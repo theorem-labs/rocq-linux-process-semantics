@@ -17,11 +17,11 @@
       c.srli64 / c.srai64 — a comparison must special-case them.
     - The all-zero halfword 0x0000 returns None here, but binutils
       prints it as "c.unimp" — a comparison must special-case it.
-    - Reserved encodings return None, matching binutils: c.addi4spn
-      nzuimm=0, c.addiw rd=0, c.lui nzimm=0, c.lwsp/c.ldsp
-      rd=0, c.jr rs1=0, the bit12=1 subw-group funct2 2/3.
-      EXCEPTION: c.addi16sp nzimm=0 is reserved by the spec but
-      binutils 2.40 accepts it, so we decode it (see below). *)
+    - Reserved encodings return None: c.addi4spn nzuimm=0, c.addiw
+      rd=0, c.addi16sp nzimm=0, c.lui nzimm=0, c.lwsp/c.ldsp rd=0,
+      c.jr rs1=0, the bit12=1 subw-group funct2 2/3.  binutils 2.40
+      prints c.addi16sp nzimm=0 (0x6101) as "c.addi16sp sp,0", so a
+      comparison with that objdump must special-case it. *)
 
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode.
 
@@ -108,16 +108,18 @@ Definition decode16 (h : bv 16) : option cinstr :=
   | 1, 3 =>
       if decide (bv_unsigned rd = 2%Z) then
         (* c.addi16sp: nzimm[9|8:7|6|5|4] at h[12|4:3|5|2|6], ×16.
-           nzimm = 0 is reserved by the ISA spec, but binutils 2.40
-           ACCEPTS it (0x6101 prints "c.addi16sp sp,0"), so we decode
-           it too, to match objdump. *)
+           nzimm = 0 is reserved by the ISA spec, and QEMU user mode
+           raises an illegal-instruction exception for it
+           (target/riscv/insn16.decode: "c.addi16sp and c.lui, RES
+           nzimm=0").  Decline it, like every other reserved encoding
+           here, rather than run it as addi sp, sp, 0. *)
         let imm : bv 10 :=
           bv_concat 10 (bits 12 1 h)
             (bv_concat 9 (bits 3 2 h)
               (bv_concat 7 (bits 5 1 h)
                 (bv_concat 6 (bits 2 1 h)
                   (bv_concat 5 (bits 6 1 h) (0 : bv 4))))) in
-        Some (CAddi16sp imm)
+        if decide (bv_unsigned imm = 0%Z) then None else Some (CAddi16sp imm)
       else
         (* c.lui; imm = 0 reserved.  rd = 0 is a hint — we decode it
            (POLICY: check binutils' printing of the rd=0 hint form). *)
@@ -311,6 +313,8 @@ Proof. vm_compute. reflexivity. Qed.
 Goal bool_decide (decode16 0x7139 (* c.addi16sp sp,-64 *)
   = Some (CAddi16sp (Z_to_bv 10 (-64)))) = true.
 Proof. vm_compute. reflexivity. Qed.
+(* c.addi16sp with nzimm = 0 is reserved *)
+Goal decode16 0x6101 = None. Proof. vm_compute. reflexivity. Qed.
 (* Low bits 11: not a compressed instruction *)
 Goal decode16 0x0013 = None. Proof. vm_compute. reflexivity. Qed.
 (* decode_any picks the right width *)
