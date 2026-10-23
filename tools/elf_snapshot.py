@@ -138,9 +138,12 @@ ELFDATA2LSB = 1
 EM_RISCV = 243
 PT_LOAD = 1
 PT_TLS = 7
-# Size of an ELF64 program header (Elf64_Phdr): what e_phentsize must be at
-# least for the table to be parseable at all.
-PHDR_MIN_ENTSIZE = 56
+# Size of an ELF64 program header (Elf64_Phdr).  Linux's execve refuses any
+# other e_phentsize, and a table larger than 64 KiB: load_elf_phdrs
+# (fs/binfmt_elf.c, v6.18.46) returns NULL for both, and load_elf_binary
+# then fails with ENOEXEC.
+PHDR_ENTSIZE = 56
+PHDR_TABLE_MAX = 65536
 PF_X = 1
 PF_W = 2
 PF_R = 4
@@ -324,11 +327,17 @@ def _parse_elf(path: str, max_total_bytes=None) -> dict:
     e_phentsize = struct.unpack_from("<H", data, 54)[0]
     e_phnum = struct.unpack_from("<H", data, 56)[0]
 
-    if e_phentsize < PHDR_MIN_ENTSIZE:
+    if e_phentsize != PHDR_ENTSIZE:
         raise ValueError(
-            "e_phentsize=%d is smaller than an ELF64 program header (%d "
-            "bytes): the program header table cannot be parsed"
-            % (e_phentsize, PHDR_MIN_ENTSIZE)
+            "e_phentsize=%d is not the size of an ELF64 program header (%d "
+            "bytes): Linux's execve refuses the file (load_elf_phdrs, "
+            "fs/binfmt_elf.c)" % (e_phentsize, PHDR_ENTSIZE)
+        )
+    if e_phnum * PHDR_ENTSIZE > PHDR_TABLE_MAX:
+        raise ValueError(
+            "e_phnum=%d: Linux's execve refuses a program header table "
+            "larger than %d bytes (load_elf_phdrs, fs/binfmt_elf.c)"
+            % (e_phnum, PHDR_TABLE_MAX)
         )
     if e_phoff + e_phnum * e_phentsize > len(data):
         raise ValueError(
@@ -1265,8 +1274,11 @@ def rebuild_elf(snap: dict) -> bytes:
     definition of the snapshot, whatever toolchain made the original."""
     segments = snap["segments"]
     ph = snap["phdrs"]
-    if ph["ent"] < PHDR_MIN_ENTSIZE:
-        raise ValueError("ph_ent %d is smaller than an ELF64 program header" % ph["ent"])
+    if ph["ent"] != PHDR_ENTSIZE:
+        raise ValueError("ph_ent %d is not the size of an ELF64 program header" % ph["ent"])
+    if ph["num"] * PHDR_ENTSIZE > PHDR_TABLE_MAX:
+        raise ValueError("ph_num %d: a program header table larger than %d bytes"
+                         % (ph["num"], PHDR_TABLE_MAX))
     table = _image_read(segments, ph["addr"], ph["ent"] * ph["num"])
     phdrs = []
     for i in range(ph["num"]):
