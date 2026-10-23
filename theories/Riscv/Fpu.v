@@ -444,6 +444,14 @@ Definition fp_mul (f : format) (md : rmode) (a b : Z) : Z * fflags :=
     end
   end.
 
+(** An exponent range for the division core wide enough that no
+    quotient of two finite operands reaches its floor.  The smallest
+    exponent [SFdiv_core_binary] asks for is
+    [4 - 2 * emax - 2 * prec] (a one-bit subnormal over the largest
+    finite value), and with this [emax] the core's own minimum exponent
+    is [3 - 2 * emax - 2 * prec], one below it. *)
+Definition div_core_emax (f : format) : Z := 2 * fp_emax f + fp_prec f.
+
 Definition fp_div (f : format) (md : rmode) (a b : Z) : Z * fflags :=
   match nan_pass2 f a b with
   | Some r => r
@@ -457,8 +465,18 @@ Definition fp_div (f : format) (md : rmode) (a b : Z) : Z * fflags :=
     (* finite nonzero / zero: the only divide-by-zero there is *)
     | x, S754_zero sb => (fp_encode f (S754_infinity (xorb (sf_sign x) sb)), dz_flag)
     | S754_finite sa ma ea, S754_finite sb mb eb =>
+        (* The core runs over [div_core_emax], so the quotient keeps
+           [prec] significant bits even when it is subnormal.  The value
+           does not change: [round_aux] still rounds onto the format's
+           own grid.  The flags do: with [fp_emax f] the core truncates
+           a subnormal quotient to the subnormal grid already, and
+           [round_tiny] then rounds that, not the exact quotient.  A
+           quotient in the last gap below the smallest normal that
+           rounds up to it under the format's range, but stays below it
+           with the range unbounded, would lose its UF flag
+           ([div_tiny_carries_to_normal_uf] in FpuTests). *)
         let '(mz, ez, lz) :=
-          SFdiv_core_binary (fp_prec f) (fp_emax f) (Z.pos ma) ea (Z.pos mb) eb in
+          SFdiv_core_binary (fp_prec f) (div_core_emax f) (Z.pos ma) ea (Z.pos mb) eb in
         enc f (round_aux f md (xorb sa sb) mz ez lz)
     | _, _ => (fp_canonical_nan f, no_flags)  (* unreachable *)
     end
