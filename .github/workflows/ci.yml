@@ -59,7 +59,7 @@ jobs:
               python3 tools/gen_checker.py --check
               python3 tools/gen_checker.py --verify
             endGroup
-            startGroup "Check the assumptions of the example proofs"
+            startGroup "Kernel-check and audit assumptions of the example proofs"
               opam exec -- python3 .github/check_assumptions.py
             endGroup
             startGroup "Test elf-snapshot"

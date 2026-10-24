@@ -3,8 +3,9 @@
 
 Run from the repository root after `dune build`.  For each
 theories/Examples/<name>/ that has a Proof.v, compile the Checker.v that
-dune generated, read the output of its two Print Assumptions blocks, and
-fail if an assumption is not permitted.
+dune generated, independently recheck its compiled proof closure with
+rocqchk, read the output of its two Print Assumptions blocks, and fail if
+an assumption is not permitted.
 
 Permitted: functional_extensionality_dep and the primitives of the
 PrimInt63, PrimString and PrimArray modules.
@@ -51,12 +52,19 @@ def check(name, tmp):
     # rocq c requires the output file to have the source's base name.
     outdir = os.path.join(tmp, name)
     os.makedirs(outdir)
+    vo = os.path.join(outdir, "Checker.vo")
     out = subprocess.run(
         ["rocq", "c", "-Q", BUILD, "LinuxProcessSemantics",
-         "-o", os.path.join(outdir, "Checker.vo"), checker],
+         "-o", vo, checker],
         capture_output=True, text=True)
     if out.returncode != 0:
         return ["rocq failed on %s:\n%s" % (checker, out.stderr)]
+    checked = subprocess.run(
+        ["rocqchk", "-silent", "-Q", BUILD, "LinuxProcessSemantics", vo],
+        capture_output=True, text=True)
+    if checked.returncode != 0:
+        detail = checked.stdout + checked.stderr
+        return ["rocqchk failed on %s:\n%s" % (vo, detail)]
     blocks = BLOCK.findall(out.stdout)
     if len(blocks) != 2:
         return ["%s: expected 2 Print Assumptions blocks, found %d"
