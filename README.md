@@ -1,5 +1,7 @@
 # rocq-linux-process-semantics
 
+[![CI](https://github.com/theorem-labs/rocq-linux-process-semantics/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/theorem-labs/rocq-linux-process-semantics/actions/workflows/ci.yml?query=branch%3Amain)
+
 This repository contains a model, in the Rocq Prover, of a Linux process
 that runs a 64-bit RISC-V (RV64GC) binary. It also contains:
 
