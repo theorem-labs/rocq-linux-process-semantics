@@ -203,49 +203,71 @@ Definition sp_window_hi : Z := 0x800000000000%Z.
     and a target may not assume the source's break placement. *)
 Definition brk_aslr_max : Z := (1 * 1024 * 1024 * 1024)%Z.
 
-(** MMAP-BASE FLOOR: the smallest [mm->mmap_base] any covered kernel
-    computes for a top-down layout.  = 0x154555557000.
+(** MMAP-BASE FLOOR: the smallest [mm->mmap_base] a covered kernel
+    computes for a top-down layout under the configuration SCOPE.md
+    names.  = 0x154555557000.
 
     riscv64 has no [arch_pick_mmap_layout] of its own — it selects
     [CONFIG_ARCH_WANT_DEFAULT_TOPDOWN_MMAP_LAYOUT]
-    (arch/riscv/Kconfig, Linux v6.12), so the generic one in mm/util.c
-    applies.  Its default (non-legacy) arm computes
+    (arch/riscv/Kconfig:84, Linux v6.18.46, commit 1f99e9ab748f), so the
+    generic one in mm/util.c:465-479 applies.  Its default (non-legacy)
+    arm computes
 
       mm->mmap_base = mmap_base(random_factor, rlim_stack)
 
-    with (mm/util.c, Linux v6.12, [mmap_base])
+    with (mm/util.c:434-463, [mmap_base])
 
       gap  = rlim_stack->rlim_cur + stack_guard_gap [+ STACK_RND_MASK pages],
       gap  clamped to [MIN_GAP, MAX_GAP],
       base = PAGE_ALIGN(STACK_TOP - gap - rnd)
 
-    where [MIN_GAP = SZ_128M], [MAX_GAP = STACK_TOP / 6 * 5], and [rnd =
-    arch_mmap_rnd()] masks [get_random_long()] to at most
-    [mmap_rnd_bits <= ARCH_MMAP_RND_BITS_MAX = 24] page-shifted bits
-    (mm/util.c [arch_mmap_rnd]; arch/riscv/Kconfig
-    [ARCH_MMAP_RND_BITS_MAX]).  With the Sv48 [STACK_TOP =
-    0x800000000000] this whole model assumes (see [sp_window_lo]), the
-    smallest value any choice of rlimit and randomness produces is
+    where [MIN_GAP = SZ_128M], [MAX_GAP = STACK_TOP / 6 * 5]
+    (mm/util.c:431-432), and [rnd = arch_mmap_rnd()] is [k] pages with
+    [k < 2^vm.mmap_rnd_bits] (mm/util.c:399-411).  [stack_guard_gap] is
+    a boot parameter of any page count (mm/mmap.c:941-954), so the gap
+    reaches [MAX_GAP] even under the 8 MiB stack limit.
+
+    THE NAMED ASSUMPTION (SCOPE.md, "Assumptions that the model does not
+    check"): [vm.mmap_rnd_bits] is at most 24, or [stack_guard_gap] is
+    under 64 TiB.  The sysctl's range is [mmap_rnd_bits_min ..
+    mmap_rnd_bits_max] (mm/mmap.c:1528-1536): 18
+    (arch/riscv/Kconfig:260-262) up to [MMAP_VA_BITS - PAGE_SHIFT - 3]
+    (arch/riscv/mm/init.c:850-853), which is 33 under Sv48.  Its boot
+    value [CONFIG_ARCH_MMAP_RND_BITS] is at most
+    [ARCH_MMAP_RND_BITS_MAX = 24] (arch/Kconfig:1208-1212,
+    arch/riscv/Kconfig:269-271); only root raises it further.  With the
+    Sv48 [STACK_TOP = 0x800000000000] this whole model assumes (see
+    [sp_window_lo]) and 24 bits, the smallest value is
 
       PAGE_ALIGN(0x800000000000 - 0x800000000000/6*5 - 0xffffff000)
       = PAGE_ALIGN(0x155555555557 - 0xffffff000) = 0x154555557000.
 
+    With more bits AND a large guard (more than about 74.7 TiB at 33
+    bits, near [MAX_GAP] at 25), Linux goes below it; with more bits and
+    a smaller guard (the hardened [vm.mmap_rnd_bits = 33] with the
+    default guard of 256 pages) it does not.  The legacy layout (an
+    [ADDR_COMPAT_LAYOUT] personality or [vm.legacy_va_layout = 1],
+    mm/util.c:413-425) puts the base at [TASK_UNMAPPED_BASE] =
+    0x2aaaaab000 plus the draw (mm/util.c:472-474), under this floor;
+    SCOPE.md names the top-down layout as an assumption too.
+
     [Run.valid_mmap_base] admits any page-aligned base from this floor
-    up to [mmap_base_max] below.
+    up to [mmap_base_max] below, and that band is EXACTLY the set of
+    bases Linux gives under those assumptions:
+    [Checks.Cases.MmapBase.sv48_band_is_linux_set] proves it against a
+    Rocq statement of the computation above, and the examples next to it
+    show that each assumption is needed.
 
-    NO SPEC ARM READS THE BASE'S VALUE: placement is
-    admissibility alone (see [Mmap.mmap_spec]'s placement section).  The
-    PREDICATE is live — [Run.valid_mmap_base] is a conjunct of
-    [Run.valid_entry] and a required step of
-    [Equivalence.image_brk_satisfiable_entry] — so neither it nor this
-    constant may be removed.
-
-    THE RESIDUAL, stated plainly because nothing else will
-    catch it: this constant is UNFALSIFIABLE in-tree.  No arm reads it, and both proofs that
-    consume [Run.valid_mmap_base] go through for a wide range of floors,
-    so an error in the derivation above would pass unnoticed here.  The
-    derivation is the only thing standing behind the number, which is
-    why it is spelled out rather than asserted. *)
+    WHY NOT LOWER, to the smallest base Linux gives without the
+    assumptions: no spec arm reads the base (placement is admissibility
+    alone, see [Mmap.mmap_spec]'s placement section), but the ASan plan
+    checker reads this floor.  [Common.AsanInit] starts its placement
+    split at [AsanPlanCore.MBASE_MIN] = this value, and
+    [AsanPlacement.kHighMemBeg_below_mmap_base_min] needs it above the
+    ASan high shadow.  A lower floor would make those proofs false.  The
+    predicate is also a conjunct of [Run.valid_entry] and a required step
+    of [Equivalence.image_brk_satisfiable_entry], so neither it nor this
+    constant may be removed. *)
 Definition mmap_base_min : Z := 0x154555557000%Z.
 
 (** MMAP-BASE CAP: the largest [mm->mmap_base] any covered kernel
@@ -365,16 +387,20 @@ Definition TASK_SIZE : Z := 0x800000000000%Z.
 
     The window and the mmap band are derived from [va_stack_top] by the
     same arguments the Sv48 constants above spell out: the window is the
-    top and 2 GiB below it, the cap is the top less [MIN_GAP].  The floor
-    of the band is the one place a derivation does not carry over.  Under
-    Sv39, [STACK_TOP - MAX_GAP] is under 2^36 while [arch_mmap_rnd] can
-    subtract up to [(2^24 - 1)] pages, so [mmap_base]'s own subtraction
-    (mm/util.c, [mmap_base]) goes below zero and wraps in the kernel's
-    unsigned arithmetic; no positive floor holds of every rlimit and
-    every draw, and the Sv39 instance admits any page-aligned base up to
-    its cap rather than a floor that would exclude a real one.  The
-    floor is read by no arm ([mmap_base_min]'s note), so this costs
-    nothing but honesty.
+    top and 2 GiB below it, the cap is the top less [MIN_GAP].  Under
+    Sv57 the floor is Sv48's too: [vm.mmap_rnd_bits] has the same range,
+    because [mmap_rnd_bits_max] is [MMAP_VA_BITS - PAGE_SHIFT - 3]
+    (arch/riscv/mm/init.c:850-853) and [MMAP_VA_BITS] is 48 for both.
+    Under Sv39, [STACK_TOP - MAX_GAP] is under 2^36 while
+    [arch_mmap_rnd] can subtract up to [(2^24 - 1)] pages (24 is
+    [mmap_rnd_bits_max] there), so [mmap_base]'s own subtraction
+    (mm/util.c:461) goes below zero and wraps in the kernel's unsigned
+    arithmetic.  No program starts from a wrapped base: the vDSO cannot
+    be placed and [execve] kills the task past its point of no return
+    (the Sv39 section of [Checks.Cases.MmapBase] cites each step).  So
+    the Sv39 instance admits every page-aligned base from 0 up to its
+    cap, and [Checks.Cases.MmapBase.sv39_band_is_linux_set] proves that
+    this is exactly the set of bases Linux gives that do not wrap.
 
     WHAT THE DECLARATION BUYS TODAY, stated here so nobody reads more
     into it: the spec arms below still compare against [TASK_SIZE], the
@@ -2689,8 +2715,12 @@ Inductive FdEntry :=
         [Equivalence.strong_universal_T] quantifies its entries under,
         and discharging it is a required step of
         [Equivalence.image_brk_satisfiable_entry], the tree's
-        anti-vacuity lemma.  It is the PREDICATE that is load-bearing,
-        not the value: no arm and no tier reads the value.
+        anti-vacuity lemma.  It is the PREDICATE that is load-bearing in
+        the spec, not the value.  Outside the spec, the ASan plan
+        checker's placement gate ([Common.AsanCeil.placement_ok], taken
+        as its named [placement_policy] hypothesis) reads the value, and
+        [Common.AsanInit] relies on the predicate's floor (see
+        [mmap_base_min]).
         A base of 0 is what [mkVmMaps] seeds and means only "no base
         recorded"; no state reachable from [State.init_model] under
         [Run.valid_mmap_base] carries it;

@@ -251,17 +251,22 @@ Variable mi_init_brk : word.
     value — page-aligned, within [State.mmap_base_min ..
     State.mmap_base_max] — quantified INDEPENDENTLY for the two binaries
     in [Equivalence.strong_universal_T].  On Linux the value is a
-    function of the stack rlimit, the layout sysctls and the mmap ASLR
-    draw ([arch_pick_mmap_layout], mm/util.c, Linux v6.18.46, commit
+    function of the stack rlimit, [stack_guard_gap], the layout
+    personality and sysctls, [vm.mmap_rnd_bits] and the mmap ASLR draw
+    ([arch_pick_mmap_layout], mm/util.c:465-479, Linux v6.18.46, commit
     1f99e9ab748f — the derivation is on [State.mmap_base_min] and the cap
-    on [State.mmap_base_max]); none of that
-    is snapshot data, so the model quantifies over the band instead.
-    Seeds [State.init_model]'s [vm_mmap_base].  NOTHING READS THAT
-    VALUE: in the trusted spec placement is
-    admissibility alone (see [Mmap.mmap_spec]'s placement section), and
-    the untrusted search in theories/Common/PlacementSearch.v takes its
-    floor as a bare argument rather than off a [VmMaps].  What keeps the
-    field is the PREDICATE over it, not the value — see
+    on [State.mmap_base_max]); none of that is snapshot data, so the
+    model quantifies over the band instead.  The band is exactly the set
+    of bases Linux gives under the assumptions SCOPE.md names
+    ([Checks.Cases.MmapBase.sv48_band_is_linux_set]).
+    Seeds [State.init_model]'s [vm_mmap_base].  NO SPEC ARM READS THAT
+    VALUE: in the trusted spec placement is admissibility alone (see
+    [Mmap.mmap_spec]'s placement section), and the untrusted search in
+    theories/Common/PlacementSearch.v takes its floor as a bare argument
+    rather than off a [VmMaps].  The ASan plan checker's placement gate
+    ([Common.AsanCeil.placement_ok]) does read it, under that checker's
+    named [placement_policy] hypothesis.  What keeps the field in the
+    spec is the PREDICATE over it, not the value — see
     [valid_mmap_base]. *)
 Variable mi_mmap_base : word.
 
@@ -2310,30 +2315,29 @@ Definition valid_brk (segs : list Segment) (brk : word) : Prop :=
 
 (** Validity predicate for the run's [mm->mmap_base] ([mi_mmap_base]):
     any page-aligned address in [[State.mmap_base_min,
-    State.mmap_base_max]].  The floor is the smallest base any covered
-    kernel's top-down layout computes and the cap the largest; both are
-    derived from mm/util.c's [mmap_base] on their own definitions.
+    State.mmap_base_max]].  The floor is the smallest base a covered
+    kernel's top-down layout computes and the cap the largest, both
+    derived from mm/util.c's [mmap_base] on their own definitions, under
+    two assumptions SCOPE.md names: the top-down layout, and
+    [vm.mmap_rnd_bits] at most 24 or [stack_guard_gap] under 64 TiB.
+    Under them the band is EXACTLY the set of bases Linux gives:
+    [Checks.Cases.MmapBase.sv48_band_is_linux_set] proves both
+    inclusions against a Rocq statement of that computation, so an error
+    in either constant fails the build.  Outside them Linux can give a
+    base under the floor, and the model has no entry for that launch.
     Quantified independently per binary in
     [Equivalence.strong_universal_T], like [valid_sp] and [valid_brk].
 
-    WHAT IS UNREAD IS THE VALUE, NOT THIS PREDICATE, and the difference
-    matters because it decides whether the apparatus can be deleted.  No
-    spec arm reads [vm_mmap_base] — placement is admissibility
+    No spec arm reads [vm_mmap_base] — placement is admissibility
     alone — so the band constrains no placement the model admits.  But
     [valid_mmap_base] is the third conjunct of [valid_entry], which
     [Equivalence.strong_universal_T] quantifies its entries under, and
     discharging it is a required step of the tree's anti-vacuity lemma
     [Equivalence.image_brk_satisfiable_entry]: that lemma exhibits an
-    entry and must show its base admissible.  Delete the field and that
-    proof silently loses a conjunct.  That is the whole reason, and it is
-    about this PREDICATE rather than about the field's value: no reader of
-    the value exists in either tier.
-
-    The genuine residual: nothing in the tree
-    can falsify the band's floor.  [State.mmap_base_min]'s value is
-    read by no arm, and both proofs that consume this predicate go
-    through for a wide range of floors, so a wrong one would not be
-    caught here — see that constant's own note. *)
+    entry and must show its base admissible.  Outside the spec, the ASan
+    plan checker ([Common.AsanInit]) takes this predicate as a
+    hypothesis and needs its floor; that is why the floor is not lowered
+    to drop the assumptions (see [State.mmap_base_min]). *)
 Definition valid_mmap_base (mbase : word) : Prop :=
   (mmap_base_min <= bv_unsigned mbase)%Z
   /\ (bv_unsigned mbase <= mmap_base_max)%Z
