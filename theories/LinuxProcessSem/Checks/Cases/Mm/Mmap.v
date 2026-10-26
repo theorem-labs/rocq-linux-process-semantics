@@ -1625,9 +1625,11 @@ Proof. check_eq. Qed.
 
 (** Reason: it pins model-internal state no execution reveals.  Outside the
     documented final-page tail of a byte-granular brk shrink, [State.v]
-    purpose (c) says [vm_noaccess] is owned by [vm_maps]; that holds on
-    every reachable state ([Checks.NoaccessOwned.star_preserves_sys_inv]),
-    but this state is built by hand.  A ledger with no owner at all must not let mprotect return
+    purpose (c) says [vm_noaccess] is owned by [vm_maps]; on every
+    reachable state that ownership holds page by page
+    ([Checks.NoaccessOwned.init_config_star_sys_inv] with
+    [sys_inv_noaccess_pages_owned]), but this state is built by hand.  A
+    ledger with no owner at all must not let mprotect return
     0 and zero-fill a range the model does
     not own — Linux answers -ENOMEM for a range starting outside every VMA
     (Linux v6.12, mm/mprotect.c:753, :765-766) — so the exposure branch
