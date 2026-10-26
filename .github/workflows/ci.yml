@@ -6,9 +6,15 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Each push to main gets its own group, so its run is never cancelled or
+# replaced: the next push is routed against this one, so a lost run would leave
+# this commit unchecked. A pull request's newer head cancels its older one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   # Decides from this commit's own diff whether the Rocq lanes run: against
@@ -42,7 +48,7 @@ jobs:
             echo build=true >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git diff --name-only "$range" > "$RUNNER_TEMP/changed"
+          git diff --name-only --no-renames "$range" > "$RUNNER_TEMP/changed"
           echo "Changed files:"; cat "$RUNNER_TEMP/changed"
           if grep -Ev '(\.md|^LICENSE)$' "$RUNNER_TEMP/changed" > /dev/null; then
             echo build=true >> "$GITHUB_OUTPUT"
