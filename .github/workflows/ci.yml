@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -10,8 +11,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decides from this commit's own diff whether the Rocq lanes run: against
+  # the base for a pull request, against the parent for a push. Only a change
+  # that touches nothing but *.md files and LICENSE skips them.
+  route:
+    name: Route
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.route.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: route
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request) base="$PR_BASE"; range="$base...HEAD" ;;
+            push) base="$PUSH_BEFORE"; range="$base..HEAD" ;;
+            *) base="" ;;
+          esac
+          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] \
+             || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "No usable base ($EVENT); running everything."
+            echo build=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "$range" > "$RUNNER_TEMP/changed"
+          echo "Changed files:"; cat "$RUNNER_TEMP/changed"
+          if grep -Ev '(\.md|^LICENSE)$' "$RUNNER_TEMP/changed" > /dev/null; then
+            echo build=true >> "$GITHUB_OUTPUT"
+          else
+            echo "Only *.md and LICENSE changed; skipping the Rocq lanes."
+            echo build=false >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build and check (Rocq ${{ matrix.rocq }})
+    needs: route
+    if: needs.route.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     strategy:
@@ -69,6 +112,8 @@ jobs:
 
   opam:
     name: opam install
+    needs: route
+    if: needs.route.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -98,3 +143,27 @@ jobs:
           opam exec -- rocq c "$RUNNER_TEMP/Use.v"
           opam exec -- elf-snapshot --help > /dev/null
           opam exec -- gen-fd-lemmas --help > /dev/null
+
+  # The one check to require: it always runs, and passes only when the route
+  # succeeded and every lane it started passed (a lane the route skipped
+  # counts as passed). All three Rocq lanes stay blocking.
+  ci:
+    name: CI
+    needs: [route, build, opam]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          ROUTE: ${{ needs.route.result }}
+          BUILD_ROUTED: ${{ needs.route.outputs.build }}
+          BUILD: ${{ needs.build.result }}
+          OPAM: ${{ needs.opam.result }}
+        run: |
+          echo "route=$ROUTE build-routed=$BUILD_ROUTED build=$BUILD opam=$OPAM"
+          [ "$ROUTE" = success ] || { echo "route did not succeed"; exit 1; }
+          if [ "$BUILD_ROUTED" = true ]; then
+            [ "$BUILD" = success ] && [ "$OPAM" = success ] || { echo "a lane did not pass"; exit 1; }
+          else
+            [ "$BUILD" = skipped ] && [ "$OPAM" = skipped ] || { echo "unexpected lane result"; exit 1; }
+          fi
