@@ -112,7 +112,9 @@ Definition wit_limit : Z := 0x40000000%Z.
     pinned to an admissible one ([wit_mmap_base_admissible]) so that the
     whole start state is one [execve] can hand out, which is what makes
     the overlap below reachable rather than hypothetical.  That is the
-    only reason: nothing in either tier reads the value. *)
+    only reason: no spec arm reads the value (the ASan plan checker's
+    placement gate does, outside the spec; see [State]'s [vm_mmap_base]
+    field note). *)
 Definition wit_mmap_base : word := Z_to_bv 64 mmap_base_min.
 
 (** The witness ledger.  [State.mkVmMaps] would default [vm_mmap_base] to

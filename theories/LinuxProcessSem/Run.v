@@ -2319,7 +2319,8 @@ Definition valid_brk (segs : list Segment) (brk : word) : Prop :=
     kernel's top-down layout computes and the cap the largest, both
     derived from mm/util.c's [mmap_base] on their own definitions, under
     two assumptions SCOPE.md names: the top-down layout, and
-    [vm.mmap_rnd_bits] at most 24 or [stack_guard_gap] under 64 TiB.
+    [vm.mmap_rnd_bits] at most 24 or [stack_guard_gap] at most
+    0x4aba6a2ab000 bytes (about 74.7 TiB).
     Under them the band is EXACTLY the set of bases Linux gives:
     [Checks.Cases.MmapBase.sv48_band_is_linux_set] proves both
     inclusions against a Rocq statement of that computation, so an error

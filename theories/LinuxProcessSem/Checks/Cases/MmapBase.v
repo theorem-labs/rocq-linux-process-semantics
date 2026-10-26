@@ -8,8 +8,8 @@
 
     - the top-down layout (no [ADDR_COMPAT_LAYOUT] personality,
       [vm.legacy_va_layout] = 0, and the 8 MiB stack limit);
-    - [vm.mmap_rnd_bits] at most 24, or a [stack_guard_gap] under
-      64 TiB.
+    - [vm.mmap_rnd_bits] at most 24, or a [stack_guard_gap] of at most
+      [floor_guard_max] = 0x4aba6a2ab000 bytes (about 74.7 TiB).
 
     So a launch inside that configuration has its base in the band, and
     every base in the band is one such a launch can have.  The file also
@@ -30,17 +30,16 @@
 
 From Stdlib Require Import ZArith Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Run.
-Open Scope Z_scope.
+Local Open Scope Z_scope.
 
 (** ** The kernel's computation, in [Z]
 
-    The kernel computes in [unsigned long].  The domain below keeps the
-    gap's sum under 2^64.  A larger [stack_guard_gap] makes the sum wrap,
-    and mm/util.c:452-454 then leaves the gap at the rlimit or at the
-    rlimit plus a wrapped pad that is smaller than [stack_rnd_pad]; both
-    clamp to a gap that a small guard also gives, so the wrap adds no
-    base.  A NEGATIVE result here is a base that wrapped below zero in
-    the kernel; the Sv39 section says why no program starts from one. *)
+    The kernel computes the gap in [unsigned long], and so does
+    [unclamped_gap]: [pad] wraps at mm/util.c:450, and the test at
+    :452-454 keeps the gap at the rlimit when [gap + pad] wraps.  The
+    final subtraction is kept in [Z]: a NEGATIVE result is a base that
+    wrapped below zero in the kernel; the Sv39 section says why no
+    program starts from one. *)
 
 (** [MIN_GAP], mm/util.c:431. *)
 Definition min_gap : Z := 128 * 1024 * 1024.
@@ -62,24 +61,31 @@ Definition clamp_gap (stack_top gap : Z) : Z :=
   else if max_gap stack_top <? gap then max_gap stack_top
   else gap.
 
-(** [mmap_base(rnd, rlim_stack)], mm/util.c:434-463.  [guard] is
-    [stack_guard_gap] (mm/mmap.c:941-954: 256 pages by default, any page
-    count on the command line); [randomize] is [PF_RANDOMIZE], which adds
-    the stack pad to the gap here and makes [arch_pick_mmap_layout]
-    draw [rnd] (mm/util.c:467-470). *)
+(** [pad] of mm/util.c:446-450 in [unsigned long]: [stack_guard_gap]
+    (mm/mmap.c:941-954: 256 pages by default, any page count on the
+    command line) plus the stack pad under [PF_RANDOMIZE]. *)
+Definition guard_pad (guard : Z) (randomize : bool) : Z :=
+  (guard + (if randomize then stack_rnd_pad else 0)) mod two_pow_64.
+
+(** [gap] before the clamp, mm/util.c:445 and :452-454. *)
+Definition unclamped_gap (guard : Z) (randomize : bool) : Z :=
+  if stack_rlimit + guard_pad guard randomize <? two_pow_64
+  then stack_rlimit + guard_pad guard randomize
+  else stack_rlimit.
+
+(** [mmap_base(rnd, rlim_stack)], mm/util.c:434-463.  [randomize] is
+    [PF_RANDOMIZE], which adds the stack pad to the gap and makes
+    [arch_pick_mmap_layout] draw [rnd] (mm/util.c:467-470). *)
 Definition topdown_base (stack_top guard : Z) (randomize : bool) (rnd : Z) : Z :=
   page_round_up_Z
-    (stack_top
-     - clamp_gap stack_top
-         (stack_rlimit + guard + (if randomize then stack_rnd_pad else 0))
-     - rnd).
+    (stack_top - clamp_gap stack_top (unclamped_gap guard randomize) - rnd).
 
-(** The inputs one launch can have: a page-multiple guard inside the
-    domain, and [rnd] = [k] pages with [k < 2^bits] ([arch_mmap_rnd],
+(** The inputs one launch can have: any page-multiple guard an
+    [unsigned long] holds ([val << PAGE_SHIFT], mm/mmap.c:948-950), and
+    [rnd] = [k] pages with [k < 2^bits] ([arch_mmap_rnd],
     mm/util.c:399-411), [k = 0] without [PF_RANDOMIZE]. *)
 Definition launch_ok (bits guard : Z) (randomize : bool) (k : Z) : Prop :=
-  0 <= guard /\ guard mod page_size = 0
-  /\ stack_rlimit + guard + stack_rnd_pad < two_pow_64
+  0 <= guard < two_pow_64 /\ guard mod page_size = 0
   /\ 0 <= k < 2 ^ bits /\ (randomize = false -> k = 0).
 
 (** The configuration SCOPE.md names, over the two knobs that move the
@@ -91,9 +97,16 @@ Definition launch_ok (bits guard : Z) (randomize : bool) (k : Z) : Prop :=
     arch/riscv/include/asm/pgtable.h:137-140) and 24 under Sv39.  Its
     boot value [CONFIG_ARCH_MMAP_RND_BITS] lies in 18 .. 24
     (arch/Kconfig:1208-1212, arch/riscv/Kconfig:269-271); only root
-    raises it past 24, through /proc/sys/vm/mmap_rnd_bits. *)
+    raises it past 24, through /proc/sys/vm/mmap_rnd_bits.
+
+    [floor_guard_max] is the largest guard with which even 33 bits keep
+    every base at or above the floor: [STACK_TOP - floor - rlimit -
+    stack pad - (2^33 - 1) pages].  It does not depend on the bit count;
+    with fewer bits a larger guard would do (about 106.6 TiB at 25). *)
+Definition floor_guard_max : Z := 0x4aba6a2ab000.
+
 Definition named_config (bits guard : Z) : Prop :=
-  18 <= bits <= 33 /\ (bits <= 24 \/ guard < 2 ^ 46).
+  18 <= bits <= 33 /\ (bits <= 24 \/ guard <= floor_guard_max).
 
 (** ** Page rounding and the clamp *)
 
@@ -146,14 +159,40 @@ Local Lemma stack_pad_range : forall randomize : bool,
   0 <= (if randomize then stack_rnd_pad else 0) <= stack_rnd_pad.
 Proof. intros []; unfold stack_rnd_pad, page_size; lia. Qed.
 
+(** Without a wrap the gap is the plain sum. *)
+Local Lemma unclamped_gap_in_domain : forall (guard : Z) (randomize : bool),
+  0 <= guard ->
+  stack_rlimit + guard + (if randomize then stack_rnd_pad else 0) < two_pow_64 ->
+  unclamped_gap guard randomize
+  = stack_rlimit + guard + (if randomize then stack_rnd_pad else 0).
+Proof.
+  intros guard randomize H0 H1. unfold unclamped_gap, guard_pad.
+  pose proof (stack_pad_range randomize) as Hp.
+  remember (if randomize then stack_rnd_pad else 0) as p eqn:Hpe.
+  rewrite Z.mod_small by (clear - H0 H1 Hp; unfold stack_rlimit in H1; lia).
+  destruct (Z.ltb_spec (stack_rlimit + (guard + p)) two_pow_64); [ring|].
+  exfalso. clear - H1 H. lia.
+Qed.
+
 Local Lemma topdown_base_randomized : forall st guard rnd,
+  0 <= guard -> stack_rlimit + guard + stack_rnd_pad < two_pow_64 ->
   topdown_base st guard true rnd
   = page_round_up_Z (st - clamp_gap st (stack_rlimit + guard + stack_rnd_pad) - rnd).
-Proof. reflexivity. Qed.
+Proof.
+  intros st guard rnd H0 H1. unfold topdown_base.
+  rewrite (unclamped_gap_in_domain guard true H0 H1). reflexivity.
+Qed.
 
 Local Lemma topdown_base_fixed : forall st guard rnd,
+  0 <= guard -> stack_rlimit + guard + 0 < two_pow_64 ->
   topdown_base st guard false rnd
   = page_round_up_Z (st - clamp_gap st (stack_rlimit + guard + 0) - rnd).
+Proof.
+  intros st guard rnd H0 H1. unfold topdown_base.
+  rewrite (unclamped_gap_in_domain guard false H0 H1). reflexivity.
+Qed.
+
+Local Lemma two_pow_64_val : two_pow_64 = 18446744073709551616.
 Proof. reflexivity. Qed.
 
 Local Lemma sv48_domain : sp_window_hi + stack_rnd_pad < two_pow_64.
@@ -194,7 +233,8 @@ Proof.
     by (exists (b / page_size); unfold page_size in *; Z.div_mod_to_equations; lia).
   destruct (Z_lt_le_dec b (st - gmax)) as [Hb'|Hb'].
   - exists (gmax - stack_rlimit - stack_rnd_pad), true, (s - g - m).
-    rewrite topdown_base_randomized.
+    rewrite topdown_base_randomized
+      by (clear - Hg1 Hg3 Hdom; unfold stack_rlimit, stack_rnd_pad, page_size in *; lia).
     replace (stack_rlimit + (gmax - stack_rlimit - stack_rnd_pad) + stack_rnd_pad)
       with gmax by ring.
     rewrite (clamp_gap_id st gmax) by (clear - Hg1 Hg2; lia).
@@ -205,7 +245,8 @@ Proof.
     all: try (intros Hf; discriminate Hf).
     all: try (Z.div_mod_to_equations; lia).
   - exists (st - b - stack_rlimit), false, 0.
-    rewrite topdown_base_fixed.
+    rewrite topdown_base_fixed
+      by (clear - Hhi Hb0 Hdom; unfold stack_rlimit, stack_rnd_pad, min_gap, page_size in *; lia).
     replace (stack_rlimit + (st - b - stack_rlimit) + 0) with (st - b) by ring.
     rewrite (clamp_gap_id st (st - b)) by (clear - Hhi Hb' Hg1; lia).
     rewrite page_round_up_Z_id
@@ -241,32 +282,36 @@ Proof.
                 ltac:(lia) ltac:(unfold sp_window_hi, min_gap, page_size; lia))
       as (guard & randomize & k & H1 & H2 & H3 & H4 & H5 & H6).
     assert (Hp24 : 2 ^ 24 = 16777216) by reflexivity.
+    unfold stack_rlimit, stack_rnd_pad, page_size in H3.
     exists 24, guard, randomize, k. rewrite Hp24.
     split; [split; [lia | left; lia]|].
     split; [repeat split; try assumption; lia | exact H6].
-  - intros (bits & guard & randomize & k & (Hb1 & Hcfg) & (Hg0 & Hgal & Hgdom & Hk & Hk0) & ->).
+  - intros (bits & guard & randomize & k & (Hb1 & Hcfg) & ((Hg0 & Hglt) & Hgal & Hk & Hk0) & ->).
     unfold topdown_base.
-    pose proof (stack_pad_range randomize) as Hp.
-    remember (if randomize then stack_rnd_pad else 0) as p eqn:Hpe.
-    pose proof (clamp_gap_range sp_window_hi (stack_rlimit + guard + p))
+    pose proof (clamp_gap_range sp_window_hi (unclamped_gap guard randomize))
       as [[Hc1 Hc2] Hc3]; [rewrite max_gap_sv48; unfold min_gap; lia|].
-    remember (clamp_gap sp_window_hi (stack_rlimit + guard + p)) as c eqn:Hce.
     rewrite max_gap_sv48 in Hc2.
+    remember (clamp_gap sp_window_hi (unclamped_gap guard randomize)) as c eqn:Hce.
     split; [|split; [|apply page_round_up_Z_aligned]].
     + (* the floor *)
       apply page_round_up_Z_ge; [reflexivity|].
       unfold mmap_base_min, sp_window_hi, page_size.
       destruct Hcfg as [Hbits|Hguard].
-      * assert (2 ^ bits <= 16777216)
+      * assert (Hpow : 2 ^ bits <= 16777216)
           by (change 16777216 with (2 ^ 24); apply Z.pow_le_mono_r; lia).
-        lia.
-      * assert (2 ^ bits <= 8589934592)
+        clear - Hc2 Hk Hpow. lia.
+      * assert (Hpow : 2 ^ bits <= 8589934592)
           by (change 8589934592 with (2 ^ 33); apply Z.pow_le_mono_r; lia).
-        change (2 ^ 46) with 70368744177664 in Hguard.
-        unfold stack_rlimit, stack_rnd_pad, min_gap, page_size in *. lia.
+        pose proof (stack_pad_range randomize) as Hp.
+        rewrite unclamped_gap_in_domain in Hc3
+          by (clear - Hg0 Hguard Hp; try rewrite two_pow_64_val;
+              unfold floor_guard_max, stack_rlimit, stack_rnd_pad, page_size in *; lia).
+        remember (if randomize then stack_rnd_pad else 0) as p eqn:Hpe.
+        clear - Hc3 Hk Hpow Hguard Hp.
+        unfold floor_guard_max, stack_rlimit, stack_rnd_pad, min_gap, page_size in *. lia.
     + (* the cap *)
       apply page_round_up_Z_le; [reflexivity|].
-      unfold mmap_base_max, sp_window_hi, min_gap, page_size in *. lia.
+      unfold mmap_base_max, sp_window_hi, min_gap, page_size in *. clear - Hc1 Hk. lia.
 Qed.
 
 (** Each assumption is needed.  With 25 bits and a guard that drives the
@@ -304,8 +349,22 @@ Example rnd_bits_33_default_guard_is_in_the_band :
      = 0x5fffbf702000
   /\ mmap_base_min <= 0x5fffbf702000.
 Proof.
-  unfold named_config. repeat split; vm_compute; try reflexivity; try discriminate;
-    right; reflexivity.
+  split; [split; [lia | right; vm_compute; discriminate]|].
+  split; vm_compute; [reflexivity | discriminate].
+Qed.
+
+(** [floor_guard_max] is exact: at 33 bits with the largest draw, that
+    guard gives the floor itself and one page more gives a base one page
+    under it. *)
+Example floor_guard_max_is_tight :
+  topdown_base sp_window_hi floor_guard_max true ((2 ^ 33 - 1) * page_size)
+    = mmap_base_min
+  /\ launch_ok 33 (floor_guard_max + page_size) true (2 ^ 33 - 1)
+  /\ topdown_base sp_window_hi (floor_guard_max + page_size) true
+       ((2 ^ 33 - 1) * page_size) = mmap_base_min - page_size.
+Proof.
+  unfold launch_ok. repeat split; try (intros Hf; discriminate Hf);
+    vm_compute; try reflexivity; discriminate.
 Qed.
 
 (** ** Sv39
@@ -320,7 +379,11 @@ Qed.
     [load_elf_binary] fails past the point of no return
     (fs/binfmt_elf.c:1290-1293) and [bprm_execve] kills the task
     (fs/exec.c:1774-1775).  So the Sv39 band is every page-aligned base
-    from 0 to the cap, and it is exactly the set of non-wrapped bases. *)
+    from 0 to the cap, and it is exactly the set of non-wrapped bases.
+    Base 0 is in that set and also starts no program: the search's top
+    is then [0 - 1] = [ULONG_MAX] (mm/vma.h:502), so the vDSO search
+    fails as for a wrapped base.  The band keeps it, a precision cost
+    only, since no spec arm reads the base. *)
 
 Definition sv39_linux_base (b : Z) : Prop :=
   exists guard randomize k,
@@ -343,16 +406,16 @@ Proof.
                 ltac:(unfold sv39_task_size, min_gap, page_size in *; lia))
       as (guard & randomize & k & H1 & H2 & H3 & H4 & H5 & H6).
     assert (Hp24 : 2 ^ 24 = 16777216) by reflexivity.
+    unfold stack_rlimit, stack_rnd_pad, page_size in H3.
     exists guard, randomize, k. rewrite Hp24.
     split; [repeat split; try assumption; lia | exact H6].
-  - intros (guard & randomize & k & (Hg0 & Hgal & Hgdom & Hk & Hk0) & Heq).
-    pose proof (stack_pad_range randomize) as Hp.
-    pose proof (clamp_gap_range sv39_task_size
-                  (stack_rlimit + guard + (if randomize then stack_rnd_pad else 0)))
+  - intros (guard & randomize & k & ((Hg0 & Hglt) & Hgal & Hk & Hk0) & Heq).
+    pose proof (clamp_gap_range sv39_task_size (unclamped_gap guard randomize))
       as [[Hc1 Hc2] _]; [rewrite max_gap_sv39; unfold min_gap; lia|].
     rewrite max_gap_sv39 in Hc2.
     split; [lia|split; [|rewrite Heq; apply page_round_up_Z_aligned]].
     rewrite Heq. unfold topdown_base.
+    remember (clamp_gap sv39_task_size (unclamped_gap guard randomize)) as c eqn:Hce.
     apply page_round_up_Z_le; [reflexivity|].
-    unfold sv39_task_size, min_gap, page_size in *. lia.
+    unfold sv39_task_size, min_gap, page_size in *. clear - Hc1 Hk. lia.
 Qed.

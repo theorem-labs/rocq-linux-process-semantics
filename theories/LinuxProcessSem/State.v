@@ -229,8 +229,9 @@ Definition brk_aslr_max : Z := (1 * 1024 * 1024 * 1024)%Z.
 
     THE NAMED ASSUMPTION (SCOPE.md, "Assumptions that the model does not
     check"): [vm.mmap_rnd_bits] is at most 24, or [stack_guard_gap] is
-    under 64 TiB.  The sysctl's range is [mmap_rnd_bits_min ..
-    mmap_rnd_bits_max] (mm/mmap.c:1528-1536): 18
+    at most 0x4aba6a2ab000 bytes (about 74.7 TiB,
+    [Checks.Cases.MmapBase.floor_guard_max]).  The sysctl's range is
+    [mmap_rnd_bits_min .. mmap_rnd_bits_max] (mm/mmap.c:1528-1536): 18
     (arch/riscv/Kconfig:260-262) up to [MMAP_VA_BITS - PAGE_SHIFT - 3]
     (arch/riscv/mm/init.c:850-853), which is 33 under Sv48.  Its boot
     value [CONFIG_ARCH_MMAP_RND_BITS] is at most
@@ -242,14 +243,14 @@ Definition brk_aslr_max : Z := (1 * 1024 * 1024 * 1024)%Z.
       PAGE_ALIGN(0x800000000000 - 0x800000000000/6*5 - 0xffffff000)
       = PAGE_ALIGN(0x155555555557 - 0xffffff000) = 0x154555557000.
 
-    With more bits AND a large guard (more than about 74.7 TiB at 33
-    bits, near [MAX_GAP] at 25), Linux goes below it; with more bits and
-    a smaller guard (the hardened [vm.mmap_rnd_bits = 33] with the
-    default guard of 256 pages) it does not.  The legacy layout (an
+    With more bits AND a larger guard (more than that bound at 33 bits,
+    about 106.6 TiB at 25), Linux goes below it; with more bits and a
+    smaller guard (the hardened [vm.mmap_rnd_bits = 33] with the default
+    guard of 256 pages) it does not.  The legacy layout (an
     [ADDR_COMPAT_LAYOUT] personality or [vm.legacy_va_layout = 1],
     mm/util.c:413-425) puts the base at [TASK_UNMAPPED_BASE] =
-    0x2aaaaab000 plus the draw (mm/util.c:472-474), under this floor;
-    SCOPE.md names the top-down layout as an assumption too.
+    0x2aaaaab000 plus the draw (mm/util.c:472-474), which can be under
+    this floor; SCOPE.md names the top-down layout as an assumption too.
 
     [Run.valid_mmap_base] admits any page-aligned base from this floor
     up to [mmap_base_max] below, and that band is EXACTLY the set of
@@ -400,7 +401,11 @@ Definition TASK_SIZE : Z := 0x800000000000%Z.
     (the Sv39 section of [Checks.Cases.MmapBase] cites each step).  So
     the Sv39 instance admits every page-aligned base from 0 up to its
     cap, and [Checks.Cases.MmapBase.sv39_band_is_linux_set] proves that
-    this is exactly the set of bases Linux gives that do not wrap.
+    this is exactly the set of bases Linux gives that do not wrap.  One
+    base of that set also starts no program: with a base of exactly 0
+    the top-down search's top is [0 - 1] (mm/vma.h:502), so the vDSO
+    search fails the same way.  The band keeps 0; this costs precision
+    only, as no spec arm reads the base.
 
     WHAT THE DECLARATION BUYS TODAY, stated here so nobody reads more
     into it: the spec arms below still compare against [TASK_SIZE], the

@@ -269,9 +269,10 @@ Proof. split; check_eq. Qed.
     Reason 4: no live run can reach it.  A trace would have to grow a tracked
     mapping in place across its run's [alloc_top].  Linux's top-down
     [mmap_base] sits at least [stack_guard_gap] below the deepest legal
-    stack (mm/util.c [mmap_base], Linux v6.18.46), so an ordinary run's
-    grants end under the stack's bottom — the exception is an argv image
-    over 1 MiB, a known limitation of the model.  The bound is the
+    stack, or [MAX_GAP] below [STACK_TOP] when a large guard makes the gap
+    clamp (mm/util.c:456-461, [mmap_base], Linux v6.18.46), so an ordinary
+    run's grants end under the stack's bottom — the exception is an argv
+    image over 1 MiB, a known limitation of the model.  The bound is the
     model's stack-disjointness
     rule; see [State.alloc_top]. *)
 
