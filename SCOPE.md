@@ -79,8 +79,9 @@ not apply.
   the random offset. That base can be below the floor of
   `Run.valid_mmap_base`, and then the model has no start state for that
   launch.
-- `vm.mmap_rnd_bits` is at most 24, or the `stack_guard_gap` boot
-  parameter is at most 0x4aba6a2ab000 bytes (about 74.7 TiB). The boot
+- `vm.mmap_rnd_bits` is at most 24, or the stack guard gap is at most
+  0x4aba6a2ab000 bytes (about 74.7 TiB; the `stack_guard_gap` boot
+  parameter gives the gap in pages, so this is 0x4aba6a2ab pages). The boot
   value of `vm.mmap_rnd_bits` is `CONFIG_ARCH_MMAP_RND_BITS`, which is
   18 to 24 on riscv64. Root can set it to at most 33 under Sv48. With 33
   bits and a larger guard gap, Linux can put the mmap base below the

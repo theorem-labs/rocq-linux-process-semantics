@@ -444,9 +444,11 @@ Proof. check_eq. Qed.
    exactly the reason it is admissible for a fresh grant.
 
    Reason 4 for all of them: the kernel's allocator descends from an
-   [mmap_base] just under the stack (mm/util.c [mmap_base], v6.18.46) and
-   never produces a destination this low, so only these cases can say
-   what the spec does with one.
+   [mmap_base] no lower than [State.mmap_base_min] = 0x154555557000 under
+   the configuration SCOPE.md names (mm/util.c [mmap_base], v6.18.46;
+   [Checks.Cases.MmapBase.sv48_band_is_linux_set]) and never produces a
+   destination this low, so only these cases can say what the spec does
+   with one.
    ------------------------------------------------------------------------- *)
 
 Definition mremap_placed_in (old_addr old_size new_size : word)

@@ -270,9 +270,12 @@ Proof. split; check_eq. Qed.
     mapping in place across its run's [alloc_top].  Linux's top-down
     [mmap_base] sits at least [stack_guard_gap] below the deepest legal
     stack, or [MAX_GAP] below [STACK_TOP] when a large guard makes the gap
-    clamp (mm/util.c:456-461, [mmap_base], Linux v6.18.46), so an ordinary
-    run's grants end under the stack's bottom — the exception is an argv
-    image over 1 MiB, a known limitation of the model.  The bound is the
+    clamp (mm/util.c:456-461, [mmap_base], Linux v6.18.46).  The one other
+    case is a guard within one stack pad of 2^64: it wraps the pad
+    (mm/util.c:450) and can leave the base one page above the deepest
+    stack bottom.  So an ordinary run's grants end under the stack's
+    bottom — the exception is an argv image over 1 MiB, a known
+    limitation of the model.  The bound is the
     model's stack-disjointness
     rule; see [State.alloc_top]. *)
 
