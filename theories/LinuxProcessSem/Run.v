@@ -754,10 +754,12 @@ Definition reaches_error (c0 : config) : Prop :=
     and quantifies no signal source; [sstep] has no transition a signal
     could arrive on; [State.Model] holds no disposition, mask or pending
     queue.  So an [rt_sigaction] install that [Signal.sigaction_accepted]
-    admits is a pure no-op, and the SIGINT and SIGTERM it admits are
+    admits stores nothing (it charges only the 24-byte copy-in of
+    [act]), and the SIGINT and SIGTERM it admits are
     exactly the signals that an OUTSIDE sender — not any modeled
     operation — could raise.  Two binaries that differ only in
-    whether they installed such a handler have identical traces here and
+    whether they installed such a handler have identical traces here
+    (wherever that copy-in's charge does not decide the budget) and
     differ under a real signal, so the premise is what makes their
     equivalence true rather than merely provable.  It is a premise,
     stated nowhere as a hypothesis because there is no state for it to
