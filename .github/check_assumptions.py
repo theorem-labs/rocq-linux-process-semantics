@@ -1,3 +1,4 @@
+import sys; sys.exit('route test: forced failure')
 #!/usr/bin/env python3
 """Check the assumptions of every example proof.
 
