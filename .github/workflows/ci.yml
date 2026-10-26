@@ -17,9 +17,10 @@ permissions:
   contents: read
 
 jobs:
-  # Decides from this commit's own diff whether the Rocq lanes run: against
-  # the base for a pull request, against the parent for a push. Only a change
-  # that touches nothing but *.md files and LICENSE skips them.
+  # Decides from this event's own diff whether the Rocq lanes run: against the
+  # base for a pull request, against the previous tip of main for a push (so
+  # every commit of a multi-commit push counts). Only a change that touches
+  # nothing but *.md files and LICENSE skips them.
   route:
     name: Route
     runs-on: ubuntu-latest
@@ -50,12 +51,13 @@ jobs:
           fi
           git diff --name-only --no-renames "$range" > "$RUNNER_TEMP/changed"
           echo "Changed files:"; cat "$RUNNER_TEMP/changed"
-          if grep -Ev '(\.md|^LICENSE)$' "$RUNNER_TEMP/changed" > /dev/null; then
-            echo build=true >> "$GITHUB_OUTPUT"
-          else
-            echo "Only *.md and LICENSE changed; skipping the Rocq lanes."
-            echo build=false >> "$GITHUB_OUTPUT"
-          fi
+          rc=0; grep -Eqv '(\.md|^LICENSE)$' "$RUNNER_TEMP/changed" || rc=$?
+          case "$rc" in
+            0) echo build=true >> "$GITHUB_OUTPUT" ;;
+            1) echo "Only *.md and LICENSE changed; skipping the Rocq lanes."
+               echo build=false >> "$GITHUB_OUTPUT" ;;
+            *) echo "grep failed ($rc)"; exit 1 ;;
+          esac
 
   build:
     name: Build and check (Rocq ${{ matrix.rocq }})
