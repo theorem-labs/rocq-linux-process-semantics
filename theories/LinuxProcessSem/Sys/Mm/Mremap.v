@@ -718,20 +718,28 @@ Definition mremap_move_charge (m : Model) (old old_n new_n : word) : Z :=
 Definition mremap_move_budget_b (m : Model) (old old_n new_n : word) : bool :=
   (mremap_move_charge m old old_n new_n <=? vm_limit (m_vmmaps m))%Z.
 
-(** Only a GROW charges, and a grow has both resolutions, each behind
-    its own reading of [mremap_final_budget_b]: in place, on the mapping
-    grown at [old], and moved, on the mapping re-created at a fresh
-    [dst].  THE MARK FIRES WHEN EITHER GATE REFUSES — it tests the larger
-    of the charges, the in-place post-state's directly and the move's
-    through [mremap_move_budget_b] — because neither post-state is
-    charged at least as much as the other on every state:
+(** Only a GROW charges, and a grow has two non-errno resolutions, each
+    behind its own reading of [mremap_final_budget_b]: in place, on the
+    mapping grown at [old], admitted when [mremap_inplace_grow_b] holds
+    (room above the source AND its budget gate passing); and moved, on
+    the mapping re-created at a fresh [dst], whose gate reads the same
+    charge at every fresh destination, [mremap_move_budget_b].
+
+    THE MARK FIRES WHEN NO PLACEMENT FITS THE BUDGET: the in-place
+    resolution is not admitted AND the move's budget gate refuses.  That
+    is the request Linux refuses for want of memory: where the in-place
+    resolution is unavailable and a move fits, Linux moves the mapping
+    ([vrm_set_new_addr], mm/mremap.c:957-960, Linux v6.18.46) and the
+    call succeeds.  Neither gate alone is the right test, because
+    neither post-state is charged at least as much as the other on
+    every state:
 
     - the in-place post-state can be charged MORE.  The grown tail may
       lie over a lazy neighbour; the in-place evaluation clears that
       neighbour's reservation under the tail and charges its bytes
       eagerly, where a move leaves the neighbour alone.  On such a state
-      the in-place gate refuses while a move fits
-      ([Checks/BudgetPremise.v]'s [ov_mark_fires_while_a_move_fits]);
+      the in-place gate refuses while a move fits, and the mark is
+      silent ([Checks/BudgetPremise.v]'s [ov_mark_silent_while_a_move_fits]);
     - the in-place post-state can be charged LESS.  The charge is
       [State.live_bytes] of [State.vm_backed_maps], which subtracts
       [vm_noaccess] — NOT of [vm_maps].  A PROT_NONE mapping directly
@@ -739,38 +747,37 @@ Definition mremap_move_budget_b (m : Model) (old old_n new_n : word) : bool :=
       while a move re-creates the whole mapping at a fresh destination
       and is charged every byte of it.  In-place growth is unavailable
       there (the tail meets a live mapping), so the move is the only
-      non-errno resolution, it is budget-refused, and a mark stated on
-      the in-place post-state alone stays silent
+      non-errno resolution, it is budget-refused, and the mark fires
+      although the in-place gate alone passes
       ([Checks/BudgetPremise.v]'s [un_mark_fires_on_the_move_refusal]).
 
-    Testing both gates is chosen for being placement-independent: the
-    mark reads neither which resolution the [alt] takes nor the
-    destination the [choose] picks.  The price is that it over-marks on
-    the [ov_model] family (in-place growth unavailable for a non-budget
-    reason, its gate refusing, a move fitting), where a false refusal
-    narrows [Run.source_within_budget] and never unsounds it.  The
-    tighter mark — in-place growth unavailable AND the move's budget
-    gate refusing — is silent there and is not written.
+    The mark stays placement-independent: it reads neither which
+    resolution the [alt] takes nor the destination the [choose] picks,
+    only whether in-place growth is admitted and the destination-free
+    charge of a move.  It does not ask whether a fresh destination
+    EXISTS: an address space with no free range is a refusal of its own
+    kind, not of the budget, and is not marked.
 
-    The mark is therefore at least as strong as EITHER resolution's
-    refusal, never weaker: a gate that refuses is a mark that fires, in
-    both directions of the charge order.  The converse fails exactly on
-    the first case above, where the mark fires although a move fits —
-    an over-approximation, on a reachable state, and the safe direction
-    for a premise: it narrows the claim's scope and never lets a
-    budget-refused source through.  [Checks/BudgetPremise.v] pins the
-    rule: [mremap_budget_refused_fires_on_inplace_refusal] and
-    [mremap_budget_refused_refuses_move] (each gate's refusal fires the
-    mark, the move's at any fresh destination),
+    An earlier version fired when EITHER gate refused, and so over-marked
+    the first case above: an execution Linux completes by moving counted
+    as budget-refused, and [Run.source_within_budget] dropped the input.
+    The present mark implies that one and not conversely
+    ([Checks/BudgetPremise.v]'s
+    [mremap_budget_refused_implies_two_gate] and
+    [ov_two_gate_fires_where_the_mark_is_silent]).
+
+    [Checks/BudgetPremise.v] pins the rule: [mremap_budget_refused_iff]
+    (the mark, on a grow past the argument gates, is exactly "not
+    admitted in place and the move's gate refuses");
     [mremap_budget_refused_refuses_inplace] (where the mark fires, the
-    in-place resolution is not admitted, on any state satisfying the
-    ledger invariants — the hypotheses it names are instances of
-    [State.noaccess_pages_owned] and of the reservation-under-live-mapping
-    invariant of the lazy ledgers at the grown range), and the concrete states
-    above, which fix the direction of each approximation so a later
-    change cannot restate the mark on one gate and turn it back into an
-    under-approximation.  Shrinks, the equal-size answer, and every
-    shape the arm declines or answers -EINVAL are not budget refusals. *)
+    in-place resolution is not admitted) and
+    [mremap_budget_refused_refuses_move] (where the mark fires, no fresh
+    destination is admitted) — together, a marked request has no
+    non-errno resolution; [mremap_budget_refused_fires_on_move_refusal]
+    (in-place unavailable and the move refused at any fresh destination
+    fires the mark); and the concrete states above.  Shrinks, the
+    equal-size answer, and every shape the arm declines or answers
+    -EINVAL are not budget refusals. *)
 Definition mremap_budget_refused_b (old old_size new_size flags : word)
     (m : Model) : bool :=
   if negb (Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE) then false
@@ -787,8 +794,8 @@ Definition mremap_budget_refused_b (old old_size new_size flags : word)
              && mremap_backing_uniform_b m old old_n)
     then false
     else if (new_nZ <=? old_nZ)%Z then false
-    else negb (mremap_final_budget_b m old old_n old new_n
-               && mremap_move_budget_b m old old_n new_n).
+    else negb (mremap_inplace_grow_b m old old_n new_n old_nZ new_nZ
+               || mremap_move_budget_b m old old_n new_n).
 
 (* -------------------------------------------------------------------------
    Destination independence of the move's charge

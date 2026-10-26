@@ -20,13 +20,12 @@
       SOUNDNESS lemmas at abstract arguments: where the mark fires,
       every outcome the arm admits is a refusal ([Run.refusal_b]) — for
       [brk], [mmap] and [mprotect] over the whole arm; for [mremap] the
-      in-place resolution, under the hypothesis that the grown range
-      carries no backing metadata but the source's own, the moved one
-      being admitted on a state where the mark fires (the mark's header
-      in [Sys/Mm/Mremap.v] says why that is the safe direction).  Beside
-      it, the COMPLETENESS lemmas the two-gate rule of that header
-      promises: each of a grow's budget gates, the in-place post-state's
-      and the move's at any fresh destination, fires the mark.
+      in-place resolution on every state, and the moved one at every
+      destination that carries no backing metadata (the mark's header
+      in [Sys/Mm/Mremap.v] gives the rule).  Beside it, the
+      COMPLETENESS lemma: in-place growth not admitted and the move's
+      gate refusing at a fresh destination fires the mark; and the
+      lemma that the mark is weaker than the earlier two-gate mark.
     - PART 2, the two first-touch clauses.  A store into a lazy page
       with the budget spent IS budget-refused and is an [SError]
       transition; the same store with a page of budget left is not; and
@@ -440,25 +439,47 @@ Example mremap_shrink_is_not_budget_refused :
   alloc_budget_refused_b (mremap_in 8192 4096) (mremap_two_page_model 8192) = false.
 Proof. vm_compute. reflexivity. Qed.
 
-(** BOTH DIRECTIONS OF THE APPROXIMATION, each on a reachable state.
-    The mark tests both of a grow's budget gates — the in-place
-    post-state's and the move's, the latter through
-    [Mremap.mremap_move_budget_b] — because the two charges are ordered
-    neither way on every state; the header of [Sys/Mm/Mremap.v] carries
-    the argument, and the two states below pin one direction each.
+(** THE MARK IS EXACT ON BOTH CHARGE ORDERS, each on a reachable state.
+    The mark fires when no placement fits: in-place growth is not
+    admitted AND the move's budget gate, [Mremap.mremap_move_budget_b],
+    refuses.  The two charges are ordered neither way on every state;
+    the header of [Sys/Mm/Mremap.v] carries the argument, and the two
+    states below pin one order each.
 
-    OVER: an eager page-sized source at 0x10000, a MAP_NORESERVE
-    neighbour at 0x11000 with its first page touched, and a budget the
-    pre-state half fills.  A grow of the source over the neighbour's
-    first page: the mark fires, because the in-place post-state would
-    clear the neighbour's lazy metadata under the tail and charge it
-    eagerly, past the budget; the in-place resolution is not even
-    available (the tail is occupied); and a move to a free destination
-    FITS, exactly at the budget.  Linux moves and
-    succeeds; the premise excludes the input anyway.  Over-approximation,
-    the safe direction — and pinned so that a later change cannot
-    restate the mark on the move's gate alone and silently turn it into
-    an under-approximation. *)
+    The earlier mark fired when EITHER gate refused.  It is kept here,
+    as [mremap_budget_refused_two_gate_b], only to pin that the present
+    mark is strictly weaker: it implies the earlier one
+    ([mremap_budget_refused_implies_two_gate], below) and is silent on
+    [ov_model], where the earlier one fired. *)
+Definition mremap_budget_refused_two_gate_b (old old_size new_size flags : word)
+    (m : Model) : bool :=
+  if negb (Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE) then false
+  else if negb (Z.eqb (bv_unsigned old mod page_size) 0) then false
+  else if page_align_is0_b new_size then false
+  else if page_align_is0_b old_size then false
+  else
+    let h := m_vmmaps m in
+    let old_nZ := page_round_up_Z (bv_unsigned old_size) in
+    let new_nZ := page_round_up_Z (bv_unsigned new_size) in
+    let old_n := Z_to_bv 64 old_nZ in
+    let new_n := Z_to_bv 64 new_nZ in
+    if negb (mremap_source_b h old old_n old_nZ
+             && mremap_backing_uniform_b m old old_n)
+    then false
+    else if (new_nZ <=? old_nZ)%Z then false
+    else negb (mremap_final_budget_b m old old_n old new_n
+               && mremap_move_budget_b m old old_n new_n).
+
+(** IN-PLACE CHARGED MORE: an eager page-sized source at 0x10000, a
+    MAP_NORESERVE neighbour at 0x11000 with its first page touched, and
+    a budget the pre-state half fills.  A grow of the source over the
+    neighbour's first page: the in-place post-state would clear the
+    neighbour's lazy metadata under the tail and charge it eagerly,
+    past the budget; the in-place resolution is not available anyway
+    (the tail is occupied); and a move to a free destination FITS,
+    exactly at the budget.  Linux moves and succeeds, and the mark is
+    silent.  The earlier two-gate mark fired here and dropped the
+    input from every budget premise. *)
 Definition ov_model : Model :=
   with_vm_backing [(Z_to_bv 64 0x11000, Z_to_bv 64 8192)] [Z_to_bv 64 0x11000]
     (with_vmmaps (mkVmMaps [] [(0x10000, 4096); (0x11000, 8192)] 0 0 16384)
@@ -467,11 +488,16 @@ Definition ov_model : Model :=
 Example ov_pre_state_within_budget : vm_backing_within_limit ov_model = true.
 Proof. vm_compute. reflexivity. Qed.
 
-Example ov_mark_fires_while_a_move_fits :
-  mremap_budget_refused_b 0x10000 4096 12288 1 ov_model = true
+Example ov_mark_silent_while_a_move_fits :
+  mremap_budget_refused_b 0x10000 4096 12288 1 ov_model = false
   /\ mremap_inplace_grow_b ov_model 0x10000 4096 12288 4096 12288 = false
   /\ mremap_fresh_b ov_model 4096 12288 0x10000 4096 0x100000 12288 = true.
 Proof. repeat split; vm_compute; reflexivity. Qed.
+
+Example ov_two_gate_fires_where_the_mark_is_silent :
+  mremap_budget_refused_two_gate_b 0x10000 4096 12288 1 ov_model = true
+  /\ mremap_budget_refused_b 0x10000 4096 12288 1 ov_model = false.
+Proof. split; vm_compute; reflexivity. Qed.
 
 (** The charges behind it: the in-place post-state is over the budget,
     the moved one is exactly at it, and the destination-free charge the
@@ -482,7 +508,7 @@ Example ov_charges :
   /\ mremap_move_charge ov_model 0x10000 4096 12288 = 16384%Z.
 Proof. repeat split; vm_compute; reflexivity. Qed.
 
-(** UNDER: an eager page-sized source at
+(** IN-PLACE CHARGED LESS: an eager page-sized source at
     0x10000 and a PROT_NONE mapping directly above it at 0x11000 —
     recorded in [vm_maps] AND [vm_noaccess], as the NULL-hint PROT_NONE
     arm of [Mmap.mmap_spec] records it, so the state is a pair of
@@ -497,8 +523,8 @@ Proof. repeat split; vm_compute; reflexivity. Qed.
     whole grown mapping at a fresh destination and is charged every byte
     of it, over the budget, at every such destination: the only
     non-errno resolution is budget-refused.
-    The mark fires, because it tests the move's gate as well.  A mark
-    that read the in-place gate alone would not, and
+    The mark fires: in-place growth is not admitted and the move's gate
+    refuses.  A mark that read the in-place gate alone would not, and
     [Run.source_within_budget] would hold of an input whose source is
     refused. *)
 Definition un_model : Model :=
@@ -578,12 +604,10 @@ Lemma mremap_model_next_limit : forall m old old_n dst new_n,
   = vm_limit (m_vmmaps m).
 Proof. reflexivity. Qed.
 
-(** THE TWO-GATE RULE, abstract.  Each of a grow's budget gates fires
-    the mark: the in-place post-state's, with no side condition, and
-    the move's at any fresh destination that carries no backing
-    metadata, through [Mremap.mremap_move_charge_at_fresh].  The
-    hypotheses of both are the mark's own argument gates, passed. *)
-Lemma mremap_budget_refused_fires_on_inplace_refusal :
+(** THE RULE, abstract.  On a grow past the mark's own argument gates,
+    the mark is exactly "in-place growth not admitted and the move's
+    budget gate refusing". *)
+Lemma mremap_budget_refused_iff :
   forall old old_size new_size flags m,
   Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE = true ->
   Z.eqb (bv_unsigned old mod page_size) 0 = true ->
@@ -596,19 +620,160 @@ Lemma mremap_budget_refused_fires_on_inplace_refusal :
        (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) = true ->
   (page_round_up_Z (bv_unsigned old_size)
    < page_round_up_Z (bv_unsigned new_size))%Z ->
-  mremap_final_budget_b m old
-    (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) old
-    (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = false ->
-  mremap_budget_refused_b old old_size new_size flags m = true.
+  mremap_budget_refused_b old old_size new_size flags m
+  = negb (mremap_inplace_grow_b m old
+            (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+            (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+            (page_round_up_Z (bv_unsigned old_size))
+            (page_round_up_Z (bv_unsigned new_size))
+          || mremap_move_budget_b m old
+               (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+               (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))).
 Proof.
-  intros old old_size new_size flags m Hflags Halign Hnew Hold Hsrc Hgrow Hgate.
+  intros old old_size new_size flags m Hflags Halign Hnew Hold Hsrc Hgrow.
   unfold mremap_budget_refused_b. cbv zeta.
   rewrite Hflags, Halign, Hnew, Hold, Hsrc. cbn [negb].
-  rewrite (proj2 (Z.leb_gt _ _) Hgrow).
-  rewrite Hgate. reflexivity.
+  rewrite (proj2 (Z.leb_gt _ _) Hgrow). reflexivity.
 Qed.
 
+(** What a mark that fires says: every argument gate passed, the
+    request grows, in-place growth is not admitted and the move's budget
+    gate refuses. *)
+Lemma mremap_budget_refused_inv :
+  forall old old_size new_size flags m,
+  mremap_budget_refused_b old old_size new_size flags m = true ->
+  Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE = true
+  /\ Z.eqb (bv_unsigned old mod page_size) 0 = true
+  /\ page_align_is0_b new_size = false
+  /\ page_align_is0_b old_size = false
+  /\ mremap_source_b (m_vmmaps m) old
+       (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+       (page_round_up_Z (bv_unsigned old_size))
+     && mremap_backing_uniform_b m old
+          (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) = true
+  /\ (page_round_up_Z (bv_unsigned old_size)
+      < page_round_up_Z (bv_unsigned new_size))%Z
+  /\ mremap_inplace_grow_b m old
+       (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+       (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+       (page_round_up_Z (bv_unsigned old_size))
+       (page_round_up_Z (bv_unsigned new_size)) = false
+  /\ mremap_move_budget_b m old
+       (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+       (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = false.
+Proof.
+  intros old old_size new_size flags m H.
+  unfold mremap_budget_refused_b in H. cbv zeta in H.
+  destruct (Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE) eqn:E1;
+    cbn [negb] in H; [| discriminate H].
+  destruct (Z.eqb (bv_unsigned old mod page_size) 0) eqn:E2;
+    cbn [negb] in H; [| discriminate H].
+  destruct (page_align_is0_b new_size) eqn:E3; [discriminate H |].
+  destruct (page_align_is0_b old_size) eqn:E4; [discriminate H |].
+  destruct (mremap_source_b _ _ _ _ && mremap_backing_uniform_b _ _ _) eqn:E5;
+    cbn [negb] in H; [| discriminate H].
+  destruct (_ <=? _)%Z eqn:E6; [discriminate H |].
+  apply Z.leb_gt in E6.
+  apply negb_true_iff, orb_false_iff in H as [Hip Hmv].
+  exact (conj eq_refl (conj eq_refl (conj eq_refl (conj eq_refl
+           (conj eq_refl (conj E6 (conj Hip Hmv))))))).
+Qed.
+
+(** SOUNDNESS for the in-place resolution: where the mark fires,
+    [Mremap.mremap_inplace_grow_b] is [false].  The mark reads the
+    in-place admission directly, so this needs no ledger hypothesis. *)
+Lemma mremap_budget_refused_refuses_inplace : forall old old_size new_size flags m,
+  mremap_budget_refused_b old old_size new_size flags m = true ->
+  mremap_inplace_grow_b m old
+    (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+    (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+    (page_round_up_Z (bv_unsigned old_size))
+    (page_round_up_Z (bv_unsigned new_size)) = false.
+Proof.
+  intros old old_size new_size flags m Hmark.
+  destruct (mremap_budget_refused_inv _ _ _ _ _ Hmark)
+    as (_ & _ & _ & _ & _ & _ & Hip & _).
+  exact Hip.
+Qed.
+
+(** SOUNDNESS for the moved resolution: where the mark fires, no fresh
+    destination that carries no backing metadata is admitted by
+    [Mremap.mremap_fresh_b] — its budget conjunct reads, at such a
+    destination, the charge [Mremap.mremap_move_budget_b] refused
+    ([Mremap.mremap_move_charge_at_fresh]).  The metadata hypotheses
+    are instances, at [dst], of the ledger invariants named in
+    [Sys/Mm/Mremap.v]'s charge header ([State.noaccess_pages_owned] and
+    the reservation-under-live-mapping invariant of the lazy ledgers).
+    With [mremap_budget_refused_refuses_inplace]: a marked request has
+    no non-errno resolution. *)
 Lemma mremap_budget_refused_refuses_move :
+  forall old old_size new_size flags m dst,
+  (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
+     (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
+  region_free (vm_noaccess (m_vmmaps m)) dst
+    (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = true ->
+  maps_subtract
+    (maps_subtract (m_vm_lazy m) (bv_unsigned old)
+       (bv_unsigned old
+        + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))))
+    (bv_unsigned dst)
+    (bv_unsigned dst
+     + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))))
+  = maps_subtract (m_vm_lazy m) (bv_unsigned old)
+      (bv_unsigned old
+       + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))) ->
+  List.filter
+    (page_outside_range (bv_unsigned dst)
+       (bv_unsigned dst
+        + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))))
+    (List.filter
+       (page_outside_range (bv_unsigned old)
+          (bv_unsigned old
+           + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))))
+       (m_vm_materialized m))
+  = List.filter
+      (page_outside_range (bv_unsigned old)
+         (bv_unsigned old
+          + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))))
+      (m_vm_materialized m) ->
+  mremap_budget_refused_b old old_size new_size flags m = true ->
+  mremap_fresh_b m
+    (page_round_up_Z (bv_unsigned old_size))
+    (page_round_up_Z (bv_unsigned new_size)) old
+    (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) dst
+    (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = false.
+Proof.
+  intros old old_size new_size flags m dst Hfit Hnoacc Hlazy Hpages Hmark.
+  destruct (mremap_budget_refused_inv _ _ _ _ _ Hmark)
+    as (_ & _ & Hnew & _ & _ & Hgrow & _ & Hmv).
+  set (old_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) in *.
+  set (new_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) in *.
+  pose proof (page_align_is0_b_false_word new_size Hnew) as Hnw. fold new_n in Hnw.
+  pose proof (page_round_up_Z_mod (bv_unsigned new_size)) as Hnmod.
+  pose proof (page_round_up_Z_nonneg (bv_unsigned old_size)
+                (proj1 (bv_unsigned_in_range 64 old_size))) as Honn.
+  pose proof (alloc_top_lt (m_vmmaps m)) as Htop.
+  destruct (mremap_fresh_b m _ _ old old_n dst new_n) eqn:Hf; [exfalso | reflexivity].
+  unfold mremap_fresh_b in Hf. cbv zeta in Hf.
+  rewrite !Bool.andb_true_iff in Hf.
+  destruct Hf as (((((_ & Hdalign) & _) & Hdtop) & Hdfree) & Hgate).
+  apply Z.eqb_eq in Hdalign. apply Z.leb_le in Hdtop.
+  unfold mremap_move_budget_b in Hmv.
+  unfold mremap_final_budget_b, vm_backing_within_limit in Hgate.
+  rewrite mremap_model_next_limit in Hgate.
+  rewrite (mremap_move_charge_at_fresh m old old_n dst new_n) in Hgate;
+    [rewrite Hgate in Hmv; discriminate Hmv | exact Hdalign
+    | rewrite Hnw; exact Hnmod | rewrite Hnw; lia | rewrite Hnw; lia | exact Hfit
+    | apply region_free_map_remove; exact (region_free_app_r _ _ _ _ Hdfree)
+    | exact Hnoacc | exact Hlazy | exact Hpages].
+Qed.
+
+(** COMPLETENESS against the move: in-place growth not admitted and the
+    move's gate refusing at one fresh destination that carries no
+    backing metadata fires the mark.  The hypotheses are the mark's
+    argument gates, the in-place refusal, and the metadata hypotheses of
+    [mremap_budget_refused_refuses_move]. *)
+Lemma mremap_budget_refused_fires_on_move_refusal :
   forall old old_size new_size flags m dst,
   Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE = true ->
   Z.eqb (bv_unsigned old mod page_size) 0 = true ->
@@ -621,15 +786,19 @@ Lemma mremap_budget_refused_refuses_move :
        (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) = true ->
   (page_round_up_Z (bv_unsigned old_size)
    < page_round_up_Z (bv_unsigned new_size))%Z ->
+  (* in-place growth is not admitted *)
+  mremap_inplace_grow_b m old
+    (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+    (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+    (page_round_up_Z (bv_unsigned old_size))
+    (page_round_up_Z (bv_unsigned new_size)) = false ->
   (* [dst] is fresh: the non-budget conjuncts of [Mremap.mremap_fresh_b] *)
   (bv_unsigned dst mod page_size = 0)%Z ->
   (bv_unsigned dst + page_round_up_Z (bv_unsigned new_size)
    <= alloc_top (m_vmmaps m))%Z ->
   region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = true ->
-  (* ...and carries no backing metadata: the ledger lies inside the
-     address space, no protected byte, no lazy reservation and no
-     materialized page lies under it *)
+  (* ...and carries no backing metadata *)
   (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
   region_free (vm_noaccess (m_vmmaps m)) dst
@@ -665,7 +834,10 @@ Lemma mremap_budget_refused_refuses_move :
   mremap_budget_refused_b old old_size new_size flags m = true.
 Proof.
   intros old old_size new_size flags m dst Hflags Halign Hnew Hold Hsrc Hgrow
-    Hdalign Hdtop Hdfree Hfit Hnoacc Hlazy Hpages Hgate.
+    Hip Hdalign Hdtop Hdfree Hfit Hnoacc Hlazy Hpages Hgate.
+  rewrite (mremap_budget_refused_iff old old_size new_size flags m
+             Hflags Halign Hnew Hold Hsrc Hgrow).
+  rewrite Hip. cbn [orb].
   set (old_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) in *.
   set (new_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) in *.
   pose proof (page_align_is0_b_false_word new_size Hnew) as Hnw. fold new_n in Hnw.
@@ -673,11 +845,7 @@ Proof.
   pose proof (page_round_up_Z_nonneg (bv_unsigned old_size)
                 (proj1 (bv_unsigned_in_range 64 old_size))) as Honn.
   pose proof (alloc_top_lt (m_vmmaps m)) as Htop.
-  unfold mremap_budget_refused_b. cbv zeta.
-  rewrite Hflags, Halign, Hnew, Hold. cbn [negb].
-  fold old_n new_n. rewrite Hsrc. cbn [negb].
-  rewrite (proj2 (Z.leb_gt _ _) Hgrow).
-  apply negb_true_iff. apply andb_false_iff. right.
+  apply negb_true_iff.
   unfold mremap_move_budget_b.
   unfold mremap_final_budget_b, vm_backing_within_limit in Hgate.
   rewrite mremap_model_next_limit in Hgate.
@@ -688,107 +856,22 @@ Proof.
     | exact Hnoacc | exact Hlazy | exact Hpages].
 Qed.
 
-(** SOUNDNESS for the in-place resolution, abstract, kept from the
-    one-gate mark: where the mark fires, [Mremap.mremap_inplace_grow_b]
-    is [false].  Under the two-gate mark the proof goes through the
-    grown range [[old, old+new_n)] carrying no backing metadata but the
-    source's own — the metadata hypotheses of
-    [mremap_budget_refused_refuses_move], at [dst = old] — because then
-    the two post-states are charged alike
-    ([Mremap.mremap_move_charge_at_fresh] at the source's own address),
-    so a mark that fires is an in-place gate that refuses.
-
-    THE HYPOTHESES ARE NOT A RESTRICTION OF THE LEMMA.  Each is an
-    instance, at the grown range, of a ledger invariant every reachable
-    state satisfies: the protected half is [State.noaccess_pages_owned]
-    (every protected byte lies on a page some live mapping touches —
-    stated in [State.v]'s purpose (c), checked on the brk-orphan state by
-    [Checks/Cases/Mm/Mmap.v]'s [noaccess_pages_owned_brk_orphan], and the
-    hypothesis [Mremap.mremap_fresh_avoids_noaccess] already consumes),
-    together with [Mremap.mremap_source_b]'s own freeness of the source;
-    the lazy and materialized halves are the reservation-under-live-
-    mapping invariant of [vm_lazy] and [vm_materialized] that
-    [Sys/Mm/Mremap.v]'s charge header names, which the tree states in
-    prose but has not yet proved preserved.  A free tail (the in-place
-    region_free conjunct) therefore carries none of them on a
-    reachable state, and the hypotheses hold.  The state on which the
-    hypothesis-free statement fails — a protected page above the
-    source that no live mapping touches, so the in-place post-state is
-    cheaper than a move and the mark fires on the move's refusal while
-    in-place growth is admitted — violates [noaccess_pages_owned] and is
-    unreachable.  Discharging the protected half from the invariant, as
-    [mremap_fresh_avoids_noaccess] does for a moved destination, is a
-    follow-up. *)
-Lemma mremap_budget_refused_refuses_inplace : forall old old_size new_size flags m,
-  (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
-     (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
-  region_free (vm_noaccess (m_vmmaps m)) old
-    (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = true ->
-  maps_subtract
-    (maps_subtract (m_vm_lazy m) (bv_unsigned old)
-       (bv_unsigned old
-        + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))))
-    (bv_unsigned old)
-    (bv_unsigned old
-     + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))))
-  = maps_subtract (m_vm_lazy m) (bv_unsigned old)
-      (bv_unsigned old
-       + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))) ->
-  List.filter
-    (page_outside_range (bv_unsigned old)
-       (bv_unsigned old
-        + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))))
-    (List.filter
-       (page_outside_range (bv_unsigned old)
-          (bv_unsigned old
-           + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))))
-       (m_vm_materialized m))
-  = List.filter
-      (page_outside_range (bv_unsigned old)
-         (bv_unsigned old
-          + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))))
-      (m_vm_materialized m) ->
+(** THE DIRECTION OF THE CHANGE: the mark implies the earlier two-gate
+    mark, so every input a budget premise kept under the earlier mark
+    it keeps now, and [ov_two_gate_fires_where_the_mark_is_silent]
+    shows the converse fails.  The present mark is the weaker one. *)
+Lemma mremap_budget_refused_implies_two_gate :
+  forall old old_size new_size flags m,
   mremap_budget_refused_b old old_size new_size flags m = true ->
-  mremap_inplace_grow_b m old
-    (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
-    (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
-    (page_round_up_Z (bv_unsigned old_size))
-    (page_round_up_Z (bv_unsigned new_size)) = false.
+  mremap_budget_refused_two_gate_b old old_size new_size flags m = true.
 Proof.
-  intros old old_size new_size flags m Hfit Hnoacc Hlazy Hpages Hmark.
-  set (old_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) in *.
-  set (new_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) in *.
-  unfold mremap_budget_refused_b in Hmark. cbv zeta in Hmark.
-  fold old_n new_n in Hmark.
-  destruct (negb (Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE)); [discriminate Hmark |].
-  destruct (negb (Z.eqb (bv_unsigned old mod page_size) 0)) eqn:Halign;
-    [discriminate Hmark |].
-  destruct (page_align_is0_b new_size) eqn:Hnew; [discriminate Hmark |].
-  destruct (page_align_is0_b old_size); [discriminate Hmark |].
-  destruct (negb (mremap_source_b _ _ _ _ && mremap_backing_uniform_b _ _ _));
-    [discriminate Hmark |].
-  destruct (_ <=? _)%Z eqn:Hgrow; [discriminate Hmark |].
-  apply negb_true_iff in Hmark.
-  destruct (mremap_inplace_grow_b m old old_n new_n _ _) eqn:Hip; [exfalso | reflexivity].
-  unfold mremap_inplace_grow_b in Hip. cbv zeta in Hip.
-  apply andb_true_iff in Hip as [Hip Hgate].
-  apply andb_true_iff in Hip as [Htop Hfree].
-  apply Z.leb_le in Htop. apply Z.leb_gt in Hgrow.
-  apply negb_false_iff in Halign. apply Z.eqb_eq in Halign.
-  pose proof (page_align_is0_b_false_word new_size Hnew) as Hnw. fold new_n in Hnw.
-  pose proof (page_round_up_Z_mod (bv_unsigned new_size)) as Hnmod.
-  pose proof (page_round_up_Z_nonneg (bv_unsigned old_size)
-                (proj1 (bv_unsigned_in_range 64 old_size))) as Honn.
-  pose proof (alloc_top_lt (m_vmmaps m)) as Halloc.
-  rewrite Hgate in Hmark. cbn [andb] in Hmark.
-  unfold mremap_move_budget_b in Hmark.
-  unfold mremap_final_budget_b, vm_backing_within_limit in Hgate.
-  rewrite mremap_model_next_limit in Hgate.
-  rewrite (mremap_move_charge_at_fresh m old old_n old new_n) in Hgate;
-    [rewrite Hgate in Hmark; discriminate Hmark | exact Halign
-    | rewrite Hnw; exact Hnmod | rewrite Hnw; lia | rewrite Hnw; lia | exact Hfit
-    | exact (region_free_app_r _ _ _ _ Hfree) | exact Hnoacc | exact Hlazy
-    | exact Hpages].
+  intros old old_size new_size flags m Hmark.
+  destruct (mremap_budget_refused_inv _ _ _ _ _ Hmark)
+    as (E1 & E2 & E3 & E4 & E5 & Hgrow & _ & Hmv).
+  unfold mremap_budget_refused_two_gate_b. cbv zeta.
+  rewrite E1, E2, E3, E4, E5. cbn [negb].
+  rewrite (proj2 (Z.leb_gt _ _) Hgrow).
+  rewrite Hmv, andb_false_r. reflexivity.
 Qed.
 
 (** ** mprotect
@@ -1477,9 +1560,10 @@ End Exit0BudgetsEitherBaselineChecked.
     nothing at that configuration is spurious and the configured step
     relation admits exactly the unfiltered steps: the mark is about a
     step no configuration can remove.  Stated for the arms whose
-    soundness lemma covers the whole arm; mremap's mark can fire where
-    a move is still admitted ([ov_mark_fires_while_a_move_fits]), so it
-    is left out here. *)
+    soundness lemma covers the whole arm on every state.  mremap's
+    covers it only on states satisfying the ledger hypotheses of
+    [mremap_budget_refused_refuses_move] at the destination, which are
+    not yet proved invariants, so it is left out here. *)
 Lemma mark_is_never_spurious : forall cfg i m eff,
   In (bv_unsigned (in_sysno i)) [214; 222; 226]%Z ->
   alloc_budget_refused_b i m = true ->
