@@ -483,18 +483,20 @@ Definition ep_op_has_event (op32 : word) : bool :=
     unreachable.  So this arm needs the copy's VERDICT and not its
     bytes.
 
-    IT NEVERTHELESS RECORDS NO COPY-IN, AND THAT IS A KNOWN-WRONG
-    OMISSION rather than a consequence of the bytes being unused.
+    THE COPY IS RECORDED although its bytes are unused.
     [State.eff_copyins] is not bookkeeping about which bytes an arm
     consulted: [State.syscall_effect_accesses] concatenates it with the
-    write ledger and [Run.mi_account_step] hands the result to
-    [State.materialize_model_accesses], which charges newly touched
-    pages of a lazy anonymous reservation against [vm_backing_used].  A
-    16-byte [event] on a mapped-but-never-touched anonymous page is
-    therefore faulted in and charged by Linux and not by this model,
-    which UNDER-charges the budget — the direction that lets the model
-    grant an allocation the kernel would refuse.  [pselect6] has the
-    identical omission.
+    write ledger and [Run.sstep_syscall] hands the result to
+    [State.materialize_model_accesses], which charges a first touch of a
+    page of a lazy anonymous reservation against [vm_backing_used],
+    reads included ([State.v]'s first-access accounting: an abstract
+    backing guarantee, which charges a user load the same way).  The
+    kernel reads the 16 bytes at [event] with [copy_from_user]
+    ([SYSCALL_DEFINE4(epoll_ctl)], fs/eventpoll.c:2663-2665, v6.18.46)
+    before [do_epoll_ctl] runs, so every answer after a successful copy
+    carries [(event, 16)] ([epoll_ctl_reads]), as the same read done by
+    a load instruction would.  A failed copy records nothing, the
+    convention [Kernel.Signal.rt_sigprocmask_spec] states.
 
     ONE ARM DECLINES, named where it is decided: step 4 on a CHANNEL
     target, where [fd_can_poll] cannot say whether the far end has a
@@ -521,12 +523,22 @@ Definition epoll_ctl_outcome (i : SyscallInput) (m : Model)
        else Some (errno_ret EFAULT)
   else after_copy.
 
+(** The copy-from-user ledger of [epoll_ctl_outcome]'s answer: the event
+    struct, exactly when the syscall entry copied it and the copy
+    succeeded. *)
+Definition epoll_ctl_reads (i : SyscallInput) (op32 event : word)
+    : list (word * nat) :=
+  if (ep_op_has_event op32
+      && copy_from_user_ok (in_mem i) event epoll_event_bytes)%bool
+  then [(event, Z.to_nat epoll_event_bytes)]
+  else [].
+
 Definition epoll_ctl_spec (epfd op32 tfd event : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
   match epoll_ctl_outcome i m epfd op32 tfd event with
   | None => unmodeled
-  | Some r => pure (mkEffect r [] [])
+  | Some r => pure (with_copyins (epoll_ctl_reads i op32 event) (mkEffect r [] []))
   end.
 
 (** ------------------------------------------------------------------
