@@ -2219,12 +2219,14 @@ Qed.
     exactly those arms.  Not for mremap: where its mark fires, the
     in-place resolution is never admitted, but the moved one is shown
     refused only at destinations that carry no backing metadata
-    ([Checks.BudgetPremise.mremap_budget_refused_refuses_move]), a
-    ledger invariant not yet proved preserved.  On a state that broke
-    it, the mark could fire where a move is still admitted, and under a
-    forced-only configuration the filter could drop the marked refusal
-    as spurious; the marked configuration is still reached, so the
-    premise is unaffected. *)
+    ([Checks.BudgetPremise.mremap_budget_refused_refuses_move]).  Its fit
+    hypothesis and the protected ledger it reads are proved invariants
+    ([Checks.MapsFit], [Checks.NoaccessOwned]); the lazy-ledger half is
+    not yet proved preserved.  On a state that broke it, the mark could
+    fire where a move is still admitted, and under a forced-only
+    configuration the filter could drop the marked refusal as spurious;
+    the marked configuration is still reached, so the premise is
+    unaffected. *)
 Definition reaches_budget_refused_cfg (cfg : SpuriousCfg) (c0 : config) : Prop :=
   exists tr c, star_cfg segs cfg c0 tr c /\ budget_refused_at c.
 

@@ -334,10 +334,11 @@ Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
     The consumer half of that argument is mechanized:
     [mremap_fresh_avoids_noaccess] below derives the missing conjunct
     from [State.noaccess_pages_owned], the page-granular weakening of the
-    containment that survives the brk-shrink exception.  What is left is
-    to prove that invariant preserved by all nine writers of
-    [vm_noaccess], which is the durable fix and is deliberately out of
-    scope here. *)
+    containment that survives the brk-shrink exception.  The other half
+    is mechanized too: [Checks/NoaccessOwned.v] proves a stronger ledger
+    invariant ([sys_inv]) true of [init_model] and kept by every modeled
+    system call, and derives [noaccess_pages_owned] from it
+    ([sys_inv_noaccess_pages_owned]). *)
 Definition mremap_fresh_b (m : Model) (old_nZ new_nZ : Z)
     (old old_n dst new_n : word) : bool :=
   let h := m_vmmaps m in
@@ -351,8 +352,8 @@ Definition mremap_fresh_b (m : Model) (old_nZ new_nZ : Z)
 (** Half of the argument above, mechanized: GIVEN the ledger invariant
     [State.noaccess_pages_owned], a destination this predicate accepts is
     disjoint from [vm_noaccess] — exactly the conjunct the definition
-    leaves out.  So the unproved part is one named hypothesis about
-    the state rather than prose about a syscall.
+    leaves out.  So what the predicate leaves to the state is one named
+    invariant rather than prose about a syscall.
 
     The proof is the page-granularity argument, with no appeal to the brk
     shrink's shape: [dst] is page aligned and [new_n] is a whole number of
@@ -370,9 +371,9 @@ Definition mremap_fresh_b (m : Model) (old_nZ new_nZ : Z)
     request has no protected BYTE to reason about while [region_free] can
     still answer false.
 
-    What is NOT proved here is that [noaccess_pages_owned] holds of every
-    reachable state, i.e. that the nine writers of [vm_noaccess] preserve
-    it.  That is the durable fix named above and remains out of scope. *)
+    That [noaccess_pages_owned] holds of every reachable state is
+    [Checks/NoaccessOwned.v]'s: [init_model_sys_inv],
+    [star_preserves_sys_inv] and [sys_inv_noaccess_pages_owned]. *)
 Lemma mremap_fresh_avoids_noaccess :
   forall m old_nZ new_nZ old old_n dst new_n,
     noaccess_pages_owned (m_vmmaps m) ->

@@ -455,11 +455,11 @@ Definition brk_model_next (h : VmMaps) (req r : word) : VmMaps :=
    an entry; they are named here so the lists above are not read as the
    whole tree.
 
-   WHAT IS NOT A THEOREM HERE.  That these compose into "every reachable
-   model satisfies [State.vm_noaccess_entries_nonzero]".  The base case
-   is [State.init_model_noaccess_nonzero] and every writer is above, but
-   the induction over [mmap_spec]'s own branch structure is not carried
-   out, so that last step is a reader's, made against the lists above.
+   THE COMPOSITION is in [Checks/NoaccessOwned.v]: "every reachable
+   model satisfies [State.vm_noaccess_entries_nonzero]" follows from
+   [init_model_sys_inv], [star_preserves_sys_inv] and
+   [sys_inv_noaccess_pages_owned] with
+   [State.noaccess_pages_owned_nonzero].
    ========================================================================= *)
 
 (** [maps_subtract_ranges] is a fold of [State.maps_subtract], so it

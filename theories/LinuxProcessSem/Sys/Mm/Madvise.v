@@ -189,16 +189,18 @@ Definition madvise_dontneed_ok (h : VmMaps) (addr n : word) : bool :=
     every writer of the list carries a preservation lemma —
     [Mm/Mmap.v]'s section "the protected ledger names real bytes" lists
     the writers by name and holds the lemmas, [Mm/Mprotect.v] the one
-    writer outside that file.  Two things that section says and this
+    writer outside that file.  One thing that section says and this
     must not overstate: the lemmas for the arms that write their
     post-state inline RESTATE the record rather than naming it, so a
-    re-shaped arm would not break them; and nothing in the tree
-    COMPOSES the lemmas into "every reachable model satisfies it",
-    because the induction over the specs' branch structure is not
-    carried out.  That is why the lemma below takes the property as a
-    HYPOTHESIS rather than proving it of the state it is handed.  A
-    caller discharges it from the writer that produced the state, as
-    the worked example in [Checks/Cases/Mm/Madvise.v] does.
+    re-shaped arm would not break them.  The composition into "every
+    reachable model satisfies it" is [Checks/NoaccessOwned.v]'s
+    ([init_model_sys_inv], [star_preserves_sys_inv],
+    [sys_inv_noaccess_pages_owned], then
+    [State.noaccess_pages_owned_nonzero]), which this file cannot
+    import, so the lemma below takes the property as a HYPOTHESIS; a
+    caller discharges it from those lemmas, or from the writer that
+    produced the state, as the worked example in
+    [Checks/Cases/Mm/Madvise.v] does.
 
     Under it, a decline attributed to [vm_noaccess] exhibits an address
     the request covers and the process cannot touch — which is exactly
