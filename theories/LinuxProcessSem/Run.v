@@ -2211,14 +2211,15 @@ Qed.
     fires on a brk, mmap or mprotect request, the filter removes nothing
     at all — every admitted outcome is a refusal, so none is spurious —
     which [Checks.BudgetPremise.marked_step_is_configured] states for
-    exactly those arms.  Not for mremap: its mark fires when either of
-    a grow's budget gates refuses, the in-place post-state's or the
-    move's, so it can fire where a move is still admitted, and under a
-    forced-only configuration the refusal it marks can be spurious and
-    the filter drops that step; the marked configuration is still
-    reached, so the premise is unaffected, and the mark stays an
-    over-approximation in the safe direction there
-    ([Checks.BudgetPremise.ov_mark_fires_while_a_move_fits]). *)
+    exactly those arms.  Not for mremap: where its mark fires, the
+    in-place resolution is never admitted, but the moved one is shown
+    refused only at destinations that carry no backing metadata
+    ([Checks.BudgetPremise.mremap_budget_refused_refuses_move]), a
+    ledger invariant not yet proved preserved.  On a state that broke
+    it, the mark could fire where a move is still admitted, and under a
+    forced-only configuration the filter could drop the marked refusal
+    as spurious; the marked configuration is still reached, so the
+    premise is unaffected. *)
 Definition reaches_budget_refused_cfg (cfg : SpuriousCfg) (c0 : config) : Prop :=
   exists tr c, star_cfg segs cfg c0 tr c /\ budget_refused_at c.
 

@@ -729,8 +729,9 @@ Definition mremap_move_budget_b (m : Model) (old old_n new_n : word) : bool :=
     resolution is not admitted AND the move's budget gate refuses.  That
     is the request Linux refuses for want of memory: where the in-place
     resolution is unavailable and a move fits, Linux moves the mapping
-    ([vrm_set_new_addr], mm/mremap.c:957-960, Linux v6.18.46) and the
-    call succeeds.  Neither gate alone is the right test, because
+    ([expand_vma], mm/mremap.c:1520-1543, Linux v6.18.46, which picks
+    the new address in [vrm_set_new_addr], :957-960) and the call
+    succeeds.  Neither gate alone is the right test, because
     neither post-state is charged at least as much as the other on
     every state:
 
@@ -756,7 +757,8 @@ Definition mremap_move_budget_b (m : Model) (old old_n new_n : word) : bool :=
     only whether in-place growth is admitted and the destination-free
     charge of a move.  It does not ask whether a fresh destination
     EXISTS: an address space with no free range is a refusal of its own
-    kind, not of the budget, and is not marked.
+    kind, not of the budget, and is not marked unless the move's charge
+    is also over the budget.
 
     An earlier version fired when EITHER gate refused, and so over-marked
     the first case above: an execution Linux completes by moving counted
@@ -772,12 +774,14 @@ Definition mremap_move_budget_b (m : Model) (old old_n new_n : word) : bool :=
     [mremap_budget_refused_refuses_inplace] (where the mark fires, the
     in-place resolution is not admitted) and
     [mremap_budget_refused_refuses_move] (where the mark fires, no fresh
-    destination is admitted) — together, a marked request has no
-    non-errno resolution; [mremap_budget_refused_fires_on_move_refusal]
-    (in-place unavailable and the move refused at any fresh destination
-    fires the mark); and the concrete states above.  Shrinks, the
-    equal-size answer, and every shape the arm declines or answers
-    -EINVAL are not budget refusals. *)
+    destination that carries no backing metadata is admitted) —
+    together, a marked request has no non-errno resolution on a state
+    keeping the ledger invariants;
+    [mremap_budget_refused_fires_on_move_refusal] (in-place unavailable
+    and the move refused at one fresh destination that carries no
+    backing metadata fires the mark); and the concrete states above.
+    Shrinks, the equal-size answer, and every shape the arm declines or
+    answers -EINVAL are not budget refusals. *)
 Definition mremap_budget_refused_b (old old_size new_size flags : word)
     (m : Model) : bool :=
   if negb (Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE) then false
