@@ -36,7 +36,7 @@ them. A proof says nothing about a program in such a case.
 | Threads | The model has one thread. It has no scheduler and no shared-memory interleaving. For `fork`-like calls, the model describes the parent only. It does not run the child. |
 | Signals | The model does not run signal handlers. |
 | Address-space size | The system call specifications use Sv48. Thus you cannot prove the Sv39 and Sv57 statements for an image that can run. |
-| Stack limit | The stack limit is 8 MiB. A larger or unlimited `RLIMIT_STACK`, which selects the legacy mmap layout, is outside the model. |
+| Stack limit | The stack limit is 8 MiB. A larger or unlimited `RLIMIT_STACK`, which selects the legacy mmap layout, is outside the model. The model does not count the entry image against this limit; see "Stack floor" in "Known gaps in precision". |
 | Arguments | `Run.valid_input` requires that the arguments after `argv[0]` do not contain `/` and are not `..`. Thus a proof about `cp src dst` does not apply to `cp /tmp/src dst`. It also bounds the lists (`Run.valid_argv`, `Run.valid_envp`): 1 to 1024 arguments and at most 2 MiB of argument bytes, at most 256 environment variables and at most 128 KiB of environment bytes, and at most 131071 bytes in each string. Each count of bytes includes the terminating NUL of each string. A launch outside these bounds is outside the model. |
 | Standard input and output | The fds 0, 1 and 2 are external channels, and their direction is fixed: 0 is read-only, 1 and 2 are write-only (`State.FdChannel`). The model answers `-EBADF` for the other direction. Thus a proof says nothing about a program that is handed a connected socket on fd 0, as an inetd-style server is. |
 | Network | The list of connections is never empty. Thus the model does not include an environment where no peer ever connects. |
@@ -134,15 +134,50 @@ true of the model and false of the real systems.
   answers `EPIPE`.
 - **The auxiliary vector.** The model publishes ten entries
   (`StackLayout.auxv_entries`). A real kernel also supplies `AT_GID`,
-  `AT_EGID`, `AT_BASE`, `AT_ENTRY`, `AT_FLAGS`, `AT_CLKTCK`,
-  `AT_PLATFORM`, `AT_EXECFN`, `AT_SYSINFO_EHDR` and the cache-descriptor
-  entries of riscv's `ARCH_DLINFO`, which this one leaves out. The 16
+  `AT_EGID`, `AT_BASE`, `AT_ENTRY`, `AT_FLAGS`, `AT_CLKTCK`, `AT_EXECFN`
+  and, from riscv's `ARCH_DLINFO`, `AT_SYSINFO_EHDR`, the
+  cache-descriptor entries and `AT_MINSIGSTKSZ` (or `AT_IGNORE`), and
+  with `CONFIG_RSEQ` also `AT_RSEQ_FEATURE_SIZE` and `AT_RSEQ_ALIGN`,
+  which this one leaves out. Neither supplies `AT_PLATFORM`, because
+  riscv's `ELF_PLATFORM` is `NULL`
+  (`arch/riscv/include/asm/elf.h`). The 16
   bytes that `AT_RANDOM` points at are the highest bytes of the image,
   above the strings, where Linux puts them below the strings
   (`StackLayout.build_stack_bytes`). A libc reads the vector as a lookup
   table and sees no difference. A program that walks its own auxv, or
   that echoes the bytes around the `AT_RANDOM` block, has a modeled trace
   that its real trace does not match.
+- **Stack floor.** The model does not count the entry image against the
+  8 MiB stack limit. `Run.init_machine_state` maps the entry image up to
+  `Run.entry_page_top` and, in addition, the whole window
+  `[sp - State.stack_max_size, sp)` below the entry `sp`. Linux counts
+  the whole stack VMA against `RLIMIT_STACK`, from its page-aligned top
+  `vm_end` down: `expand_downwards` (`mm/vma.c`, Linux v6.18.46) passes
+  `size = vm_end - address` to `acct_stack_growth`, which answers
+  `-ENOMEM` when `size` passes the limit. That VMA holds the whole entry
+  image: `do_execveat_common` (`fs/exec.c`) copies the exec filename and
+  the argv and envp strings into it, `setup_arg_pages` (`fs/exec.c`)
+  gives it its page-aligned top, and `create_elf_tables`
+  (`fs/binfmt_elf.c`) writes `AT_RANDOM`, the auxv, `argc` and the
+  pointers in it. So Linux never grows the stack below `vm_end - 8 MiB`,
+  and the lowest `vm_end - sp` bytes of the model's window are never
+  stack on Linux. `vm_end` is at or above `Run.entry_page_top`, and can
+  be pages higher, because the kernel's entry image carries more than
+  the model's: the auxv entries of the bullet above, the exec filename,
+  and the random pad of less than 4 KiB that `arch_align_stack`
+  (`arch/riscv/kernel/process.c`) takes.
+  An access in that band succeeds in the model and faults on Linux, so
+  a statement about a run whose stack reaches it
+  can be true of the model and false of the real systems, and this one
+  need not compare sets of behaviors: a single-run statement is enough.
+  A program reaches the band when its stack goes more than
+  `8 MiB - (vm_end - sp)` below the entry `sp`. The band grows with the
+  size of argv and envp, to about 2 MiB for the largest that
+  `Run.valid_argv` and `Run.valid_envp` admit.
+  QEMU user mode has a band of the same kind: its stack is one fixed
+  8 MiB mapping with a guard page below it, and the entry image is
+  inside it (`setup_arg_pages` and `load_elf_binary` in
+  `linux-user/elfload.c`, QEMU 8.2.2).
 - **vDSO and vvar.** The kernel installs this pair at `execve`, and the
   model's ledger does not carry it (`Sys/Mm/Mmap.v`, the `munmap`
   arms). An `munmap` of a free range that lands on the pair answers 0,
