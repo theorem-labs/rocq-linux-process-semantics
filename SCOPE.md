@@ -89,7 +89,11 @@ not apply.
   larger for that (about 106.6 TiB at 25 bits). With the default guard
   gap (256 pages), 33 bits keep the base in the band. Under these two
   assumptions the band is exactly the set of bases that Linux gives
-  (`Checks.Cases.MmapBase.sv48_band_is_linux_set`).
+  (`Checks.Cases.MmapBase.sv48_band_is_linux_set`). A guard gap within
+  about 1 GiB of 2^64 bytes wraps the kernel's arithmetic, and the mmap
+  base can then lie above the bottom of the stack. Linux can then place a
+  mapping where the model refuses it (`State.alloc_top`), so a proof says
+  nothing about a process with such a guard gap.
 
 ## Known gaps in precision
 
