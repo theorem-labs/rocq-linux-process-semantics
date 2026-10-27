@@ -2434,67 +2434,9 @@ Proof.
   split; [exact Himg|]. split; [lia|]. split; [exact R10|]. split; [exact HnZal | lia].
 Qed.
 
-(** a ledger with the consumed hole turned into a fog token is matched the same *)
-Lemma maps_match_unhole : forall E ms h l, maps_match E ms l <-> maps_match E (unhole ms h) l.
-Proof.
-  intros E ms h. unfold unhole. induction ms as [|m ms IH]; intros l; [cbn; tauto|].
-  cbn [List.map maps_match].
-  destruct (is_hole m && amap_eqb m h)%bool eqn:Hc.
-  - apply andb_prop in Hc as [Hh _].
-    assert (Hf : is_fog m = true) by (unfold is_fog, is_hole in *; destruct (am_kind m); cbn in Hh |- *; congruence).
-    rewrite Hf. cbn [is_fog is_tok_kind am_kind am_len].
-    split; (intros [H|(iv & l' & H1 & H2 & H3)]; [left; apply IH; exact H | right; exists iv, l'; split; [exact H1|]; split; [exact H2| apply IH; exact H3]]).
-  - destruct (is_fog m).
-    + split; (intros [H|(iv & l' & H1 & H2 & H3)]; [left; apply IH; exact H | right; exists iv, l'; split; [exact H1|]; split; [exact H2| apply IH; exact H3]]).
-    + split; (intros (l' & H1 & H2); exists l'; split; [exact H1 | apply IH; exact H2]).
-Qed.
-
-Lemma same_val_sound : forall E M k a b,
-  know_ok SEGS E M k -> same_val k a b = true -> bv_unsigned (edenot E a) = bv_unsigned (edenot E b).
-Proof.
-  intros E M k a b HK H. unfold same_val in H.
-  destruct (expr_eqb a b) eqn:He; [apply expr_eqb_eq in He; subst; reflexivity|].
-  destruct (lin_ge0 k [(a, 0)] [(b, 0)]) eqn:H1; [|discriminate].
-  pose proof (lin_ge0_sound SEGS E M k _ _ HK H1) as X1. pose proof (lin_ge0_sound SEGS E M k _ _ HK H) as X2.
-  cbn [xt_den] in X1, X2. lia.
-Qed.
-
-(** the hole token found denotes exactly [a, a+ne) *)
-Lemma find_hole_sound : forall E M k ms a ne h,
-  know_ok SEGS E M k -> find_hole k ms a ne = Some h ->
-  In h ms /\ is_hole h = true
-  /\ uE E (am_base h) = bv_unsigned (edenot E a) /\ uE E (am_len h) = bv_unsigned (edenot E ne).
-Proof.
-  intros E M k ms a ne h HK H. unfold find_hole in H. apply find_some in H as [Hin Hc].
-  apply andb_prop in Hc as [Hc H2]. apply andb_prop in Hc as [Hh H1].
-  split; [exact Hin|]. split; [exact Hh|]. unfold uE.
-  split; symmetry; [exact (same_val_sound E M k _ _ HK H1) | exact (same_val_sound E M k _ _ HK H2)].
-Qed.
-
-(** turning the consumed hole into a fog token keeps [cs_ok] *)
-Lemma cs_ok_unhole : forall E cs R FULL model h,
-  CSOK E cs R FULL model -> CSOK E (with_maps0 cs (unhole (a_maps cs) h)) R FULL model.
-Proof.
-  intros E cs R FULL model h HC.
-  assert (ELEM : forall m, In m (unhole (a_maps cs) h) ->
-            In m (a_maps cs) \/ exists m0, In m0 (a_maps cs) /\ m = AM (am_base m0) (am_len m0) KFOG).
-  { intros m Hm. unfold unhole in Hm. apply in_map_iff in Hm as (m0 & Hm0 & Hin).
-    destruct (is_hole m0 && amap_eqb m0 h)%bool; [right; exists m0; split; [exact Hin | symmetry; exact Hm0] | left; subst; exact Hin]. }
-  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xvdso].
-  constructor; unfold with_maps0 in *;
-    cbn [a_ss a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset kn] in *; try assumption.
-  - (* maps *) apply (proj1 (maps_match_unhole E _ h _)). exact Xmaps.
-  - (* holes *) apply Forall_forall. intros m Hm Hk. destruct (ELEM m Hm) as [Hin|(m0 & Hin & ->)];
-      [exact (proj1 (Forall_forall _ _) Xholes m Hin Hk) | cbn in Hk; discriminate].
-  - (* none *) apply Forall_forall. intros m Hm Hk. destruct (ELEM m Hm) as [Hin|(m0 & Hin & ->)];
-      [exact (proj1 (Forall_forall _ _) Xnone m Hin Hk) | cbn in Hk; destruct Hk; discriminate].
-  - (* kinds *) apply Forall_forall. intros m Hm Hk. destruct (ELEM m Hm) as [Hin|(m0 & Hin & ->)];
-      [exact (proj1 (Forall_forall _ _) Xkinds m Hin Hk) | cbn in Hk; discriminate].
-Qed.
-
-(** [cs_ok] of the granted child built on the ledger [ms0] ([a_maps cs] itself, or it with the
-    consumed hole turned into a fog token), from the freeness of the target range, the apartness of the
-    remaining hole tokens and the side of the placement split the range lies on *)
+(** [cs_ok] of the granted child built on the ledger [ms0] ([a_maps cs] in
+    [mmap_fixed_free]), from the freeness of the target range, the apartness of the
+    hole tokens and the side of the placement split the range lies on *)
 Lemma mmap_fixed_grant_cs1 : forall cs ms0 kd (eager : bool) top b off ne nlo nhi E R FULL model model' FULL',
   CSOK E cs R FULL model ->
   fixed_args A cs top = Some (b, off, ne, nlo, nhi) -> top <= CEIL ->
@@ -2578,37 +2520,6 @@ Proof.
   - intros m Hm Hk. exfalso. unfold no_fog in Hnf. pose proof (proj1 (forallb_forall _ _) Hnf m Hm) as X.
     apply negb_true_iff in X. unfold is_fog, is_hole in *. destruct (am_kind m); cbn in X, Hk; congruence.
   - left. exact HtopA.
-Qed.
-
-(** the hole path — the target is exactly a hole token's range (free by [co_holes]), the other hole
-    tokens are provably apart, the side of the split is the hole's *)
-Lemma mmap_fixed_hole_facts : forall cs b off ne nlo nhi h E R FULL model,
-  CSOK E cs R FULL model ->
-  fixed_args A cs CEIL = Some (b, off, ne, nlo, nhi) ->
-  find_hole (kn cs) (a_maps cs) (reg cs 10) ne = Some h ->
-  forallb (fun m => negb (is_hole m) || ranges_apart_x (kn cs) b off ne (am_base m) 0 (am_len m)) (unhole (a_maps cs) h) = true ->
-  let addr := edenot E (reg cs 10) in
-  let nZ := page_round_up_Z (bv_unsigned (edenot E (reg cs 11))) in
-  CSOK E (with_maps0 cs (unhole (a_maps cs) h)) R FULL model
-  /\ region_free (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) addr (Z_to_bv 64 nZ) = true
-  /\ (forall m, In m (unhole (a_maps cs) h) -> is_hole m = true ->
-        bv_unsigned addr + nZ <= uE E (am_base m) \/ uE E (am_base m) + uE E (am_len m) <= bv_unsigned addr)
-  /\ (bv_unsigned addr + nZ <= KHI \/ a_ylo cs <= bv_unsigned addr).
-Proof.
-  intros cs b off ne nlo nhi h E R FULL model HC HFA Hfh Hap addr nZ.
-  destruct (fixed_pre cs CEIL b off ne nlo nhi E R FULL model HC HFA ltac:(lia)) as (Hne & Un & Hest & Hal & Hpos & Himg & HtopA & R10 & HnZal & HnZ).
-  fold addr nZ in Hne, Un, Hest, Hal, Hpos, Himg, HtopA, R10, HnZal, HnZ.
-  pose proof (co_know _ _ _ _ _ _ _ _ _ _ _ HC) as HK.
-  destruct (find_hole_sound E _ (kn cs) (a_maps cs) (reg cs 10) ne h HK Hfh) as (Hin & Hh & Hhb & Hhn).
-  fold addr in Hhb. rewrite Hne, Un in Hhn.
-  destruct (proj1 (Forall_forall _ _) (co_holes _ _ _ _ _ _ _ _ _ _ _ HC) h Hin Hh) as [F1 F2].
-  rewrite Hhb, Hhn in F1, F2.
-  split; [apply cs_ok_unhole; exact HC|]. split; [|split].
-  - apply RefNodes.region_free_intro. intros b' s' Hin'. rewrite Un. destruct (F1 (b', s') Hin'); cbn [fst snd] in *; lia.
-  - intros m Hm Hk. pose proof (proj1 (forallb_forall _ _) Hap m Hm) as X. cbn beta in X. rewrite Hk in X. cbn [negb orb] in X.
-    pose proof (ranges_apart_x_sound SEGS E _ (kn cs) b off ne (am_base m) 0 (am_len m) HK X) as D.
-    unfold estart in D at 2 3. cbn [a_base a_off] in D. unfold elenZ in D. rewrite Hest, Hne, Un in D. unfold uE. lia.
-  - exact F2.
 Qed.
 
 
