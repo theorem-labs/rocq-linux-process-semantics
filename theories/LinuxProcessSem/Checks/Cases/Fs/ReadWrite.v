@@ -28,8 +28,10 @@ Proof.
   intros fd buf count i m p off eff m' evs Hfd Hspec.
   apply check_write_complete_ok in Hspec.
   unfold check_write in Hspec. rewrite Hfd in Hspec. cbv iota zeta in Hspec.
-  (* the transfer gate, then the -EFAULT gate *)
+  (* the transfer gate, the source read, then the -EFAULT gate *)
   destruct (negb (modeled_rw_range buf count)); cbv iota in Hspec; [discriminate|].
+  destruct (user_write_source i m buf count) as [bs| |]; cbv iota in Hspec;
+    [|discriminate|discriminate].
   lazymatch type of Hspec with (if ?b then _ else _) = _ => destruct b end;
     cbv iota in Hspec.
   - (* -EFAULT: no writes, no events *)
@@ -44,8 +46,7 @@ Proof.
     all: destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
          cbv iota in Hspec; [|discriminate].
     (* and the past-end-of-file hole guard *)
-    all: destruct (negb (modeled_file_gap data off
-                           (write_source (in_mem i) buf count)));
+    all: destruct (negb (modeled_file_gap data off bs));
          cbv iota in Hspec; [discriminate|].
     all: first
       [ apply check_ret_only_ok_iff in Hspec
@@ -528,6 +529,7 @@ Proof.
   { unfold w_is0, bv_eqb. apply Z.eqb_neq.
     change (bv_unsigned (Z_to_bv 64 0)) with 0%Z. lia. }
   rewrite Hc in Hspec. cbv iota zeta in Hspec.
+  rewrite (user_write_source_full _ _ _ _ _ Hb) in Hspec. cbv iota in Hspec.
   rewrite (write_source_of_rw _ _ _ Hmax),
           (readable_bytes_full _ _ _ _ Hb) in Hspec.
   assert (Hg0 : Nat.eqb (length bs) 0 = false) by (apply Nat.eqb_neq; lia).
@@ -1150,13 +1152,16 @@ Proof.
   assert (Hch0 : w_is0 ch = false).
   { unfold w_is0, bv_eqb. apply Z.eqb_neq. intro Heq. apply Hch, bv_eq.
     rewrite Heq. reflexivity. }
-  rewrite Hch0 in Hspec. cbv iota in Hspec. rewrite H32, Hiv in Hspec.
-  cbv iota in Hspec.
+  rewrite Hch0 in Hspec. cbv iota in Hspec. rewrite H32 in Hspec.
+  rewrite (user_import_iovecs_of i m iov iovcnt (ImpOk iovs) Hiv ltac:(discriminate))
+    in Hspec.
+  cbv iota in Hspec. unfold user_import_iovecs_accesses in Hspec.
   (* the aggregate the gather ran over is the CAPPED one, so its length
      is under the kernel's clamp by construction *)
   assert (Hbnd : (Z.of_nat (length bs) <= MAX_RW_COUNT)%Z).
   { rewrite (gather_iovecs_length _ _ _ Hg), iovs_total_cap. lia. }
   split; [exact Hbnd|].
+  rewrite (user_writev_gathered_full i m iovs bs Hg) in Hspec.
   unfold writev_gathered in Hspec. cbv iota zeta in Hspec.
   rewrite (gather_prefix_full _ _ _ Hg) in Hspec.
   assert (Hlpos : (0 < length bs)%nat)
@@ -1238,6 +1243,7 @@ Proof.
   { unfold w_is0, bv_eqb. apply Z.eqb_neq.
     change (bv_unsigned (Z_to_bv 64 0)) with 0%Z. lia. }
   rewrite Hc. cbv beta iota zeta.
+  rewrite (user_write_source_full _ _ _ _ _ Hb). cbv beta iota.
   rewrite (write_source_of_rw _ _ _ Hcmax), (readable_bytes_full _ _ _ _ Hb).
   assert (Hg0 : Nat.eqb (length bs) 0 = false) by (apply Nat.eqb_neq; lia).
   rewrite Hg0. cbv beta iota.
@@ -1338,7 +1344,9 @@ Proof.
     { unfold w_is0, bv_eqb. apply Z.eqb_neq. intro Heq. apply Hch, bv_eq.
       rewrite Heq. reflexivity. }
     rewrite Hch0. cbv iota. rewrite H32.
-    rewrite Hiv. cbv iota.
+    rewrite (user_import_iovecs_of iv m iov iovcnt (ImpOk iovs) Hiv ltac:(discriminate)).
+    cbv iota. unfold user_import_iovecs_accesses.
+    rewrite (user_writev_gathered_full iv m iovs bs Hg).
     unfold writev_gathered.
     cbv iota zeta.
     rewrite (gather_prefix_full _ _ _ Hg).
@@ -2519,7 +2527,9 @@ Proof.
        [now destruct (Hro _ _ _ H)|].
   all: destruct (rw_pos_einvalb pos (bv_unsigned count));
        [now destruct (Hro _ _ _ H)|].
-  all: cbv zeta in H.
+  all: destruct (user_write_source i m buf count) as [bs| |] eqn:Hus;
+       cbv beta iota zeta in H; [|discriminate|discriminate].
+  all: apply user_write_source_ok in Hus; subst bs.
   all: destruct (negb (w_is0 count)
                  && Nat.eqb (length (write_source (in_mem i) buf count)) 0);
        [now destruct (Hro _ _ _ H)|].
