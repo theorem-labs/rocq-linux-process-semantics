@@ -209,6 +209,7 @@ Proof.
   rewrite Hmc. cbv beta iota.
   assert (Hc : w_is0 (ms_gpr ms 2) = false) by (apply w_is0_pos; lia).
   rewrite Hc. cbv beta iota. cbv zeta.
+  rewrite (user_write_source_full _ model _ _ _ Hrb). cbv beta iota.
   rewrite (write_source_of_rw _ _ _ Hcw), (readable_bytes_full _ _ _ _ Hrb).
   assert (Hg0 : Nat.eqb (length buf) 0 = false) by (apply Nat.eqb_neq; lia).
   rewrite Hg0. cbv beta iota. unfold with_copyins; cbn.
@@ -277,6 +278,7 @@ Proof.
      call named -- [buf] itself for every count under [MAX_RW_COUNT], and
      a prefix of it above, which the gate above admits at an in-range
      buffer *)
+  rewrite (user_write_source_full _ model _ _ _ Hrb) in Hspec. cbv beta iota in Hspec.
   rewrite (write_source_prefix _ _ _ _ Hrb) in Hspec.
   pose proof (rw_count_clamp_range (ms_gpr ms 2)) as Hcl.
   set (c := Z.to_nat (rw_count_clamp (ms_gpr ms 2))) in *.
@@ -345,6 +347,7 @@ Proof.
   { exfalso.
     assert (Hc0 : w_is0 (ms_gpr ms 2) = false) by (apply w_is0_pos; lia).
     congruence. }
+  rewrite (user_write_source_full _ model _ _ _ Hrb) in Hspec. cbv beta iota in Hspec.
   rewrite (write_source_of_rw _ _ _ Hcw), (readable_bytes_full _ _ _ _ Hrb)
     in Hspec.
   destruct (length buf =? 0)%nat eqn:Hz; try rewrite Hz in Hspec.
@@ -992,6 +995,7 @@ Proof.
   rewrite Hmc. cbv beta iota.
   assert (Hc : w_is0 (ms_gpr ms 2) = false) by (apply w_is0_pos; lia).
   rewrite Hc. cbv beta iota. cbv zeta.
+  rewrite (user_write_source_full _ model _ _ _ Hrb). cbv beta iota.
   rewrite (write_source_of_rw _ _ _ Hcw), (readable_bytes_full _ _ _ _ Hrb).
   assert (Hg0 : Nat.eqb (length buf) 0 = false) by (apply Nat.eqb_neq; lia).
   rewrite Hg0. cbv beta iota. unfold with_copyins; cbn.
@@ -1056,6 +1060,7 @@ Proof.
      call named -- [buf] itself for every count under [MAX_RW_COUNT], and
      a prefix of it above, which the gate above admits at an in-range
      buffer *)
+  rewrite (user_write_source_full _ model _ _ _ Hrb) in Hspec. cbv beta iota in Hspec.
   rewrite (write_source_prefix _ _ _ _ Hrb) in Hspec.
   pose proof (rw_count_clamp_range (ms_gpr ms 2)) as Hcl.
   set (c := Z.to_nat (rw_count_clamp (ms_gpr ms 2))) in *.
@@ -1118,6 +1123,7 @@ Proof.
   { exfalso.
     assert (Hc0 : w_is0 (ms_gpr ms 2) = false) by (apply w_is0_pos; lia).
     congruence. }
+  rewrite (user_write_source_full _ model _ _ _ Hrb) in Hspec. cbv beta iota in Hspec.
   rewrite (write_source_of_rw _ _ _ Hcw), (readable_bytes_full _ _ _ _ Hrb)
     in Hspec.
   destruct (length buf =? 0)%nat eqn:Hz; try rewrite Hz in Hspec.
