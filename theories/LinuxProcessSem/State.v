@@ -8560,8 +8560,11 @@ Arguments with_sigmask : simpl never.
 Arguments m_utsname : simpl never.
 Arguments with_utsname : simpl never.
 
+Arguments m_vdso : simpl never.
+Arguments with_vdso : simpl never.
+
 (** And of the model a run starts from.  [init_model] builds one with
-    [mkModel], so these are [reflexivity] too -- but a proof cannot see that
+    [mkModelVdso], so these are [reflexivity] too -- but a proof cannot see that
     through an opaque accessor, and [cbn] with a delta list will not unfold
     [init_model] to show it.
 
