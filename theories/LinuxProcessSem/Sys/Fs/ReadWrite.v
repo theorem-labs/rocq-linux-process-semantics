@@ -872,6 +872,18 @@ Definition write_ledger (buf count : word) (bs : list byte)
   then ret_only (len_word bs)
   else record_copyins [(buf, length bs)] (ret_only (len_word bs)).
 
+(** THE SOURCE OF A WRITE: [Uaccess.write_source]'s readable prefix of
+    the range Linux clamps at [MAX_RW_COUNT], read through
+    [State.user_read_prefix].  A prefix that stops short at a byte of the
+    vDSO pair is [USpecial]: both pages are readable on Linux
+    (arch/riscv/kernel/vdso.c, v6.18.46), so the copy goes on with the
+    kernel's bytes, which the model does not hold, and every arm answers
+    [unmodeled] there ([State.UserRead]).  A prefix read never answers
+    [UFault] ([State.user_read_prefix_not_fault]). *)
+Definition user_write_source (i : SyscallInput) (m : Model) (buf count : word)
+    : UserRead (list byte) :=
+  user_read_prefix i m buf (Z_to_bv 64 (rw_count_clamp count)).
+
 (** The tail every file write arm shares: the source bytes, the -EFAULT
     on an unreadable buffer, the zero-count range verdict, and the
     ledger.
@@ -885,26 +897,29 @@ Definition write_ledger (buf count : word) (bs : list byte)
     -EFAULT or the zero-count wrapper, because it is given the first
     already built and never sees the other two.
 
-    [Uaccess.write_source] is the readable prefix of the CLAMPED range:
+    [user_write_source] is the readable prefix of the CLAMPED range:
     Linux clamps at [MAX_RW_COUNT] before the write, so a delivering
     write moves at most that much and the model's answer is exact below
     it.  The -EFAULT is guarded by [negb (w_is0 count)] because a
     zero-length write touches no byte and so cannot fault on the buffer;
     what remains for it is the RANGE verdict, which is
     [Uaccess.access_ok_zero]. *)
-Definition write_file_tail (mp : word -> option byte) (buf count : word)
+Definition write_file_tail (i : SyscallInput) (m : Model) (buf count : word)
     (place : list byte -> option (Sys SyscallEffect -> Sys SyscallEffect))
   : Sys SyscallEffect :=
-  let bs := write_source mp buf count in
-  if negb (w_is0 count) && Nat.eqb (length bs) 0
-  then err_ret EFAULT
-  else
-    let deliver :=
-      match place bs with
-      | None => unmodeled
-      | Some upd => upd (write_ledger buf count bs)
-      end in
-    if w_is0 count then access_ok_zero buf count deliver else deliver.
+  match user_write_source i m buf count with
+  | UFault | USpecial => unmodeled             (* the prefix stops at the vDSO pair *)
+  | UOk bs =>
+      if negb (w_is0 count) && Nat.eqb (length bs) 0
+      then err_ret EFAULT
+      else
+        let deliver :=
+          match place bs with
+          | None => unmodeled
+          | Some upd => upd (write_ledger buf count bs)
+          end in
+        if w_is0 count then access_ok_zero buf count deliver else deliver
+  end.
 
 Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
   i <- input ;;
@@ -955,7 +970,9 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
                 which leaves only the range verdict — see
                 [Uaccess.access_ok_zero] *)
       else
-      let bs := write_source (in_mem i) buf count in
+      match user_write_source i m buf count with
+      | UFault | USpecial => unmodeled           (* see [user_write_source] *)
+      | UOk bs =>
       if Nat.eqb (length bs) 0
       then err_ret EFAULT                        (* nothing readable at [buf]: real -EFAULT *)
       else
@@ -969,6 +986,7 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
         emit (map (WriteEv ch) ds) ;;            (* record each delivered byte *)
         record_copyins [(buf, length ds)]
           (ret_only (len_word ds))               (* the (possibly short) delivered length *)
+      end
   | Some FdDir => err_ret EBADF                  (* directory fds are O_RDONLY: write is real -EBADF,
                                                     checked before the source buffer as Linux does *)
   | Some (FdSocket _) => unmodeled
@@ -1022,7 +1040,7 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          divergence from Linux where those two tests would fire.  The append arm
          below models both, for the reason it gives there. *)
       write_range_gate buf count
-        (write_file_tail (in_mem i) buf count (fun bs =>
+        (write_file_tail i m buf count (fun bs =>
            match fs_lookup (m_fs m) p with
            | None => None                        (* an FdFileW always points into the fs; see openat *)
            | Some data =>
@@ -1058,7 +1076,7 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          [rw_verify_area], and rests on [modeled_file_gap] declining
          first, with the same known divergence. *)
       write_range_gate buf count
-        (write_file_tail (in_mem i) buf count (fun bs =>
+        (write_file_tail i m buf count (fun bs =>
            match fs_lookup (m_fs m) p with
            | None => None                        (* an FdFileRW always points into the fs; see openat *)
            | Some data =>
@@ -1140,7 +1158,7 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
         (if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
          else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
          else
-         write_file_tail (in_mem i) buf count (fun bs =>
+         write_file_tail i m buf count (fun bs =>
            match fs_lookup (m_fs m) p with
            | None => None                        (* an FdFileA always points into the fs; see openat *)
            | Some data =>
@@ -1193,9 +1211,11 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
                Linux the two are independent, since a declining call here
                is one the model refuses to judge at all *)
           else
-          let bs := write_source (in_mem i) buf count in
+          match user_write_source i m buf count with
+          | UFault | USpecial => unmodeled       (* see [user_write_source] *)
+          | UOk bs =>
             (* [pipe_write_room] above has already bounded [count] by
-               PIPE_BUF, so the clamp inside [Uaccess.write_source] is a
+               PIPE_BUF, so the clamp inside [user_write_source] is a
                no-op here and the unary [word_to_nat count] below is
                bounded by that guard rather than by the request *)
           if negb (Nat.eqb (length bs) (word_to_nat count)) then unmodeled
@@ -1256,6 +1276,7 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            the capacity guard above to every transfer the model admits.
            The whole source IS read, so the range goes in the copy-in
            ledger exactly as the channel and file arms record theirs *)
+          end
       end
   end.
 
@@ -1599,7 +1620,9 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
         (* [rw_verify_area], before the write operation and on the
            UNCLAMPED count, the order fs/read_write.c:677-681 has *)
       else
-      let bs := write_source (in_mem i) buf count in
+      match user_write_source i m buf count with
+      | UFault | USpecial => unmodeled           (* see [user_write_source] *)
+      | UOk bs =>
         (* NO COUNT GATE.  [write]'s arms carry
            [Uaccess.modeled_rw_range]; this one would carry it for
            nothing, because [access_ok] has already been tested above and
@@ -1608,11 +1631,12 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
            by Linux's own test, and the size question is not asked at
            all.
 
-           [Uaccess.write_source] rather than [State.readable_bytes] is
-           the other half: it is the readable prefix of the range Linux
-           CLAMPS at [MAX_RW_COUNT] ([State.rw_count_clamp]), so an
-           over-clamp count is a short write here as it is for [write],
-           and no unary numeral bigger than the clamp is built. *)
+           [user_write_source] rather than [State.user_read_prefix] of
+           the named range is the other half: it is the readable prefix
+           of the range Linux CLAMPS at [MAX_RW_COUNT]
+           ([State.rw_count_clamp]), so an over-clamp count is a short
+           write here as it is for [write], and no unary numeral bigger
+           than the clamp is built. *)
       if negb (w_is0 count) && Nat.eqb (length bs) 0
       then err_ret EFAULT                        (* nothing readable at [buf]: real -EFAULT *)
       else
@@ -1630,6 +1654,7 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
             (* a zero-length write reads no user byte, so its ledger is
                empty rather than a singleton zero-length range *)
           else record_copyins [(buf, length bs)] (ret_only (len_word bs))
+      end
       end
   end.
 
@@ -1652,7 +1677,9 @@ Definition iovcnt32 (iovcnt : word) : word := abi_low32 iovcnt.
 (** A writev buffer-shape gap: the model cannot describe this transfer, so
     it DECLINES.  One name for every writev decline, as [readv_buf_gap] is
     for readv.  (An unreadable iovec array or source buffer is NOT routed
-    here: those are a genuine -EFAULT / short write via [gather_prefix].) *)
+    here: those are a genuine -EFAULT / short write via [gather_prefix].
+    A read that stops at the vDSO pair IS: Linux reads on there with
+    bytes the model does not hold.) *)
 Definition writev_buf_gap : Sys SyscallEffect := unmodeled.
 
 (** [writev fd iov iovcnt], in the order stable Linux v6.18.46 decides it
@@ -1756,28 +1783,38 @@ Definition writev_ledger (iovs : list (word * word)) (bs : list byte)
     guards and before its update.  It is unreachable under the aggregate
     cap in any case — the note on this spec's header says why it is kept —
     and every decline around it is the same [writev_buf_gap], so the
-    position is not observable. *)
-Definition writev_file_arm (mp : word -> option byte)
+    position is not observable.
+
+    The import and the gather read user memory through
+    [State.user_import_iovecs] and [State.user_writev_gathered]: a walk
+    that stops at a byte of the vDSO pair is [USpecial], and the arm
+    declines there as [user_write_source] explains. *)
+Definition writev_file_arm (i : SyscallInput) (m : Model)
     (iov iovcnt off : word)
     (place : list byte -> option (Sys SyscallEffect -> Sys SyscallEffect))
   : Sys SyscallEffect :=
-  record_copyins (import_iovecs_accesses mp iov (iovcnt32 iovcnt))
-  (match import_iovecs mp iov (iovcnt32 iovcnt) with
-   | ImpFault => err_ret EFAULT
-   | ImpInval => err_ret EINVAL
-   | ImpOk iovs0 =>
+  record_copyins (user_import_iovecs_accesses i m iov (iovcnt32 iovcnt))
+  (match user_import_iovecs i m iov (iovcnt32 iovcnt) with
+   | USpecial => writev_buf_gap                (* a descriptor in the vDSO pair *)
+   | UFault | UOk ImpFault => err_ret EFAULT
+   | UOk ImpInval => err_ret EINVAL
+   | UOk (ImpOk iovs0) =>
        let total := iovs_total (cap_iovecs iovs0) in
-       let bs := writev_gathered mp iovs0 in
        if Z.eqb total 0 then ret_only (Z_to_bv 64 0)   (* zero aggregate: 0, offset unchanged *)
        else if rw_pos_einvalb off total then err_ret EINVAL  (* [rw_verify_area], before the write *)
-       else if Nat.eqb (length bs) 0 then err_ret EFAULT
        else
-         match place bs with
-         | None => writev_buf_gap
-         | Some upd =>
-             if addr_is_error_b (len_word bs) then writev_buf_gap
-             else upd (writev_ledger iovs0 bs)
-         end
+       match user_writev_gathered i m iovs0 with
+       | UFault | USpecial => writev_buf_gap     (* the gathered prefix stops at the vDSO pair *)
+       | UOk bs =>
+           if Nat.eqb (length bs) 0 then err_ret EFAULT
+           else
+             match place bs with
+             | None => writev_buf_gap
+             | Some upd =>
+                 if addr_is_error_b (len_word bs) then writev_buf_gap
+                 else upd (writev_ledger iovs0 bs)
+             end
+       end
    end).
 
 Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
@@ -1793,15 +1830,19 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
       if w_is0 ch then err_ret EBADF             (* channel 0 is read-only BY ASSUMPTION *)
       else
         record_copyins
-          (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
-        (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
-        | ImpFault => err_ret EFAULT             (* unreadable descriptor, or a failed access_ok *)
-        | ImpInval => err_ret EINVAL             (* count over IOV_MAX, or a negative iov_len *)
-        | ImpOk iovs0 =>
+          (user_import_iovecs_accesses i m iov (iovcnt32 iovcnt))
+        (match user_import_iovecs i m iov (iovcnt32 iovcnt) with
+        | USpecial => writev_buf_gap             (* a descriptor in the vDSO pair *)
+        | UFault | UOk ImpFault => err_ret EFAULT  (* unreadable descriptor, or a failed access_ok *)
+        | UOk ImpInval => err_ret EINVAL         (* count over IOV_MAX, or a negative iov_len *)
+        | UOk (ImpOk iovs0) =>
             let total := iovs_total (cap_iovecs iovs0) in
-            let bs := writev_gathered (in_mem i) iovs0 in
             if Z.eqb total 0 then ret_only (Z_to_bv 64 0)   (* zero aggregate: 0, no buffer inspected *)
-            else if Nat.eqb (length bs) 0 then err_ret EFAULT  (* not even the first byte readable *)
+            else
+            match user_writev_gathered i m iovs0 with
+            | UFault | USpecial => writev_buf_gap (* the gathered prefix stops at the vDSO pair *)
+            | UOk bs =>
+            if Nat.eqb (length bs) 0 then err_ret EFAULT  (* not even the first byte readable *)
             else if addr_is_error_b (len_word bs) then writev_buf_gap
                  (* unreachable under the aggregate cap; see above *)
             else
@@ -1814,9 +1855,10 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
               record_copyins
                 (iov_prefix_accesses (cap_iovecs iovs0) (length ds))
                 (ret_only (len_word ds))          (* the (possibly short) delivered length *)
+            end
         end)
   | Some (FdFileW p off) =>
-      writev_file_arm (in_mem i) iov iovcnt off (fun bs =>
+      writev_file_arm i m iov iovcnt off (fun bs =>
         match fs_lookup (m_fs m) p with
         | None => None                  (* an FdFileW always points into the fs (see openat) *)
         | Some data =>
@@ -1838,7 +1880,7 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
          the gathered bytes, and the advance — so the only thing this arm
          may state for itself is the entry.  The [FdFileA] arm below is
          the one that differs, and it differs in the destination. *)
-      writev_file_arm (in_mem i) iov iovcnt off (fun bs =>
+      writev_file_arm i m iov iovcnt off (fun bs =>
         match fs_lookup (m_fs m) p with
         | None => None                  (* an FdFileRW always points into the fs (see openat) *)
         | Some data =>
@@ -1867,7 +1909,7 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
          [modeled_file_gap] guard, which an append write cannot fail
          ([append_opens_no_gap]) and so does not carry.  Linux v6.18.46
          throughout. *)
-      writev_file_arm (in_mem i) iov iovcnt off (fun bs =>
+      writev_file_arm i m iov iovcnt off (fun bs =>
         match fs_lookup (m_fs m) p with
         | None => None                  (* an FdFileA always points into the fs (see openat) *)
         | Some data =>
@@ -1890,13 +1932,14 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
                                                     before the import *)
       else
         record_copyins
-          (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
-        (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
-        | ImpFault => err_ret EFAULT             (* [import_iovec]'s own -EFAULT and -EINVAL, the
+          (user_import_iovecs_accesses i m iov (iovcnt32 iovcnt))
+        (match user_import_iovecs i m iov (iovcnt32 iovcnt) with
+        | USpecial => writev_buf_gap             (* a descriptor in the vDSO pair *)
+        | UFault | UOk ImpFault => err_ret EFAULT  (* [import_iovec]'s own -EFAULT and -EINVAL, the
                                                     descriptor array being the ONLY user memory
                                                     this call reads *)
-        | ImpInval => err_ret EINVAL
-        | ImpOk iovs0 =>
+        | UOk ImpInval => err_ret EINVAL
+        | UOk (ImpOk iovs0) =>
             ret_only (Z_to_bv 64 (iovs_total (cap_iovecs iovs0)))
             (* [write_iter_null] (drivers/char/mem.c, v6.18.46) advances
                the iterator by [iov_iter_count] and returns it: the
@@ -1911,11 +1954,12 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
                                                     any iovec is inspected *)
       else
         record_copyins
-          (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
-        (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
-        | ImpFault => err_ret EFAULT
-        | ImpInval => err_ret EINVAL
-        | ImpOk iovs0 =>
+          (user_import_iovecs_accesses i m iov (iovcnt32 iovcnt))
+        (match user_import_iovecs i m iov (iovcnt32 iovcnt) with
+        | USpecial => writev_buf_gap             (* a descriptor in the vDSO pair *)
+        | UFault | UOk ImpFault => err_ret EFAULT
+        | UOk ImpInval => err_ret EINVAL
+        | UOk (ImpOk iovs0) =>
             if Z.eqb (iovs_total (cap_iovecs iovs0)) 0 then ret_only (Z_to_bv 64 0)
               (* zero aggregate: decided above the file kind, so no pipe
                  state enters it — [vfs_writev] returns at
@@ -2411,11 +2455,15 @@ Definition readv_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
           if readv_heap_iovecb iovcnt then readv_heap_gap
           else
             record_copyins
-              (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
-            (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
-            | ImpFault => err_ret EFAULT   (* unreadable descriptor, or a failed access_ok *)
-            | ImpInval => err_ret EINVAL   (* count over IOV_MAX, or a negative iov_len *)
-            | ImpOk iovs0 => readv_imported fd r iovs0 i m
+              (user_import_iovecs_accesses i m iov (iovcnt32 iovcnt))
+            (match user_import_iovecs i m iov (iovcnt32 iovcnt) with
+            | USpecial => readv_buf_gap
+                (* a descriptor in the vDSO pair: the walk goes on with
+                   the kernel's bytes there ([State.UserRead]) *)
+            | UFault | UOk ImpFault => err_ret EFAULT
+                (* unreadable descriptor, or a failed access_ok *)
+            | UOk ImpInval => err_ret EINVAL   (* count over IOV_MAX, or a negative iov_len *)
+            | UOk (ImpOk iovs0) => readv_imported fd r iovs0 i m
             end)
       end
   end.
