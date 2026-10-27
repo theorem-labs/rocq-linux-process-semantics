@@ -94,7 +94,7 @@ Let escale_4096_denot := AsanNodesMmLib.escale_4096_denot SEGS A RES_len HULL_ok
 Let find_containing_sound := AsanNodesMmLib.find_containing_sound SEGS A RES_len.
 Let fixed_args_sound := AsanNodesMmLib.fixed_args_sound SEGS A LIMIT SINV argH FS0 RES_len HULL_ok.
 Let fixed_cs1 := AsanNodesMmLib.fixed_cs1 A.
-Let gap_ok_sound := AsanNodesMmLib.gap_ok_sound SEGS A LIMIT SINV argH FS0 RES_len HULL_ok SHADOW_ok.
+Let gap_ok_sound := AsanNodesMmLib.gap_ok_sound SEGS A LIMIT SINV argH FS0 RES_len HULL_ok.
 Let gap_weight_eq := AsanNodesMmLib.gap_weight_eq SEGS A RES_len.
 Let grant_cs1_ok := AsanNodesMmLib.grant_cs1_ok SEGS A LIMIT SINV argH FS0 RES_len HULL_ok argH_high SINV_frame.
 Let grant_eager_le := AsanNodesMmLib.grant_eager_le SEGS A RES_len HULL_ok.
@@ -238,7 +238,7 @@ Proof.
     - (* visible arms: kd is rw *)
       assert (Hrw : kind_none kd = false) by (destruct kd; cbn in Hvisible |- *; congruence).
       pose proof (u64_range a) as Ra.
-      unfold grant_ok_na in Hg. apply andb_prop in Hg as [Hg _]. apply andb_prop in Hg as [Hg _].
+      unfold grant_ok_na in Hg. apply andb_prop in Hg as [Hg _]. apply andb_prop in Hg as [Hg _]. apply andb_prop in Hg as [Hg _].
       apply andb_prop in Hg as [Hg Hceil]. apply Z.leb_le in Hceil. rewrite CEIL_eq in Hceil. unfold CEIL in Hceil.
       eapply (grant_vis_add E' (null_cs1 cs kd eager ne nlo nhi) cs' _ ne _ FULL' model' a n nZ HC1 Hn).
       + unfold null_cs1, add_entry. cbn [kn a_ss mk_ss s_know]. apply kimg_in_hull_app; [|apply kimg_clip_in_hull'].
@@ -269,7 +269,7 @@ Proof.
     + exists a0. split; [exact Ha0|]. unfold mmap_noreserve_backed_ok. rewrite mmap_noreserve_b_4022. reflexivity.
     + exact CONTA.
     + intros a Hg _. rewrite (with_mmap_backing_lazy _ _ _ _ mmap_noreserve_b_4022). apply (CONT a); [exact Hg | | | reflexivity].
-      * pose proof Hg as Hg'. unfold grant_ok_na in Hg'. apply andb_prop in Hg' as [Hg' _]. apply andb_prop in Hg' as [Hg' _].
+      * pose proof Hg as Hg'. unfold grant_ok_na in Hg'. apply andb_prop in Hg' as [Hg' _]. apply andb_prop in Hg' as [Hg' _]. apply andb_prop in Hg' as [Hg' _].
         apply andb_prop in Hg' as [Hg' Hceil]. apply andb_prop in Hg' as [Hal Hpos].
         apply Z.eqb_eq in Hal. apply Z.leb_le in Hceil. rewrite CEIL_eq in Hceil. unfold CEIL in Hceil. unfold page_size in Hal.
         constructor; try reflexivity.
@@ -289,7 +289,7 @@ Proof.
     + exists a0. exact Ha0.
     + exact CONTA.
     + intros a Hg. rewrite (with_mmap_backing_lazy _ _ _ _ mmap_noreserve_b_4022). apply (CONT a); [exact Hg | | | reflexivity].
-      * pose proof Hg as Hg'. unfold grant_ok_na in Hg'. apply andb_prop in Hg' as [Hg' _]. apply andb_prop in Hg' as [Hg' _].
+      * pose proof Hg as Hg'. unfold grant_ok_na in Hg'. apply andb_prop in Hg' as [Hg' _]. apply andb_prop in Hg' as [Hg' _]. apply andb_prop in Hg' as [Hg' _].
         apply andb_prop in Hg' as [Hg' Hceil]. apply andb_prop in Hg' as [Hal Hpos].
         apply Z.eqb_eq in Hal. apply Z.leb_le in Hceil. rewrite CEIL_eq in Hceil. unfold CEIL in Hceil. unfold page_size in Hal.
         constructor; try reflexivity.
