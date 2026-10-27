@@ -340,11 +340,13 @@ Definition noaccess_model (a n : word) (m : Model) : Model :=
 
 (** May the kernel place an INACCESSIBLE reservation at [a, a+n)?  Like
     [MmapSim.grant_ok] WITHOUT the budget conjunct: a PROT_NONE mapping
-    consumes no backed memory ([Mmap.mmap_spec], noaccess branch). *)
+    consumes no backed memory ([Mmap.mmap_spec], noaccess branch).  The
+    range misses the vDSO pair, as every kernel-placed grant does. *)
 Definition grant_ok_na (hint : word) (m : Model) (a : word) (n : Z) : bool :=
   (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
   && (bv_unsigned a + n <=? alloc_ceiling)%Z
   && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n)
+  && negb (vdso_meets (m_vdso m) (bv_unsigned a) (bv_unsigned a + n))
   && hint_placement_ok_b hint (m_vmmaps m) (bv_unsigned a) n.
 
 (** The checker's grant condition for a PROT_NONE NULL-hint grant — exactly what [check_mmap]
@@ -352,15 +354,17 @@ Definition grant_ok_na (hint : word) (m : Model) (a : word) (n : Z) : bool :=
 Definition grant_ok_na_pin (m : Model) (a : word) (n : Z) : bool :=
   (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
   && (bv_unsigned a + n <=? alloc_top (m_vmmaps m))%Z
-  && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n).
+  && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n)
+  && negb (vdso_meets (m_vdso m) (bv_unsigned a) (bv_unsigned a + n)).
 
 Lemma grant_ok_na_of_pin : placement_policy -> forall hint m a n,
   (0 < n)%Z -> (n mod page_size = 0)%Z -> grant_ok_na_pin m a n = true -> grant_ok_na hint m a n = true.
 Proof.
   intros PL hint m a n Hn Hnal H. unfold grant_ok_na_pin in H.
+  apply andb_true_iff in H as [H Hnv].
   apply andb_true_iff in H as [H Hrf]. apply andb_true_iff in H as [H Htop]. apply andb_true_iff in H as [Hal Hpos].
   destruct (PL (m_vmmaps m) a n Hn Hnal (proj1 (Z.eqb_eq _ _) Hal) (proj1 (Z.ltb_lt _ _) Hpos) (proj1 (Z.leb_le _ _) Htop) Hrf) as [Hce Hpl].
-  unfold grant_ok_na. rewrite Hal, Hpos, Hrf, (proj2 (Z.leb_le _ _) Hce). cbn [andb].
+  unfold grant_ok_na. rewrite Hal, Hpos, Hrf, Hnv, (proj2 (Z.leb_le _ _) Hce). cbn [andb].
   unfold hint_placement_ok_b. destruct (w_is0 hint); [exact Hpl | reflexivity].
 Qed.
 
@@ -375,18 +379,20 @@ Lemma grant_ok_na_pin_of_gate : forall hint m a n,
   init_sp_ok (m_vmmaps m) -> grant_ok_na hint m a n = true -> grant_ok_na_pin m a n = true.
 Proof.
   intros hint m a n Hisp H. unfold grant_ok_na in H. unfold grant_ok_na_pin.
-  apply andb_true_iff in H as [H _]. apply andb_true_iff in H as [H Hrf]. apply andb_true_iff in H as [H Hce].
+  apply andb_true_iff in H as [H _]. apply andb_true_iff in H as [H Hnv].
+  apply andb_true_iff in H as [H Hrf]. apply andb_true_iff in H as [H Hce].
   apply andb_true_iff in H as [Hal Hpos].
   assert (Htop : (bv_unsigned a + n <= alloc_top (m_vmmaps m))%Z)
     by (apply (alloc_top_ge_of_ceiling _ _ Hisp); apply Z.leb_le; exact Hce).
-  rewrite Hal, Hpos, Hrf, (proj2 (Z.leb_le _ _) Htop). reflexivity.
+  rewrite Hal, Hpos, Hrf, Hnv, (proj2 (Z.leb_le _ _) Htop). reflexivity.
 Qed.
 
 Lemma grant_na_pin_not_errno : forall m a n,
   (0 <= n)%Z -> grant_ok_na_pin m a n = true -> errno_ret_in mmap_errnos a = false.
 Proof.
   intros m a n Hn Hg. unfold grant_ok_na_pin in Hg.
-  apply andb_true_iff in Hg as [Hg _]. apply andb_true_iff in Hg as [Hg Htop]. apply Z.leb_le in Htop.
+  apply andb_true_iff in Hg as [Hg _]. apply andb_true_iff in Hg as [Hg _].
+  apply andb_true_iff in Hg as [Hg Htop]. apply Z.leb_le in Htop.
   apply errno_ret_in_below; [reflexivity|]. alloc_top_bounds. unfold two_pow_64 in *. lia.
 Qed.
 
@@ -432,7 +438,8 @@ Lemma grant_na_not_errno : forall hint model a n,
   (0 <= n)%Z -> grant_ok_na hint model a n = true -> errno_ret_in mmap_errnos a = false.
 Proof.
   intros hint model a n Hn Hg. unfold grant_ok_na in Hg.
-  apply andb_true_iff in Hg as [Hg _]. apply andb_true_iff in Hg as [Hg _]. apply andb_true_iff in Hg as [Hg Hce]. apply Z.leb_le in Hce.
+  apply andb_true_iff in Hg as [Hg _]. apply andb_true_iff in Hg as [Hg _].
+  apply andb_true_iff in Hg as [Hg _]. apply andb_true_iff in Hg as [Hg Hce]. apply Z.leb_le in Hce.
   apply errno_ret_in_below; [reflexivity|].
   pose proof alloc_ceiling_val. unfold two_pow_64. lia.
 Qed.

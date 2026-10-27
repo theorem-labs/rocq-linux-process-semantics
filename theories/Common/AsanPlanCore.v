@@ -1772,12 +1772,23 @@ Proof. intros. bcfe. unfold kn_grant_filterB, kn_grant_filter. autorewrite with 
 
 
 
+(** The most bytes the vDSO pair can take: 8 vvar pages and 16 text pages,
+    the largest geometry [State.vdso_vvar_bytes] and [State.vdso_text_bytes]
+    encode. *)
+Definition VDSO_MAX : Z := 24 * 4096.
+
 (** gap slack for a NULL-hint request of (at most) [nhi] bytes:
-    [AsanPlacement.free_gap_of_totals]: floor + n + Σ_{L} size + |L|*(n + 4095) <= ceiling
-    ==> a free aligned window at or above the floor exists (the GRANT child is inhabited) *)
+    [AsanPlacement.free_gap_of_slack]: floor + n + Σ_{L} size + |L|*(n + 4095) <= ceiling
+    ==> a free aligned window at or above the floor exists (the GRANT child is inhabited).
+    [L] is the ledger AND the two ranges of the vDSO pair, which a NULL-hint
+    grant must also miss and whose place the plan does not know (it sits
+    below the run's mmap base, anywhere in the band [execve] picks).  So
+    the slack counts two more intervals of at most [VDSO_MAX] bytes in all:
+    A PLAN WITHIN TWO WINDOWS (and [VDSO_MAX]) OF THE BOUND IS REFUSED, where
+    before the pair was modeled it was accepted. *)
 Definition gap_ok (cs : acs) (nhi : Z) : bool :=
   let cnt := Z.of_nat (n_res A + length (a_maps cs))%nat in
-  Z.leb (FLOOR + nhi + a_totsz cs + cnt * (nhi + 4095)) CEIL.
+  Z.leb (FLOOR + nhi + a_totsz cs + VDSO_MAX + (cnt + 2) * (nhi + 4095)) CEIL.
 
 Definition budget_ok (cs : acs) (extra : Z) : bool :=
   Z.leb (a_eager cs + a_abytes cs + extra) LIMIT.

@@ -769,10 +769,11 @@ Section Init.
 
   (** The vDSO pair [init_model] places sits right below the mmap base
       ([State.vdso_at]), at most 8 vvar pages and 16 text pages long
-      ([State.vdso_vvar_bytes], [State.vdso_text_bytes]), and the base is
-      at least [State.mmap_base_min] ([Hmb]), so it misses everything below
-      [KHI] and one page, whatever geometry the input declares. *)
-  Lemma init_vdso_low : vdso_meets (m_vdso model0) 0 (KHI + page_size) = false.
+      ([State.vdso_vvar_bytes], [State.vdso_text_bytes]: [VDSO_MAX] in
+      all), and the base is at least [State.mmap_base_min] ([Hmb]), so it
+      misses everything below [KHI] and one page, whatever geometry the
+      input declares. *)
+  Lemma init_vdso_low : vdso_low (m_vdso model0).
   Proof.
     unfold model0. rewrite m_vdso_init_model.
     set (g := in_vdso inp).
@@ -784,11 +785,13 @@ Section Init.
     { unfold vdso_text_bytes.
       pose proof (Nat.mod_upper_bound (vg_text_code g) 16 ltac:(lia)).
       unfold page_size. lia. }
+    pose proof (u64_range mbase) as Rm.
     destruct Hmb as (Y1 & Y2 & Y3).
-    unfold vdso_meets, vdso_at, z_ranges_meet, vdso_vvar_lo, vdso_vvar_hi,
+    unfold vdso_low, vdso_meets, vdso_at, z_ranges_meet, vdso_vvar_lo, vdso_vvar_hi,
       vdso_text_lo, vdso_text_hi.
     cbn [vds_base vds_vvar vds_text vds_vvar_mapped vds_text_mapped andb].
-    unfold mmap_base_min, KHI, page_size in *.
+    unfold mmap_base_min, KHI, VDSO_MAX, page_size in *.
+    split; [|lia].
     rewrite !(proj2 (Z.ltb_ge _ _)) by lia. reflexivity.
   Qed.
 

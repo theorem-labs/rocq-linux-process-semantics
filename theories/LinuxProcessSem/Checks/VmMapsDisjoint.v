@@ -1074,6 +1074,7 @@ Proof.
     assert (Hphi : p < hi).
     { pose proof (page_round_up_Z_ge (bv_unsigned r) ltac:(lia)). lia. }
     rewrite (proj2 (Z.ltb_lt lo hi) ltac:(lia)) in Hgok.
+    apply andb_true_iff in Hgok as [Hgok _].
     apply andb_true_iff in Hgok as [Hceil Hfree].
     apply Z.leb_le in Hceil.
     alloc_top_bounds. unfold two_pow_64 in *.
@@ -1200,7 +1201,11 @@ Proof.
     dif H; [|discriminate]. injection H as <- <-.
     unfold vm_wf. rewrite vmm_mmap_destroyed. cbn [vm_maps].
     now apply maps_wf_filter.
-  - dif H; [apply check_ret_only_model in H; subst m'; exact Hwf|discriminate].
+  - dif H; [apply check_ret_only_model in H; subst m'; exact Hwf|].
+    dif H.
+    + dif H; [|discriminate]. apply check_ret_only_model in H; subst m'.
+      unfold vm_wf. rewrite m_vmmaps_with_vdso. exact Hwf.
+    + dif H; [apply check_ret_only_model in H; subst m'; exact Hwf|discriminate].
 Qed.
 
 Lemma check_mprotect_preserves : forall addr len prot eff m m' evs,
@@ -1220,9 +1225,11 @@ Proof.
     + destruct zs; [|discriminate]. injection H as <- <-. exact Hwf.
     + dif H; [|discriminate]. injection H as <- <-.
       unfold vm_wf. rewrite vmm_mprotect_next. cbn [vm_maps]. exact Hwf.
-  - dif H; [|discriminate].
-    destruct ws, zs, us, cs, ci; try discriminate.
-    dif H; [|discriminate]. injection H as <- <-. exact Hwf.
+  - dif H.
+    + destruct ws, zs, us, cs, ci; try discriminate.
+      dif H; [|discriminate]. injection H as <- <-. exact Hwf.
+    + dif H; [|discriminate].
+      apply check_mprotect_vdso_model in H. subst m'. exact Hwf.
 Qed.
 
 (** [madvise] never touches [vm_maps]: its one state change is to the
@@ -1241,6 +1248,100 @@ Proof.
   dif H; [|discriminate].
   destruct ws, us, cs, ci; try discriminate.
   dif H; [|discriminate]. injection H as <- <-. apply vmm_madvise_next.
+Qed.
+
+(** The MAP_FIXED arms over the vDSO pair write the same ledgers the
+    free-range and spanning arms write, under [with_vdso]. *)
+Lemma check_mmap_fixed_noaccess_vdso_preserves :
+  forall flags addr nZ eff m m' evs,
+  0 < nZ -> bv_unsigned addr + nZ <= alloc_top (m_vmmaps m) ->
+  check_mmap_fixed_noaccess_vdso flags addr nZ eff m = CheckOk m' evs ->
+  vm_wf (m_vmmaps m) -> vm_wf (m_vmmaps m').
+Proof.
+  intros flags addr nZ [ret ws zs us cs ci] m m' evs HnZ Eceil H Hwf.
+  pose proof (alloc_top_lt (m_vmmaps m)) as Hac. unfold two_pow_64 in Hac.
+  pose proof (word_range addr) as Haddrr.
+  unfold check_mmap_fixed_noaccess_vdso in H. cbv zeta in H.
+  difn H Esp.
+  { destruct ws, zs, us, cs, ci; try discriminate.
+    dif H; [|discriminate]. injection H as <- <-. exact Hwf. }
+  difn H Efree.
+  - destruct ws, zs, cs, ci; try discriminate.
+    destruct (errno_ret_in mmap_errnos ret).
+    + destruct us.
+      * injection H as <- <-. exact Hwf.
+      * difn H Eus; [|discriminate]. injection H as <- <-.
+        unfold vm_wf. rewrite m_vmmaps_with_vdso, vmm_mmap_destroyed. cbn [vm_maps].
+        apply maps_wf_subtract; try (rewrite u64 by lia); try lia. exact Hwf.
+    + difn H Eok; [|discriminate]. injection H as <- <-.
+      unfold vm_wf. rewrite m_vmmaps_with_vdso, vmm_mmap_backing, vmm_vmmaps.
+      cbn [vm_maps].
+      apply maps_wf_cons_free.
+      * exact Hwf.
+      * rewrite u64 by lia. lia.
+      * exact (region_free_app_r _ _ _ _ Efree).
+  - difn H Espan; [|discriminate].
+    destruct ws, zs, cs, ci; try discriminate.
+    destruct (errno_ret_in mmap_errnos ret).
+    + destruct us.
+      * injection H as <- <-. exact Hwf.
+      * difn H Eus; [|discriminate]. injection H as <- <-.
+        unfold vm_wf. rewrite m_vmmaps_with_vdso, vmm_mmap_destroyed. cbn [vm_maps].
+        apply maps_wf_subtract; try (rewrite u64 by lia); try lia. exact Hwf.
+    + difn H Eok; [|discriminate]. injection H as <- <-.
+      unfold vm_wf. rewrite m_vmmaps_with_vdso, vmm_mmap_replacement, vmm_vmmaps.
+      cbn [vm_maps mmap_fixed_noaccess_span_next].
+      apply maps_wf_cons_free.
+      * apply maps_wf_subtract; try (rewrite u64 by lia); try lia. exact Hwf.
+      * rewrite u64 by lia. lia.
+      * apply maps_subtract_region_free. rewrite u64 by lia. lia.
+Qed.
+
+Lemma check_mmap_fixed_rw_vdso_preserves :
+  forall flags addr nZ eff m m' evs,
+  0 < nZ -> bv_unsigned addr + nZ <= alloc_top (m_vmmaps m) ->
+  check_mmap_fixed_rw_vdso flags addr nZ eff m = CheckOk m' evs ->
+  vm_wf (m_vmmaps m) -> vm_wf (m_vmmaps m').
+Proof.
+  intros flags addr nZ [ret ws zs us cs ci] m m' evs HnZ Eceil H Hwf.
+  pose proof (alloc_top_lt (m_vmmaps m)) as Hac. unfold two_pow_64 in Hac.
+  pose proof (word_range addr) as Haddrr.
+  unfold check_mmap_fixed_rw_vdso in H. cbv zeta in H.
+  difn H Esp.
+  { destruct ws, zs, us, cs, ci; try discriminate.
+    dif H; [|discriminate]. injection H as <- <-. exact Hwf. }
+  difn H Efree.
+  - destruct ws, cs, ci; try discriminate.
+    destruct (errno_ret_in mmap_errnos ret).
+    + destruct zs; [|discriminate]. destruct us.
+      * injection H as <- <-. exact Hwf.
+      * difn H Eus; [|discriminate]. injection H as <- <-.
+        unfold vm_wf. rewrite m_vmmaps_with_vdso, vmm_mmap_destroyed. cbn [vm_maps].
+        apply maps_wf_subtract; try (rewrite u64 by lia); try lia. exact Hwf.
+    + destruct us; [|discriminate].
+      difn H Eok; [|discriminate]. injection H as <- <-.
+      unfold vm_wf. rewrite m_vmmaps_with_vdso, vmm_mmap_backing, vmm_vmmaps.
+      cbn [vm_maps].
+      apply maps_wf_cons_free.
+      * exact Hwf.
+      * rewrite u64 by lia. lia.
+      * exact (region_free_app_r _ _ _ _ Efree).
+  - difn H Espan; [|discriminate].
+    destruct ws, cs, ci; try discriminate.
+    destruct (errno_ret_in mmap_errnos ret).
+    + destruct zs; [|discriminate]. destruct us.
+      * injection H as <- <-. exact Hwf.
+      * difn H Eus; [|discriminate]. injection H as <- <-.
+        unfold vm_wf. rewrite m_vmmaps_with_vdso, vmm_mmap_destroyed. cbn [vm_maps].
+        apply maps_wf_subtract; try (rewrite u64 by lia); try lia. exact Hwf.
+    + destruct us; [|discriminate].
+      difn H Eok; [|discriminate]. injection H as <- <-.
+      unfold vm_wf. rewrite m_vmmaps_with_vdso, vmm_mmap_replacement, vmm_vmmaps.
+      cbn [vm_maps mmap_fixed_rw_span_next].
+      apply maps_wf_cons_free.
+      * apply maps_wf_subtract; try (rewrite u64 by lia); try lia. exact Hwf.
+      * rewrite u64 by lia. lia.
+      * apply maps_subtract_region_free. rewrite u64 by lia. lia.
 Qed.
 
 Lemma check_mmap_preserves : forall addr len prot flags fd off eff m m' evs,
@@ -1267,14 +1368,15 @@ Proof.
   { destruct ws, us, cs, ci; try discriminate.
     destruct (errno_ret_in mmap_errnos ret).
     { destruct zs; [|discriminate]. injection H as <- <-. exact Hwf. }
-    (* SIX conjuncts, left associated: alignment, positivity, the
-       ceiling, [region_free], [mmap_noreserve_backed_ok] and the
-       [listNN_eqb] on the grant list.  Only [region_free] and the
-       ceiling are used below; the rest are peeled to reach them. *)
+    (* SEVEN conjuncts, left associated: alignment, positivity, the
+       ceiling, [region_free], the vDSO pair, [mmap_noreserve_backed_ok]
+       and the [listNN_eqb] on the grant list.  Only [region_free] and
+       the ceiling are used below; the rest are peeled to reach them. *)
     difn H E; [|discriminate]. injection H as <- <-.
     unfold vm_wf. rewrite vmm_mmap_backing, vmm_vmmaps. cbn [vm_maps].
     apply andb_true_iff in E as [E Hzs].
     apply andb_true_iff in E as [E Hbud].
+    apply andb_true_iff in E as [E Hvd].
     apply andb_true_iff in E as [E Hfree].
     apply andb_true_iff in E as [E Hceil].
     apply andb_true_iff in E as [Halign Hpos].
@@ -1287,12 +1389,13 @@ Proof.
   { destruct ws, zs, cs, ci; try discriminate.
     destruct (errno_ret_in mmap_errnos ret).
     { destruct us; [|discriminate]. injection H as <- <-. exact Hwf. }
-    (* FIVE here: the noaccess grant carries no
+    (* SIX here: the noaccess grant carries no
        [mmap_noreserve_backed_ok] conjunct, because it reserves no
        backing. *)
     difn H E; [|discriminate]. injection H as <- <-.
     unfold vm_wf. rewrite vmm_mmap_backing, vmm_vmmaps. cbn [vm_maps].
     apply andb_true_iff in E as [E Hus].
+    apply andb_true_iff in E as [E Hvd].
     apply andb_true_iff in E as [E Hfree].
     apply andb_true_iff in E as [E Hceil].
     apply andb_true_iff in E as [Halign Hpos].
@@ -1323,7 +1426,10 @@ Proof.
       + difn H Eok; [|discriminate]. injection H as <- <-.
         unfold vm_wf. rewrite vmm_mmap_replacement, vmm_vmmaps. cbn [vm_maps].
         exact Hwf.
-    - difn H Efree.
+    - difn H Evd.
+      { eapply check_mmap_fixed_noaccess_vdso_preserves;
+          [exact HnZ | exact Eceil | exact H | exact Hwf]. }
+      difn H Efree.
       + destruct ws, zs, cs, ci; try discriminate.
         destruct (errno_ret_in mmap_errnos ret).
         * destruct us; [|discriminate]. injection H as <- <-. exact Hwf.
@@ -1373,7 +1479,8 @@ Proof.
           apply maps_wf_cons_free.
           * exact Hwf.
           * rewrite u64 by lia. lia.
-          * exact (region_free_app_r _ _ _ _ Efree).
+          * apply andb_true_iff in Efree as [Efree _].
+            exact (region_free_app_r _ _ _ _ Efree).
       - destruct ws, zs, us, cs, ci; try discriminate.
         difn H Eerr; [|discriminate]. injection H as <- <-. exact Hwf. }
     destruct (mmap_noreplace_rw_b prot flags off) eqn:Enrr; [|discriminate].
@@ -1391,7 +1498,8 @@ Proof.
         apply maps_wf_cons_free.
         * exact Hwf.
         * rewrite u64 by lia. lia.
-        * exact (region_free_app_r _ _ _ _ Efree).
+        * apply andb_true_iff in Efree as [Efree _].
+          exact (region_free_app_r _ _ _ _ Efree).
     - destruct ws, zs, us, cs, ci; try discriminate.
       difn H Eerr; [|discriminate]. injection H as <- <-. exact Hwf. }
   difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hwf|].
@@ -1411,7 +1519,10 @@ Proof.
       difn H Eok; [|discriminate]. injection H as <- <-.
       unfold vm_wf. rewrite vmm_mmap_replacement, vmm_vmmaps.
       rewrite vmm_fixed_rw_next. exact Hwf.
-  - difn H Efree.
+  - difn H Evd.
+    { eapply check_mmap_fixed_rw_vdso_preserves;
+        [exact HnZ | exact Eceil | exact H | exact Hwf]. }
+    difn H Efree.
     + destruct ws, us, cs, ci; try discriminate.
       destruct (errno_ret_in mmap_errnos ret).
       * destruct zs; [|discriminate]. injection H as <- <-. exact Hwf.
@@ -1456,7 +1567,9 @@ Proof.
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   difn H Enew; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   difn H Eold; [discriminate|].
-  difn H Esrc; [discriminate|].
+  difn H Esrc.
+  { difn H Evb; [|discriminate].
+    apply check_mremap_vdso_source_model in H. subst m'. exact Hwf. }
   difn H Eeq; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   destruct ws; [|discriminate]. destruct ci; [|discriminate].
   (* the new length is a nonzero number of pages *)
@@ -1496,6 +1609,7 @@ Proof.
       unfold mremap_maps_next. cbn [vm_maps].
       unfold mremap_inplace_grow_b in Egrow. cbv zeta in Egrow.
       apply andb_true_iff in Egrow as [Egrow _].
+      apply andb_true_iff in Egrow as [Egrow _].
       apply andb_true_iff in Egrow as [Hgceil Hgfree].
       apply Z.leb_le in Hgceil.
       apply maps_wf_cons_free.
@@ -1505,6 +1619,7 @@ Proof.
   - difn H Emove; [|discriminate]. injection H as <- <-.
     unfold vm_wf. rewrite vmm_mremap_next.
     unfold mremap_maps_next. cbn [vm_maps].
+    apply andb_true_iff in Emove as [Emove _].
     apply andb_true_iff in Emove as [Emove _].
     apply andb_true_iff in Emove as [Emove _].
     apply andb_true_iff in Emove as [Emove _].

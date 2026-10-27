@@ -102,6 +102,21 @@ Proof.
   reflexivity.
 Qed.
 
+(** The arm changes nothing: every answer it accepts is an errno. *)
+Lemma check_mprotect_vdso_model : forall addr nZ eff m m' evs,
+  check_mprotect_vdso addr nZ eff m = CheckOk m' evs -> m' = m.
+Proof.
+  intros addr nZ eff m m' evs H. unfold check_mprotect_vdso in H.
+  destruct (vdso_vvar_byte (m_vdso m) (bv_unsigned addr)).
+  { apply check_ret_only_ok_iff in H. destruct H as (_ & -> & _). reflexivity. }
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ));
+    [|discriminate].
+  destruct eff as [r [|? ?] [|? ?] [|? ?] [|? ?] [|? ?]]; try discriminate.
+  destruct (errno_ret_in mprotect_errnos r || bv_eqb r (errno_ret EINVAL));
+    [|discriminate].
+  injection H as <- _. reflexivity.
+Qed.
+
 Definition check_mprotect (addr len prot : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if mprotect_grows_conflict_b prot
