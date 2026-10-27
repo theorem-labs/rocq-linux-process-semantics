@@ -1686,7 +1686,9 @@ End Exit0BudgetsEitherBaselineChecked.
     protected-ledger and fit halves are proved invariants
     ([Checks/NoaccessOwned.v], [Checks/MapsFit.v]); the lazy-ledger half
     (no reservation and no materialized page at a fresh destination) is
-    not, so mremap is left out here. *)
+    not, so mremap is left out here.  On a state whose lazy ledgers are
+    empty the whole arm is covered ([Checks/BudgetPremiseMremap.v],
+    [mremap_budget_refused_is_refusal_sys_inv]). *)
 Lemma mark_is_never_spurious : forall cfg i m eff,
   In (bv_unsigned (in_sysno i)) [214; 222; 226]%Z ->
   alloc_budget_refused_b i m = true ->

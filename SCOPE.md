@@ -43,6 +43,30 @@ them. A proof says nothing about a program in such a case.
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. |
 | Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
 
+The entry premises also limit the launches that a statement covers.
+`Run.valid_sp` requires an entry stack pointer in the top 2 GiB of the
+Sv48 user address space (`State.sp_window_lo` to `State.sp_window_hi`).
+On Linux with Sv48 or Sv57, the pointer stays in this window for each
+stack limit, with address randomisation on or off (`randomize_stack_top`
+in `mm/util.c`, `setup_arg_pages` in `fs/exec.c`).
+QEMU user mode puts the guest stack where the host kernel maps it.
+QEMU 10.0.11 on an x86_64 host gives these entry stack pointers:
+
+- 8 MiB stack limit, address randomisation off: in the window.
+- 8 MiB stack limit, address randomisation on: below the window.
+- 1 GiB stack limit: below the window.
+- Unlimited stack limit: below the window.
+
+The statements say nothing about a launch that puts the pointer below
+the window.
+
+The model also builds its own auxiliary vector, with ten entries
+(`StackLayout.auxv_entries`). Linux and QEMU user mode publish more
+entries. Thus a program can see a different vector in the model than
+on a real launch. This occurs when the program reads an entry that the
+model omits, or reads the whole vector in sequence. "The auxiliary
+vector" in "Known gaps in precision" names the entries.
+
 ## Assumptions that the model does not check
 
 If one of these assumptions is false, a proof can be correct but it does
@@ -166,8 +190,10 @@ true of the model and false of the real systems.
   auxv entries of the bullet above, the exec filename, and the random
   pad of less than 4 KiB that `create_elf_tables` (`fs/binfmt_elf.c`)
   takes through `arch_align_stack` (`arch/riscv/kernel/process.c`).
-  The separate call in `setup_arg_pages` is page-aligned back over and
-  moves nothing. The model carries no `vm_end`.
+  The separate call in `setup_arg_pages` adds nothing here: `PAGE_ALIGN`
+  rounds its result back up, so that call moves the top by a whole page
+  or not at all, and the same `stack_shift` moves the entry image with
+  it. The model carries no `vm_end`.
   Thus the lowest `vm_end - Run.entry_page_top` bytes of the model's
   window, at most a few pages, are never stack on Linux.
   An access in that band succeeds in the model and faults on Linux, so
@@ -182,10 +208,16 @@ true of the model and false of the real systems.
   stack addresses and not others, and a proof cannot show it equivalent
   even to itself. Linux's floor moves over a range of about the same
   size, through the pad above.
-  QEMU user mode has a band of the same kind: its stack is one fixed
-  8 MiB mapping with a guard page below it, and the entry image is
-  inside it (`setup_arg_pages` and `load_elf_binary` in
-  `linux-user/elfload.c`, QEMU 8.2.2).
+  QEMU user mode has a band of the same kind. `setup_arg_pages` in
+  `linux-user/elfload.c` makes one mapping of fixed size for the guest
+  stack (QEMU 10.0.11). The stack size is `guest_stack_size`, and
+  `TARGET_DEFAULT_STACK_SIZE` in `linux-user/main.c` sets it to 8 MiB
+  by default. A finite soft `RLIMIT_STACK` above 8 MiB makes the
+  mapping larger, and the "Stack limit" row above puts that case
+  outside the model. `setup_arg_pages` also puts a `PROT_NONE` guard
+  page below the stack. `load_elf_binary` writes the entry image
+  inside the mapping, with the exec filename, the argv and envp
+  strings, `AT_RANDOM`, the auxiliary vector, `argc` and the pointers.
 - **vDSO and vvar.** The kernel installs this pair at `execve`, and the
   model's ledger does not carry it (`Sys/Mm/Mmap.v`, the `munmap`
   arms). An `munmap` of a free range that lands on the pair answers 0,
