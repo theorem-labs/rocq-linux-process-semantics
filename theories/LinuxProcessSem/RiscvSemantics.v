@@ -574,9 +574,12 @@ Definition ms_writable_byte (ms : machine_state) (addr : word) : option byte :=
     the page offset of the drawn [init_sp].  A program whose stack,
     driven by its input, ends in that 4080-byte range faults under some admissible
     [init_sp] and not under others, so [strong_universal] fails for it
-    even against itself.  Linux moves its floor in the same way, by the
-    random pad [create_elf_tables] (fs/binfmt_elf.c) takes through
-    [arch_align_stack], and the page rounding of [vm_end].
+    even against itself.  Linux's floor moves over a range of about the
+    same size, by the random pad [create_elf_tables] (fs/binfmt_elf.c)
+    takes through [arch_align_stack]: its [vm_end] is page-aligned and
+    [init_sp] sits the entry image's own size below it, so the pad is
+    the only term of [vm_end - init_sp] that a second launch with the
+    same argv, envp and exec filename can change.
 
     So the ledger this needs already exists, and is exactly [wview]:
     the initial stack block and its zero window, every brk/mmap grant

@@ -180,7 +180,8 @@ true of the model and false of the real systems.
   so it moves with the page offset of `sp` over a range of 4080 bytes. A
   program whose stack reaches a depth in that range faults under some
   stack addresses and not others, and a proof cannot show it equivalent
-  even to itself.
+  even to itself. Linux's floor moves over a range of about the same
+  size, through the pad above.
   QEMU user mode has a band of the same kind: its stack is one fixed
   8 MiB mapping with a guard page below it, and the entry image is
   inside it (`setup_arg_pages` and `load_elf_binary` in
