@@ -181,8 +181,9 @@ Record amap : Type := AM {
     variants); it is not a mapping: every lookup below skips it. *)
 (** an element of kind [KHOLE] is a TOKEN too: it stands for NO entry and records that the
     range [am_base, +am_len) is FREE (no reserved or mapped interval meets it) — the hole a refused-DESTROYED
-    [PMmapInH] punched into a tracked entry; a later MAP_FIXED over exactly that range is a fresh grant
-    ([mmap_fixed_free], hole path).  NULL-hint grants may land inside a hole, so [mmap_null] refuses while a hole exists.
+    [PMmapInH] punched into a tracked entry.  No arm maps over a hole any more: the fixed-free arm needs a
+    ledger with no tokens, and its former hole path is gone with the vDSO pair (see [mmap_fixed_free]).
+    NULL-hint grants may land inside a hole, so [mmap_null] refuses while a hole exists.
     [is_fog] is token-ness (fog OR hole): every lookup of a real mapping skips both; [is_hole] tells them apart. *)
 Definition is_tok_kind (k : mkind) : bool := match k with KFOG | KHOLE => true | _ => false end.
 Definition is_hole (m : amap) : bool := mkind_eqb (am_kind m) KHOLE.
@@ -1858,22 +1859,21 @@ Definition fixed_args (cs : acs) (top : Z) : option (expr * Z * expr * Z * Z) :=
 
 (** FIXED over a FREE range (arms C [rw lazy: a SHADOW map], C0 [rw eager],
     D [none lazy], D0 [none eager]).  A new rw-lazy entry gets the shadow
-    facts of every visible range whose shadow lies inside it. *)
-(** the same expression as a value ([expr_eqb] or equal by exact linear arithmetic both ways) *)
-Definition same_val (k : list kentry) (a b : expr) : bool :=
-  if expr_eqb a b then true
-  else (if lin_ge0 k [(a, 0%Z)] [(b, 0%Z)] then lin_ge0 k [(b, 0%Z)] [(a, 0%Z)] else false).
-(** the hole token of EXACTLY the range [a, a+ne) *)
-Definition find_hole (k : list kentry) (ms : list amap) (a ne : expr) : option amap :=
-  List.find (fun m => is_hole m && same_val k a (am_base m) && same_val k ne (am_len m)) ms.
-(** the consumed hole becomes a plain fog token of the same extent (a token may stand for an untracked entry in
-    [APS.maps_match]; turning the kind keeps that reading, removing the element would not) *)
-Definition unhole (ms : list amap) (h : amap) : list amap :=
-  List.map (fun m => if (is_hole m && amap_eqb m h)%bool then AM (am_base m) (am_len m) KFOG else m) ms.
+    facts of every visible range whose shadow lies inside it.
 
-(** the granted child of a FIXED mmap over a free range, common to both paths of [mmap_fixed_free]:
-    [ms0] is the ledger the new entry is added to ([a_maps cs] itself, or it with the consumed hole
-    turned into a fog token) *)
+    THE ARM COVERS ONLY RANGES ENDING AT OR BELOW [KHI] ([fixed_args cs KHI]).
+    The reason is the vDSO pair: Linux refuses a MAP_FIXED that splits a
+    range of the pair (-EINVAL), and the plan does not know where the pair
+    is (below the run's mmap base, anywhere in the band [execve] picks), so
+    above [KHI] it cannot show that the request misses the pair, and the
+    node's two children (refused | granted) would not cover Linux.  Below
+    [KHI] the pair is never mapped ([APS.vdso_low]).  So the former HOLE
+    path is gone: MAP_FIXED over the range a refused-destroyed [PMmapInH]
+    left in the high region (at or above [a_ylo]) is refused, and so is
+    every other fixed-free mapping in the high region. *)
+
+(** the granted child of a FIXED mmap over a free range: [ms0] is the
+    ledger the new entry is added to ([a_maps cs] in [mmap_fixed_free]) *)
 Definition mmap_fixed_grant (cs : acs) (ms0 : list amap) (b : expr) (off : Z) (ne : expr) (nhi : Z)
            (kind : mkind) (eager visible : bool) : option acs :=
   let k := kn cs in
@@ -1896,23 +1896,7 @@ Definition mmap_fixed_free (cs : acs) (kind : mkind) (eager visible : bool) : op
           && expr_vars_lt (nxt cs) ne && expr_vars_lt (nxt cs) a)%bool
       then mmap_fixed_grant cs (a_maps cs) b off ne nhi kind eager visible
       else None
-  | None =>
-      (* the HOLE path — MAP_FIXED over exactly the free range a refused-DESTROYED [PMmapInH] left;
-         any OTHER hole must be provably apart from it (it stays a hole) *)
-      match fixed_args cs CEIL with
-      | Some (b, off, ne, nlo, nhi) =>
-          match find_hole k (a_maps cs) a ne with
-          | Some h =>
-              let ms0 := unhole (a_maps cs) h in
-              if (forallb (fun m => negb (is_hole m) || ranges_apart_x k b off ne (am_base m) 0 (am_len m)) ms0
-                  && (negb eager || budget_ok cs nhi)
-                  && expr_vars_lt (nxt cs) ne && expr_vars_lt (nxt cs) a)%bool
-              then mmap_fixed_grant cs ms0 b off ne nhi kind eager visible
-              else None
-          | None => None
-          end
-      | None => None
-      end
+  | None => None
   end.
 
 (** facts about [b+off, +n) after the bytes there were RE-ZEROED in place
