@@ -6540,9 +6540,16 @@ Fixpoint vdso_gap_below (fuel : nat) (ranges : list (word * word))
         end
   end.
 
-Definition vdso_at (reserved : list (word * word)) (mbase : word)
+(** The search starts at the mmap base, or at [alloc_top] when that is
+    lower.  [Run.valid_mmap_base] and [Run.valid_sp] are quantified
+    independently, so a base inside the entry stack block is admissible
+    while Linux never makes one (its mmap base is below the stack guard
+    gap); without the [Z.min] the pair would land on bytes [in_mem] does
+    hold. *)
+Definition vdso_at (reserved : list (word * word)) (mbase sp : word)
     (g : VdsoGeom) : VdsoState :=
-  match vdso_gap_below (S (length reserved)) reserved (bv_unsigned mbase)
+  match vdso_gap_below (S (length reserved)) reserved
+          (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))
           (vdso_vvar_bytes g + vdso_text_bytes g) with
   | Some base => mkVdsoState base (vdso_vvar_bytes g) (vdso_text_bytes g)
                              true true
@@ -6612,7 +6619,7 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
        None
        None
        None
-       (vdso_at reserved mbase (in_vdso inp)))))))).
+       (vdso_at reserved mbase sp (in_vdso inp)))))))).
 
 (** The base case of the nonemptiness invariant: a run starts with NO
     protected range at all.  Every reachable [vm_noaccess] is therefore
@@ -9685,5 +9692,5 @@ Proof. reflexivity. Qed.
 
 Lemma m_vdso_init_model : forall reserved brk0 mbase sp lim inp,
   m_vdso (init_model reserved brk0 mbase sp lim inp) =
-  vdso_at reserved mbase (in_vdso inp).
+  vdso_at reserved mbase sp (in_vdso inp).
 Proof. reflexivity. Qed.
