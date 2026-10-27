@@ -115,7 +115,6 @@ Let kn_unfill_clip_ok := AsanNodesMmLib.kn_unfill_clip_ok SEGS A RES_len HULL_ok
 Let maps_match_disjoint := AsanNodesMmLib.maps_match_disjoint SEGS A RES_len.
 Let mmap_fixed_grant_cs1 := AsanNodesMmLib.mmap_fixed_grant_cs1 SEGS A LIMIT SINV argH FS0 RES_len HULL_ok SHADOW_ok argH_high SINV_frame.
 Let mmap_fixed_old_facts := AsanNodesMmLib.mmap_fixed_old_facts SEGS A nx0 LIMIT SINV argH FS0 RES_len RES_hull HULL_ok.
-Let mmap_fixed_hole_facts := AsanNodesMmLib.mmap_fixed_hole_facts SEGS A LIMIT SINV argH FS0 RES_len HULL_ok SHADOW_ok.
 Let fixed_pre := AsanNodesMmLib.fixed_pre SEGS A LIMIT SINV argH FS0 RES_len HULL_ok.
 Let mmap_len_sound := AsanNodesMmLib.mmap_len_sound SEGS A LIMIT SINV argH FS0 RES_len HULL_ok.
 Let mmap_null_cs1 := AsanNodesMmLib.mmap_null_cs1 SEGS A nx0 LIMIT SINV argH FS0 RES_len HULL_ok argH_high argH_agree SINV_frame SINV_agree.
@@ -298,7 +297,8 @@ Proof.
       * split; [intros x Hx; apply unfill_out; exact Hx | intros x Hx; apply unfill_in; exact Hx].
 Qed.
 
-(** the granted child common to both paths of [mmap_fixed_free] ([APC.mmap_fixed_grant] over the ledger [ms0]) *)
+(** the granted child of [mmap_fixed_free] ([APC.mmap_fixed_grant] over the ledger [ms0]); the
+    range ends at or below [top <= KHI], so it misses the vDSO pair ([co_vdso]) *)
 Lemma mmap_fixed_grant_sound2 : forall cs ms0 top b off ne nlo nhi kd (eager visible : bool) cs' E R FULL model TA TB,
   CSOK E cs R FULL model -> is_ecall_at SEGS cs = true ->
   reg_lit cs 17 = Some 222 ->
@@ -307,7 +307,7 @@ Lemma mmap_fixed_grant_sound2 : forall cs ms0 top b off ne nlo nhi kd (eager vis
   reg_lit cs 14 = Some (two64 - 1) -> reg_lit cs 15 = Some 0 ->
   (kind_none kd || kind_lazy kd = negb eager)%bool -> is_tok_kind kd = false ->
   visible = eager ->
-  fixed_args A cs top = Some (b, off, ne, nlo, nhi) -> top <= CEIL ->
+  fixed_args A cs top = Some (b, off, ne, nlo, nhi) -> top <= KHI ->
   (negb eager || budget_ok LIMIT cs nhi)%bool = true ->
   CSOK E (with_maps0 cs ms0) R FULL model ->
   region_free (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) (edenot E (reg cs 10))
@@ -324,7 +324,8 @@ Lemma mmap_fixed_grant_sound2 : forall cs ms0 top b off ne nlo nhi kd (eager vis
       srealizes SEGS (cfg R' (pc cs') FULL' model') TB) ->
   srealizes SEGS (cfg R (pc cs) FULL model) (t_alt2 TA TB).
 Proof.
-  intros cs ms0 top b off ne nlo nhi kd eager visible cs' E R FULL model TA TB HC Hec H17 H12 H13 H14 H15 Hkind Hkfog Hvisible HFA Htop Hbud HC0 Hrf Hholes Hside Hn HKA HK.
+  intros cs ms0 top b off ne nlo nhi kd eager visible cs' E R FULL model TA TB HC Hec H17 H12 H13 H14 H15 Hkind Hkfog Hvisible HFA HtopK Hbud HC0 Hrf Hholes Hside Hn HKA HK.
+  assert (Htop : top <= CEIL) by (unfold KHI, CEIL in *; lia).
   destruct (is_ecall_at_sound SEGS cs Hec) as (w & Hf & He & Hp0 & Hp4).
   assert (Hbudget : eager = true -> a_eager cs + a_abytes cs + nhi <= LIMIT).
   { intros ->. cbn in Hbud. unfold budget_ok in Hbud. apply Z.leb_le in Hbud. exact Hbud. }
@@ -348,6 +349,10 @@ Proof.
   destruct (fixed_pre cs top b off ne nlo nhi E R FULL model HC HFA Htop)
     as (HneE & Un & Hest & Hal & Hpos & Himg & HtopA & R10 & HnZal & HnZ).
   fold len nZ n addr in HneE, Un, Hest, Hal, Hpos, Himg, HtopA, R10, HnZal, HnZ.
+  assert (Hvd : vdso_meets (m_vdso model) (bv_unsigned addr) (bv_unsigned addr + nZ) = false).
+  { pose proof (u64_range addr).
+    eapply (Mmap.vdso_meets_narrow _ _ _ 0 (KHI + page_size));
+      [lia | unfold page_size; lia | exact (proj1 (co_vdso _ _ _ _ _ _ _ _ _ _ _ HC))]. }
   assert (HaK : bv_unsigned addr + nZ <= CEIL) by lia.   (* the name the arm scripts below use for the 2^64 headroom *)
   rewrite <- bv5_10 in R10.
   assert (Hce : bv_unsigned addr + page_round_up_Z len <= alloc_ceiling) by (rewrite CEIL_eq; fold nZ; lia).
@@ -405,7 +410,7 @@ Proof.
   - (* C0: rw eager, flags 0x32 *)
     destruct eager; [|discriminate].
     eapply (srz_mmap_fixed_rw_free2 SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w addr len (Z_to_bv 64 50) TA TB
-              Hf He Hhalt R17 R10 Hal Hpos R11 ltac:(lia) Hce Hisp R12 R13 mmap_flags_core_32 R14 R15 Hrf).
+              Hf He Hhalt R17 R10 Hal Hpos R11 ltac:(lia) Hce Hisp R12 R13 mmap_flags_core_32 R14 R15 Hrf Hvd).
     + unfold mmap_noreserve_backed_ok. rewrite mmap_noreserve_b_32. apply Z.leb_le. cbn in Hbud.
       eapply Z.le_trans; [|eapply (budget_slack E cs R FULL model nhi HC Hbud)]. fold nZ. lia.
     + exact CONTA.
@@ -415,7 +420,7 @@ Proof.
   - (* C: rw lazy, flags 0x4032 *)
     destruct eager; [discriminate|].
     eapply (srz_mmap_fixed_rw_free2 SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w addr len (Z_to_bv 64 16434) TA TB
-              Hf He Hhalt R17 R10 Hal Hpos R11 ltac:(lia) Hce Hisp R12 R13 mmap_flags_core_4032 R14 R15 Hrf).
+              Hf He Hhalt R17 R10 Hal Hpos R11 ltac:(lia) Hce Hisp R12 R13 mmap_flags_core_4032 R14 R15 Hrf Hvd).
     + unfold mmap_noreserve_backed_ok. rewrite mmap_noreserve_b_4032. reflexivity.
     + exact CONTA.
     + rewrite with_mmap_backing_lazy by apply mmap_noreserve_b_4032.
@@ -427,7 +432,7 @@ Proof.
   - (* D0: none eager, flags 0x32 *)
     destruct eager; [discriminate|].
     eapply (srz_mmap_fixed_none_free2 SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w addr len (Z_to_bv 64 50) TA TB
-              Hf He Hhalt R17 R10 Hal Hpos R11 ltac:(lia) Hce Hisp R12 R13 mmap_flags_core_32 R14 R15 Hrf).
+              Hf He Hhalt R17 R10 Hal Hpos R11 ltac:(lia) Hce Hisp R12 R13 mmap_flags_core_32 R14 R15 Hrf Hvd).
     + exact CONTA.
     + rewrite with_mmap_backing_plain by apply mmap_noreserve_b_32.
       apply CONT; [constructor; reflexivity | | reflexivity].
@@ -435,7 +440,7 @@ Proof.
   - (* D: none lazy, flags 0x4032 *)
     destruct eager; [discriminate|].
     eapply (srz_mmap_fixed_none_free2 SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w addr len (Z_to_bv 64 16434) TA TB
-              Hf He Hhalt R17 R10 Hal Hpos R11 ltac:(lia) Hce Hisp R12 R13 mmap_flags_core_4032 R14 R15 Hrf).
+              Hf He Hhalt R17 R10 Hal Hpos R11 ltac:(lia) Hce Hisp R12 R13 mmap_flags_core_4032 R14 R15 Hrf Hvd).
     + exact CONTA.
     + rewrite with_mmap_backing_lazy by apply mmap_noreserve_b_4032.
       fold nZ. fold n. apply CONT; [| | reflexivity].
@@ -462,25 +467,15 @@ Lemma mmap_fixed_free_sound2 : forall cs kd (eager visible : bool) cs' E R FULL 
 Proof.
   intros cs kd eager visible cs' E R FULL model TA TB HC Hec H17 H12 H13 H14 H15 Hkind Hkfog Hvisible Hn HKA HK.
   unfold mmap_fixed_free in Hn.
-  destruct (fixed_args A cs KHI) as [[[[[b off] ne] nlo] nhi]|] eqn:HFA.
-  - (* the classic path: no tokens, every tracked entry provably apart *)
-    match type of Hn with (if ?c then _ else _) = _ => destruct c eqn:Hcond; [|discriminate] end.
-    apply andb_prop in Hcond as [Hcond Hav]. apply andb_prop in Hcond as [Hcond Hnev].
-    apply andb_prop in Hcond as [Hcond Hbud]. apply andb_prop in Hcond as [Hnf Hall].
-    destruct (mmap_fixed_old_facts cs b off ne nlo nhi E R FULL model HC HFA Hnf Hall) as (HC0 & Hrf & Hholes & Hside).
-    eapply (mmap_fixed_grant_sound2 cs (a_maps cs) KHI b off ne nlo nhi kd eager visible cs' E R FULL model TA TB
-              HC Hec H17 H12 H13 H14 H15 Hkind Hkfog Hvisible HFA ltac:(unfold KHI, CEIL; lia) Hbud
-              HC0 Hrf Hholes Hside Hn HKA HK).
-  - (* the HOLE path *)
-    destruct (fixed_args A cs CEIL) as [[[[[b off] ne] nlo] nhi]|] eqn:HFA2; [|discriminate].
-    destruct (find_hole (kn cs) (a_maps cs) (reg cs 10) ne) as [h|] eqn:Hfh; [|discriminate].
-    match type of Hn with (if ?c then _ else _) = _ => destruct c eqn:Hcond; [|discriminate] end.
-    apply andb_prop in Hcond as [Hcond Hav]. apply andb_prop in Hcond as [Hcond Hnev].
-    apply andb_prop in Hcond as [Hap Hbud].
-    destruct (mmap_fixed_hole_facts cs b off ne nlo nhi h E R FULL model HC HFA2 Hfh Hap) as (HC0 & Hrf & Hholes & Hside).
-    eapply (mmap_fixed_grant_sound2 cs (unhole (a_maps cs) h) CEIL b off ne nlo nhi kd eager visible cs' E R FULL model TA TB
-              HC Hec H17 H12 H13 H14 H15 Hkind Hkfog Hvisible HFA2 ltac:(lia) Hbud
-              HC0 Hrf Hholes Hside Hn HKA HK).
+  destruct (fixed_args A cs KHI) as [[[[[b off] ne] nlo] nhi]|] eqn:HFA; [|discriminate].
+  (* no tokens, every tracked entry provably apart, the range at or below KHI *)
+  match type of Hn with (if ?c then _ else _) = _ => destruct c eqn:Hcond; [|discriminate] end.
+  apply andb_prop in Hcond as [Hcond Hav]. apply andb_prop in Hcond as [Hcond Hnev].
+  apply andb_prop in Hcond as [Hcond Hbud]. apply andb_prop in Hcond as [Hnf Hall].
+  destruct (mmap_fixed_old_facts cs b off ne nlo nhi E R FULL model HC HFA Hnf Hall) as (HC0 & Hrf & Hholes & Hside).
+  eapply (mmap_fixed_grant_sound2 cs (a_maps cs) KHI b off ne nlo nhi kd eager visible cs' E R FULL model TA TB
+            HC Hec H17 H12 H13 H14 H15 Hkind Hkfog Hvisible HFA ltac:(lia) Hbud
+            HC0 Hrf Hholes Hside Hn HKA HK).
 Qed.
 
 

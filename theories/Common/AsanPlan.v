@@ -109,7 +109,8 @@ Inductive plan : Type :=
 | PHavocWords (bs : list expr) (k : plan)    (** the value of the (first) KWord fact at each listed address := fresh variable *)
 | PRespell (r : nat) (e : expr) (k : plan)    (** register r := e when the knowledge proves reg r = e ([node_respell]) *)
 | PMmapInH (kkept kok kdestroyed : plan).     (** [PMmapIn] whose refused-DESTROYED children remember the punched range as a
-                                                 FREE hole (KHOLE token), so that a later MAP_FIXED over exactly that range is a [PMmap] *)
+                                                 FREE hole (KHOLE token).  No arm maps over the hole any more
+                                                 ([APC.mmap_fixed_free] lost its hole path with the vDSO pair) *)
 
 (* ######################################################################### *)
 (** * 8'. Node dispatch                                                       *)
