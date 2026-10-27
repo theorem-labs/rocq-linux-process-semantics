@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Sys.Kernel.Signal — rt_sigaction (134), rt_sigprocmask (135), tkill (130), tgkill (131)
+(** * LinuxProcessSem.Sys.Kernel.Signal — rt_sigaction (134), rt_sigprocmask (135), sigaltstack (132), tkill (130), tgkill (131)
 
     This file answers to Linux [kernel/signal.c]: it holds what the
     kernel defines there, and nothing else.  Which file a spec belongs
@@ -44,8 +44,8 @@ Open Scope sys_scope.
     process keeps going.
 
     This spec closes that by construction rather than by bookkeeping.
-    Nothing is recorded, and the accepted set is chosen so that nothing
-    NEEDS to be.  What that takes is two things, and only one of them is
+    No disposition is stored, and the accepted set is chosen so that
+    none NEEDS to be.  What that takes is two things, and only one of them is
     the list below.
 
     WHAT SOUNDNESS ACTUALLY REQUIRES.  A no-op install is sound only if
@@ -55,12 +55,14 @@ Open Scope sys_scope.
     only from outside the process, so both pass the operational test
     while reality could still deliver either.  If reality did, this spec
     would be wrong about a signal it ACCEPTS.  [State.event] is [ReadEv]/[WriteEv]/[ExitEv] only and
-    the accepting arm is [ret_only 0], recording neither an event nor
-    model state, so a source calling [sigaction(SIGTERM, &h, NULL, 8)]
-    and a target that never calls [rt_sigaction] AT ALL have identical
-    [Equivalence.bh_traces], both satisfy [Equivalence.modeled], and
-    [Equivalence.strong_equiv] holds — while under a real SIGTERM the
-    source runs [h] and continues and the target dies.
+    the accepting arm is [ret_only 0] under the 24-byte copy-in of [act],
+    recording no event and no disposition, so a source calling
+    [sigaction(SIGTERM, &h, NULL, 8)] and a target that never calls
+    [rt_sigaction] AT ALL have the same [Equivalence.bh_traces] wherever
+    that copy-in's charge does not decide the budget, both satisfy
+    [Equivalence.modeled], and [Equivalence.strong_equiv] can hold —
+    while under a real SIGTERM the source runs [h] and continues and the
+    target dies.
 
     THE OTHER HALF IS A PREMISE OF THE THEOREM, NOT A DERIVED FACT: THE
     ENVIRONMENT THE THEOREM QUANTIFIES OVER DELIVERS NO SIGNALS.
@@ -389,8 +391,13 @@ Definition sigaction_flags (mp : word -> option byte) (act : word)
          then -EINVAL for an out-of-range signal and for SIGKILL/SIGSTOP;
          then fail closed on SA_RESTART and on any bit outside
          [sa_flags_accepted]; then 0 for a signal in
-         [sigaction_accepted], recording nothing, and UNMODELED for every
-         other signal.
+         [sigaction_accepted], storing no disposition, and UNMODELED for
+         every other signal.  Every answer after the copy records the 24
+         bytes in [State.eff_copyins]: [SYSCALL_DEFINE4(rt_sigaction)]
+         (kernel/signal.c:4650, v6.18.46) has already read them with
+         [copy_from_user], and [State.materialize_model_accesses] charges
+         a lazy anonymous page the read faults in.  The -EFAULT records
+         nothing, the convention [rt_sigprocmask_spec] states.
 
     Arm 4's last case is the one that matters: it is what keeps a
     SIGSEGV, SIGILL, SIGBUS or SIGTRAP handler out of the modeled
@@ -417,11 +424,12 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
     match sigaction_flags (in_mem i) act with
     | None => err_ret EFAULT   (* the struct is not wholly readable: real -EFAULT *)
     | Some fl =>
-        if negb (sig_valid sig) then err_ret EINVAL
-        else if sig_kernel_only sig then err_ret EINVAL
-        else if negb (sa_flags_ok fl) then unmodeled
-        else if sigaction_accepted sig then ret_only (Z_to_bv 64 0)
-        else unmodeled           (* a signal a modeled operation can raise: fail closed *)
+        record_copyins [(act, 24%nat)]
+        (if negb (sig_valid sig) then err_ret EINVAL
+         else if sig_kernel_only sig then err_ret EINVAL
+         else if negb (sa_flags_ok fl) then unmodeled
+         else if sigaction_accepted sig then ret_only (Z_to_bv 64 0)
+         else unmodeled)         (* a signal a modeled operation can raise: fail closed *)
     end.
 
 (* =========================================================================
@@ -577,7 +585,7 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
         134's is [oact], the only way to read an [sa_mask] back, and
         [rt_sigaction_spec] declines a non-NULL [oact] outright; the
         [sa_mask] an accepted install carries is not stored either —
-        that spec answers [ret_only 0] and records nothing — so there is
+        that spec answers [ret_only 0] and stores no disposition — so there is
         no second window behind the first.  72's is [set_user_sigmask]
         itself, and it is a real read-back: it saves [current->blocked]
         into [current->saved_sigmask] on the way in.  [Fs.Select]'s
@@ -1282,9 +1290,12 @@ Definition sigaltstack_at (mp : word -> option byte) (uss : word)
          the only arm that raises [sas_ss_size] above zero, and the
          [Uapi.MINSIGSTKSZ] bound arm 8 just applied is why.
 
-    No arm writes user memory, and none records a copy-in: the 24 bytes
-    are read into a kernel local ([stack_t new] on the syscall's own
-    stack), the same shape [rt_sigaction_spec] has above. *)
+    No arm writes user memory.  Every answer after the copy records the
+    24 bytes at [uss] in [State.eff_copyins]: [SYSCALL_DEFINE2(sigaltstack)]
+    (kernel/signal.c:4459, v6.18.46) has read them with [copy_from_user]
+    before [do_sigaltstack] runs, and [State.materialize_model_accesses]
+    charges a lazy anonymous page that read faults in.  The -EFAULT of
+    arm 4 records nothing, the convention [rt_sigprocmask_spec] states. *)
 Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
   m <- get_model ;;
   if m_sigaltstack_installed m then unmodeled
@@ -1295,15 +1306,16 @@ Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
     match sigaltstack_at (in_mem i) uss with
     | None => err_ret EFAULT
     | Some bs =>
-        let fl := ss_flags_of bs in
-        if negb (ss_mode_ok fl) then err_ret EINVAL
-        else if ss_disabling fl
-        then ret_only (Z_to_bv 64 0)
-        else if (w_is0 (ss_sp_of bs) && w_is0 (ss_size_of bs))%bool
-        then unmodeled
-        else if (bv_unsigned (ss_size_of bs) <? MINSIGSTKSZ)%Z
-        then err_ret ENOMEM
-        else set_sigaltstack_installed ;; ret_only (Z_to_bv 64 0)
+        record_copyins [(uss, Z.to_nat SIGALTSTACK_BYTES)]
+        (let fl := ss_flags_of bs in
+         if negb (ss_mode_ok fl) then err_ret EINVAL
+         else if ss_disabling fl
+         then ret_only (Z_to_bv 64 0)
+         else if (w_is0 (ss_sp_of bs) && w_is0 (ss_size_of bs))%bool
+         then unmodeled
+         else if (bv_unsigned (ss_size_of bs) <? MINSIGSTKSZ)%Z
+         then err_ret ENOMEM
+         else set_sigaltstack_installed ;; ret_only (Z_to_bv 64 0))
     end.
 
 (* =========================================================================

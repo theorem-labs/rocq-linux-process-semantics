@@ -22,7 +22,9 @@ Definition pselect6_witness (i : SyscallInput) (m : Model)
     (n32 inp outp exp tsp sig : word) : outcome SyscallEffect :=
   match pselect6_outcome i m n32 inp outp exp tsp sig with
   | None => Unmodeled
-  | Some (r, ws) => Ok (mkEffect r ws []) m []
+  | Some (r, ws) =>
+      Ok (with_copyins (pselect6_reads i n32 inp outp exp tsp sig)
+            (mkEffect r ws [])) m []
   end.
 
 Lemma pselect6_witness_ok : forall n32 inp outp exp tsp sig i m,
@@ -41,7 +43,9 @@ Definition ppoll_witness (i : SyscallInput) (m : Model)
     (ufds nfds tsp sig sigsetsize : word) : outcome SyscallEffect :=
   match ppoll_outcome i m ufds nfds tsp sig sigsetsize with
   | None => Unmodeled
-  | Some (r, ws) => Ok (mkEffect r ws []) m []
+  | Some (r, ws) =>
+      Ok (with_copyins (ppoll_reads i m ufds nfds tsp sig sigsetsize)
+            (mkEffect r ws [])) m []
   end.
 
 Lemma ppoll_witness_ok : forall ufds nfds tsp sig sigsetsize i m,

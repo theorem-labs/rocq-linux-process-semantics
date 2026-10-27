@@ -213,6 +213,13 @@ true of the model and false of the real systems.
   arms). An `munmap` of a free range that lands on the pair answers 0,
   where Linux unmaps it, or refuses with `-EPERM` under
   `CONFIG_MSEAL_SYSTEM_MAPPINGS`.
+- **A failing store-conditional.** An `sc.w` or `sc.d` whose reservation
+  does not match retires with rd = 1 and performs no store permission
+  check (`Riscv/Sem.v`, the `Sc` arm). The RISC-V specification requires
+  the check ("No SC.W instruction shall retire unless it passes memory
+  permission checks"), so hardware faults on memory the process may not
+  write, where the model retires. QEMU user mode fixed the same omission
+  in commit `d107b748072c` (2026-04-29).
 
 ## What the proofs do not check
 
