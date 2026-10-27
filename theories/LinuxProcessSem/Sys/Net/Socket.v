@@ -1212,8 +1212,15 @@ Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
     spec then records nothing.  That under-records by at most one page,
     in the accept-more direction, and it is the
     identical bound [bind_spec] and [nanosleep_spec] carry.
+    The [struct iovec] copy-in ledger (readv/writev/sendmsg/import)
+    carries it too: on riscv64 with HAVE_EFFICIENT_UNALIGNED_ACCESS off,
+    [__get_user_nocheck] copies a misaligned [iov_len] one byte at a
+    time (arch/riscv/include/asm/uaccess.h:188-194, arch/riscv/lib/
+    uaccess.S), so a field crossing from a lazily-backed page into an
+    unmapped one touches the first page, while the ledger records
+    nothing for a faulting field and charges no page.
     Closing it needs a longest-readable-prefix range
-    and would have to move all three at once.
+    and would have to move all four at once.
 
     A KNOWN LEVEL IS DECLINED, for [setsockopt_spec]'s reasons plus one
     of its own: on the get side an over-long [*optlen] is silently

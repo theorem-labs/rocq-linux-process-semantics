@@ -164,6 +164,17 @@ Proof.
   rewrite (proj2 (Z.leb_gt _ _) Hlt). reflexivity.
 Qed.
 
+Lemma iovec_entry_accesses_of_array : forall ms b n r iov,
+  ms_rom ms = seg_rom segs ->
+  iov_array (ms_mem ms) iov ((b, n) :: r) ->
+  iovec_entry_accesses (ms_read_byte ms) iov = [(iov, 16%nat)].
+Proof.
+  intros ms b n r iov Hrom (Hb & Hn & _). unfold iovec_entry_accesses.
+  rewrite bv_add_Zform. change (bv_unsigned (8 : word)) with 8%Z.
+  rewrite (read_u64_rdn ms _ n Hrom Hn), (read_u64_rdn ms iov b Hrom Hb).
+  reflexivity.
+Qed.
+
 Lemma copy_iovecs_of_array : forall ms iovs iov,
   ms_rom ms = seg_rom segs ->
   iov_array (ms_mem ms) iov iovs ->
@@ -654,7 +665,8 @@ Proof.
     rewrite (access_okb_of_le b1 0) by lia. reflexivity. }
   assert (Hacc : import_iovecs_accesses (ms_read_byte ms) iov (Z_to_bv 64 1) = [(iov, 16%nat)]).
   { unfold import_iovecs_accesses. rewrite (proj2 (bv_eqb_eq _ _) eq_refl).
-    rewrite (access_okb_of_le iov 16) by lia. reflexivity. }
+    rewrite (access_okb_of_le iov 16) by lia.
+    exact (iovec_entry_accesses_of_array ms b1 (Z_to_bv 64 0) [] iov eq_refl Harr). }
   eapply (rz_ret_only_copyins_silent segs ms model (getr regs 17) [(iov, 16%nat)] (Z_to_bv 64 0) model);
     [exact Hh | reflexivity | | exact Hh | exact Hlazy | unfold ms; rewrite adv_set_epend; exact Hc].
   intros eff.

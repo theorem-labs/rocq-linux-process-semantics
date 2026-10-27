@@ -1481,16 +1481,38 @@ Fixpoint copy_iovecs_aux (mp : word -> option byte) (a : word) (k : nat)
       end
   end.
 
-(** Descriptors actually attempted by [copy_iovecs_aux], one 16-byte
-    range per descriptor reached.  The walk stops on the same first
-    unreadable descriptor or negative length, so an errno path records
-    only the prefix the kernel inspected. *)
+(** The bytes of the descriptor at [a] that [copy_iovec_from_user] has
+    read when it moves on or returns (lib/iov_iter.c:1272-1273,
+    v6.18.46).  It loads [iov_len], at [a + 8], before [iov_base], at
+    [a], and a fault on either load jumps to [uaccess_end] at once:
+    - [iov_len] unreadable: nothing;
+    - [iov_len] read, [iov_base] unreadable: the 8 bytes at [a + 8];
+    - both read: the whole 16 bytes, whatever the sign test of
+      [iov_len] then answers.
+    A field that straddles a page boundary and faults records nothing,
+    the convention that [Kernel.Signal.rt_sigprocmask_spec]'s note names
+    and costs. *)
+Definition iovec_entry_accesses (mp : word -> option byte) (a : word)
+    : list (word * nat) :=
+  match read_u64 mp (a + 8) with
+  | None => []
+  | Some _ =>
+      match read_u64 mp a with
+      | None => [(a + 8, 8%nat)]
+      | Some _ => [(a, 16%nat)]
+      end
+  end.
+
+(** The copy-in ledger of [copy_iovecs_aux]: [iovec_entry_accesses] of
+    each descriptor it reaches.  The walk stops on the same first
+    unreadable field or negative length, so an errno path records only
+    what the kernel read before it answered. *)
 Fixpoint copy_iovecs_accesses (mp : word -> option byte) (a : word) (k : nat)
     : list (word * nat) :=
   match k with
   | O => []
   | S k' =>
-      (a, 16%nat) ::
+      iovec_entry_accesses mp a ++
       match read_iovec_entry mp a with
       | IovEntry _ _ => copy_iovecs_accesses mp (a + 16) k'
       | _ => []
@@ -1582,7 +1604,7 @@ Definition import_iovecs (mp : word -> option byte) (a n : word)
 Definition import_iovecs_accesses (mp : word -> option byte) (a n : word)
     : list (word * nat) :=
   if bv_eqb n (Z_to_bv 64 1) then
-    if negb (access_okb a 16) then [] else [(a, 16%nat)]
+    if negb (access_okb a 16) then [] else iovec_entry_accesses mp a
   else if bv_eqb n (Z_to_bv 64 0) then []
   else if (IOV_MAX <? bv_unsigned n)%Z then []
   else if negb (access_okb a (16 * bv_unsigned n)) then []
