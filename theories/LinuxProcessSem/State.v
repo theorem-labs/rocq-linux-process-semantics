@@ -6506,15 +6506,48 @@ Definition mkProcInput
 Definition in_fs (inp : ProcInput) : Fs.Fs :=
   fs_seed_tmp (in_image_fs inp) (in_tmp inp).
 
-(** WHERE THE PAIR SITS AT THE START OF A RUN: right below the mmap base,
-    the vvar range first and the text right above it, both mapped.
-    [__setup_additional_pages] takes its base from [get_unmapped_area]
-    (arch/riscv/kernel/vdso.c:124, Linux v6.18.46), which places top-down
-    from [mm->mmap_base]; for a static ELF nothing is mapped top-down
-    before it, so the pair is [[mbase - vvar - text, mbase)]. *)
-Definition vdso_at (mbase : word) (g : VdsoGeom) : VdsoState :=
-  mkVdsoState (bv_unsigned mbase - vdso_vvar_bytes g - vdso_text_bytes g)%Z
-              (vdso_vvar_bytes g) (vdso_text_bytes g) true true.
+(** WHERE THE PAIR SITS AT THE START OF A RUN: at the highest gap below
+    the mmap base that holds it, the vvar range first and the text right
+    above it, both mapped.  [__setup_additional_pages] takes its base
+    from [get_unmapped_area(NULL, 0, len, 0, 0)]
+    (arch/riscv/kernel/vdso.c:124, Linux v6.18.46), which is
+    [generic_get_unmapped_area_topdown] (mm/mmap.c) over
+    [unmapped_area_topdown] (mm/vma.c): it tries [mmap_base - len] and,
+    whenever a mapping meets that candidate, retries below THAT
+    mapping's start.  At [execve] the mappings present are the image's
+    LOAD segments ([Run.segments_reserved]); the stack is above the
+    base, and the heap is inside the image's reserved range.  So the
+    search below walks the reserved list, which is what the kernel's
+    gap search sees.  An image that leaves no gap below the base gives
+    no pair ([no_vdso]): a kernel that cannot place the vDSO fails the
+    [execve] ([__setup_additional_pages] returns its error to
+    [load_elf_binary]), and the model declines rather than invent a
+    place for it. *)
+Fixpoint vdso_gap_below (fuel : nat) (ranges : list (word * word))
+    (hi len : Z) : option Z :=
+  match fuel with
+  | O => None
+  | S f =>
+      let cand := (hi - len)%Z in
+      if (cand <? 0)%Z then None
+      else
+        match find (fun e => ((bv_unsigned (fst e) <? hi)
+                              && (cand <? bv_unsigned (fst e)
+                                          + bv_unsigned (snd e)))%bool)
+                   ranges with
+        | Some e => vdso_gap_below f ranges (bv_unsigned (fst e)) len
+        | None => Some cand
+        end
+  end.
+
+Definition vdso_at (reserved : list (word * word)) (mbase : word)
+    (g : VdsoGeom) : VdsoState :=
+  match vdso_gap_below (S (length reserved)) reserved (bv_unsigned mbase)
+          (vdso_vvar_bytes g + vdso_text_bytes g) with
+  | Some base => mkVdsoState base (vdso_vvar_bytes g) (vdso_text_bytes g)
+                             true true
+  | None => no_vdso
+  end.
 
 (* =========================================================================
    Initial model: fds 0/1/2 bound to the three standard channels;
@@ -6579,7 +6612,7 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
        None
        None
        None
-       (vdso_at mbase (in_vdso inp)))))))).
+       (vdso_at reserved mbase (in_vdso inp)))))))).
 
 (** The base case of the nonemptiness invariant: a run starts with NO
     protected range at all.  Every reachable [vm_noaccess] is therefore
@@ -9652,5 +9685,5 @@ Proof. reflexivity. Qed.
 
 Lemma m_vdso_init_model : forall reserved brk0 mbase sp lim inp,
   m_vdso (init_model reserved brk0 mbase sp lim inp) =
-  vdso_at mbase (in_vdso inp).
+  vdso_at reserved mbase (in_vdso inp).
 Proof. reflexivity. Qed.
