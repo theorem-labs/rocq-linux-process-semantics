@@ -1163,3 +1163,30 @@ Proof.
   intros segs cfg c tr c' Hstar.
   exact (star_preserves_sys_inv _ _ _ _ (star_cfg_sub _ _ _ _ _ Hstar)).
 Qed.
+
+(** The start of every run: [Run.init_config]'s model is
+    [State.init_model], so [init_model_sys_inv] applies. *)
+Lemma init_config_sys_inv : forall segs pc ph sp brk0 mb rnd lim inp,
+  sys_inv (m_vmmaps (cfg_model (init_config segs pc ph sp brk0 mb rnd lim inp))).
+Proof. intros. unfold init_config. cbn [cfg_model]. apply init_model_sys_inv. Qed.
+
+(** Every configuration a run of an image reaches from its initial
+    configuration satisfies [sys_inv], so [State.noaccess_pages_owned]
+    ([sys_inv_noaccess_pages_owned]) and [MapsFit.vm_fit] hold there. *)
+Corollary init_config_star_sys_inv : forall segs pc ph sp brk0 mb rnd lim inp tr c,
+  star segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr c ->
+  sys_inv (m_vmmaps (cfg_model c)).
+Proof.
+  intros segs pc ph sp brk0 mb rnd lim inp tr c Hstar.
+  exact (star_preserves_sys_inv _ _ _ _ Hstar (init_config_sys_inv _ _ _ _ _ _ _ _ _)).
+Qed.
+
+(** The same under a spurious-failure configuration. *)
+Corollary init_config_star_cfg_sys_inv :
+  forall segs cfg pc ph sp brk0 mb rnd lim inp tr c,
+  star_cfg segs cfg (init_config segs pc ph sp brk0 mb rnd lim inp) tr c ->
+  sys_inv (m_vmmaps (cfg_model c)).
+Proof.
+  intros segs cfg pc ph sp brk0 mb rnd lim inp tr c Hstar.
+  exact (star_cfg_preserves_sys_inv _ _ _ _ _ Hstar (init_config_sys_inv _ _ _ _ _ _ _ _ _)).
+Qed.
