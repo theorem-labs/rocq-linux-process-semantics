@@ -708,10 +708,16 @@ Definition unlinkat_tmp_spec (n p c : path) (flags : word) (m : Model)
     working directory. *)
 Definition unlinkat_body_spec (dirfd pathp flags : word)
     (i : SyscallInput) (m : Model) : Sys SyscallEffect :=
-    match read_cstr (in_mem i) pathp with
-    | CstrTooLong => err_ret ENAMETOOLONG        (* no NUL within PATH_MAX *)
-    | CstrFault => err_ret EFAULT                (* unmapped byte in the path string *)
-    | CstrOk p =>
+    match user_read_cstr i m pathp with
+    | UOk CstrTooLong => err_ret ENAMETOOLONG    (* no NUL within PATH_MAX *)
+    (* unmapped byte in the path string ([UOk CstrFault] does not occur:
+       [State.user_read_cstr_ok_iff]) *)
+    | UFault | UOk CstrFault => err_ret EFAULT
+    (* the walk reached the vDSO pair before a NUL: Linux reads on with
+       bytes the model does not hold (arch/riscv/kernel/vdso.c;
+       [State.UserRead]) *)
+    | USpecial => unmodeled
+    | UOk (CstrOk p) =>
         if path_eqb p [] then err_ret ENOENT     (* empty pathname: getname's own -ENOENT *)
         else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
         else
@@ -753,5 +759,5 @@ Definition unlinkat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
   m <- get_model ;;
   if negb (modeled_unlink_flags flags) then err_ret EINVAL
   else
-    record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+    record_copyins [(pathp, user_cstr_access_len i m pathp)]
       (unlinkat_body_spec dirfd pathp flags i m).

@@ -37,7 +37,7 @@ Qed.
 (** [sched_setscheduler] (119) is deterministic on every branch — it
     draws nothing and the one success changes no model state — so the
     witness is the branch itself, ledger included.  Failing closed is an
-    admissible outcome, which is what makes progress hold on the three
+    admissible outcome, which is what makes progress hold on the four
     declines. *)
 Definition sched_setscheduler_witness (pid policy param : word)
     (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
@@ -45,12 +45,13 @@ Definition sched_setscheduler_witness (pid policy param : word)
   else if (w_is0 param || (sint32 pid <? 0)%Z)%bool
   then ret_outcome (errno_ret EINVAL) m
   else
-  match read_bytes_map (in_mem i) param (Z_to_bv 64 4) with
-  | None =>
+  match user_read i m param (Z_to_bv 64 4) with
+  | USpecial => Unmodeled
+  | UFault =>
       if negb (access_okb param 4)
       then ret_outcome (errno_ret EFAULT) m
       else Unmodeled
-  | Some bs =>
+  | UOk bs =>
       if negb (sched_targets_self_b pid m) then Unmodeled
       else
         match sched_setscheduler_answer (bv_unsigned (abi_low32 policy))
@@ -72,7 +73,7 @@ Proof.
     [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) param (Z_to_bv 64 4)) as [bs|] eqn:Hread.
+  destruct (user_read i m param (Z_to_bv 64 4)) as [bs| |] eqn:Hread.
   - destruct (negb (sched_targets_self_b pid m)) eqn:Hself;
       [apply record_copyins_unmodeled; apply unmodeled_intro|].
     destruct (sched_setscheduler_answer (bv_unsigned (abi_low32 policy))
@@ -82,6 +83,7 @@ Proof.
   - destruct (negb (access_okb param 4)) eqn:Hacc;
       [unfold err_ret, ret_only, ret_outcome; apply pure_ok
       |apply unmodeled_intro].
+  - apply unmodeled_intro.
 Qed.
 
 (** [sched_yield] (124) has one outcome and no branch at all, so the

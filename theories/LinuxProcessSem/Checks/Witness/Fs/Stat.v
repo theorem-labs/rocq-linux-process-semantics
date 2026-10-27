@@ -36,10 +36,12 @@ Qed.
 Definition newfstatat_core_witness (dirfd pathp flag : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   if negb (modeled_statat_flags flag) then Unmodeled   (* unmodeled flag word *)
-  else match read_cstr (in_mem i) pathp with
-       | CstrTooLong => ret_outcome (errno_ret ENAMETOOLONG) m  (* over-long path *)
-       | CstrFault => ret_outcome (errno_ret EFAULT) m          (* unreadable path *)
-       | CstrOk p =>
+  else match user_read_cstr i m pathp with
+       | UOk CstrTooLong => ret_outcome (errno_ret ENAMETOOLONG) m  (* over-long path *)
+       | UFault | UOk CstrFault =>
+           ret_outcome (errno_ret EFAULT) m                         (* unreadable path *)
+       | USpecial => Unmodeled                                      (* vDSO pair *)
+       | UOk (CstrOk p) =>
            if path_eqb p [] then ret_outcome (errno_ret ENOENT) m  (* empty pathname *)
            else if negb (bv_eqb dirfd AT_FDCWD32) then Unmodeled   (* unmodeled dirfd *)
            else if path_eqb p dot_path then Unmodeled              (* directory metadata *)
@@ -54,7 +56,7 @@ Definition newfstatat_core_witness (dirfd pathp flag : word) (i : SyscallInput)
 Definition newfstatat_witness (dirfd pathp flag : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   outcome_copyins
-    [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+    [(pathp, user_cstr_access_len i m pathp)]
     (newfstatat_core_witness dirfd pathp flag i m).
 
 Local Lemma newfstatat_core_witness_ok : forall dirfd pathp flag i m,
@@ -66,13 +68,19 @@ Proof.
   - eapply bind_step; [apply input_ok|].
     cbv beta. eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta. apply unmodeled_intro.
-  - destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp.
+  - destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp.
     2: { eapply bind_step; [apply input_ok|].
          cbv beta. eapply bind_step; [apply get_model_ok|].
          cbv beta iota zeta; srw Hp. apply pure_ok. }
     2: { eapply bind_step; [apply input_ok|].
          cbv beta. eapply bind_step; [apply get_model_ok|].
          cbv beta iota zeta; srw Hp. apply pure_ok. }
+    2: { eapply bind_step; [apply input_ok|].
+         cbv beta. eapply bind_step; [apply get_model_ok|].
+         cbv beta iota zeta; srw Hp. apply pure_ok. }
+    2: { eapply bind_step; [apply input_ok|].
+         cbv beta. eapply bind_step; [apply get_model_ok|].
+         cbv beta iota zeta; srw Hp. apply unmodeled_intro. }
     destruct (path_eqb p []) eqn:Hpe.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
@@ -331,5 +339,6 @@ Lemma newfstatat_witness_ok : forall dirfd pathp flag i m,
 Proof.
   intros. unfold newfstatat_spec, newfstatat_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
   apply record_copyins_outcome. apply newfstatat_core_witness_ok.
 Qed.

@@ -94,9 +94,9 @@ Qed.
 Definition clone3_witness (i : SyscallInput) (uargs size : word) (m : Model)
     : outcome SyscallEffect :=
   if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then Unmodeled
-  else match read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE) with
-       | None => Unmodeled                     (* unreadable clone_args *)
-       | Some bs =>
+  else match user_read i m uargs (Z_to_bv 64 CLONE_ARGS_SIZE) with
+       | UFault | USpecial => Unmodeled        (* unreadable clone_args *)
+       | UOk bs =>
            if clone3_fork_args_b bs then clone3_resolve_witness uargs m
            else Unmodeled
        end.
@@ -108,8 +108,9 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))); cbv iota;
     [apply unmodeled_intro|].
   eapply bind_step; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|]; [|apply unmodeled_intro].
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (user_read i m uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
+    as [bs| |]; [|apply unmodeled_intro|apply unmodeled_intro].
   destruct (clone3_fork_args_b bs);
     [apply clone3_resolve_witness_ok | apply unmodeled_intro].
 Qed.

@@ -20,10 +20,12 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
     (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   if negb (modeled_open_flags flags) then Unmodeled  (* unmodeled flag combination *)
-  else match read_cstr (in_mem i) pathp with
-       | CstrTooLong => ret_outcome (errno_ret ENAMETOOLONG) m  (* over-long path *)
-       | CstrFault => ret_outcome (errno_ret EFAULT) m          (* unreadable path *)
-       | CstrOk p =>
+  else match user_read_cstr i m pathp with
+       | UOk CstrTooLong => ret_outcome (errno_ret ENAMETOOLONG) m  (* over-long path *)
+       | UFault | UOk CstrFault =>
+           ret_outcome (errno_ret EFAULT) m                         (* unreadable path *)
+       | USpecial => Unmodeled                                      (* vDSO pair *)
+       | UOk (CstrOk p) =>
            if path_eqb p [] then ret_outcome (errno_ret ENOENT) m  (* empty pathname *)
            else if negb (bv_eqb dirfd AT_FDCWD32) then Unmodeled         (* unmodeled dirfd *)
            (* a pathname with a separator, declined before any flag is
@@ -155,7 +157,7 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
 Definition openat_witness (dirfd pathp flags : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   outcome_copyins
-    [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+    [(pathp, user_cstr_access_len i m pathp)]
     (openat_core_witness dirfd pathp flags i m).
 
 Local Lemma openat_core_witness_ok : forall dirfd pathp flags i m,
@@ -172,9 +174,9 @@ Proof.
   - eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
     unfold openat_body_spec.
-    destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp.
-    2: { apply pure_ok. }
-    2: { apply pure_ok. }
+    destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp.
+    2-4: apply pure_ok.
+    2: apply unmodeled_intro.
     destruct (path_eqb p []) eqn:Hpe.
     { apply pure_ok. }
     destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd.
@@ -319,6 +321,7 @@ Lemma openat_witness_ok : forall dirfd pathp flags i m,
 Proof.
   intros. unfold openat_spec, openat_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
   apply record_copyins_outcome.
   apply openat_core_witness_ok.
 Qed.
@@ -408,10 +411,11 @@ Qed.
     outcome a real run actually produces. *)
 Local Definition faccessat_body_witness (dirfd pathp : word)
     (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
-  match read_cstr (in_mem i) pathp with
-  | CstrTooLong => ret_outcome (errno_ret ENAMETOOLONG) m
-  | CstrFault => ret_outcome (errno_ret EFAULT) m
-  | CstrOk p =>
+  match user_read_cstr i m pathp with
+  | UOk CstrTooLong => ret_outcome (errno_ret ENAMETOOLONG) m
+  | UFault | UOk CstrFault => ret_outcome (errno_ret EFAULT) m
+  | USpecial => Unmodeled
+  | UOk (CstrOk p) =>
       if path_eqb p [] then ret_outcome (errno_ret ENOENT) m
       else if negb (bv_eqb dirfd AT_FDCWD32) then Unmodeled
       else if path_eqb p dot_path then ret_outcome (Z_to_bv 64 0) m
@@ -434,7 +438,7 @@ Definition faccessat_witness (dirfd pathp mode : word) (i : SyscallInput)
   if negb (modeled_access_mode mode) then ret_outcome (errno_ret EINVAL) m
   else if negb (access_mode_f_ok mode) then Unmodeled
   else
-    outcome_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+    outcome_copyins [(pathp, user_cstr_access_len i m pathp)]
       (faccessat_body_witness dirfd pathp i m).
 
 Local Lemma faccessat_body_witness_ok : forall dirfd pathp i m,
@@ -442,8 +446,8 @@ Local Lemma faccessat_body_witness_ok : forall dirfd pathp i m,
     (faccessat_body_witness dirfd pathp i m).
 Proof.
   intros. unfold faccessat_body_spec, faccessat_body_witness.
-  destruct (read_cstr (in_mem i) pathp) as [p| |];
-    [|apply pure_ok|apply pure_ok].
+  destruct (user_read_cstr i m pathp) as [[p| |]| |];
+    [|apply pure_ok|apply pure_ok|apply pure_ok|apply unmodeled_intro].
   destruct (path_eqb p []); [apply pure_ok|].
   destruct (negb (bv_eqb dirfd AT_FDCWD32)); [apply unmodeled_intro|].
   destruct (path_eqb p dot_path);
@@ -478,7 +482,7 @@ Definition faccessat2_witness (dirfd pathp mode flags : word)
   else if negb (modeled_access_flags flags) then Unmodeled
   else if negb (access_mode_f_ok mode) then Unmodeled
   else
-    outcome_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+    outcome_copyins [(pathp, user_cstr_access_len i m pathp)]
       (faccessat_body_witness dirfd pathp i m).
 
 Lemma faccessat2_witness_ok : forall dirfd pathp mode flags i m,
