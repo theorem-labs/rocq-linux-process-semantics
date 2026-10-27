@@ -383,7 +383,8 @@ Qed.
     Base 0 is in that set and also starts no program: the search's top
     is then [0 - 1] = [ULONG_MAX] (mm/vma.h:502), so the vDSO search
     fails as for a wrapped base.  The band keeps it, a precision cost
-    only, since no spec arm reads the base. *)
+    only: no spec arm reads the base, and the vDSO pair [State.vdso_at]
+    places below it lies below address 0 there. *)
 
 Definition sv39_linux_base (b : Z) : Prop :=
   exists guard randomize k,

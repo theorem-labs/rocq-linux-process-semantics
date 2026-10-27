@@ -261,7 +261,8 @@ Definition brk_aslr_max : Z := (1 * 1024 * 1024 * 1024)%Z.
 
     WHY NOT LOWER, to the smallest base Linux gives without the
     assumptions: no spec arm reads the base (placement is admissibility
-    alone, see [Mmap.mmap_spec]'s placement section), but the ASan plan
+    alone, see [Mmap.mmap_spec]'s placement section; [init_model] uses it
+    only to place the vDSO pair, [vdso_at]), but the ASan plan
     checker reads this floor.  [Common.AsanInit] starts its placement
     split at [AsanPlanCore.MBASE_MIN] = this value, and
     [AsanPlacement.kHighMemBeg_below_mmap_base_min] needs it above the
@@ -405,7 +406,9 @@ Definition TASK_SIZE : Z := 0x800000000000%Z.
     base of that set also starts no program: with a base of exactly 0
     the top-down search's top is [0 - 1] (mm/vma.h:502), so the vDSO
     search fails the same way.  The band keeps 0; this costs precision
-    only, as no spec arm reads the base.
+    only: no spec arm reads the base, and for a base below the pair's
+    size [vdso_at] puts the pair below address 0 or across it, for a
+    launch Linux never makes.
 
     WHAT THE DECLARATION BUYS TODAY, stated here so nobody reads more
     into it: the spec arms below still compare against [TASK_SIZE], the
@@ -1356,8 +1359,8 @@ Definition MAX_RW_COUNT : Z := 0x7ffff000%Z.
     side [Fs.ReadWrite.read_spec]'s channel, file, socket and pipe
     arms, and [pread64_spec]; on the write side every arm, where
     [Uaccess.write_source] is the clamped source prefix, including
-    [pwrite64_spec], which reads its source through [write_source] like
-    the rest. *)
+    [pwrite64_spec], which reads the bytes [write_source] names through
+    [ReadWrite.user_write_source] like the rest. *)
 Definition rw_count_clamp (count : word) : Z :=
   Z.min (bv_unsigned count) MAX_RW_COUNT.
 
@@ -3093,11 +3096,14 @@ Inductive FdEntry :=
         [mmap_base_min]) and IMMUTABLE for the whole run.  Like the
         initial break it is a quantified parameter of the run
         ([Run.mi_mmap_base], any [Run.valid_mmap_base] value,
-        independent per binary).  NO SPEC ARM READS THIS FIELD'S VALUE.
-        Preference-free placement says only
-        that the address is page-aligned, inside the user address space
-        and disjoint from every recorded mapping — a rule with no base
-        in it (the argument is in [Mmap.mmap_spec]'s placement section).
+        independent per binary).  NO SPEC ARM READS THIS FIELD, but its
+        VALUE now matters at launch: [init_model] places the vDSO and
+        vvar pair just below it ([vdso_at]; [procst_vdso]), and the
+        memory-map arms read the pair.  Placement itself is still
+        preference-free: the address is page-aligned, inside the user
+        address space and disjoint from every recorded mapping and from
+        the pair — a rule with no base in it (the argument is in
+        [Mmap.mmap_spec]'s placement section).
         The field is NOT thereby inert and must not be removed as one:
         [Run.valid_mmap_base] is a conjunct of [Run.valid_entry], which
         [Equivalence.strong_universal_T] quantifies its entries under,
@@ -3208,8 +3214,9 @@ Ltac alloc_top_bounds :=
 (** Compatibility constructor for ledgers containing only rw memory.
     Existing examples and allocator simulations need not mention the
     empty protection ledger, nor the placement base (seeded 0, which
-    means "no base recorded" and which nothing in the spec reads; see
-    the [vm_mmap_base] note above).  The stack pointer is seeded at the
+    means "no base recorded" and which no spec arm reads; see the
+    [vm_mmap_base] note above, and [mkModel], which pairs such a ledger
+    with no vDSO pair).  The stack pointer is seeded at the
     BOTTOM of the SP window, so a hand-built ledger's [alloc_top] is the
     smallest any admissible run has: what such a ledger admits, every
     run admits. *)
