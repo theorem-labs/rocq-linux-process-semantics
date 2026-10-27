@@ -1740,6 +1740,7 @@ Proof.
     rewrite (check_syscall_64 segs ms x8 eff model Hno). unfold check_write.
     rewrite Hfd32, Hfd. cbv beta iota.
     rewrite (rw_range_in_range _ _ Hcnt). cbv beta iota zeta.
+    rewrite (user_write_source_full _ model _ _ _ Hrb). cbv beta iota.
     rewrite (write_source_of_rw _ _ _ Hcnt), (readable_bytes_full _ _ _ _ Hrb).
     pose proof (read_bytes_map_length _ _ _ _ Hrb) as Hlen.
     assert (Hret : len_word bs = ms_gpr ms 2).
@@ -1816,6 +1817,7 @@ Proof.
     rewrite (check_syscall_64 segs ms x8 eff model Hno). unfold check_write.
     rewrite Hfd32, Hfd. cbv beta iota.
     rewrite (rw_range_in_range _ _ Hcnt). cbv beta iota zeta.
+    rewrite (user_write_source_full _ model _ _ _ Hrb). cbv beta iota.
     rewrite (write_source_of_rw _ _ _ Hcnt), (readable_bytes_full _ _ _ _ Hrb).
     pose proof (read_bytes_map_length _ _ _ _ Hrb) as Hlen.
     assert (Hret : len_word bs = ms_gpr ms 2).
