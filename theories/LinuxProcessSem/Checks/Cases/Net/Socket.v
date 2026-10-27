@@ -1908,6 +1908,45 @@ Example sendto_unmapped_buffer_in_range_faults_on_the_copy :
      = CheckOk listening_socket_model [].
 Proof. split; [|split]; check_eq. Qed.
 
+(** THE vDSO PAIR IS DECLINED WHERE THE KERNEL READS IT, NOT EARLIER.
+    Linux reads the pair's bytes (they are the kernel's, so the model
+    declines a copy-in that reaches them: [State.UserRead]).  The pair
+    here is one vvar page and one text page at the address the example
+    above leaves unmapped, so the same calls now meet the pair.
+
+    - sendto on the connected socket copies the payload: declined.
+    - sendto on the listening socket is -EPIPE, as above:
+      [tcp_sendmsg_locked] answers from the connection state before it
+      copies a byte, so the payload's test sits in
+      [Net.Socket.send_bytes], past the state, and not in the caller.
+    - sendmsg with its HEADER in the pair is declined on the socket, and
+      on a channel fd it is still -ENOTSOCK: the fd is resolved before
+      [copy_msghdr_from_user] runs. *)
+Definition vdso_over_the_buffer (m : Model) : Model :=
+  with_vdso (mkVdsoState 46912512909312 4096 4096 true true) m.
+
+Example vdso_pair_declines_only_where_the_kernel_reads :
+  check_syscall (mkInput 206 [4; 46912512909312; 1; 16384; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) (vdso_over_the_buffer accepted_socket_model)
+  = CheckUnmodeled
+  /\ check_syscall (mkInput 206 [3; 46912512909312; 1; 16384; 0; 0]
+                     (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EPIPE) [] [])
+       (vdso_over_the_buffer listening_socket_model)
+     = CheckOk (vdso_over_the_buffer listening_socket_model) []
+  /\ check_syscall (mkInput 211 [4; 46912512913408; 16384; 0; 0; 0]
+                     (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] [])
+       (vdso_over_the_buffer accepted_socket_model)
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 211 [1; 46912512913408; 16384; 0; 0; 0]
+                     (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret ENOTSOCK) [] [])
+       (vdso_over_the_buffer accepted_socket_model)
+     = CheckOk (vdso_over_the_buffer accepted_socket_model) [].
+Proof. split; [|split; [|split]]; check_eq. Qed.
+
 (* ---------------- socketpair (199), recvfrom (207), recvmsg (212) ------
 
    These cases check the order claims these arms make. *)
