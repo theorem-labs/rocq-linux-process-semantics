@@ -1762,7 +1762,7 @@ Proof.
   intros lim. cbn [run ebreak_image demo_entry bh_errors]. rewrite ebreak_config.
   exists [], (mkCfg ebreak_ms (ebreak_model lim)), []. split; [apply star_refl |].
   apply sstep_instr_fault; [reflexivity | reflexivity |].
-  no_lazy. rewrite ebreak_faults. reflexivity.
+  apply ebreak_account_fault.
 Qed.
 
 Lemma ebreak_errors_cfg : forall cfg lim,
@@ -1771,7 +1771,7 @@ Proof.
   intros cfg lim. cbn [run_scfg ebreak_image demo_entry bh_errors]. rewrite ebreak_config.
   exists [], (mkCfg ebreak_ms (ebreak_model lim)), []. split; [apply star_cfg_refl |].
   apply sstep_cfg_instr_fault; [reflexivity | reflexivity |].
-  no_lazy. rewrite ebreak_faults. reflexivity.
+  apply ebreak_account_fault.
 Qed.
 
 Theorem ebreak_refutes_error_free_budgets : forall lim_source lim_target,
@@ -1945,7 +1945,7 @@ Proof.
   rewrite ebreak_config_abort.
   exists [], (mkCfg ebreak_ms (ebreak_model_abort lim)), []. split; [apply star_cfg_refl |].
   apply sstep_cfg_instr_fault; [reflexivity | reflexivity |].
-  no_lazy. rewrite ebreak_faults. reflexivity.
+  apply ebreak_account_fault.
 Qed.
 
 Theorem ebreak_refutes_error_free_scfg_budgets_abort : forall cfg lim_source lim_target,
