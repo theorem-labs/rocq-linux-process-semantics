@@ -111,7 +111,12 @@ Open Scope sys_scope.
       and only then returns [unmapped_error], so a hole means a state
       change AND an errno at once, and the ledger — which carries neither
       the stack nor the kernel's own vdso/vvar pair — cannot say which
-      parts Linux zapped.
+      parts Linux zapped.  A range that meets the vDSO pair
+      ([State.m_vdso]) is never inside one recorded mapping (the pair
+      section of [Mm/Mmap.v] says why), so it declines here too.  Linux
+      answers it by range: the vvar range is VM_PFNMAP, so
+      [madvise_dontneed_free_valid_vma] refuses it with -EINVAL, and the
+      text's pages are zapped and fault back in with the kernel's bytes.
     - [region_free (vm_reserved h)]: never the image's LOAD pages.  The
       file-backed private ones read back FILE CONTENTS after a zap, not
       zeros, and the model cannot state them; the anonymous BSS ones are

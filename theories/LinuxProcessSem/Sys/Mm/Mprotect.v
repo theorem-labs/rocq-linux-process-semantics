@@ -52,7 +52,10 @@ Open Scope sys_scope.
       definition on riscv64
       (include/linux/mman.h:119-123, and riscv64 has no
       arch/riscv/include/asm/mman.h to override either hook).
-      [mprotect_fixup] returns no -EINVAL at all.
+      [mprotect_fixup] returns no -EINVAL at all on an anonymous VMA.
+      The vDSO pair is the exception, and so is the -EACCES of the vvar
+      range: both are answered in [mprotect_vdso], not through this
+      list.
 
     Two errnos a real kernel CAN still return are deliberately outside the
     modeled surface, rather than silently absorbed:
@@ -230,6 +233,39 @@ Qed.
 Definition mprotect_budget_ok (m : Model) (addr n : word) : bool :=
   vm_backing_within_limit (mprotect_model_next m addr n).
 
+(** [x] is a mapped byte of the vvar range of the vDSO pair. *)
+Definition vdso_vvar_byte (v : VdsoState) (x : Z) : bool :=
+  (vds_vvar_mapped v && (vdso_vvar_lo v <=? x)%Z && (x <? vdso_vvar_hi v)%Z)%bool.
+
+(** AN rw mprotect THAT STARTS IN THE vDSO PAIR.  A range that no
+    recorded mapping contains reaches here; when its first byte is a
+    mapped byte of the pair, [do_mprotect_pkey]'s walk (mm/mprotect.c:
+    903-997, Linux v6.18.46) starts at that range of the pair, and the
+    answer is Linux's:
+
+    - the VVAR range is VM_READ|VM_MAYREAD without VM_MAYWRITE
+      ([vdso_install_vvar_mapping], lib/vdso/datastore.c:99-105), so
+      the walk's first test refuses rw with -EACCES (mm/mprotect.c:
+      959-963), before anything changes;
+    - the TEXT range is VM_MAYWRITE (arch/riscv/kernel/vdso.c:137-140),
+      so the walk reaches [mprotect_fixup] (:990).  rw differs from the
+      text's flags (:769), the write accounting may refuse with -ENOMEM
+      (:799-810), and [vma_modify_flags] (:816) then splits the text
+      where the request ends inside it ([vma_modify], mm/vma.c:
+      1664-1677): [split_vma]'s map-count -ENOMEM (:590-591) or
+      [special_mapping_split]'s -EINVAL (mm/mmap.c:1394-1412).  A
+      request that covers the whole text makes it writable, and the
+      text's bytes are the kernel's, so that call is [unmodeled].
+
+    A range that meets the pair but starts outside it starts the walk at
+    a VMA or hole the ledger may not describe, and stays [unmodeled]. *)
+Definition mprotect_vdso (v : VdsoState) (addr : word) (nZ : Z)
+    : Sys SyscallEffect :=
+  if vdso_vvar_byte v (bv_unsigned addr) then err_ret EACCES
+  else if vdso_split v (bv_unsigned addr) (bv_unsigned addr + nZ)
+  then alt (e <- errno_from mprotect_errnos ;; err_ret e) (err_ret EINVAL)
+  else unmodeled.
+
 Definition mprotect_spec (addr len prot : word) : Sys SyscallEffect :=
   if mprotect_grows_conflict_b prot then err_ret EINVAL
   else if negb (Z.eqb (bv_unsigned addr mod page_size) 0) then err_ret EINVAL
@@ -314,6 +350,8 @@ Definition mprotect_spec (addr len prot : word) : Sys SyscallEffect :=
     else if map_contains (vm_maps h) addr n
             && region_free (vm_noaccess h) addr n then
       ret_only (Z_to_bv 64 0)
+    else if vdso_byte (m_vdso m) (bv_unsigned addr)
+    then mprotect_vdso (m_vdso m) addr nZ
     else unmodeled
   else unmodeled.
 

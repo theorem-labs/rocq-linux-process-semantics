@@ -16,6 +16,92 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude Fs.ReadWrite.
 
+(** The rw mprotect that starts in the vDSO pair ([Mprotect.mprotect_vdso]):
+    -EACCES in the vvar range, the split's -EINVAL beside the environment
+    -ENOMEM in the text, otherwise declined. *)
+Definition check_mprotect_vdso (addr : word) (nZ : Z) (eff : SyscallEffect)
+    (m : Model) : check_result :=
+  if vdso_vvar_byte (m_vdso m) (bv_unsigned addr)
+  then check_ret_only eff (errno_ret EACCES) m []
+  else if vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+  then match eff with
+       | mkEffectU r [] [] [] [] [] =>
+           if errno_ret_in mprotect_errnos r || bv_eqb r (errno_ret EINVAL)
+           then CheckOk m [] else CheckReject
+       | _ => CheckReject
+       end
+  else CheckUnmodeled.
+
+Lemma check_mprotect_vdso_sound_ok : forall addr nZ eff m m' evs i,
+  check_mprotect_vdso addr nZ eff m = CheckOk m' evs ->
+  mprotect_vdso (m_vdso m) addr nZ i m (Ok eff m' evs).
+Proof.
+  intros addr nZ eff m m' evs i H.
+  unfold check_mprotect_vdso in H. unfold mprotect_vdso.
+  destruct (vdso_vvar_byte (m_vdso m) (bv_unsigned addr)) eqn:Hvv.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    apply pure_ok. }
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ))
+    eqn:Hsp; [|discriminate].
+  destruct eff as [r [|? ?] [|? ?] [|? ?] [|? ?] [|? ?]]; try discriminate.
+  destruct (errno_ret_in mprotect_errnos r || bv_eqb r (errno_ret EINVAL))
+    eqn:He; [|discriminate].
+  inversion H; clear H; subst.
+  apply orb_true_iff in He as [He | He].
+  - apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+    apply alt_l. eapply bind_ok0; [apply (choose_ok _ e); exact HIn|].
+    apply pure_ok.
+  - apply bv_eqb_eq in He; subst r. apply alt_r. apply pure_ok.
+Qed.
+
+Lemma check_mprotect_vdso_sound_unmodeled : forall addr nZ eff m i,
+  check_mprotect_vdso addr nZ eff m = CheckUnmodeled ->
+  mprotect_vdso (m_vdso m) addr nZ i m Unmodeled.
+Proof.
+  intros addr nZ eff m i H.
+  unfold check_mprotect_vdso in H. unfold mprotect_vdso.
+  destruct (vdso_vvar_byte (m_vdso m) (bv_unsigned addr)).
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)).
+  { exfalso.
+    destruct eff as [r [|? ?] [|? ?] [|? ?] [|? ?] [|? ?]]; try discriminate.
+    destruct (errno_ret_in mprotect_errnos r || bv_eqb r (errno_ret EINVAL));
+      discriminate. }
+  apply unmodeled_intro.
+Qed.
+
+Lemma check_mprotect_vdso_complete_ok : forall addr nZ eff m m' evs i,
+  mprotect_vdso (m_vdso m) addr nZ i m (Ok eff m' evs) ->
+  check_mprotect_vdso addr nZ eff m = CheckOk m' evs.
+Proof.
+  intros addr nZ eff m m' evs i H.
+  unfold mprotect_vdso in H. unfold check_mprotect_vdso.
+  destruct (vdso_vvar_byte (m_vdso m) (bv_unsigned addr)).
+  { sys_unfold. inv_ok. cbn; try rewrite bv_eqb_refl; reflexivity. }
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)).
+  2: { sys_unfold. inv_ok. }
+  sys_unfold. cbv iota in H. inv_ok; cbv beta iota zeta.
+  - match goal with
+    | |- context [errno_ret_in ?es (errno_ret ?e)] =>
+        rewrite (errno_ret_in_intro es e) by assumption
+    end.
+    reflexivity.
+  - rewrite bv_eqb_refl, Bool.orb_true_r. reflexivity.
+Qed.
+
+Lemma check_mprotect_vdso_complete_unmodeled : forall addr nZ m i eff,
+  mprotect_vdso (m_vdso m) addr nZ i m Unmodeled ->
+  check_mprotect_vdso addr nZ eff m = CheckUnmodeled.
+Proof.
+  intros addr nZ m i eff H.
+  unfold mprotect_vdso in H. unfold check_mprotect_vdso.
+  destruct (vdso_vvar_byte (m_vdso m) (bv_unsigned addr)).
+  { sys_unfold. inv_ok; discriminate. }
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)).
+  { sys_unfold. cbv iota in H. inv_ok; discriminate. }
+  reflexivity.
+Qed.
+
 Definition check_mprotect (addr len prot : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if mprotect_grows_conflict_b prot
@@ -49,6 +135,8 @@ Definition check_mprotect (addr len prot : word) (eff : SyscallEffect) (m : Mode
           if w_is0 r then CheckOk m [] else CheckReject
       | _ => CheckReject
       end
+    else if vdso_byte (m_vdso m) (bv_unsigned addr)
+    then check_mprotect_vdso addr nZ eff m
     else CheckUnmodeled.
 
 Lemma check_mprotect_sound_ok : forall addr len prot eff m m' evs i,
@@ -108,7 +196,11 @@ Proof.
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && region_free (vm_noaccess (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hrw.
-  2: discriminate.
+  2: { destruct (vdso_byte (m_vdso m) (bv_unsigned addr)) eqn:Hvb;
+         [|discriminate].
+       eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
+       rewrite Hcover, Hrw, Hvb. cbv beta iota in H |- *.
+       apply check_mprotect_vdso_sound_ok. exact H. }
   destruct eff as [r ws zs us cs copyins]; destruct ws as [|? ?];
     [destruct zs as [|? ?];
       [destruct us as [|? ?];
@@ -163,7 +255,11 @@ Proof.
       try discriminate.
     destruct (w_is0 r); discriminate. }
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
-  rewrite Hcover, Hrw. apply unmodeled_intro.
+  rewrite Hcover, Hrw. cbv beta iota.
+  destruct (vdso_byte (m_vdso m) (bv_unsigned addr)) eqn:Hvb;
+    cbv beta iota in H |- *.
+  - eapply check_mprotect_vdso_sound_unmodeled. exact H.
+  - apply unmodeled_intro.
 Qed.
 
 Lemma check_mprotect_complete_ok : forall addr len prot eff m m' evs i,
@@ -211,7 +307,14 @@ Proof.
             && region_free (vm_noaccess (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hrw.
   2: { sys_unfold. cbv iota in H. inv_ok.
-       rewrite Hcover, Hrw in *. inv_ok. }
+       rewrite Hcover, Hrw in *. cbv beta iota in *.
+       destruct (vdso_byte (m_vdso m) (bv_unsigned addr)) eqn:Hvb;
+         cbv beta iota in *.
+       - match goal with
+         | Hs : mprotect_vdso _ _ _ _ _ _ |- _ =>
+             eapply check_mprotect_vdso_complete_ok; exact Hs
+         end.
+       - inv_ok. }
   sys_unfold. cbv iota in H. inv_ok. rewrite Hcover, Hrw in *. inv_ok.
   reflexivity.
 Qed.
@@ -243,6 +346,13 @@ Proof.
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && region_free (vm_noaccess (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hrw.
-  2: reflexivity.
+  2: { sys_unfold. cbv iota in H. inv_ok.
+       rewrite Hcover, Hrw in *. cbv beta iota in *.
+       destruct (vdso_byte (m_vdso m) (bv_unsigned addr)) eqn:Hvb;
+         cbv beta iota in *; [|reflexivity].
+       match goal with
+       | Hs : mprotect_vdso _ _ _ _ _ _ |- _ =>
+           eapply check_mprotect_vdso_complete_unmodeled; exact Hs
+       end. }
   sys_unfold. cbv iota in H. inv_ok. rewrite Hcover, Hrw in *. inv_ok.
 Qed.

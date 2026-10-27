@@ -54,6 +54,38 @@ Qed.
     choosing the errno one that leaves the range in place, since it only
     has to be AN admissible outcome. *)
 
+(** The MAP_FIXED arms over the vDSO pair ([Mmap.mmap_fixed_noaccess_vdso],
+    [Mmap.mmap_fixed_rw_vdso]) carry the errno arm on every answering
+    sub-case, and decline only a request that reaches the image. *)
+Definition mmap_fixed_vdso_witness (addr : word) (nZ : Z) (m : Model)
+    : outcome SyscallEffect :=
+  let n := Z_to_bv 64 nZ in
+  if vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+  then ret_outcome (errno_ret witness_errno) m
+  else if region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr n
+  then ret_outcome (errno_ret witness_errno) m
+  else if region_free (vm_reserved (m_vmmaps m)) addr n
+  then ret_outcome (errno_ret witness_errno) m
+  else Unmodeled.
+
+Ltac mmap_fixed_vdso_witness_step :=
+  cbv beta iota zeta;
+  unfold mmap_fixed_noaccess_vdso, mmap_fixed_rw_vdso, mmap_fixed_vdso_witness;
+  cbv zeta;
+  match goal with
+  | |- context [vdso_split ?v ?lo ?hi] => destruct (vdso_split v lo hi)
+  end; cbv beta iota;
+  [ apply alt_l; eapply bind_step; [apply errno_head_witness|]; apply pure_ok |];
+  match goal with
+  | |- context [region_free (?r ++ ?l) ?a ?n] => destruct (region_free (r ++ l) a n)
+  end; cbv beta iota;
+  [ apply alt_l; eapply bind_step; [apply errno_head_witness|]; apply pure_ok |];
+  match goal with
+  | |- context [region_free ?r ?a ?n] => destruct (region_free r a n)
+  end; cbv beta iota;
+  [ apply alt_l; eapply bind_step; [apply errno_head_witness|]; apply pure_ok
+  | apply unmodeled_intro ].
+
 Definition mmap_witness (addr len prot flags fd off : word) (m : Model)
     : outcome SyscallEffect :=
   if negb (mmap_off_aligned_b off) then
@@ -80,6 +112,8 @@ Definition mmap_witness (addr len prot flags fd off : word) (m : Model)
       if region_free (vm_reserved (m_vmmaps m)) addr n
          && map_contains (vm_maps (m_vmmaps m)) addr n
       then ret_outcome (errno_ret witness_errno) m
+      else if vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+      then mmap_fixed_vdso_witness addr nZ m
       else if region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                           addr n
       then ret_outcome (errno_ret witness_errno) m
@@ -99,6 +133,8 @@ Definition mmap_witness (addr len prot flags fd off : word) (m : Model)
       if region_free (vm_reserved (m_vmmaps m)) addr n
          && map_contains (vm_maps (m_vmmaps m)) addr n
       then ret_outcome (errno_ret witness_errno) m
+      else if vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+      then mmap_fixed_vdso_witness addr nZ m
       else if region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                           addr n
       then ret_outcome (errno_ret witness_errno) m
@@ -157,8 +193,8 @@ Ltac mmap_noreplace_witness_step :=
         [apply unmodeled_intro|]
   end;
   match goal with
-  | |- context [region_free ?l ?a ?n] =>
-      destruct (region_free l a n)
+  | |- context [region_free ?l ?a ?n && ?rest] =>
+      destruct (region_free l a n && rest)
   end;
   (apply alt_l; eapply bind_step; [apply errno_head_witness|]; apply pure_ok).
 
@@ -196,6 +232,9 @@ Proof.
                    (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hok.
     { apply alt_l. eapply bind_step; [apply errno_head_witness|].
       apply pure_ok. }
+    destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+                (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd.
+    { mmap_fixed_vdso_witness_step. }
     destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                    addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
       eqn:Hfresh0.
@@ -228,6 +267,9 @@ Proof.
             && map_contains (vm_maps (m_vmmaps m)) addr
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hok.
   { apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok. }
+  destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+              (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd.
+  { mmap_fixed_vdso_witness_step. }
   destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                  addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
                  ) eqn:Hfresh.
@@ -238,12 +280,13 @@ Proof.
   apply unmodeled_intro.
 Qed.
 
-(** munmap witness: mirrors the spec's four-way split — -EINVAL on a
-    bad argument or a range leaving the user address space, the removal
-    (with its unmap effect) on an exact recorded mapping, the no-op 0 on
-    a free range below the stack band, and [Unmodeled] (fail closed) on
-    a partial unmap, one touching the image, or a free range reaching
-    into the band (see [Mmap.munmap_spec]). *)
+(** munmap witness: mirrors the spec's split — -EINVAL on a bad argument
+    or a range leaving the user address space, the removal (with its
+    unmap effect) on an exact recorded mapping, -EINVAL on a split of the
+    vDSO pair, 0 with the covered ranges cleared on whole ranges of it,
+    the no-op 0 on a free range below the stack band, and [Unmodeled]
+    (fail closed) on a partial unmap, one touching the image, or a free
+    range reaching into the band (see [Mmap.munmap_spec]). *)
 
 Definition munmap_witness (addr len : word) (m : Model)
     : outcome SyscallEffect :=
@@ -265,6 +308,14 @@ Definition munmap_witness (addr len : word) (m : Model)
                                (bv_unsigned addr + bv_unsigned n))
                             (vm_start_brk h) (vm_brk h) (vm_limit h)
       (vm_mmap_base h) (vm_init_sp h)) m) []
+    else if vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+    then ret_outcome (errno_ret EINVAL) m
+    else if vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+    then (if munmap_vdso_ok h (m_vdso m) addr nZ
+          then ret_outcome (Z_to_bv 64 0)
+                 (with_vdso (vdso_cut (m_vdso m) (bv_unsigned addr)
+                               (bv_unsigned addr + nZ)) m)
+          else Unmodeled)
     else if munmap_free_ok h addr nZ
     then ret_outcome (Z_to_bv 64 0) m
     else Unmodeled.
@@ -285,12 +336,22 @@ Proof.
     cbv iota. srw Hhas.
     eapply bind_step; [apply modify_ok|].
     eapply bind_step; [apply modify_ok|]. apply pure_ok.
-  - destruct (munmap_free_ok (m_vmmaps m) addr
-                (page_round_up_Z (bv_unsigned len))) eqn:Hfree.
-    + eapply bind_step; [apply get_vmmaps_ok|]. cbv beta zeta.
-      cbv iota. srw Hhas. srw Hfree. apply pure_ok.
-    + eapply bind_step; [apply get_vmmaps_ok|]. cbv beta zeta.
-      cbv iota. srw Hhas. srw Hfree. apply unmodeled_intro.
+  - eapply bind_step; [apply get_vmmaps_ok|]. cbv beta zeta.
+    cbv iota. srw Hhas.
+    eapply bind_step; [apply get_model_ok|]. cbv beta zeta.
+    destruct (vdso_split (m_vdso m) (bv_unsigned addr)
+                (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hsp;
+      cbv beta iota; [apply pure_ok|].
+    destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+                (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd;
+      cbv beta iota.
+    { destruct (munmap_vdso_ok (m_vmmaps m) (m_vdso m) addr
+                  (page_round_up_Z (bv_unsigned len))) eqn:Hok;
+        cbv beta iota; [|apply unmodeled_intro].
+      eapply bind_step; [apply modify_ok|]. apply pure_ok. }
+    destruct (munmap_free_ok (m_vmmaps m) addr
+                (page_round_up_Z (bv_unsigned len))) eqn:Hfree;
+      cbv beta iota; [apply pure_ok|apply unmodeled_intro].
 Qed.
 
 (** mremap witness: deterministic -EINVAL for the modeled flag shape's

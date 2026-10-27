@@ -34,6 +34,13 @@ Definition mprotect_witness (addr len prot : word) (m : Model)
     else if map_contains (vm_maps (m_vmmaps m)) addr n
             && region_free (vm_noaccess (m_vmmaps m)) addr n
          then ret_outcome (Z_to_bv 64 0) m
+         else if vdso_byte (m_vdso m) (bv_unsigned addr)
+         then (if vdso_vvar_byte (m_vdso m) (bv_unsigned addr)
+               then ret_outcome (errno_ret EACCES) m
+               else if vdso_split (m_vdso m) (bv_unsigned addr)
+                         (bv_unsigned addr + nZ)
+               then ret_outcome (errno_ret EINVAL) m
+               else Unmodeled)
          else Unmodeled
   else Unmodeled.
 
@@ -60,5 +67,11 @@ Proof.
             && region_free (vm_noaccess (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hfree.
   { apply pure_ok. }
-  apply unmodeled_intro.
+  destruct (vdso_byte (m_vdso m) (bv_unsigned addr)) eqn:Hvb;
+    [|apply unmodeled_intro].
+  cbv beta iota. unfold mprotect_vdso.
+  destruct (vdso_vvar_byte (m_vdso m) (bv_unsigned addr)); [apply pure_ok|].
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr)
+              (bv_unsigned addr + page_round_up_Z (bv_unsigned len)));
+    [apply alt_r; apply pure_ok | apply unmodeled_intro].
 Qed.
