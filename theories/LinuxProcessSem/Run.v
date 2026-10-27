@@ -2222,11 +2222,13 @@ Qed.
     ([Checks.BudgetPremise.mremap_budget_refused_refuses_move]).  Its fit
     hypothesis and the protected ledger it reads are proved invariants
     ([Checks.MapsFit], [Checks.NoaccessOwned]); the lazy-ledger half is
-    not yet proved preserved.  On a state that broke it, the mark could
-    fire where a move is still admitted, and under a forced-only
-    configuration the filter could drop the marked refusal as spurious;
-    the marked configuration is still reached, so the premise is
-    unaffected. *)
+    not yet proved preserved.  On a state with empty lazy ledgers every
+    admitted outcome is a refusal
+    ([Checks.BudgetPremiseMremap.mremap_budget_refused_is_refusal_sys_inv]).
+    On a state that broke the lazy-ledger half, the mark could fire
+    where a move is still admitted, and under a forced-only configuration
+    the filter could drop the marked refusal as spurious; the marked
+    configuration is still reached, so the premise is unaffected. *)
 Definition reaches_budget_refused_cfg (cfg : SpuriousCfg) (c0 : config) : Prop :=
   exists tr c, star_cfg segs cfg c0 tr c /\ budget_refused_at c.
 
