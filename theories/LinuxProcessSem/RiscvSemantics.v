@@ -567,7 +567,8 @@ Definition ms_writable_byte (ms : machine_state) (addr : word) : option byte :=
     even for a reference against itself.  Real Linux faults at an
     ASLR-INDEPENDENT point instead: the RLIMIT_STACK window, which
     [Run.init_machine_state] already zero-maps as
-    [init_sp - stack_max_size, init_sp).
+    [[Run.stack_window_lo], init_sp): [stack_max_size] bytes counted
+    from the top of the entry image, as Linux counts them.
 
     So the ledger this needs already exists, and is exactly [wview]:
     the initial stack block and its zero window, every brk/mmap grant

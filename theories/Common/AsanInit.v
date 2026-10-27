@@ -350,23 +350,30 @@ Section Init.
     replace (CEIL <=? bv_unsigned a) with true by (symmetry; apply Z.leb_le; exact Hc). rewrite orb_true_r. reflexivity.
   Qed.
 
-  Lemma FULL0_below : forall a : word, usp - 8388608 <= bv_unsigned a < usp -> FULL0 a = Some (Z_to_bv 8 0).
+  (** 6144513 is [StoreOk.stack_window_depth]: what the 8 MiB leaves
+      below [sp] once the entry image is counted inside it, as Linux
+      counts it ([Run.stack_window_lo]). *)
+  Lemma FULL0_below : forall a : word, usp - 6144513 <= bv_unsigned a < usp -> FULL0 a = Some (Z_to_bv 8 0).
   Proof.
     intros a Ha. unfold FULL0, wrap_mem.
+    assert (HW : stack_window_lo sp SIMG <= bv_unsigned sp + stack_window_reach - stack_max_size)
+      by exact (stack_window_lo_valid ph sp argv envp uid hw rdraw Hva Hve).
     assert (Hs : stack_to_mem sp SIMG a = None).
     { unfold stack_to_mem. replace (Z.leb (bv_unsigned sp) (bv_unsigned a)) with false by (symmetry; apply Z.leb_gt; unfold usp in Ha; lia). reflexivity. }
-    fold SIMG. rewrite Hs. unfold stack_max_size, usp in *.
-    replace (Z.leb (bv_unsigned sp - 8 * 1024 * 1024) (bv_unsigned a)) with true by (symmetry; apply Z.leb_le; lia).
+    fold SIMG. rewrite Hs.
+    unfold stack_window_reach, stack_max_size, usp in *.
+    replace (Z.leb (stack_window_lo sp SIMG) (bv_unsigned a)) with true by (symmetry; apply Z.leb_le; lia).
     replace (Z.ltb (bv_unsigned a) (bv_unsigned sp)) with true by (symmetry; apply Z.ltb_lt; lia). reflexivity.
   Qed.
 
   Lemma FULL0_low : forall a : word, bv_unsigned a < usp - 8388608 -> FULL0 a = None.
   Proof.
     intros a Ha. unfold FULL0, wrap_mem.
+    pose proof (stack_window_lo_ge sp SIMG) as HW.
     assert (Hs : stack_to_mem sp SIMG a = None).
     { unfold stack_to_mem. replace (Z.leb (bv_unsigned sp) (bv_unsigned a)) with false by (symmetry; apply Z.leb_gt; unfold usp in Ha; lia). reflexivity. }
     fold SIMG. rewrite Hs. unfold stack_max_size, usp in *.
-    replace (Z.leb (bv_unsigned sp - 8 * 1024 * 1024) (bv_unsigned a)) with false by (symmetry; apply Z.leb_gt; lia). reflexivity.
+    replace (Z.leb (stack_window_lo sp SIMG) (bv_unsigned a)) with false by (symmetry; apply Z.leb_gt; lia). reflexivity.
   Qed.
 
   (** reading visible words of the argument block through [Mr0] = through the raw stack image *)
@@ -477,21 +484,21 @@ Section Init.
   Proof. intros e lo hi H. cbn [kentry_ok]. unfold uE in H. exact H. Qed.
 
   (** bytes of the zero window below sp, through [Mr0] *)
-  Lemma Mr0_below : forall a : word, usp - 8388608 <= bv_unsigned a < usp -> Mr0 a = Some (Z_to_bv 8 0).
+  Lemma Mr0_below : forall a : word, usp - 6144513 <= bv_unsigned a < usp -> Mr0 a = Some (Z_to_bv 8 0).
   Proof.
     intros a Ha. pose proof usp_lo. pose proof len_av.
     rewrite Mr0_visible; [apply FULL0_below; exact Ha | unfold CEIL; lia | apply not_argH0; lia].
   Qed.
 
   Lemma stack_window_ok :
-    kentry_ok segs E0 Mr0 (KWr (SA e_sp0 (-8388608)) (ELit 8388608))
-    /\ kentry_ok segs E0 Mr0 (KZero (SA e_sp0 (-8388608)) (ELit 8388608)).
+    kentry_ok segs E0 Mr0 (KWr (SA e_sp0 (-6144513)) (ELit 6144513))
+    /\ kentry_ok segs E0 Mr0 (KZero (SA e_sp0 (-6144513)) (ELit 6144513)).
   Proof.
     pose proof usp_lo. pose proof usp_hi.
-    assert (Hst : estart E0 (SA e_sp0 (-8388608)) = usp - 8388608).
+    assert (Hst : estart E0 (SA e_sp0 (-6144513)) = usp - 6144513).
     { unfold estart. cbn [a_base a_off]. pose proof u_e_sp0 as U. unfold uE in U. rewrite U. lia. }
-    assert (Hl : elenZ E0 (ELit 8388608) = 8388608) by (apply elenZ_lit; lia).
-    assert (Hfl : flat E0 (SA e_sp0 (-8388608)) (elenZ E0 (ELit 8388608))).
+    assert (Hl : elenZ E0 (ELit 6144513) = 6144513) by (apply elenZ_lit; lia).
+    assert (Hfl : flat E0 (SA e_sp0 (-6144513)) (elenZ E0 (ELit 6144513))).
     { unfold flat. rewrite Hst, Hl. lia. }
     split; cbn [kentry_ok]; (split; [exact Hfl|]); rewrite Hst, ?Hl.
     - intros d m Hd Hdm. apply store_ok_of_all; rewrite u_small by lia; [lia|].

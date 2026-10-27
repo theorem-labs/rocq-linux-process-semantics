@@ -2208,9 +2208,9 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       stack below the entry [sp] and records it in no [VmMaps] list, so a
       range that is free by the ledger may be the stack, which Linux
       would split and unmap where a no-op 0 would leave it mapped.
-      [alloc_top h] is [vm_init_sp h - stack_max_size], the lowest
-      address this run's stack can occupy, which is why it is the bound
-      here.
+      [alloc_top h] is [vm_init_sp h - stack_max_size], at or below
+      [Run.stack_window_lo], the lowest address this run's stack can
+      occupy, which is why it is a safe bound here.
 
     With the kernel and boot fixed ([State.TASK_SIZE]), the
     address-space test is Linux's own -EINVAL. *)

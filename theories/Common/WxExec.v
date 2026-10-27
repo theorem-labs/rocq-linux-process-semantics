@@ -130,13 +130,15 @@ Lemma mem_clear_wrap : forall ph (sp : word) argv envp lo hi uid hw rnd,
   mem_clear (wrap_mem ph sp argv envp uid hw rnd) lo hi.
 Proof.
   intros ph sp argv envp lo hi uid hw rnd Hhi a Ha.
+  pose proof (stack_window_lo_ge sp (entry_stack_image ph sp argv envp uid hw rnd)) as Hge.
   unfold wrap_mem, stack_to_mem.
   unfold stack_max_size in Hhi.
   assert (Hblo : Z.leb (bv_unsigned sp) (bv_unsigned a) = false)
     by (apply Z.leb_gt; lia).
   rewrite Hblo.
-  assert (Hwlo : Z.leb (bv_unsigned sp - stack_max_size) (bv_unsigned a) = false)
-    by (apply Z.leb_gt; unfold stack_max_size; lia).
+  assert (Hwlo : Z.leb (stack_window_lo sp (entry_stack_image ph sp argv envp uid hw rnd))
+                       (bv_unsigned a) = false)
+    by (apply Z.leb_gt; unfold stack_max_size in *; lia).
   rewrite Hwlo. reflexivity.
 Qed.
 

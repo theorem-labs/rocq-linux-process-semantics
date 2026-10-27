@@ -3649,7 +3649,8 @@ Definition auxw (i : Z) (ty : Z) (v : expr) : list kentry :=
 
 (** What the checker knows at [_start] (justified by AsanInit.init_cs_ok):
     ranges of the initial variables and the sum facts (most specific first),
-    the zero-filled writable 8 MiB below sp, argc / argv[0] / the sp0+16 word,
+    the zero-filled writable window below sp (6144513 bytes, [StoreOk.stack_window_depth]:
+    the 8 MiB less the largest entry image, as Linux counts it), argc / argv[0] / the sp0+16 word,
     the 20 auxv words (AT_UID/AT_EUID = EVar V_UID; AT_HWCAP = the hwcap word), the AT_RANDOM block ([atr]: the faithful byte-string
     entry, or the zero entry), the image hull with no
     overlay and its writable window. *)
@@ -3661,7 +3662,7 @@ Definition init_kn_with (atr : kentry) (A : atable) : list kentry :=
    KRange (EVar V_ARGC) 1 1024; KRange (EVar V_ENVC) 0 256; KRange (EVar V_L0) 0 131071; KRange (EVar V_L1) 0 131071;
    KRange (EVar V_UID) 0 0xFFFFFFFE;
    KRange (EVar V_W) 0 280000; KRange (EVar V_BRK) (img_hi A / 4096) ((img_hi A + BRK_ASLR) / 4096);
-   KWr (SA e_sp0 (-8388608)) (ELit 8388608); KZero (SA e_sp0 (-8388608)) (ELit 8388608);
+   KWr (SA e_sp0 (-6144513)) (ELit 6144513); KZero (SA e_sp0 (-6144513)) (ELit 6144513);
    KWord (SA e_sp0 0) 8 (EVar V_ARGC); KWord (SA e_sp0 8) 8 e_str0; kw_argv1 e_argv1w]
   (* pair 3 is (AT_HWCAP = 16, the run's hwcap word) — not claimed (no plan variable denotes it); pairs 4..9 follow *)
   ++ auxw 0 3 (ELit (ph_addr_z A)) ++ auxw 1 4 (ELit (ph_ent_z A)) ++ auxw 2 5 (ELit (ph_num_z A)) ++ auxw 4 6 (ELit 4096)

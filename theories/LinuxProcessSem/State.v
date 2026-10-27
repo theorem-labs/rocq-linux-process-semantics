@@ -73,10 +73,11 @@ Proof.
   lia.
 Qed.
 
-(** Maximum dynamic stack size below the initial SP (Linux default
-    [RLIMIT_STACK] = 8 MiB).  The whole region
-    [init_sp - stack_max_size, init_sp) models the zero-mapped Linux
-    stack (see [Run.init_machine_state]). *)
+(** Maximum stack size (Linux default [RLIMIT_STACK] = 8 MiB).  Like
+    Linux, the model counts it from the top of the entry image, not from
+    the initial SP: [Run.init_machine_state] zero-maps the window
+    [[Run.stack_window_lo], init_sp), which is [stack_max_size] bytes
+    below [Run.entry_page_top]. *)
 Definition stack_max_size : Z := (8 * 1024 * 1024)%Z.
 
 (** The initial stack pointer is chosen NON-DETERMINISTICALLY at [execve]
@@ -2749,7 +2750,8 @@ Record VmMaps := mkVmMapsFull {
 
 (** ALLOCATION TOP: no allocator grant (anonymous mmap, brk grow, a
     moved or grown mremap) may reach at or above this address, so every
-    grant is disjoint from the dynamic stack [sp - stack_max_size, sp)
+    grant is disjoint from the dynamic stack (whose window
+    [[Run.stack_window_lo], sp) starts at or above [sp - stack_max_size])
     and from the argv/envp/auxv block above [sp] — for the [sp] THIS run
     was started with.
 

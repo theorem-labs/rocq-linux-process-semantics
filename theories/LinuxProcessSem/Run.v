@@ -1060,6 +1060,43 @@ Proof.
   rewrite Nat2Z.inj_add, Z2Nat.id by lia. lia.
 Qed.
 
+(** ** The stack window: RLIMIT_STACK counts the entry image
+
+    Below the entry image, [init_machine_state] zero-maps the stack that
+    the program can grow into.  Linux bounds the WHOLE stack VMA by
+    [RLIMIT_STACK]: [expand_downwards] (mm/vma.c, Linux v6.18.46) passes
+    [size = vma->vm_end - address] to [acct_stack_growth], which refuses
+    the growth when [size > rlimit(RLIMIT_STACK)], and [setup_arg_pages]
+    (fs/exec.c) has already put the argv and envp strings, the auxv and
+    the rest of the entry image in that VMA, below its page-aligned top
+    [vm_end].  So the 8 MiB ([State.stack_max_size]) is measured from the
+    top of the entry image, not from [sp]: the window is
+    [[entry_page_top - stack_max_size, sp)].
+
+    Linux's [vm_end] is at or above [entry_page_top] (the note above), so
+    every address the model maps here is one that Linux can also map
+    under the same limit.
+
+    An earlier version of the model zero-mapped [[sp - stack_max_size, sp)],
+    which counted 8 MiB from [sp] and so mapped [entry_page_top - sp]
+    bytes more than Linux does (theorem-labs/rocq-linux-process-semantics#6). *)
+Definition stack_window_lo (sp : word) (image : list byte) : Z :=
+  (bv_unsigned sp + Z.of_nat (length image) - stack_max_size)%Z.
+
+Lemma stack_window_lo_entry : forall ph sp argv envp uid hwcap draw,
+  stack_window_lo sp (entry_stack_image ph sp argv envp uid hwcap draw)
+  = (entry_page_top sp (build_stack_bytes ph sp argv envp uid hwcap draw)
+     - stack_max_size)%Z.
+Proof.
+  intros. unfold stack_window_lo. rewrite entry_stack_image_top. reflexivity.
+Qed.
+
+(** The window never reaches below the old one: the image has no
+    negative length. *)
+Lemma stack_window_lo_ge : forall sp image,
+  (bv_unsigned sp - stack_max_size <= stack_window_lo sp image)%Z.
+Proof. intros. unfold stack_window_lo. lia. Qed.
+
 Definition init_machine_state (argv : list (list byte))
     (envp : list (list byte)) (uid : word) (hwcap : word) : machine_state :=
   let regs :=
@@ -1077,14 +1114,16 @@ Definition init_machine_state (argv : list (list byte))
      ms_svc_pending := None;
      ms_resv := None; ms_fcsr := Z_to_bv 32 0;
      ms_mem :=
-       let stk := stack_to_mem mi_init_sp
-                    (entry_stack_image mi_phdrs mi_init_sp argv envp uid
-                       hwcap mi_draw) in
+       let img := entry_stack_image mi_phdrs mi_init_sp argv envp uid
+                    hwcap mi_draw in
+       let stk := stack_to_mem mi_init_sp img in
        fun addr =>
          match stk addr with
          | Some b => Some b
          | None =>
-           if andb (Z.leb (bv_unsigned mi_init_sp - stack_max_size)
+           (* the window [stack_window_lo]: 8 MiB counted from the top
+              of the entry image, as Linux counts it *)
+           if andb (Z.leb (stack_window_lo mi_init_sp img)
                           (bv_unsigned addr))
                    (Z.ltb (bv_unsigned addr) (bv_unsigned mi_init_sp))
            then Some (Z_to_bv 8 0)

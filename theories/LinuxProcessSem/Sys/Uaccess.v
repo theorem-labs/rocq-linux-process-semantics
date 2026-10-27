@@ -268,10 +268,11 @@ Open Scope sys_scope.
 
     And the obstruction survives the obvious repair.  Even if memory were
     re-represented as a finite interval structure, the smallest run the
-    model structurally guarantees is the 8 MiB zero-mapped stack every
-    run has ([Run.init_machine_state]), and an anonymous grant may be
+    model structurally guarantees is the zero-mapped stack every run
+    has ([Run.init_machine_state]: 8 MiB less the entry image, so more
+    than 5 MiB), and an anonymous grant may be
     [State.target_alloc_limit] — 512 GiB.  A correct cap is not a small
-    cap: 8 MiB is 64x this constant and was already past the depth the
+    cap: 5 MiB is 40x this constant and was already past the depth the
     extraction was measured to die at.
 
     WHICH IS WHY THE WALK USES NEITHER OF THESE.  Capping
