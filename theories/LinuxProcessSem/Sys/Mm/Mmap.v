@@ -2322,7 +2322,14 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
     this arm: it is [true] iff no success resolution exists for want of
     budget.  Pinned in [Checks/BudgetPremise.v].  That pin does not see
     a NEW charging branch on a gate the mark already names (the mark
-    falls to [false] there). *)
+    falls to [false] there).
+
+    The vDSO pair's branches are mirrored too, because an answer they
+    give is not a budget refusal: a MAP_FIXED that splits a range of the
+    pair answers -EINVAL ([mmap_fixed_rw_vdso]) and a NOREPLACE over it
+    -EEXIST, so the mark is [false] there; a MAP_FIXED that covers whole
+    ranges charges through the free or the spanning gate, as the arm
+    does. *)
 Definition mmap_budget_refused_b (addr len prot flags fd off : word)
     (m : Model) : bool :=
   if negb (mmap_off_aligned_b off) then false
@@ -2344,6 +2351,14 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       else if region_free (vm_reserved h) addr n
               && map_contains (vm_maps h) addr n
       then negb (mmap_fixed_rw_budget_ok flags m addr n)
+      else if vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+      then (if vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+            then false
+            else if region_free (vm_reserved h ++ vm_maps h) addr n
+            then negb (mmap_noreserve_backed_ok flags m nZ)
+            else if region_free (vm_reserved h) addr n
+            then negb (mmap_fixed_rw_span_budget_ok flags m addr n)
+            else false)
       else if region_free (vm_reserved h ++ vm_maps h) addr n
       then negb (mmap_noreserve_backed_ok flags m nZ)
       else if region_free (vm_reserved h) addr n
@@ -2356,6 +2371,7 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       else if negb (Z.eqb (bv_unsigned addr mod page_size) 0) then false
       else if negb (0 <? bv_unsigned addr)%Z then false
       else if region_free (vm_reserved h ++ vm_maps h) addr n
+              && negb (vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ))
       then negb (mmap_noreserve_backed_ok flags m nZ)
       else false
     else false.

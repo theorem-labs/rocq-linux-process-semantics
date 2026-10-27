@@ -507,7 +507,11 @@ Proof.
   assert (E2 : (0 <? bv_unsigned (vm_brk h))%Z = true) by (apply Z.ltb_lt; lia).
   assert (E3 : (bv_unsigned (vm_brk h) <? bv_unsigned r)%Z = true)
     by (apply Z.ltb_lt; lia).
-  rewrite E2, E3. reflexivity.
+  rewrite E2, E3.
+  (* [vm_model] has no vDSO pair ([mkModel] gives [no_vdso]) *)
+  assert (Hv : m_vdso (vm_model h) = no_vdso) by reflexivity.
+  rewrite Hv, vdso_meets_no_vdso. cbn [andb negb]. rewrite !andb_true_r.
+  reflexivity.
 Qed.
 
 Lemma brk_grow_ok_keep : forall h req,

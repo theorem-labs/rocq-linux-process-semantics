@@ -328,7 +328,8 @@ Proof.
                          + page_round_up_Z (bv_unsigned (in_arg i 1)))%Z;
     [intros Hmark; discriminate Hmark |].
   intros Hmark Hspec.
-  unfold alt, bind, errno_from, choose, err_ret, ret_only, pure, get_model, modify
+  unfold mmap_fixed_rw_vdso, alt, bind, errno_from, choose, err_ret, ret_only, pure,
+    get_model, modify
     in Hspec.
   cbv beta zeta in Hspec. sys_destruct.
   match goal with
@@ -353,6 +354,25 @@ Proof.
           rewrite Hb in Hmark; discriminate Hmark
       end.
     - errno_is_refusal. }
+  destruct (vdso_meets (m_vdso m) (bv_unsigned (in_arg i 0))
+              (bv_unsigned (in_arg i 0) + page_round_up_Z (bv_unsigned (in_arg i 1)))).
+  { destruct (vdso_split (m_vdso m) (bv_unsigned (in_arg i 0))
+                (bv_unsigned (in_arg i 0) + page_round_up_Z (bv_unsigned (in_arg i 1))));
+      [intros Hmark _; discriminate Hmark |].
+    destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) (in_arg i 0)
+                (Z_to_bv 64 (page_round_up_Z (bv_unsigned (in_arg i 1))))).
+    2: destruct (region_free (vm_reserved (m_vmmaps m)) (in_arg i 0)
+                   (Z_to_bv 64 (page_round_up_Z (bv_unsigned (in_arg i 1)))));
+         [| intros Hmark _; discriminate Hmark].
+    all: intros Hmark Hspec; cbv beta iota zeta in Hspec; sys_destruct.
+    all: first
+      [ errno_is_refusal
+      | match goal with
+        | [ Hb : mmap_noreserve_backed_ok _ _ _ = true |- _ ] =>
+            rewrite Hb in Hmark; discriminate Hmark
+        | [ Hb : mmap_fixed_rw_span_budget_ok _ _ _ _ = true |- _ ] =>
+            rewrite Hb in Hmark; discriminate Hmark
+        end ]. }
   destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) (in_arg i 0)
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned (in_arg i 1))))).
   { intros Hmark Hspec. cbv beta iota zeta in Hspec. sys_destruct.
@@ -397,7 +417,10 @@ Proof.
   destruct (negb (0 <? bv_unsigned (in_arg i 0))%Z);
     [intros Hmark _; discriminate Hmark |].
   destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) (in_arg i 0)
-              (Z_to_bv 64 (page_round_up_Z (bv_unsigned (in_arg i 1)))));
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned (in_arg i 1))))
+            && negb (vdso_meets (m_vdso m) (bv_unsigned (in_arg i 0))
+                       (bv_unsigned (in_arg i 0)
+                        + page_round_up_Z (bv_unsigned (in_arg i 1)))));
     [| intros Hmark _; discriminate Hmark].
   intros Hmark Hspec. cbv beta iota zeta in Hspec. sys_destruct.
   - errno_is_refusal.

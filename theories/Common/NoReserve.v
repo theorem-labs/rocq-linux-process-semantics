@@ -261,7 +261,8 @@ Proof. reflexivity. Qed.
 Definition grant_ok_nr (hint : word) (m : Model) (a : word) (n : Z) : bool :=
   (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
   && (bv_unsigned a + n <=? alloc_top (m_vmmaps m))%Z
-  && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n).
+  && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n)
+  && negb (vdso_meets (m_vdso m) (bv_unsigned a) (bv_unsigned a + n)).
 
 Lemma grant_ok_nr_unpack : forall hint m a n,
   grant_ok_nr hint m a n = true ->
@@ -271,7 +272,7 @@ Lemma grant_ok_nr_unpack : forall hint m a n,
 Proof.
   intros hint m a n H. unfold grant_ok_nr in H.
   rewrite !andb_true_iff in H.
-  destruct H as [[[H1 H2] H3] H4].
+  destruct H as [[[[H1 H2] H3] H4] _].
   apply Z.eqb_eq in H1. apply Z.ltb_lt in H2. apply Z.leb_le in H3.
   auto 6.
 Qed.
@@ -323,11 +324,11 @@ Proof.
     [ | apply page_round_up_Z_nonneg; pose proof (u64_range (ms_gpr ms 1)); lia
       | exact Hg ].
   unfold grant_ok_nr in Hg. rewrite !andb_true_iff in Hg.
-  destruct Hg as [[[H1 H2] H3] H4].
+  destruct Hg as [[[[H1 H2] H3] H4] H6].
   rewrite Hflags.
   unfold mmap_noreserve_backed_ok, with_mmap_backing.
   rewrite mmap_noreserve_b_flags.
-  rewrite H1, H2, H3, H4. cbn [andb].
+  rewrite H1, H2, H3, H4, H6. cbn [andb].
   unfold page_round_up. cbn [listNN_eqb]. rewrite !bv_eqb_refl.
   reflexivity.
 Qed.
@@ -372,7 +373,9 @@ Proof.
     destruct ((bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
               && (bv_unsigned r + page_round_up_Z (bv_unsigned (ms_gpr ms 1)) <=? alloc_top (m_vmmaps model))%Z
               && region_free (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) r
-                   (Z_to_bv 64 (page_round_up_Z (bv_unsigned (ms_gpr ms 1))))) eqn:Hcond;
+                   (Z_to_bv 64 (page_round_up_Z (bv_unsigned (ms_gpr ms 1))))
+              && negb (vdso_meets (m_vdso model) (bv_unsigned r)
+                         (bv_unsigned r + page_round_up_Z (bv_unsigned (ms_gpr ms 1))))) eqn:Hcond;
       rewrite ?Hcond in Hspec.
     2:{ rewrite andb_false_l in Hspec. discriminate. }
     destruct (listNN_eqb zs

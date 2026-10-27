@@ -675,7 +675,11 @@ Proof.
     unfold na_inv. rewrite vmm_mmap_destroyed. cbn [vm_maps vm_noaccess vm_brk].
     apply na_inv_munmap; [exact Hwf | exact Ehas | exact Ealign | | exact Hna].
     rewrite u64 by lia. apply pu_aligned.
-  - dif H; [apply check_ret_only_model in H; subst m'; exact Hna|discriminate].
+  - dif H; [apply check_ret_only_model in H; subst m'; exact Hna|].
+    dif H.
+    + dif H; [|discriminate]. apply check_ret_only_model in H; subst m'.
+      unfold na_inv. rewrite m_vmmaps_with_vdso. exact Hna.
+    + dif H; [apply check_ret_only_model in H; subst m'; exact Hna|discriminate].
 Qed.
 
 Lemma check_mprotect_preserves_na : forall addr len prot eff m m' evs,
@@ -704,9 +708,108 @@ Proof.
       unfold na_inv. rewrite vmm_mprotect_next. cbn [vm_maps vm_noaccess vm_brk].
       apply na_inv_cut_na; [exact Ealign | | exact Hna].
       rewrite u64 by lia. apply aligned_add; [exact Ealign | apply pu_aligned].
-  - dif H; [|discriminate].
-    destruct ws, zs, us, cs, ci; try discriminate.
-    dif H; [|discriminate]. injection H as <- <-. exact Hna.
+  - dif H.
+    + destruct ws, zs, us, cs, ci; try discriminate.
+      dif H; [|discriminate]. injection H as <- <-. exact Hna.
+    + dif H; [|discriminate].
+      apply check_mprotect_vdso_model in H. subst m'. exact Hna.
+Qed.
+
+(** The MAP_FIXED arms over the vDSO pair write what the free-range and
+    spanning arms write, under [with_vdso]. *)
+Lemma check_mmap_fixed_noaccess_vdso_preserves_na :
+  forall flags addr len eff m m' evs,
+  w_is0 len = false -> (bv_unsigned addr mod page_size = 0)%Z ->
+  (bv_unsigned addr + page_round_up_Z (bv_unsigned len) <= alloc_top (m_vmmaps m))%Z ->
+  check_mmap_fixed_noaccess_vdso flags addr (page_round_up_Z (bv_unsigned len)) eff m
+    = CheckOk m' evs ->
+  vm_fit (m_vmmaps m) -> na_inv (m_vmmaps m) -> na_inv (m_vmmaps m').
+Proof.
+  intros flags addr len [ret ws zs us cs ci] m m' evs Elen Ealign Eceil H Hfit Hna.
+  pose proof (alloc_top_lt (m_vmmaps m)) as Hac. unfold two_pow_64 in Hac.
+  pose proof (word_range len) as Hlenr. pose proof (word_range addr) as Haddrr.
+  pose proof (w_is0_false len Elen) as Hlen0.
+  assert (HnZ : (0 < page_round_up_Z (bv_unsigned len))%Z)
+    by (apply page_round_up_pos; lia).
+  pose proof (pu_aligned (bv_unsigned len)) as Hnal.
+  assert (Hn64 : bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+                 = page_round_up_Z (bv_unsigned len)) by (rewrite u64 by lia; reflexivity).
+  assert (Hhial : ((bv_unsigned addr
+                    + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
+                   mod page_size = 0)%Z)
+    by (rewrite Hn64; apply aligned_add; assumption).
+  unfold check_mmap_fixed_noaccess_vdso in H. cbv zeta in H.
+  difn H Esp.
+  { destruct ws, zs, us, cs, ci; try discriminate.
+    dif H; [|discriminate]. injection H as <- <-. exact Hna. }
+  difn H Efree; [|difn H Espan; [|discriminate]].
+  all: destruct ws, zs, cs, ci; try discriminate.
+  all: destruct (errno_ret_in mmap_errnos ret).
+  all: try (destruct us;
+            [ injection H as <- <-; exact Hna
+            | difn H Eus; [|discriminate]; injection H as <- <-;
+              unfold na_inv; rewrite m_vmmaps_with_vdso, vmm_mmap_destroyed;
+              unfold mmap_fixed_destroyed_next; cbn [vm_maps vm_noaccess vm_brk];
+              apply na_inv_cut_both; [exact Hfit | exact Ealign | exact Hhial | exact Hna] ]).
+  - difn H Eok; [|discriminate]. injection H as <- <-.
+    unfold na_inv. rewrite m_vmmaps_with_vdso, vmm_mmap_backing, vmm_vmmaps.
+    cbn [vm_maps vm_noaccess vm_brk].
+    apply na_inv_cons_both;
+      [exact Ealign | rewrite Hn64; exact Hnal | rewrite Hn64; exact HnZ
+      | rewrite Hn64; unfold two_pow_64; lia | exact Hna].
+  - difn H Eok; [|discriminate]. injection H as <- <-.
+    unfold na_inv. rewrite m_vmmaps_with_vdso, vmm_mmap_replacement, vmm_vmmaps.
+    unfold mmap_fixed_noaccess_span_next. cbn [vm_maps vm_noaccess vm_brk].
+    apply na_inv_cons_both;
+      [exact Ealign | rewrite Hn64; exact Hnal | rewrite Hn64; exact HnZ
+      | rewrite Hn64; unfold two_pow_64; lia | ].
+    apply na_inv_cut_both; [exact Hfit | exact Ealign | exact Hhial | exact Hna].
+Qed.
+
+Lemma check_mmap_fixed_rw_vdso_preserves_na :
+  forall flags addr len eff m m' evs,
+  w_is0 len = false -> (bv_unsigned addr mod page_size = 0)%Z ->
+  (bv_unsigned addr + page_round_up_Z (bv_unsigned len) <= alloc_top (m_vmmaps m))%Z ->
+  check_mmap_fixed_rw_vdso flags addr (page_round_up_Z (bv_unsigned len)) eff m
+    = CheckOk m' evs ->
+  vm_fit (m_vmmaps m) -> na_inv (m_vmmaps m) -> na_inv (m_vmmaps m').
+Proof.
+  intros flags addr len [ret ws zs us cs ci] m m' evs Elen Ealign Eceil H Hfit Hna.
+  pose proof (alloc_top_lt (m_vmmaps m)) as Hac. unfold two_pow_64 in Hac.
+  pose proof (word_range len) as Hlenr. pose proof (word_range addr) as Haddrr.
+  pose proof (w_is0_false len Elen) as Hlen0.
+  assert (HnZ : (0 < page_round_up_Z (bv_unsigned len))%Z)
+    by (apply page_round_up_pos; lia).
+  assert (Hn64 : bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+                 = page_round_up_Z (bv_unsigned len)) by (rewrite u64 by lia; reflexivity).
+  assert (Hhial : ((bv_unsigned addr
+                    + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
+                   mod page_size = 0)%Z)
+    by (rewrite Hn64; apply aligned_add; [assumption | apply pu_aligned]).
+  unfold check_mmap_fixed_rw_vdso in H. cbv zeta in H.
+  difn H Esp.
+  { destruct ws, zs, us, cs, ci; try discriminate.
+    dif H; [|discriminate]. injection H as <- <-. exact Hna. }
+  difn H Efree; [|difn H Espan; [|discriminate]].
+  all: destruct ws, cs, ci; try discriminate.
+  all: destruct (errno_ret_in mmap_errnos ret).
+  all: try (destruct zs; [|discriminate]; destruct us;
+            [ injection H as <- <-; exact Hna
+            | difn H Eus; [|discriminate]; injection H as <- <-;
+              unfold na_inv; rewrite m_vmmaps_with_vdso, vmm_mmap_destroyed;
+              unfold mmap_fixed_destroyed_next; cbn [vm_maps vm_noaccess vm_brk];
+              apply na_inv_cut_both; [exact Hfit | exact Ealign | exact Hhial | exact Hna] ]).
+  - destruct us; [|discriminate].
+    difn H Eok; [|discriminate]. injection H as <- <-.
+    unfold na_inv. rewrite m_vmmaps_with_vdso, vmm_mmap_backing, vmm_vmmaps.
+    cbn [vm_maps vm_noaccess vm_brk].
+    apply na_inv_cons_maps. exact Hna.
+  - destruct us; [|discriminate].
+    difn H Eok; [|discriminate]. injection H as <- <-.
+    unfold na_inv. rewrite m_vmmaps_with_vdso, vmm_mmap_replacement, vmm_vmmaps.
+    unfold mmap_fixed_rw_span_next. cbn [vm_maps vm_noaccess vm_brk].
+    apply na_inv_cons_maps.
+    apply na_inv_cut_both; [exact Hfit | exact Ealign | exact Hhial | exact Hna].
 Qed.
 
 Lemma check_mmap_preserves_na : forall addr len prot flags fd off eff m m' evs,
@@ -747,6 +850,7 @@ Proof.
     unfold na_inv. rewrite vmm_mmap_backing, vmm_vmmaps.
     cbn [vm_maps vm_noaccess vm_brk].
     apply andb_true_iff in E as [E Hus].
+    apply andb_true_iff in E as [E Hvd].
     apply andb_true_iff in E as [E Hfree].
     apply andb_true_iff in E as [E Hceil].
     apply andb_true_iff in E as [Halign Hpos].
@@ -785,7 +889,10 @@ Proof.
           | rewrite Hn64; unfold two_pow_64; lia
           | intros x Hx; exact (map_contains_owned _ _ _ x Hcont Hx) | ].
         apply na_inv_cut_na; [exact Ealign | exact Hhial | exact Hna].
-    - difn H Efree.
+    - difn H Evd.
+      { eapply check_mmap_fixed_noaccess_vdso_preserves_na;
+          [exact Elen | exact Ealign | exact Eceil | exact H | exact Hfit | exact Hna]. }
+      difn H Efree.
       + destruct ws, zs, cs, ci; try discriminate.
         destruct (errno_ret_in mmap_errnos ret).
         * destruct us; [|discriminate]. injection H as <- <-. exact Hna.
@@ -874,7 +981,10 @@ Proof.
       unfold na_inv. rewrite vmm_mmap_replacement, vmm_vmmaps.
       unfold mmap_fixed_rw_next. cbn [vm_maps vm_noaccess vm_brk].
       apply na_inv_cut_na; [exact Ealign | exact Hhial | exact Hna].
-  - difn H Efree.
+  - difn H Evd.
+    { eapply check_mmap_fixed_rw_vdso_preserves_na;
+        [exact Elen | exact Ealign | exact Eceil | exact H | exact Hfit | exact Hna]. }
+    difn H Efree.
     + destruct ws, us, cs, ci; try discriminate.
       destruct (errno_ret_in mmap_errnos ret).
       * destruct zs; [|discriminate]. injection H as <- <-. exact Hna.
@@ -914,7 +1024,9 @@ Proof.
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hna|].
   difn H Enew; [apply check_ret_only_model in H; subst m'; exact Hna|].
   difn H Eold; [discriminate|].
-  difn H Esrc; [discriminate|].
+  difn H Esrc.
+  { difn H Evb; [|discriminate].
+    apply check_mremap_vdso_source_model in H. subst m'. exact Hna. }
   difn H Eeq; [apply check_ret_only_model in H; subst m'; exact Hna|].
   destruct ws; [|discriminate]. destruct ci; [|discriminate].
   apply negb_false_iff, Z.eqb_eq in Ealign.

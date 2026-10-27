@@ -1089,7 +1089,11 @@ Proof. check_eq. Qed.
     This is the strongest soundness argument any of the four shapes has,
     and it is why the sub-case is here rather than left fail-closed: it
     is a [forall] over admissible outcomes, which is reason 1's whole
-    category and which no trace can establish. *)
+    category and which no trace can establish.
+
+    The sub-case is reached only past the vDSO test in front of it, so
+    the range misses the pair; that is the last hypothesis, and it is the
+    hint-placed [choose]'s own conjunct. *)
 Lemma mmap_fixed_fresh_adds_no_transition :
   forall hint addr len i m,
     w_is0 hint = false ->
@@ -1099,6 +1103,8 @@ Lemma mmap_fixed_fresh_adds_no_transition :
     (bv_unsigned addr + page_round_up_Z (bv_unsigned len) <= alloc_top (m_vmmaps m))%Z ->
     region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true ->
+    vdso_meets (m_vdso m) (bv_unsigned addr)
+      (bv_unsigned addr + page_round_up_Z (bv_unsigned len)) = false ->
     mmap_noreserve_backed_ok 34 m (page_round_up_Z (bv_unsigned len)) = true ->
     mmap_spec hint len 3 34 mmap_fd_none 0 i m
       (Ok (mkEffect addr []
@@ -1113,7 +1119,7 @@ Lemma mmap_fixed_fresh_adds_no_transition :
                 (vm_brk (m_vmmaps m)) (vm_limit (m_vmmaps m)) (vm_mmap_base (m_vmmaps m))
                 (vm_init_sp (m_vmmaps m))) m)) []).
 Proof.
-  intros hint addr len i m Hhint Hl Halign Hpos Hceil Hfree Hbud.
+  intros hint addr len i m Hhint Hl Halign Hpos Hceil Hfree Hvd Hbud.
   unfold mmap_spec. rewrite Hl. cbn [mmap_modeled_b].
   apply alt_r.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
@@ -1138,6 +1144,8 @@ Lemma mmap_fixed_noaccess_fresh_adds_no_transition :
     (bv_unsigned addr + page_round_up_Z (bv_unsigned len) <= alloc_top (m_vmmaps m))%Z ->
     region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true ->
+    vdso_meets (m_vdso m) (bv_unsigned addr)
+      (bv_unsigned addr + page_round_up_Z (bv_unsigned len)) = false ->
     mmap_spec hint len 0 34 mmap_fd_none 0 i m
       (Ok (mkEffectU addr [] []
              [(addr, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))] [] [])
@@ -1151,7 +1159,7 @@ Lemma mmap_fixed_noaccess_fresh_adds_no_transition :
                 (vm_brk (m_vmmaps m)) (vm_limit (m_vmmaps m)) (vm_mmap_base (m_vmmaps m))
                 (vm_init_sp (m_vmmaps m))) m) []).
 Proof.
-  intros hint addr len i m Hhint Hl Halign Hpos Hceil Hfree.
+  intros hint addr len i m Hhint Hl Halign Hpos Hceil Hfree Hvd.
   unfold mmap_spec. rewrite Hl. cbn [mmap_modeled_b mmap_noaccess_b].
   apply alt_r.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
@@ -2778,12 +2786,15 @@ Proof.
                  (vm_reserved (m_vmmaps (init_model [] 0 mb sp demo_limit inp))
                   ++ vm_maps (m_vmmaps (init_model [] 0 mb sp demo_limit inp)))
                  a (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+            && negb (vdso_meets (m_vdso (init_model [] 0 mb sp demo_limit inp))
+                       (bv_unsigned a) (bv_unsigned a + page_round_up_Z (bv_unsigned len)))
             && mmap_noreserve_backed_ok 34 (init_model [] 0 mb sp demo_limit inp)
                  (page_round_up_Z (bv_unsigned len))
             && listNN_eqb
                  [(a, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))]
                  [(a, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
     eqn:HC; [|discriminate].
+  apply andb_true_iff in HC as [HC _].
   apply andb_true_iff in HC as [HC _].
   apply andb_true_iff in HC as [HC _].
   apply andb_true_iff in HC as [HC Hfree].
@@ -3403,18 +3414,19 @@ Qed.
 
 (** Reason 1, the other half.  OVER A FREE RANGE -EEXIST IS NEVER
     ACCEPTED, for every ledger, every address and every length.  Nothing
-    the ledger records meets the request, so no kernel reading only its
-    VMA tree could refuse it; the one kernel that would — one holding a
-    VMA the ledger does not carry — is the model's known residual
-    gap. *)
+    the ledger records meets the request, and it misses the vDSO pair,
+    so no kernel reading only its VMA tree could refuse it.  (A request
+    that lands on the pair is -EEXIST: [vdso_noreplace_eexist] below.) *)
 Lemma mmap_noreplace_free_range_never_eexist :
   forall addr len fd zs us m m' evs,
     region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true ->
+    vdso_meets (m_vdso m) (bv_unsigned addr)
+      (bv_unsigned addr + page_round_up_Z (bv_unsigned len)) = false ->
     check_mmap addr len 3 noreplace_noreserve_flags fd 0
       (mkEffectU (errno_ret EEXIST) [] zs us [] []) m <> CheckOk m' evs.
 Proof.
-  intros addr len fd zs us m m' evs Hfree H.
+  intros addr len fd zs us m m' evs Hfree Hvd H.
   unfold check_mmap in H.
   assert (E1 : mmap_off_aligned_b 0 = true) by (vm_compute; reflexivity).
   assert (E2 : mmap_anon_b noreplace_noreserve_flags = true)
@@ -3452,7 +3464,7 @@ Proof.
     apply (f_equal (fun e => bv_unsigned (eff_ret e))) in Heff.
     vm_compute in Heff. discriminate. }
   destruct (negb (0 <? bv_unsigned addr)%Z) eqn:Hpos; [discriminate|].
-  rewrite Hfree in H.
+  rewrite Hfree, Hvd in H. cbn [negb andb] in H.
   destruct us; [|discriminate].
   assert (Enot : errno_ret_in mmap_errnos (errno_ret EEXIST) = false)
     by (vm_compute; reflexivity).
@@ -3475,3 +3487,214 @@ Proof.
   pose proof (page_round_up_Z_nonneg (bv_unsigned len) ltac:(lia)) as Hn.
   alloc_top_bounds. unfold two_pow_64, stack_max_size, EEXIST in *. lia.
 Qed.
+
+(* =========================================================================
+   THE vDSO AND vvar PAIR
+
+   [init_model] places the pair right below the mmap base ([State.vdso_at]).
+   With the base at 0x106000 and the default geometry (four vvar pages, two
+   text pages) the vvar range is [[0x100000, 0x104000)] and the text
+   [[0x104000, 0x106000)].  The break is established at 65536, far below.
+   Each answer below is Linux's ([Sys/Mm/Mmap.v]'s pair section cites the
+   kernel), and each comes with a wrong answer the checker rejects.
+   ========================================================================= *)
+
+Definition vdso_mbase : word := Z_to_bv 64 0x106000.
+
+Definition m_vdso_est : Model :=
+  init_model brk_reserved 65536 vdso_mbase demo_sp demo_limit (demo_input [] IEof).
+
+Example vdso_pair_placed :
+  m_vdso m_vdso_est = mkVdsoState 0x100000%Z 16384%Z 8192%Z true true.
+Proof. vm_compute. reflexivity. Qed.
+
+(** munmap of the WHOLE pair succeeds (CONFIG_MSEAL_SYSTEM_MAPPINGS off):
+    0, and both ranges are gone.  The pair's bytes were never in the
+    machine's memory, so there is nothing to unmap there; an answer that
+    claims an unmap, or -EINVAL, is rejected. *)
+Example vdso_munmap_whole_pair_drops_it :
+  check_syscall (mkInput 215 [0x100000; 0x6000; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) m_vdso_est
+  = CheckOk (with_vdso (mkVdsoState 0x100000%Z 16384%Z 8192%Z false false)
+               m_vdso_est) [].
+Proof. check_eq. Qed.
+
+Example vdso_munmap_whole_pair_einval_rejected :
+  check_syscall (mkInput 215 [0x100000; 0x6000; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) m_vdso_est
+  = CheckReject.
+Proof. check_eq. Qed.
+
+Example vdso_munmap_whole_pair_with_unmap_rejected :
+  check_syscall (mkInput 215 [0x100000; 0x6000; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffectU 0 [] [] [(0x100000, 0x6000)] [] []) m_vdso_est
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** munmap of ONE PAGE of it splits the vvar range: -EINVAL, nothing
+    changes, and a success is rejected. *)
+Example vdso_munmap_one_page_einval :
+  check_syscall (mkInput 215 [0x100000; 4096; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) m_vdso_est
+  = CheckOk m_vdso_est [].
+Proof. check_eq. Qed.
+
+Example vdso_munmap_one_page_success_rejected :
+  check_syscall (mkInput 215 [0x100000; 4096; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) m_vdso_est
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** brk grow INTO the pair: the page above the new break is the vvar's
+    first page, so the grow is refused and only the unchanged break is an
+    answer.  One page lower the same grow is granted. *)
+Example vdso_brk_grow_into_pair_rejected :
+  check_syscall (brk_in 0x100000) (mkEffect 0x100000 [] [(65536, 0xF0000)])
+    m_vdso_est
+  = CheckReject.
+Proof. check_eq. Qed.
+
+Example vdso_brk_grow_into_pair_returns_break :
+  check_syscall (brk_in 0x100000) (mkEffect 65536 [] []) m_vdso_est
+  = CheckOk m_vdso_est [].
+Proof. check_eq. Qed.
+
+Example vdso_brk_grow_one_page_below_pair_grants :
+  match check_syscall (brk_in 0xFF000) (mkEffect 0xFF000 [] [(65536, 0xEF000)])
+          m_vdso_est with
+  | CheckOk _ _ => True
+  | _ => False
+  end.
+Proof. vm_compute. exact I. Qed.
+
+(** MAP_FIXED_NOREPLACE over the pair: -EEXIST, nothing changes, and the
+    grant is rejected. *)
+Example vdso_noreplace_eexist :
+  check_syscall
+    (mkInput 222 [0x100000; 4096; 3; noreplace_flags; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EEXIST) [] []) m_vdso_est
+  = CheckOk m_vdso_est [].
+Proof. check_eq. Qed.
+
+Example vdso_noreplace_grant_rejected :
+  check_syscall
+    (mkInput 222 [0x100000; 4096; 3; noreplace_flags; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect 0x100000 [] [(0x100000, 4096)]) m_vdso_est
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** MAP_FIXED over PART of the pair splits the vvar range: -EINVAL, and
+    the replacement is rejected. *)
+Example vdso_map_fixed_part_einval :
+  check_syscall
+    (mkInput 222 [0x100000; 4096; 3; 50; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) m_vdso_est
+  = CheckOk m_vdso_est [].
+Proof. check_eq. Qed.
+
+Example vdso_map_fixed_part_replacement_rejected :
+  check_syscall
+    (mkInput 222 [0x100000; 4096; 3; 50; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect 0x100000 [] [(0x100000, 4096)]) m_vdso_est
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** MAP_FIXED over the WHOLE pair replaces it: the grant, and both ranges
+    are gone; a replacement that hands back no zeroes is rejected. *)
+Example vdso_map_fixed_whole_pair_replaces_it :
+  match check_syscall
+          (mkInput 222 [0x100000; 0x6000; 3; 50; mmap_fd_none; 0]
+            (fun _ => None) (fun _ => None))
+          (mkEffect 0x100000 [] [(0x100000, 0x6000)]) m_vdso_est with
+  | CheckOk m' _ => m_vdso m' = mkVdsoState 0x100000%Z 16384%Z 8192%Z false false
+  | _ => False
+  end.
+Proof. vm_compute. reflexivity. Qed.
+
+Example vdso_map_fixed_whole_pair_without_zeros_rejected :
+  check_syscall
+    (mkInput 222 [0x100000; 0x6000; 3; 50; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect 0x100000 [] []) m_vdso_est
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** An mmap WITHOUT a hint never lands on the pair, on either range; the
+    same request one page clear of it is granted. *)
+Example vdso_null_hint_grant_on_vvar_rejected :
+  check_syscall (mmap_in 4096) (mkEffect 0x100000 [] [(0x100000, 4096)])
+    m_vdso_est
+  = CheckReject.
+Proof. check_eq. Qed.
+
+Example vdso_null_hint_grant_on_text_rejected :
+  check_syscall (mmap_in 4096) (mkEffect 0x105000 [] [(0x105000, 4096)])
+    m_vdso_est
+  = CheckReject.
+Proof. check_eq. Qed.
+
+Example vdso_null_hint_grant_beside_pair_admitted :
+  match check_syscall (mmap_in 4096) (mkEffect 0x106000 [] [(0x106000, 4096)])
+          m_vdso_est with
+  | CheckOk _ _ => True
+  | _ => False
+  end.
+Proof. vm_compute. exact I. Qed.
+
+(** An rw mprotect that starts in the vvar range asks for write access the
+    range may never have: -EACCES, and a success is rejected.  In the text
+    range, which may become writable, part of the range is a split:
+    -EINVAL, and -EACCES is rejected there. *)
+Example vdso_mprotect_rw_vvar_eacces :
+  check_syscall (mkInput 226 [0x100000; 4096; 3; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EACCES) [] []) m_vdso_est
+  = CheckOk m_vdso_est [].
+Proof. check_eq. Qed.
+
+Example vdso_mprotect_rw_vvar_success_rejected :
+  check_syscall (mkInput 226 [0x100000; 4096; 3; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] [(0x100000, 4096)]) m_vdso_est
+  = CheckReject.
+Proof. check_eq. Qed.
+
+Example vdso_mprotect_rw_text_part_einval :
+  check_syscall (mkInput 226 [0x104000; 4096; 3; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) m_vdso_est
+  = CheckOk m_vdso_est [].
+Proof. check_eq. Qed.
+
+Example vdso_mprotect_rw_text_part_eacces_rejected :
+  check_syscall (mkInput 226 [0x104000; 4096; 3; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EACCES) [] []) m_vdso_est
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** mremap growing the vDSO text: VM_DONTEXPAND answers -EFAULT, and a
+    move is rejected. *)
+Example vdso_mremap_grow_text_efault :
+  check_syscall (mkInput 216 [0x104000; 8192; 12288; 1; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) m_vdso_est
+  = CheckOk m_vdso_est [].
+Proof. check_eq. Qed.
+
+Example vdso_mremap_grow_text_move_rejected :
+  check_syscall (mkInput 216 [0x104000; 8192; 12288; 1; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffectU 0x200000 [] [(0x202000, 4096)] [(0x104000, 8192)]
+       [mkCopy 0x104000 0x200000 8192] []) m_vdso_est
+  = CheckReject.
+Proof. check_eq. Qed.
