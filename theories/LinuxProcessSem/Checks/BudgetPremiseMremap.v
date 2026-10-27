@@ -50,7 +50,7 @@ Lemma mremap_budget_refused_no_fresh_sys_inv :
 Proof.
   intros old old_size new_size flags m dst Hinv Hlz Hmat Hmark.
   destruct (mremap_budget_refused_inv _ _ _ _ _ Hmark)
-    as (_ & _ & Hnew & _ & _ & Hgrow & _ & _).
+    as (_ & _ & Hnew & _ & _ & _ & Hgrow & _ & _).
   pose proof (sys_inv_noaccess_pages_owned _ Hinv) as Hown.
   destruct Hinv as (_ & Hfit & _).
   destruct (mremap_fresh_b m
@@ -103,7 +103,7 @@ Proof.
   unfold alloc_budget_refused_b in Hmark. rewrite E in Hmark.
   cbn [Z.eqb Pos.eqb] in Hmark.
   destruct (mremap_budget_refused_inv _ _ _ _ _ Hmark)
-    as (Hfl & Hal & Hnew & Hold & Hsrc & Hgrow & Hip & _).
+    as (Hfl & Hal & Hnew & Htask & Hold & Hsrc & Hgrow & Hip & _).
   apply (proj1 (mremap_dispatch i m _ E)) in Hspec.
   unfold refusal_b. rewrite E. cbv zeta.
   assert (Hne : (216 =? 214)%Z = false) by reflexivity. rewrite Hne.
@@ -111,7 +111,7 @@ Proof.
     by reflexivity.
   rewrite Harm. cbn [ia_errnos].
   unfold mremap_spec in Hspec.
-  rewrite Hfl, Hal, Hnew, Hold in Hspec. cbn [negb] in Hspec.
+  rewrite Hfl, Hal, Hnew, Htask, Hold in Hspec. cbn [negb] in Hspec.
   apply (proj1 (bind_get_model _ i m _)) in Hspec. cbv beta zeta in Hspec.
   rewrite Hsrc in Hspec. cbn [negb] in Hspec.
   assert (Heq : (page_round_up_Z (bv_unsigned (in_arg i 1))

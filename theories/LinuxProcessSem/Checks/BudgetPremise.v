@@ -612,6 +612,7 @@ Lemma mremap_budget_refused_iff :
   Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE = true ->
   Z.eqb (bv_unsigned old mod page_size) 0 = true ->
   page_align_is0_b new_size = false ->
+  (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z = false ->
   page_align_is0_b old_size = false ->
   mremap_source_b (m_vmmaps m) old
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
@@ -630,9 +631,9 @@ Lemma mremap_budget_refused_iff :
                (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
                (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))).
 Proof.
-  intros old old_size new_size flags m Hflags Halign Hnew Hold Hsrc Hgrow.
+  intros old old_size new_size flags m Hflags Halign Hnew Htask Hold Hsrc Hgrow.
   unfold mremap_budget_refused_b. cbv zeta.
-  rewrite Hflags, Halign, Hnew, Hold, Hsrc. cbn [negb].
+  rewrite Hflags, Halign, Hnew, Htask, Hold, Hsrc. cbn [negb].
   rewrite (proj2 (Z.leb_gt _ _) Hgrow). reflexivity.
 Qed.
 
@@ -645,6 +646,7 @@ Lemma mremap_budget_refused_inv :
   Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE = true
   /\ Z.eqb (bv_unsigned old mod page_size) 0 = true
   /\ page_align_is0_b new_size = false
+  /\ (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z = false
   /\ page_align_is0_b old_size = false
   /\ mremap_source_b (m_vmmaps m) old
        (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
@@ -669,14 +671,16 @@ Proof.
   destruct (Z.eqb (bv_unsigned old mod page_size) 0) eqn:E2;
     cbn [negb] in H; [| discriminate H].
   destruct (page_align_is0_b new_size) eqn:E3; [discriminate H |].
+  destruct (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z eqn:E3b;
+    [discriminate H |].
   destruct (page_align_is0_b old_size) eqn:E4; [discriminate H |].
   destruct (mremap_source_b _ _ _ _ && mremap_backing_uniform_b _ _ _) eqn:E5;
     cbn [negb] in H; [| discriminate H].
   destruct (_ <=? _)%Z eqn:E6; [discriminate H |].
   apply Z.leb_gt in E6.
   apply negb_true_iff, orb_false_iff in H as [Hip Hmv].
-  exact (conj eq_refl (conj eq_refl (conj eq_refl (conj eq_refl
-           (conj eq_refl (conj E6 (conj Hip Hmv))))))).
+  exact (conj eq_refl (conj eq_refl (conj eq_refl (conj eq_refl (conj eq_refl
+           (conj eq_refl (conj E6 (conj Hip Hmv)))))))).
 Qed.
 
 (** SOUNDNESS for the in-place resolution: where the mark fires,
@@ -692,7 +696,7 @@ Lemma mremap_budget_refused_refuses_inplace : forall old old_size new_size flags
 Proof.
   intros old old_size new_size flags m Hmark.
   destruct (mremap_budget_refused_inv _ _ _ _ _ Hmark)
-    as (_ & _ & _ & _ & _ & _ & Hip & _).
+    as (_ & _ & _ & _ & _ & _ & _ & Hip & _).
   exact Hip.
 Qed.
 
@@ -745,7 +749,7 @@ Lemma mremap_budget_refused_refuses_move :
 Proof.
   intros old old_size new_size flags m dst Hfit Hnoacc Hlazy Hpages Hmark.
   destruct (mremap_budget_refused_inv _ _ _ _ _ Hmark)
-    as (_ & _ & Hnew & _ & _ & Hgrow & _ & Hmv).
+    as (_ & _ & Hnew & _ & _ & _ & Hgrow & _ & Hmv).
   set (old_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) in *.
   set (new_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) in *.
   pose proof (page_align_is0_b_false_word new_size Hnew) as Hnw. fold new_n in Hnw.
@@ -778,6 +782,7 @@ Lemma mremap_budget_refused_fires_on_move_refusal :
   Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE = true ->
   Z.eqb (bv_unsigned old mod page_size) 0 = true ->
   page_align_is0_b new_size = false ->
+  (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z = false ->
   page_align_is0_b old_size = false ->
   mremap_source_b (m_vmmaps m) old
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
@@ -833,10 +838,10 @@ Lemma mremap_budget_refused_fires_on_move_refusal :
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = false ->
   mremap_budget_refused_b old old_size new_size flags m = true.
 Proof.
-  intros old old_size new_size flags m dst Hflags Halign Hnew Hold Hsrc Hgrow
+  intros old old_size new_size flags m dst Hflags Halign Hnew Htask Hold Hsrc Hgrow
     Hip Hdalign Hdtop Hdfree Hfit Hnoacc Hlazy Hpages Hgate.
   rewrite (mremap_budget_refused_iff old old_size new_size flags m
-             Hflags Halign Hnew Hold Hsrc Hgrow).
+             Hflags Halign Hnew Htask Hold Hsrc Hgrow).
   rewrite Hip. cbn [orb].
   set (old_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) in *.
   set (new_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) in *.
@@ -987,7 +992,7 @@ Lemma mremap_budget_refused_implies_two_gate :
 Proof.
   intros old old_size new_size flags m Hmark.
   destruct (mremap_budget_refused_inv _ _ _ _ _ Hmark)
-    as (E1 & E2 & E3 & E4 & E5 & Hgrow & _ & Hmv).
+    as (E1 & E2 & E3 & _ & E4 & E5 & Hgrow & _ & Hmv).
   unfold mremap_budget_refused_two_gate_b. cbv zeta.
   rewrite E1, E2, E3, E4, E5. cbn [negb].
   rewrite (proj2 (Z.leb_gt _ _) Hgrow).

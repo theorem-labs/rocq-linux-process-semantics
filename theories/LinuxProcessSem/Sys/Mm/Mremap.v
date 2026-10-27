@@ -627,6 +627,13 @@ Definition mremap_spec (old old_size new_size flags : word)
   then err_ret EINVAL                              (* mm/mremap.c:1027 *)
   else if page_align_is0_b new_size
   then err_ret EINVAL                              (* mm/mremap.c:1031, 1038 *)
+  else if (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z
+  then err_ret EINVAL
+    (* [check_mremap_params] (mm/mremap.c:1775-1776, Linux v6.18.46):
+       a page-aligned new length over TASK_SIZE is -EINVAL before any
+       VMA is looked up.  Without this gate a grow past TASK_SIZE fell
+       through to the arm's injected -ENOMEM, an answer Linux never
+       gives for it. *)
   else if page_align_is0_b old_size
   then unmodeled                                   (* clone: mm/mremap.c:839 *)
   else
@@ -788,6 +795,7 @@ Definition mremap_budget_refused_b (old old_size new_size flags : word)
   if negb (Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE) then false
   else if negb (Z.eqb (bv_unsigned old mod page_size) 0) then false
   else if page_align_is0_b new_size then false
+  else if (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z then false
   else if page_align_is0_b old_size then false
   else
     let h := m_vmmaps m in
