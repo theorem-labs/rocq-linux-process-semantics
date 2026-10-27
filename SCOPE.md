@@ -43,6 +43,30 @@ them. A proof says nothing about a program in such a case.
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. |
 | Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
 
+The entry premises also limit the launches that a statement covers.
+`Run.valid_sp` requires an entry stack pointer in the top 2 GiB of the
+Sv48 user address space (`State.sp_window_lo` to `State.sp_window_hi`).
+On Linux with Sv48 or Sv57, the pointer stays in this window for each
+stack limit, with address randomisation on or off (`randomize_stack_top`
+in `mm/util.c`, `setup_arg_pages` in `fs/exec.c`).
+QEMU user mode puts the guest stack where the host kernel maps it.
+QEMU 10.0.11 on an x86_64 host gives these entry stack pointers:
+
+- 8 MiB stack limit, address randomisation off: in the window.
+- 8 MiB stack limit, address randomisation on: below the window.
+- 1 GiB stack limit: below the window.
+- Unlimited stack limit: below the window.
+
+The statements say nothing about a launch that puts the pointer below
+the window.
+
+The model also builds its own auxiliary vector, with ten entries
+(`StackLayout.auxv_entries`). Linux and QEMU user mode publish more
+entries. Thus a program can see a different vector in the model than
+on a real launch. This occurs when the program reads an entry that the
+model omits, or reads the whole vector in sequence. "The auxiliary
+vector" in "Known gaps in precision" names the entries.
+
 ## Assumptions that the model does not check
 
 If one of these assumptions is false, a proof can be correct but it does
