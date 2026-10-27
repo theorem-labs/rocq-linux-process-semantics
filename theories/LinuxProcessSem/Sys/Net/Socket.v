@@ -313,9 +313,15 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
         (* nothing is copied and nothing faults; [inet_bind_sk] then
            rejects the zero length *)
       else
-      match read_bytes_map (in_mem i) addrp (Z_to_bv 64 al) with
-      | None => err_ret EFAULT                   (* copy_from_user failed: real -EFAULT *)
-      | Some bs =>
+      match user_read i m addrp (Z_to_bv 64 al) with
+      | UFault => err_ret EFAULT                 (* copy_from_user failed: real -EFAULT *)
+      | USpecial => unmodeled
+        (* THE ADDRESS MEETS THE vDSO PAIR.  Linux copies those bytes (both
+           mappings are VM_READ: lib/vdso/datastore.c:99-105,
+           arch/riscv/kernel/vdso.c:137-140), but they are the kernel's and
+           the model does not hold them; see [State.UserRead].  Every later
+           [USpecial] arm in this file declines for the same reason. *)
+      | UOk bs =>
           (* PAST THE COPY.  [move_addr_to_kernel] (net/socket.c) is
              [if (ulen == 0) return 0; if (copy_from_user(kaddr, uaddr, ulen)) return -EFAULT;],
              so every [addrlen > 0] that does not fault really has copied
@@ -845,9 +851,10 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
       let al := sint32 addrlen in
       if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al) then err_ret EINVAL
       else
-      match read_bytes_map (in_mem i) addrp (Z_to_bv 64 al) with
-      | None => err_ret EFAULT                   (* copy_from_user failed, BEFORE -ENOTSOCK *)
-      | Some bs =>
+      match user_read i m addrp (Z_to_bv 64 al) with
+      | UFault => err_ret EFAULT                 (* copy_from_user failed, BEFORE -ENOTSOCK *)
+      | USpecial => unmodeled                    (* the vDSO pair, BEFORE -ENOTSOCK too *)
+      | UOk bs =>
           record_copyins (if Z.eqb al 0 then [] else [(addrp, length bs)])
           (* the copy is attached HERE, above the -ENOTSOCK arm, because
              that is where [move_addr_to_kernel] performed it; a
@@ -1225,14 +1232,16 @@ Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
 
 (** The four bytes [do_sock_getsockopt] reads at [optlen] before it
     dispatches on the level, or NOTHING when that range is not wholly
-    readable and [copy_from_user] therefore moved none of it.  One
-    definition for the spec, the checker and the witness so the three
-    cannot drift apart. *)
-Definition getsockopt_optlen_read (i : SyscallInput) (optlenp : word)
-    : list (word * nat) :=
-  match read_bytes_map (in_mem i) optlenp (Z_to_bv 64 4) with
-  | Some _ => [(optlenp, 4%nat)]
-  | None => []
+    readable and [copy_from_user] therefore moved none of it.  [None]
+    when the read meets the vDSO pair: Linux reads on there, and the call
+    is unmodeled.  One definition for the spec, the checker and the
+    witness so the three cannot drift apart. *)
+Definition getsockopt_optlen_read (i : SyscallInput) (m : Model) (optlenp : word)
+    : option (list (word * nat)) :=
+  match user_read i m optlenp (Z_to_bv 64 4) with
+  | UOk _ => Some [(optlenp, 4%nat)]
+  | UFault => Some []
+  | USpecial => None
   end.
 
 Definition getsockopt_spec (fd level optlenp : word) : Sys SyscallEffect :=
@@ -1244,9 +1253,13 @@ Definition getsockopt_spec (fd level optlenp : word) : Sys SyscallEffect :=
          [do_sock_getsockopt], so neither -EBADF nor -ENOTSOCK reaches
          the read and neither carries a ledger *)
   | inl _ =>
-      record_copyins (getsockopt_optlen_read i optlenp)
-        (if negb (sock_level_known level) then err_ret EOPNOTSUPP  (* do_ip_getsockopt *)
-         else unmodeled)                                           (* the option table *)
+      match getsockopt_optlen_read i m optlenp with
+      | None => unmodeled                       (* [optlen] meets the vDSO pair *)
+      | Some reads =>
+          record_copyins reads
+            (if negb (sock_level_known level) then err_ret EOPNOTSUPP  (* do_ip_getsockopt *)
+             else unmodeled)                                           (* the option table *)
+      end
   end.
 
 (** [shutdown fd how] (210).  Two real answers and a decline, and the
@@ -1625,10 +1638,14 @@ Definition send_state (sk : SockState) : SendState :=
 (** The body both calls share once their arguments have been reduced to
     "these bytes, on this socket".
 
-    [bs] is the gatherable source — the readable prefix for [sendto],
-    the gathered iovecs for [sendmsg] — and [total] is what the caller
-    asked to send, so that a zero-length request is told apart from a
-    request whose buffer is unreadable.
+    [src] is the read of the gatherable source — [State.user_read_prefix]
+    of the flat buffer for [sendto], [State.user_writev_gathered] of the
+    imported iovecs for [sendmsg] — and [total] is what the caller asked
+    to send, so that a zero-length request is told apart from a request
+    whose buffer is unreadable.  [src] is looked at only past the
+    connection state and the zero-length test, because that is where
+    [tcp_sendmsg_locked] copies the payload: a source in the vDSO pair
+    declines there and nowhere earlier.
 
     THE LEDGER IS TWO PIECES, and both callers supply them.  [pre] is
     what the call has ALREADY copied out of user memory before reaching
@@ -1663,9 +1680,17 @@ Definition send_state (sk : SockState) : SendState :=
     zero-length payload range, exactly as
     [Fs.ReadWrite.write_spec]'s zero-count file arm does not. *)
 Definition send_bytes (pre : list (word * nat)) (acc : nat -> list (word * nat))
-    (total : word) (bs : list byte) (ch : word) : Sys SyscallEffect :=
+    (total : word) (src : UserRead (list byte)) (ch : word) : Sys SyscallEffect :=
   if w_is0 total then record_copyins pre (ret_only (Z_to_bv 64 0))
-  else if Nat.eqb (length bs) 0 then record_copyins pre (err_ret EFAULT)
+  else
+  match src with
+  | USpecial => unmodeled                    (* the payload meets the vDSO pair *)
+  | UFault => record_copyins pre (err_ret EFAULT)
+      (* neither caller's reader faults ([State.user_read_prefix_not_fault],
+         [State.user_writev_gathered_not_fault]); a failed copy would be
+         -EFAULT, as an empty source is *)
+  | UOk bs =>
+  if Nat.eqb (length bs) 0 then record_copyins pre (err_ret EFAULT)
   else
     ds <- choose (fun ds : list byte =>
                     (1 <= Z.of_nat (length ds))%Z
@@ -1674,14 +1699,15 @@ Definition send_bytes (pre : list (word * nat)) (acc : nat -> list (word * nat))
     emit (map (WriteEv ch) ds) ;;   (* one event per byte, on the CONNECTION's
                                        channel — the same alphabet a channel
                                        write emits, on a different channel *)
-    record_copyins (pre ++ acc (length ds)) (ret_only (len_word ds)).
+    record_copyins (pre ++ acc (length ds)) (ret_only (len_word ds))
+  end.
 
 (** The socket half of both calls: dispatch on the connection's state,
-    then send.  [total] and [bs] are the caller's; [fd] and [m] are
+    then send.  [total] and [src] are the caller's; [fd] and [m] are
     needed to record an error's consumption. *)
 Definition send_on_socket (pre : list (word * nat)) (acc : nat -> list (word * nat))
-    (fd : word) (sk : SockState) (total : word) (bs : list byte) (m : Model)
-    : Sys SyscallEffect :=
+    (fd : word) (sk : SockState) (total : word) (src : UserRead (list byte))
+    (m : Model) : Sys SyscallEffect :=
   match send_state sk with
   | SendDead => record_copyins pre (err_ret EPIPE)
       (* every no-connection state, the fresh socket included: TCP does
@@ -1694,7 +1720,7 @@ Definition send_on_socket (pre : list (word * nat)) (acc : nat -> list (word * n
          the read side: one [sk_err], one [xchg], whichever direction
          gets there first.  The NEXT send is then -EPIPE, which is the
          classic two-step a program sees after a peer reset *)
-  | SendGoes ch => send_bytes pre acc total bs ch
+  | SendGoes ch => send_bytes pre acc total src ch
   end.
 
 (** [sendto fd buf len flags addr addrlen].
@@ -1775,7 +1801,7 @@ Definition sendto_spec (fd buf count flags addrp addrlen : word)
      | None => err_ret EBADF                     (* fd not open: real -EBADF *)
      | Some (FdSocket sk) =>
          send_on_socket [] (fun n => [(buf, n)]) fd sk count
-           (readable_bytes (in_mem i) buf count) m
+           (user_read_prefix i m buf count) m
      | Some _ => err_ret ENOTSOCK                (* not a socket: real -ENOTSOCK *)
      end).
 
@@ -1787,6 +1813,12 @@ Definition sendto_spec (fd buf count flags addrp addrlen : word)
     which is why the model reads whole words and compares against zero
     rather than decoding a signed 32-bit field it never uses. *)
 Definition MSGHDR_SIZE : Z := 56%Z.
+
+(** Slot [k] of a [struct user_msghdr] image, little-endian: 0
+    [msg_name], 1 [msg_namelen], 2 [msg_iov], 3 [msg_iovlen], 4
+    [msg_control], 5 [msg_controllen], 6 [msg_flags]. *)
+Definition msghdr_field (bs : list byte) (k : nat) : word :=
+  le_bytes_to_word (firstn 8 (skipn (8 * k) bs)).
 
 (** [sendmsg fd msg flags].
 
@@ -1812,7 +1844,7 @@ Definition MSGHDR_SIZE : Z := 56%Z.
 
     - a non-NULL [msg_name] — as for [sendto], validated and then
       ignored on a connected socket;
-    - a non-zero [msg_control] or [msg_controllen] — ancillary data on a
+    - a non-zero [msg_controllen] — ancillary data on a
       TCP socket reaches [ip_cmsg_send], whose vocabulary
       (IP_TTL, IP_PKTINFO, ...) this model has no representation for;
       note [____sys_sendmsg] answers -ENOBUFS for
@@ -1826,7 +1858,9 @@ Definition MSGHDR_SIZE : Z := 56%Z.
     - a [msg_iovlen] in the heap-backed range, for [readv]'s reason: the
       kernel keeps UIO_FASTIOV (8) descriptors on the stack and may fail
       the temporary allocation for more before reading any of them, and
-      an optional -ENOMEM cannot be honestly unioned with a delivery.
+      an optional -ENOMEM cannot be honestly unioned with a delivery;
+    - a header, a descriptor or a payload byte in the vDSO pair, at the
+      read that reaches it ([State.UserRead]).
 
     WHAT IS ANSWERED: an unreadable header is -EFAULT
     ([copy_from_user] of the whole 56 bytes, before any field is read);
@@ -1891,21 +1925,18 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
                                   two device kinds all fail it *)
       err_ret ENOTSOCK
   | Some (FdSocket sk) =>
-  match read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE) with
-  | None => err_ret EFAULT     (* copy_from_user of the header: real -EFAULT *)
-  | Some _ =>
-      (* Six of the seven fields.  [msg_flags] at offset 48 is READ BY
-         NOTHING, deliberately — see the note at the head of this
-         definition. *)
-      match read_u64 (in_mem i) msgp,
-            read_u64 (in_mem i) (msgp + Z_to_bv 64 8),
-            read_u64 (in_mem i) (msgp + Z_to_bv 64 16),
-            read_u64 (in_mem i) (msgp + Z_to_bv 64 24),
-            read_u64 (in_mem i) (msgp + Z_to_bv 64 32),
-            read_u64 (in_mem i) (msgp + Z_to_bv 64 40) with
-      | Some name, Some namelen, Some iov, Some iovlen, Some ctl, Some ctllen =>
-          let _ := namelen in
-          let _ := ctl in
+  match user_read i m msgp (Z_to_bv 64 MSGHDR_SIZE) with
+  | UFault => err_ret EFAULT   (* copy_from_user of the header: real -EFAULT *)
+  | USpecial => unmodeled      (* the header meets the vDSO pair *)
+  | UOk hdr =>
+      (* Four of the seven fields decide anything.  [msg_flags] at offset
+         48 is READ BY NOTHING, deliberately — see the note at the head of
+         this definition; [msg_namelen] and [msg_control] are not needed
+         by any arm the model answers (see the two declines below). *)
+      let name   := msghdr_field hdr 0 in
+      let iov    := msghdr_field hdr 2 in
+      let iovlen := msghdr_field hdr 3 in
+      let ctllen := msghdr_field hdr 5 in
           if negb (w_is0 name) then unmodeled
             (* A DESTINATION ADDRESS, declined for [sendto_spec]'s reason.
                [msg_namelen] carries no condition of its own: when
@@ -1921,18 +1952,20 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
           else if (UIO_FASTIOV <? bv_unsigned iovlen)%Z then unmodeled
             (* the heap-backed range: see [Fs.ReadWrite.readv_heap_gap] *)
           else
-          match copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen) with
-          | ImpFault =>
+          match user_copy_iovecs i m iov (word_to_nat iovlen) with
+          | USpecial => unmodeled                (* a descriptor meets the vDSO pair *)
+          | UFault | UOk ImpFault =>
+              (* [UOk ImpFault] does not occur ([State.user_copy_iovecs_ok_iff]) *)
               record_copyins ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                              ++ copy_iovecs_accesses (in_mem i) iov
+                              ++ user_copy_iovecs_accesses i m iov
                                    (word_to_nat iovlen))
                 (err_ret EFAULT)                 (* unreadable descriptor *)
-          | ImpInval =>
+          | UOk ImpInval =>
               record_copyins ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                              ++ copy_iovecs_accesses (in_mem i) iov
+                              ++ user_copy_iovecs_accesses i m iov
                                    (word_to_nat iovlen))
                 (err_ret EINVAL)                 (* iov_len negative as ssize_t *)
-          | ImpOk iovs0 =>
+          | UOk (ImpOk iovs0) =>
               if negb (w_is0 ctllen) then unmodeled
             (* ANCILLARY DATA, DECIDED WHERE THE KERNEL DECIDES IT.  The
                gate is on the LENGTH, not the pointer: [____sys_sendmsg]
@@ -1960,17 +1993,12 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
               else
               send_on_socket
                 ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                 ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                 ++ user_copy_iovecs_accesses i m iov (word_to_nat iovlen))
                 (fun n => iov_prefix_accesses (cap_iovecs iovs0) n)
                 fd sk
                 (Z_to_bv 64 (iovs_total (cap_iovecs iovs0)))
-                (writev_gathered (in_mem i) iovs0) m
+                (user_writev_gathered i m iovs0) m
           end
-      | _, _, _, _, _, _ =>
-          record_copyins [(msgp, Z.to_nat MSGHDR_SIZE)] (err_ret EFAULT)
-          (* unreachable: the whole header read above; the arm is what
-             Coq requires of a total match *)
-      end
   end
   end.
 

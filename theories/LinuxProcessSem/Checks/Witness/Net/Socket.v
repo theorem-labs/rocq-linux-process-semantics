@@ -113,9 +113,10 @@ Definition bind_witness (fd addrp addrlen : word) (i : SyscallInput) (m : Model)
       then ret_outcome (errno_ret EINVAL) m
       else if Z.eqb al 0 then ret_outcome (errno_ret EINVAL) m
       else
-      match read_bytes_map (in_mem i) addrp (Z_to_bv 64 al) with
-      | None => ret_outcome (errno_ret EFAULT) m
-      | Some bs =>
+      match user_read i m addrp (Z_to_bv 64 al) with
+      | UFault => ret_outcome (errno_ret EFAULT) m
+      | USpecial => Unmodeled                  (* the vDSO pair: see [bind_spec] *)
+      | UOk bs =>
           (* PAST THE COPY: [move_addr_to_kernel] has moved [al] bytes, so
              every outcome exhibited below has to carry the ledger
              [bind_spec] records there.  [outcome_copyins] attaches it and
@@ -156,8 +157,8 @@ Proof.
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))); [apply pure_ok|].
   destruct (Z.eqb (sint32 addrlen) 0); [apply pure_ok|].
-  destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen))) as [bs|];
-    [|apply pure_ok].
+  destruct (user_read i m addrp (Z_to_bv 64 (sint32 addrlen))) as [bs| |];
+    [|apply pure_ok|apply unmodeled_intro].
   apply record_copyins_outcome.
   destruct (Z.ltb (sint32 addrlen) SOCKADDR_IN_SIZE); [apply pure_ok|].
   destruct (negb (orb (Z.eqb (sa_family_of bs) AF_INET)
@@ -277,9 +278,10 @@ Definition connect_witness (fd addrp addrlen : word) (i : SyscallInput)
       if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al)
       then ret_outcome (errno_ret EINVAL) m
       else
-      match read_bytes_map (in_mem i) addrp (Z_to_bv 64 al) with
-      | None => ret_outcome (errno_ret EFAULT) m
-      | Some bs =>
+      match user_read i m addrp (Z_to_bv 64 al) with
+      | UFault => ret_outcome (errno_ret EFAULT) m
+      | USpecial => Unmodeled
+      | UOk bs =>
           outcome_copyins (if Z.eqb al 0 then [] else [(addrp, length bs)])
           (match e with
            | FdSocket sk =>
@@ -317,8 +319,8 @@ Proof.
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen)));
        cbv beta iota zeta; [ apply pure_ok | ].
-  all: destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
-         as [bs|]; cbv beta iota zeta; [ | apply pure_ok ].
+  all: destruct (user_read i m addrp (Z_to_bv 64 (sint32 addrlen)))
+         as [bs| |]; cbv beta iota zeta; [ | apply pure_ok | apply unmodeled_intro ].
   all: apply record_copyins_outcome; cbv beta iota zeta.
   (* seven non-socket entries answer -ENOTSOCK below the copy *)
   all: try apply pure_ok.
@@ -417,10 +419,14 @@ Definition getsockopt_witness (fd level optlenp : word) (i : SyscallInput)
   match sock_fd m fd with
   | inr e => ret_outcome (errno_ret e) m
   | inl _ =>
-      outcome_copyins (getsockopt_optlen_read i optlenp)
-        (if negb (sock_level_known level)
-         then ret_outcome (errno_ret EOPNOTSUPP) m
-         else Unmodeled)
+      match getsockopt_optlen_read i m optlenp with
+      | None => Unmodeled                      (* [optlen] meets the vDSO pair *)
+      | Some reads =>
+          outcome_copyins reads
+            (if negb (sock_level_known level)
+             then ret_outcome (errno_ret EOPNOTSUPP) m
+             else Unmodeled)
+      end
   end.
 
 Lemma getsockopt_witness_ok : forall fd level optlenp i m,
@@ -431,6 +437,8 @@ Proof.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
   destruct (sock_fd m fd) as [sk|e] eqn:Hsf; cbv beta iota zeta;
     [|apply pure_ok].
+  destruct (getsockopt_optlen_read i m optlenp) as [reads|];
+    [|apply unmodeled_intro].
   apply record_copyins_outcome.
   destruct (negb (sock_level_known level)); cbv beta iota zeta;
     [apply pure_ok | apply unmodeled_intro].
@@ -492,16 +500,23 @@ Qed.
     which is why the arm is a [modify] step and not a [pure] one. *)
 Definition send_on_socket_witness (pre : list (word * nat))
     (acc : nat -> list (word * nat)) (fd : word) (sk : SockState)
-    (total : word) (bs : list byte) (m : Model) : outcome SyscallEffect :=
+    (total : word) (src : UserRead (list byte)) (m : Model)
+    : outcome SyscallEffect :=
   match send_state sk with
   | SendGoes ch =>
       if w_is0 total
       then outcome_copyins pre (ret_outcome (Z_to_bv 64 0) m)   (* zero-length request *)
-      else if Nat.eqb (length bs) 0
+      else
+      match src with
+      | USpecial => Unmodeled                                   (* the vDSO pair *)
+      | UFault => outcome_copyins pre (ret_outcome (errno_ret EFAULT) m)
+      | UOk bs =>
+      if Nat.eqb (length bs) 0
       then outcome_copyins pre (ret_outcome (errno_ret EFAULT) m)  (* nothing readable *)
       else outcome_copyins (pre ++ acc (length (firstn 1 bs)))
              (Ok (mkEffect (len_word (firstn 1 bs)) [] []) m
                  (map (WriteEv ch) (firstn 1 bs)))            (* the one-byte send *)
+      end
   | SendErr e peer ch =>
       outcome_copyins pre
         (ret_outcome (errno_ret e)
@@ -509,9 +524,9 @@ Definition send_on_socket_witness (pre : list (word * nat))
   | SendDead => outcome_copyins pre (ret_outcome (errno_ret EPIPE) m)
   end.
 
-Lemma send_on_socket_witness_ok : forall pre acc fd sk total bs i m,
-  send_on_socket pre acc fd sk total bs m i m
-    (send_on_socket_witness pre acc fd sk total bs m).
+Lemma send_on_socket_witness_ok : forall pre acc fd sk total src i m,
+  send_on_socket pre acc fd sk total src m i m
+    (send_on_socket_witness pre acc fd sk total src m).
 Proof.
   intros. unfold send_on_socket, send_on_socket_witness.
   destruct (send_state sk) as [ch|e peer ch|]; cbv beta iota zeta.
@@ -519,6 +534,8 @@ Proof.
     unfold send_bytes.
     destruct (w_is0 total) eqn:Ht;
       [apply record_copyins_outcome; apply pure_ok|].
+    destruct src as [bs| |];
+      [ | apply record_copyins_outcome; apply pure_ok | apply unmodeled_intro ].
     destruct (Nat.eqb (length bs) 0) eqn:Hb;
       [apply record_copyins_outcome; apply pure_ok|].
     assert (Hpos : (1 <= bv_unsigned total)%Z).
@@ -559,7 +576,7 @@ Definition sendto_witness (fd buf count flags addrp : word)
        | None => ret_outcome (errno_ret EBADF) m
        | Some (FdSocket sk) =>
            send_on_socket_witness [] (fun n => [(buf, n)]) fd sk count
-             (readable_bytes (in_mem i) buf count) m
+             (user_read_prefix i m buf count) m
        | Some _ => ret_outcome (errno_ret ENOTSOCK) m
        end).
 
@@ -595,34 +612,33 @@ Definition sendmsg_witness (fd msgp flags : word)
   | Some (FdPipe _ _) | Some (FdDevNull _ _) | Some FdUrandom =>
       ret_outcome (errno_ret ENOTSOCK) m
   | Some (FdSocket sk) =>
-      match read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE) with
-      | None => ret_outcome (errno_ret EFAULT) m
-      | Some _ =>
-          match read_u64 (in_mem i) msgp,
-                read_u64 (in_mem i) (msgp + Z_to_bv 64 8),
-                read_u64 (in_mem i) (msgp + Z_to_bv 64 16),
-                read_u64 (in_mem i) (msgp + Z_to_bv 64 24),
-                read_u64 (in_mem i) (msgp + Z_to_bv 64 32),
-                read_u64 (in_mem i) (msgp + Z_to_bv 64 40) with
-          | Some name, Some _, Some iov, Some iovlen, Some _, Some ctllen =>
+      match user_read i m msgp (Z_to_bv 64 MSGHDR_SIZE) with
+      | UFault => ret_outcome (errno_ret EFAULT) m
+      | USpecial => Unmodeled
+      | UOk hdr =>
+          let name   := msghdr_field hdr 0 in
+          let iov    := msghdr_field hdr 2 in
+          let iovlen := msghdr_field hdr 3 in
+          let ctllen := msghdr_field hdr 5 in
               if negb (w_is0 name) then Unmodeled          (* a destination address *)
               else if (IOV_MAX <? bv_unsigned iovlen)%Z
               then outcome_copyins [(msgp, Z.to_nat MSGHDR_SIZE)]
                      (ret_outcome (errno_ret EMSGSIZE) m)  (* __copy_msghdr's own errno *)
               else if (UIO_FASTIOV <? bv_unsigned iovlen)%Z then Unmodeled
               else
-              match copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen) with
-              | ImpFault =>
+              match user_copy_iovecs i m iov (word_to_nat iovlen) with
+              | USpecial => Unmodeled
+              | UFault | UOk ImpFault =>
                   outcome_copyins
                     ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                     ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                     ++ user_copy_iovecs_accesses i m iov (word_to_nat iovlen))
                     (ret_outcome (errno_ret EFAULT) m)
-              | ImpInval =>
+              | UOk ImpInval =>
                   outcome_copyins
                     ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                     ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                     ++ user_copy_iovecs_accesses i m iov (word_to_nat iovlen))
                     (ret_outcome (errno_ret EINVAL) m)
-              | ImpOk iovs0 =>
+              | UOk (ImpOk iovs0) =>
                   if negb (w_is0 ctllen) then Unmodeled   (* ancillary data, after
                                                              the import: see the spec *)
                   else if negb (iovs_total (cap_iovecs iovs0) <=? rw_bytes_max)%Z
@@ -630,16 +646,12 @@ Definition sendmsg_witness (fd msgp flags : word)
                   else
                   send_on_socket_witness
                     ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                     ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                     ++ user_copy_iovecs_accesses i m iov (word_to_nat iovlen))
                     (fun n => iov_prefix_accesses (cap_iovecs iovs0) n)
                     fd sk
                     (Z_to_bv 64 (iovs_total (cap_iovecs iovs0)))
-                    (writev_gathered (in_mem i) iovs0) m
+                    (user_writev_gathered i m iovs0) m
               end
-          | _, _, _, _, _, _ =>
-              outcome_copyins [(msgp, Z.to_nat MSGHDR_SIZE)]
-                (ret_outcome (errno_ret EFAULT) m)
-          end
       end
   end.
 
@@ -652,30 +664,24 @@ Proof.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|];
     cbv beta iota zeta; try apply pure_ok.
-  destruct (read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE));
-    cbv beta iota zeta; [|apply pure_ok].
-  (* Six independent reads, so 64 shapes; 63 of them are the total-match
-     -EFAULT arm the spec calls unreachable, and only the all-[Some] one
-     continues.  The goal selector is what keeps this cheap -- do not
-     replace it with a uniform [cbn], which would delta-reduce the
-     iovec fuel below. *)
-  destruct (read_u64 (in_mem i) msgp) as [name|],
-           (read_u64 (in_mem i) (msgp + Z_to_bv 64 8)) as [namelen|],
-           (read_u64 (in_mem i) (msgp + Z_to_bv 64 16)) as [iov|],
-           (read_u64 (in_mem i) (msgp + Z_to_bv 64 24)) as [iovlen|],
-           (read_u64 (in_mem i) (msgp + Z_to_bv 64 32)) as [ctl|],
-           (read_u64 (in_mem i) (msgp + Z_to_bv 64 40)) as [ctllen|];
-    cbv beta iota zeta;
-    try (apply record_copyins_outcome; apply pure_ok).
-  destruct (negb (w_is0 name)); [apply unmodeled_intro|].
-  destruct ((IOV_MAX <? bv_unsigned iovlen)%Z);
+  destruct (user_read i m msgp (Z_to_bv 64 MSGHDR_SIZE)) as [hdr| |];
+    cbv beta iota zeta; [ | apply pure_ok | apply unmodeled_intro ].
+  (* The goal selectors are what keep this cheap -- do not replace them
+     with a uniform [cbn], which would delta-reduce the iovec fuel
+     below. *)
+  destruct (negb (w_is0 (msghdr_field hdr 0))); [apply unmodeled_intro|].
+  destruct ((IOV_MAX <? bv_unsigned (msghdr_field hdr 3))%Z);
     [apply record_copyins_outcome; apply pure_ok|].
-  destruct ((UIO_FASTIOV <? bv_unsigned iovlen)%Z); [apply unmodeled_intro|].
-  destruct (copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen)) as [iovs0| |];
+  destruct ((UIO_FASTIOV <? bv_unsigned (msghdr_field hdr 3))%Z);
+    [apply unmodeled_intro|].
+  destruct (user_copy_iovecs i m (msghdr_field hdr 2)
+              (word_to_nat (msghdr_field hdr 3))) as [[iovs0| |]| |];
     cbv beta iota zeta;
     [ | apply record_copyins_outcome; apply pure_ok
-      | apply record_copyins_outcome; apply pure_ok ].
-  destruct (negb (w_is0 ctllen)); [apply unmodeled_intro|].
+      | apply record_copyins_outcome; apply pure_ok
+      | apply record_copyins_outcome; apply pure_ok
+      | apply unmodeled_intro ].
+  destruct (negb (w_is0 (msghdr_field hdr 5))); [apply unmodeled_intro|].
   destruct (negb (iovs_total (cap_iovecs iovs0) <=? rw_bytes_max)%Z);
     [apply unmodeled_intro|].
   apply send_on_socket_witness_ok.
