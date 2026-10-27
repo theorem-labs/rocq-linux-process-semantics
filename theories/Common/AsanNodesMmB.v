@@ -574,8 +574,8 @@ Proof.
   { apply (brk_grow_ok_aligned_intro model d); fold h b;
       [exact B1 | exact D2 | exact D1 | exact B2 | rewrite alloc_ceiling_val; unfold KHI in *; lia
       | exact (proj2 (proj2 (proj2 (co_wf _ _ _ _ _ _ _ _ _ _ _ HC)))) | exact Hrfg
-      | eapply (vdso_meets_narrow _ _ _ 0 (KHI + page_size));
-          [lia | unfold page_size; lia | exact (co_vdso _ _ _ _ _ _ _ _ _ _ _ HC)]
+      | eapply (Mmap.vdso_meets_narrow _ _ _ 0 (KHI + page_size));
+          [lia | unfold page_size; lia | exact (proj1 (co_vdso _ _ _ _ _ _ _ _ _ _ _ HC))]
       |].
     rewrite Hlim. lia. }
   unfold cfg_of.
@@ -1273,7 +1273,7 @@ Proof.
     split; [exact Hm'|]. split; [exact Hne'|]. intros Hnf'. exact (DISJ' m' Hm' Hnf' Hne'). }
   assert (KNF : forall m', am_kind m' = KNONE \/ am_kind m' = KNONELAZY \/ am_kind m' = KRWLAZY -> is_fog m' = false).
   { intros m' Hk. unfold is_fog. destruct Hk as [-> |[-> | ->]]; reflexivity. }
-  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv].
+  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xvdso].
   destruct Hlohi as (L1 & L2 & L3 & L4 & L5).
   assert (HAeq : ALLOW E cs' = flat_map (allow1 A E) (kept ++ gone ++ a_ghost cs)) by reflexivity.
   constructor; rewrite ?HAeq; subst cs'; cbn [a_ss a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset kn s_regs s_log s_know s_next mk_ss];
@@ -1398,6 +1398,7 @@ Proof.
     pose proof (G3 x Hpx) as Z0. unfold Mr, mrestrict, hid in Z0. rewrite Hold in Z0.
     destruct (argH E x); [discriminate|]. cbn in Z0. exact Z0.
   - (* sinv *) eapply SINV_frame; [|exact Xsinv]. intros x Hx. unfold FULL'. apply unfill_out. pose proof (argH_high _ _ Hx). rewrite Un. subst hi. lia.
+  - (* vdso *) exact Xvdso.
 Qed.
 
 

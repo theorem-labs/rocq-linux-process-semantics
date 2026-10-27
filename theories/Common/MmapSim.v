@@ -215,8 +215,9 @@ Definition page_round_up (len : word) : word :=
 
 (** May the kernel grant [a, a+n)?  [n] is the ROUNDED length in [Z] and
     [hint] is the caller's addr argument (a0); matches [Mmap.mmap_spec]'s
-    choose / [check_mmap]'s condition, including the allocation-budget
-    conjunct ([State.vm_limit]).
+    choose / [check_mmap]'s condition, including the vDSO pair
+    ([State.vdso_meets]) and the allocation-budget conjunct
+    ([State.vm_limit]).
 
     [hint] IS DEAD: the spec constrains a preference-free placement by
     admissibility alone, so a NULL hint and a free non-NULL one accept
@@ -225,6 +226,7 @@ Definition grant_ok (hint : word) (m : Model) (a : word) (n : Z) : bool :=
   (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
   && (bv_unsigned a + n <=? alloc_top (m_vmmaps m))%Z
   && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n)
+  && negb (vdso_meets (m_vdso m) (bv_unsigned a) (bv_unsigned a + n))
   && (vm_backing_used m + n <=? vm_limit (m_vmmaps m))%Z.
 
 Lemma munmap_model_halted : forall addr n m, m_halted (munmap_model addr n m) = m_halted m.
@@ -260,7 +262,7 @@ Lemma grant_ok_unpack : forall hint m a n,
 Proof.
   intros hint m a n H. unfold grant_ok in H.
   rewrite !andb_true_iff in H.
-  destruct H as [[[[H1 H2] H3] H4] H5].
+  destruct H as [[[[[H1 H2] H3] H4] _] H5].
   apply Z.eqb_eq in H1. apply Z.ltb_lt in H2. apply Z.leb_le in H3.
   apply Z.leb_le in H5.
   auto 7.
@@ -521,12 +523,12 @@ Proof.
     [ | apply page_round_up_Z_nonneg; pose proof (u64_range (ms_gpr ms 1)); lia
       | exact Hg ].
   unfold grant_ok in Hg. rewrite !andb_true_iff in Hg.
-  destruct Hg as [[[[H1 H2] H3] H4] H5].
+  destruct Hg as [[[[[H1 H2] H3] H4] H6] H5].
   rewrite Hflags.
   assert (Hnr : mmap_noreserve_b (Z_to_bv 64 34) = false)
     by (vm_compute; reflexivity).
   unfold mmap_noreserve_backed_ok, with_mmap_backing. rewrite Hnr.
-  rewrite H1, H2, H3, H4, H5.
+  rewrite H1, H2, H3, H4, H6, H5.
   unfold page_round_up. cbn [listNN_eqb]. rewrite !bv_eqb_refl.
   reflexivity.
 Qed.
@@ -571,6 +573,8 @@ Proof.
               && (bv_unsigned r + page_round_up_Z (bv_unsigned (ms_gpr ms 1)) <=? alloc_top (m_vmmaps model))%Z
               && region_free (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) r
                    (Z_to_bv 64 (page_round_up_Z (bv_unsigned (ms_gpr ms 1))))
+              && negb (vdso_meets (m_vdso model) (bv_unsigned r)
+                         (bv_unsigned r + page_round_up_Z (bv_unsigned (ms_gpr ms 1))))
               && (vm_backing_used model
                   + page_round_up_Z (bv_unsigned (ms_gpr ms 1))
                   <=? vm_limit (m_vmmaps model))%Z) eqn:Hcond;

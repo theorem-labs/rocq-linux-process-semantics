@@ -87,6 +87,20 @@ Proof.
   reflexivity.
 Qed.
 
+(** The arm changes nothing: each answer it accepts is a bare return. *)
+Lemma check_mremap_vdso_source_model : forall old old_nZ new_nZ eff m m' evs,
+  check_mremap_vdso_source old old_nZ new_nZ eff m = CheckOk m' evs -> m' = m.
+Proof.
+  intros old old_nZ new_nZ eff m m' evs H. unfold check_mremap_vdso_source in H.
+  destruct (Z.eqb old_nZ new_nZ);
+    [apply check_ret_only_ok_iff in H; destruct H as (_ & -> & _); reflexivity|].
+  destruct (old_nZ <? new_nZ)%Z;
+    [apply check_ret_only_ok_iff in H; destruct H as (_ & -> & _); reflexivity|].
+  destruct (vdso_split (m_vdso m) (bv_unsigned old + new_nZ)
+              (bv_unsigned old + old_nZ)); [|discriminate].
+  apply check_ret_only_ok_iff in H. destruct H as (_ & -> & _). reflexivity.
+Qed.
+
 Definition check_mremap (old old_size new_size flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE)

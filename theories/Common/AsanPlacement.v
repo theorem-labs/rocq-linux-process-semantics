@@ -226,6 +226,43 @@ Proof.
   apply hint_placement_ok_b_of_floor. exact Hfl.
 Qed.
 
+(** The vDSO pair as two ledger intervals, mapped or not.  A NULL-hint
+    grant must miss the mapped ones ([Mmap.mmap_spec]'s [choose]), and
+    the ledger does not hold them, so the scan above runs over them
+    beside the ledger: a window free of both intervals misses the pair. *)
+Definition vdso_ivs (v : VdsoState) : list (word * word) :=
+  [(Z_to_bv 64 (vdso_vvar_lo v), Z_to_bv 64 (vds_vvar v));
+   (Z_to_bv 64 (vdso_text_lo v), Z_to_bv 64 (vds_text v))].
+
+Lemma gap_weight_vdso_ivs : forall nZ v,
+  0 <= vds_vvar v < 2 ^ 64 -> 0 <= vds_text v < 2 ^ 64 ->
+  gap_weight nZ (vdso_ivs v) = vds_vvar v + vds_text v + 2 * (nZ + 4095).
+Proof.
+  intros nZ v Hv Ht. unfold vdso_ivs. cbn [gap_weight].
+  rewrite !fg_u64_lit by lia. lia.
+Qed.
+
+Lemma region_free_vdso_ivs : forall v L g nZ,
+  0 <= vds_base v -> 0 <= vds_vvar v -> 0 <= vds_text v -> vdso_text_hi v < 2 ^ 64 ->
+  0 <= g -> 0 <= nZ -> g + nZ < 2 ^ 64 ->
+  region_free (vdso_ivs v ++ L) (Z_to_bv 64 g) (Z_to_bv 64 nZ) = true ->
+  region_free L (Z_to_bv 64 g) (Z_to_bv 64 nZ) = true /\ vdso_meets v g (g + nZ) = false.
+Proof.
+  intros v L g nZ Hb Hv Ht Hhi Hg Hn Hgn H.
+  unfold vdso_ivs in H. cbn [app region_free] in H.
+  apply andb_true_iff in H as [H1 H]. apply andb_true_iff in H as [H2 HL].
+  split; [exact HL|].
+  apply negb_true_iff in H1, H2. unfold iv_overlap in H1, H2.
+  unfold vdso_text_hi, vdso_text_lo, vdso_vvar_lo in *.
+  rewrite !fg_u64_lit in H1, H2 by lia.
+  unfold vdso_meets, z_ranges_meet, vdso_vvar_lo, vdso_vvar_hi, vdso_text_lo, vdso_text_hi.
+  apply andb_false_iff in H1 as [H1|H1]; apply Z.ltb_ge in H1;
+  apply andb_false_iff in H2 as [H2|H2]; apply Z.ltb_ge in H2;
+  rewrite (proj2 (Z.ltb_ge (Z.max g (vds_base v)) _)) by lia;
+  rewrite (proj2 (Z.ltb_ge (Z.max g (vds_base v + vds_vvar v)) _)) by lia;
+  rewrite !andb_false_r; reflexivity.
+Qed.
+
 (* ========================================================================= *)
 (* NULL-hint placement: where a kernel-placed grant can land                  *)
 (* ========================================================================= *)

@@ -241,18 +241,32 @@ Definition vdso_vvar_byte (v : VdsoState) (x : Z) : bool :=
     recorded mapping contains reaches here; when its first byte is a
     mapped byte of the pair, [do_mprotect_pkey]'s walk (mm/mprotect.c:
     903-997, Linux v6.18.46) starts at that range of the pair, and the
-    answer is Linux's:
+    answer is Linux's.
 
-    - the VVAR range is VM_READ|VM_MAYREAD without VM_MAYWRITE
-      ([vdso_install_vvar_mapping], lib/vdso/datastore.c:99-105), so
-      the walk's first test refuses rw with -EACCES (mm/mprotect.c:
-      959-963), before anything changes;
-    - the TEXT range is VM_MAYWRITE (arch/riscv/kernel/vdso.c:137-140),
-      so the walk reaches [mprotect_fixup] (:990).  rw differs from the
-      text's flags (:769), the write accounting may refuse with -ENOMEM
+    WHICH [prot] REACHES THIS ARM: only PROT_READ|PROT_WRITE.  Every
+    other [prot] at nonzero length is declined before ([mprotect_modeled_b]
+    in [mprotect_spec]), so the arm answers for rw and for nothing else.
+    The walk's access test (:959-963) is
+    [(newflags & ~(newflags >> 4)) & VM_ACCESS_FLAGS]: a requested access
+    whose VM_MAY* bit the range lacks.  rw requests VM_WRITE.
+
+    - the VVAR range is VM_READ|VM_MAYREAD, without VM_MAYWRITE and
+      VM_MAYEXEC ([vdso_install_vvar_mapping], lib/vdso/datastore.c:
+      99-105), so the test refuses rw with -EACCES, before anything
+      changes.  (A [prot] the vvar range allows, PROT_NONE or PROT_READ,
+      would pass the test and reach the split, -EINVAL on part of the
+      range; the model declines those [prot]s, so no such call reaches
+      this arm.)  READ_IMPLIES_EXEC adds PROT_EXEC only where VM_MAYEXEC
+      is set (:945-946), so it does not change the vvar answer;
+    - the TEXT range is VM_MAYREAD|VM_MAYWRITE|VM_MAYEXEC
+      (arch/riscv/kernel/vdso.c:137-140), so rw passes the test and the
+      walk reaches [mprotect_fixup] (:990).  rw differs from the text's
+      flags (:769), the write accounting may refuse with -ENOMEM
       (:799-810), and [vma_modify_flags] (:816) then splits the text
       where the request ends inside it ([vma_modify], mm/vma.c:
-      1664-1677): [split_vma]'s map-count -ENOMEM (:590-591) or
+      1664-1677; no merge, because the text is VM_DONTEXPAND, which is
+      in VM_SPECIAL, and [vma_merge_existing_range] refuses those, :844):
+      [split_vma]'s map-count -ENOMEM (:590-591) or
       [special_mapping_split]'s -EINVAL (mm/mmap.c:1394-1412).  A
       request that covers the whole text makes it writable, and the
       text's bytes are the kernel's, so that call is [unmodeled].

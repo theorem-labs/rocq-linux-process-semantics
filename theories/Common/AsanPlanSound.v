@@ -278,6 +278,17 @@ Qed.
 Lemma holes_none : forall E y l ms, Forall (fun m => is_hole m = false) ms -> Forall (hole_ok E y l) ms.
 Proof. intros E y l ms H. apply Forall_forall. intros m Hm Hh. pose proof (proj1 (Forall_forall _ _) H m Hm) as X. congruence. Qed.
 
+(** Where the vDSO pair ([State.m_vdso]) may be, as the ASan proofs need it:
+    no mapped range of it below [KHI] and one page (where the brk heap and
+    the shadows the plans map with MAP_FIXED end), and its two ranges at
+    most [VDSO_MAX] bytes in all, inside the address space (so a NULL-hint
+    gap scan can step over them, [AsanPlacement.vdso_ivs]). *)
+Definition vdso_low (v : VdsoState) : Prop :=
+  vdso_meets v 0 (KHI + page_size) = false
+  /\ 0 <= vds_base v /\ 0 <= vds_vvar v /\ 0 <= vds_text v
+  /\ vds_vvar v + vds_text v <= VDSO_MAX
+  /\ vdso_text_hi v < 2 ^ 64.
+
 Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte) (model : Model) : Prop := CS_OK {
   (* symbolic state *)
   co_regs  : regs_ok E (s_regs (a_ss cs)) R;
@@ -325,11 +336,10 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
                in_ghost E cs (bv_unsigned a) = false ->
                FULL a = Some (Z_to_bv 8 0);
   co_sinv  : SINV E FULL;
-  (* the vDSO pair ([State.m_vdso]): no mapped range of it below [KHI]
-     and one page, where the brk heap and the shadows the plans map
-     end.  True at [execve] ([AsanInit.init_cs_ok]: the pair sits below
-     the mmap base, above [mmap_base_min]), and no node writes the pair. *)
-  co_vdso  : vdso_meets (m_vdso model) 0 (KHI + page_size) = false
+  (* the vDSO pair: low enough and small enough ([vdso_low]).  True at
+     [execve] ([AsanInit.init_vdso_low]: the pair sits below the mmap
+     base, above [mmap_base_min]), and no node writes the pair. *)
+  co_vdso  : vdso_low (m_vdso model)
 }.
 
 (* ######################################################################### *)

@@ -912,6 +912,7 @@ Lemma mmap_fixed_rw_free_check : forall ms x8 model eff flags (addr : word) (len
   ms_gpr ms 4 = Z_to_bv 64 (-1) -> ms_gpr ms 5 = Z_to_bv 64 0 ->
   let nZ := page_round_up_Z len in let n := Z_to_bv 64 nZ in
   region_free (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) addr n = true ->
+  vdso_meets (m_vdso model) (bv_unsigned addr) (bv_unsigned addr + nZ) = false ->
   check_syscall (sys_input segs ms x8) eff model
   = match eff with
     | mkEffectU r [] zs [] [] [] =>
@@ -923,7 +924,7 @@ Lemma mmap_fixed_rw_free_check : forall ms x8 model eff flags (addr : word) (len
     | _ => CheckReject
     end.
 Proof.
-  intros ms x8 model eff flags addr len Hno H0 Hal Hpos H1 Hlen Hce Hisp H2 H3 Hcore H4 H5 nZ n Hrf.
+  intros ms x8 model eff flags addr len Hno H0 Hal Hpos H1 Hlen Hce Hisp H2 H3 Hcore H4 H5 nZ n Hrf Hvd.
   destruct (mmap_fixed_gate_open (m_vmmaps model) addr len Hal Hpos Hlen Hce Hisp) as (G1 & G2 & G3 & G4 & Hlen' & HnZ).
   destruct (mmap_gates_core50 flags (Z_to_bv 64 3) Hcore) as (Gm & Gn & _ & Gfn & Gfr).
   assert (Hu1 : bv_unsigned (ms_gpr ms 1) = len) by (rewrite H1; apply u64_lit; lia).
@@ -936,7 +937,7 @@ Proof.
   assert (Hmc : map_contains (vm_maps (m_vmmaps model)) addr n = false).
   { apply region_free_not_contains; [unfold n; rewrite u64_lit by lia; lia|].
     rewrite RefNodes.region_free_app in Hrf. apply andb_true_iff in Hrf. tauto. }
-  rewrite Hmc, andb_false_r, Hrf.
+  rewrite Hmc, andb_false_r, Hvd, Hrf.
   destruct eff as [r ws zs us cs ci]. destruct ws; [|reflexivity].
   destruct us; [|destruct (errno_ret_in mmap_errnos r); [destruct zs|]; reflexivity].
   destruct cs; [|reflexivity]. destruct ci; [|reflexivity].
@@ -954,6 +955,7 @@ Lemma srz_mmap_fixed_rw_free2 : forall regs (pc : word) mem rom model w (addr : 
   getr regs 14 = Z_to_bv 64 (-1) -> getr regs 15 = Z_to_bv 64 0 ->
   let nZ := page_round_up_Z len in let n := Z_to_bv 64 nZ in
   region_free (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) addr n = true ->
+  vdso_meets (m_vdso model) (bv_unsigned addr) (bv_unsigned addr + nZ) = false ->
   mmap_noreserve_backed_ok flags model nZ = true ->
   srealizes segs (mkCfg (mkst (regupd regs 10 (errno_ret ENOMEM)) (v_addi pc 4) mem rom) model) KA ->
   srealizes segs (mkCfg (mkst (regupd regs 10 addr) (v_addi pc 4) (zfill addr n mem) rom)
@@ -961,7 +963,7 @@ Lemma srz_mmap_fixed_rw_free2 : forall regs (pc : word) mem rom model w (addr : 
   srealizes segs (mkCfg (mkst regs pc mem rom) model) (t_alt2 KA KB).
 Proof.
   intros regs pc mem rom model w addr len flags KA KB HF HE Hh H17 H10 Hal Hpos H11 Hlen Hce Hisp H12 H13 Hcore H14 H15
-         nZ n Hrf Hbk HA HB.
+         nZ n Hrf Hvd Hbk HA HB.
   eapply srz_sys_lazy; [exact Hh | exact HF | exact HE |].
   set (ms := epend regs pc mem rom (getr regs 17)).
   assert (Hno : bv_unsigned (getr regs 17) = 222%Z) by (rewrite H17; apply u64_lit; lia).
@@ -971,7 +973,7 @@ Proof.
                 ltac:(unfold ms; rewrite ms_gpr_epend2; exact H12)
                 ltac:(unfold ms; rewrite ms_gpr_epend3; exact H13) Hcore
                 ltac:(unfold ms; rewrite ms_gpr_epend4; exact H14)
-                ltac:(unfold ms; rewrite ms_gpr_epend5; exact H15) Hrf) as Hchk.
+                ltac:(unfold ms; rewrite ms_gpr_epend5; exact H15) Hrf Hvd) as Hchk.
   cbv zeta in Hchk. fold nZ in Hchk. fold n in Hchk. rewrite Hbk in Hchk.
   destruct (mmap_fixed_gate_open (m_vmmaps model) addr len Hal Hpos Hlen Hce Hisp) as (_ & _ & _ & _ & _ & HnZ). fold nZ in HnZ.
   assert (Hna : errno_ret_in mmap_errnos addr = false).
@@ -1021,6 +1023,7 @@ Lemma mmap_fixed_none_free_check : forall ms x8 model eff flags (addr : word) (l
   ms_gpr ms 4 = Z_to_bv 64 (-1) -> ms_gpr ms 5 = Z_to_bv 64 0 ->
   let nZ := page_round_up_Z len in let n := Z_to_bv 64 nZ in
   region_free (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) addr n = true ->
+  vdso_meets (m_vdso model) (bv_unsigned addr) (bv_unsigned addr + nZ) = false ->
   check_syscall (sys_input segs ms x8) eff model
   = match eff with
     | mkEffectU r [] [] us [] [] =>
@@ -1032,7 +1035,7 @@ Lemma mmap_fixed_none_free_check : forall ms x8 model eff flags (addr : word) (l
     | _ => CheckReject
     end.
 Proof.
-  intros ms x8 model eff flags addr len Hno H0 Hal Hpos H1 Hlen Hce Hisp H2 H3 Hcore H4 H5 nZ n Hrf.
+  intros ms x8 model eff flags addr len Hno H0 Hal Hpos H1 Hlen Hce Hisp H2 H3 Hcore H4 H5 nZ n Hrf Hvd.
   destruct (mmap_fixed_gate_open (m_vmmaps model) addr len Hal Hpos Hlen Hce Hisp) as (G1 & G2 & G3 & G4 & Hlen' & HnZ).
   destruct (mmap_gates_core50 flags (Z_to_bv 64 0) Hcore) as (Gm & Gn & Gfn & _ & _).
   assert (Hu1 : bv_unsigned (ms_gpr ms 1) = len) by (rewrite H1; apply u64_lit; lia).
@@ -1045,7 +1048,7 @@ Proof.
   assert (Hmc : map_contains (vm_maps (m_vmmaps model)) addr n = false).
   { apply region_free_not_contains; [unfold n; rewrite u64_lit by lia; lia|].
     rewrite RefNodes.region_free_app in Hrf. apply andb_true_iff in Hrf. tauto. }
-  rewrite Hmc, andb_false_r, Hrf.
+  rewrite Hmc, andb_false_r, Hvd, Hrf.
   destruct eff as [r ws zs us cs ci]. destruct ws; [|reflexivity].
   destruct zs; [|reflexivity].
   destruct cs; [|destruct (errno_ret_in mmap_errnos r); [destruct us|]; reflexivity].
@@ -1064,13 +1067,14 @@ Lemma srz_mmap_fixed_none_free2 : forall regs (pc : word) mem rom model w (addr 
   getr regs 14 = Z_to_bv 64 (-1) -> getr regs 15 = Z_to_bv 64 0 ->
   let nZ := page_round_up_Z len in let n := Z_to_bv 64 nZ in
   region_free (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) addr n = true ->
+  vdso_meets (m_vdso model) (bv_unsigned addr) (bv_unsigned addr + nZ) = false ->
   srealizes segs (mkCfg (mkst (regupd regs 10 (errno_ret ENOMEM)) (v_addi pc 4) mem rom) model) KA ->
   srealizes segs (mkCfg (mkst (regupd regs 10 addr) (v_addi pc 4) (unfill addr n mem) rom)
                        (with_mmap_backing flags addr n (noaccess_model addr n model))) KB ->
   srealizes segs (mkCfg (mkst regs pc mem rom) model) (t_alt2 KA KB).
 Proof.
   intros regs pc mem rom model w addr len flags KA KB HF HE Hh H17 H10 Hal Hpos H11 Hlen Hce Hisp H12 H13 Hcore H14 H15
-         nZ n Hrf HA HB.
+         nZ n Hrf Hvd HA HB.
   eapply srz_sys_lazy; [exact Hh | exact HF | exact HE |].
   set (ms := epend regs pc mem rom (getr regs 17)).
   assert (Hno : bv_unsigned (getr regs 17) = 222%Z) by (rewrite H17; apply u64_lit; lia).
@@ -1080,7 +1084,7 @@ Proof.
                 ltac:(unfold ms; rewrite ms_gpr_epend2; exact H12)
                 ltac:(unfold ms; rewrite ms_gpr_epend3; exact H13) Hcore
                 ltac:(unfold ms; rewrite ms_gpr_epend4; exact H14)
-                ltac:(unfold ms; rewrite ms_gpr_epend5; exact H15) Hrf) as Hchk.
+                ltac:(unfold ms; rewrite ms_gpr_epend5; exact H15) Hrf Hvd) as Hchk.
   cbv zeta in Hchk. fold nZ in Hchk. fold n in Hchk.
   destruct (mmap_fixed_gate_open (m_vmmaps model) addr len Hal Hpos Hlen Hce Hisp) as (_ & _ & _ & _ & _ & HnZ). fold nZ in HnZ.
   assert (Hna : errno_ret_in mmap_errnos addr = false).
@@ -1594,7 +1598,8 @@ Record grant_post (kd : mkind) (a n : word) (model model' : Model) : Prop := GP 
   gp_fds : m_fds model' = m_fds model;
   gp_fs : m_fs model' = m_fs model;
   gp_tid : m_tid model' = m_tid model;
-  gp_isp : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model) }.
+  gp_isp : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model);
+  gp_vdso : m_vdso model' = m_vdso model }.
 
 Definition grant_mem (kd : mkind) (a n : word) (FULL FULL' : word -> option byte) : Prop :=
   (forall x : word, bv_unsigned x < bv_unsigned a \/ bv_unsigned a + bv_unsigned n <= bv_unsigned x -> FULL' x = FULL x)
@@ -1842,7 +1847,7 @@ Proof.
   split; [| split; [exact MROUT | exact MRSAME]].
   (* ---- cs_ok, field by field ---- *)
   pose proof (grant_wf kd a n model model' GPo Hwf ltac:(rewrite Un; lia)) as Hwf'.
-  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv].
+  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xvdso].
   constructor.
   all: unfold cs1, add_entry; cbn [a_ss a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset kn s_regs s_log s_know s_next mk_ss].
   all: try change (ALLOW E (ACS ?s ?m ?t ?y ?e (a_vis cs) (a_ghost cs) ?ab ?br ?fd ?ti)) with (ALLOW E cs).
@@ -1929,6 +1934,7 @@ Proof.
         rewrite page_in_ranges_cons_out in Hlz; [exact Hlz | | rewrite Un; lia].
         pose proof (page_of_byte_out_aligned x (bv_unsigned a) (bv_unsigned a + nZ) Hal ltac:(rewrite Z.add_mod, Hal, HnZal by lia; reflexivity) ltac:(lia)). unfold page_size. rewrite Un. lia.
   - (* sinv *) eapply SINV_frame; [|exact Xsinv]. intros x Hx. apply GM1. pose proof (argH_high _ _ Hx). rewrite Un. lia.
+  - (* vdso *) rewrite (gp_vdso _ _ _ _ _ GPo). exact Xvdso.
 Qed.
 
 (* ######################################################################### *)
@@ -2154,31 +2160,37 @@ Lemma gap_weight_eq : forall nZ l, gap_weight nZ l = sum_sizes l + Z.of_nat (len
 Proof. induction l as [|[b sz] l IH]; cbn -[Z.of_nat Z.add Z.mul]; [lia|]. rewrite IH. rewrite Nat2Z.inj_succ. cbn [snd]. lia. Qed.
 
 (** The spec: the GRANT child of a NULL-hint request is inhabited — a free,
-    aligned window above the floor exists ([AsanPlacement.free_gap_of_totals]
-    from [gap_ok] + [co_totsz] + [RES_len]). *)
+    aligned window above the floor exists ([AsanPlacement.free_gap_of_slack]
+    over the ledger and the two ranges of the vDSO pair, from [gap_ok] +
+    [co_totsz] + [RES_len] + [co_vdso]). *)
 Lemma gap_ok_sound : forall E cs R FULL model nhi nZ,
   CSOK E cs R FULL model -> gap_ok A cs nhi = true -> 0 <= nZ <= nhi ->
   exists a : word, grant_ok_na (Z_to_bv 64 0) model a nZ = true.
 Proof.
   intros E cs R FULL model nhi nZ HC Hg HnZ. unfold gap_ok in Hg. apply Z.leb_le in Hg.
   pose proof (co_totsz _ _ _ _ _ _ _ _ _ _ _ HC) as T.
+  destruct (co_vdso _ _ _ _ _ _ _ _ _ _ _ HC) as (_ & Vb & Vv & Vt & Vsz & Vhi).
+  unfold vdso_text_hi in Vhi. unfold VDSO_MAX in Hg, Vsz.
   assert (L : (length (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) <= n_res A + length (a_maps cs))%nat).
   { rewrite length_app, (co_res _ _ _ _ _ _ _ _ _ _ _ HC), RES_len'. pose proof (maps_match_length E _ _ (co_maps _ _ _ _ _ _ _ _ _ _ _ HC)). lia. }
   assert (GW : gw_sizes (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) <= a_totsz cs).
   { pose proof (gap_weight_sizes nZ (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model))) as G1.
     rewrite gap_weight_eq in G1. lia. }
-  destruct (free_gap_of_totals (m_vmmaps model) nZ (a_totsz cs) ltac:(lia) GW) as (g & Hal & Hfl & Hc & Hfree & Hpl).
-  { rewrite FLOOR_eq, CEIL_eq.
-    assert (0 <= a_totsz cs).
-    { assert (0 <= sum_sizes (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model))); [|lia].
-      clear. induction (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) as [|[b sz] l IH]; cbn; [lia|]. pose proof (u64_range sz). lia. }
+  destruct (free_gap_of_slack (vdso_ivs (m_vdso model) ++ (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)))
+              nZ ltac:(lia)) as (g & Hal & Hfl & Hc & Hfree').
+  { rewrite gap_weight_app, gap_weight_vdso_ivs by lia. rewrite gap_weight_sizes.
+    rewrite FLOOR_eq, CEIL_eq.
     set (len1 := length (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model))) in *.
     set (len2 := (n_res A + length (a_maps cs))%nat) in *.
     assert (Z.of_nat len1 * (nZ + 4095) <= Z.of_nat len2 * (nhi + 4095)) by nia. nia. }
   pose proof bottomup_floor_val as Hfv. pose proof alloc_ceiling_val as Hcv.
   assert (Hg64 : 0 <= g < 2 ^ 64) by lia.
+  destruct (region_free_vdso_ivs (m_vdso model) _ g nZ Vb Vv Vt ltac:(unfold vdso_text_hi; lia)
+              ltac:(lia) ltac:(lia) ltac:(lia) Hfree') as [Hfree Hvd].
+  assert (Hpl : hint_placement_ok_b (Z_to_bv 64 0) (m_vmmaps model) g nZ = true)
+    by (apply hint_placement_ok_b_of_floor; exact Hfl).
   exists (Z_to_bv 64 g). unfold grant_ok_na. rewrite u64_lit by lia.
-  rewrite Hfree, Hpl. unfold page_size in Hal |- *.
+  rewrite Hfree, Hvd, Hpl. unfold page_size in Hal |- *.
   rewrite (proj2 (Z.eqb_eq _ _) Hal). rewrite (proj2 (Z.ltb_lt 0 g)) by lia. rewrite (proj2 (Z.leb_le _ _) Hc). reflexivity.
 Qed.
 
@@ -2468,7 +2480,7 @@ Proof.
             In m (a_maps cs) \/ exists m0, In m0 (a_maps cs) /\ m = AM (am_base m0) (am_len m0) KFOG).
   { intros m Hm. unfold unhole in Hm. apply in_map_iff in Hm as (m0 & Hm0 & Hin).
     destruct (is_hole m0 && amap_eqb m0 h)%bool; [right; exists m0; split; [exact Hin | symmetry; exact Hm0] | left; subst; exact Hin]. }
-  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv].
+  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xvdso].
   constructor; unfold with_maps0 in *;
     cbn [a_ss a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset kn] in *; try assumption.
   - (* maps *) apply (proj1 (maps_match_unhole E _ h _)). exact Xmaps.
@@ -2703,7 +2715,8 @@ Record slice_post (s : slarm) (addr n : word) (model model' : Model) : Prop := S
   sp_fds : m_fds model' = m_fds model;
   sp_fs : m_fs model' = m_fs model;
   sp_tid : m_tid model' = m_tid model;
-  sp_isp : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model) }.
+  sp_isp : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model);
+  sp_vdso : m_vdso model' = m_vdso model }.
 
 Definition slice_mem (s : slarm) (addr n : word) (FULL FULL' : word -> option byte) : Prop :=
   (forall x : word, bv_unsigned x < bv_unsigned addr \/ bv_unsigned addr + bv_unsigned n <= bv_unsigned x -> FULL' x = FULL x)
@@ -2976,7 +2989,7 @@ Section Slice.
     assert (HIDOUT : forall x : word, bv_unsigned x < lo \/ hi <= bv_unsigned x -> HID E cs1 model' x = HID E cs model x).
     { intros x Hx. unfold hid. rewrite (sl_vis_out cs1 x eq_refl Hx). reflexivity. }
     assert (HALLOW : ALLOW E cs1 = ALLOW E cs) by reflexivity.
-    destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv].
+    destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xvdso].
     constructor; rewrite ?HALLOW; unfold cs1; cbn [a_ss a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset kn s_regs s_log s_know s_next mk_ss]; fold cs1.
     - exact Hregs.
     - reflexivity.
@@ -3055,6 +3068,7 @@ Section Slice.
       + rewrite (proj1 SM x) by (unfold hi in *; rewrite Un; lia). rewrite HIDOUT in Hh by lia. rewrite (sp_maps _ _ _ _ _ SPo) in Hmx.
         rewrite sl_noacc_out in Hna by lia. rewrite sl_lazy_out in Hlz by lia. exact (Xzero x Hh Hmx Hna Hlz Hgh).
     - (* sinv *) eapply SINV_frame; [|exact Xsinv]. intros x Hx. apply (proj1 SM). pose proof (argH_high _ _ Hx). unfold hi in *. rewrite Un. lia.
+    - (* vdso *) rewrite (sp_vdso _ _ _ _ _ SPo). exact Xvdso.
   Qed.
 
 End Slice.
@@ -3265,7 +3279,8 @@ Record dest_post (addr n : word) (model model' : Model) : Prop := DP_ {
   dp_fds : m_fds model' = m_fds model;
   dp_fs : m_fs model' = m_fs model;
   dp_tid : m_tid model' = m_tid model;
-  dp_isp : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model) }.
+  dp_isp : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model);
+  dp_vdso : m_vdso model' = m_vdso model }.
 
 Definition dest_mem (addr n : word) (FULL FULL' : word -> option byte) : Prop :=
   (forall x : word, bv_unsigned x < bv_unsigned addr \/ bv_unsigned addr + bv_unsigned n <= bv_unsigned x -> FULL' x = FULL x)
@@ -3472,7 +3487,7 @@ Section Destroyed.
     assert (HIDOUT : forall x : word, bv_unsigned x < lo \/ hi <= bv_unsigned x -> HID E cs1 model' x = HID E cs model x).
     { intros x Hx. unfold hid. rewrite (d_vis_out cs1 x eq_refl Hx). reflexivity. }
     assert (HALLOW : ALLOW E cs1 = ALLOW E cs) by reflexivity.
-    destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv].
+    destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xvdso].
     constructor; rewrite ?HALLOW; unfold cs1; cbn [a_ss a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset kn s_regs s_log s_know s_next mk_ss]; fold cs1.
     - exact Hregs.
     - reflexivity.
@@ -3572,6 +3587,7 @@ Section Destroyed.
       + rewrite (proj1 DM x) by (unfold hi in *; rewrite Un; lia). rewrite HIDOUT in Hh by lia. rewrite d_maps_out in Hmx by lia.
         rewrite d_noacc_out in Hna by lia. rewrite d_lazy_out in Hlz by lia. exact (Xzero x Hh Hmx Hna Hlz Hgh).
     - (* sinv *) eapply SINV_frame; [|exact Xsinv]. intros x Hx. apply (proj1 DM). pose proof (argH_high _ _ Hx). unfold hi in *. rewrite Un. lia.
+    - (* vdso *) rewrite (dp_vdso _ _ _ _ DPo). exact Xvdso.
   Qed.
 End Destroyed.
 
