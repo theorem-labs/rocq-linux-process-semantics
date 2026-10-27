@@ -16,6 +16,77 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude Fs.ReadWrite Mm.Mmap.
 
+(** A source at a mapped byte of the vDSO pair ([Mremap.mremap_vdso_source]):
+    the equal-size return, the grow's -EFAULT, the shrink's split -EINVAL,
+    otherwise declined. *)
+Definition check_mremap_vdso_source (old : word) (old_nZ new_nZ : Z)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  if Z.eqb old_nZ new_nZ then check_ret_only eff old m []
+  else if (old_nZ <? new_nZ)%Z then check_ret_only eff (errno_ret EFAULT) m []
+  else if vdso_split (m_vdso m) (bv_unsigned old + new_nZ) (bv_unsigned old + old_nZ)
+  then check_ret_only eff (errno_ret EINVAL) m []
+  else CheckUnmodeled.
+
+Lemma check_mremap_vdso_source_sound_ok : forall old old_nZ new_nZ eff m m' evs i,
+  check_mremap_vdso_source old old_nZ new_nZ eff m = CheckOk m' evs ->
+  mremap_vdso_source (m_vdso m) old old_nZ new_nZ i m (Ok eff m' evs).
+Proof.
+  intros old old_nZ new_nZ eff m m' evs i H.
+  unfold check_mremap_vdso_source in H. unfold mremap_vdso_source.
+  destruct (Z.eqb old_nZ new_nZ).
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (old_nZ <? new_nZ)%Z.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (vdso_split (m_vdso m) (bv_unsigned old + new_nZ)
+              (bv_unsigned old + old_nZ)); [|discriminate].
+  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok.
+Qed.
+
+Lemma check_mremap_vdso_source_sound_unmodeled : forall old old_nZ new_nZ eff m i,
+  check_mremap_vdso_source old old_nZ new_nZ eff m = CheckUnmodeled ->
+  mremap_vdso_source (m_vdso m) old old_nZ new_nZ i m Unmodeled.
+Proof.
+  intros old old_nZ new_nZ eff m i H.
+  unfold check_mremap_vdso_source in H. unfold mremap_vdso_source.
+  destruct (Z.eqb old_nZ new_nZ).
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (old_nZ <? new_nZ)%Z.
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (vdso_split (m_vdso m) (bv_unsigned old + new_nZ)
+              (bv_unsigned old + old_nZ)).
+  { now apply check_ret_only_no_unmodeled in H. }
+  apply unmodeled_intro.
+Qed.
+
+Lemma check_mremap_vdso_source_complete_ok : forall old old_nZ new_nZ eff m m' evs i,
+  mremap_vdso_source (m_vdso m) old old_nZ new_nZ i m (Ok eff m' evs) ->
+  check_mremap_vdso_source old old_nZ new_nZ eff m = CheckOk m' evs.
+Proof.
+  intros old old_nZ new_nZ eff m m' evs i H.
+  unfold mremap_vdso_source in H. unfold check_mremap_vdso_source.
+  destruct (Z.eqb old_nZ new_nZ).
+  { sys_unfold. inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
+  destruct (old_nZ <? new_nZ)%Z.
+  { sys_unfold. inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
+  destruct (vdso_split (m_vdso m) (bv_unsigned old + new_nZ)
+              (bv_unsigned old + old_nZ)).
+  { sys_unfold. inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
+  sys_unfold. inv_ok.
+Qed.
+
+Lemma check_mremap_vdso_source_complete_unmodeled : forall old old_nZ new_nZ m i eff,
+  mremap_vdso_source (m_vdso m) old old_nZ new_nZ i m Unmodeled ->
+  check_mremap_vdso_source old old_nZ new_nZ eff m = CheckUnmodeled.
+Proof.
+  intros old old_nZ new_nZ m i eff H.
+  unfold mremap_vdso_source in H. unfold check_mremap_vdso_source.
+  destruct (Z.eqb old_nZ new_nZ); [sys_unfold; inv_ok; discriminate|].
+  destruct (old_nZ <? new_nZ)%Z; [sys_unfold; inv_ok; discriminate|].
+  destruct (vdso_split (m_vdso m) (bv_unsigned old + new_nZ)
+              (bv_unsigned old + old_nZ)); [sys_unfold; inv_ok; discriminate|].
+  reflexivity.
+Qed.
+
 Definition check_mremap (old old_size new_size flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE)
@@ -33,7 +104,9 @@ Definition check_mremap (old old_size new_size flags : word)
     let new_n := Z_to_bv 64 new_nZ in
     if negb (mremap_source_b (m_vmmaps m) old old_n old_nZ
              && mremap_backing_uniform_b m old old_n)
-    then CheckUnmodeled
+    then (if vdso_byte (m_vdso m) (bv_unsigned old)
+          then check_mremap_vdso_source old old_nZ new_nZ eff m
+          else CheckUnmodeled)
     else if Z.eqb old_nZ new_nZ
     then check_ret_only eff old m []
     else
@@ -63,6 +136,8 @@ Definition check_mremap (old old_size new_size flags : word)
           else CheckReject
         else if (old_nZ <? new_nZ)%Z
                   && mremap_fresh_b m old_nZ new_nZ old old_n r new_n
+                  && negb (vdso_meets (m_vdso m) (bv_unsigned r)
+                             (bv_unsigned r + new_nZ))
                   && listNN_eqb zs (mremap_tail r old_n old_nZ new_nZ)
                   && listNN_eqb us [(old, old_n)]
                   && listCopy_eqb cs [mkCopy old r old_n]
@@ -128,8 +203,11 @@ Proof.
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
               (page_round_up_Z (bv_unsigned old_size))
             && mremap_backing_uniform_b m old
-              (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))))) eqn:Hsrc;
-    [discriminate|].
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))))) eqn:Hsrc.
+  { destruct (vdso_byte (m_vdso m) (bv_unsigned old)) eqn:Hvb; [|discriminate].
+    eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
+    rewrite Hsrc, Hvb. cbv beta iota in H |- *.
+    apply check_mremap_vdso_source_sound_ok. exact H. }
   destruct (Z.eqb (page_round_up_Z (bv_unsigned old_size))
                    (page_round_up_Z (bv_unsigned new_size))) eqn:Heq.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
@@ -202,6 +280,10 @@ Proof.
                   (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) r
                   (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))))
         eqn:Hfresh; [|destruct copyins; discriminate].
+      destruct (negb (vdso_meets (m_vdso m) (bv_unsigned r)
+                  (bv_unsigned r + page_round_up_Z (bv_unsigned new_size))))
+        eqn:Hvd; [|destruct copyins; discriminate].
+      apply negb_true_iff in Hvd.
       destruct (listNN_eqb zs
         (mremap_tail r
           (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
@@ -230,10 +312,12 @@ Proof.
              (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
              (page_round_up_Z (bv_unsigned old_size))
              (page_round_up_Z (bv_unsigned new_size))) eqn:Hgrow.
-        -- apply alt_r. eapply bind_ok0; [apply (choose_ok _ r); exact Hfresh|].
+        -- apply alt_r. eapply bind_ok0;
+             [apply (choose_ok _ r); split; [exact Hfresh | exact Hvd]|].
            eapply bind_ok0; [apply modify_ok|].
            unfold mremap_move_effect. apply pure_ok.
-        -- eapply bind_ok0; [apply (choose_ok _ r); exact Hfresh|].
+        -- eapply bind_ok0;
+             [apply (choose_ok _ r); split; [exact Hfresh | exact Hvd]|].
            eapply bind_ok0; [apply modify_ok|].
            unfold mremap_move_effect. apply pure_ok.
 Qed.
@@ -259,7 +343,11 @@ Proof.
             && mremap_backing_uniform_b m old
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))))) eqn:Hsrc.
   { eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
-    rewrite Hsrc. apply unmodeled_intro. }
+    rewrite Hsrc. cbv beta iota.
+    destruct (vdso_byte (m_vdso m) (bv_unsigned old)) eqn:Hvb;
+      cbv beta iota in H |- *.
+    - eapply check_mremap_vdso_source_sound_unmodeled. exact H.
+    - apply unmodeled_intro. }
   destruct (Z.eqb (page_round_up_Z (bv_unsigned old_size))
                    (page_round_up_Z (bv_unsigned new_size))) eqn:Heq.
   { now apply check_ret_only_no_unmodeled in H. }
@@ -299,6 +387,9 @@ Proof.
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) r
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))));
       [|destruct copyins; discriminate].
+    destruct (negb (vdso_meets (m_vdso m) (bv_unsigned r)
+                (bv_unsigned r + page_round_up_Z (bv_unsigned new_size))));
+      [|destruct copyins; discriminate].
     destruct (listNN_eqb zs
       (mremap_tail r
         (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
@@ -334,6 +425,11 @@ Proof.
             && mremap_backing_uniform_b m old
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))))) eqn:Hsrc;
     hall Hsrc; inv_ok.
+  { destruct (vdso_byte (m_vdso m) (bv_unsigned old)) eqn:Hvb; hall Hvb; inv_ok.
+    match goal with
+    | Hs : mremap_vdso_source _ _ _ _ _ _ _ |- _ =>
+        eapply check_mremap_vdso_source_complete_ok; exact Hs
+    end. }
   apply negb_false_iff in Hsrc.
   apply andb_true_iff in Hsrc as [Hsource Huniform].
   assert (Hold_nonneg :
@@ -389,6 +485,7 @@ Proof.
                rewrite (mremap_fresh_neq_old _ _ _ old old_n dst _ Hfresh);
                try rewrite Hmove; try rewrite Hfresh
            end.
+           vdso_rw.
            repeat match goal with
            | |- context [listNN_eqb ?l ?l] => rewrite (proj2 (listNN_eqb_eq l l) eq_refl)
            | |- context [listCopy_eqb ?l ?l] => rewrite (proj2 (listCopy_eqb_eq l l) eq_refl)
@@ -401,6 +498,7 @@ Proof.
             rewrite (mremap_fresh_neq_old _ _ _ old old_n dst _ Hfresh);
             try rewrite Hmove; try rewrite Hfresh
         end.
+        vdso_rw.
         repeat match goal with
         | |- context [listNN_eqb ?l ?l] => rewrite (proj2 (listNN_eqb_eq l l) eq_refl)
         | |- context [listCopy_eqb ?l ?l] => rewrite (proj2 (listCopy_eqb_eq l l) eq_refl)
@@ -427,7 +525,13 @@ Proof.
               (page_round_up_Z (bv_unsigned old_size))
             && mremap_backing_uniform_b m old
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))))) eqn:Hsrc;
-    hall Hsrc; inv_ok; [reflexivity|].
+    hall Hsrc; inv_ok.
+  { destruct (vdso_byte (m_vdso m) (bv_unsigned old)) eqn:Hvb; hall Hvb; inv_ok;
+      [|reflexivity].
+    match goal with
+    | Hs : mremap_vdso_source _ _ _ _ _ _ _ |- _ =>
+        eapply check_mremap_vdso_source_complete_unmodeled; exact Hs
+    end. }
   exfalso.
   destruct (Z.eqb (page_round_up_Z (bv_unsigned old_size))
                    (page_round_up_Z (bv_unsigned new_size))) eqn:Heq;

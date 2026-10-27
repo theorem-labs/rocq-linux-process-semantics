@@ -247,12 +247,21 @@ Definition mremap_final_budget_b (m : Model)
     [mremap_inplace_grow_past_ceiling_rejected] pins it, against
     [mremap_inplace_grow_to_ceiling_accepts] one page below: the pair
     differs only in the source's base address, so the flipped verdict is
-    attributable to this conjunct alone. *)
+    attributable to this conjunct alone.
+
+    The vDSO pair is a following VMA to [vma_expandable] like any other:
+    [find_vma_intersection(vma->vm_mm, vma->vm_end, end)]
+    (mm/mremap.c:1421, Linux v6.18.46) finds it in the grown tail
+    [[old + old_n, old + new_n)], and the grow moves instead.  The ledger
+    does not hold the pair, so the [State.vdso_meets] conjunct asks it of
+    that tail. *)
 Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
     (old_nZ new_nZ : Z) : bool :=
   let h := m_vmmaps m in
   (bv_unsigned old + new_nZ <=? alloc_top h)%Z
   && region_free (vm_reserved h ++ map_remove (vm_maps h) old) old new_n
+  && negb (vdso_meets (m_vdso m) (bv_unsigned old + old_nZ)
+                      (bv_unsigned old + new_nZ))
   && mremap_final_budget_b m old old_n old new_n.
 
 (** A moved destination, and the argument for what this guard says is
@@ -266,10 +275,13 @@ Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
     hold of the other — page-aligned, nonzero, below
     [State.alloc_top], disjoint from every recorded mapping — and
     the conditions that do NOT are the same conditions, for the same
-    reason.  This guard carries no search-order conjunct, for the
+    reason.  Disjointness from the vDSO pair, which the ledger does not
+    hold, is the move [choose]'s own conjunct in [mremap_spec], beside
+    this predicate, as it is beside [region_free] in the mmap guard.
+    This guard carries no search-order conjunct, for the
     reason its mmap twin carries none: a highest-fit conjunct would be
-    read on the model's ledger, and the ledger does not carry the
-    kernel's own vdso/vvar VMAs, so a real move destination the kernel
+    read on the model's ledger, and the kernel's search walks VMAs the
+    ledger does not carry, so a real move destination the kernel
     reached by descending past them would be one the model called impossible.
     Excluding a destination Linux produces costs the theorem, exactly as
     it does for a fresh grant.
@@ -446,6 +458,35 @@ Definition mremap_move_effect (old old_n dst : word) (old_nZ new_nZ : Z)
   mkEffectU dst [] (mremap_tail dst old_n old_nZ new_nZ) [(old, old_n)]
     [mkCopy old dst old_n] [].
 
+(** A SOURCE IN THE vDSO PAIR: [old] is a mapped byte of the pair, so
+    [vma_lookup] (mm/mremap.c:1931, Linux v6.18.46) finds a range of the
+    pair, which no recorded mapping is, and [mremap_source_b] has
+    already failed.  Both ranges carry VM_DONTEXPAND, which
+    [__install_special_mapping] adds to every special mapping
+    (mm/mmap.c:1454-1455).  For the MREMAP_MAYMOVE shape:
+
+    - EQUAL sizes: [check_prep_vma] returns at :1676-1677, before it
+      reads the VMA's flags, and [mremap_at] returns [addr] (:1557-1559).
+    - a GROW: [check_prep_vma] answers -EFAULT, at :1720-1721 when
+      [old_len] runs past the range's end and at :1736-1737 otherwise
+      (VM_DONTEXPAND).  The overflow test between them (:1733-1734)
+      cannot fire for a length below 2^64.  The move path, and with it
+      [special_mapping_mremap], is not reached.
+    - a SHRINK: [shrink_vma] unmaps [[old + new_n, old + old_n)] through
+      [do_vmi_munmap] (:1330-1338), so a tail that splits a range of the
+      pair is -EINVAL, as [Mmap.munmap_spec] answers it.  Any other tail
+      is unmodeled: it may unmap a whole range of the pair and more.
+
+    The sealed -EPERM (:1662-1663) needs CONFIG_MSEAL_SYSTEM_MAPPINGS,
+    which the model takes off (SCOPE.md). *)
+Definition mremap_vdso_source (v : VdsoState) (old : word)
+    (old_nZ new_nZ : Z) : Sys SyscallEffect :=
+  if Z.eqb old_nZ new_nZ then ret_only old
+  else if (old_nZ <? new_nZ)%Z then err_ret EFAULT
+  else if vdso_split v (bv_unsigned old + new_nZ) (bv_unsigned old + old_nZ)
+  then err_ret EINVAL
+  else unmodeled.
+
 (** The bounded [mremap(old,old_size,new_size,MREMAP_MAYMOVE)] shape used
     by musl realloc.  The source must be exactly one tracked readable/writable
     anonymous mapping.  Equal-size calls are no-ops; shrink removes/refunds
@@ -607,7 +648,12 @@ Definition mremap_move_effect (old old_n dst : word) (old_nZ new_nZ : Z)
 
     Size rounding is done in [Z] and checked before conversion back to
     [word].  Protected/mixed/non-exact sources, FIXED, DONTUNMAP, and every
-    other flag combination fail closed. *)
+    other flag combination fail closed.
+
+    THE vDSO PAIR.  A source at a mapped byte of the pair is
+    [mremap_vdso_source]'s; a moved destination misses the pair (the
+    move [choose]'s second conjunct); an in-place grow into it is no
+    in-place grow ([mremap_inplace_grow_b]). *)
 Definition mremap_spec (old old_size new_size flags : word)
     : Sys SyscallEffect :=
   (* This gate declines TWO different kernel answers, and only one of them
@@ -638,7 +684,9 @@ Definition mremap_spec (old old_size new_size flags : word)
     let new_n := Z_to_bv 64 new_nZ in
     if negb (mremap_source_b h old old_n old_nZ
              && mremap_backing_uniform_b m old old_n)
-    then unmodeled                                 (* mm/mremap.c:1043 *)
+    then (if vdso_byte (m_vdso m) (bv_unsigned old)
+          then mremap_vdso_source (m_vdso m) old old_nZ new_nZ
+          else unmodeled)                          (* mm/mremap.c:1043 *)
     else if Z.eqb old_nZ new_nZ
     then ret_only old                              (* mm/mremap.c:1091-1093 *)
     else
@@ -650,7 +698,9 @@ Definition mremap_spec (old old_size new_size flags : word)
          else
            let move :=
              dst <- choose (fun dst =>
-                mremap_fresh_b m old_nZ new_nZ old old_n dst new_n = true) ;;
+                mremap_fresh_b m old_nZ new_nZ old old_n dst new_n = true
+                /\ vdso_meets (m_vdso m) (bv_unsigned dst)
+                     (bv_unsigned dst + new_nZ) = false) ;;
              modify (fun _ => mremap_model_next m old old_n dst new_n) ;;
              pure (mremap_move_effect old old_n dst old_nZ new_nZ) in
            if mremap_inplace_grow_b m old old_n new_n old_nZ new_nZ
