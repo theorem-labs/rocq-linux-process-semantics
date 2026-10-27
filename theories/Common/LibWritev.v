@@ -301,13 +301,21 @@ Proof.
   unfold check_writev. rewrite Hfd.
   replace (w_is0 (Z_to_bv 64 fd)) with false
     by (symmetry; apply w_is0_pos; rewrite u64_lit; lia).
-  rewrite in_mem_si, Hcnt32.
-  rewrite (import_iovecs_of_array ms iovs iov Hrom Hcnt Hiok Harr Hbok).
+  rewrite Hcnt32.
+  rewrite (user_import_iovecs_of (sys_input segs ms x8) model iov _ (ImpOk iovs)
+             (import_iovecs_of_array ms iovs iov Hrom Hcnt Hiok Harr Hbok)
+             ltac:(discriminate)).
   (* [check_writev] has no [modeled_iovs_total] gate, so there is no
      [iovs_total_in_range] rewrite; [Htmax] stays a premise for the callers' sake. *)
   assert (Hcap : cap_iovecs iovs = iovs).
   { unfold cap_iovecs. apply cap_iovecs_id. unfold MAX_RW_COUNT. lia. }
-  unfold writev_gathered. rewrite Hcap, (gather_prefix_full _ _ _ Hg).
+  assert (Hg' : gather_iovecs (in_mem (sys_input segs ms x8)) (cap_iovecs iovs)
+                = Some bs)
+    by (rewrite in_mem_si, Hcap; exact Hg).
+  cbv beta iota zeta.
+  rewrite (user_writev_gathered_full _ _ _ _ Hg').
+  unfold user_import_iovecs_accesses, writev_gathered. rewrite in_mem_si.
+  rewrite Hcap, (gather_prefix_full _ _ _ Hg).
   cbv beta iota zeta. fold tot.
   replace ((tot =? 0)%Z) with false by (symmetry; apply Z.eqb_neq; lia).
   replace ((length bs =? 0)%nat) with false by (symmetry; apply Nat.eqb_neq; lia).
@@ -668,7 +676,9 @@ Proof.
   unfold check_writev. rewrite Hfd.
   replace (w_is0 (Z_to_bv 64 fd)) with false by (symmetry; apply w_is0_pos; rewrite u64_lit; lia).
   change (iovcnt32 (Z_to_bv 64 1)) with (Z_to_bv 64 1).
-  rewrite in_mem_si, Himp, Hacc.
+  unfold user_import_iovecs_accesses. rewrite in_mem_si, Hacc.
+  rewrite (user_import_iovecs_of (sys_input segs ms (getr regs 17)) model iov
+             (Z_to_bv 64 1) (ImpOk [(b1, Z_to_bv 64 0)]) Himp ltac:(discriminate)).
   (* [check_writev] has no [modeled_iovs_total] gate; [Hmax] stays a premise. *)
   unfold cap_iovecs. cbn [cap_iovecs_aux iovs_total].
   change (bv_unsigned (Z_to_bv 64 0)) with 0%Z. rewrite Z.min_r by (unfold MAX_RW_COUNT; lia).
