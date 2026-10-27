@@ -410,7 +410,9 @@ Proof.
     unfold timespec_ns, CLOCK_NS_ENVELOPE, tv_sec_of, tv_frac_of in *.
     change (2 ^ 63)%Z with 9223372036854775808%Z in *. lia. }
   intro Hc. unfold check_nanosleep in Hc.
-  rewrite Hread, Hvalid in Hc. cbn [negb] in Hc. cbv iota in Hc.
+  rewrite (proj2 (user_read_ok_iff i m rqtp (Z_to_bv 64 16) rem) Hread),
+    Hvalid in Hc.
+  cbn [negb] in Hc. cbv iota in Hc.
   destruct eff as [ret ws zs us cs cp].
   destruct (w_is0 rmtp) eqn:Hw; cbv iota in Hc.
   - unfold check_copyins in Hc.

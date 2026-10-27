@@ -317,8 +317,9 @@ Definition sa_flags_ok (fl : word) : bool :=
     would raise.  It does NOT precede the [sigsetsize] -EINVAL, which the
     syscall entry raises before the copy — arm 1 below — and the [oact]
     [copy_to_user] runs after [do_sigaction], so a bad [oact] with a bad
-    [sig] is -EINVAL rather than -EFAULT.  This returns [sa_flags]
-    exactly when all 24 bytes are readable.
+    [sig] is -EINVAL rather than -EFAULT.  So the spec reads all 24
+    bytes with one [State.user_read], and this decodes [sa_flags] from
+    them.
 
     NO [State.access_okb] GUARD, and that is not an omission.  The
     delivering syscalls need one because they answer for ranges they do
@@ -328,7 +329,7 @@ Definition sa_flags_ok (fl : word) : bool :=
     which is the limit [__access_ok] tests (include/asm-generic/access_ok.h;
     riscv overrides [access_ok] for pointer masking but not
     [__access_ok]; see [State.TASK_SIZE]).
-    The word addition in [readable_bytes] cannot manufacture one either:
+    The word addition in [read_bytes_map] cannot manufacture one either:
     wrapping needs [act] within 24 bytes of 2^64, and no model state has
     a mapping there ([alloc_top] and [sp_window_hi] both sit at or
     below 2^47 for any [Run.valid_sp]), so the walk stops on its first unmapped byte and the
@@ -343,11 +344,8 @@ Definition sa_flags_ok (fl : word) : bool :=
     then [flush_sigqueue_mask]) when the new disposition ignores them.
     The model has neither a stored mask nor a pending queue, and [oact] —
     declined below — is the only window onto either. *)
-Definition sigaction_flags (mp : word -> option byte) (act : word)
-    : option word :=
-  if Nat.eqb (length (readable_bytes mp act (Z_to_bv 64 24))) 24
-  then read_u64 mp (bv_add act (Z_to_bv 64 8))
-  else None.
+Definition sa_flags_of (bs : list byte) : word :=
+  le_bytes_to_word (firstn 8 (skipn 8 bs)).
 
 (** [rt_sigaction sig act oact sigsetsize].  [sig] arrives already
     truncated (see [sig32]).  The arms follow the kernel's own order
@@ -421,13 +419,20 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
   then (if sig_valid sig then ret_only (Z_to_bv 64 0) else err_ret EINVAL)
   else
     i <- input ;;
-    match sigaction_flags (in_mem i) act with
-    | None => err_ret EFAULT   (* the struct is not wholly readable: real -EFAULT *)
-    | Some fl =>
+    m <- get_model ;;
+    match user_read i m act (Z_to_bv 64 24) with
+    | UFault => err_ret EFAULT   (* the struct is not wholly readable: real -EFAULT *)
+    | USpecial => unmodeled
+      (* the struct meets the vDSO pair: Linux reads it (both pages are
+         readable, arch/riscv/kernel/vdso.c:137-140), but the bytes are the
+         kernel's and the model does not hold them ([State.UserRead]).
+         Every later [USpecial] arm in this file declines for the same
+         reason. *)
+    | UOk bs =>
         record_copyins [(act, 24%nat)]
         (if negb (sig_valid sig) then err_ret EINVAL
          else if sig_kernel_only sig then err_ret EINVAL
-         else if negb (sa_flags_ok fl) then unmodeled
+         else if negb (sa_flags_ok (sa_flags_of bs)) then unmodeled
          else if sigaction_accepted sig then ret_only (Z_to_bv 64 0)
          else unmodeled)         (* a signal a modeled operation can raise: fail closed *)
     end.
@@ -714,8 +719,9 @@ Definition how_valid (how : word) : bool :=
 
 (** [copy_from_user(&new_set, nset, sizeof(sigset_t))] is all-or-nothing
     at the syscall boundary: any shortfall is -EFAULT and nothing is
-    installed.  [sizeof(sigset_t)] is [Uapi.NSIG_BYTES] = 8, so this is
-    readability of eight bytes and no more.
+    installed.  [sizeof(sigset_t)] is [Uapi.NSIG_BYTES] = 8, so the spec
+    reads eight bytes and no more with one [State.user_read], and this
+    decodes them.
 
     NO [State.access_okb] GUARD.  All eight bytes must be mapped
     before anything is answered, and a mapping cannot sit above the
@@ -740,14 +746,10 @@ Definition how_valid (how : word) : bool :=
 
     THE CONTENTS ARE READ: the value
     decides what gets installed, so the test and the read are one
-    [option].  This helper lives in this file rather than in
+    [State.user_read].  This decoder lives in this file rather than in
     [Sys/Uaccess.v]: it is the [sigset_t] ABI shape, not a uaccess
     policy, and one syscall uses it. *)
-Definition sigset_at (mp : word -> option byte) (p : word) : option word :=
-  match read_bytes_map mp p (Z_to_bv 64 NSIG_BYTES) with
-  | Some bs => Some (le_bytes_to_word bs)
-  | None => None
-  end.
+Definition sigset_of (bs : list byte) : word := le_bytes_to_word bs.
 
 
 (** [rt_sigprocmask how nset oset ss].  [how] arrives already truncated
@@ -1068,13 +1070,15 @@ Definition rt_sigprocmask_spec (how nset oset ss : word) : Sys SyscallEffect :=
       (if w_is0 oset then ret_only (Z_to_bv 64 0) else write_oset oset old)
     else
       i <- input ;;
-      match sigset_at (in_mem i) nset with
-      | None => err_ret EFAULT
-      | Some raw =>
+      match user_read i m nset (Z_to_bv 64 NSIG_BYTES) with
+      | UFault => err_ret EFAULT
+      | USpecial => unmodeled
+      | UOk bs =>
           record_copyins [(nset, Z.to_nat NSIG_BYTES)]
           (if negb (how_valid how) then err_ret EINVAL
            else
-             set_sigmask_deliver (sigmask_apply how old (sigmask_strip raw)) ;;
+             set_sigmask_deliver
+               (sigmask_apply how old (sigmask_strip (sigset_of bs))) ;;
              (if w_is0 oset then ret_only (Z_to_bv 64 0)
               else write_oset oset old))
       end.
@@ -1239,19 +1243,6 @@ Definition ss_mode_ok (fl : word) : bool :=
 
 Definition ss_disabling (fl : word) : bool := Z.eqb (ss_mode fl) SS_DISABLE.
 
-(** The [stack_t] at [uss], or [None] if any of its 24 bytes is
-    unreadable.  All-or-nothing because [SYSCALL_DEFINE2(sigaltstack)]
-    fetches the struct with ONE [copy_from_user] before [do_sigaltstack]
-    runs, so -EFAULT precedes every other answer this call has.
-
-    NO [State.access_okb] GUARD, for the reason [sigaction_flags] gives
-    above and by the same argument: all 24 bytes must be readable before
-    anything is answered, and the word addition cannot manufacture a
-    readable range across 2^64 because no model state maps one there. *)
-Definition sigaltstack_at (mp : word -> option byte) (uss : word)
-    : option (list byte) :=
-  read_bytes_map mp uss (Z_to_bv 64 SIGALTSTACK_BYTES).
-
 (** [sigaltstack uss uoss].  The arms follow the kernel's own order:
 
       1. a stack is installed — [sas_ss_size] is non-zero — so nothing
@@ -1261,7 +1252,16 @@ Definition sigaltstack_at (mp : word -> option byte) (uss : word)
          bit is part of the answer.
       3. with both pointers NULL [do_sigaltstack] runs and does nothing:
          0.
-      4. -EFAULT unless all 24 bytes at [uss] are readable.
+      4. -EFAULT unless all 24 bytes at [uss] are readable, read with one
+         [State.user_read].  All-or-nothing because
+         [SYSCALL_DEFINE2(sigaltstack)] fetches the struct with ONE
+         [copy_from_user] before [do_sigaltstack] runs, so -EFAULT
+         precedes every other answer this call has.  NO
+         [State.access_okb] GUARD, for the reason [sa_flags_of] gives
+         above and by the same argument: all 24 bytes must be readable
+         before anything is answered, and the word addition cannot
+         manufacture a readable range across 2^64 because no model state
+         maps one there.
       5. -EINVAL for a mode outside {0, SS_ONSTACK, SS_DISABLE}.  It is
          decided AFTER the copy and BEFORE the fast path, exactly where
          the kernel decides it, and after an -EPERM that cannot fire —
@@ -1303,9 +1303,10 @@ Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
   else if w_is0 uss then ret_only (Z_to_bv 64 0)
   else
     i <- input ;;
-    match sigaltstack_at (in_mem i) uss with
-    | None => err_ret EFAULT
-    | Some bs =>
+    match user_read i m uss (Z_to_bv 64 SIGALTSTACK_BYTES) with
+    | UFault => err_ret EFAULT
+    | USpecial => unmodeled
+    | UOk bs =>
         record_copyins [(uss, Z.to_nat SIGALTSTACK_BYTES)]
         (let fl := ss_flags_of bs in
          if negb (ss_mode_ok fl) then err_ret EINVAL

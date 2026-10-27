@@ -31,7 +31,7 @@ Definition check_pselect6 (i : SyscallInput) (n32 inp outp exp tsp sig : word)
       match eff with
       | mkEffectU r' ws' [] [] [] ks =>
           if bv_eqb r' r && writes_eqb ws' ws
-             && access_ranges_eqb ks (pselect6_reads i n32 inp outp exp tsp sig)
+             && access_ranges_eqb ks (pselect6_reads i m n32 inp outp exp tsp sig)
           then CheckOk m [] else CheckReject
       | _ => CheckReject
       end
@@ -53,7 +53,7 @@ Proof.
   destruct us as [|? ?]; [|discriminate].
   destruct cs as [|? ?]; [|discriminate].
   destruct (bv_eqb r' r && writes_eqb ws' ws
-            && access_ranges_eqb ks (pselect6_reads i n32 inp outp exp tsp sig))
+            && access_ranges_eqb ks (pselect6_reads i m n32 inp outp exp tsp sig))
     eqn:Hg; [|discriminate].
   apply Bool.andb_true_iff in Hg. destruct Hg as [Hg Hk].
   apply Bool.andb_true_iff in Hg. destruct Hg as [Hr Hw].
@@ -78,7 +78,7 @@ Proof.
   destruct us as [|? ?]; [|discriminate].
   destruct cs as [|? ?]; [|discriminate].
   destruct (bv_eqb r' r && writes_eqb ws' ws
-            && access_ranges_eqb ks (pselect6_reads i n32 inp outp exp tsp sig));
+            && access_ranges_eqb ks (pselect6_reads i m n32 inp outp exp tsp sig));
     discriminate.
 Qed.
 

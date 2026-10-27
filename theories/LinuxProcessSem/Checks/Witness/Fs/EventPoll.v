@@ -42,7 +42,7 @@ Definition epoll_ctl_witness (epfd op32 tfd event : word)
     (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
   match epoll_ctl_outcome i m epfd op32 tfd event with
   | None => Unmodeled
-  | Some r => Ok (with_copyins (epoll_ctl_reads i op32 event) (mkEffect r [] [])) m []
+  | Some r => Ok (with_copyins (epoll_ctl_reads i m op32 event) (mkEffect r [] [])) m []
   end.
 
 Lemma epoll_ctl_witness_ok : forall epfd op32 tfd event i m,

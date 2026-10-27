@@ -24,9 +24,10 @@ Definition sigaltstack_witness (uss uoss : word) (i : SyscallInput)
   else if negb (w_is0 uoss) then Unmodeled
   else if w_is0 uss then ret_outcome (Z_to_bv 64 0) m
   else
-    match sigaltstack_at (in_mem i) uss with
-    | None => ret_outcome (errno_ret EFAULT) m
-    | Some bs =>
+    match user_read i m uss (Z_to_bv 64 SIGALTSTACK_BYTES) with
+    | UFault => ret_outcome (errno_ret EFAULT) m
+    | USpecial => Unmodeled
+    | UOk bs =>
         outcome_copyins [(uss, Z.to_nat SIGALTSTACK_BYTES)]
         (if negb (ss_mode_ok (ss_flags_of bs))
          then ret_outcome (errno_ret EINVAL) m
@@ -51,7 +52,9 @@ Proof.
   destruct (w_is0 uss) eqn:Hu; cbv beta iota.
   { unfold ret_only, ret_outcome. apply pure_ok. }
   eapply bind_step; [apply input_ok|]. cbv beta.
-  destruct (sigaltstack_at (in_mem i) uss) as [bs|] eqn:Hbs; cbv beta iota.
+  destruct (user_read i m uss (Z_to_bv 64 SIGALTSTACK_BYTES)) as [bs| |] eqn:Hbs;
+    cbv beta iota.
+  3:{ apply unmodeled_intro. }
   2:{ unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
   apply record_copyins_outcome. cbv zeta.
   destruct (negb (ss_mode_ok (ss_flags_of bs))) eqn:Hmode; cbv beta iota.
@@ -76,13 +79,14 @@ Definition rt_sigaction_witness (sig act oact ss : word) (i : SyscallInput)
   then (if sig_valid sig then ret_outcome (Z_to_bv 64 0) m
         else ret_outcome (errno_ret EINVAL) m)
   else
-    match sigaction_flags (in_mem i) act with
-    | None => ret_outcome (errno_ret EFAULT) m
-    | Some fl =>
+    match user_read i m act (Z_to_bv 64 24) with
+    | UFault => ret_outcome (errno_ret EFAULT) m
+    | USpecial => Unmodeled
+    | UOk bs =>
         outcome_copyins [(act, 24%nat)]
         (if negb (sig_valid sig) then ret_outcome (errno_ret EINVAL) m
          else if sig_kernel_only sig then ret_outcome (errno_ret EINVAL) m
-         else if negb (sa_flags_ok fl) then Unmodeled
+         else if negb (sa_flags_ok (sa_flags_of bs)) then Unmodeled
          else if sigaction_accepted sig then ret_outcome (Z_to_bv 64 0) m
          else Unmodeled)
     end.
@@ -100,14 +104,16 @@ Proof.
   { destruct (sig_valid sig) eqn:Hv; cbv beta iota;
       unfold err_ret, ret_only, ret_outcome; apply pure_ok. }
   eapply bind_step; [apply input_ok|]. cbv beta.
-  destruct (sigaction_flags (in_mem i) act) as [fl|] eqn:Hfl; cbv beta iota.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (user_read i m act (Z_to_bv 64 24)) as [bs| |] eqn:Hfl; cbv beta iota.
+  3:{ apply unmodeled_intro. }
   2:{ unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
   apply record_copyins_outcome.
   destruct (negb (sig_valid sig)) eqn:Hv; cbv beta iota.
   { unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
   destruct (sig_kernel_only sig) eqn:Hk; cbv beta iota.
   { unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
-  destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota.
+  destruct (negb (sa_flags_ok (sa_flags_of bs))) eqn:Hfo; cbv beta iota.
   { apply unmodeled_intro. }
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota.
   - unfold ret_only, ret_outcome. apply pure_ok.
@@ -154,14 +160,15 @@ Definition rt_sigprocmask_witness (how nset oset ss : word) (i : SyscallInput)
     then (if w_is0 oset then ret_outcome (Z_to_bv 64 0) m
           else write_oset_witness oset old i m)
     else
-      match sigset_at (in_mem i) nset with
-      | None => ret_outcome (errno_ret EFAULT) m
-      | Some raw =>
+      match user_read i m nset (Z_to_bv 64 NSIG_BYTES) with
+      | UFault => ret_outcome (errno_ret EFAULT) m
+      | USpecial => Unmodeled
+      | UOk bs =>
           outcome_copyins [(nset, Z.to_nat NSIG_BYTES)]
           (if negb (how_valid how) then ret_outcome (errno_ret EINVAL) m
            else
              let m' := sigmask_deliver_model
-                         (sigmask_apply how old (sigmask_strip raw)) m in
+                         (sigmask_apply how old (sigmask_strip (sigset_of bs))) m in
              if w_is0 oset then ret_outcome (Z_to_bv 64 0) m'
              else write_oset_witness oset old i m')
       end.
@@ -179,7 +186,9 @@ Proof.
     - unfold ret_only, ret_outcome. apply pure_ok.
     - apply write_oset_witness_ok. }
   eapply bind_step; [apply input_ok|]. cbv beta.
-  destruct (sigset_at (in_mem i) nset) as [raw|] eqn:Hr; cbv beta iota.
+  destruct (user_read i m nset (Z_to_bv 64 NSIG_BYTES)) as [bs| |] eqn:Hr;
+    cbv beta iota.
+  3:{ apply unmodeled_intro. }
   2:{ unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
   apply record_copyins_outcome.
   destruct (negb (how_valid how)) eqn:Hh; cbv beta iota zeta.

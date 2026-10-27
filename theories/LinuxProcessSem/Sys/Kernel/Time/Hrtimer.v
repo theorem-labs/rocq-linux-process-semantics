@@ -219,7 +219,7 @@ Definition nanosleep_clock (prev : word) (req rem : list byte) : word :=
     a kernel-local [struct timespec64] with [get_timespec64] before
     anything else, and only writes [rmtp] at the very end, so the write
     cannot disturb the read.  The model has the same order — [req] is
-    read out of [in_mem] and the remainder is a separate write entry —
+    read with [State.user_read] and the remainder is a separate write entry —
     so nothing special is needed and no gate has to notice the two
     pointers are equal.
 
@@ -410,22 +410,26 @@ Definition nanosleep_clock (prev : word) (req rem : list byte) : word :=
     So every outcome reached through a successful read has already
     consumed those bytes — the -EINVAL, the one decline that is left
     past it, the completed sleep and the interruption alike — and
-    [record_copyins] therefore wraps the whole [Some req] arm rather
-    than any one branch of it.  The [None] arm carries no ledger
+    [record_copyins] therefore wraps the whole [UOk req] arm rather
+    than any one branch of it.  The other two arms carry no ledger
     because nothing was copied: a request that is not wholly readable
     is the -EFAULT [get_timespec64] reports with the kernel buffer
     untouched, and the model declines that shape rather than describing
-    it. *)
+    it; a request in the vDSO pair is one Linux reads (both pages are
+    readable, arch/riscv/kernel/vdso.c:137-140), but its bytes are the
+    kernel's and the model does not hold them ([State.UserRead]), so it
+    declines too. *)
 Definition nanosleep_spec (rqtp rmtp : word) : Sys SyscallEffect :=
   i <- input ;;
-  match read_bytes_map (in_mem i) rqtp (Z_to_bv 64 16) with
-  | None => unmodeled   (* request not wholly readable: fail closed *)
-  | Some req =>
+  m <- get_model ;;
+  match user_read i m rqtp (Z_to_bv 64 16) with
+  | UFault => unmodeled   (* request not wholly readable: fail closed *)
+  | USpecial => unmodeled
+  | UOk req =>
       record_copyins [(rqtp, 16%nat)]
       (
       if negb (timespec_valid_b req) then err_ret EINVAL
       else
-      m <- get_model ;;
       let slept :=
         (set_clock (nanosleep_clock (m_clock m) req []) ;;
          ret_only (Z_to_bv 64 0)) in
