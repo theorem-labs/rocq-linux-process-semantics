@@ -385,10 +385,14 @@ Definition epoll_create1_spec (flags32 : word) : Sys SyscallEffect :=
     [include/linux/uaccess.h] gives [can_do_masked_user_access()] the
     value 0 and the address is never clamped.
 
-    Two answers: [true] when the range check passes ([State.access_okb],
+    Three answers: [UOk] when the range check passes ([State.access_okb],
     the kernel's own predicate with [State.TASK_SIZE] as its limit) and
-    every byte is mapped; [false] — -EFAULT — when the range check fails,
-    or when it passes and some byte is unmapped.
+    every byte is mapped; [UFault] — -EFAULT — when the range check
+    fails, or when it passes and the first unmapped byte is outside the
+    vDSO pair; and [USpecial] when that byte is in the pair.  Linux reads
+    it (both pages are readable, arch/riscv/kernel/vdso.c:137-140), but
+    it is the kernel's and the model does not hold it ([State.UserRead]),
+    so every caller answers [unmodeled] there.
 
     THE [access_okb] CONJUNCT IS ALSO WHAT RULES OUT THE WRAP.
     [State.read_bytes_map] walks in WORD arithmetic and wraps at 2^64, so
@@ -397,13 +401,9 @@ Definition epoll_create1_spec (flags32 : word) : Sys SyscallEffect :=
     the kernel's [access_ok] rejects the range outright.  Testing the
     range before reading is what stops that here; a site that reads
     without this test can still wrap. *)
-Definition copy_from_user_ok (mp : word -> option byte) (a : word) (len : Z)
-    : bool :=
-  (access_okb a len
-   && match read_bytes_map mp a (Z_to_bv 64 len) with
-      | Some _ => true
-      | None => false
-      end)%bool.
+Definition copy_from_user (i : SyscallInput) (m : Model) (a : word) (len : Z)
+    : UserRead (list byte) :=
+  if access_okb a len then user_read i m a (Z_to_bv 64 len) else UFault.
 
 (** ------------------------------------------------------------------
     epoll_ctl (21)
@@ -518,19 +518,23 @@ Definition epoll_ctl_outcome (i : SyscallInput) (m : Model)
         end
     end in
   if ep_op_has_event op32
-  then if copy_from_user_ok (in_mem i) event epoll_event_bytes
-       then after_copy
-       else Some (errno_ret EFAULT)
+  then match copy_from_user i m event epoll_event_bytes with
+       | UOk _ => after_copy
+       | UFault => Some (errno_ret EFAULT)
+       | USpecial => None
+       end
   else after_copy.
 
 (** The copy-from-user ledger of [epoll_ctl_outcome]'s answer: the event
     struct, exactly when the syscall entry copied it and the copy
     succeeded. *)
-Definition epoll_ctl_reads (i : SyscallInput) (op32 event : word)
+Definition epoll_ctl_reads (i : SyscallInput) (m : Model) (op32 event : word)
     : list (word * nat) :=
-  if (ep_op_has_event op32
-      && copy_from_user_ok (in_mem i) event epoll_event_bytes)%bool
-  then [(event, Z.to_nat epoll_event_bytes)]
+  if ep_op_has_event op32
+  then match copy_from_user i m event epoll_event_bytes with
+       | UOk _ => [(event, Z.to_nat epoll_event_bytes)]
+       | UFault | USpecial => []
+       end
   else [].
 
 Definition epoll_ctl_spec (epfd op32 tfd event : word) : Sys SyscallEffect :=
@@ -538,7 +542,7 @@ Definition epoll_ctl_spec (epfd op32 tfd event : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match epoll_ctl_outcome i m epfd op32 tfd event with
   | None => unmodeled
-  | Some r => pure (with_copyins (epoll_ctl_reads i op32 event) (mkEffect r [] []))
+  | Some r => pure (with_copyins (epoll_ctl_reads i m op32 event) (mkEffect r [] []))
   end.
 
 (** ------------------------------------------------------------------
@@ -573,16 +577,19 @@ Inductive EpollSigmask :=
   | EpSigNone        (* [umask] is NULL: nothing installed *)
   | EpSigBadSize     (* wrong [sigsetsize]: -EINVAL *)
   | EpSigFault       (* [umask] unreadable: -EFAULT *)
+  | EpSigSpecial     (* [umask] read from the vDSO pair: unmodeled *)
   | EpSigReal.       (* a mask that would be installed: unmodeled *)
 
-Definition epoll_sigmask (mp : word -> option byte) (umask sigsetsize : word)
+Definition epoll_sigmask (i : SyscallInput) (m : Model) (umask sigsetsize : word)
     : EpollSigmask :=
   if w_is0 umask then EpSigNone
   else if negb (Z.eqb (bv_unsigned sigsetsize) kernel_sigset_bytes)
        then EpSigBadSize
-       else if copy_from_user_ok mp umask kernel_sigset_bytes
-            then EpSigReal
-            else EpSigFault.
+       else match copy_from_user i m umask kernel_sigset_bytes with
+            | UOk _ => EpSigReal
+            | UFault => EpSigFault
+            | USpecial => EpSigSpecial
+            end.
 
 (** [epoll_pwait epfd events maxevents timeout sigmask sigsetsize] — the
     one outcome the model admits, or [None].
@@ -627,9 +634,10 @@ Definition epoll_sigmask (mp : word -> option byte) (umask sigsetsize : word)
     not a store. *)
 Definition epoll_pwait_outcome (i : SyscallInput) (m : Model)
     (epfd events maxevents32 sigmask sigsetsize : word) : option word :=
-  match epoll_sigmask (in_mem i) sigmask sigsetsize with
+  match epoll_sigmask i m sigmask sigsetsize with
   | EpSigBadSize => Some (errno_ret EINVAL)
   | EpSigFault => Some (errno_ret EFAULT)
+  | EpSigSpecial => None
   | EpSigReal => None
   | EpSigNone =>
       match fd_lookup (m_fds m) epfd with
