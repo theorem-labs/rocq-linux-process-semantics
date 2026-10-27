@@ -497,7 +497,7 @@ Proof.
   assert (Hmaps : m_vmmaps (vm_model h) = h) by reflexivity.
   assert (Hbacked : vm_backing_used (vm_model h) = vm_backed_bytes h).
   { unfold vm_backing_used, vm_model.
-    cbv [mkModel m_vmmaps m_vm m_vm_lazy m_vm_materialized
+    cbv [mkModel mkModelVdso m_vmmaps m_vm m_vm_lazy m_vm_materialized
          vmst_lazy vmst_materialized].
     change ((live_bytes (vm_backed_maps h) + 0)%Z =
             live_bytes (vm_backed_maps h)).
@@ -514,7 +514,7 @@ Lemma brk_grow_ok_keep : forall h req,
   brk_grow_ok h req (vm_brk h) = true.
 Proof.
   intros h req. unfold brk_grow_ok, Mmap.brk_grow_ok.
-  cbv [vm_model mkModel m_vmmaps m_vm vm_backing_used m_vm_lazy
+  cbv [vm_model mkModel mkModelVdso m_vmmaps m_vm vm_backing_used m_vm_lazy
        m_vm_materialized vmst_lazy vmst_materialized].
   cbn [vmst_maps vm_backed_bytes maps_subtract_all].
   rewrite Z.ltb_irrefl, andb_false_r. reflexivity.
@@ -769,7 +769,7 @@ Lemma brk_r_ok_query_iff : forall h r,
   brk_r_ok h (Z_to_bv 64 0) r <-> r = vm_brk h.
 Proof.
   intros h r. unfold brk_r_ok, Mmap.brk_r_ok.
-  cbv [vm_model mkModel m_vmmaps m_vm]. cbv zeta.
+  cbv [vm_model mkModel mkModelVdso m_vmmaps m_vm]. cbv zeta.
   unfold w_is0. rewrite bv_eqb_refl. cbn [orb].
   apply bv_eqb_eq.
 Qed.
@@ -919,7 +919,7 @@ Lemma brk_r_ok_grow_iff : forall reserved lim s r maps noaccess mb sp req r2,
 Proof.
   intros reserved lim s r maps noaccess mb sp req r2 Hpos Hs Hreq.
   unfold brk_r_ok, Mmap.brk_r_ok.
-  cbv [vm_model mkModel m_vmmaps m_vm]. cbv zeta.
+  cbv [vm_model mkModel mkModelVdso m_vmmaps m_vm]. cbv zeta.
   assert (E0 : w_is0 req = false).
   { unfold w_is0, bv_eqb.
     change (bv_unsigned (Z_to_bv 64 0)) with 0%Z.

@@ -1048,6 +1048,156 @@ Proof.
   destruct (bv_unsigned_in_range _ len). lia.
 Qed.
 
+(** THE FIRST UNREADABLE BYTE of [[a, a+k)]: where a byte walk from [a]
+    meets a byte [mp] does not hold, or [None] if all [k] are readable.
+    The user-read helpers below [Model] ([user_read] and its siblings)
+    test this stop point against the vDSO pair: the kernel reads the
+    bytes in order, and the first one it cannot read is where it faults.
+
+    [first_unreadable] is the shape proofs use, and NOT what the checker
+    may execute on a long range, for [read_bytes_map]'s reason: [k] is a
+    unary numeral.  [first_unreadable_map] is the chunked form that
+    executes, and [first_unreadable_map_eq] is the equation between the
+    two. *)
+Fixpoint first_unreadable (mp : word -> option byte) (a : word) (k : nat)
+    : option word :=
+  match k with
+  | O => None
+  | S k' =>
+      match mp a with
+      | None => Some a
+      | Some _ => first_unreadable mp (a + 1) k'
+      end
+  end.
+
+Fixpoint first_unreadable_chunks (mp : word -> option byte) (a : word)
+    (q k : nat) : option word :=
+  match q with
+  | O => None
+  | S q' =>
+      match first_unreadable mp a k with
+      | Some x => Some x
+      | None => first_unreadable_chunks mp (a + nat_to_word k) q' k
+      end
+  end.
+
+Definition first_unreadable_map (mp : word -> option byte) (a len : word)
+    : option word :=
+  let n := bv_unsigned len in
+  match first_unreadable_chunks mp a (Z.to_nat (n / wmem_chunk))
+          (Z.to_nat wmem_chunk) with
+  | Some x => Some x
+  | None =>
+      first_unreadable mp (a + Z_to_bv 64 (n / wmem_chunk * wmem_chunk))
+        (Z.to_nat (n mod wmem_chunk))
+  end.
+
+Lemma first_unreadable_split : forall mp j k a,
+  first_unreadable mp a (j + k)
+  = match first_unreadable mp a j with
+    | Some x => Some x
+    | None => first_unreadable mp (a + nat_to_word j) k
+    end.
+Proof.
+  induction j as [|j IH]; intros k a; cbn [first_unreadable Nat.add].
+  - replace (a + nat_to_word 0)%bv with a; [reflexivity|].
+    apply bv_eq. unfold nat_to_word.
+    rewrite bv_add_unsigned, Z_to_bv_unsigned.
+    change (Z.of_nat 0) with 0%Z.
+    rewrite bv_wrap_0, Z.add_0_r.
+    rewrite bv_wrap_small; [reflexivity|apply bv_unsigned_in_range].
+  - destruct (mp a); [|reflexivity].
+    rewrite IH.
+    replace (a + 1 + nat_to_word j)%bv with (a + nat_to_word (S j))%bv;
+      [reflexivity|].
+    apply bv_eq. unfold nat_to_word.
+    rewrite !bv_add_unsigned, !Z_to_bv_unsigned.
+    rewrite Nat2Z.inj_succ.
+    change (bv_unsigned (1 : word)) with 1%Z.
+    unfold bv_wrap.
+    rewrite !Zplus_mod_idemp_r, !Zplus_mod_idemp_l.
+    f_equal. lia.
+Qed.
+
+Lemma first_unreadable_chunks_flat : forall mp q k a,
+  first_unreadable_chunks mp a q k = first_unreadable mp a (q * k).
+Proof.
+  induction q as [|q IH]; intros k a; cbn [first_unreadable_chunks Nat.mul];
+    [reflexivity|].
+  rewrite first_unreadable_split, IH. reflexivity.
+Qed.
+
+Lemma first_unreadable_map_eq : forall mp a len,
+  first_unreadable_map mp a len = first_unreadable mp a (word_to_nat len).
+Proof.
+  intros mp a len. unfold first_unreadable_map. cbv zeta.
+  rewrite first_unreadable_chunks_flat.
+  pose proof (bv_unsigned_in_range 64 len) as Hr.
+  unfold bv_modulus in Hr.
+  set (n := bv_unsigned len) in *.
+  assert (Hq : (0 <= n / wmem_chunk)%Z)
+    by (apply Z.div_pos; [lia|unfold wmem_chunk; lia]).
+  assert (Hm : (0 <= n mod wmem_chunk < wmem_chunk)%Z)
+    by (apply Z.mod_pos_bound; unfold wmem_chunk; lia).
+  replace (a + Z_to_bv 64 (n / wmem_chunk * wmem_chunk))%bv
+    with (a + nat_to_word (Z.to_nat (n / wmem_chunk) * Z.to_nat wmem_chunk))%bv.
+  2: { apply bv_eq. unfold nat_to_word.
+       rewrite !bv_add_unsigned, !Z_to_bv_unsigned.
+       rewrite Nat2Z.inj_mul, !Z2Nat.id by (unfold wmem_chunk in *; lia).
+       reflexivity. }
+  replace (word_to_nat len)
+    with (Z.to_nat (n / wmem_chunk) * Z.to_nat wmem_chunk
+          + Z.to_nat (n mod wmem_chunk))%nat.
+  2: { unfold word_to_nat.
+       rewrite <- Z2Nat.inj_mul by (unfold wmem_chunk in *; lia).
+       rewrite <- Z2Nat.inj_add
+         by (try apply Z.mul_nonneg_nonneg; unfold wmem_chunk in *; lia).
+       f_equal. rewrite Z.mul_comm. fold n. symmetry. apply Z.div_mod.
+       unfold wmem_chunk; lia. }
+  rewrite first_unreadable_split. reflexivity.
+Qed.
+
+(** The walk and [read_bytes_aux] agree: the walk meets no unreadable
+    byte exactly when the read succeeds, and the byte it stops at is one
+    [mp] does not hold. *)
+Lemma first_unreadable_none_iff : forall mp k a,
+  first_unreadable mp a k = None <-> exists bs, read_bytes_aux mp a k = Some bs.
+Proof.
+  induction k as [|k IH]; intros a; cbn [first_unreadable read_bytes_aux].
+  - split; intros _; [exists []|]; reflexivity.
+  - destruct (mp a) as [b|].
+    + destruct (IH (a + 1)%bv) as [H1 H2]. split.
+      * intros H. destruct (H1 H) as [bs Hbs]. rewrite Hbs. eexists. reflexivity.
+      * intros [bs Hbs]. apply H2.
+        destruct (read_bytes_aux mp (a + 1)%bv k) as [r|];
+          [eexists; reflexivity|discriminate Hbs].
+    + split; [intros H; discriminate H|intros [bs Hbs]; discriminate Hbs].
+Qed.
+
+Lemma first_unreadable_some : forall mp k a x,
+  first_unreadable mp a k = Some x -> mp x = None.
+Proof.
+  induction k as [|k IH]; intros a x; cbn [first_unreadable];
+    [intros H; discriminate H|].
+  destruct (mp a) as [b|] eqn:Ha; [intros H; exact (IH _ _ H)|].
+  intros H. injection H as Hx. subst x. exact Ha.
+Qed.
+
+Lemma first_unreadable_map_none_iff : forall mp a len,
+  first_unreadable_map mp a len = None
+  <-> exists bs, read_bytes_map mp a len = Some bs.
+Proof.
+  intros mp a len. rewrite first_unreadable_map_eq, read_bytes_map_eq.
+  apply first_unreadable_none_iff.
+Qed.
+
+Lemma first_unreadable_map_some : forall mp a len x,
+  first_unreadable_map mp a len = Some x -> mp x = None.
+Proof.
+  intros mp a len x. rewrite first_unreadable_map_eq.
+  apply first_unreadable_some.
+Qed.
+
 (** Linux PATH_MAX: a pathname's content may be at most 4095 bytes, i.e.
     4096 counting the NUL — [path_max] is the bound Linux's [getname()]
     enforces, and it counts the terminator, so a 4095-byte path plus its
@@ -1106,6 +1256,36 @@ Fixpoint read_cstr_aux (mp : word -> option byte) (a : word) (k : nat)
 Definition read_cstr (mp : word -> option byte) (a : word)
     : cstr_result :=
   read_cstr_aux mp a path_max.
+
+(** Where a [read_cstr] walk stops: on the first unreadable byte of the
+    bytes it reads, which [cstr_access_len_aux] counts (through the
+    first NUL or the first unreadable byte).  The walk faults exactly
+    when it stops there. *)
+Lemma read_cstr_aux_fault_iff : forall mp k a,
+  read_cstr_aux mp a k = CstrFault
+  <-> first_unreadable mp a (cstr_access_len_aux mp a k) <> None.
+Proof.
+  induction k as [|k IH]; intros a;
+    cbn [read_cstr_aux cstr_access_len_aux first_unreadable].
+  - split; [intros H; discriminate H|intros H; exfalso; apply H; reflexivity].
+  - destruct (mp a) as [b|] eqn:Ha.
+    + destruct (bv_eqb b (Z_to_bv 8 0)).
+      * cbn [first_unreadable]. rewrite Ha.
+        split; [intros H; discriminate H|intros H; exfalso; apply H; reflexivity].
+      * cbn [first_unreadable]. rewrite Ha.
+        generalize (IH (a + 1)%bv).
+        destruct (read_cstr_aux mp (a + 1)%bv k) as [p| |]; intros [I1 I2].
+        -- split; [intros H; discriminate H|intros H; discriminate (I2 H)].
+        -- split; [intros H; discriminate H|intros H; discriminate (I2 H)].
+        -- split; [intros _; apply I1; reflexivity|intros _; reflexivity].
+    + cbn [first_unreadable]. rewrite Ha.
+      split; [intros _ H; discriminate H|intros _; reflexivity].
+Qed.
+
+Lemma read_cstr_fault_iff : forall mp a,
+  read_cstr mp a = CstrFault
+  <-> first_unreadable mp a (cstr_access_len_aux mp a path_max) <> None.
+Proof. intros mp a. exact (read_cstr_aux_fault_iff mp path_max a). Qed.
 
 (** Read one little-endian 64-bit word at [a] ([BvBase.le_bytes_to_word]
     decodes index 0 as least significant), or [None] if any of the 8
@@ -1452,6 +1632,65 @@ Definition read_iovec_entry (mp : word -> option byte) (a : word)
   | _, _ => IovFault
   end.
 
+(** Where [read_iovec_entry]'s two loads stop on an unreadable byte, in
+    the kernel's order: [iov_len] (bytes 8..15) first, then [iov_base]
+    (bytes 0..7), as [copy_iovec_from_user] issues its two
+    [unsafe_get_user]s (lib/iov_iter.c:1272-1273, v6.18.46). *)
+Definition iovec_entry_stop (mp : word -> option byte) (a : word)
+    : option word :=
+  match first_unreadable mp (a + 8) 8 with
+  | Some x => Some x
+  | None => first_unreadable mp a 8
+  end.
+
+Lemma read_u64_none_iff : forall mp a,
+  read_u64 mp a = None <-> first_unreadable mp a 8 <> None.
+Proof.
+  intros mp a. unfold read_u64. rewrite read_bytes_map_eq.
+  change (word_to_nat (Z_to_bv 64 8)) with 8%nat.
+  destruct (read_bytes_aux mp a 8) as [bs|] eqn:E.
+  - split; [intros H; discriminate H|].
+    intros H. exfalso. apply H, first_unreadable_none_iff. exists bs. exact E.
+  - split; [|intros _; reflexivity].
+    intros _ H. apply first_unreadable_none_iff in H.
+    destruct H as [bs Hbs]. rewrite E in Hbs. discriminate Hbs.
+Qed.
+
+Lemma read_iovec_entry_fault_iff : forall mp a,
+  read_iovec_entry mp a = IovFault <-> iovec_entry_stop mp a <> None.
+Proof.
+  intros mp a. unfold read_iovec_entry, iovec_entry_stop.
+  destruct (first_unreadable mp (a + 8)%bv 8) as [x|] eqn:El.
+  - assert (Hl : read_u64 mp (a + 8)%bv = None)
+      by (apply read_u64_none_iff; rewrite El; intros H; discriminate H).
+    rewrite Hl. destruct (read_u64 mp a);
+      (split; [intros _ H; discriminate H|intros _; reflexivity]).
+  - assert (Hl : read_u64 mp (a + 8)%bv <> None)
+      by (intros H; apply read_u64_none_iff in H; exact (H El)).
+    destruct (read_u64 mp (a + 8)%bv) as [len|];
+      [|exfalso; apply Hl; reflexivity].
+    destruct (first_unreadable mp a 8) as [y|] eqn:Eb.
+    + assert (Hb : read_u64 mp a = None)
+        by (apply read_u64_none_iff; rewrite Eb; intros H; discriminate H).
+      rewrite Hb. split; [intros _ H; discriminate H|intros _; reflexivity].
+    + assert (Hb : read_u64 mp a <> None)
+        by (intros H; apply read_u64_none_iff in H; exact (H Eb)).
+      destruct (read_u64 mp a) as [base|];
+        [|exfalso; apply Hb; reflexivity].
+      destruct (2 ^ 63 <=? bv_unsigned len)%Z;
+        (split; [intros H; discriminate H
+                |intros H; exfalso; apply H; reflexivity]).
+Qed.
+
+Lemma iovec_entry_stop_some : forall mp a x,
+  iovec_entry_stop mp a = Some x -> mp x = None.
+Proof.
+  intros mp a x. unfold iovec_entry_stop.
+  destruct (first_unreadable mp (a + 8)%bv 8) as [y|] eqn:E.
+  - intros H. injection H as Hy. subst y. exact (first_unreadable_some _ _ _ _ E).
+  - apply first_unreadable_some.
+Qed.
+
 (** [copy_iovec_from_user] (lib/iov_iter.c, v6.18.46): ONE interleaved
     pass in index order — per entry both fields, then
     [if (len < 0) return -EINVAL] — so the FIRST error in INDEX ORDER
@@ -1495,6 +1734,57 @@ Fixpoint copy_iovecs_accesses (mp : word -> option byte) (a : word) (k : nat)
       | _ => []
       end
   end.
+
+(** Where [copy_iovecs_aux]'s walk stops on an unreadable byte: in index
+    order, each entry in [iovec_entry_stop]'s order; [None] if the walk
+    ends without meeting one.  The walk goes past an entry only when the
+    entry reads whole with a non-negative length, as [copy_iovecs_aux]
+    does. *)
+Fixpoint copy_iovecs_stop (mp : word -> option byte) (a : word) (k : nat)
+    : option word :=
+  match k with
+  | O => None
+  | S k' =>
+      match iovec_entry_stop mp a with
+      | Some x => Some x
+      | None =>
+          match read_iovec_entry mp a with
+          | IovEntry _ _ => copy_iovecs_stop mp (a + 16) k'
+          | _ => None
+          end
+      end
+  end.
+
+Lemma copy_iovecs_aux_fault_iff : forall mp k a,
+  copy_iovecs_aux mp a k = ImpFault <-> copy_iovecs_stop mp a k <> None.
+Proof.
+  induction k as [|k IH]; intros a; cbn [copy_iovecs_aux copy_iovecs_stop].
+  - split; [intros H; discriminate H|intros H; exfalso; apply H; reflexivity].
+  - destruct (iovec_entry_stop mp a) as [x|] eqn:Es.
+    + assert (Hf : read_iovec_entry mp a = IovFault)
+        by (apply read_iovec_entry_fault_iff; rewrite Es; intros H;
+            discriminate H).
+      rewrite Hf. split; [intros _ H; discriminate H|intros _; reflexivity].
+    + destruct (read_iovec_entry mp a) as [base len| |] eqn:Ee.
+      * generalize (IH (a + 16)%bv).
+        destruct (copy_iovecs_aux mp (a + 16)%bv k) as [l| |]; intros [I1 I2].
+        -- split; [intros H; discriminate H|intros H; discriminate (I2 H)].
+        -- split; [intros _; apply I1; reflexivity|intros _; reflexivity].
+        -- split; [intros H; discriminate H|intros H; discriminate (I2 H)].
+      * exfalso. apply read_iovec_entry_fault_iff in Ee. exact (Ee Es).
+      * split; [intros H; discriminate H|intros H; exfalso; apply H; reflexivity].
+Qed.
+
+Lemma copy_iovecs_stop_some : forall mp k a x,
+  copy_iovecs_stop mp a k = Some x -> mp x = None.
+Proof.
+  induction k as [|k IH]; intros a x; cbn [copy_iovecs_stop];
+    [intros H; discriminate H|].
+  destruct (iovec_entry_stop mp a) as [y|] eqn:E.
+  - intros H. injection H as Hy. subst y. exact (iovec_entry_stop_some _ _ _ E).
+  - destruct (read_iovec_entry mp a);
+      [apply IH|intros H; discriminate H|intros H; discriminate H].
+Qed.
 
 (** [__import_iovec]'s per-segment [access_ok(iov_base, len)] on the
     UNCAPPED length (lib/iov_iter.c, v6.18.46), applied to a zero-length
@@ -1586,6 +1876,52 @@ Definition import_iovecs_accesses (mp : word -> option byte) (a n : word)
   else if (IOV_MAX <? bv_unsigned n)%Z then []
   else if negb (access_okb a (16 * bv_unsigned n)) then []
   else copy_iovecs_accesses mp a (word_to_nat n).
+
+(** Where [import_iovecs]'s walk stops on an unreadable byte: the
+    descriptor walk of the branch that reads descriptors, and [None] on
+    the branches that read none (a refused [access_ok], a count of zero
+    or over [IOV_MAX]).  A refused [access_ok] is [-EFAULT] on Linux
+    whatever the memory holds, so it has no stop. *)
+Definition import_iovecs_stop (mp : word -> option byte) (a n : word)
+    : option word :=
+  if bv_eqb n (Z_to_bv 64 1) then
+    if negb (access_okb a 16) then None else iovec_entry_stop mp a
+  else if bv_eqb n (Z_to_bv 64 0) then None
+  else if (IOV_MAX <? bv_unsigned n)%Z then None
+  else if negb (access_okb a (16 * bv_unsigned n)) then None
+  else copy_iovecs_stop mp a (word_to_nat n).
+
+Lemma import_iovecs_stop_fault : forall mp a n,
+  import_iovecs_stop mp a n <> None -> import_iovecs mp a n = ImpFault.
+Proof.
+  intros mp a n. unfold import_iovecs_stop, import_iovecs.
+  destruct (bv_eqb n (Z_to_bv 64 1)).
+  - destruct (negb (access_okb a 16)); [intros _; reflexivity|].
+    intros H. apply (proj2 (read_iovec_entry_fault_iff mp a)) in H.
+    rewrite H. reflexivity.
+  - destruct (bv_eqb n (Z_to_bv 64 0));
+      [intros H; exfalso; apply H; reflexivity|].
+    destruct (IOV_MAX <? bv_unsigned n)%Z;
+      [intros H; exfalso; apply H; reflexivity|].
+    destruct (negb (access_okb a (16 * bv_unsigned n)));
+      [intros _; reflexivity|].
+    intros H. apply (proj2 (copy_iovecs_aux_fault_iff mp (word_to_nat n) a)) in H.
+    rewrite H. reflexivity.
+Qed.
+
+Lemma import_iovecs_stop_some : forall mp a n x,
+  import_iovecs_stop mp a n = Some x -> mp x = None.
+Proof.
+  intros mp a n x. unfold import_iovecs_stop.
+  destruct (bv_eqb n (Z_to_bv 64 1)).
+  - destruct (negb (access_okb a 16));
+      [intros H; discriminate H|apply iovec_entry_stop_some].
+  - destruct (bv_eqb n (Z_to_bv 64 0)); [intros H; discriminate H|].
+    destruct (IOV_MAX <? bv_unsigned n)%Z; [intros H; discriminate H|].
+    destruct (negb (access_okb a (16 * bv_unsigned n)));
+      [intros H; discriminate H|].
+    apply copy_iovecs_stop_some.
+Qed.
 
 (** The copy-in ledger for the prefix of an iovec sequence a transfer of
     [left] bytes actually touched.  [word_to_nat_bounded] rather than
@@ -1787,6 +2123,53 @@ Qed.
 Definition writev_gathered (mp : word -> option byte)
     (iovs0 : list (word * word)) : list byte :=
   gather_prefix mp (cap_iovecs iovs0).
+
+(** Where a gather over [iovs] stops on an unreadable byte: the first
+    unreadable byte of the entries' sources, entry by entry in order, as
+    the kernel copies them.  It is where [gather_iovecs] fails and where
+    [gather_prefix] ends short; [None] if every source byte is readable.
+    A zero-length entry reads nothing. *)
+Fixpoint gather_stop (mp : word -> option byte) (iovs : list (word * word))
+    : option word :=
+  match iovs with
+  | [] => None
+  | (base, len) :: r =>
+      match first_unreadable_map mp base len with
+      | Some x => Some x
+      | None => gather_stop mp r
+      end
+  end.
+
+Lemma gather_iovecs_fault_iff : forall mp iovs,
+  gather_iovecs mp iovs = None <-> gather_stop mp iovs <> None.
+Proof.
+  intros mp iovs. induction iovs as [|[base len] r IH];
+    cbn [gather_iovecs gather_stop].
+  - split; [intros H; discriminate H|intros H; exfalso; apply H; reflexivity].
+  - destruct (first_unreadable_map mp base len) as [x|] eqn:Ef.
+    + destruct (read_bytes_map mp base len) as [bs|] eqn:Er.
+      * exfalso.
+        assert (Hn : first_unreadable_map mp base len = None)
+          by (apply first_unreadable_map_none_iff; exists bs; exact Er).
+        rewrite Ef in Hn. discriminate Hn.
+      * split; [intros _ H; discriminate H|intros _; reflexivity].
+    + destruct (proj1 (first_unreadable_map_none_iff mp base len) Ef)
+        as [bs Er].
+      rewrite Er.
+      revert IH. destruct (gather_iovecs mp r) as [rest|]; intros [I1 I2].
+      * split; [intros H; discriminate H|intros H; discriminate (I2 H)].
+      * split; [intros _; apply I1; reflexivity|intros _; reflexivity].
+Qed.
+
+Lemma gather_stop_some : forall mp iovs x,
+  gather_stop mp iovs = Some x -> mp x = None.
+Proof.
+  intros mp iovs x. induction iovs as [|[base len] r IH]; cbn [gather_stop];
+    [intros H; discriminate H|].
+  destruct (first_unreadable_map mp base len) as [y|] eqn:E; [|exact IH].
+  intros H. injection H as Hy. subst y.
+  exact (first_unreadable_map_some _ _ _ _ E).
+Qed.
 
 (* =========================================================================
    Standard input: an explicit INPUT of the semantics
@@ -3065,6 +3448,96 @@ Record Creds := mkCreds {
 Definition creds_privileged (c : Creds) : bool :=
   bv_eqb (cr_euid c) (Z_to_bv 64 0).
 
+(** THE vDSO AND vvar PAIR, as the process sees it: where the pair sits
+    and which of its two ranges are still mapped.  Positions and lengths
+    in bytes, in [Z] over unsigned values, like the rest of the range
+    arithmetic in this file.
+
+    [__setup_additional_pages] (arch/riscv/kernel/vdso.c:110-150, Linux
+    v6.18.46) maps the vvar pages at the base [get_unmapped_area] picks
+    ([vdso_install_vvar_mapping], lib/vdso/datastore.c:99-105) and the
+    vDSO text right above them (:137-140).  Both are readable and not
+    writable.  Both are special mappings, and [special_mapping_split]
+    (mm/mmap.c:1394-1412) refuses every split of one, so each range is
+    mapped whole or not at all: one bit per range is all the state a
+    range has. *)
+Record VdsoState := mkVdsoState {
+  vds_base : Z;            (* the first byte of the vvar range *)
+  vds_vvar : Z;            (* the vvar range's length *)
+  vds_text : Z;            (* the text range's length; the text starts at
+                              [vds_base + vds_vvar] *)
+  vds_vvar_mapped : bool;
+  vds_text_mapped : bool
+}.
+
+(** The pair of a model that has none, which is what [mkModel] gives:
+    both bits clear, so every test below is [false] on it. *)
+Definition no_vdso : VdsoState := mkVdsoState 0 0 0 false false.
+
+(** The two ranges, half-open. *)
+Definition vdso_vvar_lo (v : VdsoState) : Z := vds_base v.
+Definition vdso_vvar_hi (v : VdsoState) : Z := (vds_base v + vds_vvar v)%Z.
+Definition vdso_text_lo (v : VdsoState) : Z := (vds_base v + vds_vvar v)%Z.
+Definition vdso_text_hi (v : VdsoState) : Z :=
+  (vds_base v + vds_vvar v + vds_text v)%Z.
+
+(** [[lo, hi)] and [[lo', hi')] share a byte. *)
+Definition z_ranges_meet (lo hi lo' hi' : Z) : bool :=
+  (Z.max lo lo' <? Z.min hi hi')%Z.
+
+(** [[lo, hi)] holds every byte of [[lo', hi')]. *)
+Definition z_range_covers (lo hi lo' hi' : Z) : bool :=
+  ((lo <=? lo')%Z && (hi' <=? hi)%Z)%bool.
+
+(** [x] is a byte of a mapped range of the pair. *)
+Definition vdso_byte (v : VdsoState) (x : Z) : bool :=
+  (vds_vvar_mapped v && (vdso_vvar_lo v <=? x)%Z && (x <? vdso_vvar_hi v)%Z
+   || vds_text_mapped v && (vdso_text_lo v <=? x)%Z && (x <? vdso_text_hi v)%Z)%bool.
+
+(** [[lo, hi)] meets a mapped range of the pair. *)
+Definition vdso_meets (v : VdsoState) (lo hi : Z) : bool :=
+  (vds_vvar_mapped v && z_ranges_meet lo hi (vdso_vvar_lo v) (vdso_vvar_hi v)
+   || vds_text_mapped v && z_ranges_meet lo hi (vdso_text_lo v) (vdso_text_hi v))%bool.
+
+(** [[lo, hi)] meets a mapped range of the pair without covering it
+    whole: the split [special_mapping_split] refuses. *)
+Definition vdso_split (v : VdsoState) (lo hi : Z) : bool :=
+  (vds_vvar_mapped v && z_ranges_meet lo hi (vdso_vvar_lo v) (vdso_vvar_hi v)
+     && negb (z_range_covers lo hi (vdso_vvar_lo v) (vdso_vvar_hi v))
+   || vds_text_mapped v && z_ranges_meet lo hi (vdso_text_lo v) (vdso_text_hi v)
+     && negb (z_range_covers lo hi (vdso_text_lo v) (vdso_text_hi v)))%bool.
+
+(** [[lo, hi)] covers a mapped range of the pair whole. *)
+Definition vdso_covered_any (v : VdsoState) (lo hi : Z) : bool :=
+  (vds_vvar_mapped v && z_range_covers lo hi (vdso_vvar_lo v) (vdso_vvar_hi v)
+   || vds_text_mapped v && z_range_covers lo hi (vdso_text_lo v) (vdso_text_hi v))%bool.
+
+(** The pair once [[lo, hi)] is unmapped or mapped over: each range it
+    covers whole is gone.  A range it meets only in part is a split,
+    which a caller refuses first ([vdso_split]). *)
+Definition vdso_cut (v : VdsoState) (lo hi : Z) : VdsoState :=
+  mkVdsoState (vds_base v) (vds_vvar v) (vds_text v)
+    (vds_vvar_mapped v
+     && negb (z_range_covers lo hi (vdso_vvar_lo v) (vdso_vvar_hi v)))%bool
+    (vds_text_mapped v
+     && negb (z_range_covers lo hi (vdso_text_lo v) (vdso_text_hi v)))%bool.
+
+Lemma vdso_byte_no_vdso : forall x, vdso_byte no_vdso x = false.
+Proof. reflexivity. Qed.
+
+Lemma vdso_meets_no_vdso : forall lo hi, vdso_meets no_vdso lo hi = false.
+Proof. reflexivity. Qed.
+
+Lemma vdso_split_no_vdso : forall lo hi, vdso_split no_vdso lo hi = false.
+Proof. reflexivity. Qed.
+
+Lemma vdso_covered_any_no_vdso : forall lo hi,
+  vdso_covered_any no_vdso lo hi = false.
+Proof. reflexivity. Qed.
+
+Lemma vdso_cut_no_vdso : forall lo hi, vdso_cut no_vdso lo hi = no_vdso.
+Proof. reflexivity. Qed.
+
 (** The process itself: whether it has halted, its identity, who it runs
     as, and whether it has led a session. *)
 Record ProcState := mkProcState {
@@ -3366,6 +3839,20 @@ Record ProcState := mkProcState {
        inode, and the difference shows only where two paths name one
        inode or one path names two -- neither of which [Fs]'s flat,
        link-free namespace can express (Fs.v). *)
+;
+  procst_vdso : VdsoState
+    (* THE vDSO AND vvar PAIR the kernel mapped at exec ([VdsoState]):
+       where it sits and which of its two ranges are still mapped.
+       [init_model] writes it ([vdso_at]), from the run's [in_vdso] and
+       mmap base; [mkModel] gives [no_vdso], so a model built by hand has
+       no pair.  The munmap and MAP_FIXED arms of [Sys.Mm] clear a range's
+       bit when they cover the range whole ([vdso_cut]); nothing else
+       writes it.
+
+       NOT IN [VmState], because the pair's bytes are the kernel's: no
+       byte of machine memory backs them, and the ledger, which counts
+       the process's own grants, has no entry for them.  A copy-in that
+       reaches one is [USpecial] ([UserRead]). *)
 }.
 
 (** The resource limits the process has been observed to have. *)
@@ -3506,6 +3993,7 @@ Definition m_utsname (m : Model) : option (list byte) :=
   procst_utsname (m_proc m).
 Definition m_statpins (m : Model) : list (Fs.path * list byte) :=
   procst_statpins (m_proc m).
+Definition m_vdso (m : Model) : VdsoState := procst_vdso (m_proc m).
 Definition m_rlimit_core (m : Model) : option (list byte) := limst_core (m_lim m).
 Definition m_nofile (m : Model) : word := limst_nofile (m_lim m).
 Definition m_clock (m : Model) : word := timest_clock (m_time m).
@@ -3540,22 +4028,39 @@ Definition overflow_id : word := Z_to_bv 64 65534.
     never sees this: [init_model] installs [in_nofile] over it. *)
 Definition default_nofile : word := Z_to_bv 64 1024.
 
-(** [mkModel] keeps the flat constructor's argument order, so every site that
-    builds a model is unchanged.  The random device's stream starts
-    EMPTY here ([IEof]) for the reason the accept queue starts silent:
-    it is an input of the run, and the one place that installs one is
-    [init_model], through [with_urandom]. *)
-Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
+(** [mkModel] with the vDSO pair given: what [init_model] builds the
+    initial model from, with the run's pair ([vdso_at]).
+
+    WHY [init_model] DOES NOT PLACE THE PAIR WITH [with_vdso]: every
+    [ProcState] setter repeats its model argument once per field, and
+    unifying two initial-model terms that differ deep inside backtracks
+    through each repeat.  One more setter layer over [init_model]'s nest
+    took Checks/Cases/Prelude.v from about 12 minutes to more than 55
+    ([fd_truncation_high_low_halves_all_ebadf]); building the pair into
+    the innermost model adds no layer. *)
+Definition mkModelVdso (fds : list (word * FdEntry)) (vm : VmMaps)
     (stdin : InputStream) (fs : Fs.Fs) (halted : option word)
-    (tid : option word) (rlim : option (list byte)) : Model :=
+    (tid : option word) (rlim : option (list byte)) (v : VdsoState) : Model :=
   mkModelOf (mkFdState fds []) (mkVmState vm [] [])
             (mkIoState stdin IEof net_silent (Z_to_bv 64 0)) (mkFsState fs)
             (mkProcState halted tid
                (mkCreds overflow_id overflow_id overflow_id
                         overflow_id overflow_id overflow_id [])
-               false (Z_to_bv 64 0) false None false false false false [])
+               false (Z_to_bv 64 0) false None false false false false [] v)
             (mkLimState rlim default_nofile)
             (mkTimeState (Z_to_bv 64 0)).
+
+(** [mkModel] keeps the flat constructor's argument order, so every site that
+    builds a model is unchanged.  The random device's stream starts
+    EMPTY here ([IEof]) for the reason the accept queue starts silent:
+    it is an input of the run, and the one place that installs one is
+    [init_model], through [with_urandom].  The vDSO pair is [no_vdso]
+    for the same reason: [init_model] places the run's pair, through
+    [mkModelVdso]. *)
+Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
+    (stdin : InputStream) (fs : Fs.Fs) (halted : option word)
+    (tid : option word) (rlim : option (list byte)) : Model :=
+  mkModelVdso fds vm stdin fs halted tid rlim no_vdso.
 
 (** Field-update helpers.  Each one rebuilds only its own subsystem and
     carries the other five across, so a new field inside a subsystem touches
@@ -3628,7 +4133,8 @@ Definition with_fs (fs : Fs.Fs) (m : Model) : Model :=
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m)
-                         (statpins_restrict fs (m_statpins m)))
+                         (statpins_restrict fs (m_statpins m))
+                         (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 (** Halt the process by an EXIT, which is the other half of what the
     kill flag distinguishes: this clears it, so a model this produced has
@@ -3644,7 +4150,8 @@ Definition with_halted (code : word) (m : Model) : Model :=
                          (procst_children (m_proc m)) (m_utsname m)
                          (m_sigaltstack_installed m)
                          false (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 Definition with_tid (tid : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -3653,7 +4160,8 @@ Definition with_tid (tid : word) (m : Model) : Model :=
                          (procst_children (m_proc m)) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
@@ -3675,7 +4183,8 @@ Definition with_utsname (bs : list byte) (m : Model) : Model :=
                          (m_has_children m) (Some bs)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 (** Look a file's stat pin up by path.  [None] means no [fstat] has
     delivered a [struct stat] for that file yet, which is the branch
@@ -3711,7 +4220,8 @@ Definition with_statpin (p : Fs.path) (bs : list byte) (m : Model) : Model :=
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m)
-                         ((p, bs) :: m_statpins m))
+                         ((p, bs) :: m_statpins m)
+                         (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 
 (** Seed the soft descriptor limit.  Its only caller is [init_model], for
@@ -3737,7 +4247,7 @@ Definition with_abort_terminal (b : bool) (m : Model) : Model :=
                          (m_has_children m) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m) b
-                         (m_statpins m))
+                         (m_statpins m) (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 
 Definition with_nofile (n : word) (m : Model) : Model :=
@@ -3750,7 +4260,8 @@ Definition with_creds (c : Creds) (m : Model) : Model :=
                          (procst_children (m_proc m)) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 Definition with_setsid_succeeded (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -3758,7 +4269,8 @@ Definition with_setsid_succeeded (m : Model) : Model :=
                          true (m_sigmask m) (procst_children (m_proc m))
                          (m_utsname m) (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 
 (** Record that the process now has something to reap.
@@ -3784,7 +4296,8 @@ Definition with_children (m : Model) : Model :=
                          (m_setsid_succeeded m) (m_sigmask m) true
                          (m_utsname m) (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 (** Install a new blocked mask.  [Kernel.Signal.rt_sigprocmask_spec] is
     the only caller, and the only kernel path that reaches
@@ -3804,7 +4317,8 @@ Definition with_sigmask (s : word) (m : Model) : Model :=
                          (m_setsid_succeeded m) s (m_has_children m)
                          (m_utsname m) (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 
 (** Record that a [sigaltstack] has installed an alternate stack.
@@ -3831,7 +4345,8 @@ Definition with_sigaltstack_installed (m : Model) : Model :=
                          (m_setsid_succeeded m) (m_sigmask m)
                          (m_has_children m) (m_utsname m) true
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 
 (** Record that SIGABRT has been sent and is BLOCKED, so it waits in
@@ -3856,7 +4371,7 @@ Definition with_sigabrt_pending (m : Model) : Model :=
                          (m_has_children m) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) true (m_abort_terminal m)
-                         (m_statpins m))
+                         (m_statpins m) (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 
 (** End the process by a fatal signal.  It writes the signal number into
@@ -3886,7 +4401,8 @@ Definition with_killed (sig : word) (m : Model) : Model :=
                          (m_has_children m) (m_utsname m)
                          (m_sigaltstack_installed m)
                          true (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (procst_vdso (m_proc m)))
             (m_lim m) (m_time m).
 
 (** The invariant the two fields are written under, stated where the
@@ -3927,6 +4443,582 @@ Definition with_accepted (fds : list (word * FdEntry)) (m : Model) : Model :=
     (mkIoState (m_stdin m) (m_urandom m) (nq_rest (m_net m))
                (m_conn_ix m + Z_to_bv 64 1))
     (m_fsys m) (m_proc m) (m_lim m) (m_time m).
+
+(** Install the vDSO pair's state.  An arm that unmaps or maps over a
+    whole range of the pair writes [vdso_cut] of it ([init_model] places
+    the pair through [mkModelVdso], not through this).  Every other
+    [ProcState] setter above carries the field across, as
+    [with_children]'s note asks. *)
+Definition with_vdso (v : VdsoState) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m) v)
+            (m_lim m) (m_time m).
+
+(* =========================================================================
+   User-memory reads and the vDSO pair
+   ========================================================================= *)
+
+(** THE ANSWER OF A USER-MEMORY READ, now that the vDSO pair is in the
+    model.  Linux can read the pair's bytes (the vvar pages are VM_READ
+    and the text VM_READ|VM_EXEC: lib/vdso/datastore.c:99-105 and
+    arch/riscv/kernel/vdso.c:137-140, Linux v6.18.46), but they are the
+    kernel's and [in_mem] does not hold them, so the readers above see
+    an unmapped byte there.  A copy-in that reaches one goes on, on
+    Linux, with data the model does not have.
+
+    THE RULE, the same for every reader: walk the bytes the kernel reads,
+    in its order, on [in_mem].  If the walk stops at an unreadable byte
+    and that byte is in a mapped range of the pair ([vdso_byte]), the
+    answer is [USpecial], and the spec arm answers [unmodeled].
+    Otherwise it is the reader's own answer: [UOk] of what it read, or
+    [UFault] where it failed.  A walk that stops at a byte outside the
+    pair stops there on Linux too, because every byte before it is
+    readable on both sides.
+
+    Each helper below tests its walk's stop point ([first_unreadable],
+    [first_unreadable_map], [copy_iovecs_stop], [import_iovecs_stop] and
+    [gather_stop], next to the readers) and has the same equations: when
+    it answers [UOk], when [USpecial], when [UFault], and that on a model
+    with [no_vdso] it is the plain reader's answer. *)
+Inductive UserRead (A : Type) : Type :=
+| UOk (x : A)
+| UFault
+| USpecial.
+Arguments UOk {A} x.
+Arguments UFault {A}.
+Arguments USpecial {A}.
+
+(** The vDSO test at a walk's stop point [stop] ([None]: the walk met
+    no unreadable byte); [r] is the reader's own answer. *)
+Definition user_stop {A : Type} (v : VdsoState) (stop : option word)
+    (r : UserRead A) : UserRead A :=
+  match stop with
+  | Some x => if vdso_byte v (bv_unsigned x) then USpecial else r
+  | None => r
+  end.
+
+Lemma user_stop_special : forall A v stop (r : UserRead A),
+  r <> USpecial ->
+  user_stop v stop r = USpecial
+  <-> exists x, stop = Some x /\ vdso_byte v (bv_unsigned x) = true.
+Proof.
+  intros A v [x|] r Hr; cbn [user_stop].
+  - destruct (vdso_byte v (bv_unsigned x)) eqn:E.
+    + split; [intros _; exists x; split; [reflexivity|exact E]|intros _; reflexivity].
+    + split.
+      * intros H. exfalso. exact (Hr H).
+      * intros [y [Hy Hv]]. injection Hy as Hy. subst y.
+        rewrite E in Hv. discriminate Hv.
+  - split.
+    + intros H. exfalso. exact (Hr H).
+    + intros [y [Hy _]]. discriminate Hy.
+Qed.
+
+Lemma user_stop_other : forall A v stop (r r' : UserRead A),
+  r' <> USpecial ->
+  user_stop v stop r = r'
+  <-> r = r' /\ (forall x, stop = Some x -> vdso_byte v (bv_unsigned x) = false).
+Proof.
+  intros A v [x|] r r' Hr'; cbn [user_stop].
+  - destruct (vdso_byte v (bv_unsigned x)) eqn:E.
+    + split.
+      * intros H. exfalso. apply Hr'. symmetry. exact H.
+      * intros [_ H]. rewrite (H x eq_refl) in E. discriminate E.
+    + split.
+      * intros H. split; [exact H|]. intros y Hy. injection Hy as Hy.
+        subst y. exact E.
+      * intros [H _]. exact H.
+  - split.
+    + intros H. split; [exact H|]. intros y Hy. discriminate Hy.
+    + intros [H _]. exact H.
+Qed.
+
+Lemma user_stop_no_vdso : forall A stop (r : UserRead A),
+  user_stop no_vdso stop r = r.
+Proof. intros A [x|] r; reflexivity. Qed.
+
+(** [read_bytes_map]: a fixed range, all or nothing. *)
+Definition user_read (i : SyscallInput) (m : Model) (a n : word)
+    : UserRead (list byte) :=
+  match read_bytes_map (in_mem i) a n with
+  | Some bs => UOk bs
+  | None => user_stop (m_vdso m) (first_unreadable_map (in_mem i) a n) UFault
+  end.
+
+Lemma user_read_ok_iff : forall i m a n bs,
+  user_read i m a n = UOk bs <-> read_bytes_map (in_mem i) a n = Some bs.
+Proof.
+  intros i m a n bs. unfold user_read.
+  destruct (read_bytes_map (in_mem i) a n) as [bs'|].
+  - split; intros H; injection H as H; subst; reflexivity.
+  - split; [|intros H; discriminate H].
+    unfold user_stop.
+    destruct (first_unreadable_map (in_mem i) a n) as [x|];
+      [destruct (vdso_byte (m_vdso m) (bv_unsigned x))|];
+      intros H; discriminate H.
+Qed.
+
+Lemma user_read_special_iff : forall i m a n,
+  user_read i m a n = USpecial
+  <-> exists x, first_unreadable_map (in_mem i) a n = Some x
+                /\ vdso_byte (m_vdso m) (bv_unsigned x) = true.
+Proof.
+  intros i m a n. unfold user_read.
+  destruct (read_bytes_map (in_mem i) a n) as [bs|] eqn:Er.
+  - split; [intros H; discriminate H|].
+    intros [x [Hx _]].
+    assert (Hn : first_unreadable_map (in_mem i) a n = None)
+      by (apply first_unreadable_map_none_iff; exists bs; exact Er).
+    rewrite Hn in Hx. discriminate Hx.
+  - apply user_stop_special. intros H; discriminate H.
+Qed.
+
+Lemma user_read_fault_iff : forall i m a n,
+  user_read i m a n = UFault
+  <-> read_bytes_map (in_mem i) a n = None
+      /\ (forall x, first_unreadable_map (in_mem i) a n = Some x ->
+                    vdso_byte (m_vdso m) (bv_unsigned x) = false).
+Proof.
+  intros i m a n. unfold user_read.
+  destruct (read_bytes_map (in_mem i) a n) as [bs|].
+  - split; [intros H; discriminate H|intros [H _]; discriminate H].
+  - destruct (user_stop_other (list byte) (m_vdso m)
+                (first_unreadable_map (in_mem i) a n) UFault UFault
+                ltac:(discriminate)) as [H1 H2].
+    split.
+    + intros H. destruct (H1 H) as [_ H']. split; [reflexivity|exact H'].
+    + intros [_ H]. apply H2. split; [reflexivity|exact H].
+Qed.
+
+Lemma user_read_no_vdso : forall i m a n,
+  m_vdso m = no_vdso ->
+  user_read i m a n = match read_bytes_map (in_mem i) a n with
+                      | Some bs => UOk bs
+                      | None => UFault
+                      end.
+Proof.
+  intros i m a n Hv. unfold user_read. rewrite Hv.
+  destruct (read_bytes_map (in_mem i) a n); [reflexivity|apply user_stop_no_vdso].
+Qed.
+
+(** [readable_bytes]: the readable prefix of a range.  It never fails;
+    when the prefix is short, the walk stopped at the byte right after
+    it. *)
+Definition user_read_prefix (i : SyscallInput) (m : Model) (a n : word)
+    : UserRead (list byte) :=
+  let p := readable_bytes (in_mem i) a n in
+  user_stop (m_vdso m)
+    (if (Z.of_nat (length p) <? bv_unsigned n)%Z then Some (a + len_word p)
+     else None)
+    (UOk p).
+
+Lemma user_read_prefix_ok_iff : forall i m a n p,
+  user_read_prefix i m a n = UOk p
+  <-> p = readable_bytes (in_mem i) a n
+      /\ ((Z.of_nat (length p) < bv_unsigned n)%Z ->
+          vdso_byte (m_vdso m) (bv_unsigned (a + len_word p)) = false).
+Proof.
+  intros i m a n p. unfold user_read_prefix. cbv zeta.
+  set (q := readable_bytes (in_mem i) a n).
+  destruct (Z.ltb_spec (Z.of_nat (length q)) (bv_unsigned n)) as [Hlt|Hge];
+    cbn [user_stop].
+  - destruct (vdso_byte (m_vdso m) (bv_unsigned (a + len_word q))) eqn:E.
+    + split; [intros H; discriminate H|].
+      intros [Hp H]. subst p. rewrite (H Hlt) in E. discriminate E.
+    + split.
+      * intros H. injection H as H. subst p.
+        split; [reflexivity|intros _; exact E].
+      * intros [Hp _]. subst p. reflexivity.
+  - split.
+    + intros H. injection H as H. subst p.
+      split; [reflexivity|intros H; exfalso; lia].
+    + intros [Hp _]. subst p. reflexivity.
+Qed.
+
+Lemma user_read_prefix_special_iff : forall i m a n,
+  user_read_prefix i m a n = USpecial
+  <-> (Z.of_nat (length (readable_bytes (in_mem i) a n)) < bv_unsigned n)%Z
+      /\ vdso_byte (m_vdso m)
+           (bv_unsigned (a + len_word (readable_bytes (in_mem i) a n))) = true.
+Proof.
+  intros i m a n. unfold user_read_prefix. cbv zeta.
+  set (q := readable_bytes (in_mem i) a n).
+  destruct (Z.ltb_spec (Z.of_nat (length q)) (bv_unsigned n)) as [Hlt|Hge];
+    cbn [user_stop].
+  - destruct (vdso_byte (m_vdso m) (bv_unsigned (a + len_word q))) eqn:E.
+    + split; [intros _; split; [exact Hlt|reflexivity]|intros _; reflexivity].
+    + split; [intros H; discriminate H|intros [_ H]; discriminate H].
+  - split; [intros H; discriminate H|intros [H _]; exfalso; lia].
+Qed.
+
+Lemma user_read_prefix_not_fault : forall i m a n,
+  user_read_prefix i m a n <> UFault.
+Proof.
+  intros i m a n. unfold user_read_prefix. cbv zeta.
+  destruct (Z.of_nat (length (readable_bytes (in_mem i) a n)) <? bv_unsigned n)%Z;
+    cbn [user_stop];
+    [destruct (vdso_byte (m_vdso m)
+                 (bv_unsigned (a + len_word (readable_bytes (in_mem i) a n))))|];
+    intros H; discriminate H.
+Qed.
+
+Lemma user_read_prefix_no_vdso : forall i m a n,
+  m_vdso m = no_vdso ->
+  user_read_prefix i m a n = UOk (readable_bytes (in_mem i) a n).
+Proof.
+  intros i m a n Hv. unfold user_read_prefix. cbv zeta. rewrite Hv.
+  apply user_stop_no_vdso.
+Qed.
+
+(** The pathname bytes a [read_cstr] walk reads, which is what an arm
+    records as copied in ([cstr_access_len_aux] to [path_max]). *)
+Definition user_cstr_access_len (i : SyscallInput) (m : Model) (a : word)
+    : nat :=
+  cstr_access_len_aux (in_mem i) a path_max.
+
+(** [read_cstr]: a NUL-terminated pathname.  Its fault constructor is
+    [CstrFault]; the walk's stop is the first unreadable byte of the
+    bytes it reads ([read_cstr_fault_iff]). *)
+Definition user_read_cstr (i : SyscallInput) (m : Model) (a : word)
+    : UserRead cstr_result :=
+  match read_cstr (in_mem i) a with
+  | CstrFault =>
+      user_stop (m_vdso m)
+        (first_unreadable (in_mem i) a (user_cstr_access_len i m a)) UFault
+  | r => UOk r
+  end.
+
+Lemma user_read_cstr_ok_iff : forall i m a r,
+  user_read_cstr i m a = UOk r
+  <-> read_cstr (in_mem i) a = r /\ r <> CstrFault.
+Proof.
+  intros i m a r. unfold user_read_cstr.
+  destruct (read_cstr (in_mem i) a) as [p| |].
+  3: { split; [|intros [Hr H]; subst r; exfalso; apply H; reflexivity].
+       unfold user_stop.
+       destruct (first_unreadable (in_mem i) a (user_cstr_access_len i m a)) as [x|];
+         [destruct (vdso_byte (m_vdso m) (bv_unsigned x))|];
+         intros H; discriminate H. }
+  all: split; [intros H; injection H as H; subst r;
+               split; [reflexivity|intros H; discriminate H]
+              |intros [Hr _]; subst r; reflexivity].
+Qed.
+
+Lemma user_read_cstr_special_iff : forall i m a,
+  user_read_cstr i m a = USpecial
+  <-> exists x, first_unreadable (in_mem i) a (user_cstr_access_len i m a) = Some x
+                /\ vdso_byte (m_vdso m) (bv_unsigned x) = true.
+Proof.
+  intros i m a. unfold user_read_cstr.
+  destruct (read_cstr (in_mem i) a) eqn:Er.
+  3: { apply user_stop_special. intros H; discriminate H. }
+  all: split; [intros H; discriminate H|];
+    intros [x [Hx _]];
+    assert (Hf : read_cstr (in_mem i) a = CstrFault)
+      by (apply read_cstr_fault_iff; unfold user_cstr_access_len in Hx;
+          rewrite Hx; intros H; discriminate H);
+    rewrite Er in Hf; discriminate Hf.
+Qed.
+
+Lemma user_read_cstr_fault_iff : forall i m a,
+  user_read_cstr i m a = UFault
+  <-> read_cstr (in_mem i) a = CstrFault
+      /\ (forall x, first_unreadable (in_mem i) a (user_cstr_access_len i m a) = Some x ->
+                    vdso_byte (m_vdso m) (bv_unsigned x) = false).
+Proof.
+  intros i m a. unfold user_read_cstr.
+  destruct (read_cstr (in_mem i) a).
+  3: { destruct (user_stop_other cstr_result (m_vdso m)
+                   (first_unreadable (in_mem i) a (user_cstr_access_len i m a))
+                   UFault UFault ltac:(discriminate)) as [H1 H2].
+       split.
+       - intros H. destruct (H1 H) as [_ H']. split; [reflexivity|exact H'].
+       - intros [_ H]. apply H2. split; [reflexivity|exact H]. }
+  all: split; [intros H; discriminate H|intros [H _]; discriminate H].
+Qed.
+
+Lemma user_read_cstr_no_vdso : forall i m a,
+  m_vdso m = no_vdso ->
+  user_read_cstr i m a = match read_cstr (in_mem i) a with
+                         | CstrFault => UFault
+                         | r => UOk r
+                         end.
+Proof.
+  intros i m a Hv. unfold user_read_cstr. rewrite Hv.
+  destruct (read_cstr (in_mem i) a);
+    [reflexivity|reflexivity|apply user_stop_no_vdso].
+Qed.
+
+(** [copy_iovecs_aux]: [k] descriptors from [a], the import without the
+    [access_ok] tests ([Net.Socket.sendmsg_spec]'s).  Its fault
+    constructor is [ImpFault]. *)
+Definition user_copy_iovecs (i : SyscallInput) (m : Model) (a : word) (k : nat)
+    : UserRead iov_import :=
+  match copy_iovecs_aux (in_mem i) a k with
+  | ImpFault => user_stop (m_vdso m) (copy_iovecs_stop (in_mem i) a k) UFault
+  | r => UOk r
+  end.
+
+Lemma user_copy_iovecs_ok_iff : forall i m a k r,
+  user_copy_iovecs i m a k = UOk r
+  <-> copy_iovecs_aux (in_mem i) a k = r /\ r <> ImpFault.
+Proof.
+  intros i m a k r. unfold user_copy_iovecs.
+  destruct (copy_iovecs_aux (in_mem i) a k) as [l| |].
+  2: { split; [|intros [Hr H]; subst r; exfalso; apply H; reflexivity].
+       unfold user_stop.
+       destruct (copy_iovecs_stop (in_mem i) a k) as [x|];
+         [destruct (vdso_byte (m_vdso m) (bv_unsigned x))|];
+         intros H; discriminate H. }
+  all: split; [intros H; injection H as H; subst r;
+               split; [reflexivity|intros H; discriminate H]
+              |intros [Hr _]; subst r; reflexivity].
+Qed.
+
+Lemma user_copy_iovecs_special_iff : forall i m a k,
+  user_copy_iovecs i m a k = USpecial
+  <-> exists x, copy_iovecs_stop (in_mem i) a k = Some x
+                /\ vdso_byte (m_vdso m) (bv_unsigned x) = true.
+Proof.
+  intros i m a k. unfold user_copy_iovecs.
+  destruct (copy_iovecs_aux (in_mem i) a k) eqn:Ec.
+  2: { apply user_stop_special. intros H; discriminate H. }
+  all: split; [intros H; discriminate H|];
+    intros [x [Hx _]];
+    assert (Hf : copy_iovecs_aux (in_mem i) a k = ImpFault)
+      by (apply copy_iovecs_aux_fault_iff; rewrite Hx; intros H;
+          discriminate H);
+    rewrite Ec in Hf; discriminate Hf.
+Qed.
+
+Lemma user_copy_iovecs_fault_iff : forall i m a k,
+  user_copy_iovecs i m a k = UFault
+  <-> copy_iovecs_aux (in_mem i) a k = ImpFault
+      /\ (forall x, copy_iovecs_stop (in_mem i) a k = Some x ->
+                    vdso_byte (m_vdso m) (bv_unsigned x) = false).
+Proof.
+  intros i m a k. unfold user_copy_iovecs.
+  destruct (copy_iovecs_aux (in_mem i) a k).
+  2: { destruct (user_stop_other iov_import (m_vdso m)
+                   (copy_iovecs_stop (in_mem i) a k) UFault UFault
+                   ltac:(discriminate)) as [H1 H2].
+       split.
+       - intros H. destruct (H1 H) as [_ H']. split; [reflexivity|exact H'].
+       - intros [_ H]. apply H2. split; [reflexivity|exact H]. }
+  all: split; [intros H; discriminate H|intros [H _]; discriminate H].
+Qed.
+
+Lemma user_copy_iovecs_no_vdso : forall i m a k,
+  m_vdso m = no_vdso ->
+  user_copy_iovecs i m a k = match copy_iovecs_aux (in_mem i) a k with
+                             | ImpFault => UFault
+                             | r => UOk r
+                             end.
+Proof.
+  intros i m a k Hv. unfold user_copy_iovecs. rewrite Hv.
+  destruct (copy_iovecs_aux (in_mem i) a k);
+    [reflexivity|apply user_stop_no_vdso|reflexivity].
+Qed.
+
+(** [import_iovecs]: the readv/writev import.  Its fault constructor is
+    [ImpFault], which a refused [access_ok] also gives; that fault has no
+    stop ([import_iovecs_stop] is [None] there), so it stays [UFault]. *)
+Definition user_import_iovecs (i : SyscallInput) (m : Model) (a n : word)
+    : UserRead iov_import :=
+  match import_iovecs (in_mem i) a n with
+  | ImpFault => user_stop (m_vdso m) (import_iovecs_stop (in_mem i) a n) UFault
+  | r => UOk r
+  end.
+
+Lemma user_import_iovecs_ok_iff : forall i m a n r,
+  user_import_iovecs i m a n = UOk r
+  <-> import_iovecs (in_mem i) a n = r /\ r <> ImpFault.
+Proof.
+  intros i m a n r. unfold user_import_iovecs.
+  destruct (import_iovecs (in_mem i) a n) as [l| |].
+  2: { split; [|intros [Hr H]; subst r; exfalso; apply H; reflexivity].
+       unfold user_stop.
+       destruct (import_iovecs_stop (in_mem i) a n) as [x|];
+         [destruct (vdso_byte (m_vdso m) (bv_unsigned x))|];
+         intros H; discriminate H. }
+  all: split; [intros H; injection H as H; subst r;
+               split; [reflexivity|intros H; discriminate H]
+              |intros [Hr _]; subst r; reflexivity].
+Qed.
+
+Lemma user_import_iovecs_special_iff : forall i m a n,
+  user_import_iovecs i m a n = USpecial
+  <-> exists x, import_iovecs_stop (in_mem i) a n = Some x
+                /\ vdso_byte (m_vdso m) (bv_unsigned x) = true.
+Proof.
+  intros i m a n. unfold user_import_iovecs.
+  destruct (import_iovecs (in_mem i) a n) eqn:Ei.
+  2: { apply user_stop_special. intros H; discriminate H. }
+  all: split; [intros H; discriminate H|];
+    intros [x [Hx _]];
+    assert (Hf : import_iovecs (in_mem i) a n = ImpFault)
+      by (apply import_iovecs_stop_fault; rewrite Hx; intros H; discriminate H);
+    rewrite Ei in Hf; discriminate Hf.
+Qed.
+
+Lemma user_import_iovecs_fault_iff : forall i m a n,
+  user_import_iovecs i m a n = UFault
+  <-> import_iovecs (in_mem i) a n = ImpFault
+      /\ (forall x, import_iovecs_stop (in_mem i) a n = Some x ->
+                    vdso_byte (m_vdso m) (bv_unsigned x) = false).
+Proof.
+  intros i m a n. unfold user_import_iovecs.
+  destruct (import_iovecs (in_mem i) a n).
+  2: { destruct (user_stop_other iov_import (m_vdso m)
+                   (import_iovecs_stop (in_mem i) a n) UFault UFault
+                   ltac:(discriminate)) as [H1 H2].
+       split.
+       - intros H. destruct (H1 H) as [_ H']. split; [reflexivity|exact H'].
+       - intros [_ H]. apply H2. split; [reflexivity|exact H]. }
+  all: split; [intros H; discriminate H|intros [H _]; discriminate H].
+Qed.
+
+Lemma user_import_iovecs_no_vdso : forall i m a n,
+  m_vdso m = no_vdso ->
+  user_import_iovecs i m a n = match import_iovecs (in_mem i) a n with
+                               | ImpFault => UFault
+                               | r => UOk r
+                               end.
+Proof.
+  intros i m a n Hv. unfold user_import_iovecs. rewrite Hv.
+  destruct (import_iovecs (in_mem i) a n);
+    [reflexivity|apply user_stop_no_vdso|reflexivity].
+Qed.
+
+(** The copy-in ledgers of the two descriptor walks, beside the helpers
+    they go with, so an arm need not name [in_mem]. *)
+Definition user_import_iovecs_accesses (i : SyscallInput) (m : Model)
+    (a n : word) : list (word * nat) :=
+  import_iovecs_accesses (in_mem i) a n.
+
+Definition user_copy_iovecs_accesses (i : SyscallInput) (m : Model)
+    (a : word) (k : nat) : list (word * nat) :=
+  copy_iovecs_accesses (in_mem i) a k.
+
+(** [gather_iovecs]: every source byte of [iovs], all or nothing. *)
+Definition user_gather_iovecs (i : SyscallInput) (m : Model)
+    (iovs : list (word * word)) : UserRead (list byte) :=
+  match gather_iovecs (in_mem i) iovs with
+  | Some bs => UOk bs
+  | None => user_stop (m_vdso m) (gather_stop (in_mem i) iovs) UFault
+  end.
+
+Lemma user_gather_iovecs_ok_iff : forall i m iovs bs,
+  user_gather_iovecs i m iovs = UOk bs <-> gather_iovecs (in_mem i) iovs = Some bs.
+Proof.
+  intros i m iovs bs. unfold user_gather_iovecs.
+  destruct (gather_iovecs (in_mem i) iovs) as [bs'|].
+  - split; intros H; injection H as H; subst; reflexivity.
+  - split; [|intros H; discriminate H].
+    unfold user_stop.
+    destruct (gather_stop (in_mem i) iovs) as [x|];
+      [destruct (vdso_byte (m_vdso m) (bv_unsigned x))|];
+      intros H; discriminate H.
+Qed.
+
+Lemma user_gather_iovecs_special_iff : forall i m iovs,
+  user_gather_iovecs i m iovs = USpecial
+  <-> exists x, gather_stop (in_mem i) iovs = Some x
+                /\ vdso_byte (m_vdso m) (bv_unsigned x) = true.
+Proof.
+  intros i m iovs. unfold user_gather_iovecs.
+  destruct (gather_iovecs (in_mem i) iovs) as [bs|] eqn:Eg.
+  - split; [intros H; discriminate H|].
+    intros [x [Hx _]].
+    assert (Hn : gather_iovecs (in_mem i) iovs = None)
+      by (apply gather_iovecs_fault_iff; rewrite Hx; intros H; discriminate H).
+    rewrite Eg in Hn. discriminate Hn.
+  - apply user_stop_special. intros H; discriminate H.
+Qed.
+
+Lemma user_gather_iovecs_fault_iff : forall i m iovs,
+  user_gather_iovecs i m iovs = UFault
+  <-> gather_iovecs (in_mem i) iovs = None
+      /\ (forall x, gather_stop (in_mem i) iovs = Some x ->
+                    vdso_byte (m_vdso m) (bv_unsigned x) = false).
+Proof.
+  intros i m iovs. unfold user_gather_iovecs.
+  destruct (gather_iovecs (in_mem i) iovs) as [bs|].
+  - split; [intros H; discriminate H|intros [H _]; discriminate H].
+  - destruct (user_stop_other (list byte) (m_vdso m)
+                (gather_stop (in_mem i) iovs) UFault UFault
+                ltac:(discriminate)) as [H1 H2].
+    split.
+    + intros H. destruct (H1 H) as [_ H']. split; [reflexivity|exact H'].
+    + intros [_ H]. apply H2. split; [reflexivity|exact H].
+Qed.
+
+Lemma user_gather_iovecs_no_vdso : forall i m iovs,
+  m_vdso m = no_vdso ->
+  user_gather_iovecs i m iovs = match gather_iovecs (in_mem i) iovs with
+                                | Some bs => UOk bs
+                                | None => UFault
+                                end.
+Proof.
+  intros i m iovs Hv. unfold user_gather_iovecs. rewrite Hv.
+  destruct (gather_iovecs (in_mem i) iovs); [reflexivity|apply user_stop_no_vdso].
+Qed.
+
+(** [writev_gathered]: the gatherable prefix of the capped vector.  It
+    never fails; the walk is over [cap_iovecs iovs0], the bytes the
+    kernel reads. *)
+Definition user_writev_gathered (i : SyscallInput) (m : Model)
+    (iovs0 : list (word * word)) : UserRead (list byte) :=
+  user_stop (m_vdso m) (gather_stop (in_mem i) (cap_iovecs iovs0))
+    (UOk (writev_gathered (in_mem i) iovs0)).
+
+Lemma user_writev_gathered_ok_iff : forall i m iovs0 bs,
+  user_writev_gathered i m iovs0 = UOk bs
+  <-> bs = writev_gathered (in_mem i) iovs0
+      /\ (forall x, gather_stop (in_mem i) (cap_iovecs iovs0) = Some x ->
+                    vdso_byte (m_vdso m) (bv_unsigned x) = false).
+Proof.
+  intros i m iovs0 bs. unfold user_writev_gathered.
+  destruct (user_stop_other (list byte) (m_vdso m)
+              (gather_stop (in_mem i) (cap_iovecs iovs0))
+              (UOk (writev_gathered (in_mem i) iovs0)) (UOk bs)
+              ltac:(discriminate)) as [H1 H2].
+  split.
+  - intros H. destruct (H1 H) as [Heq H']. injection Heq as Heq.
+    split; [symmetry; exact Heq|exact H'].
+  - intros [Hb H]. apply H2. split; [rewrite Hb; reflexivity|exact H].
+Qed.
+
+Lemma user_writev_gathered_special_iff : forall i m iovs0,
+  user_writev_gathered i m iovs0 = USpecial
+  <-> exists x, gather_stop (in_mem i) (cap_iovecs iovs0) = Some x
+                /\ vdso_byte (m_vdso m) (bv_unsigned x) = true.
+Proof.
+  intros i m iovs0. unfold user_writev_gathered.
+  apply user_stop_special. intros H; discriminate H.
+Qed.
+
+Lemma user_writev_gathered_not_fault : forall i m iovs0,
+  user_writev_gathered i m iovs0 <> UFault.
+Proof.
+  intros i m iovs0. unfold user_writev_gathered, user_stop.
+  destruct (gather_stop (in_mem i) (cap_iovecs iovs0)) as [x|];
+    [destruct (vdso_byte (m_vdso m) (bv_unsigned x))|];
+    intros H; discriminate H.
+Qed.
+
+Lemma user_writev_gathered_no_vdso : forall i m iovs0,
+  m_vdso m = no_vdso ->
+  user_writev_gathered i m iovs0 = UOk (writev_gathered (in_mem i) iovs0).
+Proof.
+  intros i m iovs0 Hv. unfold user_writev_gathered. rewrite Hv.
+  apply user_stop_no_vdso.
+Qed.
 
 (* =========================================================================
    Observable trace events
@@ -5086,6 +6178,34 @@ Proof.
   - intros n. right. now exists n.
 Qed.
 
+(** THE SIZE OF THE vDSO PAIR the kernel maps at exec, as two CODES.
+    The vvar range is [VDSO_NR_PAGES] pages ([vdso_install_vvar_mapping],
+    lib/vdso/datastore.c:99-105, Linux v6.18.46): three plus the arch
+    data pages (include/vdso/datapage.h:178-185), four in all on riscv64.
+    The text range is the kernel's vdso.so image
+    ([vdso_info->vdso_pages], arch/riscv/kernel/vdso.c:120).  Both are
+    fixed by the kernel build, so a run takes them as an input
+    ([in_vdso]).
+
+    A CODE RATHER THAN A COUNT, so that the field needs no validity
+    premise: the vvar range is [S (code mod 8)] pages (1 to 8) and the
+    text range [S (code mod 16)] pages (1 to 16).  Every code names a
+    geometry with both ranges non-empty, and every geometry in those
+    bounds has a code. *)
+Record VdsoGeom := mkVdsoGeom {
+  vg_vvar_code : nat;
+  vg_text_code : nat
+}.
+
+Definition vdso_vvar_bytes (g : VdsoGeom) : Z :=
+  (page_size * Z.of_nat (S (vg_vvar_code g mod 8)%nat))%Z.
+Definition vdso_text_bytes (g : VdsoGeom) : Z :=
+  (page_size * Z.of_nat (S (vg_text_code g mod 16)%nat))%Z.
+
+(** The geometry [mkProcInput] declares: four vvar pages, as on riscv64
+    v6.18.46, and two text pages. *)
+Definition default_vdso_geom : VdsoGeom := mkVdsoGeom 3 1.
+
 (** What the CALLER supplies to a run: the argv and envp strings, the
     initial file-system image, the standard-input stream, the user and
     group the process runs as, and the network the program faces.
@@ -5305,16 +6425,25 @@ Record ProcInput := mkProcInput_full {
        [Run.valid_input] has NO clause naming it: [fs_seed_tmp] seeds
        any list into the canonical form, so every value is one a launch
        could present ([fs_seed_tmp_valid]). *)
+;
+  in_vdso  : VdsoGeom
+    (* THE ENVIRONMENT'S DECLARATION of the vDSO pair's size: how many
+       vvar pages and how many vDSO text pages the kernel maps at exec
+       ([VdsoGeom]).  Like [in_va_size] it is a fact about the kernel the
+       model cannot derive.  Every value names a geometry, so
+       [Run.valid_input] has no clause on it.  [init_model] places the
+       pair right below the mmap base ([vdso_at]). *)
 }.
 
-(** THE POSITIONAL-LITERAL FORM: every field except the two ENVIRONMENT
-    fields at the end of the record ([in_urandom], [in_tmp]).
+(** THE POSITIONAL-LITERAL FORM: every field except the three ENVIRONMENT
+    fields at the end of the record ([in_urandom], [in_tmp], [in_vdso]).
 
     The record's own constructor is [mkProcInput_full] and takes every
     field.  This takes the first thirteen, in that order,
-    and fills the last two with THE DEFAULT RANDOM STREAM and
-    THE EMPTY /tmp: [default_urandom], which is zero bytes forever, and
-    a private /tmp that starts empty.  So a literal written through this
+    and fills the last three with THE DEFAULT RANDOM STREAM,
+    THE EMPTY /tmp and THE DEFAULT vDSO GEOMETRY: [default_urandom], which
+    is zero bytes forever, a private /tmp that starts empty, and
+    [default_vdso_geom].  So a literal written through this
     name denotes an input in an environment
     that holds no file of its own.
 
@@ -5329,7 +6458,7 @@ Record ProcInput := mkProcInput_full {
     form under this name, and putting every new environment field at
     the END, is what makes an added field a compile error there rather
     than a re-spelling of every literal.  A NEW literal that wants to
-    set either field uses [mkProcInput_full] or the record-brace form;
+    set any of them uses [mkProcInput_full] or the record-brace form;
     this one cannot express them, which is the point.
 
     It is a plain (transparent) [Definition], so it reduces wherever the
@@ -5341,7 +6470,8 @@ Definition mkProcInput
     (nofile sigmask hwcap : word) (abort_terminal : bool)
     (va_size : VaSize) : ProcInput :=
   mkProcInput_full argv envp image_fs stdin uid gid groups net
-    nofile sigmask hwcap abort_terminal va_size default_urandom [].
+    nofile sigmask hwcap abort_terminal va_size default_urandom []
+    default_vdso_geom.
 
 (** THE FILE SYSTEM THE RUN STARTS WITH: the image, with the run's
     declared private /tmp seeded into it under absolute keys.
@@ -5363,6 +6493,16 @@ Definition mkProcInput
 Definition in_fs (inp : ProcInput) : Fs.Fs :=
   fs_seed_tmp (in_image_fs inp) (in_tmp inp).
 
+(** WHERE THE PAIR SITS AT THE START OF A RUN: right below the mmap base,
+    the vvar range first and the text right above it, both mapped.
+    [__setup_additional_pages] takes its base from [get_unmapped_area]
+    (arch/riscv/kernel/vdso.c:124, Linux v6.18.46), which places top-down
+    from [mm->mmap_base]; for a static ELF nothing is mapped top-down
+    before it, so the pair is [[mbase - vvar - text, mbase)]. *)
+Definition vdso_at (mbase : word) (g : VdsoGeom) : VdsoState :=
+  mkVdsoState (bv_unsigned mbase - vdso_vvar_bytes g - vdso_text_bytes g)%Z
+              (vdso_vvar_bytes g) (vdso_text_bytes g) true true.
+
 (* =========================================================================
    Initial model: fds 0/1/2 bound to the three standard channels;
    [reserved] is the address space the kernel used at [execve] (the
@@ -5382,6 +6522,9 @@ Definition in_fs (inp : ProcInput) : Fs.Fs :=
    is the run's backed anonymous-memory budget in bytes ([vm_limit] — see the
    field's note and its companion constants
    [source_alloc_limit]/[target_alloc_limit]).
+
+   The vDSO pair is placed right below [mbase], with the geometry the
+   input declares ([vdso_at], [in_vdso]).
 
    The six CREDENTIAL ids are built from the two the input carries.
    [execve] of an ordinary binary — one that is neither set-user-id nor
@@ -5413,7 +6556,7 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
    (with_creds
     (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
              (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
-    (mkModel
+    (mkModelVdso
        [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
          (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
          (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
@@ -5422,7 +6565,8 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
        (in_fs inp)
        None
        None
-       None)))))).
+       None
+       (vdso_at mbase (in_vdso inp)))))))).
 
 (** The base case of the nonemptiness invariant: a run starts with NO
     protected range at all.  Every reachable [vm_noaccess] is therefore
@@ -8102,6 +9246,264 @@ Lemma m_sigaltstack_installed_with_abort_terminal : forall (v : bool) (m : Model
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_sigaltstack_installed_with_abort_terminal : model.
 
+(** The vDSO pair's row and column: every setter but [with_vdso] carries
+    [procst_vdso] across, which is what lets a later arm read the pair
+    [init_model] placed, and [with_vdso] moves nothing else. *)
+
+Lemma m_vdso_with_fds : forall (v : list (word * FdEntry)) (m : Model),
+  m_vdso (with_fds v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_fds : model.
+
+Lemma m_vdso_with_pipes : forall (v : list (word * PipeBuf)) (m : Model),
+  m_vdso (with_pipes v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_pipes : model.
+
+Lemma m_vdso_with_vmmaps : forall (v : VmMaps) (m : Model),
+  m_vdso (with_vmmaps v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_vmmaps : model.
+
+Lemma m_vdso_with_vm_backing : forall (l : list (word * word)) (mt : list word) (m : Model),
+  m_vdso (with_vm_backing l mt m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_vm_backing : model.
+
+Lemma m_vdso_with_stdin : forall (v : InputStream) (m : Model),
+  m_vdso (with_stdin v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_stdin : model.
+
+Lemma m_vdso_with_urandom : forall (v : InputStream) (m : Model),
+  m_vdso (with_urandom v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_urandom : model.
+
+Lemma m_vdso_with_net : forall (v : NetQueue) (m : Model),
+  m_vdso (with_net v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_net : model.
+
+Lemma m_vdso_with_fs : forall (v : Fs.Fs) (m : Model),
+  m_vdso (with_fs v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_fs : model.
+
+Lemma m_vdso_with_halted : forall (v : word) (m : Model),
+  m_vdso (with_halted v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_halted : model.
+
+Lemma m_vdso_with_tid : forall (v : word) (m : Model),
+  m_vdso (with_tid v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_tid : model.
+
+Lemma m_vdso_with_rlimit_core : forall (v : list byte) (m : Model),
+  m_vdso (with_rlimit_core v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_rlimit_core : model.
+
+Lemma m_vdso_with_utsname : forall (v : list byte) (m : Model),
+  m_vdso (with_utsname v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_utsname : model.
+
+Lemma m_vdso_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
+  m_vdso (with_statpin p bs m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_statpin : model.
+
+Lemma m_vdso_with_abort_terminal : forall (v : bool) (m : Model),
+  m_vdso (with_abort_terminal v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_abort_terminal : model.
+
+Lemma m_vdso_with_nofile : forall (v : word) (m : Model),
+  m_vdso (with_nofile v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_nofile : model.
+
+Lemma m_vdso_with_creds : forall (v : Creds) (m : Model),
+  m_vdso (with_creds v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_creds : model.
+
+Lemma m_vdso_with_setsid_succeeded : forall (m : Model),
+  m_vdso (with_setsid_succeeded m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_setsid_succeeded : model.
+
+Lemma m_vdso_with_children : forall (m : Model),
+  m_vdso (with_children m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_children : model.
+
+Lemma m_vdso_with_sigmask : forall (v : word) (m : Model),
+  m_vdso (with_sigmask v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_sigmask : model.
+
+Lemma m_vdso_with_sigaltstack_installed : forall (m : Model),
+  m_vdso (with_sigaltstack_installed m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_sigaltstack_installed : model.
+
+Lemma m_vdso_with_sigabrt_pending : forall (m : Model),
+  m_vdso (with_sigabrt_pending m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_sigabrt_pending : model.
+
+Lemma m_vdso_with_killed : forall (v : word) (m : Model),
+  m_vdso (with_killed v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_killed : model.
+
+Lemma m_vdso_with_clock : forall (v : word) (m : Model),
+  m_vdso (with_clock v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_clock : model.
+
+Lemma m_vdso_with_accepted : forall (v : list (word * FdEntry)) (m : Model),
+  m_vdso (with_accepted v m) = m_vdso m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_accepted : model.
+
+Lemma m_vdso_with_vdso : forall (v : VdsoState) (m : Model),
+  m_vdso (with_vdso v m) = v.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vdso_with_vdso : model.
+
+Lemma m_fds_with_vdso : forall (v : VdsoState) (m : Model),
+  m_fds (with_vdso v m) = m_fds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_fds_with_vdso : model.
+
+Lemma m_pipes_with_vdso : forall (v : VdsoState) (m : Model),
+  m_pipes (with_vdso v m) = m_pipes m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_pipes_with_vdso : model.
+
+Lemma m_vmmaps_with_vdso : forall (v : VdsoState) (m : Model),
+  m_vmmaps (with_vdso v m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vmmaps_with_vdso : model.
+
+Lemma m_vm_lazy_with_vdso : forall (v : VdsoState) (m : Model),
+  m_vm_lazy (with_vdso v m) = m_vm_lazy m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vm_lazy_with_vdso : model.
+
+Lemma m_vm_materialized_with_vdso : forall (v : VdsoState) (m : Model),
+  m_vm_materialized (with_vdso v m) = m_vm_materialized m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vm_materialized_with_vdso : model.
+
+Lemma m_stdin_with_vdso : forall (v : VdsoState) (m : Model),
+  m_stdin (with_vdso v m) = m_stdin m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_stdin_with_vdso : model.
+
+Lemma m_urandom_with_vdso : forall (v : VdsoState) (m : Model),
+  m_urandom (with_vdso v m) = m_urandom m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_urandom_with_vdso : model.
+
+Lemma m_net_with_vdso : forall (v : VdsoState) (m : Model),
+  m_net (with_vdso v m) = m_net m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_net_with_vdso : model.
+
+Lemma m_conn_ix_with_vdso : forall (v : VdsoState) (m : Model),
+  m_conn_ix (with_vdso v m) = m_conn_ix m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_conn_ix_with_vdso : model.
+
+Lemma m_fs_with_vdso : forall (v : VdsoState) (m : Model),
+  m_fs (with_vdso v m) = m_fs m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_fs_with_vdso : model.
+
+Lemma m_halted_with_vdso : forall (v : VdsoState) (m : Model),
+  m_halted (with_vdso v m) = m_halted m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_halted_with_vdso : model.
+
+Lemma m_tid_with_vdso : forall (v : VdsoState) (m : Model),
+  m_tid (with_vdso v m) = m_tid m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_tid_with_vdso : model.
+
+Lemma m_setsid_succeeded_with_vdso : forall (v : VdsoState) (m : Model),
+  m_setsid_succeeded (with_vdso v m) = m_setsid_succeeded m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_setsid_succeeded_with_vdso : model.
+
+Lemma m_has_children_with_vdso : forall (v : VdsoState) (m : Model),
+  m_has_children (with_vdso v m) = m_has_children m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_has_children_with_vdso : model.
+
+Lemma m_sigaltstack_installed_with_vdso : forall (v : VdsoState) (m : Model),
+  m_sigaltstack_installed (with_vdso v m) = m_sigaltstack_installed m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigaltstack_installed_with_vdso : model.
+
+Lemma m_sigmask_with_vdso : forall (v : VdsoState) (m : Model),
+  m_sigmask (with_vdso v m) = m_sigmask m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigmask_with_vdso : model.
+
+Lemma m_killed_with_vdso : forall (v : VdsoState) (m : Model),
+  m_killed (with_vdso v m) = m_killed m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_killed_with_vdso : model.
+
+Lemma m_sigabrt_pending_with_vdso : forall (v : VdsoState) (m : Model),
+  m_sigabrt_pending (with_vdso v m) = m_sigabrt_pending m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigabrt_pending_with_vdso : model.
+
+Lemma m_abort_terminal_with_vdso : forall (v : VdsoState) (m : Model),
+  m_abort_terminal (with_vdso v m) = m_abort_terminal m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_abort_terminal_with_vdso : model.
+
+Lemma m_utsname_with_vdso : forall (v : VdsoState) (m : Model),
+  m_utsname (with_vdso v m) = m_utsname m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_utsname_with_vdso : model.
+
+Lemma m_statpins_with_vdso : forall (v : VdsoState) (m : Model),
+  m_statpins (with_vdso v m) = m_statpins m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_statpins_with_vdso : model.
+
+Lemma m_rlimit_core_with_vdso : forall (v : VdsoState) (m : Model),
+  m_rlimit_core (with_vdso v m) = m_rlimit_core m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_rlimit_core_with_vdso : model.
+
+Lemma m_nofile_with_vdso : forall (v : VdsoState) (m : Model),
+  m_nofile (with_vdso v m) = m_nofile m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_nofile_with_vdso : model.
+
+Lemma m_clock_with_vdso : forall (v : VdsoState) (m : Model),
+  m_clock (with_vdso v m) = m_clock m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_clock_with_vdso : model.
+
+Lemma m_creds_with_vdso : forall (v : VdsoState) (m : Model),
+  m_creds (with_vdso v m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_creds_with_vdso : model.
+
+(** Writing back the pair a model holds gives the same model. *)
+Lemma with_vdso_m_vdso : forall (m : Model), with_vdso (m_vdso m) m = m.
+Proof. intros [fd vm io fs [] lim tm]. reflexivity. Qed.
+
 Lemma m_sigaltstack_installed_init_model : forall reserved brk0 mbase sp lim inp,
   m_sigaltstack_installed (init_model reserved brk0 mbase sp lim inp) = false.
 Proof. reflexivity. Qed.
@@ -8230,4 +9632,9 @@ Proof. reflexivity. Qed.
 Lemma m_pipes_init_model : forall reserved brk0 mbase sp lim inp,
   m_pipes (init_model reserved brk0 mbase sp lim inp) =
   [].
+Proof. reflexivity. Qed.
+
+Lemma m_vdso_init_model : forall reserved brk0 mbase sp lim inp,
+  m_vdso (init_model reserved brk0 mbase sp lim inp) =
+  vdso_at mbase (in_vdso inp).
 Proof. reflexivity. Qed.
