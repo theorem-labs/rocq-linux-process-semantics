@@ -2410,13 +2410,16 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       later grow continues above the old break — the hole stays a
       hole.)
     - [addr, addr+n) SPLITS a mapped range of the vDSO pair (see the
-      pair section at the top of this file): -EINVAL.
-      [do_vmi_align_munmap] gathers the VMAs first (mm/vma.c:1569),
-      [__split_vma] asks the special mapping (:1401, :1422, :504-508),
-      and [special_mapping_split] refuses (mm/mmap.c:1394-1412); every
-      VMA the gather detached is put back (mm/vma.c:1500-1507).  The
-      map-count -ENOMEM at :1389-1393 and the allocation failures are
-      not modeled, as for every munmap here.
+      pair section at the top of this file): -EINVAL, or the map-count
+      -ENOMEM.  [do_vmi_align_munmap] gathers the VMAs first
+      (mm/vma.c:1569); an unmap strictly inside one range meets the
+      map-count test there first (:1389-1393), which at the limit is
+      -ENOMEM, and otherwise [__split_vma] asks the special mapping
+      (:1401, :1422, :504-508) and [special_mapping_split] refuses
+      (mm/mmap.c:1394-1412); every VMA the gather detached is put back
+      (mm/vma.c:1500-1507).  So this arm answers both, as the
+      fixed-[mmap] arms do for the same path.  The allocation failures
+      are not modeled, as for every munmap here.
     - [addr, addr+n) covers whole ranges of the pair, holds nothing
       recorded, and every byte of it at or above [State.alloc_top] is a
       byte of the pair: 0, and the covered ranges' bits clear.  The
@@ -2493,7 +2496,14 @@ Definition munmap_spec (addr len : word) : Sys SyscallEffect :=
       m <- get_model ;;
       let v := m_vdso m in
       if vdso_split v (bv_unsigned addr) (bv_unsigned addr + nZ)
-      then err_ret EINVAL
+      then
+        (* The split is refused, but not always with -EINVAL: an unmap
+           strictly inside one range hits the map-count test of
+           [vms_gather_munmap_vmas] (mm/vma.c:1389-1393, Linux v6.18.46)
+           BEFORE [__split_vma] reaches [special_mapping_split], so at
+           the limit the answer is -ENOMEM.  Both, as the fixed-mmap
+           arms above write the same path. *)
+        alt (e <- errno_from mmap_errnos ;; err_ret e) (err_ret EINVAL)
       else if vdso_meets v (bv_unsigned addr) (bv_unsigned addr + nZ) then
         if munmap_vdso_ok h v addr nZ
         then modify (fun _ =>

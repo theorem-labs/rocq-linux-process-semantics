@@ -83,7 +83,9 @@ The memory-map calls treat the two ranges as Linux treats its two special
 mappings (`Sys/Mm/Mmap.v`, the section on the pair): `brk` does not grow
 into them, an `mmap` without a fixed address does not land on them,
 `MAP_FIXED_NOREPLACE` over them is `-EEXIST`, and an `munmap` or fixed
-`mmap` that would split one of them is `-EINVAL` (`special_mapping_split`,
+`mmap` that would split one of them is `-EINVAL`, or the map-count
+`-ENOMEM` that `vms_gather_munmap_vmas` reaches first for an unmap
+strictly inside a range (`mm/vma.c`, `special_mapping_split`,
 `mm/mmap.c`). An `munmap` or a fixed `mmap` that covers whole ranges
 removes them. An `mprotect` that asks for write access in the vvar range
 is `-EACCES`, and one that would split the code range is `-EINVAL`. An

@@ -484,7 +484,11 @@ Definition mremap_vdso_source (v : VdsoState) (old : word)
   if Z.eqb old_nZ new_nZ then ret_only old
   else if (old_nZ <? new_nZ)%Z then err_ret EFAULT
   else if vdso_split v (bv_unsigned old + new_nZ) (bv_unsigned old + old_nZ)
-  then err_ret EINVAL
+  then
+    (* as [Mmap.munmap_spec]: the shrink reaches the same
+       [do_vmi_munmap] ([shrink_vma], mm/mremap.c:1326-1338), whose
+       map-count test answers -ENOMEM before the split's -EINVAL *)
+    alt (e <- errno_from mremap_errnos ;; err_ret e) (err_ret EINVAL)
   else unmodeled.
 
 (** The bounded [mremap(old,old_size,new_size,MREMAP_MAYMOVE)] shape used
