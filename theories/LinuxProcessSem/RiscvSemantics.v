@@ -572,10 +572,11 @@ Definition ms_writable_byte (ms : machine_state) (addr : word) : option byte :=
     window's depth below [init_sp] is [stack_max_size] less
     [Run.entry_page_top - init_sp], which moves by up to 4080 bytes with
     the page offset of the drawn [init_sp].  A program whose stack,
-    driven by its input, ends in that band faults under some admissible
+    driven by its input, ends in that 4080-byte range faults under some admissible
     [init_sp] and not under others, so [strong_universal] fails for it
     even against itself.  Linux moves its floor in the same way, by the
-    random pad of [arch_align_stack] and the page rounding of [vm_end].
+    random pad [create_elf_tables] (fs/binfmt_elf.c) takes through
+    [arch_align_stack], and the page rounding of [vm_end].
 
     So the ledger this needs already exists, and is exactly [wview]:
     the initial stack block and its zero window, every brk/mmap grant

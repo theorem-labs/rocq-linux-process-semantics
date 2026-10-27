@@ -164,8 +164,10 @@ true of the model and false of the real systems.
   `vm_end` is at or above `Run.entry_page_top`, and can be pages higher,
   because the kernel's entry image carries more than the model's: the
   auxv entries of the bullet above, the exec filename, and the random
-  pad of less than 4 KiB that `arch_align_stack`
-  (`arch/riscv/kernel/process.c`) takes. The model carries no `vm_end`.
+  pad of less than 4 KiB that `create_elf_tables` (`fs/binfmt_elf.c`)
+  takes through `arch_align_stack` (`arch/riscv/kernel/process.c`).
+  The separate call in `setup_arg_pages` is page-aligned back over and
+  moves nothing. The model carries no `vm_end`.
   Thus the lowest `vm_end - Run.entry_page_top` bytes of the model's
   window, at most a few pages, are never stack on Linux.
   An access in that band succeeds in the model and faults on Linux, so
@@ -174,10 +176,11 @@ true of the model and false of the real systems.
   need not compare sets of behaviors: a single-run statement is enough.
   A program reaches the band only when its stack goes below
   `vm_end - 8 MiB`, which is at most a few pages above `Run.stack_window_lo`.
-  The depth of the window below `sp` depends on the page offset of `sp`,
-  by up to 4080 bytes. So a program whose stack ends within a page of the
-  floor faults under some stack addresses and not others, and a proof
-  cannot show it equivalent even to itself.
+  The depth of the window below `sp` is `8 MiB - (Run.entry_page_top - sp)`,
+  so it moves with the page offset of `sp` over a range of 4080 bytes. A
+  program whose stack reaches a depth in that range faults under some
+  stack addresses and not others, and a proof cannot show it equivalent
+  even to itself.
   QEMU user mode has a band of the same kind: its stack is one fixed
   8 MiB mapping with a guard page below it, and the entry image is
   inside it (`setup_arg_pages` and `load_elf_binary` in
