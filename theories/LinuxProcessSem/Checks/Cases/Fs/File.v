@@ -87,9 +87,10 @@ Example dup3_replaces_the_target_and_returns_it :
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
 (** O_CLOEXEC is accepted and leaves the same state as flags 0 — nothing
-    in [Specs.modeled_sysnos] can observe a close-on-exec bit.  Any
-    OTHER bit is [ksys_dup3]'s -EINVAL, so claiming the successful
-    return there is rejected. *)
+    in [Specs.modeled_sysnos] can observe a close-on-exec bit's value
+    (F_GETFD admits both answers; see [File.dup3_spec]).  Any OTHER bit
+    is [ksys_dup3]'s -EINVAL, so claiming the successful return there is
+    rejected. *)
 Example dup3_ignores_o_cloexec_but_not_another_bit :
   check_syscall (mkInput 24 [0; 1; 524288; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 1 [] []) dup_model

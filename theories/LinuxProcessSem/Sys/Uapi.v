@@ -428,6 +428,11 @@ Definition F_SETFD  : word := Z_to_bv 64 2.
 Definition F_GETFL  : word := Z_to_bv 64 3.
 Definition F_SETFL  : word := Z_to_bv 64 4.
 
+(** [FD_CLOEXEC], the one bit of the fd-flags word that [F_GETFD]
+    reports and [F_SETFD] reads ([#define FD_CLOEXEC 1],
+    include/uapi/asm-generic/fcntl.h, Linux v6.18.46). *)
+Definition FD_CLOEXEC : word := Z_to_bv 64 1.
+
 (** The [flock] operations, from that same header
     ([include/uapi/asm-generic/fcntl.h], Linux v6.18.46, commit
     1f99e9ab748f).  They are a MIXED word rather than an enumeration:
