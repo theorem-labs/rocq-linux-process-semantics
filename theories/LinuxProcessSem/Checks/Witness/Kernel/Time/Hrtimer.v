@@ -36,9 +36,10 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
     the spec admits. *)
 Definition nanosleep_witness (rqtp rmtp : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
-  match read_bytes_map (in_mem i) rqtp (Z_to_bv 64 16) with
-  | None => Unmodeled                          (* unreadable request *)
-  | Some req =>
+  match user_read i m rqtp (Z_to_bv 64 16) with
+  | UFault => Unmodeled                        (* unreadable request *)
+  | USpecial => Unmodeled                      (* request in the vDSO pair *)
+  | UOk req =>
       if negb (timespec_valid_b req)
       then Ok (with_copyins [(rqtp, 16%nat)] (mkEffect (errno_ret EINVAL) [] []))
              m []
@@ -58,20 +59,17 @@ Lemma nanosleep_witness_ok : forall i rqtp rmtp m,
 Proof.
   intros. unfold nanosleep_spec, nanosleep_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) rqtp (Z_to_bv 64 16)) as [req|] eqn:Hrq;
-    [|apply unmodeled_intro].
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (user_read i m rqtp (Z_to_bv 64 16)) as [req| |] eqn:Hrq;
+    [|apply unmodeled_intro|apply unmodeled_intro].
   destruct (negb (timespec_valid_b req)) eqn:Hv;
     [apply record_copyins_ok_empty; [reflexivity|apply pure_ok]|].
   cbv zeta.
   destruct (w_is0 rmtp) eqn:Hrm.
-  - apply record_copyins_ok_empty; [reflexivity|].
-    eapply bind_step; [apply get_model_ok|]. cbv beta. cbv iota zeta.
+  - apply record_copyins_ok_empty; [reflexivity|]. cbv iota zeta.
     apply alt_l. eapply bind_step; [apply modify_ok|]. apply pure_ok.
   - destruct (read_bytes_map (in_wmem i) rmtp (Z_to_bv 64 16)) eqn:Hrm2.
-    + apply record_copyins_ok_empty; [reflexivity|].
-      eapply bind_step; [apply get_model_ok|]. cbv beta. cbv iota zeta.
+    + apply record_copyins_ok_empty; [reflexivity|]. cbv iota zeta.
       apply alt_l. eapply bind_step; [apply modify_ok|]. apply pure_ok.
-    + apply record_copyins_unmodeled.
-      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
-      cbv iota zeta. apply unmodeled_intro.
+    + apply record_copyins_unmodeled. cbv iota zeta. apply unmodeled_intro.
 Qed.

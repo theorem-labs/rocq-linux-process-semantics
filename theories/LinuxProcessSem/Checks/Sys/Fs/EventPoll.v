@@ -85,7 +85,7 @@ Definition check_epoll_ctl (i : SyscallInput) (epfd op32 tfd event : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match epoll_ctl_outcome i m epfd op32 tfd event with
   | None => CheckUnmodeled
-  | Some r => check_ret_only_copyins (epoll_ctl_reads i op32 event) eff r m []
+  | Some r => check_ret_only_copyins (epoll_ctl_reads i m op32 event) eff r m []
   end.
 
 Lemma check_epoll_ctl_sound_ok : forall i epfd op32 tfd event eff m m' evs,

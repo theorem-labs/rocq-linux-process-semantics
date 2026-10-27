@@ -1568,7 +1568,7 @@ Definition access_okb (base : word) (len : Z) : bool :=
 
     A spec modeling a [copy_to_user] or a [copy_from_user] should reach
     for this and not for the bare walk.  [Net.Socket.socketpair_dest_writable],
-    [Kernel.Signal.write_oset], [EventPoll.copy_from_user_ok] and
+    [Kernel.Signal.write_oset], [EventPoll.copy_from_user] and
     [Fs.Pipe.pipe2_spec] each spell the same pair by hand,
     [access_okb] and then [read_bytes_map]; moving them onto this
     definition is the follow-up, so that the range question has one

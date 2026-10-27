@@ -211,13 +211,22 @@ Definition pselect_touches_sets (n : Z) : bool := negb (Z.eqb n 0).
 (** One requested descriptor set, as the kernel imports it: the bitmap
     word at [p], or all-zero when [p] is NULL ([get_fd_set] memsets its
     kernel copy instead of reading) or when [n] is 0 (a zero-length
-    [copy_from_user] always succeeds).  [None] is the unreadable
-    pointer that [get_fd_set] answers -EFAULT for. *)
-Definition read_fd_set (mp : word -> option byte) (p : word) (n : Z)
-    : option word :=
-  if negb (pselect_touches_sets n) then Some (Z_to_bv 64 0)
-  else if w_is0 p then Some (Z_to_bv 64 0)
-  else read_u64 mp p.
+    [copy_from_user] always succeeds).  [UFault] is the unreadable
+    pointer that [get_fd_set] answers -EFAULT for.  [USpecial] is a word
+    in the vDSO pair: Linux reads it (both pages are readable,
+    arch/riscv/kernel/vdso.c:137-140), but the bytes are the kernel's and
+    the model does not hold them ([State.UserRead]), so the call is
+    unmodeled.  Every later [USpecial] answer in this file is unmodeled
+    for the same reason. *)
+Definition read_fd_set (i : SyscallInput) (m : Model) (p : word) (n : Z)
+    : UserRead word :=
+  if negb (pselect_touches_sets n) then UOk (Z_to_bv 64 0)
+  else if w_is0 p then UOk (Z_to_bv 64 0)
+  else match user_read i m p (Z_to_bv 64 8) with
+       | UOk bs => UOk (le_bytes_to_word bs)
+       | UFault => UFault
+       | USpecial => USpecial
+       end.
 
 (** The bits of a requested set that [do_select] actually scans.
     [max_select_fd] masks the partial last word with
@@ -443,22 +452,30 @@ Definition writes_all_writable (i : SyscallInput)
     and modeling only the NULL sixth argument would leave [select]
     itself outside the modeled surface. *)
 Inductive PselectSig :=
-  | PsSigFault      (* the pair itself is unreadable: -EFAULT *)
+  | PsSigFault      (* the pack itself is unreadable: -EFAULT *)
+  | PsSigSpecial    (* the pack is read from the vDSO pair: unmodeled *)
   | PsSigNone       (* no mask: the sixth argument is NULL, or its first word is *)
   | PsSigBadSize    (* a mask with the wrong [sigsetsize]: -EINVAL *)
   | PsSigReal.      (* a mask that would be installed: unmodeled *)
 
-Definition pselect_sigpack (mp : word -> option byte) (sig : word) : PselectSig :=
+(** [get_sigset_argpack] reads the pointer and then the size, so one
+    16-byte [State.user_read] walks the pack's bytes in the kernel's
+    order. *)
+Definition pselect_sigpack (i : SyscallInput) (m : Model) (sig : word)
+    : PselectSig :=
   if w_is0 sig then PsSigNone
-  else match read_u64 mp sig, read_u64 mp (sig + Z_to_bv 64 8) with
-       | Some sp, Some ss =>
-           if w_is0 sp then PsSigNone
+  else match user_read i m sig (Z_to_bv 64 16) with
+       | UFault => PsSigFault
+       | USpecial => PsSigSpecial
+       | UOk bs =>
+           if w_is0 (le_bytes_to_word (firstn 8 bs)) then PsSigNone
              (* [set_user_sigmask] returns 0 on a NULL mask BEFORE it looks
                 at the size, so {NULL, anything} is "no mask" -- the 8 musl
                 passes is never read. *)
-           else if Z.eqb (bv_unsigned ss) kernel_sigset_bytes then PsSigReal
+           else if Z.eqb (bv_unsigned (le_bytes_to_word (skipn 8 bs)))
+                         kernel_sigset_bytes
+           then PsSigReal
            else PsSigBadSize
-       | _, _ => PsSigFault
        end.
 
 (** The fifth argument, after [get_timespec64] and
@@ -487,23 +504,28 @@ Definition pselect_sigpack (mp : word -> option byte) (sig : word) : PselectSig 
     see [pselect_finish]. *)
 Inductive PselectTimeout :=
   | PsToFault       (* [tsp] unreadable: -EFAULT *)
+  | PsToSpecial     (* [tsp] read from the vDSO pair: unmodeled *)
   | PsToInval       (* [timespec64_valid] rejects it: -EINVAL *)
   | PsToNone        (* [tsp] NULL: no deadline at all *)
   | PsToZero        (* exactly {0,0}: poll once and return *)
   | PsToDeadline.   (* a real deadline *)
 
-Definition pselect_timeout (mp : word -> option byte) (tsp : word)
+(** [get_timespec64] is one 16-byte [copy_from_user]. *)
+Definition pselect_timeout (i : SyscallInput) (m : Model) (tsp : word)
     : PselectTimeout :=
   if w_is0 tsp then PsToNone
-  else match read_u64 mp tsp, read_u64 mp (tsp + Z_to_bv 64 8) with
-       | Some sec, Some nsec =>
+  else match user_read i m tsp (Z_to_bv 64 16) with
+       | UFault => PsToFault
+       | USpecial => PsToSpecial
+       | UOk bs =>
+           let sec := le_bytes_to_word (firstn 8 bs) in
+           let nsec := le_bytes_to_word (skipn 8 bs) in
            if (bv_signed sec <? 0)%Z then PsToInval
            else if (NSEC_PER_SEC <=? bv_unsigned nsec)%Z then PsToInval
                   (* the [unsigned long] cast in [timespec64_valid]:
                      a negative [tv_nsec] is an enormous unsigned one *)
            else if w_is0 sec && w_is0 nsec then PsToZero
            else PsToDeadline
-       | _, _ => PsToFault
        end.
 
 (** What [core_sys_select] answers, before [poll_select_finish] decides
@@ -517,7 +539,8 @@ Inductive PselectCore :=
 
     ORDER, and it is the kernel's: [n < 0] is -EINVAL before anything is
     read; the three sets are copied in, [inp] then [outp] then [exp],
-    and an unreadable one is -EFAULT; then [max_select_fd] answers
+    and the first one that is unreadable is -EFAULT, or a decline when
+    it is read from the vDSO pair; then [max_select_fd] answers
     -EBADF if any requested descriptor is closed, before a single
     descriptor is polled.  The -ENOMEM the kernel can raise between the
     -EINVAL and the -EFAULT is UNREACHABLE here: [core_sys_select]
@@ -532,10 +555,10 @@ Definition pselect_core (i : SyscallInput) (m : Model)
   if (n <? 0)%Z then PsCoreErr EINVAL
   else if (pselect_nfds_max <? n)%Z then PsCoreGap
   else
-    match read_fd_set (in_mem i) inp n,
-          read_fd_set (in_mem i) outp n,
-          read_fd_set (in_mem i) exp n with
-    | Some rin, Some rout, Some rex =>
+    match read_fd_set i m inp n,
+          read_fd_set i m outp n,
+          read_fd_set i m exp n with
+    | UOk rin, UOk rout, UOk rex =>
         let win  := fd_set_scanned rin n in
         let wout := fd_set_scanned rout n in
         let wex  := fd_set_scanned rex n in
@@ -554,7 +577,8 @@ Definition pselect_core (i : SyscallInput) (m : Model)
                      (fd_set_writeback inp n win
                       ++ fd_set_writeback outp n wout
                       ++ fd_set_writeback exp n (Z_to_bv 64 0))
-    | _, _, _ => PsCoreErr EFAULT
+    | UFault, _, _ | UOk _, UFault, _ | UOk _, UOk _, UFault => PsCoreErr EFAULT
+    | _, _, _ => PsCoreGap    (* the first failed copy read the vDSO pair *)
     end.
 
 (** An errno return: no user memory is written on any error path that
@@ -672,11 +696,13 @@ Definition pselect6_outcome (i : SyscallInput) (m : Model)
     (n32 inp outp exp tsp sig : word)
     : option (word * list (word * list byte)) :=
   let core := pselect_core i m n32 inp outp exp in
-  match pselect_sigpack (in_mem i) sig, pselect_timeout (in_mem i) tsp with
+  match pselect_sigpack i m sig, pselect_timeout i m tsp with
   (* [get_sigset_argpack], in the syscall entry, before [do_pselect] *)
   | PsSigFault, _ => pselect_err EFAULT
+  | PsSigSpecial, _ => None
   (* [get_timespec64] and [poll_select_set_timeout] *)
   | _, PsToFault => pselect_err EFAULT
+  | _, PsToSpecial => None
   | _, PsToInval => pselect_err EINVAL
   (* [set_user_sigmask] *)
   | PsSigBadSize, _ => pselect_err EINVAL
@@ -697,7 +723,8 @@ Definition pselect6_outcome (i : SyscallInput) (m : Model)
     touch of a lazy anonymous page by any of these reads.
 
     A copy that FAILS records nothing and stops the walk, the convention
-    [Kernel.Signal.rt_sigprocmask_spec] states; a NULL pointer, and a set
+    [Kernel.Signal.rt_sigprocmask_spec] states; a copy from the vDSO pair
+    is a decline, so it records nothing either; a NULL pointer, and a set
     pointer at [n = 0], is never dereferenced.  An -EINVAL from the
     timespec or from the pack's size stops the walk after the reads that
     preceded it.  The mask the pack points at is read only on the
@@ -709,35 +736,34 @@ Definition pselect6_outcome (i : SyscallInput) (m : Model)
     checker and witness all read the ledger from here and agree with
     each other whatever it says.  [Checks.Cases.Fs.Select] pins it
     against fixed inputs. *)
-Fixpoint fd_set_reads (mp : word -> option byte) (n : Z) (ps : list word)
+Fixpoint fd_set_reads (i : SyscallInput) (m : Model) (n : Z) (ps : list word)
     : list (word * nat) :=
   match ps with
   | [] => []
   | p :: ps' =>
-      match read_fd_set mp p n with
-      | None => []
-      | Some _ =>
+      match read_fd_set i m p n with
+      | UOk _ =>
           (if negb (pselect_touches_sets n) || w_is0 p then [] else [(p, 8%nat)])
-          ++ fd_set_reads mp n ps'
+          ++ fd_set_reads i m n ps'
+      | UFault | USpecial => []
       end
   end.
 
-Definition pselect6_reads (i : SyscallInput) (n32 inp outp exp tsp sig : word)
-    : list (word * nat) :=
-  let mp := in_mem i in
-  match pselect_sigpack mp sig with
-  | PsSigFault => []
+Definition pselect6_reads (i : SyscallInput) (m : Model)
+    (n32 inp outp exp tsp sig : word) : list (word * nat) :=
+  match pselect_sigpack i m sig with
+  | PsSigFault | PsSigSpecial => []
   | sk =>
       (if w_is0 sig then [] else [(sig, 16%nat)]) ++
-      match pselect_timeout mp tsp with
-      | PsToFault => []
+      match pselect_timeout i m tsp with
+      | PsToFault | PsToSpecial => []
       | tmo =>
           (if w_is0 tsp then [] else [(tsp, 16%nat)]) ++
           match tmo, sk with
           | PsToInval, _ => []
           | _, PsSigNone =>
               let n := nfds_signed n32 in
-              if (n <? 0)%Z then [] else fd_set_reads mp n [inp; outp; exp]
+              if (n <? 0)%Z then [] else fd_set_reads i m n [inp; outp; exp]
           | _, _ => []
           end
       end
@@ -750,7 +776,7 @@ Definition pselect6_spec (n32 inp outp exp tsp sig : word)
   match pselect6_outcome i m n32 inp outp exp tsp sig with
   | None => unmodeled
   | Some (r, ws) =>
-      pure (with_copyins (pselect6_reads i n32 inp outp exp tsp sig)
+      pure (with_copyins (pselect6_reads i m n32 inp outp exp tsp sig)
               (mkEffect r ws []))
   end.
 
@@ -1016,10 +1042,10 @@ Definition ppoll_core (i : SyscallInput) (m : Model) (ufds nfds : word)
   if (bv_unsigned (m_nofile m) <? n)%Z then PsCoreErr EINVAL
   else if (ppoll_nfds_max <? n)%Z then PsCoreGap
   else
-    match read_bytes_map (in_mem i) ufds
-            (Z_to_bv 64 (pollfd_bytes * n)) with
-    | None => PsCoreErr EFAULT
-    | Some bs =>
+    match user_read i m ufds (Z_to_bv 64 (pollfd_bytes * n)) with
+    | UFault => PsCoreErr EFAULT
+    | USpecial => PsCoreGap
+    | UOk bs =>
         match ppoll_revents (m_fds m) (decode_pollfds bs (Z.to_nat n)) with
         | None => PsCoreGap
         | Some rs => PsCoreDone (ppoll_count rs) (ppoll_writeback ufds rs)
@@ -1042,16 +1068,18 @@ Inductive PpollSig :=
   | PpSigNone       (* no mask: the pointer is NULL *)
   | PpSigBadSize    (* the wrong [sigsetsize]: -EINVAL *)
   | PpSigFault      (* the mask itself is unreadable: -EFAULT *)
+  | PpSigSpecial    (* the mask is read from the vDSO pair: unmodeled *)
   | PpSigReal.      (* a mask that would be installed: unmodeled *)
 
-Definition ppoll_sigmask (mp : word -> option byte) (sig sigsetsize : word)
+Definition ppoll_sigmask (i : SyscallInput) (m : Model) (sig sigsetsize : word)
     : PpollSig :=
   if w_is0 sig then PpSigNone
   else if negb (Z.eqb (bv_unsigned sigsetsize) kernel_sigset_bytes)
   then PpSigBadSize
-  else match read_bytes_map mp sig (Z_to_bv 64 kernel_sigset_bytes) with
-       | Some _ => PpSigReal
-       | None => PpSigFault
+  else match user_read i m sig (Z_to_bv 64 kernel_sigset_bytes) with
+       | UOk _ => PpSigReal
+       | UFault => PpSigFault
+       | USpecial => PpSigSpecial
        end.
 
 (** [ppoll ufds nfds tsp sigmask sigsetsize] -- the ONE outcome the
@@ -1067,15 +1095,17 @@ Definition ppoll_sigmask (mp : word -> option byte) (sig sigsetsize : word)
 Definition ppoll_outcome (i : SyscallInput) (m : Model)
     (ufds nfds tsp sig sigsetsize : word)
     : option (word * list (word * list byte)) :=
-  match pselect_timeout (in_mem i) tsp with
+  match pselect_timeout i m tsp with
   (* [get_timespec64] and [poll_select_set_timeout] *)
   | PsToFault => pselect_err EFAULT
+  | PsToSpecial => None
   | PsToInval => pselect_err EINVAL
   | tmo =>
       (* [set_user_sigmask] *)
-      match ppoll_sigmask (in_mem i) sig sigsetsize with
+      match ppoll_sigmask i m sig sigsetsize with
       | PpSigBadSize => pselect_err EINVAL
       | PpSigFault => pselect_err EFAULT
+      | PpSigSpecial => None
       | PpSigReal => None
       | PpSigNone =>
           (* [do_sys_poll], then [poll_select_finish] *)
@@ -1089,25 +1119,25 @@ Definition ppoll_outcome (i : SyscallInput) (m : Model)
     [set_user_sigmask], whose only successful read is on the declined
     [PpSigReal] arm -- the [8 * nfds] bytes of the [pollfd] array, one
     [copy_from_user] in [do_sys_poll] for every [nfds] the modeled band
-    admits.  The same conventions as [pselect6_reads]: a failed copy
-    records nothing, and [nfds = 0] or an [nfds] over the RLIMIT_NOFILE
-    soft limit reads no array.  It restates the decision order of
-    [ppoll_outcome] and [ppoll_core], and must change with them. *)
+    admits.  The same conventions as [pselect6_reads]: a failed copy, or
+    one from the vDSO pair, records nothing, and [nfds = 0] or an [nfds]
+    over the RLIMIT_NOFILE soft limit reads no array.  It restates the
+    decision order of [ppoll_outcome] and [ppoll_core], and must change
+    with them. *)
 Definition ppoll_reads (i : SyscallInput) (m : Model)
     (ufds nfds tsp sig sigsetsize : word) : list (word * nat) :=
-  let mp := in_mem i in
   let n := bv_unsigned nfds in
-  match pselect_timeout mp tsp with
-  | PsToFault => []
+  match pselect_timeout i m tsp with
+  | PsToFault | PsToSpecial => []
   | tmo =>
       (if w_is0 tsp then [] else [(tsp, 16%nat)]) ++
-      match tmo, ppoll_sigmask mp sig sigsetsize with
+      match tmo, ppoll_sigmask i m sig sigsetsize with
       | PsToInval, _ => []
       | _, PpSigNone =>
           if ((bv_unsigned (m_nofile m) <? n)%Z || (n =? 0)%Z)%bool then []
-          else match read_bytes_map mp ufds (Z_to_bv 64 (pollfd_bytes * n)) with
-               | Some _ => [(ufds, Z.to_nat (pollfd_bytes * n))]
-               | None => []
+          else match user_read i m ufds (Z_to_bv 64 (pollfd_bytes * n)) with
+               | UOk _ => [(ufds, Z.to_nat (pollfd_bytes * n))]
+               | UFault | USpecial => []
                end
       | _, _ => []
       end

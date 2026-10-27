@@ -31,9 +31,10 @@ Definition check_sigaltstack (i : SyscallInput) (uss uoss : word)
   else if negb (w_is0 uoss) then CheckUnmodeled
   else if w_is0 uss then check_ret_only eff (Z_to_bv 64 0) m []
   else
-    match sigaltstack_at (in_mem i) uss with
-    | None => check_ret_only eff (errno_ret EFAULT) m []
-    | Some bs =>
+    match user_read i m uss (Z_to_bv 64 SIGALTSTACK_BYTES) with
+    | UFault => check_ret_only eff (errno_ret EFAULT) m []
+    | USpecial => CheckUnmodeled
+    | UOk bs =>
         if negb (ss_mode_ok (ss_flags_of bs))
         then check_ret_only_copyins [(uss, Z.to_nat SIGALTSTACK_BYTES)]
                eff (errno_ret EINVAL) m []
@@ -62,7 +63,9 @@ Proof.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
   eapply bind_ok0; [apply input_ok|]. cbv beta.
-  destruct (sigaltstack_at (in_mem i) uss) as [bs|] eqn:Hbs; cbv beta iota.
+  destruct (user_read i m uss (Z_to_bv 64 SIGALTSTACK_BYTES)) as [bs| |] eqn:Hbs;
+    cbv beta iota.
+  3:{ discriminate. }
   2:{ apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
       apply pure_ok. }
   cbv beta iota zeta in H |- *.
@@ -97,7 +100,9 @@ Proof.
   destruct (w_is0 uss) eqn:Hu; cbv beta iota.
   { now apply check_ret_only_no_unmodeled in H. }
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  destruct (sigaltstack_at (in_mem i) uss) as [bs|] eqn:Hbs; cbv beta iota.
+  destruct (user_read i m uss (Z_to_bv 64 SIGALTSTACK_BYTES)) as [bs| |] eqn:Hbs;
+    cbv beta iota.
+  3:{ apply unmodeled_intro. }
   2:{ now apply check_ret_only_no_unmodeled in H. }
   apply record_copyins_unmodeled. cbv beta iota zeta in H |- *.
   destruct (negb (ss_mode_ok (ss_flags_of bs))) eqn:Hmode; cbv beta iota.
@@ -123,8 +128,9 @@ Proof.
   destruct (w_is0 uss) eqn:Hu; cbv beta iota in *.
   { inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
   inv_ok.
-  destruct (sigaltstack_at (in_mem i) uss) as [bs|] eqn:Hbs;
+  destruct (user_read i m uss (Z_to_bv 64 SIGALTSTACK_BYTES)) as [bs| |] eqn:Hbs;
     cbv beta iota in *.
+  3:{ inv_ok. }
   2:{ inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
   destruct (negb (ss_mode_ok (ss_flags_of bs))) eqn:Hmode;
     cbv beta iota in *.
@@ -150,8 +156,8 @@ Proof.
   destruct (negb (w_is0 uoss)) eqn:Ho; cbv beta iota in *; [reflexivity|].
   destruct (w_is0 uss) eqn:Hu; cbv beta iota in *; [inv_ok|].
   inv_ok.
-  destruct (sigaltstack_at (in_mem i) uss) as [bs|] eqn:Hbs;
-    cbv beta iota in *; [|inv_ok].
+  destruct (user_read i m uss (Z_to_bv 64 SIGALTSTACK_BYTES)) as [bs| |] eqn:Hbs;
+    cbv beta iota in *; [|inv_ok|reflexivity].
   destruct (negb (ss_mode_ok (ss_flags_of bs))) eqn:Hmode;
     cbv beta iota in *; [inv_ok|].
   destruct (ss_disabling (ss_flags_of bs)) eqn:Hdis; cbv beta iota in *;
@@ -176,14 +182,15 @@ Definition check_rt_sigaction (i : SyscallInput) (sig act oact ss : word)
   then (if sig_valid sig then check_ret_only eff (Z_to_bv 64 0) m []
         else check_ret_only eff (errno_ret EINVAL) m [])
   else
-    match sigaction_flags (in_mem i) act with
-    | None => check_ret_only eff (errno_ret EFAULT) m []
-    | Some fl =>
+    match user_read i m act (Z_to_bv 64 24) with
+    | UFault => check_ret_only eff (errno_ret EFAULT) m []
+    | USpecial => CheckUnmodeled
+    | UOk bs =>
         if negb (sig_valid sig)
         then check_ret_only_copyins [(act, 24%nat)] eff (errno_ret EINVAL) m []
         else if sig_kernel_only sig
         then check_ret_only_copyins [(act, 24%nat)] eff (errno_ret EINVAL) m []
-        else if negb (sa_flags_ok fl) then CheckUnmodeled
+        else if negb (sa_flags_ok (sa_flags_of bs)) then CheckUnmodeled
         else if sigaction_accepted sig
         then check_ret_only_copyins [(act, 24%nat)] eff (Z_to_bv 64 0) m []
         else CheckUnmodeled
@@ -204,7 +211,9 @@ Proof.
       apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
       apply pure_ok. }
   eapply bind_ok0; [apply input_ok|]. cbv beta.
-  destruct (sigaction_flags (in_mem i) act) as [fl|] eqn:Hfl; cbv beta iota.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (user_read i m act (Z_to_bv 64 24)) as [bs| |] eqn:Hfl; cbv beta iota.
+  3:{ discriminate. }
   2:{ apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
       apply pure_ok. }
   destruct (negb (sig_valid sig)) eqn:Hv; cbv beta iota.
@@ -213,7 +222,8 @@ Proof.
   destruct (sig_kernel_only sig) eqn:Hk; cbv beta iota.
   { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
     apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
-  destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota; [discriminate|].
+  destruct (negb (sa_flags_ok (sa_flags_of bs))) eqn:Hfo; cbv beta iota;
+    [discriminate|].
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota; [|discriminate].
   apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
   apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
@@ -233,14 +243,16 @@ Proof.
   { destruct (sig_valid sig) eqn:Hv; cbv beta iota;
       now apply check_ret_only_no_unmodeled in H. }
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  destruct (sigaction_flags (in_mem i) act) as [fl|] eqn:Hfl; cbv beta iota.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  destruct (user_read i m act (Z_to_bv 64 24)) as [bs| |] eqn:Hfl; cbv beta iota.
+  3:{ apply unmodeled_intro. }
   2:{ now apply check_ret_only_no_unmodeled in H. }
   apply record_copyins_unmodeled.
   destruct (negb (sig_valid sig)) eqn:Hv; cbv beta iota.
   { now apply check_ret_only_copyins_no_unmodeled in H. }
   destruct (sig_kernel_only sig) eqn:Hk; cbv beta iota.
   { now apply check_ret_only_copyins_no_unmodeled in H. }
-  destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota.
+  destruct (negb (sa_flags_ok (sa_flags_of bs))) eqn:Hfo; cbv beta iota.
   { apply unmodeled_intro. }
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota.
   - now apply check_ret_only_copyins_no_unmodeled in H.
@@ -260,14 +272,16 @@ Proof.
   { destruct (sig_valid sig) eqn:Hv; cbv beta iota in *; inv_ok;
       cbn; rewrite bv_eqb_refl; reflexivity. }
   inv_ok.
-  destruct (sigaction_flags (in_mem i) act) as [fl|] eqn:Hfl;
+  destruct (user_read i m act (Z_to_bv 64 24)) as [bs| |] eqn:Hfl;
     cbv beta iota in *.
+  3:{ inv_ok. }
   2:{ inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
   destruct (negb (sig_valid sig)) eqn:Hv; cbv beta iota in *.
   { inv_ok. apply check_ret_only_copyins_ok_iff. now repeat split. }
   destruct (sig_kernel_only sig) eqn:Hk; cbv beta iota in *.
   { inv_ok. apply check_ret_only_copyins_ok_iff. now repeat split. }
-  destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota in *; [inv_ok|].
+  destruct (negb (sa_flags_ok (sa_flags_of bs))) eqn:Hfo; cbv beta iota in *;
+    [inv_ok|].
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *; inv_ok.
   apply check_ret_only_copyins_ok_iff. now repeat split.
 Qed.
@@ -284,11 +298,11 @@ Proof.
   destruct (w_is0 act) eqn:Hact; cbv beta iota in *.
   { destruct (sig_valid sig) eqn:Hv; cbv beta iota in *; inv_ok. }
   inv_ok.
-  destruct (sigaction_flags (in_mem i) act) as [fl|] eqn:Hfl;
-    cbv beta iota in *; [|inv_ok].
+  destruct (user_read i m act (Z_to_bv 64 24)) as [bs| |] eqn:Hfl;
+    cbv beta iota in *; [|inv_ok|reflexivity].
   destruct (negb (sig_valid sig)) eqn:Hv; cbv beta iota in *; [inv_ok|].
   destruct (sig_kernel_only sig) eqn:Hk; cbv beta iota in *; [inv_ok|].
-  destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota in *;
+  destruct (negb (sa_flags_ok (sa_flags_of bs))) eqn:Hfo; cbv beta iota in *;
     [reflexivity|].
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *;
     [inv_ok|reflexivity].
@@ -430,15 +444,16 @@ Definition check_rt_sigprocmask (i : SyscallInput) (how nset oset ss : word)
     then (if w_is0 oset then check_ret_only eff (Z_to_bv 64 0) m []
           else check_write_oset i oset old eff m)
     else
-      match sigset_at (in_mem i) nset with
-      | None => check_ret_only eff (errno_ret EFAULT) m []
-      | Some raw =>
+      match user_read i m nset (Z_to_bv 64 NSIG_BYTES) with
+      | UFault => check_ret_only eff (errno_ret EFAULT) m []
+      | USpecial => CheckUnmodeled
+      | UOk bs =>
           if negb (how_valid how)
           then check_ret_only_copyins [(nset, Z.to_nat NSIG_BYTES)]
                  eff (errno_ret EINVAL) m []
           else
             let m' := sigmask_deliver_model
-                        (sigmask_apply how old (sigmask_strip raw)) m in
+                        (sigmask_apply how old (sigmask_strip (sigset_of bs))) m in
             if w_is0 oset
             then check_ret_only_copyins [(nset, Z.to_nat NSIG_BYTES)]
                    eff (Z_to_bv 64 0) m' []
@@ -502,7 +517,9 @@ Proof.
     - apply check_write_oset_ok_iff in H.
       destruct H as (-> & -> & _ & Hspec). exact Hspec. }
   eapply bind_ok0; [apply input_ok|]. cbv beta.
-  destruct (sigset_at (in_mem i) nset) as [raw|] eqn:Hr; cbv beta iota.
+  destruct (user_read i m nset (Z_to_bv 64 NSIG_BYTES)) as [bs| |] eqn:Hr;
+    cbv beta iota.
+  3:{ discriminate. }
   2:{ apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
       apply pure_ok. }
   destruct (negb (how_valid how)) eqn:Hh; cbv beta iota zeta.
@@ -515,7 +532,7 @@ Proof.
   unfold check_write_oset_copyins in H.
   destruct (check_write_oset i oset (m_sigmask m) (clear_copyins eff)
               (sigmask_deliver_model (sigmask_apply how (m_sigmask m)
-                               (sigmask_strip raw)) m))
+                               (sigmask_strip (sigset_of bs))) m))
     as [m2 evs2| |] eqn:Hcw; [|discriminate|discriminate].
   destruct (access_ranges_eqb (eff_copyins eff)
               [(nset, Z.to_nat NSIG_BYTES)]) eqn:Hled; [|discriminate].
@@ -545,7 +562,9 @@ Proof.
     - now apply check_ret_only_no_unmodeled in H.
     - eapply check_write_oset_no_ok_unmodeled; exact H. }
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  destruct (sigset_at (in_mem i) nset) as [raw|] eqn:Hr; cbv beta iota.
+  destruct (user_read i m nset (Z_to_bv 64 NSIG_BYTES)) as [bs| |] eqn:Hr;
+    cbv beta iota.
+  3:{ apply unmodeled_intro. }
   2:{ now apply check_ret_only_no_unmodeled in H. }
   apply record_copyins_unmodeled.
   destruct (negb (how_valid how)) eqn:Hh; cbv beta iota zeta.
@@ -556,7 +575,7 @@ Proof.
   unfold check_write_oset_copyins in H.
   destruct (check_write_oset i oset (m_sigmask m) (clear_copyins eff)
               (sigmask_deliver_model (sigmask_apply how (m_sigmask m)
-                               (sigmask_strip raw)) m))
+                               (sigmask_strip (sigset_of bs))) m))
     as [m2 evs2| |] eqn:Hcw.
   - destruct (access_ranges_eqb (eff_copyins eff)
                 [(nset, Z.to_nat NSIG_BYTES)]); discriminate.
@@ -586,7 +605,9 @@ Proof.
       as [bs|] eqn:Hw; cbv beta iota in *; [|inv_ok].
     inv_ok. now apply (check_write_oset_stored _ _ _ _ bs). }
   inv_ok.
-  destruct (sigset_at (in_mem i) nset) as [raw|] eqn:Hr; cbv beta iota in *.
+  destruct (user_read i m nset (Z_to_bv 64 NSIG_BYTES)) as [bs| |] eqn:Hr;
+    cbv beta iota in *.
+  3:{ inv_ok. }
   2:{ inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
   destruct (negb (how_valid how)) eqn:Hh; cbv beta iota zeta in *.
   { inv_ok. apply check_ret_only_copyins_ok_iff. now repeat split. }
@@ -600,10 +621,10 @@ Proof.
     now apply check_write_oset_efault. }
   inv_ok.
   destruct (read_bytes_map (in_wmem i) oset (Z_to_bv 64 NSIG_BYTES))
-    as [bs|] eqn:Hw; cbv beta iota in *; [|inv_ok].
+    as [ws|] eqn:Hw; cbv beta iota in *; [|inv_ok].
   inv_ok. apply check_write_oset_copyins_ok; [|reflexivity].
   unfold clear_copyins, with_copyins. cbn.
-  now apply (check_write_oset_stored _ _ _ _ bs).
+  now apply (check_write_oset_stored _ _ _ _ ws).
 Qed.
 
 Lemma check_rt_sigprocmask_complete_unmodeled : forall i how nset oset ss m eff,
@@ -625,8 +646,8 @@ Proof.
       as [bs|] eqn:Hw; cbv beta iota in *; [inv_ok|].
     unfold check_write_oset. rewrite Ha, Hw. reflexivity. }
   inv_ok.
-  destruct (sigset_at (in_mem i) nset) as [raw|] eqn:Hr;
-    cbv beta iota in *; [|inv_ok].
+  destruct (user_read i m nset (Z_to_bv 64 NSIG_BYTES)) as [bs| |] eqn:Hr;
+    cbv beta iota in *; [|inv_ok|reflexivity].
   destruct (negb (how_valid how)) eqn:Hh; cbv beta iota zeta in *; [inv_ok|].
   inv_ok.
   destruct (w_is0 oset) eqn:Ho; cbv beta iota in *; [inv_ok|].
@@ -635,7 +656,7 @@ Proof.
     cbv beta iota in *; [inv_ok|].
   inv_ok.
   destruct (read_bytes_map (in_wmem i) oset (Z_to_bv 64 NSIG_BYTES))
-    as [bs|] eqn:Hw; cbv beta iota in *; [inv_ok|].
+    as [ws|] eqn:Hw; cbv beta iota in *; [inv_ok|].
   unfold check_write_oset. rewrite Ha, Hw. reflexivity.
 Qed.
 
@@ -665,14 +686,16 @@ Proof.
     - apply check_ret_only_ok_iff in H. destruct H as (_ & -> & _). exact Hm.
     - apply check_write_oset_ok_iff in H.
       destruct H as (-> & _ & _ & _). exact Hm. }
-  destruct (sigset_at (in_mem i) nset) as [raw|] eqn:Hr; cbv beta iota in H.
+  destruct (user_read i m nset (Z_to_bv 64 NSIG_BYTES)) as [bs| |] eqn:Hr;
+    cbv beta iota in H.
+  3:{ discriminate. }
   2:{ apply check_ret_only_ok_iff in H. destruct H as (_ & -> & _). exact Hm. }
   destruct (negb (how_valid how)) eqn:Hh; cbv beta iota zeta in H.
   { apply check_ret_only_copyins_ok_iff in H. destruct H as (_ & -> & _).
     exact Hm. }
   assert (Hinst : mask_launchable
             (m_sigmask (sigmask_deliver_model
-               (sigmask_apply how (m_sigmask m) (sigmask_strip raw)) m))).
+               (sigmask_apply how (m_sigmask m) (sigmask_strip (sigset_of bs))) m))).
   { rewrite m_sigmask_sigmask_deliver_model.
     apply sigmask_apply_launchable; [exact Hm | apply sigmask_strip_launchable]. }
   destruct (w_is0 oset) eqn:Ho; cbv beta iota in H.
@@ -681,7 +704,7 @@ Proof.
   unfold check_write_oset_copyins in H.
   destruct (check_write_oset i oset (m_sigmask m) (clear_copyins eff)
               (sigmask_deliver_model (sigmask_apply how (m_sigmask m)
-                               (sigmask_strip raw)) m))
+                               (sigmask_strip (sigset_of bs))) m))
     as [m2 evs2| |] eqn:Hcw; [|discriminate|discriminate].
   destruct (access_ranges_eqb (eff_copyins eff)
               [(nset, Z.to_nat NSIG_BYTES)]); [|discriminate].
@@ -719,7 +742,9 @@ Proof.
   { destruct (w_is0 oset) eqn:Ho; cbv beta iota in H.
     - apply check_ret_only_ok_iff in H. now destruct H as (_ & -> & _).
     - apply check_write_oset_ok_iff in H. now destruct H as (-> & _ & _ & _). }
-  destruct (sigset_at (in_mem i) nset) as [raw|] eqn:Hr; cbv beta iota in H.
+  destruct (user_read i m nset (Z_to_bv 64 NSIG_BYTES)) as [bs| |] eqn:Hr;
+    cbv beta iota in H.
+  3:{ discriminate. }
   2:{ apply check_ret_only_ok_iff in H. now destruct H as (_ & -> & _). }
   destruct (negb (how_valid how)) eqn:Hh; cbv beta iota zeta in H.
   { apply check_ret_only_copyins_ok_iff in H. now destruct H as (_ & -> & _). }
@@ -729,7 +754,7 @@ Proof.
   unfold check_write_oset_copyins in H.
   destruct (check_write_oset i oset (m_sigmask m) (clear_copyins eff)
               (sigmask_deliver_model (sigmask_apply how (m_sigmask m)
-                               (sigmask_strip raw)) m))
+                               (sigmask_strip (sigset_of bs))) m))
     as [m2 evs2| |] eqn:Hcw; [|discriminate|discriminate].
   destruct (access_ranges_eqb (eff_copyins eff)
               [(nset, Z.to_nat NSIG_BYTES)]); [|discriminate].

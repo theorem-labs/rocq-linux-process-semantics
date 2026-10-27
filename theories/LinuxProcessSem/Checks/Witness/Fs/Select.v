@@ -23,7 +23,7 @@ Definition pselect6_witness (i : SyscallInput) (m : Model)
   match pselect6_outcome i m n32 inp outp exp tsp sig with
   | None => Unmodeled
   | Some (r, ws) =>
-      Ok (with_copyins (pselect6_reads i n32 inp outp exp tsp sig)
+      Ok (with_copyins (pselect6_reads i m n32 inp outp exp tsp sig)
             (mkEffect r ws [])) m []
   end.
 
