@@ -26,6 +26,19 @@ keeps the reservation too. Linux clears it on each return to user mode
 the model, and that outcome is QEMU's. A proof about such a sequence
 says nothing about Linux.
 
+A store-conditional (`sc.w`, `sc.d`) that fails still passes the
+alignment check and the memory permission check (`Riscv/Sem.v`, the
+`Sc` arm). The unprivileged specification requires a permission check
+("No SC.W instruction shall retire unless it passes memory permission
+checks"), the privileged specification (11.1.3.1) makes it a store's (a
+store-conditional to a page without write permission raises a store
+page fault), and Sail checks for a write. On a misaligned address, or on
+memory the process may not write, the model faults. QEMU user mode
+before commit `d107b748072c` ("target/riscv: Generate access fault if sc
+comparison fails", 2026-04-29; 8.2.2 among them) skips both checks on a
+failing `sc` and retires it with rd = 1. That is a QEMU bug, which this
+model does not describe.
+
 ## Where the model is narrower
 
 The statements restrict these cases, or the model says `unmodeled` for
@@ -213,6 +226,13 @@ true of the model and false of the real systems.
   arms). An `munmap` of a free range that lands on the pair answers 0,
   where Linux unmaps it, or refuses with `-EPERM` under
   `CONFIG_MSEAL_SYSTEM_MAPPINGS`.
+- **A failing store-conditional on a write-only segment.** The model
+  writes the failing `sc`'s permission check as a load and a store of
+  the same bytes, so on a writable segment that lacks the `r` flag it
+  faults, as a load from that segment already does
+  (`RiscvSemantics.memory_read`). Linux on riscv maps every writable
+  page readable (`arch/riscv/mm/fault.c`, `access_error`: "Write
+  implies read"), so there both the load and the failing `sc` succeed.
 
 ## What the proofs do not check
 
