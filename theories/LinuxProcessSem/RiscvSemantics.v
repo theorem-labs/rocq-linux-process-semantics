@@ -199,7 +199,13 @@ Definition set_gpr0_write_buf (ms : machine_state) (ret : word)
     Both drive the same explicit error transition in [Run.sstep]; the
     distinction is carried alongside it, not instead of it.  The machine
     itself is deterministic — all non-determinism in the semantics lives
-    in the syscall model. *)
+    in the syscall model.
+
+    One fault the step cannot classify alone: a fetch or a load from the
+    vDSO pair, which Linux maps readable but whose bytes the kernel holds
+    and the machine state does not.  The step faults there, and
+    [Run.mi_account_step], which sees the pair, answers [MachineUnmodeled]
+    for it, from the access [step_fault_access] names. *)
 Inductive machine_result (A : Type) :=
 | MachineOk (result : A) : machine_result A
 | MachineFault : machine_result A
@@ -922,6 +928,151 @@ Proof.
   reflexivity.
 Qed.
 
+(** *** The access a faulting walk failed on
+
+    [interp_eff_fault t m] walks the effect tree as [interp_eff_accesses]
+    does: the same checks, the same continuation values, the same overlay
+    threaded through each store.  It names the load or store whose
+    permission check fails ([ov_read_bytes] for a load, [store_ok] for a
+    store), with the range that check was made on: the address the tree
+    computed and [width_bytes] of the width.  It answers [None] when the
+    walk reaches no failing check (the tree ends in [EDone] or in a boundary
+    node, which faults or declines for another reason).  [AccFetch] is
+    [step_fault_access]'s, for the instruction fetch.
+
+    [eff_reaches t m t' m'] is that walk: from tree [t] and overlay [m],
+    [interp_eff_accesses] arrives at node [t'] with overlay [m'], every
+    check on the way having passed.  Each constructor is one success
+    branch of [interp_eff_accesses], read off it.  [interp_eff_fault_load]
+    and [interp_eff_fault_store] say that the access [interp_eff_fault]
+    names is the one failing check the walk reaches, so the two cannot
+    disagree about it. *)
+Inductive access_kind : Type := AccFetch | AccLoad | AccStore.
+
+Fixpoint interp_eff_fault (t : eff) (m : word -> option byte)
+    : option (access_kind * memory_access) :=
+  match t with
+  | EDone _ | EEbreak _ | EFault _ | EDefinedIllegal _
+  | EIllegal _ | EEcall _ => None
+  | ELoad n a k =>
+      match ov_read_bytes m a (width_bytes n) with
+      | Some bs => interp_eff_fault (k (bv_extract 0 n (le_bytes_to_word bs))) m
+      | None => Some (AccLoad, (a, width_bytes n))
+      end
+  | EStore n a v k =>
+      if store_ok m a (width_bytes n)
+      then interp_eff_fault k
+             (write_to_mem m a (Z_to_le_bytes (width_bytes n) (bv_unsigned v)))
+      else Some (AccStore, (a, width_bytes n))
+  end.
+
+Inductive eff_reaches
+    : eff -> (word -> option byte) -> eff -> (word -> option byte) -> Prop :=
+| eff_reaches_here : forall t m, eff_reaches t m t m
+| eff_reaches_load : forall n a k m bs t' m',
+    ov_read_bytes m a (width_bytes n) = Some bs ->
+    eff_reaches (k (bv_extract 0 n (le_bytes_to_word bs))) m t' m' ->
+    eff_reaches (ELoad n a k) m t' m'
+| eff_reaches_store : forall n a v k m t' m',
+    store_ok m a (width_bytes n) = true ->
+    eff_reaches k
+      (write_to_mem m a (Z_to_le_bytes (width_bytes n) (bv_unsigned v))) t' m' ->
+    eff_reaches (EStore n a v k) m t' m'.
+
+(** The walk is the interpreter's: a fault at the node it reaches is a
+    fault of the whole tree. *)
+Lemma eff_reaches_fault : forall t m t' m',
+  eff_reaches t m t' m' ->
+  interp_eff_accesses t' m' = MachineFault ->
+  interp_eff_accesses t m = MachineFault.
+Proof.
+  intros t m t' m' Hr.
+  induction Hr as [t m|n a k m bs t' m' Hok _ IH|n a v k m t' m' Hok _ IH];
+    intros Hf; [exact Hf| |];
+    cbn [interp_eff_accesses]; rewrite Hok; cbv beta iota;
+    rewrite (IH Hf); reflexivity.
+Qed.
+
+Lemma eff_reaches_interp_eff_fault : forall t m t' m',
+  eff_reaches t m t' m' -> interp_eff_fault t m = interp_eff_fault t' m'.
+Proof.
+  intros t m t' m' Hr.
+  induction Hr as [t m|n a k m bs t' m' Hok _ IH|n a v k m t' m' Hok _ IH];
+    [reflexivity| |]; cbn [interp_eff_fault]; rewrite Hok; exact IH.
+Qed.
+
+(** An access is named only on a fault. *)
+Lemma interp_eff_fault_fault : forall t m acc,
+  interp_eff_fault t m = Some acc -> interp_eff_accesses t m = MachineFault.
+Proof.
+  induction t as [c|c|c|c|c|c|n a k IH|n a v k IH]; intros m acc H;
+    cbn [interp_eff_fault] in H; cbn [interp_eff_accesses]; try discriminate H.
+  - destruct (ov_read_bytes m a (width_bytes n)) as [bs|]; [|reflexivity].
+    rewrite (IH _ m acc H). reflexivity.
+  - destruct (store_ok m a (width_bytes n)); [|reflexivity].
+    rewrite (IH _ acc H). reflexivity.
+Qed.
+
+Lemma interp_eff_fault_not_fetch : forall t m acc,
+  interp_eff_fault t m <> Some (AccFetch, acc).
+Proof.
+  induction t as [c|c|c|c|c|c|n a k IH|n a v k IH]; intros m acc H;
+    cbn [interp_eff_fault] in H; try discriminate H.
+  - destruct (ov_read_bytes m a (width_bytes n)) as [bs|];
+      [exact (IH _ m acc H)|discriminate H].
+  - destruct (store_ok m a (width_bytes n)); [exact (IH _ acc H)|discriminate H].
+Qed.
+
+(** The load named is the load the walk reaches whose read fails. *)
+Lemma interp_eff_fault_load : forall t m a w,
+  interp_eff_fault t m = Some (AccLoad, (a, w)) <->
+  exists n k m', eff_reaches t m (ELoad n a k) m' /\
+                 w = width_bytes n /\ ov_read_bytes m' a w = None.
+Proof.
+  intros t m a w. split.
+  - revert m. induction t as [c|c|c|c|c|c|n a0 k IH|n a0 v k IH]; intros m H;
+      cbn [interp_eff_fault] in H; try discriminate H.
+    + destruct (ov_read_bytes m a0 (width_bytes n)) as [bs|] eqn:Hok.
+      * destruct (IH _ m H) as (n' & k' & m' & Hr & Hw & Hnone).
+        exists n', k', m'. split; [|split; assumption].
+        eapply eff_reaches_load; [exact Hok | exact Hr].
+      * inversion H; subst. exists n, k, m.
+        split; [apply eff_reaches_here | split; [reflexivity | exact Hok]].
+    + destruct (store_ok m a0 (width_bytes n)) eqn:Hok; [|discriminate H].
+      destruct (IH _ H) as (n' & k' & m' & Hr & Hw & Hnone).
+      exists n', k', m'. split; [|split; assumption].
+      eapply eff_reaches_store; [exact Hok | exact Hr].
+  - intros (n & k & m' & Hr & -> & Hnone).
+    rewrite (eff_reaches_interp_eff_fault _ _ _ _ Hr). cbn [interp_eff_fault].
+    rewrite Hnone. reflexivity.
+Qed.
+
+(** The store named is the store the walk reaches whose range is not
+    writable. *)
+Lemma interp_eff_fault_store : forall t m a w,
+  interp_eff_fault t m = Some (AccStore, (a, w)) <->
+  exists n v k m', eff_reaches t m (EStore n a v k) m' /\
+                   w = width_bytes n /\ store_ok m' a w = false.
+Proof.
+  intros t m a w. split.
+  - revert m. induction t as [c|c|c|c|c|c|n a0 k IH|n a0 v k IH]; intros m H;
+      cbn [interp_eff_fault] in H; try discriminate H.
+    + destruct (ov_read_bytes m a0 (width_bytes n)) as [bs|] eqn:Hok;
+        [|discriminate H].
+      destruct (IH _ m H) as (n' & v' & k' & m' & Hr & Hw & Hbad).
+      exists n', v', k', m'. split; [|split; assumption].
+      eapply eff_reaches_load; [exact Hok | exact Hr].
+    + destruct (store_ok m a0 (width_bytes n)) eqn:Hok.
+      * destruct (IH _ H) as (n' & v' & k' & m' & Hr & Hw & Hbad).
+        exists n', v', k', m'. split; [|split; assumption].
+        eapply eff_reaches_store; [exact Hok | exact Hr].
+      * inversion H; subst. exists n, v, k, m.
+        split; [apply eff_reaches_here | split; [reflexivity | exact Hok]].
+  - intros (n & v & k & m' & Hr & -> & Hbad).
+    rewrite (eff_reaches_interp_eff_fault _ _ _ _ Hr). cbn [interp_eff_fault].
+    rewrite Hbad. reflexivity.
+Qed.
+
 (** ** Decode-and-execute a fetched instruction word
 
     Given the 32-bit word [w] the fetch produced (a full 32-bit
@@ -993,6 +1144,35 @@ Definition decode_exec_accesses (st : machine_state) (w : bv 32)
 Definition decode_exec (st : machine_state) (w : bv 32)
     : machine_result machine_state :=
   drop_access_report (decode_exec_accesses st w).
+
+(** [decode_exec_accesses]'s path to its effect tree (the same ecall test,
+    the same decode, the same core), with [interp_eff_fault] where it runs
+    [interp_eff_accesses].  An ecall and an undecodable word make no data
+    access, so they name none. *)
+Definition decode_exec_fault (st : machine_state) (w : bv 32)
+    : option (access_kind * memory_access) :=
+  if is_ecall w then None
+  else
+    match decode_any w with
+    | None => None
+    | Some (i, isz) =>
+      interp_eff_fault (exec (Z_to_bv 64 isz) i
+                          {| c_regs := st.(ms_regs);
+                             c_fregs := st.(ms_fregs);
+                             c_pc := st.(ms_pc_val);
+                             c_fcsr := st.(ms_fcsr);
+                             c_resv := st.(ms_resv) |})
+                       st.(ms_mem)
+    end.
+
+Lemma decode_exec_fault_fault : forall st w acc,
+  decode_exec_fault st w = Some acc -> decode_exec_accesses st w = MachineFault.
+Proof.
+  intros st w acc H. unfold decode_exec_fault in H. unfold decode_exec_accesses.
+  destruct (is_ecall w); [discriminate H|].
+  destruct (decode_any w) as [[i isz]|]; [|discriminate H].
+  rewrite (interp_eff_fault_fault _ _ acc H). reflexivity.
+Qed.
 
 (** ** Step function
 
@@ -1074,6 +1254,216 @@ Proof.
   reflexivity.
 Qed.
 
+(** ** The access a faulting step faulted on
+
+    [step_fault_access st] names the memory access at which [step_accesses
+    st] fails a permission check and answers [MachineFault]: the
+    instruction fetch, or a data load or store, with its range.  It
+    answers [None] when the step faults on no access: it succeeds, it is
+    unmodeled, or it faults for another reason (a misaligned pc, which
+    traps before any byte is read; [ebreak]; a defined-illegal
+    instruction; a misaligned atomic).
+
+    It is a pure function of the segments and the state, and it takes the
+    path [step_accesses] takes: the same fetch ([step_fetch], which
+    [step_accesses_step_fetch] shows is [step_accesses]'s), then
+    [decode_exec_fault] on the fetched word, or [fetch_failure]'s verdict
+    when the fetch declines.  So the range it names is the one the step
+    computed and checked, not a second derivation of it:
+    [step_fault_access_fault] (it names an access only on a
+    [MachineFault]), [step_fault_access_fetch], [step_fault_access_load]
+    and [step_fault_access_store] (the access it names is the check that
+    failed).
+
+    Its consumer is [Run.mi_account_step], which answers
+    [MachineUnmodeled] for a faulting fetch or load that meets the vDSO
+    pair; see [Run.mi_fault_reads_vdso]. *)
+
+(** The fetch [step_accesses] makes: its three paths, in its order. *)
+Definition step_fetch (st : machine_state) : option (bv 32) :=
+  match fetch_word (ms_pc st) with
+  | Some w => Some w
+  | None =>
+    match fetch_word_ov st.(ms_mem) (ms_pc st) with
+    | Some w => Some w
+    | None => fetch_tail_any st.(ms_mem) (ms_pc st)
+    end
+  end.
+
+Lemma step_accesses_step_fetch : forall st,
+  step_accesses st =
+    match step_fetch st with
+    | Some w => decode_exec_accesses st w
+    | None =>
+        match fetch_failure st.(ms_mem) (ms_pc st) with
+        | MachineOk st' => MachineOk (mkAccessReport st' [])
+        | MachineFault => MachineFault
+        | MachineUnmodeled => MachineUnmodeled
+        end
+    end.
+Proof.
+  intros st. unfold step_accesses, step_fetch.
+  destruct (fetch_word (ms_pc st)); [reflexivity|].
+  destruct (fetch_word_ov (ms_mem st) (ms_pc st)); [reflexivity|].
+  destruct (fetch_tail_any (ms_mem st) (ms_pc st)); reflexivity.
+Qed.
+
+(** A declined fetch at an aligned [addr] that [fetch_failure] calls a
+    fault, with the bytes it inspected: parcel 0, and parcel 1 too when
+    parcel 0 was fetchable (once [fetch_tail_any] has declined, that
+    means parcel 0 announced a 32-bit instruction). *)
+Definition fetch_fault_access (m : word -> option byte) (addr : word)
+    : option (access_kind * memory_access) :=
+  if negb (Z.eqb (bv_unsigned addr mod 2) 0)%Z then None
+  else
+    match fetch_failure m addr with
+    | MachineFault =>
+        Some (AccFetch, (addr, match fetch_half_any m addr with
+                               | Some _ => 4%nat
+                               | None => 2%nat
+                               end))
+    | MachineOk _ | MachineUnmodeled => None
+    end.
+
+Definition step_fault_access (st : machine_state)
+    : option (access_kind * memory_access) :=
+  match step_fetch st with
+  | Some w => decode_exec_fault st w
+  | None => fetch_fault_access st.(ms_mem) (ms_pc st)
+  end.
+
+Lemma step_fault_access_fault : forall st acc,
+  step_fault_access st = Some acc -> step_accesses st = MachineFault.
+Proof.
+  intros st acc H. rewrite step_accesses_step_fetch.
+  unfold step_fault_access in H.
+  destruct (step_fetch st) as [w|].
+  - exact (decode_exec_fault_fault st w acc H).
+  - unfold fetch_fault_access in H.
+    destruct (negb (bv_unsigned (ms_pc st) mod 2 =? 0)%Z); [discriminate H|].
+    destruct (fetch_failure (ms_mem st) (ms_pc st));
+      [discriminate H|reflexivity|discriminate H].
+Qed.
+
+Lemma step_fault_access_step : forall st acc,
+  step_fault_access st = Some acc -> step st = MachineFault.
+Proof.
+  intros st acc H. unfold step. rewrite (step_fault_access_fault st acc H).
+  reflexivity.
+Qed.
+
+(** A fetch is named exactly when every fetch path declined at an aligned
+    pc and [fetch_failure] called it a fault; the range is the pc and the
+    bytes [fetch_failure] inspected. *)
+Lemma step_fault_access_fetch : forall st a n,
+  step_fault_access st = Some (AccFetch, (a, n)) <->
+  step_fetch st = None /\
+  (bv_unsigned (ms_pc st) mod 2 = 0)%Z /\
+  fetch_failure st.(ms_mem) (ms_pc st) = MachineFault /\
+  a = ms_pc st /\
+  n = match fetch_half_any st.(ms_mem) (ms_pc st) with
+      | Some _ => 4%nat
+      | None => 2%nat
+      end.
+Proof.
+  intros st a n. split.
+  - intros H. unfold step_fault_access in H.
+    destruct (step_fetch st) as [w|] eqn:Hf.
+    + exfalso. unfold decode_exec_fault in H.
+      destruct (is_ecall w); [discriminate H|].
+      destruct (decode_any w) as [[i isz]|]; [|discriminate H].
+      exact (interp_eff_fault_not_fetch _ _ _ H).
+    + unfold fetch_fault_access in H.
+      destruct (Z.eqb_spec (bv_unsigned (ms_pc st) mod 2) 0) as [Hal|Hal];
+        cbn [negb] in H; [|discriminate H].
+      destruct (fetch_failure (ms_mem st) (ms_pc st)) eqn:Hff;
+        [discriminate H| |discriminate H].
+      inversion H; subst.
+      repeat split; reflexivity || assumption.
+  - intros (Hf & Hal & Hff & -> & ->).
+    unfold step_fault_access, fetch_fault_access. rewrite Hf, Hal, Hff.
+    reflexivity.
+Qed.
+
+(** A data access is named exactly when the fetch succeeded and
+    [decode_exec_fault] names it on the fetched word. *)
+Lemma step_fault_access_data : forall st kind acc,
+  kind <> AccFetch ->
+  step_fault_access st = Some (kind, acc) <->
+  exists w, step_fetch st = Some w /\ decode_exec_fault st w = Some (kind, acc).
+Proof.
+  intros st kind acc Hkind. split.
+  - intros H. unfold step_fault_access in H.
+    destruct (step_fetch st) as [w|].
+    + exists w. split; [reflexivity | exact H].
+    + exfalso. unfold fetch_fault_access in H.
+      destruct (negb (bv_unsigned (ms_pc st) mod 2 =? 0)%Z); [discriminate H|].
+      destruct (fetch_failure (ms_mem st) (ms_pc st));
+        [discriminate H| |discriminate H].
+      inversion H; subst. apply Hkind. reflexivity.
+  - intros (w & Hf & Hd). unfold step_fault_access. rewrite Hf. exact Hd.
+Qed.
+
+(** THE AGREEMENT, for a load: the load [step_fault_access] names is the
+    one the step made: the step fetched [fw], decoded it to [i], and the
+    walk of [i]'s effect tree from the state's overlay reached a load of
+    [a .. a + w) whose read failed. *)
+Lemma step_fault_access_load : forall st a w,
+  step_fault_access st = Some (AccLoad, (a, w)) <->
+  exists fw i isz n k m',
+    step_fetch st = Some fw /\ is_ecall fw = false /\
+    decode_any fw = Some (i, isz) /\
+    eff_reaches (exec (Z_to_bv 64 isz) i
+                   {| c_regs := st.(ms_regs);
+                      c_fregs := st.(ms_fregs);
+                      c_pc := st.(ms_pc_val);
+                      c_fcsr := st.(ms_fcsr);
+                      c_resv := st.(ms_resv) |})
+                st.(ms_mem) (ELoad n a k) m' /\
+    w = width_bytes n /\ ov_read_bytes m' a w = None.
+Proof.
+  intros st a w. split.
+  - intros H. apply step_fault_access_data in H; [|discriminate].
+    destruct H as (fw & Hf & Hd). unfold decode_exec_fault in Hd.
+    destruct (is_ecall fw) eqn:He; [discriminate Hd|].
+    destruct (decode_any fw) as [[i isz]|] eqn:Hdec; [|discriminate Hd].
+    apply interp_eff_fault_load in Hd. destruct Hd as (n & k & m' & Hr & Hw & Hn).
+    exists fw, i, isz, n, k, m'. repeat split; assumption.
+  - intros (fw & i & isz & n & k & m' & Hf & He & Hdec & Hr & Hw & Hn).
+    apply step_fault_access_data; [discriminate|]. exists fw. split; [exact Hf|].
+    unfold decode_exec_fault. rewrite He, Hdec. apply interp_eff_fault_load.
+    exists n, k, m'. repeat split; assumption.
+Qed.
+
+(** ... and for a store. *)
+Lemma step_fault_access_store : forall st a w,
+  step_fault_access st = Some (AccStore, (a, w)) <->
+  exists fw i isz n v k m',
+    step_fetch st = Some fw /\ is_ecall fw = false /\
+    decode_any fw = Some (i, isz) /\
+    eff_reaches (exec (Z_to_bv 64 isz) i
+                   {| c_regs := st.(ms_regs);
+                      c_fregs := st.(ms_fregs);
+                      c_pc := st.(ms_pc_val);
+                      c_fcsr := st.(ms_fcsr);
+                      c_resv := st.(ms_resv) |})
+                st.(ms_mem) (EStore n a v k) m' /\
+    w = width_bytes n /\ store_ok m' a w = false.
+Proof.
+  intros st a w. split.
+  - intros H. apply step_fault_access_data in H; [|discriminate].
+    destruct H as (fw & Hf & Hd). unfold decode_exec_fault in Hd.
+    destruct (is_ecall fw) eqn:He; [discriminate Hd|].
+    destruct (decode_any fw) as [[i isz]|] eqn:Hdec; [|discriminate Hd].
+    apply interp_eff_fault_store in Hd.
+    destruct Hd as (n & v & k & m' & Hr & Hw & Hbad).
+    exists fw, i, isz, n, v, k, m'. repeat split; assumption.
+  - intros (fw & i & isz & n & v & k & m' & Hf & He & Hdec & Hr & Hw & Hbad).
+    apply step_fault_access_data; [discriminate|]. exists fw. split; [exact Hf|].
+    unfold decode_exec_fault. rewrite He, Hdec. apply interp_eff_fault_store.
+    exists n, v, k, m'. repeat split; assumption.
+Qed.
+
 End WithMemImage.
 
 Global Strategy 100
@@ -1082,4 +1472,6 @@ Global Strategy 100
    memory_read code_read code_read_wx code_read_ov
    seg_ov_read_bytes fetch_word fetch_word_ov fetch_word_wx fetch_tail
    fetch_half fetch_half_ov fetch_half_any fetch_tail_any
-   fetch_failure fetch_byte_traps interp_eff store_ok wview].
+   fetch_failure fetch_byte_traps interp_eff store_ok wview
+   interp_eff_fault decode_exec_fault step_fetch fetch_fault_access
+   step_fault_access].

@@ -30,7 +30,9 @@
 
     [srealizes] is [realizes] plus ONE constructor, [srz_fault]: a
     non-halted, non-syscall configuration whose instruction step is
-    [MachineFault] realizes [t_nil].  Everything [ShapeAlg] proves by
+    [MachineFault], on an access other than a fetch or a load that meets
+    the vDSO pair ([Run.mi_fault_reads_vdso] — the model reports that one
+    unmodeled), realizes [t_nil].  Everything [ShapeAlg] proves by
     induction on [realizes] is re-proved here by the same induction with
     one extra (trivial) case — EXCEPT [realizes_no_error], which is false
     for [srealizes] and is replaced by
@@ -99,6 +101,7 @@ Inductive srealizes : config -> TSet -> Prop :=
     ms_svc_pending (cfg_ms c) = None ->
     m_vm_lazy (cfg_model c) = [] ->
     RiscvSemantics.step segs (cfg_ms c) = MachineFault ->
+    mi_fault_reads_vdso segs (m_vdso (cfg_model c)) (cfg_ms c) = false ->
     srealizes c t_nil
 | srz_conseq : forall c T T',
     srealizes c T -> t_eq T T' -> srealizes c T'.
@@ -123,12 +126,10 @@ Lemma fault_no_snext : forall c evs c',
   ~ sstep segs c evs (SNext c').
 Proof.
   intros [ms model] evs c' Hsvc Hlazy Hf Hss; cbn in *.
-  inversion Hss; subst;
-    try match goal with
-        | H : mi_account_step segs ms model = _ |- _ =>
-            rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hf in H
-        end;
-    congruence.
+  inversion Hss; subst; try congruence.
+  match goal with H : mi_account_step segs ms model = MachineOk _ |- _ =>
+    exact (mi_account_step_fault_not_ok segs ms model _ Hf H)
+  end.
 Qed.
 
 (** Every transition out of a fault leaf is the silent error transition. *)
@@ -139,12 +140,10 @@ Lemma fault_sstep_inv : forall c evs st,
   sstep segs c evs st -> evs = [] /\ st = SError.
 Proof.
   intros [ms model] evs st Hsvc Hlazy Hf Hss; cbn in *.
-  inversion Hss; subst;
-    try match goal with
-        | H : mi_account_step segs ms model = _ |- _ =>
-            rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hf in H
-        end;
-    split; congruence.
+  inversion Hss; subst; try (split; congruence).
+  match goal with H : mi_account_step segs ms model = MachineOk _ |- _ =>
+    exact (False_ind _ (mi_account_step_fault_not_ok segs ms model _ Hf H))
+  end.
 Qed.
 
 Lemma fault_star_refl : forall c tr c',
@@ -162,10 +161,11 @@ Lemma fault_not_unmodeled : forall c,
   ms_svc_pending (cfg_ms c) = None ->
   m_vm_lazy (cfg_model c) = [] ->
   RiscvSemantics.step segs (cfg_ms c) = MachineFault ->
+  mi_fault_reads_vdso segs (m_vdso (cfg_model c)) (cfg_ms c) = false ->
   ~ unmodeled_at segs c.
 Proof.
-  intros [ms model] Hsvc Hlazy Hf (_ & [(_ & Hum) | (x8 & Hsvc' & _)]); cbn in *;
-    [rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hf in Hum|];
+  intros [ms model] Hsvc Hlazy Hf Hv (_ & [(_ & Hum) | (x8 & Hsvc' & _)]); cbn in *;
+    [rewrite (mi_account_step_fault segs ms model Hf Hv) in Hum|];
     congruence.
 Qed.
 
@@ -190,7 +190,7 @@ Qed.
 Lemma srealizes_nonempty : forall c T, srealizes c T -> T [].
 Proof.
   intros c T H;
-  induction H as [c I evs nx T i0 Hnode Hcont IH | c Hh | c Hh Hsvc Hlz Hf | c T T' H IH Heq].
+  induction H as [c I evs nx T i0 Hnode Hcont IH | c Hh | c Hh Hsvc Hlz Hf Hv | c T T' H IH Heq].
   - exists i0. left. apply is_prefix_nil.
   - reflexivity.
   - reflexivity.
@@ -201,7 +201,7 @@ Lemma srealizes_pclosed : forall c T, srealizes c T ->
   forall tr tr', T tr -> is_prefix tr' tr -> T tr'.
 Proof.
   intros c T H;
-  induction H as [c I evs nx T i0 Hnode Hcont IH | c Hh | c Hh Hsvc Hlz Hf | c T T' H IH Heq];
+  induction H as [c I evs nx T i0 Hnode Hcont IH | c Hh | c Hh Hsvc Hlz Hf Hv | c T T' H IH Heq];
     intros tr tr' HT Hp.
   - destruct HT as [i [Hpre | (tr0 & -> & HT0)]]; exists i.
     + left. eapply is_prefix_trans; eauto.
@@ -221,7 +221,7 @@ Lemma srealizes_star_only : forall c T, srealizes c T ->
   forall tr c', star segs c tr c' -> T tr.
 Proof.
   intros c T H;
-  induction H as [c I evs nx T i0 Hnode Hcont IH | c Hh | c Hh Hsvc Hlz Hf | c T T' H IH Heq];
+  induction H as [c I evs nx T i0 Hnode Hcont IH | c Hh | c Hh Hsvc Hlz Hf Hv | c T T' H IH Heq];
     intros tr c' Hstar.
   - inversion Hstar as [|c1 e c2 tr2 c3 Hss Hstar2]; subst.
     + exists i0. left. apply is_prefix_nil.
@@ -238,7 +238,7 @@ Lemma srealizes_admits : forall c T, srealizes c T ->
   forall tr, T tr -> obs_trace segs c tr.
 Proof.
   intros c T H;
-  induction H as [c I evs nx T i0 Hnode Hcont IH | c Hh | c Hh Hsvc Hlz Hf | c T T' H IH Heq];
+  induction H as [c I evs nx T i0 Hnode Hcont IH | c Hh | c Hh Hsvc Hlz Hf Hv | c T T' H IH Heq];
     intros tr HT.
   - destruct Hnode as [Hcomp _].
     destruct HT as [i [Hpre | (tr0 & -> & HT0)]].
@@ -268,7 +268,7 @@ Lemma srealizes_star_not_unmodeled : forall c T, srealizes c T ->
   forall tr c', star segs c tr c' -> ~ unmodeled_at segs c'.
 Proof.
   intros c T H;
-  induction H as [c I evs nx T i0 Hnode Hcont IH | c Hh | c Hh Hsvc Hlz Hf | c T T' H IH Heq];
+  induction H as [c I evs nx T i0 Hnode Hcont IH | c Hh | c Hh Hsvc Hlz Hf Hv | c T T' H IH Heq];
     intros tr c' Hstar.
   - inversion Hstar as [|c1 e c2 tr2 c3 Hss Hstar2]; subst.
     + eapply node_not_unmodeled; exact Hnode.
@@ -336,9 +336,10 @@ Lemma srz_fault_any : forall c,
   ms_svc_pending (cfg_ms c) = None ->
   m_vm_lazy (cfg_model c) = [] ->
   RiscvSemantics.step segs (cfg_ms c) = MachineFault ->
+  mi_fault_reads_vdso segs (m_vdso (cfg_model c)) (cfg_ms c) = false ->
   srealizes c t_nil.
 Proof.
-  intros c Hsvc Hlz Hf. destruct (m_halted (cfg_model c)) eqn:Hh.
+  intros c Hsvc Hlz Hf Hv. destruct (m_halted (cfg_model c)) eqn:Hh.
   - apply srz_halt. rewrite Hh. discriminate.
   - apply srz_fault; assumption.
 Qed.
@@ -502,17 +503,19 @@ Proof.
   eapply srz_step; [exact Hh | exact Hlz | exact Hsvc | exact Hstep | apply IH; exact Hc].
 Qed.
 
-(** A deterministic instruction line that ends in a genuine fault: the
-    [ErrEscape] path, as a [t_nil] leaf. *)
+(** A deterministic instruction line that ends in a genuine fault (not a
+    fetch or a load on the vDSO pair): the [ErrEscape] path, as a [t_nil]
+    leaf. *)
 Lemma srz_msteps_fault : forall ms ms' model,
   m_halted model = None ->
   m_vm_lazy model = [] ->
   msteps segs ms ms' ->
   ms_svc_pending ms' = None ->
   RiscvSemantics.step segs ms' = MachineFault ->
+  mi_fault_reads_vdso segs (m_vdso model) ms' = false ->
   srealizes (mkCfg ms model) t_nil.
 Proof.
-  intros ms ms' model Hh Hlz Hms Hsvc Hf.
+  intros ms ms' model Hh Hlz Hms Hsvc Hf Hv.
   eapply srz_msteps; [exact Hh | exact Hlz | exact Hms |].
   apply srz_fault; cbn; assumption.
 Qed.
