@@ -462,10 +462,13 @@ Definition sched_setscheduler_spec (pid policy param : word)
   else
   i <- input ;;
   m <- get_model ;;
-  match read_bytes_map (in_mem i) param (Z_to_bv 64 4) with
-  | None =>
+  match user_read i m param (Z_to_bv 64 4) with
+  (* the bytes are in the vDSO pair, which Linux reads and the model does
+     not hold (arch/riscv/kernel/vdso.c; [State.UserRead]) *)
+  | USpecial => unmodeled
+  | UFault =>
       if negb (access_okb param 4) then err_ret EFAULT else unmodeled
-  | Some bs =>
+  | UOk bs =>
       record_copyins [(param, 4%nat)]
       (if negb (sched_targets_self_b pid m) then unmodeled
        else

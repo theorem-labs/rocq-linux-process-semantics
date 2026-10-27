@@ -58,10 +58,11 @@ Local Definition check_unlinkat_tmp (n p c : path) (flags : word)
 
 Local Definition check_unlinkat_body (i : SyscallInput) (dirfd pathp flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-    match read_cstr (in_mem i) pathp with
-    | CstrTooLong => check_ret_only eff (errno_ret ENAMETOOLONG) m []
-    | CstrFault => check_ret_only eff (errno_ret EFAULT) m []
-    | CstrOk p =>
+    match user_read_cstr i m pathp with
+    | UOk CstrTooLong => check_ret_only eff (errno_ret ENAMETOOLONG) m []
+    | UFault | UOk CstrFault => check_ret_only eff (errno_ret EFAULT) m []
+    | USpecial => CheckUnmodeled
+    | UOk (CstrOk p) =>
         if path_eqb p [] then check_ret_only eff (errno_ret ENOENT) m []
         else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
         else
@@ -102,7 +103,7 @@ Definition check_unlinkat (i : SyscallInput) (dirfd pathp flags : word)
   if negb (modeled_unlink_flags flags)
   then check_ret_only eff (errno_ret EINVAL) m []
   else
-    let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
+    let reads := [(pathp, user_cstr_access_len i m pathp)] in
     check_copyins_after reads eff
       (check_unlinkat_body i dirfd pathp flags (clear_copyins eff) m).
 
@@ -234,11 +235,10 @@ Local Lemma check_unlinkat_body_sound_ok : forall i dirfd pathp flags eff m m' e
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   unfold check_unlinkat_body in H. unfold unlinkat_body_spec.
-  destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp.
-  2: { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-       apply pure_ok. }
-  2: { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-       apply pure_ok. }
+  destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp.
+  2-4: apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+       apply pure_ok.
+  2: discriminate.
   destruct (path_eqb p []) eqn:Hpe.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
@@ -275,9 +275,11 @@ Local Lemma check_unlinkat_body_sound_unmodeled : forall i dirfd pathp flags eff
 Proof.
   intros i dirfd pathp flags eff m H.
   unfold check_unlinkat_body in H. unfold unlinkat_body_spec.
-  destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp;
+  destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp;
     [|now apply check_ret_only_no_unmodeled in H
-     |now apply check_ret_only_no_unmodeled in H].
+     |now apply check_ret_only_no_unmodeled in H
+     |now apply check_ret_only_no_unmodeled in H
+     |apply unmodeled_intro].
   destruct (path_eqb p []) eqn:Hpe;
     [now apply check_ret_only_no_unmodeled in H|].
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd.
@@ -388,7 +390,7 @@ Proof.
   intros i dirfd pathp flags eff m m' evs H.
   unfold unlinkat_body_spec in H. unfold check_unlinkat_body. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp; hall Hp; inv_ok;
+  destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp; hall Hp; inv_ok;
     try (cbn; try rewrite bv_eqb_refl; reflexivity).
   destruct (path_eqb p []) eqn:Hpe; hall Hpe; inv_ok;
     [cbn; try rewrite bv_eqb_refl; reflexivity|].
@@ -428,8 +430,8 @@ Proof.
   intros i dirfd pathp flags m eff H.
   unfold unlinkat_body_spec in H. unfold check_unlinkat_body. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp; hall Hp; inv_ok;
-    try discriminate.
+  destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp; hall Hp; inv_ok;
+    try discriminate; [|reflexivity].
   destruct (path_eqb p []) eqn:Hpe; hall Hpe; inv_ok; try discriminate.
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; hall Hd; inv_ok;
     try discriminate; [reflexivity|].
@@ -469,9 +471,11 @@ Local Lemma check_unlinkat_body_ok_copyins_nil :
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   unfold check_unlinkat_body in H.
-  destruct (read_cstr (in_mem i) pathp) as [p| |];
+  destruct (user_read_cstr i m pathp) as [[p| |]| |];
     [ | apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity
-      | apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity ].
+      | apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity
+      | apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity
+      | discriminate ].
   destruct (path_eqb p []);
     [apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity|].
   destruct (negb (bv_eqb dirfd AT_FDCWD32)); [discriminate|].

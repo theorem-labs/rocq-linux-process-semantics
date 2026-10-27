@@ -76,9 +76,10 @@ Proof.
     cbv iota in H;
     try (unfold err_ret, ret_only, pure in H; inversion H; subst;
          repeat split; auto; fail).
-  apply input_bind_ok_inv in H. cbv beta in H.
-  destruct (read_bytes_map (in_mem i) uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
-    as [uval|]; cbv iota in H; [|unfold unmodeled in H; discriminate].
+  apply bind_input_model_inv in H.
+  destruct (user_read i m uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
+    as [uval| |]; cbv iota in H;
+    [|unfold unmodeled in H; discriminate|unfold unmodeled in H; discriminate].
   apply record_copyins_ok_inv in H. destruct H as (core & Hcore & ->).
   destruct (bv_eqb (le_bytes_to_word uval) val); cbv iota in Hcore;
     [unfold unmodeled in Hcore; discriminate|].

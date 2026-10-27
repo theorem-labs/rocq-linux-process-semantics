@@ -190,8 +190,8 @@ Proof. reflexivity. Qed.
     THE READ IS A COPY-IN.  [futex_get_value_locked]
     (kernel/futex/waitwake.c) is a [get_user]-class fetch of the four
     bytes at [uaddr], and it has happened on both the -EAGAIN arm and
-    the declining one, so [record_copyins] wraps the whole [Some uval]
-    arm.  The [None] arm carries no ledger and answers no errno: a word
+    the declining one, so [record_copyins] wraps the whole [UOk uval]
+    arm.  The [UFault] arm carries no ledger and answers no errno: a word
     the model cannot read is one Linux would fault on
     ([futex_wait_setup] retries through [get_user] and returns its
     error), but the model's memory is a partial map rather than the
@@ -201,9 +201,13 @@ Proof. reflexivity. Qed.
 Definition futex_wait_private_spec (uaddr val : word) : Sys SyscallEffect :=
   futex_key_check uaddr
     (i <- input ;;
-     match read_bytes_map (in_mem i) uaddr (Z_to_bv 64 FUTEX_WORD_SIZE) with
-     | None => unmodeled   (* the word is not readable: fail closed *)
-     | Some uval =>
+     m <- get_model ;;
+     match user_read i m uaddr (Z_to_bv 64 FUTEX_WORD_SIZE) with
+     | UFault => unmodeled   (* the word is not readable: fail closed *)
+     (* the word is in the vDSO pair, which Linux reads and the model does
+        not hold (arch/riscv/kernel/vdso.c; [State.UserRead]) *)
+     | USpecial => unmodeled
+     | UOk uval =>
          record_copyins [(uaddr, FUTEX_WORD_SIZE_nat)]
            (if bv_eqb (le_bytes_to_word uval) val
             then unmodeled   (* the caller would block, and nothing wakes it *)

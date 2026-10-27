@@ -80,13 +80,14 @@ Qed.
     it, so the whole claimed list is that single range. *)
 Definition check_newfstatat (i : SyscallInput) (dirfd pathp flag : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
+  let reads := [(pathp, user_cstr_access_len i m pathp)] in
   if negb (modeled_statat_flags flag) then CheckUnmodeled
   else
-    match read_cstr (in_mem i) pathp with
-    | CstrTooLong => check_ret_only_copyins reads eff (errno_ret ENAMETOOLONG) m []
-    | CstrFault => check_ret_only_copyins reads eff (errno_ret EFAULT) m []
-    | CstrOk p =>
+    match user_read_cstr i m pathp with
+    | UOk CstrTooLong => check_ret_only_copyins reads eff (errno_ret ENAMETOOLONG) m []
+    | UFault | UOk CstrFault => check_ret_only_copyins reads eff (errno_ret EFAULT) m []
+    | USpecial => CheckUnmodeled
+    | UOk (CstrOk p) =>
         if path_eqb p [] then check_ret_only_copyins reads eff (errno_ret ENOENT) m []
         else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
         else if path_eqb p dot_path then CheckUnmodeled
@@ -176,12 +177,13 @@ Proof.
   intros i dirfd pathp flag eff m m' evs H.
   unfold check_newfstatat in H. cbv zeta in H. unfold newfstatat_spec.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
   destruct (negb (modeled_statat_flags flag)) eqn:Hfl; [discriminate|].
   cbv iota in H.
   (* Every accepting arm returns an errno and the one pathname range, so
      the wrapper is stripped the same way on each: the core effect has an
      empty ledger, and [record_copyins_ok_empty] puts [reads] on it. *)
-  destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp.
+  destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp.
   2: { (* no NUL within PATH_MAX: a real -ENAMETOOLONG *)
     apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
     apply record_copyins_ok_empty; [reflexivity|].
@@ -197,6 +199,14 @@ Proof.
     eapply bind_ok0; [apply input_ok|]. cbv beta.
     eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
     srw Hfl. srw Hp. apply pure_ok. }
+  2: { (* the same -EFAULT, from the helper's own fault answer *)
+    apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|].
+    unfold newfstatat_core_spec.
+    eapply bind_ok0; [apply input_ok|]. cbv beta.
+    eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+    srw Hfl. srw Hp. apply pure_ok. }
+  2: discriminate.
   destruct (path_eqb p []) eqn:Hpe.
   { (* empty pathname: -ENOENT *)
     apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
@@ -225,6 +235,7 @@ Proof.
   intros i dirfd pathp flag eff m H.
   unfold check_newfstatat in H. cbv zeta in H. unfold newfstatat_spec.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
   (* [record_copyins] carries a decline through untouched, so recording
      the pathname costs the declining arms nothing. *)
   apply record_copyins_unmodeled.
@@ -234,9 +245,16 @@ Proof.
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
     srw Hfl. apply unmodeled_intro. }
   cbv iota in H.
-  destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp;
+  destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp;
     [| now apply check_ret_only_copyins_no_unmodeled in H
-     | now apply check_ret_only_copyins_no_unmodeled in H ].
+     | now apply check_ret_only_copyins_no_unmodeled in H
+     | now apply check_ret_only_copyins_no_unmodeled in H
+     | ].
+  2: { (* the walk reached the vDSO pair *)
+    unfold newfstatat_core_spec.
+    eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+    srw Hfl. srw Hp. apply unmodeled_intro. }
   destruct (path_eqb p []) eqn:Hpe.
   { now apply check_ret_only_copyins_no_unmodeled in H. }
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd.
@@ -264,11 +282,12 @@ Proof.
   intros i dirfd pathp flag eff m m' evs H.
   unfold newfstatat_spec in H.
   apply input_bind_ok_inv in H. cbv beta in H.
+  apply bind_get_model_ok_inv in H. cbv beta in H.
   apply record_copyins_ok_inv in H. destruct H as (core & H & ->).
   unfold newfstatat_core_spec in H. unfold check_newfstatat. cbv zeta.
   sys_unfold. cbv iota in H. inv_ok.
   destruct (negb (modeled_statat_flags flag)) eqn:Hfl; hall Hfl; inv_ok.
-  destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp; hall Hp; inv_ok;
+  destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp; hall Hp; inv_ok;
     try (cbn [eff_copyins with_copyins app];
          apply check_ret_only_copyins_refl).
   destruct (path_eqb p []) eqn:Hpe; hall Hpe; inv_ok.
@@ -286,13 +305,14 @@ Proof.
   intros i dirfd pathp flag m eff H.
   unfold newfstatat_spec in H.
   apply input_bind_unmodeled_inv in H. cbv beta in H.
+  apply bind_get_model_unmodeled_inv in H. cbv beta in H.
   apply record_copyins_unmodeled_inv in H.
   unfold newfstatat_core_spec in H. unfold check_newfstatat. cbv zeta.
   sys_unfold. cbv iota in H. inv_ok.
   destruct (negb (modeled_statat_flags flag)) eqn:Hfl; hall Hfl; inv_ok;
     try discriminate; [reflexivity|].
-  destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp; hall Hp; inv_ok;
-    try discriminate.
+  destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp; hall Hp; inv_ok;
+    try discriminate; [|reflexivity].
   destruct (path_eqb p []) eqn:Hpe; hall Hpe; inv_ok; try discriminate.
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; hall Hd; inv_ok;
     try discriminate; [reflexivity|].

@@ -1338,10 +1338,16 @@ Definition openat_resolved_spec (p : path) (flags : word) (m : Model)
     theorem. *)
 Definition openat_body_spec (i : SyscallInput) (m : Model)
     (dirfd pathp flags : word) : Sys SyscallEffect :=
-  match read_cstr (in_mem i) pathp with
-    | CstrTooLong => err_ret ENAMETOOLONG        (* no NUL within PATH_MAX *)
-    | CstrFault => err_ret EFAULT                (* unmapped byte in the path string *)
-    | CstrOk p =>
+  match user_read_cstr i m pathp with
+    | UOk CstrTooLong => err_ret ENAMETOOLONG    (* no NUL within PATH_MAX *)
+    (* unmapped byte in the path string ([UOk CstrFault] does not occur:
+       [State.user_read_cstr_ok_iff]) *)
+    | UFault | UOk CstrFault => err_ret EFAULT
+    (* the walk reached the vDSO pair before a NUL: Linux reads on with
+       bytes the model does not hold (arch/riscv/kernel/vdso.c;
+       [State.UserRead]) *)
+    | USpecial => unmodeled
+    | UOk (CstrOk p) =>
         if path_eqb p [] then err_ret ENOENT     (* empty pathname: always a real -ENOENT on Linux *)
         (* only now the dirfd ([path_init]'s [fdget_raw] runs after
            [getname]): the relative-to-a-dirfd modes aren't modeled, so we
@@ -1364,7 +1370,8 @@ Definition openat_core_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
 
 Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
   i <- input ;;
-  record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+  m <- get_model ;;
+  record_copyins [(pathp, user_cstr_access_len i m pathp)]
     (openat_core_spec dirfd pathp flags).
 
 (** [close fd]: 0 on a live fd (which is removed), -EBADF otherwise.
@@ -1904,10 +1911,11 @@ Definition access_exists_spec : Sys SyscallEffect :=
     proved theorem. *)
 Definition faccessat_body_spec (dirfd pathp : word)
     (i : SyscallInput) (m : Model) : Sys SyscallEffect :=
-  match read_cstr (in_mem i) pathp with
-  | CstrTooLong => err_ret ENAMETOOLONG          (* no NUL within PATH_MAX *)
-  | CstrFault => err_ret EFAULT                  (* unmapped byte in the path string *)
-  | CstrOk p =>
+  match user_read_cstr i m pathp with
+  | UOk CstrTooLong => err_ret ENAMETOOLONG      (* no NUL within PATH_MAX *)
+  | UFault | UOk CstrFault => err_ret EFAULT     (* unmapped byte in the path string *)
+  | USpecial => unmodeled                        (* the vDSO pair: see [openat_body_spec] *)
+  | UOk (CstrOk p) =>
       if path_eqb p [] then err_ret ENOENT       (* empty pathname: getname's own -ENOENT *)
       else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
       else if path_eqb p dot_path then access_exists_spec      (* the working directory *)
@@ -1939,7 +1947,7 @@ Definition faccessat_spec (dirfd pathp mode : word) : Sys SyscallEffect :=
   if negb (modeled_access_mode mode) then err_ret EINVAL
   else if negb (access_mode_f_ok mode) then unmodeled
   else
-    record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+    record_copyins [(pathp, user_cstr_access_len i m pathp)]
       (faccessat_body_spec dirfd pathp i m).
 
 (** [flags] as [do_faccessat] reads it: the low 32 bits of the register,
@@ -2062,5 +2070,5 @@ Definition faccessat2_spec (dirfd pathp mode flags : word)
   else if negb (modeled_access_flags flags) then unmodeled
   else if negb (access_mode_f_ok mode) then unmodeled
   else
-    record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+    record_copyins [(pathp, user_cstr_access_len i m pathp)]
       (faccessat_body_spec dirfd pathp i m).

@@ -583,11 +583,14 @@ Definition prlimit64_spec (pid resource new_rlim old_rlim : word)
     match m_rlimit_core m with
     | None => unmodeled          (* no recorded hard limit to compare against *)
     | Some bs0 =>
-        match read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16) with
-        | None =>
+        match user_read i m new_rlim (Z_to_bv 64 16) with
+        (* the struct reaches the vDSO pair, which Linux reads and the
+           model does not hold (arch/riscv/kernel/vdso.c; [State.UserRead]) *)
+        | USpecial => unmodeled
+        | UFault =>
             if negb (access_okb new_rlim 16) then err_ret EFAULT
             else unmodeled
-        | Some nb =>
+        | UOk nb =>
             record_copyins [(new_rlim, 16%nat)]
             (
             if (bv_unsigned (rlim64_hard nb) <? bv_unsigned (rlim64_soft nb))%Z
