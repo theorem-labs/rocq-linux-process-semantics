@@ -117,11 +117,11 @@ Open Scope sys_scope.
    AN ARM WHOSE RANGE LIES INSIDE ONE RECORDED MAPPING DOES NOT TEST THE
    PAIR: the exact munmap, the contained MAP_FIXED, and the mprotect,
    madvise and mremap sources.  The ledger entry stands for a VMA, VMAs
-   do not overlap, so the range meets no other VMA.  Every arm that
-   records an entry tests the pair first, so no recorded mapping lies
-   over a mapped range of it.  (A brk grow inside one page is tested by
-   neither Linux nor the model; it stays inside the page the break is
-   already in.)
+   do not overlap, so the range meets no other VMA.  That no recorded
+   mapping meets a mapped range of the pair is proved:
+   [Checks/VdsoDisjoint.init_config_star_vdso_maps_disjoint] (a brk grow
+   inside one page, which neither Linux nor the model tests, is covered
+   there by [vdso_heap_clear]).
    ========================================================================= *)
 
 (** [[lo, hi)] holds only mapped bytes of the pair: it is empty, or it
