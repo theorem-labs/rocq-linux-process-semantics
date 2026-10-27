@@ -37,14 +37,7 @@
     that a [MachineFault] is not the model giving up), so the two
     sections below are corollaries of it, and [err_escape_omni_strong_equiv]
     is the packaged escape in the shape of
-    [OmniEquivalence.omni_strong_equiv].
-
-    The coverage half needs one more fact about the fault: it is not a
-    fetch or a load that meets the vDSO pair
-    ([Run.mi_fault_reads_vdso] is [false]).  Linux reads the pair's bytes
-    and runs on, so the model reports such a fault unmodeled, and the
-    escape does not cover it.  The error half needs nothing: both answers
-    take the error transition ([Run.sstep_instr_step_fault]). *)
+    [OmniEquivalence.omni_strong_equiv]. *)
 
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
@@ -124,7 +117,8 @@ Proof.
   intros ms ms' model Hh Hlazy Hm Hsvc Hill.
   exists [], (mkCfg ms' model), [].
   split; [apply msteps_star_nil; assumption |].
-  apply sstep_instr_step_fault; assumption.
+  apply sstep_instr_fault; [assumption | assumption |].
+  rewrite (mi_account_step_no_lazy segs ms' model Hlazy), Hill. reflexivity.
 Qed.
 
 End WithSegs.
@@ -147,11 +141,13 @@ Lemma illegal_exec : forall ms model,
 Proof.
   intros ms model Hh Hlazy Hsvc Hill.
   apply exec_step; [exact Hh | | |].
-  - exists [], SError. apply sstep_instr_step_fault; assumption.
+  - exists [], SError. apply sstep_instr_fault; [assumption | assumption |].
+    rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill. reflexivity.
   - intros evs Hss. inversion Hss; subst; split; reflexivity.
   - intros evs c' Hnext. exfalso. inversion Hnext; subst; try congruence.
     match goal with H : mi_account_step segs ms model = MachineOk _ |- _ =>
-      exact (mi_account_step_fault_not_ok segs ms model _ Hill H)
+      rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill in H;
+      discriminate
     end.
 Qed.
 
@@ -203,17 +199,15 @@ Proof.
 Qed.
 
 (** The faulting configuration is covered: the fault is a
-    [MachineFault], not the model giving up — provided it is not a fetch
-    or a load on the vDSO pair, which is unmodeled. *)
+    [MachineFault], not the model giving up. *)
 Lemma fault_covered_at : forall ms model,
   m_vm_lazy model = [] ->
   ms_svc_pending ms = None ->
   RiscvSemantics.step segs ms = MachineFault ->
-  mi_fault_reads_vdso segs (m_vdso model) ms = false ->
   ~ unmodeled_at segs (mkCfg ms model).
 Proof.
-  intros ms model Hlazy Hsvc Hfault Hv (_ & [(_ & Hum) | (x8 & Hsvc' & _)]); cbn in *.
-  - rewrite (mi_account_step_fault segs ms model Hfault Hv) in Hum.
+  intros ms model Hlazy Hsvc Hfault (_ & [(_ & Hum) | (x8 & Hsvc' & _)]); cbn in *.
+  - rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hfault in Hum.
     discriminate.
   - congruence.
 Qed.
@@ -239,10 +233,9 @@ Lemma msteps_illegal_covered : forall ms ms' model,
   msteps segs ms ms' ->
   ms_svc_pending ms' = None ->
   RiscvSemantics.step segs ms' = MachineFault ->
-  mi_fault_reads_vdso segs (m_vdso model) ms' = false ->
   OmniRun.coexec segs (mkCfg ms model) (covered segs).
 Proof.
-  intros ms ms' model Hh Hlazy Hm Hsvc Hill Hv.
+  intros ms ms' model Hh Hlazy Hm Hsvc Hill.
   apply exec_coexec.
   eapply exec_conseq; [eapply msteps_illegal_exec; eassumption |].
   intros tr o (_ & ->). unfold covered. apply fault_covered_at; assumption.
@@ -299,10 +292,12 @@ Lemma illegal_all_traces_error : forall ms model,
 Proof.
   intros ms model Hh Hlazy Hsvc Hill.
   constructor.
-  - exists [], SError. apply sstep_instr_step_fault; assumption.
+  - exists [], SError. apply sstep_instr_fault; [assumption | assumption |].
+    rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill. reflexivity.
   - intros evs c' Hnext. inversion Hnext; subst; try congruence.
     match goal with H : mi_account_step segs ms model = MachineOk _ |- _ =>
-      exact (False_ind _ (mi_account_step_fault_not_ok segs ms model _ Hill H))
+      rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill in H;
+      discriminate
     end.
 Qed.
 
@@ -387,24 +382,23 @@ Proof.
 Qed.
 
 (** The faulting state itself is covered: its only transition is the
-    error one, and that error is a genuine fault (not one on the vDSO
-    pair). *)
+    error one, and that error is a genuine fault. *)
 Lemma fault_no_unmodeled : forall ms model,
   m_vm_lazy model = [] ->
   ms_svc_pending ms = None ->
   RiscvSemantics.step segs ms = MachineFault ->
-  mi_fault_reads_vdso segs (m_vdso model) ms = false ->
   ~ reaches_unmodeled segs (mkCfg ms model).
 Proof.
-  intros ms model Hlazy Hsvc Hfault Hv (tr & c & Hstar & Hun).
+  intros ms model Hlazy Hsvc Hfault (tr & c & Hstar & Hun).
   assert (Hno : forall evs c2, ~ sstep segs (mkCfg ms model) evs (SNext c2)).
   { intros evs c2 Hss. inversion Hss; subst; try congruence.
     match goal with H : mi_account_step segs ms model = MachineOk _ |- _ =>
-      exact (mi_account_step_fault_not_ok segs ms model _ Hfault H)
+      rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hfault in H;
+      discriminate
     end. }
   rewrite (star_stuck_refl _ tr c Hno Hstar) in Hun.
   destruct Hun as (_ & [(_ & Hum) | (x8 & Hsvc' & _)]); cbn in *.
-  - rewrite (mi_account_step_fault segs ms model Hfault Hv) in Hum.
+  - rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hfault in Hum.
     discriminate.
   - congruence.
 Qed.
@@ -436,10 +430,9 @@ Lemma msteps_fault_no_unmodeled : forall ms ms' model,
   m_vm_lazy model = [] ->
   ms_svc_pending ms' = None ->
   RiscvSemantics.step segs ms' = MachineFault ->
-  mi_fault_reads_vdso segs (m_vdso model) ms' = false ->
   ~ reaches_unmodeled segs (mkCfg ms model).
 Proof.
-  intros ms ms' model Hm Hlazy Hsvc Hfault Hv.
+  intros ms ms' model Hm Hlazy Hsvc Hfault.
   destruct (m_halted model) as [code |] eqn:Hh.
   - (* a halted model takes no transition, and a halted configuration is
        not one the model declined *)
@@ -469,21 +462,17 @@ Proof.
   eapply msteps_illegal_errors; [reflexivity | reflexivity | exact Hm | exact Hsvc | exact Hill].
 Qed.
 
-(** ... its coverage, when the fault is not on the vDSO pair the run
-    starts with ... *)
+(** ... its coverage ... *)
 Lemma err_escape_omni_covered :
   forall segs pc ph sp brk0 mb rnd lim inp ms',
   msteps segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ms' ->
   ms_svc_pending ms' = None ->
   RiscvSemantics.step segs ms' = MachineFault ->
-  mi_fault_reads_vdso segs (vdso_at mb (in_vdso inp)) ms' = false ->
   omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (covered segs).
 Proof.
-  intros segs pc ph sp brk0 mb rnd lim inp ms' Hm Hsvc Hill Hv.
+  intros segs pc ph sp brk0 mb rnd lim inp ms' Hm Hsvc Hill.
   cbn [omni_corun]. unfold init_config.
-  eapply msteps_illegal_covered;
-    [reflexivity | reflexivity | exact Hm | exact Hsvc | exact Hill |].
-  rewrite m_vdso_init_model. exact Hv.
+  eapply msteps_illegal_covered; [reflexivity | reflexivity | exact Hm | exact Hsvc | exact Hill].
 Qed.
 
 (** ... [OmniEquivalence.omni_equiv] against ANY target run ... *)
@@ -499,17 +488,15 @@ Proof.
 Qed.
 
 (** ... and the packaged [OmniEquivalence.omni_strong_equiv]: a source
-    that deterministically faults, not on the vDSO pair, against any
-    target image and entry. *)
+    that deterministically faults, against any target image and entry. *)
 Lemma err_escape_omni_strong_equiv :
   forall segs pc ph sp brk0 mb rnd inp T et ms',
   msteps segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ms' ->
   ms_svc_pending ms' = None ->
   RiscvSemantics.step segs ms' = MachineFault ->
-  mi_fault_reads_vdso segs (vdso_at mb (in_vdso inp)) ms' = false ->
   omni_strong_equiv (mkImage segs pc ph) T (mkEntry sp brk0 mb rnd) et inp.
 Proof.
-  intros segs pc ph sp brk0 mb rnd inp T et ms' Hm Hsvc Hill Hv.
+  intros segs pc ph sp brk0 mb rnd inp T et ms' Hm Hsvc Hill.
   split.
   - cbn [img_segments]. eapply err_escape_omni_covered; eassumption.
   - eapply err_escape_omni_equiv; eassumption.
@@ -531,8 +518,7 @@ Proof.
 Qed.
 
 (** …and the same run is MODELED: it dies, but at a [MachineFault], with
-    nothing but ordinary instructions before it, and the fault is not a
-    fetch or a load on the vDSO pair.  This is what stops the
+    nothing but ordinary instructions before it.  This is what stops the
     escape from being a way to launder an unmodeled source through the
     theorem.  From the same omni judgment, through
     [OmniEquivalence.modeled_iff]. *)
@@ -541,27 +527,24 @@ Lemma err_escape_modeled :
   msteps segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ms' ->
   ms_svc_pending ms' = None ->
   RiscvSemantics.step segs ms' = MachineFault ->
-  mi_fault_reads_vdso segs (vdso_at mb (in_vdso inp)) ms' = false ->
   Equivalence.modeled (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp).
 Proof.
-  intros segs pc ph sp brk0 mb rnd lim inp ms' Hm Hsvc Hill Hv.
+  intros segs pc ph sp brk0 mb rnd lim inp ms' Hm Hsvc Hill.
   apply modeled_iff. cbn [img_segments]. eapply err_escape_omni_covered; eassumption.
 Qed.
 
 (** The packaged escape: both clauses of [Equivalence.strong_equiv] for a
-    source that deterministically faults, not on the vDSO pair, against
-    ANY target. *)
+    source that deterministically faults, against ANY target. *)
 Lemma err_escape_strong_equiv :
   forall segs pc ph sp brk0 mb rnd lim inp (target : behavior) ms',
   msteps segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ms' ->
   ms_svc_pending ms' = None ->
   RiscvSemantics.step segs ms' = MachineFault ->
-  mi_fault_reads_vdso segs (vdso_at mb (in_vdso inp)) ms' = false ->
   Equivalence.modeled (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp)
   /\ Equivalence.equiv (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp)
        target.
 Proof.
-  intros segs pc ph sp brk0 mb rnd lim inp target ms' Hm Hsvc Hill Hv.
+  intros segs pc ph sp brk0 mb rnd lim inp target ms' Hm Hsvc Hill.
   split; [eapply err_escape_modeled | eapply err_escape_equiv]; eassumption.
 Qed.
 End WithFP1.

@@ -43,7 +43,7 @@ them. A proof says nothing about a program in such a case.
 | Network | The list of connections is never empty. Thus the model does not include an environment where no peer ever connects. |
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. |
 | Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
-| vDSO and vvar | A load or an instruction fetch from a mapped range of the pair is `unmodeled` (`Run.mi_account_step`), and so is a system call that reads user memory from it (`State.UserRead`). The pages hold the kernel's data and code, which the model does not have. A store to the pair is a fault, and a system call that writes to it answers `-EFAULT` or declines, as on Linux, because neither range is writable. The `mremap`, `mprotect` and `madvise` cases on the pair that the paragraph on the vDSO and vvar pages below does not list are also `unmodeled`. |
+| vDSO and vvar | A system call that reads user memory from a mapped range of the pair is `unmodeled` (`State.UserRead`). The pages hold the kernel's data and code, which the model does not have. A system call that writes to the pair answers `-EFAULT` or declines, as on Linux, because neither range is writable. The `mremap`, `mprotect` and `madvise` cases on the pair that the paragraph on the vDSO and vvar pages below does not list are also `unmodeled`. |
 
 The entry premises also limit the launches that a statement covers.
 `Run.valid_sp` requires an entry stack pointer in the top 2 GiB of the
@@ -91,13 +91,7 @@ removes them. An `mprotect` that asks for write access in the vvar range
 is `-EACCES`, and one that would split the code range is `-EINVAL`. An
 `mremap` whose source is in the pair returns the old address for an
 equal size, `-EFAULT` for a grow and `-EINVAL` for a shrink that splits.
-A load from the pair is `unmodeled`
-rather than a fault: a fault ends the run with an error, and
-`Equivalence.equiv` accepts any target for a source whose every run
-errors, so a fault where Linux runs on would make a statement true for
-the wrong reason. Every consumer of `Common.ErrEscape.err_escape_*`,
-`Common.SrcShape.srz_fault*` and `Common.AllocMixSim.tom_fault` carries a
-`mi_fault_reads_vdso … = false` premise for the same reason. The model
+The model
 does not publish `AT_SYSINFO_EHDR` (see "The
 auxiliary vector"), so a C library that looks for the vDSO in the
 auxiliary vector does not find it and makes the system call instead.
@@ -254,14 +248,6 @@ true of the model and false of the real systems.
   8 MiB mapping with a guard page below it, and the entry image is
   inside it (`setup_arg_pages` and `load_elf_binary` in
   `linux-user/elfload.c`, QEMU 8.2.2).
-- **vDSO and vvar fetch and atomics.** The model says `unmodeled` for any
-  load or fetch that meets a mapped range of the pair (see "Where the model
-  is narrower"). Four of those cases are faults on Linux: a fetch from
-  the vvar range, which is not executable; an AMO on the pair, whose
-  store half needs write permission; a load that meets the pair only in
-  part and whose other bytes are unmapped; and a load from the vvar
-  time-namespace page, which SIGBUSes outside a time namespace
-  (`vvar_fault`, `lib/vdso/datastore.c`). The model fails closed there.
 - **A failing store-conditional.** An `sc.w` or `sc.d` whose reservation
   does not match retires with rd = 1 and performs no store permission
   check (`Riscv/Sem.v`, the `Sc` arm). The RISC-V specification requires

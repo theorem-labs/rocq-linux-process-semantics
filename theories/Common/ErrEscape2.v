@@ -80,7 +80,8 @@ Proof.
   intros ms model Hh Hlazy Hsvc Hill.
   exists [], (mkCfg ms model), [].
   split; [apply star_refl |].
-  apply sstep_instr_step_fault; assumption.
+  apply sstep_instr_fault; try assumption.
+  rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill. reflexivity.
 Qed.
 
 End WithSegs.

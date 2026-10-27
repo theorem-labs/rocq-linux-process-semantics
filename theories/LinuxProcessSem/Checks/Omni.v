@@ -179,8 +179,7 @@ Proof.
 Qed.
 
 (** ... and when the answer is a fault, the only transition is the
-    error one (a genuine fault, or one on the vDSO pair, which is
-    unmodeled: both are [SError]). *)
+    error one. *)
 Lemma sstep_fault_only : forall segs ms model,
   m_vm_lazy model = [] ->
   ms_svc_pending ms = None ->
@@ -188,10 +187,13 @@ Lemma sstep_fault_only : forall segs ms model,
   forall evs st, sstep segs (mkCfg ms model) evs st -> evs = [] /\ st = SError.
 Proof.
   intros segs ms model Hlazy Hsvc Hstep evs st Hss.
-  inversion Hss; subst; try (split; congruence).
-  match goal with H : mi_account_step _ _ _ = MachineOk _ |- _ =>
-    exact (False_ind _ (mi_account_step_fault_not_ok segs ms model _ Hstep H))
-  end.
+  inversion Hss; subst;
+    try (match goal with
+         | H : mi_account_step _ _ _ = _ |- _ =>
+             rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hstep in H;
+             first [ split; reflexivity | discriminate H ]
+         end);
+    congruence.
 Qed.
 
 (** A configuration that steps to itself: silent forever. *)
@@ -813,19 +815,6 @@ Proof. reflexivity. Qed.
 Lemma ebreak_faults : RiscvSemantics.step ebreak_segments ebreak_ms = MachineFault.
 Proof. vm_compute. reflexivity. Qed.
 
-(** It faults on no memory access, so not on the vDSO pair [init_model]
-    places: the accounted step is a fault under every model. *)
-Lemma ebreak_no_fault_access :
-  step_fault_access ebreak_segments ebreak_ms = None.
-Proof. vm_compute. reflexivity. Qed.
-
-Lemma ebreak_account_fault : forall model,
-  mi_account_step ebreak_segments ebreak_ms model = MachineFault.
-Proof.
-  intros model. apply mi_account_step_fault; [exact ebreak_faults |].
-  apply mi_fault_reads_vdso_no_access. exact ebreak_no_fault_access.
-Qed.
-
 Lemma ebreak_only : forall lim evs st,
   sstep ebreak_segments (mkCfg ebreak_ms (ebreak_model lim)) evs st ->
   evs = [] /\ st = SError.
@@ -840,7 +829,7 @@ Proof.
   intros lim. cbn [omni_run ebreak_image demo_entry]. rewrite ebreak_config.
   apply exec_step; [reflexivity | | intros; exact I |].
   - eexists; eexists. apply sstep_instr_fault; [reflexivity | reflexivity |].
-    apply ebreak_account_fault.
+    no_lazy. rewrite ebreak_faults. reflexivity.
   - intros evs c' Hss. destruct (ebreak_only _ _ _ Hss) as (_ & Habs). discriminate Habs.
 Qed.
 
@@ -852,7 +841,7 @@ Proof.
   intros lim. cbn [omni_corun ebreak_image demo_entry]. rewrite ebreak_config.
   apply coexec_step; [reflexivity | |].
   - intros evs _ (_ & [(_ & Hun) | (x8 & Hsvc & _)]); cbn [cfg_ms cfg_model] in *.
-    + rewrite ebreak_account_fault in Hun. discriminate Hun.
+    + no_lazy_in Hun. rewrite ebreak_faults in Hun. discriminate Hun.
     + vm_compute in Hsvc. discriminate Hsvc.
   - intros evs c' Hss. destruct (ebreak_only _ _ _ Hss) as (_ & Habs). discriminate Habs.
 Qed.
@@ -865,7 +854,7 @@ Proof.
   intros lim H. cbn [omni_corun ebreak_image demo_entry] in H. rewrite ebreak_config in H.
   refine (coexec_sound _ _ _ _ (mexec_error _ _ _ _) _ H I).
   apply sstep_instr_fault; [reflexivity | reflexivity |].
-  apply ebreak_account_fault.
+  no_lazy. rewrite ebreak_faults. reflexivity.
 Qed.
 
 Example ebreak_omni_may_errors : forall lim,

@@ -237,7 +237,7 @@ In `Proof.v`, each input case uses exactly one library lemma:
 | `brk` allocation | `AllocSim.alloc_omni_strong_equiv` | `to_outcomes ... U`, with the same outcome set `U` |
 | one anonymous `mmap` | `MmapSim.mmap_omni_strong_equiv_te` | `tmw ...`, with the same failure and success results |
 | read and write loop that does not stop | `StreamSim.stream_omni_strong_equiv` | a loop invariant `to_rd` |
-| every source execution crashes | `ErrEscape.err_escape_omni_strong_equiv` | source only: `msteps` to a `MachineFault` whose access is not a fetch or a load on the vDSO pair (`Run.mi_fault_reads_vdso` is `false`) |
+| every source execution crashes | `ErrEscape.err_escape_omni_strong_equiv` | source only: `msteps` to a `MachineFault` |
 | any shape, any allocator | `ShapeAlg.shape_omni_strong_equiv` | a `realizes` derivation of the same shape |
 
 Use the crash row only when every execution of the source crashes. If an

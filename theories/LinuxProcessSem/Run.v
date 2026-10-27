@@ -316,57 +316,10 @@ Variable mi_alloc_limit : Z.
 Let mi_step := RiscvSemantics.step mi_loaded_segments.
 Let mi_step_accesses := RiscvSemantics.step_accesses mi_loaded_segments.
 
-(** A FAULTING FETCH OR LOAD THAT MEETS THE vDSO PAIR.  Linux maps both
-    ranges of the pair readable (the vvar pages VM_READ,
-    lib/vdso/datastore.c:99-105; the text VM_READ|VM_EXEC,
-    arch/riscv/kernel/vdso.c:137-140, Linux v6.18.46), but their bytes are
-    the kernel's, and no segment or overlay byte here holds them, so the
-    interpreter faults on a fetch or a load there where Linux reads on.
-    This is [true] exactly when the access the step faulted on
-    ([RiscvSemantics.step_fault_access], which takes the step's own path
-    to it) is a fetch or a load whose range meets a mapped range of the
-    pair ([State.vdso_meets]).  It is never [true] for a store: neither
-    range is writable on Linux either, so that fault is faithful.  (Three
-    reads fault on Linux too and are counted here, which fails closed: a
-    fetch from the vvar range, which lacks VM_EXEC; an AMO's load half on
-    the pair, whose store half needs write permission -- a bare [lr] is a
-    read and does not; and a load from the vvar time-namespace page,
-    which SIGBUSes outside a time namespace, lib/vdso/datastore.c:64-75.) *)
-Definition mi_fault_reads_vdso (v : VdsoState) (ms : machine_state) : bool :=
-  match RiscvSemantics.step_fault_access mi_loaded_segments ms with
-  | Some (AccFetch, (a, n)) | Some (AccLoad, (a, n)) =>
-      vdso_meets v (bv_unsigned a) (bv_unsigned a + Z.of_nat n)
-  | Some (AccStore, _) | None => false
-  end.
-
-Lemma mi_fault_reads_vdso_no_vdso : forall ms,
-  mi_fault_reads_vdso no_vdso ms = false.
-Proof.
-  intros ms. unfold mi_fault_reads_vdso.
-  destruct (RiscvSemantics.step_fault_access mi_loaded_segments ms)
-    as [[[| |] [a n]]|]; reflexivity.
-Qed.
-
-(** A fault on no access (an [ebreak], a misaligned pc, ...) is never
-    one on the pair. *)
-Lemma mi_fault_reads_vdso_no_access : forall v ms,
-  RiscvSemantics.step_fault_access mi_loaded_segments ms = None ->
-  mi_fault_reads_vdso v ms = false.
-Proof. intros v ms H. unfold mi_fault_reads_vdso. rewrite H. reflexivity. Qed.
-
 (** Execute one instruction and atomically charge every newly touched page in
     a lazy anonymous reservation.  The interpreter returns the complete access
     report before this function changes the model, so an instruction spanning
-    two new pages either charges both or takes the fault transition.
-
-    A fault on a fetch or a load that meets the vDSO pair is
-    [MachineUnmodeled], not [MachineFault] ([mi_fault_reads_vdso]).  A
-    [MachineFault] says the process really dies, and a run whose every
-    execution errors takes [Equivalence.equiv]'s [bh_all_errors] escape
-    and frees the target unanalyzed, with [Equivalence.modeled] still
-    satisfied (see [unmodeled_at]).  A source that faults only because
-    the model lacks the kernel's bytes would make that statement vacuously
-    true, while on Linux it reads them and runs on. *)
+    two new pages either charges both or takes the fault transition. *)
 Definition mi_account_step (ms : machine_state) (model : Model)
     : machine_result (machine_state * Model) :=
   match mi_step_accesses ms with
@@ -375,9 +328,7 @@ Definition mi_account_step (ms : machine_state) (model : Model)
       | Some model' => MachineOk (@access_value _ report, model')
       | None => MachineFault
       end
-  | MachineFault =>
-      if mi_fault_reads_vdso (m_vdso model) ms then MachineUnmodeled
-      else MachineFault
+  | MachineFault => MachineFault
   | MachineUnmodeled => MachineUnmodeled
   end.
 
@@ -392,9 +343,7 @@ Proof.
   unfold mi_account_step, mi_step_accesses in Haccount.
   remember (RiscvSemantics.step_accesses mi_loaded_segments ms) as stepped
     eqn:Hstepped.
-  destruct stepped as [report| |];
-    [|destruct (mi_fault_reads_vdso (m_vdso model) ms); discriminate
-     |discriminate].
+  destruct stepped as [report| |]; [|discriminate|discriminate].
   destruct (materialize_model_accesses model (@accessed_ranges _ report))
     as [accounted|] eqn:Hmaterialized; [|discriminate].
   inversion Haccount; subst.
@@ -415,9 +364,7 @@ Proof.
   intros ms model ms' model' Haccount.
   unfold mi_account_step, mi_step_accesses in Haccount.
   destruct (RiscvSemantics.step_accesses mi_loaded_segments ms)
-    as [report| |] eqn:Hstepped;
-    [|destruct (mi_fault_reads_vdso (m_vdso model) ms); discriminate
-     |discriminate].
+    as [report| |] eqn:Hstepped; [|discriminate|discriminate].
   destruct (materialize_model_accesses model (@accessed_ranges _ report))
     as [accounted|] eqn:Hmaterialized; [|discriminate].
   inversion Haccount; subst.
@@ -426,16 +373,13 @@ Proof.
 Qed.
 
 (** With no lazy mappings there is nothing to charge, so accounting erases
-    completely and preserves the model as well as the machine step.  A
-    fault keeps its vDSO classification. *)
+    completely and preserves the model as well as the machine step. *)
 Lemma mi_account_step_no_lazy : forall ms model,
   m_vm_lazy model = [] ->
   mi_account_step ms model =
     match mi_step ms with
     | MachineOk ms' => MachineOk (ms', model)
-    | MachineFault =>
-        if mi_fault_reads_vdso (m_vdso model) ms then MachineUnmodeled
-        else MachineFault
+    | MachineFault => MachineFault
     | MachineUnmodeled => MachineUnmodeled
     end.
 Proof.
@@ -449,55 +393,6 @@ Proof.
   destruct stepped as [[ms' accesses]| |]; cbn; try reflexivity.
   rewrite (materialize_model_accesses_no_lazy model accesses Hlazy).
   reflexivity.
-Qed.
-
-(** A faulting instruction step, lazy mappings or not: [MachineFault]
-    unless the access it faulted on reads the vDSO pair, and
-    [MachineUnmodeled] if it does.  Never a successor. *)
-Lemma mi_account_step_fault : forall ms model,
-  mi_step ms = MachineFault ->
-  mi_fault_reads_vdso (m_vdso model) ms = false ->
-  mi_account_step ms model = MachineFault.
-Proof.
-  intros ms model Hstep Hv.
-  unfold mi_account_step, mi_step_accesses.
-  unfold mi_step, RiscvSemantics.step in Hstep.
-  destruct (RiscvSemantics.step_accesses mi_loaded_segments ms);
-    cbn in Hstep; try discriminate Hstep.
-  rewrite Hv. reflexivity.
-Qed.
-
-Lemma mi_account_step_fault_vdso : forall ms model,
-  mi_step ms = MachineFault ->
-  mi_fault_reads_vdso (m_vdso model) ms = true ->
-  mi_account_step ms model = MachineUnmodeled.
-Proof.
-  intros ms model Hstep Hv.
-  unfold mi_account_step, mi_step_accesses.
-  unfold mi_step, RiscvSemantics.step in Hstep.
-  destruct (RiscvSemantics.step_accesses mi_loaded_segments ms);
-    cbn in Hstep; try discriminate Hstep.
-  rewrite Hv. reflexivity.
-Qed.
-
-Lemma mi_account_step_fault_not_ok : forall ms model r,
-  mi_step ms = MachineFault ->
-  mi_account_step ms model <> MachineOk r.
-Proof.
-  intros ms model r Hstep.
-  destruct (mi_fault_reads_vdso (m_vdso model) ms) eqn:Hv.
-  - rewrite (mi_account_step_fault_vdso ms model Hstep Hv). discriminate.
-  - rewrite (mi_account_step_fault ms model Hstep Hv). discriminate.
-Qed.
-
-(** On a model with no pair, a fault is a fault. *)
-Lemma mi_account_step_fault_no_vdso : forall ms model,
-  m_vdso model = no_vdso ->
-  mi_step ms = MachineFault ->
-  mi_account_step ms model = MachineFault.
-Proof.
-  intros ms model Hv Hstep. apply mi_account_step_fault; [exact Hstep|].
-  rewrite Hv. apply mi_fault_reads_vdso_no_vdso.
 Qed.
 
 (** The input handed to the syscall spec: the syscall number, the
@@ -575,23 +470,6 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
     ms_svc_pending ms = Some x8 ->
     syscall_spec (sys_input ms x8) model Unmodeled ->
     sstep (mkCfg ms model) [] SError.
-
-(** A faulting instruction takes the error transition either way: through
-    [sstep_instr_fault], or through [sstep_instr_unmodeled] when the access
-    it faulted on reads the vDSO pair ([mi_fault_reads_vdso]). *)
-Lemma sstep_instr_step_fault : forall ms model,
-  m_halted model = None ->
-  ms_svc_pending ms = None ->
-  mi_step ms = MachineFault ->
-  sstep (mkCfg ms model) [] SError.
-Proof.
-  intros ms model Hh Hsvc Hstep.
-  destruct (mi_fault_reads_vdso (m_vdso model) ms) eqn:Hv.
-  - apply sstep_instr_unmodeled; [exact Hh | exact Hsvc |].
-    exact (mi_account_step_fault_vdso ms model Hstep Hv).
-  - apply sstep_instr_fault; [exact Hh | exact Hsvc |].
-    exact (mi_account_step_fault ms model Hstep Hv).
-Qed.
 
 (** Kleene star of [sstep], accumulating events. *)
 Inductive star : config -> list event -> config -> Prop :=
@@ -827,10 +705,8 @@ Definition reaches_error (c0 : config) : Prop :=
     decline to say what happens:
 
     - the pending instruction is [MachineUnmodeled] — a word the decoder
-      does not decode, an instruction outside the modeled subset, an
-      unmodeled ISA boundary node (see [RiscvSemantics.machine_result]),
-      or a fetch or load that faults on the vDSO pair, whose bytes Linux
-      reads and the model does not have ([mi_fault_reads_vdso]);
+      does not decode, an instruction outside the modeled subset, or an
+      unmodeled ISA boundary node (see [RiscvSemantics.machine_result]);
     - the pending syscall's spec yields [Unmodeled] — the fail-closed arm of
       [Specs.syscall_spec], reached by a syscall number outside
       [Specs.modeled_sysnos], by unmodeled flags, or by a buffer the
@@ -844,8 +720,7 @@ Definition reaches_error (c0 : config) : Prop :=
     binary is entitled to reach them.  This is the whole point of the
     distinction — an equivalence task is allowed to be about a program
     that crashes, but it must not be about a program the semantics
-    failed to follow.  That is also why a fault on the vDSO pair is not
-    one of them: there the model, not the process, is what fails.
+    failed to follow.
 
     THAT EXCLUSION IS A CLAIM ABOUT SIGNAL DISPOSITIONS, and it is not
     self-evident: a process that has installed a SIGSEGV handler does

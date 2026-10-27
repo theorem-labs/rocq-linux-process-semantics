@@ -18,9 +18,7 @@
 
     This file provides [to_outcomes_mix]: the same shape as
     [to_outcomes], plus an ERROR LEAF ([tom_fault]) for a branch that runs
-    a deterministic instruction line into an illegal instruction (a
-    genuine fault: not a fetch or a load on the vDSO pair, which the
-    model reports unmodeled — [Run.mi_fault_reads_vdso]).  Such
+    a deterministic instruction line into an illegal instruction.  Such
     a branch contributes NO outcome and NO events — every [star] run
     inside it is silent — so the trace set of the whole tree is still
     exactly the prefixes of the outcome traces of the surviving outcome
@@ -57,7 +55,6 @@ Inductive to_outcomes_mix :
     msteps segs ms ms' ->
     ms_svc_pending ms' = None ->
     RiscvSemantics.step segs ms' = MachineFault ->
-    mi_fault_reads_vdso segs (m_vdso model) ms' = false ->
     (forall o, ~ U o) ->
     to_outcomes_mix ms model U
 | tom_step : forall ms ms' model U,
@@ -97,12 +94,12 @@ Proof.
   intros ms model U V Hto; revert V.
   induction Hto as
     [ ms model U Hout
-    | ms ms' model U Hm Hsvc Hill Hv HU
+    | ms ms' model U Hm Hsvc Hill HU
     | ms ms' model U Hsvc Hstep Hto IH
     | ms model x8 T U Hsvc Hno Hcont IH HU ];
     intros V HV.
   - apply tom_out. eapply tou_equiv; [exact Hout | exact HV].
-  - eapply tom_fault; [exact Hm | exact Hsvc | exact Hill | exact Hv |].
+  - eapply tom_fault; [exact Hm | exact Hsvc | exact Hill |].
     intros o Ho. exact (HU o (proj1 (HV o) Ho)).
   - eapply tom_step; [exact Hsvc | exact Hstep | apply IH; exact HV].
   - apply (tom_brk ms model x8 T V); [exact Hsvc | exact Hno | |].
@@ -158,7 +155,8 @@ Proof.
   intros ms model evs c' Hlazy Hsvc Hill Hss.
   inversion Hss; subst; try congruence.
   match goal with H : mi_account_step segs ms model = MachineOk _ |- _ =>
-    exact (mi_account_step_fault_not_ok segs ms model _ Hill H)
+    rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill in H;
+    discriminate
   end.
 Qed.
 
@@ -195,7 +193,7 @@ Proof.
   intros ms model U Hto.
   induction Hto as
     [ ms model U Hout
-    | ms ms' model U Hm Hsvc Hill Hv HU
+    | ms ms' model U Hm Hsvc Hill HU
     | ms ms' model U Hsvc Hstep Hto IH
     | ms model x8 T U Hsvc Hno Hcont IH HU ];
     intros Hh Hlazy tr c Hstar.
@@ -236,7 +234,7 @@ Proof.
   intros ms model U Hto.
   induction Hto as
     [ ms model U Hout
-    | ms ms' model U Hm Hsvc Hill Hv HU
+    | ms ms' model U Hm Hsvc Hill HU
     | ms ms' model U Hsvc Hstep Hto IH
     | ms model x8 T U Hsvc Hno Hcont IH HU ];
     intros Hh Hlazy o Ho.
@@ -282,7 +280,7 @@ Proof.
   intros ms model U Hto.
   induction Hto as
     [ ms model U Hout
-    | ms ms' model U Hm Hsvc Hill Hv HU
+    | ms ms' model U Hm Hsvc Hill HU
     | ms ms' model U Hsvc Hstep Hto IH
     | ms model x8 T U Hsvc Hno Hcont IH HU ];
     intros Hh Hlazy.
