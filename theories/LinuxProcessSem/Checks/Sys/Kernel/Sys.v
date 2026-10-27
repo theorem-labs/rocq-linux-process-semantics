@@ -109,12 +109,13 @@ Definition check_prlimit64 (i : SyscallInput)
     match m_rlimit_core m with
     | None => CheckUnmodeled
     | Some bs0 =>
-        match read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16) with
-        | None =>
+        match user_read i m new_rlim (Z_to_bv 64 16) with
+        | USpecial => CheckUnmodeled
+        | UFault =>
             if negb (access_okb new_rlim 16)
             then check_ret_only eff (errno_ret EFAULT) m []
             else CheckUnmodeled
-        | Some nb =>
+        | UOk nb =>
             if (bv_unsigned (rlim64_hard nb) <? bv_unsigned (rlim64_soft nb))%Z
             then check_ret_only_copyins [(new_rlim, 16%nat)]
                    eff (errno_ret EINVAL) m []
@@ -592,7 +593,7 @@ Proof.
         [|discriminate].
       apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok.
   - destruct (m_rlimit_core m) as [bs0|] eqn:Hm; [|discriminate].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|]
+    destruct (user_read i m new_rlim (Z_to_bv 64 16)) as [nb| |]
       eqn:Hw.
     + destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z) eqn:Hi.
@@ -606,6 +607,7 @@ Proof.
     + destruct (negb (access_okb new_rlim 16)) eqn:Ho;
         [|discriminate].
       apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok.
+    + discriminate.
 Qed.
 
 Lemma check_prlimit64_sound_unmodeled :
@@ -637,7 +639,7 @@ Proof.
       * now apply check_ret_only_no_unmodeled in H.
       * apply unmodeled_intro.
   - destruct (m_rlimit_core m) as [bs0|] eqn:Hm; [|apply unmodeled_intro].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|]
+    destruct (user_read i m new_rlim (Z_to_bv 64 16)) as [nb| |]
       eqn:Hw.
     + destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z) eqn:Hi.
@@ -648,6 +650,7 @@ Proof.
     + destruct (negb (access_okb new_rlim 16)) eqn:Ho.
       * now apply check_ret_only_no_unmodeled in H.
       * apply unmodeled_intro.
+    + apply unmodeled_intro.
 Qed.
 
 Lemma check_prlimit64_complete_ok :
@@ -679,7 +682,7 @@ Proof.
       apply check_ret_only_ok_iff. now repeat split.
   - destruct (m_rlimit_core m) as [bs0|] eqn:Hm;
       [|sys_unfold; inv_ok; hall Hn; hall Hm; inv_ok].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|]
+    destruct (user_read i m new_rlim (Z_to_bv 64 16)) as [nb| |]
       eqn:Hw.
     + destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z) eqn:Hi;
@@ -693,6 +696,7 @@ Proof.
     + destruct (negb (access_okb new_rlim 16)) eqn:Ho;
         sys_unfold; inv_ok; hall Hn; hall Hm; hall Hw; hall Ho; inv_ok.
       apply check_ret_only_ok_iff. now repeat split.
+    + sys_unfold; inv_ok; hall Hn; hall Hm; hall Hw; inv_ok.
 Qed.
 
 Lemma check_prlimit64_complete_unmodeled :
@@ -718,7 +722,7 @@ Proof.
         [exfalso|reflexivity];
         sys_unfold; inv_ok; hall Hn; hall Hw; hall Ho; inv_ok.
   - destruct (m_rlimit_core m) as [bs0|] eqn:Hm; [|reflexivity].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|]
+    destruct (user_read i m new_rlim (Z_to_bv 64 16)) as [nb| |]
       eqn:Hw.
     + destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z) eqn:Hi;
@@ -731,6 +735,7 @@ Proof.
     + destruct (negb (access_okb new_rlim 16)) eqn:Ho;
         [exfalso|reflexivity];
         sys_unfold; inv_ok; hall Hn; hall Hm; hall Hw; hall Ho; inv_ok.
+    + reflexivity.
 Qed.
 
 (* =========================================================================

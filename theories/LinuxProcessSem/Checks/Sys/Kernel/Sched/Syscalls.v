@@ -89,12 +89,13 @@ Definition check_sched_setscheduler (i : SyscallInput)
   else if (w_is0 param || (sint32 pid <? 0)%Z)%bool
   then check_ret_only eff (errno_ret EINVAL) m []
   else
-  match read_bytes_map (in_mem i) param (Z_to_bv 64 4) with
-  | None =>
+  match user_read i m param (Z_to_bv 64 4) with
+  | USpecial => CheckUnmodeled
+  | UFault =>
       if negb (access_okb param 4)
       then check_ret_only eff (errno_ret EFAULT) m []
       else CheckUnmodeled
-  | Some bs =>
+  | UOk bs =>
       if negb (sched_targets_self_b pid m) then CheckUnmodeled
       else
         match sched_setscheduler_answer (bv_unsigned (abi_low32 policy))
@@ -121,7 +122,7 @@ Proof.
   cbv iota.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) param (Z_to_bv 64 4)) as [bs|] eqn:Hread.
+  destruct (user_read i m param (Z_to_bv 64 4)) as [bs| |] eqn:Hread.
   - destruct (negb (sched_targets_self_b pid m)) eqn:Hself; [discriminate|].
     cbv iota.
     destruct (sched_setscheduler_answer (bv_unsigned (abi_low32 policy))
@@ -132,12 +133,14 @@ Proof.
   - destruct (negb (access_okb param 4)) eqn:Hacc; [|discriminate].
     apply check_ret_only_ok_iff in H as (-> & -> & ->).
     unfold err_ret, ret_only. apply pure_ok.
+  - discriminate.
 Qed.
 
-(** The four declines, in the order the kernel reaches them: a [param]
-    range [access_ok] admits but memory does not back, a pid naming a
-    task this model has no representation of, and the two shapes
-    [sched_setscheduler_answer] answers [None] for. *)
+(** The five declines, in the order the kernel reaches them: a [param]
+    read that reaches the vDSO pair, a [param] range [access_ok] admits
+    but memory does not back, a pid naming a task this model has no
+    representation of, and the two shapes [sched_setscheduler_answer]
+    answers [None] for. *)
 Lemma check_sched_setscheduler_sound_unmodeled :
   forall i pid policy param eff m,
   check_sched_setscheduler i pid policy param eff m = CheckUnmodeled ->
@@ -153,7 +156,7 @@ Proof.
   cbv iota.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) param (Z_to_bv 64 4)) as [bs|] eqn:Hread.
+  destruct (user_read i m param (Z_to_bv 64 4)) as [bs| |] eqn:Hread.
   - apply record_copyins_unmodeled.
     destruct (negb (sched_targets_self_b pid m)) eqn:Hself.
     { cbv iota. apply unmodeled_intro. }
@@ -165,6 +168,7 @@ Proof.
   - destruct (negb (access_okb param 4)) eqn:Hacc.
     + now apply check_ret_only_no_unmodeled in H.
     + apply unmodeled_intro.
+  - apply unmodeled_intro.
 Qed.
 
 Lemma check_sched_setscheduler_complete_ok :
@@ -183,7 +187,7 @@ Proof.
     now apply check_ret_only_ok_iff. }
   cbv iota in H.
   apply bind_input_model_inv in H.
-  destruct (read_bytes_map (in_mem i) param (Z_to_bv 64 4)) as [bs|] eqn:Hread.
+  destruct (user_read i m param (Z_to_bv 64 4)) as [bs| |] eqn:Hread.
   - apply record_copyins_ok_inv in H as (core & Hcore & ->).
     destruct (negb (sched_targets_self_b pid m)) eqn:Hself.
     { cbv iota in Hcore. discriminate Hcore. }
@@ -197,6 +201,7 @@ Proof.
     + unfold err_ret, ret_only in H. inversion H; subst.
       now apply check_ret_only_ok_iff.
     + discriminate H.
+  - discriminate H.
 Qed.
 
 Lemma check_sched_setscheduler_complete_unmodeled :
@@ -213,7 +218,7 @@ Proof.
   { cbv iota in H. unfold err_ret, ret_only in H. discriminate H. }
   cbv iota in H.
   apply bind_input_model_inv in H.
-  destruct (read_bytes_map (in_mem i) param (Z_to_bv 64 4)) as [bs|] eqn:Hread.
+  destruct (user_read i m param (Z_to_bv 64 4)) as [bs| |] eqn:Hread.
   - apply record_copyins_unmodeled_inv in H.
     destruct (negb (sched_targets_self_b pid m)) eqn:Hself; [reflexivity|].
     cbv iota in H.
@@ -223,6 +228,7 @@ Proof.
     unfold ret_only in H. discriminate H.
   - destruct (negb (access_okb param 4)) eqn:Hacc; [|reflexivity].
     unfold err_ret, ret_only in H. discriminate H.
+  - reflexivity.
 Qed.
 
 (** [sched_yield] (124): 0, no writes, no state change, no events, and

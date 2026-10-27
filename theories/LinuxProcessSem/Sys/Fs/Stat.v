@@ -213,10 +213,10 @@ Definition modeled_statat_flags (flag : word) : bool :=
     THE COPY-IN LEDGER.  The pathname fetch is a real
     [strncpy_from_user] of user memory, so it is recorded as one, with
     the same [record_copyins] wrapper and the same range
-    [Open.openat_spec] uses: [cstr_access_len_aux (in_mem i) pathp
-    path_max], the bytes through the first NUL, the first unreadable
-    byte, or PATH_MAX.  The wrapper sits OUTSIDE the flag test, so every
-    arm the spec ANSWERS carries the ledger — the [CstrFault] one
+    [Open.openat_spec] uses: [State.user_cstr_access_len i m pathp], the
+    bytes through the first NUL, the first unreadable byte, or PATH_MAX.
+    The wrapper sits OUTSIDE the flag test, so every
+    arm the spec ANSWERS carries the ledger — the -EFAULT one
     included, where [cstr_access_len_aux] counts the faulting byte
     itself (a [None] byte is 1, [State.v]): the kernel attempted that
     byte, and an immediate -EFAULT is a fetch that happened, not one
@@ -236,15 +236,15 @@ Definition modeled_statat_flags (flag : word) : bool :=
     at a time, and this spec inherits that bound rather than restating it.
 
     SHARED WITH [Open.openat_spec], AND DELIBERATELY LEFT INLINE.  The
-    three steps between the flag word and the path — [read_cstr]'s three
+    three steps between the flag word and the path — [user_read_cstr]'s
     answers, the empty pathname's -ENOENT, and the AT_FDCWD gate — are
     the same sequence [Open.openat_spec] runs, wrapped in the same
     ledger, and those two specs are its only copies (mirrored once more
     by [Open.check_openat] and [Stat.check_newfstatat], whose soundness
-    and completeness lemmas discharge by destructing [read_cstr]
+    and completeness lemmas discharge by destructing [user_read_cstr]
     directly).  They are kept side by side rather than hoisted into a
     shared combinator: what repeats is five lines of already shared
-    primitives ([read_cstr], [Fs.path_eqb], [Uapi.AT_FDCWD32],
+    primitives ([user_read_cstr], [Fs.path_eqb], [Uapi.AT_FDCWD32],
     [err_ret]) under one already shared wrapper
     ([Syscall.record_copyins]), and hoisting them would have to thread a
     continuation through both checkers, where the arm-for-arm mirroring
@@ -263,10 +263,16 @@ Definition newfstatat_core_spec (dirfd pathp flag : word) : Sys SyscallEffect :=
   else
     (* [getname_flags()]: all three of its answers are real errnos, and
        all three preempt the dirfd. *)
-    match read_cstr (in_mem i) pathp with
-    | CstrTooLong => err_ret ENAMETOOLONG        (* no NUL within PATH_MAX *)
-    | CstrFault => err_ret EFAULT                (* unmapped byte in the path string *)
-    | CstrOk p =>
+    match user_read_cstr i m pathp with
+    | UOk CstrTooLong => err_ret ENAMETOOLONG    (* no NUL within PATH_MAX *)
+    (* unmapped byte in the path string ([UOk CstrFault] does not occur:
+       [State.user_read_cstr_ok_iff]) *)
+    | UFault | UOk CstrFault => err_ret EFAULT
+    (* the walk reached the vDSO pair before a NUL: Linux reads on with
+       bytes the model does not hold (arch/riscv/kernel/vdso.c;
+       [State.UserRead]) *)
+    | USpecial => unmodeled
+    | UOk (CstrOk p) =>
         if path_eqb p [] then err_ret ENOENT     (* empty pathname: AT_EMPTY_PATH is not modeled *)
         else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled  (* unmodeled dirfd: fail closed *)
         else if path_eqb p dot_path then unmodeled  (* the working directory: no metadata in [Fs] *)
@@ -290,7 +296,8 @@ Definition newfstatat_core_spec (dirfd pathp flag : word) : Sys SyscallEffect :=
     caller finally sees, where the flag word still wins. *)
 Definition newfstatat_spec (dirfd pathp flag : word) : Sys SyscallEffect :=
   i <- input ;;
-  record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+  m <- get_model ;;
+  record_copyins [(pathp, user_cstr_access_len i m pathp)]
     (newfstatat_core_spec dirfd pathp flag).
 
 (** [fstat fd statbuf] — [newfstatat]'s descriptor-only sibling, and the

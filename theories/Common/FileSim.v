@@ -1245,6 +1245,7 @@ Proof.
   rewrite (check_syscall_56 segs ms x8 eff model Hno). unfold check_openat.
   rewrite (modeled_open_flags_rd _ Hfl). cbn [negb]. cbv beta iota.
   unfold Prelude.check_copyins_after, Open.check_openat_body.
+  unfold user_read_cstr, user_cstr_access_len.
   rewrite in_mem_si, Hpath. cbv beta iota zeta.
   rewrite Hpe. cbv beta iota.
   rewrite Hdirfd; norm_fd32; rewrite bv_eqb_refl. cbn [negb]. cbv beta iota.
@@ -1290,6 +1291,7 @@ Proof.
   rewrite (check_syscall_56 segs ms x8 eff model Hno). unfold check_openat.
   rewrite (modeled_open_flags_wr _ Hfl). cbn [negb]. cbv beta iota.
   unfold Prelude.check_copyins_after, Open.check_openat_body.
+  unfold user_read_cstr, user_cstr_access_len.
   rewrite in_mem_si, Hpath. cbv beta iota zeta.
   rewrite Hpe. cbv beta iota.
   rewrite Hdirfd; norm_fd32; rewrite bv_eqb_refl. cbn [negb]. cbv beta iota.
@@ -1337,6 +1339,7 @@ Proof.
   rewrite (check_syscall_56 segs ms x8 eff model Hno). unfold check_openat.
   rewrite (modeled_open_flags_wr _ Hfl). cbn [negb]. cbv beta iota.
   unfold Prelude.check_copyins_after, Open.check_openat_body.
+  unfold user_read_cstr, user_cstr_access_len.
   rewrite in_mem_si, Hpath. cbv beta iota zeta.
   rewrite Hpe. cbv beta iota.
   rewrite Hdirfd; norm_fd32; rewrite bv_eqb_refl. cbn [negb]. cbv beta iota.
@@ -1370,6 +1373,7 @@ Proof.
   rewrite (check_syscall_56 segs ms x8 eff model Hno). unfold check_openat.
   rewrite Hfl. cbn [negb]. cbv beta iota.
   unfold Prelude.check_copyins_after, Open.check_openat_body.
+  unfold user_read_cstr, user_cstr_access_len.
   rewrite in_mem_si, Hpath.
   unfold check_ret_only_copyins, open_copyins.
   destruct (check_ret_only (clear_copyins eff) (errno_ret ENAMETOOLONG)
@@ -1562,6 +1566,7 @@ Proof.
     unfold check_openat.
     rewrite (modeled_open_flags_rd _ Hfl). cbn [negb]. cbv beta iota.
     unfold Prelude.check_copyins_after, Open.check_openat_body.
+    unfold user_read_cstr, user_cstr_access_len.
     rewrite in_mem_si, Hpath. cbv beta iota zeta.
     (* the empty path is -ENOENT by fiat, any other by the absent lookup *)
     destruct (path_eqb p []) eqn:Hpe; cbv beta iota.

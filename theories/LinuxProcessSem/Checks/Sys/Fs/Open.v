@@ -412,10 +412,11 @@ Local Definition check_openat_resolved (p : path) (flags : word)
 
 Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  match read_cstr (in_mem i) pathp with
-    | CstrTooLong => check_ret_only eff (errno_ret ENAMETOOLONG) m []
-    | CstrFault => check_ret_only eff (errno_ret EFAULT) m []
-    | CstrOk p =>
+  match user_read_cstr i m pathp with
+    | UOk CstrTooLong => check_ret_only eff (errno_ret ENAMETOOLONG) m []
+    | UFault | UOk CstrFault => check_ret_only eff (errno_ret EFAULT) m []
+    | USpecial => CheckUnmodeled
+    | UOk (CstrOk p) =>
         if path_eqb p [] then check_ret_only eff (errno_ret ENOENT) m []
         else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
         else check_openat_resolved p flags eff m
@@ -425,7 +426,7 @@ Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
 
 
 (** The pathname copy-in is the prefix through the first NUL, the first
-    faulting byte, or [PATH_MAX] — [State.cstr_access_len_aux].  That is
+    faulting byte, or [PATH_MAX] — [State.user_cstr_access_len].  That is
     the range the model records, not the one [getname()] loads:
     [strncpy_from_user] reads a word at a time and so runs to the end of
     the word holding the NUL, up to 7 bytes further, without moving the
@@ -438,7 +439,7 @@ Definition check_openat (i : SyscallInput) (dirfd pathp flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (modeled_open_flags flags) then CheckUnmodeled
   else
-    let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
+    let reads := [(pathp, user_cstr_access_len i m pathp)] in
     check_copyins_after reads eff
       (check_openat_body i dirfd pathp flags (clear_copyins eff) m).
 
@@ -487,14 +488,18 @@ Proof.
           | Some x => Hsome x | None => Hnone end).
 Qed.
 
-Local Lemma refine_cstr (r : cstr_result) (P : cstr_result -> Prop) :
-  (forall p, P (CstrOk p)) -> P CstrTooLong -> P CstrFault -> P r.
+Local Lemma refine_ucstr (r : UserRead cstr_result)
+    (P : UserRead cstr_result -> Prop) :
+  (forall p, P (UOk (CstrOk p))) -> P (UOk CstrTooLong) ->
+  P (UOk CstrFault) -> P UFault -> P USpecial -> P r.
 Proof.
-  intros Hok Htoo_long Hfault.
+  intros Hok Htoo_long Hcfault Hfault Hspecial.
   refine (match r as r' return P r' with
-          | CstrOk p => Hok p
-          | CstrTooLong => Htoo_long
-          | CstrFault => Hfault
+          | UOk (CstrOk p) => Hok p
+          | UOk CstrTooLong => Htoo_long
+          | UOk CstrFault => Hcfault
+          | UFault => Hfault
+          | USpecial => Hspecial
           end).
 Qed.
 
@@ -745,13 +750,15 @@ Local Lemma check_openat_body_spec_sound_ok :
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   unfold check_openat_body, openat_body_spec in H |- *.
-  destruct (read_cstr (in_mem i) pathp) as [p| |].
+  destruct (user_read_cstr i m pathp) as [[p| |]| |].
   - destruct (path_eqb p []).
     + now apply check_ret_only_sound_ok.
     + destruct (negb (bv_eqb dirfd AT_FDCWD32)); [discriminate|].
       now apply check_openat_resolved_sound_ok.
   - now apply check_ret_only_sound_ok.
   - now apply check_ret_only_sound_ok.
+  - now apply check_ret_only_sound_ok.
+  - discriminate.
 Qed.
 
 Local Lemma check_openat_body_sound_ok : forall i dirfd pathp flags eff m m' evs,
@@ -781,6 +788,7 @@ Proof.
   pose proof (check_openat_body_sound_ok i dirfd pathp flags eff
     m m' evs Hfl Hchecked) as Hcore.
   unfold openat_spec. eapply bind_ok0; [apply input_ok|]. cbv beta.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
   now apply record_copyins_clear_ok.
 Qed.
 
@@ -1013,7 +1021,7 @@ Local Lemma check_openat_body_spec_sound_unmodeled :
 Proof.
   intros i dirfd pathp flags eff m H.
   unfold check_openat_body, openat_body_spec in *.
-  destruct (read_cstr (in_mem i) pathp) as [p| |].
+  destruct (user_read_cstr i m pathp) as [[p| |]| |].
   - destruct (path_eqb p []).
     + exfalso. now apply check_ret_only_no_unmodeled in H.
     + destruct (negb (bv_eqb dirfd AT_FDCWD32)).
@@ -1021,6 +1029,8 @@ Proof.
       * exact (check_openat_resolved_sound_unmodeled i p flags eff m H).
   - exfalso. now apply check_ret_only_no_unmodeled in H.
   - exfalso. now apply check_ret_only_no_unmodeled in H.
+  - exfalso. now apply check_ret_only_no_unmodeled in H.
+  - apply unmodeled_intro.
 Qed.
 
 Local Lemma check_openat_body_sound_unmodeled :
@@ -1046,12 +1056,14 @@ Proof.
   unfold check_openat in H.
   destruct (negb (modeled_open_flags flags)) eqn:Hfl.
   - unfold openat_spec. eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
     apply record_copyins_unmodeled. unfold openat_core_spec.
     eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
     rewrite Hfl. apply unmodeled_intro.
   - cbv iota in H. apply check_copyins_after_unmodeled in H.
     unfold openat_spec. eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
     apply record_copyins_unmodeled.
     exact (check_openat_body_sound_unmodeled i dirfd pathp flags
       (clear_copyins eff) m Hfl H).
@@ -1470,24 +1482,26 @@ Local Lemma check_openat_body_complete_ok : forall i dirfd pathp flags eff m m' 
 Proof.
   intros i dirfd pathp flags eff m m' evs.
   unfold openat_body_spec, check_openat_body.
-  refine (refine_cstr (read_cstr (in_mem i) pathp)
+  refine (refine_ucstr (user_read_cstr i m pathp)
     (fun r => completes_ok i m eff m' evs
       (match r with
-       | CstrOk p =>
+       | UOk CstrTooLong => err_ret ENAMETOOLONG
+       | UFault | UOk CstrFault => err_ret EFAULT
+       | USpecial => unmodeled
+       | UOk (CstrOk p) =>
            if path_eqb p [] then err_ret ENOENT
            else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
            else openat_resolved_spec p flags m
-       | CstrTooLong => err_ret ENAMETOOLONG
-       | CstrFault => err_ret EFAULT
        end)
       (match r with
-       | CstrOk p =>
+       | UOk CstrTooLong => check_ret_only eff (errno_ret ENAMETOOLONG) m []
+       | UFault | UOk CstrFault => check_ret_only eff (errno_ret EFAULT) m []
+       | USpecial => CheckUnmodeled
+       | UOk (CstrOk p) =>
            if path_eqb p [] then check_ret_only eff (errno_ret ENOENT) m []
            else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
            else check_openat_resolved p flags eff m
-       | CstrTooLong => check_ret_only eff (errno_ret ENAMETOOLONG) m []
-       | CstrFault => check_ret_only eff (errno_ret EFAULT) m []
-       end)) _ _ _).
+       end)) _ _ _ _ _).
   - intro p.
     refine (refine_if (path_eqb p [])
       (fun b => completes_ok i m eff m' evs
@@ -1507,6 +1521,8 @@ Proof.
       * unfold completes_ok. apply check_openat_resolved_complete_ok.
   - unfold completes_ok. apply check_ret_only_complete_ok.
   - unfold completes_ok. apply check_ret_only_complete_ok.
+  - unfold completes_ok. apply check_ret_only_complete_ok.
+  - unfold completes_ok, unmodeled. intros H. discriminate H.
 Qed.
 
 
@@ -1534,6 +1550,7 @@ Proof.
   intros i dirfd pathp flags eff m m' evs H.
   unfold openat_spec in H.
   apply input_bind_ok_inv in H. cbv beta in H.
+  apply get_model_bind_ok_inv in H. cbv beta in H.
   apply record_copyins_ok_inv in H.
   destruct H as (core & Hcore & ->).
   apply openat_core_ok_inv in Hcore.
@@ -1810,24 +1827,26 @@ Local Lemma check_openat_body_spec_complete_unmodeled :
 Proof.
   intros i dirfd pathp flags eff m.
   unfold openat_body_spec, check_openat_body.
-  refine (refine_cstr (read_cstr (in_mem i) pathp)
+  refine (refine_ucstr (user_read_cstr i m pathp)
     (fun r => completes_unmodeled i m
       (match r with
-       | CstrOk p =>
+       | UOk CstrTooLong => err_ret ENAMETOOLONG
+       | UFault | UOk CstrFault => err_ret EFAULT
+       | USpecial => unmodeled
+       | UOk (CstrOk p) =>
            if path_eqb p [] then err_ret ENOENT
            else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
            else openat_resolved_spec p flags m
-       | CstrTooLong => err_ret ENAMETOOLONG
-       | CstrFault => err_ret EFAULT
        end)
       (match r with
-       | CstrOk p =>
+       | UOk CstrTooLong => check_ret_only eff (errno_ret ENAMETOOLONG) m []
+       | UFault | UOk CstrFault => check_ret_only eff (errno_ret EFAULT) m []
+       | USpecial => CheckUnmodeled
+       | UOk (CstrOk p) =>
            if path_eqb p [] then check_ret_only eff (errno_ret ENOENT) m []
            else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
            else check_openat_resolved p flags eff m
-       | CstrTooLong => check_ret_only eff (errno_ret ENAMETOOLONG) m []
-       | CstrFault => check_ret_only eff (errno_ret EFAULT) m []
-       end)) _ _ _).
+       end)) _ _ _ _ _).
   - intro p.
     refine (refine_if (path_eqb p [])
       (fun b => completes_unmodeled i m
@@ -1851,6 +1870,9 @@ Proof.
     exfalso. exact (ret_only_no_unmodeled (errno_ret ENAMETOOLONG) i m H).
   - unfold completes_unmodeled. intro H.
     exfalso. exact (ret_only_no_unmodeled (errno_ret EFAULT) i m H).
+  - unfold completes_unmodeled. intro H.
+    exfalso. exact (ret_only_no_unmodeled (errno_ret EFAULT) i m H).
+  - unfold completes_unmodeled, unmodeled. intros _. reflexivity.
 Qed.
 
 
@@ -1878,6 +1900,7 @@ Lemma check_openat_complete_unmodeled : forall i dirfd pathp flags m eff,
 Proof.
   intros i dirfd pathp flags m eff H.
   unfold openat_spec in H. apply input_bind_unmodeled_inv in H. cbv beta in H.
+  apply get_model_bind_unmodeled_inv in H. cbv beta in H.
   apply record_copyins_unmodeled_inv in H.
   apply openat_core_unmodeled_inv in H.
   destruct H as [Hflags | (Hflags & Hbody)].
@@ -2059,10 +2082,11 @@ Definition check_access_exists (eff : SyscallEffect) (m : Model)
 
 Local Definition check_faccessat_body (i : SyscallInput) (dirfd pathp : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  match read_cstr (in_mem i) pathp with
-  | CstrTooLong => check_ret_only eff (errno_ret ENAMETOOLONG) m []
-  | CstrFault => check_ret_only eff (errno_ret EFAULT) m []
-  | CstrOk p =>
+  match user_read_cstr i m pathp with
+  | UOk CstrTooLong => check_ret_only eff (errno_ret ENAMETOOLONG) m []
+  | UFault | UOk CstrFault => check_ret_only eff (errno_ret EFAULT) m []
+  | USpecial => CheckUnmodeled
+  | UOk (CstrOk p) =>
       if path_eqb p [] then check_ret_only eff (errno_ret ENOENT) m []
       else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
       else if path_eqb p dot_path then check_access_exists eff m
@@ -2089,7 +2113,7 @@ Definition check_faccessat (i : SyscallInput) (dirfd pathp mode : word)
   then check_ret_only eff (errno_ret EINVAL) m []
   else if negb (access_mode_f_ok mode) then CheckUnmodeled
   else
-    let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
+    let reads := [(pathp, user_cstr_access_len i m pathp)] in
     check_copyins_after reads eff
       (check_faccessat_body i dirfd pathp (clear_copyins eff) m).
 
@@ -2202,11 +2226,10 @@ Local Lemma check_faccessat_body_sound_ok : forall i dirfd pathp eff m m' evs,
 Proof.
   intros i dirfd pathp eff m m' evs H.
   unfold check_faccessat_body in H. unfold faccessat_body_spec.
-  destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp.
-  2: { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-       apply pure_ok. }
-  2: { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-       apply pure_ok. }
+  destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp.
+  2-4: apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+       apply pure_ok.
+  2: discriminate.
   destruct (path_eqb p []) eqn:Hpe.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
@@ -2230,9 +2253,11 @@ Local Lemma check_faccessat_body_sound_unmodeled : forall i dirfd pathp eff m,
 Proof.
   intros i dirfd pathp eff m H.
   unfold check_faccessat_body in H. unfold faccessat_body_spec.
-  destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp;
+  destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp;
     [|now apply check_ret_only_no_unmodeled in H
-     |now apply check_ret_only_no_unmodeled in H].
+     |now apply check_ret_only_no_unmodeled in H
+     |now apply check_ret_only_no_unmodeled in H
+     |apply unmodeled_intro].
   destruct (path_eqb p []) eqn:Hpe;
     [now apply check_ret_only_no_unmodeled in H|].
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; [apply unmodeled_intro|].
@@ -2255,7 +2280,8 @@ Local Lemma check_faccessat_body_complete_ok :
 Proof.
   intros i dirfd pathp eff m m' evs H.
   unfold faccessat_body_spec in H. unfold check_faccessat_body.
-  destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp; [|fa_det|fa_det].
+  destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp;
+    [|fa_det|fa_det|fa_det|fa_unmod_h].
   destruct (path_eqb p []) eqn:Hpe; [fa_det|].
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; [fa_unmod_h|].
   destruct (path_eqb p dot_path) eqn:Hdot;
@@ -2276,7 +2302,8 @@ Local Lemma check_faccessat_body_complete_unmodeled :
 Proof.
   intros i dirfd pathp m eff H.
   unfold faccessat_body_spec in H. unfold check_faccessat_body.
-  destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp; [|fa_det_u|fa_det_u].
+  destruct (user_read_cstr i m pathp) as [[p| |]| |] eqn:Hp;
+    [|fa_det_u|fa_det_u|fa_det_u|reflexivity].
   destruct (path_eqb p []) eqn:Hpe; [fa_det_u|].
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; [reflexivity|].
   destruct (path_eqb p dot_path) eqn:Hdot;
@@ -2302,9 +2329,11 @@ Local Lemma check_faccessat_body_ok_copyins_nil :
 Proof.
   intros i dirfd pathp eff m m' evs H.
   unfold check_faccessat_body in H.
-  destruct (read_cstr (in_mem i) pathp) as [p| |];
+  destruct (user_read_cstr i m pathp) as [[p| |]| |];
     [ | apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity
-      | apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity ].
+      | apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity
+      | apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity
+      | discriminate ].
   destruct (path_eqb p []);
     [apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity|].
   destruct (negb (bv_eqb dirfd AT_FDCWD32)); [discriminate|].
@@ -2414,7 +2443,7 @@ Definition check_faccessat2 (i : SyscallInput) (dirfd pathp mode flags : word)
   else if negb (modeled_access_flags flags) then CheckUnmodeled
   else if negb (access_mode_f_ok mode) then CheckUnmodeled
   else
-    let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
+    let reads := [(pathp, user_cstr_access_len i m pathp)] in
     check_copyins_after reads eff
       (check_faccessat_body i dirfd pathp (clear_copyins eff) m).
 

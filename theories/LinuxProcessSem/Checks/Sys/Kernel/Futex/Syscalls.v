@@ -45,9 +45,9 @@ Definition check_futex_wait_private (i : SyscallInput) (uaddr val : word)
   else if negb (access_okb uaddr FUTEX_WORD_SIZE)
   then check_ret_only eff (errno_ret EFAULT) m []
   else
-    match read_bytes_map (in_mem i) uaddr (Z_to_bv 64 FUTEX_WORD_SIZE) with
-    | None => CheckUnmodeled
-    | Some uval =>
+    match user_read i m uaddr (Z_to_bv 64 FUTEX_WORD_SIZE) with
+    | UFault | USpecial => CheckUnmodeled
+    | UOk uval =>
         if bv_eqb (le_bytes_to_word uval) val then CheckUnmodeled
         else check_ret_only_copyins [(uaddr, FUTEX_WORD_SIZE_nat)] eff
                (errno_ret EAGAIN) m []
@@ -123,8 +123,9 @@ Proof.
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          apply pure_ok).
   eapply bind_ok0; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
-    as [uval|] eqn:Hr; cbv iota; cbv iota in H; [|discriminate].
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (user_read i m uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
+    as [uval| |] eqn:Hr; cbv iota; cbv iota in H; [|discriminate|discriminate].
   destruct (bv_eqb (le_bytes_to_word uval) val) eqn:Hv;
     cbv iota; cbv iota in H; [discriminate|].
   apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
@@ -140,8 +141,10 @@ Proof.
   futex_gate uaddr; cbv iota; cbv iota in H;
     try (now apply check_ret_only_no_unmodeled in H).
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
-    as [uval|] eqn:Hr; cbv iota; cbv iota in H; [|apply unmodeled_intro].
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  destruct (user_read i m uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
+    as [uval| |] eqn:Hr; cbv iota; cbv iota in H;
+    [|apply unmodeled_intro|apply unmodeled_intro].
   destruct (bv_eqb (le_bytes_to_word uval) val) eqn:Hv;
     cbv iota; cbv iota in H;
     [apply record_copyins_unmodeled; apply unmodeled_intro
@@ -156,10 +159,10 @@ Proof.
   unfold futex_wait_private_spec in H. unfold check_futex_wait_private.
   futex_gate uaddr; cbv iota in H |- *;
     try (sys_unfold; inv_ok; apply check_ret_only_ok_iff; auto).
-  apply input_bind_ok_inv in H. cbv beta in H.
-  destruct (read_bytes_map (in_mem i) uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
-    as [uval|] eqn:Hr; cbv iota in H |- *;
-    [|unfold unmodeled in H; discriminate].
+  apply bind_input_model_inv in H.
+  destruct (user_read i m uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
+    as [uval| |] eqn:Hr; cbv iota in H |- *;
+    [|unfold unmodeled in H; discriminate|unfold unmodeled in H; discriminate].
   apply record_copyins_ok_inv in H. destruct H as (core & Hcore & ->).
   destruct (bv_eqb (le_bytes_to_word uval) val) eqn:Hv;
     cbv iota in Hcore |- *; [unfold unmodeled in Hcore; discriminate|].
@@ -175,9 +178,9 @@ Proof.
   unfold futex_wait_private_spec in H. unfold check_futex_wait_private.
   futex_gate uaddr; cbv iota in H |- *;
     try (unfold err_ret, ret_only, pure in H; discriminate).
-  apply input_bind_unmodeled_inv in H. cbv beta in H.
-  destruct (read_bytes_map (in_mem i) uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
-    as [uval|] eqn:Hr; cbv iota in H |- *; [|reflexivity].
+  apply bind_input_model_inv in H.
+  destruct (user_read i m uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
+    as [uval| |] eqn:Hr; cbv iota in H |- *; [|reflexivity|reflexivity].
   apply record_copyins_unmodeled_inv in H.
   destruct (bv_eqb (le_bytes_to_word uval) val) eqn:Hv;
     cbv iota in H |- *; [reflexivity|].
@@ -280,9 +283,10 @@ Proof.
     [|cbv iota in H; unfold err_ret, ret_only, pure in H;
       inversion H; reflexivity].
   cbv iota in H.
-  apply input_bind_ok_inv in H. cbv beta in H.
-  destruct (read_bytes_map (in_mem i) uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
-    as [uval|]; cbv iota in H; [|unfold unmodeled in H; discriminate].
+  apply bind_input_model_inv in H.
+  destruct (user_read i m uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
+    as [uval| |]; cbv iota in H;
+    [|unfold unmodeled in H; discriminate|unfold unmodeled in H; discriminate].
   apply record_copyins_ok_inv in H. destruct H as (core & Hcore & ->).
   destruct (bv_eqb (le_bytes_to_word uval) (abi_low32 val)); cbv iota in Hcore;
     [unfold unmodeled in Hcore; discriminate|].

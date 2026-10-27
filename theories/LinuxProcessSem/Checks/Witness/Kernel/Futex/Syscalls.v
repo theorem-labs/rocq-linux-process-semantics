@@ -42,9 +42,9 @@ Definition futex_witness (uaddr op val utime : word) (i : SyscallInput)
         else if negb (access_okb uaddr FUTEX_WORD_SIZE)
         then ret_outcome (errno_ret EFAULT) m
         else
-          match read_bytes_map (in_mem i) uaddr (Z_to_bv 64 FUTEX_WORD_SIZE) with
-          | None => Unmodeled
-          | Some uval =>
+          match user_read i m uaddr (Z_to_bv 64 FUTEX_WORD_SIZE) with
+          | UFault | USpecial => Unmodeled
+          | UOk uval =>
               if bv_eqb (le_bytes_to_word uval) (abi_low32 val) then Unmodeled
               else Ok (with_copyins [(uaddr, FUTEX_WORD_SIZE_nat)]
                         (mkEffect (errno_ret EAGAIN) [] [])) m []
@@ -68,8 +68,9 @@ Proof.
            (access_okb uaddr FUTEX_WORD_SIZE);
     cbn [negb]; cbv iota; try apply pure_ok.
   eapply bind_step; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
-    as [uval|]; cbv iota; [|apply unmodeled_intro].
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (user_read i m uaddr (Z_to_bv 64 FUTEX_WORD_SIZE))
+    as [uval| |]; cbv iota; [|apply unmodeled_intro|apply unmodeled_intro].
   destruct (bv_eqb (le_bytes_to_word uval) (abi_low32 val)); cbv iota.
   - apply record_copyins_unmodeled. apply unmodeled_intro.
   - apply (record_copyins_ok_empty _ _ _ _ (mkEffect (errno_ret EAGAIN) [] []));

@@ -159,9 +159,9 @@ Definition check_clone (flags : word) (eff : SyscallEffect) (m : Model)
 Definition check_clone3 (i : SyscallInput) (uargs size : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then CheckUnmodeled
-  else match read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE) with
-       | None => CheckUnmodeled
-       | Some bs =>
+  else match user_read i m uargs (Z_to_bv 64 CLONE_ARGS_SIZE) with
+       | UFault | USpecial => CheckUnmodeled
+       | UOk bs =>
            if clone3_fork_args_b bs then check_clone3_resolve uargs eff m
            else CheckUnmodeled
        end.
@@ -398,8 +398,9 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota; cbv iota in H; [discriminate|].
   eapply bind_ok0; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|] eqn:Hbs; cbv iota; cbv iota in H; [|discriminate].
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (user_read i m uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
+    as [bs| |] eqn:Hbs; cbv iota; cbv iota in H; [|discriminate|discriminate].
   destruct (clone3_fork_args_b bs) eqn:Ha;
     cbv iota; cbv iota in H; [|discriminate].
   now apply check_clone3_resolve_sound_ok.
@@ -414,8 +415,10 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota; cbv iota in H; [apply unmodeled_intro|].
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|] eqn:Hbs; cbv iota; cbv iota in H; [|apply unmodeled_intro].
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  destruct (user_read i m uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
+    as [bs| |] eqn:Hbs; cbv iota; cbv iota in H;
+    [|apply unmodeled_intro|apply unmodeled_intro].
   destruct (clone3_fork_args_b bs) eqn:Ha;
     cbv iota; cbv iota in H; [|apply unmodeled_intro].
   now apply check_clone3_resolve_sound_unmodeled with (eff := eff).
@@ -429,10 +432,12 @@ Proof.
   unfold clone3_spec in H. unfold check_clone3.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota in H; [unfold unmodeled in H; discriminate|].
-  sys_unfold. cbv iota in H. inv_ok.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|] eqn:Hbs; hall Hbs; inv_ok.
-  destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
+  apply bind_input_model_inv in H.
+  destruct (user_read i m uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
+    as [bs| |] eqn:Hbs; cbv iota in H |- *;
+    [|unfold unmodeled in H; discriminate|unfold unmodeled in H; discriminate].
+  destruct (clone3_fork_args_b bs) eqn:Ha; cbv iota in H |- *;
+    [|unfold unmodeled in H; discriminate].
   now apply check_clone3_resolve_complete_ok with (i := i).
 Qed.
 
@@ -444,9 +449,9 @@ Proof.
   unfold clone3_spec in H. unfold check_clone3.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota in H; [reflexivity|].
-  sys_unfold. cbv iota in H. inv_ok.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|] eqn:Hbs; hall Hbs; inv_ok; [|reflexivity].
-  destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok; [|reflexivity].
+  apply bind_input_model_inv in H.
+  destruct (user_read i m uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
+    as [bs| |] eqn:Hbs; cbv iota in H |- *; [|reflexivity|reflexivity].
+  destruct (clone3_fork_args_b bs) eqn:Ha; cbv iota in H |- *; [|reflexivity].
   now apply check_clone3_resolve_complete_unmodeled with (i := i).
 Qed.

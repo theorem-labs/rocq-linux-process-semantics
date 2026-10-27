@@ -45,10 +45,11 @@ Local Definition unlinkat_tmp_witness (n p c : path) (flags : word) (m : Model)
 
 Local Definition unlinkat_body_witness (dirfd pathp flags : word)
     (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
-  match read_cstr (in_mem i) pathp with
-       | CstrTooLong => ret_outcome (errno_ret ENAMETOOLONG) m
-       | CstrFault => ret_outcome (errno_ret EFAULT) m
-       | CstrOk p =>
+  match user_read_cstr i m pathp with
+       | UOk CstrTooLong => ret_outcome (errno_ret ENAMETOOLONG) m
+       | UFault | UOk CstrFault => ret_outcome (errno_ret EFAULT) m
+       | USpecial => Unmodeled
+       | UOk (CstrOk p) =>
            if path_eqb p [] then ret_outcome (errno_ret ENOENT) m
            else if negb (bv_eqb dirfd AT_FDCWD32) then Unmodeled
            else
@@ -83,7 +84,7 @@ Definition unlinkat_witness (dirfd pathp flags : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   if negb (modeled_unlink_flags flags) then ret_outcome (errno_ret EINVAL) m
   else
-    outcome_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+    outcome_copyins [(pathp, user_cstr_access_len i m pathp)]
       (unlinkat_body_witness dirfd pathp flags i m).
 
 (** Read the input and the model, the two steps every arm of
@@ -121,8 +122,8 @@ Proof.
   (* Both sides read the same guards in the same order, so one [destruct]
      settles each; the body opens no binds, which is what the wrapper
      below peels instead. *)
-  destruct (read_cstr (in_mem i) pathp) as [p| |];
-    [|apply pure_ok|apply pure_ok].
+  destruct (user_read_cstr i m pathp) as [[p| |]| |];
+    [|apply pure_ok|apply pure_ok|apply pure_ok|apply unmodeled_intro].
   destruct (path_eqb p []); [apply pure_ok|].
   destruct (negb (bv_eqb dirfd AT_FDCWD32)); [apply unmodeled_intro|].
   cbv zeta.

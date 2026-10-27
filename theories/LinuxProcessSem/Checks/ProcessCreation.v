@@ -262,7 +262,8 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)));
     cbv iota; [apply unmodeled_intro|].
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  rewrite Hread. cbv iota.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  rewrite (proj2 (user_read_ok_iff i m uargs _ bs) Hread). cbv iota.
   destruct (clone3_fork_args_b bs) eqn:Ha; [|apply unmodeled_intro].
   exfalso. unfold clone3_fork_args_b in Ha.
   repeat (apply andb_true_iff in Ha as [Ha ?]).
@@ -330,10 +331,12 @@ Proof.
   unfold clone3_spec in H.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)));
     cbv iota in H; [unfold unmodeled in H; discriminate|].
-  sys_unfold. cbv iota in H. inv_ok.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|] eqn:Hbs; hall Hbs; inv_ok.
-  destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
+  apply bind_input_model_inv in H.
+  destruct (user_read i m uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
+    as [bs| |] eqn:Hbs; cbv iota in H;
+    [|unfold unmodeled in H; discriminate|unfold unmodeled in H; discriminate].
+  destruct (clone3_fork_args_b bs) eqn:Ha; cbv iota in H;
+    [|unfold unmodeled in H; discriminate].
   match goal with
   | Hr : clone3_resolve _ _ _ (Ok _ _ _) |- _ =>
       apply clone3_resolve_inv in Hr as (e0 & H0 & Hret); rewrite Hret
@@ -449,11 +452,12 @@ Proof.
     unfold clone3_spec in H.
     destruct (negb (bv_eqb (in_arg i 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
       cbv iota in H; [unfold unmodeled in H; discriminate|].
-    sys_unfold. cbv iota in H. inv_ok.
-    destruct (read_bytes_map (in_mem i) (in_arg i 0)
-                (Z_to_bv 64 CLONE_ARGS_SIZE)) as [bs|] eqn:Hbs;
-      hall Hbs; inv_ok.
-    destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
+    apply bind_input_model_inv in H.
+    destruct (user_read i m (in_arg i 0) (Z_to_bv 64 CLONE_ARGS_SIZE))
+      as [bs| |] eqn:Hbs; cbv iota in H;
+      [|unfold unmodeled in H; discriminate|unfold unmodeled in H; discriminate].
+    destruct (clone3_fork_args_b bs) eqn:Ha; cbv iota in H;
+      [|unfold unmodeled in H; discriminate].
     match goal with
     | Hr : clone3_resolve _ _ _ (Ok _ _ _) |- _ =>
         apply clone3_resolve_inv in Hr as (e0 & H0 & Hret); rewrite Hret

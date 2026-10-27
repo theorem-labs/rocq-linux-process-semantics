@@ -134,11 +134,12 @@ Definition prlimit64_witness (pid resource new_rlim old_rlim : word)
     match m_rlimit_core m with
     | None => Unmodeled
     | Some bs0 =>
-        match read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16) with
-        | None =>
+        match user_read i m new_rlim (Z_to_bv 64 16) with
+        | USpecial => Unmodeled
+        | UFault =>
             if negb (access_okb new_rlim 16)
             then ret_outcome (errno_ret EFAULT) m else Unmodeled
-        | Some nb =>
+        | UOk nb =>
             outcome_copyins [(new_rlim, 16%nat)]
             (
             if (bv_unsigned (rlim64_hard nb) <? bv_unsigned (rlim64_soft nb))%Z
@@ -171,7 +172,7 @@ Proof.
     + destruct (negb (access_okb old_rlim 16));
         [apply pure_ok|apply unmodeled_intro].
   - destruct (m_rlimit_core m) as [bs0|]; [|apply unmodeled_intro].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|].
+    destruct (user_read i m new_rlim (Z_to_bv 64 16)) as [nb| |].
     + apply record_copyins_outcome.
       destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z); [apply pure_ok|].
@@ -180,6 +181,7 @@ Proof.
       eapply bind_step; [apply modify_ok|]. apply pure_ok.
     + destruct (negb (access_okb new_rlim 16));
         [apply pure_ok|apply unmodeled_intro].
+    + apply unmodeled_intro.
 Qed.
 
 (* =========================================================================

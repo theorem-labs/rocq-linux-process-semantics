@@ -842,8 +842,12 @@ Definition clone3_spec (uargs size : word) : Sys SyscallEffect :=
   if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then unmodeled
   else
     i <- input ;;
-    match read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE) with
-    | None => unmodeled       (* the struct is not wholly readable *)
-    | Some bs =>
+    m <- get_model ;;
+    match user_read i m uargs (Z_to_bv 64 CLONE_ARGS_SIZE) with
+    | UFault => unmodeled     (* the struct is not wholly readable *)
+    (* the struct reaches the vDSO pair, which Linux reads and the model
+       does not hold (arch/riscv/kernel/vdso.c; [State.UserRead]) *)
+    | USpecial => unmodeled
+    | UOk bs =>
         if clone3_fork_args_b bs then clone3_resolve uargs else unmodeled
     end.
