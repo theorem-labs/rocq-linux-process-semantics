@@ -499,19 +499,24 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
           (* count = 0: return 0, but only once the range passes
              [access_ok] — see [Uaccess.access_ok_zero] *)
       else
-      let bs := write_source (in_mem i) buf count in
+      match user_write_source i m buf count with
+      | UFault | USpecial => Unmodeled        (* the prefix stops at the vDSO pair *)
+      | UOk bs =>
       if Nat.eqb (length bs) 0
       then ret_outcome (errno_ret EFAULT) m    (* nothing readable: -EFAULT *)
       else outcome_copyins [(buf, length bs)]
              (Ok (mkEffect (len_word bs) [] []) m (map (WriteEv ch) bs))
              (* the full delivery *)
+      end
   | Some FdDir => ret_outcome (errno_ret EBADF) m   (* directory fd is O_RDONLY: -EBADF *)
   | Some (FdFile _ _) => ret_outcome (errno_ret EBADF) m  (* read-only file *)
   | Some (FdFileW p off) =>
       if negb (modeled_rw_range buf count) then Unmodeled
         (* see [Uaccess.modeled_rw_range] *)
       else
-      let bs := write_source (in_mem i) buf count in
+      match user_write_source i m buf count with
+      | UFault | USpecial => Unmodeled
+      | UOk bs =>
       if negb (w_is0 count) && Nat.eqb (length bs) 0
       then ret_outcome (errno_ret EFAULT) m    (* nothing readable: -EFAULT *)
       else
@@ -532,10 +537,13 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
               else outcome_copyins [(buf, length bs)] out
           end in
         if w_is0 count then access_ok_zero_witness buf count m k else k
+      end
   | Some (FdFileRW p off) =>   (* the [FdFileW] arm above, on the O_RDWR kind *)
       if negb (modeled_rw_range buf count) then Unmodeled
       else
-      let bs := write_source (in_mem i) buf count in
+      match user_write_source i m buf count with
+      | UFault | USpecial => Unmodeled
+      | UOk bs =>
       if negb (w_is0 count) && Nat.eqb (length bs) 0
       then ret_outcome (errno_ret EFAULT) m    (* nothing readable: -EFAULT *)
       else
@@ -556,6 +564,7 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
               else outcome_copyins [(buf, length bs)] out
           end in
         if w_is0 count then access_ok_zero_witness buf count m k else k
+      end
   | Some (FdFileA p off) =>
       if negb (modeled_rw_range buf count) then Unmodeled
         (* the [FdFileW] arm's gate; see [ReadWrite.write_spec]'s
@@ -565,7 +574,9 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       else if rw_pos_einvalb off (bv_unsigned count)
       then ret_outcome (errno_ret EINVAL) m           (* [rw_verify_area], on [f_pos] *)
       else
-      let bs := write_source (in_mem i) buf count in
+      match user_write_source i m buf count with
+      | UFault | USpecial => Unmodeled
+      | UOk bs =>
       if negb (w_is0 count) && Nat.eqb (length bs) 0
       then ret_outcome (errno_ret EFAULT) m    (* nothing readable: -EFAULT *)
       else
@@ -584,6 +595,7 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
               else outcome_copyins [(buf, length bs)] out
           end in
         if w_is0 count then access_ok_zero_witness buf count m k else k
+      end
   | Some (FdSocket _) => Unmodeled  (* writing a socket is unmodeled, permanently *)
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
   | Some (FdDevNull _ wr) =>
@@ -603,7 +615,9 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       | Some st =>
           if negb (pipe_write_room st (bv_unsigned count)) then Unmodeled
           else
-          let bs := write_source (in_mem i) buf count in
+          match user_write_source i m buf count with
+          | UFault | USpecial => Unmodeled
+          | UOk bs =>
           if negb (Nat.eqb (length bs) (word_to_nat count)) then Unmodeled
           else outcome_copyins [(buf, length bs)]
                  (Ok (mkEffect count [] [])
@@ -612,6 +626,7 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
                  (* the whole source is read, so the range goes in the
                     copy-in ledger, exactly as the channel and file arms
                     record theirs *)
+          end
       end
   end.
 
@@ -656,22 +671,27 @@ Proof.
       cbv beta iota zeta; srw Hfd; srw Hm.
       unfold access_ok_zero, access_ok_zero_witness.
       destruct (access_okb buf (bv_unsigned count)); apply pure_ok. }
-    destruct (Nat.eqb (length (write_source (in_mem i) buf count)) 0)
-      eqn:Hg.
+    destruct (user_write_source i m buf count) as [bs| |] eqn:Hus.
+    2,3: (eapply bind_step; [apply input_ok|]; cbv beta;
+          eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
+          srw Hfd; srw Hm; srw Hus; apply unmodeled_intro).
+    destruct (Nat.eqb (length bs) 0) eqn:Hg.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hm; srw Hg. apply pure_ok.
+      cbv beta iota zeta; srw Hfd; srw Hm; srw Hus; srw Hg. apply pure_ok.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hm; srw Hg.
+      cbv beta iota zeta; srw Hfd; srw Hm; srw Hus; srw Hg.
       eapply bind_step.
-      { apply (choose_ok _ (write_source (in_mem i) buf count)).
+      { apply (choose_ok _ bs).
         repeat split.
         - apply Nat.eqb_neq in Hg. lia.
-        - apply write_source_length_le.
+        - unfold user_write_source in Hus.
+          apply user_read_prefix_ok_iff in Hus. destruct Hus as [-> _].
+          exact (write_source_length_le (in_mem i) buf count).
         - now rewrite firstn_all. }
       eapply witness_bind_ok_eq with
-        (evs1 := map (WriteEv ch) (write_source (in_mem i) buf count))
+        (evs1 := map (WriteEv ch) bs)
         (evs2 := []); [apply emit_ok| |now rewrite app_nil_r].
       unfold record_copyins. eapply bind_step; [apply pure_ok|]. apply pure_ok.
   - (* read-only file fd: -EBADF *)
@@ -682,15 +702,17 @@ Proof.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd. apply unmodeled_intro. }
-    destruct (negb (w_is0 count)
-              && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
-      eqn:Hg.
+    destruct (user_write_source i m buf count) as [bs| |] eqn:Hus.
+    2,3: (eapply bind_step; [apply input_ok|]; cbv beta;
+          eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
+          srw Hfd; srw Hus; apply unmodeled_intro).
+    destruct (negb (w_is0 count) && Nat.eqb (length bs) 0) eqn:Hg.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hg. apply pure_ok.
+      cbv beta iota zeta; srw Hfd; srw Hus; srw Hg. apply pure_ok.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hg.
+      cbv beta iota zeta; srw Hfd; srw Hus; srw Hg.
       (* [count = 0] adds the range verdict in front of the same file
          analysis; both branches end in it, so it is proved twice *)
       destruct (w_is0 count) eqn:Hc;
@@ -698,8 +720,7 @@ Proof.
           destruct (access_okb buf (bv_unsigned count)); [ | apply pure_ok ]
         | ].
       all: (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
-            [ destruct (negb (modeled_file_gap data off
-                                (write_source (in_mem i) buf count))) eqn:Hk;
+            [ destruct (negb (modeled_file_gap data off bs)) eqn:Hk;
               [ apply unmodeled_intro
               | eapply bind_step; [apply modify_ok|];
                 eapply bind_step; [apply modify_ok|];
@@ -722,15 +743,17 @@ Proof.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd; srw Hpos. apply pure_ok. }
-    destruct (negb (w_is0 count)
-              && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
-      eqn:Hg.
+    destruct (user_write_source i m buf count) as [bs| |] eqn:Hus.
+    2,3: (eapply bind_step; [apply input_ok|]; cbv beta;
+          eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
+          srw Hfd; srw Hpos; srw Hus; apply unmodeled_intro).
+    destruct (negb (w_is0 count) && Nat.eqb (length bs) 0) eqn:Hg.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hpos; srw Hg. apply pure_ok.
+      cbv beta iota zeta; srw Hfd; srw Hpos; srw Hus; srw Hg. apply pure_ok.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hpos; srw Hg.
+      cbv beta iota zeta; srw Hfd; srw Hpos; srw Hus; srw Hg.
       destruct (w_is0 count) eqn:Hc;
         [ unfold access_ok_zero, access_ok_zero_witness;
           destruct (access_okb buf (bv_unsigned count)); [ | apply pure_ok ]
@@ -747,15 +770,17 @@ Proof.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd. apply unmodeled_intro. }
-    destruct (negb (w_is0 count)
-              && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
-      eqn:Hg.
+    destruct (user_write_source i m buf count) as [bs| |] eqn:Hus.
+    2,3: (eapply bind_step; [apply input_ok|]; cbv beta;
+          eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
+          srw Hfd; srw Hus; apply unmodeled_intro).
+    destruct (negb (w_is0 count) && Nat.eqb (length bs) 0) eqn:Hg.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hg. apply pure_ok.
+      cbv beta iota zeta; srw Hfd; srw Hus; srw Hg. apply pure_ok.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hg.
+      cbv beta iota zeta; srw Hfd; srw Hus; srw Hg.
       (* [count = 0] adds the range verdict in front of the same file
          analysis; both branches end in it, so it is proved twice *)
       destruct (w_is0 count) eqn:Hc;
@@ -763,8 +788,7 @@ Proof.
           destruct (access_okb buf (bv_unsigned count)); [ | apply pure_ok ]
         | ].
       all: (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
-            [ destruct (negb (modeled_file_gap data off
-                                (write_source (in_mem i) buf count))) eqn:Hk;
+            [ destruct (negb (modeled_file_gap data off bs)) eqn:Hk;
               [ apply unmodeled_intro
               | eapply bind_step; [apply modify_ok|];
                 eapply bind_step; [apply modify_ok|];
@@ -812,16 +836,20 @@ Proof.
       cbv beta. eapply bind_unmodeled2; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd; rewrite ?Hn, ?Hc; cbv beta iota zeta;
         srw Hrd; srw Hp; srw Hroom. apply unmodeled_intro. }
-    destruct (negb (Nat.eqb (length (write_source (in_mem i) buf count))
-                      (word_to_nat count))) eqn:Hsrc.
+    destruct (user_write_source i m buf count) as [bs| |] eqn:Hus.
+    2,3: (eapply bind_step; [apply input_ok|]; cbv beta;
+          eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
+          srw Hfd; rewrite ?Hn, ?Hc; cbv beta iota zeta;
+          srw Hrd; srw Hp; srw Hroom; srw Hus; apply unmodeled_intro).
+    destruct (negb (Nat.eqb (length bs) (word_to_nat count))) eqn:Hsrc.
     { eapply bind_unmodeled2; [apply input_ok|].
       cbv beta. eapply bind_unmodeled2; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd; rewrite ?Hn, ?Hc; cbv beta iota zeta;
-        srw Hrd; srw Hp; srw Hroom; srw Hsrc. apply unmodeled_intro. }
+        srw Hrd; srw Hp; srw Hroom; srw Hus; srw Hsrc. apply unmodeled_intro. }
     eapply bind_step; [apply input_ok|].
     cbv beta. eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta; srw Hfd; rewrite ?Hn, ?Hc; cbv beta iota zeta;
-      srw Hrd; srw Hp; srw Hroom; srw Hsrc.
+      srw Hrd; srw Hp; srw Hroom; srw Hus; srw Hsrc.
     eapply bind_step; [apply modify_ok|].
     unfold record_copyins. eapply bind_step; [apply pure_ok|]. apply pure_ok.
   - eapply bind_step; [apply input_ok|].
@@ -1031,7 +1059,9 @@ Definition pwrite64_witness (fd buf count pos : word) (i : SyscallInput)
       else if rw_pos_einvalb pos (bv_unsigned count)
       then ret_outcome (errno_ret EINVAL) m
       else
-      let bs := write_source (in_mem i) buf count in
+      match user_write_source i m buf count with
+      | UFault | USpecial => Unmodeled        (* the prefix stops at the vDSO pair *)
+      | UOk bs =>
         (* no count gate: see [ReadWrite.pwrite64_spec] *)
       if negb (w_is0 count) && Nat.eqb (length bs) 0
       then ret_outcome (errno_ret EFAULT) m
@@ -1046,6 +1076,7 @@ Definition pwrite64_witness (fd buf count pos : word) (i : SyscallInput)
                (with_fs (fs_set (m_fs m) p (file_write data pos bs)) m) [] in
           if w_is0 count then out
           else outcome_copyins [(buf, length bs)] out
+      end
       end
   end.
 
@@ -1077,23 +1108,25 @@ Proof.
   { eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta; srw Hfd. apply pure_ok. }
-  destruct (negb (w_is0 count)
-            && Nat.eqb (length (write_source (in_mem i) buf count)) 0) eqn:Hg.
+  destruct (user_write_source i m buf count) as [bs| |] eqn:Hus.
+  2,3: (eapply bind_step; [apply input_ok|]; cbv beta;
+        eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
+        srw Hfd; srw Hus; apply unmodeled_intro).
+  destruct (negb (w_is0 count) && Nat.eqb (length bs) 0) eqn:Hg.
   { eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|].
-    cbv beta iota zeta; srw Hfd; srw Hg. apply pure_ok. }
+    cbv beta iota zeta; srw Hfd; srw Hus; srw Hg. apply pure_ok. }
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
   2: { eapply bind_step; [apply input_ok|]. cbv beta.
        eapply bind_step; [apply get_model_ok|].
-       cbv beta iota zeta; srw Hfd; srw Hg; srw Hfs. apply unmodeled_intro. }
-  destruct (negb (modeled_file_gap data pos
-                    (write_source (in_mem i) buf count))) eqn:Hk.
+       cbv beta iota zeta; srw Hfd; srw Hus; srw Hg; srw Hfs. apply unmodeled_intro. }
+  destruct (negb (modeled_file_gap data pos bs)) eqn:Hk.
   { eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|].
-    cbv beta iota zeta; srw Hfd; srw Hg; srw Hfs; srw Hk. apply unmodeled_intro. }
+    cbv beta iota zeta; srw Hfd; srw Hus; srw Hg; srw Hfs; srw Hk. apply unmodeled_intro. }
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|].
-  cbv beta iota zeta; srw Hfd; srw Hg; srw Hfs; srw Hk.
+  cbv beta iota zeta; srw Hfd; srw Hus; srw Hg; srw Hfs; srw Hk.
   eapply bind_step; [apply modify_ok|].
   destruct (w_is0 count).
   - apply pure_ok.
@@ -1107,23 +1140,25 @@ Proof.
   { eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta; srw Hfd. apply pure_ok. }
-  destruct (negb (w_is0 count)
-            && Nat.eqb (length (write_source (in_mem i) buf count)) 0) eqn:Hg.
+  destruct (user_write_source i m buf count) as [bs| |] eqn:Hus.
+  2,3: (eapply bind_step; [apply input_ok|]; cbv beta;
+        eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
+        srw Hfd; srw Hus; apply unmodeled_intro).
+  destruct (negb (w_is0 count) && Nat.eqb (length bs) 0) eqn:Hg.
   { eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|].
-    cbv beta iota zeta; srw Hfd; srw Hg. apply pure_ok. }
+    cbv beta iota zeta; srw Hfd; srw Hus; srw Hg. apply pure_ok. }
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
   2: { eapply bind_step; [apply input_ok|]. cbv beta.
        eapply bind_step; [apply get_model_ok|].
-       cbv beta iota zeta; srw Hfd; srw Hg; srw Hfs. apply unmodeled_intro. }
-  destruct (negb (modeled_file_gap data pos
-                    (write_source (in_mem i) buf count))) eqn:Hk.
+       cbv beta iota zeta; srw Hfd; srw Hus; srw Hg; srw Hfs. apply unmodeled_intro. }
+  destruct (negb (modeled_file_gap data pos bs)) eqn:Hk.
   { eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|].
-    cbv beta iota zeta; srw Hfd; srw Hg; srw Hfs; srw Hk. apply unmodeled_intro. }
+    cbv beta iota zeta; srw Hfd; srw Hus; srw Hg; srw Hfs; srw Hk. apply unmodeled_intro. }
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|].
-  cbv beta iota zeta; srw Hfd; srw Hg; srw Hfs; srw Hk.
+  cbv beta iota zeta; srw Hfd; srw Hus; srw Hg; srw Hfs; srw Hk.
   eapply bind_step; [apply modify_ok|].
   destruct (w_is0 count).
   - apply pure_ok.
@@ -1146,15 +1181,19 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
   | Some (FdChannel ch) =>
       if w_is0 ch then ret_outcome (errno_ret EBADF) m  (* stdin is read-only *)
       else outcome_copyins
-        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
-        (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
-           | ImpFault => ret_outcome (errno_ret EFAULT) m
-           | ImpInval => ret_outcome (errno_ret EINVAL) m
-           | ImpOk iovs0 =>
+        (user_import_iovecs_accesses i m iov (iovcnt32 iovcnt))
+        (match user_import_iovecs i m iov (iovcnt32 iovcnt) with
+           | USpecial => Unmodeled                       (* a descriptor in the vDSO pair *)
+           | UFault | UOk ImpFault => ret_outcome (errno_ret EFAULT) m
+           | UOk ImpInval => ret_outcome (errno_ret EINVAL) m
+           | UOk (ImpOk iovs0) =>
                let total := iovs_total (cap_iovecs iovs0) in
-               let bs := writev_gathered (in_mem i) iovs0 in
                if Z.eqb total 0 then ret_outcome (Z_to_bv 64 0) m   (* zero aggregate *)
-               else if Nat.eqb (length bs) 0
+               else
+               match user_writev_gathered i m iovs0 with
+               | UFault | USpecial => Unmodeled      (* the gathered prefix stops at the vDSO pair *)
+               | UOk bs =>
+               if Nat.eqb (length bs) 0
                then ret_outcome (errno_ret EFAULT) m   (* nothing gatherable *)
                else if addr_is_error_b (len_word bs) then Unmodeled
                else outcome_copyins
@@ -1162,17 +1201,19 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                          (length (firstn 1 bs)))
                       (Ok (mkEffect (len_word (firstn 1 bs)) [] []) m
                         (map (WriteEv ch) (firstn 1 bs)))  (* the one-byte delivery *)
+               end
            end)
   | Some FdDir => ret_outcome (errno_ret EBADF) m   (* directory fd is O_RDONLY: -EBADF *)
   | Some (FdFile _ _) => ret_outcome (errno_ret EBADF) m  (* read-only file *)
   | Some (FdPipe _ w) =>
       if negb w then ret_outcome (errno_ret EBADF) m   (* read end: -EBADF *)
       else outcome_copyins
-        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
-        (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
-           | ImpFault => ret_outcome (errno_ret EFAULT) m
-           | ImpInval => ret_outcome (errno_ret EINVAL) m
-           | ImpOk iovs0 =>
+        (user_import_iovecs_accesses i m iov (iovcnt32 iovcnt))
+        (match user_import_iovecs i m iov (iovcnt32 iovcnt) with
+           | USpecial => Unmodeled
+           | UFault | UOk ImpFault => ret_outcome (errno_ret EFAULT) m
+           | UOk ImpInval => ret_outcome (errno_ret EINVAL) m
+           | UOk (ImpOk iovs0) =>
                if Z.eqb (iovs_total (cap_iovecs iovs0)) 0
                then ret_outcome (Z_to_bv 64 0) m   (* zero aggregate: above the file kind *)
                else Unmodeled                      (* vectored pipe writes *)
@@ -1181,25 +1222,30 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
       else outcome_copyins
-        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
-        (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
-           | ImpFault => ret_outcome (errno_ret EFAULT) m
-           | ImpInval => ret_outcome (errno_ret EINVAL) m
-           | ImpOk iovs0 =>
+        (user_import_iovecs_accesses i m iov (iovcnt32 iovcnt))
+        (match user_import_iovecs i m iov (iovcnt32 iovcnt) with
+           | USpecial => Unmodeled
+           | UFault | UOk ImpFault => ret_outcome (errno_ret EFAULT) m
+           | UOk ImpInval => ret_outcome (errno_ret EINVAL) m
+           | UOk (ImpOk iovs0) =>
                ret_outcome (Z_to_bv 64 (iovs_total (cap_iovecs iovs0))) m
            end)
   | Some (FdFileW p off) =>
       outcome_copyins
-        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
-        (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
-           | ImpFault => ret_outcome (errno_ret EFAULT) m
-           | ImpInval => ret_outcome (errno_ret EINVAL) m
-           | ImpOk iovs0 =>
+        (user_import_iovecs_accesses i m iov (iovcnt32 iovcnt))
+        (match user_import_iovecs i m iov (iovcnt32 iovcnt) with
+           | USpecial => Unmodeled
+           | UFault | UOk ImpFault => ret_outcome (errno_ret EFAULT) m
+           | UOk ImpInval => ret_outcome (errno_ret EINVAL) m
+           | UOk (ImpOk iovs0) =>
                let total := iovs_total (cap_iovecs iovs0) in
-               let bs := writev_gathered (in_mem i) iovs0 in
                if Z.eqb total 0 then ret_outcome (Z_to_bv 64 0) m
                else if rw_pos_einvalb off total then ret_outcome (errno_ret EINVAL) m
-               else if Nat.eqb (length bs) 0
+               else
+               match user_writev_gathered i m iovs0 with
+               | UFault | USpecial => Unmodeled
+               | UOk bs =>
+               if Nat.eqb (length bs) 0
                then ret_outcome (errno_ret EFAULT) m
                else
                  match fs_lookup (m_fs m) p with
@@ -1216,19 +1262,24 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                              (with_fs (fs_set (m_fs m) p (file_write data off bs)) m))
                           [])
                  end
+               end
            end)
   | Some (FdFileRW p off) =>   (* the [FdFileW] arm above, on the O_RDWR kind *)
       outcome_copyins
-        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
-        (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
-           | ImpFault => ret_outcome (errno_ret EFAULT) m
-           | ImpInval => ret_outcome (errno_ret EINVAL) m
-           | ImpOk iovs0 =>
+        (user_import_iovecs_accesses i m iov (iovcnt32 iovcnt))
+        (match user_import_iovecs i m iov (iovcnt32 iovcnt) with
+           | USpecial => Unmodeled
+           | UFault | UOk ImpFault => ret_outcome (errno_ret EFAULT) m
+           | UOk ImpInval => ret_outcome (errno_ret EINVAL) m
+           | UOk (ImpOk iovs0) =>
                let total := iovs_total (cap_iovecs iovs0) in
-               let bs := writev_gathered (in_mem i) iovs0 in
                if Z.eqb total 0 then ret_outcome (Z_to_bv 64 0) m
                else if rw_pos_einvalb off total then ret_outcome (errno_ret EINVAL) m
-               else if Nat.eqb (length bs) 0
+               else
+               match user_writev_gathered i m iovs0 with
+               | UFault | USpecial => Unmodeled
+               | UOk bs =>
+               if Nat.eqb (length bs) 0
                then ret_outcome (errno_ret EFAULT) m
                else
                  match fs_lookup (m_fs m) p with
@@ -1245,19 +1296,24 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                              (with_fs (fs_set (m_fs m) p (file_write data off bs)) m))
                           [])
                  end
+               end
            end)
   | Some (FdFileA p off) =>
       outcome_copyins
-        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
-        (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
-           | ImpFault => ret_outcome (errno_ret EFAULT) m
-           | ImpInval => ret_outcome (errno_ret EINVAL) m
-           | ImpOk iovs0 =>
+        (user_import_iovecs_accesses i m iov (iovcnt32 iovcnt))
+        (match user_import_iovecs i m iov (iovcnt32 iovcnt) with
+           | USpecial => Unmodeled
+           | UFault | UOk ImpFault => ret_outcome (errno_ret EFAULT) m
+           | UOk ImpInval => ret_outcome (errno_ret EINVAL) m
+           | UOk (ImpOk iovs0) =>
                let total := iovs_total (cap_iovecs iovs0) in
-               let bs := writev_gathered (in_mem i) iovs0 in
                if Z.eqb total 0 then ret_outcome (Z_to_bv 64 0) m
                else if rw_pos_einvalb off total then ret_outcome (errno_ret EINVAL) m
-               else if Nat.eqb (length bs) 0
+               else
+               match user_writev_gathered i m iovs0 with
+               | UFault | USpecial => Unmodeled
+               | UOk bs =>
+               if Nat.eqb (length bs) 0
                then ret_outcome (errno_ret EFAULT) m
                else
                  match fs_lookup (m_fs m) p with
@@ -1273,6 +1329,7 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                                          (file_write data (len_word data) bs)) m))
                           [])
                  end
+               end
            end)
   | Some (FdSocket _) => Unmodeled
       (* writing a socket is unmodeled at every count — see
@@ -1292,26 +1349,38 @@ Proof.
       destruct wr.
       2:{ wvw_open Hfd. apply pure_ok. }
       cbn [negb]. cbv iota.
-      destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv;
-        (wvw_open Hfd; srw Hiv; eapply bind_step; [apply pure_ok|apply pure_ok]). }
+      destruct (user_import_iovecs i m iov (iovcnt32 iovcnt)) as [[iovs| |]| |] eqn:Hiv;
+        wvw_open Hfd; srw Hiv;
+        [ eapply bind_step; [apply pure_ok|apply pure_ok]
+        | eapply bind_step; [apply pure_ok|apply pure_ok]
+        | eapply bind_step; [apply pure_ok|apply pure_ok]
+        | eapply bind_step; [apply pure_ok|apply pure_ok]
+        | left; unfold writev_buf_gap; apply unmodeled_intro ]. }
   9:{ (* /dev/urandom: -EBADF *) wvw_open Hfd. apply pure_ok. }
   - destruct (w_is0 ch) eqn:Hm.
     { wvw_open Hfd. srw Hm. apply pure_ok. }
-    destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv.
+    destruct (user_import_iovecs i m iov (iovcnt32 iovcnt)) as [[iovs| |]| |] eqn:Hiv.
     2:{ wvw_open Hfd. srw Hm. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
     2:{ wvw_open Hfd. srw Hm. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
-    unfold writev_gathered. cbv zeta.
+    2:{ wvw_open Hfd. srw Hm. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    2:{ wvw_open Hfd. srw Hm. srw Hiv. left. unfold writev_buf_gap. apply unmodeled_intro. }
+    cbv zeta.
     destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot.
     { wvw_open Hfd. srw Hm. srw Hiv. srw Htot.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    destruct (user_writev_gathered i m iovs) as [bs| |] eqn:Hgs.
+    2,3: (wvw_open Hfd; srw Hm; srw Hiv; srw Htot; srw Hgs;
+          left; unfold writev_buf_gap; apply unmodeled_intro).
+    pose proof Hgs as Hbs. apply user_writev_gathered_ok_iff in Hbs.
+    destruct Hbs as [Hbs _]. subst bs. unfold writev_gathered in *.
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
-    { wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Ht.
+    { wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Hgs. srw Ht.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
     destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))))
       eqn:Hae.
-    { wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Ht. srw Hae.
+    { wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Hgs. srw Ht. srw Hae.
       left. unfold writev_buf_gap. apply unmodeled_intro. }
-    wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Ht. srw Hae.
+    wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Hgs. srw Ht. srw Hae.
     eapply witness_bind_ok_eq with
       (evs1 := map (WriteEv ch)
                  (firstn 1 (gather_prefix (in_mem i) (cap_iovecs iovs))))
@@ -1333,88 +1402,109 @@ Proof.
     unfold record_copyins. eapply bind_step; [apply pure_ok|apply pure_ok].
   - (* read-only file fd: -EBADF *)
     wvw_open Hfd. apply pure_ok.
-  - destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv.
+  - destruct (user_import_iovecs i m iov (iovcnt32 iovcnt)) as [[iovs| |]| |] eqn:Hiv.
     2:{ wvw_open Hfd. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
     2:{ wvw_open Hfd. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
-    unfold writev_gathered. cbv zeta.
+    2:{ wvw_open Hfd. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    2:{ wvw_open Hfd. srw Hiv. left. unfold writev_buf_gap. apply unmodeled_intro. }
+    cbv zeta.
     destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot.
     { wvw_open Hfd. srw Hiv. srw Htot.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
     destruct (rw_pos_einvalb off (iovs_total (cap_iovecs iovs))) eqn:Hpos.
     { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    destruct (user_writev_gathered i m iovs) as [bs| |] eqn:Hgs.
+    2,3: (wvw_open Hfd; srw Hiv; srw Htot; srw Hpos; srw Hgs;
+          left; unfold writev_buf_gap; apply unmodeled_intro).
+    pose proof Hgs as Hbs. apply user_writev_gathered_ok_iff in Hbs.
+    destruct Hbs as [Hbs _]. subst bs. unfold writev_gathered in *.
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
-    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
+    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
-    2:{ wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs.
+    2:{ wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht. srw Hfs.
         left. unfold writev_buf_gap. apply unmodeled_intro. }
     destruct (negb (modeled_file_gap data off
                       (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hk.
-    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs. srw Hk.
+    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht. srw Hfs. srw Hk.
       left. unfold writev_buf_gap. apply unmodeled_intro. }
     destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))))
       eqn:Hae.
-    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs. srw Hk. srw Hae.
+    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht. srw Hfs. srw Hk. srw Hae.
       left. unfold writev_buf_gap. apply unmodeled_intro. }
-    wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs. srw Hk. srw Hae.
+    wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht. srw Hfs. srw Hk. srw Hae.
     eapply bind_step; [|apply pure_ok].
     eapply bind_step; [apply modify_ok|].
     eapply bind_step; [apply modify_ok|].
     unfold record_copyins. eapply bind_step; [apply pure_ok|apply pure_ok].
   - (* append fd: the arm above, minus the zero-fill guard, with the
        write landing at [len_word data] *)
-    destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv.
+    destruct (user_import_iovecs i m iov (iovcnt32 iovcnt)) as [[iovs| |]| |] eqn:Hiv.
     2:{ wvw_open Hfd. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
     2:{ wvw_open Hfd. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
-    unfold writev_gathered. cbv zeta.
+    2:{ wvw_open Hfd. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    2:{ wvw_open Hfd. srw Hiv. left. unfold writev_buf_gap. apply unmodeled_intro. }
+    cbv zeta.
     destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot.
     { wvw_open Hfd. srw Hiv. srw Htot.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
     destruct (rw_pos_einvalb off (iovs_total (cap_iovecs iovs))) eqn:Hpos.
     { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    destruct (user_writev_gathered i m iovs) as [bs| |] eqn:Hgs.
+    2,3: (wvw_open Hfd; srw Hiv; srw Htot; srw Hpos; srw Hgs;
+          left; unfold writev_buf_gap; apply unmodeled_intro).
+    pose proof Hgs as Hbs. apply user_writev_gathered_ok_iff in Hbs.
+    destruct Hbs as [Hbs _]. subst bs. unfold writev_gathered in *.
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
-    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
+    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
-    2:{ wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs.
+    2:{ wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht. srw Hfs.
         left. unfold writev_buf_gap. apply unmodeled_intro. }
     destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))))
       eqn:Hae.
-    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs. srw Hae.
+    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht. srw Hfs. srw Hae.
       left. unfold writev_buf_gap. apply unmodeled_intro. }
-    wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs. srw Hae.
+    wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht. srw Hfs. srw Hae.
     eapply bind_step; [|apply pure_ok].
     eapply bind_step; [apply modify_ok|].
     eapply bind_step; [apply modify_ok|].
     unfold record_copyins. eapply bind_step; [apply pure_ok|apply pure_ok].
   - (* the same file opened O_RDWR: the write-only bullet above *)
-    destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv.
+    destruct (user_import_iovecs i m iov (iovcnt32 iovcnt)) as [[iovs| |]| |] eqn:Hiv.
     2:{ wvw_open Hfd. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
     2:{ wvw_open Hfd. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
-    unfold writev_gathered. cbv zeta.
+    2:{ wvw_open Hfd. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    2:{ wvw_open Hfd. srw Hiv. left. unfold writev_buf_gap. apply unmodeled_intro. }
+    cbv zeta.
     destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot.
     { wvw_open Hfd. srw Hiv. srw Htot.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
     destruct (rw_pos_einvalb off (iovs_total (cap_iovecs iovs))) eqn:Hpos.
     { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    destruct (user_writev_gathered i m iovs) as [bs| |] eqn:Hgs.
+    2,3: (wvw_open Hfd; srw Hiv; srw Htot; srw Hpos; srw Hgs;
+          left; unfold writev_buf_gap; apply unmodeled_intro).
+    pose proof Hgs as Hbs. apply user_writev_gathered_ok_iff in Hbs.
+    destruct Hbs as [Hbs _]. subst bs. unfold writev_gathered in *.
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
-    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
+    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
-    2:{ wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs.
+    2:{ wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht. srw Hfs.
         left. unfold writev_buf_gap. apply unmodeled_intro. }
     destruct (negb (modeled_file_gap data off
                       (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hk.
-    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs. srw Hk.
+    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht. srw Hfs. srw Hk.
       left. unfold writev_buf_gap. apply unmodeled_intro. }
     destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))))
       eqn:Hae.
-    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs. srw Hk. srw Hae.
+    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht. srw Hfs. srw Hk. srw Hae.
       left. unfold writev_buf_gap. apply unmodeled_intro. }
-    wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs. srw Hk. srw Hae.
+    wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hgs. srw Ht. srw Hfs. srw Hk. srw Hae.
     eapply bind_step; [|apply pure_ok].
     eapply bind_step; [apply modify_ok|].
     eapply bind_step; [apply modify_ok|].
@@ -1428,9 +1518,11 @@ Proof.
     destruct w.
     2:{ wvw_open Hfd. apply pure_ok. }
     cbn [negb]. cbv iota.
-    destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv.
+    destruct (user_import_iovecs i m iov (iovcnt32 iovcnt)) as [[iovs| |]| |] eqn:Hiv.
     2:{ wvw_open Hfd. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
     2:{ wvw_open Hfd. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    2:{ wvw_open Hfd. srw Hiv. eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    2:{ wvw_open Hfd. srw Hiv. left. unfold writev_buf_gap. apply unmodeled_intro. }
     destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot.
     { wvw_open Hfd. srw Hiv. srw Htot. eapply bind_step; [apply pure_ok|apply pure_ok]. }
     wvw_open Hfd. srw Hiv. srw Htot.
@@ -1457,11 +1549,12 @@ Definition readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
           then Unmodeled
           else
           outcome_copyins
-            (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
-          (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
-          | ImpFault => ret_outcome (errno_ret EFAULT) m
-          | ImpInval => ret_outcome (errno_ret EINVAL) m
-          | ImpOk iovs0 =>
+            (user_import_iovecs_accesses i m iov (iovcnt32 iovcnt))
+          (match user_import_iovecs i m iov (iovcnt32 iovcnt) with
+          | USpecial => Unmodeled                     (* a descriptor in the vDSO pair *)
+          | UFault | UOk ImpFault => ret_outcome (errno_ret EFAULT) m
+          | UOk ImpInval => ret_outcome (errno_ret EINVAL) m
+          | UOk (ImpOk iovs0) =>
               let iovs := cap_iovecs iovs0 in
               let total := iovs_total iovs in
               if Z.eqb total 0 then ret_outcome (Z_to_bv 64 0) m
@@ -1594,15 +1687,17 @@ Proof.
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
     srw Hfd; srw Hr. unfold readv_heap_gap, readv_buf_gap.
     apply unmodeled_intro. }
-  destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs0| |] eqn:Himp.
-  2:{ eapply bind_step; [apply input_ok|]. cbv beta.
+  destruct (user_import_iovecs i m iov (iovcnt32 iovcnt))
+    as [[iovs0| |]| |] eqn:Himp.
+  2,3,4: (eapply bind_step; [apply input_ok|]; cbv beta;
+          eapply bind_step; [apply get_model_ok|]; cbv beta iota;
+          srw Hfd; srw Hr; srw Himp;
+          eapply bind_step; [apply pure_ok|apply pure_ok]).
+  2:{ (* a descriptor in the vDSO pair: both sides decline *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota.
       srw Hfd; srw Hr; srw Himp.
-      eapply bind_step; [apply pure_ok|apply pure_ok]. }
-  2:{ eapply bind_step; [apply input_ok|]. cbv beta.
-      eapply bind_step; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd; srw Hr; srw Himp.
-      eapply bind_step; [apply pure_ok|apply pure_ok]. }
+      unfold readv_buf_gap. left. apply unmodeled_intro. }
   unfold readv_imported. cbv zeta.
   destruct (Z.eqb (iovs_total (cap_iovecs iovs0)) 0) eqn:Htotal.
   { eapply bind_step; [apply input_ok|]. cbv beta.
