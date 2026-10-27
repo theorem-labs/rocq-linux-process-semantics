@@ -2009,7 +2009,7 @@ Proof.
   fold len in R11, Hlen, Hne, HnZ, HnZal. fold nZ in Hne, HnZ, HnZal.
   pose proof (page_round_up_Z_bounds len ltac:(lia)) as PB. fold nZ in PB. unfold page_size in PB.
   pose proof Hg as Hg0.
-  unfold grant_ok_na in Hg. apply andb_prop in Hg as [Hg Hpl]. apply andb_prop in Hg as [Hg Hrf].
+  unfold grant_ok_na in Hg. apply andb_prop in Hg as [Hg Hpl]. apply andb_prop in Hg as [Hg _]. apply andb_prop in Hg as [Hg Hrf].
   apply andb_prop in Hg as [Hg Hceil]. apply andb_prop in Hg as [Hal Hpos].
   apply Z.eqb_eq in Hal. apply Z.ltb_lt in Hpos. apply Z.leb_le in Hceil. fold n in Hrf.
   unfold page_size in Hal. rewrite CEIL_eq in Hceil. unfold CEIL in Hceil.
