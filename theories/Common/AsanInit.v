@@ -767,6 +767,31 @@ Section Init.
     split; lia.
   Qed.
 
+  (** The vDSO pair [init_model] places sits right below the mmap base
+      ([State.vdso_at]), at most 8 vvar pages and 16 text pages long
+      ([State.vdso_vvar_bytes], [State.vdso_text_bytes]), and the base is
+      at least [State.mmap_base_min] ([Hmb]), so it misses everything below
+      [KHI] and one page, whatever geometry the input declares. *)
+  Lemma init_vdso_low : vdso_meets (m_vdso model0) 0 (KHI + page_size) = false.
+  Proof.
+    unfold model0. rewrite m_vdso_init_model.
+    set (g := in_vdso inp).
+    assert (Hv : 0 < vdso_vvar_bytes g <= 8 * page_size).
+    { unfold vdso_vvar_bytes.
+      pose proof (Nat.mod_upper_bound (vg_vvar_code g) 8 ltac:(lia)).
+      unfold page_size. lia. }
+    assert (Ht : 0 < vdso_text_bytes g <= 16 * page_size).
+    { unfold vdso_text_bytes.
+      pose proof (Nat.mod_upper_bound (vg_text_code g) 16 ltac:(lia)).
+      unfold page_size. lia. }
+    destruct Hmb as (Y1 & Y2 & Y3).
+    unfold vdso_meets, vdso_at, z_ranges_meet, vdso_vvar_lo, vdso_vvar_hi,
+      vdso_text_lo, vdso_text_hi.
+    cbn [vds_base vds_vvar vds_text vds_vvar_mapped vds_text_mapped andb].
+    unfold mmap_base_min, KHI, page_size in *.
+    rewrite !(proj2 (Z.ltb_ge _ _)) by lia. reflexivity.
+  Qed.
+
   Theorem init_cs_ok : cs_ok segs A LIMIT SINV0 argH0 fs E0 cs0 R0 FULL0 model0.
   Proof.
     destruct model0_facts as (M1 & M2 & M3 & M4 & M5 & M6 & M7 & M8 & M9 & M10 & M11 & M12 & M13).
@@ -808,6 +833,7 @@ Section Init.
     - constructor; rewrite ?M8, ?M9, ?M13; [constructor | intros p [] | intros p [] | intros p [] | lia].
     - intros a _ Hm. exact (eq_sym Hm) || discriminate Hm.
     - split; [intros; reflexivity | intros; reflexivity].
+    - exact init_vdso_low.
   Qed.
 
   (** ZERO DRAW: the same configuration over [init_kn_zero], under the zero-draw hypothesis;
@@ -854,6 +880,7 @@ Section Init.
     - constructor; rewrite ?M8, ?M9, ?M13; [constructor | intros p [] | intros p [] | intros p [] | lia].
     - intros a _ Hm. exact (eq_sym Hm) || discriminate Hm.
     - split; [intros; reflexivity | intros; reflexivity].
+    - exact init_vdso_low.
   Qed.
 
   (** [Run.init_config] is the configuration [cs_ok] speaks about *)

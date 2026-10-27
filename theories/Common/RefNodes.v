@@ -664,7 +664,8 @@ Lemma vm_backed_bytes_no_noaccess : forall h,
 Proof. intros h H. unfold vm_backed_bytes, vm_backed_maps. rewrite H. reflexivity. Qed.
 
 (** Admissibility of an aligned grow [b -> b + d]: below the ceiling,
-    disjoint from the image and every mapping, within budget. *)
+    disjoint from the image and every mapping, clear of the vDSO pair,
+    within budget. *)
 Lemma brk_grow_ok_aligned_intro : forall m d,
   let h := m_vmmaps m in
   let b := vm_brk h in
@@ -672,10 +673,11 @@ Lemma brk_grow_ok_aligned_intro : forall m d,
   (0 < bv_unsigned b)%Z ->
   (bv_unsigned b + d <= alloc_ceiling)%Z -> init_sp_ok h ->
   region_free (vm_reserved h ++ vm_maps h) b (Z_to_bv 64 (d + page_size)) = true ->
+  vdso_meets (m_vdso m) (bv_unsigned b) (bv_unsigned b + d + page_size) = false ->
   (vm_backing_used m + d <= vm_limit h)%Z ->
   Mmap.brk_grow_ok m (Z_to_bv 64 (bv_unsigned b + d)) (Z_to_bv 64 (bv_unsigned b + d)) = true.
 Proof.
-  intros m d h b Hbal Hdal Hd Hb0 Hce Hisp Hrf Hlive.
+  intros m d h b Hbal Hdal Hd Hb0 Hce Hisp Hrf Hvd Hlive.
   pose proof alloc_ceiling_val as Hcv. pose proof (u64_range b) as Hbr.
   pose proof (alloc_ceiling_le_alloc_top h Hisp) as Htop.
   assert (Hureq : bv_unsigned (Z_to_bv 64 (bv_unsigned b + d)) = (bv_unsigned b + d)%Z) by (apply u64_lit; lia).
@@ -688,6 +690,7 @@ Proof.
   rewrite (proj2 (Z.leb_le _ _)) by lia.
   replace (Z_to_bv 64 (bv_unsigned b)) with b by (symmetry; apply Z_to_bv_u_eq'; reflexivity).
   replace (bv_unsigned b + d + page_size - bv_unsigned b)%Z with (d + page_size)%Z by lia. rewrite Hrf.
+  rewrite Hvd.
   replace (bv_unsigned (Z_to_bv 64 (bv_unsigned b + d) - b)) with d.
   2:{ rewrite bv_sub_unsigned, Hureq. rewrite bv_wrap_small by (unfold bv_modulus; lia). lia. }
   rewrite (proj2 (Z.leb_le _ _) Hlive). reflexivity.
@@ -695,7 +698,7 @@ Qed.
 
 (** In the initial model (no mappings yet; break = the ASLR base [brk0] at or
     above the image top) the first aligned grow of [d <= limit] bytes that
-    stays below the ceiling is admissible. *)
+    stays below the ceiling and clear of the vDSO pair is admissible. *)
 Lemma brk_grow_admissible_init : forall reserved (brk0 mbase sp : word) lim (model : Model) d,
   (sp_window_lo <= bv_unsigned sp)%Z ->
   (reserved_top reserved <= bv_unsigned brk0)%Z ->
@@ -705,13 +708,16 @@ Lemma brk_grow_admissible_init : forall reserved (brk0 mbase sp : word) lim (mod
   (d <= lim)%Z ->
   m_vmmaps model = mkVmMapsFull reserved [] [] brk0 brk0 lim mbase sp ->
   m_vm_lazy model = [] -> m_vm_materialized model = [] ->
+  vdso_meets (m_vdso model) (bv_unsigned brk0) (bv_unsigned brk0 + d + page_size) = false ->
   Mmap.brk_grow_ok model (Z_to_bv 64 (bv_unsigned brk0 + d)) (Z_to_bv 64 (bv_unsigned brk0 + d)) = true.
 Proof.
-  intros reserved brk0 mbase sp lim model d Hsp Htop Hbal Hdal Hd Hb0 Hce Hlim Hvm Hlz Hmt.
+  intros reserved brk0 mbase sp lim model d Hsp Htop Hbal Hdal Hd Hb0 Hce Hlim Hvm Hlz Hmt Hvd.
   pose proof (brk_grow_ok_aligned_intro model d) as H. cbv zeta in H. rewrite Hvm in H. cbn in H.
   apply H; try assumption; try lia.  (* init_sp_ok of the literal ledger is Hsp up to conversion *)
-  - rewrite app_nil_r. apply region_free_above_top. exact Htop.
-  - rewrite vm_backing_used_simple by assumption. rewrite Hvm. cbn. lia.
+  all: first
+    [ rewrite app_nil_r; apply region_free_above_top; exact Htop
+    | rewrite vm_backing_used_simple by assumption; rewrite Hvm; cbn; lia
+    | exact Hvd ].
 Qed.
 
 End WithSegs.
