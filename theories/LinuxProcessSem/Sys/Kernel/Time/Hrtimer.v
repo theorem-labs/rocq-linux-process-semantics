@@ -415,8 +415,9 @@ Definition nanosleep_clock (prev : word) (req rem : list byte) : word :=
     because nothing was copied: a request that is not wholly readable
     is the -EFAULT [get_timespec64] reports with the kernel buffer
     untouched, and the model declines that shape rather than describing
-    it; a request in the vDSO pair is one Linux reads (both pages are
-    readable, arch/riscv/kernel/vdso.c:137-140), but its bytes are the
+    it; a request in the vDSO pair is one Linux reads (the ranges are
+    VM_READ, lib/vdso/datastore.c:99-105 and
+    arch/riscv/kernel/vdso.c:137-140, bar the time-namespace page), but its bytes are the
     kernel's and the model does not hold them ([State.UserRead]), so it
     declines too. *)
 Definition nanosleep_spec (rqtp rmtp : word) : Sys SyscallEffect :=

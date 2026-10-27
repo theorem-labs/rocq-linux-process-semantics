@@ -1784,7 +1784,9 @@ Definition VDSO_MAX : Z := 24 * 4096.
     [L] is the ledger AND the two ranges of the vDSO pair, which a NULL-hint
     grant must also miss and whose place the plan does not know (it sits
     below the run's mmap base, anywhere in the band [execve] picks).  So
-    the slack counts two more intervals of at most [VDSO_MAX] bytes in all:
+    the slack counts two more intervals of at most [VDSO_MAX] bytes in all,
+    with the alignment slack those two intervals carry ([(cnt + 2)] rather
+    than [cnt] times [nhi + 4095]):
     A PLAN WITHIN TWO WINDOWS (and [VDSO_MAX]) OF THE BOUND IS REFUSED, where
     before the pair was modeled it was accepted. *)
 Definition gap_ok (cs : acs) (nhi : Z) : bool :=

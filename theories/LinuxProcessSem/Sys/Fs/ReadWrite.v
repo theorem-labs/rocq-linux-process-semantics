@@ -875,8 +875,9 @@ Definition write_ledger (buf count : word) (bs : list byte)
 (** THE SOURCE OF A WRITE: [Uaccess.write_source]'s readable prefix of
     the range Linux clamps at [MAX_RW_COUNT], read through
     [State.user_read_prefix].  A prefix that stops short at a byte of the
-    vDSO pair is [USpecial]: both pages are readable on Linux
-    (arch/riscv/kernel/vdso.c, v6.18.46), so the copy goes on with the
+    vDSO pair is [USpecial]: the ranges are readable on Linux
+    (lib/vdso/datastore.c:99-105, arch/riscv/kernel/vdso.c:137-140,
+    v6.18.46, bar the time-namespace page), so the copy goes on with the
     kernel's bytes, which the model does not hold, and every arm answers
     [unmodeled] there ([State.UserRead]).  A prefix read never answers
     [UFault] ([State.user_read_prefix_not_fault]). *)

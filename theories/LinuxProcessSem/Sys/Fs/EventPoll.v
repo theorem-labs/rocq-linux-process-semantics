@@ -390,7 +390,8 @@ Definition epoll_create1_spec (flags32 : word) : Sys SyscallEffect :=
     every byte is mapped; [UFault] — -EFAULT — when the range check
     fails, or when it passes and the first unmapped byte is outside the
     vDSO pair; and [USpecial] when that byte is in the pair.  Linux reads
-    it (both pages are readable, arch/riscv/kernel/vdso.c:137-140), but
+    it (the ranges are VM_READ, lib/vdso/datastore.c:99-105 and
+    arch/riscv/kernel/vdso.c:137-140, bar the time-namespace page), but
     it is the kernel's and the model does not hold it ([State.UserRead]),
     so every caller answers [unmodeled] there.
 

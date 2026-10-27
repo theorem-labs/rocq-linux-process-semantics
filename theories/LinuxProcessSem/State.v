@@ -402,13 +402,14 @@ Definition TASK_SIZE : Z := 0x800000000000%Z.
     (the Sv39 section of [Checks.Cases.MmapBase] cites each step).  So
     the Sv39 instance admits every page-aligned base from 0 up to its
     cap, and [Checks.Cases.MmapBase.sv39_band_is_linux_set] proves that
-    this is exactly the set of bases Linux gives that do not wrap.  One
-    base of that set also starts no program: with a base of exactly 0
-    the top-down search's top is [0 - 1] (mm/vma.h:502), so the vDSO
-    search fails the same way.  The band keeps 0; this costs precision
-    only: no spec arm reads the base, and for a base below the pair's
-    size [vdso_at] puts the pair below address 0 or across it, for a
-    launch Linux never makes.
+    this is exactly the set of bases Linux gives that do not wrap.  Some
+    bases of that set also start no program: at a base of exactly 0 the
+    top-down search's top is [0 - 1] (mm/vma.h:502), and at any base
+    below [mmap_min_addr] plus the pair's length the search finds no
+    gap, so the vDSO cannot be placed and [execve] fails the same way.
+    The band keeps them; this costs precision only: no spec arm reads
+    the base, and [vdso_at] gives [no_vdso] where no gap holds the pair
+    ([vdso_gap_below]), for a launch Linux never makes.
 
     WHAT THE DECLARATION BUYS TODAY, stated here so nobody reads more
     into it: the spec arms below still compare against [TASK_SIZE], the
@@ -3466,8 +3467,11 @@ Definition creds_privileged (c : Creds) : bool :=
     vDSO text right above them (:137-140).  Both are readable and not
     writable.  Both are special mappings, and [special_mapping_split]
     (mm/mmap.c:1394-1412) refuses every split of one, so each range is
-    mapped whole or not at all: one bit per range is all the state a
-    range has. *)
+    mapped whole or not at all.  Linux can also [mprotect] the whole text
+    range (it carries VM_MAYWRITE, vdso.c:139) and move a whole range
+    with [mremap] ([vdso_mremap], vdso.c:36-42); the model DECLINES both
+    ([Mm/Mprotect.v], [Mm/Mremap.v]), so one bit per range is all the
+    state a range needs here. *)
 Record VdsoState := mkVdsoState {
   vds_base : Z;            (* the first byte of the vvar range *)
   vds_vvar : Z;            (* the vvar range's length *)
@@ -4473,7 +4477,9 @@ Definition with_vdso (v : VdsoState) (m : Model) : Model :=
 (** THE ANSWER OF A USER-MEMORY READ, now that the vDSO pair is in the
     model.  Linux can read the pair's bytes (the vvar pages are VM_READ
     and the text VM_READ|VM_EXEC: lib/vdso/datastore.c:99-105 and
-    arch/riscv/kernel/vdso.c:137-140, Linux v6.18.46), but they are the
+    arch/riscv/kernel/vdso.c:137-140, Linux v6.18.46) -- all but the
+    time-namespace page, which faults outside a time namespace
+    ([vvar_fault], lib/vdso/datastore.c:64-75) -- but they are the
     kernel's and [in_mem] does not hold them, so the readers above see
     an unmapped byte there.  A copy-in that reaches one goes on, on
     Linux, with data the model does not have.

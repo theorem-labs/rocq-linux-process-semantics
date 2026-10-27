@@ -18,7 +18,8 @@ Bugs in Linux or QEMU do not count.
 Other stable kernels (v4.17 and later) are a goal. They are not supported
 now. The model does not check claims about them.
 
-In one case the model describes one supported system and not the other.
+In two cases the model describes one supported system and not the other.
+The second is where it places the vDSO pages, below.
 The LR/SC reservation survives a system call: `ecall` leaves `ms_resv`
 as it is (`Run.apply_effect`, `Run.advance_past_svc`). QEMU user mode
 keeps the reservation too. Linux clears it on each return to user mode
@@ -42,7 +43,7 @@ them. A proof says nothing about a program in such a case.
 | Network | The list of connections is never empty. Thus the model does not include an environment where no peer ever connects. |
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. |
 | Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
-| vDSO and vvar | A load or an instruction fetch from a mapped range of the pair is `unmodeled` (`Run.mi_account_step`), and so is a system call that reads user memory from it (`State.UserRead`). The pages hold the kernel's data and code, which the model does not have. A store to the pair is a fault and a system call that writes to it answers `-EFAULT`, as on Linux, because both pages are read-only. The `mremap`, `mprotect` and `madvise` cases on the pair that the paragraph on the vDSO and vvar pages below does not list are also `unmodeled`. |
+| vDSO and vvar | A load or an instruction fetch from a mapped range of the pair is `unmodeled` (`Run.mi_account_step`), and so is a system call that reads user memory from it (`State.UserRead`). The pages hold the kernel's data and code, which the model does not have. A store to the pair is a fault, and a system call that writes to it answers `-EFAULT` or declines, as on Linux, because neither range is writable. The `mremap`, `mprotect` and `madvise` cases on the pair that the paragraph on the vDSO and vvar pages below does not list are also `unmodeled`. |
 
 The entry premises also limit the launches that a statement covers.
 `Run.valid_sp` requires an entry stack pointer in the top 2 GiB of the
@@ -72,7 +73,12 @@ The kernel maps a vvar data area and the vDSO code at `execve`, just
 below the mmap base (`arch/riscv/kernel/vdso.c`, `__setup_additional_pages`;
 `lib/vdso/datastore.c`). The model puts the pair there (`State.vdso_at`,
 `State.init_model`) and quantifies over its size (`State.VdsoGeom`: 1 to
-8 vvar pages and 1 to 16 code pages; Linux v6.18 on riscv64 has 4 and 2).
+8 vvar pages and 1 to 16 code pages; Linux v6.18 on riscv64 has 4 data
+pages, and 2 code pages in the builds we measured: the data count is
+`VDSO_NR_PAGES` (`include/vdso/datapage.h`, with riscv's
+`VDSO_ARCH_DATA_PAGES` = 1), and the code count is
+`(vdso_end - vdso_start) >> PAGE_SHIFT` (`arch/riscv/kernel/vdso.c`), a
+property of the built `vdso.so` that no source file fixes).
 The memory-map calls treat the two ranges as Linux treats its two special
 mappings (`Sys/Mm/Mmap.v`, the section on the pair): `brk` does not grow
 into them, an `mmap` without a fixed address does not land on them,
@@ -87,7 +93,10 @@ A load from the pair is `unmodeled`
 rather than a fault: a fault ends the run with an error, and
 `Equivalence.equiv` accepts any target for a source whose every run
 errors, so a fault where Linux runs on would make a statement true for
-the wrong reason. The model does not publish `AT_SYSINFO_EHDR` (see "The
+the wrong reason. Every consumer of `Common.ErrEscape.err_escape_*`,
+`Common.SrcShape.srz_fault*` and `Common.AllocMixSim.tom_fault` carries a
+`mi_fault_reads_vdso … = false` premise for the same reason. The model
+does not publish `AT_SYSINFO_EHDR` (see "The
 auxiliary vector"), so a C library that looks for the vDSO in the
 auxiliary vector does not find it and makes the system call instead.
 QEMU user mode places its own vDSO elsewhere (`linux-user/elfload.c`), so
@@ -97,7 +106,9 @@ The ASan plan checker in `theories/Common` (`AsanPlanCore`) keeps its
 placements clear of the pair, which a plan does not locate: it refuses a
 plan whose hint-less mappings come within two windows and 24 pages of
 its ceiling (`gap_ok`), and it maps a free range with `MAP_FIXED` only
-below the high shadow (`mmap_fixed_free`).
+at or below `kHighMemBeg` (`AsanPlanCore.KHI`), where the plan's own
+mappings end. Only the hole path of that arm, which used the plan's
+ceiling, is new; the main path already took the `kHighMemBeg` bound.
 
 ## Assumptions that the model does not check
 
@@ -243,10 +254,12 @@ true of the model and false of the real systems.
   `linux-user/elfload.c`, QEMU 8.2.2).
 - **vDSO and vvar fetch and atomics.** The model says `unmodeled` for any
   load or fetch that meets a mapped range of the pair (see "Where the model
-  is narrower"). Three of those cases are faults on Linux: a fetch from
-  the vvar range, which is not executable; the load half of an atomic on
-  the pair, which needs write permission; and a load that meets the pair
-  only in part. The model fails closed there.
+  is narrower"). Four of those cases are faults on Linux: a fetch from
+  the vvar range, which is not executable; an AMO on the pair, whose
+  store half needs write permission; a load that meets the pair only in
+  part and whose other bytes are unmapped; and a load from the vvar
+  time-namespace page, which SIGBUSes outside a time namespace
+  (`vvar_fault`, `lib/vdso/datastore.c`). The model fails closed there.
 - **A failing store-conditional.** An `sc.w` or `sc.d` whose reservation
   does not match retires with rd = 1 and performs no store permission
   check (`Riscv/Sem.v`, the `Sc` arm). The RISC-V specification requires

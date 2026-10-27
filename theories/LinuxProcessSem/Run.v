@@ -326,10 +326,12 @@ Let mi_step_accesses := RiscvSemantics.step_accesses mi_loaded_segments.
     ([RiscvSemantics.step_fault_access], which takes the step's own path
     to it) is a fetch or a load whose range meets a mapped range of the
     pair ([State.vdso_meets]).  It is never [true] for a store: neither
-    range is writable on Linux either, so that fault is faithful.  (A fetch
-    from the vvar range, which lacks VM_EXEC, and an atomic's load half on
-    the pair, which needs write permission, fault on Linux too; counting
-    them here fails closed.) *)
+    range is writable on Linux either, so that fault is faithful.  (Three
+    reads fault on Linux too and are counted here, which fails closed: a
+    fetch from the vvar range, which lacks VM_EXEC; an AMO's load half on
+    the pair, whose store half needs write permission -- a bare [lr] is a
+    read and does not; and a load from the vvar time-namespace page,
+    which SIGBUSes outside a time namespace, lib/vdso/datastore.c:64-75.) *)
 Definition mi_fault_reads_vdso (v : VdsoState) (ms : machine_state) : bool :=
   match RiscvSemantics.step_fault_access mi_loaded_segments ms with
   | Some (AccFetch, (a, n)) | Some (AccLoad, (a, n)) =>

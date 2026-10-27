@@ -318,7 +318,8 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
       | USpecial => unmodeled
         (* THE ADDRESS MEETS THE vDSO PAIR.  Linux copies those bytes (both
            mappings are VM_READ: lib/vdso/datastore.c:99-105,
-           arch/riscv/kernel/vdso.c:137-140), but they are the kernel's and
+           arch/riscv/kernel/vdso.c:137-140; the time-namespace page is
+           the one that faults), but they are the kernel's and
            the model does not hold them; see [State.UserRead].  Every later
            [USpecial] arm in this file declines for the same reason. *)
       | UOk bs =>

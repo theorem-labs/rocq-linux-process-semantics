@@ -423,8 +423,10 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
     match user_read i m act (Z_to_bv 64 24) with
     | UFault => err_ret EFAULT   (* the struct is not wholly readable: real -EFAULT *)
     | USpecial => unmodeled
-      (* the struct meets the vDSO pair: Linux reads it (both pages are
-         readable, arch/riscv/kernel/vdso.c:137-140), but the bytes are the
+      (* the struct meets the vDSO pair: Linux reads it (the ranges are
+         VM_READ, lib/vdso/datastore.c:99-105 and
+         arch/riscv/kernel/vdso.c:137-140, bar the time-namespace page),
+         but the bytes are the
          kernel's and the model does not hold them ([State.UserRead]).
          Every later [USpecial] arm in this file declines for the same
          reason. *)

@@ -213,8 +213,9 @@ Definition pselect_touches_sets (n : Z) : bool := negb (Z.eqb n 0).
     kernel copy instead of reading) or when [n] is 0 (a zero-length
     [copy_from_user] always succeeds).  [UFault] is the unreadable
     pointer that [get_fd_set] answers -EFAULT for.  [USpecial] is a word
-    in the vDSO pair: Linux reads it (both pages are readable,
-    arch/riscv/kernel/vdso.c:137-140), but the bytes are the kernel's and
+    in the vDSO pair: Linux reads it (the ranges are VM_READ,
+    lib/vdso/datastore.c:99-105 and arch/riscv/kernel/vdso.c:137-140, bar
+    the time-namespace page), but the bytes are the kernel's and
     the model does not hold them ([State.UserRead]), so the call is
     unmodeled.  Every later [USpecial] answer in this file is unmodeled
     for the same reason. *)
