@@ -573,7 +573,10 @@ Proof.
   assert (Hadm : Mmap.brk_grow_ok model (Z_to_bv 64 (bv_unsigned b + d)) (Z_to_bv 64 (bv_unsigned b + d)) = true).
   { apply (brk_grow_ok_aligned_intro model d); fold h b;
       [exact B1 | exact D2 | exact D1 | exact B2 | rewrite alloc_ceiling_val; unfold KHI in *; lia
-      | exact (proj2 (proj2 (proj2 (co_wf _ _ _ _ _ _ _ _ _ _ _ HC)))) | exact Hrfg |].
+      | exact (proj2 (proj2 (proj2 (co_wf _ _ _ _ _ _ _ _ _ _ _ HC)))) | exact Hrfg
+      | eapply (vdso_meets_narrow _ _ _ 0 (KHI + page_size));
+          [lia | unfold page_size; lia | exact (co_vdso _ _ _ _ _ _ _ _ _ _ _ HC)]
+      |].
     rewrite Hlim. lia. }
   unfold cfg_of.
   eapply (srz_brk_grow_lazy SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w d TA TB HF HE Hh G17);
