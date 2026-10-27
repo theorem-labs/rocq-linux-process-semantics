@@ -24,6 +24,8 @@ Definition check_mremap (old old_size new_size flags : word)
   then check_ret_only eff (errno_ret EINVAL) m []
   else if page_align_is0_b new_size
   then check_ret_only eff (errno_ret EINVAL) m []
+  else if (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z
+  then check_ret_only eff (errno_ret EINVAL) m []
   else if page_align_is0_b old_size
   then CheckUnmodeled
   else
@@ -120,6 +122,9 @@ Proof.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
   destruct (page_align_is0_b new_size) eqn:Hnew.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    apply pure_ok. }
+  destruct (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z eqn:Htask.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
   destruct (page_align_is0_b old_size) eqn:Hold; [discriminate|].
@@ -250,6 +255,8 @@ Proof.
   { now apply check_ret_only_no_unmodeled in H. }
   destruct (page_align_is0_b new_size) eqn:Hnew.
   { now apply check_ret_only_no_unmodeled in H. }
+  destruct (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z eqn:Htask.
+  { now apply check_ret_only_no_unmodeled in H. }
   destruct (page_align_is0_b old_size) eqn:Hold.
   { apply unmodeled_intro. }
   cbv zeta in H.
@@ -324,6 +331,8 @@ Proof.
   destruct (negb (Z.eqb (bv_unsigned old mod page_size) 0)) eqn:Halign.
   { sys_unfold. inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
   destruct (page_align_is0_b new_size) eqn:Hnew.
+  { sys_unfold. inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
+  destruct (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z eqn:Htask.
   { sys_unfold. inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
   destruct (page_align_is0_b old_size) eqn:Hold.
   { sys_unfold. inv_ok; discriminate. }
@@ -418,6 +427,8 @@ Proof.
   destruct (negb (Z.eqb (bv_unsigned old mod page_size) 0)) eqn:Halign.
   { sys_unfold. inv_ok; discriminate. }
   destruct (page_align_is0_b new_size) eqn:Hnew.
+  { sys_unfold. inv_ok; discriminate. }
+  destruct (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z eqn:Htask.
   { sys_unfold. inv_ok; discriminate. }
   destruct (page_align_is0_b old_size) eqn:Hold.
   { reflexivity. }

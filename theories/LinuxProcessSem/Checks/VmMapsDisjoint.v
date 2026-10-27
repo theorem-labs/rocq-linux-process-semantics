@@ -1455,6 +1455,7 @@ Proof.
   difn H Eflag; [discriminate|].
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   difn H Enew; [apply check_ret_only_model in H; subst m'; exact Hwf|].
+  difn H Etask; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   difn H Eold; [discriminate|].
   difn H Esrc; [discriminate|].
   difn H Eeq; [apply check_ret_only_model in H; subst m'; exact Hwf|].

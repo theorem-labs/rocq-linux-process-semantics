@@ -1509,6 +1509,166 @@ Definition alloc_budget_refused_b (i : SyscallInput) (m : Model) : bool :=
     mprotect_budget_refused_b (in_arg i 0) (in_arg i 1) (in_arg i 2) m
   else false.
 
+(** ** Classifying a budget refusal: oversize vs cumulative
+
+    [alloc_budget_refused_b] records that a request was refused for
+    budget, not why.  [alloc_refuse_reason] reads the same pre-state and
+    request and gives [RefuseOversize] when the request's charge alone
+    exceeds [State.vm_limit], and [RefuseBudget] otherwise.  It adds no
+    transition; each arm still answers its own refusal (-ENOMEM, or the
+    unmoved break for [brk]).  The threshold is the budget, not a
+    per-request cap.
+
+    A premise built on [budget_only_refused_at] still excludes: a
+    cumulative refusal of a request that fits the budget alone, whatever
+    controls its size; every first-touch refusal of a MAP_NORESERVE
+    mapping; and a [brk] whose growth fits the budget but whose heap does
+    not (the charge is the growth above the current break). *)
+Inductive RefuseReason : Set := RefuseBudget | RefuseOversize.
+
+(** The charge of the pending request: the byte growth above the
+    current break for [brk], the page-rounded length or new size for the
+    others, and 0 for any other syscall.  The argument indices are those
+    of [alloc_budget_refused_b]; the per-arm lemmas below tie this charge
+    to each arm's gate. *)
+Definition alloc_req_charge_bytes (i : SyscallInput) (m : Model) : Z :=
+  let no := bv_unsigned (in_sysno i) in
+  if Z.eqb no 214 then
+    Z.max 0%Z (bv_unsigned (in_arg i 0) - bv_unsigned (vm_brk (m_vmmaps m)))%Z
+  else if Z.eqb no 216 then page_round_up_Z (bv_unsigned (in_arg i 2))
+  else if Z.eqb no 222 then page_round_up_Z (bv_unsigned (in_arg i 1))
+  else if Z.eqb no 226 then page_round_up_Z (bv_unsigned (in_arg i 1))
+  else 0%Z.
+
+(** The classified budget refusal.  [None] exactly when the request is
+    not budget-refused at all; otherwise the cause.  [RefuseOversize]
+    takes priority: a refused request whose charge alone exceeds the whole
+    budget is classified oversize, however much budget is left. *)
+Definition alloc_refuse_reason (i : SyscallInput) (m : Model)
+    : option RefuseReason :=
+  if alloc_budget_refused_b i m
+  then if Z.ltb (vm_limit (m_vmmaps m)) (alloc_req_charge_bytes i m)
+       then Some RefuseOversize   (* the request alone exceeds the budget *)
+       else Some RefuseBudget     (* refused only by cumulative use *)
+  else None.
+
+(** Faithfulness: the classifier refines [alloc_budget_refused_b] and
+    changes nothing — it fires on exactly the configurations the mark
+    already fires on, so no new input is excluded or admitted. *)
+Lemma alloc_refuse_reason_none_iff_not_refused : forall i m,
+  alloc_refuse_reason i m = None <-> alloc_budget_refused_b i m = false.
+Proof.
+  intros i m. unfold alloc_refuse_reason.
+  destruct (alloc_budget_refused_b i m).
+  - destruct (Z.ltb (vm_limit (m_vmmaps m)) (alloc_req_charge_bytes i m));
+      split; intro H; discriminate.
+  - split; intros; reflexivity.
+Qed.
+
+(** *** The charge is the refusing gate's own charge, arm by arm
+
+    For each [FamAlloc] arm: where its mark fires, the budget gate the
+    arm consults is false when applied to [alloc_req_charge_bytes].  For
+    [brk] the gate is [vm_backing_used + charge <= vm_limit] verbatim;
+    for the other arms the charge is the page-rounded size [n] each
+    gate is applied to. *)
+Lemma alloc_req_charge_brk : forall i m,
+  bv_unsigned (in_sysno i) = 214%Z ->
+  alloc_budget_refused_b i m = true ->
+  (0 < alloc_req_charge_bytes i m)%Z
+  /\ brk_budget_ok m (in_arg i 0)
+     = (vm_backing_used m + alloc_req_charge_bytes i m <=? vm_limit (m_vmmaps m))%Z
+  /\ brk_budget_ok m (in_arg i 0) = false.
+Proof.
+  intros i m Hno Hb.
+  unfold alloc_budget_refused_b in Hb. cbv zeta in Hb. rewrite Hno in Hb.
+  cbn [Z.eqb Pos.eqb] in Hb.
+  unfold brk_budget_refused_b in Hb.
+  apply andb_true_iff in Hb as [Hb Hok].
+  apply andb_true_iff in Hb as [Hb Hgt].
+  apply andb_true_iff in Hb as [_ Hpos].
+  apply Z.ltb_lt in Hgt. apply Z.ltb_lt in Hpos.
+  apply negb_true_iff in Hok.
+  assert (Hc : alloc_req_charge_bytes i m
+               = (bv_unsigned (in_arg i 0) - bv_unsigned (vm_brk (m_vmmaps m)))%Z).
+  { unfold alloc_req_charge_bytes. cbv zeta. rewrite Hno. cbn [Z.eqb Pos.eqb]. lia. }
+  assert (Hsz : bv_unsigned (in_arg i 0 - vm_brk (m_vmmaps m))%bv
+                = (bv_unsigned (in_arg i 0) - bv_unsigned (vm_brk (m_vmmaps m)))%Z).
+  { pose proof (bv_unsigned_in_range 64 (in_arg i 0)).
+    pose proof (bv_unsigned_in_range 64 (vm_brk (m_vmmaps m))).
+    rewrite bv_sub_unsigned. apply bv_wrap_small. lia. }
+  split; [lia |]. split; [| exact Hok].
+  unfold brk_budget_ok. cbv zeta. rewrite Hsz, Hc. reflexivity.
+Qed.
+
+Lemma alloc_req_charge_mremap : forall i m,
+  bv_unsigned (in_sysno i) = 216%Z ->
+  alloc_budget_refused_b i m = true ->
+  let old_nZ := page_round_up_Z (bv_unsigned (in_arg i 1)) in
+  let c := alloc_req_charge_bytes i m in
+  (old_nZ < c)%Z
+  /\ mremap_inplace_grow_b m (in_arg i 0) (Z_to_bv 64 old_nZ) (Z_to_bv 64 c) old_nZ c = false
+  /\ mremap_move_budget_b m (in_arg i 0) (Z_to_bv 64 old_nZ) (Z_to_bv 64 c) = false.
+Proof.
+  intros i m Hno Hb old_nZ c.
+  assert (Hc : c = page_round_up_Z (bv_unsigned (in_arg i 2))).
+  { subst c. unfold alloc_req_charge_bytes. cbv zeta. rewrite Hno. reflexivity. }
+  rewrite Hc. subst old_nZ.
+  unfold alloc_budget_refused_b in Hb. cbv zeta in Hb. rewrite Hno in Hb.
+  cbn [Z.eqb Pos.eqb] in Hb.
+  unfold mremap_budget_refused_b in Hb. cbv zeta in Hb.
+  repeat match type of Hb with
+         | context [if ?b then _ else _] => destruct b eqn:?; try discriminate Hb
+         end.
+  apply negb_true_iff, orb_false_iff in Hb as [H1 H2].
+  match goal with
+  | [ H : (page_round_up_Z (bv_unsigned (in_arg i 2))
+           <=? page_round_up_Z (bv_unsigned (in_arg i 1)))%Z = false |- _ ] =>
+      apply Z.leb_gt in H
+  end.
+  repeat split; assumption.
+Qed.
+
+Lemma alloc_req_charge_mmap : forall i m,
+  bv_unsigned (in_sysno i) = 222%Z ->
+  alloc_budget_refused_b i m = true ->
+  let c := alloc_req_charge_bytes i m in
+  mmap_noreserve_backed_ok (in_arg i 3) m c = false
+  \/ mmap_fixed_rw_budget_ok (in_arg i 3) m (in_arg i 0) (Z_to_bv 64 c) = false
+  \/ mmap_fixed_rw_span_budget_ok (in_arg i 3) m (in_arg i 0) (Z_to_bv 64 c) = false.
+Proof.
+  intros i m Hno Hb c.
+  assert (Hc : c = page_round_up_Z (bv_unsigned (in_arg i 1))).
+  { subst c. unfold alloc_req_charge_bytes. cbv zeta. rewrite Hno. reflexivity. }
+  rewrite Hc.
+  unfold alloc_budget_refused_b in Hb. cbv zeta in Hb. rewrite Hno in Hb.
+  cbn [Z.eqb Pos.eqb] in Hb.
+  unfold mmap_budget_refused_b in Hb. cbv zeta in Hb.
+  repeat match type of Hb with
+         | context [if ?b then _ else _] => destruct b eqn:?; try discriminate Hb
+         end;
+    apply negb_true_iff in Hb;
+    first [ left; exact Hb | right; left; exact Hb | right; right; exact Hb ].
+Qed.
+
+Lemma alloc_req_charge_mprotect : forall i m,
+  bv_unsigned (in_sysno i) = 226%Z ->
+  alloc_budget_refused_b i m = true ->
+  mprotect_budget_ok m (in_arg i 0) (Z_to_bv 64 (alloc_req_charge_bytes i m)) = false.
+Proof.
+  intros i m Hno Hb.
+  assert (Hc : alloc_req_charge_bytes i m = page_round_up_Z (bv_unsigned (in_arg i 1))).
+  { unfold alloc_req_charge_bytes. cbv zeta. rewrite Hno. reflexivity. }
+  rewrite Hc.
+  unfold alloc_budget_refused_b in Hb. cbv zeta in Hb. rewrite Hno in Hb.
+  cbn [Z.eqb Pos.eqb] in Hb.
+  unfold mprotect_budget_refused_b in Hb. cbv zeta in Hb.
+  repeat match type of Hb with
+         | context [if ?b then _ else _] => destruct b eqn:?; try discriminate Hb
+         end.
+  apply negb_true_iff in Hb. exact Hb.
+Qed.
+
 Lemma lookup_injected_in : forall t n a,
   lookup_injected t n = Some a -> In a t /\ ia_no a = n.
 Proof.
@@ -3589,4 +3749,131 @@ Lemma valid_input_absolute_key_absent : forall inp m r i a b,
 Proof.
   intros inp m r i a b Hrel Hm Hp Ht Hab. rewrite Hm. unfold in_fs.
   exact (absolute_divergent_not_seeded _ _ r i a b Hrel Hp Ht Hab).
+Qed.
+
+Lemma refuse_reason_budget_implies_refused : forall i m,
+  alloc_refuse_reason i m = Some RefuseBudget -> alloc_budget_refused_b i m = true.
+Proof.
+  intros i m H. unfold alloc_refuse_reason in H.
+  destruct (alloc_budget_refused_b i m) eqn:E.
+  - reflexivity.
+  - discriminate H.
+Qed.
+
+(** [budget_refused_at] with the grant disjunct narrowed to
+    [alloc_refuse_reason i m = Some RefuseBudget]; the two first-touch
+    clauses are unchanged.  It implies [budget_refused_at], so
+    [~ run_budget_only_refused] admits every input [~ run_budget_refused]
+    admits, and also those whose only refusal is oversize. *)
+Definition budget_only_refused_at (segs : list Segment) (c : config) : Prop :=
+  m_halted (cfg_model c) = None /\
+  ( (ms_svc_pending (cfg_ms c) = None /\
+     exists report,
+       RiscvSemantics.step_accesses segs (cfg_ms c) = MachineOk report /\
+       materialize_model_accesses (cfg_model c) (@accessed_ranges _ report) = None)
+  \/ (exists x8, ms_svc_pending (cfg_ms c) = Some x8 /\
+       ( alloc_refuse_reason (sys_input segs (cfg_ms c) x8) (cfg_model c) = Some RefuseBudget
+       \/ exists eff model' evs,
+            syscall_spec (sys_input segs (cfg_ms c) x8) (cfg_model c) (Ok eff model' evs)
+            /\ m_halted model' = None
+            /\ materialize_model_accesses model' (syscall_effect_accesses eff) = None)) ).
+
+Lemma budget_only_refused_at_implies : forall segs c,
+  budget_only_refused_at segs c -> budget_refused_at segs c.
+Proof.
+  intros segs c [Hh Hd]. split; [exact Hh|].
+  destruct Hd as [H1 | (x8 & Hp & [Hb | H3])].
+  - left; exact H1.
+  - right. exists x8. split; [exact Hp|]. left.
+    apply refuse_reason_budget_implies_refused; exact Hb.
+  - right. exists x8. split; [exact Hp|]. right. exact H3.
+Qed.
+
+Definition reaches_budget_only_refused (segs : list Segment) (c0 : config) : Prop :=
+  exists tr c, star segs c0 tr c /\ budget_only_refused_at segs c.
+
+Lemma reaches_budget_only_refused_implies : forall segs c0,
+  reaches_budget_only_refused segs c0 -> reaches_budget_refused segs c0.
+Proof.
+  intros segs c0 (tr & c & Hstar & Hb). exists tr, c. split; [exact Hstar|].
+  apply budget_only_refused_at_implies; exact Hb.
+Qed.
+
+Definition run_budget_only_refused (img : Image) (lim : Z) (en : ExecEntry)
+    (inp : ProcInput) : Prop :=
+  match img, en with
+  | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
+    reaches_budget_only_refused segs (init_config segs pc ph sp brk0 mbase rnd lim inp)
+  end.
+
+Lemma run_budget_only_refused_implies : forall img lim en inp,
+  run_budget_only_refused img lim en inp -> run_budget_refused img lim en inp.
+Proof.
+  intros [segs pc ph] lim [sp brk0 mbase rnd] inp H.
+  cbn in *. apply reaches_budget_only_refused_implies; exact H.
+Qed.
+
+(** The configured form, over [star_cfg], beside
+    [reaches_budget_refused_cfg].  The same lifts hold: to the
+    configured released mark, to the unfiltered finer mark (a
+    configuration removes executions and adds none), and the two agree
+    at [may_fail_cfg]. *)
+Definition reaches_budget_only_refused_cfg (segs : list Segment) (cfg : SpuriousCfg)
+    (c0 : config) : Prop :=
+  exists tr c, star_cfg segs cfg c0 tr c /\ budget_only_refused_at segs c.
+
+Lemma reaches_budget_only_refused_cfg_implies : forall segs cfg c0,
+  reaches_budget_only_refused_cfg segs cfg c0 -> reaches_budget_refused_cfg segs cfg c0.
+Proof.
+  intros segs cfg c0 (tr & c & Hstar & Hb). exists tr, c. split; [exact Hstar|].
+  apply budget_only_refused_at_implies; exact Hb.
+Qed.
+
+Lemma reaches_budget_only_refused_cfg_sub : forall segs cfg c0,
+  reaches_budget_only_refused_cfg segs cfg c0 -> reaches_budget_only_refused segs c0.
+Proof.
+  intros segs cfg c0 (tr & c & Hstar & Hb).
+  exists tr, c. split; [exact (star_cfg_sub segs cfg _ _ _ Hstar) | exact Hb].
+Qed.
+
+Lemma reaches_budget_only_refused_cfg_may_fail : forall segs c0,
+  reaches_budget_only_refused segs c0
+  <-> reaches_budget_only_refused_cfg segs may_fail_cfg c0.
+Proof.
+  intros segs c0. split; intros (tr & c & Hstar & Hb); exists tr, c; split; try exact Hb.
+  - apply star_cfg_may_fail; exact Hstar.
+  - apply star_cfg_may_fail; exact Hstar.
+Qed.
+
+(** The configured run's form, the [match] of [run_scfg]. *)
+Definition run_scfg_budget_only_refused (cfg : SpuriousCfg) (img : Image) (lim : Z)
+    (en : ExecEntry) (inp : ProcInput) : Prop :=
+  match img, en with
+  | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
+    reaches_budget_only_refused_cfg segs cfg
+      (init_config segs pc ph sp brk0 mbase rnd lim inp)
+  end.
+
+Lemma run_scfg_budget_only_refused_implies : forall cfg img lim en inp,
+  run_scfg_budget_only_refused cfg img lim en inp ->
+  run_scfg_budget_refused cfg img lim en inp.
+Proof.
+  intros cfg [segs pc ph] lim [sp brk0 mbase rnd] inp H.
+  exact (reaches_budget_only_refused_cfg_implies segs cfg _ H).
+Qed.
+
+Lemma run_scfg_budget_only_refused_sub : forall cfg img lim en inp,
+  run_scfg_budget_only_refused cfg img lim en inp ->
+  run_budget_only_refused img lim en inp.
+Proof.
+  intros cfg [segs pc ph] lim [sp brk0 mbase rnd] inp H.
+  exact (reaches_budget_only_refused_cfg_sub segs cfg _ H).
+Qed.
+
+Lemma run_scfg_budget_only_refused_may_fail : forall img lim en inp,
+  run_budget_only_refused img lim en inp
+  <-> run_scfg_budget_only_refused may_fail_cfg img lim en inp.
+Proof.
+  intros [segs pc ph] lim [sp brk0 mbase rnd] inp.
+  exact (reaches_budget_only_refused_cfg_may_fail segs _).
 Qed.

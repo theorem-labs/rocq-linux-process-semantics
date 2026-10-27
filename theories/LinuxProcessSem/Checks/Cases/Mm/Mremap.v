@@ -204,15 +204,22 @@ Example mremap_wrapping_new_size_success_rejected :
   = CheckReject.
 Proof. check_eq. Qed.
 
-Example mremap_top_aligned_new_size_is_enomem :
+(** A NEW SIZE AT THE TOP OF THE ADDRESS SPACE is -EINVAL, not the
+    arm's injected -ENOMEM.  It is page aligned, so it passes the
+    wrap gate above, and [check_mremap_params] then refuses it for
+    exceeding TASK_SIZE (mm/mremap.c:1775-1776, Linux v6.18.46),
+    before any VMA is looked up.  These two examples pinned -ENOMEM
+    until that gate was added; they pinned an answer Linux never
+    gives. *)
+Example mremap_top_aligned_new_size_is_einval :
   check_syscall (mremap_in 8192 18446744073709547520)
-    (mkEffect (errno_ret ENOMEM) [] []) mremap_two_page_model
+    (mkEffect (errno_ret EINVAL) [] []) mremap_two_page_model
   = CheckOk mremap_two_page_model [].
 Proof. check_eq. Qed.
 
-Example mremap_top_aligned_new_size_einval_rejected :
+Example mremap_top_aligned_new_size_enomem_rejected :
   check_syscall (mremap_in 8192 18446744073709547520)
-    (mkEffect (errno_ret EINVAL) [] []) mremap_two_page_model
+    (mkEffect (errno_ret ENOMEM) [] []) mremap_two_page_model
   = CheckReject.
 Proof. check_eq. Qed.
 
@@ -662,3 +669,39 @@ Example mremap_move_past_demo_top_admitted_under_high_sp :
         (mkVmMapsFull [] [(Z_to_bv 64 (demo_top - 4096), 8192)] [] 0 0 8192
           (Z_to_bv 64 mmap_base_max) hi_sp) mremap_move_source_hi_model) [].
 Proof. check_eq. Qed.
+
+(** A NEW LENGTH OVER [State.TASK_SIZE] is -EINVAL, and the answer is
+    deterministic: [check_mremap_params] (mm/mremap.c:1775-1776, Linux
+    v6.18.46) rejects it before any VMA is looked up.  The first three
+    conjuncts use an [old_size] the model's ledger does NOT hold exactly,
+    so before this gate the answer was [Unmodeled]: they pin that the gate
+    fires AHEAD of the source test, which is the kernel's order
+    ([do_mremap] calls [check_mremap_params] at :1920-1922 and
+    [vma_lookup] only at :1931).  The fourth and fifth use the source the
+    ledger does hold, where the answer before this gate was the arm's
+    injected -ENOMEM, the answer Linux never gives here. *)
+Example mremap_new_len_over_task_size_is_einval :
+  check_syscall (mremap_in 4096 (Z_to_bv 64 (TASK_SIZE + 1)))
+    (mkEffect (errno_ret EINVAL) [] []) mremap_two_page_model
+  = CheckOk mremap_two_page_model []
+  /\ check_syscall (mremap_in 4096 (Z_to_bv 64 (TASK_SIZE + 1)))
+       (mkEffect (errno_ret ENOMEM) [] []) mremap_two_page_model
+     = CheckReject
+  /\ check_syscall (mremap_in 4096 (Z_to_bv 64 (TASK_SIZE + 1)))
+       (mkEffect 65536 [] []) mremap_two_page_model
+     = CheckReject
+  /\ check_syscall (mremap_in 8192 (Z_to_bv 64 (TASK_SIZE + 1)))
+       (mkEffect (errno_ret EINVAL) [] []) mremap_two_page_model
+     = CheckOk mremap_two_page_model []
+  /\ check_syscall (mremap_in 8192 (Z_to_bv 64 (TASK_SIZE + 1)))
+       (mkEffect (errno_ret ENOMEM) [] []) mremap_two_page_model
+     = CheckReject
+  (* ...while a new length of exactly TASK_SIZE passes the gate and
+     reaches the grow arm, whose injected -ENOMEM is admitted *)
+  /\ check_syscall (mremap_in 8192 (Z_to_bv 64 TASK_SIZE))
+       (mkEffect (errno_ret ENOMEM) [] []) mremap_two_page_model
+     = CheckOk mremap_two_page_model []
+  /\ check_syscall (mremap_in 8192 (Z_to_bv 64 TASK_SIZE))
+       (mkEffect (errno_ret EINVAL) [] []) mremap_two_page_model
+     = CheckReject.
+Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.

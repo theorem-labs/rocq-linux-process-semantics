@@ -61,10 +61,12 @@ Open Scope sys_scope.
       (:1795-1796) are all excluded by the exact-flags test;
       [offset_in_page(addr)] (:1763-1764) and a zero [new_len]
       (:1771-1772) are the deterministic -EINVAL the spec returns itself;
-      a rounded [new_len] above TASK_SIZE (:1775-1776) is a gate v6.12
-      did not have on the
-      MAYMOVE-only path, where the request went on to -ENOMEM from
-      [get_unmapped_area], and [mremap_spec] answers it that way;
+      a rounded [new_len] above TASK_SIZE (:1775-1776) is deterministic
+      -EINVAL too, which the spec returns itself; that gate is younger
+      than the MAYMOVE-only path (a v2.5 kernel tested it only when the
+      caller gave [new_addr], and the request went on to -ENOMEM from
+      [get_unmapped_area]), and v6.18.46 tests it before any VMA is
+      looked up;
       a zero [old_len] on a private vma ([check_prep_vma], :1690-1693) is
       excluded by the clone gate; DONTUNMAP over a VM_DONTEXPAND /
       VM_PFNMAP vma (:1696-1698) is excluded for the same reason as :1795,
@@ -486,16 +488,21 @@ Definition mremap_move_effect (old old_n dst : word) (old_nZ new_nZ : Z)
       So a [new_size] in the top partial page is EINVAL, exactly like
       [new_size = 0]; the model says so rather than failing closed on the
       wrap.
+    - [check_mremap_params] then refuses a rounded NEW length above
+      TASK_SIZE with EINVAL (mm/mremap.c:1775-1776, Linux v6.18.46),
+      still before [vma_lookup] (:1931).  The model answers it here too,
+      so the gate precedes the source test, as it does in the kernel.
     - a rounded OLD length of zero is the "duplicate a mapping" shape, which
       Linux refuses with EINVAL for a private mapping in [check_prep_vma]
       (mm/mremap.c:1690-1693, Linux v6.18.46; v6.12's [vma_to_resize] at
       :839-842) — but only after [vma_lookup] (:1043) and the
       seal check (:1050), and only on the growth path (:1108).  The model
       does not track enough to reproduce that EINVAL's preconditions, so it
-      fails closed; it does so HERE, after the two EINVAL gates above, so
-      that a misaligned address or a zero new size still gets Linux's answer.
+      fails closed; it does so HERE, after the three EINVAL gates above,
+      so that a misaligned address, a zero new size or a new size over
+      TASK_SIZE still gets Linux's answer.
       (An unmodeled answer need not precede a modeled one: being unmodeled
-      says nothing about position, and Linux's position is :839, below both.
+      says nothing about position, and Linux's position is :839, below all three.
       [PAGE_ALIGN] at :1030 wraps a near-2^64 [old_size] to 0, so the wrap
       and the literal zero are the same case and share this gate.)
       The gate's two halves are NOT equally observable, and a trace pins
@@ -627,6 +634,13 @@ Definition mremap_spec (old old_size new_size flags : word)
   then err_ret EINVAL                              (* mm/mremap.c:1027 *)
   else if page_align_is0_b new_size
   then err_ret EINVAL                              (* mm/mremap.c:1031, 1038 *)
+  else if (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z
+  then err_ret EINVAL
+    (* [check_mremap_params] (mm/mremap.c:1775-1776, Linux v6.18.46):
+       a page-aligned new length over TASK_SIZE is -EINVAL before any
+       VMA is looked up.  Without this gate a grow past TASK_SIZE fell
+       through to the arm's injected -ENOMEM, an answer Linux never
+       gives for it. *)
   else if page_align_is0_b old_size
   then unmodeled                                   (* clone: mm/mremap.c:839 *)
   else
@@ -788,6 +802,7 @@ Definition mremap_budget_refused_b (old old_size new_size flags : word)
   if negb (Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE) then false
   else if negb (Z.eqb (bv_unsigned old mod page_size) 0) then false
   else if page_align_is0_b new_size then false
+  else if (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z then false
   else if page_align_is0_b old_size then false
   else
     let h := m_vmmaps m in

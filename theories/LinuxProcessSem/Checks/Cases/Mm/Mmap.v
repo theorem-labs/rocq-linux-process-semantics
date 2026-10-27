@@ -301,11 +301,17 @@ Proof. split; check_eq. Qed.
 
 (** The boundary the wrap does NOT reach: [2^64-4096] is already page
     aligned, so [PAGE_ALIGN] returns it unchanged and nonzero and
-    mm/mremap.c:1038 does not fire.  It is an enormous grow instead, and
-    every placement conjunct — [addr + new_len <= alloc_top h] in both
-    [Mremap.mremap_inplace_grow_b] and [Mremap.mremap_fresh_b] — fails, so
-    the only outcome the model still admits is the injected -ENOMEM, and
-    -EINVAL is rejected. *)
+    mm/mremap.c:1038 does not fire.  The TASK_SIZE gate decides it
+    instead ([check_mremap_params], :1775-1776): the rounded length is
+    above TASK_SIZE, so the answer is -EINVAL, before any placement is
+    considered, and the injected -ENOMEM is rejected.  That gate makes
+    the WRAP half of [Mremap.page_align_is0_b] on the NEW size
+    redundant, as the old size's half is redundant for the reason given
+    further down: every new size that half catches, [[2^64-4095,
+    2^64-1]], rounds in [Z] to [2^64], which is above TASK_SIZE, so with
+    the half deleted the TASK_SIZE gate gives the same -EINVAL.  Only
+    the [w_is0] half still decides an answer
+    there. *)
 
 (** Gate ORDER for [old_len = 0].  Linux validates the flag word, then
     [offset_in_page(addr)] ([check_mremap_params], mm/mremap.c:1759-1764,

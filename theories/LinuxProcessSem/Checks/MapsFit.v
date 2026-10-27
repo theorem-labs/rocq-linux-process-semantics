@@ -382,6 +382,7 @@ Proof.
   difn H Eflag; [discriminate|].
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hfit|].
   difn H Enew; [apply check_ret_only_model in H; subst m'; exact Hfit|].
+  difn H Etask; [apply check_ret_only_model in H; subst m'; exact Hfit|].
   difn H Eold; [discriminate|].
   difn H Esrc; [discriminate|].
   difn H Eeq; [apply check_ret_only_model in H; subst m'; exact Hfit|].
