@@ -324,7 +324,12 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
                page_in_ranges (page_base a) (m_vm_lazy model) = true ->
                in_ghost E cs (bv_unsigned a) = false ->
                FULL a = Some (Z_to_bv 8 0);
-  co_sinv  : SINV E FULL
+  co_sinv  : SINV E FULL;
+  (* the vDSO pair ([State.m_vdso]): no mapped range of it below [KHI]
+     and one page, where the brk heap and the shadows the plans map
+     end.  True at [execve] ([AsanInit.init_cs_ok]: the pair sits below
+     the mmap base, above [mmap_base_min]), and no node writes the pair. *)
+  co_vdso  : vdso_meets (m_vdso model) 0 (KHI + page_size) = false
 }.
 
 (* ######################################################################### *)
@@ -475,6 +480,9 @@ Proof.
   - replace (eager_used model') with (eager_used model) by (symmetry; apply Hfr). assumption.
   - intros a Hh. rewrite (hid_same _ _ _ _ Hs) in Hh. rewrite (Hhid a Hh). auto.
   - eapply SINV_frame; [|eassumption]. intros a Ha. apply Hhid. unfold hid. rewrite Ha. reflexivity.
+  - unfold m_vdso in *.
+    replace (m_proc model') with (m_proc model) by (symmetry; apply Hfr).
+    assumption.
 Qed.
 
 (** ---- the knowledge GC / forgetting facts is a weakening ----------------- *)
