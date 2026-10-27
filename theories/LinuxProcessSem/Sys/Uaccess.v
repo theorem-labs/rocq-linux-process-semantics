@@ -272,8 +272,7 @@ Open Scope sys_scope.
     has ([Run.init_machine_state]: 8 MiB less the entry image, so more
     than 5 MiB), and an anonymous grant may be
     [State.target_alloc_limit] — 512 GiB.  A correct cap is not a small
-    cap: 5 MiB is 40x this constant and was already past the depth the
-    extraction was measured to die at.
+    cap: 5 MiB is 40x this constant.
 
     WHICH IS WHY THE WALK USES NEITHER OF THESE.  Capping
     cannot bound [readable_bytes]'s walk and re-representing memory

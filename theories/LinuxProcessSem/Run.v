@@ -1066,20 +1066,25 @@ Qed.
     the program can grow into.  Linux bounds the WHOLE stack VMA by
     [RLIMIT_STACK]: [expand_downwards] (mm/vma.c, Linux v6.18.46) passes
     [size = vma->vm_end - address] to [acct_stack_growth], which refuses
-    the growth when [size > rlimit(RLIMIT_STACK)], and [setup_arg_pages]
-    (fs/exec.c) has already put the argv and envp strings, the auxv and
-    the rest of the entry image in that VMA, below its page-aligned top
-    [vm_end].  So the 8 MiB ([State.stack_max_size]) is measured from the
-    top of the entry image, not from [sp]: the window is
-    [[entry_page_top - stack_max_size, sp)].
+    the growth when [size > rlimit(RLIMIT_STACK)].  That VMA holds the
+    whole entry image below its page-aligned top [vm_end]:
+    [do_execveat_common] (fs/exec.c) copies the exec filename and the
+    argv and envp strings into it, [setup_arg_pages] (fs/exec.c) gives it
+    its top, and [create_elf_tables] (fs/binfmt_elf.c) writes AT_RANDOM,
+    the auxv, argc and the pointers in it.  So the 8 MiB
+    ([State.stack_max_size]) is measured from the top of the entry image,
+    not from [sp]: the window is [[entry_page_top - stack_max_size, sp)].
 
     Linux's [vm_end] is at or above [entry_page_top] (the note above), so
-    every address the model maps here is one that Linux can also map
-    under the same limit.
+    every address that Linux can grow the stack to under the same limit
+    is one that the model maps here.  The converse is false: the lowest
+    [vm_end - entry_page_top] bytes of the window, at most a few pages,
+    are never stack on Linux (SCOPE.md, "Stack floor").
 
     An earlier version of the model zero-mapped [[sp - stack_max_size, sp)],
     which counted 8 MiB from [sp] and so mapped [entry_page_top - sp]
-    bytes more than Linux does (theorem-labs/rocq-linux-process-semantics#6). *)
+    bytes more than this window
+    (theorem-labs/rocq-linux-process-semantics#6). *)
 Definition stack_window_lo (sp : word) (image : list byte) : Z :=
   (bv_unsigned sp + Z.of_nat (length image) - stack_max_size)%Z.
 

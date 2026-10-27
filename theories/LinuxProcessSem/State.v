@@ -76,8 +76,8 @@ Qed.
 (** Maximum stack size (Linux default [RLIMIT_STACK] = 8 MiB).  Like
     Linux, the model counts it from the top of the entry image, not from
     the initial SP: [Run.init_machine_state] zero-maps the window
-    [[Run.stack_window_lo], init_sp), which is [stack_max_size] bytes
-    below [Run.entry_page_top]. *)
+    [[Run.stack_window_lo], init_sp), whose floor is [stack_max_size]
+    bytes below [Run.entry_page_top]. *)
 Definition stack_max_size : Z := (8 * 1024 * 1024)%Z.
 
 (** The initial stack pointer is chosen NON-DETERMINISTICALLY at [execve]

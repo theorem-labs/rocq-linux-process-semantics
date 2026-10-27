@@ -3650,7 +3650,7 @@ Definition auxw (i : Z) (ty : Z) (v : expr) : list kentry :=
 (** What the checker knows at [_start] (justified by AsanInit.init_cs_ok):
     ranges of the initial variables and the sum facts (most specific first),
     the zero-filled writable window below sp (6144513 bytes, [StoreOk.stack_window_depth]:
-    the 8 MiB less the largest entry image, as Linux counts it), argc / argv[0] / the sp0+16 word,
+    the 8 MiB less [StoreOk.stack_window_reach], a bound on the page-rounded entry image), argc / argv[0] / the sp0+16 word,
     the 20 auxv words (AT_UID/AT_EUID = EVar V_UID; AT_HWCAP = the hwcap word), the AT_RANDOM block ([atr]: the faithful byte-string
     entry, or the zero entry), the image hull with no
     overlay and its writable window. *)

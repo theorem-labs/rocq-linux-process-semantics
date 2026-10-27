@@ -143,7 +143,7 @@ Qed.
 
 Definition win_lo (sp0 : word) : Z := bv_unsigned sp0 - stack_max_size.
 
-(** The lowest address every admissible launch maps as stack. *)
+(** An address at or above every admissible launch's [Run.stack_window_lo] ([StoreOk.stack_window_lo_valid]): every such launch maps [[wok_lo sp0, sp0)]. *)
 Definition wok_lo (sp0 : word) : Z :=
   bv_unsigned sp0 + stack_window_reach - stack_max_size.
 

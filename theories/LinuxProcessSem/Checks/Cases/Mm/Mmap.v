@@ -2820,7 +2820,7 @@ Qed.
    THE BOUND IS READ FROM THE LEDGER, NOT FROM A CONSTANT
 
    [State.alloc_top] is [vm_init_sp - stack_max_size]: the grant top of a
-   run is its own stack's bottom.  The biconditional proofs in
+   run is at or below its own stack's floor.  The biconditional proofs in
    [Checks/Sys/Mm/Mmap.v] cannot see a constant creeping into both the
    spec and the checker at once, so each pair below runs THE SAME effect
    against two ledgers that differ only in the stack pointer they were

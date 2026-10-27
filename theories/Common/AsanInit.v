@@ -351,8 +351,8 @@ Section Init.
   Qed.
 
   (** 6144513 is [StoreOk.stack_window_depth]: what the 8 MiB leaves
-      below [sp] once the entry image is counted inside it, as Linux
-      counts it ([Run.stack_window_lo]). *)
+      below [sp] for the largest entry image [StoreOk.stack_window_reach]
+      bounds, as Linux counts it ([Run.stack_window_lo]). *)
   Lemma FULL0_below : forall a : word, usp - 6144513 <= bv_unsigned a < usp -> FULL0 a = Some (Z_to_bv 8 0).
   Proof.
     intros a Ha. unfold FULL0, wrap_mem.

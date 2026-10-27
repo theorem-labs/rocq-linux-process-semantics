@@ -172,8 +172,12 @@ true of the model and false of the real systems.
   a statement about a run whose stack reaches it
   can be true of the model and false of the real systems, and this one
   need not compare sets of behaviors: a single-run statement is enough.
-  A program reaches the band only when its stack goes almost to
-  `Run.stack_window_lo`.
+  A program reaches the band only when its stack goes below
+  `vm_end - 8 MiB`, which is at most a few pages above `Run.stack_window_lo`.
+  The depth of the window below `sp` depends on the page offset of `sp`,
+  by up to 4080 bytes. So a program whose stack ends within a page of the
+  floor faults under some stack addresses and not others, and a proof
+  cannot show it equivalent even to itself.
   QEMU user mode has a band of the same kind: its stack is one fixed
   8 MiB mapping with a guard page below it, and the entry image is
   inside it (`setup_arg_pages` and `load_elf_binary` in

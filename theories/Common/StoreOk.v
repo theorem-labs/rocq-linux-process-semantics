@@ -164,8 +164,8 @@ Qed.
 
     [PropExec.wrap_mem] is the proof-side mirror of the initial
     overlay: the argv/envp/auxv block, then [Some 0] everywhere in
-    [[Run.stack_window_lo], sp), the [stack_max_size] bytes below the
-    top of the entry image.  A store wholly inside that window is
+    [[Run.stack_window_lo], sp), what is left below [sp] of the
+    [stack_max_size] bytes under the top of the entry image.  A store wholly inside that window is
     therefore always in bounds -- which is the point of the window, and
     the reason [store_ok] does not need [sp] threaded into [step]. *)
 Lemma wrap_mem_window_defined : forall ph sp argv envp (x : word) uid hw rnd,

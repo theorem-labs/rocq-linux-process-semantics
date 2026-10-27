@@ -564,11 +564,18 @@ Definition ms_writable_byte (ms : machine_state) (addr : word) : option byte :=
     those choices, so a program whose recursion or allocation is driven
     by its input diverges from itself between two admissible
     quantifications — and [strong_universal] is then arguably false
-    even for a reference against itself.  Real Linux faults at an
-    ASLR-INDEPENDENT point instead: the RLIMIT_STACK window, which
-    [Run.init_machine_state] already zero-maps as
-    [[Run.stack_window_lo], init_sp): [stack_max_size] bytes counted
-    from the top of the entry image, as Linux counts them.
+    even for a reference against itself.  Real Linux faults at the
+    RLIMIT_STACK limit instead, which [Run.init_machine_state] already
+    zero-maps as the window [[Run.stack_window_lo], init_sp): what is
+    left below [init_sp] of the [stack_max_size] bytes under the top of
+    the entry image.  That point is not fully ASLR-independent: the
+    window's depth below [init_sp] is [stack_max_size] less
+    [Run.entry_page_top - init_sp], which moves by up to 4080 bytes with
+    the page offset of the drawn [init_sp].  A program whose stack,
+    driven by its input, ends in that band faults under some admissible
+    [init_sp] and not under others, so [strong_universal] fails for it
+    even against itself.  Linux moves its floor in the same way, by the
+    random pad of [arch_align_stack] and the page rounding of [vm_end].
 
     So the ledger this needs already exists, and is exactly [wview]:
     the initial stack block and its zero window, every brk/mmap grant
