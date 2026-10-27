@@ -89,6 +89,82 @@ Open Scope sys_scope.
    page round-up near 2^64 must not wrap into a small number).
    ========================================================================= *)
 
+(* =========================================================================
+   THE vDSO AND vvar PAIR
+
+   [execve] maps two VMAs the ledger does not hold: the vvar pages and
+   the vDSO text right above them ([__setup_additional_pages],
+   arch/riscv/kernel/vdso.c:110-150, Linux v6.18.46).  The model keeps
+   them in [State.m_vdso], one bit per range.  Both are special
+   mappings, whose [vm_ops->may_split] is [special_mapping_split]
+   (mm/mmap.c:1394-1412): it returns -EINVAL, so an operation that would
+   split either range fails, while one that covers a range whole is no
+   split.  Every arm here that places, grows into, maps over or unmaps
+   a range that no recorded mapping contains tests the pair:
+
+   - a brk grow is refused when the pages it installs, or the page above
+     them, meet the pair ([brk_grow_ok]);
+   - a placement the kernel picks misses the pair (the two fresh-grant
+     [choose] guards);
+   - MAP_FIXED_NOREPLACE over the pair is -EEXIST;
+   - MAP_FIXED over part of a range of the pair is -EINVAL; over whole
+     ranges it replaces them, and their bits clear ([vdso_cut]);
+   - munmap of part of a range is -EINVAL; of whole ranges, 0, and their
+     bits clear.
+
+   [Mm/Mremap.v] and [Mm/Mprotect.v] carry their own arms.
+
+   AN ARM WHOSE RANGE LIES INSIDE ONE RECORDED MAPPING DOES NOT TEST THE
+   PAIR: the exact munmap, the contained MAP_FIXED, and the mprotect,
+   madvise and mremap sources.  The ledger entry stands for a VMA, VMAs
+   do not overlap, so the range meets no other VMA.  Every arm that
+   records an entry tests the pair first, so no recorded mapping lies
+   over a mapped range of it.  (A brk grow inside one page is tested by
+   neither Linux nor the model; it stays inside the page the break is
+   already in.)
+   ========================================================================= *)
+
+(** [[lo, hi)] holds only mapped bytes of the pair: it is empty, or it
+    lies inside one mapped range, or inside the two together when both
+    are mapped.  The munmap arm reads it for the bytes of a request at
+    or above [alloc_top]. *)
+Definition vdso_holds (v : VdsoState) (lo hi : Z) : bool :=
+  ((hi <=? lo)%Z
+   || vds_vvar_mapped v && z_range_covers (vdso_vvar_lo v) (vdso_vvar_hi v) lo hi
+   || vds_text_mapped v && z_range_covers (vdso_text_lo v) (vdso_text_hi v) lo hi
+   || vds_vvar_mapped v && vds_text_mapped v
+      && z_range_covers (vdso_vvar_lo v) (vdso_text_hi v) lo hi)%bool.
+
+Lemma vdso_split_meets : forall v lo hi,
+  vdso_split v lo hi = true -> vdso_meets v lo hi = true.
+Proof.
+  intros v lo hi H. unfold vdso_split, vdso_meets in *.
+  destruct (vds_vvar_mapped v), (vds_text_mapped v),
+    (z_ranges_meet lo hi (vdso_vvar_lo v) (vdso_vvar_hi v)),
+    (z_ranges_meet lo hi (vdso_text_lo v) (vdso_text_hi v));
+    cbn in *; congruence.
+Qed.
+
+Lemma vdso_split_of_meets_false : forall v lo hi,
+  vdso_meets v lo hi = false -> vdso_split v lo hi = false.
+Proof.
+  intros v lo hi H. destruct (vdso_split v lo hi) eqn:E; [|reflexivity].
+  rewrite (vdso_split_meets _ _ _ E) in H. discriminate H.
+Qed.
+
+(** A range inside one that misses the pair misses it too. *)
+Lemma vdso_meets_narrow : forall v lo hi lo' hi',
+  (lo' <= lo)%Z -> (hi <= hi')%Z ->
+  vdso_meets v lo' hi' = false -> vdso_meets v lo hi = false.
+Proof.
+  intros v lo hi lo' hi' Hl Hh H. unfold vdso_meets, z_ranges_meet in *.
+  apply orb_false_iff in H as [H1 H2]. apply orb_false_iff. split.
+  - destruct (vds_vvar_mapped v); cbn [andb] in *; [|reflexivity].
+    apply Z.ltb_ge in H1. apply Z.ltb_ge. lia.
+  - destruct (vds_text_mapped v); cbn [andb] in *; [|reflexivity].
+    apply Z.ltb_ge in H2. apply Z.ltb_ge. lia.
+Qed.
+
 (** [brk req] models the raw Linux [SYSCALL_DEFINE1(brk)] (riscv64), which
     NEVER returns [-errno]: it returns the NEW break on success, and the
     CURRENT break UNCHANGED on any failure.  Three execution paths,
@@ -323,6 +399,13 @@ Definition brk_unmaps (r old : word) : list (word * word) :=
     has not grown to within [stack_guard_gap + PAGE_SIZE] of that bound.
     That is a premise of the model.
 
+    THE vDSO PAIR IS A VMA TO THAT TEST, and the model's ledger does not
+    hold it, so the gate asks [State.vdso_meets] of the same range
+    beside [region_free].  Neither range of the pair is VM_GROWSDOWN or
+    VM_SHADOW_STACK, so [vm_start_gap(next)] is its [vm_start], and the
+    test refuses exactly when a mapped range of the pair meets
+    [[oldbrk, newbrk + PAGE_SIZE)] (mm/mmap.c:187-190).
+
     What holds instead is PAGE-granular: no page-aligned address is ever
     owned by two [vm_maps] entries, because a page-aligned byte of
     [[old, r)] is necessarily inside [[PAGE_ALIGN(old), PAGE_ALIGN(r))],
@@ -350,6 +433,7 @@ Definition brk_grow_ok (m : Model) (req r : word) : bool :=
         then Z.leb hi (alloc_top h)
              && region_free (vm_reserved h ++ vm_maps h)
                             (Z_to_bv 64 lo) (Z_to_bv 64 (hi + page_size - lo))
+             && negb (vdso_meets (m_vdso m) lo (hi + page_size))
         else true)
        && brk_budget_ok m r
   else true.
@@ -906,7 +990,8 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    - it is inside the user address space this model describes — nonzero,
      and ending at or below this run's [State.alloc_top];
    - it is DISJOINT from every mapping the ledger records, [vm_reserved]
-     and [vm_maps] both.  [get_unmapped_area] never silently overlaps a
+     and [vm_maps] both, and from the mapped ranges of the vDSO pair
+     ([State.vdso_meets]).  [get_unmapped_area] never silently overlaps a
      live VMA for a preference-free request: both generic searches ask
      [vm_unmapped_area] for a gap (mm/mmap.c:712-718 and :763-770, Linux
      v6.18.46), and a gap is by construction free of every VMA in the
@@ -921,7 +1006,8 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    It would EXCLUDE PLACEMENTS LINUX MAKES.  The highest-fit half would
    be read on
    the model's ledger, and the kernel's search walks VMAs the ledger
-   does not carry — the vdso/vvar pair [execve] installs, among others.
+   does not carry — the vdso/vvar pair [execve] installs (which the model
+   keeps apart, in [State.m_vdso]), among others.
    A real top-down descent below the floor is justified by "everything
    above me is occupied", occupied in part by mappings the model never
    recorded, so the model would call a real placement inadmissible.  That is
@@ -1354,21 +1440,21 @@ Definition mmap_fixed_rw_span_budget_ok (flags : word) (m : Model)
    also answer EEXIST on a range the GUEST has free: without
    [reserved_va] it keeps the bit on the host mmap and a host-side
    collision comes back as EEXIST, linux-user/mmap.c:655-659 and
-   :738-745 at the same version — a second free-range residual beside
-   the vdso one below.)  The
+   :738-745 at the same version — a free-range residual the model does
+   not describe.)  The
    refusal is therefore not a placement choice the statement quantifies
    over but a point every admitted implementation reaches, so a
    statement over a program that meets it must reproduce it on the
    target side: [Equivalence.equiv] compares whole trace sets, and the
    source's set contains the -EEXIST trace.
 
-   WHAT THE LEDGER CANNOT SEE, since -EEXIST is rejected on a range the
-   ledger calls free.  The kernel's own VMAs — the vdso/vvar pair
-   [execve] installs — are in neither ledger, so a request that lands
-   on them answers -EEXIST on Linux and is rejected here; the stack is
-   kept out by [alloc_top], which declines the band above it.  That is
-   a known limitation of the model, the same absence [munmap]'s
-   free-range arm has.
+   THE vDSO PAIR.  The kernel's own VMAs — the vdso/vvar pair [execve]
+   installs — are in neither ledger.  The model holds them in
+   [State.m_vdso], and the free-range test asks [State.vdso_meets]
+   beside [region_free], so a request that lands on a mapped range of
+   the pair is -EEXIST, because [find_vma_intersection] finds that VMA.
+   The stack is kept out by [alloc_top], which declines the band above
+   it.
    ========================================================================= *)
 
 (** Does [flags] spell a MAP_FIXED_NOREPLACE request over the plain
@@ -1400,6 +1486,113 @@ Definition mmap_noreplace_rw_b (prot flags off : word) : bool :=
 Definition mmap_noreplace_noaccess_b (prot flags off : word) : bool :=
   Z.eqb (bv_unsigned prot) PROT_NONE
   && mmap_noreplace_flags_b flags && w_is0 off.
+
+(** MAP_FIXED OVER THE vDSO PAIR: the arm each MAP_FIXED shape takes for
+    a request [[addr, addr + nZ)] that meets a mapped range of the pair
+    and that no recorded mapping contains.  [__mmap_prepare] gathers
+    every VMA the request meets before it maps anything
+    ([vms_gather_munmap_vmas], mm/vma.c:2404 and :1372-1508, Linux
+    v6.18.46), splitting the first and the last VMA where the request
+    ends inside them (:1401, :1422).  [__split_vma] asks the VMA first
+    ([vm_ops->may_split], :504-508), and for either range of the pair
+    that is [special_mapping_split], which answers -EINVAL (mm/mmap.c:
+    1394-1412).
+
+    - A request that SPLITS a range of the pair ([State.vdso_split]) is
+      -EINVAL, with every VMA the gather detached put back (mm/vma.c:
+      1500-1507).  Beside it the -ENOMEM every arm in this file admits:
+      the map-count test at :1389-1393 runs before the first split, and
+      the model tracks no map count.
+    - A request that covers whole ranges of the pair and is otherwise
+      the free-range or the spanning case gathers them like any VMA and
+      replaces them: the resolutions of that case, with the covered
+      ranges' bits cleared ([State.vdso_cut]).  The free case gains the
+      DESTRUCTIVE errno the spanning case already has: the gathered
+      pair is torn down in [vms_clean_up_area] (:2441) before the two
+      allocations that can still fail, and the abort then leaves a gap
+      where the request was ([vms_abort_munmap_vmas], :2349-2369), so
+      the covered ranges are gone after that errno too.  The budget
+      gates are the free and the spanning cases' own, so the budget mark
+      [mmap_budget_refused_b] reads the same gate the success does.
+    - A request that also reaches the image's LOAD reservations stays
+      [unmodeled], for the reason the spanning case gives.
+
+    The success zero-fills the whole request ([eff_zeros] in the rw
+    shape): the pages are fresh anonymous pages, the pair's bytes
+    included.  The pair's bytes were never in the machine's memory, so
+    clearing its bits is all the post-state needs for them. *)
+Definition mmap_fixed_noaccess_vdso (flags : word) (m : Model) (addr : word)
+    (nZ : Z) : Sys SyscallEffect :=
+  let h := m_vmmaps m in
+  let n := Z_to_bv 64 nZ in
+  let v' := vdso_cut (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ) in
+  if vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ) then
+    alt (e <- errno_from mmap_errnos ;; err_ret e) (err_ret EINVAL)
+  else if region_free (vm_reserved h ++ vm_maps h) addr n then
+    alt
+      (e <- errno_from mmap_errnos ;; err_ret e)
+      (alt
+        (modify (fun _ => with_vdso v'
+           (with_mmap_backing flags addr n
+             (with_vmmaps (mkVmMapsFull (vm_reserved h) ((addr, n) :: vm_maps h)
+               ((addr, n) :: vm_noaccess h) (vm_start_brk h)
+               (vm_brk h) (vm_limit h) (vm_mmap_base h) (vm_init_sp h)) m))) ;;
+         pure (mkEffectU addr [] [] [(addr, n)] [] []))
+        (e <- errno_from mmap_errnos ;;
+         modify (fun _ => with_vdso v'
+           (with_mmap_destroyed addr n (mmap_fixed_destroyed_next h addr n) m)) ;;
+         pure (mkEffectU (errno_ret e) [] [] [(addr, n)] [] [])))
+  else if region_free (vm_reserved h) addr n then
+    alt
+      (e <- errno_from mmap_errnos ;; err_ret e)
+      (alt
+        (modify (fun _ => with_vdso v'
+           (with_mmap_replacement flags addr n
+             (with_vmmaps (mmap_fixed_noaccess_span_next h addr n) m))) ;;
+         pure (mkEffectU addr [] [] [(addr, n)] [] []))
+        (e <- errno_from mmap_errnos ;;
+         modify (fun _ => with_vdso v'
+           (with_mmap_destroyed addr n (mmap_fixed_destroyed_next h addr n) m)) ;;
+         pure (mkEffectU (errno_ret e) [] [] [(addr, n)] [] [])))
+  else unmodeled.
+
+Definition mmap_fixed_rw_vdso (flags : word) (m : Model) (addr : word)
+    (nZ : Z) : Sys SyscallEffect :=
+  let h := m_vmmaps m in
+  let n := Z_to_bv 64 nZ in
+  let v' := vdso_cut (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ) in
+  if vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ) then
+    alt (e <- errno_from mmap_errnos ;; err_ret e) (err_ret EINVAL)
+  else if region_free (vm_reserved h ++ vm_maps h) addr n then
+    alt
+      (e <- errno_from mmap_errnos ;; err_ret e)
+      (alt
+        (_ <- choose (fun _ : unit => mmap_noreserve_backed_ok flags m nZ = true) ;;
+         modify (fun _ => with_vdso v'
+           (with_mmap_backing flags addr n
+             (with_vmmaps (mkVmMapsFull (vm_reserved h) ((addr, n) :: vm_maps h)
+               (vm_noaccess h) (vm_start_brk h) (vm_brk h) (vm_limit h)
+               (vm_mmap_base h) (vm_init_sp h)) m))) ;;
+         pure (mkEffect addr [] [(addr, n)]))
+        (e <- errno_from mmap_errnos ;;
+         modify (fun _ => with_vdso v'
+           (with_mmap_destroyed addr n (mmap_fixed_destroyed_next h addr n) m)) ;;
+         pure (mkEffectU (errno_ret e) [] [] [(addr, n)] [] [])))
+  else if region_free (vm_reserved h) addr n then
+    alt
+      (e <- errno_from mmap_errnos ;; err_ret e)
+      (alt
+        (_ <- choose (fun _ : unit =>
+               mmap_fixed_rw_span_budget_ok flags m addr n = true) ;;
+         modify (fun _ => with_vdso v'
+           (with_mmap_replacement flags addr n
+             (with_vmmaps (mmap_fixed_rw_span_next h addr n) m))) ;;
+         pure (mkEffect addr [] [(addr, n)]))
+        (e <- errno_from mmap_errnos ;;
+         modify (fun _ => with_vdso v'
+           (with_mmap_destroyed addr n (mmap_fixed_destroyed_next h addr n) m)) ;;
+         pure (mkEffectU (errno_ret e) [] [] [(addr, n)] [] [])))
+  else unmodeled.
 
 (** [mmap addr len prot flags fd off].  Three things are decided before
     any shape is matched, in the kernel's own order.
@@ -1554,7 +1747,9 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
                              /\ (0 < bv_unsigned a)%Z
                              /\ (bv_unsigned a + nZ <= alloc_top h)%Z
                              /\ region_free (vm_reserved h ++ vm_maps h) a n = true
-                              /\ mmap_noreserve_backed_ok flags m nZ = true) ;;
+                             /\ vdso_meets (m_vdso m) (bv_unsigned a)
+                                  (bv_unsigned a + nZ) = false
+                             /\ mmap_noreserve_backed_ok flags m nZ = true) ;;
        modify (fun _ =>
          with_mmap_backing flags a n
            (with_vmmaps
@@ -1572,7 +1767,9 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        a <- choose (fun a => (bv_unsigned a mod page_size = 0)%Z
                              /\ (0 < bv_unsigned a)%Z
                              /\ (bv_unsigned a + nZ <= alloc_top h)%Z
-                             /\ region_free (vm_reserved h ++ vm_maps h) a n = true) ;;
+                             /\ region_free (vm_reserved h ++ vm_maps h) a n = true
+                             /\ vdso_meets (m_vdso m) (bv_unsigned a)
+                                  (bv_unsigned a + nZ) = false) ;;
        modify (fun _ =>
          with_mmap_backing flags a n
            (with_vmmaps
@@ -1726,6 +1923,12 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
            modify (fun _ => with_mmap_destroyed addr n
              (mmap_fixed_destroyed_next h addr n) m) ;;
            pure (mkEffectU (errno_ret e) [] [] [(addr, n)] [] [])))
+      (* The vDSO pair, met by a request no recorded mapping contains:
+         a split is -EINVAL, whole ranges are replaced
+         ([mmap_fixed_noaccess_vdso]).  Below this test the request
+         misses the pair, and the three sub-cases are as before. *)
+      else if vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+      then mmap_fixed_noaccess_vdso flags m addr nZ
       (* The same free-range sub-case the rw branch below carries, and for the
          same reason.  A PROT_NONE MAP_FIXED whose range meets no live mapping
          is not a guard page punched into something owned; it is a fresh
@@ -1791,23 +1994,21 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          [Specs.syscall_spec]'s modeled surface — the same argument
          [Mremap.mremap_errnos] makes, there against v6.12.  And
          [VM_SEALED_SYSMAP] (include/linux/mm.h:4402-4405) aliases
-         VM_SEALED under CONFIG_MSEAL_SYSTEM_MAPPINGS.  What carries
-         that half is not a list of its users but a property of all of
-         them: it is applied only by kernel-installed special mappings,
-         and this model tracks NO special mapping in either ledger.
+         VM_SEALED under CONFIG_MSEAL_SYSTEM_MAPPINGS, and is 0 without
+         it.  It is applied only by kernel-installed special mappings.
          Grepping VM_SEALED_SYSMAP over v6.18.46 gives eleven sites
          across seven architectures; the three a riscv64 task can meet
          are the arch vdso text (arch/riscv/kernel/vdso.c:139), the vvar
          datastore (lib/vdso/datastore.c:103), and the uprobes
-         execute-out-of-line area (kernel/events/uprobes.c:1727) — the
-         last installed at
-         uprobe registration rather than by [execve], which is why the
-         argument is phrased over the property and not over what
-         [execve] does (the placement search has the same
-         absence).  That second half is
-         vacuous while those VMAs are absent, but this
-         arm widens the class of requests that reach the question, so
-         it is written down rather than left implicit.
+         execute-out-of-line area (kernel/events/uprobes.c:1727).  The
+         first two are the vDSO pair, which this arm never reaches (the
+         test above sends a request that meets it to
+         [mmap_fixed_noaccess_vdso]), and the model takes
+         CONFIG_MSEAL_SYSTEM_MAPPINGS off, its default (SCOPE.md), so the
+         pair is not sealed there either.  The uprobes area is installed
+         at uprobe registration rather than by [execve] and is outside
+         the model; this arm widens the class of requests that would
+         meet it, so it is written down rather than left implicit.
 
          [max_map_count] gives -ENOMEM (:1389-1393) but only before any
          split, hence non-destructively, and the errno arm already
@@ -1938,6 +2139,9 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
            modify (fun _ => with_mmap_destroyed addr n
              (mmap_fixed_destroyed_next h addr n) m) ;;
            pure (mkEffectU (errno_ret e) [] [] [(addr, n)] [] [])))
+      (* The vDSO pair, as in the PROT_NONE shape ([mmap_fixed_rw_vdso]). *)
+      else if vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+      then mmap_fixed_rw_vdso flags m addr nZ
       (* THE OTHER HALF OF MAP_FIXED, and the one that adds the least.  A
          MAP_FIXED whose range meets NO live mapping is not a commit
          inside something the process owns — it is an ordinary anonymous
@@ -2037,8 +2241,9 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        ledger, not four: a range that meets nothing in [vm_reserved ++
        vm_maps] is the free-range MAP_FIXED sub-case, resolution for
        resolution; a range that meets anything — a live mapping, a brk
-       grant, or the image's LOAD reservations — is -EEXIST with nothing
-       changed, beside the environment -ENOMEM every arm admits. *)
+       grant, the image's LOAD reservations, or a mapped range of the vDSO
+       pair — is -EEXIST with nothing changed, beside the environment
+       -ENOMEM every arm admits. *)
     let nZ := page_round_up_Z (bv_unsigned len) in
     if (two_pow_64 <=? bv_unsigned addr + nZ)%Z then err_ret ENOMEM
     else
@@ -2050,6 +2255,7 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
       else
       let n := Z_to_bv 64 nZ in
       if region_free (vm_reserved h ++ vm_maps h) addr n
+         && negb (vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ))
       then
       alt
         (e <- errno_from mmap_errnos ;; err_ret e)
@@ -2079,6 +2285,7 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
       else
       let n := Z_to_bv 64 nZ in
       if region_free (vm_reserved h ++ vm_maps h) addr n
+         && negb (vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ))
       then
       alt
         (e <- errno_from mmap_errnos ;; err_ret e)
@@ -2186,19 +2393,28 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       Linux unmaps the pages, the break pointer is unchanged, and a
       later grow continues above the old break — the hole stays a
       hole.)
-    - [addr, addr+n) disjoint from the image and every recorded
-      mapping, and ending at or below this run's [State.alloc_top]: 0, a no-op
-      — Linux does not fail when the range contains no mapped pages.
-      Below that line the only mappings the ledger does not carry are
-      the ones the KERNEL installs without being asked — the vdso/vvar
-      pair, which ends at [mm->mmap_base] and so sits BELOW this line on
-      essentially every exec ([mmap_base] pads its gap by the largest
-      stack randomisation, mm/util.c at v6.18.46, so it is at least
-      1 MiB under [sp - 8 MiB] unless the argv/envp block is larger than
-      that) — and a free-range unmap that lands on those is answered 0
-      here where Linux unmaps them (or, with
-      [CONFIG_MSEAL_SYSTEM_MAPPINGS], refuses with -EPERM); that is a
-      premise of the model.
+    - [addr, addr+n) SPLITS a mapped range of the vDSO pair (see the
+      pair section at the top of this file): -EINVAL.
+      [do_vmi_align_munmap] gathers the VMAs first (mm/vma.c:1569),
+      [__split_vma] asks the special mapping (:1401, :1422, :504-508),
+      and [special_mapping_split] refuses (mm/mmap.c:1394-1412); every
+      VMA the gather detached is put back (mm/vma.c:1500-1507).  The
+      map-count -ENOMEM at :1389-1393 and the allocation failures are
+      not modeled, as for every munmap here.
+    - [addr, addr+n) covers whole ranges of the pair, holds nothing
+      recorded, and every byte of it at or above [State.alloc_top] is a
+      byte of the pair: 0, and the covered ranges' bits clear.  The
+      gather detaches them and [vms_complete_munmap_vmas] unmaps them
+      (mm/vma.c:1578); a program may drop its vDSO.  The pair's bytes
+      were never in the machine's memory, so no [eff_unmaps].  The
+      pair's own bytes need no stack-band test: on Linux the stack lies
+      above [mm->mmap_base] and the pair below it.  With
+      CONFIG_MSEAL_SYSTEM_MAPPINGS Linux would answer -EPERM; the model
+      takes it off, its default (SCOPE.md).
+    - [addr, addr+n) disjoint from the image, every recorded mapping and
+      the pair, and ending at or below this run's [State.alloc_top]: 0,
+      a no-op — Linux does not fail when the range contains no mapped
+      pages.
     - anything else — a PARTIAL/interior/spanning unmap (Linux would
       split the mapping), a range touching the binary image
       ([vm_reserved] can never be unreserved), or a free range reaching
@@ -2220,6 +2436,16 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
 Definition munmap_free_ok (h : VmMaps) (addr : word) (nZ : Z) : bool :=
   (region_free (vm_reserved h ++ vm_maps h) addr (Z_to_bv 64 nZ)
    && (bv_unsigned addr + nZ <=? alloc_top h)%Z)%bool.
+
+(** The guard of the arm that unmaps whole ranges of the vDSO pair:
+    nothing recorded in the range, and every byte of it at or above
+    [alloc_top] a mapped byte of the pair (see [munmap_spec]). *)
+Definition munmap_vdso_ok (h : VmMaps) (v : VdsoState) (addr : word)
+    (nZ : Z) : bool :=
+  (region_free (vm_reserved h ++ vm_maps h) addr (Z_to_bv 64 nZ)
+   && ((bv_unsigned addr + nZ <=? alloc_top h)%Z
+       || vdso_holds v (Z.max (bv_unsigned addr) (alloc_top h))
+                       (bv_unsigned addr + nZ)))%bool.
 
 Definition munmap_spec (addr len : word) : Sys SyscallEffect :=
   if negb (Z.eqb (bv_unsigned addr mod page_size) 0) || w_is0 len then err_ret EINVAL
@@ -2247,6 +2473,17 @@ Definition munmap_spec (addr len : word) : Sys SyscallEffect :=
       forget_vm_range (bv_unsigned addr)
                       (bv_unsigned addr + bv_unsigned n) ;;
       pure (mkEffectU (Z_to_bv 64 0) [] [] [(addr, n)] [] [])
-    else if munmap_free_ok h addr nZ
-    then ret_only (Z_to_bv 64 0)
-    else unmodeled.
+    else
+      m <- get_model ;;
+      let v := m_vdso m in
+      if vdso_split v (bv_unsigned addr) (bv_unsigned addr + nZ)
+      then err_ret EINVAL
+      else if vdso_meets v (bv_unsigned addr) (bv_unsigned addr + nZ) then
+        if munmap_vdso_ok h v addr nZ
+        then modify (fun _ =>
+               with_vdso (vdso_cut v (bv_unsigned addr) (bv_unsigned addr + nZ)) m) ;;
+             ret_only (Z_to_bv 64 0)
+        else unmodeled
+      else if munmap_free_ok h addr nZ
+      then ret_only (Z_to_bv 64 0)
+      else unmodeled.

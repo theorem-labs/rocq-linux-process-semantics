@@ -32,7 +32,14 @@ Definition mremap_witness (old old_size new_size flags : word) (m : Model)
     let old_n := Z_to_bv 64 old_nZ in
     if negb (mremap_source_b (m_vmmaps m) old old_n old_nZ
              && mremap_backing_uniform_b m old old_n)
-    then Unmodeled
+    then (if vdso_byte (m_vdso m) (bv_unsigned old)
+          then (if Z.eqb old_nZ new_nZ then ret_outcome old m
+                else if (old_nZ <? new_nZ)%Z then ret_outcome (errno_ret EFAULT) m
+                else if vdso_split (m_vdso m) (bv_unsigned old + new_nZ)
+                          (bv_unsigned old + old_nZ)
+                then ret_outcome (errno_ret EINVAL) m
+                else Unmodeled)
+          else Unmodeled)
     else if Z.eqb old_nZ new_nZ
     then ret_outcome old m
     else ret_outcome (errno_ret witness_errno) m.
@@ -53,8 +60,18 @@ Proof.
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
     (page_round_up_Z (bv_unsigned old_size))
     && mremap_backing_uniform_b m old
-      (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))))) eqn:Hsrc;
-    [apply unmodeled_intro|].
+      (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))))) eqn:Hsrc.
+  { destruct (vdso_byte (m_vdso m) (bv_unsigned old)) eqn:Hvb;
+      [|apply unmodeled_intro].
+    cbv beta iota. unfold mremap_vdso_source.
+    destruct (Z.eqb (page_round_up_Z (bv_unsigned old_size))
+                    (page_round_up_Z (bv_unsigned new_size))); [apply pure_ok|].
+    destruct ((page_round_up_Z (bv_unsigned old_size)
+               <? page_round_up_Z (bv_unsigned new_size))%Z); [apply pure_ok|].
+    destruct (vdso_split (m_vdso m)
+                (bv_unsigned old + page_round_up_Z (bv_unsigned new_size))
+                (bv_unsigned old + page_round_up_Z (bv_unsigned old_size)));
+      [apply pure_ok | apply unmodeled_intro]. }
   destruct (Z.eqb (page_round_up_Z (bv_unsigned old_size))
                   (page_round_up_Z (bv_unsigned new_size))) eqn:Heq;
     [apply pure_ok|].

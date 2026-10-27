@@ -28,6 +28,413 @@ Definition check_brk (req : word) (eff : SyscallEffect) (m : Model)
   | _ => CheckReject
   end.
 
+(** The MAP_FIXED arms over the vDSO pair ([Mmap.mmap_fixed_noaccess_vdso]
+    and [Mmap.mmap_fixed_rw_vdso]), resolution for resolution: the split's
+    -EINVAL beside the environment errno, then the free-range and the
+    spanning replacement with the covered ranges' bits cleared. *)
+Definition check_mmap_fixed_noaccess_vdso (flags addr : word) (nZ : Z)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  let h := m_vmmaps m in
+  let n := Z_to_bv 64 nZ in
+  let v' := vdso_cut (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ) in
+  if vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ) then
+    match eff with
+    | mkEffectU r [] [] [] [] [] =>
+        if errno_ret_in mmap_errnos r || bv_eqb r (errno_ret EINVAL)
+        then CheckOk m [] else CheckReject
+    | _ => CheckReject
+    end
+  else if region_free (vm_reserved h ++ vm_maps h) addr n then
+    match eff with
+    | mkEffectU r [] [] us [] [] =>
+        if errno_ret_in mmap_errnos r
+        then match us with
+             | [] => CheckOk m []
+             | _ =>
+                 if listNN_eqb us [(addr, n)]
+                 then CheckOk (with_vdso v'
+                        (with_mmap_destroyed addr n
+                          (mmap_fixed_destroyed_next h addr n) m)) []
+                 else CheckReject
+             end
+        else if bv_eqb r addr && listNN_eqb us [(addr, n)]
+        then CheckOk (with_vdso v'
+               (with_mmap_backing flags addr n
+                 (with_vmmaps (mkVmMapsFull (vm_reserved h)
+                    ((addr, n) :: vm_maps h) ((addr, n) :: vm_noaccess h)
+                    (vm_start_brk h) (vm_brk h) (vm_limit h)
+                    (vm_mmap_base h) (vm_init_sp h)) m))) []
+        else CheckReject
+    | _ => CheckReject
+    end
+  else if region_free (vm_reserved h) addr n then
+    match eff with
+    | mkEffectU r [] [] us [] [] =>
+        if errno_ret_in mmap_errnos r
+        then match us with
+             | [] => CheckOk m []
+             | _ =>
+                 if listNN_eqb us [(addr, n)]
+                 then CheckOk (with_vdso v'
+                        (with_mmap_destroyed addr n
+                          (mmap_fixed_destroyed_next h addr n) m)) []
+                 else CheckReject
+             end
+        else if bv_eqb r addr && listNN_eqb us [(addr, n)]
+        then CheckOk (with_vdso v'
+               (with_mmap_replacement flags addr n
+                 (with_vmmaps (mmap_fixed_noaccess_span_next h addr n) m))) []
+        else CheckReject
+    | _ => CheckReject
+    end
+  else CheckUnmodeled.
+
+Definition check_mmap_fixed_rw_vdso (flags addr : word) (nZ : Z)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  let h := m_vmmaps m in
+  let n := Z_to_bv 64 nZ in
+  let v' := vdso_cut (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ) in
+  if vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ) then
+    match eff with
+    | mkEffectU r [] [] [] [] [] =>
+        if errno_ret_in mmap_errnos r || bv_eqb r (errno_ret EINVAL)
+        then CheckOk m [] else CheckReject
+    | _ => CheckReject
+    end
+  else if region_free (vm_reserved h ++ vm_maps h) addr n then
+    match eff with
+    | mkEffectU r [] zs us [] [] =>
+        if errno_ret_in mmap_errnos r
+        then match zs with
+             | _ :: _ => CheckReject
+             | [] =>
+                 match us with
+                 | [] => CheckOk m []
+                 | _ =>
+                     if listNN_eqb us [(addr, n)]
+                     then CheckOk (with_vdso v'
+                            (with_mmap_destroyed addr n
+                              (mmap_fixed_destroyed_next h addr n) m)) []
+                     else CheckReject
+                 end
+             end
+        else match us with
+             | _ :: _ => CheckReject
+             | [] =>
+                 if bv_eqb r addr && listNN_eqb zs [(addr, n)]
+                    && mmap_noreserve_backed_ok flags m nZ
+                 then CheckOk (with_vdso v'
+                        (with_mmap_backing flags addr n
+                          (with_vmmaps (mkVmMapsFull (vm_reserved h)
+                             ((addr, n) :: vm_maps h) (vm_noaccess h)
+                             (vm_start_brk h) (vm_brk h) (vm_limit h)
+                             (vm_mmap_base h) (vm_init_sp h)) m))) []
+                 else CheckReject
+             end
+    | _ => CheckReject
+    end
+  else if region_free (vm_reserved h) addr n then
+    match eff with
+    | mkEffectU r [] zs us [] [] =>
+        if errno_ret_in mmap_errnos r
+        then match zs with
+             | _ :: _ => CheckReject
+             | [] =>
+                 match us with
+                 | [] => CheckOk m []
+                 | _ =>
+                     if listNN_eqb us [(addr, n)]
+                     then CheckOk (with_vdso v'
+                            (with_mmap_destroyed addr n
+                              (mmap_fixed_destroyed_next h addr n) m)) []
+                     else CheckReject
+                 end
+             end
+        else match us with
+             | _ :: _ => CheckReject
+             | [] =>
+                 if bv_eqb r addr && listNN_eqb zs [(addr, n)]
+                    && mmap_fixed_rw_span_budget_ok flags m addr n
+                 then CheckOk (with_vdso v'
+                        (with_mmap_replacement flags addr n
+                          (with_vmmaps (mmap_fixed_rw_span_next h addr n) m))) []
+                 else CheckReject
+             end
+    | _ => CheckReject
+    end
+  else CheckUnmodeled.
+
+(** The four agreement lemmas of each helper, for the arm in the state it
+    is run in ([mmap_spec] reaches it after [get_model]). *)
+Ltac vdso_never_unmodeled H :=
+  cbv beta iota zeta in H;
+  repeat (match type of H with
+          | context [if ?b then _ else _] => destruct b
+          end; cbv beta iota zeta in H);
+  discriminate H.
+
+(** Rewrite every known miss of the pair into the goal. *)
+Ltac vdso_rw :=
+  repeat match goal with
+         | Hv : vdso_meets ?v ?a ?b = false |- context [vdso_meets ?v ?a ?b] =>
+             rewrite Hv
+         end.
+
+Ltac vdso_errno_ok :=
+  match goal with
+  | |- context [errno_ret_in ?es (errno_ret ?e)] =>
+      rewrite (errno_ret_in_intro es e) by assumption
+  end.
+
+Lemma check_mmap_fixed_noaccess_vdso_sound_ok :
+  forall flags addr nZ eff m m' evs i,
+  check_mmap_fixed_noaccess_vdso flags addr nZ eff m = CheckOk m' evs ->
+  mmap_fixed_noaccess_vdso flags m addr nZ i m (Ok eff m' evs).
+Proof.
+  intros flags addr nZ eff m m' evs i H.
+  unfold check_mmap_fixed_noaccess_vdso in H. unfold mmap_fixed_noaccess_vdso.
+  cbv zeta in H |- *.
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ))
+    eqn:Hsp.
+  { destruct eff as [r [|? ?] [|? ?] [|? ?] [|? ?] [|? ?]]; try discriminate.
+    destruct (errno_ret_in mmap_errnos r || bv_eqb r (errno_ret EINVAL))
+      eqn:He; [|discriminate].
+    inversion H; clear H; subst.
+    apply orb_true_iff in He as [He | He].
+    - apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+      apply alt_l. eapply bind_ok0; [apply (choose_ok _ e); exact HIn|].
+      apply pure_ok.
+    - apply bv_eqb_eq in He; subst r. apply alt_r. apply pure_ok. }
+  destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+              addr (Z_to_bv 64 nZ)) eqn:Hfree;
+    [|destruct (region_free (vm_reserved (m_vmmaps m)) addr (Z_to_bv 64 nZ))
+        eqn:Hspan; [|discriminate]].
+  all: destruct eff as [r ws zs us cs copyins]; destruct ws as [|? ?];
+    [destruct zs as [|? ?]|]; try discriminate.
+  all: destruct cs as [|? ?]; [destruct copyins as [|? ?]|]; try discriminate.
+  all: destruct (errno_ret_in mmap_errnos r) eqn:He.
+  all: try (apply errno_ret_in_true in He; destruct He as (e & HIn & ->);
+            destruct us as [|u us];
+            [ inversion H; clear H; subst; apply alt_l;
+              eapply bind_ok0; [apply (choose_ok _ e); exact HIn|]; apply pure_ok
+            | destruct (listNN_eqb (u :: us) [(addr, Z_to_bv 64 nZ)]) eqn:Hus;
+                [|discriminate];
+              inversion H; clear H; subst;
+              apply listNN_eqb_eq in Hus; rewrite Hus;
+              apply alt_r; apply alt_r;
+              eapply bind_ok0; [apply (choose_ok _ e); exact HIn|];
+              eapply bind_ok0; [apply modify_ok|]; apply pure_ok ]).
+  all: destruct (bv_eqb r addr && listNN_eqb us [(addr, Z_to_bv 64 nZ)])
+         eqn:HC; [|discriminate].
+  all: inversion H; clear H; subst.
+  all: apply andb_true_iff in HC as [Hr Hus]; apply bv_eqb_eq in Hr; subst r;
+       apply listNN_eqb_eq in Hus; subst us.
+  all: apply alt_r; apply alt_l; eapply bind_ok0; [apply modify_ok|];
+       apply pure_ok.
+Qed.
+
+Lemma check_mmap_fixed_noaccess_vdso_sound_unmodeled :
+  forall flags addr nZ eff m i,
+  check_mmap_fixed_noaccess_vdso flags addr nZ eff m = CheckUnmodeled ->
+  mmap_fixed_noaccess_vdso flags m addr nZ i m Unmodeled.
+Proof.
+  intros flags addr nZ eff m i H.
+  unfold check_mmap_fixed_noaccess_vdso in H. unfold mmap_fixed_noaccess_vdso.
+  cbv zeta in H |- *.
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ));
+    [exfalso; destruct eff as [r [|? ?] [|? ?] [|? ?] [|? ?] [|? ?]];
+     vdso_never_unmodeled H|].
+  destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+              addr (Z_to_bv 64 nZ));
+    [exfalso; destruct eff as [r [|? ?] [|? ?] [|? ?] [|? ?] [|? ?]];
+     vdso_never_unmodeled H|].
+  destruct (region_free (vm_reserved (m_vmmaps m)) addr (Z_to_bv 64 nZ));
+    [exfalso; destruct eff as [r [|? ?] [|? ?] [|? ?] [|? ?] [|? ?]];
+     vdso_never_unmodeled H|].
+  apply unmodeled_intro.
+Qed.
+
+Lemma check_mmap_fixed_noaccess_vdso_complete_ok :
+  forall flags addr nZ eff m m' evs i,
+  (0 <= nZ)%Z -> (bv_unsigned addr + nZ <= alloc_top (m_vmmaps m))%Z ->
+  mmap_fixed_noaccess_vdso flags m addr nZ i m (Ok eff m' evs) ->
+  check_mmap_fixed_noaccess_vdso flags addr nZ eff m = CheckOk m' evs.
+Proof.
+  intros flags addr nZ eff m m' evs i Hn Hb H.
+  unfold mmap_fixed_noaccess_vdso in H. unfold check_mmap_fixed_noaccess_vdso.
+  cbv zeta in H |- *.
+  pose proof (word_unsigned_range addr) as Haddr.
+  assert (Hlow : errno_ret_in mmap_errnos addr = false)
+    by (apply errno_ret_in_below; [reflexivity|];
+        alloc_top_bounds; unfold two_pow_64 in *; lia).
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)).
+  { sys_unfold. cbv iota in H. inv_ok; cbv beta iota zeta.
+    - vdso_errno_ok. reflexivity.
+    - rewrite bv_eqb_refl, Bool.orb_true_r. reflexivity. }
+  destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+              addr (Z_to_bv 64 nZ));
+    [|destruct (region_free (vm_reserved (m_vmmaps m)) addr (Z_to_bv 64 nZ))].
+  all: sys_unfold; cbv iota in H; inv_ok; cbv beta iota zeta.
+  all: first
+    [ vdso_errno_ok; cbv iota;
+      first [ reflexivity
+            | rewrite (proj2 (listNN_eqb_eq _ _) eq_refl); reflexivity ]
+    | rewrite Hlow, bv_eqb_refl, (proj2 (listNN_eqb_eq _ _) eq_refl);
+      reflexivity ].
+Qed.
+
+Lemma check_mmap_fixed_noaccess_vdso_complete_unmodeled :
+  forall flags addr nZ m i eff,
+  mmap_fixed_noaccess_vdso flags m addr nZ i m Unmodeled ->
+  check_mmap_fixed_noaccess_vdso flags addr nZ eff m = CheckUnmodeled.
+Proof.
+  intros flags addr nZ m i eff H.
+  unfold mmap_fixed_noaccess_vdso in H. unfold check_mmap_fixed_noaccess_vdso.
+  cbv zeta in H |- *.
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ));
+    [sys_unfold; cbv iota in H; inv_ok; discriminate|].
+  destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+              addr (Z_to_bv 64 nZ));
+    [sys_unfold; cbv iota in H; inv_ok; discriminate|].
+  destruct (region_free (vm_reserved (m_vmmaps m)) addr (Z_to_bv 64 nZ));
+    [sys_unfold; cbv iota in H; inv_ok; discriminate|].
+  reflexivity.
+Qed.
+
+Lemma check_mmap_fixed_rw_vdso_sound_ok :
+  forall flags addr nZ eff m m' evs i,
+  check_mmap_fixed_rw_vdso flags addr nZ eff m = CheckOk m' evs ->
+  mmap_fixed_rw_vdso flags m addr nZ i m (Ok eff m' evs).
+Proof.
+  intros flags addr nZ eff m m' evs i H.
+  unfold check_mmap_fixed_rw_vdso in H. unfold mmap_fixed_rw_vdso.
+  cbv zeta in H |- *.
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ))
+    eqn:Hsp.
+  { destruct eff as [r [|? ?] [|? ?] [|? ?] [|? ?] [|? ?]]; try discriminate.
+    destruct (errno_ret_in mmap_errnos r || bv_eqb r (errno_ret EINVAL))
+      eqn:He; [|discriminate].
+    inversion H; clear H; subst.
+    apply orb_true_iff in He as [He | He].
+    - apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+      apply alt_l. eapply bind_ok0; [apply (choose_ok _ e); exact HIn|].
+      apply pure_ok.
+    - apply bv_eqb_eq in He; subst r. apply alt_r. apply pure_ok. }
+  destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+              addr (Z_to_bv 64 nZ)) eqn:Hfree;
+    [|destruct (region_free (vm_reserved (m_vmmaps m)) addr (Z_to_bv 64 nZ))
+        eqn:Hspan; [|discriminate]].
+  all: destruct eff as [r ws zs us cs copyins]; destruct ws as [|? ?];
+    try discriminate.
+  all: destruct cs as [|? ?]; [destruct copyins as [|? ?]|]; try discriminate.
+  all: destruct (errno_ret_in mmap_errnos r) eqn:He.
+  all: try (apply errno_ret_in_true in He; destruct He as (e & HIn & ->);
+            destruct zs as [|? ?]; [|discriminate];
+            destruct us as [|u us];
+            [ inversion H; clear H; subst; apply alt_l;
+              eapply bind_ok0; [apply (choose_ok _ e); exact HIn|]; apply pure_ok
+            | destruct (listNN_eqb (u :: us) [(addr, Z_to_bv 64 nZ)]) eqn:Hus;
+                [|discriminate];
+              inversion H; clear H; subst;
+              apply listNN_eqb_eq in Hus; rewrite Hus;
+              apply alt_r; apply alt_r;
+              eapply bind_ok0; [apply (choose_ok _ e); exact HIn|];
+              eapply bind_ok0; [apply modify_ok|]; apply pure_ok ]).
+  - destruct us as [|? ?]; [|discriminate].
+    destruct (bv_eqb r addr && listNN_eqb zs [(addr, Z_to_bv 64 nZ)]
+              && mmap_noreserve_backed_ok flags m nZ) eqn:HC; [|discriminate].
+    inversion H; clear H; subst.
+    apply andb_true_iff in HC as [HC Hbud].
+    apply andb_true_iff in HC as [Hr Hzs].
+    apply bv_eqb_eq in Hr; subst r. apply listNN_eqb_eq in Hzs; subst zs.
+    apply alt_r. apply alt_l.
+    eapply bind_ok0; [apply (choose_ok _ tt); exact Hbud|].
+    eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+  - destruct us as [|? ?]; [|discriminate].
+    destruct (bv_eqb r addr && listNN_eqb zs [(addr, Z_to_bv 64 nZ)]
+              && mmap_fixed_rw_span_budget_ok flags m addr (Z_to_bv 64 nZ))
+      eqn:HC; [|discriminate].
+    inversion H; clear H; subst.
+    apply andb_true_iff in HC as [HC Hbud].
+    apply andb_true_iff in HC as [Hr Hzs].
+    apply bv_eqb_eq in Hr; subst r. apply listNN_eqb_eq in Hzs; subst zs.
+    apply alt_r. apply alt_l.
+    eapply bind_ok0; [apply (choose_ok _ tt); exact Hbud|].
+    eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+Lemma check_mmap_fixed_rw_vdso_sound_unmodeled :
+  forall flags addr nZ eff m i,
+  check_mmap_fixed_rw_vdso flags addr nZ eff m = CheckUnmodeled ->
+  mmap_fixed_rw_vdso flags m addr nZ i m Unmodeled.
+Proof.
+  intros flags addr nZ eff m i H.
+  unfold check_mmap_fixed_rw_vdso in H. unfold mmap_fixed_rw_vdso.
+  cbv zeta in H |- *.
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ));
+    [exfalso; destruct eff as [r [|? ?] [|? ?] [|? ?] [|? ?] [|? ?]];
+     vdso_never_unmodeled H|].
+  destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+              addr (Z_to_bv 64 nZ));
+    [exfalso; destruct eff as [r [|? ?] [|? ?] [|? ?] [|? ?] [|? ?]];
+     vdso_never_unmodeled H|].
+  destruct (region_free (vm_reserved (m_vmmaps m)) addr (Z_to_bv 64 nZ));
+    [exfalso; destruct eff as [r [|? ?] [|? ?] [|? ?] [|? ?] [|? ?]];
+     vdso_never_unmodeled H|].
+  apply unmodeled_intro.
+Qed.
+
+Lemma check_mmap_fixed_rw_vdso_complete_ok :
+  forall flags addr nZ eff m m' evs i,
+  (0 <= nZ)%Z -> (bv_unsigned addr + nZ <= alloc_top (m_vmmaps m))%Z ->
+  mmap_fixed_rw_vdso flags m addr nZ i m (Ok eff m' evs) ->
+  check_mmap_fixed_rw_vdso flags addr nZ eff m = CheckOk m' evs.
+Proof.
+  intros flags addr nZ eff m m' evs i Hn Hb H.
+  unfold mmap_fixed_rw_vdso in H. unfold check_mmap_fixed_rw_vdso.
+  cbv zeta in H |- *.
+  pose proof (word_unsigned_range addr) as Haddr.
+  assert (Hlow : errno_ret_in mmap_errnos addr = false)
+    by (apply errno_ret_in_below; [reflexivity|];
+        alloc_top_bounds; unfold two_pow_64 in *; lia).
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)).
+  { sys_unfold. cbv iota in H. inv_ok; cbv beta iota zeta.
+    - vdso_errno_ok. reflexivity.
+    - rewrite bv_eqb_refl, Bool.orb_true_r. reflexivity. }
+  destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+              addr (Z_to_bv 64 nZ));
+    [|destruct (region_free (vm_reserved (m_vmmaps m)) addr (Z_to_bv 64 nZ))].
+  all: sys_unfold; cbv iota in H; inv_ok; cbv beta iota zeta.
+  all: first
+    [ vdso_errno_ok; cbv iota;
+      first [ reflexivity
+            | rewrite (proj2 (listNN_eqb_eq _ _) eq_refl); reflexivity ]
+    | rewrite Hlow, bv_eqb_refl, (proj2 (listNN_eqb_eq _ _) eq_refl);
+      cbn [andb];
+      match goal with
+      | Hg : ?g = true |- context [?g] => rewrite Hg
+      end;
+      reflexivity ].
+Qed.
+
+Lemma check_mmap_fixed_rw_vdso_complete_unmodeled :
+  forall flags addr nZ m i eff,
+  mmap_fixed_rw_vdso flags m addr nZ i m Unmodeled ->
+  check_mmap_fixed_rw_vdso flags addr nZ eff m = CheckUnmodeled.
+Proof.
+  intros flags addr nZ m i eff H.
+  unfold mmap_fixed_rw_vdso in H. unfold check_mmap_fixed_rw_vdso.
+  cbv zeta in H |- *.
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ));
+    [sys_unfold; cbv iota in H; inv_ok; discriminate|].
+  destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+              addr (Z_to_bv 64 nZ));
+    [sys_unfold; cbv iota in H; inv_ok; discriminate|].
+  destruct (region_free (vm_reserved (m_vmmaps m)) addr (Z_to_bv 64 nZ));
+    [sys_unfold; cbv iota in H; inv_ok; discriminate|].
+  reflexivity.
+Qed.
+
 Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
   if negb (mmap_off_aligned_b off) then
@@ -50,6 +457,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
         if (bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
            && (bv_unsigned r + nZ <=? alloc_top (m_vmmaps m))%Z
            && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) r n
+           && negb (vdso_meets (m_vdso m) (bv_unsigned r) (bv_unsigned r + nZ))
            && mmap_noreserve_backed_ok flags m nZ
            && listNN_eqb zs [(r, n)]
         then CheckOk
@@ -76,6 +484,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
         if (bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
            && (bv_unsigned r + nZ <=? alloc_top (m_vmmaps m))%Z
            && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) r n
+           && negb (vdso_meets (m_vdso m) (bv_unsigned r) (bv_unsigned r + nZ))
            && listNN_eqb us [(r, n)]
         then CheckOk
                (with_mmap_backing flags r n
@@ -131,6 +540,8 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
             else CheckReject
         | _ => CheckReject
         end
+      else if vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+      then check_mmap_fixed_noaccess_vdso flags addr nZ eff m
       else if region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                           addr n
       then
@@ -218,6 +629,8 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
                  end
         | _ => CheckReject
         end
+      else if vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+      then check_mmap_fixed_rw_vdso flags addr nZ eff m
       else if region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                           addr n
       then
@@ -287,6 +700,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
     else
       let n := Z_to_bv 64 nZ in
       if region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr n
+         && negb (vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ))
       then
         match eff with
         | mkEffectU r [] [] us [] [] =>
@@ -326,6 +740,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
     else
       let n := Z_to_bv 64 nZ in
       if region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr n
+         && negb (vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ))
       then
         match eff with
         | mkEffectU r [] zs [] [] [] =>
@@ -384,6 +799,15 @@ Definition check_munmap (addr len : word) (eff : SyscallEffect) (m : Model)
           else CheckReject
       | _ => CheckReject
       end
+    else if vdso_split (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+    then check_ret_only eff (errno_ret EINVAL) m []
+    else if vdso_meets (m_vdso m) (bv_unsigned addr) (bv_unsigned addr + nZ)
+    then
+      (if munmap_vdso_ok (m_vmmaps m) (m_vdso m) addr nZ
+       then check_ret_only eff (Z_to_bv 64 0)
+              (with_vdso (vdso_cut (m_vdso m) (bv_unsigned addr)
+                            (bv_unsigned addr + nZ)) m) []
+       else CheckUnmodeled)
     else if munmap_free_ok (m_vmmaps m) addr nZ
     then check_ret_only eff (Z_to_bv 64 0) m []
     else CheckUnmodeled.
@@ -524,6 +948,8 @@ Proof.
                 && (bv_unsigned r + page_round_up_Z (bv_unsigned len) <=? alloc_top (m_vmmaps m))%Z
                 && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                      r (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+                && negb (vdso_meets (m_vdso m) (bv_unsigned r)
+                           (bv_unsigned r + page_round_up_Z (bv_unsigned len)))
                  && mmap_noreserve_backed_ok flags m
                      (page_round_up_Z (bv_unsigned len))
                 && listNN_eqb zs [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
@@ -531,9 +957,11 @@ Proof.
       inversion H; clear H; subst.
       apply andb_true_iff in HC as [HC HZs].
       apply andb_true_iff in HC as [HC HL].
+      apply andb_true_iff in HC as [HC HV].
       apply andb_true_iff in HC as [HC HD].
       apply andb_true_iff in HC as [HC HB].
       apply andb_true_iff in HC as [HA HZ].
+      apply negb_true_iff in HV.
       apply Z.eqb_eq in HA. apply Z.ltb_lt in HZ. apply Z.leb_le in HB.
       apply listNN_eqb_eq in HZs; subst zs.
       apply alt_r.
@@ -558,14 +986,18 @@ Proof.
                 && (bv_unsigned r + page_round_up_Z (bv_unsigned len) <=? alloc_top (m_vmmaps m))%Z
                 && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                      r (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+                && negb (vdso_meets (m_vdso m) (bv_unsigned r)
+                           (bv_unsigned r + page_round_up_Z (bv_unsigned len)))
                 && listNN_eqb us
                      [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
         eqn:HC; [|discriminate].
       inversion H; clear H; subst.
       apply andb_true_iff in HC as [HC HUs].
+      apply andb_true_iff in HC as [HC HV].
       apply andb_true_iff in HC as [HC HD].
       apply andb_true_iff in HC as [HC HB].
       apply andb_true_iff in HC as [HA HZ].
+      apply negb_true_iff in HV.
       apply Z.eqb_eq in HA. apply Z.ltb_lt in HZ. apply Z.leb_le in HB.
       apply listNN_eqb_eq in HUs; subst us.
       apply alt_r.
@@ -593,6 +1025,9 @@ Proof.
             && map_contains (vm_maps (m_vmmaps m)) addr
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hok.
   2: {
+  destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+              (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd.
+  { cbv beta iota in H |- *. apply check_mmap_fixed_noaccess_vdso_sound_ok. exact H. }
   destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                  addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
     eqn:Hfresh0.
@@ -705,7 +1140,9 @@ Proof.
         apply pure_ok. }
       destruct (negb (0 <? bv_unsigned addr)%Z) eqn:Hpos; [discriminate|].
       destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                     addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
+                     addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+                && negb (vdso_meets (m_vdso m) (bv_unsigned addr)
+                          (bv_unsigned addr + page_round_up_Z (bv_unsigned len))))
         eqn:Hfree.
       - destruct eff as [r ws zs us cs copyins]; destruct ws as [|? ?];
           [destruct zs as [|? ?]|]; try discriminate.
@@ -758,7 +1195,9 @@ Proof.
       apply pure_ok. }
     destruct (negb (0 <? bv_unsigned addr)%Z) eqn:Hpos; [discriminate|].
     destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                   addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
+                   addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+              && negb (vdso_meets (m_vdso m) (bv_unsigned addr)
+                        (bv_unsigned addr + page_round_up_Z (bv_unsigned len))))
       eqn:Hfree.
     - destruct eff as [r ws zs us cs copyins]; destruct ws as [|? ?];
         [destruct us as [|? ?];
@@ -853,6 +1292,9 @@ Proof.
     eapply bind_ok0; [apply (choose_ok _ tt); exact Hbacked|].
     eapply bind_ok0; [apply modify_ok|].
     apply pure_ok. }
+  destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+              (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd.
+  { cbv beta iota in H |- *. apply check_mmap_fixed_rw_vdso_sound_ok. exact H. }
   destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                  addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
                  ) eqn:Hfresh.
@@ -948,6 +1390,8 @@ Proof.
                 && (bv_unsigned r + page_round_up_Z (bv_unsigned len) <=? alloc_top (m_vmmaps m))%Z
                 && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                      r (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+                && negb (vdso_meets (m_vdso m) (bv_unsigned r)
+                           (bv_unsigned r + page_round_up_Z (bv_unsigned len)))
                  && mmap_noreserve_backed_ok flags m
                      (page_round_up_Z (bv_unsigned len))
                 && listNN_eqb zs
@@ -968,6 +1412,8 @@ Proof.
                 && (bv_unsigned r + page_round_up_Z (bv_unsigned len) <=? alloc_top (m_vmmaps m))%Z
                 && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                      r (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+                && negb (vdso_meets (m_vdso m) (bv_unsigned r)
+                           (bv_unsigned r + page_round_up_Z (bv_unsigned len)))
                 && listNN_eqb us
                      [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))]);
         discriminate. }
@@ -993,7 +1439,9 @@ Proof.
       { apply unmodeled_intro. }
       exfalso.
       destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                     addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
+                     addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+                && negb (vdso_meets (m_vdso m) (bv_unsigned addr)
+                          (bv_unsigned addr + page_round_up_Z (bv_unsigned len))))
         eqn:Hfree.
       - destruct ws;
           [destruct zs; [destruct cs; [destruct copyins|]|]|];
@@ -1026,7 +1474,9 @@ Proof.
     { apply unmodeled_intro. }
     exfalso.
     destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                   addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
+                   addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+              && negb (vdso_meets (m_vdso m) (bv_unsigned addr)
+                        (bv_unsigned addr + page_round_up_Z (bv_unsigned len))))
       eqn:Hfree.
     - destruct ws;
         [destruct us; [destruct cs; [destruct copyins|]|]|];
@@ -1061,7 +1511,11 @@ Proof.
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && map_contains (vm_maps (m_vmmaps m)) addr
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hok.
-  2: { destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+  2: { destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+                   (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd.
+       { cbv beta iota in H |- *.
+         eapply check_mmap_fixed_rw_vdso_sound_unmodeled. exact H. }
+       destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                       addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
                       ) eqn:Hfresh.
        2: { destruct (region_free (vm_reserved (m_vmmaps m)) addr
@@ -1134,6 +1588,10 @@ Proof.
             && map_contains (vm_maps (m_vmmaps m)) addr
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hok.
   2: {
+  destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+              (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd.
+  { cbv beta iota in H |- *.
+    eapply check_mmap_fixed_noaccess_vdso_sound_unmodeled. exact H. }
   destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                  addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
     eqn:Hfresh0.
@@ -1214,7 +1672,7 @@ Proof.
                   | alloc_top_bounds;
                       unfold two_pow_64 in *; lia ]
       end.
-      bool_true. rewrite (proj2 (listNN_eqb_eq _ _) eq_refl).
+      vdso_rw. bool_true. rewrite (proj2 (listNN_eqb_eq _ _) eq_refl).
       rewrite Bool.andb_true_r. reflexivity. }
   destruct (mmap_noaccess_b prot flags off) eqn:Hnone.
   { sys_unfold. cbv iota in H. inv_ok.
@@ -1234,7 +1692,7 @@ Proof.
                   | alloc_top_bounds;
                       unfold two_pow_64 in *; lia ]
       end.
-      bool_true. rewrite (proj2 (listNN_eqb_eq _ _) eq_refl).
+      vdso_rw. bool_true. rewrite (proj2 (listNN_eqb_eq _ _) eq_refl).
       rewrite Bool.andb_true_r. reflexivity. }
   destruct (mmap_fixed_noaccess_b prot flags off) eqn:Hfixed.
   2: {
@@ -1264,7 +1722,9 @@ Proof.
       pose proof (word_unsigned_range len) as Hlen.
       pose proof (page_round_up_Z_nonneg (bv_unsigned len) ltac:(lia)) as Hn.
       destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                     addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
+                     addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+                && negb (vdso_meets (m_vdso m) (bv_unsigned addr)
+                          (bv_unsigned addr + page_round_up_Z (bv_unsigned len))))
         eqn:Hfree.
       - sys_unfold. cbv iota in H. inv_ok.
         + (* errno *)
@@ -1314,7 +1774,9 @@ Proof.
     pose proof (word_unsigned_range len) as Hlen.
     pose proof (page_round_up_Z_nonneg (bv_unsigned len) ltac:(lia)) as Hn.
     destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                   addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
+                   addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+              && negb (vdso_meets (m_vdso m) (bv_unsigned addr)
+                        (bv_unsigned addr + page_round_up_Z (bv_unsigned len))))
       eqn:Hfree.
     - sys_unfold. cbv iota in H. inv_ok.
       + (* errno *)
@@ -1365,7 +1827,14 @@ Proof.
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && map_contains (vm_maps (m_vmmaps m)) addr
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hok.
-  2: { destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+  2: { destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+                   (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd.
+       { cbv beta iota in H |- *.
+         apply negb_false_iff, Z.leb_le in Hceil.
+         pose proof (word_unsigned_range len) as Hlen.
+         eapply check_mmap_fixed_rw_vdso_complete_ok; [| exact Hceil | exact H].
+         apply page_round_up_Z_nonneg. lia. }
+       destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                       addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
                       ) eqn:Hfresh.
        2: { destruct (region_free (vm_reserved (m_vmmaps m)) addr
@@ -1481,7 +1950,15 @@ Proof.
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && map_contains (vm_maps (m_vmmaps m)) addr
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hok.
-  2: { destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+  2: { destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+                   (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd.
+       { cbv beta iota in H |- *.
+         apply negb_false_iff, Z.leb_le in Hceil.
+         pose proof (word_unsigned_range len) as Hlen.
+         eapply check_mmap_fixed_noaccess_vdso_complete_ok;
+           [| exact Hceil | exact H].
+         apply page_round_up_Z_nonneg. lia. }
+       destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                       addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
          eqn:Hfresh0.
        2: { destruct (region_free (vm_reserved (m_vmmaps m)) addr
@@ -1610,7 +2087,9 @@ Proof.
       destruct (negb (0 <? bv_unsigned addr)%Z) eqn:Hpos.
       { reflexivity. }
       destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                     addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
+                     addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+                && negb (vdso_meets (m_vdso m) (bv_unsigned addr)
+                          (bv_unsigned addr + page_round_up_Z (bv_unsigned len))))
         eqn:Hfree; sys_unfold; cbv iota in H; inv_ok. }
     destruct (mmap_noreplace_rw_b prot flags off) eqn:Hnrr.
     2: reflexivity.
@@ -1628,7 +2107,9 @@ Proof.
     destruct (negb (0 <? bv_unsigned addr)%Z) eqn:Hpos.
     { reflexivity. }
     destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                   addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
+                   addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+              && negb (vdso_meets (m_vdso m) (bv_unsigned addr)
+                        (bv_unsigned addr + page_round_up_Z (bv_unsigned len))))
       eqn:Hfree; sys_unfold; cbv iota in H; inv_ok. }
   cbv zeta in H. cbv zeta.
   destruct ((two_pow_64
@@ -1647,7 +2128,11 @@ Proof.
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && map_contains (vm_maps (m_vmmaps m)) addr
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hok.
-  2: { destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+  2: { destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+                   (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd.
+       { cbv beta iota in H |- *.
+         eapply check_mmap_fixed_rw_vdso_complete_unmodeled. exact H. }
+       destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                       addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
                       ) eqn:Hfresh.
        2: { destruct (region_free (vm_reserved (m_vmmaps m)) addr
@@ -1674,7 +2159,11 @@ Proof.
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && map_contains (vm_maps (m_vmmaps m)) addr
                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hok.
-  2: { destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
+  2: { destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+                   (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd.
+       { cbv beta iota in H |- *.
+         eapply check_mmap_fixed_noaccess_vdso_complete_unmodeled. exact H. }
+       destruct (region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
                       addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))))
          eqn:Hfresh0.
        2: { destruct (region_free (vm_reserved (m_vmmaps m)) addr
@@ -1718,12 +2207,28 @@ Proof.
     srw Hhas.
     eapply bind_ok0; [apply modify_ok|].
     eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
-  - destruct (munmap_free_ok (m_vmmaps m) addr
+  - destruct (vdso_split (m_vdso m) (bv_unsigned addr)
+                (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hsp.
+    { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+      eapply bind_ok0; [apply get_vmmaps_ok|]. cbv beta zeta. srw Hhas.
+      eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta. srw Hsp.
+      apply pure_ok. }
+    destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+                (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd.
+    { destruct (munmap_vdso_ok (m_vmmaps m) (m_vdso m) addr
+                  (page_round_up_Z (bv_unsigned len))) eqn:Hok; [|discriminate].
+      apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+      eapply bind_ok0; [apply get_vmmaps_ok|]. cbv beta zeta. srw Hhas.
+      eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
+      srw Hsp. srw Hvd. srw Hok.
+      eapply bind_ok0; [apply modify_ok|]. apply pure_ok. }
+    destruct (munmap_free_ok (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len)))
       eqn:Hfree; [|discriminate].
     apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-    eapply bind_ok0; [apply get_vmmaps_ok|]. cbv beta zeta.
-    srw Hhas. srw Hfree. apply pure_ok.
+    eapply bind_ok0; [apply get_vmmaps_ok|]. cbv beta zeta. srw Hhas.
+    eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
+    srw Hsp. srw Hvd. srw Hfree. apply pure_ok.
 Qed.
 
 Lemma check_munmap_sound_unmodeled : forall addr len eff m i,
@@ -1747,12 +2252,24 @@ Proof.
                   && listNN_eqb us
                        [(addr, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])|]|]|]|];
       discriminate.
-  - destruct (munmap_free_ok (m_vmmaps m) addr
+  - destruct (vdso_split (m_vdso m) (bv_unsigned addr)
+                (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hsp.
+    { now apply check_ret_only_no_unmodeled in H. }
+    destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+                (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd.
+    { destruct (munmap_vdso_ok (m_vmmaps m) (m_vdso m) addr
+                  (page_round_up_Z (bv_unsigned len))) eqn:Hok.
+      { now apply check_ret_only_no_unmodeled in H. }
+      eapply bind_unmodeled2; [apply get_vmmaps_ok|]. cbv beta zeta. srw Hhas.
+      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
+      srw Hsp. srw Hvd. srw Hok. apply unmodeled_intro. }
+    destruct (munmap_free_ok (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len)))
       eqn:Hfree.
     { now apply check_ret_only_no_unmodeled in H. }
-    eapply bind_unmodeled2; [apply get_vmmaps_ok|]. cbv beta zeta.
-    srw Hhas. srw Hfree. apply unmodeled_intro.
+    eapply bind_unmodeled2; [apply get_vmmaps_ok|]. cbv beta zeta. srw Hhas.
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
+    srw Hsp. srw Hvd. srw Hfree. apply unmodeled_intro.
 Qed.
 
 Lemma check_munmap_complete_ok : forall addr len eff m m' evs i,
@@ -1774,7 +2291,18 @@ Proof.
     hall Hhas; inv_ok.
   - cbv iota. unfold w_is0. rewrite bv_eqb_refl.
     rewrite (proj2 (listNN_eqb_eq _ _) eq_refl). reflexivity.
-  - destruct (munmap_free_ok (m_vmmaps m) addr
+  - destruct (vdso_split (m_vdso m) (bv_unsigned addr)
+                (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hsp;
+      hall Hsp; inv_ok.
+    { cbv iota. cbn; rewrite bv_eqb_refl; reflexivity. }
+    destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+                (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd;
+      hall Hvd; inv_ok.
+    { destruct (munmap_vdso_ok (m_vmmaps m) (m_vdso m) addr
+                  (page_round_up_Z (bv_unsigned len))) eqn:Hok;
+        hall Hok; inv_ok.
+      cbv iota. cbn; try rewrite bv_eqb_refl; reflexivity. }
+    destruct (munmap_free_ok (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len)))
       eqn:Hfree; hall Hfree; inv_ok.
     cbv iota. cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
@@ -1794,6 +2322,16 @@ Proof.
   destruct (map_has (vm_maps (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hhas;
     hall Hhas; inv_ok; try discriminate.
+  destruct (vdso_split (m_vdso m) (bv_unsigned addr)
+              (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hsp;
+    hall Hsp; inv_ok; try discriminate.
+  destruct (vdso_meets (m_vdso m) (bv_unsigned addr)
+              (bv_unsigned addr + page_round_up_Z (bv_unsigned len))) eqn:Hvd;
+    hall Hvd; inv_ok; try discriminate.
+  { destruct (munmap_vdso_ok (m_vmmaps m) (m_vdso m) addr
+                (page_round_up_Z (bv_unsigned len))) eqn:Hok;
+      hall Hok; inv_ok; try discriminate.
+    reflexivity. }
   destruct (munmap_free_ok (m_vmmaps m) addr
               (page_round_up_Z (bv_unsigned len))) eqn:Hfree;
     hall Hfree; inv_ok; try discriminate.
