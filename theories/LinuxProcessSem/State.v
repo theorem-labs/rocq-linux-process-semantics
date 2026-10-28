@@ -2885,20 +2885,30 @@ Proof. reflexivity. Qed.
     lets the break walk over bytes another mapping owns (reachable by
     unmapping the brk VMA and mapping over it).
     [Checks/VmMapsDisjoint] carries a checked six-syscall execution that
-    reaches exactly that state.  Over-counting can only bring the forced
-    out-of-memory point EARLIER, which is the safe direction.
+    reaches exactly that state.  Over-counting brings the forced
+    out-of-memory point EARLIER: the model refuses memory Linux grants.
+    That is no safe direction for every statement.  A halts statement
+    that allows a refusal as an exit then holds on a refusal the real run
+    never meets, so it covers less of the real run than it appears to;
+    a statement whose premise is that the source is never refused covers
+    fewer inputs.
 
-    UNDER-COUNT, from a brk SHRINK that does not cross a page boundary,
-    and this one is a KNOWN INCONSISTENCY rather than faithful modelling.
-    [Sys/Mm/Mmap.brk_maps_next]'s shrink arm subtracts the RAW range
-    [[r, b)] from [vm_maps], while [Sys/Mm/Mmap.brk_unmaps] reports the
-    PAGE-ROUNDED one, which is empty for such a shrink.  So the effect
-    says nothing was freed, Linux's [oldbrk == newbrk] exit frees no VMA
-    at all, and the ledger drops the bytes anyway:
+    UNDER-COUNT, from a brk SHRINK to a break [r] that is not page
+    aligned, and this one is a KNOWN INCONSISTENCY rather than faithful
+    modelling.  [Sys/Mm/Mmap.brk_maps_next]'s shrink arm subtracts the
+    RAW range [[r, b)] from [vm_maps] on top of the PAGE-ROUNDED one
+    [Sys/Mm/Mmap.brk_unmaps] reports.  Linux unmaps only from
+    [PAGE_ALIGN(r)] up, and nothing at all when the two breaks round to
+    the same page (its [oldbrk == newbrk] exit), so the page holding [r]
+    stays mapped; where a mapping other than a brk grant owns bytes of
+    [[r, min(b, PAGE_ALIGN(r)))] — a MAP_FIXED or a placed mmap over the
+    heap's last page — the ledger drops them while they stay mapped:
     [Checks/VmMapsDisjoint]'s [wit_step6] shrinks the break by 10 bytes
     inside one page and the ledger goes from [[(65536, 4096)]] to
     [[(65536, 1990); (67536, 2096)]] — 4096 bytes to 4086, ten granted,
-    unfreed, still-mapped bytes gone from the sum.  Under-counting moves
+    unfreed, still-mapped bytes gone from the sum.  The ledger does not
+    record which entries are brk grants, so the logical cut cannot spare
+    the others.  Under-counting moves
     the forced out-of-memory point LATER, which is the UNSAFE direction,
     and no gate compensates for it.  The two are not reconciled.
 
@@ -4401,8 +4411,9 @@ Fixpoint reserved_top (maps : list (word * word)) : Z :=
     right remnant, or vanish).  A [brk] SHRINK uses it in two deliberately
     different ways (see [Mmap.brk_model_next]): [vm_maps] drops the logical,
     byte-granular heap tail [new_break, old_break), preserving exact live-byte
-    budget accounting, while [vm_noaccess] drops only the page-rounded range
-    named by [Mmap.brk_unmaps].  The latter is the kernel's actual
+    budget accounting, AND the page-rounded range named by
+    [Mmap.brk_unmaps] ([Mmap.brk_unmap_cut]), while [vm_noaccess] drops
+    only the page-rounded range.  The latter is the kernel's actual
     [do_vmi_align_munmap] interval and is also what the running program sees
     in [eff_unmaps].  Higher anonymous mmaps and lower mappings survive, and
     one straddling record is truncated.
@@ -4799,7 +4810,8 @@ Qed.
     length up), so this is the identity on the reachable domain; it is
     here so the bad state is unconstructible rather than merely unreached.
     An unaligned caller would record LESS than it asked for, which
-    over-charges — the safe direction. *)
+    over-charges: the model would refuse memory Linux grants (see
+    [live_bytes] for what that does to a statement). *)
 Definition lazy_interior (a n : word) : list (word * word) :=
   let lo := bv_unsigned a in
   let hi := (lo + bv_unsigned n)%Z in

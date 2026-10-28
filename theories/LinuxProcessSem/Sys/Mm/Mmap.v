@@ -111,10 +111,12 @@ Open Scope sys_scope.
 
     - SHRINK ([min_brk <= req < break]): the kernel lowers the logical break
       to [req] and unmaps the page tail
-      [[PAGE_ALIGN(req), PAGE_ALIGN(break))] ([do_vmi_align_munmap] on the
-      brk VMA).  Those pages really go: the logical ledger drops
-      [[req, break)] ([brk_maps_next])
-      AND the effect declares them in [eff_unmaps] ([brk_unmaps]), so a
+      [[PAGE_ALIGN(req), PAGE_ALIGN(break))] ([do_vmi_align_munmap],
+      which takes every VMA in that range, not only the brk VMA).  Those
+      pages really go: the logical ledger drops [[req, break)] AND every
+      ledger entry's share of those pages ([brk_maps_next],
+      [brk_unmap_cut]), and the effect declares them in [eff_unmaps]
+      ([brk_unmaps]), so a
       load through a dangling heap pointer faults instead of reading the
       bytes that were there — as on Linux, where a re-grow of pages actually
       released reads back zeros.  A same-page shrink releases nothing and
@@ -367,6 +369,35 @@ Definition brk_r_ok (m : Model) (req r : word) : bool :=
   else
     (bv_eqb r req || bv_eqb r b) && brk_grow_ok m req r.  (* GROW: to [req], or fail *)
 
+(** The whole pages a brk SHRINK from break [old] down to [r] takes out of
+    [vm_maps]: the range [brk_unmaps] names, [[PAGE_ALIGN(r),
+    PAGE_ALIGN(old))], cut from EVERY entry that meets it, because Linux
+    unmaps every VMA in that range, not only the brk VMA.
+    [SYSCALL_DEFINE1(brk)] (mm/mmap.c:153-177, Linux v6.18.46) finds the
+    first VMA meeting [[newbrk, oldbrk)] with [vma_find] (:163-164) and
+    hands it to [do_vmi_align_munmap(&vmi, brkvma, mm, newbrk, oldbrk)]
+    (:173), whose [vms_gather_munmap_vmas] splits the VMA the range starts
+    inside and the one it ends inside and detaches every VMA between
+    (mm/vma.c:1382-1404, :1413-1468).  A PROT_NONE or MAP_FIXED mapping
+    laid over the heap's pages therefore goes with them; a ledger that
+    kept its remnant past the logical break would keep charging bytes the
+    kernel has freed.  A same-page shrink names no page (the
+    [oldbrk == newbrk] exit, mm/mmap.c:155-158) and cuts nothing.
+
+    The cut's end is capped one byte short of 2^64.  [PAGE_ALIGN(old)]
+    reaches 2^64 only for a break inside the top page of the address
+    space, which no run reaches (every break stays at or below
+    [State.alloc_top], under 2^47); the cap keeps the cut's end a word, so
+    a right remnant's base round-trips through [Z_to_bv] and
+    [Checks/VmMapsDisjoint.maps_wf_subtract] applies.  It changes nothing
+    on any reachable state. *)
+Definition brk_unmap_cut (maps : list (word * word)) (r old : word)
+    : list (word * word) :=
+  let lo := page_round_up_Z (bv_unsigned r) in
+  let hi := page_round_up_Z (bv_unsigned old) in
+  if Z.ltb lo hi then maps_subtract maps lo (Z.min hi (two_pow_64 - 1))
+  else maps.
+
 (** The [vm_maps] ledger after resolving to break [r].  A GROW SUCCESS
     records the granted interval, so a later mmap can never alias the
     live heap; the CONVERSE fails, because a grow inside one page is
@@ -374,15 +405,23 @@ Definition brk_r_ok (m : Model) (req r : word) : bool :=
     and so can land inside a live mapping.  A SHRINK drops the logical
     tail [r, b) via
     [maps_subtract] (dropping heap grants inside it while sparing higher
-    anonymous mmaps); every other resolution leaves [vm_maps] untouched
-    ([brk_grants] is [] and no interval is freed).  This ledger stays
-    byte-granular on purpose even though [brk_zeros]/[brk_unmaps] describe
-    the page-rounded memory effects. *)
+    anonymous mmaps), and then the whole pages the kernel unmaps
+    ([brk_unmap_cut]), so no remnant of a mapping inside those pages
+    survives to be charged; every other resolution leaves [vm_maps]
+    untouched ([brk_grants] is [] and no interval is freed).  The logical
+    cut keeps the ledger byte-granular on purpose even though
+    [brk_zeros]/[brk_unmaps] describe the page-rounded memory effects;
+    the page cut makes the ledger lose at least every byte the kernel
+    unmaps.  [Checks/Cases/Mm/Mmap.v]'s
+    [brk_shrink_takes_the_mapping_in_its_freed_page] pins it against
+    Linux's post-state. *)
 Definition brk_maps_next (h : VmMaps) (req r : word) : list (word * word) :=
   if Z.ltb 0 (bv_unsigned (vm_brk h))
      && Z.ltb (bv_unsigned r) (bv_unsigned (vm_brk h))
-  then (* SHRINK: free [r, b) *)
-       maps_subtract (vm_maps h) (bv_unsigned r) (bv_unsigned (vm_brk h))
+  then (* SHRINK: free [r, b), then the pages Linux unmaps *)
+       brk_unmap_cut
+         (maps_subtract (vm_maps h) (bv_unsigned r) (bv_unsigned (vm_brk h)))
+         r (vm_brk h)
   else (* GROW success records; else no-op *)
        brk_grants req r (vm_brk h) ++ vm_maps h.
 
@@ -442,8 +481,7 @@ Definition brk_model_next (h : VmMaps) (req r : word) : VmMaps :=
        [mmap_fixed_destroyed_next]      — named; [maps_subtract]
        [mmap_fixed_rw_span_next]        — named; [maps_subtract]
        [Mprotect.mprotect_model_next]   — named; [maps_subtract]
-       [munmap_spec]'s whole-mapping removal — inline; [maps_subtract]
-       [munmap_spec]'s partial unmap    — [mmap_fixed_destroyed_next]
+       [munmap_spec]'s exact and partial unmaps — [mmap_fixed_destroyed_next]
 
      LEAVES THE LIST ALONE — [vm_noaccess h] carried over verbatim, so
      there is nothing to state: [Mremap.mremap_maps_next], and the rw
@@ -493,9 +531,9 @@ Qed.
 
 (* ---- the writers that have no name -------------------------------------
 
-   THREE post-states are written out inside [mmap_spec] and
-   [munmap_spec] rather than defined, and a lemma cannot be ABOUT an
-   expression with no name.  So each of the three below RESTATES the
+   TWO post-states are written out inside [mmap_spec] rather than
+   defined, and a lemma cannot be ABOUT an expression with no name.
+   So each of the two below RESTATES the
    record its arms write, and takes as hypotheses the GATES those arms
    have already passed — which is what makes them the arm's own facts
    rather than facts about an arbitrary record: an arm past [w_is0 len]
@@ -553,24 +591,6 @@ Proof.
   unfold vm_noaccess_entries_nonzero. cbn [vm_noaccess].
   apply entries_nonzero_cons;
     [now apply mmap_request_len_nonzero | now apply maps_subtract_nonzero].
-Qed.
-
-(** The record [munmap_spec]'s whole-mapping removal writes.  Nothing is
-    added to the protected list — the removal cuts it by the request's
-    range, [maps_subtract] rather than [map_remove] because a protected
-    entry need not coincide with the mapping — so no length fact is
-    needed and no gate is a hypothesis. *)
-Lemma munmap_inline_nonzero : forall (h : VmMaps) (addr n : word),
-  vm_noaccess_entries_nonzero h ->
-  vm_noaccess_entries_nonzero
-    (mkVmMapsFull (vm_reserved h) (map_remove (vm_maps h) addr)
-       (maps_subtract (vm_noaccess h)
-          (bv_unsigned addr) (bv_unsigned addr + bv_unsigned n))
-       (vm_start_brk h) (vm_brk h) (vm_limit h)
-       (vm_mmap_base h) (vm_init_sp h)).
-Proof.
-  intros h addr n H. unfold vm_noaccess_entries_nonzero.
-  cbn [vm_noaccess]. now apply maps_subtract_nonzero.
 Qed.
 
 (** A [brk] shrink cuts the page-rounded unmapped range out of the
@@ -2180,10 +2200,19 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
     Then, with [n] = the page-rounded [len]:
 
     - [addr, addr+n) EXACTLY a recorded mapping (an anonymous mmap
-      grant or a recorded brk grow): the mapping is dropped from the
-      ledger and the range is UNMAPPED in the machine ([eff_unmaps]) —
-      a later access faults instead of reading stale bytes, as on
-      Linux.  (Unmapping a brk-grow record this way is faithful too:
+      grant or a recorded brk grow): the range is cut out of both
+      ledgers and UNMAPPED in the machine ([eff_unmaps]) — a later
+      access faults instead of reading stale bytes, as on Linux.  The
+      cut is [maps_subtract] over the range, the same post-state the
+      partial arm below writes ([mmap_fixed_destroyed_next]), and not
+      the removal of the one matched entry: [do_vmi_munmap]
+      (mm/vma.c:1604-1626) unmaps every VMA meeting the range, so a
+      byte-granular brk grant inside one of its pages (a same-page grow
+      over the mapping, which [brk_grow_ok] lets through untested) goes
+      too, and a ledger that kept it would go on charging it once the
+      protection over it is cut.  [Checks/Cases/Mm/Mmap.v]'s
+      [munmap_exact_takes_the_grant_inside_the_page] pins that.
+      (Unmapping a brk-grow record this way is faithful too:
       Linux unmaps the pages, the break pointer is unchanged, and a
       later grow continues above the old break — the hole stays a
       hole.)
@@ -2272,12 +2301,7 @@ Definition munmap_spec (addr len : word) : Sys SyscallEffect :=
     else
     let n := Z_to_bv 64 nZ in
     if map_has (vm_maps h) addr n then
-      set_vmmaps (mkVmMapsFull (vm_reserved h) (map_remove (vm_maps h) addr)
-                    (maps_subtract (vm_noaccess h)
-                       (bv_unsigned addr)
-                       (bv_unsigned addr + bv_unsigned n))
-                    (vm_start_brk h) (vm_brk h) (vm_limit h)
-                    (vm_mmap_base h) (vm_init_sp h)) ;;
+      set_vmmaps (mmap_fixed_destroyed_next h addr n) ;;
       forget_vm_range (bv_unsigned addr)
                       (bv_unsigned addr + bv_unsigned n) ;;
       pure (mkEffectU (Z_to_bv 64 0) [] [] [(addr, n)] [] [])

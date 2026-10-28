@@ -557,22 +557,13 @@ Example un_inplace_gate_passes :
   mremap_final_budget_b un_model 0x10000 4096 0x10000 12288 = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** The [region_free] readings the lemmas below need: freeness of an
-    appended ledger is freeness of its right half, and freeness survives
-    dropping an entry. *)
+(** The [region_free] reading the lemmas below need: freeness of an
+    appended ledger is freeness of its right half. *)
 Lemma region_free_app_r : forall l1 l2 lo n,
   region_free (l1 ++ l2) lo n = true -> region_free l2 lo n = true.
 Proof.
   intros l1 l2 lo n H. apply region_free_intro. intros a sz Hin.
   exact (region_free_In _ _ _ _ _ H (in_or_app _ _ _ (or_intror Hin))).
-Qed.
-
-Lemma region_free_map_remove : forall maps old lo n,
-  region_free maps lo n = true -> region_free (map_remove maps old) lo n = true.
-Proof.
-  intros maps old lo n H. apply region_free_intro. intros a sz Hin.
-  unfold map_remove in Hin. apply List.filter_In in Hin as [Hin _].
-  exact (region_free_In _ _ _ _ _ H Hin).
 Qed.
 
 (** The rounded request as the spec computes it: page sized, and a word
@@ -712,7 +703,7 @@ Qed.
     no non-errno resolution. *)
 Lemma mremap_budget_refused_refuses_move :
   forall old old_size new_size flags m dst,
-  (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
+  (forall (a sz : word), In (a, sz) (vm_maps (m_vmmaps m)) ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
   region_free (vm_noaccess (m_vmmaps m)) dst
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = true ->
@@ -767,8 +758,10 @@ Proof.
   rewrite mremap_model_next_limit in Hgate.
   rewrite (mremap_move_charge_at_fresh m old old_n dst new_n) in Hgate;
     [rewrite Hgate in Hmv; discriminate Hmv | exact Hdalign
-    | rewrite Hnw; exact Hnmod | rewrite Hnw; lia | rewrite Hnw; lia | exact Hfit
-    | apply region_free_map_remove; exact (region_free_app_r _ _ _ _ Hdfree)
+    | rewrite Hnw; exact Hnmod | rewrite Hnw; lia | rewrite Hnw; lia
+    | exact (maps_subtract_fits _ _ _ Hfit)
+    | apply (region_free_subtract_fits _ _ _ _ _ Hfit);
+      exact (region_free_app_r _ _ _ _ Hdfree)
     | exact Hnoacc | exact Hlazy | exact Hpages].
 Qed.
 
@@ -804,7 +797,7 @@ Lemma mremap_budget_refused_fires_on_move_refusal :
   region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = true ->
   (* ...and carries no backing metadata *)
-  (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
+  (forall (a sz : word), In (a, sz) (vm_maps (m_vmmaps m)) ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
   region_free (vm_noaccess (m_vmmaps m)) dst
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = true ->
@@ -856,8 +849,10 @@ Proof.
   rewrite mremap_model_next_limit in Hgate.
   rewrite (mremap_move_charge_at_fresh m old old_n dst new_n) in Hgate;
     [exact Hgate | exact Hdalign | rewrite Hnw; exact Hnmod
-    | rewrite Hnw; lia | rewrite Hnw; lia | exact Hfit
-    | apply region_free_map_remove; exact (region_free_app_r _ _ _ _ Hdfree)
+    | rewrite Hnw; lia | rewrite Hnw; lia
+    | exact (maps_subtract_fits _ _ _ Hfit)
+    | apply (region_free_subtract_fits _ _ _ _ _ Hfit);
+      exact (region_free_app_r _ _ _ _ Hdfree)
     | exact Hnoacc | exact Hlazy | exact Hpages].
 Qed.
 
@@ -906,8 +901,10 @@ Qed.
     [alloc_top] and is free against [vm_reserved ++ vm_maps] — the
     non-budget conjuncts of [Mremap.mremap_fresh_b] that bear on the
     charge.  The ledger hypotheses are [State.noaccess_pages_owned], the
-    fit of every live mapping other than the source, and the two
-    lazy-ledger identities [Mremap.mremap_move_charge_at_fresh] takes;
+    fit of every live mapping (from which [Mremap.maps_subtract_fits]
+    gives that lemma the fit of the ledger with the source range cut),
+    and the two lazy-ledger identities
+    [Mremap.mremap_move_charge_at_fresh] takes;
     the [vm_noaccess] hypothesis of that lemma comes from
     [fresh_dst_avoids_noaccess].  The converse direction of
     [mremap_budget_refused_refuses_move].  The two side conditions on
@@ -922,7 +919,7 @@ Lemma mremap_move_budget_admits_fresh : forall m old old_n dst new_n,
   region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst new_n
   = true ->
   noaccess_pages_owned (m_vmmaps m) ->
-  (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
+  (forall (a sz : word), In (a, sz) (vm_maps (m_vmmaps m)) ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
   maps_subtract
     (maps_subtract (m_vm_lazy m) (bv_unsigned old)
@@ -948,8 +945,10 @@ Proof.
   unfold mremap_final_budget_b, vm_backing_within_limit.
   rewrite mremap_model_next_limit.
   rewrite (mremap_move_charge_at_fresh m old old_n dst new_n);
-    [exact Hmv | exact Hdalign | exact Hnmod | exact Hpos | lia | exact Hfit
-    | apply region_free_map_remove; exact (region_free_app_r _ _ _ _ Hdfree)
+    [exact Hmv | exact Hdalign | exact Hnmod | exact Hpos | lia
+    | exact (maps_subtract_fits _ _ _ Hfit)
+    | apply (region_free_subtract_fits _ _ _ _ _ Hfit);
+      exact (region_free_app_r _ _ _ _ Hdfree)
     | exact (fresh_dst_avoids_noaccess _ _ _ Hown Hpos Hnmod Hdalign Hdfree)
     | exact Hlazy | exact Hpages].
 Qed.
@@ -969,7 +968,7 @@ Lemma mremap_move_budget_admits_fresh_lazyfree :
   region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst new_n
   = true ->
   noaccess_pages_owned (m_vmmaps m) ->
-  (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
+  (forall (a sz : word), In (a, sz) (vm_maps (m_vmmaps m)) ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
   mremap_move_budget_b m old old_n new_n = true ->
   mremap_final_budget_b m old old_n dst new_n = true.

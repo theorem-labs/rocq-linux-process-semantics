@@ -371,16 +371,7 @@ Definition check_munmap (addr len : word) (eff : SyscallEffect) (m : Model)
       | mkEffectU r [] [] us [] [] =>
           if w_is0 r && listNN_eqb us [(addr, n)]
           then CheckOk (with_mmap_destroyed addr n
-                          (mkVmMapsFull (vm_reserved (m_vmmaps m))
-                             (map_remove (vm_maps (m_vmmaps m)) addr)
-                             (maps_subtract (vm_noaccess (m_vmmaps m))
-                                            (bv_unsigned addr)
-                                            (bv_unsigned addr + bv_unsigned n))
-                             (vm_start_brk (m_vmmaps m))
-                             (vm_brk (m_vmmaps m))
-                             (vm_limit (m_vmmaps m))
-                             (vm_mmap_base (m_vmmaps m))
-                             (vm_init_sp (m_vmmaps m))) m) []
+                          (mmap_fixed_destroyed_next (m_vmmaps m) addr n) m) []
           else CheckReject
       | _ => CheckReject
       end
