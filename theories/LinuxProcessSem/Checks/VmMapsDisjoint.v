@@ -19,7 +19,7 @@
     mapping base is page aligned ([munmap], [mremap] and [mprotect]
     answer -EINVAL otherwise, and [mmap] only ever places on a page
     boundary), so this yields base uniqueness exactly where it is used,
-    and in particular makes [munmap]'s [map_has]/[map_remove] pair agree.
+    and in particular makes a [map_has] hit name exactly one entry.
 
     WHY THE WEAKER PROPERTY IS THE RIGHT ONE.  The gap Part 1 exploits is
     real Linux behaviour, not a modelling slip: [SYSCALL_DEFINE1(brk)]
@@ -648,25 +648,6 @@ Proof.
   intros e' Hin. apply H. now right.
 Qed.
 
-Lemma owners_map_remove_lt : forall maps b s p,
-  In (b, s) maps -> owns_b (b, s) p = true ->
-  (owners (map_remove maps b) p + 1 <= owners maps p)%nat.
-Proof.
-  induction maps as [|e r IH]; intros b s p Hin Ho; [contradiction|].
-  unfold map_remove in *. cbn [List.filter].
-  destruct (negb (bv_eqb (fst e) b)) eqn:Hf.
-  - assert (Hin' : In (b, s) r).
-    { destruct Hin as [He|Hin]; [|exact Hin].
-      subst e. cbn in Hf. rewrite bv_eqb_refl in Hf. discriminate. }
-    specialize (IH b s p Hin' Ho). cbn [owners].
-    destruct (owns_b e p); lia.
-  - destruct Hin as [He|Hin].
-    + subst e. cbn [owners]. rewrite Ho.
-      pose proof (owners_filter_le (fun q => negb (bv_eqb (fst q) b)) r p). lia.
-    + specialize (IH b s p Hin Ho). cbn [owners].
-      destruct (owns_b e p); lia.
-Qed.
-
 (* -------------------------------------------------------------------------
    The two ways the ledger grows: a fresh [region_free] grant, and a
    [maps_subtract] that can only shrink coverage
@@ -815,25 +796,76 @@ Proof.
   exact (region_free_In maps lo n a sz H Hin).
 Qed.
 
-Lemma maps_wf_cons_sub : forall maps a n0 n,
-  maps_wf maps -> bv_unsigned n <> 0 ->
-  In (a, n0) maps -> bv_unsigned n <= bv_unsigned n0 ->
-  maps_wf ((a, n) :: map_remove maps a).
+(** Each remnant of a cut lies inside the entry it came from, when the
+    cut's end is an address (a right remnant's base is re-wrapped through
+    [Z_to_bv]). *)
+Lemma iv_subtract_inside : forall a sz lo hi b s,
+  0 <= lo -> hi < 2 ^ 64 ->
+  In (b, s) (iv_subtract a sz lo hi) ->
+  bv_unsigned a <= bv_unsigned b
+  /\ bv_unsigned b + bv_unsigned s <= bv_unsigned a + bv_unsigned sz.
 Proof.
-  intros maps a n0 n [Hnz Hun] Hn Hin Hle. split.
-  - constructor; [exact Hn|now apply sizes_nonzero_filter].
-  - intros p Hp. cbn [owners]. destruct (owns_b (a, n) p) eqn:Ho.
-    + apply owns_true in Ho.
-      assert (Ho0 : owns_b (a, n0) p = true) by (apply owns_intro; lia).
-      pose proof (owners_map_remove_lt maps a n0 p Hin Ho0).
-      specialize (Hun p Hp). lia.
-    + pose proof (owners_filter_le (fun q => negb (bv_eqb (fst q) a)) maps p).
-      specialize (Hun p Hp). unfold map_remove. lia.
+  intros a sz lo hi b s Hlo Hhi Hin.
+  pose proof (word_range a) as Ha. pose proof (word_range sz) as Hs.
+  unfold iv_subtract in Hin. cbv zeta in Hin. apply in_app_or in Hin.
+  destruct Hin as [Hin|Hin].
+  - destruct (bv_unsigned a <? lo) eqn:E1; cbn in Hin; [|contradiction].
+    apply Z.ltb_lt in E1. destruct Hin as [Heq|[]]. inversion Heq; subst b s.
+    rewrite u64 by lia. lia.
+  - destruct (hi <? bv_unsigned a + bv_unsigned sz) eqn:E2; cbn in Hin;
+      [|contradiction].
+    apply Z.ltb_lt in E2. destruct Hin as [Heq|[]]. inversion Heq; subst b s.
+    rewrite !u64 by lia. lia.
+Qed.
+
+Lemma maps_subtract_inside : forall maps lo hi b s,
+  0 <= lo -> hi < 2 ^ 64 ->
+  In (b, s) (maps_subtract maps lo hi) ->
+  exists a sz, In (a, sz) maps
+    /\ bv_unsigned a <= bv_unsigned b
+    /\ bv_unsigned b + bv_unsigned s <= bv_unsigned a + bv_unsigned sz.
+Proof.
+  induction maps as [|[a sz] r IH]; intros lo hi b s Hlo Hhi Hin;
+    [contradiction|].
+  cbn [maps_subtract] in Hin. apply in_app_or in Hin.
+  destruct Hin as [Hin|Hin].
+  - destruct (iv_subtract_inside a sz lo hi b s Hlo Hhi Hin) as [H1 H2].
+    exists a, sz. split; [left; reflexivity | split; assumption].
+  - destruct (IH lo hi b s Hlo Hhi Hin) as (a' & sz' & Hin' & H1 & H2).
+    exists a', sz'. split; [right; exact Hin' | split; assumption].
+Qed.
+
+(** A cut only shrinks entries, so a region free of a ledger stays free
+    of what is left of it. *)
+Lemma region_free_maps_subtract : forall maps lo hi x n,
+  0 <= lo -> hi < 2 ^ 64 ->
+  region_free maps x n = true ->
+  region_free (maps_subtract maps lo hi) x n = true.
+Proof.
+  intros maps lo hi x n Hlo Hhi H. apply region_free_intro. intros b s Hin.
+  destruct (maps_subtract_inside maps lo hi b s Hlo Hhi Hin)
+    as (a & sz & Hin0 & W1 & W2).
+  pose proof (region_free_In maps x n a sz H Hin0) as Hov.
+  unfold iv_overlap in *. apply andb_false_iff in Hov. apply andb_false_iff.
+  destruct Hov as [Hov|Hov]; apply Z.ltb_ge in Hov;
+    [left | right]; apply Z.ltb_ge; lia.
+Qed.
+
+(** A region free of a ledger has every prefix free of it too. *)
+Lemma region_free_shorter : forall maps a n n',
+  bv_unsigned n' <= bv_unsigned n ->
+  region_free maps a n = true -> region_free maps a n' = true.
+Proof.
+  intros maps a n n' Hle H. apply region_free_intro. intros b s Hin.
+  pose proof (region_free_In maps a n b s H Hin) as Hov.
+  unfold iv_overlap in *. apply andb_false_iff in Hov. apply andb_false_iff.
+  destruct Hov as [Hov|Hov]; apply Z.ltb_ge in Hov;
+    [left | right]; apply Z.ltb_ge; lia.
 Qed.
 
 (* -------------------------------------------------------------------------
    What the invariant buys: base uniqueness where a syscall can name a
-   base, and the [map_has]/[map_remove] agreement munmap needs
+   base, and the [map_has]/[map_remove] agreement
    ------------------------------------------------------------------------- *)
 
 Lemma map_has_In : forall maps a n,
@@ -845,7 +877,7 @@ Proof.
   apply bv_eqb_eq in H1. apply bv_eqb_eq in H2. subst. exact Hin.
 Qed.
 
-(** THE NARROW FORM the downstream [munmap] argument asks for: at a
+(** THE NARROW FORM a downstream [munmap] or [mremap] argument asks for: at a
     PAGE-ALIGNED base — the only kind [munmap], [mremap], [mprotect] and
     [mmap] can produce or accept — the ledger holds exactly one entry,
     and it is the one [map_has] matched.  So [map_has]'s [(base, size)]
@@ -991,7 +1023,7 @@ Proof. reflexivity. Qed.
 
 Lemma vmm_mremap_next : forall m old old_n dst new_n,
   m_vmmaps (mremap_model_next m old old_n dst new_n)
-  = mremap_maps_next (m_vmmaps m) old dst new_n.
+  = mremap_maps_next (m_vmmaps m) old old_n dst new_n.
 Proof.
   intros. unfold mremap_model_next.
   now rewrite vmm_resize_backing, vmm_vmmaps.
@@ -1098,7 +1130,23 @@ Proof.
             && Z.ltb (bv_unsigned r) (bv_unsigned (vm_brk h))) eqn:Eshrink.
   - apply andb_true_iff in Eshrink as [_ Hlt]. apply Z.ltb_lt in Hlt.
     pose proof (word_range r). pose proof (word_range (vm_brk h)).
-    apply maps_wf_subtract; try lia. exact Hwf.
+    assert (Hcut : maps_wf (maps_subtract (vm_maps h) (bv_unsigned r)
+                              (bv_unsigned (vm_brk h))))
+      by (apply maps_wf_subtract; try lia; exact Hwf).
+    unfold brk_unmap_cut. cbv zeta.
+    destruct (page_round_up_Z (bv_unsigned r)
+              <? page_round_up_Z (bv_unsigned (vm_brk h))) eqn:Ep;
+      [|exact Hcut].
+    apply Z.ltb_lt in Ep.
+    assert (Hpb : page_round_up_Z (bv_unsigned (vm_brk h)) <= 2 ^ 64).
+    { unfold page_round_up_Z, page_size.
+      pose proof (Z.div_mod (bv_unsigned (vm_brk h) + 4096 - 1) 4096 ltac:(lia)).
+      pose proof (Z.mod_pos_bound (bv_unsigned (vm_brk h) + 4096 - 1) 4096
+                    ltac:(lia)).
+      lia. }
+    pose proof (page_round_up_Z_nonneg (bv_unsigned r) ltac:(lia)).
+    unfold two_pow_64.
+    apply maps_wf_subtract; [lia | lia | lia | exact Hcut].
   - unfold brk_grants. destruct (brk_is_grow req r (vm_brk h)) eqn:Egrow.
     + cbn [app]. now apply (brk_grant_wf m req r).
     + cbn [app]. exact Hwf.
@@ -1198,8 +1246,12 @@ Proof.
   dif H.
   - destruct ws, zs, cs, ci; try discriminate.
     dif H; [|discriminate]. injection H as <- <-.
+    pose proof (word_range addr) as Har. pose proof (word_range len) as Hlr.
+    apply Z.ltb_ge in Etask. unfold TASK_SIZE in Etask.
+    pose proof (page_round_up_Z_ge (bv_unsigned len) ltac:(lia)) as HnZ.
     unfold vm_wf. rewrite vmm_mmap_destroyed. cbn [vm_maps].
-    now apply maps_wf_filter.
+    apply maps_wf_subtract; try (rewrite u64 by lia); try lia.
+    exact Hwf.
   - dif H; [apply check_ret_only_model in H; subst m'; exact Hwf|].
     dif H; [|discriminate].
     destruct ws, zs, cs, ci; try discriminate.
@@ -1489,6 +1541,12 @@ Proof.
   apply Z.leb_le in Hoceil.
   assert (HoldZ : 0 <= page_round_up_Z (bv_unsigned old_size))
     by (apply page_round_up_Z_nonneg; lia).
+  (* what is left of the ledger once the source range is cut *)
+  assert (Hcut : maps_wf (maps_subtract (vm_maps (m_vmmaps m)) (bv_unsigned old)
+                   (bv_unsigned old
+                    + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))))).
+  { apply maps_wf_subtract; [lia | rewrite u64 by lia; lia | rewrite u64 by lia; lia
+                            | exact Hwf]. }
   destruct (errno_ret_in mremap_errnos ret).
   { destruct zs, us, cs; try discriminate. injection H as <- <-. exact Hwf. }
   destruct (bv_eqb ret old).
@@ -1497,11 +1555,13 @@ Proof.
       apply Z.ltb_lt in Eshrink.
       unfold vm_wf. rewrite vmm_mremap_next.
       unfold mremap_maps_next. cbn [vm_maps].
-      apply (maps_wf_cons_sub _ _ (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))).
-      * exact Hwf.
+      apply maps_wf_cons_free.
+      * exact Hcut.
       * rewrite u64 by lia. lia.
-      * apply map_has_In. exact Hhas.
-      * rewrite !u64 by lia. lia.
+      * apply (region_free_shorter _ _
+                 (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))).
+        -- rewrite !u64 by lia. lia.
+        -- apply maps_subtract_region_free. rewrite u64 by lia. lia.
     + difn H Egrow; [|discriminate].
       difn H Eok; [|discriminate]. injection H as <- <-.
       unfold vm_wf. rewrite vmm_mremap_next.
@@ -1511,7 +1571,7 @@ Proof.
       apply andb_true_iff in Egrow as [Hgceil Hgfree].
       apply Z.leb_le in Hgceil.
       apply maps_wf_cons_free.
-      * now apply maps_wf_filter.
+      * exact Hcut.
       * rewrite u64 by lia. lia.
       * exact (region_free_app_r _ _ _ _ Hgfree).
   - difn H Emove; [|discriminate]. injection H as <- <-.
@@ -1534,9 +1594,10 @@ Proof.
     apply andb_true_iff in Hfresh as [_ Hfpos].
     apply Z.leb_le in Hfceil. apply Z.ltb_lt in Hfpos.
     apply maps_wf_cons_free.
-    + now apply maps_wf_filter.
+    + exact Hcut.
     + rewrite u64 by lia. lia.
-    + apply region_free_filter. exact (region_free_app_r _ _ _ _ Hffree).
+    + apply region_free_maps_subtract;
+        [lia | rewrite u64 by lia; lia | exact (region_free_app_r _ _ _ _ Hffree)].
 Qed.
 
 (* -------------------------------------------------------------------------
@@ -2537,7 +2598,7 @@ Qed.
     corollary below takes as a HYPOTHESIS rather than establishing by
     induction over a run — a [map_has] hit at a
     page-aligned base names exactly one ledger entry.  This is the fact
-    the downstream [munmap] argument needs — [map_has]'s
+    the downstream [munmap] and [mremap] arguments need — [map_has]'s
     [(base, size)] test and [map_remove]'s base-only removal cannot
     disagree. *)
 Corollary base_unique_after_syscall : forall i eff m m' evs a n,

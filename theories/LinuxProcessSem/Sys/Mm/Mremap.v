@@ -116,11 +116,36 @@ Open Scope sys_scope.
       on a modeled run. *)
 Definition mremap_errnos : list Z := [ENOMEM].
 
-(** Replace the one mapping based at [old] with [(dst,new_n)].  The source
-    is required below to have no [vm_noaccess] overlap, while a moved
-    destination is fresh, so the no-access ledger is preserved verbatim. *)
-Definition mremap_maps_next (h : VmMaps) (old dst new_n : word) : VmMaps :=
-  mkVmMapsFull (vm_reserved h) ((dst, new_n) :: map_remove (vm_maps h) old)
+(** Cut the source range [[old, old+old_n)] out of the ledger and record
+    [(dst,new_n)].  The cut is [maps_subtract] over the whole source range
+    rather than the removal of the one entry based at [old].  The entry
+    [mremap_source_b] matched is the only one owning a page-aligned byte
+    there ([Checks/VmMapsDisjoint]).  Another entry can still meet the
+    range if it starts inside it at an address that is not page aligned.
+    Only a move of the break makes such a start: a brk grant starts at the
+    old break ([Mmap.brk_grow_ok] tests nothing below the first new page,
+    so the old break can lie inside this mapping), and a brk shrink's
+    logical cut leaves a remnant that starts at the old break
+    ([Checks/VmMapsDisjoint]'s [wit_step6]).  In the kernel such an entry
+    is no VMA of its own, only bytes of the VMAs it lies in.  An entry that
+    runs past the range's end keeps the part outside.  So:
+    - a shrink in place unmaps [[addr+new_len, addr+old_len)] with
+      [do_vmi_munmap] ([shrink_vma], mm/mremap.c:1326-1338, Linux
+      v6.18.46), and a move unmaps the whole source [[addr, addr+old_len)]
+      ([unmap_source_vma], :1078-1122): the entry's bytes there are gone,
+      and a ledger that kept them would charge them once the source's lazy
+      provenance stops covering them ([Checks/Cases/Mm/Mremap.v]'s
+      [mremap_shrink_takes_the_grant_inside_the_tail]);
+    - a grow in place extends the source VMA, which already holds the
+      entry's bytes inside the source, so the re-recorded entry covers them
+      and keeping them would count them twice.
+    The source is required below to have no [vm_noaccess] overlap, while a
+    moved destination is fresh, so the no-access ledger is preserved
+    verbatim. *)
+Definition mremap_maps_next (h : VmMaps) (old old_n dst new_n : word) : VmMaps :=
+  mkVmMapsFull (vm_reserved h)
+    ((dst, new_n) :: maps_subtract (vm_maps h) (bv_unsigned old)
+                       (bv_unsigned old + bv_unsigned old_n))
     (vm_noaccess h) (vm_start_brk h) (vm_brk h) (vm_limit h)
     (vm_mmap_base h) (vm_init_sp h).
 
@@ -141,7 +166,7 @@ Definition mremap_source_lazy_b (m : Model) (old old_n : word) : bool :=
     without eagerly charging its tail. *)
 Definition mremap_model_next (m : Model) (old old_n dst new_n : word) : Model :=
   vm_resize_backing (mremap_source_lazy_b m old old_n) old old_n dst new_n
-    (with_vmmaps (mremap_maps_next (m_vmmaps m) old dst new_n) m).
+    (with_vmmaps (mremap_maps_next (m_vmmaps m) old old_n dst new_n) m).
 
 (** The grown delta reads as fresh zeroes.  Neither [vma_merge_extend]
     ([expand_vma_in_place], mm/mremap.c:1470, Linux v6.18.46) on the
@@ -229,6 +254,14 @@ Definition mremap_final_budget_b (m : Model)
     [mremap_spec] for why the resulting over-admission is presented as an
     [alt] rather than a claim.
 
+    The [vm_maps] half reads the ledger the in-place post-state is built
+    on ([mremap_maps_next]): the live mappings with the source range cut
+    out, so what it tests is the grown tail.  Testing the ledger with
+    only the source ENTRY removed would also refuse a grow for a
+    byte-granular brk grant inside the source's own pages — a same-page
+    move of [mm->brk] over the source VMA, which is no VMA of its own in
+    the kernel and so no neighbour [vma_expandable] could meet.
+
     Both halves of the [region_free] conjunct are LIVE.  The [vm_maps] half
     is the ordinary case; the [vm_reserved]
     half — an in-place grow running into the binary image — no trace reaches,
@@ -254,7 +287,9 @@ Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
     (old_nZ new_nZ : Z) : bool :=
   let h := m_vmmaps m in
   (bv_unsigned old + new_nZ <=? alloc_top h)%Z
-  && region_free (vm_reserved h ++ map_remove (vm_maps h) old) old new_n
+  && region_free (vm_reserved h
+                  ++ maps_subtract (vm_maps h) (bv_unsigned old)
+                       (bv_unsigned old + bv_unsigned old_n)) old new_n
   && mremap_final_budget_b m old old_n old new_n.
 
 (** A moved destination, and the argument for what this guard says is
@@ -690,7 +725,7 @@ Definition mremap_spec (old old_size new_size flags : word)
     page — the re-created mapping is charged in full when the source is
     eager and not at all when it is lazy (its materialized pages move
     with it and are charged by count), and nothing else in the
-    post-state mentions [dst]: [mremap_maps_next] drops [old] and conses
+    post-state mentions [dst]: [mremap_maps_next] cuts the source range and conses
     the destination, [State.vm_resize_backing] cuts the source's own
     reservation and pages out of the two backing ledgers and re-records
     the moved pages at destination-relative offsets, whose COUNT is what
@@ -723,7 +758,7 @@ Definition mremap_move_charge (m : Model) (old old_n new_n : word) : Z :=
     else [] in
   (live_bytes
      (maps_subtract_all
-        (maps_subtract_all (map_remove (vm_maps h) old) (vm_noaccess h))
+        (maps_subtract_all (maps_subtract (vm_maps h) old_lo old_hi) (vm_noaccess h))
         kept_lazy)
    + (if source_lazy then 0 else bv_unsigned new_n)
    + Z.of_nat (List.length moved_pages + List.length kept_pages) * page_size)%Z.
@@ -1026,6 +1061,37 @@ Proof.
     exists a', sz'. split; [right; exact Hin' | exact Hiv].
 Qed.
 
+(** A cut of a ledger whose entries lie inside the address space leaves
+    remnants that do too, and that miss whatever the entries missed: the
+    two facts [mremap_move_charge_at_fresh] needs of the ledger with the
+    source range cut, drawn from the ledger itself. *)
+Lemma maps_subtract_fits : forall l lo hi,
+  (forall (a sz : word), In (a, sz) l ->
+     (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
+  forall (b s : word), In (b, s) (maps_subtract l lo hi) ->
+    (bv_unsigned b + bv_unsigned s <= two_pow_64)%Z.
+Proof.
+  intros l lo hi Hfit b s Hin.
+  destruct (maps_subtract_In l lo hi b s Hin) as [a [sz [Hin0 Hiv]]].
+  pose proof (Hfit a sz Hin0).
+  pose proof (iv_subtract_within a sz lo hi b s (Hfit a sz Hin0) Hiv). lia.
+Qed.
+
+Lemma region_free_subtract_fits : forall l lo hi x n,
+  (forall (a sz : word), In (a, sz) l ->
+     (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
+  region_free l x n = true ->
+  region_free (maps_subtract l lo hi) x n = true.
+Proof.
+  intros l lo hi x n Hfit H. apply region_free_intro. intros b s Hin.
+  destruct (maps_subtract_In l lo hi b s Hin) as [a [sz [Hin0 Hiv]]].
+  pose proof (iv_subtract_within a sz lo hi b s (Hfit a sz Hin0) Hiv) as Hw.
+  pose proof (region_free_In l x n a sz H Hin0) as Hov.
+  unfold iv_overlap in *. apply andb_false_iff in Hov. apply andb_false_iff.
+  destruct Hov as [Hov|Hov]; apply Z.ltb_ge in Hov;
+    [left | right]; apply Z.ltb_ge; lia.
+Qed.
+
 Lemma maps_subtract_all_within : forall cuts l (b s : word),
   (forall (a sz : word), In (a, sz) l ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
@@ -1143,8 +1209,9 @@ Qed.
     ledger: [dst] is page aligned and the request page-sized and
     nonempty (so the lazy interior a lazy source re-records is exactly
     the destination); the request ends inside the address space (so a
-    remnant's re-wrapped base is its base); every live mapping other than
-    the source lies inside the address space and misses the destination;
+    remnant's re-wrapped base is its base); what is left of the live
+    mappings once the source range is cut lies inside the address space
+    and misses the destination;
     so does every protected range; cutting the destination out of the
     lazy ledger — after the source's own reservation is gone — changes
     nothing; and no materialized page outside the source lies under the
@@ -1156,9 +1223,12 @@ Lemma mremap_move_charge_at_fresh : forall m old old_n dst new_n,
   (bv_unsigned new_n mod page_size = 0)%Z ->
   (0 < bv_unsigned new_n)%Z ->
   (bv_unsigned dst + bv_unsigned new_n < two_pow_64)%Z ->
-  (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
+  (forall (a sz : word),
+     In (a, sz) (maps_subtract (vm_maps (m_vmmaps m)) (bv_unsigned old)
+                   (bv_unsigned old + bv_unsigned old_n)) ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
-  region_free (map_remove (vm_maps (m_vmmaps m)) old) dst new_n = true ->
+  region_free (maps_subtract (vm_maps (m_vmmaps m)) (bv_unsigned old)
+                 (bv_unsigned old + bv_unsigned old_n)) dst new_n = true ->
   region_free (vm_noaccess (m_vmmaps m)) dst new_n = true ->
   maps_subtract
     (maps_subtract (m_vm_lazy m) (bv_unsigned old)
@@ -1202,7 +1272,8 @@ Proof.
   set (KP := List.filter (page_outside_range (bv_unsigned old)
                             (bv_unsigned old + bv_unsigned old_n))
                (m_vm_materialized m)) in *.
-  set (R0 := map_remove (vm_maps (m_vmmaps m)) old) in *.
+  set (R0 := maps_subtract (vm_maps (m_vmmaps m)) (bv_unsigned old)
+               (bv_unsigned old + bv_unsigned old_n)) in *.
   set (NA := vm_noaccess (m_vmmaps m)) in *.
   (* KL misses the destination: by the identity, every entry of KL is a
      remnant of cutting the destination out of it *)
