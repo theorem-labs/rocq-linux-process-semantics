@@ -2908,9 +2908,10 @@ Proof. reflexivity. Qed.
     [[(65536, 1990); (67536, 2096)]] — 4096 bytes to 4086, ten granted,
     unfreed, still-mapped bytes gone from the sum.  The ledger does not
     record which entries are brk grants, so the logical cut cannot spare
-    the others.  Under-counting moves
-    the forced out-of-memory point LATER, which is the UNSAFE direction,
-    and no gate compensates for it.  The two are not reconciled.
+    the others.  Under-counting moves the forced out-of-memory point
+    LATER: the model grants memory Linux refuses, so a statement can hold
+    of a run that Linux would have refused.  No gate compensates for it,
+    and the two directions are not reconciled.
 
     [munmap], a shrinking [mremap], and a [brk] shrink return their bytes
     to the budget by shrinking the ledger.  Placement plays no part — the
@@ -4410,13 +4411,15 @@ Fixpoint reserved_top (maps : list (word * word)) : Z :=
     parts that fall OUTSIDE it (each mapping may split into a left and/or a
     right remnant, or vanish).  A [brk] SHRINK uses it in two deliberately
     different ways (see [Mmap.brk_model_next]): [vm_maps] drops the logical,
-    byte-granular heap tail [new_break, old_break), preserving exact live-byte
-    budget accounting, AND the page-rounded range named by
-    [Mmap.brk_unmaps] ([Mmap.brk_unmap_cut]), while [vm_noaccess] drops
-    only the page-rounded range.  The latter is the kernel's actual
-    [do_vmi_align_munmap] interval and is also what the running program sees
-    in [eff_unmaps].  Higher anonymous mmaps and lower mappings survive, and
-    one straddling record is truncated.
+    byte-granular heap tail [new_break, old_break) AND the page-rounded
+    range named by [Mmap.brk_unmaps] ([Mmap.brk_unmap_cut]), while
+    [vm_noaccess] drops only the page-rounded range.  The latter is the
+    kernel's actual [do_vmi_align_munmap] interval and is also what the
+    running program sees in [eff_unmaps].  Every entry is cut, not only
+    heap grants: an entry wholly inside the two ranges vanishes, and an
+    entry that straddles either end keeps the part outside, so more than
+    one record can be truncated.  The logical cut can drop bytes Linux
+    keeps; [live_bytes] documents that under-count.
     Arithmetic in [Z] over unsigned values (no wrapping); the remnant
     bases/sizes fit in 64 bits by construction, so the [Z_to_bv]
     round-trips are lossless.  The interval ENDPOINTS are taken in [Z]

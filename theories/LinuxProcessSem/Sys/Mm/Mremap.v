@@ -121,9 +121,10 @@ Definition mremap_errnos : list Z := [ENOMEM].
     rather than the removal of the one entry based at [old].  The entry
     [mremap_source_b] matched is the only one owning a page-aligned byte
     there ([Checks/VmMapsDisjoint]); what else can meet the range is a
-    byte-granular brk grant inside one of its pages (a same-page grow,
-    which [Mmap.brk_grow_ok] lets through untested), and in the kernel
-    that is no VMA of its own, only bytes of the source VMA.  So:
+    byte-granular brk grant that starts in one of its pages (a same-page
+    grow, which [Mmap.brk_grow_ok] lets through untested), and in the
+    kernel that is no VMA of its own, only bytes of the VMAs it lies in.
+    A grant that runs past the range's end keeps the part outside.  So:
     - a shrink in place unmaps [[addr+new_len, addr+old_len)] with
       [do_vmi_munmap] ([shrink_vma], mm/mremap.c:1326-1338, Linux
       v6.18.46), and a move unmaps the whole source [[addr, addr+old_len)]
