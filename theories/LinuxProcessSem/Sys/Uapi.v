@@ -489,24 +489,21 @@ Definition RLIMIT_CORE : Z := 4%Z.
     [Kernel.Time.PosixTimers.clock_gettime_spec] names the ids it
     declines in prose rather than as constants.
 
-    The first three are [clock_gettime]'s.  The last three are
-    [Fs.Timerfd.timerfd_create_spec]'s, and they are named for the
-    OPPOSITE reason: that spec's whole content is a five-way membership
-    test written out of Linux's own, so each id it admits has to be
-    stateable.  The two families OVERLAP but neither contains the other
-    — [timerfd_create] takes [CLOCK_BOOTTIME] and the two alarm clocks
-    that [clock_gettime] declines, and declines
-    [CLOCK_PROCESS_CPUTIME_ID], which [clock_gettime] answers.  Do not
-    read either list as "the clocks the model supports". *)
+    [clock_gettime], [clock_getres], and [timerfd_create] each cover
+    different sets of IDs.  Do not read this list as the clocks every
+    spec supports. *)
 Definition CLOCK_REALTIME : Z := 0%Z.
 Definition CLOCK_MONOTONIC : Z := 1%Z.
 Definition CLOCK_PROCESS_CPUTIME_ID : Z := 2%Z.
+Definition CLOCK_THREAD_CPUTIME_ID : Z := 3%Z.
 Definition CLOCK_MONOTONIC_RAW : Z := 4%Z.
 Definition CLOCK_REALTIME_COARSE : Z := 5%Z.
 Definition CLOCK_MONOTONIC_COARSE : Z := 6%Z.
 Definition CLOCK_BOOTTIME : Z := 7%Z.
 Definition CLOCK_REALTIME_ALARM : Z := 8%Z.
 Definition CLOCK_BOOTTIME_ALARM : Z := 9%Z.
+Definition CLOCK_SGI_CYCLE : Z := 10%Z.
+Definition CLOCK_TAI : Z := 11%Z.
 
 (** [TFD_CREATE_FLAGS], the only flag bits [timerfd_create] accepts.
 

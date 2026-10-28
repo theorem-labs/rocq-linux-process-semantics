@@ -523,6 +523,7 @@ Definition ESPIPE : Z := 29%Z.
 Definition EPIPE  : Z := 32%Z.
 Definition ERANGE : Z := 34%Z.
 Definition ENAMETOOLONG : Z := 36%Z.
+Definition ENOSYS : Z := 38%Z.
 Definition ENOTEMPTY : Z := 39%Z.
 
 (** Errno values the per-syscall failure-injection sets draw from

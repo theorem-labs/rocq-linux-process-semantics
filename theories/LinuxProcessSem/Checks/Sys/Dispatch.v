@@ -498,6 +498,17 @@ Proof.
     eauto using check_futex_sound_ok, check_futex_sound_unmodeled, check_futex_complete_ok, check_futex_complete_unmodeled, futex_witness_ok.
 Defined.
 
+(** set_robust_list (99). *)
+Definition arm_set_robust_list : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 99%Z (fun i => set_robust_list_spec (in_arg i 1) i))
+                       (fun i eff m => check_set_robust_list (in_arg i 1) eff m)
+                       (fun i m => set_robust_list_witness m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_set_robust_list_sound_ok, check_set_robust_list_sound_unmodeled, check_set_robust_list_complete_ok, check_set_robust_list_complete_unmodeled, set_robust_list_witness_ok.
+Defined.
+
 (** nanosleep (101). *)
 Definition arm_nanosleep : CheckedArm.
 Proof.
@@ -518,6 +529,17 @@ Proof.
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_clock_gettime_sound_ok, check_clock_gettime_sound_unmodeled, check_clock_gettime_complete_ok, check_clock_gettime_complete_unmodeled, clock_gettime_witness_ok.
+Defined.
+
+(** clock_getres (114). *)
+Definition arm_clock_getres : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 114%Z (fun i => clock_getres_spec (clockid32 (in_arg i 0)) (in_arg i 1) i))
+                       (fun i eff m => check_clock_getres i (clockid32 (in_arg i 0)) (in_arg i 1) eff m)
+                       (fun i m => clock_getres_witness (clockid32 (in_arg i 0)) (in_arg i 1) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_clock_getres_sound_ok, check_clock_getres_sound_unmodeled, check_clock_getres_complete_ok, check_clock_getres_complete_unmodeled, clock_getres_witness_ok.
 Defined.
 
 (** sched_setscheduler (119). *)
@@ -1133,8 +1155,10 @@ Definition checked_table : list CheckedArm :=
   arm_exit_group ::
   arm_set_tid_address ::
   arm_futex ::
+  arm_set_robust_list ::
   arm_nanosleep ::
   arm_clock_gettime ::
+  arm_clock_getres ::
   arm_sched_setscheduler ::
   arm_sched_getaffinity ::
   arm_sched_yield ::
@@ -1570,6 +1594,16 @@ Lemma sa_spec_arm_futex : forall i m o,
   sa_spec (ca_arm arm_futex) i m o = futex_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) (in_arg i 3) i m o.
 Proof. reflexivity. Qed.
 
+Lemma ca_check_arm_set_robust_list : forall i eff m,
+  ca_check arm_set_robust_list i eff m = check_set_robust_list (in_arg i 1) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_set_robust_list : forall i m,
+  ca_witness arm_set_robust_list i m = set_robust_list_witness m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_set_robust_list : forall i m o,
+  sa_spec (ca_arm arm_set_robust_list) i m o = set_robust_list_spec (in_arg i 1) i m o.
+Proof. reflexivity. Qed.
+
 Lemma ca_check_arm_nanosleep : forall i eff m,
   ca_check arm_nanosleep i eff m = check_nanosleep i (in_arg i 0) (in_arg i 1) eff m.
 Proof. reflexivity. Qed.
@@ -1588,6 +1622,16 @@ Lemma ca_witness_arm_clock_gettime : forall i m,
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_clock_gettime : forall i m o,
   sa_spec (ca_arm arm_clock_gettime) i m o = clock_gettime_spec (clockid32 (in_arg i 0)) (in_arg i 1) i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_clock_getres : forall i eff m,
+  ca_check arm_clock_getres i eff m = check_clock_getres i (clockid32 (in_arg i 0)) (in_arg i 1) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_clock_getres : forall i m,
+  ca_witness arm_clock_getres i m = clock_getres_witness (clockid32 (in_arg i 0)) (in_arg i 1) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_clock_getres : forall i m o,
+  sa_spec (ca_arm arm_clock_getres) i m o = clock_getres_spec (clockid32 (in_arg i 0)) (in_arg i 1) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_sched_setscheduler : forall i eff m,
@@ -2145,8 +2189,10 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_check_arm_exit_group ca_witness_arm_exit_group sa_spec_arm_exit_group : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_set_tid_address ca_witness_arm_set_tid_address sa_spec_arm_set_tid_address : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_futex ca_witness_arm_futex sa_spec_arm_futex : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_set_robust_list ca_witness_arm_set_robust_list sa_spec_arm_set_robust_list : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_nanosleep ca_witness_arm_nanosleep sa_spec_arm_nanosleep : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_clock_gettime ca_witness_arm_clock_gettime sa_spec_arm_clock_gettime : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_clock_getres ca_witness_arm_clock_getres sa_spec_arm_clock_getres : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_sched_setscheduler ca_witness_arm_sched_setscheduler sa_spec_arm_sched_setscheduler : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_sched_getaffinity ca_witness_arm_sched_getaffinity sa_spec_arm_sched_getaffinity : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_sched_yield ca_witness_arm_sched_yield sa_spec_arm_sched_yield : arm_unfold.
@@ -2325,6 +2371,10 @@ Lemma ca_no_arm_futex : ca_no arm_futex = 98%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_futex : arm_unfold.
 
+Lemma ca_no_arm_set_robust_list : ca_no arm_set_robust_list = 99%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_set_robust_list : arm_unfold.
+
 Lemma ca_no_arm_nanosleep : ca_no arm_nanosleep = 101%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_nanosleep : arm_unfold.
@@ -2332,6 +2382,10 @@ Proof. reflexivity. Qed.
 Lemma ca_no_arm_clock_gettime : ca_no arm_clock_gettime = 113%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_clock_gettime : arm_unfold.
+
+Lemma ca_no_arm_clock_getres : ca_no arm_clock_getres = 114%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_clock_getres : arm_unfold.
 
 Lemma ca_no_arm_sched_setscheduler : ca_no arm_sched_setscheduler = 119%Z.
 Proof. reflexivity. Qed.

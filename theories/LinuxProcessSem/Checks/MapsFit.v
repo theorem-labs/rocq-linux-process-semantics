@@ -511,6 +511,7 @@ Proof.
     | erewrite check_getrandom_frame by eassumption; exact Hfit
     | erewrite check_gettimeofday_frame by eassumption; exact Hfit
     | erewrite check_clock_gettime_frame by eassumption; exact Hfit
+    | erewrite check_clock_getres_frame by eassumption; exact Hfit
     | erewrite check_nanosleep_frame by eassumption; exact Hfit
     | erewrite check_dup_frame by eassumption; exact Hfit
     | erewrite check_dup3_frame by eassumption; exact Hfit
@@ -540,6 +541,7 @@ Proof.
     | erewrite check_tgkill_frame by eassumption; exact Hfit
     | erewrite check_rt_sigprocmask_frame by eassumption; exact Hfit
     | erewrite check_futex_frame by eassumption; exact Hfit
+    | erewrite check_set_robust_list_frame by eassumption; exact Hfit
     | erewrite check_clone_frame by eassumption; exact Hfit
     | erewrite check_clone3_frame by eassumption; exact Hfit
     | erewrite check_getsockname_frame by eassumption; exact Hfit

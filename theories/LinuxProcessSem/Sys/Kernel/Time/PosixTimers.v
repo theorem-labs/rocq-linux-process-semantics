@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Sys.Kernel.Time.PosixTimers — clock_gettime (113)
+(** * LinuxProcessSem.Sys.Kernel.Time.PosixTimers — clock_gettime (113), clock_getres (114)
 
     This file answers to Linux [kernel/time/posix-timers.c]: it holds
     what the kernel defines there, and nothing else.  Which file a spec
@@ -596,3 +596,65 @@ Definition clock_gettime_spec (clkid tp : word) : Sys SyscallEffect :=
       set_clock (Z_to_bv 64 (timespec_ns bs)) ;;
       pure (mkEffect (Z_to_bv 64 0) [(tp, bs)] [])
   end.
+
+(** Positive clock IDs handled by [clock_getres].  IDs 8 and 9 can fail
+    with -EINVAL when no alarm RTC is available.  The CPU clocks (2, 3)
+    have a fixed 1 ns resolution.  For the others Linux returns either
+    [hrtimer_resolution] or [KTIME_LOW_RES]; QEMU forwards the host's
+    [clock_getres].  A positive normalized subsecond value covers these
+    configurations without fixing the host kernel's HZ.  This deliberately
+    leaves the exact resolution unspecified, like other environment time
+    values in this model.  Negative dynamic clock IDs and optional auxiliary
+    clocks remain unmodeled. *)
+Definition clock_getres_supported_b (clkid : word) : bool :=
+  (bv_unsigned clkid <=? CLOCK_BOOTTIME_ALARM)%Z
+  || Z.eqb (bv_unsigned clkid) CLOCK_TAI.
+
+Definition clock_getres_alarm_b (clkid : word) : bool :=
+  Z.eqb (bv_unsigned clkid) CLOCK_REALTIME_ALARM
+  || Z.eqb (bv_unsigned clkid) CLOCK_BOOTTIME_ALARM.
+
+Definition clock_getres_cpu_b (clkid : word) : bool :=
+  Z.eqb (bv_unsigned clkid) CLOCK_PROCESS_CPUTIME_ID
+  || Z.eqb (bv_unsigned clkid) CLOCK_THREAD_CPUTIME_ID.
+
+Definition clock_getres_resolution_b (clkid : word) (bs : list byte) : bool :=
+  Nat.eqb (length bs) 16
+  && Z.eqb (tv_sec_of bs) 0
+  && (if clock_getres_cpu_b clkid
+      then Z.eqb (tv_frac_of bs) 1
+      else (0 <? tv_frac_of bs)%Z && (tv_frac_of bs <? 1000000000)%Z).
+
+Definition clock_getres_dst_ok_b (i : SyscallInput) (tp : word) : bool :=
+  if w_is0 tp then
+    match read_bytes_map (in_wmem i) tp (Z_to_bv 64 16) with
+    | Some _ => false
+    | None => true
+    end
+  else match read_bytes_map (in_wmem i) tp (Z_to_bv 64 16) with
+       | Some _ => true
+       | None => false
+       end.
+
+Definition clock_getres_result_spec (clkid tp : word) : Sys SyscallEffect :=
+  if w_is0 tp then ret_only (Z_to_bv 64 0)
+  else
+    bs <- choose (fun bs : list byte =>
+      clock_getres_resolution_b clkid bs = true) ;;
+    pure (mkEffect (Z_to_bv 64 0) [(tp, bs)] []).
+
+(** The clock is resolved before the destination is touched.  Linux skips
+    the copy for NULL [tp]; QEMU attempts it but ignores the copy's return.
+    If guest address zero is writable, QEMU can write there, so that input
+    is declined.  A partially writable non-NULL destination is declined,
+    as in [clock_gettime_spec]. *)
+Definition clock_getres_spec (clkid tp : word) : Sys SyscallEffect :=
+  if clock_getres_supported_b clkid then
+    i <- input ;;
+    if clock_getres_dst_ok_b i tp then
+      if clock_getres_alarm_b clkid
+      then alt (err_ret EINVAL) (clock_getres_result_spec clkid tp)
+      else clock_getres_result_spec clkid tp
+    else unmodeled
+  else if Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE then err_ret EINVAL
+  else unmodeled.
