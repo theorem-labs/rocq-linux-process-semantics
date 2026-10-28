@@ -359,12 +359,17 @@ Lemma stk_ok_mem_denot : forall segs E mem log sp K,
   stk_ok segs mem sp K -> stk_ok segs (mem_denot E mem log) sp K.
 Proof. intros. eapply stk_ok_grows; [eassumption | apply mem_denot_grows]. Qed.
 
-(** The initial memory: the whole 8 MiB window below sp is writable. *)
+(** The initial memory: the stack window below sp is writable.  Its
+    depth is [StoreOk.stack_window_depth], not the whole 8 MiB: Linux
+    counts the entry image inside [RLIMIT_STACK]
+    ([Run.stack_window_lo]). *)
 Lemma stk_ok_init : forall segs ph sp argv envp uid hw (rdraw : EntryDraw),
-  stk_ok segs (wrap_mem ph sp argv envp uid hw rdraw) sp stack_max_size.
+  valid_argv argv -> valid_envp envp ->
+  stk_ok segs (wrap_mem ph sp argv envp uid hw rdraw) sp stack_window_depth.
 Proof.
-  intros segs ph sp argv envp uid hw rdraw a n H1 H2.
-  apply store_ok_wrap_window; assumption.
+  intros segs ph sp argv envp uid hw rdraw Hva Hve a n H1 H2.
+  apply store_ok_wrap_window_valid; try assumption;
+    unfold stack_window_depth in H1; lia.
 Qed.
 
 Lemma kwr_of_stk_ok : forall segs E mem (e : expr) (sp : word) K,
@@ -431,10 +436,12 @@ Lemma wrap_mem_none_low : forall ph sp argv envp uid hw (rdraw : EntryDraw) (i :
 Proof.
   intros ph sp argv envp uid hw rdraw i H0 Hi. unfold wrap_mem.
   pose proof (u64_range sp) as Hsp.
+  pose proof (stack_window_lo_ge sp (entry_stack_image ph sp argv envp uid hw rdraw)) as Hge.
   assert (Hu : bv_unsigned (Z_to_bv 64 i) = i) by (apply u_small; unfold stack_max_size in Hi; lia).
   unfold stack_to_mem. rewrite Hu.
   replace (Z.leb (bv_unsigned sp) i) with false by (symmetry; apply Z.leb_gt; unfold stack_max_size in Hi; lia).
-  replace (Z.leb (bv_unsigned sp - stack_max_size) i) with false by (symmetry; apply Z.leb_gt; lia).
+  replace (Z.leb (stack_window_lo sp (entry_stack_image ph sp argv envp uid hw rdraw)) i)
+    with false by (symmetry; apply Z.leb_gt; lia).
   reflexivity.
 Qed.
 
