@@ -120,21 +120,25 @@ Definition mremap_errnos : list Z := [ENOMEM].
     [(dst,new_n)].  The cut is [maps_subtract] over the whole source range
     rather than the removal of the one entry based at [old].  The entry
     [mremap_source_b] matched is the only one owning a page-aligned byte
-    there ([Checks/VmMapsDisjoint]); what else can meet the range is a
-    byte-granular brk grant that starts in one of its pages (a same-page
-    grow, which [Mmap.brk_grow_ok] lets through untested), and in the
-    kernel that is no VMA of its own, only bytes of the VMAs it lies in.
-    A grant that runs past the range's end keeps the part outside.  So:
+    there ([Checks/VmMapsDisjoint]).  Another entry can still meet the
+    range if it starts inside it at an address that is not page aligned.
+    Only a move of the break makes such a start: a brk grant starts at the
+    old break ([Mmap.brk_grow_ok] tests nothing below the first new page,
+    so the old break can lie inside this mapping), and a brk shrink's
+    logical cut leaves a remnant that starts at the old break
+    ([Checks/VmMapsDisjoint]'s [wit_step6]).  In the kernel such an entry
+    is no VMA of its own, only bytes of the VMAs it lies in.  An entry that
+    runs past the range's end keeps the part outside.  So:
     - a shrink in place unmaps [[addr+new_len, addr+old_len)] with
       [do_vmi_munmap] ([shrink_vma], mm/mremap.c:1326-1338, Linux
       v6.18.46), and a move unmaps the whole source [[addr, addr+old_len)]
-      ([unmap_source_vma], :1078-1122): the grant's bytes there are gone,
+      ([unmap_source_vma], :1078-1122): the entry's bytes there are gone,
       and a ledger that kept them would charge them once the source's lazy
       provenance stops covering them ([Checks/Cases/Mm/Mremap.v]'s
       [mremap_shrink_takes_the_grant_inside_the_tail]);
     - a grow in place extends the source VMA, which already holds the
-      grant's bytes, so the re-recorded entry covers them and keeping the
-      grant would count them twice.
+      entry's bytes inside the source, so the re-recorded entry covers them
+      and keeping them would count them twice.
     The source is required below to have no [vm_noaccess] overlap, while a
     moved destination is fresh, so the no-access ledger is preserved
     verbatim. *)

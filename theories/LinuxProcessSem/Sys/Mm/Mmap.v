@@ -2206,12 +2206,16 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       cut is [maps_subtract] over the range, the same post-state the
       partial arm below writes ([mmap_fixed_destroyed_next]), and not
       the removal of the one matched entry: [do_vmi_munmap]
-      (mm/vma.c:1604-1626) unmaps every VMA meeting the range, so the
-      bytes in the range of a byte-granular brk grant that meets it (a
-      same-page grow over the mapping, which [brk_grow_ok] lets through
-      untested) go too; a grant that runs past the range's end keeps the
-      part outside, as a straddling VMA would.  A ledger that kept them
-      would go on charging them once the protection over them is cut.
+      (mm/vma.c:1604-1626) unmaps every VMA meeting the range.  Besides
+      the matched entry, an entry can meet the range only by starting
+      inside it at an address that is not page aligned, and only a move
+      of the break makes such a start: a brk grant from an old break
+      inside the mapping ([brk_grow_ok] tests nothing below the first new
+      page), or the remnant a brk shrink's logical cut leaves at the old
+      break.  The kernel holds those bytes in the VMAs the range unmaps,
+      so they go too; an entry that runs past the range's end keeps the
+      part outside.  A ledger that kept them would go on charging them
+      once the protection over them is cut.
       [Checks/Cases/Mm/Mmap.v]'s
       [munmap_exact_takes_the_grant_inside_the_page] pins that.
       (Unmapping a brk-grow record this way is faithful too:
