@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Cases.Kernel.Time.PosixTimers — worked examples over clock_gettime (113)
+(** * LinuxProcessSem.Checks.Cases.Kernel.Time.PosixTimers — worked examples over clock_gettime (113) and clock_getres (114)
 
     Mirrors [Sys/Kernel/Time/PosixTimers.v], which answers to Linux
     [kernel/time/posix-timers.c]: this file holds the worked examples
@@ -478,3 +478,68 @@ Example monotonic_coarse_ignores_the_recorded_clock :
     (clock_model (2 ^ 63))
   = CheckOk (clock_model (2 ^ 63)) [].
 Proof. check_eq. Qed.
+
+Definition getres_input (clkid tp : word) (wmem : word -> option byte)
+    : SyscallInput :=
+  mkInput 114 [clkid; tp; 0; 0; 0; 0] (fun _ => None) wmem.
+
+Definition res_1ns : list byte :=
+  Z_to_le_bytes 8 0 ++ Z_to_le_bytes 8 1.
+Definition res_4ms : list byte :=
+  Z_to_le_bytes 8 0 ++ Z_to_le_bytes 8 4000000.
+
+Example clock_getres_null_and_invalid_clock :
+  check_syscall (getres_input 1 0 (fun _ => None))
+    (mkEffect 0 [] []) (clock_model 0) = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 10 0 (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) (clock_model 0)
+       = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 1 0 (fun _ => Some (Z_to_bv 8 0)))
+       (mkEffect 0 [] []) (clock_model 0) = CheckUnmodeled
+  /\ check_syscall (getres_input 10 0 (fun _ => None))
+       (mkEffect 0 [] []) (clock_model 0) = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+Example clock_getres_cpu_and_general_resolutions :
+  check_syscall (getres_input 2 4096 wmem_ts)
+    (mkEffect 0 [(4096, res_1ns)] []) (clock_model 0)
+    = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 3 4096 wmem_ts)
+       (mkEffect 0 [(4096, res_1ns)] []) (clock_model 0)
+       = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 4294967298 4096 wmem_ts)
+       (mkEffect 0 [(4096, res_1ns)] []) (clock_model 0)
+       = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 1 4096 wmem_ts)
+       (mkEffect 0 [(4096, res_4ms)] []) (clock_model 0)
+       = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 2 4096 wmem_ts)
+       (mkEffect 0 [(4096, res_4ms)] []) (clock_model 0)
+       = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+Example clock_getres_alarm_and_memory_edges :
+  check_syscall (getres_input 8 4096 wmem_ts)
+    (mkEffect (errno_ret EINVAL) [] []) (clock_model 0)
+    = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 8 4096 wmem_ts)
+       (mkEffect 0 [(4096, res_1ns)] []) (clock_model 0)
+       = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 8 4096 (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) (clock_model 0)
+       = CheckUnmodeled
+  /\ check_syscall (getres_input 1 4096 (fun _ => None))
+       (mkEffect 0 [(4096, res_1ns)] []) (clock_model 0)
+       = CheckUnmodeled
+  /\ check_syscall (getres_input 1 4096 wmem_ts)
+       (mkEffect 0 [(4096, Z_to_le_bytes 8 0 ++ Z_to_le_bytes 8 0)] [])
+       (clock_model 0) = CheckReject
+  /\ check_syscall (getres_input 1 4096 wmem_ts)
+       (mkEffect 0 [(4096, Z_to_le_bytes 8 0 ++ Z_to_le_bytes 8 1000000000)] [])
+       (clock_model 0) = CheckReject
+  /\ check_syscall (getres_input 1 4096 wmem_ts)
+       (mkEffect 0 [(4096, Z_to_le_bytes 8 1 ++ Z_to_le_bytes 8 0)] [])
+       (clock_model 0) = CheckReject
+  /\ check_syscall (getres_input 1 0 (fun _ => None))
+       (mkEffect 0 [(0, res_1ns)] []) (clock_model 0) = CheckReject.
+Proof. repeat split; check_eq. Qed.

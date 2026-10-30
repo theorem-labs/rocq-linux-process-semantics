@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Witness.Kernel.Time.PosixTimers — the clock_gettime (113) witness, and its proof
+(** * LinuxProcessSem.Checks.Witness.Kernel.Time.PosixTimers — the clock_gettime (113) and clock_getres (114) witnesses
 
     Mirrors [Sys/Kernel/Time/PosixTimers.v], which answers to Linux
     [kernel/time/posix-timers.c]: this file holds the witnesses for the
@@ -146,4 +146,45 @@ Proof.
     reflexivity. }
   eapply bind_step; [apply modify_ok|].
   apply pure_ok.
+Qed.
+
+Definition clock_getres_witness (clkid tp : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  if clock_getres_supported_b clkid then
+    if clock_getres_dst_ok_b i tp then
+      if clock_getres_alarm_b clkid then ret_outcome (errno_ret EINVAL) m
+      else if w_is0 tp then ret_outcome (Z_to_bv 64 0) m
+      else Ok (mkEffect (Z_to_bv 64 0)
+                    [(tp, clock_gettime_bytes 1)] []) m []
+    else Unmodeled
+  else if Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE
+       then ret_outcome (errno_ret EINVAL) m
+       else Unmodeled.
+
+Lemma clock_getres_one_ns : forall clkid,
+  clock_getres_resolution_b clkid (clock_gettime_bytes 1) = true.
+Proof.
+  intros clkid. unfold clock_getres_resolution_b.
+  destruct (clock_getres_cpu_b clkid); vm_compute; reflexivity.
+Qed.
+
+Lemma clock_getres_witness_ok : forall i clkid tp m,
+  clock_getres_spec clkid tp i m (clock_getres_witness clkid tp i m).
+Proof.
+  intros. unfold clock_getres_spec, clock_getres_witness.
+  destruct (clock_getres_supported_b clkid).
+  - eapply bind_step; [apply input_ok|]. cbv beta.
+    destruct (clock_getres_dst_ok_b i tp); [|apply unmodeled_intro].
+    destruct (clock_getres_alarm_b clkid).
+    + apply alt_l. unfold err_ret, ret_only, ret_outcome. apply pure_ok.
+    + unfold clock_getres_result_spec.
+      destruct (w_is0 tp).
+      * unfold ret_only, ret_outcome. apply pure_ok.
+      * eapply bind_step.
+        { apply (choose_ok _ (clock_gettime_bytes 1)).
+          apply clock_getres_one_ns. }
+        apply pure_ok.
+  - destruct (Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE).
+    + unfold err_ret, ret_only, ret_outcome. apply pure_ok.
+    + apply unmodeled_intro.
 Qed.

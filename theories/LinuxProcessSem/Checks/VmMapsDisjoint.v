@@ -1927,7 +1927,7 @@ Proof.
   intros option_ arg2 eff m m' evs H. unfold check_prctl in H. vm_frame2 H.
 Qed.
 
-(** The three clock arms.  [gettimeofday] and [clock_gettime] hand back
+(** The four clock arms.  [gettimeofday], [clock_gettime], and [clock_getres] hand back
     the model untouched; [nanosleep] advances [m_clock] and nothing else,
     and [with_clock] leaves [m_vmmaps] alone BY CONVERSION. *)
 
@@ -1945,6 +1945,14 @@ Lemma check_clock_gettime_frame : forall i clkid tp eff m m' evs,
 Proof.
   intros i clkid tp eff m m' evs H.
   unfold check_clock_gettime in H. vm_frame2 H.
+Qed.
+
+Lemma check_clock_getres_frame : forall i clkid tp eff m m' evs,
+  check_clock_getres i clkid tp eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i clkid tp eff m m' evs H.
+  unfold check_clock_getres, check_clock_getres_result in H. vm_frame2 H.
 Qed.
 
 Lemma check_nanosleep_frame : forall i rqtp rmtp eff m m' evs,
@@ -2475,6 +2483,14 @@ Proof.
   vm_frame2 H.
 Qed.
 
+Lemma check_set_robust_list_frame : forall len eff m m' evs,
+  check_set_robust_list len eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros len eff m m' evs H.
+  unfold check_set_robust_list in H. vm_frame2 H.
+Qed.
+
 Lemma checked_table_preserves_vm : Forall arm_preserves_vm checked_table.
 Proof.
   unfold checked_table.
@@ -2516,6 +2532,7 @@ Proof.
     | erewrite check_getrandom_frame by eassumption; exact Hwf
     | erewrite check_gettimeofday_frame by eassumption; exact Hwf
     | erewrite check_clock_gettime_frame by eassumption; exact Hwf
+    | erewrite check_clock_getres_frame by eassumption; exact Hwf
     | erewrite check_nanosleep_frame by eassumption; exact Hwf
     | erewrite check_dup_frame by eassumption; exact Hwf
     | erewrite check_dup3_frame by eassumption; exact Hwf
@@ -2545,6 +2562,7 @@ Proof.
     | erewrite check_tgkill_frame by eassumption; exact Hwf
     | erewrite check_rt_sigprocmask_frame by eassumption; exact Hwf
     | erewrite check_futex_frame by eassumption; exact Hwf
+    | erewrite check_set_robust_list_frame by eassumption; exact Hwf
     | erewrite check_clone_frame by eassumption; exact Hwf
     | erewrite check_clone3_frame by eassumption; exact Hwf
     | erewrite check_getsockname_frame by eassumption; exact Hwf
