@@ -1227,10 +1227,12 @@ Definition run (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
    OFF THE SPEC by the definition of [spurious_refusal_cfg], and this is
    what each family's forcing condition comes to:
 
-     alloc  mmap, brk, mremap, mprotect   the shape's budget test fails,
-                                          or no placement exists
-     fs     openat, faccessat, unlinkat,  openat: no free descriptor;
-            getcwd                        the others: never
+     alloc  mmap, brk, mremap, mprotect,  the shape's budget test fails,
+            munmap                        or no placement exists;
+                                          munmap: never
+     fs     openat, faccessat,            openat: no free descriptor;
+            faccessat2, unlinkat,         the others: never
+            getcwd, getdents64
      fd     dup, pipe2, socket,           no free descriptor (two for
             socketpair, accept, clone     pipe2 and socketpair; accept
                                           also when [Socket.conn_ix_exhausted]);
@@ -1362,7 +1364,9 @@ Record InjectedArm := mkInjectedArm {
     that add two arms land at different lines).  [brk] refuses by value
     and carries no list; see [brk_refusal_b].  [nanosleep]'s -EINTR and
     [setsid]'s -EPERM are injected by a bare [alt] rather than through a
-    named list, so their lists are written here. *)
+    named list, so their lists are written here.  [faccessat2] draws from
+    [faccessat]'s list because both answer through
+    [Fs.Open.access_exists_spec]. *)
 Definition injected_table : list InjectedArm :=
   (* getcwd     *) mkInjectedArm  17%Z FamFs    getcwd_errnos ::
   (* dup        *) mkInjectedArm  23%Z FamFd    dup_errnos ::
@@ -1370,6 +1374,7 @@ Definition injected_table : list InjectedArm :=
   (* faccessat  *) mkInjectedArm  48%Z FamFs    faccessat_errnos ::
   (* openat     *) mkInjectedArm  56%Z FamFs    openat_errnos ::
   (* pipe2      *) mkInjectedArm  59%Z FamFd    pipe2_errnos ::
+  (* getdents64 *) mkInjectedArm  61%Z FamFs    getdents64_errnos ::
   (* nanosleep  *) mkInjectedArm 101%Z FamIntr  [EINTR] ::
   (* setgid     *) mkInjectedArm 144%Z FamCred  (setid_errnos true) ::
   (* setuid     *) mkInjectedArm 146%Z FamCred  (setid_errnos true) ::
@@ -1382,6 +1387,7 @@ Definition injected_table : list InjectedArm :=
   (* listen     *) mkInjectedArm 201%Z FamNet   listen_errnos ::
   (* accept     *) mkInjectedArm 202%Z FamFd    accept_errnos ::
   (* brk        *) mkInjectedArm 214%Z FamAlloc [] ::
+  (* munmap     *) mkInjectedArm 215%Z FamAlloc munmap_errnos ::
   (* mremap     *) mkInjectedArm 216%Z FamAlloc mremap_errnos ::
   (* clone      *) mkInjectedArm 220%Z FamFd    clone_errnos ::
   (* mmap       *) mkInjectedArm 222%Z FamAlloc mmap_errnos ::
@@ -1389,6 +1395,7 @@ Definition injected_table : list InjectedArm :=
   (* accept4    *) mkInjectedArm 242%Z FamFd    accept_errnos ::
   (* getrandom  *) mkInjectedArm 278%Z FamIntr  getrandom_errnos ::
   (* clone3     *) mkInjectedArm 435%Z FamFd    clone_errnos ::
+  (* faccessat2 *) mkInjectedArm 439%Z FamFs    faccessat_errnos ::
   nil.
 
 Fixpoint lookup_injected (t : list InjectedArm) (n : Z) : option InjectedArm :=
@@ -1434,12 +1441,15 @@ Definition refusal_b (i : SyscallInput) (m : Model) (ret : word) : bool :=
 (** Is the pending syscall [i] at model [m] a grant the BUDGET refuses?
     Every [FamAlloc] arm of [injected_table], each answered by the mark
     its own file defines beside its spec
-    ([Mmap.brk_budget_refused_b], [Mremap.mremap_budget_refused_b],
-    [Mmap.mmap_budget_refused_b], [Mprotect.mprotect_budget_refused_b])
+    ([Mmap.brk_budget_refused_b], [Mmap.munmap_budget_refused_b],
+    [Mremap.mremap_budget_refused_b], [Mmap.mmap_budget_refused_b],
+    [Mprotect.mprotect_budget_refused_b])
     on the arguments [Sys.SyscallTable.spec_table] hands the arm; every
-    other number is [false].  Compare [refusal_b], which asks whether a
-    given ANSWER is a refusal; this asks whether the REQUEST is one the
-    budget declines, whatever answer is then drawn.
+    other number is [false].  [munmap]'s mark is [false] too, on every
+    request: munmap consults no budget, and its one refusal is never a
+    budget one ([alloc_budget_refused_munmap]).  Compare [refusal_b],
+    which asks whether a given ANSWER is a refusal; this asks whether the
+    REQUEST is one the budget declines, whatever answer is then drawn.
 
     THE [false] IS THE DANGEROUS ANSWER: an allocation arm this
     dispatcher does not know is a silent false negative of the budget
@@ -1447,18 +1457,19 @@ Definition refusal_b (i : SyscallInput) (m : Model) (ret : word) : bool :=
     [alloc_family_dispatched] proves that every number
     [injected_table] registers under [FamAlloc] is in
     [alloc_mark_sysnos], and [alloc_budget_refused_b_outside] that the
-    dispatcher answers [false] exactly off that list, so a fifth
+    dispatcher answers [false] exactly off that list, so a sixth
     [FamAlloc] arm fails to build until the list and the dispatcher
     learn it.  What Rocq cannot see is an arm that consults the budget
     without registering as injecting, so that rule is stated here
     instead: every file under [Sys/] that names a
     budget reader must define a [*_budget_refused_b] this dispatcher
     names. *)
-Definition alloc_mark_sysnos : list Z := [214; 216; 222; 226]%Z.
+Definition alloc_mark_sysnos : list Z := [214; 215; 216; 222; 226]%Z.
 
 Definition alloc_budget_refused_b (i : SyscallInput) (m : Model) : bool :=
   let no := bv_unsigned (in_sysno i) in
   if Z.eqb no 214 then brk_budget_refused_b m (in_arg i 0)
+  else if Z.eqb no 215 then munmap_budget_refused_b (in_arg i 0) (in_arg i 1) m
   else if Z.eqb no 216 then
     mremap_budget_refused_b (in_arg i 0) (in_arg i 1) (in_arg i 2) (in_arg i 3) m
   else if Z.eqb no 222 then
@@ -1486,10 +1497,11 @@ Definition alloc_budget_refused_b (i : SyscallInput) (m : Model) : bool :=
 Inductive RefuseReason : Set := RefuseBudget | RefuseOversize.
 
 (** The charge of the pending request: the byte growth above the
-    current break for [brk], the page-rounded length or new size for the
-    others, and 0 for any other syscall.  The argument indices are those
-    of [alloc_budget_refused_b]; the per-arm lemmas below tie this charge
-    to each arm's gate. *)
+    current break for [brk], the page-rounded length or new size for
+    [mremap], [mmap] and [mprotect], and 0 for any other syscall —
+    [munmap] included, whose mark never fires.  The argument indices are
+    those of [alloc_budget_refused_b]; the per-arm lemmas below tie this
+    charge to each arm's gate. *)
 Definition alloc_req_charge_bytes (i : SyscallInput) (m : Model) : Z :=
   let no := bv_unsigned (in_sysno i) in
   if Z.eqb no 214 then
@@ -1628,6 +1640,17 @@ Proof.
   apply negb_true_iff in Hb. exact Hb.
 Qed.
 
+(** [munmap] has no gate to tie a charge to: its mark never fires
+    ([Mmap.munmap_budget_refused_b]), so no munmap request is
+    budget-refused, whatever the state. *)
+Lemma alloc_budget_refused_munmap : forall i m,
+  bv_unsigned (in_sysno i) = 215%Z ->
+  alloc_budget_refused_b i m = false.
+Proof.
+  intros i m Hno. unfold alloc_budget_refused_b. cbv zeta. rewrite Hno.
+  reflexivity.
+Qed.
+
 Lemma lookup_injected_in : forall t n a,
   lookup_injected t n = Some a -> In a t /\ ia_no a = n.
 Proof.
@@ -1645,7 +1668,8 @@ Ltac in_alloc_mark_sysnos :=
   first [ left; reflexivity
         | right; left; reflexivity
         | right; right; left; reflexivity
-        | right; right; right; left; reflexivity ].
+        | right; right; right; left; reflexivity
+        | right; right; right; right; left; reflexivity ].
 
 Lemma alloc_family_dispatched : forall no a,
   injected_arm no = Some a -> ia_family a = FamAlloc -> In no alloc_mark_sysnos.
@@ -1664,6 +1688,8 @@ Qed.
 Lemma alloc_mark_sysnos_dispatched : forall i m,
   let no := bv_unsigned (in_sysno i) in
   (no = 214%Z -> alloc_budget_refused_b i m = brk_budget_refused_b m (in_arg i 0))
+  /\ (no = 215%Z ->
+      alloc_budget_refused_b i m = munmap_budget_refused_b (in_arg i 0) (in_arg i 1) m)
   /\ (no = 216%Z ->
       alloc_budget_refused_b i m
       = mremap_budget_refused_b (in_arg i 0) (in_arg i 1) (in_arg i 2) (in_arg i 3) m)
@@ -1688,6 +1714,8 @@ Proof.
   intros i m Hout. unfold alloc_budget_refused_b. cbv zeta.
   destruct (Z.eqb (bv_unsigned (in_sysno i)) 214) eqn:E1;
     [apply Z.eqb_eq in E1; exfalso; apply Hout; rewrite E1; in_alloc_mark_sysnos |].
+  destruct (Z.eqb (bv_unsigned (in_sysno i)) 215) eqn:E5;
+    [apply Z.eqb_eq in E5; exfalso; apply Hout; rewrite E5; in_alloc_mark_sysnos |].
   destruct (Z.eqb (bv_unsigned (in_sysno i)) 216) eqn:E2;
     [apply Z.eqb_eq in E2; exfalso; apply Hout; rewrite E2; in_alloc_mark_sysnos |].
   destruct (Z.eqb (bv_unsigned (in_sysno i)) 222) eqn:E3;
@@ -2227,10 +2255,11 @@ Qed.
    - the pending SYSCALL is a grant the budget refuses:
      [alloc_budget_refused_b] on the request and the pre-state, a
      boolean each arm defines beside its spec as the negation of its
-     own budget gate.  It reads the request and the state, never the
-     answer: the arms keep an [alt] onto their errno list, so a refusal
-     is always ADMISSIBLE, and what the mark says is that at this
-     configuration nothing else is;
+     own budget gate ([munmap], which has no gate, defines the constant
+     [false]).  It reads the request and the state, never the answer:
+     the arms that consult a budget keep an [alt] onto their errno list,
+     so a refusal is always ADMISSIBLE, and what the mark says is that at
+     this configuration nothing else is;
    - some admissible outcome of the pending syscall has an effect
      whose copy-in or copy-out touches a lazy page the budget cannot
      back — the [sstep_syscall_materialization_fault] premises.
