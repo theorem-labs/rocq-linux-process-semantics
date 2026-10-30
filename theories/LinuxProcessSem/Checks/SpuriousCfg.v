@@ -33,6 +33,13 @@
       filter never removes an answer the state determines, whatever the
       list says.
     - the table itself: sorted, and every number in it dispatches.
+    - three refusals no state forces, at every input and model:
+      [munmap]'s partial-unmap -ENOMEM (alloc), [faccessat2]'s -ENOMEM
+      and -EACCES and [getdents64]'s -ENOENT (fs).  Wherever the spec
+      admits one of them it admits a non-refusal beside it, so a
+      configuration that reads the family as forced-only removes every
+      such answer and one that reads it as may-fail keeps it: forced-only
+      removes all three, [alloc_only_cfg false] only [munmap]'s.
     - run level: the exit-0 image must-exits under forced-only exactly
       as it does under may-fail, and the undecodable image refutes the
       predicate under forced-only as it does under may-fail — the two
@@ -556,3 +563,414 @@ Proof.
   cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
   rewrite undecodable_step_unmodeled. reflexivity.
 Qed.
+
+(* =========================================================================
+   PART 7 — munmap, faccessat2, getdents64: refusals no state forces
+   ========================================================================= *)
+
+(** Three arms inject a refusal beside an answer the model can always
+    give instead: [munmap]'s partial-unmap -ENOMEM ([Mmap.munmap_errnos],
+    alloc), [faccessat2]'s -ENOMEM and -EACCES ([Open.faccessat_errnos],
+    fs) and [getdents64]'s -ENOENT ([Readdir.getdents64_errnos], fs).
+    For each, this part pins the family [Run.injected_table] gives it,
+    that [Run.refusal_b] is exactly its list, and the claim no check on
+    the table itself can make: wherever the spec admits one of these
+    refusals, it admits a non-refusal at the same input and model.  So no
+    state forces them, and a configuration that reads the family as
+    forced-only removes every one ([unforced_refusal_spurious]). *)
+
+Lemma munmap_dispatch : forall i m o,
+  bv_unsigned (in_sysno i) = 215%Z ->
+  syscall_spec i m o <-> munmap_spec (in_arg i 0) (in_arg i 1) i m o.
+Proof. intros i m o E. unfold syscall_spec, dispatch. rewrite E. reflexivity. Qed.
+
+Lemma faccessat2_dispatch : forall i m o,
+  bv_unsigned (in_sysno i) = 439%Z ->
+  syscall_spec i m o
+  <-> faccessat2_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i m o.
+Proof. intros i m o E. unfold syscall_spec, dispatch. rewrite E. reflexivity. Qed.
+
+Lemma getdents64_dispatch : forall i m o,
+  bv_unsigned (in_sysno i) = 61%Z ->
+  syscall_spec i m o <-> getdents64_spec (fd32 (in_arg i 0)) (in_arg i 2) i m o.
+Proof. intros i m o E. unfold syscall_spec, dispatch. rewrite E. reflexivity. Qed.
+
+(** The family each arm is read under, at every configuration. *)
+Lemma munmap_family_off : forall cfg i,
+  bv_unsigned (in_sysno i) = 215%Z ->
+  injected_family_off cfg i = negb (sc_alloc cfg).
+Proof. intros cfg i E. unfold injected_family_off. rewrite E. reflexivity. Qed.
+
+Lemma faccessat2_family_off : forall cfg i,
+  bv_unsigned (in_sysno i) = 439%Z ->
+  injected_family_off cfg i = negb (sc_fs cfg).
+Proof. intros cfg i E. unfold injected_family_off. rewrite E. reflexivity. Qed.
+
+Lemma getdents64_family_off : forall cfg i,
+  bv_unsigned (in_sysno i) = 61%Z ->
+  injected_family_off cfg i = negb (sc_fs cfg).
+Proof. intros cfg i E. unfold injected_family_off. rewrite E. reflexivity. Qed.
+
+(** The refusals of each arm are exactly its list. *)
+Lemma munmap_refusal_b : forall i m r,
+  bv_unsigned (in_sysno i) = 215%Z ->
+  refusal_b i m r = ret_in_errnos munmap_errnos r.
+Proof. intros i m r E. unfold refusal_b. rewrite E. reflexivity. Qed.
+
+Lemma faccessat2_refusal_b : forall i m r,
+  bv_unsigned (in_sysno i) = 439%Z ->
+  refusal_b i m r = ret_in_errnos faccessat_errnos r.
+Proof. intros i m r E. unfold refusal_b. rewrite E. reflexivity. Qed.
+
+Lemma getdents64_refusal_b : forall i m r,
+  bv_unsigned (in_sysno i) = 61%Z ->
+  refusal_b i m r = ret_in_errnos getdents64_errnos r.
+Proof. intros i m r E. unfold refusal_b. rewrite E. reflexivity. Qed.
+
+(* -------------------------------------------------------------------------
+   The spec level: a non-refusal beside every refusal
+   ------------------------------------------------------------------------- *)
+
+Local Lemma get_vmmaps_bind_ok_inv {A : Type} : forall (k : VmMaps -> Sys A)
+    i m x m' evs,
+  bind get_vmmaps k i m (Ok x m' evs) -> k (m_vmmaps m) i m (Ok x m' evs).
+Proof.
+  intros k i m x m' evs H.
+  destruct H as (v & m1 & evs1 & evs2 & Hg & Hk & ->).
+  unfold get_vmmaps in Hg. injection Hg as -> -> ->. exact Hk.
+Qed.
+
+(** Case on the first [if] of the spec in [H], in [H] and in the goal
+    together: the goal is the same spec at another outcome. *)
+Local Ltac case_if H :=
+  match type of H with
+  | context [if ?b then _ else _] => let E := fresh "E" in destruct b eqn:E
+  end;
+  cbv iota in H |- *.
+
+(** [H] says the spec gave one fixed answer and changed nothing, [Hr]
+    that the answer is a refusal: they disagree by computation. *)
+Local Ltac refute_ret H Hr :=
+  exfalso; unfold err_ret, ret_only, pure in H;
+  let Heff := fresh "Heff" in
+  injection H as Heff _ _; subst; cbn [eff_ret] in Hr; vm_compute in Hr;
+  discriminate Hr.
+
+Local Ltac refute_unmodeled H :=
+  exfalso; unfold unmodeled in H; discriminate H.
+
+(** [munmap]: an -ENOMEM is admitted only by the partial arm, and that
+    arm admits the cut beside it. *)
+Lemma munmap_success_beside_refusal : forall a l i m eff m' evs,
+  munmap_spec a l i m (Ok eff m' evs) ->
+  ret_in_errnos munmap_errnos (eff_ret eff) = true ->
+  munmap_spec a l i m
+    (Ok (mkEffectU (Z_to_bv 64 0) [] []
+           [(a, Z_to_bv 64 (page_round_up_Z (bv_unsigned l)))] [] [])
+        (with_mmap_destroyed a (Z_to_bv 64 (page_round_up_Z (bv_unsigned l)))
+           (mmap_fixed_destroyed_next (m_vmmaps m) a
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned l)))) m)
+        []).
+Proof.
+  intros a l i m eff m' evs H Hr.
+  unfold munmap_spec in H |- *.
+  (* the argument gate: -EINVAL *)
+  case_if H; [refute_ret H Hr |].
+  apply get_vmmaps_bind_ok_inv in H. cbv beta zeta in H.
+  eapply bind_ok0; [apply get_vmmaps_ok |]. cbv beta zeta.
+  (* the range leaves the address space: -EINVAL *)
+  case_if H; [refute_ret H Hr |].
+  (* exactly one recorded mapping: 0 *)
+  case_if H.
+  { exfalso. unfold set_vmmaps, forget_vm_range, modify, bind, pure in H.
+    sys_destruct. cbn [eff_ret] in Hr. vm_compute in Hr. discriminate Hr. }
+  (* nothing recorded in the range: 0 *)
+  case_if H; [refute_ret H Hr |].
+  (* the partial arm, or a decline *)
+  case_if H; [| refute_unmodeled H].
+  apply alt_r. eapply bind_ok0; [apply modify_ok |]. apply pure_ok.
+Qed.
+
+(** [faccessat2]: -ENOMEM and -EACCES are admitted only by
+    [Fs.Open.access_exists_spec], which admits 0 beside them. *)
+Lemma faccessat2_success_beside_refusal :
+    forall dirfd pathp mode flags i m eff m' evs,
+  faccessat2_spec dirfd pathp mode flags i m (Ok eff m' evs) ->
+  ret_in_errnos faccessat_errnos (eff_ret eff) = true ->
+  faccessat2_spec dirfd pathp mode flags i m
+    (Ok (with_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+           (mkEffect (Z_to_bv 64 0) [] []))
+        m []).
+Proof.
+  intros dirfd pathp mode flags i m eff m' evs H Hr.
+  unfold faccessat2_spec in H |- *.
+  apply input_bind_ok_inv in H. cbv beta in H.
+  apply get_model_bind_ok_inv in H. cbv beta iota in H.
+  eapply bind_ok0; [apply input_ok |]. cbv beta.
+  eapply bind_ok0; [apply get_model_ok |]. cbv beta iota.
+  (* the mode and flag gates: two -EINVALs, then two declines *)
+  case_if H; [refute_ret H Hr |].
+  case_if H; [refute_ret H Hr |].
+  case_if H; [refute_unmodeled H |].
+  case_if H; [refute_unmodeled H |].
+  (* the pathname copy-in, around the body faccessat shares *)
+  apply record_copyins_ok_inv in H. destruct H as (core & Hcore & ->).
+  cbn [eff_ret with_copyins] in Hr.
+  apply record_copyins_ok_empty; [reflexivity |].
+  unfold faccessat_body_spec in Hcore |- *.
+  destruct (read_cstr (in_mem i) pathp) as [p | |] eqn:Hcs;
+    cbv iota in Hcore |- *; [| refute_ret Hcore Hr | refute_ret Hcore Hr].
+  (* the empty pathname: -ENOENT *)
+  case_if Hcore; [refute_ret Hcore Hr |].
+  (* a dirfd other than AT_FDCWD: declined *)
+  case_if Hcore; [refute_unmodeled Hcore |].
+  (* "." and "..": the arm that can succeed *)
+  case_if Hcore; [unfold access_exists_spec; apply alt_r; apply pure_ok |].
+  case_if Hcore; [unfold access_exists_spec; apply alt_r; apply pure_ok |].
+  (* a slash, an over-long name, an implied directory: declined *)
+  case_if Hcore; [refute_unmodeled Hcore |].
+  case_if Hcore; [refute_unmodeled Hcore |].
+  case_if Hcore; [refute_unmodeled Hcore |].
+  (* a present name: the arm that can succeed; an absent one: -ENOENT *)
+  match type of Hcore with
+  | context [match ?x with Some _ => _ | None => _ end] => destruct x eqn:Hlk
+  end;
+  cbv iota in Hcore |- *.
+  - unfold access_exists_spec. apply alt_r. apply pure_ok.
+  - refute_ret Hcore Hr.
+Qed.
+
+(** [getdents64]: -ENOENT is admitted only on a directory whose buffer
+    has no room for an entry, beside [filldir64]'s own -EINVAL. *)
+Lemma getdents64_answer_beside_refusal : forall fd count i m eff m' evs,
+  getdents64_spec fd count i m (Ok eff m' evs) ->
+  ret_in_errnos getdents64_errnos (eff_ret eff) = true ->
+  getdents64_spec fd count i m (Ok (mkEffect (errno_ret EINVAL) [] []) m []).
+Proof.
+  intros fd count i m eff m' evs H Hr.
+  unfold getdents64_spec in H |- *.
+  apply get_model_bind_ok_inv in H. cbv beta in H.
+  eapply bind_ok0; [apply get_model_ok |]. cbv beta.
+  match type of H with
+  | context [match ?x with Some _ => _ | None => _ end] => destruct x as [e |] eqn:Hfd
+  end;
+  cbv iota in H |- *; [| refute_ret H Hr].
+  (* every descriptor but a directory: -ENOTDIR *)
+  destruct e; cbv iota in H |- *; try (refute_ret H Hr).
+  (* the directory: no room for an entry, or a decline *)
+  case_if H; [apply alt_r; apply pure_ok | refute_unmodeled H].
+Qed.
+
+(* -------------------------------------------------------------------------
+   The syscall level
+   ------------------------------------------------------------------------- *)
+
+Lemma munmap_refusal_avoidable : forall i m eff m' evs,
+  bv_unsigned (in_sysno i) = 215%Z ->
+  syscall_spec i m (Ok eff m' evs) ->
+  refusal_b i m (eff_ret eff) = true ->
+  exists eff' m'' evs',
+    syscall_spec i m (Ok eff' m'' evs') /\ refusal_b i m (eff_ret eff') = false.
+Proof.
+  intros i m eff m' evs E Hspec Hr.
+  rewrite (munmap_refusal_b _ _ _ E) in Hr.
+  apply (munmap_dispatch _ _ _ E) in Hspec.
+  pose proof (munmap_success_beside_refusal _ _ _ _ _ _ _ Hspec Hr) as Hw.
+  do 3 eexists. split.
+  - apply (munmap_dispatch _ _ _ E). exact Hw.
+  - rewrite (munmap_refusal_b _ _ _ E). cbn [eff_ret]. vm_compute. reflexivity.
+Qed.
+
+Lemma faccessat2_refusal_avoidable : forall i m eff m' evs,
+  bv_unsigned (in_sysno i) = 439%Z ->
+  syscall_spec i m (Ok eff m' evs) ->
+  refusal_b i m (eff_ret eff) = true ->
+  exists eff' m'' evs',
+    syscall_spec i m (Ok eff' m'' evs') /\ refusal_b i m (eff_ret eff') = false.
+Proof.
+  intros i m eff m' evs E Hspec Hr.
+  rewrite (faccessat2_refusal_b _ _ _ E) in Hr.
+  apply (faccessat2_dispatch _ _ _ E) in Hspec.
+  pose proof (faccessat2_success_beside_refusal _ _ _ _ _ _ _ _ _ Hspec Hr) as Hw.
+  do 3 eexists. split.
+  - apply (faccessat2_dispatch _ _ _ E). exact Hw.
+  - rewrite (faccessat2_refusal_b _ _ _ E). cbn [eff_ret with_copyins].
+    vm_compute. reflexivity.
+Qed.
+
+Lemma getdents64_refusal_avoidable : forall i m eff m' evs,
+  bv_unsigned (in_sysno i) = 61%Z ->
+  syscall_spec i m (Ok eff m' evs) ->
+  refusal_b i m (eff_ret eff) = true ->
+  exists eff' m'' evs',
+    syscall_spec i m (Ok eff' m'' evs') /\ refusal_b i m (eff_ret eff') = false.
+Proof.
+  intros i m eff m' evs E Hspec Hr.
+  rewrite (getdents64_refusal_b _ _ _ E) in Hr.
+  apply (getdents64_dispatch _ _ _ E) in Hspec.
+  pose proof (getdents64_answer_beside_refusal _ _ _ _ _ _ _ Hspec Hr) as Hw.
+  do 3 eexists. split.
+  - apply (getdents64_dispatch _ _ _ E). exact Hw.
+  - rewrite (getdents64_refusal_b _ _ _ E). cbn [eff_ret]. vm_compute. reflexivity.
+Qed.
+
+(** THE CLAIM: for these three numbers, under any configuration that
+    reads the arm's family as forced-only, every refusal the spec admits
+    is spurious — so [Run.sstep_cfg] takes none of them. *)
+Theorem unforced_refusal_spurious : forall cfg i m eff m' evs,
+  In (bv_unsigned (in_sysno i)) [61; 215; 439]%Z ->
+  injected_family_off cfg i = true ->
+  syscall_spec i m (Ok eff m' evs) ->
+  refusal_b i m (eff_ret eff) = true ->
+  spurious_refusal_cfg cfg i m eff.
+Proof.
+  intros cfg i m eff m' evs Hno Hoff Hspec Hr.
+  split; [exact Hoff |]. split; [exact Hr |].
+  destruct Hno as [E | [E | [E | []]]]; symmetry in E.
+  - exact (getdents64_refusal_avoidable _ _ _ _ _ E Hspec Hr).
+  - exact (munmap_refusal_avoidable _ _ _ _ _ E Hspec Hr).
+  - exact (faccessat2_refusal_avoidable _ _ _ _ _ E Hspec Hr).
+Qed.
+
+(** ... read as the premise [Run.sstep_cfg]'s syscall steps carry: an
+    outcome the configured run keeps is not a refusal. *)
+Corollary unforced_kept_outcome_not_refusal : forall cfg i m eff m' evs,
+  In (bv_unsigned (in_sysno i)) [61; 215; 439]%Z ->
+  injected_family_off cfg i = true ->
+  syscall_spec i m (Ok eff m' evs) ->
+  ~ spurious_refusal_cfg cfg i m eff ->
+  refusal_b i m (eff_ret eff) = false.
+Proof.
+  intros cfg i m eff m' evs Hno Hoff Hspec Hns.
+  destruct (refusal_b i m (eff_ret eff)) eqn:Hr; [| reflexivity].
+  exfalso. exact (Hns (unforced_refusal_spurious _ _ _ _ _ _ Hno Hoff Hspec Hr)).
+Qed.
+
+(** The three named configurations.  Forced-only removes all three
+    refusals. *)
+Corollary unforced_refusal_spurious_forced_only : forall i m eff m' evs,
+  In (bv_unsigned (in_sysno i)) [61; 215; 439]%Z ->
+  syscall_spec i m (Ok eff m' evs) ->
+  refusal_b i m (eff_ret eff) = true ->
+  spurious_refusal_cfg forced_only_cfg i m eff.
+Proof.
+  intros i m eff m' evs Hno Hspec Hr.
+  apply (unforced_refusal_spurious _ _ _ _ m' evs Hno); [| exact Hspec | exact Hr].
+  destruct Hno as [E | [E | [E | []]]]; symmetry in E.
+  - rewrite (getdents64_family_off _ _ E). reflexivity.
+  - rewrite (munmap_family_off _ _ E). reflexivity.
+  - rewrite (faccessat2_family_off _ _ E). reflexivity.
+Qed.
+
+(** [alloc_only_cfg false] removes [munmap]'s -ENOMEM, which is not a
+    budget refusal ([Run.alloc_budget_refused_munmap]) ... *)
+Corollary munmap_refusal_spurious_alloc_only : forall i m eff m' evs,
+  bv_unsigned (in_sysno i) = 215%Z ->
+  syscall_spec i m (Ok eff m' evs) ->
+  refusal_b i m (eff_ret eff) = true ->
+  spurious_refusal_cfg (alloc_only_cfg false) i m eff.
+Proof.
+  intros i m eff m' evs E Hspec Hr.
+  apply (unforced_refusal_spurious _ _ _ _ m' evs); [| | exact Hspec | exact Hr].
+  - rewrite E. cbn [In]. right. left. reflexivity.
+  - rewrite (munmap_family_off _ _ E). reflexivity.
+Qed.
+
+(** ... and keeps the two fs refusals, as it keeps [getcwd]'s. *)
+Corollary fs_refusals_kept_alloc_only : forall i m eff,
+  In (bv_unsigned (in_sysno i)) [61; 439]%Z ->
+  ~ spurious_refusal_cfg (alloc_only_cfg false) i m eff.
+Proof.
+  intros i m eff Hno. apply spurious_refusal_family_on.
+  destruct Hno as [E | [E | []]]; symmetry in E.
+  - rewrite (getdents64_family_off _ _ E). reflexivity.
+  - rewrite (faccessat2_family_off _ _ E). reflexivity.
+Qed.
+
+(* -------------------------------------------------------------------------
+   Not vacuous: each arm admits its refusal, and there it is spurious
+   ------------------------------------------------------------------------- *)
+
+(** A hole punched in [Checks.Cases.Mm.Mmap.four_page_model]'s mapping,
+    answered -ENOMEM ([Checks.Cases.Mm.Mmap.munmap_partial_enomem]). *)
+Definition munmap_hole_i : SyscallInput :=
+  mkInput 215 [69632; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+Example munmap_hole_enomem_admitted :
+  syscall_spec munmap_hole_i four_page_model
+    (Ok (errno_eff ENOMEM) four_page_model []).
+Proof. apply check_syscall_sound_ok. check_eq. Qed.
+
+Example munmap_hole_enomem_spurious_under_forced_only :
+  spurious_refusal_cfg forced_only_cfg munmap_hole_i four_page_model
+    (errno_eff ENOMEM).
+Proof.
+  apply (unforced_refusal_spurious_forced_only _ _ _ four_page_model []);
+    [vm_compute; right; left; reflexivity
+    | exact munmap_hole_enomem_admitted
+    | vm_compute; reflexivity].
+Qed.
+
+Example munmap_hole_enomem_spurious_under_alloc_only :
+  spurious_refusal_cfg (alloc_only_cfg false) munmap_hole_i four_page_model
+    (errno_eff ENOMEM).
+Proof.
+  apply (munmap_refusal_spurious_alloc_only _ _ _ four_page_model []);
+    [vm_compute; reflexivity
+    | exact munmap_hole_enomem_admitted
+    | vm_compute; reflexivity].
+Qed.
+
+Example munmap_hole_enomem_kept_under_may_fail :
+  ~ spurious_refusal_cfg may_fail_cfg munmap_hole_i four_page_model
+      (errno_eff ENOMEM).
+Proof. apply spurious_refusal_may_fail. Qed.
+
+(** F_OK on the present name "a" of [Checks.Cases.Fs.Open.fa2_model],
+    answered -ENOMEM. *)
+Definition faccessat2_a_i : SyscallInput :=
+  mkInput 439 [AT_FDCWD; 8192; 0; 0; 0; 0] fa_mem_name_a (fun _ => None).
+
+Definition faccessat2_enomem_eff : SyscallEffect :=
+  with_copyins [(8192, 2%nat)] (errno_eff ENOMEM).
+
+Example faccessat2_a_enomem_admitted :
+  syscall_spec faccessat2_a_i fa2_model (Ok faccessat2_enomem_eff fa2_model []).
+Proof. apply check_syscall_sound_ok. check_eq. Qed.
+
+Example faccessat2_a_enomem_spurious_under_forced_only :
+  spurious_refusal_cfg forced_only_cfg faccessat2_a_i fa2_model faccessat2_enomem_eff.
+Proof.
+  apply (unforced_refusal_spurious_forced_only _ _ _ fa2_model []);
+    [vm_compute; right; right; left; reflexivity
+    | exact faccessat2_a_enomem_admitted
+    | vm_compute; reflexivity].
+Qed.
+
+Example faccessat2_a_enomem_kept_under_alloc_only :
+  ~ spurious_refusal_cfg (alloc_only_cfg false) faccessat2_a_i fa2_model
+      faccessat2_enomem_eff.
+Proof. apply fs_refusals_kept_alloc_only. vm_compute. right. left. reflexivity. Qed.
+
+(** A directory read into a zero-byte buffer
+    ([Checks.Cases.Fs.Readdir.getdents64_answers_are_inert]), answered
+    -ENOENT. *)
+Example getdents64_dir_enoent_admitted :
+  syscall_spec (getdents64_in 5 0) getdents64_model
+    (Ok (errno_eff ENOENT) getdents64_model []).
+Proof. apply check_syscall_sound_ok. check_eq. Qed.
+
+Example getdents64_dir_enoent_spurious_under_forced_only :
+  spurious_refusal_cfg forced_only_cfg (getdents64_in 5 0) getdents64_model
+    (errno_eff ENOENT).
+Proof.
+  apply (unforced_refusal_spurious_forced_only _ _ _ getdents64_model []);
+    [vm_compute; left; reflexivity
+    | exact getdents64_dir_enoent_admitted
+    | vm_compute; reflexivity].
+Qed.
+
+Example getdents64_dir_enoent_kept_under_alloc_only :
+  ~ spurious_refusal_cfg (alloc_only_cfg false) (getdents64_in 5 0)
+      getdents64_model (errno_eff ENOENT).
+Proof. apply fs_refusals_kept_alloc_only. vm_compute. left. reflexivity. Qed.
