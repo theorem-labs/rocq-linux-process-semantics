@@ -687,13 +687,71 @@ Definition pselect6_outcome (i : SyscallInput) (m : Model)
   | PsSigNone, PsToDeadline => pselect_finish i tsp PsToDeadline core
   end.
 
+(** The ranges [pselect6_outcome]'s answer has already read from user
+    memory, in the kernel's order, for [State.eff_copyins]:
+    [get_sigset_argpack] reads the 16-byte {pointer, size} pack at [sig]
+    from the syscall entry; [do_pselect] reads the 16-byte timespec at
+    [tsp] with [get_timespec64]; [core_sys_select] then copies [inp],
+    [outp] and [exp] in that order with [get_fd_set], one word each in
+    the modeled band.  [State.materialize_model_accesses] charges a first
+    touch of a lazy anonymous page by any of these reads.
+
+    A copy that FAILS records nothing and stops the walk, the convention
+    [Kernel.Signal.rt_sigprocmask_spec] states; a NULL pointer, and a set
+    pointer at [n = 0], is never dereferenced.  An -EINVAL from the
+    timespec or from the pack's size stops the walk after the reads that
+    preceded it.  The mask the pack points at is read only on the
+    [PsSigReal] arm, which the model declines, so no answered arm reads
+    through a pointer it found in memory.
+
+    This walk restates the decision order of [pselect6_outcome] and
+    [pselect_core]; a change to either must change it too, since spec,
+    checker and witness all read the ledger from here and agree with
+    each other whatever it says.  [Checks.Cases.Fs.Select] pins it
+    against fixed inputs. *)
+Fixpoint fd_set_reads (mp : word -> option byte) (n : Z) (ps : list word)
+    : list (word * nat) :=
+  match ps with
+  | [] => []
+  | p :: ps' =>
+      match read_fd_set mp p n with
+      | None => []
+      | Some _ =>
+          (if negb (pselect_touches_sets n) || w_is0 p then [] else [(p, 8%nat)])
+          ++ fd_set_reads mp n ps'
+      end
+  end.
+
+Definition pselect6_reads (i : SyscallInput) (n32 inp outp exp tsp sig : word)
+    : list (word * nat) :=
+  let mp := in_mem i in
+  match pselect_sigpack mp sig with
+  | PsSigFault => []
+  | sk =>
+      (if w_is0 sig then [] else [(sig, 16%nat)]) ++
+      match pselect_timeout mp tsp with
+      | PsToFault => []
+      | tmo =>
+          (if w_is0 tsp then [] else [(tsp, 16%nat)]) ++
+          match tmo, sk with
+          | PsToInval, _ => []
+          | _, PsSigNone =>
+              let n := nfds_signed n32 in
+              if (n <? 0)%Z then [] else fd_set_reads mp n [inp; outp; exp]
+          | _, _ => []
+          end
+      end
+  end.
+
 Definition pselect6_spec (n32 inp outp exp tsp sig : word)
     : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
   match pselect6_outcome i m n32 inp outp exp tsp sig with
   | None => unmodeled
-  | Some (r, ws) => pure (mkEffect r ws [])
+  | Some (r, ws) =>
+      pure (with_copyins (pselect6_reads i n32 inp outp exp tsp sig)
+              (mkEffect r ws []))
   end.
 
 (** ** ppoll (73)
@@ -1025,11 +1083,43 @@ Definition ppoll_outcome (i : SyscallInput) (m : Model)
       end
   end.
 
+(** The ranges [ppoll_outcome]'s answer has already read from user
+    memory, in the kernel's order, for [State.eff_copyins]: the 16-byte
+    timespec at [tsp] ([get_timespec64]), then -- past
+    [set_user_sigmask], whose only successful read is on the declined
+    [PpSigReal] arm -- the [8 * nfds] bytes of the [pollfd] array, one
+    [copy_from_user] in [do_sys_poll] for every [nfds] the modeled band
+    admits.  The same conventions as [pselect6_reads]: a failed copy
+    records nothing, and [nfds = 0] or an [nfds] over the RLIMIT_NOFILE
+    soft limit reads no array.  It restates the decision order of
+    [ppoll_outcome] and [ppoll_core], and must change with them. *)
+Definition ppoll_reads (i : SyscallInput) (m : Model)
+    (ufds nfds tsp sig sigsetsize : word) : list (word * nat) :=
+  let mp := in_mem i in
+  let n := bv_unsigned nfds in
+  match pselect_timeout mp tsp with
+  | PsToFault => []
+  | tmo =>
+      (if w_is0 tsp then [] else [(tsp, 16%nat)]) ++
+      match tmo, ppoll_sigmask mp sig sigsetsize with
+      | PsToInval, _ => []
+      | _, PpSigNone =>
+          if ((bv_unsigned (m_nofile m) <? n)%Z || (n =? 0)%Z)%bool then []
+          else match read_bytes_map mp ufds (Z_to_bv 64 (pollfd_bytes * n)) with
+               | Some _ => [(ufds, Z.to_nat (pollfd_bytes * n))]
+               | None => []
+               end
+      | _, _ => []
+      end
+  end.
+
 Definition ppoll_spec (ufds nfds tsp sig sigsetsize : word)
     : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
   match ppoll_outcome i m ufds nfds tsp sig sigsetsize with
   | None => unmodeled
-  | Some (r, ws) => pure (mkEffect r ws [])
+  | Some (r, ws) =>
+      pure (with_copyins (ppoll_reads i m ufds nfds tsp sig sigsetsize)
+              (mkEffect r ws []))
   end.
