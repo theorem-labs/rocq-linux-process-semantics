@@ -2252,10 +2252,11 @@ Qed.
    - the pending SYSCALL is a grant the budget refuses:
      [alloc_budget_refused_b] on the request and the pre-state, a
      boolean each arm defines beside its spec as the negation of its
-     own budget gate.  It reads the request and the state, never the
-     answer: the arms keep an [alt] onto their errno list, so a refusal
-     is always ADMISSIBLE, and what the mark says is that at this
-     configuration nothing else is;
+     own budget gate ([munmap], which has no gate, defines the constant
+     [false]).  It reads the request and the state, never the answer:
+     the arms that consult a budget keep an [alt] onto their errno list,
+     so a refusal is always ADMISSIBLE, and what the mark says is that at
+     this configuration nothing else is;
    - some admissible outcome of the pending syscall has an effect
      whose copy-in or copy-out touches a lazy page the budget cannot
      back — the [sstep_syscall_materialization_fault] premises.
