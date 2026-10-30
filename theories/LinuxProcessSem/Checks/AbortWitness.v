@@ -35,6 +35,14 @@
     on a valid input, so that a statement quantified over those is really
     reached.
 
+    A second image, [abrt_blocked], closes a second gap: the launch whose
+    signal mask already blocks SIGABRT.  [Run.valid_sigmask] allows that
+    launch, and on it musl's [raise(SIGABRT)] returns, so [abort] goes on
+    to its second path.  [abrt_blocked_dies_by_signal] and
+    [abrt_blocked_error_free] say that the model follows that path to the
+    death and that no execution of it reaches [Run.SError].  The last
+    part of this file says why each half needs the other.
+
     ** Why an image is needed rather than a longer argument
 
     [Equivalence.dies_by_signal] is read off [Run.behavior]'s trace set,
@@ -85,9 +93,10 @@
     [Kernel.Signal.send_sigabrt] takes the [State.with_killed] branch
     rather than the [State.with_sigabrt_pending] one.  musl's real
     [raise] blocks first and dies on the mask restore two calls later;
-    that longer path is deliberately NOT what this file
-    walks — the shortest path to a [State.KillEv] is what a non-vacuity
-    witness wants.
+    that longer path is deliberately NOT what this first image walks —
+    the shortest path to a [State.KillEv] is what a non-vacuity witness
+    wants.  The longest path, the one a launch that blocks SIGABRT takes,
+    is the second image's.
 
     ADMISSION REASON (the third at the top of [Checks/Examples.v]): what
     is pinned here is that a [Run.run]'s TRACE SET contains a
@@ -96,9 +105,10 @@
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase Fs State Monad Specs Run StackLayout MemImageType RiscvSemantics.
+  BvBase Fs State Monad Specs Run StackLayout MemImageType RiscvSemantics OmniRun.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
   ExecutableSpecs Examples Omni.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import DispatchCompute.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 Import ListNotations.
 Open Scope bv_scope.
@@ -504,4 +514,888 @@ Proof.
            (demo_entry_valid_abrt _ abrt_input_valid)
            abrt_input_valid).
   exact (abrt_dies_by_signal_scfg source_alloc_limit).
+Qed.
+
+(* =========================================================================
+   The second path: a launch that already blocks SIGABRT
+   ========================================================================= *)
+
+(** WHY A SECOND IMAGE.  [Run.valid_sigmask] forbids only the kernel-only
+    bits, so a launch whose mask blocks SIGABRT is a valid input under
+    [Run.valid_input_abort].  On such a launch musl's [raise(SIGABRT)]
+    RETURNS: [raise] restores the launch mask, which still blocks the
+    signal, so nothing is delivered.  [abort] then takes its second path
+    (src/exit/abort.c, musl 1.2.6): block every signal, install SIG_DFL
+    for SIGABRT, send it again, and unblock it.  The unblock is what kills
+    the process ([Kernel.Signal.sigmask_deliver_model]).
+
+    If the model declined any call on that path, every program that can
+    reach [abort()] would reach [Run.SError] on the same input under this
+    launch, and no error-free statement with the abort declaration could
+    be true of it.  [abrt_blocked_error_free] says that no execution of
+    the path reaches [Run.SError]; [abrt_blocked_dies_by_signal] says that
+    an execution reaches the [State.KillEv], so the first is not true
+    only because the run stops early.
+
+    ** The program
+
+    Thirty-five instructions at 0x100 and forty bytes of data after them,
+    the syscalls in musl's order:
+
+    #<pre>
+      addi a7, x0, 96      06000893   set_tid_address   (musl's __init_tp)
+      addi a0, x0, 0       00000513   tidptr = NULL
+      ecall                00000073   -> a0 = the tid the model chose
+      fmv.d.x f8, a0       f2050453   keep the tid
+      addi a7, x0, 135     08700893   rt_sigprocmask    (raise: __block_app_sigs)
+      addi a0, x0, 0       00000513   SIG_BLOCK
+      addi a1, x0, 0x190   19000593   &app_mask
+      addi a2, sp, -8      ff810613   &set
+      addi a3, x0, 8       00800693   _NSIG/8
+      ecall                00000073   -> set = the launch mask
+      fmv.x.d a0, f8       e2040553   the tid
+      addi a1, x0, 6       00600593   SIGABRT
+      addi a7, x0, 130     08200893   tkill             (raise)
+      ecall                00000073   -> pending, because blocked
+      addi a7, x0, 135     08700893   rt_sigprocmask    (raise: __restore_sigs)
+      addi a0, x0, 2       00200513   SIG_SETMASK
+      addi a1, sp, -8      ff810593   &set
+      addi a2, x0, 0       00000613   NULL
+      ecall                00000073   -> the launch mask: still blocked
+      addi a0, x0, 0       00000513   SIG_BLOCK         (abort: __block_all_sigs)
+      addi a1, x0, 0x198   19800593   &all_mask
+      ecall                00000073
+      addi a7, x0, 134     08600893   rt_sigaction      (abort)
+      addi a0, x0, 6       00600513   SIGABRT
+      addi a1, x0, 0x1a8   1a800593   &(struct k_sigaction){.handler = SIG_DFL}
+      ecall                00000073   -> 0               (a2 = NULL, a3 = 8)
+      fmv.x.d a0, f8       e2040553   the tid
+      addi a1, x0, 6       00600593   SIGABRT
+      addi a7, x0, 130     08200893   tkill             (abort)
+      ecall                00000073   -> still pending
+      addi a7, x0, 135     08700893   rt_sigprocmask    (abort)
+      addi a0, x0, 1       00100513   SIG_UNBLOCK
+      addi a1, x0, 0x1a0   1a000593   &{1 << (SIGABRT - 1)}
+      ecall                00000073   -> killed
+      ebreak               00100073   musl's a_crash(): never reached
+
+      0x190  app_mask  0xfffffffc7fffffff   (src/signal/block.c)
+      0x198  all_mask  0xffffffffffffffff
+      0x1a0  1 << 5
+      0x1a8  32 zero bytes: musl's struct k_sigaction with handler SIG_DFL
+    #</pre>
+
+    THE TID IS KEPT IN f8, NOT IN AN INTEGER REGISTER, and that is for
+    the proof, not for the model.  [Kernel.Fork.set_tid_address_spec]
+    lets the tid be any value in its window, so the error-free half is
+    proved for a tid [t] that is a variable.  [fmv.d.x] and [fmv.x.d]
+    move a register's bits unchanged ([Riscv.Sem]), where an integer copy
+    is an addition; so [tkill]'s first argument is [t] itself, and the
+    proof needs only that [Syscall.pid32] does not change a [t] in the
+    window ([blk_tid_pid32]).  musl reads the tid from memory instead;
+    the syscalls and their arguments are the same.
+
+    THE LAUNCH: [abrt_input] with [State.in_sigmask] = 1 << 5, which is
+    SIGABRT's bit and nothing else. *)
+Definition abrt_blocked_segment : Segment := {|
+  seg_base := 0x100;
+  seg_size := 200;
+  seg_perms := "r-x"%string;
+  seg_bytes := ["930800061305000073000000530405f2930870081305000093050019130681ff9306800073000000530504e29305600093082008730000009308700813052000930581ff130600007300000013050000930580197300000093086008130560009305801a73000000530504e293056000930820087300000093087008130510009305001a730000007300100000000000ffffff7ffcffffffffffffffffffffff20000000000000000000000000000000000000000000000000000000000000000000000000000000"%pstring]
+|}.
+Definition abrt_blocked_segments : list Segment := [abrt_blocked_segment].
+Definition abrt_blocked : Image := mkImage abrt_blocked_segments 0x100 demo_phdrs.
+
+Definition abrt_blocked_input : ProcInput :=
+  mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
+    default_nofile (Z_to_bv 64 32) demo_hwcap true Sv48.
+
+Example abrt_blocked_input_blocks_sigabrt :
+  sigabrt_blocked (in_sigmask abrt_blocked_input) = true
+  /\ in_abort_terminal abrt_blocked_input = true.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** The launch is valid under the abort declaration: the mask has no
+    kernel-only bit, which is all [Run.valid_sigmask] asks. *)
+Example abrt_blocked_input_valid : valid_input_abort abrt_blocked_input.
+Proof.
+  unfold valid_input_abort, abrt_blocked_input, valid_argv, valid_envp.
+  cbn [mkProcInput in_argv in_envp in_fs].
+  repeat split; cbn;
+    try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
+    try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
+    try (unfold valid_hwcap; left; reflexivity);
+    try lia; try reflexivity;
+    repeat first [ apply Forall_nil | apply Forall_cons | split
+                 | cbn; lia | reflexivity | intros [] ].
+  all: try valid_urandom_default.
+Qed.
+
+(** The entry is [Checks.Examples.demo_entry] again: this segment, too,
+    ends inside the first page. *)
+Example demo_entry_valid_abrt_blocked : forall inp,
+  valid_input_abort inp -> valid_entry abrt_blocked demo_entry inp.
+Proof.
+  intros inp Hvalid.
+  rewrite (valid_entry_sv48 _ _ _ (valid_input_abort_va_size _ Hvalid)).
+  destruct Hvalid as (Hargv & Henvp & _).
+  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
+  cbn [abrt_blocked demo_entry].
+  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
+  rewrite Z_to_bv_unsigned, bv_wrap_small
+    by (unfold bv_modulus; cbn; lia).
+  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
+  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+Qed.
+
+(** ** The legs between the syscalls
+
+    A leg is the run of instructions from one syscall's successor to the
+    next [ecall].  As above, the memory of every state on a leg is the
+    leg's first state's, because no instruction of this image loads or
+    stores; [blk_leg ms k] is the state [k] instructions into the leg
+    that starts at [ms]. *)
+Definition blk_legk (ms : machine_state) (k : nat) : machine_state :=
+  match run_steps k abrt_blocked_segments ms with
+  | Some ms' => ms'
+  | None => ms
+  end.
+Definition blk_leg (ms : machine_state) (k : nat) : machine_state :=
+  with_mem (blk_legk ms k) (ms_mem ms).
+
+Lemma blk_leg_0 : forall ms, blk_leg ms 0 = ms.
+Proof. intros ms. exact (eq_sym (with_mem_eta ms)). Qed.
+
+(** What [vm_compute] proves for each instruction of a leg, with the
+    memory a variable: the instruction is not an [ecall] already pending,
+    and it steps to the next state. *)
+Definition leg_ok (ms : machine_state) (k : nat) : Prop :=
+  ms_svc_pending (blk_legk ms k) = None
+  /\ forall mem, RiscvSemantics.step abrt_blocked_segments (with_mem (blk_legk ms k) mem)
+                 = MachineOk (with_mem (blk_legk ms (S k)) mem).
+
+Lemma leg_instr : forall ms model k,
+  m_halted model = None -> m_vm_lazy model = [] -> leg_ok ms k ->
+  sstep abrt_blocked_segments (mkCfg (blk_leg ms k) model) []
+    (SNext (mkCfg (blk_leg ms (S k)) model))
+  /\ (forall evs st, sstep abrt_blocked_segments (mkCfg (blk_leg ms k) model) evs st ->
+        evs = [] /\ st = SNext (mkCfg (blk_leg ms (S k)) model)).
+Proof.
+  intros ms model k Hh Hlazy [Hsvc Hstep]. unfold blk_leg. split.
+  - apply sstep_instr; [exact Hh | exact Hsvc |].
+    rewrite (mi_account_step_no_lazy _ _ _ Hlazy), Hstep. reflexivity.
+  - apply sstep_instr_only; [exact Hlazy | exact Hsvc | apply Hstep].
+Qed.
+
+Lemma exec_leg : forall ms model n (Q : post),
+  m_halted model = None -> m_vm_lazy model = [] ->
+  (forall k, (k < n)%nat -> leg_ok ms k) ->
+  exec abrt_blocked_segments (mkCfg (blk_leg ms n) model) Q ->
+  exec abrt_blocked_segments (mkCfg (blk_leg ms 0) model) Q.
+Proof.
+  intros ms model n Q Hh Hlazy Hok Hend.
+  assert (H : forall d k, (k + d = n)%nat ->
+                exec abrt_blocked_segments (mkCfg (blk_leg ms k) model) Q).
+  { induction d as [|d IH]; intros k Hk.
+    - replace k with n by lia. exact Hend.
+    - destruct (leg_instr ms model k Hh Hlazy (Hok k ltac:(lia))) as [Hs Ho].
+      eapply exec_step_only; [exact Hs | exact Ho |].
+      exact (IH (S k) ltac:(lia)). }
+  exact (H n 0%nat eq_refl).
+Qed.
+
+(** ** The syscalls
+
+    Each syscall on the path has exactly one outcome: the checker accepts
+    one effect, and two accepted effects are equal.  The second half is
+    [check_*_det] below, read off the checkers' arms; nothing in it is
+    about this image. *)
+Lemma check_ret_only_det : forall e1 e2 r m evs m1 v1 m2 v2,
+  check_ret_only e1 r m evs = CheckOk m1 v1 ->
+  check_ret_only e2 r m evs = CheckOk m2 v2 -> e1 = e2 /\ m1 = m2 /\ v1 = v2.
+Proof.
+  intros e1 e2 r m evs m1 v1 m2 v2 H1 H2.
+  apply check_ret_only_ok_iff in H1, H2.
+  destruct H1 as (-> & -> & ->), H2 as (-> & -> & ->). repeat split.
+Qed.
+
+Lemma check_ret_only_copyins_det : forall reads e1 e2 r m evs m1 v1 m2 v2,
+  check_ret_only_copyins reads e1 r m evs = CheckOk m1 v1 ->
+  check_ret_only_copyins reads e2 r m evs = CheckOk m2 v2 ->
+  e1 = e2 /\ m1 = m2 /\ v1 = v2.
+Proof.
+  intros reads e1 e2 r m evs m1 v1 m2 v2 H1 H2.
+  apply check_ret_only_copyins_ok_iff in H1, H2.
+  destruct H1 as (-> & -> & ->), H2 as (-> & -> & ->). repeat split.
+Qed.
+
+Lemma check_write_oset_det : forall i oset old e1 e2 m m1 v1 m2 v2,
+  check_write_oset i oset old e1 m = CheckOk m1 v1 ->
+  check_write_oset i oset old e2 m = CheckOk m2 v2 ->
+  e1 = e2 /\ m1 = m2 /\ v1 = v2.
+Proof.
+  intros i oset old e1 e2 m m1 v1 m2 v2 H1 H2.
+  unfold check_write_oset in H1, H2.
+  destruct (negb (access_okb oset NSIG_BYTES)); cbv beta iota in H1, H2.
+  { eapply check_ret_only_det; eassumption. }
+  destruct (read_bytes_map (in_wmem i) oset (Z_to_bv 64 NSIG_BYTES));
+    cbv beta iota in H1, H2; [|discriminate H1].
+  apply check_one_write_ok_iff in H1, H2.
+  destruct H1 as (-> & -> & ->), H2 as (-> & -> & ->). repeat split.
+Qed.
+
+Lemma check_write_oset_copyins_det : forall reads i oset old e1 e2 m m1 v1 m2 v2,
+  check_write_oset_copyins reads i oset old e1 m = CheckOk m1 v1 ->
+  check_write_oset_copyins reads i oset old e2 m = CheckOk m2 v2 ->
+  e1 = e2 /\ m1 = m2 /\ v1 = v2.
+Proof.
+  intros reads i oset old e1 e2 m m1 v1 m2 v2 H1 H2.
+  unfold check_write_oset_copyins in H1, H2.
+  destruct (check_write_oset i oset old (clear_copyins e1) m) eqn:W1;
+    try discriminate H1.
+  destruct (access_ranges_eqb (eff_copyins e1) reads) eqn:C1; [|discriminate H1].
+  injection H1 as <- <-.
+  destruct (check_write_oset i oset old (clear_copyins e2) m) eqn:W2;
+    try discriminate H2.
+  destruct (access_ranges_eqb (eff_copyins e2) reads) eqn:C2; [|discriminate H2].
+  injection H2 as <- <-.
+  edestruct check_write_oset_det as (Hc & Hm & Hv); [exact W1 | exact W2 |].
+  apply access_ranges_eqb_eq in C1, C2.
+  split; [| split; assumption].
+  destruct e1 as [r1 w1 z1 u1 c1 i1], e2 as [r2 w2 z2 u2 c2 i2].
+  cbn in C1, C2. unfold clear_copyins, with_copyins in Hc. cbn in Hc.
+  injection Hc as -> -> -> -> ->. subst. reflexivity.
+Qed.
+
+Lemma check_send_sigabrt_forced : forall eff m m' evs,
+  check_send_sigabrt eff m = CheckOk m' evs ->
+  eff = mkEffect (Z_to_bv 64 0) [] [] /\ evs = []
+  /\ m' = (if sigabrt_blocked (m_sigmask m) then with_sigabrt_pending m
+           else with_killed (Z_to_bv 64 SIGABRT) m).
+Proof.
+  intros [ret ws zs us cs ci] m m' evs H. unfold check_send_sigabrt in H.
+  destruct ws as [|? ?]; [|discriminate H].
+  destruct zs as [|? ?]; [|discriminate H].
+  destruct us as [|? ?]; [|discriminate H].
+  destruct cs as [|? ?]; [|discriminate H].
+  destruct ci as [|? ?]; [|discriminate H].
+  cbv beta iota in H.
+  destruct (negb (bv_eqb ret (Z_to_bv 64 0))) eqn:E; [discriminate H|].
+  apply negb_false_iff, bv_eqb_eq in E. subst ret.
+  destruct (sigabrt_blocked (m_sigmask m)); injection H as <- <-;
+    repeat split.
+Qed.
+
+Lemma check_send_sigabrt_det : forall e1 e2 m m1 v1 m2 v2,
+  check_send_sigabrt e1 m = CheckOk m1 v1 ->
+  check_send_sigabrt e2 m = CheckOk m2 v2 -> e1 = e2 /\ m1 = m2 /\ v1 = v2.
+Proof.
+  intros e1 e2 m m1 v1 m2 v2 H1 H2.
+  apply check_send_sigabrt_forced in H1, H2.
+  destruct H1 as (-> & -> & ->), H2 as (-> & -> & ->). repeat split.
+Qed.
+
+(** Split every [if] two acceptor runs share, then close the leaf. *)
+Ltac det_ifs :=
+  repeat match goal with
+         | H : context [if ?c then _ else _] |- _ => destruct c; cbv beta iota in *
+         end.
+Ltac det_leaf :=
+  first [ discriminate
+        | eapply check_ret_only_det; eassumption
+        | eapply check_ret_only_copyins_det; eassumption
+        | eapply check_write_oset_det; eassumption
+        | eapply check_write_oset_copyins_det; eassumption
+        | eapply check_send_sigabrt_det; eassumption ].
+
+Lemma check_rt_sigprocmask_det : forall i how nset oset ss e1 e2 m m1 v1 m2 v2,
+  check_rt_sigprocmask i how nset oset ss e1 m = CheckOk m1 v1 ->
+  check_rt_sigprocmask i how nset oset ss e2 m = CheckOk m2 v2 ->
+  e1 = e2 /\ m1 = m2 /\ v1 = v2.
+Proof.
+  intros i how nset oset ss e1 e2 m m1 v1 m2 v2 H1 H2.
+  unfold check_rt_sigprocmask in H1, H2. cbv zeta in H1, H2.
+  det_ifs. all: try det_leaf.
+  all: destruct (sigset_at (in_mem i) nset); cbv beta iota in *; det_ifs; det_leaf.
+Qed.
+
+Lemma check_rt_sigaction_det : forall i sig act oact ss e1 e2 m m1 v1 m2 v2,
+  check_rt_sigaction i sig act oact ss e1 m = CheckOk m1 v1 ->
+  check_rt_sigaction i sig act oact ss e2 m = CheckOk m2 v2 ->
+  e1 = e2 /\ m1 = m2 /\ v1 = v2.
+Proof.
+  intros i sig act oact ss e1 e2 m m1 v1 m2 v2 H1 H2.
+  unfold check_rt_sigaction in H1, H2.
+  det_ifs. all: try det_leaf.
+  all: destruct (sigaction_flags (in_mem i) act); cbv beta iota in *; det_ifs; det_leaf.
+Qed.
+
+Lemma check_tkill_det : forall pid sig e1 e2 m m1 v1 m2 v2,
+  check_tkill pid sig e1 m = CheckOk m1 v1 ->
+  check_tkill pid sig e2 m = CheckOk m2 v2 -> e1 = e2 /\ m1 = m2 /\ v1 = v2.
+Proof.
+  intros pid sig e1 e2 m m1 v1 m2 v2 H1 H2.
+  unfold check_tkill, check_tkill_self in H1, H2.
+  det_ifs. all: try det_leaf.
+  all: destruct (m_tid m); cbv beta iota in *; det_ifs; det_leaf.
+Qed.
+
+Lemma check_syscall_tkill_at : forall i eff m,
+  bv_unsigned (in_sysno i) = 130%Z ->
+  check_syscall i eff m = check_tkill (pid32 (in_arg i 0)) (sig32 (in_arg i 1)) eff m.
+Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
+
+(** A syscall whose checker accepts one effect: the transition, and that
+    it is the only one.  [Run.sstep_exit] and [Run.sstep_killed] are
+    ruled out by the post-model, and [Run.sstep_syscall_unmodeled] by
+    the checker's acceptance. *)
+Lemma syscall_step : forall ms model x8 eff0 m0,
+  m_halted model = None -> ms_svc_pending ms = Some x8 ->
+  check_syscall (sys_input abrt_blocked_segments ms x8) eff0 model = CheckOk m0 [] ->
+  (forall eff m' evs,
+     check_syscall (sys_input abrt_blocked_segments ms x8) eff model = CheckOk m' evs ->
+     eff = eff0 /\ m' = m0 /\ evs = []) ->
+  m_halted m0 = None -> m_killed m0 = None -> m_vm_lazy m0 = [] ->
+  sstep abrt_blocked_segments (mkCfg ms model) []
+    (SNext (mkCfg (blk_leg (advance_past_svc (apply_effect ms eff0)) 0) m0))
+  /\ (forall evs st, sstep abrt_blocked_segments (mkCfg ms model) evs st ->
+        evs = [] /\
+        st = SNext (mkCfg (blk_leg (advance_past_svc (apply_effect ms eff0)) 0) m0)).
+Proof.
+  intros ms model x8 eff0 m0 Hh Hsvc Hchk Hdet Hh0 Hk0 Hlazy.
+  rewrite blk_leg_0. split.
+  - eapply sstep_syscall;
+      [ exact Hh | exact Hsvc | apply check_syscall_ok_iff; exact Hchk
+      | exact Hh0 | apply materialize_model_accesses_no_lazy; exact Hlazy ].
+  - intros evs st Hss. inversion Hss; subst; try congruence.
+    all: match goal with
+         | H : ms_svc_pending _ = Some ?y |- _ => rewrite Hsvc in H; injection H as <-
+         end.
+    all: first
+      [ match goal with
+        | Hs : syscall_spec _ _ Unmodeled |- _ =>
+            pose proof (check_syscall_complete_unmodeled _ _ eff0 Hs) as Hc;
+            rewrite Hchk in Hc; discriminate Hc
+        end
+      | match goal with
+        | Hs : syscall_spec _ _ (Ok _ _ _) |- _ =>
+            apply check_syscall_complete_ok in Hs;
+            destruct (Hdet _ _ _ Hs) as (-> & -> & ->)
+        end;
+        first
+          [ match goal with
+            | Hm : materialize_model_accesses _ _ = Some _ |- _ =>
+                rewrite (materialize_model_accesses_no_lazy _ _ Hlazy) in Hm;
+                injection Hm as <-; split; reflexivity
+            end
+          | match goal with
+            | Hm : materialize_model_accesses _ _ = None |- _ =>
+                rewrite (materialize_model_accesses_no_lazy _ _ Hlazy) in Hm;
+                discriminate Hm
+            end
+          | congruence ] ].
+Qed.
+
+(** ... and the one whose accepted effect kills the process. *)
+Lemma syscall_kill_step : forall ms model x8 eff0 m0 sig,
+  m_halted model = None -> ms_svc_pending ms = Some x8 ->
+  check_syscall (sys_input abrt_blocked_segments ms x8) eff0 model = CheckOk m0 [] ->
+  (forall eff m' evs,
+     check_syscall (sys_input abrt_blocked_segments ms x8) eff model = CheckOk m' evs ->
+     eff = eff0 /\ m' = m0 /\ evs = []) ->
+  m_killed m0 = Some sig -> m_halted m0 <> None ->
+  sstep abrt_blocked_segments (mkCfg ms model) [KillEv sig (m_fs m0)] (SNext (mkCfg ms m0))
+  /\ (forall evs st, sstep abrt_blocked_segments (mkCfg ms model) evs st ->
+        evs = [KillEv sig (m_fs m0)] /\ st = SNext (mkCfg ms m0)).
+Proof.
+  intros ms model x8 eff0 m0 sig Hh Hsvc Hchk Hdet Hk0 Hh0. split.
+  - change [KillEv sig (m_fs m0)] with ([] ++ [KillEv sig (m_fs m0)]).
+    eapply sstep_killed;
+      [ exact Hh | exact Hsvc | apply check_syscall_ok_iff; exact Hchk | exact Hk0 ].
+  - intros evs st Hss. inversion Hss; subst; try congruence.
+    all: match goal with
+         | H : ms_svc_pending _ = Some ?y |- _ => rewrite Hsvc in H; injection H as <-
+         end.
+    all: first
+      [ match goal with
+        | Hs : syscall_spec _ _ Unmodeled |- _ =>
+            pose proof (check_syscall_complete_unmodeled _ _ eff0 Hs) as Hc;
+            rewrite Hchk in Hc; discriminate Hc
+        end
+      | match goal with
+        | Hs : syscall_spec _ _ (Ok _ _ _) |- _ =>
+            apply check_syscall_complete_ok in Hs;
+            destruct (Hdet _ _ _ Hs) as (-> & -> & ->)
+        end;
+        first [ congruence | split; [cbn [app]; congruence | reflexivity] ] ].
+Qed.
+
+(** Bounds a tid from [Kernel.Fork.set_tid_address_spec]'s window
+    satisfies, which [tkill]'s checks read. *)
+Lemma blk_tid_pid32 : forall t,
+  (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z -> pid32 t = t.
+Proof.
+  intros t [H1 H2]. unfold pid32, abi_low32.
+  unfold PID_MAX_ENVELOPE in H2. change (2 ^ 22)%Z with 4194304%Z in H2.
+  rewrite Z.mod_small by (change (2 ^ 32)%Z with 4294967296%Z; lia).
+  apply Z_to_bv_bv_unsigned.
+Qed.
+
+Lemma blk_tid_positive : forall t,
+  (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z -> pid_positive t = true.
+Proof.
+  intros t [H1 H2]. unfold pid_positive. cbv zeta.
+  unfold PID_MAX_ENVELOPE in H2. change (2 ^ 22)%Z with 4194304%Z in H2.
+  change (2 ^ 31)%Z with 2147483648%Z.
+  apply andb_true_iff. split; [apply Z.leb_le | apply Z.ltb_lt]; lia.
+Qed.
+
+Ltac blk_check_eq :=
+  vm_compute;
+  repeat first [reflexivity | (apply bv_eq; reflexivity) | progress f_equal].
+
+Ltac blk_svc :=
+  vm_compute; first [reflexivity | f_equal; apply bv_eq; reflexivity].
+
+(** ** The states and models along the path
+
+    [blk_L1 t] .. [blk_L7 t] are the first states of the legs after the
+    first seven syscalls, for the tid [t]; [blk_m1 t lim] .. [blk_m8 t lim]
+    are the models after them.  The masks are what [sigmask_strip] and
+    [sigmask_apply] give: [app_mask] and [all_mask] lose SIGKILL's and
+    SIGSTOP's bits (1 << 8, 1 << 18). *)
+Definition blk_L0 : machine_state :=
+  init_machine_state abrt_blocked_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
+    demo_draw
+    (in_argv abrt_blocked_input) (in_envp abrt_blocked_input)
+    (in_uid abrt_blocked_input) (in_hwcap abrt_blocked_input).
+
+Definition blk_m0 (lim : Z) : Model :=
+  init_model (segments_reserved abrt_blocked_segments) (Z_to_bv 64 0x1000)
+    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) lim abrt_blocked_input.
+Definition blk_c (lim : Z) : config := mkCfg (blk_leg blk_L0 0) (blk_m0 lim).
+
+Lemma blk_config : forall lim,
+  init_config abrt_blocked_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
+    (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw lim abrt_blocked_input
+  = blk_c lim.
+Proof. intros lim. unfold blk_c. rewrite blk_leg_0. reflexivity. Qed.
+
+(** The effects: the old mask written to [set] (eight bytes, 1 << 5),
+    and the eight bytes of each [sigset_t] the kernel read. *)
+Definition blk_e2 : SyscallEffect :=
+  with_copyins [(Z_to_bv 64 0x190, 8%nat)]
+    (mkEffect (Z_to_bv 64 0) [(Z_to_bv 64 0x7fff7ffffff8, Z_to_le_bytes 8 32)] []).
+Definition blk_e0 : SyscallEffect := mkEffect (Z_to_bv 64 0) [] [].
+Definition blk_e4 : SyscallEffect :=
+  with_copyins [(Z_to_bv 64 0x7fff7ffffff8, 8%nat)] (mkEffect (Z_to_bv 64 0) [] []).
+Definition blk_e5 : SyscallEffect :=
+  with_copyins [(Z_to_bv 64 0x198, 8%nat)] (mkEffect (Z_to_bv 64 0) [] []).
+Definition blk_e8 : SyscallEffect :=
+  with_copyins [(Z_to_bv 64 0x1a0, 8%nat)] (mkEffect (Z_to_bv 64 0) [] []).
+
+Definition blk_L1 (t : word) : machine_state :=
+  advance_past_svc (apply_effect (blk_leg blk_L0 3) (mkEffect t [] [])).
+Definition blk_L2 (t : word) : machine_state :=
+  advance_past_svc (apply_effect (blk_leg (blk_L1 t) 7) blk_e2).
+Definition blk_L3 (t : word) : machine_state :=
+  advance_past_svc (apply_effect (blk_leg (blk_L2 t) 4) blk_e0).
+Definition blk_L4 (t : word) : machine_state :=
+  advance_past_svc (apply_effect (blk_leg (blk_L3 t) 5) blk_e4).
+Definition blk_L5 (t : word) : machine_state :=
+  advance_past_svc (apply_effect (blk_leg (blk_L4 t) 3) blk_e5).
+Definition blk_L6 (t : word) : machine_state :=
+  advance_past_svc (apply_effect (blk_leg (blk_L5 t) 4) blk_e0).
+Definition blk_L7 (t : word) : machine_state :=
+  advance_past_svc (apply_effect (blk_leg (blk_L6 t) 4) blk_e0).
+
+Definition blk_m1 (t : word) (lim : Z) : Model := with_tid t (blk_m0 lim).
+(** SIG_BLOCK app_mask over the launch mask 1 << 5. *)
+Definition blk_m2 (t : word) (lim : Z) : Model :=
+  with_sigmask (Z_to_bv 64 0xfffffffc7ffbfeff) (blk_m1 t lim).
+(** tkill with SIGABRT blocked: pending. *)
+Definition blk_m3 (t : word) (lim : Z) : Model := with_sigabrt_pending (blk_m2 t lim).
+(** SIG_SETMASK back to the launch mask, which still blocks it. *)
+Definition blk_m4 (t : word) (lim : Z) : Model :=
+  with_sigmask (Z_to_bv 64 32) (blk_m3 t lim).
+(** SIG_BLOCK all_mask; [rt_sigaction] leaves this model as it is. *)
+Definition blk_m5 (t : word) (lim : Z) : Model :=
+  with_sigmask (Z_to_bv 64 0xfffffffffffbfeff) (blk_m4 t lim).
+(** tkill again: pending already. *)
+Definition blk_m7 (t : word) (lim : Z) : Model := with_sigabrt_pending (blk_m5 t lim).
+(** SIG_UNBLOCK SIGABRT: the pending signal is delivered, and kills. *)
+Definition blk_m8 (t : word) (lim : Z) : Model :=
+  with_killed (Z_to_bv 64 SIGABRT)
+    (with_sigmask (Z_to_bv 64 0xfffffffffffbfedf) (blk_m7 t lim)).
+
+Lemma blk_leg0_ok : forall k, (k < 3)%nat -> leg_ok blk_L0 k.
+Proof.
+  intros k Hk.
+  do 3 (destruct k as [| k];
+        [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
+  lia.
+Qed.
+Lemma blk_leg1_ok : forall t k, (k < 7)%nat -> leg_ok (blk_L1 t) k.
+Proof.
+  intros t k Hk.
+  do 7 (destruct k as [| k];
+        [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
+  lia.
+Qed.
+Lemma blk_leg2_ok : forall t k, (k < 4)%nat -> leg_ok (blk_L2 t) k.
+Proof.
+  intros t k Hk.
+  do 4 (destruct k as [| k];
+        [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
+  lia.
+Qed.
+Lemma blk_leg3_ok : forall t k, (k < 5)%nat -> leg_ok (blk_L3 t) k.
+Proof.
+  intros t k Hk.
+  do 5 (destruct k as [| k];
+        [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
+  lia.
+Qed.
+Lemma blk_leg4_ok : forall t k, (k < 3)%nat -> leg_ok (blk_L4 t) k.
+Proof.
+  intros t k Hk.
+  do 3 (destruct k as [| k];
+        [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
+  lia.
+Qed.
+Lemma blk_leg5_ok : forall t k, (k < 4)%nat -> leg_ok (blk_L5 t) k.
+Proof.
+  intros t k Hk.
+  do 4 (destruct k as [| k];
+        [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
+  lia.
+Qed.
+Lemma blk_leg6_ok : forall t k, (k < 4)%nat -> leg_ok (blk_L6 t) k.
+Proof.
+  intros t k Hk.
+  do 4 (destruct k as [| k];
+        [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
+  lia.
+Qed.
+Lemma blk_leg7_ok : forall t k, (k < 4)%nat -> leg_ok (blk_L7 t) k.
+Proof.
+  intros t k Hk.
+  do 4 (destruct k as [| k];
+        [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
+  lia.
+Qed.
+
+(** set_tid_address: the one branching step.  Every tid in the window is
+    an outcome, and nothing else is. *)
+Lemma blk_sc1 : forall lim,
+  sstep abrt_blocked_segments (mkCfg (blk_leg blk_L0 3) (blk_m0 lim)) []
+    (SNext (mkCfg (blk_leg (blk_L1 abort_tid) 0) (blk_m1 abort_tid lim)))
+  /\ (forall evs st,
+        sstep abrt_blocked_segments (mkCfg (blk_leg blk_L0 3) (blk_m0 lim)) evs st ->
+        evs = [] /\ exists t, (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z
+                             /\ st = SNext (mkCfg (blk_leg (blk_L1 t) 0) (blk_m1 t lim))).
+Proof.
+  intros lim.
+  assert (Hsvc : ms_svc_pending (blk_leg blk_L0 3) = Some (Z_to_bv 64 96)) by blk_svc.
+  assert (Hchk : forall t, (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z ->
+            check_syscall (sys_input abrt_blocked_segments (blk_leg blk_L0 3) (Z_to_bv 64 96))
+              (mkEffect t [] []) (blk_m0 lim) = CheckOk (blk_m1 t lim) []).
+  { intros t [H1 H2]. rewrite check_syscall_set_tid_address by reflexivity.
+    unfold check_set_tid_address. change (m_tid (blk_m0 lim)) with (@None word).
+    cbv beta iota.
+    rewrite (proj2 (Z.ltb_lt _ _) H1), (proj2 (Z.ltb_lt _ _) H2). reflexivity. }
+  assert (Habort : (0 < bv_unsigned abort_tid < PID_MAX_ENVELOPE)%Z)
+    by (vm_compute; split; reflexivity).
+  assert (Hforced : forall eff m' evs,
+            check_syscall (sys_input abrt_blocked_segments (blk_leg blk_L0 3) (Z_to_bv 64 96))
+              eff (blk_m0 lim) = CheckOk m' evs ->
+            exists t, (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z
+                      /\ eff = mkEffect t [] [] /\ m' = blk_m1 t lim /\ evs = []).
+  { intros [ret ws zs us cs ci] m' evs H.
+    rewrite check_syscall_set_tid_address in H by reflexivity.
+    unfold check_set_tid_address in H.
+    destruct ws as [|? ?]; [|discriminate H].
+    destruct zs as [|? ?]; [|discriminate H].
+    destruct us as [|? ?]; [|discriminate H].
+    destruct cs as [|? ?]; [|discriminate H].
+    destruct ci as [|? ?]; [|discriminate H].
+    change (m_tid (blk_m0 lim)) with (@None word) in H. cbv beta iota in H.
+    destruct ((0 <? bv_unsigned ret)%Z && (bv_unsigned ret <? PID_MAX_ENVELOPE)%Z) eqn:Eb;
+      [|discriminate H].
+    injection H as <- <-.
+    apply andb_true_iff in Eb as [E1 E2]. apply Z.ltb_lt in E1, E2.
+    exists ret. repeat split; assumption. }
+  split.
+  - rewrite blk_leg_0.
+    eapply sstep_syscall;
+      [ reflexivity | exact Hsvc | apply check_syscall_ok_iff; exact (Hchk _ Habort)
+      | reflexivity | apply materialize_model_accesses_no_lazy; reflexivity ].
+  - intros evs st Hss. inversion Hss; subst; try congruence.
+    all: match goal with
+         | H : ms_svc_pending _ = Some ?y |- _ => rewrite Hsvc in H; injection H as <-
+         end.
+    all: first
+      [ match goal with
+        | Hs : syscall_spec _ _ Unmodeled |- _ =>
+            pose proof (check_syscall_complete_unmodeled _ _ (mkEffect abort_tid [] []) Hs)
+              as Hc;
+            rewrite (Hchk _ Habort) in Hc; discriminate Hc
+        end
+      | match goal with
+        | Hs : syscall_spec _ _ (Ok _ _ _) |- _ =>
+            apply check_syscall_complete_ok in Hs;
+            destruct (Hforced _ _ _ Hs) as (t & Ht & -> & -> & ->)
+        end;
+        first
+          [ match goal with
+            | Hm : materialize_model_accesses _ _ = Some _ |- _ =>
+                rewrite materialize_model_accesses_no_lazy in Hm by reflexivity;
+                injection Hm as <-; split; [reflexivity|];
+                exists t; split; [exact Ht | rewrite blk_leg_0; reflexivity]
+            end
+          | match goal with
+            | Hm : materialize_model_accesses _ _ = None |- _ =>
+                rewrite materialize_model_accesses_no_lazy in Hm by reflexivity;
+                discriminate Hm
+            end
+          | match goal with
+            | Hx : m_halted (blk_m1 _ _) = Some _ |- _ =>
+                first [discriminate Hx | vm_compute in Hx; discriminate Hx]
+            | Hx : m_killed (blk_m1 _ _) = Some _ |- _ =>
+                first [discriminate Hx | vm_compute in Hx; discriminate Hx]
+            end ] ].
+Qed.
+
+(** rt_sigprocmask(SIG_BLOCK, app_mask, &set, 8): the mask grows, and the
+    launch mask is written to [set]. *)
+Lemma blk_sc2 : forall lim t,
+  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L1 t) 7) (blk_m1 t lim)) []
+    (SNext (mkCfg (blk_leg (blk_L2 t) 0) (blk_m2 t lim)))
+  /\ (forall evs st,
+        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L1 t) 7) (blk_m1 t lim)) evs st ->
+        evs = [] /\ st = SNext (mkCfg (blk_leg (blk_L2 t) 0) (blk_m2 t lim))).
+Proof.
+  intros lim t.
+  assert (Hsvc : ms_svc_pending (blk_leg (blk_L1 t) 7) = Some (Z_to_bv 64 135)) by blk_svc.
+  assert (Hchk : check_syscall
+            (sys_input abrt_blocked_segments (blk_leg (blk_L1 t) 7) (Z_to_bv 64 135))
+            blk_e2 (blk_m1 t lim) = CheckOk (blk_m2 t lim) []) by blk_check_eq.
+  eapply syscall_step;
+    [ reflexivity | exact Hsvc | exact Hchk | | reflexivity | reflexivity | reflexivity ].
+  intros eff m' evs H. pose proof Hchk as Hc.
+  rewrite check_syscall_rt_sigprocmask in H, Hc by reflexivity.
+  eapply check_rt_sigprocmask_det; eassumption.
+Qed.
+
+(** tkill(tid, SIGABRT) with SIGABRT blocked: pending, and the run goes
+    on. *)
+Lemma blk_sc3 : forall lim t, (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z ->
+  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L2 t) 4) (blk_m2 t lim)) []
+    (SNext (mkCfg (blk_leg (blk_L3 t) 0) (blk_m3 t lim)))
+  /\ (forall evs st,
+        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L2 t) 4) (blk_m2 t lim)) evs st ->
+        evs = [] /\ st = SNext (mkCfg (blk_leg (blk_L3 t) 0) (blk_m3 t lim))).
+Proof.
+  intros lim t Ht.
+  assert (Hsvc : ms_svc_pending (blk_leg (blk_L2 t) 4) = Some (Z_to_bv 64 130)) by blk_svc.
+  assert (Hchk : check_syscall
+            (sys_input abrt_blocked_segments (blk_leg (blk_L2 t) 4) (Z_to_bv 64 130))
+            blk_e0 (blk_m2 t lim) = CheckOk (blk_m3 t lim) []).
+  { rewrite check_syscall_tkill_at by reflexivity.
+    assert (Ha0 : in_arg (sys_input abrt_blocked_segments (blk_leg (blk_L2 t) 4)
+                            (Z_to_bv 64 130)) 0 = t) by (vm_compute; reflexivity).
+    rewrite Ha0, (blk_tid_pid32 t Ht).
+    unfold check_tkill, check_tkill_self. rewrite (blk_tid_positive t Ht).
+    change (m_tid (blk_m2 t lim)) with (Some t). cbv beta iota.
+    rewrite bv_eqb_refl. blk_check_eq. }
+  eapply syscall_step;
+    [ reflexivity | exact Hsvc | exact Hchk | | reflexivity | reflexivity | reflexivity ].
+  intros eff m' evs H. pose proof Hchk as Hc.
+  rewrite check_syscall_tkill_at in H, Hc by reflexivity.
+  eapply check_tkill_det; eassumption.
+Qed.
+
+(** rt_sigprocmask(SIG_SETMASK, &set, NULL, 8): the launch mask again,
+    read back from [set].  SIGABRT stays blocked, so nothing is
+    delivered and [raise] returns. *)
+Lemma blk_sc4 : forall lim t,
+  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L3 t) 5) (blk_m3 t lim)) []
+    (SNext (mkCfg (blk_leg (blk_L4 t) 0) (blk_m4 t lim)))
+  /\ (forall evs st,
+        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L3 t) 5) (blk_m3 t lim)) evs st ->
+        evs = [] /\ st = SNext (mkCfg (blk_leg (blk_L4 t) 0) (blk_m4 t lim))).
+Proof.
+  intros lim t.
+  assert (Hsvc : ms_svc_pending (blk_leg (blk_L3 t) 5) = Some (Z_to_bv 64 135)) by blk_svc.
+  assert (Hchk : check_syscall
+            (sys_input abrt_blocked_segments (blk_leg (blk_L3 t) 5) (Z_to_bv 64 135))
+            blk_e4 (blk_m3 t lim) = CheckOk (blk_m4 t lim) []) by blk_check_eq.
+  eapply syscall_step;
+    [ reflexivity | exact Hsvc | exact Hchk | | reflexivity | reflexivity | reflexivity ].
+  intros eff m' evs H. pose proof Hchk as Hc.
+  rewrite check_syscall_rt_sigprocmask in H, Hc by reflexivity.
+  eapply check_rt_sigprocmask_det; eassumption.
+Qed.
+
+(** rt_sigprocmask(SIG_BLOCK, all_mask, NULL, 8): abort's second path
+    begins. *)
+Lemma blk_sc5 : forall lim t,
+  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L4 t) 3) (blk_m4 t lim)) []
+    (SNext (mkCfg (blk_leg (blk_L5 t) 0) (blk_m5 t lim)))
+  /\ (forall evs st,
+        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L4 t) 3) (blk_m4 t lim)) evs st ->
+        evs = [] /\ st = SNext (mkCfg (blk_leg (blk_L5 t) 0) (blk_m5 t lim))).
+Proof.
+  intros lim t.
+  assert (Hsvc : ms_svc_pending (blk_leg (blk_L4 t) 3) = Some (Z_to_bv 64 135)) by blk_svc.
+  assert (Hchk : check_syscall
+            (sys_input abrt_blocked_segments (blk_leg (blk_L4 t) 3) (Z_to_bv 64 135))
+            blk_e5 (blk_m4 t lim) = CheckOk (blk_m5 t lim) []) by blk_check_eq.
+  eapply syscall_step;
+    [ reflexivity | exact Hsvc | exact Hchk | | reflexivity | reflexivity | reflexivity ].
+  intros eff m' evs H. pose proof Hchk as Hc.
+  rewrite check_syscall_rt_sigprocmask in H, Hc by reflexivity.
+  eapply check_rt_sigprocmask_det; eassumption.
+Qed.
+
+(** rt_sigaction(SIGABRT, &{.handler = SIG_DFL}, NULL, 8): THE CALL THIS
+    IMAGE EXISTS FOR.  [Kernel.Signal.rt_sigaction_spec] answers it 0 and
+    changes nothing ([Kernel.Signal.sigabrt_dfl_install]). *)
+Lemma blk_sc6 : forall lim t,
+  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L5 t) 4) (blk_m5 t lim)) []
+    (SNext (mkCfg (blk_leg (blk_L6 t) 0) (blk_m5 t lim)))
+  /\ (forall evs st,
+        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L5 t) 4) (blk_m5 t lim)) evs st ->
+        evs = [] /\ st = SNext (mkCfg (blk_leg (blk_L6 t) 0) (blk_m5 t lim))).
+Proof.
+  intros lim t.
+  assert (Hsvc : ms_svc_pending (blk_leg (blk_L5 t) 4) = Some (Z_to_bv 64 134)) by blk_svc.
+  assert (Hchk : check_syscall
+            (sys_input abrt_blocked_segments (blk_leg (blk_L5 t) 4) (Z_to_bv 64 134))
+            blk_e0 (blk_m5 t lim) = CheckOk (blk_m5 t lim) []) by blk_check_eq.
+  eapply syscall_step;
+    [ reflexivity | exact Hsvc | exact Hchk | | reflexivity | reflexivity | reflexivity ].
+  intros eff m' evs H. pose proof Hchk as Hc.
+  rewrite check_syscall_rt_sigaction in H, Hc by reflexivity.
+  eapply check_rt_sigaction_det; eassumption.
+Qed.
+
+(** tkill(tid, SIGABRT) again: still blocked, still pending. *)
+Lemma blk_sc7 : forall lim t, (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z ->
+  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L6 t) 4) (blk_m5 t lim)) []
+    (SNext (mkCfg (blk_leg (blk_L7 t) 0) (blk_m7 t lim)))
+  /\ (forall evs st,
+        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L6 t) 4) (blk_m5 t lim)) evs st ->
+        evs = [] /\ st = SNext (mkCfg (blk_leg (blk_L7 t) 0) (blk_m7 t lim))).
+Proof.
+  intros lim t Ht.
+  assert (Hsvc : ms_svc_pending (blk_leg (blk_L6 t) 4) = Some (Z_to_bv 64 130)) by blk_svc.
+  assert (Hchk : check_syscall
+            (sys_input abrt_blocked_segments (blk_leg (blk_L6 t) 4) (Z_to_bv 64 130))
+            blk_e0 (blk_m5 t lim) = CheckOk (blk_m7 t lim) []).
+  { rewrite check_syscall_tkill_at by reflexivity.
+    assert (Ha0 : in_arg (sys_input abrt_blocked_segments (blk_leg (blk_L6 t) 4)
+                            (Z_to_bv 64 130)) 0 = t) by (vm_compute; reflexivity).
+    rewrite Ha0, (blk_tid_pid32 t Ht).
+    unfold check_tkill, check_tkill_self. rewrite (blk_tid_positive t Ht).
+    change (m_tid (blk_m5 t lim)) with (Some t). cbv beta iota.
+    rewrite bv_eqb_refl. blk_check_eq. }
+  eapply syscall_step;
+    [ reflexivity | exact Hsvc | exact Hchk | | reflexivity | reflexivity | reflexivity ].
+  intros eff m' evs H. pose proof Hchk as Hc.
+  rewrite check_syscall_tkill_at in H, Hc by reflexivity.
+  eapply check_tkill_det; eassumption.
+Qed.
+
+(** rt_sigprocmask(SIG_UNBLOCK, {SIGABRT}, NULL, 8): the pending SIGABRT
+    is delivered, at SIG_DFL, and the process dies. *)
+Lemma blk_sc8 : forall lim t,
+  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L7 t) 4) (blk_m7 t lim))
+    [KillEv (Z_to_bv 64 SIGABRT) (m_fs (blk_m8 t lim))]
+    (SNext (mkCfg (blk_leg (blk_L7 t) 4) (blk_m8 t lim)))
+  /\ (forall evs st,
+        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L7 t) 4) (blk_m7 t lim)) evs st ->
+        evs = [KillEv (Z_to_bv 64 SIGABRT) (m_fs (blk_m8 t lim))]
+        /\ st = SNext (mkCfg (blk_leg (blk_L7 t) 4) (blk_m8 t lim))).
+Proof.
+  intros lim t.
+  assert (Hsvc : ms_svc_pending (blk_leg (blk_L7 t) 4) = Some (Z_to_bv 64 135)) by blk_svc.
+  assert (Hchk : check_syscall
+            (sys_input abrt_blocked_segments (blk_leg (blk_L7 t) 4) (Z_to_bv 64 135))
+            blk_e8 (blk_m7 t lim) = CheckOk (blk_m8 t lim) []) by blk_check_eq.
+  eapply syscall_kill_step;
+    [ reflexivity | exact Hsvc | exact Hchk | | reflexivity
+    | intro Hx; vm_compute in Hx; discriminate Hx ].
+  intros eff m' evs H. pose proof Hchk as Hc.
+  rewrite check_syscall_rt_sigprocmask in H, Hc by reflexivity.
+  eapply check_rt_sigprocmask_det; eassumption.
+Qed.
+
+(** ** Every execution, followed to its end
+
+    One [OmniRun.exec] judgment gives both theorems: every maximal
+    execution ends without an error and with a [State.KillEv] in its
+    trace, and [exec] also says that such an execution exists. *)
+Definition blk_post : post :=
+  fun tr o => ~ is_error o /\ exists sig fs, In (KillEv sig fs) tr.
+
+Lemma blk_exec_after_tid : forall lim t, (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z ->
+  exec abrt_blocked_segments (mkCfg (blk_leg (blk_L1 t) 0) (blk_m1 t lim)) blk_post.
+Proof.
+  intros lim t Ht.
+  eapply exec_leg; [reflexivity | reflexivity | exact (blk_leg1_ok t) |].
+  destruct (blk_sc2 lim t) as [S2 O2]. eapply exec_step_only; [exact S2 | exact O2 |].
+  eapply exec_leg; [reflexivity | reflexivity | exact (blk_leg2_ok t) |].
+  destruct (blk_sc3 lim t Ht) as [S3 O3]. eapply exec_step_only; [exact S3 | exact O3 |].
+  eapply exec_leg; [reflexivity | reflexivity | exact (blk_leg3_ok t) |].
+  destruct (blk_sc4 lim t) as [S4 O4]. eapply exec_step_only; [exact S4 | exact O4 |].
+  eapply exec_leg; [reflexivity | reflexivity | exact (blk_leg4_ok t) |].
+  destruct (blk_sc5 lim t) as [S5 O5]. eapply exec_step_only; [exact S5 | exact O5 |].
+  eapply exec_leg; [reflexivity | reflexivity | exact (blk_leg5_ok t) |].
+  destruct (blk_sc6 lim t) as [S6 O6]. eapply exec_step_only; [exact S6 | exact O6 |].
+  eapply exec_leg; [reflexivity | reflexivity | exact (blk_leg6_ok t) |].
+  destruct (blk_sc7 lim t Ht) as [S7 O7]. eapply exec_step_only; [exact S7 | exact O7 |].
+  eapply exec_leg; [reflexivity | reflexivity | exact (blk_leg7_ok t) |].
+  destruct (blk_sc8 lim t) as [S8 O8]. eapply exec_step_only; [exact S8 | exact O8 |].
+  apply exec_halt; [intro Hx; vm_compute in Hx; discriminate Hx |].
+  cbv beta. unfold blk_post. split; [intros [] |].
+  exists (Z_to_bv 64 SIGABRT), (m_fs (blk_m8 t lim)).
+  cbn [app In]. left. reflexivity.
+Qed.
+
+Lemma blk_exec : forall lim, exec abrt_blocked_segments (blk_c lim) blk_post.
+Proof.
+  intros lim. unfold blk_c.
+  eapply exec_leg; [reflexivity | reflexivity | exact blk_leg0_ok |].
+  destruct (blk_sc1 lim) as [S1 O1].
+  apply exec_step.
+  - reflexivity.
+  - do 2 eexists. exact S1.
+  - intros evs H. destruct (O1 _ _ H) as (_ & t & _ & Habs). discriminate Habs.
+  - intros evs c' H. destruct (O1 _ _ H) as (-> & t & Ht & Hst).
+    injection Hst as ->. exact (blk_exec_after_tid lim t Ht).
+Qed.
+
+(** THE LAUNCH THAT BLOCKS SIGABRT DOES NOT TAKE THE RUN OFF THE MODEL.
+    No execution reaches [Run.SError], for every budget: the tid is
+    any value [Kernel.Fork.set_tid_address_spec] allows, and the
+    [rt_sigaction] on abort's second path is answered. *)
+Theorem abrt_blocked_error_free : forall lim,
+  error_free (run abrt_blocked lim demo_entry abrt_blocked_input).
+Proof.
+  intros lim. unfold error_free. cbn [run bh_errors abrt_blocked demo_entry].
+  rewrite blk_config. apply exec_no_error.
+  eapply exec_conseq; [exact (blk_exec lim) |]. intros tr o [H _]. exact H.
+Qed.
+
+(** ... and the run ends where Linux's does: death by SIGABRT. *)
+Theorem abrt_blocked_dies_by_signal : forall lim,
+  dies_by_signal (run abrt_blocked lim demo_entry abrt_blocked_input).
+Proof.
+  intros lim. cbn [run bh_traces abrt_blocked demo_entry]. rewrite blk_config.
+  destruct (exec_realizes _ _ _ (blk_exec lim)) as (tr & o & Hm & Hne & sig & fs & Hin).
+  destruct o as [c | c]; [| exfalso; exact (Hne I)].
+  destruct (mexec_halt_star _ _ _ _ Hm c eq_refl) as [Hstar _].
+  exists tr, sig, fs. split; [| exact Hin].
+  exists tr, c. split; [exact Hstar | apply is_prefix_refl].
 Qed.
