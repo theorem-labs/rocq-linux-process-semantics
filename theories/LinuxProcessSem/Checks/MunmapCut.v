@@ -1,8 +1,8 @@
 (** * LinuxProcessSem.Checks.MunmapCut — what a partial [munmap] leaves
 
     Not part of the trusted specification.  When [Mmap.munmap_spec]
-    answers 0 to a partial unmap, it cuts both ledgers with
-    [maps_subtract] over the page-rounded range
+    answers 0 to an unmap that unmaps — the exact arm or a partial one —
+    it cuts both ledgers with [maps_subtract] over the page-rounded range
     ([Mmap.mmap_fixed_destroyed_next]).  This file states what that cut
     does:
 
