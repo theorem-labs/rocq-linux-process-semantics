@@ -3809,11 +3809,12 @@ Definition with_sigaltstack_installed (m : Model) : Model :=
     a pending signal when it delivers it ([dequeue_signal] from
     [get_signal]), but the only delivery this model has is the FATAL one:
     SIGABRT's disposition in a modeled run is SIG_DFL by construction --
-    [Kernel.Signal.rt_sigaction_spec] declines every install for a signal
-    outside SIGINT and SIGTERM -- so the step that would clear the field
-    is the step that ends the process, and no later state can read it.
-    A second sendable signal, or a catchable SIGABRT, brings the clear
-    with it. *)
+    [Kernel.Signal.rt_sigaction_spec] declines every install of a handler
+    for a signal outside SIGINT and SIGTERM, and accepts only SIG_DFL for
+    SIGABRT, which changes nothing -- so the step that would clear the
+    field is the step that ends the process, and no later state can read
+    it.  A second sendable signal, or a catchable SIGABRT, brings the
+    clear with it. *)
 Definition with_sigabrt_pending (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
