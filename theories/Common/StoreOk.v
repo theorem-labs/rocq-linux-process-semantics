@@ -12,7 +12,7 @@
     condition:
 
     - the STACK: an address in the RLIMIT_STACK window
-      [init_sp - stack_max_size, init_sp) that [Run.init_machine_state]
+      [[Run.stack_window_lo], init_sp) that [Run.init_machine_state]
       (and its proof-side mirror [PropExec.wrap_mem]) zero-maps up
       front — [store_ok_wrap_window];
     - a HEAP grant: an address inside a range some brk/mmap already
@@ -164,11 +164,12 @@ Qed.
 
     [PropExec.wrap_mem] is the proof-side mirror of the initial
     overlay: the argv/envp/auxv block, then [Some 0] everywhere in
-    [sp - stack_max_size, sp).  A store wholly inside that window is
+    [[Run.stack_window_lo], sp), what is left below [sp] of the
+    [stack_max_size] bytes under the top of the entry image.  A store wholly inside that window is
     therefore always in bounds -- which is the point of the window, and
     the reason [store_ok] does not need [sp] threaded into [step]. *)
 Lemma wrap_mem_window_defined : forall ph sp argv envp (x : word) uid hw rnd,
-  bv_unsigned sp - stack_max_size <= bv_unsigned x ->
+  stack_window_lo sp (entry_stack_image ph sp argv envp uid hw rnd) <= bv_unsigned x ->
   bv_unsigned x < bv_unsigned sp ->
   wrap_mem ph sp argv envp uid hw rnd x <> None.
 Proof.
@@ -180,7 +181,7 @@ Proof.
 Qed.
 
 Lemma store_ok_wrap_window : forall segs ph sp argv envp a n uid hw rnd,
-  bv_unsigned sp - stack_max_size <= bv_unsigned a ->
+  stack_window_lo sp (entry_stack_image ph sp argv envp uid hw rnd) <= bv_unsigned a ->
   bv_unsigned a + Z.of_nat n <= bv_unsigned sp ->
   store_ok segs (wrap_mem ph sp argv envp uid hw rnd) a n = true.
 Proof.
@@ -190,6 +191,49 @@ Proof.
   intros x Hx. unfold wview.
   destruct (wrap_mem ph sp argv envp uid hw rnd x) as [b|] eqn:Hw; [discriminate|].
   exfalso. revert Hw. apply wrap_mem_window_defined; lia.
+Qed.
+
+(** How low the window reaches for any admissible launch: the image is
+    at most [StepTac.bsb_bound]'s 2240000 bytes plus the rest of its
+    page, so the window covers at least [stack_max_size - 2244095]
+    bytes (more than 5.8 MiB) below [sp]. *)
+Definition stack_window_reach : Z := 2244095.
+
+(** What is left of the 8 MiB below [sp] for every admissible launch:
+    [stack_max_size - stack_window_reach] = 6144513 bytes. *)
+Definition stack_window_depth : Z := stack_max_size - stack_window_reach.
+
+Lemma stack_window_depth_val : stack_window_depth = 6144513.
+Proof. vm_compute. reflexivity. Qed.
+
+Lemma stack_window_lo_valid : forall ph sp argv envp uid hw rnd,
+  valid_argv argv -> valid_envp envp ->
+  stack_window_lo sp (entry_stack_image ph sp argv envp uid hw rnd)
+  <= bv_unsigned sp + stack_window_reach - stack_max_size.
+Proof.
+  intros ph sp argv envp uid hw rnd Hva Hve.
+  rewrite stack_window_lo_entry.
+  pose proof (bsb_bound ph sp argv envp uid hw rnd Hva Hve) as Hb.
+  pose proof (bv_unsigned_in_range _ sp) as Hsp.
+  assert (Hp := page_round_up_Z_bounds
+                  (entry_block_top sp (build_stack_bytes ph sp argv envp uid hw rnd))
+                  ltac:(unfold entry_block_top; lia)).
+  unfold entry_page_top, stack_window_reach.
+  unfold entry_block_top in *. unfold page_size in Hp. lia.
+Qed.
+
+(** The window in the form a [lia] closes: an address [a] with
+    [sp + stack_window_reach - stack_max_size <= a] is in it for every
+    admissible launch. *)
+Lemma store_ok_wrap_window_valid : forall segs ph sp argv envp a n uid hw rnd,
+  valid_argv argv -> valid_envp envp ->
+  bv_unsigned sp + stack_window_reach - stack_max_size <= bv_unsigned a ->
+  bv_unsigned a + Z.of_nat n <= bv_unsigned sp ->
+  store_ok segs (wrap_mem ph sp argv envp uid hw rnd) a n = true.
+Proof.
+  intros segs ph sp argv envp a n uid hw rnd Hva Hve Hlo Hhi.
+  apply store_ok_wrap_window; [|exact Hhi].
+  pose proof (stack_window_lo_valid ph sp argv envp uid hw rnd Hva Hve). lia.
 Qed.
 
 (** ** Grants
@@ -524,11 +568,16 @@ Ltac store_ok_peel :=
     | eapply store_ok_mono; [apply apply_zeros_grows|]
     | eapply store_ok_mono; [apply apply_writes_grows|] ].
 
-(* [stack_max_size] has to be unfolded: it is an atom to [lia], and every
-   stack bound is "8 MiB below sp is far enough below sp". *)
+(* [stack_max_size] and [stack_window_reach] have to be unfolded: they
+   are atoms to [lia].  A stack store needs the launch's
+   [valid_argv]/[valid_envp] in context, which bound the entry image
+   ([store_ok_wrap_window_valid]). *)
 Ltac store_ok_base :=
   first
-    [ apply store_ok_wrap_window; unfold stack_max_size; u_norm; lia
+    [ eapply store_ok_wrap_window_valid;
+      [ eassumption | eassumption
+      | unfold stack_window_reach, stack_max_size; u_norm; lia
+      | u_norm; lia ]
     | eapply store_ok_zeros_hit;
       [ discriminate | u_norm; lia | intros; u_norm; lia ]
     | apply store_ok_zmem; u_norm; lia ].

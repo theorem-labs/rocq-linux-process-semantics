@@ -214,11 +214,13 @@ Lemma wrap_mem_below : forall ph (sp : word) argv envp (addr : word) uid hw rnd,
 Proof.
   intros ph sp argv envp addr uid hw rnd Hlt.
   pose proof stack_max_size_val as Hsms.
+  pose proof (stack_window_lo_ge sp (entry_stack_image ph sp argv envp uid hw rnd)) as Hge.
   unfold wrap_mem, stack_to_mem.
   assert (Hsp : Z.leb (bv_unsigned sp) (bv_unsigned addr) = false)
     by (apply Z.leb_gt; lia).
   rewrite Hsp.
-  assert (Hgate : Z.leb (bv_unsigned sp - stack_max_size) (bv_unsigned addr) = false)
+  assert (Hgate : Z.leb (stack_window_lo sp (entry_stack_image ph sp argv envp uid hw rnd))
+                        (bv_unsigned addr) = false)
     by (apply Z.leb_gt; lia).
   rewrite Hgate. reflexivity.
 Qed.
