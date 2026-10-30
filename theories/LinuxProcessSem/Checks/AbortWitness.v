@@ -539,8 +539,8 @@ Qed.
 
     ** The program
 
-    Thirty-five instructions at 0x100 and forty bytes of data after them,
-    the syscalls in musl's order:
+    Thirty-five instructions at 0x100, then four bytes of padding, then
+    fifty-six bytes of data at 0x190, the syscalls in musl's order:
 
     #<pre>
       addi a7, x0, 96      06000893   set_tid_address   (musl's __init_tp)
@@ -592,8 +592,12 @@ Qed.
     move a register's bits unchanged ([Riscv.Sem]), where an integer copy
     is an addition; so [tkill]'s first argument is [t] itself, and the
     proof needs only that [Syscall.pid32] does not change a [t] in the
-    window ([blk_tid_pid32]).  musl reads the tid from memory instead;
-    the syscalls and their arguments are the same.
+    window ([blk_tid_pid32]).  musl reads the tid from memory instead.
+    The syscalls and their arguments are musl's, with one exception
+    that changes no answer: musl's [__init_tp] passes
+    [&__thread_list_lock] to [set_tid_address] (src/env/__init_tls.c,
+    musl 1.2.6) where this image passes NULL, and
+    [Kernel.Fork.set_tid_address_spec] does not read the pointer.
 
     THE LAUNCH: [abrt_input] with [State.in_sigmask] = 1 << 5, which is
     SIGABRT's bit and nothing else. *)
@@ -961,7 +965,9 @@ Ltac blk_svc :=
 
     [blk_L1 t] .. [blk_L7 t] are the first states of the legs after the
     first seven syscalls, for the tid [t]; [blk_m1 t lim] .. [blk_m8 t lim]
-    are the models after them.  The masks are what [sigmask_strip] and
+    are the models after them, except that there is no [blk_m6]:
+    [rt_sigaction] leaves [blk_m5] as it is.  The masks are what
+    [sigmask_strip] and
     [sigmask_apply] give: [app_mask] and [all_mask] lose SIGKILL's and
     SIGSTOP's bits (1 << 8, 1 << 18). *)
 Definition blk_L0 : machine_state :=

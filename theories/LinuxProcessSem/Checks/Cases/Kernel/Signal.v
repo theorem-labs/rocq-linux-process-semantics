@@ -126,10 +126,12 @@ Proof. vm_compute. reflexivity. Qed.
     declined: [mem_sigaction_zero] is a SIG_DFL install, so those three
     say that the acceptance is for SIGABRT and not for SIG_DFL as such.
 
-    THE SAME STRUCT SHAPE as [rt_sigaction_sigint_accepted] below, with
-    only the handler word changed, which is what makes the three say
-    that the HANDLER is the reason.  Two OTHER gates sit in front of that
-    one — a non-NULL [oact], and a flag word outside
+    THE THREE DIFFER FROM EACH OTHER IN THE HANDLER WORD ONLY, which is
+    what makes them say that the HANDLER is the reason.  And
+    [rt_sigaction_sigabrt_dfl_accepted] differs from
+    [rt_sigaction_sigint_accepted] below in the signal number only.  Two
+    OTHER gates sit in front of the handler test — a non-NULL [oact],
+    and a flag word outside
     [Signal.sa_flags_accepted] — and both would decline a handler install
     for reasons that have nothing to do with SIGABRT: musl's [signal(3)]
     trips both, since it returns the old handler and passes SA_RESTART.

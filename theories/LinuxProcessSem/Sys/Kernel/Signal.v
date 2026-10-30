@@ -374,8 +374,9 @@ Definition sigaction_handler (mp : word -> option byte) (act : word)
     (src/exit/abort.c, musl 1.2.6:
     [__syscall(SYS_rt_sigaction, SIGABRT,
     &(struct k_sigaction){.handler = SIG_DFL}, 0, _NSIG/8)]), which it
-    takes when [raise(SIGABRT)] returns — in this model, when the launch
-    mask already blocks SIGABRT (see [sigabrt_blocked]).
+    takes when [raise(SIGABRT)] returns — in this model, when the signal
+    mask at the call already blocks SIGABRT: the launch mask, or a mask
+    the program installed with [rt_sigprocmask] (see [sigabrt_blocked]).
 
     WHY 0, AND NO STATE.  Linux answers 0 here: SIGABRT is in 1..64 and
     is not SIGKILL or SIGSTOP, and no live process has SA_IMMUTABLE set
@@ -1069,7 +1070,8 @@ Definition write_oset (oset old : word) : Sys SyscallEffect :=
     sets a bit that is already set.  The unblock is the mask install that
     takes the pending signal, and [sigmask_deliver_model] kills there.
     [Run.valid_sigmask] does not forbid such a launch and should not: it
-    is a launch Linux really performs.
+    is a launch Linux really performs.  A mask the program installs
+    itself with [rt_sigprocmask] before [abort] takes the same path.
     [Checks.AbortWitness.abrt_blocked_dies_by_signal] and
     [Checks.AbortWitness.abrt_blocked_error_free] walk that run. *)
 Definition sigabrt_blocked (mask : word) : bool :=
@@ -1472,17 +1474,26 @@ Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
 
     ** WHY SIGABRT'S DISPOSITION IS SIG_DFL, BY CONSTRUCTION
 
-    The whole arm rests on it, and it is not an assumption: SIGABRT's
-    disposition cannot be changed inside the modeled surface.
+    The whole arm rests on it.  INSIDE THE MODELED SURFACE it is not an
+    assumption: SIGABRT's disposition cannot be changed there.
     [rt_sigaction_spec] answers an install for signal 6 in one case
     only: the handler word is SIG_DFL ([sigabrt_dfl_install]), which is
     musl's own install on abort's second path.  Signal 6 with SIG_IGN or
     a handler address is [unmodeled].  So the one install the model
-    admits sets the disposition it already has, and in any run this model
-    covers SIGABRT still has its boot-time disposition, which is
-    SIG_CORE: terminate, and dump core (kernel/signal.c,
-    SIG_KERNEL_COREDUMP_MASK; the core dump is a file the process never
-    sees, so nothing of it reaches the trace).
+    admits sets the disposition it already has.  What the model DOES
+    assume is the start: that the launch leaves SIGABRT at SIG_DFL.  It
+    cannot derive that, because [execve] keeps an inherited SIG_IGN, so
+    it is the launch premise written down above [Run.unmodeled_at]
+    ("THE PROCESS STARTS WITH SIGABRT AT ITS DEFAULT DISPOSITION").
+    Under that premise SIGABRT keeps its boot-time
+    disposition in every run this model covers, which is SIG_CORE:
+    terminate, and dump core (kernel/signal.c, SIG_KERNEL_COREDUMP_MASK;
+    the core dump is a file the process never sees, so nothing of it
+    reaches the trace).  On abort's second path Linux agrees with the
+    model even after an inherited SIG_IGN: a blocked signal is never
+    ignored at send time ([sig_ignored]), the SIG_DFL install does not
+    discard it ([do_sigaction]), and the unblock delivers it at SIG_DFL
+    (kernel/signal.c, Linux v6.18.46, commit 1f99e9ab748f).
 
     That is the sentence [sigaction_accepted]'s own note has to be read
     against: its list is "the signals whose disposition no modeled
