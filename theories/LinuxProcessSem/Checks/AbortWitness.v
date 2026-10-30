@@ -988,7 +988,8 @@ Lemma blk_config : forall lim,
 Proof. intros lim. unfold blk_c. rewrite blk_leg_0. reflexivity. Qed.
 
 (** The effects: the old mask written to [set] (eight bytes, 1 << 5),
-    and the eight bytes of each [sigset_t] the kernel read. *)
+    the eight bytes of each [sigset_t] the kernel read, and the 24 bytes
+    of the [struct k_sigaction] that [rt_sigaction] read. *)
 Definition blk_e2 : SyscallEffect :=
   with_copyins [(Z_to_bv 64 0x190, 8%nat)]
     (mkEffect (Z_to_bv 64 0) [(Z_to_bv 64 0x7fff7ffffff8, Z_to_le_bytes 8 32)] []).
@@ -997,6 +998,8 @@ Definition blk_e4 : SyscallEffect :=
   with_copyins [(Z_to_bv 64 0x7fff7ffffff8, 8%nat)] (mkEffect (Z_to_bv 64 0) [] []).
 Definition blk_e5 : SyscallEffect :=
   with_copyins [(Z_to_bv 64 0x198, 8%nat)] (mkEffect (Z_to_bv 64 0) [] []).
+Definition blk_e6 : SyscallEffect :=
+  with_copyins [(Z_to_bv 64 0x1a8, 24%nat)] (mkEffect (Z_to_bv 64 0) [] []).
 Definition blk_e8 : SyscallEffect :=
   with_copyins [(Z_to_bv 64 0x1a0, 8%nat)] (mkEffect (Z_to_bv 64 0) [] []).
 
@@ -1011,7 +1014,7 @@ Definition blk_L4 (t : word) : machine_state :=
 Definition blk_L5 (t : word) : machine_state :=
   advance_past_svc (apply_effect (blk_leg (blk_L4 t) 3) blk_e5).
 Definition blk_L6 (t : word) : machine_state :=
-  advance_past_svc (apply_effect (blk_leg (blk_L5 t) 4) blk_e0).
+  advance_past_svc (apply_effect (blk_leg (blk_L5 t) 4) blk_e6).
 Definition blk_L7 (t : word) : machine_state :=
   advance_past_svc (apply_effect (blk_leg (blk_L6 t) 4) blk_e0).
 
@@ -1265,8 +1268,9 @@ Proof.
 Qed.
 
 (** rt_sigaction(SIGABRT, &{.handler = SIG_DFL}, NULL, 8): THE CALL THIS
-    IMAGE EXISTS FOR.  [Kernel.Signal.rt_sigaction_spec] answers it 0 and
-    changes nothing ([Kernel.Signal.sigabrt_dfl_install]). *)
+    IMAGE EXISTS FOR.  [Kernel.Signal.rt_sigaction_spec] answers it 0,
+    records the 24 bytes it read at 0x1a8, and changes nothing else
+    ([Kernel.Signal.sigabrt_dfl_install]). *)
 Lemma blk_sc6 : forall lim t,
   sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L5 t) 4) (blk_m5 t lim)) []
     (SNext (mkCfg (blk_leg (blk_L6 t) 0) (blk_m5 t lim)))
@@ -1278,7 +1282,7 @@ Proof.
   assert (Hsvc : ms_svc_pending (blk_leg (blk_L5 t) 4) = Some (Z_to_bv 64 134)) by blk_svc.
   assert (Hchk : check_syscall
             (sys_input abrt_blocked_segments (blk_leg (blk_L5 t) 4) (Z_to_bv 64 134))
-            blk_e0 (blk_m5 t lim) = CheckOk (blk_m5 t lim) []) by blk_check_eq.
+            blk_e6 (blk_m5 t lim) = CheckOk (blk_m5 t lim) []) by blk_check_eq.
   eapply syscall_step;
     [ reflexivity | exact Hsvc | exact Hchk | | reflexivity | reflexivity | reflexivity ].
   intros eff m' evs H. pose proof Hchk as Hc.
