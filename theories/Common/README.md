@@ -1,9 +1,10 @@
 # Common: the proof library
 
 This directory is the Rocq theory `LinuxProcessSemantics.Common` (opam
-package `rocq-linux-process-semantics-common`). It helps you prove the
-statements of `theories/EquivalenceDefinition/` about RISC-V binaries. No
-file in it depends on a specific binary.
+package `rocq-linux-process-semantics-core`, the package that also installs
+the model). It helps you prove the statements of
+`theories/EquivalenceDefinition/` about RISC-V binaries. No file in it
+depends on a specific binary.
 
 Read this document to find the part of the library that you need. For the
 steps to write a full proof, read

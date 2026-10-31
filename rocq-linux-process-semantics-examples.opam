@@ -22,7 +22,6 @@ depends: [
   "coq-flocq" {>= "4.2"}
   "rocq-read-file" {>= "0.0.2"}
   "rocq-linux-process-semantics-core" {= version}
-  "rocq-linux-process-semantics-common" {= version}
 ]
 # The build runs tools/gen_fd_lemmas.py and tools/gen_checker.py.
 depexts: [

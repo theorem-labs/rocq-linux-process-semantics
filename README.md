@@ -55,14 +55,13 @@ v6.18.46 (commit `1f99e9ab748fc5c32120de9c4eca31abfe54a4d5`).
 
 ## Packages
 
-The repository has four opam packages. One dune project builds all of them.
+The repository has three opam packages. One dune project builds all of them.
 
 | opam package | Rocq theory | Directory | Contents |
 | --- | --- | --- | --- |
-| `rocq-linux-process-semantics-core` | `LinuxProcessSemantics` | `theories/` (except `Common/` and `Examples/`) | The model and the statements. Also the tools `elf-snapshot` and `gen-fd-lemmas`. |
-| `rocq-linux-process-semantics-common` | `LinuxProcessSemantics.Common` | `theories/Common/` | The proof library. |
+| `rocq-linux-process-semantics-core` | `LinuxProcessSemantics`, `LinuxProcessSemantics.Common` | `theories/` (except `Examples/`) | The model, the statements and the proof library. Also the tools `elf-snapshot` and `gen-fd-lemmas`. |
 | `rocq-linux-process-semantics-examples` | `LinuxProcessSemantics.Examples` | `theories/Examples/` | The example proofs. |
-| `rocq-linux-process-semantics` | none | none | Installs the three packages above. |
+| `rocq-linux-process-semantics` | none | none | Installs the two packages above. |
 
 `tests/` holds tests that are not in a package.
 
@@ -83,7 +82,7 @@ other dependencies. CI tests Rocq 9.2, 9.3 and the development version.
    opam pin add https://github.com/theorem-labs/rocq-linux-process-semantics.git
    ```
 
-   opam finds the four `.opam` files at the top of the repository and pins
+   opam finds the three `.opam` files at the top of the repository and pins
    all of them.
 
 To install only one package, pin with `--no-action`, then install that
