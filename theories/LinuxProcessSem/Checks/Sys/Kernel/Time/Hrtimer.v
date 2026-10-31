@@ -16,9 +16,12 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude Uaccess.
 
-(** nanosleep: an unreadable request declines; an invalid one is
-    -EINVAL; and otherwise BOTH outcomes are admissible, so the
-    acceptor decides which arm it is being shown from the return value.
+(** nanosleep: a request [access_ok] refuses is -EFAULT with an empty
+    ledger; one it admits that is not wholly readable declines; an
+    invalid one is -EINVAL; and otherwise BOTH outcomes are admissible,
+    so the acceptor decides which arm it is being shown from the return
+    value.  Both pointers are read through [State.copy_bytes_map], as
+    [Kernel.Time.Hrtimer.nanosleep_spec] reads them.
 
     THE REQUEST'S SECONDS FIELD GATES NOTHING.  A [tv_sec] at or
     above [Uapi.KTIME_SEC_MAX] does not decline here, and
@@ -36,17 +39,23 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
       with a non-NULL one it MUST carry exactly one write at [rmtp]
       that [Kernel.Time.Hrtimer.nanosleep_rem_ok_b] admits, and carries
       the part of the request that provably elapsed into [m_clock].
+    - -EFAULT with no write is the interruption when [access_ok]
+      refuses [rmtp]: the copy-out fails before a byte moves.  It moves
+      nothing, for the NULL [rmtp] reason.  A completed sleep is still
+      0 there.
 
-    That last "must" is the sharp claim: with a remainder destination,
-    an -EINTR and no write is REJECTED, because [do_nanosleep] reports
-    success rather than an interruption when it has no positive
-    remainder to write.
+    The -EINTR bullet's "must" is the sharp claim: with a remainder
+    destination, an -EINTR and no write is REJECTED, because
+    [do_nanosleep] reports success rather than an interruption when it
+    has no positive remainder to write.
 
-    AND EVERY ACCEPTED OUTCOME MUST CARRY THE COPY-IN.  The request
-    reaches the kernel through [get_timespec64], so an effect that
-    claims one of these outcomes without the 16-byte read at [rqtp] in
-    its ledger describes a kernel that decided the call without looking
-    at the request, and is rejected.  The requirement sits on the
+    AND EVERY OUTCOME PAST A SUCCESSFUL READ MUST CARRY THE COPY-IN.
+    The request reaches the kernel through [get_timespec64], so an
+    effect that claims one of these outcomes without the 16-byte read
+    at [rqtp] in its ledger describes a kernel that decided the call
+    without looking at the request, and is rejected.  The -EFAULT for a
+    request [access_ok] refuses is the opposite case: nothing was
+    copied, so its ledger MUST be empty.  The requirement sits on the
     accepting arms only: every [CheckUnmodeled] verdict is
     reached before any effect is inspected and must stay reachable
     whatever ledger that effect carries, or
@@ -57,12 +66,16 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
     deadline rather than refusing, so
     [Kernel.Time.Hrtimer.nanosleep_clock] clamps and this acceptor
     reads [m] only to compute the new clock.  That is why the two
-    declines that remain — an unreadable request and an unwritable
-    [rmtp] — are decided without it, and why they are the only ones. *)
+    declines that remain — a request and an [rmtp] that [access_ok]
+    admits and that are not wholly mapped — are decided without it,
+    and why they are the only ones. *)
 Definition check_nanosleep (i : SyscallInput) (rqtp rmtp : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  match read_bytes_map (in_mem i) rqtp (Z_to_bv 64 16) with
-  | None => CheckUnmodeled
+  match copy_bytes_map (in_mem i) rqtp 16 with
+  | None =>
+      if negb (access_okb rqtp 16)
+      then check_ret_only eff (errno_ret EFAULT) m []
+      else CheckUnmodeled
   | Some req =>
       if negb (timespec_valid_b req)
       then check_ret_only_copyins [(rqtp, 16%nat)] eff (errno_ret EINVAL) m []
@@ -78,8 +91,20 @@ Definition check_nanosleep (i : SyscallInput) (rqtp rmtp : word)
          | _ => CheckReject
          end)
       else
-        match read_bytes_map (in_wmem i) rmtp (Z_to_bv 64 16) with
-        | None => CheckUnmodeled
+        match copy_bytes_map (in_wmem i) rmtp 16 with
+        | None =>
+            if negb (access_okb rmtp 16)
+            then
+              check_copyins [(rqtp, 16%nat)] eff
+              (match eff with
+               | mkEffectU r [] [] [] [] _ =>
+                   if bv_eqb r (Z_to_bv 64 0)
+                   then CheckOk (with_clock (nanosleep_clock (m_clock m) req []) m) []
+                   else if bv_eqb r (errno_ret EFAULT) then CheckOk m []
+                   else CheckReject
+               | _ => CheckReject
+               end)
+            else CheckUnmodeled
         | Some _ =>
             check_copyins [(rqtp, 16%nat)] eff
             (match eff with
@@ -115,17 +140,19 @@ Proof.
 Qed.
 
 (** What the acceptor demands of the ledger, read back out of an
-    acceptance.  Soundness needs it before it can peel
-    [record_copyins], because the ledger has to be known before the
-    effect can be split into the part the body produces and the part
-    the wrapper prepends. *)
-Local Lemma check_nanosleep_ok_copyins : forall i rqtp rmtp eff m m' evs,
+    acceptance past a successful read of the request.  Soundness needs
+    it before it can peel [record_copyins], because the ledger has to be
+    known before the effect can be split into the part the body
+    produces and the part the wrapper prepends.  The premise is the
+    read: the -EFAULT for a request [access_ok] refuses is accepted
+    with an EMPTY ledger, and soundness takes that arm before this. *)
+Local Lemma check_nanosleep_ok_copyins : forall i rqtp rmtp eff m m' evs req,
+  copy_bytes_map (in_mem i) rqtp 16 = Some req ->
   check_nanosleep i rqtp rmtp eff m = CheckOk m' evs ->
   eff_copyins eff = [(rqtp, 16%nat)].
 Proof.
-  intros i rqtp rmtp eff m m' evs H. unfold check_nanosleep in H.
-  destruct (read_bytes_map (in_mem i) rqtp (Z_to_bv 64 16)) as [req|] eqn:Hrq;
-    [|discriminate].
+  intros i rqtp rmtp eff m m' evs req Hrq H. unfold check_nanosleep in H.
+  rewrite Hrq in H. cbv iota in H.
   destruct (negb (timespec_valid_b req)) eqn:Hv.
   { unfold check_ret_only_copyins in H.
     destruct (check_ret_only (clear_copyins eff) (errno_ret EINVAL) m []);
@@ -138,11 +165,14 @@ Proof.
   - destruct (access_ranges_eqb (eff_copyins eff) [(rqtp, 16%nat)]) eqn:Hc;
       [|discriminate].
     now apply access_ranges_eqb_eq in Hc.
-  - destruct (read_bytes_map (in_wmem i) rmtp (Z_to_bv 64 16)) eqn:Hrm2;
-      [|discriminate].
-    destruct (access_ranges_eqb (eff_copyins eff) [(rqtp, 16%nat)]) eqn:Hc;
-      [|discriminate].
-    now apply access_ranges_eqb_eq in Hc.
+  - destruct (copy_bytes_map (in_wmem i) rmtp 16) eqn:Hrm2.
+    + destruct (access_ranges_eqb (eff_copyins eff) [(rqtp, 16%nat)]) eqn:Hc;
+        [|discriminate].
+      now apply access_ranges_eqb_eq in Hc.
+    + destruct (negb (access_okb rmtp 16)) eqn:Ho; [|discriminate].
+      destruct (access_ranges_eqb (eff_copyins eff) [(rqtp, 16%nat)]) eqn:Hc;
+        [|discriminate].
+      now apply access_ranges_eqb_eq in Hc.
 Qed.
 
 Lemma check_nanosleep_sound_ok : forall i rqtp rmtp eff m m' evs,
@@ -150,11 +180,16 @@ Lemma check_nanosleep_sound_ok : forall i rqtp rmtp eff m m' evs,
   nanosleep_spec rqtp rmtp i m (Ok eff m' evs).
 Proof.
   intros i rqtp rmtp eff m m' evs H.
-  pose proof (check_nanosleep_ok_copyins _ _ _ _ _ _ _ H) as Hled.
-  unfold check_nanosleep in H. unfold nanosleep_spec.
+  unfold nanosleep_spec.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) rqtp (Z_to_bv 64 16)) as [req|] eqn:Hrq;
-    [|discriminate]. cbv iota.
+  destruct (copy_bytes_map (in_mem i) rqtp 16) as [req|] eqn:Hrq; cbv iota.
+  2:{ unfold check_nanosleep in H. rewrite Hrq in H. cbv iota in H.
+      destruct (negb (access_okb rqtp 16)) eqn:Ho; cbv iota in H |- *;
+        [|discriminate].
+      apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+      apply pure_ok. }
+  pose proof (check_nanosleep_ok_copyins _ _ _ _ _ _ _ _ Hrq H) as Hled.
+  unfold check_nanosleep in H. rewrite Hrq in H. cbv iota in H.
   destruct eff as [ret ws zs us cs copyins]. cbn in Hled. subst copyins.
   apply nanosleep_ledger_ok.
   destruct (negb (timespec_valid_b req)) eqn:Hv; cbv iota.
@@ -175,8 +210,21 @@ Proof.
     + destruct (bv_eqb ret (errno_ret EINTR)) eqn:HE; [|discriminate].
       apply bv_eqb_eq in HE; subst ret. inversion H; clear H; subst.
       apply alt_r. apply pure_ok.
-  - destruct (read_bytes_map (in_wmem i) rmtp (Z_to_bv 64 16)) eqn:Hrm2;
-      [|discriminate]. cbv iota.
+  - destruct (copy_bytes_map (in_wmem i) rmtp 16) eqn:Hrm2; cbv iota.
+    2:{ (* [access_ok] refused [rmtp]: the NULL-[rmtp] shape, with the
+           copy-out's -EFAULT where that arm has -EINTR *)
+        destruct (negb (access_okb rmtp 16)) eqn:Ho; cbv iota;
+          [|discriminate].
+        destruct ws as [|? ?]; [|discriminate].
+        destruct zs as [|? ?]; [|discriminate].
+        destruct us as [|? ?]; [|discriminate].
+        destruct cs as [|? ?]; [|discriminate].
+        destruct (bv_eqb ret (Z_to_bv 64 0)) eqn:H0.
+        + apply bv_eqb_eq in H0; subst ret. inversion H; clear H; subst.
+          apply alt_l. eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+        + destruct (bv_eqb ret (errno_ret EFAULT)) eqn:HE; [|discriminate].
+          apply bv_eqb_eq in HE; subst ret. inversion H; clear H; subst.
+          apply alt_r. apply pure_ok. }
     destruct ws as [|[a rem] ws'].
     + destruct zs as [|? ?]; [|discriminate].
       destruct us as [|? ?]; [|discriminate].
@@ -206,8 +254,10 @@ Proof.
   intros i rqtp rmtp eff m H.
   unfold check_nanosleep in H. unfold nanosleep_spec.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) rqtp (Z_to_bv 64 16)) as [req|] eqn:Hrq;
-    cbv iota; [|apply unmodeled_intro]. cbv iota in H.
+  destruct (copy_bytes_map (in_mem i) rqtp 16) as [req|] eqn:Hrq; cbv iota.
+  2:{ destruct (negb (access_okb rqtp 16)) eqn:Ho; cbv iota in H |- *;
+        [now apply check_ret_only_no_unmodeled in H|apply unmodeled_intro]. }
+  cbv iota in H.
   apply record_copyins_unmodeled.
   destruct (negb (timespec_valid_b req)) eqn:Hv; cbv iota; cbv iota in H.
   { exfalso. now apply check_ret_only_copyins_no_unmodeled in H. }
@@ -225,8 +275,19 @@ Proof.
     destruct cs as [|? ?]; [|discriminate].
     destruct (bv_eqb ret (Z_to_bv 64 0)); [discriminate|].
     destruct (bv_eqb ret (errno_ret EINTR)); discriminate.
-  - destruct (read_bytes_map (in_wmem i) rmtp (Z_to_bv 64 16)) eqn:Hrm2;
-      cbv iota; [|apply unmodeled_intro].
+  - destruct (copy_bytes_map (in_wmem i) rmtp 16) eqn:Hrm2; cbv iota.
+    2:{ destruct (negb (access_okb rmtp 16)) eqn:Ho; cbv iota; cbv iota in H;
+          [|apply unmodeled_intro].
+        exfalso.
+        destruct (access_ranges_eqb (eff_copyins eff) [(rqtp, 16%nat)]);
+          [|discriminate].
+        destruct eff as [ret ws zs us cs copyins].
+        destruct ws as [|? ?]; [|discriminate].
+        destruct zs as [|? ?]; [|discriminate].
+        destruct us as [|? ?]; [|discriminate].
+        destruct cs as [|? ?]; [|discriminate].
+        destruct (bv_eqb ret (Z_to_bv 64 0)); [discriminate|].
+        destruct (bv_eqb ret (errno_ret EFAULT)); discriminate. }
     exfalso. cbv iota in H.
     destruct (access_ranges_eqb (eff_copyins eff) [(rqtp, 16%nat)]);
       [|discriminate].
@@ -251,15 +312,22 @@ Proof.
   intros i rqtp rmtp eff m m' evs H.
   unfold nanosleep_spec in H. unfold check_nanosleep. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (read_bytes_map (in_mem i) rqtp (Z_to_bv 64 16)) as [req|] eqn:Hrq;
+  destruct (copy_bytes_map (in_mem i) rqtp 16) as [req|] eqn:Hrq;
     hall Hrq; inv_ok.
+  2:{ destruct (negb (access_okb rqtp 16)) eqn:Ho; hall Ho; inv_ok.
+      now apply check_ret_only_ok_iff. }
   destruct (negb (timespec_valid_b req)) eqn:Hv; hall Hv; inv_ok.
   { unfold check_ret_only_copyins, clear_copyins, with_copyins, check_ret_only.
     cbn [eff_ret eff_writes eff_zeros eff_unmaps eff_copies eff_copyins].
     rewrite bv_eqb_refl, access_ranges_eqb_refl. reflexivity. }
-  destruct (w_is0 rmtp) eqn:Hrm; hall Hrm; inv_ok.
-  all: try (destruct (read_bytes_map (in_wmem i) rmtp (Z_to_bv 64 16)) eqn:Hrm2;
-            hall Hrm2; inv_ok).
+  (* Three shapes reach an accepting arm past the read: a NULL [rmtp],
+     a writable one, and one [access_ok] refuses.  The fourth, a range
+     admitted and not wholly mapped, is [unmodeled] and [inv_ok] closes
+     it on the [Ok] it cannot produce. *)
+  destruct (w_is0 rmtp) eqn:Hrm; hall Hrm;
+    [ | destruct (copy_bytes_map (in_wmem i) rmtp 16) eqn:Hrm2; hall Hrm2;
+        [ | destruct (negb (access_okb rmtp 16)) eqn:Ho; hall Ho ] ].
+  all: inv_ok.
   all: unfold check_copyins;
        cbn [eff_ret eff_writes eff_zeros eff_unmaps eff_copies eff_copyins];
        rewrite access_ranges_eqb_refl; cbv iota.
@@ -275,10 +343,13 @@ Proof.
   intros i rqtp rmtp m eff H.
   unfold nanosleep_spec in H. unfold check_nanosleep. sys_unfold.
   cbv iota in H. inv_ok.
-  destruct (read_bytes_map (in_mem i) rqtp (Z_to_bv 64 16)) as [req|] eqn:Hrq;
-    hall Hrq; inv_ok; [|reflexivity].
+  destruct (copy_bytes_map (in_mem i) rqtp 16) as [req|] eqn:Hrq;
+    hall Hrq; inv_ok.
+  2:{ destruct (negb (access_okb rqtp 16)) eqn:Ho; hall Ho; inv_ok;
+        reflexivity. }
   destruct (negb (timespec_valid_b req)) eqn:Hv; hall Hv; inv_ok.
   destruct (w_is0 rmtp) eqn:Hrm; hall Hrm; inv_ok.
-  destruct (read_bytes_map (in_wmem i) rmtp (Z_to_bv 64 16)) eqn:Hrm2;
-    hall Hrm2; inv_ok; reflexivity.
+  destruct (copy_bytes_map (in_wmem i) rmtp 16) eqn:Hrm2;
+    hall Hrm2; inv_ok.
+  destruct (negb (access_okb rmtp 16)) eqn:Ho; hall Ho; inv_ok; reflexivity.
 Qed.

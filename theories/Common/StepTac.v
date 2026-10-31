@@ -1217,7 +1217,7 @@ Qed.
 
 (** ** Avoiding the read-only segments, for any number of segments
 
-    [range_avoids_ro_two] above is fixed at two segments.  Each example
+    [range_avoids_two] above is fixed at two segments.  Each example
     proves the same fact about its own image, and the hand-rolled proof
     names every segment explicitly — so it has to be edited by hand
     whenever the segment COUNT changes (for example, gcc can give
@@ -1239,7 +1239,7 @@ Qed.
       Qed.
 
     Note the range's LENGTH is irrelevant, as it is for
-    [range_avoids_ro_two]: a range that starts above every read-only
+    [range_avoids_two]: a range that starts above every read-only
     segment cannot re-enter one by being long, because the segments lie
     below it. *)
 Definition ro_segs_below (segs : list Segment) (data_base : Z) : bool :=

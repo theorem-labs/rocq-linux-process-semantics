@@ -28,17 +28,20 @@ Open Scope sys_scope.
    memory would fail — a vacuity trap for any source that reads zeroed
    pages.)
 
-   DISJOINTNESS, AND WHAT IT IS NOT.  Every grant (and its zero-fill)
-   is disjoint from the binary image and the stack.  It is NOT disjoint
-   from every other live allocation: a brk grow inside one page enters
-   [vm_maps] with no address-space test at all (see [brk_grants] and
-   [brk_grow_ok] below), so the ledger can hold entries that overlap
-   byte for byte, and [Checks/VmMapsDisjoint] carries a checked
-   execution reaching exactly that.  What IS invariant is PAGE-GRANULAR:
-   no page-aligned address is owned by two entries, which is what every
-   consumer of the ledger actually needs.  Linux behaves the same way
+   DISJOINTNESS.  Every grant (and its zero-fill) is disjoint from the
+   binary image, from the stack, and from every other live allocation.
+   Every writer of [vm_maps] records a PAGE-ALIGNED, PAGE-ROUNDED range
+   it has first tested free: the mmap arms through [region_free] on the
+   rounded length, and a brk grow through [brk_grow_ok] on the pages it
+   installs ([brk_grants]).  A grow that stays inside the page the break
+   is already in installs no page, so it records nothing and has nothing
+   to test — which is Linux's own [oldbrk == newbrk] early exit
    ([SYSCALL_DEFINE1(brk)] exits before consulting any VMA when the
-   rounded breaks agree), so this is faithful, not a modelling slip.
+   rounded breaks agree), not a gap in the gate.  An earlier revision
+   recorded the LOGICAL range [[old, r)] for a brk grow instead, and
+   then the ledger could hold entries overlapping byte for byte; see
+   [brk_grants] for why that range is gone and [State.live_bytes] for
+   what it cost the budget.
    Placement stays non-deterministic (covering ASLR); only occupied
    space is excluded:
    - below this run's [State.alloc_top], hence disjoint from the dynamic
@@ -110,14 +113,15 @@ Open Scope sys_scope.
       to [req] and unmaps the page tail
       [[PAGE_ALIGN(req), PAGE_ALIGN(break))] ([do_vmi_align_munmap],
       which takes every VMA in that range, not only the brk VMA).  Those
-      pages really go: the logical ledger drops [[req, break)] AND every
-      ledger entry's share of those pages ([brk_maps_next],
-      [brk_unmap_cut]), and the effect declares them in [eff_unmaps]
-      ([brk_unmaps]), so a
+      pages really go: the ledger drops every entry's share of them
+      ([brk_maps_next], [brk_unmap_cut]) and the effect declares them in
+      [eff_unmaps] ([brk_unmaps]), so a
       load through a dangling heap pointer faults instead of reading the
       bytes that were there — as on Linux, where a re-grow of pages actually
-      released reads back zeros.  A same-page shrink releases nothing and
-      preserves its bytes.  A shrink can also fail (intersecting VMA /
+      released reads back zeros.  A same-page shrink releases nothing,
+      cuts nothing out of the ledger and preserves its bytes: the break
+      is [vm_brk] and it is the only thing that moves.  A shrink can
+      also fail (intersecting VMA /
       ENOMEM), returning the break unchanged — so both resolutions are
       admissible.
 
@@ -154,16 +158,6 @@ Definition brk_is_grow (req r old : word) : bool :=
   negb (w_is0 req) && Z.ltb 0 (bv_unsigned old)
   && Z.ltb (bv_unsigned old) (bv_unsigned r).
 
-(** The byte-granular grant ledger of a brk transition: exactly a GROW
-    SUCCESS from break [old] up to [r] owns [old, r); every other case
-    owns nothing.  This deliberately differs from [brk_zeros]: Linux
-    changes [mm->brk] byte-granularly but only installs page-rounded memory.
-    Keeping the logical range here makes [vm_backing_used] charge exactly the
-    requested growth.
-    [r - old] cannot wrap: [brk_is_grow] ensures [old < r] unsigned. *)
-Definition brk_grants (req r old : word) : list (word * word) :=
-  if brk_is_grow req r old then [(old, r - old)] else [].
-
 (** Turn a nonempty half-open interval [[lo, hi)] expressed in unbounded
     integer address arithmetic into the effect/ledger range spelling.  Both
     brk directions use this helper so their page rounding cannot drift apart.
@@ -172,6 +166,38 @@ Definition brk_grants (req r old : word) : list (word * word) :=
 Definition brk_page_range (lo hi : Z) : list (word * word) :=
   if Z.ltb lo hi
   then [(Z_to_bv 64 lo, Z_to_bv 64 (hi - lo))]
+  else [].
+
+(** The grant ledger of a brk transition: a GROW SUCCESS from break
+    [old] up to [r] records the PAGES LINUX INSTALLS,
+    [[PAGE_ALIGN(old), PAGE_ALIGN(r))], and every other case records
+    nothing.  A grow that stays inside the page the break is already in
+    therefore records nothing either, because Linux installs nothing
+    there: [SYSCALL_DEFINE1(brk)] (mm/mmap.c, Linux v6.18.46, commit
+    1f99e9ab748f) takes its [oldbrk == newbrk] early exit and never
+    reaches [do_brk_flags].
+
+    THE LEDGER IS PAGE-GRANULAR, AND THAT IS THE WHOLE POINT.  This
+    range is exactly the one [brk_zeros] zero-fills, exactly the one
+    [brk_grow_ok] tests for freedom, and exactly the one a later
+    [brk_unmaps] takes back, so a grant can neither overlap a live entry
+    nor leave a byte of itself behind when the break comes down again.
+    An earlier revision recorded the LOGICAL range [[old, r)] instead,
+    on the ground that [vm_backing_used] should charge the requested
+    growth to the byte; [State.live_bytes] says what that cost — a
+    same-page grow entering the ledger with no address-space test, hence
+    overlapping entries and bytes counted twice, and a same-page shrink
+    cutting still-mapped bytes out of entries that are not the heap's.
+    Both directions were errors of the same conflation, and both go
+    with the byte-granular range.  The LOGICAL break is not lost: it is
+    [vm_brk], a field of its own.
+
+    [brk_is_grow] gates this and [brk_zeros] alike so the ledger and the
+    zero-fill cannot drift apart. *)
+Definition brk_grants (req r old : word) : list (word * word) :=
+  if brk_is_grow req r old
+  then brk_page_range (page_round_up_Z (bv_unsigned old))
+                      (page_round_up_Z (bv_unsigned r))
   else [].
 
 (** The zero-fill VISIBLE to the process after a brk GROW SUCCESS.  Linux
@@ -218,19 +244,20 @@ Definition brk_unmaps (r old : word) : list (word * word) :=
     from the image and every live mapping (ONE FREE PAGE ABOVE THE NEW
     BREAK, below).
     A same-page grow has no physical interval, so those address-space tests
-    are vacuous.  The allocation budget is deliberately LOGICAL:
-    [r - old] added bytes must fit next to the live byte-granular grants, so
-    the deterministic OOM point does not depend on page rounding.  All page
+    are vacuous — and it records and charges nothing, so there is nothing
+    for them to protect.  The budget is the same range again
+    ([brk_budget_ok]).  All page
     arithmetic is in [Z] and the ceiling test precedes conversion to words.
 
-    THE GRANT AND THE GATE COVER DIFFERENT RANGES, ON PURPOSE.
-    [brk_grants] records the LOGICAL interval [[old, r)] while this gate
-    tests the PHYSICAL one [[PAGE_ALIGN(old), PAGE_ALIGN(r))] plus the page
-    above it (next paragraph), and tests nothing at all when the physical
-    interval is EMPTY, as it is for a grow inside one page.  So a same-page grow enters
-    [vm_maps] with no address-space test at all, and the ledger can end
-    up holding overlapping — even identically based — entries.  That is
-    not a hole to be plugged; it is what Linux does.
+    THE GRANT, THE GATE, THE ZERO-FILL AND THE CHARGE ARE ONE RANGE.
+    [brk_grants] records, [brk_zeros] fills, this gate tests (plus the
+    page above it, next paragraph) and [brk_budget_ok] charges
+    [[PAGE_ALIGN(old), PAGE_ALIGN(r))], and all four are empty together
+    for a grow inside one page.  So no brk grow enters [vm_maps] without
+    having been tested free, and the ledger cannot come to hold
+    overlapping entries by this route.  The LOGICAL break still moves
+    byte-granularly, because Linux moves it that way and [vm_brk]
+    carries it:
     [SYSCALL_DEFINE1(brk)] (mm/mmap.c) computes
 
       newbrk = PAGE_ALIGN(brk);
@@ -325,22 +352,29 @@ Definition brk_unmaps (r old : word) : list (word * word) :=
     has not grown to within [stack_guard_gap + PAGE_SIZE] of that bound.
     That is a premise of the model.
 
-    What holds instead is PAGE-granular: no page-aligned address is ever
-    owned by two [vm_maps] entries, because a page-aligned byte of
-    [[old, r)] is necessarily inside [[PAGE_ALIGN(old), PAGE_ALIGN(r))],
-    a range this gate does test.  Since every base a syscall can name
-    is page aligned, that is what makes a base determine its entry.  See
-    [Checks/VmMapsDisjoint] for the statement, the preservation proof
-    over the whole dispatcher, and a checked execution reaching the
-    byte-level overlap. *)
+    What this gate buys is the ledger's disjointness: a brk grow records
+    exactly the range it tests here, so no [vm_maps] entry can overlap
+    another by this route — not at a page and not at a byte.  Since
+    every base a syscall can name is page aligned, a base determines its
+    entry.  See [Checks/VmMapsDisjoint] for the statement and the
+    preservation proof over the whole dispatcher. *)
 (** The budget conjunct of a brk grow, named so that [brk_grow_ok]
     and the budget mark [brk_budget_refused_b] below read ONE
-    definition rather than two spellings of it: the grow's byte delta
-    [r - vm_brk] must fit the backing still unspent.  Byte-granular,
-    like the ledger entry a grow records. *)
+    definition rather than two spellings of it: the PAGES the grow
+    installs, [[PAGE_ALIGN(vm_brk), PAGE_ALIGN(r))], must fit the
+    backing still unspent.  Page-granular, like the ledger entry a grow
+    records ([brk_grants]) — the charge and the entry are the same
+    range, so [vm_backing_used] of the post-state is exactly this sum
+    and the gate cannot admit a state above the limit.  A grow inside
+    one page installs no page and so costs nothing, which is Linux's
+    [oldbrk == newbrk] early exit read as accounting. *)
+Definition brk_grow_bytes (h : VmMaps) (r : word) : Z :=
+  Z.max 0 (page_round_up_Z (bv_unsigned r)
+           - page_round_up_Z (bv_unsigned (vm_brk h))).
+
 Definition brk_budget_ok (m : Model) (r : word) : bool :=
   let h := m_vmmaps m in
-  Z.leb (vm_backing_used m + bv_unsigned (r - vm_brk h)) (vm_limit h).
+  Z.leb (vm_backing_used m + brk_grow_bytes h r) (vm_limit h).
 
 Definition brk_grow_ok (m : Model) (req r : word) : bool :=
   let h := m_vmmaps m in
@@ -400,29 +434,36 @@ Definition brk_unmap_cut (maps : list (word * word)) (r old : word)
   else maps.
 
 (** The [vm_maps] ledger after resolving to break [r].  A GROW SUCCESS
-    records the granted interval, so a later mmap can never alias the
-    live heap; the CONVERSE fails, because a grow inside one page is
-    gated on neither [vm_maps] nor anything else in the address space,
-    and so can land inside a live mapping.  A SHRINK drops the logical
-    tail [r, b) via
-    [maps_subtract] (dropping heap grants inside it while sparing higher
-    anonymous mmaps), and then the whole pages the kernel unmaps
-    ([brk_unmap_cut]), so no remnant of a mapping inside those pages
-    survives to be charged; every other resolution leaves [vm_maps]
-    untouched ([brk_grants] is [] and no interval is freed).  The logical
-    cut keeps the ledger byte-granular on purpose even though
-    [brk_zeros]/[brk_unmaps] describe the page-rounded memory effects;
-    the page cut makes the ledger lose at least every byte the kernel
-    unmaps.  [Checks/Cases/Mm/Mmap.v]'s
-    [brk_shrink_takes_the_mapping_in_its_freed_page] pins it against
-    Linux's post-state. *)
+    records the pages Linux installs ([brk_grants]), so a later mmap can
+    never alias the live heap and the recorded range is the range the
+    gate tested free.  A SHRINK drops exactly the whole pages the kernel
+    unmaps, [[PAGE_ALIGN(r), PAGE_ALIGN(b))] ([brk_unmap_cut]), cut from
+    every entry that meets them, so no remnant of a mapping inside those
+    pages survives to be charged.  Every other resolution leaves
+    [vm_maps] untouched ([brk_grants] is [] and no page is freed).
+
+    THE SHRINK NO LONGER CUTS THE LOGICAL TAIL [[r, b)] AS WELL, and
+    that removal is a fix rather than a simplification.  Linux unmaps
+    from [PAGE_ALIGN(r)] up and nothing at all when the two breaks round
+    to the same page (the [oldbrk == newbrk] exit of
+    [SYSCALL_DEFINE1(brk)], mm/mmap.c, Linux v6.18.46, commit
+    1f99e9ab748f), so the page holding [r] stays mapped.  The extra
+    byte-granular cut therefore took bytes out of the ledger that stay
+    mapped — and, since the ledger does not record which entries are brk
+    grants, it took them out of mappings that are not the heap's, which
+    is how a MAP_FIXED page over the heap's tail lost ten granted,
+    unfreed bytes in [Checks/VmMapsDisjoint]'s witness.  The logical
+    break is [vm_brk], and it is the field that carries it.
+    [Checks/Cases/Mm/Mmap.v]'s
+    [brk_shrink_takes_the_mapping_in_its_freed_page] pins the page cut
+    against Linux's post-state, and
+    [brk_shrink_in_one_page_keeps_the_mapped_bytes] pins the sub-page
+    shrink against it. *)
 Definition brk_maps_next (h : VmMaps) (req r : word) : list (word * word) :=
   if Z.ltb 0 (bv_unsigned (vm_brk h))
      && Z.ltb (bv_unsigned r) (bv_unsigned (vm_brk h))
-  then (* SHRINK: free [r, b), then the pages Linux unmaps *)
-       brk_unmap_cut
-         (maps_subtract (vm_maps h) (bv_unsigned r) (bv_unsigned (vm_brk h)))
-         r (vm_brk h)
+  then (* SHRINK: free exactly the pages Linux unmaps *)
+       brk_unmap_cut (vm_maps h) r (vm_brk h)
   else (* GROW success records; else no-op *)
        brk_grants req r (vm_brk h) ++ vm_maps h.
 
@@ -650,9 +691,11 @@ Definition brk_spec (req : word) : Sys SyscallEffect :=
    and change what every existing statement means.
 
    For brk: a real request ([req <> 0], at or above [min_brk]) that
-   GROWS the break from an established one, whose byte delta does not
-   fit.  Everything else — the query, the invalid address, a shrink, a
+   GROWS the break from an established one, and whose PAGES do not fit
+   ([brk_budget_ok]).  Everything else — the query, the invalid address,
+   a shrink, a
    grow from an unestablished break (which [brk_grow_ok] does not gate),
+   a grow inside one page (which installs no page and costs nothing),
    a grow that fits — is not a budget refusal, whatever the answer.
    [brk_r_ok] then admits only [r = vm_brk]: the mark's soundness is
    pinned in [Checks/BudgetPremise.v]. *)

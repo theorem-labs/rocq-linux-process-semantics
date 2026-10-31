@@ -373,38 +373,57 @@ Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
 
     [vm_noaccess] is deliberately ABSENT from the [region_free] list, and
     that is not an oversight this predicate gets away with.  [State.v]'s
-    purpose (c) says protected ranges are ORDINARILY subranges of
-    [vm_maps], which the [vm_maps] half already excludes.  It names ONE
-    exception, and it is a real one: a brk shrink inside its final page
-    drops the byte-granular tail from [vm_maps] while [Mmap.brk_unmaps]
-    (page-rounded) removes nothing from [vm_noaccess], so a strict
-    sub-page slice [[r, PAGE_ALIGN r)] is left protected and owned by no
-    [vm_maps] entry.  [Checks/Examples.v]'s [m_brk_same_page_shrunk] is a
-    checked-in state in exactly that shape.
+    purpose (c) says protected ranges are subranges of [vm_maps], which
+    the [vm_maps] half already excludes.  That held with ONE exception
+    until this revision: a brk shrink inside its final page dropped the
+    byte-granular tail from [vm_maps] while [Mmap.brk_unmaps]
+    (page-rounded) removed nothing from [vm_noaccess], leaving a strict
+    sub-page slice [[r, PAGE_ALIGN r)] protected and owned by no
+    [vm_maps] entry.  [Mmap.brk_maps_next] no longer makes that cut — it
+    takes out exactly the pages [Mmap.brk_unmaps] names — so the two
+    lists now lose the same interval and no brk shrink produces such a
+    slice.
 
-    No destination can reach such a slice, for a reason this predicate
-    does check.  [dst] is page aligned, and the entry that owned the
-    protected range is TRUNCATED to [[e0, r)], never removed — a nonempty
-    orphan forces the protected base [a] to satisfy
-    [a <= page_floor r < r], so [[page_floor r, r)] is still in
-    [vm_maps].  A page-aligned [dst] overlapping the orphan needs
+    THE GUARD IS STILL WHAT IT WAS, and what it leans on is still worth
+    stating, because the states are hand-buildable even if no step
+    reaches them.  THEY ARE UNREACHABLE BY TWO SEPARATE ROUTES, and a
+    reader who sees one will think the other state is reachable:
+    [Checks/Cases/Mm/Mmap.m_brk_orphan_without_residual] was already
+    unreachable before this revision, by the [a <= page_floor r < r]
+    argument below — a nonempty orphan forces the truncated entry to
+    survive — and [m_brk_orphan_with_source] joined it when
+    [Mmap.brk_maps_next] became page-granular.
+    [dst] is page aligned, and an entry that owns a
+    protected range and is TRUNCATED rather than removed forces the
+    protected base [a] to satisfy [a <= page_floor r < r], so
+    [[page_floor r, r)] is still in
+    [vm_maps].  A page-aligned [dst] overlapping such an orphan needs
     [dst <= page_floor r] and [dst + new_n > r], which puts it across
-    [[e0, r)], and [region_free] refuses it.  The pair
-    [mremap_move_onto_brk_orphan_page_rejected] /
-    [mremap_move_above_brk_orphan_accepts] in [Checks/Examples.v] pins
-    that boundary: the two differ only in the destination, one page apart
-    across the orphan's end.
+    [[e0, r)], and [region_free] refuses it.
+    [mremap_fresh_above_brk_orphan_accepts] in [Checks/Examples.v] pins
+    that boundary ON THIS GUARD: its two destinations differ only in
+    the page, one apart across the orphan's end, and the guard answers
+    true above the end and false onto it.
 
-    Note WHICH half of that does the work.
-    [mremap_move_onto_orphan_without_residual_accepts] takes the residual
-    entry out of the same state, and the move onto the orphan page is
-    then ACCEPTED — so the property this predicate leans on is "the
-    shrink TRUNCATES the owning entry rather than removing it", not the
-    containment prose itself.  The orphan's presence in [vm_noaccess]
-    contributes nothing here, because the predicate never reads it.  That
-    state is unreachable, for the [a <= page_floor r < r] reason above;
-    the example is checked in so the load-bearing property is visible
-    rather than inferred.
+    IT IS STATED ON THE GUARD AND NOT ON A SYSCALL because no syscall
+    reaches the guard on that state.  [mremap_inplace_room_b] is true
+    there, so [check_mremap] expands in place and refuses every moved
+    destination before this predicate is consulted:
+    [mremap_move_onto_brk_orphan_page_rejected] and
+    [mremap_move_above_brk_orphan_rejected] are BOTH [CheckReject], and
+    for the room above the source, not for the orphan
+    ([mremap_orphan_input_has_room_above_the_source]).
+
+    Note WHICH half of the guard's pair does the work.
+    [mremap_fresh_onto_orphan_without_residual_accepts] takes the
+    residual entry out of the same state, and the guard then ADMITS the
+    destination onto the orphan page — so the property this predicate
+    leans on is "the shrink TRUNCATES the owning entry rather than
+    removing it", not the containment prose itself.  The orphan's
+    presence in [vm_noaccess] contributes nothing here, because the
+    predicate never reads it.  That state is unreachable, for the
+    [a <= page_floor r < r] reason above; the example is checked in so
+    the load-bearing property is visible rather than inferred.
 
     Adding [region_free (vm_noaccess h) dst new_n] here would be
     redundant on every reachable state by the argument above, and it

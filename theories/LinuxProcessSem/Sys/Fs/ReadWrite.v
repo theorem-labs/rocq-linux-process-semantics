@@ -227,16 +227,16 @@ Qed.
       grow-by-doubling reader's 256 KiB call is an ordinary full
       transfer.
 
-    TWO ARMS ASK THE RANGE QUESTION DIFFERENTLY, and the difference is
-    which test each already had.  The channel, file and directory arms
-    run [access_ok] themselves and answer -EFAULT, so they need no gate
-    of their own.  The SOCKET and PIPE arms do not run it.  They carry
-    [Uaccess.modeled_rw_range], the same
+    EVERY ARM ASKS [access_ok] ON THE NAMED COUNT, and which arm asks
+    it where is said once, at [Uaccess.modeled_rw_range].  The channel,
+    file, directory, /dev/null and /dev/urandom arms ask it first and
+    answer -EFAULT, so they need no gate of their own.  The SOCKET and
+    PIPE arms put [Uaccess.modeled_rw_range] in front of it, the same
     one-sided gate the write arms carry: judged up to
-    [Uaccess.rw_bytes_max], judged above it when the range is inside the address
-    space, declined above it when it is not.  What Linux answers there
-    is -EFAULT.  This is a known gap, the same
-    for both directions.
+    [Uaccess.rw_bytes_max], judged above it when the range is inside
+    the address space, declined above it when it is not, where Linux
+    answers -EFAULT.  Below that gate they ask [access_ok] on every
+    path that answers.
 
     The fd's OFFSET carries no bound: a read at or past end-of-file
     delivers nothing whatever the offset, and [Fs.file_read] answers
@@ -466,23 +466,37 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
                                                     resolved before any buffer access *)
   | Some (FdSocket sk) =>
       if negb (modeled_rw_range buf count) then unmodeled
-        (* THE SOCKET ARM DOES NOT ASK [access_ok] ITSELF, unlike the
-           channel, file and directory arms above, so this gate is what
-           keeps a big count honest.  It is
-           [Uaccess.modeled_rw_range] — [Uaccess.rw_bytes_max] OR Linux's own
-           range test — which means: at or below [Uaccess.rw_bytes_max]
-           a read is judged, above it a read whose range is inside the
-           user address space is JUDGED (with the transfer clamped
-           below), and above it a read whose range leaves the address
-           space is DECLINED where Linux answers -EFAULT.
+        (* THE GATE COMES FIRST, and it is [Uaccess.modeled_rw_range] —
+           [Uaccess.rw_bytes_max] OR Linux's own range test: at or below
+           [Uaccess.rw_bytes_max] a read is judged, above it a read whose
+           range is inside the user address space is JUDGED (with the
+           transfer clamped below), and above it a read whose range
+           leaves the address space is DECLINED where Linux answers
+           -EFAULT.  That decline is about how much the model judges, and
+           it stays.
 
-           That last decline is the one this arm keeps, and it is
-           [write_spec]'s decline for [write_spec]'s reason: adding the
-           -EFAULT would make every socket read's judgement depend on a
-           stack-layout fact the model does not carry.  Below the
-           constant the same over-approximation is there too, in the
-           read direction as in the write one.  Decided after the fd, as
-           Linux does *)
+           BELOW THE GATE EVERY PATH ASKS [vfs_read]'s [access_ok] ON THE
+           NAMED COUNT (fs/read_write.c, [vfs_read]), and it is asked in
+           two places rather than once, on purpose.  The five paths that
+           move no byte — zero count, [NFin], [NRst] and [NTimedOut]
+           through [socket_pending_error], [SkReset], never connected —
+           ask it through [access_ok_zero], which is the same test.  The
+           one that moves bytes, [NCons], asks it at its own head.  One
+           test above the state dispatch would leave those five wrappers
+           deciding nothing.
+
+           [NCons] used not to ask it, on the argument that the test
+           would make every socket read's judgement depend on a
+           stack-layout fact the model does not carry.  That argument was
+           false rather than outweighed: [State.access_okb] compares [buf]
+           and [count] with the literal [State.TASK_SIZE] and reads no
+           model state at all.  What the arm paid for it was a guard on
+           every path but the one that moves bytes: a delivered read
+           where Linux answers -EFAULT — [read(sock, TASK_SIZE - 4, 8)]
+           with two bytes queued delivered them — and, at a destination
+           straddling 2^64, a delivery into bytes the walk reached by
+           wrapping ([State.copy_bytes_map]'s note has the wrap).
+           Decided after the fd, as Linux does *)
       else
       if w_is0 count then
         access_ok_zero buf count (ret_only (Z_to_bv 64 0))
@@ -509,6 +523,25 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
           | NRst => socket_pending_error ECONNRESET fd peer ch buf count i m
           | NTimedOut => socket_pending_error ETIMEDOUT fd peer ch buf count i m
           | NCons _ _ =>
+              if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+                (* [vfs_read]'s [access_ok] on the count the call NAMED,
+                   before [sock_read_iter] (net/socket.c) is reached: a
+                   range whose exact end is past [State.TASK_SIZE] is
+                   -EFAULT with nothing delivered and nothing consumed,
+                   however much of it the memory backs.
+
+                   THIS IS THE GUARD ON THE WALKS BELOW — the one-byte
+                   probe, the delivered-length walk and the [choose] side
+                   condition that repeats it — which are the bare
+                   [State.read_bytes_map] as on the channel and file arms.
+                   The test is on [count]; each walk covers at most the
+                   delivered prefix, whose length is at most
+                   [State.rw_count_clamp count] and so at most [count].  So
+                   [buf + len <= buf + count <= TASK_SIZE] and no walk can
+                   pass the top of the user address space, let alone wrap.
+                   [State.copy_bytes_map] here would be a guard that can
+                   never fire *)
+              else
               match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
               | None => err_ret EFAULT               (* not one byte of the destination is
                                                     writable-mapped: real -EFAULT, nothing
@@ -670,12 +703,17 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
                                                     FMODE_READ first *)
       else
       if negb (modeled_rw_range buf count) then unmodeled
-        (* THE PIPE ARM DOES NOT ASK [access_ok] ITSELF, as the socket
-           arm above does not, so this gate is what keeps a big count
-           honest — the same [Uaccess.modeled_rw_range], read the same
-           way: judged at or below [Uaccess.rw_bytes_max], judged
-           above it when the range is inside the user address space, and
-           declined above it when the range is not.
+        (* THE SOCKET ARM'S GATE, read the same way: judged at or below
+           [Uaccess.rw_bytes_max], judged above it when the range is
+           inside the user address space, and declined above it when the
+           range is not.  Below it every path that answers asks
+           [vfs_read]'s [access_ok] on the NAMED count, in two places for
+           the reason the socket arm's note gives: the zero-count and
+           end-of-file paths, which move no byte, through
+           [access_ok_zero]; the delivering path at its own head.  The
+           delivering path used not to, at the cost that note names.  The
+           would-block decline is reached before the test, which costs
+           only how much the model judges.
 
            IT IS NOT THE TIGHTER [Uaccess.modeled_rw_count], which
            would decline an ordinary [read(pipefd, buf, 1 << 20)] outright.
@@ -733,6 +771,16 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
              precedes the only wait, :388).  [State.pipe_take] is that
              [min], taken in [Z] so a large count costs nothing.
              No trace events: pipe bytes are internal to the process *)
+          if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+            (* [vfs_read]'s [access_ok] on the count the call NAMED,
+               before [anon_pipe_read] (fs/pipe.c) is reached: -EFAULT
+               with the queue untouched, however much of the range the
+               memory backs.  THIS IS THE GUARD ON THE TWO WALKS BELOW:
+               the test is on [count], and each walk covers at most [del],
+               whose length is at most [State.rw_count_clamp count] and so
+               at most [count], so [buf + len <= buf + count <= TASK_SIZE]
+               and neither walk can pass the top *)
+          else
           let del := pipe_take q (rw_count_clamp count) in
           match read_bytes_map (in_wmem i) buf (len_word del) with
           | None =>
@@ -830,9 +878,10 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     decided after the fd checks Linux makes first,
     is [Uaccess.modeled_rw_range]: at or below [Uaccess.rw_bytes_max] the gate
     admits the call, and above it the gate is Linux's own range test
-    ([State.access_okb]), with an out-of-range write DECLINED rather
-    than answered — the argument, and the -EFAULT this model does not
-    have, are at [Uaccess.modeled_rw_range].
+    ([State.access_okb]), with an out-of-range write above the constant
+    DECLINED rather than answered.  Below the gate every judging arm asks
+    [vfs_write]'s own [access_ok] on the named count and answers -EFAULT;
+    [Uaccess.modeled_rw_range] says which arm asks it where.
 
     The transfer itself is then the kernel's: Linux clamps it at
     [MAX_RW_COUNT] before the write ([State.rw_count_clamp]), so the
@@ -856,9 +905,9 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     one of them is a kernel fact rather than a modelling convenience:
 
     - the LEADING KERNEL TESTS.  The append arm models [vfs_write]'s
-      [access_ok] and [rw_verify_area]; the other two model neither and
-      rely on [modeled_file_gap] declining first, which is a known
-      divergence from Linux.
+      [access_ok] and [rw_verify_area]; the other two model [access_ok]
+      and not [rw_verify_area], and rely on [modeled_file_gap] declining
+      first for that one, which is a known divergence from Linux.
       That is a difference between the ARMS, not between the kernels, so
       it has to stay visible at each arm rather than move in here.
     - the GAP GUARD, which the append arm does not need and does not have
@@ -876,8 +925,9 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     unstateable.
 
     The channel and pipe arms do NOT go through these: they share the
-    count gate and nothing else -- no file, no gap, no offset written
-    back, and a ledger of their own -- so each spells the gate in place. *)
+    count gate and [vfs_write]'s [access_ok] and nothing else -- no file,
+    no gap, no offset written back, and a ledger of their own -- so each
+    spells the two tests in place. *)
 
 (** THE COUNT GATE, and it is the FIRST thing every file write arm does.
 
@@ -886,7 +936,7 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     whether the MODEL will judge this call at all, not a kernel test.  It
     has to stay AHEAD of the arm's own kernel tests: its left disjunct is
     what admits a small count at an unaddressable buffer, and that is the
-    call on which the append arm's [access_ok] then produces the real
+    call on which every file arm's [access_ok] then produces the real
     -EFAULT.  An arm that ran a kernel test first would be answering for
     a call the model had not yet agreed to judge. *)
 Definition write_range_gate (buf count : word) (k : Sys SyscallEffect)
@@ -947,7 +997,25 @@ Definition write_ledger (buf count : word) (bs : list byte)
     [Uaccess.access_ok_zero].  A zero-length write extends nothing
     either: [generic_write_checks] returns at
     [if (!iov_iter_count(from)) return 0;] before [write_begin] is
-    reached at all. *)
+    reached at all.
+
+    Every arm that reaches this tail has asked [vfs_write]'s [access_ok]
+    on the named count first, so the walk [Uaccess.write_source] makes
+    never leaves the user address space: it covers at most
+    [State.rw_count_clamp count] bytes, which is at most [count], and
+    [buf + count <= State.TASK_SIZE].
+
+    THE [access_ok_zero] IN THE BODY THEREFORE DECIDES NOTHING, AND IT IS
+    KEPT.
+    The helper has three callers, [write_spec]'s [FdFileW], [FdFileRW]
+    and [FdFileA] arms, and each asks [access_okb buf (bv_unsigned count)]
+    under [write_range_gate] before it calls the helper.  [access_ok_zero]
+    is that same test, so on every caller it passes.  For [FdFileA] this
+    was already true before the other two arms asked.  [pwrite64] and
+    [writev] are not callers: they share [write_fault_extend] and not
+    this tail.  The test stays as the helper's own guarantee, so a
+    future caller that does not ask first still gets Linux's answer on a
+    zero-length write. *)
 Definition write_file_tail (mp : word -> option byte) (buf count : word)
     (fault : option (Sys SyscallEffect -> Sys SyscallEffect))
     (place : list byte -> option (Sys SyscallEffect -> Sys SyscallEffect))
@@ -1127,6 +1195,21 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
                 which leaves only the range verdict — see
                 [Uaccess.access_ok_zero] *)
       else
+      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+        (* [vfs_write]'s [access_ok] on the count the call NAMED
+           (fs/read_write.c, [vfs_write]), after the gate and before the
+           source is read.  Without it a write whose named range
+           [access_ok] refuses was judged by its readable prefix — a short
+           write where Linux answers -EFAULT — and at a buffer straddling
+           2^64 by bytes the walk reached by wrapping
+           ([State.readable_bytes] steps [a + 1] in the word;
+           [State.copy_bytes_map]'s note has the wrap).  THIS IS THE GUARD
+           ON [Uaccess.write_source] BELOW: it walks at most
+           [State.rw_count_clamp count] bytes, at most [count], so
+           [buf + len <= buf + count <= TASK_SIZE].
+           IT IS ALSO THE TEST THE NO-READER ARM BELOW NEEDS, which is
+           why that arm no longer carries one of its own *)
+      else
       if negb (m_channel_reader m) then
         (* THE FAR END HAS NO READER.  [State.in_channel_reader] says
            the launch put a pipe or a socket on the other side of this
@@ -1150,14 +1233,15 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            before it calls [f_op->write_iter], so a buffer whose NAMED
            range leaves the user address space is -EFAULT whatever is
            on the other end of the descriptor, and only a call that
-           gets past it reaches the readers test.  The reader-present
-           path below does not make this test and takes a readable
-           prefix instead -- a looseness of that path which this arm
-           cannot inherit, because answering a death where Linux
-           answers -EFAULT is a wrong MODELED answer rather than a
-           short count.  Linux v6.18.46, commit 1f99e9ab748f *)
-        if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
-        else sigpipe_write
+           gets past it reaches the readers test.  That test is now the
+           arm's own, immediately above, rather than a second copy
+           here: the reader-present path below faces it too, which is
+           the one thing that changed under this arm since this note
+           was written -- that path no longer takes a readable prefix
+           on a range [access_ok] refuses, so the looseness this note
+           refused to inherit is gone rather than avoided.
+           Linux v6.18.46, commit 1f99e9ab748f *)
+        sigpipe_write
       else
       let bs := write_source (in_mem i) buf count in
       if Nat.eqb (length bs) 0
@@ -1245,14 +1329,29 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          MSG_NOSIGNAL gate, where the flag is an argument a spec can
          read ([Net.Socket.send_flags_modeled]) *)
   | Some (FdFileW p off) =>
-      (* NO LEADING KERNEL TEST, which is a deliberate omission and not
-         the helper's doing: this arm models neither [vfs_write]'s
-         [access_ok] nor [rw_verify_area], and rests on
-         [modeled_file_gap] below declining first.  The cost is a known
-         divergence from Linux where those two tests would fire.  The append arm
-         below models both, for the reason it gives there. *)
+      (* ONE LEADING KERNEL TEST, [vfs_write]'s [access_ok], and not the
+         second.  This note used to say the arm models neither
+         [vfs_write]'s [access_ok] nor [rw_verify_area]; the [access_ok]
+         half of that is withdrawn.  Without it a write whose named range
+         [access_ok] refuses was judged by its readable prefix — a short
+         or full write where Linux answers -EFAULT, and at a buffer
+         straddling 2^64 a write of bytes the walk reached by wrapping
+         ([State.copy_bytes_map]'s note has the wrap).
+
+         TAKING [access_ok] WITHOUT [rw_verify_area] CANNOT INVERT THEIR
+         ORDER.  [vfs_write] (fs/read_write.c) runs [access_ok] FIRST and
+         [rw_verify_area] second; the inversion the append arm's note
+         warns of — -EINVAL where Linux answers -EFAULT — needs the later
+         test without the earlier one, and this arm has the earlier one
+         without the later.  [rw_verify_area] is still not modeled here,
+         and the arm rests on [modeled_file_gap] below declining first for
+         it: a known divergence from Linux where that test would fire.
+         The append arm below models both, for the reason it gives
+         there. *)
       write_range_gate buf count
-        (write_file_tail (in_mem i) buf count
+        (if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+         else
+         write_file_tail (in_mem i) buf count
            (write_fault_extend (m_fs m) p off)
              (* a source that faults still extends the file to [off]:
                 see [write_file_tail] *)
@@ -1286,12 +1385,14 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          arm advances, which is the whole content of the kind.  Linux
          v6.18.46.
 
-         IT INHERITS THE MISSING KERNEL TESTS TOO.  Like the O_WRONLY arm
-         and unlike the append one, this models neither [access_ok] nor
-         [rw_verify_area], and rests on [modeled_file_gap] declining
-         first, with the same known divergence. *)
+         IT INHERITS THE O_WRONLY ARM'S KERNEL TESTS TOO: [access_ok]
+         and not [rw_verify_area], resting on [modeled_file_gap]
+         declining first for the second, with the same known
+         divergence. *)
       write_range_gate buf count
-        (write_file_tail (in_mem i) buf count
+        (if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+         else
+         write_file_tail (in_mem i) buf count
            (write_fault_extend (m_fs m) p off) (fun bs =>
            match fs_lookup (m_fs m) p with
            | None => None                        (* an FdFileRW always points into the fs; see openat *)
@@ -1365,11 +1466,11 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          wrong modeled answer rather than a gap.
 
          This is where the append arm stops matching the [FdFileW] one
-         in a second place, and the two omissions are one decision: that
-         arm models NEITHER test, judging a delivering write by its
-         readable prefix instead, which is a known divergence.  Modelling
-         [rw_verify_area] here without [access_ok] would have been the
-         worst of the three, so the arm takes both.  Linux v6.18.46. *)
+         in a second place: that arm models [access_ok] and not
+         [rw_verify_area], resting on [modeled_file_gap] for the second,
+         which is a known divergence.  Modelling [rw_verify_area] here
+         without [access_ok] would have been the worst of the three, so
+         the arm takes both.  Linux v6.18.46. *)
       write_range_gate buf count
         (if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
          else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
@@ -1409,6 +1510,16 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            pipe whose reader is gone is 0 — NOT -EPIPE, and no SIGPIPE
            (v6.18.46) *)
       else
+      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+        (* [vfs_write]'s [access_ok] on the count the call NAMED
+           (fs/read_write.c, [vfs_write]), which runs before
+           [anon_pipe_write] (fs/pipe.c) and so before its readers test: a
+           refused range is -EFAULT with no SIGPIPE and the pipe
+           untouched.  THIS IS THE GUARD ON [Uaccess.write_source] BELOW,
+           by the channel arm's argument, so the wholly-readable decline
+           further down is left with exactly a source [access_ok] admits
+           and the memory does not wholly back *)
+      else
       if negb (pipe_end_live (m_fds m) id false) then
         (* NO READER LEFT.  fs/pipe.c [anon_pipe_write] takes
            [if (!pipe->readers) { send_sig(SIGPIPE, current, 0); ret = -EPIPE; goto out; }]
@@ -1422,9 +1533,12 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
 
            DECIDED AFTER the zero-count branch above, which is :454-456
            returning 0 BEFORE the [mutex_lock] at :458 and so before
-           this test, and after [write_range_gate]'s count rule.  No
-           byte of the source is read on this path, exactly as on
-           Linux, so the ledger stays empty.
+           this test, and after [write_range_gate]'s count rule.  AND
+           AFTER [access_ok], immediately above: [vfs_write] refuses a
+           range that leaves the user address space before it calls
+           [f_op->write_iter], so a refused range is -EFAULT and not a
+           death.  No byte of the source is read on this path, exactly
+           as on Linux, so the ledger stays empty.
 
            AND DECIDED ABOVE THE -ENOMEM ALTERNATIVE of the page
            allocation further down this arm.  THIS ORDER IS BEHAVIOUR AND

@@ -860,6 +860,8 @@ with twm_pend : machine_state -> Model -> list byte -> list (list byte) -> word 
     bv_unsigned x8 = 64%Z ->
     ms_gpr ms 0 = Z_to_bv 64 1 ->
     ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some rest ->
+    (* the range [vfs_write]'s [access_ok] accepts; see [CatSim.write1_check_n] *)
+    access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
     (1 <= length rest)%nat ->
     (forall n, (1 <= n)%nat -> (n <= length rest)%nat ->
        twm_tail (advance_past_svc (set_gpr0 ms (len_word (firstn n rest)))) model
@@ -914,6 +916,7 @@ Lemma twm_write_ret : forall regs pc mem rom model buf bufs code,
                    ms_svc_pending := Some (getr regs 17); ms_resv := None; ms_fcsr := fp_csr;
                    ms_mem := mem; ms_rom := rom |}
     (reg_get regs 11) (reg_get regs 12) = Some buf ->
+  access_okb (reg_get regs 11) (bv_unsigned (reg_get regs 12)) = true ->
   (1 <= length buf)%nat ->
   (forall n, (1 <= n)%nat -> (n <= length buf)%nat ->
      twm_tail (mkst (regupd regs 10 (len_word (firstn n buf))) (v_addi pc 4) mem rom)
@@ -923,7 +926,7 @@ Lemma twm_write_ret : forall regs pc mem rom model buf bufs code,
          ms_mem := mem; ms_rom := rom |}
       model (buf :: bufs) code.
 Proof.
-  intros regs pc mem rom model buf bufs code H17 H10 Hr Hnb Hcont.
+  intros regs pc mem rom model buf bufs code H17 H10 Hr Hok Hnb Hcont.
   assert (E10 : Z_to_bv 5 (10 + Z.of_nat 0) = (10 : reg)) by (apply bv_eq; reflexivity).
   assert (E11 : Z_to_bv 5 (10 + Z.of_nat 1) = (11 : reg)) by (apply bv_eq; reflexivity).
   assert (E12 : Z_to_bv 5 (10 + Z.of_nat 2) = (12 : reg)) by (apply bv_eq; reflexivity).
@@ -933,6 +936,7 @@ Proof.
   - exact H17.
   - unfold ms_gpr. cbn [ms_regs]. rewrite E10. exact H10.
   - unfold ms_gpr. cbn [ms_regs]. rewrite E11, E12. exact Hr.
+  - unfold ms_gpr. cbn [ms_regs]. rewrite E11, E12. exact Hok.
   - exact Hnb.
   - intros n Hn1 Hn2. rewrite adv_set. exact (Hcont n Hn1 Hn2).
 Qed.
@@ -946,6 +950,7 @@ Lemma twm_tail_write_rec : forall regs pc mem rom model rest bufs code,
                    ms_svc_pending := Some (getr regs 17); ms_resv := None; ms_fcsr := fp_csr;
                    ms_mem := mem; ms_rom := rom |}
     (reg_get regs 11) (reg_get regs 12) = Some rest ->
+  access_okb (reg_get regs 11) (bv_unsigned (reg_get regs 12)) = true ->
   (1 <= length rest)%nat ->
   (forall n, (1 <= n)%nat -> (n <= length rest)%nat ->
      twm_tail (mkst (regupd regs 10 (len_word (firstn n rest))) (v_addi pc 4) mem rom)
@@ -955,7 +960,7 @@ Lemma twm_tail_write_rec : forall regs pc mem rom model rest bufs code,
               ms_mem := mem; ms_rom := rom |}
     model rest bufs code.
 Proof.
-  intros regs pc mem rom model rest bufs code H17 H10 Hr Hnb Hcont.
+  intros regs pc mem rom model rest bufs code H17 H10 Hr Hok Hnb Hcont.
   assert (E10 : Z_to_bv 5 (10 + Z.of_nat 0) = (10 : reg)) by (apply bv_eq; reflexivity).
   assert (E11 : Z_to_bv 5 (10 + Z.of_nat 1) = (11 : reg)) by (apply bv_eq; reflexivity).
   assert (E12 : Z_to_bv 5 (10 + Z.of_nat 2) = (12 : reg)) by (apply bv_eq; reflexivity).
@@ -965,6 +970,7 @@ Proof.
   - exact H17.
   - unfold ms_gpr. cbn [ms_regs]. rewrite E10. exact H10.
   - unfold ms_gpr. cbn [ms_regs]. rewrite E11, E12. exact Hr.
+  - unfold ms_gpr. cbn [ms_regs]. rewrite E11, E12. exact Hok.
   - exact Hnb.
   - intros n Hn1 Hn2. rewrite adv_set. exact (Hcont n Hn1 Hn2).
 Qed.
@@ -1243,7 +1249,7 @@ Proof.
     + intros evs st Hss. exact (sstep_instr_inv segs ms model ms' evs st Hlazy Hsvc Hstep Hss).
     + eapply exec_conseq; [exact (IH Hbm Hh Hlazy Hfd) |]. intros tr o H. cbn [app]. exact H.
   - (* twmp_write: every delivered length is a successor *)
-    intros ms model x8 rest bufs code Hsvc Hno Hg Hr Hnb Hcont IH Hbr Hbm Hh Hlazy Hfd.
+    intros ms model x8 rest bufs code Hsvc Hno Hg Hr Hok Hnb Hcont IH Hbr Hbm Hh Hlazy Hfd.
     apply exec_step; [exact Hh | | |].
     + eexists; eexists.
       apply (sstep_syscall segs ms model x8
@@ -1257,11 +1263,11 @@ Proof.
       * apply materialize_model_accesses_no_lazy. exact Hlazy.
     + intros evs Hss.
       destruct (sstep_write_inv segs ms model x8 rest evs SError
-                  Hh Hlazy Hfd Hsvc Hno Hg Hr Hbr Hnb Hss) as (n & _ & _ & _ & Habs).
+                  Hh Hlazy Hfd Hsvc Hno Hg Hr Hok Hbr Hnb Hss) as (n & _ & _ & _ & Habs).
       discriminate Habs.
     + intros evs c' Hss.
       destruct (sstep_write_inv segs ms model x8 rest evs (SNext c')
-                  Hh Hlazy Hfd Hsvc Hno Hg Hr Hbr Hnb Hss) as (n & Hn1 & Hn2 & -> & Hc').
+                  Hh Hlazy Hfd Hsvc Hno Hg Hr Hok Hbr Hnb Hss) as (n & Hn1 & Hn2 & -> & Hc').
       injection Hc' as ->.
       eapply exec_conseq;
         [exact (IH n Hn1 Hn2 (buf_modeled_skipn n rest Hbr) Hbm Hh Hlazy Hfd) |].

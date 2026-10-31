@@ -1099,65 +1099,6 @@ Proof.
   destruct (bv_unsigned_in_range _ len). lia.
 Qed.
 
-(** Linux PATH_MAX: a pathname's content may be at most 4095 bytes, i.e.
-    4096 counting the NUL — [path_max] is the bound Linux's [getname()]
-    enforces, and it counts the terminator, so a 4095-byte path plus its
-    NUL fits and a 4096-byte one does not. *)
-Definition path_max : nat := 4096%nat.
-
-(** Pathname bytes counted as read: through the first NUL, the first
-    unreadable byte, or [path_max].  This is the count the model records,
-    and it is SHORTER than what [getname()] issues —
-    [strncpy_from_user] loads whole words, so it runs past the NUL to the
-    end of that word (lib/strncpy_from_user.c, [do_strncpy_from_user];
-    byte-identical v6.10 through v6.16 — the FILE is not, so the window
-    belongs to the function).  The answer is unaffected: that loop is clamped
-    below TASK_SIZE and falls back to a byte loop when a word load faults,
-    so no verdict moves.  Only the recorded read set is short. *)
-Fixpoint cstr_access_len_aux (mp : word -> option byte) (a : word) (fuel : nat)
-    : nat :=
-  match fuel with
-  | O => O
-  | S fuel' =>
-      match mp a with
-      | None => 1%nat
-      | Some b =>
-          if bv_eqb b (Z_to_bv 8 0) then 1%nat
-          else S (cstr_access_len_aux mp (a + 1) fuel')
-      end
-  end.
-
-(** Reading a pathname out of user memory has three outcomes, and Linux
-    distinguishes all three: the string, [-ENAMETOOLONG] (no NUL within
-    PATH_MAX), and [-EFAULT] (an unmapped byte before the NUL).  Both
-    failures are ordinary kernel returns, NOT modeling gaps — keeping
-    them apart is what lets [Open.openat_spec] answer an errno instead
-    of declining to interpret the call. *)
-Inductive cstr_result :=
-| CstrOk (p : list byte)   (* NUL-terminated within PATH_MAX *)
-| CstrTooLong              (* no NUL within PATH_MAX        -> -ENAMETOOLONG *)
-| CstrFault.               (* unmapped byte before the NUL  -> -EFAULT *)
-
-Fixpoint read_cstr_aux (mp : word -> option byte) (a : word) (k : nat)
-    : cstr_result :=
-  match k with
-  | O => CstrTooLong             (* no NUL within the length bound *)
-  | S k' =>
-      match mp a with
-      | None => CstrFault        (* unmapped byte before the NUL *)
-      | Some b =>
-          if bv_eqb b (Z_to_bv 8 0) then CstrOk []
-          else match read_cstr_aux mp (a + 1) k' with
-               | CstrOk r => CstrOk (b :: r)
-               | r => r          (* propagate the failure verbatim *)
-               end
-      end
-  end.
-
-Definition read_cstr (mp : word -> option byte) (a : word)
-    : cstr_result :=
-  read_cstr_aux mp a path_max.
-
 (** Read one little-endian 64-bit word at [a] ([BvBase.le_bytes_to_word]
     decodes index 0 as least significant), or [None] if any of the 8
     bytes is unmapped — for reading 8-byte fields of in-memory kernel
@@ -1473,6 +1414,191 @@ Lemma copy_bytes_map_accepted : forall mp a len,
   access_okb a len = true ->
   copy_bytes_map mp a len = read_bytes_map mp a (Z_to_bv 64 len).
 Proof. intros mp a len H. unfold copy_bytes_map. rewrite H. reflexivity. Qed.
+
+(** Linux PATH_MAX: a pathname's content may be at most 4095 bytes, i.e.
+    4096 counting the NUL — [path_max] is the bound Linux's [getname()]
+    enforces, and it counts the terminator, so a 4095-byte path plus its
+    NUL fits and a 4096-byte one does not. *)
+Definition path_max : nat := 4096%nat.
+
+(** Pathname bytes counted as read: through the first NUL, the first
+    unreadable byte, the last byte below [TASK_SIZE], or [path_max].
+    This is the count the model records,
+    and it is SHORTER than what [getname()] issues —
+    [strncpy_from_user] loads whole words, so it runs past the NUL to the
+    end of that word (lib/strncpy_from_user.c, [do_strncpy_from_user];
+    byte-identical v6.10 through v6.16 — the FILE is not, so the window
+    belongs to the function).  The answer is unaffected: that loop is clamped
+    below TASK_SIZE and falls back to a byte loop when a word load faults,
+    so no verdict moves.  Only the recorded read set is short.
+
+    AT [TASK_SIZE] THE COUNT STOPS WITHOUT COUNTING, where an unreadable
+    byte below it counts 1.  The kernel attempts an unmapped byte and
+    faults on it; it never attempts the byte at [TASK_SIZE], because
+    [strncpy_from_user]'s clamp ends both loops before it (see
+    [read_cstr_aux]).  The test is [read_cstr_aux]'s own, in the same
+    place, so the two walks stop together, a pointer at or above
+    [TASK_SIZE] records nothing, and no recorded range reaches
+    [TASK_SIZE] ([cstr_access_len_below_task_size]).  The shortness
+    argument above is untouched: the word loop and the byte loop sit
+    inside the same clamp, so what [getname()] issues still covers every
+    byte counted here. *)
+Fixpoint cstr_access_len_aux (mp : word -> option byte) (a : word) (fuel : nat)
+    : nat :=
+  match fuel with
+  | O => O
+  | S fuel' =>
+      if negb (access_okb a 1) then O   (* past strncpy_from_user's clamp: never fetched *)
+      else match mp a with
+      | None => 1%nat
+      | Some b =>
+          if bv_eqb b (Z_to_bv 8 0) then 1%nat
+          else S (cstr_access_len_aux mp (a + 1) fuel')
+      end
+  end.
+
+(** Reading a pathname out of user memory has three outcomes, and Linux
+    distinguishes all three: the string, [-ENAMETOOLONG] (no NUL within
+    PATH_MAX), and [-EFAULT] (an unmapped byte, or the top of the user
+    address space, before the NUL).  Both
+    failures are ordinary kernel returns, NOT modeling gaps — keeping
+    them apart is what lets [Open.openat_spec] answer an errno instead
+    of declining to interpret the call. *)
+Inductive cstr_result :=
+| CstrOk (p : list byte)   (* NUL-terminated within PATH_MAX *)
+| CstrTooLong              (* no NUL within PATH_MAX        -> -ENAMETOOLONG *)
+| CstrFault.               (* unmapped byte or TASK_SIZE before the NUL -> -EFAULT *)
+
+(** THE WALK STOPS AT [TASK_SIZE], and stopping there is [CstrFault].
+    [strncpy_from_user] (lib/strncpy_from_user.c, [strncpy_from_user],
+    v6.18.46) sets [max_addr = TASK_SIZE_MAX] — [TASK_SIZE] on riscv64,
+    see [access_okb] — and returns -EFAULT outright when the untagged
+    source address is at or above it.  Otherwise it clamps the scan to
+    [max = max_addr - src_addr] bytes, or to [count] when that is
+    smaller, and [do_strncpy_from_user] (same file) returns the count
+    when the scan ends on [count] and -EFAULT when it ends on the
+    address-space limit first.  Its [res >= count] test comes before
+    the -EFAULT, so where the two bounds fall on the same byte the count
+    wins.  [getname_flags] (fs/namei.c), the pathname caller, returns
+    the -EFAULT as the call's error and turns a count of PATH_MAX into
+    -ENAMETOOLONG.  riscv64 defines no [masked_user_access_begin], so
+    [can_do_masked_user_access()] is 0 (include/linux/uaccess.h) and
+    the clamped branch is the one taken; [untagged_addr] is the
+    identity for every modeled process ([access_okb]'s note).
+
+    So the test is [access_okb a 1] in front of EACH byte load, after
+    the length bound: byte [a] is inside the clamp exactly when
+    [a < TASK_SIZE] ([access_okb_one]).  That is Linux's clamp byte for
+    byte — a name that starts below [TASK_SIZE] and ends at
+    [TASK_SIZE - 1] reads, a name whose bytes reach [TASK_SIZE] faults
+    there, and PATH_MAX non-NUL bytes ending at [TASK_SIZE - 1] are
+    [CstrTooLong], the count winning.  One
+    [access_okb a (Z.of_nat path_max)] in front of the walk would be
+    wrong the other way: it refuses a short name that starts within
+    PATH_MAX bytes of [TASK_SIZE], which Linux
+    reads ([Checks.Cases.Fs.Open.openat_path_at_the_top_still_answers]).
+    The three outcomes suffice, because Linux's answer here is the same
+    -EFAULT an unmapped byte gets.
+
+    Without the test the walk stepped [a + 1] in the 64-bit word and
+    tested nothing, so a pointer in the last bytes of the address space
+    walked off the top and back in at 0 — the wrap [copy_bytes_map]'s
+    note describes — and answered [CstrOk] on a name Linux refuses.
+    With it every walk faults at [TASK_SIZE] at the latest, so [a + 1]
+    never wraps. *)
+Fixpoint read_cstr_aux (mp : word -> option byte) (a : word) (k : nat)
+    : cstr_result :=
+  match k with
+  | O => CstrTooLong             (* no NUL within the length bound *)
+  | S k' =>
+      if negb (access_okb a 1) then CstrFault  (* past strncpy_from_user's clamp *)
+      else match mp a with
+      | None => CstrFault        (* unmapped byte before the NUL *)
+      | Some b =>
+          if bv_eqb b (Z_to_bv 8 0) then CstrOk []
+          else match read_cstr_aux mp (a + 1) k' with
+               | CstrOk r => CstrOk (b :: r)
+               | r => r          (* propagate the failure verbatim *)
+               end
+      end
+  end.
+
+Definition read_cstr (mp : word -> option byte) (a : word)
+    : cstr_result :=
+  read_cstr_aux mp a path_max.
+
+(** One byte at [a] is inside the user address space exactly when [a]
+    is below [TASK_SIZE]. *)
+Lemma access_okb_one : forall a,
+  access_okb a 1 = (bv_unsigned a <? TASK_SIZE)%Z.
+Proof.
+  intro a. unfold access_okb.
+  destruct (Z.leb_spec (bv_unsigned a) (TASK_SIZE - 1)%Z);
+    destruct (Z.ltb_spec (bv_unsigned a) TASK_SIZE); try lia; reflexivity.
+Qed.
+
+(** Below [TASK_SIZE] the walk's [a + 1] is the integer successor. *)
+Lemma bv_unsigned_succ_below_task_size : forall a : word,
+  (bv_unsigned a < TASK_SIZE)%Z -> bv_unsigned (a + 1) = (bv_unsigned a + 1)%Z.
+Proof.
+  intros a Ha. rewrite bv_add_unsigned.
+  change (bv_unsigned (1 : word)) with 1%Z.
+  apply bv_wrap_small. change (bv_modulus 64) with 18446744073709551616%Z.
+  pose proof (bv_unsigned_in_range 64 a). unfold TASK_SIZE in Ha. lia.
+Qed.
+
+(** The half the unguarded walk could not see: at or above [TASK_SIZE]
+    a pathname read is [CstrFault] however the memory map answers, and
+    nothing is counted as read. *)
+Lemma read_cstr_aux_refused : forall mp a k,
+  access_okb a 1 = false -> read_cstr_aux mp a (S k) = CstrFault.
+Proof. intros mp a k H. cbn [read_cstr_aux]. rewrite H. reflexivity. Qed.
+
+Lemma read_cstr_refused : forall mp a,
+  access_okb a 1 = false -> read_cstr mp a = CstrFault.
+Proof.
+  intros mp a H. unfold read_cstr, path_max. apply read_cstr_aux_refused. exact H.
+Qed.
+
+Lemma cstr_access_len_aux_refused : forall mp a k,
+  access_okb a 1 = false -> cstr_access_len_aux mp a k = O.
+Proof.
+  intros mp a [|k] H; [reflexivity|].
+  cbn [cstr_access_len_aux]. rewrite H. reflexivity.
+Qed.
+
+(** ...and the other direction, which keeps the guard from being a
+    blanket refusal: below [TASK_SIZE] a step is the step it always was. *)
+Lemma read_cstr_aux_accepted : forall mp a k,
+  access_okb a 1 = true ->
+  read_cstr_aux mp a (S k) =
+    match mp a with
+    | None => CstrFault
+    | Some b =>
+        if bv_eqb b (Z_to_bv 8 0) then CstrOk []
+        else match read_cstr_aux mp (a + 1) k with
+             | CstrOk r => CstrOk (b :: r)
+             | r => r
+             end
+    end.
+Proof. intros mp a k H. cbn [read_cstr_aux]. rewrite H. reflexivity. Qed.
+
+(** The copy-in ledger never claims a byte at or above [TASK_SIZE]:
+    either it records nothing or its range ends at or below it. *)
+Lemma cstr_access_len_below_task_size : forall mp k a,
+  cstr_access_len_aux mp a k = O \/
+  (bv_unsigned a + Z.of_nat (cstr_access_len_aux mp a k) <= TASK_SIZE)%Z.
+Proof.
+  intros mp k. induction k as [|k IH]; intros a; [left; reflexivity|].
+  cbn [cstr_access_len_aux].
+  destruct (access_okb a 1) eqn:Ha; cbn [negb]; [|left; reflexivity].
+  rewrite access_okb_one in Ha. apply Z.ltb_lt in Ha.
+  right. destruct (mp a) as [b|]; [|lia].
+  destruct (bv_eqb b (Z_to_bv 8 0)); [lia|].
+  destruct (IH (a + 1)) as [H0|Hle].
+  - rewrite H0. lia.
+  - pose proof (bv_unsigned_succ_below_task_size a Ha). lia.
+Qed.
 
 (** The three outcomes of importing an iovec array (lib/iov_iter.c
     [__import_iovec], v6.18.46): the imported entries, a [-EFAULT] from an
@@ -2767,21 +2893,21 @@ Inductive FdEntry :=
     (b) [vm_maps] — live anonymous mappings as [(lo, size)] intervals,
         including brk-grow grants — so allocator grants are handed out
         DISJOINT from each other and from the image ([region_free]
-        against [vm_reserved ++ vm_maps]).  Read that as a PAGE-granular
-        guarantee, which is what it is: no page-aligned address is ever
-        owned by two entries, and every base a syscall can name is page
-        aligned, so a base determines its entry.  Byte-level overlap IS
-        reachable, because a brk grow within one page is checked by
-        neither [region_free] nor Linux itself (see [live_bytes] below);
+        against [vm_reserved ++ vm_maps]).  Every writer records a
+        PAGE-ALIGNED, PAGE-ROUNDED range it has first tested free, the
+        brk grow included ([Sys/Mm/Mmap.brk_grants] records the pages it
+        installs, which is what [Sys/Mm/Mmap.brk_grow_ok] tests), so no
+        byte is ever owned by two entries and a base — always page
+        aligned — determines its entry.  The LOGICAL break is not in
+        this list; it is [vm_brk] below, and [live_bytes] says what it
+        cost to keep it here;
     (c) [vm_noaccess] — physical page ranges currently protected with
-        PROT_NONE.  Ordinarily they are subranges of [vm_maps].  A brk
-        shrink within its final page is the deliberate exception: the
-        byte-granular [vm_maps] tail is removed while Linux keeps the whole
-        page mapped and protected, so [vm_noaccess] may transiently extend
-        to [PAGE_ALIGN(vm_brk)].  It still blocks placement through the
-        containing brk page; mprotect also requires [vm_maps] containment,
-        so the logical tail cannot be exposed until a same-page regrow owns
-        it again.  Protected pages consume budget through their logical
+        PROT_NONE, and subranges of [vm_maps].  A brk shrink takes the
+        same page-rounded range out of both ([Sys/Mm/Mmap.brk_unmap_cut]
+        on this list's twin, [Sys/Mm/Mmap.brk_unmaps] on this one), so a
+        shrink inside the break's final page changes neither: Linux
+        keeps that page mapped and protected, and so does the ledger.
+        Protected pages consume budget through their
         [vm_maps] ownership, and the machine overlay contains no bytes for
         them until a modeled mprotect makes them rw again;
     (d) [vm_start_brk] — Linux's [mm->start_brk]: the ASLR-placed base of
@@ -2824,8 +2950,9 @@ Inductive FdEntry :=
         and discharging it is a required step of
         [Equivalence.image_brk_satisfiable_entry], the tree's
         anti-vacuity lemma.  Outside the spec, the ASan plan
-        checker's placement gate ([Common.AsanCeil.placement_ok], taken
-        as its named [placement_policy] hypothesis) reads the value, and
+        checker's placement gate ([Common.AsanCeil.placement_ok], which
+        is the theorem [Common.AsanCeil.placement_policy_holds] and no
+        longer a named hypothesis) reads the value, and
         [Common.AsanInit] relies on the predicate's floor (see
         [mmap_base_min]).
         A base of 0 is what [mkVmMaps] seeds and means only "no base
@@ -2983,55 +3110,52 @@ Proof. reflexivity. Qed.
 
 (** Bytes currently granted by a ledger: the sum of its interval sizes.
 
-    The [vm_maps] intervals are pairwise disjoint AT PAGE GRANULARITY —
-    no page-aligned address is owned by two entries — which
-    [Checks/VmMapsDisjoint.check_syscall_preserves_vm_wf] proves is
-    preserved by every modeled syscall from [init_model] on.  They are
-    NOT pairwise disjoint byte for byte, so this sum is NEITHER AN UPPER
-    NOR A LOWER BOUND on the granted-and-not-freed bytes — two sub-page
-    brk gaps move it in OPPOSITE directions — both for [vm_live_bytes]
-    here and downstream in [vm_backed_bytes] and [vm_backing_used], which
-    measure this same sum over ledgers derived from [vm_maps] by
-    subtraction.
+    THE SUM IS THE GRANTED-AND-NOT-FREED BYTES, exactly, and that rests
+    on every writer of [vm_maps] recording a PAGE-ALIGNED, PAGE-ROUNDED
+    range it has first tested free.  The mmap arms do it through
+    [region_free] on the rounded length; a brk grow does it through
+    [Sys/Mm/Mmap.brk_grow_ok] on the pages it installs,
+    [[PAGE_ALIGN(old), PAGE_ALIGN(r))], which is also the range
+    [Sys/Mm/Mmap.brk_grants] records, the range [Sys/Mm/Mmap.brk_zeros]
+    fills and the range [Sys/Mm/Mmap.brk_budget_ok] charges.  Entries
+    are therefore pairwise disjoint byte for byte, not merely at page
+    granularity, and the same holds downstream in [vm_backed_bytes] and
+    [vm_backing_used], which measure this sum over ledgers derived from
+    [vm_maps] by subtraction.
+    [Checks/VmMapsDisjoint.check_syscall_preserves_vm_wf] proves the
+    page-granular statement preserved by every modeled syscall from
+    [init_model] on.
 
-    OVER-COUNT, from a brk GROW that does not cross a page boundary.
-    [Sys/Mm/Mmap.brk_grants] records the logical range [[old, r)] while
-    [Sys/Mm/Mmap.brk_grow_ok] tests the page-rounded one (plus the page
-    above it) and tests nothing when that range is EMPTY, as it is for
-    such a grow, so the grant enters with no address-space test
-    and entries can overlap — the same bytes counted twice.  That one is
-    FAITHFUL rather than a slip: [SYSCALL_DEFINE1(brk)] takes its
-    [oldbrk == newbrk] early exit before consulting any VMA, so Linux too
-    lets the break walk over bytes another mapping owns (reachable by
-    unmapping the brk VMA and mapping over it).
-    [Checks/VmMapsDisjoint] carries a checked six-syscall execution that
-    reaches exactly that state.  Over-counting brings the forced
-    out-of-memory point EARLIER: the model refuses memory Linux grants.
-    That is no safe direction for every statement.  A halts statement
-    that allows a refusal as an exit then holds on a refusal the real run
-    never meets, so it covers less of the real run than it appears to;
-    a statement whose premise is that the source is never refused covers
-    fewer inputs.
+    WHAT THIS REPLACED, because the two errors are worth keeping in
+    sight.  An earlier revision recorded a brk grow's LOGICAL range
+    [[old, r)] and cut the logical tail [[r, b)] on a shrink, and then
+    the sum was NEITHER AN UPPER NOR A LOWER BOUND on those bytes: two
+    sub-page brk gaps moved it in OPPOSITE directions.
 
-    UNDER-COUNT, from a brk SHRINK to a break [r] that is not page
-    aligned, and this one is a KNOWN INCONSISTENCY rather than faithful
-    modelling.  [Sys/Mm/Mmap.brk_maps_next]'s shrink arm subtracts the
-    RAW range [[r, b)] from [vm_maps] on top of the PAGE-ROUNDED one
-    [Sys/Mm/Mmap.brk_unmaps] reports.  Linux unmaps only from
-    [PAGE_ALIGN(r)] up, and nothing at all when the two breaks round to
-    the same page (its [oldbrk == newbrk] exit), so the page holding [r]
-    stays mapped; where a mapping other than a brk grant owns bytes of
-    [[r, min(b, PAGE_ALIGN(r)))] — a MAP_FIXED or a placed mmap over the
-    heap's last page — the ledger drops them while they stay mapped:
-    [Checks/VmMapsDisjoint]'s [wit_step6] shrinks the break by 10 bytes
-    inside one page and the ledger goes from [[(65536, 4096)]] to
-    [[(65536, 1990); (67536, 2096)]] — 4096 bytes to 4086, ten granted,
-    unfreed, still-mapped bytes gone from the sum.  The ledger does not
-    record which entries are brk grants, so the logical cut cannot spare
-    the others.  Under-counting moves the forced out-of-memory point
-    LATER: the model grants memory Linux refuses, so a statement can hold
-    of a run that Linux would have refused.  No gate compensates for it,
-    and the two directions are not reconciled.
+    - OVER-COUNT, from a grow that did not cross a page boundary.  The
+      gate tests the page-rounded range and tests nothing when that
+      range is empty, so such a grow entered [vm_maps] with no
+      address-space test and entries could overlap — the same bytes
+      counted twice.  Over-counting brings the forced out-of-memory
+      point EARLIER: the model refuses memory Linux grants.  A halts
+      statement that allows a refusal as an exit then holds on a refusal
+      the real run never meets; a statement whose premise is that the
+      source is never refused covers fewer inputs.
+    - UNDER-COUNT, from a shrink to a break that is not page aligned.
+      Linux unmaps only from [PAGE_ALIGN(r)] up, and nothing at all when
+      the two breaks round to the same page (its [oldbrk == newbrk]
+      exit), so the page holding [r] stays mapped; where a mapping other
+      than a brk grant owned bytes of [[r, min(b, PAGE_ALIGN(r)))] — a
+      MAP_FIXED or a placed mmap over the heap's last page — the logical
+      cut dropped them while they stayed mapped.  Under-counting moves
+      the forced out-of-memory point LATER: the model grants memory
+      Linux refuses.
+
+    Both followed from one conflation: a ledger of MAPPED MEMORY cannot
+    also be the record of a byte-granular logical break.  The break has
+    a field of its own, [vm_brk], and keeping the ledger page-granular
+    is what makes this sum mean something.  [Checks/VmMapsDisjoint]
+    carries the execution that used to reach the byte-level overlap.
 
     [munmap], a shrinking [mremap], and a [brk] shrink return their bytes
     to the budget by shrinking the ledger.  Placement plays no part — the
@@ -5181,17 +5305,19 @@ Fixpoint reserved_top (maps : list (word * word)) : Z :=
 
 (** Subtract the half-open interval [lo, hi) from every mapping, keeping the
     parts that fall OUTSIDE it (each mapping may split into a left and/or a
-    right remnant, or vanish).  A [brk] SHRINK uses it in two deliberately
-    different ways (see [Mmap.brk_model_next]): [vm_maps] drops the logical,
-    byte-granular heap tail [new_break, old_break) AND the page-rounded
-    range named by [Mmap.brk_unmaps] ([Mmap.brk_unmap_cut]), while
-    [vm_noaccess] drops only the page-rounded range.  The latter is the
+    right remnant, or vanish).  A [brk] SHRINK uses it on both ledgers
+    over ONE range (see [Mmap.brk_model_next]): the page-rounded
+    [[PAGE_ALIGN(new_break), PAGE_ALIGN(old_break))] that
+    [Mmap.brk_unmaps] names, for [vm_maps] through
+    [Mmap.brk_unmap_cut] and for [vm_noaccess] through
+    [maps_subtract_ranges].  That range is the
     kernel's actual [do_vmi_align_munmap] interval and is also what the
     running program sees in [eff_unmaps].  Every entry is cut, not only
-    heap grants: an entry wholly inside the two ranges vanishes, and an
+    heap grants: an entry wholly inside it vanishes, and an
     entry that straddles either end keeps the part outside, so more than
-    one record can be truncated.  The logical cut can drop bytes Linux
-    keeps; [live_bytes] documents that under-count.
+    one record can be truncated.  An earlier revision cut [vm_maps] over
+    the logical tail [[new_break, old_break)] as well, which dropped
+    bytes Linux keeps mapped; [live_bytes] records what that cost.
     Arithmetic in [Z] over unsigned values (no wrapping); the remnant
     bases/sizes fit in 64 bits by construction, so the [Z_to_bv]
     round-trips are lossless.  The interval ENDPOINTS are taken in [Z]

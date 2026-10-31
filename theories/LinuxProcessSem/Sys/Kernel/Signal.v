@@ -331,21 +331,30 @@ Definition sa_flags_ok (fl : word) : bool :=
     syscall entry raises before the copy — arm 1 below — and the [oact]
     [copy_to_user] runs after [do_sigaction], so a bad [oact] with a bad
     [sig] is -EINVAL rather than -EFAULT.  This returns [sa_flags]
-    exactly when all 24 bytes are readable.
+    exactly when [access_ok] admits all 24 bytes and they are readable.
 
-    NO [State.access_okb] GUARD, and that is not an omission.  The
-    delivering syscalls need one because they answer for ranges they do
-    not require to be mapped; here all 24 bytes must be mapped before
-    anything is answered, and a mapping cannot sit above the address
-    space it was made in — so a readable range is below [TASK_SIZE],
-    which is the limit [__access_ok] tests (include/asm-generic/access_ok.h;
-    riscv overrides [access_ok] for pointer masking but not
-    [__access_ok]; see [State.TASK_SIZE]).
-    The word addition in [readable_bytes] cannot manufacture one either:
-    wrapping needs [act] within 24 bytes of 2^64, and no model state has
-    a mapping there ([alloc_top] and [sp_window_hi] both sit at or
-    below 2^47 for any [Run.valid_sp]), so the walk stops on its first unmapped byte and the
-    answer is -EFAULT.
+    THE RANGE TEST IS ASKED, through [State.copy_bytes_map], rather than
+    argued away.  [SYSCALL_DEFINE4(rt_sigaction)] (kernel/signal.c) reads
+    the struct with [copy_from_user] before [do_sigaction] runs, and that
+    is [access_ok] over all 24 bytes before a byte moves
+    (include/linux/uaccess.h, [_inline_copy_from_user];
+    include/asm-generic/access_ok.h, [__access_ok]; riscv overrides
+    [access_ok] for pointer masking but not [__access_ok], see
+    [State.TASK_SIZE]).  This note used to give two reasons for leaving
+    the test out, and only one of them holds.  The WRAP half holds in a
+    run, for a reason other than the one it gave: completing a wrap
+    needs a mapped byte at 2^64-1 and one at 0, and
+    [Equivalence.image_brk_satisfiable], a hypothesis of the IMAGE_WF
+    ascription, bounds every loaded segment's end below 2^64.  The
+    [TASK_SIZE] half does not hold.  That hypothesis bounds the image at
+    2^64 and not at 2^47, and [Run.valid_brk] asks only that the break
+    sit at or above the image's top, so an admissible image may carry a
+    LOAD segment above the user limit whose bytes reach this spec through
+    [in_mem] ([Run.sys_input]); and [Checks.ExecutableSpecs.check_syscall]
+    takes an arbitrary [SyscallInput] besides.  A wholly readable range
+    above [TASK_SIZE] therefore exists, the bare walk answered the call
+    on it, and Linux answers -EFAULT.  The wrap itself is
+    [State.copy_bytes_map]'s note and is not repeated here.
 
     For a signal in [sigaction_accepted] the flags word is the only field
     the model consults.  The handler (SIG_DFL, SIG_IGN or an address) and
@@ -361,19 +370,22 @@ Definition sa_flags_ok (fl : word) : bool :=
     [sigabrt_dfl_install]. *)
 Definition sigaction_flags (mp : word -> option byte) (act : word)
     : option word :=
-  if Nat.eqb (length (readable_bytes mp act (Z_to_bv 64 24))) 24
-  then read_u64 mp (bv_add act (Z_to_bv 64 8))
-  else None.
+  match copy_bytes_map mp act 24 with
+  | Some _ => read_u64 mp (bv_add act (Z_to_bv 64 8))
+  | None => None
+  end.
 
 (** [sa_handler], the eight bytes at offset 0 of the struct above, under
-    the same all-or-nothing readability as [sigaction_flags]: SIG_DFL is
-    0 and SIG_IGN is 1 (include/uapi/asm-generic/signal-defs.h); any other
-    value is the address of a handler. *)
+    the same range test and all-or-nothing readability as
+    [sigaction_flags]: SIG_DFL is 0 and SIG_IGN is 1
+    (include/uapi/asm-generic/signal-defs.h); any other value is the
+    address of a handler. *)
 Definition sigaction_handler (mp : word -> option byte) (act : word)
     : option word :=
-  if Nat.eqb (length (readable_bytes mp act (Z_to_bv 64 24))) 24
-  then read_u64 mp act
-  else None.
+  match copy_bytes_map mp act 24 with
+  | Some _ => read_u64 mp act
+  | None => None
+  end.
 
 (** The one install outside [sigaction_accepted] that the spec answers:
     SIG_DFL for SIGABRT.  musl's [abort] makes it on its second path
@@ -460,7 +472,8 @@ Definition sigabrt_dfl_install (sig : word) (mp : word -> option byte) (act : wo
          no-op for EVERY valid signal, fault signals included: 0, or
          -EINVAL outside 1..64.  This is also why SIGKILL and SIGSTOP are
          only rejected in arm 4.
-      4. with [act] non-NULL: -EFAULT unless all 24 bytes are readable;
+      4. with [act] non-NULL: -EFAULT unless [access_ok] admits all 24
+         bytes and they are readable;
          then -EINVAL for an out-of-range signal and for SIGKILL/SIGSTOP;
          then fail closed on SA_RESTART and on any bit outside
          [sa_flags_accepted]; then 0 for a signal in
@@ -497,7 +510,8 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
   else
     i <- input ;;
     match sigaction_flags (in_mem i) act with
-    | None => err_ret EFAULT   (* the struct is not wholly readable: real -EFAULT *)
+    | None => err_ret EFAULT   (* [access_ok] refuses the struct, or it is not
+                                  wholly readable: real -EFAULT *)
     | Some fl =>
         record_copyins [(act, 24%nat)]
         (if negb (sig_valid sig) then err_ret EINVAL
@@ -800,26 +814,29 @@ Definition how_valid (how : word) : bool :=
     installed.  [sizeof(sigset_t)] is [Uapi.NSIG_BYTES] = 8, so this is
     readability of eight bytes and no more.
 
-    NO [State.access_okb] GUARD.  All eight bytes must be mapped
-    before anything is answered, and a mapping cannot sit above the
-    address space it was made in, so a wholly readable range is below
-    [TASK_SIZE].  The word addition inside
-    [State.read_bytes_map] cannot manufacture one either — but NAME THE
-    RIGHT REASON, because the obvious one is incomplete.
-    [State.alloc_top] and [State.sp_window_hi] bound the mmap, brk
-    and stack sources and sit far below 2^64; they say nothing about
-    the third source [in_mem] merges in, which is the ELF ROM image,
-    whose [MemImageType.Segment] carries [seg_base] and [seg_size] as
-    unbounded [N] with no side condition in the trusted tree.  What
-    actually excludes a byte in the last page is
-    [Equivalence.image_brk_satisfiable], a hypothesis of the IMAGE_WF
-    module type each example's generated Checker ascribes — so
-    completing a wrap would need two segments, one supplying the byte
-    at 2^64-1 and one at 0, and that hypothesis forbids it.  Outside
-    that ascription the specs quantify over an arbitrary
-    [mp : word -> option byte], so this is a property of the
-    well-formedness the equivalence theorem is stated under and not of
-    the syscall layer.
+    THE RANGE TEST IS ASKED, through [State.copy_bytes_map], rather than
+    argued away.  [SYSCALL_DEFINE4(rt_sigprocmask)] (kernel/signal.c)
+    copies [nset] with [copy_from_user] and answers -EFAULT before
+    [sigprocmask] runs, and [copy_from_user] is [access_ok] over the
+    eight bytes and then the copy (include/linux/uaccess.h,
+    [_inline_copy_from_user]; include/asm-generic/access_ok.h,
+    [__access_ok]).  This note used to give two reasons for leaving the
+    test out, and only the first survives.  The WRAP is impossible in a
+    run, and the reason is [Equivalence.image_brk_satisfiable], a
+    hypothesis of the IMAGE_WF module type each example's generated
+    Checker ascribes: it bounds every loaded segment's end below 2^64,
+    so no image supplies both a byte at 2^64-1 and one at 0
+    ([State.alloc_top] and [State.sp_window_hi] bound only the mmap, brk
+    and stack sources, not the ELF ROM image [in_mem] merges in).  The
+    [TASK_SIZE] half is false.  That same hypothesis bounds the image at
+    2^64, not at 2^47, and [Run.valid_brk] asks only that the break sit
+    at or above the image's top, so an admissible image may carry a LOAD
+    segment above the user limit whose bytes [Run.sys_input] hands to
+    this spec; and [Checks.ExecutableSpecs.check_syscall] takes an
+    arbitrary [SyscallInput] besides.  A wholly readable [nset] above
+    [TASK_SIZE] therefore exists, the bare walk installed a mask from it,
+    and Linux answers -EFAULT.  The wrap itself is
+    [State.copy_bytes_map]'s note.
 
     THE CONTENTS ARE READ: the value
     decides what gets installed, so the test and the read are one
@@ -827,7 +844,7 @@ Definition how_valid (how : word) : bool :=
     [Sys/Uaccess.v]: it is the [sigset_t] ABI shape, not a uaccess
     policy, and one syscall uses it. *)
 Definition sigset_at (mp : word -> option byte) (p : word) : option word :=
-  match read_bytes_map mp p (Z_to_bv 64 NSIG_BYTES) with
+  match copy_bytes_map mp p NSIG_BYTES with
   | Some bs => Some (le_bytes_to_word bs)
   | None => None
   end.
@@ -859,7 +876,8 @@ Definition sigset_at (mp : word -> option byte) (p : word) : option word :=
          oversight, and it is pinned by
          [Checks.Cases.Kernel.Signal].  The call is
          not a no-op even so: arm 5 still runs, so a query WRITES.
-      4. with [nset] non-NULL: -EFAULT unless all 8 bytes are readable,
+      4. with [nset] non-NULL: -EFAULT unless [access_ok] admits the 8
+         bytes and they are readable,
          then SIGKILL and SIGSTOP are stripped from the new set
          ([sigmask_strip], silently — the call succeeds), then -EINVAL
          for a [how] outside {0, 1, 2}, then the install
@@ -1358,18 +1376,26 @@ Definition ss_mode_ok (fl : word) : bool :=
 
 Definition ss_disabling (fl : word) : bool := Z.eqb (ss_mode fl) SS_DISABLE.
 
-(** The [stack_t] at [uss], or [None] if any of its 24 bytes is
-    unreadable.  All-or-nothing because [SYSCALL_DEFINE2(sigaltstack)]
+(** The [stack_t] at [uss], or [None] if [access_ok] refuses its 24
+    bytes or any of them is unreadable.  All-or-nothing because
+    [SYSCALL_DEFINE2(sigaltstack)]
     fetches the struct with ONE [copy_from_user] before [do_sigaltstack]
     runs, so -EFAULT precedes every other answer this call has.
 
-    NO [State.access_okb] GUARD, for the reason [sigaction_flags] gives
-    above and by the same argument: all 24 bytes must be readable before
-    anything is answered, and the word addition cannot manufacture a
-    readable range across 2^64 because no model state maps one there. *)
+    THE RANGE TEST IS ASKED, through [State.copy_bytes_map]:
+    [SYSCALL_DEFINE2(sigaltstack)] (kernel/signal.c) copies with
+    [copy_from_user], which is [access_ok] over the 24 bytes before the
+    copy, and both come before [do_sigaltstack] runs.  This note used to
+    lean on [sigaction_flags]'s argument for leaving the test out, and
+    that argument is withdrawn there for the reason given there: the
+    wrap is impossible in a run, because
+    [Equivalence.image_brk_satisfiable] bounds the image below 2^64, but
+    nothing bounds a wholly readable range below [TASK_SIZE], so the
+    test is asked rather than argued.  The wrap itself is
+    [State.copy_bytes_map]'s note. *)
 Definition sigaltstack_at (mp : word -> option byte) (uss : word)
     : option (list byte) :=
-  read_bytes_map mp uss (Z_to_bv 64 SIGALTSTACK_BYTES).
+  copy_bytes_map mp uss SIGALTSTACK_BYTES.
 
 (** [sigaltstack uss uoss].  The arms follow the kernel's own order:
 
@@ -1380,7 +1406,8 @@ Definition sigaltstack_at (mp : word -> option byte) (uss : word)
          bit is part of the answer.
       3. with both pointers NULL [do_sigaltstack] runs and does nothing:
          0.
-      4. -EFAULT unless all 24 bytes at [uss] are readable.
+      4. -EFAULT unless [access_ok] admits the 24 bytes at [uss] and
+         they are readable.
       5. -EINVAL for a mode outside {0, SS_ONSTACK, SS_DISABLE}.  It is
          decided AFTER the copy and BEFORE the fast path, exactly where
          the kernel decides it, and after an -EPERM that cannot fire —

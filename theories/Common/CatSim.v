@@ -199,6 +199,15 @@ Lemma write1_check_n : forall segs ms x8 model buf n,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = Z_to_bv 64 1 ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  (* THE RANGE [vfs_write]'s [access_ok] ACCEPTS.  The channel arm asks it
+     on the named count before it reads the source, so a delivery is
+     admissible only there: without this premise the lemma was true of a
+     walk that wrapped at 2^64 and is false of one that does not, exactly
+     where the buffer leaves the user address space ([buf + count] past
+     [State.TASK_SIZE]; [Uaccess.access_okb_intro] gives it from that
+     inequality).  A repair of a statement that had become false, not a
+     weakening *)
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= n)%nat -> (n <= length buf)%nat ->
   check_write (sys_input segs ms x8)
@@ -207,7 +216,7 @@ Lemma write1_check_n : forall segs ms x8 model buf n,
       (mkEffect (len_word (firstn n buf)) [] [])) model
     = CheckOk model (map (WriteEv (Z_to_bv 64 1)) (firstn n buf)).
 Proof.
-  intros segs ms x8 model buf n Hfd Hno Hg Hr Hcnt Hn1 Hn2.
+  intros segs ms x8 model buf n Hfd Hno Hg Hr Hok Hcnt Hn1 Hn2.
   unfold fd1chan in Hfd. destruct Hfd as [Hfd Hrdr].
   assert (Hrb : read_bytes_map (in_mem (sys_input segs ms x8))
                   (ms_gpr ms 1) (ms_gpr ms 2) = Some buf).
@@ -224,6 +233,7 @@ Proof.
   rewrite Hmc. cbv beta iota.
   assert (Hc : w_is0 (ms_gpr ms 2) = false) by (apply w_is0_pos; lia).
   rewrite Hc. cbv beta iota. cbv zeta.
+  rewrite Hok. cbn [negb]. cbv beta iota.
   rewrite Hrdr. change (negb true) with false. cbv beta iota.
   rewrite (write_source_of_rw _ _ _ Hcw), (readable_bytes_full _ _ _ _ Hrb).
   assert (Hg0 : Nat.eqb (length buf) 0 = false) by (apply Nat.eqb_neq; lia).
@@ -247,6 +257,8 @@ Lemma write1_ok_n : forall segs ms x8 model buf n,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = Z_to_bv 64 1 ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  (* see [write1_check_n] *)
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= n)%nat -> (n <= length buf)%nat ->
   syscall_spec (sys_input segs ms x8) model
@@ -254,20 +266,24 @@ Lemma write1_ok_n : forall segs ms x8 model buf n,
           (mkEffect (len_word (firstn n buf)) [] [])) model
         (map (WriteEv (Z_to_bv 64 1)) (firstn n buf))).
 Proof.
-  intros segs ms x8 model buf n Hfd Hno Hg Hr Hcnt Hn1 Hn2.
+  intros segs ms x8 model buf n Hfd Hno Hg Hr Hok Hcnt Hn1 Hn2.
   apply (proj2 (syscall_spec_write _ _ _ _ _ Hno)).
   apply check_write_sound_ok. apply write1_check_n; assumption.
 Qed.
 
 (** Every admissible write-to-fd-1 outcome delivers SOME nonempty prefix,
-    given the reader [fd1chan] carries: the reader-gone resolution KILLS
-    the process instead (see [write1_check_n]), which is why the
-    hypothesis is there and not a modelling shortcut. *)
+    given the reader [fd1chan] carries and on a range [vfs_write]'s
+    [access_ok] accepts.  The reader-gone resolution KILLS the process
+    instead (see [write1_check_n]), which is why the reader hypothesis is
+    there and not a modelling shortcut; on a refused range the -EFAULT is
+    admissible and delivers nothing, so [write1_check_n]'s range premise
+    is this lemma's too, for the same reason. *)
 Lemma write1_ok_inv : forall segs ms x8 model eff model' evs buf,
   fd1chan model ->
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = Z_to_bv 64 1 ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   (1 <= length buf)%nat ->
   syscall_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
   exists n, (1 <= n)%nat /\ (n <= length buf)%nat /\
@@ -275,7 +291,7 @@ Lemma write1_ok_inv : forall segs ms x8 model eff model' evs buf,
             (mkEffect (len_word (firstn n buf)) [] []) /\ model' = model /\
     evs = map (WriteEv (Z_to_bv 64 1)) (firstn n buf).
 Proof.
-  intros segs ms x8 model eff model' evs buf Hfd Hno Hg Hr Hnb Hspec.
+  intros segs ms x8 model eff model' evs buf Hfd Hno Hg Hr Hok Hnb Hspec.
   unfold fd1chan in Hfd. destruct Hfd as [Hfd Hrdr].
   assert (Hrb : read_bytes_map (in_mem (sys_input segs ms x8))
                   (ms_gpr ms 1) (ms_gpr ms 2) = Some buf).
@@ -292,6 +308,7 @@ Proof.
     cbv beta iota in Hspec; [discriminate|].
   assert (Hc : w_is0 (ms_gpr ms 2) = false) by (apply w_is0_pos; lia).
   rewrite Hc in Hspec. cbv beta iota zeta in Hspec.
+  rewrite Hok in Hspec. cbn [negb] in Hspec. cbv beta iota in Hspec.
   rewrite Hrdr in Hspec. change (negb true) with false in Hspec.
   cbv beta iota in Hspec.
   (* the source the transfer sees is the CLAMPED prefix of the range the
@@ -332,7 +349,9 @@ Proof.
 Qed.
 
 (** Write to fd 1 with a readable buffer never takes the error transition:
-    on this checker branch the answer is CheckOk or CheckReject only. *)
+    on this checker branch the answer is CheckOk or CheckReject only.  It
+    needs no range premise: a range [access_ok] refuses is -EFAULT, which
+    is an answer and not a decline. *)
 Lemma write1_no_unmodeled : forall segs ms x8 model buf,
   fd1chan model ->
   bv_unsigned x8 = 64%Z ->
@@ -366,6 +385,9 @@ Proof.
   { exfalso.
     assert (Hc0 : w_is0 (ms_gpr ms 2) = false) by (apply w_is0_pos; lia).
     congruence. }
+  (* [vfs_write]'s [access_ok]: a refused range is -EFAULT, an answer *)
+  destruct (negb (access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)))).
+  { now apply check_ret_only_no_unmodeled in Hspec. }
   rewrite Hrdr in Hspec. change (negb true) with false in Hspec.
   cbv beta iota in Hspec.
   rewrite (write_source_of_rw _ _ _ Hcw), (readable_bytes_full _ _ _ _ Hrb)
@@ -532,6 +554,8 @@ Inductive to_wexit : machine_state -> list (list byte) -> word -> Prop :=
     bv_unsigned x8 = 64%Z ->
     ms_gpr ms 0 = Z_to_bv 64 1 ->
     ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+    (* the range [vfs_write]'s [access_ok] accepts; see [write1_check_n] *)
+    access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
     (1 <= length buf)%nat ->
     (forall n, (1 <= n)%nat -> (n <= length buf)%nat ->
        to_wexit (advance_past_svc (set_gpr0 ms (len_word (firstn n buf)))) bufs code) ->
@@ -591,7 +615,7 @@ Proof.
   intros ms bufs code H;
     induction H as
       [ms x8 Hsvc Hx8
-      | ms x8 buf bufs code Hsvc Hno Hg Hr Hnb Hcont IH
+      | ms x8 buf bufs code Hsvc Hno Hg Hr Hok Hnb Hcont IH
       | ms ms' bufs code Hsvc Hstep Hte IH].
   - constructor.
   - constructor; [exact Hnb | apply (IH (length buf)); lia].
@@ -617,19 +641,21 @@ Lemma sstep_write_next_inv : forall ms model x8 buf evs c',
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = Z_to_bv 64 1 ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  (* see [write1_check_n]: on a refused range the step is the -EFAULT *)
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   (1 <= length buf)%nat ->
   sstep segs (mkCfg ms model) evs (SNext c') ->
   exists n, (1 <= n)%nat /\ (n <= length buf)%nat /\
     evs = map (WriteEv (Z_to_bv 64 1)) (firstn n buf) /\
     c' = mkCfg (advance_past_svc (set_gpr0 ms (len_word (firstn n buf)))) model.
 Proof.
-  intros ms model x8 buf evs c' Hh Hlazy Hfd Hsvc Hno Hg Hr Hnb Hss.
+  intros ms model x8 buf evs c' Hh Hlazy Hfd Hsvc Hno Hg Hr Hok Hnb Hss.
   inversion Hss; subst; try congruence.
   - (* sstep_syscall *)
     match goal with
     | H2 : ms_svc_pending ms = Some ?x, H3 : syscall_spec (sys_input segs ms ?x) model (Ok ?eff ?model' ?evs0) |- _ =>
       assert (Hx : x = x8) by congruence; subst x;
-      destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf Hfd Hno Hg Hr Hnb H3)
+      destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf Hfd Hno Hg Hr Hok Hnb H3)
         as (n & Hn1 & Hn2 & Heff & Hm & Hevs);
       subst eff model' evs0; exists n
     end.
@@ -646,7 +672,7 @@ Proof.
       H3 : syscall_spec (sys_input segs ms ?x) model (Ok ?eff ?model' ?evs0),
       H6 : m_halted ?model' = Some ?code |- _ =>
       assert (Hx : x = x8) by congruence; subst x;
-      destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf Hfd Hno Hg Hr Hnb H3)
+      destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf Hfd Hno Hg Hr Hok Hnb H3)
         as (n & _ & _ & _ & Hm & _);
       subst model'; rewrite Hh in H6; discriminate
     end.
@@ -657,7 +683,7 @@ Proof.
       H3 : syscall_spec (sys_input segs ms ?x) model (Ok ?eff ?model' ?evs0),
       H6 : m_killed ?model' = Some ?sig |- _ =>
       assert (Hx : x = x8) by congruence; subst x;
-      destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf Hfd Hno Hg Hr Hnb H3)
+      destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf Hfd Hno Hg Hr Hok Hnb H3)
         as (n & _ & _ & _ & Hm & _);
       subst model'; rewrite (m_killed_of_m_halted_none model Hh) in H6;
       discriminate
@@ -672,6 +698,7 @@ Lemma sstep_write_inv : forall ms model x8 buf evs st,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = Z_to_bv 64 1 ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= length buf)%nat ->
   sstep segs (mkCfg ms model) evs st ->
@@ -679,10 +706,10 @@ Lemma sstep_write_inv : forall ms model x8 buf evs st,
     evs = map (WriteEv (Z_to_bv 64 1)) (firstn n buf) /\
     st = SNext (mkCfg (advance_past_svc (set_gpr0 ms (len_word (firstn n buf)))) model).
 Proof.
-  intros ms model x8 buf evs st Hh Hlazy Hfd Hsvc Hno Hg Hr Hcnt Hnb Hss.
+  intros ms model x8 buf evs st Hh Hlazy Hfd Hsvc Hno Hg Hr Hok Hcnt Hnb Hss.
   destruct st as [c'|].
   - destruct (sstep_write_next_inv ms model x8 buf evs c'
-                Hh Hlazy Hfd Hsvc Hno Hg Hr Hnb Hss) as (n & Hn1 & Hn2 & Hevs & Hc').
+                Hh Hlazy Hfd Hsvc Hno Hg Hr Hok Hnb Hss) as (n & Hn1 & Hn2 & Hevs & Hc').
     exists n. repeat split; [exact Hn1 | exact Hn2 | exact Hevs | now rewrite Hc'].
   - (* SError: only [sstep_syscall_unmodeled] reaches it, and the write
        is modeled *)
@@ -693,7 +720,7 @@ Proof.
         Hmat : materialize_model_accesses ?model' _ = None |- _ =>
         assert (Hx : x = x8) by congruence; subst x;
         destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf
-                    Hfd Hno Hg Hr Hnb H3)
+                    Hfd Hno Hg Hr Hok Hnb H3)
           as (n & _ & _ & _ & Hm & _);
         subst model'; rewrite (materialize_model_accesses_no_lazy model _ Hlazy) in Hmat;
         discriminate
@@ -751,7 +778,7 @@ Proof.
   intros ms bufs code Hte.
   induction Hte as
     [ms x8 Hsvc Hx8
-    | ms x8 buf bufs code Hsvc Hno Hg Hr Hnb Hcont IH
+    | ms x8 buf bufs code Hsvc Hno Hg Hr Hok Hnb Hcont IH
     | ms ms' bufs code Hsvc Hstep Hte IH];
     intros model Hh Hlazy Hfd Hbm.
   - (* tw_exit: the one transition is the exit *)
@@ -796,11 +823,11 @@ Proof.
       * rewrite (materialize_model_accesses_no_lazy model _ Hlazy). reflexivity.
     + intros evs Hss.
       destruct (sstep_write_inv ms model x8 buf evs SError
-                  Hh Hlazy Hfd Hsvc Hno Hg Hr Hb Hnb Hss) as (n & _ & _ & _ & Habs).
+                  Hh Hlazy Hfd Hsvc Hno Hg Hr Hok Hb Hnb Hss) as (n & _ & _ & _ & Habs).
       discriminate Habs.
     + intros evs c' Hss.
       destruct (sstep_write_inv ms model x8 buf evs (SNext c')
-                  Hh Hlazy Hfd Hsvc Hno Hg Hr Hb Hnb Hss) as (n & Hn1 & Hn2 & -> & Hc').
+                  Hh Hlazy Hfd Hsvc Hno Hg Hr Hok Hb Hnb Hss) as (n & Hn1 & Hn2 & -> & Hc').
       injection Hc' as ->.
       eapply exec_conseq; [exact (IH n Hn1 Hn2 model Hh Hlazy (or_intror Hfd) Hbs) |].
       intros tr o ((full & Hpick & ->) & Hx). split.
@@ -829,7 +856,7 @@ Proof.
   intros ms bufs code Hte.
   induction Hte as
     [ms x8 Hsvc Hx8
-    | ms x8 buf bufs code Hsvc Hno Hg Hr Hnb Hcont IH
+    | ms x8 buf bufs code Hsvc Hno Hg Hr Hok Hnb Hcont IH
     | ms ms' bufs code Hsvc Hstep Hte IH];
     intros model full Hh Hlazy Hfd Hbm Hpick.
   - (* tw_exit *)
@@ -916,8 +943,12 @@ Qed.
 (* ========================================================================= *)
 (* The reader-gone launch with signal 13 open: the run is its silent prefix  *)
 (* up to the first write, then [KillEv 13] over the file system there.  The *)
-(* one premise a [to_wexit] derivation does not already carry is that the  *)
-(* first write names a range [access_ok] passes ([wfirst_ok]).              *)
+(* first write names a range [access_ok] passes ([wfirst_ok]).  A [to_wexit]*)
+(* derivation NOW CARRIES that premise: [tw_write] gained its [access_okb]  *)
+(* hypothesis in the uaccess merge, so [wfirst_ok] is implied for any       *)
+(* non-empty [bufs] and is kept as a standalone statement, not removed.    *)
+(* Retiring it means restating [cat_launch], [cat_kill_*], the             *)
+(* [to_wexit_kill_*] lemmas, CatSimSigpipe.v and theories/Examples/README. *)
 (* ========================================================================= *)
 
 (** The first write the run reaches names a range [access_ok] passes.
@@ -1003,7 +1034,7 @@ Proof.
   intros ms bufs code Hte.
   induction Hte as
     [ms x8 Hsvc Hx8
-    | ms x8 buf bufs code Hsvc Hno Hg Hr Hnb Hcont IH
+    | ms x8 buf bufs code Hsvc Hno Hg Hr _ Hnb Hcont IH
     | ms ms' bufs code Hsvc Hstep Hte IH];
     intros Hne Hfo model Hh Hlazy Hd.
   - exfalso. exact (Hne eq_refl).
@@ -1447,6 +1478,8 @@ Lemma write_ch_check_n : forall segs ms x8 model fd ch buf n,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = fd ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  (* see [write1_check_n] *)
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= n)%nat -> (n <= length buf)%nat ->
   check_write (sys_input segs ms x8)
@@ -1455,7 +1488,7 @@ Lemma write_ch_check_n : forall segs ms x8 model fd ch buf n,
       (mkEffect (len_word (firstn n buf)) [] [])) model
     = CheckOk model (map (WriteEv ch) (firstn n buf)).
 Proof.
-  intros segs ms x8 model fd ch buf n [Hfd [Hch Hrdr]] H32 Hno Hg Hr Hcnt Hn1 Hn2.
+  intros segs ms x8 model fd ch buf n [Hfd [Hch Hrdr]] H32 Hno Hg Hr Hok Hcnt Hn1 Hn2.
   assert (Hrb : read_bytes_map (in_mem (sys_input segs ms x8))
                   (ms_gpr ms 1) (ms_gpr ms 2) = Some buf).
   { rewrite in_mem_sys_input, read_bytes_map_read_byte. exact Hr. }
@@ -1470,6 +1503,7 @@ Proof.
   rewrite Hmc. cbv beta iota.
   assert (Hc : w_is0 (ms_gpr ms 2) = false) by (apply w_is0_pos; lia).
   rewrite Hc. cbv beta iota. cbv zeta.
+  rewrite Hok. cbn [negb]. cbv beta iota.
   rewrite Hrdr. change (negb true) with false. cbv beta iota.
   rewrite (write_source_of_rw _ _ _ Hcw), (readable_bytes_full _ _ _ _ Hrb).
   assert (Hg0 : Nat.eqb (length buf) 0 = false) by (apply Nat.eqb_neq; lia).
@@ -1492,6 +1526,7 @@ Lemma write_ch_ok_n : forall segs ms x8 model fd ch buf n,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = fd ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= n)%nat -> (n <= length buf)%nat ->
   syscall_spec (sys_input segs ms x8) model
@@ -1499,7 +1534,7 @@ Lemma write_ch_ok_n : forall segs ms x8 model fd ch buf n,
           (mkEffect (len_word (firstn n buf)) [] [])) model
         (map (WriteEv ch) (firstn n buf))).
 Proof.
-  intros segs ms x8 model fd ch buf n Hfdc H32 Hno Hg Hr Hcnt Hn1 Hn2.
+  intros segs ms x8 model fd ch buf n Hfdc H32 Hno Hg Hr Hok Hcnt Hn1 Hn2.
   apply (proj2 (syscall_spec_write _ _ _ _ _ Hno)).
   apply check_write_sound_ok. eapply write_ch_check_n; eassumption.
 Qed.
@@ -1509,6 +1544,8 @@ Lemma write_ch_ok_inv : forall segs ms x8 model fd ch eff model' evs buf,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = fd ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  (* see [write1_ok_inv] *)
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   (1 <= length buf)%nat ->
   syscall_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
   exists n, (1 <= n)%nat /\ (n <= length buf)%nat /\
@@ -1516,7 +1553,7 @@ Lemma write_ch_ok_inv : forall segs ms x8 model fd ch eff model' evs buf,
             (mkEffect (len_word (firstn n buf)) [] []) /\ model' = model /\
     evs = map (WriteEv ch) (firstn n buf).
 Proof.
-  intros segs ms x8 model fd ch eff model' evs buf Hfdc H32 Hno Hg Hr Hnb Hspec.
+  intros segs ms x8 model fd ch eff model' evs buf Hfdc H32 Hno Hg Hr Hok Hnb Hspec.
   destruct Hfdc as [Hfd [Hch Hrdr]].
   assert (Hrb : read_bytes_map (in_mem (sys_input segs ms x8))
                   (ms_gpr ms 1) (ms_gpr ms 2) = Some buf).
@@ -1531,6 +1568,7 @@ Proof.
     cbv beta iota in Hspec; [discriminate|].
   assert (Hc : w_is0 (ms_gpr ms 2) = false) by (apply w_is0_pos; lia).
   rewrite Hc in Hspec. cbv beta iota zeta in Hspec.
+  rewrite Hok in Hspec. cbn [negb] in Hspec. cbv beta iota in Hspec.
   rewrite Hrdr in Hspec. change (negb true) with false in Hspec.
   cbv beta iota in Hspec.
   (* the source the transfer sees is the CLAMPED prefix of the range the
@@ -1599,6 +1637,9 @@ Proof.
   { exfalso.
     assert (Hc0 : w_is0 (ms_gpr ms 2) = false) by (apply w_is0_pos; lia).
     congruence. }
+  (* [vfs_write]'s [access_ok]: a refused range is -EFAULT, an answer *)
+  destruct (negb (access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)))).
+  { now apply check_ret_only_no_unmodeled in Hspec. }
   rewrite Hrdr in Hspec. change (negb true) with false in Hspec.
   cbv beta iota in Hspec.
   rewrite (write_source_of_rw _ _ _ Hcw), (readable_bytes_full _ _ _ _ Hrb)
@@ -1624,6 +1665,7 @@ Inductive to_wexit_ch : machine_state -> list (list byte) -> word -> Prop :=
     bv_unsigned x8 = 64%Z ->
     ms_gpr ms 0 = fd ->
     ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+    access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
     (1 <= length buf)%nat ->
     (forall n, (1 <= n)%nat -> (n <= length buf)%nat ->
        to_wexit_ch (advance_past_svc (set_gpr0 ms (len_word (firstn n buf)))) bufs code) ->
@@ -1651,6 +1693,7 @@ Lemma sstep_write_ch_inv : forall ms model x8 buf evs st,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = fd ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= length buf)%nat ->
   sstep segs (mkCfg ms model) evs st ->
@@ -1658,12 +1701,12 @@ Lemma sstep_write_ch_inv : forall ms model x8 buf evs st,
     evs = map (WriteEv ch) (firstn n buf) /\
     st = SNext (mkCfg (advance_past_svc (set_gpr0 ms (len_word (firstn n buf)))) model).
 Proof.
-  intros ms model x8 buf evs st Hh Hlazy Hfdc Hsvc Hno Hg Hr Hcnt Hnb Hss.
+  intros ms model x8 buf evs st Hh Hlazy Hfdc Hsvc Hno Hg Hr Hok Hcnt Hnb Hss.
   revert Hg Hfdc. inversion Hss; subst; intros Hg Hfdc; try congruence.
   - match goal with
     | H2 : ms_svc_pending ms = Some ?x, H3 : syscall_spec (sys_input segs ms ?x) model (Ok ?eff ?model' ?evs0) |- _ =>
       assert (Hx : x = x8) by congruence; subst x;
-      destruct (write_ch_ok_inv segs ms x8 model fd ch eff model' evs0 buf Hfdc Hfd32 Hno Hg Hr Hnb H3)
+      destruct (write_ch_ok_inv segs ms x8 model fd ch eff model' evs0 buf Hfdc Hfd32 Hno Hg Hr Hok Hnb H3)
         as (n & Hn1 & Hn2 & Heff & Hm & Hevs);
       subst eff model' evs0; exists n
     end.
@@ -1680,7 +1723,7 @@ Proof.
       Hmat : materialize_model_accesses ?model' _ = None |- _ =>
       assert (Hx : x = x8) by congruence; subst x;
       destruct (write_ch_ok_inv segs ms x8 model fd ch eff model' evs0 buf
-                  Hfdc Hfd32 Hno Hg Hr Hnb H3)
+                  Hfdc Hfd32 Hno Hg Hr Hok Hnb H3)
         as (n & _ & _ & _ & Hm & _);
       subst model'; rewrite (materialize_model_accesses_no_lazy model _ Hlazy) in Hmat;
       discriminate
@@ -1691,7 +1734,7 @@ Proof.
       H3 : syscall_spec (sys_input segs ms ?x) model (Ok ?eff ?model' ?evs0),
       H6 : m_halted ?model' = Some ?code |- _ =>
       assert (Hx : x = x8) by congruence; subst x;
-      destruct (write_ch_ok_inv segs ms x8 model fd ch eff model' evs0 buf Hfdc Hfd32 Hno Hg Hr Hnb H3)
+      destruct (write_ch_ok_inv segs ms x8 model fd ch eff model' evs0 buf Hfdc Hfd32 Hno Hg Hr Hok Hnb H3)
         as (n & _ & _ & _ & Hm & _);
       subst model'; rewrite Hh in H6; discriminate
     end.
@@ -1703,7 +1746,7 @@ Proof.
       H3 : syscall_spec (sys_input segs ms ?x) model (Ok ?eff ?model' ?evs0),
       H6 : m_killed ?model' = Some ?sig |- _ =>
       assert (Hx : x = x8) by congruence; subst x;
-      destruct (write_ch_ok_inv segs ms x8 model fd ch eff model' evs0 buf Hfdc Hfd32 Hno Hg Hr Hnb H3)
+      destruct (write_ch_ok_inv segs ms x8 model fd ch eff model' evs0 buf Hfdc Hfd32 Hno Hg Hr Hok Hnb H3)
         as (n & _ & _ & _ & Hm & _);
       subst model'; rewrite (m_killed_of_m_halted_none model Hh) in H6;
       discriminate

@@ -311,8 +311,10 @@ Variable mi_init_brk : word.
     section).  The untrusted search in
     theories/Common/PlacementSearch.v takes its floor as a bare argument
     rather than off a [VmMaps].  The ASan plan checker's placement gate
-    ([Common.AsanCeil.placement_ok]) reads it too, under that checker's
-    named [placement_policy] hypothesis.  The PREDICATE over the value
+    ([Common.AsanCeil.placement_ok]) reads it too; that gate is the
+    theorem [Common.AsanCeil.placement_policy_holds], proved from
+    [Mmap.linux_place], and no longer a hypothesis the checker names.
+    The PREDICATE over the value
     is what [valid_entry] carries — see [valid_mmap_base]. *)
 Variable mi_mmap_base : word.
 
@@ -1590,7 +1592,29 @@ Record InjectedArm := mkInjectedArm {
     injected by a bare [alt] rather than through a named list, so their
     lists are written here.  [faccessat2] draws from
     [faccessat]'s list because both answer through
-    [Fs.Open.access_exists_spec]. *)
+    [Fs.Open.access_exists_spec].
+
+    NANOSLEEP LISTS -EINTR AND NOT -EFAULT, AND THAT ASYMMETRY IS A
+    DECISION rather than an oversight — it is written here because the
+    next reader will otherwise close it in the wrong direction.  Since
+    the remainder pointer took its range test
+    ([Sys.Kernel.Time.Hrtimer.nanosleep_spec]), an [rmtp] that
+    [State.access_okb] refuses answers -EFAULT, and that answer is
+    reachable ONLY through an interruption: a completed sleep never
+    copies the remainder out.  So -EINTR and -EFAULT come from the same
+    injection, and only one of them is in the list.
+    LISTING AN ERRNO MAKES [forced_only_cfg] FILTER THE OUTCOME, so
+    adding -EFAULT here would stop a proof having to handle a case a
+    real run produces — an interrupted sleep whose remainder pointer is
+    out of range.  Leaving it unlisted keeps that outcome and costs a
+    proof one case it can discharge.  The cheap error is the one that
+    keeps the case, so the list stays as it is.
+    What would have to be true for the other choice: that no covered
+    program can present an out-of-range [rmtp] to an interrupted sleep
+    — which is a fact about the programs, not about this table, and
+    nothing in this tree states it.
+    A refused [rqtp] is not affected either way: its -EFAULT is the
+    only outcome at that state, so it is kept under both readings. *)
 Definition injected_table : list InjectedArm :=
   (* getcwd     *) mkInjectedArm  17%Z FamFs    getcwd_errnos ::
   (* dup        *) mkInjectedArm  23%Z FamFd    dup_errnos ::
@@ -1721,16 +1745,17 @@ Definition alloc_budget_refused_b (i : SyscallInput) (m : Model) : bool :=
     not (the charge is the growth above the current break). *)
 Inductive RefuseReason : Set := RefuseBudget | RefuseOversize.
 
-(** The charge of the pending request: the byte growth above the
-    current break for [brk], the page-rounded length or new size for
+(** The charge of the pending request: the PAGES a [brk] grow installs
+    above the current break ([Sys/Mm/Mmap.brk_grow_bytes], the same
+    range the ledger records and the gate charges), the page-rounded
+    length or new size for
     [mremap], [mmap] and [mprotect], and 0 for any other syscall —
     [munmap] included, whose mark never fires.  The argument indices are
     those of [alloc_budget_refused_b]; the per-arm lemmas below tie this
     charge to each arm's gate. *)
 Definition alloc_req_charge_bytes (i : SyscallInput) (m : Model) : Z :=
   let no := bv_unsigned (in_sysno i) in
-  if Z.eqb no 214 then
-    Z.max 0%Z (bv_unsigned (in_arg i 0) - bv_unsigned (vm_brk (m_vmmaps m)))%Z
+  if Z.eqb no 214 then brk_grow_bytes (m_vmmaps m) (in_arg i 0)
   else if Z.eqb no 216 then page_round_up_Z (bv_unsigned (in_arg i 2))
   else if Z.eqb no 222 then page_round_up_Z (bv_unsigned (in_arg i 1))
   else if Z.eqb no 226 then page_round_up_Z (bv_unsigned (in_arg i 1))
@@ -1771,7 +1796,7 @@ Qed.
 Lemma alloc_req_charge_brk : forall i m,
   bv_unsigned (in_sysno i) = 214%Z ->
   alloc_budget_refused_b i m = true ->
-  (0 < alloc_req_charge_bytes i m)%Z
+  (0 <= alloc_req_charge_bytes i m)%Z
   /\ brk_budget_ok m (in_arg i 0)
      = (vm_backing_used m + alloc_req_charge_bytes i m <=? vm_limit (m_vmmaps m))%Z
   /\ brk_budget_ok m (in_arg i 0) = false.
@@ -1781,20 +1806,13 @@ Proof.
   cbn [Z.eqb Pos.eqb] in Hb.
   unfold brk_budget_refused_b in Hb.
   apply andb_true_iff in Hb as [Hb Hok].
-  apply andb_true_iff in Hb as [Hb Hgt].
-  apply andb_true_iff in Hb as [_ Hpos].
-  apply Z.ltb_lt in Hgt. apply Z.ltb_lt in Hpos.
   apply negb_true_iff in Hok.
   assert (Hc : alloc_req_charge_bytes i m
-               = (bv_unsigned (in_arg i 0) - bv_unsigned (vm_brk (m_vmmaps m)))%Z).
-  { unfold alloc_req_charge_bytes. cbv zeta. rewrite Hno. cbn [Z.eqb Pos.eqb]. lia. }
-  assert (Hsz : bv_unsigned (in_arg i 0 - vm_brk (m_vmmaps m))%bv
-                = (bv_unsigned (in_arg i 0) - bv_unsigned (vm_brk (m_vmmaps m)))%Z).
-  { pose proof (bv_unsigned_in_range 64 (in_arg i 0)).
-    pose proof (bv_unsigned_in_range 64 (vm_brk (m_vmmaps m))).
-    rewrite bv_sub_unsigned. apply bv_wrap_small. lia. }
-  split; [lia |]. split; [| exact Hok].
-  unfold brk_budget_ok. cbv zeta. rewrite Hsz, Hc. reflexivity.
+               = brk_grow_bytes (m_vmmaps m) (in_arg i 0)).
+  { unfold alloc_req_charge_bytes. cbv zeta. rewrite Hno.
+    cbn [Z.eqb Pos.eqb]. reflexivity. }
+  split; [rewrite Hc; unfold brk_grow_bytes; lia |]. split; [| exact Hok].
+  unfold brk_budget_ok. cbv zeta. rewrite Hc. reflexivity.
 Qed.
 
 (** THE MREMAP MARK, READ BACK.  The grow has ONE non-errno
@@ -3216,8 +3234,9 @@ Qed.
     discharge — which is why the field strengthens every
     statement in the tree that quantifies over an entry without changing
     one of their texts.  No ADDRESS moves with the draw either
-    ([StackLayout.build_stack_bytes_split_random],
-    [entry_stack_image_block_prefix]), so [entry_stack_fits] stays a
+    ([StackLayout.build_stack_bytes_split_random], carried to the
+    mapped image by [PropExec.entry_stack_image_block]), so
+    [entry_stack_fits] stays a
     function of (sp, argv, envp) — and it still bounds the whole mapped
     region, page rounding included
     ([PropExec.entry_page_top_within_window]).

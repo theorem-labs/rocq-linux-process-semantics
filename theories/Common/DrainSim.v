@@ -51,7 +51,7 @@ From LinuxProcessSemantics.Common Require Import SimInv ExitSim PropExec CatSim 
 Import ListNotations.
 Open Scope bv_scope.
 
-(* Sb-store-for-any-byte-value machinery ([sb_chain256]/[step_sb256]/       *)
+(* Sb-store-for-any-byte-value machinery ([step_sb256] /                     *)
 (* [N_to_le_bytes_1_small]) lives in [SeqExec] (reused directly, since       *)
 (* this file already imports it).                                            *)
 
