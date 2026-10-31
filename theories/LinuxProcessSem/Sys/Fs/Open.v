@@ -45,16 +45,59 @@ Definition is_excl_create (fl : Z) : bool :=
     O_WRONLY|O_CREAT|O_APPEND, the word C's [fopen(p, "a")] issues (musl
     1.2.6, src/stdio/fopen.c through [__fmodeflags]) and the one zlib's
     gzio output path uses.  It is a SINGLE word and not a mask test: the
-    O_TRUNC and O_EXCL spellings beside it are declined, each for its own
-    reason, and [modeled_open_flags]'s note says which.
+    O_TRUNC spelling beside it is declined, the O_EXCL spellings have an
+    arm of their own ([is_excl_append_create]), and
+    [modeled_open_flags]'s note says why each is not this one.
 
-    THIS IS THE ONE ADMITTED WORD WHOSE RESIDUE MEETS
-    [Fs.Fcntl.setfl_acted_on], because O_APPEND is a bit F_SETFL acts
-    on.  That is why the fd it mints is a [State.FdFileA] rather than a
+    ITS RESIDUE MEETS [Fs.Fcntl.setfl_acted_on], because O_APPEND is a
+    bit F_SETFL acts on, and so does every residue
+    [is_excl_append_create] admits; [Fs.Fcntl.modeled_open_flags_clear_of_setfl]
+    proves every other admitted word clear of it.  That is why the fd
+    these words mint is a [State.FdFileA] rather than a
     [State.FdFileW]: [Fs.Fcntl.setfl_noop_on] declines the new kind, and
-    its arm carries the argument.  A future widening that routed this
+    its arm carries the argument.  A future widening that routed either
     word to [FdFileW] would silently make that predicate unsound. *)
 Definition append_create_flags : Z := (O_WRONLY + O_CREAT + O_APPEND)%Z.
+
+(** The EXCLUSIVE APPEND write-open combinations the model covers:
+    O_WRONLY|O_CREAT|O_EXCL|O_APPEND, with or without O_TRUNC.  The plain
+    spelling is the word zlib's [gz_open] (gzlib.c) builds for
+    [gzopen(p, "ax")].  Ported from main LPS
+    (theorem-labs/linux-process-semantics) commit 4d80c33d83, #1760,
+    with the one change the next paragraph names.
+
+    EACH HALF OF ITS ANSWER IS ALREADY A NEIGHBOUR'S, and that is the
+    whole derivation.  [do_open] (fs/namei.c, Linux v6.18.46) opens its
+    [open_flag & O_CREAT] block with
+    [(open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED)], and
+    returns -EEXIST there, BEFORE the [d_is_dir(nd->path.dentry)] test
+    that answers -EISDIR.  So a name that exists -- a key, a directory
+    reference, or a directory some key lives under -- is -EEXIST before
+    anything else is looked at: the answer [openat_excl_spec] gives, and
+    the reason no append rule ever meets an existing tail.  A DIRECTORY
+    REFERENCE IS -EEXIST AND NOTHING ELSE HERE, which is the one place
+    this port differs from main LPS 4d80c33d83: that model admits
+    -EISDIR beside it, the answer kernels v4.17 through v5.6 give in the
+    function [do_open] replaced.  This model describes Linux v6.18.46
+    alone (dispatch://OSSV-266/ask/9128d2b8), so the arm answers
+    v6.18.46's -EEXIST and offers no alternative.  An absent name is
+    created, and then
+    [do_open] clears O_TRUNC under [FMODE_CREATED] (which is why the
+    O_TRUNC spelling is the same behaviour, as it is for
+    [is_excl_create]), while O_APPEND survives into [f_flags]:
+    [do_dentry_open] (fs/open.c, Linux v6.18.46) clears only
+    O_CREAT|O_EXCL|O_NOCTTY|O_TRUNC there.  So the created descriptor is
+    the append kind on a new empty file, which is what [open_append]
+    records for an absent name.
+
+    The descriptor is a [State.FdFileA] for the reason
+    [append_create_flags] gives: the residue carries O_APPEND. *)
+Definition excl_append_create_flags : Z :=
+  (O_WRONLY + O_CREAT + O_EXCL + O_APPEND)%Z.
+
+Definition is_excl_append_create (fl : Z) : bool :=
+  Z.eqb fl excl_append_create_flags
+  || Z.eqb fl (excl_append_create_flags + O_TRUNC).
 
 (** Is bit [b] set in the flag residue [fl]?  Used only by the O_RDWR
     arms, which derive their behavior from the O_CREAT and O_TRUNC bits
@@ -114,8 +157,9 @@ Definition open_ignored_flags : Z := (O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z.
 (** The flag WORDS [openat_spec] interprets: O_RDONLY, the clobbering
     write-create shape, the exclusive write-create shapes, the
     read-a-directory shape O_RDONLY|O_DIRECTORY, the APPEND
-    write-create shape, and the READ-WRITE shapes ([rdwr_open_word] and
-    [is_rdwr_excl_create]), each modulo the bits in
+    write-create shape, the READ-WRITE shapes ([rdwr_open_word] and
+    [is_rdwr_excl_create]), and the EXCLUSIVE APPEND shapes
+    ([is_excl_append_create]), each modulo the bits in
     [open_ignored_flags].
     Linux validates
     the flags in [build_open_flags()] BEFORE it fetches the pathname, so
@@ -134,8 +178,8 @@ Definition open_ignored_flags : Z := (O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z.
     v6.18.46.
 
     DELIBERATELY STILL DECLINED.  Two flags real programs reach for that
-    this set does NOT admit, each for its own reason, and three
-    O_APPEND SPELLINGS beside the one that is admitted:
+    this set does NOT admit, each for its own reason, and the O_APPEND
+    SPELLINGS beside the admitted ones:
 
     - O_WRONLY|O_APPEND without O_CREAT is a different syscall answer,
       not a different name for the same one: the file must already
@@ -148,11 +192,10 @@ Definition open_ignored_flags : Z := (O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z.
       and the resulting fd is indistinguishable from an append fd on a
       file the open just emptied — which is exactly why it is worth an
       arm of its own with its own test rather than being folded in
-      here on the strength of that sentence.
-    - O_WRONLY|O_CREAT|O_EXCL|O_APPEND cannot open an existing file at
-      all, so the append rule never has an existing tail to append to;
-      it is declined for the same reason as the O_TRUNC spelling, being
-      a shape no test in this repository exercises.
+      here on the strength of that sentence.  The O_EXCL spelling is
+      NOT this case and is admitted: there O_EXCL refuses every
+      existing name before O_TRUNC could act, so nothing is composed
+      ([is_excl_append_create]).
 
     - O_RDWR IS ADMITTED, in the six words [rdwr_open_word] and
       [is_rdwr_excl_create] name, and [State.FdFileRW] is its
@@ -203,7 +246,8 @@ Definition modeled_open_flags (flags : word) : bool :=
   let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
   Z.eqb fl 0 || Z.eqb fl wr_create_flags || is_excl_create fl
   || Z.eqb fl O_DIRECTORY || Z.eqb fl append_create_flags
-  || rdwr_open_word fl || is_rdwr_excl_create fl.
+  || rdwr_open_word fl || is_rdwr_excl_create fl
+  || is_excl_append_create fl.
 
 (** One introduction lemma per modeled shape, so a proof that already
     knows which arm it is in can clear the flags guard. *)
@@ -255,6 +299,14 @@ Qed.
 
 Lemma modeled_open_flags_rdwr_excl : forall flags,
   is_rdwr_excl_create (Z.ldiff (bv_unsigned flags) open_ignored_flags) = true ->
+  modeled_open_flags flags = true.
+Proof.
+  intros flags H. unfold modeled_open_flags. cbv zeta. rewrite H.
+  now rewrite Bool.orb_true_r.
+Qed.
+
+Lemma modeled_open_flags_excl_append : forall flags,
+  is_excl_append_create (Z.ldiff (bv_unsigned flags) open_ignored_flags) = true ->
   modeled_open_flags flags = true.
 Proof.
   intros flags H. unfold modeled_open_flags. cbv zeta. rewrite H.
@@ -477,20 +529,57 @@ Definition open_append (p : path) (m : Model) : Sys SyscallEffect :=
        set_fds (fd_insert (m_fds m) fd (FdFileA p (Z_to_bv 64 0))) ;;
        ret_only fd).
 
-(** Resolve the APPEND write-create open shape.
+(** Resolve the two APPEND write-create open shapes: the plain word
+    ([excl] false) and the exclusive one ([excl] true).  Both
+    create an absent name with [open_append]; they differ in what an
+    existing name gets.  The exclusive half is ported from main LPS
+    (theorem-labs/linux-process-semantics) commit 4d80c33d83 (#1760).
 
-    A DIRECTORY REFERENCE IS -EISDIR, the clobbering shape's answer and
-    not the exclusive shape's -EEXIST, and the reason is which test
-    [do_open] (fs/namei.c) reaches first.  With O_CREAT set it returns
-    -EEXIST only under O_EXCL, which this word does not carry; the next
-    test is [d_is_dir(nd->path.dentry)], and that is -EISDIR.  So "." and
-    ".." answer here exactly as they do for O_WRONLY|O_CREAT|O_TRUNC,
+    THE PLAIN WORD: A DIRECTORY REFERENCE IS -EISDIR, the clobbering
+    shape's answer and not the exclusive shape's -EEXIST, and the reason
+    is which test [do_open] (fs/namei.c) reaches first.  With O_CREAT set
+    it returns -EEXIST only under O_EXCL, which this word does not carry;
+    the next test is [d_is_dir(nd->path.dentry)], and that is -EISDIR.  So
+    "." and ".." answer here exactly as they do for O_WRONLY|O_CREAT|O_TRUNC,
     ahead of [may_open], and O_APPEND changes nothing about it.  An
     IMPLIED directory ([fs_under]) takes the same branch for the reason
     given above [openat_create_spec]: the dentry the lookup finds is
-    positive and [d_is_dir], and the word carries no O_EXCL. *)
-Definition openat_append_spec (p : path) (m : Model) : Sys SyscallEffect :=
-  if path_is_dirref p || fs_under (m_fs m) p then err_ret EISDIR
+    positive and [d_is_dir], and the word carries no O_EXCL.  An existing
+    file is opened, and keeps its bytes ([append_open_fs]).
+
+    THE EXCLUSIVE WORD: [openat_excl_spec]'s -EEXIST for every name that
+    exists ([is_excl_append_create] gives the derivation), and the same
+    creation as the plain word for one that does not.  The -EEXIST is
+    deterministic, as the exclusive shape's is; only the creation admits
+    an [openat_errnos] alternative.  One thing differs from
+    [openat_excl_spec], and it is what that arm would do if no example
+    already reached it: a name longer than [Uapi.NAME_MAX] declines,
+    ahead of the implied-directory test and the lookup.  No such name
+    can exist, so the create would reach the filesystem's own
+    -ENAMETOOLONG, which [openat_dir_spec] declines for the same reason
+    and the create arms answer by minting the key.
+
+    A DIRECTORY REFERENCE IS -EEXIST, with no second answer.  Main LPS
+    4d80c33d83 admits -EISDIR beside it, for kernels v4.17 through v5.6.
+    This model describes Linux v6.18.46 alone
+    (dispatch://OSSV-266/ask/9128d2b8), and an [alt] over two kernel
+    versions is the same defect as an [alt] over two systems.  At
+    v6.18.46 [do_open] (fs/namei.c) returns -EEXIST at
+    [(open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED)], the test
+    before [d_is_dir(nd->path.dentry)], so -EEXIST is the whole
+    answer. *)
+Definition openat_append_spec (excl : bool) (p : path) (m : Model)
+    : Sys SyscallEffect :=
+  if excl then
+    (if path_is_dirref p then err_ret EEXIST
+     else if Nat.ltb NAME_MAX (length p) then unmodeled  (* the filesystem's own -ENAMETOOLONG *)
+     else if fs_under (m_fs m) p then err_ret EEXIST
+     else
+       match fs_lookup (m_fs m) p with
+       | Some _ => err_ret EEXIST
+       | None => open_append p m
+       end)
+  else if path_is_dirref p || fs_under (m_fs m) p then err_ret EISDIR
   else open_append p m.
 
 (** Resolve an exclusive write-create open after pathname fetch.  A
@@ -922,7 +1011,8 @@ Definition openat_localtime_spec (flags : word) (m : Model)
       word does.  That is exactly the O_APPEND-is-unobservable argument
       [State.FdFileA] exists because a REGULAR file breaks; here it
       holds.
-    - O_CREAT|O_EXCL, in either access mode: [do_open]'s
+    - O_CREAT|O_EXCL, in every admitted word that carries it (either
+      access mode, with or without O_APPEND): [do_open]'s
       [(open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED)] is
       -EEXIST, before [may_open] — deterministic, as on every existing
       name.
@@ -962,6 +1052,7 @@ Definition openat_devnull_spec (flags : word) (m : Model)
       else if Z.eqb fl append_create_flags then open_devnull m false true
       else if rdwr_open_word fl then open_devnull m true true
       else if is_rdwr_excl_create fl then err_ret EEXIST
+      else if is_excl_append_create fl then err_ret EEXIST
       else unmodeled   (* unreachable: [modeled_open_flags] admitted the word *)
   end.
 
@@ -999,14 +1090,17 @@ Definition openat_devnull_spec (flags : word) (m : Model)
       [urandom_fops].  The descriptor carries FMODE_READ, FMODE_PREAD
       and FMODE_LSEEK ([do_dentry_open] sets the latter two and
       [memory_open] clears nothing).
-    - O_CREAT|O_EXCL, in either access mode: [do_open]'s
+    - O_CREAT|O_EXCL, in every admitted word that carries it (either
+      access mode, with or without O_APPEND): [do_open]'s
       [(open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED)] is
       -EEXIST, before [may_open] — deterministic, as on every existing
-      name.
+      name.  That is why the exclusive APPEND word is answered here
+      although it is a write word: it never opens the device.
     - O_RDONLY|O_DIRECTORY: [do_open]'s [(nd->flags & LOOKUP_DIRECTORY)
       && !d_can_lookup(...)] is -ENOTDIR.
     - THE WRITE WORDS ARE DECLINED, not answered: O_WRONLY and O_RDWR,
-      with or without O_CREAT, O_TRUNC and O_APPEND.  Linux admits them
+      with or without O_CREAT, O_TRUNC and O_APPEND, and without
+      O_EXCL.  Linux admits them
       — [may_open] passes, [may_open]'s [flag &= ~O_TRUNC] drops the
       truncation, and a write through the descriptor reaches
       [random_write_iter], which mixes the bytes into the input pool
@@ -1041,6 +1135,7 @@ Definition openat_urandom_spec (flags : word) (m : Model)
       else if is_excl_create fl then err_ret EEXIST
       else if Z.eqb fl O_DIRECTORY then err_ret ENOTDIR
       else if is_rdwr_excl_create fl then err_ret EEXIST
+      else if is_excl_append_create fl then err_ret EEXIST
       else unmodeled   (* the write words ([wr_create_flags],
                           [append_create_flags], [rdwr_open_word]):
                           admitted by Linux into the pool, declined here *)
@@ -1207,10 +1302,11 @@ Definition openat_resolved_spec (p : path) (flags : word) (m : Model)
   else if Z.eqb fl wr_create_flags then openat_create_spec p m
   else if is_excl_create fl then openat_excl_spec p m
   else if Z.eqb fl O_DIRECTORY then openat_dir_spec p m
-  else if Z.eqb fl append_create_flags then openat_append_spec p m
+  else if Z.eqb fl append_create_flags then openat_append_spec false p m
   else if rdwr_open_word fl then
     openat_rdwr_spec (flag_set fl O_CREAT) (flag_set fl O_TRUNC) p m
   else if is_rdwr_excl_create fl then openat_rdwr_excl_spec p m
+  else if is_excl_append_create fl then openat_append_spec true p m
   else unmodeled.
 
 (** [openat dirfd path flags mode].  Modeled shapes (the
@@ -1257,6 +1353,11 @@ Definition openat_resolved_spec (p : path) (flags : word) (m : Model)
       O_CREAT and O_TRUNC bits each decide, and
       [openat_rdwr_excl_spec] the -EEXIST that separates the exclusive
       words from them.
+    - O_WRONLY|O_CREAT|O_EXCL|O_APPEND, with or without O_TRUNC
+      ([is_excl_append_create]): the exclusive shape's deterministic
+      -EEXIST on every name that exists, and otherwise the append
+      shape's creation, an empty file and a [State.FdFileA]
+      ([openat_append_spec] with [excl] true).
 
     ALL OF THEM ARE ON A PATHNAME WITH NO SEPARATOR IN IT.  One with a
     separator is declined ahead of the flag test and reaches none of the

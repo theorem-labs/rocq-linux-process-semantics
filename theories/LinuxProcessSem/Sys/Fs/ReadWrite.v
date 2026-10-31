@@ -1702,8 +1702,9 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
          (fs/read_write.c, [ksys_pwrite64]); that is a modelling change
          with its own argument to make, not something this decline
          prejudges.  No example can reach it: an [FdFileA] is minted only
-         by [Open.openat_append_spec] and no example opens a file in
-         append mode and then pwrites it. *)
+         by [Open.openat_append_spec] (both append words), and no
+         example opens a file in append mode and then pwrites
+         it. *)
   | Some (FdFileW p _) | Some (FdFileRW p _) =>
       (* ONE ARM FOR TWO KINDS, and one arm rather than two copies is the
          point: a positional write neither reads nor moves [f_pos], so the

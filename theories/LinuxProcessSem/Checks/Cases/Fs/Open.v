@@ -110,10 +110,12 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     are the same one, so the pair is a real contrast rather than two
     unrelated runs.
 
-    The declines are the three O_APPEND spellings beside the modeled one
+    The declines are the O_APPEND spellings beside the modeled ones
     ([Fs.Open.modeled_open_flags] names each and says why), plus
     O_APPEND on its own, which is O_RDONLY|O_APPEND and not this
-    shape. *)
+    shape.  The O_EXCL spelling is no longer among them: it has an arm
+    of its own, and [openat_excl_append_flag_word] below is its
+    example. *)
 Example openat_append_flag_word :
   let open fs fl := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
@@ -137,10 +139,102 @@ Example openat_append_flag_word :
   /\ kept (open have wr_create_flags) = Some []
   (* and the spellings next to it stay declined *)
   /\ open have (append_create_flags + O_TRUNC)%Z = CheckUnmodeled
-  /\ open have (append_create_flags + O_EXCL)%Z = CheckUnmodeled
   /\ open have (O_WRONLY + O_APPEND)%Z = CheckUnmodeled
   /\ open have (O_RDWR + O_CREAT + O_APPEND)%Z = CheckUnmodeled.
 Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** THE EXCLUSIVE APPEND WORDS, O_WRONLY|O_CREAT|O_EXCL|O_APPEND with
+    and without O_TRUNC, against one image so that every pair below is a
+    real contrast.
+
+    What only a Rocq literal can state, for the reason the O_NONBLOCK
+    example gives (an equality BETWEEN TWO FLAG WORDS): the O_TRUNC
+    spelling lands in exactly the model the plain one does, and so does
+    the plain one with the ignored bits set.
+
+    What separates the arm from its two neighbours, and is the arm's
+    whole claim ([Fs.Open.is_excl_append_create]):
+    - an ABSENT name is created EMPTY and the fd is the APPEND kind, at
+      offset 0, where the exclusive shape hands back a [FdFileW];
+    - an EXISTING name is -EEXIST and only -EEXIST: the open that
+      succeeds there and the injectable -EMFILE are both refused, where
+      the append shape opens it and keeps its bytes;
+    - "." is -EEXIST and nothing else, the answer [do_open] gives at
+      its O_EXCL test before [d_is_dir] (fs/namei.c, Linux v6.18.46):
+      -EISDIR, the descriptor and -ENOENT are all refused.
+    The creation, unlike the -EEXIST, does admit an [openat_errnos]
+    alternative. *)
+Example openat_excl_append_flag_word :
+  let open fs pathm fl eff := check_syscall
+        (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
+           pathm (fun _ => None))
+        (with_copyins [(8192, 2%nat)] eff)
+        (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
+  let dot := fun a => if bv_eqb a 8192 then Some 46
+                      else if bv_eqb a 8193 then Some 0 else None in
+  let have := [([102], [104; 105])] in
+  let absent := [] in
+  let base fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
+  let fd3 := mkEffect 3 [] [] in
+  let kept r := match r with
+                | CheckOk m _ => fs_lookup (m_fs m) [102]
+                | _ => None
+                end in
+  let kind r := match r with
+                | CheckOk m _ => fd_lookup (m_fds m) 3
+                | _ => None
+                end in
+  (* the O_TRUNC spelling and the ignored bits change nothing *)
+  open absent mem_open_write (excl_append_create_flags + O_TRUNC)%Z fd3
+    = open absent mem_open_write excl_append_create_flags fd3
+  /\ open absent mem_open_write
+       (excl_append_create_flags + O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z fd3
+     = open absent mem_open_write excl_append_create_flags fd3
+  (* an ABSENT name: created empty, and the fd is the APPEND kind *)
+  /\ kept (open absent mem_open_write excl_append_create_flags fd3) = Some []
+  /\ kind (open absent mem_open_write excl_append_create_flags fd3)
+     = Some (FdFileA [102] 0)
+  (* ...where the exclusive shape mints the plain write-only kind *)
+  /\ kind (open absent mem_open_write excl_create_flags fd3)
+     = Some (FdFileW [102] 0)
+  (* and the creation may still fail with an injectable errno *)
+  /\ open absent mem_open_write excl_append_create_flags
+       (mkEffect (errno_ret ENOMEM) [] [])
+     = CheckOk (base absent) []
+  (* an EXISTING name: -EEXIST, deterministically *)
+  /\ open have mem_open_write excl_append_create_flags
+       (mkEffect (errno_ret EEXIST) [] [])
+     = CheckOk (base have) []
+  /\ open have mem_open_write (excl_append_create_flags + O_TRUNC)%Z
+       (mkEffect (errno_ret EEXIST) [] [])
+     = CheckOk (base have) []
+  /\ open have mem_open_write excl_append_create_flags fd3 = CheckReject
+  /\ open have mem_open_write excl_append_create_flags
+       (mkEffect (errno_ret EMFILE) [] [])
+     = CheckReject
+  (* ...where the append shape opens it, bytes intact *)
+  /\ kept (open have mem_open_write append_create_flags fd3)
+     = Some [104; 105]
+  (* "." is -EEXIST, v6.18.46's answer, and only that *)
+  /\ open absent dot excl_append_create_flags
+       (mkEffect (errno_ret EEXIST) [] [])
+     = CheckOk (base absent) []
+  /\ open absent dot excl_append_create_flags
+       (mkEffect (errno_ret EISDIR) [] [])
+     = CheckReject
+  /\ open absent dot excl_append_create_flags fd3 = CheckReject
+  /\ open absent dot excl_append_create_flags
+       (mkEffect (errno_ret ENOENT) [] [])
+     = CheckReject
+  (* ...where the append shape, with no O_EXCL, is -EISDIR alone *)
+  /\ open absent dot append_create_flags (mkEffect (errno_ret EISDIR) [] [])
+     = CheckOk (base absent) []
+  /\ open absent dot append_create_flags (mkEffect (errno_ret EEXIST) [] [])
+     = CheckReject
+  (* the read-write spelling of the same bits is still declined *)
+  /\ open absent mem_open_write (O_RDWR + O_CREAT + O_EXCL + O_APPEND)%Z fd3
+     = CheckUnmodeled.
+Proof. vm_compute. repeat split; check_eq. Qed.
 
 (** THE SIX READ-WRITE WORDS, as the table the two bits decide.
 
@@ -503,8 +597,10 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     append shape and the read-write shapes with and without O_CREAT and
     O_TRUNC answer -EISDIR (the O_CREAT-free ones through [may_open]'s
     S_IFDIR arm rather than [do_open]'s [d_is_dir], the same errno by
-    a different route), and the exclusive read-write shape answers
-    -EEXIST. *)
+    a different route), and the two other exclusive shapes, read-write
+    and append, answer -EEXIST.  The exclusive append word is the one
+    whose O_EXCL-free neighbour answers -EISDIR on the same image, so
+    its -EISDIR is refused beside its -EEXIST. *)
 Example openat_implied_directory_other_write_words :
   let m0 fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
   let under := [([Z_to_bv 8 97; Z_to_bv 8 47; Z_to_bv 8 98], [104])] in
@@ -518,6 +614,9 @@ Example openat_implied_directory_other_write_words :
   /\ open O_RDWR (mkEffect (errno_ret EISDIR) [] []) = CheckOk (m0 under) []
   /\ open (O_RDWR + O_TRUNC)%Z (mkEffect (errno_ret EISDIR) [] []) = CheckOk (m0 under) []
   /\ open rdwr_excl_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk (m0 under) []
+  /\ open excl_append_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk (m0 under) []
+  /\ open excl_append_create_flags (mkEffect (errno_ret EISDIR) [] []) = CheckReject
+  /\ open excl_append_create_flags (mkEffect 3 [] []) = CheckReject
   /\ open (O_RDWR + O_CREAT)%Z (mkEffect 3 [] []) = CheckReject.
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
@@ -678,8 +777,12 @@ Example devnull_open_by_word :
   /\ minted (O_RDWR + O_CREAT + O_TRUNC)%Z true true
   /\ open excl_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk devnull_m0 []
   /\ open rdwr_excl_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk devnull_m0 []
+  /\ open excl_append_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk devnull_m0 []
+  /\ open (excl_append_create_flags + O_TRUNC)%Z (mkEffect (errno_ret EEXIST) [] [])
+     = CheckOk devnull_m0 []
   /\ open O_DIRECTORY (mkEffect (errno_ret ENOTDIR) [] []) = CheckOk devnull_m0 []
   /\ open excl_create_flags (mkEffect 3 [] []) = CheckReject
+  /\ open excl_append_create_flags (mkEffect 3 [] []) = CheckReject
   /\ open O_DIRECTORY (mkEffect 3 [] []) = CheckReject.
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
@@ -879,8 +982,12 @@ Example urandom_open_by_word :
   /\ minted (0 + O_CLOEXEC)%Z
   /\ open excl_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk urandom_m0 []
   /\ open rdwr_excl_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk urandom_m0 []
+  /\ open excl_append_create_flags (mkEffect (errno_ret EEXIST) [] []) = CheckOk urandom_m0 []
+  /\ open (excl_append_create_flags + O_TRUNC)%Z (mkEffect (errno_ret EEXIST) [] [])
+     = CheckOk urandom_m0 []
   /\ open O_DIRECTORY (mkEffect (errno_ret ENOTDIR) [] []) = CheckOk urandom_m0 []
   /\ open excl_create_flags (mkEffect 3 [] []) = CheckReject
+  /\ open excl_append_create_flags (mkEffect 3 [] []) = CheckReject
   /\ open O_DIRECTORY (mkEffect 3 [] []) = CheckReject
   /\ open wr_create_flags (mkEffect 3 [] []) = CheckUnmodeled
   /\ open append_create_flags (mkEffect 3 [] []) = CheckUnmodeled
@@ -1458,6 +1565,49 @@ Example openat_directory_name_max_boundary :
   /\ open (repeat 97%Z 255) 256%nat (mkEffect (errno_ret ENOENT) [] [])
      = CheckOk m0 [].
 Proof. vm_compute. split; reflexivity. Qed.
+
+(** THE EXCLUSIVE APPEND WORD AT ITS EDGES: each is a change a wrong arm
+    could make in [Fs.Open.openat_append_spec] and its checker
+    alike, closing every proof.
+    - A 256-byte name is declined and a 255-byte one is created: no name
+      over [Uapi.NAME_MAX] can exist, so the create would reach the
+      filesystem's own -ENAMETOOLONG, which a model with no filesystem
+      type does not invent (the pair above states it for O_DIRECTORY).
+    - Without O_CREAT nothing is created: Linux answers an absent name
+      with the lookup's -ENOENT, since [lookup_open] creates only under
+      O_CREAT (fs/namei.c, Linux v6.18.46), and
+      [Fs.Open.modeled_open_flags] declines the word before the path.
+    - /tmp/<n> and /etc/localtime keep declining it: their arms answer
+      only the words they name. *)
+Example openat_excl_append_edges :
+  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let open bs fl eff := check_syscall
+        (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
+           (open_path_mem bs) (fun _ => None))
+        (with_copyins [(8192, S (length bs))] eff) m0 in
+  let ok r := match r with CheckOk _ _ => true | _ => false end in
+  (* NAME_MAX: 256 bytes declined, whatever is offered; 255 created *)
+  open (repeat 97%Z 256) excl_append_create_flags (mkEffect 3 [] [])
+    = CheckUnmodeled
+  /\ open (repeat 97%Z 256) excl_append_create_flags
+       (mkEffect (errno_ret EEXIST) [] [])
+     = CheckUnmodeled
+  /\ ok (open (repeat 97%Z 255) excl_append_create_flags (mkEffect 3 [] []))
+     = true
+  (* no O_CREAT: not this word, and declined before the path *)
+  /\ open [102%Z] (O_WRONLY + O_EXCL + O_APPEND)%Z (mkEffect 3 [] [])
+     = CheckUnmodeled
+  /\ open [102%Z] (O_WRONLY + O_EXCL + O_APPEND)%Z
+       (mkEffect (errno_ret ENOENT) [] [])
+     = CheckUnmodeled
+  (* the /tmp and /etc/localtime arms do not answer it *)
+  /\ open [47; 116; 109; 112; 47; 100]%Z excl_append_create_flags
+       (mkEffect 3 [] [])
+     = CheckUnmodeled
+  /\ open localtime_bytes excl_append_create_flags
+       (mkEffect (errno_ret ENOENT) [] [])
+     = CheckUnmodeled.
+Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (* ================================================ faccessat2 (439)
 

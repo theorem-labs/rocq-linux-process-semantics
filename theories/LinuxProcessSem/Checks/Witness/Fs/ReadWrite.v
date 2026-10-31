@@ -673,25 +673,23 @@ Proof.
       cbv beta iota zeta; srw Hfd; srw Hm.
       unfold access_ok_zero, access_ok_zero_witness.
       destruct (access_okb buf (bv_unsigned count)); apply pure_ok. }
-    destruct (m_channel_reader m) eqn:Hcr; cycle 1.
+    destruct (negb (m_channel_reader m)) eqn:Hcr.
     { (* the far end has no reader: [access_ok], then signal 13 *)
-      eapply bind_step; [apply input_ok|].
-      cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hm; srw Hc; srw Hcr; cbn [negb];
-        cbv beta iota.
-      destruct (access_okb buf (bv_unsigned count)) eqn:Hok;
-        cbn [negb]; cbv beta iota.
+      destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hok;
+        (eapply bind_step; [apply input_ok|]); cbv beta;
+        (eapply bind_step; [apply get_model_ok|]);
+        cbv beta iota zeta; srw Hfd; srw Hm; srw Hcr.
+      - apply pure_ok.
       - unfold sigpipe_write.
-        eapply bind_step; [apply modify_ok|]. apply pure_ok.
-      - apply pure_ok. }
+        eapply bind_step; [apply modify_ok|]. apply pure_ok. }
     destruct (Nat.eqb (length (write_source (in_mem i) buf count)) 0)
       eqn:Hg.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hm; srw Hg. apply pure_ok.
+      cbv beta iota zeta; srw Hfd; srw Hm; srw Hcr; srw Hg. apply pure_ok.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hm; srw Hg.
+      cbv beta iota zeta; srw Hfd; srw Hm; srw Hcr; srw Hg.
       eapply bind_step.
       { apply (choose_ok _ (write_source (in_mem i) buf count)).
         repeat split.
@@ -806,28 +804,25 @@ Proof.
     cbv beta iota zeta; srw Hfd. apply pure_ok.
   - (* socket: a delivering write is still unmodeled; a socket with no
        connection answers -EPIPE and raises signal 13 *)
-    destruct (sock_send_dead sk) eqn:Hsd; cbn [negb]; cbv beta iota.
-    2:{ eapply bind_unmodeled2; [apply input_ok|].
-        cbv beta. eapply bind_unmodeled2; [apply get_model_ok|].
-        cbv beta iota zeta; srw Hfd; srw Hsd; cbn [negb]; cbv beta iota.
-        apply unmodeled_intro. }
-    destruct (modeled_rw_range buf count) eqn:Hn; cbn [negb]; cbv beta iota.
-    2:{ eapply bind_unmodeled2; [apply input_ok|].
-        cbv beta. eapply bind_unmodeled2; [apply get_model_ok|].
-        cbv beta iota zeta; srw Hfd; srw Hsd; cbn [negb]; cbv beta iota;
-          srw Hn; cbn [negb]; cbv beta iota.
-        apply unmodeled_intro. }
-    eapply bind_step; [apply input_ok|].
-    cbv beta. eapply bind_step; [apply get_model_ok|].
-    cbv beta iota zeta; srw Hfd; srw Hsd; cbn [negb]; cbv beta iota;
-      srw Hn; cbn [negb]; cbv beta iota.
-    destruct (access_okb buf (bv_unsigned count)) eqn:Hok;
-      cbn [negb]; cbv beta iota.
+    cbv beta iota.
+    destruct (negb (sock_send_dead sk)) eqn:Hsd.
+    { eapply bind_unmodeled2; [apply input_ok|].
+      cbv beta. eapply bind_unmodeled2; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd; srw Hsd. apply unmodeled_intro. }
+    destruct (negb (modeled_rw_range buf count)) eqn:Hn.
+    { eapply bind_unmodeled2; [apply input_ok|].
+      cbv beta. eapply bind_unmodeled2; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd; srw Hsd. apply unmodeled_intro. }
+    destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hok;
+      (eapply bind_step; [apply input_ok|]); cbv beta;
+      (eapply bind_step; [apply get_model_ok|]);
+      cbv beta iota zeta; srw Hfd; srw Hsd.
+    + apply pure_ok.
     + unfold sigpipe_write.
       eapply bind_step; [apply modify_ok|]. apply pure_ok.
-    + apply pure_ok.
-  - (* pipe: -EBADF on the read end, else the deterministic append or one
-       of the three fail-closed verdicts *)
+  - (* pipe: -EBADF on the read end, else the deterministic append, the
+       no-reader -EPIPE with signal 13, or one of the three fail-closed
+       verdicts *)
     destruct w.
     2:{ eapply bind_step; [apply input_ok|].
         cbv beta. eapply bind_step; [apply get_model_ok|].
