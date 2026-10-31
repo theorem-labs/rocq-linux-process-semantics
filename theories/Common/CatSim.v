@@ -966,16 +966,17 @@ Lemma sstep_write_dead_inv : forall ms model x8 evs st,
   /\ st = SNext (mkCfg ms (with_killed (Z_to_bv 64 SIGPIPE) model)).
 Proof.
   intros ms model x8 evs st Hh Hd Hsvc Hno Hg Hok Hc Hss.
-  inversion Hss; subst; try congruence;
-    match goal with
-    | H2 : ms_svc_pending ms = Some ?x |- _ =>
-        assert (Hx : x = x8) by congruence; subst x
-    end.
+  inversion Hss; subst; try congruence.
   all: match goal with
-       | H3 : syscall_spec (sys_input segs ms x8) model Unmodeled |- _ =>
-           exfalso; exact (write1_dead_no_unmodeled segs ms x8 model Hd Hno Hg Hok Hc H3)
-       | H3 : syscall_spec (sys_input segs ms x8) model (Ok ?eff ?model' ?evs0) |- _ =>
-           destruct (write1_dead_ok_inv segs ms x8 model eff model' evs0
+       | H2 : ms_svc_pending ?m = Some ?x,
+         H3 : syscall_spec (sys_input segs ?m ?x) _ _ |- _ =>
+           try (assert (Hx : x = x8) by congruence; subst x)
+       end.
+  all: match goal with
+       | H3 : syscall_spec (sys_input segs ?m ?x) ?mo Unmodeled |- _ =>
+           exfalso; exact (write1_dead_no_unmodeled segs m x mo Hd Hno Hg Hok Hc H3)
+       | H3 : syscall_spec (sys_input segs ?m ?x) ?mo (Ok ?eff ?model' ?evs0) |- _ =>
+           destruct (write1_dead_ok_inv segs m x mo eff model' evs0
                        Hd Hno Hg Hok Hc H3) as (-> & -> & ->)
        end.
   all: rewrite ?m_halted_with_killed, ?m_killed_with_killed in *;
