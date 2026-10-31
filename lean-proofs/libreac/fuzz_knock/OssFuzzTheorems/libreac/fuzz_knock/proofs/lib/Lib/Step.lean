@@ -17,7 +17,7 @@ open LinuxProcessSemantics.LinuxProcessSem.MemImageType
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Mem (wr_at)
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Cells (cell cells_at cells_size)
 
-/-- `lib/Lib/Step.v:25`. -/
+/-- `lib/Lib/Step.v:25-26`. -/
 def rw_cells (segs : List Segment) (m : word → Option byte) (A : Int)
     (cs : List cell) : Prop :=
   cells_at segs m A cs ∧ wr_at segs m A (cells_size cs)

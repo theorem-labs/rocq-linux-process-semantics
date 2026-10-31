@@ -19,7 +19,9 @@ open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Mem (wa mrd)
 /-- `lib/Lib/Frame.v:35`. -/
 abbrev ivl := Int × Int
 
-/-- `lib/Lib/Frame.v:37-39`. -/
+/-- `lib/Lib/Frame.v:37-41`. Rocq writes the cons arm `~ (lo <= x < hi)`; over
+`Int` that is this disjunction, so `munch`, which reads `outside` in a
+hypothesis, is neither weakened nor strengthened by the spelling. -/
 def outside : List ivl → Int → Prop
   | [], _ => True
   | (lo, hi) :: W, x => (x < lo ∨ hi ≤ x) ∧ outside W x
@@ -33,14 +35,14 @@ def munch (W : List ivl) (m m' : word → Option byte) : Prop :=
 def wmono (segs : List Segment) (m m' : word → Option byte) : Prop :=
   ∀ x : word, wview segs m x ≠ none → wview segs m' x ≠ none
 
-/-- `lib/Lib/Frame.v:81-83`: every byte of `[lo, hi)` is writable and readable
+/-- `lib/Lib/Frame.v:144-146`: every byte of `[lo, hi)` is writable and readable
 — the stack window a call may use. -/
 def stk (segs : List Segment) (m : word → Option byte) (lo hi : Int) : Prop :=
   0 ≤ lo ∧ hi ≤ 2 ^ 64 ∧
     ∀ a : Int, lo ≤ a → a < hi →
       wview segs m (wa a) ≠ none ∧ ∃ b, mrd segs m (wa a) = some b
 
-/-- `lib/Lib/Frame.v:85-86`. -/
+/-- `lib/Lib/Frame.v:148-149`. -/
 theorem stk_split (segs : List Segment) (m : word → Option byte) (lo mid hi : Int)
     (h : stk segs m lo hi) (h1 : lo ≤ mid) (h2 : mid ≤ hi) :
     stk segs m lo mid ∧ stk segs m mid hi := by

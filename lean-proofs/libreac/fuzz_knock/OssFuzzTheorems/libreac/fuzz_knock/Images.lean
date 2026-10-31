@@ -27,8 +27,9 @@ The `_wf` theorems check by computation that each image is well formed
 (`OssFuzzTheorems.Core.Images.image_wf`), so that no statement about it holds
 only because the image has no valid entry.
 
-NOT PORTED HERE: `asan` and `asan_ubsan`. Their ELFs are 558,152 and 558,224
-bytes, thirteen times the plain build, and no statement this slice proves names
+NOT PORTED HERE: `asan` and `asan_ubsan`, and with them the `asan_wf` and
+`asan_ubsan_wf` theorems. Their ELFs are 558,152 and 558,224 bytes, thirteen
+times the plain build, and no statement this slice proves names
 them; a Lean ASan statement also waits on the runtime work that
 `sdd/ossv-265/task-T-report.md` ("What a Lean ASan runtime would need") sets
 out. OSSV-265 gaps row K1-3. -/

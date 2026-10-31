@@ -9,7 +9,12 @@ The Lean twin of `projects/libreac/fuzz_knock/Statements.v` of
 theorem-labs/oss-verify-proofs-internal (`origin/ossv/recipes`
 `9b0ac6f0e6780f75e0353041e71b055f15384ff0`), over the Lean twin of the Rocq
 model those statements pin (rocq-linux-process-semantics `f1006fe8`). The
-docstrings below are that file's, unchanged.
+docstrings below are that file's, word for word, with two changes the port
+forces: "Proving a statement" names `Proof.lean` and `theorem` where the Rocq
+file names `Proof.v` and `Theorem`, and drops its two pointers to
+`docs/proving.md`, which this repository does not carry. `ubsan_agrees`'s
+docstring still opens "As `asan_agrees`", the released wording;
+`asan_agrees` is one of the four statements this file does not carry (below).
 
 SUBJECT. Four builds of libreac's own fuzz target `fuzz_knock`, which OSS-Fuzz
 does not run, for libreac 1.9.0 (FreeREAC/libreac at `d16f3f4e`), static riscv64

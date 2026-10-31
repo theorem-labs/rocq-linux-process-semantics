@@ -54,8 +54,8 @@ when the stored state word is zero.
 The test is Rocq's own, on the INTEGER the first cell holds
 (`lib/Prog/reac_knock_heard_c.v:25`, `if Z.eqb st 0 then 2 else st`). Rocq
 gets from the sign-extended `lw` result to that test with
-`knock_sx32_unsigned` and `knock_sx32_eqb`
-(`lib/Prog/reac_knock_struct.v:12-28` and `:30-36`), which rest on stdpp's
+`knock_sx32_unsigned` (`lib/Prog/reac_knock_struct.v:12-28`) and
+`knock_sx32_eqb` (`lib/Prog/reac_knock_struct.v:30-36`), which rest on stdpp's
 `bv_swrap` lemma set. The Lean model carries no twin of that set (OSSV-265
 gaps row T-12), but the two lemmas follow from Lean's own `Int` arithmetic;
 `reac_knock_heard.lean` proves them, so the contract keeps Rocq's test and
@@ -83,15 +83,16 @@ does not carry, and each a row of the OSSV-265 gaps ledger:
   registers, CSR or reservation differ, and does not state that the call
   leaves them unchanged.
 * **T-10.** The register file is a `bvmap 5 word` read by `getr`, not the 31
-  named words of `mkR` (`lib/Lib/Frame.v:20`). "Only `a1` and `a2` changed" is
+  named words of `mkR` (`lib/Lib/Frame.v:20-26`). "Only `a1` and `a2` changed" is
   stated as `∀ r, r ≠ 11 → r ≠ 12 → getr regs' r = getr regs r`.
 * **T-11; row W1.** `rw_cells` is here, as Rocq has it, but the first
   cell's four bytes are taken as the extra hypotheses `hread`/`hbs`: the Rocq
-  bridge from `rw_cells` to a 4-byte read (`lib/Lib/Cells.v:94`,
-  `lib/Lib/Step.v:28`) has no Lean twin, and `proofs/lib/Lib/Step.lean`
+  bridge from `rw_cells` to a 4-byte read (`lib/Lib/Cells.v:94-109`,
+  `lib/Lib/Step.v:28-31`) has no Lean twin, and `proofs/lib/Lib/Step.lean`
   carries the statement of `rw_cells` only. The two `store_ok` side
-  conditions the Rocq proof also gets from `rw_cells` are NOT hypotheses:
-  they are derived from the `wr_at` conjunct in `reac_knock_heard.lean`.
+  conditions the Rocq proof gets from `rw_cells` by `rw_cells_store_ok`
+  (`lib/Lib/Step.v:70-76`) are NOT hypotheses: they are derived from the
+  `wr_at` conjunct in `reac_knock_heard.lean`.
 * **T-12 does NOT bite.** The post-state's first cell is Rocq's own
   `if Z.eqb st 0 then 2 else st`, on the stored integer (see `heard_mem`).
 * **K1-1; row W8.** The post-state's memory is given EXPLICITLY, as

@@ -8,8 +8,8 @@ import LinuxProcessSemantics.Common.SymBranch
 /-! `lib/Prog/reac_knock_heard.v`: the walk of `reac_knock_heard`.
 
 The Rocq proof is fifteen lines (`lib/Prog/reac_knock_heard.v:14-28`), each of
-which drives the library tactics `step` (`lib/Lib/Step.v:722-771`), `if_cases`
-(`lib/Lib/Step.v:773-777`) and `finish` (`lib/Lib/Tac.v:336-347`). The Lean
+which drives the library tactics `step` (`lib/Lib/Step.v:722-726`), `if_cases`
+(`lib/Lib/Step.v:773-777`) and `finish` (`lib/Lib/Tac.v:336-346`). The Lean
 model carries no twin of those tactics, so the walk
 below names the step lemma of each instruction.
 
@@ -127,7 +127,7 @@ private theorem step_branch_not (segs : List Segment) (regs : bvmap 5 word) (pc 
 
 /-! ## From `wr_at` to the model's store bound
 
-`lib/Lib/Step.v:28` does this with `rw_cells_wr`; here it is
+`lib/Lib/Step.v:70-76` does this with `rw_cells_store_ok`; here it is
 `StoreOk.store_ok_of_all`. -/
 
 private theorem store_ok_of_wr_at (segs : List Segment) (m : word → Option byte)
@@ -176,7 +176,8 @@ private theorem v_jalr_ret_pc (a : word) : v_jalr a (bv_signed (0 : BitVec 12)) 
 /-! ## The sign-extended load against the stored integer
 
 `knock_sx32_unsigned` (`lib/Prog/reac_knock_struct.v:12-28`) and
-`knock_sx32_eqb` (`:30-36`) rest on stdpp's `bv_swrap` lemma set, which the
+`knock_sx32_eqb` (`lib/Prog/reac_knock_struct.v:30-36`) rest on stdpp's
+`bv_swrap` lemma set, which the
 Lean port does not carry (OSSV-265 gaps row T-12); they follow from Lean's
 own `Int` arithmetic. They are `private` here, as they are in the sibling
 `reac_knock_step.lean:63` and `:77`, because

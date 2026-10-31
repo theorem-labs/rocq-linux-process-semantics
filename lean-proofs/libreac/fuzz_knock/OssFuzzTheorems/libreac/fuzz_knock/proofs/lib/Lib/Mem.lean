@@ -7,10 +7,11 @@ Only the declarations the ported contracts of `lib/Prog/` are stated in are
 here: eleven of the Rocq file's 21 definitions, and none of its 64 lemmas. The
 Rocq file is 594 lines, most of them the reading and writing lemmas that join
 `mrd`, `bytes_at` and `wr_at` (`bytes_at_rdn` at `lib/Lib/Mem.v:89-103`,
-`bytes_at_read` at `:112-119`, `wr_at_store_ok` at `:125-135`, and so on).
-Those lemmas have NO Lean twin, and neither has the vocabulary they are about:
-a grep of the Lean port's `LinuxProcessSemantics/Common/` for `bytes_at`,
-`wr_at`, `mrd`, `ro_addr`, `mem_inv`, `ro_bytes` and `upd_bytes` returns
+`bytes_at_read` at `lib/Lib/Mem.v:112-119`, `wr_at_store_ok` at
+`lib/Lib/Mem.v:125-135`, and so on). Those lemmas have NO Lean twin, and
+neither has the vocabulary they are about: a grep of the Lean port's
+`LinuxProcessSemantics/Common/` for `bytes_at`, `wr_at`, `mrd`, `ro_addr`,
+`mem_inv`, `ro_bytes` and `upd_bytes` returns
 nothing (OSSV-265 gaps row T-8: the symbols of our Rocq `proofs/lib/Lib/` have
 no Lean name at all). The model's own reader is `Common.PropExec.rdn`, whose
 lemmas are about the model's `wbytes` and overlay, not about these predicates.

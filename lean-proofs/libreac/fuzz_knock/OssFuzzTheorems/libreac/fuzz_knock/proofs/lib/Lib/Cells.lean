@@ -3,10 +3,12 @@ import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Mem
 
 /-! `lib/Lib/Cells.v`: a C object as a list of little-endian cells.
 
-The five arms and the predicates the `lib/Prog/` contracts name; the Rocq file
-is 227 lines, the rest of it reading and splitting lemmas. Every path in this
-docstring is in theorem-labs/oss-verify-proofs-internal `ossv/recipes`
-`9b0ac6f0e6`, under `projects/libreac/fuzz_knock/proofs/`. -/
+The five arms and the predicates the `lib/Prog/` contracts name: eight of the
+Rocq file's 13 definitions, and none of its 18 lemmas. The file is 227 lines;
+what is left out is `cell_at`, `cell_upd`, `cb_pieces`, `cb_split` and
+`cb_split_ok`, and the reading, writing and splitting theory about them. Every
+path in this docstring is in theorem-labs/oss-verify-proofs-internal
+`ossv/recipes` `9b0ac6f0e6`, under `projects/libreac/fuzz_knock/proofs/`. -/
 
 namespace OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Cells
 
@@ -59,7 +61,7 @@ def cells_wf : List cell → Prop
   | [] => True
   | c :: cs => cell_wf c ∧ cells_wf cs
 
-/-- `lib/Lib/Cells.v:91`. -/
+/-- `lib/Lib/Cells.v:91-92`. -/
 def cells_at (segs : List Segment) (m : word → Option byte) (A : Int)
     (cs : List cell) : Prop :=
   bytes_at segs m A (cells_bytes cs) ∧ cells_wf cs
