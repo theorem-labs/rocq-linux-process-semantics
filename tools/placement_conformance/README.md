@@ -16,12 +16,13 @@ it.
 | --- | --- |
 | `probe.c` | The program that makes the calls and writes the log. |
 | `run-kernel.sh` | Builds the kernel, the probe and the initramfs; boots the kernel; writes the log. |
-| `log_to_rocq.py` | Makes a Rocq replay from a log. |
+| `log_to_rocq.py` | Makes a Rocq replay from a placement log. |
+| `start_state_to_rocq.py` | Makes the Rocq A4 check from a start-state log (OSSV-257 A4). |
 | `merge_launch.py` | Puts the `.config` lines, the devicetree cache properties and the command line into the launch object. |
 | `patch_dtb.py` | Writes a devicetree in which the boot CPU has caches, which qemu's has not. |
-| `check_start_state.py` | Reads a start-state log against the LPS entry model (OSSV-257 A4). |
+| `check_start_state.py` | EVIDENCE, not the check: reads a start-state log against a Python transcription of the entry model. |
 | `../../tests/placement/*.log` | The logs this tree keeps: four placement logs and ten start-state logs. |
-| `../../tests/dune` | The rules that make `PlacementReplay*.v` from the placement logs. |
+| `../../tests/dune` | The rules that make `PlacementReplay*.v` from the placement logs, and `StartState*.v` from the start-state logs. |
 
 ## The one line that turns the replay on
 
@@ -220,6 +221,71 @@ unmaps; an `mremap` grow in place zero-fills the new tail; a move zero-fills
 the new tail, unmaps the old range and copies the old bytes; a `brk` grow
 zero-fills the pages it adds.
 
+## Why no PROT_READ-only mapping
+
+The probe asks for `PROT_NONE` or for `PROT_READ|PROT_WRITE`, never for
+`PROT_READ` alone. The model covers those two shapes only:
+`Sys/Mm/Mmap.v`'s `mmap_modeled_b` takes `PROT_READ + PROT_WRITE` and
+`mmap_noaccess_b` takes `PROT_NONE`; every other protection answers
+`unmodeled`, which is the fail-closed answer, because the machine model has
+no mutable page permissions. That limit is older than this harness and it is
+deliberate.
+
+One call was changed for it: `MAP_FIXED_NOREPLACE` over the first page of the
+vvar mapping asked with `PROT_READ` at first, and the checker answered
+`CheckUnmodeled` on all three kernel logs. Linux answers `-EEXIST` whatever
+the protection, so the call now asks with `PROT_READ|PROT_WRITE` and reads
+the same kernel behaviour. Do not change it back: a read-only anonymous
+mapping is a new modeled shape with its own fault behaviour, and it is not a
+change to make behind a conformance harness.
+
+## When a replay fails, find the one step
+
+A failed replay says only `Unable to unify "true" with "false"`. Walk the
+trace instead of reading 88 steps. Copy the generated file out of
+`_build/default/tests/`, cut it at its last lemma, and add:
+
+```coq
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Placement.
+Fixpoint walk (m : Model) (steps : list (SyscallInput * SyscallEffect))
+    (k : nat) : nat * Model :=
+  match steps with
+  | [] => (k, m)
+  | (i, e) :: rest =>
+      match check_syscall i e m with
+      | CheckOk m2 _ => walk m2 rest (S k)
+      | _ => (k, m)
+      end
+  end.
+Definition tag (r : check_result) : nat :=
+  match r with CheckOk _ _ => 0 | CheckReject => 1 | CheckUnmodeled => 2 end.
+Definition bad := walk replay_init replay_steps 0.
+Eval vm_compute in (fst bad,
+  match nth_error replay_steps (fst bad) with
+  | Some (i, e) => (bv_unsigned (in_sysno i), map bv_unsigned (in_args i),
+                    bv_unsigned (eff_ret e))
+  | None => (0%Z, nil, 0%Z) end,
+  match nth_error replay_steps (fst bad) with
+  | Some (i, e) => tag (check_syscall i e (snd bad)) | None => 9%nat end).
+Definition steps2 :=
+  firstn (fst bad) replay_steps ++ skipn (S (fst bad)) replay_steps.
+Eval vm_compute in (fst (walk replay_init steps2 0), length steps2).
+```
+
+Compile it in the build tree:
+
+```bash
+cd _build/default && <the checker image> rocq compile -q -R theories LinuxProcessSemantics diag.v
+```
+
+The first value is the index of the first step the checker does not accept,
+with the call and the kernel's answer, and the verdict (0 `CheckOk`,
+1 `CheckReject`, 2 `CheckUnmodeled`). The last pair walks the trace with that
+one step removed: when the two numbers are equal, every other step passed and
+the disagreement is that step alone. A `CheckReject` with an address is a
+placement disagreement and a finding; a `CheckUnmodeled` is the model
+declining to answer, which is a scope question, not a wrong answer.
+
 ## What this harness does not cover
 
 - The probe runs with one argument and no environment, so its entry block is
@@ -264,24 +330,66 @@ zero and a check of those words shows nothing.
 A start-state launch object holds, besides the five keys of a placement log:
 `config`, `dt_cache` and `cmdline`, which `run-kernel.sh` merges in because
 the probe cannot read them, and `run`, `argv`, `envp`, `execfn`,
-`mmap_rnd_bits`, `mmap_rnd_bits_max`, `randomize_va_space`, `vlenb`,
+`mmap_rnd_bits`, `mmap_rnd_bits_max`, `randomize_va_space`, `vlenb`, `elf`,
 `sp_at_start`, `stack_end`, `vvar_start`, `auxv`, `stack_bytes` and
 `vdso_image`. `sp_at_start` is the x2 the kernel chose: the probe is built
 `-nostartfiles`, and its own `_start` stores x2 before anything else runs.
 `mmap_rnd_bits_max` is measured, not read: there is no such file, so the probe
 writes candidates to `vm.mmap_rnd_bits` and writes the launch's value back.
 `vlenb` is read with `csrr` only when AT_HWCAP carries the V bit, because the
-CSR traps without it and a trap in init panics the kernel.
+CSR traps without it and a trap in init panics the kernel. `elf` is the
+probe's own ELF header — `{"base", "phoff", "phdr", "phentsize", "phnum",
+"entry"}`, with `phdr` = `base + phoff` — read out of its own mapped image
+(`read_elf_facts`), so that the four auxv entries the kernel copies out of
+that header are checked against the header instead of being fed back in. It
+is `null` when the first mapping carries no ELF magic. The ten logs in the
+tree were captured before this key existed; re-capture them with a rebuilt
+probe and the four entries become a check.
+
+### The check: a Rocq term, computed against the model
+
+```bash
+python3 tools/placement_conformance/start_state_to_rocq.py LOG --out F.v \
+    [--name NAME] [--va {Sv39,Sv48,Sv57}]
+```
+
+This writes a Rocq file that states the recorded launch as LPS terms — the
+`ProcInput` with its `KernelBuild`, the `ExecEntry` with the recorded stack
+end and the sixteen AT_RANDOM bytes in its draw, the recorded block and the
+recorded auxiliary vector — and closes three lemmas:
+
+| Lemma | What it says |
+| --- | --- |
+| `launch_ok` | `Run.entry_launch_ok_va` holds of the recorded stack end, stack pointer and mmap base. |
+| `block_ok` | `Run.entry_stack_image` equals the bytes the kernel wrote, every byte of them. |
+| `auxv_ok` | `StackLayout.auxv_entries` equals the recorded `/proc/self/auxv`. |
+
+Nothing in the generator states what the model says: the block is computed
+by Rocq from `StackLayout.v` itself. `launch_ok` names one number the
+generator works out — the page draw `arch_mmap_rnd` made, which
+`Run.valid_launch_base` quantifies over — and the proof recomputes
+`Run.mmap_base_of` at that draw, so a wrong number makes the file fail to
+compile rather than makes a wrong lemma pass. `block_ok` excludes nothing:
+the sixteen AT_RANDOM bytes are the record's own, carried in the draw.
+
+`../../tests/dune` of the entry tree has one rule per log, so `dune build`
+compiles all ten and a start state LPS does not reproduce breaks the build.
+Each file costs 0.9 to 2.4 seconds of `rocq compile`, 15.9 seconds for the
+ten: a block of a few kilobytes is cheap for `vm_compute`.
+
+### The evidence: the Python checker
 
 ```bash
 python3 tools/placement_conformance/check_start_state.py LOG [LOG ...] \
     [--vdso $PC_WORK/kernels/<cfg>/vdso.so]
 ```
 
-The checker rebuilds the model's block and auxiliary vector from the recorded
-facts, compares them with the recorded bytes, and prints a verdict per
-sub-check. It exits 0 when every sub-check of every log passes. Its model
-transcription, between the markers `MODEL TRANSCRIPTION BEGINS` and
-`MODEL TRANSCRIPTION ENDS`, is the part a reviewer reads against the Rocq
-source. The results are in `reports/a4-start-state.md` of the entry lane's
-clone.
+`check_start_state.py` is no longer the check. It compares the record with a
+PYTHON TRANSCRIPTION of the model, between the markers
+`MODEL TRANSCRIPTION BEGINS` and `MODEL TRANSCRIPTION ENDS`: a second model
+of the entry block that nothing proves agrees with the first. Its run stands
+as the first evidence — 110 verdicts over 10 records, 0 failures — and it
+reads two things the Rocq files do not: the recorded vDSO image against the
+kernel build's own `vdso.so`, and the distance from the `[vvar]` mapping to
+AT_SYSINFO_EHDR. It exits 0 when every sub-check of every log passes. Both
+sets of results are in `reports/a4-start-state.md` of the entry lane's clone.

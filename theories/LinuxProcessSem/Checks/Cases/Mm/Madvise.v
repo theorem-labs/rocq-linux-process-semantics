@@ -267,9 +267,16 @@ Definition madvise_lazy_granted : Model :=
   vm_add_lazy 65536 8192
     (with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 8192) madvise_lazy_base).
 
+(** The call passes 0x10000 as a HINT rather than a NULL one.  Since
+    the placement change a fresh grant lands where Linux's search puts
+    it, and on this ledger a NULL hint does not put it here; a free
+    hint Linux honours (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
+    1f99e9ab748f).  The examples below are about the first-touch
+    charge and its return, not about where the mapping went. *)
 Example madvise_lazy_grant :
   check_syscall
-    (mkInput 222 [0; 8192; 3; 16418; mmap_fd_none; 0]
+    (mkInput 222 [65536; 8192; 3; 16418; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 65536 [] [(65536, 8192)]) madvise_lazy_base
   = CheckOk madvise_lazy_granted [].

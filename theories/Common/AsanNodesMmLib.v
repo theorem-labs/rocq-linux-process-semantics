@@ -580,9 +580,11 @@ Proof. apply bv_eq. reflexivity. Qed.
 
 Section OurSpecNodes.
 Variable segs : list Segment.
-(** the first-fit placement gate is not a spec fact; the NULL-hint grant nodes below
-    take it as the one named hypothesis [AsanCeil.placement_policy] (see AsanCeil.v). *)
-Hypothesis PLACEMENT : placement_policy.
+(** The placement gate IS a spec fact since OSSV-231: the fresh-grant
+    arms of [Mmap.mmap_spec] choose with [Mmap.linux_place], and
+    [AsanCeil.placement_policy_holds] proves the gate from it.  The
+    NULL-hint grant nodes below used to take it as a named hypothesis
+    [PLACEMENT]; they no longer do. *)
 
 (** The [ecall] instruction reports no memory access. *)
 Lemma stepacc_ecall_epend : forall regs pc mem rom w,
@@ -684,7 +686,7 @@ Lemma mmap_rw_check : forall ms x8 model eff flags,
     | mkEffectU r [] zs [] [] [] =>
         if errno_ret_in mmap_errnos r
         then match zs with [] => CheckOk model [] | _ => CheckReject end
-        else if grant_ok_na_pin model r nZ && mmap_noreserve_backed_ok flags model nZ
+        else if grant_ok_na_pin (ms_gpr ms 0) model r nZ && mmap_noreserve_backed_ok flags model nZ
                 && listNN_eqb zs [(r, Z_to_bv 64 nZ)]
         then CheckOk (with_mmap_backing flags r (Z_to_bv 64 nZ) (mmap_model r (Z_to_bv 64 nZ) model)) []
         else CheckReject
@@ -753,7 +755,7 @@ Proof.
   - apply (node_chk_ev_mat ms model (getr regs 17) (unit + IB) effs ms' (fun _ => []) Hh eq_refl).
     + intros [[] | [a Ha]]; cbn [effs ms']; rewrite Hchk.
       * rewrite (errno_ret_in_intro _ _ ENOMEM_in_mmap_errnos). reflexivity.
-      * rewrite (grant_na_not_errno _ model a nZ Hn0 Ha), (grant_ok_na_pin_of_gate _ _ _ _ Hisp Ha). cbn [andb].
+      * rewrite (grant_na_not_errno _ model a nZ Hn0 Ha), (grant_ok_na_pin_of_gate _ _ _ _ Ha). cbn [andb].
         rewrite (proj2 (listNN_eqb_eq _ _) eq_refl). reflexivity.
     + intros [r ws zs us cs ci] m' evs Hc. rewrite Hchk in Hc.
       destruct ws; [|discriminate]. destruct us; [|discriminate].
@@ -762,16 +764,16 @@ Proof.
       * destruct zs; [|discriminate]. injection Hc as <- <-.
         destruct (proj1 (errno_ret_in_true _ _) Er) as (e & He & ->).
         rewrite (mmap_errnos_ENOMEM e He). exists (inl tt). repeat split; reflexivity.
-      * destruct (grant_ok_na_pin model r nZ) eqn:Hg; [|discriminate].
+      * destruct (grant_ok_na_pin (ms_gpr ms 0) model r nZ) eqn:Hg; [|discriminate].
         cbn [andb] in Hc.
         destruct (listNN_eqb zs [(r, n)]) eqn:Hl; [|discriminate].
         apply listNN_eqb_eq in Hl. subst zs. injection Hc as <- <-.
-        exists (inr (exist _ r (grant_ok_na_of_pin PLACEMENT _ _ _ _ HnZpos HnZal Hg))). repeat split; reflexivity.
+        exists (inr (exist _ r (grant_ok_na_of_pin _ _ _ _ HnZpos HnZal Hg))). repeat split; reflexivity.
     + intros [r ws zs us cs ci] Hc. rewrite Hchk in Hc.
       destruct ws; [|discriminate]. destruct us; [|discriminate].
       destruct cs; [|discriminate]. destruct ci; [|discriminate].
       destruct (errno_ret_in mmap_errnos r); [destruct zs; discriminate|].
-      destruct (grant_ok_na_pin model r nZ && true && listNN_eqb zs [(r, n)])%bool; discriminate.
+      destruct (grant_ok_na_pin (ms_gpr ms 0) model r nZ && true && listNN_eqb zs [(r, n)])%bool; discriminate.
     + intros [[] | [a Ha]]; cbn [ms']; [exact Hh | rewrite with_mmap_backing_halted; unfold mmap_model; rewrite with_vmmaps_halted; exact Hh].
     + intros [[] | [a Ha]]; reflexivity.
   - intros []. cbn [effs ms']. unfold ms. rewrite adv_ret_epend. exact HA.
@@ -791,7 +793,7 @@ Lemma mmap_none_check : forall ms x8 model eff flags,
     | mkEffectU r [] [] us [] [] =>
         if errno_ret_in mmap_errnos r
         then match us with [] => CheckOk model [] | _ => CheckReject end
-        else if grant_ok_na_pin model r nZ && listNN_eqb us [(r, Z_to_bv 64 nZ)]
+        else if grant_ok_na_pin (ms_gpr ms 0) model r nZ && listNN_eqb us [(r, Z_to_bv 64 nZ)]
         then CheckOk (with_mmap_backing flags r (Z_to_bv 64 nZ) (noaccess_model r (Z_to_bv 64 nZ) model)) []
         else CheckReject
     | _ => CheckReject
@@ -852,7 +854,7 @@ Proof.
   - apply (node_chk_ev_mat ms model (getr regs 17) (unit + IB) effs ms' (fun _ => []) Hh eq_refl).
     + intros [[] | [a Ha]]; cbn [effs ms']; rewrite Hchk.
       * rewrite (errno_ret_in_intro _ _ ENOMEM_in_mmap_errnos). reflexivity.
-      * rewrite (grant_na_not_errno _ model a nZ Hn0 Ha), (grant_ok_na_pin_of_gate _ _ _ _ Hisp Ha). cbn [andb].
+      * rewrite (grant_na_not_errno _ model a nZ Hn0 Ha), (grant_ok_na_pin_of_gate _ _ _ _ Ha). cbn [andb].
         rewrite (proj2 (listNN_eqb_eq _ _) eq_refl). reflexivity.
     + intros [r ws zs us cs ci] m' evs Hc. rewrite Hchk in Hc.
       destruct ws; [|discriminate]. destruct zs; [|discriminate].
@@ -861,15 +863,15 @@ Proof.
       * destruct us; [|discriminate]. injection Hc as <- <-.
         destruct (proj1 (errno_ret_in_true _ _) Er) as (e & He & ->).
         rewrite (mmap_errnos_ENOMEM e He). exists (inl tt). repeat split; reflexivity.
-      * destruct (grant_ok_na_pin model r nZ) eqn:Hg; [|discriminate].
+      * destruct (grant_ok_na_pin (ms_gpr ms 0) model r nZ) eqn:Hg; [|discriminate].
         destruct (listNN_eqb us [(r, n)]) eqn:Hl; [|discriminate].
         apply listNN_eqb_eq in Hl. subst us. injection Hc as <- <-.
-        exists (inr (exist _ r (grant_ok_na_of_pin PLACEMENT _ _ _ _ HnZpos HnZal Hg))). repeat split; reflexivity.
+        exists (inr (exist _ r (grant_ok_na_of_pin _ _ _ _ HnZpos HnZal Hg))). repeat split; reflexivity.
     + intros [r ws zs us cs ci] Hc. rewrite Hchk in Hc.
       destruct ws; [|discriminate]. destruct zs; [|discriminate].
       destruct cs; [|destruct us; discriminate]. destruct ci; [|destruct us; discriminate].
       destruct (errno_ret_in mmap_errnos r); [destruct us; discriminate|].
-      destruct (grant_ok_na_pin model r nZ && listNN_eqb us [(r, n)])%bool; discriminate.
+      destruct (grant_ok_na_pin (ms_gpr ms 0) model r nZ && listNN_eqb us [(r, n)])%bool; discriminate.
     + intros [[] | [a Ha]]; cbn [ms']; [exact Hh | rewrite with_mmap_backing_halted; unfold noaccess_model; rewrite with_vmmaps_halted; exact Hh].
     + intros [[] | [a Ha]]; reflexivity.
   - intros []. cbn [effs ms']. unfold ms. rewrite adv_ret_epend. exact HA.
@@ -1428,7 +1430,6 @@ Hypothesis argH_high : forall E (a : word), argH E a = true -> CEIL <= bv_unsign
 Hypothesis argH_agree : forall E E' (a : word), env_agree nx0 E E' -> argH E a = argH E' a.
 Hypothesis SINV_frame : forall E M M', (forall a, argH E a = true -> M' a = M a) -> SINV E M -> SINV E M'.
 Hypothesis SINV_agree : forall E E' M, env_agree nx0 E E' -> SINV E M -> SINV E' M.
-Hypothesis PLACEMENT : placement_policy.  (* see AsanCeil.v *)
 
 #[local] Notation CSOK := (APS.cs_ok SEGS A LIMIT SINV argH FS0).
 #[local] Notation HID := (APS.hid A argH).

@@ -359,7 +359,9 @@ Proof. vm_compute. reflexivity. Qed.
 
 
 def emit(state, steps, module, log, expect, provenance):
-    body = ",\n".join(f"    (* {c} *)\n    ({i},\n     {e})"
+    # A Rocq list separates its elements with ';'.  The ',' inside each
+    # element is the pair of the call and its effect.
+    body = ";\n".join(f"    (* {c} *)\n    ({i},\n     {e})"
                       for i, e, c in steps)
     reserved = ("[ " + ";\n    ".join(f"({w(a)}, {w(n)})"
                                       for a, n in state["reserved"]) + " ]"

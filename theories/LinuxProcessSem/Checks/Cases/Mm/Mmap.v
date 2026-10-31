@@ -600,9 +600,21 @@ Proof. split; check_eq. Qed.
    never that the split produced exactly these two intervals in this order.
    ------------------------------------------------------------------------- *)
 
+(** THE HINT IS WHY THE ADDRESS IS 0x10000.  Since the placement
+    change a fresh grant lands where Linux's search puts it, and a
+    NULL hint on this ledger does not put it here — the top-down
+    window of a fixture whose [vm_mmap_base] is 0 is empty, so the
+    search falls back to the bottom-up window from
+    [Mmap.task_unmapped_base] up, and 0x10000 is below that floor.
+    The call therefore passes 0x10000 as a HINT, which Linux honours
+    because the range is free (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], the hint test, Linux
+    v6.18.46, commit 1f99e9ab748f).  The example is about the two
+    ledgers, not about the search; the companion below pins what the
+    search does with no hint. *)
 Example mmap_fresh_noaccess_records_both_ledgers :
   check_syscall
-    (mkInput 222 [0; 4096; 0; 34; mmap_fd_none; 0]
+    (mkInput 222 [65536; 4096; 0; 34; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffectU 65536 [] [] [(65536, 4096)] [] []) noaccess_base
   = CheckOk
@@ -610,6 +622,18 @@ Example mmap_fresh_noaccess_records_both_ledgers :
         (mkVmMapsFull [] [(65536, 4096)] [(65536, 4096)] 0 0 16384 0 demo_sp)
         noaccess_base) [].
 Proof. check_eq. Qed.
+
+(** The same call with NO hint is REFUSED at the same address.  Before
+    the placement change it was admitted, and that freedom is what let
+    the model refuse a mapping the same Linux launch grants
+    (OSSV-210's B2, B3 and N3). *)
+Example mmap_fresh_noaccess_null_hint_here_refused :
+  check_syscall
+    (mkInput 222 [0; 4096; 0; 34; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffectU 65536 [] [] [(65536, 4096)] [] []) noaccess_base
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
 
 (** Reason 3.  The fresh no-access effect also erases any old
     writable-overlay byte at a reused address.  Without that erasure, the VM

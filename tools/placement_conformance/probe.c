@@ -45,9 +45,12 @@
  * ["a"] and an empty environment, once with a long argv and a long envp.
  * Each child writes ONE launch line that holds, besides the five keys above,
  * the bytes of its own entry block, its auxiliary vector, the end of its
- * [stack] mapping and the facts that decide them.  The parent then powers
- * the machine off.  tools/placement_conformance/check_start_state.py reads
- * those lines against the LPS entry model.
+ * [stack] mapping, its own ELF header ("elf") and the facts that decide
+ * them.  The parent then powers the machine off.
+ * tools/placement_conformance/start_state_to_rocq.py turns each line into a
+ * Rocq file whose lemmas the model has to close by computation, and
+ * check_start_state.py reads the same line against a Python transcription
+ * of the model.
  *
  * The probe is built -nostartfiles, so _start below is the process's entry
  * point and its first instructions store the kernel's x2 to sp_at_start.  No
@@ -398,9 +401,13 @@ static void placement_run(void)
   do_mmap(pages[0], PAGE, RW, ANON);
   do_mmap(~0UL, PAGE, RW, ANON);
 
-  /* MAP_FIXED_NOREPLACE over the first page of the vvar mapping: -EEXIST. */
+  /* MAP_FIXED_NOREPLACE over the first page of the vvar mapping: -EEXIST.
+     The protection is PROT_READ|PROT_WRITE, not PROT_READ: Linux answers
+     -EEXIST whatever the protection, and a read-only anonymous mapping is a
+     shape the model does not cover (see README.md, "Why no PROT_READ-only
+     mapping").  Do not change it back. */
   if (vvar_lo)
-    do_mmap(vvar_lo, PAGE, PROT_READ, ANON | MAP_FIXED_NOREPLACE);
+    do_mmap(vvar_lo, PAGE, RW, ANON | MAP_FIXED_NOREPLACE);
 
   /* The three mremap grows.  A scratch region is taken and released so the
      last two subjects can be placed with MAP_FIXED: their answers then do
@@ -523,6 +530,43 @@ static int range_of(const char *buf, const char *tag, u64 *lo, u64 *hi)
   return 1;
 }
 
+/* THE PROBE'S OWN ELF HEADER, read out of its own mapped image.
+
+   AT_PHDR, AT_PHENT, AT_PHNUM and AT_ENTRY are four entries the kernel
+   copies out of this header.  A check that reads them back out of the
+   auxiliary vector and feeds them to the model checks nothing about those
+   four, so the probe publishes the header itself and the check compares the
+   two.
+
+   The header is at the start of the first PT_LOAD.  This binary is static
+   ET_EXEC built -no-pie, so that segment is the lowest mapping
+   /proc/self/maps shows, and its start is also the image base; the magic is
+   verified before anything is read, and a line that does not carry an ELF
+   header leaves ok = 0 and the launch says "elf": null.  Nothing here opens
+   a file.
+
+   The offsets are Elf64_Ehdr's (include/uapi/linux/elf.h, Linux v6.18.46,
+   commit 1f99e9ab748f): e_entry at 0x18, e_phoff at 0x20, e_phentsize at
+   0x36, e_phnum at 0x38.  The base is page-aligned, so each is aligned. */
+struct elf_facts { u64 base, phoff, phentsize, phnum, entry; int ok; };
+
+static void read_elf_facts(const char *buf, struct elf_facts *e)
+{
+  const unsigned char *h;
+  const char *p;
+  e->ok = 0;
+  e->base = 0; e->phoff = 0; e->phentsize = 0; e->phnum = 0; e->entry = 0;
+  e->base = hex_at(buf, &p);
+  if (*p != '-' || !e->base) return;
+  h = (const unsigned char *)e->base;
+  if (h[0] != 0x7f || h[1] != 'E' || h[2] != 'L' || h[3] != 'F') return;
+  e->entry     = *(const u64 *)(const void *)(h + 0x18);
+  e->phoff     = *(const u64 *)(const void *)(h + 0x20);
+  e->phentsize = *(const unsigned short *)(const void *)(h + 0x36);
+  e->phnum     = *(const unsigned short *)(const void *)(h + 0x38);
+  e->ok = 1;
+}
+
 /* vlenb, the vector register width in bytes (arch/riscv/kernel/vector.c,
    riscv_v_setup_vsize).  The CSR is read ONLY when AT_HWCAP carries the V
    bit: on a hart without V the read traps, and a trap in init panics the
@@ -550,11 +594,13 @@ static void record_run(const char *run, char *const *argv, char *const *envp)
   u64 brk0, stack_lo = 0, stack_hi = 0, vvar_lo = 0, vvar_hi = 0;
   u64 vdso_lo = 0, vdso_hi = 0, ehdr = 0, hwcap = 0, execfn = 0;
   const u64 *av;
+  struct elf_facts ef;
   long i;
 
   rsys(SYS_mount, (long)"proc", (long)"/proc", (long)"proc", 0, 0, 0);
   maps_n = read_file("/proc/self/maps", maps, sizeof maps);
   if (maps_n < 0) maps_n = 0;
+  read_elf_facts(maps, &ef);
   read_file("/proc/self/stat", statb, sizeof statb);
   read_file("/proc/cpuinfo", cpub, sizeof cpub);
   read_file("/proc/sys/vm/mmap_min_addr", minaddr, sizeof minaddr);
@@ -593,6 +639,24 @@ static void record_run(const char *run, char *const *argv, char *const *envp)
   ps(",\"randomize_va_space\":"); pu(dec_at(randvab, 0));
   ps(",\"vlenb\":");
   if (hwcap & COMPAT_HWCAP_ISA_V) pu(read_vlenb()); else ps("null");
+  /* The image's own ELF header: the four values the kernel turned into
+     AT_PHDR, AT_PHENT, AT_PHNUM and AT_ENTRY, plus the base they are
+     relative to.  "phdr" is base + phoff, the run-time address of the
+     program-header table, so a reader compares it with AT_PHDR without
+     adding anything.  base and phoff are both written because they differ
+     the day this binary is built PIE. */
+  ps(",\"elf\":");
+  if (ef.ok) {
+    ps("{\"base\":"); pu(ef.base);
+    ps(",\"phoff\":"); pu(ef.phoff);
+    ps(",\"phdr\":"); pu(ef.base + ef.phoff);
+    ps(",\"phentsize\":"); pu(ef.phentsize);
+    ps(",\"phnum\":"); pu(ef.phnum);
+    ps(",\"entry\":"); pu(ef.entry);
+    pc('}');
+  } else {
+    ps("null");
+  }
   ps(",\"sp_at_start\":"); pu(sp_at_start);
   ps(",\"stack_end\":"); pu(stack_hi);
   ps(",\"vvar_start\":"); pu(vvar_lo);
