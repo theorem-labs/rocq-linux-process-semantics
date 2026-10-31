@@ -88,6 +88,8 @@ Fixpoint path_openers (fds : list (word * FdEntry)) (p : path) : nat :=
   | (_, FdDevNull _ _) :: r => path_openers r p   (* a device node is not a key of [Fs.Fs] *)
   | (_, FdUrandom) :: r => path_openers r p       (* nor is this one *)
   | (_, FdStream _ _ _) :: r => path_openers r p  (* a socket inode, not a key of [Fs.Fs] *)
+  | (_, FdDgram _) :: r => path_openers r p       (* another sockfs inode *)
+  | (_, FdEventfd _) :: r => path_openers r p     (* the anonymous inode, not a key of [Fs.Fs] *)
   end.
 
 (** Exactly one descriptor names [p].  Applied to a path just resolved
@@ -323,5 +325,12 @@ Definition flock_spec (fd cmd : word) : Sys SyscallEffect :=
                  an [FdUrandom] count would be needed.  Not written. *)
           | FdStream _ _ _ => unmodeled
               (* the [FdSocket] case: a sockfs inode, no caller *)
+          | FdDgram _ => unmodeled
+              (* the [FdSocket] case: a sockfs inode, no caller *)
+          | FdEventfd _ => unmodeled
+              (* FAIL-CLOSED: every eventfd shares the one anonymous
+                 inode ([anon_inode_getfile_fmode] passes
+                 [anon_inode_inode]), so a conflict is an argument about
+                 other eventfds this entry does not count; no caller *)
           end
     end.

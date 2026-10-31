@@ -680,6 +680,11 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
   | Some (FdSocket _)  => unmodeled  (* mode/uid/gid are known; ino, dev and the timestamps are not *)
   | Some (FdStream _ _ _) => unmodeled  (* the [FdSocket] case: S_IFSOCK is known; the sockfs
                                         inode number and the timestamps are not *)
+  | Some (FdDgram _)   => unmodeled  (* the [FdSocket] case again: another sockfs inode *)
+  | Some (FdEventfd _) => unmodeled  (* the shared anonymous inode: [alloc_anon_inode]
+                                        (fs/libfs.c, v6.18.46) gives it mode 0600 with no
+                                        type bits, but its inode number and timestamps are
+                                        the boot's, not the model's *)
   | Some (FdPipe _ _)  => unmodeled  (* S_IFIFO is known; a pipe's [st_size]/[st_blocks] are
                                         not even the queue's length, so nothing plays the
                                         role the file contents play above *)

@@ -230,6 +230,9 @@ Definition getdents64_spec (fd count : word) : Sys SyscallEffect :=
   | Some (FdPipe _ _)  => err_ret ENOTDIR
   | Some (FdSocket _)  => err_ret ENOTDIR
   | Some (FdStream _ _ _) => err_ret ENOTDIR (* [socket_file_ops] has no [.iterate_shared] *)
+  | Some (FdDgram _)   => err_ret ENOTDIR    (* nor for a datagram socket's file *)
+  | Some (FdEventfd _) => err_ret ENOTDIR    (* [eventfd_fops] (fs/eventfd.c, v6.18.46) has no
+                                                [.iterate_shared] either *)
   | Some (FdDevNull _ _) => err_ret ENOTDIR (* [null_fops] (drivers/char/mem.c, v6.18.46)
                                               has no [.iterate_shared], so [iterate_dir]
                                               (fs/readdir.c) answers its opening -ENOTDIR *)

@@ -615,7 +615,10 @@ Definition EROFS  : Z := 30%Z.
    a stream-pair end ([FdStream]): [Fs.ReadWrite.stream_read_empty] and
    [Fs.ReadWrite.stream_send] return it exactly where
    [unix_stream_read_generic] and [sock_alloc_send_pskb] can, from the
-   end's O_NONBLOCK and its queues. *)
+   end's O_NONBLOCK and its queues; and by the non-blocking transfers on
+   an eventfd ([FdEventfd]): [Fs.ReadWrite.eventfd_read] and
+   [Fs.ReadWrite.eventfd_write] return it exactly where [eventfd_read]
+   and [eventfd_write] do, from the file's O_NONBLOCK and the counter. *)
 Definition EAGAIN : Z := 11%Z.
 
 (** Socket errno values.  All from the asm-generic table
@@ -632,6 +635,7 @@ Definition EOPNOTSUPP      : Z := 95%Z.
 Definition EAFNOSUPPORT    : Z := 97%Z.
 Definition EADDRINUSE      : Z := 98%Z.
 Definition ECONNRESET      : Z := 104%Z.
+Definition ENOBUFS         : Z := 105%Z.   (* [inet6_create]'s [sk_alloc] failure *)
 Definition EISCONN         : Z := 106%Z.
 Definition ENOTCONN        : Z := 107%Z.
 Definition ETIMEDOUT       : Z := 110%Z.
@@ -2481,11 +2485,13 @@ Definition nq_rest (q : NetQueue) : NetQueue :=
 
 (** THE LIFE OF A SOCKET, as much of it as this model covers.
 
-    Only AF_INET/SOCK_STREAM sockets ever enter the fd table:
-    [Net.Socket.socket_spec] declines every other domain and type, so a
+    Only AF_INET/SOCK_STREAM sockets ever become an [FdSocket]:
+    [Net.Socket.socket_spec] declines every other AF_INET type, so a
     [FdSocket] is always a TCP socket and the domain, type and protocol
-    need not be stored.  (That is also why "listen on a UDP socket is
-    -EOPNOTSUPP" never arises here: there are no UDP sockets.)
+    need not be stored.  The datagram sockets [socket_spec] does make --
+    AF_INET6 and AF_UNIX, SOCK_DGRAM -- are [FdDgram], a kind of their
+    own on which every call that would move socket state declines, so
+    "listen on a UDP socket is -EOPNOTSUPP" still never arises here.
 
     - [SkFresh]      — created by [socket], not yet bound.  [read] is
                        -ENOTCONN; [accept] and a second [bind] are
@@ -2670,6 +2676,55 @@ Record StreamEnd := mkStreamEnd {
   se_shut_wr  : bool
 }.
 
+(** THE COUNTER BEHIND AN EVENTFD: what Linux keeps in the [struct
+    eventfd_ctx] [do_eventfd] allocates, and in the one [struct file]
+    over it, as far as this model reads them.  Every claim in this block
+    is Linux v6.18.46 (commit 1f99e9ab748f), fs/eventfd.c.
+
+    - [ef_count] is [ctx->count], a [__u64], held in [Z] and kept in
+      [0, 2^64 - 1] by the arms that move it: [eventfd2] stores the
+      [unsigned int] it was given ([ctx->count = count]), a read
+      subtracts what it returns ([eventfd_ctx_do_read]), and a write adds
+      only while [ULLONG_MAX - ctx->count > ucnt] ([eventfd_write]), so
+      the sum stays at most [2^64 - 2].  [eventfd_signal_mask], the one
+      path that can push it to [ULLONG_MAX], is the kernel's own (AIO,
+      KVM, vfio and the like) and no modeled call reaches it.
+    - [ef_semaphore] is [EFD_SEMAPHORE] in [ctx->flags]: a read takes 1
+      from a non-zero counter rather than the whole of it.
+    - [ef_nonblock] is O_NONBLOCK in the file's [f_flags].
+      [anon_inode_getfile_fmode] hands [alloc_file_pseudo] the creation
+      flags masked with [O_ACCMODE | O_NONBLOCK] (fs/anon_inodes.c), and
+      [EFD_NONBLOCK] is O_NONBLOCK ([do_eventfd]'s [BUILD_BUG_ON]).  It
+      belongs to the [struct file], not to the context; it is carried
+      here for [StreamEnd.se_nonblock]'s reason: no descriptor of this
+      kind is ever duplicated (see [FdEventfd]), so the context and its
+      one file are the same object.
+
+    WHAT IS NOT HERE.  No wait queue: a read of a zero counter or a write
+    that would overflow it sleeps until another task acts, and in this
+    one-thread model none can, so the arms decline the blocking case
+    rather than represent a run that cannot progress (see
+    [Fs.ReadWrite.eventfd_read]).  No [ctx->id]: it names the context in
+    /proc/PID/fdinfo only, which no modeled call reads. *)
+Record EventfdCtx := mkEventfdCtx {
+  ef_count     : Z;
+  ef_semaphore : bool;
+  ef_nonblock  : bool
+}.
+
+(** [ULLONG_MAX], the ceiling of an eventfd's [__u64] counter and the
+    one value [eventfd_write] refuses outright. *)
+Definition U64_MAX : Z := (2 ^ 64 - 1)%Z.
+
+(** One-field updates of a context.  Rocq has no record-update syntax,
+    so each spells the record whole; they are the only places that do.
+    The counter is what a read or a write moves, O_NONBLOCK what an
+    [F_SETFL] moves. *)
+Definition ef_set_count (ctx : EventfdCtx) (c : Z) : EventfdCtx :=
+  mkEventfdCtx c (ef_semaphore ctx) (ef_nonblock ctx).
+Definition ef_set_nonblock (ctx : EventfdCtx) (b : bool) : EventfdCtx :=
+  mkEventfdCtx (ef_count ctx) (ef_semaphore ctx) b.
+
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
 
@@ -2843,7 +2898,53 @@ Record StreamEnd := mkStreamEnd {
       [Kernel.Fork.clone_no_shared_file_b] declines a clone holding one,
       so no second entry ever names [(id, side)] and [socketpair] is the
       only constructor.  [stream_peer] relies on that, and so does
-      [se_nonblock] living on the end rather than on a file. *)
+      [se_nonblock] living on the end rather than on a file.
+    - [FdEventfd ctx]: AN EVENTFD, made by [eventfd2] (see
+      [Fs.EventFd.eventfd2_spec]).  [ctx] is everything Linux keeps on
+      its [struct eventfd_ctx] and its file that the model reads,
+      [EventfdCtx], INCLUDING THE COUNTER: an eventfd's state belongs to
+      its one context, not to a pair of ends as a pipe's does, so it
+      lives in the entry and needs no side table.  Its file is
+      [anon_inode_getfile_fmode]'s, over the shared anonymous inode with
+      [eventfd_fops] (fs/anon_inodes.c, fs/eventfd.c, Linux v6.18.46),
+      opened O_RDWR: FMODE_READ and FMODE_WRITE are both set, and
+      [alloc_file_pseudo] sets FMODE_LSEEK (the table has [.llseek]) but
+      never FMODE_PREAD or FMODE_PWRITE, which only [do_dentry_open]
+      grants (fs/file_table.c [file_init_path]).
+
+      A NEW KIND, for the reason the type enumerates: every [FdEntry]
+      match now says what an eventfd does, and the read, write, poll and
+      fcntl arms answer from [ctx].
+
+      AT MOST ONE DESCRIPTOR PER EVENTFD, as for [FdStream]:
+      [Fs.File.dup_modeled_entry] declines this kind, so [dup], [dup3]
+      and [F_DUPFD] of one decline, and
+      [Kernel.Fork.clone_no_shared_file_b] declines a clone holding one.
+      So [eventfd2] is the only constructor and the counter has one
+      home, which is what lets a read or a write move it by rewriting
+      this one entry.
+    - [FdDgram family]: an UNCONNECTED DATAGRAM SOCKET, made by
+      [socket(family, SOCK_DGRAM, 0)] for [family] AF_INET6 (10) or
+      AF_UNIX (1) (see [Net.Socket.socket_spec]).  The model only
+      creates one, closes it, asks it the loopback's index through
+      SIOCGIFINDEX ([Fs.Ioctl.ioctl_spec]), and answers the calls whose
+      answer the socket's state cannot change -- [F_GETFL], an empty
+      [F_SETFL], the terminal ioctls, the -ESPIPE of a positioned
+      transfer.  Every other call on it declines, so it carries NO STATE
+      but its family: nothing it could bind, connect, queue or shut down
+      is ever moved.
+
+      A NEW KIND, NOT A WIDENING OF [FdSocket].  [SockState] is a TCP
+      socket's life, and every arm that matches [FdSocket] reads it as
+      one; a datagram socket folded into it would be answered by those
+      arms as a TCP socket.  A constructor of its own makes each socket
+      arm state, explicitly, that this kind IS a socket (never
+      -ENOTSOCK) and that it declines.
+
+      ONE ENTRY PER SOCKET is not needed by anything here, since no arm
+      reads one [FdDgram] to answer for another; [dup] and [clone] still
+      treat it as they treat [FdSocket] ([Fs.File.dup_modeled_entry]
+      and [Kernel.Fork.clone_no_shared_file_b] decline both). *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
   | FdFile (p : path) (offset : word)
@@ -2855,7 +2956,9 @@ Inductive FdEntry :=
   | FdPipe (id : word) (writer : bool)
   | FdDevNull (rd wr : bool)
   | FdUrandom
-  | FdStream (id : word) (side : bool) (st : StreamEnd).
+  | FdStream (id : word) (side : bool) (st : StreamEnd)
+  | FdEventfd (ctx : EventfdCtx)
+  | FdDgram (family : Z).
 
 (** Virtual-memory bookkeeping: a ledger of allocator decisions the model
     has already committed to (the flat byte-map memory can't encode
@@ -5203,18 +5306,19 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     message to an installed descriptor, and SCM_RIGHTS appears nowhere
     in net/ipv4: [ip_cmsg_send] (net/ipv4/ip_sockglue.c) understands
     IP_RETOPTS, IP_PKTINFO, IP_TTL, IP_TOS and IP_PROTOCOL, none of which
-    carries an fd.  [Net.Socket.socket_spec] still answers [unmodeled]
-    for every family but AF_INET, so the only AF_UNIX sockets the model
-    has are the [FdStream] ends [Net.Socket.socketpair_spec] makes.
+    carries an fd.  The AF_UNIX sockets the model has are the
+    [FdStream] ends [Net.Socket.socketpair_spec] makes and the
+    unconnected [FdDgram] sockets [Net.Socket.socket_spec] makes.
 
     THE CONDITION THAT FALSIFIED THIS WAS MODELLING AF_UNIX, AND IT HAS
     HAPPENED, so the argument now rests on the gate that condition named.
     An SCM_RIGHTS message rides only in a [sendmsg]'s control data —
     [write], [writev] and [sendto] carry none ([__sys_sendto] sets
     [msg_control] to NULL) — and [Net.Socket.sendmsg_spec] DECLINES
-    every [FdStream] end outright, control data or not.  So no modeled
-    socket can carry a pipe end, or a stream end, in flight.  A change
-    that answers [sendmsg] on this kind must decline its control data or
+    every [FdStream] end and every [FdDgram] socket outright, control
+    data or not.  So no modeled socket can carry a pipe end, or a
+    stream end, in flight.  A change
+    that answers [sendmsg] on either kind must decline its control data or
     give this model a notion of a file held by nothing in the fd table;
     that decline is load-bearing for pipe end-of-file, not only for
     sockets.
@@ -5245,9 +5349,10 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
       prose too, beside its [F_DUPFD] bullet, because this file is not
       where someone widening fcntl's command set will look;
     - a reference IN FLIGHT is closed by [Net.Socket.sendmsg_spec]: it
-      declines every [FdStream] end, the only AF_UNIX sockets there are,
-      and keeps [if negb (w_is0 ctllen) then unmodeled] for an AF_INET
-      one, which could not carry SCM_RIGHTS anyway.
+      declines every [FdStream] end and every [FdDgram] socket, the only
+      AF_UNIX sockets there are, and keeps
+      [if negb (w_is0 ctllen) then unmodeled] for an AF_INET one, which
+      could not carry SCM_RIGHTS anyway.
 
     ONLY THE WRITER DIRECTION IS A SOUNDNESS EXPOSURE, which is what
     decides how much any future widening costs.  Under-reporting a WRITER
@@ -5284,6 +5389,8 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
   | (_, FdDevNull _ _) :: r => pipe_end_live r id writer
   | (_, FdUrandom) :: r => pipe_end_live r id writer
   | (_, FdStream _ _ _) :: r => pipe_end_live r id writer
+  | (_, FdEventfd _) :: r => pipe_end_live r id writer
+  | (_, FdDgram _) :: r => pipe_end_live r id writer
   end.
 
 (** A 32-bit value as the four little-endian bytes the kernel's
@@ -5334,6 +5441,10 @@ Fixpoint stream_end (fds : list (word * FdEntry)) (id : word) (side : bool)
   | (_, FdPipe _ _) :: r => stream_end r id side
   | (_, FdDevNull _ _) :: r => stream_end r id side
   | (_, FdUrandom) :: r => stream_end r id side
+  | (_, FdEventfd _) :: r => stream_end r id side
+  | (_, FdDgram _) :: r => stream_end r id side
+    (* neither names a stream end: an eventfd is an anonymous inode and
+       an [FdDgram] is a socket no [socketpair] joined to anything *)
   end.
 
 (** The PEER of end [(id, side)]: [unix_peer] of that socket, while the
@@ -5358,6 +5469,8 @@ Fixpoint stream_max_id (fds : list (word * FdEntry)) : Z :=
   | (_, FdPipe _ _) :: r => stream_max_id r
   | (_, FdDevNull _ _) :: r => stream_max_id r
   | (_, FdUrandom) :: r => stream_max_id r
+  | (_, FdEventfd _) :: r => stream_max_id r
+  | (_, FdDgram _) :: r => stream_max_id r
   end.
 
 (** The id a new pair gets: one above every LIVE pair's.  Unlike

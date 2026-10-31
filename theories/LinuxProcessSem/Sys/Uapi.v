@@ -73,8 +73,9 @@ Definition O_LARGEFILE : Z := 32768%Z.
 
     - READ THE FLAG WORD BACK, which means fcntl(F_GETFL).  fcntl (25)
       is modeled and F_GETFL IS one of the commands it answers — but
-      only on the fd kind whose flag word the model can derive, which is
-      [State.FdSocket] ([Fcntl.getfl_f_flags]).  [Open.openat_spec] never
+      only on the fd kinds whose flag word the model can derive, which
+      are [State.FdSocket], [State.FdStream], [State.FdEventfd] and
+      [State.FdDgram] ([Fcntl.getfl_f_flags]).  [Open.openat_spec] never
       mints one: the fd this bullet is about is an [FdFile], [FdFileW],
       [FdFileA], [FdFileRW], [FdDir], [FdDevNull] or [FdUrandom], and F_GETFL
       declines on every one of them FOR THE
@@ -254,6 +255,7 @@ Definition urandom_path : path :=
 Definition AF_UNSPEC : Z := 0%Z.
 Definition AF_UNIX   : Z := 1%Z.    (* = AF_LOCAL, include/linux/socket.h *)
 Definition AF_INET   : Z := 2%Z.
+Definition AF_INET6  : Z := 10%Z.   (* include/linux/socket.h *)
 Definition NPROTO    : Z := 46%Z.    (* = AF_MAX, include/linux/socket.h *)
 
 Definition SOCK_STREAM    : Z := 1%Z.
@@ -430,6 +432,31 @@ Definition TIOCSWINSZ  : word := Z_to_bv 64 21524.  (* 0x5414 *)
 Definition TIOCNOTTY   : word := Z_to_bv 64 21538.  (* 0x5422 *)
 Definition TIOCGPTN    : word := Z_to_bv 64 2147767344.  (* 0x80045430 *)
 Definition TIOCSPTLCK  : word := Z_to_bv 64 1074025521.  (* 0x40045431 *)
+
+(** [SIOCGIFINDEX], the socket ioctl that maps an interface name to its
+    index (include/uapi/linux/sockios.h, Linux v6.18.46): [0x8933], in
+    the [SOCK_IOC_TYPE] (0x89) range that [is_socket_ioctl_cmd]
+    (include/linux/netdevice.h) admits.  musl's [if_nametoindex] issues
+    it on an AF_UNIX datagram socket. *)
+Definition SIOCGIFINDEX : word := Z_to_bv 64 35123.  (* 0x8933 *)
+
+(** The layout of [struct ifreq] on riscv64 (include/uapi/linux/if.h,
+    Linux v6.18.46): [ifr_name], [IFNAMSIZ] = 16 bytes, at offset 0,
+    then the [ifr_ifru] union at offset 16, whose [int ifru_ivalue] is
+    [ifr_ifindex].  The union's largest member is [struct ifmap] (two
+    [unsigned long]s, a [short] and three [char]s: 21 bytes padded to
+    24 at 8-byte alignment), so [sizeof(struct ifreq)] is 40, the count
+    [get_user_ifreq] and [put_user_ifreq] (net/socket.c) copy whole. *)
+Definition IFNAMSIZ : Z := 16%Z.
+Definition IFREQ_SIZE : Z := 40%Z.
+
+(** [LOOPBACK_IFINDEX] (include/net/flow.h:25, Linux v6.18.46): the
+    index every network namespace's loopback device has.
+    [loopback_net_init] (drivers/net/loopback.c) allocates the device
+    under the name "lo", registers it, and stops the kernel
+    ([BUG_ON(dev->ifindex != LOOPBACK_IFINDEX)], :222) if it got any
+    other index. *)
+Definition LOOPBACK_IFINDEX : Z := 1%Z.
 
 (** The fcntl commands, from [include/uapi/asm-generic/fcntl.h] — riscv64
     supplies no arch override, so these are its values.  [F_GETLK] and
