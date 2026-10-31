@@ -1,9 +1,10 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/Classifier.v
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence
 import LinuxProcessSemantics.EquivalenceDefinition.MustExit
 import LinuxProcessSemantics.EquivalenceDefinition.FinInput
 import LinuxProcessSemantics.LinuxProcessSem.StackLayout
 
-/-! rocq-baseline: 1807c1e25ce12708f5cc85213f2df4bf03d978da -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # EquivalenceDefinition.Classifier — total deciders over finite inputs
 

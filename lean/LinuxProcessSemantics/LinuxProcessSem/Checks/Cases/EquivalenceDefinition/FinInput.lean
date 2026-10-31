@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/FinInput.v
 import LinuxProcessSemantics.EquivalenceDefinition.FinInput
 
 /-! # Checks.Cases.EquivalenceDefinition.FinInput — the finite-input record at concrete records
