@@ -144,3 +144,47 @@ turns variant E green. Without it the build depends both on
 and on nobody having built a `tests/` target first.
 
 That file is outside `reports/`, so this report does not make the change.
+
+## A near-miss in the measuring, worth more than the finding
+
+The second attempt at this experiment **measured the first attempt's tree**,
+and nearly reported it as the rebased branch's result.
+
+The runner unpacked its export only when the target directory was absent:
+
+```bash
+if [ ! -d "$W/lps-$v" ]; then … tar -x … ; fi
+```
+
+A `rm -rf` that was meant to clear it had not run — its output went to a
+shell whose result was never read — so the run reused the previous export
+**and its `_build`**, and came back red. The tarball on the machine was the
+right one; the tree was not. It was caught only by reading **which file the
+error named**: the failure quoted `Placement.linux_place_is`, which exists at
+the commit the first attempt used and not at the commit the second was
+supposed to be measuring.
+
+**That is the same defect this revision keeps finding, in the instrument
+rather than in the subject**: a step whose correctness rests on a condition
+nothing states — here, that the directory was empty. It has appeared in a
+build cache key that did not cover the installed libraries, a copy that only
+ever added, a removal that failed silently as the wrong user, a harness that
+copies only when absent, and now twice in this lane's own scripts.
+
+**It would have been invisible in a green run.** A reused tree that happens
+to pass looks exactly like a fresh tree that passes, and every number taken
+from it would have been reported with the wrong commit beside it.
+
+The three runners used for the measurements in this report and in
+`reports/evidence-initmodel-timing.md` were rewritten to `rm -rf` the
+directory unconditionally and to print the tarball's checksum at the top of
+every log, so each log says which bytes it measured.
+
+## Who reads this
+
+Nobody imports these reports. The six evidence files under `reports/` are
+read by people: nothing in the build, in CI or in any proof refers to them,
+and a change to any of them cannot break anything. That is said here rather
+than left to be assumed, because "who imports it" is a question this revision
+asks of everything else it ships, and a reports-only branch is the one case
+where the honest answer is nobody.
