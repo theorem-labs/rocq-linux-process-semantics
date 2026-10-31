@@ -34,7 +34,8 @@
       list says.
     - the table itself: sorted, and every number in it dispatches.
     - three refusals no state forces, at every input and model:
-      [munmap]'s partial-unmap -ENOMEM (alloc), [faccessat2]'s -ENOMEM
+      [munmap]'s -ENOMEM on a whole or a partial unmap (alloc),
+      [faccessat2]'s -ENOMEM
       and -EACCES and [getdents64]'s -ENOENT (fs).  Wherever the spec
       admits one of them it admits a non-refusal beside it, so a
       configuration that reads the family as forced-only removes every
@@ -569,9 +570,10 @@ Qed.
    ========================================================================= *)
 
 (** Three arms inject a refusal beside an answer the model can always
-    give instead: [munmap]'s partial-unmap -ENOMEM ([Mmap.munmap_errnos],
-    alloc), [faccessat2]'s -ENOMEM and -EACCES ([Open.faccessat_errnos],
-    fs) and [getdents64]'s -ENOENT ([Readdir.getdents64_errnos], fs).
+    give instead: [munmap]'s -ENOMEM on a whole or a partial unmap
+    ([Mmap.munmap_errnos], alloc), [faccessat2]'s -ENOMEM and -EACCES
+    ([Open.faccessat_errnos], fs) and [getdents64]'s -ENOENT
+    ([Readdir.getdents64_errnos], fs).
     For each, this part pins the family [Run.injected_table] gives it,
     that [Run.refusal_b] is exactly its list, and the claim no check on
     the table itself can make: wherever the spec admits one of these
@@ -659,8 +661,8 @@ Local Ltac refute_ret H Hr :=
 Local Ltac refute_unmodeled H :=
   exfalso; unfold unmodeled in H; discriminate H.
 
-(** [munmap]: an -ENOMEM is admitted only by the partial arm, and that
-    arm admits the cut beside it. *)
+(** [munmap]: an -ENOMEM is admitted by the exact arm and by the
+    partial arm, and each of them admits the cut beside it. *)
 Lemma munmap_success_beside_refusal : forall a l i m eff m' evs,
   munmap_spec a l i m (Ok eff m' evs) ->
   ret_in_errnos munmap_errnos (eff_ret eff) = true ->
@@ -680,10 +682,11 @@ Proof.
   eapply bind_ok0; [apply get_vmmaps_ok |]. cbv beta zeta.
   (* the range leaves the address space: -EINVAL *)
   case_if H; [refute_ret H Hr |].
-  (* exactly one recorded mapping: 0 *)
+  (* exactly one recorded mapping: the -ENOMEM beside the cut *)
   case_if H.
-  { exfalso. unfold set_vmmaps, forget_vm_range, modify, bind, pure in H.
-    sys_destruct. cbn [eff_ret] in Hr. vm_compute in Hr. discriminate Hr. }
+  { unfold with_mmap_destroyed, set_vmmaps, forget_vm_range.
+    apply alt_r. eapply bind_ok0; [apply modify_ok |].
+    eapply bind_ok0; [apply modify_ok |]. apply pure_ok. }
   (* nothing recorded in the range: 0 *)
   case_if H; [refute_ret H Hr |].
   (* the partial arm, or a decline *)
@@ -923,6 +926,45 @@ Qed.
 
 Example munmap_hole_enomem_kept_under_may_fail :
   ~ spurious_refusal_cfg may_fail_cfg munmap_hole_i four_page_model
+      (errno_eff ENOMEM).
+Proof. apply spurious_refusal_may_fail. Qed.
+
+(** The same for an unmap of ONE WHOLE mapping, the arm Linux answers
+    -ENOMEM at in [do_vmi_align_munmap] (mm/vma.c, Linux v6.18.46):
+    [Checks.Cases.Mm.Mmap.one_map_model]'s single mapping, unmapped
+    whole ([Checks.Cases.Mm.Mmap.munmap_whole_mapping_enomem]).  Under
+    may-fail the refusal stays; forced-only and [alloc_only_cfg false]
+    both remove it, so neither of those two readings changes. *)
+Definition munmap_whole_i : SyscallInput :=
+  mkInput 215 [65536; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+Example munmap_whole_enomem_admitted :
+  syscall_spec munmap_whole_i one_map_model
+    (Ok (errno_eff ENOMEM) one_map_model []).
+Proof. apply check_syscall_sound_ok. check_eq. Qed.
+
+Example munmap_whole_enomem_spurious_under_forced_only :
+  spurious_refusal_cfg forced_only_cfg munmap_whole_i one_map_model
+    (errno_eff ENOMEM).
+Proof.
+  apply (unforced_refusal_spurious_forced_only _ _ _ one_map_model []);
+    [vm_compute; right; left; reflexivity
+    | exact munmap_whole_enomem_admitted
+    | vm_compute; reflexivity].
+Qed.
+
+Example munmap_whole_enomem_spurious_under_alloc_only :
+  spurious_refusal_cfg (alloc_only_cfg false) munmap_whole_i one_map_model
+    (errno_eff ENOMEM).
+Proof.
+  apply (munmap_refusal_spurious_alloc_only _ _ _ one_map_model []);
+    [vm_compute; reflexivity
+    | exact munmap_whole_enomem_admitted
+    | vm_compute; reflexivity].
+Qed.
+
+Example munmap_whole_enomem_kept_under_may_fail :
+  ~ spurious_refusal_cfg may_fail_cfg munmap_whole_i one_map_model
       (errno_eff ENOMEM).
 Proof. apply spurious_refusal_may_fail. Qed.
 

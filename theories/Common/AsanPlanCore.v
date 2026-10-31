@@ -28,11 +28,12 @@
       about page accounting) and their byte bound ([a_abytes]), the program
       break ([a_brk]), the fd table ([a_fd]) and whether set_tid_address ran.
     * syscall nodes [PSys]: mmap arms P/A/B0/B (NULL hint), C/C0/D/D0 (FIXED,
-      free), E/F/G (FIXED inside a tracked entry), munmap (exact entry), brk
-      query / provably blocked grow, set_tid_address; [PBrk2] = brk grow with
-      both outcomes; [PExit].  Every memory syscall has a REFUSED child
-      ([node_mmap2] / [node_mmapin] (3 resolutions) / [node_mprotect2]);
-      [node_spin] is the sealed runtime's self-loop leaf.
+      free), E/F/G (FIXED inside a tracked entry), brk query / provably
+      blocked grow, set_tid_address; [PBrk2] = brk grow with both outcomes;
+      [PMunmap2] = munmap of exactly one tracked entry with both outcomes;
+      [PExit].  Every memory syscall has a REFUSED child
+      ([node_mmap2] / [node_mmapin] (3 resolutions) / [node_mprotect2] /
+      [node_munmap2]); [node_spin] is the sealed runtime's self-loop leaf.
       The checker verifies the budget / gap slack numerically.
     * abstraction / bookkeeping nodes: [PFresh] (re-spell a register as a
       scaled fresh variable c*v), [PFact] (add a fact the checker can verify),
@@ -2265,6 +2266,20 @@ Definition node_munmap (cs : acs) : option acs :=
 
 Lemma node_munmap_eq : forall cs, node_munmap cs = node_munmap_ref cs.
 Proof. intros. unfold node_munmap, node_munmap_ref. unfold ehi, elo. rewrite ?amap_matchB_eqf, ?ealignB_eqf, ?flat_xB_eqf, ?kn_unfillB_eqf, ?kzero_xB_eqf, ?page_alignedB_eqf, ?ranges_apart_xB_eqf, ?shadow_ofB_eqf, ?xhiB_eqf, ?xinsideB_eqf, ?kn_unfillM_eq. reflexivity. Qed.
+
+(** [PMunmap2]: the exact-entry munmap with its two resolutions
+    (refused, granted).  Linux clears the range in the mapping tree
+    ([vma_iter_clear_gfp], mm/vma.c:1573 at v6.18.46) BEFORE the point of no
+    return (mm/vma.c:1577), and [do_vmi_align_munmap]'s [clear_tree_failed:]
+    path (mm/vma.c:1581) calls [reattach_vmas], so the refusal keeps every
+    page: the refused child is [refuse cs] (a0 := -ENOMEM, pc+4, nothing
+    else), exactly as the other memory syscalls spell it. *)
+Definition node_munmap2 (cs : acs) : option (acs * acs) :=
+  match node_munmap cs with Some csG => Some (refuse cs, csG) | None => None end.
+
+Lemma node_munmap2_eq : forall cs,
+  node_munmap2 cs = match node_munmap_ref cs with Some csG => Some (refuse cs, csG) | None => None end.
+Proof. intros. unfold node_munmap2. rewrite node_munmap_eq. reflexivity. Qed.
 
 
 (* ---- 8.5 brk ------------------------------------------------------------------ *)

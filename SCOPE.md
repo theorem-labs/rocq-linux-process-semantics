@@ -168,6 +168,21 @@ true of the model and false of the real systems.
 - **mmap placement.** A mapping without an address hint can go to any free,
   page-aligned address below `State.alloc_top`. This is wider than the
   placement policy of each supported system.
+- **`munmap` failures.** An `munmap` that unmaps pages can answer
+  `ENOMEM` at every call, and under a reading that admits only the
+  failures the state forces it can answer `ENOMEM` at no call. On Linux
+  the answer depends on kernel memory, which the model does not hold.
+  The call that unmaps pages goes to `do_vmi_align_munmap`
+  (`mm/vma.c`, Linux v6.18.46). That function clears the range in the
+  mapping tree with `vma_iter_clear_gfp` (`include/linux/mm.h`), which
+  answers `-ENOMEM` when the tree cannot get a node, and
+  `vms_gather_munmap_vmas` has the same failure in `mas_store_gfp` one
+  step earlier. Both are before the point of no return, and both
+  re-attach what they detached (`reattach_vmas`), so the mapping keeps
+  its pages. The model gives the same two answers, under an `alt`, for
+  an unmap of one whole mapping and for a partial unmap. A range with
+  no mapped pages keeps its single answer 0: Linux returns there in
+  `do_vmi_munmap` (`mm/vma.c`) before any allocation.
 - **Random bytes.** The bytes of `/dev/urandom` are an input
   (`State.ProcInput.in_urandom`): the source and the target see the same
   stream. The bytes of `getrandom` are a free choice at each call: the source
