@@ -1,15 +1,20 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Dispatch.v
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/VmMapsDisjoint.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Checks.InvariantRegistry
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Sched.Syscalls
 import LinuxProcessSemantics.LinuxProcessSem.Sys.SyscallTable
 import LinuxProcessSemantics.LinuxProcessSem.SysSimp
 
-/-! rocq-baseline: 6e7c0d18ddbaa2d453318f0af4665958350a1871 -/
+
+/-! rocq-baseline: 6e7c0d18ddbaa2d453318f0af4665958350a1871 (the upstream port's
+baseline; the twin's source of truth is the header lines above) -/
 
 /-! # LinuxProcessSem.Checks.Arms.Kernel.Sched.Syscalls — sched_setscheduler, sched_getaffinity and sched_yield on the checked surface
 
 The registration of `Checks/Sys/Kernel/Sched/Syscalls.lean`'s three
 checkers in `checked_table`, in the one file that registration writes.
-`tools/gen_lean_checked.py` renders `checked_table`,
+`linux-process-semantics@ff0313ba4f:tools/gen_lean_checked.py` renders `checked_table`,
 `checked_table_preserves_vm` and `registry_preserves` from the files
 under `Checks/Arms/`, one per checker twin, so that registering an arm
 creates or edits no hub but this file; its docstring is the shape it reads
@@ -46,19 +51,31 @@ open LinuxProcessSemantics.LinuxProcessSem.Sys.SyscallTable
 open LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 open LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Dispatch
 
+/-! `sched_setscheduler`'s first gate is `decide (sint32 policy < 0)`, and
+reducing that reading against a symbolic register exceeds the recursion
+limit — "Crossing the negative-policy gate" in
+`Checks/Sys/Kernel/Sched/Syscalls.lean` says why.  Registering the arm asks
+for the reduction twice: once when `ca_sound_ok`'s field type is unified
+with the checker lemma, and once in each `arm_unfold` equation.  The
+attribute blocks the reading here as it does there.  Nothing in this file
+evaluates a signed reading: every arm field is a lemma applied to the
+registers, and every `arm_unfold` equation is `rfl` or `dsimp only` on a
+projection.  It is `local`, so no importing file sees it. -/
+attribute [local irreducible] LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.sint32
 
 /- ### sched_setscheduler (119) -/
 
 /-- This wrapper supplies the checker with the three argument registers.
 The unfolding equation supplies its value to proofs.
-The NULL gate blocks reduction on symbolic arguments before the signed comparisons.
-The arm and generated alternatives now build without irreducibility attributes on this wrapper or the spec. -/
+The first gate is the negative-policy test, which blocks reduction on a
+symbolic register; the attribute above is what keeps that block cheap. -/
 def check_sched_setscheduler_regs (i : SyscallInput) (eff : SyscallEffect)
     (m : Model) : check_result :=
   Checks.Sys.Kernel.Sched.Syscalls.check_sched_setscheduler i
     (in_arg i 0) (in_arg i 1) (in_arg i 2) eff m
 
-/-- This equation exposes the register wrapper without reducing the checker's signed comparisons. -/
+/-- This equation exposes the register wrapper without reducing the checker's
+negative-policy gate. -/
 theorem check_sched_setscheduler_regs_eq (i : SyscallInput) (eff : SyscallEffect) (m : Model) :
     check_sched_setscheduler_regs i eff m =
       Checks.Sys.Kernel.Sched.Syscalls.check_sched_setscheduler i
@@ -284,9 +301,12 @@ theorem check_sched_setscheduler_fd_state_frame (i : SyscallInput) (pid policy p
       CheckOk m' evs) :
     m'.m_fd = m.m_fd := by
   unfold Checks.Sys.Kernel.Sched.Syscalls.check_sched_setscheduler at h
-  cases hnull : w_is0 param
-  · simp only [hnull, Bool.false_eq_true, ↓reduceIte] at h
-    cases hearly : (decide (sint32 policy < 0) || decide (sint32 pid < 0))
+  by_cases hpolneg : sint32 policy < 0
+  · simp only [hpolneg, decide_true, ↓reduceIte] at h
+    obtain ⟨-, rfl, -⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+    rfl
+  · simp only [hpolneg, decide_false, Bool.false_eq_true, ↓reduceIte] at h
+    cases hearly : (w_is0 param || decide (sint32 pid < 0))
     · simp only [hearly, Bool.false_eq_true, ↓reduceIte] at h
       cases hread : read_bytes_map i.in_mem param (Z_to_bv 64 4) with
       | none =>
@@ -315,10 +335,8 @@ theorem check_sched_setscheduler_fd_state_frame (i : SyscallInput) (pid policy p
             dsimp only at h
             exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
     · simp only [hearly, ↓reduceIte] at h
-      cases h
-  · simp only [hnull, ↓reduceIte] at h
-    obtain ⟨-, rfl, -⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
-    rfl
+      obtain ⟨-, rfl, -⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+      rfl
 
 /-- `check_sched_getaffinity` answers an errno or declines. -/
 theorem check_sched_getaffinity_fd_state_frame (len : word) (eff : SyscallEffect)

@@ -1,7 +1,10 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Signal.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Signal
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel.Signal
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
+
 
 /-! # Checks.Cases.Checks.Sys.Kernel.Signal — what the signal CHECKERS accept and their WITNESSES name, read off against Linux
 
@@ -2687,7 +2690,7 @@ that byte is not one of them.  -EINVAL is refused on each.  The two
 SS_AUTODISARM shapes are Linux's answer alone: qemu-user's
 `target_restore_altstack` switches on the raw flags word and answers
 -EINVAL to every value with bit 31 set (linux-user/signal.c:317-319,
-QEMU v11.1.1), and `bugs/sigaltstack-autodisarm-mode-admits-linux-alone.md`
+QEMU v11.1.1), and `linux-process-semantics@ff0313ba4f:bugs/sigaltstack-autodisarm-mode-admits-linux-alone.md`
 records that the spec's arm, which this checker restates, proves as
 certain an answer outside the supported intersection there.
 kernel: kernel/signal.c:do_sigaltstack@v6.18.46 -/
@@ -2764,7 +2767,7 @@ disable and the autodisarm disable are both 0 with the model unchanged,
 autodisarm disable is Linux's answer alone, for the reason
 `check_sigaltstack_accepted_modes_install` gives (qemu-user, QEMU v11.1.1,
 answers -EINVAL to bit 31 at linux-user/signal.c:317-319) and
-`bugs/sigaltstack-autodisarm-mode-admits-linux-alone.md` records.
+`linux-process-semantics@ff0313ba4f:bugs/sigaltstack-autodisarm-mode-admits-linux-alone.md` records.
 kernel: kernel/signal.c:do_sigaltstack@v6.18.46 -/
 theorem check_sigaltstack_disable_ignores_the_size_and_autodisarm :
     check_sigaltstack (sigaltstack_in mem_ss_disable_small mem_none) 4096 0 (mkEffect 0 [] [])
@@ -3351,7 +3354,7 @@ and `complete_signal` does not flag a task whose mask covers it —
 (:159-175) find it; an unblocked one is taken on the way back to user
 space, where `get_signal` finds SIG_DFL (:2942) for a coredumping signal
 and reaches the fatal branch (:3016-3043).  That it finds SIG_DFL is the
-launch premise `bugs/tkill-assumes-sigabrt-not-ignored-at-launch.md`
+launch premise `linux-process-semantics@ff0313ba4f:bugs/tkill-assumes-sigabrt-not-ignored-at-launch.md`
 records and Rocq's `Run.v` cites: `flush_signal_handlers` (:519-534,
 called from `begin_new_exec`, fs/exec.c:1252, Linux v6.18.46) resets a
 handler to SIG_DFL but keeps a SIG_IGN across execve, and the model has no
@@ -3474,7 +3477,7 @@ theorem check_tkill_forged_write_rejected :
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> check_norm_altstack_kill
 
 /-- Rocq's `tkill_forged_return_rejected`, and every other non-zero return:
-an LSM's -EPERM (bugs/tkill-lsm-denial-not-admitted.md), -ESRCH for the
+an LSM's -EPERM (linux-process-semantics@ff0313ba4f:bugs/tkill-lsm-denial-not-admitted.md), -ESRCH for the
 caller itself, -EINVAL for a valid signal, and 1 — on both sides of the
 mask.  The fatal branch still claims 0.
 kernel: kernel/signal.c:do_send_specific,check_kill_permission@v6.18.46 -/
@@ -3954,7 +3957,7 @@ theorem tkill_forged_write_rejected_over_the_real_table :
   check_norm_altstack_kill
 
 /-- Rocq's `tkill_forged_return_rejected`: an LSM's -EPERM is refused
-(bugs/tkill-lsm-denial-not-admitted.md).
+(linux-process-semantics@ff0313ba4f:bugs/tkill-lsm-denial-not-admitted.md).
 kernel: kernel/signal.c:do_send_specific,check_kill_permission@v6.18.46 -/
 theorem tkill_forged_return_rejected_over_the_real_table :
     check_syscall (SyscallInput.mkInput 130 [4242, 6, 0, 0, 0, 0] mem_none mem_none)

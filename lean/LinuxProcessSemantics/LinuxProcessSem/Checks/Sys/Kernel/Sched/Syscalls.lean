@@ -1,8 +1,14 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Sched/Syscalls.v
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Witness/Kernel/Sched/Syscalls.v
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/VmMapsDisjoint.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Sched.Syscalls
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude
 
-/-! rocq-baseline: 6e7c0d18ddbaa2d453318f0af4665958350a1871 -/
+
+/-! rocq-baseline: 6e7c0d18ddbaa2d453318f0af4665958350a1871 (the upstream port's
+baseline; the twin's source of truth is the header lines above) -/
 
 /-! # LinuxProcessSem.Checks.Sys.Kernel.Sched.Syscalls — the sched_getaffinity (123), sched_setscheduler (119) and sched_yield (124) checkers and witnesses, and their proofs
 
@@ -57,7 +63,7 @@ still why a71fd38a was the baseline rather than f44244ad, the commit the
 ticket named: f44244ad is not an ancestor — that day's work was
 rebase-merged — and everything here read the same at either.
 The ancestor rule, and why a day-branch commit fails it once the day
-integrates, is `tools/check_lean_spec_parity.py`'s docstring (WHICH
+integrates, is `linux-process-semantics@ff0313ba4f:tools/check_lean_spec_parity.py`'s docstring (WHICH
 COMMITS SURVIVE THAT TEST).  The `Checks/VmMapsDisjoint.v` the frame
 lemmas mirror differs between f44244ad and the tip, in arms that are not
 the first two of these: the `sched_getaffinity` and `sched_setscheduler`
@@ -65,10 +71,7 @@ lemmas read the same at either.  What it gained between a71fd38a and the baselin
 `check_sched_yield_frame` and the one `erewrite` alternative that consumes
 it, and nothing else.
 
-Every definition and every lemma keeps its Rocq name and statement, with the following exception.
-The values of `check_sched_setscheduler` and `sched_setscheduler_witness` follow the changed `sched_setscheduler_spec`.
-The `partial:` line in `Sys/Kernel/Sched/Syscalls.lean` declares its temporary decline.
-The
+Every definition and every lemma keeps its Rocq name and statement.  The
 kernel argument for each branch is on the Sys twin and is not repeated:
 the checkers mirror the specs branch for branch, and what a branch means
 is said once, where the spec makes the decision.  Spellings that differ
@@ -166,9 +169,9 @@ it.
 Rocq: `Checks.Sys.Kernel.Sched.Syscalls.check_sched_setscheduler`. -/
 def check_sched_setscheduler (i : SyscallInput) (pid policy param : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
-  if w_is0 param then check_ret_only eff (errno_ret EINVAL) m []
-  else if decide (sint32 policy < 0) || decide (sint32 pid < 0) then
-    CheckUnmodeled
+  if decide (sint32 policy < 0) then check_ret_only eff (errno_ret EINVAL) m []
+  else if w_is0 param || decide (sint32 pid < 0) then
+    check_ret_only eff (errno_ret EINVAL) m []
   else
     match read_bytes_map i.in_mem param (Z_to_bv 64 4) with
     | none =>
@@ -182,8 +185,35 @@ def check_sched_setscheduler (i : SyscallInput) (pid policy param : word) (eff :
           | some r => check_ret_only_copyins [(param, 4)] eff r m []
           | none => CheckUnmodeled
 
-/- The NULL gate now blocks reduction on symbolic arguments before the signed comparisons.
-The checker proofs build without the former local irreducibility attribute. -/
+/-! ### Crossing the negative-policy gate
+
+The gate is `decide (sint32 policy < 0)`, and reducing it against a
+symbolic `policy` exceeds the recursion limit: `sint32` opens into a
+comparison and a subtraction against `2 ^ 31` and `2 ^ 32`
+(`Sys/Syscall.lean`), and `Int.decLt` sends those literals into `Nat.sub`'s
+structural recursion.  The second gate is safe, for the reason upstream's
+Lean was safe by accident: `w_is0 param || decide (sint32 pid < 0)` has
+`Bool.or` at the head and stops at once on the symbolic `w_is0`.  The first
+gate has nothing in front of the `decide`, so anything that asks for its
+value pays — `by_cases` on the `Prop` under the `decide` among them,
+because the elaborator reduces the goal through the gate to find its head,
+and `Lean.Linter.constructorNameAsVariable`, which runs `whnf` on the type
+of every bound variable it sees and so walks into the gate of
+`check_sched_setscheduler_complete_ok` and
+`check_sched_setscheduler_complete_unmodeled`, whose hypothesis IS the
+spec, before a tactic runs at all.
+
+The attribute below stops every one of those at the root, which is the
+reading and not the gate.  No proof in this file evaluates a signed
+reading: each crosses both gates from a hypothesis, by `simp only` keyed on
+it, which is the discipline the header of
+`Checks/Sys/Kernel/Time/PosixTimers.lean` states for the recorded-clock
+gate.  The attribute is `local`, so the pins in `Checks/Cases/`, which DO
+evaluate closed readings, are untouched.  It changes no definition: the
+gate still reads `decide (sint32 policy < 0)`, still comes first, and still
+answers what it answered. -/
+
+attribute [local irreducible] sint32
 
 theorem check_sched_setscheduler_sound_ok (i : SyscallInput) (pid policy param : word)
     (eff : SyscallEffect) (m m' : Model) (evs : List event)
@@ -191,9 +221,12 @@ theorem check_sched_setscheduler_sound_ok (i : SyscallInput) (pid policy param :
     sched_setscheduler_spec pid policy param i m (Ok eff m' evs) := by
   unfold check_sched_setscheduler at h
   unfold sched_setscheduler_spec
-  cases hnull : w_is0 param
-  · simp only [hnull, Bool.false_eq_true, ↓reduceIte] at h ⊢
-    cases hearly : (decide (sint32 policy < 0) || decide (sint32 pid < 0))
+  by_cases hpolneg : sint32 policy < 0
+  · simp only [hpolneg, decide_true, ↓reduceIte] at h ⊢
+    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+    exact pure_ok _ i _
+  · simp only [hpolneg, decide_false, Bool.false_eq_true, ↓reduceIte] at h ⊢
+    cases hearly : (w_is0 param || decide (sint32 pid < 0))
     · simp only [hearly, Bool.false_eq_true, ↓reduceIte] at h ⊢
       refine bind_ok0 _ _ i m i m _ _ _ (input_ok i m) ?_
       try dsimp only
@@ -226,10 +259,8 @@ theorem check_sched_setscheduler_sound_ok (i : SyscallInput) (pid policy param :
             dsimp only at h
             exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
     · simp only [hearly, ↓reduceIte] at h ⊢
-      cases h
-  · simp only [hnull, ↓reduceIte] at h ⊢
-    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
-    exact pure_ok _ i _
+      obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+      exact pure_ok _ i _
 
 theorem check_sched_setscheduler_sound_unmodeled (i : SyscallInput) (pid policy param : word)
     (eff : SyscallEffect) (m : Model)
@@ -237,9 +268,11 @@ theorem check_sched_setscheduler_sound_unmodeled (i : SyscallInput) (pid policy 
     sched_setscheduler_spec pid policy param i m Unmodeled := by
   unfold check_sched_setscheduler at h
   unfold sched_setscheduler_spec
-  cases hnull : w_is0 param
-  · simp only [hnull, Bool.false_eq_true, ↓reduceIte] at h ⊢
-    cases hearly : (decide (sint32 policy < 0) || decide (sint32 pid < 0))
+  by_cases hpolneg : sint32 policy < 0
+  · simp only [hpolneg, decide_true, ↓reduceIte] at h ⊢
+    exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+  · simp only [hpolneg, decide_false, Bool.false_eq_true, ↓reduceIte] at h ⊢
+    cases hearly : (w_is0 param || decide (sint32 pid < 0))
     · simp only [hearly, Bool.false_eq_true, ↓reduceIte] at h ⊢
       refine bind_unmodeled2 _ _ i m i m [] (input_ok i m) ?_
       try dsimp only
@@ -271,9 +304,7 @@ theorem check_sched_setscheduler_sound_unmodeled (i : SyscallInput) (pid policy 
             dsimp only
             exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
     · simp only [hearly, ↓reduceIte] at h ⊢
-      exact unmodeled_intro i m
-  · simp only [hnull, ↓reduceIte] at h ⊢
-    exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
 
 theorem check_sched_setscheduler_complete_ok (i : SyscallInput) (pid policy param : word)
     (eff : SyscallEffect) (m m' : Model) (evs : List event)
@@ -281,9 +312,13 @@ theorem check_sched_setscheduler_complete_ok (i : SyscallInput) (pid policy para
     check_sched_setscheduler i pid policy param eff m = CheckOk m' evs := by
   unfold check_sched_setscheduler
   unfold sched_setscheduler_spec at h
-  cases hnull : w_is0 param
-  · simp only [hnull, Bool.false_eq_true, ↓reduceIte] at h ⊢
-    cases hearly : (decide (sint32 policy < 0) || decide (sint32 pid < 0))
+  by_cases hpolneg : sint32 policy < 0
+  · simp only [hpolneg, decide_true, ↓reduceIte] at h ⊢
+    have h' : Ok eff m' evs = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := h
+    cases h'
+    exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
+  · simp only [hpolneg, decide_false, Bool.false_eq_true, ↓reduceIte] at h ⊢
+    cases hearly : (w_is0 param || decide (sint32 pid < 0))
     · simp only [hearly, Bool.false_eq_true, ↓reduceIte] at h ⊢
       have h := bind_input_model_inv _ i m _ h
       try dsimp only at h
@@ -317,11 +352,9 @@ theorem check_sched_setscheduler_complete_ok (i : SyscallInput) (pid policy para
             rw [hans] at hcore
             simp only [unmodeled, reduceCtorEq] at hcore
     · simp only [hearly, ↓reduceIte] at h ⊢
-      simp only [unmodeled, reduceCtorEq] at h
-  · simp only [hnull, ↓reduceIte] at h ⊢
-    have h' : Ok eff m' evs = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := h
-    cases h'
-    exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
+      have h' : Ok eff m' evs = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := h
+      cases h'
+      exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
 
 theorem check_sched_setscheduler_complete_unmodeled (i : SyscallInput) (pid policy param : word)
     (eff : SyscallEffect) (m : Model)
@@ -329,9 +362,11 @@ theorem check_sched_setscheduler_complete_unmodeled (i : SyscallInput) (pid poli
     check_sched_setscheduler i pid policy param eff m = CheckUnmodeled := by
   unfold check_sched_setscheduler
   unfold sched_setscheduler_spec at h
-  cases hnull : w_is0 param
-  · simp only [hnull, Bool.false_eq_true, ↓reduceIte] at h ⊢
-    cases hearly : (decide (sint32 policy < 0) || decide (sint32 pid < 0))
+  by_cases hpolneg : sint32 policy < 0
+  · simp only [hpolneg, decide_true, ↓reduceIte] at h ⊢
+    simp only [err_ret, ret_only, Monad.pure, reduceCtorEq] at h
+  · simp only [hpolneg, decide_false, Bool.false_eq_true, ↓reduceIte] at h ⊢
+    cases hearly : (w_is0 param || decide (sint32 pid < 0))
     · simp only [hearly, Bool.false_eq_true, ↓reduceIte] at h ⊢
       have h := bind_input_model_inv _ i m _ h
       try dsimp only at h
@@ -357,8 +392,7 @@ theorem check_sched_setscheduler_complete_unmodeled (i : SyscallInput) (pid poli
             simp only [ret_only, Monad.pure, reduceCtorEq] at hcore
           | none => rfl
     · simp only [hearly, ↓reduceIte] at h ⊢
-  · simp only [hnull, ↓reduceIte] at h ⊢
-    simp only [err_ret, ret_only, Monad.pure, reduceCtorEq] at h
+      simp only [err_ret, ret_only, Monad.pure, reduceCtorEq] at h
 
 /-! ## The witnesses
 
@@ -405,9 +439,12 @@ theorem check_sched_setscheduler_frame (i : SyscallInput) (pid policy param : wo
     (h : check_sched_setscheduler i pid policy param eff m = CheckOk m' evs) :
     m_vmmaps m' = m_vmmaps m := by
   unfold check_sched_setscheduler at h
-  cases hnull : w_is0 param
-  · simp only [hnull, Bool.false_eq_true, ↓reduceIte] at h
-    cases hearly : (decide (sint32 policy < 0) || decide (sint32 pid < 0))
+  by_cases hpolneg : sint32 policy < 0
+  · simp only [hpolneg, decide_true, ↓reduceIte] at h
+    obtain ⟨-, rfl, -⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+    rfl
+  · simp only [hpolneg, decide_false, Bool.false_eq_true, ↓reduceIte] at h
+    cases hearly : (w_is0 param || decide (sint32 pid < 0))
     · simp only [hearly, Bool.false_eq_true, ↓reduceIte] at h
       cases hread : read_bytes_map i.in_mem param (Z_to_bv 64 4) with
       | none =>
@@ -436,10 +473,8 @@ theorem check_sched_setscheduler_frame (i : SyscallInput) (pid policy param : wo
             dsimp only at h
             exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
     · simp only [hearly, ↓reduceIte] at h
-      cases h
-  · simp only [hnull, ↓reduceIte] at h
-    obtain ⟨-, rfl, -⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
-    rfl
+      obtain ⟨-, rfl, -⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+      rfl
 
 /-! ### The sched_getaffinity witness -/
 
@@ -465,14 +500,18 @@ theorem sched_getaffinity_witness_ok (len : word) (i : SyscallInput) (m : Model)
 /-! ### The sched_setscheduler witness -/
 
 /-- The witness follows the spec's decisions without drawing a value or changing model state.
-Linux v6.18.46 copies four bytes before task lookup in `do_sched_setscheduler` (kernel/sched/syscalls.c:887-890).
+`SYSCALL_DEFINE3(sched_setscheduler)` refuses a negative policy
+(kernel/sched/syscalls.c:962-968, Linux v6.18.46) and `do_sched_setscheduler`
+refuses a NULL `param` or a negative pid (:885-886), both before the copy,
+so those two witnesses are the -EINVAL with an empty ledger.
+Linux copies four bytes before the task lookup in `do_sched_setscheduler` (:887-892).
 Every witness answer after that copy carries its ledger.
 The `Unmodeled` outcome supplies the progress witness for each decline.
 Rocq: `Checks.Witness.Kernel.Sched.Syscalls.sched_setscheduler_witness`. -/
 def sched_setscheduler_witness (pid policy param : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
-  if w_is0 param then ret_outcome (errno_ret EINVAL) m
-  else if decide (sint32 policy < 0) || decide (sint32 pid < 0) then Unmodeled
+  if decide (sint32 policy < 0) then ret_outcome (errno_ret EINVAL) m
+  else if w_is0 param || decide (sint32 pid < 0) then ret_outcome (errno_ret EINVAL) m
   else
     match read_bytes_map i.in_mem param (Z_to_bv 64 4) with
     | none =>
@@ -490,9 +529,11 @@ theorem sched_setscheduler_witness_ok (i : SyscallInput) (pid policy param : wor
     sched_setscheduler_spec pid policy param i m
       (sched_setscheduler_witness pid policy param i m) := by
   unfold sched_setscheduler_spec sched_setscheduler_witness
-  cases hnull : w_is0 param
-  · simp only [Bool.false_eq_true, ↓reduceIte]
-    cases hearly : (decide (sint32 policy < 0) || decide (sint32 pid < 0))
+  by_cases hpolneg : sint32 policy < 0
+  · simp only [hpolneg, decide_true, ↓reduceIte]
+    exact pure_ok _ i m
+  · simp only [hpolneg, decide_false, Bool.false_eq_true, ↓reduceIte]
+    cases hearly : (w_is0 param || decide (sint32 pid < 0))
     · simp only [Bool.false_eq_true, ↓reduceIte]
       refine bind_step _ _ i m i m _ (input_ok i m) ?_
       try dsimp only
@@ -521,9 +562,7 @@ theorem sched_setscheduler_witness_ok (i : SyscallInput) (pid policy param : wor
             dsimp only
             exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
     · simp only [↓reduceIte]
-      exact unmodeled_intro i m
-  · simp only [↓reduceIte]
-    exact pure_ok _ i m
+      exact pure_ok _ i m
 
 /-! ## sched_yield (124)
 

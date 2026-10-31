@@ -1,3 +1,5 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Fork.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Fork
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.State
@@ -6,6 +8,7 @@ import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Oracle
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ProcessCreation
+
 
 /-! # Checks.Cases.Checks.Sys.Kernel.Fork — what the set_tid_address, clone and clone3 checkers answer, read off against Linux
 
@@ -796,7 +799,7 @@ theorem check_clone_refuses_a_write :
 and the caller's own is in use; the model knows the caller's tid once an
 identity call has recorded it (`with_tid`), and `clone_pid_ok_b` excludes
 it from then on.  Until then the conjunct is vacuous — the widening
-`bugs/clone-retires-no-pid.md` records, which `check_clone_admits_a_pid`
+`linux-process-semantics@ff0313ba4f:bugs/clone-retires-no-pid.md` records, which `check_clone_admits_a_pid`
 above shows on the bare fixture. -/
 
 /-- With tid 1234 recorded, pid 1234 is refused.
@@ -885,7 +888,7 @@ premise and advances nothing — so the call is answered as on the bare
 table.  A child's own `getdents64` through the shared `struct file` would
 move it, and the parent's next short-count call would then read 0 from
 Linux where the model says -EINVAL: the child's action, outside the model
-with the rest of the child (bugs/clone-child-not-in-the-model.md, which
+with the rest of the child (linux-process-semantics@ff0313ba4f:bugs/clone-child-not-in-the-model.md, which
 does not yet name this route), and a question for the spec's gate —
 `clone_no_shared_file_b`, Rocq's and its Lean twin's, whose docstrings
 carry the unqualified sentence — not for this checker.
@@ -1265,7 +1268,7 @@ and the refusals of `copy_clone_args_from_user` are -EINVAL, -E2BIG and
 -EFAULT (kernel/fork.c:2772-2818, Linux v6.18.46).  QEMU's user-mode
 emulation at v11.1.1 has no `clone3` handler and answers -ENOSYS with
 nothing read, so the refusal is the model's and not the supported set's;
-bugs/clone3-enosys-arm-admits-linux-alone.md records the gap, which is
+linux-process-semantics@ff0313ba4f:bugs/clone3-enosys-arm-admits-linux-alone.md records the gap, which is
 `clone_errnos`'s and reaches this checker through the obligations.
 probe: testing/syscall-check/tests/clone_spec.c#reject --mutate clone3:arg1=88,ret=-ENOSYS -- c3 -/
 theorem check_clone3_enosys_not_accepted (m' : Model) (evs : List event) :

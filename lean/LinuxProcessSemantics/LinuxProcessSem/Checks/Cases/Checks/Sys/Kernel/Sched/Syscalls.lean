@@ -1,31 +1,33 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Kernel/Sched/Syscalls.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Sched.Syscalls
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel.Sched.Syscalls
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
 
+
 /-! # Checks.Cases.Checks.Sys.Kernel.Sched.Syscalls — what the three sched checkers and witnesses answer, read off against Linux
 
 Pins over `Checks.Sys.Kernel.Sched.Syscalls`: `check_sched_getaffinity`,
 `check_sched_setscheduler`, `check_sched_yield` and the three witnesses.
 The checker pins restate the `Example`s of
-`theories/LinuxProcessSem/Checks/Cases/Kernel/Sched/Syscalls.v` at commit
-6e7c0d18ddbaa2d453318f0af4665958350a1871, the checker twin's baseline
-(the file was byte-identical at a71fd38a and at f44244ad6b80, the commit
-the ticket named, and gained the `sched_yield` examples at the baseline
-this now reads): every `Example` there about a checker's verdict is
+`theories/LinuxProcessSem/Checks/Cases/Kernel/Sched/Syscalls.v`, at the
+commit the header line above names.  The upstream port's baseline was
+6e7c0d18ddbaa2d453318f0af4665958350a1871 (the file was byte-identical at
+a71fd38a and at f44244ad6b80, the commit that ticket named, and gained
+the `sched_yield` examples at that baseline): every `Example` there about a checker's verdict is
 stated on `check_syscall`, and each is restated here on `check_<name>` at
 the same register values, with the same offered effect and the same
 fixture.
-The negative-argument pins now require the temporary decline for PR #1929.
-Those verdicts differ from the Rocq statements.  Two `sched_yield` Examples are not
+Two `sched_yield` Examples are not
 restated: `sched_yield_is_modeled`, which is about the table and no
 checker, and `sched_yield_ignores_every_argument_word`, whose subject is
 the argument registers `check_sched_yield` never sees; both are the
 spec-level file's.  The spec-level twins of the same
 Rocq examples are `Checks/Cases/Kernel/Sched/Syscalls.lean`'s, which this
 file imports for its fixtures and does not restate.  No ledger
-reads this file's mapping today: `tools/check_lean_cases_parity.py` pairs
+reads this file's mapping today: `linux-process-semantics@ff0313ba4f:tools/check_lean_cases_parity.py` pairs
 a Cases file with the Rocq file at its mirrored path, none sits at this
 one, and the S file's `covers:` lines may name only its own theorems — so
 this file is listed `unmirrored`, and the mapping is the theorem's name:
@@ -68,7 +70,7 @@ on any, so each witness pin runs the witness on one fixture and names the
 outcome.  The Rocq tree has no check file for the witnesses — their
 `*_witness_ok` lemmas are stated in the file itself — so the witness pins
 mirror nothing: they are the Lean tree's tests for what the twin ports,
-placed where every pin in this tree lives so that `tools/check_lean_pins.py`
+placed where every pin in this tree lives so that `linux-process-semantics@ff0313ba4f:tools/check_lean_pins.py`
 reads them.  The kernel readings are the spec-level file's; each
 docstring below keeps the function of Linux its Rocq original cites, with
 the line numbers read at v6.18.46 beside it, so that a pin is judged
@@ -117,7 +119,7 @@ ONE LIE NO PIN HERE REFUSES: a gate -EINVAL branch that also accepted
 -EPERM.  The call's only -EPERM is whatever `security_task_getscheduler`
 returns inside `sched_getaffinity()` (kernel/sched/syscalls.c:1310-1312,
 Linux v6.18.46), behind both gates, and that is a security module's value:
-no function on the path spells the errno, so `tools/check_lean_pin_evidence.py`'s
+no function on the path spells the errno, so `linux-process-semantics@ff0313ba4f:tools/check_lean_pin_evidence.py`'s
 KMENTION rule — the cited function must spell the errno the pin judges —
 would refuse the pin's evidence line, and the bound is named here instead
 of pinned. -/
@@ -273,7 +275,7 @@ compat-aligned pin exercises — refuses 4 and 12 and every length in the
 wrapping pins, and lets these through to the decline; this pin is what
 fails on it.  qemu-user's `TARGET_NR_sched_getaffinity`
 (linux-user/syscall.c:11979-12018, QEMU v11.1.1, the range
-`bugs/sched-setscheduler-pre-copy-einval-is-linux-order.md` records)
+`linux-process-semantics@ff0313ba4f:bugs/sched-setscheduler-pre-copy-einval-is-linux-order.md` records)
 refuses `arg2 & (sizeof(abi_ulong) - 1)` with
 -TARGET_EINVAL before it rounds the length up, so the -EINVAL here is the
 intersection's, not one implementation's.
@@ -295,7 +297,7 @@ end GetAffinity
 section SetScheduler
 
 /-- Compute closed gates with `sys_norm` before `rfl` compares the remaining constructors.
-The non-NULL branch still tests `decide (sint32 policy < 0)` and `decide (sint32 pid < 0)`.
+The two pre-copy branches test `decide (sint32 policy < 0)` and `decide (sint32 pid < 0)`.
 Reducing their `Int.decLt` instances can expand `Nat.sub` before evaluating the bit-vector reading.
 `sys_norm` evaluates these readings first.
 The type `check_result` has no `DecidableEq`, so `decide` cannot prove the whole verdict directly. -/
@@ -340,17 +342,19 @@ theorem sched_setscheduler_negative_priority_is_out_of_range :
   by
   refine ⟨?_, ?_, ?_⟩ <;> sched_check_run
 
-/-- Linux rejects negative policy in `SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:964-965, Linux v6.18.46).
-It rejects negative pid before copying in `do_sched_setscheduler` (kernel/sched/syscalls.c:885-888, Linux v6.18.46).
-QEMU v11.1.1 tests NULL `param` in `do_syscall1`, case `TARGET_NR_sched_setscheduler` (linux-user/syscall.c:12095-12103).
-It then copies four bytes before the host checks the signed arguments.
-An unreadable pointer can change the errno.
-A readable pointer changes the copy-in ledger.
-The intersection therefore supplies no single effect for non-NULL negative arguments.
-The twin declines that band until PR #1929 changes Rocq and Lean follows it.
-Both implementations return -EINVAL without copying when `param` is NULL, even with negative policy and pid.
-The `int policy` argument reads 2^32 + 5 as SCHED_IDLE in `SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:962, Linux v6.18.46).
-Linux returns zero for this caller request with priority zero through `__sched_setscheduler` (kernel/sched/syscalls.c:555-571, :757, Linux v6.18.46).
+/-- THE ORDER OF THE TWO PRE-COPY -EINVALS, on a call that is wrong in
+three ways at once.  `policy < 0` is decided in
+`SYSCALL_DEFINE3(sched_setscheduler)` itself (kernel/sched/syscalls.c:962-968,
+Linux v6.18.46), before `do_sched_setscheduler` is entered, so a negative
+policy beats the NULL `param` and the negative pid that function refuses
+at :880-888 — and beats the -EFAULT an unreadable `param` would raise,
+which is the discrimination the unreadable pointer of the second conjunct
+makes.  A checker that tested the pointer first would accept -EFAULT
+there.
+…and the truncation is real: `int policy` reads 2^32 + 5 as SCHED_IDLE at
+:962, so the same register with its low half changed is answered with the
+0 `__sched_setscheduler` gives a priority-0 SCHED_IDLE request (:555-571,
+:757) rather than refused.
 kernel: kernel/sched/syscalls.c:sched_setscheduler,do_sched_setscheduler@v6.18.46 -/
 theorem sched_setscheduler_negative_policy_wins :
     check_sched_setscheduler
@@ -360,7 +364,7 @@ theorem sched_setscheduler_negative_policy_wins :
     ∧ check_sched_setscheduler
         (sched_setscheduler_in 0 (Z_to_bv 64 (2 ^ 64 - 1)) (Z_to_bv 64 (2 ^ 63)) (fun _ => none))
         0 (Z_to_bv 64 (2 ^ 64 - 1)) (Z_to_bv 64 (2 ^ 63))
-        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckUnmodeled
+        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
     ∧ check_sched_setscheduler
         (sched_setscheduler_in 0 (Z_to_bv 64 (2 ^ 32 + 5)) sched_param_ptr (sched_param_mem 0))
         0 (Z_to_bv 64 (2 ^ 32 + 5)) sched_param_ptr
@@ -376,7 +380,7 @@ theorem sched_setscheduler_negative_policy_wins :
 arch/riscv/include/asm/uaccess.h:57 includes the generic header and
 nothing under `arch/riscv/include` defines the name.  So the constant the
 fault pins below name reaches the cited function through a header, and
-the alias keeps `tools/check_lean_pin_evidence.py`'s constant search off
+the alias keeps `linux-process-semantics@ff0313ba4f:tools/check_lean_pin_evidence.py`'s constant search off
 it, as `Checks/Cases/Kernel/Time/Time.lean` does for the same test.  This
 stops being right the day riscv defines `TASK_SIZE_MAX` to anything but
 `TASK_SIZE`: the fault line moves, and every `task_size_minus` pin is a
@@ -763,15 +767,14 @@ theorem sched_setscheduler_task_lookup_precedes_the_policy_check :
   by
   refine ⟨?_, ?_⟩ <;> sched_check_run
 
-/-- Linux rejects negative policy in `SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:964-965, Linux v6.18.46).
-It rejects negative pid before copying in `do_sched_setscheduler` (kernel/sched/syscalls.c:885-888, Linux v6.18.46).
-QEMU v11.1.1 tests NULL `param` in `do_syscall1`, case `TARGET_NR_sched_setscheduler` (linux-user/syscall.c:12095-12103).
-It then copies four bytes before the host checks the signed arguments.
-An unreadable pointer can change the errno.
-A readable pointer changes the copy-in ledger.
-The intersection therefore supplies no single effect for non-NULL negative arguments.
-The twin declines that band until PR #1929 changes Rocq and Lean follows it.
-kernel: kernel/sched/syscalls.c:sched_setscheduler,do_sched_setscheduler@v6.18.46 -/
+/-- THE PRE-COPY GATE IS -EINVAL AND NOTHING ELSE.  `do_sched_setscheduler`
+tests `!param || pid < 0` (kernel/sched/syscalls.c:885-886, Linux v6.18.46)
+before the `copy_from_user` at :887-888, so the NULL `param` and the pid
+-1 are both the bare -EINVAL: the -EFAULT a checker reading the pointer
+first would accept is refused, a ledger on an answer whose copy never ran
+is refused, and the register 2^31 — the smallest `int` in its low half —
+takes the same route.
+kernel: kernel/sched/syscalls.c:do_sched_setscheduler@v6.18.46 -/
 theorem sched_setscheduler_pre_copy_gate_is_einval :
     check_sched_setscheduler
         (sched_setscheduler_in 0 5 0 (fun _ => none))
@@ -784,31 +787,31 @@ theorem sched_setscheduler_pre_copy_gate_is_einval :
     ∧ check_sched_setscheduler
         (sched_setscheduler_in (Z_to_bv 64 (2 ^ 64 - 1)) 5 sched_param_ptr (sched_param_mem 0))
         (Z_to_bv 64 (2 ^ 64 - 1)) 5 sched_param_ptr
-        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckUnmodeled
+        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
     ∧ check_sched_setscheduler
         (sched_setscheduler_in (Z_to_bv 64 (2 ^ 64 - 1)) 5 sched_param_ptr (sched_param_mem 0))
         (Z_to_bv 64 (2 ^ 64 - 1)) 5 sched_param_ptr
         (with_copyins [(sched_param_ptr, 4)] (mkEffect (errno_ret EINVAL) [] [])) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_sched_setscheduler
         (sched_setscheduler_in (Z_to_bv 64 (2 ^ 64 - 1)) 5 sched_param_ptr (sched_param_mem 0))
         (Z_to_bv 64 (2 ^ 64 - 1)) 5 sched_param_ptr
-        (mkEffect (errno_ret EFAULT) [] []) demo_model = CheckUnmodeled
+        (mkEffect (errno_ret EFAULT) [] []) demo_model = CheckReject
     ∧ check_sched_setscheduler
         (sched_setscheduler_in (Z_to_bv 64 (2 ^ 31)) 5 sched_param_ptr (sched_param_mem 0))
         (Z_to_bv 64 (2 ^ 31)) 5 sched_param_ptr
-        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckUnmodeled :=
+        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model [] :=
   by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> sched_check_run
 
-/-- Linux rejects negative policy in `SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:964-965, Linux v6.18.46).
-It rejects negative pid before copying in `do_sched_setscheduler` (kernel/sched/syscalls.c:885-888, Linux v6.18.46).
-QEMU v11.1.1 tests NULL `param` in `do_syscall1`, case `TARGET_NR_sched_setscheduler` (linux-user/syscall.c:12095-12103).
-It then copies four bytes before the host checks the signed arguments.
-An unreadable pointer can change the errno.
-A readable pointer changes the copy-in ledger.
-The intersection therefore supplies no single effect for non-NULL negative arguments.
-The twin declines that band until PR #1929 changes Rocq and Lean follows it.
+/-- THE PRE-COPY -EINVALS CARRY NO LEDGER AND NO WRITE.  Both of them are
+decided before the `copy_from_user` of `do_sched_setscheduler`
+(kernel/sched/syscalls.c:887-888, Linux v6.18.46): the negative policy in
+`SYSCALL_DEFINE3(sched_setscheduler)` at :962-968, the NULL `param` and
+the negative pid at :885-886.  So an -EINVAL claiming the four bytes at
+`param`, or claiming a write, is refused on every one of those routes —
+including the ones whose `param` is a readable `struct sched_param` the
+copy would have succeeded on.
 kernel: kernel/sched/syscalls.c:sched_setscheduler,do_sched_setscheduler@v6.18.46 -/
 theorem sched_setscheduler_pre_copy_einvals_carry_no_ledger :
     -- the negative policy, beside a readable param
@@ -816,12 +819,12 @@ theorem sched_setscheduler_pre_copy_einvals_carry_no_ledger :
         (sched_setscheduler_in 0 (Z_to_bv 64 (2 ^ 64 - 1)) sched_param_ptr (sched_param_mem 0))
         0 (Z_to_bv 64 (2 ^ 64 - 1)) sched_param_ptr
         (with_copyins [(sched_param_ptr, 4)] (mkEffect (errno_ret EINVAL) [] [])) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_sched_setscheduler
         (sched_setscheduler_in 0 (Z_to_bv 64 (2 ^ 64 - 1)) sched_param_ptr (sched_param_mem 0))
         0 (Z_to_bv 64 (2 ^ 64 - 1)) sched_param_ptr
         (mkEffect (errno_ret EINVAL) [(sched_param_ptr, [Z_to_bv 8 0])] []) demo_model
-      = CheckUnmodeled
+      = CheckReject
     -- the NULL param
     ∧ check_sched_setscheduler
         (sched_setscheduler_in 0 5 0 (fun _ => none))
@@ -832,34 +835,31 @@ theorem sched_setscheduler_pre_copy_einvals_carry_no_ledger :
         0 5 0
         (mkEffect (errno_ret EINVAL) [(sched_param_ptr, [Z_to_bv 8 0])] []) demo_model
       = CheckReject
-    -- The earlier pin declines QEMU's real four-byte ledger answer until #1929.
-    -- This conjunct offers a write beside the negative pid and readable parameter.
+    -- the negative pid, beside the same readable parameter
     ∧ check_sched_setscheduler
         (sched_setscheduler_in (Z_to_bv 64 (2 ^ 64 - 1)) 5 sched_param_ptr (sched_param_mem 0))
         (Z_to_bv 64 (2 ^ 64 - 1)) 5 sched_param_ptr
         (mkEffect (errno_ret EINVAL) [(sched_param_ptr, [Z_to_bv 8 0])] []) demo_model
-      = CheckUnmodeled :=
+      = CheckReject :=
   by
   refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> sched_check_run
 
-/-- Linux rejects negative policy in `SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:964-965, Linux v6.18.46).
-It rejects negative pid before copying in `do_sched_setscheduler` (kernel/sched/syscalls.c:885-888, Linux v6.18.46).
-QEMU v11.1.1 tests NULL `param` in `do_syscall1`, case `TARGET_NR_sched_setscheduler` (linux-user/syscall.c:12095-12103).
-It then copies four bytes before the host checks the signed arguments.
-An unreadable pointer can change the errno.
-A readable pointer changes the copy-in ledger.
-The intersection therefore supplies no single effect for non-NULL negative arguments.
-The twin declines that band until PR #1929 changes Rocq and Lean follows it.
+/-- THE POLICY'S SIGN IS READ AT 32 BITS.  `SYSCALL_DEFINE3(sched_setscheduler)`
+takes an `int policy` (kernel/sched/syscalls.c:962) and refuses `policy < 0`
+at :964-965 (Linux v6.18.46), so the register 2^31 is negative there and
+is -EINVAL before `do_sched_setscheduler` reads the pointer at :885-888 —
+which is why the -EFAULT its unreadable `param` would otherwise draw is
+refused.
 kernel: kernel/sched/syscalls.c:sched_setscheduler,do_sched_setscheduler@v6.18.46 -/
 theorem sched_setscheduler_policy_sign_is_32_bit :
     check_sched_setscheduler
         (sched_setscheduler_in 0 (Z_to_bv 64 (2 ^ 31)) (Z_to_bv 64 (2 ^ 63)) (fun _ => none))
         0 (Z_to_bv 64 (2 ^ 31)) (Z_to_bv 64 (2 ^ 63))
-        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckUnmodeled
+        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
     ∧ check_sched_setscheduler
         (sched_setscheduler_in 0 (Z_to_bv 64 (2 ^ 31)) (Z_to_bv 64 (2 ^ 63)) (fun _ => none))
         0 (Z_to_bv 64 (2 ^ 31)) (Z_to_bv 64 (2 ^ 63))
-        (mkEffect (errno_ret EFAULT) [] []) demo_model = CheckUnmodeled :=
+        (mkEffect (errno_ret EFAULT) [] []) demo_model = CheckReject :=
   by
   refine ⟨?_, ?_⟩ <;> sched_check_run
 
@@ -914,39 +914,40 @@ theorem sched_setscheduler_param_is_read_at_four_bytes :
   by
   refine ⟨?_, ?_⟩ <;> sched_check_run
 
-/-- Linux rejects negative policy in `SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:964-965, Linux v6.18.46).
-It rejects negative pid before copying in `do_sched_setscheduler` (kernel/sched/syscalls.c:885-888, Linux v6.18.46).
-QEMU v11.1.1 tests NULL `param` in `do_syscall1`, case `TARGET_NR_sched_setscheduler` (linux-user/syscall.c:12095-12103).
-It then copies four bytes before the host checks the signed arguments.
-An unreadable pointer can change the errno.
-A readable pointer changes the copy-in ledger.
-The intersection therefore supplies no single effect for non-NULL negative arguments.
-The twin declines that band until PR #1929 changes Rocq and Lean follows it.
-kernel: kernel/sched/syscalls.c:sched_setscheduler,do_sched_setscheduler@v6.18.46 -/
-theorem sched_setscheduler_negative_policy_any_effect_is_unmodeled
-    (pid policy param : word) (hn : w_is0 param = false) (h : sint32 policy < 0)
+/-- EVERY NEGATIVE POLICY TAKES THE FIRST GATE, whatever the pid, the
+`param`, the input and the model: `SYSCALL_DEFINE3(sched_setscheduler)`
+refuses `policy < 0` (kernel/sched/syscalls.c:962-968, Linux v6.18.46)
+before `do_sched_setscheduler` is entered, so the checker's whole verdict
+is the -EINVAL acceptance, with no copy-in ledger to agree on.
+kernel: kernel/sched/syscalls.c:sched_setscheduler@v6.18.46 -/
+theorem sched_setscheduler_negative_policy_any_effect_is_einval
+    (pid policy param : word) (h : sint32 policy < 0)
     (i : SyscallInput) (eff : SyscallEffect) (m : Model) :
-    check_sched_setscheduler i pid policy param eff m = CheckUnmodeled := by
-  simp only [check_sched_setscheduler, hn, Bool.false_eq_true, ↓reduceIte, h, decide_true, Bool.true_or]
+    check_sched_setscheduler i pid policy param eff m
+      = check_ret_only eff (errno_ret EINVAL) m [] := by
+  simp only [check_sched_setscheduler, h, decide_true, ↓reduceIte]
 
-/-- Linux rejects negative policy in `SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:964-965, Linux v6.18.46).
-It rejects negative pid before copying in `do_sched_setscheduler` (kernel/sched/syscalls.c:885-888, Linux v6.18.46).
-QEMU v11.1.1 tests NULL `param` in `do_syscall1`, case `TARGET_NR_sched_setscheduler` (linux-user/syscall.c:12095-12103).
-It then copies four bytes before the host checks the signed arguments.
-An unreadable pointer can change the errno.
-A readable pointer changes the copy-in ledger.
-The intersection therefore supplies no single effect for non-NULL negative arguments.
-The twin declines that band until PR #1929 changes Rocq and Lean follows it.
+/-- EVERY NEGATIVE PID TOO, whatever the policy, the `param`, the input and
+the model: a negative policy is refused first and by the same errno
+(kernel/sched/syscalls.c:962-968, Linux v6.18.46), and every other
+negative pid is refused by `do_sched_setscheduler` at :885-886, before the
+copy at :887-888.
 kernel: kernel/sched/syscalls.c:sched_setscheduler,do_sched_setscheduler@v6.18.46 -/
-theorem sched_setscheduler_negative_pid_any_effect_is_unmodeled
-    (pid policy param : word) (hn : w_is0 param = false) (h : sint32 pid < 0)
+theorem sched_setscheduler_negative_pid_any_effect_is_einval
+    (pid policy param : word) (h : sint32 pid < 0)
     (i : SyscallInput) (eff : SyscallEffect) (m : Model) :
-    check_sched_setscheduler i pid policy param eff m = CheckUnmodeled := by
-  simp only [check_sched_setscheduler, hn, Bool.false_eq_true, ↓reduceIte, h, decide_true, Bool.or_true]
+    check_sched_setscheduler i pid policy param eff m
+      = check_ret_only eff (errno_ret EINVAL) m [] := by
+  by_cases hp : sint32 policy < 0
+  · simp only [check_sched_setscheduler, hp, decide_true, ↓reduceIte]
+  · simp only [check_sched_setscheduler, hp, decide_false, Bool.false_eq_true, ↓reduceIte, h,
+      decide_true, Bool.or_true]
 
-/-- Linux v6.18.46 rejects NULL before copying in `do_sched_setscheduler` (kernel/sched/syscalls.c).
-QEMU v11.1.1 does the same in `do_syscall1`, case `TARGET_NR_sched_setscheduler` (linux-user/syscall.c).
-Negative arguments cannot change that common effect.
+/-- A NULL `param` IS -EINVAL WHATEVER THE SIGNED ARGUMENTS DO.  A negative
+policy is refused by `SYSCALL_DEFINE3(sched_setscheduler)`
+(kernel/sched/syscalls.c:962-968, Linux v6.18.46) and a NULL `param` or a
+negative pid by `do_sched_setscheduler` (:885-886); the three calls reach
+that -EINVAL by the first route, by the second, and by both at once.
 kernel: kernel/sched/syscalls.c:sched_setscheduler,do_sched_setscheduler@v6.18.46 -/
 theorem sched_setscheduler_null_param_negative_arguments :
     check_sched_setscheduler (sched_setscheduler_in 0 (Z_to_bv 64 (2 ^ 64 - 1)) 0 (fun _ => none))
@@ -957,9 +958,10 @@ theorem sched_setscheduler_null_param_negative_arguments :
         (Z_to_bv 64 (2 ^ 64 - 1)) (Z_to_bv 64 (2 ^ 64 - 1)) 0 (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model [] := by
   refine ⟨?_, ?_, ?_⟩ <;> sched_check_run
 
-/-- Linux v6.18.46 rejects NULL before copying in `do_sched_setscheduler` (kernel/sched/syscalls.c).
-QEMU v11.1.1 does the same in `do_syscall1`, case `TARGET_NR_sched_setscheduler` (linux-user/syscall.c).
-Negative arguments cannot change that common effect.
+/-- …and on each of those three calls the -EFAULT of a checker that read
+the pointer first, and an -EINVAL carrying the four bytes of a copy that
+never ran, are refused: both gates sit before the `copy_from_user` of
+`do_sched_setscheduler` (kernel/sched/syscalls.c:887-888, Linux v6.18.46).
 kernel: kernel/sched/syscalls.c:sched_setscheduler,do_sched_setscheduler@v6.18.46 -/
 theorem sched_setscheduler_null_param_negative_argument_lies_rejected :
     check_sched_setscheduler (sched_setscheduler_in 0 (Z_to_bv 64 (2 ^ 64 - 1)) 0 (fun _ => none))
@@ -985,7 +987,7 @@ from: the errno with its empty ledger on a refusal, `Unmodeled` on a
 decline, and the one success with the four bytes it read. -/
 
 /-- Evaluate closed signed readings with `sys_norm` before `rfl` compares witness outcomes.
-The non-NULL branch still tests `decide (sint32 policy < 0)` and `decide (sint32 pid < 0)`.
+The two pre-copy branches test `decide (sint32 policy < 0)` and `decide (sint32 pid < 0)`.
 Direct `Int.decLt` reduction can expand `Nat.sub` before evaluating the bit-vector reading. -/
 local macro "sched_witness_run" : tactic =>
   `(tactic| (unfold sched_setscheduler_witness; sys_norm <;> rfl))
@@ -1030,39 +1032,34 @@ theorem sched_setscheduler_witness_is_the_idle_success :
       = Ok (with_copyins [(sched_param_ptr, 4)] (mkEffect (Z_to_bv 64 0) [] [])) demo_model [] := by
   sched_witness_run
 
-/-- Linux rejects negative policy in `SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:964-965, Linux v6.18.46).
-It rejects negative pid before copying in `do_sched_setscheduler` (kernel/sched/syscalls.c:885-888, Linux v6.18.46).
-QEMU v11.1.1 tests NULL `param` in `do_syscall1`, case `TARGET_NR_sched_setscheduler` (linux-user/syscall.c:12095-12103).
-It then copies four bytes before the host checks the signed arguments.
-An unreadable pointer can change the errno.
-A readable pointer changes the copy-in ledger.
-The intersection therefore supplies no single effect for non-NULL negative arguments.
-The twin declines that band until PR #1929 changes Rocq and Lean follows it.
-kernel: kernel/sched/syscalls.c:sched_setscheduler@v6.18.46 -/
-theorem sched_setscheduler_witness_declines_a_negative_policy :
+/-- A NEGATIVE POLICY IS THE WITNESS'S FIRST DECISION TOO:
+`SYSCALL_DEFINE3(sched_setscheduler)` refuses `policy < 0`
+(kernel/sched/syscalls.c:962-968, Linux v6.18.46) before
+`do_sched_setscheduler` reads the pointer, so the witness is the -EINVAL
+with an empty ledger and not the -EFAULT that unreadable `param` would
+otherwise draw at :887-888.
+kernel: kernel/sched/syscalls.c:sched_setscheduler,do_sched_setscheduler@v6.18.46 -/
+theorem sched_setscheduler_witness_refuses_a_negative_policy :
     sched_setscheduler_witness 0 (Z_to_bv 64 (2 ^ 64 - 1)) (Z_to_bv 64 (2 ^ 63))
         (sched_setscheduler_in 0 (Z_to_bv 64 (2 ^ 64 - 1)) (Z_to_bv 64 (2 ^ 63)) (fun _ => none))
         demo_model
-      = Unmodeled := by
+      = ret_outcome (errno_ret EINVAL) demo_model := by
   sched_witness_run
 
-/-- Linux rejects negative policy in `SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:964-965, Linux v6.18.46).
-It rejects negative pid before copying in `do_sched_setscheduler` (kernel/sched/syscalls.c:885-888, Linux v6.18.46).
-QEMU v11.1.1 tests NULL `param` in `do_syscall1`, case `TARGET_NR_sched_setscheduler` (linux-user/syscall.c:12095-12103).
-It then copies four bytes before the host checks the signed arguments.
-An unreadable pointer can change the errno.
-A readable pointer changes the copy-in ledger.
-The intersection therefore supplies no single effect for non-NULL negative arguments.
-The twin declines that band until PR #1929 changes Rocq and Lean follows it.
-Both implementations reject NULL before copying.
+/-- A NULL `param` AND A NEGATIVE PID ARE ONE WITNESS, because they are one
+test: `if (unlikely(!param || pid < 0)) return -EINVAL;`
+(kernel/sched/syscalls.c:885-886, Linux v6.18.46) refuses both before the
+copy at :887-888, so both witnesses are the same -EINVAL with an empty
+ledger — the second even though its `param` is a readable `struct
+sched_param`.
 kernel: kernel/sched/syscalls.c:do_sched_setscheduler@v6.18.46 -/
-theorem sched_setscheduler_witness_distinguishes_null_param_and_negative_pid :
+theorem sched_setscheduler_witness_agrees_on_null_param_and_negative_pid :
     sched_setscheduler_witness 0 5 0 (sched_setscheduler_in 0 5 0 (fun _ => none)) demo_model
       = ret_outcome (errno_ret EINVAL) demo_model
     ∧ sched_setscheduler_witness (Z_to_bv 64 (2 ^ 64 - 1)) 5 sched_param_ptr
         (sched_setscheduler_in (Z_to_bv 64 (2 ^ 64 - 1)) 5 sched_param_ptr (sched_param_mem 0))
         demo_model
-      = Unmodeled := by
+      = ret_outcome (errno_ret EINVAL) demo_model := by
   refine ⟨?_, ?_⟩ <;> sched_witness_run
 
 /-- Four bytes whose last one is at `TASK_SIZE` fail `access_ok` before a
@@ -1135,7 +1132,7 @@ Each of the three restatements keeps its Rocq `Example`'s name verbatim —
 `sched_yield_effect_shape_is_bare` of
 `theories/LinuxProcessSem/Checks/Cases/Kernel/Sched/Syscalls.v` — which
 is the mapping this file's header describes, and the reason none carries a
-`rocq-twin:` line: `tools/check_lean_pin_evidence.py` resolves that
+`rocq-twin:` line: `linux-process-semantics@ff0313ba4f:tools/check_lean_pin_evidence.py` resolves that
 marker against the Rocq file at the Lean file's own mirror path, and no
 Rocq file sits at a `Checks/Cases/Checks/` one, so a `rocq-twin:` here
 names a file that does not exist however right the name is.
@@ -1167,7 +1164,7 @@ two finds the same shape.  A `CheckUnmodeled` is impossible and no
 conjunct asserts one: the checker has no fail-closed branch.
 
 WHY THE ERRNO HEADER IS CITED BESIDE THE SYSCALL.
-`tools/check_lean_pin_evidence.py` reads a pin's polarity off `¬`, `≠`,
+`linux-process-semantics@ff0313ba4f:tools/check_lean_pin_evidence.py` reads a pin's polarity off `¬`, `≠`,
 `False` and `Unmodeled`, so a `= CheckReject` verdict is judged a POSITIVE
 claim and held to KMENTION: every uppercase constant the statement names
 and this tree defines must occur in the cited symbols' text.  The syscall
@@ -1394,17 +1391,14 @@ theorem sched_setscheduler_negative_priority_is_out_of_range_over_the_real_table
       = CheckOk demo_model [] := by
   refine ⟨?_, ?_, ?_⟩ <;> sched_table_check_run lookup_sched_setscheduler_in
 
-/-- Linux rejects negative policy in `SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:964-965, Linux v6.18.46).
-It rejects negative pid before copying in `do_sched_setscheduler` (kernel/sched/syscalls.c:885-888, Linux v6.18.46).
-QEMU v11.1.1 tests NULL `param` in `do_syscall1`, case `TARGET_NR_sched_setscheduler` (linux-user/syscall.c:12095-12103).
-It then copies four bytes before the host checks the signed arguments.
-An unreadable pointer can change the errno.
-A readable pointer changes the copy-in ledger.
-The intersection therefore supplies no single effect for non-NULL negative arguments.
-The twin declines that band until PR #1929 changes Rocq and Lean follows it.
-Both implementations return -EINVAL without copying when `param` is NULL, even with negative policy and pid.
-The `int policy` argument reads 2^32 + 5 as SCHED_IDLE in `SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:962, Linux v6.18.46).
-Linux returns zero for this caller request with priority zero through `__sched_setscheduler` (kernel/sched/syscalls.c:555-571, :757, Linux v6.18.46).
+/-- THE ORDER OF THE TWO PRE-COPY -EINVALS over the real table.
+`policy < 0` is decided in `SYSCALL_DEFINE3(sched_setscheduler)` itself
+(kernel/sched/syscalls.c:962-968, Linux v6.18.46), before
+`do_sched_setscheduler` is entered, so a negative policy beats the NULL
+`param` and the negative pid of :880-888 and beats the -EFAULT an
+unreadable `param` would raise; and `int policy` reads 2^32 + 5 as
+SCHED_IDLE at :962, which `__sched_setscheduler` answers 0 at priority 0
+(:555-571, :757).
 kernel: kernel/sched/syscalls.c:sched_setscheduler,do_sched_setscheduler@v6.18.46 -/
 theorem sched_setscheduler_negative_policy_wins_over_the_real_table :
     check_syscall
@@ -1412,7 +1406,7 @@ theorem sched_setscheduler_negative_policy_wins_over_the_real_table :
         (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
     ∧ check_syscall
         (sched_setscheduler_in 0 (Z_to_bv 64 (2 ^ 64 - 1)) (Z_to_bv 64 (2 ^ 63)) (fun _ => none))
-        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckUnmodeled
+        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
     ∧ check_syscall
         (sched_setscheduler_in 0 (Z_to_bv 64 (2 ^ 32 + 5)) sched_param_ptr (sched_param_mem 0))
         (with_copyins [(sched_param_ptr, 4)] (mkEffect (Z_to_bv 64 0) [] [])) demo_model

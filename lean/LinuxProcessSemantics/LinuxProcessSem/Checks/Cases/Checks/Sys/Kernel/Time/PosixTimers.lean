@@ -1,7 +1,10 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Time/PosixTimers.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Time.PosixTimers
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel.Time.PosixTimers
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
+
 
 /-! # Checks.Cases.Checks.Sys.Kernel.Time.PosixTimers — what the clock_gettime checker answers, read off against Linux
 
@@ -95,6 +98,7 @@ open LinuxProcessSemantics.LinuxProcessSem.Monad
 open LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 open LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 open LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
+open LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers
 open LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Time.PosixTimers
 open LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel.Time.PosixTimers
 
@@ -143,12 +147,18 @@ array's initializer, elsewhere in the file, does.
 kernel: kernel/time/posix-timers.c:clock_gettime,clockid_to_kclock@v6.18.46 -/
 theorem clock_gettime_only_the_modeled_clocks (i : SyscallInput) (clkid tp : word)
     (eff : SyscallEffect) (m : Model)
-    (hrt : bv_unsigned clkid ≠ 0) (hcp : bv_unsigned clkid ≠ 2)
+    (hrt : bv_unsigned clkid ≠ 0) (hraw : bv_unsigned clkid ≠ 4)
+    (hrtc : bv_unsigned clkid ≠ 5) (hmc : bv_unsigned clkid ≠ 6)
+    (hbt : bv_unsigned clkid ≠ 7) (hcp : bv_unsigned clkid ≠ 2)
     (hmono : bv_unsigned clkid ≠ 1) :
     check_clock_gettime i clkid tp eff m = CheckUnmodeled := by
   unfold check_clock_gettime
-  simp only [CLOCK_REALTIME, CLOCK_PROCESS_CPUTIME_ID, CLOCK_MONOTONIC, hrt, hcp, hmono, ne_eq,
-    not_false_eq_true, ↓reduceIte]
+  have hpc : clockid_percall_b clkid = false := by
+    simp only [clockid_percall_b, CLOCK_REALTIME, CLOCK_MONOTONIC_RAW, CLOCK_REALTIME_COARSE,
+      CLOCK_MONOTONIC_COARSE, CLOCK_BOOTTIME, Bool.or_eq_false_iff, beq_eq_false_iff_ne]
+    exact ⟨⟨⟨⟨hrt, hraw⟩, hrtc⟩, hmc⟩, hbt⟩
+  simp only [hpc, Bool.false_eq_true, ↓reduceIte, CLOCK_PROCESS_CPUTIME_ID, CLOCK_MONOTONIC,
+    hcp, hmono, ne_eq, not_false_eq_true, ↓reduceIte]
 
 /-! ## The id register's low 32 bits
 
@@ -308,7 +318,7 @@ theorem clock_reading_wrapping_sum_rejected :
     clock_check 1 (mkEffect 0 [(4096, ts_wrap)] []) (clock_model 0) = CheckReject := by
   conv => lhs; whnf
 
-/-! ## CLOCK_REALTIME, whose whole content is what it does NOT promise
+/-! ## The per-call ids, whose whole content is what they do NOT promise
 
 The probe covers the shape of an accepted wall-clock reading against a
 real kernel.  What no probe can reach is the ABSENCE of the cross-call
@@ -317,7 +327,8 @@ calls on request, and `m_clock` not moving is invisible from outside.
 Each case below is paired with the `CLOCK_MONOTONIC` case above that it
 contradicts. -/
 
-/-- An accepted `CLOCK_REALTIME` call leaves the model EXACTLY as it found
+/-- An accepted call on ANY per-call id leaves the model EXACTLY as it
+found
 it, for every input, destination, effect and starting model — the
 load-bearing universal, since a field written here and read by nothing
 would look like a guarantee the kernel does not give.
@@ -326,16 +337,16 @@ time before the boot instant (its second `-EINVAL` compares the new value
 against the wall-to-monotonic offset), nothing else that sets the clock
 EARLIER; `__timekeeping_inject_offset` applies a signed `timespec64` from
 userspace under the same floor; so no reading constrains the next, and
-the checker records none.  The id is the
-numeral 0 because neither function spells `CLOCK_REALTIME`.
+the checker records none.  The raw and coarse ids and `CLOCK_BOOTTIME`
+are on the same arm and record nothing for the reasons
+`Sys.Kernel.Time.PosixTimers.clockid_percall_b` gives.
 kernel: kernel/time/timekeeping.c:do_settimeofday64,__timekeeping_inject_offset@v6.18.46 -/
-theorem clock_gettime_realtime_leaves_the_model_alone (i : SyscallInput) (clkid tp : word)
+theorem clock_gettime_percall_leaves_the_model_alone (i : SyscallInput) (clkid tp : word)
     (eff : SyscallEffect) (m m' : Model) (evs : List event)
-    (hid : bv_unsigned clkid = 0)
+    (hid : clockid_percall_b clkid = true)
     (h : check_clock_gettime i clkid tp eff m = CheckOk m' evs) : m' = m ∧ evs = [] := by
   unfold check_clock_gettime at h
-  rw [hid] at h
-  simp only [CLOCK_REALTIME, ↓reduceIte] at h
+  simp only [hid, ↓reduceIte] at h
   rcases hdst : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | w
   · simp only [hdst, reduceCtorEq] at h
   · simp only [hdst] at h
@@ -440,8 +451,13 @@ theorem clock_gettime_cputime_leaves_the_model_alone (i : SyscallInput) (clkid t
     (hid : bv_unsigned clkid = 2)
     (h : check_clock_gettime i clkid tp eff m = CheckOk m' evs) : m' = m ∧ evs = [] := by
   unfold check_clock_gettime at h
+  have hpc : clockid_percall_b clkid = false := by
+    simp only [clockid_percall_b, hid, CLOCK_REALTIME, CLOCK_MONOTONIC_RAW,
+      CLOCK_REALTIME_COARSE, CLOCK_MONOTONIC_COARSE, CLOCK_BOOTTIME]
+    decide
+  simp only [hpc, Bool.false_eq_true, ↓reduceIte] at h
   rw [hid] at h
-  simp only [CLOCK_REALTIME, CLOCK_PROCESS_CPUTIME_ID, Int.reduceEq, ↓reduceIte] at h
+  simp only [CLOCK_PROCESS_CPUTIME_ID, ↓reduceIte] at h
   rcases hdst : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | w
   · simp only [hdst, reduceCtorEq] at h
   · simp only [hdst] at h
@@ -1045,9 +1061,9 @@ theorem checker_and_witness_read_whole_words :
 
 /-- The ids the probe's `fail-closed` id cases pass are declined through
 the table, a reading and a dropped write alike.
-`CLOCK_THREAD_CPUTIME_ID` (3), `CLOCK_MONOTONIC_RAW` (4),
-`CLOCK_BOOTTIME` (7) and `CLOCK_TAI` (11) each have a clock in
+`CLOCK_THREAD_CPUTIME_ID` (3) and `CLOCK_TAI` (11) each have a clock in
 `posix_clocks[]` (kernel/time/posix-timers.c:1518-1529, Linux v6.18.46),
+`CLOCK_SGI_CYCLE` (10) is a NULL hole in it that answers -EINVAL,
 and -6 and -1, sign-extended into `a0` as the C caller passes an `int`,
 take `clockid_to_kclock`'s `id < 0` branch
 (kernel/time/posix-timers.c:1539-1542, Linux v6.18.46); the model answers
@@ -1056,11 +1072,10 @@ kernel: kernel/time/posix-timers.c:clock_gettime,clockid_to_kclock@v6.18.46 -/
 theorem probe_unmodeled_ids_decline_over_the_real_table :
     check_syscall (clock_input 3) (mkEffect 0 [(4096, ts_1s)] []) (clock_model 0)
       = CheckUnmodeled
-    ∧ check_syscall (clock_input 4) (mkEffect 0 [(4096, ts_1s)] []) (clock_model 0)
+    ∧ check_syscall (clock_input 3) (mkEffect 0 [] []) (clock_model 0) = CheckUnmodeled
+    ∧ check_syscall (clock_input 10) (mkEffect 0 [(4096, ts_1s)] []) (clock_model 0)
       = CheckUnmodeled
-    ∧ check_syscall (clock_input 7) (mkEffect 0 [(4096, ts_1s)] []) (clock_model 0)
-      = CheckUnmodeled
-    ∧ check_syscall (clock_input 7) (mkEffect 0 [] []) (clock_model 0) = CheckUnmodeled
+    ∧ check_syscall (clock_input 10) (mkEffect 0 [] []) (clock_model 0) = CheckUnmodeled
     ∧ check_syscall (clock_input 11) (mkEffect 0 [(4096, ts_1s)] []) (clock_model 0)
       = CheckUnmodeled
     ∧ check_syscall (clock_input 18446744073709551610) (mkEffect 0 [(4096, ts_1s)] [])

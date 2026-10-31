@@ -1,8 +1,11 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Kernel/Sched/Syscalls.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 
-/-! rocq-baseline: 6e7c0d18ddbaa2d453318f0af4665958350a1871
-partial: sched_setscheduler_spec -- Non-NULL negative arguments (119) decline until PR #1929 merges and Lean replaces the decline. -/
+
+/-! rocq-baseline: 6e7c0d18ddbaa2d453318f0af4665958350a1871 (the upstream port's
+baseline; the twin's source of truth is the header line above) -/
 
 /-! # LinuxProcessSem.Sys.Kernel.Sched.Syscalls — sched_setscheduler (119), sched_getaffinity (123), sched_yield (124)
 
@@ -25,10 +28,7 @@ v6.18.46 (commit 1f99e9ab748f).
 
 TRUST BOUNDARY: this file is part of the trusted specification.
 
-Every definition keeps the Rocq name and shape, except `sched_setscheduler_spec`.
-The `partial:` line above declares its temporary decline.
-The corresponding `check_sched_setscheduler` and `sched_setscheduler_witness` follow that exception in the checker twin.
-The docstrings carry the
+Every definition keeps the Rocq name and shape.  The docstrings carry the
 kernel citation each decision rests on — file, function and the line
 numbers at v6.18.46 — and point at the Rocq definition for the argument in
 full, so there is one place to correct it.
@@ -145,11 +145,11 @@ which is inside `SCHED_FLAG_ALL` (include/uapi/linux/sched.h:143-148, Linux
 v6.18.46) and is not `SCHED_FLAG_SUGOV`, so neither can fire — and the reset-on-fork word is
 declined at the strip in any case.
 
-Linux checks the arguments in the order above.
-The twin declines non-NULL negative arguments because QEMU checks them in another order.
+Linux checks the arguments in the order above, and this file answers in
+that order: a negative policy is -EINVAL before the NULL `param` test and
+before any read of `param`.
 The Rocq definition `Syscalls.sched_setscheduler_spec` explains the later SCHED_IDLE result and its scheduling-state premises.
-It also explains the SCHED_EXT, SCHED_DEADLINE, and other-task limits.
-The docstring below explains the temporary difference from Rocq. -/
+It also explains the SCHED_EXT, SCHED_DEADLINE, and other-task limits. -/
 
 /-- `valid_policy` (kernel/sched/sched.h:216-220, Linux v6.18.46) minus
 SCHED_EXT, which is declined before this test is reached.  Written as a
@@ -202,34 +202,46 @@ def sched_setscheduler_answer (pol prio : Int) : Option word :=
   else if pol = SCHED_IDLE then some (Z_to_bv 64 0)
   else none
 
-/-- Linux v6.18.46 rejects negative policy in `SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:962-968).
-Linux v6.18.46 checks NULL `param` and negative pid before `copy_from_user` in `do_sched_setscheduler` (kernel/sched/syscalls.c:880-888).
-Both signed arguments use their low 32 bits.
-QEMU v11.1.1 checks NULL `param` first in `do_syscall1`, case `TARGET_NR_sched_setscheduler` (linux-user/syscall.c:12091-12104).
-It then calls `lock_user_struct` to read four bytes before the host checks the signed arguments.
-A failed read returns -EFAULT.
-Linux and QEMU therefore differ on non-NULL negative arguments.
-An unreadable pointer can change the errno.
-A readable pointer changes the copy-in ledger even when both return -EINVAL.
-The twin declines that band until PR #1929 changes Rocq and a later Lean change follows it.
-The intersection does not supply one common effect for that band.
-NULL `param` remains -EINVAL because both implementations reject it without a copy.
-The file bugs/sched-setscheduler-pre-copy-einval-is-linux-order.md records Rocq's remaining divergence.
+/-- Linux v6.18.46 rejects a negative policy in
+`SYSCALL_DEFINE3(sched_setscheduler)` (kernel/sched/syscalls.c:962-968)
+before `do_sched_setscheduler` is entered, and `do_sched_setscheduler`
+(kernel/sched/syscalls.c:880-888) rejects a NULL `param` and a negative
+pid before `copy_from_user`.  Both signed arguments are read at their low
+32 bits, because both arrive as 32-bit kernel types.  So the two
+pre-copy -EINVALs are answered here in the kernel's order: a negative
+policy beats a NULL `param`, a negative pid, and the -EFAULT an
+unreadable `param` would raise.
 
-Linux v6.18.46 copies four bytes before task lookup in `do_sched_setscheduler` (kernel/sched/syscalls.c:887-892).
-The twin records each successful copy on every later path.
-Linux v6.18.46 checks the user range through `access_ok` in `_inline_copy_from_user` (include/linux/uaccess.h).
-A refused range produces -EFAULT without a copy-in ledger.
-The twin declines a permitted range when its memory fixture lacks bytes.
-The ledger cannot identify the bytes that Linux read before a partial copy failed.
-Rocq's `Kernel.Sys.prlimit64_spec` explains that limit.
-Linux v6.18.46 calls `find_get_task` from `do_sched_setscheduler` (kernel/sched/syscalls.c:890).
-`find_get_task` (kernel/sched/syscalls.c:258-263, Linux v6.18.46) calls `find_process_by_pid` (kernel/sched/syscalls.c:253-256, Linux v6.18.46).
-The twin represents only the caller, so it declines other tasks after the copy.
-The remaining decisions use `sched_setscheduler_answer`. -/
+THE ORDER IS THE WHOLE POINT, and it is why this arm answers rather than
+declines.  Every decision above `user_check_sched_setscheduler` is a
+function of the ARGUMENTS alone, so the two -EINVALs, the -EFAULT and
+the four -EINVALs `__sched_setscheduler` raises before it consults the
+task are modeled exactly.  The argument in full is on the Rocq
+definition `Sched.Syscalls.sched_setscheduler_spec` (f1006fe8,
+`Sys/Kernel/Sched/Syscalls.v:213-268`).
+
+UPSTREAM DECLINES THIS BAND AND THE TWIN DOES NOT.  linux-process-semantics'
+Lean tree answers `unmodeled` for a non-NULL negative argument, because
+QEMU v11.1.1 reads `param` through `lock_user_struct` before it tests the
+signed arguments (linux-user/syscall.c:12091-12104) and so can answer
+-EFAULT where Linux answers -EINVAL.  This model describes Linux
+v6.18.46 and not the intersection with QEMU user mode
+(dispatch://OSSV-266/ask/9128d2b8), so the twin follows the Rocq
+definition and answers -EINVAL.
+
+Linux v6.18.46 copies four bytes before the task lookup
+(kernel/sched/syscalls.c:887-892) and the twin records each successful
+copy on every later path.  A range `access_ok` refuses
+(`_inline_copy_from_user`, include/linux/uaccess.h) produces -EFAULT with
+no copy-in ledger; a permitted range whose bytes the memory fixture lacks
+is declined, because the ledger cannot name the bytes Linux read before a
+partial copy failed.  `find_get_task` (kernel/sched/syscalls.c:258-263)
+resolves any other task, which this model does not represent, so a pid
+that is neither 0 nor the pinned tid declines after the copy.  The
+remaining decisions are `sched_setscheduler_answer`'s. -/
 def sched_setscheduler_spec (pid policy param : word) : Sys SyscallEffect :=
-  if w_is0 param then err_ret EINVAL
-  else if decide (sint32 policy < 0) || decide (sint32 pid < 0) then unmodeled
+  if decide (sint32 policy < 0) then err_ret EINVAL
+  else if w_is0 param || decide (sint32 pid < 0) then err_ret EINVAL
   else
     i <- input ;;
     m <- get_model ;;
@@ -265,7 +277,7 @@ is invisible while the model has one process.  Rocq:
 
 THE VERSION IS THE PIN, AND NOT ROCQ'S.  The Rocq header pins this arm
 "to what was read at v6.12.1" and cites it throughout.  Both functions
-above were re-read at the pin AGENTS.md names, v6.18.46 commit
+above were re-read at the pin linux-process-semantics@ff0313ba4f:AGENTS.md names, v6.18.46 commit
 1f99e9ab748f, before these line numbers were written, and each says there
 what Rocq says it says; this file's header claims exactly that of every
 line it cites, so a v6.12.1 label here would have contradicted it.
@@ -315,7 +327,7 @@ pins' `1`, `-EINTR` and `-EPERM` no less than the right-hand side of each
 `iff`, which refuses every word but 0 — rests on this premise rather than
 on every kernel answering 0.  No `bugs/` entry is owed: the direction of
 failure is the mild one, and
-`bugs/clone-errnos-omits-three-environment-failures.md` records that
+`linux-process-semantics@ff0313ba4f:bugs/clone-errnos-omits-three-environment-failures.md` records that
 argument for the whole class. -/
 def sched_yield_spec : Sys SyscallEffect :=
   ret_only (Z_to_bv 64 0)

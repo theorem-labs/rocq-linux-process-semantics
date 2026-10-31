@@ -1,6 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Kernel/Signal.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
+
 
 /-! rocq-cases: a71fd38a08571d519b9cfc5f66308db5c26da570
 covers: rt_sigreturn_unmodeled -- sysno_139_is_unmodeled
@@ -2472,7 +2475,7 @@ Linux's answer (`ss_mode = ss_flags & ~SS_FLAG_BITS`, kernel/signal.c:4421,
 Linux v6.18.46) and only Linux's: qemu-user's `target_restore_altstack`
 switches on the raw flags word and answers -EINVAL to every value with bit
 31 set (linux-user/signal.c:317-319, QEMU v11.1.1).  The arm is Rocq's, and
-`bugs/sigaltstack-autodisarm-mode-admits-linux-alone.md` records that at
+`linux-process-semantics@ff0313ba4f:bugs/sigaltstack-autodisarm-mode-admits-linux-alone.md` records that at
 this shape it proves as certain an answer outside the intersection of the
 supported implementations, and what closes it.
 probe: testing/syscall-check/tests/sigaltstack_spec.c#conform -- ss ok buf 0x80000000 0x4000 0 -/
@@ -2611,7 +2614,7 @@ theorem sigaltstack_disable_small_enomem_rejected :
 although a 16 KiB size rides along.  Linux's answer once more (the mask
 leaves SS_DISABLE, kernel/signal.c:4421 and :4436-4438, Linux v6.18.46);
 qemu-user's is -EINVAL (linux-user/signal.c:317-319, QEMU v11.1.1), the
-third shape `bugs/sigaltstack-autodisarm-mode-admits-linux-alone.md`
+third shape `linux-process-semantics@ff0313ba4f:bugs/sigaltstack-autodisarm-mode-admits-linux-alone.md`
 records.
 probe: testing/syscall-check/tests/sigaltstack_spec.c#conform -- ss ok buf 0x80000002 0x4000 0 -/
 theorem sigaltstack_autodisarm_disable_is_a_disable (o : outcome SyscallEffect) :
@@ -3428,7 +3431,7 @@ theorem tkill_forged_write_rejected :
         (Ok (mkEffect 0 [(4096, [0])] []) (with_sigabrt_pending abort_model_blocked) []) := by
   refine ⟨?_, ?_⟩ <;> sys_refute
 /-- A kernel that answered the kill with anything but 0 is refused: an
-LSM's -EPERM is not admitted (bugs/tkill-lsm-denial-not-admitted.md).
+LSM's -EPERM is not admitted (linux-process-semantics@ff0313ba4f:bugs/tkill-lsm-denial-not-admitted.md).
 rocq-twin: tkill_forged_return_rejected
 probe: testing/syscall-check/tests/abort_terminal.c#reject --mutate tkill:ret=-EPERM --abort-terminal --guest-signal 6 -/
 theorem tkill_forged_return_rejected :

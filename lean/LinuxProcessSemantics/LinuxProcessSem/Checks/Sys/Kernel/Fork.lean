@@ -1,6 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Fork.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Fork
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude
+
 
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
@@ -407,7 +410,7 @@ image — and then the ledgered resolution.  The read is the spec's bare
 the four obligations require it: a `uargs` within 88 bytes of `2^64` whose
 walk wraps onto mapped low addresses would be read where Linux's
 `access_ok` refuses the range.
-bugs/read-bytes-map-wraps-while-access-ok-over-sums-in-z.md lists
+linux-process-semantics@ff0313ba4f:bugs/read-bytes-map-wraps-while-access-ok-over-sums-in-z.md lists
 `Kernel/Fork` among the files its class has not been audited in, and the
 caller-side repair it describes costs the spec, this checker and
 `clone3_witness` together; whether any run can hold the shape is that

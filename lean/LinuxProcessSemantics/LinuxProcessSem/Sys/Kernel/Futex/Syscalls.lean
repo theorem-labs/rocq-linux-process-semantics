@@ -1,5 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Kernel/Futex/Syscalls.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
+
 
 /-! rocq-baseline: 61028314611f040514075982c2825fe4c38226c9 -/
 
@@ -14,7 +17,7 @@ are `Checks/Cases/Kernel/Futex/Syscalls.lean`.
 
 Every definition keeps the Rocq name and shape, and every kernel line
 cited below was read at Linux v6.18.46 (commit 1f99e9ab748f) in the tree
-AGENTS.md pins; Rocq cites the same functions at the same version without
+linux-process-semantics@ff0313ba4f:AGENTS.md pins; Rocq cites the same functions at the same version without
 line numbers.  THE BASELINE IS THE DAY TIP THE PORT WAS REBASED ONTO, not
 the f44244ad6b80 the ticket named: the two Rocq futex files are identical
 at both, and what moved between them in this spec's closure is the

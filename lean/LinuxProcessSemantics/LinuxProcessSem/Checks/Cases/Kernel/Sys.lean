@@ -1,8 +1,11 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Kernel/Sys.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel.Fork
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel.Groups
+
 
 /-! rocq-cases: a71fd38a08571d519b9cfc5f66308db5c26da570
 covers: getpid_first_choice_is_within_modeled_envelope -- getpid_first_call_draws_a_live_tid
@@ -2642,7 +2645,7 @@ include/uapi/linux/capability.h:421-425, Linux v6.18.46), so capability 40 answe
 THAT IS A CLAIM ABOUT KERNELS FROM v5.9 ON: the same header ends at 37
 through v5.7 and at 39 at v5.8, so a supported kernel before v5.9 answers
 -EINVAL here where this pin proves 1 —
-bugs/prctl-capbset-read-arm-admits-linux-alone.md records it.
+linux-process-semantics@ff0313ba4f:bugs/prctl-capbset-read-arm-admits-linux-alone.md records it.
 probe: testing/syscall-check/tests/prctl_spec.c#conform -- last -/
 theorem prctl_capbset_read_last_cap_iff (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
     prctl_spec 23 40 i m o ↔ o = Ok (mkEffect 1 [] []) m [] := by
@@ -2789,7 +2792,7 @@ under qemu-system, where the `hiopt` probe case sees the kernel.  THE 1
 IS LINUX'S ANSWER ALONE: QEMU's user-mode `do_prctl` switches on the
 whole 64-bit `abi_long` and answers -EINVAL to 2^32 | 23, so at this
 shape the arm proves an answer outside the supported intersection;
-bugs/prctl-capbset-read-arm-admits-linux-alone.md records it and what
+linux-process-semantics@ff0313ba4f:bugs/prctl-capbset-read-arm-admits-linux-alone.md records it and what
 it costs.  The other half of the asymmetry — `arg2` is NOT narrowed —
 is `sysno_167_capability_is_an_unsigned_long` below, one claim per pin
 so that each cites the probe case whose recorded run returned its

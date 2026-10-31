@@ -1,6 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Kernel/Groups.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
+
 
 /-! # Checks.Cases.Kernel.Groups — what `getgroups` and `setgroups` answer, read off against Linux
 
@@ -484,7 +487,7 @@ anything (:12599-12604; `lock_user` is NULL where `access_ok_untagged`
 fails, linux-user/uaccess.c:8-15, QEMU v11.1.1), so an unmapped
 destination is -EFAULT there even at zero groups.  The two refutations at the end of this section
 refuse exactly those two answers; they fix what Rocq's arm decides, and
-`bugs/getgroups-empty-list-arm-admits-linux-alone.md` records the defect
+`linux-process-semantics@ff0313ba4f:bugs/getgroups-empty-list-arm-admits-linux-alone.md` records the defect
 and what closes it. -/
 
 /-- ANY nonnegative size, on a process with no supplementary groups,
@@ -535,7 +538,7 @@ validation is the per-element `put_user` at :47, and the loop at :44 runs
 no iteration.  qemu-user does exactly that (`lock_user` at
 linux-user/syscall.c:12600-12604, QEMU v11.1.1), so the answer this pin
 refuses is a real one of a supported implementation: the pin fixes Rocq's
-Linux-only arm, and `bugs/getgroups-empty-list-arm-admits-linux-alone.md`
+Linux-only arm, and `linux-process-semantics@ff0313ba4f:bugs/getgroups-empty-list-arm-admits-linux-alone.md`
 is the defect.  (The probe's `garbage64` reject case is not cited: its
 unindexed `--mutate getgroups:` selects the run's FIRST call,
 `getgroups(0, 0)`, so it records the size-0 arm, not this shape.)
@@ -627,7 +630,7 @@ call: -EINVAL for a size negative or above `NGROUPS_MAX` at :12620-12621,
 So the -EINVAL and -EFAULT the two refutations below refuse are real
 answers of a supported implementation, exactly as on the `getgroups`
 zero-length arm; they fix what Rocq's arm decides, and
-`bugs/setgroups-eperm-arm-admits-linux-alone.md` records the defect and
+`linux-process-semantics@ff0313ba4f:bugs/setgroups-eperm-arm-admits-linux-alone.md` records the defect and
 what closes it. -/
 
 /-- An unprivileged caller gets -EPERM, whatever the arguments were: the

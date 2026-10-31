@@ -1,5 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Kernel/Time/Hrtimer.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
+
 
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
@@ -68,7 +71,7 @@ v6.18.46, commit 1f99e9ab748f):
   (kernel/time/hrtimer.c:2138-2139, Linux v6.18.46) turns a non-positive remainder into a
   completed sleep before anything is written.
 
-See bugs/nanosleep-remainder-can-exceed-the-request.md for why no
+See linux-process-semantics@ff0313ba4f:bugs/nanosleep-remainder-can-exceed-the-request.md for why no
 conjunct compares the remainder with the request.  Rocq:
 `Hrtimer.nanosleep_rem_ok_b`. -/
 def nanosleep_rem_ok_b (bs : List byte) : Bool :=
@@ -219,7 +222,7 @@ to deliver — a job-control stop and continue — the same
 counter rewound (arch/riscv/kernel/signal.c:455-456, Linux v6.18.46), and `rmtp` has
 already been written by then.  What the model would see at that step is
 neither arm, so it REJECTS rather than declining;
-bugs/nanosleep-transparent-restart-rejected.md records it.
+linux-process-semantics@ff0313ba4f:bugs/nanosleep-transparent-restart-rejected.md records it.
 
 THE `none` ARM ON `rmtp`: Linux answers -EFAULT there HAVING CONSUMED THE
 SLEEP and, on a 16-byte `rmtp` straddling into an unwritable page, having
