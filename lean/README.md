@@ -127,7 +127,7 @@ links under OCaml 5.2 or newer (`trace.ml` digests a post-state with
 # 1. in lps-ff03, with Rocq 9.2:
 dune build --only-packages linux-process-semantics @install
 ./testing/syscall-check/extract.sh          # writes syscall_model.ml
-# 2. in lps-ff03/testing/syscall-check, with OCaml 5.3:
+# 2. in lps-ff03/testing/syscall-check, with OCaml 5.3 and python3 on PATH:
 dune build --root . ./main.exe
 # 3. in this repository:
 cd lean && lake build lps_runner
@@ -138,6 +138,13 @@ python3 tools/lean_replay.py --root . \
     --ocaml testing/syscall-check/_build/default/main.exe \
     -j 24 --max-report 100000 --json replay.json
 ```
+
+Step 2 needs python3 on `PATH` as well as the OCaml compiler: a dune rule
+of the harness (`testing/syscall-check/dune:31`) renders `syscall_names.ml`
+with `python3 gen_tables.py`, and without it the build stops with
+"Error: Program python3 not found in the tree or in PATH". The image
+`ocaml/opam:debian-12-ocaml-5.3` has no python3, so `apt-get install -y
+python3` comes first there.
 
 `lps-ff03` must be a git repository: `lean_replay.py` resolves each
 `rests_on` path with `git ls-files`, and an unpacked tarball has no `.git`.
