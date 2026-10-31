@@ -1554,7 +1554,8 @@ Qed.
 
 (** [AllocSim2.alloc_mmap_strong_equiv], re-derived from the master
     theorem: a brk-allocating source and an mmap-allocating target that
-    realize the SAME shape. *)
+    realize the SAME shape, on a launch with a reader on stdout (the
+    target's [tmw] realization takes [CatSim.fd1chan]). *)
 Theorem alloc_mmap_strong_equiv_alg :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
          bf cf bs cs (inp : ProcInput),
@@ -1566,12 +1567,13 @@ Theorem alloc_mmap_strong_equiv_alg :
     (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
     (init_model (segments_reserved target_segs) abrk amb asp alim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
+  in_channel_reader inp = true ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
                        (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).
 Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
-    bf cf bs cs inp Hs Ht Hbf Hbs.
+    bf cf bs cs inp Hs Ht Hbf Hbs Hr.
   apply (shape_strong_equiv source_segs rpc rph rsp rbrk rmb rrnd rlim
            target_segs apc aph asp abrk amb arnd alim
            (t_alt2 (t_writes bf (t_exit cf (in_fs inp))) (t_writes bs (t_exit cs (in_fs inp))))
@@ -1584,7 +1586,7 @@ Proof.
     apply (tmw_realizes target_segs
              (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
              (init_model (segments_reserved target_segs) abrk amb asp alim inp)
-             bf cf bs cs eq_refl eq_refl eq_refl Ht Hbf Hbs).
+             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ Hr) Ht Hbf Hbs).
 Qed.
 
 (** The same, in the shape of [OmniEquivalence.omni_strong_equiv], at the
@@ -1600,11 +1602,12 @@ Theorem alloc_mmap_omni_strong_equiv_alg :
     (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
     (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
+  in_channel_reader inp = true ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
 Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd
-    bf cf bs cs inp Hs Ht Hbf Hbs.
+    bf cf bs cs inp Hs Ht Hbf Hbs Hr.
   apply (shape_omni_strong_equiv source_segs rpc rph rsp rbrk rmb rrnd
            target_segs apc aph asp abrk amb arnd
            (t_alt2 (t_writes bf (t_exit cf (in_fs inp))) (t_writes bs (t_exit cs (in_fs inp))))
@@ -1617,7 +1620,7 @@ Proof.
     apply (tmw_realizes target_segs
              (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
              (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp)
-             bf cf bs cs eq_refl eq_refl eq_refl Ht Hbf Hbs).
+             bf cf bs cs eq_refl eq_refl (init_model_fd1chan _ _ _ _ _ _ Hr) Ht Hbf Hbs).
 Qed.
 
 
