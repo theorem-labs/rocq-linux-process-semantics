@@ -1,5 +1,5 @@
 (* Written by the OSS-Fuzz proof collaborators. *)
-(* AsanNodesMmB — node obligations M4 (brk2), M5 (YBrk / YSetTid / YMunmap), M6 (exit)
+(* AsanNodesMmB — node obligations M4 (brk2), M5 (YBrk / YSetTid), M5b (munmap2), M6 (exit)
    of AsanNodesIface.v, proved on the spec. *)
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From Stdlib Require Import FunctionalExtensionality.
@@ -7,6 +7,7 @@ From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Sys.Mm Require Import Mmap Mprotect.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
 From LinuxProcessSemantics.Common Require Import
   PropExec CatExec CatSim SeqExec StoreOk ShapeAlg SpinAlg AgentLib AgentNodes Nodes RefNodes AllocSim MmapSim
@@ -193,6 +194,95 @@ Proof.
   - intros Hin. pose proof (proj1 (Forall_forall _ _) Hf h Hin) as D. pose proof (Hpos h (or_introl eq_refl)). unfold iv_disjoint in D. lia.
   - apply IH; [exact Ht|]. intros iv Hiv. apply Hpos. right. exact Hiv.
 Qed.
+
+Section MunmapAlt2.
+Open Scope bv_scope.
+
+(** [AsanNodesLibE.srz_munmap_lazy] with the two resolutions kept APART: the
+    refusal arm realizes [TA], the cut realizes [TB], and the node yields
+    their alternation.  Same node as there ([node_chk_noacc] over
+    [{e | In e munmap_errnos} + unit]), closed with [SpinAlg.srz_alt2]
+    instead of [srz_silent_all]. *)
+Lemma srz_munmap_lazy2 : forall segs regs (pc : word) mem rom model w (a : word) (len : Z) (TA TB : TSet),
+  fetch_word segs pc = Some w -> is_ecall w = true ->
+  m_halted model = None ->
+  getr regs 17 = Z_to_bv 64 215 ->
+  getr regs 10 = a -> (bv_unsigned a mod page_size = 0)%Z ->
+  getr regs 11 = Z_to_bv 64 len -> (0 < len)%Z ->
+  (bv_unsigned a + page_round_up_Z len <= TASK_SIZE)%Z ->
+  map_has (vm_maps (m_vmmaps model)) a (Z_to_bv 64 (page_round_up_Z len)) = true ->
+  (forall e, In e munmap_errnos ->
+     srealizes segs (mkCfg (mkst (regupd regs 10 (errno_ret e)) (v_addi pc 4) mem rom) model) TA) ->
+  srealizes segs (mkCfg (mkst (regupd regs 10 (Z_to_bv 64 0)) (v_addi pc 4)
+                             (unfill a (Z_to_bv 64 (page_round_up_Z len)) mem) rom)
+                      (munmap_model a (Z_to_bv 64 (page_round_up_Z len)) model)) TB ->
+  srealizes segs (mkCfg (mkst regs pc mem rom) model) (t_alt2 TA TB).
+Proof.
+  intros segs regs pc mem rom model w a len TA TB HF HE Hh H17 H10 Hal H11 Hlen Hnw Hhas Hfail Hc.
+  assert (Hlen' : (len < two_pow_64)%Z).
+  { pose proof (page_round_up_Z_bounds len ltac:(lia)). pose proof (u64_range a). unfold TASK_SIZE, two_pow_64 in *. lia. }
+  eapply (AsanNodesLibE.srz_sys_lazy segs); [exact Hh | exact HF | exact HE |].
+  set (ms := epend regs pc mem rom (getr regs 17)).
+  assert (Hno : bv_unsigned (getr regs 17) = 215%Z) by (rewrite H17; apply u64_lit; lia).
+  assert (Hu1 : bv_unsigned (ms_gpr ms 1) = len).
+  { unfold ms. rewrite ms_gpr_epend1, H11. apply u64_lit. unfold two_pow_64 in Hlen'. lia. }
+  assert (Hpr : page_round_up (ms_gpr ms 1) = Z_to_bv 64 (page_round_up_Z len)).
+  { unfold page_round_up. rewrite Hu1. reflexivity. }
+  assert (H0 : ms_gpr ms 0 = a) by (unfold ms; rewrite ms_gpr_epend0; exact H10).
+  assert (Hargs : munmap_args_ok ms model).
+  { unfold munmap_args_ok. rewrite H0, Hu1, Hpr. repeat split; try assumption.
+    intro Hz. apply (f_equal bv_unsigned) in Hz. rewrite Hu1 in Hz.
+    change (bv_unsigned (Z_to_bv 64 0)) with 0%Z in Hz. lia. }
+  pose proof (fun eff => eq_trans (munmap_check segs ms (getr regs 17) model eff Hno) (munmap_check_modeled ms model eff Hargs)) as Hchk.
+  rewrite H0, Hpr in Hchk.
+  pose (effs := fun i : {e : Z | In e munmap_errnos} + unit =>
+          match i with
+          | inl (exist _ e _) => mkEffectU (errno_ret e) [] [] [] [] []
+          | inr _ => mkEffectU (Z_to_bv 64 0) [] []
+                       [(a, Z_to_bv 64 (page_round_up_Z len))] [] []
+          end).
+  pose (ms'' := fun i : {e : Z | In e munmap_errnos} + unit =>
+          match i with
+          | inl _ => model
+          | inr _ => munmap_model a (Z_to_bv 64 (page_round_up_Z len)) model
+          end).
+  apply (srz_alt2 segs (mkCfg ms model) {e : Z | In e munmap_errnos} unit
+           (fun i => mkCfg (advance_past_svc (apply_effect ms (effs i))) (ms'' i))
+           TA TB (exist _ ENOMEM ENOMEM_in_munmap_errnos) tt).
+  - apply (AsanNodesLibE.node_chk_noacc segs ms model (getr regs 17)
+             ({e : Z | In e munmap_errnos} + unit) effs ms'' Hh eq_refl).
+    + intros [[e He] | []]; cbn [effs ms'']; rewrite Hchk.
+      * rewrite (errno_ret_in_intro _ _ He). reflexivity.
+      * replace (errno_ret_in munmap_errnos (Z_to_bv 64 0)) with false by reflexivity.
+        cbv beta iota. unfold w_is0. rewrite bv_eqb_refl.
+        rewrite (proj2 (listNN_eqb_eq _ _) eq_refl). reflexivity.
+    + intros [r ws zs us cs ci] m' evs Hck. rewrite Hchk in Hck.
+      destruct ws; [|discriminate]. destruct zs; [|discriminate].
+      destruct cs; [|destruct us; discriminate]. destruct ci; [|destruct us; discriminate].
+      destruct (errno_ret_in munmap_errnos r) eqn:Er.
+      * destruct us; [|discriminate]. injection Hck as <- <-.
+        destruct (proj1 (errno_ret_in_true _ _) Er) as (e & He & ->).
+        exists (inl (exist _ e He)). repeat split; reflexivity.
+      * destruct (w_is0 r) eqn:E0; [|discriminate].
+        destruct (listNN_eqb us [(a, Z_to_bv 64 (page_round_up_Z len))]) eqn:Hl;
+          [|discriminate].
+        apply listNN_eqb_eq in Hl. subst us. cbn [andb] in Hck.
+        injection Hck as <- <-.
+        unfold w_is0 in E0. apply bv_eqb_eq in E0. subst r.
+        exists (inr tt). repeat split; reflexivity.
+    + intros [r ws zs us cs ci] Hck. rewrite Hchk in Hck.
+      destruct ws; [|discriminate]. destruct zs; [|discriminate].
+      destruct cs; [|destruct us; discriminate]. destruct ci; [|destruct us; discriminate].
+      destruct (errno_ret_in munmap_errnos r); [destruct us; discriminate|].
+      destruct (w_is0 r && listNN_eqb us _)%bool; discriminate.
+    + intros [[e He] | []]; cbn [ms''];
+        [exact Hh | rewrite munmap_model_halted; exact Hh].
+    + intros [[e He] | []]; reflexivity.
+  - intros [e He]; cbn [effs ms'']; unfold ms. rewrite adv_ret_epend. exact (Hfail e He).
+  - intros []; cbn [effs ms'']; unfold ms. rewrite adv_unmaps1_epend. exact Hc.
+Qed.
+End MunmapAlt2.
+
 
 Section SoundB.
 Variable SEGS : list Segment.
@@ -1033,14 +1123,17 @@ Proof.
   destruct (g x); cbn; rewrite IH; destruct (h x); cbn; rewrite ?orb_true_r; reflexivity.
 Qed.
 
-Lemma node_munmap_sound : forall cs cs' E R FULL model T,
-  CSOK E cs R FULL model -> is_ecall_at SEGS cs = true ->
-  node_munmap A cs = Some cs' ->
-  (forall E' R' FULL' model', env_agree nx0 E E' /\ env_agree (nxt cs) E E' -> CSOK E' cs' R' FULL' model' -> m_fs model' = m_fs model ->
-      srealizes SEGS (cfg R' (pc cs') FULL' model') T) ->
-  srealizes SEGS (cfg R (pc cs) FULL model) T.
+(** M5b: the exact-entry munmap with both resolutions.  The refused child is
+    [APC.refuse] (a0 := -ENOMEM, model unchanged): Linux clears the range in
+    the mapping tree ([vma_iter_clear_gfp], mm/vma.c:1573 at v6.18.46) BEFORE
+    the point of no return (mm/vma.c:1577) and [clear_tree_failed:]
+    (mm/vma.c:1581) reattaches the vmas, so the refusal keeps every page. *)
+Theorem node_munmap2_sound : munmap2_stmt SEGS A nx0 LIMIT SINV argH FS0.
 Proof.
-  intros cs cs' E R FULL model T HC Hec Hn HK.
+  intros cs csa csb E R FULL model TA TB HC Hec Hn HkA HK.
+  unfold node_munmap2 in Hn.
+  destruct (node_munmap A cs) as [cs'|] eqn:Hng; [|discriminate].
+  apply Some_pair_inj in Hn as [Eca Ecb]. subst csa. subst csb. rename Hng into Hn.
   destruct (AsanNodesMmLib.is_ecall_at_sound SEGS cs Hec) as (w & Hf & He & Hp0 & Hp4).
   pose proof (co_know _ _ _ _ _ _ _ _ _ _ _ HC) as HKN.
   rewrite node_munmap_eq in Hn. (* PERF *) unfold node_munmap_ref in Hn.
@@ -1190,9 +1283,13 @@ Proof.
   (* ---- the spec step ---- *)
   pose proof (co_halt _ _ _ _ _ _ _ _ _ _ _ HC) as Hhalt. pose proof (co_wf _ _ _ _ _ _ _ _ _ _ _ HC) as Hwf. pose proof Hwf as (W1 & W2 & W3 & Wsp).
   unfold cfg_of.
-  eapply (srz_munmap_lazy SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w addr len T Hf He Hhalt R17 R10 B2 R11 ltac:(lia)).
+  eapply (srz_munmap_lazy2 SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w addr len TA TB Hf He Hhalt R17 R10 B2 R11 ltac:(lia)).
   { unfold TASK_SIZE. fold nZ. unfold CEIL in *. lia. }  (* munmap bound is TASK_SIZE *)
   { fold nZ. rewrite HnZw. apply map_has_intro. rewrite <- Haddr. exact HIN. }
+  { (* the REFUSED child: a0 := -ENOMEM, nothing else changes *)
+    intros e He'. destruct He' as [<-|[]].
+    exact (AsanNodesMmLib.refuse_cont SEGS A nx0 LIMIT SINV argH FS0 RES_len SINV_frame
+             cs E R FULL model TA HC Hp0 Hp4 HkA). }
   fold nZ. rewrite HnZw. rewrite (v_addi_pc (pc cs) Hp0 Hp4).
   set (model' := munmap_model addr n model). set (FULL' := unfill addr n FULL).
   match goal with |- srealizes _ (mkCfg _ ?mo) _ => change mo with model' end.
@@ -1412,10 +1509,6 @@ Proof.
   - (* sinv *) eapply SINV_frame; [|exact Xsinv]. intros x Hx. unfold FULL'. apply unfill_out. pose proof (argH_high _ _ Hx). rewrite Un. subst hi. lia.
 Qed.
 
-
-Theorem node_sys_sound_YMunmap : sys_stmt SEGS A nx0 LIMIT SINV argH FS0 YMunmap.
-Proof. intros cs cs' E R FULL model T HC Hpre Hn HK. eapply node_munmap_sound; eauto. Qed.
-
 End SoundMunmap.
 
 (* ######################################################################### *)
@@ -1440,8 +1533,7 @@ Hypothesis PLACEMENT : placement_policy.  (* see AsanCeil.v *)
 
 Theorem node_sys_sound : forall y, sys_stmt SEGS A nx0 LIMIT SINV argH FS0 y.
 Proof.
-  intros [| |].
-  - exact (node_sys_sound_YMunmap SEGS A nx0 LIMIT SINV argH RES_len HULL_ok SHADOW_ok argH_high SINV_frame FS0).
+  intros [|].
   - exact (node_sys_sound_YBrk SEGS A nx0 LIMIT SINV argH FS0 SINV_frame).
   - exact (node_sys_sound_YSetTid SEGS A nx0 LIMIT SINV argH FS0 argH_agree SINV_agree).
 Qed.

@@ -234,9 +234,11 @@ Proof.
                = page_round_up_Z (bv_unsigned len)) by (rewrite u64 by lia; reflexivity).
   dif H.
   - destruct ws, zs, cs, ci; try discriminate.
-    dif H; [|discriminate]. injection H as <- <-.
-    unfold with_mmap_destroyed, vm_forget_range. rewrite Hn.
-    split; reflexivity.
+    dif H.
+    + destruct us; [contradiction|discriminate].
+    + dif H; [|discriminate]. injection H as <- <-.
+      unfold with_mmap_destroyed, vm_forget_range. rewrite Hn.
+      split; reflexivity.
   - dif H.
     { apply check_ret_only_ok_iff in H as [Heff _].
       inversion Heff; subst; contradiction. }
