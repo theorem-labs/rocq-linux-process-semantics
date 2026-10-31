@@ -1099,65 +1099,6 @@ Proof.
   destruct (bv_unsigned_in_range _ len). lia.
 Qed.
 
-(** Linux PATH_MAX: a pathname's content may be at most 4095 bytes, i.e.
-    4096 counting the NUL — [path_max] is the bound Linux's [getname()]
-    enforces, and it counts the terminator, so a 4095-byte path plus its
-    NUL fits and a 4096-byte one does not. *)
-Definition path_max : nat := 4096%nat.
-
-(** Pathname bytes counted as read: through the first NUL, the first
-    unreadable byte, or [path_max].  This is the count the model records,
-    and it is SHORTER than what [getname()] issues —
-    [strncpy_from_user] loads whole words, so it runs past the NUL to the
-    end of that word (lib/strncpy_from_user.c, [do_strncpy_from_user];
-    byte-identical v6.10 through v6.16 — the FILE is not, so the window
-    belongs to the function).  The answer is unaffected: that loop is clamped
-    below TASK_SIZE and falls back to a byte loop when a word load faults,
-    so no verdict moves.  Only the recorded read set is short. *)
-Fixpoint cstr_access_len_aux (mp : word -> option byte) (a : word) (fuel : nat)
-    : nat :=
-  match fuel with
-  | O => O
-  | S fuel' =>
-      match mp a with
-      | None => 1%nat
-      | Some b =>
-          if bv_eqb b (Z_to_bv 8 0) then 1%nat
-          else S (cstr_access_len_aux mp (a + 1) fuel')
-      end
-  end.
-
-(** Reading a pathname out of user memory has three outcomes, and Linux
-    distinguishes all three: the string, [-ENAMETOOLONG] (no NUL within
-    PATH_MAX), and [-EFAULT] (an unmapped byte before the NUL).  Both
-    failures are ordinary kernel returns, NOT modeling gaps — keeping
-    them apart is what lets [Open.openat_spec] answer an errno instead
-    of declining to interpret the call. *)
-Inductive cstr_result :=
-| CstrOk (p : list byte)   (* NUL-terminated within PATH_MAX *)
-| CstrTooLong              (* no NUL within PATH_MAX        -> -ENAMETOOLONG *)
-| CstrFault.               (* unmapped byte before the NUL  -> -EFAULT *)
-
-Fixpoint read_cstr_aux (mp : word -> option byte) (a : word) (k : nat)
-    : cstr_result :=
-  match k with
-  | O => CstrTooLong             (* no NUL within the length bound *)
-  | S k' =>
-      match mp a with
-      | None => CstrFault        (* unmapped byte before the NUL *)
-      | Some b =>
-          if bv_eqb b (Z_to_bv 8 0) then CstrOk []
-          else match read_cstr_aux mp (a + 1) k' with
-               | CstrOk r => CstrOk (b :: r)
-               | r => r          (* propagate the failure verbatim *)
-               end
-      end
-  end.
-
-Definition read_cstr (mp : word -> option byte) (a : word)
-    : cstr_result :=
-  read_cstr_aux mp a path_max.
-
 (** Read one little-endian 64-bit word at [a] ([BvBase.le_bytes_to_word]
     decodes index 0 as least significant), or [None] if any of the 8
     bytes is unmapped — for reading 8-byte fields of in-memory kernel
@@ -1473,6 +1414,191 @@ Lemma copy_bytes_map_accepted : forall mp a len,
   access_okb a len = true ->
   copy_bytes_map mp a len = read_bytes_map mp a (Z_to_bv 64 len).
 Proof. intros mp a len H. unfold copy_bytes_map. rewrite H. reflexivity. Qed.
+
+(** Linux PATH_MAX: a pathname's content may be at most 4095 bytes, i.e.
+    4096 counting the NUL — [path_max] is the bound Linux's [getname()]
+    enforces, and it counts the terminator, so a 4095-byte path plus its
+    NUL fits and a 4096-byte one does not. *)
+Definition path_max : nat := 4096%nat.
+
+(** Pathname bytes counted as read: through the first NUL, the first
+    unreadable byte, the last byte below [TASK_SIZE], or [path_max].
+    This is the count the model records,
+    and it is SHORTER than what [getname()] issues —
+    [strncpy_from_user] loads whole words, so it runs past the NUL to the
+    end of that word (lib/strncpy_from_user.c, [do_strncpy_from_user];
+    byte-identical v6.10 through v6.16 — the FILE is not, so the window
+    belongs to the function).  The answer is unaffected: that loop is clamped
+    below TASK_SIZE and falls back to a byte loop when a word load faults,
+    so no verdict moves.  Only the recorded read set is short.
+
+    AT [TASK_SIZE] THE COUNT STOPS WITHOUT COUNTING, where an unreadable
+    byte below it counts 1.  The kernel attempts an unmapped byte and
+    faults on it; it never attempts the byte at [TASK_SIZE], because
+    [strncpy_from_user]'s clamp ends both loops before it (see
+    [read_cstr_aux]).  The test is [read_cstr_aux]'s own, in the same
+    place, so the two walks stop together, a pointer at or above
+    [TASK_SIZE] records nothing, and no recorded range reaches
+    [TASK_SIZE] ([cstr_access_len_below_task_size]).  The shortness
+    argument above is untouched: the word loop and the byte loop sit
+    inside the same clamp, so what [getname()] issues still covers every
+    byte counted here. *)
+Fixpoint cstr_access_len_aux (mp : word -> option byte) (a : word) (fuel : nat)
+    : nat :=
+  match fuel with
+  | O => O
+  | S fuel' =>
+      if negb (access_okb a 1) then O   (* past strncpy_from_user's clamp: never fetched *)
+      else match mp a with
+      | None => 1%nat
+      | Some b =>
+          if bv_eqb b (Z_to_bv 8 0) then 1%nat
+          else S (cstr_access_len_aux mp (a + 1) fuel')
+      end
+  end.
+
+(** Reading a pathname out of user memory has three outcomes, and Linux
+    distinguishes all three: the string, [-ENAMETOOLONG] (no NUL within
+    PATH_MAX), and [-EFAULT] (an unmapped byte, or the top of the user
+    address space, before the NUL).  Both
+    failures are ordinary kernel returns, NOT modeling gaps — keeping
+    them apart is what lets [Open.openat_spec] answer an errno instead
+    of declining to interpret the call. *)
+Inductive cstr_result :=
+| CstrOk (p : list byte)   (* NUL-terminated within PATH_MAX *)
+| CstrTooLong              (* no NUL within PATH_MAX        -> -ENAMETOOLONG *)
+| CstrFault.               (* unmapped byte or TASK_SIZE before the NUL -> -EFAULT *)
+
+(** THE WALK STOPS AT [TASK_SIZE], and stopping there is [CstrFault].
+    [strncpy_from_user] (lib/strncpy_from_user.c, [strncpy_from_user],
+    v6.18.46) sets [max_addr = TASK_SIZE_MAX] — [TASK_SIZE] on riscv64,
+    see [access_okb] — and returns -EFAULT outright when the untagged
+    source address is at or above it.  Otherwise it clamps the scan to
+    [max = max_addr - src_addr] bytes, or to [count] when that is
+    smaller, and [do_strncpy_from_user] (same file) returns the count
+    when the scan ends on [count] and -EFAULT when it ends on the
+    address-space limit first.  Its [res >= count] test comes before
+    the -EFAULT, so where the two bounds fall on the same byte the count
+    wins.  [getname_flags] (fs/namei.c), the pathname caller, returns
+    the -EFAULT as the call's error and turns a count of PATH_MAX into
+    -ENAMETOOLONG.  riscv64 defines no [masked_user_access_begin], so
+    [can_do_masked_user_access()] is 0 (include/linux/uaccess.h) and
+    the clamped branch is the one taken; [untagged_addr] is the
+    identity for every modeled process ([access_okb]'s note).
+
+    So the test is [access_okb a 1] in front of EACH byte load, after
+    the length bound: byte [a] is inside the clamp exactly when
+    [a < TASK_SIZE] ([access_okb_one]).  That is Linux's clamp byte for
+    byte — a name that starts below [TASK_SIZE] and ends at
+    [TASK_SIZE - 1] reads, a name whose bytes reach [TASK_SIZE] faults
+    there, and PATH_MAX non-NUL bytes ending at [TASK_SIZE - 1] are
+    [CstrTooLong], the count winning.  One
+    [access_okb a (Z.of_nat path_max)] in front of the walk would be
+    wrong the other way: it refuses a short name that starts within
+    PATH_MAX bytes of [TASK_SIZE], which Linux
+    reads ([Checks.Cases.Fs.Open.openat_path_at_the_top_still_answers]).
+    The three outcomes suffice, because Linux's answer here is the same
+    -EFAULT an unmapped byte gets.
+
+    Without the test the walk stepped [a + 1] in the 64-bit word and
+    tested nothing, so a pointer in the last bytes of the address space
+    walked off the top and back in at 0 — the wrap [copy_bytes_map]'s
+    note describes — and answered [CstrOk] on a name Linux refuses.
+    With it every walk faults at [TASK_SIZE] at the latest, so [a + 1]
+    never wraps. *)
+Fixpoint read_cstr_aux (mp : word -> option byte) (a : word) (k : nat)
+    : cstr_result :=
+  match k with
+  | O => CstrTooLong             (* no NUL within the length bound *)
+  | S k' =>
+      if negb (access_okb a 1) then CstrFault  (* past strncpy_from_user's clamp *)
+      else match mp a with
+      | None => CstrFault        (* unmapped byte before the NUL *)
+      | Some b =>
+          if bv_eqb b (Z_to_bv 8 0) then CstrOk []
+          else match read_cstr_aux mp (a + 1) k' with
+               | CstrOk r => CstrOk (b :: r)
+               | r => r          (* propagate the failure verbatim *)
+               end
+      end
+  end.
+
+Definition read_cstr (mp : word -> option byte) (a : word)
+    : cstr_result :=
+  read_cstr_aux mp a path_max.
+
+(** One byte at [a] is inside the user address space exactly when [a]
+    is below [TASK_SIZE]. *)
+Lemma access_okb_one : forall a,
+  access_okb a 1 = (bv_unsigned a <? TASK_SIZE)%Z.
+Proof.
+  intro a. unfold access_okb.
+  destruct (Z.leb_spec (bv_unsigned a) (TASK_SIZE - 1)%Z);
+    destruct (Z.ltb_spec (bv_unsigned a) TASK_SIZE); try lia; reflexivity.
+Qed.
+
+(** Below [TASK_SIZE] the walk's [a + 1] is the integer successor. *)
+Lemma bv_unsigned_succ_below_task_size : forall a : word,
+  (bv_unsigned a < TASK_SIZE)%Z -> bv_unsigned (a + 1) = (bv_unsigned a + 1)%Z.
+Proof.
+  intros a Ha. rewrite bv_add_unsigned.
+  change (bv_unsigned (1 : word)) with 1%Z.
+  apply bv_wrap_small. change (bv_modulus 64) with 18446744073709551616%Z.
+  pose proof (bv_unsigned_in_range 64 a). unfold TASK_SIZE in Ha. lia.
+Qed.
+
+(** The half the unguarded walk could not see: at or above [TASK_SIZE]
+    a pathname read is [CstrFault] however the memory map answers, and
+    nothing is counted as read. *)
+Lemma read_cstr_aux_refused : forall mp a k,
+  access_okb a 1 = false -> read_cstr_aux mp a (S k) = CstrFault.
+Proof. intros mp a k H. cbn [read_cstr_aux]. rewrite H. reflexivity. Qed.
+
+Lemma read_cstr_refused : forall mp a,
+  access_okb a 1 = false -> read_cstr mp a = CstrFault.
+Proof.
+  intros mp a H. unfold read_cstr, path_max. apply read_cstr_aux_refused. exact H.
+Qed.
+
+Lemma cstr_access_len_aux_refused : forall mp a k,
+  access_okb a 1 = false -> cstr_access_len_aux mp a k = O.
+Proof.
+  intros mp a [|k] H; [reflexivity|].
+  cbn [cstr_access_len_aux]. rewrite H. reflexivity.
+Qed.
+
+(** ...and the other direction, which keeps the guard from being a
+    blanket refusal: below [TASK_SIZE] a step is the step it always was. *)
+Lemma read_cstr_aux_accepted : forall mp a k,
+  access_okb a 1 = true ->
+  read_cstr_aux mp a (S k) =
+    match mp a with
+    | None => CstrFault
+    | Some b =>
+        if bv_eqb b (Z_to_bv 8 0) then CstrOk []
+        else match read_cstr_aux mp (a + 1) k with
+             | CstrOk r => CstrOk (b :: r)
+             | r => r
+             end
+    end.
+Proof. intros mp a k H. cbn [read_cstr_aux]. rewrite H. reflexivity. Qed.
+
+(** The copy-in ledger never claims a byte at or above [TASK_SIZE]:
+    either it records nothing or its range ends at or below it. *)
+Lemma cstr_access_len_below_task_size : forall mp k a,
+  cstr_access_len_aux mp a k = O \/
+  (bv_unsigned a + Z.of_nat (cstr_access_len_aux mp a k) <= TASK_SIZE)%Z.
+Proof.
+  intros mp k. induction k as [|k IH]; intros a; [left; reflexivity|].
+  cbn [cstr_access_len_aux].
+  destruct (access_okb a 1) eqn:Ha; cbn [negb]; [|left; reflexivity].
+  rewrite access_okb_one in Ha. apply Z.ltb_lt in Ha.
+  right. destruct (mp a) as [b|]; [|lia].
+  destruct (bv_eqb b (Z_to_bv 8 0)); [lia|].
+  destruct (IH (a + 1)) as [H0|Hle].
+  - rewrite H0. lia.
+  - pose proof (bv_unsigned_succ_below_task_size a Ha). lia.
+Qed.
 
 (** The three outcomes of importing an iovec array (lib/iov_iter.c
     [__import_iovec], v6.18.46): the imported entries, a [-EFAULT] from an

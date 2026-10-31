@@ -33,11 +33,11 @@ Open Scope sys_scope.
     COUNT in either direction.  A read's recursion is capped by the file
     or the stream it reads from, and [State.readable_bytes] spends
     neither stack depth nor a length-sized unary numeral on the count a
-    write names.  A READ's count faces the kernel's own two tests and
-    nothing else — [State.access_okb] on the range, then the
-    [MAX_RW_COUNT] clamp ([State.rw_count_clamp]).  A WRITE's faces
-    [modeled_rw_range] below, which is this constant OR that same range
-    test, and then the same clamp.
+    write names.  A transfer's count faces the kernel's own two tests —
+    [State.access_okb] on the range, then the [MAX_RW_COUNT] clamp
+    ([State.rw_count_clamp]) — and, on the arms [modeled_rw_range]
+    names, that gate in front of them, which is this constant OR that
+    same range test.
 
     THE HOLE IS NOT THE COUNT, and that is why this constant bounds the
     one and not the other.  A hole is the distance from the file's end to the
@@ -334,62 +334,91 @@ Definition modeled_rw_count (count : word) : bool :=
 
     Above [rw_bytes_max] the model asks LINUX'S OWN QUESTION about the
     range — [State.access_okb], i.e. [buf + count <= State.TASK_SIZE] —
-    and declines when the answer is no.  Three things are worth being
-    explicit about.
+    and declines when the answer is no.
 
-    THE ARMS THAT CARRY IT, BY NAME: [ReadWrite.write_spec]'s channel,
-    plain-file, read-write-file, append and pipe arms, and its /dev/null
-    arm ([State.FdDevNull], through [ReadWrite.write_range_gate]); and
-    [ReadWrite.read_spec]'s SOCKET and PIPE arms.
+    WHICH ARM ASKS WHAT, and this is the one place the tree says it.
+    Every transfer arm of [ReadWrite] asks [vfs_read]'s or
+    [vfs_write]'s [access_ok] on the count the call NAMED
+    (fs/read_write.c, [vfs_read] and [vfs_write]) and answers -EFAULT
+    when it refuses.  The arms differ only in what stands in front of it:
 
-    THE RULE IS ABOUT ORDER, NOT ABOUT WHETHER AN ARM HAS AN -EFAULT.
-    Every arm named above except [write_spec]'s APPEND and /dev/null
-    arms asks [access_ok] nowhere at all.  Those arms do ask it — and
-    keep this gate AHEAD of it, so the gate still decides.  What makes an
-    arm need none is asking [access_ok] FIRST: [read_spec]'s /dev/null,
-    channel, file and directory arms do, all of [pread64] does, and so does [pwrite64]'s one judging
-    arm, where [rw_range_of_access_ok] below is the proof that this gate
-    would then be constantly true.
+    - NOTHING: [ReadWrite.read_spec]'s /dev/null, channel, file,
+      directory and /dev/urandom arms, all of [pread64], and
+      [pwrite64]'s one judging arm, where [rw_range_of_access_ok] below
+      is the proof that this gate would be constantly true.
+    - THIS GATE: [ReadWrite.write_spec]'s channel, plain-file,
+      read-write-file, append and pipe arms, its /dev/null arm (through
+      [ReadWrite.write_range_gate]), and [ReadWrite.read_spec]'s SOCKET
+      and PIPE arms.  Below the gate the socket and pipe read arms and the
+      channel and pipe write arms ask it at the head of each path that
+      moves bytes, and on each path that moves none through
+      [access_ok_zero], which is the same test; that is why it appears in
+      two places on those arms rather than once.  The plain-file,
+      read-write-file and append arms ask it first under the gate, so the
+      [access_ok_zero] inside [ReadWrite.write_file_tail] decides nothing
+      on any of its three callers, those three arms.
+    - [State.import_iovecs], for [readv] and [writev]: an [access_ok] on
+      every descriptor's uncapped length, before a byte moves.
+
+    EVERY WALK A TRANSFER ARM MAKES IS THEREFORE BEHIND THE TEST, and a
+    reader can check it without trusting this note: each walk covers at
+    most the clamped count, which is at most the named count, so
+    [buf + len <= buf + count <= State.TASK_SIZE] and no walk passes the
+    top of the user address space, let alone wraps at 2^64.
+
+    WHAT THE DELIVERING PATHS ANSWERED BEFORE THEY ASKED.  The write
+    arms other than append and /dev/null, and the socket and pipe read
+    arms on their delivering paths, used to let the walk speak for the
+    range: a small count at a range [access_ok] refuses was a short or
+    full transfer where Linux answers -EFAULT, and at a buffer straddling
+    2^64 a transfer of bytes the walk reached by wrapping
+    ([State.copy_bytes_map]'s note has the wrap).  Every other path of
+    those arms already asked, so the one path without the guard was the
+    one that moved bytes.
+
+    THE RULE IS ABOUT ORDER.  The gate stays AHEAD of each arm's own
+    test, so the gate decides first whether the model judges the call
+    at all.
 
     THE TWO ORDERS ANSWER THE SAME SHAPE DIFFERENTLY, and both answers
     are admissible.  A count above [rw_bytes_max] at a buffer whose
-    range leaves the address space is [unmodeled] through [write] on an
-    append fd — the gate is reached first — and -EFAULT through
-    [pwrite64] on a write-only fd, which is Linux's answer.  A decline
-    is never wrong, so this is a difference in how much the model
-    judges, not in what it judges.  Aligning them means either moving
-    the append arm's [access_ok] above its gate, which is a widening,
-    or putting a gate on [pwrite64],
-    which would be dead code; neither is folded in here.
+    range leaves the address space is [unmodeled] through [write] — the
+    gate is reached first — and -EFAULT through [pwrite64] on a
+    write-only fd, which is Linux's answer.  A decline is never wrong,
+    so this is a difference in how much the model judges, not in what it
+    judges.  Aligning them means either moving each arm's [access_ok]
+    above its gate, which is a widening, or putting a gate on
+    [pwrite64], which would be dead code; neither is folded in here.
 
     The read arms that carry it read it exactly as the write arms do,
     and the paragraphs below apply unchanged to both.
 
-    WHY [rw_bytes_max] IS THE FIRST DISJUNCT.  Below it the
-    gate is [modeled_rw_count], so a proof that discharges
-    [modeled_rw_count] discharges this gate with no new fact.  That is not only convenience: the model does NOT have
-    an -EFAULT arm for an out-of-range scalar write, and adding one
-    would make every write's judgement depend on a stack-layout fact the
-    model does not carry — that the initial argv/envp block lies under
-    [State.TASK_SIZE] ([StackLayout]'s [sp] bound is [sp_window_hi],
-    which is [TASK_SIZE] itself, so a buffer in that block cannot be
-    shown in range).  That gap is a known limitation, and this
-    definition deliberately neither widens nor closes it.
+    WHY [rw_bytes_max] IS THE FIRST DISJUNCT.  Below it the gate is
+    [modeled_rw_count], so a proof that discharges [modeled_rw_count]
+    discharges this gate with no new fact, and the call reaches the
+    arm's own [access_ok], which answers a small count at an
+    unaddressable buffer -EFAULT as Linux does.  This note used to give
+    a second reason: that the model had no -EFAULT arm for an
+    out-of-range scalar transfer, because adding one would make every
+    judgement depend on a stack-layout fact the model does not carry.
+    That reason is withdrawn.  [State.access_okb] compares the call's
+    two arguments with the literal [State.TASK_SIZE] and reads no model
+    state at all.  What a proof of a delivering transfer owes is the
+    range itself, [buf + count <= TASK_SIZE] ([access_okb_intro]); for a
+    buffer in the initial argv/envp block [Run.entry_stack_fits]
+    supplies it, since it puts the block at or below
+    [State.sp_window_hi], which is [State.TASK_SIZE].
 
-    WHY [access_ok] IS THE RIGHT SECOND DISJUNCT.  It is what bounds the
-    walk: [State.readable_bytes] steps [a + 1] in the 64-bit word, so a
-    range that runs past the top of the address space wraps, and the
-    prefix it would then read is not a prefix of anything Linux would
-    copy.  Under [access_ok] the walk stays inside the user address
-    space, where the bytes it finds are the bytes [copy_from_user]
-    would move.
+    WHY [access_ok] IS THE RIGHT SECOND DISJUNCT.  Above [rw_bytes_max]
+    it admits exactly the calls the arm's own [access_ok] then passes, so
+    what the gate declines is only what Linux answers -EFAULT.
 
     WHAT IS DECLINED, then, is a transfer above [rw_bytes_max] whose
     range leaves the user address space — where Linux answers -EFAULT
     and this model says [unmodeled] instead.  Fail-closed: every count
-    is admitted at an
-    in-range buffer, up to and past the kernel's own [MAX_RW_COUNT]
-    clamp ([State.rw_count_clamp], applied by [write_source]).
+    is admitted at an in-range buffer, up to and past the kernel's own
+    [MAX_RW_COUNT] clamp ([State.rw_count_clamp], applied by
+    [write_source]).
 
     writev and readv need no analogue: [State.import_iovecs] already
     applies [access_ok] to every descriptor's uncapped length, so a
@@ -495,7 +524,13 @@ Qed.
     [write] can copy out of the user buffer are the readable prefix of
     the CLAMPED range, never of the count the call named.  Below 2^31 the
     clamp is a no-op and this is exactly [State.readable_bytes] at the
-    named count. *)
+    named count.
+
+    EVERY CALLER HAS ASKED [access_ok] ON THE NAMED COUNT FIRST (the
+    list at [modeled_rw_range]), so this walk covers at most
+    [rw_count_clamp count <= count] bytes from a [buf] with
+    [buf + count <= State.TASK_SIZE]: it never leaves the user address
+    space.  That is why the walk itself carries no range test. *)
 Definition write_source (mp : word -> option byte) (buf count : word)
     : list byte :=
   readable_bytes mp buf (Z_to_bv 64 (rw_count_clamp count)).

@@ -1349,7 +1349,29 @@ Record InjectedArm := mkInjectedArm {
     injected by a bare [alt] rather than through a named list, so their
     lists are written here.  [faccessat2] draws from
     [faccessat]'s list because both answer through
-    [Fs.Open.access_exists_spec]. *)
+    [Fs.Open.access_exists_spec].
+
+    NANOSLEEP LISTS -EINTR AND NOT -EFAULT, AND THAT ASYMMETRY IS A
+    DECISION rather than an oversight — it is written here because the
+    next reader will otherwise close it in the wrong direction.  Since
+    the remainder pointer took its range test
+    ([Sys.Kernel.Time.Hrtimer.nanosleep_spec]), an [rmtp] that
+    [State.access_okb] refuses answers -EFAULT, and that answer is
+    reachable ONLY through an interruption: a completed sleep never
+    copies the remainder out.  So -EINTR and -EFAULT come from the same
+    injection, and only one of them is in the list.
+    LISTING AN ERRNO MAKES [forced_only_cfg] FILTER THE OUTCOME, so
+    adding -EFAULT here would stop a proof having to handle a case a
+    real run produces — an interrupted sleep whose remainder pointer is
+    out of range.  Leaving it unlisted keeps that outcome and costs a
+    proof one case it can discharge.  The cheap error is the one that
+    keeps the case, so the list stays as it is.
+    What would have to be true for the other choice: that no covered
+    program can present an out-of-range [rmtp] to an interrupted sleep
+    — which is a fact about the programs, not about this table, and
+    nothing in this tree states it.
+    A refused [rqtp] is not affected either way: its -EFAULT is the
+    only outcome at that state, so it is kept under both readings. *)
 Definition injected_table : list InjectedArm :=
   (* getcwd     *) mkInjectedArm  17%Z FamFs    getcwd_errnos ::
   (* dup        *) mkInjectedArm  23%Z FamFd    dup_errnos ::

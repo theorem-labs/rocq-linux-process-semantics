@@ -127,6 +127,9 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
                 (ret_outcome (errno_ret ETIMEDOUT)
                    (with_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch))) m))
           | NCons b rest =>
+              if negb (access_okb buf (bv_unsigned count))
+              then ret_outcome (errno_ret EFAULT) m  (* [vfs_read]'s [access_ok], named count *)
+              else
               match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
               | None => ret_outcome (errno_ret EFAULT) m  (* no byte can land: -EFAULT *)
               | Some _ =>
@@ -192,6 +195,9 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
           else access_ok_zero_witness buf count m
                  (ret_outcome (Z_to_bv 64 0) m)               (* end of file *)
       | Some ((b :: bs0) as q, used) =>
+          if negb (access_okb buf (bv_unsigned count))
+          then ret_outcome (errno_ret EFAULT) m      (* [vfs_read]'s [access_ok], named count *)
+          else
           let del := pipe_take q (rw_count_clamp count) in
           match read_bytes_map (in_wmem i) buf (len_word del) with
           | None =>
@@ -388,6 +394,11 @@ Proof.
         { eapply bind_step; [apply modify_ok|]. apply pure_ok. }
         apply pure_ok.
       * (* a queued byte: the one-byte delivery *)
+        destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
+        { (* [vfs_read]'s [access_ok] refuses the named range: -EFAULT *)
+          eapply bind_step; [apply input_ok|]. cbv beta.
+          eapply bind_step; [apply get_model_ok|].
+          cbv beta iota zeta; srw Hfd. apply pure_ok. }
         destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1.
         -- destruct (read_bytes_map (in_wmem i) buf
                        (len_word (fst (net_take_z (NCons b rest) (rw_count_clamp count)))))
@@ -458,6 +469,12 @@ Proof.
         srw Hp; srw Hlv.
       unfold access_ok_zero, access_ok_zero_witness.
       destruct (access_okb buf (bv_unsigned count)); apply pure_ok. }
+    destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
+    { (* [vfs_read]'s [access_ok] refuses the named range: -EFAULT *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd; rewrite ?Hn, ?Hc; cbv beta iota zeta;
+        srw Hp. apply pure_ok. }
     destruct (read_bytes_map (in_wmem i) buf
                 (len_word (pipe_take (b :: bs0) (rw_count_clamp count)))) as [okw|]
       eqn:Hw.
@@ -514,6 +531,9 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
           (* count = 0: return 0, but only once the range passes
              [access_ok] — see [Uaccess.access_ok_zero] *)
       else
+      if negb (access_okb buf (bv_unsigned count))
+      then ret_outcome (errno_ret EFAULT) m    (* [vfs_write]'s [access_ok], named count *)
+      else
       let bs := write_source (in_mem i) buf count in
       if Nat.eqb (length bs) 0
       then ret_outcome (errno_ret EFAULT) m    (* nothing readable: -EFAULT *)
@@ -525,6 +545,9 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
   | Some (FdFileW p off) =>
       if negb (modeled_rw_range buf count) then Unmodeled
         (* see [Uaccess.modeled_rw_range] *)
+      else
+      if negb (access_okb buf (bv_unsigned count))
+      then ret_outcome (errno_ret EFAULT) m    (* [vfs_write]'s [access_ok], named count *)
       else
       let bs := write_source (in_mem i) buf count in
       if negb (w_is0 count) && Nat.eqb (length bs) 0
@@ -551,6 +574,9 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
         if w_is0 count then access_ok_zero_witness buf count m k else k
   | Some (FdFileRW p off) =>   (* the [FdFileW] arm above, on the O_RDWR kind *)
       if negb (modeled_rw_range buf count) then Unmodeled
+      else
+      if negb (access_okb buf (bv_unsigned count))
+      then ret_outcome (errno_ret EFAULT) m    (* [vfs_write]'s [access_ok], named count *)
       else
       let bs := write_source (in_mem i) buf count in
       if negb (w_is0 count) && Nat.eqb (length bs) 0
@@ -613,6 +639,8 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       else if negb (modeled_rw_range buf count) then Unmodeled
       else if w_is0 count then
         access_ok_zero_witness buf count m (ret_outcome (Z_to_bv 64 0) m)
+      else if negb (access_okb buf (bv_unsigned count))
+      then ret_outcome (errno_ret EFAULT) m    (* [vfs_write]'s [access_ok], before the readers test *)
       else if negb (pipe_end_live (m_fds m) id false) then Unmodeled  (* SIGPIPE *)
       else
       match pipe_lookup (m_pipes m) id with
@@ -673,6 +701,11 @@ Proof.
       cbv beta iota zeta; srw Hfd; srw Hm.
       unfold access_ok_zero, access_ok_zero_witness.
       destruct (access_okb buf (bv_unsigned count)); apply pure_ok. }
+    destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
+    { (* [vfs_write]'s [access_ok] refuses the named range: -EFAULT *)
+      eapply bind_step; [apply input_ok|].
+      cbv beta. eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd; srw Hm. apply pure_ok. }
     destruct (Nat.eqb (length (write_source (in_mem i) buf count)) 0)
       eqn:Hg.
     + eapply bind_step; [apply input_ok|].
@@ -699,6 +732,11 @@ Proof.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd. apply unmodeled_intro. }
+    destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
+    { (* [vfs_write]'s [access_ok] refuses the named range: -EFAULT *)
+      eapply bind_step; [apply input_ok|].
+      cbv beta. eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd. apply pure_ok. }
     destruct (negb (w_is0 count)
               && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
       eqn:Hg.
@@ -771,6 +809,11 @@ Proof.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd. apply unmodeled_intro. }
+    destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
+    { (* [vfs_write]'s [access_ok] refuses the named range: -EFAULT *)
+      eapply bind_step; [apply input_ok|].
+      cbv beta. eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd. apply pure_ok. }
     destruct (negb (w_is0 count)
               && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
       eqn:Hg.
@@ -828,6 +871,12 @@ Proof.
       cbv beta iota zeta; srw Hfd; rewrite ?Hn, ?Hc; cbv beta iota zeta.
       unfold access_ok_zero, access_ok_zero_witness.
       destruct (access_okb buf (bv_unsigned count)); apply pure_ok. }
+    destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
+    { (* [vfs_write]'s [access_ok] refuses the named range: -EFAULT *)
+      eapply bind_step; [apply input_ok|].
+      cbv beta. eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd; rewrite ?Hn, ?Hc; cbv beta iota zeta.
+      apply pure_ok. }
     destruct (negb (pipe_end_live (m_fds m) id false)) eqn:Hrd.
     { eapply bind_unmodeled2; [apply input_ok|].
       cbv beta. eapply bind_unmodeled2; [apply get_model_ok|].

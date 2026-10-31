@@ -1061,19 +1061,21 @@ Lemma sstep_write_next_inv_disjoint : forall ms model x8 buf evs c',
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = Z_to_bv 64 1 ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  (* the range [vfs_write]'s [access_ok] accepts; see [CatSim.write1_check_n] *)
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   (1 <= length buf)%nat ->
   sstep segs (mkCfg ms model) evs (SNext c') ->
   exists n, (1 <= n)%nat /\ (n <= length buf)%nat /\
     evs = map (WriteEv (Z_to_bv 64 1)) (firstn n buf) /\
     c' = mkCfg (advance_past_svc (set_gpr0 ms (len_word (firstn n buf)))) model.
 Proof.
-  intros ms model x8 buf evs c' Hh Hout Hfd Hsvc Hno Hg Hr Hnb Hss.
+  intros ms model x8 buf evs c' Hh Hout Hfd Hsvc Hno Hg Hr Hok Hnb Hss.
   inversion Hss; subst; try congruence.
   - (* sstep_syscall *)
     match goal with
     | H2 : ms_svc_pending ms = Some ?x, H3 : syscall_spec (sys_input segs ms ?x) model (Ok ?eff ?model' ?evs0) |- _ =>
       assert (Hx : x = x8) by congruence; subst x;
-      destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf Hfd Hno Hg Hr Hnb H3)
+      destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf Hfd Hno Hg Hr Hok Hnb H3)
         as (n & Hn1 & Hn2 & Heff & Hm & Hevs);
       subst eff model' evs0; exists n
     end.
@@ -1091,7 +1093,7 @@ Proof.
       H3 : syscall_spec (sys_input segs ms ?x) model (Ok ?eff ?model' ?evs0),
       H6 : m_halted ?model' = Some ?code |- _ =>
       assert (Hx : x = x8) by congruence; subst x;
-      destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf Hfd Hno Hg Hr Hnb H3)
+      destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf Hfd Hno Hg Hr Hok Hnb H3)
         as (n & _ & _ & _ & Hm & _);
       subst model'; rewrite Hh in H6; discriminate
     end.
@@ -1102,7 +1104,7 @@ Proof.
       H3 : syscall_spec (sys_input segs ms ?x) model (Ok ?eff ?model' ?evs0),
       H6 : m_killed ?model' = Some _ |- _ =>
       assert (Hx : x = x8) by congruence; subst x;
-      destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf Hfd Hno Hg Hr Hnb H3)
+      destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf Hfd Hno Hg Hr Hok Hnb H3)
         as (n & _ & _ & _ & Hm & _);
       subst model'; rewrite (m_killed_of_m_halted_none _ Hh) in H6; discriminate
     end.
@@ -1116,6 +1118,7 @@ Lemma sstep_write_inv_disjoint : forall ms model x8 buf evs st,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = Z_to_bv 64 1 ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= length buf)%nat ->
   sstep segs (mkCfg ms model) evs st ->
@@ -1123,10 +1126,10 @@ Lemma sstep_write_inv_disjoint : forall ms model x8 buf evs st,
     evs = map (WriteEv (Z_to_bv 64 1)) (firstn n buf) /\
     st = SNext (mkCfg (advance_past_svc (set_gpr0 ms (len_word (firstn n buf)))) model).
 Proof.
-  intros ms model x8 buf evs st Hh Hout Hfd Hsvc Hno Hg Hr Hcnt Hnb Hss.
+  intros ms model x8 buf evs st Hh Hout Hfd Hsvc Hno Hg Hr Hok Hcnt Hnb Hss.
   destruct st as [c'|].
   - destruct (sstep_write_next_inv_disjoint ms model x8 buf evs c'
-                Hh Hout Hfd Hsvc Hno Hg Hr Hnb Hss) as (n & Hn1 & Hn2 & Hevs & Hc').
+                Hh Hout Hfd Hsvc Hno Hg Hr Hok Hnb Hss) as (n & Hn1 & Hn2 & Hevs & Hc').
     exists n. repeat split; [exact Hn1 | exact Hn2 | exact Hevs | now rewrite Hc'].
   - (* SError: the write is modeled, and its one access is disjoint,
        so neither error transition applies *)
@@ -1137,7 +1140,7 @@ Proof.
         Hmat : materialize_model_accesses ?model' _ = None |- _ =>
         assert (Hx : x = x8) by congruence; subst x;
         destruct (write1_ok_inv segs ms x8 model eff model' evs0 buf
-                    Hfd Hno Hg Hr Hnb H3)
+                    Hfd Hno Hg Hr Hok Hnb H3)
           as (n & _ & Hn2 & Heff & Hm & _);
         subst eff model';
         rewrite (materialize_syscall_effect_copyin_disjoint model _ _ n
@@ -1160,6 +1163,7 @@ Lemma node_write1_disjoint : forall ms model x8 buf,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = Z_to_bv 64 1 ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= length buf)%nat ->
   node_ok segs (mkCfg ms model) (wr_index buf)
@@ -1168,7 +1172,7 @@ Lemma node_write1_disjoint : forall ms model x8 buf,
                              (set_gpr0 ms (len_word (firstn (proj1_sig i) buf))))
                           model).
 Proof.
-  intros ms model x8 buf Hh Hout Hfd Hsvc Hno Hg Hr Hbm Hnb. split.
+  intros ms model x8 buf Hh Hout Hfd Hsvc Hno Hg Hr Hok Hbm Hnb. split.
   - intros [n [Hn1 Hn2]]. cbn [proj1_sig].
     rewrite <- (apply_effect_copyins_no_write ms (len_word (firstn n buf))
                   [(ms_gpr ms 1, n)]).
@@ -1184,7 +1188,7 @@ Proof.
       exact (accesses_outside_lazy_shrink _ _ n _ Hn2 Hout).
   - intros e st Hss.
     destruct (sstep_write_inv_disjoint ms model x8 buf e st
-                Hh Hout Hfd Hsvc Hno Hg Hr Hbm Hnb Hss)
+                Hh Hout Hfd Hsvc Hno Hg Hr Hok Hbm Hnb Hss)
       as (n & Hn1 & Hn2 & -> & ->).
     exists (exist _ n (conj Hn1 Hn2)). split; reflexivity.
 Qed.
@@ -1197,6 +1201,7 @@ Lemma srz_write1_disjoint : forall ms model x8 buf T,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = Z_to_bv 64 1 ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= length buf)%nat ->
   (forall n, (1 <= n)%nat -> (n <= length buf)%nat ->
@@ -1204,7 +1209,7 @@ Lemma srz_write1_disjoint : forall ms model x8 buf T,
                          (set_gpr0 ms (len_word (firstn n buf)))) model) T) ->
   srealizes segs (mkCfg ms model) (t_write_ch (Z_to_bv 64 1) buf T).
 Proof.
-  intros ms model x8 buf T Hh Hout Hfd Hsvc Hno Hg Hr Hbm Hnb Hc.
+  intros ms model x8 buf T Hh Hout Hfd Hsvc Hno Hg Hr Hok Hbm Hnb Hc.
   unfold t_write_ch.
   apply (srz_node segs (mkCfg ms model) (wr_index buf)
            (fun i => map (WriteEv (Z_to_bv 64 1)) (firstn (proj1_sig i) buf))
@@ -1884,6 +1889,12 @@ Hypothesis Hw_read : forall a1 a2,
   grant_ok_nr (ms_gpr ms1 0) model a1 nZ1 = true ->
   grant_ok (ms_gpr (ms2 a1) 0) (model1 a1) a2 (nZ2 a1) = true ->
   ms_read_bytes (ms3 a1 a2) (ms_gpr (ms3 a1 a2) 1) (ms_gpr (ms3 a1 a2) 2) = Some buf.
+(** ...on a range [vfs_write]'s [access_ok] accepts, which the channel
+    arm asks before it reads the source; see [CatSim.write1_check_n]. *)
+Hypothesis Hw_acc : forall a1 a2,
+  grant_ok_nr (ms_gpr ms1 0) model a1 nZ1 = true ->
+  grant_ok (ms_gpr (ms2 a1) 0) (model1 a1) a2 (nZ2 a1) = true ->
+  access_okb (ms_gpr (ms3 a1 a2) 1) (bv_unsigned (ms_gpr (ms3 a1 a2) 2)) = true.
 Hypothesis Hw_out : forall a1 a2,
   grant_ok_nr (ms_gpr ms1 0) model a1 nZ1 = true ->
   grant_ok (ms_gpr (ms2 a1) 0) (model1 a1) a2 (nZ2 a1) = true ->
@@ -1941,7 +1952,8 @@ Proof.
   eapply srz_write1_disjoint;
     [ exact Hh | exact (Hw_out a1 a2 Hg1 Hg2) | exact Hfd
     | exact (Hw_svc a1 a2 Hg1 Hg2) | exact Hno3 | exact (Hw_fd1 a1 a2 Hg1 Hg2)
-    | exact (Hw_read a1 a2 Hg1 Hg2) | exact Hbufmod | exact Hbufnb | ].
+    | exact (Hw_read a1 a2 Hg1 Hg2) | exact (Hw_acc a1 a2 Hg1 Hg2)
+    | exact Hbufmod | exact Hbufnb | ].
   intros n Hn1 Hn2.
   eapply srz_msteps_disjoint;
     [ exact Hh | exact (Hwalk3 a1 a2 n Hg1 Hg2 Hn1 Hn2)

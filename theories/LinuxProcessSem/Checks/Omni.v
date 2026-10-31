@@ -1122,7 +1122,11 @@ Proof.
      [addi a2, x0, 1] in [wloop_segment]. *)
   assert (Hmax : (bv_unsigned (in_arg i 2) <= rw_bytes_max)%Z)
     by (vm_compute; discriminate).
-  destruct (write_channel_outcome _ _ _ _ _ _ _ _ _ _ Hfd Hch Hmax Hrb Hne Hspec)
+  (* ...and the range [vfs_write]'s [access_ok] accepts, which the channel
+     arm now asks before it reads the source: one byte at 0x100 *)
+  assert (Hok : access_okb (in_arg i 1) (bv_unsigned (in_arg i 2)) = true)
+    by (vm_compute; reflexivity).
+  destruct (write_channel_outcome _ _ _ _ _ _ _ _ _ _ Hfd Hch Hmax Hrb Hok Hne Hspec)
     as (_ & n & Hn1 & Hn2 & Heff & Hm & Hevs).
   cbn [length] in Hn2. assert (n = 1%nat) by lia. subst n.
   split; [| split; [exact Hm | exact Hevs]].

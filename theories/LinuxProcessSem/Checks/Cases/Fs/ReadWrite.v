@@ -28,8 +28,12 @@ Proof.
   intros fd buf count i m p off eff m' evs Hfd Hspec.
   apply check_write_complete_ok in Hspec.
   unfold check_write in Hspec. rewrite Hfd in Hspec. cbv iota zeta in Hspec.
-  (* the transfer gate, then the -EFAULT gate *)
+  (* the transfer gate, [vfs_write]'s [access_ok], then the -EFAULT gate *)
   destruct (negb (modeled_rw_range buf count)); cbv iota in Hspec; [discriminate|].
+  destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec.
+  { (* the named range is refused: -EFAULT, no events *)
+    apply check_ret_only_ok_iff in Hspec. destruct Hspec as (_ & _ & Hev).
+    exact Hev. }
   lazymatch type of Hspec with (if ?b then _ else _) = _ => destruct b end;
     cbv iota in Hspec.
   - (* -EFAULT: no writes, no events, whatever the file it extends *)
@@ -392,6 +396,9 @@ Proof.
     unfold check_socket_pending_error in Hspec.
     destruct rx as [| | |b0 s0]; cbv iota in Hspec;
       try (now destruct (Hnodel _ _ _ _ Hspec)).
+    (* [vfs_read]'s [access_ok] on the named count: -EFAULT delivers nothing *)
+    destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
+      [now destruct (Hro _ _ _ Hspec)|].
     destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)); cbv iota in Hspec;
       [|now destruct (Hro _ _ _ Hspec)].
     destruct (read_bytes_map (in_wmem i) buf
@@ -430,6 +437,8 @@ Proof.
     { destruct (pipe_end_live (m_fds m) id true); cbv iota in Hspec;
         [discriminate|now destruct (Hnodel _ _ _ _ Hspec)]. }
     cbv zeta in Hspec.
+    destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
+      [now destruct (Hro _ _ _ Hspec)|].
     destruct (read_bytes_map (in_wmem i) buf
                 (len_word (pipe_take (b :: q0) (rw_count_clamp count))));
       cbv iota in Hspec.
@@ -508,6 +517,15 @@ Lemma write_channel_outcome : forall fd buf count i m ch bs eff m' evs,
      is the identity; see [Uaccess.modeled_rw_range] *)
   (bv_unsigned count <= rw_bytes_max)%Z ->
   read_bytes_map (in_mem i) buf count = Some bs ->
+  (* THE RANGE [vfs_write]'s [access_ok] ACCEPTS, a premise this lemma
+     did not used to carry.  Without it the statement was true of a
+     channel arm that judged a write by its readable prefix and is false
+     of one that asks [access_ok] first: a [buf] whose bytes the memory
+     backs past [State.TASK_SIZE], or round the top of the address space
+     by wrapping, is now -EFAULT, which delivers nothing.  So this repairs
+     a statement that had become false; it is not a weakening.  It is
+     [buf + count <= TASK_SIZE] by [Uaccess.access_okb_intro] *)
+  access_okb buf (bv_unsigned count) = true ->
   bs <> [] ->
   write_spec fd buf count i m (Ok eff m' evs) ->
   (Z.of_nat (length bs) <= rw_bytes_max)%Z
@@ -516,7 +534,7 @@ Lemma write_channel_outcome : forall fd buf count i m ch bs eff m' evs,
        (mkEffect (len_word (firstn n bs)) [] []) /\ m' = m
   /\ evs = map (WriteEv ch) (firstn n bs).
 Proof.
-  intros fd buf count i m ch bs eff m' evs Hfd Hch Hmax Hb Hnonempty Hspec.
+  intros fd buf count i m ch bs eff m' evs Hfd Hch Hmax Hb Hok Hnonempty Hspec.
   apply check_write_complete_ok in Hspec.
   unfold check_write in Hspec. rewrite Hfd in Hspec. cbv iota in Hspec.
   assert (Hch0 : w_is0 ch = false).
@@ -533,6 +551,7 @@ Proof.
   { unfold w_is0, bv_eqb. apply Z.eqb_neq.
     change (bv_unsigned (Z_to_bv 64 0)) with 0%Z. lia. }
   rewrite Hc in Hspec. cbv iota zeta in Hspec.
+  rewrite Hok in Hspec. cbn [negb] in Hspec. cbv iota in Hspec.
   rewrite (write_source_of_rw _ _ _ Hmax),
           (readable_bytes_full _ _ _ _ Hb) in Hspec.
   assert (Hg0 : Nat.eqb (length bs) 0 = false) by (apply Nat.eqb_neq; lia).
@@ -716,8 +735,9 @@ Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
     The file is present and the fd is open, so nothing else on any of
     the three arms can be what declines -- and the guard runs ahead of
-    the append arm's [access_ok] and [rw_verify_area] too, so the three
-    really do meet here rather than at three different tests. *)
+    each arm's [access_ok] and of the append arm's [rw_verify_area]
+    too, so the three really do meet here rather than at three
+    different tests. *)
 Example write_count_bound_declines_on_every_file_kind :
   let over := Z_to_bv 64 (rw_bytes_max + 1) in
   let at_bound := Z_to_bv 64 rw_bytes_max in
@@ -770,24 +790,21 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
     tell the two apart, and would stay green through exactly the
     divergence it was written to catch.
 
-    So this pins the three kinds at that address instead, and the three
-    answers DIFFER -- which is the point rather than a defect, and the
-    one thing the shared helper deliberately does NOT make uniform.  The
-    append arm models [vfs_write]'s [access_ok] and refuses a delivering
-    write whose named range passes TASK_SIZE; the write-only arm models
-    neither that test nor [rw_verify_area], judging a delivering write
-    by its readable prefix instead, which is a known divergence from
-    Linux; and the
-    read-write arm takes the write-only answer because it calls the same
-    two helpers with the same empty middle in front of them.
+    So this pins the three kinds at that address instead.  The three
+    answers USED TO DIFFER: the append arm modeled [vfs_write]'s
+    [access_ok] and refused a delivering write whose named range passes
+    TASK_SIZE, while the write-only and read-write arms judged it by its
+    readable prefix and delivered — a known divergence from Linux, and
+    on a buffer straddling 2^64 a delivery of bytes the walk reached by
+    wrapping.  All three now ask [access_ok] (fs/read_write.c,
+    [vfs_write]), so all three refuse it, and that agreement is what
+    this pins.
 
     WHAT THIS LINE IS FOR: a change to the shared range judgement has to
-    come here and say what it did to all three.  Move the append arm's
-    [access_ok] into [ReadWrite.write_file_tail], where it would look
-    like tidying, and the first verdict below flips -- the write-only arm
-    would start refusing a write Linux's own [vfs_write] does not refuse
-    on that arm's reading, which is a behaviour change wearing a
-    refactor's clothes. *)
+    come here and say what it did to all three.  Drop the [access_ok]
+    from one arm, where it would look like tidying since [write_source]
+    reads nothing past what the memory backs, and that arm's verdict
+    below flips back to a delivery Linux refuses. *)
 Example write_range_boundary_pins_the_three_file_kinds :
   let near_top := Z_to_bv 64 (TASK_SIZE - 4) in
   let small := Z_to_bv 64 8 in
@@ -806,9 +823,9 @@ Example write_range_boundary_pins_the_three_file_kinds :
     end in
   (* the count is far inside [rw_bytes_max], so the guard pinned above is
      not what answers here *)
-  verdict (call FdFileW) = 0%nat      (* no access_ok modeled: judged by the readable prefix *)
-  /\ verdict (call FdFileA) = 1%nat   (* access_ok modeled: the delivering write is refused *)
-  /\ verdict (call FdFileRW) = 0%nat. (* the write-only shape, so the write-only answer *)
+  verdict (call FdFileW) = 1%nat      (* access_ok: the delivering write is refused *)
+  /\ verdict (call FdFileA) = 1%nat   (* access_ok, then rw_verify_area: refused *)
+  /\ verdict (call FdFileRW) = 1%nat. (* the write-only arm's tests, so its answer *)
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (** ...AND NO AGGREGATE BOUND OF THE MODEL'S OWN on [writev], pinned the
@@ -1212,6 +1229,9 @@ Corollary writev_outcome_is_write_outcome :
   bs <> [] ->
   (bv_unsigned count <= rw_bytes_max)%Z ->
   read_bytes_map (in_mem iw) buf count = Some bs ->
+  (* the range [vfs_write]'s [access_ok] accepts; see
+     [write_channel_outcome], which needs it for the same reason *)
+  access_okb buf (bv_unsigned count) = true ->
   writev_spec fd iov iovcnt iv m (Ok eff m' evs) ->
   exists n, (1 <= n)%nat /\ (n <= length bs)%nat
   /\ eff = with_copyins
@@ -1223,7 +1243,7 @@ Corollary writev_outcome_is_write_outcome :
               (mkEffect (len_word (firstn n bs)) [] [])) m' evs).
 Proof.
   intros fd iov iovcnt buf count iv iw m ch iovs bs eff m' evs
-         Hfd Hch Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hv.
+         Hfd Hch Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hok Hv.
   destruct (writev_channel_outcome _ _ _ _ _ _ _ _ _ _ _
               Hfd Hch Hmax Hiv Hg Hae Hnonempty Hv)
     as (Hbnd & n & Hn1 & Hn2 & Heff & Hm & Hevs).
@@ -1243,6 +1263,7 @@ Proof.
   { unfold w_is0, bv_eqb. apply Z.eqb_neq.
     change (bv_unsigned (Z_to_bv 64 0)) with 0%Z. lia. }
   rewrite Hc. cbv beta iota zeta.
+  rewrite Hok. cbn [negb]. cbv beta iota.
   rewrite (write_source_of_rw _ _ _ Hcmax), (readable_bytes_full _ _ _ _ Hb).
   assert (Hg0 : Nat.eqb (length bs) 0 = false) by (apply Nat.eqb_neq; lia).
   rewrite Hg0. cbv beta iota.
@@ -1294,6 +1315,9 @@ Corollary write_outcome_is_writev_outcome :
   bs <> [] ->
   (bv_unsigned count <= rw_bytes_max)%Z ->
   read_bytes_map (in_mem iw) buf count = Some bs ->
+  (* the range [vfs_write]'s [access_ok] accepts; see
+     [write_channel_outcome], which needs it for the same reason *)
+  access_okb buf (bv_unsigned count) = true ->
   write_spec fd buf count iw m (Ok eff m' evs) ->
   exists n, (1 <= n)%nat /\ (n <= length bs)%nat
   /\ eff = with_copyins [(buf, n)]
@@ -1305,9 +1329,9 @@ Corollary write_outcome_is_writev_outcome :
               (mkEffect (len_word (firstn n bs)) [] [])) m' evs).
 Proof.
   intros fd iov iovcnt buf count iv iw m ch iovs bs eff m' evs
-         Hfd Hch Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hw.
+         Hfd Hch Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hok Hw.
   destruct (write_channel_outcome _ _ _ _ _ _ _ _ _ _
-              Hfd Hch Hcmax Hb Hnonempty Hw)
+              Hfd Hch Hcmax Hb Hok Hnonempty Hw)
     as (Hbnd & n & Hn1 & Hn2 & Heff & Hm & Hevs).
   exists n. split; [exact Hn1|]. split; [exact Hn2|].
   split; [exact Heff|]. subst m' evs.
@@ -2756,3 +2780,288 @@ Example pipe_write_into_an_empty_pipe_may_be_enomem :
        (mkEffect (errno_ret ENOMEM) [] []) pipe_queued_model
      = CheckReject.
 Proof. split; [check_eq | split; [check_eq | vm_compute; reflexivity]]. Qed.
+
+(* =========================================================================
+   PART 7 — THE TRANSFER ARMS THAT WALKED OFF THE TOP OF THE ADDRESS SPACE
+
+   [read]'s socket and pipe arms and [write]'s channel, pipe and plain
+   file arms used to let the walk over the buffer speak for the range:
+   a small count passed [Uaccess.modeled_rw_range] by its left disjunct
+   and the arm then walked [buf] with [State.read_bytes_map] or
+   [Uaccess.write_source], which advance in WORD arithmetic and WRAP at
+   2^64.  A buffer in the last bytes of the address space read the bytes
+   below the wrap and then the bytes from 0 on, the walk said [Some],
+   and the arm ANSWERED the call: a delivery where Linux answers -EFAULT.
+   Each arm now asks [vfs_read]'s or [vfs_write]'s [access_ok] on the
+   count the call named (fs/read_write.c, [vfs_read] and [vfs_write])
+   before its walks; [Uaccess.modeled_rw_range]'s note says which arm
+   asks it where, and [State.copy_bytes_map]'s note has the wrap.
+
+   EACH GROUP IS THREE EXAMPLES, and all three are needed.  The wrapping
+   call is refused.  A NEIGHBOURING ordinary call at the top of what
+   [State.access_okb] accepts is still answered, so the test is not a
+   blanket refusal of high addresses.  And the CONTROL: the bare walk
+   really would have passed at the wrapping buffer, so the refusal
+   cannot be passing because the memory quietly stopped short.
+
+   THE MEMORIES MAP EXACTLY THEIR OWN RANGE and nothing else, for that
+   reason: [wmem_open] answers [Some] at every address and could not
+   tell a wrapping buffer from any other.
+   ========================================================================= *)
+
+(** Eight bytes below the top and eight from 0, sixteen in all, every
+    one of them 'a'. *)
+Definition top_wrap_buf : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition top_wrap_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 8)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 97) else None.
+
+(** The last sixteen bytes [State.access_okb] accepts, mapped end to end
+    and nothing else. *)
+Definition task_top_buf : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition task_top_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 16 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 97) else None.
+
+Definition sixteen_a : list byte := repeat (Z_to_bv 8 97) 16%nat.
+
+(** The events of an answered call, and [None] for a refused or declined
+    one: the neighbours below are measured as still answered by this,
+    without spelling the post-model a delivery leaves. *)
+Definition answered_events (r : check_result) : option (list event) :=
+  match r with CheckOk _ evs => Some evs | _ => None end.
+
+(** THE CONTROL, shared by every group below: the walk the arms used to
+    make at the wrapping buffer passes, over all sixteen bytes. *)
+Example top_wrap_would_pass_the_bare_walk :
+  read_bytes_map top_wrap_mem top_wrap_buf (Z_to_bv 64 16) <> None.
+Proof. vm_compute. discriminate. Qed.
+
+(* ---- read (63) on a connected socket ----------------------------------- *)
+
+Definition rw_sock_peer : PeerAddr := mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0).
+
+Fixpoint rw_net_of (l : list byte) : NetStream :=
+  match l with
+  | [] => NFin
+  | b :: r => NCons b (rw_net_of r)
+  end.
+
+(** fd 3 is a connection on channel 3 with [rx] queued. *)
+Definition rw_sock_model (rx : NetStream) : Model :=
+  mkModel [(3, FdSocket (SkConnected rw_sock_peer 3 rx))]
+    (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+
+(** Sixteen queued bytes and a sixteen-byte read at the wrapping buffer.
+    Before the test the arm delivered them, into eight bytes below the
+    top and eight from 0; [vfs_read]'s [access_ok] refuses the range
+    before [sock_read_iter] (net/socket.c) is reached, so the answer is
+    -EFAULT with nothing delivered and the queue untouched. *)
+Example read_socket_wrapping_buffer_is_efault :
+  check_syscall (mkInput 63 [3; top_wrap_buf; 16; 0; 0; 0]
+                   (fun _ => None) top_wrap_mem)
+    (mkEffect (errno_ret EFAULT) [] []) (rw_sock_model (rw_net_of sixteen_a))
+  = CheckOk (rw_sock_model (rw_net_of sixteen_a)) []
+  /\ check_syscall (mkInput 63 [3; top_wrap_buf; 16; 0; 0; 0]
+                      (fun _ => None) top_wrap_mem)
+       (mkEffect (Z_to_bv 64 16) [(top_wrap_buf, sixteen_a)] [])
+       (rw_sock_model (rw_net_of sixteen_a))
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** THE NEIGHBOUR: the same read at the top of what [State.access_okb]
+    accepts delivers all sixteen bytes on the connection's channel, and
+    -EFAULT is refused there. *)
+Example read_socket_at_the_top_still_delivers :
+  answered_events
+    (check_syscall (mkInput 63 [3; task_top_buf; 16; 0; 0; 0]
+                      (fun _ => None) task_top_mem)
+       (mkEffect (Z_to_bv 64 16) [(task_top_buf, sixteen_a)] [])
+       (rw_sock_model (rw_net_of sixteen_a)))
+  = Some (map (ReadEv 3) sixteen_a)
+  /\ check_syscall (mkInput 63 [3; task_top_buf; 16; 0; 0; 0]
+                      (fun _ => None) task_top_mem)
+       (mkEffect (errno_ret EFAULT) [] []) (rw_sock_model (rw_net_of sixteen_a))
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** THE NAMED COUNT, NOT ONLY THE WRAP.  [read(sock, TASK_SIZE - 4, 8)]
+    with two bytes queued: the delivered two bytes fit under
+    [State.TASK_SIZE] and the walk over them passes (the control below),
+    so before the test the arm delivered them.  [vfs_read] tests the
+    NAMED range, which passes the top, and answers -EFAULT. *)
+Definition residue_buf : word := Z_to_bv 64 (TASK_SIZE - 4).
+
+Definition residue_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 4 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 97) else None.
+
+Example read_socket_residue_walk_passes :
+  read_bytes_map residue_mem residue_buf (Z_to_bv 64 2) <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example read_socket_named_range_past_the_top_is_efault :
+  check_syscall (mkInput 63 [3; residue_buf; 8; 0; 0; 0]
+                   (fun _ => None) residue_mem)
+    (mkEffect (errno_ret EFAULT) [] [])
+    (rw_sock_model (rw_net_of [Z_to_bv 8 97; Z_to_bv 8 97]))
+  = CheckOk (rw_sock_model (rw_net_of [Z_to_bv 8 97; Z_to_bv 8 97])) []
+  /\ check_syscall (mkInput 63 [3; residue_buf; 8; 0; 0; 0]
+                      (fun _ => None) residue_mem)
+       (mkEffect (Z_to_bv 64 2) [(residue_buf, [Z_to_bv 8 97; Z_to_bv 8 97])] [])
+       (rw_sock_model (rw_net_of [Z_to_bv 8 97; Z_to_bv 8 97]))
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- read (63) on a pipe's read end ------------------------------------ *)
+
+(** fd 3 the read end, fd 4 the write end, sixteen bytes queued. *)
+Definition rw_pipe16_model : Model :=
+  with_pipes [(0, (sixteen_a, 16%Z))]
+    (mkModel [(3, FdPipe 0 false); (4, FdPipe 0 true)]
+       (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
+
+(** Before the test [anon_pipe_read] (fs/pipe.c) was reached and the
+    queue delivered across the wrap; now -EFAULT with the queue
+    untouched. *)
+Example read_pipe_wrapping_buffer_is_efault :
+  check_syscall (mkInput 63 [3; top_wrap_buf; 16; 0; 0; 0]
+                   (fun _ => None) top_wrap_mem)
+    (mkEffect (errno_ret EFAULT) [] []) rw_pipe16_model
+  = CheckOk rw_pipe16_model []
+  /\ check_syscall (mkInput 63 [3; top_wrap_buf; 16; 0; 0; 0]
+                      (fun _ => None) top_wrap_mem)
+       (mkEffect (Z_to_bv 64 16) [(top_wrap_buf, sixteen_a)] []) rw_pipe16_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+Example read_pipe_at_the_top_still_delivers :
+  answered_events
+    (check_syscall (mkInput 63 [3; task_top_buf; 16; 0; 0; 0]
+                      (fun _ => None) task_top_mem)
+       (mkEffect (Z_to_bv 64 16) [(task_top_buf, sixteen_a)] []) rw_pipe16_model)
+  = Some []
+  /\ check_syscall (mkInput 63 [3; task_top_buf; 16; 0; 0; 0]
+                      (fun _ => None) task_top_mem)
+       (mkEffect (errno_ret EFAULT) [] []) rw_pipe16_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- write (64) on stdout ---------------------------------------------- *)
+
+Definition rw_chan_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+
+(** Before the test the channel arm delivered the sixteen bytes it
+    walked across the wrap; [vfs_write]'s [access_ok] refuses the range
+    first, so -EFAULT with no copy-in and no event. *)
+Example write_channel_wrapping_buffer_is_efault :
+  check_syscall (mkInput 64 [1; top_wrap_buf; 16; 0; 0; 0]
+                   top_wrap_mem (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) rw_chan_model
+  = CheckOk rw_chan_model []
+  /\ check_syscall (mkInput 64 [1; top_wrap_buf; 16; 0; 0; 0]
+                      top_wrap_mem (fun _ => None))
+       (with_copyins [(top_wrap_buf, 16%nat)] (mkEffect 16 [] [])) rw_chan_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+Example write_channel_at_the_top_still_delivers :
+  answered_events
+    (check_syscall (mkInput 64 [1; task_top_buf; 16; 0; 0; 0]
+                      task_top_mem (fun _ => None))
+       (with_copyins [(task_top_buf, 16%nat)] (mkEffect 16 [] [])) rw_chan_model)
+  = Some (map (WriteEv 1) sixteen_a)
+  /\ check_syscall (mkInput 64 [1; task_top_buf; 16; 0; 0; 0]
+                      task_top_mem (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) rw_chan_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- write (64) on a pipe's write end ---------------------------------- *)
+
+(** [pipe_queued_model]'s write end, with a reader alive and room in the
+    page.  Before the test the whole wrapped source passed the arm's
+    wholly-readable test and was appended; [vfs_write]'s [access_ok] runs
+    before [anon_pipe_write] (fs/pipe.c), so -EFAULT and the pipe left
+    as it was. *)
+Example write_pipe_wrapping_buffer_is_efault :
+  check_syscall (mkInput 64 [4; top_wrap_buf; 16; 0; 0; 0]
+                   top_wrap_mem (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) pipe_queued_model
+  = CheckOk pipe_queued_model []
+  /\ check_syscall (mkInput 64 [4; top_wrap_buf; 16; 0; 0; 0]
+                      top_wrap_mem (fun _ => None))
+       (with_copyins [(top_wrap_buf, 16%nat)] (mkEffect 16 [] [])) pipe_queued_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+Example write_pipe_at_the_top_still_delivers :
+  answered_events
+    (check_syscall (mkInput 64 [4; task_top_buf; 16; 0; 0; 0]
+                      task_top_mem (fun _ => None))
+       (with_copyins [(task_top_buf, 16%nat)] (mkEffect 16 [] [])) pipe_queued_model)
+  = Some []
+  /\ check_syscall (mkInput 64 [4; task_top_buf; 16; 0; 0; 0]
+                      task_top_mem (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) pipe_queued_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- write (64) on an O_WRONLY file ------------------------------------ *)
+
+Definition rw_filew_model : Model :=
+  mkModel [(3, FdFileW [102] (Z_to_bv 64 0))] (mkVmMaps [] [] 0 0 demo_limit) IEof
+    [([102], [104; 105])] None None None.
+
+(** Before the test the arm wrote the sixteen wrapped bytes into the
+    file at offset 0; [vfs_write]'s [access_ok] refuses the range before
+    [write_begin] is reached, so -EFAULT with the file and [f_pos] as they
+    were.  The O_RDWR arm takes the same two tests through the same
+    helpers, and [write_range_boundary_pins_the_three_file_kinds] pins
+    the three kinds agreeing at [State.TASK_SIZE]. *)
+Example write_file_wrapping_buffer_is_efault :
+  check_syscall (mkInput 64 [3; top_wrap_buf; 16; 0; 0; 0]
+                   top_wrap_mem (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) rw_filew_model
+  = CheckOk rw_filew_model []
+  /\ check_syscall (mkInput 64 [3; top_wrap_buf; 16; 0; 0; 0]
+                      top_wrap_mem (fun _ => None))
+       (with_copyins [(top_wrap_buf, 16%nat)] (mkEffect 16 [] [])) rw_filew_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+Example write_file_at_the_top_still_writes :
+  answered_events
+    (check_syscall (mkInput 64 [3; task_top_buf; 16; 0; 0; 0]
+                      task_top_mem (fun _ => None))
+       (with_copyins [(task_top_buf, 16%nat)] (mkEffect 16 [] [])) rw_filew_model)
+  = Some []
+  /\ check_syscall (mkInput 64 [3; task_top_buf; 16; 0; 0; 0]
+                      task_top_mem (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) rw_filew_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- write (64) on a socket: declined, at both addresses --------------- *)
+
+(** WRITING A SOCKET IS DECLINED WHATEVER THE BUFFER ([write_spec]'s
+    [FdSocket] arm: SIGPIPE has no encoding), so there was no wrapped
+    answer to withdraw here.  Pinned so that a socket write arm grown
+    later has to come past this line with its own range test. *)
+Example write_socket_is_declined_at_both_addresses :
+  check_syscall (mkInput 64 [3; top_wrap_buf; 16; 0; 0; 0]
+                   top_wrap_mem (fun _ => None))
+    (with_copyins [(top_wrap_buf, 16%nat)] (mkEffect 16 [] []))
+    (rw_sock_model NFin)
+  = CheckUnmodeled
+  /\ check_syscall (mkInput 64 [3; task_top_buf; 16; 0; 0; 0]
+                      task_top_mem (fun _ => None))
+       (with_copyins [(task_top_buf, 16%nat)] (mkEffect 16 [] []))
+       (rw_sock_model NFin)
+     = CheckUnmodeled.
+Proof. split; check_eq. Qed.

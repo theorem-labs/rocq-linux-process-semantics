@@ -458,18 +458,23 @@ Definition check_munmap (addr len : word) (eff : SyscallEffect) (m : Model)
     are modeled ([Mprotect.mprotect_modeled_b]); any other [prot] — PROT_EXEC
     above all — is fail-closed. *)
 
-(** getrandom: destination must be writable-mapped; then a nonzero
-    request of at most [Random.getrandom_small_max] bytes is exactly
-    [cap] arbitrary bytes written at [buf], and a larger one is either
-    an error return with no writes or arbitrary bytes written at [buf]
-    — at least one (a bare 0 return is admissible only for [cap = 0])
-    — and only flags 0 / GRND_NONBLOCK are modeled (see
-    [Random.getrandom_spec]). *)
+(** getrandom: the checker is [check_getrandom] in
+    [Checks/Sys/Drivers/Char/Random.v].  The destination is asked through
+    [State.copy_bytes_map]: a range [access_ok] refuses is -EFAULT beside
+    -EINTR at every length, and one it admits that is not wholly
+    writable is declined.  Past that a nonzero request of at most
+    [Random.getrandom_small_max] bytes is exactly [cap] arbitrary bytes
+    written at [buf], and a larger one is either -EINTR with no writes or
+    arbitrary bytes written at [buf] — at least one (a bare 0 return is
+    admissible only for [cap = 0]) — and only flags 0 / GRND_NONBLOCK are
+    modeled (see [Random.getrandom_spec]). *)
 
-(** The acceptor for a ZERO-BYTE getrandom request once the range
-    verdict is known: [r0] is what that verdict allows besides the
-    interrupted return, which stays admissible either way (Linux can be
-    interrupted before it imports the buffer). *)
+(** [check_getrandom_zero], beside it, is the acceptor for a getrandom
+    that moves no byte: [r0] is the one answer besides the interrupted
+    return — 0 for a zero-byte request the range test admits, -EFAULT for
+    any range it refuses — and the interrupted return stays admissible
+    either way (Linux can be interrupted in [wait_for_random_bytes] before
+    [import_ubuf] tests the range). *)
 
 Lemma page_round_up_Z_nonneg : forall z,
   (0 <= z)%Z -> (0 <= page_round_up_Z z)%Z.
@@ -1916,5 +1921,6 @@ Qed.
 
 (* --------------------------------------------------------------- getrandom *)
 
-(** The zero-byte arm proved once, for whichever return the range
-    verdict allows beside the interrupted one. *)
+(** The no-byte arm — an admitted zero-byte request's 0 or a refused
+    range's -EFAULT, beside the interrupted return — is proved once, as
+    [check_getrandom_zero_sound] in [Checks/Sys/Drivers/Char/Random.v]. *)

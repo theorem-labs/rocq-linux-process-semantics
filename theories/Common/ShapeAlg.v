@@ -703,6 +703,8 @@ Lemma node_write1 : forall ms model x8 buf,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = Z_to_bv 64 1 ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  (* the range [vfs_write]'s [access_ok] accepts; see [CatSim.write1_check_n] *)
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= length buf)%nat ->
   node_ok (mkCfg ms model) (wr_index buf)
@@ -711,7 +713,7 @@ Lemma node_write1 : forall ms model x8 buf,
                              (set_gpr0 ms (len_word (firstn (proj1_sig i) buf))))
                           model).
 Proof.
-  intros ms model x8 buf Hh Hlazy Hfd Hsvc Hno Hg Hr Hbm Hnb. split.
+  intros ms model x8 buf Hh Hlazy Hfd Hsvc Hno Hg Hr Hok Hbm Hnb. split.
   - intros [n [Hn1 Hn2]]. cbn [proj1_sig].
     rewrite <- (apply_effect_copyins_no_write ms (len_word (firstn n buf))
                   [(ms_gpr ms 1, n)]).
@@ -726,7 +728,7 @@ Proof.
     + apply materialize_model_accesses_no_lazy. exact Hlazy.
   - intros e st Hss.
     destruct (sstep_write_inv segs ms model x8 buf e st
-                Hh Hlazy Hfd Hsvc Hno Hg Hr Hbm Hnb Hss)
+                Hh Hlazy Hfd Hsvc Hno Hg Hr Hok Hbm Hnb Hss)
       as (n & Hn1 & Hn2 & -> & ->).
     exists (exist _ n (conj Hn1 Hn2)). split; reflexivity.
 Qed.
@@ -739,13 +741,14 @@ Lemma rz_write1 : forall ms model x8 buf T,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = Z_to_bv 64 1 ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= length buf)%nat ->
   (forall n, (1 <= n)%nat -> (n <= length buf)%nat ->
      realizes (mkCfg (advance_past_svc (set_gpr0 ms (len_word (firstn n buf)))) model) T) ->
   realizes (mkCfg ms model) (t_write_ch (Z_to_bv 64 1) buf T).
 Proof.
-  intros ms model x8 buf T Hh Hlazy Hfd Hsvc Hno Hg Hr Hbm Hnb Hc.
+  intros ms model x8 buf T Hh Hlazy Hfd Hsvc Hno Hg Hr Hok Hbm Hnb Hc.
   unfold t_write_ch.
   apply (rz_node (mkCfg ms model) (wr_index buf)
            (fun i => map (WriteEv (Z_to_bv 64 1)) (firstn (proj1_sig i) buf))
@@ -1026,7 +1029,7 @@ Proof.
   intros segs ms model bufs code Hh Hlazy Hfd Hte. revert model Hh Hlazy Hfd.
   induction Hte as
     [ms x8 Hsvc Hx8
-    | ms x8 buf bufs code Hsvc Hno Hg Hr Hnb Hcont IH
+    | ms x8 buf bufs code Hsvc Hno Hg Hr Hok Hnb Hcont IH
     | ms ms' bufs code Hsvc Hstep Hte IH];
     intros model Hh Hlazy Hfd Hbm.
   - rewrite t_writes_pick_nil. eapply rz_exit; eassumption.
@@ -1052,7 +1055,7 @@ Proof.
   intros segs ms bufs code model Hte.
   induction Hte as
     [ms x8 Hsvc Hx8
-    | ms x8 buf bufs code Hsvc Hno Hg Hr Hnb Hcont IH
+    | ms x8 buf bufs code Hsvc Hno Hg Hr Hok Hnb Hcont IH
     | ms ms' bufs code Hsvc Hstep Hte IH]; intros Hbufs Hh;
     [| discriminate Hbufs |]; intro Hlazy.
   - eapply rz_exit; eassumption.
@@ -1096,7 +1099,7 @@ Proof.
        realizes segs (mkCfg ms model)
          (t_emit (map (WriteEv (Z_to_bv 64 1)) rest) T))).
   - (* twl_write *)
-    intros ms x8 rest k Hsvc Hno Hg Hr Hnb Hcont IH Hbm T HT Hk.
+    intros ms x8 rest k Hsvc Hno Hg Hr Hok Hnb Hcont IH Hbm T HT Hk.
     eapply rz_conseq.
     { apply (rz_node segs (mkCfg ms model) (wr_index rest)
         (fun i => map (WriteEv (Z_to_bv 64 1)) (firstn (proj1_sig i) rest))
@@ -1200,7 +1203,7 @@ Proof.
     intros ms ms' model bufs code Hsvc Hstep Hte IH Hh Hlazy Hfd Hbm.
     eapply rz_step; try eassumption. apply IH; assumption.
   - (* twmp_write *)
-    intros ms model x8 rest bufs code Hsvc Hno Hg Hr Hnb Hcont IH Hh Hlazy Hfd Hbr Hbm.
+    intros ms model x8 rest bufs code Hsvc Hno Hg Hr Hok Hnb Hcont IH Hh Hlazy Hfd Hbr Hbm.
     eapply rz_conseq.
     { apply (rz_node segs (mkCfg ms model) (wr_index rest)
         (fun i => map (WriteEv (Z_to_bv 64 1)) (firstn (proj1_sig i) rest))
@@ -1642,6 +1645,7 @@ Lemma node_write_ch : forall segs ms model fd ch x8 buf,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = fd ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= length buf)%nat ->
   node_ok segs (mkCfg ms model) (wr_index buf)
@@ -1650,7 +1654,7 @@ Lemma node_write_ch : forall segs ms model fd ch x8 buf,
                              (set_gpr0 ms (len_word (firstn (proj1_sig i) buf))))
                           model).
 Proof.
-  intros segs ms model fd ch x8 buf Hh Hlazy Hfdc H32 Hsvc Hno Hg Hr Hbm Hnb. split.
+  intros segs ms model fd ch x8 buf Hh Hlazy Hfdc H32 Hsvc Hno Hg Hr Hok Hbm Hnb. split.
   - intros [n [Hn1 Hn2]]. cbn [proj1_sig].
     rewrite <- (apply_effect_copyins_no_write ms (len_word (firstn n buf))
                   [(ms_gpr ms 1, n)]).
@@ -1665,7 +1669,7 @@ Proof.
     + apply materialize_model_accesses_no_lazy. exact Hlazy.
   - intros e st Hss.
     destruct (sstep_write_ch_inv segs fd ch H32 ms model x8 buf e st
-                Hh Hlazy Hfdc Hsvc Hno Hg Hr Hbm Hnb Hss)
+                Hh Hlazy Hfdc Hsvc Hno Hg Hr Hok Hbm Hnb Hss)
       as (n & Hn1 & Hn2 & -> & ->).
     exists (exist _ n (conj Hn1 Hn2)). split; reflexivity.
 Qed.
@@ -1678,6 +1682,7 @@ Lemma rz_write_ch : forall segs ms model fd ch x8 buf T,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = fd ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= length buf)%nat ->
   (forall n, (1 <= n)%nat -> (n <= length buf)%nat ->
@@ -1685,7 +1690,7 @@ Lemma rz_write_ch : forall segs ms model fd ch x8 buf T,
        (mkCfg (advance_past_svc (set_gpr0 ms (len_word (firstn n buf)))) model) T) ->
   realizes segs (mkCfg ms model) (t_write_ch ch buf T).
 Proof.
-  intros segs ms model fd ch x8 buf T Hh Hlazy Hfdc H32 Hsvc Hno Hg Hr Hbm Hnb Hc.
+  intros segs ms model fd ch x8 buf T Hh Hlazy Hfdc H32 Hsvc Hno Hg Hr Hok Hbm Hnb Hc.
   unfold t_write_ch.
   apply (rz_node segs (mkCfg ms model) (wr_index buf)
            (fun i => map (WriteEv ch) (firstn (proj1_sig i) buf))
@@ -1709,7 +1714,7 @@ Proof.
   revert model Hh Hlazy Hfdc.
   induction Hte as
     [ms x8 Hsvc Hx8
-    | ms x8 buf bufs code Hsvc Hno Hg Hr Hnb Hcont IH
+    | ms x8 buf bufs code Hsvc Hno Hg Hr Hok Hnb Hcont IH
     | ms ms' bufs code Hsvc Hstep Hte IH];
     intros model Hh Hlazy Hfdc Hbm.
   - eapply rz_exit; eassumption.

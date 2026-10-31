@@ -555,6 +555,46 @@ Definition image_brk_witness (segs : list Segment) : Z :=
 Definition image_brk_satisfiable (segs : list Segment) : bool :=
   (image_brk_witness segs <? 2 ^ 64)%Z.
 
+(** WHAT THIS BOUNDS, AND WHAT IT DOES NOT.  It is worth stating here
+    because the syscall layer leans on it twice and got the reason wrong
+    once.
+
+    [reserved_top] is the MAXIMUM of [base + size] over every loaded
+    segment, in [Z], and the witness above is that maximum rounded up to
+    a page.  So this check IS an address bound and not only an
+    anti-vacuity test: under it no loaded byte can lie in the last page
+    of the address space, since a reservation reaching into that page
+    rounds up to 2^64 and the check is then [false].  That is exactly
+    what makes a WRAPPING user access unreachable in a run under this
+    ascription — a wrap needs the byte at 2^64-1, the image cannot
+    supply it, and [State.alloc_top] and [State.sp_window_hi] hold
+    mmap, brk and the stack far below it.
+    [Sys.Kernel.Signal]'s notes name this check for that argument.
+
+    THE BOUND IS BELOW 2^64 AND NOT BELOW [State.TASK_SIZE] (2^47), and
+    nothing else closes the difference: [Run.valid_entry] adds only
+    [Run.valid_brk], which asks the break to sit at or above
+    [reserved_top] and gives no 2^47 ceiling, and the other two IMAGE_WF
+    parameters are about the entry and the program headers.  So an image
+    carrying a LOAD segment ABOVE the user address space satisfies every
+    well-formedness condition this tree asserts, [Run.sys_input] hands
+    its bytes to the syscall layer as [State.in_mem], and a syscall
+    pointer into it is a range that is wholly mapped and that
+    [State.access_okb] refuses — the shape every [copy_from_user] and
+    [copy_to_user] in Linux answers -EFAULT for.  A spec that tests only
+    whether a range is mapped therefore ANSWERS such a call, in a run,
+    under the full ascription, with no wrap anywhere.  That is why the
+    range test is asked per site rather than argued away from this
+    check, and it is the half of the argument a bound on the image would
+    not remove.
+
+    THE CAVEAT, which belongs with the claim wherever it travels: this
+    is argued from the well-formedness conditions and [Run.valid_entry],
+    which were read, and not from a survey of shipped images.  No image
+    in theories/Examples and no ELF snapshot read while this was written
+    places a segment above 2^47 — the snapshot tool records real riscv64
+    loads, which sit far below it. *)
+
 Lemma reserved_top_nonneg : forall maps,
   (0 <= reserved_top maps)%Z.
 Proof.

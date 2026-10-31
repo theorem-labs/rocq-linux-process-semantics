@@ -904,3 +904,314 @@ Example ppoll_an_unreadable_mask_is_efault :
     (with_copyins [(pp_tsp, 16%nat)] (mkEffect (errno_ret EFAULT) [] [])) pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
+
+(* =========================================================================
+   THE USER RANGES THAT WALKED OFF THE TOP OF THE ADDRESS SPACE
+
+   pselect6's descriptor-set word ([Select.read_fd_set]), the timespec
+   pselect6 and ppoll share ([Select.pselect_timeout]), pselect6's
+   {[sigset_t *], [size_t]} pack ([Select.pselect_sigpack]), ppoll's
+   signal mask ([Select.ppoll_sigmask]) and the write-back test both
+   syscalls end on ([Select.range_writable]) each read user memory with
+   [State.read_bytes_map] or [State.read_u64] and no range test in front.
+   That walk advances in WORD arithmetic and wraps at 2^64, so a pointer
+   in the last bytes of the address space read the bytes below the wrap
+   and then the bytes from 0 on, said [Some], and the call was judged on
+   them.  Each now asks [State.access_okb] first, or goes through
+   [State.copy_bytes_map], which is that test and then the walk.
+
+   EACH GROUP IS A TRIPLE, in the shape the socket groups in
+   [Checks.Cases.Net.Socket] take: the wrapping call refused, a
+   neighbouring ordinary call at the top of what [State.access_okb]
+   accepts still answered, and the control that the bare walk really
+   would have passed -- without it the refusal would also hold if the
+   memory quietly stopped mapping the range.
+
+   THE MEMORIES MAP EXACTLY THEIR OWN RANGE and nothing else, for that
+   reason, and they are written as range tests rather than as
+   [bytes_at] with a low base: [bytes_at] turns the distance from its
+   base into a unary [nat], and a probe near 2^64 from a base near 0
+   would build one that never finishes.
+   ========================================================================= *)
+
+(* ---- pselect6 (72): the descriptor-set word ----------------------------- *)
+
+(** Four bytes below the top and four from 0: the 8-byte [readfds] word
+    covers both halves.  The byte at the base is 8, so the word names
+    fd 3, the open file in [pselect_model], and the writable map is the
+    same eight bytes.  Before the guard this call was not refused late:
+    it imported that word, found fd 3 ready, wrote the word back through
+    the same wrap, and returned 1. *)
+Definition sel_wrap_inp : word := Z_to_bv 64 (2 ^ 64 - 4).
+
+Definition sel_wrap_inp_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 4)%Z || (2 ^ 64 - 4 <=? bv_unsigned a)%Z)%bool
+           then Some (if bv_eqb a sel_wrap_inp then Z_to_bv 8 8 else Z_to_bv 8 0)
+           else None.
+
+Example pselect_wrap_set_would_pass_the_bare_walk :
+  read_bytes_map sel_wrap_inp_mem sel_wrap_inp (Z_to_bv 64 8) <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example pselect_wrap_set_is_not_imported :
+  read_fd_set sel_wrap_inp_mem sel_wrap_inp 4 = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(** -EFAULT with nothing read and nothing written is the answer, and the
+    1 the bare walk admitted -- with its write-back through the wrap and
+    its one-word ledger -- is refused.  [get_fd_set] (fs/select.c,
+    [get_fd_set]) imports with [copy_from_user], whose [access_ok]
+    refuses this range. *)
+Example pselect_wrapping_set_is_efault :
+  check_syscall
+    (mkInput 72 [4; sel_wrap_inp; 0; 0; 0; 0] sel_wrap_inp_mem sel_wrap_inp_mem)
+    (mkEffect (errno_ret EFAULT) [] []) pselect_model
+  = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 72 [4; sel_wrap_inp; 0; 0; 0; 0] sel_wrap_inp_mem sel_wrap_inp_mem)
+       (with_copyins [(sel_wrap_inp, 8%nat)]
+          (mkEffect 1 [(sel_wrap_inp, word_le8 8)] [])) pselect_model
+     = CheckReject.
+Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
+
+(** THE NEIGHBOUR: the last eight bytes [State.access_okb] accepts,
+    readable and writable end to end, with the same word in them.  The
+    call is still answered -- 1, the word written back, the one-word
+    ledger -- and -EFAULT is refused there. *)
+Definition sel_top_inp : word := Z_to_bv 64 (TASK_SIZE - 8).
+
+Definition sel_top_inp_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 8 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (if bv_eqb a sel_top_inp then Z_to_bv 8 8 else Z_to_bv 8 0)
+           else None.
+
+Example pselect_set_at_the_top_still_answers :
+  check_syscall
+    (mkInput 72 [4; sel_top_inp; 0; 0; 0; 0] sel_top_inp_mem sel_top_inp_mem)
+    (with_copyins [(sel_top_inp, 8%nat)]
+       (mkEffect 1 [(sel_top_inp, word_le8 8)] [])) pselect_model
+  = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 72 [4; sel_top_inp; 0; 0; 0; 0] sel_top_inp_mem sel_top_inp_mem)
+       (mkEffect (errno_ret EFAULT) [] []) pselect_model
+     = CheckReject.
+Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
+
+(* ---- the write-back test both syscalls end on --------------------------- *)
+
+(** [Select.range_writable] went through the bare walk too, so the
+    wrapping word above read back as WRITABLE, which is how the call got
+    as far as returning 1.  A refused range cannot reach it through
+    either syscall now, since every range it is handed is one an import
+    has already accepted (the note at [Select.range_writable]), so it is
+    pinned at the helper: refused at the wrap and still writable at the
+    top.  The control is [pselect_wrap_set_would_pass_the_bare_walk]
+    above, over the same memory and the same eight bytes. *)
+Example range_writable_refuses_the_wrap :
+  range_writable (mkInput 72 [] (fun _ => None) sel_wrap_inp_mem) sel_wrap_inp 8
+  = false.
+Proof. vm_compute. reflexivity. Qed.
+
+Example range_writable_still_admits_the_top :
+  range_writable (mkInput 72 [] (fun _ => None) sel_top_inp_mem) sel_top_inp 8
+  = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(* ---- pselect6 (72) and ppoll (73): the timespec ------------------------- *)
+
+(** Eight bytes below the top and eight from 0, so the two fields split
+    across the wrap: [tv_sec] = 0 at the top and [tv_nsec] = 1000000 from
+    address 0.  That is a real deadline over an empty request, the
+    portable-sleep shape, so before the guard both syscalls ran it to
+    expiry, wrote sixteen zero bytes back through the same wrap, and
+    returned 0.  [get_timespec64] (kernel/time/time.c, [get_timespec64])
+    imports with [copy_from_user], whose [access_ok] refuses the range,
+    so both answer -EFAULT with nothing read and nothing written. *)
+Definition sel_wrap_tsp : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition sel_wrap_tsp_mem : word -> option byte :=
+  fun a => if (2 ^ 64 - 8 <=? bv_unsigned a)%Z then Some (Z_to_bv 8 0)
+           else if (bv_unsigned a <? 8)%Z
+           then nth_error (word_le8 1000000) (Z.to_nat (bv_unsigned a))
+           else None.
+
+Example timespec_wrap_would_pass_the_bare_walk :
+  read_bytes_map sel_wrap_tsp_mem sel_wrap_tsp (Z_to_bv 64 16) <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example timespec_wrap_is_a_fault :
+  pselect_timeout sel_wrap_tsp_mem sel_wrap_tsp = PsToFault.
+Proof. vm_compute. reflexivity. Qed.
+
+Example timespec_wrapping_is_efault :
+  check_syscall
+    (mkInput 72 [0; 0; 0; 0; sel_wrap_tsp; 0] sel_wrap_tsp_mem sel_wrap_tsp_mem)
+    (mkEffect (errno_ret EFAULT) [] []) pselect_model
+  = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 72 [0; 0; 0; 0; sel_wrap_tsp; 0] sel_wrap_tsp_mem sel_wrap_tsp_mem)
+       (with_copyins [(sel_wrap_tsp, 16%nat)]
+          (mkEffect 0 [(sel_wrap_tsp, repeat (Z_to_bv 8 0) 16)] [])) pselect_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 73 [0; 0; sel_wrap_tsp; 0; 0; 0] sel_wrap_tsp_mem sel_wrap_tsp_mem)
+       (mkEffect (errno_ret EFAULT) [] []) pselect_model
+     = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 73 [0; 0; sel_wrap_tsp; 0; 0; 0] sel_wrap_tsp_mem sel_wrap_tsp_mem)
+       (with_copyins [(sel_wrap_tsp, 16%nat)]
+          (mkEffect 0 [(sel_wrap_tsp, repeat (Z_to_bv 8 0) 16)] [])) pselect_model
+     = CheckReject.
+Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE NEIGHBOUR: the last sixteen bytes [State.access_okb] accepts,
+    readable and writable, holding the same {0, 1000000}.  Both
+    syscalls still run it to expiry and write the sixteen zero bytes
+    back, with the timespec on the ledger, and -EFAULT is refused. *)
+Definition sel_top_tsp : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition sel_top_tsp_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 16 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then nth_error (word_le8 0 ++ word_le8 1000000)
+                  (Z.to_nat (bv_unsigned a - (TASK_SIZE - 16)))
+           else None.
+
+Example timespec_at_the_top_still_answers :
+  check_syscall
+    (mkInput 72 [0; 0; 0; 0; sel_top_tsp; 0] sel_top_tsp_mem sel_top_tsp_mem)
+    (with_copyins [(sel_top_tsp, 16%nat)]
+       (mkEffect 0 [(sel_top_tsp, repeat (Z_to_bv 8 0) 16)] [])) pselect_model
+  = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 72 [0; 0; 0; 0; sel_top_tsp; 0] sel_top_tsp_mem sel_top_tsp_mem)
+       (mkEffect (errno_ret EFAULT) [] []) pselect_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 73 [0; 0; sel_top_tsp; 0; 0; 0] sel_top_tsp_mem sel_top_tsp_mem)
+       (with_copyins [(sel_top_tsp, 16%nat)]
+          (mkEffect 0 [(sel_top_tsp, repeat (Z_to_bv 8 0) 16)] [])) pselect_model
+     = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 73 [0; 0; sel_top_tsp; 0; 0; 0] sel_top_tsp_mem sel_top_tsp_mem)
+       (mkEffect (errno_ret EFAULT) [] []) pselect_model
+     = CheckReject.
+Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(* ---- pselect6 (72): the {[sigset_t *], [size_t]} pack -------------------- *)
+
+(** Eight bytes below the top and eight from 0: the mask pointer is NULL
+    at the top and the size, 8, sits at address 0.  {NULL, 8} is musl's
+    plain [select] pack, which is NO MASK, so before the guard the call
+    went on to import [readfds] at [ps_inp] and returned 1.
+    [get_sigset_argpack] (fs/select.c, [get_sigset_argpack]) tests
+    [access_ok] over the whole pack before it reads either field, and
+    answers -EFAULT. *)
+Definition sel_wrap_sig : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition sel_wrap_sig_mem : word -> option byte :=
+  fun a => if (2 ^ 64 - 8 <=? bv_unsigned a)%Z then Some (Z_to_bv 8 0)
+           else if (bv_unsigned a <? 8)%Z
+           then Some (if bv_eqb a (Z_to_bv 64 0) then Z_to_bv 8 8 else Z_to_bv 8 0)
+           else bytes_at ps_inp (word_le8 8) a.
+
+Example sigpack_wrap_would_pass_the_bare_walk :
+  read_bytes_map sel_wrap_sig_mem sel_wrap_sig (Z_to_bv 64 16) <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example sigpack_wrap_is_a_fault :
+  pselect_sigpack sel_wrap_sig_mem sel_wrap_sig = PsSigFault.
+Proof. vm_compute. reflexivity. Qed.
+
+Example sigpack_wrapping_is_efault :
+  check_syscall
+    (mkInput 72 [4; ps_inp; 0; 0; 0; sel_wrap_sig] sel_wrap_sig_mem ps_wmem)
+    (mkEffect (errno_ret EFAULT) [] []) pselect_model
+  = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 72 [4; ps_inp; 0; 0; 0; sel_wrap_sig] sel_wrap_sig_mem ps_wmem)
+       (with_copyins [(sel_wrap_sig, 16%nat); (ps_inp, 8%nat)]
+          (mkEffect 1 [(ps_inp, word_le8 8)] [])) pselect_model
+     = CheckReject.
+Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
+
+(** THE NEIGHBOUR: the last sixteen bytes [State.access_okb] accepts,
+    holding the same {NULL, 8}.  The pack is read, it is no mask, and
+    the call is still answered -- 1, with the pack and the set on the
+    ledger -- and -EFAULT is refused there. *)
+Definition sel_top_sig : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition sel_top_sig_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 16 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (if bv_eqb a (Z_to_bv 64 (TASK_SIZE - 8))
+                      then Z_to_bv 8 8 else Z_to_bv 8 0)
+           else bytes_at ps_inp (word_le8 8) a.
+
+Example sigpack_at_the_top_still_answers :
+  check_syscall
+    (mkInput 72 [4; ps_inp; 0; 0; 0; sel_top_sig] sel_top_sig_mem ps_wmem)
+    (with_copyins [(sel_top_sig, 16%nat); (ps_inp, 8%nat)]
+       (mkEffect 1 [(ps_inp, word_le8 8)] [])) pselect_model
+  = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 72 [4; ps_inp; 0; 0; 0; sel_top_sig] sel_top_sig_mem ps_wmem)
+       (mkEffect (errno_ret EFAULT) [] []) pselect_model
+     = CheckReject.
+Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
+
+(* ---- ppoll (73): the signal mask ----------------------------------------- *)
+
+(** Four bytes below the top and four from 0: the 8-byte mask covers both
+    halves.  Before the guard it read back as a mask and the call took
+    the [PpSigReal] decline -- a gap rather than a wrong answer, but not
+    the kernel's answer: [set_user_sigmask] (kernel/signal.c,
+    [set_user_sigmask]) copies the mask with [copy_from_user], whose
+    [access_ok] refuses the range, so ppoll answers -EFAULT, and a
+    success is refused. *)
+Definition pp_wrap_mask : word := Z_to_bv 64 (2 ^ 64 - 4).
+
+Definition pp_wrap_mask_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 4)%Z || (2 ^ 64 - 4 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example ppoll_wrap_mask_would_pass_the_bare_walk :
+  read_bytes_map pp_wrap_mask_mem pp_wrap_mask (Z_to_bv 64 8) <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example ppoll_wrap_mask_is_a_fault :
+  ppoll_sigmask pp_wrap_mask_mem pp_wrap_mask 8 = PpSigFault.
+Proof. vm_compute. reflexivity. Qed.
+
+Example ppoll_wrapping_mask_is_efault :
+  check_syscall
+    (mkInput 73 [0; 0; 0; pp_wrap_mask; 8; 0] pp_wrap_mask_mem (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) pselect_model
+  = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 73 [0; 0; 0; pp_wrap_mask; 8; 0] pp_wrap_mask_mem (fun _ => None))
+       (mkEffect 0 [] []) pselect_model
+     = CheckReject.
+Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
+
+(** THE NEIGHBOUR: the last eight bytes [State.access_okb] accepts, a
+    readable mask.  The range test passes, the mask is copied, and the
+    call reaches the arm that would INSTALL it, which the model declines
+    as it always has for a real mask (the pair pinned in
+    [Checks.Cases.Kernel.Signal]).  So -EFAULT is not the answer there,
+    and the guard is not a refusal of every high address. *)
+Definition pp_top_mask : word := Z_to_bv 64 (TASK_SIZE - 8).
+
+Definition pp_top_mask_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 8 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example ppoll_mask_at_the_top_is_still_copied :
+  ppoll_sigmask pp_top_mask_mem pp_top_mask 8 = PpSigReal
+  /\ check_syscall
+       (mkInput 73 [0; 0; 0; pp_top_mask; 8; 0] pp_top_mask_mem (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) pselect_model
+     = CheckUnmodeled.
+Proof. split; vm_compute; reflexivity. Qed.
