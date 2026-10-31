@@ -218,9 +218,10 @@ Proof.
   pose proof (word_range addr) as Haddrr.
   pose proof (word_range ret) as Hretr.
   destruct (negb (mmap_off_aligned_b off)) eqn:Eoff.
-  { destruct (mmap_pglen_ok_b len); [|discriminate].
+  { apply check_ret_only_model in H; subst m'; exact Hfit. }
+  destruct (negb (mmap_anon_b flags)) eqn:Eanon.
+  { destruct (fd_lookup (m_fds m) (fd32 fd)); [discriminate|].
     apply check_ret_only_model in H; subst m'; exact Hfit. }
-  destruct (negb (mmap_anon_b flags)) eqn:Eanon; [discriminate|].
   destruct (w_is0 len) eqn:Elen.
   { destruct (mmap_plain_anon_b flags); [|discriminate].
     apply check_ret_only_model in H; subst m'; exact Hfit. }

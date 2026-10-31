@@ -80,14 +80,14 @@ Proof.
   destruct (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_PACKET).
   { apply unmodeled_intro. }
   destruct (orb (Z.ltb (sint32 protocol) 0) (Z.leb IPPROTO_MAX (sint32 protocol))).
-  { apply pure_ok. }
+  { apply alt_l. apply pure_ok. }
   destruct (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_STREAM).
   - destruct (orb (Z.eqb (sint32 protocol) IPPROTO_SCTP)
                   (Z.eqb (sint32 protocol) IPPROTO_MPTCP)).
     { apply unmodeled_intro. }
     destruct (negb (orb (Z.eqb (sint32 protocol) IPPROTO_IP)
                         (Z.eqb (sint32 protocol) IPPROTO_TCP))).
-    { apply pure_ok. }
+    { apply alt_l. apply pure_ok. }
     apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok.
   - destruct (orb (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_DGRAM)
                   (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_RAW)).
@@ -95,7 +95,7 @@ Proof.
     destruct (orb (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_SEQPACKET)
                   (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_DCCP)).
     { apply unmodeled_intro. }
-    apply pure_ok.
+    apply alt_l. apply pure_ok.
 Qed.
 
 (* =========================================================================
@@ -239,7 +239,9 @@ Definition accept4_witness (fd addrp flags : word) (m : Model)
           | SkListening => ret_outcome (errno_ret witness_errno) m
           | _ => ret_outcome (errno_ret EINVAL) m
           end
-      | _ => ret_outcome (errno_ret ENOTSOCK) m
+      | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
+             then Unmodeled
+             else ret_outcome (errno_ret ENOTSOCK) m
       end
   end.
 
@@ -254,9 +256,12 @@ Proof.
                            (Z.lor SOCK_CLOEXEC SOCK_NONBLOCK)) 0)); [apply pure_ok|].
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags)) SOCK_NONBLOCK) 0));
     [apply unmodeled_intro|].
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]; try apply pure_ok.
+  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ];
+    try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT));
+         [apply unmodeled_intro | apply alt_l; apply pure_ok]).
   destruct (negb (w_is0 addrp)); [apply unmodeled_intro|].
-  destruct sk as [| | |peer ch rx|peer ch]; try apply pure_ok.
+  destruct sk as [| | |peer ch rx|peer ch];
+    try (apply alt_l; apply pure_ok).
   (* listening: the one arm that can hand a connection over, taken on its
      environment-failure branch *)
   apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok.

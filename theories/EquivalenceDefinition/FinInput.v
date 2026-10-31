@@ -905,9 +905,10 @@ Lemma valid_input_urandom_endless_irrelevant : forall inp r,
                  r (in_tmp inp)).
 Proof.
   intros inp r H Hr.
-  (* [valid_input] has eleven conjuncts: keep the first ten and replace the last ([valid_urandom]) with [Hr]. *)
-  destruct H as (a & b & c & d & e & f & g & h & i & j & _).
-  exact (conj a (conj b (conj c (conj d (conj e (conj f (conj g (conj h (conj i (conj j Hr)))))))))).
+  (* [valid_input] has twelve conjuncts: keep the first eleven and
+     replace the last ([valid_urandom]) with [Hr]. *)
+  destruct H as (a & b & c & d & e & f & g & h & i & j & k & _).
+  exact (conj a (conj b (conj c (conj d (conj e (conj f (conj g (conj h (conj i (conj j (conj k Hr))))))))))).
 Qed.
 
 (** The same for [valid_fin_input]: the byte list in [fin_stdin] is
@@ -964,11 +965,12 @@ Lemma valid_fin_input_urandom_irrelevant : forall f l,
                      l (fin_tmp f)).
 Proof.
   intros f l H.
-  (* Eleven conjuncts: keep the first ten and prove the last ([valid_urandom]) from the padding. *)
-  destruct H as (a & b & c & d & e & g & h & i & j & k & _).
-  exact (conj a (conj b (conj c (conj d (conj e (conj g (conj h (conj i (conj j (conj k
+  (* Twelve conjuncts: keep the first eleven and prove the last
+     ([valid_urandom]) from the padding. *)
+  destruct H as (a & b & c & d & e & g & h & i & j & k & n & _).
+  exact (conj a (conj b (conj c (conj d (conj e (conj g (conj h (conj i (conj j (conj k (conj n
     (stream_of_list_then_infinite l State.default_urandom
-       State.default_urandom_infinite))))))))))).
+       State.default_urandom_infinite)))))))))))).
 Qed.
 
 (* -------------------------------------------------------------------------
