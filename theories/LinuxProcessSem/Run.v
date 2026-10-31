@@ -259,15 +259,17 @@ Variable mi_init_brk : word.
     model quantifies over the band instead.  The band is exactly the set
     of bases Linux gives under the assumptions SCOPE.md names
     ([Checks.Cases.MmapBase.sv48_band_is_linux_set]).
-    Seeds [State.init_model]'s [vm_mmap_base].  NO SPEC ARM READS THAT
-    VALUE: in the trusted spec placement is admissibility alone (see
-    [Mmap.mmap_spec]'s placement section), and the untrusted search in
+    Seeds [State.init_model]'s [vm_mmap_base].  THE SPEC READS THAT
+    VALUE: both fresh-grant arms of [Mmap.mmap_spec], and [mremap]'s
+    move, choose their address with [Mmap.linux_place], whose top-down
+    half searches below [State.mmap_top], which is the minimum of this
+    base and [State.alloc_top] (see [Mmap.mmap_spec]'s PLACEMENT
+    section).  The untrusted search in
     theories/Common/PlacementSearch.v takes its floor as a bare argument
     rather than off a [VmMaps].  The ASan plan checker's placement gate
-    ([Common.AsanCeil.placement_ok]) does read it, under that checker's
-    named [placement_policy] hypothesis.  What keeps the field in the
-    spec is the PREDICATE over it, not the value — see
-    [valid_mmap_base]. *)
+    ([Common.AsanCeil.placement_ok]) reads it too, under that checker's
+    named [placement_policy] hypothesis.  The PREDICATE over the value
+    is what [valid_entry] carries — see [valid_mmap_base]. *)
 Variable mi_mmap_base : word.
 
 (** The 16 bytes of startup entropy AT_RANDOM points at, drawn afresh at
@@ -2571,8 +2573,9 @@ Definition valid_brk (segs : list Segment) (brk : word) : Prop :=
     Quantified independently per binary in
     [Equivalence.strong_universal_T], like [valid_sp] and [valid_brk].
 
-    No spec arm reads [vm_mmap_base] — placement is admissibility
-    alone — so the band constrains no placement the model admits.  But
+    The spec reads [vm_mmap_base]: it is the top-down bound of
+    [Mmap.linux_place], through [State.mmap_top].  So the band is the
+    set of placements the model admits, base by base.  Also,
     [valid_mmap_base] is the third conjunct of [valid_entry], which
     [Equivalence.strong_universal_T] quantifies its entries under, and
     discharging it is a required step of the tree's anti-vacuity lemma

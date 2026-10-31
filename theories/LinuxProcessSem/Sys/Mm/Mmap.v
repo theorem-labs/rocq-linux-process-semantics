@@ -55,19 +55,16 @@ Open Scope sys_scope.
    mmap/brk effect's [eff_zeros] is disjoint from the stack and the
    image by constant-interval arithmetic, with no dependence on SP.
 
-   PLACEMENT within the free space is nondeterministic (covering ASLR
-   and both kernel layouts), with no floor or highest-fit invariant laid
-   on top: a fresh grant's [choose] guard asks only for page alignment,
-   an address below [alloc_top], and disjointness from [vm_reserved]
-   and [vm_maps] through [region_free].  A first grant can therefore
-   land as low as 0x80000000, the placement
-   [mmap_null_hint_low_grant_admitted] checks.  That is safe for a
-   program whose runtime later reserves a low fixed range, because such
-   a later MAP_FIXED reservation is the spanning
-   replacement ([mmap_fixed_rw_span_next] and
-   [mmap_fixed_noaccess_span_next], both built on [maps_subtract])
-   rather than a decline, as [asan_shadow_fixed_after_null_grants_admitted]
-   checks.
+   PLACEMENT is Linux's: a fresh grant with no MAP_FIXED lands at the
+   one address [linux_place] gives, which is the address
+   [__get_unmapped_area] gives for the same ledger, the same
+   [mm->mmap_base] and the same kernel build (Linux v6.18.46, commit
+   1f99e9ab748f, mm/mmap.c).  The randomization stays quantified --
+   the base, the stack pointer and the program break are still drawn
+   -- but GIVEN the draw and the earlier calls, the address is a
+   function, not a choice.  See the PLACEMENT section below for the
+   rule, for what Linux does, and for the four residuals in which the
+   model's address can still differ from the kernel's.
 
    BUDGET: every accessible grant is additionally metered against the
    run's backed-memory budget ([State.vm_limit], seeded per role by
@@ -913,94 +910,230 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
   && Z.eqb (Z.land (bv_unsigned flags) MAP_HUGETLB) 0.
 
 (* =========================================================================
-   PLACEMENT — what the two fresh-grant arms may choose, and why the
-   spec says no more than it does
+   PLACEMENT — where a fresh mapping goes, and why that is Linux's
+   address and not a choice
 
-   When the caller expresses no preference the kernel picks the address,
-   and the model lets it: the placement flows through the
-   nondeterminism monad, exactly as the initial stack pointer and the
-   program break already do ([Run.valid_sp], [Run.valid_brk],
-   [Equivalence.strong_universal_T]).  The [choose] guards below say
-   three things about the address and nothing else:
+   Every Linux claim below is at v6.18.46, commit 1f99e9ab748f.
 
-   - it is PAGE-ALIGNED;
-   - it is inside the user address space this model describes — nonzero,
-     and ending at or below this run's [State.alloc_top];
-   - it is DISJOINT from every mapping the ledger records, [vm_reserved]
-     and [vm_maps] both.  [get_unmapped_area] never silently overlaps a
-     live VMA for a preference-free request: both generic searches ask
-     [vm_unmapped_area] for a gap (mm/mmap.c:712-718 and :763-770, Linux
-     v6.18.46), and a gap is by construction free of every VMA in the
-     interval it was searched (mm/vma.c:2885-2930, :2942-2982).
+   WHAT LINUX DOES, for an anonymous MAP_PRIVATE request without
+   MAP_FIXED on riscv64 under Sv48.
 
-   WHY NOT MORE.  A fourth conjunct could also pin the
-   SEARCH: a placement would have to sit at or above a bottom-up floor derived
-   from riscv64's [TASK_UNMAPPED_BASE], or else leave no fitting free
-   gap between its end and the run's [mm->mmap_base].  Three things are
-   wrong with that, in increasing order of importance.
+   (1) THE LAYOUT.  riscv64 selects ARCH_WANT_DEFAULT_TOPDOWN_MMAP_LAYOUT
+   (arch/riscv/Kconfig), so [arch_pick_mmap_layout] (mm/util.c) sets
+   [mm->mmap_base] from [mmap_base] and raises MMF_TOPDOWN.
+   [mmap_base] is [PAGE_ALIGN(STACK_TOP - gap - rnd)] with the gap
+   clamped to [[MIN_GAP, MAX_GAP]] and [rnd] from [arch_mmap_rnd]
+   (mm/util.c).  [State.vm_mmap_base] carries the drawn value, and
+   [Run.valid_mmap_base] quantifies it over the band this model admits
+   ([Checks.Cases.MmapBase.sv48_band_is_linux_set] shows the band is
+   Linux's set).
 
-   It would EXCLUDE PLACEMENTS LINUX MAKES.  The highest-fit half would
-   be read on
-   the model's ledger, and the kernel's search walks VMAs the ledger
-   does not carry — the vdso/vvar pair [execve] installs, among others.
-   A real top-down descent below the floor is justified by "everything
-   above me is occupied", occupied in part by mappings the model never
-   recorded, so the model would call a real placement inadmissible.  That is
-   the direction that costs the THEOREM rather than coverage: a
-   statement proved against it would not cover the run the kernel
-   performs.  The ledger's missing kernel VMAs have other costs, which
-   are a known limitation of the model.
+   (2) THE ENTRY POINT.  [do_mmap] (mm/mmap.c) forces MAP_FIXED for
+   MAP_FIXED_NOREPLACE, and without MAP_FIXED calls
+   [round_hint_to_min], which is [hint &= PAGE_MASK] and then a raise
+   to [PAGE_ALIGN(mmap_min_addr)] for a nonzero hint below it.  So a
+   hint of 1 to 4095 ROUNDS DOWN TO ZERO and is no hint at all.
+   [hint_address] below is the rounding; the raise never fires at the
+   [mmap_min_addr] of 4096 that SCOPE.md assumes, and SCOPE.md names
+   the SELinux default of 65536 as outside the model.
 
-   It would ENCODE A LAYOUT.  The floor is a constant, and no constant of
-   that kind belongs in a model of the kernel: riscv64's own is one,
-   but the same slot invites one chosen to clear whatever
-   the runtime in front of us happens to reserve, which would be a fact
-   about a corpus wearing a kernel citation.  Nor could the floor be
-   RAISED to steer placements clear of a runtime's absolute
-   reservations: on riscv64 [TASK_UNMAPPED_BASE] is
-   [PAGE_ALIGN((UL(1) << MMAP_MIN_VA_BITS) / 3)] with [MMAP_MIN_VA_BITS]
-   fixed at [VA_BITS_SV39] whatever paging mode the guest boots
-   (arch/riscv/include/asm/processor.h:52, pgtable.h:138-140, Linux
-   v6.18.46), so every riscv64 kernel allocates bottom-up from
-   0x2aaaaab000 and a higher floor would call a real placement
-   inadmissible.  A collision with such a reservation is answered by
-   the spanning MAP_FIXED arm below, unless the reservation reaches the
-   image, which is the one MAP_FIXED shape that still declines.
+   (3) TRANSPARENT HUGE PAGES.  [__get_unmapped_area] (mm/mmap.c) sends
+   a PRIVATE anonymous request — no file and no MAP_SHARED, so the
+   file-system hook [get_area] stays NULL — with NO hint and a length
+   that is a multiple of PMD_SIZE to [thp_get_unmapped_area_vmflags]
+   when the kernel was built with CONFIG_TRANSPARENT_HUGEPAGE.  (A
+   SHARED anonymous request takes [shmem_get_unmapped_area] instead,
+   and never reaches the THP path; this model answers [unmodeled] for
+   every MAP_SHARED mmap, so [linux_place] is never asked for one.)
+   That searches for [len + PMD_SIZE]
+   and, on success, returns [ret + PMD_SIZE] when [ret] is already
+   PMD_SIZE aligned under MMF_TOPDOWN and [ret + off_sub] otherwise,
+   with [off_sub = (0 - ret) & (PMD_SIZE - 1)] for the pgoff of zero
+   that anonymous memory always has; a failed padded search falls back
+   to the plain one (mm/huge_memory.c, [__thp_get_unmapped_area]).
+   [thp_align] below is that arithmetic: the least multiple of
+   PMD_SIZE strictly above [ret].  Whether the kernel was built with it
+   is a fact about the image, so it is an input: [State.KernelBuild]'s
+   [kb_thp].  The riscv defconfig does not set it; distribution
+   kernels do.
 
-   And it would describe a KERNEL THAT DOES NOT DEPLOY.  Placement is
-   randomized per exec ([arch_mmap_rnd], mm/util.c:399-411), so no
-   deterministic rule is the rule; what is true of every run is the
-   admissibility above.  Quantifying over the whole admissible set is
-   also what makes the certified property the right one — that
-   observable behaviour is INSENSITIVE to placement, which is what an
-   equivalence statement about a sanitizer build should mean.  A program
-   whose output really does depend on where a mapping landed is
-   nondeterministic under ASLR, and its statement should be false.
+   (4) THE SEARCH.  [arch_get_mmap_end] is STACK_TOP_MAX and
+   [arch_get_mmap_base] is [mm->mmap_base], whatever the hint
+   (arch/riscv/include/asm/processor.h).
+   [generic_get_unmapped_area_topdown] (mm/mmap.c) returns a nonzero
+   hint when [mmap_end - len >= addr], [addr >= mmap_min_addr] and the
+   range meets no VMA; else it asks [vm_unmapped_area] top-down with
+   [low_limit = PAGE_SIZE] and [high_limit = mm->mmap_base]; and if
+   THAT fails it searches bottom-up from TASK_UNMAPPED_BASE to
+   [mmap_end].  [unmapped_area_topdown] (mm/vma.c) returns the END of
+   the highest gap of at least the length below the high limit, minus
+   the length — that is, the HIGHEST fitting page base; [unmapped_area]
+   returns the LOWEST.  For anonymous memory the align mask and the
+   start gap are both zero ([stack_guard_placement], mm/mmap.c), and a
+   gap rule applies only next to a VM_GROWSDOWN VMA, the stack.
+   TASK_UNMAPPED_BASE is [PAGE_ALIGN((1 << 39) / 3)] for every 64-bit
+   riscv task, whatever the paging mode
+   (arch/riscv/include/asm/processor.h): [task_unmapped_base] below.
 
-   ANTI-VACUITY is a behaviour here, not a side condition.  Each arm is
-   [alt (errno_from mmap_errnos) (choose ...)]: when no address
-   satisfies the guard the [choose] is unsatisfiable, the [alt] collapses
-   onto its errno arm, and the model MUST answer -ENOMEM.  So an
-   exhausted address space is modeled rather than a gap, and no
-   totality obligation is needed to keep statements from going vacuous
-   (this is the same collapse the backed-memory budget uses to force
-   its out-of-memory point).
+   (5) THE vdso/vvar PAIR is in the ledger from [execve], so the search
+   sees it: [State.init_model] puts it in [vm_reserved]
+   ([State.vdso_reserved]).  Without it the model's occupied set would
+   be smaller than the kernel's and its first grant would land where
+   the kernel's cannot.
 
-   A KERNEL-LIKE SEARCH BELONGS IN THE UNTRUSTED TIER, beside the proof
-   library in theories/Common/, for proof strategies that want one
-   concrete address rather than a quantifier.
-   theories/Common/PlacementSearch.v holds it: the free-gap decision
-   procedure, and the executable
-   placement function with its soundness lemma against these very
-   conditions.  What is NOT there is an unconditional nonemptiness
-   lemma, and that is a fact rather than a gap: over an ARBITRARY ledger
-   the admissible set really can be empty, so the honest unconditional
-   statement is a counting argument, which is not written.  Nothing
-   above depends on any of it -- the anti-vacuity paragraph is what
-   keeps statements non-vacuous, and it holds whatever that tier
-   contains.  The spec does not name that file, and determinism claims
-   are welcome there and unnecessary here.
+   SO THE RULE IS A FUNCTION.  [linux_place] has at most one solution
+   ([Checks.Placement.linux_place_unique]); the base, the kernel build
+   and the earlier calls decide it.  The randomization is still
+   quantified — the base, the stack pointer, the program break and the
+   AT_RANDOM draw — and the per-request -ENOMEM arm is still there for
+   a may-fail reading.  What is gone is the free choice of an address
+   inside the free space, which is what let the model refuse a request
+   the same Linux launch grants (the holes of OSSV-210: B2, B3 and N3).
+
+   ANTI-VACUITY is unchanged, and is still a behaviour rather than a
+   side condition.  Each arm is [alt (errno_from mmap_errnos)
+   (choose ...)]: when [linux_place] has no solution the [choose] is
+   unsatisfiable, the [alt] collapses onto its errno arm, and the model
+   MUST answer -ENOMEM.  With [task_unmapped_base <= mmap_top h], true
+   of every valid base, [linux_place] has a solution exactly when a
+   range of the requested size is free below [mmap_top h], or at or
+   above [task_unmapped_base] below [alloc_top h]
+   ([Checks.Placement.linux_place_exists]), which is Linux's condition
+   with [alloc_top] in place of the stack's guard.  So the model
+   refuses only where that launch refuses, or where the address space
+   really is exhausted.
+
+   THE FOUR RESIDUALS, each named in SCOPE.md.  Refusals differ only at
+   exhaustion; an address can differ earlier in these cases, and that
+   reaches a statement only through output that depends on where a
+   mapping or the stack sits.
+
+   - R-a, a base above [alloc_top].  The model's stack window starts at
+     [sp - stack_max_size]; Linux's starts at the stack VMA's end.  A
+     high base draw with a large entry block can put Linux's base above
+     [alloc_top], and then this model's top-down placements are lower
+     than the kernel's.
+   - R-b, hints and the bottom-up fallback above [alloc_top].  Linux
+     honours a free hint anywhere up to STACK_TOP_MAX, the band above
+     the stack included, and its bottom-up fallback reaches the stack's
+     guard gap (mm/mmap.c, [generic_get_unmapped_area_topdown];
+     arch/riscv/include/asm/processor.h, [arch_get_mmap_end]).  This
+     model honours a hint and searches only below [alloc_top], because
+     the dynamic stack is a bound here and not a ledger entry.
+   - R-c, the stack's guard gap.  When the stack has grown to its
+     limit Linux keeps a mapping [stack_guard_gap] below it; this model
+     allows a mapping there when the base or a hint reaches
+     [alloc_top].  R-b and R-c close together, by tracking the stack
+     VMA in the ledger.
+   - R-d, the entry.  [Run.valid_entry_va] draws the stack pointer and
+     the base independently, while Linux's base gap pads the stack
+     draw, so some pairs this model admits are no single Linux launch.
+
+   QEMU USER MODE IS OUT.  [mmap_find_vma] (linux-user/mmap.c, QEMU
+   10.0.11) searches the HOST process's free space, which is not a
+   function of the guest's state, so no rule over this ledger describes
+   it.  This model answers Linux's address, and SCOPE.md names the
+   difference.  An "any free address" arm is not the answer: that is
+   exactly the rule whose holes this replaces.
+
+   A KERNEL-LIKE SEARCH ALSO LIVES IN THE UNTRUSTED TIER, beside the
+   proof library in theories/Common/PlacementSearch.v, for proof
+   strategies that want one concrete address.  Nothing here depends on
+   it; [Checks.Placement] is the executable twin this file's rule is
+   proved against.
    ========================================================================= *)
+
+(** The floor of Linux's bottom-up fallback: [TASK_UNMAPPED_BASE],
+    [PAGE_ALIGN((UL(1) << MMAP_MIN_VA_BITS) / 3)] with MMAP_MIN_VA_BITS
+    fixed at VA_BITS_SV39 whatever paging mode the guest boots
+    (arch/riscv/include/asm/processor.h, Linux v6.18.46, commit
+    1f99e9ab748f). *)
+Definition task_unmapped_base : Z := 0x2aaaaab000%Z.
+
+(** PMD_SIZE on riscv64 under Sv48: one second-level page-table entry,
+    2 MiB.  The unit [thp_get_unmapped_area_vmflags] pads and aligns by
+    (mm/huge_memory.c). *)
+Definition pmd_size : Z := 0x200000%Z.
+
+(** A page base at which a request of [nZ] bytes FITS in the window
+    [[lo, hi)] and meets no entry of [maps].  This is one candidate of
+    the kernel's gap walk ([unmapped_area], [unmapped_area_topdown],
+    mm/vma.c): the walk returns the highest or the lowest such base. *)
+Definition gap_fits (maps : list (word * word)) (lo hi nZ a : Z) : Prop :=
+  (a mod page_size = 0)%Z /\ (lo <= a)%Z /\ (a + nZ <= hi)%Z
+  /\ region_free maps (Z_to_bv 64 a) (Z_to_bv 64 nZ) = true.
+
+(** The HIGHEST fitting base in the window — [unmapped_area_topdown]'s
+    answer (mm/vma.c), which the kernel computes as the end of the
+    highest large enough gap minus the length. *)
+Definition highest_gap (maps : list (word * word)) (lo hi nZ a : Z) : Prop :=
+  gap_fits maps lo hi nZ a
+  /\ forall a', gap_fits maps lo hi nZ a' -> (a' <= a)%Z.
+
+(** The LOWEST fitting base in the window — [unmapped_area]'s answer
+    (mm/vma.c). *)
+Definition lowest_gap (maps : list (word * word)) (lo hi nZ a : Z) : Prop :=
+  gap_fits maps lo hi nZ a
+  /\ forall a', gap_fits maps lo hi nZ a' -> (a <= a')%Z.
+
+(** [generic_get_unmapped_area_topdown] with no hint: the highest fit
+    below [mmap_top], and if there is none, the lowest fit from
+    [task_unmapped_base] up (mm/mmap.c).  The two windows are the
+    kernel's [[PAGE_SIZE, mm->mmap_base)] and
+    [[TASK_UNMAPPED_BASE, mmap_end)], with [alloc_top] for [mmap_end]
+    (residual R-b). *)
+Definition topdown_search (h : VmMaps) (nZ a : Z) : Prop :=
+  let maps := vm_reserved h ++ vm_maps h in
+  highest_gap maps page_size (mmap_top h) nZ a
+  \/ ((forall a', ~ gap_fits maps page_size (mmap_top h) nZ a')
+      /\ lowest_gap maps task_unmapped_base (alloc_top h) nZ a).
+
+(** [__thp_get_unmapped_area]'s answer for pgoff 0 (mm/huge_memory.c):
+    the least multiple of PMD_SIZE STRICTLY ABOVE the padded search's
+    result.  The kernel writes it as two cases — [ret + PMD_SIZE] when
+    [ret] is aligned and MMF_TOPDOWN is set, [ret + off_sub] with
+    [off_sub = (0 - ret) & (PMD_SIZE - 1)] otherwise — and this is
+    those two cases. *)
+Definition thp_align (ret : Z) : Z :=
+  if (ret mod pmd_size =? 0)%Z then (ret + pmd_size)%Z
+  else (ret + (pmd_size - ret mod pmd_size))%Z.
+
+(** [round_hint_to_min]'s rounding (mm/mmap.c): [hint &= PAGE_MASK].
+    A hint of 1 to 4095 becomes 0, which is no hint.  The raise to
+    [PAGE_ALIGN(mmap_min_addr)] is not here because SCOPE.md assumes
+    [mmap_min_addr] is 4096, at which it never fires.  ON A KERNEL
+    WHOSE [mmap_min_addr] IS HIGHER this is not Linux: with the
+    SELinux default of 65536 (security/Kconfig, LSM_MMAP_MIN_ADDR;
+    security/min_addr.c, [update_mmap_min_addr]) a page-aligned hint
+    in [[0x1000, 0x10000)] is raised to 0x10000, and this rounding
+    keeps it.  SCOPE.md names such a kernel as outside the model. *)
+Definition hint_address (hint : word) : Z :=
+  page_round_down_Z (bv_unsigned hint).
+
+(** WHERE LINUX PUTS A MAPPING OF [nZ] BYTES, given the ledger [h], the
+    kernel build's THP setting and the caller's hint.  Items (2), (3)
+    and (4) of the PLACEMENT section above, in that order.
+
+    [Checks.Placement] holds the executable twin [linux_place_b] with
+    its correctness proof, and the three facts a consumer needs:
+    [linux_place_unique], [linux_place_admissible] (the four conditions
+    the old [choose] guard asked for) and [linux_place_exists]. *)
+Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
+    : Prop :=
+  let g := hint_address hint in
+  let maps := vm_reserved h ++ vm_maps h in
+  if (g =? 0)%Z then
+    (* no hint; a hint of 1 to 4095 has rounded to zero and is here *)
+    if thp && (nZ mod pmd_size =? 0)%Z then
+      (exists ret, topdown_search h (nZ + pmd_size) ret /\ a = thp_align ret)
+      \/ ((forall ret, ~ topdown_search h (nZ + pmd_size) ret)
+          /\ topdown_search h nZ a)
+    else topdown_search h nZ a
+  else
+    (* a nonzero hint is honoured if the range is free; it never takes
+       the THP path, which [__get_unmapped_area] gates on [!addr] *)
+    (gap_fits maps page_size (alloc_top h) nZ g /\ a = g)
+    \/ (~ gap_fits maps page_size (alloc_top h) nZ g /\ topdown_search h nZ a).
 
 (** The ordinary rw mmap shape: PRIVATE ANONYMOUS READ+WRITE at offset
     0, with any [fd].  Fresh PROT_NONE and the two bounded contained
@@ -1571,11 +1704,10 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        let h := m_vmmaps m in
        let nZ := page_round_up_Z (bv_unsigned len) in
        let n := Z_to_bv 64 nZ in
-       a <- choose (fun a => (bv_unsigned a mod page_size = 0)%Z
-                             /\ (0 < bv_unsigned a)%Z
-                             /\ (bv_unsigned a + nZ <= alloc_top h)%Z
-                             /\ region_free (vm_reserved h ++ vm_maps h) a n = true
-                              /\ mmap_noreserve_backed_ok flags m nZ = true) ;;
+       a <- choose (fun a =>
+                      linux_place h (kb_thp (m_kernel m)) addr nZ
+                        (bv_unsigned a)
+                      /\ mmap_noreserve_backed_ok flags m nZ = true) ;;
        modify (fun _ =>
          with_mmap_backing flags a n
            (with_vmmaps
@@ -1590,10 +1722,9 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        let h := m_vmmaps m in
        let nZ := page_round_up_Z (bv_unsigned len) in
        let n := Z_to_bv 64 nZ in
-       a <- choose (fun a => (bv_unsigned a mod page_size = 0)%Z
-                             /\ (0 < bv_unsigned a)%Z
-                             /\ (bv_unsigned a + nZ <= alloc_top h)%Z
-                             /\ region_free (vm_reserved h ++ vm_maps h) a n = true) ;;
+       a <- choose (fun a =>
+                      linux_place h (kb_thp (m_kernel m)) addr nZ
+                        (bv_unsigned a)) ;;
        modify (fun _ =>
          with_mmap_backing flags a n
            (with_vmmaps

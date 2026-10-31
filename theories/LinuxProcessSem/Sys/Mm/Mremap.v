@@ -283,13 +283,27 @@ Definition mremap_final_budget_b (m : Model)
     [mremap_inplace_grow_to_ceiling_accepts] one page below: the pair
     differs only in the source's base address, so the flipped verdict is
     attributable to this conjunct alone. *)
-Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
+(** THE ROOM TEST ALONE, with no budget in it.  Linux asks the two
+    questions in this order and answers them differently: no room means
+    MOVE, a failing charge means REFUSE and do not move
+    (mm/mremap.c, [vrm_can_expand_in_place] and the accounting failure
+    beside it, Linux v6.18.46, commit 1f99e9ab748f).  Keeping them in
+    one predicate made a failing budget look like missing room, and the
+    model then offered a move Linux does not make. *)
+Definition mremap_inplace_room_b (m : Model) (old old_n new_n : word)
     (old_nZ new_nZ : Z) : bool :=
   let h := m_vmmaps m in
   (bv_unsigned old + new_nZ <=? alloc_top h)%Z
   && region_free (vm_reserved h
                   ++ maps_subtract (vm_maps h) (bv_unsigned old)
-                       (bv_unsigned old + bv_unsigned old_n)) old new_n
+                       (bv_unsigned old + bv_unsigned old_n)) old new_n.
+
+(** Room AND the budget: what the in-place resolution needs.  Its
+    meaning is unchanged, so every consumer of this name still reads
+    the same predicate. *)
+Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
+    (old_nZ new_nZ : Z) : bool :=
+  mremap_inplace_room_b m old old_n new_n old_nZ new_nZ
   && mremap_final_budget_b m old old_n old new_n.
 
 (** A moved destination, and the argument for what this guard says is
@@ -385,6 +399,26 @@ Definition mremap_fresh_b (m : Model) (old_nZ new_nZ : Z)
   && (bv_unsigned dst + new_nZ <=? alloc_top h)%Z
   && region_free (vm_reserved h ++ vm_maps h) dst new_n
   && mremap_final_budget_b m old old_n dst new_n.
+
+(** WHERE A MOVE GOES.  [vrm_set_new_addr] asks
+    [get_unmapped_area(vma->vm_file, 0, new_len, pgoff, 0)] WHILE THE
+    OLD MAPPING IS STILL MAPPED (mm/mremap.c, Linux v6.18.46, commit
+    1f99e9ab748f), and [get_unmapped_area] is [__get_unmapped_area]
+    with no flags, so the transparent huge-page rule applies to a move
+    exactly as it does to a fresh [mmap].  The hint is 0, and
+    [__get_unmapped_area] forces pgoff to 0 for an anonymous request.
+
+    So the destination is [Mmap.linux_place] at hint 0, read on the
+    ledger BEFORE the source is cut — which is what [m_vmmaps m] is at
+    this point in [mremap_spec].  [mremap_fresh_b] stays beside it: it
+    carries the budget gate and the facts the post-state needs, and
+    [Checks.BudgetPremiseMremap] proves that at Linux's one destination
+    it cannot be false while the move's own budget mark is false. *)
+Definition mremap_dst_ok (m : Model) (old_nZ new_nZ : Z)
+    (old old_n dst new_n : word) : Prop :=
+  linux_place (m_vmmaps m) (kb_thp (m_kernel m)) (Z_to_bv 64 0) new_nZ
+    (bv_unsigned dst)
+  /\ mremap_fresh_b m old_nZ new_nZ old old_n dst new_n = true.
 
 (** Half of the argument above, mechanized: GIVEN the ledger invariant
     [State.noaccess_pages_owned], a destination this predicate accepts is
@@ -697,17 +731,24 @@ Definition mremap_spec (old old_size new_size flags : word)
            modify (fun _ => mremap_model_next m old old_n old new_n) ;;
            pure (mremap_inplace_effect old old_n new_n old_nZ new_nZ)
          else
-           let move :=
-             dst <- choose (fun dst =>
-                mremap_fresh_b m old_nZ new_nZ old old_n dst new_n = true) ;;
-             modify (fun _ => mremap_model_next m old old_n dst new_n) ;;
-             pure (mremap_move_effect old old_n dst old_nZ new_nZ) in
-           if mremap_inplace_grow_b m old old_n new_n old_nZ new_nZ
-           then alt
-             (modify (fun _ => mremap_model_next m old old_n old new_n) ;;
+           (* GROW.  Linux asks for room above the source first
+              ([vrm_can_expand_in_place], mm/mremap.c, Linux v6.18.46,
+              commit 1f99e9ab748f).  With room it expands there, and a
+              failing charge is a REFUSAL with no move.  Without room
+              it calls [get_unmapped_area] with no hint, while the old
+              mapping is still in the tree, and moves to the one
+              address that search gives ([Mmap.linux_place]). *)
+           if mremap_inplace_room_b m old old_n new_n old_nZ new_nZ
+           then
+             (_ <- choose (fun _ : unit =>
+                     mremap_final_budget_b m old old_n old new_n = true) ;;
+              modify (fun _ => mremap_model_next m old old_n old new_n) ;;
               pure (mremap_inplace_effect old old_n new_n old_nZ new_nZ))
-             move
-           else move).
+           else
+             dst <- choose (fun dst => mremap_dst_ok m old_nZ new_nZ
+                                         old old_n dst new_n) ;;
+             modify (fun _ => mremap_model_next m old old_n dst new_n) ;;
+             pure (mremap_move_effect old old_n dst old_nZ new_nZ)).
 
 (* =========================================================================
    THE BUDGET MARK for mremap (see [Mmap.brk_budget_refused_b] for what
@@ -849,8 +890,16 @@ Definition mremap_budget_refused_b (old old_size new_size flags : word)
              && mremap_backing_uniform_b m old old_n)
     then false
     else if (new_nZ <=? old_nZ)%Z then false
-    else negb (mremap_inplace_grow_b m old old_n new_n old_nZ new_nZ
-               || mremap_move_budget_b m old old_n new_n).
+    (* The grow has ONE resolution, chosen by the room test, so the
+       mark reads that resolution's gate and not a disjunction of
+       both.  With room, the only answer besides an errno is the
+       in-place one, gated by [mremap_final_budget_b]; without room,
+       the only one is the move, and its gate reads the same charge at
+       every destination Linux can give
+       ([mremap_move_charge_at_fresh]). *)
+    else if mremap_inplace_room_b m old old_n new_n old_nZ new_nZ
+    then negb (mremap_final_budget_b m old old_n old new_n)
+    else negb (mremap_move_budget_b m old old_n new_n).
 
 (* -------------------------------------------------------------------------
    Destination independence of the move's charge

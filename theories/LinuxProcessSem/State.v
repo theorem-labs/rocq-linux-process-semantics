@@ -308,8 +308,9 @@ Definition brk_aslr_max : Z := (1 * 1024 * 1024 * 1024)%Z.
     show that each assumption is needed.
 
     WHY NOT LOWER, to the smallest base Linux gives without the
-    assumptions: no spec arm reads the base (placement is admissibility
-    alone, see [Mmap.mmap_spec]'s placement section), but the ASan plan
+    assumptions: the base bounds the top-down search ([mmap_top], read
+    by [Mmap.linux_place]), so a lower floor would admit placements no
+    covered kernel makes, and the ASan plan
     checker reads this floor.  [Common.AsanInit] starts its placement
     split at [AsanPlanCore.MBASE_MIN] = this value, and
     [AsanPlacement.kHighMemBeg_below_mmap_base_min] needs it above the
@@ -453,7 +454,8 @@ Definition TASK_SIZE : Z := 0x800000000000%Z.
     base of that set also starts no program: with a base of exactly 0
     the top-down search's top is [0 - 1] (mm/vma.h:502), so the vDSO
     search fails the same way.  The band keeps 0; this costs precision
-    only, as no spec arm reads the base.
+    only: with a base of 0 the model's [mmap_top] leaves the top-down
+    half of [Mmap.linux_place] no room, so it places nothing there.
 
     WHAT THE DECLARATION BUYS TODAY, stated here so nobody reads more
     into it: the spec arms below still compare against [TASK_SIZE], the
@@ -2781,18 +2783,18 @@ Inductive FdEntry :=
         [mmap_base_min]) and IMMUTABLE for the whole run.  Like the
         initial break it is a quantified parameter of the run
         ([Run.mi_mmap_base], any [Run.valid_mmap_base] value,
-        independent per binary).  NO SPEC ARM READS THIS FIELD'S VALUE.
-        Preference-free placement says only
-        that the address is page-aligned, inside the user address space
-        and disjoint from every recorded mapping — a rule with no base
-        in it (the argument is in [Mmap.mmap_spec]'s placement section).
-        The field is NOT thereby inert and must not be removed as one:
+        independent per binary).  THE SPEC READS THIS FIELD'S VALUE:
+        [mmap_top] below is the minimum of this base and the page-rounded
+        [alloc_top], and it is the top-down bound of [Mmap.linux_place],
+        which both fresh-grant arms of [Mmap.mmap_spec] and [mremap]'s
+        move use to choose their address (the argument is in
+        [Mmap.mmap_spec]'s PLACEMENT section).  The field also carries a
+        PREDICATE that the spec needs on its own:
         [Run.valid_mmap_base] is a conjunct of [Run.valid_entry], which
         [Equivalence.strong_universal_T] quantifies its entries under,
         and discharging it is a required step of
         [Equivalence.image_brk_satisfiable_entry], the tree's
-        anti-vacuity lemma.  It is the PREDICATE that is load-bearing in
-        the spec, not the value.  Outside the spec, the ASan plan
+        anti-vacuity lemma.  Outside the spec, the ASan plan
         checker's placement gate ([Common.AsanCeil.placement_ok], taken
         as its named [placement_policy] hypothesis) reads the value, and
         [Common.AsanInit] relies on the predicate's floor (see
@@ -5718,28 +5720,45 @@ Definition init_reserved (reserved : list (word * word))
        (page_round_down_Z
           (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
 
+(** ONE CONSTRUCTOR, NOT A STACK OF SETTERS, and that is a performance
+    fact rather than a style one.
+
+    Each [with_*] rebuilds [mkModelOf] from SEVEN projections of its
+    argument, so a chain of seven of them is a term holding 7^7 copies
+    of the innermost model, which conversion does not share.  An
+    [Example] that writes [init_model ...] on both sides of an equation
+    and closes with [reflexivity] or [repeat constructor] then has to
+    convert it twice.  Measured in the checker image on
+    [Checks/Cases/Prelude.v]'s
+    [fd_truncation_high_low_halves_all_ebadf]: the setter chain did not
+    finish in 120 s; this form takes 0.095 s, and naming the model in a
+    [Definition] takes 0.012 s.  [Strategy] does not help — the cost is
+    the size of the term, not the order of unfolding.
+
+    SO: A FIELD ADDED TO THE MODEL GOES IN THIS CONSTRUCTOR, not in a
+    new [with_*] wrapped around the result.  Every [*_init_model] lemma
+    below is [reflexivity], which is what catches a field written in
+    the wrong place. *)
 Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     (lim : Z) (inp : ProcInput) : Model :=
-  with_abort_terminal (in_abort_terminal inp)
-  (with_sigmask (in_sigmask inp)
-  (with_nofile (in_nofile inp)
-   (with_net (in_net inp)
-   (with_urandom (in_urandom inp)
-   (with_kernel (in_kernel inp)
-   (with_creds
-    (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
-             (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
-    (mkModel
+  mkModelOf
+    (mkFdState
        [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
          (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
-         (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
+         (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ] [])
+    (mkVmState
        (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
           [] [] brk0 brk0 lim mbase sp)
-       (in_stdin inp)
-       (in_fs inp)
-       None
-       None
-       None))))))).
+       [] [] (in_kernel inp))
+    (mkIoState (in_stdin inp) (in_urandom inp) (in_net inp) (Z_to_bv 64 0))
+    (mkFsState (in_fs inp))
+    (mkProcState None None
+       (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
+                (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
+       false (in_sigmask inp) false None false false false
+       (in_abort_terminal inp) [])
+    (mkLimState None (in_nofile inp))
+    (mkTimeState (Z_to_bv 64 0)).
 
 Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
   m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.

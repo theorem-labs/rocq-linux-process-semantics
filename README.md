@@ -39,7 +39,11 @@ Priorities 2 and 3 together make the model complete: a statement that is
 true of the supported systems is provable with this model. The exception is
 a statement that depends on a detail that the documented interface (man
 pages, POSIX) leaves open, or that differs between the supported systems.
-An example is the address that `mmap` chooses.
+An example is the resolution of `clock_getres`. The address that `mmap`
+chooses is no longer such a detail: the model runs Linux's search
+(`mm/mmap.c`, `generic_get_unmapped_area_topdown`), so the address is a
+function of the mmap base, the kernel build and the earlier calls.
+[SCOPE.md](SCOPE.md) names the cases where the two still differ.
 
 A failure of priority 2 can also break priority 1. If the model includes a
 behavior that no supported system gives, a statement that compares sets of
