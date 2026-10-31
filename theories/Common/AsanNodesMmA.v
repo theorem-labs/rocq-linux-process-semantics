@@ -126,11 +126,10 @@ Let refuse_cont := AsanNodesMmLib.refuse_cont SEGS A nx0 LIMIT SINV argH FS0 RES
 Let refuse_ok := AsanNodesMmLib.refuse_ok SEGS A LIMIT SINV argH FS0 RES_len SINV_frame.
 Let region_free_of_apart := AsanNodesMmLib.region_free_of_apart SEGS A nx0 LIMIT SINV argH FS0 RES_len RES_hull HULL_ok.
 Let regs_ok_regupd_same := AsanNodesMmLib.regs_ok_regupd_same SEGS A RES_len.
-Let reserved_free_above := AsanNodesMmLib.reserved_free_above SEGS A RES_len RES_hull HULL_ok.
 Let safe_range_apart := AsanNodesMmLib.safe_range_apart SEGS A RES_len HULL_ok.
 Let seps_map_disjoint := AsanNodesMmLib.seps_map_disjoint SEGS A RES_len.
 Let shadow_facts_new_ok := AsanNodesMmLib.shadow_facts_new_ok SEGS A LIMIT SINV argH FS0 RES_len HULL_ok SHADOW_ok.
-Let slice_args := AsanNodesMmLib.slice_args SEGS A LIMIT SINV argH FS0 RES_len RES_hull HULL_ok.
+Let slice_args := AsanNodesMmLib.slice_args SEGS A LIMIT SINV argH FS0 RES_len HULL_ok.
 Let slice_hyps := AsanNodesMmLib.slice_hyps SEGS A LIMIT SINV argH FS0.
 Let split_flat_estart := AsanNodesMmLib.split_flat_estart SEGS A RES_len HULL_ok.
 Let vis_add_inv := AsanNodesMmLib.vis_add_inv A LIMIT.
@@ -462,14 +461,15 @@ Lemma mmap_fixed_free_sound2 : forall cs kd (eager visible : bool) cs' E R FULL 
 Proof.
   intros cs kd eager visible cs' E R FULL model TA TB HC Hec H17 H12 H13 H14 H15 Hkind Hkfog Hvisible Hn HKA HK.
   unfold mmap_fixed_free in Hn.
-  destruct (fixed_args A cs KHI) as [[[[[b off] ne] nlo] nhi]|] eqn:HFA.
+  destruct (fixed_args A cs (resx_clear cs)) as [[[[[b off] ne] nlo] nhi]|] eqn:HFA.
   - (* the classic path: no tokens, every tracked entry provably apart *)
     match type of Hn with (if ?c then _ else _) = _ => destruct c eqn:Hcond; [|discriminate] end.
     apply andb_prop in Hcond as [Hcond Hav]. apply andb_prop in Hcond as [Hcond Hnev].
     apply andb_prop in Hcond as [Hcond Hbud]. apply andb_prop in Hcond as [Hnf Hall].
     destruct (mmap_fixed_old_facts cs b off ne nlo nhi E R FULL model HC HFA Hnf Hall) as (HC0 & Hrf & Hholes & Hside).
-    eapply (mmap_fixed_grant_sound2 cs (a_maps cs) KHI b off ne nlo nhi kd eager visible cs' E R FULL model TA TB
-              HC Hec H17 H12 H13 H14 H15 Hkind Hkfog Hvisible HFA ltac:(unfold KHI, CEIL; lia) Hbud
+    eapply (mmap_fixed_grant_sound2 cs (a_maps cs) (resx_clear cs) b off ne nlo nhi kd eager visible cs' E R FULL model TA TB
+              HC Hec H17 H12 H13 H14 H15 Hkind Hkfog Hvisible HFA
+              ltac:(unfold resx_clear; pose proof (Z.le_min_l KHI (a_ylo cs)); unfold KHI, CEIL in *; lia) Hbud
               HC0 Hrf Hholes Hside Hn HKA HK).
   - (* the HOLE path *)
     destruct (fixed_args A cs CEIL) as [[[[[b off] ne] nlo] nhi]|] eqn:HFA2; [|discriminate].
