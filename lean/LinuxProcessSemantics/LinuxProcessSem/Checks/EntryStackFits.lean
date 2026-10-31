@@ -207,6 +207,8 @@ span stays an upper bound that is not slack: every byte of slack is a byte of
 the address space the premise refuses to let a real image use.  At the
 minimal input the bound is ATTAINED. -/
 
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 2000000 in
 /-- Rocq: `EntryStackFits.entry_stack_span_attained_at_the_minimum`.
 
 The conversion is bounded and small — `minimal_argv` is `[[]]`,
@@ -214,8 +216,6 @@ The conversion is bounded and small — `minimal_argv` is `[[]]`,
 `build_stack_bytes` to a byte list and counts it, which is past both
 default budgets.  Raised here rather than made into a `simp` computation:
 `rfl` is the Rocq proof, and the two options say what the cost is. -/
-set_option maxRecDepth 100000 in
-set_option maxHeartbeats 2000000 in
 theorem entry_stack_span_attained_at_the_minimum (ph : PhdrInfo) (sp : word)
     (uid hw : word) (rnd : EntryDraw) :
     ((build_stack_bytes ph sp minimal_argv minimal_envp uid hw rnd).length : Int)
