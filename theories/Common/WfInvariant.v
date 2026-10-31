@@ -47,7 +47,7 @@ From stdpp Require Import bitvector.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import VmMapsDisjoint.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require MapsFit NoaccessOwned Placement.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require MapsFit NoaccessOwned Placement BudgetPremise.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import
   Mm.Mmap Mm.Mremap Mm.Mprotect.
 Import ListNotations.
@@ -1326,4 +1326,199 @@ split; [exact (MapsFit.check_mremap_preserves_fit _ _ _ _ _ _ _ _ H Hfit)|].
 exact (NoaccessOwned.check_mremap_preserves_na _ _ _ _ _ _ _ _ H Hwf Hfit Hna).
 Qed.
 
+(* ==================================================================== *)
+(* DISCHARGING THE BUDGET PREMISE'S LEDGER HYPOTHESES.
+
+   [Checks/BudgetPremise.mremap_move_budget_admits_fresh_lazyfree] assumes
+   [m_vm_lazy m = []] and [m_vm_materialized m = []].  Neither is a run
+   invariant -- [Checks/BudgetPremiseInv.v] says so in those words -- so
+   the lemma was unusable on a state a run actually reaches.  That is the
+   assumption this file exists to remove.
+
+   What the two emptiness hypotheses are really standing in for is visible
+   in [mremap_move_budget_admits_fresh]'s own statement: two SYNTACTIC list
+   identities saying that cutting the DESTINATION range out of the already
+   source-cut ledgers changes nothing.  Both say "the destination range
+   holds no backing", and that is exactly what [WF] gives beside the
+   lemma's own [region_free]: a lazy byte or a materialized page there
+   would be owned in [vm_maps], which [region_free] forbids.
+
+   [WF] also supplies two of the remaining hypotheses -- [noaccess_pages_owned]
+   from [sys_inv]'s [na_inv], and the fit of the live mappings from
+   [vm_fit] -- so FOUR hypotheses go, not two.
+
+   ONE FACT [WF] DOES NOT STATE AND THIS NEEDS.  The identities are
+   syntactic, and [State.iv_subtract a sz lo hi] with [sz = 0] and
+   [lo <= a < hi] returns [[] ++ []]: it DROPS a zero-size entry.  So the
+   equality needs every lazy entry to be nonzero.  That is true and
+   inductive -- [init_model]'s ledger is [[]], [lazy_interior] yields an
+   empty list or one nonzero entry, and a cut of a nonzero entry is
+   nonzero -- but it does not follow from [WF] as merged.  It is carried
+   here as [LZ_NZ], a separate invariant, rather than as a fourth conjunct
+   of [WF], so that no statement already merged and already consumed by
+   other lanes changes under them. *)
+(* ==================================================================== *)
+
+Definition LZ_NZ (m : Model) : Prop :=
+forall a n, In (a, n) (m_vm_lazy m) -> (0 < bv_unsigned n)%Z.
+
+(* A region the ledger leaves free owns nothing. *)
+Lemma region_free_excludes : forall h dst n y,
+region_free (vm_reserved h ++ vm_maps h) dst n = true ->
+NoaccessOwned.owned (vm_maps h) y ->
+~ (bv_unsigned dst <= y < bv_unsigned dst + bv_unsigned n)%Z.
+Proof.
+intros h dst n y Hfree Hown Hin.
+assert (Howns : owns_b (dst, n) y = true) by (apply owns_intro; lia).
+pose proof (region_free_no_owner _ _ _ _ Hfree Howns) as Hz.
+destruct Hown as (b & s & Hinb & Hyb).
+pose proof (owners_ge1 (vm_reserved h ++ vm_maps h) (b, s) y
+              (in_or_app _ _ _ (or_intror Hinb))
+              (owns_intro b s y (proj1 Hyb) (proj2 Hyb))) as Hge.
+lia.
+Qed.
+
+(* A cut over a range the list avoids is the identity.  The nonzero
+   hypothesis is the zero-size entry above, and it is why [LZ_NZ] exists. *)
+Lemma maps_subtract_noop : forall L lo hi,
+(lo <= hi)%Z ->
+(forall a n, In (a, n) L ->
+   (0 < bv_unsigned n)%Z
+   /\ ((bv_unsigned a + bv_unsigned n <= lo)%Z \/ (hi <= bv_unsigned a)%Z)) ->
+maps_subtract L lo hi = L.
+Proof.
+induction L as [|[a sz] r IH]; intros lo hi Hlh H; [reflexivity|].
+cbn [maps_subtract].
+destruct (H a sz (or_introl eq_refl)) as [Hnz Hout].
+pose proof (word_range a) as Ra. pose proof (word_range sz) as Rs.
+assert (Hiv : iv_subtract a sz lo hi = [(a, sz)]).
+{ unfold iv_subtract. cbv zeta. destruct Hout as [Hlow|Hhigh].
+  - destruct (Z.ltb_spec (bv_unsigned a) lo) as [_|Hc]; [|lia].
+    destruct (Z.ltb_spec hi (bv_unsigned a + bv_unsigned sz)) as [Hc2|_]; [lia|].
+    cbn [app]. do 2 f_equal.
+    apply bv_eq. rewrite u64 by lia. lia.
+  - destruct (Z.ltb_spec (bv_unsigned a) lo) as [Hc|_]; [lia|].
+    destruct (Z.ltb_spec hi (bv_unsigned a + bv_unsigned sz)) as [_|Hc2]; [|lia].
+    cbn [app]. f_equal. f_equal.
+    + apply bv_eq. rewrite u64 by lia. lia.
+    + apply bv_eq. rewrite u64 by lia. lia. }
+rewrite Hiv. cbn [app]. f_equal.
+apply IH; [exact Hlh|]. intros b m Hin. exact (H b m (or_intror Hin)).
+Qed.
+
+(* Every entry a cut leaves is a sub-interval of an entry that was there,
+   and it is nonzero when the originals are.  The fit hypothesis is what
+   keeps the right-hand remnant's [Z_to_bv] lossless. *)
+Lemma maps_subtract_entry_inv : forall L lo hi a n,
+MapsFit.maps_fit L ->
+(forall b m, In (b, m) L -> (0 < bv_unsigned m)%Z) ->
+In (a, n) (maps_subtract L lo hi) ->
+(0 < bv_unsigned n)%Z
+/\ exists a0 n0, In (a0, n0) L
+   /\ forall x, (bv_unsigned a <= x < bv_unsigned a + bv_unsigned n)%Z ->
+                (bv_unsigned a0 <= x < bv_unsigned a0 + bv_unsigned n0)%Z.
+Proof.
+induction L as [|[b sz] r IH]; intros lo hi a n Hfit Hnz Hin; [destruct Hin|].
+cbn [maps_subtract] in Hin. apply in_app_or in Hin. destruct Hin as [Hin|Hin].
+- pose proof (word_range b) as Rb. pose proof (word_range sz) as Rs.
+  pose proof (Hnz b sz (or_introl eq_refl)) as Hbz.
+  assert (Hbf : (bv_unsigned b + bv_unsigned sz <= 2 ^ 64)%Z).
+  { pose proof (Hfit b sz (or_introl eq_refl)) as Hb.
+    unfold two_pow_64 in Hb. exact Hb. }
+  unfold iv_subtract in Hin. cbv zeta in Hin.
+  apply in_app_or in Hin. destruct Hin as [Hin|Hin].
+  + destruct (Z.ltb_spec (bv_unsigned b) lo) as [Hc|Hc]; cbn [In] in Hin;
+      [|destruct Hin].
+    destruct Hin as [Heq|[]]. injection Heq as <- <-.
+    rewrite u64 by lia. split; [lia|].
+    exists b, sz. split; [left; reflexivity | intros x Hx; lia].
+  + destruct (Z.ltb_spec hi (bv_unsigned b + bv_unsigned sz)) as [Hc|Hc];
+      cbn [In] in Hin; [|destruct Hin].
+    destruct Hin as [Heq|[]]. injection Heq as <- <-.
+    rewrite !u64 by lia. split; [lia|].
+    exists b, sz. split; [left; reflexivity | intros x Hx; lia].
+- destruct (IH lo hi a n
+             (fun c u Hcu => Hfit c u (or_intror Hcu))
+             (fun c u Hcu => Hnz c u (or_intror Hcu)) Hin)
+    as (Hnz0 & a0 & n0 & Hin0 & Hsub).
+  split; [exact Hnz0|]. exists a0, n0. split; [right; exact Hin0 | exact Hsub].
+Qed.
+
+(* The same for the materialized ledger, where the cut is a filter. *)
+Lemma filter_outside_noop : forall lo hi (P : list word),
+(forall p, In p P -> page_outside_range lo hi p = true) ->
+List.filter (page_outside_range lo hi) P = P.
+Proof.
+induction P as [|p r IH]; intros H; [reflexivity|].
+cbn [List.filter]. rewrite (H p (or_introl eq_refl)). f_equal.
+apply IH. intros q Hin. exact (H q (or_intror Hin)).
+Qed.
+
+
+(* THE REPLACEMENT.  Same conclusion as
+   [BudgetPremise.mremap_move_budget_admits_fresh_lazyfree], with the two
+   emptiness hypotheses -- which are NOT run invariants -- and the two
+   hypotheses [WF] already carries replaced by [WF] itself.  This is the
+   lemma a caller on a reachable state can actually use. *)
+Lemma mremap_move_budget_admits_fresh_wf : forall m old old_n dst new_n,
+WF m -> LZ_NZ m ->
+(bv_unsigned dst mod page_size = 0)%Z ->
+(bv_unsigned new_n mod page_size = 0)%Z ->
+(0 < bv_unsigned new_n)%Z ->
+(bv_unsigned dst + bv_unsigned new_n <= alloc_top (m_vmmaps m))%Z ->
+region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst new_n = true ->
+Mremap.mremap_move_budget_b m old old_n new_n = true ->
+Mremap.mremap_final_budget_b m old old_n dst new_n = true.
+Proof.
+intros m old old_n dst new_n HW HNZ Hdalign Hnmod Hpos Hdtop Hdfree Hmv.
+pose proof (word_range dst) as Rd. pose proof (word_range new_n) as Rn.
+set (dlo := bv_unsigned dst) in *.
+set (dhi := (dlo + bv_unsigned new_n)%Z) in *.
+assert (HalD : (dlo mod page_size = 0)%Z) by exact Hdalign.
+assert (HalDH : (dhi mod page_size = 0)%Z)
+  by (subst dhi; apply NoaccessOwned.aligned_add; assumption).
+(* no owner of the live ledger lies in the destination range *)
+assert (NOOWN : forall y, NoaccessOwned.owned (vm_maps (m_vmmaps m)) y ->
+                ~ (dlo <= y < dhi)%Z)
+  by (intros y Hy; exact (region_free_excludes _ _ _ y Hdfree Hy)).
+(* hence no lazy byte and no materialized page lies there *)
+assert (NOLZ : forall a n x, In (a, n) (m_vm_lazy m) ->
+          (bv_unsigned a <= x < bv_unsigned a + bv_unsigned n)%Z ->
+          ~ (dlo <= x < dhi)%Z).
+{ intros a n x Hin Hx Hc.
+  assert (H0 : (0 <= x)%Z) by (pose proof (word_range a); lia).
+  pose proof (proj1 (proj2 HW) a n x Hin Hx) as Hown.
+  apply (NOOWN _ Hown).
+  pose proof (pfloor_bounds x H0) as [B1 B2].
+  split; [exact (pfloor_mono_lo dlo x HalD ltac:(lia) ltac:(lia))|].
+  pose proof (aligned_lt_step _ _ (pfloor_mod x) HalDH) as Hs. lia. }
+apply (BudgetPremise.mremap_move_budget_admits_fresh m old old_n dst new_n
+         Hdalign Hnmod Hpos Hdtop Hdfree
+         (NoaccessOwned.sys_inv_noaccess_pages_owned _ (proj1 HW))
+         (proj1 (proj2 (proj1 HW)))).
+- (* the lazy identity *)
+  apply maps_subtract_noop; [subst dhi; lia|]. intros a n Hin.
+  destruct (maps_subtract_entry_inv _ _ _ _ _ (WF_lazy_fit m HW) HNZ Hin)
+    as (Hnz0 & a0 & n0 & Hin0 & Hsub).
+  split; [exact Hnz0|].
+  destruct (Z.le_gt_cases (bv_unsigned a + bv_unsigned n) dlo) as [Hl|Hl];
+    [left; exact Hl|].
+  destruct (Z.le_gt_cases dhi (bv_unsigned a)) as [Hr|Hr]; [right; exact Hr|].
+  exfalso.
+  set (x := Z.max (bv_unsigned a) dlo).
+  assert (Hxe : (bv_unsigned a <= x < bv_unsigned a + bv_unsigned n)%Z)
+    by (subst x; pose proof (word_range a); lia).
+  assert (Hxd : (dlo <= x < dhi)%Z) by (subst x; lia).
+  exact (NOLZ a0 n0 x Hin0 (Hsub x Hxe) Hxd).
+- (* the materialized identity *)
+  apply filter_outside_noop. intros p Hin.
+  apply List.filter_In in Hin as [Hin _].
+  destruct (proj2 (proj2 HW) p Hin) as [Hpa Hown].
+  pose proof (NOOWN _ Hown) as Hout.
+  unfold page_outside_range. apply negb_true_iff. apply andb_false_iff.
+  destruct (Z.leb_spec dlo (bv_unsigned p)) as [H1|H1]; [|left; apply Z.leb_nle; lia].
+  destruct (Z.ltb_spec (bv_unsigned p) dhi) as [H2|H2]; [|right; apply Z.ltb_nlt; lia].
+  exfalso. exact (Hout (conj H1 H2)).
+- exact Hmv.
+Qed.
 
