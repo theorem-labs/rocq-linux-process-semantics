@@ -162,6 +162,17 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      [f_flags].  [State.FdStream]'s own note relies on this decline:
      it is what keeps [socketpair] the only thing that makes an end. *)
   | FdStream _ _ _ => false
+  (* AN EVENTFD DECLINES, for the stream-pair end's reasons: its counter
+     lives in the entry ([State.EventfdCtx]), so two copies would count
+     apart where Linux's two fds share one [eventfd_ctx], and so would
+     the O_NONBLOCK it carries for its one [struct file].
+     [State.FdEventfd]'s note relies on this decline. *)
+  | FdEventfd _ => false
+  (* A DATAGRAM SOCKET TAKES THE [FdSocket] ANSWER.  Nothing it carries
+     drifts -- only its family -- but every call that would read the
+     shared socket declines anyway, so copying it would buy nothing,
+     and a decline keeps one rule for every socket kind *)
+  | FdDgram _ => false
   end.
 
 (** dup's injectable failures: fd-table exhaustion at RLIMIT_NOFILE

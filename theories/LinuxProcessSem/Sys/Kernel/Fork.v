@@ -667,6 +667,16 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        [fput] -- and [State.stream_peer] reads ends off
                        the fd table, which a copied table would double. *)
                     | FdStream _ _ _ => false
+                    (* AN EVENTFD JOINS THE GATE for the same reason: the
+                       child's copy names the same [eventfd_ctx], so a
+                       child that reads or writes moves the parent's
+                       counter, and [State.FdEventfd] keeps that counter
+                       in the one entry a copied table would double. *)
+                    | FdEventfd _ => false
+                    (* A DATAGRAM SOCKET takes the [FdSocket] answer, for
+                       [Fs.File.dup_modeled_entry]'s reason: one rule for
+                       every socket kind. *)
+                    | FdDgram _ => false
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which

@@ -464,6 +464,66 @@ Definition stream_read (fd id : word) (side : bool) (st : StreamEnd)
       end
   end.
 
+(** A READ OF AN EVENTFD, once [read_spec] has made [vfs_read]'s tests:
+    FMODE_READ (set: [eventfd2] opens the file O_RDWR), FMODE_CAN_READ
+    (set: [eventfd_fops] has [.read_iter]) and [access_ok] on the count
+    the call named.  [rw_verify_area] between them cannot fire: [f_pos]
+    is 0 on this kind (see [lseek_spec]) and a count of 2^63 or more
+    already failed [access_ok].  [fd] holds [State.FdEventfd ctx].
+
+    Everything below is [eventfd_read] (fs/eventfd.c, Linux v6.18.46),
+    reached through [new_sync_read] with the count [vfs_read] clamped at
+    [MAX_RW_COUNT], in its order:
+
+    - [iov_iter_count(to) < sizeof(ucnt)]: a count below 8 is -EINVAL,
+      before the counter is looked at.
+    - A ZERO COUNTER on a non-blocking file is -EAGAIN ([file->f_flags &
+      O_NONBLOCK]; a plain read never carries IOCB_NOWAIT).  On a
+      blocking file it is DECLINED, DELIBERATELY, for the reason
+      [stream_read] declines a blocking read of an empty pair end:
+      [wait_event_interruptible_locked_irq] sleeps until another task
+      writes or signals, this one-thread model has no such task, and
+      no signal is modeled, so the read never returns.  A choice of
+      "some count arrives" would be unsound and no transition at all
+      would break [Checks.Progress.receptive]; declining keeps both.
+      The cURL target this was written for creates its eventfds with
+      EFD_NONBLOCK and reads them at a zero counter (curl-fuzzer's
+      census, OSSV-287 wave 2), so it takes the -EAGAIN.
+    - Otherwise [eventfd_ctx_do_read] takes [ucnt] -- 1 under
+      EFD_SEMAPHORE, the whole counter otherwise; the counter is not 0
+      here, so [(flags & EFD_SEMAPHORE) && count] is just the bit -- and
+      SUBTRACTS IT FIRST.  Only after the lock is dropped does
+      [copy_to_iter] store the eight little-endian bytes of [ucnt] at
+      [buf].  So a destination that takes all eight returns 8, and one
+      that takes NONE of them is -EFAULT WITH THE COUNTER ALREADY
+      DECREMENTED: Linux does not put the count back.  A destination
+      that takes some of the eight and not the rest declines, as every
+      partially writable destination does here (see [readv_imported]'s
+      note).
+
+    No trace events and no copy-in: the counter is internal to the
+    process, as a pipe's bytes are. *)
+Definition eventfd_read (fd : word) (ctx : EventfdCtx) (buf count : word)
+    (i : SyscallInput) (m : Model) : Sys SyscallEffect :=
+  if (rw_count_clamp count <? 8)%Z then err_ret EINVAL
+  else if Z.eqb (ef_count ctx) 0 then
+    (if ef_nonblock ctx then err_ret EAGAIN
+     else unmodeled)                          (* would sleep forever: see above *)
+  else
+    let ucnt := if ef_semaphore ctx then 1%Z else ef_count ctx in
+    let fds' := fd_insert (m_fds m) fd (FdEventfd (ef_set_count ctx (ef_count ctx - ucnt))) in
+    match read_bytes_map (in_wmem i) buf (Z_to_bv 64 8) with
+    | Some _ =>
+        set_fds fds' ;;
+        pure (mkEffect (Z_to_bv 64 8) [(buf, word_le8 (Z_to_bv 64 ucnt))] [])
+    | None =>
+        match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+        | None => set_fds fds' ;; err_ret EFAULT
+            (* nothing lands, and the counter stays decremented *)
+        | Some _ => unmodeled                 (* partially writable destination: fail closed *)
+        end
+    end.
+
 (** Neither this spec nor [write_spec] has an -EINTR outcome, so an
     interrupted transfer is REJECTED rather than declined. *)
 Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
@@ -905,6 +965,16 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
            of a socket is 0 before the protocol is reached, whatever the
            queue holds -- unlike recvfrom, which has no such test *)
       else stream_read fd id side st (se_nonblock st) buf count i m
+  | Some (FdEventfd ctx) =>
+      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+        (* [vfs_read]'s [access_ok] on the count the call NAMED, ahead of
+           [eventfd_read]'s own length test, as on every kind *)
+      else eventfd_read fd ctx buf count i m
+  | Some (FdDgram _) => unmodeled
+      (* DECLINED.  An unconnected datagram socket's read reaches
+         [unix_dgram_recvmsg] or [udpv6_recvmsg] with an empty queue and,
+         on the blocking file [State.FdDgram] always is, waits for a
+         datagram nothing in this model can send *)
   end.
 
 (** [write fd buf count].
@@ -1307,6 +1377,48 @@ Definition stream_write (id : word) (side : bool) (st : StreamEnd)
   stream_send id side st nonblock nosignal (rw_count_clamp count)
     (fun c => readable_bytes (in_mem i) buf (Z_to_bv 64 c))
     (fun k => [(buf, k)]) m.
+
+(** A WRITE TO AN EVENTFD, once [write_spec] has made [vfs_write]'s
+    tests: FMODE_WRITE (set: O_RDWR), FMODE_CAN_WRITE (set:
+    [eventfd_fops] has [.write]) and [access_ok] on the count the call
+    named; [rw_verify_area] cannot fire, for [eventfd_read]'s reason.
+    [fd] holds [State.FdEventfd ctx].
+
+    Everything below is [eventfd_write] (fs/eventfd.c, Linux v6.18.46),
+    called directly through [.write] with the count [vfs_write] clamped
+    at [MAX_RW_COUNT], in its order:
+
+    - [count != sizeof(ucnt)]: any count but 8 is -EINVAL.
+    - [copy_from_user(&ucnt, buf, 8)]: a source that is not readable end
+      to end is -EFAULT with nothing changed.  [copy_from_user] reports
+      a partial copy as a nonzero remainder and [eventfd_write] answers
+      that -EFAULT too, so unlike a copy OUT this one has no partial
+      case to decline.  The eight bytes read go in the copy-in ledger on
+      every path past this one.
+    - [ucnt == ULLONG_MAX] is -EINVAL.
+    - [ULLONG_MAX - ctx->count > ucnt]: the counter takes [ucnt] and the
+      call returns 8.  Otherwise the add would reach [ULLONG_MAX]: on a
+      non-blocking file -EAGAIN with nothing changed; on a blocking file
+      DECLINED, because the wait for a reader to make room is the one
+      [eventfd_read]'s note argues can never end here.
+
+    No trace events, as for a read. *)
+Definition eventfd_write (fd : word) (ctx : EventfdCtx) (buf count : word)
+    (i : SyscallInput) (m : Model) : Sys SyscallEffect :=
+  if negb (Z.eqb (rw_count_clamp count) 8) then err_ret EINVAL
+  else
+  match copy_bytes_map (in_mem i) buf 8 with
+  | None => err_ret EFAULT                    (* not all eight bytes readable: nothing changes *)
+  | Some bs =>
+      record_copyins [(buf, 8%nat)]
+        (let ucnt := bv_unsigned (le_bytes_to_word bs) in
+         if Z.eqb ucnt U64_MAX then err_ret EINVAL
+         else if (ucnt <? U64_MAX - ef_count ctx)%Z then
+           set_fds (fd_insert (m_fds m) fd (FdEventfd (ef_set_count ctx (ef_count ctx + ucnt)))) ;;
+           ret_only (Z_to_bv 64 8)
+         else if ef_nonblock ctx then err_ret EAGAIN
+         else unmodeled)                       (* would sleep forever: see above *)
+  end.
 
 (** The faulting-source post-state of a write whose bytes would have
     landed at [off] in [p]: the file extended to [off], the descriptor
@@ -1864,6 +1976,16 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            [sock_write_iter] *)
       else stream_write id side st (se_nonblock st) false buf count i m
         (* write(2) cannot set [IOCB_NOSIGNAL], so SIGPIPE is raised *)
+  | Some (FdEventfd ctx) =>
+      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+        (* [vfs_write]'s [access_ok] on the count the call NAMED, after
+           FMODE_WRITE (set: O_RDWR) and ahead of [eventfd_write] *)
+      else eventfd_write fd ctx buf count i m
+  | Some (FdDgram _) => unmodeled
+      (* DECLINED.  A send with no address on an unconnected datagram
+         socket is refused by [unix_dgram_sendmsg] and [udpv6_sendmsg]
+         past flag and length tests this model does not carry; no target
+         writes one *)
   end.
 
 (** * pread64 (67) and pwrite64 (68) — a transfer at a POSITION THE CALL NAMES
@@ -1994,6 +2116,17 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
                                                     net/socket.c *)
   | Some (FdStream _ _ _) => err_ret ESPIPE      (* a socket file too: the same [stream_open] in
                                                     [sock_alloc_file] *)
+  | Some (FdDgram _) => err_ret ESPIPE          (* a socket file: the same [stream_open] in
+                                                   [sock_alloc_file] clears FMODE_PREAD *)
+  | Some (FdEventfd _) => err_ret ESPIPE        (* [ksys_pread64] reads through [vfs_read] only
+                                                   under FMODE_PREAD, and an eventfd's file
+                                                   never has it: [alloc_file_pseudo] reaches
+                                                   [init_file] and [file_init_path]
+                                                   (fs/file_table.c, v6.18.46), which grant
+                                                   OPEN_FMODE, FMODE_LSEEK and the CAN_ bits
+                                                   but not FMODE_PREAD -- that is
+                                                   [do_dentry_open]'s, which an anonymous-
+                                                   inode file never passes through *)
   | Some (FdFileW _ _) => err_ret EBADF          (* a regular file keeps FMODE_PREAD, so this
                                                     reaches [vfs_read] and fails its FMODE_READ
                                                     test: fs/read_write.c *)
@@ -2154,6 +2287,11 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
   | Some (FdStream _ _ _) => err_ret ESPIPE      (* a socket file: [stream_open] in
                                                     [sock_alloc_file]; so no -EPIPE and no
                                                     SIGPIPE through pwrite either *)
+  | Some (FdDgram _) => err_ret ESPIPE          (* a socket file: [stream_open] in
+                                                   [sock_alloc_file] *)
+  | Some (FdEventfd _) => err_ret ESPIPE        (* no FMODE_PWRITE, for the reason the pread64
+                                                   arm gives: [ksys_pwrite64] answers -ESPIPE
+                                                   before [vfs_write] is reached *)
   | Some (FdFile _ _) => err_ret EBADF           (* fd open read-only: [vfs_write]'s FMODE_WRITE
                                                     test, fs/read_write.c *)
   | Some FdUrandom => err_ret EBADF             (* FMODE_PWRITE is set on the device, so this
@@ -2627,6 +2765,26 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
                the ledger is the iovecs' prefix in order, as
                [writev_ledger] records a channel's *)
       end)
+  | Some (FdEventfd _) =>
+      record_copyins
+        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+      (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
+      | ImpFault => err_ret EFAULT
+      | ImpInval => err_ret EINVAL
+      | ImpOk iovs0 =>
+          if Z.eqb (iovs_total (cap_iovecs iovs0)) 0 then ret_only (Z_to_bv 64 0)
+            (* zero aggregate: [vfs_writev] returns at [if (!tot_len) goto out]
+               before the file is reached, on every kind *)
+          else writev_buf_gap
+            (* A VECTORED EVENTFD WRITE IS DECLINED.  [eventfd_fops] has
+               [.write] and no [.write_iter], so [vfs_writev] takes
+               [do_loop_readv_writev], which calls [eventfd_write] once
+               per segment and stops at the first error or short count:
+               an answer per segment, each an 8-byte add or an -EINVAL,
+               that no target asks for *)
+      end)
+  | Some (FdDgram _) => writev_buf_gap
+      (* declined whole, as the scalar write is: see [write_spec] *)
   end.
 
 
@@ -2715,9 +2873,20 @@ Inductive ReadableFd : Type :=
   (** /dev/urandom, which is only ever open for reading.  It carries
       nothing because the stream it would read is the model's
       ([State.m_urandom]), not the descriptor's. *)
-  | RdStream (id : word) (side : bool) (st : StreamEnd).
+  | RdStream (id : word) (side : bool) (st : StreamEnd)
   (** A stream-pair end ([State.FdStream]), which carries its own
       receive queue, so the read arm needs the end itself. *)
+  | RdEventfd
+  (** An eventfd ([State.FdEventfd]), open O_RDWR, so it passes the
+      gate.  It carries nothing because [readv_imported] declines its
+      transfer: the kind's readv is answered only as far as the parts
+      every kind shares -- the gate, the import's two errnos and the
+      zero aggregate -- which is why it is a constructor here rather
+      than a decline ahead of [readable_fd]. *)
+  | RdDgram.
+  (** An unconnected datagram socket ([State.FdDgram]): a socket file,
+      O_RDWR, so it passes the gate for [RdSocket]'s reason, and its
+      transfer declines for [read_spec]'s. *)
 
 (** [FMODE_READ] (fs/read_write.c [vfs_readv]'s first test, v6.18.46):
     an fd not open for reading is [-EBADF], decided BEFORE the iovec
@@ -2774,6 +2943,12 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
     (* a socket file: [sock_alloc_file] opens it O_RDWR, so FMODE_READ
        is set, and turning it away here would be [RdSocket]'s false
        -EBADF all over again *)
+  | FdEventfd _ => Some RdEventfd
+    (* [eventfd2] opens its file O_RDWR ([do_eventfd]'s [flags |=
+       O_RDWR]), so FMODE_READ is set; and FMODE_CAN_READ too, since
+       [eventfd_fops] has [.read_iter] *)
+  | FdDgram _ => Some RdDgram
+    (* a socket file, O_RDWR: [RdSocket]'s argument *)
   end.
 
 (** Linux keeps eight iovecs on the syscall stack ([UIO_FASTIOV],
@@ -2996,6 +3171,18 @@ Definition readv_imported (fd : word) (r : ReadableFd)
          pipe arm and for the same reason.  The -EBADF ordering above is
          still exact: [readable_fd] answers the write end before this
          point.  Fail closed through [readv_buf_gap] *)
+  | RdEventfd => readv_buf_gap
+      (* A VECTORED EVENTFD READ IS DECLINED, by choice.  [eventfd_fops]
+         has [.read_iter], so [vfs_readv] hands [eventfd_read] the whole
+         scatter in one [do_iter_readv_writev] -- a total below 8 is
+         -EINVAL and otherwise [copy_to_iter] spreads the eight bytes
+         over the iovecs -- which is [read_spec]'s [eventfd_read] over a
+         scatter.  No target issues it, so it is not written; the
+         -EBADF, the import's errnos and the zero aggregate above are
+         answered, as they are for every kind *)
+  | RdDgram => readv_buf_gap
+      (* declined for [read_spec]'s reason: an empty queue the file
+         would wait on *)
   | RdDevNull => ret_only (Z_to_bv 64 0)
       (* [read_iter_null] (drivers/char/mem.c, v6.18.46) is [return 0],
          reached through [do_iter_readv_writev] because [null_fops]
@@ -3229,6 +3416,20 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                                                     -EINVAL, not -ESPIPE *)
       | FdStream _ _ _ => err_ret ESPIPE        (* a socket file: the [FdSocket] argument
                                                     above, word for word *)
+      | FdDgram _ => err_ret ESPIPE             (* a socket file again: [stream_open] in
+                                                   [sock_alloc_file] clears FMODE_LSEEK *)
+      | FdEventfd _ => ret_only (Z_to_bv 64 0)  (* [eventfd_fops] has [.llseek = noop_llseek],
+                                                   so [file_init_path] (fs/file_table.c, v6.18.46)
+                                                   sets FMODE_LSEEK and [vfs_llseek] dispatches
+                                                   to it: [return file->f_pos] for every whence
+                                                   and offset.  [f_pos] is 0 on this kind:
+                                                   [init_file] sets it, [eventfd_read] never moves
+                                                   [kiocb.ki_pos] so [new_sync_read] writes back
+                                                   the 0 it started from, [eventfd_write] ignores
+                                                   its [ppos], and the positioned and vectored
+                                                   transfers that could move it are -ESPIPE or
+                                                   declined.  One descriptor per eventfd, so no
+                                                   other fd shares a moved position *)
       | FdPipe _ _ => err_ret ESPIPE             (* a real pipe, and the reason channels answer this.
                                                     The deciding test is [FMODE_LSEEK], not a null
                                                     [.llseek] read directly: [vfs_llseek]

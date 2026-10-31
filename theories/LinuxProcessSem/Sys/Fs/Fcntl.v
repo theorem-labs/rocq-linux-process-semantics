@@ -267,6 +267,19 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
       (* NOT A NO-OP QUESTION AT ALL: a stream-pair end records the one
          bit [setfl] can change on it, so [fcntl_spec] answers its
          F_SETFL through [stream_setfl] and never asks this predicate *)
+  | FdEventfd _ => false
+      (* NOT A NO-OP QUESTION EITHER, for the stream-pair end's reason:
+         an eventfd records its O_NONBLOCK, so [fcntl_spec] answers its
+         F_SETFL through [eventfd_setfl] *)
+  | FdDgram _ => Z.eqb (Z.land (bv_unsigned arg) setfl_acted_on) 0
+      (* THE [FdSocket] RULE, for the [FdSocket] reason: its [f_flags] is
+         exactly [socket_f_flags], O_RDWR, which carries no bit of
+         [setfl_acted_on] ([socket_f_flags_clear_of_setfl]), so an [arg]
+         clear of them meets every [setfl] test with both sides clear
+         and the closing assignment leaves the word as it was.  The
+         premise is [Net.Socket.socket_spec]'s datagram arm, which
+         declines SOCK_NONBLOCK and mints this kind with [O_RDWR]
+         alone *)
   end.
 
 (** The arithmetic half of the argument above, mechanized rather than
@@ -380,7 +393,10 @@ Proof. vm_compute. reflexivity. Qed.
     [Net.Socket.socket_spec] and [Net.Socket.accept4_spec] each answer
     [unmodeled] when SOCK_NONBLOCK is set, and they are the ONLY two
     specs that put a [State.FdSocket] on a NEW fd
-    ([State.init_model] seeds channels alone).  Six other sites
+    ([State.init_model] seeds channels alone).  [socket_spec]'s gate
+    precedes its datagram arm too, so the [State.FdDgram] sockets it
+    mints carry this same word and [getfl_f_flags] answers it for
+    them.  Six other sites
     [fd_insert] an [FdSocket] — bind, listen, shutdown, and the reset
     and connect transitions in [Fs.ReadWrite] — but each replaces an
     entry that already held one, so they move [State.SockState] and
@@ -392,9 +408,9 @@ Proof. vm_compute. reflexivity. Qed.
     and its AF_UNIX triple, the one that succeeds, mints
     [State.FdStream] ends rather than [State.FdSocket]s, carrying the
     bit in [se_nonblock] ([stream_f_flags] below).  So every
-    [State.FdSocket] the model can reach carries exactly this word.  A
-    change that made socketpair, socket or accept4 mint an [FdSocket]
-    with SOCK_NONBLOCK would falsify it.
+    [State.FdSocket] and every [State.FdDgram] the model can reach
+    carries exactly this word.  A change that made socketpair, socket
+    or accept4 mint either with SOCK_NONBLOCK would falsify it.
 
     NOTE WHAT IS NOT HERE: O_LARGEFILE.  A path open gets it from the
     SYSCALL ENTRY POINT, not from [build_open_flags], which never
@@ -485,6 +501,50 @@ Definition stream_setfl (fd id : word) (side : bool) (st : StreamEnd)
 (** The bit [stream_setfl] reads is O_NONBLOCK's, as a check. *)
 Remark o_nonblock_is_bit_11 : O_NONBLOCK = (2 ^ 11)%Z.
 Proof. reflexivity. Qed.
+
+(** THE WHOLE OF AN EVENTFD'S [f_flags]: O_RDWR plus O_NONBLOCK exactly
+    when the context records it.
+
+    [do_eventfd] (fs/eventfd.c, Linux v6.18.46) narrows its flag word
+    with [flags &= EFD_SHARED_FCNTL_FLAGS] (O_CLOEXEC | O_NONBLOCK),
+    adds [O_RDWR], and hands it to [anon_inode_getfile_fmode], whose
+    [__anon_inode_getfile] (fs/anon_inodes.c) passes
+    [flags & (O_ACCMODE | O_NONBLOCK)] to [alloc_file_pseudo], which
+    reaches [init_file]'s [f->f_flags = flags] (fs/file_table.c).  So at
+    creation the word is O_RDWR, plus O_NONBLOCK iff EFD_NONBLOCK was
+    asked for, which is what [Fs.EventFd.eventfd2_spec] records in
+    [ef_nonblock]; O_CLOEXEC is dropped by that mask and reaches only
+    [get_unused_fd_flags].  No O_LARGEFILE: [eventfd2] is not one of the
+    open entry points that add it.  After that the only modeled writer
+    is [eventfd_setfl], which records the one bit it changes.  FIONBIO,
+    the other writer, is declined by [Ioctl.ioctl_spec] here as for
+    every kind. *)
+Definition eventfd_f_flags (ctx : EventfdCtx) : Z :=
+  (O_RDWR + (if ef_nonblock ctx then O_NONBLOCK else 0))%Z.
+
+(** [F_SETFL] on an eventfd, which records the change, as
+    [stream_setfl] does on a stream-pair end.
+
+    [setfl] (fs/fcntl.c, Linux v6.18.46) on the anonymous-inode file
+    [eventfd2] makes: the O_APPEND test needs [IS_APPEND] of the shared
+    anonymous inode, whose [i_flags] [alloc_anon_inode] sets to
+    [S_PRIVATE | S_ANON_INODE] only (fs/libfs.c); O_NOATIME needs the
+    inode's owner; O_DIRECT is -EINVAL without [FMODE_CAN_ODIRECT],
+    which [alloc_file_pseudo] never sets; and [eventfd_fops] has neither
+    [check_flags] nor [fasync].  So an [arg] whose bits among
+    [setfl_acted_on] are at most O_NONBLOCK passes every test, changes
+    nothing but O_NONBLOCK, and returns 0 -- and [eventfd_read] and
+    [eventfd_write] read that bit straight off [file->f_flags], so the
+    change is the one [ReadWrite.eventfd_read] and
+    [ReadWrite.eventfd_write] honour.  Any other [arg] is declined, for
+    [stream_setfl]'s reasons. *)
+Definition eventfd_setfl (fd : word) (ctx : EventfdCtx) (arg : word)
+    (m : Model) : Sys SyscallEffect :=
+  if Z.eqb (Z.land (bv_unsigned arg) (setfl_acted_on - O_NONBLOCK)) 0
+  then set_fds (fd_insert (m_fds m) fd
+                 (FdEventfd (ef_set_nonblock ctx (Z.testbit (bv_unsigned arg) 11)))) ;;
+       ret_only (Z_to_bv 64 0)
+  else unmodeled.
 
 (** What [F_GETFL] answers, per fd kind: [Some w] where the model can
     derive [filp->f_flags] exactly, [None] where it cannot.
@@ -585,6 +645,13 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
   | FdStream _ _ st => Some (Z_to_bv 64 (stream_f_flags st))
       (* the [FdSocket] derivation, with the one bit it lacks recorded:
          see [stream_f_flags] *)
+  | FdEventfd ctx => Some (Z_to_bv 64 (eventfd_f_flags ctx))
+      (* derived from the context, with its one variable bit recorded:
+         see [eventfd_f_flags] *)
+  | FdDgram _ => Some (Z_to_bv 64 socket_f_flags)
+      (* the [FdSocket] derivation word for word: [sock_alloc_file]
+         builds every socket file the same way, and [socket_spec]'s
+         datagram arm declines SOCK_NONBLOCK *)
   | FdPipe _ _ => None
       (* DECLINED THOUGH DERIVABLE TODAY, and the asymmetry with the
          [FdSocket] arm above is the thing to justify rather than the
@@ -743,8 +810,11 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
     recorded by [stream_setfl]: the end carries its O_NONBLOCK, and the
     read and write arms ([ReadWrite.stream_read], [ReadWrite.stream_send])
     answer -EAGAIN by it, so setting the bit here and honouring it there
-    is one model, not a guess.  That is the non-blocking mode the
-    sentences below lack for every other kind.
+    is one model, not a guess.  [F_SETFL] on an EVENTFD
+    ([State.FdEventfd]) is the same move through [eventfd_setfl], with
+    [ReadWrite.eventfd_read] and [ReadWrite.eventfd_write] honouring the
+    bit.  That is the non-blocking mode the sentences below lack for
+    every other kind.
 
     On every other kind [F_SETFL] answers 0 exactly when it provably
     changes nothing — see [setfl_noop_on] — and declines otherwise.  The
@@ -761,9 +831,10 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
     EVERY OTHER COMMAND DECLINES, as does [F_GETFL] on the kinds it
     cannot answer:
 
-    - [F_GETFL] is answered on [State.FdSocket] and [State.FdStream] and
-      declined on every other fd kind.  [getfl_f_flags] above carries
-      the whole argument — the derivation of a socket's flag word, why a
+    - [F_GETFL] is answered on [State.FdSocket], [State.FdStream],
+      [State.FdEventfd] and [State.FdDgram] and declined on every other
+      fd kind.  [getfl_f_flags] above carries the whole argument — the
+      derivation of a socket's and an eventfd's flag word, why a
       channel's is the environment's, and why the [openat] kinds lose
       the answer to an ignored O_NONBLOCK — so it is not restated here.
     - [F_DUPFD] / [F_DUPFD_CLOEXEC] are [dup] in disguise: they mint a
@@ -844,6 +915,8 @@ Definition fcntl_spec (fd cmd arg : word) : Sys SyscallEffect :=
         match e with
         | FdStream id side st => stream_setfl fd id side st arg m
             (* a stream-pair end records its O_NONBLOCK *)
+        | FdEventfd ctx => eventfd_setfl fd ctx arg m
+            (* and so does an eventfd *)
         | _ =>
             if setfl_noop_on e arg then ret_only (Z_to_bv 64 0)   (* a provably empty F_SETFL: real 0 *)
             else unmodeled                       (* an F_SETFL that would change something *)

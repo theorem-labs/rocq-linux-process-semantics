@@ -1723,6 +1723,11 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
                                                     is consulted *)
   | Some (FdStream _ _ _) => err_ret EINVAL      (* a stream-pair end is a socket too: S_ISSOCK,
                                                     the same [!S_ISREG] -EINVAL *)
+  | Some (FdDgram _) => err_ret EINVAL           (* and so is a datagram socket *)
+  | Some (FdEventfd _) => err_ret EINVAL         (* an eventfd's anonymous inode has no type bits
+                                                   at all ([alloc_anon_inode], fs/libfs.c,
+                                                   v6.18.46), so it is not S_ISREG and takes the
+                                                   same -EINVAL though FMODE_WRITE is set *)
   | Some (FdPipe _ _) => err_ret EINVAL          (* the same answer for the same reason, on an fd
                                                     the model KNOWS is a pipe — see the header *)
   | Some (FdDevNull _ _) => err_ret EINVAL       (* and on /dev/null: a character device is not

@@ -422,6 +422,13 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
             (* NOT CONSTANT: [unix_poll] reads the end's queues and
                shutdown bits.  It is answered, but per descriptor, by
                [select_fd_bits] below rather than by this predicate *)
+            | Some (FdEventfd _) => false
+            (* NOT CONSTANT either: [eventfd_poll] reads the counter.
+               Answered per descriptor by [select_fd_bits] below *)
+            | Some (FdDgram _) => false
+            (* FAIL-CLOSED: [sock_poll] reaches [unix_dgram_poll] or
+               [udp_poll], each a function of socket state
+               [State.FdDgram] does not carry *)
             end
        else true)
       && bits_all_pollable fds z k'
@@ -509,6 +516,25 @@ Definition stream_poll_mask (fds : list (word * FdEntry)) (id : word)
       else (base, Z.lor base w)
   end.
 
+(** [eventfd_poll] on an eventfd whose context is [ctx] (fs/eventfd.c,
+    Linux v6.18.46), reached through [vfs_poll] because [eventfd_fops]
+    has [.poll].  It reads the counter once and reports:
+
+    - EPOLLIN when [count > 0];
+    - EPOLLERR when [count == ULLONG_MAX];
+    - EPOLLOUT when [ULLONG_MAX - 1 > count].
+
+    Nothing else: no RDNORM, WRNORM or HUP bit, whatever the counter.
+    So the mask is a FUNCTION OF THE ENTRY, with nothing undecided, and
+    both callers answer from it on every request.  ([count] never reaches
+    [ULLONG_MAX] through a modeled call -- see [State.EventfdCtx] -- so
+    EPOLLERR is clear in every modeled run; it is computed rather than
+    assumed.) *)
+Definition eventfd_poll_mask (ctx : EventfdCtx) : Z :=
+  Z.lor (if (0 <? ef_count ctx)%Z then EPOLLIN else 0)
+ (Z.lor (if Z.eqb (ef_count ctx) U64_MAX then EPOLLERR else 0)
+        (if (ef_count ctx <? U64_MAX - 1)%Z then EPOLLOUT else 0)).
+
 (** What [do_select] reports for one descriptor [fd] asked about in the
     sets [i], [o] and [x]: the three result bits, or [None] where the
     model declines.
@@ -520,7 +546,8 @@ Definition stream_poll_mask (fds : list (word * FdEntry)) (id : word)
     [unix_writable] turns on truesize; and a survivor whose peer closed
     is answered too, because its undecided EPOLLERR adds nothing to
     readable or writable that SHUTDOWN_MASK has not already set, and is
-    not in [POLLEX_SET].  Every other kind is
+    not in [POLLEX_SET].  An EVENTFD is answered from
+    [eventfd_poll_mask], always.  Every other kind is
     answered exactly when [bits_all_pollable] calls its mask constant:
     [DEFAULT_POLLMASK] meets [POLLIN_SET] and [POLLOUT_SET] and misses
     [POLLEX_SET].  The [_] arm hands every other constructor to that
@@ -539,6 +566,14 @@ Definition select_fd_bits (fds : list (word * FdEntry)) (fd : word)
       let '(a', b', c') := pick hi in
       if (Bool.eqb a a' && Bool.eqb b b' && Bool.eqb c c')%bool
       then Some (a, b, c) else None
+  | Some (FdEventfd ctx) =>
+      let mk := eventfd_poll_mask ctx in
+      Some ((i && negb (Z.eqb (Z.land mk POLLIN_SET) 0))%bool,
+            (o && negb (Z.eqb (Z.land mk POLLOUT_SET) 0))%bool,
+            (x && negb (Z.eqb (Z.land mk POLLEX_SET) 0))%bool)
+        (* [do_select]'s three tests on the one mask: readable at a
+           non-zero counter, writable below [ULLONG_MAX - 1], never
+           exceptional (EPOLLPRI is not among [eventfd_poll]'s bits) *)
   | _ =>
       if bits_all_pollable fds (Z.shiftl 1 (bv_unsigned fd)) (S (Z.to_nat (bv_unsigned fd)))
       then Some (i, o, false) else None
@@ -832,9 +867,15 @@ Definition pselect_writes (i : SyscallInput) (ret : Z)
     reads, writes, shuts down or closes, and the peer is held by this
     same single-threaded process, which is asleep here; signals are not
     modeled, and no clone can hold a copy ([Kernel.Fork] declines one),
-    so no other task can act on it either.  The portable-sleep idiom
+    so no other task can act on it either.  An eventfd's mask changes
+    only when its counter does, and only this process's [read] and
+    [write] move it: the kernel's own [eventfd_signal] callers (AIO,
+    io_uring, KVM, vfio) need an eventfd registered with them, which no
+    modeled call does, and one descriptor per eventfd means no other
+    task holds it.  The portable-sleep idiom
     [select(0, NULL, NULL, NULL, &tv)] is one such shape; a pair end
-    asked for reading with an empty queue and an open peer is another.
+    asked for reading with an empty queue and an open peer is another,
+    and an eventfd asked for reading at a zero counter a third.
     The model says WHAT that wait returns and not how long it takes,
     which is the same partial-correctness reading every other syscall
     here gets; a [tv_sec] near [TIME64_MAX] -- where
@@ -878,9 +919,11 @@ Definition pselect_finish (i : SyscallInput) (tsp : word)
     every descriptor kind it answers: a kernel CONSTANT for regular
     files and directories -- [vfs_poll] hands back [DEFAULT_POLLMASK]
     for any file with no [->poll] method, and neither defines one on any
-    filesystem in the tree -- and, for a stream-pair end, [unix_poll]
+    filesystem in the tree -- for a stream-pair end, [unix_poll]
     read off the end's queues and shutdown bits ([stream_poll_mask]),
-    declined only where it turns on skb truesize.  A descriptor whose
+    declined only where it turns on skb truesize, and for an eventfd,
+    [eventfd_poll] read off its counter ([eventfd_poll_mask]).  A
+    descriptor whose
     readiness is a schedule rather than a state -- the piped stdio
     channels -- is refused by [select_fd_bits] instead of guessed at.
     So the checker can recompute the one answer, as the contract needs.
@@ -1182,6 +1225,17 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
            let filt := Z.lor events (Z.lor EPOLLERR EPOLLHUP) in
            if Z.eqb (Z.land lo filt) (Z.land hi filt) then Some (Z.land lo filt)
            else None
+       | Some (FdEventfd ctx) =>
+           (* [eventfd_poll], masked by the same filter: nothing in
+              [eventfd_poll_mask] is undecided, so this is always
+              answered.  Every bit it can hold -- EPOLLIN, EPOLLOUT,
+              EPOLLERR -- is one [mangle_poll] maps to the [POLL*] bit of
+              the same value on riscv64 *)
+           Some (Z.land (eventfd_poll_mask ctx) (Z.lor events (Z.lor EPOLLERR EPOLLHUP)))
+       | Some (FdDgram _) => None
+           (* FAIL-CLOSED, for [bits_all_pollable]'s reason: a datagram
+              socket's [->poll] reads state [State.FdDgram] does not
+              carry *)
        end.
 
 Fixpoint ppoll_revents (fds : list (word * FdEntry)) (es : list (Z * Z))
@@ -1202,8 +1256,9 @@ Fixpoint ppoll_revents (fds : list (word * FdEntry)) (es : list (Z * Z))
 (** [do_poll]'s return: the number of entries whose [do_pollfd]
     answered a non-zero mask.  Within the modeled band that is exactly
     the number of non-zero [revents], because every mask this spec
-    produces -- 0, [EPOLLNVAL], a subset of [DEFAULT_POLLMASK], or a
-    subset of [stream_poll_mask]'s bits -- is built from [EPOLL*] bits
+    produces -- 0, [EPOLLNVAL], a subset of [DEFAULT_POLLMASK], a
+    subset of [stream_poll_mask]'s bits, or a subset of
+    [eventfd_poll_mask]'s -- is built from [EPOLL*] bits
     that [mangle_poll] maps to [POLL*] bits of the same value on riscv64,
     so the mask is zero exactly when
     the stored [revents] is.  Unlike pselect6's, this count is a

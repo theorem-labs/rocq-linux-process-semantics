@@ -139,6 +139,63 @@ Definition sin_addr_of (bs : list byte) : Z :=
 (** INADDR_ANY, the only bind address the model accepts. *)
 Definition INADDR_ANY : Z := 0%Z.
 
+(** THE DATAGRAM SHAPES [socket] ANSWERS WITH A DESCRIPTOR: AF_INET6 or
+    AF_UNIX, base type SOCK_DGRAM, protocol 0 -- [fam], [ty] and [pro]
+    as [socket_spec] decodes them.  Both reach a [->create] that
+    succeeds and hand back an UNCONNECTED datagram socket, which the
+    model holds as [State.FdDgram fam].  Linux v6.18.46 throughout:
+
+    - AF_UNIX: [unix_create] (net/unix/af_unix.c) accepts protocol 0,
+      gives a SOCK_DGRAM socket [unix_dgram_ops], and [unix_create1]
+      allocates its [sock].
+    - AF_INET6: [inet6_create] (net/ipv6/af_inet6.c) walks
+      [inetsw6[SOCK_DGRAM]], where protocol 0 takes the first entry's
+      protocol.  [inet6_register_protosw] inserts every non-permanent
+      entry after the last permanent one, and [udpv6_init] registers the
+      permanent UDP entry before [udplitev6_init] (permanent too) and
+      [pingv6_init] (not), so the first entry is UDP and the socket is
+      UDPv6 ([udpv6_prot], [inet6_dgram_ops]).
+
+    Every other shape of these two families stays declined, each for a
+    reason the model does not carry: a nonzero protocol (AF_UNIX's
+    [PF_UNIX] alias, which no target passes, or -EPROTONOSUPPORT;
+    AF_INET6's explicit IPPROTO_UDP, UDP-Lite, ICMPv6 ping and whatever
+    a module registers), SOCK_STREAM and SOCK_SEQPACKET (connection
+    sockets this model holds as nothing yet), SOCK_RAW (CAP_NET_RAW for
+    AF_INET6; rewritten to SOCK_DGRAM by [unix_create] for AF_UNIX, and
+    no target asks), and the types no protocol registers.
+
+    THE BUILD AND THE BOOT MUST REGISTER BOTH FAMILIES for this to be
+    Linux's answer: CONFIG_UNIX and CONFIG_IPV6, each [y] in the
+    configuration of record (SCOPE.md), and a boot without
+    [ipv6.disable=1], under which [inet6_init] returns before
+    [sock_register(&inet6_family_ops)] and [__sock_create] answers
+    -EAFNOSUPPORT.  SCOPE.md lists all three among the assumptions the
+    model does not check. *)
+Definition socket_dgram_b (fam ty pro : Z) : bool :=
+  ((Z.eqb fam AF_INET6 || Z.eqb fam AF_UNIX)
+   && Z.eqb ty SOCK_DGRAM && Z.eqb pro 0)%bool.
+
+(** The errnos a [socket_dgram_b] call can fail with, for reasons the
+    model does not decide; every one of them follows [__sock_create]'s
+    range tests, which [socket_spec] answers first.  [sock_alloc]'s
+    -ENFILE (net/socket.c); then the family's [->create]: [unix_create1]'s
+    -ENFILE past [2 * get_max_files()] AF_UNIX sockets and -ENOMEM from
+    its [sk_alloc], or [inet6_create]'s -ENOBUFS from its [sk_alloc] (NOT
+    -ENOMEM: [err = -ENOBUFS] is set before that call, where
+    [inet_create] sets -ENOMEM) and the -ENOMEM of [udpv6_init_sock]'s
+    [kcalloc] (include/net/udp.h [udp_lib_init_sock]); then
+    [sock_map_fd]'s -EMFILE or -ENOMEM from [get_unused_fd_flags] and
+    -ENFILE or -ENOMEM from [sock_alloc_file]'s [alloc_file_pseudo].
+    So AF_UNIX's set is exactly [socket_errnos], and AF_INET6's is that
+    plus -ENOBUFS.  The LSM hooks ([security_socket_create],
+    [security_socket_post_create], [security_file_alloc]) and
+    [inet6_create]'s [BPF_CGROUP_RUN_PROG_INET_SOCK] are the
+    environment's: the model describes a kernel with no denying LSM and
+    no cgroup socket program, as [getsockopt_spec] does. *)
+Definition socket_dgram_errnos (fam : Z) : list Z :=
+  if Z.eqb fam AF_INET6 then [ENOMEM; EMFILE; ENFILE; ENOBUFS] else socket_errnos.
+
 (** [socket domain type protocol].
 
     net/socket.c [__sys_socket] -> __sys_socket_create -> sock_create ->
@@ -185,9 +242,12 @@ Definition INADDR_ANY : Z := 0%Z.
       touches only the descriptor's close-on-exec bit, there is no
       execve here, and [Fs.Fcntl.fcntl_spec]'s F_GETFD admits both
       values of the bit.)
-    - Every family but AF_INET.  Whether an in-range family is
-      registered is a property of the kernel build, so neither success
-      nor -EAFNOSUPPORT can be asserted.
+    - Every family but AF_INET, AF_INET6 and AF_UNIX, and of those two
+      every shape but [socket_dgram_b]'s.  Whether an in-range family
+      is registered is a property of the kernel build, so neither
+      success nor -EAFNOSUPPORT can be asserted for the rest.  The two
+      datagram shapes SUCCEED, past the same flag, family and type
+      tests, and the model holds the socket as [State.FdDgram].
     - SOCK_DGRAM, SOCK_RAW and SOCK_PACKET under AF_INET.  The first two
       would SUCCEED and hand back a socket whose protocol this model
       does not have; the third is silently rewritten to PF_PACKET by
@@ -211,8 +271,19 @@ Definition socket_spec (domain type protocol : word) : Sys SyscallEffect :=
     let pro := sint32 protocol in
     if orb (Z.ltb fam 0) (Z.leb NPROTO fam) then err_ret EAFNOSUPPORT
     else if Z.leb SOCK_MAX ty then err_ret EINVAL
+    else if socket_dgram_b fam ty pro then
+      alt (e <- errno_from (socket_dgram_errnos fam) ;; err_ret e)
+          (fd <- lowest_fd (m_fds m) ;;          (* success: the lowest free fd, as Linux *)
+           set_fds (fd_insert (m_fds m) fd (FdDgram fam)) ;;
+           ret_only fd)
+      (* [unix_create] / [inet6_create], then [sock_map_fd]: see
+         [socket_dgram_b] and [socket_dgram_errnos].  SOCK_CLOEXEC was
+         admitted and is ignored, as below; SOCK_NONBLOCK was declined
+         above, so the new file's [f_flags] is [O_RDWR] exactly
+         ([sock_alloc_file]) and [Fs.Fcntl.getfl_f_flags] reports it *)
     else if negb (Z.eqb fam AF_INET) then unmodeled
-      (* an in-range family whose registration the model cannot know *)
+      (* an in-range family whose registration the model cannot know,
+         or an AF_INET6 / AF_UNIX shape [socket_dgram_b] does not take *)
     else if Z.eqb ty SOCK_PACKET then unmodeled
       (* SOCK_PACKET UNDER AF_INET NEVER REACHES [inet_create], so the
          protocol range BELOW must not judge it, and this arm has to sit
@@ -478,6 +549,11 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
          v6.18.46) then parses a [sockaddr_un] -- an autobind for a
          bare family, a filesystem or abstract name otherwise -- none of
          which this model carries.  Declined *)
+  | Some (FdDgram _) => unmodeled
+      (* A DATAGRAM SOCKET IS A SOCKET TOO, so not the wildcard below:
+         [sock_alloc_file] gave it [socket_file_ops].  [unix_bind] and
+         [inet6_bind] would parse and claim an address, none of which
+         this model carries ([State.FdDgram] has no state).  Declined *)
   | Some _ => err_ret ENOTSOCK
       (* AN OPEN FD THAT IS NOT A SOCKET, whatever kind it is.  This arm
          is a wildcard on purpose: [sock_from_file] is one comparison
@@ -485,16 +561,18 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
          property of the kernel's DISPATCH rather than of any
          enumeration of file kinds.  It is therefore the right answer for
          every NON-SOCKET kind this model has — [FdChannel], [FdFile],
-         [FdFileW], [FdFileA], [FdFileRW], [FdDir], [FdPipe], [FdDevNull]
-         and [FdUrandom] — and for any non-socket kind a later change
-         adds.  [FdPipe] and [FdFileA] arrived that way without an edit:
-         a pipe end's [f_op] is [pipeanon_fops] (fs/pipe.c
-         [create_pipe_files], v6.18.46) and an append fd's is its
-         filesystem's, so [sock_from_file] returns NULL for each exactly
-         as for the other four.
+         [FdFileW], [FdFileA], [FdFileRW], [FdDir], [FdPipe], [FdDevNull],
+         [FdUrandom] and [FdEventfd] — and for any non-socket kind a
+         later change adds.  [FdPipe], [FdFileA] and [FdEventfd] arrived
+         that way without an edit: a pipe end's [f_op] is
+         [pipeanon_fops] (fs/pipe.c [create_pipe_files], v6.18.46), an
+         append fd's is its filesystem's, and an eventfd's is
+         [eventfd_fops] (fs/eventfd.c), so [sock_from_file] returns NULL
+         for each exactly as for the other four.
          WHAT THE WILDCARD CANNOT SEE IS A NEW SOCKET KIND, which would
-         fall into it and answer a FALSE -ENOTSOCK.  [FdStream] is the
-         first, and takes its own arm above; the next must too.
+         fall into it and answer a FALSE -ENOTSOCK.  [FdStream] and
+         [FdDgram] are the first two, and take their own arms above; the
+         next must too.
          [listen_spec] and [accept4_spec] answer the same way for the
          same reason. *)
   end.
@@ -592,6 +670,12 @@ Definition listen_spec (fd backlog : word) : Sys SyscallEffect :=
          passes its SOCK_STREAM test and then answers [-EINVAL] at
          "No listens on an unbound socket": a [socketpair] end has no
          [u->addr].  No state moves *)
+  | Some (FdDgram _) => unmodeled
+      (* a datagram socket is a socket, so not the wildcard below
+         either.  Its [proto_ops] give [.listen = sock_no_listen]
+         ([unix_dgram_ops], [inet6_dgram_ops]), so Linux answers
+         -EOPNOTSUPP after [security_socket_listen]; the model declines
+         every call on this kind that it does not need, and this is one *)
   | Some _ => err_ret ENOTSOCK
   end.
 
@@ -728,6 +812,12 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
              allocation errnos are the [FdSocket] arm's; this model does
              not take them on for a call no target issues on a pair.
              Declined *)
+      | FdDgram _ => unmodeled
+          (* a datagram socket is a socket, so not the -ENOTSOCK below.
+             Its [.accept] is [sock_no_accept] (-EOPNOTSUPP), reached
+             after the same descriptor reservation and socket allocation
+             whose errnos the [FdSocket] arm carries; declined, as every
+             call on [State.FdDgram] the model does not need *)
       | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
              then unmodeled
                (* Linux v6.18.46 (commit 1f99e9ab748f), fs/file.c [alloc_fd]
@@ -919,12 +1009,13 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
     - Every errno of net/unix/af_unix.c [unix_stream_connect] and
       [unix_dgram_connect] — including -EINVAL, not -EISCONN, for a
       listening socket, the one place the two families disagree on an
-      answer this spec gives.  [socket_spec] admits only AF_INET
-      SOCK_STREAM into the fd table, so [ops->connect] is always
-      [inet_stream_connect] and neither function is ever entered.  An
-      AF_UNIX ADDRESS on an AF_INET socket is a different thing and IS
-      answered: -EAFNOSUPPORT, after the 16-byte -EINVAL.  Modeling
-      AF_UNIX sockets is what would make the unix path reachable.
+      answer this spec gives.  The only [FdSocket] [socket_spec] makes
+      is AF_INET SOCK_STREAM, so on that kind [ops->connect] is always
+      [inet_stream_connect]; the AF_UNIX sockets the model has, a
+      [State.FdStream] end and a [State.FdDgram], each take a declining
+      arm below, so neither unix function is ever entered.  An AF_UNIX
+      ADDRESS on an AF_INET socket is a different thing and IS
+      answered: -EAFNOSUPPORT, after the 16-byte -EINVAL.
     - [__inet_stream_connect]'s [default:] -EINVAL arm, for
       SS_DISCONNECTING.  TWO things write that state and both are shut:
       a failed disconnect, and [tcp_disconnect] cannot fail; and
@@ -1038,6 +1129,11 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
                   below: [unix_stream_connect] (net/unix/af_unix.c,
                   v6.18.46) parses a [sockaddr_un] and looks a name up,
                   none of which this model carries.  Declined *)
+           | FdDgram _ => unmodeled
+               (* a datagram socket is a socket, so not the -ENOTSOCK
+                  below: [unix_dgram_connect] and [inet_dgram_connect]
+                  would set a peer this model does not carry
+                  ([State.FdDgram] has no state).  Declined *)
            | _ => err_ret ENOTSOCK               (* [sock_from_file], AFTER the copy *)
            end)
       end
@@ -1068,8 +1164,9 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
     constructor breaks the definition and forces
     an answer, rather than silently inheriting -ENOTSOCK for a descriptor
     that IS a socket.  [State.FdStream] was the first such constructor,
-    and it is why the answer has THREE shapes rather than two: an
-    AF_INET socket's state, a stream-pair end, or the lookup's errno.
+    and [State.FdDgram] the second; they are why the answer has FOUR
+    shapes rather than two: an AF_INET socket's state, a stream-pair
+    end, an inert datagram socket, or the lookup's errno.
 
     -ENOTSOCK IS NOT A TOTAL ANSWER.  [socket_spec] (198) and
     [accept4_spec] (202/242) hand out socket fds, so only the [sock_fd]
@@ -1094,6 +1191,10 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
 Inductive SockOf :=
   | SoInet (sk : SockState)                       (* an AF_INET/SOCK_STREAM socket *)
   | SoPair (id : word) (side : bool) (st : StreamEnd)  (* an AF_UNIX stream-pair end *)
+  | SoInert (family : Z)
+      (* an unconnected AF_INET6 or AF_UNIX datagram socket ([State.FdDgram]):
+         a socket, so never -ENOTSOCK, and declined by every spec below,
+         since the model carries none of the state these calls read *)
   | SoErr (e : Z).                                (* the lookup's -EBADF or -ENOTSOCK *)
 
 Definition sock_fd (m : Model) (fd : word) : SockOf :=
@@ -1113,10 +1214,13 @@ Definition sock_fd (m : Model) (fd : word) : SockOf :=
                                               fails *)
   | Some FdUrandom => SoErr ENOTSOCK       (* nor /dev/urandom: [urandom_fops]
                                               (drivers/char/random.c) *)
+  | Some (FdEventfd _) => SoErr ENOTSOCK   (* nor an eventfd: [eventfd_fops]
+                                              (fs/eventfd.c), on an anonymous inode *)
   | Some (FdSocket sk)  => SoInet sk
   | Some (FdStream id side st) => SoPair id side st
                                            (* a socket file: [sock_alloc_file] gives it
                                               [socket_file_ops] whatever the family *)
+  | Some (FdDgram fam) => SoInert fam      (* the same [socket_file_ops] *)
   end.
 
 (** A level with a handler on an AF_INET/SOCK_STREAM socket.  Anything
@@ -1365,6 +1469,7 @@ Definition getsockname_spec (fd : word) : Sys SyscallEffect :=
       stream_getname (in_arg i 1) (in_arg i 2) i
       (* an unbound AF_UNIX end: its address is fixed, so the export the
          AF_INET arm lacks is just two bytes and a length here *)
+  | SoInert _ => unmodeled             (* [State.FdDgram]: declined, see [SockOf] *)
   end.
 
 (** [getpeername fd addr addrlen] (205) — THE ONE CALL OF THE FIVE THAT
@@ -1430,6 +1535,7 @@ Definition getpeername_spec (fd : word) : Sys SyscallEffect :=
       stream_getname (in_arg i 1) (in_arg i 2) i
       (* the peer is unbound too, and found even after it closed: see
          [stream_getname] *)
+  | SoInert _ => unmodeled             (* [State.FdDgram]: declined, see [SockOf] *)
   end.
 
 (** [setsockopt fd level optname optval optlen] (208).  Two arms are
@@ -1489,6 +1595,7 @@ Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
            AF_INET (lib/cf-socket.c:160), only logs the failure, and goes
            on *)
       else i <- input ;; stream_setsockopt fd id side st (in_arg i 2) (in_arg i 3) optlen i m
+  | SoInert _ => unmodeled             (* [State.FdDgram]: declined, see [SockOf] *)
   end.
 
 (** [getsockopt fd level optname optval optlen] (209) — the same walk,
@@ -1649,6 +1756,7 @@ Definition getsockopt_spec (fd level optlenp : word) : Sys SyscallEffect :=
               [do_sock_getsockopt] answers -EOPNOTSUPP for every level
               but SOL_SOCKET *)
          else stream_getsockopt st (in_arg i 2) (in_arg i 3) optlenp i)
+  | SoInert _ => unmodeled             (* [State.FdDgram]: declined, see [SockOf] *)
   end.
 
 (** [shutdown fd how] (210).  Two real answers and a decline, and the
@@ -1754,6 +1862,7 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
       else stream_shutdown fd id side st how m
         (* the two bits [State.SockState] lacks are exactly what a
            [State.StreamEnd] carries, so this arm is answered *)
+  | SoInert _ => unmodeled             (* [State.FdDgram]: declined, see [SockOf] *)
   end.
 
 (* =========================================================================
@@ -1855,7 +1964,11 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
      [setfl_noop_declines_fasync] below is that step mechanized rather
      than asserted.  FIOASYNC is not in [Fs.Ioctl.tty_only_request], so
      [Fs.Ioctl.ioctl_spec] declines it -- the modeled requests there are
-     terminal-only and every one answers -ENOTTY, changing nothing.  Nor
+     the eight terminal-only ones, every one answering -ENOTTY and
+     changing nothing, and SIOCGIFINDEX on a [State.FdDgram], which
+     [sock_do_ioctl] hands to [dev_ioctl] and which reads the device
+     table and writes the caller's [struct ifreq], touching neither
+     [sock_fasync] nor the file's owner.  Nor
      can the bit arrive at open time:
      [Fs.Fcntl.modeled_open_flags_clear_of_setfl] proves every word
      [Fs.Open.modeled_open_flags] admits is disjoint from
@@ -1891,7 +2004,8 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
 
    THE CLAIM IS OVER TWO MODELED SETS, and that is the form to keep true:
    {[F_SETFD], [F_GETFD], [F_SETFL], [F_GETFL]} for fcntl, and
-   [Fs.Ioctl.tty_only_request] for ioctl.  ADDING A COMMAND TO EITHER
+   [Fs.Ioctl.tty_only_request] plus a datagram socket's SIOCGIFINDEX
+   for ioctl.  ADDING A COMMAND TO EITHER
    BREAKS THIS SENTENCE -- an [F_SETOWN] arm, an [F_SETFL] that admitted
    FASYNC, or a FIOASYNC arm reopens the route directly.  [F_GETFL]
    clears both gates:
@@ -2215,6 +2329,12 @@ Definition sendto_spec (fd buf count flags addrp addrlen : word)
            (* [__sys_sendto] ORs MSG_DONTWAIT in for an O_NONBLOCK file,
               and [unix_stream_sendmsg] raises SIGPIPE unless the call
               itself carries MSG_NOSIGNAL *)
+     | Some (FdDgram _) => unmodeled
+         (* a datagram socket is a socket, so not the -ENOTSOCK below.
+            With no address and no peer, [unix_dgram_sendmsg] and
+            [udpv6_sendmsg] each refuse the send, after flag tests this
+            model does not carry; declined, as every call on
+            [State.FdDgram] the model does not need *)
      | Some _ => err_ret ENOTSOCK                (* not a socket: real -ENOTSOCK *)
      end).
 
@@ -2327,9 +2447,10 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
   | Some FdDir
   | Some (FdPipe _ _)
   | Some (FdDevNull _ _)
-  | Some FdUrandom =>          (* not a socket: [sock_from_file] is one comparison
-                                  against [socket_file_ops], and a pipe end and the
-                                  two device kinds all fail it *)
+  | Some FdUrandom
+  | Some (FdEventfd _) =>      (* not a socket: [sock_from_file] is one comparison
+                                  against [socket_file_ops], and a pipe end, the
+                                  two device kinds and an eventfd all fail it *)
       err_ret ENOTSOCK
   | Some (FdStream _ _ _) => unmodeled
       (* A STREAM-PAIR END DECLINES, WHOLE, and this decline is
@@ -2341,6 +2462,13 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
          never existing.  So the arm declines even a [sendmsg] with no
          control data; answering it needs a decline of [msg_controllen]
          first, as the AF_INET arm below has *)
+  | Some (FdDgram _) => unmodeled
+      (* AN AF_UNIX DATAGRAM SOCKET DECLINES WHOLE for the stream-pair
+         end's reason: [unix_dgram_sendmsg] attaches SCM_RIGHTS files
+         too ([unix_scm_to_skb]), and the decline is what keeps
+         [State.pipe_end_live]'s "no reference outside the table" true.
+         An AF_INET6 one carries no SCM_RIGHTS, but has no peer and no
+         state here either, so it declines with it *)
   | Some (FdSocket sk) =>
   (* THE RANGE TEST COMES FIRST, through [State.copy_bytes_map] — the
      [State.access_okb]-then-walk pair [socketpair_dest_writable] below
@@ -2515,10 +2643,18 @@ Definition sockfd_lookup_errno (fds : list (word * FdEntry)) (fd : word)
          same comparison fails and the same -ENOTSOCK is exact *)
   | Some FdUrandom => Some ENOTSOCK
       (* and /dev/urandom's is [urandom_fops] (drivers/char/random.c) *)
+  | Some (FdEventfd _) => Some ENOTSOCK
+      (* and an eventfd's is [eventfd_fops] (fs/eventfd.c) *)
   | Some (FdSocket _) => None
   | Some (FdStream _ _ _) => None
       (* a socket too: [recvfrom_spec] answers a stream-pair end before it
          asks this, and [recvmsg_spec] takes the decline *)
+  | Some (FdDgram _) => None
+      (* a socket too ([socket_file_ops]), so never -ENOTSOCK; both
+         recv-family arms decline it here, as every call on
+         [State.FdDgram] the model does not need: an unbound,
+         unconnected datagram socket that nothing can address would
+         wait in [unix_dgram_recvmsg] or [udpv6_recvmsg] *)
   end.
 
 (** That answer as a spec: the errno, or the decline a socket takes.
@@ -2935,7 +3071,8 @@ Definition socketpair_spec (family type protocol sv : word) : Sys SyscallEffect 
     out of reach a step earlier: it opens its socket with
     [socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0)] (:123,
     and AF_INET6 first where configured), and [socket_spec] declines
-    SOCK_DGRAM.  So the
+    both: SOCK_NONBLOCK on every family, and SOCK_DGRAM under AF_INET.
+    So the
     resolver never obtains the descriptor it would call [recvmsg] on,
     and the decline costs [modeled] nothing a modeled program does.
 

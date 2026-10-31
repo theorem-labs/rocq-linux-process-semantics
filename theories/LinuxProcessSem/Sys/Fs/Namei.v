@@ -241,6 +241,12 @@ Fixpoint fd_names_path (fds : list (word * FdEntry)) (p : path) : bool :=
     (* exact: a [socketpair] end is a sockfs inode made by
        [sock_alloc_file]'s [alloc_file_pseudo], unbound, so it names no
        path at all *)
+  | (_, FdDgram _) :: r => fd_names_path r p
+    (* exact for the same reason: [sock_alloc_file]'s pseudo file, and
+       [socket] binds nothing, so it names no path *)
+  | (_, FdEventfd _) :: r => fd_names_path r p
+    (* exact: [alloc_file_pseudo] on the anonymous-inode mount
+       (fs/anon_inodes.c), which no path in [Fs.Fs] reaches *)
   end.
 
 (** unlinkat's injectable failures: environment conditions the model does

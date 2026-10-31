@@ -28,7 +28,11 @@ is another: `socketpair(AF_UNIX, SOCK_STREAM, 0)` succeeds only on a
 kernel with AF_UNIX registered. The riscv64 defconfig gets it from
 `CONFIG_NET_9P_FD`, which has `imply UNIX` (`net/9p/Kconfig`); the
 generated `.config` has `CONFIG_UNIX=y` and `CONFIG_AF_UNIX_OOB=y`
-(dispatch://OSSV-287/artifact/skb-sizes-md).
+(dispatch://OSSV-287/artifact/skb-sizes-md). `CONFIG_IPV6=y` is a third:
+`socket(AF_INET6, SOCK_DGRAM, 0)` succeeds only on a kernel with AF_INET6
+registered. `net/ipv6/Kconfig` gives `IPV6` `default y`, and the same
+generated `.config` has `CONFIG_IPV6=y` (line 961 of `build-nodbg.config`,
+among that artifact's raw files).
 
 ## Where QEMU user mode differs
 
@@ -294,6 +298,7 @@ them. A proof says nothing about a program in such a case.
 | Network | The list of connections is never empty. Thus the model does not include an environment where no peer ever connects. |
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. The `*_budgets_only` statements have a finer premise for the source: it excludes a first-touch or a cumulative refusal, but not a single request that is larger than the whole budget (`Run.alloc_refuse_reason`). |
 | Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
+| Datagram sockets and eventfds | `socket(AF_INET6 or AF_UNIX, SOCK_DGRAM, 0)` gives a socket (`State.FdDgram`) on which the model answers `close`, `F_GETFL`, an empty `F_SETFL`, the terminal ioctls, `SIOCGIFINDEX` for `lo`, and the errnos of calls that stop before the socket (`-ESPIPE` from `pread64`, `pwrite64` and `lseek`, `-EINVAL` from `fsync` and `ftruncate`, `-ENOTDIR` from `getdents64`); every call that would read or change socket state, and every other protocol or flag of these two families, is `unmodeled`. An eventfd answers `read`, `write`, `select`/`poll`, `fcntl`, the terminal ioctls, `lseek` and `close`; a nonempty `readv` or `writev` on it is `unmodeled`. |
 
 The entry premises also limit the launches that a statement covers, and
 they limit them to Linux's own. For one input and one kernel build
@@ -389,6 +394,25 @@ not apply.
   from `State.KernelBuild`, which a launch states once; statements
   quantify over every value. Another process that writes
   `/proc/sys/net/core/*` during the run makes this assumption false.
+- An eventfd (`eventfd2`, `State.FdEventfd`) is used by this one thread
+  only, and no kernel subsystem signals it. `dup`, `dup3`, `F_DUPFD` and
+  a `clone` holding one are declined. A blocking read of a zero counter,
+  and a blocking write that would take the counter to `ULLONG_MAX`, are
+  declined: on Linux such a call never returns, because the only task
+  that could change the counter is the one that waits. A program that
+  reaches either is outside the model.
+- The network namespace's loopback device is named `lo`. The model
+  answers `ioctl(fd, SIOCGIFINDEX, &ifr)` on an `AF_UNIX` or `AF_INET6`
+  datagram socket only for the name `lo`, and answers it with index 1
+  (`Fs.Ioctl.siocgifindex_spec`). Linux gives the loopback device the name
+  `lo` and the index 1 in every namespace (`loopback_net_init`,
+  `drivers/net/loopback.c`; `LOOPBACK_IFINDEX`, `include/net/flow.h`), but
+  a privileged process can rename it afterwards, and another device can
+  then take the name. Every other name is declined.
+- The kernel was booted without `ipv6.disable=1`. With it, `inet6_init`
+  returns before it registers the `AF_INET6` family
+  (`net/ipv6/af_inet6.c`), and `socket(AF_INET6, ...)` is
+  `-EAFNOSUPPORT` where the model answers a descriptor.
 - The launch left `SIGPIPE` at its default disposition, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises

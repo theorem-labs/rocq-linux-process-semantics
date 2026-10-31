@@ -287,6 +287,13 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
   | FdStream _ _ _ => Some true
       (* a socket file like [FdSocket]'s: [sock_alloc_file] gives every
          address family [socket_file_ops], whose [.poll] is [sock_poll] *)
+  | FdDgram _ => Some true
+      (* the same [socket_file_ops], whose [.poll] is [sock_poll] *)
+  | FdEventfd _ => Some true
+      (* [eventfd_fops] (fs/eventfd.c, v6.18.46) has [.poll =
+         eventfd_poll], and the model minted the file itself in
+         [Fs.EventFd.eventfd2_spec], so there is no far end to be unsure
+         about *)
   | FdChannel _ => None
   | FdDevNull _ _ => None
       (* FAIL-CLOSED, though the answer is exact and this file already
@@ -328,7 +335,7 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
 Example fd_can_poll_is_select_pollable :
   forall e, bits_all_pollable [(Z_to_bv 64 0, e)] 1%Z 1%nat = true
             <-> fd_can_poll e = Some false.
-Proof. intros [| | | | | | | | | |]; vm_compute; split; congruence. Qed.
+Proof. intros [| | | | | | | | | | | |]; vm_compute; split; congruence. Qed.
 
 (** ------------------------------------------------------------------
     epoll_create1 (20)
