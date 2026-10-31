@@ -499,6 +499,9 @@ Qed.
 Lemma write_channel_outcome : forall fd buf count i m ch bs eff m' evs,
   fd_lookup (m_fds m) fd = Some (FdChannel ch) ->
   ch <> 0 ->
+  (* the far end has a reader: without one the channel arm answers
+     -EPIPE and SIGPIPE, never a delivery; see [ReadWrite.write_spec] *)
+  m_channel_reader m = true ->
   (* at or below [rw_bytes_max] the clamp inside [Uaccess.write_source]
      is the identity; see [Uaccess.modeled_rw_range] *)
   (bv_unsigned count <= rw_bytes_max)%Z ->
@@ -511,7 +514,7 @@ Lemma write_channel_outcome : forall fd buf count i m ch bs eff m' evs,
        (mkEffect (len_word (firstn n bs)) [] []) /\ m' = m
   /\ evs = map (WriteEv ch) (firstn n bs).
 Proof.
-  intros fd buf count i m ch bs eff m' evs Hfd Hch Hmax Hb Hnonempty Hspec.
+  intros fd buf count i m ch bs eff m' evs Hfd Hch Hrdr Hmax Hb Hnonempty Hspec.
   apply check_write_complete_ok in Hspec.
   unfold check_write in Hspec. rewrite Hfd in Hspec. cbv iota in Hspec.
   assert (Hch0 : w_is0 ch = false).
@@ -528,6 +531,8 @@ Proof.
   { unfold w_is0, bv_eqb. apply Z.eqb_neq.
     change (bv_unsigned (Z_to_bv 64 0)) with 0%Z. lia. }
   rewrite Hc in Hspec. cbv iota zeta in Hspec.
+  rewrite Hrdr in Hspec. change (negb true) with false in Hspec.
+  cbv iota zeta in Hspec.
   rewrite (write_source_of_rw _ _ _ Hmax),
           (readable_bytes_full _ _ _ _ Hb) in Hspec.
   assert (Hg0 : Nat.eqb (length bs) 0 = false) by (apply Nat.eqb_neq; lia).
@@ -1194,12 +1199,15 @@ Qed.
     it, returning the delivered length.  As above, an [Ok] pins [count]
     — and so the buffer — inside [rw_bytes_max].  [bs <> []] also keeps
     the zero-length case out: a write of nothing is decided by the range
-    verdict instead ([Uaccess.access_ok_zero]). *)
+    verdict instead ([Uaccess.access_ok_zero]).  And the far end must
+    have a reader ([State.m_channel_reader]): without one the write
+    answers -EPIPE and raises SIGPIPE instead of delivering. *)
 
 Corollary writev_outcome_is_write_outcome :
   forall fd iov iovcnt buf count iv iw m ch iovs bs eff m' evs,
   fd_lookup (m_fds m) fd = Some (FdChannel ch) ->
   ch <> 0 ->
+  m_channel_reader m = true ->
   (bv_unsigned iovcnt <= IOV_MAX)%Z ->
   import_iovecs (in_mem iv) iov iovcnt = ImpOk iovs ->
   gather_iovecs (in_mem iv) (cap_iovecs iovs) = Some bs ->
@@ -1218,7 +1226,7 @@ Corollary writev_outcome_is_write_outcome :
               (mkEffect (len_word (firstn n bs)) [] [])) m' evs).
 Proof.
   intros fd iov iovcnt buf count iv iw m ch iovs bs eff m' evs
-         Hfd Hch Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hv.
+         Hfd Hch Hrdr Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hv.
   destruct (writev_channel_outcome _ _ _ _ _ _ _ _ _ _ _
               Hfd Hch Hmax Hiv Hg Hae Hnonempty Hv)
     as (Hbnd & n & Hn1 & Hn2 & Heff & Hm & Hevs).
@@ -1238,6 +1246,7 @@ Proof.
   { unfold w_is0, bv_eqb. apply Z.eqb_neq.
     change (bv_unsigned (Z_to_bv 64 0)) with 0%Z. lia. }
   rewrite Hc. cbv beta iota zeta.
+  rewrite Hrdr. change (negb true) with false. cbv beta iota zeta.
   rewrite (write_source_of_rw _ _ _ Hcmax), (readable_bytes_full _ _ _ _ Hb).
   assert (Hg0 : Nat.eqb (length bs) 0 = false) by (apply Nat.eqb_neq; lia).
   rewrite Hg0. cbv beta iota.
@@ -1282,6 +1291,7 @@ Corollary write_outcome_is_writev_outcome :
   forall fd iov iovcnt buf count iv iw m ch iovs bs eff m' evs,
   fd_lookup (m_fds m) fd = Some (FdChannel ch) ->
   ch <> 0 ->
+  m_channel_reader m = true ->
   (bv_unsigned iovcnt <= IOV_MAX)%Z ->
   import_iovecs (in_mem iv) iov iovcnt = ImpOk iovs ->
   gather_iovecs (in_mem iv) (cap_iovecs iovs) = Some bs ->
@@ -1300,9 +1310,9 @@ Corollary write_outcome_is_writev_outcome :
               (mkEffect (len_word (firstn n bs)) [] [])) m' evs).
 Proof.
   intros fd iov iovcnt buf count iv iw m ch iovs bs eff m' evs
-         Hfd Hch Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hw.
+         Hfd Hch Hrdr Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hw.
   destruct (write_channel_outcome _ _ _ _ _ _ _ _ _ _
-              Hfd Hch Hcmax Hb Hnonempty Hw)
+              Hfd Hch Hrdr Hcmax Hb Hnonempty Hw)
     as (Hbnd & n & Hn1 & Hn2 & Heff & Hm & Hevs).
   exists n. split; [exact Hn1|]. split; [exact Hn2|].
   split; [exact Heff|]. subst m' evs.

@@ -1068,6 +1068,9 @@ Proof.
   assert (Hrb : read_bytes_map (in_mem i) (in_arg i 1) (in_arg i 2) = Some [wloop_byte])
     by (vm_compute; reflexivity).
   assert (Hne : [wloop_byte] <> []) by discriminate.
+  (* [demo_proc_input] is built by the 13-place [State.mkProcInput], which
+     launches with a reader on the far end of stdout *)
+  assert (Hrdr : m_channel_reader (wloop_model lim) = true) by reflexivity.
   (* The count bound, which [write_channel_outcome] asks for by name.
      The channel arm's gate is [Uaccess.modeled_rw_range], a
      DISJUNCTION, so the lemma states the disjunct its proof uses instead
@@ -1075,7 +1078,7 @@ Proof.
      [addi a2, x0, 1] in [wloop_segment]. *)
   assert (Hmax : (bv_unsigned (in_arg i 2) <= rw_bytes_max)%Z)
     by (vm_compute; discriminate).
-  destruct (write_channel_outcome _ _ _ _ _ _ _ _ _ _ Hfd Hch Hmax Hrb Hne Hspec)
+  destruct (write_channel_outcome _ _ _ _ _ _ _ _ _ _ Hfd Hch Hrdr Hmax Hrb Hne Hspec)
     as (_ & n & Hn1 & Hn2 & Heff & Hm & Hevs).
   cbn [length] in Hn2. assert (n = 1%nat) by lia. subst n.
   split; [| split; [exact Hm | exact Hevs]].

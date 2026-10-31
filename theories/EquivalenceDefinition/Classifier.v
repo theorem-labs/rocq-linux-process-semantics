@@ -426,7 +426,7 @@ Lemma good_input_refuted_by_source_error : forall O1 O2 inp en1 en2,
 Proof.
   intros O1 O2 inp en1 en2 H1 H2 Herr Hg.
   destruct (Hg en1 en2 H1 H2) as (Hef & _ & _).
-  exact (Hef Herr).
+  exact (error_free_unkilled_error_free _ Hef Herr).
 Qed.
 
 (** ... and it has the same vacuity route, from EITHER image alone.
@@ -529,7 +529,17 @@ Qed.
     two slice obligations would then be about different runs from the
     one the gate sorted. *)
 Definition error_free_input (O : Image) (inp : ProcInput) : Prop :=
-  forall en, valid_entry O en inp -> error_free (run O source_alloc_limit en inp).
+  forall en, valid_entry O en inp ->
+    error_free_unkilled (run O source_alloc_limit en inp).
+  (* [error_free_unkilled] AND NOT [error_free]: the gate is named for
+     an input that does not make the original crash, and a death by a
+     fatal signal is a crash that takes no error transition.  Before
+     the write arms could raise SIGPIPE no run under [Run.valid_input]
+     could end in one, so the two predicates agreed; one can now
+     ([Sys.Fs.ReadWrite.write_spec]), and with the weaker predicate
+     this gate would sort an input on which the original dies into the
+     error-free side.  The same decision [Equivalence.strong_equiv_error_free]
+     takes, for the same reason. *)
 
 (** ... and the consequence just argued for: on an error-free input the
     original is also covered by the model at every valid entry.  The
@@ -1401,7 +1411,7 @@ Lemma good_input_s_refuted_by_source_error : forall cfg O1 O2 inp en1 en2,
 Proof.
   intros cfg O1 O2 inp en1 en2 H1 H2 Herr Hg.
   destruct (Hg en1 en2 H1 H2) as (Hef & _ & _).
-  exact (Hef Herr).
+  exact (error_free_unkilled_error_free _ Hef Herr).
 Qed.
 
 (* -------------------------------------------------------------------------
@@ -1854,7 +1864,8 @@ Qed.
     the regions would be carved by a different notion of "buggy" from
     the one the slice obligations are stated under. *)
 Definition error_free_input_s (cfg : SpuriousCfg) (O : Image) (inp : ProcInput) : Prop :=
-  forall en, valid_entry O en inp -> error_free (run_scfg cfg O source_alloc_limit en inp).
+  forall en, valid_entry O en inp ->
+    error_free_unkilled (run_scfg cfg O source_alloc_limit en inp).
 
 (** At [Run.may_fail_cfg] it is the property above, which is what lets
     the unparameterized statements keep their text.  Through

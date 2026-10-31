@@ -1913,8 +1913,14 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
   | None => err_ret EBADF                        (* fd not open: real -EBADF *)
   | Some (FdFile _ _) => err_ret EBADF           (* fd open read-only: real -EBADF *)
   | Some FdDir => err_ret EBADF                  (* directory fds are O_RDONLY *)
-  | Some (FdSocket _) => writev_buf_gap           (* see [write_spec]'s socket arm: a write that
-                                                    would raise SIGPIPE has no encoding *)
+  | Some (FdSocket _) => writev_buf_gap           (* A VECTORED SOCKET WRITE IS UNMODELED, and
+                                                    unlike the scalar arm it stays so for every
+                                                    socket state: [write_spec]'s socket arm answers
+                                                    the no-connection states because the transfer
+                                                    is the only thing in the way there, and here
+                                                    the gathered transfer is in the way too.  No
+                                                    soundness claim rests on the difference: a
+                                                    decline is sound under either *)
   | Some (FdChannel ch) =>
       if w_is0 ch then err_ret EBADF             (* channel 0 is read-only BY ASSUMPTION *)
       else
@@ -1927,6 +1933,26 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
             let total := iovs_total (cap_iovecs iovs0) in
             let bs := writev_gathered (in_mem i) iovs0 in
             if Z.eqb total 0 then ret_only (Z_to_bv 64 0)   (* zero aggregate: 0, no buffer inspected *)
+            else if negb (m_channel_reader m) then sigpipe_write
+              (* THE FAR END HAS NO READER, and writev takes the same
+                 path write does: fs/read_write.c [do_writev] imports
+                 the iovec array -- which is why the ledger above keeps
+                 its entry on this branch -- then [vfs_writev] reaches
+                 [f_op->write_iter], which for a pipe is
+                 [anon_pipe_write] and takes [send_sig(SIGPIPE, ...)]
+                 and -EPIPE at fs/pipe.c:460-465, and for a socket is
+                 [sock_write_iter] and reaches net/core/stream.c
+                 [sk_stream_error] :190-198.  AFTER the zero-aggregate
+                 branch for the scalar arm's reason (fs/pipe.c:454-456
+                 returns 0 before the readers test), and with no
+                 [access_ok] test of its own, because [import_iovecs]
+                 above has already made it and answered [ImpFault] if
+                 it failed.  Linux v6.18.46, commit 1f99e9ab748f.
+
+                 WITHOUT THIS ARM [writev] WOULD BE UNSOUND WHERE
+                 [write] IS NOT: it would answer a byte count and let
+                 the program run on for a launch the input says has no
+                 reader, which asserts the process SURVIVED *)
             else if Nat.eqb (length bs) 0 then err_ret EFAULT  (* not even the first byte readable *)
             else if addr_is_error_b (len_word bs) then writev_buf_gap
                  (* unreachable under the aggregate cap; see above *)
