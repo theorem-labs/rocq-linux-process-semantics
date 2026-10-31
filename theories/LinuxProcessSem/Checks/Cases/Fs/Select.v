@@ -740,17 +740,61 @@ Example ppoll_an_unreadable_array_is_efault :
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
 
-(** [nfds = 0] NEVER DEREFERENCES [ufds].  [copy_from_user] of zero
-    bytes reads nothing and the write-back loop writes none, however
-    wild the pointer is.  With a requested {0,0} the call polls once and
-    returns 0, and [poll_select_finish] writes nothing for it either. *)
-Example ppoll_nfds_zero_never_dereferences_ufds :
+(** [nfds = 0] COPIES NOTHING FROM [ufds], and this says only that.
+    [copy_from_user] of zero bytes reads nothing and the write-back
+    loop writes none, so a pointer no byte of which is mapped is still
+    a 0 return.  With a requested {0,0} the call polls once and returns
+    0, and [poll_select_finish] writes nothing for it either.  What the
+    pointer may NOT be is out of the user address space; the example
+    below is that half. *)
+Example ppoll_nfds_zero_reads_no_entry_from_ufds :
   check_syscall
     (mkInput 73 [65536; 0; pp_tsp; 0; 0; 0]
        (bytes_at pp_tsp (pp_ts 0 0)) pp_wmem)
     (with_copyins [(pp_tsp, 16%nat)] (mkEffect 0 [] [])) pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
+
+(** [nfds = 0] STILL RANGE-CHECKS [ufds], and the answer is -EFAULT.
+    [do_sys_poll] guards its write-back loop with
+    [if (!user_write_access_begin(ufds, nfds * sizeof(*ufds))) goto
+    out_fds] (fs/select.c) and runs that call for every [nfds],
+    including 0; [out_fds] returns the [err = -EFAULT] the function
+    opened with.  riscv64's [user_write_access_begin] is [access_ok]
+    on the untagged address (arch/riscv/include/asm/uaccess.h), and
+    the generic [__access_ok] ends
+    [return (size <= limit) && (addr <= (limit - size));]
+    (include/asm-generic/access_ok.h): at [size = 0] the first
+    conjunct is free and the second still refuses an [addr] above
+    [TASK_SIZE_MAX].  [State.TASK_SIZE] is that limit, so
+    [State.TASK_SIZE + 1] is outside it by one byte.
+
+    The second conjunct is the 0 this call used to answer, now
+    rejected.  The third is the ORDER: [user_write_access_begin] runs
+    AFTER [do_poll], so with a NULL [tsp] and no entry the call never
+    returns to reach it and the model declines rather than answering
+    -EFAULT — the same shape, and the same reason, as
+    [ppoll_a_null_timeout_with_nothing_ready_is_declined] below. *)
+Example ppoll_nfds_zero_still_range_checks_ufds :
+  check_syscall
+    (mkInput 73 [Z_to_bv 64 (TASK_SIZE + 1); 0; pp_tsp; 0; 0; 0]
+       (bytes_at pp_tsp (pp_ts 0 0)) pp_wmem)
+    (with_copyins [(pp_tsp, 16%nat)] (mkEffect (errno_ret EFAULT) [] []))
+    pselect_model
+  = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 73 [Z_to_bv 64 (TASK_SIZE + 1); 0; pp_tsp; 0; 0; 0]
+          (bytes_at pp_tsp (pp_ts 0 0)) pp_wmem)
+       (with_copyins [(pp_tsp, 16%nat)] (mkEffect 0 [] [])) pselect_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 73 [Z_to_bv 64 (TASK_SIZE + 1); 0; 0; 0; 0; 0]
+          (fun _ => None) pp_wmem)
+       (mkEffect (errno_ret EFAULT) [] []) pselect_model
+     = CheckUnmodeled.
+Proof.
+  split; [check_eq | split; vm_compute; reflexivity].
+Qed.
 
 (** THE TIMEOUT WRITE-BACK, and it is [poll_select_finish]'s — the same
     function pselect6 reaches, with the same [PT_TIMESPEC] argument.  An
