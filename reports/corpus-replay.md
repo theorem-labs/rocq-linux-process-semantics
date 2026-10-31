@@ -117,27 +117,37 @@ cheap replay path survives pull request #39, which moves `theories/Common` into
 `rocq-linux-process-semantics-core`: after it lands the whole-package build
 grows by whatever `Common` costs and the cone build does not move.
 
-### 3a. The head moved twice under this report; the result is unaffected
+### 3a. The head moved twice under this report, and the result was re-measured on it
 
-`revision/entry` is now `deea495` — `7c429761` (`revision/vdso-reserved-asan`)
-merged, then a consumer round and an ASan turn on top. This replay measured
-`36811ec`.
+`revision/entry` moved to `deea495` while this was being written —
+`7c429761` (`revision/vdso-reserved-asan`) merged, then a consumer round and an
+ASan turn on top. The body of this report measures `36811ec`.
 
-**[INFERENCE, not a measurement.]** Every file the extracted checker is built
-from is byte-identical between `36811ec` and `deea495` — same git blob for
-`BvBase.v`, `Fs.v`, `Monad.v`, `State.v`, `Specs.v`, `Run.v` and
-`Checks/ExecutableSpecs.v`, and `theories/LinuxProcessSem/Sys/` is untouched.
-The only cone changes are `Checks/Extraction.v`, which gains the two roots
-`image_shape_b` and `fs_of_raw` and nothing else, and `Checks/CheckedInput.v`,
-which is the checked boundary the harness never calls — it links
-`State.init_model`, the raw entry point. Adding an extraction root publishes a
-name; it changes no function. So no verdict and no post-state digest can move,
-and the five hold at `deea495`.
+**Re-measured at `deea495`, against the same base `b1a36516`:**
 
-That is an argument from the diff, not a run. Confirming it is one cone build,
-one link and one replay — about six minutes — and it is not worth contending
-with `LpsStartState`'s CI run for. It should be done once that run reports, and
-re-done if a later merge touches any file in the list above.
+```
+base    b1a36516:  3939 of 4291 reproduced,  352 differ on a verdict word
+entry   deea495:   3934 of 4291 reproduced,  357 differ on a verdict word
+BROKE 5 — the same five traces, the same five moves
+```
+
+Identical to `36811ec`. Predicted before the run, from the diff, and the
+prediction is worth keeping because it is the cheap test for the next merge:
+every file the extracted checker is built from is byte-identical between
+`36811ec` and `deea495` — same git blob for `BvBase.v`, `Fs.v`, `Monad.v`,
+`State.v`, `Specs.v`, `Run.v` and `Checks/ExecutableSpecs.v` — and
+`theories/LinuxProcessSem/Sys/` is untouched. The only cone changes are
+`Checks/Extraction.v`, which gains the roots `image_shape_b` and `fs_of_raw`
+and nothing else, and `Checks/CheckedInput.v`, the checked boundary the harness
+never calls, since it links `State.init_model`, the raw entry point. Adding an
+extraction root publishes a name; it changes no function.
+
+**So the rule for the next merge, which costs one `git diff --stat`:** if it
+touches `BvBase.v`, `Fs.v`, `Monad.v`, `State.v`, `Specs.v`, `Run.v`,
+`Checks/ExecutableSpecs.v` or anything under `Sys/`, re-run the replay. If it
+touches only `Checks/CheckedInput.v`, `Checks/Extraction.v`'s root list,
+`Checks/Cases/`, `Checks/Examples.v` or `theories/Common`, it cannot move a
+verdict. Re-running it anyway is six minutes.
 
 ## 4. `revision/entry`, and what every difference IS
 
@@ -458,6 +468,39 @@ later for a reason the log does not name — and `words_equal` compares events
 with `Trace.events_equal` rather than by count. Section 4b was re-measured
 against that version and is unchanged.
 
+### 6a. The follow-up: the harness should link the CHECKED entry point
+
+`harness-adapt.sh`'s `pre` step exists only because the harness links
+`State.init_model`, the raw entry point, and so needs `State.default_kernel`
+and `State.default_execfn` as values. Adding those two to
+`Checks/Extraction.v`'s root list would make the step a no-op forever, and the
+branch owner declined it. **The decline is right, and the usual reason for it
+is not.**
+
+The usual reason — that naming a constant "would publish a way into the checker
+that no boundary guards" — does not apply to these two, on two measured counts.
+First, `Checks/Extraction.v` says itself that the root list hides nothing: "the
+generated .mli publishes everything the roots reach, these included, so no
+choice of roots can hide them; the roots are what this tree supports". So
+`init_model` is already callable; the root list is a statement of SUPPORTED
+surface, not an access control. Second, the two constants add no capability
+even in principle: `mkRawKernelBuild`, `mkRawCacheView` and `mkRawCacheLeaf`
+are all roots, and `CheckedInput.kernel_of_raw_of_kernel` proves
+`kernel_of_raw (raw_of_kernel kb) = Some kb` for EVERY `kb` — so a caller on
+the checked path can already build `default_kernel`, and any other
+`KernelBuild`, out of plain integers and booleans.
+
+What the decline is right about is the thing the root list actually records:
+adding them would declare the bypass a supported way to use this model. **The
+real fix is for the harness to build a `RawProcInput` and call
+`init_model_checked`**, which costs the two constants nothing because the
+checked path constructs them, and buys two things this replay measured it does
+not have: the declared launch becomes eight named numbers visible in the
+harness's own source instead of a model constant hidden behind a name, and the
+replay would exercise the checked boundary, which section 5 records that it
+never does. That is the Lean comparison lane's call, not this branch's defect,
+and it has been sent to them with the patch.
+
 ## 7. One change to a model tree, and it was not needed in the end
 
 At `25e591a`, `theories/LinuxProcessSem/Checks/CheckedInput.v` was
@@ -482,12 +525,12 @@ and `rocq-entry2` was built with no shim at all.
 
 ## 8. Disk
 
-**0.44 GB** persistent, under `/mnt/durable/scratch/lps-start-state-replay/`
-(437 MB: the 363 MB corpus checkout, four exported trees, the scripts and the
+**0.45 GB** persistent, under `/mnt/durable/scratch/lps-start-state-replay/`
+(453 MB: the 363 MB corpus checkout, five exported trees, the scripts and the
 result JSON). **0 GB** added to `/mnt/nvme` — the Lean lane's scripts were read
-there and copied out, never written to. 0.99 GB transient on the GCE VM
-`lpsrev-entry`'s own 290 GB root disk (986 MB of `~/replay-D`, including four
-dune build trees and four linked checkers), which goes when the VM does. No new
+there and copied out, never written to. 1.2 GB transient on the GCE VM
+`lpsrev-entry`'s own 290 GB root disk (`lpsrev-entry:~/replay-D`, five dune
+build trees and five linked checkers), which goes when the VM does. No new
 checkout of theorem-labs/oss-verify-proofs-internal was made.
 
 ## 9. Where the artefacts are
