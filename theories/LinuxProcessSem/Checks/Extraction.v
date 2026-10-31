@@ -60,7 +60,17 @@ Require Extraction.
    [byte_of_Z]), [execfn_shape_b], the exec file name's launch
    condition on its own, so that a caller can tell a name that is not
    a VALUE from one no launch could have presented before it seeds a
-   model, [wmem_ranges], the writable-address predicate a reader
+   model, [image_shape_b] and [fs_of_raw], which say the same two
+   things about the file-system image the run is launched over --
+   [fs_of_raw] answers whether the image is a VALUE (a byte of it no
+   [byte] holds refuses it) and [image_shape_b] answers, of an image
+   [fs_of_raw] converted, whether it describes a file system at all,
+   which is [Run.valid_input]'s [Fs.fs_image_real] conjunct that
+   revision/linux-only added; the image needs the two roots because
+   that test reads the keys as paths and so can only be asked after
+   the bytes are bytes, while the exec name's two tests are facts
+   about the integers themselves, [wmem_ranges], the writable-address
+   predicate a reader
    that holds ranges rather than a per-page test hands in, and
    [raw_of_effect], the way back for an effect the
    caller built with the model's own constructors below -- it is checked
@@ -104,6 +114,8 @@ Extraction "syscall_model.ml"
   mkRawCacheLeaf
   raw_of_effect
   execfn_shape_b
+  image_shape_b
+  fs_of_raw
   wmem_ranges
   word_of_Z
   byte_of_Z

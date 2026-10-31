@@ -51,14 +51,26 @@ Proof.
      fs/binfmt_elf.c and fs/exec.c, Linux v6.18.46, commit
      1f99e9ab748f).  The source derivation reads argc off the initial
      stack and fetches through the overlay, so it needs that conjunct
-     and the TWELFTH conjunct of [Run.valid_input], [Run.valid_launch]:
+     and the LAST conjunct of [Run.valid_input], [Run.valid_launch]:
      together they bound the entry block and put [sp] at or below the
      stack VMA's end.  The target reads nothing off the stack and needs
      neither. *)
   destruct Hens as (Hspr & _ & _ & _ & Hlaunch_source).
   destruct Hent as (Hspa & _).
-  destruct Hvalid as
-    (Hva & _ & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hlaunch_inp).
+  (* Guarded rather than positional: [Run.valid_input] grows a conjunct
+     whenever the input class learns to say something new, and this
+     proof names none of them by place -- the peel below leaves every
+     clause in the context, where [assumption] finds it.  The
+     [lazymatch] is the guard, and it is what stops the peel at
+     [Run.valid_launch]: that conjunct stays FOLDED, so it is not
+     syntactically a conjunction and arrives whole, which is what
+     [source_wexit] asks for.  Scoped to [Hvalid] rather than run over
+     every conjunction in the context, because [Hlaunch_source] must
+     stay whole too. *)
+  red in Hvalid.
+  repeat (lazymatch type of Hvalid with
+          | _ /\ _ => let Hc := fresh "Hc" in destruct Hvalid as [Hc Hvalid]
+          end).
   destruct Hspr as (Hr_lo & Hr_hi & _).
   destruct Hspa as (Ha_lo & Ha_hi & _).
   apply (cat_omni_strong_equiv_te

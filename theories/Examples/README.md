@@ -278,8 +278,10 @@ Proof.
   rewrite (valid_entry_sv48 _ _ _ Hsv48) in Hent.
   destruct Hens as (Hspr & _ & _ & _ & Hlau_source).
   destruct Hent as (Hspa & _ & _ & _ & Hlau_target).
-  destruct Hvalid as
-    (Hva & Hve & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hvl).
+  red in Hvalid.
+  repeat (lazymatch type of Hvalid with
+          | _ /\ _ => let Hc := fresh "Hc" in destruct Hvalid as [Hc Hvalid]
+          end).
   set (argv := in_argv inp) in *.
   rewrite source_init_pc_val, target_init_pc_val.
   destruct (le_lt_dec 2 (length argv)) as [Hge | Hlt].
@@ -288,10 +290,16 @@ Proof.
 Qed.
 ```
 
-`Run.valid_input` has twelve conjuncts. Most proofs use only the first
-two or three and the twelfth, `Run.valid_launch`. The pattern
-`(Hva & Hve & _)` drops the others; write the twelve-place pattern when
-a per-binary section asks for `valid_launch`.
+`Run.valid_input` gains a conjunct whenever the input class learns to say
+something new — three of them this revision — so a positional pattern over
+it names a different clause after each insertion rather than failing. Do
+not count. Peel it as above: the guard stops the peel at
+`Run.valid_launch`, which stays folded, so that clause arrives whole and
+every other one sits in the context where `assumption` finds it. Where
+only one clause is wanted, take it from its accessor lemma —
+`Run.valid_input_va_size`, `Run.valid_input_abort_terminal`,
+`Run.valid_input_image_real`, `Run.valid_input_urandom`,
+`Run.valid_input_hwcap_rv64gc_word` — which no insertion can move.
 
 `Run.valid_entry` has five. Its fifth, `Run.entry_launch_ok_va`, is the
 one a per-binary section needs, so a positional pattern over it has five

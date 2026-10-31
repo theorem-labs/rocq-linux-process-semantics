@@ -970,11 +970,22 @@ Section Init.
       [reflexivity].  [AsanPlanSound.cs_ok] still says the ledger is the
       image's reservations alone, so [co_res], [co_totsz] and [co_split] do
       not close on this branch.  The shape that closes them is
-      [LpsStartState.VdsoReservedLane]'s, on `revision/vdso-reserved-asan`:
-      [co_res] becomes [reserved_ok], an EXISTENTIAL list [rx] with
-      [Forall resx_entry_ok rx], [length rx <= n_resx A] and
-      [sum_sizes rx <= resx_bytes A], so [cs_ok]'s arity does not change and
-      this Section needs no new variable; [co_mres] is a new LAST field,
+      [LpsStartState.VdsoReservedLane]'s, on `revision/vdso-reserved-asan`,
+      head c7747642, green:
+
+        co_res : exists rx : list (word * word),
+                   vm_reserved (m_vmmaps model) = segments_reserved SEGS ++ rx
+                   /\ Forall resx_entry_ok rx
+                   /\ (length rx <= n_resx A)%nat
+                   /\ sum_sizes rx <= resx_bytes A;
+
+      so [cs_ok]'s arity does not change and this Section needs no new
+      variable.  The existential is SPELLED OUT in the record rather than
+      wrapped in a named definition, deliberately: [cs_ok_frame] and the other
+      frame lemmas [rewrite ?Evm] over every field to turn [m_vmmaps model']
+      into [m_vmmaps model], and [rewrite] cannot see under an unexpanded
+      definition, so a named [reserved_ok] stops the field being closed by
+      [try assumption].  [co_mres] is a new LAST field, after [co_sinv],
       discharged here by [constructor] because [vm_maps model0 = []].
 
       The witness is [RESX], and its four clauses are:
@@ -1017,7 +1028,21 @@ Section Init.
       [a_ylo cs <= base] from [co_split] together with [KHI + 4096 <= base].
       Raising [a_ylo] back to the constant [MBASE_MIN] would make that
       derivation unsound for a pair sitting below it, and the mmap node could
-      then certify a grant overlapping the vDSO.  Do not raise it. *)
+      then certify a grant overlapping the vDSO.  Do not raise it.
+
+      [AsanPlanCore.v] COMES WHOLE FROM THAT BRANCH, not field by field: it
+      carries the [atable] fields [n_resx] and [p_resx] and [resx_bytes], the
+      new [a_totsz] and [a_ylo] in [init_acs_of_with], AND two further changes
+      that are needed and easy to miss — [gap_ok]'s count becomes
+      [n_res A + n_resx A + length (a_maps cs)], because the extra
+      reservations are intervals the gap lemma measures, and
+      [mmap_fixed_free]'s free path reads
+      [fixed_args cs (resx_clear cs)] with [resx_clear cs = Z.min KHI (a_ylo cs)],
+      so a candidate range the checker cannot place against the pair falls
+      through to the hole path and is REFUSED rather than admitted.  What this
+      branch adds on top is [n_resx := 2] and [p_resx := 20] in [ASAN] and
+      [BOTH]: 0 is the honest bound at b1243062, where [State.init_reserved]
+      does not yet exist and the launch reserves nothing. *)
   Theorem init_cs_ok : cs_ok segs A LIMIT SINV0 argH0 fs E0 cs0 R0 FULL0 model0.
   Proof.
     destruct model0_facts as (M1 & M2 & M3 & M4 & M5 & M6 & M7 & M8 & M9 & M10 & M11 & M12 & M13).

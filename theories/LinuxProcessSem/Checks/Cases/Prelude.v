@@ -491,7 +491,18 @@ Qed.
     [Run.launch_entry_va] witnesses — rather than a round number, and
     that is also why it is short: a fixture whose [sp] sat at
     [State.sp_window_lo] with a top near STACK_TOP would make every
-    [vm_compute] below walk two gigabytes of pad. *)
+    [vm_compute] below walk two gigabytes of pad.
+
+    WHAT WIDENING THIS FIXTURE COSTS, measured, because the next
+    person to widen it needs the number: a 4096-byte block did not
+    finish one [vm_compute] below in thirty minutes, and these 528
+    bytes finish in seconds.  Part of that was [State.init_model]
+    being a chain of [with_*] setters — each rebuilds the record from
+    its argument's fields, so a chain of n of them denotes a term with
+    7^n copies of the innermost model, and a fixture that writes the
+    term twice costs time exponential in n.  [init_model] is one
+    constructor since, which is what makes 528 bytes cheap; the
+    four-kilobyte block was not measured again after that. *)
 
 Definition demo_block_top : word := Z_to_bv 64 sp_window_hi.
 Definition demo_block_sp : word := Z_to_bv 64 0x7ffffffffdf0.

@@ -551,3 +551,101 @@ Example seed_execfn_short_dev_fd_converted :
            ++ repeat 97 4085%nat)))
   = Some 4095.
 Proof. vm_compute. reflexivity. Qed.
+
+(* ------------------------------------------------------------------ *)
+(* The file-system image: the one that describes no file system, and   *)
+(* the neighbour the boundary still converts                           *)
+(* ------------------------------------------------------------------ *)
+
+(** [revision/linux-only] added [Fs.fs_image_real] to
+    [Run.valid_input] over [State.in_image_fs]; the boundary enforces
+    it here, and this pair is what says the enforcement is not
+    vacuous.  [fs_image_real] is a [bool], so a test that read the
+    wrong thing would still type-check and still answer: only an
+    image it must refuse beside an image it must convert shows which
+    test was written.
+
+    "a" and "a/b": the first key is a regular file and the second
+    says the same name is the directory "b" lives under.  No Linux
+    file system holds both -- one name in one directory is one inode
+    -- and the model would answer a read open with the regular file
+    while a write-create answered EISDIR.  It is
+    [Checks.Cases.Fs.Open.prefix_key_image] in the raw vocabulary.
+    Beside it "a" and "ab", which differ in one byte of the second
+    key and name two files. *)
+Definition seed_with_image (img : list (list Z * list Z)) : RawProcInput :=
+  mkRawProcInput [] [] img [] 0 0 [] [] 1024 0 4397 false Sv48 [] []
+    raw_kernel_default [97].
+
+Definition raw_image_prefix_key : list (list Z * list Z) :=
+  [([97], [104]); ([97; 47; 98], [104])].
+Definition raw_image_flat_keys : list (list Z * list Z) :=
+  [([97], [104]); ([97; 98], [104])].
+
+Example seed_unreal_image_refused :
+  init_model_checked [] 4096 4096 4096 0
+    (seed_with_image raw_image_prefix_key) = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(** And WHICH refusal it is, which is what the published root answers:
+    the image is a VALUE -- every byte of it is a [byte], so
+    [fs_of_raw] converts it -- and it is no launch. *)
+Example seed_unreal_image_is_a_value :
+  option_map (fun fs => map (fun pf => map bv_unsigned (fst pf)) fs)
+    (fs_of_raw raw_image_prefix_key) = Some [[97]; [97; 47; 98]].
+Proof. vm_compute. reflexivity. Qed.
+
+Example seed_unreal_image_is_no_launch :
+  image_shape_b raw_image_prefix_key = false.
+Proof. vm_compute. reflexivity. Qed.
+
+Example seed_flat_image_is_a_launch :
+  image_shape_b raw_image_flat_keys = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(** The neighbour, converted, with the seed's [State.in_image_fs] read
+    back out: the two keys and their contents, in the model's sorted
+    order. *)
+Example seed_flat_image_converted :
+  option_map
+    (fun inp => map (fun pf => (map bv_unsigned (fst pf),
+                                map bv_unsigned (snd pf)))
+                  (in_image_fs inp))
+    (proc_input_of_raw (seed_with_image raw_image_flat_keys))
+  = Some [([97], [104]); ([97; 98], [104])].
+Proof. vm_compute. reflexivity. Qed.
+
+(** A key that is not canonical is refused by the same clause and
+    converted by [fs_of_raw] just as readily: "./a" names the file
+    "a", which the flat map would keep as a file of its own. *)
+Example seed_noncanonical_image_refused :
+  init_model_checked [] 4096 4096 4096 0
+    (seed_with_image [([46; 47; 97], [104])]) = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example seed_canonical_image_converted :
+  option_map
+    (fun inp => map (fun pf => (map bv_unsigned (fst pf),
+                                map bv_unsigned (snd pf)))
+                  (in_image_fs inp))
+    (proc_input_of_raw (seed_with_image [([97], [104])]))
+  = Some [([97], [104])].
+Proof. vm_compute. reflexivity. Qed.
+
+(** The /tmp declaration beside it, which carries NO reality
+    condition in [Run] -- [State.fs_seed_tmp] seeds it into
+    [State.in_fs] under absolute keys and no clause constrains the
+    declaration -- so the same nesting the image is refused for is
+    converted there. *)
+Example seed_nested_tmp_converted :
+  exists m, init_model_checked [] 4096 4096 4096 0
+              (mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 []
+                 [([97], [104]); ([97; 47; 98], [104])]
+                 raw_kernel_default [97]) = Some m.
+Proof.
+  unfold init_model_checked.
+  destruct (pairs_of_Z []) eqn:E1; [|vm_compute in E1; discriminate E1].
+  destruct (word_of_Z 4096) eqn:E2; [|vm_compute in E2; discriminate E2].
+  destruct (proc_input_of_raw _) eqn:E3; [|vm_compute in E3; discriminate E3].
+  eexists. reflexivity.
+Qed.

@@ -626,7 +626,12 @@ Lemma image_brk_satisfiable_entry : forall img inp,
 Proof.
   intros [segs pc ph] inp Hv H.
   destruct (image_brk_satisfiable_sound segs H) as [brk Hbrk].
-  destruct Hv as (Hargv & Henvp & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hlaunch).
+  (* Split [valid_input] WITHOUT counting its conjuncts: the predicate
+     grows one whenever the input class learns to say something new,
+     and a positional pattern here silently rebinds when it does.
+     [red] first, because the hypothesis pattern below is syntactic. *)
+  red in Hv.
+  repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
   exists (launch_entry_va (in_va_size inp) inp brk (Z_to_bv 128 0)
             vdso_keeps_all).
   apply launch_entry_va_valid; assumption.
@@ -1134,9 +1139,11 @@ Lemma image_brk_satisfiable_entry_va : forall img inp,
   image_brk_satisfiable (img_segments img) = true ->
   exists en, valid_entry img en inp.
 Proof.
-  intros [segs pc ph] inp
-    (Hargv & Henvp & _ & _ & _ & _ & _ & _ & _ & _ & Hlaunch) H.
+  intros [segs pc ph] inp Hv H.
   destruct (image_brk_satisfiable_sound segs H) as [brk Hbrk].
+  (* Conjunct-count-free, as in [image_brk_satisfiable_entry]. *)
+  red in Hv.
+  repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
   exists (launch_entry_va (in_va_size inp) inp brk (Z_to_bv 128 0)
             vdso_keeps_all).
   apply launch_entry_va_valid; assumption.
@@ -1216,9 +1223,13 @@ Lemma strong_universal_T_sv39_refuted :
     valid_input_sv39 inp ->
     ~ strong_universal_T_sv39.
 Proof.
-  intros en_s en_t inp Hs Ht Hv H.
-  destruct (H en_s en_t inp Hs Ht Hv) as (H48 & _).
-  destruct Hv as (_ & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hv & _). rewrite Hv in H48. discriminate.
+  intros en_s en_t inp Hv_s Hv_t Hv H.
+  destruct (H en_s en_t inp Hv_s Hv_t Hv) as (H48 & _).
+  (* No conjunct count: [red] then split everything, and let
+     [congruence] find the declared size among the pieces. *)
+  red in Hv.
+  repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
+  congruence.
 Qed.
 
 Lemma strong_universal_T_sv57_refuted :
@@ -1228,9 +1239,11 @@ Lemma strong_universal_T_sv57_refuted :
     valid_input_sv57 inp ->
     ~ strong_universal_T_sv57.
 Proof.
-  intros en_s en_t inp Hs Ht Hv H.
-  destruct (H en_s en_t inp Hs Ht Hv) as (H48 & _).
-  destruct Hv as (_ & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hv & _). rewrite Hv in H48. discriminate.
+  intros en_s en_t inp Hv_s Hv_t Hv H.
+  destruct (H en_s en_t inp Hv_s Hv_t Hv) as (H48 & _).
+  red in Hv.
+  repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
+  congruence.
 Qed.
 
 End SpecVa.

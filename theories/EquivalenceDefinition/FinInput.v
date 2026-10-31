@@ -964,12 +964,16 @@ Lemma valid_input_urandom_endless_irrelevant : forall inp r,
                  r (in_tmp inp) (in_kernel inp) (in_execfn inp)).
 Proof.
   intros inp r H Hr.
-  (* [valid_input] has thirteen conjuncts: keep the first eleven and the
-     last ([valid_launch], which reads argv, envp and the exec name,
-     none of them touched), and replace the twelfth ([valid_urandom])
-     with [Hr]. *)
-  destruct H as (a & b & c & d & e & f & g & h & i & j & k & _ & L).
-  exact (conj a (conj b (conj c (conj d (conj e (conj f (conj g (conj h (conj i (conj j (conj k (conj Hr L)))))))))))).
+  (* NO CONJUNCT COUNT.  [valid_input] grows a conjunct whenever the
+     input class learns to say something new, and a positional pattern
+     here rebinds silently when it does.  Split both sides to their
+     leaves instead: every clause but [valid_urandom] reads a field the
+     swap carries across unchanged, so [assumption] closes it up to
+     conversion, and the one that does not is [Hr].  [unfold] first,
+     because both [match goal] patterns are syntactic. *)
+  unfold valid_input in H |- *.
+  repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** The same for [valid_fin_input]: the byte list in [fin_stdin] is
@@ -1027,12 +1031,13 @@ Lemma valid_fin_input_urandom_irrelevant : forall f l,
                      l (fin_tmp f) (fin_kernel f) (fin_execfn f)).
 Proof.
   intros f l H.
-  (* Thirteen conjuncts: keep the first eleven and the last
-     ([valid_launch]), and prove the twelfth ([valid_urandom]) from the
-     padding. *)
-  destruct H as (a & b & c & d & e & g & h & i & j & k & n & _ & L).
-  refine (conj a (conj b (conj c (conj d (conj e (conj g (conj h (conj i
-            (conj j (conj k (conj n (conj _ L)))))))))))).
+  (* Conjunct-count-free, as in [valid_input_urandom_endless_irrelevant]:
+     every clause but [valid_urandom] reads a field the swap carries
+     across, and that one comes from the padding. *)
+  unfold valid_fin_input, to_proc_input, valid_input in H |- *.
+  repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
+  repeat match goal with |- _ /\ _ => split end;
+    try assumption.
   exact (stream_of_list_then_infinite l State.default_urandom
            State.default_urandom_infinite).
 Qed.

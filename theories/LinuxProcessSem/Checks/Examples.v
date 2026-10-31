@@ -800,8 +800,15 @@ Example demo_entry_valid_exit0 : forall inp,
   valid_input inp -> valid_entry exit0_image (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  destruct Hvalid
-    as (Hargv & Henvp & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hlaunch).
+  (* Guarded rather than positional: [Run.valid_input] grows a conjunct
+     whenever the input class learns to say something new, and the three
+     clauses this proof needs -- [Run.valid_argv], [Run.valid_envp] and
+     [Run.valid_launch] -- are then found by [assumption] rather than by
+     counting.  [red] is what makes the match fire: [match goal] is
+     syntactic, and [valid_launch] stays folded under it, so the
+     conjunct arrives whole. *)
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   unfold valid_entry, demo_entry_of, exit0_image.
   apply launch_entry_va_valid; try assumption.
   unfold valid_brk.
@@ -814,8 +821,8 @@ Example demo_entry_valid_undecodable : forall inp,
   valid_input inp -> valid_entry undecodable_image (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  destruct Hvalid
-    as (Hargv & Henvp & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hlaunch).
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   unfold valid_entry, demo_entry_of, undecodable_image.
   apply launch_entry_va_valid; try assumption.
   unfold valid_brk.
@@ -898,7 +905,11 @@ Proof.
     try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
     try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
     try (unfold valid_hwcap; left; reflexivity);
-    (* [Run.valid_launch], the TWELFTH conjunct, and the only one
+    (* [Fs.fs_image_real], the FIFTH conjunct: this fixture's image is
+       the empty one, which has no key to be non-canonical and no key
+       under another, so the boolean computes to [true]. *)
+    try (unfold fs_image_real; vm_compute; reflexivity);
+    (* [Run.valid_launch], the THIRTEENTH conjunct, and the only one
        about the exec file name.  [State.mkProcInput] fills
        [State.in_execfn] with [State.default_execfn], the one-byte
        relative path "a", so the first half takes
@@ -927,7 +938,7 @@ Proof.
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
-  (* [Run.valid_urandom], the eighth, is the only COINDUCTIVE conjunct,
+  (* [Run.valid_urandom], the twelfth, is the only COINDUCTIVE conjunct,
      so no computation decides it and the fixture discharges it by
      naming the witness its declaration is: [State.default_urandom],
      which is what [State.mkProcInput] fills the field with. *)

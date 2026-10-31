@@ -242,6 +242,47 @@ let () =
                                  rcl_assoc = z "16"; rcl_line = z "64" } } };
               rpi_execfn = [z "47"; z "97"] }))
 
+(* ----------------------------------------------------------------- *)
+(* the file-system image the run is launched over                     *)
+(* ----------------------------------------------------------------- *)
+
+(* "a" and "a/b": one name is a regular file and the directory the
+   other name lives under, which no Linux file system holds -- one
+   name in one directory is one inode.  Run.valid_input carries that
+   clause (Fs.fs_image_real) since revision/linux-only, and the
+   boundary refuses the image here.  Beside it "a" and "ab", which
+   differ in one byte of the second key and name two files.
+
+   The two roots answer the two questions apart: fs_of_raw says
+   whether the image is a VALUE, image_shape_b whether it is a
+   launch. *)
+let image_prefix_key =
+  [([z "97"], [z "104"]); ([z "97"; z "47"; z "98"], [z "104"])]
+let image_flat_keys =
+  [([z "97"], [z "104"]); ([z "97"; z "98"], [z "104"])]
+
+let converts l = match M.fs_of_raw l with Some _ -> true | None -> false
+
+let () =
+  check "an image whose key is also a directory is refused"
+    (seed_refused { seed with M.rpi_image_fs = image_prefix_key });
+  check "that image is a VALUE: fs_of_raw converts it"
+    (converts image_prefix_key);
+  check "the image shape test says that image is no launch"
+    (not (M.image_shape_b image_prefix_key));
+  check "the image shape test takes the two flat keys"
+    (M.image_shape_b image_flat_keys);
+  check "the image with two flat keys is converted"
+    (not (seed_refused { seed with M.rpi_image_fs = image_flat_keys }));
+  check "a non-canonical key names no file a directory can hold"
+    (not (M.image_shape_b [([z "46"; z "47"; z "97"], [z "104"])]));
+  check "an image byte above 255 is not a value at all"
+    (not (converts [([z "97"], [z "256"])]));
+  (* the /tmp declaration carries no reality condition in Run, so the
+     same nesting is converted there *)
+  check "the same nesting in the /tmp declaration is converted"
+    (not (seed_refused { seed with M.rpi_tmp = image_prefix_key }))
+
 let () =
   if !failures = 0 then print_endline "checked-input smoke: all checks passed"
   else begin

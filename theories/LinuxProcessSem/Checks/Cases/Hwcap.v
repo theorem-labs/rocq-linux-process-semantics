@@ -78,7 +78,7 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
   all: try valid_urandom_default.
-  (* [Run.valid_launch], the twelfth conjunct: a positional
+  (* [Run.valid_launch], the thirteenth conjunct: a positional
      [mkProcInput] gets [State.default_execfn], the one-byte relative
      name "a" that [getname_flags] (fs/namei.c, Linux v6.18.46, commit
      1f99e9ab748f) can return -- one byte, no NUL -- and the launch it

@@ -151,6 +151,10 @@ Proof.
     try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
     try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
     try (unfold valid_hwcap; left; reflexivity);
+    (* [Fs.fs_image_real], the FIFTH conjunct: the image is the empty
+       one, with no key to be non-canonical and no key under another,
+       so the boolean computes to [true]. *)
+    try (unfold fs_image_real; vm_compute; reflexivity);
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
@@ -195,10 +199,17 @@ Example demo_entry_valid_abrt : forall inp,
   valid_input_abort inp -> valid_entry abrt_image (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  destruct Hvalid
-    as (Hargv & Henvp & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hlaunch).
+  (* Guarded rather than positional: [Run.valid_input_abort] grows a
+     conjunct whenever the input class learns to say something new, and
+     the three clauses this proof needs -- [Run.valid_argv],
+     [Run.valid_envp] and [Run.valid_launch] -- are then found by
+     [assumption] rather than by counting.  [match goal] is syntactic,
+     so [red] is what makes it fire, and [valid_launch] stays folded
+     under it and arrives whole. *)
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   unfold valid_entry, demo_entry_of, abrt_image.
-  apply launch_entry_va_valid; [exact Hargv | exact Henvp | exact Hlaunch |].
+  apply launch_entry_va_valid; try assumption.
   unfold valid_brk.
   repeat split; vm_compute; try reflexivity; try discriminate.
 Qed.
@@ -678,6 +689,9 @@ Proof.
     try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
     try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
     try (unfold valid_hwcap; left; reflexivity);
+    (* [Fs.fs_image_real], the FIFTH conjunct, as at
+       [abrt_input_valid]: the image is empty. *)
+    try (unfold fs_image_real; vm_compute; reflexivity);
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
@@ -707,10 +721,10 @@ Example demo_entry_valid_abrt_blocked : forall inp,
   valid_input_abort inp -> valid_entry abrt_blocked (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  destruct Hvalid
-    as (Hargv & Henvp & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hlaunch).
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   unfold valid_entry, demo_entry_of, abrt_blocked.
-  apply launch_entry_va_valid; [exact Hargv | exact Henvp | exact Hlaunch |].
+  apply launch_entry_va_valid; try assumption.
   unfold valid_brk.
   repeat split; vm_compute; try reflexivity; try discriminate.
 Qed.

@@ -112,7 +112,7 @@ Open Scope bv_scope.
     is a statement about one — with [Run.valid_input] as the premise,
     since it is [Run.valid_argv] and [Run.valid_envp] that cap the span
     at [Run.entry_stack_span_max] and leave the bottom of the sp window
-    room for it, and [Run.valid_launch] (its twelfth conjunct) that
+    room for it, and [Run.valid_launch] (its thirteenth conjunct) that
     caps the whole block at the E2BIG limit so that a stack pointer
     exists at all.  An input outside those caps has no valid entry at
     all,
@@ -542,7 +542,12 @@ Definition demo_input (s : list byte) : FinProcInput :=
     own for a third reason: it is a DISJUNCTION, and neither
     [reflexivity] nor [lia] picks a side.
 
-    [Run.valid_launch], the TWELFTH conjunct, needs three arms for a
+    [Fs.fs_image_real], the FIFTH conjunct, needs no arm of its own:
+    [demo_fs] is the empty image, with no key to be non-canonical and
+    no key under another, so the boolean computes to [true] and the
+    [reflexivity] at the end of the chain closes it.
+
+    [Run.valid_launch], the THIRTEENTH conjunct, needs three arms for a
     fourth reason: [repeat split] may or may not have taken it apart
     already, so each half is also written on its own.  Its first half
     is about [State.in_execfn], which

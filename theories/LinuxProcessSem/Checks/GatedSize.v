@@ -147,10 +147,16 @@ Lemma demo_entry_valid_exit1 : forall inp,
   valid_input inp -> valid_entry exit1_image (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  destruct Hvalid
-    as (Hargv & Henvp & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hlaunch).
+  (* Guarded rather than positional: [Run.valid_input] grows a conjunct
+     whenever the input class learns to say something new, and the three
+     clauses this proof needs -- [Run.valid_argv], [Run.valid_envp] and
+     [Run.valid_launch] -- are then found by [assumption] rather than by
+     counting.  [match goal] is syntactic, so [red] is what makes it
+     fire, and [valid_launch] stays folded under it and arrives whole. *)
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   unfold valid_entry, demo_entry_of, exit1_image.
-  apply launch_entry_va_valid; [exact Hargv | exact Henvp | exact Hlaunch |].
+  apply launch_entry_va_valid; try assumption.
   unfold valid_brk.
   repeat split; vm_compute; try reflexivity; try discriminate.
 Qed.

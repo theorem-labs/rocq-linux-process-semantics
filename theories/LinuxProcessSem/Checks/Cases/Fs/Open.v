@@ -1129,7 +1129,7 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons
                  | apply not_in_bytes_of_existsb; vm_compute; reflexivity
                  | key_byte_neq | split | cbn; lia | reflexivity | intros [] ].
-  (* [Run.valid_launch], the twelfth conjunct: the fixture declares
+  (* [Run.valid_launch], the thirteenth conjunct: the fixture declares
      [State.default_execfn], the one-byte relative name "a" that
      [getname_flags] (fs/namei.c, Linux v6.18.46, commit 1f99e9ab748f)
      can return -- one byte, no NUL -- so the first arm of
