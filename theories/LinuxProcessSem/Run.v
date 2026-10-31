@@ -252,6 +252,20 @@ Inductive step_to :=
   | SNext (c : config)
   | SError.
 
+(** One system call that RETURNED, as a statement about call order reads
+    it: the number latched from a7 at the [ecall], the argument registers
+    a0..a5 there ([syscall_args]), and a0 once the call has returned
+    ([apply_effect] writes the effect's return value there).  [star_calls]
+    below collects them along a run.  Nothing in the semantics reads this
+    record; it is vocabulary for statements, which is why it carries the
+    registers and not the [SyscallEffect]: a statement says what the
+    program asked and what it was told, in the program's own terms. *)
+Record SysCall := mkSysCall {
+  sc_no   : word;
+  sc_args : list word;
+  sc_ret  : word;
+}.
+
 Section WithMemImage.
 
 Variable mi_loaded_segments : list Segment.
@@ -972,6 +986,164 @@ Proof.
   intros ms model Hh Hsvc Hstep.
   exists [], (mkCfg ms model). split; [apply star_refl|].
   split; [exact Hh|]. left. split; assumption.
+Qed.
+
+(* =========================================================================
+   The execve boundary, and the log of the calls before it
+   ========================================================================= *)
+
+(** [s] sits at [p] as a C string: its bytes in order, none of them NUL,
+    then a NUL.  Stated over a memory function rather than computed, so
+    a statement can name the string an argument register points at
+    without fixing a fuel or a length bound; the length is [s]'s own. *)
+Definition cstr_at (mem : word -> option byte) (p : word) (s : list byte)
+    : Prop :=
+  ~ In (Z_to_bv 8 0) s /\
+  (forall k, (k < length s)%nat ->
+     mem (p + Z_to_bv 64 (Z.of_nat k)) = Some (nth k s (Z_to_bv 8 0))) /\
+  mem (p + Z_to_bv 64 (Z.of_nat (length s))) = Some (Z_to_bv 8 0).
+
+(** [w] sits at [a] as the 8-byte little-endian word a riscv64 [ld]
+    reads: the in-memory form of a pointer in an argv or envp array. *)
+Definition word_at (mem : word -> option byte) (a w : word) : Prop :=
+  exists bs, length bs = 8%nat /\
+    (forall k, (k < 8)%nat ->
+       mem (a + Z_to_bv 64 (Z.of_nat k)) = Some (nth k bs (Z_to_bv 8 0))) /\
+    le_bytes_to_word bs = w.
+
+(** [l] sits at [p] as a NULL-terminated array of string pointers, the
+    shape [execve] reads its argv and envp from ([do_execveat_common] ->
+    [count] and [copy_strings], fs/exec.c, Linux v6.18.44; identical at
+    v6.18.46): entry [k] is a non-NULL pointer to the C string [nth k l],
+    and the entry after the last is NULL.  An empty [l] is an array that
+    holds only the NULL, which is what a launcher passes for an empty
+    environment ({NULL}); a NULL [argv] or [envp] POINTER is a different
+    call, and this predicate does not describe it. *)
+Definition strv_at (mem : word -> option byte) (p : word) (l : list (list byte))
+    : Prop :=
+  (forall k, (k < length l)%nat ->
+     exists q, word_at mem (p + Z_to_bv 64 (8 * Z.of_nat k)) q
+               /\ q <> Z_to_bv 64 0
+               /\ cstr_at mem q (nth k l [])) /\
+  word_at mem (p + Z_to_bv 64 (8 * Z.of_nat (length l))) (Z_to_bv 64 0).
+
+(** THE EXECVE BOUNDARY.  [c] is a live configuration whose pending
+    system call is [execve] (riscv64 number 221), with the path at a0,
+    argv at a1 and envp at a2, read from the memory the call would read
+    ([ms_read_byte], the same view [sys_input] hands a spec).
+
+    [execve] HAS NO ARM, ON PURPOSE.  The model describes ONE program
+    image, and what [execve] makes is another; so the model stops here
+    ([execve_boundary_stops]: the only step out of [c] is the [SError]
+    of an uncovered call).  A statement about a launcher -- a program
+    whose job ends in an exec -- is stated AT the boundary instead: what
+    the configuration holds when the call is made (the credentials
+    [m_creds], the descriptor table [m_fds], the strings it passes), and,
+    through [star_calls], which calls returned on the way there.  What
+    the kernel then does with that state (what survives the exec, what
+    the new image is) is a kernel fact, not part of this model.
+
+    The path is read as a C string with no length bound here: [getname]
+    refuses one longer than PATH_MAX, which the CALL would then answer
+    with -ENAMETOOLONG; a statement that needs that bound states it. *)
+Definition execve_boundary (c : config) (path : list byte)
+    (argv envp : list (list byte)) : Prop :=
+  m_halted (cfg_model c) = None /\
+  ms_svc_pending (cfg_ms c) = Some (Z_to_bv 64 221) /\
+  cstr_at (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) path /\
+  strv_at (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 1) argv /\
+  strv_at (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 2) envp.
+
+(** [execve] is declined on every input: [Sys.SyscallTable.spec_table]
+    has no entry for 221.  This lemma is the tripwire for that design: it
+    stops compiling the day 221 gets an arm, and [execve_boundary]'s
+    reading as "where the model stops" has to be revisited then. *)
+Lemma syscall_spec_execve_unmodeled : forall i m o,
+  in_sysno i = Z_to_bv 64 221 -> syscall_spec i m o -> o = Unmodeled.
+Proof.
+  intros i m o Hno H. unfold syscall_spec, dispatch in H.
+  assert (Hl : lookup_arm spec_table (bv_unsigned (in_sysno i)) = None)
+    by (rewrite Hno; reflexivity).
+  rewrite Hl in H. exact H.
+Qed.
+
+(** The boundary is where the run stops: no event, and the only
+    transition is the error of an uncovered call. *)
+Lemma execve_boundary_stops : forall c path argv envp,
+  execve_boundary c path argv envp ->
+  forall evs s, sstep c evs s -> evs = [] /\ s = SError.
+Proof.
+  intros [ms model] path argv envp (_ & Hsvc & _) evs s Hs. cbn in Hsvc.
+  inversion Hs; subst; try congruence;
+    match goal with
+    | H : syscall_spec _ _ (Ok _ _ _) |- _ =>
+        apply syscall_spec_execve_unmodeled in H; [discriminate H|];
+        cbn; congruence
+    | _ => split; reflexivity
+    end.
+Qed.
+
+(** [star] with the log of the system calls that RETURNED on the way, in
+    order.  An instruction step adds nothing to the log; a system call
+    that returns ([sstep_syscall]'s shape, written out here) adds its
+    [SysCall]; a call that ENDS the process ([sstep_exit],
+    [sstep_killed]) adds its events to the trace and nothing to the log,
+    because it returns to nobody.  [star_calls_star] and
+    [star_star_calls] say that the log is a pure annotation: the runs are
+    exactly [star]'s.
+
+    WHY A LOG AND NOT MORE STATE.  Several facts a statement needs are
+    the RESULT of a call the model does not otherwise remember -- that
+    [prctl(PR_SET_NO_NEW_PRIVS)] returned 0 before the [clone], that
+    [setgroups], [setresgid] and [setresuid] returned 0 in that order
+    before the exec.  The kernel keeps those effects in the task and in
+    its credentials; the model keeps what a modeled call can read back
+    (the credentials) and nothing it cannot.  The log lets a statement
+    say what the program did without the model inventing state no
+    modeled call consults. *)
+Inductive star_calls : config -> list event -> list SysCall -> config -> Prop :=
+| star_calls_refl : forall c, star_calls c [] [] c
+| star_calls_ret : forall ms model x8 eff model' model'' evs tr log c',
+    m_halted model = None ->
+    ms_svc_pending ms = Some x8 ->
+    syscall_spec (sys_input ms x8) model (Ok eff model' evs) ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff)
+      = Some model'' ->
+    star_calls (mkCfg (advance_past_svc (apply_effect ms eff)) model'')
+               tr log c' ->
+    star_calls (mkCfg ms model) (evs ++ tr)
+               (mkSysCall x8 (syscall_args ms) (eff_ret eff) :: log) c'
+| star_calls_other : forall c evs c2 tr log c',
+    sstep c evs (SNext c2) ->
+    (ms_svc_pending (cfg_ms c) = None \/ m_halted (cfg_model c2) <> None) ->
+    star_calls c2 tr log c' ->
+    star_calls c (evs ++ tr) log c'.
+
+Lemma star_calls_star : forall c tr log c',
+  star_calls c tr log c' -> star c tr c'.
+Proof.
+  intros c tr log c' H. induction H.
+  - apply star_refl.
+  - eapply star_step; [|exact IHstar_calls].
+    eapply sstep_syscall; eassumption.
+  - eapply star_step; eassumption.
+Qed.
+
+Lemma star_star_calls : forall c tr c',
+  star c tr c' -> exists log, star_calls c tr log c'.
+Proof.
+  intros c tr c' H. induction H as [c|c1 evs c2 tr c3 Hs Hst (log & IH)].
+  - exists []. apply star_calls_refl.
+  - destruct (ms_svc_pending (cfg_ms c1)) as [x8|] eqn:Hsvc.
+    + inversion Hs; subst; cbn in Hsvc; try congruence.
+      * eexists. eapply star_calls_ret; eassumption.
+      * exists log. eapply star_calls_other; [exact Hs| |exact IH].
+        right. cbn [cfg_model]. congruence.
+      * exists log. eapply star_calls_other; [exact Hs| |exact IH].
+        right. cbn [cfg_model]. unfold m_killed, m_halted in *.
+        destruct (procst_killed (m_proc model')); congruence.
+    + exists log. eapply star_calls_other; [exact Hs|left; exact Hsvc|exact IH].
 Qed.
 
 (** Every maximal execution from [c0] reaches the explicit error
@@ -2731,6 +2903,45 @@ Definition valid_argv (argv : list (list byte)) : Prop :=
   Forall (fun a => path_has_slash a = false
                    /\ path_eqb a dotdot_path = false) (tl argv).
 
+(** THE SAME LIST WITH PATH ARGUMENTS ADMITTED: [valid_argv] without its
+    last clause.  The counts and the byte bounds are the same; an
+    argument after argv[0] may contain "/" and may be "..".
+
+    WHY IT IS A SECOND PREDICATE AND NOT A WIDER [valid_argv].  The tail
+    clause above narrows what every statement over [valid_input] covers,
+    and the note on it says why that narrowing is load-bearing for two
+    theorems.  Widening [valid_argv] would change what every existing
+    statement says.  A program whose real launches pass paths -- a
+    sandbox launcher's argv is mostly paths, "--bind /src /dst" -- is
+    covered instead by [valid_input_paths] below, which a statement
+    names when it means those launches.  Nothing in the model reads argv
+    after launch except the program itself, so admitting the separator
+    here admits no new kernel behaviour: what a path argument then MEANS
+    to the kernel is decided by the arms that receive it, each of which
+    still declines what it cannot answer. *)
+Definition valid_argv_paths (argv : list (list byte)) : Prop :=
+  (1 <= Z.of_nat (length argv) <= 1024)%Z /\
+  (total_arg_bytes argv <= 2097152)%Z /\
+  Forall (fun a => (Z.of_nat (length a) <= 131071)%Z) argv /\
+  Forall (fun a => ~ In (Z_to_bv 8 0) a) argv.
+
+Lemma valid_argv_paths_of_valid_argv : forall argv,
+  valid_argv argv -> valid_argv_paths argv.
+Proof.
+  intros argv (H1 & H2 & H3 & H4 & _). exact (conj H1 (conj H2 (conj H3 H4))).
+Qed.
+
+(** And back, given the clause the paths form leaves out. *)
+Lemma valid_argv_of_paths : forall argv,
+  valid_argv_paths argv ->
+  Forall (fun a => path_has_slash a = false
+                   /\ path_eqb a dotdot_path = false) (tl argv) ->
+  valid_argv argv.
+Proof.
+  intros argv (H1 & H2 & H3 & H4) H5.
+  exact (conj H1 (conj H2 (conj H3 (conj H4 H5)))).
+Qed.
+
 (** Validity predicate for envp lists.
     Same structural constraints as argv but with larger bounds:
     up to 256 variables, 131072 bytes total. *)
@@ -4352,6 +4563,59 @@ Proof.
   intros inp H. red in H.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
+Qed.
+
+(** THE PATH-ARGUMENT LAUNCH: [valid_input] with [valid_argv_paths] in
+    place of [valid_argv], and every other clause the same -- the
+    ordinary world, with the abort path off, SIGPIPE at SIG_DFL, a live
+    reader on descriptors 1 and 2, and Sv48.  It is a second launch
+    predicate beside the ordinary one, as [valid_input_abort] and
+    [valid_input_channel_closed] are, and for their reason: what a proof
+    was made under has to be readable in the statement.  Unlike those
+    two it names no declaration field, because no arm reads argv: the
+    difference between the two launches is in the strings alone.
+
+    WHAT IT IS FOR.  A program that takes paths on its command line --
+    BET-467's sandbox launcher and bubblewrap, whose every real argv
+    holds "/tmp", "/proc" and bind paths -- has no launch at all under
+    [valid_input].  A statement about it quantifies over this predicate
+    instead, and [valid_input_paths_of_valid_input] says it covers every
+    launch [valid_input] does.  [valid_input_of_paths] is the converse
+    given the tail clause, and it is also the guard that keeps the two
+    in step: a conjunct added to [valid_input] and not here stops it
+    from compiling. *)
+Definition valid_input_paths (inp : ProcInput) : Prop :=
+  valid_argv_paths (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
+  /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
+  /\ valid_creds inp /\ valid_nofile (in_nofile inp)
+  /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
+  /\ in_abort_terminal inp = false
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_va_size inp = Sv48
+  /\ valid_urandom inp
+  /\ valid_launch inp.
+
+Lemma valid_input_paths_of_valid_input : forall inp,
+  valid_input inp -> valid_input_paths inp.
+Proof.
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  split; [apply valid_argv_paths_of_valid_argv; assumption|].
+  repeat match goal with |- _ /\ _ => split end; assumption.
+Qed.
+
+Lemma valid_input_of_paths : forall inp,
+  valid_input_paths inp ->
+  Forall (fun a => path_has_slash a = false
+                   /\ path_eqb a dotdot_path = false) (tl (in_argv inp)) ->
+  valid_input inp.
+Proof.
+  intros inp H Htl. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  split; [apply valid_argv_of_paths; assumption|].
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** THE SIGPIPE DECLARATION, as an accessor rather than as a position,
