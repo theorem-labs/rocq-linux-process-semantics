@@ -236,22 +236,32 @@ Qed.
    ========================================================================= *)
 
 (** The error-free flavor, which is what actually falls out here: both
-    patches are error-free ([Verdicts]) and their trace sets are the
-    same two-element set ([Traces]).  [Equivalence.strong_equiv_error_free]
-    is exactly those three conjuncts.
+    patches are error-free ([Verdicts]), neither dies by a signal, and
+    their trace sets are the same two-element set ([Traces]).
+    [Equivalence.strong_equiv_error_free] is exactly those conjuncts.
+    The no-signal half is read off the same characterization: the only
+    non-empty trace of either patch is its exit event, so no trace
+    carries a [State.KillEv].
 
     Proved first because it is the STRONGER statement and it is free:
-    the demo's programs cannot error, so nothing is being claimed that
-    the images do not support.  The baseline obligation the SPEC asks
-    for is derived from it below, by the library's own implication. *)
+    the demo's programs cannot error or die, so nothing is being claimed
+    that the images do not support.  The baseline obligation the SPEC
+    asks for is derived from it below, by the library's own
+    implication. *)
 Theorem P1_P2_strong_universal_error_free :
   strong_universal_error_free_T P1_image P2_image.
 Proof.
   intros en_source en_target inp _ _ _.
-  unfold strong_equiv_error_free, error_free.
+  unfold strong_equiv_error_free, error_free_unkilled, dies_by_signal.
   split; [| split].
-  - exact (P1_error_free _ _ _).
-  - exact (P2_error_free _ _ _).
+  - split; [exact (P1_error_free _ _ _) |].
+    intros (tr & sig & fs & Ht & Hin).
+    destruct (proj1 (P1_traces _ _ _ _) Ht) as [-> | ->];
+      [exact Hin | destruct Hin as [Hk | []]; discriminate Hk].
+  - split; [exact (P2_error_free _ _ _) |].
+    intros (tr & sig & fs & Ht & Hin).
+    destruct (proj1 (P2_traces _ _ _ _) Ht) as [-> | ->];
+      [exact Hin | destruct Hin as [Hk | []]; discriminate Hk].
   - intros tr. split; intros Ht.
     + apply (proj2 (P2_traces _ _ _ _)). exact (proj1 (P1_traces _ _ _ _) Ht).
     + apply (proj2 (P1_traces _ _ _ _)). exact (proj1 (P2_traces _ _ _ _) Ht).

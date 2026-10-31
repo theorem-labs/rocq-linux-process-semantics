@@ -2533,6 +2533,33 @@ Inductive SockState :=
   | SkConnected (peer : PeerAddr) (chan : word) (rx : NetStream)
   | SkReset (peer : PeerAddr) (chan : word).
 
+(** THE SOCKET HAS NO CONNECTION TO SEND ON, as a boolean over the
+    representation.  TCP has NO -ENOTCONN on the send path: net/core/stream.c
+    [sk_stream_wait_connect] (:60-88) answers -EPIPE for every state
+    outside SYN_SENT and SYN_RECV, and net/ipv4/tcp.c
+    [tcp_sendmsg_locked] reaches it whenever the state is outside
+    [TCPF_ESTABLISHED | TCPF_CLOSE_WAIT] (Linux v6.18.46, commit
+    1f99e9ab748f).  [SkReset] is the state whose peer error has ALREADY
+    been consumed, so its send is the plain -EPIPE too; the state with
+    an error still pending is [SkConnected _ _ NRst], which answers
+    -ECONNRESET and raises no signal.
+
+    WHY IT LIVES HERE AND NOT IN [Sys.Net.Socket], where
+    [Net.Socket.send_state] already decides the same question.  Two
+    files need it and the import goes one way:
+    [Sys.Fs.ReadWrite.write_spec]'s socket arm reads it to decide
+    whether a write(2) raises SIGPIPE, and [Sys.Net.Socket] imports
+    [Sys.Fs.ReadWrite] rather than the other way about.  Putting it on
+    the REPRESENTATION rather than in either spec is what keeps one
+    answer; [Net.Socket.send_state_dead_iff] is the tripwire that holds
+    the two in step, and a new [SockState] constructor has to be added
+    here and there in the same commit. *)
+Definition sock_send_dead (sk : SockState) : bool :=
+  match sk with
+  | SkFresh | SkBound | SkListening | SkReset _ _ => true
+  | SkConnected _ _ _ => false
+  end.
+
 (** [PIPE_BUF] (include/uapi/linux/limits.h), which on riscv64 is also
     [PAGE_SIZE]: the size of the page a pipe buffers bytes in, and the
     largest transfer Linux writes atomically. *)
@@ -3742,12 +3769,20 @@ Record ProcState := mkProcState {
                                     writer, and a writer that forgot it would
                                     break no proof.
 
-                                    ONLY [State.with_killed] sets it, its only
-                                    callers are in
-                                    [Sys.Kernel.Signal], and SIGABRT is the only
-                                    signal any of them sends --
-                                    [Kernel.Signal.tkill_spec] is the one arm
-                                    that can send a signal at all. *)
+                                    ONLY [State.with_killed] sets it.  Its
+                                    callers are in [Sys.Kernel.Signal] and in
+                                    [Sys.Fs.ReadWrite], and the signals they
+                                    send are SIGABRT (6) and SIGPIPE (13) --
+                                    [Kernel.Signal.tkill_spec] raises the
+                                    first, the three write arms of
+                                    [Fs.ReadWrite.write_spec] raise the
+                                    second through [raise_sigpipe], and
+                                    [Kernel.Signal.sigmask_deliver_model]
+                                    delivers whichever of them a mask install
+                                    uncovers.  Both have the default
+                                    disposition TERMINATE in every run this
+                                    model covers, which is what makes the halt
+                                    this field marks the end of the run. *)
 ;
   procst_sigabrt_pending : bool  (* SIGABRT has been sent to this process and
                                     is BLOCKED, so it sits in
@@ -3843,6 +3878,140 @@ Record ProcState := mkProcState {
        inode, and the difference shows only where two paths name one
        inode or one path names two -- neither of which [Fs]'s flat,
        link-free namespace can express (Fs.v). *)
+;
+  procst_sigpipe_pending : bool  (* SIGPIPE has been sent to this process and is
+                                    BLOCKED, so it sits in
+                                    [task->pending.signal] waiting for the mask
+                                    to let it through.  [procst_sigabrt_pending]
+                                    above, on the other signal this model can
+                                    raise, and the same kernel path:
+                                    kernel/signal.c [send_signal_locked] adds a
+                                    blocked signal to the pending set and
+                                    [recalc_sigpending] leaves TIF_SIGPENDING
+                                    clear, so the return to user space takes no
+                                    signal and the syscall's -EPIPE IS seen
+                                    (Linux v6.18.46, commit 1f99e9ab748f).
+
+                                    WHO SETS IT: the three write arms of
+                                    [Sys.Fs.ReadWrite.write_spec], through
+                                    [Sys.Fs.ReadWrite.raise_sigpipe], when the
+                                    far end has no reader AND the mask blocks
+                                    signal 13.  With the mask open the same
+                                    helper calls [with_killed] instead and the
+                                    process dies there, which is why this field
+                                    is not the common case.
+
+                                    WHO CLEARS IT: nothing, and
+                                    [Kernel.Signal.sigmask_deliver_model] is why
+                                    that is right.  A pending SIGPIPE is
+                                    delivered by the mask install that uncovers
+                                    it, and that delivery KILLS, so the state
+                                    after it is a halted one and no later reader
+                                    exists.  SIGPIPE's default action is
+                                    terminate (it is in none of
+                                    SIG_KERNEL_IGNORE_MASK, SIG_KERNEL_STOP_MASK
+                                    or SIG_KERNEL_COREDUMP_MASK,
+                                    include/linux/signal.h), so there is no
+                                    disposition under which the delivery returns.
+
+                                    A BOOL AND NOT A SIGSET, for
+                                    [procst_sigabrt_pending]'s reason: one write
+                                    sends one signal, and a second write to the
+                                    same dead end sends signal 13 again, which
+                                    [legacy_queue] (kernel/signal.c) drops
+                                    because it is already pending below
+                                    SIGRTMIN.  Setting a bit that is already set
+                                    is exactly that. *)
+;
+  procst_channel_reader : bool   (* THE SECOND FIELD OF THIS RECORD THAT IS NOT
+                                    KERNEL STATE, and unlike
+                                    [procst_abort_terminal] it is not the task's
+                                    declaration but the ENVIRONMENT's: whether
+                                    the far end of descriptors 1 and 2 still has
+                                    a reader.  Seeded by [init_model] from
+                                    [ProcInput]'s [in_channel_reader] and
+                                    written by nothing, so one run has one
+                                    answer.
+
+                                    WHY THE MODEL NEEDS TO BE TOLD.  A channel
+                                    descriptor ([FdChannel]) is whatever the
+                                    launcher put there -- a terminal, a file, a
+                                    pipe, a socket -- and the model carries no
+                                    term for it.  A write to a terminal or a
+                                    file always has a reader; a write to a pipe
+                                    or a socket whose reader has gone raises
+                                    SIGPIPE and dies (fs/pipe.c
+                                    [anon_pipe_write] :460-465, net/core/stream.c
+                                    [sk_stream_error] :190-198, Linux v6.18.46).
+                                    The model cannot derive which, so it is
+                                    quantified over, exactly as [in_uid] and
+                                    [in_sigmask] are.
+
+                                    A LAUNCH FACT AND NOT A PER-CALL CHOICE.  A
+                                    [choose] resolved afresh at each write would
+                                    admit a trace in which one write to stdout
+                                    finds a reader and the next does not, with
+                                    no close in between -- which `prog | head -1`
+                                    does not do either: there the reader goes
+                                    away once and stays away.  The honest
+                                    middle, a reader that goes away at a point
+                                    the model cannot see, is a pipe the model
+                                    does not have a term for; this field says
+                                    which of the two ends the run was launched
+                                    with.  [Run.valid_input] DOES NOT CONSTRAIN
+                                    IT: both values name a real launch, so every
+                                    statement covers both, and the reader-present
+                                    reading -- which every statement in this tree
+                                    was silently written under, as an assumption
+                                    inside the write arm -- is no longer
+                                    assumed anywhere. *)
+;
+  procst_sigpipe_default : bool  (* THE THIRD FIELD OF THIS RECORD THAT IS NOT
+                                    KERNEL STATE IN THE USUAL SENSE: whether the
+                                    process was launched with SIGPIPE at its
+                                    DEFAULT DISPOSITION (SIG_DFL).  [true] is
+                                    SIG_DFL and so death on delivery; [false] is
+                                    SIG_IGN, under which the kernel never
+                                    delivers the signal at all and the write
+                                    simply returns -EPIPE.  Seeded by
+                                    [init_model] from [ProcInput]'s
+                                    [in_sigpipe_default] and written by nothing,
+                                    so one run has one answer.
+
+                                    WHY THE MODEL HAS TO BE TOLD, AND WHY THIS IS
+                                    THE TASK'S DECLARATION RATHER THAN THE
+                                    ENVIRONMENT'S.  A disposition SURVIVES
+                                    execve when it is SIG_IGN: fs/exec.c
+                                    [begin_new_exec] calls
+                                    kernel/signal.c [flush_signal_handlers] with
+                                    [force_default = 0], which resets only
+                                    handlers that are neither SIG_DFL nor
+                                    SIG_IGN (Linux v6.18.46, commit
+                                    1f99e9ab748f).  So `signal(SIGPIPE, SIG_IGN)`
+                                    in a launcher -- what a shell job-control
+                                    wrapper, a service manager or a language
+                                    runtime that wants EPIPE instead of death
+                                    does -- hands this process a world in which
+                                    no write kills it.  The model cannot derive
+                                    which world it is in, because nothing inside
+                                    the modeled surface can observe or change it:
+                                    [Kernel.Signal.rt_sigaction_spec] declines
+                                    every install for signal 13.
+
+                                    IT IS PINNED, UNLIKE [procst_channel_reader].
+                                    [Run.valid_input] pins it to [true], because
+                                    that is the world every statement in this
+                                    tree was written under -- the ordinary
+                                    launch, in which a reader-less write ends the
+                                    program.  The other world is a predicate of
+                                    its own, [Run.valid_input_sigpipe_ignored],
+                                    exactly as the abort stance is
+                                    [Run.valid_input_abort].  Without the field
+                                    that pinning would be an UNSTATED premise of
+                                    every theorem here, and a launcher that
+                                    ignores SIGPIPE would hand the model a
+                                    process it kills where Linux returns -EPIPE
+                                    and runs on. *)
 }.
 
 (** The resource limits the process has been observed to have. *)
@@ -3981,6 +4150,20 @@ Definition m_sigabrt_pending (m : Model) : bool :=
   procst_sigabrt_pending (m_proc m).
 Definition m_abort_terminal (m : Model) : bool :=
   procst_abort_terminal (m_proc m).
+Definition m_sigpipe_pending (m : Model) : bool :=
+  procst_sigpipe_pending (m_proc m).
+(** Whether the far end of descriptors 1 and 2 still has a reader --
+    the launch fact [Sys.Fs.ReadWrite.write_spec]'s channel arm reads
+    before it admits a transfer.  [Run.valid_input] constrains neither
+    value; see [procst_channel_reader]. *)
+Definition m_channel_reader (m : Model) : bool :=
+  procst_channel_reader (m_proc m).
+(** Whether SIGPIPE is still at SIG_DFL, the launch declaration
+    [Sys.Fs.ReadWrite.raise_sigpipe] reads before it ends the process.
+    [Run.valid_input] pins it to [true]; the other reading is
+    [Run.valid_input_sigpipe_ignored].  See [procst_sigpipe_default]. *)
+Definition m_sigpipe_default (m : Model) : bool :=
+  procst_sigpipe_default (m_proc m).
 Definition m_utsname (m : Model) : option (list byte) :=
   procst_utsname (m_proc m).
 Definition m_statpins (m : Model) : list (Fs.path * list byte) :=
@@ -4032,7 +4215,8 @@ Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
             (mkProcState halted tid
                (mkCreds overflow_id overflow_id overflow_id
                         overflow_id overflow_id overflow_id [])
-               false (Z_to_bv 64 0) false None false false false false [])
+               false (Z_to_bv 64 0) false None false false false false []
+               false true true)
             (mkLimState rlim default_nofile)
             (mkTimeState (Z_to_bv 64 0)).
 
@@ -4113,7 +4297,9 @@ Definition with_fs (fs : Fs.Fs) (m : Model) : Model :=
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m)
-                         (statpins_restrict fs (m_statpins m)))
+                         (statpins_restrict fs (m_statpins m))
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 (** Halt the process by an EXIT, which is the other half of what the
     kill flag distinguishes: this clears it, so a model this produced has
@@ -4129,7 +4315,9 @@ Definition with_halted (code : word) (m : Model) : Model :=
                          (procst_children (m_proc m)) (m_utsname m)
                          (m_sigaltstack_installed m)
                          false (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 Definition with_tid (tid : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -4138,7 +4326,9 @@ Definition with_tid (tid : word) (m : Model) : Model :=
                          (procst_children (m_proc m)) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
@@ -4160,7 +4350,9 @@ Definition with_utsname (bs : list byte) (m : Model) : Model :=
                          (m_has_children m) (Some bs)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 (** Look a file's stat pin up by path.  [None] means no [fstat] has
     delivered a [struct stat] for that file yet, which is the branch
@@ -4196,7 +4388,9 @@ Definition with_statpin (p : Fs.path) (bs : list byte) (m : Model) : Model :=
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m)
-                         ((p, bs) :: m_statpins m))
+                         ((p, bs) :: m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 
 (** Seed the soft descriptor limit.  Its only caller is [init_model], for
@@ -4222,7 +4416,9 @@ Definition with_abort_terminal (b : bool) (m : Model) : Model :=
                          (m_has_children m) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m) b
-                         (m_statpins m))
+                         (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 
 Definition with_nofile (n : word) (m : Model) : Model :=
@@ -4235,7 +4431,9 @@ Definition with_creds (c : Creds) (m : Model) : Model :=
                          (procst_children (m_proc m)) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 Definition with_setsid_succeeded (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -4243,7 +4441,9 @@ Definition with_setsid_succeeded (m : Model) : Model :=
                          true (m_sigmask m) (procst_children (m_proc m))
                          (m_utsname m) (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 
 (** Record that the process now has something to reap.
@@ -4269,7 +4469,9 @@ Definition with_children (m : Model) : Model :=
                          (m_setsid_succeeded m) (m_sigmask m) true
                          (m_utsname m) (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 (** Install a new blocked mask.  [Kernel.Signal.rt_sigprocmask_spec] is
     the only caller, and the only kernel path that reaches
@@ -4289,7 +4491,9 @@ Definition with_sigmask (s : word) (m : Model) : Model :=
                          (m_setsid_succeeded m) s (m_has_children m)
                          (m_utsname m) (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 
 (** Record that a [sigaltstack] has installed an alternate stack.
@@ -4316,7 +4520,9 @@ Definition with_sigaltstack_installed (m : Model) : Model :=
                          (m_setsid_succeeded m) (m_sigmask m)
                          (m_has_children m) (m_utsname m) true
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 
 (** Record that SIGABRT has been sent and is BLOCKED, so it waits in
@@ -4342,7 +4548,72 @@ Definition with_sigabrt_pending (m : Model) : Model :=
                          (m_has_children m) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) true (m_abort_terminal m)
-                         (m_statpins m))
+                         (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
+            (m_lim m) (m_time m).
+
+(** Record that SIGPIPE has been sent and is BLOCKED, the same shape as
+    [with_sigabrt_pending] above on the other signal this model can
+    raise.  [Sys.Fs.ReadWrite.raise_sigpipe] is the only caller, and it
+    reaches here only when [Sys.Uapi.sigpipe_blocked] holds of the
+    process's mask; with the mask open it calls [with_killed] instead.
+
+    NOTHING CLEARS IT, for [procst_sigabrt_pending]'s reason and more
+    simply: SIGPIPE's default action is TERMINATE and the model admits
+    no other disposition for it ([Kernel.Signal.rt_sigaction_spec]
+    declines every install for signal 13), so the delivery that would
+    dequeue it is the step that ends the process. *)
+Definition with_sigpipe_pending (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         true (m_channel_reader m)
+                         (m_sigpipe_default m))
+            (m_lim m) (m_time m).
+
+(** Seed the environment's channel-reader fact.  Its only caller is
+    [init_model], for the reason [with_abort_terminal] gives: the fact
+    is a parameter of the RUN, so the one place that may install it is
+    the one that turns a [ProcInput] into a model.  Like that field it
+    has no writer anywhere in the model's own state transitions, so it
+    is constant along every run -- which is what lets one run have one
+    answer to "did a write to stdout reach a reader", where a [choose]
+    at each call would let one run have two. *)
+Definition with_channel_reader (b : bool) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) b
+                         (m_sigpipe_default m))
+            (m_lim m) (m_time m).
+
+(** Seed the task's SIGPIPE disposition.  Its only caller is
+    [init_model], for the reason [with_abort_terminal] gives: the
+    disposition is a parameter of the RUN -- it was decided before
+    execve and survives it ([procst_sigpipe_default] names the kernel
+    site) -- so the one place that may install it is the one that turns
+    a [ProcInput] into a model.  Nothing inside the modeled surface
+    writes it: [Kernel.Signal.rt_sigaction_spec] declines every install
+    for signal 13, so it is constant along every run. *)
+Definition with_sigpipe_default (b : bool) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         b)
             (m_lim m) (m_time m).
 
 (** End the process by a fatal signal.  It writes the signal number into
@@ -4353,18 +4624,38 @@ Definition with_sigabrt_pending (m : Model) : Model :=
     [procst_killed] alone -- [Run.sstep_exit] declines a death by signal
     and [Run.sstep_killed] takes it -- so the two cannot both apply.
 
-    IT HAS TWO CALLERS, and which is which decides what guards them.
-    [Kernel.Signal.send_sigabrt] is the SEND, and it sits behind the
-    task's declaration.  [Kernel.Signal.sigmask_deliver_model] is the
-    DELIVERY inside [rt_sigprocmask], and it does NOT: it branches on
-    [procst_sigabrt_pending], because a signal already pending has to be
-    taken by the mask install that uncovers it whatever the task
+    IT HAS FOUR CALLERS, IN TWO SIGNALS, and which is which decides what
+    guards them.
+
+    SIGABRT (6).  [Kernel.Signal.send_sigabrt] is the SEND, and it sits
+    behind the task's declaration.  [Kernel.Signal.sigmask_deliver_model]
+    is the DELIVERY inside [rt_sigprocmask], and it does NOT: it branches
+    on [procst_sigabrt_pending], because a signal already pending has to
+    be taken by the mask install that uncovers it whatever the task
     declared.  A reader checking the declaration-off claim needs both
-    rows — see [Run.decl_off_frame], whose hypothesis carries the pending
-    bit for exactly this reason, and
+    rows — see [Run.decl_off_frame], whose conclusion is about THIS
+    SIGNAL for exactly this reason, and
     [Checks.Cases.Kernel.Signal.decl_off_frame_one_sided_refuted], which
-    refutes the version that names only the declaration.  SIGABRT is the
-    only argument either caller is ever given. *)
+    refutes the version that names only the declaration.
+
+    SIGPIPE (13).  [Sys.Fs.ReadWrite.raise_sigpipe] is the SEND, from the
+    channel, pipe and socket arms of [Sys.Fs.ReadWrite.write_spec] when
+    the far end has no reader, and [Kernel.Signal.sigmask_deliver_model]
+    is again the delivery of a blocked one.  NEITHER SEND IS BEHIND THE
+    ABORT DECLARATION, and that is the difference between the two
+    signals: a pipe whose read end the program itself closed is ordinary
+    modeled state, not a stance a task declares, so a run under plain
+    [Run.valid_input] can end in [KillEv 13].
+
+    TWO LAUNCH FACTS GATE IT, and they are pinned differently on
+    purpose.  [procst_channel_reader] is the ENVIRONMENT's -- whether
+    anything still reads descriptors 1 and 2 -- and [Run.valid_input]
+    CONSTRAINS NEITHER VALUE, so every statement covers both worlds.
+    [procst_sigpipe_default] is the TASK's -- whether SIGPIPE is still
+    at SIG_DFL -- and [Run.valid_input] pins it to [true], the world
+    every statement in this tree was written under; the other world is
+    [Run.valid_input_sigpipe_ignored], where this setter is never
+    reached because [raise_sigpipe] discards the signal. *)
 Definition with_killed (sig : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (Some sig) (m_tid m) (m_creds m)
@@ -4372,7 +4663,9 @@ Definition with_killed (sig : word) (m : Model) : Model :=
                          (m_has_children m) (m_utsname m)
                          (m_sigaltstack_installed m)
                          true (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m))
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m))
             (m_lim m) (m_time m).
 
 (** The invariant the two fields are written under, stated where the
@@ -5961,22 +6254,103 @@ Record ProcInput := mkProcInput_full {
        RESIDUAL: on Linux the name resolves to the image's file.  This
        model holds the image's SEGMENTS, not its file, so [in_fs] need
        not hold a file at this name, and a program that opens its own
-       AT_EXECFN gets [in_fs]'s answer.  SCOPE.md records it *)
+       AT_EXECFN gets [in_fs]'s answer.  SCOPE.md records it *);
+  in_channel_reader : bool
+    (* THE ENVIRONMENT'S DECLARATION of whether the far end of
+       descriptors 1 and 2 still has a reader.  [true]: a write to
+       stdout or stderr reaches something that reads it -- a terminal,
+       a file, a pipe whose reader is open.  [false]: the far end is a
+       pipe or a socket whose reader has gone, which is the state
+       `prog | head -1` leaves the writer in once `head` has had its
+       line.
+
+       WHY IT IS AN INPUT.  A channel descriptor is whatever the
+       launcher put there and the model carries no term for it, exactly
+       as it carries none for the launching uid or the blocked mask.
+       What makes this one matter is that the answer changes the
+       OUTCOME and not only a returned number: with no reader, Linux
+       raises SIGPIPE at the write ([anon_pipe_write], fs/pipe.c, for a
+       pipe; [sk_stream_error], net/core/stream.c, for a socket; Linux
+       v6.18.46, commit 1f99e9ab748f) and the process DIES, where the
+       model used to answer a byte count and let the program run on.
+
+       A LAUNCH FACT AND NOT A PER-CALL CHOICE, for the reason
+       [procst_utsname] is pinned rather than chosen afresh: a [choose]
+       at each write would admit a trace in which one write to stdout
+       finds a reader and the next does not with no close in between,
+       which no launch produces.  One run has one answer.
+
+       [Run.valid_input] PINS IT PRESENT, the stream owner's answer to
+       dispatch://OSSV-266/ask/77724e06: every statement quantified
+       over the ordinary predicate is about the run whose standard
+       output is read, and the run that is the writing end of
+       `prog | head -1` after `head` has had its line is asked for by
+       name, [Run.valid_input_channel_closed], in the shape
+       [Run.valid_input_abort] has for the abort declaration.
+       [Run.valid_input_channel_either] pins neither reading, for a
+       statement that means both.
+
+       WHAT IS NOT OPEN: before this field the write arm ADMITTED a
+       byte count for the reader-less launch and let the program run
+       on, so every such statement was silently sound only for the
+       other one.  The field does not add that assumption, it makes it
+       sayable.  The one place the reader-present reading survives
+       unasked is [EquivalenceDefinition.FinInput.to_proc_input].
+
+       [init_model] copies this into [procst_channel_reader] and
+       nothing else writes it *);
+  in_sigpipe_default : bool
+    (* THE TASK'S DECLARATION of whether SIGPIPE is still at its
+       DEFAULT DISPOSITION when the program starts.  [true]: SIG_DFL,
+       so a delivery ends the process.  [false]: the launcher ran
+       `signal(SIGPIPE, SIG_IGN)` before execve, so the kernel never
+       delivers signal 13 at all and a reader-less write simply returns
+       -EPIPE.
+
+       WHY IT IS AN INPUT.  SIG_IGN SURVIVES EXECVE: fs/exec.c
+       [begin_new_exec] calls kernel/signal.c [flush_signal_handlers]
+       with [force_default = 0], which resets handlers but leaves
+       SIG_DFL and SIG_IGN alone (Linux v6.18.46, commit 1f99e9ab748f).
+       So the disposition the program runs under was decided by its
+       launcher, exactly as the launching uid and the blocked mask
+       were, and nothing inside the modeled surface can observe or
+       change it: [Kernel.Signal.rt_sigaction_spec] declines every
+       install for signal 13.  Ignoring SIGPIPE is what a service
+       manager, a shell wrapper and several language runtimes do.
+
+       [Run.valid_input] PINS IT TO [true], and that is settled where
+       the reader above is not.  The two fields gate the same death,
+       but this one is the TASK's stance and not the environment's, so
+       it is declared the way the abort stance is: [Run.valid_input] is
+       the ordinary launch, [Run.valid_input_sigpipe_ignored] is the
+       other world, and [Run.valid_input_sigpipe_either] asserts both.
+       Without the field every statement here would carry the SIG_DFL
+       launch as an UNSTATED premise, and a launcher that ignores
+       SIGPIPE would be handed a model that kills the process where
+       Linux returns -EPIPE and runs on.
+
+       [init_model] copies this into [procst_sigpipe_default] and
+       nothing else writes it *)
 }.
 
-(** THE POSITIONAL-LITERAL FORM: every field except the four
-    ENVIRONMENT fields at the end of the record ([in_urandom],
-    [in_tmp], [in_kernel], [in_execfn]).
+(** THE POSITIONAL-LITERAL FORM: every field except the six
+    TRAILING DECLARATION fields of the record ([in_urandom], [in_tmp],
+    [in_kernel], [in_execfn], [in_channel_reader],
+    [in_sigpipe_default]).
 
     The record's own constructor is [mkProcInput_full] and takes every
     field.  This takes the first thirteen, in that order, and fills the
-    last four with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
-    DEFAULT KERNEL BUILD and THE DEFAULT EXEC NAME: [default_urandom],
-    which is zero bytes forever, a private /tmp that starts empty,
-    [default_kernel], a kernel built without transparent huge pages,
-    and [default_execfn], the one-byte name "a".  So a literal written
+    last six with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
+    DEFAULT KERNEL BUILD, THE DEFAULT EXEC NAME, A LIVE CHANNEL READER
+    and SIGPIPE AT SIG_DFL: [default_urandom], which is zero bytes
+    forever; a private /tmp that starts empty; [default_kernel], a
+    kernel built without transparent huge pages; [default_execfn], the
+    one-byte name "a"; [true], the reading every literal written before
+    [in_channel_reader] existed was already assuming; and [true] again,
+    the SIG_DFL launch [Run.valid_input] pins.  So a literal written
     through this name denotes an input in an environment that holds no
-    file of its own, on an ordinary kernel, launched as "a".
+    file of its own, on an ordinary kernel, launched as "a", whose
+    standard output is read, and whose SIGPIPE still kills.
 
     THE RANDOM DEFAULT IS NOT [IEof]: under
     [Run.valid_urandom] every valid input declares an endless stream, so
@@ -6002,7 +6376,7 @@ Definition mkProcInput
     (va_size : VaSize) : ProcInput :=
   mkProcInput_full argv envp image_fs stdin uid gid groups net
     nofile sigmask hwcap abort_terminal va_size default_urandom []
-    default_kernel default_execfn.
+    default_kernel default_execfn true true.
 
 (** THE FILE SYSTEM THE RUN STARTS WITH: the image, with the run's
     declared private /tmp seeded into it under absolute keys.
@@ -6152,7 +6526,8 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
        (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
                 (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
        false (in_sigmask inp) false None false false false
-       (in_abort_terminal inp) [])
+       (in_abort_terminal inp) [] false (in_channel_reader inp)
+       (in_sigpipe_default inp))
     (mkLimState None (in_nofile inp))
     (mkTimeState (Z_to_bv 64 0)).
 
@@ -6163,7 +6538,9 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     the point of keeping it. *)
 Definition init_model_setter_chain (reserved : list (word * word))
     (brk0 mbase sp : word) (lim : Z) (inp : ProcInput) : Model :=
-  with_abort_terminal (in_abort_terminal inp)
+  with_sigpipe_default (in_sigpipe_default inp)
+  (with_channel_reader (in_channel_reader inp)
+  (with_abort_terminal (in_abort_terminal inp)
   (with_sigmask (in_sigmask inp)
   (with_nofile (in_nofile inp)
    (with_net (in_net inp)
@@ -6182,7 +6559,7 @@ Definition init_model_setter_chain (reserved : list (word * word))
        (in_fs inp)
        None
        None
-       None))))))).
+       None))))))))).
 
 Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
   m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.
@@ -6291,6 +6668,24 @@ Lemma m_kernel_with_abort_terminal : forall v m,
   m_kernel (with_abort_terminal v m) = m_kernel m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_abort_terminal : model.
+
+(** The two launch declarations this revision added are setters of the
+    same kind, so they get the same row: the kernel build is not theirs
+    to change either. *)
+Lemma m_kernel_with_channel_reader : forall v m,
+  m_kernel (with_channel_reader v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_channel_reader : model.
+
+Lemma m_kernel_with_sigpipe_default : forall v m,
+  m_kernel (with_sigpipe_default v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigpipe_default : model.
+
+Lemma m_kernel_with_sigpipe_pending : forall m,
+  m_kernel (with_sigpipe_pending m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigpipe_pending : model.
 
 Lemma m_kernel_with_creds : forall v m, m_kernel (with_creds v m) = m_kernel m.
 Proof. reflexivity. Qed.

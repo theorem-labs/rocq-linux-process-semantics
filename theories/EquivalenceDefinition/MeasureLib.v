@@ -2120,7 +2120,7 @@ Qed.
 
 (** A canonical [FinInput.FinProcInput] over a given core.  The four
     core fields are copied; the nine LAUNCH ENVIRONMENT fields and the
-    two declarations are invented, and the choices are these:
+    four declarations are invented, and the choices are these:
 
     - [fin_uid], [fin_gid], [fin_nofile] and [fin_sigmask] are all
       [Z_to_bv 64 0].  [Run.valid_input] constrains four
@@ -2149,12 +2149,25 @@ Qed.
       and envp rather than by this choice.
     - [fin_abort_terminal] is [false], the task declaration
       [Run.valid_input] pins and so the one this embedding has to make
-      if the record is to be valid at all.  It and [fin_va_size] are
-      the declarations rather than environment facts, and the only
-      fields [Run.valid_input] fixes rather than bounds.
+      if the record is to be valid at all.  It, [fin_va_size] and
+      [fin_sigpipe_default] are declarations rather than environment
+      facts, and the only fields [Run.valid_input] fixes rather than
+      bounds.
+    - [fin_channel_reader] is [true], the launch whose standard output
+      is read.  It is the fourth declaration, and [Run.valid_input]
+      pins it at that value, so it is forced in the way
+      [fin_abort_terminal] is: [false] would be valid only under
+      [Run.valid_input_channel_closed], which this library's callers
+      do not discharge.  A measure statement is about a list of CORES,
+      and the core forgets this field like the others here.
+    - [fin_sigpipe_default] is [true], SIGPIPE at SIG_DFL.
+      [Run.valid_input] fixes it, so it is forced in the way
+      [fin_abort_terminal] is: [false] would be valid only under
+      [Run.valid_input_sigpipe_ignored], which this library's callers
+      do not discharge.
 
     The choice is arbitrary and is allowed to be, because
-    [FinInput.fin_core] forgets all eleven ([FinInput.fin_core_env_eq]
+    [FinInput.fin_core] forgets all thirteen ([FinInput.fin_core_env_eq]
     pins that it forgets these and nothing else).  What the embedding is
     FOR is [fin_core_core_input]: it is a section of
     [FinInput.fin_core], so a statement about a list of cores can be
@@ -2169,7 +2182,7 @@ Definition core_input (c : FinCore) : FinProcInput :=
   mkFinProcInput (core_argv c) (core_envp c) (core_fs c) (core_stdin c)
                  (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
                  (Z_to_bv 64 0) (Z_to_bv 64 0) hwcap_rv64gc false Sv48 [] []
-                 default_kernel default_execfn.
+                 default_kernel default_execfn true true.
 
 (** THE LAUNCH-ENVIRONMENT FIELDS ARE NOT ARBITRARY, even though this
     definition claims nothing about them.  A caller proving its own
@@ -2183,10 +2196,11 @@ Definition core_input (c : FinCore) : FinProcInput :=
     every core's input unprovable, whatever its argv said.  Choosing a
     value that CAN be valid is not the same as claiming it is.
 
-    [fin_abort_terminal] is [false], the declaration [Run.valid_input]
-    pins, for the same reason: it is the only value that can be valid
-    under the predicate this library's callers discharge.  [fin_execfn]
-    is [State.default_execfn] on the same ground -- the empty name is
+    [fin_abort_terminal] is [false] and [fin_sigpipe_default] is
+    [true], declarations [Run.valid_input] pins, for the same reason:
+    each is the only value that can be valid under the predicate this
+    library's callers discharge.  [fin_execfn] is
+    [State.default_execfn] on the same ground -- the empty name is
     one [Run.valid_execfn] refuses, so a caller that wanted validity
     could not get there from it. *)
 

@@ -30,22 +30,36 @@
     on its first fetch, at a VALID entry and on a VALID input, so
     [halts_allowed_T] is refused for it at every allowed set.
 
-    THE SIGNAL ROUTE IS FIRED ONE LEVEL DOWN, AND THAT IS A FACT ABOUT
-    THE INPUT CLASS RATHER THAN A GAP HERE.  [Run.valid_input] pins
-    [State.in_abort_terminal] to [false], and with the declaration off
-    [Kernel.Signal.tkill_spec] declines every call, so no run this
-    statement quantifies over can reach a [State.KillEv] at all
-    ([Run.sstep_off_no_kill]).  The kill conjunct of
-    [MustExit.must_exit_in_at] is therefore a GUARD over this input
-    class, not a live refutation of [halts_allowed_T]: it is what keeps
-    the predicate honest if the statement is ever issued over an input
-    class that admits the declaration.  So the refutation is fired where
-    it can be — against [MustExit.must_exit_in] on
-    [Checks.AbortWitness]'s killed run — and
-    [abrt_input_not_valid_input] pins the reason it stops there, so a
-    reader does not take the missing statement-level refutation for an
-    oversight.  Without that pin this file would look like it had simply
-    failed to state one. *)
+    THE SIGNAL ROUTE IS TWO ROUTES, AND ONLY ONE OF THEM IS FIRED ONE
+    LEVEL DOWN.
+
+    SIGABRT.  [Run.valid_input] pins [State.in_abort_terminal] to
+    [false], and with the declaration off [Kernel.Signal.tkill_spec]
+    declines every call, so no run this statement quantifies over can
+    reach a [State.KillEv] CARRYING SIGABRT ([Run.sstep_off_no_kill],
+    which says that and no longer says "no kill").  So that refutation
+    is fired where it can be — against [MustExit.must_exit_in] on
+    [Checks.AbortWitness]'s killed run — and [abrt_input_not_valid_input]
+    pins the reason it stops there, so a reader does not take the
+    missing statement-level refutation for an oversight.
+
+    SIGPIPE.  This one has no declaration that holds it off everywhere.
+    [Fs.ReadWrite.write_spec] raises signal 13 from ordinary modeled
+    state — a pipe whose read end the program closed, a socket with no
+    connection, a channel [State.in_channel_reader] says is unread —
+    and [Run.valid_input] constrains only the third of the three: it
+    pins the reader PRESENT, so the reader-less channel is reached by
+    name under [Run.valid_input_channel_closed], while the closed pipe
+    and the unconnected socket are ordinary states under the ordinary
+    predicate.  So the kill conjunct of [MustExit.must_exit_in_at] is a
+    LIVE refutation of
+    [halts_allowed_T] over this very input class, and
+    [halts_allowed_T_refuted_by_kill] below, which used to be
+    unfireable at statement level, is a lemma with a reachable
+    hypothesis.  A run that dies by signal 13 does not satisfy
+    [must_exit_in]: that predicate's halted constructor requires
+    [State.m_killed] to be [None], so it asks the program to end BY
+    EXIT and not merely to end. *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import

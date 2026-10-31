@@ -219,30 +219,34 @@ Proof.
   all: try (vm_compute; discriminate).
 Qed.
 
+(** Each instance from the unpinned predicate, without counting
+    conjuncts: the hypothesis and the goal are taken apart to the same
+    depth, so a clause added to the predicates does not move anything
+    here.  The size clause is the one the goal has and the hypothesis
+    lacks, and it closes by computation. *)
+Ltac sized_valid_of_va_any v :=
+  pose proof (sized_input_va_any v) as Hany; red in Hany |- *;
+  repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end;
+  repeat match goal with |- _ /\ _ => split end;
+  first [assumption | reflexivity].
+
 Example sized_sv48_valid : valid_input (sized_input Sv48).
-Proof.
-  destruct (sized_input_va_any Sv48) as (a & b & c & k & r & d & e & f & g & h & u & l).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj eq_refl (conj u l)))))))))))).
-Qed.
+Proof. sized_valid_of_va_any Sv48. Qed.
 
 Example sized_sv39_valid : valid_input_sv39 (sized_input Sv39).
-Proof.
-  destruct (sized_input_va_any Sv39) as (a & b & c & k & r & d & e & f & g & h & u & l).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj eq_refl (conj u l)))))))))))).
-Qed.
+Proof. sized_valid_of_va_any Sv39. Qed.
 
 Example sized_sv57_valid : valid_input_sv57 (sized_input Sv57).
-Proof.
-  destruct (sized_input_va_any Sv57) as (a & b & c & k & r & d & e & f & g & h & u & l).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj eq_refl (conj u l)))))))))))).
-Qed.
+Proof. sized_valid_of_va_any Sv57. Qed.
 
 Example each_instance_refuses_the_others :
   ~ valid_input (sized_input Sv39) /\ ~ valid_input (sized_input Sv57)
   /\ ~ valid_input_sv39 (sized_input Sv48) /\ ~ valid_input_sv39 (sized_input Sv57)
   /\ ~ valid_input_sv57 (sized_input Sv48) /\ ~ valid_input_sv57 (sized_input Sv39).
 Proof.
-  repeat split; intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & _ & H & _); discriminate H.
+  repeat split; intros Hv; red in Hv;
+    repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end;
+    match goal with Hs : in_va_size _ = _ |- _ => discriminate Hs end.
 Qed.
 
 Example va_any_splits_each_to_its_own :

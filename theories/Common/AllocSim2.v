@@ -30,7 +30,9 @@ Definition two_outcomes (bf : list (list byte)) (cf : word)
 
 (** [Equivalence.equiv] for a brk-allocating source whose outcome set is
     [two_outcomes bf cf bs cs] and an mmap-allocating target with the
-    same failure tail [(bf, cf)] and success tail [(bs, cs)]. *)
+    same failure tail [(bf, cf)] and success tail [(bs, cs)], on a launch
+    with a reader on stdout: the target side is [MmapSim]'s, whose write
+    nodes need one (a reader-gone write KILLS the process). *)
 Lemma alloc_mmap_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim bf cf bs cs inp,
   to_outcomes source_segs
@@ -41,12 +43,13 @@ Lemma alloc_mmap_strong_equiv :
     (init_machine_state target_segs apc aph asp amb arnd inp)
     (init_model (segments_reserved target_segs) abrk amb asp alim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
+  in_channel_reader inp = true ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
                        (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).
 Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim bf cf bs cs
-    inp Hsource Htarget Hbf Hbs.
+    inp Hsource Htarget Hbf Hbs Hr.
   split.
   { apply no_error_run_modeled.
     apply (alloc_no_error_run source_segs rpc rph rsp rbrk rmb rrnd rlim inp
@@ -56,7 +59,7 @@ Proof.
     rewrite (alloc_obs_iff source_segs rpc rph rsp rbrk rmb rrnd rlim inp
                (two_outcomes bf cf bs cs) Hsource tr).
     rewrite (mmap_obs_iff_te target_segs apc aph asp abrk amb arnd alim inp
-               bf cf bs cs Htarget Hbf Hbs tr).
+               bf cf bs cs Htarget Hbf Hbs Hr tr).
     unfold two_traces, two_outcomes, outcome_trace.
     split.
     + intros (o & [-> | ->] & Hp); cbn [fst snd] in Hp; [left | right]; exact Hp.
@@ -64,7 +67,7 @@ Proof.
         cbn [fst snd]; auto.
   - cbn.
     apply (mmap_no_error_run_te target_segs apc aph asp abrk amb arnd alim inp
-             bf cf bs cs Htarget Hbf Hbs).
+             bf cf bs cs Htarget Hbf Hbs Hr).
 Qed.
 
 (** The omni equivalence of a brk-branching source against a mmap-branching
@@ -79,13 +82,14 @@ Lemma alloc_mmap_omni_strong_equiv :
     (init_machine_state target_segs apc aph asp amb arnd inp)
     (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
+  in_channel_reader inp = true ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
 Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bf cf bs cs
-    inp Hsource Htarget Hbf Hbs.
+    inp Hsource Htarget Hbf Hbs Hr.
   apply strong_equiv_iff.
   apply (alloc_mmap_strong_equiv source_segs rpc rph rsp rbrk rmb rrnd source_alloc_limit
            target_segs apc aph asp abrk amb arnd target_alloc_limit bf cf bs cs inp
-           Hsource Htarget Hbf Hbs).
+           Hsource Htarget Hbf Hbs Hr).
 Qed.
