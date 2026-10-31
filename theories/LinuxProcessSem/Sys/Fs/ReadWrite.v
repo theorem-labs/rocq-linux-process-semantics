@@ -992,11 +992,33 @@ Definition write_file_tail (mp : word -> option byte) (buf count : word)
     uncovers signal 13 kills there
     ([Kernel.Signal.sigmask_deliver_model]).
 
-    THE DISPOSITION IS SIG_DFL BY CONSTRUCTION INSIDE THE MODELED
-    SURFACE: [Kernel.Signal.rt_sigaction_spec] declines every install
-    for signal 13.  That the LAUNCH left it at SIG_DFL is a premise,
-    written above [Run.unmodeled_at]; `signal(SIGPIPE, SIG_IGN)` in a
-    launcher survives execve and is outside what this model covers.
+    THE DISPOSITION IS A LAUNCH DECLARATION, and it is the FIRST test
+    here.  Nothing inside the modeled surface can change it --
+    [Kernel.Signal.rt_sigaction_spec] declines every install for signal
+    13 -- but the launcher can: `signal(SIGPIPE, SIG_IGN)` before
+    execve survives it, because fs/exec.c [begin_new_exec] calls
+    kernel/signal.c [flush_signal_handlers] with [force_default = 0],
+    which resets handlers and leaves SIG_DFL and SIG_IGN alone (Linux
+    v6.18.46, commit 1f99e9ab748f).  [State.in_sigpipe_default] is that
+    declaration and [State.m_sigpipe_default] reads it.  WITH SIG_IGN
+    THE PROCESS NEVER DIES, by either of two kernel routes, and the
+    model collapses both into leaving the state alone.  UNBLOCKED:
+    kernel/signal.c [prepare_signal] returns [!sig_ignored(p, sig,
+    force)], [sig_ignored] falls through to [sig_task_ignored], and
+    the signal is dropped before [__send_signal_locked] queues
+    anything.  BLOCKED: [sig_ignored] answers false for a blocked
+    signal on purpose ("the signal handler may change by the time it
+    is unblocked"), so it IS queued -- but the [rt_sigprocmask] that
+    later uncovers it reaches [get_signal]'s
+    [if (ka->sa.sa_handler == SIG_IGN) continue], which discards it
+    there instead.  Either way no state this model carries differs
+    afterwards: the only thing that could tell the two apart is
+    [sigpending], which this model has no call for.  So the branch
+    answers -EPIPE over an UNCHANGED model, which is what every
+    program that ignores SIGPIPE is written to read, and nothing is
+    recorded as pending -- [Kernel.Signal.sigmask_deliver_model] stays
+    out of it.  [Run.valid_input] pins the declaration to SIG_DFL;
+    [Run.valid_input_sigpipe_ignored] is the other world.
 
     NO LEDGER AND NO EVENT.  Both kernel sites raise the signal before
     any byte is copied out of user memory, so the call reads nothing
@@ -1007,7 +1029,9 @@ Definition write_file_tail (mp : word -> option byte) (buf count : word)
     returns -- exactly as [Run.sstep_exit] discards an [exit]'s -- so
     the -EPIPE is unobservable there, which is the point. *)
 Definition raise_sigpipe (m : Model) : Model :=
-  if sigpipe_blocked (m_sigmask m)
+  if negb (m_sigpipe_default m)
+  then m                         (* SIG_IGN: discarded, never queued *)
+  else if sigpipe_blocked (m_sigmask m)
   then with_sigpipe_pending m
   else with_killed (Z_to_bv 64 SIGPIPE) m.
 
@@ -1400,6 +1424,21 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            byte of the source is read on this path, exactly as on
            Linux, so the ledger stays empty.
 
+           AND DECIDED ABOVE THE -ENOMEM ALTERNATIVE of the page
+           allocation further down this arm.  THIS ORDER IS BEHAVIOUR AND
+           MUST NOT BE SWAPPED.  [anon_pipe_write] tests
+           [if (!pipe->readers)] at :460 before it takes the mutex-held
+           path at all, and repeats the test at the TOP of each loop
+           iteration (:501-506, with [break]) — both strictly before
+           [page = anon_pipe_get_page(pipe)] at :515 and its
+           [ret = -ENOMEM] at :517-519 (Linux v6.18.46, commit
+           1f99e9ab748f).  So a write to a pipe with no reader NEVER
+           reaches the allocation and can never answer -ENOMEM: it
+           raises signal 13 and answers -EPIPE.  If the [pipe_needs_page]
+           alternative below were moved above this test, the model would
+           answer a memory failure, and let the process live, where Linux
+           kills it.
+
            THIS USED TO FAIL CLOSED, on the argument that the model had
            no signals and no death that is not [exit].  It has both now
            ([State.with_killed], [Run.sstep_killed]), so the pipe write
@@ -1477,7 +1516,12 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
               record_copyins [(buf, length bs)] (ret_only count) in
             if pipe_needs_page st
             then alt (e <- errno_from write_errnos ;; err_ret e) deliver
-              (* [anon_pipe_get_page] came back NULL: see [write_errnos] *)
+              (* [anon_pipe_get_page] came back NULL: see [write_errnos].
+                 THIS ALTERNATIVE STAYS BELOW THE NO-READER TEST ABOVE and
+                 must not be lifted above it: fs/pipe.c:460 and :501-506
+                 test [!pipe->readers] before :515 reaches this
+                 allocation, so a reader-less pipe answers -EPIPE and a
+                 signal 13, never -ENOMEM (Linux v6.18.46, 1f99e9ab748f) *)
             else deliver
         (* NO SHORT POSITIVE RETURN, and deliberately not the channel
            arm's short write: with room in the ring and the whole source
