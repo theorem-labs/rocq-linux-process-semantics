@@ -2,7 +2,7 @@
 import LinuxProcessSemantics.LinuxProcessSem.Run
 import LinuxProcessSemantics.LinuxProcessSem.StreamLaws
 
-/-! rocq-baseline: 9f9a96b29a12dd26b54bff74b47ba1c4a6e01ad3
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
 divergence: bugs/fin-record-not-injective-on-the-random-field.md -- inherited -/
 
 /-! # EquivalenceDefinition.FinInput — finite process inputs

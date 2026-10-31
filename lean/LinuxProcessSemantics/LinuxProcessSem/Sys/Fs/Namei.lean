@@ -55,6 +55,14 @@ ahead of the first component (fs/namei.c:2450-2454, Linux v6.18.46) and
 between components (:2502-2504). -/
 def slash_byte : byte := Z_to_bv 8 47
 
+/-- The SAME byte is spelled in `Fs`, as `Fs.path_slash_byte`, because
+`Fs.key_is_relative` needs it at a rung below this one and this file sits
+above it.  The separator's MEANING stays here — the component tests below
+are what a separator is for — and the two spellings are pinned equal so
+that moving either is a compile error rather than a silent divergence.
+Rocq: `Namei.slash_byte_is_path_slash_byte`. -/
+theorem slash_byte_is_path_slash_byte : slash_byte = path_slash_byte := rfl
+
 /-- Does the path contain a component separator? -/
 def path_has_slash (p : path) : Bool :=
   p.any (fun b => bv_eqb b slash_byte)
@@ -102,6 +110,47 @@ def fs_under (fs : Fs) (p : path) : Bool :=
   match fs with
   | [] => false
   | (q, _) :: r => dir_prefixb p q || fs_under r p
+
+/-- `dir_prefixb` read back: a `true` exhibits the rest of the key.  This
+is what lets a caller holding a fact about the BYTES of a key rule the
+test out — `Run.absolute_divergent_not_seeded` is the one that does, for a
+key the seeding minted under "/tmp/".  Rocq: `Namei.dir_prefixb_app`. -/
+theorem dir_prefixb_app : ∀ p q : path, dir_prefixb p q = true →
+    ∃ r, q = p ++ slash_byte :: r := by
+  intro p
+  induction p with
+  | nil =>
+    intro q h
+    cases q with
+    | nil => simp only [dir_prefixb] at h; cases h
+    | cons c q =>
+      refine ⟨q, ?_⟩
+      simp only [dir_prefixb] at h
+      rw [(bv_eqb_eq c slash_byte).1 h]; rfl
+  | cons a p ih =>
+    intro q h
+    cases q with
+    | nil => simp only [dir_prefixb] at h; cases h
+    | cons b q =>
+      simp only [dir_prefixb, Bool.and_eq_true] at h
+      obtain ⟨hab, hr⟩ := h
+      obtain ⟨r, hq⟩ := ih q hr
+      refine ⟨r, ?_⟩
+      rw [(bv_eqb_eq a b).1 hab, hq]; rfl
+
+/-- Neither half of `fs_under` can fire on a list of keys none of which
+continues `p` with a separator.  Rocq: `Namei.fs_under_false_of_keys`. -/
+theorem fs_under_false_of_keys : ∀ (fs : Fs) (p : path),
+    (∀ qd ∈ fs, dir_prefixb p qd.1 = false) → fs_under fs p = false := by
+  intro fs
+  induction fs with
+  | nil => intro p _; rfl
+  | cons qd fs ih =>
+    intro p h
+    have hq : dir_prefixb p qd.1 = false := h qd (List.mem_cons_self ..)
+    have hr : fs_under fs p = false := ih p (fun x hx => h x (List.mem_cons_of_mem _ hx))
+    obtain ⟨q, d⟩ := qd
+    simp only [fs_under, hq, hr, Bool.or_self]
 
 /-- Strip a fixed prefix off a path, or say it is not there.  Rocq:
 `Namei.path_strip_prefix`. -/

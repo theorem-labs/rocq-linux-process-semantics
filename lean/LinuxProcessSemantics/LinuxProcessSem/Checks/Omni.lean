@@ -8,7 +8,7 @@ import LinuxProcessSemantics.EquivalenceDefinition.OmniEquivalence
 import LinuxProcessSemantics.Common.ExitSim
 import LinuxProcessSemantics.Common.PropExec
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
 unported: demo_proc_input -- the process input `Omni.v` defines ahead of Part 1 for its concrete pins; `Checks/Examples.lean` defines the same term under the same name, and Parts 2, 4 and 5 here read that copy -/
 
 /-! # LinuxProcessSem.Checks.Omni — what the omni judgments MEAN

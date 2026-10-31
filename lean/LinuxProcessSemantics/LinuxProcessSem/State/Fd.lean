@@ -2,7 +2,7 @@
 import LinuxProcessSemantics.LinuxProcessSem.Fs
 import LinuxProcessSemantics.LinuxProcessSem.State.Streams
 
-/-! rocq-baseline: 7b4cf49586658ecbffbab14145ab0969272a0b23 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.State.Fd — descriptors and their table
 
