@@ -45,6 +45,11 @@ Definition accept_errnos : list Z := [ENOMEM; EMFILE; ENFILE].
     commit 7cce061164. *)
 Definition accept_notsock_errnos : list Z := [EMFILE].
 
+(** [sock_alloc]'s own failure, the one errno that can preempt each
+    [inet_create] answer of [socket].  Ported from main LPS #1536,
+    commit 7cce061164. *)
+Definition socket_alloc_errnos : list Z := [ENFILE].
+
 (** Linux v6.18.46 net/socket.c [__sys_accept4_file] reaches descriptor
     reservation, [sock_alloc] and [sock_alloc_file] before
     net/ipv4/inet_connection_sock.c [inet_csk_accept] rejects a
@@ -225,7 +230,7 @@ Definition socket_spec (domain type protocol : word) : Sys SyscallEffect :=
          family, which is why this sits below the AF_INET test: under any
          other in-range family SOCK_PACKET is declined by that test. *)
     else if orb (Z.ltb pro 0) (Z.leb IPPROTO_MAX pro)
-    then alt (err_ret EINVAL) (err_ret ENFILE)
+    then alt (err_ret EINVAL) (e <- errno_from socket_alloc_errnos ;; err_ret e)
     else if Z.eqb ty SOCK_STREAM then
       (* The BUILT-IN [inetsw_array] holds exactly
          {SOCK_STREAM, IPPROTO_TCP} for this type.  Protocol 0 takes the
@@ -247,7 +252,7 @@ Definition socket_spec (domain type protocol : word) : Sys SyscallEffect :=
          protocol 0 still wildcards to TCP however many modules load. *)
       if orb (Z.eqb pro IPPROTO_SCTP) (Z.eqb pro IPPROTO_MPTCP) then unmodeled
       else if negb (orb (Z.eqb pro IPPROTO_IP) (Z.eqb pro IPPROTO_TCP))
-      then alt (err_ret EPROTONOSUPPORT) (err_ret ENFILE)
+      then alt (err_ret EPROTONOSUPPORT) (e <- errno_from socket_alloc_errnos ;; err_ret e)
       else
         alt (e <- errno_from socket_errnos ;; err_ret e)  (* no free fd, or an untracked failure *)
             (fd <- lowest_fd (m_fds m) ;;                 (* success: the lowest free fd, as Linux *)
@@ -265,7 +270,7 @@ Definition socket_spec (domain type protocol : word) : Sys SyscallEffect :=
          registers a SOCK_SEQPACKET entry and net/dccp registers a
          SOCK_DCCP one, so [inetsw[ty]] is empty for these two only on a
          kernel that builds neither. *)
-    else alt (err_ret ESOCKTNOSUPPORT) (err_ret ENFILE).
+    else alt (err_ret ESOCKTNOSUPPORT) (e <- errno_from socket_alloc_errnos ;; err_ret e).
                                          (* [inetsw[ty]] is empty for every remaining type
                                             (0, 4, 7, 8 and 9): no in-tree AF_INET protocol
                                             registers one, so the walk never runs and the

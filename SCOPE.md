@@ -127,7 +127,7 @@ mode answers. QEMU citations are QEMU 10.0.11.
 - **`mremap(MREMAP_MAYMOVE)`: a misaligned `old`, a `new_size` that rounds
   to 0, an equal size, a shrink.** The model answers Linux's `-EINVAL`,
   `ret_only old` and in-place shrink (`mm/mremap.c`,
-  `check_mremap_params` and `mremap_to`). QEMU user mode reserves a fresh
+  `check_mremap_params` and `mremap_at`). QEMU user mode reserves a fresh
   range with `mmap_find_vma` before the host `mremap` (`target_mremap`,
   `linux-user/mmap.c`), so it gives `-ENOMEM` before `-EINVAL` and
   relocates the equal and the shrink call.
@@ -184,7 +184,50 @@ mode answers. QEMU citations are QEMU 10.0.11.
 
 The entries above are the ones the model and QEMU user mode are known to
 differ on. The list is maintained by hand; no tool checks that it is
-complete.
+complete. A replay of 4,291 recorded traces (19,693 judged system calls)
+through extracted checkers found twelve system calls where the model
+answers and an older tree declines; each of the twelve was read against
+v6.18.46 and the model answers Linux's at every one.
+
+## Where older Linux versions differ
+
+Some shapes are contested for a reason that is not QEMU user mode. The
+model answers v6.18.46's, and an older stable kernel answers otherwise.
+A proof says nothing about those kernels; "Supported systems" above
+already says so. These are the known cases.
+
+- **`flock` with `LOCK_MAND`, or with an unrecognised operation, on a
+  closed fd.** The model answers 0 for `LOCK_MAND` and `-EINVAL` for an
+  unrecognised operation, both before the fd lookup
+  (`SYSCALL_DEFINE2(flock)`, `fs/locks.c`: the `LOCK_MAND` test and
+  `flock_translate_cmd` precede `CLASS(fd, f)(fd)`). Kernels v4.17 to
+  v5.19 resolve the fd first. QEMU user mode passes the call through to
+  the host, so it answers what its host kernel answers; it is not a
+  difference of its own.
+- **`flock` granting a lock to the sole opener whose type does not match
+  the fd mode.** The model answers 0. That holds while
+  `f_op->flock` is NULL, which is the case for the file systems the
+  model describes; an NFS mount supplies one and can answer otherwise.
+  This is a file-system difference, not a system one.
+- **`mremap(MREMAP_MAYMOVE)` whose rounded `new_len` passes
+  `TASK_SIZE`.** The model answers `-EINVAL`: from v6.17
+  `check_mremap_params` (`mm/mremap.c`) tests `new_len > TASK_SIZE`
+  unconditionally. Up to v6.16 that test sat inside `mremap_to`, so a
+  MAYMOVE grow reached `-ENOMEM` instead.
+- **`socket` with a type at or above `SOCK_MAX` and a family of 44 or
+  45, and AF_INET protocols 256 to 262.** `NPROTO` and `IPPROTO_MAX`
+  grew across the stable series (`include/linux/socket.h`,
+  `include/uapi/linux/in.h`), so an older kernel answers
+  `-EAFNOSUPPORT` or `-EINVAL` where v6.18.46 does not.
+- **The order of `accept4`'s flag check and `epoll_pwait`'s parameter
+  checks against the fd lookup.** v6.18.46 resolves the fd first in both
+  (`__sys_accept4`, `net/socket.c`; `do_epoll_wait`, `fs/eventpoll.c`),
+  and older kernels do not. QEMU user mode also checks first, so these
+  two are in the QEMU list above as well.
+- **`eventfd2` with a refused flag word.** For a riscv64 guest QEMU user
+  mode and Linux agree; the entry in the QEMU list above applies only to
+  a sparc64, mips or parisc target, whose `TARGET_O_NONBLOCK` and
+  `TARGET_O_CLOEXEC` differ.
 
 ## Where the model is narrower
 

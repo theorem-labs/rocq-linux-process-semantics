@@ -506,10 +506,13 @@ Proof.
   intros addr len prot flags fd off eff m m' evs i H.
   unfold check_mmap in H. unfold mmap_spec.
   destruct (negb (mmap_off_aligned_b off)) eqn:Hoff.
-  { destruct (mmap_pglen_ok_b len) eqn:Hpl; [|discriminate].
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    apply pure_ok. }
+  destruct (negb (mmap_anon_b flags)) eqn:Hanon.
+  { eapply bind_ok0; [apply get_model_ok|]. cbv beta iota zeta.
+    destruct (fd_lookup (m_fds m) (fd32 fd)); [discriminate|].
     apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
-  destruct (negb (mmap_anon_b flags)) eqn:Hanon; [discriminate|].
   destruct (w_is0 len) eqn:Hl.
   { destruct (mmap_plain_anon_b flags) eqn:Hpa; [|discriminate].
     apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
@@ -940,9 +943,11 @@ Proof.
   intros addr len prot flags fd off [r ws zs us cs copyins] m i H.
   unfold check_mmap in H. unfold mmap_spec.
   destruct (negb (mmap_off_aligned_b off)) eqn:Hoff.
-  { destruct (mmap_pglen_ok_b len) eqn:Hpl;
-      [now apply check_ret_only_no_unmodeled in H | apply unmodeled_intro]. }
-  destruct (negb (mmap_anon_b flags)) eqn:Hanon; [apply unmodeled_intro|].
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (negb (mmap_anon_b flags)) eqn:Hanon.
+  { eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
+    destruct (fd_lookup (m_fds m) (fd32 fd)) as [e0|];
+      [apply unmodeled_intro | now apply check_ret_only_no_unmodeled in H]. }
   destruct (w_is0 len) eqn:Hl.
   { destruct (mmap_plain_anon_b flags) eqn:Hpa;
       [now apply check_ret_only_no_unmodeled in H | apply unmodeled_intro]. }
@@ -1197,9 +1202,12 @@ Proof.
   unfold mmap_spec in H.
   unfold check_mmap.
   destruct (negb (mmap_off_aligned_b off)) eqn:Hoff.
-  { destruct (mmap_pglen_ok_b len) eqn:Hpl; sys_unfold; inv_ok.
+  { sys_unfold; inv_ok.
     cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
-  destruct (negb (mmap_anon_b flags)) eqn:Hanon; [sys_unfold; inv_ok|].
+  destruct (negb (mmap_anon_b flags)) eqn:Hanon.
+  { sys_unfold; inv_ok.
+    destruct (fd_lookup (m_fds m) (fd32 fd)) as [e0|]; sys_unfold; inv_ok;
+      cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
   destruct (w_is0 len) eqn:Hl.
   { destruct (mmap_plain_anon_b flags) eqn:Hpa; sys_unfold; inv_ok.
     cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
@@ -1584,9 +1592,11 @@ Proof.
   unfold mmap_spec in H.
   unfold check_mmap.
   destruct (negb (mmap_off_aligned_b off)) eqn:Hoff.
-  { destruct (mmap_pglen_ok_b len) eqn:Hpl;
-      [sys_unfold; inv_ok; discriminate | reflexivity]. }
-  destruct (negb (mmap_anon_b flags)) eqn:Hanon; [reflexivity|].
+  { sys_unfold; inv_ok. }
+  destruct (negb (mmap_anon_b flags)) eqn:Hanon.
+  { sys_unfold; inv_ok.
+    destruct (fd_lookup (m_fds m) (fd32 fd)) as [e0|]; [reflexivity|].
+    sys_unfold; inv_ok. }
   destruct (w_is0 len) eqn:Hl.
   { destruct (mmap_plain_anon_b flags) eqn:Hpa;
       [sys_unfold; inv_ok; discriminate | reflexivity]. }
