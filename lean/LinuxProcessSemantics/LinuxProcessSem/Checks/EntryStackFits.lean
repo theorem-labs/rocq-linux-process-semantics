@@ -303,7 +303,8 @@ about, which is what makes the restriction a fix rather than a dodge:
 `EntryStackFits.oversized_input_is_not_valid`. -/
 theorem oversized_input_is_not_valid : ¬ valid_fin_input oversized_input := by
   intro h
-  have hlen : ((to_proc_input oversized_input).in_argv.length : Int) ≤ 1024 := h.1.1.2
+  have hlen : ((to_proc_input oversized_input).in_argv.length : Int) ≤ 1024 :=
+    (Run.valid_input_argv _ h).1.2
   have hargv : (to_proc_input oversized_input).in_argv = oversized_argv := rfl
   rw [hargv, oversized_argv_length] at hlen
   omega
