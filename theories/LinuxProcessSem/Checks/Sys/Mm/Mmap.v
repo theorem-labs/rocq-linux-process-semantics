@@ -31,10 +31,12 @@ Definition check_brk (req : word) (eff : SyscallEffect) (m : Model)
 Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
   if negb (mmap_off_aligned_b off) then
-    (if mmap_pglen_ok_b len
-     then check_ret_only eff (errno_ret EINVAL) m []
-     else CheckUnmodeled)
-  else if negb (mmap_anon_b flags) then CheckUnmodeled
+    check_ret_only eff (errno_ret EINVAL) m []
+  else if negb (mmap_anon_b flags) then
+    (match fd_lookup (m_fds m) (fd32 fd) with
+     | None => check_ret_only eff (errno_ret EBADF) m []
+     | Some _ => CheckUnmodeled
+     end)
   else if w_is0 len then
     (if mmap_plain_anon_b flags
      then check_ret_only eff (errno_ret EINVAL) m []

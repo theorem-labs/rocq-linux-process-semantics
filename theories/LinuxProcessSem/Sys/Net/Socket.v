@@ -35,6 +35,26 @@ Open Scope sys_scope.
 Definition socket_errnos : list Z := [ENOMEM; EMFILE; ENFILE].
 Definition accept_errnos : list Z := [ENOMEM; EMFILE; ENFILE].
 
+(** Linux v6.18.46 net/socket.c [__sys_accept4_file] reserves a
+    descriptor before [do_accept] checks [sock_from_file].  Below
+    [Uapi.NR_OPEN_DEFAULT], fs/file.c [alloc_fd] needs no table
+    expansion, so -ENOMEM is out of reach there; -EMFILE stays possible
+    because this arm does not consult RLIMIT_NOFILE.  The capacity
+    bound is justified beside the non-socket arm in [accept4_spec].
+    Ported from main LPS (theorem-labs/linux-process-semantics) #1536,
+    commit 7cce061164. *)
+Definition accept_notsock_errnos : list Z := [EMFILE].
+
+(** Linux v6.18.46 net/socket.c [__sys_accept4_file] reaches descriptor
+    reservation, [sock_alloc] and [sock_alloc_file] before
+    net/ipv4/inet_connection_sock.c [inet_csk_accept] rejects a
+    non-listening socket.  Those sites yield -EMFILE, -ENOMEM and
+    -ENFILE.  In particular [sock_alloc_file] reaches fs/file_table.c
+    [alloc_file_pseudo] / [alloc_empty_file], whose allocation can
+    return -ENOMEM even below [Uapi.NR_OPEN_DEFAULT].  Ported from main
+    LPS #1536, commit 7cce061164. *)
+Definition accept_notlisten_errnos : list Z := [EMFILE; ENOMEM; ENFILE].
+
 (** [bind] and [listen] both reach [inet_csk_get_port], whose every
     failure — an exhausted net.ipv4.ip_local_port_range, or a bind-bucket
     allocation failure — is reported as -EADDRINUSE: the function
@@ -141,11 +161,17 @@ Definition INADDR_ANY : Z := 0%Z.
     every validation errno above preempts -EMFILE, and the injected
     failure set attaches to the SUCCESS path alone.
 
-    THE NARROWING, the same one [openat_spec] carries: [sock_alloc] can
-    fail with -ENFILE after the family and type checks but before
-    [inet_create], so Linux can answer -ENFILE where this spec insists
-    on -EINVAL/-EPROTONOSUPPORT/-ESOCKTNOSUPPORT.  That admits fewer
-    behaviors than Linux, never more.
+    THE -ENFILE BESIDE EACH [inet_create] ANSWER, ported from main LPS
+    (theorem-labs/linux-process-semantics) #1536, commit 7cce061164.
+    [__sock_create] (net/socket.c, Linux v6.18.46, commit 1f99e9ab748f)
+    checks the family and the type ranges and then calls [sock_alloc],
+    which can fail with -ENFILE BEFORE [inet_create] reads the protocol
+    range or walks [inetsw].  So each answer of steps 4 and 5 above has
+    an -ENFILE alternative, and this spec admits it rather than
+    insisting on the validation errno alone.  Steps 2 and 3 keep their
+    single answer: they precede [sock_alloc].  Descriptor allocation in
+    [sock_map_fd] follows creation, so -EMFILE joins none of these
+    arms.
 
     WHAT IS DECLINED, and why:
     - [SOCK_NONBLOCK] in the flags sets O_NONBLOCK on the new file, and
@@ -198,7 +224,8 @@ Definition socket_spec (domain type protocol : word) : Sys SyscallEffect :=
          protocol Linux never rejects.  The rewrite is conditional on the
          family, which is why this sits below the AF_INET test: under any
          other in-range family SOCK_PACKET is declined by that test. *)
-    else if orb (Z.ltb pro 0) (Z.leb IPPROTO_MAX pro) then err_ret EINVAL
+    else if orb (Z.ltb pro 0) (Z.leb IPPROTO_MAX pro)
+    then alt (err_ret EINVAL) (err_ret ENFILE)
     else if Z.eqb ty SOCK_STREAM then
       (* The BUILT-IN [inetsw_array] holds exactly
          {SOCK_STREAM, IPPROTO_TCP} for this type.  Protocol 0 takes the
@@ -220,7 +247,7 @@ Definition socket_spec (domain type protocol : word) : Sys SyscallEffect :=
          protocol 0 still wildcards to TCP however many modules load. *)
       if orb (Z.eqb pro IPPROTO_SCTP) (Z.eqb pro IPPROTO_MPTCP) then unmodeled
       else if negb (orb (Z.eqb pro IPPROTO_IP) (Z.eqb pro IPPROTO_TCP))
-      then err_ret EPROTONOSUPPORT
+      then alt (err_ret EPROTONOSUPPORT) (err_ret ENFILE)
       else
         alt (e <- errno_from socket_errnos ;; err_ret e)  (* no free fd, or an untracked failure *)
             (fd <- lowest_fd (m_fds m) ;;                 (* success: the lowest free fd, as Linux *)
@@ -238,10 +265,13 @@ Definition socket_spec (domain type protocol : word) : Sys SyscallEffect :=
          registers a SOCK_SEQPACKET entry and net/dccp registers a
          SOCK_DCCP one, so [inetsw[ty]] is empty for these two only on a
          kernel that builds neither. *)
-    else err_ret ESOCKTNOSUPPORT.        (* [inetsw[ty]] is empty for every remaining type
+    else alt (err_ret ESOCKTNOSUPPORT) (err_ret ENFILE).
+                                         (* [inetsw[ty]] is empty for every remaining type
                                             (0, 4, 7, 8 and 9): no in-tree AF_INET protocol
                                             registers one, so the walk never runs and the
-                                            pre-loop -ESOCKTNOSUPPORT stands *)
+                                            pre-loop -ESOCKTNOSUPPORT stands.  The -ENFILE
+                                            beside it is [sock_alloc]'s; see
+                                            [socket_alloc_enfile_note] *)
 
 (** [bind fd addr addrlen].
 
@@ -562,9 +592,17 @@ Definition listen_spec (fd backlog : word) : Sys SyscallEffect :=
       and the reset surfaces as -ECONNRESET on the first read.  That is
       exactly a connection whose script begins with [NRst].
 
-    A NARROWING, openat's again: for a non-socket fd, and for a socket
-    that is not listening, this spec insists on -ENOTSOCK / -EINVAL
-    where Linux could answer -EMFILE first. *)
+    THE ALLOCATION ERRNOS BESIDE THE TWO REFUSALS, ported from main LPS
+    (theorem-labs/linux-process-semantics) #1536, commit 7cce061164.
+    [__sys_accept4_file] (net/socket.c, Linux v6.18.46, commit
+    1f99e9ab748f) reserves a descriptor before [do_accept] reaches
+    [sock_from_file], and reaches [sock_alloc] and [sock_alloc_file]
+    before [inet_csk_accept] rejects a non-listening socket.  So the
+    non-socket arm admits [accept_notsock_errnos] beside -ENOTSOCK and
+    the non-listening arm admits [accept_notlisten_errnos] beside
+    -EINVAL; each list carries which sites it comes from.  The -EBADF
+    of a closed fd keeps its single answer: [fdget] precedes every one
+    of those sites. *)
 Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
   m <- get_model ;;
   let _ := addrlenp in                           (* untouched while [addrp] is NULL *)
@@ -606,9 +644,26 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
                                                 (conn_channel (m_conn_ix m))
                                                 (nq_script (m_net m)))))) ;;
                    ret_only nfd)
-          | _ => err_ret EINVAL                  (* [inet_csk_accept]: not TCP_LISTEN *)
+          | _ => alt (err_ret EINVAL)
+                     (er <- errno_from accept_notlisten_errnos ;; err_ret er)
+                                                 (* [inet_csk_accept]: not TCP_LISTEN, or one
+                                                    of the allocation errnos that precede it *)
           end
-      | _ => err_ret ENOTSOCK
+      | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
+             then unmodeled
+               (* Linux v6.18.46 (commit 1f99e9ab748f), fs/file.c [alloc_fd]
+                  reaches [expand_files], the -ENOMEM source on this path,
+                  only at fd >= the current [max_fds].  The capacity floor
+                  is include/linux/fdtable.h [NR_OPEN_DEFAULT] (64 here;
+                  the floor argument is on [Uapi.NR_OPEN_DEFAULT]).
+                  Reaching 64 is necessary, not sufficient, for expansion:
+                  an open fd 64 or 100 already forces capacity beyond a
+                  lowest free fd of 65 or 64, and the model carries no
+                  table-capacity history.  Below 64, capacity >= 64 >=
+                  [alloc_fd] + 1, so no expansion runs and the errno list
+                  below is exactly [alloc_fd]'s own.  Fail closed above *)
+             else alt (err_ret ENOTSOCK)
+                      (er <- errno_from accept_notsock_errnos ;; err_ret er)
       end
   end.
 

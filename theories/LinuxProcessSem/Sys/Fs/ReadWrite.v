@@ -1232,7 +1232,10 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
                succeeds and the loop is never entered.  Either way no
                earlier iteration exists to have moved bytes, and Linux's
                answer across the whole admitted band is a plain -EFAULT
-               with the pipe unchanged.  Declining is therefore CONSERVATIVE: it costs
+               — or, on the empty-queue path, the -ENOMEM of the page
+               allocation the arm below admits, which precedes the copy
+               and leaves the pipe unchanged.
+               Declining is therefore CONSERVATIVE: it costs
                priority 3 and nothing else.  It is kept rather than
                answered because that -EFAULT holds only while the capacity
                guard confines the write to one site, so a spec arm asserting
@@ -1243,19 +1246,78 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
                [read_spec]'s pipe arm records for the other bound here.
                Fail closed until then *)
           else
+          let deliver :=
             set_pipes (pipe_insert (m_pipes m) id (pipe_append st bs)) ;;  (* append; no trace events *)
-            record_copyins [(buf, length bs)] (ret_only count)
-        (* DETERMINISTIC, and deliberately not the channel arm's short
-           write: with room in the ring and the whole source readable,
-           [anon_pipe_write] copies everything before it reaches its only
-           [signal_pending] test — that test is at fs/pipe.c:557-561,
-           inside the branch [!pipe_full] at :510 sends a full ring to —
-           so a short POSITIVE return is unreachable — the argument
-           [write_spec]'s channel arm already
-           spells out for transfers at or below PIPE_BUF, here extended by
-           the capacity guard above to every transfer the model admits.
-           The whole source IS read, so the range goes in the copy-in
-           ledger exactly as the channel and file arms record theirs *)
+            record_copyins [(buf, length bs)] (ret_only count) in
+            (* NO SHORT POSITIVE RETURN, and deliberately not the channel
+               arm's short write: with room in the ring and the whole
+               source readable, [anon_pipe_write] copies everything before
+               it reaches its only [signal_pending] test — that test is at
+               fs/pipe.c:557-561, inside the branch [!pipe_full] at :510
+               sends a full ring to — the argument [write_spec]'s channel
+               arm already spells out for transfers at or below PIPE_BUF,
+               here extended by the capacity guard above to every transfer
+               the model admits.  The whole source IS read, so the range
+               goes in the copy-in ledger exactly as the channel and file
+               arms record theirs *)
+          match fst st with
+          | [] => alt (err_ret ENOMEM) deliver
+            (* AN EMPTY QUEUE TAKES A FRESH PAGE, AND GETTING ONE CAN FAIL.
+               Ported from main LPS (theorem-labs/linux-process-semantics)
+               #1604, commit 4cb1d1b37a, "write: admit -ENOMEM on a pipe's
+               fresh page".
+
+               With the ring empty the merge guard [chars && !was_empty]
+               (:478) is false, so the loop's first iteration calls
+               [anon_pipe_get_page] (:515), which hands back a page cached
+               in the two-slot [pipe->tmp_page] array or else returns
+               [alloc_page(GFP_HIGHUSER | __GFP_ACCOUNT)] (:114-125).  A
+               NULL page is
+               [if (!ret) ret = -ENOMEM] (:516-519), with [ret] still 0,
+               BEFORE [copy_page_from_iter] (:522) reads the source and
+               before [pipe->head] moves (:530): the answer is a plain
+               -ENOMEM, the pipe is unchanged, and no copy-in is recorded
+               (fs/pipe.c [anon_pipe_write], Linux v6.18.46, commit
+               1f99e9ab748f).
+
+               THE TASK THAT ASKED LIVES TO SEE THE -ENOMEM.  An order-0
+               page charged with [__GFP_ACCOUNT] comes back NULL when the
+               task's memory cgroup refuses the charge (mm/page_alloc.c
+               [__alloc_frozen_pages_noprof]), and mm/memcontrol.c
+               [try_charge_memcg] refuses it with -ENOMEM for these flags,
+               which carry neither [__GFP_HIGH] nor [__GFP_NOFAIL], once
+               [mem_cgroup_oom] kills nothing: a group with no killable
+               task (mm/oom_kill.c [out_of_memory] returns false there
+               rather than panicking for a memcg OOM), or a cgroup-v1
+               group with [oom_kill_disable] set, whose
+               mm/memcontrol-v1.c [memcg1_oom_prepare] declines the kill
+               outside a user fault (v6.18.46).
+
+               ADMITTED BESIDE THE DELIVERY RATHER THAN DECLINED, because
+               every byte that enters a modeled pipe enters through this
+               branch: a decline here would leave no pipe the model can
+               hold with anything in it, and every read arm that delivers
+               pipe bytes would go unreachable with it.  Both answers are
+               ones Linux gives on this path, so admitting both proves
+               neither as certain.
+
+               WHETHER A CACHED PAGE MAKES -ENOMEM UNREACHABLE is history
+               the model does not carry, and it does not settle the
+               question either way.  [anon_pipe_put_page] (:127-140) keeps a
+               released page in [tmp_page] only when [page_count(page) ==
+               1]; mm/filemap.c's lockless page-cache protocol (the comment
+               above [filemap_get_entry], v6.18.46) says any page may have
+               its count raised for a moment by a speculative page-cache
+               or GUP-fast lookup, so a drain can hand the page back to the
+               allocator instead, and the next write allocates again.
+
+               A NONEMPTY queue is never here.  Its [used] is the page's
+               watermark [buf->offset + buf->len], which a read does not
+               lower ([State.PipeBuf]), so under [pipe_write_room] the
+               merge at :478-498 takes the whole request and leaves at
+               :495-496 without entering the loop: it allocates nothing *)
+          | _ :: _ => deliver
+          end
       end
   end.
 

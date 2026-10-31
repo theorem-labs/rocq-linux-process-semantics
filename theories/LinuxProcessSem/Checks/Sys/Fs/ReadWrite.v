@@ -613,8 +613,26 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
           else
           let bs := write_source (in_mem i) buf count in
           if negb (Nat.eqb (length bs) (word_to_nat count)) then CheckUnmodeled
-          else check_ret_only_copyins [(buf, length bs)] eff count
-                 (with_pipes (pipe_insert (m_pipes m) id (pipe_append st bs)) m) []
+          else
+          match fst st with
+          | [] =>
+              (* an empty queue takes a fresh page, whose allocation can
+                 fail: [Fs.ReadWrite.write_spec]'s empty-queue arm.  The
+                 two answers are told apart by the EFFECT SHAPE, not by
+                 the return value: the -ENOMEM answer carries no ledger
+                 at all, and the delivery always carries the one copy-in
+                 range, so [check_ret_only] refuses the delivery whatever
+                 [count] is. *)
+              match check_ret_only eff (errno_ret ENOMEM) m [] with
+              | CheckOk m2 evs2 => CheckOk m2 evs2
+              | _ =>
+                  check_ret_only_copyins [(buf, length bs)] eff count
+                    (with_pipes (pipe_insert (m_pipes m) id (pipe_append st bs)) m) []
+              end
+          | _ :: _ =>
+              check_ret_only_copyins [(buf, length bs)] eff count
+                (with_pipes (pipe_insert (m_pipes m) id (pipe_append st bs)) m) []
+          end
       end
   end.
 
@@ -1708,10 +1726,30 @@ Proof.
     cbv zeta in H.
     destruct (negb (Nat.eqb (length (write_source (in_mem i) buf count))
                       (word_to_nat count))) eqn:Hfull; [discriminate|].
+    destruct (fst st) as [|b0 q0] eqn:Hq.
+    { destruct (check_ret_only eff (errno_ret ENOMEM) m []) eqn:He.
+      - injection H as -> ->.
+        apply check_ret_only_ok_iff in He. destruct He as (-> & -> & ->).
+        eapply bind_ok0; [apply input_ok|]. cbv beta.
+        eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
+        srw Hl. srw Hp. srw Hroom. srw Hfull. srw Hq.
+        left. apply pure_ok.
+      - apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+        eapply bind_ok0; [apply input_ok|]. cbv beta.
+        eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
+        srw Hl. srw Hp. srw Hroom. srw Hfull. srw Hq.
+        right. eapply bind_ok0; [apply modify_ok|].
+        apply record_copyins_ok. apply pure_ok.
+      - apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+        eapply bind_ok0; [apply input_ok|]. cbv beta.
+        eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
+        srw Hl. srw Hp. srw Hroom. srw Hfull. srw Hq.
+        right. eapply bind_ok0; [apply modify_ok|].
+        apply record_copyins_ok. apply pure_ok. }
     apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
     eapply bind_ok0; [apply input_ok|]. cbv beta.
     eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
-    srw Hl. srw Hp. srw Hroom. srw Hfull.
+    srw Hl. srw Hp. srw Hroom. srw Hfull. srw Hq.
     eapply bind_ok0; [apply modify_ok|].
     apply record_copyins_ok. apply pure_ok.
   - apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
@@ -1889,6 +1927,10 @@ Proof.
       eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. srw Hrd. srw Hp. srw Hroom. srw Hsrc. apply unmodeled_intro. }
+    destruct (fst st) as [|b0 q0] eqn:Hq.
+    { destruct (check_ret_only eff (errno_ret ENOMEM) m []) eqn:He;
+        [discriminate | | ];
+        now apply check_ret_only_copyins_no_unmodeled in H. }
     now apply check_ret_only_copyins_no_unmodeled in H.
   - now apply check_ret_only_no_unmodeled in H.
 Qed.
@@ -1988,7 +2030,10 @@ Proof.
       cbv zeta.
       destruct (negb (Nat.eqb (length (write_source (in_mem i) buf count))
                         (word_to_nat count))) eqn:Hsrc; hall Hsrc; inv_ok.
-      unfold check_ret_only_copyins, check_ret_only, clear_copyins; cbn;
+      destruct (fst st) as [|b0 q0] eqn:Hq; inv_ok.
+      { (* the empty queue's -ENOMEM alternative *)
+        unfold check_ret_only; cbn; rewrite ?bv_eqb_refl; reflexivity. }
+      all: unfold check_ret_only_copyins, check_ret_only, clear_copyins; cbn;
         rewrite ?bv_eqb_refl, ?Nat.eqb_refl; reflexivity. }
     cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
   - (* /dev/null *)

@@ -822,6 +822,10 @@ Proof.
     cbv beta. eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta; srw Hfd; rewrite ?Hn, ?Hc; cbv beta iota zeta;
       srw Hrd; srw Hp; srw Hroom; srw Hsrc.
+    destruct (fst st) as [|b0 q0] eqn:Hq.
+    { apply alt_r.
+      eapply bind_step; [apply modify_ok|].
+      unfold record_copyins. eapply bind_step; [apply pure_ok|]. apply pure_ok. }
     eapply bind_step; [apply modify_ok|].
     unfold record_copyins. eapply bind_step; [apply pure_ok|]. apply pure_ok.
   - eapply bind_step; [apply input_ok|].
