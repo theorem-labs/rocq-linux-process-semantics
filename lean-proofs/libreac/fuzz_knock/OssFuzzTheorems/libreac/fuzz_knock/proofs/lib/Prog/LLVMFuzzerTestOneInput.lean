@@ -61,8 +61,8 @@ set_option maxHeartbeats 4000000
 
 /-! ## Literal arithmetic -/
 
-/-- The twin of `lib/Lib/Mem.v:106` (`unsigned_lit`): a literal in range
-reads back. -/
+/-- The twin of `unsigned_lit` (`lib/Lib/MState.v:133-134`): a literal in
+range reads back. -/
 private theorem bvu_lit (z : Int) (h0 : 0 ≤ z) (h1 : z < 2 ^ 64) :
     bv_unsigned (Z_to_bv 64 z) = z := by
   rw [Z_to_bv_unsigned, bv_wrap64_mod]
@@ -224,8 +224,8 @@ private theorem rd_hit8 (segs : List Segment) (m : word → Option byte) (base k
 /-! ## `stk` and `mem_inv` under the frame -/
 
 /-- A byte the kernel may write is not a read-only byte: `wview`'s fallback
-and `ro_addr` (`lib/Lib/Mem.v:74-78`) read the SAME `find_segment`. The Rocq
-proof gets this from `mem_inv_from_entry` (`lib/Lib/Mem.v`). -/
+and `ro_addr` (`lib/Lib/Mem.v:75-79`) read the SAME `find_segment`. The Rocq
+proof gets this from `mem_inv_from_entry` (`lib/Prog/knock_lib.v:50-64`). -/
 private theorem ro_false_of_wview (segs : List Segment) (m : word → Option byte)
     (hmi : mem_inv segs m) (x : word) (h : wview segs m x ≠ none) :
     ro_addr segs x = false := by
@@ -676,7 +676,7 @@ private theorem knock_exit_big (regs regsE : bvmap 5 word) (m : word → Option 
     exact wview_grows rsegs m _ x (frame_grows (SP regs) (savedList regs) m) hx
   · -- mem_inv (`lib/Lib/Mem.v:82-83`)
     exact frame_mem_inv rsegs (SP regs) (savedList regs) (by omega) (by omega) hro m hpsAll hmi
-  · -- stk (`lib/Lib/Frame.v:81-83`)
+  · -- stk (`lib/Lib/Frame.v:144-146`)
     refine ⟨hstk.1, hstk.2.1, ?_⟩
     intro a h1 h2
     exact ⟨wview_grows rsegs m _ _ (frame_grows (SP regs) (savedList regs) m)
@@ -693,10 +693,11 @@ above, so the `bne` at `0x12b18` is taken and `LLVMFuzzerTestOneInput` returns
 `hbig` is the model's own `bne` condition at `0x12b18` on the value the `srl`
 at `0x12b14` leaves in `a2`; Rocq states the same through `if_cases EBIG`.
 
-Of the contract's eight hypotheses this needs three: `mem_inv` (`:16`), `stk`
-(`:17`) and the frame bound (`:18`). The buffer hypotheses (`:14`, `:15`,
-`:20`, `:21`) and the alignment (`:19`) are not used on this path, because the
-path reads no input byte. -/
+Of the contract's eight hypotheses this needs three, all of them in
+`lib/Prog/LLVMFuzzerTestOneInput_c.v`: `mem_inv` (`:16`), `stk` (`:17`) and
+the frame bound (`:18`). The buffer hypotheses (`:14`, `:15`, `:20`, `:21`)
+and the alignment (`:19`) are not used on this path, because the path reads
+no input byte. -/
 theorem knock_big_holds (regs : bvmap 5 word) (m : word → Option byte) (lo : Int)
     (hmi : mem_inv rsegs m)
     (hstk : stk rsegs m lo (SP regs))

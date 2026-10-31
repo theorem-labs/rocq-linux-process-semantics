@@ -44,12 +44,16 @@ Differences from the Rocq contract, all of them forced by the Lean library:
   is a `bvmap 5 word` read by `getr`, not Rocq's 31 named words built by
   `mkR` (OSSV-265 gaps rows T-6 and T-10);
 * Rocq's `rw_cells` hypothesis stands for both the reads the function makes
-  and the writability of what it stores; the Lean port of `lib/Lib/Step.v`
-  carries neither the read bridge nor the write bridge (gaps row T-11), so
-  the three reads are taken as `rdn` hypotheses and the three stores as
-  `store_ok` hypotheses, as OSSV-265 slice T's probe did
+  and the writability of what it stores. The Lean port of `lib/Lib/Step.v`
+  carries the write side: the three `store_ok` side conditions and the
+  `a0 + 40 ≤ 2^64` bound are derived from the `wr_at` conjunct of `rw_cells`
+  in `reac_knock_step.lean`, by `store_ok_of_wr_at` over
+  `StoreOk.store_ok_of_all`. It does NOT carry the read side: the bridge from
+  `rw_cells` to a 4- or 8-byte read (`lib/Lib/Cells.v:94` `cells_at_read`,
+  `lib/Lib/Step.v:28` `rw_cells_read`) has no Lean twin, so the three reads
+  are taken as `rdn` hypotheses (gaps row T-11), as slice T's probe did
   (`probe/ossv265-t/Probe/Heard.lean` of theorem-labs/oss-verify-proofs-internal,
-  branch `mcsl/lean-convert-probe` `4054974252`), and the post-state's memory
+  branch `mcsl/lean-convert-probe` `4054974252`). The post-state's memory
   is given byte for byte by `knock_step_mem` instead of by `rw_cells` on
   `knock_cells st' p1 opened due' heard g' p2` (gaps row K1-1).
   `knock_step_mem` writes exactly `le4 (Z_to_bv 64 st')` at offset 0,
@@ -68,7 +72,9 @@ open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Mem (le4 le8)
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Frame (munch wmono)
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.MState (ret_pc)
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Exec (evt)
-open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_struct (L_NS)
+open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Step (rw_cells)
+open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_struct
+  (L_NS knock_cells)
 
 /-- `lib/Prog/reac_knock_step_c.v:9`. -/
 def REAC_KNOCK_STEP : Int := 0x12db8
@@ -120,23 +126,21 @@ which lets `a0`…`a5` change: the function writes only `a0`, `a2`, `a3`, `a4`
 and `a5`. -/
 def reac_knock_step_contract : Prop :=
   ∀ (regs : bvmap 5 word) (mem : word → Option byte) (st g : Int)
-    (due heard : word) (bs0 bsd bsh : List byte),
+    (p1 opened due heard p2 : word) (bs0 bsd bsh : List byte),
     0 ≤ st → st < 2 ^ 32 →
-    -- the three fields the function reads, as the model reads them
+    -- `lib/Prog/reac_knock_step_c.v:25`, as Rocq has it: the three `store_ok`
+    -- side conditions and the no-wrap bound are derived from its `wr_at`
+    -- conjunct in `reac_knock_step.lean`, not asked for here
+    rw_cells Img0.rsegs mem (bv_unsigned (getr regs 10))
+      (knock_cells st p1 opened due heard g p2) →
+    -- the three fields the function reads, as the model reads them: the one
+    -- thing `rw_cells` cannot give the Lean port (gaps row T-11)
     rdn Img0.rsegs mem (v_addi (getr regs 10) 0) 4 = some bs0 →
     bytes_le_to_Z bs0 = st →
     rdn Img0.rsegs mem (v_addi (getr regs 10) 16) 8 = some bsd →
     bytes_le_to_Z bsd = bv_unsigned due →
     rdn Img0.rsegs mem (v_addi (getr regs 10) 24) 8 = some bsh →
     bytes_le_to_Z bsh = bv_unsigned heard →
-    -- the three fields it stores to lie in the writable view: the `wr_at`
-    -- conjunct of Rocq's `rw_cells`
-    store_ok Img0.rsegs mem (v_addi (getr regs 10) 0) 4 = true →
-    store_ok Img0.rsegs mem (v_addi (getr regs 10) 16) 8 = true →
-    store_ok Img0.rsegs mem (v_addi (getr regs 10) 32) 4 = true →
-    -- the structure does not wrap the address space: the first conjuncts of
-    -- Rocq's `bytes_at` and `wr_at`
-    bv_unsigned (getr regs 10) + 40 ≤ 2 ^ 64 →
     evt Img0.rsegs
       (fun ms' => ∃ (regs' : bvmap 5 word) (m' : word → Option byte),
         ms' = mkst regs' (ret_pc (getr regs 1)) m' (seg_rom Img0.rsegs) ∧

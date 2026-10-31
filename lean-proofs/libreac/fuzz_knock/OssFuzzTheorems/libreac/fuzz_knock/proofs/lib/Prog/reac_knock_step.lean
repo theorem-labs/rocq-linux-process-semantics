@@ -46,7 +46,10 @@ open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Frame
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.MState (ret_pc)
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Exec
   (evt evt_done evt_step mstep_mkst)
-open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_struct (L_NS)
+open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Mem (wa wr_at)
+open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Cells (cells_size)
+open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_struct
+  (L_NS knock_cells)
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_step_c
 
 set_option maxHeartbeats 1000000
@@ -167,6 +170,28 @@ private theorem u_addi (a : word) (k : Int) (h0 : 0 ≤ k)
     bv_unsigned (v_addi a k) = bv_unsigned a + k := by
   rw [v_addi, Z_to_bv_unsigned, bv_wrap64_mod]
   exact Int.emod_eq_of_lt (by have := (u64_range a).1; omega) h1
+
+/-- From the `wr_at` half of Rocq's `rw_cells` to the model's store bound:
+what `lib/Lib/Step.v:25` gives the Rocq proof for free. Over
+`StoreOk.store_ok_of_all`; the same text as `reac_knock_heard.lean`'s, which
+wrote it first in this slice. -/
+private theorem store_ok_of_wr_at (segs : List Segment) (m : word → Option byte)
+    (A N : Int) (hwr : wr_at segs m A N) (off : Int) (n : Nat)
+    (hn : 0 < n) (h1 : 0 ≤ off) (h2 : off + (n : Int) ≤ N) :
+    store_ok segs m (wa (A + off)) n = true := by
+  obtain ⟨hA0, hAN, hall⟩ := hwr
+  have hu : bv_unsigned (wa (A + off)) = A + off := by
+    unfold wa
+    rw [Z_to_bv_unsigned]
+    exact Int.emod_eq_of_lt (by omega) (by omega)
+  apply store_ok_of_all segs n m _ (by rw [hu]; omega)
+  intro x hx
+  obtain ⟨hx1, hx2⟩ := hx
+  rw [hu] at hx1 hx2
+  have hx' := hall (bv_unsigned x - A) (by omega) (by omega)
+  unfold wa at hx'
+  rw [show A + (bv_unsigned x - A) = bv_unsigned x by omega, Z_to_bv_bv_unsigned64] at hx'
+  exact hx'
 
 /-- One of the function's stores leaves every byte outside the structure
 alone: the per-store half of Rocq's `munch` conjunct
@@ -443,8 +468,22 @@ private theorem tail_e04 (regs : bvmap 5 word) (mem : word → Option byte)
 
 /-- `lib/Prog/reac_knock_step.v:25-70`. -/
 theorem reac_knock_step_holds : reac_knock_step_contract := by
-  intro regs mem st g due heard bs0 bsd bsh hst0 hst1 hrd0 hv0 hrd16 hv16 hrd24 hv24
-    hok0 hok16 hok32 hnw
+  intro regs mem st g p1 opened due heard p2 bs0 bsd bsh hst0 hst1 hrw
+    hrd0 hv0 hrd16 hv16 hrd24 hv24
+  -- the three store bounds and the no-wrap bound, off the `wr_at` half of
+  -- Rocq's `rw_cells` (`lib/Prog/reac_knock_step_c.v:25`), the way the Rocq
+  -- proof reads them off `H`
+  obtain ⟨-, hwr⟩ := hrw
+  have hsz : cells_size (knock_cells st p1 opened due heard g p2) = 40 := rfl
+  rw [hsz] at hwr
+  obtain ⟨-, hA40, -⟩ := id hwr
+  have hnw : bv_unsigned (getr regs 10) + 40 ≤ 2 ^ 64 := by omega
+  have hok0 : store_ok Img0.rsegs mem (v_addi (getr regs 10) 0) 4 = true :=
+    store_ok_of_wr_at Img0.rsegs mem _ 40 hwr 0 4 (by omega) (by omega) (by omega)
+  have hok16 : store_ok Img0.rsegs mem (v_addi (getr regs 10) 16) 8 = true :=
+    store_ok_of_wr_at Img0.rsegs mem _ 40 hwr 16 8 (by omega) (by omega) (by omega)
+  have hok32 : store_ok Img0.rsegs mem (v_addi (getr regs 10) 32) 4 = true :=
+    store_ok_of_wr_at Img0.rsegs mem _ 40 hwr 32 4 (by omega) (by omega) (by omega)
   have p31 : (2 : Int) ^ 31 = 2147483648 := by decide
   have p32 : (2 : Int) ^ 32 = 4294967296 := by decide
   have p64 : (2 : Int) ^ 64 = 18446744073709551616 := by decide

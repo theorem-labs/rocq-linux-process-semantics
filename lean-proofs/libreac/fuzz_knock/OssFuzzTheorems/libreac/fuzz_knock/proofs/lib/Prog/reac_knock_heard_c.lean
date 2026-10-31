@@ -49,18 +49,21 @@ open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_struct (knock
 def REAC_KNOCK_HEARD : Int := 0x12d9c
 
 /-- The memory the call leaves: `s->heard := now` always, and `s->state := 2`
-when the word the model's own `lw` loaded is zero.
+when the stored state word is zero.
 
-`lib/Prog/reac_knock_heard_c.v:25` writes the second case as
-`if Z.eqb st 0 then 2 else st`, a test on the INTEGER the first cell holds.
-Rocq gets from the one to the other with `knock_sx32_eqb`
-(`lib/Prog/reac_knock_struct.v:12-36`), which rests on stdpp's `bv_swrap`
-lemma set; the Lean model carries no twin of that set (OSSV-265 gaps row
-T-12), so the test here is on the loaded word. -/
-def heard_mem (regs : bvmap 5 word) (mem : word → Option byte) (v : word)
+The test is Rocq's own, on the INTEGER the first cell holds
+(`lib/Prog/reac_knock_heard_c.v:25`, `if Z.eqb st 0 then 2 else st`). Rocq
+gets from the sign-extended `lw` result to that test with
+`knock_sx32_unsigned` and `knock_sx32_eqb`
+(`lib/Prog/reac_knock_struct.v:12-28` and `:30-36`), which rest on stdpp's
+`bv_swrap` lemma set. The Lean model carries no twin of that set (OSSV-265
+gaps row T-12), but the two lemmas follow from Lean's own `Int` arithmetic;
+`reac_knock_heard.lean` proves them, so the contract keeps Rocq's test and
+T-12 does not bite here. -/
+def heard_mem (regs : bvmap 5 word) (mem : word → Option byte) (st : Int)
     : word → Option byte :=
   let m1 := wbytes mem (v_addi (getr regs 10) 24) (word_to_le_bytes 8 (getr regs 11))
-  if branch_taken .BC_EQ (v_lw v) (Z_to_bv 64 0) = true then
+  if st = 0 then
     wbytes m1 (v_addi (getr regs 10) 0) (word_to_le_bytes 4 (Z_to_bv 64 2))
   else m1
 
@@ -70,30 +73,38 @@ def heard_mem (regs : bvmap 5 word) (mem : word → Option byte) (v : word)
 Differences from the Rocq statement, each forced by vocabulary the Lean model
 does not carry, and each a row of the OSSV-265 gaps ledger:
 
-* **T-6.** The state is `PropExec.mkst`, which pins `ms_fregs`, `ms_fcsr` and
-  `ms_resv`; Rocq's `MS` (`lib/Lib/MState.v:16-19`) leaves all three free, and
-  Rocq's `step_gen` (`lib/Lib/MState.v:71-83`) is proved over the general
-  state. Every step lemma of `LinuxProcessSemantics.Common.SeqExec`/`SymExec`
-  is stated over `mkst`.
+* **T-6; rows W6 and W7 of the K1 line-by-line review.** The state is
+  `PropExec.mkst`, which pins `ms_fregs := bvmap_empty`, `ms_fcsr := 0` and
+  `ms_resv := none`; Rocq's `MS` (`lib/Lib/MState.v:16-19`) leaves all three
+  free, in the start state and in the post-state, and Rocq's `step_gen`
+  (`lib/Lib/MState.v:71-83`) is proved over the general state. Every step
+  lemma of `LinuxProcessSemantics.Common.SeqExec`/`SymExec` is stated over
+  `mkst`, so this contract says nothing about a machine whose float
+  registers, CSR or reservation differ, and does not state that the call
+  leaves them unchanged.
 * **T-10.** The register file is a `bvmap 5 word` read by `getr`, not the 31
-  named words of `mkR` (`lib/Lib/Frame.v`). "Only `a1` and `a2` changed" is
+  named words of `mkR` (`lib/Lib/Frame.v:20`). "Only `a1` and `a2` changed" is
   stated as `∀ r, r ≠ 11 → r ≠ 12 → getr regs' r = getr regs r`.
-* **T-11.** `rw_cells` is here, as Rocq has it, but the first cell's bytes are
-  taken as the extra hypotheses `hread`/`hbs`: the Rocq bridge from `rw_cells`
-  to a 4-byte read (`lib/Lib/Cells.v:94`, `lib/Lib/Step.v:28`) has no Lean
-  twin, and `proofs/lib/Lib/Step.lean` carries the statement of `rw_cells`
-  only. The two `store_ok` side conditions the Rocq proof also gets from
-  `rw_cells` are NOT hypotheses: they are derived from the `wr_at` conjunct in
-  `reac_knock_heard.lean`.
-* **T-12.** The post-state's first cell is given by `heard_mem`'s test on the
-  loaded word, not by `if Z.eqb st 0 then 2 else st` (see `heard_mem`).
-* **K1-1.** The post-state's memory is given EXPLICITLY, as `heard_mem`,
-  where Rocq states it as
-  `rw_cells rsegs m' a0 (knock_cells (if st =? 0 then 2 else st) …)`. Turning
-  the explicit overlay back into `rw_cells` needs the write-side lemmas of
-  `lib/Lib/Step.v` (824 lines, of which the Lean port carries the one
-  definition), which have no Lean twin. The two `rw_cells` conjuncts the Lean
-  model CAN state, `munch` and `wmono` (`lib/Lib/Frame.v:71-74`), are proved.
+* **T-11; row W1.** `rw_cells` is here, as Rocq has it, but the first
+  cell's four bytes are taken as the extra hypotheses `hread`/`hbs`: the Rocq
+  bridge from `rw_cells` to a 4-byte read (`lib/Lib/Cells.v:94`,
+  `lib/Lib/Step.v:28`) has no Lean twin, and `proofs/lib/Lib/Step.lean`
+  carries the statement of `rw_cells` only. The two `store_ok` side
+  conditions the Rocq proof also gets from `rw_cells` are NOT hypotheses:
+  they are derived from the `wr_at` conjunct in `reac_knock_heard.lean`.
+* **T-12 does NOT bite.** The post-state's first cell is Rocq's own
+  `if Z.eqb st 0 then 2 else st`, on the stored integer (see `heard_mem`).
+* **K1-1; row W8.** The post-state's memory is given EXPLICITLY, as
+  `heard_mem`, where Rocq states it as
+  `rw_cells rsegs m' a0 (knock_cells (if st =? 0 then 2 else st) …)`
+  (`lib/Prog/reac_knock_heard_c.v:24-25`). The overlay pins every byte, so it
+  is stronger about the bytes, but a caller does not get `cells_at m'` or
+  `wr_at m' a0 40` back: turning the overlay into `rw_cells` needs the
+  write-side lemmas of `lib/Lib/Step.v` (824 lines, of which the Lean port
+  carries the one definition `rw_cells` itself). Rocq's other two post
+  conjuncts, `munch` and `wmono` (`lib/Lib/Frame.v:71-74`,
+  `lib/Prog/reac_knock_heard_c.v:22-23`), are stated and proved as Rocq has
+  them.
 
 What is NOT weakened, against slice T: the walk is over `Img0.rsegs`, the
 whole four-segment image, not a 28-byte window; the return address is
@@ -103,19 +114,19 @@ whole four-segment image, not a 28-byte window; the return address is
 def reac_knock_heard_contract : Prop :=
   ∀ (regs : bvmap 5 word) (mem : word → Option byte)
     (st : Int) (p1 opened due heard : word) (g : Int) (p2 : word)
-    (bs : List byte) (v : word),
+    (bs : List byte),
     0 ≤ st → st < 2 ^ 32 → 0 ≤ g → g < 2 ^ 32 →
     rw_cells Img0.rsegs mem (bv_unsigned (getr regs 10))
       (knock_cells st p1 opened due heard g p2) →
     rdn Img0.rsegs mem (v_addi (getr regs 10) 0) 4 = some bs →
-    bytes_le_to_Z bs = bv_unsigned v →
+    bytes_le_to_Z bs = st →
     evt Img0.rsegs
       (fun ms' => ∃ (regs' : bvmap 5 word) (mem' : word → Option byte),
         ms' = mkst regs' (ret_pc (getr regs 1)) mem' (seg_rom Img0.rsegs) ∧
         (∀ r : reg, r ≠ 11 → r ≠ 12 → getr regs' r = getr regs r) ∧
         munch [(bv_unsigned (getr regs 10), bv_unsigned (getr regs 10) + 40)] mem mem' ∧
         wmono Img0.rsegs mem mem' ∧
-        mem' = heard_mem regs mem v)
+        mem' = heard_mem regs mem st)
       (mkst regs (Z_to_bv 64 REAC_KNOCK_HEARD) mem (seg_rom Img0.rsegs))
 
 end OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_heard_c

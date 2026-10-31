@@ -3,12 +3,14 @@ import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_heard_c
 import OssFuzzTheorems.libreac.fuzz_knock.Image.PlainCode
 import LinuxProcessSemantics.Common.StoreOk
 import LinuxProcessSemantics.Riscv.DecodeC
+import LinuxProcessSemantics.Common.SymBranch
 
 /-! `lib/Prog/reac_knock_heard.v`: the walk of `reac_knock_heard`.
 
-The Rocq proof is nine tactic lines (`lib/Prog/reac_knock_heard.v:14-28`), each
-of which drives the library tactics `step`, `if_cases` and `finish`
-(`lib/Lib/Tac.v`). The Lean model carries no twin of those tactics, so the walk
+The Rocq proof is fifteen lines (`lib/Prog/reac_knock_heard.v:14-28`), each of
+which drives the library tactics `step` (`lib/Lib/Step.v:722-771`), `if_cases`
+(`lib/Lib/Step.v:773-777`) and `finish` (`lib/Lib/Tac.v:336-347`). The Lean
+model carries no twin of those tactics, so the walk
 below names the step lemma of each instruction.
 
 Every instruction fetch and decode is a GENERATED theorem of
@@ -34,8 +36,9 @@ open LinuxProcessSemantics.Common.PropExec
 open LinuxProcessSemantics.Common.SeqExec
 open LinuxProcessSemantics.Common.CatExec
 open LinuxProcessSemantics.Common.StoreOk
+open LinuxProcessSemantics.Common.SymBranch
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib
-open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Mem (wa wr_at)
+open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Mem (wa wr_at sx32)
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Cells (cells_size)
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Exec (evt evt_done evt_step mstep_mkst)
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.MState (ret_pc)

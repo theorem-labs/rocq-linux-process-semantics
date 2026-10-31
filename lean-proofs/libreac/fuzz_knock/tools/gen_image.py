@@ -566,6 +566,22 @@ def check(image: Img, text: str) -> None:
         else:
             if got != seg.data.hex():
                 bad.append(f"{seg.name}: the chunk literals are not the segment's bytes")
+
+    # The two lines that say WHICH segments the program has. Without these the
+    # per-segment records above can all be right while `loaded_segments` drops
+    # one or adds one that the ELF has not: the adversarial review of slice K1
+    # drove two such images through this check and through `lake build`
+    # (its findings 1a and 1b, 2026-10-31).
+    want_list = ", ".join(seg.name for seg in image.segments)
+    m = re.search(r"def loaded_segments : List Segment :=\s*\[([^\]]*)\]", text)
+    if m is None:
+        bad.append("loaded_segments: no definition in the emitted text")
+    else:
+        got_list = ", ".join(n.strip() for n in m.group(1).split(",") if n.strip())
+        if got_list != want_list:
+            bad.append(f"loaded_segments: [{got_list}] against the ELF's [{want_list}]")
+    if re.search(r"def image : Image :=\s*Image\.mkImage loaded_segments init_pc phdrs", text) is None:
+        bad.append("image: not `Image.mkImage loaded_segments init_pc phdrs`")
     for field, want, pat in (("init_pc", image.pc, r"def init_pc : Nat := 0x([0-9a-f]+)"),
                              ("ph_addr", image.ph_addr, r"ph_addr := 0x([0-9a-f]+)"),
                              ("ph_ent", image.ph_ent, r"ph_ent := (\d+)"),
