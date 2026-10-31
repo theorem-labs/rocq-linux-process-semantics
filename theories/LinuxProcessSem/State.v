@@ -2739,21 +2739,21 @@ Inductive FdEntry :=
     (b) [vm_maps] — live anonymous mappings as [(lo, size)] intervals,
         including brk-grow grants — so allocator grants are handed out
         DISJOINT from each other and from the image ([region_free]
-        against [vm_reserved ++ vm_maps]).  Read that as a PAGE-granular
-        guarantee, which is what it is: no page-aligned address is ever
-        owned by two entries, and every base a syscall can name is page
-        aligned, so a base determines its entry.  Byte-level overlap IS
-        reachable, because a brk grow within one page is checked by
-        neither [region_free] nor Linux itself (see [live_bytes] below);
+        against [vm_reserved ++ vm_maps]).  Every writer records a
+        PAGE-ALIGNED, PAGE-ROUNDED range it has first tested free, the
+        brk grow included ([Sys/Mm/Mmap.brk_grants] records the pages it
+        installs, which is what [Sys/Mm/Mmap.brk_grow_ok] tests), so no
+        byte is ever owned by two entries and a base — always page
+        aligned — determines its entry.  The LOGICAL break is not in
+        this list; it is [vm_brk] below, and [live_bytes] says what it
+        cost to keep it here;
     (c) [vm_noaccess] — physical page ranges currently protected with
-        PROT_NONE.  Ordinarily they are subranges of [vm_maps].  A brk
-        shrink within its final page is the deliberate exception: the
-        byte-granular [vm_maps] tail is removed while Linux keeps the whole
-        page mapped and protected, so [vm_noaccess] may transiently extend
-        to [PAGE_ALIGN(vm_brk)].  It still blocks placement through the
-        containing brk page; mprotect also requires [vm_maps] containment,
-        so the logical tail cannot be exposed until a same-page regrow owns
-        it again.  Protected pages consume budget through their logical
+        PROT_NONE, and subranges of [vm_maps].  A brk shrink takes the
+        same page-rounded range out of both ([Sys/Mm/Mmap.brk_unmap_cut]
+        on this list's twin, [Sys/Mm/Mmap.brk_unmaps] on this one), so a
+        shrink inside the break's final page changes neither: Linux
+        keeps that page mapped and protected, and so does the ledger.
+        Protected pages consume budget through their
         [vm_maps] ownership, and the machine overlay contains no bytes for
         them until a modeled mprotect makes them rw again;
     (d) [vm_start_brk] — Linux's [mm->start_brk]: the ASLR-placed base of
@@ -2955,55 +2955,52 @@ Proof. reflexivity. Qed.
 
 (** Bytes currently granted by a ledger: the sum of its interval sizes.
 
-    The [vm_maps] intervals are pairwise disjoint AT PAGE GRANULARITY —
-    no page-aligned address is owned by two entries — which
-    [Checks/VmMapsDisjoint.check_syscall_preserves_vm_wf] proves is
-    preserved by every modeled syscall from [init_model] on.  They are
-    NOT pairwise disjoint byte for byte, so this sum is NEITHER AN UPPER
-    NOR A LOWER BOUND on the granted-and-not-freed bytes — two sub-page
-    brk gaps move it in OPPOSITE directions — both for [vm_live_bytes]
-    here and downstream in [vm_backed_bytes] and [vm_backing_used], which
-    measure this same sum over ledgers derived from [vm_maps] by
-    subtraction.
+    THE SUM IS THE GRANTED-AND-NOT-FREED BYTES, exactly, and that rests
+    on every writer of [vm_maps] recording a PAGE-ALIGNED, PAGE-ROUNDED
+    range it has first tested free.  The mmap arms do it through
+    [region_free] on the rounded length; a brk grow does it through
+    [Sys/Mm/Mmap.brk_grow_ok] on the pages it installs,
+    [[PAGE_ALIGN(old), PAGE_ALIGN(r))], which is also the range
+    [Sys/Mm/Mmap.brk_grants] records, the range [Sys/Mm/Mmap.brk_zeros]
+    fills and the range [Sys/Mm/Mmap.brk_budget_ok] charges.  Entries
+    are therefore pairwise disjoint byte for byte, not merely at page
+    granularity, and the same holds downstream in [vm_backed_bytes] and
+    [vm_backing_used], which measure this sum over ledgers derived from
+    [vm_maps] by subtraction.
+    [Checks/VmMapsDisjoint.check_syscall_preserves_vm_wf] proves the
+    page-granular statement preserved by every modeled syscall from
+    [init_model] on.
 
-    OVER-COUNT, from a brk GROW that does not cross a page boundary.
-    [Sys/Mm/Mmap.brk_grants] records the logical range [[old, r)] while
-    [Sys/Mm/Mmap.brk_grow_ok] tests the page-rounded one (plus the page
-    above it) and tests nothing when that range is EMPTY, as it is for
-    such a grow, so the grant enters with no address-space test
-    and entries can overlap — the same bytes counted twice.  That one is
-    FAITHFUL rather than a slip: [SYSCALL_DEFINE1(brk)] takes its
-    [oldbrk == newbrk] early exit before consulting any VMA, so Linux too
-    lets the break walk over bytes another mapping owns (reachable by
-    unmapping the brk VMA and mapping over it).
-    [Checks/VmMapsDisjoint] carries a checked six-syscall execution that
-    reaches exactly that state.  Over-counting brings the forced
-    out-of-memory point EARLIER: the model refuses memory Linux grants.
-    That is no safe direction for every statement.  A halts statement
-    that allows a refusal as an exit then holds on a refusal the real run
-    never meets, so it covers less of the real run than it appears to;
-    a statement whose premise is that the source is never refused covers
-    fewer inputs.
+    WHAT THIS REPLACED, because the two errors are worth keeping in
+    sight.  An earlier revision recorded a brk grow's LOGICAL range
+    [[old, r)] and cut the logical tail [[r, b)] on a shrink, and then
+    the sum was NEITHER AN UPPER NOR A LOWER BOUND on those bytes: two
+    sub-page brk gaps moved it in OPPOSITE directions.
 
-    UNDER-COUNT, from a brk SHRINK to a break [r] that is not page
-    aligned, and this one is a KNOWN INCONSISTENCY rather than faithful
-    modelling.  [Sys/Mm/Mmap.brk_maps_next]'s shrink arm subtracts the
-    RAW range [[r, b)] from [vm_maps] on top of the PAGE-ROUNDED one
-    [Sys/Mm/Mmap.brk_unmaps] reports.  Linux unmaps only from
-    [PAGE_ALIGN(r)] up, and nothing at all when the two breaks round to
-    the same page (its [oldbrk == newbrk] exit), so the page holding [r]
-    stays mapped; where a mapping other than a brk grant owns bytes of
-    [[r, min(b, PAGE_ALIGN(r)))] — a MAP_FIXED or a placed mmap over the
-    heap's last page — the ledger drops them while they stay mapped:
-    [Checks/VmMapsDisjoint]'s [wit_step6] shrinks the break by 10 bytes
-    inside one page and the ledger goes from [[(65536, 4096)]] to
-    [[(65536, 1990); (67536, 2096)]] — 4096 bytes to 4086, ten granted,
-    unfreed, still-mapped bytes gone from the sum.  The ledger does not
-    record which entries are brk grants, so the logical cut cannot spare
-    the others.  Under-counting moves the forced out-of-memory point
-    LATER: the model grants memory Linux refuses, so a statement can hold
-    of a run that Linux would have refused.  No gate compensates for it,
-    and the two directions are not reconciled.
+    - OVER-COUNT, from a grow that did not cross a page boundary.  The
+      gate tests the page-rounded range and tests nothing when that
+      range is empty, so such a grow entered [vm_maps] with no
+      address-space test and entries could overlap — the same bytes
+      counted twice.  Over-counting brings the forced out-of-memory
+      point EARLIER: the model refuses memory Linux grants.  A halts
+      statement that allows a refusal as an exit then holds on a refusal
+      the real run never meets; a statement whose premise is that the
+      source is never refused covers fewer inputs.
+    - UNDER-COUNT, from a shrink to a break that is not page aligned.
+      Linux unmaps only from [PAGE_ALIGN(r)] up, and nothing at all when
+      the two breaks round to the same page (its [oldbrk == newbrk]
+      exit), so the page holding [r] stays mapped; where a mapping other
+      than a brk grant owned bytes of [[r, min(b, PAGE_ALIGN(r)))] — a
+      MAP_FIXED or a placed mmap over the heap's last page — the logical
+      cut dropped them while they stayed mapped.  Under-counting moves
+      the forced out-of-memory point LATER: the model grants memory
+      Linux refuses.
+
+    Both followed from one conflation: a ledger of MAPPED MEMORY cannot
+    also be the record of a byte-granular logical break.  The break has
+    a field of its own, [vm_brk], and keeping the ledger page-granular
+    is what makes this sum mean something.  [Checks/VmMapsDisjoint]
+    carries the execution that used to reach the byte-level overlap.
 
     [munmap], a shrinking [mremap], and a [brk] shrink return their bytes
     to the budget by shrinking the ledger.  Placement plays no part — the
@@ -4887,17 +4884,19 @@ Fixpoint reserved_top (maps : list (word * word)) : Z :=
 
 (** Subtract the half-open interval [lo, hi) from every mapping, keeping the
     parts that fall OUTSIDE it (each mapping may split into a left and/or a
-    right remnant, or vanish).  A [brk] SHRINK uses it in two deliberately
-    different ways (see [Mmap.brk_model_next]): [vm_maps] drops the logical,
-    byte-granular heap tail [new_break, old_break) AND the page-rounded
-    range named by [Mmap.brk_unmaps] ([Mmap.brk_unmap_cut]), while
-    [vm_noaccess] drops only the page-rounded range.  The latter is the
+    right remnant, or vanish).  A [brk] SHRINK uses it on both ledgers
+    over ONE range (see [Mmap.brk_model_next]): the page-rounded
+    [[PAGE_ALIGN(new_break), PAGE_ALIGN(old_break))] that
+    [Mmap.brk_unmaps] names, for [vm_maps] through
+    [Mmap.brk_unmap_cut] and for [vm_noaccess] through
+    [maps_subtract_ranges].  That range is the
     kernel's actual [do_vmi_align_munmap] interval and is also what the
     running program sees in [eff_unmaps].  Every entry is cut, not only
-    heap grants: an entry wholly inside the two ranges vanishes, and an
+    heap grants: an entry wholly inside it vanishes, and an
     entry that straddles either end keeps the part outside, so more than
-    one record can be truncated.  The logical cut can drop bytes Linux
-    keeps; [live_bytes] documents that under-count.
+    one record can be truncated.  An earlier revision cut [vm_maps] over
+    the logical tail [[new_break, old_break)] as well, which dropped
+    bytes Linux keeps mapped; [live_bytes] records what that cost.
     Arithmetic in [Z] over unsigned values (no wrapping); the remnant
     bases/sizes fit in 64 bits by construction, so the [Z_to_bv]
     round-trips are lossless.  The interval ENDPOINTS are taken in [Z]

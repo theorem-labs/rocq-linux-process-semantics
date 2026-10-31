@@ -373,27 +373,30 @@ Definition mremap_inplace_grow_b (m : Model) (old old_n new_n : word)
 
     [vm_noaccess] is deliberately ABSENT from the [region_free] list, and
     that is not an oversight this predicate gets away with.  [State.v]'s
-    purpose (c) says protected ranges are ORDINARILY subranges of
-    [vm_maps], which the [vm_maps] half already excludes.  It names ONE
-    exception, and it is a real one: a brk shrink inside its final page
-    drops the byte-granular tail from [vm_maps] while [Mmap.brk_unmaps]
-    (page-rounded) removes nothing from [vm_noaccess], so a strict
-    sub-page slice [[r, PAGE_ALIGN r)] is left protected and owned by no
-    [vm_maps] entry.  [Checks/Examples.v]'s [m_brk_same_page_shrunk] is a
-    checked-in state in exactly that shape.
+    purpose (c) says protected ranges are subranges of [vm_maps], which
+    the [vm_maps] half already excludes.  That held with ONE exception
+    until this revision: a brk shrink inside its final page dropped the
+    byte-granular tail from [vm_maps] while [Mmap.brk_unmaps]
+    (page-rounded) removed nothing from [vm_noaccess], leaving a strict
+    sub-page slice [[r, PAGE_ALIGN r)] protected and owned by no
+    [vm_maps] entry.  [Mmap.brk_maps_next] no longer makes that cut — it
+    takes out exactly the pages [Mmap.brk_unmaps] names — so the two
+    lists now lose the same interval and no brk shrink produces such a
+    slice.
 
-    No destination can reach such a slice, for a reason this predicate
-    does check.  [dst] is page aligned, and the entry that owned the
-    protected range is TRUNCATED to [[e0, r)], never removed — a nonempty
-    orphan forces the protected base [a] to satisfy
-    [a <= page_floor r < r], so [[page_floor r, r)] is still in
-    [vm_maps].  A page-aligned [dst] overlapping the orphan needs
+    THE GUARD IS STILL WHAT IT WAS, and what it leans on is still worth
+    stating, because the states are hand-buildable even if no step
+    reaches them.  [dst] is page aligned, and an entry that owns a
+    protected range and is TRUNCATED rather than removed forces the
+    protected base [a] to satisfy [a <= page_floor r < r], so
+    [[page_floor r, r)] is still in
+    [vm_maps].  A page-aligned [dst] overlapping such an orphan needs
     [dst <= page_floor r] and [dst + new_n > r], which puts it across
     [[e0, r)], and [region_free] refuses it.  The pair
     [mremap_move_onto_brk_orphan_page_rejected] /
     [mremap_move_above_brk_orphan_accepts] in [Checks/Examples.v] pins
-    that boundary: the two differ only in the destination, one page apart
-    across the orphan's end.
+    that boundary on those states: the two differ only in the
+    destination, one page apart across the orphan's end.
 
     Note WHICH half of that does the work.
     [mremap_move_onto_orphan_without_residual_accepts] takes the residual
