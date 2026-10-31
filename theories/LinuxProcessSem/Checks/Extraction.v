@@ -7,33 +7,57 @@
     extracts to its unsigned
     [Z] value (the [BvWf] proof is erased).
 
+    THAT ERASURE IS WHY THE ROOTS BELOW ARE THE CHECKED ONES.  With the
+    proof erased, the extracted [word] is zarith's arbitrary-precision
+    integer: nothing in the extracted code holds it to [0 <= z < 2^64],
+    and a caller that passes an integer no register holds gets a VERDICT
+    on a value outside the Rocq type, which no theorem here covers.  So
+    the supported surface is [Checks.CheckedInput]: every entry point
+    takes the outside world's values as [Z] and refuses, before the
+    checker runs, any integer that is not in the type it would inhabit.
+    A refusal ([CheckedRefused], and [None] from [init_model_checked])
+    is a third answer, distinct from every verdict.  Read that file for
+    what it checks, what it builds, and what it cannot enforce.
+
     Not part of the batch build (it writes a .ml file as a side effect):
     theories/dune excludes it by name in
     [(modules :standard \ Riscv.Extraction LinuxProcessSem.Checks.Extraction)],
     so that list is what must be updated if this file is moved or renamed.
     Compile it by hand to write syscall_model.ml.
 
-    The extracted artifact is [ExecutableSpecs.check_syscall_for_run].
-    Its raw syscall acceptor is verified against the relational specs, then
-    its successful post-model is charged for the effect's copy-in/copy-out
-    ranges exactly as [Run.sstep_syscall] charges them.  A caller
-    assembles a [SyscallInput] (registers plus captured pre-syscall
-    memory as a lookup closure) and a [SyscallEffect] (observed return value
-    plus the captured output buffers) for each real syscall and folds this
-    accounted checker over the run.
+    The extracted artifact is [CheckedInput.check_syscall_for_run_checked],
+    which is [ExecutableSpecs.check_syscall_for_run] behind that boundary.
+    The checker's raw syscall acceptor is verified against the relational
+    specs, then its successful post-model is charged for the effect's
+    copy-in/copy-out ranges exactly as [Run.sstep_syscall] charges them.  A
+    caller assembles a [RawInput] (registers plus the captured pre-syscall
+    memory, as the byte runs and writable ranges it holds) and a
+    [RawEffect] (observed return value plus the captured output buffers)
+    for each real syscall and folds this accounted checker over the run.
 
     [N]/[Z]/[positive] are realized with zarith's [Big_int_Z] so OCaml
-    can build argument/return values from parsed integers cheaply. *)
+    can build argument/return values from parsed integers cheaply.  They
+    carry erased invariants of their own — a [positive] is at least 1 and
+    an [N] is not negative — so no root below takes one from a caller;
+    every width this surface mentions is fixed inside Rocq. *)
 
 From Stdlib Require Import extraction.ExtrOcamlBasic.
 From Stdlib Require Import extraction.ExtrOcamlZBigInt.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
+  ExecutableSpecs CheckedInput.
 
 Require Extraction.
 
-(* Roots: the checker, the initial state, input/effect constructors, the
+(* Roots: the checked checker and the checked initial state, the raw
+   record constructors a caller fills in ([mkRawInput], [mkRawEffect],
+   [mkRawProcInput], [mkRawPeer]), the two scalar checkers a caller needs
+   to validate a value it is about to put somewhere else ([word_of_Z],
+   [byte_of_Z]), and [raw_of_effect], the way back for an effect the
+   caller built with the model's own constructors below -- it is checked
+   like any other outside value, so no root hands the checker a word that
+   did not pass the boundary.  Then: the
    fd-table lookup (a caller needs it on the write, readv and writev
    paths, to decide which user memory a transfer touched; read's own
    capture is fd-blind and never asks the kind), error-encoding helpers, the iovec layout decoder that
@@ -50,15 +74,25 @@ Require Extraction.
    in OCaml ([brk_zeros], [brk_unmaps]) together with the two whole mremap
    effect records that hold all three mremap ledgers
    ([mremap_inplace_effect], [mremap_move_effect] -- [mremap_tail] itself is
-   reached only through them, so it is not a root), the model
-   projections, and [State.net_silent], the quiet [State.NetQueue]. *)
+   reached only through them, so it is not a root), and the model
+   projections.
+
+   [check_syscall_for_run], [init_model], [mkInput], [mkEffectU],
+   [mkCopy] and [net_silent] are NOT roots any more: each is reached
+   through its checked form, and naming one here would publish a way into
+   the checker that no boundary guards.  (Extraction writes one flat .ml
+   with no .mli, so they are still present in the generated file; the
+   roots are what this tree supports, and what a reader must use.) *)
 Extraction "syscall_model.ml"
-  check_syscall_for_run
-  init_model
-  net_silent
-  mkInput
-  mkEffectU
-  mkCopy
+  check_syscall_for_run_checked
+  init_model_checked
+  mkRawInput
+  mkRawEffect
+  mkRawProcInput
+  mkRawPeer
+  raw_of_effect
+  word_of_Z
+  byte_of_Z
   fd_lookup
   fs_lookup
   addr_is_error_b
