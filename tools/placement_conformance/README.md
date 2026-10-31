@@ -24,21 +24,26 @@ it.
 | `../../tests/placement/*.log` | The logs this tree keeps: four placement logs and ten start-state logs. |
 | `../../tests/dune` | The rules that make `PlacementReplay*.v` from the placement logs, and `StartState*.v` from the start-state logs. |
 
-## The one line that turns the replay on
+## The replay is compiled by the ordinary build
 
-The generated files are not compiled yet. `tests/dune` holds one line that
-keeps them out of the theory:
+The generated files are part of the test theory. `tests/dune` declares
 
 ```
- (modules :standard \ PlacementReplayDefconfig PlacementReplayThp PlacementReplayNorandmaps PlacementReplayQemuUser PlacementReplayOffByOnePage)
+(rocq.theory
+ (name LinuxProcessSemantics.Tests)
+ (theories Stdlib stdpp ReadFile LinuxProcessSemantics LinuxProcessSemantics.Common))
 ```
 
-The line is there because `Checks/Placement.v`, the executable search that the
-replay computes with, is still being written. The rules above the line still
-write the files, so you can read them and run the generator today.
+with no `modules` field, so `:standard` takes every module the rules above
+generate: `PlacementReplayDefconfig`, `PlacementReplayThp`,
+`PlacementReplayNorandmaps`, `PlacementReplayQemuUser` and
+`PlacementReplayOffByOnePage`. There is no line keeping them out of the
+theory, and there is nothing to turn on.
 
-**To turn the replay on, delete that one line.** Then `dune build` compiles
-the five files, and a placement that LPS does not reproduce breaks the build.
+So `dune build` — the first thing CI runs — compiles the five files, and a
+placement that LPS does not reproduce breaks the build. The last two are the
+negatives: they demand a REJECT, so a model that started accepting what the
+kernel did not do breaks the build just as loudly.
 
 ## How to make a log
 
