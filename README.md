@@ -186,6 +186,8 @@ that the statement is not true only because an image cannot run.
 | `*_abort` variants | `Equivalence.v` | The task declares that `abort()` is a terminal outcome. |
 | `*_either` variants | `Equivalence.v` | The task does not choose: the statement must be true with and without the `abort()` declaration. |
 | `*_hwcap_*`, `*_sv39`, `*_sv57` variants | `Equivalence.v` | The task fixes the `AT_HWCAP` value or the address-space size. |
+| `*_sigpipe_ignored` variants | `Equivalence.v` | The launcher ran `signal(SIGPIPE, SIG_IGN)` before `execve`, so a write whose far end has no reader returns `-EPIPE` and the program runs on. The default statements pin the other launch: signal 13 at `SIG_DFL`, so that write ends the process. |
+| `*_sigpipe_either` variants | `Equivalence.v` | The task does not choose: the statement must be true for both `SIGPIPE` launches. |
 | `omni_strong_universal_T` | `OmniEquivalence.v` | You prefer proofs over execution trees. It is proved equivalent to `strong_universal_T`. |
 | `must_exit_with` | `MustExit.v` | Every execution must stop with a given exit code. Equal trace prefixes do not show this. |
 | `halts_allowed_T` | `HaltsAllowed.v` | One binary must stop with an exit code from a given set. |

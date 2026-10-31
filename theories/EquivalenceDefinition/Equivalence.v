@@ -1043,6 +1043,120 @@ Lemma strong_universal_error_free_T_either_implies_abort :
   strong_universal_error_free_T_either -> strong_universal_error_free_T_abort.
 Proof. intros (_ & H). exact H. Qed.
 
+(* =========================================================================
+   The SIGPIPE-ignored statements: the same obligations, quantified over
+   the launches that ignore signal 13
+   ========================================================================= *)
+
+(** THE QUANTIFIER IS AGAIN THE WHOLE DIFFERENCE, and here it is the
+    TASK'S launch declaration rather than the environment's.
+    [Run.valid_input] pins [State.in_sigpipe_default] to [true]: the
+    launch left signal 13 at SIG_DFL, so a write whose far end has no
+    reader ENDS the process ([Sys.Fs.ReadWrite.raise_sigpipe]).
+    [Run.valid_input_sigpipe_ignored] pins it to [false]: the launcher
+    ran `signal(SIGPIPE, SIG_IGN)` before execve -- which execve
+    preserves, see [State.in_sigpipe_default] -- so the same write
+    answers -EPIPE and the program runs on.
+
+    WHAT A PROOF OF THIS BUYS, AND WHAT IT COSTS.  It buys a world in
+    which NO write arm can end the run, so a program that writes to a
+    channel, a pipe or a socket with no reader is still running
+    afterwards and its halting is decided by its own code.  It costs
+    the error: the -EPIPE is a real error return, so a source that
+    writes to a reader-less descriptor fails the error-free shape here
+    where under [Run.valid_input] it merely died.  Neither statement
+    implies the other, and that is why both exist.
+
+    ONE PER-TRIPLE OBLIGATION, UNLIKE THE ABORT PAIR.  The abort
+    stances needed two, because the declaration-on statement had to ask
+    [error_free_unkilled] where the other asked [error_free].  Here
+    both stances already ask [error_free_unkilled] -- the plain family
+    was moved to it when SIGPIPE became reachable from ordinary state --
+    so these shapes are quantifier shells over the SAME triple
+    obligation, and the either shape below is a shell too. *)
+Definition strong_universal_T_sigpipe_ignored : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input_sigpipe_ignored inp ->
+    strong_equiv en_source en_target inp.
+
+Definition strong_universal_error_free_T_sigpipe_ignored : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input_sigpipe_ignored inp ->
+    strong_equiv_error_free en_source en_target inp.
+
+(** Neither SIGPIPE stance pinned: the obligation over every input the
+    shared clauses accept.  It is exactly the conjunction of the two
+    stances, so a task that says nothing about the disposition its
+    launcher left is held to both readings. *)
+Definition strong_universal_T_sigpipe_either : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input_sigpipe_either inp ->
+    strong_equiv en_source en_target inp.
+
+Lemma strong_universal_T_sigpipe_either_splits :
+  strong_universal_T_sigpipe_either
+  <-> (strong_universal_T /\ strong_universal_T_sigpipe_ignored).
+Proof.
+  split.
+  - intros H. split; intros en_s en_t inp Hs Ht Hv; apply H;
+      try assumption;
+      [ exact (valid_input_sigpipe_either_of_valid_input _ Hv)
+      | exact (valid_input_sigpipe_either_of_valid_input_sigpipe_ignored
+                 _ Hv) ].
+  - intros (Hdfl & Hign) en_s en_t inp Hs Ht Hv.
+    destruct (valid_input_sigpipe_either_splits _ Hv) as [Hv' | Hv'];
+      [ exact (Hdfl _ _ _ Hs Ht Hv') | exact (Hign _ _ _ Hs Ht Hv') ].
+Qed.
+
+Lemma strong_universal_T_sigpipe_either_implies :
+  strong_universal_T_sigpipe_either -> strong_universal_T.
+Proof.
+  intros H. exact (proj1 (proj1 strong_universal_T_sigpipe_either_splits H)).
+Qed.
+
+Lemma strong_universal_T_sigpipe_either_implies_ignored :
+  strong_universal_T_sigpipe_either -> strong_universal_T_sigpipe_ignored.
+Proof.
+  intros H. exact (proj2 (proj1 strong_universal_T_sigpipe_either_splits H)).
+Qed.
+
+Definition strong_universal_error_free_T_sigpipe_either : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input_sigpipe_either inp ->
+    strong_equiv_error_free en_source en_target inp.
+
+Lemma strong_universal_error_free_T_sigpipe_either_splits :
+  strong_universal_error_free_T_sigpipe_either
+  <-> (strong_universal_error_free_T
+       /\ strong_universal_error_free_T_sigpipe_ignored).
+Proof.
+  split.
+  - intros H. split; intros en_s en_t inp Hs Ht Hv; apply H;
+      try assumption;
+      [ exact (valid_input_sigpipe_either_of_valid_input _ Hv)
+      | exact (valid_input_sigpipe_either_of_valid_input_sigpipe_ignored
+                 _ Hv) ].
+  - intros (Hdfl & Hign) en_s en_t inp Hs Ht Hv.
+    destruct (valid_input_sigpipe_either_splits _ Hv) as [Hv' | Hv'];
+      [ exact (Hdfl _ _ _ Hs Ht Hv') | exact (Hign _ _ _ Hs Ht Hv') ].
+Qed.
+
+Lemma strong_universal_error_free_T_sigpipe_ignored_implies :
+  strong_universal_error_free_T_sigpipe_ignored ->
+  strong_universal_T_sigpipe_ignored.
+Proof.
+  intros H en_s en_t inp Hs Ht Hv.
+  apply strong_equiv_error_free_implies, H; assumption.
+Qed.
+
 (** And it bites on an abort: a source that can be killed on one valid
     triple refutes it.  This is the clause that keeps "the reference can
     abort" a proof obligation under the declaration, rather than only

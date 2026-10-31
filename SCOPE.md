@@ -47,7 +47,7 @@ them. A proof says nothing about a program in such a case.
 | Area | Limit |
 | --- | --- |
 | Threads | The model has one thread. It has no scheduler and no shared-memory interleaving. For `fork`-like calls, the model describes the parent only. It does not run the child. |
-| Signals | The model does not run signal handlers. It has two signals and both are fatal: `SIGABRT`, raised by `tkill`/`tgkill` on the abort path, and `SIGPIPE`, raised by a write whose far end has no reader. Each ends the run with a death that is not an exit (`State.KillEv`), or, where the launch mask blocks it, returns the errno and leaves the signal pending until a `rt_sigprocmask` uncovers it. The model holds no disposition for either: it assumes the launch left both at `SIG_DFL`, and `rt_sigaction` declines every install that would change one. A launcher that does `signal(SIGPIPE, SIG_IGN)` before `execve` is outside the model, because `execve` keeps an inherited `SIG_IGN` (`fs/exec.c`, `begin_new_exec`'s `flush_signal_handlers`, Linux v6.18.46). No other signal is modeled: `SIGSEGV` is reported as the error transition rather than as a death, `SIGCHLD`'s default action is to ignore it, `SIGXFSZ` needs an `RLIMIT_FSIZE` the model does not carry, and nothing outside the process can send one. |
+| Signals | The model does not run signal handlers. It has two signals and both are fatal: `SIGABRT`, raised by `tkill`/`tgkill` on the abort path, and `SIGPIPE`, raised by a write whose far end has no reader. Each ends the run with a death that is not an exit (`State.KillEv`), or, where the launch mask blocks it, returns the errno and leaves the signal pending until a `rt_sigprocmask` uncovers it. `rt_sigaction` declines every install that would change either disposition, so no modeled call moves one. For `SIGABRT` the model assumes the launch left the disposition at `SIG_DFL`. For `SIGPIPE` it no longer assumes: the launch declares it (`State.in_sigpipe_default`), `Run.valid_input` pins the declaration to `SIG_DFL`, and `Run.valid_input_sigpipe_ignored` is the launch that ran `signal(SIGPIPE, SIG_IGN)` before `execve` — a launch `execve` preserves (`fs/exec.c`, `begin_new_exec`'s `flush_signal_handlers` with `force_default = 0`, Linux v6.18.46), under which the same write returns `-EPIPE` and the program runs on. No other signal is modeled: `SIGSEGV` is reported as the error transition rather than as a death, `SIGCHLD`'s default action is to ignore it, `SIGXFSZ` needs an `RLIMIT_FSIZE` the model does not carry, and nothing outside the process can send one. |
 | Address-space size | The system call specifications use Sv48. Thus you cannot prove the Sv39 and Sv57 statements for an image that can run. |
 | Stack limit | The stack limit is 8 MiB. A larger or unlimited `RLIMIT_STACK`, which selects the legacy mmap layout, is outside the model. The model counts its own entry image against this limit, but not the parts of a real entry image that it leaves out; see "Stack floor" in "Known gaps in precision". |
 | Arguments | `Run.valid_input` requires that the arguments after `argv[0]` do not contain `/` and are not `..`. Thus a proof about `cp src dst` does not apply to `cp /tmp/src dst`. It also bounds the lists (`Run.valid_argv`, `Run.valid_envp`): 1 to 1024 arguments and at most 2 MiB of argument bytes, at most 256 environment variables and at most 128 KiB of environment bytes, and at most 131071 bytes in each string. Each count of bytes includes the terminating NUL of each string. A launch outside these bounds is outside the model. |
@@ -208,11 +208,14 @@ true of the model and false of the real systems.
   (`State.ProcInput.in_channel_reader`). `Run.valid_input` constrains
   that field at neither value, so every statement covers both the run
   whose standard output is read and the writing end of
-  `prog | head -1`. What is left is a PREMISE and not a gap: the model
-  assumes the launch left `SIGPIPE` at `SIG_DFL` (see "Signals"), and
-  it has one answer per run rather than a reader that goes away at a
-  point the model can see. A program whose reader goes away in the
-  middle of its output is outside the model.
+  `prog | head -1`. What is left is NOT the SIGPIPE disposition: that
+  was an unstated premise and is now a declaration
+  (`State.ProcInput.in_sigpipe_default`, pinned to `SIG_DFL` by
+  `Run.valid_input`, with `Run.valid_input_sigpipe_ignored` for the
+  launch that ignored the signal; see "Signals"). What is left is that
+  the model has ONE answer per run: a reader that goes away at a point
+  the model can see is not expressible, so a program whose reader goes
+  away in the middle of its output is outside the model.
 - **A socket write that delivers.** A write to a socket with no
   connection is answered — `-EPIPE`, and the `SIGPIPE` that goes with
   it (`net/core/stream.c`, `sk_stream_wait_connect` and
