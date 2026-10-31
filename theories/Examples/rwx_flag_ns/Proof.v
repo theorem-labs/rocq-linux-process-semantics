@@ -83,6 +83,10 @@ Proof.
     apply target_wexit; assumption.
   - (* Neither binary writes anything, so there is no buffer to bound. *)
     unfold bufs_modeled. constructor.
+  - (* ... and no write to reach the channel arm, so the run is the same
+       on both values of [State.in_channel_reader]: the launch is covered
+       whatever the reader. *)
+    left. left. reflexivity.
 Qed.
 
 (** The legacy statement, through the compat [iff]; this is the theorem

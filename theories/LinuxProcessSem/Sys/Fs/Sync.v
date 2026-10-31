@@ -191,17 +191,18 @@ Open Scope sys_scope.
     not an optimization.
 
     -EINVAL FOR A PIPE END, and here the missing [.fsync] the channel
-    arm ASSUMES is instead a fact the model owns.  [pipeanon_fops], the
-    table [create_pipe_files] installs on both ends of an anonymous pipe
-    (fs/pipe.c:1257-1266, installed at :946 and :957, v6.18.46), has no
-    [.fsync] line — nor does the FIFO table [pipefifo_fops] (:1246-1255),
+    arm ASSUMES is instead a fact the model owns.  The file-scope
+    initializer [static const struct file_operations pipeanon_fops] in
+    fs/pipe.c -- the table [create_pipe_files] installs on both ends of
+    an anonymous pipe -- has no [.fsync] line, nor does the FIFO table
+    [pipefifo_fops] beside it,
     which a [pipe2] fd never gets.  That is the same table
     [ReadWrite.lseek_spec]'s -ESPIPE arm reads, and for the same reason:
     both errnos come from an absent method rather than from a test on the
-    file.  So [vfs_fsync_range] (fs/sync.c:179-188, v6.18.46) takes its
-    opening [if (!file->f_op->fsync) return -EINVAL] (:183-184) before it
+    file.  So [vfs_fsync_range] (fs/sync.c) takes its
+    opening [if (!file->f_op->fsync) return -EINVAL] before it
     does anything else, on both ends and whatever the pipe holds.  That
-    test also precedes the [datasync] read at :185, so fdatasync agrees —
+    test also precedes the [datasync] read, so fdatasync agrees --
     the sharing argument above needs no pipe-specific clause.
 
     THE DIRECTORY ARM IS WHAT THIS MUST NOT BE CONFUSED WITH.  Three of
