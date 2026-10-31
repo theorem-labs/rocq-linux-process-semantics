@@ -1239,7 +1239,7 @@ Qed.
       Qed.
 
     Note the range's LENGTH is irrelevant, as it is for
-    [range_avoids_ro_two]: a range that starts above every read-only
+    [range_avoids_two]: a range that starts above every read-only
     segment cannot re-enter one by being long, because the segments lie
     below it. *)
 Definition ro_segs_below (segs : list Segment) (data_base : Z) : bool :=

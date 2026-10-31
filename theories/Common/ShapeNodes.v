@@ -25,9 +25,8 @@
     2. PER-SYSCALL nodes at the generic machine-state level (any [ms]
        with [ms_svc_pending ms = Some x8], arguments read through
        [ms_gpr ms k]) — the same level as [ShapeAlg.rz_write1] /
-       [rz_exit] / [rz_mmap]: [rz_set_tid_*], [rz_openat_*],
-       [rz_read_file*], [rz_read_dir], [rz_close*], [rz_ioctl_*],
-       [rz_brk_*], [rz_mprotect_*], [rz_mmap_*] ...
+       [rz_exit] / [rz_mmap], and as [DrainAlg.rz_read0],
+       [Nodes.rz_open], [RefNodes.node_brk] and [RefNodes.node_set_tid].
 
     3. [mkst]-LEVEL WRAPPERS (suffix [_at]): the form a symbolic-
        execution proof applies.  Pre-state [mkst regs pc mem rom] sits
