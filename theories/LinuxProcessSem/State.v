@@ -1307,8 +1307,11 @@ Qed.
     and is outside [Specs.modeled_sysnos] — as is [execve] — so it falls
     through the dispatcher to [Monad.unmodeled], fail closed, before any
     tagged pointer can reach this predicate.  [prctl] is 167 and IS in
-    [Specs.modeled_sysnos]: it answers [PR_CAPBSET_READ] and nothing
-    else, so what is declined is the OPTION rather than the number, and
+    [Specs.modeled_sysnos]: it answers the four options of
+    [Kernel.Sys.prctl_modeled_options] — [PR_CAPBSET_READ],
+    [PR_SET_PDEATHSIG], [PR_SET_DUMPABLE], [PR_SET_NO_NEW_PRIVS], none of
+    which reaches [set_tagged_addr_ctrl] — and nothing else, so what is
+    declined is the OPTION rather than the number, and
     [PR_SET_TAGGED_ADDR_CTRL] (55) is declined inside
     [Kernel.Sys.prctl_spec] instead of at the dispatcher.  Neither step
     is left to this comment:
@@ -1320,7 +1323,7 @@ Qed.
     because the answered options are a closed list of their own,
     [Kernel.Sys.prctl_modeled_options], which
     [Checks.ProcessCreation.prctl_modeled_options_are] pins EXACTLY: an
-    edit teaching [prctl] a second option fails that pin, and whoever
+    edit teaching [prctl] another option fails that pin, and whoever
     makes it has to come back here.
     [clone] (220) and [clone3] (435) ARE in [Specs.modeled_sysnos], but
     only for a flag word that shares no address space
@@ -3620,10 +3623,12 @@ Record FsState := mkFsState { fsst_image : Fs.Fs }.
     least obvious of the three (fs/proc/array.c, [task_state], the
     [Groups:] line).  Carrying the ELEMENTS as well as the length is
     deliberate: they are what [getgroups]'s array-writing form would
-    copy out, and what [Kernel.Groups.setgroups_spec]'s successful half
-    would write, so both of those declines are declines of the WRITE and
-    not of the state.  A [Creds] that held only a count would have to
-    change shape before either could be finished. *)
+    copy out, and what [Kernel.Groups.setgroups_spec]'s non-empty
+    successful half would write, so both of those declines are declines
+    of the WRITE and not of the state.  (The empty list is answered:
+    [setgroups(0, NULL)] by a privileged caller sets [cr_groups] to [[]].)
+    A [Creds] that held only a count would have to change shape before
+    either decline could be finished. *)
 Record Creds := mkCreds {
   cr_uid  : word;   (* real user id *)
   cr_euid : word;   (* effective user id *)

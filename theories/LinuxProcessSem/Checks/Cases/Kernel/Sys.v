@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Cases.Kernel.Sys — worked examples over getpid (172), gettid (178), uname (160), prlimit64 (261)
+(** * LinuxProcessSem.Checks.Cases.Kernel.Sys — worked examples over getpid (172), getppid (173), gettid (178), uname (160), prctl (167), prlimit64 (261)
 
     Mirrors [Sys/Kernel/Sys.v], which answers to Linux [kernel/sys.c]:
     this file holds the worked examples for the syscalls defined there,
@@ -646,3 +646,129 @@ Example unprivileged_setresuid_may_rearrange_held_ids :
                      (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) split_ids_model = CheckReject.
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(* =========================================================================
+   prctl (167): the three options kernel/sys.c answers
+
+   Each extension is pinned in pairs: the call the model used to DECLINE
+   (every option but [PR_CAPBSET_READ] was [unmodeled]) now answered, its
+   refusal answered too, and beside them a control the old model already
+   passed -- an option that still declines, and [PR_CAPBSET_READ]
+   unchanged -- so a [prctl] that answered everything would fail here as
+   surely as one that answered nothing.  The model is [demo_model]
+   throughout and comes back unchanged: none of the three is stored.
+   ========================================================================= *)
+
+Definition prctl_in (opt a2 a3 a4 a5 : word) : SyscallInput :=
+  mkInput 167 [opt; a2; a3; a4; a5; 0] (fun _ => None) (fun _ => None).
+
+(** [prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)] is 0, the call bwrap makes
+    in [main]; any other [arg2], or any nonzero [arg3]..[arg5] -- a2..a4,
+    read as whole registers -- is -EINVAL.  The option is an [int], so a
+    high half on a0 is discarded and 2^32 + 38 is the same call. *)
+Example prctl_no_new_privs_answered :
+  check_syscall (prctl_in 38 1 0 0 0) (mkEffect 0 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall (prctl_in 38 2 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 38 1 0 0 1)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 38 1 4294967296 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 4294967334 1 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckOk demo_model []
+  (* and each answer is the only one: no 0 for a refused shape, no
+     -EINVAL for the accepted one *)
+  /\ check_syscall (prctl_in 38 2 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject
+  /\ check_syscall (prctl_in 38 1 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** [prctl(PR_SET_PDEATHSIG, sig)] is 0 for [sig] in 0..64 -- the full
+    register, [valid_signal] on an [unsigned long] -- and -EINVAL above,
+    65 and 2^32 + 9 included.  bwrap's call is [SIGKILL] (9). *)
+Example prctl_pdeathsig_answered :
+  check_syscall (prctl_in 1 9 0 0 0) (mkEffect 0 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall (prctl_in 1 0 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall (prctl_in 1 64 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall (prctl_in 1 65 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 1 4294967305 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 1 65 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject
+  (* arg3..arg5 are not read on this option *)
+  /\ check_syscall (prctl_in 1 9 7 7 7) (mkEffect 0 [] []) demo_model
+       = CheckOk demo_model [].
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** [prctl(PR_SET_DUMPABLE, v)] is 0 for [SUID_DUMP_DISABLE] (0) and
+    [SUID_DUMP_USER] (1), the call bwrap makes after it drops privilege,
+    and -EINVAL for anything else, [SUID_DUMP_ROOT] (2) included. *)
+Example prctl_dumpable_answered :
+  check_syscall (prctl_in 4 1 0 0 0) (mkEffect 0 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall (prctl_in 4 0 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall (prctl_in 4 2 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 4 2 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE CONTROL, which the model before these three options passed too.
+    The readers of what they set -- [PR_GET_NO_NEW_PRIVS] (39),
+    [PR_GET_PDEATHSIG] (2), [PR_GET_DUMPABLE] (3) -- still decline, as
+    does the tagging option 55 the [State.access_okb] argument rests on,
+    and [PR_CAPBSET_READ] still answers 1. *)
+Example prctl_options_still_declined :
+  check_syscall (prctl_in 39 0 0 0 0) (mkEffect 0 [] []) demo_model
+    = CheckUnmodeled
+  /\ check_syscall (prctl_in 2 0 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckUnmodeled
+  /\ check_syscall (prctl_in 3 0 0 0 0) (mkEffect 1 [] []) demo_model
+       = CheckUnmodeled
+  /\ check_syscall (prctl_in 55 0 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckUnmodeled
+  /\ check_syscall (prctl_in 23 0 0 0 0) (mkEffect 1 [] []) demo_model
+       = CheckOk demo_model [].
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(* =========================================================================
+   getppid (173): a fresh choice on every call
+   ========================================================================= *)
+
+Definition getppid_in : SyscallInput :=
+  mkInput 173 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+(** Any pid below [Fork.PID_MAX_ENVELOPE] is admitted, 0 (a parent in
+    an ancestor pid namespace) included, and the model comes back
+    UNCHANGED: two different answers are both admissible on the same
+    model, which is the "no pin" half of the spec.  The envelope bound
+    and an errno are refused.  The model before this arm declined every
+    [getppid]. *)
+Example getppid_answers_any_pid_in_the_envelope :
+  check_syscall getppid_in (mkEffect 4242 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall getppid_in (mkEffect 1 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall getppid_in (mkEffect 0 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall getppid_in (mkEffect (Z_to_bv 64 PID_MAX_ENVELOPE) [] [])
+       demo_model = CheckReject
+  /\ check_syscall getppid_in (mkEffect (errno_ret EPERM) [] []) demo_model
+       = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE CONTROL, which the model before this arm passed too: [getpid]
+    on the same model is untouched by the new number -- it still pins
+    the tid at its first answer, where [getppid] pins nothing. *)
+Example getppid_leaves_getpid_alone :
+  check_syscall (mkInput 172 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 4242 [] []) demo_model
+  = CheckOk (with_tid 4242 demo_model) [].
+Proof. check_eq. Qed.

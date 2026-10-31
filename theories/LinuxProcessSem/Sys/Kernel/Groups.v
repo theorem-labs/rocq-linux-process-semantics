@@ -132,40 +132,103 @@ Definition getgroups_spec (gidsetsize : word) : Sys SyscallEffect :=
 
 (* ---- setgroups (159) ---------------------------------------------------- *)
 
+(** The credentials with the supplementary group list replaced and the
+    six ids left alone: what [set_groups(new, group_info)] does to the
+    [struct cred] that [prepare_creds] copied (kernel/groups.c
+    [set_groups]), in the shape [Kernel.Sys.set_cred_uids] and
+    [Kernel.Sys.set_cred_gids] have for the other two thirds of
+    [State.Creds]. *)
+Definition set_cred_groups (gs : list word) (c : Creds) : Creds :=
+  mkCreds (cr_uid c) (cr_euid c) (cr_suid c) (cr_gid c) (cr_egid c)
+          (cr_sgid c) gs.
+
 (** [setgroups gidsetsize grouplist] (159): -EPERM for an unprivileged
-    caller, and FAIL CLOSED for a privileged one.  (Linux v6.18.46,
-    commit 1f99e9ab748f, kernel/groups.c, [SYSCALL_DEFINE2(setgroups)] /
-    [may_setgroups] / [groups_from_user]; the whole file is
-    byte-identical there and at every mainline release tag from v6.10
-    through v6.18.)  [State.creds_privileged] carries the standing
-    assumptions that let an effective uid answer the capability question
-    [may_setgroups] really asks.
+    caller; for a privileged one, the EMPTY list is answered and every
+    other size is declined.  [State.creds_privileged] carries the
+    standing assumptions that let an effective uid answer the capability
+    question [may_setgroups] really asks; the credentials section of
+    [Kernel.Sys] carries the other two this arm uses (the init user
+    namespace, a capability-only LSM).
+
+    kernel/groups.c [SYSCALL_DEFINE2(setgroups)], [may_setgroups], [groups_alloc], [groups_from_user], [groups_sort], [set_current_groups], [set_groups], read at v6.18.44; identical at v6.18.46.
+    kernel/user_namespace.c [userns_may_setgroups], read at v6.18.44; identical at v6.18.46.
+    kernel/user.c [init_user_ns], read at v6.18.44; identical at v6.18.46.
+    kernel/cred.c [prepare_creds], [commit_creds], read at v6.18.44; identical at v6.18.46.
+    include/linux/lsm_hook_defs.h [task_fix_setgroups], read at v6.18.44; identical at v6.18.46.
+
+    THE WHOLE KERNEL FUNCTION, in its own order:
+
+      if (!may_setgroups())                    return -EPERM;
+      if ((unsigned)gidsetsize > NGROUPS_MAX)  return -EINVAL;
+      group_info = groups_alloc(gidsetsize);
+      if (!group_info)                         return -ENOMEM;
+      retval = groups_from_user(group_info, grouplist);
+      if (retval) { put_group_info(group_info); return retval; }
+      groups_sort(group_info);
+      retval = set_current_groups(group_info);
+      put_group_info(group_info);
+      return retval;
+
+    and [set_current_groups] is [prepare_creds] (-ENOMEM on NULL),
+    [set_groups], [security_task_fix_setgroups], [commit_creds].
 
     The -EPERM half is exact, and it is exact for a reason worth naming:
     [may_setgroups()] is the FIRST thing the syscall does, before the
     [gidsetsize] bound and before the pointer is touched.  So an
     unprivileged caller gets -EPERM whatever it passes — a negative size,
-    a size past NGROUPS_MAX, an unmapped list — and the spec needs
-    neither argument.  A model that checked the arguments first would
-    answer -EINVAL or -EFAULT where the kernel answers -EPERM.
+    a size past NGROUPS_MAX, an unmapped list — and the spec reads
+    neither argument on that branch.  A model that checked the arguments
+    first would answer -EINVAL or -EFAULT where the kernel answers
+    -EPERM.  In the init user namespace [may_setgroups] is
+    [ns_capable_setid(CAP_SETGID)] alone: [userns_may_setgroups] is true
+    there, since [init_user_ns] has a one-extent [gid_map] and
+    [USERNS_INIT_FLAGS] is [USERNS_SETGROUPS_ALLOWED].
 
-    The successful half is DECLINED rather than faked.  It writes the
-    supplementary group list — [State.cr_groups], the list [getgroups]
-    (158) above reports the length of — so accepting the call while
-    discarding what it wrote would make the next [getgroups] answer for
-    a list nobody set.  The model carries the list;
-    what is missing is a per-element import from user memory with the
-    kernel's index-ordered -EFAULT-before-EINVAL precedence, and
-    [groups_sort]'s ascending reorder, which is observable because
-    [getgroups] hands back the STORED order and not the written one.
+    THE PRIVILEGED EMPTY LIST IS ANSWERED: 0 with [State.cr_groups] set
+    to [[]], or -ENOMEM with nothing changed.  [gidsetsize] is an [int]
+    read from a0, so only the low half of the register counts
+    ([Syscall.sint32], as [getgroups_spec] reads it).  At 0 the
+    [NGROUPS_MAX] test passes, and then:
+    - [groups_alloc(0)] is a [kvmalloc] of the bare header, which can
+      fail: -ENOMEM, nothing installed.
+    - [groups_from_user] loops [ngroups] = 0 times and returns 0
+      without touching [grouplist], so the pointer is never read and
+      cannot fault: [setgroups(0, NULL)] and [setgroups(0, garbage)] are
+      one call.  [groups_sort] sorts nothing.
+    - [set_current_groups]: [prepare_creds] can fail, -ENOMEM again and
+      nothing installed; [set_groups] puts the empty list in the new
+      credentials; [security_task_fix_setgroups] has no capability-LSM
+      hook and takes its default 0 ([LSM_HOOK(int, 0,
+      task_fix_setgroups, ...)]) under the capability-only LSM the
+      credentials section assumes; [commit_creds] returns 0.
+    So the answers are exactly 0 (list cleared) and -ENOMEM (list kept),
+    both allocation sites giving the same errno.  The ids do not move,
+    so [commit_creds]'s dumpable and parent-death-signal reset does not
+    fire either.  This is the shape a privilege drop issues first
+    ([setgroups(0, NULL)] before [setgid]/[setuid]), and the shape
+    BET-467's launcher uses.
+
+    A PRIVILEGED NON-ZERO SIZE STAYS DECLINED.  It writes a list read
+    from user memory: a per-element import with the kernel's
+    index-ordered -EFAULT/-EINVAL precedence ([get_user] then
+    [gid_valid] per element), [groups_sort]'s ascending reorder, which
+    is observable because [getgroups] hands back the STORED order and
+    not the written one, and the [NGROUPS_MAX] -EINVAL for a size above
+    it (a negative [int] included).  None of it is modeled, so the
+    whole non-empty case fails closed rather than answering in part.
 
     Cost of the decline, stated plainly: a source binary that drops
-    privilege the way dropbear does — [setgroups] via [initgroups],
-    then [setgid], then [setuid] — leaves the modeled surface at the
-    first of those three, so it cannot be certified.  The
-    [rt_sigprocmask] (135) pair
-    musl wraps around every credential syscall (musl 1.2.5,
-    src/thread/synccall.c) is answered, so it does not leave earlier. *)
+    privilege through [initgroups] -- a NON-EMPTY list, then [setgid],
+    then [setuid] -- leaves the modeled surface at the [setgroups].  A
+    binary that clears the list with [setgroups(0, NULL)] does not.  The
+    [rt_sigprocmask] (135) pair musl wraps around every credential
+    syscall (musl 1.2.5, src/thread/synccall.c) is answered, so it does
+    not leave earlier. *)
 Definition setgroups_spec : Sys SyscallEffect :=
+  i <- input ;;
   m <- get_model ;;
-  if creds_privileged (m_creds m) then unmodeled else err_ret EPERM.
+  if negb (creds_privileged (m_creds m)) then err_ret EPERM
+  else if negb (Z.eqb (sint32 (in_arg i 0)) 0) then unmodeled
+  else alt (err_ret ENOMEM)                  (* groups_alloc, prepare_creds *)
+           (set_creds (set_cred_groups [] (m_creds m)) ;;
+            ret_only (Z_to_bv 64 0)).

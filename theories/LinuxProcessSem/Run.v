@@ -907,8 +907,9 @@ Definition reaches_error (c0 : config) : Prop :=
 
     Nothing a modeled run does can move it:
     [Kernel.Signal.rt_sigaction_spec] declines EVERY install for signal
-    13 ([Kernel.Signal.sigaction_accepted] admits 2 and 15, and
-    [Kernel.Signal.sigabrt_dfl_install] admits only signal 6).  What
+    13 ([Kernel.Signal.sigaction_accepted] admits 2 and 15,
+    [Kernel.Signal.sigabrt_dfl_install] admits only signal 6, and
+    [Kernel.Signal.sigchld_dfl_install] only signal 17).  What
     the LAUNCH did is the live question, by the same
     [flush_signal_handlers] argument: SIG_IGN survives execve, and
     `signal(SIGPIPE, SIG_IGN)` before exec is COMMON -- commoner than

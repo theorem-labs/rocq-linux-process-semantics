@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Sys.Kernel.Sys — getpid (172), gettid (178), setsid (157), uname (160), prctl (167), prlimit64 (261)
+(** * LinuxProcessSem.Sys.Kernel.Sys — getpid (172), getppid (173), gettid (178), setsid (157), uname (160), prctl (167), prlimit64 (261)
 
     This file answers to Linux [kernel/sys.c]: it holds what the kernel
     defines there, and nothing else.  Which file a spec belongs in is
@@ -286,12 +286,62 @@ Definition setsid_spec : Sys SyscallEffect :=
          set_setsid_succeeded ;;
          ret_only tid).
 
-(** [getppid] (173) is absent for a simple reason: the model describes
-    one process and has no parent to report.  The four credential
-    READERS — [getuid] (174), [geteuid]
-    (175), [getgid] (176), [getegid] (177) — are modeled, and so
-    are five setters; the credentials section below says how, and
-    what it costs. *)
+(** [getppid] (173): the thread-group id of the caller's PARENT, as the
+    caller's own pid namespace numbers it.  No argument and no failure
+    path:
+
+        rcu_read_lock();
+        pid = task_tgid_vnr(rcu_dereference(current->real_parent));
+        rcu_read_unlock();
+        return pid;
+
+    kernel/sys.c [SYSCALL_DEFINE0(getppid)], read at v6.18.44; identical at v6.18.46.
+    include/linux/pid.h [task_tgid_vnr], read at v6.18.44; identical at v6.18.46.
+    kernel/pid.c [__task_pid_nr_ns], [pid_nr_ns], read at v6.18.44; identical at v6.18.46.
+    kernel/exit.c [forget_original_parent], read at v6.18.44; identical at v6.18.46.
+
+    THE RANGE IS [[0, Fork.PID_MAX_ENVELOPE)], the tid's envelope with 0
+    admitted.  [task_tgid_vnr] is [__task_pid_nr_ns(parent, PIDTYPE_TGID,
+    NULL)], which takes the namespace of the CALLER
+    ([task_active_pid_ns(current)]) and asks [pid_nr_ns] for the
+    parent's number in it.  [pid_nr_ns] answers 0 when the parent's
+    [struct pid] has no number at that level -- the parent lives in an
+    ancestor namespace, which is exactly the first process of a
+    [clone(CLONE_NEWPID)] asking about the process that made it -- and
+    otherwise a pid of the caller's namespace, which is below [pid_max]
+    and so below [PID_MAX_ENVELOPE] (the argument is at that
+    definition).  0 is a real answer here where it is not for the
+    caller's own tid: a task always has a number in its own active
+    namespace, its parent need not.
+
+    A FRESH CHOICE ON EVERY CALL, AND NO PIN.  The parent is the one
+    process fact this model cannot hold still.  When the parent exits,
+    [forget_original_parent] rewrites the caller's [real_parent] to a
+    subreaper or to the namespace's init, at a moment no input of this
+    model names, so two calls can answer two different values.  A
+    choice recorded once, the way [Fork.set_tid_address_spec] records
+    the tid, would forbid that run; an unconstrained choice per call
+    admits it, and that is the honest model.
+
+    A PROGRAM CAN TOLERATE IT.  What a fresh choice costs is that the
+    model never says WHICH parent: a statement that needs [getppid] to
+    name a particular process has to take that as a premise about the
+    environment.  What it does not cost is the program that CHECKS:
+    BET-467's launcher is handed the pid of the process that started it,
+    compares [getppid]'s answer with it, and stops if they differ.  A
+    proof about that program quantifies over the answer, reads it from
+    the call log ([Run.star_calls]: [sc_no = 173], [sc_ret]) and covers
+    both branches, which is exactly what a per-call choice supports.
+
+    No argument register is read and no model state is read or written:
+    the riscv [SYSCALL_DEFINE0] wrapper argument given at [getpid_spec]
+    covers this number too, as does its residual error-injection
+    infidelity.  The four credential READERS -- [getuid] (174),
+    [geteuid] (175), [getgid] (176), [getegid] (177) -- and five setters
+    are in the credentials section below. *)
+Definition getppid_spec : Sys SyscallEffect :=
+  ppid <- choose (fun p : word => (bv_unsigned p < PID_MAX_ENVELOPE)%Z) ;;
+  ret_only ppid.
 
 (* ------------------------------------------------------------- prlimit64 *)
 
@@ -733,20 +783,15 @@ Definition set_cred_gids (t : IdTriple) (c : Creds) : Creds :=
     it would REJECT the truthful answer of any kernel not running the
     process as root.
 
-    [getppid] (173) is deliberately absent, and stays [unmodeled] via the
-    dispatcher's fallback.  The model is single-process: there is no
-    parent, and the parent's pid is a function of no input and of no
-    model state.  A quantified answer, the treatment
-    [Kernel.Fork.set_tid_address_spec] gives the tid, does not transfer:
-    a tid is fixed for the process's lifetime, so one choice recorded
-    once is faithful, whereas [getppid] genuinely CHANGES under the
-    kernel — when the parent exits, [find_new_reaper] reparents the
-    process to a subreaper or to pid 1 — at a moment the model cannot
-    predict.  The only honest quantified model is therefore an
-    unconstrained fresh choice on every call, which no program could be
-    proved to tolerate; failing closed says the same thing and says it
-    where it can be seen.  Nothing is lost in practice: dropbear never
-    calls it. *)
+    [getppid] (173) is NOT one of these readers, although it sits beside
+    them in kernel/sys.c.  The parent's pid is a function of no input and
+    of no model state, and it CHANGES under the kernel -- when the parent
+    exits, [find_new_reaper] reparents the process to a subreaper or to
+    the namespace's init -- at a moment the model cannot predict.  So the
+    treatment [Kernel.Fork.set_tid_address_spec] gives the tid, one
+    choice recorded once, does not transfer.  [getppid_spec] above makes
+    a fresh choice on every call instead, and says why a program can be
+    proved to tolerate that. *)
 Definition getid_spec (sel : Creds -> word) : Sys SyscallEffect :=
   m <- get_model ;;
   ret_only (sel (m_creds m)).
@@ -1089,17 +1134,29 @@ Definition uname_spec (name : word) : Sys SyscallEffect :=
     surface" stops being a set of syscall NUMBERS at the moment it gains
     an arm: what is modeled is a set of (number, option) pairs, and
     nothing in [Specs.modeled_sysnos] can say which.  This list is where
-    that set is written down, and
-    [Checks.ProcessCreation.prctl_modeled_options_are] pins it exactly,
-    so widening the multiplexer is a change a proof reports rather than
-    one a reader has to notice.  The obligation that pin carries is
-    named there and is not restated here. *)
-Definition prctl_modeled_options : list Z := [PR_CAPBSET_READ].
+    that set is written down, [prctl_spec]'s first test is membership
+    in it, and [Checks.ProcessCreation.prctl_modeled_options_are] pins
+    it exactly, so widening the multiplexer is a change a proof reports
+    rather than one a reader has to notice.  The obligation that pin
+    carries is named there and is not restated here. *)
+Definition prctl_modeled_options : list Z :=
+  [PR_CAPBSET_READ; PR_SET_PDEATHSIG; PR_SET_DUMPABLE; PR_SET_NO_NEW_PRIVS].
 
 (** [prctl(option, arg2, arg3, arg4, arg5)] — syscall 167, answered for
-    [PR_CAPBSET_READ] and for nothing else.
+    the four options of [prctl_modeled_options] and for nothing else.
+    [PR_CAPBSET_READ] is answered by the capability LSM hook; the other
+    three by kernel/sys.c's own [switch].  The paragraphs below take
+    them in that order.
 
-    WHERE THE ANSWER COMES FROM, AND WHY IT IS NOT kernel/sys.c.
+    security/commoncap.c [cap_task_prctl], read at v6.18.44; identical at v6.18.46.
+    security/security.c [security_task_prctl], read at v6.18.44; identical at v6.18.46.
+    kernel/sys.c [SYSCALL_DEFINE5(prctl)], read at v6.18.44; identical at v6.18.46.
+    include/linux/signal.h [valid_signal], read at v6.18.44; identical at v6.18.46.
+    include/linux/sched/coredump.h [SUID_DUMP_DISABLE], [SUID_DUMP_USER], read at v6.18.44; identical at v6.18.46.
+    kernel/cred.c [commit_creds], read at v6.18.44; identical at v6.18.46.
+
+    PR_CAPBSET_READ: WHERE THE ANSWER COMES FROM, AND WHY IT IS NOT
+    kernel/sys.c.
     [SYSCALL_DEFINE5(prctl)] opens with
 
         error = security_task_prctl(option, arg2, arg3, arg4, arg5);
@@ -1145,8 +1202,7 @@ Definition prctl_modeled_options : list Z := [PR_CAPBSET_READ].
     reading the bounding set; [arg3], [arg4] and [arg5] are not read on
     this arm at all — unlike [PR_MCE_KILL_GET], which rejects a nonzero
     one — so a caller that leaves garbage in a2..a4 gets the same
-    answer, and this spec takes only the two registers the kernel
-    reads.
+    answer, and this arm reads only the two registers the kernel reads.
 
     [cap_valid] IS AN UNSIGNED TEST ON THE FULL REGISTER.  It is
     [((x) >= 0 && (x) <= CAP_LAST_CAP)] (include/uapi/linux/capability.h)
@@ -1207,11 +1263,87 @@ Definition prctl_modeled_options : list Z := [PR_CAPBSET_READ].
     declining because it is what programs READ: libcap's [cap_max_bits]
     binary-searches it from a constructor.
 
+    THE THREE OPTIONS kernel/sys.c ANSWERS: [PR_SET_PDEATHSIG],
+    [PR_SET_DUMPABLE], [PR_SET_NO_NEW_PRIVS].  [cap_task_prctl] has no
+    case for any of them and returns -ENOSYS from its [default:], which
+    is [LSM_RET_DEFAULT(task_prctl)], so [security_task_prctl] keeps
+    -ENOSYS and [SYSCALL_DEFINE5(prctl)] goes on to its own [switch].
+    That is the capability-only LSM the credentials section above names
+    as a standing assumption; a second LSM that claims one of these
+    options is outside the model, as for [PR_CAPBSET_READ] above.  The
+    three cases, quoted:
+
+        case PR_SET_PDEATHSIG:
+                if (!valid_signal(arg2)) { error = -EINVAL; break; }
+                ... me->pdeath_signal = arg2; ...
+                break;
+        case PR_SET_DUMPABLE:
+                if (arg2 != SUID_DUMP_DISABLE && arg2 != SUID_DUMP_USER) {
+                        error = -EINVAL; break; }
+                set_dumpable(me->mm, arg2);
+                break;
+        case PR_SET_NO_NEW_PRIVS:
+                if (arg2 != 1 || arg3 || arg4 || arg5)
+                        return -EINVAL;
+                task_set_no_new_privs(current);
+                break;
+
+    and the function ends [return error;] with [error = 0] set before
+    the [switch].  So each answers 0 or -EINVAL, decided by its arguments
+    alone, and has no other failure: none allocates, and none can be
+    refused by privilege.
+
+    - [valid_signal(arg2)] is [arg2 <= _NSIG] on an [unsigned long],
+      [_NSIG] being 64 on riscv64: 0 to 64 is 0 (0 clears the parent-death
+      signal), anything above, including every value with a high bit
+      set, is -EINVAL.  The full register, as for [cap_valid].
+    - [SUID_DUMP_DISABLE] is 0 and [SUID_DUMP_USER] is 1, so the
+      dumpable flag answers 0 for [arg2] in {0, 1} and -EINVAL for any
+      other value, again over the full register.  2
+      ([SUID_DUMP_ROOT]) is refused here; only [suid_dumpable] sets it.
+    - [PR_SET_NO_NEW_PRIVS] is the one option that reads [arg3], [arg4]
+      and [arg5] -- a2, a3 and a4 -- and it reads them as whole
+      registers: 0 for [arg2 = 1] with the other three 0, -EINVAL for
+      anything else.  That is why this spec reads the input, and only
+      on that branch; its signature still takes [arg2] alone, as the
+      dispatcher has always passed it.
+
+    THE MODEL STORES NOTHING FOR THEM, and that is sound because no
+    modeled call reads the bit, the signal or the flag.
+    - The no-new-privs bit is read by [PR_GET_NO_NEW_PRIVS] (39), by
+      seccomp ([PR_SET_SECCOMP] (22) and [seccomp] (277)) and by
+      [execve] (fs/exec.c): 39 and 22 are outside
+      [prctl_modeled_options], and 277 and 221 have no arm.
+    - The parent-death signal is read by [PR_GET_PDEATHSIG] (2), which
+      is declined, and is SENT by [forget_original_parent] when the
+      parent exits.  That is a signal from outside the process, which
+      the environment this model quantifies over does not deliver (the
+      premise [Signal.rt_sigaction_spec]'s header states; SCOPE.md
+      lists it among the assumptions the model does not check).
+    - The dumpable flag is read by [PR_GET_DUMPABLE] (3), declined; by
+      core dumps, which this model has none of ([prlimit64_spec]'s
+      RLIMIT_CORE note); by ptrace access checks, and the model admits
+      no tracer; and by procfs ownership ([task_dump_owner],
+      fs/proc/base.c), to which no modeled answer is pinned.
+    A statement that needs one of them SET reads it from the call log
+    ([Run.star_calls]: [sc_no = 167], [sc_args], [sc_ret = 0]); what the
+    kernel then does with it is a kernel-side obligation.  Such a
+    statement must take the LAST such call that follows the last
+    credential change: [commit_creds] (kernel/cred.c) clears
+    [pdeath_signal] and resets the dumpable flag to [suid_dumpable]
+    whenever a call moves the effective or filesystem ids or narrows
+    the capability sets, so a [setuid] after [prctl(PR_SET_DUMPABLE, 1)]
+    undoes it.  The no-new-privs bit has no such reset: nothing clears
+    it.
+
     EVERY OTHER OPTION IS [unmodeled], and one of them is load-bearing.
     [PR_SET_TAGGED_ADDR_CTRL] (55) is one of the two callers of riscv's
     [set_tagged_addr_ctrl] (arch/riscv/kernel/process.c), and declining
     it is half of why [State.access_okb] is exact — the other half being
-    [ptrace] (117), which has no arm at all.  That argument rests
+    [ptrace] (117), which has no arm at all.  None of the four answered
+    options reaches [set_tagged_addr_ctrl]: its only callers are that
+    option's [SET_TAGGED_ADDR_CTRL] and riscv's ptrace regset (read at
+    v6.18.44).  That argument rests
     on [prctl_modeled_options] being a closed list, not on the NUMBER
     167, which is why that list is a definition with a pin on it and
     not a [match] a reader has to read.  See
@@ -1222,6 +1354,20 @@ Definition prctl_modeled_options : list Z := [PR_CAPBSET_READ].
     certified by [Equivalence.strong_equiv], because [modeled] is an
     obligation to prove rather than one the source is let off. *)
 Definition prctl_spec (option_ arg2 : word) : Sys SyscallEffect :=
-  if negb (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ) then unmodeled
-  else if (CAP_LAST_CAP <? bv_unsigned arg2)%Z then err_ret EINVAL
-  else ret_only (Z_to_bv 64 1).
+  if negb (existsb (Z.eqb (bv_unsigned option_)) prctl_modeled_options)
+  then unmodeled
+  else if Z.eqb (bv_unsigned option_) PR_CAPBSET_READ then
+    (if (CAP_LAST_CAP <? bv_unsigned arg2)%Z then err_ret EINVAL
+     else ret_only (Z_to_bv 64 1))
+  else if Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG then
+    (if (64 <? bv_unsigned arg2)%Z then err_ret EINVAL   (* !valid_signal *)
+     else ret_only (Z_to_bv 64 0))
+  else if Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE then
+    (if (1 <? bv_unsigned arg2)%Z then err_ret EINVAL    (* not 0 or 1 *)
+     else ret_only (Z_to_bv 64 0))
+  else if Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS then
+    i <- input ;;
+    (if (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+         && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool
+     then ret_only (Z_to_bv 64 0) else err_ret EINVAL)
+  else unmodeled.     (* unreachable: the list has no fifth member *)

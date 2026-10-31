@@ -98,6 +98,7 @@ Definition spec_table : list SpecArm :=
   (* prctl           *) mkSpecArm 167%Z (fun i => prctl_spec (int32 (in_arg i 0)) (in_arg i 1) i) ::
   (* gettimeofday    *) mkSpecArm 169%Z (fun i => gettimeofday_spec (in_arg i 0) (in_arg i 1) i) ::
   (* getpid          *) mkSpecArm 172%Z (fun i => getpid_spec i) ::
+  (* getppid         *) mkSpecArm 173%Z (fun i => getppid_spec i) ::
   (* getuid          *) mkSpecArm 174%Z (fun i => getid_spec cr_uid i) ::
   (* geteuid         *) mkSpecArm 175%Z (fun i => getid_spec cr_euid i) ::
   (* getgid          *) mkSpecArm 176%Z (fun i => getid_spec cr_gid i) ::
@@ -130,5 +131,6 @@ Definition spec_table : list SpecArm :=
   (* prlimit64       *) mkSpecArm 261%Z (fun i => prlimit64_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) (in_arg i 3) i) ::
   (* getrandom       *) mkSpecArm 278%Z (fun i => getrandom_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) i) ::
   (* clone3          *) mkSpecArm 435%Z (fun i => clone3_spec (in_arg i 0) (in_arg i 1) i) ::
+  (* close_range     *) mkSpecArm 436%Z (fun i => close_range_spec (fd32 (in_arg i 0)) (fd32 (in_arg i 1)) (flag32 (in_arg i 2)) i) ::
   (* faccessat2      *) mkSpecArm 439%Z (fun i => faccessat2_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i) ::
   nil.

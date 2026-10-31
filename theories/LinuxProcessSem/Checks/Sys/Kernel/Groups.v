@@ -125,53 +125,101 @@ Proof.
 Qed.
 
 (** [setgroups] (159): an unprivileged caller is refused -EPERM before
-    either argument is read, and a privileged one is DECLINED, because
-    the model does not import the list it would write (Linux v6.18.46,
-    commit 1f99e9ab748f, kernel/groups.c, [SYSCALL_DEFINE2(setgroups)] /
-    [may_setgroups]).
-    [Kernel.Groups.setgroups_spec] says what accepting the successful
-    half would cost and what the decline costs. *)
-Definition check_setgroups (eff : SyscallEffect) (m : Model) : check_result :=
-  if creds_privileged (m_creds m) then CheckUnmodeled
-  else check_ret_only eff (errno_ret EPERM) m [].
+    either argument is read; a privileged one with a [gidsetsize] whose
+    [int] is 0 gets -ENOMEM with the model kept, or 0 with [cr_groups]
+    cleared; every other privileged size is DECLINED, because the model
+    does not import the list it would write (kernel/groups.c
+    [SYSCALL_DEFINE2(setgroups)], [may_setgroups], [set_current_groups],
+    read at v6.18.44; identical at v6.18.46).
+    [Kernel.Groups.setgroups_spec] carries the argument for each answer
+    and for the decline. *)
+Definition check_setgroups (i : SyscallInput) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  if negb (creds_privileged (m_creds m))
+  then check_ret_only eff (errno_ret EPERM) m []
+  else if negb (Z.eqb (sint32 (in_arg i 0)) 0) then CheckUnmodeled
+  else
+    match eff with
+    | mkEffectU ret [] [] [] [] [] =>
+        if bv_eqb ret (errno_ret ENOMEM) then CheckOk m []
+        else if bv_eqb ret (Z_to_bv 64 0)
+        then CheckOk (with_creds (set_cred_groups [] (m_creds m)) m) []
+        else CheckReject
+    | _ => CheckReject
+    end.
 
-Lemma check_setgroups_sound_ok : forall eff m m' evs i,
-  check_setgroups eff m = CheckOk m' evs -> setgroups_spec i m (Ok eff m' evs).
+Lemma check_setgroups_sound_ok : forall i eff m m' evs,
+  check_setgroups i eff m = CheckOk m' evs -> setgroups_spec i m (Ok eff m' evs).
 Proof.
-  intros eff m m' evs i H.
+  intros i eff m m' evs H.
   unfold check_setgroups in H. unfold setgroups_spec.
-  destruct (creds_privileged (m_creds m)) eqn:Hp; [discriminate|].
-  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-  eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hp. apply pure_ok.
+  eapply bind_ok0; [apply input_ok|]. cbv beta.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (negb (creds_privileged (m_creds m))).
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    apply pure_ok. }
+  destruct (negb (Z.eqb (sint32 (in_arg i 0)) 0)); [discriminate|].
+  destruct eff as [ret ws zs us cs copyins].
+  destruct ws as [|? ?];
+    [destruct zs as [|? ?];
+      [destruct us as [|? ?];
+        [destruct cs as [|? ?]; [destruct copyins as [|? ?]|]|]|]|];
+    try discriminate.
+  destruct (bv_eqb ret (errno_ret ENOMEM)) eqn:He.
+  { apply bv_eqb_eq in He. subst ret. inversion H; clear H; subst.
+    apply alt_l. apply pure_ok. }
+  destruct (bv_eqb ret (Z_to_bv 64 0)) eqn:Hz; [|discriminate].
+  apply bv_eqb_eq in Hz. subst ret. inversion H; clear H; subst.
+  apply alt_r. eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
 Qed.
 
-(** The privileged half is where both sides fail closed. *)
-Lemma check_setgroups_sound_unmodeled : forall eff m i,
-  check_setgroups eff m = CheckUnmodeled -> setgroups_spec i m Unmodeled.
+(** The non-empty privileged list is where both sides fail closed; every
+    other branch answers. *)
+Lemma check_setgroups_sound_unmodeled : forall i eff m,
+  check_setgroups i eff m = CheckUnmodeled -> setgroups_spec i m Unmodeled.
 Proof.
-  intros eff m i H. unfold check_setgroups in H. unfold setgroups_spec.
-  destruct (creds_privileged (m_creds m)) eqn:Hp.
-  - eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota. srw Hp.
-    apply unmodeled_intro.
-  - now apply check_ret_only_no_unmodeled in H.
+  intros i eff m H. unfold check_setgroups in H. unfold setgroups_spec.
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  destruct (negb (creds_privileged (m_creds m))).
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (negb (Z.eqb (sint32 (in_arg i 0)) 0)); [apply unmodeled_intro|].
+  exfalso.
+  destruct eff as [ret [|? ?] [|? ?] [|? ?] [|? ?] [|? ?]]; try discriminate.
+  destruct (bv_eqb ret (errno_ret ENOMEM)); [discriminate|].
+  destruct (bv_eqb ret (Z_to_bv 64 0)); discriminate.
 Qed.
 
-Lemma check_setgroups_complete_ok : forall eff m m' evs i,
-  setgroups_spec i m (Ok eff m' evs) -> check_setgroups eff m = CheckOk m' evs.
+Lemma check_setgroups_complete_ok : forall i eff m m' evs,
+  setgroups_spec i m (Ok eff m' evs) -> check_setgroups i eff m = CheckOk m' evs.
 Proof.
-  intros eff m m' evs i H.
-  unfold setgroups_spec in H. unfold check_setgroups. sys_unfold.
-  cbv iota in H. inv_ok.
-  destruct (creds_privileged (m_creds m)) eqn:Hp; hall Hp; inv_ok.
-  cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
+  intros i eff m m' evs H.
+  unfold setgroups_spec in H. unfold check_setgroups.
+  apply input_bind_ok_inv in H. cbv beta in H.
+  apply get_model_bind_ok_inv in H. cbv beta in H.
+  destruct (negb (creds_privileged (m_creds m))).
+  { unfold err_ret, ret_only, pure in H. inversion H; subst.
+    cbn; try rewrite bv_eqb_refl; reflexivity. }
+  destruct (negb (Z.eqb (sint32 (in_arg i 0)) 0)); [now inversion H|].
+  assert (Hz : bv_eqb (Z_to_bv 64 0) (errno_ret ENOMEM) = false) by reflexivity.
+  destruct H as [H|H].
+  - unfold err_ret, ret_only, pure in H. inversion H; subst.
+    cbv beta iota. rewrite bv_eqb_refl. reflexivity.
+  - sys_unfold. inv_ok. cbv beta iota.
+    rewrite Hz, bv_eqb_refl. reflexivity.
 Qed.
 
-Lemma check_setgroups_complete_unmodeled : forall m i eff,
-  setgroups_spec i m Unmodeled -> check_setgroups eff m = CheckUnmodeled.
+Lemma check_setgroups_complete_unmodeled : forall i m eff,
+  setgroups_spec i m Unmodeled -> check_setgroups i eff m = CheckUnmodeled.
 Proof.
-  intros m i eff H.
-  unfold setgroups_spec in H. unfold check_setgroups. sys_unfold.
-  cbv iota in H. inv_ok.
-  destruct (creds_privileged (m_creds m)) eqn:Hp; hall Hp; inv_ok;
-    first [reflexivity | discriminate].
+  intros i m eff H.
+  unfold setgroups_spec in H. unfold check_setgroups.
+  apply input_bind_unmodeled_inv in H. cbv beta in H.
+  apply get_model_bind_unmodeled_inv in H. cbv beta in H.
+  destruct (negb (creds_privileged (m_creds m))).
+  { unfold err_ret, ret_only, pure in H. discriminate H. }
+  destruct (negb (Z.eqb (sint32 (in_arg i 0)) 0)); [reflexivity|].
+  exfalso. destruct H as [H|H].
+  - unfold err_ret, ret_only, pure in H. discriminate H.
+  - sys_unfold. inv_ok.
 Qed.

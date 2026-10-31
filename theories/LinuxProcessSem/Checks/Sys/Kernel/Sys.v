@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Sys.Kernel.Sys — the getpid (172), gettid (178), setsid (157), uname (160), prlimit64 (261) checkers, and their proofs
+(** * LinuxProcessSem.Checks.Sys.Kernel.Sys — the getpid (172), getppid (173), gettid (178), setsid (157), uname (160), prctl (167), prlimit64 (261) checkers, and their proofs
 
     Mirrors [Sys/Kernel/Sys.v], which answers to Linux [kernel/sys.c]:
     this file holds the checkers for the syscalls defined there, and no
@@ -163,71 +163,144 @@ Definition check_uname (i : SyscallInput) (name : word)
     | Some _ => check_uname_copy name (m_utsname m) eff m
     end.
 
-(** prctl: [Kernel.Sys.prctl_spec] carries the whole argument -- why
-    only [PR_CAPBSET_READ], why its answer is the constant 1 rather than
-    a choice, and why every other option declines.  This mirrors its
-    three branches one for one.  TOTAL ON ITS OWN OPTION: once the
-    option is [PR_CAPBSET_READ] this answers [CheckOk] or [CheckReject]
-    and never [CheckUnmodeled], so the decline is a fact about the
-    OPTION and about nothing else -- which is what makes
+(** prctl: [Kernel.Sys.prctl_spec] carries the whole argument -- which
+    four options, why [PR_CAPBSET_READ]'s answer is the constant 1, why
+    the other three answer 0 or -EINVAL and store nothing, and why
+    every other option declines.  This mirrors its branches one for one.
+    TOTAL ON ITS OWN OPTIONS: once the option is in
+    [prctl_modeled_options] this answers [CheckOk] or [CheckReject] and
+    never [CheckUnmodeled], so the decline is a fact about the OPTION
+    and about nothing else -- which is what makes
     [Checks.ProcessCreation]'s pin on [prctl_modeled_options] the whole
-    story about what 167 declines. *)
+    story about what 167 declines.  [i] is read on the
+    [PR_SET_NO_NEW_PRIVS] branch alone, for a2..a4. *)
 
-Definition check_prctl (option_ arg2 : word) (eff : SyscallEffect) (m : Model)
-    : check_result :=
-  if negb (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ) then CheckUnmodeled
-  else if (CAP_LAST_CAP <? bv_unsigned arg2)%Z
-  then check_ret_only eff (errno_ret EINVAL) m []
-  else check_ret_only eff (Z_to_bv 64 1) m [].
+Definition check_prctl (i : SyscallInput) (option_ arg2 : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  if negb (existsb (Z.eqb (bv_unsigned option_)) prctl_modeled_options)
+  then CheckUnmodeled
+  else if Z.eqb (bv_unsigned option_) PR_CAPBSET_READ then
+    (if (CAP_LAST_CAP <? bv_unsigned arg2)%Z
+     then check_ret_only eff (errno_ret EINVAL) m []
+     else check_ret_only eff (Z_to_bv 64 1) m [])
+  else if Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG then
+    (if (64 <? bv_unsigned arg2)%Z
+     then check_ret_only eff (errno_ret EINVAL) m []
+     else check_ret_only eff (Z_to_bv 64 0) m [])
+  else if Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE then
+    (if (1 <? bv_unsigned arg2)%Z
+     then check_ret_only eff (errno_ret EINVAL) m []
+     else check_ret_only eff (Z_to_bv 64 0) m [])
+  else if Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS then
+    (if (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+         && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool
+     then check_ret_only eff (Z_to_bv 64 0) m []
+     else check_ret_only eff (errno_ret EINVAL) m [])
+  else CheckUnmodeled.
 
-Lemma check_prctl_sound_ok : forall option_ arg2 eff m m' evs i,
-  check_prctl option_ arg2 eff m = CheckOk m' evs ->
+Lemma check_prctl_sound_ok : forall i option_ arg2 eff m m' evs,
+  check_prctl i option_ arg2 eff m = CheckOk m' evs ->
   prctl_spec option_ arg2 i m (Ok eff m' evs).
 Proof.
-  intros option_ arg2 eff m m' evs i H.
+  intros i option_ arg2 eff m m' evs H.
   unfold check_prctl in H. unfold prctl_spec.
-  destruct (negb (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ)); [discriminate|].
-  destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z);
+  destruct (negb (existsb (Z.eqb (bv_unsigned option_)) prctl_modeled_options));
+    [discriminate|].
+  destruct (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ).
+  { destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z);
+      apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+      apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
+  { destruct ((64 <? bv_unsigned arg2)%Z);
+      apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+      apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
+  { destruct ((1 <? bv_unsigned arg2)%Z);
+      apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+      apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS); [|discriminate].
+  eapply bind_ok0; [apply input_ok|]. cbv beta.
+  destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+            && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
     apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
     apply pure_ok.
 Qed.
 
-(** The option test is the ONLY thing that declines, so a [CheckUnmodeled]
-    forces the same branch in the spec. *)
-Lemma check_prctl_sound_unmodeled : forall option_ arg2 eff m i,
-  check_prctl option_ arg2 eff m = CheckUnmodeled ->
+(** The option tests are the ONLY things that decline, so a
+    [CheckUnmodeled] forces the same branch in the spec. *)
+Lemma check_prctl_sound_unmodeled : forall i option_ arg2 eff m,
+  check_prctl i option_ arg2 eff m = CheckUnmodeled ->
   prctl_spec option_ arg2 i m Unmodeled.
 Proof.
-  intros option_ arg2 eff m i H.
+  intros i option_ arg2 eff m H.
   unfold check_prctl in H. unfold prctl_spec.
-  destruct (negb (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ));
+  destruct (negb (existsb (Z.eqb (bv_unsigned option_)) prctl_modeled_options));
     [apply unmodeled_intro|].
-  destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z);
+  destruct (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ).
+  { destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z);
+      now apply check_ret_only_no_unmodeled in H. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
+  { destruct ((64 <? bv_unsigned arg2)%Z);
+      now apply check_ret_only_no_unmodeled in H. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
+  { destruct ((1 <? bv_unsigned arg2)%Z);
+      now apply check_ret_only_no_unmodeled in H. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS);
+    [|apply unmodeled_intro].
+  destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+            && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
     now apply check_ret_only_no_unmodeled in H.
 Qed.
 
-Lemma check_prctl_complete_ok : forall option_ arg2 eff m m' evs i,
+Lemma check_prctl_complete_ok : forall i option_ arg2 eff m m' evs,
   prctl_spec option_ arg2 i m (Ok eff m' evs) ->
-  check_prctl option_ arg2 eff m = CheckOk m' evs.
+  check_prctl i option_ arg2 eff m = CheckOk m' evs.
 Proof.
-  intros option_ arg2 eff m m' evs i H.
+  intros i option_ arg2 eff m m' evs H.
   unfold prctl_spec in H. unfold check_prctl.
-  destruct (negb (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ));
+  destruct (negb (existsb (Z.eqb (bv_unsigned option_)) prctl_modeled_options));
     [now inversion H|].
-  destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z);
+  destruct (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ).
+  { destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z);
+      unfold err_ret, ret_only, pure in H; inversion H; subst;
+      cbn; rewrite bv_eqb_refl; reflexivity. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
+  { destruct ((64 <? bv_unsigned arg2)%Z);
+      unfold err_ret, ret_only, pure in H; inversion H; subst;
+      cbn; rewrite bv_eqb_refl; reflexivity. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
+  { destruct ((1 <? bv_unsigned arg2)%Z);
+      unfold err_ret, ret_only, pure in H; inversion H; subst;
+      cbn; rewrite bv_eqb_refl; reflexivity. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS); [|now inversion H].
+  apply input_bind_ok_inv in H. cbv beta in H.
+  destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+            && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
     unfold err_ret, ret_only, pure in H; inversion H; subst;
     cbn; rewrite bv_eqb_refl; reflexivity.
 Qed.
 
-Lemma check_prctl_complete_unmodeled : forall option_ arg2 m i eff,
+Lemma check_prctl_complete_unmodeled : forall i option_ arg2 m eff,
   prctl_spec option_ arg2 i m Unmodeled ->
-  check_prctl option_ arg2 eff m = CheckUnmodeled.
+  check_prctl i option_ arg2 eff m = CheckUnmodeled.
 Proof.
-  intros option_ arg2 m i eff H.
+  intros i option_ arg2 m eff H.
   unfold prctl_spec in H. unfold check_prctl.
-  destruct (negb (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ)); [reflexivity|].
-  exfalso.
-  destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z);
+  destruct (negb (existsb (Z.eqb (bv_unsigned option_)) prctl_modeled_options));
+    [reflexivity|].
+  destruct (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ).
+  { destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z);
+      unfold err_ret, ret_only, pure in H; discriminate H. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
+  { destruct ((64 <? bv_unsigned arg2)%Z);
+      unfold err_ret, ret_only, pure in H; discriminate H. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
+  { destruct ((1 <? bv_unsigned arg2)%Z);
+      unfold err_ret, ret_only, pure in H; discriminate H. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS); [|reflexivity].
+  apply input_bind_unmodeled_inv in H. cbv beta in H.
+  destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+            && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
     unfold err_ret, ret_only, pure in H; discriminate H.
 Qed.
 
@@ -291,6 +364,76 @@ Proof. exact check_set_tid_address_complete_ok. Qed.
 Lemma check_gettid_complete_unmodeled : forall m i eff,
   gettid_spec i m Unmodeled -> check_gettid eff m = CheckUnmodeled.
 Proof. exact check_set_tid_address_complete_unmodeled. Qed.
+
+(* ------------------------------------------------------------ getppid *)
+
+(** getppid: a bare return in [[0, PID_MAX_ENVELOPE)], with the model
+    handed back unchanged.  [Kernel.Sys.getppid_spec] makes a fresh
+    choice on every call and pins nothing (the argument is there), so
+    this acceptor reads nothing of the model, and it is TOTAL: every
+    effect is accepted or rejected, none declined. *)
+Definition check_getppid (eff : SyscallEffect) (m : Model) : check_result :=
+  match eff with
+  | mkEffectU ret [] [] [] [] [] =>
+      if (bv_unsigned ret <? PID_MAX_ENVELOPE)%Z then CheckOk m [] else CheckReject
+  | _ => CheckReject
+  end.
+
+Lemma check_getppid_no_unmodeled : forall eff m,
+  check_getppid eff m <> CheckUnmodeled.
+Proof.
+  intros [ret ws zs us cs copyins] m. unfold check_getppid.
+  destruct ws;
+    [destruct zs;
+      [destruct us;
+        [destruct cs;
+          [destruct copyins;
+            [destruct ((bv_unsigned ret <? PID_MAX_ENVELOPE)%Z)|]|]|]|]|];
+    discriminate.
+Qed.
+
+Lemma check_getppid_sound_ok : forall eff m m' evs i,
+  check_getppid eff m = CheckOk m' evs -> getppid_spec i m (Ok eff m' evs).
+Proof.
+  intros [ret ws zs us cs copyins] m m' evs i H.
+  unfold check_getppid in H. unfold getppid_spec.
+  destruct ws as [|? ?];
+    [destruct zs as [|? ?];
+      [destruct us as [|? ?];
+        [destruct cs as [|? ?]; [destruct copyins as [|? ?]|]|]|]|];
+    try discriminate.
+  destruct ((bv_unsigned ret <? PID_MAX_ENVELOPE)%Z) eqn:Hr; [|discriminate].
+  inversion H; clear H; subst.
+  apply Z.ltb_lt in Hr.
+  eapply bind_ok0; [apply (choose_ok _ ret); exact Hr|].
+  apply pure_ok.
+Qed.
+
+Lemma check_getppid_sound_unmodeled : forall eff m i,
+  check_getppid eff m = CheckUnmodeled -> getppid_spec i m Unmodeled.
+Proof.
+  intros eff m i H. exfalso. eapply check_getppid_no_unmodeled. exact H.
+Qed.
+
+Lemma check_getppid_complete_ok : forall eff m m' evs i,
+  getppid_spec i m (Ok eff m' evs) -> check_getppid eff m = CheckOk m' evs.
+Proof.
+  intros eff m m' evs i H.
+  unfold getppid_spec in H. unfold check_getppid. sys_unfold. inv_ok.
+  cbn.
+  match goal with
+  | Hx : (bv_unsigned ?r < PID_MAX_ENVELOPE)%Z |- _ =>
+      rewrite (proj2 (Z.ltb_lt (bv_unsigned r) PID_MAX_ENVELOPE) Hx)
+  end.
+  reflexivity.
+Qed.
+
+Lemma check_getppid_complete_unmodeled : forall m i eff,
+  getppid_spec i m Unmodeled -> check_getppid eff m = CheckUnmodeled.
+Proof.
+  intros m i eff H. exfalso.
+  unfold getppid_spec in H. sys_unfold. inv_ok.
+Qed.
 
 (* ------------------------------------------------------------- setsid *)
 

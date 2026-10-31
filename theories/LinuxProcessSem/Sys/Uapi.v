@@ -438,6 +438,15 @@ Definition F_SETFL  : word := Z_to_bv 64 4.
     include/uapi/asm-generic/fcntl.h, Linux v6.18.46). *)
 Definition FD_CLOEXEC : word := Z_to_bv 64 1.
 
+(** [close_range]'s two flag bits (include/uapi/linux/close_range.h,
+    [#define CLOSE_RANGE_UNSHARE (1U << 1)] and
+    [#define CLOSE_RANGE_CLOEXEC (1U << 2)]; read at v6.18.44, identical
+    at v6.18.46).  [SYSCALL_DEFINE3(close_range)] (fs/file.c) refuses
+    every other bit with -EINVAL before it looks at the range, and
+    [Fs.File.close_range_spec] declines both of these; see there. *)
+Definition CLOSE_RANGE_UNSHARE : Z := 2%Z.
+Definition CLOSE_RANGE_CLOEXEC : Z := 4%Z.
+
 (** The [flock] operations, from that same header
     ([include/uapi/asm-generic/fcntl.h], Linux v6.18.46, commit
     1f99e9ab748f).  They are a MIXED word rather than an enumeration:
@@ -1044,7 +1053,7 @@ Definition NEW_UTS_LEN : Z := 64%Z.
     [machine], [domainname], at offsets 0, 65, 130, 195, 260 and 325. *)
 Definition NEW_UTSNAME_SIZE : Z := 390%Z.
 
-(** [PR_CAPBSET_READ], the one [prctl] option this model answers
+(** [PR_CAPBSET_READ], the first of the four [prctl] options this model answers
     (include/uapi/linux/prctl.h, Linux v6.18.46, commit 1f99e9ab748f).
     It is NOT handled in kernel/sys.c's own [switch]: the LSM hook
     [security_task_prctl] runs first, and capability's implementation of
@@ -1052,6 +1061,18 @@ Definition NEW_UTSNAME_SIZE : Z := 390%Z.
     and returns before the syscall body's [switch] is reached.  See
     [Kernel.Sys.prctl_spec], which is where the whole argument lives. *)
 Definition PR_CAPBSET_READ : Z := 23%Z.
+
+(** The three [prctl] options [Kernel.Sys.prctl_spec] answers beside
+    [PR_CAPBSET_READ] (include/uapi/linux/prctl.h: [#define
+    PR_SET_PDEATHSIG 1], [#define PR_SET_DUMPABLE 4], [#define
+    PR_SET_NO_NEW_PRIVS 38]; read at v6.18.44, identical at v6.18.46).
+    Unlike [PR_CAPBSET_READ], all three reach kernel/sys.c's own
+    [switch]: capability's [cap_task_prctl] has no case for them and
+    answers -ENOSYS, which [SYSCALL_DEFINE5(prctl)] reads as "not mine".
+    [Kernel.Sys.prctl_spec] carries the argument. *)
+Definition PR_SET_PDEATHSIG : Z := 1%Z.
+Definition PR_SET_DUMPABLE : Z := 4%Z.
+Definition PR_SET_NO_NEW_PRIVS : Z := 38%Z.
 
 (** [CAP_LAST_CAP], the highest capability number the kernel recognises:
     [CAP_CHECKPOINT_RESTORE], 40 (include/uapi/linux/capability.h, Linux

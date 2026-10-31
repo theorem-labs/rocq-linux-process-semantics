@@ -65,7 +65,7 @@
       Sys/Fs/Fcntl.v             fs/fcntl.c        fcntl
       Sys/Fs/Locks.v             fs/locks.c        flock
       Sys/Fs/Pipe.v              fs/pipe.c         pipe2
-      Sys/Fs/File.v              fs/file.c         dup dup3, and which descriptor an open gets
+      Sys/Fs/File.v              fs/file.c         dup dup3 close_range, and which descriptor an open gets
       Sys/Fs/Timerfd.v           fs/timerfd.c      timerfd_create
       Sys/Fs/EventPoll.v         fs/eventpoll.c    epoll_create1 epoll_ctl epoll_pwait
       Sys/Fs/EventFd.v           fs/eventfd.c      eventfd2
@@ -82,7 +82,7 @@
       Sys/Kernel/Sched/Syscalls.v  kernel/sched/syscalls.c  sched_getaffinity
                                                    sched_setscheduler
                                                    sched_yield
-      Sys/Kernel/Sys.v           kernel/sys.c      getpid gettid setsid uname
+      Sys/Kernel/Sys.v           kernel/sys.c      getpid getppid gettid setsid uname
                                                    prlimit64 getuid geteuid
                                                    getgid getegid setuid setgid
                                                    setresuid setresgid

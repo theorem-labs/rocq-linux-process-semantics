@@ -48,8 +48,11 @@
       [SIG_DFL] SIGCHLD is discarded, a blocked one is queued but sets
       no [TIF_SIGPENDING].  NEITHER half is a statement about a
       declined number: 134 and 135 are both modeled.  What
-      carries the whole argument is [Signal.sigaction_accepted], which
-      excludes SIGCHLD, so an install for it fails closed at the SIGNAL
+      carries the whole argument is the SIGNAL gate of 134:
+      [Signal.sigaction_accepted] excludes SIGCHLD, and the one SIGCHLD
+      install answered outside it, [Signal.sigchld_dfl_install], sets
+      exactly [SIG_DFL], so every install that would change the
+      disposition — SIG_IGN, a handler — fails closed at the signal
       rather than at the number.  A changeable mask does not reopen
       anything: unblocking a queued SIGCHLD hands it to [get_signal],
       which finds [SIG_DFL] and [sig_kernel_ignore] and discards it, so
@@ -775,10 +778,11 @@ Qed.
     THE ANSWER TO THAT COST IS ANOTHER CLOSED
     LIST.  [Kernel.Sys.prctl_modeled_options] is the set of options the
     arm answers, written as a definition rather than left implicit in a
-    [match], and [prctl_modeled_options_are] pins it EXACTLY — not that
+    [match] — [Kernel.Sys.prctl_spec]'s first test is membership in it —
+    and [prctl_modeled_options_are] pins it EXACTLY — not that
     55 is absent from it, which a widening could preserve, but that the
-    list is [[PR_CAPBSET_READ]] and nothing else.  So the tripwire keeps
-    its shape: an edit that teaches [prctl] a second
+    list is these four options and nothing else.  So the tripwire keeps
+    its shape: an edit that teaches [prctl] another
     option fails a named proof in this file, and whoever makes that edit
     has to come back here and say what it does to the tagging argument.
     The three statements below are that argument, from the general to
@@ -787,10 +791,20 @@ Qed.
     enables lives in [__untagged_addr_remote]
     (arch/riscv/include/asm/uaccess.h) and is
     applied per uaccess primitive, not once at the syscall boundary, so
-    it could not be modeled by masking registers on entry either. *)
+    it could not be modeled by masking registers on entry either.
+
+    WHAT THE CURRENT LIST DOES TO IT: nothing.  Besides [PR_CAPBSET_READ]
+    the list holds [PR_SET_PDEATHSIG] (1), [PR_SET_DUMPABLE] (4) and
+    [PR_SET_NO_NEW_PRIVS] (38), which write the parent-death signal, the
+    mm's dumpable flag and the no-new-privs bit and nothing else
+    (kernel/sys.c, [SYSCALL_DEFINE5(prctl)], read at v6.18.44).  Neither
+    is a caller of [set_tagged_addr_ctrl], whose only callers at that
+    tag are option 55's [SET_TAGGED_ADDR_CTRL] and riscv's ptrace
+    regset, so [PMLEN] stays 0 and [State.access_okb] stays exact. *)
 
 Example prctl_modeled_options_are :
-  prctl_modeled_options = [PR_CAPBSET_READ].
+  prctl_modeled_options =
+    [PR_CAPBSET_READ; PR_SET_PDEATHSIG; PR_SET_DUMPABLE; PR_SET_NO_NEW_PRIVS].
 Proof. reflexivity. Qed.
 
 (** Every option outside that list falls through [prctl_spec]'s first
@@ -809,10 +823,11 @@ Proof.
               (fun i => prctl_spec (int32 (in_arg i 0)) (in_arg i 1) i)));
     [rewrite Hno; reflexivity|].
   cbn [sa_spec]. unfold prctl_spec.
-  destruct (Z.eqb_spec (bv_unsigned (int32 (in_arg i 0))) PR_CAPBSET_READ)
-    as [Heq|_]; cbn [negb].
-  - exfalso. apply Hopt. unfold prctl_modeled_options. rewrite Heq.
-    now left.
+  destruct (existsb (Z.eqb (bv_unsigned (int32 (in_arg i 0))))
+                    prctl_modeled_options) eqn:Hex; cbn [negb].
+  - exfalso. apply Hopt. apply existsb_exists in Hex.
+    destruct Hex as (x & Hx & Heq). apply Z.eqb_eq in Heq.
+    rewrite Heq. exact Hx.
   - apply unmodeled_intro.
 Qed.
 
@@ -823,8 +838,7 @@ Lemma prctl_tagged_addr_ctrl_unmodeled : forall i m,
   syscall_spec i m Unmodeled.
 Proof.
   intros i m Hno Hopt. apply prctl_option_unmodeled; [exact Hno|].
-  rewrite Hopt. unfold prctl_modeled_options, PR_CAPBSET_READ.
-  intros [H|H]; [discriminate H|exact H].
+  rewrite Hopt. intros H. cbv in H. intuition discriminate.
 Qed.
 
 (** [ptrace] (117).  The OTHER caller of [set_tagged_addr_ctrl], through
@@ -859,18 +873,25 @@ Proof. intros i m Hno. declined_at Hno. Qed.
     half is where all the weight sits.
 
     AND THE DISPOSITION HALF IS NOT A NUMBER EITHER.  134 is modeled, so
-    what carries it is [Signal.sigaction_accepted], whose accepted set is
-    {SIGINT, SIGTERM}: an install FOR SIGCHLD fails closed at the SIGNAL.
-    The note above that definition states the invariant in the direction
-    that matters — the accepted set is a claim about the rest of the
-    model, and any change giving the model a child owes SIGCHLD's removal.
+    what carries it is the SIGNAL gate of [Signal.rt_sigaction_spec]:
+    [Signal.sigaction_accepted], whose accepted set is {SIGINT, SIGTERM},
+    and beside it [Signal.sigchld_dfl_install], which answers a SIGCHLD
+    install for the one handler word [SIG_DFL].  That install sets the
+    very disposition this argument assumes, so it moves the process
+    towards the argument rather than away from it; every SIGCHLD install
+    that would change it — SIG_IGN, a handler — fails closed at the
+    SIGNAL.  The note above [Signal.sigaction_accepted] states the
+    invariant in the direction that matters — the accepted set is a
+    claim about the rest of the model, and any change giving the model
+    a child owes SIGCHLD's removal.
 
     THE TRIPWIRE IS AT THE SIGNAL.  An edit that puts 17
-    back into the accepted set is caught by
-    [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled], which
-    fails to compute the moment it is accepted.  That is a tighter guard
-    than a decline of either number, because it holds with both of them
-    modeled. *)
+    into the accepted set, or that lets [Signal.sigchld_dfl_install]
+    admit a handler word other than [SIG_DFL], is caught by
+    [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled], a
+    HANDLER install for SIGCHLD that fails to compute the moment it is
+    accepted.  That is a tighter guard than a decline of either number,
+    because it holds with both of them modeled. *)
 
 (* =========================================================================
    What a declined syscall does to a RUN
