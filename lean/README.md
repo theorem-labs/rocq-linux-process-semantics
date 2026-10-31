@@ -61,8 +61,16 @@ Lean comes from elan, which reads `lean/lean-toolchain`
 cd lean && lake build
 ```
 
-The build takes about 50 minutes cold on 8 CPUs and needs about 16 GB of
-memory. Run it on a build VM, not on sami-rocqperf.
+Run it on a build VM, not on sami-rocqperf. The measured cold build is in
+`sdd/ossv-265/scale/task-Z1-report.md` of the oss-verifier checkout.
+
+`lake build` runs Python generators that render the syscall table, the
+checked table and the example images. They are in `lean/tools/`, and the
+image bytes of the twelve examples beside `rwx_flag_ns` are in
+`lean/examples-rocq/`; upstream keeps both outside its `lean/`, and
+`lean/UPSTREAM` says which file came from where. The generators read this
+repository's Rocq tree, so what they render follows the Rocq model, which
+is rule 1.
 
 Upstream's own checks over this tree (`tools/check_lean_policy.py` and the
 rest) are listed in `README.upstream.md`. They live in upstream's

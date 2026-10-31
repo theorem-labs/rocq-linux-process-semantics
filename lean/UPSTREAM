@@ -11,12 +11,41 @@ how:        git archive ff0313ba4f lean | tar -x
 toolchain:  leanprover/lean4:v4.34.0 (lean/lean-toolchain),
             leanchecker of the same toolchain (lean/leanchecker.pin)
 
-Every file under `lean/` is a byte copy of that tree, with two exceptions
-made by the import itself:
+Every file under `lean/` is a byte copy of that tree, except for these,
+which the import made:
 
 - `lean/README.md` is the twin's own page. Upstream's page is kept, byte
   for byte, as `lean/README.upstream.md`.
 - `lean/UPSTREAM` (this file) is new.
+- `lean/lakefile.lean` has three changed paths, each marked
+  `TWIN CHANGE` and listed below.
+- `lean/tools/` and `lean/examples-rocq/` are new directories, holding
+  files upstream keeps outside its own `lean/`; see below.
+
+`lean/lakefile.lean` reads files that upstream keeps outside `lean/`.
+Upstream's repository root has all of them; this repository's root has
+some, so the import brings the rest in under `lean/` and the lakefile
+points at them there:
+
+- `lean/tools/` (15 files, from upstream `tools/` at the same commit): the
+  generators the lakefile runs and the modules they import —
+  gen_lean_registry.py, gen_lean_checked.py, gen_lean_image.py,
+  gen_lean_example_image.py, gen_fd_lemmas.py, check_lean_pins.py,
+  check_lean_spec_parity.py, check_spec_file_map.py, lean_cases_family.py,
+  lean_port_nav.py, lean_port_outside.py, lean_port_progress.py,
+  lean_port_state.py, lean_port_time.py, specdeps.py. This repository's own
+  `tools/gen_fd_lemmas.py` is a different file and belongs to the Rocq
+  package, so the twin does not touch it.
+- `lean/examples-rocq/` (`dune` and, for each of the twelve examples
+  beside `rwx_flag_ns`, `SourceMemImage.v`, `TargetMemImage.v` and the
+  `*_seg_*.hex` chunks, from upstream `theories/Examples/`): the image
+  bytes the twelve Lean example proofs are checked against. This
+  repository has no such examples.
+- `theories/Examples/rwx_flag_ns/` and
+  `theories/LinuxProcessSem/Sys/SyscallTable.v` and
+  `theories/LinuxProcessSem/Bridge/exit.hex` are read from THIS
+  repository, unchanged by the import. The rwx snapshots and hex chunks
+  are byte-identical in the two repositories at these commits.
 
 A file still at its imported bytes carries no `-- Ports` header, and
 upstream's commit above is its provenance. A slice that ports a file to

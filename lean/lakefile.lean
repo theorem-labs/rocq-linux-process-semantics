@@ -303,7 +303,13 @@ def generatedInput : ModuleFacetDecl := {
       -- tool writes, because both facet jobs may run at once and a tool
       -- writing both would have them write each other's file.
       let root := mod.pkg.dir / ".."
-      let tool := root / "tools/gen_lean_registry.py"
+      -- TWIN CHANGE (rocq-linux-process-semantics): the generators live in
+      -- `lean/tools/`, not `<root>/tools/`.  `<root>` here is this
+      -- repository, whose own `tools/` belongs to the Rocq packages; see
+      -- `lean/UPSTREAM`.  `root` still names the Rocq tree the generators
+      -- mirror, which is the point of the twin.
+      let tools := mod.pkg.dir / "tools"
+      let tool := tools / "gen_lean_registry.py"
       -- What the array traces is what the SysTable comment above says:
       -- the generator, the Rocq table, the registry files, and the three
       -- tool modules the generator's own rules read through.  Of those
@@ -329,8 +335,8 @@ def generatedInput : ModuleFacetDecl := {
       -- the generator's own test walks the generator's imports
       -- with `ast` and refuses a new one this array neither names nor
       -- excludes by name.
-      let inputs := #[tool, root / "tools/check_lean_pins.py",
-        root / "tools/check_lean_spec_parity.py", root / "tools/check_spec_file_map.py",
+      let inputs := #[tool, tools / "check_lean_pins.py",
+        tools / "check_lean_spec_parity.py", tools / "check_spec_file_map.py",
         root / "theories/LinuxProcessSem/Sys/SyscallTable.v"] ++ (← registryDeps mod)
       let deps ← Job.collectArray <$> inputs.mapM (fun path => inputBinFile path)
       let generated ← buildFileAfterDep mod.leanFile deps (fun _ => do
@@ -343,9 +349,12 @@ def generatedInput : ModuleFacetDecl := {
       -- One module per invocation, as for SysTable; the CheckedTable comment
       -- above says what the array traces and what it leaves to `--check`.
       let root := mod.pkg.dir / ".."
-      let tool := root / "tools/gen_lean_checked.py"
-      let inputs := #[tool, root / "tools/gen_lean_registry.py",
-        root / "tools/check_lean_pins.py",
+      -- TWIN CHANGE: the generators live in `lean/tools/` (see the SysTable
+      -- facet above and `lean/UPSTREAM`).
+      let tools := mod.pkg.dir / "tools"
+      let tool := tools / "gen_lean_checked.py"
+      let inputs := #[tool, tools / "gen_lean_registry.py",
+        tools / "check_lean_pins.py",
         mod.pkg.dir / "LinuxProcessSemantics/LinuxProcessSem/Checks/InvariantRegistry.lean"] ++
         (← armDeps mod) ++ (← registryDeps mod)
       let deps ← Job.collectArray <$> inputs.mapM (fun path => inputBinFile path)
@@ -367,19 +376,27 @@ def generatedInput : ModuleFacetDecl := {
             entry.fileName.startsWith "TargetMemImage_seg_") &&
             entry.fileName.endsWith ".hex" then some entry.path else none
       let chunks := chunks.qsort fun a b => a.toString < b.toString
-      let inputs := #[root / "tools/gen_lean_image.py", root / "tools/gen_fd_lemmas.py",
+      -- TWIN CHANGE: the generators live in `lean/tools/`.
+      let tools := mod.pkg.dir / "tools"
+      let inputs := #[tools / "gen_lean_image.py", tools / "gen_fd_lemmas.py",
         imgDir / "SourceMemImage.v", imgDir / "TargetMemImage.v"] ++ chunks
       let deps ← Job.collectArray <$> inputs.mapM (fun path => inputBinFile path)
       let generated ← buildFileAfterDep mod.leanFile deps (fun _ => do
         createParentDirs mod.leanFile
-        proc {cmd := "python3", args := #[(root / "tools/gen_lean_image.py").toString,
+        proc {cmd := "python3", args := #[(tools / "gen_lean_image.py").toString,
           "--example-dir", imgDir.toString,
           "--out-dir", mod.leanFile.parent.get!.toString,
           "--module", mod.name.getString!]} ) (text := true)
       discard <| generated.await
     if mod.lib.name == `ExampleImages then
-      let root := mod.pkg.dir / ".."
-      let examples := root / "theories/Examples"
+      -- TWIN CHANGE: the twelve examples beside `rwx_flag_ns` are not in
+      -- this repository's `theories/Examples/`.  Their image snapshots and
+      -- hex chunks are vendored under `lean/examples-rocq/`, from
+      -- linux-process-semantics ff0313ba4f (`lean/UPSTREAM`).  Those are
+      -- image bytes, not semantics; `rwx_flag_ns`'s own snapshots and
+      -- chunks are identical in both repositories, so `RwxImages` above
+      -- still reads this repository's copy.
+      let examples := mod.pkg.dir / "examples-rocq"
       -- `LinuxProcessSemantics.Examples.<example>.<module>`
       let exName := mod.name.getPrefix.getString!
       let exDir := examples / exName
@@ -391,12 +408,14 @@ def generatedInput : ModuleFacetDecl := {
             entry.fileName.startsWith "TargetMemImage_seg_") &&
             entry.fileName.endsWith ".hex" then some entry.path else none
       let chunks := chunks.qsort fun a b => a.toString < b.toString
-      let inputs := #[root / "tools/gen_lean_example_image.py", examples / "dune",
+      -- TWIN CHANGE: the generators live in `lean/tools/`.
+      let tools := mod.pkg.dir / "tools"
+      let inputs := #[tools / "gen_lean_example_image.py", examples / "dune",
         exDir / "SourceMemImage.v", exDir / "TargetMemImage.v"] ++ chunks
       let deps ← Job.collectArray <$> inputs.mapM (fun path => inputBinFile path)
       let generated ← buildFileAfterDep mod.leanFile deps (fun _ => do
         createParentDirs mod.leanFile
-        proc {cmd := "python3", args := #[(root / "tools/gen_lean_example_image.py").toString,
+        proc {cmd := "python3", args := #[(tools / "gen_lean_example_image.py").toString,
           exName, "--examples-dir", examples.toString,
           "--out-dir", mod.leanFile.parent.get!.toString,
           "--module", mod.name.getString!]} ) (text := true)

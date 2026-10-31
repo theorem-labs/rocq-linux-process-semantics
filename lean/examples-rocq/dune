@@ -1,0 +1,296 @@
+; The example equivalence proofs: a package-less theory, built by a plain
+; `dune build` and never installed.
+(include_subdirs qualified)
+
+; The MemImage files pull in their segment bytes with Rocq's
+;   From <dir> Extra Dependency "<...>.hex" as <...>
+; `rocq dep` does report those .hex files as dependencies, but only if it can
+; find them — and dune copies a source file into the build tree only once
+; some rule has asked for it.  Nothing in a rocq.theory asks (there is no
+; (extra_files) field), so the dependency scan would run against a build tree
+; with no .hex in it, report nothing, and `rocq compile` would then fail to
+; find them.
+;
+; HexDeps.v breaks the cycle: it is a *generated* member of the theory, so
+; it must be built before `rocq dep` can run over the theory's sources, and
+; building it drags every .hex into the build tree.  Its contents are
+; irrelevant — only the dependency edge matters.
+(rule
+ (target HexDeps.v)
+ (deps (glob_files_rec *.hex))
+ (action (with-stdout-to HexDeps.v (echo "(* Generated: see the dune file. *)\n"))))
+
+; Compile the exact measured 9,878,516-byte zxc ASAN region through
+; ReadFileString and check ordered reads/fetch across the primitive-string
+; join.  Generated into _build only: the 19 MiB of hex is a CI instrument,
+; not a checked-in artifact or an installed library module.
+(rule
+ (targets
+  ZxcSizedChunkImage.v
+  ZxcSizedChunkImage_seg_000_chunk_000.hex
+  ZxcSizedChunkImage_seg_000_chunk_001.hex)
+ (deps
+  %{project_root}/tools/elf_snapshot.py
+  %{project_root}/tools/gen_fd_lemmas.py
+  %{project_root}/tools/test_elf_snapshot.py)
+ (action
+  (run python3 %{project_root}/tools/test_elf_snapshot.py
+   --emit-large-rocq-check ZxcSizedChunkImage.v)))
+
+; ---------------------------------------------------------------------------
+; Generated members of the theory, two per example, built on demand and
+; deliberately NOT checked in: they used to be, and were 7.6k lines of
+; machine-written Rocq that every reader and every diff had to scroll past.
+; Both generators are deterministic functions of files that ARE checked in,
+; and both emit only VM-checked or type-checked content, so a generator bug
+; cannot make a proof pass — it makes the build fail.
+;
+;   <name>/<name>_code.v  fetch/decode lemmas, from the two memory images
+;                         (gen-fd-lemmas).  It shells out to `rocq`
+;                         for the decoder, hence the dependency on the
+;                         Riscv/*.vo of the LinuxProcessSemantics theory and
+;                         the --loadpath pointing at its build directory.
+;                         That dependency is on theories/Riscv alone rather
+;                         than the whole library because Riscv/Decode is
+;                         self-contained (Stdlib + stdpp), and because a
+;                         recursive glob over theories/ would take in
+;                         theories/Examples and close a cycle.
+;
+;   <name>/Checker.v      the trusted top-level check (tools/gen_checker.py),
+;                         a fixed template stamped with the example name.
+;
+; Adding an example means adding a pair of stanzas below, copied from any
+; other and renamed.  This is the one list a new example must be added to —
+; the Makefile discovers problems from the directory tree — so a missing
+; pair shows up as `<name>_code.v` not found, not as a silent skip.  See
+; README.md.
+
+(subdir arena_tee_ns
+ (rule
+  (target arena_tee_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py arena_tee_ns
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py arena_tee_ns --out %{target}))))
+
+(subdir alloc_join_ns
+ (rule
+  (target alloc_join_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py alloc_join_ns
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py alloc_join_ns --out %{target}))))
+
+(subdir brk_rev_ns
+ (rule
+  (target brk_rev_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py brk_rev_ns
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py brk_rev_ns --out %{target}))))
+
+(subdir cat1024_ns
+ (rule
+  (target cat1024_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py cat1024_ns
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py cat1024_ns --out %{target}))))
+
+(subdir conditional_bug_ns
+ (rule
+  (target conditional_bug_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py conditional_bug_ns
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py conditional_bug_ns --out %{target}))))
+
+(subdir cp_ns
+ (rule
+  (target cp_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py cp_ns
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py cp_ns --out %{target}))))
+
+(subdir grep_args_ns
+ (rule
+  (target grep_args_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py grep_args_ns
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py grep_args_ns --out %{target}))))
+
+(subdir headcp_ns
+ (rule
+  (target headcp_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py headcp_ns
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py headcp_ns --out %{target}))))
+
+(subdir mmap_upper_ns
+ (rule
+  (target mmap_upper_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py mmap_upper_ns
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py mmap_upper_ns --out %{target}))))
+
+(subdir modprint_ns
+ (rule
+  (target modprint_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py modprint_ns
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py modprint_ns --out %{target}))))
+
+(subdir oob_read_bug_ns
+ (rule
+  (target oob_read_bug_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py oob_read_bug_ns
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py oob_read_bug_ns --out %{target}))))
+
+(subdir tail1_ns
+ (rule
+  (target tail1_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py tail1_ns
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py tail1_ns --out %{target}))))
+
+(rocq.theory
+ (name LinuxProcessSemantics.Examples)
+ (theories Stdlib stdpp ReadFile LinuxProcessSemantics LinuxProcessSemantics.Common))
+
+(subdir rwx_flag_ns
+ (rule
+  (target rwx_flag_ns_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  ; The source image is a single RWX LOAD segment (see source/rwx.lds), so
+  ; its .text cannot be located as the nonzero run — the segment also holds
+  ; the ELF headers and the writable data.  The range is passed explicitly
+  ; and the source fetch lemmas are stated over fetch_word_wx.
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py rwx_flag_ns
+    --source-text 0x10078:0x100e4
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target})))
+ (rule
+  (target Checker.v)
+  (deps %{project_root}/tools/gen_checker.py)
+  (action
+   (run python3 %{project_root}/tools/gen_checker.py rwx_flag_ns --out %{target}))))
