@@ -45,7 +45,9 @@ theorem launch_blocking_sigkill_is_refused :
   exact absurd (valid_input_sigmask _ h) (by unfold valid_sigmask; decide)
 
 /-- inherited-divergence: bugs/fin-record-not-injective-on-the-random-field.md --
-Two distinct records denote one launch, as the bugs entry records.
+Two distinct records denote one launch, as the
+linux-process-semantics@ff0313ba4f:bugs/fin-record-not-injective-on-the-random-field.md
+entry records.
 model: `to_proc_input` pads `fin_urandom` with `State.default_urandom`, a `stream_const` of the zero byte, so `[0]` and `[]` pad to one stream. -/
 theorem padding_byte_denotes_the_empty_declaration :
     { inhabited_fin_input with fin_urandom := [Z_to_bv 8 0] } ≠ inhabited_fin_input

@@ -1,7 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/HaltsAllowed.v
 import LinuxProcessSemantics.EquivalenceDefinition.HaltsAllowed
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Omni
 import LinuxProcessSemantics.LinuxProcessSem.Checks.SpuriousCfg
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.EquivalenceDefinition.Equivalence
+import LinuxProcessSemantics.LinuxProcessSem.Checks.AbortWitness
 
 /-! # Checks.Cases.EquivalenceDefinition.HaltsAllowed — allowed-exit statements
 
@@ -24,7 +26,9 @@ open LinuxProcessSemantics.LinuxProcessSem.Checks.Examples
 open LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 open LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.EquivalenceDefinition.Equivalence
   (undecodable_entry_valid undecodable_run_unmodeled undecodable_run_scfg_unmodeled
-   undecodable_within_budget_scfg)
+   undecodable_within_budget_scfg abrt_image abort_input)
+open LinuxProcessSemantics.LinuxProcessSem.Checks.AbortWitness
+  (abrt_t abrt_killed_model abrt_trace abrt_star abrt_tkill_declined_undeclared)
 
 /-! ## A-HaltsAllowed: the allowed-exit statements -/
 
@@ -202,6 +206,67 @@ theorem exit0_refutes_halts_allowed_empty : ¬ halts_allowed_T [] exit0_image :=
   · exact hh
   · exact List.not_mem_nil
 
+/-! ## The signal route, and where it stops -/
+
+set_option maxRecDepth 32768 in
+/-- The abort fixture reaches a configuration killed with signal 6, at every
+allocation limit: three instructions, `set_tid_address`, three more, then `tkill`
+of its own thread.  This is the shape `MustExit.must_exit_in_refuted_by_kill` takes.
+The walk itself is `Checks.AbortWitness.abrt_star`, which holds the eight
+transitions; what this adds is the killed field of the configuration it ends at.
+model: `Checks.AbortWitness.abrt_star` and `State.killed_is_halted`.
+-/
+theorem abrt_run_reaches_killed (lim : Int) :
+    run_reaches_killed abrt_image lim demo_entry abort_input := by
+  refine ⟨abrt_trace lim, config.mkCfg (abrt_t 3) (abrt_killed_model lim),
+    Z_to_bv 64 6, ?_, (killed_is_halted _ _).2⟩
+  exact abrt_star lim
+
+/-- REFUTE, the signal route fired: a run that dies by a signal meets
+`MustExit.must_exit_in` at NO allowed set, not even one holding the signal number.
+The halted case of the judgment also asks `State.m_killed` to be clear, and
+`State.with_killed` writes the signal into both fields, so "halts with an allowed
+status" means `exit_group` and not "stops running".
+model: `MustExit.must_exit_in_refuted_by_kill` consumes `abrt_run_reaches_killed`.
+-/
+theorem abrt_refutes_must_exit_in (S : List word) (lim : Int) :
+    ¬ must_exit_in S abrt_image lim demo_entry abort_input :=
+  must_exit_in_refuted_by_kill S abrt_image lim demo_entry abort_input
+    (abrt_run_reaches_killed lim)
+
+/-- …and here the route stops: `Run.valid_input` pins the abort declaration to
+`false`, and this input declares it on, so the killed run above is not one
+`halts_allowed_T` quantifies over.  That is why the refutation above is about
+`MustExit.must_exit_in` and not about `halts_allowed_T`: the statement-level signal
+refutation is unavailable over this input class because the class holds no killed
+run, not because the refutation was not written.
+model: `Run.valid_input_abort_terminal` reads the declaration off the accessor, so a
+new conjunct of `Run.valid_input` cannot move this proof to a different clause.
+-/
+theorem abrt_input_not_valid_input : ¬ valid_input abort_input := fun hv =>
+  Bool.noConfusion
+    ((valid_input_abort_terminal _ hv).symm.trans (rfl : abort_input.in_abort_terminal = true))
+
+set_option maxRecDepth 32768 in
+/-- The control, and it says the refutation above is about the DEATH and not about
+the image: the same program on the undeclared input is refused too, but by the error
+route — with the declaration clear `Sys.Kernel.Signal.tkill_spec` declines, the run
+leaves the modeled surface, and there is no `State.KillEv` to refute it by.
+model: `Checks.ExecutableSpecs.check_syscall` computes the decline at the `tkill`
+call of the fixture over `demo_proc_input`, which is `abort_input` with the
+declaration off.
+-/
+theorem abrt_declined_undeclared_is_unmodeled :
+    Checks.ExecutableSpecs.check_syscall
+        (sys_input abrt_image.img_segments (abrt_t 3) (Z_to_bv 64 130))
+        (mkEffect (Z_to_bv 64 0) [] [])
+        (with_tid (Z_to_bv 64 4242)
+          (init_model (segments_reserved abrt_image.img_segments) (Z_to_bv 64 0x1000)
+            (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000)
+            source_alloc_limit demo_proc_input))
+      = LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude.CheckUnmodeled :=
+  abrt_tkill_declined_undeclared
+
 /-- The set form over two codes follows from either single-code claim; the converse is not stated.
 model: `MustExit.must_exit_with_in` at each disjunct.
 -/
@@ -288,12 +353,13 @@ theorem spec_halts_allowed_scfg_iff (cfg : SpuriousCfg) (S : List word) (img : I
     SPEC_HALTS_ALLOWED_SCFG cfg S img ↔ halts_allowed_T_scfg cfg S img :=
   ⟨fun h => h.halts_allowed, fun h => ⟨h⟩⟩
 
-/-- The budget structure seals the predicate at the supplied configuration and limit.
+/-- The budget structure seals the predicate at the supplied configuration and budget pair.
 model: `HaltsAllowed.SPEC_HALTS_ALLOWED_SCFG_BUDGETS.halts_allowed` and `SPEC_HALTS_ALLOWED_SCFG_BUDGETS.mk` expose and seal the field.
 -/
-theorem spec_halts_allowed_scfg_budgets_iff (cfg : SpuriousCfg) (lim : Int)
+theorem spec_halts_allowed_scfg_budgets_iff (cfg : SpuriousCfg) (b : BUDGETS)
     (S : List word) (img : Image) :
-    SPEC_HALTS_ALLOWED_SCFG_BUDGETS cfg lim S img ↔ halts_allowed_T_scfg_budgets cfg lim S img :=
+    SPEC_HALTS_ALLOWED_SCFG_BUDGETS cfg b S img ↔
+      halts_allowed_T_scfg_budgets cfg b.lim_source S img :=
   ⟨fun h => h.halts_allowed, fun h => ⟨h⟩⟩
 
 /-- ACCEPT: the exit-0 singleton statement inhabits the unconfigured structure.
@@ -313,7 +379,7 @@ theorem exit0_spec_halts_allowed_scfg :
 model: `spec_halts_allowed_scfg_budgets_iff` seals `exit0_halts_allowed_budgets`.
 -/
 theorem exit0_spec_halts_allowed_scfg_budgets :
-    SPEC_HALTS_ALLOWED_SCFG_BUDGETS forced_only_cfg source_alloc_limit [verdict_accept] exit0_image :=
+    SPEC_HALTS_ALLOWED_SCFG_BUDGETS forced_only_cfg ShippedBudgets [verdict_accept] exit0_image :=
   (spec_halts_allowed_scfg_budgets_iff _ _ _ _).2 exit0_halts_allowed_budgets
 
 /-- ACCEPT: Lean form of Rocq's ascription `Exit0HaltsAllowedChecked`, sealed at AnyExit (`byte_codes`).
@@ -329,11 +395,11 @@ theorem Exit0HaltsAllowedScfgChecked : SPEC_HALTS_ALLOWED_SCFG may_fail_cfg byte
   (spec_halts_allowed_scfg_iff _ _ _).2
     ((halts_allowed_T_scfg_may_fail _ _).2 exit0_halts_allowed_any_exit)
 
-/-- ACCEPT: Lean form of Rocq's ascription `Exit0HaltsAllowedBudgetsChecked`, sealed at AnyExit (`byte_codes`) and MayFailCfg (`may_fail_cfg`); Rocq's `ShippedBudgets.lim_source` is `source_alloc_limit`.
+/-- ACCEPT: Lean form of Rocq's ascription `Exit0HaltsAllowedBudgetsChecked`, sealed at AnyExit (`byte_codes`), MayFailCfg (`may_fail_cfg`) and ShippedBudgets, whose `lim_source` is `source_alloc_limit`.
 model: `spec_halts_allowed_scfg_budgets_iff` seals `exit0_halts_allowed_any_exit` via `halts_allowed_T_scfg_may_fail` and `halts_allowed_T_scfg_budgets_of_scfg`.
 -/
 theorem Exit0HaltsAllowedBudgetsChecked :
-    SPEC_HALTS_ALLOWED_SCFG_BUDGETS may_fail_cfg source_alloc_limit byte_codes exit0_image :=
+    SPEC_HALTS_ALLOWED_SCFG_BUDGETS may_fail_cfg ShippedBudgets byte_codes exit0_image :=
   (spec_halts_allowed_scfg_budgets_iff _ _ _ _).2
     (halts_allowed_T_scfg_budgets_of_scfg _ _ _
       ((halts_allowed_T_scfg_may_fail _ _).2 exit0_halts_allowed_any_exit))
@@ -357,7 +423,7 @@ theorem undecodable_refutes_spec_halts_allowed_scfg (S : List word) :
 model: `undecodable_image_refutes_halts_allowed_budgets` refutes the field exposed by `spec_halts_allowed_scfg_budgets_iff`.
 -/
 theorem undecodable_refutes_spec_halts_allowed_scfg_budgets (S : List word) :
-    ¬ SPEC_HALTS_ALLOWED_SCFG_BUDGETS forced_only_cfg source_alloc_limit S undecodable_image :=
+    ¬ SPEC_HALTS_ALLOWED_SCFG_BUDGETS forced_only_cfg ShippedBudgets S undecodable_image :=
   fun h => undecodable_image_refutes_halts_allowed_budgets S
     ((spec_halts_allowed_scfg_budgets_iff _ _ _ _).1 h)
 

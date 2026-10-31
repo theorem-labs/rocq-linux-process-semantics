@@ -1,6 +1,7 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/Equivalence.v
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.Base
 
-/-! rocq-baseline: 1807c1e25ce12708f5cc85213f2df4bf03d978da -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # The declared address-space size: one statement per size, and the one that pins none
 
@@ -18,13 +19,14 @@ The conjunct is there because the spec arms compare against the Sv48
 entry predicates are inhabited (`strong_universal_T_sv39_refuted`,
 `strong_universal_T_sv57_refuted`). A task on such a kernel is refused by
 name rather than graded against the Sv48 window, until the arms read the
-declared size (bugs/va-size-declines-every-non-sv48-run.md). This does not
-gate `Run.run` itself: an obligation written over it directly is a
-statement about the Sv48 run, the residual that bugs entry records.
-
-Rocq's `SPEC_SV39`, `SPEC_SV57` and `SPEC_VA_ANY` module types have no Lean
-surface: Lean has no module types, and `Base.SPEC` is the structure the
-examples' checkers ascribe. -/
+declared size
+(linux-process-semantics@ff0313ba4f:bugs/va-size-declines-every-non-sv48-run.md;
+scope: SCOPE.md#where-the-model-is-narrower, the "Address-space size"
+row). This does not gate `Run.run` itself: an obligation written over it
+directly is a statement about the Sv48 run, the residual that
+linux-process-semantics@ff0313ba4f:bugs/va-size-declines-every-non-sv48-run.md
+records.
+-/
 
 namespace LinuxProcessSemantics.EquivalenceDefinition.Equivalence
 
@@ -41,9 +43,6 @@ theorem image_brk_satisfiable_entry_va (img : Image) (inp : ProcInput)
     ∃ en, valid_entry img en inp := by
   obtain ⟨hargv, henvp, -⟩ := hv
   have hspan := entry_stack_span_bound _ _ hargv henvp
-  have htop : ∀ maps, 0 ≤ reserved_top maps := by
-    exact List.rec (by decide)
-      (fun pair rest ih => Int.le_trans ih (Int.le_max_right _ _))
   have hbounds :
       reserved_top (segments_reserved img.img_segments) ≤ image_brk_witness img.img_segments ∧
       image_brk_witness img.img_segments <
@@ -51,7 +50,7 @@ theorem image_brk_satisfiable_entry_va (img : Image) (inp : ProcInput)
     simp only [image_brk_witness, page_size]
     omega
   have hnonneg : 0 ≤ image_brk_witness img.img_segments := by
-    have := htop (segments_reserved img.img_segments)
+    have := reserved_top_nonneg (segments_reserved img.img_segments)
     omega
   have hsmall : image_brk_witness img.img_segments < 2 ^ 64 := by
     exact of_decide_eq_true h
@@ -158,5 +157,20 @@ theorem strong_universal_T_sv57_refuted (source_image target_image : Image)
   have h48 := (h en_source en_target inp hs ht hv).1
   rw [valid_input_sv57_va_size inp hv] at h48
   cases h48
+
+/-- The sealing surface for a task declared on an Sv39 kernel, beside
+`SPEC`. Which surface a checker ascribes is the task's declaration: a
+proof made under `Run.valid_input` does not fit this one. -/
+structure SPEC_SV39 (source target : Image) : Prop where
+  strong_universal : strong_universal_T_sv39 source target
+
+/-- The same for a task declared on an Sv57 kernel. -/
+structure SPEC_SV57 (source target : Image) : Prop where
+  strong_universal : strong_universal_T_sv57 source target
+
+/-- The surface for a task that declares no size and is held to all three
+readings. -/
+structure SPEC_VA_ANY (source target : Image) : Prop where
+  strong_universal : strong_universal_T_va_any source target
 
 end LinuxProcessSemantics.EquivalenceDefinition.Equivalence

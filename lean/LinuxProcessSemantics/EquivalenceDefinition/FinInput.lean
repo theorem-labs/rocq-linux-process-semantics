@@ -12,12 +12,9 @@ The long arguments stay on the Rocq file.
 
 TRUST BOUNDARY: this file is part of the trusted specification.
 
-These Rocq lemmas have no twin in this file.
+One Rocq lemma has no twin in this file.
 `stream_decompose` has its twin in `StreamLaws.lean`: `State.stream_decompose`,
 with the same statement over `uncons`.
-`valid_input_tmp_arbitrary` needs `State.fs_seed_tmp_valid`, which waits on
-the `fs_set_sorted` port that `Fs.lean`'s header names.
-Delete this sentence when this file proves it;
 `check_lean_spec_parity.py` compares definitions, not lemmas.
 
 `all_zeros` is the Rocq CoFixpoint written as a `stream_const`, which is also
@@ -285,6 +282,22 @@ theorem valid_input_urandom_endless_irrelevant (inp : ProcInput) (r : InputStrea
 theorem valid_fin_input_stdin_irrelevant (f : FinProcInput) (l : List byte) :
     valid_fin_input f → valid_fin_input { f with fin_stdin := l } := by
   intro h; exact h
+
+/-- The declared /tmp is not constrained either, which takes one more word
+to say than stdin's and the device's do: `valid_input`'s `Fs.valid_fs`
+clause reads the SEEDED image (`State.ProcInput.in_fs`) and the seeding
+reads `in_tmp`.  What holds is this: given an image in the canonical form,
+EVERY declared /tmp yields a valid input, which is
+`State.fs_seed_tmp_valid`. -/
+theorem valid_input_tmp_arbitrary (inp : ProcInput) (t : Fs.Fs) :
+    Fs.valid_fs inp.in_image_fs → valid_input inp →
+    valid_input { inp with in_tmp := t } := by
+  intro him h
+  unfold valid_input at h ⊢
+  obtain ⟨ha, he, -, hrest⟩ := h
+  refine ⟨ha, he, ?_, hrest⟩
+  unfold ProcInput.in_fs
+  exact State.fs_seed_tmp_valid t inp.in_image_fs him
 
 theorem valid_fin_input_urandom_irrelevant (f : FinProcInput) (l : List byte) :
     valid_fin_input f → valid_fin_input { f with fin_urandom := l } := by
