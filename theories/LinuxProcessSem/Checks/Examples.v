@@ -778,10 +778,13 @@ Lemma demo_entry_fields :
             (mkDraw demo_random (Z_to_bv 64 0x800000000000) vdso_keeps_all).
 Proof.
   unfold demo_entry, demo_entry_of, launch_entry_va. cbv zeta.
+  (* [all:] rather than bullets: how many goals [f_equal] leaves
+     depends on which of the four fields are already convertible, and a
+     bullet count that is right today is wrong the next time one of
+     them is. *)
   f_equal.
-  - apply bv_eq; vm_compute; reflexivity.
-  - apply bv_eq; vm_compute; reflexivity.
-  - f_equal. apply bv_eq; vm_compute; reflexivity.
+  all: try (apply bv_eq; vm_compute; reflexivity).
+  all: f_equal; apply bv_eq; vm_compute; reflexivity.
 Qed.
 
 (** Both images put their only segment inside the first page, so both
@@ -925,14 +928,14 @@ Proof.
        reaches inside [valid_launch] wherever the conjunct has already
        been split. *)
     try (unfold valid_launch; split;
-         [ unfold valid_execfn, valid_path_name; left; split;
-           [ vm_compute; lia
-           | intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+         [ unfold valid_execfn, valid_path_name, default_execfn; left; split;
+           [ cbn; lia
+           | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
              vm_compute in Hz; discriminate ]
          | unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity ]);
-    try (unfold valid_execfn, valid_path_name; left; split;
-         [ vm_compute; lia
-         | intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+    try (unfold valid_execfn, valid_path_name, default_execfn; left; split;
+         [ cbn; lia
+         | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
            vm_compute in Hz; discriminate ]);
     try (unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity);
     try lia; try reflexivity;

@@ -48,7 +48,14 @@ Record img_facts (segs : list Segment) (A : atable) (ph : PhdrInfo) : Prop := IM
   if_sizes : sum_sizes (segments_reserved segs) = img_hi A - img_lo A;
   if_rw    : (0 <= rw_lo A /\ 0 <= rw_len A /\ rw_lo A + rw_len A < 2 ^ 64)
              /\ forall m (x : word), rw_lo A <= bv_unsigned x < rw_lo A + rw_len A -> wview segs m x <> None;
-  if_shadow : 0 <= shadow_off A <= 2 ^ 47
+  if_shadow : 0 <= shadow_off A <= 2 ^ 47;
+  (** the table's bounds on what the LAUNCH reserves beside the image.  The
+      launch always carries the vDSO pair ([State.init_reserved]), so a table
+      used with this Section must allow two intervals and the twenty pages
+      [State.vdso_len_bounds] permits.  It is a bound, not the list: a table
+      with 0 describes a launch that reserves nothing extra, which is no
+      launch Linux gives. *)
+  if_resx  : (2 <= n_resx A)%nat /\ (20 <= p_resx A)%nat
 }.
 
 (** the EXACT size of the initial stack image.  Linux's block runs from the
@@ -466,9 +473,13 @@ Section Init.
       is four vvar pages and two text pages, 24576 bytes, just below
       [mm->mmap_base] — NOT the empty list the checker's [AsanPlanSound.co_res]
       still assumes. *)
-  Let RESX : list (word * word) :=
-    vdso_reserved (in_kernel inp)
-      (page_round_down_Z (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
+  (** [State.vdso_top] of the initial ledger: [page_round_down_Z] of the
+      smaller of the mmap base and the allocation top, which for
+      [mkVmMapsFull reserved [] [] brk0 brk0 lim mbase sp] is
+      [Z.min mbase (sp - stack_max_size)] (State.v, [init_reserved]). *)
+  Let VTOP : Z :=
+    page_round_down_Z (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size)).
+  Let RESX : list (word * word) := vdso_reserved (in_kernel inp) VTOP.
 
   Lemma model0_facts :
     m_halted model0 = None /\ m_fds model0 = fds_std /\ m_tid model0 = None
@@ -477,6 +488,57 @@ Section Init.
     /\ vm_limit (m_vmmaps model0) = LIMIT /\ vm_brk (m_vmmaps model0) = brk0 /\ vm_start_brk (m_vmmaps model0) = brk0
     /\ vm_mmap_base (m_vmmaps model0) = mbase /\ eager_used model0 = 0.
   Proof. repeat split; reflexivity. Qed.
+
+  Lemma sum_sizes_app : forall l1 l2, sum_sizes (l1 ++ l2) = sum_sizes l1 + sum_sizes l2.
+  Proof.
+    induction l1 as [|iv l1 IH]; intro l2; cbn [app sum_sizes]; [lia|]. rewrite IH. lia.
+  Qed.
+
+  Lemma mb_range : mmap_base_min <= bv_unsigned mbase <= mmap_base_max
+                   /\ bv_unsigned mbase mod page_size = 0.
+  Proof. destruct Hmb as (Y1 & Y2 & Y3). repeat split; assumption. Qed.
+
+  (** The pair ends at [VTOP], which is at most the mmap base and at most one
+      page below [State.mmap_base_min]: the base is page-aligned, so rounding
+      it down does nothing, and the allocation top is far above. *)
+  Lemma vtop_range : mmap_base_min - 4095 <= VTOP <= bv_unsigned mbase
+                     /\ VTOP mod 4096 = 0.
+  Proof.
+    pose proof mb_range as ((Y1 & Y2) & Y3). pose proof usp_lo.
+    unfold VTOP, page_round_down_Z, page_size, stack_max_size,
+           mmap_base_min, mmap_base_max, sp_window_hi, usp in *.
+    split; [split|]; lia.
+  Qed.
+
+  (** [State.default_kernel] has [kb_vdso = 1], so the text is two pages and
+      the pair is four vvar pages below them: 16384 and 8192 bytes. *)
+  Lemma resx_eq : RESX = [(Z_to_bv 64 (VTOP - 24576), Z_to_bv 64 16384);
+                          (Z_to_bv 64 (VTOP - 24576 + 16384), Z_to_bv 64 8192)].
+  Proof.
+    pose proof vtop_range as [[T1 T2] T3].
+    unfold RESX, vdso_reserved. cbv zeta.
+    replace (vdso_len (in_kernel inp)) with 24576 by (vm_compute; reflexivity).
+    replace (vdso_vvar_pages * page_size)%Z with 16384 by (vm_compute; reflexivity).
+    replace (vdso_text_pages (in_kernel inp) * page_size)%Z with 8192 by (vm_compute; reflexivity).
+    replace (VTOP - 24576 <? page_size)%Z with false
+      by (symmetry; apply Z.ltb_ge; unfold page_size, mmap_base_min in *; lia).
+    reflexivity.
+  Qed.
+
+  Lemma resx_len : (length RESX <= 2)%nat.
+  Proof. rewrite resx_eq. cbn [length]. lia. Qed.
+
+  Lemma resx_sum : sum_sizes RESX = 24576.
+  Proof.
+    pose proof vtop_range as [[T1 T2] T3]. pose proof mb_range as ((Y1 & Y2) & Y3).
+    rewrite resx_eq. cbn [sum_sizes fst snd].
+    rewrite !u64_lit by (unfold mmap_base_min, mmap_base_max, sp_window_hi in *; lia). lia.
+  Qed.
+
+  Lemma resx_bytes_lo : 81920 <= resx_bytes A.
+  Proof.
+    pose proof (if_resx _ _ _ IMG) as [RX1 RX2]. unfold resx_bytes. lia.
+  Qed.
 
   (** the hidden set at start: the two argument-block regions; the hull and
       everything at/above CEIL are visible *)
@@ -1057,10 +1119,17 @@ Section Init.
     - reflexivity.
     - reflexivity.
     - reflexivity.
-    - (* co_res: this launch reserves nothing besides the image *)
-      exists []. rewrite app_nil_r. split; [reflexivity|]. split; [constructor|].
-      split; [cbn [length]; lia|].
-      cbn [sum_sizes]. unfold resx_bytes. pose proof (Nat2Z.is_nonneg (p_resx A)). lia.
+    - (* co_res: the launch reserves the vDSO pair beside the image *)
+      pose proof vtop_range as [[T1 T2] T3]. pose proof mb_range as ((Y1 & Y2) & Y3).
+      pose proof (if_hull _ _ _ IMG) as (G1 & G2 & G3 & G4).
+      pose proof (if_resx _ _ _ IMG) as [RX1 RX2]. pose proof resx_bytes_lo.
+      exists RESX. split; [reflexivity|].
+      split; [| split; [pose proof resx_len; lia | rewrite resx_sum; lia]].
+      rewrite resx_eq. repeat constructor;
+        cbn [fst snd];
+        rewrite !u64_lit
+          by (unfold mmap_base_min, mmap_base_max, sp_window_hi in *; lia);
+        unfold KHI, mmap_base_min, mmap_base_max, sp_window_hi in *; lia.
     - reflexivity.
     - reflexivity.
     - constructor.   (* no hole tokens *)
@@ -1072,14 +1141,22 @@ Section Init.
     - intros z Hz. exact Hz.
     - constructor.
     - constructor.
-    - rewrite app_nil_r, (if_sizes _ _ _ IMG). unfold resx_bytes.
-      pose proof (Nat2Z.is_nonneg (p_resx A)). lia.
-    - exists (bv_unsigned mbase). destruct Hmb as (Y1 & Y2 & Y3). unfold mmap_base_min in Y1. unfold page_size in Y3.
-      unfold MBASE_MIN, resx_bytes. pose proof (Nat2Z.is_nonneg (p_resx A)).
-      split; [lia|]. split; [exact Y3|]. split; [lia|].
-      rewrite app_nil_r. intros b sz Hin.
-      pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin) as [R1 R2]. cbn [fst snd] in R1, R2.
-      left. unfold kHighMemBeg. lia.
+    - (* co_totsz: the image's reservations and the vDSO pair *)
+      rewrite app_nil_r, sum_sizes_app, (if_sizes _ _ _ IMG), resx_sum.
+      pose proof resx_bytes_lo. lia.
+    - (* co_split: the high mark is the vDSO pair's BASE, not its top; with the
+         top the pair satisfies neither disjunct of [ledger_split] *)
+      pose proof vtop_range as [[T1 T2] T3]. pose proof mb_range as ((Y1 & Y2) & Y3).
+      pose proof (if_hull _ _ _ IMG) as (G1 & G2 & G3 & G4). pose proof resx_bytes_lo.
+      exists (VTOP - 24576).
+      unfold MBASE_MIN, mmap_base_min, mmap_base_max, sp_window_hi in *.
+      split; [lia|]. split; [lia|]. split; [lia|].
+      rewrite app_nil_r. intros b sz Hin. apply in_app_or in Hin as [Hin|Hin].
+      + pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin) as [R1 R2]. cbn [fst snd] in R1, R2.
+        left. unfold kHighMemBeg. lia.
+      + right. rewrite resx_eq in Hin. cbn [In] in Hin.
+        destruct Hin as [E|[E|[]]]; inversion E; subst; cbn [fst];
+          rewrite u64_lit by lia; lia.
     - unfold escale. rewrite mkMd_denot. cbn [edenot]. apply bv_eq. rewrite u_mul64, u64_lit by lia.
       destruct uE0 as (_ & _ & _ & _ & _ & _ & U7 & _). unfold uE in U7. cbn [edenot] in U7. rewrite U7.
       rewrite Z.mod_small by lia. lia.
@@ -1109,10 +1186,17 @@ Section Init.
     - reflexivity.
     - reflexivity.
     - reflexivity.
-    - (* co_res: this launch reserves nothing besides the image *)
-      exists []. rewrite app_nil_r. split; [reflexivity|]. split; [constructor|].
-      split; [cbn [length]; lia|].
-      cbn [sum_sizes]. unfold resx_bytes. pose proof (Nat2Z.is_nonneg (p_resx A)). lia.
+    - (* co_res: the launch reserves the vDSO pair beside the image *)
+      pose proof vtop_range as [[T1 T2] T3]. pose proof mb_range as ((Y1 & Y2) & Y3).
+      pose proof (if_hull _ _ _ IMG) as (G1 & G2 & G3 & G4).
+      pose proof (if_resx _ _ _ IMG) as [RX1 RX2]. pose proof resx_bytes_lo.
+      exists RESX. split; [reflexivity|].
+      split; [| split; [pose proof resx_len; lia | rewrite resx_sum; lia]].
+      rewrite resx_eq. repeat constructor;
+        cbn [fst snd];
+        rewrite !u64_lit
+          by (unfold mmap_base_min, mmap_base_max, sp_window_hi in *; lia);
+        unfold KHI, mmap_base_min, mmap_base_max, sp_window_hi in *; lia.
     - reflexivity.
     - reflexivity.
     - constructor.   (* no hole tokens *)
@@ -1124,14 +1208,22 @@ Section Init.
     - intros z Hz. exact Hz.
     - constructor.
     - constructor.
-    - rewrite app_nil_r, (if_sizes _ _ _ IMG). unfold resx_bytes.
-      pose proof (Nat2Z.is_nonneg (p_resx A)). lia.
-    - exists (bv_unsigned mbase). destruct Hmb as (Y1 & Y2 & Y3). unfold mmap_base_min in Y1. unfold page_size in Y3.
-      unfold MBASE_MIN, resx_bytes. pose proof (Nat2Z.is_nonneg (p_resx A)).
-      split; [lia|]. split; [exact Y3|]. split; [lia|].
-      rewrite app_nil_r. intros b sz Hin.
-      pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin) as [R1 R2]. cbn [fst snd] in R1, R2.
-      left. unfold kHighMemBeg. lia.
+    - (* co_totsz: the image's reservations and the vDSO pair *)
+      rewrite app_nil_r, sum_sizes_app, (if_sizes _ _ _ IMG), resx_sum.
+      pose proof resx_bytes_lo. lia.
+    - (* co_split: the high mark is the vDSO pair's BASE, not its top; with the
+         top the pair satisfies neither disjunct of [ledger_split] *)
+      pose proof vtop_range as [[T1 T2] T3]. pose proof mb_range as ((Y1 & Y2) & Y3).
+      pose proof (if_hull _ _ _ IMG) as (G1 & G2 & G3 & G4). pose proof resx_bytes_lo.
+      exists (VTOP - 24576).
+      unfold MBASE_MIN, mmap_base_min, mmap_base_max, sp_window_hi in *.
+      split; [lia|]. split; [lia|]. split; [lia|].
+      rewrite app_nil_r. intros b sz Hin. apply in_app_or in Hin as [Hin|Hin].
+      + pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin) as [R1 R2]. cbn [fst snd] in R1, R2.
+        left. unfold kHighMemBeg. lia.
+      + right. rewrite resx_eq in Hin. cbn [In] in Hin.
+        destruct Hin as [E|[E|[]]]; inversion E; subst; cbn [fst];
+          rewrite u64_lit by lia; lia.
     - unfold escale. rewrite mkMd_denot. cbn [edenot]. apply bv_eq. rewrite u_mul64, u64_lit by lia.
       destruct uE0 as (_ & _ & _ & _ & _ & _ & U7 & _). unfold uE in U7. cbn [edenot] in U7. rewrite U7.
       rewrite Z.mod_small by lia. lia.
@@ -1148,6 +1240,9 @@ Section Init.
   Theorem init_cfg_eq :
     init_config segs apc ph sp brk0 mbase rdraw LIMIT inp = cfg_of segs R0 (a_entry A) FULL0 model0.
   Proof.
-    unfold init_config, cfg_of. rewrite init_mkst. rewrite Hapc. reflexivity.
+    (** [Hapc] must land in BOTH places the entry pc appears: the machine's
+        initial program counter and the auxv's AT_ENTRY, which the stack image
+        reads through [entryw]. *)
+    unfold init_config, cfg_of, FULL0, entryw. rewrite init_mkst, Hapc. reflexivity.
   Qed.
 End Init.

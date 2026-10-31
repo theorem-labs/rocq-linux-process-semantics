@@ -183,6 +183,20 @@ Example witness_argv0_pointer :
   = word_le8 witness_argv0.
 Proof. check_eq. Qed.
 
+(** The neighbour of that check, so that it is a test of the value and
+    not of the shape: the eight bytes are NOT the address the model
+    used to put there.  0x7ffffffffeb0 is sp + 192, where the old
+    block's strings began. *)
+Example witness_block_refuses_the_old_pointer :
+  firstn 8 (skipn 8 (entry_stack_image witness_input witness_mbase witness_phdrs
+                       (Z_to_bv 64 0x10100) witness_sp witness_draw))
+  <> word_le8 (Z_to_bv 64 0x7ffffffffeb0).
+Proof.
+  intros H.
+  apply (f_equal (fun l => bv_unsigned (nth 0 l (Z_to_bv 8 0)))) in H.
+  vm_compute in H. discriminate H.
+Qed.
+
 (** ... and argv[0] really is 516 bytes above sp here, which is what
     makes the program of the Problem section — abort when
     [argv[0] - sp] is above 0x100 — abort. *)
@@ -487,6 +501,7 @@ Proof.
   intros sp mem rom Hb. rewrite (low_step3_either sp mem rom), Hb.
   reflexivity.
 Qed.
+
 (** ... and the self-branch is a fixed point. *)
 Local Lemma low_step4 : forall sp mem rom,
   RiscvSemantics.step low_segments (low_s4 sp mem rom)
@@ -509,19 +524,24 @@ Local Lemma low_inv_sstep : forall sp mem rom model,
 Proof.
   intros sp mem rom model Hlazy Hb c evs st Hinv Hss.
   destruct Hinv as [-> | [-> | [-> | [-> | ->]]]].
-  - destruct (istep_only low_segments _ model _ Hlazy eq_refl
+  - destruct (istep_only low_segments (low_s0 sp mem rom) model
+                (low_s1 sp mem rom) Hlazy eq_refl
                 (low_step0 sp mem rom) _ _ Hss) as (_ & ->).
     eexists. split; [reflexivity | right; left; reflexivity].
-  - destruct (istep_only low_segments _ model _ Hlazy eq_refl
+  - destruct (istep_only low_segments (low_s1 sp mem rom) model
+                (low_s2 sp mem rom) Hlazy eq_refl
                 (low_step1 sp mem rom) _ _ Hss) as (_ & ->).
     eexists. split; [reflexivity | right; right; left; reflexivity].
-  - destruct (istep_only low_segments _ model _ Hlazy eq_refl
+  - destruct (istep_only low_segments (low_s2 sp mem rom) model
+                (low_s3 sp mem rom) Hlazy eq_refl
                 (low_step2 sp mem rom) _ _ Hss) as (_ & ->).
     eexists. split; [reflexivity | right; right; right; left; reflexivity].
-  - destruct (istep_only low_segments _ model _ Hlazy eq_refl
+  - destruct (istep_only low_segments (low_s3 sp mem rom) model
+                (low_s4 sp mem rom) Hlazy eq_refl
                 (low_step3 sp mem rom Hb) _ _ Hss) as (_ & ->).
     eexists. split; [reflexivity | right; right; right; right; reflexivity].
-  - destruct (istep_only low_segments _ model _ Hlazy eq_refl
+  - destruct (istep_only low_segments (low_s4 sp mem rom) model
+                (low_s4 sp mem rom) Hlazy eq_refl
                 (low_step4 sp mem rom) _ _ Hss) as (_ & ->).
     eexists. split; [reflexivity | right; right; right; right; reflexivity].
 Qed.
@@ -653,20 +673,28 @@ Proof.
   exists [], (mkCfg (high_s4 witness_sp high_mem high_rom) (high_model lim)), [].
   split.
   - eapply star_silent;
-      [ exact (istep high_segments _ (high_model lim) _ eq_refl eq_refl eq_refl
+      [ exact (istep high_segments (high_s0 witness_sp high_mem high_rom)
+                 (high_model lim) (high_s1 witness_sp high_mem high_rom)
+                 eq_refl eq_refl eq_refl
                  (high_step0 witness_sp high_mem high_rom)) |].
     eapply star_silent;
-      [ exact (istep high_segments _ (high_model lim) _ eq_refl eq_refl eq_refl
+      [ exact (istep high_segments (high_s1 witness_sp high_mem high_rom)
+                 (high_model lim) (high_s2 witness_sp high_mem high_rom)
+                 eq_refl eq_refl eq_refl
                  (high_step1 witness_sp high_mem high_rom)) |].
     eapply star_silent;
-      [ exact (istep high_segments _ (high_model lim) _ eq_refl eq_refl eq_refl
+      [ exact (istep high_segments (high_s2 witness_sp high_mem high_rom)
+                 (high_model lim) (high_s3 witness_sp high_mem high_rom)
+                 eq_refl eq_refl eq_refl
                  (high_step2 witness_sp high_mem high_rom)) |].
     eapply star_silent;
-      [ exact (istep high_segments _ (high_model lim) _ eq_refl eq_refl eq_refl
+      [ exact (istep high_segments (high_s3 witness_sp high_mem high_rom)
+                 (high_model lim) (high_s4 witness_sp high_mem high_rom)
+                 eq_refl eq_refl eq_refl
                  (high_step3 high_mem high_rom)) |].
     apply star_refl.
-  - exact (istep_fault high_segments _ (high_model lim) eq_refl eq_refl eq_refl
-             high_fault).
+  - exact (istep_fault high_segments (high_s4 witness_sp high_mem high_rom)
+             (high_model lim) eq_refl eq_refl eq_refl high_fault).
 Qed.
 
 (** THE SECOND HALF: [high_image] faults at the witness entry, the

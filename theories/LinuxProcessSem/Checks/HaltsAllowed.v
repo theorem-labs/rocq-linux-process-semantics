@@ -234,9 +234,17 @@ Qed.
    ========================================================================= *)
 
 (** The killed run of [Checks.AbortWitness], in the shape
-    [MustExit.must_exit_in_refuted_by_kill] takes. *)
+    [MustExit.must_exit_in_refuted_by_kill] takes.
+
+    The entry is [Checks.AbortWitness.abrt_entry], not
+    [Checks.Examples.demo_entry]: an entry is a function of its input
+    now ([Run.entry_launch_ok_va] ties the stack pointer to the
+    lengths of THAT input's strings, [create_elf_tables],
+    fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f), and this
+    run is on [abrt_input], whose argv differs from
+    [demo_proc_input]'s. *)
 Lemma abrt_run_reaches_killed : forall lim,
-  run_reaches_killed abrt_image lim demo_entry abrt_input.
+  run_reaches_killed abrt_image lim abrt_entry abrt_input.
 Proof.
   intros lim. rewrite abrt_entry_fields.
   cbn [run_reaches_killed abrt_image]. rewrite abrt_config.
@@ -255,10 +263,10 @@ Qed.
     the signal.  So "halts with an allowed status" really does mean
     [exit_group] and not "stops running". *)
 Theorem abrt_refutes_must_exit_in : forall S lim,
-  ~ must_exit_in S abrt_image lim demo_entry abrt_input.
+  ~ must_exit_in S abrt_image lim abrt_entry abrt_input.
 Proof.
   intros S lim.
-  exact (must_exit_in_refuted_by_kill S abrt_image lim demo_entry abrt_input
+  exact (must_exit_in_refuted_by_kill S abrt_image lim abrt_entry abrt_input
            (abrt_run_reaches_killed lim)).
 Qed.
 

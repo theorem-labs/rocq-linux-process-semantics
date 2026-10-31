@@ -3855,7 +3855,7 @@ Definition init_acs_of_zero (A : atable) : acs := init_acs_of_with (init_kn_zero
     (their address +4), musl memset 0x116934 / memcpy 0x116530 (their address -0xf18), __init_libc
     env-scan loop 0x10d5e4 (exit 0x10d5f0), progname scan 0x10d6a8 (exit 0x10d6b4). *)
 Definition ASAN : atable :=
-  {| img_lo := 0x10000; img_hi := 0x671000; n_res := 4; n_resx := 0; p_resx := 0; shadow_off := 0x7fff8000;
+  {| img_lo := 0x10000; img_hi := 0x671000; n_res := 4; n_resx := 2; p_resx := 20; shadow_off := 0x7fff8000;
      a_entry := 0x4ba64; rw_lo := 0x142000; rw_len := 0x52f000; ph_addr_z := 0x10040; ph_ent_z := 56; ph_num_z := 11;
      x_imemset := 0xe1ea4; x_imemcpy := 0xe1e28; x_memset := 0x116934; x_memcpy := 0x116530; x_memiszero := 0xe2508;
      x_istrncpy := 0xe23b8; x_sealed := 0x1205f; x_popfree := 0x52a70;
@@ -3872,7 +3872,7 @@ Definition asan_init : acs := init_acs_of ASAN.
     for everything below pni_sniff_header (0x1414dc); same segment layout
     (not confirmed; data delta assumed 0). *)
 Definition BOTH : atable :=
-  {| img_lo := 0x10000; img_hi := 0x671000; n_res := 4; n_resx := 0; p_resx := 0; shadow_off := 0x7fff8000;
+  {| img_lo := 0x10000; img_hi := 0x671000; n_res := 4; n_resx := 2; p_resx := 20; shadow_off := 0x7fff8000;
      a_entry := 0x4ba54; rw_lo := 0x142000; rw_len := 0x52f000; ph_addr_z := 0x10040; ph_ent_z := 56; ph_num_z := 11;
      x_imemset := 0xe1e94; x_imemcpy := 0xe1e18; x_memset := 0x116924; x_memcpy := 0x116520; x_memiszero := 0xe24f8;
      x_istrncpy := 0xe23a8; x_sealed := 0x1205f; x_popfree := 0x52a60;

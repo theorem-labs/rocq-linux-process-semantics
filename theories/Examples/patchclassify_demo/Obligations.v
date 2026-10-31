@@ -576,14 +576,16 @@ Proof.
     try (unfold valid_hwcap; left;
          first [ reflexivity | apply bv_eq; vm_compute; reflexivity ]);
     try (unfold valid_launch; split;
-         [ unfold valid_execfn, valid_path_name; left; split;
-           [ vm_compute; lia
-           | intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+         [ unfold valid_execfn, valid_path_name, State.default_execfn;
+           left; split;
+           [ cbn; lia
+           | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
              vm_compute in Hz; discriminate ]
          | unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity ]);
-    try (unfold valid_execfn, valid_path_name; left; split;
-         [ vm_compute; lia
-         | intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+    try (unfold valid_execfn, valid_path_name, State.default_execfn;
+         left; split;
+         [ cbn; lia
+         | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
            vm_compute in Hz; discriminate ]);
     try (unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity);
     try lia; try reflexivity;

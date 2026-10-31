@@ -229,6 +229,43 @@ right answer, and the comment "the neighbour being free" on
 is a corpus defect worth fixing whatever happens to this branch; its `movegrow`
 twin at line 76 already says "an in-place grow needs the neighbour free".
 
+**And the two are the whole of it.** The corpus holds 64 `mremap` growths that
+returned an address: **13 resolved in place and 51 moved**, and 14 of the 51
+moved with the vvar as their immediate neighbour. Of the 13 in-place ones,
+**six end one page PAST the vvar start** — that is, they record an in-place
+grow overlapping a mapping no process can expand into:
+
+| trace | case | recorded verdict | in the five? |
+| --- | --- | --- | --- |
+| `mremap_shapes/037` | `conform` | `ok` | **yes** |
+| `mremap_shapes/089` | `conform` (`--alloc-limit 0x2000`) | `ok` | **yes** |
+| `mremap_shapes/038` | `reject` (+ `smuggle-unmap`) | `reject` | no |
+| `mremap_shapes/039` | `reject` (+ `smuggle-copy`) | `reject` | no |
+| `mremap_shapes/040` | `reject` (+ `smuggle-write`) | `reject` | no |
+| `mremap_shapes/088` | `reject` (`--alloc-limit 0x1000`) | `reject` | no |
+
+The four that are not in the five are rejected by BOTH trees anyway — their
+mutation smuggles an unmap, a copy, a write, or busts the budget, so the base
+refuses them for a reason that has nothing to do with the neighbour and no
+verdict word moves. **The corpus asserts `ok` for exactly the two overlapping
+in-place grows whose only defect is the neighbour, and `revision/entry` catches
+exactly those two.** Nothing is missed and nothing is over-caught.
+
+The negative control is in the same list: `mremap_shapes/055` and
+`scenarios/mmap_mremap_madvise/004` grow to end exactly AT the vvar start, and
+`mremap_shapes/077` ends a page below it. Those neighbours really are free, and
+the branch treats all three identically to the base.
+
+**Why the branch's `reject` follows, in the spec's own shape.** `mremap_spec`
+on a grow is `if mremap_inplace_grow_b … then alt (in-place resolution) move
+else move`. Under the base the ledger is empty above the grant, so
+`mremap_inplace_grow_b` holds and the `alt` admits the in-place resolution the
+mutated effect claims. Under `revision/entry` the vDSO/vvar pair is in the
+ledger, `mremap_inplace_grow_b` is false, only the move arm remains, and an
+effect with `ret = a0` and no unmaps or copies is not a move. The branch does
+not need a new claim about when Linux moves — it needs only the neighbour to be
+in the ledger, which is what OSSV-257 puts there.
+
 ### 4d. Traces that newly reproduce
 
 **Zero.** No trace that the base failed to reproduce is reproduced by
@@ -271,12 +308,16 @@ boundary either.
 ### How much of the corpus can reach the start state at all
 
 The start state reaches a verdict only through what a syscall rule reads out of
-the model: the mmap base, the allocation top, the stack window. Measured over
-all 4,291 traces:
+the model: the mmap base, the allocation top, the stack window.
+
+**The set decides the number, so here is the set.** 808 traces of 4,291 contain
+at least one call from
+**{`mmap`, `munmap`, `mremap`, `brk`, `mprotect`, `madvise`}**, counted whatever
+the call returned. `msync` and `mincore` were looked for and are absent.
 
 | | traces | records |
 | --- | --- | --- |
-| at least one placement or ledger call | **808 (18.8%)** | |
+| at least one call from that set | **808 (18.8%)** | |
 | `mmap` | 763 | 1138 |
 | `munmap` | 200 | 207 |
 | `mremap` | 137 | 139 |
@@ -285,6 +326,29 @@ all 4,291 traces:
 | `madvise` | 24 | 24 |
 | `msync`, `mincore` | 0 | 0 |
 | `mmap` whose hint is 0 (the mmap base decides the address) | **696** | 796 |
+
+A narrower set gives a smaller number, and none of them is wrong — they answer
+different questions. Every union, measured
+(`/mnt/durable/scratch/lps-start-state-replay/reach-subsets.py`):
+
+| set | any return | excluding calls that returned an errno |
+| --- | --- | --- |
+| {`mmap`} | 763 | 735 |
+| {`mmap`, `munmap`} | 776 | 743 |
+| {`mmap`, `munmap`, `mremap`} | 777 | 743 |
+| {`mmap`, `munmap`, `mremap`, `mprotect`} | **779** | |
+| {`mmap`, `munmap`, `mremap`, `brk`} | 803 | 770 |
+| + `mprotect` | 805 | 771 |
+| + `madvise` (**the 808 above**) | **808** | 772 |
+
+**The 779 row is the placement lane's figure, and the two reconcile exactly.**
+CorpusReplay counts {`mmap`, `munmap`, `mremap`, `mprotect`} on the same 4,291
+traces with the same filter — every return, mutated records included — and gets
+779. Measured here: 26 traces hold a `brk` and none of those four, and 3 more
+hold a `madvise` and neither those four nor a `brk`. 779 + 26 + 3 = 808, with
+nothing left over. Both numbers are right about different sets. The `4,266`
+figure quoted elsewhere in this stream is a third thing and is neither lane's
+denominator.
 
 The other 3,483 traces cannot distinguish a right start state from a wrong one.
 

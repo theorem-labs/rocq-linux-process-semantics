@@ -1202,6 +1202,24 @@ Proof.
     try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
     try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
     try (unfold valid_hwcap; left; reflexivity);
+    (* [Run.valid_launch], the last conjunct: [State.mkProcInput_full]
+       here carries [State.default_execfn], the one-byte relative path
+       "a", which takes [Run.valid_execfn]'s first arm
+       ([Run.valid_path_name]), and this launch's string and pointer
+       bytes are far under [Run.e2big_limit].  Two arms rather than
+       one, because [repeat split] reaches inside [valid_launch]
+       wherever the conjunct has already been split. *)
+    try (unfold valid_launch; split;
+         [ unfold valid_execfn, valid_path_name, default_execfn; left; split;
+           [ cbn; lia
+           | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+             vm_compute in Hz; discriminate ]
+         | unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity ]);
+    try (unfold valid_execfn, valid_path_name, default_execfn; left; split;
+         [ cbn; lia
+         | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+           vm_compute in Hz; discriminate ]);
+    try (unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity);
     try (vm_compute; reflexivity);
     try lia;
     repeat first [ apply Forall_nil | apply Forall_cons
