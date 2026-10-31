@@ -434,13 +434,14 @@ theorem realtime_negative_tv_sec_rejected :
 its reading to `realtime_ok_b` alone: a denormalized `tv_nsec` is refused
 there as it is for the wall clock.
 kernel: kernel/time/timekeeping.c:ktime_get_raw_ts64@v6.18.46
-rocq-twin: monotonic_raw_denormalized_nsec_rejected -/
+(the spec-level twin of Rocq's `monotonic_raw_denormalized_nsec_rejected`, stated here on
+the checker; this file's cases have no Rocq mirror path, as its header says) -/
 theorem monotonic_raw_denormalized_nsec_rejected :
     clock_check 4 (mkEffect 0 [(4096, ts_denorm)] []) (clock_model 0) = CheckReject := rfl
 
 /-- `CLOCK_REALTIME_COARSE` (5), same arm, same envelope on the reading.
 kernel: kernel/time/timekeeping.c:ktime_get_coarse_real_ts64@v6.18.46
-rocq-twin: realtime_coarse_reading_at_envelope_rejected -/
+(the checker's side of Rocq's `realtime_coarse_reading_at_envelope_rejected`) -/
 theorem realtime_coarse_reading_at_envelope_rejected :
     clock_check 5 (mkEffect 0 [(4096, ts_over)] []) (clock_model 0) = CheckReject := rfl
 
@@ -448,15 +449,15 @@ theorem realtime_coarse_reading_at_envelope_rejected :
 checker answers over a recorded clock the monotonic arm declines, and
 records nothing.
 kernel: kernel/time/timekeeping.c:ktime_get_coarse_ts64@v6.18.46
-rocq-twin: monotonic_coarse_ignores_the_recorded_clock -/
+(the checker's side of Rocq's `monotonic_coarse_ignores_the_recorded_clock`) -/
 theorem monotonic_coarse_ignores_the_recorded_clock :
     clock_check 6 (mkEffect 0 [(4096, ts_1s)] []) (clock_model (2 ^ 63))
       = CheckOk (clock_model (2 ^ 63)) [] := rfl
 
 /-- `CLOCK_BOOTTIME` (7), same arm: a reading BEFORE the recorded
 monotonic one is admissible, and the recorded clock does not move.
-kernel: kernel/time/timekeeping.c:ktime_get_boottime_ts64,__timekeeping_inject_sleeptime@v6.18.46
-rocq-twin: boottime_backwards_reading_is_admissible -/
+kernel: include/linux/timekeeping.h:ktime_get_boottime_ts64; kernel/time/timekeeping.c:__timekeeping_inject_sleeptime@v6.18.46
+(the checker's side of Rocq's `boottime_backwards_reading_is_admissible`) -/
 theorem boottime_backwards_reading_is_admissible :
     clock_check 7 (mkEffect 0 [(4096, ts_1s_minus)] []) (clock_model 1000000000)
       = CheckOk (clock_model 1000000000) [] := rfl

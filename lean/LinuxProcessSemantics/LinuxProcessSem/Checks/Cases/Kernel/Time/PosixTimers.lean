@@ -304,7 +304,7 @@ pins is that the decline needs no destination at all.  The probe's own
 any more: at `f1006fe8` id 7 is answered, so the case is stated on
 `CLOCK_THREAD_CPUTIME_ID` (3), which no recorded case pairs with a
 dropped write.
-model: `clock_gettime_spec`'s id gate against `clock_input_unwritable` -/
+kernel: kernel/time/posix-timers.c:clock_gettime,clockid_to_kclock@v6.18.46 -/
 theorem bad_id_with_unwritable_tp_is_unmodeled (m : Model) (o : outcome SyscallEffect) :
     clock_gettime_spec 3 4096 (clock_input_unwritable 3) m o ↔ o = Unmodeled := by
   sys_norm
