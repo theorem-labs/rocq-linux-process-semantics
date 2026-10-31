@@ -3374,17 +3374,17 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
 Proof.
-  intros inp Hv. unfold valid_input, valid_input_either in *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat split; assumption.
+  intros inp (a & b & c & k & d & e & f & g & _ & s & v & u).
+  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+    (conj g (conj s (conj v u)))))))))).
 Qed.
 
 Lemma valid_input_either_of_valid_input_abort : forall inp,
   valid_input_abort inp -> valid_input_either inp.
 Proof.
-  intros inp Hv. unfold valid_input_abort, valid_input_either in *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat split; assumption.
+  intros inp (a & b & c & k & d & e & f & g & _ & s & v & u).
+  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+    (conj g (conj s (conj v u)))))))))).
 Qed.
 
 (** The exhaustiveness the paragraph above claims, as a lemma rather
@@ -3393,11 +3393,14 @@ Qed.
 Lemma valid_input_either_splits : forall inp,
   valid_input_either inp -> valid_input inp \/ valid_input_abort inp.
 Proof.
-  intros inp Hv. unfold valid_input_either in Hv.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  intros inp (a & b & c & k & d & e & f & g & s & v & u).
   destruct (in_abort_terminal inp) eqn:Hab.
-  - right. unfold valid_input_abort. repeat split; assumption.
-  - left. unfold valid_input. repeat split; assumption.
+  - right.
+    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+      (conj g (conj Hab (conj s (conj v u))))))))))).
+  - left.
+    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+      (conj g (conj Hab (conj s (conj v u))))))))))).
 Qed.
 
 (** * The SIGPIPE declaration: the same predicate with signal 13 ignored
@@ -3446,18 +3449,17 @@ Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
 Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_sigpipe_either inp.
 Proof.
-  intros inp Hv. unfold valid_input, valid_input_sigpipe_either in *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat split; assumption.
+  intros inp (a & b & c & k & d & e & f & g & h & _ & v & u).
+  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+    (conj g (conj h (conj v u)))))))))).
 Qed.
 
 Lemma valid_input_sigpipe_either_of_valid_input_sigpipe_ignored : forall inp,
   valid_input_sigpipe_ignored inp -> valid_input_sigpipe_either inp.
 Proof.
-  intros inp Hv.
-  unfold valid_input_sigpipe_ignored, valid_input_sigpipe_either in *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat split; assumption.
+  intros inp (a & b & c & k & d & e & f & g & h & _ & v & u).
+  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+    (conj g (conj h (conj v u)))))))))).
 Qed.
 
 (** The exhaustiveness above as a lemma rather than as a sentence, the
@@ -3466,11 +3468,14 @@ Lemma valid_input_sigpipe_either_splits : forall inp,
   valid_input_sigpipe_either inp ->
   valid_input inp \/ valid_input_sigpipe_ignored inp.
 Proof.
-  intros inp Hv. unfold valid_input_sigpipe_either in Hv.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  intros inp (a & b & c & k & d & e & f & g & h & v & u).
   destruct (in_sigpipe_default inp) eqn:Hsp.
-  - left. unfold valid_input. repeat split; assumption.
-  - right. unfold valid_input_sigpipe_ignored. repeat split; assumption.
+  - left.
+    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+      (conj g (conj h (conj Hsp (conj v u))))))))))).
+  - right.
+    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+      (conj g (conj h (conj Hsp (conj v u))))))))))).
 Qed.
 
 (** THE SIGPIPE DECLARATION, as an accessor rather than as a position,
@@ -3619,25 +3624,25 @@ Qed.
 Lemma valid_input_va_any_of_valid_input : forall inp,
   valid_input inp -> valid_input_va_any inp.
 Proof.
-  intros inp Hv. unfold valid_input, valid_input_va_any in *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat split; assumption.
+  intros inp (a & b & c & k & d & e & f & g & h & s & _ & u).
+  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+    (conj g (conj h (conj s u)))))))))).
 Qed.
 
 Lemma valid_input_va_any_of_valid_input_sv39 : forall inp,
   valid_input_sv39 inp -> valid_input_va_any inp.
 Proof.
-  intros inp Hv. unfold valid_input_sv39, valid_input_va_any in *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat split; assumption.
+  intros inp (a & b & c & k & d & e & f & g & h & s & _ & u).
+  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+    (conj g (conj h (conj s u)))))))))).
 Qed.
 
 Lemma valid_input_va_any_of_valid_input_sv57 : forall inp,
   valid_input_sv57 inp -> valid_input_va_any inp.
 Proof.
-  intros inp Hv. unfold valid_input_sv57, valid_input_va_any in *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat split; assumption.
+  intros inp (a & b & c & k & d & e & f & g & h & s & _ & u).
+  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+    (conj g (conj h (conj s u)))))))))).
 Qed.
 
 (** Exhaustiveness as a lemma: an input the shared clauses accept
@@ -3647,12 +3652,17 @@ Lemma valid_input_va_any_splits : forall inp,
   valid_input_va_any inp ->
   valid_input inp \/ valid_input_sv39 inp \/ valid_input_sv57 inp.
 Proof.
-  intros inp Hv. unfold valid_input_va_any in Hv.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  intros inp (a & b & c & k & d & e & f & g & h & s & u).
   destruct (in_va_size inp) eqn:Hsz.
-  - right; left. unfold valid_input_sv39. repeat split; assumption.
-  - left. unfold valid_input. repeat split; assumption.
-  - right; right. unfold valid_input_sv57. repeat split; assumption.
+  - right; left.
+    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj Hsz u))))))))))).
+  - left.
+    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj Hsz u))))))))))).
+  - right; right.
+    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj Hsz u))))))))))).
 Qed.
 
 (** * The hardware-capability declaration: the same predicate per word
@@ -3731,19 +3741,17 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
 Lemma valid_input_of_valid_input_hwcap_rv64gc : forall inp,
   valid_input_hwcap_rv64gc inp -> valid_input inp.
 Proof.
-  intros inp Hv. unfold valid_input_hwcap_rv64gc, valid_input in *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat split; try assumption.
-  left; assumption.
+  intros inp (a & b & c & k & d & e & f & g & h & s & v & u).
+  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+    (conj (or_introl g) (conj h (conj s (conj v u))))))))))).
 Qed.
 
 Lemma valid_input_of_valid_input_hwcap_rv64gcv : forall inp,
   valid_input_hwcap_rv64gcv inp -> valid_input inp.
 Proof.
-  intros inp Hv. unfold valid_input_hwcap_rv64gcv, valid_input in *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat split; try assumption.
-  right; assumption.
+  intros inp (a & b & c & k & d & e & f & g & h & s & v & u).
+  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+    (conj (or_intror g) (conj h (conj s (conj v u))))))))))).
 Qed.
 
 (** …and the two are EXHAUSTIVE on the default, because [valid_hwcap] is
@@ -3756,11 +3764,13 @@ Lemma valid_input_hwcap_splits : forall inp,
   valid_input inp ->
   valid_input_hwcap_rv64gc inp \/ valid_input_hwcap_rv64gcv inp.
 Proof.
-  intros inp Hv. unfold valid_input in Hv.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  match goal with H : valid_hwcap _ |- _ => destruct H as [Hw | Hw] end.
-  - left. unfold valid_input_hwcap_rv64gc. repeat split; assumption.
-  - right. unfold valid_input_hwcap_rv64gcv. repeat split; assumption.
+  intros inp (a & b & c & k & d & e & f & [g | g] & h & s & v & u).
+  - left.
+    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj v u))))))))))).
+  - right.
+    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj v u))))))))))).
 Qed.
 
 (** The declared word, read back out of the predicate.  A statement's
@@ -3826,32 +3836,30 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gc : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> valid_input_abort inp.
 Proof.
-  intros inp Hv.
-  unfold valid_input_abort_hwcap_rv64gc, valid_input_abort in *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat split; try assumption.
-  left; assumption.
+  intros inp (a & b & c & k & d & e & f & g & h & s & v & u).
+  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+    (conj (or_introl g) (conj h (conj s (conj v u))))))))))).
 Qed.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> valid_input_abort inp.
 Proof.
-  intros inp Hv.
-  unfold valid_input_abort_hwcap_rv64gcv, valid_input_abort in *.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat split; try assumption.
-  right; assumption.
+  intros inp (a & b & c & k & d & e & f & g & h & s & v & u).
+  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+    (conj (or_intror g) (conj h (conj s (conj v u))))))))))).
 Qed.
 
 Lemma valid_input_abort_hwcap_splits : forall inp,
   valid_input_abort inp ->
   valid_input_abort_hwcap_rv64gc inp \/ valid_input_abort_hwcap_rv64gcv inp.
 Proof.
-  intros inp Hv. unfold valid_input_abort in Hv.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  match goal with H : valid_hwcap _ |- _ => destruct H as [Hw | Hw] end.
-  - left. unfold valid_input_abort_hwcap_rv64gc. repeat split; assumption.
-  - right. unfold valid_input_abort_hwcap_rv64gcv. repeat split; assumption.
+  intros inp (a & b & c & k & d & e & f & [g | g] & h & s & v & u).
+  - left.
+    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj v u))))))))))).
+  - right.
+    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj v u))))))))))).
 Qed.
 
 Lemma valid_input_abort_hwcap_rv64gc_word : forall inp,

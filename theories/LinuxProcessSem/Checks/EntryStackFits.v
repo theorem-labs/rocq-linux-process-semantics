@@ -296,7 +296,7 @@ Qed.
 Definition oversized_input : FinProcInput :=
   mkFinProcInput oversized_argv [] [] [] (Z_to_bv 64 0) (Z_to_bv 64 0) []
                  net_silent (Z_to_bv 64 0) (Z_to_bv 64 0) hwcap_rv64gc false Sv48
-                 [] [] true.
+                 [] [] true true.
 
 (** The band the POINTER ARRAY alone excludes, stated over every [sp],
     argv and envp rather than at the witness: 268435457 argv entries need

@@ -1051,7 +1051,7 @@ Definition image_input_tmp (fs0 tmp0 : Fs.Fs) : ProcInput :=
      the image inputs declare [default_urandom] (as [Cases.Prelude]'s
      fixture does) rather than [IEof]. *)
   mkProcInput_full [[]] [] fs0 IEof demo_uid demo_gid demo_groups net_silent
-                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom tmp0 true.
+                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom tmp0 true true.
 
 Definition image_input (fs0 : Fs.Fs) : ProcInput := image_input_tmp fs0 [].
 
@@ -1334,7 +1334,7 @@ Example urandom_same_bytes_on_both_sides :
   let inp := mkProcInput_full [[]] [] [] IEof
                demo_uid demo_gid demo_groups net_silent
                default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-               (urandom_stream urandom_decl) [] true in
+               (urandom_stream urandom_decl) [] true true in
   let src := with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit inp))
                          3 FdUrandom)
                (init_model [] 0 0 demo_sp demo_limit inp) in

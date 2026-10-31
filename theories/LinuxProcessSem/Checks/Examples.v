@@ -981,7 +981,7 @@ Proof.
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
-  (* [Run.valid_urandom], the eighth, is the only COINDUCTIVE conjunct,
+  (* [Run.valid_urandom], the last, is the only COINDUCTIVE conjunct,
      so no computation decides it and the fixture discharges it by
      naming the witness its declaration is: [State.default_urandom],
      which is what [State.mkProcInput] fills the field with. *)
@@ -1009,7 +1009,7 @@ Example the_random_clause_is_what_the_fixture_carries :
   /\ ~ valid_input
         (mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups
                           net_silent default_nofile (Z_to_bv 64 0) demo_hwcap
-                          false Sv48 IEof [] true).
+                          false Sv48 IEof [] true true).
 Proof.
   split.
   - valid_urandom_default.
