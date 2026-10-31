@@ -82,7 +82,7 @@ Let kimg_clip_in_hull' := APS.kimg_clip_in_hull A.
 Let cs_ok_agree' := APS.cs_ok_agree SEGS A nx0 LIMIT CEIL SINV argH argH_agree SINV_agree FS0.
 Let cs_ok_frame' := APS.cs_ok_frame SEGS A LIMIT CEIL SINV argH SINV_frame FS0.
 Let hid_agree' := APS.hid_agree A nx0 CEIL argH argH_agree.
-Let vis_add_sound' := APS.vis_add_sound SEGS A LIMIT CEIL HS XN XE XB SHADOW_ok SINV argH argH_high FS0 0%nat.
+Let vis_add_sound' := APS.vis_add_sound SEGS A LIMIT CEIL CEIL_ok HS XN XE XB SHADOW_ok SINV argH argH_high FS0 0%nat.
 Let A_wf_allowA' := APS.A_wf_allowA A HS XN XE XB 0%nat.
 Let know_ok_unhide' := APS.know_ok_unhide SEGS A.
 Let hid_hull' := APS.hid_hull A CEIL CEIL_ok HULL_ok argH argH_high.
@@ -91,7 +91,7 @@ Let maps_match_exact' := APS.maps_match_exact nx0 HS XN XE XB.
 
 (** the Section-[Nodes] lemmas of AsanNodesMmLib, instantiated *)
 Let budget_slack := AsanNodesMmLib.budget_slack SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let dest_hyps := AsanNodesMmLib.dest_hyps SEGS A LIMIT CEIL SINV argH FS0.
+Let dest_hyps := AsanNodesMmLib.dest_hyps SEGS A LIMIT SINV argH FS0.
 Let escale_4096_denot := AsanNodesMmLib.escale_4096_denot SEGS A RES_len HULL_ok.
 Let find_containing_sound := AsanNodesMmLib.find_containing_sound SEGS A RES_len.
 Let fixed_args_sound := AsanNodesMmLib.fixed_args_sound SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
@@ -99,29 +99,29 @@ Let fixed_cs1 := AsanNodesMmLib.fixed_cs1 A.
 Let gap_ok_sound := AsanNodesMmLib.gap_ok_sound SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok SHADOW_ok.
 Let ceil_le_alloc_top := AsanNodesMmLib.ceil_le_alloc_top SEGS A LIMIT CEIL SINV argH FS0.
 Let gap_weight_eq := AsanNodesMmLib.gap_weight_eq SEGS A RES_len.
-Let grant_cs1_ok := AsanNodesMmLib.grant_cs1_ok SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok argH_high SINV_frame.
+Let grant_cs1_ok := AsanNodesMmLib.grant_cs1_ok SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok argH_high SINV_frame.
 Let grant_eager_le := AsanNodesMmLib.grant_eager_le SEGS A RES_len HULL_ok.
-Let grant_keep_apart := AsanNodesMmLib.grant_keep_apart SEGS A RES_len HULL_ok.
+Let grant_keep_apart := AsanNodesMmLib.grant_keep_apart SEGS A CEIL RES_len HULL_ok.
 Let grant_new_facts := AsanNodesMmLib.grant_new_facts SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok argH_high.
-Let grant_vis_add := AsanNodesMmLib.grant_vis_add SEGS A LIMIT CEIL SINV argH FS0 SEGS_in_hull RES_len HULL_ok SHADOW_ok argH_high.
+Let grant_vis_add := AsanNodesMmLib.grant_vis_add SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 SEGS_in_hull RES_len HULL_ok SHADOW_ok argH_high.
 Let grant_wf := AsanNodesMmLib.grant_wf SEGS A RES_len.
 Let in_allow_ext := AsanNodesMmLib.in_allow_ext A.
 Let inside_maps_apart := AsanNodesMmLib.inside_maps_apart SEGS A RES_len HULL_ok.
 Let kimg_in_hull_cons2 := AsanNodesMmLib.kimg_in_hull_cons2 A HULL_ok SHADOW_ok.
 Let kimg_in_hull_pure := AsanNodesMmLib.kimg_in_hull_pure A.
 Let kmem_ok := AsanNodesMmLib.kmem_ok SEGS A RES_len HULL_ok.
-Let kn_grant_filter_ok := AsanNodesMmLib.kn_grant_filter_ok SEGS A RES_len HULL_ok.
+Let kn_grant_filter_ok := AsanNodesMmLib.kn_grant_filter_ok SEGS A CEIL RES_len HULL_ok.
 Let kn_rezero_clip_ok := AsanNodesMmLib.kn_rezero_clip_ok SEGS A RES_len HULL_ok.
 Let kn_rezero_hull_ok := AsanNodesMmLib.kn_rezero_hull_ok SEGS A RES_len HULL_ok.
 Let kn_rezero_ok_gen := AsanNodesMmLib.kn_rezero_ok_gen SEGS A RES_len HULL_ok.
 Let kn_unfill_clip_ok := AsanNodesMmLib.kn_unfill_clip_ok SEGS A RES_len HULL_ok.
 Let maps_match_disjoint := AsanNodesMmLib.maps_match_disjoint SEGS A RES_len.
-Let mmap_fixed_grant_cs1 := AsanNodesMmLib.mmap_fixed_grant_cs1 SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok SHADOW_ok argH_high SINV_frame.
-Let mmap_fixed_old_facts := AsanNodesMmLib.mmap_fixed_old_facts SEGS A nx0 LIMIT CEIL SINV argH FS0 RES_len RES_hull HULL_ok.
-Let mmap_fixed_hole_facts := AsanNodesMmLib.mmap_fixed_hole_facts SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok SHADOW_ok.
-Let fixed_pre := AsanNodesMmLib.fixed_pre SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
+Let mmap_fixed_grant_cs1 := AsanNodesMmLib.mmap_fixed_grant_cs1 SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok SHADOW_ok argH_high SINV_frame.
+Let mmap_fixed_old_facts := AsanNodesMmLib.mmap_fixed_old_facts SEGS A nx0 LIMIT CEIL CEIL_ok SINV argH FS0 RES_len RES_hull HULL_ok.
+Let mmap_fixed_hole_facts := AsanNodesMmLib.mmap_fixed_hole_facts SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok SHADOW_ok.
+Let fixed_pre := AsanNodesMmLib.fixed_pre SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let mmap_len_sound := AsanNodesMmLib.mmap_len_sound SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let mmap_null_cs1 := AsanNodesMmLib.mmap_null_cs1 SEGS A nx0 LIMIT CEIL SINV argH FS0 RES_len HULL_ok argH_high argH_agree SINV_frame SINV_agree.
+Let mmap_null_cs1 := AsanNodesMmLib.mmap_null_cs1 SEGS A nx0 LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok SHADOW_ok argH_high argH_agree SINV_frame SINV_agree.
 Let null_cs1 := AsanNodesMmLib.null_cs1 A.
 Let overlap_sum_contained := AsanNodesMmLib.overlap_sum_contained SEGS A RES_len HULL_ok.
 Let page_aligned_sound := AsanNodesMmLib.page_aligned_sound SEGS A RES_len.
@@ -129,49 +129,48 @@ Let refuse_cont := AsanNodesMmLib.refuse_cont SEGS A nx0 LIMIT CEIL SINV argH FS
 Let refuse_ok := AsanNodesMmLib.refuse_ok SEGS A LIMIT CEIL SINV argH FS0 RES_len SINV_frame.
 Let region_free_of_apart := AsanNodesMmLib.region_free_of_apart SEGS A nx0 LIMIT CEIL SINV argH FS0 RES_len RES_hull HULL_ok.
 Let regs_ok_regupd_same := AsanNodesMmLib.regs_ok_regupd_same SEGS A RES_len.
-Let reserved_free_above := AsanNodesMmLib.reserved_free_above SEGS A RES_len RES_hull HULL_ok.
-Let safe_range_apart := AsanNodesMmLib.safe_range_apart SEGS A RES_len HULL_ok.
+Let safe_range_apart := AsanNodesMmLib.safe_range_apart SEGS A CEIL RES_len HULL_ok.
 Let seps_map_disjoint := AsanNodesMmLib.seps_map_disjoint SEGS A RES_len.
-Let shadow_facts_new_ok := AsanNodesMmLib.shadow_facts_new_ok SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok SHADOW_ok.
-Let slice_args := AsanNodesMmLib.slice_args SEGS A LIMIT CEIL SINV argH FS0 RES_len RES_hull HULL_ok.
-Let slice_hyps := AsanNodesMmLib.slice_hyps SEGS A LIMIT CEIL SINV argH FS0.
+Let shadow_facts_new_ok := AsanNodesMmLib.shadow_facts_new_ok SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok SHADOW_ok.
+Let slice_args := AsanNodesMmLib.slice_args SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
+Let slice_hyps := AsanNodesMmLib.slice_hyps SEGS A LIMIT SINV argH FS0.
 Let split_flat_estart := AsanNodesMmLib.split_flat_estart SEGS A RES_len HULL_ok.
 Let vis_add_inv := AsanNodesMmLib.vis_add_inv A LIMIT.
-Let vis_add_slice_ok := AsanNodesMmLib.vis_add_slice_ok SEGS A LIMIT CEIL SINV argH FS0 SEGS_in_hull RES_len HULL_ok SHADOW_ok argH_high.
-Let vis_grant_out := AsanNodesMmLib.vis_grant_out SEGS A RES_len.
-Let d_MR_in := AsanNodesMmLib.d_MR_in SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let d_MR_out := AsanNodesMmLib.d_MR_out SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
+Let vis_add_slice_ok := AsanNodesMmLib.vis_add_slice_ok SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 SEGS_in_hull RES_len HULL_ok SHADOW_ok argH_high.
+Let vis_grant_out := AsanNodesMmLib.vis_grant_out SEGS A CEIL RES_len.
+Let d_MR_in := AsanNodesMmLib.d_MR_in SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
+Let d_MR_out := AsanNodesMmLib.d_MR_out SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let d_bounds := AsanNodesMmLib.d_bounds SEGS A LIMIT CEIL SINV argH FS0.
-Let d_eager := AsanNodesMmLib.d_eager SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
+Let d_eager := AsanNodesMmLib.d_eager SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let d_in_maps := AsanNodesMmLib.d_in_maps SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let d_lazy_out := AsanNodesMmLib.d_lazy_out SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let d_lohi := AsanNodesMmLib.d_lohi SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
+Let d_lazy_out := AsanNodesMmLib.d_lazy_out SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
+Let d_lohi := AsanNodesMmLib.d_lohi SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let d_maps_in := AsanNodesMmLib.d_maps_in SEGS A LIMIT CEIL SINV argH FS0 RES_len.
 Let d_maps_out := AsanNodesMmLib.d_maps_out SEGS A LIMIT CEIL SINV argH FS0 RES_len.
 Let d_noacc_in := AsanNodesMmLib.d_noacc_in SEGS A LIMIT CEIL SINV argH FS0 RES_len.
 Let d_noacc_out := AsanNodesMmLib.d_noacc_out SEGS A LIMIT CEIL SINV argH FS0 RES_len.
 Let d_sub_in := AsanNodesMmLib.d_sub_in SEGS A LIMIT CEIL SINV argH FS0 RES_len.
 Let d_sub_out := AsanNodesMmLib.d_sub_out SEGS A LIMIT CEIL SINV argH FS0 RES_len.
-Let d_vis_in := AsanNodesMmLib.d_vis_in SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let d_vis_out := AsanNodesMmLib.d_vis_out SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let d_wf' := AsanNodesMmLib.d_wf' SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let dest_cs1_ok := AsanNodesMmLib.dest_cs1_ok SEGS A LIMIT CEIL SINV argH FS0 RES_len RES_hull HULL_ok SHADOW_ok argH_high SINV_frame.
+Let d_vis_in := AsanNodesMmLib.d_vis_in SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
+Let d_vis_out := AsanNodesMmLib.d_vis_out SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
+Let d_wf' := AsanNodesMmLib.d_wf' SEGS A LIMIT SINV argH FS0 RES_len HULL_ok.
+Let dest_cs1_ok := AsanNodesMmLib.dest_cs1_ok SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len RES_hull HULL_ok SHADOW_ok argH_high SINV_frame.
 Let page_base_aligned := AsanNodesMmLib.page_base_aligned SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let sl_MR_out := AsanNodesMmLib.sl_MR_out SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
+Let sl_MR_out := AsanNodesMmLib.sl_MR_out SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let sl_bounds := AsanNodesMmLib.sl_bounds SEGS A LIMIT CEIL SINV argH FS0.
-Let sl_eager := AsanNodesMmLib.sl_eager SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
+Let sl_eager := AsanNodesMmLib.sl_eager SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let sl_in_maps := AsanNodesMmLib.sl_in_maps SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let sl_lazy_in := AsanNodesMmLib.sl_lazy_in SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let sl_lazy_out := AsanNodesMmLib.sl_lazy_out SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let sl_lohi := AsanNodesMmLib.sl_lohi SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
+Let sl_lazy_in := AsanNodesMmLib.sl_lazy_in SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
+Let sl_lazy_out := AsanNodesMmLib.sl_lazy_out SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
+Let sl_lohi := AsanNodesMmLib.sl_lohi SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let sl_noacc_in := AsanNodesMmLib.sl_noacc_in SEGS A LIMIT CEIL SINV argH FS0 RES_len.
 Let sl_noacc_out := AsanNodesMmLib.sl_noacc_out SEGS A LIMIT CEIL SINV argH FS0 RES_len.
-Let sl_vis_in_E := AsanNodesMmLib.sl_vis_in_E SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let sl_vis_in_F := AsanNodesMmLib.sl_vis_in_F SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let sl_vis_in_G := AsanNodesMmLib.sl_vis_in_G SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let sl_vis_out := AsanNodesMmLib.sl_vis_out SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let sl_wf' := AsanNodesMmLib.sl_wf' SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let slice_cs1_ok := AsanNodesMmLib.slice_cs1_ok SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok SHADOW_ok argH_high SINV_frame.
+Let sl_vis_in_E := AsanNodesMmLib.sl_vis_in_E SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
+Let sl_vis_in_F := AsanNodesMmLib.sl_vis_in_F SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
+Let sl_vis_in_G := AsanNodesMmLib.sl_vis_in_G SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
+Let sl_vis_out := AsanNodesMmLib.sl_vis_out SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
+Let sl_wf' := AsanNodesMmLib.sl_wf' SEGS A LIMIT SINV argH FS0 RES_len HULL_ok.
+Let slice_cs1_ok := AsanNodesMmLib.slice_cs1_ok SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok SHADOW_ok argH_high SINV_frame.
 
 (* ######################################################################### *)
 (** * 7b. The NULL-hint node (arms P / A / B0 / B), the spec: refused|granted *)
@@ -471,14 +470,15 @@ Lemma mmap_fixed_free_sound2 : forall cs kd (eager visible : bool) cs' E R FULL 
 Proof.
   intros cs kd eager visible cs' E R FULL model TA TB HC Hec H17 H12 H13 H14 H15 Hkind Hkfog Hvisible Hn HKA HK.
   unfold mmap_fixed_free in Hn.
-  destruct (fixed_args A cs KHI) as [[[[[b off] ne] nlo] nhi]|] eqn:HFA.
+  destruct (fixed_args A cs (resx_clear cs)) as [[[[[b off] ne] nlo] nhi]|] eqn:HFA.
   - (* the classic path: no tokens, every tracked entry provably apart *)
     match type of Hn with (if ?c then _ else _) = _ => destruct c eqn:Hcond; [|discriminate] end.
     apply andb_prop in Hcond as [Hcond Hav]. apply andb_prop in Hcond as [Hcond Hnev].
     apply andb_prop in Hcond as [Hcond Hbud]. apply andb_prop in Hcond as [Hnf Hall].
     destruct (mmap_fixed_old_facts cs b off ne nlo nhi E R FULL model HC HFA Hnf Hall) as (HC0 & Hrf & Hholes & Hside).
-    eapply (mmap_fixed_grant_sound2 cs (a_maps cs) KHI b off ne nlo nhi kd eager visible cs' E R FULL model TA TB
-              HC Hec H17 H12 H13 H14 H15 Hkind Hkfog Hvisible HFA ltac:(unfold KHI in *; ceilnum; lia) Hbud
+    eapply (mmap_fixed_grant_sound2 cs (a_maps cs) (resx_clear cs) b off ne nlo nhi kd eager visible cs' E R FULL model TA TB
+              HC Hec H17 H12 H13 H14 H15 Hkind Hkfog Hvisible HFA
+              ltac:(unfold resx_clear; pose proof (Z.le_min_l KHI (a_ylo cs)); unfold KHI in *; ceilnum; lia) Hbud
               HC0 Hrf Hholes Hside Hn HKA HK).
   - (* the HOLE path *)
     destruct (fixed_args A cs CEIL) as [[[[[b off] ne] nlo] nhi]|] eqn:HFA2; [|discriminate].

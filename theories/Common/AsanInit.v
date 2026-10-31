@@ -89,6 +89,23 @@ Section Init.
       quantified draw that is the NAMED hypothesis [AsanCeil.zero_random_draw], FALSE on every real run, used
       only by [atrandom_zero_ok] / [init_kn_zero_ok] / [init_cs_ok_zero] — see the Common README. *)
   Hypothesis Hzr : AsanCeil.zero_random_draw (ed_random rdraw).
+  (** THE TABLE MUST OVER-STATE THE LAUNCH'S EXTRA RESERVATIONS.
+
+      [State.init_model] seeds [vm_reserved] with the vdso/vvar pair
+      beside the image ([State.init_reserved], [State.vdso_reserved]),
+      and [cs_ok]'s [co_res] asks the table to bound how many intervals
+      that is and how many bytes.  Two and twenty pages are the model's
+      own maxima: [State.vdso_reserved] emits exactly two intervals,
+      and [State.vdso_len_bounds] caps the pair at twenty pages,
+      because the vDSO text is one to sixteen pages and the vvar part
+      is four.
+
+      THIS NARROWS NO RUN.  [n_resx] and [p_resx] are fields of the
+      ANALYSIS TABLE a consumer writes, not of the launch, and their
+      own comment calls them upper bounds.  A table that sets them
+      lower describes no launch this model admits, so the hypothesis
+      excludes tables and not executions. *)
+  Hypothesis RESX : (2 <= n_resx A)%nat /\ (20 <= p_resx A)%nat.
 
   Definition inp : ProcInput := mkProcInput argv envp fs stdin uid gid groups net default_nofile (Z_to_bv 64 0) hw false Sv48.  (* in_hwcap = hw, in_abort_terminal = false, in_va_size = Sv48 *)
   Let bsb := build_stack_bytes ph sp argv envp uid hw rdraw.
@@ -351,9 +368,25 @@ Section Init.
   Let hid0 := hid A CEIL argH0 E0 cs0 model0.
   Let Mr0 := Mr A CEIL argH0 E0 cs0 model0 FULL0.
 
+  (** THE RESERVED LEDGER IS NOT THE SEGMENT LIST ANY MORE.
+
+      [State.init_model] builds it with [State.init_reserved], which
+      appends the vdso/vvar pair [execve] installs below the mmap base
+      ([State.vdso_reserved]).  The old conjunct said
+      [vm_reserved (m_vmmaps model0) = segments_reserved segs] and
+      closed by [reflexivity]; at this model that is false, and the
+      ASan plan checker reasoning from it is what let a plan node
+      certify a grant overlapping the vDSO.
+
+      The honest form is the one [init_reserved] gives, and it still
+      closes by [reflexivity], so every consumer that destructs this
+      positionally is unaffected: [hid0_eq] reads the FIFTH conjunct,
+      [vm_maps], not this one. *)
   Lemma model0_facts :
     m_halted model0 = None /\ m_fds model0 = fds_std /\ m_tid model0 = None
-    /\ vm_reserved (m_vmmaps model0) = segments_reserved segs /\ vm_maps (m_vmmaps model0) = []
+    /\ vm_reserved (m_vmmaps model0)
+       = init_reserved (segments_reserved segs) mbase sp (in_kernel inp)
+    /\ vm_maps (m_vmmaps model0) = []
     /\ vm_noaccess (m_vmmaps model0) = [] /\ m_vm_lazy model0 = [] /\ m_vm_materialized model0 = []
     /\ vm_limit (m_vmmaps model0) = LIMIT /\ vm_brk (m_vmmaps model0) = brk0 /\ vm_start_brk (m_vmmaps model0) = brk0
     /\ vm_mmap_base (m_vmmaps model0) = mbase /\ eager_used model0 = 0.
@@ -791,12 +824,162 @@ Section Init.
     assert (P1 : forall z, z mod 4096 = 0 -> pagedown z = z) by (intros z Hz; unfold pagedown; lia).
     assert (P2 : forall z, z mod 4096 = 0 -> pageup z = z) by (intros z Hz; unfold pageup; lia).
     rewrite (P1 (img_lo A) I3), (P2 (img_hi A) I4).
-    rewrite (P1 0x7fff7f800000 eq_refl). rewrite (P2 (0x7fff7f800000 + (2 ^ 47 - 0x7fff7f800000)) eq_refl).
+    (* the stack side runs from the run's ceiling to 2^47, so the UPPER end is a
+       constant and the lower one is [CEIL]; [ceil_bounds] gives its alignment *)
+    rewrite (P1 CEIL (proj1 CB)).
+    replace (CEIL + (2 ^ 47 - CEIL)) with (2 ^ 47) by lia.
+    rewrite (P2 (2 ^ 47) eq_refl).
     pose proof (pageup_minus_pagedown (shadow_off A + img_lo A / 8) (shadow_off A + img_hi A / 8) ltac:(lia)).
-    pose proof (pageup_minus_pagedown (shadow_off A + 0x7fff7f800000 / 8) (shadow_off A + (0x7fff7f800000 + (2 ^ 47 - 0x7fff7f800000)) / 8) ltac:(lia)).
+    pose proof (pageup_minus_pagedown (shadow_off A + CEIL / 8) (shadow_off A + 2 ^ 47 / 8) ltac:(lia)).
     split; lia.
   Qed.
 
+  (** ** THE LAUNCH'S EXTRA RESERVED INTERVALS
+
+      [State.init_model] seeds [vm_reserved] with the vdso/vvar pair
+      beside the image, so [cs_ok]'s [co_res], [co_totsz] and
+      [co_split] all have to account for it.  The facts are proved once
+      here and read three times below. *)
+  Definition resx0 : list (word * word) :=
+    vdso_reserved (in_kernel inp)
+      (page_round_down_Z (Z.min (bv_unsigned mbase)
+                            (bv_unsigned sp - stack_max_size))).
+
+  Lemma RESX_split :
+    vm_reserved (m_vmmaps model0) = segments_reserved segs ++ resx0.
+  Proof. reflexivity. Qed.
+
+  Lemma RESX_bounds :
+    (mmap_base_min <= page_round_down_Z
+       (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size)))%Z
+    /\ (page_round_down_Z
+          (Z.min (bv_unsigned mbase)
+             (bv_unsigned sp - stack_max_size)) <= mmap_base_max)%Z
+    /\ (page_round_down_Z
+          (Z.min (bv_unsigned mbase)
+             (bv_unsigned sp - stack_max_size)) mod page_size = 0)%Z.
+  Proof.
+    destruct Hsp as (Hsplo & Hsphi & Hsp16).
+    destruct Hmb as (Hmblo & Hmbhi & Hmbal).
+    split; [|split].
+    - (* the base is page aligned and the stack is far above, so the
+         rounding loses nothing below [mmap_base_min] *)
+      assert (Hal : page_round_down_Z mmap_base_min = mmap_base_min)
+        by (unfold page_round_down_Z, page_size, mmap_base_min; reflexivity).
+      rewrite <- Hal at 1. apply page_round_down_Z_mono.
+      unfold mmap_base_min, stack_max_size, sp_window_lo in *. lia.
+    - pose proof (page_round_down_Z_le
+                    (Z.min (bv_unsigned mbase)
+                       (bv_unsigned sp - stack_max_size))).
+      unfold mmap_base_max, sp_window_hi in *. lia.
+    - unfold page_round_down_Z, page_size. apply Z_mod_mult.
+  Qed.
+
+  (** Where the pair's base sits: at or above [top - vdso_len], which is
+      what [co_split]'s high mark has to clear. *)
+  Lemma RESX_base : forall b sz, In (b, sz) resx0 ->
+    (page_round_down_Z (Z.min (bv_unsigned mbase)
+                          (bv_unsigned sp - stack_max_size))
+     - vdso_len (in_kernel inp) <= bv_unsigned b)%Z.
+  Proof.
+    intros b sz Hin.
+    destruct RESX_bounds as (Hlo & Hhi' & Hal).
+    pose proof (vdso_len_bounds (in_kernel inp)) as Hvl.
+    unfold mmap_base_min, mmap_base_max, sp_window_hi, page_size in *.
+    unfold resx0 in Hin.
+    destruct (vdso_reserved_entry_ok (in_kernel inp)
+                (page_round_down_Z
+                   (Z.min (bv_unsigned mbase)
+                      (bv_unsigned sp - stack_max_size))) b sz
+                ltac:(unfold page_size in *; lia)
+                ltac:(unfold two_pow_64; lia) Hal Hin)
+      as (_ & _ & _ & H4 & _).
+    exact H4.
+  Qed.
+
+  (** [AsanNodesMmLib] proves this too, but [AsanInit] does not require
+      that file. *)
+  Lemma sum_sizes_app : forall l1 l2,
+    sum_sizes (l1 ++ l2) = sum_sizes l1 + sum_sizes l2.
+  Proof.
+    intros l1 l2. induction l1 as [|iv l1 IH]; cbn [sum_sizes app]; [lia|].
+    rewrite IH. lia.
+  Qed.
+
+  (** The same equation on the term [init_model] leaves after reduction,
+      for the bullets that meet it unfolded rather than as
+      [vm_reserved (m_vmmaps model0)]. *)
+  Lemma RESX_split' :
+    init_reserved (segments_reserved segs) mbase sp (in_kernel inp)
+    = segments_reserved segs ++ resx0.
+  Proof. reflexivity. Qed.
+
+  Lemma RESX_ok : Forall (resx_entry_ok A) resx0.
+  Proof.
+    pose proof (if_hull _ _ _ IMG) as (_ & Hhi & _ & _).
+    destruct RESX_bounds as (Hlo & Hhi' & Hal).
+    pose proof (vdso_len_bounds (in_kernel inp)) as Hvl.
+    unfold mmap_base_min, mmap_base_max, sp_window_hi, page_size in *.
+    apply Forall_forall. intros [a n] Hin. unfold resx0 in Hin.
+    destruct (vdso_reserved_entry_ok (in_kernel inp)
+                (page_round_down_Z
+                   (Z.min (bv_unsigned mbase)
+                      (bv_unsigned sp - stack_max_size))) a n
+                ltac:(unfold page_size in *; lia)
+                ltac:(unfold two_pow_64; lia) Hal Hin)
+      as (H1 & H2 & H3 & H4 & H5).
+    unfold resx_entry_ok, KHI. cbn [fst snd] in *.
+    unfold page_size in *. repeat split; try lia.
+  Qed.
+
+  Lemma RESX_nonempty :
+    (page_size + vdso_len (in_kernel inp)
+     <= page_round_down_Z (Z.min (bv_unsigned mbase)
+                             (bv_unsigned sp - stack_max_size)))%Z.
+  Proof.
+    destruct RESX_bounds as (Hlo & _ & _).
+    pose proof (vdso_len_bounds (in_kernel inp)) as Hvl.
+    unfold mmap_base_min, page_size in *. lia.
+  Qed.
+
+  Lemma RESX_len : length resx0 = 2%nat.
+  Proof.
+    pose proof RESX_nonempty as Hne.
+    unfold resx0, vdso_reserved.
+    destruct (Z.ltb_spec
+                (page_round_down_Z
+                   (Z.min (bv_unsigned mbase)
+                      (bv_unsigned sp - stack_max_size))
+                 - vdso_len (in_kernel inp)) page_size)
+      as [Hlt|Hge]; [lia | reflexivity].
+  Qed.
+
+  Lemma RESX_sum : sum_sizes resx0 <= resx_bytes A.
+  Proof.
+    destruct RESX as [Hnx Hpx].
+    pose proof RESX_nonempty as Hne.
+    pose proof (Nat2Z.inj_le 20 (p_resx A)) as Hpz.
+    pose proof (vdso_len_bounds (in_kernel inp)) as Hvl.
+    pose proof (vdso_text_pages_pos (in_kernel inp)) as Hvp.
+    pose proof (vdso_text_pages_le (in_kernel inp)) as Hvq.
+    pose proof (bv_unsigned_Z_to_bv_u64 (vdso_vvar_pages * page_size)
+                  ltac:(unfold vdso_vvar_pages, page_size, two_pow_64; lia))
+      as E1.
+    pose proof (bv_unsigned_Z_to_bv_u64
+                  (vdso_text_pages (in_kernel inp) * page_size)
+                  ltac:(unfold page_size, two_pow_64 in *; lia)) as E2.
+    unfold resx0, vdso_reserved.
+    destruct (Z.ltb_spec
+                (page_round_down_Z
+                   (Z.min (bv_unsigned mbase)
+                      (bv_unsigned sp - stack_max_size))
+                 - vdso_len (in_kernel inp)) page_size)
+      as [Hlt|Hge]; [|].
+    - cbn [sum_sizes fold_right fold_left map fst snd].
+      unfold resx_bytes, vdso_len, vdso_vvar_pages, page_size in *. lia.
+    - cbn [sum_sizes fold_right fold_left map fst snd].
+      unfold resx_bytes, vdso_len, vdso_vvar_pages, page_size in *. lia.
+  Qed.
   Theorem init_cs_ok : cs_ok segs A LIMIT CEIL SINV0 argH0 fs E0 cs0 R0 FULL0 model0.
   Proof.
     destruct model0_facts as (M1 & M2 & M3 & M4 & M5 & M6 & M7 & M8 & M9 & M10 & M11 & M12 & M13).
@@ -811,10 +994,16 @@ Section Init.
     - reflexivity.
     - reflexivity.
     - reflexivity.
-    - (* co_res: this launch reserves nothing besides the image *)
-      exists []. rewrite app_nil_r. split; [reflexivity|]. split; [constructor|].
-      split; [cbn [length]; lia|].
-      cbn [sum_sizes]. unfold resx_bytes. pose proof (Nat2Z.is_nonneg (p_resx A)). lia.
+    - (* co_res: the launch seeds the vdso/vvar pair beside the image.
+         It used to read [exists []], "this launch reserves nothing
+         besides the image", which [State.init_model] made false the
+         moment it began seeding the pair. *)
+      destruct RESX as [Hnx Hpx].
+      exists resx0.
+      split; [exact RESX_split|].
+      split; [exact RESX_ok|].
+      split; [rewrite RESX_len; lia|].
+      exact RESX_sum.
     - reflexivity.
     - reflexivity.
     - constructor.   (* no hole tokens *)
@@ -827,14 +1016,45 @@ Section Init.
     - intros z Hz. exact Hz.
     - constructor.
     - constructor.
-    - rewrite app_nil_r, (if_sizes _ _ _ IMG). unfold resx_bytes.
-      pose proof (Nat2Z.is_nonneg (p_resx A)). lia.
-    - exists (bv_unsigned mbase). destruct Hmb as (Y1 & Y2 & Y3). unfold mmap_base_min in Y1. unfold page_size in Y3.
-      unfold MBASE_MIN, resx_bytes. pose proof (Nat2Z.is_nonneg (p_resx A)).
-      split; [lia|]. split; [exact Y3|]. split; [lia|].
-      rewrite app_nil_r. intros b sz Hin.
-      pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin) as [R1 R2]. cbn [fst snd] in R1, R2.
-      left. unfold kHighMemBeg. lia.
+    - (* co_totsz: the image hull plus the launch's extra reservations *)
+      rewrite app_nil_r, RESX_split', sum_sizes_app, (if_sizes _ _ _ IMG).
+      pose proof RESX_sum. unfold resx_bytes in *. lia.
+    - (* co_split: the mark is the base of the launch's extra
+         reservations, not the mmap base.  The pair sits BELOW the mmap
+         base, so a mark at the base would have the pair on the wrong
+         side of it. *)
+      destruct RESX as [Hnx Hpx].
+      destruct RESX_bounds as (Hlo & Hhi' & Hal).
+      pose proof (vdso_len_bounds (in_kernel inp)) as Hvl.
+      pose proof (Nat2Z.inj_le 20 (p_resx A)) as Hpz.
+      pose proof (if_hull _ _ _ IMG) as (_ & Hih & _ & _).
+      exists (page_round_down_Z
+                (Z.min (bv_unsigned mbase)
+                   (bv_unsigned sp - stack_max_size))
+              - vdso_len (in_kernel inp))%Z.
+      assert (Htm : (page_round_down_Z (Z.min (bv_unsigned mbase)
+                       (bv_unsigned sp - stack_max_size))
+                     <= bv_unsigned mbase)%Z).
+      { pose proof (page_round_down_Z_le
+                      (Z.min (bv_unsigned mbase)
+                         (bv_unsigned sp - stack_max_size))).
+        pose proof (Z.le_min_l (bv_unsigned mbase)
+                      (bv_unsigned sp - stack_max_size)). lia. }
+      assert (Hpz' : (20 <= Z.of_nat (p_resx A))%Z)
+        by (change 20%Z with (Z.of_nat 20); apply Nat2Z.inj_le; exact Hpx).
+      unfold MBASE_MIN, resx_bytes, mmap_base_min, page_size in *.
+      split; [lia|].
+      split.
+      { pose proof (vdso_len_page (in_kernel inp)) as Hvp.
+        unfold page_size in *.
+        rewrite Zminus_mod, Hal, Hvp. reflexivity. }
+      split; [lia|].
+      rewrite app_nil_r, RESX_split'. intros b sz Hin.
+      apply in_app_iff in Hin as [Hin|Hin].
+      + pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin)
+          as [R1 R2]. cbn [fst snd] in R1, R2.
+        left. unfold kHighMemBeg, KHI in *. lia.
+      + right. exact (RESX_base b sz Hin).
     - unfold escale. rewrite mkMd_denot. cbn [edenot]. apply bv_eq. rewrite u_mul64, u64_lit by lia.
       destruct uE0 as (_ & _ & _ & _ & _ & _ & U7). unfold uE in U7. cbn [edenot] in U7. rewrite U7.
       rewrite Z.mod_small by lia. lia.

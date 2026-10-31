@@ -4811,6 +4811,54 @@ Proof.
     rewrite bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia); lia.
 Qed.
 
+(** The pair's width is a whole number of pages, which is what a
+    consumer needs to see that a page-aligned top leaves a page-aligned
+    base. *)
+Lemma vdso_len_page : forall kb, (vdso_len kb mod page_size = 0)%Z.
+Proof.
+  intro kb. unfold vdso_len, vdso_vvar_pages, page_size.
+  apply Z_mod_mult.
+Qed.
+
+(** EVERYTHING A CONSUMER NEEDS ABOUT ONE ENTRY OF THE PAIR, in one
+    lemma: it names at least one byte, it starts and ends on a page,
+    and it lies inside [[top - vdso_len kb, top)].  The page-aligned
+    [top] is what [State.vdso_top] gives, and the room premise says the
+    pair fits above the first page, which is the condition under which
+    [vdso_reserved] emits anything at all. *)
+Lemma vdso_reserved_entry_ok : forall kb top a n,
+  (page_size + vdso_len kb <= top)%Z -> (top < two_pow_64)%Z ->
+  (top mod page_size = 0)%Z ->
+  In (a, n) (vdso_reserved kb top) ->
+  (0 < bv_unsigned n)%Z
+  /\ (bv_unsigned a mod page_size = 0)%Z
+  /\ (bv_unsigned n mod page_size = 0)%Z
+  /\ (top - vdso_len kb <= bv_unsigned a)%Z
+  /\ (bv_unsigned a + bv_unsigned n <= top)%Z.
+Proof.
+  intros kb top a n Hroom Htop Hal Hin.
+  pose proof (vdso_text_pages_pos kb) as Hp.
+  pose proof (vdso_text_pages_le kb) as Hl.
+  pose proof (vdso_len_bounds kb) as Hb.
+  assert (Hdiv : (4096 | top)%Z)
+    by (apply Z.mod_divide; [lia | unfold page_size in Hal; exact Hal]).
+  unfold vdso_reserved, vdso_len, vdso_vvar_pages, page_size in *.
+  destruct (Z.ltb_spec (top - (4 + vdso_text_pages kb) * 4096) 4096) as [Hlt|Hge];
+    [cbn in Hin; contradiction|].
+  destruct Hdiv as (q & Hq).
+  cbn in Hin. destruct Hin as [Heq|[Heq|[]]]; inversion Heq; subst a n;
+    rewrite !bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia);
+    repeat split; try lia;
+    rewrite Hq; rewrite <- Z.mul_sub_distr_r || idtac;
+    try (apply Z_mod_mult);
+    try (replace (q * 4096 - (4 + vdso_text_pages kb) * 4096)%Z
+           with ((q - (4 + vdso_text_pages kb)) * 4096)%Z by lia;
+         apply Z_mod_mult);
+    try (replace (q * 4096 - (4 + vdso_text_pages kb) * 4096 + 4 * 4096)%Z
+           with ((q - vdso_text_pages kb) * 4096)%Z by lia;
+         apply Z_mod_mult).
+Qed.
+
 (** Cutting a NONEMPTY entry leaves nonempty remnants: each of the two
     is emitted under exactly the guard that makes its size positive. *)
 Lemma iv_subtract_nonzero : forall (a sz : word) loZ hiZ,

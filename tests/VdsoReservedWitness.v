@@ -64,7 +64,7 @@ Definition LIMITX : Z := 2 ^ 40.
 
 (** the extra reservation: twenty pages based at the lowest address a launch
     can put them, [MBASE_MIN - resx_bytes AX], which is the initial
-    [a_ylo] of [init_acs_of AX] *)
+    [a_ylo] of [init_acs_of AX GAP_CEIL] *)
 Definition RXBASE : Z := MBASE_MIN - resx_bytes AX.
 Definition RX : list (word * word) := [(Z_to_bv 64 RXBASE, Z_to_bv 64 (resx_bytes AX))].
 
@@ -120,21 +120,28 @@ Definition with_ylo (cs : acs) (y : Z) : acs :=
 
 Definition YLO : Z := KHI - 3 * 4096.
 
+(** [init_acs_of] takes the plan's ceiling, which since the placement
+    change is a parameter rather than a constant: [cs_ok]'s [co_ceil]
+    pins it to [page_round_down_Z (alloc_top (m_vmmaps model))] for a
+    real run.  This fixture carries no model, so it uses [GAP_CEIL],
+    the constant [AsanCeil.alloc_ceiling], which is the lower end of
+    the band [ceil_ok] admits and is therefore a ceiling some launch
+    really has. *)
 Definition csX (addr len : Z) : acs :=
-  with_ylo (set_reg (set_reg (init_acs_of AX) 10 (ELit addr)) 11 (ELit len)) YLO.
+  with_ylo (set_reg (set_reg (init_acs_of AX GAP_CEIL) 10 (ELit addr)) 11 (ELit len)) YLO.
 
 (** REFUSED: the request ends one page ABOVE the floor, so the checker cannot
     place it below the launch's extra reservations.  An undecided case
     refuses: the node returns [None] rather than granting. *)
 Example node_refuses_past_the_floor :
-  mmap_fixed_free AX LIMITX (csX (YLO - 4096) 8192) KRW false false = None.
+  mmap_fixed_free AX LIMITX GAP_CEIL (csX (YLO - 4096) 8192) KRW false false = None.
 Proof. vm_compute. reflexivity. Qed.
 
 (** ADMITTED: the same request one page lower ends AT the floor, so it is
     provably clear of them, and the node still grants.  Without this half the
     pair would not show the checker still works. *)
 Example node_admits_below_the_floor :
-  exists cs', mmap_fixed_free AX LIMITX (csX (YLO - 8192) 4096) KRW false false = Some cs'.
+  exists cs', mmap_fixed_free AX LIMITX GAP_CEIL (csX (YLO - 8192) 4096) KRW false false = Some cs'.
 Proof. eexists. vm_compute. reflexivity. Qed.
 
 (** what the two requests differ in, stated as the test itself *)
