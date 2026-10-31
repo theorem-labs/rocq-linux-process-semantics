@@ -1007,14 +1007,35 @@ Fixpoint ppoll_writeback (p : word) (rs : list Z) : list (word * list byte) :=
     30 and above the limit gets the kernel's -EINVAL rather than a
     decline.
 
-    [nfds = 0] touches [ufds] not at all: [copy_from_user] of zero bytes
-    reads nothing, [do_poll] walks no entries and the write-back loop
-    writes none, however wild the pointer is. *)
+    [nfds = 0] COPIES NOTHING AND STILL ANSWERS FOR [ufds].  The copy
+    loop breaks at [if (!len) break] before [copy_from_user], [do_poll]
+    walks no entry and the write-back loop writes none -- but
+    [do_sys_poll] guards that loop with
+    [if (!user_write_access_begin(ufds, nfds * sizeof pollfd)) goto
+    out_fds] (fs/select.c), which it runs UNCONDITIONALLY, and
+    [out_fds] returns the [err = -EFAULT] the function opened with.
+    riscv64's [user_write_access_begin] is [access_ok] on the untagged
+    address (arch/riscv/include/asm/uaccess.h), and the generic
+    [__access_ok] ends [return (size <= limit) && (addr <= (limit -
+    size));] (include/asm-generic/access_ok.h), which at [size = 0]
+    still refuses an [addr] above [TASK_SIZE_MAX].  So a wild [ufds] is
+    -EFAULT at [nfds = 0] and not a success.  That test is
+    [ppoll_writeback_access] below, where its ORDER against [do_poll]
+    can be stated; what belongs here is the other half of the same
+    range test, [copy_from_user]'s own [access_ok], which runs BEFORE
+    [do_poll] and only for the bytes it copies -- so it is conditioned
+    on [n] being nonzero, and above [n = 0] it makes the later test
+    redundant.  Linux v6.18.46 throughout. *)
 Definition ppoll_core (i : SyscallInput) (m : Model) (ufds nfds : word)
     : PselectCore :=
   let n := bv_unsigned nfds in
   if (bv_unsigned (m_nofile m) <? n)%Z then PsCoreErr EINVAL
   else if (ppoll_nfds_max <? n)%Z then PsCoreGap
+  else if (negb (Z.eqb n 0) && negb (access_okb ufds (pollfd_bytes * n)))%bool
+  then PsCoreErr EFAULT
+    (* [copy_from_user]'s [access_ok] over the one chunk the modeled
+       band copies ([n <= ppoll_nfds_max <= N_STACK_PPS]), ahead of
+       [do_poll] and so ahead of any wait *)
   else
     match read_bytes_map (in_mem i) ufds
             (Z_to_bv 64 (pollfd_bytes * n)) with
@@ -1025,6 +1046,40 @@ Definition ppoll_core (i : SyscallInput) (m : Model) (ufds nfds : word)
         | Some rs => PsCoreDone (ppoll_count rs) (ppoll_writeback ufds rs)
         end
     end.
+
+(** [user_write_access_begin(ufds, nfds * sizeof pollfd)] (fs/select.c),
+    the range test [do_sys_poll] makes on the write-back band.
+
+    IT RUNS AFTER [do_poll], which is the whole reason it is a second
+    definition rather than a line in [ppoll_core].  A call that would
+    not return cannot answer -EFAULT either: with a NULL [tsp] and no
+    ready descriptor, [do_poll]'s [timed_out] flag is never set and the
+    loop never exits (the argument is [pselect_finish]'s, which answers
+    [None] for exactly that shape), so this test is never reached and
+    the model declines.  Every other shape -- a zero timeout, a real
+    deadline, or a nonzero count -- has [do_poll] returning, and the
+    failed range test then discards that return for the [-EFAULT] the
+    function opened with.  [PsCoreErr] carries it to [pselect_finish],
+    which answers the deadline case [None] for the live clock reading
+    the errno would come with, exactly as it does for every other errno
+    out of [do_sys_poll].
+
+    Above [nfds = 0] this is dead: [ppoll_core]'s own [access_ok] on
+    the same range has already answered.  It is written over the whole
+    band anyway, because the kernel's call is unconditional and
+    conditioning it on [n] would make the model's agreement with
+    fs/select.c rest on an argument rather than on the code. *)
+Definition ppoll_writeback_access (ufds nfds : word) (tmo : PselectTimeout)
+    (c : PselectCore) : PselectCore :=
+  match c with
+  | PsCoreDone ret _ =>
+      if access_okb ufds (pollfd_bytes * bv_unsigned nfds) then c
+      else match tmo with
+           | PsToNone => if Z.eqb ret 0 then PsCoreGap else PsCoreErr EFAULT
+           | _ => PsCoreErr EFAULT
+           end
+  | _ => c
+  end.
 
 (** [set_user_sigmask] (kernel/signal.c), reached with the mask pointer
     and the size as separate arguments.
@@ -1063,7 +1118,11 @@ Definition ppoll_sigmask (mp : word -> option byte) (sig sigsetsize : word)
     Note where [poll_select_finish] is and is not: the two
     [set_user_sigmask] errnos below return from the entry directly and
     write no timeout back, while everything [ppoll_core] answers --
-    errnos included -- passes through it. *)
+    errnos included -- passes through it.  [do_sys_poll] is TWO
+    definitions here, [ppoll_core] and [ppoll_writeback_access], and
+    the second is the range test that follows [do_poll]; it needs the
+    timeout because a call that never returns cannot answer -EFAULT
+    either. *)
 Definition ppoll_outcome (i : SyscallInput) (m : Model)
     (ufds nfds tsp sig sigsetsize : word)
     : option (word * list (word * list byte)) :=
@@ -1078,8 +1137,11 @@ Definition ppoll_outcome (i : SyscallInput) (m : Model)
       | PpSigFault => pselect_err EFAULT
       | PpSigReal => None
       | PpSigNone =>
-          (* [do_sys_poll], then [poll_select_finish] *)
-          pselect_finish i tsp tmo (ppoll_core i m ufds nfds)
+          (* [do_sys_poll] -- the copy and [do_poll], then the
+             write-back's own range test -- and then
+             [poll_select_finish] *)
+          pselect_finish i tsp tmo
+            (ppoll_writeback_access ufds nfds tmo (ppoll_core i m ufds nfds))
       end
   end.
 
@@ -1090,9 +1152,10 @@ Definition ppoll_outcome (i : SyscallInput) (m : Model)
     [PpSigReal] arm -- the [8 * nfds] bytes of the [pollfd] array, one
     [copy_from_user] in [do_sys_poll] for every [nfds] the modeled band
     admits.  The same conventions as [pselect6_reads]: a failed copy
-    records nothing, and [nfds = 0] or an [nfds] over the RLIMIT_NOFILE
-    soft limit reads no array.  It restates the decision order of
-    [ppoll_outcome] and [ppoll_core], and must change with them. *)
+    records nothing -- including the copy its own [access_ok] refuses --
+    and [nfds = 0] or an [nfds] over the RLIMIT_NOFILE soft limit reads
+    no array.  It restates the decision order of [ppoll_outcome] and
+    [ppoll_core], and must change with them. *)
 Definition ppoll_reads (i : SyscallInput) (m : Model)
     (ufds nfds tsp sig sigsetsize : word) : list (word * nat) :=
   let mp := in_mem i in
@@ -1104,7 +1167,8 @@ Definition ppoll_reads (i : SyscallInput) (m : Model)
       match tmo, ppoll_sigmask mp sig sigsetsize with
       | PsToInval, _ => []
       | _, PpSigNone =>
-          if ((bv_unsigned (m_nofile m) <? n)%Z || (n =? 0)%Z)%bool then []
+          if ((bv_unsigned (m_nofile m) <? n)%Z || (n =? 0)%Z
+              || negb (access_okb ufds (pollfd_bytes * n)))%bool then []
           else match read_bytes_map mp ufds (Z_to_bv 64 (pollfd_bytes * n)) with
                | Some _ => [(ufds, Z.to_nat (pollfd_bytes * n))]
                | None => []
