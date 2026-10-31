@@ -6,7 +6,9 @@ import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.ScaleMix
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.Calibrated
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoFile
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
+
+/-!
 
 # MeasureLib — geometric file contents behind a fixed header
 

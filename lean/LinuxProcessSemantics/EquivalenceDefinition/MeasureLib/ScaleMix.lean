@@ -3,7 +3,9 @@ import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.Prelude
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.FiniteSupport
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoStdin
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
+
+/-!
 
 # EquivalenceDefinition.MeasureLib.ScaleMix — scaling and mixture
 

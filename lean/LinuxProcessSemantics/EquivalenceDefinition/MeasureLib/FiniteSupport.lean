@@ -1,7 +1,9 @@
 -- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/MeasureLib.v
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.Prelude
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
+
+/-!
 
 # EquivalenceDefinition.MeasureLib.FiniteSupport — the finite-support combinator
 

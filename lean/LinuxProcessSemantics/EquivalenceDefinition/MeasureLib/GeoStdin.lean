@@ -2,7 +2,9 @@
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.Prelude
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.FiniteSupport
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
+
+/-!
 
 # MeasureLib.GeoStdin — geometric standard input over a fixed environment
 

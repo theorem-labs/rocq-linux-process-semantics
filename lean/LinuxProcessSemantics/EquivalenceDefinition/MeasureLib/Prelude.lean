@@ -5,9 +5,9 @@ import LinuxProcessSemantics.EquivalenceDefinition.GatedSize
 import LinuxProcessSemantics.EquivalenceDefinition.Classifier
 import LinuxProcessSemantics.EquivalenceDefinition.FinInput
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
-# EquivalenceDefinition.MeasureLib.Prelude — the arithmetic and the packaging
+/-! # EquivalenceDefinition.MeasureLib.Prelude — the arithmetic and the packaging
 
 This file holds Rocq `theories/EquivalenceDefinition/MeasureLib.v`
 lines 1256-1833: the rational facts `QArith` does not ship, powers with

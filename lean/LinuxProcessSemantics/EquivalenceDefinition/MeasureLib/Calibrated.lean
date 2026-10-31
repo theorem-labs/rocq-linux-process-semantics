@@ -5,7 +5,9 @@ import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoStdin
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.ScaleMix
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoStdinVarying
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
+
+/-!
 
 # EquivalenceDefinition.MeasureLib.Calibrated — the calibrated mixture
 

@@ -10,7 +10,9 @@ import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoFileHeader
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoFileHeaderAlphabet
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoFileVarying
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
+
+/-!
 
 # EquivalenceDefinition.MeasureLib.FullSupport — the full-support base family
 

@@ -9,7 +9,9 @@ import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoFile
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoFileHeader
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.Alphabet
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
+
+/-!
 
 # EquivalenceDefinition.MeasureLib.GeoFileHeaderAlphabet — geometric file contents behind a fixed header, over an alphabet
 

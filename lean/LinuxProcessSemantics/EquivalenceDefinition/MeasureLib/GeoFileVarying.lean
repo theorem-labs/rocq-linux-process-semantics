@@ -10,7 +10,9 @@ import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoFileHeader
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.Alphabet
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoFileHeaderAlphabet
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
+
+/-!
 
 # EquivalenceDefinition.MeasureLib.GeoFileVarying — geometric file contents over a varying launch-time environment
 
