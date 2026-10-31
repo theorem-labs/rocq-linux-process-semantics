@@ -1,4 +1,6 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Kernel/Time/PosixTimers.v
 -- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Time/PosixTimers.v
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Witness/Kernel/Time/PosixTimers.v
 
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Time.PosixTimers
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel.Time.PosixTimers
@@ -427,6 +429,37 @@ applies first, refuses `tv_sec < 0` as a date before 1970.
 kernel: include/linux/time64.h:timespec64_valid,timespec64_valid_settod@v6.18.46 -/
 theorem realtime_negative_tv_sec_rejected :
     clock_check 0 (mkEffect 0 [(4096, ts_cpu_neg1)] []) (clock_model 0) = CheckReject := rfl
+
+/-- `CLOCK_MONOTONIC_RAW` (4) is on the per-call arm, so the checker holds
+its reading to `realtime_ok_b` alone: a denormalized `tv_nsec` is refused
+there as it is for the wall clock.
+kernel: kernel/time/timekeeping.c:ktime_get_raw_ts64@v6.18.46
+rocq-twin: monotonic_raw_denormalized_nsec_rejected -/
+theorem monotonic_raw_denormalized_nsec_rejected :
+    clock_check 4 (mkEffect 0 [(4096, ts_denorm)] []) (clock_model 0) = CheckReject := rfl
+
+/-- `CLOCK_REALTIME_COARSE` (5), same arm, same envelope on the reading.
+kernel: kernel/time/timekeeping.c:ktime_get_coarse_real_ts64@v6.18.46
+rocq-twin: realtime_coarse_reading_at_envelope_rejected -/
+theorem realtime_coarse_reading_at_envelope_rejected :
+    clock_check 5 (mkEffect 0 [(4096, ts_over)] []) (clock_model 0) = CheckReject := rfl
+
+/-- `CLOCK_MONOTONIC_COARSE` (6) states no cross-call relation, so the
+checker answers over a recorded clock the monotonic arm declines, and
+records nothing.
+kernel: kernel/time/timekeeping.c:ktime_get_coarse_ts64@v6.18.46
+rocq-twin: monotonic_coarse_ignores_the_recorded_clock -/
+theorem monotonic_coarse_ignores_the_recorded_clock :
+    clock_check 6 (mkEffect 0 [(4096, ts_1s)] []) (clock_model (2 ^ 63))
+      = CheckOk (clock_model (2 ^ 63)) [] := rfl
+
+/-- `CLOCK_BOOTTIME` (7), same arm: a reading BEFORE the recorded
+monotonic one is admissible, and the recorded clock does not move.
+kernel: kernel/time/timekeeping.c:ktime_get_boottime_ts64,__timekeeping_inject_sleeptime@v6.18.46
+rocq-twin: boottime_backwards_reading_is_admissible -/
+theorem boottime_backwards_reading_is_admissible :
+    clock_check 7 (mkEffect 0 [(4096, ts_1s_minus)] []) (clock_model 1000000000)
+      = CheckOk (clock_model 1000000000) [] := rfl
 
 /-! ## CLOCK_PROCESS_CPUTIME_ID, which is not a clock
 

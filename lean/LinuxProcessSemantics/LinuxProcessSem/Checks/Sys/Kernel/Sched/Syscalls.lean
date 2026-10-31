@@ -7,8 +7,9 @@ import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude
 
 
-/-! rocq-baseline: 6e7c0d18ddbaa2d453318f0af4665958350a1871 (the upstream port's
-baseline; the twin's source of truth is the header lines above) -/
+-- The `rocq-baseline` below is the upstream port's own; this file's source
+-- of truth is the `Ports` line at the top.
+/-! rocq-baseline: 6e7c0d18ddbaa2d453318f0af4665958350a1871 -/
 
 /-! # LinuxProcessSem.Checks.Sys.Kernel.Sched.Syscalls — the sched_getaffinity (123), sched_setscheduler (119) and sched_yield (124) checkers and witnesses, and their proofs
 

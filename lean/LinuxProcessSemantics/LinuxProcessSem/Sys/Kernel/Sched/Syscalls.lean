@@ -4,8 +4,9 @@ import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 
 
-/-! rocq-baseline: 6e7c0d18ddbaa2d453318f0af4665958350a1871 (the upstream port's
-baseline; the twin's source of truth is the header line above) -/
+-- The `rocq-baseline` below is the upstream port's own; this file's source
+-- of truth is the `Ports` line at the top.
+/-! rocq-baseline: 6e7c0d18ddbaa2d453318f0af4665958350a1871 -/
 
 /-! # LinuxProcessSem.Sys.Kernel.Sched.Syscalls — sched_setscheduler (119), sched_getaffinity (123), sched_yield (124)
 
@@ -218,7 +219,8 @@ function of the ARGUMENTS alone, so the two -EINVALs, the -EFAULT and
 the four -EINVALs `__sched_setscheduler` raises before it consults the
 task are modeled exactly.  The argument in full is on the Rocq
 definition `Sched.Syscalls.sched_setscheduler_spec` (f1006fe8,
-`Sys/Kernel/Sched/Syscalls.v:213-268`).
+`Sys/Kernel/Sched/Syscalls.v:213-400`, and the definition itself is at
+`:462-487`).
 
 UPSTREAM DECLINES THIS BAND AND THE TWIN DOES NOT.  linux-process-semantics'
 Lean tree answers `unmodeled` for a non-NULL negative argument, because

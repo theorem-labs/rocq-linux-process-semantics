@@ -4,8 +4,9 @@ import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 (the upstream port's
-baseline; the twin's source of truth is the header line above) -/
+-- The `rocq-baseline` below is the upstream port's own; this file's source
+-- of truth is the `Ports` line at the top.
+/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
 /-! # LinuxProcessSem.Sys.Kernel.Time.PosixTimers — clock_gettime (113)
 

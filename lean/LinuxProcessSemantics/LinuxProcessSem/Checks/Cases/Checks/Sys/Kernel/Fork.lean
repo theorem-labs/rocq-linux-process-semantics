@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Kernel/Fork.v
 -- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Fork.v
 
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Fork
@@ -169,8 +170,10 @@ Linux returns a `pid_t`, an `int`, so the return register excludes this value.
 This pin fails for a checker that tests only the low 32 bits.
 The probe case `set_tid_address:ret=4294967301 -- one` in
 `testing/syscall-check/tests/set_tid.c` states the same of the Rocq checker.
-The Rocq twin is `check_set_tid_address_refuses_a_tid_past_32_bits` in
-`theories/LinuxProcessSem/Checks/Cases/Kernel/Fork.v`.
+`linux-process-semantics@ff0313ba4f:theories/LinuxProcessSem/Checks/Cases/Kernel/Fork.v`
+had a twin of this pin, `check_set_tid_address_refuses_a_tid_past_32_bits`; `f1006fe8`,
+the commit this file ports, deleted it, and the twin keeps the pin because what
+it states is still true of this model (gaps-Z5.md row Z5-5).
 kernel: kernel/fork.c:set_tid_address; include/linux/pid.h:task_pid_vnr@v6.18.46 -/
 theorem check_set_tid_address_refuses_a_tid_past_32_bits (h : m_tid m = none) :
     check_set_tid_address (mkEffect 4294967301 [] []) m = CheckReject := by
@@ -327,8 +330,10 @@ Linux returns a `pid_t`, an `int`, so the return register excludes this value.
 This pin fails for a checker that compares only the low 32 bits.
 The probe case `set_tid_address#2:ret+4294967296 -- two` in
 `testing/syscall-check/tests/set_tid.c` states the same of the Rocq checker.
-The Rocq twin is `check_set_tid_address_refuses_the_recorded_tid_past_32_bits` in
-`theories/LinuxProcessSem/Checks/Cases/Kernel/Fork.v`.
+`linux-process-semantics@ff0313ba4f:theories/LinuxProcessSem/Checks/Cases/Kernel/Fork.v`
+had a twin of this pin, `check_set_tid_address_refuses_the_recorded_tid_past_32_bits`; `f1006fe8`,
+the commit this file ports, deleted it, and the twin keeps the pin because what
+it states is still true of this model (gaps-Z5.md row Z5-5).
 kernel: kernel/fork.c:set_tid_address; include/linux/pid.h:task_pid_vnr@v6.18.46 -/
 theorem check_set_tid_address_refuses_the_recorded_tid_past_32_bits (h : m_tid m = some 7) :
     check_set_tid_address (mkEffect 4294967303 [] []) m = CheckReject := by

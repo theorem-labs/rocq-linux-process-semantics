@@ -1,12 +1,14 @@
 -- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Time/PosixTimers.v
 -- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Witness/Kernel/Time/PosixTimers.v
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/VmMapsDisjoint.v
 
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 (the upstream port's
-baseline; the twin's source of truth is the header lines above) -/
+-- The `rocq-baseline` below is the upstream port's own; this file's source
+-- of truth is the `Ports` line at the top.
+/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
 /-! # LinuxProcessSem.Checks.Sys.Kernel.Time.PosixTimers — the clock_gettime (113) checker and its witness
 

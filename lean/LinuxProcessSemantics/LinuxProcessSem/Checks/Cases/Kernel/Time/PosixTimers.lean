@@ -299,8 +299,12 @@ theorem tai_is_unmodeled (m : Model) (o : outcome SyscallEffect) :
 an unwritable destination alike — the id is decoded first, so nothing
 about `tp` is consulted.  Both gates decline here, so the kernel's
 -EINVAL-before-EFAULT order is not observable on the outcome; what this
-pins is that the decline needs no destination at all.
-probe: testing/syscall-check/tests/clock_gettime_spec.c#fail-closed --mutate clock_gettime:arg0=3,drop-writes -- one -/
+pins is that the decline needs no destination at all.  The probe's own
+`--mutate clock_gettime:arg0=7,drop-writes` case cannot carry this pin
+any more: at `f1006fe8` id 7 is answered, so the case is stated on
+`CLOCK_THREAD_CPUTIME_ID` (3), which no recorded case pairs with a
+dropped write.
+model: `clock_gettime_spec`'s id gate against `clock_input_unwritable` -/
 theorem bad_id_with_unwritable_tp_is_unmodeled (m : Model) (o : outcome SyscallEffect) :
     clock_gettime_spec 3 4096 (clock_input_unwritable 3) m o ↔ o = Unmodeled := by
   sys_norm
