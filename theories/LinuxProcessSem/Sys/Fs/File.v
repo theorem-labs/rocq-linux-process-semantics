@@ -218,8 +218,10 @@ Definition dup3_flags_ok (flags : word) : bool :=
        validity test, which is where dup3 differs from dup2 (dup2
        returns [newfd] unchanged for an open fd, and musl's riscv64
        dup2 answers that case itself with an [fcntl(F_GETFD)] probe
-       rather than issuing dup3).  The comparison is on the truncated
-       fds, so [dup3(2^32, 0, 0)] is -EINVAL too.
+       rather than issuing dup3; it reads only the probe's sign, and
+       both answers [Fcntl.fcntl_spec] admits there are nonnegative).
+       The comparison is on the truncated fds, so [dup3(2^32, 0, 0)] is
+       -EINVAL too.
     3. [newfd >= rlimit(RLIMIT_NOFILE)] is -EBADF.
     4. [expand_files] is CALLED next, but its result is not read yet.
     5. [oldfd] not open is -EBADF — tested BEFORE step 4's result, so a
@@ -291,13 +293,14 @@ Definition dup3_flags_ok (flags : word) : bool :=
     O_CLOEXEC is accepted and IGNORED, as [Open.openat_spec] accepts and
     ignores it: close-on-exec is observable only through execve (221)
     and fcntl (25).  execve is outside [Specs.modeled_sysnos].  fcntl is
-    IN it, but the bit's only reader there is [F_GETFD], which
-    [Fcntl.fcntl_spec] declines; the one fcntl command it does answer
-    for the bit, [F_SETFD], writes it and reports nothing.  So no
-    modeled execution can tell the bit's value, and the decision to
+    IN it, and its [F_GETFD] reads the bit — but [Fcntl.fcntl_spec]
+    answers that read with BOTH values, 0 and FD_CLOEXEC, and the one
+    fcntl command that writes the bit, [F_SETFD], reports nothing.  So
+    the bit's VALUE stays unobservable — whatever it is, the model admits
+    the same two answers — and the decision to
     ignore O_CLOEXEC here stands or falls with [Fcntl.fcntl_spec]'s
-    decision to decline [F_GETFD].  The displaced entry is dropped
-    exactly as [Open.close_spec] drops one. *)
+    decision to admit both answers to [F_GETFD].  The displaced entry is
+    dropped exactly as [Open.close_spec] drops one. *)
 Definition dup3_newfd_under_limit (newfd : word) (m : Model) : bool :=
   Z.ltb (bv_unsigned newfd) (bv_unsigned (m_nofile m)).
 

@@ -22,20 +22,26 @@ Open Scope bv_scope.
 
 Section TargetProof.
 
-Variable av ev : list (list byte).
+(** The launch, in the shape [Run.init_machine_state] now takes: the
+    whole [State.ProcInput] record, the entry's mmap base, its stack
+    pointer and its draw.  The argv and envp lists are fields of [inp]
+    rather than separate arguments — Linux builds the entry block from
+    the input itself ([create_elf_tables], fs/binfmt_elf.c, Linux
+    v6.18.46, commit 1f99e9ab748f).  This side reads nothing off the
+    initial stack, so it needs no launch conjunct and no argv or envp
+    validity: it only has to name the state its six instructions run
+    from. *)
+Variable inp : ProcInput.
 
-(** The initial stack pointer is QUANTIFIED (ASLR). *)
-Variable asp : word.
+(** The initial stack pointer and the mmap base are QUANTIFIED (ASLR). *)
+Variable asp amb : word.
 
-(** The target run's own AT_RANDOM draw, independent of the source's
-    (the [ed_random] half of [Run.ExecEntry]'s [en_draw]; see the source file). *)
+(** The target run's own draw, independent of the source's
+    (the [ed_random] and [ed_top] halves of [Run.ExecEntry]'s
+    [en_draw]; see the source file). *)
 Variable arnd : EntryDraw.
 Hypothesis Hsp_lo : (sp_window_lo <= bv_unsigned asp)%Z.
 Hypothesis Hsp_hi : (bv_unsigned asp <= sp_window_hi)%Z.
-
-Variable uid : word.
-
-Variable hw : word.
 
 Lemma asp_lo_num : (0x7fff80000000 <= bv_unsigned asp)%Z.
 Proof. exact Hsp_lo. Qed.
@@ -44,7 +50,7 @@ Proof. exact Hsp_hi. Qed.
 
 Lemma target_wexit :
   to_wexit target_segs
-    (init_machine_state target_segs 0x1001190 target_phdrs asp arnd av ev uid hw)
+    (init_machine_state target_segs 0x1001190 target_phdrs asp amb arnd inp)
     [] (Z_to_bv 64 5).
 Proof.
   pose proof asp_lo_num as Hlo. pose proof asp_hi_num as Hhi.

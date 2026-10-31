@@ -80,14 +80,14 @@ Proof.
   destruct (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_PACKET).
   { apply unmodeled_intro. }
   destruct (orb (Z.ltb (sint32 protocol) 0) (Z.leb IPPROTO_MAX (sint32 protocol))).
-  { apply pure_ok. }
+  { apply alt_l. apply pure_ok. }
   destruct (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_STREAM).
   - destruct (orb (Z.eqb (sint32 protocol) IPPROTO_SCTP)
                   (Z.eqb (sint32 protocol) IPPROTO_MPTCP)).
     { apply unmodeled_intro. }
     destruct (negb (orb (Z.eqb (sint32 protocol) IPPROTO_IP)
                         (Z.eqb (sint32 protocol) IPPROTO_TCP))).
-    { apply pure_ok. }
+    { apply alt_l. apply pure_ok. }
     apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok.
   - destruct (orb (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_DGRAM)
                   (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_RAW)).
@@ -95,7 +95,7 @@ Proof.
     destruct (orb (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_SEQPACKET)
                   (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_DCCP)).
     { apply unmodeled_intro. }
-    apply pure_ok.
+    apply alt_l. apply pure_ok.
 Qed.
 
 (* =========================================================================
@@ -113,7 +113,7 @@ Definition bind_witness (fd addrp addrlen : word) (i : SyscallInput) (m : Model)
       then ret_outcome (errno_ret EINVAL) m
       else if Z.eqb al 0 then ret_outcome (errno_ret EINVAL) m
       else
-      match read_bytes_map (in_mem i) addrp (Z_to_bv 64 al) with
+      match copy_bytes_map (in_mem i) addrp al with
       | None => ret_outcome (errno_ret EFAULT) m
       | Some bs =>
           (* PAST THE COPY: [move_addr_to_kernel] has moved [al] bytes, so
@@ -156,7 +156,7 @@ Proof.
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))); [apply pure_ok|].
   destruct (Z.eqb (sint32 addrlen) 0); [apply pure_ok|].
-  destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen))) as [bs|];
+  destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen)) as [bs|];
     [|apply pure_ok].
   apply record_copyins_outcome.
   destruct (Z.ltb (sint32 addrlen) SOCKADDR_IN_SIZE); [apply pure_ok|].
@@ -239,7 +239,9 @@ Definition accept4_witness (fd addrp flags : word) (m : Model)
           | SkListening => ret_outcome (errno_ret witness_errno) m
           | _ => ret_outcome (errno_ret EINVAL) m
           end
-      | _ => ret_outcome (errno_ret ENOTSOCK) m
+      | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
+             then Unmodeled
+             else ret_outcome (errno_ret ENOTSOCK) m
       end
   end.
 
@@ -254,9 +256,12 @@ Proof.
                            (Z.lor SOCK_CLOEXEC SOCK_NONBLOCK)) 0)); [apply pure_ok|].
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags)) SOCK_NONBLOCK) 0));
     [apply unmodeled_intro|].
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]; try apply pure_ok.
+  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ];
+    try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT));
+         [apply unmodeled_intro | apply alt_l; apply pure_ok]).
   destruct (negb (w_is0 addrp)); [apply unmodeled_intro|].
-  destruct sk as [| | |peer ch rx|peer ch]; try apply pure_ok.
+  destruct sk as [| | |peer ch rx|peer ch];
+    try (apply alt_l; apply pure_ok).
   (* listening: the one arm that can hand a connection over, taken on its
      environment-failure branch *)
   apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok.
@@ -277,7 +282,7 @@ Definition connect_witness (fd addrp addrlen : word) (i : SyscallInput)
       if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al)
       then ret_outcome (errno_ret EINVAL) m
       else
-      match read_bytes_map (in_mem i) addrp (Z_to_bv 64 al) with
+      match copy_bytes_map (in_mem i) addrp al with
       | None => ret_outcome (errno_ret EFAULT) m
       | Some bs =>
           outcome_copyins (if Z.eqb al 0 then [] else [(addrp, length bs)])
@@ -317,7 +322,7 @@ Proof.
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen)));
        cbv beta iota zeta; [ apply pure_ok | ].
-  all: destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
          as [bs|]; cbv beta iota zeta; [ | apply pure_ok ].
   all: apply record_copyins_outcome; cbv beta iota zeta.
   (* seven non-socket entries answer -ENOTSOCK below the copy *)
@@ -595,7 +600,7 @@ Definition sendmsg_witness (fd msgp flags : word)
   | Some (FdPipe _ _) | Some (FdDevNull _ _) | Some FdUrandom =>
       ret_outcome (errno_ret ENOTSOCK) m
   | Some (FdSocket sk) =>
-      match read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE) with
+      match copy_bytes_map (in_mem i) msgp MSGHDR_SIZE with
       | None => ret_outcome (errno_ret EFAULT) m
       | Some _ =>
           match read_u64 (in_mem i) msgp,
@@ -611,16 +616,16 @@ Definition sendmsg_witness (fd msgp flags : word)
                      (ret_outcome (errno_ret EMSGSIZE) m)  (* __copy_msghdr's own errno *)
               else if (UIO_FASTIOV <? bv_unsigned iovlen)%Z then Unmodeled
               else
-              match copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen) with
+              match import_iovecs (in_mem i) iov iovlen with
               | ImpFault =>
                   outcome_copyins
                     ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                     ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                     ++ import_iovecs_accesses (in_mem i) iov iovlen)
                     (ret_outcome (errno_ret EFAULT) m)
               | ImpInval =>
                   outcome_copyins
                     ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                     ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                     ++ import_iovecs_accesses (in_mem i) iov iovlen)
                     (ret_outcome (errno_ret EINVAL) m)
               | ImpOk iovs0 =>
                   if negb (w_is0 ctllen) then Unmodeled   (* ancillary data, after
@@ -630,7 +635,7 @@ Definition sendmsg_witness (fd msgp flags : word)
                   else
                   send_on_socket_witness
                     ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                     ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                     ++ import_iovecs_accesses (in_mem i) iov iovlen)
                     (fun n => iov_prefix_accesses (cap_iovecs iovs0) n)
                     fd sk
                     (Z_to_bv 64 (iovs_total (cap_iovecs iovs0)))
@@ -652,7 +657,7 @@ Proof.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|];
     cbv beta iota zeta; try apply pure_ok.
-  destruct (read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE));
+  destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE);
     cbv beta iota zeta; [|apply pure_ok].
   (* Six independent reads, so 64 shapes; 63 of them are the total-match
      -EFAULT arm the spec calls unreachable, and only the all-[Some] one
@@ -671,7 +676,7 @@ Proof.
   destruct ((IOV_MAX <? bv_unsigned iovlen)%Z);
     [apply record_copyins_outcome; apply pure_ok|].
   destruct ((UIO_FASTIOV <? bv_unsigned iovlen)%Z); [apply unmodeled_intro|].
-  destruct (copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen)) as [iovs0| |];
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs0| |];
     cbv beta iota zeta;
     [ | apply record_copyins_outcome; apply pure_ok
       | apply record_copyins_outcome; apply pure_ok ].

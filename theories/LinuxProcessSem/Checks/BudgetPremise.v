@@ -12,11 +12,12 @@
 
     ** What is pinned
 
-    - PART 1, the grant clause, arm by arm.  Each mark fires on the
-      arm's own beyond-budget fixture and does not fire within budget,
-      on a request an argument gate answers, on a request that consumes
-      no backing, or on a query — so a budget refusal is distinguishable
-      from every other refusal the arm admits.  Beside the fixtures, the
+    - PART 1, the grant clause, arm by arm.  Each mark of an arm that
+      reads the budget fires on the arm's own beyond-budget fixture and
+      does not fire within budget, on a request an argument gate
+      answers, on a request that consumes no backing, or on a query — so
+      a budget refusal is distinguishable from every other refusal the
+      arm admits.  Beside the fixtures, the
       SOUNDNESS lemmas at abstract arguments: where the mark fires,
       every outcome the arm admits is a refusal ([Run.refusal_b]) — for
       [brk], [mmap] and [mprotect] over the whole arm; for [mremap] the
@@ -35,6 +36,9 @@
       is budget-refused through the effect clause.
     - PART 3, the dispatcher: every [FamAlloc] arm and nothing else
       ([Run.alloc_family_dispatched] makes the enumeration a theorem).
+      [munmap]'s mark is the constant [false]
+      ([Run.alloc_budget_refused_munmap]), so PART 1 has no munmap
+      fixture: no munmap request is budget-refused.
     - PART 4, run level.  The exit-0 image never reaches the mark at ANY
       budget, entry or input, through the same reflective evaluator that
       discharges [MustExit] ([Checks.Examples.exits_c]); a six-instruction
@@ -72,6 +76,15 @@ From LinuxProcessSemantics.EquivalenceDefinition Require Import
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
+
+(** An [Run.ExecEntry] is its four fields.  The fixtures below are
+    placed at [Checks.Examples.demo_entry], which is no longer a
+    [mkEntry] literal but [Run.launch_entry_va] at the input, so a
+    proof that has to reduce [Run.run]'s match on the entry rewrites
+    with this first and keeps reading the fields by name. *)
+Lemma entry_eta : forall en : ExecEntry,
+  en = mkEntry (en_sp en) (en_brk en) (en_mmap_base en) (en_draw en).
+Proof. intros [sp brk0 mbase draw]. reflexivity. Qed.
 
 (* =========================================================================
    PART 1 — the grant clause, arm by arm
@@ -557,22 +570,13 @@ Example un_inplace_gate_passes :
   mremap_final_budget_b un_model 0x10000 4096 0x10000 12288 = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** The [region_free] readings the lemmas below need: freeness of an
-    appended ledger is freeness of its right half, and freeness survives
-    dropping an entry. *)
+(** The [region_free] reading the lemmas below need: freeness of an
+    appended ledger is freeness of its right half. *)
 Lemma region_free_app_r : forall l1 l2 lo n,
   region_free (l1 ++ l2) lo n = true -> region_free l2 lo n = true.
 Proof.
   intros l1 l2 lo n H. apply region_free_intro. intros a sz Hin.
   exact (region_free_In _ _ _ _ _ H (in_or_app _ _ _ (or_intror Hin))).
-Qed.
-
-Lemma region_free_map_remove : forall maps old lo n,
-  region_free maps lo n = true -> region_free (map_remove maps old) lo n = true.
-Proof.
-  intros maps old lo n H. apply region_free_intro. intros a sz Hin.
-  unfold map_remove in Hin. apply List.filter_In in Hin as [Hin _].
-  exact (region_free_In _ _ _ _ _ H Hin).
 Qed.
 
 (** The rounded request as the spec computes it: page sized, and a word
@@ -605,8 +609,15 @@ Lemma mremap_model_next_limit : forall m old old_n dst new_n,
 Proof. reflexivity. Qed.
 
 (** THE RULE, abstract.  On a grow past the mark's own argument gates,
-    the mark is exactly "in-place growth not admitted and the move's
-    budget gate refusing". *)
+    the mark reads the gate of THE ONE RESOLUTION the room test
+    chooses: with room above the source Linux expands there and a
+    failing charge is a refusal with no move, so the mark is the
+    in-place charge failing; without room the only answer is the move,
+    so the mark is the move's charge failing.  Before the placement
+    change it was a disjunction of the two, which said that a failing
+    in-place budget left the move available — and Linux does not move
+    when it can expand in place (mm/mremap.c,
+    [vrm_can_expand_in_place], Linux v6.18.46, commit 1f99e9ab748f). *)
 Lemma mremap_budget_refused_iff :
   forall old old_size new_size flags m,
   Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE = true ->
@@ -622,14 +633,17 @@ Lemma mremap_budget_refused_iff :
   (page_round_up_Z (bv_unsigned old_size)
    < page_round_up_Z (bv_unsigned new_size))%Z ->
   mremap_budget_refused_b old old_size new_size flags m
-  = negb (mremap_inplace_grow_b m old
-            (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
-            (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
-            (page_round_up_Z (bv_unsigned old_size))
-            (page_round_up_Z (bv_unsigned new_size))
-          || mremap_move_budget_b m old
-               (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
-               (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))).
+  = (if mremap_inplace_room_b m old
+          (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+          (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+          (page_round_up_Z (bv_unsigned old_size))
+          (page_round_up_Z (bv_unsigned new_size))
+     then negb (mremap_final_budget_b m old
+                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) old
+                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))))
+     else negb (mremap_move_budget_b m old
+                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))))).
 Proof.
   intros old old_size new_size flags m Hflags Halign Hnew Htask Hold Hsrc Hgrow.
   unfold mremap_budget_refused_b. cbv zeta.
@@ -638,8 +652,14 @@ Proof.
 Qed.
 
 (** What a mark that fires says: every argument gate passed, the
-    request grows, in-place growth is not admitted and the move's budget
-    gate refuses. *)
+    request grows, in-place growth is not admitted, and the gate of the
+    resolution the room test chooses refuses.
+
+    The last conjunct is a CASE and not a conjunction, because the grow
+    has one non-errno resolution: with room above the source the
+    in-place charge is what failed, and the move's charge says nothing
+    about that call, because Linux does not move when it can expand in
+    place. *)
 Lemma mremap_budget_refused_inv :
   forall old old_size new_size flags m,
   mremap_budget_refused_b old old_size new_size flags m = true ->
@@ -660,9 +680,17 @@ Lemma mremap_budget_refused_inv :
        (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
        (page_round_up_Z (bv_unsigned old_size))
        (page_round_up_Z (bv_unsigned new_size)) = false
-  /\ mremap_move_budget_b m old
-       (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
-       (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = false.
+  /\ (if mremap_inplace_room_b m old
+           (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+           (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+           (page_round_up_Z (bv_unsigned old_size))
+           (page_round_up_Z (bv_unsigned new_size))
+      then mremap_final_budget_b m old
+             (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) old
+             (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = false
+      else mremap_move_budget_b m old
+             (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+             (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = false).
 Proof.
   intros old old_size new_size flags m H.
   unfold mremap_budget_refused_b in H. cbv zeta in H.
@@ -678,9 +706,17 @@ Proof.
     cbn [negb] in H; [| discriminate H].
   destruct (_ <=? _)%Z eqn:E6; [discriminate H |].
   apply Z.leb_gt in E6.
-  apply negb_true_iff, orb_false_iff in H as [Hip Hmv].
-  exact (conj eq_refl (conj eq_refl (conj eq_refl (conj eq_refl (conj eq_refl
-           (conj eq_refl (conj E6 (conj Hip Hmv)))))))).
+  split; [reflexivity|]. split; [reflexivity|]. split; [reflexivity|].
+  split; [reflexivity|]. split; [reflexivity|]. split; [reflexivity|].
+  split; [exact E6|].
+  unfold mremap_inplace_grow_b.
+  destruct (mremap_inplace_room_b m old
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+              (page_round_up_Z (bv_unsigned old_size))
+              (page_round_up_Z (bv_unsigned new_size))) eqn:Eroom;
+    apply negb_true_iff in H; cbn [andb];
+    (split; [first [reflexivity | exact H] | exact H]).
 Qed.
 
 (** SOUNDNESS for the in-place resolution: where the mark fires,
@@ -700,19 +736,31 @@ Proof.
   exact Hip.
 Qed.
 
-(** SOUNDNESS for the moved resolution: where the mark fires, no fresh
-    destination that carries no backing metadata is admitted by
-    [Mremap.mremap_fresh_b] — its budget conjunct reads, at such a
-    destination, the charge [Mremap.mremap_move_budget_b] refused
+(** SOUNDNESS for the moved resolution: where the mark fires AND there
+    is no room above the source, no fresh destination that carries no
+    backing metadata is admitted by [Mremap.mremap_fresh_b] — its
+    budget conjunct reads, at such a destination, the charge
+    [Mremap.mremap_move_budget_b] refused
     ([Mremap.mremap_move_charge_at_fresh]).  The metadata hypotheses
     are instances, at [dst], of the ledger invariants named in
     [Sys/Mm/Mremap.v]'s charge header ([State.noaccess_pages_owned] and
     the reservation-under-live-mapping invariant of the lazy ledgers).
     With [mremap_budget_refused_refuses_inplace]: a marked request has
-    no non-errno resolution. *)
+    no non-errno resolution.
+
+    THE NO-ROOM PREMISE IS NEW AND IT IS NOT A WEAKENING.  Since the
+    placement change the grow has ONE non-errno resolution, chosen by
+    the room test: with room above the source Linux expands there and
+    never moves (mm/mremap.c, [vrm_can_expand_in_place], Linux
+    v6.18.46, commit 1f99e9ab748f), so a marked request WITH room has
+    no move for this lemma to refuse, and the mark says nothing about
+    the move's charge.  The caller that needs "no resolution at all"
+    takes this lemma for the no-room case and
+    [mremap_budget_refused_refuses_inplace] for the other; together
+    they still cover every grow. *)
 Lemma mremap_budget_refused_refuses_move :
   forall old old_size new_size flags m dst,
-  (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
+  (forall (a sz : word), In (a, sz) (vm_maps (m_vmmaps m)) ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
   region_free (vm_noaccess (m_vmmaps m)) dst
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = true ->
@@ -740,6 +788,11 @@ Lemma mremap_budget_refused_refuses_move :
          (bv_unsigned old
           + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))))
       (m_vm_materialized m) ->
+  mremap_inplace_room_b m old
+    (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+    (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+    (page_round_up_Z (bv_unsigned old_size))
+    (page_round_up_Z (bv_unsigned new_size)) = false ->
   mremap_budget_refused_b old old_size new_size flags m = true ->
   mremap_fresh_b m
     (page_round_up_Z (bv_unsigned old_size))
@@ -747,9 +800,11 @@ Lemma mremap_budget_refused_refuses_move :
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) dst
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = false.
 Proof.
-  intros old old_size new_size flags m dst Hfit Hnoacc Hlazy Hpages Hmark.
+  intros old old_size new_size flags m dst Hfit Hnoacc Hlazy Hpages
+    Hnoroom Hmark.
   destruct (mremap_budget_refused_inv _ _ _ _ _ Hmark)
     as (_ & _ & Hnew & _ & _ & _ & Hgrow & _ & Hmv).
+  rewrite Hnoroom in Hmv. cbv iota in Hmv.
   set (old_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) in *.
   set (new_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) in *.
   pose proof (page_align_is0_b_false_word new_size Hnew) as Hnw. fold new_n in Hnw.
@@ -767,16 +822,25 @@ Proof.
   rewrite mremap_model_next_limit in Hgate.
   rewrite (mremap_move_charge_at_fresh m old old_n dst new_n) in Hgate;
     [rewrite Hgate in Hmv; discriminate Hmv | exact Hdalign
-    | rewrite Hnw; exact Hnmod | rewrite Hnw; lia | rewrite Hnw; lia | exact Hfit
-    | apply region_free_map_remove; exact (region_free_app_r _ _ _ _ Hdfree)
+    | rewrite Hnw; exact Hnmod | rewrite Hnw; lia | rewrite Hnw; lia
+    | exact (maps_subtract_fits _ _ _ Hfit)
+    | apply (region_free_subtract_fits _ _ _ _ _ Hfit);
+      exact (region_free_app_r _ _ _ _ Hdfree)
     | exact Hnoacc | exact Hlazy | exact Hpages].
 Qed.
 
-(** COMPLETENESS against the move: in-place growth not admitted and the
+(** COMPLETENESS against the move: NO ROOM above the source, and the
     move's gate refusing at one fresh destination that carries no
-    backing metadata fires the mark.  The hypotheses are the mark's
-    argument gates, the in-place refusal, and the metadata hypotheses of
-    [mremap_budget_refused_refuses_move]. *)
+    backing metadata, fires the mark.  The hypotheses are the mark's
+    argument gates, the no-room test, and the metadata hypotheses of
+    [mremap_budget_refused_refuses_move].
+
+    The premise is the ROOM test and not the in-place admission,
+    because the mark now reads the gate of the one resolution the room
+    test chooses: with room there is no move to refuse, and a failing
+    in-place charge alone no longer fires a mark about the move
+    (mm/mremap.c, [vrm_can_expand_in_place], Linux v6.18.46, commit
+    1f99e9ab748f). *)
 Lemma mremap_budget_refused_fires_on_move_refusal :
   forall old old_size new_size flags m dst,
   Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE = true ->
@@ -791,8 +855,9 @@ Lemma mremap_budget_refused_fires_on_move_refusal :
        (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) = true ->
   (page_round_up_Z (bv_unsigned old_size)
    < page_round_up_Z (bv_unsigned new_size))%Z ->
-  (* in-place growth is not admitted *)
-  mremap_inplace_grow_b m old
+  (* there is no room above the source, so the move is the only
+     resolution *)
+  mremap_inplace_room_b m old
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
     (page_round_up_Z (bv_unsigned old_size))
@@ -804,7 +869,7 @@ Lemma mremap_budget_refused_fires_on_move_refusal :
   region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = true ->
   (* ...and carries no backing metadata *)
-  (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
+  (forall (a sz : word), In (a, sz) (vm_maps (m_vmmaps m)) ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
   region_free (vm_noaccess (m_vmmaps m)) dst
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = true ->
@@ -842,7 +907,7 @@ Proof.
     Hip Hdalign Hdtop Hdfree Hfit Hnoacc Hlazy Hpages Hgate.
   rewrite (mremap_budget_refused_iff old old_size new_size flags m
              Hflags Halign Hnew Htask Hold Hsrc Hgrow).
-  rewrite Hip. cbn [orb].
+  rewrite Hip. cbv iota.
   set (old_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) in *.
   set (new_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) in *.
   pose proof (page_align_is0_b_false_word new_size Hnew) as Hnw. fold new_n in Hnw.
@@ -856,8 +921,10 @@ Proof.
   rewrite mremap_model_next_limit in Hgate.
   rewrite (mremap_move_charge_at_fresh m old old_n dst new_n) in Hgate;
     [exact Hgate | exact Hdalign | rewrite Hnw; exact Hnmod
-    | rewrite Hnw; lia | rewrite Hnw; lia | exact Hfit
-    | apply region_free_map_remove; exact (region_free_app_r _ _ _ _ Hdfree)
+    | rewrite Hnw; lia | rewrite Hnw; lia
+    | exact (maps_subtract_fits _ _ _ Hfit)
+    | apply (region_free_subtract_fits _ _ _ _ _ Hfit);
+      exact (region_free_app_r _ _ _ _ Hdfree)
     | exact Hnoacc | exact Hlazy | exact Hpages].
 Qed.
 
@@ -906,8 +973,10 @@ Qed.
     [alloc_top] and is free against [vm_reserved ++ vm_maps] — the
     non-budget conjuncts of [Mremap.mremap_fresh_b] that bear on the
     charge.  The ledger hypotheses are [State.noaccess_pages_owned], the
-    fit of every live mapping other than the source, and the two
-    lazy-ledger identities [Mremap.mremap_move_charge_at_fresh] takes;
+    fit of every live mapping (from which [Mremap.maps_subtract_fits]
+    gives that lemma the fit of the ledger with the source range cut),
+    and the two lazy-ledger identities
+    [Mremap.mremap_move_charge_at_fresh] takes;
     the [vm_noaccess] hypothesis of that lemma comes from
     [fresh_dst_avoids_noaccess].  The converse direction of
     [mremap_budget_refused_refuses_move].  The two side conditions on
@@ -922,7 +991,7 @@ Lemma mremap_move_budget_admits_fresh : forall m old old_n dst new_n,
   region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst new_n
   = true ->
   noaccess_pages_owned (m_vmmaps m) ->
-  (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
+  (forall (a sz : word), In (a, sz) (vm_maps (m_vmmaps m)) ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
   maps_subtract
     (maps_subtract (m_vm_lazy m) (bv_unsigned old)
@@ -948,8 +1017,10 @@ Proof.
   unfold mremap_final_budget_b, vm_backing_within_limit.
   rewrite mremap_model_next_limit.
   rewrite (mremap_move_charge_at_fresh m old old_n dst new_n);
-    [exact Hmv | exact Hdalign | exact Hnmod | exact Hpos | lia | exact Hfit
-    | apply region_free_map_remove; exact (region_free_app_r _ _ _ _ Hdfree)
+    [exact Hmv | exact Hdalign | exact Hnmod | exact Hpos | lia
+    | exact (maps_subtract_fits _ _ _ Hfit)
+    | apply (region_free_subtract_fits _ _ _ _ _ Hfit);
+      exact (region_free_app_r _ _ _ _ Hdfree)
     | exact (fresh_dst_avoids_noaccess _ _ _ Hown Hpos Hnmod Hdalign Hdfree)
     | exact Hlazy | exact Hpages].
 Qed.
@@ -969,7 +1040,7 @@ Lemma mremap_move_budget_admits_fresh_lazyfree :
   region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst new_n
   = true ->
   noaccess_pages_owned (m_vmmaps m) ->
-  (forall (a sz : word), In (a, sz) (map_remove (vm_maps (m_vmmaps m)) old) ->
+  (forall (a sz : word), In (a, sz) (vm_maps (m_vmmaps m)) ->
      (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
   mremap_move_budget_b m old old_n new_n = true ->
   mremap_final_budget_b m old old_n dst new_n = true.
@@ -984,7 +1055,12 @@ Qed.
 (** THE DIRECTION OF THE CHANGE: the mark implies the earlier two-gate
     mark, so every input a budget premise kept under the earlier mark
     it keeps now, and [ov_two_gate_fires_where_the_mark_is_silent]
-    shows the converse fails.  The present mark is the weaker one. *)
+    shows the converse fails.  The present mark is the weaker one.
+
+    It now holds for a different reason on each side of the room test,
+    and that is the point of the change: with room above the source
+    the IN-PLACE charge is what failed, and without room the MOVE's
+    charge is, so the conjunction of the two is false either way. *)
 Lemma mremap_budget_refused_implies_two_gate :
   forall old old_size new_size flags m,
   mremap_budget_refused_b old old_size new_size flags m = true ->
@@ -996,7 +1072,13 @@ Proof.
   unfold mremap_budget_refused_two_gate_b. cbv zeta.
   rewrite E1, E2, E3, E4, E5. cbn [negb].
   rewrite (proj2 (Z.leb_gt _ _) Hgrow).
-  rewrite Hmv, andb_false_r. reflexivity.
+  destruct (mremap_inplace_room_b m old
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+              (page_round_up_Z (bv_unsigned old_size))
+              (page_round_up_Z (bv_unsigned new_size))) eqn:Eroom;
+    cbv iota in Hmv;
+    [rewrite Hmv, andb_false_l | rewrite Hmv, andb_false_r]; reflexivity.
 Qed.
 
 (** ** mprotect
@@ -1254,6 +1336,12 @@ Proof. vm_compute. reflexivity. Qed.
 Example brk_is_dispatched : In 214%Z alloc_mark_sysnos.
 Proof. apply (alloc_family_dispatched 214 (mkInjectedArm 214 FamAlloc [])); reflexivity. Qed.
 
+Example munmap_is_dispatched : In 215%Z alloc_mark_sysnos.
+Proof.
+  apply (alloc_family_dispatched 215 (mkInjectedArm 215 FamAlloc munmap_errnos));
+    reflexivity.
+Qed.
+
 Example mremap_is_dispatched : In 216%Z alloc_mark_sysnos.
 Proof.
   apply (alloc_family_dispatched 216 (mkInjectedArm 216 FamAlloc mremap_errnos));
@@ -1402,11 +1490,13 @@ Definition mm_image : Image := mkImage mm_segments 0x100 demo_phdrs.
 
 Definition mm_budget : Z := page_size.
 
+(** The placement is [Checks.Examples.demo_entry]'s own, read off its
+    fields rather than written out: the entry is now
+    [Run.launch_entry_va] at this input, so its stack pointer, break,
+    mmap base and draw are the fixture's to move. *)
 Definition mm_ms0 : machine_state :=
-  init_machine_state mm_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    demo_draw
-    (in_argv demo_proc_input) (in_envp demo_proc_input) (in_uid demo_proc_input)
-    (in_hwcap demo_proc_input).
+  init_machine_state mm_segments 0x100 demo_phdrs (en_sp demo_entry)
+    (en_mmap_base demo_entry) (en_draw demo_entry) demo_proc_input.
 Definition mm_msk (k : nat) : machine_state :=
   match run_steps k mm_segments mm_ms0 with
   | Some ms => ms
@@ -1415,13 +1505,14 @@ Definition mm_msk (k : nat) : machine_state :=
 Definition mm_s (k : nat) : machine_state := with_mem (mm_msk k) (ms_mem mm_ms0).
 
 Definition mm_model : Model :=
-  init_model (segments_reserved mm_segments) (Z_to_bv 64 0x1000)
-    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) mm_budget demo_proc_input.
+  init_model (segments_reserved mm_segments) (en_brk demo_entry)
+    (en_mmap_base demo_entry) (en_sp demo_entry) mm_budget demo_proc_input.
 Definition mm_c : config := mkCfg (mm_s 0) mm_model.
 
 Lemma mm_config :
-  init_config mm_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw mm_budget demo_proc_input
+  init_config mm_segments 0x100 demo_phdrs (en_sp demo_entry)
+    (en_brk demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry)
+    mm_budget demo_proc_input
   = mm_c.
 Proof. unfold init_config, mm_c. f_equal; try exact (with_mem_eta mm_ms0). Qed.
 
@@ -1471,10 +1562,8 @@ Qed.
 Theorem mm_run_budget_refused :
   run_budget_refused mm_image mm_budget demo_entry demo_proc_input.
 Proof.
-  change (reaches_budget_refused mm_segments
-            (init_config mm_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-               (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw mm_budget
-               demo_proc_input)).
+  unfold run_budget_refused, mm_image.
+  rewrite (entry_eta demo_entry). cbn beta iota.
   rewrite mm_config.
   eapply reaches_budget_refused_star; [exact mm_star |].
   apply reaches_budget_refused_intro. exact mm_ecall_is_budget_refused.
@@ -1735,26 +1824,48 @@ Qed.
     nobody fires is indistinguishable from one whose hypotheses cannot
     be met, so both refutation lemmas are fired on it here, against a
     target with a valid entry. *)
-Example demo_entry_valid_ebreak : forall inp,
-  valid_input inp -> valid_entry ebreak_image demo_entry inp.
+(** An entry valid for one image is valid for any image whose segments
+    reserve the same top.  [Run.valid_entry] mentions the image in ONE
+    of its five conjuncts, [Run.valid_brk], and that one reads the
+    segments only through [reserved_top]; the launch conjunct
+    [Run.entry_launch_ok_va] — the stack top, the stack pointer and the
+    mmap base a Linux v6.18.46 [execve] could have chosen — speaks
+    about the entry and the input alone.
+
+    Every image here puts its only segment inside the first page, so
+    the hypothesis is one [vm_compute], and the three statements below
+    are then the validity [Checks.Examples] and [Checks.AbortWitness]
+    already proved for the same entry at the same input.  Taking them
+    from there rather than recomputing them is what keeps this file off
+    [demo_entry]'s literal stack pointer, break and mmap base: those
+    are the fixture's to choose. *)
+Lemma valid_entry_same_reserved : forall segs pc ph segs' pc' ph' en inp,
+  reserved_top (segments_reserved segs')
+  = reserved_top (segments_reserved segs) ->
+  valid_entry (mkImage segs pc ph) en inp ->
+  valid_entry (mkImage segs' pc' ph') en inp.
 Proof.
-  intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [ebreak_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
-  rewrite Z_to_bv_unsigned, bv_wrap_small
-    by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
-  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  intros segs pc ph segs' pc' ph' [sp brk0 mbase draw] inp Hr H.
+  unfold valid_entry, valid_entry_va in H |- *.
+  destruct H as (Hsp & Hbrk & Hmb & Hfits & Hlaunch).
+  assert (Hbrk' : valid_brk segs' brk0).
+  { unfold valid_brk in *. rewrite Hr. exact Hbrk. }
+  exact (conj Hsp (conj Hbrk' (conj Hmb (conj Hfits Hlaunch)))).
+Qed.
+
+Example demo_entry_valid_ebreak : forall inp,
+  valid_input inp -> valid_entry ebreak_image (demo_entry_of inp) inp.
+Proof.
+  intros inp Hvalid. unfold ebreak_image.
+  apply (valid_entry_same_reserved exit0_segments 0x100 demo_phdrs);
+    [vm_compute; reflexivity | exact (demo_entry_valid_exit0 inp Hvalid)].
 Qed.
 
 Lemma ebreak_source_within_budget : forall lim,
   source_within_budget lim ebreak_image demo_entry demo_proc_input.
 Proof.
-  intros lim. unfold source_within_budget, run_budget_refused.
-  cbn [ebreak_image demo_entry]. rewrite ebreak_config.
+  intros lim. unfold source_within_budget, run_budget_refused, ebreak_image.
+  rewrite (entry_eta demo_entry). cbn beta iota. rewrite ebreak_config.
   intros (tr & c & Hstar & Hb).
   inversion Hstar as [c0 Heq | c1 evs c2 tr' c3 Hss Hstar']; subst.
   - exact (ebreak_fault_is_not_budget_refused lim Hb).
@@ -1764,7 +1875,9 @@ Qed.
 Lemma ebreak_errors : forall lim,
   bh_errors (run ebreak_image lim demo_entry demo_proc_input).
 Proof.
-  intros lim. cbn [run ebreak_image demo_entry bh_errors]. rewrite ebreak_config.
+  intros lim. unfold run, ebreak_image.
+  rewrite (entry_eta demo_entry). cbn beta iota delta [bh_errors].
+  rewrite ebreak_config.
   exists [], (mkCfg ebreak_ms (ebreak_model lim)), []. split; [apply star_refl |].
   apply sstep_instr_fault; [reflexivity | reflexivity |].
   no_lazy. rewrite ebreak_faults. reflexivity.
@@ -1773,7 +1886,9 @@ Qed.
 Lemma ebreak_errors_cfg : forall cfg lim,
   bh_errors (run_scfg cfg ebreak_image lim demo_entry demo_proc_input).
 Proof.
-  intros cfg lim. cbn [run_scfg ebreak_image demo_entry bh_errors]. rewrite ebreak_config.
+  intros cfg lim. unfold run_scfg, ebreak_image.
+  rewrite (entry_eta demo_entry). cbn beta iota delta [bh_errors].
+  rewrite ebreak_config.
   exists [], (mkCfg ebreak_ms (ebreak_model lim)), []. split; [apply star_cfg_refl |].
   apply sstep_cfg_instr_fault; [reflexivity | reflexivity |].
   no_lazy. rewrite ebreak_faults. reflexivity.
@@ -1816,25 +1931,19 @@ Qed.
     [Checks.AbortWitness.abrt_input] is the demo input with the abort
     declaration on, valid for [Run.valid_input_abort]
     ([Checks.AbortWitness.abrt_input_valid]).  The exit-0 image is
-    entered at [demo_entry] as before — the entry's validity reads only
-    the argv and envp clauses, which both stances carry in the same
-    positions — and its trace set under any configuration is the
-    prefixes of its one exit ([exit0_obs_cfg]), so it is never killed
-    and the abort-declared configured statement holds of the pair at
-    every configuration and budget pair. *)
+    entered at [demo_entry] as before — the entry is the one
+    [Checks.AbortWitness.demo_entry_valid_abrt] already validated for
+    this stance, and only the image changes, which [Run.valid_entry]
+    sees through [reserved_top] alone — and its trace set under any
+    configuration is the prefixes of its one exit ([exit0_obs_cfg]), so
+    it is never killed and the abort-declared configured statement
+    holds of the pair at every configuration and budget pair. *)
 Example demo_entry_valid_exit0_abort : forall inp,
-  valid_input_abort inp -> valid_entry exit0_image demo_entry inp.
+  valid_input_abort inp -> valid_entry exit0_image (demo_entry_of inp) inp.
 Proof.
-  intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_abort_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [exit0_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
-  rewrite Z_to_bv_unsigned, bv_wrap_small
-    by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
-  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  intros inp Hvalid. unfold exit0_image.
+  apply (valid_entry_same_reserved abrt_segments 0x100 demo_phdrs);
+    [vm_compute; reflexivity | exact (demo_entry_valid_abrt inp Hvalid)].
 Qed.
 
 Lemma exit0_never_dies_by_signal_cfg : forall cfg lim en inp,
@@ -1885,58 +1994,73 @@ End Exit0ScfgBudgetsAbortBaselineChecked.
     [Checks.Omni.ebreak_image] serves under the declaration as it does
     without it: its one instruction faults before any syscall, so the
     declaration — which only changes what [tkill] does — never comes
-    into play.  The machine state at [abrt_input] is [Checks.Omni.ebreak_ms]
-    (the two inputs differ only in the declaration, which the entry
-    does not read); only the model carries the flag. *)
+    into play.
+
+    THE PLACEMENT IS THE LAUNCH AT THIS INPUT.
+    [Checks.Examples.demo_entry_of] is [Run.launch_entry_va] at the
+    input it is given, so the abort-declared run is entered at
+    [abrt_entry], not at [Checks.Examples.demo_entry]: the two inputs
+    differ only in the declaration, which no launch rule reads, but
+    the entry is a function of the input and the fixtures here read
+    its fields rather than any literal.  Only the model carries the
+    flag. *)
+Definition abrt_entry : ExecEntry := demo_entry_of abrt_input.
+
+Definition ebreak_ms_abort : machine_state :=
+  init_machine_state ebreak_segments 0x100 demo_phdrs (en_sp abrt_entry)
+    (en_mmap_base abrt_entry) (en_draw abrt_entry) abrt_input.
+
+Lemma ebreak_faults_abort :
+  RiscvSemantics.step ebreak_segments ebreak_ms_abort = MachineFault.
+Proof. vm_compute. reflexivity. Qed.
+
 Definition ebreak_model_abort (lim : Z) : Model :=
-  init_model (segments_reserved ebreak_segments) (Z_to_bv 64 0x1000)
-    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) lim abrt_input.
+  init_model (segments_reserved ebreak_segments) (en_brk abrt_entry)
+    (en_mmap_base abrt_entry) (en_sp abrt_entry) lim abrt_input.
 
 Lemma ebreak_config_abort : forall lim,
-  init_config ebreak_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw lim abrt_input
-  = mkCfg ebreak_ms (ebreak_model_abort lim).
+  init_config ebreak_segments 0x100 demo_phdrs (en_sp abrt_entry)
+    (en_brk abrt_entry) (en_mmap_base abrt_entry) (en_draw abrt_entry)
+    lim abrt_input
+  = mkCfg ebreak_ms_abort (ebreak_model_abort lim).
 Proof. reflexivity. Qed.
 
 Lemma ebreak_only_abort : forall lim evs st,
-  sstep ebreak_segments (mkCfg ebreak_ms (ebreak_model_abort lim)) evs st ->
+  sstep ebreak_segments (mkCfg ebreak_ms_abort (ebreak_model_abort lim)) evs st ->
   evs = [] /\ st = SError.
 Proof.
-  intros lim. apply sstep_fault_only; [reflexivity | reflexivity | exact ebreak_faults].
+  intros lim. apply sstep_fault_only;
+    [first [reflexivity | vm_compute; reflexivity]
+    |first [reflexivity | vm_compute; reflexivity]
+    |exact ebreak_faults_abort].
 Qed.
 
 (** The fault is not a budget refusal whatever the model beside it:
     [ebreak_fault_is_not_budget_refused] generalised. *)
 Lemma ebreak_fault_is_not_budget_refused_any : forall model,
-  ~ budget_refused_at ebreak_segments (mkCfg ebreak_ms model).
+  ~ budget_refused_at ebreak_segments (mkCfg ebreak_ms_abort model).
 Proof.
   intros model (_ & [(_ & r & E & _) | (x8 & Hx8 & _)]); cbn [cfg_ms cfg_model] in *.
-  - pose proof (drop_step_accesses ebreak_segments ebreak_ms) as Hd.
-    rewrite E, ebreak_faults in Hd. discriminate Hd.
-  - assert (Hnone : ms_svc_pending ebreak_ms = None) by reflexivity.
+  - pose proof (drop_step_accesses ebreak_segments ebreak_ms_abort) as Hd.
+    rewrite E, ebreak_faults_abort in Hd. discriminate Hd.
+  - assert (Hnone : ms_svc_pending ebreak_ms_abort = None)
+      by (vm_compute; reflexivity).
     congruence.
 Qed.
 
 Example demo_entry_valid_ebreak_abort : forall inp,
-  valid_input_abort inp -> valid_entry ebreak_image demo_entry inp.
+  valid_input_abort inp -> valid_entry ebreak_image (demo_entry_of inp) inp.
 Proof.
-  intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_abort_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [ebreak_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
-  rewrite Z_to_bv_unsigned, bv_wrap_small
-    by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
-  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  intros inp Hvalid. unfold ebreak_image.
+  apply (valid_entry_same_reserved abrt_segments 0x100 demo_phdrs);
+    [vm_compute; reflexivity | exact (demo_entry_valid_abrt inp Hvalid)].
 Qed.
 
 Lemma ebreak_source_within_budget_abort : forall lim,
-  source_within_budget lim ebreak_image demo_entry abrt_input.
+  source_within_budget lim ebreak_image abrt_entry abrt_input.
 Proof.
-  intros lim. unfold source_within_budget, run_budget_refused.
-  cbn [ebreak_image demo_entry]. rewrite ebreak_config_abort.
+  intros lim. unfold source_within_budget, run_budget_refused, ebreak_image.
+  rewrite (entry_eta abrt_entry). cbn beta iota. rewrite ebreak_config_abort.
   intros (tr & c & Hstar & Hb).
   inversion Hstar as [c0 Heq | c1 evs c2 tr' c3 Hss Hstar']; subst.
   - exact (ebreak_fault_is_not_budget_refused_any _ Hb).
@@ -1944,13 +2068,15 @@ Proof.
 Qed.
 
 Lemma ebreak_errors_cfg_abort : forall cfg lim,
-  bh_errors (run_scfg cfg ebreak_image lim demo_entry abrt_input).
+  bh_errors (run_scfg cfg ebreak_image lim abrt_entry abrt_input).
 Proof.
-  intros cfg lim. cbn [run_scfg ebreak_image demo_entry bh_errors].
+  intros cfg lim. unfold run_scfg, ebreak_image.
+  rewrite (entry_eta abrt_entry). cbn beta iota delta [bh_errors].
   rewrite ebreak_config_abort.
-  exists [], (mkCfg ebreak_ms (ebreak_model_abort lim)), []. split; [apply star_cfg_refl |].
+  exists [], (mkCfg ebreak_ms_abort (ebreak_model_abort lim)), [].
+  split; [apply star_cfg_refl |].
   apply sstep_cfg_instr_fault; [reflexivity | reflexivity |].
-  no_lazy. rewrite ebreak_faults. reflexivity.
+  no_lazy. rewrite ebreak_faults_abort. reflexivity.
 Qed.
 
 Theorem ebreak_refutes_error_free_scfg_budgets_abort : forall cfg lim_source lim_target,
@@ -1959,7 +2085,7 @@ Theorem ebreak_refutes_error_free_scfg_budgets_abort : forall cfg lim_source lim
 Proof.
   intros cfg ls lt.
   apply (strong_universal_error_free_T_scfg_budgets_abort_refuted_by_source_error
-           _ _ _ _ _ demo_entry demo_entry abrt_input).
+           _ _ _ _ _ abrt_entry abrt_entry abrt_input).
   - apply demo_entry_valid_ebreak_abort. exact abrt_input_valid.
   - apply demo_entry_valid_exit0_abort. exact abrt_input_valid.
   - exact abrt_input_valid.

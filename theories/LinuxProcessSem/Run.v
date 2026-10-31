@@ -5,7 +5,8 @@
     Machine words are [bv 64], bytes are [bv 8], and the segment/stack
     range arithmetic is in [Z] over unsigned values.  [machine_state]
     carries an LR/SC reservation field [ms_resv] (initialized [None];
-    preserved across syscalls).
+    cleared on each system call return, as Linux clears it — see
+    [advance_past_svc]).
 
     A binary's observable behavior is its set of finite trace prefixes
     plus TWO error facts: whether SOME execution can reach the explicit
@@ -187,12 +188,41 @@ Definition apply_effect (ms : machine_state) (eff : SyscallEffect)
                  (eff_writes eff);
      ms_rom := ms_rom ms' |}.
 
-(** Advance PC past the ecall instruction (+4) and clear svc_pending. *)
+(** Advance PC past the ecall instruction (+4), clear svc_pending, and
+    CLEAR THE LR/SC RESERVATION.
+
+    Linux breaks the reservation on every return to user mode.
+    [ret_from_exception] (arch/riscv/kernel/entry.S, Linux v6.18.46,
+    commit 1f99e9ab748f) ends with
+
+        REG_L  a2, PT_EPC(sp)
+        REG_SC x0, a2, PT_EPC(sp)
+
+    above the comment "so instead here we clear any existing reservation
+    -- it's always legal for implementations to clear load reservations
+    at any point".  An [ecall] from user mode enters [handle_exception],
+    which dispatches [do_trap_ecall_u] and then jumps to
+    [ret_from_exception], so that [REG_SC] runs on the syscall return
+    too.  The unprivileged specification (the A extension, LR/SC) makes
+    that enough: "An SC must fail if there is another SC (to any
+    address) between the LR and the SC in program order".  So after
+    [lr.w a0,(s0); ecall; sc.w a1,a2,(s0)] the [sc] fails on Linux,
+    whatever the memory holds.
+
+    QEMU user mode answers otherwise: its syscall path
+    ([RISCV_EXCP_U_ECALL] in [cpu_loop], linux-user/riscv/cpu_loop.c,
+    QEMU 10.0.11) never writes [env->load_res], and the only
+    [load_res = -1] outside CPU reset and [gen_sc] is in
+    [riscv_cpu_set_mode] (target/riscv/cpu_helper.c), which
+    [CONFIG_USER_ONLY] builds out.  So the [sc] of that sequence can
+    succeed under qemu-user.  LPS describes Linux v6.18.46, so it
+    answers Linux's; SCOPE.md's list "Where QEMU user mode differs"
+    carries the difference. *)
 Definition advance_past_svc (ms : machine_state) : machine_state :=
   {| ms_regs := ms_regs ms; ms_fregs := ms_fregs ms;
      ms_pc_val := ms_pc ms + Z_to_bv 64 4;
      ms_svc_pending := None;
-     ms_resv := ms_resv ms; ms_fcsr := ms_fcsr ms;
+     ms_resv := None; ms_fcsr := ms_fcsr ms;
      ms_mem := ms_mem ms;
      ms_rom := ms_rom ms |}.
 
@@ -259,15 +289,17 @@ Variable mi_init_brk : word.
     model quantifies over the band instead.  The band is exactly the set
     of bases Linux gives under the assumptions SCOPE.md names
     ([Checks.Cases.MmapBase.sv48_band_is_linux_set]).
-    Seeds [State.init_model]'s [vm_mmap_base].  NO SPEC ARM READS THAT
-    VALUE: in the trusted spec placement is admissibility alone (see
-    [Mmap.mmap_spec]'s placement section), and the untrusted search in
+    Seeds [State.init_model]'s [vm_mmap_base].  THE SPEC READS THAT
+    VALUE: both fresh-grant arms of [Mmap.mmap_spec], and [mremap]'s
+    move, choose their address with [Mmap.linux_place], whose top-down
+    half searches below [State.mmap_top], which is the minimum of this
+    base and [State.alloc_top] (see [Mmap.mmap_spec]'s PLACEMENT
+    section).  The untrusted search in
     theories/Common/PlacementSearch.v takes its floor as a bare argument
     rather than off a [VmMaps].  The ASan plan checker's placement gate
-    ([Common.AsanCeil.placement_ok]) does read it, under that checker's
-    named [placement_policy] hypothesis.  What keeps the field in the
-    spec is the PREDICATE over it, not the value — see
-    [valid_mmap_base]. *)
+    ([Common.AsanCeil.placement_ok]) reads it too, under that checker's
+    named [placement_policy] hypothesis.  The PREDICATE over the value
+    is what [valid_entry] carries — see [valid_mmap_base]. *)
 Variable mi_mmap_base : word.
 
 (** The 16 bytes of startup entropy AT_RANDOM points at, drawn afresh at
@@ -754,10 +786,12 @@ Definition reaches_error (c0 : config) : Prop :=
     and quantifies no signal source; [sstep] has no transition a signal
     could arrive on; [State.Model] holds no disposition, mask or pending
     queue.  So an [rt_sigaction] install that [Signal.sigaction_accepted]
-    admits is a pure no-op, and the SIGINT and SIGTERM it admits are
+    admits stores nothing (it charges only the 24-byte copy-in of
+    [act]), and the SIGINT and SIGTERM it admits are
     exactly the signals that an OUTSIDE sender — not any modeled
     operation — could raise.  Two binaries that differ only in
-    whether they installed such a handler have identical traces here and
+    whether they installed such a handler have identical traces here
+    (wherever that copy-in's charge does not decide the budget) and
     differ under a real signal, so the premise is what makes their
     equivalence true rather than merely provable.  It is a premise,
     stated nowhere as a hypothesis because there is no state for it to
@@ -770,9 +804,12 @@ Definition reaches_error (c0 : config) : Prop :=
     [Kernel.Signal.tkill_self] is a modeled operation that
     DELIVERS a signal rather than merely admitting an install, so
     "the model holds no disposition" is not harmless.  The disposition a modeled operation could install is
-    covered — [Signal.sigaction_accepted] declines every install for
-    signal 6, which
-    [Checks.Cases.Kernel.Signal.rt_sigaction_sigabrt_unmodeled] pins —
+    covered — [Signal.rt_sigaction_spec] answers an install for signal 6
+    only with the handler SIG_DFL, the disposition it already assumes
+    ([Checks.Cases.Kernel.Signal.rt_sigaction_sigabrt_dfl_accepted]), and
+    declines SIG_IGN and a handler address
+    ([Checks.Cases.Kernel.Signal.rt_sigaction_sigabrt_ign_unmodeled],
+    [Checks.Cases.Kernel.Signal.rt_sigaction_sigabrt_handler_unmodeled]) —
     but the disposition the process INHERITS is not: [begin_new_exec]
     calls [flush_signal_handlers(me, 0)], and that function resets a
     slot only [if (force_default || ka->sa.sa_handler != SIG_IGN)], so
@@ -904,164 +941,112 @@ Qed.
 
 (** ** Initial machine state at [execve]
 
-    Sets PC (from the [N]-based snapshot); SP (x2) is the
-    quantified [mi_init_sp].  Populates stack memory from the
-    argv/envp/auxv layout (StackLayout.v — the auxv carries this image's
-    [mi_phdrs], and AT_UID/AT_EUID the [uid] this run is launched as);
-    the dynamic stack region below SP is zero-mapped.  All other registers start at 0; no LR/SC reservation
+    Sets PC (from the [N]-based snapshot); SP (x2) is the quantified
+    [mi_init_sp].  Populates stack memory with Linux's entry block
+    (StackLayout.v) from [mi_init_sp] up to the stack VMA's end
+    [StackLayout.ed_top]; the dynamic stack region below SP is
+    zero-mapped.  All other registers start at 0; no LR/SC reservation
     is held.
 
-    [uid] is the run's [State.in_uid], the same field [State.init_model]
-    copies into the credentials the id syscalls read, so the auxv on the
-    stack and [getuid]'s answer come from ONE source and cannot
-    disagree — as they cannot on Linux, where [create_elf_tables] and
-    [SYSCALL_DEFINE0(getuid)] both munge [current_cred()->uid]
-    (Linux v6.18.46, commit 1f99e9ab748f, fs/binfmt_elf.c and
-    kernel/sys.c; the [NEW_AUX_ENT(AT_UID ...)] line and the
-    [SYSCALL_DEFINE0(getuid)] body are byte-identical there and at every
-    mainline release tag from v4.4 through v6.18). *)
-(** ** The entry stack image: the block, then the rest of its page
+    [State.in_uid] and [State.in_gid] are the fields
+    [State.init_model] copies into the credentials the id syscalls
+    read, so the auxv on the stack and [getuid]'s answer come from ONE
+    source and cannot disagree — as they cannot on Linux, where
+    [create_elf_tables] and [SYSCALL_DEFINE0(getuid)] both munge
+    [current_cred()->uid] (Linux v6.18.46, commit 1f99e9ab748f,
+    fs/binfmt_elf.c and kernel/sys.c). *)
 
-    [StackLayout.build_stack_bytes] is what the kernel WRITES on the new
-    stack.  What it MAPS is whole pages: the stack is a VMA, and
+(** ** What the launch, rather than the image or the caller, puts in
+       the auxv
+
+    [StackLayout.LaunchAuxv] from the run's [State.KernelBuild], the
+    entry's mmap base and the declared address-space size.
+
+    AT_SYSINFO_EHDR is [base - T]: [__setup_additional_pages]
+    (arch/riscv/kernel/vdso.c, Linux v6.18.46, commit 1f99e9ab748f)
+    maps the vvar pages and then the text with [get_unmapped_area],
+    which under the top-down layout returns the highest free range
+    below [mm->mmap_base].  At that moment only the image's segments
+    and the stack exist, so the pair lands directly below the base and
+    the text's start is [base - vdso_text_pages * 4096]. *)
+Definition launch_cache_words (kb : KernelBuild) : CacheWords :=
+  let w := fun l => Z_to_bv 64 (cache_size_word l) in
+  let g := fun l => Z_to_bv 64 (cache_geometry_word l) in
+  let c := kb_cache kb in
+  mkCacheWords (w (cv_l1i c)) (g (cv_l1i c))
+               (w (cv_l1d c)) (g (cv_l1d c))
+               (w (cv_l2 c))  (g (cv_l2 c))
+               (w (cv_l3 c))  (g (cv_l3 c)).
+
+Definition vdso_text_base (kb : KernelBuild) (mbase : word) : word :=
+  Z_to_bv 64 (bv_unsigned mbase - vdso_text_pages kb * page_size).
+
+Definition launch_auxv (inp : ProcInput) (mbase : word) : LaunchAuxv :=
+  let kb := in_kernel inp in
+  mkLaunchAuxv (vdso_text_base kb mbase)
+               (launch_cache_words kb)
+               (Z_to_bv 64 (min_sigframe_size kb (in_hwcap inp)))
+               (kb_rseq kb).
+
+(** ** The entry stack image
+
+    THE BLOCK IS THE WHOLE IMAGE.  [StackLayout.build_stack_bytes] now
+    runs from [sp] to the stack VMA's end [StackLayout.ed_top], which
     [setup_arg_pages] (fs/exec.c, Linux v6.18.46, commit 1f99e9ab748f)
-    fixes its top with
+    page-aligns, so there is no page tail above it and nothing for the
+    entry to choose there.  [ed_slack] and [entry_slack] are gone with
+    it: the model used to lay a block SHORTER than the kernel's and
+    draw the bytes above it, because it published no exec file name and
+    only ten auxv entries.
 
-      [stack_top = arch_align_stack(stack_top); stack_top = PAGE_ALIGN(stack_top);]
-
-    so [vma->vm_end] is page-aligned and every address below it inside the
-    VMA is ordinary readable, writable stack.  Mapping exactly the block
-    would leave the rest of the page it ends in unmapped, which is a FAULT
-    no kernel produces — a sanitizer's fast unwinder, for one, bounds its
-    frame walk by the page above the frame it starts from and reads up to
-    it on every allocation.
-
-    So the image is the block followed by [entry_slack], the rest of that
-    page, whose bytes are the entry's own [StackLayout.ed_slack] draw
-    (see there for what Linux puts up there and why the model cannot say
-    which address holds which).  Three consequences worth stating here
-    rather than leaving to be rediscovered:
-
-    - the model still stops at the page ABOVE the block, while a real
-      stack VMA runs up to [PAGE_ALIGN(randomize_stack_top(STACK_TOP))],
-      above the strings and the filename.  That page is the MINIMUM every
-      kernel maps, so nothing the model admits inside it is unreal; a
-      fault the model reports above it may still not be a real one.
-    - the top of the image never rises above the top of the user address
-      space: [State.sp_window_hi] is page-aligned, so the page boundary
-      above a block that [entry_stack_fits] admits is still at or below
-      it.  That is [PropExec.entry_page_top_within_window], proved where
-      the length bound it needs lives; this file cannot import it.
-    - no ADDRESS in the layout moves.  The slack sits above the block, so
-      [StackLayout.at_random_ptr], the string addresses and the auxv are
-      exactly where the block alone puts them
-      ([entry_stack_image_block_prefix]). *)
-
+    [entry_page_top] is [ed_top]. *)
 Definition entry_block_top (sp : word) (bytes : list byte) : Z :=
   (bv_unsigned sp + Z.of_nat (length bytes))%Z.
 
-Definition entry_page_top (sp : word) (bytes : list byte) : Z :=
-  page_round_up_Z (entry_block_top sp bytes).
+Definition entry_page_top (draw : EntryDraw) : Z :=
+  bv_unsigned (ed_top draw).
 
-Definition entry_slack_len (sp : word) (bytes : list byte) : nat :=
-  Z.to_nat (entry_page_top sp bytes - entry_block_top sp bytes).
+Definition entry_stack_image (inp : ProcInput) (mbase : word)
+    (ph : PhdrInfo) (entry sp : word) (draw : EntryDraw) : list byte :=
+  build_stack_bytes (launch_auxv inp mbase) ph entry sp (ed_top draw)
+    (in_argv inp) (in_envp inp) (in_execfn inp)
+    (in_uid inp) (in_gid inp) (in_hwcap inp) draw.
 
-Definition entry_slack (sp : word) (bytes : list byte)
-    (slack : word -> byte) : list byte :=
-  map (fun k => slack (Z_to_bv 64 (entry_block_top sp bytes + Z.of_nat k)))
-      (seq 0 (entry_slack_len sp bytes)).
+(** ** The stack window: RLIMIT_STACK counts the entry image, and the
+       guard gap above the vDSO stops it
 
-Definition entry_stack_image (ph : PhdrInfo) (sp : word)
-    (argv envp : list (list byte)) (uid hwcap : word) (draw : EntryDraw)
-    : list byte :=
-  let bytes := build_stack_bytes ph sp argv envp uid hwcap draw in
-  bytes ++ entry_slack sp bytes (ed_slack draw).
+    Below the entry image, [init_machine_state] zero-maps the stack
+    that the program can grow into.  Two things bound it, and Linux
+    applies both in [expand_downwards] (mm/vma.c, Linux v6.18.46):
 
-(** The page boundary is at or above the block's top: rounding up never
-    moves an address down.  Everything below rests on this, so it is
-    proved here rather than assumed by an [lia] at each use. *)
-Lemma entry_page_top_ge : forall sp bytes,
-  (entry_block_top sp bytes <= entry_page_top sp bytes)%Z.
-Proof.
-  intros sp bytes. unfold entry_page_top, page_round_up_Z, page_size.
-  pose proof (Z.mod_pos_bound (entry_block_top sp bytes + 4096 - 1) 4096
-                ltac:(lia)) as Hb.
-  pose proof (Z.div_mod (entry_block_top sp bytes + 4096 - 1) 4096
-                ltac:(lia)) as Hd.
-  lia.
-Qed.
+    - RLIMIT_STACK.  [expand_downwards] passes
+      [size = vma->vm_end - address] to [acct_stack_growth], which
+      refuses the growth when [size > rlimit(RLIMIT_STACK)].  So the 8
+      MiB ([State.stack_max_size]) is counted from [vm_end], which is
+      [ed_top], not from [sp] and not from the top of the block.
+    - THE GUARD GAP.  [expand_downwards] refuses to grow within
+      [stack_guard_gap] of the mapping below.  At entry that mapping is
+      the vDSO text, directly below the mmap base, so the floor is
+      [base + guard gap].
 
-Lemma length_entry_slack : forall sp bytes slack,
-  length (entry_slack sp bytes slack) = entry_slack_len sp bytes.
-Proof.
-  intros sp bytes slack. unfold entry_slack.
-  rewrite length_map, length_seq. reflexivity.
-Qed.
+    The floor is the higher of the two, and it is below [sp] for every
+    launch the fifth conjunct of [valid_entry_va] admits: with
+    randomization the base and its gap are at most
+    [STACK_TOP - 0x407ff000] while [ed_top] is at least
+    [STACK_TOP - 2^30], and without it the base and its gap are at most
+    [STACK_TOP - 8 MiB] while [ed_top] is at least [STACK_TOP - 4096].
 
-(** NO ADDRESS IN THE LAYOUT MOVES: the slack is a SUFFIX, so every byte
-    the kernel writes is still at the offset [build_stack_bytes] put it
-    at.  This is what keeps every concrete-layout proof in the tree — the
-    argc word, the argv and envp pointers, the auxv, the strings, the
-    AT_RANDOM block — reading exactly what it read before the page was
-    mapped whole. *)
-Lemma entry_stack_image_block_prefix :
-  forall ph sp argv envp uid hwcap draw i,
-  (i < length (build_stack_bytes ph sp argv envp uid hwcap draw))%nat ->
-  nth_error (entry_stack_image ph sp argv envp uid hwcap draw) i
-  = nth_error (build_stack_bytes ph sp argv envp uid hwcap draw) i.
-Proof.
-  intros ph sp argv envp uid hwcap draw i Hi.
-  unfold entry_stack_image. cbv zeta. apply nth_error_app1. exact Hi.
-Qed.
+    An earlier version zero-mapped [[sp - stack_max_size, sp)], which
+    counted 8 MiB from [sp]
+    (theorem-labs/rocq-linux-process-semantics#6), and the version
+    before this one counted it from the top of the block and had no
+    guard-gap floor at all (#25). *)
+Definition stack_window_lo (kb : KernelBuild) (mbase : word)
+    (draw : EntryDraw) : Z :=
+  Z.max (bv_unsigned (ed_top draw) - stack_max_size)
+        (bv_unsigned mbase + stack_guard_gap_bytes kb).
 
-(** INSIDE THE BLOCK, the image answers exactly as the block does.  Every
-    read-back lemma in the tree — the argc word, the argv and envp
-    pointers, the auxv slots, the strings — is about an address below
-    [entry_block_top], so this is the one step each of them takes to see
-    past the page the model maps whole. *)
-Lemma stack_to_mem_image_in_block :
-  forall ph (sp : word) argv envp uid hwcap draw (addr : word),
-  (bv_unsigned addr
-   < entry_block_top sp (build_stack_bytes ph sp argv envp uid hwcap draw))%Z ->
-  stack_to_mem sp (entry_stack_image ph sp argv envp uid hwcap draw) addr
-  = stack_to_mem sp (build_stack_bytes ph sp argv envp uid hwcap draw) addr.
-Proof.
-  intros ph sp argv envp uid hwcap draw addr Hlt.
-  unfold entry_block_top in Hlt. unfold stack_to_mem.
-  destruct (Z.leb (bv_unsigned sp) (bv_unsigned addr)) eqn:Hle; [|reflexivity].
-  apply Z.leb_le in Hle. cbv beta zeta.
-  assert (Hoff : (Z.to_nat (bv_unsigned addr - bv_unsigned sp)
-                  < length (build_stack_bytes ph sp argv envp uid hwcap draw))%nat).
-  { apply Nat2Z.inj_lt. rewrite Z2Nat.id by lia. lia. }
-  assert (Him : (Z.of_nat (length (build_stack_bytes ph sp argv envp uid hwcap draw))
-                 <= Z.of_nat (length (entry_stack_image ph sp argv envp uid hwcap draw)))%Z).
-  { unfold entry_stack_image. cbv zeta. rewrite length_app. lia. }
-  assert (H1 : (bv_unsigned addr - bv_unsigned sp
-                <? Z.of_nat (length (entry_stack_image ph sp argv envp uid hwcap draw)))%Z
-               = true) by (apply Z.ltb_lt; lia).
-  assert (H2 : (bv_unsigned addr - bv_unsigned sp
-                <? Z.of_nat (length (build_stack_bytes ph sp argv envp uid hwcap draw)))%Z
-               = true) by (apply Z.ltb_lt; lia).
-  rewrite H1, H2. apply entry_stack_image_block_prefix. exact Hoff.
-Qed.
-
-(** The image ends exactly at the page boundary above the block. *)
-Lemma entry_stack_image_top : forall ph sp argv envp uid hwcap draw,
-  (bv_unsigned sp
-   + Z.of_nat (length (entry_stack_image ph sp argv envp uid hwcap draw))
-   = entry_page_top sp (build_stack_bytes ph sp argv envp uid hwcap draw))%Z.
-Proof.
-  intros ph sp argv envp uid hwcap draw.
-  pose proof (entry_page_top_ge sp (build_stack_bytes ph sp argv envp uid hwcap draw))
-    as Hge.
-  unfold entry_stack_image. cbv zeta.
-  rewrite length_app, length_entry_slack.
-  unfold entry_slack_len, entry_page_top, entry_block_top in *.
-  rewrite Nat2Z.inj_add, Z2Nat.id by lia. lia.
-Qed.
-
-Definition init_machine_state (argv : list (list byte))
-    (envp : list (list byte)) (uid : word) (hwcap : word) : machine_state :=
+Definition init_machine_state (inp : ProcInput) : machine_state :=
   let regs :=
     bvmap_set 2 mi_init_sp                 (* sp *)
       (bvmap_set 10 (Z_to_bv 64 0)         (* a0 — 0 on Linux entry; the entry is
@@ -1077,14 +1062,14 @@ Definition init_machine_state (argv : list (list byte))
      ms_svc_pending := None;
      ms_resv := None; ms_fcsr := Z_to_bv 32 0;
      ms_mem :=
-       let stk := stack_to_mem mi_init_sp
-                    (entry_stack_image mi_phdrs mi_init_sp argv envp uid
-                       hwcap mi_draw) in
+       let img := entry_stack_image inp mi_mmap_base mi_phdrs
+                    (Z_to_bv 64 (Z.of_N mi_init_pc)) mi_init_sp mi_draw in
+       let stk := stack_to_mem mi_init_sp img in
        fun addr =>
          match stk addr with
          | Some b => Some b
          | None =>
-           if andb (Z.leb (bv_unsigned mi_init_sp - stack_max_size)
+           if andb (Z.leb (stack_window_lo (in_kernel inp) mi_mmap_base mi_draw)
                           (bv_unsigned addr))
                    (Z.ltb (bv_unsigned addr) (bv_unsigned mi_init_sp))
            then Some (Z_to_bv 8 0)
@@ -1099,8 +1084,7 @@ Definition init_machine_state (argv : list (list byte))
 (** The initial configuration for one run of THIS image on the
     caller-supplied inputs [inp]. *)
 Definition init_config (inp : ProcInput) : config :=
-  mkCfg (init_machine_state (in_argv inp) (in_envp inp) (in_uid inp)
-                            (in_hwcap inp))
+  mkCfg (init_machine_state inp)
         (init_model (segments_reserved mi_loaded_segments) mi_init_brk
                     mi_mmap_base mi_init_sp mi_alloc_limit inp).
 
@@ -1224,10 +1208,13 @@ Definition run (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
    OFF THE SPEC by the definition of [spurious_refusal_cfg], and this is
    what each family's forcing condition comes to:
 
-     alloc  mmap, brk, mremap, mprotect   the shape's budget test fails,
-                                          or no placement exists
-     fs     openat, faccessat, unlinkat,  openat: no free descriptor;
-            getcwd                        the others: never
+     alloc  mmap, brk, mremap, mprotect,  the shape's budget test fails,
+            munmap                        or no placement exists;
+                                          munmap: never
+     fs     openat, faccessat,            openat: no free descriptor;
+            faccessat2, unlinkat,         the others: never
+            getcwd, getdents64, write     (write's is the page an empty
+                                          pipe's write must allocate)
      fd     dup, pipe2, socket,           no free descriptor (two for
             socketpair, accept, clone     pipe2 and socketpair; accept
                                           also when [Socket.conn_ix_exhausted]);
@@ -1357,9 +1344,12 @@ Record InjectedArm := mkInjectedArm {
 (** Every arm of [Sys.SyscallTable.spec_table] that injects, SORTED BY
     SYSCALL NUMBER like that table and for the same reason (two changes
     that add two arms land at different lines).  [brk] refuses by value
-    and carries no list; see [brk_refusal_b].  [nanosleep]'s -EINTR and
-    [setsid]'s -EPERM are injected by a bare [alt] rather than through a
-    named list, so their lists are written here. *)
+    and carries no list; see [brk_refusal_b].  [nanosleep]'s -EINTR,
+    [setsid]'s -EPERM and [write]'s -ENOMEM on a pipe's fresh page are
+    injected by a bare [alt] rather than through a named list, so their
+    lists are written here.  [faccessat2] draws from
+    [faccessat]'s list because both answer through
+    [Fs.Open.access_exists_spec]. *)
 Definition injected_table : list InjectedArm :=
   (* getcwd     *) mkInjectedArm  17%Z FamFs    getcwd_errnos ::
   (* dup        *) mkInjectedArm  23%Z FamFd    dup_errnos ::
@@ -1367,6 +1357,8 @@ Definition injected_table : list InjectedArm :=
   (* faccessat  *) mkInjectedArm  48%Z FamFs    faccessat_errnos ::
   (* openat     *) mkInjectedArm  56%Z FamFs    openat_errnos ::
   (* pipe2      *) mkInjectedArm  59%Z FamFd    pipe2_errnos ::
+  (* getdents64 *) mkInjectedArm  61%Z FamFs    getdents64_errnos ::
+  (* write      *) mkInjectedArm  64%Z FamFs    write_errnos ::
   (* nanosleep  *) mkInjectedArm 101%Z FamIntr  [EINTR] ::
   (* setgid     *) mkInjectedArm 144%Z FamCred  (setid_errnos true) ::
   (* setuid     *) mkInjectedArm 146%Z FamCred  (setid_errnos true) ::
@@ -1379,6 +1371,7 @@ Definition injected_table : list InjectedArm :=
   (* listen     *) mkInjectedArm 201%Z FamNet   listen_errnos ::
   (* accept     *) mkInjectedArm 202%Z FamFd    accept_errnos ::
   (* brk        *) mkInjectedArm 214%Z FamAlloc [] ::
+  (* munmap     *) mkInjectedArm 215%Z FamAlloc munmap_errnos ::
   (* mremap     *) mkInjectedArm 216%Z FamAlloc mremap_errnos ::
   (* clone      *) mkInjectedArm 220%Z FamFd    clone_errnos ::
   (* mmap       *) mkInjectedArm 222%Z FamAlloc mmap_errnos ::
@@ -1386,6 +1379,7 @@ Definition injected_table : list InjectedArm :=
   (* accept4    *) mkInjectedArm 242%Z FamFd    accept_errnos ::
   (* getrandom  *) mkInjectedArm 278%Z FamIntr  getrandom_errnos ::
   (* clone3     *) mkInjectedArm 435%Z FamFd    clone_errnos ::
+  (* faccessat2 *) mkInjectedArm 439%Z FamFs    faccessat_errnos ::
   nil.
 
 Fixpoint lookup_injected (t : list InjectedArm) (n : Z) : option InjectedArm :=
@@ -1431,12 +1425,15 @@ Definition refusal_b (i : SyscallInput) (m : Model) (ret : word) : bool :=
 (** Is the pending syscall [i] at model [m] a grant the BUDGET refuses?
     Every [FamAlloc] arm of [injected_table], each answered by the mark
     its own file defines beside its spec
-    ([Mmap.brk_budget_refused_b], [Mremap.mremap_budget_refused_b],
-    [Mmap.mmap_budget_refused_b], [Mprotect.mprotect_budget_refused_b])
+    ([Mmap.brk_budget_refused_b], [Mmap.munmap_budget_refused_b],
+    [Mremap.mremap_budget_refused_b], [Mmap.mmap_budget_refused_b],
+    [Mprotect.mprotect_budget_refused_b])
     on the arguments [Sys.SyscallTable.spec_table] hands the arm; every
-    other number is [false].  Compare [refusal_b], which asks whether a
-    given ANSWER is a refusal; this asks whether the REQUEST is one the
-    budget declines, whatever answer is then drawn.
+    other number is [false].  [munmap]'s mark is [false] too, on every
+    request: munmap consults no budget, and its one refusal is never a
+    budget one ([alloc_budget_refused_munmap]).  Compare [refusal_b],
+    which asks whether a given ANSWER is a refusal; this asks whether the
+    REQUEST is one the budget declines, whatever answer is then drawn.
 
     THE [false] IS THE DANGEROUS ANSWER: an allocation arm this
     dispatcher does not know is a silent false negative of the budget
@@ -1444,18 +1441,19 @@ Definition refusal_b (i : SyscallInput) (m : Model) (ret : word) : bool :=
     [alloc_family_dispatched] proves that every number
     [injected_table] registers under [FamAlloc] is in
     [alloc_mark_sysnos], and [alloc_budget_refused_b_outside] that the
-    dispatcher answers [false] exactly off that list, so a fifth
+    dispatcher answers [false] exactly off that list, so a sixth
     [FamAlloc] arm fails to build until the list and the dispatcher
     learn it.  What Rocq cannot see is an arm that consults the budget
     without registering as injecting, so that rule is stated here
     instead: every file under [Sys/] that names a
     budget reader must define a [*_budget_refused_b] this dispatcher
     names. *)
-Definition alloc_mark_sysnos : list Z := [214; 216; 222; 226]%Z.
+Definition alloc_mark_sysnos : list Z := [214; 215; 216; 222; 226]%Z.
 
 Definition alloc_budget_refused_b (i : SyscallInput) (m : Model) : bool :=
   let no := bv_unsigned (in_sysno i) in
   if Z.eqb no 214 then brk_budget_refused_b m (in_arg i 0)
+  else if Z.eqb no 215 then munmap_budget_refused_b (in_arg i 0) (in_arg i 1) m
   else if Z.eqb no 216 then
     mremap_budget_refused_b (in_arg i 0) (in_arg i 1) (in_arg i 2) (in_arg i 3) m
   else if Z.eqb no 222 then
@@ -1483,10 +1481,11 @@ Definition alloc_budget_refused_b (i : SyscallInput) (m : Model) : bool :=
 Inductive RefuseReason : Set := RefuseBudget | RefuseOversize.
 
 (** The charge of the pending request: the byte growth above the
-    current break for [brk], the page-rounded length or new size for the
-    others, and 0 for any other syscall.  The argument indices are those
-    of [alloc_budget_refused_b]; the per-arm lemmas below tie this charge
-    to each arm's gate. *)
+    current break for [brk], the page-rounded length or new size for
+    [mremap], [mmap] and [mprotect], and 0 for any other syscall —
+    [munmap] included, whose mark never fires.  The argument indices are
+    those of [alloc_budget_refused_b]; the per-arm lemmas below tie this
+    charge to each arm's gate. *)
 Definition alloc_req_charge_bytes (i : SyscallInput) (m : Model) : Z :=
   let no := bv_unsigned (in_sysno i) in
   if Z.eqb no 214 then
@@ -1557,6 +1556,19 @@ Proof.
   unfold brk_budget_ok. cbv zeta. rewrite Hsz, Hc. reflexivity.
 Qed.
 
+(** THE MREMAP MARK, READ BACK.  The grow has ONE non-errno
+    resolution, and which one is decided by the room test
+    ([Sys/Mm/Mremap.mremap_inplace_room_b]), so the mark says a
+    different thing in each case: with room, the in-place charge
+    fails; without room, the move's charge fails.  What holds in BOTH
+    is that the in-place resolution is not admitted.
+
+    Before the placement change this lemma could claim both halves at
+    once, because the mark was [negb (inplace_grow || move_budget)].
+    It cannot now, and it should not: Linux with room above the source
+    does not move, so the move's budget says nothing about that
+    call (mm/mremap.c, [vrm_can_expand_in_place] and the accounting
+    failure beside it, Linux v6.18.46, commit 1f99e9ab748f). *)
 Lemma alloc_req_charge_mremap : forall i m,
   bv_unsigned (in_sysno i) = 216%Z ->
   alloc_budget_refused_b i m = true ->
@@ -1564,7 +1576,11 @@ Lemma alloc_req_charge_mremap : forall i m,
   let c := alloc_req_charge_bytes i m in
   (old_nZ < c)%Z
   /\ mremap_inplace_grow_b m (in_arg i 0) (Z_to_bv 64 old_nZ) (Z_to_bv 64 c) old_nZ c = false
-  /\ mremap_move_budget_b m (in_arg i 0) (Z_to_bv 64 old_nZ) (Z_to_bv 64 c) = false.
+  /\ (if mremap_inplace_room_b m (in_arg i 0) (Z_to_bv 64 old_nZ) (Z_to_bv 64 c) old_nZ c
+      then mremap_final_budget_b m (in_arg i 0) (Z_to_bv 64 old_nZ)
+             (in_arg i 0) (Z_to_bv 64 c) = false
+      else mremap_move_budget_b m (in_arg i 0) (Z_to_bv 64 old_nZ)
+             (Z_to_bv 64 c) = false).
 Proof.
   intros i m Hno Hb old_nZ c.
   assert (Hc : c = page_round_up_Z (bv_unsigned (in_arg i 2))).
@@ -1575,14 +1591,21 @@ Proof.
   unfold mremap_budget_refused_b in Hb. cbv zeta in Hb.
   repeat match type of Hb with
          | context [if ?b then _ else _] => destruct b eqn:?; try discriminate Hb
-         end.
-  apply negb_true_iff, orb_false_iff in Hb as [H1 H2].
+         end;
   match goal with
   | [ H : (page_round_up_Z (bv_unsigned (in_arg i 2))
            <=? page_round_up_Z (bv_unsigned (in_arg i 1)))%Z = false |- _ ] =>
       apply Z.leb_gt in H
+  end;
+  apply negb_true_iff in Hb;
+  (split; [assumption|]);
+  unfold mremap_inplace_grow_b;
+  match goal with
+  | [ Hr : mremap_inplace_room_b _ _ _ _ _ _ = true |- _ ] =>
+      rewrite Hr; cbn [andb]; split; [exact Hb | exact Hb]
+  | [ Hr : mremap_inplace_room_b _ _ _ _ _ _ = false |- _ ] =>
+      rewrite Hr; cbn [andb]; split; [reflexivity | exact Hb]
   end.
-  repeat split; assumption.
 Qed.
 
 Lemma alloc_req_charge_mmap : forall i m,
@@ -1625,6 +1648,17 @@ Proof.
   apply negb_true_iff in Hb. exact Hb.
 Qed.
 
+(** [munmap] has no gate to tie a charge to: its mark never fires
+    ([Mmap.munmap_budget_refused_b]), so no munmap request is
+    budget-refused, whatever the state. *)
+Lemma alloc_budget_refused_munmap : forall i m,
+  bv_unsigned (in_sysno i) = 215%Z ->
+  alloc_budget_refused_b i m = false.
+Proof.
+  intros i m Hno. unfold alloc_budget_refused_b. cbv zeta. rewrite Hno.
+  reflexivity.
+Qed.
+
 Lemma lookup_injected_in : forall t n a,
   lookup_injected t n = Some a -> In a t /\ ia_no a = n.
 Proof.
@@ -1642,7 +1676,8 @@ Ltac in_alloc_mark_sysnos :=
   first [ left; reflexivity
         | right; left; reflexivity
         | right; right; left; reflexivity
-        | right; right; right; left; reflexivity ].
+        | right; right; right; left; reflexivity
+        | right; right; right; right; left; reflexivity ].
 
 Lemma alloc_family_dispatched : forall no a,
   injected_arm no = Some a -> ia_family a = FamAlloc -> In no alloc_mark_sysnos.
@@ -1661,6 +1696,8 @@ Qed.
 Lemma alloc_mark_sysnos_dispatched : forall i m,
   let no := bv_unsigned (in_sysno i) in
   (no = 214%Z -> alloc_budget_refused_b i m = brk_budget_refused_b m (in_arg i 0))
+  /\ (no = 215%Z ->
+      alloc_budget_refused_b i m = munmap_budget_refused_b (in_arg i 0) (in_arg i 1) m)
   /\ (no = 216%Z ->
       alloc_budget_refused_b i m
       = mremap_budget_refused_b (in_arg i 0) (in_arg i 1) (in_arg i 2) (in_arg i 3) m)
@@ -1685,6 +1722,8 @@ Proof.
   intros i m Hout. unfold alloc_budget_refused_b. cbv zeta.
   destruct (Z.eqb (bv_unsigned (in_sysno i)) 214) eqn:E1;
     [apply Z.eqb_eq in E1; exfalso; apply Hout; rewrite E1; in_alloc_mark_sysnos |].
+  destruct (Z.eqb (bv_unsigned (in_sysno i)) 215) eqn:E5;
+    [apply Z.eqb_eq in E5; exfalso; apply Hout; rewrite E5; in_alloc_mark_sysnos |].
   destruct (Z.eqb (bv_unsigned (in_sysno i)) 216) eqn:E2;
     [apply Z.eqb_eq in E2; exfalso; apply Hout; rewrite E2; in_alloc_mark_sysnos |].
   destruct (Z.eqb (bv_unsigned (in_sysno i)) 222) eqn:E3;
@@ -2224,10 +2263,11 @@ Qed.
    - the pending SYSCALL is a grant the budget refuses:
      [alloc_budget_refused_b] on the request and the pre-state, a
      boolean each arm defines beside its spec as the negation of its
-     own budget gate.  It reads the request and the state, never the
-     answer: the arms keep an [alt] onto their errno list, so a refusal
-     is always ADMISSIBLE, and what the mark says is that at this
-     configuration nothing else is;
+     own budget gate ([munmap], which has no gate, defines the constant
+     [false]).  It reads the request and the state, never the answer:
+     the arms that consult a budget keep an [alt] onto their errno list,
+     so a refusal is always ADMISSIBLE, and what the mark says is that at
+     this configuration nothing else is;
    - some admissible outcome of the pending syscall has an effect
      whose copy-in or copy-out touches a lazy page the budget cannot
      back — the [sstep_syscall_materialization_fault] premises.
@@ -2493,8 +2533,9 @@ Definition valid_brk (segs : list Segment) (brk : word) : Prop :=
     Quantified independently per binary in
     [Equivalence.strong_universal_T], like [valid_sp] and [valid_brk].
 
-    No spec arm reads [vm_mmap_base] — placement is admissibility
-    alone — so the band constrains no placement the model admits.  But
+    The spec reads [vm_mmap_base]: it is the top-down bound of
+    [Mmap.linux_place], through [State.mmap_top].  So the band is the
+    set of placements the model admits, base by base.  Also,
     [valid_mmap_base] is the third conjunct of [valid_entry], which
     [Equivalence.strong_universal_T] quantifies its entries under, and
     discharging it is a required step of the tree's anti-vacuity lemma
@@ -2630,6 +2671,109 @@ Definition valid_envp (envp : list (list byte)) : Prop :=
   Forall (fun e => (Z.of_nat (length e) <= 131071)%Z) envp /\
   Forall (fun e => ~ In (Z_to_bv 8 0) e) envp.
 
+(** * The exec file name, and the launches Linux refuses with E2BIG
+
+    ** Which names [execve] can present
+
+    [bprm->filename] is either the caller's own path or a name
+    [alloc_bprm] (fs/exec.c, Linux v6.18.46, commit 1f99e9ab748f)
+    builds for an [execveat] relative to a descriptor:
+
+      [if (fd == AT_FDCWD || filename->name[0] == '/')]
+        [bprm->filename = filename->name;]
+      [else if (filename->name[0] == '\0')]
+        [bprm->fdpath = kasprintf(GFP_KERNEL, "/dev/fd/%d", fd);]
+      [else]
+        [bprm->fdpath = kasprintf(GFP_KERNEL, "/dev/fd/%d/%s", fd, filename->name);]
+
+    The caller's path itself comes through [getname_flags]
+    (fs/namei.c), which refuses a name of [PATH_MAX] bytes or more
+    counting the NUL (-ENAMETOOLONG), so it is 1 to 4095 bytes, and
+    which refuses the EMPTY name with -ENOENT unless the caller passed
+    AT_EMPTY_PATH.  With AT_EMPTY_PATH and AT_FDCWD the lookup finds
+    the working directory, and [may_open] (fs/namei.c) answers -EACCES
+    for a directory opened with MAY_EXEC, so the empty name reaches no
+    launch.  A name is NUL-free by construction: [strncpy_from_user]
+    stops at the first NUL.
+
+    [fd] is a descriptor number, so it is decimal without a leading
+    zero and at most [sysctl_nr_open_max] - 1 = 0x7fffffbf
+    (fs/file.c: [sysctl_nr_open_max] is [INT_MAX] masked down to a
+    multiple of [BITS_PER_LONG], 0x7fffffc0 on rv64).  The part after [/dev/fd/N/] is the
+    caller's own relative name, so it is 1 to 4095 bytes and does not
+    start with "/".
+
+    RESIDUAL: a file system limits each NAME COMPONENT — 255 bytes on
+    ext4, 1024 on FUSE — and this predicate does not look at
+    components.  SCOPE.md records it. *)
+Definition byte_is_digit (b : byte) : bool :=
+  andb (Z.leb 48 (bv_unsigned b)) (Z.leb (bv_unsigned b) 57).
+
+Definition path_byte : byte := Z_to_bv 8 47.   (* '/' *)
+
+(** A decimal descriptor number: nonempty, every byte a digit, no
+    leading zero unless the whole number is "0", and at most
+    [sysctl_nr_open_max] - 1. *)
+Definition valid_fd_digits (ds : list byte) : Prop :=
+  ds <> [] /\ Forall (fun b => byte_is_digit b = true) ds
+  /\ (ds = [Z_to_bv 8 48] \/ hd (Z_to_bv 8 48) ds <> Z_to_bv 8 48)
+  /\ (Z.of_nat (length ds) <= 10)%Z.
+
+(** A path [getname_flags] can return: 1 to 4095 bytes, no NUL. *)
+Definition valid_path_name (p : list byte) : Prop :=
+  (1 <= Z.of_nat (length p) <= 4095)%Z /\ ~ In (Z_to_bv 8 0) p.
+
+Definition dev_fd_prefix : list byte :=
+  [ Z_to_bv 8 47; Z_to_bv 8 100; Z_to_bv 8 101; Z_to_bv 8 118;
+    Z_to_bv 8 47; Z_to_bv 8 102; Z_to_bv 8 100; Z_to_bv 8 47 ].  (* "/dev/fd/" *)
+
+Definition valid_execfn (fn : list byte) : Prop :=
+  valid_path_name fn
+  \/ (exists ds, fn = dev_fd_prefix ++ ds /\ valid_fd_digits ds)
+  \/ (exists ds rest,
+        fn = dev_fd_prefix ++ ds ++ [path_byte] ++ rest
+        /\ valid_fd_digits ds /\ valid_path_name rest
+        /\ hd path_byte rest <> path_byte).
+
+(** ** The joint E2BIG limit
+
+    [bprm_stack_limits] (fs/exec.c) computes
+
+      [limit = _STK_LIM / 4 * 3;]                      (6 MiB)
+      [limit = min(limit, bprm->rlim_stack.rlim_cur / 4);]   (2 MiB at the 8 MiB limit)
+      [limit = max_t(unsigned long, limit, ARG_MAX);]        (128 KiB)
+      [ptr_size = (max(bprm->argc, 1) + bprm->envc) * 8;]
+      [if (limit <= ptr_size) return -E2BIG;]
+      [limit -= ptr_size;]
+
+    and [bprm_set_stack_limit] records [argmin = bprm->p - limit].
+    Every [copy_strings] and [copy_string_kernel] then fails with
+    -E2BIG once [bprm->p] falls below [argmin].  [bprm->p] starts at
+    the top of the temporary stack and moves down by the file name,
+    the envp strings and the argv strings with their NULs, so the
+    launch succeeds exactly when those bytes are at most [limit].
+
+    At SCOPE.md's 8 MiB stack limit the first three lines give 2 MiB,
+    so the condition is
+
+      [L + 8 * (argc + envc) <= 2 MiB],
+
+    with [L] the string bytes including the NULs.  [valid_argv] admits
+    [argc >= 1], so [max(argc, 1)] is [argc].  This is ONE conjunct
+    rather than two because [L >= 2] under [valid_execfn], which makes
+    the strict [limit > ptr_size] test follow from it.
+
+    [valid_argv]'s own 2 MiB bound and [valid_envp]'s 128 KiB bound
+    stay: they are per-list bounds and this is the joint one. *)
+Definition e2big_limit : Z := 2097152%Z.
+
+Definition launch_bytes (inp : ProcInput) : Z :=
+  (Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp) (in_execfn inp))
+   + 8 * (Z.of_nat (length (in_argv inp)) + Z.of_nat (length (in_envp inp))))%Z.
+
+Definition valid_launch (inp : ProcInput) : Prop :=
+  valid_execfn (in_execfn inp) /\ (launch_bytes inp <= e2big_limit)%Z.
+
 (** * The entry stack image fits inside the user address space
 
     [init_machine_state] lays [StackLayout.build_stack_bytes] down AT
@@ -2712,7 +2856,14 @@ Definition entry_stack_span (argv envp : list (list byte)) : Z :=
   (8                                    (* argc *)
    + 8 * Z.of_nat (length argv) + 8     (* argv[] and its NULL *)
    + 8 * Z.of_nat (length envp) + 8     (* envp[] and its NULL *)
-   + Z.of_nat auxv_size                 (* the serialized auxv *)
+   + 160                                (* the OLD auxv's size: this
+                                           ceiling is a LOWER bound on
+                                           Linux's block, kept as the
+                                           literal it had while the
+                                           model's own auxv was ten
+                                           entries, so that the fifth
+                                           conjunct of [valid_entry_va]
+                                           implies it *)
    + total_arg_bytes argv               (* the argument strings *)
    + total_arg_bytes envp               (* the environment strings *)
    + 7                                  (* 8-alignment padding *)
@@ -2802,20 +2953,187 @@ Qed.
     statement under another declaration is refused rather than answered
     -- see [State.VaSize] for what the arms implement and for the
     residual. *)
+(* =========================================================================
+   THE ADMITTED SET: exactly Linux's start states for this launch
+   ========================================================================= *)
+
+(** 16-byte and page alignment in [Z], as the kernel's masks work on
+    [unsigned long]: [x & ~0xf] and [PAGE_ALIGN(x) = (x + 4095) & ~4095].
+    Every address these are applied to is far below 2^64, so the
+    wrap-around the C does never happens; the [Z] forms are exact. *)
+Definition align_down16 (x : Z) : Z := (x - x mod 16)%Z.
+
+(** [STACK_RND_MASK << PAGE_SHIFT]: the largest stack draw, 0x3ffff
+    pages (arch/riscv/include/asm/elf.h, Linux v6.18.46, commit
+    1f99e9ab748f, with 4 KiB pages and no compat task). *)
+Definition stack_rnd_max : Z := 0x3ffff000%Z.
+
+(** ** Rule 1: the stack VMA's end
+
+    [load_elf_binary] (fs/binfmt_elf.c) calls
+    [setup_arg_pages(bprm, randomize_stack_top(STACK_TOP), ...)], and
+    [setup_arg_pages] (fs/exec.c) then applies
+
+      [stack_top = arch_align_stack(stack_top);]
+      [stack_top = PAGE_ALIGN(stack_top);]
+
+    [randomize_stack_top] (mm/util.c) subtracts [k] pages, [k] from 0
+    to 0x3ffff, when PF_RANDOMIZE is set, and nothing otherwise.
+    [arch_align_stack] (arch/riscv/kernel/process.c) subtracts [r]
+    from 0 to 4095 and clears the low four bits; from a page-aligned
+    [T] that gives [T] again for [r] in 0..4094 and [T - 4096] for
+    [r = 4095], because [(T - 4095) & ~0xf = T - 4096].  PAGE_ALIGN
+    then rounds the first case back up to [T].
+
+    So the end is page-aligned, and it is [T0 - 4096 * k] for [k] in
+    [0, 0x40000] with randomization, or [T0] or [T0 - 4096] without.
+
+    WITHOUT RANDOMIZATION THE SECOND PAGE IS STILL LINUX.
+    [load_elf_binary] reads [randomize_va_space] ONCE
+    ([snapshot_randomize_va_space]) for PF_RANDOMIZE, while
+    [arch_align_stack] reads the global again at each of its two
+    calls.  A root write to the sysctl during the [execve] therefore
+    gives a launch with no stack draw, no base draw, and the
+    [arch_align_stack] pad.  Admitting it costs nothing and needs no
+    SCOPE.md assumption (dispatch://OSSV-257/ask/a4606aae). *)
+Definition valid_stack_top_va (v : VaSize) (aslr : bool) (top : word) : Prop :=
+  (bv_unsigned top mod page_size = 0)%Z
+  /\ (bv_unsigned top <= va_stack_top v)%Z
+  /\ (va_stack_top v
+      - (if aslr then stack_rnd_max + page_size else page_size)
+      <= bv_unsigned top)%Z.
+
+(** ** Rule 2: the entry stack pointer
+
+    After the strings, [bprm->p] is [top - 8 - L]: the stack VMA's top
+    eight bytes are the slot [create_init_stack_vma] (mm/vma_exec.c)
+    skipped, and [do_execveat_common] copied [L] bytes of file name,
+    envp and argv below it.  [create_elf_tables] (fs/binfmt_elf.c)
+    then does
+
+      [p = arch_align_stack(p);]                 (minus 0..4095, then & ~0xf)
+      [u_rand_bytes = STACK_ALLOC(p, 16);]       (p -= 16)
+      [sp = STACK_ADD(p, ei_index);]             (p - 16 * n_aux)
+      [bprm->p = STACK_ROUND(sp, items);]        ((sp - 8 * items) & ~15)
+
+    [p] after [arch_align_stack] is 16-aligned and both 16 and
+    [16 * n_aux] are multiples of 16, so the final mask removes exactly
+    [8 * (items mod 2)] bytes.  Writing
+    [C = 16 + 16 * n_aux + 8 * items + 8 * (items mod 2)]
+    ([StackLayout.block_head_size]), the entry stack pointer is
+
+      [sp = align_down16(top - 8 - L - r) - C],   [r] in [0, 4095].
+
+    [align_down16] is monotone and [r] covers a span of 4095, so the
+    admitted set is every 16-aligned address in the closed interval
+    between the two ends, and nothing else. *)
+Definition launch_sp_hi (top : word) (inp : ProcInput) : Z :=
+  (align_down16 (bv_unsigned top - 8
+                 - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                                 (in_execfn inp)))
+   - Z.of_nat (block_head_size (kb_rseq (in_kernel inp))
+                               (in_argv inp) (in_envp inp)))%Z.
+
+Definition launch_sp_lo (top : word) (inp : ProcInput) : Z :=
+  (align_down16 (bv_unsigned top - 8
+                 - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                                 (in_execfn inp))
+                 - 4095)
+   - Z.of_nat (block_head_size (kb_rseq (in_kernel inp))
+                               (in_argv inp) (in_envp inp)))%Z.
+
+Definition valid_launch_sp (top : word) (inp : ProcInput) (sp : word) : Prop :=
+  (bv_unsigned sp mod 16 = 0)%Z
+  /\ (launch_sp_lo top inp <= bv_unsigned sp <= launch_sp_hi top inp)%Z.
+
+(** ** Rule 3: the mmap base
+
+    [arch_pick_mmap_layout] (mm/util.c) takes
+    [random_factor = arch_mmap_rnd()] when PF_RANDOMIZE is set and 0
+    otherwise, and calls [mmap_base], which is
+
+      [gap = rlim_stack->rlim_cur;]
+      [pad = stack_guard_gap;]
+      [if (current->flags & PF_RANDOMIZE) pad += (STACK_RND_MASK << PAGE_SHIFT);]
+      [if (gap + pad > gap) gap += pad;]
+      [if (gap < MIN_GAP && MIN_GAP < MAX_GAP) gap = MIN_GAP;]
+      [else if (gap > MAX_GAP) gap = MAX_GAP;]
+      [return PAGE_ALIGN(STACK_TOP - gap - rnd);]
+
+    with [MIN_GAP = SZ_128M] and [MAX_GAP = STACK_TOP / 6 * 5].  The
+    [gap + pad > gap] test is the kernel's own overflow guard on
+    [unsigned long]; it is written out here rather than simplified
+    away, because it is what the source does.
+
+    [arch_mmap_rnd] (mm/util.c) is
+    [(get_random_long() & ((1UL << mmap_rnd_bits) - 1)) << PAGE_SHIFT],
+    so the draw is [4096 * r] for some [r < 2^mmap_rnd_bits].
+
+    [mmap_is_legacy] is false here: SCOPE.md assumes the top-down
+    layout, a finite RLIMIT_STACK and no ADDR_COMPAT_LAYOUT. *)
+Definition mmap_min_gap : Z := (128 * 1024 * 1024)%Z.
+Definition mmap_max_gap (v : VaSize) : Z := (va_stack_top v / 6 * 5)%Z.
+
+Definition mmap_gap (v : VaSize) (kb : KernelBuild) : Z :=
+  let rlim := stack_max_size in
+  let pad := (stack_guard_gap_bytes kb
+              + if kb_aslr kb then stack_rnd_max else 0)%Z in
+  let g := if ((rlim + pad) mod two_pow_64 >? rlim)%Z then (rlim + pad)%Z
+           else rlim in
+  if andb (g <? mmap_min_gap)%Z (mmap_min_gap <? mmap_max_gap v)%Z
+  then mmap_min_gap
+  else if (g >? mmap_max_gap v)%Z then mmap_max_gap v else g.
+
+Definition mmap_base_of (v : VaSize) (kb : KernelBuild) (rnd : Z) : Z :=
+  page_round_up_Z (va_stack_top v - mmap_gap v kb - rnd).
+
+Definition valid_launch_base (v : VaSize) (kb : KernelBuild) (mbase : word)
+    : Prop :=
+  exists r : Z,
+    (0 <= r)%Z
+    /\ (kb_aslr kb = true -> r < 2 ^ mmap_rnd_bits v kb)%Z
+    /\ (kb_aslr kb = false -> r = 0%Z)
+    /\ bv_unsigned mbase = mmap_base_of v kb (page_size * r).
+
+(** ** The conjunct
+
+    THE START STATE IS EXACTLY A LINUX LAUNCH.  The three rules above
+    are the kernel's own steps, so for one input and one
+    [State.KernelBuild] the set of (stack top, sp, mmap base) this
+    admits is the set a Linux v6.18.46 launch can give, and
+    [StackLayout.build_stack_bytes] lays Linux's bytes between sp and
+    the top.  There is no band.
+
+    It is a FIFTH conjunct rather than a replacement for the four
+    older ones, which it implies, because the tree reads those four
+    facts off a destructured entry in thousands of places.  See
+    [entry_launch_ok_va_sp], [entry_launch_ok_va_base] and
+    [entry_launch_ok_va_fits] for the implications. *)
+Definition entry_launch_ok_va (v : VaSize) (en : ExecEntry)
+    (inp : ProcInput) : Prop :=
+  match en with
+  | mkEntry sp _ mbase draw =>
+    valid_stack_top_va v (kb_aslr (in_kernel inp)) (ed_top draw)
+    /\ valid_launch_sp (ed_top draw) inp sp
+    /\ valid_launch_base v (in_kernel inp) mbase
+  end.
+
 Definition valid_entry_va (v : VaSize) (img : Image) (en : ExecEntry)
     (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs _ _, mkEntry sp brk0 mbase _ =>
     valid_sp_va v sp /\ valid_brk segs brk0 /\ valid_mmap_base_va v mbase
     /\ entry_stack_fits_va v sp (in_argv inp) (in_envp inp)
+    /\ entry_launch_ok_va v en inp
   end.
 
 Definition valid_entry (img : Image) (en : ExecEntry) (inp : ProcInput) : Prop :=
   valid_entry_va (in_va_size inp) img en inp.
 
 (** The Sv48 instance is the predicate the tree was written against,
-    conjunct for conjunct.  Consumers that reason about the window under
-    [valid_input] rewrite with this and go on as before. *)
+    conjunct for conjunct, with the launch conjunct last.  Consumers
+    that reason about the window under [valid_input] rewrite with this
+    and go on as before. *)
 Lemma valid_entry_sv48 : forall img en inp,
   in_va_size inp = Sv48 ->
   (valid_entry img en inp
@@ -2823,12 +3141,490 @@ Lemma valid_entry_sv48 : forall img en inp,
        | mkImage segs _ _, mkEntry sp brk0 mbase _ =>
          valid_sp sp /\ valid_brk segs brk0 /\ valid_mmap_base mbase
          /\ entry_stack_fits sp (in_argv inp) (in_envp inp)
+         /\ entry_launch_ok_va Sv48 en inp
        end).
 Proof.
   intros [segs pc ph] [sp brk0 mbase rnd] inp Hv.
   unfold valid_entry. rewrite Hv. cbn [valid_entry_va].
   rewrite valid_sp_va_sv48, valid_mmap_base_va_sv48, entry_stack_fits_va_sv48.
   reflexivity.
+Qed.
+
+(* =========================================================================
+   A WITNESS ENTRY FOR EVERY VALID INPUT
+   ========================================================================= *)
+
+(** What a vDSO call leaves behind when it leaves nothing behind: the
+    caller-saved registers and the frame bytes it found.  A legal
+    choice of [StackLayout.ed_vdso] — a vDSO function that writes only
+    its result is one Linux can run — and the one a proof that does not
+    care about the leftovers names. *)
+Definition vdso_keeps_all
+    : nat -> list word -> list byte -> word -> (list word * list byte) :=
+  fun _ regs frame _ => (regs, frame).
+
+(** THE WITNESS ENTRY, and the lemma that makes repairing a consumer
+    cheap.
+
+    A proof that used to write
+
+      [exists (mkEntry sp brk base (mkDraw rnd slack)). ... ]
+
+    and discharge four conjuncts by [lia] now writes
+
+      [exists (launch_entry_va v inp brk rnd vdso_keeps_all).]
+      [apply launch_entry_va_valid; ...]
+
+    and discharges the launch conjunct by the lemma rather than by
+    arithmetic.  The witness is the one the spec names: the stack at
+    the very top ([ed_top = STACK_TOP], the launch with no stack
+    draw), the stack pointer at the top of rule 2 (the launch with no
+    [arch_align_stack] pad), and the mmap base of rule 3 with the draw
+    at 0.  That triple is a Linux launch for every valid input and
+    every kernel build, under all three address-space sizes.
+
+    [brk] stays an argument: it is a fact about the IMAGE's
+    reservations, which this file does not compute
+    ([Equivalence.image_brk_witness] does). *)
+Definition launch_entry_va (v : VaSize) (inp : ProcInput) (brk : word)
+    (rnd : bv 128)
+    (vd : nat -> list word -> list byte -> word -> (list word * list byte))
+    : ExecEntry :=
+  let top := Z_to_bv 64 (va_stack_top v) in
+  mkEntry (Z_to_bv 64 (launch_sp_hi top inp))
+          brk
+          (Z_to_bv 64 (mmap_base_of v (in_kernel inp) 0))
+          (mkDraw rnd top vd).
+
+(* ------------------------------------------------------------------
+   THE ARITHMETIC OF THE FIFTH CONJUNCT
+
+   The kernel's three masks -- [PAGE_ALIGN], [x & ~0xf] and the gap
+   clamp in [mmap_base] (mm/util.c, Linux v6.18.46, commit
+   1f99e9ab748f) -- as inequalities, once.  Every bound below is a
+   closed bound on a huge literal, so each division is turned into an
+   inequality here and no later goal reaches [lia] with one still in
+   it.
+   ------------------------------------------------------------------ *)
+
+Lemma launch_page_round_up_ge : forall z, (z <= page_round_up_Z z)%Z.
+Proof.
+  intros z. unfold page_round_up_Z, page_size.
+  pose proof (Z.div_mod (z + 4096 - 1) 4096 ltac:(discriminate)).
+  pose proof (Z.mod_pos_bound (z + 4096 - 1) 4096 ltac:(lia)).
+  lia.
+Qed.
+
+Lemma launch_page_round_up_lt : forall z, (page_round_up_Z z < z + page_size)%Z.
+Proof.
+  intros z. unfold page_round_up_Z, page_size.
+  pose proof (Z.div_mod (z + 4096 - 1) 4096 ltac:(discriminate)).
+  pose proof (Z.mod_pos_bound (z + 4096 - 1) 4096 ltac:(lia)).
+  lia.
+Qed.
+
+(** [PAGE_ALIGN] reaches no further than the first page boundary at or
+    above its argument, so a page-aligned ceiling survives it. *)
+Lemma launch_page_round_up_le : forall z b,
+  (z <= b)%Z -> (b mod page_size = 0)%Z -> (page_round_up_Z z <= b)%Z.
+Proof.
+  intros z b Hzb Hb. unfold page_round_up_Z, page_size in *.
+  pose proof (Z.div_mod (z + 4096 - 1) 4096 ltac:(discriminate)).
+  pose proof (Z.mod_pos_bound (z + 4096 - 1) 4096 ltac:(lia)).
+  pose proof (Z.div_mod b 4096 ltac:(discriminate)).
+  lia.
+Qed.
+
+Lemma launch_page_round_up_mod : forall z,
+  (page_round_up_Z z mod page_size = 0)%Z.
+Proof. intros z. unfold page_round_up_Z. apply Z_mod_mult. Qed.
+
+Lemma align_down16_le : forall x, (align_down16 x <= x)%Z.
+Proof.
+  intros x. unfold align_down16.
+  pose proof (Z.mod_pos_bound x 16 ltac:(lia)). lia.
+Qed.
+
+Lemma align_down16_ge : forall x, (x - 15 <= align_down16 x)%Z.
+Proof.
+  intros x. unfold align_down16.
+  pose proof (Z.mod_pos_bound x 16 ltac:(lia)). lia.
+Qed.
+
+(** Why rule 2 ranges over a closed INTERVAL rather than a scattered
+    set: [arch_align_stack] subtracts 0 to 4095 and then masks, and the
+    mask is monotone. *)
+Lemma align_down16_mono : forall x y,
+  (x <= y)%Z -> (align_down16 x <= align_down16 y)%Z.
+Proof.
+  intros x y Hxy. unfold align_down16.
+  pose proof (Z.div_mod x 16 ltac:(discriminate)).
+  pose proof (Z.div_mod y 16 ltac:(discriminate)).
+  pose proof (Z.mod_pos_bound x 16 ltac:(lia)).
+  pose proof (Z.mod_pos_bound y 16 ltac:(lia)).
+  lia.
+Qed.
+
+Lemma align_down16_mod16 : forall x, (align_down16 x mod 16 = 0)%Z.
+Proof.
+  intros x. unfold align_down16.
+  pose proof (Z.div_mod x 16 ltac:(discriminate)).
+  replace (x - x mod 16)%Z with (16 * (x / 16))%Z by lia.
+  rewrite Z.mul_comm. apply Z_mod_mult.
+Qed.
+
+(** C, the head of the block, in this file's own vocabulary: it moves
+    with the two pointer arrays and with nothing else, because
+    [StackLayout.auxv_count] is 27 or 29 and [STACK_ROUND] adds at most
+    one eight-byte word. *)
+Lemma block_head_size_bounds : forall rseq argv envp,
+  (8 * (Z.of_nat (length argv) + Z.of_nat (length envp)) + 472
+   <= Z.of_nat (block_head_size rseq argv envp)
+   <= 8 * (Z.of_nat (length argv) + Z.of_nat (length envp)) + 512)%Z.
+Proof.
+  intros rseq argv envp.
+  unfold block_head_size, block_items, auxv_size, auxv_count.
+  assert (Hm : (Nat.modulo (length argv + length envp + 3) 2 < 2)%nat)
+    by (apply Nat.mod_upper_bound; discriminate).
+  destruct rseq; lia.
+Qed.
+
+(** C is a multiple of 16, which is why [STACK_ROUND]'s result is: the
+    [8 * items] of the pointer arrays and the [8 * (items mod 2)] the
+    mask removes always pair up. *)
+Lemma block_head_size_mod16 : forall rseq argv envp,
+  (Z.of_nat (block_head_size rseq argv envp) mod 16 = 0)%Z.
+Proof.
+  intros rseq argv envp.
+  assert (Hk : exists k, block_head_size rseq argv envp = (16 * k)%nat).
+  { unfold block_head_size, block_items, auxv_size, auxv_count.
+    exists (((length argv + length envp + 3) / 2)
+            + ((length argv + length envp + 3) mod 2)
+            + (if rseq then 29 else 27) + 1)%nat.
+    pose proof (Nat.div_mod_eq (length argv + length envp + 3) 2).
+    destruct rseq; lia. }
+  destruct Hk as [k Hk]. rewrite Hk, Nat2Z.inj_mul.
+  change (Z.of_nat 16) with 16%Z. rewrite Z.mul_comm. apply Z_mod_mult.
+Qed.
+
+(** The strings [copy_strings] (fs/exec.c) copied, counted twice over:
+    [StackLayout.flatten_strings] lays each string and its NUL, which
+    is what [total_arg_bytes] sums. *)
+Lemma length_flatten_strings : forall l,
+  Z.of_nat (length (flatten_strings l)) = total_arg_bytes l.
+Proof.
+  induction l as [|a l IH]; [reflexivity|].
+  unfold flatten_strings, total_arg_bytes in *.
+  cbn [flat_map fold_right]. rewrite !length_app. cbn [length]. lia.
+Qed.
+
+Lemma launch_string_bytes_ge : forall argv envp execfn,
+  (total_arg_bytes argv + total_arg_bytes envp + 1
+   <= Z.of_nat (launch_string_bytes argv envp execfn))%Z.
+Proof.
+  intros argv envp execfn. unfold launch_string_bytes.
+  pose proof (length_flatten_strings argv).
+  pose proof (length_flatten_strings envp).
+  pose proof (Nat2Z.is_nonneg (length execfn)).
+  lia.
+Qed.
+
+(** [mmap_base]'s clamp, with the gap abstracted: whatever the
+    unclamped gap is, the result lies between MIN_GAP and MAX_GAP, and
+    it never exceeds the larger of MIN_GAP and the unclamped gap. *)
+Lemma launch_clamp_facts : forall g lo hi : Z,
+  (lo < hi)%Z ->
+  (lo <= (if (g <? lo)%Z && (lo <? hi)%Z then lo
+          else if (g >? hi)%Z then hi else g) <= hi)%Z
+  /\ ((if (g <? lo)%Z && (lo <? hi)%Z then lo
+       else if (g >? hi)%Z then hi else g) <= Z.max lo g)%Z.
+Proof.
+  intros g lo hi Hlh.
+  destruct ((g <? lo)%Z && (lo <? hi)%Z) eqn:E1.
+  - split; lia.
+  - apply andb_false_iff in E1 as [E1 | E1]; apply Z.ltb_ge in E1; [| exfalso; lia].
+    destruct ((g >? hi)%Z) eqn:E2.
+    + apply Z.gtb_lt in E2. split; lia.
+    + rewrite Z.gtb_ltb in E2. apply Z.ltb_ge in E2. split; lia.
+Qed.
+
+Lemma mmap_gap_bounds : forall v kb,
+  (mmap_min_gap <= mmap_gap v kb <= mmap_max_gap v)%Z
+  /\ (mmap_gap v kb
+      <= Z.max mmap_min_gap
+               (stack_max_size + stack_guard_gap_bytes kb + stack_rnd_max))%Z.
+Proof.
+  intros v kb.
+  assert (Hmm : (mmap_min_gap < mmap_max_gap v)%Z)
+    by (destruct v; vm_compute; reflexivity).
+  pose proof (stack_guard_gap_bytes_bounds kb) as Hguard.
+  unfold mmap_gap. cbv zeta.
+  set (pad := (stack_guard_gap_bytes kb
+               + (if kb_aslr kb then stack_rnd_max else 0))%Z).
+  assert (Hpad : (0 <= pad <= stack_guard_gap_bytes kb + stack_rnd_max)%Z)
+    by (unfold pad; destruct (kb_aslr kb); unfold stack_rnd_max; lia).
+  set (g := (if ((stack_max_size + pad) mod two_pow_64 >? stack_max_size)%Z
+             then (stack_max_size + pad)%Z else stack_max_size)).
+  assert (Hgle : (g <= stack_max_size + pad)%Z).
+  { unfold g.
+    destruct ((stack_max_size + pad) mod two_pow_64 >? stack_max_size)%Z;
+      unfold stack_max_size; lia. }
+  destruct (launch_clamp_facts g mmap_min_gap (mmap_max_gap v) Hmm) as [Hb Hc].
+  split; [exact Hb |]. unfold stack_max_size in *. lia.
+Qed.
+
+(* ------------------------------------------------------------------
+   THE FOUR OLDER CONJUNCTS ARE CONSEQUENCES OF THE FIFTH
+   ------------------------------------------------------------------ *)
+
+(** [valid_sp_va] from the launch conjunct.  [valid_launch] is a real
+    premise and the only one: it is the E2BIG cap, and it bounds the
+    strings AND the pointer arrays jointly, so [valid_argv] and
+    [valid_envp] add nothing here.  Without a cap the block could reach
+    below the bottom of the sp window. *)
+Lemma entry_launch_ok_va_sp : forall v en inp,
+  valid_launch inp -> entry_launch_ok_va v en inp -> valid_sp_va v (en_sp en).
+Proof.
+  intros v [sp brk0 mbase draw] inp [_ Hlb] Hok.
+  cbn [en_sp] in *. cbn [entry_launch_ok_va] in Hok.
+  destruct Hok as [Htop [Hsp _]].
+  unfold valid_stack_top_va in Htop. destruct Htop as [_ [Htople Htopge]].
+  unfold valid_launch_sp in Hsp. destruct Hsp as [Hspmod [Hsplo Hsphi]].
+  unfold launch_bytes in Hlb.
+  pose proof (block_head_size_bounds (kb_rseq (in_kernel inp))
+                (in_argv inp) (in_envp inp)) as [HCl HCh].
+  pose proof (launch_string_bytes_ge (in_argv inp) (in_envp inp)
+                (in_execfn inp)) as HL.
+  pose proof (total_arg_bytes_nonneg (in_argv inp)).
+  pose proof (total_arg_bytes_nonneg (in_envp inp)).
+  pose proof (Nat2Z.is_nonneg (length (in_argv inp))).
+  pose proof (Nat2Z.is_nonneg (length (in_envp inp))).
+  unfold launch_sp_hi in Hsphi. unfold launch_sp_lo in Hsplo.
+  pose proof (align_down16_le
+    (bv_unsigned (ed_top draw) - 8
+     - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                     (in_execfn inp)))) as Hal1.
+  pose proof (align_down16_ge
+    (bv_unsigned (ed_top draw) - 8
+     - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                     (in_execfn inp)) - 4095)) as Hal2.
+  unfold valid_sp_va, va_sp_window_lo, va_sp_window_hi, e2big_limit in *.
+  split; [| split; [| exact Hspmod]].
+  - destruct (kb_aslr (in_kernel inp));
+      unfold stack_rnd_max, page_size in *; lia.
+  - lia.
+Qed.
+
+(** [entry_stack_fits_va] from the launch conjunct, with the same
+    premise: [entry_stack_span] counts the pointer arrays, the strings,
+    a 160-byte auxv and 31 bytes of slack, and the real block's
+    [8 + L + C] is larger term for term. *)
+Lemma entry_launch_ok_va_fits : forall v en inp,
+  valid_launch inp -> entry_launch_ok_va v en inp ->
+  entry_stack_fits_va v (en_sp en) (in_argv inp) (in_envp inp).
+Proof.
+  intros v [sp brk0 mbase draw] inp [_ Hlb] Hok.
+  cbn [en_sp] in *. cbn [entry_launch_ok_va] in Hok.
+  destruct Hok as [Htop [Hsp _]].
+  unfold valid_stack_top_va in Htop. destruct Htop as [_ [Htople _]].
+  unfold valid_launch_sp in Hsp. destruct Hsp as [_ [_ Hsphi]].
+  pose proof (block_head_size_bounds (kb_rseq (in_kernel inp))
+                (in_argv inp) (in_envp inp)) as [HCl _].
+  pose proof (launch_string_bytes_ge (in_argv inp) (in_envp inp)
+                (in_execfn inp)) as HL.
+  unfold launch_sp_hi in Hsphi.
+  pose proof (align_down16_le
+    (bv_unsigned (ed_top draw) - 8
+     - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                     (in_execfn inp)))) as Hal1.
+  unfold entry_stack_fits_va, entry_stack_span, va_sp_window_hi in *. lia.
+Qed.
+
+(** [valid_mmap_base_va] from the launch conjunct, with no premise at
+    all: rule 3 pins the base to [PAGE_ALIGN(STACK_TOP - gap - rnd)],
+    the gap is at least MIN_GAP, and [State.stack_guard_gap_bytes]
+    together with [State.mmap_rnd_bits_max] keeps the base at or above
+    [State.mmap_base_min] under Sv48 and Sv57.  Under Sv39 the clamp at
+    MAX_GAP can fire and the kernel's own subtraction can pass zero, so
+    the floor there is zero, which every address meets. *)
+Lemma entry_launch_ok_va_base : forall v en inp,
+  entry_launch_ok_va v en inp -> valid_mmap_base_va v (en_mmap_base en).
+Proof.
+  intros v [sp brk0 mbase draw] inp Hok.
+  cbn [en_mmap_base] in *. cbn [entry_launch_ok_va] in Hok.
+  destruct Hok as [_ [_ Hbase]].
+  unfold valid_launch_base in Hbase.
+  destruct Hbase as [r [Hr0 [Hrt [Hrf Heq]]]].
+  pose proof (mmap_gap_bounds v (in_kernel inp)) as [[Hgl _] Hgmax].
+  pose proof (stack_guard_gap_bytes_bounds (in_kernel inp)) as Hguard.
+  pose proof (bv_unsigned_in_range 64 mbase) as Hmr.
+  assert (Hrb : (page_size * r <= 35184372084736)%Z).
+  { destruct (kb_aslr (in_kernel inp)).
+    - pose proof (mmap_rnd_bits_bounds v (in_kernel inp)) as [_ Hb].
+      assert (Hmax : (mmap_rnd_bits_max v <= 33)%Z)
+        by (destruct v; cbn; lia).
+      assert (Hp : (2 ^ mmap_rnd_bits v (in_kernel inp) <= 8589934592)%Z).
+      { replace 8589934592%Z with (2 ^ 33)%Z by (vm_compute; reflexivity).
+        apply Z.pow_le_mono_r; lia. }
+      pose proof (Hrt eq_refl). unfold page_size. lia.
+    - rewrite (Hrf eq_refl). unfold page_size. lia. }
+  split; [| split].
+  - destruct v.
+    + (* Sv39: no address is below zero *)
+      unfold va_mmap_base_min. lia.
+    + rewrite Heq. unfold mmap_base_of.
+      eapply Z.le_trans; [| apply launch_page_round_up_ge].
+      unfold va_mmap_base_min, mmap_base_min, va_stack_top, sp_window_hi,
+        mmap_min_gap, stack_max_size, stack_rnd_max, page_size in *. lia.
+    + rewrite Heq. unfold mmap_base_of.
+      eapply Z.le_trans; [| apply launch_page_round_up_ge].
+      unfold va_mmap_base_min, mmap_base_min, va_stack_top, sp_window_hi,
+        mmap_min_gap, stack_max_size, stack_rnd_max, page_size in *. lia.
+  - rewrite Heq. unfold mmap_base_of. apply launch_page_round_up_le.
+    + unfold va_mmap_base_max, mmap_min_gap, page_size in *. lia.
+    + destruct v; vm_compute; reflexivity.
+  - rewrite Heq. unfold mmap_base_of. apply launch_page_round_up_mod.
+Qed.
+
+(* ------------------------------------------------------------------
+   THE WITNESS SATISFIES THE LAUNCH CONJUNCT
+   ------------------------------------------------------------------ *)
+
+Lemma launch_top_unsigned : forall v,
+  bv_unsigned (Z_to_bv 64 (va_stack_top v)) = va_stack_top v.
+Proof.
+  intros v. apply bv_unsigned_Z_to_bv_u64.
+  destruct v; unfold va_stack_top, sv39_task_size, sp_window_hi, two_pow_64;
+    split; [lia | vm_compute; reflexivity | lia | vm_compute; reflexivity
+           | lia | vm_compute; reflexivity].
+Qed.
+
+(** The witness stack pointer is a real address: the block below
+    STACK_TOP is at most [8 + 4095 + 15] bytes of masks plus the E2BIG
+    cap plus C, far less than the 2^38 of the smallest STACK_TOP. *)
+Lemma launch_sp_hi_range : forall v inp,
+  valid_launch inp ->
+  (0 < launch_sp_hi (Z_to_bv 64 (va_stack_top v)) inp < two_pow_64)%Z.
+Proof.
+  intros v inp [_ Hlb]. unfold launch_bytes in Hlb.
+  unfold launch_sp_hi. rewrite launch_top_unsigned.
+  pose proof (block_head_size_bounds (kb_rseq (in_kernel inp))
+                (in_argv inp) (in_envp inp)) as [HCl HCh].
+  pose proof (launch_string_bytes_ge (in_argv inp) (in_envp inp)
+                (in_execfn inp)) as HL.
+  pose proof (total_arg_bytes_nonneg (in_argv inp)).
+  pose proof (total_arg_bytes_nonneg (in_envp inp)).
+  pose proof (Nat2Z.is_nonneg (length (in_argv inp))).
+  pose proof (Nat2Z.is_nonneg (length (in_envp inp))).
+  pose proof (align_down16_le
+    (va_stack_top v - 8
+     - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                     (in_execfn inp)))) as Hal1.
+  pose proof (align_down16_ge
+    (va_stack_top v - 8
+     - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                     (in_execfn inp)))) as Hal2.
+  assert (H64 : two_pow_64 = 18446744073709551616%Z)
+    by (vm_compute; reflexivity).
+  unfold e2big_limit in *. rewrite H64.
+  destruct v; unfold va_stack_top, sv39_task_size, sp_window_hi in *; lia.
+Qed.
+
+(** The witness mmap base is a real address too: the gap is at most
+    MAX_GAP = [STACK_TOP / 6 * 5], so with the draw at 0 the base stays
+    a sixth of the address space above zero. *)
+Lemma launch_mmap_base_range : forall v kb,
+  (0 < mmap_base_of v kb 0 < two_pow_64)%Z.
+Proof.
+  intros v kb.
+  pose proof (mmap_gap_bounds v kb) as [[Hgl Hgh] _].
+  pose proof (launch_page_round_up_ge (va_stack_top v - mmap_gap v kb - 0)) as H1.
+  pose proof (launch_page_round_up_lt (va_stack_top v - mmap_gap v kb - 0)) as H2.
+  assert (H64 : two_pow_64 = 18446744073709551616%Z)
+    by (vm_compute; reflexivity).
+  unfold mmap_base_of. rewrite H64.
+  destruct v;
+    [ assert (Hmg : mmap_max_gap Sv39 = 229064922450%Z)
+        by (vm_compute; reflexivity)
+    | assert (Hmg : mmap_max_gap Sv48 = 117281240296105%Z)
+        by (vm_compute; reflexivity)
+    | assert (Hmg : mmap_max_gap Sv57 = 117281240296105%Z)
+        by (vm_compute; reflexivity) ];
+    rewrite Hmg in Hgh;
+    unfold va_stack_top, sv39_task_size, sp_window_hi, mmap_min_gap,
+      page_size in *; lia.
+Qed.
+
+(** THE WITNESS IS A LINUX LAUNCH.  The stack at the very top (the
+    launch with no stack draw), the stack pointer at the top of rule 2
+    (no [arch_align_stack] pad), the mmap base of rule 3 with the draw
+    at 0.  [valid_launch] is what makes [sp] an address at all. *)
+Lemma launch_entry_va_launch_ok : forall v inp brk rnd vd,
+  valid_launch inp ->
+  entry_launch_ok_va v (launch_entry_va v inp brk rnd vd) inp.
+Proof.
+  intros v inp brk rnd vd Hl.
+  pose proof (launch_top_unsigned v) as Htop.
+  pose proof (launch_sp_hi_range v inp Hl) as Hspr.
+  cbn [launch_entry_va entry_launch_ok_va ed_top].
+  split; [| split].
+  - unfold valid_stack_top_va. rewrite Htop.
+    split; [destruct v; vm_compute; reflexivity |].
+    split; [lia |].
+    destruct (kb_aslr (in_kernel inp)); unfold stack_rnd_max, page_size; lia.
+  - unfold valid_launch_sp.
+    assert (Hu : bv_unsigned
+                   (Z_to_bv 64 (launch_sp_hi (Z_to_bv 64 (va_stack_top v)) inp))
+                 = launch_sp_hi (Z_to_bv 64 (va_stack_top v)) inp)
+      by (apply bv_unsigned_Z_to_bv_u64; lia).
+    rewrite Hu. split; [| split; [| lia]].
+    + unfold launch_sp_hi.
+      rewrite Zminus_mod, align_down16_mod16, block_head_size_mod16.
+      reflexivity.
+    + unfold launch_sp_lo, launch_sp_hi.
+      pose proof (align_down16_mono
+        (bv_unsigned (Z_to_bv 64 (va_stack_top v)) - 8
+         - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                         (in_execfn inp)) - 4095)
+        (bv_unsigned (Z_to_bv 64 (va_stack_top v)) - 8
+         - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                         (in_execfn inp)))
+        ltac:(lia)).
+      lia.
+  - unfold valid_launch_base. exists 0%Z.
+    split; [lia |].
+    split.
+    + intros _. pose proof (mmap_rnd_bits_bounds v (in_kernel inp)) as [Hb _].
+      apply Z.pow_pos_nonneg; lia.
+    + split; [intros _; reflexivity |].
+      rewrite Z.mul_0_r. apply bv_unsigned_Z_to_bv_u64.
+      pose proof (launch_mmap_base_range v (in_kernel inp)). lia.
+Qed.
+
+(** THE WITNESS, in one lemma.  The launch conjunct is proved directly
+    and the four older ones are read off it by the three implications
+    above, so there is one piece of arithmetic and not five.
+
+    [valid_argv] and [valid_envp] are premises because the statement is
+    the one every consumer has: the proof needs only [valid_launch],
+    whose E2BIG cap bounds the strings and the pointer arrays together.
+    [brk] stays an argument, a fact about the image's reservations. *)
+Lemma launch_entry_va_valid : forall v segs pc ph inp brk rnd vd,
+  valid_argv (in_argv inp) ->
+  valid_envp (in_envp inp) ->
+  valid_launch inp ->
+  valid_brk segs brk ->
+  valid_entry_va v (mkImage segs pc ph) (launch_entry_va v inp brk rnd vd) inp.
+Proof.
+  intros v segs pc ph inp brk rnd vd Ha He Hl Hbrk.
+  pose proof (launch_entry_va_launch_ok v inp brk rnd vd Hl) as Hok.
+  cbn [valid_entry_va launch_entry_va].
+  split; [| split; [| split; [| split]]].
+  - exact (entry_launch_ok_va_sp v (launch_entry_va v inp brk rnd vd) inp Hl Hok).
+  - exact Hbrk.
+  - exact (entry_launch_ok_va_base v (launch_entry_va v inp brk rnd vd) inp Hok).
+  - exact (entry_launch_ok_va_fits v (launch_entry_va v inp brk rnd vd) inp Hl Hok).
+  - exact Hok.
 Qed.
 
 (** Validity predicate for the user and group a process is launched as
@@ -3140,14 +3936,33 @@ Ltac valid_urandom_default :=
     seeded image is, or lives under, any of the three device paths, and
     the guards stay in the arms as the courtesy their comments say they
     are. *)
+
+(** THE IMAGE DESCRIBES A FILE SYSTEM: [Fs.fs_image_real] on
+    [State.in_image_fs], beside the clause above and on the same
+    pre-seed image, for the same seeding reason.  It says every key is
+    canonical (no empty, "." or ".." component, no "//" and no trailing
+    "/") and no key is also a directory another key lives in.  Ported
+    from main LPS (theorem-labs/linux-process-semantics) #1776, commit
+    9f9a96b29a; [Fs.fs_image_real] carries the argument.
+
+    WHAT IT BUYS.  Without it [valid_input] admits an image with the
+    keys "a" and "a/b".  No Linux file system holds that -- one name in
+    one directory is one inode -- and on it the model answers as if "a"
+    were a regular file and a directory at once, so a statement
+    quantified here covers a launch no kernel can produce.
+    [Checks.Cases.Fs.Open.fs_prefix_key_image_is_not_real] is that
+    image, refused; [valid_input_image_real] below is the projection a
+    proof uses. *)
 Definition valid_input (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
   /\ in_va_size inp = Sv48
-  /\ valid_urandom inp.
+  /\ valid_urandom inp
+  /\ valid_launch inp.
 
 (** The SAME predicate with the abort-path declaration turned on, and it
     is a separate definition rather than a parameter for the reason the
@@ -3177,11 +3992,13 @@ Definition valid_input (inp : ProcInput) : Prop :=
 Definition valid_input_abort (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = true
   /\ in_va_size inp = Sv48
-  /\ valid_urandom inp.
+  /\ valid_urandom inp
+  /\ valid_launch inp.
 
 (** Neither stance pinned: the clauses both share, and nothing about
     the declaration.  A statement quantified over this one is the
@@ -3191,23 +4008,35 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
 Definition valid_input_either (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_va_size inp = Sv48
-  /\ valid_urandom inp.
+  /\ valid_urandom inp
+  /\ valid_launch inp.
 
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & _ & v & u).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj v u))))))))).
+  (* Written so an inserted conjunct does not break it: destruct the
+     hypothesis and split the goal to the same depth, both GUARDED.  A
+     bare [repeat split] would also apply the constructor of
+     [valid_urandom], which is coinductive. *)
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_either_of_valid_input_abort : forall inp,
   valid_input_abort inp -> valid_input_either inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & _ & v & u).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj v u))))))))).
+  (* Written so an inserted conjunct does not break it: destruct the
+     hypothesis and split the goal to the same depth, both GUARDED.  A
+     bare [repeat split] would also apply the constructor of
+     [valid_urandom], which is coinductive. *)
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** The exhaustiveness the paragraph above claims, as a lemma rather
@@ -3216,12 +4045,12 @@ Qed.
 Lemma valid_input_either_splits : forall inp,
   valid_input_either inp -> valid_input inp \/ valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & v & u).
+  intros inp (a & b & c & k & r & d & e & f & g & v & u & L).
   destruct (in_abort_terminal inp) eqn:Hab.
   - right.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj Hab (conj v u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj Hab (conj v (conj u L)))))))))))).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj Hab (conj v u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj Hab (conj v (conj u L)))))))))))).
 Qed.
 
 (** * The address-space declaration: the same predicate per size
@@ -3245,28 +4074,42 @@ Qed.
 Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
   /\ in_va_size inp = Sv39
-  /\ valid_urandom inp.
+  /\ valid_urandom inp
+  /\ valid_launch inp.
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
   /\ in_va_size inp = Sv57
-  /\ valid_urandom inp.
+  /\ valid_urandom inp
+  /\ valid_launch inp.
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ valid_urandom inp.
+  /\ valid_urandom inp
+  /\ valid_launch inp.
+
+Lemma valid_input_image_real : forall inp,
+  valid_input inp -> fs_image_real (in_image_fs inp) = true.
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
 
 Lemma valid_input_va_size : forall inp, valid_input inp -> in_va_size inp = Sv48.
 Proof.
@@ -3341,22 +4184,37 @@ Qed.
 Lemma valid_input_va_any_of_valid_input : forall inp,
   valid_input inp -> valid_input_va_any inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & _ & u).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h u))))))))).
+  (* Written so an inserted conjunct does not break it: destruct the
+     hypothesis and split the goal to the same depth, both GUARDED.  A
+     bare [repeat split] would also apply the constructor of
+     [valid_urandom], which is coinductive. *)
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_va_any_of_valid_input_sv39 : forall inp,
   valid_input_sv39 inp -> valid_input_va_any inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & _ & u).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h u))))))))).
+  (* Written so an inserted conjunct does not break it: destruct the
+     hypothesis and split the goal to the same depth, both GUARDED.  A
+     bare [repeat split] would also apply the constructor of
+     [valid_urandom], which is coinductive. *)
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_va_any_of_valid_input_sv57 : forall inp,
   valid_input_sv57 inp -> valid_input_va_any inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & _ & u).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h u))))))))).
+  (* Written so an inserted conjunct does not break it: destruct the
+     hypothesis and split the goal to the same depth, both GUARDED.  A
+     bare [repeat split] would also apply the constructor of
+     [valid_urandom], which is coinductive. *)
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** Exhaustiveness as a lemma: an input the shared clauses accept
@@ -3366,14 +4224,14 @@ Lemma valid_input_va_any_splits : forall inp,
   valid_input_va_any inp ->
   valid_input inp \/ valid_input_sv39 inp \/ valid_input_sv57 inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & u).
+  intros inp (a & b & c & k & r & d & e & f & g & h & u & L).
   destruct (in_va_size inp) eqn:Hv.
   - right; left.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj Hv u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj Hv (conj u L)))))))))))).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj Hv u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj Hv (conj u L)))))))))))).
   - right; right.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj Hv u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj Hv (conj u L)))))))))))).
 Qed.
 
 (** * The hardware-capability declaration: the same predicate per word
@@ -3428,20 +4286,24 @@ Qed.
 Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = false
   /\ in_va_size inp = Sv48
-  /\ valid_urandom inp.
+  /\ valid_urandom inp
+  /\ valid_launch inp.
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = false
   /\ in_va_size inp = Sv48
-  /\ valid_urandom inp.
+  /\ valid_urandom inp
+  /\ valid_launch inp.
 
 (** Each declaration is a NARROWING of the default, so a statement
     quantified over [valid_input] is about every input either predicate
@@ -3450,17 +4312,17 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
 Lemma valid_input_of_valid_input_hwcap_rv64gc : forall inp,
   valid_input_hwcap_rv64gc inp -> valid_input inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & v & u).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v u)))))))))).
+  intros inp (a & b & c & k & r & d & e & f & g & h & v & u & L).
+  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+    (conj (or_introl g) (conj h (conj v (conj u L)))))))))))).
 Qed.
 
 Lemma valid_input_of_valid_input_hwcap_rv64gcv : forall inp,
   valid_input_hwcap_rv64gcv inp -> valid_input inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & v & u).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v u)))))))))).
+  intros inp (a & b & c & k & r & d & e & f & g & h & v & u & L).
+  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+    (conj (or_intror g) (conj h (conj v (conj u L)))))))))))).
 Qed.
 
 (** …and the two are EXHAUSTIVE on the default, because [valid_hwcap] is
@@ -3473,11 +4335,11 @@ Lemma valid_input_hwcap_splits : forall inp,
   valid_input inp ->
   valid_input_hwcap_rv64gc inp \/ valid_input_hwcap_rv64gcv inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & [g | g] & h & v & u).
+  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & v & u).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj v u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj v u))))))))))).
   - right.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj v u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj v u))))))))))).
 Qed.
 
 (** The declared word, read back out of the predicate.  A statement's
@@ -3486,11 +4348,11 @@ Qed.
     and it is what [Checks.Cases.Hwcap] fires to say so. *)
 Lemma valid_input_hwcap_rv64gc_word : forall inp,
   valid_input_hwcap_rv64gc inp -> in_hwcap inp = hwcap_rv64gc.
-Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
+Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
 
 Lemma valid_input_hwcap_rv64gcv_word : forall inp,
   valid_input_hwcap_rv64gcv inp -> in_hwcap inp = hwcap_rv64gcv.
-Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
+Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
 
 (** ** The same declaration under the ABORT stance
 
@@ -3515,55 +4377,59 @@ Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
 Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = true
   /\ in_va_size inp = Sv48
-  /\ valid_urandom inp.
+  /\ valid_urandom inp
+  /\ valid_launch inp.
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = true
   /\ in_va_size inp = Sv48
-  /\ valid_urandom inp.
+  /\ valid_urandom inp
+  /\ valid_launch inp.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gc : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & v & u).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v u)))))))))).
+  intros inp (a & b & c & k & r & d & e & f & g & h & v & u & L).
+  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+    (conj (or_introl g) (conj h (conj v (conj u L)))))))))))).
 Qed.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & v & u).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v u)))))))))).
+  intros inp (a & b & c & k & r & d & e & f & g & h & v & u & L).
+  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+    (conj (or_intror g) (conj h (conj v (conj u L)))))))))))).
 Qed.
 
 Lemma valid_input_abort_hwcap_splits : forall inp,
   valid_input_abort inp ->
   valid_input_abort_hwcap_rv64gc inp \/ valid_input_abort_hwcap_rv64gcv inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & [g | g] & h & v & u).
+  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & v & u).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj v u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj v u))))))))))).
   - right.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj v u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj v u))))))))))).
 Qed.
 
 Lemma valid_input_abort_hwcap_rv64gc_word : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> in_hwcap inp = hwcap_rv64gc.
-Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
+Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
 
 Lemma valid_input_abort_hwcap_rv64gcv_word : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> in_hwcap inp = hwcap_rv64gcv.
-Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
+Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
 
 (* =========================================================================
    The image premise, consumed: the device arms' guards are unreachable

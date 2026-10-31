@@ -110,21 +110,24 @@ Definition demo_hwcap : word := hwcap_rv64gc.
 Definition demo_random : bv 128 :=
   Z_to_bv 128 0x0f1e2d3c4b5a69788796a5b4c3d2e1f0.
 
-(** A demo slack draw ([StackLayout.ed_slack]): the bytes of the entry
-    stack's last page above the block.  Every byte is [0xa5] except at
-    one address, so the checks below can tell "the model reads the draw
-    at THIS address" from "the model reads some constant", and the
-    NEGATIVE check has a witness that no fixed value fits.  Nothing in
-    the model constrains this function; a kernel could leave any bytes
-    there ([StackLayout.EntryDraw]). *)
-Definition demo_slack : word -> byte :=
-  fun a => if Z.eqb (bv_unsigned a mod 4096) 4095 then Z_to_bv 8 0x5a
-           else Z_to_bv 8 0xa5.
+(** The stack VMA's end these fixtures launch with
+    ([StackLayout.ed_top]): one page above [demo_sp].
+    [setup_arg_pages] (fs/exec.c, Linux v6.18.46, commit 1f99e9ab748f)
+    page-aligns the top, and the block now runs from the entry stack
+    pointer UP TO it, so the whole entry image of these fixtures is
+    4096 bytes — small enough for every check below to be a
+    [vm_compute] over a literal list, which is why the fixture does not
+    take the top at [State.sp_window_hi]. *)
+Definition demo_stack_top : word := Z_to_bv 64 (sp_window_lo + page_size).
 
-(** The two draws together, and the all-zero draw. *)
-Definition demo_draw : EntryDraw := mkDraw demo_random demo_slack.
+(** The two draws, and the all-zero one.  [ed_vdso] is
+    [Run.vdso_keeps_all] in both: no check here runs a vDSO call, and
+    that choice is one Linux can make (a vDSO function that writes only
+    its result). *)
+Definition demo_draw : EntryDraw :=
+  mkDraw demo_random demo_stack_top vdso_keeps_all.
 Definition zero_draw : EntryDraw :=
-  mkDraw (Z_to_bv 128 0) (fun _ => Z_to_bv 8 0).
+  mkDraw (Z_to_bv 128 0) demo_stack_top vdso_keeps_all.
 
 (** THREE supplementary groups, ascending, and none of them 3.  The
     number [getgroups] reports is the LENGTH of this list, so a fixture
@@ -150,7 +153,21 @@ Definition demo_input_tmp (fs0 tmp0 : Fs.Fs) (stdin0 : InputStream)
     : ProcInput :=
   mkProcInput_full [] [] fs0 stdin0 demo_uid demo_gid demo_groups
                    net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false
-                   Sv48 default_urandom tmp0.
+                   Sv48 default_urandom tmp0 default_kernel default_execfn.
+
+(** The launch facts the entry-block checks below read: the run's
+    [mm->mmap_base], the [StackLayout.LaunchAuxv] the model derives
+    from the declared kernel build at that base ([Run.launch_auxv]),
+    and the one-argument input whose block they lay out.  One name
+    each, so a check states a layout and not a derivation. *)
+Definition demo_mbase : word := Z_to_bv 64 mmap_base_max.
+Definition demo_la : LaunchAuxv := launch_auxv (demo_input [] IEof) demo_mbase.
+Definition demo_pc : N := 0x10000%N.
+Definition demo_argv : list (list byte) := [[Z_to_bv 8 120]].   (* "x" *)
+
+Definition demo_x_input : ProcInput :=
+  mkProcInput demo_argv [] [] IEof demo_uid demo_gid demo_groups net_silent
+              default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48.
 
 (** The credentials [demo_input] produces: an ordinary user whose real,
     effective and saved ids all agree, because [State.init_model] derives
@@ -455,6 +472,101 @@ Proof.
   - apply Forall_nil.
 Qed.
 
+(* ---- the concrete block these checks read -------------------------- *)
+
+(** The fixture layout, spelled once: argv = ["x"], envp = [], the exec
+    file name [State.default_execfn], the stack VMA's end at
+    [State.sp_window_hi] (riscv64's STACK_TOP, the launch with no stack
+    draw) and [sp] at the top of what [create_elf_tables]
+    (fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f) leaves: the
+    whole block is 528 bytes.
+
+    THE BLOCK IS THE WHOLE IMAGE.  [setup_arg_pages] (fs/exec.c)
+    page-aligns the top and [create_init_stack_vma] (mm/vma_exec.c)
+    leaves only the eight bytes at the very top unwritten, which the
+    block itself carries, so there is nothing above [sp + 528] for an
+    entry to choose.
+
+    This is a placement a Linux launch really gives — the one
+    [Run.launch_entry_va] witnesses — rather than a round number, and
+    that is also why it is short: a fixture whose [sp] sat at
+    [State.sp_window_lo] with a top near STACK_TOP would make every
+    [vm_compute] below walk two gigabytes of pad.
+
+    WHAT WIDENING THIS FIXTURE COSTS, measured, because the next
+    person to widen it needs the number: a 4096-byte block did not
+    finish one [vm_compute] below in thirty minutes, and these 528
+    bytes finish in seconds.  Part of that was [State.init_model]
+    being a chain of [with_*] setters — each rebuilds the record from
+    its argument's fields, so a chain of n of them denotes a term with
+    7^n copies of the innermost model, and a fixture that writes the
+    term twice costs time exponential in n.  [init_model] is one
+    constructor since, which is what makes 528 bytes cheap; the
+    four-kilobyte block was not measured again after that. *)
+
+Definition demo_block_top : word := Z_to_bv 64 sp_window_hi.
+Definition demo_block_sp : word := Z_to_bv 64 0x7ffffffffdf0.
+
+Definition block_draw : EntryDraw :=
+  mkDraw demo_random demo_block_top vdso_keeps_all.
+Definition block_draw_zero : EntryDraw :=
+  mkDraw (Z_to_bv 128 0) demo_block_top vdso_keeps_all.
+
+Definition demo_block : list byte :=
+  entry_stack_image demo_x_input demo_mbase demo_phdrs
+    (Z_to_bv 64 (Z.of_N demo_pc)) demo_block_sp block_draw.
+
+Definition demo_block_zero : list byte :=
+  entry_stack_image demo_x_input demo_mbase demo_phdrs
+    (Z_to_bv 64 (Z.of_N demo_pc)) demo_block_sp block_draw_zero.
+
+Definition demo_mem (draw : EntryDraw) : word -> option byte :=
+  ms_mem (init_machine_state [] demo_pc demo_phdrs demo_block_sp demo_mbase
+            draw demo_x_input).
+
+(** The vector this layout publishes is the 29-entry one: the kernel
+    build [State.default_kernel] has CONFIG_RSEQ, so [create_elf_tables]
+    (fs/binfmt_elf.c) emits AT_RSEQ_FEATURE_SIZE and AT_RSEQ_ALIGN.  The
+    offsets every check below counts with come from that number. *)
+
+Example demo_auxv_has_the_rseq_pair :
+  (la_rseq demo_la, auxv_count (la_rseq demo_la), auxv_size (la_rseq demo_la))
+  = (true, 29%nat, 464%nat).
+Proof. check_eq. Qed.
+
+(** The block runs from [sp] to [StackLayout.ed_top]: its length is the
+    distance between them, and the pad [arch_align_stack]
+    (arch/riscv/kernel/process.c) left is whatever is over once the
+    head, the strings and the skipped slot are taken out — 0 to 4095
+    bytes, and 4 here, because this fixture is the launch with the
+    SMALLEST pad.  A model that laid a shorter block and drew the bytes
+    above it, as this one used to, fails the first of these. *)
+
+Example the_block_runs_from_sp_to_the_stack_top :
+  Z.of_nat (length demo_block)
+  = (entry_page_top block_draw - bv_unsigned demo_block_sp)%Z.
+Proof. check_eq. Qed.
+
+Example the_block_measurements_are_linuxs :
+  (block_head_size (la_rseq demo_la) demo_argv [],
+   launch_string_bytes demo_argv [] default_execfn,
+   block_pad_len (la_rseq demo_la) demo_block_sp demo_block_top demo_argv []
+     default_execfn,
+   length demo_block)
+  = (512%nat, 4%nat, 4%nat, 528%nat).
+Proof. check_eq. Qed.
+
+(** …and the model maps exactly that range.  The last byte of the block
+    is mapped; the byte AT the stack VMA's end is not, because the
+    kernel's VMA ends there too.  Under the old layout the bytes above
+    the block were a draw of the entry's; there are none now. *)
+
+Example the_image_stops_at_the_stack_top :
+  (demo_mem block_draw (Z_to_bv 64 (entry_page_top block_draw - 1)),
+   demo_mem block_draw (Z_to_bv 64 (entry_page_top block_draw)))
+  = (Some (Z_to_bv 8 0), None).
+Proof. check_eq. Qed.
+
 (** The auxv's AT_RANDOM entry carries [at_random_ptr], and the 16 bytes
     there are materialized in the initial stack image (a libc seeding its
     stack canary from AT_RANDOM dereferences the pointer).  What is
@@ -463,15 +575,13 @@ Qed.
     down little-endian; the expected list is written out as literal
     bytes rather than as [at_random_bytes demo_random], so that the check
     pins the serialization and the placement together instead of
-    restating the definition.  Checked on a concrete layout:
-    argv = ["x"], envp = []. *)
+    restating the definition. *)
 
 Example at_random_points_at_the_16_drawn_bytes :
-  let sp : word := 65536 in
-  let mem := stack_to_mem sp
-               (build_stack_bytes demo_phdrs sp [[120]] [] demo_uid demo_hwcap
-                  demo_draw) in
-  map (fun k => mem (at_random_ptr sp [[120]] [] + nat_to_word k)) (seq 0 16)
+  let mem := stack_to_mem demo_block_sp demo_block in
+  map (fun k => mem (at_random_ptr demo_block_sp (la_rseq demo_la) demo_argv []
+                     + nat_to_word k))
+      (seq 0 16)
   = map (fun b => Some (Z_to_bv 8 b))
         [0xf0; 0xe1; 0xd2; 0xc3; 0xb4; 0xa5; 0x96; 0x87;
          0x78; 0x69; 0x5a; 0x4b; 0x3c; 0x2d; 0x1e; 0x0f]%Z.
@@ -483,24 +593,31 @@ Proof. check_eq. Qed.
     block were fixed at zero. *)
 
 Example at_random_points_at_zeros_at_the_zero_draw :
-  let sp : word := 65536 in
-  let mem := stack_to_mem sp (build_stack_bytes demo_phdrs sp [[120]] [] demo_uid demo_hwcap zero_draw) in
-  map (fun k => mem (at_random_ptr sp [[120]] [] + nat_to_word k)) (seq 0 16)
+  let mem := stack_to_mem demo_block_sp demo_block_zero in
+  map (fun k => mem (at_random_ptr demo_block_sp (la_rseq demo_la) demo_argv []
+                     + nat_to_word k))
+      (seq 0 16)
   = repeat (Some (Z_to_bv 8 0)) 16.
 Proof. check_eq. Qed.
 
 (** The draw moves those 16 bytes and NOTHING ELSE: at two draws the
-    images have equal prefixes and the tail is the draw's own bytes.
-    [StackLayout.build_stack_bytes_split_random] says this for every
-    argument; here it is on a concrete layout, where the prefix equality
-    is a computation rather than a unification side condition. *)
+    images agree outside them.  The sixteen bytes are no longer the
+    block's tail — Linux puts the strings above them — so the split is
+    read with [StackLayout.block_below_random], which is what
+    [StackLayout.build_stack_bytes_split_random] says for every
+    argument; here it is on a concrete layout, where the two outer
+    pieces are a computation rather than a unification side
+    condition. *)
 
 Example at_random_block_is_all_the_draw_moves :
-  let sp : word := 65536 in
-  let bs  := build_stack_bytes demo_phdrs sp [[120]] [] demo_uid demo_hwcap demo_draw in
-  let bs0 := build_stack_bytes demo_phdrs sp [[120]] [] demo_uid demo_hwcap zero_draw in
-  (firstn (length bs - 16) bs, skipn (length bs - 16) bs)
-  = (firstn (length bs0 - 16) bs0, at_random_bytes demo_random).
+  let n := length (block_below_random demo_la demo_phdrs
+                     (Z_to_bv 64 (Z.of_N demo_pc)) demo_block_sp demo_block_top
+                     demo_argv [] default_execfn demo_uid demo_gid
+                     demo_hwcap) in
+  (firstn n demo_block, firstn 16 (skipn n demo_block),
+   skipn (n + 16) demo_block)
+  = (firstn n demo_block_zero, at_random_bytes demo_random,
+     skipn (n + 16) demo_block_zero).
 Proof. check_eq. Qed.
 
 (** The NEGATIVE half: a proof may NOT assume the block is zero.  If
@@ -513,139 +630,61 @@ Proof. check_eq. Qed.
     free to make. *)
 
 Example zero_at_random_block_is_refuted :
-  ~ (forall (sp : word) rnd,
-       skipn (length (build_stack_bytes demo_phdrs sp [[120]] [] demo_uid demo_hwcap rnd) - 16)
-             (build_stack_bytes demo_phdrs sp [[120]] [] demo_uid demo_hwcap rnd)
-       = repeat (Z_to_bv 8 0) 16).
-Proof.
-  intro H. specialize (H (Z_to_bv 64 65536) demo_draw).
-  apply (f_equal (map bv_unsigned)) in H. vm_compute in H. discriminate.
-Qed.
-
-(* ---- the page the entry stack image ends in ------------------------ *)
-
-(** The demo layout, spelled once: argv = ["x"], envp = [], a
-    page-aligned [sp] so the page boundary above the block is easy to
-    read off.  The block is what [build_stack_bytes] lays out; the model
-    maps up to the next page boundary above it. *)
-
-Definition h_sp : word := Z_to_bv 64 65536.
-Definition h_block : list byte :=
-  build_stack_bytes demo_phdrs h_sp [[Z_to_bv 8 120]] [] demo_uid demo_hwcap
-    demo_draw.
-Definition h_mem (draw : EntryDraw) : word -> option byte :=
-  ms_mem (init_machine_state [] 0x10000%N demo_phdrs h_sp draw
-            [[Z_to_bv 8 120]] [] demo_uid demo_hwcap).
-
-(** THE POSITIVE HALF.  The first byte above the block, the last byte of
-    the page it ends in, and the first byte above that page.  The first
-    two are mapped and carry the entry's [ed_slack] draw at their own
-    address — [demo_slack] answers 0x5a at an address one below a page
-    boundary and 0xa5 elsewhere, so the pair also pins that the model
-    reads the draw AT THE ADDRESS rather than at some fixed offset.  The
-    third is unmapped, which is where the model stops, although a real
-    stack VMA goes on above it: a known limitation of the model (see the
-    note above [Run.entry_block_top]).
-
-    If the FIRST of these were [None] too, a load there would be a
-    fault the model produces and no kernel does. *)
-
-Example entry_page_above_the_block_is_mapped :
-  (h_mem demo_draw (Z_to_bv 64 (entry_block_top h_sp h_block)),
-   h_mem demo_draw (Z_to_bv 64 (entry_page_top h_sp h_block - 1)),
-   h_mem demo_draw (Z_to_bv 64 (entry_page_top h_sp h_block)))
-  = (Some (Z_to_bv 8 0xa5), Some (Z_to_bv 8 0x5a), None).
-Proof. check_eq. Qed.
-
-(** And not just at the ends: EVERY byte from the top of the block to the
-    page boundary is mapped.  A check on the two ends alone would pass on
-    a model that mapped two bytes. *)
-
-Example every_byte_of_the_entry_page_is_mapped :
-  let mem := h_mem demo_draw in
-  let top := entry_block_top h_sp h_block in
-  forallb (fun k => match mem (Z_to_bv 64 (top + Z.of_nat k)) with
-                    | Some _ => true
-                    | None => false
-                    end)
-          (seq 0 (entry_slack_len h_sp h_block))
-  = true.
-Proof. check_eq. Qed.
-
-(** The region is not empty, so the two checks above are about something:
-    for this layout the block ends mid-page and the slack is the rest of
-    it. *)
-
-Example the_entry_page_slack_is_not_empty :
-  (entry_slack_len h_sp h_block =? 0)%nat = false.
-Proof. check_eq. Qed.
-
-(** THE NEGATIVE HALF, and the one that keeps the region a CHOICE.  A
-    proof may not assume the bytes above the block are zero — nor any
-    other fixed value, since the draw is unconstrained and quantified per
-    binary.  Zeros are what a model that page-filled instead of drawing
-    would give, and what Linux leaves only in the part of the region
-    nothing wrote: which part that is depends on the exec filename's
-    length, which this model does not carry
-    ([StackLayout.EntryDraw]). *)
-
-Example zero_entry_page_slack_is_refuted :
   ~ (forall draw : EntryDraw,
-       h_mem draw (Z_to_bv 64 (entry_block_top h_sp h_block))
-       = Some (Z_to_bv 8 0)).
+       let mem := stack_to_mem demo_block_sp
+                    (entry_stack_image demo_x_input demo_mbase demo_phdrs
+                       (Z_to_bv 64 (Z.of_N demo_pc)) demo_block_sp draw) in
+       map (fun k => mem (at_random_ptr demo_block_sp (la_rseq demo_la) demo_argv []
+                          + nat_to_word k))
+           (seq 0 16)
+       = repeat (Some (Z_to_bv 8 0)) 16).
 Proof.
-  intro H. specialize (H demo_draw).
-  apply (f_equal (option_map bv_unsigned)) in H. vm_compute in H. discriminate.
-Qed.
-
-(** The other direction of the same claim: two draws that differ only in
-    the slack give different bytes up there, and the SAME bytes
-    everywhere the kernel wrote.  So the draw is live, and no address in
-    the layout moves with it
-    ([Run.entry_stack_image_block_prefix] for every argument). *)
-
-Example the_slack_draw_does_not_move_the_block :
-  build_stack_bytes demo_phdrs h_sp [[Z_to_bv 8 120]] [] demo_uid demo_hwcap
-    (mkDraw demo_random (fun _ => Z_to_bv 8 0))
-  = h_block.
-Proof. check_eq. Qed.
-
-Example two_slack_draws_disagree_above_the_block :
-  h_mem (mkDraw demo_random (fun _ => Z_to_bv 8 0))
-        (Z_to_bv 64 (entry_block_top h_sp h_block))
-  <> h_mem demo_draw (Z_to_bv 64 (entry_block_top h_sp h_block)).
-Proof.
-  intro H. apply (f_equal (option_map bv_unsigned)) in H.
+  intro H. specialize (H block_draw).
+  apply (f_equal (map (option_map bv_unsigned))) in H.
   vm_compute in H. discriminate.
 Qed.
 
 (** The pointer really is what the auxv slot stores: reading the value
     half of the AT_RANDOM entry back out of the image yields
-    [at_random_ptr] (the entry sits 3 slots -- 24 bytes -- before the
-    end of the [auxv_size]-byte auxv, which ends the struct prefix). *)
+    [at_random_ptr].  AT_RANDOM is the twenty-fifth of the twenty-nine
+    entries [create_elf_tables] writes (index 24, counting
+    [ARCH_DLINFO]'s ten first), so its value word starts [16 * 24 + 8]
+    bytes into the vector. *)
 
 Example at_random_auxv_slot_stores_the_pointer :
-  let sp : word := 65536 in
-  let bytes := build_stack_bytes demo_phdrs sp [[120]] [] demo_uid demo_hwcap demo_draw in
-  let auxv_end := (8 + (1 + 1) * 8 + (0 + 1) * 8 + auxv_size)%nat in
-  firstn 8 (skipn (auxv_end - 24)%nat bytes)
-  = word_le8 (at_random_ptr sp [[120]] []).
+  let auxv_start := (8 + (1 + 1) * 8 + (0 + 1) * 8)%nat in
+  firstn 8 (skipn (auxv_start + 16 * 24 + 8)%nat demo_block)
+  = word_le8 (at_random_ptr demo_block_sp (la_rseq demo_la) demo_argv []).
+Proof. check_eq. Qed.
+
+(** AT_EXECFN points at the exec file name, which [do_execveat_common]
+    (fs/exec.c) copied FIRST and therefore placed at the TOP of the
+    string area, right below the eight bytes [create_init_stack_vma]
+    skipped.  The name and its NUL are read back out at that address,
+    and the address is ten bytes below the stack VMA's end: eight for
+    the skipped slot, one for the NUL and one for the name. *)
+
+Example at_execfn_points_at_the_exec_file_name :
+  let mem := stack_to_mem demo_block_sp demo_block in
+  let p := at_execfn_ptr demo_block_top default_execfn in
+  (map (fun k => mem (p + nat_to_word k)) (seq 0 2),
+   (bv_unsigned demo_block_top - bv_unsigned p)%Z)
+  = ([Some (Z_to_bv 8 97); Some (Z_to_bv 8 0)], 10%Z).
 Proof. check_eq. Qed.
 
 (** THREAD-LOCAL STORAGE hinges on this: a static libc finds PT_TLS only
     by walking the program header table, and finds the table only through
-    AT_PHDR/AT_PHENT/AT_PHNUM.  The three entries are the first three
-    auxv slots, so their (type, value) words are the first six words of
+    AT_PHDR/AT_PHENT/AT_PHNUM.  They are entries 13, 14 and 15 of the
+    vector — [ARCH_DLINFO]'s ten come first, then AT_HWCAP, AT_PAGESZ
+    and AT_CLKTCK — so their (type, value) words are words 26..31 of
     the auxv, which starts right after argc, the argv pointers (+ NULL)
     and the envp pointers (+ NULL).  Read them straight back out of the
     initial stack image and check they carry the IMAGE's numbers, not
     zeros. *)
 
 Example auxv_publishes_the_program_header_table :
-  let sp : word := 65536 in
-  let bytes := build_stack_bytes demo_phdrs sp [[120]] [] demo_uid demo_hwcap demo_draw in
   let auxv_start := (8 + (1 + 1) * 8 + (0 + 1) * 8)%nat in
-  map (fun k => firstn 8 (skipn (auxv_start + 8 * k)%nat bytes)) (seq 0 6)
+  map (fun k => firstn 8 (skipn (auxv_start + 8 * k)%nat demo_block)) (seq 26 6)
   = [ word_le8 AT_PHDR;  word_le8 (Z_to_bv 64 0x10040);
       word_le8 AT_PHENT; word_le8 (Z_to_bv 64 56);
       word_le8 AT_PHNUM; word_le8 (Z_to_bv 64 6) ].
@@ -671,52 +710,52 @@ Proof. check_eq. Qed.
     evidence instead.
 
     Read back out of the built image, the way the program header entries
-    are above: AT_UID is the SIXTH auxv entry and AT_EUID the seventh —
-    AT_HWCAP sits fourth, ahead of AT_PAGESZ, where
-    [create_elf_tables] puts it — so their (type, value) words are words
-    10..13 of the vector. *)
+    are above: AT_UID, AT_EUID, AT_GID and AT_EGID are entries 19 to 22,
+    so their (type, value) words are words 38..45 of the vector. *)
 
 Example auxv_publishes_the_launching_uid :
-  let sp : word := 65536 in
-  let bytes := build_stack_bytes demo_phdrs sp [[120]] [] demo_uid demo_hwcap demo_draw in
   let auxv_start := (8 + (1 + 1) * 8 + (0 + 1) * 8)%nat in
-  map (fun k => firstn 8 (skipn (auxv_start + 8 * k)%nat bytes)) (seq 10 4)
+  map (fun k => firstn 8 (skipn (auxv_start + 8 * k)%nat demo_block)) (seq 38 8)
   = [ word_le8 AT_UID;  word_le8 demo_uid;
-      word_le8 AT_EUID; word_le8 demo_uid ].
+      word_le8 AT_EUID; word_le8 demo_uid;
+      word_le8 AT_GID;  word_le8 demo_gid;
+      word_le8 AT_EGID; word_le8 demo_gid ].
 Proof. check_eq. Qed.
 
-(** …for EVERY uid, not just [demo_uid]: the two id entries are exactly
-    the launching one, and there is no third entry a uid could hide in.
-    Universally quantified, so no finite set of traces could establish
-    it. *)
+(** …for EVERY launch, not just [demo_uid]: the four id entries are
+    exactly the launching user and group, and there is no fifth entry
+    an id could hide in.  Universally quantified, so no finite set of
+    traces could establish it.  [la] is destructured because the
+    vector's last two entries are there only under CONFIG_RSEQ, and the
+    claim holds either way. *)
 
-Lemma auxv_ids_are_exactly_the_launching_uid : forall ph at_random uid hw,
-  filter (fun e => orb (bv_eqb (fst e) AT_UID) (bv_eqb (fst e) AT_EUID))
-         (auxv_entries ph at_random uid hw)
-  = [(AT_UID, uid); (AT_EUID, uid)].
-Proof. reflexivity. Qed.
+Lemma auxv_ids_are_exactly_the_launching_ids :
+  forall la ph entry uid gid hw ar ae,
+  filter (fun e => orb (orb (bv_eqb (fst e) AT_UID) (bv_eqb (fst e) AT_EUID))
+                       (orb (bv_eqb (fst e) AT_GID) (bv_eqb (fst e) AT_EGID)))
+         (auxv_entries la ph entry uid gid hw ar ae)
+  = [(AT_UID, uid); (AT_EUID, uid); (AT_GID, gid); (AT_EGID, gid)].
+Proof. intros [ehdr c msz [|]] ph entry uid gid hw ar ae; reflexivity. Qed.
 
-(** …and that uid is the one the READERS answer, not a second copy that
-    could drift from it: both entries hold the credentials
+(** …and those ids are the ones the READERS answer, not a second copy
+    that could drift from them: all four entries hold the credentials
     [State.init_model] builds, which is what [Kernel.Sys.getid_spec]
     projects.  This is the whole argument — one source, so the two
     cannot disagree. *)
 
 Lemma auxv_ids_are_the_credentials_the_readers_answer :
-  forall reserved brk0 mbase sp lim inp ph at_random,
+  forall reserved brk0 mbase sp lim inp la ph entry ar ae,
     let m := init_model reserved brk0 mbase sp lim inp in
-    auxv_entries ph at_random (in_uid inp) (in_hwcap inp)
-    = [ (AT_PHDR,   Z_to_bv 64 (Z.of_N (ph_addr ph)));
-        (AT_PHENT,  Z_to_bv 64 (Z.of_N (ph_ent ph)));
-        (AT_PHNUM,  Z_to_bv 64 (Z.of_N (ph_num ph)));
-        (AT_HWCAP,  in_hwcap inp);
-        (AT_PAGESZ, Z_to_bv 64 4096);
-        (AT_UID,    cr_uid  (m_creds m));
-        (AT_EUID,   cr_euid (m_creds m));
-        (AT_SECURE, Z_to_bv 64 0);
-        (AT_RANDOM, at_random);
-        (AT_NULL,   Z_to_bv 64 0) ].
-Proof. reflexivity. Qed.
+    filter (fun e => orb (orb (bv_eqb (fst e) AT_UID) (bv_eqb (fst e) AT_EUID))
+                         (orb (bv_eqb (fst e) AT_GID) (bv_eqb (fst e) AT_EGID)))
+           (auxv_entries la ph entry (in_uid inp) (in_gid inp) (in_hwcap inp)
+              ar ae)
+    = [ (AT_UID,  cr_uid  (m_creds m)); (AT_EUID, cr_euid (m_creds m));
+        (AT_GID,  cr_gid  (m_creds m)); (AT_EGID, cr_egid (m_creds m)) ].
+Proof.
+  intros reserved brk0 mbase sp lim inp [ehdr c msz [|]] ph entry ar ae;
+    reflexivity.
+Qed.
 
 (** ** AT_HWCAP: the entry, its range, and what the range excludes
 
@@ -733,14 +772,13 @@ Proof. reflexivity. Qed.
     initial stack.
 
     First the entry is THERE, and where Linux puts it: AT_HWCAP is the
-    fourth auxv entry, immediately before AT_PAGESZ, so its (type,
-    value) words are words 6 and 7 of the vector. *)
+    first entry [create_elf_tables] writes after [ARCH_DLINFO]'s ten,
+    immediately before AT_PAGESZ, so it is entry 10 and its (type,
+    value) words are words 20 and 21 of the vector. *)
 
 Example auxv_publishes_the_hart_capabilities :
-  let sp : word := 65536 in
-  let bytes := build_stack_bytes demo_phdrs sp [[120]] [] demo_uid demo_hwcap demo_draw in
   let auxv_start := (8 + (1 + 1) * 8 + (0 + 1) * 8)%nat in
-  map (fun k => firstn 8 (skipn (auxv_start + 8 * k)%nat bytes)) (seq 6 4)
+  map (fun k => firstn 8 (skipn (auxv_start + 8 * k)%nat demo_block)) (seq 20 4)
   = [ word_le8 AT_HWCAP;  word_le8 demo_hwcap;
       word_le8 AT_PAGESZ; word_le8 (Z_to_bv 64 4096) ].
 Proof. check_eq. Qed.
@@ -748,12 +786,14 @@ Proof. check_eq. Qed.
 (** …carrying the LAUNCH'S word, for every launch, and there is no
     second entry a hwcap could hide in.  Universally quantified, so no
     finite set of traces could establish it — the same shape as
-    [auxv_ids_are_exactly_the_launching_uid] above. *)
+    [auxv_ids_are_exactly_the_launching_ids] above. *)
 
-Lemma auxv_hwcap_is_exactly_the_launch_word : forall ph at_random uid hw,
-  filter (fun e => bv_eqb (fst e) AT_HWCAP) (auxv_entries ph at_random uid hw)
+Lemma auxv_hwcap_is_exactly_the_launch_word :
+  forall la ph entry uid gid hw ar ae,
+  filter (fun e => bv_eqb (fst e) AT_HWCAP)
+         (auxv_entries la ph entry uid gid hw ar ae)
   = [(AT_HWCAP, hw)].
-Proof. reflexivity. Qed.
+Proof. intros [ehdr c msz [|]] ph entry uid gid hw ar ae; reflexivity. Qed.
 
 (** BOTH masks are admitted.  Without this the disjunction could have
     been written with an unsatisfiable second arm and every proof would
@@ -804,11 +844,22 @@ Proof. intros [H | H]; apply (f_equal bv_unsigned) in H; vm_compute in H;
     otherwise-RV64GC mask: a hart without atomics, which cannot run the
     [Riscv.Instr] AMOs this semantics interprets, so the model must not
     describe a process on one.  [0x40112D] adds bit 22 — the letter W,
-    which [riscv_fill_hwcap]'s [isa2hwcap] never assigns
-    (arch/riscv/kernel/cpufeature.c:1059-1065, Linux v6.18.46, commit
-    1f99e9ab748f, which seeds seven indices and leaves the other
-    nineteen zero), so no kernel publishes it and admitting it would put
-    the model outside what that kernel tree can produce. *)
+    which the [isa2hwcap] table never assigns
+    (arch/riscv/kernel/cpufeature.c, Linux v6.18.46, commit
+    1f99e9ab748f: the [unsigned long isa2hwcap[26]] that
+    [riscv_fill_hwcap] declares and seeds itself, seven indices set and
+    the other nineteen left zero), so no kernel publishes it and
+    admitting it would put the model outside what that kernel tree can
+    produce.
+
+    The citation names the FUNCTION and the declaration, not a line.  A
+    line number rots with the next patch and nothing in this tree
+    checks it.  The declaration is named because [riscv_fill_hwcap] is
+    not unique as a string in that file: it is also the prefix of
+    [riscv_fill_hwcap_from_isa_string] and
+    [riscv_fill_hwcap_from_ext_list], which take the table as a
+    parameter rather than seeding it, so a reader grepping the bare
+    name lands on three functions and the seeding is in only one. *)
 
 Example valid_hwcap_refuses_masks_no_kernel_publishes :
   ~ valid_hwcap (Z_to_bv 64 0x112C) /\ ~ valid_hwcap (Z_to_bv 64 0x40112D).
@@ -817,25 +868,32 @@ Proof.
     vm_compute in H; discriminate.
 Qed.
 
-(** THE NEGATIVE, third half: the nine-entry vector WITHOUT AT_HWCAP is
-    not what the model builds.  Stated on the entry TYPES, so it is a
-    claim about the entry SET rather than about any value: a model that
-    dropped the entry, or moved it behind AT_PAGESZ where Linux does not
-    put it, fails here. *)
+(** THE NEGATIVE, third half: the vector WITHOUT AT_HWCAP is not what
+    the model builds.  Stated on the entry TYPES, so it is a claim
+    about the entry SET rather than about any value: a model that
+    dropped the entry, or moved it behind AT_PAGESZ where Linux does
+    not put it, fails here. *)
 
 Example the_hwcap_less_auxv_is_refuted :
   map (fun e => bv_unsigned (fst e))
-      (auxv_entries demo_phdrs (Z_to_bv 64 0) demo_uid demo_hwcap)
-  <> [3; 4; 5; 6; 11; 12; 23; 25; 0]%Z.
+      (auxv_entries demo_la demo_phdrs (Z_to_bv 64 0) demo_uid demo_gid
+         demo_hwcap (Z_to_bv 64 0) (Z_to_bv 64 0))
+  <> [33; 40; 41; 42; 43; 44; 45; 46; 47; 51;
+      6; 17; 3; 4; 5; 7; 8; 9; 11; 12; 13; 14; 23; 25; 31; 27; 28; 0]%Z.
 Proof. vm_compute. discriminate. Qed.
 
 (** The entry set the model DOES build, in order, as the positive twin
-    of that refutation. *)
+    of that refutation: [ARCH_DLINFO]'s ten
+    (arch/riscv/include/asm/elf.h) first, because fs/binfmt_elf.c
+    expands it before its own entries, then [create_elf_tables]'s
+    sixteen, then the CONFIG_RSEQ pair, then AT_NULL. *)
 
 Example the_auxv_entry_types_in_order :
   map (fun e => bv_unsigned (fst e))
-      (auxv_entries demo_phdrs (Z_to_bv 64 0) demo_uid demo_hwcap)
-  = [3; 4; 5; 16; 6; 11; 12; 23; 25; 0]%Z.
+      (auxv_entries demo_la demo_phdrs (Z_to_bv 64 0) demo_uid demo_gid
+         demo_hwcap (Z_to_bv 64 0) (Z_to_bv 64 0))
+  = [33; 40; 41; 42; 43; 44; 45; 46; 47; 51;
+     16; 6; 17; 3; 4; 5; 7; 8; 9; 11; 12; 13; 14; 23; 25; 31; 27; 28; 0]%Z.
 Proof. vm_compute. reflexivity. Qed.
 
 Print Assumptions auxv_hwcap_is_exactly_the_launch_word.
@@ -852,7 +910,9 @@ Print Assumptions valid_hwcap_admits_both_masks.
 
 Example the_constant_zero_auxv_is_refuted :
   map (fun e => bv_unsigned (snd e))
-      (auxv_entries demo_phdrs (Z_to_bv 64 0) demo_uid demo_hwcap)
+      (auxv_entries demo_la demo_phdrs (Z_to_bv 64 0) demo_uid demo_gid
+         demo_hwcap (Z_to_bv 64 0) (Z_to_bv 64 0))
   <> map (fun e => bv_unsigned (snd e))
-         (auxv_entries demo_phdrs (Z_to_bv 64 0) (Z_to_bv 64 0) demo_hwcap).
+         (auxv_entries demo_la demo_phdrs (Z_to_bv 64 0) (Z_to_bv 64 0)
+            (Z_to_bv 64 0) demo_hwcap (Z_to_bv 64 0) (Z_to_bv 64 0)).
 Proof. vm_compute. discriminate. Qed.

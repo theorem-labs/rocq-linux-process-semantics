@@ -94,6 +94,81 @@ Proof.
   - unfold choose in Hno. destruct Hno as (? & [] & _).
 Qed.
 
+(** The acceptor for an [alt] of ONE FIXED ERRNO and an INJECTED LIST:
+    the shape [socket_spec] and [accept4_spec] take where a refusal of
+    Linux's stands beside the allocation errnos that precede it
+    ([Net.Socket.accept_notsock_errnos] and its neighbour, ported from
+    main LPS #1536 `7cce061164`).  Neither side declines, so this
+    acceptor never answers [CheckUnmodeled]. *)
+Definition check_errno_or_list (e0 : Z) (es : list Z) (eff : SyscallEffect)
+    (m : Model) : check_result :=
+  match eff with
+  | mkEffectU ret [] [] [] [] [] =>
+      if orb (bv_eqb ret (errno_ret e0)) (errno_ret_in es ret)
+      then CheckOk m [] else CheckReject
+  | _ => CheckReject
+  end.
+
+Lemma check_errno_or_list_no_unmodeled : forall e0 es eff m,
+  check_errno_or_list e0 es eff m <> CheckUnmodeled.
+Proof.
+  intros e0 es eff m. unfold check_errno_or_list.
+  destruct eff as [ret ws zs us cs copyins];
+    destruct ws; destruct zs; destruct us; destruct cs; destruct copyins;
+    try discriminate.
+  destruct (orb (bv_eqb ret (errno_ret e0)) (errno_ret_in es ret)); discriminate.
+Qed.
+
+Lemma check_errno_or_list_sound_ok :
+  forall e0 es (i : SyscallInput) eff m m' evs,
+  check_errno_or_list e0 es eff m = CheckOk m' evs ->
+  alt (err_ret e0) (er <- errno_from es ;; err_ret er) i m (Ok eff m' evs).
+Proof.
+  intros e0 es i eff m m' evs H. unfold check_errno_or_list in H.
+  destruct eff as [ret ws zs us cs copyins];
+    destruct ws; destruct zs; destruct us; destruct cs; destruct copyins;
+    try discriminate.
+  destruct (bv_eqb ret (errno_ret e0)) eqn:He0; cbn [orb] in H.
+  - inversion H; clear H; subst.
+    apply bv_eqb_eq in He0. subst ret.
+    apply alt_l. unfold err_ret, ret_only. apply pure_ok.
+  - destruct (errno_ret_in es ret) eqn:He; [|discriminate].
+    inversion H; clear H; subst.
+    apply errno_ret_in_true in He. destruct He as (er & HIn & ->).
+    apply alt_r. eapply bind_ok0; [apply (choose_ok _ er); exact HIn|].
+    unfold err_ret, ret_only. apply pure_ok.
+Qed.
+
+Lemma check_errno_or_list_e0 : forall e0 es m,
+  check_errno_or_list e0 es (mkEffect (errno_ret e0) [] []) m = CheckOk m [].
+Proof.
+  intros e0 es m. unfold check_errno_or_list. cbn [eff_ret].
+  rewrite bv_eqb_refl. reflexivity.
+Qed.
+
+Lemma check_errno_or_list_in : forall e0 es e m,
+  In e es -> check_errno_or_list e0 es (mkEffect (errno_ret e) [] []) m = CheckOk m [].
+Proof.
+  intros e0 es e m HIn. unfold check_errno_or_list. cbn [eff_ret].
+  rewrite (errno_ret_in_intro _ _ HIn), orb_true_r. reflexivity.
+Qed.
+
+Lemma check_errno_or_list_complete_ok :
+  forall e0 es (i : SyscallInput) eff m m' evs,
+  alt (err_ret e0) (er <- errno_from es ;; err_ret er) i m (Ok eff m' evs) ->
+  check_errno_or_list e0 es eff m = CheckOk m' evs.
+Proof.
+  intros e0 es i eff m m' evs [Hfix | Herr].
+  - unfold err_ret, ret_only, pure in Hfix. inversion Hfix; clear Hfix; subst.
+    unfold check_errno_or_list. cbn. rewrite bv_eqb_refl. reflexivity.
+  - destruct Herr as (e & m1 & evs1 & evs2 & Hch & Hret & ->).
+    unfold errno_from, choose in Hch.
+    destruct Hch as (x & HIn & Heq). inversion Heq; clear Heq; subst.
+    unfold err_ret, ret_only, pure in Hret. inversion Hret; clear Hret; subst.
+    unfold check_errno_or_list. cbn.
+    rewrite (errno_ret_in_intro _ _ HIn), orb_true_r. reflexivity.
+Qed.
+
 (** socket(2).  Every test is a pure function of the arguments and they
     are made in the kernel's order, because the order is what decides
     which errno a doubly-bad call gets; see [Net.Socket.socket_spec]. *)
@@ -119,11 +194,11 @@ Definition check_socket (domain type protocol : word) (eff : SyscallEffect)
          PF_PACKET, so inet_create's IPPROTO_MAX check never runs — see
          [Net.Socket.socket_spec] *)
     else if orb (Z.ltb pro 0) (Z.leb IPPROTO_MAX pro)
-    then check_ret_only eff (errno_ret EINVAL) m []
+    then check_errno_or_list EINVAL socket_alloc_errnos eff m
     else if Z.eqb ty SOCK_STREAM then
       if orb (Z.eqb pro IPPROTO_SCTP) (Z.eqb pro IPPROTO_MPTCP) then CheckUnmodeled
       else if negb (orb (Z.eqb pro IPPROTO_IP) (Z.eqb pro IPPROTO_TCP))
-      then check_ret_only eff (errno_ret EPROTONOSUPPORT) m []
+      then check_errno_or_list EPROTONOSUPPORT socket_alloc_errnos eff m
       else
         check_new_fd_result socket_errnos eff m
           (fun fd => with_fds (fd_insert (m_fds m) fd (FdSocket SkFresh)) m)
@@ -131,7 +206,7 @@ Definition check_socket (domain type protocol : word) (eff : SyscallEffect)
     then CheckUnmodeled                  (* SOCK_DGRAM / SOCK_RAW; SOCK_PACKET is above *)
     else if orb (Z.eqb ty SOCK_SEQPACKET) (Z.eqb ty SOCK_DCCP)
     then CheckUnmodeled                  (* sctp and dccp register these *)
-    else check_ret_only eff (errno_ret ESOCKTNOSUPPORT) m [].
+    else check_errno_or_list ESOCKTNOSUPPORT socket_alloc_errnos eff m.
 
 (** bind(2).  -EFAULT precedes the 16-byte minimum, which is why the
     address bytes are read before their length is judged against
@@ -147,7 +222,7 @@ Definition check_bind (i : SyscallInput) (fd addrp addrlen : word)
       then check_ret_only eff (errno_ret EINVAL) m []
       else if Z.eqb al 0 then check_ret_only eff (errno_ret EINVAL) m []
       else
-      match read_bytes_map (in_mem i) addrp (Z_to_bv 64 al) with
+      match copy_bytes_map (in_mem i) addrp al with
       | None => check_ret_only eff (errno_ret EFAULT) m []
       | Some bs =>
           (* PAST THE COPY, and that is where the ledger starts.
@@ -262,9 +337,11 @@ Definition check_accept4 (fd addrp addrlenp flags : word)
                         (FdSocket (SkConnected (nq_peer (m_net m))
                                                (conn_channel (m_conn_ix m))
                                                (nq_script (m_net m))))) m)
-          | _ => check_ret_only eff (errno_ret EINVAL) m []
+          | _ => check_errno_or_list EINVAL accept_notlisten_errnos eff m
           end
-      | _ => check_ret_only eff (errno_ret ENOTSOCK) m []
+      | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
+             then CheckUnmodeled
+             else check_errno_or_list ENOTSOCK accept_notsock_errnos eff m
       end
   end.
 
@@ -283,7 +360,7 @@ Definition check_connect (i : SyscallInput) (fd addrp addrlen : word)
       if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al)
       then check_ret_only eff (errno_ret EINVAL) m []
       else
-      match read_bytes_map (in_mem i) addrp (Z_to_bv 64 al) with
+      match copy_bytes_map (in_mem i) addrp al with
       | None => check_ret_only eff (errno_ret EFAULT) m []
       | Some bs =>
           let copied := if Z.eqb al 0 then [] else [(addrp, length bs)] in
@@ -416,7 +493,7 @@ Proof.
   destruct (orb (Z.ltb (sint32 protocol) 0)
                 (Z.leb IPPROTO_MAX (sint32 protocol))) eqn:E6;
     cbv beta iota zeta in H |- *.
-  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  { eapply check_errno_or_list_sound_ok; exact H. }
   destruct (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_STREAM) eqn:E7;
     cbv beta iota zeta in H |- *.
   - destruct (orb (Z.eqb (sint32 protocol) IPPROTO_SCTP)
@@ -426,7 +503,7 @@ Proof.
     destruct (negb (orb (Z.eqb (sint32 protocol) IPPROTO_IP)
                         (Z.eqb (sint32 protocol) IPPROTO_TCP))) eqn:E7a;
       cbv beta iota zeta in H |- *.
-    { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+    { eapply check_errno_or_list_sound_ok; exact H. }
     (* the injected failure, or the lowest free fd *)
     unfold check_new_fd_result in H.
     destruct eff as [ret ws zs us cs copyins]; destruct ws as [|w ws'];
@@ -449,7 +526,7 @@ Proof.
     destruct (orb (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_SEQPACKET)
                   (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_DCCP)) eqn:E8b;
       cbv beta iota zeta in H |- *; [discriminate|].
-    apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok.
+    eapply check_errno_or_list_sound_ok; exact H.
 Qed.
 
 Lemma check_socket_sound_unmodeled : forall domain type protocol eff m i,
@@ -478,7 +555,7 @@ Proof.
   destruct (orb (Z.ltb (sint32 protocol) 0)
                 (Z.leb IPPROTO_MAX (sint32 protocol))) eqn:E6;
     cbv beta iota zeta in H |- *.
-  { now apply check_ret_only_no_unmodeled in H. }
+  { now apply check_errno_or_list_no_unmodeled in H. }
   destruct (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_STREAM) eqn:E7;
     cbv beta iota zeta in H |- *.
   - destruct (orb (Z.eqb (sint32 protocol) IPPROTO_SCTP)
@@ -488,7 +565,7 @@ Proof.
     destruct (negb (orb (Z.eqb (sint32 protocol) IPPROTO_IP)
                         (Z.eqb (sint32 protocol) IPPROTO_TCP))) eqn:E7a;
       cbv beta iota zeta in H |- *.
-    { now apply check_ret_only_no_unmodeled in H. }
+    { now apply check_errno_or_list_no_unmodeled in H. }
     now apply check_new_fd_result_no_unmodeled in H.
   - destruct (orb (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_DGRAM)
                   (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_RAW)) eqn:E8;
@@ -496,7 +573,7 @@ Proof.
     destruct (orb (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_SEQPACKET)
                   (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_DCCP)) eqn:E8b;
       cbv beta iota zeta in H |- *; [apply unmodeled_intro|].
-    now apply check_ret_only_no_unmodeled in H.
+    now apply check_errno_or_list_no_unmodeled in H.
 Qed.
 
 Lemma check_socket_complete_ok : forall domain type protocol eff m m' evs i,
@@ -522,7 +599,8 @@ Proof.
     hall E5p; inv_ok.
   destruct (orb (Z.ltb (sint32 protocol) 0)
                 (Z.leb IPPROTO_MAX (sint32 protocol))) eqn:E6; hall E6; inv_ok.
-  { cbn; try rewrite bv_eqb_refl; reflexivity. }
+  2:{ apply check_errno_or_list_in. cbn. auto. }
+  { apply check_errno_or_list_e0. }
   destruct (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_STREAM) eqn:E7;
     hall E7; inv_ok.
   - destruct (orb (Z.eqb (sint32 protocol) IPPROTO_SCTP)
@@ -530,7 +608,8 @@ Proof.
     destruct (negb (orb (Z.eqb (sint32 protocol) IPPROTO_IP)
                         (Z.eqb (sint32 protocol) IPPROTO_TCP))) eqn:E7a;
       hall E7a; inv_ok.
-    { cbn; try rewrite bv_eqb_refl; reflexivity. }
+    2:{ apply check_errno_or_list_in. cbn. auto. }
+    { apply check_errno_or_list_e0. }
     + (* injected failure *)
       unfold check_new_fd_result.
       match goal with
@@ -549,7 +628,8 @@ Proof.
     destruct (orb (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_SEQPACKET)
                   (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_DCCP)) eqn:E8b;
       hall E8b; inv_ok.
-    cbn; try rewrite bv_eqb_refl; reflexivity.
+    2:{ apply check_errno_or_list_in. cbn. auto. }
+    apply check_errno_or_list_e0.
 Qed.
 
 Lemma check_socket_complete_unmodeled : forall domain type protocol m i eff,
@@ -644,7 +724,7 @@ Proof.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
   destruct (Z.eqb (sint32 addrlen) 0) eqn:E2; cbv beta iota zeta in H |- *.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
-  destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
     as [bs|] eqn:Hrb; cbv beta iota zeta in H |- *.
   2: { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
   destruct (Z.ltb (sint32 addrlen) SOCKADDR_IN_SIZE) eqn:E3;
@@ -696,7 +776,7 @@ Proof.
   { now apply check_ret_only_no_unmodeled in H. }
   destruct (Z.eqb (sint32 addrlen) 0) eqn:E2; cbv beta iota zeta in H |- *.
   { now apply check_ret_only_no_unmodeled in H. }
-  destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
     as [bs|] eqn:Hrb; cbv beta iota zeta in H |- *.
   2: { now apply check_ret_only_no_unmodeled in H. }
   destruct (Z.ltb (sint32 addrlen) SOCKADDR_IN_SIZE) eqn:E3;
@@ -741,7 +821,7 @@ Proof.
     hall E1; inv_ok; [cbn; try rewrite bv_eqb_refl; reflexivity|].
   destruct (Z.eqb (sint32 addrlen) 0) eqn:E2; hall E2; inv_ok;
     [cbn; try rewrite bv_eqb_refl; reflexivity|].
-  destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
     as [bs|] eqn:Hrb; hall Hrb; inv_ok;
     [|cbn; try rewrite bv_eqb_refl; reflexivity].
   destruct (Z.ltb (sint32 addrlen) SOCKADDR_IN_SIZE) eqn:E3; hall E3; inv_ok;
@@ -791,7 +871,7 @@ Proof.
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
     hall E1; inv_ok; try discriminate.
   destruct (Z.eqb (sint32 addrlen) 0) eqn:E2; hall E2; inv_ok; try discriminate.
-  destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
     as [bs|] eqn:Hrb; hall Hrb; inv_ok; try discriminate.
   destruct (Z.ltb (sint32 addrlen) SOCKADDR_IN_SIZE) eqn:E3; hall E3; inv_ok;
     try discriminate.
@@ -902,13 +982,12 @@ Proof.
                                 SOCK_NONBLOCK) 0)) eqn:E2;
     cbv beta iota zeta in H |- *; [discriminate|].
   destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]; cbv beta iota zeta in H |- *;
-    try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-         apply pure_ok).
+    try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT));
+         [discriminate | now apply check_errno_or_list_sound_ok]).
   destruct (negb (w_is0 addrp)) eqn:E3; cbv beta iota zeta in H |- *;
     [discriminate|].
   destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta in H |- *;
-    try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-         apply pure_ok).
+    try (now apply check_errno_or_list_sound_ok).
   (* listening: the injected failure, or the connection at the head of the
      environment's queue -- and once the channel space is used up, the
      failure alone (see [Net.Socket.conn_ix_exhausted]) *)
@@ -950,11 +1029,13 @@ Proof.
                                 SOCK_NONBLOCK) 0)) eqn:E2;
     cbv beta iota zeta in H |- *; [apply unmodeled_intro|].
   destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]; cbv beta iota zeta in H |- *;
-    try (now apply check_ret_only_no_unmodeled in H).
+    try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT))
+           eqn:Ecap;
+         [apply unmodeled_intro | now apply check_errno_or_list_no_unmodeled in H]).
   destruct (negb (w_is0 addrp)) eqn:E3; cbv beta iota zeta in H |- *;
     [apply unmodeled_intro|].
   destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta in H |- *;
-    try (now apply check_ret_only_no_unmodeled in H).
+    try (now apply check_errno_or_list_no_unmodeled in H).
   destruct (conn_ix_exhausted (m_conn_ix m)) eqn:Hex;
     cbv beta iota zeta in H |- *.
   { now apply check_errno_only_no_unmodeled in H. }
@@ -984,10 +1065,15 @@ Proof.
      THE INDICES MOVE WITH [State.FdEntry]: a constructor added ahead of
      [FdSocket] shifts every number here, and a stale selector silently
      addresses a different arm. *)
-  1-6,8-10: (cbn; try rewrite bv_eqb_refl; reflexivity).
+  1-6,8-10: (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT))
+               eqn:Ecap; hall Ecap; inv_ok;
+             [ apply check_errno_or_list_e0
+             | apply check_errno_or_list_in; cbn; auto ]).
   destruct (negb (w_is0 addrp)) eqn:E3; hall E3; inv_ok.
   destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta in *.
-  1-2,4-5: (inv_ok; cbn; try rewrite bv_eqb_refl; reflexivity).
+  1-2,4-5: (inv_ok;
+            [ apply check_errno_or_list_e0
+            | apply check_errno_or_list_in; cbn; auto ]).
   destruct (conn_ix_exhausted (m_conn_ix m)) eqn:Hex;
     cbv beta iota zeta in *.
   { now apply (check_errno_only_complete_ok _ i). }
@@ -1022,7 +1108,9 @@ Proof.
                                 SOCK_NONBLOCK) 0)) eqn:E2; hall E2; inv_ok;
     try discriminate; [reflexivity|].
   destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]; cbv beta iota zeta in *; inv_ok;
-    try discriminate.
+    try discriminate;
+    try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT))
+           eqn:Ecap; hall Ecap; inv_ok; first [reflexivity | discriminate]).
   destruct (negb (w_is0 addrp)) eqn:E3; hall E3; inv_ok; try discriminate;
     [reflexivity|].
   destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta in *; inv_ok;
@@ -1053,7 +1141,7 @@ Proof.
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        cbv beta iota zeta in H |- *; [ connect_ret H | ].
-  all: destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; cbv beta iota zeta in H |- *; [ | connect_ret H ].
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez;
        cbv beta iota zeta in H |- *.
@@ -1088,7 +1176,7 @@ Proof.
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        cbv beta iota zeta in H |- *;
        [ now apply check_ret_only_no_unmodeled in H | ].
-  all: destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; cbv beta iota zeta in H |- *;
        [ | now apply check_ret_only_no_unmodeled in H ].
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez;
@@ -1125,7 +1213,7 @@ Proof.
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        hall E1; inv_ok; [ cbn; try rewrite bv_eqb_refl; reflexivity | ].
-  all: destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; hall Hrb; inv_ok;
        [ | cbn; try rewrite bv_eqb_refl; reflexivity ].
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez; hall Ez; inv_ok.
@@ -1154,7 +1242,7 @@ Proof.
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        hall E1; inv_ok; try discriminate.
-  all: destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; hall Hrb; inv_ok; try discriminate.
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez; hall Ez; inv_ok;
        try discriminate.
@@ -1638,7 +1726,7 @@ Definition check_sendmsg (i : SyscallInput) (fd msgp flags : word)
   | Some (FdPipe _ _) | Some (FdDevNull _ _) | Some FdUrandom =>
       check_ret_only eff (errno_ret ENOTSOCK) m []
   | Some (FdSocket sk) =>
-      match read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE) with
+      match copy_bytes_map (in_mem i) msgp MSGHDR_SIZE with
       | None => check_ret_only eff (errno_ret EFAULT) m []
       | Some _ =>
           match read_u64 (in_mem i) msgp,
@@ -1654,16 +1742,16 @@ Definition check_sendmsg (i : SyscallInput) (fd msgp flags : word)
                      (errno_ret EMSGSIZE) m []
               else if (UIO_FASTIOV <? bv_unsigned iovlen)%Z then CheckUnmodeled
               else
-              match copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen) with
+              match import_iovecs (in_mem i) iov iovlen with
               | ImpFault =>
                   check_ret_only_copyins
                     ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                     ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                     ++ import_iovecs_accesses (in_mem i) iov iovlen)
                     eff (errno_ret EFAULT) m []
               | ImpInval =>
                   check_ret_only_copyins
                     ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                     ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                     ++ import_iovecs_accesses (in_mem i) iov iovlen)
                     eff (errno_ret EINVAL) m []
               | ImpOk iovs0 =>
                   (* msg_controllen is decided HERE, where ____sys_sendmsg
@@ -1677,7 +1765,7 @@ Definition check_sendmsg (i : SyscallInput) (fd msgp flags : word)
                   else
                   check_send_on_socket
                     ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                     ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                     ++ import_iovecs_accesses (in_mem i) iov iovlen)
                     (fun n => iov_prefix_accesses (cap_iovecs iovs0) n)
                     fd sk
                     (Z_to_bv 64 (iovs_total (cap_iovecs iovs0)))
@@ -1924,7 +2012,8 @@ Qed.
 (** The header's six reads are destructed together: 63 of the 64 shapes
     are the total-match -EFAULT arm both sides agree on, and only the
     all-[Some] one carries the call.  Keep the goal selectors below --
-    a uniform [cbn] here delta-reduces [State.copy_iovecs_aux]'s fuel. *)
+    a uniform [cbn] here delta-reduces [State.copy_iovecs_aux]'s fuel,
+    which [State.import_iovecs] still reaches. *)
 Lemma check_sendmsg_sound_ok : forall i fd msgp flags eff m m' evs,
   check_sendmsg i fd msgp flags eff m = CheckOk m' evs ->
   sendmsg_spec fd msgp flags i m (Ok eff m' evs).
@@ -1938,7 +2027,7 @@ Proof.
     cbv beta iota zeta in H |- *;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          apply pure_ok).
-  destruct (read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE)) eqn:Hh;
+  destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
     cbv beta iota zeta in H |- *;
     [|apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
       apply pure_ok].
@@ -1956,7 +2045,7 @@ Proof.
     [apply check_ret_only_copyins_ok_iff in H; destruct H as (-> & -> & ->);
      apply record_copyins_ok_empty; [reflexivity|apply pure_ok]|].
   destruct ((UIO_FASTIOV <? bv_unsigned iovlen)%Z) eqn:Hfa; [discriminate|].
-  destruct (copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen)) as [iovs0| |]
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs0| |]
     eqn:Hci; cbv beta iota zeta in H |- *;
     [ | apply check_ret_only_copyins_ok_iff in H; destruct H as (-> & -> & ->);
         apply record_copyins_ok_empty; [reflexivity|apply pure_ok]
@@ -1980,7 +2069,7 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     try (now apply check_ret_only_no_unmodeled in H).
-  destruct (read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE)) eqn:Hh;
+  destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
     cbv beta iota zeta in H |- *;
     [|now apply check_ret_only_no_unmodeled in H].
   destruct (read_u64 (in_mem i) msgp) as [name|],
@@ -1996,7 +2085,7 @@ Proof.
     [now apply check_ret_only_copyins_no_unmodeled in H|].
   destruct ((UIO_FASTIOV <? bv_unsigned iovlen)%Z) eqn:Hfa;
     [apply unmodeled_intro|].
-  destruct (copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen)) as [iovs0| |]
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs0| |]
     eqn:Hci; cbv beta iota zeta in H |- *;
     [ | now apply check_ret_only_copyins_no_unmodeled in H
       | now apply check_ret_only_copyins_no_unmodeled in H ].
@@ -2018,7 +2107,7 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; try rewrite bv_eqb_refl; reflexivity).
-  destruct (read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE)) eqn:Hh;
+  destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
     hall Hh; inv_ok;
     [|cbn; try rewrite bv_eqb_refl; reflexivity].
   destruct (read_u64 (in_mem i) msgp) as [name|] eqn:R0,
@@ -2037,7 +2126,7 @@ Proof.
      rewrite app_nil_r, (proj2 (access_ranges_eqb_eq _ _) eq_refl);
      cbn; rewrite ?bv_eqb_refl; reflexivity|].
   destruct ((UIO_FASTIOV <? bv_unsigned iovlen)%Z) eqn:Hfa; hall Hfa; inv_ok.
-  destruct (copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen)) as [iovs0| |]
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs0| |]
     eqn:Hci; hall Hci; inv_ok;
     try (unfold check_ret_only_copyins, clear_copyins; cbn [with_copyins];
          rewrite app_nil_r, (proj2 (access_ranges_eqb_eq _ _) eq_refl);
@@ -2058,7 +2147,7 @@ Proof.
   sys_unfold. cbv iota zeta in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate.
-  destruct (read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE)) eqn:Hh;
+  destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
     hall Hh; inv_ok; try discriminate.
   destruct (read_u64 (in_mem i) msgp) as [name|] eqn:R0,
            (read_u64 (in_mem i) (msgp + Z_to_bv 64 8)) as [namelen|] eqn:R1,
@@ -2072,7 +2161,7 @@ Proof.
     try discriminate.
   destruct ((UIO_FASTIOV <? bv_unsigned iovlen)%Z) eqn:Hfa; hall Hfa; inv_ok;
     [reflexivity|].
-  destruct (copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen)) as [iovs0| |]
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs0| |]
     eqn:Hci; hall Hci; inv_ok; try discriminate.
   destruct (negb (w_is0 ctllen)) eqn:Hcl; hall Hcl; inv_ok; [reflexivity|].
   destruct (negb (iovs_total (cap_iovecs iovs0) <=? rw_bytes_max)%Z) eqn:Hmt;

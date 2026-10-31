@@ -804,7 +804,7 @@ Proof. reflexivity. Qed.
 
 (** The run-level omni judgment of a write-then-exit binary. *)
 Lemma cat_omni_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) bufs code ->
+  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
   bufs_modeled bufs ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
     (wexit_post bufs code (in_fs inp)).
@@ -817,7 +817,7 @@ Proof.
 Qed.
 
 Lemma cat_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) bufs code ->
+  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
   bufs_modeled bufs ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
              <-> exists full, wpick (Z_to_bv 64 1) bufs full /\
@@ -826,7 +826,7 @@ Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bufs code Hte Hbm tr.
   set (fs0 := in_fs inp) in *.
   unfold init_config in *.
-  set (ms := init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
+  set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
   assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None) by reflexivity.
   assert (Hlazy : m_vm_lazy (init_model (segments_reserved segs) brk0 mb sp lim inp) = []) by reflexivity.
   assert (Hfd : fd1chan (init_model (segments_reserved segs) brk0 mb sp lim inp)) by reflexivity.
@@ -846,7 +846,7 @@ Proof.
 Qed.
 
 Lemma cat_no_error_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) bufs code ->
+  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
   bufs_modeled bufs ->
   ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
 Proof.
@@ -858,7 +858,7 @@ Qed.
 (** The code half of [wexit_post], consumed and pinned: the run satisfies
     [MustExit.must_exit_with] at [code], and at no other. *)
 Lemma cat_must_exit_with_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) bufs code ->
+  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
   bufs_modeled bufs ->
   must_exit_with code (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp.
 Proof.
@@ -868,7 +868,7 @@ Proof.
 Qed.
 
 Lemma cat_omni_run_te_code_unique : forall segs pc ph sp brk0 mb rnd lim inp bufs code code',
-  to_wexit segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) bufs code ->
+  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
   bufs_modeled bufs ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (exits_with code') ->
   code' = code.
@@ -887,8 +887,8 @@ Qed.
     role budgets. *)
 Lemma cat_omni_strong_equiv_te :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bufs code inp,
-  to_wexit source_segs (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) bufs code ->
-  to_wexit target_segs (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) bufs code ->
+  to_wexit source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp) bufs code ->
+  to_wexit target_segs (init_machine_state target_segs apc aph asp amb arnd inp) bufs code ->
   bufs_modeled bufs ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
@@ -916,8 +916,8 @@ Qed.
     and exit code: both denote the same set of delivery choices. *)
 Lemma cat_strong_equiv_te :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim bufs code inp,
-  to_wexit source_segs (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) bufs code ->
-  to_wexit target_segs (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) bufs code ->
+  to_wexit source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp) bufs code ->
+  to_wexit target_segs (init_machine_state target_segs apc aph asp amb arnd inp) bufs code ->
   bufs_modeled bufs ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)

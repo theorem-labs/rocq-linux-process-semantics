@@ -19,7 +19,7 @@
     mapping base is page aligned ([munmap], [mremap] and [mprotect]
     answer -EINVAL otherwise, and [mmap] only ever places on a page
     boundary), so this yields base uniqueness exactly where it is used,
-    and in particular makes [munmap]'s [map_has]/[map_remove] pair agree.
+    and in particular makes a [map_has] hit name exactly one entry.
 
     WHY THE WEAKER PROPERTY IS THE RIGHT ONE.  The gap Part 1 exploits is
     real Linux behaviour, not a modelling slip: [SYSCALL_DEFINE1(brk)]
@@ -79,7 +79,8 @@
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs Run MemImageType StackLayout.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
+  ExecutableSpecs Placement.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -107,22 +108,34 @@ Definition wit_reserved : list (word * word) := [(4096, 4096)].
 Definition wit_brk_base : word := 65536.
 Definition wit_limit : Z := 0x40000000%Z.
 
-(** [mm->mmap_base].  Nothing in the spec reads this field, so no
-    step below depends on the value.  It is
+(** [mm->mmap_base].  The placement rule reads this field — it is the
+    top-down bound of [Mmap.linux_place], through [State.mmap_top] —
+    but no step below places a mapping, so no step below depends on the
+    value.  It is
     pinned to an admissible one ([wit_mmap_base_admissible]) so that the
     whole start state is one [execve] can hand out, which is what makes
-    the overlap below reachable rather than hypothetical.  That is the
-    only reason: no spec arm reads the value (the ASan plan checker's
-    placement gate does, outside the spec; see [State]'s [vm_mmap_base]
-    field note). *)
+    the overlap below reachable rather than hypothetical (see [State]'s
+    [vm_mmap_base] field note). *)
 Definition wit_mmap_base : word := Z_to_bv 64 mmap_base_min.
 
 (** The witness ledger.  [State.mkVmMaps] would default [vm_mmap_base] to
     zero, which is below [State.mmap_base_min]; this fixes it at the
-    admissible value instead and is otherwise that same constructor. *)
+    admissible value instead and is otherwise that same constructor.
+
+    THE RESERVED LIST IS [State.init_reserved], not [wit_reserved]
+    alone.  [State.init_model] reserves the image AND the vdso/vvar pair
+    [execve] installs above it ([setup_rt_sigreturn_trampoline] and
+    [_install_special_mapping], arch/riscv/kernel/vdso.c, Linux
+    v6.18.46, commit 1f99e9ab748f), placed at the ledger's [vdso_top].
+    No step below touches that pair, so every [wit_sN] has to carry it
+    too or the expected model would differ from the one the checker
+    hands back in a field no step wrote. *)
 Definition wit_vm (maps : list (word * word)) (start_brk brk : word)
     (limit : Z) : VmMaps :=
-  mkVmMapsFull wit_reserved maps [] start_brk brk limit wit_mmap_base
+  mkVmMapsFull
+    (init_reserved wit_reserved wit_mmap_base (Z_to_bv 64 sp_window_lo)
+       default_kernel)
+    maps [] start_brk brk limit wit_mmap_base
     (Z_to_bv 64 sp_window_lo).
 
 Definition wit_s0 : Model :=
@@ -236,42 +249,42 @@ Example wit_step5 :
   = CheckOk wit_s5 [].
 Proof. check_eq. Qed.
 
-(** THE HINT IS NOT LOAD-BEARING.
-    The identical grant with a NULL hint is admitted, because the spec
-    says only three things about a preference-free placement — page
-    alignment, the user range, and disjointness from every recorded
-    mapping — and 0x10000 satisfies all three on this ledger.
+(** THE HINT IS LOAD-BEARING, and since the placement change that is
+    what the pair below says.
 
-    The spec does not pin the search further — at or above a bottom-up
-    floor derived from riscv64's [TASK_UNMAPPED_BASE], or else leaving
-    no fitting free gap up to the run's [mm->mmap_base] — because such a
-    conjunct EXCLUDES placements Linux makes: its highest-fit half would
-    be read on a ledger that does not carry the kernel's own vdso/vvar
-    VMAs, so a real top-down descent would look impossible to the
-    model.  The cost is exactly this: a low placement no ORDINARY
-    kernel run produces is admissible.
-
-    That is a provability cost and not a soundness one, and it is
-    bounded.  It cannot refute a statement by colliding with a runtime's
-    later MAP_FIXED reservation, because [Mmap.mmap_spec] models that
-    MAP_FIXED as the replacement Linux performs rather than declining it;
-    what remains is that a program whose observable behaviour depends on
-    where a mapping landed has a false equivalence statement, which is
-    the correct answer under ASLR.  The pair is kept — the hinted step 5
-    above and this one — because the two together say what the spec does
-    and does not constrain, which is what a reader needs. *)
-Example wit_step5_null_hint_also_admitted :
+    Step 5 above hands the kernel the hint 0x10000, and the hint is
+    free on this ledger, so Linux returns it ([Mmap.linux_place]'s
+    hinted arm; mm/mmap.c, [generic_get_unmapped_area_topdown], the
+    hint test, Linux v6.18.46, commit 1f99e9ab748f).  The SAME grant
+    with a NULL hint is now REFUSED: with no hint the kernel searches
+    top-down from [mm->mmap_base] and 0x10000 is not where that search
+    stops.  Before the change the model admitted it, because the old
+    guard asked only for page alignment, the user range and
+    disjointness, and that is exactly the freedom that let the model
+    refuse a mapping Linux grants (OSSV-210's B2, B3 and N3). *)
+Example wit_step5_null_hint_low_rejected :
   check_syscall
     (mkInput 222 [0; 4096; 3; 34; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 65536 [] [(65536, 4096)]) wit_s4
-  = CheckOk wit_s5 [].
-Proof. check_eq. Qed.
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
 
-(** …and the conditions that DO still refuse are pinned here, so the
-    accept above is not read as "anything goes": the same NULL-hint
-    grant at an unaligned address, and at one that overlaps the live
-    mapping step 5 placed, are both rejected. *)
+(** …and WHERE the search does stop, stated structurally rather than as
+    a constant: the highest page that fits below the vdso/vvar pair,
+    which [execve] put at the top of the search window.  The pair is
+    the first thing the top-down search meets, so the first grant of
+    the run lands one page under it. *)
+Example wit_step5_null_hint_lands_under_the_vdso :
+  linux_place_b (m_vmmaps wit_s4) (kb_thp (m_kernel wit_s4))
+    (Z_to_bv 64 0) 4096
+  = Some (vdso_top (m_vmmaps wit_s4) - vdso_len default_kernel - 4096)%Z.
+Proof. vm_compute. reflexivity. Qed.
+
+(** The conditions that refuse for the OTHER reasons are still pinned,
+    so the rejection above is not read as "the search is the only
+    gate": the same NULL-hint grant at an unaligned address, and at one
+    that overlaps the live mapping step 5 placed. *)
 Example wit_step5_null_hint_unaligned_refused :
   check_syscall
     (mkInput 222 [0; 4096; 3; 34; mmap_fd_none; 0]
@@ -648,25 +661,6 @@ Proof.
   intros e' Hin. apply H. now right.
 Qed.
 
-Lemma owners_map_remove_lt : forall maps b s p,
-  In (b, s) maps -> owns_b (b, s) p = true ->
-  (owners (map_remove maps b) p + 1 <= owners maps p)%nat.
-Proof.
-  induction maps as [|e r IH]; intros b s p Hin Ho; [contradiction|].
-  unfold map_remove in *. cbn [List.filter].
-  destruct (negb (bv_eqb (fst e) b)) eqn:Hf.
-  - assert (Hin' : In (b, s) r).
-    { destruct Hin as [He|Hin]; [|exact Hin].
-      subst e. cbn in Hf. rewrite bv_eqb_refl in Hf. discriminate. }
-    specialize (IH b s p Hin' Ho). cbn [owners].
-    destruct (owns_b e p); lia.
-  - destruct Hin as [He|Hin].
-    + subst e. cbn [owners]. rewrite Ho.
-      pose proof (owners_filter_le (fun q => negb (bv_eqb (fst q) b)) r p). lia.
-    + specialize (IH b s p Hin Ho). cbn [owners].
-      destruct (owns_b e p); lia.
-Qed.
-
 (* -------------------------------------------------------------------------
    The two ways the ledger grows: a fresh [region_free] grant, and a
    [maps_subtract] that can only shrink coverage
@@ -815,25 +809,76 @@ Proof.
   exact (region_free_In maps lo n a sz H Hin).
 Qed.
 
-Lemma maps_wf_cons_sub : forall maps a n0 n,
-  maps_wf maps -> bv_unsigned n <> 0 ->
-  In (a, n0) maps -> bv_unsigned n <= bv_unsigned n0 ->
-  maps_wf ((a, n) :: map_remove maps a).
+(** Each remnant of a cut lies inside the entry it came from, when the
+    cut's end is an address (a right remnant's base is re-wrapped through
+    [Z_to_bv]). *)
+Lemma iv_subtract_inside : forall a sz lo hi b s,
+  0 <= lo -> hi < 2 ^ 64 ->
+  In (b, s) (iv_subtract a sz lo hi) ->
+  bv_unsigned a <= bv_unsigned b
+  /\ bv_unsigned b + bv_unsigned s <= bv_unsigned a + bv_unsigned sz.
 Proof.
-  intros maps a n0 n [Hnz Hun] Hn Hin Hle. split.
-  - constructor; [exact Hn|now apply sizes_nonzero_filter].
-  - intros p Hp. cbn [owners]. destruct (owns_b (a, n) p) eqn:Ho.
-    + apply owns_true in Ho.
-      assert (Ho0 : owns_b (a, n0) p = true) by (apply owns_intro; lia).
-      pose proof (owners_map_remove_lt maps a n0 p Hin Ho0).
-      specialize (Hun p Hp). lia.
-    + pose proof (owners_filter_le (fun q => negb (bv_eqb (fst q) a)) maps p).
-      specialize (Hun p Hp). unfold map_remove. lia.
+  intros a sz lo hi b s Hlo Hhi Hin.
+  pose proof (word_range a) as Ha. pose proof (word_range sz) as Hs.
+  unfold iv_subtract in Hin. cbv zeta in Hin. apply in_app_or in Hin.
+  destruct Hin as [Hin|Hin].
+  - destruct (bv_unsigned a <? lo) eqn:E1; cbn in Hin; [|contradiction].
+    apply Z.ltb_lt in E1. destruct Hin as [Heq|[]]. inversion Heq; subst b s.
+    rewrite u64 by lia. lia.
+  - destruct (hi <? bv_unsigned a + bv_unsigned sz) eqn:E2; cbn in Hin;
+      [|contradiction].
+    apply Z.ltb_lt in E2. destruct Hin as [Heq|[]]. inversion Heq; subst b s.
+    rewrite !u64 by lia. lia.
+Qed.
+
+Lemma maps_subtract_inside : forall maps lo hi b s,
+  0 <= lo -> hi < 2 ^ 64 ->
+  In (b, s) (maps_subtract maps lo hi) ->
+  exists a sz, In (a, sz) maps
+    /\ bv_unsigned a <= bv_unsigned b
+    /\ bv_unsigned b + bv_unsigned s <= bv_unsigned a + bv_unsigned sz.
+Proof.
+  induction maps as [|[a sz] r IH]; intros lo hi b s Hlo Hhi Hin;
+    [contradiction|].
+  cbn [maps_subtract] in Hin. apply in_app_or in Hin.
+  destruct Hin as [Hin|Hin].
+  - destruct (iv_subtract_inside a sz lo hi b s Hlo Hhi Hin) as [H1 H2].
+    exists a, sz. split; [left; reflexivity | split; assumption].
+  - destruct (IH lo hi b s Hlo Hhi Hin) as (a' & sz' & Hin' & H1 & H2).
+    exists a', sz'. split; [right; exact Hin' | split; assumption].
+Qed.
+
+(** A cut only shrinks entries, so a region free of a ledger stays free
+    of what is left of it. *)
+Lemma region_free_maps_subtract : forall maps lo hi x n,
+  0 <= lo -> hi < 2 ^ 64 ->
+  region_free maps x n = true ->
+  region_free (maps_subtract maps lo hi) x n = true.
+Proof.
+  intros maps lo hi x n Hlo Hhi H. apply region_free_intro. intros b s Hin.
+  destruct (maps_subtract_inside maps lo hi b s Hlo Hhi Hin)
+    as (a & sz & Hin0 & W1 & W2).
+  pose proof (region_free_In maps x n a sz H Hin0) as Hov.
+  unfold iv_overlap in *. apply andb_false_iff in Hov. apply andb_false_iff.
+  destruct Hov as [Hov|Hov]; apply Z.ltb_ge in Hov;
+    [left | right]; apply Z.ltb_ge; lia.
+Qed.
+
+(** A region free of a ledger has every prefix free of it too. *)
+Lemma region_free_shorter : forall maps a n n',
+  bv_unsigned n' <= bv_unsigned n ->
+  region_free maps a n = true -> region_free maps a n' = true.
+Proof.
+  intros maps a n n' Hle H. apply region_free_intro. intros b s Hin.
+  pose proof (region_free_In maps a n b s H Hin) as Hov.
+  unfold iv_overlap in *. apply andb_false_iff in Hov. apply andb_false_iff.
+  destruct Hov as [Hov|Hov]; apply Z.ltb_ge in Hov;
+    [left | right]; apply Z.ltb_ge; lia.
 Qed.
 
 (* -------------------------------------------------------------------------
    What the invariant buys: base uniqueness where a syscall can name a
-   base, and the [map_has]/[map_remove] agreement munmap needs
+   base, and the [map_has]/[map_remove] agreement
    ------------------------------------------------------------------------- *)
 
 Lemma map_has_In : forall maps a n,
@@ -845,7 +890,7 @@ Proof.
   apply bv_eqb_eq in H1. apply bv_eqb_eq in H2. subst. exact Hin.
 Qed.
 
-(** THE NARROW FORM the downstream [munmap] argument asks for: at a
+(** THE NARROW FORM a downstream [munmap] or [mremap] argument asks for: at a
     PAGE-ALIGNED base — the only kind [munmap], [mremap], [mprotect] and
     [mmap] can produce or accept — the ledger holds exactly one entry,
     and it is the one [map_has] matched.  So [map_has]'s [(base, size)]
@@ -991,7 +1036,7 @@ Proof. reflexivity. Qed.
 
 Lemma vmm_mremap_next : forall m old old_n dst new_n,
   m_vmmaps (mremap_model_next m old old_n dst new_n)
-  = mremap_maps_next (m_vmmaps m) old dst new_n.
+  = mremap_maps_next (m_vmmaps m) old old_n dst new_n.
 Proof.
   intros. unfold mremap_model_next.
   now rewrite vmm_resize_backing, vmm_vmmaps.
@@ -1098,7 +1143,23 @@ Proof.
             && Z.ltb (bv_unsigned r) (bv_unsigned (vm_brk h))) eqn:Eshrink.
   - apply andb_true_iff in Eshrink as [_ Hlt]. apply Z.ltb_lt in Hlt.
     pose proof (word_range r). pose proof (word_range (vm_brk h)).
-    apply maps_wf_subtract; try lia. exact Hwf.
+    assert (Hcut : maps_wf (maps_subtract (vm_maps h) (bv_unsigned r)
+                              (bv_unsigned (vm_brk h))))
+      by (apply maps_wf_subtract; try lia; exact Hwf).
+    unfold brk_unmap_cut. cbv zeta.
+    destruct (page_round_up_Z (bv_unsigned r)
+              <? page_round_up_Z (bv_unsigned (vm_brk h))) eqn:Ep;
+      [|exact Hcut].
+    apply Z.ltb_lt in Ep.
+    assert (Hpb : page_round_up_Z (bv_unsigned (vm_brk h)) <= 2 ^ 64).
+    { unfold page_round_up_Z, page_size.
+      pose proof (Z.div_mod (bv_unsigned (vm_brk h) + 4096 - 1) 4096 ltac:(lia)).
+      pose proof (Z.mod_pos_bound (bv_unsigned (vm_brk h) + 4096 - 1) 4096
+                    ltac:(lia)).
+      lia. }
+    pose proof (page_round_up_Z_nonneg (bv_unsigned r) ltac:(lia)).
+    unfold two_pow_64.
+    apply maps_wf_subtract; [lia | lia | lia | exact Hcut].
   - unfold brk_grants. destruct (brk_is_grow req r (vm_brk h)) eqn:Egrow.
     + cbn [app]. now apply (brk_grant_wf m req r).
     + cbn [app]. exact Hwf.
@@ -1197,9 +1258,15 @@ Proof.
   difn H Etask; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   dif H.
   - destruct ws, zs, cs, ci; try discriminate.
-    dif H; [|discriminate]. injection H as <- <-.
-    unfold vm_wf. rewrite vmm_mmap_destroyed. cbn [vm_maps].
-    now apply maps_wf_filter.
+    dif H.
+    + destruct us; [|discriminate]. injection H as <- <-. exact Hwf.
+    + dif H; [|discriminate]. injection H as <- <-.
+      pose proof (word_range addr) as Har. pose proof (word_range len) as Hlr.
+      apply Z.ltb_ge in Etask. unfold TASK_SIZE in Etask.
+      pose proof (page_round_up_Z_ge (bv_unsigned len) ltac:(lia)) as HnZ.
+      unfold vm_wf. rewrite vmm_mmap_destroyed. cbn [vm_maps].
+      apply maps_wf_subtract; try (rewrite u64 by lia); try lia.
+      exact Hwf.
   - dif H; [apply check_ret_only_model in H; subst m'; exact Hwf|].
     dif H; [|discriminate].
     destruct ws, zs, cs, ci; try discriminate.
@@ -1264,9 +1331,10 @@ Proof.
   pose proof (word_range len) as Hlenr.
   pose proof (word_range addr) as Haddrr.
   destruct (negb (mmap_off_aligned_b off)) eqn:Eoff.
-  { destruct (mmap_pglen_ok_b len); [|discriminate].
+  { apply check_ret_only_model in H; subst m'; exact Hwf. }
+  destruct (negb (mmap_anon_b flags)) eqn:Eanon.
+  { destruct (fd_lookup (m_fds m) (fd32 fd)); [discriminate|].
     apply check_ret_only_model in H; subst m'; exact Hwf. }
-  destruct (negb (mmap_anon_b flags)) eqn:Eanon; [discriminate|].
   destruct (w_is0 len) eqn:Elen.
   { destruct (mmap_plain_anon_b flags); [|discriminate].
     apply check_ret_only_model in H; subst m'; exact Hwf. }
@@ -1278,18 +1346,19 @@ Proof.
   { destruct ws, us, cs, ci; try discriminate.
     destruct (errno_ret_in mmap_errnos ret).
     { destruct zs; [|discriminate]. injection H as <- <-. exact Hwf. }
-    (* SIX conjuncts, left associated: alignment, positivity, the
-       ceiling, [region_free], [mmap_noreserve_backed_ok] and the
-       [listNN_eqb] on the grant list.  Only [region_free] and the
-       ceiling are used below; the rest are peeled to reach them. *)
+    (* THREE conjuncts now, left associated: the placement test, the
+       budget gate and the [listNN_eqb] on the grant list.  The four
+       facts the old guard spelled out — alignment, positivity, the
+       ceiling and [region_free] — come from
+       [Placement.linux_place_is_admissible], which is what the
+       placement test entails. *)
     difn H E; [|discriminate]. injection H as <- <-.
     unfold vm_wf. rewrite vmm_mmap_backing, vmm_vmmaps. cbn [vm_maps].
     apply andb_true_iff in E as [E Hzs].
-    apply andb_true_iff in E as [E Hbud].
-    apply andb_true_iff in E as [E Hfree].
-    apply andb_true_iff in E as [E Hceil].
-    apply andb_true_iff in E as [Halign Hpos].
-    apply Z.leb_le in Hceil. apply Z.ltb_lt in Hpos.
+    apply andb_true_iff in E as [Hplace Hbud].
+    destruct (linux_place_is_admissible _ _ _ _ _ HnZ
+                (page_round_up_Z_aligned (bv_unsigned len)) Hplace)
+      as (Halign & Hpos & Hceil & Hfree).
     apply maps_wf_cons_free.
     - exact Hwf.
     - rewrite u64 by lia. lia.
@@ -1298,16 +1367,15 @@ Proof.
   { destruct ws, zs, cs, ci; try discriminate.
     destruct (errno_ret_in mmap_errnos ret).
     { destruct us; [|discriminate]. injection H as <- <-. exact Hwf. }
-    (* FIVE here: the noaccess grant carries no
+    (* TWO here: the noaccess grant carries no
        [mmap_noreserve_backed_ok] conjunct, because it reserves no
        backing. *)
     difn H E; [|discriminate]. injection H as <- <-.
     unfold vm_wf. rewrite vmm_mmap_backing, vmm_vmmaps. cbn [vm_maps].
-    apply andb_true_iff in E as [E Hus].
-    apply andb_true_iff in E as [E Hfree].
-    apply andb_true_iff in E as [E Hceil].
-    apply andb_true_iff in E as [Halign Hpos].
-    apply Z.leb_le in Hceil. apply Z.ltb_lt in Hpos.
+    apply andb_true_iff in E as [Hplace Hus].
+    destruct (linux_place_is_admissible _ _ _ _ _ HnZ
+                (page_round_up_Z_aligned (bv_unsigned len)) Hplace)
+      as (Halign & Hpos & Hceil & Hfree).
     apply maps_wf_cons_free.
     - exact Hwf.
     - rewrite u64 by lia. lia.
@@ -1489,6 +1557,12 @@ Proof.
   apply Z.leb_le in Hoceil.
   assert (HoldZ : 0 <= page_round_up_Z (bv_unsigned old_size))
     by (apply page_round_up_Z_nonneg; lia).
+  (* what is left of the ledger once the source range is cut *)
+  assert (Hcut : maps_wf (maps_subtract (vm_maps (m_vmmaps m)) (bv_unsigned old)
+                   (bv_unsigned old
+                    + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))))).
+  { apply maps_wf_subtract; [lia | rewrite u64 by lia; lia | rewrite u64 by lia; lia
+                            | exact Hwf]. }
   destruct (errno_ret_in mremap_errnos ret).
   { destruct zs, us, cs; try discriminate. injection H as <- <-. exact Hwf. }
   destruct (bv_eqb ret old).
@@ -1497,11 +1571,13 @@ Proof.
       apply Z.ltb_lt in Eshrink.
       unfold vm_wf. rewrite vmm_mremap_next.
       unfold mremap_maps_next. cbn [vm_maps].
-      apply (maps_wf_cons_sub _ _ (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))).
-      * exact Hwf.
+      apply maps_wf_cons_free.
+      * exact Hcut.
       * rewrite u64 by lia. lia.
-      * apply map_has_In. exact Hhas.
-      * rewrite !u64 by lia. lia.
+      * apply (region_free_shorter _ _
+                 (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))).
+        -- rewrite !u64 by lia. lia.
+        -- apply maps_subtract_region_free. rewrite u64 by lia. lia.
     + difn H Egrow; [|discriminate].
       difn H Eok; [|discriminate]. injection H as <- <-.
       unfold vm_wf. rewrite vmm_mremap_next.
@@ -1511,7 +1587,7 @@ Proof.
       apply andb_true_iff in Egrow as [Hgceil Hgfree].
       apply Z.leb_le in Hgceil.
       apply maps_wf_cons_free.
-      * now apply maps_wf_filter.
+      * exact Hcut.
       * rewrite u64 by lia. lia.
       * exact (region_free_app_r _ _ _ _ Hgfree).
   - difn H Emove; [|discriminate]. injection H as <- <-.
@@ -1534,9 +1610,10 @@ Proof.
     apply andb_true_iff in Hfresh as [_ Hfpos].
     apply Z.leb_le in Hfceil. apply Z.ltb_lt in Hfpos.
     apply maps_wf_cons_free.
-    + now apply maps_wf_filter.
+    + exact Hcut.
     + rewrite u64 by lia. lia.
-    + apply region_free_filter. exact (region_free_app_r _ _ _ _ Hffree).
+    + apply region_free_maps_subtract;
+        [lia | rewrite u64 by lia; lia | exact (region_free_app_r _ _ _ _ Hffree)].
 Qed.
 
 (* -------------------------------------------------------------------------
@@ -1608,7 +1685,8 @@ Lemma check_write_frame : forall i fd buf count eff m m' evs,
   check_write i fd buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_write, check_access_ok_zero in H. vm_frame2 H.
+  unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
+  vm_frame2 H.
 Qed.
 
 (** A positional transfer touches no mapping.  [check_pread64] returns
@@ -1628,7 +1706,7 @@ Lemma check_pwrite64_frame : forall i fd buf count pos eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count pos eff m m' evs H.
-  unfold check_pwrite64 in H. vm_frame2 H.
+  unfold check_pwrite64, check_write_fault_extend in H. vm_frame2 H.
 Qed.
 
 Lemma check_openat_frame : forall i dirfd pathp flags eff m m' evs,
@@ -1700,7 +1778,7 @@ Lemma check_writev_frame : forall i fd iov iovcnt eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd iov iovcnt eff m m' evs H.
-  unfold check_writev in H. vm_frame2 H.
+  unfold check_writev, check_write_fault_extend in H. vm_frame2 H.
 Qed.
 
 Lemma check_readv_imported_frame : forall i fd r iovs0 eff m m' evs,
@@ -1866,7 +1944,7 @@ Proof.
   intros option_ arg2 eff m m' evs H. unfold check_prctl in H. vm_frame2 H.
 Qed.
 
-(** The three clock arms.  [gettimeofday] and [clock_gettime] hand back
+(** The four clock arms.  [gettimeofday], [clock_gettime], and [clock_getres] hand back
     the model untouched; [nanosleep] advances [m_clock] and nothing else,
     and [with_clock] leaves [m_vmmaps] alone BY CONVERSION. *)
 
@@ -1884,6 +1962,14 @@ Lemma check_clock_gettime_frame : forall i clkid tp eff m m' evs,
 Proof.
   intros i clkid tp eff m m' evs H.
   unfold check_clock_gettime in H. vm_frame2 H.
+Qed.
+
+Lemma check_clock_getres_frame : forall i clkid tp eff m m' evs,
+  check_clock_getres i clkid tp eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i clkid tp eff m m' evs H.
+  unfold check_clock_getres, check_clock_getres_result in H. vm_frame2 H.
 Qed.
 
 Lemma check_nanosleep_frame : forall i rqtp rmtp eff m m' evs,
@@ -2119,7 +2205,7 @@ Lemma check_socket_frame : forall domain type protocol eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros domain type protocol eff m m' evs H.
-  unfold check_socket, check_new_fd_result in H. vm_frame2 H.
+  unfold check_socket, check_new_fd_result, check_errno_or_list in H. vm_frame2 H.
 Qed.
 
 Lemma check_bind_frame : forall i fd addrp addrlen eff m m' evs,
@@ -2159,7 +2245,7 @@ Proof.
      [vm_step] sees no [if] or [match] through a folded definition, so
      without the unfold that branch leaves an open goal. *)
   unfold check_accept4, check_new_fd_result, check_errno_or_success,
-    check_errno_only in H. vm_frame2 H.
+    check_errno_only, check_errno_or_list in H. vm_frame2 H.
 Qed.
 
 Lemma check_fcntl_frame : forall fd cmd arg eff m m' evs,
@@ -2414,6 +2500,14 @@ Proof.
   vm_frame2 H.
 Qed.
 
+Lemma check_set_robust_list_frame : forall len eff m m' evs,
+  check_set_robust_list len eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros len eff m m' evs H.
+  unfold check_set_robust_list in H. vm_frame2 H.
+Qed.
+
 Lemma checked_table_preserves_vm : Forall arm_preserves_vm checked_table.
 Proof.
   unfold checked_table.
@@ -2455,6 +2549,7 @@ Proof.
     | erewrite check_getrandom_frame by eassumption; exact Hwf
     | erewrite check_gettimeofday_frame by eassumption; exact Hwf
     | erewrite check_clock_gettime_frame by eassumption; exact Hwf
+    | erewrite check_clock_getres_frame by eassumption; exact Hwf
     | erewrite check_nanosleep_frame by eassumption; exact Hwf
     | erewrite check_dup_frame by eassumption; exact Hwf
     | erewrite check_dup3_frame by eassumption; exact Hwf
@@ -2484,6 +2579,7 @@ Proof.
     | erewrite check_tgkill_frame by eassumption; exact Hwf
     | erewrite check_rt_sigprocmask_frame by eassumption; exact Hwf
     | erewrite check_futex_frame by eassumption; exact Hwf
+    | erewrite check_set_robust_list_frame by eassumption; exact Hwf
     | erewrite check_clone_frame by eassumption; exact Hwf
     | erewrite check_clone3_frame by eassumption; exact Hwf
     | erewrite check_getsockname_frame by eassumption; exact Hwf
@@ -2537,7 +2633,7 @@ Qed.
     corollary below takes as a HYPOTHESIS rather than establishing by
     induction over a run — a [map_has] hit at a
     page-aligned base names exactly one ledger entry.  This is the fact
-    the downstream [munmap] argument needs — [map_has]'s
+    the downstream [munmap] and [mremap] arguments need — [map_has]'s
     [(base, size)] test and [map_remove]'s base-only removal cannot
     disagree. *)
 Corollary base_unique_after_syscall : forall i eff m m' evs a n,

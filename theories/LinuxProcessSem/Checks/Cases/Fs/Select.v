@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Cases.Fs.Select — worked examples over pselect6 (72)
+(** * LinuxProcessSem.Checks.Cases.Fs.Select — worked examples over pselect6 (72) and ppoll (73)
 
     Mirrors [Sys/Fs/Select.v], which answers to Linux [fs/select.c]:
     this file holds the worked examples for the syscalls defined there,
@@ -67,12 +67,14 @@ Example pselect_a_file_counts_once_per_set :
   check_syscall
     (mkInput 72 [4; ps_inp; ps_outp; 0; 0; 0]
        (bytes_at ps_inp (word_le8 8 ++ word_le8 8)) ps_wmem)
-    (mkEffect 2 [(ps_inp, word_le8 8); (ps_outp, word_le8 8)] []) pselect_model
+    (with_copyins [(ps_inp, 8%nat); (ps_outp, 8%nat)]
+       (mkEffect 2 [(ps_inp, word_le8 8); (ps_outp, word_le8 8)] [])) pselect_model
   = CheckOk pselect_model []
   /\ check_syscall
        (mkInput 72 [4; ps_inp; ps_outp; 0; 0; 0]
           (bytes_at ps_inp (word_le8 8 ++ word_le8 8)) ps_wmem)
-       (mkEffect 1 [(ps_inp, word_le8 8); (ps_outp, word_le8 8)] []) pselect_model
+       (with_copyins [(ps_inp, 8%nat); (ps_outp, 8%nat)]
+          (mkEffect 1 [(ps_inp, word_le8 8); (ps_outp, word_le8 8)] [])) pselect_model
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
@@ -85,7 +87,8 @@ Example pselect_exceptfds_comes_back_zeroed :
   check_syscall
     (mkInput 72 [4; ps_inp; 0; ps_exp; 0; 0]
        (bytes_at ps_inp (word_le8 8 ++ word_le8 0 ++ word_le8 8)) ps_wmem)
-    (mkEffect 1 [(ps_inp, word_le8 8); (ps_exp, word_le8 0)] []) pselect_model
+    (with_copyins [(ps_inp, 8%nat); (ps_exp, 8%nat)]
+       (mkEffect 1 [(ps_inp, word_le8 8); (ps_exp, word_le8 0)] [])) pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
 
@@ -99,7 +102,7 @@ Example pselect_bits_at_or_above_n_are_invisible :
   check_syscall
     (mkInput 72 [4; ps_inp; 0; 0; 0; 0]
        (bytes_at ps_inp (word_le8 520)) ps_wmem)
-    (mkEffect 1 [(ps_inp, word_le8 8)] []) pselect_model
+    (with_copyins [(ps_inp, 8%nat)] (mkEffect 1 [(ps_inp, word_le8 8)] [])) pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
 
@@ -111,7 +114,7 @@ Example pselect_a_closed_descriptor_below_n_is_ebadf :
   check_syscall
     (mkInput 72 [10; ps_inp; 0; 0; 0; 0]
        (bytes_at ps_inp (word_le8 520)) ps_wmem)
-    (mkEffect (errno_ret EBADF) [] []) pselect_model
+    (with_copyins [(ps_inp, 8%nat)] (mkEffect (errno_ret EBADF) [] [])) pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
 
@@ -155,7 +158,7 @@ Example pselect_a_real_sigmask_is_declined_but_a_bad_size_is_einval :
        (mkInput 72 [4; ps_inp; 0; 0; 0; ps_sig]
           (mem_join (bytes_at ps_inp (word_le8 8))
                    (bytes_at ps_sig (word_le8 1 ++ word_le8 4))) ps_wmem)
-       (mkEffect (errno_ret EINVAL) [] []) pselect_model
+       (with_copyins [(ps_sig, 16%nat)] (mkEffect (errno_ret EINVAL) [] [])) pselect_model
      = CheckOk pselect_model [].
 Proof. split; [vm_compute; reflexivity | check_eq]. Qed.
 
@@ -169,12 +172,12 @@ Example pselect_a_bad_sigsetsize_beats_an_unreadable_set :
   check_syscall
     (mkInput 72 [4; ps_inp; 0; 0; 0; ps_sig]
        (bytes_at ps_sig (word_le8 1 ++ word_le8 4)) ps_wmem)
-    (mkEffect (errno_ret EINVAL) [] []) pselect_model
+    (with_copyins [(ps_sig, 16%nat)] (mkEffect (errno_ret EINVAL) [] [])) pselect_model
   = CheckOk pselect_model []
   /\ check_syscall
        (mkInput 72 [4; ps_inp; 0; 0; 0; ps_sig]
           (bytes_at ps_sig (word_le8 1 ++ word_le8 4)) ps_wmem)
-       (mkEffect (errno_ret EFAULT) [] []) pselect_model
+       (with_copyins [(ps_sig, 16%nat)] (mkEffect (errno_ret EFAULT) [] [])) pselect_model
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
@@ -188,7 +191,8 @@ Example pselect_null_mask_ignores_the_size :
     (mkInput 72 [4; ps_inp; 0; 0; 0; ps_sig]
        (mem_join (bytes_at ps_inp (word_le8 8))
                 (bytes_at ps_sig (word_le8 0 ++ word_le8 999))) ps_wmem)
-    (mkEffect 1 [(ps_inp, word_le8 8)] []) pselect_model
+    (with_copyins [(ps_sig, 16%nat); (ps_inp, 8%nat)]
+       (mkEffect 1 [(ps_inp, word_le8 8)] [])) pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
 
@@ -208,7 +212,7 @@ Example pselect_a_deadline_with_a_request_is_declined :
   /\ check_syscall
        (mkInput 72 [4; ps_inp; 0; 0; 0; 0]
           (bytes_at ps_inp (word_le8 8)) ps_wmem)
-       (mkEffect 1 [(ps_inp, word_le8 8)] []) pselect_model
+       (with_copyins [(ps_inp, 8%nat)] (mkEffect 1 [(ps_inp, word_le8 8)] [])) pselect_model
      = CheckOk pselect_model [].
 Proof. split; [vm_compute; reflexivity | check_eq]. Qed.
 
@@ -224,7 +228,8 @@ Example pselect_an_empty_request_sleeps_and_writes_zeros :
   check_syscall
     (mkInput 72 [0; 0; 0; 0; ps_tsp; 0]
        (bytes_at ps_tsp (word_le8 0 ++ word_le8 1000000)) ps_wmem)
-    (mkEffect 0 [(ps_tsp, word_le8 0 ++ word_le8 0)] []) pselect_model
+    (with_copyins [(ps_tsp, 16%nat)]
+       (mkEffect 0 [(ps_tsp, word_le8 0 ++ word_le8 0)] [])) pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
 
@@ -241,7 +246,8 @@ Example pselect_an_exceptfds_only_request_still_sleeps :
     (mkInput 72 [4; 0; 0; ps_exp; ps_tsp; 0]
        (mem_join (bytes_at ps_exp (word_le8 8))
                 (bytes_at ps_tsp (word_le8 0 ++ word_le8 1000000))) ps_wmem)
-    (mkEffect 0 [(ps_exp, word_le8 0); (ps_tsp, word_le8 0 ++ word_le8 0)] [])
+    (with_copyins [(ps_tsp, 16%nat); (ps_exp, 8%nat)]
+       (mkEffect 0 [(ps_exp, word_le8 0); (ps_tsp, word_le8 0 ++ word_le8 0)] []))
     pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
@@ -289,7 +295,8 @@ Example pselect_where_an_errno_comes_from_decides_the_writeback :
           (mem_join (bytes_at ps_inp (word_le8 8))
                    (mem_join (bytes_at ps_tsp (word_le8 5 ++ word_le8 0))
                             (bytes_at ps_sig (word_le8 1 ++ word_le8 4)))) ps_wmem)
-       (mkEffect (errno_ret EINVAL) [] []) pselect_model
+       (with_copyins [(ps_sig, 16%nat); (ps_tsp, 16%nat)]
+          (mkEffect (errno_ret EINVAL) [] [])) pselect_model
      = CheckOk pselect_model [].
 Proof.
   split; [check_eq | split; [vm_compute; reflexivity | check_eq]].
@@ -324,7 +331,7 @@ Example pselect_n_zero_never_dereferences_a_set_pointer :
   check_syscall
     (mkInput 72 [0; 65536; 65536; 65536; ps_tsp; 0]
        (bytes_at ps_tsp (word_le8 0 ++ word_le8 0)) ps_wmem)
-    (mkEffect 0 [] []) pselect_model
+    (with_copyins [(ps_tsp, 16%nat)] (mkEffect 0 [] [])) pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
 
@@ -347,27 +354,28 @@ Example pselect_the_timespec_is_judged_raw :
   check_syscall
     (mkInput 72 [0; 0; 0; 0; ps_tsp; 0]
        (bytes_at ps_tsp (word_le8 0 ++ word_le8 1000000000)) ps_wmem)
-    (mkEffect (errno_ret EINVAL) [] []) pselect_model
+    (with_copyins [(ps_tsp, 16%nat)] (mkEffect (errno_ret EINVAL) [] [])) pselect_model
   = CheckOk pselect_model []
   (* and no carry rescues a negative tv_sec *)
   /\ check_syscall
        (mkInput 72 [0; 0; 0; 0; ps_tsp; 0]
           (bytes_at ps_tsp (word_le8 (Z_to_bv 64 (-1)) ++ word_le8 2000000000))
           ps_wmem)
-       (mkEffect (errno_ret EINVAL) [] []) pselect_model
+       (with_copyins [(ps_tsp, 16%nat)] (mkEffect (errno_ret EINVAL) [] [])) pselect_model
      = CheckOk pselect_model []
   (* a negative tv_nsec is enormous as an unsigned long *)
   /\ check_syscall
        (mkInput 72 [0; 0; 0; 0; ps_tsp; 0]
           (bytes_at ps_tsp (word_le8 2 ++ word_le8 (Z_to_bv 64 (-1000000000))))
           ps_wmem)
-       (mkEffect (errno_ret EINVAL) [] []) pselect_model
+       (with_copyins [(ps_tsp, 16%nat)] (mkEffect (errno_ret EINVAL) [] [])) pselect_model
      = CheckOk pselect_model []
   (* and the deadline a normalizing model would have answered instead *)
   /\ check_syscall
        (mkInput 72 [0; 0; 0; 0; ps_tsp; 0]
           (bytes_at ps_tsp (word_le8 0 ++ word_le8 1000000000)) ps_wmem)
-       (mkEffect 0 [(ps_tsp, repeat (Z_to_bv 8 0) 16)] []) pselect_model
+       (with_copyins [(ps_tsp, 16%nat)]
+          (mkEffect 0 [(ps_tsp, repeat (Z_to_bv 8 0) 16)] [])) pselect_model
      = CheckReject.
 Proof. repeat split; vm_compute; reflexivity. Qed.
 
@@ -396,31 +404,72 @@ Example pselect_aliased_sets_are_modeled :
   check_syscall
     (mkInput 72 [4; ps_inp; 0; ps_inp; 0; 0]
        (bytes_at ps_inp (word_le8 8)) ps_wmem)
-    (mkEffect 1 [(ps_inp, word_le8 8); (ps_inp, word_le8 0)] []) pselect_model
+    (with_copyins [(ps_inp, 8%nat); (ps_inp, 8%nat)]
+       (mkEffect 1 [(ps_inp, word_le8 8); (ps_inp, word_le8 0)] [])) pselect_model
   = CheckOk pselect_model []
   (* the ledger a memory snapshot would produce: the surviving word
      reported for both entries, losing the first write entirely *)
   /\ check_syscall
        (mkInput 72 [4; ps_inp; 0; ps_inp; 0; 0]
           (bytes_at ps_inp (word_le8 8)) ps_wmem)
-       (mkEffect 1 [(ps_inp, word_le8 0); (ps_inp, word_le8 0)] []) pselect_model
+       (with_copyins [(ps_inp, 8%nat); (ps_inp, 8%nat)]
+          (mkEffect 1 [(ps_inp, word_le8 0); (ps_inp, word_le8 0)] [])) pselect_model
      = CheckReject
   (* and aliasing [readfds] with [writefds], the pair whose two words
      AGREE, since both are the imported request *)
   /\ check_syscall
        (mkInput 72 [4; ps_inp; ps_inp; 0; 0; 0]
           (bytes_at ps_inp (word_le8 8)) ps_wmem)
-       (mkEffect 2 [(ps_inp, word_le8 8); (ps_inp, word_le8 8)] []) pselect_model
+       (with_copyins [(ps_inp, 8%nat); (ps_inp, 8%nat)]
+          (mkEffect 2 [(ps_inp, word_le8 8); (ps_inp, word_le8 8)] [])) pselect_model
      = CheckOk pselect_model []
   (* raise n past a closed descriptor and the errno still comes out *)
   /\ check_syscall
        (mkInput 72 [10; ps_inp; 0; ps_inp; 0; 0]
           (bytes_at ps_inp (word_le8 520)) ps_wmem)
-       (mkEffect (errno_ret EBADF) [] []) pselect_model
+       (with_copyins [(ps_inp, 8%nat); (ps_inp, 8%nat)]
+          (mkEffect (errno_ret EBADF) [] [])) pselect_model
      = CheckOk pselect_model [].
 Proof.
   repeat split; first [ check_eq | vm_compute; reflexivity ].
 Qed.
+
+(** THE COPY-IN LEDGER FOLLOWS THE KERNEL'S WALK.  [core_sys_select]
+    copies [inp], [outp] and [exp] in that order and returns -EFAULT at
+    the first that faults, so a readable [readfds] and an unreadable
+    [writefds] answer -EFAULT having read exactly the first word: the
+    ledger [Select.pselect6_reads] gives is that one range.  An empty
+    ledger claims the call read nothing and leaves a lazy page uncharged
+    that Linux faults in; a ledger naming the faulting word as well claims
+    a read that failed, against the convention that a failed copy
+    records nothing.  Both are rejected.  And the 16-byte pack at [sig]
+    is read before any set, the timespec at [tsp] between them. *)
+Example pselect_efault_records_the_sets_read_before_it :
+  check_syscall
+    (mkInput 72 [4; ps_inp; 65536; 0; 0; 0]
+       (bytes_at ps_inp (word_le8 8)) ps_wmem)
+    (with_copyins [(ps_inp, 8%nat)] (mkEffect (errno_ret EFAULT) [] [])) pselect_model
+  = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 72 [4; ps_inp; 65536; 0; 0; 0]
+          (bytes_at ps_inp (word_le8 8)) ps_wmem)
+       (mkEffect (errno_ret EFAULT) [] []) pselect_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 72 [4; ps_inp; 65536; 0; 0; 0]
+          (bytes_at ps_inp (word_le8 8)) ps_wmem)
+       (with_copyins [(ps_inp, 8%nat); (65536, 8%nat)]
+          (mkEffect (errno_ret EFAULT) [] [])) pselect_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 72 [4; ps_inp; 0; 0; ps_tsp; ps_sig]
+          (mem_join (bytes_at ps_inp (word_le8 8))
+                   (mem_join (bytes_at ps_tsp (word_le8 0 ++ word_le8 0))
+                            (bytes_at ps_sig (word_le8 0 ++ word_le8 8)))) ps_wmem)
+       (with_copyins [(ps_sig, 16%nat); (ps_tsp, 16%nat); (ps_inp, 8%nat)]
+          (mkEffect 1 [(ps_inp, word_le8 8)] [])) pselect_model
+     = CheckOk pselect_model [].
+Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (* =========================================================================
    ppoll (73)
@@ -468,19 +517,28 @@ Definition pp_ts (sec nsec : Z) : list byte :=
     The [revents] written back is [DEFAULT_POLLMASK & events] = 5, two
     bytes at offset 6 of the entry, and the [fd] and [events] fields in
     front of it are NOT rewritten — which is why the ledger names a
-    2-byte write and not an 8-byte one. *)
+    2-byte write and not an 8-byte one.  The copy-in ledger names the
+    whole 8-byte entry [do_sys_poll] copied, and the third conjunct is
+    the same answer claiming no read at all, which is rejected. *)
 Example ppoll_counts_descriptors_not_bits :
   check_syscall
     (mkInput 73 [pp_ufds; 1; 0; 0; 0; 0]
        (bytes_at pp_ufds (pp_entry 3 5)) pp_wmem)
-    (mkEffect 1 [(pp_ufds + 6, word_le2 5)] []) pselect_model
+    (with_copyins [(pp_ufds, 8%nat)] (mkEffect 1 [(pp_ufds + 6, word_le2 5)] []))
+    pselect_model
   = CheckOk pselect_model []
   /\ check_syscall
        (mkInput 73 [pp_ufds; 1; 0; 0; 0; 0]
           (bytes_at pp_ufds (pp_entry 3 5)) pp_wmem)
-       (mkEffect 2 [(pp_ufds + 6, word_le2 5)] []) pselect_model
+       (with_copyins [(pp_ufds, 8%nat)] (mkEffect 2 [(pp_ufds + 6, word_le2 5)] []))
+       pselect_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 73 [pp_ufds; 1; 0; 0; 0; 0]
+          (bytes_at pp_ufds (pp_entry 3 5)) pp_wmem)
+       (mkEffect 1 [(pp_ufds + 6, word_le2 5)] []) pselect_model
      = CheckReject.
-Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
+Proof. split; [check_eq | split; vm_compute; reflexivity]. Qed.
 
 (** THE ACCESS MODE IS NOT ONE OF [vfs_poll]'S INPUTS, and until this
     example nothing in the tree said so for [ppoll].
@@ -529,13 +587,15 @@ Example ppoll_a_read_write_file_polls_as_any_other :
     (mkInput 73 [pp_ufds; 1; pp_tsp; 0; 0; 0]
        (mem_join (bytes_at pp_ufds (pp_entry 3 5))
                  (bytes_at pp_tsp (pp_ts 0 0))) pp_wmem)
-    (mkEffect 1 [(pp_ufds + 6, word_le2 5)] []) pselect_model_rdwr
+    (with_copyins [(pp_tsp, 16%nat); (pp_ufds, 8%nat)]
+       (mkEffect 1 [(pp_ufds + 6, word_le2 5)] [])) pselect_model_rdwr
   = CheckOk pselect_model_rdwr []
   /\ check_syscall
        (mkInput 73 [pp_ufds; 1; pp_tsp; 0; 0; 0]
           (mem_join (bytes_at pp_ufds (pp_entry 3 5))
                     (bytes_at pp_tsp (pp_ts 0 0))) pp_wmem)
-       (mkEffect 0 [(pp_ufds + 6, word_le2 0)] []) pselect_model_rdwr
+       (with_copyins [(pp_tsp, 16%nat); (pp_ufds, 8%nat)]
+          (mkEffect 0 [(pp_ufds + 6, word_le2 0)] [])) pselect_model_rdwr
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
@@ -550,12 +610,13 @@ Example ppoll_an_unopened_descriptor_is_pollnval_not_ebadf :
   check_syscall
     (mkInput 73 [pp_ufds; 1; 0; 0; 0; 0]
        (bytes_at pp_ufds (pp_entry 9 1)) pp_wmem)
-    (mkEffect 1 [(pp_ufds + 6, word_le2 32)] []) pselect_model
+    (with_copyins [(pp_ufds, 8%nat)] (mkEffect 1 [(pp_ufds + 6, word_le2 32)] []))
+    pselect_model
   = CheckOk pselect_model []
   /\ check_syscall
        (mkInput 73 [pp_ufds; 1; 0; 0; 0; 0]
           (bytes_at pp_ufds (pp_entry 9 1)) pp_wmem)
-       (mkEffect (errno_ret EBADF) [] []) pselect_model
+       (with_copyins [(pp_ufds, 8%nat)] (mkEffect (errno_ret EBADF) [] [])) pselect_model
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
@@ -572,13 +633,15 @@ Example ppoll_a_negative_fd_is_skipped_not_invalid :
     (mkInput 73 [pp_ufds; 1; pp_tsp; 0; 0; 0]
        (mem_join (bytes_at pp_ufds (pp_entry (-1) 1))
                  (bytes_at pp_tsp (pp_ts 0 0))) pp_wmem)
-    (mkEffect 0 [(pp_ufds + 6, word_le2 0)] []) pselect_model
+    (with_copyins [(pp_tsp, 16%nat); (pp_ufds, 8%nat)]
+       (mkEffect 0 [(pp_ufds + 6, word_le2 0)] [])) pselect_model
   = CheckOk pselect_model []
   /\ check_syscall
        (mkInput 73 [pp_ufds; 1; pp_tsp; 0; 0; 0]
           (mem_join (bytes_at pp_ufds (pp_entry (-1) 1))
                     (bytes_at pp_tsp (pp_ts 0 0))) pp_wmem)
-       (mkEffect 1 [(pp_ufds + 6, word_le2 32)] []) pselect_model
+       (with_copyins [(pp_tsp, 16%nat); (pp_ufds, 8%nat)]
+          (mkEffect 1 [(pp_ufds + 6, word_le2 32)] [])) pselect_model
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
@@ -595,13 +658,15 @@ Example ppoll_events_filters_the_default_pollmask :
     (mkInput 73 [pp_ufds; 1; pp_tsp; 0; 0; 0]
        (mem_join (bytes_at pp_ufds (pp_entry 3 2))
                  (bytes_at pp_tsp (pp_ts 0 0))) pp_wmem)
-    (mkEffect 0 [(pp_ufds + 6, word_le2 0)] []) pselect_model
+    (with_copyins [(pp_tsp, 16%nat); (pp_ufds, 8%nat)]
+       (mkEffect 0 [(pp_ufds + 6, word_le2 0)] [])) pselect_model
   = CheckOk pselect_model []
   /\ check_syscall
        (mkInput 73 [pp_ufds; 1; pp_tsp; 0; 0; 0]
           (mem_join (bytes_at pp_ufds (pp_entry 3 2))
                     (bytes_at pp_tsp (pp_ts 0 0))) pp_wmem)
-       (mkEffect 1 [(pp_ufds + 6, word_le2 2)] []) pselect_model
+       (with_copyins [(pp_tsp, 16%nat); (pp_ufds, 8%nat)]
+          (mkEffect 1 [(pp_ufds + 6, word_le2 2)] [])) pselect_model
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
@@ -675,17 +740,61 @@ Example ppoll_an_unreadable_array_is_efault :
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
 
-(** [nfds = 0] NEVER DEREFERENCES [ufds].  [copy_from_user] of zero
-    bytes reads nothing and the write-back loop writes none, however
-    wild the pointer is.  With a requested {0,0} the call polls once and
-    returns 0, and [poll_select_finish] writes nothing for it either. *)
-Example ppoll_nfds_zero_never_dereferences_ufds :
+(** [nfds = 0] COPIES NOTHING FROM [ufds], and this says only that.
+    [copy_from_user] of zero bytes reads nothing and the write-back
+    loop writes none, so a pointer no byte of which is mapped is still
+    a 0 return.  With a requested {0,0} the call polls once and returns
+    0, and [poll_select_finish] writes nothing for it either.  What the
+    pointer may NOT be is out of the user address space; the example
+    below is that half. *)
+Example ppoll_nfds_zero_reads_no_entry_from_ufds :
   check_syscall
     (mkInput 73 [65536; 0; pp_tsp; 0; 0; 0]
        (bytes_at pp_tsp (pp_ts 0 0)) pp_wmem)
-    (mkEffect 0 [] []) pselect_model
+    (with_copyins [(pp_tsp, 16%nat)] (mkEffect 0 [] [])) pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
+
+(** [nfds = 0] STILL RANGE-CHECKS [ufds], and the answer is -EFAULT.
+    [do_sys_poll] guards its write-back loop with
+    [if (!user_write_access_begin(ufds, nfds * sizeof pollfd)) goto
+    out_fds] (fs/select.c) and runs that call for every [nfds],
+    including 0; [out_fds] returns the [err = -EFAULT] the function
+    opened with.  riscv64's [user_write_access_begin] is [access_ok]
+    on the untagged address (arch/riscv/include/asm/uaccess.h), and
+    the generic [__access_ok] ends
+    [return (size <= limit) && (addr <= (limit - size));]
+    (include/asm-generic/access_ok.h): at [size = 0] the first
+    conjunct is free and the second still refuses an [addr] above
+    [TASK_SIZE_MAX].  [State.TASK_SIZE] is that limit, so
+    [State.TASK_SIZE + 1] is outside it by one byte.
+
+    The second conjunct is the 0 this call used to answer, now
+    rejected.  The third is the ORDER: [user_write_access_begin] runs
+    AFTER [do_poll], so with a NULL [tsp] and no entry the call never
+    returns to reach it and the model declines rather than answering
+    -EFAULT — the same shape, and the same reason, as
+    [ppoll_a_null_timeout_with_nothing_ready_is_declined] below. *)
+Example ppoll_nfds_zero_still_range_checks_ufds :
+  check_syscall
+    (mkInput 73 [Z_to_bv 64 (TASK_SIZE + 1); 0; pp_tsp; 0; 0; 0]
+       (bytes_at pp_tsp (pp_ts 0 0)) pp_wmem)
+    (with_copyins [(pp_tsp, 16%nat)] (mkEffect (errno_ret EFAULT) [] []))
+    pselect_model
+  = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 73 [Z_to_bv 64 (TASK_SIZE + 1); 0; pp_tsp; 0; 0; 0]
+          (bytes_at pp_tsp (pp_ts 0 0)) pp_wmem)
+       (with_copyins [(pp_tsp, 16%nat)] (mkEffect 0 [] [])) pselect_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 73 [Z_to_bv 64 (TASK_SIZE + 1); 0; 0; 0; 0; 0]
+          (fun _ => None) pp_wmem)
+       (mkEffect (errno_ret EFAULT) [] []) pselect_model
+     = CheckUnmodeled.
+Proof.
+  split; [check_eq | split; vm_compute; reflexivity].
+Qed.
 
 (** THE TIMEOUT WRITE-BACK, and it is [poll_select_finish]'s — the same
     function pselect6 reaches, with the same [PT_TIMESPEC] argument.  An
@@ -699,7 +808,8 @@ Example ppoll_a_deadline_expires_to_zeros_but_an_early_return_is_declined :
   check_syscall
     (mkInput 73 [0; 0; pp_tsp; 0; 0; 0]
        (bytes_at pp_tsp (pp_ts 0 1000000)) pp_wmem)
-    (mkEffect 0 [(pp_tsp, repeat (Z_to_bv 8 0) 16)] []) pselect_model
+    (with_copyins [(pp_tsp, 16%nat)]
+       (mkEffect 0 [(pp_tsp, repeat (Z_to_bv 8 0) 16)] [])) pselect_model
   = CheckOk pselect_model []
   /\ check_syscall
        (mkInput 73 [pp_ufds; 1; pp_tsp; 0; 0; 0]
@@ -724,7 +834,8 @@ Example ppoll_a_null_timeout_with_nothing_ready_is_declined :
   /\ check_syscall
        (mkInput 73 [pp_ufds; 1; 0; 0; 0; 0]
           (bytes_at pp_ufds (pp_entry 3 1)) pp_wmem)
-       (mkEffect 1 [(pp_ufds + 6, word_le2 1)] []) pselect_model
+       (with_copyins [(pp_ufds, 8%nat)] (mkEffect 1 [(pp_ufds + 6, word_le2 1)] []))
+       pselect_model
      = CheckOk pselect_model [].
 Proof. split; [vm_compute; reflexivity | check_eq]. Qed.
 
@@ -773,7 +884,7 @@ Example ppoll_the_timeout_is_judged_before_the_signal_mask :
        (mkInput 73 [pp_ufds; 1; pp_tsp; pp_sig; 4; 0]
           (mem_join (bytes_at pp_tsp (pp_ts 0 0))
                     (bytes_at pp_sig (word_le8 0 ++ word_le8 0))) pp_wmem)
-       (mkEffect (errno_ret EINVAL) [] []) pselect_model
+       (with_copyins [(pp_tsp, 16%nat)] (mkEffect (errno_ret EINVAL) [] [])) pselect_model
      = CheckOk pselect_model [].
 Proof.
   repeat split; first [ check_eq | vm_compute; reflexivity ].
@@ -790,6 +901,6 @@ Example ppoll_an_unreadable_mask_is_efault :
   check_syscall
     (mkInput 73 [0; 0; pp_tsp; pp_sig; 8; 0]
        (bytes_at pp_tsp (pp_ts 0 0)) pp_wmem)
-    (mkEffect (errno_ret EFAULT) [] []) pselect_model
+    (with_copyins [(pp_tsp, 16%nat)] (mkEffect (errno_ret EFAULT) [] [])) pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.

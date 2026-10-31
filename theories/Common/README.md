@@ -1,9 +1,10 @@
 # Common: the proof library
 
 This directory is the Rocq theory `LinuxProcessSemantics.Common` (opam
-package `rocq-linux-process-semantics-common`). It helps you prove the
-statements of `theories/EquivalenceDefinition/` about RISC-V binaries. No
-file in it depends on a specific binary.
+package `rocq-linux-process-semantics-core`, the package that also installs
+the model). It helps you prove the statements of
+`theories/EquivalenceDefinition/` about RISC-V binaries. No file in it
+depends on a specific binary.
 
 Read this document to find the part of the library that you need. For the
 steps to write a full proof, read
@@ -155,9 +156,11 @@ The method:
 
 1. Write a *plan* (`AP.plan`, in `AsanPlan.v`). A plan says what to do at
    each point: run the executor to the next stop (`PRun`), take a system
-   call node with one child for each result (`PMmap`, `PBrk2`, `PSys`, ...),
-   apply a routine summary (`PX`), change the known facts (`PFact`,
-   `PSplit`, ...), or stop (`PExit`, `PSpin`, `PHandoff`).
+   call node with one child for each result (`PMmap`, `PBrk2`, `PMunmap2`,
+   `PSys`, ...), apply a routine summary (`PX`), change the known facts
+   (`PFact`, `PSplit`, ...), or stop (`PExit`, `PSpin`, `PHandoff`).
+   `munmap` of exactly one tracked entry is `PMunmap2`: its first child is
+   the refusal (`-ENOMEM`, nothing else changes), its second child the cut.
 2. Run the checker to get the result:
    `Eval vm_compute in AP.check SEGS IT A nx0 LIMIT HS bfuel fuel cs plan.`
    A good result is `COk shape`. `CErr` names the node and the state that

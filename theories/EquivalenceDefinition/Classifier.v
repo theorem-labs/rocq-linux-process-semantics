@@ -1524,11 +1524,17 @@ Proof.
       [ exact (decides_fo_hwcap_rv64gc_of_decides_fo C spec H)
       | exact (decides_fo_hwcap_rv64gcv_of_decides_fo C spec H) ].
   - intros (Hgc & Hgcv) f Hf en Hen.
-    destruct Hf as (a & b & c & k & d & e & g & [Hw | Hw] & ab & v).
-    + apply Hgc; try assumption.
-      exact (conj a (conj b (conj c (conj k (conj d (conj e (conj g (conj (or_introl Hw) (conj ab v))))))))).
-    + apply Hgcv; try assumption.
-      exact (conj a (conj b (conj c (conj k (conj d (conj e (conj g (conj (or_intror Hw) (conj ab v))))))))).
+    (* NO CONJUNCT COUNT.  The capability clause's POSITION in
+       [Run.valid_input] moves whenever that predicate grows, and a
+       positional pattern here would rebind silently.  Read the clause
+       out by its TYPE instead, and keep [Hf] whole for the declared
+       obligation, which asks for [valid_fin_input] and the equation
+       rather than for a rebuilt conjunction. *)
+    assert (Hw : valid_hwcap (in_hwcap (to_proc_input f))).
+    { unfold valid_fin_input, valid_input in Hf.
+      repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end.
+      assumption. }
+    destruct Hw as [Hw | Hw]; [apply Hgc | apply Hgcv]; assumption.
 Qed.
 
 (** The declared obligation still implies totality on the inputs it

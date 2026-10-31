@@ -961,14 +961,14 @@ Qed.
 (* ------------------------------------------------------------------------- *)
 
 Lemma drain_obs_iff : forall pc ph sp brk0 mb rnd lim inp a0,
-  to_rd a0 (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_rd a0 (init_machine_state segs pc ph sp mb rnd inp) ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
              <-> drain_from cnt f out ec a0 (in_fs inp) (in_stdin inp) tr.
 Proof.
   intros pc ph sp brk0 mb rnd lim inp a0 Hrd tr.
   set (fs0 := in_fs inp) in *; set (stdin0 := in_stdin inp) in *.
   unfold init_config.
-  set (ms0 := init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
+  set (ms0 := init_machine_state segs pc ph sp mb rnd inp) in *.
   pose proof (init_M_loop (segments_reserved segs) brk0 mb sp lim inp) as HM0.
   set (model0 := init_model (segments_reserved segs) brk0 mb sp lim inp) in *.
   assert (Hst0 : m_stdin model0 = stdin0) by reflexivity.
@@ -993,7 +993,7 @@ Proof.
 Qed.
 
 Lemma drain_no_error : forall pc ph sp brk0 mb rnd lim inp a0,
-  to_rd a0 (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_rd a0 (init_machine_state segs pc ph sp mb rnd inp) ->
   ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros pc ph sp brk0 mb rnd lim inp a0 Hrd.
@@ -1015,7 +1015,7 @@ Proof.
 Qed.
 
 Lemma drain_omni_corun : forall pc ph sp brk0 mb rnd lim inp a0,
-  to_rd a0 (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_rd a0 (init_machine_state segs pc ph sp mb rnd inp) ->
   omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp never_errors.
 Proof.
   intros pc ph sp brk0 mb rnd lim inp a0 Hrd. cbn [omni_corun]. unfold init_config.
@@ -1023,7 +1023,7 @@ Proof.
 Qed.
 
 Lemma drain_omni_cosafe : forall pc ph sp brk0 mb rnd lim inp a0,
-  to_rd a0 (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_rd a0 (init_machine_state segs pc ph sp mb rnd inp) ->
   omni_cosafe (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
     (drain_from cnt f out ec a0 (in_fs inp) (in_stdin inp)).
 Proof.
@@ -1058,9 +1058,9 @@ Lemma drain_omni_strong_equiv :
   (forall a ms, rLH a ms -> to_rd source_segs cnt f out ec rLH a ms) ->
   (forall a ms, aLH a ms -> to_rd target_segs cnt f out ec aLH a ms) ->
   to_rd source_segs cnt f out ec rLH a0
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp) ->
   to_rd target_segs cnt f out ec aLH a0
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+    (init_machine_state target_segs apc aph asp amb arnd inp) ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
 Proof.
@@ -1091,9 +1091,9 @@ Lemma drain_strong_equiv :
   (forall a ms, rLH a ms -> to_rd source_segs cnt f out ec rLH a ms) ->
   (forall a ms, aLH a ms -> to_rd target_segs cnt f out ec aLH a ms) ->
   to_rd source_segs cnt f out ec rLH a0
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp) ->
   to_rd target_segs cnt f out ec aLH a0
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+    (init_machine_state target_segs apc aph asp amb arnd inp) ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
                        (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).

@@ -808,7 +808,7 @@ Lemma wall_omni_run : forall fd ch, fd32 fd = fd ->
   forall segs pc ph sp brk0 mb rnd lim inp bufs code,
   fdchan fd ch (init_model (segments_reserved segs) brk0 mb sp lim inp) ->
   bufs_modeled bufs ->
-  to_wallexit segs fd bufs code (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_wallexit segs fd bufs code (init_machine_state segs pc ph sp mb rnd inp) ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
     (fun tr o => tr = wevents_ch ch bufs ++ [ExitEv code (in_fs inp)]
                  /\ exits_with code tr o).
@@ -824,7 +824,7 @@ Lemma wall_obs_iff : forall fd ch, fd32 fd = fd ->
   forall segs pc ph sp brk0 mb rnd lim inp bufs code,
   fdchan fd ch (init_model (segments_reserved segs) brk0 mb sp lim inp) ->
   bufs_modeled bufs ->
-  to_wallexit segs fd bufs code (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_wallexit segs fd bufs code (init_machine_state segs pc ph sp mb rnd inp) ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
              <-> is_prefix tr (wevents_ch ch bufs ++ [ExitEv code (in_fs inp)]).
 Proof.
@@ -839,7 +839,7 @@ Lemma wall_no_error_run : forall fd ch, fd32 fd = fd ->
   forall segs pc ph sp brk0 mb rnd lim inp bufs code,
   fdchan fd ch (init_model (segments_reserved segs) brk0 mb sp lim inp) ->
   bufs_modeled bufs ->
-  to_wallexit segs fd bufs code (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_wallexit segs fd bufs code (init_machine_state segs pc ph sp mb rnd inp) ->
   ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros fd ch Hfd32 segs pc ph sp brk0 mb rnd lim inp bufs code Hfdc Hbm Hw. apply exec_no_error.
@@ -853,9 +853,9 @@ Qed.
 Lemma wall_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bufs code inp,
   to_wallexit source_segs (Z_to_bv 64 1) bufs code
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp) ->
   to_wallexit target_segs (Z_to_bv 64 1) bufs code
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+    (init_machine_state target_segs apc aph asp amb arnd inp) ->
   bufs_modeled bufs ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
@@ -894,9 +894,9 @@ Qed.
 Lemma wall_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim bufs code inp,
   to_wallexit source_segs (Z_to_bv 64 1) bufs code
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp) ->
   to_wallexit target_segs (Z_to_bv 64 1) bufs code
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+    (init_machine_state target_segs apc aph asp amb arnd inp) ->
   bufs_modeled bufs ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
