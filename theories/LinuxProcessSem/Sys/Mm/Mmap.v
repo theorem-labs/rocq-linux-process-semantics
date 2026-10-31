@@ -1183,6 +1183,138 @@ Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
     (gap_fits maps page_size (alloc_top h) nZ g /\ a = g)
     \/ (~ gap_fits maps page_size (alloc_top h) nZ g /\ topdown_search h nZ a).
 
+(* =========================================================================
+   AN ANONYMOUS MAP_SHARED MAPPING IS NOT A PRIVATE ONE, and an arm that
+   answered it like one would be unsound rather than imprecise.
+
+   The question is asked from outside this file, so the answer is kept
+   here rather than in a review: a program asks for a scratch buffer
+   with MAP_SHARED|MAP_ANONYMOUS, the process has one thread and no
+   second sharer, and the reading is that nothing the program can
+   observe tells that mapping from a private one.  The reading is
+   wrong.  Three of the reasons below are reachable inside this model,
+   and each is enough on its own.  Every Linux claim is at v6.18.46,
+   commit 1f99e9ab748f.
+
+   WHAT LINUX BUILDS.  [do_mmap]'s anonymous arm is a switch on
+   [flags & MAP_TYPE] (mm/mmap.c): MAP_PRIVATE (0x02) sets
+   [pgoff = addr >> PAGE_SHIFT] and nothing else, MAP_SHARED (0x01,
+   include/uapi/linux/mman.h) sets [pgoff = 0] and raises
+   VM_SHARED|VM_MAYSHARE.  That bit decides what the VMA IS.  In
+   [__mmap_new_vma] (mm/vma.c) the three-way choice is
+
+     if (map->file)                       __mmap_new_file_vma(map, vma);
+     else if (map->vm_flags & VM_SHARED)  shmem_zero_setup(vma);
+     else                                 vma_set_anonymous(vma);
+
+   and [shmem_zero_setup] (mm/shmem.c) makes a tmpfs file of the
+   mapping's length and installs it: [vma->vm_file = file] and
+   [vma->vm_ops = &shmem_anon_vm_ops].  So the mapping is a FILE
+   mapping of a fresh shmem inode, and [vma_is_anonymous], which is
+   [!vma->vm_ops], is FALSE for it.  "Anonymous shared" names the
+   absence of a path, not an anonymous VMA.  Every argument in this
+   development that rests on a range of [State.vm_maps] being an
+   anonymous private VMA stops holding for such a range, and three of
+   them carry weight.
+
+   (1) MADV_DONTNEED STOPS READING BACK AS ZEROS, with no second
+   process and no second thread.  [Madvise.madvise_spec] answers
+   MADV_DONTNEED over every range [State.map_contains] admits of
+   [vm_maps], deterministically, with [eff_zeros] over the whole
+   range; its header's warrant is "a zapped anonymous private page
+   reads back as zeros and is faulted in fresh on the next touch".
+   For a shmem VMA the zap is the same code and the outcome is the
+   opposite.  [madvise_dontneed_single_vma] (mm/madvise.c) calls
+   [zap_page_range_single_batched], which takes the page-table entries
+   down; it does not touch [inode->i_mapping], and the next access
+   faults into [shmem_fault] -> [shmem_get_folio_gfp(inode, pgoff, 0,
+   &folio, SGP_CACHE, ...)] (mm/shmem.c), which finds the SAME folio
+   in the page cache and serves the bytes written to it.  The advice
+   that does discard them is MADV_REMOVE, and it is a different
+   operation: [madvise_remove] (mm/madvise.c) refuses any VMA that is
+   not [vma_is_shared_maywrite] and punches the hole with
+   [vfs_fallocate(FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE)] rather
+   than with a zap.  So
+
+     p = mmap(0, 4096, PROT_READ|PROT_WRITE,
+              MAP_SHARED|MAP_ANONYMOUS, -1, 0);
+     *p = 7;  madvise(p, 4096, MADV_DONTNEED);  return *p;
+
+   gives 7 on Linux and 0 in a model that answered the mmap like a
+   private one — not a missing run, a CONTRADICTED one, since that
+   arm is deterministic.  THIS ARM COULD NOT EXCLUDE IT: the madvise
+   is a later call, and [State.VmMaps] records ranges and nothing
+   else, so no test on [prot], [flags] or the ledger at mmap time
+   separates the two afterwards.
+
+   (2) FORK.  [Kernel.Fork.clone_spec] answers [clone(SIGCHLD)], which
+   is a plain fork.  Today every range this model can create is
+   private anonymous, so the child's copy-on-write copy keeps whatever
+   the child does invisible here, and this process's memory stays a
+   function of its own steps — which is what [Run] assumes, and what
+   the no-second-holder argument in [Fork.v]'s header assumes on the
+   neighbouring question of [set_tid_address].  A shared anonymous
+   mapping survives the fork as ONE object: parent and child hold the
+   same shmem folios, and a store the child makes changes a byte this
+   model says only this process can change.  Whether the child stores
+   is a property of the program, so this one costs Linux runs the
+   model would not admit rather than forcing a wrong answer.  The
+   [clone] also comes after the mmap, so again no test in this arm
+   reaches it.
+
+   (3) THE ADDRESS.  [__get_unmapped_area] (mm/mmap.c) reads MAP_SHARED
+   before it searches:
+
+     } else if (flags & MAP_SHARED) {
+             get_area = shmem_get_unmapped_area;
+     }
+
+   so a shared anonymous request never reaches the THP branch beneath
+   it and goes to [shmem_get_unmapped_area] (mm/shmem.c).  That
+   function starts from the same [mm_get_unmapped_area], so the two
+   placements agree when the kernel has no CONFIG_TRANSPARENT_HUGEPAGE
+   ([State.KernelBuild]'s [kb_thp] false, its first test), when the
+   hint was honoured ([uaddr == addr]), and under MAP_FIXED.  Where
+   they can differ the difference is a function of [shmem_huge], of
+   the mount's own [huge], and of the three mTHP order bitmaps
+   ([huge_shmem_orders_always], [huge_shmem_orders_within_size],
+   [huge_shmem_orders_madvise]) — boot and sysfs state that is neither
+   an input of this model nor a fact about the kernel image, so
+   [State.KernelBuild] cannot carry it.  [linux_place] is the private
+   rule by construction; the placement section above says so at its
+   item (3), and an arm that reused it would be answering an address
+   the kernel need not give.
+
+   (4) THE BUDGET, for the PROT_NONE shape, which is the other arm a
+   reader reaches for.  [accountable_mapping] (mm/vma.c) is
+   [(vm_flags & (VM_NORESERVE|VM_SHARED|VM_WRITE)) == VM_WRITE], so a
+   shared mapping is never charged there; the charge comes instead
+   from [shmem_acct_size] inside [shmem_zero_setup], which charges the
+   whole length unless VM_NORESERVE and never looks at VM_WRITE.  A
+   PROT_NONE private mapping is charged nothing and a PROT_NONE shared
+   one is charged in full, so [mmap_noreserve_backed_ok] is not the
+   shared rule either.
+
+   WHAT THIS IS NOT.  None of the four is about a read-only page or
+   about file CONTENTS, the two walls the file-backed arm above names,
+   so this is not that decline under another name: the bytes of an
+   anonymous shared mapping are exactly the zero-filled read-write
+   bytes this model can hold.  What it cannot hold is their LIFETIME,
+   which outlives a zap and a fork.
+
+   WHAT AN ARM WOULD TAKE.  A shared bit on each range of
+   [State.VmMaps]; a reader of it in [Madvise] (decline, or answer
+   MADV_DONTNEED with the range preserved rather than zeroed), in
+   [Mremap] and in this file; a decline in [Kernel.Fork.clone_resolve]
+   while such a range is live; and a placement rule carrying
+   [shmem_get_unmapped_area], which the sysfs state above may put out
+   of reach for a THP kernel.  That is a ledger change, not an arm.
+   Until it is made, MAP_SHARED is [unmodeled], which is the
+   fail-closed answer, and [Checks/Cases/Mm/Mmap.v]'s
+   [mmap_anonymous_shared_rw_is_unmodeled] group pins each shape
+   beside the MAP_PRIVATE twin that is answered.
+   ========================================================================= *)
+
 (** The ordinary rw mmap shape: PRIVATE ANONYMOUS READ+WRITE at offset
     0, with any [fd].  Fresh PROT_NONE and the two bounded contained
     MAP_FIXED shapes are recognized separately below.  A NON-NULL [addr]
@@ -1191,13 +1323,16 @@ Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
     covers both.  A NULL [addr] leaves the kernel to place, and the
     address the model may then choose is bounded by the [choose] guard's
     admissibility conditions — see the placement section above.
-    Everything else — file-backed mappings, MAP_SHARED, executable
-    permissions, and unknown flag bits other than MAP_NORESERVE
+    Everything else — file-backed mappings, executable permissions,
+    and unknown flag bits other than MAP_NORESERVE
     ([mmap_flags_core]) — is unmodeled and
     must yield [unmodeled] (fail closed): the machine model has no mutable page
     permissions and no file-backed memory, so honoring those calls
     with zero-filled rw memory would invent behavior no real kernel
-    produces. *)
+    produces.  MAP_SHARED is unmodeled for a DIFFERENT reason, which
+    is why it has a section of its own above: the bytes of an
+    anonymous shared mapping are ones this model can hold, and what it
+    cannot hold is that they survive a MADV_DONTNEED and a fork. *)
 Definition mmap_modeled_b (prot flags off : word) : bool :=
   Z.eqb (bv_unsigned prot) (PROT_READ + PROT_WRITE)
   && Z.eqb (mmap_flags_core flags) (MAP_PRIVATE + MAP_ANONYMOUS)
