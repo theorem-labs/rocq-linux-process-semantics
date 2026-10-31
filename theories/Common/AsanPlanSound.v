@@ -153,6 +153,47 @@ Variable FS0 : Fs.Fs.
 (** register cap of the extension-mode executor (0 = off) *)
 Variable KC : nat.
 
+(** THE LAUNCH'S EXTRA RESERVED INTERVALS.  [State.init_model] seeds
+    [vm_reserved] with the image's reservations AND with what the kernel maps
+    for the process besides the image: the vvar pages and the vDSO text,
+    taken as one unhinted [get_unmapped_area] span (Linux v6.18.46, commit
+    1f99e9ab748f, arch/riscv/kernel/vdso.c:124
+    [arch_setup_additional_pages]), which a top-down layout answers from the
+    gap just below [mm->mmap_base].
+
+    [co_res] used to read [vm_reserved … = segments_reserved SEGS], which
+    ASSERTED that there is nothing else in the ledger.  A consumer could then
+    conclude that a region ABOVE the image hull meets no reserved interval,
+    and the pair sits exactly there, so a plan node could certify a grant
+    overlapping the vDSO.  [reserved_ok] below says the same thing without
+    that assertion: the image's reservations, then a list [rx] the launch
+    adds, of which the consumers need the geometry, the count and the total
+    size.  [rx] is existential because it is determined by the model, and
+    because a Section variable would add a parameter to [cs_ok] and so to
+    every one of its 145 projection sites and every downstream consumer.
+
+    The two checker-side numbers are [n_resx A] and [resx_bytes A]: UPPER
+    bounds, 0 for a launch that reserves nothing extra. *)
+Definition resx_entry_ok (iv : word * word) : Prop :=
+  0 < bv_unsigned (snd iv)
+  /\ bv_unsigned (fst iv) mod 4096 = 0
+  /\ bv_unsigned (snd iv) mod 4096 = 0
+  /\ img_hi A <= bv_unsigned (fst iv)
+  (** a PAGE clear of [KHI]: [ledger_split]'s low disjunct is then impossible
+      for it, which is what makes [co_split]'s high mark — and so [a_ylo] — a
+      floor the nodes can test against; and the brk node's guard page still
+      fits between the heap top and the base *)
+  /\ KHI + 4096 <= bv_unsigned (fst iv)
+  (** NOT [<= CEIL].  The pair hangs off [mm->mmap_base], and
+      [Run.valid_mmap_base] admits a base up to [State.mmap_base_max] =
+      0x7ffff8000000, above [AsanCeil.alloc_ceiling]. *)
+  /\ bv_unsigned (fst iv) + bv_unsigned (snd iv) <= 2 ^ 47.
+
+(** [co_res] spells the existential out INLINE rather than through a named
+    definition here: the frame lemmas rewrite [m_vmmaps model'] to
+    [m_vmmaps model] across every field of [cs_ok], and [rewrite] cannot see
+    under an unexpanded definition. *)
+
 #[local] Notation CHECK := (AP.check SEGS IT A nx0 LIMIT XN XE XB HS KC).
 
 #[local] Notation cfg := (cfg_of SEGS).
@@ -288,7 +329,11 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
   co_fds   : fds_ok E (a_fd cs) model;
   co_fs    : m_fs model = FS0;
   co_tid   : a_tidset cs = false -> m_tid model = None;
-  co_res   : vm_reserved (m_vmmaps model) = segments_reserved SEGS;
+  co_res   : exists rx : list (word * word),
+               vm_reserved (m_vmmaps model) = segments_reserved SEGS ++ rx
+               /\ Forall resx_entry_ok rx
+               /\ (length rx <= n_resx A)%nat
+               /\ sum_sizes rx <= resx_bytes A;
   co_limit : vm_limit (m_vmmaps model) = LIMIT;
   (* model: the ledger *)
   co_maps  : maps_match E (a_maps cs) (vm_maps (m_vmmaps model));
@@ -324,7 +369,15 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
                page_in_ranges (page_base a) (m_vm_lazy model) = true ->
                in_ghost E cs (bv_unsigned a) = false ->
                FULL a = Some (Z_to_bv 8 0);
-  co_sinv  : SINV E FULL
+  co_sinv  : SINV E FULL;
+  (** every tracked mapping is apart from the WHOLE reserved ledger.  A grant
+      proves it of its own range ([region_free] over reserved ++ maps) and
+      nothing ever widens a mapping, so it holds of the ledger throughout.
+      The slice nodes need it: their range is named up to the allocation
+      ceiling, inside a tracked entry, which may sit above the extra
+      reservations, so no numeric bound can place it below them. *)
+  co_mres  : Forall (fun iv => Forall (iv_disjoint iv) (vm_reserved (m_vmmaps model)))
+                    (vm_maps (m_vmmaps model))
 }.
 
 (* ######################################################################### *)
