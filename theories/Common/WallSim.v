@@ -32,7 +32,7 @@
 
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import Prelude.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim CatSim PropExec SeqExec CatExec.
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
@@ -806,26 +806,34 @@ Qed.
 (** The run-level omni judgment of a retry-loop run. *)
 Lemma wall_omni_run : forall fd ch, fd32 fd = fd ->
   forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  fdchan fd ch (init_model (segments_reserved segs) brk0 mb sp lim inp) ->
+  fdchan fd ch (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) ->
   bufs_modeled bufs ->
-  to_wallexit segs fd bufs code (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_wallexit (run_segments segs inp sp mb) fd bufs code
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd
+       (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
     (fun tr o => tr = wevents_ch ch bufs ++ [ExitEv code (in_fs inp)]
                  /\ exits_with code tr o).
 Proof.
   intros fd ch Hfd32 segs pc ph sp brk0 mb rnd lim inp bufs code Hfdc Hbm Hw.
   cbn [omni_run]. unfold init_config.
-  exact (to_wallexit_exec segs fd ch Hfd32 bufs code _
-           (init_model (segments_reserved segs) brk0 mb sp lim inp)
+  exact (to_wallexit_exec (run_segments segs inp sp mb) fd ch Hfd32 bufs code _
+           (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
            eq_refl eq_refl Hfdc Hbm Hw).
 Qed.
 
 Lemma wall_obs_iff : forall fd ch, fd32 fd = fd ->
   forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  fdchan fd ch (init_model (segments_reserved segs) brk0 mb sp lim inp) ->
+  fdchan fd ch (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) ->
   bufs_modeled bufs ->
-  to_wallexit segs fd bufs code (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
-  forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
+  to_wallexit (run_segments segs inp sp mb) fd bufs code
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd
+       (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  forall tr, obs_trace (run_segments segs inp sp mb)
+               (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
              <-> is_prefix tr (wevents_ch ch bufs ++ [ExitEv code (in_fs inp)]).
 Proof.
   intros fd ch Hfd32 segs pc ph sp brk0 mb rnd lim inp bufs code Hfdc Hbm Hw tr.
@@ -837,10 +845,14 @@ Qed.
 
 Lemma wall_no_error_run : forall fd ch, fd32 fd = fd ->
   forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  fdchan fd ch (init_model (segments_reserved segs) brk0 mb sp lim inp) ->
+  fdchan fd ch (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) ->
   bufs_modeled bufs ->
-  to_wallexit segs fd bufs code (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
-  ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
+  to_wallexit (run_segments segs inp sp mb) fd bufs code
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd
+       (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  ~ reaches_error (run_segments segs inp sp mb)
+      (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros fd ch Hfd32 segs pc ph sp brk0 mb rnd lim inp bufs code Hfdc Hbm Hw. apply exec_no_error.
   eapply exec_conseq;
@@ -852,10 +864,10 @@ Qed.
     emitting the same buffers and exit code, at the two role budgets. *)
 Lemma wall_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bufs code inp,
-  to_wallexit source_segs (Z_to_bv 64 1) bufs code
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
-  to_wallexit target_segs (Z_to_bv 64 1) bufs code
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_wallexit (run_segments source_segs inp rsp rmb) (Z_to_bv 64 1) bufs code
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_wallexit (run_segments target_segs inp asp amb) (Z_to_bv 64 1) bufs code
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
   bufs_modeled bufs ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
@@ -863,13 +875,17 @@ Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bufs code inp
     Hsource Htarget Hbm.
   assert (HfdS : fdchan (Z_to_bv 64 1) (Z_to_bv 64 1)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp))
+    (with_vdso (vdso_run_init (ed_vdso rrnd))
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb))
+          rbrk rmb rsp source_alloc_limit inp)))
     by (split; reflexivity).
   assert (HfdT : fdchan (Z_to_bv 64 1) (Z_to_bv 64 1)
-    (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp))
+    (with_vdso (vdso_run_init (ed_vdso arnd))
+       (init_model (segments_reserved (run_segments target_segs inp asp amb))
+          abrk amb asp target_alloc_limit inp)))
     by (split; reflexivity).
   split.
-  { cbn [img_segments].
+  { cbn [image_run_segments img_segments en_sp en_mmap_base].
     eapply coexec_conseq;
       [apply exec_coexec;
        exact (wall_omni_run (Z_to_bv 64 1) (Z_to_bv 64 1) fd32_1 source_segs rpc rph rsp rbrk rmb rrnd
@@ -893,10 +909,10 @@ Qed.
     [CatSim.cat_strong_equiv_te] had before short channel writes. *)
 Lemma wall_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim bufs code inp,
-  to_wallexit source_segs (Z_to_bv 64 1) bufs code
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
-  to_wallexit target_segs (Z_to_bv 64 1) bufs code
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_wallexit (run_segments source_segs inp rsp rmb) (Z_to_bv 64 1) bufs code
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_wallexit (run_segments target_segs inp asp amb) (Z_to_bv 64 1) bufs code
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
   bufs_modeled bufs ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)

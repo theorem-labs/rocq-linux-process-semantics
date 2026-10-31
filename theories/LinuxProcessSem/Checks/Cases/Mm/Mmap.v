@@ -3090,7 +3090,7 @@ Example noaccess_grant_at_demo_top_admitted_under_high_sp :
     top_hi_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 demo_top, 4096)]
+        (mkVmMapsFull top_hi_reserved [(Z_to_bv 64 demo_top, 4096)]
           [(Z_to_bv 64 demo_top, 4096)] 0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) hi_sp) top_hi_model) [].
 Proof. check_eq. Qed.
@@ -3103,6 +3103,10 @@ Definition brk_top_lo_model : Model :=
 Definition brk_top_hi_model : Model :=
   init_model [] (Z_to_bv 64 (demo_top - 4096)) (Z_to_bv 64 mmap_base_max)
     hi_sp demo_limit (demo_input [] IEof).
+
+(** Its reservations: no LOAD segment, and the vdso/vvar pair. *)
+Definition brk_top_hi_reserved : list (word * word) :=
+  vm_reserved (m_vmmaps brk_top_hi_model).
 
 Example brk_grow_across_demo_top_rejected_under_low_sp :
   check_syscall (brk_in (Z_to_bv 64 (demo_top + 4096)))
@@ -3119,8 +3123,8 @@ Example brk_grow_across_demo_top_admitted_under_high_sp :
     brk_top_hi_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 (demo_top - 4096), 8192)] []
-          (Z_to_bv 64 (demo_top - 4096)) (Z_to_bv 64 (demo_top + 4096))
+        (mkVmMapsFull brk_top_hi_reserved [(Z_to_bv 64 (demo_top - 4096), 8192)]
+          [] (Z_to_bv 64 (demo_top - 4096)) (Z_to_bv 64 (demo_top + 4096))
           demo_limit (Z_to_bv 64 mmap_base_max) hi_sp) brk_top_hi_model) [].
 Proof. check_eq. Qed.
 

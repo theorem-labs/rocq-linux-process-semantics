@@ -556,13 +556,12 @@ Proof.
   end.
   split; [apply star_cfg_refl |].
   split; [reflexivity |]. left. split; [reflexivity |].
-  cbn [cfg_ms cfg_model].
+  cbn [cfg_ms cfg_model]. split; [| vm_compute; reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
-  rewrite undecodable_step_unmodeled. reflexivity.
+  vm_compute. reflexivity.
 Qed.
 
 (* =========================================================================

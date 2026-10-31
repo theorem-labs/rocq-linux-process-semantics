@@ -58,7 +58,7 @@
 
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import Fs.ReadWrite.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim CatSim WallSim.
 
@@ -1162,7 +1162,8 @@ Proof.
   unfold init_config.
   set (ms0 := init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
   pose proof (init_M_loop (segments_reserved segs) brk0 mb sp lim inp) as HM0.
-  set (model0 := init_model (segments_reserved segs) brk0 mb sp lim inp) in *.
+  set (model0 := with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved segs) brk0 mb sp lim inp)) in *.
   assert (Hst0 : m_stdin model0 = stdin0) by reflexivity.
   assert (Hfs0 : m_fs model0 = fs0) by reflexivity.
   split.
@@ -1203,20 +1204,28 @@ Proof.
   apply (inv_coexec segs sinv sinv_step sinv_no_error). left; cbn; auto.
 Qed.
 
-Lemma stream_omni_corun : forall pc ph sp brk0 mb rnd lim inp,
+(** Stated for an image whose RUN segment list is this section's
+    [segs]: [Run.run_segments] appends the vDSO pair [execve] installs,
+    and that extended list is what the step relation reads. *)
+Lemma stream_omni_corun : forall isegs pc ph sp brk0 mb rnd lim inp,
+  run_segments isegs inp sp mb = segs ->
   to_rd (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
-  omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp never_errors.
+  omni_corun (mkImage isegs pc ph) lim (mkEntry sp brk0 mb rnd) inp never_errors.
 Proof.
-  intros pc ph sp brk0 mb rnd lim inp Hrd. cbn [omni_corun]. unfold init_config.
+  intros isegs pc ph sp brk0 mb rnd lim inp Hseg Hrd. cbn [omni_corun]. unfold init_config. rewrite Hseg.
   apply to_rd_coexec; [apply init_M_loop | exact Hrd].
 Qed.
 
-Lemma stream_omni_cosafe : forall pc ph sp brk0 mb rnd lim inp,
+(** Stated for an image whose RUN segment list is this section's
+    [segs]: [Run.run_segments] appends the vDSO pair [execve] installs,
+    and that extended list is what the step relation reads. *)
+Lemma stream_omni_cosafe : forall isegs pc ph sp brk0 mb rnd lim inp,
+  run_segments isegs inp sp mb = segs ->
   to_rd (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
-  omni_cosafe (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
+  omni_cosafe (mkImage isegs pc ph) lim (mkEntry sp brk0 mb rnd) inp
     (stream_traces cnt (in_fs inp) (in_stdin inp)).
 Proof.
-  intros pc ph sp brk0 mb rnd lim inp Hrd. cbn [omni_cosafe].
+  intros isegs pc ph sp brk0 mb rnd lim inp Hseg Hrd. cbn [omni_cosafe].
   apply cosafe_obs_iff.
   - intros t t' Ht Hp. eapply stream_traces_prefix_closed; eauto.
   - intros tr Hobs. apply (stream_obs_iff pc ph sp brk0 mb rnd lim inp Hrd). exact Hobs.
@@ -1246,7 +1255,7 @@ Proof.
   intros cnt Hcnt source_segs rLH rpc rph rsp rbrk rmb rrnd target_segs aLH apc aph asp abrk amb arnd
          inp HrLH HaLH Hr Ha.
   split.
-  { cbn [img_segments].
+  { cbn [image_run_segments img_segments en_sp en_mmap_base].
     eapply coexec_conseq;
       [exact (stream_omni_corun source_segs rLH cnt Hcnt HrLH rpc rph rsp rbrk rmb rrnd
                 source_alloc_limit inp Hr) | apply never_errors_covered]. }

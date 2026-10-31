@@ -82,7 +82,8 @@ Proof. exact demo_input_valid. Qed.
     reader's eye. *)
 Definition efi_demo_fin : FinProcInput :=
   mkFinProcInput [[]] [] [] [] demo_uid demo_gid demo_groups net_silent
-                 default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] [].
+                 default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] []
+                 default_kernel.
 
 Lemma efi_demo_to_proc_input : to_proc_input efi_demo_fin = efi_demo_input.
 Proof. reflexivity. Qed.
@@ -357,12 +358,12 @@ Proof.
   eexists [], _. split; [apply star_cfg_refl |].
   unfold unmodeled_at. cbn [cfg_ms cfg_model].
   split; [reflexivity |]. left. split; [reflexivity |].
+  split; [| vm_compute; reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  unfold efi_demo_input. cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
-  rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+  vm_compute. reflexivity.
 Qed.
 
 (** THE BUGGY REGION, under every configuration.  Leaving the modeled

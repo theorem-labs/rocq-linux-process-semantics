@@ -21,7 +21,7 @@
 (* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)); AT_HWCAP is the auxv's fourth pair (10 pairs / 20 words, auxv_size 160); the mapped image is [Run.entry_stack_image] (block ++ page slack). *)
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
+  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run.
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
 From LinuxProcessSemantics.Common Require Import
   PropExec CatExec CatSim SeqExec StoreOk StreamSim StepTac ShapeAlg AgentLib StartupAux RefLayout ArgvEnv

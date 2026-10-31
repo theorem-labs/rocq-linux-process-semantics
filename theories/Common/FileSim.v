@@ -48,7 +48,7 @@
 
 From Stdlib Require Import NArith ZArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim PropExec CatSim CatExec ErrEscape SeqExec StreamExec StreamSim.
 From LinuxProcessSemantics.Riscv Require Import Prelude Sem.
@@ -2342,42 +2342,47 @@ End OpenNodes.
 
 (** The run-level omni judgment of a file-copying run. *)
 Lemma fout_omni_run : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_fout segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-          (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
+  to_fout (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+          (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (fout_post U).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto.
   cbn [omni_run]. unfold init_config.
-  exact (to_fout_exec segs _ _ U Hto eq_refl eq_refl).
+  exact (to_fout_exec (run_segments segs inp sp mb) _ _ U Hto eq_refl eq_refl).
 Qed.
 
 Lemma fout_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_fout segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-          (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
-  forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
+  to_fout (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+          (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
+  forall tr, obs_trace (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
     <-> exists o, U o /\ is_prefix tr (fout_trace o).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto tr.
   unfold init_config.
-  set (ms := init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
-  assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None)
+  set (ms := init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
+  assert (Hh : m_halted (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = None)
     by reflexivity.
-  assert (Hlazy : m_vm_lazy (init_model (segments_reserved segs) brk0 mb sp lim inp) = [])
+  assert (Hlazy : m_vm_lazy (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = [])
     by reflexivity.
   split.
   - intros (tr' & c & Hstar & Hp).
-    destruct (to_fout_star_only segs ms _ U Hto Hh Hlazy tr' c Hstar)
+    destruct (to_fout_star_only (run_segments segs inp sp mb) ms _ U Hto Hh Hlazy tr' c Hstar)
       as (o & Ho & Hp').
     exists o. split; [exact Ho | eapply is_prefix_trans; eauto].
   - intros (o & Ho & Hp).
-    destruct (to_fout_star_admits segs ms _ U Hto Hh Hlazy o Ho) as [c Hstar].
+    destruct (to_fout_star_admits (run_segments segs inp sp mb) ms _ U Hto Hh Hlazy o Ho) as [c Hstar].
     exists (fout_trace o), c. split; assumption.
 Qed.
 
 Lemma fout_no_error_run : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_fout segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-          (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
-  ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
+  to_fout (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+          (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
+  ~ reaches_error (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto. apply exec_no_error.
   eapply exec_conseq; [exact (fout_omni_run segs pc ph sp brk0 mb rnd lim inp U Hto) |].
@@ -2389,18 +2394,18 @@ Qed.
 Lemma fout_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd U inp,
   to_fout source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp) U ->
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp source_alloc_limit inp) U ->
   to_fout target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) U ->
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp target_alloc_limit inp) U ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
 Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd U inp
     Hsource Htarget.
   split.
-  { cbn [img_segments].
+  { cbn [image_run_segments img_segments en_sp en_mmap_base].
     eapply coexec_conseq;
       [apply exec_coexec;
        exact (fout_omni_run source_segs rpc rph rsp rbrk rmb rrnd source_alloc_limit inp U Hsource) |].
@@ -2420,11 +2425,11 @@ Qed.
 Lemma fout_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim U inp,
   to_fout source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) U ->
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp rlim inp) U ->
   to_fout target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved target_segs) abrk amb asp alim inp) U ->
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp alim inp) U ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
                        (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).
@@ -2447,7 +2452,7 @@ Qed.
     insufficient when another source resolution avoids error. *)
 Lemma spec_err_escape_equiv :
   forall segs pc ph sp brk0 mb rnd lim inp (target : behavior),
-  all_traces_error segs (init_config segs pc ph sp brk0 mb rnd lim inp) ->
+  all_traces_error (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) ->
   Equivalence.equiv (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp) target.
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp target Hall.

@@ -226,7 +226,7 @@ Proof.
         rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
     end.
     cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
-    rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+    vm_compute. reflexivity.
   - apply H; [exact (demo_entry_valid_undecodable _ demo_input_valid)
             | exact demo_input_valid].
 Qed.

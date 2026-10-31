@@ -679,6 +679,8 @@ Proof.
   difn H Elen; [apply check_ret_only_model in H; subst m'; exact Hna|].
   difn H Ebig; [apply check_ret_only_model in H; subst m'; exact Hna|].
   dif H; [discriminate|].
+  (* the vdso/vvar gate: a request that meets the pair is unmodeled *)
+  dif H; [discriminate|].
   dif H.
   - destruct ws, us, cs, ci; try discriminate.
     dif H.
@@ -1115,6 +1117,15 @@ Proof.
         destruct (mi_account_step_model_frame _ _ _ _ _ H) as (_&Hvm&_)
     end.
     rewrite Hvm. exact Hinv.
+  - (* a vDSO call: the same specification, then materialization, then
+       the call count, and none of the three touches [vm_maps] *)
+    match goal with
+    | [ Hs : syscall_spec _ _ (Ok _ ?m1 _),
+        Hm : materialize_model_accesses ?m1 _ = Some _ |- _ ] =>
+        destruct (materialize_model_accesses_frame _ _ _ Hm) as (_&Hvm&_);
+        rewrite m_vmmaps_with_vdso_bump, Hvm;
+        exact (syscall_spec_preserves_sys_inv _ _ _ _ _ Hs Hinv)
+    end.
   - match goal with
     | [ Hs : syscall_spec _ _ (Ok _ ?m1 _),
         Hm : materialize_model_accesses ?m1 _ = Some _ |- _ ] =>

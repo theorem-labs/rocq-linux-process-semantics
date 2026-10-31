@@ -17,7 +17,7 @@
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase Fs State Monad Specs Run StackLayout MemImageType RiscvSemantics.
+  BvBase Fs State Monad Specs Vdso Run StackLayout MemImageType RiscvSemantics.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 Import ListNotations.

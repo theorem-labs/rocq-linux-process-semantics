@@ -118,7 +118,7 @@
 
 From Stdlib Require Import ZArith NArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase MemImageType RiscvSemantics Fs State Specs Run.
+  BvBase MemImageType RiscvSemantics Fs State Specs Vdso Run StackLayout.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Examples.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import
   Equivalence MustExit Classifier.
@@ -290,28 +290,33 @@ Qed.
 Lemma exits_c_trace_characterization :
   forall (segs : list Segment) (pc : N) (ph : PhdrInfo)
          (code : word) (fuel : nat),
-    (forall sp mem rom,
-        exits_c segs code fuel (demo_init_state pc sp mem rom) = true) ->
+    (forall extra sp mem rom,
+        exits_c (segs ++ extra) code fuel (demo_init_state pc sp mem rom)
+        = true) ->
     forall lim en inp t,
       bh_traces (run (mkImage segs pc ph) lim en inp) t
       <-> (t = [] \/ t = [ExitEv code (in_fs inp)]).
 Proof.
   intros segs pc ph code fuel Hc lim [sp brk0 mbase rnd] inp t.
-  cbn [run bh_traces]. unfold init_config.
+  cbn [run bh_traces]. unfold init_config, run_segments.
+  set (vsegs := segs ++ vdso_segments (in_kernel inp) sp mbase).
   (* the machine half: the premise holds at this run's initial state *)
-  assert (Hms : exits_c segs code fuel
-                  (init_machine_state segs pc ph sp rnd (in_argv inp)
+  assert (Hms : exits_c vsegs code fuel
+                  (init_machine_state vsegs pc ph sp rnd (in_argv inp)
                      (in_envp inp) (in_uid inp) (in_hwcap inp)) = true).
-  { destruct (init_machine_state_abstracts segs pc ph sp rnd (in_argv inp)
+  { destruct (init_machine_state_abstracts vsegs pc ph sp rnd (in_argv inp)
                 (in_envp inp) (in_uid inp) (in_hwcap inp)) as (mem & rom & Hshape).
     rewrite Hshape. apply Hc. }
   (* the model half, at this run's initial model *)
-  pose proof (m_halted_init_model (segments_reserved segs) brk0 mbase sp lim inp)
-    as Hh.
-  pose proof (init_model_no_lazy (segments_reserved segs) brk0 mbase sp lim inp)
-    as Hlazy.
-  pose proof (m_fs_init_model (segments_reserved segs) brk0 mbase sp lim inp)
-    as Hfs.
+  assert (Hh : m_halted (with_vdso (vdso_run_init (ed_vdso rnd))
+                 (init_model (segments_reserved vsegs) brk0 mbase sp lim inp))
+               = None) by reflexivity.
+  assert (Hlazy : m_vm_lazy (with_vdso (vdso_run_init (ed_vdso rnd))
+                    (init_model (segments_reserved vsegs) brk0 mbase sp lim inp))
+                  = []) by reflexivity.
+  assert (Hfs : m_fs (with_vdso (vdso_run_init (ed_vdso rnd))
+                  (init_model (segments_reserved vsegs) brk0 mbase sp lim inp))
+                = in_fs inp) by reflexivity.
   split.
   - (* every observed prefix is one of the two *)
     intros (tr' & c & Hstar & Hp).
@@ -323,7 +328,7 @@ Proof.
     intros [-> | ->]; [apply obs_trace_nil |].
     pose proof (must_exit_everywhere_of_exits_c segs pc ph code fuel Hc lim
                   (mkEntry sp brk0 mbase rnd) inp) as Hme.
-    cbn [must_exit_with] in Hme. unfold init_config in Hme.
+    cbn [must_exit_with] in Hme. unfold init_config, run_segments in Hme.
     destruct (must_exit_at_realizes _ _ _ Hme Hh) as (tr0 & fs & c' & Hstar & _).
     assert (Hshape : tr0 ++ [ExitEv code fs] = [ExitEv code (in_fs inp)]).
     { rewrite <- Hfs.

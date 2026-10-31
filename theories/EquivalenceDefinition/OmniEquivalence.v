@@ -101,9 +101,13 @@ Lemma error_free_iff : forall img lim en inp,
   error_free (run img lim en inp) <-> omni_corun img lim en inp never_errors.
 Proof. intros. apply bh_errors_iff. Qed.
 
+(** Over the RUN's segment list ([Run.image_run_segments]), which is
+    the image's own plus the vDSO pair [execve] installs: that is the
+    list the step relation reads, so it is the list
+    [OmniRun.covered] has to be stated over. *)
 Lemma modeled_iff : forall img lim en inp,
   modeled (run img lim en inp)
-  <-> omni_corun img lim en inp (covered (img_segments img)).
+  <-> omni_corun img lim en inp (covered (image_run_segments img en inp)).
 Proof. intros. apply bh_unmodeled_iff. Qed.
 
 (** Trace equivalence of two runs is agreement on every prefix-closed
@@ -181,7 +185,7 @@ Variable target_image : Image.
 Definition omni_strong_equiv (en_source en_target : ExecEntry)
     (inp : ProcInput) : Prop :=
   omni_corun source_image source_alloc_limit en_source inp
-    (covered (img_segments source_image))
+    (covered (image_run_segments source_image en_source inp))
   /\ omni_equiv source_image source_alloc_limit en_source
                 target_image target_alloc_limit en_target inp.
 
@@ -382,9 +386,10 @@ Definition omni_agree (X Y : Image) (lim : Z) (inp : ProcInput) : Prop :=
   /\ ((exists en, valid_entry X en inp /\ omni_run X lim en inp errors)
       <-> (exists en, valid_entry Y en inp /\ omni_run Y lim en inp errors))
   /\ ((exists en, valid_entry X en inp
-                  /\ omni_may X lim en inp (uncovered (img_segments X)))
+                  /\ omni_may X lim en inp (uncovered (image_run_segments X en inp)))
       <-> (exists en, valid_entry Y en inp
-                      /\ omni_may Y lim en inp (uncovered (img_segments Y)))).
+                      /\ omni_may Y lim en inp
+                           (uncovered (image_run_segments Y en inp)))).
 
 Lemma agree_iff : forall X Y lim inp,
   agree X Y lim inp <-> omni_agree X Y lim inp.

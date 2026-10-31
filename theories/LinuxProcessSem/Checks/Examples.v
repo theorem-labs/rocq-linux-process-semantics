@@ -240,13 +240,16 @@ Example run_of_undecodable_image_is_unmodeled :
                      default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48)).
 Proof.
   cbn [run bh_unmodeled]. unfold init_config.
-  apply reaches_unmodeled_intro; [reflexivity | reflexivity |].
+  apply reaches_unmodeled_intro;
+    [reflexivity | reflexivity | | vm_compute; reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
-  rewrite undecodable_step_unmodeled. reflexivity.
+  (* the run's segment list is the image's plus the vDSO pair, so the
+     pinned [undecodable_step_unmodeled] above is not the same term;
+     the answer is the same and computation says so. *)
+  vm_compute. reflexivity.
 Qed.
 
 Example run_of_undecodable_image_refutes_modeled :
@@ -882,7 +885,7 @@ Example the_random_clause_is_what_the_fixture_carries :
   /\ ~ valid_input
         (mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups
                           net_silent default_nofile (Z_to_bv 64 0) demo_hwcap
-                          false Sv48 IEof []).
+                          false Sv48 IEof [] default_kernel).
 Proof.
   split.
   - valid_urandom_default.
@@ -957,9 +960,10 @@ Proof. vm_compute. reflexivity. Qed.
 Lemma unmodeled_no_next : forall segs ms model evs c',
   ms_svc_pending ms = None ->
   mi_account_step segs ms model = MachineUnmodeled ->
+  vdso_entry_fn segs (ms_pc ms) = None ->
   ~ sstep segs (mkCfg ms model) evs (SNext c').
 Proof.
-  intros segs ms model evs c' Hsvc Hacc Hss.
+  intros segs ms model evs c' Hsvc Hacc Hvd Hss.
   inversion Hss; subst; congruence.
 Qed.
 
@@ -994,13 +998,12 @@ Proof.
   cbn [run bh_traces undecodable_image demo_entry] in Htr.
   eapply no_next_obs_trace_nil; [|exact Htr].
   intros evs c'. unfold init_config.
-  apply unmodeled_no_next; [reflexivity|].
+  apply unmodeled_no_next; [reflexivity| |vm_compute; reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
-  rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+  vm_compute. reflexivity.
 Qed.
 
 (** The exit-0 image and the undecodable image do not agree on this
@@ -1049,13 +1052,13 @@ Example run_of_undecodable_image_is_unmodeled_at_demo_entry :
                        default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48)).
 Proof.
   cbn [run bh_unmodeled undecodable_image demo_entry]. unfold init_config.
-  apply reaches_unmodeled_intro; [reflexivity | reflexivity |].
+  apply reaches_unmodeled_intro;
+    [reflexivity | reflexivity | | vm_compute; reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
-  rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+  vm_compute. reflexivity.
 Qed.
 
 (** The abort-declared twin of this one is

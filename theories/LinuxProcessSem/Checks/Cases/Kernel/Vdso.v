@@ -23,6 +23,7 @@ From Stdlib Require Import ZArith NArith List Lia Bool String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel Require Import VdsoSym.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Mm Require Import Mprotect.
 Import ListNotations.
 Open Scope bv_scope.
 Local Open Scope Z_scope.
@@ -284,9 +285,9 @@ Proof.
     exists eff, model', evs. repeat split; assumption.
   - intros ((eff & model' & evs & Hspec & Hh & Hmat & Hret & Hws) & Hne).
     exists VdsoClockGettime, 113%Z, eff, model', evs.
-    repeat split; try assumption.
-    + exact Hentry.
-    + rewrite <- Hret. exact Hne.
+    split; [exact Hentry|]. split; [reflexivity|]. split; [exact Hspec|].
+    split; [rewrite <- Hret; exact Hne|]. split; [exact Hh|].
+    split; [exact Hmat|]. split; assumption.
 Qed.
 
 (** The same for [__vdso_clock_getres] and system call 114, which LPS
@@ -308,8 +309,9 @@ Proof.
     exists eff, model', evs. repeat split; assumption.
   - intros ((eff & model' & evs & Hspec & Hh & Hmat & Hret & Hws) & Hne).
     exists fn, n, eff, model', evs.
-    repeat split; try assumption.
-    rewrite <- Hret. exact Hne.
+    split; [exact Hentry|]. split; [exact Hno|]. split; [exact Hspec|].
+    split; [rewrite <- Hret; exact Hne|]. split; [exact Hh|].
+    split; [exact Hmat|]. split; assumption.
 Qed.
 
 (** What the STEP does to the machine, beside the system call's own
@@ -322,3 +324,83 @@ Proof. reflexivity. Qed.
 Lemma vdso_post_no_svc : forall segs ms model f eff,
   ms_svc_pending (vdso_post segs ms model f eff) = None.
 Proof. reflexivity. Qed.
+
+(* =========================================================================
+   Step 4, continued — an [mprotect] that meets the pair
+   ========================================================================= *)
+
+(** A launch whose ledger holds the pair, and one ordinary mapping
+    beside it that an [mprotect] can still change.  [fx_mbase] and
+    [fx_sp] are the fixture's, so [State.vdso_top] of this ledger is
+    [fx_top] and the pair is the five pages below it. *)
+Definition fx_inp : ProcInput :=
+  mkProcInput [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) [] net_silent
+              default_nofile (Z_to_bv 64 0) (Z_to_bv 64 0) false Sv48.
+
+Definition fx_model0 : Model :=
+  init_model [] 0 fx_mbase fx_sp 0x40000000 fx_inp.
+
+(** One page at 0x80000000, mapped and PROT_NONE, which is the shape
+    [Sys.Mm.Mprotect]'s modelled arm changes. *)
+Definition fx_other : word := Z_to_bv 64 0x80000000.
+
+Definition fx_model : Model :=
+  with_vmmaps
+    (mkVmMapsFull (vm_reserved (m_vmmaps fx_model0))
+       [(fx_other, Z_to_bv 64 4096)] [] 0 0 0x40000000 fx_mbase fx_sp)
+    fx_model0.
+
+(** The pair is in this ledger's reservations, at the fixture's
+    addresses: the Examples below are about the range the model really
+    reserved, not about a number written twice. *)
+Example fx_model_reserves_the_pair :
+  vdso_reserved (m_kernel fx_model) (vdso_top (m_vmmaps fx_model))
+  = [(Z_to_bv 64 fx_vvar_base, Z_to_bv 64 (6 * 4096))].
+Proof. vm_compute. reflexivity. Qed.
+
+(** REFUSES: a page of the vDSO text.  Linux would allow it — the
+    kernel maps the text with [VM_MAYWRITE] — and after it the bytes
+    are no longer the measured image's, which is a vDSO this model has
+    no term for. *)
+Example mprotect_on_the_vdso_text_is_unmodeled :
+  check_mprotect (Z_to_bv 64 fx_text_base) (Z_to_bv 64 4096)
+    (Z_to_bv 64 3) (mkEffect (Z_to_bv 64 0) [] []) fx_model
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** REFUSES: a page of the vvar data. *)
+Example mprotect_on_the_vvar_pages_is_unmodeled :
+  check_mprotect (Z_to_bv 64 fx_vvar_base) (Z_to_bv 64 4096)
+    (Z_to_bv 64 3) (mkEffect (Z_to_bv 64 0) [] []) fx_model
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** REFUSES: a request that only MEETS the pair, starting one page
+    below the vvar base and running two pages into it. *)
+Example mprotect_overlapping_the_pair_is_unmodeled :
+  check_mprotect (Z_to_bv 64 (fx_vvar_base - 4096)) (Z_to_bv 64 8192)
+    (Z_to_bv 64 3) (mkEffect (Z_to_bv 64 0) [] []) fx_model
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** STILL ADMITS: the neighbouring page the pair does not meet.  This
+    is the half that shows the gate did not simply stop answering:
+    the same request, one ordinary mapping away, is still the modelled
+    [mprotect] that reports the pages it backed. *)
+Example mprotect_beside_the_pair_still_works :
+  check_mprotect fx_other (Z_to_bv 64 4096) (Z_to_bv 64 3)
+    (mkEffect (Z_to_bv 64 0) [] [(fx_other, Z_to_bv 64 4096)]) fx_model
+  = CheckOk (mprotect_model_next fx_model fx_other (Z_to_bv 64 4096)) [].
+Proof. vm_compute. reflexivity. Qed.
+
+(** STILL ADMITS: the page directly BELOW the pair, which the request
+    above runs into but this one stops short of.  The two together pin
+    the gate's lower edge. *)
+Example mprotect_one_page_below_the_pair_is_not_refused :
+  check_mprotect (Z_to_bv 64 (fx_vvar_base - 4096)) (Z_to_bv 64 4096)
+    (Z_to_bv 64 3) (mkEffect (Z_to_bv 64 0) [] []) fx_model
+  <> CheckUnmodeled
+  \/ region_free (vdso_reserved (m_kernel fx_model)
+                   (vdso_top (m_vmmaps fx_model)))
+       (Z_to_bv 64 (fx_vvar_base - 4096)) (Z_to_bv 64 4096) = true.
+Proof. right. vm_compute. reflexivity. Qed.
