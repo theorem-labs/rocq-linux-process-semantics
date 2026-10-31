@@ -238,8 +238,8 @@ Section Init.
     unfold LSTR, launch_string_bytes, L0.
     pose proof (Nat2Z.is_nonneg (length (flatten_strings envp))).
     pose proof (Nat2Z.is_nonneg (length execfn)).
-    pose proof Hav0 as H0.
-    destruct argv as [|a t] eqn:Ea; [cbn in H0; lia|].
+    pose proof Hav0 as Hnz.
+    destruct argv as [|a t] eqn:Ea; [cbn in Hnz; lia|].
     cbn [flatten_strings flat_map nth]. rewrite !length_app. cbn [length]. lia.
   Qed.
 
@@ -268,8 +268,8 @@ Section Init.
 
   Lemma pad_eq : W = utop - 8 - LSTR - usp - CHEAD.
   Proof.
-    pose proof pad_bounds_Z. unfold W, block_pad_len.
-    rewrite inp_execfn. fold LSTR. fold CHEAD. fold utop usp.
+    pose proof pad_bounds_Z.
+    unfold W, block_pad_len, LSTR, CHEAD, utop, usp in *.
     rewrite Z2Nat.id by lia. reflexivity.
   Qed.
 
@@ -304,9 +304,10 @@ Section Init.
     unfold entry_page_top, va_stack_top, sp_window_hi in H. fold top utop in H. lia.
   Qed.
 
-  (** everything the block holds, in order: the pointer vector, the auxv, the
-      gap, the sixteen random bytes, the pad, the strings, the skipped slot *)
-  Lemma bsb_ge : 8 * argc + 8 * envc + 520 <= Z.of_nat (length bsb).
+  (** everything the block holds, in order: the pointer vector (8*items), the
+      auxv (464), the gap, the sixteen random bytes, the pad, the strings
+      (at least the exec name and its NUL) and the eight-byte slot *)
+  Lemma bsb_ge : 8 * argc + 8 * envc + 514 <= Z.of_nat (length bsb).
   Proof.
     pose proof length_bsb_sum. pose proof chead_eq. pose proof lstr_lo. pose proof pad_range.
     pose proof gap_range. lia.
@@ -456,9 +457,22 @@ Section Init.
   Let hid0 := hid A argH0 E0 cs0 model0.
   Let Mr0 := Mr A argH0 E0 cs0 model0 FULL0.
 
+  (** THE LAUNCH'S RESERVED LEDGER is the image's reservations AND the vDSO
+      pair: [State.init_model] seeds [vm_reserved] with
+      [State.init_reserved], which appends
+      [State.vdso_reserved] at the top of the mmap region
+      (arch/riscv/kernel/vdso.c [arch_setup_additional_pages], Linux
+      v6.18.46, commit 1f99e9ab748f).  For [State.default_kernel] that pair
+      is four vvar pages and two text pages, 24576 bytes, just below
+      [mm->mmap_base] — NOT the empty list the checker's [AsanPlanSound.co_res]
+      still assumes. *)
+  Let RESX : list (word * word) :=
+    vdso_reserved (in_kernel inp)
+      (page_round_down_Z (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
+
   Lemma model0_facts :
     m_halted model0 = None /\ m_fds model0 = fds_std /\ m_tid model0 = None
-    /\ vm_reserved (m_vmmaps model0) = segments_reserved segs /\ vm_maps (m_vmmaps model0) = []
+    /\ vm_reserved (m_vmmaps model0) = segments_reserved segs ++ RESX /\ vm_maps (m_vmmaps model0) = []
     /\ vm_noaccess (m_vmmaps model0) = [] /\ m_vm_lazy model0 = [] /\ m_vm_materialized model0 = []
     /\ vm_limit (m_vmmaps model0) = LIMIT /\ vm_brk (m_vmmaps model0) = brk0 /\ vm_start_brk (m_vmmaps model0) = brk0
     /\ vm_mmap_base (m_vmmaps model0) = mbase /\ eager_used model0 = 0.
@@ -556,7 +570,7 @@ Section Init.
   Proof.
     intros a H. destruct (argH0 E0 a) eqn:Ha; [|reflexivity]. apply argH0_range in Ha.
     pose proof len_av. pose proof len_ev. pose proof chead_eq. pose proof pad_range.
-    pose proof gap_range. unfold STR0 in *. lia.
+    pose proof gap_range. pose proof str0_hi. pose proof lstr_lo. unfold STR0 in *. lia.
   Qed.
 
   (** a KWord fact about a visible 8-byte word of the argument block read through the raw image *)
@@ -603,7 +617,7 @@ Section Init.
     - intros x Hx. apply not_argH0. rewrite word_add_nat, u64_lit in Hx; unfold auxv_off, usp in *; [|lia].
       rewrite !Nat2Z.inj_add, !Nat2Z.inj_mul in Hx. cbn [Z.of_nat Pos.of_succ_nat Pos.succ] in Hx. unfold STR0. lia.
     - rewrite <- Hv.
-      pose proof (read_auxv_word segs Sv48 inp mbase ph entryw sp brk0 rdraw Hva Hve Hlaunch Hlau j ltac:(vm_compute; lia)) as RW.
+      pose proof (read_auxv_word segs Sv48 inp mbase ph entryw sp brk0 rdraw Hlaunch Hlau Hhi' j ltac:(vm_compute; lia)) as RW.
       exact RW.
   Qed.
 
@@ -655,7 +669,8 @@ Section Init.
     - intros x Hx. apply not_argH0. unfold usp in *. lia.
     - pose proof (read_argc inp mbase ph entryw segs sp rdraw) as RW.
       assert (Hv : len_word argv = edenot E0 (EVar V_ARGC)).
-      { apply bv_eq. destruct uE0 as (_ & _ & U3 & _). unfold uE in U3. rewrite U3. unfold argc. exact (u_argcN argv Hva). }
+      { apply bv_eq. destruct uE0 as (_ & _ & U3 & _). unfold uE in U3. rewrite U3.
+        pose proof len_av. unfold len_word, argc in *. rewrite u64_lit by lia. reflexivity. }
       rewrite inp_argv in RW. rewrite <- Hv. apply RW. fold bsb. pose proof bsb_nw. unfold usp in *. lia.
   Qed.
 
@@ -727,7 +742,7 @@ Section Init.
             unfold usp, L0 in *. lia. }
         rewrite <- Hv. apply RW; [exact Hav1|]. fold bsb. pose proof bsb_nw. unfold usp in *. lia.
       + apply Z.ltb_ge in Hc. assert (Hav1 : length argv = 1%nat) by (unfold argc in Hc; pose proof Hav0; lia).
-        pose proof (read_argv_null segs Sv48 inp mbase ph entryw sp brk0 rdraw Hva Hve Hlaunch Hlau) as RW.
+        pose proof (read_argv_null segs Sv48 inp mbase ph entryw sp brk0 rdraw Hlaunch Hlau Hhi') as RW.
         rewrite inp_argv in RW. rewrite Hav1 in RW.
         exact RW.
   Qed.
@@ -750,7 +765,7 @@ Section Init.
     split; [unfold flat; rewrite Hst; unfold usp in *; lia|].
     split; [rewrite length_at_random_bytes; reflexivity|].
     intros i Hi.
-    destruct (at_random_off segs Sv48 inp mbase ph entryw sp brk0 rdraw Hva Hve Hlaunch Hlau) as [off (Hp & Hoff & Hmod & Hrd)].
+    destruct (at_random_off segs Sv48 inp mbase ph entryw sp brk0 rdraw Hlaunch Hlau Hhi') as [off (Hp & Hoff & Hmod & Hrd)].
     rewrite inp_argv, inp_envp, inp_rseq in Hp, Hoff, Hrd.
     assert (Hu : bv_unsigned (at_random_ptr sp rseq argv envp) = usp + CHEAD - 16).
     { rewrite Hp, word_add_nat, u64_lit by (unfold usp in *; lia). unfold CHEAD. lia. }
@@ -785,7 +800,7 @@ Section Init.
     assert (Hl : elenZ E0 (ELit 16) = 16) by (apply elenZ_lit; lia).
     cbn [kentry_ok]. rewrite Hst, Hl. split; [unfold flat; rewrite Hst; unfold usp in *; lia|].
     intros i Hi.
-    destruct (at_random_off segs Sv48 inp mbase ph entryw sp brk0 rdraw Hva Hve Hlaunch Hlau) as [off (Hp & Hoff & Hmod & Hrd)].
+    destruct (at_random_off segs Sv48 inp mbase ph entryw sp brk0 rdraw Hlaunch Hlau Hhi') as [off (Hp & Hoff & Hmod & Hrd)].
     rewrite inp_argv, inp_envp, inp_rseq in Hp, Hoff, Hrd.
     assert (Hu : bv_unsigned (at_random_ptr sp rseq argv envp) = usp + CHEAD - 16).
     { rewrite Hp, word_add_nat, u64_lit by (unfold usp in *; lia). unfold CHEAD. lia. }
@@ -830,7 +845,7 @@ Section Init.
   Proof.
     pose proof usp_lo. pose proof usp_fit. pose proof chead_eq. pose proof gap_range.
     pose proof len_av. pose proof len_ev. pose proof bsb_ge.
-    destruct (at_random_off segs Sv48 inp mbase ph entryw sp brk0 rdraw Hva Hve Hlaunch Hlau) as [off (Hp & Hoff & _ & _)].
+    destruct (at_random_off segs Sv48 inp mbase ph entryw sp brk0 rdraw Hlaunch Hlau Hhi') as [off (Hp & Hoff & _ & _)].
     rewrite inp_argv, inp_envp, inp_rseq in Hp, Hoff.
     apply bv_eq. rewrite Hp, word_add_nat, u64_lit by (unfold CHEAD, usp in *; lia).
     pose proof u_e_atrandom as U. unfold uE in U. rewrite U. unfold CHEAD, usp. lia.

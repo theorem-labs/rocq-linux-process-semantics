@@ -161,7 +161,8 @@ Proof.
   destruct Hsp as (_ & Hlo & Hhi).
   unfold launch_sp_lo in Hlo. unfold launch_sp_hi in Hhi.
   rewrite witness_L, witness_C in Hlo. rewrite witness_L, witness_C in Hhi.
-  cbn [va_stack_top sp_window_hi page_size stack_rnd_max] in Hle, Hge.
+  cbn [va_stack_top] in Hle, Hge.
+  unfold sp_window_hi, page_size in Hle, Hge.
   cbn [en_draw en_sp].
   split; [lia | split; [exact Hlo | exact Hhi]].
 Qed.
@@ -233,7 +234,7 @@ Lemma admitted_string_base : forall img en,
   = (bv_unsigned (ed_top (en_draw en)) - 12)%Z.
 Proof.
   intros img en Hen.
-  destruct (admitted_bounds img en Hen) as ((Hge & _) & _ & _).
+  destruct (admitted_bounds img en Hen) as ((Hge & Hle) & _ & _).
   unfold string_base_addr.
   assert (H12 : bv_unsigned (nat_to_word
                    (8 + launch_string_bytes (in_argv witness_input)
@@ -241,8 +242,7 @@ Proof.
                 = 12%Z) by reflexivity.
   rewrite bv_sub_unsigned, H12.
   apply bv_wrap_small.
-  pose proof (bv_unsigned_in_range 64 (ed_top (en_draw en))).
-  unfold bv_modulus in *. cbn [Z.of_N] in *. lia.
+  change (bv_modulus 64) with (2 ^ 64)%Z. lia.
 Qed.
 
 Lemma admitted_string_base_far_above_sp : forall img en,
@@ -281,6 +281,12 @@ Local Fixpoint walk (n : nat) (segs : list Segment) (ms : machine_state)
   | O => ms
   | S k => walk1 segs (walk k segs ms)
   end.
+
+(** The one field a branch writes. *)
+Local Definition set_pc (ms : machine_state) (p : word) : machine_state :=
+  {| ms_regs := ms_regs ms; ms_fregs := ms_fregs ms; ms_pc_val := p;
+     ms_svc_pending := ms_svc_pending ms; ms_resv := ms_resv ms;
+     ms_fcsr := ms_fcsr ms; ms_mem := ms_mem ms; ms_rom := ms_rom ms |}.
 
 (** [Run.init_machine_state] with the memory named: every other field
     is a literal of that definition, so the bridge is a conversion. *)
@@ -392,6 +398,9 @@ Definition low_threshold : word := Z_to_bv 64 0x7fffbf000000.
     stands above it. *)
 Definition high_threshold : word := Z_to_bv 64 0x7fffffc00000.
 
+Local Lemma bvu_low : bv_unsigned low_threshold = 0x7fffbf000000%Z.
+Proof. reflexivity. Qed.
+
 Definition low_segment : Segment := {|
   seg_base  := 0x100;
   seg_size  := 24;
@@ -435,14 +444,33 @@ Proof.
   lia.
 Qed.
 
-(** With sp at or above the constant the branch is taken, the program
-    counter is the self-branch, and the state is a fixed point. *)
+(** The branch changes the program counter and nothing else, so the
+    state after it is the state before it with the target written in.
+    Stated this way on purpose: the target carries the comparison with
+    sp unevaluated, and asking [vm_compute] to take a step FROM a state
+    whose program counter is unevaluated would make it unfold the whole
+    decoder under the binder. *)
+Local Lemma low_st4_eq : forall sp mem,
+  low_st sp mem 4 = set_pc (low_st sp mem 3) (ms_pc (low_st sp mem 4)).
+Proof. intros sp mem. vm_compute. reflexivity. Qed.
+
+(** With sp at or above the constant the branch is taken ... *)
+Local Lemma low_pc4 : forall sp mem,
+  bv_ltu sp low_threshold = false ->
+  ms_pc (low_st sp mem 4) = Z_to_bv 64 0x114.
+Proof.
+  intros sp mem Hb. vm_compute in Hb |- *. rewrite Hb. reflexivity.
+Qed.
+
+(** ... the program counter is the self-branch, and the state is a
+    fixed point: [jal x0, 0] writes nothing and jumps to itself. *)
 Local Lemma low_step_loop : forall sp mem,
   bv_ltu sp low_threshold = false ->
   RiscvSemantics.step low_segments (low_st sp mem 4)
   = MachineOk (low_st sp mem 4).
 Proof.
-  intros sp mem Hb. vm_compute in Hb. vm_compute. rewrite Hb.
+  intros sp mem Hb.
+  rewrite (low_st4_eq sp mem), (low_pc4 sp mem Hb).
   vm_compute. reflexivity.
 Qed.
 
@@ -519,8 +547,7 @@ Proof.
   pose proof (Z.mod_pos_bound
                 (bv_unsigned (ed_top (en_draw en)) - 8 - 4 - 4095) 16
                 ltac:(lia)).
-  unfold bv_ltu, low_threshold.
-  rewrite Z_to_bv_unsigned, bv_wrap_small by (unfold bv_modulus; cbn; lia).
+  unfold bv_ltu. rewrite bvu_low.
   apply Z.ltb_ge. lia.
 Qed.
 
@@ -631,33 +658,25 @@ Proof.
   unfold valid_entry. rewrite witness_va_size.
   unfold witness_entry. cbn [valid_entry_va].
   split; [| split; [exact Hbrk | split; [| split]]].
-  - unfold valid_sp_va. rewrite bvu_sp.
-    cbn [va_sp_window_lo va_sp_window_hi va_stack_top sp_window_hi].
-    split; [lia | split; [lia | reflexivity]].
-  - unfold valid_mmap_base_va. rewrite bvu_mbase.
-    cbn [va_mmap_base_min va_mmap_base_max va_stack_top sp_window_hi
-         mmap_base_min page_size].
-    split; [lia | split; [lia | reflexivity]].
-  - unfold entry_stack_fits_va. rewrite bvu_sp.
-    cbn [va_sp_window_hi va_stack_top sp_window_hi].
-    assert (Hspan : entry_stack_span (in_argv witness_input)
-                      (in_envp witness_input) = 217%Z) by reflexivity.
-    cbn [in_argv in_envp witness_input]. rewrite <- Hspan.
-    cbn [in_argv in_envp witness_input]. lia.
+  - unfold valid_sp_va.
+    split; [vm_compute; discriminate
+           | split; [vm_compute; discriminate | vm_compute; reflexivity]].
+  - unfold valid_mmap_base_va.
+    split; [vm_compute; discriminate
+           | split; [vm_compute; discriminate | vm_compute; reflexivity]].
+  - unfold entry_stack_fits_va. vm_compute. discriminate.
   - cbn [entry_launch_ok_va]. split; [| split].
-    + unfold valid_stack_top_va. cbn [ed_top witness_draw].
-      rewrite bvu_top, witness_aslr.
-      cbn [va_stack_top sp_window_hi page_size].
-      split; [reflexivity | split; lia].
-    + unfold valid_launch_sp. cbn [ed_top witness_draw].
-      rewrite bvu_sp. unfold launch_sp_lo, launch_sp_hi.
-      rewrite bvu_top, witness_L, witness_C.
-      split; [reflexivity | split; vm_compute; discriminate].
+    + unfold valid_stack_top_va.
+      split; [vm_compute; reflexivity
+             | split; [vm_compute; discriminate | vm_compute; discriminate]].
+    + unfold valid_launch_sp.
+      split; [vm_compute; reflexivity
+             | split; [vm_compute; discriminate | vm_compute; discriminate]].
     + exists 0%Z.
       split; [lia |].
       split; [intros Hc; discriminate Hc |].
-      split; [reflexivity |].
-      rewrite bvu_mbase. vm_compute. reflexivity.
+      split; [intros _; reflexivity |].
+      vm_compute. reflexivity.
 Qed.
 
 Lemma witness_entry_admitted_low :
