@@ -691,9 +691,9 @@ Section Init.
   Let AUXW := auxv_words la ph entryw uid gid hw
                 (at_random_ptr sp rseq argv envp) (at_execfn_ptr top execfn).
 
-  (** the 58 auxv words (29 pairs under CONFIG_RSEQ) *)
+  (** the 56 auxv words (28 pairs under CONFIG_RSEQ) *)
   Lemma auxv_word_ok : forall (j : nat) v,
-    (j < 58)%nat ->
+    (j < 56)%nat ->
     nth j AUXW (Z_to_bv 64 0) = edenot E0 v ->
     kentry_ok segs E0 Mr0 (KWord (SA (fst e_auxb) (snd e_auxb + 8 * Z.of_nat j)) 8 v).
   Proof.
@@ -717,7 +717,7 @@ Section Init.
   Qed.
 
   Lemma auxw_ok : forall i ty v,
-    (0 <= i <= 28) ->
+    (0 <= i <= 27) ->
     nth (Z.to_nat (2 * i)) AUXW (Z_to_bv 64 0) = Z_to_bv 64 ty ->
     nth (Z.to_nat (2 * i + 1)) AUXW (Z_to_bv 64 0) = edenot E0 v ->
     know_ok segs E0 Mr0 (auxw i ty v).
@@ -852,7 +852,7 @@ Section Init.
     assert (Hab : split_lit e_atrandom = (fst e_atrb, snd e_atrb)) by (unfold e_atrb; destruct (split_lit e_atrandom); reflexivity).
     set (ab := fst e_atrb) in *. set (ak := snd e_atrb) in *.
     pose proof (split_u E0 e_atrandom ab ak Hab) as Hs. rewrite u_e_atrandom in Hs.
-    assert (Hak : ak = 488) by (subst ak; vm_compute; reflexivity).
+    assert (Hak : ak = 472) by (subst ak; vm_compute; reflexivity).
     specialize (Hs ltac:(lia) ltac:(lia)).
     assert (Hst : estart E0 (SA ab ak) = usp + CHEAD - 16) by (unfold estart; cbn [a_base a_off]; lia).
     assert (Hl : elenZ E0 (ELit 16) = 16) by (apply elenZ_lit; lia).
@@ -891,7 +891,7 @@ Section Init.
     assert (Hab : split_lit e_atrandom = (fst e_atrb, snd e_atrb)) by (unfold e_atrb; destruct (split_lit e_atrandom); reflexivity).
     set (ab := fst e_atrb) in *. set (ak := snd e_atrb) in *.
     pose proof (split_u E0 e_atrandom ab ak Hab) as Hs. rewrite u_e_atrandom in Hs.
-    assert (Hak : ak = 488) by (subst ak; vm_compute; reflexivity).
+    assert (Hak : ak = 472) by (subst ak; vm_compute; reflexivity).
     specialize (Hs ltac:(lia) ltac:(lia)).
     assert (Hst : estart E0 (SA ab ak) = usp + CHEAD - 16) by (unfold estart; cbn [a_base a_off]; lia).
     assert (Hl : elenZ E0 (ELit 16) = 16) by (apply elenZ_lit; lia).
