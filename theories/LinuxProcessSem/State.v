@@ -73,6 +73,53 @@ Proof.
   lia.
 Qed.
 
+(** Rounding down never goes up, is monotone, and is idempotent.  Three
+    one-line facts about [Z.div]'s floor, kept here because the
+    placement rule's top ([mmap_top], [vdso_top]) is a minimum of a
+    rounded and an unrounded bound and needs all three. *)
+Lemma page_round_down_Z_le : forall x, (page_round_down_Z x <= x)%Z.
+Proof.
+  intro x. unfold page_round_down_Z, page_size.
+  pose proof (Z.mul_div_le x 4096 ltac:(lia)). lia.
+Qed.
+
+Lemma page_round_down_Z_mono : forall x y,
+  (x <= y)%Z -> (page_round_down_Z x <= page_round_down_Z y)%Z.
+Proof.
+  intros x y H. unfold page_round_down_Z, page_size.
+  pose proof (Z.div_le_mono x y 4096 ltac:(lia) H). lia.
+Qed.
+
+Lemma page_round_down_Z_idem : forall x,
+  page_round_down_Z (page_round_down_Z x) = page_round_down_Z x.
+Proof.
+  intro x. unfold page_round_down_Z, page_size.
+  rewrite Z.div_mul by lia. reflexivity.
+Qed.
+
+(** Rounding the SECOND argument of a minimum first changes nothing
+    once the whole minimum is rounded.  This is why [mmap_top] may
+    round [alloc_top] (which [vm_init_sp] leaves 16-byte aligned) while
+    [vdso_top] still equals the rounded minimum of the raw bounds. *)
+Lemma page_round_down_Z_min_r : forall x y,
+  page_round_down_Z (Z.min x (page_round_down_Z y))
+  = page_round_down_Z (Z.min x y).
+Proof.
+  intros x y.
+  pose proof (page_round_down_Z_le y) as Hle.
+  destruct (Z.le_gt_cases x (page_round_down_Z y)) as [H1|H1].
+  - rewrite (Z.min_l x (page_round_down_Z y)) by lia.
+    rewrite (Z.min_l x y) by lia. reflexivity.
+  - rewrite (Z.min_r x (page_round_down_Z y)) by lia.
+    rewrite page_round_down_Z_idem.
+    destruct (Z.le_gt_cases x y) as [H2|H2].
+    + rewrite (Z.min_l x y) by lia.
+      pose proof (page_round_down_Z_mono _ _ H2) as Hm.
+      pose proof (page_round_down_Z_mono _ _ (Z.lt_le_incl _ _ H1)) as Hm2.
+      rewrite page_round_down_Z_idem in Hm2. lia.
+    + rewrite (Z.min_r x y) by lia. reflexivity.
+Qed.
+
 (** Maximum stack size (Linux default [RLIMIT_STACK] = 8 MiB).  Like
     Linux, the model counts it from the top of the entry image, not from
     the initial SP: [Run.init_machine_state] zero-maps the window
@@ -2847,6 +2894,45 @@ Ltac alloc_top_bounds :=
   | _ => pose proof stack_max_size_val
   end.
 
+(** THE TOP OF THE TOP-DOWN SEARCH, the bound Linux's
+    [generic_get_unmapped_area_topdown] passes to [vm_unmapped_area] as
+    [info.high_limit] (Linux v6.18.46, commit 1f99e9ab748f,
+    mm/mmap.c, [generic_get_unmapped_area_topdown]; mm/vma.c,
+    [unmapped_area_topdown]).
+
+    Linux's value is [mm->mmap_base] alone, which [vm_mmap_base]
+    carries.  This takes the minimum with [alloc_top] as well, because
+    the model keeps the dynamic stack OUT of the ledger and bounds every
+    grant by [alloc_top] instead (see the [vm_init_sp] note above).  A
+    base drawn above [alloc_top] would otherwise let the search return a
+    range the stack owns.  The difference is residual R-b of SCOPE.md:
+    Linux's search reaches up to [STACK_TOP_MAX] for a free HINT and its
+    bottom-up fallback reaches the stack's guard gap, and this model
+    stops at [alloc_top].
+
+    [page_round_down_Z] on [alloc_top] because [alloc_top] is
+    [sp - stack_max_size] and [sp] is only 16-byte aligned
+    ([Run.valid_sp]), while every address the search returns is a page
+    base. *)
+Definition mmap_top (h : VmMaps) : Z :=
+  Z.min (bv_unsigned (vm_mmap_base h)) (page_round_down_Z (alloc_top h)).
+
+(** WHERE THE vdso/vvar PAIR SITS, as a page base.
+
+    [__setup_additional_pages] (arch/riscv/kernel/vdso.c) is the FIRST
+    [get_unmapped_area] of the run — [load_elf_binary] calls
+    [ARCH_SETUP_ADDITIONAL_PAGES] after it has mapped the segments and
+    before it randomizes brk (fs/binfmt_elf.c) — and for a static
+    ET_EXEC image nothing is mapped below [mm->mmap_base] yet, so the
+    top-down search hands back the highest range that fits: the pair
+    ends exactly at the search top.
+
+    Both [vm_mmap_base] and [vm_init_sp] are immutable for the whole
+    run, so this value is the same at every step, and a reader outside
+    [init_model] (the vDSO's own load and fetch arms) may call it on the
+    current ledger. *)
+Definition vdso_top (h : VmMaps) : Z := page_round_down_Z (mmap_top h).
+
 (** Compatibility constructor for ledgers containing only rw memory.
     Existing examples and allocator simulations need not mention the
     empty protection ledger, nor the placement base (seeded 0, which
@@ -2961,6 +3047,92 @@ Record FdState := mkFdState {
   fdst_pipes : list (word * PipeBuf);
 }.
 
+(** * THE KERNEL BUILD THE RUN WAS LAUNCHED ON
+
+    Two facts about the launch that no trace reveals and that the model
+    cannot derive, and that are FIXED for a kernel image rather than
+    drawn per run: which optional memory-management behaviour the kernel
+    was built with, and which vDSO image it carries.  They sit together
+    in one record so that a later launch fact of the same kind costs one
+    field and no signature.
+
+    A run carries the record in its input ([ProcInput]'s [in_kernel]),
+    not in its entry: a pair of builds compared for equivalence runs on
+    ONE machine, which is why [in_hwcap] and [in_va_size] are inputs
+    too.  [init_model] copies it into [VmState]'s [vmst_kernel], where
+    [m_kernel] reads it.
+
+    EVERY VALUE OF EVERY FIELD NAMES A REAL BUILD, so [Run.valid_input]
+    carries no clause about this record and no consumer's destructuring
+    pattern changes.  That is what [vdso_text_pages]'s wrap below is
+    for. *)
+Record KernelBuild := mkKernelBuild {
+  kb_thp : bool
+    (* was the kernel built with CONFIG_TRANSPARENT_HUGEPAGE?  It
+       decides whether an anonymous request whose length is a multiple
+       of [pmd_size] takes the padded search and the 2 MiB alignment of
+       [thp_get_unmapped_area_vmflags] (Linux v6.18.46, commit
+       1f99e9ab748f, mm/huge_memory.c), which
+       [Sys/Mm/Mmap.linux_place] reads.  Both answers describe real
+       kernels: the riscv defconfig
+       (arch/riscv/configs/defconfig) does not set it, and
+       distribution kernels do *);
+  kb_vdso : N
+    (* which vDSO image the kernel build carries.  Its one use here is
+       the image's SIZE, through [vdso_text_pages] below; the image's
+       CONTENT belongs to the vDSO rules *);
+}.
+
+(** The vvar pages the kernel maps below the vDSO text: four, fixed by
+    the build ([__VDSO_PAGES], arch/riscv/include/asm/vdso.h;
+    [VDSO_NR_PAGES], lib/vdso/datastore.c, Linux v6.18.46, commit
+    1f99e9ab748f). *)
+Definition vdso_vvar_pages : Z := 4.
+
+(** HOW MANY PAGES THE vDSO TEXT TAKES, for the build [kb] names.
+
+    One to sixteen, and EVERY [N] gives one, so no validity clause is
+    needed: a build whose image is larger than sixteen pages is not a
+    build this model describes, and SCOPE.md says so.
+
+    This is the ONE place the size of the image is read.  Everything
+    below — [vdso_len], [vdso_reserved], the placement rule, the
+    examples — goes through it, and every proof about the pair uses
+    [vdso_text_pages_pos] and [vdso_text_pages_le] rather than this
+    body, so a lane that gives the model a table of MEASURED images
+    replaces this body alone. *)
+Definition vdso_text_pages (kb : KernelBuild) : Z :=
+  (1 + Z.of_N (kb_vdso kb) mod 16)%Z.
+
+Lemma vdso_text_pages_pos : forall kb, (1 <= vdso_text_pages kb)%Z.
+Proof.
+  intros kb. unfold vdso_text_pages.
+  pose proof (Z.mod_pos_bound (Z.of_N (kb_vdso kb)) 16 ltac:(lia)). lia.
+Qed.
+
+Lemma vdso_text_pages_le : forall kb, (vdso_text_pages kb <= 16)%Z.
+Proof.
+  intros kb. unfold vdso_text_pages.
+  pose proof (Z.mod_pos_bound (Z.of_N (kb_vdso kb)) 16 ltac:(lia)). lia.
+Qed.
+
+(** The whole pair's width in bytes: the vvar pages and the text pages. *)
+Definition vdso_len (kb : KernelBuild) : Z :=
+  ((vdso_vvar_pages + vdso_text_pages kb) * page_size)%Z.
+
+Lemma vdso_len_bounds : forall kb,
+  (5 * page_size <= vdso_len kb <= 20 * page_size)%Z.
+Proof.
+  intros kb. unfold vdso_len, vdso_vvar_pages, page_size.
+  pose proof (vdso_text_pages_pos kb). pose proof (vdso_text_pages_le kb). lia.
+Qed.
+
+(** The build a model gets when nobody names one: no transparent huge
+    pages, image 1 (two text pages under the body above).  A run built
+    from a [ProcInput] never sees it — [init_model] installs
+    [in_kernel] — exactly as with [default_nofile]. *)
+Definition default_kernel : KernelBuild := mkKernelBuild false 1%N.
+
 (** The virtual-memory subsystem.  [vmst_lazy] records page-aligned sparse
     anonymous reservations whose backing is charged on first data access;
     [vmst_materialized] is the deduplicated set of page bases already charged.
@@ -2969,6 +3141,10 @@ Record VmState := mkVmState {
   vmst_maps : VmMaps;
   vmst_lazy : list (word * word);
   vmst_materialized : list word;
+  vmst_kernel : KernelBuild
+    (* the build the run was launched on, copied from [ProcInput]'s
+       [in_kernel] by [init_model] and written by nothing else.  Read it
+       with [m_kernel] *);
 }.
 
 (** The channels.  Standard input carries the UNCONSUMED remainder of the
@@ -3515,6 +3691,8 @@ Definition m_vmmaps (m : Model) : VmMaps := vmst_maps (m_vm m).
 Definition m_vm_lazy (m : Model) : list (word * word) := vmst_lazy (m_vm m).
 Definition m_vm_materialized (m : Model) : list word :=
   vmst_materialized (m_vm m).
+(** The kernel build this run was launched on; see [KernelBuild]. *)
+Definition m_kernel (m : Model) : KernelBuild := vmst_kernel (m_vm m).
 Definition m_stdin (m : Model) : InputStream := iost_stdin (m_io m).
 Definition m_urandom (m : Model) : InputStream := iost_urandom (m_io m).
 Definition m_net (m : Model) : NetQueue := iost_net (m_io m).
@@ -3584,7 +3762,7 @@ Definition default_nofile : word := Z_to_bv 64 1024.
 Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
     (stdin : InputStream) (fs : Fs.Fs) (halted : option word)
     (tid : option word) (rlim : option (list byte)) : Model :=
-  mkModelOf (mkFdState fds []) (mkVmState vm [] [])
+  mkModelOf (mkFdState fds []) (mkVmState vm [] [] default_kernel)
             (mkIoState stdin IEof net_silent (Z_to_bv 64 0)) (mkFsState fs)
             (mkProcState halted tid
                (mkCreds overflow_id overflow_id overflow_id
@@ -3604,11 +3782,17 @@ Definition with_pipes (ps : list (word * PipeBuf)) (m : Model) : Model :=
     (m_lim m) (m_time m).
 Definition with_vmmaps (h : VmMaps) (m : Model) : Model :=
   mkModelOf (m_fd m)
-    (mkVmState h (m_vm_lazy m) (m_vm_materialized m))
+    (mkVmState h (m_vm_lazy m) (m_vm_materialized m) (m_kernel m))
     (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
 Definition with_vm_backing (lazy : list (word * word))
     (materialized : list word) (m : Model) : Model :=
-  mkModelOf (m_fd m) (mkVmState (m_vmmaps m) lazy materialized)
+  mkModelOf (m_fd m) (mkVmState (m_vmmaps m) lazy materialized (m_kernel m))
+    (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
+(** Install the launch's kernel build.  Its ONE caller is [init_model]:
+    the build is a fact about the machine, and no step changes it. *)
+Definition with_kernel (kb : KernelBuild) (m : Model) : Model :=
+  mkModelOf (m_fd m)
+    (mkVmState (m_vmmaps m) (m_vm_lazy m) (m_vm_materialized m) kb)
     (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
 Definition with_stdin (s : InputStream) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (mkIoState s (m_urandom m) (m_net m) (m_conn_ix m))
@@ -4536,6 +4720,68 @@ Proof.
   change (bv_modulus 64) with two_pow_64. exact Hz.
 Qed.
 
+(** THE vdso/vvar PAIR AS LEDGER ENTRIES, ending at [top].
+
+    [__setup_additional_pages] (arch/riscv/kernel/vdso.c, Linux
+    v6.18.46, commit 1f99e9ab748f) asks [get_unmapped_area] for
+    [vdso_text_len + VVAR_SIZE] in one request, maps the vvar pages at
+    the bottom of what it gets and the text above them.  So the vvar
+    entry comes first and the text ends at [top].
+
+    [[]] WHEN THE PAIR WOULD NOT FIT above the first page: a ledger
+    whose [top] is that low describes no launch, and an entry at a
+    negative address is not a word.
+
+    They go in [vm_reserved] rather than [vm_maps] (the OSSV-231 plan,
+    decision D4): the placement search, an in-place [mremap] grow and
+    MAP_FIXED_NOREPLACE all read [vm_reserved], while a whole [munmap]
+    of a [vm_maps] entry would SUCCEED, and Linux's answer to an
+    [munmap] of part of the pair is not that. *)
+Definition vdso_reserved (kb : KernelBuild) (top : Z) : list (word * word) :=
+  let base := (top - vdso_len kb)%Z in
+  if (base <? page_size)%Z then []
+  else [ (Z_to_bv 64 base, Z_to_bv 64 (vdso_vvar_pages * page_size));
+         (Z_to_bv 64 (base + vdso_vvar_pages * page_size),
+          Z_to_bv 64 (vdso_text_pages kb * page_size)) ].
+
+(** The pair lies inside [[top - vdso_len kb, top)] — what a proof
+    about the INITIAL ledger needs in order to say that a range below
+    the pair, or at or above [top], misses it. *)
+Lemma vdso_reserved_above : forall kb top a n,
+  (top < two_pow_64)%Z ->
+  In (a, n) (vdso_reserved kb top) ->
+  ((top - vdso_len kb <= bv_unsigned a)%Z
+   /\ (bv_unsigned a + bv_unsigned n <= top)%Z).
+Proof.
+  intros kb top a n Htop Hin. unfold vdso_reserved in Hin.
+  pose proof (vdso_text_pages_pos kb). pose proof (vdso_text_pages_le kb).
+  pose proof (vdso_len_bounds kb).
+  unfold vdso_len, vdso_vvar_pages, page_size in *.
+  destruct (Z.ltb_spec (top - (4 + vdso_text_pages kb) * 4096) 4096) as [Hlt|Hge];
+    [cbn in Hin; contradiction|].
+  cbn in Hin. destruct Hin as [Heq|[Heq|[]]]; inversion Heq; subst a n;
+    rewrite !bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia);
+    unfold two_pow_64 in *; lia.
+Qed.
+
+(** Every entry of the pair names at least one byte, so neither closes
+    a [region_free] gate over a range it holds no byte of (see
+    [entries_nonzero] below). *)
+Lemma vdso_reserved_nonzero : forall kb top a n,
+  (top < two_pow_64)%Z ->
+  In (a, n) (vdso_reserved kb top) ->
+  (0 < bv_unsigned n)%Z.
+Proof.
+  intros kb top a n Htop Hin. unfold vdso_reserved in Hin.
+  pose proof (vdso_text_pages_pos kb). pose proof (vdso_text_pages_le kb).
+  pose proof (vdso_len_bounds kb).
+  unfold vdso_len, vdso_vvar_pages, page_size in *.
+  destruct (Z.ltb_spec (top - (4 + vdso_text_pages kb) * 4096) 4096) as [Hlt|Hge];
+    [cbn in Hin; contradiction|].
+  cbn in Hin. destruct Hin as [Heq|[Heq|[]]]; inversion Heq; subst a n;
+    rewrite bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia); lia.
+Qed.
+
 (** Cutting a NONEMPTY entry leaves nonempty remnants: each of the two
     is emitted under exactly the guard that makes its size positive. *)
 Lemma iv_subtract_nonzero : forall (a sz : word) loZ hiZ,
@@ -5345,19 +5591,30 @@ Record ProcInput := mkProcInput_full {
 
        [Run.valid_input] has NO clause naming it: [fs_seed_tmp] seeds
        any list into the canonical form, so every value is one a launch
-       could present ([fs_seed_tmp_valid]). *)
+       could present ([fs_seed_tmp_valid]). *);
+  in_kernel : KernelBuild
+    (* THE ENVIRONMENT'S DECLARATION of the kernel build the process
+       was launched on: see [KernelBuild] for what it holds and why it
+       is an input rather than a field of the entry.  [init_model]
+       copies it into [vmst_kernel], where [m_kernel] reads it, and
+       [Sys/Mm/Mmap.linux_place] is its one consumer today.
+
+       [Run.valid_input] has NO clause naming it: every value of every
+       field names a build a launch could present *)
 }.
 
-(** THE POSITIONAL-LITERAL FORM: every field except the two ENVIRONMENT
-    fields at the end of the record ([in_urandom], [in_tmp]).
+(** THE POSITIONAL-LITERAL FORM: every field except the three
+    ENVIRONMENT fields at the end of the record ([in_urandom],
+    [in_tmp], [in_kernel]).
 
     The record's own constructor is [mkProcInput_full] and takes every
-    field.  This takes the first thirteen, in that order,
-    and fills the last two with THE DEFAULT RANDOM STREAM and
-    THE EMPTY /tmp: [default_urandom], which is zero bytes forever, and
-    a private /tmp that starts empty.  So a literal written through this
-    name denotes an input in an environment
-    that holds no file of its own.
+    field.  This takes the first thirteen, in that order, and fills the
+    last three with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp and THE
+    DEFAULT KERNEL BUILD: [default_urandom], which is zero bytes
+    forever, a private /tmp that starts empty, and [default_kernel], a
+    kernel built without transparent huge pages.  So a literal written
+    through this name denotes an input in an environment that holds no
+    file of its own, on an ordinary kernel.
 
     THE RANDOM DEFAULT IS NOT [IEof]: under
     [Run.valid_urandom] every valid input declares an endless stream, so
@@ -5382,7 +5639,8 @@ Definition mkProcInput
     (nofile sigmask hwcap : word) (abort_terminal : bool)
     (va_size : VaSize) : ProcInput :=
   mkProcInput_full argv envp image_fs stdin uid gid groups net
-    nofile sigmask hwcap abort_terminal va_size default_urandom [].
+    nofile sigmask hwcap abort_terminal va_size default_urandom []
+    default_kernel.
 
 (** THE FILE SYSTEM THE RUN STARTS WITH: the image, with the run's
     declared private /tmp seeded into it under absolute keys.
@@ -5444,6 +5702,22 @@ Definition in_fs (inp : ProcInput) : Fs.Fs :=
    effective id differs — is not an input this model can state.
    ========================================================================= *)
 
+(** THE INITIAL RESERVED LEDGER: the image the kernel mapped, and the
+    vdso/vvar pair [execve] installed above it.
+
+    The pair ends at [vdso_top] of the ledger this very function
+    builds, which for [mkVmMapsFull reserved [] [] brk0 brk0 lim mbase
+    sp] is [page_round_down_Z (Z.min mbase (sp - stack_max_size))].
+    Written out here rather than called on the finished model because
+    the model is what this term is building; [vm_reserved_init_model]
+    below states the two forms are the same. *)
+Definition init_reserved (reserved : list (word * word))
+    (mbase sp : word) (kb : KernelBuild) : list (word * word) :=
+  reserved
+  ++ vdso_reserved kb
+       (page_round_down_Z
+          (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
+
 Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     (lim : Z) (inp : ProcInput) : Model :=
   with_abort_terminal (in_abort_terminal inp)
@@ -5451,6 +5725,7 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
   (with_nofile (in_nofile inp)
    (with_net (in_net inp)
    (with_urandom (in_urandom inp)
+   (with_kernel (in_kernel inp)
    (with_creds
     (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
              (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
@@ -5458,12 +5733,154 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
        [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
          (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
          (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
-       (mkVmMapsFull reserved [] [] brk0 brk0 lim mbase sp)
+       (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
+          [] [] brk0 brk0 lim mbase sp)
        (in_stdin inp)
        (in_fs inp)
        None
        None
-       None)))))).
+       None))))))).
+
+Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
+  m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_init_model : model.
+
+Lemma vdso_top_init_model : forall reserved brk0 mbase sp lim inp,
+  vdso_top (m_vmmaps (init_model reserved brk0 mbase sp lim inp))
+  = page_round_down_Z
+      (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size)).
+Proof.
+  intros. unfold vdso_top, mmap_top, alloc_top. cbn.
+  apply page_round_down_Z_min_r.
+Qed.
+
+Lemma vm_reserved_init_model : forall reserved brk0 mbase sp lim inp,
+  vm_reserved (m_vmmaps (init_model reserved brk0 mbase sp lim inp))
+  = reserved
+    ++ vdso_reserved (in_kernel inp)
+         (vdso_top (m_vmmaps (init_model reserved brk0 mbase sp lim inp))).
+Proof.
+  intros. rewrite vdso_top_init_model. reflexivity.
+Qed.
+
+(** THE KERNEL BUILD SURVIVES EVERY SETTER, because no step changes the
+    machine the run is on.  [with_kernel] is the one writer, and its one
+    caller is [init_model].  Registered in [model] so a proof that
+    reaches [m_kernel] through a stack of setters writes
+    [autorewrite with model] and names no field. *)
+Lemma m_kernel_with_kernel : forall kb m, m_kernel (with_kernel kb m) = kb.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_kernel : model.
+
+Lemma m_kernel_with_vmmaps : forall v m,
+  m_kernel (with_vmmaps v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_vmmaps : model.
+
+Lemma m_kernel_with_vm_backing : forall lz mt m,
+  m_kernel (with_vm_backing lz mt m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_vm_backing : model.
+
+Lemma m_kernel_with_fds : forall v m, m_kernel (with_fds v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_fds : model.
+
+Lemma m_kernel_with_pipes : forall v m, m_kernel (with_pipes v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_pipes : model.
+
+Lemma m_kernel_with_stdin : forall v m, m_kernel (with_stdin v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_stdin : model.
+
+Lemma m_kernel_with_urandom : forall v m,
+  m_kernel (with_urandom v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_urandom : model.
+
+Lemma m_kernel_with_net : forall v m, m_kernel (with_net v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_net : model.
+
+Lemma m_kernel_with_accepted : forall v m,
+  m_kernel (with_accepted v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_accepted : model.
+
+Lemma m_kernel_with_fs : forall v m, m_kernel (with_fs v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_fs : model.
+
+Lemma m_kernel_with_halted : forall v m, m_kernel (with_halted v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_halted : model.
+
+Lemma m_kernel_with_killed : forall v m, m_kernel (with_killed v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_killed : model.
+
+Lemma m_kernel_with_tid : forall v m, m_kernel (with_tid v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_tid : model.
+
+Lemma m_kernel_with_rlimit_core : forall v m,
+  m_kernel (with_rlimit_core v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_rlimit_core : model.
+
+Lemma m_kernel_with_nofile : forall v m, m_kernel (with_nofile v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_nofile : model.
+
+Lemma m_kernel_with_utsname : forall v m,
+  m_kernel (with_utsname v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_utsname : model.
+
+Lemma m_kernel_with_statpin : forall p bs m,
+  m_kernel (with_statpin p bs m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_statpin : model.
+
+Lemma m_kernel_with_abort_terminal : forall v m,
+  m_kernel (with_abort_terminal v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_abort_terminal : model.
+
+Lemma m_kernel_with_creds : forall v m, m_kernel (with_creds v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_creds : model.
+
+Lemma m_kernel_with_setsid_succeeded : forall m,
+  m_kernel (with_setsid_succeeded m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_setsid_succeeded : model.
+
+Lemma m_kernel_with_children : forall m,
+  m_kernel (with_children m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_children : model.
+
+Lemma m_kernel_with_sigmask : forall v m,
+  m_kernel (with_sigmask v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigmask : model.
+
+Lemma m_kernel_with_sigaltstack_installed : forall m,
+  m_kernel (with_sigaltstack_installed m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigaltstack_installed : model.
+
+Lemma m_kernel_with_sigabrt_pending : forall m,
+  m_kernel (with_sigabrt_pending m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigabrt_pending : model.
+
+Lemma m_kernel_with_clock : forall v m, m_kernel (with_clock v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_clock : model.
 
 (** The base case of the nonemptiness invariant: a run starts with NO
     protected range at all.  Every reachable [vm_noaccess] is therefore
@@ -8157,7 +8574,8 @@ Proof. reflexivity. Qed.
 
 Lemma m_vmmaps_init_model : forall reserved brk0 mbase sp lim inp,
   m_vmmaps (init_model reserved brk0 mbase sp lim inp) =
-  mkVmMapsFull reserved [] [] brk0 brk0 lim mbase sp.
+  mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
+    [] [] brk0 brk0 lim mbase sp.
 Proof. reflexivity. Qed.
 
 (** The grant bound of the model a run starts from, in the form the
