@@ -59,9 +59,12 @@ Hypothesis SINV_agree : forall E E' M, env_agree nx0 E E' -> SINV E M -> SINV E'
          child a = REFUSED; child b = [APC.node_mprotect] (Mprotect.v: [map_contains noaccess && map_contains maps] branch).
     M4 [node_brk2_sound    : OBL_brk2]      [AP.node_brk2 A LIMIT]   (Mmap.v [brk_r_ok] GROW:
          child a = stay (r = b), child b = grow (r = req, [brk_grow_ok])).
-    M5 [node_sys_sound     : OBL_sys]       [AP.node_sys A nx0 y] for y ∈ {YMunmap, YBrk, YSetTid}
-         (munmap of exactly one tracked entry — deterministic; brk query / provably blocked grow — r = b only;
-          set_tid_address).
+    M5 [node_sys_sound     : OBL_sys]       [AP.node_sys A nx0 y] for y ∈ {YBrk, YSetTid}
+         (brk query / provably blocked grow — r = b only; set_tid_address).
+    M5b [node_munmap2_sound : OBL_munmap2]  [APC.node_munmap2 A]   (Mmap.v [munmap_spec] EXACT arm:
+         child a = REFUSED ([APC.refuse]: a0 := -ENOMEM, model unchanged — Linux reattaches the vmas
+         when [vma_iter_clear_gfp] fails, mm/vma.c:1573/1581 at v6.18.46);
+         child b = the cut of exactly one tracked entry).
     M6 [node_exit_sound    : OBL_exit]      [APC.node_exit]  (exit 93 / exit_group 94 → [t_exit]).
     The [PSpin] leaf, PRun, PX summaries, PFresh, PJoin and hooks are not node obligations. *)
 
@@ -90,11 +93,12 @@ Definition OBL_mmap2 : Prop := mm2_stmt SEGS A nx0 LIMIT SINV argH FS0 (node_mma
 Definition OBL_mmapin : Prop := forall hole : bool, mm3_stmt SEGS A nx0 LIMIT SINV argH FS0 (node_mmapin A LIMIT hole).   (* hole = PMmapInH *)
 Definition OBL_mprotect2 : Prop := mm2_stmt SEGS A nx0 LIMIT SINV argH FS0 (node_mprotect2 A LIMIT).
 Definition OBL_brk2 : Prop := brk2_stmt SEGS A nx0 LIMIT SINV argH FS0.
+Definition OBL_munmap2 : Prop := munmap2_stmt SEGS A nx0 LIMIT SINV argH FS0.
 Definition OBL_sys : Prop := forall y : snode, sys_stmt SEGS A nx0 LIMIT SINV argH FS0 y.
 Definition OBL_exit : Prop := exit_stmt SEGS A LIMIT SINV argH FS0.
 
 (** all of them (what an integration file assumes about one image / invariant) *)
-Definition OBL_all : Prop := OBL_mmap2 /\ OBL_mmapin /\ OBL_mprotect2 /\ OBL_brk2 /\ OBL_sys /\ OBL_exit.
+Definition OBL_all : Prop := OBL_mmap2 /\ OBL_mmapin /\ OBL_mprotect2 /\ OBL_brk2 /\ OBL_munmap2 /\ OBL_sys /\ OBL_exit.
 
 (** Unfolded reading of the two-child template, for reference (definitionally
     equal to [OBL_mmap2]; do not restate it differently). *)

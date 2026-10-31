@@ -235,6 +235,39 @@ Example munmap_ordinary_still_succeeds :
   = CheckOk (with_vmmaps (mkVmMaps [] [] 0 0 demo_limit) one_map_model) [].
 Proof. check_eq. Qed.
 
+(** An munmap of ONE WHOLE mapping has the same two answers.  Linux
+    sends it to [do_vmi_align_munmap] (mm/vma.c:1557), which detaches
+    the VMA and then clears the range in the mapping tree with
+    [vma_iter_clear_gfp] (mm/vma.c:1573, the helper at
+    include/linux/mm.h:1050): no node, -ENOMEM.  That store is before
+    the point of no return (mm/vma.c:1577) and [clear_tree_failed:]
+    (:1581) re-attaches, so the mapping stays whole and the model is
+    unchanged.  [munmap_ordinary_still_succeeds] above is the success
+    Linux gives when the store gets its node; these are the refusal
+    beside it, and the refusal that also claims the unmap is rejected,
+    since a failed munmap takes no page. *)
+Example munmap_whole_mapping_enomem :
+  check_syscall (mkInput 215 [65536; 4096; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret ENOMEM) [] []) one_map_model
+  = CheckOk one_map_model []
+  /\ check_syscall (mkInput 215 [65536; 4096; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffectU (errno_ret ENOMEM) [] [] [(65536, 4096)] [] []) one_map_model
+  = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** The free-range arm keeps its single answer: with no VMA in the
+    range [do_vmi_munmap] returns 0 at mm/vma.c:1620-1624, before
+    [do_vmi_align_munmap] and before any allocation, so -ENOMEM is not
+    an answer there. *)
+Example munmap_free_range_has_no_enomem :
+  check_syscall (mkInput 215 [131072; 4096; 0; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret ENOMEM) [] []) one_map_model
+  = CheckReject.
+Proof. check_eq. Qed.
+
 (** A mapping the MODEL holds just under 2^64 — which no riscv64 kernel
     can hand out, the model admits it only because no Rocq-side
     invariant bounds a segment's address — is refused by [munmap] with
