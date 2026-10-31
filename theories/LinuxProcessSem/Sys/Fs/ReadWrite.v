@@ -18,6 +18,37 @@ Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
 
+(** write's injectable failure, and it has exactly one: the PAGE a
+    write into an empty pipe has to get before it can copy.
+
+    [anon_pipe_write] (fs/pipe.c, Linux v6.18.46) skips its merge path
+    for an empty pipe — the guard is [if (chars && !was_empty)] (:478)
+    — and the ring loop then opens with
+    [page = anon_pipe_get_page(pipe); if (unlikely(!page)) { if (!ret)
+    ret = -ENOMEM; break; }] (:515-519).  [anon_pipe_get_page] hands
+    back a cached [pipe->tmp_page] when there is one and otherwise
+    [alloc_page(GFP_HIGHUSER | __GFP_ACCOUNT)], which can fail — under
+    memory pressure, or on a memory cgroup at its limit, since
+    [__GFP_ACCOUNT] charges the page.  Nothing in the model's state
+    decides which, so the answer is the ENVIRONMENT's, exactly as
+    [Open.openat_errnos], [Pipe.pipe2_errnos] and [Net.Socket.socket_errnos]
+    are: the arm offers it beside the answer the state does determine,
+    and [Run.injected_table] registers it so a statement may read the
+    family as forced-only instead.
+
+    [break] with [ret] still 0 means NO byte was copied and the pipe is
+    untouched, so the errno stands alone — there is no short count to
+    pair it with.  A write that MERGES allocates nothing and cannot
+    reach it ([State.pipe_needs_page]).
+
+    THE OTHER -ENOMEM ON THIS FILE'S SYSCALLS IS NOT HERE.
+    [__import_iovec] allocates for 9 through [IOV_MAX] descriptors and
+    may answer -ENOMEM there too (lib/iov_iter.c); [readv] declines that
+    band outright ([readv_heap_iovecb]) and [writev]'s header records it
+    as unrepresented.  Those are shapes the model refuses to judge, not
+    answers it offers, so they add nothing to this list. *)
+Definition write_errnos : list Z := [ENOMEM].
+
 (** The zero-fill a call forces on the model is one the model can
     represent: [endpoint], the byte position the call opens the file out
     to, lies at most [Uaccess.rw_bytes_max] past the current end.  Linux leaves
@@ -873,17 +904,37 @@ Definition write_ledger (buf count : word) (bs : list byte)
   else record_copyins [(buf, length bs)] (ret_only (len_word bs)).
 
 (** The tail every file write arm shares: the source bytes, the -EFAULT
-    on an unreadable buffer, the zero-count range verdict, and the
-    ledger.
+    on an unreadable buffer AND THE FILE THAT -EFAULT STILL EXTENDS, the
+    zero-count range verdict, and the ledger.
 
-    [place bs] is the KIND's own middle and the only thing that varies:
-    it answers [None] where that kind declines -- an fd whose path is not
-    in the file system, or a hole the model would have to build -- and
-    otherwise the state update, which is where the destination and the
-    written-back entry live.  The update is handed the ledger as its
-    CONTINUATION rather than building one: it cannot vary the ledger, the
-    -EFAULT or the zero-count wrapper, because it is given the first
-    already built and never sees the other two.
+    [place bs] is the KIND's own middle and [fault] is its other one.
+    [place] answers [None] where that kind declines -- an fd whose path
+    is not in the file system, or a hole the model would have to build
+    -- and otherwise the state update, which is where the destination
+    and the written-back entry live.  The update is handed the ledger as
+    its CONTINUATION rather than building one: it cannot vary the
+    ledger, the -EFAULT or the zero-count wrapper, because it is given
+    the first already built and never sees the other two.
+
+    A FAULTING SOURCE IS NOT A NO-OP ON THE FILE, and [fault] is why
+    this is not simply [err_ret EFAULT].  [generic_perform_write]
+    (mm/filemap.c) calls [a_ops->write_begin] BEFORE the copy, copies
+    with [copy_folio_from_iter_atomic] -- which moves 0 bytes when no
+    byte of the buffer is there -- and then calls
+    [a_ops->write_end(iocb, mapping, pos, bytes, copied, folio, fsdata)]
+    with [copied = 0] anyway.  [shmem_write_end] (mm/shmem.c) opens with
+    [if (pos + copied > inode->i_size) i_size_write(inode, pos + copied);],
+    so the file comes out extended to [pos] exactly; the loop then takes
+    [status == 0], finds [fault_in_iov_iter_readable] unable to fault
+    the range in, sets [status = -EFAULT] and breaks, and
+    [if (!written) return status;] returns it.  So Linux answers -EFAULT
+    AND leaves the file longer, and [fault] carries the kind's own
+    version of that: [None] where the hole it opens is one the model
+    will not build ([modeled_zero_fill]), and otherwise
+    [Fs.file_extend].  [f_pos] does not move -- [new_sync_write]
+    (fs/read_write.c) writes a position back only under [if (ret > 0 &&
+    ppos)] -- so no [fault] update writes the descriptor back.  Linux
+    v6.18.46 throughout.
 
     [Uaccess.write_source] is the readable prefix of the CLAMPED range:
     Linux clamps at [MAX_RW_COUNT] before the write, so a delivering
@@ -891,13 +942,21 @@ Definition write_ledger (buf count : word) (bs : list byte)
     it.  The -EFAULT is guarded by [negb (w_is0 count)] because a
     zero-length write touches no byte and so cannot fault on the buffer;
     what remains for it is the RANGE verdict, which is
-    [Uaccess.access_ok_zero]. *)
+    [Uaccess.access_ok_zero].  A zero-length write extends nothing
+    either: [generic_write_checks] returns at
+    [if (!iov_iter_count(from)) return 0;] before [write_begin] is
+    reached at all. *)
 Definition write_file_tail (mp : word -> option byte) (buf count : word)
+    (fault : option (Sys SyscallEffect -> Sys SyscallEffect))
     (place : list byte -> option (Sys SyscallEffect -> Sys SyscallEffect))
   : Sys SyscallEffect :=
   let bs := write_source mp buf count in
   if negb (w_is0 count) && Nat.eqb (length bs) 0
-  then err_ret EFAULT
+  then
+    match fault with
+    | None => unmodeled
+    | Some upd => upd (err_ret EFAULT)
+    end
   else
     let deliver :=
       match place bs with
@@ -905,6 +964,44 @@ Definition write_file_tail (mp : word -> option byte) (buf count : word)
       | Some upd => upd (write_ledger buf count bs)
       end in
     if w_is0 count then access_ok_zero buf count deliver else deliver.
+
+(** The faulting-source post-state of a write whose bytes would have
+    landed at [off] in [p]: the file extended to [off], the descriptor
+    untouched, or [None] where the hole is one the model will not build.
+
+    The POSITIONAL arms pass this -- [write]'s two, [writev]'s two and
+    [pwrite64]'s shared one -- so the kernel statement [write_file_tail]
+    cites is written once.  The APPEND arms pass [write_fault_keep]
+    below instead, and the difference is the kernel's arithmetic rather
+    than a second rule. *)
+Definition write_fault_extend (fs : Fs) (p : path) (off : word)
+    : option (Sys SyscallEffect -> Sys SyscallEffect) :=
+  match fs_lookup fs p with
+  | None => None                 (* a file fd always points into the fs; see openat *)
+  | Some data =>
+      if negb (modeled_zero_fill (bv_unsigned off) data) then None
+        (* the same hole [modeled_file_gap] bounds for a DELIVERING
+           write, measured at the same offset: the model holds a file as
+           a flat byte list and would have to build those zeros *)
+      else Some (fun k => set_fs (fs_set fs p (file_extend data off)) ;; k)
+  end.
+
+(** An APPEND write's faulting source leaves the file alone, and that
+    is [shmem_write_end]'s own test rather than an omission: the
+    position an append write uses IS [i_size]
+    ([generic_write_checks]'s [iocb->ki_pos = i_size_read(inode)]), so
+    [pos + copied > inode->i_size] is false at [copied = 0] and no new
+    size is written.  [file_extend_at_eof] is that statement in the
+    model's terms -- extending a file to its own length is the identity
+    -- so this is [write_fault_extend] at the append position with the
+    [fs_set] it would perform proved away. *)
+Definition write_fault_keep : Sys SyscallEffect -> Sys SyscallEffect :=
+  fun k => k.
+
+Remark file_extend_at_eof : forall data,
+  (word_to_nat (len_word data) <= length data)%nat ->
+  file_extend data (len_word data) = data.
+Proof. intros data H. apply file_extend_within, H. Qed.
 
 Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
   i <- input ;;
@@ -1022,16 +1119,19 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          divergence from Linux where those two tests would fire.  The append arm
          below models both, for the reason it gives there. *)
       write_range_gate buf count
-        (write_file_tail (in_mem i) buf count (fun bs =>
+        (write_file_tail (in_mem i) buf count
+           (write_fault_extend (m_fs m) p off)
+             (* a source that faults still extends the file to [off]:
+                see [write_file_tail] *)
+           (fun bs =>
            match fs_lookup (m_fs m) p with
            | None => None                        (* an FdFileW always points into the fs; see openat *)
            | Some data =>
                if negb (modeled_file_gap data off bs) then None
                  (* a hole past end-of-file too large to zero-fill as a byte
                     list; Linux makes the file sparse for free — see
-                    [modeled_file_gap].  After the tail's -EFAULT, as on
-                    Linux: an unreadable buffer faults during the copy,
-                    whatever the offset *)
+                    [modeled_file_gap]; the tail's -EFAULT measures the
+                    same hole at the same offset *)
                else
                Some (fun k =>
                  set_fs (fs_set (m_fs m) p (file_write data off bs)) ;;
@@ -1058,7 +1158,8 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          [rw_verify_area], and rests on [modeled_file_gap] declining
          first, with the same known divergence. *)
       write_range_gate buf count
-        (write_file_tail (in_mem i) buf count (fun bs =>
+        (write_file_tail (in_mem i) buf count
+           (write_fault_extend (m_fs m) p off) (fun bs =>
            match fs_lookup (m_fs m) p with
            | None => None                        (* an FdFileRW always points into the fs; see openat *)
            | Some data =>
@@ -1140,7 +1241,10 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
         (if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
          else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
          else
-         write_file_tail (in_mem i) buf count (fun bs =>
+         write_file_tail (in_mem i) buf count (Some write_fault_keep)
+           (* a faulting source leaves an APPEND write's file alone:
+              see [write_fault_keep] *)
+           (fun bs =>
            match fs_lookup (m_fs m) p with
            | None => None                        (* an FdFileA always points into the fs; see openat *)
            | Some data =>
@@ -1246,78 +1350,28 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
                [read_spec]'s pipe arm records for the other bound here.
                Fail closed until then *)
           else
-          let deliver :=
-            set_pipes (pipe_insert (m_pipes m) id (pipe_append st bs)) ;;  (* append; no trace events *)
-            record_copyins [(buf, length bs)] (ret_only count) in
-            (* NO SHORT POSITIVE RETURN, and deliberately not the channel
-               arm's short write: with room in the ring and the whole
-               source readable, [anon_pipe_write] copies everything before
-               it reaches its only [signal_pending] test — that test is at
-               fs/pipe.c:557-561, inside the branch [!pipe_full] at :510
-               sends a full ring to — the argument [write_spec]'s channel
-               arm already spells out for transfers at or below PIPE_BUF,
-               here extended by the capacity guard above to every transfer
-               the model admits.  The whole source IS read, so the range
-               goes in the copy-in ledger exactly as the channel and file
-               arms record theirs *)
-          match fst st with
-          | [] => alt (err_ret ENOMEM) deliver
-            (* AN EMPTY QUEUE TAKES A FRESH PAGE, AND GETTING ONE CAN FAIL.
-               Ported from main LPS (theorem-labs/linux-process-semantics)
-               #1604, commit 4cb1d1b37a, "write: admit -ENOMEM on a pipe's
-               fresh page".
-
-               With the ring empty the merge guard [chars && !was_empty]
-               (:478) is false, so the loop's first iteration calls
-               [anon_pipe_get_page] (:515), which hands back a page cached
-               in the two-slot [pipe->tmp_page] array or else returns
-               [alloc_page(GFP_HIGHUSER | __GFP_ACCOUNT)] (:114-125).  A
-               NULL page is
-               [if (!ret) ret = -ENOMEM] (:516-519), with [ret] still 0,
-               BEFORE [copy_page_from_iter] (:522) reads the source and
-               before [pipe->head] moves (:530): the answer is a plain
-               -ENOMEM, the pipe is unchanged, and no copy-in is recorded
-               (fs/pipe.c [anon_pipe_write], Linux v6.18.46, commit
-               1f99e9ab748f).
-
-               THE TASK THAT ASKED LIVES TO SEE THE -ENOMEM.  An order-0
-               page charged with [__GFP_ACCOUNT] comes back NULL when the
-               task's memory cgroup refuses the charge (mm/page_alloc.c
-               [__alloc_frozen_pages_noprof]), and mm/memcontrol.c
-               [try_charge_memcg] refuses it with -ENOMEM for these flags,
-               which carry neither [__GFP_HIGH] nor [__GFP_NOFAIL], once
-               [mem_cgroup_oom] kills nothing: a group with no killable
-               task (mm/oom_kill.c [out_of_memory] returns false there
-               rather than panicking for a memcg OOM), or a cgroup-v1
-               group with [oom_kill_disable] set, whose
-               mm/memcontrol-v1.c [memcg1_oom_prepare] declines the kill
-               outside a user fault (v6.18.46).
-
-               ADMITTED BESIDE THE DELIVERY RATHER THAN DECLINED, because
-               every byte that enters a modeled pipe enters through this
-               branch: a decline here would leave no pipe the model can
-               hold with anything in it, and every read arm that delivers
-               pipe bytes would go unreachable with it.  Both answers are
-               ones Linux gives on this path, so admitting both proves
-               neither as certain.
-
-               WHETHER A CACHED PAGE MAKES -ENOMEM UNREACHABLE is history
-               the model does not carry, and it does not settle the
-               question either way.  [anon_pipe_put_page] (:127-140) keeps a
-               released page in [tmp_page] only when [page_count(page) ==
-               1]; mm/filemap.c's lockless page-cache protocol (the comment
-               above [filemap_get_entry], v6.18.46) says any page may have
-               its count raised for a moment by a speculative page-cache
-               or GUP-fast lookup, so a drain can hand the page back to the
-               allocator instead, and the next write allocates again.
-
-               A NONEMPTY queue is never here.  Its [used] is the page's
-               watermark [buf->offset + buf->len], which a read does not
-               lower ([State.PipeBuf]), so under [pipe_write_room] the
-               merge at :478-498 takes the whole request and leaves at
-               :495-496 without entering the loop: it allocates nothing *)
-          | _ :: _ => deliver
-          end
+            let deliver :=
+              set_pipes (pipe_insert (m_pipes m) id (pipe_append st bs)) ;;
+                (* append; no trace events *)
+              record_copyins [(buf, length bs)] (ret_only count) in
+            if pipe_needs_page st
+            then alt (e <- errno_from write_errnos ;; err_ret e) deliver
+              (* [anon_pipe_get_page] came back NULL: see [write_errnos] *)
+            else deliver
+        (* NO SHORT POSITIVE RETURN, and deliberately not the channel
+           arm's short write: with room in the ring and the whole source
+           readable, [anon_pipe_write] copies everything before it
+           reaches its only [signal_pending] test — that test is at
+           fs/pipe.c:557-561, inside the branch [!pipe_full] at :510
+           sends a full ring to — so a short POSITIVE return is
+           unreachable — the argument [write_spec]'s channel arm already
+           spells out for transfers at or below PIPE_BUF, here extended by
+           the capacity guard above to every transfer the model admits.
+           The delivered COUNT is therefore the whole request; what is
+           not deterministic is whether the delivery happens at all,
+           which is [write_errnos] above and the environment's.
+           The whole source IS read, so the range goes in the copy-in
+           ledger exactly as the channel and file arms record theirs *)
       end
   end.
 
@@ -1677,7 +1731,23 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
            over-clamp count is a short write here as it is for [write],
            and no unary numeral bigger than the clamp is built. *)
       if negb (w_is0 count) && Nat.eqb (length bs) 0
-      then err_ret EFAULT                        (* nothing readable at [buf]: real -EFAULT *)
+      then
+        (* NOTHING READABLE AT [buf]: a real -EFAULT, and a file left
+           LONGER.  [generic_perform_write] (mm/filemap.c) runs
+           [write_begin] and then [write_end] with [copied = 0] even
+           when the atomic copy moved nothing, and [shmem_write_end]
+           (mm/shmem.c) extends the file in
+           [if (pos + copied > inode->i_size) i_size_write(inode, pos +
+           copied);] -- here to [pos] exactly.  [write_file_tail] holds
+           the same statement for [write] and [writev], and this spec
+           reaches it through [write_fault_extend], which declines the
+           hole the model will not build.  The descriptor's own offset
+           is not touched, and would not be even on a delivering write:
+           [ksys_pwrite64] passes [&pos], a stack slot it discards *)
+        match write_fault_extend (m_fs m) p pos with
+        | None => unmodeled
+        | Some upd => upd (err_ret EFAULT)
+        end
       else
       match fs_lookup (m_fs m) p with
       | None => unmodeled   (* a file fd always points into the fs; see openat *)
@@ -1812,7 +1882,15 @@ Definition writev_ledger (iovs : list (word * word)) (bs : list byte)
     otherwise the state update carrying the destination and the
     written-back entry, handed the shared ledger as its continuation.  It
     is not passed the imported vector: the ledger is the only thing that
-    reads it, and the ledger is built here.
+    reads it, and the ledger is built here.  [fault] is its other
+    middle, and it is [write_file_tail]'s: a gathered prefix of nothing
+    is -EFAULT with the file STILL EXTENDED to the write's offset,
+    because [generic_perform_write] (mm/filemap.c) reaches
+    [a_ops->write_end(..., copied = 0, ...)] and [shmem_write_end]
+    (mm/shmem.c) answers it with
+    [if (pos + copied > inode->i_size) i_size_write(inode, pos + copied);].
+    A vectored write reaches the same [vfs_write] body as a scalar one,
+    so this is one kernel statement and not two.  Linux v6.18.46.
 
     THE [addr_is_error_b] DECLINE SITS BEHIND [place] and not in front of
     it: after the kind's own
@@ -1822,6 +1900,7 @@ Definition writev_ledger (iovs : list (word * word)) (bs : list byte)
     position is not observable. *)
 Definition writev_file_arm (mp : word -> option byte)
     (iov iovcnt off : word)
+    (fault : option (Sys SyscallEffect -> Sys SyscallEffect))
     (place : list byte -> option (Sys SyscallEffect -> Sys SyscallEffect))
   : Sys SyscallEffect :=
   record_copyins (import_iovecs_accesses mp iov (iovcnt32 iovcnt))
@@ -1833,7 +1912,11 @@ Definition writev_file_arm (mp : word -> option byte)
        let bs := writev_gathered mp iovs0 in
        if Z.eqb total 0 then ret_only (Z_to_bv 64 0)   (* zero aggregate: 0, offset unchanged *)
        else if rw_pos_einvalb off total then err_ret EINVAL  (* [rw_verify_area], before the write *)
-       else if Nat.eqb (length bs) 0 then err_ret EFAULT
+       else if Nat.eqb (length bs) 0
+       then match fault with
+            | None => writev_buf_gap
+            | Some upd => upd (err_ret EFAULT)
+            end
        else
          match place bs with
          | None => writev_buf_gap
@@ -1879,7 +1962,8 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
                 (ret_only (len_word ds))          (* the (possibly short) delivered length *)
         end)
   | Some (FdFileW p off) =>
-      writev_file_arm (in_mem i) iov iovcnt off (fun bs =>
+      writev_file_arm (in_mem i) iov iovcnt off
+        (write_fault_extend (m_fs m) p off) (fun bs =>
         match fs_lookup (m_fs m) p with
         | None => None                  (* an FdFileW always points into the fs (see openat) *)
         | Some data =>
@@ -1901,7 +1985,8 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
          the gathered bytes, and the advance — so the only thing this arm
          may state for itself is the entry.  The [FdFileA] arm below is
          the one that differs, and it differs in the destination. *)
-      writev_file_arm (in_mem i) iov iovcnt off (fun bs =>
+      writev_file_arm (in_mem i) iov iovcnt off
+        (write_fault_extend (m_fs m) p off) (fun bs =>
         match fs_lookup (m_fs m) p with
         | None => None                  (* an FdFileRW always points into the fs (see openat) *)
         | Some data =>
@@ -1930,7 +2015,8 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
          [modeled_file_gap] guard, which an append write cannot fail
          ([append_opens_no_gap]) and so does not carry.  Linux v6.18.46
          throughout. *)
-      writev_file_arm (in_mem i) iov iovcnt off (fun bs =>
+      writev_file_arm (in_mem i) iov iovcnt off
+        (Some write_fault_keep) (fun bs =>
         match fs_lookup (m_fs m) p with
         | None => None                  (* an FdFileA always points into the fs (see openat) *)
         | Some data =>

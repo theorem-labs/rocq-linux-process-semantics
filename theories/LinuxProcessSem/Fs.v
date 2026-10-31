@@ -526,6 +526,27 @@ Proof.
   reflexivity.
 Qed.
 
+(** The file grown to [off] with zeros, and left alone at or below its
+    current end: the content [i_size_write(inode, pos)] leaves behind
+    when the page-cache write moved NO bytes.
+
+    Two call sites, and they are the same kernel statement seen twice.
+    [file_write] below pads with this before it overwrites; and a write
+    whose source buffer faults reaches
+    [a_ops->write_end(iocb, mapping, pos, bytes, copied = 0, ...)]
+    (mm/filemap.c, [generic_perform_write]), whose
+    [if (pos + copied > inode->i_size) i_size_write(inode, pos + copied)]
+    (mm/shmem.c, [shmem_write_end]) extends the file to the write's own
+    offset and no further.  The region it opens is a hole, which reads
+    back as zeros, so a byte list of zeros is the right content — the
+    same argument [file_truncate] below makes for a grow.  Linux v6.18.46.
+
+    [word_to_nat off] is built in full here, exactly as [file_write]
+    does; what bounds it is each caller's [ReadWrite.modeled_zero_fill]
+    guard. *)
+Definition file_extend (data : list byte) (off : word) : list byte :=
+  data ++ repeat (Z_to_bv 8 0) (word_to_nat off - length data)%nat.
+
 (** Overwrite [bs] at offset [off], extending the file if needed.  A write
     of a NONEMPTY [bs] past the current end zero-fills the gap
     (sparse-file semantics).
@@ -536,16 +557,37 @@ Qed.
     put it there).  Without the [[]] arm the padding below would zero-
     extend the file out to [off] on a write that Linux makes no change
     for.  For [off <= length data] the two arms agree, so this is exactly
-    the past-EOF corner. *)
+    the past-EOF corner.  A write whose source FAULTS is neither of
+    these two: it moves no byte and still extends the file, and
+    [file_extend] above is that post-state. *)
 Definition file_write (data : list byte) (off : word) (bs : list byte)
     : list byte :=
   match bs with
   | [] => data                                (* zero-length write: no effect *)
   | _ :: _ =>
-      let padded := data ++ repeat (Z_to_bv 8 0) (word_to_nat off - length data)%nat in
+      let padded := file_extend data off in
       firstn (word_to_nat off) padded
         ++ bs ++ skipn (word_to_nat off + length bs)%nat padded
   end.
+
+(** A delivering write's padding IS the faulting write's post-state, so
+    the two arms of the same kernel statement cannot drift apart. *)
+Lemma file_write_padding : forall data off b bs,
+  file_write data off (b :: bs)
+  = firstn (word_to_nat off) (file_extend data off)
+    ++ (b :: bs) ++ skipn (word_to_nat off + length (b :: bs))%nat
+                        (file_extend data off).
+Proof. reflexivity. Qed.
+
+(** At or below end-of-file nothing is added, which is what makes the
+    guard on this padding a PAST-EOF question. *)
+Lemma file_extend_within : forall data off,
+  (word_to_nat off <= length data)%nat -> file_extend data off = data.
+Proof.
+  intros data off H. unfold file_extend.
+  replace (word_to_nat off - length data)%nat with 0%nat by lia.
+  cbn [repeat]. apply app_nil_r.
+Qed.
 
 (** Set the file's length to exactly [len]: a SHRINK drops the tail, a
     GROW zero-fills out to the new length ([ftruncate]; see
