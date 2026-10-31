@@ -282,6 +282,30 @@ not apply.
   `Sys/Kernel/Exit.v`). `execve` does not reap a child in Linux, so a
   launcher that forks a grandchild, or attaches a tracee, before it
   execs the image makes this assumption false.
+- The launch left `SIGPIPE` at its default disposition, and the
+  statements say which launch they mean rather than assuming one. On
+  Linux a write to a pipe or a socket whose reader has gone raises
+  `SIGPIPE` and the default action ends the program — as in
+  `fuzz_target input | true`, once `true` has exited (`anon_pipe_write`,
+  `fs/pipe.c`, and `sk_stream_error`, `net/core/stream.c`, Linux
+  v6.18.46, commit `1f99e9ab748f`). **The model gives that ending**
+  (`State.with_killed`, `Run.sstep_killed`), so a run under the ordinary
+  statements can end by signal 13 rather than by `exit`, and a halts
+  statement that only accepts an exit status is refuted by such a run
+  rather than silently assuming it away. Which world a statement is
+  about is a declared field, `State.in_sigpipe_default`: `Run.valid_input`
+  pins it to the default disposition, and `Run.valid_input_sigpipe_ignored`
+  is the launch that ran `signal(SIGPIPE, SIG_IGN)` before `execve` — a
+  disposition `execve` preserves (`begin_new_exec` calls
+  `flush_signal_handlers` with `force_default = 0`, `fs/exec.c`) — under
+  which the same write returns `-EPIPE` and the program runs on. **The
+  assumption that is left is not the disposition but the shape of the
+  reader**: `State.in_channel_reader` is a launch fact with one value for
+  the whole run, which `Run.valid_input` constrains at neither value, so
+  the statements cover both the run whose standard output is read
+  throughout and the run that never had a reader. A reader that goes away
+  PART WAY through the output is a third thing the model has no term for,
+  and a program whose reader goes away mid-output is outside the model.
 - No write to a regular file fails. The model has no `ENOSPC`, `EDQUOT`
   or `EIO` out of the page cache (the write arm of
   `Sys/Fs/ReadWrite.v`). The one failure `write` injects is not a
