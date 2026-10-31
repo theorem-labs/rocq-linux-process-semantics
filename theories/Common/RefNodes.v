@@ -48,7 +48,7 @@ From Stdlib Require Import FunctionalExtensionality.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Placement ExecutableSpecs.
 From LinuxProcessSemantics.Common Require Import AsanCeil.  (* constant ceiling/floor, the placement gate, placement_policy *)
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC.
 From LinuxProcessSemantics.Common Require Import
@@ -336,53 +336,98 @@ Definition noaccess_model (a n : word) (m : Model) : Model :=
 
 (** May the kernel place an INACCESSIBLE reservation at [a, a+n)?  Like
     [MmapSim.grant_ok] WITHOUT the budget conjunct: a PROT_NONE mapping
-    consumes no backed memory ([Mmap.mmap_spec], noaccess branch). *)
+    consumes no backed memory ([Mmap.mmap_spec], noaccess branch).
+
+    TWO CHANGES SINCE OSSV-231.  The first conjunct is the spec's own
+    placement rule ([Mmap.linux_place], decided by
+    [Placement.linux_place_is]) — the address is Linux's, not merely a
+    free one.  And the third conjunct bounds the grant by the run's
+    [alloc_top], not by the constant [alloc_ceiling]: at Linux's
+    address the constant bound is FALSE for some admissible runs, since
+    the top-down window's ceiling [mmap_top h] follows
+    [vm_mmap_base h], which [Run.valid_mmap_base] allows above
+    [alloc_ceiling] (see [AsanCeil.placement_policy]). *)
 Definition grant_ok_na (hint : word) (m : Model) (a : word) (n : Z) : bool :=
-  (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
-  && (bv_unsigned a + n <=? alloc_ceiling)%Z
+  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a
+  && (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
+  && (bv_unsigned a + n <=? alloc_top (m_vmmaps m))%Z
   && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n)
   && hint_placement_ok_b hint (m_vmmaps m) (bv_unsigned a) n.
 
-(** The checker's grant condition for a PROT_NONE NULL-hint grant — exactly what [check_mmap]
-    tests (run-dependent ceiling, no placement gate). *)
-Definition grant_ok_na_pin (m : Model) (a : word) (n : Z) : bool :=
-  (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
-  && (bv_unsigned a + n <=? alloc_top (m_vmmaps m))%Z
-  && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n).
+(** The checker's grant condition for a PROT_NONE grant — EXACTLY what
+    [check_mmap]'s noaccess arm tests, so [mmap_noaccess_check] below is
+    a [reflexivity].  That is now one test: the address is the one
+    [Mmap.linux_place] gives.  The four conditions the old guard listed
+    are consequences of it ([Placement.linux_place_is_admissible]) and
+    are no longer separately checked.
 
-Lemma grant_ok_na_of_pin : placement_policy -> forall hint m a n,
-  (0 < n)%Z -> (n mod page_size = 0)%Z -> grant_ok_na_pin m a n = true -> grant_ok_na hint m a n = true.
+    It gained the [hint] parameter that every other [grant_ok*] already
+    had: [check_mmap]'s test reads the call's [addr] argument, so the
+    condition is no longer hint-independent. *)
+Definition grant_ok_na_pin (hint : word) (m : Model) (a : word) (n : Z) : bool :=
+  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a.
+
+Lemma grant_ok_na_pin_unpack : forall hint m a n,
+  (0 < n)%Z -> (n mod page_size = 0)%Z ->
+  grant_ok_na_pin hint m a n = true ->
+  (bv_unsigned a mod page_size = 0)%Z /\ (0 < bv_unsigned a)%Z
+  /\ (bv_unsigned a + n <= alloc_top (m_vmmaps m))%Z
+  /\ region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n) = true.
 Proof.
-  intros PL hint m a n Hn Hnal H. unfold grant_ok_na_pin in H.
-  apply andb_true_iff in H as [H Hrf]. apply andb_true_iff in H as [H Htop]. apply andb_true_iff in H as [Hal Hpos].
-  destruct (PL (m_vmmaps m) a n Hn Hnal (proj1 (Z.eqb_eq _ _) Hal) (proj1 (Z.ltb_lt _ _) Hpos) (proj1 (Z.leb_le _ _) Htop) Hrf) as [Hce Hpl].
-  unfold grant_ok_na. rewrite Hal, Hpos, Hrf, (proj2 (Z.leb_le _ _) Hce). cbn [andb].
-  unfold hint_placement_ok_b. destruct (w_is0 hint); [exact Hpl | reflexivity].
+  intros hint m a n Hn Hnal H.
+  exact (linux_place_is_admissible _ _ _ _ _ Hn Hnal H).
 Qed.
 
-Lemma grant_ok_na_pin_of_grant_ok : forall hint m a n, grant_ok hint m a n = true -> grant_ok_na_pin m a n = true.
+(** THE GATE IS NO LONGER A HYPOTHESIS.  [AsanCeil.placement_policy_holds]
+    proves it from the spec's placement rule, so the checker's
+    condition already implies the gated one. *)
+Lemma grant_ok_na_of_pin : forall hint m a n,
+  (0 < n)%Z -> (n mod page_size = 0)%Z ->
+  grant_ok_na_pin hint m a n = true -> grant_ok_na hint m a n = true.
 Proof.
-  intros hint m a n H. unfold grant_ok in H. unfold grant_ok_na_pin.
-  apply andb_true_iff in H as [H _]. exact H.
+  intros hint m a n Hn Hnal H.
+  unfold grant_ok_na_pin in H.
+  destruct (linux_place_is_admissible _ _ _ _ _ Hn Hnal H)
+    as (Hal & Hpos & Htop & Hfree).
+  unfold grant_ok_na. rewrite H, Hfree.
+  rewrite (proj2 (Z.eqb_eq _ _) Hal), (proj2 (Z.ltb_lt _ _) Hpos),
+    (proj2 (Z.leb_le _ _) Htop). cbn [andb].
+  unfold hint_placement_ok_b. destruct (w_is0 hint) eqn:H0; [|reflexivity].
+  unfold w_is0 in H0. apply bv_eqb_eq in H0. subst hint.
+  exact (placement_policy_holds (m_vmmaps m) (kb_thp (m_kernel m)) a n Hn Hnal
+           (proj1 (linux_place_is_iff _ _ _ _ _ Hn Hnal) H)).
 Qed.
 
-(** [grant_ok_na] implies [grant_ok_na_pin] once the ledger's stack pointer is admissible *)
+Lemma grant_ok_na_pin_of_grant_ok : forall hint m a n,
+  grant_ok hint m a n = true -> grant_ok_na_pin hint m a n = true.
+Proof.
+  intros hint m a n H. unfold grant_ok_na_pin.
+  exact (grant_ok_place _ _ _ _ H).
+Qed.
+
+(** [grant_ok_na] implies [grant_ok_na_pin]: the gate is the only
+    extra conjunct, and both bound the grant by the run's [alloc_top]. *)
 Lemma grant_ok_na_pin_of_gate : forall hint m a n,
-  init_sp_ok (m_vmmaps m) -> grant_ok_na hint m a n = true -> grant_ok_na_pin m a n = true.
+  grant_ok_na hint m a n = true -> grant_ok_na_pin hint m a n = true.
 Proof.
-  intros hint m a n Hisp H. unfold grant_ok_na in H. unfold grant_ok_na_pin.
-  apply andb_true_iff in H as [H _]. apply andb_true_iff in H as [H Hrf]. apply andb_true_iff in H as [H Hce].
-  apply andb_true_iff in H as [Hal Hpos].
-  assert (Htop : (bv_unsigned a + n <= alloc_top (m_vmmaps m))%Z)
-    by (apply (alloc_top_ge_of_ceiling _ _ Hisp); apply Z.leb_le; exact Hce).
-  rewrite Hal, Hpos, Hrf, (proj2 (Z.leb_le _ _) Htop). reflexivity.
+  intros hint m a n H. unfold grant_ok_na in H. unfold grant_ok_na_pin.
+  rewrite !andb_true_iff in H. tauto.
 Qed.
 
-Lemma grant_na_pin_not_errno : forall m a n,
-  (0 <= n)%Z -> grant_ok_na_pin m a n = true -> errno_ret_in mmap_errnos a = false.
+Lemma grant_ok_na_place : forall hint m a n,
+  grant_ok_na hint m a n = true ->
+  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a = true.
 Proof.
-  intros m a n Hn Hg. unfold grant_ok_na_pin in Hg.
-  apply andb_true_iff in Hg as [Hg _]. apply andb_true_iff in Hg as [Hg Htop]. apply Z.leb_le in Htop.
+  intros hint m a n H. unfold grant_ok_na in H.
+  rewrite !andb_true_iff in H. tauto.
+Qed.
+
+Lemma grant_na_pin_not_errno : forall hint m a n,
+  (0 < n)%Z -> (n mod page_size = 0)%Z -> grant_ok_na_pin hint m a n = true ->
+  errno_ret_in mmap_errnos a = false.
+Proof.
+  intros hint m a n Hn Hnal Hg.
+  destruct (grant_ok_na_pin_unpack _ _ _ _ Hn Hnal Hg) as (_ & _ & Htop & _).
   apply errno_ret_in_below; [reflexivity|]. alloc_top_bounds. unfold two_pow_64 in *. lia.
 Qed.
 
@@ -399,7 +444,7 @@ Lemma mmap_noaccess_check : forall ms x8 model eff,
     | mkEffectU r [] [] us [] [] =>
         if errno_ret_in mmap_errnos r
         then match us with [] => CheckOk model [] | _ => CheckReject end
-        else if grant_ok_na_pin model r n && listNN_eqb us [(r, Z_to_bv 64 n)]
+        else if grant_ok_na_pin (ms_gpr ms 0) model r n && listNN_eqb us [(r, Z_to_bv 64 n)]
              then CheckOk (noaccess_model r (Z_to_bv 64 n) model) []
              else CheckReject
     | _ => CheckReject
@@ -421,16 +466,17 @@ Proof.
   destruct (errno_ret_in mmap_errnos r); [reflexivity|].
   unfold grant_ok_na_pin, noaccess_model, with_mmap_backing.
   replace (mmap_noreserve_b (Z_to_bv 64 34)) with false by (vm_compute; reflexivity).
-  rewrite <- !andb_assoc. reflexivity.
+  reflexivity.
 Qed.
 
 Lemma grant_na_not_errno : forall hint model a n,
   (0 <= n)%Z -> grant_ok_na hint model a n = true -> errno_ret_in mmap_errnos a = false.
 Proof.
   intros hint model a n Hn Hg. unfold grant_ok_na in Hg.
-  apply andb_true_iff in Hg as [Hg _]. apply andb_true_iff in Hg as [Hg _]. apply andb_true_iff in Hg as [Hg Hce]. apply Z.leb_le in Hce.
-  apply errno_ret_in_below; [reflexivity|].
-  pose proof alloc_ceiling_val. unfold two_pow_64. lia.
+  apply andb_true_iff in Hg as [Hg _]. apply andb_true_iff in Hg as [Hg _].
+  apply andb_true_iff in Hg as [Hg Htop].
+  apply Z.leb_le in Htop.
+  apply errno_ret_in_below; [reflexivity|]. alloc_top_bounds. unfold two_pow_64 in *. lia.
 Qed.
 
 (* ========================================================================= *)

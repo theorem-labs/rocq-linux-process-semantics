@@ -102,7 +102,11 @@ Section Init.
       quantified draw that is the NAMED hypothesis [AsanCeil.zero_random_draw], FALSE on every real run, used
       only by [atrandom_zero_ok] / [init_kn_zero_ok] / [init_cs_ok_zero] — see the Common README. *)
   Hypothesis Hzr : AsanCeil.zero_random_draw (ed_random rdraw).
-
+  (* The table hypothesis the launch's extra reservations need is
+     declared beside [resx0] below, not here: a Section hypothesis
+     naming [A] that is declared before the layout lemmas is
+     discharged into them too, and their callers then carry an
+     argument they have no reason to. *)
   Definition inp : ProcInput := mkProcInput argv envp fs stdin uid gid groups net default_nofile (Z_to_bv 64 0) hw false Sv48.  (* in_hwcap = hw, in_abort_terminal = false, in_va_size = Sv48 *)
 
   (** [Run.valid_input]'s last conjunct: the exec file name is a name
@@ -137,6 +141,29 @@ Section Init.
 
   Let bsb := entry_stack_image inp mbase ph entryw sp rdraw.   (* the mapped image IS Linux's block: sp .. ed_top *)
   Let usp := bv_unsigned sp.
+  (** THE RUN'S ALLOCATION CEILING, the checker's grant/stack boundary.
+      [APS.co_ceil] asks for [page_round_down_Z (alloc_top (m_vmmaps model0))];
+      [init_model] copies the run's [sp] into [vm_init_sp], and
+      [State.alloc_top h = bv_unsigned (vm_init_sp h) - stack_max_size], so this
+      IS that number ([ceil_eq_model] below).  It is NOT
+      [AsanCeil.alloc_ceiling = 0x7fff7f800000]: that constant is only its lower
+      end, reached when [sp = State.sp_window_lo]. *)
+  Definition CEIL : Z := page_round_down_Z (usp - stack_max_size).
+
+  Lemma ceil_bounds : CEIL mod 4096 = 0 /\ 0x7fff7f800000 <= CEIL <= 0x7fffff800000.
+  Proof.
+    destruct Hsp as (Hlo & Hhi & _). unfold sp_window_lo in Hlo. unfold sp_window_hi in Hhi.
+    unfold CEIL, page_round_down_Z, page_size, stack_max_size, usp in *.
+    split; [apply Z_mod_mult | lia].
+  Qed.
+
+  (** what the stack-side proofs below used the ceiling's numeral for *)
+  Lemma ceil_le_sp : CEIL <= usp - stack_max_size.
+  Proof. unfold CEIL, page_round_down_Z, page_size. lia. Qed.
+
+  Lemma ceil_ok_init : ceil_ok CEIL.
+  Proof. exact ceil_bounds. Qed.
+
   Let utop := bv_unsigned top.
   Let argc := Z.of_nat (length argv).
   Let envc := Z.of_nat (length envp).
@@ -177,7 +204,7 @@ Section Init.
   (** the four AsanPlanSound hypotheses about SINV/argH *)
   Lemma argH0_high : forall E a, argH0 E a = true -> CEIL <= bv_unsigned a.
   Proof.
-    intros E a H. unfold argH0 in H. destruct Hsp as [Hlo _]. unfold sp_window_lo in Hlo. unfold CEIL.
+    intros E a H. unfold argH0 in H. pose proof ceil_le_sp as HCs. unfold stack_max_size in HCs.
     pose proof (valid_argv_len argv Hva).
     assert (HC : 0 <= CHEAD) by (unfold CHEAD; lia).
     assert (HW : 0 <= W) by (unfold W; lia).
@@ -459,10 +486,10 @@ Section Init.
   Definition FULL0 : word -> option byte := wrap_mem inp mbase ph entryw sp rdraw.
   Definition model0 : Model := init_model (segments_reserved segs) brk0 mbase sp LIMIT inp.  (* init_model takes the run stack pointer *)
 
-  Let cs0 := init_acs_of A.
-  Let cs0z := init_acs_of_zero A.   (* zero-draw initial state: init_kn_zero *)
-  Let hid0 := hid A argH0 E0 cs0 model0.
-  Let Mr0 := Mr A argH0 E0 cs0 model0 FULL0.
+  Let cs0 := init_acs_of A CEIL.
+  Let cs0z := init_acs_of_zero A CEIL.   (* zero-draw initial state: init_kn_zero *)
+  Let hid0 := hid A CEIL argH0 E0 cs0 model0.
+  Let Mr0 := Mr A CEIL argH0 E0 cs0 model0 FULL0.
 
   (** THE LAUNCH'S RESERVED LEDGER is the image's reservations AND the vDSO
       pair: [State.init_model] seeds [vm_reserved] with
@@ -590,7 +617,7 @@ Section Init.
   Proof.
     intros a n Ha Hn Hvis. pose proof usp_lo. unfold bsb.
     rewrite <- (rdn_wrap_stack_above segs inp mbase ph entryw sp rdraw a n) by (unfold usp in *; lia).
-    apply rdn_ext; [exact Hn|]. intros x Hx. apply Mr0_visible; [unfold usp, CEIL in *; lia | apply Hvis; exact Hx].
+    apply rdn_ext; [exact Hn|]. intros x Hx. apply Mr0_visible; [pose proof ceil_le_sp; unfold usp, stack_max_size in *; lia | apply Hvis; exact Hx].
   Qed.
 
   Lemma split_u : forall E e b k, split_lit e = (b, k) -> 0 <= k -> k <= uE E e ->
@@ -702,7 +729,7 @@ Section Init.
   Lemma Mr0_below : forall a : word, usp - 6144513 <= bv_unsigned a < usp -> Mr0 a = Some (Z_to_bv 8 0).
   Proof.
     intros a Ha. pose proof usp_lo. pose proof len_av.
-    rewrite Mr0_visible; [apply FULL0_below; exact Ha | unfold CEIL; lia | apply not_argH0; lia].
+    rewrite Mr0_visible; [apply FULL0_below; exact Ha | pose proof ceil_le_sp; unfold usp, stack_max_size in *; lia | apply not_argH0; lia].
   Qed.
 
   Lemma stack_window_ok :
@@ -838,7 +865,7 @@ Section Init.
     assert (Ha : (at_random_ptr sp rseq argv envp + nat_to_word (Z.to_nat i))%bv = Z_to_bv 64 (usp + CHEAD - 16 + i)).
     { apply bv_eq. rewrite word_add_nat, Hu, u64_lit, u64_lit; unfold usp in *; lia. }
     rewrite Ha in Hrd.
-    rewrite Mr0_visible; [| rewrite u64_lit; unfold usp, CEIL in *; lia | apply not_argH0; rewrite u64_lit; unfold STR0, usp in *; lia].
+    rewrite Mr0_visible; [| rewrite u64_lit; pose proof ceil_le_sp; unfold usp, stack_max_size in *; lia | apply not_argH0; rewrite u64_lit; unfold STR0, usp in *; lia].
     unfold FULL0. rewrite (wrap_above_sp inp mbase ph entryw sp rdraw) by (rewrite u64_lit; unfold usp in *; lia). fold bsb.
     cbn [rdn] in Hrd.
     destruct (stack_to_mem sp bsb (Z_to_bv 64 (usp + CHEAD - 16 + i))) as [b|] eqn:Hstk.
@@ -874,7 +901,7 @@ Section Init.
     assert (Ha : (at_random_ptr sp rseq argv envp + nat_to_word (Z.to_nat i))%bv = Z_to_bv 64 (usp + CHEAD - 16 + i)).
     { apply bv_eq. rewrite word_add_nat, Hu, u64_lit, u64_lit; unfold usp in *; lia. }
     rewrite Ha in Hrd.
-    rewrite Mr0_visible; [| rewrite u64_lit; unfold usp, CEIL in *; lia | apply not_argH0; rewrite u64_lit; unfold STR0, usp in *; lia].
+    rewrite Mr0_visible; [| rewrite u64_lit; pose proof ceil_le_sp; unfold usp, stack_max_size in *; lia | apply not_argH0; rewrite u64_lit; unfold STR0, usp in *; lia].
     unfold FULL0. rewrite (wrap_above_sp inp mbase ph entryw sp rdraw) by (rewrite u64_lit; unfold usp in *; lia). fold bsb.
     cbn [rdn] in Hrd.
     destruct (stack_to_mem sp bsb (Z_to_bv 64 (usp + CHEAD - 16 + i))) as [b|] eqn:Hstk.
@@ -889,7 +916,7 @@ Section Init.
   Lemma kimg_ok : kentry_ok segs E0 Mr0 (KImg (img_lo A) (img_hi A)).
   Proof.
     pose proof usp_lo. pose proof (if_hull _ _ _ IMG) as (H1 & H2 & H3 & H4). cbn [kentry_ok]. split; [lia|]. split; [lia|]. intros i Hi.
-    unfold Mr0, Mr, mrestrict. destruct (hid A argH0 E0 cs0 model0 (Z_to_bv 64 i)); [reflexivity|].
+    unfold Mr0, Mr, mrestrict. destruct (hid A CEIL argH0 E0 cs0 model0 (Z_to_bv 64 i)); [reflexivity|].
     apply FULL0_low. rewrite u64_lit; lia.
   Qed.
 
@@ -1006,21 +1033,25 @@ Section Init.
     pose proof (if_hull _ _ _ IMG) as (I1 & I2 & I3 & I4).
     unfold allowA, cs0, init_acs_of, init_acs_of_with, init_vis. cbn [a_vis a_ghost app flat_map allow1 fst snd].
     unfold sh_lo, sh_hi. cbn [fst snd].
-    unfold uE. rewrite !edenot_lit, !u64_lit by (unfold CEIL; lia). reflexivity.
+    unfold uE. rewrite !edenot_lit, !u64_lit by (pose proof ceil_bounds as CB; lia). reflexivity.
   Qed.
 
   Lemma abytes_init : A_bytes (allowA A E0 cs0) <= vis_cost (img_hi A - img_lo A) + vis_cost (2 ^ 47 - CEIL)
                       /\ vis_cost (img_hi A - img_lo A) + vis_cost (2 ^ 47 - CEIL) <= LIMIT.
   Proof.
     pose proof (if_hull _ _ _ IMG) as (I1 & I2 & I3 & I4). pose proof (if_shadow _ _ _ IMG) as S1.
-    rewrite allowA_init. cbn [A_bytes fst snd]. unfold vis_cost, CEIL, LIMIT, target_alloc_limit.
+    rewrite allowA_init. cbn [A_bytes fst snd]. pose proof ceil_bounds as CB. unfold vis_cost, LIMIT, target_alloc_limit.
     replace (img_lo A + (img_hi A - img_lo A)) with (img_hi A) by lia.
     assert (P1 : forall z, z mod 4096 = 0 -> pagedown z = z) by (intros z Hz; unfold pagedown; lia).
     assert (P2 : forall z, z mod 4096 = 0 -> pageup z = z) by (intros z Hz; unfold pageup; lia).
     rewrite (P1 (img_lo A) I3), (P2 (img_hi A) I4).
-    rewrite (P1 0x7fff7f800000 eq_refl). rewrite (P2 (0x7fff7f800000 + (2 ^ 47 - 0x7fff7f800000)) eq_refl).
+    (* the stack side runs from the run's ceiling to 2^47, so the UPPER end is a
+       constant and the lower one is [CEIL]; [ceil_bounds] gives its alignment *)
+    rewrite (P1 CEIL (proj1 CB)).
+    replace (CEIL + (2 ^ 47 - CEIL)) with (2 ^ 47) by lia.
+    rewrite (P2 (2 ^ 47) eq_refl).
     pose proof (pageup_minus_pagedown (shadow_off A + img_lo A / 8) (shadow_off A + img_hi A / 8) ltac:(lia)).
-    pose proof (pageup_minus_pagedown (shadow_off A + 0x7fff7f800000 / 8) (shadow_off A + (0x7fff7f800000 + (2 ^ 47 - 0x7fff7f800000)) / 8) ltac:(lia)).
+    pose proof (pageup_minus_pagedown (shadow_off A + CEIL / 8) (shadow_off A + 2 ^ 47 / 8) ltac:(lia)).
     split; lia.
   Qed.
 
@@ -1105,7 +1136,7 @@ Section Init.
       branch adds on top is [n_resx := 2] and [p_resx := 20] in [ASAN] and
       [BOTH]: 0 is the honest bound at b1243062, where [State.init_reserved]
       does not yet exist and the launch reserves nothing. *)
-  Theorem init_cs_ok : cs_ok segs A LIMIT SINV0 argH0 fs E0 cs0 R0 FULL0 model0.
+  Theorem init_cs_ok : cs_ok segs A LIMIT CEIL SINV0 argH0 fs E0 cs0 R0 FULL0 model0.
   Proof.
     destruct model0_facts as (M1 & M2 & M3 & M4 & M5 & M6 & M7 & M8 & M9 & M10 & M11 & M12 & M13).
     pose proof (if_hull _ _ _ IMG) as (I1 & I2 & I3 & I4). pose proof brk_range as [B1 B2]. pose proof (u64_range brk0) as [B3 B4].
@@ -1136,6 +1167,7 @@ Section Init.
     - apply seps_nil.
     - unfold model_ivs_wf. rewrite M5, M6, M7. repeat split; try (intros q []).
       unfold model0. apply init_sp_ok_init_model. exact Hsp.  (* the ledger stack pointer is admissible *)
+    - unfold CEIL, usp, model0. reflexivity.   (* co_ceil: the plan's ceiling is the run's *)
     - constructor.
     - constructor.
     - intros z Hz. exact Hz.
@@ -1171,12 +1203,12 @@ Section Init.
 
   (** ZERO DRAW: the same configuration over [init_kn_zero], under the zero-draw hypothesis;
       establishes nothing about a real run. *)
-  Theorem init_cs_ok_zero : cs_ok segs A LIMIT SINV0 argH0 fs E0 cs0z R0 FULL0 model0.
+  Theorem init_cs_ok_zero : cs_ok segs A LIMIT CEIL SINV0 argH0 fs E0 cs0z R0 FULL0 model0.
   Proof.
     destruct model0_facts as (M1 & M2 & M3 & M4 & M5 & M6 & M7 & M8 & M9 & M10 & M11 & M12 & M13).
     pose proof (if_hull _ _ _ IMG) as (I1 & I2 & I3 & I4). pose proof brk_range as [B1 B2]. pose proof (u64_range brk0) as [B3 B4].
     destruct abytes_init as [AB1 AB2].
-    change (allowA A E0 cs0) with (allowA A E0 (init_acs_of_zero A)) in AB1.   (* allowA ignores the knowledge *)
+    change (allowA A E0 cs0) with (allowA A E0 (init_acs_of_zero A CEIL)) in AB1.   (* allowA ignores the knowledge *)
     constructor; unfold cs0z; cbn [init_acs_of_zero init_acs_of_with a_ss s_regs s_log kn s_know a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset];
       rewrite ?M1, ?M2, ?M3, ?M4, ?M5, ?M6, ?M7, ?M8, ?M9, ?M10, ?M11, ?M12, ?M13.
     - exact init_regs_ok.
@@ -1203,6 +1235,7 @@ Section Init.
     - apply seps_nil.
     - unfold model_ivs_wf. rewrite M5, M6, M7. repeat split; try (intros q []).
       unfold model0. apply init_sp_ok_init_model. exact Hsp.  (* the ledger stack pointer is admissible *)
+    - unfold CEIL, usp, model0. reflexivity.   (* co_ceil *)
     - constructor.
     - constructor.
     - intros z Hz. exact Hz.

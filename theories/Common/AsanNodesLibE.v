@@ -690,7 +690,7 @@ Lemma mmap_fixedin_check : forall ms x8 model eff (prot : Z) (flags addr : word)
   ms_gpr ms 1 = Z_to_bv 64 len -> (0 < len)%Z ->
   ms_gpr ms 2 = Z_to_bv 64 prot -> ms_gpr ms 3 = flags ->
   ms_gpr ms 4 = Z_to_bv 64 (-1) -> ms_gpr ms 5 = Z_to_bv 64 0 ->
-  (bv_unsigned addr + page_round_up_Z len <= alloc_ceiling)%Z -> init_sp_ok (m_vmmaps model) ->
+  (bv_unsigned addr + page_round_up_Z len <= alloc_top (m_vmmaps model))%Z -> init_sp_ok (m_vmmaps model) ->
   let n := Z_to_bv 64 (page_round_up_Z len) in
   region_free (vm_reserved (m_vmmaps model)) addr n = true ->
   map_contains (vm_maps (m_vmmaps model)) addr n = true ->
@@ -724,6 +724,8 @@ Lemma mmap_fixedin_check : forall ms x8 model eff (prot : Z) (flags addr : word)
 Proof.
   intros ms x8 model eff prot flags addr len Hno Hprot Hcore H0 Hal Hpos H1 Hlen H2 H3 H4 H5 Hce Hisp n Hrf Hmc Hbud.
   pose proof alloc_ceiling_val as Hcv.
+  assert (Hat64 : alloc_top (m_vmmaps model) < 2 ^ 64 - 8388608)
+    by (pose proof (u64_range (vm_init_sp (m_vmmaps model))); unfold alloc_top, stack_max_size; lia).
   assert (Hlen' : (len < 2 ^ 64)%Z).
   { pose proof (page_round_up_Z_bounds len ltac:(lia)). pose proof (u64_range addr). lia. }
   assert (Hu1 : bv_unsigned (ms_gpr ms 1) = len) by (rewrite H1; apply u64_lit; lia).
@@ -738,7 +740,7 @@ Proof.
   - (* PROT_NONE *)
     rewrite G3. cbv beta iota zeta.
     rewrite (proj2 (Z.leb_gt _ _)) by (unfold two_pow_64; lia).
-    rewrite (proj2 (Z.leb_le _ _) (alloc_top_ge_of_ceiling _ _ Hisp Hce)). cbn [negb].
+    rewrite (proj2 (Z.leb_le _ _) Hce). cbn [negb].
     rewrite (proj2 (Z.eqb_eq _ _) Hal). cbn [negb].
     rewrite (proj2 (Z.ltb_lt _ _) Hpos). cbn [negb]. fold n. rewrite Hrf, Hmc. cbn [andb Z.eqb].
     destruct eff as [r ws zs us cs ci]. destruct ws; [|reflexivity].
@@ -749,7 +751,7 @@ Proof.
   - (* rw *)
     rewrite G4, G5. cbv beta iota zeta.
     rewrite (proj2 (Z.leb_gt _ _)) by (unfold two_pow_64; lia).
-    rewrite (proj2 (Z.leb_le _ _) (alloc_top_ge_of_ceiling _ _ Hisp Hce)). cbn [negb].
+    rewrite (proj2 (Z.leb_le _ _) Hce). cbn [negb].
     rewrite (proj2 (Z.eqb_eq _ _) Hal). cbn [negb].
     rewrite (proj2 (Z.ltb_lt _ _) Hpos). cbn [negb]. fold n. rewrite Hrf, Hmc. cbn [andb Z.eqb].
     rewrite (Hbud eq_refl).
@@ -771,7 +773,7 @@ Lemma srz_mmap_fixedin_lazy : forall regs (pc : word) mem rom model w (prot : Z)
   (prot = 0 \/ prot = 3)%Z -> mmap_flags_core flags = 50%Z ->
   getr regs 10 = addr -> (bv_unsigned addr mod page_size = 0)%Z -> (0 < bv_unsigned addr)%Z ->
   getr regs 11 = Z_to_bv 64 len -> (0 < len)%Z ->
-  (bv_unsigned addr + page_round_up_Z len <= alloc_ceiling)%Z -> init_sp_ok (m_vmmaps model) ->
+  (bv_unsigned addr + page_round_up_Z len <= alloc_top (m_vmmaps model))%Z -> init_sp_ok (m_vmmaps model) ->
   getr regs 12 = Z_to_bv 64 prot -> getr regs 13 = flags ->
   getr regs 14 = Z_to_bv 64 (-1) -> getr regs 15 = Z_to_bv 64 0 ->
   let n := Z_to_bv 64 (page_round_up_Z len) in
@@ -788,6 +790,8 @@ Lemma srz_mmap_fixedin_lazy : forall regs (pc : word) mem rom model w (prot : Z)
 Proof.
   intros regs pc mem rom model w prot flags addr len KA KB KC HF HE Hh H17 Hprot Hcore H10 Hal Hpos H11 Hlen Hce Hisp H12 H13 H14 H15 n Hrf Hmc Hbud HA HB HC.
   pose proof alloc_ceiling_val as Hcv. pose proof (u64_range addr) as Har.
+  assert (Hat64 : alloc_top (m_vmmaps model) < 2 ^ 64 - 8388608)
+    by (pose proof (u64_range (vm_init_sp (m_vmmaps model))); unfold alloc_top, stack_max_size; lia).
   eapply srz_sys_lazy; [exact Hh | exact HF | exact HE |].
   set (ms := epend regs pc mem rom (getr regs 17)).
   assert (Hno : bv_unsigned (getr regs 17) = 222%Z) by (rewrite H17; apply u64_lit; lia).
@@ -901,10 +905,12 @@ Variable SEGS : list Segment.
 Variable A : atable.
 Variable nx0 : nat.
 Variable LIMIT : Z.
+Variable CEIL : Z.      (** the run's allocation ceiling ([APS.co_ceil]) *)
+Hypothesis CEIL_ok : ceil_ok CEIL.
 Variable SINV : env -> (word -> option byte) -> Prop.
 Variable argH : env -> word -> bool.
 Variable FS0 : Fs.Fs.
-#[local] Notation cs_ok := (APS.cs_ok SEGS A LIMIT SINV argH FS0).
+#[local] Notation cs_ok := (APS.cs_ok SEGS A LIMIT CEIL SINV argH FS0).
 
 (** the REFUSED child of any memory syscall: registers a0 := -ENOMEM, pc+4;
     model and memory unchanged *)
@@ -913,7 +919,7 @@ Lemma cs_ok_refuse : forall E cs R FULL model,
   cs_ok E (refuse cs) (regupd R 10 (Z_to_bv 64 ENOMEM_RET)) FULL model.
 Proof.
   intros E cs R FULL model HC.
-  assert (HMr : Mr A argH E (refuse cs) model FULL = Mr A argH E cs model FULL) by reflexivity.
+  assert (HMr : Mr A CEIL argH E (refuse cs) model FULL = Mr A CEIL argH E cs model FULL) by reflexivity.
   assert (HA : allowA A E (refuse cs) = allowA A E cs) by reflexivity.
   destruct HC; constructor; unfold refuse, set_pc, set_reg, with_ss, mk_ss in *;
     cbn [a_ss a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset kn s_regs s_log s_know s_pc s_next] in *;

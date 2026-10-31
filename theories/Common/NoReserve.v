@@ -82,6 +82,7 @@ From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Placement.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Mm Require Import Mmap.
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
 From LinuxProcessSemantics.Common Require Import
@@ -257,11 +258,38 @@ Proof. reflexivity. Qed.
 (** May the kernel grant the NORESERVE reservation [a, a+n)?
     [MmapSim.grant_ok] minus the backed-budget conjunct: the reservation
     is granted UNCONDITIONALLY on budget ([mmap_noreserve_backed_ok] is
-    [true] for a NORESERVE call); pages charge on first touch. *)
+    [true] for a NORESERVE call); pages charge on first touch.
+
+    Its first conjunct is [MmapSim.grant_ok]'s: the address is the ONE
+    [Mmap.linux_place] gives, not merely a free one. *)
 Definition grant_ok_nr (hint : word) (m : Model) (a : word) (n : Z) : bool :=
-  (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
+  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a
+  && (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
   && (bv_unsigned a + n <=? alloc_top (m_vmmaps m))%Z
   && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n).
+
+(** Building one: the placement test is all a caller has to show. *)
+Lemma grant_ok_nr_intro : forall hint m a n,
+  (0 < n)%Z -> (n mod page_size = 0)%Z ->
+  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a = true ->
+  grant_ok_nr hint m a n = true.
+Proof.
+  intros hint m a n Hn Hnal Hpl.
+  destruct (linux_place_is_admissible _ _ _ _ _ Hn Hnal Hpl)
+    as (Hal & Hpos & Htop & Hfree).
+  unfold grant_ok_nr. rewrite Hpl, Hfree.
+  rewrite (proj2 (Z.eqb_eq _ _) Hal), (proj2 (Z.ltb_lt _ _) Hpos),
+    (proj2 (Z.leb_le _ _) Htop).
+  reflexivity.
+Qed.
+
+Lemma grant_ok_nr_place : forall hint m a n,
+  grant_ok_nr hint m a n = true ->
+  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a = true.
+Proof.
+  intros hint m a n H. unfold grant_ok_nr in H.
+  rewrite !andb_true_iff in H. tauto.
+Qed.
 
 Lemma grant_ok_nr_unpack : forall hint m a n,
   grant_ok_nr hint m a n = true ->
@@ -271,7 +299,7 @@ Lemma grant_ok_nr_unpack : forall hint m a n,
 Proof.
   intros hint m a n H. unfold grant_ok_nr in H.
   rewrite !andb_true_iff in H.
-  destruct H as [[[H1 H2] H3] H4].
+  destruct H as [[[[_ H1] H2] H3] H4].
   apply Z.eqb_eq in H1. apply Z.ltb_lt in H2. apply Z.leb_le in H3.
   auto 6.
 Qed.
@@ -322,12 +350,11 @@ Proof.
              (page_round_up_Z (bv_unsigned (ms_gpr ms 1))));
     [ | apply page_round_up_Z_nonneg; pose proof (u64_range (ms_gpr ms 1)); lia
       | exact Hg ].
-  unfold grant_ok_nr in Hg. rewrite !andb_true_iff in Hg.
-  destruct Hg as [[[H1 H2] H3] H4].
+  pose proof (grant_ok_nr_place _ _ _ _ Hg) as Hp.
   rewrite Hflags.
   unfold mmap_noreserve_backed_ok, with_mmap_backing.
   rewrite mmap_noreserve_b_flags.
-  rewrite H1, H2, H3, H4. cbn [andb].
+  rewrite Hp. cbn [andb].
   unfold page_round_up. cbn [listNN_eqb]. rewrite !bv_eqb_refl.
   reflexivity.
 Qed.
@@ -369,11 +396,9 @@ Proof.
     apply errno_ret_in_true in Herr. destruct Herr as (e & HIn & ->).
     exists e. auto.
   - rewrite andb_true_r in Hspec.
-    destruct ((bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-              && (bv_unsigned r + page_round_up_Z (bv_unsigned (ms_gpr ms 1)) <=? alloc_top (m_vmmaps model))%Z
-              && region_free (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) r
-                   (Z_to_bv 64 (page_round_up_Z (bv_unsigned (ms_gpr ms 1))))) eqn:Hcond;
-      rewrite ?Hcond in Hspec.
+    destruct (linux_place_is (m_vmmaps model) (kb_thp (m_kernel model))
+                (ms_gpr ms 0) (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) r)
+      eqn:Hcond; rewrite ?Hcond in Hspec.
     2:{ rewrite andb_false_l in Hspec. discriminate. }
     destruct (listNN_eqb zs
                 [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned (ms_gpr ms 1))))]) eqn:Hzs;
@@ -384,7 +409,8 @@ Proof.
     inversion Hspec; subst.
     split; [reflexivity|]. right.
     exists r. split; [|split].
-    + unfold grant_ok_nr. exact Hcond.
+    + exact (grant_ok_nr_intro _ _ _ _ (proj1 (mmap_grant_len_ok _ Hl))
+               (proj2 (mmap_grant_len_ok _ Hl)) Hcond).
     + unfold page_round_up. reflexivity.
     + reflexivity.
 Qed.
