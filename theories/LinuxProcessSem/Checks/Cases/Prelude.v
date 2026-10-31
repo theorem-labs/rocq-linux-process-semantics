@@ -153,7 +153,8 @@ Definition demo_input_tmp (fs0 tmp0 : Fs.Fs) (stdin0 : InputStream)
     : ProcInput :=
   mkProcInput_full [] [] fs0 stdin0 demo_uid demo_gid demo_groups
                    net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false
-                   Sv48 default_urandom tmp0 default_kernel default_execfn.
+                   Sv48 default_urandom tmp0 default_kernel default_execfn
+                   true true.
 
 (** The launch facts the entry-block checks below read: the run's
     [mm->mmap_base], the [StackLayout.LaunchAuxv] the model derives

@@ -1480,8 +1480,9 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     ([State.pipe_end_live]) instead of keeping a counter.  So closing the
     last WRITE end is exactly what turns a
     later read of the drained pipe from a block into end-of-file, and
-    closing the last READ end is what makes a later write a SIGPIPE the
-    model declines — both without a line of pipe-specific code here.
+    closing the last READ end is what makes a later write raise SIGPIPE
+    ([Fs.ReadWrite.raise_sigpipe]) — both without a line of
+    pipe-specific code here.
     Buffered bytes are NOT dropped: the [m_pipes] entry stays (see
     [State.pipe_new_id]), and a reader whose end is still open still
     sees them, as it does on Linux. *)

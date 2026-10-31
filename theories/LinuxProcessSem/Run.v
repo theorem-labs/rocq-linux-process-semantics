@@ -480,14 +480,16 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
     the two arms are disjoint by [m_killed], which [sstep_exit]
     requires to be [None].
 
-    THE DECLARATION IS NOT A PREMISE HERE.  It is one inside
-    [Kernel.Signal.tkill_spec], which is the only arm that can write
-    [State.m_killed] at all, and putting it here as well would make this
-    rule unable to fire on an outcome the spec layer produced -- which
-    is a STUCK configuration, not a decline, and [sstep_cfg_progress]
-    below would be false.  What carries the compatibility claim instead
-    is [decl_off_frame] above, stated once and consumed by
-    [sstep_off_no_kill]. *)
+    THE DECLARATION IS NOT A PREMISE HERE.  For SIGABRT it is one
+    inside [Kernel.Signal.tkill_spec]; for SIGPIPE there is none at
+    all, because [Sys.Fs.ReadWrite.write_spec]'s three write arms raise
+    it from ordinary modeled state.  Putting a declaration here as well
+    would make this rule unable to fire on an outcome the spec layer
+    produced -- which is a STUCK configuration, not a decline, and
+    [sstep_cfg_progress] below would be false.  What carries the
+    abort-compatibility claim instead is [decl_off_frame] above, stated
+    once and consumed by [sstep_off_no_kill], and it is a claim about
+    SIGABRT alone. *)
 | sstep_killed : forall ms model x8 eff model' evs sig,
     m_halted model = None ->
     ms_svc_pending ms = Some x8 ->
@@ -557,20 +559,31 @@ Qed.
     the traces, errors and uncovered points it would produce if 130 and
     131 had no arms.  Two of the three things that has to mean are facts
     about the SPEC LAYER rather than about this file — that no syscall
-    arm turns the declaration on, that none records a kill under it, and
-    that none emits a [State.KillEv] of its own — and this development
-    has no lemma quantified over the arms of
+    arm turns the declaration on, that none records a SIGABRT kill under
+    it, and that none emits a [State.KillEv] of its own — and this
+    development has no lemma quantified over the arms of
     [Sys.SyscallTable.spec_table] to prove them with.  The arms are not
     counted here on purpose: a number in prose is the part that goes
     stale, which is the rule [Checks.Cases.Kernel.Signal]'s
     [sig_mask_windows] header states and the reason it names its
     syscalls instead.
 
+    IT IS ABOUT SIGABRT AND NOT ABOUT KILLS.  [State.with_killed] has a
+    second signal, SIGPIPE, raised by the three write arms of
+    [Sys.Fs.ReadWrite.write_spec] from ordinary modeled state, and NOTHING
+    gates those on a declaration — a pipe whose read end the program
+    closed is state the program made, not a stance a task took.  So "no
+    kill with the declaration off" is FALSE, and the frame says what is
+    true instead: no kill CARRYING SIGABRT.  A reader who wants the
+    stronger reading will not find it here, and [sstep_off_no_kill] says
+    in as many words what it no longer rules out.
+
     So they are a hypothesis with a name.  [decl_off_frame] states
     exactly what the abort path's code establishes BY
     INSPECTION: [State.with_abort_terminal] has one caller
-    ([State.init_model]); [State.with_killed] has two,
-    [Kernel.Signal.send_sigabrt] and [Kernel.Signal.sigmask_deliver_model];
+    ([State.init_model]); [State.with_killed]'s SIGABRT callers are two,
+    [Kernel.Signal.send_sigabrt] and [Kernel.Signal.sigmask_deliver_model]'s
+    SIGABRT branch;
     and no spec emits any event but [State.ReadEv] and [State.WriteEv].
     Every other setter carries the three fields across, which is what the
     [m_killed_with_*], [m_sigabrt_pending_with_*] and
@@ -578,8 +591,8 @@ Qed.
     theories/LinuxProcessSem/State.v say, one [reflexivity] each.
 
     IT IS AN INVARIANT AND NOT A ONE-SIDED FRAME, and the second
-    hypothesis is the whole reason.  Of [State.with_killed]'s two
-    callers only the first is behind [State.m_abort_terminal]:
+    hypothesis is the whole reason.  Of those two callers only the first
+    is behind [State.m_abort_terminal]:
     [Kernel.Signal.sigmask_deliver_model] branches on
     [State.m_sigabrt_pending] instead, because a signal already pending
     has to be delivered by the mask install that uncovers it whatever
@@ -604,6 +617,12 @@ Qed.
     than that note — the consequences below are mechanized, and the day
     a table-wide frame lemma exists it is discharged rather than
     assumed. *)
+(** The signal the abort path sends, as the word a [State.KillEv] and
+    [State.m_killed] carry.  Named here because the frame below and its
+    two lemmas are claims about THIS SIGNAL and not about kills in
+    general; see the paragraph above them. *)
+Definition sigabrt_word : word := Z_to_bv 64 SIGABRT.
+
 Definition decl_off_frame : Prop :=
   forall i m eff m' evs,
     syscall_spec i m (Ok eff m' evs) ->
@@ -611,7 +630,7 @@ Definition decl_off_frame : Prop :=
     m_sigabrt_pending m = false ->
     m_abort_terminal m' = false
     /\ m_sigabrt_pending m' = false
-    /\ m_killed m' = None
+    /\ m_killed m' <> Some sigabrt_word
     /\ (forall sig fs, ~ In (KillEv sig fs) evs).
 
 (** The form this had before, kept ONLY so that
@@ -638,10 +657,20 @@ Lemma m_sigabrt_pending_proc : forall m1 m2,
 Proof. intros m1 m2 H. unfold m_sigabrt_pending. now rewrite H. Qed.
 
 (** One step, with the declaration off and nothing pending: BOTH bits
-    stay clear, and the events the step contributes carry no kill.  The
-    pending bit is carried for the reason the frame carries it — see
-    [decl_off_frame] — and dropping it from either side makes this
-    lemma's hypothesis the false one. *)
+    stay clear, and the events the step contributes carry no SIGABRT
+    kill.  The pending bit is carried for the reason the frame carries
+    it — see [decl_off_frame] — and dropping it from either side makes
+    this lemma's hypothesis the false one.
+
+    WHAT IT NO LONGER RULES OUT, said once so that nobody reads "no
+    kill" where this says "no SIGABRT kill": a step MAY contribute a
+    [State.KillEv] carrying SIGPIPE (13) with both abort bits clear and
+    the declaration off, because the three write arms of
+    [Sys.Fs.ReadWrite.write_spec] raise that signal from ordinary
+    modeled state — a pipe whose read end the program closed, a socket
+    with no connection, a channel the launch says has no reader — and
+    none of those is behind the abort declaration.  This lemma is about
+    the abort path's inertness and about nothing else. *)
 Lemma sstep_off_no_kill : decl_off_frame ->
   forall ms model evs c',
     m_abort_terminal model = false ->
@@ -649,7 +678,7 @@ Lemma sstep_off_no_kill : decl_off_frame ->
     sstep (mkCfg ms model) evs (SNext c') ->
     m_abort_terminal (cfg_model c') = false
     /\ m_sigabrt_pending (cfg_model c') = false
-    /\ (forall sig fs, ~ In (KillEv sig fs) evs).
+    /\ (forall fs, ~ In (KillEv sigabrt_word fs) evs).
 Proof.
   intros Hframe ms model evs c' Hoff Hpend Hstep.
   inversion Hstep; subst.
@@ -658,7 +687,7 @@ Proof.
     | [ H : mi_account_step _ _ = MachineOk (_, _) |- _ ] =>
         destruct (mi_account_step_model_frame _ _ _ _ H) as (_&_&_&_&_&Hp&_)
     end.
-    cbn [cfg_model]. split; [| split; [| intros sig fs []]].
+    cbn [cfg_model]. split; [| split; [| intros fs []]].
     + rewrite <- Hoff. apply m_abort_terminal_proc. exact Hp.
     + rewrite <- Hpend. apply m_sigabrt_pending_proc. exact Hp.
   - (* a syscall that materializes: the frame, then materialization,
@@ -669,7 +698,8 @@ Proof.
         destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (Hoff' & Hpend' & _ & Hev);
         destruct (materialize_model_accesses_frame _ _ _ Hm) as (_&_&_&_&_&Hp&_)
     end.
-    cbn [cfg_model]. split; [| split; [| exact Hev]].
+    cbn [cfg_model].
+    split; [| split; [| intros fs Hin; exact (Hev _ _ Hin)]].
     + rewrite <- Hoff'. apply m_abort_terminal_proc. exact Hp.
     + rewrite <- Hpend'. apply m_sigabrt_pending_proc. exact Hp.
   - (* exit: the effect is discarded, so the post-model is the spec's *)
@@ -678,39 +708,44 @@ Proof.
         destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (Hoff' & Hpend' & _ & Hev)
     end.
     split; [exact Hoff' | split; [exact Hpend' |]].
-    intros sig fs Hin. apply in_app_or in Hin.
-    destruct Hin as [Hin | [Hin | []]]; [exact (Hev sig fs Hin) | discriminate].
-  - (* kill: the frame says no arm records one from a state with both
-       bits clear *)
+    intros fs Hin. apply in_app_or in Hin.
+    destruct Hin as [Hin | [Hin | []]]; [exact (Hev _ _ Hin) | discriminate].
+  - (* kill: the frame says no arm records a SIGABRT kill from a state
+       with both bits clear, so the appended event carries some OTHER
+       signal, and the two bits come across unchanged *)
     match goal with
     | [ Hs : syscall_spec _ _ (Ok _ _ _) |- _ ] =>
-        destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (_ & _ & Hk & _)
+        destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (Hoff' & Hpend' & Hk & Hev)
     end.
-    congruence.
+    split; [exact Hoff' | split; [exact Hpend' |]].
+    intros fs Hin. apply in_app_or in Hin.
+    destruct Hin as [Hin | [Hin | []]]; [exact (Hev _ _ Hin) |].
+    apply Hk. injection Hin as Hsig Hfs. congruence.
 Qed.
 
 (** In a whole execution, the same.  [State.init_model] clears both bits
     ([State.m_sigabrt_pending_init_model], and
     [State.m_abort_terminal_init_model] reads the declaration off the
     input), so a run whose task did not declare the abort path meets
-    this lemma's hypotheses at its first configuration. *)
+    this lemma's hypotheses at its first configuration.  It says NO
+    SIGABRT KILL and not "no kill"; see [sstep_off_no_kill]. *)
 Lemma star_off_no_kill : decl_off_frame ->
   forall c tr c',
     m_abort_terminal (cfg_model c) = false ->
     m_sigabrt_pending (cfg_model c) = false ->
     star c tr c' ->
-    forall sig fs, ~ In (KillEv sig fs) tr.
+    forall fs, ~ In (KillEv sigabrt_word fs) tr.
 Proof.
   intros Hframe c tr c' Hoff Hpend Hstar.
   revert Hoff Hpend.
   induction Hstar as [c | c1 evs c2 tr c3 Hstep Hstar IH];
-    intros Hoff Hpend; [intros sig fs []|].
+    intros Hoff Hpend; [intros fs []|].
   destruct c1 as [ms model]. cbn [cfg_model] in Hoff, Hpend.
   destruct (sstep_off_no_kill Hframe _ _ _ _ Hoff Hpend Hstep)
     as (Hoff' & Hpend' & Hev).
-  intros sig fs Hin. apply in_app_or in Hin.
+  intros fs Hin. apply in_app_or in Hin.
   destruct Hin as [Hin | Hin];
-    [ exact (Hev sig fs Hin) | exact (IH Hoff' Hpend' sig fs Hin) ].
+    [ exact (Hev fs Hin) | exact (IH Hoff' Hpend' fs Hin) ].
 Qed.
 
 Lemma in_is_prefix {A} : forall (x : A) l1 l2,
@@ -843,7 +878,41 @@ Definition reaches_error (c0 : config) : Prop :=
     incomplete instead.  Two binaries differing only in what they block
     are not equivalent under this theorem, but the answer is right only
     while nothing is delivered.  The reasoning is in
-    [Sys/Kernel/Signal.v]'s header. *)
+    [Sys/Kernel/Signal.v]'s header.
+
+    THE SIGPIPE DISPOSITION IS NOT ON THIS LIST ANY MORE: IT IS A
+    DECLARED FIELD.  [Sys.Fs.ReadWrite.write_spec] is a modeled
+    operation that DELIVERS signal 13 -- on a write to a pipe with no
+    reader (fs/pipe.c [anon_pipe_write] :460-465), to a socket with no
+    connection (net/core/stream.c [sk_stream_error] :190-198), and to a
+    channel the launch declares unread ([State.in_channel_reader]) --
+    so the inherited disposition decides the OUTCOME of those calls and
+    not merely a returned number.
+
+    Nothing a modeled run does can move it:
+    [Kernel.Signal.rt_sigaction_spec] declines EVERY install for signal
+    13 ([Kernel.Signal.sigaction_accepted] admits 2 and 15, and
+    [Kernel.Signal.sigabrt_dfl_install] admits only signal 6).  What
+    the LAUNCH did is the live question, by the same
+    [flush_signal_handlers] argument: SIG_IGN survives execve, and
+    `signal(SIGPIPE, SIG_IGN)` before exec is COMMON -- commoner than
+    ignoring SIGABRT.  Left as a premise it would be an unstated one
+    with teeth: a launcher that ignores SIGPIPE hands the model a
+    process it kills where Linux returns -EPIPE and continues, an
+    ACCEPTANCE of a trace Linux cannot produce.
+
+    SO IT IS [State.in_sigpipe_default], and [valid_input] pins it to
+    [true].  A statement quantified over [valid_input] now SAYS which
+    world it is about rather than assuming one, and the other world has
+    its own predicate, [valid_input_sigpipe_ignored], under which
+    [Sys.Fs.ReadWrite.raise_sigpipe] discards the signal and no write
+    arm can end the run.  The alternative considered and rejected was
+    declining every write once the launch could have ignored the
+    signal, which gives back exactly the coverage this revision bought.
+    BLOCKING is a third, independent matter and was already modeled: a
+    launch whose [in_sigmask] blocks signal 13 is a valid input, the
+    write answers -EPIPE, and [State.procst_sigpipe_pending] carries
+    the signal to the [rt_sigprocmask] that uncovers it. *)
 Definition unmodeled_at (c : config) : Prop :=
   m_halted (cfg_model c) = None /\
   ( (ms_svc_pending (cfg_ms c) = None /\
@@ -3982,6 +4051,8 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp.
@@ -4009,8 +4080,32 @@ Definition valid_input (inp : ProcInput) : Prop :=
     statements saying what they said: with the declaration off, no
     reachable model has [State.m_abort_terminal] set, so
     [Kernel.Signal.tkill_spec] declines every call and no
-    [State.KillEv] can appear in any trace ([sstep_off_no_kill]).  A
-    task that wants the other reading asks for it by name. *)
+    [State.KillEv] CARRYING SIGABRT can appear in any trace
+    ([sstep_off_no_kill]).
+
+    THE SIGPIPE DECLARATION IS PINNED HERE TOO, and the two are
+    independent stances rather than one.  [State.in_sigpipe_default] is
+    [true] under this predicate: the launch left signal 13 at SIG_DFL,
+    so a write whose far end has no reader ENDS THE PROCESS and a run
+    under [valid_input] can carry [KillEv 13] -- see
+    [Sys.Fs.ReadWrite.write_spec] and [Sys.Fs.ReadWrite.raise_sigpipe].
+    It is pinned rather than left open because that is the world every
+    statement in this tree was written under, and because the other
+    world is not a different number but a different OUTCOME: with
+    SIG_IGN the same write returns -EPIPE and the program runs on.  A
+    task that wants either other reading asks for it by name
+    ([valid_input_abort], [valid_input_sigpipe_ignored]).
+
+    THE READER DECLARATION IS PINNED HERE TOO, at [true].
+    [State.in_channel_reader] says whether anything still reads
+    descriptors 1 and 2, and under this predicate something does: the
+    ordinary launch, whose writes to standard output are delivered.
+    The reader-GONE launch -- the writing end of `prog | head -1` once
+    `head` has had its line, where that same write raises signal 13 and
+    ends the run -- is named rather than covered here, and a task that
+    means it asks for it by name ([valid_input_channel_closed]); a task
+    that means both asks for [valid_input_channel_either].  The stance
+    is the stream owner's answer to dispatch://OSSV-266/ask/77724e06. *)
 Definition valid_input_abort (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4018,21 +4113,29 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = true
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp.
 
-(** Neither stance pinned: the clauses both share, and nothing about
-    the declaration.  A statement quantified over this one is the
+(** Neither ABORT stance pinned: the clauses both share, and nothing
+    about that declaration.  A statement quantified over this one is the
     CONJUNCTION of the two above -- it has to hold whichever stance the
     task takes -- which is what makes forgetting to choose the safe
-    failure rather than the dangerous one. *)
+    failure rather than the dangerous one.
+
+    IT STILL PINS THE SIGPIPE DECLARATION, because it is the abort
+    question it leaves open and only that one.  The SIGPIPE pair is
+    [valid_input_sigpipe_either] below. *)
 Definition valid_input_either (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
   /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp.
@@ -4067,12 +4170,232 @@ Qed.
 Lemma valid_input_either_splits : forall inp,
   valid_input_either inp -> valid_input inp \/ valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & v & u & L).
+  intros inp (a & b & c & k & r & d & e & f & g & s & n & v & u & L).
   destruct (in_abort_terminal inp) eqn:Hab.
   - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj Hab (conj v (conj u L)))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+      (conj g (conj Hab (conj s (conj n (conj v (conj u L)))))))))))))).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj Hab (conj v (conj u L)))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+      (conj g (conj Hab (conj s (conj n (conj v (conj u L)))))))))))))).
+Qed.
+
+(** * The SIGPIPE declaration: the same predicate with signal 13 ignored
+
+    THE OTHER WORLD A LAUNCH CAN PUT THIS PROGRAM IN, written the way
+    the abort stance above is, and for the same reason: what a proof was
+    made under has to be readable in the statement.  Here the launcher
+    ran `signal(SIGPIPE, SIG_IGN)` before execve and the disposition
+    survived it, so [Sys.Fs.ReadWrite.raise_sigpipe] discards the signal
+    and a write to a far end with no reader is -EPIPE with the process
+    STILL RUNNING.  Every other clause is [valid_input]'s, the abort
+    declaration included.
+
+    WHAT A STATEMENT QUANTIFIED OVER THIS ONE IS WORTH.  It is the
+    reading a program that handles -EPIPE itself was written for -- a
+    daemon, a filter under a service manager -- and under it no write
+    arm can end the run, so a halts statement is not refuted by a
+    reader-less channel.  It is NOT the safer predicate: it asserts
+    something about the launch that the ordinary one does not, and a
+    proof made under it says nothing about the ordinary launch. *)
+Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
+  /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
+  /\ valid_creds inp /\ valid_nofile (in_nofile inp)
+  /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
+  /\ in_abort_terminal inp = false
+  /\ in_sigpipe_default inp = false
+  /\ in_channel_reader inp = true
+  /\ in_va_size inp = Sv48
+  /\ valid_urandom inp
+  /\ valid_launch inp.
+
+(** Neither SIGPIPE stance pinned: the clauses both share, and nothing
+    about the disposition.  A statement quantified over this one is the
+    CONJUNCTION of [valid_input] and [valid_input_sigpipe_ignored], so a
+    task that forgets to say which launch it means is held to both --
+    the same safe failure [valid_input_either] gives for the abort
+    stance. *)
+Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
+  /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
+  /\ valid_creds inp /\ valid_nofile (in_nofile inp)
+  /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
+  /\ in_abort_terminal inp = false
+  /\ in_channel_reader inp = true
+  /\ in_va_size inp = Sv48
+  /\ valid_urandom inp
+  /\ valid_launch inp.
+
+Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
+  valid_input inp -> valid_input_sigpipe_either inp.
+Proof.
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
+Qed.
+
+Lemma valid_input_sigpipe_either_of_valid_input_sigpipe_ignored : forall inp,
+  valid_input_sigpipe_ignored inp -> valid_input_sigpipe_either inp.
+Proof.
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
+Qed.
+
+(** The exhaustiveness above as a lemma rather than as a sentence, the
+    twin of [valid_input_either_splits]: a bool has two values. *)
+Lemma valid_input_sigpipe_either_splits : forall inp,
+  valid_input_sigpipe_either inp ->
+  valid_input inp \/ valid_input_sigpipe_ignored inp.
+Proof.
+  intros inp (a & b & c & k & r & d & e & f & g & h & n & v & u & L).
+  destruct (in_sigpipe_default inp) eqn:Hsp.
+  - left.
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+      (conj g (conj h (conj Hsp (conj n (conj v (conj u L)))))))))))))).
+  - right.
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+      (conj g (conj h (conj Hsp (conj n (conj v (conj u L)))))))))))))).
+Qed.
+
+(** * THE READER DECLARATION: PINNED PRESENT, AND THE OTHER WORLD NAMED
+
+    [State.in_channel_reader] says whether anything still reads
+    descriptors 1 and 2.  [valid_input] above PINS IT TO [true]: the
+    ordinary launch is the one whose standard output is read, and a
+    statement quantified over [valid_input] speaks about that launch
+    and no other.  That is the stance the stream owner chose for
+    dispatch://OSSV-266/ask/77724e06 -- pin the reader, and name the
+    reader-gone launch so a proof can ask for it -- and it is the shape
+    the abort declaration already has: [valid_input] pins
+    [State.in_abort_terminal] to [false] and [valid_input_abort] names
+    the other world.
+
+    WHY THE PIN RATHER THAN BOTH READINGS.  With the field unpinned
+    every ordinary statement would also be a claim about a run whose
+    first write to standard output KILLS IT (signal 13 at SIG_DFL,
+    which [valid_input] pins as well), so a halts statement or a
+    trace statement would silently have to cover a death the task
+    never meant to describe.  The pin says which launch the tree is
+    about; the predicates below say the other one.
+
+    [valid_input_channel_closed] is the reader-GONE launch named, in
+    the shape [valid_input_abort] has for the abort declaration: every
+    clause of [valid_input] with the reader pinned to [false].  It is
+    NOT the safer predicate -- it asserts something about the launch
+    that [valid_input] does not, and a proof made under it says nothing
+    about a run whose output is read.  What it buys is a world where
+    [Sys.Fs.ReadWrite.write_spec]'s channel arm takes the reader-less
+    branch, which is what [Common.CatSimSigpipe] proves a whole run of.
+
+    [valid_input_channel_either] pins neither value, the twin of
+    [valid_input_either]: a statement quantified over it is the
+    CONJUNCTION of the two readings, which is what makes forgetting to
+    choose the safe failure rather than the dangerous one. *)
+Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
+  /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
+  /\ valid_creds inp /\ valid_nofile (in_nofile inp)
+  /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
+  /\ in_abort_terminal inp = false
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = false
+  /\ in_va_size inp = Sv48
+  /\ valid_urandom inp
+  /\ valid_launch inp.
+
+(** Neither reader stance pinned: the clauses both share, and nothing
+    about that declaration. *)
+Definition valid_input_channel_either (inp : ProcInput) : Prop :=
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
+  /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
+  /\ valid_creds inp /\ valid_nofile (in_nofile inp)
+  /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
+  /\ in_abort_terminal inp = false
+  /\ in_sigpipe_default inp = true
+  /\ in_va_size inp = Sv48
+  /\ valid_urandom inp
+  /\ valid_launch inp.
+
+Lemma valid_input_channel_either_of_valid_input : forall inp,
+  valid_input inp -> valid_input_channel_either inp.
+Proof.
+  (* Written so an inserted conjunct does not break it: destruct the
+     hypothesis and split the goal to the same depth, both GUARDED.  A
+     bare [repeat split] would also apply the constructor of
+     [valid_urandom], which is coinductive. *)
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
+Qed.
+
+Lemma valid_input_channel_either_of_valid_input_channel_closed : forall inp,
+  valid_input_channel_closed inp -> valid_input_channel_either inp.
+Proof.
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
+Qed.
+
+(** The exhaustiveness the paragraph above claims, as a lemma rather
+    than as a sentence, the twin of [valid_input_either_splits]: a bool
+    has two values, so an input the shared clauses accept is one of the
+    two named launches. *)
+Lemma valid_input_channel_either_splits : forall inp,
+  valid_input_channel_either inp ->
+  valid_input inp \/ valid_input_channel_closed inp.
+Proof.
+  intros inp H.
+  destruct (in_channel_reader inp) eqn:Hcr; [left | right];
+    red in H |- *;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
+Qed.
+
+(** THE READER CLAUSE under each named reading, as an accessor rather
+    than as a position, for the reason [valid_input_abort_terminal]
+    below is one. *)
+Lemma valid_input_channel_reader : forall inp,
+  valid_input inp -> in_channel_reader inp = true.
+Proof.
+  intros inp H. red in H.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_channel_closed_reader : forall inp,
+  valid_input_channel_closed inp -> in_channel_reader inp = false.
+Proof.
+  intros inp H. red in H.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** THE SIGPIPE DECLARATION, as an accessor rather than as a position,
+    for the reason [valid_input_abort_terminal] below is one: this
+    predicate grows a conjunct whenever the input class learns to say
+    something new, and a caller that reached in by position would then
+    name a DIFFERENT clause rather than fail. *)
+Lemma valid_input_sigpipe_default : forall inp,
+  valid_input inp -> in_sigpipe_default inp = true.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** The same clause under the ignoring stance, where it is [false]. *)
+Lemma valid_input_sigpipe_ignored_sigpipe_default : forall inp,
+  valid_input_sigpipe_ignored inp -> in_sigpipe_default inp = false.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
 Qed.
 
 (** * The address-space declaration: the same predicate per size
@@ -4100,6 +4423,8 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv39
   /\ valid_urandom inp
   /\ valid_launch inp.
@@ -4111,6 +4436,8 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv57
   /\ valid_urandom inp
   /\ valid_launch inp.
@@ -4122,6 +4449,8 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
   /\ valid_urandom inp
   /\ valid_launch inp.
 
@@ -4143,8 +4472,12 @@ Qed.
 (** THE ABORT DECLARATION, as an accessor rather than as a position.
     [valid_input] pins [State.in_abort_terminal] to [false] — that is
     what makes [Kernel.Signal.tkill_spec] decline every call under it,
-    and therefore what makes a [State.KillEv] unreachable for every
-    statement quantified over this predicate ([sstep_off_no_kill]).
+    and therefore what makes a [State.KillEv] CARRYING SIGABRT
+    unreachable for every statement quantified over this predicate
+    ([sstep_off_no_kill]).  A SIGPIPE kill is a separate declaration,
+    [valid_input_sigpipe_default] above, which this predicate pins the
+    other way round: under [valid_input] signal 13 IS at SIG_DFL and a
+    reader-less write ends the run; see [Sys.Fs.ReadWrite.write_spec].
     Consumers want that one clause and nothing else.
 
     NAMED, BECAUSE THE POSITION MOVES.  This predicate grows a conjunct
@@ -4246,14 +4579,17 @@ Lemma valid_input_va_any_splits : forall inp,
   valid_input_va_any inp ->
   valid_input inp \/ valid_input_sv39 inp \/ valid_input_sv57 inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & u & L).
+  intros inp (a & b & c & k & r & d & e & f & g & h & s & n & u & L).
   destruct (in_va_size inp) eqn:Hv.
   - right; left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj Hv (conj u L)))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj n (conj Hv (conj u L)))))))))))))).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj Hv (conj u L)))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj n (conj Hv (conj u L)))))))))))))).
   - right; right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj Hv (conj u L)))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj n (conj Hv (conj u L)))))))))))))).
 Qed.
 
 (** * The hardware-capability declaration: the same predicate per word
@@ -4312,6 +4648,8 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = false
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp.
@@ -4323,6 +4661,8 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = false
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp.
@@ -4334,17 +4674,17 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
 Lemma valid_input_of_valid_input_hwcap_rv64gc : forall inp,
   valid_input_hwcap_rv64gc inp -> valid_input inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & u & L).
+  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
   exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v (conj u L)))))))))))).
+    (conj (or_introl g) (conj h (conj v (conj n (conj u L))))))))))))).
 Qed.
 
 Lemma valid_input_of_valid_input_hwcap_rv64gcv : forall inp,
   valid_input_hwcap_rv64gcv inp -> valid_input inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & u & L).
+  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
   exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v (conj u L)))))))))))).
+    (conj (or_intror g) (conj h (conj v (conj n (conj u L))))))))))))).
 Qed.
 
 (** …and the two are EXHAUSTIVE on the default, because [valid_hwcap] is
@@ -4357,11 +4697,13 @@ Lemma valid_input_hwcap_splits : forall inp,
   valid_input inp ->
   valid_input_hwcap_rv64gc inp \/ valid_input_hwcap_rv64gcv inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & v & u).
+  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & s & n & v & u).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj v u))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
   - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj v u))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
 Qed.
 
 (** The declared word, read back out of the predicate.  A statement's
@@ -4370,11 +4712,19 @@ Qed.
     and it is what [Checks.Cases.Hwcap] fires to say so. *)
 Lemma valid_input_hwcap_rv64gc_word : forall inp,
   valid_input_hwcap_rv64gc inp -> in_hwcap inp = hwcap_rv64gc.
-Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
+Proof.
+  intros inp Hv. unfold valid_input_hwcap_rv64gc in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
 
 Lemma valid_input_hwcap_rv64gcv_word : forall inp,
   valid_input_hwcap_rv64gcv inp -> in_hwcap inp = hwcap_rv64gcv.
-Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
+Proof.
+  intros inp Hv. unfold valid_input_hwcap_rv64gcv in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
 
 (** ** The same declaration under the ABORT stance
 
@@ -4403,6 +4753,8 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = true
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp.
@@ -4414,6 +4766,8 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = true
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp.
@@ -4421,37 +4775,47 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gc : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & u & L).
+  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
   exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v (conj u L)))))))))))).
+    (conj (or_introl g) (conj h (conj v (conj n (conj u L))))))))))))).
 Qed.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & u & L).
+  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
   exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v (conj u L)))))))))))).
+    (conj (or_intror g) (conj h (conj v (conj n (conj u L))))))))))))).
 Qed.
 
 Lemma valid_input_abort_hwcap_splits : forall inp,
   valid_input_abort inp ->
   valid_input_abort_hwcap_rv64gc inp \/ valid_input_abort_hwcap_rv64gcv inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & v & u).
+  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & s & n & v & u).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj v u))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
   - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj v u))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
 Qed.
 
 Lemma valid_input_abort_hwcap_rv64gc_word : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> in_hwcap inp = hwcap_rv64gc.
-Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
+Proof.
+  intros inp Hv. unfold valid_input_abort_hwcap_rv64gc in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
 
 Lemma valid_input_abort_hwcap_rv64gcv_word : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> in_hwcap inp = hwcap_rv64gcv.
-Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
+Proof.
+  intros inp Hv. unfold valid_input_abort_hwcap_rv64gcv in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
 
 (* =========================================================================
    The image premise, consumed: the device arms' guards are unreachable

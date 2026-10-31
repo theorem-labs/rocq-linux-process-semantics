@@ -119,13 +119,17 @@ Qed.
     [bs]; the continuation must hold for every delivered length [k]
     (a0 := k).  Shape: [t_write_ch ch bs T] (= the union over [k] of
     [t_emit (map (WriteEv ch) (firstn k bs)) T]).  [n = 0] is NOT covered
-    (zero-count writes face [access_ok_zero]). *)
+    (zero-count writes face [access_ok_zero]).  The far end must have a
+    reader: a reader-gone write KILLS the process instead (SIGPIPE at
+    the default disposition; see [CatSim.fd1chan]), which is why that
+    premise is here and not the model assuming a reader. *)
 Lemma rz_write_chan : forall segs regs pc mem model fd ch n bs T,
   m_halted model = None ->
   m_vm_lazy model = [] ->
   bv_unsigned (getr regs 17) = 64%Z ->
   getr regs 10 = fd -> (bv_unsigned fd < 2 ^ 32)%Z ->
   fd_lookup (m_fds model) fd = Some (FdChannel ch) -> w_is0 ch = false ->
+  m_channel_reader model = true ->
   getr regs 12 = Z_to_bv 64 (Z.of_nat n) ->
   (1 <= n)%nat -> (Z.of_nat n <= rw_bytes_max)%Z -> (Z.of_nat n < 2 ^ 64)%Z ->
   rdn segs mem (getr regs 11) n = Some bs ->
@@ -137,10 +141,10 @@ Lemma rz_write_chan : forall segs regs pc mem model fd ch n bs T,
   realizes segs (mkCfg (epend regs pc mem (seg_rom segs) (getr regs 17)) model)
            (t_write_ch ch bs T).
 Proof.
-  intros segs regs pc mem model fd ch n bs T Hh Hlazy Hno Hfd Hfd32 Hlk Hch Hcnt Hn1 Hmax Hn64 Hrd Hok Hc.
+  intros segs regs pc mem model fd ch n bs T Hh Hlazy Hno Hfd Hfd32 Hlk Hch Hrdr Hcnt Hn1 Hmax Hn64 Hrd Hok Hc.
   pose proof (rdn_length segs mem n (getr regs 11) bs Hrd) as Hlen.
   eapply (rz_write_ch segs _ model fd ch (getr regs 17) bs T Hh Hlazy).
-  - unfold fdchan. split; [exact Hlk | exact Hch].
+  - unfold fdchan. split; [exact Hlk | split; [exact Hch | exact Hrdr]].
   - apply fd32_id. exact Hfd32.
   - reflexivity.
   - exact Hno.

@@ -513,6 +513,12 @@ Qed.
 Lemma write_channel_outcome : forall fd buf count i m ch bs eff m' evs,
   fd_lookup (m_fds m) fd = Some (FdChannel ch) ->
   ch <> 0 ->
+  (* the far end has a reader.  Not a modelling shortcut and not the
+     model assuming one: with the reader gone [ReadWrite.write_spec]'s
+     channel arm answers -EPIPE and raises SIGPIPE, which KILLS the
+     process under the default disposition, so no delivery is
+     admissible there *)
+  m_channel_reader m = true ->
   (* at or below [rw_bytes_max] the clamp inside [Uaccess.write_source]
      is the identity; see [Uaccess.modeled_rw_range] *)
   (bv_unsigned count <= rw_bytes_max)%Z ->
@@ -534,7 +540,7 @@ Lemma write_channel_outcome : forall fd buf count i m ch bs eff m' evs,
        (mkEffect (len_word (firstn n bs)) [] []) /\ m' = m
   /\ evs = map (WriteEv ch) (firstn n bs).
 Proof.
-  intros fd buf count i m ch bs eff m' evs Hfd Hch Hmax Hb Hok Hnonempty Hspec.
+  intros fd buf count i m ch bs eff m' evs Hfd Hch Hrdr Hmax Hb Hok Hnonempty Hspec.
   apply check_write_complete_ok in Hspec.
   unfold check_write in Hspec. rewrite Hfd in Hspec. cbv iota in Hspec.
   assert (Hch0 : w_is0 ch = false).
@@ -552,6 +558,8 @@ Proof.
     change (bv_unsigned (Z_to_bv 64 0)) with 0%Z. lia. }
   rewrite Hc in Hspec. cbv iota zeta in Hspec.
   rewrite Hok in Hspec. cbn [negb] in Hspec. cbv iota in Hspec.
+  rewrite Hrdr in Hspec. change (negb true) with false in Hspec.
+  cbv iota zeta in Hspec.
   rewrite (write_source_of_rw _ _ _ Hmax),
           (readable_bytes_full _ _ _ _ Hb) in Hspec.
   assert (Hg0 : Nat.eqb (length bs) 0 = false) by (apply Nat.eqb_neq; lia).
@@ -1150,6 +1158,11 @@ Proof. vm_compute. split; check_eq. Qed.
 Lemma writev_channel_outcome : forall fd iov iovcnt i m ch iovs bs eff m' evs,
   fd_lookup (m_fds m) fd = Some (FdChannel ch) ->
   ch <> 0 ->
+  (* the far end has a reader.  Not a modelling shortcut and not the
+     model assuming one: with the reader gone [ReadWrite.writev_spec]
+     answers -EPIPE and raises SIGPIPE, which KILLS the process under
+     the default disposition, so no delivery is admissible there *)
+  m_channel_reader m = true ->
   (bv_unsigned iovcnt <= IOV_MAX)%Z ->
   import_iovecs (in_mem i) iov iovcnt = ImpOk iovs ->
   gather_iovecs (in_mem i) (cap_iovecs iovs) = Some bs ->
@@ -1164,7 +1177,7 @@ Lemma writev_channel_outcome : forall fd iov iovcnt i m ch iovs bs eff m' evs,
        (mkEffect (len_word (firstn n bs)) [] []) /\ m' = m
   /\ evs = map (WriteEv ch) (firstn n bs).
 Proof.
-  intros fd iov iovcnt i m ch iovs bs eff m' evs Hfd Hch Hmax Hiv Hg Hae
+  intros fd iov iovcnt i m ch iovs bs eff m' evs Hfd Hch Hrdr Hmax Hiv Hg Hae
     Hnonempty Hspec.
   apply check_writev_complete_ok in Hspec.
   assert (H32 : iovcnt32 iovcnt = iovcnt) by (apply iovcnt32_small; exact Hmax).
@@ -1186,6 +1199,8 @@ Proof.
   assert (Htot : Z.eqb (iovs_total (cap_iovecs iovs)) 0 = false).
   { apply Z.eqb_neq. rewrite <- (gather_iovecs_length _ _ _ Hg). lia. }
   rewrite Htot in Hspec. cbv iota in Hspec.
+  rewrite Hrdr in Hspec. change (negb true) with false in Hspec.
+  cbv iota in Hspec.
   assert (Hg0 : Nat.eqb (length bs) 0 = false) by (apply Nat.eqb_neq; lia).
   rewrite Hg0 in Hspec. cbv iota in Hspec.
   rewrite Hae in Hspec. cbv iota in Hspec.
@@ -1216,12 +1231,15 @@ Qed.
     it, returning the delivered length.  As above, an [Ok] pins [count]
     — and so the buffer — inside [rw_bytes_max].  [bs <> []] also keeps
     the zero-length case out: a write of nothing is decided by the range
-    verdict instead ([Uaccess.access_ok_zero]). *)
+    verdict instead ([Uaccess.access_ok_zero]).  And the far end must
+    have a reader ([State.m_channel_reader]): without one the write
+    answers -EPIPE and raises SIGPIPE instead of delivering. *)
 
 Corollary writev_outcome_is_write_outcome :
   forall fd iov iovcnt buf count iv iw m ch iovs bs eff m' evs,
   fd_lookup (m_fds m) fd = Some (FdChannel ch) ->
   ch <> 0 ->
+  m_channel_reader m = true ->
   (bv_unsigned iovcnt <= IOV_MAX)%Z ->
   import_iovecs (in_mem iv) iov iovcnt = ImpOk iovs ->
   gather_iovecs (in_mem iv) (cap_iovecs iovs) = Some bs ->
@@ -1243,9 +1261,9 @@ Corollary writev_outcome_is_write_outcome :
               (mkEffect (len_word (firstn n bs)) [] [])) m' evs).
 Proof.
   intros fd iov iovcnt buf count iv iw m ch iovs bs eff m' evs
-         Hfd Hch Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hok Hv.
+         Hfd Hch Hrdr Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hok Hv.
   destruct (writev_channel_outcome _ _ _ _ _ _ _ _ _ _ _
-              Hfd Hch Hmax Hiv Hg Hae Hnonempty Hv)
+              Hfd Hch Hrdr Hmax Hiv Hg Hae Hnonempty Hv)
     as (Hbnd & n & Hn1 & Hn2 & Heff & Hm & Hevs).
   exists n. split; [exact Hn1|]. split; [exact Hn2|].
   split; [exact Heff|]. subst m' evs.
@@ -1264,6 +1282,7 @@ Proof.
     change (bv_unsigned (Z_to_bv 64 0)) with 0%Z. lia. }
   rewrite Hc. cbv beta iota zeta.
   rewrite Hok. cbn [negb]. cbv beta iota.
+  rewrite Hrdr. change (negb true) with false. cbv beta iota zeta.
   rewrite (write_source_of_rw _ _ _ Hcmax), (readable_bytes_full _ _ _ _ Hb).
   assert (Hg0 : Nat.eqb (length bs) 0 = false) by (apply Nat.eqb_neq; lia).
   rewrite Hg0. cbv beta iota.
@@ -1308,6 +1327,7 @@ Corollary write_outcome_is_writev_outcome :
   forall fd iov iovcnt buf count iv iw m ch iovs bs eff m' evs,
   fd_lookup (m_fds m) fd = Some (FdChannel ch) ->
   ch <> 0 ->
+  m_channel_reader m = true ->
   (bv_unsigned iovcnt <= IOV_MAX)%Z ->
   import_iovecs (in_mem iv) iov iovcnt = ImpOk iovs ->
   gather_iovecs (in_mem iv) (cap_iovecs iovs) = Some bs ->
@@ -1329,9 +1349,9 @@ Corollary write_outcome_is_writev_outcome :
               (mkEffect (len_word (firstn n bs)) [] [])) m' evs).
 Proof.
   intros fd iov iovcnt buf count iv iw m ch iovs bs eff m' evs
-         Hfd Hch Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hok Hw.
+         Hfd Hch Hrdr Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hok Hw.
   destruct (write_channel_outcome _ _ _ _ _ _ _ _ _ _
-              Hfd Hch Hcmax Hb Hok Hnonempty Hw)
+              Hfd Hch Hrdr Hcmax Hb Hok Hnonempty Hw)
     as (Hbnd & n & Hn1 & Hn2 & Heff & Hm & Hevs).
   exists n. split; [exact Hn1|]. split; [exact Hn2|].
   split; [exact Heff|]. subst m' evs.
@@ -1374,6 +1394,7 @@ Proof.
     assert (Htot : Z.eqb (iovs_total (cap_iovecs iovs)) 0 = false).
     { apply Z.eqb_neq. rewrite <- (gather_iovecs_length _ _ _ Hg). lia. }
     rewrite Htot. cbv iota.
+    rewrite Hrdr. change (negb true) with false. cbv iota.
     assert (Hg0 : Nat.eqb (length bs) 0 = false) by (apply Nat.eqb_neq; lia).
     rewrite Hg0. cbv iota. rewrite Hae. cbv iota.
     unfold with_copyins. cbn.
@@ -2317,10 +2338,10 @@ Proof. split; [|split; [|split]]; first [check_eq | vm_compute; reflexivity]. Qe
 
    Every one pairs its rejection with the honest answer AT THE SAME CALL.
    That is the point of the pairing: a checker that had become constantly
-   rejecting would fail these examples rather than pass them.  Three of
-   the four discriminate further, and would flip to [CheckOk] if an arm
-   for the limitation were added; [write_channel_epipe_rejected] is the
-   exception and says so at its own docstring.
+   rejecting would fail these examples rather than pass them.  Each of
+   the four discriminates further, and would flip to [CheckOk] if an arm
+   for its limitation were added; [write_channel_epipe_rejected] says at
+   its own docstring which part of its limitation is already modeled.
    ------------------------------------------------------------------------- *)
 
 (** -EINTR on a read.  read(0, buf, 1) with one byte of input delivers
@@ -2363,15 +2384,21 @@ Example write_channel_eintr_rejected :
      = CheckReject.
 Proof. split; check_eq. Qed.
 
-(** -EPIPE on a channel write.  This rejection is the RIGHT answer for a
-    process that installs no handler — SIGPIPE kills it before the errno
-    is returned — and the defect is the other direction: the short write
-    in the first conjunct is admitted in a state where the reader has
-    gone and Linux kills the process instead.  So unlike the other three
-    this pair does NOT discriminate its own limitation: no model state
-    can express "the reader has gone", so neither conjunct would move if
-    it were fixed.  What it carries is that -EPIPE is not admitted here,
-    which is what a premature arm would break. *)
+(** -EPIPE on a channel write, on a launch whose far end HAS a reader.
+    The model answers -EPIPE on a channel now, but only on a launch whose
+    reader has gone ([State.in_channel_reader] false): there the channel
+    arm of [ReadWrite.write_spec] raises SIGPIPE through
+    [ReadWrite.raise_sigpipe] -- a death at the default disposition, the
+    -EPIPE only with signal 13 blocked -- and refuses the short write
+    below.  This launch is [demo_input]'s, built by the 13-place
+    [State.mkProcInput], which says the reader is there, so the short
+    write is admitted and -EPIPE is refused, which is right for a reader
+    that stays for the whole run.  The limitation left is a reader that
+    goes away PARTWAY through a run -- `prog | head -1` once [head] has
+    had its line -- which the model has no term for: the reader is a
+    launch fact ([State.procst_channel_reader]).  An arm that let it go
+    away mid-run would admit the -EPIPE here and break the second
+    conjunct. *)
 
 Example write_channel_epipe_rejected :
   check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
@@ -2782,7 +2809,213 @@ Example pipe_write_into_an_empty_pipe_may_be_enomem :
 Proof. split; [check_eq | split; [check_eq | vm_compute; reflexivity]]. Qed.
 
 (* =========================================================================
-   PART 7 — THE TRANSFER ARMS THAT WALKED OFF THE TOP OF THE ADDRESS SPACE
+   PART 7 — death by SIGPIPE: what each arm answers, and what it still
+   admits beside it (OSSV-266)
+   ========================================================================= *)
+
+(** The launch of [demo_input] with THE READER GONE: the far end of
+    descriptors 1 and 2 is a pipe or a socket nothing reads any more,
+    which is `prog | head -1` once [head] has had its line.  Everything
+    else is [demo_input]'s.  [Run.valid_input] pins the reader present
+    and so does not admit this launch; [Run.valid_input_channel_closed]
+    is the predicate that names it. *)
+Definition noreader_input : ProcInput :=
+  mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
+                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
+                   default_urandom [] default_kernel default_execfn
+                   false true.
+
+(** The same launch again, with SIGPIPE at SIG_IGN: the launcher ran
+    `signal(SIGPIPE, SIG_IGN)` before execve and execve kept it
+    ([State.in_sigpipe_default]).  No named predicate admits this one:
+    [Run.valid_input] and [Run.valid_input_sigpipe_ignored] both pin
+    the reader PRESENT, and [Run.valid_input_channel_closed], which
+    admits the launch above, pins SIGPIPE at SIG_DFL.  The pair below
+    is about what one CALL answers on it, which the check layer judges
+    on a model rather than on a validity premise. *)
+Definition noreader_ignored_input : ProcInput :=
+  mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
+                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
+                   default_urandom [] default_kernel default_execfn
+                   false false.
+
+Definition noreader_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit noreader_input.
+Definition noreader_ignored_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit noreader_ignored_input.
+Definition reader_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+
+(** PAIR 1 — A WRITE TO STANDARD OUTPUT WHOSE READER HAS GONE KILLS THE
+    PROCESS, AND THE SAME WRITE WITH A READER STILL DELIVERS.
+
+    Linux raises SIGPIPE and sets -EPIPE, in that order and without a
+    flag write(2) can suppress: fs/pipe.c [anon_pipe_write] :460-465
+    when the far end is a pipe, net/core/stream.c [sk_stream_error]
+    :190-198 when it is a socket (Linux v6.18.46, commit 1f99e9ab748f).
+    Signal 13's default action is terminate, so the -EPIPE is never
+    returned and what the world sees is a death by signal 13.
+
+    The first conjunct is that answer: the post-state is
+    [State.with_killed 13], which [Run.sstep_killed] takes and
+    [Run.sstep_exit] declines, and the ledger is empty because no byte
+    of the source is read on this path.  THE SECOND CONJUNCT IS WHY
+    THIS IS NOT A CHECKER THAT HAS BECOME CONSTANTLY KILLING: the same
+    call on the launch whose reader is there still delivers both bytes,
+    with the two [State.WriteEv]s and the copy-in ledger it always
+    had.  The third says the two answers do not cross: the delivering
+    answer is REFUSED on the reader-less launch. *)
+Example write_channel_no_reader_dies_by_sigpipe :
+  check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+    (mkEffect (errno_ret EPIPE) [] []) noreader_model
+  = CheckOk (with_killed (Z_to_bv 64 13) noreader_model) []
+  /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (with_copyins [(4096, 2%nat)] (mkEffect 2 [] [])) reader_model
+     = CheckOk reader_model [WriteEv 1 97; WriteEv 1 98]
+  /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (with_copyins [(4096, 2%nat)] (mkEffect 2 [] [])) noreader_model
+     = CheckReject.
+Proof. split; [check_eq | split; check_eq]. Qed.
+
+(** PAIR 2 — THE SAME WRITE UNDER THE OTHER LAUNCH DECLARATION.
+
+    [State.in_sigpipe_default] is the task's declaration that signal 13
+    is still at SIG_DFL, and [Run.valid_input] pins it.  Under
+    [Run.valid_input_sigpipe_ignored] it is SIG_IGN, and then the
+    kernel never delivers the signal at all --
+    kernel/signal.c [prepare_signal]/[sig_ignored] drops it unblocked,
+    [get_signal]'s [if (ka->sa.sa_handler == SIG_IGN) continue] drops it
+    after an unblock -- so the call's whole answer is the -EPIPE and
+    THE PROCESS IS STILL RUNNING.
+
+    The first conjunct is that: the same -EPIPE over an UNCHANGED
+    model, no kill.  The second is the discrimination, and it is what
+    makes the field worth having: the killing answer of pair 1 is
+    REFUSED on this launch, and the surviving answer here is refused on
+    that one.  Without the field one of the two launches would get the
+    other's answer. *)
+Example write_channel_no_reader_survives_when_sigpipe_is_ignored :
+  check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+    (mkEffect (errno_ret EPIPE) [] []) noreader_ignored_model
+  = CheckOk noreader_ignored_model []
+  /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect (errno_ret EPIPE) [] []) noreader_ignored_model
+     <> CheckOk (with_killed (Z_to_bv 64 13) noreader_ignored_model) []
+  /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect (errno_ret EPIPE) [] []) noreader_model
+     <> CheckOk noreader_model [].
+Proof.
+  split; [check_eq|].
+  split; vm_compute; discriminate.
+Qed.
+
+(** A pipe whose READ END HAS BEEN CLOSED: fd 4 is the write end and no
+    descriptor of pipe 0 is open for reading, which is what
+    [State.pipe_end_live _ 0 false] asks. *)
+Definition pipe_reader_gone_model : Model :=
+  with_pipes [(0, (@nil byte, 0%Z))]
+    (mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+              (4, FdPipe 0 true)]
+       (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
+
+(** PAIR 3 — A WRITE TO A PIPE WITH NO READER IS ANSWERED, WHERE IT
+    USED TO BE REFUSED, AND THE PIPE'S OTHER ANSWERS ARE UNCHANGED.
+
+    This arm used to answer [unmodeled], on the argument that the model
+    had no signals and no death that is not [exit].  It has both now,
+    so the call is judged: signal 13 and -EPIPE, fs/pipe.c
+    [anon_pipe_write] :460-465, repeated at the top of each loop
+    iteration at :501-506.
+
+    The first conjunct is the new answer.  The second is the ordering
+    that makes it sound, and it is not a stylistic one: the no-reader
+    test is STRICTLY ABOVE the page allocation at :515 and its
+    [ret = -ENOMEM] at :517-519, so a reader-less pipe can never answer
+    -ENOMEM, and the model refuses that answer here while
+    [pipe_write_into_an_empty_pipe_may_be_enomem] above admits it on the
+    same empty pipe WITH a reader.  The third is the zero-count
+    exception, which is also ordering: :454-456 returns 0 before the
+    [mutex_lock] at :458 and so before the readers test, so a
+    zero-length write to a reader-less pipe is 0 and raises nothing.
+    The fourth is the neighbouring case still admitted: with the read
+    end open the write delivers. *)
+Example write_pipe_no_reader_is_answered :
+  check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+    (mkEffect (errno_ret EPIPE) [] []) pipe_reader_gone_model
+  = CheckOk (with_killed (Z_to_bv 64 13) pipe_reader_gone_model) []
+  /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] []) pipe_reader_gone_model
+     = CheckReject
+  /\ check_syscall (mkInput 64 [4; 4096; 0; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect 0 [] []) pipe_reader_gone_model
+     = CheckOk pipe_reader_gone_model []
+  /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (with_copyins [(4096, 2%nat)] (mkEffect 2 [] [])) pipe_empty_model
+     = CheckOk (with_pipes [(0, ([97; 98], 2%Z))] pipe_empty_model) [].
+Proof.
+  split; [check_eq|].
+  split; [vm_compute; reflexivity|].
+  split; check_eq.
+Qed.
+
+(** THE SAME READER-LESS PIPE, AT A RANGE [access_ok] REFUSES: -EFAULT
+    AND NO DEATH.  [vfs_write] tests [access_ok] on the named range before
+    it calls [f_op->write_iter], so a refused range is -EFAULT and never
+    reaches [anon_pipe_write]'s readers test or its signal
+    (fs/read_write.c, [vfs_write]; fs/pipe.c, [anon_pipe_write]).  Before
+    the merge put that test above the no-reader branch, this call was the
+    death of [write_pipe_no_reader_is_answered].
+
+    Two bytes from one below the top of the address space: the byte at
+    2^64 - 1 and the byte at 0.  Each memory maps exactly its own range. *)
+Definition pipe_noreader_wrap_buf : word := Z_to_bv 64 (2 ^ 64 - 1).
+
+Definition pipe_noreader_wrap_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 1)%Z || (2 ^ 64 - 1 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 97) else None.
+
+(** The last two bytes [State.access_okb] accepts. *)
+Definition pipe_noreader_top_buf : word := Z_to_bv 64 (TASK_SIZE - 2).
+
+Definition pipe_noreader_top_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 2 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 97) else None.
+
+(** THE CONTROL: the bare walk at the wrapping buffer passes. *)
+Example write_pipe_no_reader_wrap_would_pass_the_bare_walk :
+  read_bytes_map pipe_noreader_wrap_mem pipe_noreader_wrap_buf (Z_to_bv 64 2)
+    <> None.
+Proof. vm_compute. discriminate. Qed.
+
+(** -EFAULT over the model as it was, and the death refused. *)
+Example write_pipe_no_reader_wrapping_buffer_is_efault :
+  check_syscall (mkInput 64 [4; pipe_noreader_wrap_buf; 2; 0; 0; 0]
+                   pipe_noreader_wrap_mem (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) pipe_reader_gone_model
+  = CheckOk pipe_reader_gone_model []
+  /\ check_syscall (mkInput 64 [4; pipe_noreader_wrap_buf; 2; 0; 0; 0]
+                      pipe_noreader_wrap_mem (fun _ => None))
+       (mkEffect (errno_ret EPIPE) [] []) pipe_reader_gone_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** THE NEIGHBOUR: at the top of what [State.access_okb] accepts the call
+    is answered exactly as [write_pipe_no_reader_is_answered] answers it,
+    a death by signal 13, and -EFAULT is refused there. *)
+Example write_pipe_no_reader_at_the_top_still_dies :
+  check_syscall (mkInput 64 [4; pipe_noreader_top_buf; 2; 0; 0; 0]
+                   pipe_noreader_top_mem (fun _ => None))
+    (mkEffect (errno_ret EPIPE) [] []) pipe_reader_gone_model
+  = CheckOk (with_killed (Z_to_bv 64 13) pipe_reader_gone_model) []
+  /\ check_syscall (mkInput 64 [4; pipe_noreader_top_buf; 2; 0; 0; 0]
+                      pipe_noreader_top_mem (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) pipe_reader_gone_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* =========================================================================
+   PART 8 — THE TRANSFER ARMS THAT WALKED OFF THE TOP OF THE ADDRESS SPACE
 
    [read]'s socket and pipe arms and [write]'s channel, pipe and plain
    file arms used to let the walk over the buffer speak for the range:
@@ -3047,12 +3280,16 @@ Example write_file_at_the_top_still_writes :
      = CheckReject.
 Proof. split; check_eq. Qed.
 
-(* ---- write (64) on a socket: declined, at both addresses --------------- *)
+(* ---- write (64) on a connected socket: declined, at both addresses ----- *)
 
-(** WRITING A SOCKET IS DECLINED WHATEVER THE BUFFER ([write_spec]'s
-    [FdSocket] arm: SIGPIPE has no encoding), so there was no wrapped
-    answer to withdraw here.  Pinned so that a socket write arm grown
-    later has to come past this line with its own range test. *)
+(** A CONNECTED SOCKET'S WRITE IS DECLINED WHATEVER THE BUFFER
+    ([write_spec]'s [FdSocket] arm declines every delivering socket
+    write, where [State.sock_send_dead] is false), so there was no
+    wrapped answer to withdraw here.  A socket with no connection is
+    answered, and that arm asks [vfs_write]'s [access_ok] on the named
+    count before its -EPIPE, so it never walked the buffer.  Pinned so
+    that a delivering socket write arm grown later has to come past this
+    line with its own range test. *)
 Example write_socket_is_declined_at_both_addresses :
   check_syscall (mkInput 64 [3; top_wrap_buf; 16; 0; 0; 0]
                    top_wrap_mem (fun _ => None))

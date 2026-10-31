@@ -646,7 +646,12 @@ Record RawProcInput := mkRawProcInput {
   rpi_urandom : list Z;                   (* the declared prefix; zeros after *)
   rpi_tmp   : list (list Z * list Z);
   rpi_kernel : RawKernelBuild;            (* the build the launch ran on *)
-  rpi_execfn : list Z                     (* [bprm->filename], without its NUL *)
+  rpi_execfn : list Z;                    (* [bprm->filename], without its NUL *)
+  rpi_channel_reader : bool;              (* whether the far end of fds 1 and 2
+                                             has a reader ([State.in_channel_reader]);
+                                             a bool, so every value is in type *)
+  rpi_sigpipe_default : bool              (* SIGPIPE's disposition is SIG_DFL
+                                             ([State.in_sigpipe_default]); a bool *)
 }.
 
 Fixpoint stream_of_bytes (l : list byte) : InputStream :=
@@ -912,10 +917,12 @@ Qed.
     claim about the run that nobody made — the launch would be seeded
     with a value no reader declared and no statement quantified over.
     The break is how a new input gets a raw counterpart here and a
-    declaration in every reader.  It has fired twice in this revision
-    already, for [in_kernel] and [in_execfn] — [rpi_kernel] and
-    [rpi_execfn] below are what it bought — and it fires again on
-    revision/sigpipe's [in_sigpipe_default].  The repair is a raw
+    declaration in every reader.  It has fired for [in_kernel] and
+    [in_execfn] — [rpi_kernel] and [rpi_execfn] below are what it
+    bought — and for revision/sigpipe's [in_channel_reader] and
+    [in_sigpipe_default], which bought [rpi_channel_reader] and
+    [rpi_sigpipe_default]; those two are bools, so every value is in
+    type and their check is the type itself.  The repair is a raw
     field and its check, never [mkProcInput] and never a default. *)
 Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
   match bytes_list_of_Z (rpi_argv r), bytes_list_of_Z (rpi_envp r),
@@ -933,7 +940,8 @@ Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
           Some (mkProcInput_full argv envp image_fs (stream_of_bytes stdin)
                   uid gid groups net nofile sigmask hwcap
                   (rpi_abort_terminal r) (rpi_va_size r)
-                  (urandom_of_bytes urandom) tmp kernel execfn)
+                  (urandom_of_bytes urandom) tmp kernel execfn
+                  (rpi_channel_reader r) (rpi_sigpipe_default r))
       | _, _, _, _, _, _, _ => None
       end
   | _, _, _, _, _, _, _, _ => None

@@ -821,14 +821,16 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     whole readable prefix remains admissible.
 
     This OVER-APPROXIMATES, deliberately.  Linux does not fall short on
-    every channel.  A blocking pipe write of at most PIPE_BUF (4096;
-    include/uapi/linux/limits.h:14, v6.12) is atomic.  The optional
-    pre-loop merge either copies the whole write or errors
-    (fs/pipe.c:463-495).  If merging is unavailable, the ordinary loop
-    either returns EPIPE or an allocation error before copying, encounters
-    a copy fault without publishing the copied bytes, copies the whole
-    request into one new pipe page when a slot exists (:497-550), or
-    reaches the signal and wait checks before copying anything (:556-580).
+    every channel.  A blocking pipe write of at most PIPE_BUF (4096; the
+    [PIPE_BUF] definition in include/uapi/linux/limits.h) is atomic.  The
+    optional pre-loop merge either copies the whole write or errors: that
+    is the [chars && !was_empty] branch of [anon_pipe_write] in
+    fs/pipe.c.  If merging is unavailable, the ordinary loop of the same
+    function either returns EPIPE or an allocation error before copying,
+    encounters a copy fault without publishing the copied bytes, copies
+    the whole request into one new pipe page when a slot exists, or
+    reaches its signal and wait checks before copying anything.  Linux
+    v6.18.46, commit 1f99e9ab748f.
     None of these paths can produce a short POSITIVE return, signal
     interruption included.
 
@@ -1033,6 +1035,79 @@ Definition write_file_tail (mp : word -> option byte) (buf count : word)
       end in
     if w_is0 count then access_ok_zero buf count deliver else deliver.
 
+(** WHAT A WRITE TO A FAR END WITH NO READER DOES TO THE PROCESS.
+
+    Linux sends SIGPIPE and sets the syscall's return to -EPIPE, in that
+    order and unconditionally: fs/pipe.c [anon_pipe_write] does
+    [send_sig(SIGPIPE, current, 0); ret = -EPIPE;] at :460-465 and again
+    at :501-506, and net/core/stream.c [sk_stream_error] does
+    [if (err == -EPIPE && !(flags & MSG_NOSIGNAL)) send_sig(SIGPIPE, current, 0);]
+    at :190-198.  Neither raises a signal write(2) can suppress:
+    [IOCB_NOSIGNAL] is not among the flags [iocb_flags]
+    (include/linux/fs.h) sets, and MSG_NOSIGNAL reaches
+    net/socket.c [sock_write_iter] only from it (:1193-1194).  Linux
+    v6.18.46, commit 1f99e9ab748f.
+
+    WHICH OF THE TWO THE PROCESS SEES IS THE MASK'S DECISION, and that
+    is the whole of this function.  SIGPIPE's default action is
+    TERMINATE ([Uapi.SIGPIPE] says why), so with the signal unblocked
+    kernel/signal.c [get_signal] runs on the way back to user space and
+    reaches [do_group_exit]: the -EPIPE is never returned, and what the
+    world sees is a death by signal 13.  With the signal BLOCKED,
+    [send_signal_locked] leaves it in [task->pending.signal],
+    [recalc_sigpending] leaves TIF_SIGPENDING clear, the return to user
+    space takes no signal, and the program reads -EPIPE -- which is why
+    the errno is this function's answer on BOTH branches, and why the
+    pending bit has to be recorded: an [rt_sigprocmask] that later
+    uncovers signal 13 kills there
+    ([Kernel.Signal.sigmask_deliver_model]).
+
+    THE DISPOSITION IS A LAUNCH DECLARATION, and it is the FIRST test
+    here.  Nothing inside the modeled surface can change it --
+    [Kernel.Signal.rt_sigaction_spec] declines every install for signal
+    13 -- but the launcher can: `signal(SIGPIPE, SIG_IGN)` before
+    execve survives it, because fs/exec.c [begin_new_exec] calls
+    kernel/signal.c [flush_signal_handlers] with [force_default = 0],
+    which resets handlers and leaves SIG_DFL and SIG_IGN alone (Linux
+    v6.18.46, commit 1f99e9ab748f).  [State.in_sigpipe_default] is that
+    declaration and [State.m_sigpipe_default] reads it.  WITH SIG_IGN
+    THE PROCESS NEVER DIES, by either of two kernel routes, and the
+    model collapses both into leaving the state alone.  UNBLOCKED:
+    kernel/signal.c [prepare_signal] returns [!sig_ignored(p, sig,
+    force)], [sig_ignored] falls through to [sig_task_ignored], and
+    the signal is dropped before [__send_signal_locked] queues
+    anything.  BLOCKED: [sig_ignored] answers false for a blocked
+    signal on purpose ("the signal handler may change by the time it
+    is unblocked"), so it IS queued -- but the [rt_sigprocmask] that
+    later uncovers it reaches [get_signal]'s
+    [if (ka->sa.sa_handler == SIG_IGN) continue], which discards it
+    there instead.  Either way no state this model carries differs
+    afterwards: the only thing that could tell the two apart is
+    [sigpending], which this model has no call for.  So the branch
+    answers -EPIPE over an UNCHANGED model, which is what every
+    program that ignores SIGPIPE is written to read, and nothing is
+    recorded as pending -- [Kernel.Signal.sigmask_deliver_model] stays
+    out of it.  [Run.valid_input] pins the declaration to SIG_DFL;
+    [Run.valid_input_sigpipe_ignored] is the other world.
+
+    NO LEDGER AND NO EVENT.  Both kernel sites raise the signal before
+    any byte is copied out of user memory, so the call reads nothing
+    and emits nothing; [State.with_killed] and
+    [State.with_sigpipe_pending] rebuild [State.ProcState] alone, so the
+    file system, the fd table and the address space are untouched.  When
+    the branch kills, [Run.sstep_killed] discards the effect this
+    returns -- exactly as [Run.sstep_exit] discards an [exit]'s -- so
+    the -EPIPE is unobservable there, which is the point. *)
+Definition raise_sigpipe (m : Model) : Model :=
+  if negb (m_sigpipe_default m)
+  then m                         (* SIG_IGN: discarded, never queued *)
+  else if sigpipe_blocked (m_sigmask m)
+  then with_sigpipe_pending m
+  else with_killed (Z_to_bv 64 SIGPIPE) m.
+
+Definition sigpipe_write : Sys SyscallEffect :=
+  modify raise_sigpipe ;;
+  err_ret EPIPE.
 (** The faulting-source post-state of a write whose bytes would have
     landed at [off] in [p]: the file extended to [off], the descriptor
     untouched, or [None] where the hole is one the model will not build.
@@ -1131,7 +1206,42 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            [State.copy_bytes_map]'s note has the wrap).  THIS IS THE GUARD
            ON [Uaccess.write_source] BELOW: it walks at most
            [State.rw_count_clamp count] bytes, at most [count], so
-           [buf + len <= buf + count <= TASK_SIZE] *)
+           [buf + len <= buf + count <= TASK_SIZE].
+           IT IS ALSO THE TEST THE NO-READER ARM BELOW NEEDS, which is
+           why that arm no longer carries one of its own *)
+      else
+      if negb (m_channel_reader m) then
+        (* THE FAR END HAS NO READER.  [State.in_channel_reader] says
+           the launch put a pipe or a socket on the other side of this
+           descriptor and its reader has gone -- `prog | head -1` once
+           `head` has had its line.  Linux raises SIGPIPE and sets
+           -EPIPE (fs/pipe.c [anon_pipe_write] :460-465 when the far
+           end is a pipe, net/core/stream.c [sk_stream_error] :190-198
+           when it is a socket), and under the default disposition the
+           process DIES; see [raise_sigpipe], which is where the mask
+           decides between the death and the errno.
+
+           AFTER THE ZERO-COUNT BRANCH, because fs/pipe.c returns 0 for
+           a zero-length write at :454-456, BEFORE the [mutex_lock] at
+           :458 and therefore before the [if (!pipe->readers)] test at
+           :460: a zero-length write to a pipe whose reader is gone is
+           0, not -EPIPE, and raises no signal.
+
+           AND BEHIND [access_ok], which is the order fs/read_write.c
+           fixes: [vfs_write] runs
+           [if (unlikely(!access_ok(buf, count))) return -EFAULT;]
+           before it calls [f_op->write_iter], so a buffer whose NAMED
+           range leaves the user address space is -EFAULT whatever is
+           on the other end of the descriptor, and only a call that
+           gets past it reaches the readers test.  That test is now the
+           arm's own, immediately above, rather than a second copy
+           here: the reader-present path below faces it too, which is
+           the one thing that changed under this arm since this note
+           was written -- that path no longer takes a readable prefix
+           on a range [access_ok] refuses, so the looseness this note
+           refused to inherit is gone rather than avoided.
+           Linux v6.18.46, commit 1f99e9ab748f *)
+        sigpipe_write
       else
       let bs := write_source (in_mem i) buf count in
       if Nat.eqb (length bs) 0
@@ -1149,49 +1259,75 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
           (ret_only (len_word ds))               (* the (possibly short) delivered length *)
   | Some FdDir => err_ret EBADF                  (* directory fds are O_RDONLY: write is real -EBADF,
                                                     checked before the source buffer as Linux does *)
-  | Some (FdSocket _) => unmodeled
-      (* WRITING A SOCKET IS UNMODELED, PERMANENTLY — not deferred.
-         Every kernel citation in this arm is v6.12.
-         On a connection the peer has reset, write(2) returns -EPIPE
-         *and raises SIGPIPE*: net/core/stream.c [sk_stream_error] sends
-         the signal whenever the final errno is exactly -EPIPE and
-         MSG_NOSIGNAL is clear, and write(2) cannot set that flag.  The
-         reason is NOT that net/socket.c [sock_write_iter] passes only
-         MSG_DONTWAIT: at v6.18.46 it also raises MSG_NOSIGNAL, from
-         [IOCB_NOSIGNAL], and MSG_EOR for SOCK_SEQPACKET.  What write(2)
-         cannot do is set [IOCB_NOSIGNAL] -- include/linux/fs.h
+  | Some (FdSocket sk) =>
+      if negb (sock_send_dead sk) then unmodeled
+        (* A DELIVERING SOCKET WRITE IS STILL UNMODELED, and this is
+           what is left of the arm that used to decline every socket.
+           [State.sock_send_dead] is false only for [SkConnected],
+           where the send either goes out -- a short count chosen from
+           the gatherable bytes, which is [Net.Socket.send_bytes]'s
+           business and needs that file's machinery -- or reports a
+           pending peer error ONCE and REWRITES the descriptor
+           (include/net/sock.h [sock_error] consumes it with an
+           [xchg]).  Neither raises a signal: [sk_stream_error] replaces
+           the errno with [sock_error]'s before it tests for -EPIPE
+           (net/core/stream.c :192-195), so a reset connection's FIRST
+           write is -ECONNRESET and carries none.  What keeps those
+           states out is the transfer, not the signal, which is why this
+           decline is now bounded and not permanent *)
+      else
+      if negb (modeled_rw_range buf count) then unmodeled
+        (* the count rule every judging arm of this spec applies, after
+           the fd check Linux makes first -- see
+           [Uaccess.modeled_rw_range] *)
+      else
+      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+        (* [vfs_write]'s [access_ok] over the NAMED range, which
+           fs/read_write.c runs before [f_op->write_iter] and therefore
+           before anything the socket decides *)
+      else sigpipe_write
+      (* THE SOCKET HAS NO CONNECTION TO SEND ON, which is every state
+         but [SkConnected]: TCP has no -ENOTCONN on the send path at
+         all.  net/core/stream.c [sk_stream_wait_connect] (:60-88)
+         answers -EPIPE for every state outside SYN_SENT and SYN_RECV,
+         and net/ipv4/tcp.c [tcp_sendmsg_locked] reaches it whenever the
+         state is outside [TCPF_ESTABLISHED | TCPF_CLOSE_WAIT].  That
+         -EPIPE then goes through [sk_stream_error] (:190-198), whose
+         [if (err == -EPIPE && !(flags & MSG_NOSIGNAL)) send_sig(SIGPIPE, ...)]
+         fires because write(2) cannot set MSG_NOSIGNAL: the flag
+         reaches net/socket.c [sock_write_iter] only from
+         [IOCB_NOSIGNAL] (:1193-1194), and include/linux/fs.h
          [iocb_flags] ORs only IOCB_APPEND, IOCB_DIRECT, IOCB_DSYNC and
-         IOCB_SYNC, and RWF_NOSIGNAL reaches a kiocb through
-         [kiocb_set_rw_flags], which no write(2) or writev(2) path calls.  The
-         conclusion is the v6.12 one.  The mechanism was never right:
-         MSG_EOR for SOCK_SEQPACKET is already there at v6.12, so "passes
-         only MSG_DONTWAIT" was wrong when it was written rather than
-         overtaken by a later kernel.  SIGPIPE is
-         in none of SIG_KERNEL_IGNORE_MASK, SIG_KERNEL_STOP_MASK or
+         IOCB_SYNC -- RWF_NOSIGNAL reaches a kiocb through
+         [kiocb_set_rw_flags], which no write(2) or writev(2) path
+         calls.  So the process takes SIGPIPE and, at the default
+         disposition, DIES; [raise_sigpipe] is where the mask decides
+         between that death and the -EPIPE.  SIGPIPE is in none of
+         SIG_KERNEL_IGNORE_MASK, SIG_KERNEL_STOP_MASK or
          SIG_KERNEL_COREDUMP_MASK (include/linux/signal.h), so under
-         SIG_DFL kernel/signal.c [get_signal] reaches [do_group_exit] and
-         the whole thread group dies.
+         SIG_DFL kernel/signal.c [get_signal] reaches [do_group_exit]
+         and the whole thread group dies.  Linux v6.18.46, commit
+         1f99e9ab748f.
 
-         A spec's outcomes are [Ok] and [Unmodeled] and nothing else
-         ([Monad.Sys]), so "the process died" cannot be stated.
-         Returning -EPIPE and continuing asserts the process SURVIVED —
-         a confidently wrong answer of exactly the class [modeled]
-         cannot see — and halting with 141 is indistinguishable from a
-         voluntary exit(141), which would let a target replace a signal
-         death with a normal exit and stay equivalent.  Both are worse
-         than declining.
+         A ZERO-LENGTH WRITE IS NOT AN ESCAPE, which is why no
+         zero-count branch precedes this: [sock_write_iter] has no
+         zero-count short-circuit of the kind [sock_read_iter] has, so
+         [write(sockfd, buf, 0)] on a socket with no connection reaches
+         [tcp_sendmsg_locked] and takes the same -EPIPE and the same
+         signal.  That is the one place this arm differs in SHAPE from
+         the pipe and channel arms, and the difference is Linux's.
 
-         Nor is a never-connected socket an escape:
-         net/core/stream.c [sk_stream_wait_connect] returns -EPIPE for
-         every state outside SYN_SENT/SYN_RECV — there is no -ENOTCONN
-         on the TCP send path at all — so that raises SIGPIPE too.  Nor
-         is zero length: sock_write_iter has no zero-count
-         short-circuit of the kind sock_read_iter has, so
-         [write(sockfd, buf, 0)] on a reset connection is not a no-op.
-
-         The socket write path this model can grow is sendto/sendmsg
-         with MSG_NOSIGNAL REQUIRED and checked first, which works only
-         because the flag is a syscall argument a spec can read. *)
+         WHAT THIS REPLACED.  The arm used to decline every socket
+         write permanently, on the argument that a spec's outcomes are
+         [Ok] and [Unmodeled] only ([Monad.Sys]), so "the process died"
+         could not be stated and answering -EPIPE would assert the
+         process SURVIVED -- a confidently wrong answer of exactly the
+         class [Equivalence.modeled] cannot see.  The model now has a
+         death that is not [exit] ([State.with_killed],
+         [Run.sstep_killed]), so the argument no longer holds and the
+         answer is the kernel's.  The sendto/sendmsg path keeps its own
+         MSG_NOSIGNAL gate, where the flag is an argument a spec can
+         read ([Net.Socket.send_flags_modeled]) *)
   | Some (FdFileW p off) =>
       (* ONE LEADING KERNEL TEST, [vfs_write]'s [access_ok], and not the
          second.  This note used to say the arm models neither
@@ -1384,12 +1520,47 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            further down is left with exactly a source [access_ok] admits
            and the memory does not wholly back *)
       else
-      if negb (pipe_end_live (m_fds m) id false) then unmodeled
-        (* NO READER LEFT.  Linux raises SIGPIPE and answers -EPIPE
-           (fs/pipe.c:460-465, v6.18.46), and SIGPIPE's default disposition
-           TERMINATES the process — an outcome this model has no way to
-           express, since it has no signals and no death that is not
-           [exit].  Fail closed *)
+      if negb (pipe_end_live (m_fds m) id false) then
+        (* NO READER LEFT.  fs/pipe.c [anon_pipe_write] takes
+           [if (!pipe->readers) { send_sig(SIGPIPE, current, 0); ret = -EPIPE; goto out; }]
+           at :460-465, and the loop repeats the pair at :501-506
+           (Linux v6.18.46, commit 1f99e9ab748f).  [send_sig] carries
+           no suppressing flag here: the [(iocb->ki_flags & IOCB_NOSIGNAL) == 0]
+           guard is true for write(2), which cannot set that kiocb flag.
+           Under the default disposition the process DIES by signal 13;
+           [raise_sigpipe] is where the mask decides between that death
+           and the -EPIPE a program with signal 13 blocked reads back.
+
+           DECIDED AFTER the zero-count branch above, which is :454-456
+           returning 0 BEFORE the [mutex_lock] at :458 and so before
+           this test, and after [write_range_gate]'s count rule.  AND
+           AFTER [access_ok], immediately above: [vfs_write] refuses a
+           range that leaves the user address space before it calls
+           [f_op->write_iter], so a refused range is -EFAULT and not a
+           death.  No byte of the source is read on this path, exactly
+           as on Linux, so the ledger stays empty.
+
+           AND DECIDED ABOVE THE -ENOMEM ALTERNATIVE of the page
+           allocation further down this arm.  THIS ORDER IS BEHAVIOUR AND
+           MUST NOT BE SWAPPED.  [anon_pipe_write] tests
+           [if (!pipe->readers)] at :460 before it takes the mutex-held
+           path at all, and repeats the test at the TOP of each loop
+           iteration (:501-506, with [break]) — both strictly before
+           [page = anon_pipe_get_page(pipe)] at :515 and its
+           [ret = -ENOMEM] at :517-519 (Linux v6.18.46, commit
+           1f99e9ab748f).  So a write to a pipe with no reader NEVER
+           reaches the allocation and can never answer -ENOMEM: it
+           raises signal 13 and answers -EPIPE.  If the [pipe_needs_page]
+           alternative below were moved above this test, the model would
+           answer a memory failure, and let the process live, where Linux
+           kills it.
+
+           THIS USED TO FAIL CLOSED, on the argument that the model had
+           no signals and no death that is not [exit].  It has both now
+           ([State.with_killed], [Run.sstep_killed]), so the pipe write
+           is answered instead of declined, and a program that closes a
+           pipe's read end and writes is a program proofs can cover *)
+        sigpipe_write
       else
       match pipe_lookup (m_pipes m) id with
       | None => unmodeled   (* an FdPipe always names a live table entry; see [Pipe.pipe2_spec] *)
@@ -1464,7 +1635,12 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
               record_copyins [(buf, length bs)] (ret_only count) in
             if pipe_needs_page st
             then alt (e <- errno_from write_errnos ;; err_ret e) deliver
-              (* [anon_pipe_get_page] came back NULL: see [write_errnos] *)
+              (* [anon_pipe_get_page] came back NULL: see [write_errnos].
+                 THIS ALTERNATIVE STAYS BELOW THE NO-READER TEST ABOVE and
+                 must not be lifted above it: fs/pipe.c:460 and :501-506
+                 test [!pipe->readers] before :515 reaches this
+                 allocation, so a reader-less pipe answers -EPIPE and a
+                 signal 13, never -ENOMEM (Linux v6.18.46, 1f99e9ab748f) *)
             else deliver
         (* NO SHORT POSITIVE RETURN, and deliberately not the channel
            arm's short write: with room in the ring and the whole source
@@ -1592,22 +1768,26 @@ Definition ppos_einvalb (pos : word) : bool := (bv_signed pos <? 0)%Z.
     establishes it cannot happen. *)
 Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
   if ppos_einvalb pos then err_ret EINVAL
-    (* [pos < 0] BEFORE the descriptor: fs/read_write.c:755-756 *)
+    (* [pos < 0] BEFORE the descriptor, in [ksys_pread64]: fs/read_write.c,
+       Linux v6.18.46, commit 1f99e9ab748f *)
   else
   i <- input ;;
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
-  | None => err_ret EBADF                        (* empty slot: fs/read_write.c:759-760 *)
+  | None => err_ret EBADF                        (* empty slot: the [CLASS(fd, f)(fd)] declaration
+                                                    in [ksys_pread64], fs/read_write.c *)
   | Some (FdChannel _) => err_ret ESPIPE         (* no FMODE_PREAD, BY THE PIPED-STDIO
                                                     ASSUMPTION — see the header *)
-  | Some (FdPipe _ _) => err_ret ESPIPE          (* [stream_open] on both ends, fs/pipe.c:966-967.
+  | Some (FdPipe _ _) => err_ret ESPIPE          (* [stream_open] on both ends, from
+                                                    [create_pipe_files] in fs/pipe.c.
                                                     Decided AHEAD of [vfs_read]'s [FMODE_READ], so
                                                     the WRITE end is -ESPIPE here where [read] on
                                                     it is -EBADF *)
-  | Some (FdSocket _) => err_ret ESPIPE          (* [stream_open], net/socket.c:494 *)
+  | Some (FdSocket _) => err_ret ESPIPE          (* [stream_open], from [sock_alloc_file] in
+                                                    net/socket.c *)
   | Some (FdFileW _ _) => err_ret EBADF          (* a regular file keeps FMODE_PREAD, so this
                                                     reaches [vfs_read] and fails its FMODE_READ
-                                                    test: fs/read_write.c:556-557 *)
+                                                    test: fs/read_write.c *)
   | Some (FdFileA _ _) => err_ret EBADF          (* and so does an append fd: O_APPEND rides on
                                                     O_WRONLY here, so FMODE_READ is clear and the
                                                     same test answers.  Where the write lands never
@@ -1741,24 +1921,29 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
     there, so pwrite reaches no offset a chain of writes could not. *)
 Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
   if ppos_einvalb pos then err_ret EINVAL
-    (* [pos < 0] BEFORE the descriptor: fs/read_write.c:785-786 *)
+    (* [pos < 0] BEFORE the descriptor, in [ksys_pwrite64]: fs/read_write.c,
+       Linux v6.18.46, commit 1f99e9ab748f *)
   else
   i <- input ;;
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
-  | None => err_ret EBADF                        (* empty slot: fs/read_write.c:789-790 *)
+  | None => err_ret EBADF                        (* empty slot: the [CLASS(fd, f)(fd)] declaration
+                                                    in [ksys_pwrite64], fs/read_write.c *)
   | Some (FdChannel _) => err_ret ESPIPE         (* no FMODE_PWRITE, BY THE PIPED-STDIO
                                                     ASSUMPTION — see the header.  This is where
                                                     the channel's short-write over-approximation
                                                     stops being reachable at all *)
-  | Some (FdPipe _ _) => err_ret ESPIPE          (* fs/pipe.c:966-967.  A pwrite to a pipe whose
+  | Some (FdPipe _ _) => err_ret ESPIPE          (* [stream_open] on both ends, from
+                                                    [create_pipe_files] in fs/pipe.c.
+                                                    A pwrite to a pipe whose
                                                     reader is gone is -ESPIPE and raises NO
                                                     SIGPIPE: [anon_pipe_write] is never reached *)
-  | Some (FdSocket _) => err_ret ESPIPE          (* net/socket.c:494.  The -EPIPE-and-SIGPIPE that
-                                                    makes [write_spec]'s socket arm permanently
-                                                    unmodeled is unreachable through pwrite *)
+  | Some (FdSocket _) => err_ret ESPIPE          (* [stream_open], from [sock_alloc_file] in
+                                                    net/socket.c.  The -EPIPE-and-SIGPIPE that
+                                                    [write_spec]'s socket arm answers is
+                                                    unreachable through pwrite *)
   | Some (FdFile _ _) => err_ret EBADF           (* fd open read-only: [vfs_write]'s FMODE_WRITE
-                                                    test, fs/read_write.c:670-671 *)
+                                                    test, fs/read_write.c *)
   | Some FdUrandom => err_ret EBADF             (* FMODE_PWRITE is set on the device, so this
                                                     reaches [vfs_write]'s FMODE_WRITE test, which a
                                                     read-only descriptor fails: -EBADF before the
@@ -2041,8 +2226,14 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
   | None => err_ret EBADF                        (* fd not open: real -EBADF *)
   | Some (FdFile _ _) => err_ret EBADF           (* fd open read-only: real -EBADF *)
   | Some FdDir => err_ret EBADF                  (* directory fds are O_RDONLY *)
-  | Some (FdSocket _) => writev_buf_gap           (* see [write_spec]'s socket arm: a write that
-                                                    would raise SIGPIPE has no encoding *)
+  | Some (FdSocket _) => writev_buf_gap           (* A VECTORED SOCKET WRITE IS UNMODELED, and
+                                                    unlike the scalar arm it stays so for every
+                                                    socket state: [write_spec]'s socket arm answers
+                                                    the no-connection states because the transfer
+                                                    is the only thing in the way there, and here
+                                                    the gathered transfer is in the way too.  No
+                                                    soundness claim rests on the difference: a
+                                                    decline is sound under either *)
   | Some (FdChannel ch) =>
       if w_is0 ch then err_ret EBADF             (* channel 0 is read-only BY ASSUMPTION *)
       else
@@ -2055,6 +2246,26 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
             let total := iovs_total (cap_iovecs iovs0) in
             let bs := writev_gathered (in_mem i) iovs0 in
             if Z.eqb total 0 then ret_only (Z_to_bv 64 0)   (* zero aggregate: 0, no buffer inspected *)
+            else if negb (m_channel_reader m) then sigpipe_write
+              (* THE FAR END HAS NO READER, and writev takes the same
+                 path write does: fs/read_write.c [do_writev] imports
+                 the iovec array -- which is why the ledger above keeps
+                 its entry on this branch -- then [vfs_writev] reaches
+                 [f_op->write_iter], which for a pipe is
+                 [anon_pipe_write] and takes [send_sig(SIGPIPE, ...)]
+                 and -EPIPE at fs/pipe.c:460-465, and for a socket is
+                 [sock_write_iter] and reaches net/core/stream.c
+                 [sk_stream_error] :190-198.  AFTER the zero-aggregate
+                 branch for the scalar arm's reason (fs/pipe.c:454-456
+                 returns 0 before the readers test), and with no
+                 [access_ok] test of its own, because [import_iovecs]
+                 above has already made it and answered [ImpFault] if
+                 it failed.  Linux v6.18.46, commit 1f99e9ab748f.
+
+                 WITHOUT THIS ARM [writev] WOULD BE UNSOUND WHERE
+                 [write] IS NOT: it would answer a byte count and let
+                 the program run on for a launch the input says has no
+                 reader, which asserts the process SURVIVED *)
             else if Nat.eqb (length bs) 0 then err_ret EFAULT  (* not even the first byte readable *)
             else if addr_is_error_b (len_word bs) then writev_buf_gap
                  (* unreachable under the aggregate cap; see above *)
@@ -2761,14 +2972,15 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                                                     v6.18.46) sets it only for a table that
                                                     supplies the method ([if (fop->llseek)],
                                                     :364-365).  An anonymous pipe misses it
-                                                    TWICE: [pipeanon_fops], the table
-                                                    [create_pipe_files] installs on both ends
-                                                    (fs/pipe.c:1257-1266, installed at :946 and
-                                                    :957), has no [.llseek] line at all, and
+                                                    TWICE.  First, the file-scope initializer
+                                                    [static const struct file_operations
+                                                    pipeanon_fops] in fs/pipe.c -- the table
+                                                    [create_pipe_files] installs on both ends --
+                                                    has no [.llseek] line at all.  Second,
                                                     [create_pipe_files] then runs [stream_open]
-                                                    (fs/open.c:1656-1660, v6.18.46) on both ends
-                                                    (fs/pipe.c:966-967), which CLEARS
-                                                    [FMODE_LSEEK] outright at fs/open.c:1658.
+                                                    (fs/open.c) on both ends, and [stream_open]
+                                                    CLEARS [FMODE_LSEEK] outright.  Linux
+                                                    v6.18.46, commit 1f99e9ab748f.
                                                     Spelling the bit out matters because the
                                                     table half is the one whose SPELLING has
                                                     moved: older kernels wrote
