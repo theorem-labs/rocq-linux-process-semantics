@@ -89,24 +89,11 @@ Section Init.
       quantified draw that is the NAMED hypothesis [AsanCeil.zero_random_draw], FALSE on every real run, used
       only by [atrandom_zero_ok] / [init_kn_zero_ok] / [init_cs_ok_zero] — see the Common README. *)
   Hypothesis Hzr : AsanCeil.zero_random_draw (ed_random rdraw).
-  (** THE TABLE MUST OVER-STATE THE LAUNCH'S EXTRA RESERVATIONS.
-
-      [State.init_model] seeds [vm_reserved] with the vdso/vvar pair
-      beside the image ([State.init_reserved], [State.vdso_reserved]),
-      and [cs_ok]'s [co_res] asks the table to bound how many intervals
-      that is and how many bytes.  Two and twenty pages are the model's
-      own maxima: [State.vdso_reserved] emits exactly two intervals,
-      and [State.vdso_len_bounds] caps the pair at twenty pages,
-      because the vDSO text is one to sixteen pages and the vvar part
-      is four.
-
-      THIS NARROWS NO RUN.  [n_resx] and [p_resx] are fields of the
-      ANALYSIS TABLE a consumer writes, not of the launch, and their
-      own comment calls them upper bounds.  A table that sets them
-      lower describes no launch this model admits, so the hypothesis
-      excludes tables and not executions. *)
-  Hypothesis RESX : (2 <= n_resx A)%nat /\ (20 <= p_resx A)%nat.
-
+  (* The table hypothesis the launch's extra reservations need is
+     declared beside [resx0] below, not here: a Section hypothesis
+     naming [A] that is declared before the layout lemmas is
+     discharged into them too, and their callers then carry an
+     argument they have no reason to. *)
   Definition inp : ProcInput := mkProcInput argv envp fs stdin uid gid groups net default_nofile (Z_to_bv 64 0) hw false Sv48.  (* in_hwcap = hw, in_abort_terminal = false, in_va_size = Sv48 *)
   Let bsb := build_stack_bytes ph sp argv envp uid hw rdraw.
   Let SIMG := entry_stack_image ph sp argv envp uid hw rdraw.   (* the mapped image = bsb ++ page slack *)
@@ -840,6 +827,20 @@ Section Init.
       beside the image, so [cs_ok]'s [co_res], [co_totsz] and
       [co_split] all have to account for it.  The facts are proved once
       here and read three times below. *)
+  (** THE TABLE MUST OVER-STATE THE LAUNCH'S EXTRA RESERVATIONS.
+
+      Two and twenty pages are the model's own maxima:
+      [State.vdso_reserved] emits exactly two intervals, and
+      [State.vdso_len_bounds] caps the pair at twenty pages, because
+      the vDSO text is one to sixteen pages and the vvar part is four.
+
+      THIS NARROWS NO RUN.  [n_resx] and [p_resx] are fields of the
+      ANALYSIS TABLE a consumer writes, not of the launch, and their
+      own comment calls them upper bounds.  A table that sets them
+      lower describes no launch this model admits, so the hypothesis
+      excludes tables and not executions. *)
+  Hypothesis RESX : (2 <= n_resx A)%nat /\ (20 <= p_resx A)%nat.
+
   Definition resx0 : list (word * word) :=
     vdso_reserved (in_kernel inp)
       (page_round_down_Z (Z.min (bv_unsigned mbase)
@@ -1084,10 +1085,13 @@ Section Init.
     - reflexivity.
     - reflexivity.
     - reflexivity.
-    - (* co_res: this launch reserves nothing besides the image *)
-      exists []. rewrite app_nil_r. split; [reflexivity|]. split; [constructor|].
-      split; [cbn [length]; lia|].
-      cbn [sum_sizes]. unfold resx_bytes. pose proof (Nat2Z.is_nonneg (p_resx A)). lia.
+    - (* co_res: the launch seeds the vdso/vvar pair beside the image *)
+      destruct RESX as [Hnx Hpx].
+      exists resx0.
+      split; [exact RESX_split|].
+      split; [exact RESX_ok|].
+      split; [rewrite RESX_len; lia|].
+      exact RESX_sum.
     - reflexivity.
     - reflexivity.
     - constructor.   (* no hole tokens *)
@@ -1100,14 +1104,41 @@ Section Init.
     - intros z Hz. exact Hz.
     - constructor.
     - constructor.
-    - rewrite app_nil_r, (if_sizes _ _ _ IMG). unfold resx_bytes.
-      pose proof (Nat2Z.is_nonneg (p_resx A)). lia.
-    - exists (bv_unsigned mbase). destruct Hmb as (Y1 & Y2 & Y3). unfold mmap_base_min in Y1. unfold page_size in Y3.
-      unfold MBASE_MIN, resx_bytes. pose proof (Nat2Z.is_nonneg (p_resx A)).
-      split; [lia|]. split; [exact Y3|]. split; [lia|].
-      rewrite app_nil_r. intros b sz Hin.
-      pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin) as [R1 R2]. cbn [fst snd] in R1, R2.
-      left. unfold kHighMemBeg. lia.
+    - (* co_totsz *)
+      rewrite app_nil_r, RESX_split', sum_sizes_app, (if_sizes _ _ _ IMG).
+      pose proof RESX_sum. unfold resx_bytes in *. lia.
+    - (* co_split: the mark is the base of the extra reservations *)
+      destruct RESX as [Hnx Hpx].
+      destruct RESX_bounds as (Hlo & Hhi' & Hal).
+      pose proof (vdso_len_bounds (in_kernel inp)) as Hvl.
+      pose proof (if_hull _ _ _ IMG) as (_ & Hih & _ & _).
+      exists (page_round_down_Z
+                (Z.min (bv_unsigned mbase)
+                   (bv_unsigned sp - stack_max_size))
+              - vdso_len (in_kernel inp))%Z.
+      assert (Htm : (page_round_down_Z (Z.min (bv_unsigned mbase)
+                       (bv_unsigned sp - stack_max_size))
+                     <= bv_unsigned mbase)%Z).
+      { pose proof (page_round_down_Z_le
+                      (Z.min (bv_unsigned mbase)
+                         (bv_unsigned sp - stack_max_size))).
+        pose proof (Z.le_min_l (bv_unsigned mbase)
+                      (bv_unsigned sp - stack_max_size)). lia. }
+      assert (Hpz' : (20 <= Z.of_nat (p_resx A))%Z)
+        by (change 20%Z with (Z.of_nat 20); apply Nat2Z.inj_le; exact Hpx).
+      unfold MBASE_MIN, resx_bytes, mmap_base_min, page_size in *.
+      split; [lia|].
+      split.
+      { pose proof (vdso_len_page (in_kernel inp)) as Hvp.
+        unfold page_size in *.
+        rewrite Zminus_mod, Hal, Hvp. reflexivity. }
+      split; [lia|].
+      rewrite app_nil_r, RESX_split'. intros b sz Hin.
+      apply in_app_iff in Hin as [Hin|Hin].
+      + pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin)
+          as [R1 R2]. cbn [fst snd] in R1, R2.
+        left. unfold kHighMemBeg, KHI in *. lia.
+      + right. exact (RESX_base b sz Hin).
     - unfold escale. rewrite mkMd_denot. cbn [edenot]. apply bv_eq. rewrite u_mul64, u64_lit by lia.
       destruct uE0 as (_ & _ & _ & _ & _ & _ & U7). unfold uE in U7. cbn [edenot] in U7. rewrite U7.
       rewrite Z.mod_small by lia. lia.

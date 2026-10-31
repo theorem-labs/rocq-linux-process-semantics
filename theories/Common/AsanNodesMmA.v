@@ -91,13 +91,13 @@ Let maps_match_exact' := APS.maps_match_exact nx0 HS XN XE XB.
 
 (** the Section-[Nodes] lemmas of AsanNodesMmLib, instantiated *)
 Let budget_slack := AsanNodesMmLib.budget_slack SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
-Let dest_hyps := AsanNodesMmLib.dest_hyps SEGS A LIMIT SINV argH FS0.
+Let dest_hyps := AsanNodesMmLib.dest_hyps SEGS A LIMIT CEIL SINV argH FS0.
 Let escale_4096_denot := AsanNodesMmLib.escale_4096_denot SEGS A RES_len HULL_ok.
 Let find_containing_sound := AsanNodesMmLib.find_containing_sound SEGS A RES_len.
 Let fixed_args_sound := AsanNodesMmLib.fixed_args_sound SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
 Let fixed_cs1 := AsanNodesMmLib.fixed_cs1 A.
 Let gap_ok_sound := AsanNodesMmLib.gap_ok_sound SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok SHADOW_ok.
-Let ceil_le_alloc_top := AsanNodesMmLib.ceil_le_alloc_top SEGS A LIMIT CEIL SINV argH FS0.
+Let ceil_le_alloc_top := AsanNodesMmLib.ceil_le_alloc_top SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
 Let gap_weight_eq := AsanNodesMmLib.gap_weight_eq SEGS A RES_len.
 Let grant_cs1_ok := AsanNodesMmLib.grant_cs1_ok SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok argH_high SINV_frame.
 Let grant_eager_le := AsanNodesMmLib.grant_eager_le SEGS A RES_len HULL_ok.
@@ -122,7 +122,7 @@ Let mmap_fixed_hole_facts := AsanNodesMmLib.mmap_fixed_hole_facts SEGS A LIMIT C
 Let fixed_pre := AsanNodesMmLib.fixed_pre SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let mmap_len_sound := AsanNodesMmLib.mmap_len_sound SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
 Let mmap_null_cs1 := AsanNodesMmLib.mmap_null_cs1 SEGS A nx0 LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok SHADOW_ok argH_high argH_agree SINV_frame SINV_agree.
-Let null_cs1 := AsanNodesMmLib.null_cs1 A.
+Let null_cs1 := AsanNodesMmLib.null_cs1 A CEIL.
 Let overlap_sum_contained := AsanNodesMmLib.overlap_sum_contained SEGS A RES_len HULL_ok.
 Let page_aligned_sound := AsanNodesMmLib.page_aligned_sound SEGS A RES_len.
 Let refuse_cont := AsanNodesMmLib.refuse_cont SEGS A nx0 LIMIT CEIL SINV argH FS0 RES_len SINV_frame.
@@ -133,7 +133,7 @@ Let safe_range_apart := AsanNodesMmLib.safe_range_apart SEGS A CEIL RES_len HULL
 Let seps_map_disjoint := AsanNodesMmLib.seps_map_disjoint SEGS A RES_len.
 Let shadow_facts_new_ok := AsanNodesMmLib.shadow_facts_new_ok SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok SHADOW_ok.
 Let slice_args := AsanNodesMmLib.slice_args SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
-Let slice_hyps := AsanNodesMmLib.slice_hyps SEGS A LIMIT SINV argH FS0.
+Let slice_hyps := AsanNodesMmLib.slice_hyps SEGS A LIMIT CEIL SINV argH FS0.
 Let split_flat_estart := AsanNodesMmLib.split_flat_estart SEGS A RES_len HULL_ok.
 Let vis_add_inv := AsanNodesMmLib.vis_add_inv A LIMIT.
 Let vis_add_slice_ok := AsanNodesMmLib.vis_add_slice_ok SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 SEGS_in_hull RES_len HULL_ok SHADOW_ok argH_high.
@@ -153,7 +153,7 @@ Let d_sub_in := AsanNodesMmLib.d_sub_in SEGS A LIMIT CEIL SINV argH FS0 RES_len.
 Let d_sub_out := AsanNodesMmLib.d_sub_out SEGS A LIMIT CEIL SINV argH FS0 RES_len.
 Let d_vis_in := AsanNodesMmLib.d_vis_in SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let d_vis_out := AsanNodesMmLib.d_vis_out SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
-Let d_wf' := AsanNodesMmLib.d_wf' SEGS A LIMIT SINV argH FS0 RES_len HULL_ok.
+Let d_wf' := AsanNodesMmLib.d_wf' SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let dest_cs1_ok := AsanNodesMmLib.dest_cs1_ok SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len RES_hull HULL_ok SHADOW_ok argH_high SINV_frame.
 Let page_base_aligned := AsanNodesMmLib.page_base_aligned SEGS A LIMIT CEIL SINV argH FS0 RES_len HULL_ok.
 Let sl_MR_out := AsanNodesMmLib.sl_MR_out SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
@@ -169,7 +169,7 @@ Let sl_vis_in_E := AsanNodesMmLib.sl_vis_in_E SEGS A LIMIT CEIL CEIL_ok SINV arg
 Let sl_vis_in_F := AsanNodesMmLib.sl_vis_in_F SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let sl_vis_in_G := AsanNodesMmLib.sl_vis_in_G SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let sl_vis_out := AsanNodesMmLib.sl_vis_out SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
-Let sl_wf' := AsanNodesMmLib.sl_wf' SEGS A LIMIT SINV argH FS0 RES_len HULL_ok.
+Let sl_wf' := AsanNodesMmLib.sl_wf' SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok.
 Let slice_cs1_ok := AsanNodesMmLib.slice_cs1_ok SEGS A LIMIT CEIL CEIL_ok SINV argH FS0 RES_len HULL_ok SHADOW_ok argH_high SINV_frame.
 
 (* ######################################################################### *)
@@ -613,7 +613,7 @@ Proof.
   destruct (reg_lit cs 10) as [[|p10|p10]|]; intros H; try discriminate H. reflexivity.
 Qed.
 
-Theorem node_mmap2_sound : mm2_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 (node_mmap2 A nx0 LIMIT).
+Theorem node_mmap2_sound : mm2_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 (node_mmap2 A nx0 LIMIT CEIL).
 Proof.
   intros cs csa csb E R FULL model TA TB HC Hec Hn HKA HKB.
   unfold node_mmap2 in Hn.
@@ -645,7 +645,7 @@ Proof.
     + eapply (mmap_fixed_free_sound2 cs KNONE false false); eauto; reflexivity.
 Qed.
 
-Theorem node_mprotect2_sound : mm2_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 (node_mprotect2 A LIMIT).
+Theorem node_mprotect2_sound : mm2_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 (node_mprotect2 A LIMIT CEIL).
 Proof.
   intros cs csa csb E R FULL model TA TB HC Hec Hn HKA HKB.
   unfold node_mprotect2 in Hn.
@@ -924,7 +924,7 @@ Theorem node_mmap2_sound_OBL : forall SEGS A nx0 LIMIT CEIL SINV argH FS0,
   (forall a : word, in_hull A (bv_unsigned a) = false -> find_segment SEGS (bv_unsigned a) 1 = None) ->
   res_len_ok SEGS A ->
   Forall (fun iv => img_lo A <= bv_unsigned (fst iv) /\ bv_unsigned (fst iv) + bv_unsigned (snd iv) <= img_hi A) (segments_reserved SEGS) ->
-  hull_ok A -> shadow_ok A ->
+  hull_ok A -> shadow_ok A -> ceil_ok CEIL ->
   (forall E (a : word), argH E a = true -> CEIL <= bv_unsigned a) ->
   (forall E E' (a : word), env_agree nx0 E E' -> argH E a = argH E' a) ->
   (forall E M M', (forall a, argH E a = true -> M' a = M a) -> SINV E M -> SINV E M') ->
@@ -936,7 +936,7 @@ Theorem node_mprotect2_sound_OBL : forall SEGS A nx0 LIMIT CEIL SINV argH FS0,
   (forall a : word, in_hull A (bv_unsigned a) = false -> find_segment SEGS (bv_unsigned a) 1 = None) ->
   res_len_ok SEGS A ->
   Forall (fun iv => img_lo A <= bv_unsigned (fst iv) /\ bv_unsigned (fst iv) + bv_unsigned (snd iv) <= img_hi A) (segments_reserved SEGS) ->
-  hull_ok A -> shadow_ok A ->
+  hull_ok A -> shadow_ok A -> ceil_ok CEIL ->
   (forall E (a : word), argH E a = true -> CEIL <= bv_unsigned a) ->
   (forall E E' (a : word), env_agree nx0 E E' -> argH E a = argH E' a) ->
   (forall E M M', (forall a, argH E a = true -> M' a = M a) -> SINV E M -> SINV E M') ->
@@ -948,7 +948,7 @@ Theorem node_mmapin_sound_OBL : forall SEGS A nx0 LIMIT CEIL SINV argH FS0,
   (forall a : word, in_hull A (bv_unsigned a) = false -> find_segment SEGS (bv_unsigned a) 1 = None) ->
   res_len_ok SEGS A ->
   Forall (fun iv => img_lo A <= bv_unsigned (fst iv) /\ bv_unsigned (fst iv) + bv_unsigned (snd iv) <= img_hi A) (segments_reserved SEGS) ->
-  hull_ok A -> shadow_ok A ->
+  hull_ok A -> shadow_ok A -> ceil_ok CEIL ->
   (forall E (a : word), argH E a = true -> CEIL <= bv_unsigned a) ->
   (forall E E' (a : word), env_agree nx0 E E' -> argH E a = argH E' a) ->
   (forall E M M', (forall a, argH E a = true -> M' a = M a) -> SINV E M -> SINV E M') ->
