@@ -2797,8 +2797,9 @@ Inductive FdEntry :=
         and discharging it is a required step of
         [Equivalence.image_brk_satisfiable_entry], the tree's
         anti-vacuity lemma.  Outside the spec, the ASan plan
-        checker's placement gate ([Common.AsanCeil.placement_ok], taken
-        as its named [placement_policy] hypothesis) reads the value, and
+        checker's placement gate ([Common.AsanCeil.placement_ok], which
+        is the theorem [Common.AsanCeil.placement_policy_holds] and no
+        longer a named hypothesis) reads the value, and
         [Common.AsanInit] relies on the predicate's floor (see
         [mmap_base_min]).
         A base of 0 is what [mkVmMaps] seeds and means only "no base
