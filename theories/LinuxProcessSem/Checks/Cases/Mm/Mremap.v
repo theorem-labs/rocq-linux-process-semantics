@@ -160,8 +160,9 @@ Proof. check_eq. Qed.
     without MREMAP_FIXED), and this fixture's [vm_mmap_base] is 0 — a
     property of the fixture, not of Linux — so its top-down window is
     empty and the search falls to the bottom-up window, whose floor is
-    [Mmap.task_unmapped_base] = 0x2aaaaab000 (TASK_UNMAPPED_BASE,
-    mm/mmap.c:780-783, [generic_get_unmapped_area_topdown], Linux
+    [Mmap.task_unmapped_base] = 0x2aaaaab000 (TASK_UNMAPPED_BASE, the
+    bottom-up fallback at the end of
+    [generic_get_unmapped_area_topdown], mm/mmap.c, Linux
     v6.18.46, commit 1f99e9ab748f).  Nothing is mapped there, so that
     is the lowest fit and the move lands on it.  The example is about
     the move out of the image's way; the address is the search's. *)
@@ -233,7 +234,7 @@ Proof. check_eq. Qed.
 (** A NEW SIZE AT THE TOP OF THE ADDRESS SPACE is -EINVAL, not the
     arm's injected -ENOMEM.  It is page aligned, so it passes the
     wrap gate above, and [check_mremap_params] then refuses it for
-    exceeding TASK_SIZE (mm/mremap.c:1775-1776, Linux v6.18.46),
+    exceeding TASK_SIZE (mm/mremap.c, Linux v6.18.46),
     before any VMA is looked up.  These two examples pinned -ENOMEM
     until that gate was added; they pinned an answer Linux never
     gives. *)
@@ -814,13 +815,14 @@ Example mremap_move_past_demo_top_admitted_under_high_sp :
 Proof. check_eq. Qed.
 
 (** A NEW LENGTH OVER [State.TASK_SIZE] is -EINVAL, and the answer is
-    deterministic: [check_mremap_params] (mm/mremap.c:1775-1776, Linux
-    v6.18.46) rejects it before any VMA is looked up.  The first three
+    deterministic: [check_mremap_params] (mm/mremap.c, Linux
+    v6.18.46, commit 1f99e9ab748f) rejects it before any VMA is looked
+    up.  The first three
     conjuncts use an [old_size] the model's ledger does NOT hold exactly,
     so before this gate the answer was [Unmodeled]: they pin that the gate
     fires AHEAD of the source test, which is the kernel's order
-    ([do_mremap] calls [check_mremap_params] at :1920-1922 and
-    [vma_lookup] only at :1931).  The fourth and fifth use the source the
+    ([do_mremap] calls [check_mremap_params] before it calls
+    [vma_lookup]).  The fourth and fifth use the source the
     ledger does hold, where the answer before this gate was the arm's
     injected -ENOMEM, the answer Linux never gives here. *)
 Example mremap_new_len_over_task_size_is_einval :
@@ -862,9 +864,9 @@ Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.
 (** The fresh mapping at step four names 0x20000 as a HINT: this
     trace's ledger has [vm_mmap_base] 0 — a property of the fixture —
     so its top-down window is empty, and Linux returns a free
-    page-aligned hint unchanged (mm/mmap.c:753-761,
-    [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
-    1f99e9ab748f).  The trace is about the budget. *)
+    page-aligned hint unchanged — the specific-address arm of
+    [generic_get_unmapped_area_topdown] (mm/mmap.c, Linux v6.18.46,
+    commit 1f99e9ab748f).  The trace is about the budget. *)
 Definition mremap_budget_prefix : list (SyscallInput * SyscallEffect) :=
   [ (brk_in 69732, mkEffect 69732 [] [(65536, 8192)]);
     (mmap_flags_in 65536 8192 3 16434, mkEffect 65536 [] [(65536, 8192)]);
@@ -872,7 +874,7 @@ Definition mremap_budget_prefix : list (SyscallInput * SyscallEffect) :=
     (mmap_flags_in 131072 8192 3 34, mkEffect 131072 [] [(131072, 8192)]) ].
 
 (** SHRINK IN PLACE to one page: [shrink_vma] hands [[S + 4096, S +
-    8192)] to [do_vmi_munmap] (mm/mremap.c:1326-1338, Linux v6.18.46),
+    8192)] to [do_vmi_munmap] (mm/mremap.c, Linux v6.18.46),
     so the grant's bytes go with the page.  Linux is left with the
     NORESERVE page [[S, P)] (nothing charged until touched) and the
     fresh mapping: 8192 bytes.  Before the fix (68ccc393) the grant
@@ -889,7 +891,7 @@ Proof. check_eq. Qed.
 
 (** GROW IN PLACE by one page from the same state: the grant inside the
     source is no VMA of its own (Linux only moved [mm->brk]), so it is no
-    neighbour [vma_expandable] (mm/mremap.c:1415-1427) could meet, and
+    neighbour [vma_expandable] (mm/mremap.c) could meet, and
     the free page above the source lets the grow stay in place.  The
     grown entry covers the grant's bytes, so the grant is dropped rather
     than counted twice; the grown tail is lazy and charges nothing. *)

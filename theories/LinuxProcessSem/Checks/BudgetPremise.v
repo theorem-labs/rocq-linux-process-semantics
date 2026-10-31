@@ -600,8 +600,15 @@ Lemma mremap_model_next_limit : forall m old old_n dst new_n,
 Proof. reflexivity. Qed.
 
 (** THE RULE, abstract.  On a grow past the mark's own argument gates,
-    the mark is exactly "in-place growth not admitted and the move's
-    budget gate refusing". *)
+    the mark reads the gate of THE ONE RESOLUTION the room test
+    chooses: with room above the source Linux expands there and a
+    failing charge is a refusal with no move, so the mark is the
+    in-place charge failing; without room the only answer is the move,
+    so the mark is the move's charge failing.  Before the placement
+    change it was a disjunction of the two, which said that a failing
+    in-place budget left the move available — and Linux does not move
+    when it can expand in place (mm/mremap.c,
+    [vrm_can_expand_in_place], Linux v6.18.46, commit 1f99e9ab748f). *)
 Lemma mremap_budget_refused_iff :
   forall old old_size new_size flags m,
   Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE = true ->
@@ -617,14 +624,17 @@ Lemma mremap_budget_refused_iff :
   (page_round_up_Z (bv_unsigned old_size)
    < page_round_up_Z (bv_unsigned new_size))%Z ->
   mremap_budget_refused_b old old_size new_size flags m
-  = negb (mremap_inplace_grow_b m old
-            (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
-            (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
-            (page_round_up_Z (bv_unsigned old_size))
-            (page_round_up_Z (bv_unsigned new_size))
-          || mremap_move_budget_b m old
-               (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
-               (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))).
+  = (if mremap_inplace_room_b m old
+          (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+          (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+          (page_round_up_Z (bv_unsigned old_size))
+          (page_round_up_Z (bv_unsigned new_size))
+     then negb (mremap_final_budget_b m old
+                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) old
+                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))))
+     else negb (mremap_move_budget_b m old
+                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+                  (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))))).
 Proof.
   intros old old_size new_size flags m Hflags Halign Hnew Htask Hold Hsrc Hgrow.
   unfold mremap_budget_refused_b. cbv zeta.
@@ -633,8 +643,14 @@ Proof.
 Qed.
 
 (** What a mark that fires says: every argument gate passed, the
-    request grows, in-place growth is not admitted and the move's budget
-    gate refuses. *)
+    request grows, in-place growth is not admitted, and the gate of the
+    resolution the room test chooses refuses.
+
+    The last conjunct is a CASE and not a conjunction, because the grow
+    has one non-errno resolution: with room above the source the
+    in-place charge is what failed, and the move's charge says nothing
+    about that call, because Linux does not move when it can expand in
+    place. *)
 Lemma mremap_budget_refused_inv :
   forall old old_size new_size flags m,
   mremap_budget_refused_b old old_size new_size flags m = true ->
@@ -655,9 +671,17 @@ Lemma mremap_budget_refused_inv :
        (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
        (page_round_up_Z (bv_unsigned old_size))
        (page_round_up_Z (bv_unsigned new_size)) = false
-  /\ mremap_move_budget_b m old
-       (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
-       (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = false.
+  /\ (if mremap_inplace_room_b m old
+           (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+           (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+           (page_round_up_Z (bv_unsigned old_size))
+           (page_round_up_Z (bv_unsigned new_size))
+      then mremap_final_budget_b m old
+             (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) old
+             (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = false
+      else mremap_move_budget_b m old
+             (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+             (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = false).
 Proof.
   intros old old_size new_size flags m H.
   unfold mremap_budget_refused_b in H. cbv zeta in H.
@@ -673,9 +697,17 @@ Proof.
     cbn [negb] in H; [| discriminate H].
   destruct (_ <=? _)%Z eqn:E6; [discriminate H |].
   apply Z.leb_gt in E6.
-  apply negb_true_iff, orb_false_iff in H as [Hip Hmv].
-  exact (conj eq_refl (conj eq_refl (conj eq_refl (conj eq_refl (conj eq_refl
-           (conj eq_refl (conj E6 (conj Hip Hmv)))))))).
+  split; [reflexivity|]. split; [reflexivity|]. split; [reflexivity|].
+  split; [reflexivity|]. split; [reflexivity|]. split; [reflexivity|].
+  split; [exact E6|].
+  unfold mremap_inplace_grow_b.
+  destruct (mremap_inplace_room_b m old
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+              (page_round_up_Z (bv_unsigned old_size))
+              (page_round_up_Z (bv_unsigned new_size))) eqn:Eroom;
+    apply negb_true_iff in H; cbn [andb];
+    (split; [first [reflexivity | exact H] | exact H]).
 Qed.
 
 (** SOUNDNESS for the in-place resolution: where the mark fires,
@@ -695,16 +727,28 @@ Proof.
   exact Hip.
 Qed.
 
-(** SOUNDNESS for the moved resolution: where the mark fires, no fresh
-    destination that carries no backing metadata is admitted by
-    [Mremap.mremap_fresh_b] — its budget conjunct reads, at such a
-    destination, the charge [Mremap.mremap_move_budget_b] refused
+(** SOUNDNESS for the moved resolution: where the mark fires AND there
+    is no room above the source, no fresh destination that carries no
+    backing metadata is admitted by [Mremap.mremap_fresh_b] — its
+    budget conjunct reads, at such a destination, the charge
+    [Mremap.mremap_move_budget_b] refused
     ([Mremap.mremap_move_charge_at_fresh]).  The metadata hypotheses
     are instances, at [dst], of the ledger invariants named in
     [Sys/Mm/Mremap.v]'s charge header ([State.noaccess_pages_owned] and
     the reservation-under-live-mapping invariant of the lazy ledgers).
     With [mremap_budget_refused_refuses_inplace]: a marked request has
-    no non-errno resolution. *)
+    no non-errno resolution.
+
+    THE NO-ROOM PREMISE IS NEW AND IT IS NOT A WEAKENING.  Since the
+    placement change the grow has ONE non-errno resolution, chosen by
+    the room test: with room above the source Linux expands there and
+    never moves (mm/mremap.c, [vrm_can_expand_in_place], Linux
+    v6.18.46, commit 1f99e9ab748f), so a marked request WITH room has
+    no move for this lemma to refuse, and the mark says nothing about
+    the move's charge.  The caller that needs "no resolution at all"
+    takes this lemma for the no-room case and
+    [mremap_budget_refused_refuses_inplace] for the other; together
+    they still cover every grow. *)
 Lemma mremap_budget_refused_refuses_move :
   forall old old_size new_size flags m dst,
   (forall (a sz : word), In (a, sz) (vm_maps (m_vmmaps m)) ->
@@ -735,6 +779,11 @@ Lemma mremap_budget_refused_refuses_move :
          (bv_unsigned old
           + bv_unsigned (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))))
       (m_vm_materialized m) ->
+  mremap_inplace_room_b m old
+    (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+    (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+    (page_round_up_Z (bv_unsigned old_size))
+    (page_round_up_Z (bv_unsigned new_size)) = false ->
   mremap_budget_refused_b old old_size new_size flags m = true ->
   mremap_fresh_b m
     (page_round_up_Z (bv_unsigned old_size))
@@ -742,9 +791,11 @@ Lemma mremap_budget_refused_refuses_move :
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) dst
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) = false.
 Proof.
-  intros old old_size new_size flags m dst Hfit Hnoacc Hlazy Hpages Hmark.
+  intros old old_size new_size flags m dst Hfit Hnoacc Hlazy Hpages
+    Hnoroom Hmark.
   destruct (mremap_budget_refused_inv _ _ _ _ _ Hmark)
     as (_ & _ & Hnew & _ & _ & _ & Hgrow & _ & Hmv).
+  rewrite Hnoroom in Hmv. cbv iota in Hmv.
   set (old_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) in *.
   set (new_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) in *.
   pose proof (page_align_is0_b_false_word new_size Hnew) as Hnw. fold new_n in Hnw.
@@ -769,11 +820,18 @@ Proof.
     | exact Hnoacc | exact Hlazy | exact Hpages].
 Qed.
 
-(** COMPLETENESS against the move: in-place growth not admitted and the
+(** COMPLETENESS against the move: NO ROOM above the source, and the
     move's gate refusing at one fresh destination that carries no
-    backing metadata fires the mark.  The hypotheses are the mark's
-    argument gates, the in-place refusal, and the metadata hypotheses of
-    [mremap_budget_refused_refuses_move]. *)
+    backing metadata, fires the mark.  The hypotheses are the mark's
+    argument gates, the no-room test, and the metadata hypotheses of
+    [mremap_budget_refused_refuses_move].
+
+    The premise is the ROOM test and not the in-place admission,
+    because the mark now reads the gate of the one resolution the room
+    test chooses: with room there is no move to refuse, and a failing
+    in-place charge alone no longer fires a mark about the move
+    (mm/mremap.c, [vrm_can_expand_in_place], Linux v6.18.46, commit
+    1f99e9ab748f). *)
 Lemma mremap_budget_refused_fires_on_move_refusal :
   forall old old_size new_size flags m dst,
   Z.eqb (bv_unsigned flags) MREMAP_MAYMOVE = true ->
@@ -788,8 +846,9 @@ Lemma mremap_budget_refused_fires_on_move_refusal :
        (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) = true ->
   (page_round_up_Z (bv_unsigned old_size)
    < page_round_up_Z (bv_unsigned new_size))%Z ->
-  (* in-place growth is not admitted *)
-  mremap_inplace_grow_b m old
+  (* there is no room above the source, so the move is the only
+     resolution *)
+  mremap_inplace_room_b m old
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
     (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
     (page_round_up_Z (bv_unsigned old_size))
@@ -839,7 +898,7 @@ Proof.
     Hip Hdalign Hdtop Hdfree Hfit Hnoacc Hlazy Hpages Hgate.
   rewrite (mremap_budget_refused_iff old old_size new_size flags m
              Hflags Halign Hnew Htask Hold Hsrc Hgrow).
-  rewrite Hip. cbn [orb].
+  rewrite Hip. cbv iota.
   set (old_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size))) in *.
   set (new_n := Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))) in *.
   pose proof (page_align_is0_b_false_word new_size Hnew) as Hnw. fold new_n in Hnw.
@@ -987,7 +1046,12 @@ Qed.
 (** THE DIRECTION OF THE CHANGE: the mark implies the earlier two-gate
     mark, so every input a budget premise kept under the earlier mark
     it keeps now, and [ov_two_gate_fires_where_the_mark_is_silent]
-    shows the converse fails.  The present mark is the weaker one. *)
+    shows the converse fails.  The present mark is the weaker one.
+
+    It now holds for a different reason on each side of the room test,
+    and that is the point of the change: with room above the source
+    the IN-PLACE charge is what failed, and without room the MOVE's
+    charge is, so the conjunction of the two is false either way. *)
 Lemma mremap_budget_refused_implies_two_gate :
   forall old old_size new_size flags m,
   mremap_budget_refused_b old old_size new_size flags m = true ->
@@ -999,7 +1063,13 @@ Proof.
   unfold mremap_budget_refused_two_gate_b. cbv zeta.
   rewrite E1, E2, E3, E4, E5. cbn [negb].
   rewrite (proj2 (Z.leb_gt _ _) Hgrow).
-  rewrite Hmv, andb_false_r. reflexivity.
+  destruct (mremap_inplace_room_b m old
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned old_size)))
+              (Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size)))
+              (page_round_up_Z (bv_unsigned old_size))
+              (page_round_up_Z (bv_unsigned new_size))) eqn:Eroom;
+    cbv iota in Hmv;
+    [rewrite Hmv, andb_false_l | rewrite Hmv, andb_false_r]; reflexivity.
 Qed.
 
 (** ** mprotect

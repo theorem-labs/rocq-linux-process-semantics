@@ -189,11 +189,13 @@ Definition brk_zeros (req r old : word) : list (word * word) :=
 
 (** The pages a brk transition FREES: a SHRINK from break [old] down to
     [r] releases exactly [PAGE_ALIGN(r), PAGE_ALIGN(old))
-    ([do_vmi_align_munmap] on the brk VMA, mm/mmap.c:164-181 in v6.12,
-    which tears the PTEs down for real — a later re-grow of the same
-    addresses hands back FRESH ZEROES, not the old bytes).  That range
-    is EMPTY when the two breaks round to the same page: Linux takes the
-    [newbrk == oldbrk] early exit (mm/mmap.c:156-161) and a SUB-PAGE
+    ([do_vmi_align_munmap] on the brk VMA, from the shrink block of
+    [SYSCALL_DEFINE1(brk)] in mm/mmap.c, Linux v6.18.46, commit
+    1f99e9ab748f, which tears the PTEs down for real — a later re-grow
+    of the same addresses hands back FRESH ZEROES, not the old bytes).
+    That range is EMPTY when the two breaks round to the same page:
+    Linux takes that function's [oldbrk == newbrk] early exit and a
+    SUB-PAGE
     shrink frees nothing at all.  Every other resolution (query/invalid,
     and grow, which keep [old <= r]) frees nothing either.
 
@@ -255,7 +257,8 @@ Definition brk_unmaps (r old : word) : list (word * word) :=
     over v6.5-v6.16.  That commit is a no-functional-change refactor of
     a gate that already sat above the exit and was already not an
     address-space test, so it does not reach this argument; neither does
-    the v6.12 change of the shrink call to [do_vmi_align_munmap], which
+    the change of the shrink call to [do_vmi_align_munmap] (commit
+    63fc66f5b6b1, first released in v6.12), which
     is below the exit.  Window figures sample mainline tags; the
     v6.18.46 statement is read from that commit itself.  A within-page move of
     the break therefore reaches [mm->brk = brk] with NO ADDRESS-SPACE
@@ -370,16 +373,17 @@ Definition brk_r_ok (m : Model) (req r : word) : bool :=
     [vm_maps]: the range [brk_unmaps] names, [[PAGE_ALIGN(r),
     PAGE_ALIGN(old))], cut from EVERY entry that meets it, because Linux
     unmaps every VMA in that range, not only the brk VMA.
-    [SYSCALL_DEFINE1(brk)] (mm/mmap.c:153-177, Linux v6.18.46) finds the
-    first VMA meeting [[newbrk, oldbrk)] with [vma_find] (:163-164) and
-    hands it to [do_vmi_align_munmap(&vmi, brkvma, mm, newbrk, oldbrk)]
-    (:173), whose [vms_gather_munmap_vmas] splits the VMA the range starts
-    inside and the one it ends inside and detaches every VMA between
-    (mm/vma.c:1382-1404, :1413-1468).  A PROT_NONE or MAP_FIXED mapping
+    [SYSCALL_DEFINE1(brk)] (mm/mmap.c, Linux v6.18.46, commit
+    1f99e9ab748f) finds the first VMA meeting [[newbrk, oldbrk)] with
+    the [vma_find] of its shrink block and hands it to
+    [do_vmi_align_munmap(&vmi, brkvma, mm, newbrk, oldbrk)], whose
+    [vms_gather_munmap_vmas] (mm/vma.c) splits the VMA the range starts
+    inside and the one it ends inside and detaches every VMA between.
+    A PROT_NONE or MAP_FIXED mapping
     laid over the heap's pages therefore goes with them; a ledger that
     kept its remnant past the logical break would keep charging bytes the
     kernel has freed.  A same-page shrink names no page (the
-    [oldbrk == newbrk] exit, mm/mmap.c:155-158) and cuts nothing.
+    [oldbrk == newbrk] exit of the same function) and cuts nothing.
 
     The cut's end is capped one byte short of 2^64.  [PAGE_ALIGN(old)]
     reaches 2^64 only for a break inside the top page of the address
@@ -663,12 +667,13 @@ Definition brk_budget_refused_b (m : Model) (req : word) : bool :=
 Definition mmap_errnos : list Z := [ENOMEM].
 
 (** MAP_NORESERVE lives in the arch-generic half riscv64 inherits
-    (include/uapi/asm-generic/mman.h:11, Linux v6.12).  It changes only
+    (the [MAP_NORESERVE] definition in include/uapi/asm-generic/mman.h,
+    Linux v6.18.46, commit 1f99e9ab748f).  It changes only
     Linux's commit accounting; it does not affect placement, contents,
     permissions, or a successful return value.
 
     It changes that accounting CONDITIONALLY, which matters for what the
-    model is entitled to claim.  [do_mmap] (mm/mmap.c, Linux v6.12)
+    model is entitled to claim.  [do_mmap] (mm/mmap.c, Linux v6.18.46)
     translates the bit to VM_NORESERVE only outside strict overcommit:
 
       if (flags & MAP_NORESERVE) {
@@ -834,42 +839,45 @@ Definition mmap_off_aligned_b (off : word) : bool :=
     [SYSCALL_DEFINE6] for mmap in the same file), so the mask is just
     [PAGE_SIZE - 1].  A page-aligned offset is then IGNORED for an
     anonymous mapping: [__get_unmapped_area] zeroes the page offset it
-    places with ([if (!file) pgoff = 0], mm/mmap.c:897-899) and
-    [do_mmap] resets the one the VMA records to [addr >> PAGE_SHIFT]
-    (mm/mmap.c:471-476).  A page-aligned nonzero [off] is therefore an
+    places with ([if (!file) pgoff = 0], mm/mmap.c) and [do_mmap]
+    resets the one the VMA records to [addr >> PAGE_SHIFT] (the
+    MAP_PRIVATE arm of its [switch (flags & MAP_TYPE)] for a file-less
+    request, mm/mmap.c).  A page-aligned nonzero [off] is therefore an
     ordinary success on Linux, and [unmodeled] here.
 
-    One consequence of that path is genuinely surprising and worth
-    naming.  [riscv_sys_mmap] declares [offset] as [off_t], i.e.
-    SIGNED (arch/riscv/kernel/sys_riscv.c:13; [off_t] ->
-    [__kernel_off_t] -> [__kernel_long_t], include/linux/types.h:26 and
-    include/uapi/asm-generic/posix_types.h:87), while both the syscall
-    prototype above it (arch/riscv/kernel/sys_riscv.c:24-26) and
-    [ksys_mmap_pgoff] below it (mm/mmap.c:506) say [unsigned long].  The
-    [offset >> (PAGE_SHIFT - page_shift_offset)] at
-    arch/riscv/kernel/sys_riscv.c:19-20 is thus an ARITHMETIC shift: a
-    page-aligned [off] at or above 2^63 becomes a page offset with its
-    top 12 bits set rather than [off / 4096].  That is large enough for
-    [do_mmap]'s [(pgoff + (len >> PAGE_SHIFT)) < pgoff] to wrap and
-    return -EOVERFLOW (mm/mmap.c:319-321) once [len] is large enough —
-    even under MAP_ANONYMOUS, because that check runs before the
-    [pgoff = 0] of mm/mmap.c:897-899. *)
+    One consequence of that path USED to be surprising and is not any
+    more, which is worth naming because the old reading is still in
+    circulation.  Up to v6.17 [riscv_sys_mmap] declared [offset] as the
+    SIGNED [off_t], so its
+    [offset >> (PAGE_SHIFT - page_shift_offset)] was an ARITHMETIC
+    shift and a page-aligned [off] at or above 2^63 became a page
+    offset with its top 12 bits set rather than [off / 4096].  Commit
+    316b60b984d5 ("riscv: mmap(): use unsigned offset type in
+    riscv_sys_mmap", first released in v6.18) made the parameter
+    [unsigned long] (arch/riscv/kernel/sys_riscv.c, [riscv_sys_mmap],
+    Linux v6.18.46), which is what both the [SYSCALL_DEFINE6] for mmap
+    beside it and [ksys_mmap_pgoff] (mm/mmap.c) below it already said.
+    The shift is therefore LOGICAL at this kernel: the page offset it
+    hands on is at most 2^52 - 1, the page-aligned [len] contributes at
+    most 2^52 - 1 to [do_mmap]'s [(pgoff + (len >> PAGE_SHIFT)) < pgoff]
+    overflow test (mm/mmap.c), and that sum cannot wrap.  No [off] the
+    riscv64 mmap entry accepts answers -EOVERFLOW. *)
 
 (** Is this the PLAIN anonymous shape — MAP_ANONYMOUS set, MAP_HUGETLB
     clear?  This is the gate on the zero-length -EINVAL below, because
     it is the only flag combination that reaches it.
 
-    [ksys_mmap_pgoff] (mm/mmap.c:566-609, Linux v6.18.46) inspects the
+    [ksys_mmap_pgoff] (mm/mmap.c, Linux v6.18.46) inspects the
     flags before the length is ever examined, and only its fall-through
-    reaches [do_mmap]'s [if (!len) return -EINVAL] (mm/mmap.c:347-348):
+    reaches [do_mmap]'s [if (!len) return -EINVAL] (mm/mmap.c):
 
     - MAP_ANONYMOUS clear: [file = fget(fd)] and -EBADF on failure
-      (mm/mmap.c:575-577).  So [mmap(NULL, 0, PROT_READ, MAP_PRIVATE,
+      (its MAP_ANONYMOUS-clear arm).  So [mmap(NULL, 0, PROT_READ, MAP_PRIVATE,
       999, 0)] with 999 closed is -EBADF on Linux, not -EINVAL.
     - MAP_ANONYMOUS and MAP_HUGETLB both set: [hstate_sizelog] (-EINVAL
       when the requested huge-page size has no hstate) and
       [hugetlb_file_setup], whose error is returned as-is
-      (mm/mmap.c:584-602).
+      (its MAP_HUGETLB arm).
 
     Both are unmodeled here — the model maps no files and has no huge
     pages — so a zero-length mmap outside the plain anonymous shape
@@ -884,12 +892,15 @@ Definition mmap_off_aligned_b (off : word) : bool :=
 
     INSIDE the plain anonymous shape the -EINVAL holds for every other
     argument, which is why the branch below tests nothing else.  Nothing
-    between [ksys_mmap_pgoff]'s fall-through and mm/mmap.c:294 looks at
-    [addr], [prot] or [off]: [do_mmap] validates MAP_TYPE only at
-    mm/mmap.c:477-478, well after the length.  And the one argument
+    between [ksys_mmap_pgoff]'s fall-through and [do_mmap]'s
+    [if (!len) return -EINVAL] reads [addr] or [off] at all; the only
+    reader of [prot] before it is the LSM hook [security_mmap_file] in
+    [vm_mmap_pgoff] (mm/util.c), which this model does not describe.
+    [do_mmap] validates MAP_TYPE only in its [switch (flags & MAP_TYPE)],
+    well after the length.  And the one argument
     check that DOES precede all of this — riscv's
     [offset & (~PAGE_MASK >> page_shift_offset)]
-    (arch/riscv/kernel/sys_riscv.c:16-17) — answers -EINVAL as well, so
+    ([riscv_sys_mmap], arch/riscv/kernel/sys_riscv.c) — answers -EINVAL as well, so
     a misaligned [off] agrees with this branch rather than escaping it. *)
 Definition mmap_plain_anon_b (flags : word) : bool :=
   negb (Z.eqb (Z.land (bv_unsigned flags) MAP_ANONYMOUS) 0)
@@ -1244,15 +1255,16 @@ Qed.
    two mappings, a range covering one whole mapping and part of another
    — is what Linux calls replacement and this section models.
 
-   [__mmap_prepare] (mm/vma.c:2386, Linux v6.18.46) hands every VMA
-   overlapping [addr, addr + len) to [vms_gather_munmap_vmas] (:2404,
-   defined at :1372), which SPLITS the first at [addr] when the range
-   starts inside it (:1401) and the last at the end when the range ends
-   inside it (:1422), then detaches everything between.  The splits are
+   [__mmap_prepare] (mm/vma.c, Linux v6.18.46, commit 1f99e9ab748f)
+   hands every VMA overlapping [addr, addr + len) to
+   [vms_gather_munmap_vmas] (same file), which SPLITS the first at
+   [addr] when the range starts inside it and the last at the end when
+   the range ends inside it — its two [__split_vma] calls — then
+   detaches everything between.  The splits are
    why the bytes OUTSIDE the request survive: those remnants were never
-   detached.  [__mmap_region] (:2682) then installs one new mapping over
+   detached.  [__mmap_region] (same file) then installs one new mapping over
    the whole request, merging it with its neighbours where it can
-   ([vma_merge_new_range], :2708).
+   ([vma_merge_new_range]).
 
    So the ledger after a success is: every entry re-cut by
    [maps_subtract] over the request, plus one entry for the request
@@ -1284,7 +1296,8 @@ Qed.
 (** The ledger a destructive MAP_FIXED failure leaves: the request's
     range is gone from both ledgers and nothing replaces it.
     [vms_abort_munmap_vmas] writes NULL over exactly
-    [[vms->start, vms->end)] (mm/vma.c:2365-2366, Linux v6.18.46), so the
+    [[vms->start, vms->end)] (its [mas_set_range] and [mas_store_gfp],
+    mm/vma.c, Linux v6.18.46), so the
     split remnants outside the request survive here too — which is why
     this is [maps_subtract] over the request rather than the removal of
     whole entries. *)
@@ -1396,8 +1409,8 @@ Definition mmap_fixed_rw_budget_ok (flags : word) (m : Model)
     charges it: [__mmap_prepare] takes the commit charge
     [map->charged = map->pglen - vms->nr_accounted] and calls
     [security_vm_enough_memory_mm] when that delta is nonzero
-    (mm/vma.c:2422-2429, Linux v6.18.46), where [nr_accounted] counts
-    only the VM_ACCOUNT pages the gather detached (:1439-1440) — that
+    (mm/vma.c, Linux v6.18.46), where [nr_accounted] counts
+    only the VM_ACCOUNT pages [vms_gather_munmap_vmas] detached — that
     is, only the pages already inside the request.  Testing the whole
     post-state is the same delta read on the model's ledger. *)
 Definition mmap_fixed_rw_span_budget_ok (flags : word) (m : Model)
@@ -1409,7 +1422,7 @@ Definition mmap_fixed_rw_span_budget_ok (flags : word) (m : Model)
 (* =========================================================================
    MAP_FIXED_NOREPLACE — placed exactly, refused rather than replaced
 
-   MAP_FIXED_NOREPLACE (0x100000, include/uapi/asm-generic/mman-common.h:31,
+   MAP_FIXED_NOREPLACE (0x100000, include/uapi/asm-generic/mman-common.h,
    Linux v6.18.46) asks for what MAP_FIXED asks for — placement at
    [addr] exactly — with one difference: where MAP_FIXED tears down
    whatever the range holds and installs the new mapping over it, this
@@ -1417,28 +1430,32 @@ Definition mmap_fixed_rw_span_budget_ok (flags : word) (m : Model)
    mapped already.  [do_mmap] (mm/mmap.c, Linux v6.18.46) decides both
    halves:
 
-     mm/mmap.c:361-362   if (flags & MAP_FIXED_NOREPLACE)
-                                 flags |= MAP_FIXED;
-     ...
-     mm/mmap.c:406       addr = __get_unmapped_area(file, addr, len, pgoff,
-                                                    flags, vm_flags);
-     mm/mmap.c:410-413   if (flags & MAP_FIXED_NOREPLACE) {
-                                 if (find_vma_intersection(mm, addr, addr + len))
-                                         return -EEXIST;
-                         }
+     [do_mmap], before placement and just after it:
 
-   The first is PLACEMENT.  From :362 on the request carries MAP_FIXED,
+       if (flags & MAP_FIXED_NOREPLACE)
+               flags |= MAP_FIXED;
+       ...
+       addr = __get_unmapped_area(file, addr, len, pgoff,
+                                  flags, vm_flags);
+       if (flags & MAP_FIXED_NOREPLACE) {
+               if (find_vma_intersection(mm, addr, addr + len))
+                       return -EEXIST;
+       }
+
+   The first is PLACEMENT.  From that [flags |= MAP_FIXED] on the
+   request carries MAP_FIXED,
    so [__get_unmapped_area] hands [addr] back unchanged — both generic
    searches return it at their [if (flags & MAP_FIXED) return addr;]
-   (mm/mmap.c:700 and :750) — and runs the bounds and alignment tests
-   the MAP_FIXED arms above cite: [len > TASK_SIZE] at :824, [addr >
-   TASK_SIZE - len] at :857, [offset_in_page(addr)] at :859,
-   [security_mmap_addr] at :862.  The argument gate of the two shapes
+   ([generic_get_unmapped_area] and [generic_get_unmapped_area_topdown],
+   mm/mmap.c) — and runs the bounds and alignment tests
+   the MAP_FIXED arms above cite: [len > TASK_SIZE], [addr >
+   TASK_SIZE - len], [offset_in_page(addr)] and
+   [security_mmap_addr], all in [__get_unmapped_area].  The argument gate of the two shapes
    below is therefore the MAP_FIXED arms' gate verbatim, in the same
    order, and it PRECEDES the refusal: an unaligned [addr] inside a live
    mapping is -EINVAL, not -EEXIST.
 
-   The second is the REFUSAL.  [find_vma_intersection] (mm/mmap.c:885-893)
+   The second is the REFUSAL.  [find_vma_intersection] (mm/mmap.c)
    is [mt_find(&mm->mm_mt, &index, end_addr - 1)] from [start_addr]: the
    first VMA meeting the half-open interval [[addr, addr + len)].  So
    ANY mapped page of the request, whatever else in it is free, answers
@@ -1459,12 +1476,13 @@ Definition mmap_fixed_rw_span_budget_ok (flags : word) (m : Model)
    finds one and the answer is -EEXIST with nothing changed, which the
    ledger CAN say; [vm_reserved] is in the test for that reason.
 
-   BOTH BITS TOGETHER is not "MAP_FIXED wins".  :361-362 is the only
+   BOTH BITS TOGETHER is not "MAP_FIXED wins".  That [flags |= MAP_FIXED]
+   is the only
    place [do_mmap] reads the NOREPLACE bit before placement, and it only
-   ADDS MAP_FIXED to the word; :410 then tests the NOREPLACE bit alone,
+   ADDS MAP_FIXED to the word; the test after placement then reads the NOREPLACE bit alone,
    whatever else is set.  So MAP_FIXED | MAP_FIXED_NOREPLACE reaches
    every test MAP_FIXED_NOREPLACE alone reaches, with the same flags
-   word from :362 on, and [calc_vm_flag_bits] (include/linux/mman.h:153-162,
+   word from that assignment on, and [calc_vm_flag_bits] (include/linux/mman.h,
    Linux v6.18.46) translates neither bit into a VM_ flag, so the
    mapping installed on success is the same one.  [mmap_noreplace_flags_b]
    accepts both spellings and the arms answer them alike: -EEXIST on an
@@ -1472,17 +1490,18 @@ Definition mmap_fixed_rw_span_budget_ok (flags : word) (m : Model)
    replacement Linux refuses.
 
    WHAT ELSE LINUX CAN ANSWER on the occupied path, and which of it the
-   arms carry.  Three -ENOMEMs sit before :410.  The wrapped
-   page-rounding at :368-370 and :857's bound are the argument gate's,
+   arms carry.  Three -ENOMEMs sit before that refusal.  The wrapped
+   page-rounding of [do_mmap]'s [len = PAGE_ALIGN(len); if (!len)] and
+   [__get_unmapped_area]'s [addr > TASK_SIZE - len] bound are the argument gate's,
    answered as the MAP_FIXED arms answer them; [mm->map_count >
-   sysctl_max_map_count] at :377-378 is the environment failure every
+   sysctl_max_map_count] ([do_mmap], mm/mmap.c) is the environment failure every
    arm in this file admits through [errno_from mmap_errnos], because the
    model tracks no map count.  So the occupied sub-case is
    [alt (errno_from mmap_errnos) (err_ret EEXIST)]: -EEXIST is the
    answer, and the -ENOMEM beside it is the one every other mmap arm
    already admits.  Nothing else reaches it: MAP_LOCKED's -EPERM
-   (:415-417) needs a bit outside the shape, and [mlock_future_ok]'s
-   -EAGAIN (:419-420) needs VM_LOCKED in [def_flags], which only
+   ([do_mmap]'s [if (flags & MAP_LOCKED)] arm) needs a bit outside the shape, and [mlock_future_ok]'s
+   -EAGAIN (its test in the same function) needs VM_LOCKED in [def_flags], which only
    [mlockall(MCL_FUTURE)] sets and no modeled call does.  The free-range
    sub-case's answers are the MAP_FIXED free-range sub-case's, for the
    reasons given there.
@@ -1522,7 +1541,8 @@ Definition mmap_fixed_rw_span_budget_ok (flags : word) (m : Model)
 (** Does [flags] spell a MAP_FIXED_NOREPLACE request over the plain
     anonymous shape?  Two spellings, deliberately both: the bit alone,
     and the bit beside MAP_FIXED, which [do_mmap] folds into the same
-    flags word at mm/mmap.c:361-362 before anything else reads it (the
+    flags word, in its [if (flags & MAP_FIXED_NOREPLACE)] before
+    placement, before anything else reads it (the
     section above).  MAP_NORESERVE is masked as everywhere else
     ([mmap_flags_core]); every other bit must be absent, so MAP_SHARED,
     MAP_HUGETLB, MAP_POPULATE and the rest still leave the modeled
@@ -1727,28 +1747,35 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
                (vm_brk h) (vm_limit h) (vm_mmap_base h) (vm_init_sp h)) m)) ;;
        pure (mkEffectU a [] [] [(a, n)] [] []))
   else if mmap_fixed_noaccess_b prot flags off then
-    (* ARGUMENT GATE, in Linux's order (Linux v6.12).  [do_mmap] rounds
+    (* ARGUMENT GATE, in Linux's order (Linux v6.18.46, commit
+       1f99e9ab748f).  [do_mmap] rounds
        the length and runs its bounds — all -ENOMEM — before any address
        is looked at, and [__get_unmapped_area] runs two more -ENOMEM
-       bounds BEFORE the alignment -EINVAL:
+       bounds BEFORE the alignment -EINVAL — all five in mm/mmap.c:
 
-         mm/mmap.c:315-317   len = PAGE_ALIGN(len); if (!len)  -ENOMEM
-         mm/mmap.c:323-325   map_count > sysctl_max_map_count  -ENOMEM
-         mm/mmap.c:883-884   len > TASK_SIZE                   -ENOMEM
-         mm/mmap.c:915-916   addr > TASK_SIZE - len            -ENOMEM
-         mm/mmap.c:917-918   offset_in_page(addr)              -EINVAL
+         [do_mmap]              len = PAGE_ALIGN(len); if (!len)  -ENOMEM
+         [do_mmap]              map_count > sysctl_max_map_count  -ENOMEM
+         [__get_unmapped_area]  len > TASK_SIZE                   -ENOMEM
+         [__get_unmapped_area]  addr > TASK_SIZE - len            -ENOMEM
+         [__get_unmapped_area]  offset_in_page(addr)              -EINVAL
 
-       [generic_get_unmapped_area] hands MAP_FIXED's [addr] straight
-       back, before any rounding (mm/mmap.c:763-764), so the alignment
-       test at :917 sees the caller's address unchanged.
+       Both generic searches hand MAP_FIXED's [addr] straight
+       back, before any rounding, at their
+       [if (flags & MAP_FIXED) return addr;]
+       ([generic_get_unmapped_area] and [generic_get_unmapped_area_topdown],
+       same file), so the alignment
+       test sees the caller's address unchanged.
 
        Hence the first test.  [addr + PAGE_ALIGN(len) >= 2^64] covers
-       both the wrapped round-up of :316 (which forces
-       [addr + nZ >= 2^64] as well, [addr] being unsigned) and the bound
-       at :915: the [len] live at :915 is the PAGE-ALIGNED length
-       ([do_mmap] assigned it at :315 and [__get_unmapped_area] never
-       reassigns its parameter), and :883 already guarantees
-       [len <= TASK_SIZE] there, so :915 reads [addr + len > TASK_SIZE]
+       both the wrapped round-up of [do_mmap]'s [len = PAGE_ALIGN(len)]
+       (which forces
+       [addr + nZ >= 2^64] as well, [addr] being unsigned) and
+       [__get_unmapped_area]'s [addr > TASK_SIZE - len]: the [len] live
+       at that bound is the PAGE-ALIGNED length
+       ([do_mmap] assigned it and [__get_unmapped_area] never
+       reassigns its parameter), and the [len > TASK_SIZE] test above it
+       already guarantees
+       [len <= TASK_SIZE] there, so the bound reads [addr + len > TASK_SIZE]
        — which [addr + len >= 2^64] implies for every
        [TASK_SIZE < 2^64], with no knowledge of the actual TASK_SIZE
        needed.  -ENOMEM, deterministically.
@@ -1762,10 +1789,10 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        onto [mmap_errnos = [ENOMEM]].  Only this branch answered
        [unmodeled].
 
-       The residual of :915 — [addr + nZ < 2^64] but still
+       The residual of that bound — [addr + nZ < 2^64] but still
        [addr > TASK_SIZE - len] — is what the second test fails closed
        on.  This arm does not consult [State.TASK_SIZE]; it commits to
-       the -EINVAL of :917 only below [State.alloc_top], the run's
+       the -EINVAL of [offset_in_page(addr)] only below [State.alloc_top], the run's
        stack-derived grant top, with its own justification.  For a
        [Run.valid_sp] stack pointer the top is under [sp_window_hi -
        stack_max_size], hence under [State.TASK_SIZE] = 0x800000000000,
@@ -1777,13 +1804,14 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        [unmodeled].
 
        -EPERM is deliberately NOT modeled.  [security_mmap_addr]
-       ([__get_unmapped_area], mm/mmap.c:862-863) runs after the
+       ([__get_unmapped_area], mm/mmap.c) runs after the
        alignment test, and its baseline hook [cap_mmap_addr]
-       (security/commoncap.c:1459-1471) only fires below
+       (security/commoncap.c) only fires below
        [dac_mmap_min_addr], whose default is 4096
-       (security/min_addr.c:11 defines it from
-       CONFIG_DEFAULT_MMAP_MIN_ADDR, mm/Kconfig:726 declares that symbol
-       and :729 gives it that default, Linux v6.18.46).  The only
+       (security/min_addr.c defines it from
+       CONFIG_DEFAULT_MMAP_MIN_ADDR, and mm/Kconfig's
+       [config DEFAULT_MMAP_MIN_ADDR] declares that symbol with that
+       default, Linux v6.18.46).  The only
        page-aligned address it can reject is therefore 0, and the fourth
        gate below declines it — for BOTH MAP_FIXED shapes and BOTH of
        each shape's sub-cases, so no sub-case has to re-derive it. *)
@@ -1802,15 +1830,16 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
       then
       (* THREE RESOLUTIONS, because Linux produces three.  A MAP_FIXED
          over a live mapping tears the old range down in
-         [vms_clean_up_area] (mm/vma.c:1281-1293, called from
-         [__mmap_prepare] at :2441, Linux v6.18.46) — [vms_clear_ptes]
+         [vms_clean_up_area] (mm/vma.c, called from the end of
+         [__mmap_prepare], Linux v6.18.46, commit 1f99e9ab748f) —
+         [vms_clear_ptes]
          runs [unmap_vmas] and [free_pgtables] and then clears
-         [vms->clear_ptes] (mm/vma.c:1255-1280) — and it does so BEFORE
+         [vms->clear_ptes] (same file) — and it does so BEFORE
          the two allocations that can still fail, [vm_area_alloc] and
          [vma_iter_prealloc], both -ENOMEM ([__mmap_new_vma],
-         mm/vma.c:2506-2508 and :2515-2518).  Either reaches
-         [abort_munmap:] (mm/vma.c:2729-2730), and with [clear_ptes]
-         false [vms_abort_munmap_vmas] (mm/vma.c:2349-2369) takes the
+         same file).  Either reaches
+         [__mmap_region]'s [abort_munmap:] label, and with [clear_ptes]
+         false [vms_abort_munmap_vmas] takes the
          destructive path:
 
            /* Aborting cannot just call the vm_ops open() because they
@@ -1826,20 +1855,20 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          For exactly the shape this branch models — PROT_NONE, wholly
          inside one live anonymous mapping — the failures that are
          still NON-destructive are narrow.  [accountable_mapping]
-         (mm/vma.c:2326-2336) is false without VM_WRITE, so
+         (mm/vma.c) is false without VM_WRITE, so
          [security_vm_enough_memory_mm] ([__mmap_prepare],
-         mm/vma.c:2422-2432) never
+         same file) never
          runs; [may_expand_vm] gets the delta [pglen - vms.nr_pages]
-         (mm/vma.c:2418-2419), which is 0 when the whole requested
+         ([__mmap_prepare] again), which is 0 when the whole requested
          range was already mapped; and [__mmap_region] has no
          [map_count] check of its own (the only increment is in
-         [__mmap_new_vma], mm/vma.c:2543).  That leaves
-         [vms_gather_munmap_vmas] (mm/vma.c:1389-1393) testing
+         [__mmap_new_vma]).  That leaves
+         [vms_gather_munmap_vmas] (mm/vma.c) testing
          [mm->map_count >= sysctl_max_map_count],
          which fires only for the strictly-interior two-split case and
          is tested before any [__split_vma], so it returns -ENOMEM
-         through [__mmap_prepare]'s gather-error arm (:2436-2440), which
-         zeroes [vms->nr_pages] so that the abort at :2730 does nothing.
+         through [__mmap_prepare]'s gather-error arm, which
+         zeroes [vms->nr_pages] so that the abort does nothing.
 
          So: an errno with the range preserved, the success, and an
          errno with the range destroyed.  [alt] composes, so this is
@@ -1849,10 +1878,10 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          bytes.
 
          A separate, deliberate gap: even the non-destructive abort
-         [reattach_vmas] (mm/vma.c:1351-1360) only clears each VMA's
+         [reattach_vmas] (mm/vma.c) only clears each VMA's
          detached flag and destroys the side tree — it never re-merges,
          so the two [__split_vma] calls in [vms_gather_munmap_vmas]
-         (mm/vma.c:1401, 1422) survive
+         survive
          and a failed interior MAP_FIXED permanently costs up to two
          [map_count].  The model tracks no [map_count] at all, so this
          is not modeled here. *)
@@ -1882,8 +1911,8 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          see [Checks/Cases/Mm/Mmap.v]'s
          [mmap_fixed_noaccess_fresh_adds_no_transition].
          Two resolutions, not three: with [vms.nr_pages] zero there is nothing
-         to tear down and [vms_abort_munmap_vmas] returns at its first line
-         (mm/vma.h:244-245), so the destructive one cannot arise.
+         to tear down and [vms_abort_munmap_vmas] returns at its first test,
+         [if (!vms->nr_pages) return;] (mm/vma.c), so the destructive one cannot arise.
 
          Leaving it out was an asymmetry rather than a decision, and a MEASURED
          one: a sealed sanitizer runtime fills the gap between its two shadow
@@ -1906,13 +1935,15 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
 
          THREE RESOLUTIONS, and the same three the contained arm has,
          for the same reason — the destructive boundary is
-         [vms_clean_up_area] (mm/vma.c:1281-1293, called at :2441, Linux
+         [vms_clean_up_area] (mm/vma.c, called at the end of
+         [__mmap_prepare], Linux
          v6.18.46), the allocations that can still fail are past it, and
-         [vms_abort_munmap_vmas] (:2349, taken at :2730) then leaves the
-         request's range as a hole (:2365-2366) while the split remnants
+         [vms_abort_munmap_vmas], taken at [__mmap_region]'s
+         [abort_munmap:] label, then leaves the
+         request's range as a hole (its [mas_store_gfp] of NULL) while the split remnants
          outside it survive.  What CAN be wider here than in the
          contained arm is the non-destructive half: [may_expand_vm] gets
-         the delta [map->pglen - vms->nr_pages] (:2418), which is
+         the delta [map->pglen - vms->nr_pages], which is
          nonzero exactly when the request is not wholly covered by live
          mappings, so RLIMIT_AS can refuse such a call where it could
          not refuse a contained one.  NOT every spanning request,
@@ -1922,30 +1953,36 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          RLIMIT_AS cannot refuse it either.  Nothing turns on which:
          the non-destructive resolution is an unguarded [errno_from
          mmap_errnos] superset in both cases.  Non-destructive because
-         [vms->clear_ptes] is still set at that point (:1497), so the
-         abort takes [reattach_vmas] (:2357-2358) and the range comes
+         [vms->clear_ptes] is still set at that point ([vms_gather_munmap_vmas]
+         sets it on its success path), so the
+         abort takes [reattach_vmas] and the range comes
          back.
 
          Two Linux answers this arm does not carry, both narrow.
 
-         [vma_is_sealed] gives -EPERM (:1396-1398, :1416-1418).  Two
-         things set VM_SEALED (include/linux/mm.h:447-448) and neither
+         [vma_is_sealed] gives -EPERM (both tests in
+         [vms_gather_munmap_vmas], mm/vma.c).  Two
+         things set VM_SEALED (its definition in include/linux/mm.h) and neither
          can reach a ledger entry this arm meets.  [mseal_apply]
-         (mm/mseal.c:72, :78, the only setters in that file, reached
-         only from [do_mseal] at :139 and its [SYSCALL_DEFINE3] at
-         :187) needs the [mseal] syscall, 462, which is not in
+         (mm/mseal.c, the only setter in that file, reached
+         only from [do_mseal] and its [SYSCALL_DEFINE3]) needs the
+         [mseal] syscall, 462, which is not in
          [Specs.syscall_spec]'s modeled surface — the same argument
-         [Mremap.mremap_errnos] makes, there against v6.12.  And
-         [VM_SEALED_SYSMAP] (include/linux/mm.h:4402-4405) aliases
+         [Mremap.mremap_errnos] makes.  And
+         [VM_SEALED_SYSMAP] (include/linux/mm.h) aliases
          VM_SEALED under CONFIG_MSEAL_SYSTEM_MAPPINGS.  What carries
          that half is not a list of its users but a property of all of
          them: it is applied only by kernel-installed special mappings,
          and this model tracks NO special mapping in either ledger.
-         Grepping VM_SEALED_SYSMAP over v6.18.46 gives eleven sites
-         across seven architectures; the three a riscv64 task can meet
-         are the arch vdso text (arch/riscv/kernel/vdso.c:139), the vvar
-         datastore (lib/vdso/datastore.c:103), and the uprobes
-         execute-out-of-line area (kernel/events/uprobes.c:1727) — the
+         Grepping VM_SEALED_SYSMAP over v6.18.46 gives ten uses beside
+         its two definitions: eight in the vdso setup of five
+         architectures (arm64, loongarch, riscv, s390 and x86), and two
+         generic ones.  The three a riscv64 task can meet
+         are the arch vdso text ([__setup_additional_pages],
+         arch/riscv/kernel/vdso.c), the vvar
+         datastore ([vdso_install_vvar_mapping] in
+         lib/vdso/datastore.c), and the uprobes
+         execute-out-of-line area ([xol_add_vma], kernel/events/uprobes.c) — the
          last installed at
          uprobe registration rather than by [execve], which is why the
          argument is phrased over the property and not over what
@@ -1955,7 +1992,8 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          arm widens the class of requests that reach the question, so
          it is written down rather than left implicit.
 
-         [max_map_count] gives -ENOMEM (:1389-1393) but only before any
+         [max_map_count] gives -ENOMEM ([vms_gather_munmap_vmas]'s
+         [mm->map_count >= sysctl_max_map_count]) but only before any
          split, hence non-destructively, and the errno arm already
          admits it. *)
       else if region_free (vm_reserved h) addr n
@@ -2002,11 +2040,11 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
   else if mmap_fixed_rw_b prot flags off then
     (* THE ARGUMENT GATE IS THE ONE ABOVE, VERBATIM, and it has to be:
        every citation on it is about [do_mmap] and [__get_unmapped_area]
-       reading the length and the address (mm/mmap.c:315-317, :323-325,
-       :883-884, :915-918, Linux v6.12), and none of those four gates
-       branches on [prot].  [do_mmap] does READ [prot] before them, at
-       mm/mmap.c:303-305, but only to fold in PROT_EXEC under
-       [READ_IMPLIES_EXEC]; that cannot change which of these four errnos
+       reading the length and the address (the five tests tabled above,
+       mm/mmap.c, Linux v6.18.46), and none of those four gates
+       branches on [prot].  [do_mmap] does READ [prot] before them, in
+       its [READ_IMPLIES_EXEC] test, but only to fold in PROT_EXEC under
+       that personality; that cannot change which of these four errnos
        is produced, so the gate is genuinely shared.  A shape that
        answered a different errno for the same [addr]/[len] would be
        claiming Linux branches on a register none of these gates reads. *)
@@ -2024,15 +2062,15 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          && map_contains (vm_maps h) addr n
       then
       (* THE SAME THREE RESOLUTIONS, for the same reason: the destructive
-         boundary is [vms_clean_up_area] (mm/vma.c:1281-1293, called from
-         [__mmap_prepare] at :2441, Linux v6.18.46), everything
+         boundary is [vms_clean_up_area] (mm/vma.c, called at the end of
+         [__mmap_prepare], Linux v6.18.46), everything
          that can fail before it leaves the range intact, everything
          after it leaves a hole.  Asking for rw rather than PROT_NONE
          moves one failure across that boundary in the SAFE direction and
          adds none:
 
          - [accountable_mapping] is now TRUE (VM_WRITE, private, and —
-           for the plain spelling — no VM_NORESERVE, mm/vma.c:2326-2336),
+           for the plain spelling — no VM_NORESERVE, mm/vma.c),
            so [__mmap_prepare] takes the commit charge this time.  It
            charges the DELTA, [charged = pglen; charged -=
            vms.nr_accounted], and calls [security_vm_enough_memory_mm]
@@ -2040,20 +2078,21 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
            [mmap_fixed_rw_budget_ok] tests the whole post-state rather
            than adding [pglen]: over a range already accounted the delta,
            and the charge, are zero.  It is
-           at mm/vma.c:2422-2432, which is BEFORE :2441, so its -ENOMEM
+           in [__mmap_prepare], BEFORE that function's
+           [vms_clean_up_area], so its -ENOMEM
            reaches [abort_munmap:] with [vms->clear_ptes] still set and
-           [vms_abort_munmap_vmas] (mm/vma.c:2357-2358) takes
-           [reattach_vmas] (:1351-1360): the range is put
+           [vms_abort_munmap_vmas] takes
+           [reattach_vmas]: the range is put
            back.  A NON-destructive errno, already among the three.
-         - [may_expand_vm] (:2418-2419) still gets the delta
+         - [may_expand_vm] ([__mmap_prepare] again) still gets the delta
            [pglen - vms.nr_pages], which is 0 for a range already wholly
-           mapped, and [vms_gather_munmap_vmas]'s [max_map_count]
-           (mm/vma.c:1389-1393) still fires only for the interior
+           mapped, and [vms_gather_munmap_vmas]'s [max_map_count] test
+           (mm/vma.c) still fires only for the interior
            two-split case, before any [__split_vma].  Both
            non-destructive, both unchanged.
          - [vm_area_alloc] and [vma_iter_prealloc] ([__mmap_new_vma],
-           mm/vma.c:2506-2508 and :2515-2518) are still the two past
-           :2441, and still the destructive pair.
+           mm/vma.c) are still the two past
+           [vms_clean_up_area], and still the destructive pair.
 
          The SUCCESS is where the two shapes part.  Linux tears the old
          range down and installs fresh anonymous rw pages, so the process
@@ -2090,7 +2129,8 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          grant that names its own address instead of letting the kernel
          pick one.  Linux treats it as exactly that: with [vms.nr_pages]
          zero there is nothing to tear down, [vms_abort_munmap_vmas]
-         returns at its first line (mm/vma.h:244-245), and the
+         returns at its first test, [if (!vms->nr_pages) return;]
+         (mm/vma.c), and the
          destructive resolution above cannot arise — which is why this
          sub-case has TWO resolutions where the commit has three.
 
@@ -2176,9 +2216,11 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
            pure (mkEffectU (errno_ret e) [] [] [(addr, n)] [] [])))
       else unmodeled
   else if mmap_noreplace_noaccess_b prot flags off then
-    (* THE MAP_FIXED ARGUMENT GATE, VERBATIM: from mm/mmap.c:362 on the
+    (* THE MAP_FIXED ARGUMENT GATE, VERBATIM: from [do_mmap]'s
+       [flags |= MAP_FIXED] on the
        request carries MAP_FIXED, so the four tests above are the tests
-       it meets, in that order, and they precede the -EEXIST of :410-412
+       it meets, in that order, and they precede the -EEXIST of its
+       [find_vma_intersection] test
        (the MAP_FIXED_NOREPLACE section above).  Then ONE split on the
        ledger, not four: a range that meets nothing in [vm_reserved ++
        vm_maps] is the free-range MAP_FIXED sub-case, resolution for
@@ -2331,7 +2373,7 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       cut is [maps_subtract] over the range, the same post-state the
       partial arm below writes ([mmap_fixed_destroyed_next]), and not
       the removal of the one matched entry: [do_vmi_munmap]
-      (mm/vma.c:1604-1626) unmaps every VMA meeting the range.  Besides
+      (mm/vma.c) unmaps every VMA meeting the range.  Besides
       the matched entry, an entry can meet the range only by starting
       inside it at an address that is not page aligned, and only a move
       of the break makes such a start: a brk grant from an old break
@@ -2348,20 +2390,20 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       later grow continues above the old break — the hole stays a
       hole.)
       Linux can also answer -ENOMEM here, before any page goes.  The
-      call reaches [do_vmi_align_munmap] (mm/vma.c:1557), which detaches
+      call reaches [do_vmi_align_munmap] (mm/vma.c), which detaches
       the VMAs and then clears the range in the mapping tree with
       [vma_iter_clear_gfp(vmi, start, end, GFP_KERNEL)]
-      (mm/vma.c:1573; the helper is at include/linux/mm.h:1050 and
+      (the helper is in include/linux/mm.h and
       answers -ENOMEM when the maple-tree store cannot get a node).
-      That store is BEFORE the "point of no return" comment at
-      mm/vma.c:1577, and its error path [clear_tree_failed:]
-      (mm/vma.c:1581) calls [reattach_vmas], so the mapping stays whole
+      That store is BEFORE the "point of no return" comment in the same
+      function, and its error path, the [clear_tree_failed:] label,
+      calls [reattach_vmas], so the mapping stays whole
       and nothing is unmapped.  [vms_gather_munmap_vmas] has the same
       failure one step earlier: its [mas_store_gfp] on the detach tree
-      (mm/vma.c:1428) goes to [munmap_gather_failed:] (:1501) and the
-      same [reattach_vmas] (:1504).  The path from the system call is
-      [SYSCALL_DEFINE2(munmap, ...)] (mm/mmap.c:1077) ->
-      [__vm_munmap] (mm/vma.c:3189) -> [do_vmi_munmap] (mm/vma.c:1604)
+      goes to its [munmap_gather_failed:] label and the
+      same [reattach_vmas].  The path from the system call is
+      [SYSCALL_DEFINE2(munmap, ...)] (mm/mmap.c) ->
+      [__vm_munmap] (mm/vma.c) -> [do_vmi_munmap] (same file)
       -> [do_vmi_align_munmap].  Neither failure reads anything the
       model holds, so no state forces it: the arm answers it under an
       [alt] beside the success, [Run.injected_table] already lists
@@ -2380,20 +2422,20 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       1 MiB under [sp - 8 MiB] unless the argv/envp block is larger than
       that) — and a free-range unmap that lands on those is answered 0
       here where Linux unmaps them, or refuses with -EPERM when they are
-      sealed ([CONFIG_MSEAL_SYSTEM_MAPPINGS]; the [vma_is_sealed] tests
-      at mm/vma.c:1396-1398 and :1416-1418), or with -EINVAL when the
+      sealed ([CONFIG_MSEAL_SYSTEM_MAPPINGS]; the two [vma_is_sealed]
+      tests in [vms_gather_munmap_vmas], mm/vma.c), or with -EINVAL when the
       range starts or ends inside one of them: [__split_vma] asks the
-      VMA's [may_split] first (mm/vma.c:504-508), and a special mapping's
+      VMA's [may_split] first (mm/vma.c), and a special mapping's
       is [special_mapping_split], which always answers -EINVAL
-      (mm/mmap.c:1394-1403, installed for both by
-      [_install_special_mapping], :1492-1498).  That is a premise of the
+      (mm/mmap.c, installed for both by
+      [_install_special_mapping] in the same file).  That is a premise of the
       model (SCOPE.md, "Assumptions that the model does not check").
     - [addr, addr+n) meeting recorded mappings without being exactly
       one — a head or tail trim, a hole punched in one mapping, a range
       over several mappings or over mappings and free pages — that
       touches no image segment and ends at or below [State.alloc_top]:
       Linux splits the VMA the range starts inside and the one it ends
-      inside ([vms_gather_munmap_vmas], mm/vma.c:1401 and :1422),
+      inside ([vms_gather_munmap_vmas]'s two [__split_vma] calls, mm/vma.c),
       detaches every VMA between, and returns 0; free pages are
       skipped.  So the bytes outside the range stay mapped and the bytes
       inside are unmapped.  The ledgers are cut by [maps_subtract] over
@@ -2403,8 +2445,11 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       released as for a whole munmap; and the effect unmaps the range.
       The free-range arm's vdso premise covers the free pages here too.
       Linux can also answer -ENOMEM before any page is unmapped: the
-      [map_count] test of an interior split (mm/vma.c:1389-1393), a
-      [__split_vma] allocation, or a maple-tree store (:1428, :1573).
+      [map_count] test of an interior split ([vms_gather_munmap_vmas]'s
+      [mm->map_count >= sysctl_max_map_count], mm/vma.c), a
+      [__split_vma] allocation, or either maple-tree store (that
+      function's [mas_store_gfp], or [do_vmi_align_munmap]'s
+      [vma_iter_clear_gfp]).
       Each failure path re-attaches what it detached ([reattach_vmas]),
       so the range keeps its pages.  The model tracks none of these, so
       no state forces that -ENOMEM: [Run.injected_table] lists it in the

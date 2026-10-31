@@ -106,7 +106,8 @@ Definition exit1_image : Image := mkImage exit1_segments 0x100 demo_phdrs.
     computation rather than by the reader's eye. *)
 Definition gated_demo_fin : FinProcInput :=
   mkFinProcInput [[]] [] [] [] demo_uid demo_gid demo_groups net_silent
-                 default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] [].
+                 default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] []
+                 default_kernel.
 
 Lemma gated_demo_to_proc_input :
   to_proc_input gated_demo_fin
@@ -416,7 +417,7 @@ Qed.
 Definition gated_demo_fin_stdin : FinProcInput :=
   mkFinProcInput [[]] [] [] [Z_to_bv 8 65] demo_uid demo_gid demo_groups
                  net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-                 [] [].
+                 [] [] default_kernel.
 
 Lemma gated_demo_fin_stdin_valid : valid_fin_input gated_demo_fin_stdin.
 Proof.
