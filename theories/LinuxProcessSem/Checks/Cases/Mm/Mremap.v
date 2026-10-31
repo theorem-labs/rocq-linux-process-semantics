@@ -408,6 +408,14 @@ Definition mremap_orphan_in : SyscallInput :=
   mkInput 216 [131072; 4096; 8192; 1; 0x12345000; 0]
     (fun _ => None) (fun _ => None).
 
+(** THESE THREE REJECTIONS ARE ABOUT THE ROOM, NOT ABOUT THE ORPHAN,
+    and their names should not be read the other way.  Each is a moved
+    destination on a ledger where [Mremap.mremap_inplace_room_b] is
+    true, and [check_mremap]'s move arm is guarded by the ABSENCE of
+    room — so every one of them is refused before
+    [Mremap.mremap_fresh_b], and before the orphan, is ever consulted
+    ([mremap_orphan_input_has_room_above_the_source] below).  The
+    orphan boundary itself is pinned on the guard, two groups down. *)
 Example mremap_move_onto_brk_orphan_page_rejected :
   check_syscall mremap_orphan_in
     (mkEffectU 65536 [] [(69632, 4096)] [(131072, 4096)]
@@ -447,9 +455,10 @@ Example mremap_inplace_grow_above_brk_orphan_accepts :
         m_brk_orphan_with_source) [].
 Proof. check_eq. Qed.
 
-(** The same on the ledger WITHOUT the residual, which is the contrast
-    these carry: the post-states differ in exactly the residual, and
-    in nothing else. *)
+(** The same on the ledger WITHOUT the residual.  It too rejects for the
+    room, so the contrast these two carry is between the admitted
+    in-place post-states: they differ in exactly the residual, and in
+    nothing else. *)
 Example mremap_move_onto_orphan_without_residual_rejected :
   check_syscall mremap_orphan_in
     (mkEffectU 65536 [] [(69632, 4096)] [(131072, 4096)]
