@@ -1052,3 +1052,157 @@ Proof.
   rewrite Hr in Hfree.
   repeat split; assumption.
 Qed.
+
+(** * THE vDSO PAIR UNDER LOAD
+
+    [State] proves four general facts about the pair that [execve]
+    installs ([State.vdso_reserved]; arch/riscv/kernel/vdso.c,
+    [arch_setup_additional_pages], Linux v6.18.46, commit
+    1f99e9ab748f): [vdso_reserved_above], [vdso_reserved_nonzero],
+    [vdso_len_page] and [vdso_reserved_entry_ok].  Until this section
+    NOTHING IN THE MODEL USED ANY OF THEM.  The vDSO proofs that exist
+    reach the same facts by inline argument: [Common.AsanInit]'s
+    [resx_eq] unfolds [State.vdso_reserved] and computes the pair for
+    [State.default_kernel], and the fixtures in
+    [Checks.Cases.Mm.PlacementHoles] are concrete.
+
+    A lemma nothing uses is not merely dead weight.  It has never had
+    to discharge an obligation, and an obligation is the one test that
+    exposes a statement too weak to use — a premise no caller can
+    produce, or a conclusion that stops just short of the fact a caller
+    needs.  The four below are the obligations, one for each, and they
+    are general in the kernel build where the fixtures are not. *)
+
+(** A rounded address is a page base.  [page_round_down_Z_le],
+    [_mono], [_idem] and [_min_r] above say where rounding puts an
+    address; this says what it leaves. *)
+Lemma page_round_down_Z_mod : forall x,
+  (page_round_down_Z x mod page_size = 0)%Z.
+Proof.
+  intro x. unfold page_round_down_Z, page_size. apply Z_mod_mult.
+Qed.
+
+(** The pair's hull starts on a page when its top is a page base,
+    because the pair's width is a whole number of pages
+    ([State.vdso_len_page]).  A port that has to place something below
+    the pair needs the base, not the top. *)
+Lemma vdso_hull_base_page : forall kb top,
+  (top mod page_size = 0)%Z ->
+  ((top - vdso_len kb) mod page_size = 0)%Z.
+Proof.
+  intros kb top Htop.
+  rewrite Zminus_mod, Htop, (vdso_len_page kb). reflexivity.
+Qed.
+
+(** WHERE THE PAIR'S TOP IS FOR A LAUNCH, written once.  This is the
+    expression [State.init_reserved] uses — the model it is building
+    does not exist yet, so [State.vdso_top] cannot be called on it —
+    and [State.vdso_top_init_model] is the proof that the finished
+    model agrees.  Named rather than written out at each premise so
+    that a caller may [apply] these lemmas without a [zeta] step. *)
+Definition launch_vdso_top (mbase sp : word) : Z :=
+  page_round_down_Z
+    (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size)).
+
+(** THE LAUNCH'S LEDGER HAS NO ZERO-WIDTH ENTRY when the image's own
+    reservations have none.  [State.entries_nonzero] is what stops an
+    entry closing a [region_free] gate over a range it holds no byte
+    of, and [State.init_reserved] appends the pair to the image's list,
+    so the pair has to carry its half: [State.vdso_reserved_nonzero].
+
+    The only premise about the top is the 64-bit bound, which is why
+    this is the form a fixture can use — it needs no alignment and no
+    room hypothesis. *)
+Lemma init_reserved_nonzero : forall reserved mbase sp kb,
+  entries_nonzero reserved ->
+  (launch_vdso_top mbase sp < two_pow_64)%Z ->
+  entries_nonzero (init_reserved reserved mbase sp kb).
+Proof.
+  intros reserved mbase sp kb Hres Htop a n Hin.
+  unfold init_reserved in Hin. apply in_app_or in Hin as [Hin | Hin].
+  - exact (Hres a n Hin).
+  - exact (vdso_reserved_nonzero _ _ _ _ Htop Hin).
+Qed.
+
+(** EVERY ENTRY OF THE LAUNCH'S LEDGER IS THE IMAGE'S OR LIES IN THE
+    PAIR'S HULL.  [State.vdso_reserved_above] is the second half.  A
+    proof that a range misses the whole ledger splits here: it argues
+    about the image's segments, and about one interval for the pair. *)
+Lemma init_reserved_entry_place : forall reserved mbase sp kb a n,
+  (launch_vdso_top mbase sp < two_pow_64)%Z ->
+  In (a, n) (init_reserved reserved mbase sp kb) ->
+  In (a, n) reserved
+  \/ ((launch_vdso_top mbase sp - vdso_len kb <= bv_unsigned a)%Z
+      /\ (bv_unsigned a + bv_unsigned n <= launch_vdso_top mbase sp)%Z).
+Proof.
+  intros reserved mbase sp kb a n Htop Hin.
+  unfold init_reserved in Hin. apply in_app_or in Hin as [Hin | Hin].
+  - left. exact Hin.
+  - right. exact (vdso_reserved_above _ _ _ _ Htop Hin).
+Qed.
+
+(** EVERYTHING AN ENTRY OF THE LAUNCH'S LEDGER PROMISES, in one
+    lemma: it names at least one byte, it starts and ends on a page,
+    and the pair's hull starts on a page too.  This is
+    [State.vdso_reserved_entry_ok] put under the obligation it was
+    written for, with the alignment premise discharged rather than
+    assumed — [page_round_down_Z_mod] supplies it, because
+    [State.init_reserved] rounds the top itself.
+
+    The room premise is the condition under which
+    [State.vdso_reserved] emits anything at all, and it is the one
+    premise a caller must carry.  Say so here rather than letting a
+    port discover it. *)
+Lemma init_reserved_entry_ok : forall reserved mbase sp kb a n,
+  (page_size + vdso_len kb <= launch_vdso_top mbase sp)%Z ->
+  (launch_vdso_top mbase sp < two_pow_64)%Z ->
+  (forall b m, In (b, m) reserved ->
+     (0 < bv_unsigned m)%Z /\ (bv_unsigned b mod page_size = 0)%Z
+     /\ (bv_unsigned m mod page_size = 0)%Z) ->
+  In (a, n) (init_reserved reserved mbase sp kb) ->
+  (0 < bv_unsigned n)%Z
+  /\ (bv_unsigned a mod page_size = 0)%Z
+  /\ (bv_unsigned n mod page_size = 0)%Z
+  /\ ((launch_vdso_top mbase sp - vdso_len kb) mod page_size = 0)%Z.
+Proof.
+  intros reserved mbase sp kb a n Hroom Htop Hres Hin.
+  assert (Hal : (launch_vdso_top mbase sp mod page_size = 0)%Z)
+    by apply page_round_down_Z_mod.
+  pose proof (vdso_hull_base_page kb _ Hal) as Hhull.
+  unfold init_reserved in Hin. apply in_app_or in Hin as [Hin | Hin].
+  - destruct (Hres a n Hin) as (H1 & H2 & H3). repeat split; assumption.
+  - destruct (vdso_reserved_entry_ok kb _ a n Hroom Htop Hal Hin)
+      as (H1 & H2 & H3 & _ & _).
+    repeat split; assumption.
+Qed.
+
+(** THE ADDRESS THE RULE CHOOSES MISSES THE PAIR, for EVERY kernel
+    build.  The fixtures in [Checks.Cases.Mm.PlacementHoles] show this
+    for [State.default_kernel] by computation; this is the general
+    statement, and it is the one a port needs, because a port's build
+    is not the fixture's.
+
+    The ledger is split as the image's entries and the pair, which is
+    the shape [State.vm_reserved_init_model] gives for a launch and
+    which every later state keeps: no step of the model removes a
+    reservation. *)
+Lemma linux_place_misses_vdso : forall h thp hint nZ r kb rest a n,
+  (0 < nZ)%Z -> (nZ mod page_size = 0)%Z -> (nZ < two_pow_64)%Z ->
+  vm_reserved h = rest ++ vdso_reserved kb (vdso_top h) ->
+  linux_place_is h thp hint nZ r = true ->
+  In (a, n) (vdso_reserved kb (vdso_top h)) ->
+  (bv_unsigned r + nZ <= bv_unsigned a)%Z
+  \/ (bv_unsigned a + bv_unsigned n <= bv_unsigned r)%Z.
+Proof.
+  intros h thp hint nZ r kb rest a n HnPos HnAl HnB Hres H Hin.
+  destruct (linux_place_is_admissible h thp hint nZ r HnPos HnAl H)
+    as (_ & _ & _ & Hfree).
+  assert (Hin' : In (a, n) (vm_reserved h ++ vm_maps h)).
+  { apply in_or_app. left. rewrite Hres. apply in_or_app. right. exact Hin. }
+  pose proof (region_free_In _ _ _ _ _ Hfree Hin') as Hov.
+  unfold iv_overlap in Hov.
+  rewrite bv_unsigned_Z_to_bv_u64 in Hov by (unfold two_pow_64 in *; lia).
+  apply andb_false_iff in Hov as [Hf | Hf]; apply Z.ltb_ge in Hf.
+  - right. exact Hf.
+  - left. exact Hf.
+Qed.
