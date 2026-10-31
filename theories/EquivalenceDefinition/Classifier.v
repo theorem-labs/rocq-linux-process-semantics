@@ -1894,7 +1894,8 @@ Lemma error_free_input_s_of_error_free_input : forall cfg O inp,
   error_free_input O inp -> error_free_input_s cfg O inp.
 Proof.
   intros cfg O inp H en Hen.
-  exact (error_free_scfg_of_error_free cfg O source_alloc_limit en inp (H en Hen)).
+  exact (error_free_unkilled_scfg_of_error_free_unkilled cfg O source_alloc_limit
+           en inp (H en Hen)).
 Qed.
 
 (** ... and it BITES under every configuration, exactly as the

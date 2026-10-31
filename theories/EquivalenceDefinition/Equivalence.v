@@ -1926,6 +1926,24 @@ Lemma error_free_scfg_of_error_free : forall cfg img lim en inp,
   error_free (run img lim en inp) -> error_free (run_scfg cfg img lim en inp).
 Proof. intros cfg img lim en inp Hef Herr. apply Hef, (run_scfg_sub_errors cfg), Herr. Qed.
 
+(** The same inheritance for the predicate that SEES A DEATH, and the
+    second conjunct runs the same way for the same reason: a
+    configuration REMOVES executions, so it can add neither an error
+    ([Run.run_scfg_sub_errors]) nor a trace carrying a [State.KillEv]
+    ([Run.run_scfg_sub_traces]).  Both halves are therefore downward,
+    and the converse fails for both. *)
+Lemma error_free_unkilled_scfg_of_error_free_unkilled :
+  forall cfg img lim en inp,
+  error_free_unkilled (run img lim en inp) ->
+  error_free_unkilled (run_scfg cfg img lim en inp).
+Proof.
+  intros cfg img lim en inp (Hef & Hk). split.
+  - exact (error_free_scfg_of_error_free cfg img lim en inp Hef).
+  - intros (tr & sig & fs & Htr & Hin).
+    apply Hk. exists tr, sig, fs.
+    split; [exact (run_scfg_sub_traces cfg img lim en inp tr Htr) | exact Hin].
+Qed.
+
 Lemma modeled_scfg_of_modeled : forall cfg img lim en inp,
   modeled (run img lim en inp) -> modeled (run_scfg cfg img lim en inp).
 Proof. intros cfg img lim en inp Hm Hun. apply Hm, (run_scfg_sub_unmodeled cfg), Hun. Qed.
