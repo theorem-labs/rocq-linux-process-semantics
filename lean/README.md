@@ -127,7 +127,7 @@ links under OCaml 5.2 or newer (`trace.ml` digests a post-state with
 # 1. in lps-ff03, with Rocq 9.2:
 dune build --only-packages linux-process-semantics @install
 ./testing/syscall-check/extract.sh          # writes syscall_model.ml
-# 2. in lps-ff03/testing/syscall-check, with OCaml 5.3 and python3 on PATH:
+# 2. in lps-ff03/testing/syscall-check, with OCaml 5.3, dune, zarith and python3:
 dune build --root . ./main.exe
 # 3. in this repository:
 cd lean && lake build lps_runner
@@ -139,10 +139,14 @@ python3 tools/lean_replay.py --root . \
     -j 24 --max-report 100000 --json replay.json
 ```
 
-Step 2 needs more than an OCaml compiler. It needs dune and zarith, which
-the harness links (`testing/syscall-check/dune:5,49`) and nothing in
-`linux-process-semantics.opam` declares, and python3 on `PATH`, because a
-dune rule of the harness (`testing/syscall-check/dune:26-31`) renders
+Step 2 needs more than an OCaml compiler. It needs dune, zarith and
+python3. The harness links zarith (`testing/syscall-check/dune:5,49`),
+and no opam file declares it: `linux-process-semantics.opam` does not, and
+`testing/` has none of its own. The opam file does declare dune, as
+`>= 3.23`, and python3, as a debian depext; but dune arrives in a switch
+and the depext on the system, and a switch that has not installed the
+package has done neither. python3 is needed because a dune rule
+of the harness (`testing/syscall-check/dune:26-31`) renders
 `syscall_names.ml` with `python3 gen_tables.py`; without it the build
 stops with "Error: Program python3 not found in the tree or in PATH". In
 the image `ocaml/opam:debian-12-ocaml-5.3`, run
