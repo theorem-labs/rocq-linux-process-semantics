@@ -499,8 +499,11 @@ Qed.
 Lemma write_channel_outcome : forall fd buf count i m ch bs eff m' evs,
   fd_lookup (m_fds m) fd = Some (FdChannel ch) ->
   ch <> 0 ->
-  (* the far end has a reader: without one the channel arm answers
-     -EPIPE and SIGPIPE, never a delivery; see [ReadWrite.write_spec] *)
+  (* the far end has a reader.  Not a modelling shortcut and not the
+     model assuming one: with the reader gone [ReadWrite.write_spec]'s
+     channel arm answers -EPIPE and raises SIGPIPE, which KILLS the
+     process under the default disposition, so no delivery is
+     admissible there *)
   m_channel_reader m = true ->
   (* at or below [rw_bytes_max] the clamp inside [Uaccess.write_source]
      is the identity; see [Uaccess.modeled_rw_range] *)
@@ -1133,6 +1136,11 @@ Proof. vm_compute. split; check_eq. Qed.
 Lemma writev_channel_outcome : forall fd iov iovcnt i m ch iovs bs eff m' evs,
   fd_lookup (m_fds m) fd = Some (FdChannel ch) ->
   ch <> 0 ->
+  (* the far end has a reader.  Not a modelling shortcut and not the
+     model assuming one: with the reader gone [ReadWrite.writev_spec]
+     answers -EPIPE and raises SIGPIPE, which KILLS the process under
+     the default disposition, so no delivery is admissible there *)
+  m_channel_reader m = true ->
   (bv_unsigned iovcnt <= IOV_MAX)%Z ->
   import_iovecs (in_mem i) iov iovcnt = ImpOk iovs ->
   gather_iovecs (in_mem i) (cap_iovecs iovs) = Some bs ->
@@ -1147,7 +1155,7 @@ Lemma writev_channel_outcome : forall fd iov iovcnt i m ch iovs bs eff m' evs,
        (mkEffect (len_word (firstn n bs)) [] []) /\ m' = m
   /\ evs = map (WriteEv ch) (firstn n bs).
 Proof.
-  intros fd iov iovcnt i m ch iovs bs eff m' evs Hfd Hch Hmax Hiv Hg Hae
+  intros fd iov iovcnt i m ch iovs bs eff m' evs Hfd Hch Hrdr Hmax Hiv Hg Hae
     Hnonempty Hspec.
   apply check_writev_complete_ok in Hspec.
   assert (H32 : iovcnt32 iovcnt = iovcnt) by (apply iovcnt32_small; exact Hmax).
@@ -1169,6 +1177,8 @@ Proof.
   assert (Htot : Z.eqb (iovs_total (cap_iovecs iovs)) 0 = false).
   { apply Z.eqb_neq. rewrite <- (gather_iovecs_length _ _ _ Hg). lia. }
   rewrite Htot in Hspec. cbv iota in Hspec.
+  rewrite Hrdr in Hspec. change (negb true) with false in Hspec.
+  cbv iota in Hspec.
   assert (Hg0 : Nat.eqb (length bs) 0 = false) by (apply Nat.eqb_neq; lia).
   rewrite Hg0 in Hspec. cbv iota in Hspec.
   rewrite Hae in Hspec. cbv iota in Hspec.
@@ -1228,7 +1238,7 @@ Proof.
   intros fd iov iovcnt buf count iv iw m ch iovs bs eff m' evs
          Hfd Hch Hrdr Hmax Hiv Hg Hae Hnonempty Hcmax Hb Hv.
   destruct (writev_channel_outcome _ _ _ _ _ _ _ _ _ _ _
-              Hfd Hch Hmax Hiv Hg Hae Hnonempty Hv)
+              Hfd Hch Hrdr Hmax Hiv Hg Hae Hnonempty Hv)
     as (Hbnd & n & Hn1 & Hn2 & Heff & Hm & Hevs).
   exists n. split; [exact Hn1|]. split; [exact Hn2|].
   split; [exact Heff|]. subst m' evs.
@@ -1355,6 +1365,7 @@ Proof.
     assert (Htot : Z.eqb (iovs_total (cap_iovecs iovs)) 0 = false).
     { apply Z.eqb_neq. rewrite <- (gather_iovecs_length _ _ _ Hg). lia. }
     rewrite Htot. cbv iota.
+    rewrite Hrdr. change (negb true) with false. cbv iota.
     assert (Hg0 : Nat.eqb (length bs) 0 = false) by (apply Nat.eqb_neq; lia).
     rewrite Hg0. cbv iota. rewrite Hae. cbv iota.
     unfold with_copyins. cbn.

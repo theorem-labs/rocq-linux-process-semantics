@@ -2954,6 +2954,15 @@ Proof.
       inv_ok.
 Qed.
 
+(** The vectored form of [check_sigpipe_write]: the same -EPIPE over the
+    same [ReadWrite.raise_sigpipe] model, with the iovec array's import
+    in the ledger, because [do_writev] imports the array before
+    [vfs_writev] reaches the far end -- see [ReadWrite.writev_spec]'s
+    channel arm. *)
+Definition check_sigpipe_writev (reads : list (word * nat))
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  check_ret_only_copyins reads eff (errno_ret EPIPE) (raise_sigpipe m) [].
+
 Definition check_writev (i : SyscallInput) (fd iov iovcnt : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match fd_lookup (m_fds m) fd with
@@ -2978,6 +2987,11 @@ Definition check_writev (i : SyscallInput) (fd iov iovcnt : word)
             then check_ret_only_copyins
               (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
               eff (Z_to_bv 64 0) m []
+            else if negb (m_channel_reader m)
+            then check_sigpipe_writev
+              (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt)) eff m
+              (* the far end has no reader: -EPIPE and signal 13, after
+                 the zero-aggregate answer as on [check_write] *)
             else if Nat.eqb (length bs) 0
             then check_ret_only_copyins
               (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
@@ -3208,8 +3222,15 @@ Proof.
     destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot.
     { wv_errno H. wv_open Hfd. srw Hm. srw Hiv. srw Htot.
       apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
+    destruct (negb (m_channel_reader m)) eqn:Hrdr; cbv beta iota in H.
+    { (* no reader on the far end: -EPIPE and signal 13, the import in
+         the ledger *)
+      unfold check_sigpipe_writev in H.
+      wv_errno H. wv_open Hfd. srw Hm. srw Hiv. srw Htot. srw Hrdr.
+      apply record_copyins_ok_empty; [reflexivity|].
+      unfold sigpipe_write. eapply bind_ok0; [apply modify_ok|]. apply pure_ok. }
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
-    { wv_errno H. wv_open Hfd. srw Hm. srw Hiv. srw Htot. srw Ht.
+    { wv_errno H. wv_open Hfd. srw Hm. srw Hiv. srw Htot. srw Hrdr. srw Ht.
       apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
     destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))))
       eqn:Hae; [discriminate|].
@@ -3233,7 +3254,7 @@ Proof.
     pose proof (word_unsigned_range ret) as Hr.
     wv_open Hfd. srw Hm. srw Hiv.
     set (bs := gather_prefix (in_mem i) (cap_iovecs iovs)) in *.
-    srw Htot. srw Ht. srw Hae.
+    srw Htot. srw Hrdr. srw Ht. srw Hae.
     set (ds := firstn (Z.to_nat (bv_unsigned ret)) bs) in *.
     assert (Hlen : Z.of_nat (length ds) = bv_unsigned ret)
       by (apply firstn_length_le_Z; lia).
@@ -3404,6 +3425,10 @@ Proof.
     cbv zeta in H.
     destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot.
     { now apply check_ret_only_copyins_no_unmodeled in H. }
+    destruct (negb (m_channel_reader m)) eqn:Hrdr; cbv beta iota in H.
+    { (* no reader on the far end: -EPIPE, never a decline *)
+      unfold check_sigpipe_writev in H.
+      now apply check_ret_only_copyins_no_unmodeled in H. }
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
     { now apply check_ret_only_copyins_no_unmodeled in H. }
     destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hae.
@@ -3415,7 +3440,7 @@ Proof.
                       <=? Z.of_nat (length (gather_prefix (in_mem i) (cap_iovecs iovs))))%Z
                   && negb (addr_is_error_b ret));
           [destruct (access_ranges_eqb _ _)|]; discriminate. }
-    wv_open_unmodeled Hfd. srw Hm. srw Hiv. srw Htot. srw Ht. srw Hae.
+    wv_open_unmodeled Hfd. srw Hm. srw Hiv. srw Htot. srw Hrdr. srw Ht. srw Hae.
     apply record_copyins_unmodeled.
     unfold writev_buf_gap. apply unmodeled_intro.
   - now apply check_ret_only_no_unmodeled in H.
@@ -3519,7 +3544,8 @@ Lemma check_writev_complete_ok : forall i fd iov iovcnt eff m m' evs,
   check_writev i fd iov iovcnt eff m = CheckOk m' evs.
 Proof.
   intros i fd iov iovcnt eff m m' evs H.
-  unfold writev_spec, writev_file_arm, writev_ledger in H. unfold check_writev.
+  unfold writev_spec, writev_file_arm, writev_ledger, sigpipe_write in H.
+  unfold check_writev.
   unfold writev_gathered in H |- *.
   unfold writev_buf_gap in H. sys_unfold. cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd; hall Hfd; inv_ok.
@@ -3532,6 +3558,9 @@ Proof.
     cbv zeta in *.
     destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot; hall Htot; inv_ok.
     { wv_errno_complete. }
+    destruct (negb (m_channel_reader m)) eqn:Hrdr; hall Hrdr; inv_ok.
+    { (* no reader on the far end: -EPIPE and signal 13 *)
+      unfold check_sigpipe_writev. wv_errno_complete. }
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0)
       eqn:Ht; hall Ht; inv_ok.
     { wv_errno_complete. }
@@ -3635,7 +3664,8 @@ Lemma check_writev_complete_unmodeled : forall i fd iov iovcnt m eff,
   check_writev i fd iov iovcnt eff m = CheckUnmodeled.
 Proof.
   intros i fd iov iovcnt m eff H.
-  unfold writev_spec, writev_file_arm, writev_ledger in H. unfold check_writev.
+  unfold writev_spec, writev_file_arm, writev_ledger, sigpipe_write in H.
+  unfold check_writev.
   unfold writev_gathered in H |- *.
   unfold writev_buf_gap in H. sys_unfold. cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd; hall Hfd; inv_ok;
@@ -3645,6 +3675,8 @@ Proof.
       hall Hiv; inv_ok; try discriminate.
     cbv zeta in *.
     destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot; hall Htot; inv_ok;
+      try discriminate.
+    destruct (negb (m_channel_reader m)) eqn:Hrdr; hall Hrdr; inv_ok;
       try discriminate.
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht;
       hall Ht; inv_ok; try discriminate.

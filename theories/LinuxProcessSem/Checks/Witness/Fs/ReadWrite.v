@@ -1197,6 +1197,9 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                let total := iovs_total (cap_iovecs iovs0) in
                let bs := writev_gathered (in_mem i) iovs0 in
                if Z.eqb total 0 then ret_outcome (Z_to_bv 64 0) m   (* zero aggregate *)
+               else if negb (m_channel_reader m)
+               then ret_outcome (errno_ret EPIPE) (raise_sigpipe m)
+                 (* no reader on the far end: -EPIPE and signal 13 *)
                else if Nat.eqb (length bs) 0
                then ret_outcome (errno_ret EFAULT) m   (* nothing gatherable *)
                else if addr_is_error_b (len_word bs) then Unmodeled
@@ -1347,14 +1350,20 @@ Proof.
     destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot.
     { wvw_open Hfd. srw Hm. srw Hiv. srw Htot.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    destruct (negb (m_channel_reader m)) eqn:Hrdr.
+    { (* no reader on the far end: -EPIPE and signal 13 *)
+      wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Hrdr.
+      eapply bind_step;
+        [ unfold sigpipe_write; eapply bind_step; [apply modify_ok | apply pure_ok]
+        | apply pure_ok ]. }
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
-    { wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Ht.
+    { wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Hrdr. srw Ht.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
     destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))))
       eqn:Hae.
-    { wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Ht. srw Hae.
+    { wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Hrdr. srw Ht. srw Hae.
       left. unfold writev_buf_gap. apply unmodeled_intro. }
-    wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Ht. srw Hae.
+    wvw_open Hfd. srw Hm. srw Hiv. srw Htot. srw Hrdr. srw Ht. srw Hae.
     eapply witness_bind_ok_eq with
       (evs1 := map (WriteEv ch)
                  (firstn 1 (gather_prefix (in_mem i) (cap_iovecs iovs))))

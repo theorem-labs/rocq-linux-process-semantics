@@ -551,7 +551,8 @@ Lemma error_free_input_modeled : forall O inp en,
   modeled (run O source_alloc_limit en inp).
 Proof.
   intros O inp en Hef Hen.
-  exact (run_error_free_modeled _ _ _ _ (Hef en Hen)).
+  exact (run_error_free_modeled _ _ _ _
+           (error_free_unkilled_error_free _ (Hef en Hen))).
 Qed.
 
 (** THE BITE.  One erroring resolution, at one valid entry, and the
@@ -574,7 +575,7 @@ Lemma error_free_input_refuted_by_error : forall O inp en,
   ~ error_free_input O inp.
 Proof.
   intros O inp en Hen Herr Hef.
-  exact (Hef en Hen Herr).
+  exact (error_free_unkilled_error_free _ (Hef en Hen) Herr).
 Qed.
 
 (** THE VACUITY ROUTE, in the family's style and with the same answer.
@@ -1874,9 +1875,11 @@ Definition error_free_input_s (cfg : SpuriousCfg) (O : Image) (inp : ProcInput) 
 Lemma error_free_input_s_may_fail : forall O inp,
   error_free_input_s may_fail_cfg O inp <-> error_free_input O inp.
 Proof.
-  intros O inp. unfold error_free_input_s, error_free_input, error_free.
-  split; intros H en Hen Herr; apply (H en Hen);
-    apply (proj1 (proj2 (run_scfg_may_fail O source_alloc_limit en inp))); exact Herr.
+  intros O inp. unfold error_free_input_s, error_free_input.
+  split; intros H en Hen;
+    [ apply (proj1 (error_free_unkilled_scfg_may_fail O source_alloc_limit en inp))
+    | apply (proj2 (error_free_unkilled_scfg_may_fail O source_alloc_limit en inp)) ];
+    exact (H en Hen).
 Qed.
 
 (** Turning a family OFF cannot make an original buggy: fewer executions
@@ -1906,7 +1909,7 @@ Lemma error_free_input_s_refuted_by_error : forall cfg O inp en,
   ~ error_free_input_s cfg O inp.
 Proof.
   intros cfg O inp en Hen Herr Hef.
-  exact (Hef en Hen Herr).
+  exact (error_free_unkilled_error_free _ (Hef en Hen) Herr).
 Qed.
 
 (** The vacuity route survives the parameterisation untouched, because
@@ -1931,7 +1934,8 @@ Lemma error_free_input_s_modeled : forall cfg O inp en,
   modeled (run_scfg cfg O source_alloc_limit en inp).
 Proof.
   intros cfg O inp en Hef Hen Hun.
-  exact (Hef en Hen (run_scfg_unmodeled_errors cfg O source_alloc_limit en inp Hun)).
+  exact (error_free_unkilled_error_free _ (Hef en Hen)
+           (run_scfg_unmodeled_errors cfg O source_alloc_limit en inp Hun)).
 Qed.
 
 (** The positive relation to [good_input_s], the [_s] twin of

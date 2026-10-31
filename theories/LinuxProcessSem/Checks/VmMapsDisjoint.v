@@ -1647,6 +1647,14 @@ Proof.
   unfold raise_sigpipe. destruct (sigpipe_blocked (m_sigmask m)); reflexivity.
 Qed.
 
+Lemma check_sigpipe_writev_frame : forall reads eff m m' evs,
+  check_sigpipe_writev reads eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros reads eff m m' evs H. unfold check_sigpipe_writev in H.
+  apply check_ret_only_copyins_model in H; subst.
+  unfold raise_sigpipe. destruct (sigpipe_blocked (m_sigmask m)); reflexivity.
+Qed.
+
 Lemma check_readv_gap_frame : forall m' evs,
   check_readv_gap = CheckOk m' evs -> False.
 Proof. intros m' evs H. unfold check_readv_gap in H. discriminate. Qed.
@@ -1664,6 +1672,7 @@ Ltac vm_done H :=
   first
   [ apply check_efault_or_frame in H; exact H
   | apply check_sigpipe_write_frame in H; exact H
+  | apply check_sigpipe_writev_frame in H; exact H
   | elim (check_readv_gap_frame _ _ H)
   | (eapply check_open_result_frame in H;
      [exact H | intros; reflexivity]) ].
