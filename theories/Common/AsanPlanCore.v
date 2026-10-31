@@ -74,14 +74,26 @@ Import AX2. Import AX2B.
 (** * 0. Constants and the address table (one instance per image)            *)
 (* ######################################################################### *)
 
-(** [AsanCeil.alloc_ceiling]: every grant ends below it; the stack window and the
-    argument block lie above it. *)
-Definition CEIL : Z := 0x7fff7f800000.
+(** [CEIL] — the boundary between the grant region and the stack side — is a
+    PARAMETER of the checker (declared in [Section WithSegs] below), not a
+    constant.  Every grant the checker records ends at or below it; the stack
+    window and the argument block lie above it.  The run fixes it:
+    [AsanPlanSound.co_ceil] says [CEIL = page_round_down_Z (alloc_top (m_vmmaps model))].
+    It is NOT [AsanCeil.alloc_ceiling = 0x7fff7f800000]: that constant is a
+    LOWER bound for it (a true ledger bound only under [AsanCeil.init_sp_ok]),
+    and [Run.valid_mmap_base] admits a run whose grants land above it. *)
 (** [AsanPlacement.kHighMemBeg]: NULL-hint grants land strictly above it, every
     other ledger interval (image, shadows, brk heap) ends at or below it. *)
 Definition KHI : Z := 0x10007fff8000.
 (** [AsanCeil.bottomup_floor] *)
 Definition FLOOR : Z := 0x2aaaaaaab000.
+(** [AsanCeil.alloc_ceiling] — the CONSTANT 0x7fff7f800000, which is NOT the
+    plan's boundary (that is the parameter [CEIL] below) but its lower end: it
+    is a true ledger bound for a ledger built under [AsanCeil.init_sp_ok].  The
+    gap/slack argument [AsanPlacement.free_gap_of_totals] searches for a free
+    window BELOW it, and [gap_ok] is the checker's side of that argument, so
+    this is the number [gap_ok] compares against — not the run's ceiling. *)
+Definition GAP_CEIL : Z := 0x7fff7f800000.
 (** [State.mmap_base_min] (initial value of [a_ylo]) *)
 Definition MBASE_MIN : Z := 0x154555557000.
 (** set_tid_address: the tid is in (0, PID_MAX_ENVELOPE) *)
@@ -94,7 +106,7 @@ Record atable : Type := AT {
       [vm_reserved] with besides the image's own reservations.  At Linux
       v6.18.46, commit 1f99e9ab748f, arch/riscv/kernel/vdso.c
       [arch_setup_additional_pages] takes the vvar pages and the vDSO text as
-      one unhinted [get_unmapped_area] span (vdso.c:124), which a top-down
+      one unhinted [get_unmapped_area] span, which a top-down
       layout answers from the gap just below [mm->mmap_base], so that pair is
       reserved ledger the checker must stay clear of.  Both fields are UPPER
       bounds, so a table may over-state them; 0 means the launch reserves
@@ -148,6 +160,16 @@ Variable IT : itab.
 Variable A : atable.
 Variable nx0 : nat.     (** variables below nx0 are the INITIAL ones (splits / shapes may only mention those) *)
 Variable LIMIT : Z.     (** the run's backing budget (vm_limit): target_alloc_limit *)
+Variable CEIL : Z.      (** the run's allocation ceiling: [page_round_down_Z (alloc_top (m_vmmaps model))] *)
+
+(** What a plan layer needs of the run's ceiling, wrapped in a definition so
+    that [lia] does not silently make every lemma of a Section depend on it.
+    The bounds: [AsanCeil.alloc_ceiling = 0x7fff7f800000] below (every
+    admissible run has [sp >= State.sp_window_lo], so
+    [alloc_top h = sp - stack_max_size >= alloc_ceiling]) and
+    [State.sp_window_hi - State.stack_max_size = 0x7fffff800000] above. *)
+Definition ceil_ok : Prop :=
+  CEIL mod 4096 = 0 /\ 0x7fff7f800000 <= CEIL <= 0x7fffff800000.
 
 (* ######################################################################### *)
 (** * 1. Shapes                                                               *)
@@ -1815,7 +1837,7 @@ Definition gap_ok (cs : acs) (nhi : Z) : bool :=
   (* [n_resx A] counts the launch's extra reserved intervals: they sit in the
      same ledger [free_gap_of_totals] measures. *)
   let cnt := Z.of_nat (n_res A + n_resx A + length (a_maps cs))%nat in
-  Z.leb (FLOOR + nhi + a_totsz cs + cnt * (nhi + 4095)) CEIL.
+  Z.leb (FLOOR + nhi + a_totsz cs + cnt * (nhi + 4095)) GAP_CEIL.
 
 Definition budget_ok (cs : acs) (extra : Z) : bool :=
   Z.leb (a_eager cs + a_abytes cs + extra) LIMIT.
@@ -2342,9 +2364,9 @@ Proof. intros. unfold node_munmap, node_munmap_ref. unfold ehi, elo. rewrite ?am
 
 (** [PMunmap2]: the exact-entry munmap with its two resolutions
     (refused, granted).  Linux clears the range in the mapping tree
-    ([vma_iter_clear_gfp], mm/vma.c:1573 at v6.18.46) BEFORE the point of no
-    return (mm/vma.c:1577), and [do_vmi_align_munmap]'s [clear_tree_failed:]
-    path (mm/vma.c:1581) calls [reattach_vmas], so the refusal keeps every
+    ([vma_iter_clear_gfp], mm/vma.c at v6.18.46) BEFORE the point of no
+    return, and [do_vmi_align_munmap]'s [clear_tree_failed:]
+    path calls [reattach_vmas], so the refusal keeps every
     page: the refused child is [refuse cs] (a0 := -ENOMEM, pc+4, nothing
     else), exactly as the other memory syscalls spell it. *)
 Definition node_munmap2 (cs : acs) : option (acs * acs) :=
@@ -3888,7 +3910,7 @@ Definition init_kn_zero (A : atable) : list kentry := init_kn_with atr_entry_zer
 
 Definition init_regs : list expr := sr_upd (repeat (ELit 0) 32) 2 e_sp0.
 (** visible application ranges at start: the image hull and the whole stack side *)
-Definition init_vis (A : atable) : list (expr * expr) :=
+Definition init_vis (A : atable) (CEIL : Z) : list (expr * expr) :=
   [(ELit (img_lo A), ELit (img_hi A - img_lo A)); (ELit CEIL, ELit (2^47 - CEIL))].
 
 (** [a_totsz] must cover the WHOLE reserved ledger, the launch's extra
@@ -3898,23 +3920,23 @@ Definition init_vis (A : atable) : list (expr * expr) :=
     WHERE THE EXTRA INTERVALS SIT.  At Linux v6.18.46, commit 1f99e9ab748f,
     arch/riscv/kernel/vdso.c [arch_setup_additional_pages] asks for the vvar
     pages and the vDSO text in ONE span through
-    [get_unmapped_area(NULL, 0, vdso_mapping_len, 0, 0)] (vdso.c:124), with no
-    hint; under a top-down layout mm/mmap.c
-    [generic_get_unmapped_area_topdown] (mmap.c:737) answers from the highest
-    free gap below [mm->mmap_base].  So the span ends at the mmap top and its
-    base is [mmap_top - its length].  [mmap_top] is never below
-    [State.mmap_base_min] = [MBASE_MIN], which makes [MBASE_MIN -
+    [get_unmapped_area(NULL, 0, vdso_mapping_len, 0, 0)], with no hint; under
+    a top-down layout mm/mmap.c [generic_get_unmapped_area_topdown] answers
+    from the highest free gap below [mm->mmap_base].  So the span ends at the
+    mmap top and its base is [mmap_top - its length].  [mmap_top] is never
+    below [State.mmap_base_min] = [MBASE_MIN], which makes [MBASE_MIN -
     resx_bytes A] a floor for it.
 
     That floor is NOT a constant: [vdso_mapping_len] is the text plus
-    [VVAR_SIZE] (vdso.c:122) and the text is one to sixteen pages, so the base
-    moves with the build and a constant bound would refuse a legal grant. *)
-Definition init_acs_of_with (kn0 : list kentry) (A : atable) : acs :=
+    [VVAR_SIZE] and the text is one to sixteen pages, so the base moves with
+    the build and a constant bound would refuse a legal grant. *)
+Definition init_acs_of_with (kn0 : list kentry) (A : atable) (CEIL : Z) : acs :=
   ACS (mk_ss (a_entry A) init_regs kn0 NX0) []
-      (img_hi A - img_lo A + resx_bytes A) (MBASE_MIN - resx_bytes A) 0 (init_vis A) []
+      (img_hi A - img_lo A + resx_bytes A) (MBASE_MIN - resx_bytes A) 0
+      (init_vis A CEIL) []
       (vis_cost (img_hi A - img_lo A) + vis_cost (2^47 - CEIL)) (escale 4096 (EVar V_BRK)) FdStd false.
-Definition init_acs_of (A : atable) : acs := init_acs_of_with (init_kn A) A.        (** the default *)
-Definition init_acs_of_zero (A : atable) : acs := init_acs_of_with (init_kn_zero A) A.  (** zero draw *)
+Definition init_acs_of (A : atable) (CEIL : Z) : acs := init_acs_of_with (init_kn A) A CEIL.        (** the default *)
+Definition init_acs_of_zero (A : atable) (CEIL : Z) : acs := init_acs_of_with (init_kn_zero A) A CEIL.  (** zero draw *)
 
 (* ######################################################################### *)
 (** * 10. Address tables                                                      *)
@@ -3940,7 +3962,7 @@ Definition ASAN : atable :=
 (** the decoded-instruction table range of the asan text *)
 Definition ASAN_TEXT_LO : Z := 0x4ba64.
 Definition ASAN_TEXT_N : nat := 252263.
-Definition asan_init : acs := init_acs_of ASAN.
+Definition asan_init (CEIL : Z) : acs := init_acs_of ASAN CEIL.
 
 (** target_fuzz_sniff_header_both: code = asan - 0x10
     for everything below pni_sniff_header (0x1414dc); same segment layout
@@ -3955,6 +3977,6 @@ Definition BOTH : atable :=
      stops_more := [0x506d4; 0x51cf8; 0xddd78; 0xee060; 0xee1f0] |}.
 Definition BOTH_TEXT_LO : Z := 0x4ba54.
 Definition BOTH_TEXT_N : nat := 252267.
-Definition both_init : acs := init_acs_of BOTH.
+Definition both_init (CEIL : Z) : acs := init_acs_of BOTH CEIL.
 
 End APC.

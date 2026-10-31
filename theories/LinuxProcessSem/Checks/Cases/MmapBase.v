@@ -42,70 +42,84 @@ Local Open Scope Z_scope.
 (** ** The kernel's computation, in [Z]
 
     The kernel computes the gap in [unsigned long], and so does
-    [unclamped_gap]: [pad] wraps at mm/util.c:450, and the test at
-    :452-454 keeps the gap at the rlimit when [gap + pad] wraps.  The
-    final subtraction is kept in [Z]: a NEGATIVE result is a base that
-    wrapped below zero in the kernel; the Sv39 section says why no
-    program starts from one. *)
+    [unclamped_gap]: [pad] wraps where [mmap_base] adds the stack pad
+    under [PF_RANDOMIZE] (mm/util.c, Linux v6.18.46, commit
+    1f99e9ab748f), and [mmap_base]'s [gap + pad > gap] test keeps the
+    gap at the rlimit when the sum wraps.  The final subtraction is
+    kept in [Z]: a NEGATIVE result is a base that wrapped below zero in
+    the kernel; the Sv39 section says why no program starts from one. *)
 
-(** [MIN_GAP], mm/util.c:431. *)
+(** [MIN_GAP], the macro in mm/util.c (Linux v6.18.46, commit
+    1f99e9ab748f). *)
 Definition min_gap : Z := 128 * 1024 * 1024.
 
-(** [MAX_GAP = STACK_TOP / 6 * 5], mm/util.c:432. *)
+(** [MAX_GAP = STACK_TOP / 6 * 5], the macro in mm/util.c (Linux
+    v6.18.46, commit 1f99e9ab748f). *)
 Definition max_gap (stack_top : Z) : Z := stack_top / 6 * 5.
 
-(** [STACK_RND_MASK << PAGE_SHIFT] for a 64-bit task:
-    arch/riscv/include/asm/elf.h:56-58 gives the mask 0x3ffff. *)
+(** [STACK_RND_MASK << PAGE_SHIFT] for a 64-bit task: the
+    [STACK_RND_MASK] macro in arch/riscv/include/asm/elf.h (Linux
+    v6.18.46, commit 1f99e9ab748f) gives the mask 0x3ffff. *)
 Definition stack_rnd_pad : Z := 0x3ffff * page_size.
 
 (** [rlim_stack->rlim_cur]: SCOPE.md fixes the stack limit at 8 MiB. *)
 Definition stack_rlimit : Z := 8 * 1024 * 1024.
 
-(** The clamp of mm/util.c:456-459.  [MIN_GAP < MAX_GAP] is left out as
-    always true; [min_gap_lt_max_gap_va] below proves that at every
-    [VaSize] the model has. *)
+(** The clamp inside [mmap_base] — its [MIN_GAP] floor and its
+    [MAX_GAP] ceiling (mm/util.c, Linux v6.18.46, commit 1f99e9ab748f).
+    [MIN_GAP < MAX_GAP] holds for every stack top below. *)
 Definition clamp_gap (stack_top gap : Z) : Z :=
   if gap <? min_gap then min_gap
   else if max_gap stack_top <? gap then max_gap stack_top
   else gap.
 
-(** [pad] of mm/util.c:446-450 in [unsigned long]: [stack_guard_gap]
-    (mm/mmap.c:941-954: 256 pages by default, any page count on the
-    command line) plus the stack pad under [PF_RANDOMIZE]. *)
+(** [pad] of [mmap_base] (mm/util.c, Linux v6.18.46, commit
+    1f99e9ab748f) in [unsigned long]: [stack_guard_gap] — its
+    file-scope definition in mm/mmap.c gives 256 pages by default and
+    [cmdline_parse_stack_guard_gap] there takes any page count on the
+    command line — plus the stack pad under [PF_RANDOMIZE]. *)
 Definition guard_pad (guard : Z) (randomize : bool) : Z :=
   (guard + (if randomize then stack_rnd_pad else 0)) mod two_pow_64.
 
-(** [gap] before the clamp, mm/util.c:445 and :452-454. *)
+(** [gap] before the clamp: [mmap_base]'s [gap = rlim_stack->rlim_cur]
+    and its [gap + pad > gap] overflow test (mm/util.c, Linux v6.18.46,
+    commit 1f99e9ab748f). *)
 Definition unclamped_gap (guard : Z) (randomize : bool) : Z :=
   if stack_rlimit + guard_pad guard randomize <? two_pow_64
   then stack_rlimit + guard_pad guard randomize
   else stack_rlimit.
 
-(** [mmap_base(rnd, rlim_stack)], mm/util.c:434-463.  [randomize] is
-    [PF_RANDOMIZE], which adds the stack pad to the gap and makes
-    [arch_pick_mmap_layout] draw [rnd] (mm/util.c:467-470). *)
+(** [mmap_base(rnd, rlim_stack)] (mm/util.c, Linux v6.18.46, commit
+    1f99e9ab748f).  [randomize] is [PF_RANDOMIZE], which adds the stack
+    pad to the gap and makes [arch_pick_mmap_layout] (mm/util.c) draw
+    [rnd] through [arch_mmap_rnd]. *)
 Definition topdown_base (stack_top guard : Z) (randomize : bool) (rnd : Z) : Z :=
   page_round_up_Z
     (stack_top - clamp_gap stack_top (unclamped_gap guard randomize) - rnd).
 
 (** The inputs one launch can have: any page-multiple guard an
-    [unsigned long] holds ([val << PAGE_SHIFT], mm/mmap.c:948-950), and
-    [rnd] = [k] pages with [k < 2^bits] ([arch_mmap_rnd],
-    mm/util.c:399-411), [k = 0] without [PF_RANDOMIZE]. *)
+    [unsigned long] holds ([val << PAGE_SHIFT] in
+    [cmdline_parse_stack_guard_gap], mm/mmap.c, Linux v6.18.46, commit
+    1f99e9ab748f), and [rnd] = [k] pages with [k < 2^bits]
+    ([arch_mmap_rnd], mm/util.c), [k = 0] without [PF_RANDOMIZE]. *)
 Definition launch_ok (bits guard : Z) (randomize : bool) (k : Z) : Prop :=
   0 <= guard < two_pow_64 /\ guard mod page_size = 0
   /\ 0 <= k < 2 ^ bits /\ (randomize = false -> k = 0).
 
 (** The configuration SCOPE.md names, over the two knobs that move the
     floor.  [vm.mmap_rnd_bits] lies in [mmap_rnd_bits_min ..
-    mmap_rnd_bits_max] (the sysctl's range, mm/mmap.c:1528-1536): 18
-    (arch/riscv/Kconfig:260-262) to [MMAP_VA_BITS - PAGE_SHIFT - 3]
-    (arch/riscv/mm/init.c:850-853, set at boot, :1164-1167), which is 33
-    under Sv48 and Sv57 ([MMAP_VA_BITS] is capped at 48,
-    arch/riscv/include/asm/pgtable.h:137-140) and 24 under Sv39.  Its
-    boot value [CONFIG_ARCH_MMAP_RND_BITS] lies in 18 .. 24
-    (arch/Kconfig:1208-1212, arch/riscv/Kconfig:269-271); only root
-    raises it past 24, through /proc/sys/vm/mmap_rnd_bits.
+    mmap_rnd_bits_max] (the sysctl's range: the "mmap_rnd_bits" entry of
+    [mmap_table] in mm/mmap.c, Linux v6.18.46, commit 1f99e9ab748f): 18
+    (the [ARCH_MMAP_RND_BITS_MIN] symbol of arch/riscv/Kconfig) to
+    [MMAP_VA_BITS - PAGE_SHIFT - 3] ([set_mmap_rnd_bits_max],
+    arch/riscv/mm/init.c, called at boot from [setup_vm] there), which
+    is 33 under Sv48 and Sv57 ([MMAP_VA_BITS] is capped at 48 by the
+    [MMAP_VA_BITS_64] macro, arch/riscv/include/asm/pgtable.h) and 24
+    under Sv39.  Its boot value [CONFIG_ARCH_MMAP_RND_BITS] lies in
+    18 .. 24 (the [ARCH_MMAP_RND_BITS] symbol of arch/Kconfig, whose
+    range is the arch's MIN and MAX, and the [ARCH_MMAP_RND_BITS_MAX]
+    symbol of arch/riscv/Kconfig); only root raises it past 24, through
+    /proc/sys/vm/mmap_rnd_bits.
 
     [floor_guard_max] is the largest guard with which even 33 bits keep
     every base at or above the floor: [STACK_TOP - floor - rlimit -
@@ -336,11 +350,13 @@ Proof.
 Qed.
 
 (** The legacy layout puts the base at [TASK_UNMAPPED_BASE] plus the draw
-    (mm/util.c:472-474), where [TASK_UNMAPPED_BASE] is
+    ([arch_pick_mmap_layout]'s legacy arm, mm/util.c, Linux v6.18.46,
+    commit 1f99e9ab748f), where [TASK_UNMAPPED_BASE] is
     [PAGE_ALIGN(2^MMAP_MIN_VA_BITS / 3)] with [MMAP_MIN_VA_BITS] = 39 for
-    a 64-bit task (arch/riscv/include/asm/processor.h:52,
-    arch/riscv/include/asm/pgtable.h:138-140).  Without a draw that is
-    far under the floor. *)
+    a 64-bit task (the CONFIG_64BIT arm of the [TASK_UNMAPPED_BASE]
+    macro, arch/riscv/include/asm/processor.h; the [MMAP_MIN_VA_BITS_64]
+    and [MMAP_MIN_VA_BITS] macros, arch/riscv/include/asm/pgtable.h).
+    Without a draw that is far under the floor. *)
 Definition task_unmapped_base : Z := page_round_up_Z (2 ^ 39 / 3).
 
 Example legacy_base_is_below_the_floor :
@@ -379,19 +395,27 @@ Qed.
 
     [STACK_TOP] is 2^38 and [mmap_rnd_bits_max] is 24, so the
     subtraction can go below zero and wrap.  Such a base gives no
-    program: the vDSO's [get_unmapped_area] (arch/riscv/kernel/vdso.c:124-127)
-    takes the top-down search with [high_limit] = the wrapped base
-    (mm/mmap.c:766), which finds the free range above the stack
-    (mm/vma.c:2942-2982) and answers an address above [TASK_SIZE];
-    [__get_unmapped_area] turns that into [-ENOMEM] (mm/mmap.c:857-858),
-    [load_elf_binary] fails past the point of no return
-    (fs/binfmt_elf.c:1290-1293) and [bprm_execve] kills the task
-    (fs/exec.c:1774-1775).  So the Sv39 band is every page-aligned base
-    from 0 to the cap, and it is exactly the set of non-wrapped bases.
-    Base 0 is in that set and also starts no program: the search's top
-    is then [0 - 1] = [ULONG_MAX] (mm/vma.h:502), so the vDSO search
-    fails as for a wrapped base.  The band keeps it, a precision cost
-    only, since no spec arm reads the base. *)
+    program: the vDSO's [get_unmapped_area] call in
+    [__setup_additional_pages] (arch/riscv/kernel/vdso.c, Linux
+    v6.18.46, commit 1f99e9ab748f) takes the top-down search with
+    [high_limit] = the wrapped base
+    ([generic_get_unmapped_area_topdown]'s
+    [info.high_limit = arch_get_mmap_base(addr, mm->mmap_base)],
+    mm/mmap.c), which finds the free range above the stack
+    ([unmapped_area_topdown], mm/vma.c) and answers an address above
+    [TASK_SIZE]; [__get_unmapped_area] turns that into [-ENOMEM] (its
+    [addr > TASK_SIZE - len] test, mm/mmap.c), [load_elf_binary] fails
+    past the point of no return (its [ARCH_SETUP_ADDITIONAL_PAGES] call,
+    fs/binfmt_elf.c) and [bprm_execve] kills the task (the
+    [force_fatal_sig(SIGSEGV)] under its [out:] label, fs/exec.c).  So
+    the Sv39 band is every page-aligned base from 0 to the cap, and it
+    is exactly the set of non-wrapped bases.  Base 0 is in that set and
+    also starts no program: the search's top is then [0 - 1] =
+    [ULONG_MAX] ([vma_iter_area_highest] passes [max - 1] to
+    [mas_empty_area_rev], mm/vma.h), so the vDSO search fails as for a
+    wrapped base.  The band keeps it, a precision cost only: with a base
+    of 0 the model's [State.mmap_top] leaves the top-down half of
+    [Mmap.linux_place] no room. *)
 
 Definition sv39_linux_base (b : Z) : Prop :=
   exists guard randomize k,

@@ -352,9 +352,22 @@ Qed.
 
 (** Within budget the -ENOMEM is spurious: the grant
     [Checks.Cases.Mm.Mmap.mmap_within_budget_grants] admits is the
-    non-refusal answer. *)
+    non-refusal answer.
+
+    THE CALL CARRIES A HINT, and so does the grant it cites.  Since the
+    placement change a fresh mapping lands where Linux's search puts
+    it, and on this ledger a NULL hint does not put it at 0x20000;
+    a free hint Linux honours (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], the hint test, Linux v6.18.46,
+    commit 1f99e9ab748f).  What this Example is about is the REFUSAL
+    CONFIGURATION — that a budget-satisfiable -ENOMEM is spurious under
+    [forced_only_cfg] — and not about where the mapping goes, so the
+    hint keeps the budget as the only thing deciding it.  The
+    preference-free case is pinned in
+    [Checks.Cases.Mm.PlacementHoles.place_linux_address_accepted]. *)
 Example mmap_enomem_spurious_within_budget :
-  spurious_refusal_cfg forced_only_cfg (mmap_in 4096) tight_model (errno_eff ENOMEM).
+  spurious_refusal_cfg forced_only_cfg (mmap_at_in 131072 4096) tight_model
+    (errno_eff ENOMEM).
 Proof.
   split; [vm_compute; reflexivity |].
   split; [vm_compute; reflexivity |].

@@ -308,8 +308,9 @@ Definition brk_aslr_max : Z := (1 * 1024 * 1024 * 1024)%Z.
     show that each assumption is needed.
 
     WHY NOT LOWER, to the smallest base Linux gives without the
-    assumptions: no spec arm reads the base (placement is admissibility
-    alone, see [Mmap.mmap_spec]'s placement section), but the ASan plan
+    assumptions: the base bounds the top-down search ([mmap_top], read
+    by [Mmap.linux_place]), so a lower floor would admit placements no
+    covered kernel makes, and the ASan plan
     checker reads this floor.  [Common.AsanInit] starts its placement
     split at [AsanPlanCore.MBASE_MIN] = this value, and
     [AsanPlacement.kHighMemBeg_below_mmap_base_min] needs it above the
@@ -453,7 +454,8 @@ Definition TASK_SIZE : Z := 0x800000000000%Z.
     base of that set also starts no program: with a base of exactly 0
     the top-down search's top is [0 - 1] (mm/vma.h:502), so the vDSO
     search fails the same way.  The band keeps 0; this costs precision
-    only, as no spec arm reads the base.
+    only: with a base of 0 the model's [mmap_top] leaves the top-down
+    half of [Mmap.linux_place] no room, so it places nothing there.
 
     WHAT THE DECLARATION BUYS TODAY, stated here so nobody reads more
     into it: the spec arms below still compare against [TASK_SIZE], the
@@ -1599,8 +1601,9 @@ Definition cap_iovecs (iovs : list (word * word)) : list (word * word) :=
     ([ReadWrite.readv_imported], [ReadWrite.writev_spec]'s gather),
     after the per-entry [access_ok] the loop applies to the uncapped
     length has been decided.
-    ([Net.Socket.sendmsg_spec] imports with [copy_iovecs_aux] and
-    so lacks the per-segment [access_ok] this function adds.)
+    [Net.Socket.sendmsg_spec] imports through this function too, so the
+    array [access_ok] and the per-segment one hold for every vectored
+    call the model judges.
 
     - A count of exactly ONE takes a DIFFERENT function with the OPPOSITE
       cap/[access_ok] order: [__import_iovec_ubuf] copies the single
@@ -2809,18 +2812,18 @@ Inductive FdEntry :=
         [mmap_base_min]) and IMMUTABLE for the whole run.  Like the
         initial break it is a quantified parameter of the run
         ([Run.mi_mmap_base], any [Run.valid_mmap_base] value,
-        independent per binary).  NO SPEC ARM READS THIS FIELD'S VALUE.
-        Preference-free placement says only
-        that the address is page-aligned, inside the user address space
-        and disjoint from every recorded mapping — a rule with no base
-        in it (the argument is in [Mmap.mmap_spec]'s placement section).
-        The field is NOT thereby inert and must not be removed as one:
+        independent per binary).  THE SPEC READS THIS FIELD'S VALUE:
+        [mmap_top] below is the minimum of this base and the page-rounded
+        [alloc_top], and it is the top-down bound of [Mmap.linux_place],
+        which both fresh-grant arms of [Mmap.mmap_spec] and [mremap]'s
+        move use to choose their address (the argument is in
+        [Mmap.mmap_spec]'s PLACEMENT section).  The field also carries a
+        PREDICATE that the spec needs on its own:
         [Run.valid_mmap_base] is a conjunct of [Run.valid_entry], which
         [Equivalence.strong_universal_T] quantifies its entries under,
         and discharging it is a required step of
         [Equivalence.image_brk_satisfiable_entry], the tree's
-        anti-vacuity lemma.  It is the PREDICATE that is load-bearing in
-        the spec, not the value.  Outside the spec, the ASan plan
+        anti-vacuity lemma.  Outside the spec, the ASan plan
         checker's placement gate ([Common.AsanCeil.placement_ok], taken
         as its named [placement_policy] hypothesis) reads the value, and
         [Common.AsanInit] relies on the predicate's floor (see
@@ -5363,6 +5366,54 @@ Proof.
     rewrite bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia); lia.
 Qed.
 
+(** The pair's width is a whole number of pages, which is what a
+    consumer needs to see that a page-aligned top leaves a page-aligned
+    base. *)
+Lemma vdso_len_page : forall kb, (vdso_len kb mod page_size = 0)%Z.
+Proof.
+  intro kb. unfold vdso_len, vdso_vvar_pages, page_size.
+  apply Z_mod_mult.
+Qed.
+
+(** EVERYTHING A CONSUMER NEEDS ABOUT ONE ENTRY OF THE PAIR, in one
+    lemma: it names at least one byte, it starts and ends on a page,
+    and it lies inside [[top - vdso_len kb, top)].  The page-aligned
+    [top] is what [State.vdso_top] gives, and the room premise says the
+    pair fits above the first page, which is the condition under which
+    [vdso_reserved] emits anything at all. *)
+Lemma vdso_reserved_entry_ok : forall kb top a n,
+  (page_size + vdso_len kb <= top)%Z -> (top < two_pow_64)%Z ->
+  (top mod page_size = 0)%Z ->
+  In (a, n) (vdso_reserved kb top) ->
+  (0 < bv_unsigned n)%Z
+  /\ (bv_unsigned a mod page_size = 0)%Z
+  /\ (bv_unsigned n mod page_size = 0)%Z
+  /\ (top - vdso_len kb <= bv_unsigned a)%Z
+  /\ (bv_unsigned a + bv_unsigned n <= top)%Z.
+Proof.
+  intros kb top a n Hroom Htop Hal Hin.
+  pose proof (vdso_text_pages_pos kb) as Hp.
+  pose proof (vdso_text_pages_le kb) as Hl.
+  pose proof (vdso_len_bounds kb) as Hb.
+  assert (Hdiv : (4096 | top)%Z)
+    by (apply Z.mod_divide; [lia | unfold page_size in Hal; exact Hal]).
+  unfold vdso_reserved, vdso_len, vdso_vvar_pages, page_size in *.
+  destruct (Z.ltb_spec (top - (4 + vdso_text_pages kb) * 4096) 4096) as [Hlt|Hge];
+    [cbn in Hin; contradiction|].
+  destruct Hdiv as (q & Hq).
+  cbn in Hin. destruct Hin as [Heq|[Heq|[]]]; inversion Heq; subst a n;
+    rewrite !bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia);
+    repeat split; try lia;
+    rewrite Hq; rewrite <- Z.mul_sub_distr_r || idtac;
+    try (apply Z_mod_mult);
+    try (replace (q * 4096 - (4 + vdso_text_pages kb) * 4096)%Z
+           with ((q - (4 + vdso_text_pages kb)) * 4096)%Z by lia;
+         apply Z_mod_mult);
+    try (replace (q * 4096 - (4 + vdso_text_pages kb) * 4096 + 4 * 4096)%Z
+           with ((q - vdso_text_pages kb) * 4096)%Z by lia;
+         apply Z_mod_mult).
+Qed.
+
 (** Cutting a NONEMPTY entry leaves nonempty remnants: each of the two
     is emitted under exactly the guard that makes its size positive. *)
 Lemma iv_subtract_nonzero : forall (a sz : word) loZ hiZ,
@@ -6409,24 +6460,46 @@ Definition init_reserved (reserved : list (word * word))
     and that is a performance fact worth stating where it is easy to
     undo.
 
-    Each [with_*] rebuilds [mkModelOf] from SEVEN projections of its
-    argument, so a chain of n of them denotes a term with 7^n copies of
-    the innermost model.  The kernel's conversion does not share those
-    copies.  A goal that reduces [init_model] TWICE — which is every
+    Each [with_*] rebuilds [mkModelOf] from the projections of its
+    argument, so a chain of them denotes a term holding the PRODUCT of
+    their per-setter counts — not a power.  Only [with_nofile] takes
+    seven; a setter that rebuilds a sub-record takes more, because every
+    field of that record is another projection.  Counted at this commit,
+    over [init_model_setter_chain]'s seven links:
+
+      with_abort_terminal 17   with_sigmask 17   with_nofile  7
+      with_net             9   with_urandom  9   with_creds  17
+      with_kernel          9
+
+    17·17·7·9·9·17·9 = 25,071,039 copies of the innermost model, against
+    the 823,543 that "7^7" would give.  The kernel's conversion does not
+    share them.  A goal that reduces [init_model] TWICE — which is every
     fixture that writes the term on both sides of an equation, as
     [Checks.Cases.Prelude] does — then costs time exponential in the
     chain's length.
 
-    Measured in the release checker image, on
-    [Checks.Cases.Prelude]'s [fd_truncation_high_low_halves_all_ebadf],
-    whose proof is [repeat constructor; check_eq] and whose
-    [constructor] asks the kernel to convert the two sides:
+    MEASURED, five runs each, on [Checks.Cases.Prelude]'s
+    [fd_truncation_high_low_halves_all_ebadf], whose proof is
+    [repeat constructor; check_eq] and whose [constructor] asks the
+    kernel to convert the two sides.  A cold [.vo] for that one file and
+    a warm cone, in the release checker image
+    ([rc2-checker:1b59b23d],
+    [sha256:e9fa8b19d7cbab6127dfa522f9b9a02ad8c086febd809e58510ad96e78e24e14]),
+    on a 16-vCPU machine, timed by Rocq's own [-time] line for the
+    Example's own sentences:
 
-    - the model named once ([Definition M0 := init_model …], used
-      twice): 0.012 s;
-    - the term written out twice, as that [Example] writes it, with a
-      seven-link chain: over 120 s;
-    - this definition, written out twice: 0.095 s.
+    - the six-link chain this replaced, written out twice, at [ba8a152]:
+      437.6 to 445.6 s, mean 441.1 s — about 227 s in the tactic and
+      about 214 s in the [Qed];
+    - this definition, written out twice: 0.044 to 0.046 s, mean
+      0.0444 s.
+
+    A factor of 9,935.  The three figures this comment used to give —
+    0.012 s, "over 120 s" and 0.095 s — were not measurements of any
+    chain this tree holds: the first names a form that is not in the
+    tree, the second is a lower bound rather than a time, and neither it
+    nor the third names a machine.  The run behind them is unrecoverable;
+    these replace them.
 
     [Strategy] does not fix it.  [Strategy 1000] on the constants the
     chain reduces through leaves the same [Example] over its timeout:
@@ -6654,6 +6727,43 @@ Lemma init_model_is_the_setter_chain :
     init_model reserved brk0 mbase sp lim inp
     = init_model_setter_chain reserved brk0 mbase sp lim inp.
 Proof. reflexivity. Qed.
+
+(** AND THE CHECK THAT THE EQUALITY ABOVE IS NOT.  The lemma says the two
+    forms denote the same model; it says nothing about the SHAPE of
+    [init_model], which is the whole of the performance property.  Both
+    forms satisfy it, so a later edit that wraps the constructor in one
+    setter leaves that lemma true and restores the defect.
+
+    MEASURED, and this is why the check is here and not in a timer:
+    wrapping [init_model]'s body in ONE [with_abort_terminal] costs the
+    [Checks.Cases.Prelude] Example 0.009 s (0.053 s against 0.044 s) and
+    the whole file nothing at all -- 12.6 s either way.  The chain's cost
+    is in the NESTING, 0.053 s at one link and 441 s at six, so nothing
+    that watches a build time can see the first wrap.  Only the term's
+    shape can.
+
+    WHAT IT CATCHES: any wrapper around the whole body, whatever its name,
+    including the first.  WHAT IT DOES NOT: a setter applied inside one
+    FIELD of the [mkModelOf] below, and any other definition that could
+    blow up the same way -- it is about the shape of this one definition
+    and nothing else.
+
+    It costs about a millisecond and needs no CI step: [cbv delta] unfolds
+    [init_model] once, [beta] reduces the application, and the match looks
+    only at the head.  Nothing is computed. *)
+Section InitModelIsOneConstructor.
+Variables (reserved : list (word * word)) (brk0 mbase sp : word)
+          (lim : Z) (inp : ProcInput).
+Goal True.
+  let t := eval cbv delta [init_model] beta in
+             (init_model reserved brk0 mbase sp lim inp) in
+  lazymatch t with
+  | mkModelOf _ _ _ _ _ _ _ => idtac
+  | _ => fail 0 "init_model is not one mkModelOf application: a new field goes beside the others in it, never into a setter wrapped around the result (see the comment above this Section)"
+  end.
+  exact I.
+Qed.
+End InitModelIsOneConstructor.
 
 (** The base case of the nonemptiness invariant: a run starts with NO
     protected range at all.  Every reachable [vm_noaccess] is therefore

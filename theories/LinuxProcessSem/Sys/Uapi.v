@@ -250,7 +250,7 @@ Definition urandom_path : path :=
 (** Address families and socket types.  riscv64 has no [asm/socket.h] and
     no [asm/errno.h] of its own — arch/riscv/include/uapi/asm/Kbuild
     generates only unistd_32.h and unistd_64.h — so every constant here
-    is the asm-generic one, at v6.12. *)
+    is the asm-generic one (Linux v6.18.46, commit 1f99e9ab748f). *)
 Definition AF_UNSPEC : Z := 0%Z.
 Definition AF_INET   : Z := 2%Z.
 Definition NPROTO    : Z := 46%Z.    (* = AF_MAX, include/linux/socket.h *)
@@ -278,10 +278,10 @@ Definition SOCK_NONBLOCK : Z := 2048%Z.     (* 0o4000 *)
 
 (** [IPPROTO_MAX] is the TRAILING ENUMERATOR of the [IPPROTO_*] enum in
     include/uapi/linux/in.h, not a round number: the last named member is
-    [IPPROTO_MPTCP = 262], so [IPPROTO_MAX] is 263.  It was 256 only up
-    to v5.5; [IPPROTO_MPTCP] arrived in v5.6 and the value has been 263
-    from v5.6 through v6.12.  Getting this wrong makes protocols 256-262
-    answer -EINVAL where Linux answers -EPROTONOSUPPORT. *)
+    [IPPROTO_MPTCP = 262], so [IPPROTO_MAX] is 263 (Linux v6.18.46,
+    commit 1f99e9ab748f).  It was 256 only up to v5.5; [IPPROTO_MPTCP]
+    arrived in v5.6 and made it 263.  Getting this wrong makes protocols
+    256-262 answer -EINVAL where Linux answers -EPROTONOSUPPORT. *)
 Definition IPPROTO_IP    : Z := 0%Z.
 Definition IPPROTO_TCP   : Z := 6%Z.
 Definition IPPROTO_SCTP  : Z := 132%Z.
@@ -343,7 +343,8 @@ Definition SEEK_END : Z := 2%Z.
 Definition SEEK_MAX : Z := 4%Z.
 
 (** mmap prot/flags ABI constants (asm-generic, as on riscv64:
-    include/uapi/asm-generic/mman-common.h, Linux v6.12). *)
+    include/uapi/asm-generic/mman-common.h, Linux v6.18.46, commit
+    1f99e9ab748f). *)
 Definition PROT_READ     : Z := 1%Z.
 Definition PROT_WRITE    : Z := 2%Z.
 Definition PROT_NONE     : Z := 0%Z.
@@ -360,28 +361,32 @@ Definition MAP_HUGETLB   : Z := 262144%Z.         (* 0x40000 *)
 
 (** MAP_FIXED_NOREPLACE, from the same arch-generic header riscv64
     inherits: [#define MAP_FIXED_NOREPLACE 0x100000]
-    (include/uapi/asm-generic/mman-common.h:31, Linux v6.18.46).  It
-    asks for placement at [addr] exactly, as MAP_FIXED does, but for a
-    refusal rather than a replacement when any page of the range is
-    already mapped; [do_mmap] (mm/mmap.c:361-362 and :410-412, Linux
-    v6.18.46) is where both halves are decided, and
-    [Mmap.mmap_noreplace_flags_b] carries the reading. *)
+    (include/uapi/asm-generic/mman-common.h, Linux v6.18.46, commit
+    1f99e9ab748f).  It asks for placement at [addr] exactly, as
+    MAP_FIXED does, but for a refusal rather than a replacement when any
+    page of the range is already mapped; [do_mmap] (mm/mmap.c) is where
+    both halves are decided — its [flags |= MAP_FIXED] under
+    [flags & MAP_FIXED_NOREPLACE], and its later [find_vma_intersection]
+    test that answers -EEXIST — and [Mmap.mmap_noreplace_flags_b]
+    carries the reading. *)
 Definition MAP_FIXED_NOREPLACE : Z := 1048576%Z.  (* 0x100000 *)
 
 (** mremap ABI flag bits (asm-generic, as on riscv64):
-    [#define MREMAP_MAYMOVE 1] (include/uapi/linux/mman.h:9, v6.12).  The
-    value is architecture-independent — riscv64 has no
+    [#define MREMAP_MAYMOVE 1] (include/uapi/linux/mman.h, Linux
+    v6.18.46, commit 1f99e9ab748f).  The value is
+    architecture-independent — riscv64 has no
     arch/riscv/include/uapi/asm/mman.h of its own, and neither
     include/uapi/asm-generic/mman.h nor mman-common.h redefines any
     MREMAP_ bit, so this uapi header is the sole definition. *)
 Definition MREMAP_MAYMOVE : Z := 1%Z.
 
 (** madvise advice values (asm-generic, as on riscv64):
-    [#define MADV_DONTNEED 4] (include/uapi/asm-generic/mman-common.h:49,
-    Linux v6.18.46).  Architecture-independent for the same reason the
-    MREMAP_ bits are: riscv64 carries no uapi mman.h of its own, and the
-    arch-generic mman.h defines no MADV_ value, so mman-common.h is the
-    sole definition.  [Mm.Madvise.madvise_dontneed_b] is the one reader. *)
+    [#define MADV_DONTNEED 4] (include/uapi/asm-generic/mman-common.h,
+    Linux v6.18.46, commit 1f99e9ab748f).  Architecture-independent for
+    the same reason the MREMAP_ bits are: riscv64 carries no uapi
+    mman.h of its own, and the arch-generic mman.h defines no MADV_
+    value, so mman-common.h is the sole definition.
+    [Mm.Madvise.madvise_dontneed_b] is the one reader. *)
 Definition MADV_DONTNEED : Z := 4%Z.
 
 (** getrandom flag bits (include/uapi/linux/random.h). *)
@@ -694,8 +699,8 @@ Definition timespec_ns_signed (bs : list byte) : Z :=
 (** [AT_REMOVEDIR] (0x200): the only flag [unlinkat] accepts.  Any other
     bit is a deterministic -EINVAL, decided before the pathname is
     fetched and before the dirfd is looked at — see [Fs.Namei.unlinkat_spec]
-    (Linux include/uapi/linux/fcntl.h; the value is unchanged v6.10
-    through v6.15, though the file was reorganised in v6.12). *)
+    (the [AT_REMOVEDIR] define in Linux include/uapi/linux/fcntl.h,
+    v6.18.46, commit 1f99e9ab748f). *)
 Definition AT_REMOVEDIR : Z := 512%Z.
 
 (** The longest single path COMPONENT every Linux filesystem in reach

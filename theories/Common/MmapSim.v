@@ -61,6 +61,7 @@ From Stdlib Require Import NArith ZArith List Lia Bool.
 From Stdlib Require Import FunctionalExtensionality.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Placement.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import Mm.Mmap.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim PropExec CatSim CatExec SeqExec StreamSim AllocSim.
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
@@ -265,14 +266,41 @@ Definition page_round_up (len : word) : word :=
     choose / [check_mmap]'s condition, including the allocation-budget
     conjunct ([State.vm_limit]).
 
-    [hint] IS DEAD: the spec constrains a preference-free placement by
-    admissibility alone, so a NULL hint and a free non-NULL one accept
-    the same addresses. *)
+    [hint] IS LIVE.  The spec no longer admits every free page-aligned
+    address: [Mmap.linux_place] names the ONE address Linux v6.18.46
+    gives for this ledger, this kernel build and this hint, and
+    [Checks.Placement.linux_place_is] is its decision procedure.  That
+    is the first conjunct, and it is what [check_mmap] tests.
+
+    THE FOUR OLD CONJUNCTS STAY.  They are consequences of the first
+    ([Placement.linux_place_is_admissible]) rather than independent
+    tests, and every consumer that destructs [grant_ok] reads them, so
+    they are kept rather than re-derived at each use. *)
 Definition grant_ok (hint : word) (m : Model) (a : word) (n : Z) : bool :=
-  (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
+  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a
+  && (bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
   && (bv_unsigned a + n <=? alloc_top (m_vmmaps m))%Z
   && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) a (Z_to_bv 64 n)
   && (vm_backing_used m + n <=? vm_limit (m_vmmaps m))%Z.
+
+(** BUILDING a grant: the placement test and the budget are all a
+    caller has to show; the other four conjuncts follow.  A proof that
+    has to produce an execution gets the address itself from
+    [Placement.linux_place_b] and this lemma. *)
+Lemma grant_ok_intro : forall hint m a n,
+  (0 < n)%Z -> (n mod page_size = 0)%Z ->
+  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a = true ->
+  (vm_backing_used m + n <= vm_limit (m_vmmaps m))%Z ->
+  grant_ok hint m a n = true.
+Proof.
+  intros hint m a n Hn Hnal Hpl Hbud.
+  destruct (linux_place_is_admissible _ _ _ _ _ Hn Hnal Hpl)
+    as (Hal & Hpos & Htop & Hfree).
+  unfold grant_ok. rewrite Hpl, Hfree.
+  rewrite (proj2 (Z.eqb_eq _ _) Hal), (proj2 (Z.ltb_lt _ _) Hpos),
+    (proj2 (Z.leb_le _ _) Htop), (proj2 (Z.leb_le _ _) Hbud).
+  reflexivity.
+Qed.
 
 Lemma munmap_model_halted : forall addr n m, m_halted (munmap_model addr n m) = m_halted m.
 Proof. reflexivity. Qed.
@@ -307,10 +335,20 @@ Lemma grant_ok_unpack : forall hint m a n,
 Proof.
   intros hint m a n H. unfold grant_ok in H.
   rewrite !andb_true_iff in H.
-  destruct H as [[[[H1 H2] H3] H4] H5].
+  destruct H as [[[[[_ H1] H2] H3] H4] H5].
   apply Z.eqb_eq in H1. apply Z.ltb_lt in H2. apply Z.leb_le in H3.
   apply Z.leb_le in H5.
   auto 7.
+Qed.
+
+(** The conjunct the other five follow from: the address is the one
+    Linux gives. *)
+Lemma grant_ok_place : forall hint m a n,
+  grant_ok hint m a n = true ->
+  linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) hint n a = true.
+Proof.
+  intros hint m a n H. unfold grant_ok in H.
+  rewrite !andb_true_iff in H. tauto.
 Qed.
 
 Lemma region_free_cons : forall (b s : word) r (lo n : word),
@@ -607,12 +645,12 @@ Proof.
     [ | apply page_round_up_Z_nonneg; pose proof (u64_range (ms_gpr ms 1)); lia
       | exact Hg ].
   unfold grant_ok in Hg. rewrite !andb_true_iff in Hg.
-  destruct Hg as [[[[H1 H2] H3] H4] H5].
+  destruct Hg as [[[[[Hp H1] H2] H3] H4] H5].
   rewrite Hflags.
   assert (Hnr : mmap_noreserve_b (Z_to_bv 64 34) = false)
     by (vm_compute; reflexivity).
   unfold mmap_noreserve_backed_ok, with_mmap_backing. rewrite Hnr.
-  rewrite H1, H2, H3, H4, H5.
+  rewrite Hp, H5.
   unfold page_round_up. cbn [listNN_eqb]. rewrite !bv_eqb_refl.
   reflexivity.
 Qed.
@@ -653,10 +691,8 @@ Proof.
     split; [reflexivity|]. left.
     apply errno_ret_in_true in Herr. destruct Herr as (e & HIn & ->).
     exists e. auto.
-  - destruct ((bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-              && (bv_unsigned r + page_round_up_Z (bv_unsigned (ms_gpr ms 1)) <=? alloc_top (m_vmmaps model))%Z
-              && region_free (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) r
-                   (Z_to_bv 64 (page_round_up_Z (bv_unsigned (ms_gpr ms 1))))
+  - destruct (linux_place_is (m_vmmaps model) (kb_thp (m_kernel model))
+                (ms_gpr ms 0) (page_round_up_Z (bv_unsigned (ms_gpr ms 1))) r
               && (vm_backing_used model
                   + page_round_up_Z (bv_unsigned (ms_gpr ms 1))
                   <=? vm_limit (m_vmmaps model))%Z) eqn:Hcond;
@@ -671,7 +707,10 @@ Proof.
     inversion Hspec; subst.
     split; [reflexivity|]. right.
     exists r. split; [|split].
-    + unfold grant_ok. exact Hcond.
+    + apply andb_true_iff in Hcond as [Hpl Hbud].
+      apply (grant_ok_intro _ _ _ _ (proj1 (mmap_grant_len_ok _ Hl))
+               (proj2 (mmap_grant_len_ok _ Hl)) Hpl).
+      now apply Z.leb_le.
     + unfold page_round_up. reflexivity.
     + reflexivity.
 Qed.

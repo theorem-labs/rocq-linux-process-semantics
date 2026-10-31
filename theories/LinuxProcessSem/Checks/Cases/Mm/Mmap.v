@@ -12,7 +12,9 @@
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs Run StackLayout MemImageType RiscvSemantics.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
+  ExecutableSpecs Placement.
+
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 From LinuxProcessSemantics.Riscv Require Import Decode DecodeC.
 Import ListNotations.
@@ -236,13 +238,15 @@ Example munmap_ordinary_still_succeeds :
 Proof. check_eq. Qed.
 
 (** An munmap of ONE WHOLE mapping has the same two answers.  Linux
-    sends it to [do_vmi_align_munmap] (mm/vma.c:1557), which detaches
-    the VMA and then clears the range in the mapping tree with
-    [vma_iter_clear_gfp] (mm/vma.c:1573, the helper at
-    include/linux/mm.h:1050): no node, -ENOMEM.  That store is before
-    the point of no return (mm/vma.c:1577) and [clear_tree_failed:]
-    (:1581) re-attaches, so the mapping stays whole and the model is
-    unchanged.  [munmap_ordinary_still_succeeds] above is the success
+    sends it to [do_vmi_align_munmap] (mm/vma.c, Linux v6.18.46, commit
+    1f99e9ab748f), which detaches the VMA and then clears the range in
+    the mapping tree with [vma_iter_clear_gfp] (the helper in
+    include/linux/mm.h): no node, -ENOMEM.  That store is before the
+    "Point of no return" comment that precedes
+    [vms_complete_munmap_vmas] in the same function, and the
+    [clear_tree_failed:] label there re-attaches, so the mapping stays
+    whole and the model is unchanged.
+    [munmap_ordinary_still_succeeds] above is the success
     Linux gives when the store gets its node; these are the refusal
     beside it, and the refusal that also claims the unmap is rejected,
     since a failed munmap takes no page. *)
@@ -258,9 +262,9 @@ Example munmap_whole_mapping_enomem :
 Proof. split; check_eq. Qed.
 
 (** The free-range arm keeps its single answer: with no VMA in the
-    range [do_vmi_munmap] returns 0 at mm/vma.c:1620-1624, before
-    [do_vmi_align_munmap] and before any allocation, so -ENOMEM is not
-    an answer there. *)
+    range [do_vmi_munmap] returns 0 at its [!vma] arm (mm/vma.c, Linux
+    v6.18.46, commit 1f99e9ab748f), before [do_vmi_align_munmap] and
+    before any allocation, so -ENOMEM is not an answer there. *)
 Example munmap_free_range_has_no_enomem :
   check_syscall (mkInput 215 [131072; 4096; 0; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
@@ -323,10 +327,13 @@ Proof. split; check_eq. Qed.
 
 (** On a RESIZING call the one admitted runtime failure is ENOMEM, with a
     canonical empty effect and the allocation ledger unchanged.  This one
-    shrinks, and the shrink path really can fail: [do_vmi_munmap]
-    (mm/mremap.c:1096, v6.12) splits the VMA, and the split can fail to
-    allocate (mm/vma.c:384-405) or trip [sysctl_max_map_count]
-    (mm/vma.c:1197).  The equal-size arm is different — see
+    shrinks, and the shrink path really can fail: [shrink_vma]
+    (mm/mremap.c, Linux v6.18.46, commit 1f99e9ab748f) hands the tail to
+    [do_vmi_munmap], whose gather splits the VMA, and the split can fail
+    to allocate ([__split_vma]'s [vm_area_dup], mm/vma.c) or trip
+    [sysctl_max_map_count] (the map-count test in
+    [vms_gather_munmap_vmas], and the one in [split_vma]).  The
+    equal-size arm is different — see
     [mremap_equal_size_enomem_rejected]. *)
 
 (** Shrinking in place replaces the exact mapping and refunds its tail. *)
@@ -345,17 +352,21 @@ Proof. split; check_eq. Qed.
     tail is zero, and an unrelated byte is untouched. *)
 
 (** An equal-size call is deterministic and succeeds with an EMPTY effect:
-    Linux returns [addr] at mm/mremap.c:1092 (v6.12) having done no
+    Linux returns [addr] from [mremap_at]'s [MREMAP_NO_RESIZE] case
+    (mm/mremap.c, Linux v6.18.46, commit 1f99e9ab748f) having done no
     allocation, no VMA split and no accounting, so nothing is unmapped,
     zeroed or copied.  Reason 3: what is pinned here is the resulting
     LEDGER — [vm_maps] and the live-byte total come out byte-identical, so
     the call is a no-op for the allocator too, which no trace reveals. *)
 
-(** And that arm carries NO injectable failure.  Walking mm/mremap.c:1041-1093
-    (v6.12) for [flags = MREMAP_MAYMOVE], a non-hugetlb VMA that exists and
-    is unsealed, and [old_len = new_len], the only exits are -EINTR (:1042),
-    -EFAULT (:1045), -EPERM (:1051), the hugetlb -EINVALs (:1062-1072) and
-    [ret = addr] (:1092) — and all four errnos are excluded by the modeled
+(** And that arm carries NO injectable failure.  Walking [do_mremap] from
+    its [mmap_write_lock_killable] onward (mm/mremap.c, Linux v6.18.46,
+    commit 1f99e9ab748f) for [flags = MREMAP_MAYMOVE], a non-hugetlb VMA
+    that exists and is unsealed, and [old_len = new_len], the only exits
+    are -EINTR (that lock), -EFAULT and -EPERM ([check_prep_vma]'s [!vma]
+    and seal tests), the hugetlb -EINVAL ([check_prep_vma]'s
+    [align_hugetlb] call) and [addr] from [mremap_at] — and all four
+    errnos are excluded by the modeled
     shape (see [Mremap.mremap_errnos]).  No allocation, no split, no
     accounting, hence no -ENOMEM: a trace reporting one on a modeled source
     is rejected.  Reason 4: no kernel can be made to produce it; this
@@ -364,18 +375,18 @@ Proof. split; check_eq. Qed.
 
 (** Growing IN PLACE.  Linux takes this branch when [old_len == vma->vm_end
     - addr] and [vma_expandable] holds ([vrm_can_expand_in_place],
-    mm/mremap.c:1430-1444, Linux v6.18.46, testing [vma_expandable],
-    :1415-1427); the grown delta gets no page tables from
-    [vma_merge_extend] ([expand_vma_in_place], :1470), so it faults in as
-    zeroes through [do_anonymous_page] (mm/memory.c:5149-5262) — which is
+    mm/mremap.c, Linux v6.18.46, commit 1f99e9ab748f, testing
+    [vma_expandable]); the grown delta gets no page tables from
+    [vma_merge_extend] (called by [expand_vma_in_place]), so it faults in as
+    zeroes through [do_anonymous_page] (mm/memory.c) — which is
     the declared zero range.  Reason 3: the assertion pins the post-state
     ledger, where the
     single [vm_maps] entry is REPLACED by a longer one at the same base
     rather than a second entry being added — invisible in any trace. *)
 
 (** The same call on the same budget is rejected once the neighbouring page
-    is owned by another mapping: [vma_expandable] (mm/mremap.c:1415-1427,
-    Linux v6.18.46) would fail and Linux would have to move, so staying at
+    is owned by another mapping: [vma_expandable] (mm/mremap.c, Linux
+    v6.18.46, commit 1f99e9ab748f) would fail and Linux would have to move, so staying at
     [addr] is not an admissible answer.  The budget still allows the growth
     (limit 16384,
     final live bytes 12288), so the rejection is attributable to the
@@ -403,8 +414,8 @@ Proof. split; check_eq. Qed.
 
 (** And the conjunct closes the in-place ARM, not the call: from the same
     ledger a move to free space is still admissible, which is also what
-    Linux does once [vma_expandable] (mm/mremap.c:1415-1427, Linux
-    v6.18.46) reports the neighbouring address space taken. *)
+    Linux does once [vma_expandable] (mm/mremap.c, Linux v6.18.46,
+    commit 1f99e9ab748f) reports the neighbouring address space taken. *)
 
 (** The THIRD conjunct of [Mremap.mremap_inplace_grow_b],
     [addr + new_len <= alloc_top h], is what keeps a grown mapping clear
@@ -438,10 +449,13 @@ Proof. split; check_eq. Qed.
     mapping in place across its run's [alloc_top].  Linux's top-down
     [mmap_base] sits at least [stack_guard_gap] below the deepest legal
     stack, or [MAX_GAP] below [STACK_TOP] when a large guard makes the gap
-    clamp (mm/util.c:456-461, [mmap_base], Linux v6.18.46).  The other
+    clamp ([mmap_base]'s [MIN_GAP]/[MAX_GAP] clamp, mm/util.c, Linux
+    v6.18.46, commit 1f99e9ab748f).  The other
     case is a guard within one stack pad plus the stack rlimit of 2^64:
-    the pad wraps (mm/util.c:450), or the sum wraps and the test at :453
-    keeps the rlimit alone.  The gap is then at most 0x407fe000 and can
+    the pad wraps (the [PF_RANDOMIZE] addition of [STACK_RND_MASK] to
+    [pad] in the same function), or the sum wraps and the [gap + pad >
+    gap] test beside it keeps the rlimit alone.  The gap is then at most
+    0x407fe000 and can
     clamp up to [MIN_GAP], so under [PF_RANDOMIZE] the base can be from
     one page to 0x387ff000 bytes above the deepest stack bottom, up to
     [STACK_TOP - MIN_GAP].  So with any smaller guard a live run's grants
@@ -455,11 +469,14 @@ Proof. split; check_eq. Qed.
     the call: from the same ledger a move down to free space is still
     admissible. *)
 
-(** [PAGE_ALIGN(new_len)] at mm/mremap.c:1918 ([do_mremap], Linux v6.18.46)
-    is [(len + 4095) & ~4095] on an [unsigned long] — include/linux/mm.h:222
-    -> include/vdso/align.h:8 -> include/uapi/linux/const.h:48-49 — and it
-    WRAPS.  At [new_len = 2^64-1] it yields 0, so the [!new_len] test at
-    mm/mremap.c:1771-1772 ([check_mremap_params]) answers -EINVAL, exactly
+(** [PAGE_ALIGN(new_len)] in [do_mremap] (mm/mremap.c, Linux v6.18.46,
+    commit 1f99e9ab748f)
+    is [(len + 4095) & ~4095] on an [unsigned long] — the [PAGE_ALIGN]
+    macro in include/linux/mm.h -> [ALIGN] in include/vdso/align.h ->
+    [__ALIGN_KERNEL] and [__ALIGN_KERNEL_MASK] in
+    include/uapi/linux/const.h — and it
+    WRAPS.  At [new_len = 2^64-1] it yields 0, so the [!vrm->new_len] test
+    in [check_mremap_params] answers -EINVAL, exactly
     as for [new_len = 0].  Reason
     3: what is pinned is the BOUNDARY of [Mremap.page_align_is0_b], read off
     from the two adjacent lengths below — a model predicate, where any one
@@ -469,8 +486,9 @@ Proof. split; check_eq. Qed.
 
 (** The boundary the wrap does NOT reach: [2^64-4096] is already page
     aligned, so [PAGE_ALIGN] returns it unchanged and nonzero and
-    mm/mremap.c:1038 does not fire.  The TASK_SIZE gate decides it
-    instead ([check_mremap_params], :1775-1776): the rounded length is
+    [check_mremap_params]'s [!vrm->new_len] test does not fire.  The
+    TASK_SIZE gate decides it instead (the [vrm->new_len > TASK_SIZE]
+    test just below it): the rounded length is
     above TASK_SIZE, so the answer is -EINVAL, before any placement is
     considered, and the injected -ENOMEM is rejected.  That gate makes
     the WRAP half of [Mremap.page_align_is0_b] on the NEW size
@@ -482,18 +500,21 @@ Proof. split; check_eq. Qed.
     there. *)
 
 (** Gate ORDER for [old_len = 0].  Linux validates the flag word, then
-    [offset_in_page(addr)] ([check_mremap_params], mm/mremap.c:1759-1764,
-    Linux v6.18.46); the "duplicate a mapping" shape that [old_len = 0]
+    [offset_in_page(addr)] ([check_mremap_params], mm/mremap.c, Linux
+    v6.18.46, commit 1f99e9ab748f); the "duplicate a mapping" shape that
+    [old_len = 0]
     selects is only examined much later, inside [check_prep_vma]
-    (mm/mremap.c:1690-1693; v6.12's [vma_to_resize]), after [vma_lookup]
-    (:1931) and the seal check (:1662-1663).  So a MISALIGNED address with
+    (its [!old_len] test on a private mapping),
+    after [do_mremap]'s [vma_lookup] and [check_prep_vma]'s seal check.
+    So a MISALIGNED address with
     [old_len = 0] is a plain -EINVAL, and the model must not fail closed on
     the clone shape first.  Reason 3: which gate fires first is
     model-internal, and a trace that only ever sees -EINVAL cannot
     distinguish the two orders. *)
 
 (** With an ALIGNED address the same [old_len = 0] does reach the clone
-    shape, whose -EINVAL preconditions (mm/mremap.c:839-842) the model does
+    shape, whose -EINVAL precondition ([check_prep_vma]'s [!old_len] test
+    on a mapping that is neither VM_SHARED nor VM_MAYSHARE) the model does
     not track, so it fails closed.  This pins the ANSWER; the pair below
     pins the GATE that produces it, which on this ledger cannot be seen
     apart from [Mremap.mremap_source_b]. *)
@@ -519,15 +540,18 @@ Proof. split; check_eq. Qed.
     changes.  Reason 1: a [forall] over every ledger and every address. *)
 
 (** ...and the hypothesis is the wrap: [2^64-1] is the top-partial-page
-    argument Linux's [PAGE_ALIGN] sends to zero (mm/mremap.c:1030, v6.12). *)
+    argument Linux's [PAGE_ALIGN] sends to zero (the rounding of
+    [vrm->old_len] in [do_mremap], mm/mremap.c, Linux v6.18.46, commit
+    1f99e9ab748f). *)
 
 (** The end-to-end answer, for the record. *)
 
 (** What BOUNDS the one approximation mremap makes on its SUCCESS path
     (see [Mremap.mremap_spec], BOUNDED APPROXIMATION).  A move unmaps the source
-    with [do_vmi_munmap] at mm/mremap.c:792 (v6.12), and when that call fails
-    Linux SWALLOWS its error (:793-797, "OOM: unable to split vma, just get
-    accounts right") and still returns [new_addr] (:817).  So a successful
+    with [do_vmi_munmap] in [unmap_source_vma] (mm/mremap.c, Linux
+    v6.18.46, commit 1f99e9ab748f), and when that call fails
+    Linux SWALLOWS its error ("OOM: unable to split vma, just get
+    accounts right") and [move_vma] still returns [vrm->new_addr].  So a successful
     Linux mremap can leave the source mapped, while [Mremap.mremap_model_next]
     always drops it.  Such a kernel's address space is therefore the model's
     ledger plus one retained entry [(old, old_n)]; [region_free] does not care
@@ -550,9 +574,10 @@ Proof. split; check_eq. Qed.
 (* -------------------------------------------------------------------------
    [Run.apply_effect] stage order.
 
-   [apply_effect] (Run.v:172-185) runs four memory stages in a fixed order
+   [apply_effect] (Run.v) runs four memory stages in a fixed order
    — unmaps, then zeros, then copies, then writes — and every copy source
-   is read from the PRE-effect snapshot taken at Run.v:180.
+   is read from the PRE-effect snapshot, the [ms_mem ms'] that
+   [apply_effect] passes to [apply_copies] beside the unmapped map.
    [mremap_copy_reads_pre_effect_snapshot] above has pairwise-disjoint
    zero, unmap and destination ranges, so it pins the snapshot against the
    unmaps and nothing else: the three remaining adjacencies never show.
@@ -600,6 +625,18 @@ Proof. split; check_eq. Qed.
    never that the split produced exactly these two intervals in this order.
    ------------------------------------------------------------------------- *)
 
+(** THE HINT IS WHY THE ADDRESS IS 0x10000.  Since the placement
+    change a fresh grant lands where Linux's search puts it, and a
+    NULL hint on this ledger does not put it here — the top-down
+    window of a fixture whose [vm_mmap_base] is 0 is empty, so the
+    search falls back to the bottom-up window from
+    [Mmap.task_unmapped_base] up, and 0x10000 is below that floor.
+    The call therefore passes 0x10000 as a HINT, which Linux honours
+    because the range is free (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], the hint test, Linux
+    v6.18.46, commit 1f99e9ab748f).  The example is about the two
+    ledgers, not about the search; the companion below pins what the
+    search does with no hint. *)
 (** THE RESERVED FIELD IS NOT [[]] in the expected ledgers below that
     sit over a RAW [State.init_model] base.  [init_model] seeds
     [vm_reserved] with [State.init_reserved], which appends the
@@ -612,10 +649,9 @@ Proof. split; check_eq. Qed.
     disagree about the vdso/vvar pair, nor about the [mmap_base], the
     stack pointer or the [State.KernelBuild] that fix where the pair
     sits, because only one of them is written down. *)
-
 Example mmap_fresh_noaccess_records_both_ledgers :
   check_syscall
-    (mkInput 222 [0; 4096; 0; 34; mmap_fd_none; 0]
+    (mkInput 222 [65536; 4096; 0; 34; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffectU 65536 [] [] [(65536, 4096)] [] []) noaccess_base
   = CheckOk
@@ -624,6 +660,18 @@ Example mmap_fresh_noaccess_records_both_ledgers :
           [(65536, 4096)] [(65536, 4096)] 0 0 16384 0 demo_sp)
         noaccess_base) [].
 Proof. check_eq. Qed.
+
+(** The same call with NO hint is REFUSED at the same address.  Before
+    the placement change it was admitted, and that freedom is what let
+    the model refuse a mapping the same Linux launch grants
+    (OSSV-210's B2, B3 and N3). *)
+Example mmap_fresh_noaccess_null_hint_here_refused :
+  check_syscall
+    (mkInput 222 [0; 4096; 0; 34; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffectU 65536 [] [] [(65536, 4096)] [] []) noaccess_base
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
 
 (** Reason 3.  The fresh no-access effect also erases any old
     writable-overlay byte at a reused address.  Without that erasure, the VM
@@ -719,10 +767,20 @@ Example mmap_populate_bit_still_unmodeled :
 Proof. check_eq. Qed.
 
 (** A PROT_NONE|MAP_NORESERVE reservation occupies virtual space without
-    consuming backed capacity.  Its size may therefore exceed [vm_limit]. *)
+    consuming backed capacity.  Its size may therefore exceed [vm_limit].
+
+    THE HINT IS WHY THE ADDRESS IS 0x10000, as for the two-ledger case
+    above: a fixture whose [vm_mmap_base] is 0 has an empty top-down
+    window, so a NULL hint would fall to the bottom-up window at
+    [Mmap.task_unmapped_base] and could not land here.  Linux returns
+    a free page-aligned hint unchanged (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], the hint test, Linux
+    v6.18.46, commit 1f99e9ab748f), so both post-states are what they
+    always were.  The pair is about the backed budget, not about the
+    search. *)
 Example mmap_noreserve_reservation_ignores_backed_budget :
   check_syscall
-    (mkInput 222 [0; 8192; 0; 16418; mmap_fd_none; 0]
+    (mkInput 222 [65536; 8192; 0; 16418; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffectU 65536 [] [] [(65536, 8192)] [] [])
     (with_vmmaps (mkVmMaps [] [] 0 0 4096) noaccess_base)
@@ -737,7 +795,7 @@ Proof. check_eq. Qed.
     reservation, in both ledgers, spelled with the MAP_NORESERVE bit set. *)
 Example mmap_noreserve_reservation_within_budget :
   check_syscall
-    (mkInput 222 [0; 8192; 0; 16418; mmap_fd_none; 0]
+    (mkInput 222 [65536; 8192; 0; 16418; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffectU 65536 [] [] [(65536, 8192)] [] [])
     (with_vmmaps (mkVmMaps [] [] 0 0 8192) noaccess_base)
@@ -913,9 +971,11 @@ Definition span_model : Model :=
 (** Resolution 1 of 3: the NON-DESTRUCTIVE failure.  [may_expand_vm] gets
     a strictly positive delta here — the request is not wholly mapped
     already — so RLIMIT_AS can refuse this call where it could not refuse
-    a contained one (mm/vma.c:2418, Linux v6.18.46).  The gather has
-    already set [vms->clear_ptes] (:1497), so the abort reattaches
-    (:2357-2358) and the ledger is untouched. *)
+    a contained one ([__mmap_prepare]'s [may_expand_vm] test, mm/vma.c,
+    Linux v6.18.46, commit 1f99e9ab748f).  The gather has
+    already set [vms->clear_ptes] on its success path, so the abort
+    reattaches ([vms_abort_munmap_vmas]'s [clear_ptes] arm) and the
+    ledger is untouched. *)
 Example mmap_fixed_rw_span_errno_preserves_the_range :
   check_syscall
     (mkInput 222 [69632; 8192; 3; 50; mmap_fd_none; 0]
@@ -927,7 +987,9 @@ Proof. check_eq. Qed.
 
 (** Resolution 3 of 3: the DESTRUCTIVE failure.  Past
     [vms_clean_up_area] the abort cannot reattach, so it writes a hole
-    over exactly [[addr, addr + len)] (mm/vma.c:2365-2366) — and only
+    over exactly [[addr, addr + len)] ([vms_abort_munmap_vmas]'s
+    [mas_store_gfp] of NULL, mm/vma.c, Linux v6.18.46, commit
+    1f99e9ab748f) — and only
     over that: the remnant at 65536 the split produced is outside the
     request and survives, which is why this is [maps_subtract] and not
     the removal of a whole entry. *)
@@ -945,9 +1007,10 @@ Proof. check_eq. Qed.
 (** NEGATIVE, and the one the ABORT path most needs.  A failure may
     leave the range intact or leave it as a hole, and nothing between:
     [vms_abort_munmap_vmas] either reattaches every VMA the gather
-    detached (mm/vma.c:2357-2358, calling [reattach_vmas],
-    mm/vma.c:1351-1360) or writes NULL over exactly
-    [[vms->start, vms->end)] in one store (:2365-2366).  A
+    detached (its [clear_ptes] arm, which calls [reattach_vmas],
+    mm/vma.c, Linux v6.18.46, commit 1f99e9ab748f) or writes NULL over
+    exactly
+    [[vms->start, vms->end)] in one [mas_store_gfp].  A
     failure announcing an unmap of PART of the request is describing a
     half-replaced ledger no kernel reaches — the state the model would
     have if it applied the gather's tear-down without the abort's
@@ -1013,7 +1076,8 @@ Proof. check_eq. Qed.
 
 (** The BUDGET, both ways.  The part of the request that met nothing is
     newly owned and Linux charges it
-    ([map->charged = map->pglen - vms->nr_accounted], mm/vma.c:2422-2429),
+    ([map->charged = map->pglen - vms->nr_accounted] in [__mmap_prepare],
+    mm/vma.c, Linux v6.18.46, commit 1f99e9ab748f),
     so the success is available only while the resulting state fits.
     Here the request needs 12288 backed bytes against a 8192-byte
     budget: the success is refused… *)
@@ -1266,21 +1330,27 @@ Proof. check_eq. Qed.
 (** Reason 1.  THE FRESH MAP_FIXED SUB-CASE ADDS NO REACHABLE TRANSITION.
     Under the guards that sub-case tests, the effect and post-state it
     produces are ones the HINT-PLACED rw shape already produces from the
-    same pre-state — for any hint at all, since without MAP_FIXED an
-    address argument is only a hint and the model's placement [choose]
-    is always free to land on [addr].  So the widening is in which
-    argument words reach the transition, never in the set of transitions:
-    no state becomes reachable that the hint-placed shape does not reach,
-    and every invariant that holds of that shape's post-states holds of
-    these unchanged.
+    same pre-state — with [addr] ITSELF as the hint.  Before the
+    placement change the lemma said "for any hint at all", because the
+    model's [choose] was free to land anywhere; it is not any more, and
+    naming the hint is what the change costs.  It costs nothing in
+    strength: Linux returns a page-aligned hint whose range is free
+    unchanged (mm/mmap.c, [generic_get_unmapped_area_topdown], the hint
+    test,
+    Linux v6.18.46, commit 1f99e9ab748f), and the sub-case's own
+    guards — alignment, positivity, the [alloc_top] bound and
+    [region_free] — are exactly what makes this hint free.  So the
+    widening is in which argument words reach the transition, never in
+    the set of transitions: no state becomes reachable that the
+    hint-placed shape does not reach, and every invariant that holds of
+    that shape's post-states holds of these unchanged.
 
     This is the strongest soundness argument any of the four shapes has,
     and it is why the sub-case is here rather than left fail-closed: it
     is a [forall] over admissible outcomes, which is reason 1's whole
     category and which no trace can establish. *)
 Lemma mmap_fixed_fresh_adds_no_transition :
-  forall hint addr len i m,
-    w_is0 hint = false ->
+  forall addr len i m,
     w_is0 len = false ->
     (bv_unsigned addr mod page_size = 0)%Z ->
     (0 < bv_unsigned addr)%Z ->
@@ -1288,7 +1358,7 @@ Lemma mmap_fixed_fresh_adds_no_transition :
     region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true ->
     mmap_noreserve_backed_ok 34 m (page_round_up_Z (bv_unsigned len)) = true ->
-    mmap_spec hint len 3 34 mmap_fd_none 0 i m
+    mmap_spec addr len 3 34 mmap_fd_none 0 i m
       (Ok (mkEffect addr []
              [(addr, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
           (with_mmap_backing 34 addr
@@ -1301,12 +1371,20 @@ Lemma mmap_fixed_fresh_adds_no_transition :
                 (vm_brk (m_vmmaps m)) (vm_limit (m_vmmaps m)) (vm_mmap_base (m_vmmaps m))
                 (vm_init_sp (m_vmmaps m))) m)) []).
 Proof.
-  intros hint addr len i m Hhint Hl Halign Hpos Hceil Hfree Hbud.
+  intros addr len i m Hl Halign Hpos Hceil Hfree Hbud.
   unfold mmap_spec. rewrite Hl. cbn [mmap_modeled_b].
   apply alt_r.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
   eapply bind_ok0.
-  { apply (choose_ok _ addr). cbv beta. repeat split; assumption. }
+  { apply (choose_ok _ addr). cbv beta. split; [|assumption].
+    unfold linux_place, hint_address, page_round_down_Z.
+    unfold page_size in Halign |- *.
+    replace (bv_unsigned addr / 4096 * 4096)%Z with (bv_unsigned addr) by lia.
+    destruct (Z.eqb_spec (bv_unsigned addr) 0) as [Hz|_]; [lia|].
+    left. split; [|reflexivity].
+    unfold gap_fits, page_size.
+    split; [exact Halign|]. split; [lia|]. split; [exact Hceil|].
+    rewrite Z_to_bv_bv_unsigned. exact Hfree. }
   eapply bind_ok0; [apply modify_ok|].
   apply pure_ok.
 Qed.
@@ -1314,19 +1392,21 @@ Qed.
 (** Reason 1.  The PROT_NONE MAP_FIXED branch carries the same free-range
     sub-case, and it is the same argument again: under those guards the
     effect and post-state are ones [mmap_noaccess_b] already produces from
-    the same pre-state, for any hint.  Leaving this out would be an
-    asymmetry rather than a decision — a sanitizer runtime fills the gap
-    between its two shadow regions with exactly this call. *)
+    the same pre-state, with [addr] as the hint — free, by those same
+    guards, so Linux returns it (mm/mmap.c, the hint test in
+    [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
+    1f99e9ab748f).  Leaving this out would be an asymmetry rather than
+    a decision — a sanitizer runtime fills the gap between its two
+    shadow regions with exactly this call. *)
 Lemma mmap_fixed_noaccess_fresh_adds_no_transition :
-  forall hint addr len i m,
-    w_is0 hint = false ->
+  forall addr len i m,
     w_is0 len = false ->
     (bv_unsigned addr mod page_size = 0)%Z ->
     (0 < bv_unsigned addr)%Z ->
     (bv_unsigned addr + page_round_up_Z (bv_unsigned len) <= alloc_top (m_vmmaps m))%Z ->
     region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) addr
       (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true ->
-    mmap_spec hint len 0 34 mmap_fd_none 0 i m
+    mmap_spec addr len 0 34 mmap_fd_none 0 i m
       (Ok (mkEffectU addr [] []
              [(addr, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))] [] [])
           (with_vmmaps
@@ -1339,12 +1419,20 @@ Lemma mmap_fixed_noaccess_fresh_adds_no_transition :
                 (vm_brk (m_vmmaps m)) (vm_limit (m_vmmaps m)) (vm_mmap_base (m_vmmaps m))
                 (vm_init_sp (m_vmmaps m))) m) []).
 Proof.
-  intros hint addr len i m Hhint Hl Halign Hpos Hceil Hfree.
+  intros addr len i m Hl Halign Hpos Hceil Hfree.
   unfold mmap_spec. rewrite Hl. cbn [mmap_modeled_b mmap_noaccess_b].
   apply alt_r.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
   eapply bind_ok0.
-  { apply (choose_ok _ addr). cbv beta. repeat split; assumption. }
+  { apply (choose_ok _ addr). cbv beta.
+    unfold linux_place, hint_address, page_round_down_Z.
+    unfold page_size in Halign |- *.
+    replace (bv_unsigned addr / 4096 * 4096)%Z with (bv_unsigned addr) by lia.
+    destruct (Z.eqb_spec (bv_unsigned addr) 0) as [Hz|_]; [lia|].
+    left. split; [|reflexivity].
+    unfold gap_fits, page_size.
+    split; [exact Halign|]. split; [lia|]. split; [exact Hceil|].
+    rewrite Z_to_bv_bv_unsigned. exact Hfree. }
   eapply bind_ok0; [apply modify_ok|].
   apply pure_ok.
 Qed.
@@ -1446,10 +1534,20 @@ Proof. check_eq. Qed.
     it arrives as exactly the PROT_NONE|MAP_NORESERVE shape the masking
     above matches.  It occupies virtual address space but consumes no
     backed budget, so the Sv48-sized reservation is admissible even with
-    the ordinary target backed-memory limit. *)
+    the ordinary target backed-memory limit.
+
+    THE HINT IS WHY THE ADDRESS IS 0x10000.  This ledger's
+    [vm_mmap_base] is 0, so the top-down window is empty and a NULL
+    hint would fall to the bottom-up window at
+    [Mmap.task_unmapped_base], which is above 0x10000; the call
+    therefore names 0x10000 as a HINT, and Linux returns a free
+    page-aligned hint unchanged (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], the hint test, Linux
+    v6.18.46, commit 1f99e9ab748f).  The pair is about the size and
+    the budget, not about where the reservation went. *)
 Example asan_sized_reservation_is_admitted :
   check_syscall
-    (mkInput 222 [0; 15392894357504; 0; 16418; mmap_fd_none; 0]
+    (mkInput 222 [65536; 15392894357504; 0; 16418; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffectU 65536 [] [] [(65536, 15392894357504)] [] [])
     (with_vmmaps (mkVmMaps [] [] 0 0 target_alloc_limit) noaccess_base)
@@ -1465,7 +1563,7 @@ Proof. check_eq. Qed.
     which is the same answer the machine gives. *)
 Example asan_sized_reservation_admits_enomem :
   check_syscall
-    (mkInput 222 [0; 15392894357504; 0; 16418; mmap_fd_none; 0]
+    (mkInput 222 [65536; 15392894357504; 0; 16418; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffectU (errno_ret ENOMEM) [] [] [] [] [])
     (with_vmmaps (mkVmMaps [] [] 0 0 target_alloc_limit) noaccess_base)
@@ -1493,14 +1591,15 @@ Proof. check_eq. Qed.
    to fail a MAP_FIXED (the last reason listed at the top of
    [Checks/Examples.v] — the environment cannot be made to produce the
    outcome), and an argument combination the model declines has no
-   verdict to check.  Line numbers are Linux v6.12.
+   verdict to check.  Every citation below is Linux v6.18.46, commit
+   1f99e9ab748f.
    ------------------------------------------------------------------------- *)
 
 (** A length whose page round-up leaves the address space is -ENOMEM, and
     that -ENOMEM BEATS the -EINVAL an unaligned addr would otherwise earn:
-    [do_mmap] rounds the length and answers -ENOMEM on the wrap
-    (mm/mmap.c:315-317) before [__get_unmapped_area] ever reaches
-    [offset_in_page] (mm/mmap.c:917-918). *)
+    [do_mmap] rounds the length with [PAGE_ALIGN] and answers -ENOMEM on
+    the wrap (mm/mmap.c) before [__get_unmapped_area] ever reaches its
+    [offset_in_page(addr)] test. *)
 
 Example mmap_fixed_overflowing_len_is_enomem :
   check_syscall
@@ -1546,9 +1645,9 @@ Example mmap_fixed_unaligned_above_ceiling_is_unmodeled :
 Proof. check_eq. Qed.
 
 (** A zero length is -EINVAL only once the call is plainly anonymous.
-    [ksys_mmap_pgoff] inspects the FLAGS first (mm/mmap.c:511-515,
-    :522-540); [do_mmap]'s [if (!len)] is downstream of both arms
-    (mm/mmap.c:294-295). *)
+    [ksys_mmap_pgoff] inspects the FLAGS first (its MAP_ANONYMOUS test
+    and the MAP_HUGETLB arms under it, mm/mmap.c); [do_mmap]'s
+    [if (!len)] is downstream of both arms. *)
 
 Example mmap_zero_len_anonymous_is_einval :
   check_syscall
@@ -1688,7 +1787,8 @@ Example mmap_misaligned_offset_page_len_is_einval :
 Proof. check_eq. Qed.
 
 (** ...and with MAP_HUGETLB the hugetlbfs setup answers first
-    (mm/mmap.c:522-540). *)
+    ([ksys_mmap_pgoff]'s MAP_HUGETLB arm, which calls
+    [hugetlb_file_setup], mm/mmap.c). *)
 
 Example mmap_zero_len_hugetlb_is_unmodeled :
   check_syscall
@@ -1698,15 +1798,26 @@ Example mmap_zero_len_hugetlb_is_unmodeled :
   = CheckUnmodeled.
 Proof. check_eq. Qed.
 
-(** Linux ignores [fd] entirely for an anonymous mapping (mm/mmap.c:511),
+(** Linux ignores [fd] entirely for an anonymous mapping
+    ([ksys_mmap_pgoff] reads it only under [!(flags & MAP_ANONYMOUS)],
+    mm/mmap.c, Linux v6.18.46, commit 1f99e9ab748f),
     and so does the model: the shape predicates do not read it, so the
     grant is admitted for any [fd], open or not.  This is the widening
     [Mmap.mmap_fd_none] describes; the value 3 here is an fd the base
-    model does not hold, and 0 below is one it does. *)
+    model does not hold, and 0 below is one it does.
+
+    THE HINT IS WHY THE ADDRESS IS 0x10000 in both.  [noaccess_base]'s
+    [vm_mmap_base] is 0 — a property of the fixture, not of Linux — so
+    its top-down window is empty and a NULL hint would fall to the
+    bottom-up window at [Mmap.task_unmapped_base], above 0x10000.  A
+    free page-aligned hint Linux returns unchanged (mm/mmap.c, the hint
+    test in
+    [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
+    1f99e9ab748f).  The pair is about [fd], not about placement. *)
 
 Example mmap_anonymous_other_fd_grants :
   check_syscall
-    (mkInput 222 [0; 4096; 3; 34; 3; 0]
+    (mkInput 222 [65536; 4096; 3; 34; 3; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 65536 [] [(65536, 4096)]) noaccess_base
   = CheckOk
@@ -1718,7 +1829,7 @@ Proof. check_eq. Qed.
 
 Example mmap_anonymous_live_fd_grants :
   check_syscall
-    (mkInput 222 [0; 4096; 3; 34; 0; 0]
+    (mkInput 222 [65536; 4096; 3; 34; 0; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 65536 [] [(65536, 4096)]) noaccess_base
   = CheckOk
@@ -1742,8 +1853,11 @@ Example mmap_anonymous_other_fd_bad_placement_is_rejected :
 Proof. check_eq. Qed.
 
 (** Same for the offset: Linux requires only page alignment
-    (arch/riscv/kernel/sys_riscv.c:16-17) and then ignores the page offset
-    for anonymous memory (mm/mmap.c:897-899, :471-476). *)
+    ([riscv_sys_mmap]'s [offset & (~PAGE_MASK >> page_shift_offset)]
+    test, arch/riscv/kernel/sys_riscv.c) and then ignores the page offset
+    for anonymous memory ([do_mmap]'s anonymous [switch (flags &
+    MAP_TYPE)] overwrites [pgoff] — 0 for MAP_SHARED, [addr >>
+    PAGE_SHIFT] for MAP_PRIVATE, mm/mmap.c). *)
 
 Example mmap_anonymous_page_aligned_offset_is_unmodeled :
   check_syscall
@@ -1754,10 +1868,11 @@ Example mmap_anonymous_page_aligned_offset_is_unmodeled :
 Proof. check_eq. Qed.
 
 (** A failed MAP_FIXED has TWO shapes.  Past [vms_clean_up_area]
-    (mm/vma.c:1281-1293, called from [__mmap_prepare] at :2441, Linux
-    v6.18.46) the old range is already torn down, so the abort at
-    mm/vma.c:2729-2730 takes the destructive branch and deliberately
-    leaves a gap ([vms_abort_munmap_vmas], mm/vma.c:2365-2366): the errno
+    (mm/vma.c, called at the end of [__mmap_prepare], Linux
+    v6.18.46, commit 1f99e9ab748f) the old range is already torn down, so
+    the [abort_munmap:] label in [__mmap_region] takes the destructive
+    branch and deliberately
+    leaves a gap ([vms_abort_munmap_vmas]'s NULL store): the errno
     comes back with the range UNMAPPED and carved out of both ledgers,
     leaving the tail of the enclosing mapping behind. *)
 
@@ -1773,10 +1888,12 @@ Example mmap_fixed_errno_may_destroy_the_range :
 Proof. check_eq. Qed.
 
 (** The same call may equally preserve the range — that is the -ENOMEM of
-    [vms_gather_munmap_vmas] (mm/vma.c:1389-1393, Linux v6.18.46), which
-    is tested before any split and returns through [__mmap_prepare]
-    (mm/vma.c:2436-2440), whose gather-error arm zeroes [vms->nr_pages]
-    so that [vms_abort_munmap_vmas] (:2354-2355) tears nothing down. *)
+    [vms_gather_munmap_vmas] (its [sysctl_max_map_count] test, mm/vma.c,
+    Linux v6.18.46, commit 1f99e9ab748f), which
+    is tested before any split and returns through [__mmap_prepare],
+    whose gather-error arm zeroes [vms->nr_pages]
+    so that [vms_abort_munmap_vmas] returns at its [!vms->nr_pages] test
+    and tears nothing down. *)
 
 Example mmap_fixed_errno_may_preserve_the_range :
   check_syscall
@@ -1815,15 +1932,16 @@ Proof. check_eq. Qed.
 (** Reason 3, and reason 4 in the direction that matters.  A forged 0 over a
     range in NEITHER ledger is [CheckUnmodeled]: the state gate is consulted
     before the return value, so no answer rescues an untracked range.  Linux
-    would say -ENOMEM here (v6.12 [mm/mprotect.c] [do_mprotect_pkey], L753
-    `error = -ENOMEM;` and L765-766 `if (vma->vm_start > start) goto out;`),
+    would say -ENOMEM here ([do_mprotect_pkey], mm/mprotect.c, Linux
+    v6.18.46, commit 1f99e9ab748f: it sets `error = -ENOMEM;` before the
+    [vma_find] and leaves through `if (vma->vm_start > start) goto out;`),
     which is why the model declining is fail-closed rather than wrong.
     This states it at a ledger a live run cannot build. *)
 
 (** Reason: the environment cannot produce it.  Re-protecting an
     already-rw range CANNOT fail on Linux — [mprotect_fixup] returns 0 at
     [newflags == oldflags] before any allocation, split or accounting
-    (Linux v6.12, mm/mprotect.c:617-620) — so a kernel answering -ENOMEM
+    (mm/mprotect.c, Linux v6.18.46, commit 1f99e9ab748f) — so a kernel answering -ENOMEM
     here is behaving inadmissibly and the model must say so.  This is the
     negative half of that branch having no errno alternative: with such an
     alternative in [Mprotect.mprotect_spec] the verdict would be
@@ -1838,14 +1956,16 @@ Proof. check_eq. Qed.
     ledger with no owner at all must not let mprotect return
     0 and zero-fill a range the model does
     not own — Linux answers -ENOMEM for a range starting outside every VMA
-    (Linux v6.12, mm/mprotect.c:753, :765-766) — so the exposure branch
+    ([do_mprotect_pkey]'s `error = -ENOMEM;` and its
+    `if (vma->vm_start > start) goto out;`, mm/mprotect.c, Linux
+    v6.18.46, commit 1f99e9ab748f) — so the exposure branch
     tests both ledgers and this state falls through to fail-closed. *)
 
 (** Reason: the environment cannot produce a verdict on it.  [addr] = 2^63
     with [len] = 2^63 page-rounds to 2^63, so the sum reaches exactly 2^64
     and Linux's [end = start + len] wraps to 0: [end <= start] holds and
-    the answer is -ENOMEM (v6.12 [mm/mprotect.c] [do_mprotect_pkey],
-    L731-734).  This Rocq pair
+    the answer is -ENOMEM ([do_mprotect_pkey]'s [end <= start] test,
+    mm/mprotect.c, Linux v6.18.46, commit 1f99e9ab748f).  This Rocq pair
     pins the exact 2^63 + 2^63 boundary and rejects a forged
     success.
 
@@ -1863,11 +1983,13 @@ Proof. check_eq. Qed.
     would change, an unaligned start deterministically returns -EINVAL. *)
 
 (** The grows conflict fires on BOTH stack-extension bits together, never
-    on either one alone: Linux v6.12 mm/mprotect.c [do_mprotect_pkey] latches
-    [grows = prot & (PROT_GROWSDOWN|PROT_GROWSUP)] (:715) and returns
-    -EINVAL only for [grows == (PROT_GROWSDOWN|PROT_GROWSUP)] (:724-725).
-    A single bit survives that gate, is masked out of [prot] (:723), and
-    at zero length reaches the `if (!len) return 0` at :729-730.
+    on either one alone: [do_mprotect_pkey] (mm/mprotect.c, Linux
+    v6.18.46, commit 1f99e9ab748f) latches
+    [grows = prot & (PROT_GROWSDOWN|PROT_GROWSUP)], masks both bits out
+    of [prot], and returns
+    -EINVAL only for [grows == (PROT_GROWSDOWN|PROT_GROWSUP)].
+    A single bit survives that gate, and
+    at zero length reaches the `if (!len) return 0` just below it.
 
     The three calls below differ in NOTHING but the grow bits — same
     page-aligned start, same zero length, same PROT_READ|PROT_WRITE
@@ -2092,8 +2214,9 @@ Example brk_shrink_must_declare_unmaps :
 Proof. check_eq. Qed.
 
 (** The alignment boundary: a SUB-PAGE shrink frees NOTHING.  Linux
-    page-aligns both breaks and takes the [newbrk == oldbrk] early exit
-    (mm/mmap.c:156-161), so brk from 131072 down to 129024 (0x1f800,
+    page-aligns both breaks and takes the [oldbrk == newbrk] early exit
+    ([SYSCALL_DEFINE1(brk)], mm/mmap.c, Linux v6.18.46, commit
+    1f99e9ab748f), so brk from 131072 down to 129024 (0x1f800,
     inside the same page) moves [mm->brk] and unmaps not one byte — the
     written heap survives, and [eff_unmaps] is empty.  ([vm_maps] still
     tracks the break itself, at byte granularity, so the ledger entry
@@ -2258,20 +2381,42 @@ Proof. check_eq. Qed.
 Definition mmap_in (len : word) : SyscallInput :=
   mkInput 222 [0; len; 3; 34; mmap_fd_none; 0] (fun _ => None) (fun _ => None).
 
+(** The same two shapes with an explicit HINT.  Since the placement
+    change a fresh grant lands exactly where [Mmap.linux_place] puts
+    it, so an example that is about something else — a budget, a
+    ledger shape, an errno — names the address it is about as a hint
+    and Linux returns it unchanged when the range is free (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], the hint test, Linux
+    v6.18.46, commit 1f99e9ab748f).  That keeps every such example
+    saying what it always said, and leaves the NULL-hint cases to say
+    where the search goes. *)
+Definition mmap_at_in (addr len : word) : SyscallInput :=
+  mkInput 222 [addr; len; 3; 34; mmap_fd_none; 0]
+    (fun _ => None) (fun _ => None).
+
+Definition mmap_noaccess_at_in (addr len : word) : SyscallInput :=
+  mkInput 222 [addr; len; 0; 34; mmap_fd_none; 0]
+    (fun _ => None) (fun _ => None).
+
 (** Within the remaining budget the grant is admissible, and is metered
-    at the PAGE-ROUNDED length the ledger records. *)
+    at the PAGE-ROUNDED length the ledger records.  0x20000 is free on
+    [tight_model], so the hint fixes the address and [vm_limit] is the
+    only thing left to decide the call. *)
 
 Example mmap_within_budget_grants :
-  check_syscall (mmap_in 4096) (mkEffect 131072 [] [(131072, 4096)]) tight_model
+  check_syscall (mmap_at_in 131072 4096) (mkEffect 131072 [] [(131072, 4096)])
+    tight_model
   = CheckOk (with_vmmaps (mkVmMaps [] [(131072, 4096); (65536, 4096)] 0 0 8192)
                tight_model) [].
 Proof. check_eq. Qed.
 
 (** Beyond it the grant is REJECTED — address space is plentiful (the
-    ceiling is nowhere near), the budget alone forces failure… *)
+    ceiling is nowhere near) and the hint is free, so the budget alone
+    forces failure… *)
 
 Example mmap_beyond_budget_rejected :
-  check_syscall (mmap_in 8192) (mkEffect 131072 [] [(131072, 8192)]) tight_model
+  check_syscall (mmap_at_in 131072 8192) (mkEffect 131072 [] [(131072, 8192)])
+    tight_model
   = CheckReject.
 Proof. check_eq. Qed.
 
@@ -2279,7 +2424,8 @@ Proof. check_eq. Qed.
     no grant.  This pair is the deterministic out-of-memory point. *)
 
 Example mmap_beyond_budget_fails_enomem :
-  check_syscall (mmap_in 8192) (mkEffect (errno_ret ENOMEM) [] []) tight_model
+  check_syscall (mmap_at_in 131072 8192) (mkEffect (errno_ret ENOMEM) [] [])
+    tight_model
   = CheckOk tight_model [].
 Proof. check_eq. Qed.
 
@@ -2287,7 +2433,7 @@ Proof. check_eq. Qed.
     the 8192-byte request that was over budget above is grantable. *)
 
 Example freed_budget_is_regrantable :
-  check_syscall (mmap_in 8192) (mkEffect 131072 [] [(131072, 8192)])
+  check_syscall (mmap_at_in 131072 8192) (mkEffect 131072 [] [(131072, 8192)])
     (with_vmmaps (mkVmMaps [] [] 0 0 8192) tight_model)
   = CheckOk (with_vmmaps (mkVmMaps [] [(131072, 8192)] 0 0 8192) tight_model) [].
 Proof. check_eq. Qed.
@@ -2328,8 +2474,16 @@ Definition mmap_noaccess_in (len : word) : SyscallInput :=
   mkInput 222 [0; len; 0; 34; mmap_fd_none; 0] (fun _ => None) (fun _ => None).
 
 (** A zero placement is page-aligned, below the ceiling, disjoint, and
-    within budget.  Positivity is the only placement conjunct that can
-    reject these otherwise exact fresh-grant effects. *)
+    within budget.  Positivity is the placement conjunct these pin:
+    the effect claims address 0, and no hint can name it — a hint of 0
+    IS the null hint ([Mmap.hint_address] rounds it down to 0, which
+    is "no hint"; [round_hint_to_min], mm/mmap.c, Linux v6.18.46,
+    commit 1f99e9ab748f).  Since the placement change the search is a
+    second ground for the same refusal, and the pair that keeps
+    positivity load-bearing on its own is
+    [mmap_null_hint_zero_rejected] below against
+    [mmap_nonnull_hint_low_grant_admitted], which differ only in
+    whether the address is zero. *)
 
 Example mmap_modeled_zero_placement_is_rejected :
   check_syscall (mmap_in 4096) (mkEffect 0 [] [(0, 4096)]) ceiling_room_model
@@ -2344,16 +2498,20 @@ Proof. check_eq. Qed.
 
 (** Address 65537 is positive, below the ceiling, disjoint, and within
     budget.  It is one byte past a page boundary, so page alignment is
-    the only placement conjunct that rejects these exact effects. *)
+    what rejects these exact effects — and the calls hand the kernel
+    65537 ITSELF as the hint to show it: [round_hint_to_min] masks the
+    hint with PAGE_MASK (mm/mmap.c, Linux v6.18.46, commit
+    1f99e9ab748f), so the honoured address is 65536 and 65537 is not
+    reachable by any route. *)
 
 Example mmap_modeled_unaligned_placement_is_rejected :
-  check_syscall (mmap_in 4096) (mkEffect 65537 [] [(65537, 4096)])
+  check_syscall (mmap_at_in 65537 4096) (mkEffect 65537 [] [(65537, 4096)])
     ceiling_room_model
   = CheckReject.
 Proof. check_eq. Qed.
 
 Example mmap_noaccess_unaligned_placement_is_rejected :
-  check_syscall (mmap_noaccess_in 4096)
+  check_syscall (mmap_noaccess_at_in 65537 4096)
     (mkEffectU 65537 [] [] [(65537, 4096)] [] []) ceiling_room_model
   = CheckReject.
 Proof. check_eq. Qed.
@@ -2364,10 +2522,14 @@ Proof. check_eq. Qed.
     exactly, satisfying the conjunct's [<=?]. Budget and placement are
     otherwise unconstrained ([ceiling_room_model] carries no live map
     and [demo_limit] of budget), so only [alloc_top] can be doing
-    the work here. *)
+    the work here — and the pair names each address as its own HINT,
+    which is what keeps that true: Linux honours a free hint whose
+    range fits the window and ignores one whose range does not
+    (mm/mmap.c, [generic_get_unmapped_area_topdown], the hint test,
+    Linux v6.18.46, commit 1f99e9ab748f). *)
 
 Example mmap_modeled_at_ceiling_boundary_grants :
-  check_syscall (mmap_in 4096)
+  check_syscall (mmap_at_in 140735332478976 4096)
     (mkEffect 140735332478976 [] [(140735332478976, 4096)])
     ceiling_room_model
   = CheckOk
@@ -2381,7 +2543,7 @@ Proof. check_eq. Qed.
     above. *)
 
 Example mmap_modeled_past_ceiling_is_rejected :
-  check_syscall (mmap_in 4096)
+  check_syscall (mmap_at_in 140735332483072 4096)
     (mkEffect 140735332483072 [] [(140735332483072, 4096)])
     ceiling_room_model
   = CheckReject.
@@ -2391,7 +2553,7 @@ Proof. check_eq. Qed.
     [vm_noaccess]. *)
 
 Example mmap_noaccess_at_ceiling_boundary_grants :
-  check_syscall (mmap_noaccess_in 4096)
+  check_syscall (mmap_noaccess_at_in 140735332478976 4096)
     (mkEffectU 140735332478976 [] [] [(140735332478976, 4096)] [] [])
     ceiling_room_model
   = CheckOk
@@ -2402,14 +2564,22 @@ Example mmap_noaccess_at_ceiling_boundary_grants :
 Proof. check_eq. Qed.
 
 Example mmap_noaccess_past_ceiling_is_rejected :
-  check_syscall (mmap_noaccess_in 4096)
+  check_syscall (mmap_noaccess_at_in 140735332483072 4096)
     (mkEffectU 140735332483072 [] [] [(140735332483072, 4096)] [] [])
     ceiling_room_model
   = CheckReject.
 Proof. check_eq. Qed.
 
+(** Each of the four below names the address under test as a HINT, so
+    the conjunct the example is about is the only one that can decide
+    it: Linux returns a free page-aligned hint unchanged and ignores
+    one whose range is not free (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], the hint test, Linux
+    v6.18.46, commit 1f99e9ab748f).  Here [region_free] is that
+    conjunct — 135168 is the page just above the live mapping and is
+    free, 131072 is the mapping's own start and is not. *)
 Example mmap_modeled_adjacent_to_live_map_grants :
-  check_syscall (mmap_in 4096) (mkEffect 135168 [] [(135168, 4096)])
+  check_syscall (mmap_at_in 135168 4096) (mkEffect 135168 [] [(135168, 4096)])
     region_live_model
   = CheckOk
       (with_vmmaps (mkVmMaps [] [(135168, 4096); (131072, 4096)] 0 0 demo_limit)
@@ -2417,16 +2587,19 @@ Example mmap_modeled_adjacent_to_live_map_grants :
 Proof. check_eq. Qed.
 
 (** …while a grant AT the live mapping's own start overlaps it exactly
-    and [region_free] alone rejects it. *)
+    and [region_free] alone rejects it: the hint is not honoured
+    because its range is not free, and the fallback search answers
+    elsewhere. *)
 
 Example mmap_modeled_overlapping_live_map_is_rejected :
-  check_syscall (mmap_in 4096) (mkEffect 131072 [] [(131072, 4096)])
+  check_syscall (mmap_at_in 131072 4096) (mkEffect 131072 [] [(131072, 4096)])
     region_live_model
   = CheckReject.
 Proof. check_eq. Qed.
 
 Example mmap_noaccess_adjacent_to_live_map_grants :
-  check_syscall (mmap_noaccess_in 4096) (mkEffectU 135168 [] [] [(135168, 4096)] [] [])
+  check_syscall (mmap_noaccess_at_in 135168 4096)
+    (mkEffectU 135168 [] [] [(135168, 4096)] [] [])
     region_live_model
   = CheckOk
       (with_vmmaps
@@ -2436,18 +2609,21 @@ Example mmap_noaccess_adjacent_to_live_map_grants :
 Proof. check_eq. Qed.
 
 Example mmap_noaccess_overlapping_live_map_is_rejected :
-  check_syscall (mmap_noaccess_in 4096) (mkEffectU 131072 [] [] [(131072, 4096)] [] [])
+  check_syscall (mmap_noaccess_at_in 131072 4096)
+    (mkEffectU 131072 [] [] [(131072, 4096)] [] [])
     region_live_model
   = CheckReject.
 Proof. check_eq. Qed.
 
 (** PROT_NONE reservations occupy virtual space without consuming the
     backed-memory budget.  Same [tight_model] (budget 8192, one accessible
-    4096-byte grant), same addresses and lengths: the reservation is
+    4096-byte grant), same addresses and lengths, and the same hint at
+    0x20000, which is free on this ledger: the reservation is
     admissible whether or not its full length would fit [vm_limit]. *)
 
 Example mmap_noaccess_within_budget_grants :
-  check_syscall (mmap_noaccess_in 4096) (mkEffectU 131072 [] [] [(131072, 4096)] [] [])
+  check_syscall (mmap_noaccess_at_in 131072 4096)
+    (mkEffectU 131072 [] [] [(131072, 4096)] [] [])
     tight_model
   = CheckOk
       (with_vmmaps
@@ -2460,7 +2636,8 @@ Proof. check_eq. Qed.
     virtual addresses, while only the original read-write page is backed. *)
 
 Example mmap_noaccess_ignores_backed_budget :
-  check_syscall (mmap_noaccess_in 8192) (mkEffectU 131072 [] [] [(131072, 8192)] [] [])
+  check_syscall (mmap_noaccess_at_in 131072 8192)
+    (mkEffectU 131072 [] [] [(131072, 8192)] [] [])
     tight_model
   = CheckOk
       (with_vmmaps
@@ -2510,9 +2687,16 @@ Proof. check_eq. Qed.
 Definition mmap_lazy_rw_base : Model :=
   with_vmmaps (mkVmMaps [] [] 0 0 4096) noaccess_base.
 
+(** 0x10000 is a HINT, free on this empty ledger, and Linux returns a
+    free page-aligned hint unchanged (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], the hint test, Linux
+    v6.18.46, commit 1f99e9ab748f); the fixture's [vm_mmap_base] is 0,
+    so with no hint the search would answer in the bottom-up window
+    instead.  The example is about MAP_NORESERVE skipping the eager
+    charge. *)
 Example mmap_rw_noreserve_bypasses_eager_backing :
   check_syscall
-    (mkInput 222 [0; 8192; 3; 16418; mmap_fd_none; 0]
+    (mkInput 222 [65536; 8192; 3; 16418; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 65536 [] [(65536, 8192)]) mmap_lazy_rw_base
   = CheckOk
@@ -2679,10 +2863,15 @@ Example brk_shrink_clears_sparse_ledgers :
   vm_backing_used post = 0%Z.
 Proof. cbv zeta. repeat split; check_eq. Qed.
 
+(** 0x20000 is a HINT: this ledger's [vm_mmap_base] is 0, so only a
+    hint can name a low address, and Linux returns a free page-aligned
+    hint unchanged (mm/mmap.c, [generic_get_unmapped_area_topdown],
+    the hint test, Linux v6.18.46, commit 1f99e9ab748f).  The example
+    is about the budget the shrink released. *)
 Example eager_mmap_reuses_budget_after_sparse_brk_shrink :
   let post := with_brk_next brk_sparse_touched 65536 65536 in
   check_syscall
-    (mkInput 222 [0; 4096; 3; 34; mmap_fd_none; 0]
+    (mkInput 222 [131072; 4096; 3; 34; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 131072 [] [(131072, 4096)]) post
   = CheckOk
@@ -2704,22 +2893,27 @@ Proof. check_eq. Qed.
     with offset 0. *)
 
 (* -------------------------------------------------------------------------
-   PREFERENCE-FREE PLACEMENT: what the spec says, and what it does not say
+   PLACEMENT: the model answers LINUX'S address, and these are the cases
+   that say so
 
-   The fresh-grant arms say three things about a placement the model
-   chooses and nothing else — page-aligned, inside the user address
-   space (nonzero, ending at or below the run's [State.alloc_top]), and
-   disjoint from every mapping the ledger records.  The section note in
-   [Sys/Mm/Mmap.v] carries the argument; these cases carry both halves
-   of it, and the first three are low placements the spec admits.
+   The fresh-grant arms used to say three things about a placement the
+   model chose and nothing else — page-aligned, inside the user
+   address space (nonzero, ending at or below the run's
+   [State.alloc_top]), and disjoint from every mapping the ledger
+   records.  They now also say WHERE: [Mmap.linux_place], the hint
+   test and the two searches of
+   [generic_get_unmapped_area_topdown] (mm/mmap.c, Linux v6.18.46,
+   commit 1f99e9ab748f), with [State.alloc_top] for [mmap_end].  The
+   section note in [Sys/Mm/Mmap.v] carries the argument and names the
+   residuals; these cases carry both halves of it.
 
-   The spec does not pin the SEARCH as well — at or above a bottom-up
-   floor, or leaving no fitting free gap up to the run's
-   [mm->mmap_base] — because such a conjunct excludes placements Linux
-   makes: its highest-fit half would read a ledger that does not carry
-   the kernel's own vdso/vvar VMAs, so a real top-down descent would
-   look impossible to the model.  Leaving it out costs provability and
-   buys soundness, and these cases are where that trade is visible.
+   The three low placements the old rule admitted are kept below as
+   the refusals they now are, each beside the address the search does
+   give, so a reader can see what changed.  The freedom they had is
+   what let the model refuse a mapping the same Linux launch grants
+   (OSSV-210's B2, B3 and N3); what paid for it was a ledger that
+   now carries the kernel's own vdso/vvar VMAs ([State.init_reserved]),
+   so a real top-down descent no longer looks impossible to the model.
 
    Reason 4 (the environment cannot produce it) for all of them: the
    kernel allocates top-down from an [mmap_base] just under the stack
@@ -2731,50 +2925,83 @@ Proof. check_eq. Qed.
 Definition placement_model : Model :=
   init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp demo_limit (demo_input [] IEof).
 
-(** A LOW FIRST GRANT, admitted.  A first NULL-hint
-    grant at 0x80000000 is page-aligned, positive, below the ceiling and
-    free, so the spec admits it.
+(** A LOW FIRST GRANT, NOW REFUSED.  A first NULL-hint grant at
+    0x80000000 is page-aligned, positive, below the ceiling and free,
+    and the old rule admitted it on exactly those four grounds.  Since
+    the placement change the model answers Linux's address instead,
+    and Linux does not place a first anonymous mapping there: with no
+    hint it descends from [mm->mmap_base] (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
+    1f99e9ab748f), which on this ledger is far above 0x80000000.
 
-    The OTHER end of the run is where this matters: a runtime that later
-    reserves a low absolute range with MAP_FIXED meets a partial
-    overlap.  [Mmap.mmap_spec]'s spanning arm performs the replacement
-    Linux performs, so a low placement is an ordinary resolution rather
-    than a refutation.  What remains is that a program whose OBSERVABLE
-    behaviour changes under such a replacement has a false equivalence
-    statement, which is the right answer for a program that is
-    placement-sensitive under ASLR. *)
-Example mmap_null_hint_low_grant_admitted :
+    The freedom this removes is the one that let the model refuse a
+    mapping the same Linux launch grants (OSSV-210's B2, B3 and N3),
+    so the case is kept as the refusal it now is rather than deleted:
+    a reader needs to see what the model used to admit. *)
+Example mmap_null_hint_low_grant_rejected :
   check_syscall (mmap_in 4096)
     (mkEffect (Z_to_bv 64 0x80000000) [] [(Z_to_bv 64 0x80000000, 4096)])
+    placement_model
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** WHERE THE SEARCH DOES STOP, stated structurally rather than as a
+    constant: the highest page that fits below the vdso/vvar pair,
+    which [State.init_model] put at the top of the search window
+    ([State.vdso_reserved], from [execve]; arch/riscv/kernel/vdso.c,
+    Linux v6.18.46, commit 1f99e9ab748f).  The pair is the first thing
+    a top-down descent meets, so the first grant of a run lands one
+    page under it. *)
+Definition placement_reserved : list (word * word) :=
+  vm_reserved (m_vmmaps placement_model).
+
+Definition placement_search_answer : Z :=
+  (vdso_top (m_vmmaps placement_model) - vdso_len default_kernel - 4096)%Z.
+
+Example mmap_null_hint_lands_under_the_vdso :
+  check_syscall (mmap_in 4096)
+    (mkEffect (Z_to_bv 64 placement_search_answer) []
+       [(Z_to_bv 64 placement_search_answer, 4096)])
     placement_model
   = CheckOk
       (with_vmmaps
         (mkVmMapsFull (vm_reserved (m_vmmaps placement_model))
-          [(Z_to_bv 64 0x80000000, 4096)] [] 0 0 demo_limit
+          [(Z_to_bv 64 placement_search_answer, 4096)] [] 0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) demo_sp) placement_model) [].
 Proof. check_eq. Qed.
 
-(** …and the PROT_NONE arm admits the same placement through the same
-    three conditions, so the freedom is in the placement rule rather than
-    in either arm. *)
-Example mmap_null_hint_low_reservation_admitted :
+(** …and the PROT_NONE arm refuses and places through the SAME rule,
+    so the placement is in [Mmap.linux_place] rather than in either
+    arm. *)
+Example mmap_null_hint_low_reservation_rejected :
   check_syscall (mmap_noaccess_in 4096)
     (mkEffectU (Z_to_bv 64 0x80000000) [] []
        [(Z_to_bv 64 0x80000000, 4096)] [] [])
     placement_model
+  = CheckReject.
+Proof. check_eq. Qed.
+
+Example mmap_noaccess_null_hint_lands_under_the_vdso :
+  check_syscall (mmap_noaccess_in 4096)
+    (mkEffectU (Z_to_bv 64 placement_search_answer) [] []
+       [(Z_to_bv 64 placement_search_answer, 4096)] [] [])
+    placement_model
   = CheckOk
       (with_vmmaps
         (mkVmMapsFull (vm_reserved (m_vmmaps placement_model))
-          [(Z_to_bv 64 0x80000000, 4096)]
-          [(Z_to_bv 64 0x80000000, 4096)] 0 0 demo_limit
+          [(Z_to_bv 64 placement_search_answer, 4096)]
+          [(Z_to_bv 64 placement_search_answer, 4096)] 0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) demo_sp) placement_model) [].
 Proof. check_eq. Qed.
 
-(** A NON-NULL hint is just as free — the kernel honors a free
+(** A NON-NULL HINT IS STILL FREE to go low, and that is now the ONLY
+    way a low placement is admitted: the kernel honours a free
     page-aligned hint anywhere ([generic_get_unmapped_area] returns
-    [addr] when the gap fits, mm/mmap.c:703-710, Linux v6.18.46) — and
-    the pair with the case above is what says the spec treats the
-    two alike. *)
+    [addr] when the gap fits, mm/mmap.c, Linux v6.18.46, commit
+    1f99e9ab748f), so 0x80000000 with the hint stands where the same
+    address with no hint is refused above.  The pair with
+    [mmap_null_hint_low_grant_rejected] is what says the model now
+    distinguishes the two, which it did not before. *)
 Example mmap_nonnull_hint_low_grant_admitted :
   check_syscall
     (mkInput 222 [Z_to_bv 64 0x80000000; 4096; 3; 34; mmap_fd_none; 0]
@@ -2788,22 +3015,25 @@ Example mmap_nonnull_hint_low_grant_admitted :
           (Z_to_bv 64 mmap_base_max) demo_sp) placement_model) [].
 Proof. check_eq. Qed.
 
-(** THE THIRD CASE, and the one easiest to miss: SKIPPING A FITTING
-    FREE GAP is not a refusal.
+(** THE THIRD CASE, and the one that changed most: SKIPPING A FITTING
+    FREE GAP IS NOW A REFUSAL.
 
     The ledger below is saturated from 0x2aaaaab000 up to the ceiling
-    except for one free page-sized hole.  A placement below 0x2aaaaab000
-    therefore has a fitting gap above it, and a search conjunct would
-    refuse it on exactly that ground — no kernel descends past free
-    space.
+    except for one free page-sized hole at 0x3aaaaab000 — the end of
+    [holed_reservation]'s first entry, where its second entry does not
+    yet begin.  A placement below 0x2aaaaab000 therefore has a fitting
+    gap above it.
 
-    It is admitted, and nothing in the spec looks at what is above a
-    placement.  That is the sharpest single statement of what the spec
-    gives up: not merely that low addresses are allowed, but that the
-    ORDER a search would impose is not checked at all.  The trade is
-    the one the section note argues — the same quantifier would also
-    refuse real descents across VMAs the ledger does not carry — and
-    this case is where a reader can see both sides of it at once. *)
+    The old rule ADMITTED 0x2aaaaaa000 here: nothing in it looked at
+    what was above a placement, so the ORDER a search imposes was not
+    checked at all.  Since the placement change the model answers
+    Linux's own address, so that freedom is gone and this is the
+    sharpest case in the file showing it: a descent that steps past a
+    free gap is exactly what [unmapped_area_topdown] never does
+    (mm/vma.c; mm/mmap.c, [generic_get_unmapped_area_topdown], Linux
+    v6.18.46, commit 1f99e9ab748f).  The grant the model used to admit
+    is kept here as the refusal it now is, with the address the search
+    does give beside it. *)
 Definition holed_reservation : list (word * word) :=
   [(Z_to_bv 64 0x2aaaaab000, Z_to_bv 64 0x1000000000);
    (Z_to_bv 64 0x3aaaaac000, Z_to_bv 64 (demo_top - 0x3aaaaac000))].
@@ -2813,15 +3043,29 @@ Definition holed_model : Model :=
     (mkVmMapsFull [] holed_reservation holed_reservation 0 0
       demo_limit (Z_to_bv 64 mmap_base_max) demo_sp) placement_model.
 
-Example mmap_null_hint_skipping_a_free_gap_admitted :
+Example mmap_null_hint_skipping_a_free_gap_rejected :
   check_syscall (mmap_in 4096)
     (mkEffect (Z_to_bv 64 0x2aaaaaa000) []
        [(Z_to_bv 64 0x2aaaaaa000, 4096)])
     holed_model
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** …and THE HOLE IS WHERE IT GOES.  The top-down descent starts at
+    [State.mmap_top] of this ledger — [demo_top], since
+    [mmap_base_max] is above it — and the second reservation fills
+    everything from 0x3aaaaac000 to there, so the first base at which
+    a page fits is the hole itself.  The pair is the refusal and the
+    neighbouring grant the checker still admits. *)
+Example mmap_null_hint_lands_in_the_free_gap :
+  check_syscall (mmap_in 4096)
+    (mkEffect (Z_to_bv 64 0x3aaaaab000) []
+       [(Z_to_bv 64 0x3aaaaab000, 4096)])
+    holed_model
   = CheckOk
       (with_vmmaps
         (mkVmMapsFull []
-          ((Z_to_bv 64 0x2aaaaaa000, 4096) :: holed_reservation)
+          ((Z_to_bv 64 0x3aaaaab000, 4096) :: holed_reservation)
           holed_reservation 0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) demo_sp) holed_model) [].
 Proof. check_eq. Qed.
@@ -2851,9 +3095,11 @@ Proof. check_eq. Qed.
 
 (** NEGATIVE: address 0.  What Linux enforces is
     [mmap_min_addr <= a] — [security_mmap_addr] consults
-    [dac_mmap_min_addr], whose default is 4096 (security/min_addr.c:11
-    defines it from CONFIG_DEFAULT_MMAP_MIN_ADDR, mm/Kconfig:726 and
-    :729, Linux v6.18.46) — and what the spec enforces is [0 < a], which
+    [dac_mmap_min_addr], whose default is 4096 (the file-scope definition
+    of [dac_mmap_min_addr] in security/min_addr.c takes it from
+    CONFIG_DEFAULT_MMAP_MIN_ADDR, whose [default 4096] is the
+    DEFAULT_MMAP_MIN_ADDR entry in mm/Kconfig, Linux v6.18.46, commit
+    1f99e9ab748f) — and what the spec enforces is [0 < a], which
     is WIDER.  The sysctl is settable to 0, so [0 < a] is the
     loosest-legal envelope over every configuration of it rather than a
     kernel rule.
@@ -2889,9 +3135,11 @@ Proof. check_eq. Qed.
 (** NEGATIVE, and the essence of the rule:
     DISJOINTNESS from every live mapping.  [get_unmapped_area] never
     silently overlaps a live VMA for a preference-free request — both
-    generic searches ask [vm_unmapped_area] for a gap (mm/mmap.c:712-718,
-    :763-770), and a gap is free of every VMA in the interval searched
-    (mm/vma.c:2885-2930, :2942-2982, Linux v6.18.46).  Here the request
+    generic searches ask [vm_unmapped_area] for a gap ([generic_get_unmapped_area]
+    and [generic_get_unmapped_area_topdown], mm/mmap.c), and a gap is
+    free of every VMA in the interval searched
+    ([unmapped_area] and [unmapped_area_topdown], mm/vma.c, Linux
+    v6.18.46, commit 1f99e9ab748f).  Here the request
     lands on a page the ledger already owns. *)
 Definition placement_model_1 : Model :=
   with_vmmaps
@@ -2980,8 +3228,10 @@ Proof. check_eq. Qed.
     is what makes the accepts above evidence about a SPEC rather than
     about seven addresses.
 
-    No lemma says the grant lands at or above a floor, and none should:
-    such a floor excludes placements Linux makes.
+    It states the three conditions ONLY, not the search: the search is
+    pinned by [Checks.Placement.linux_place_admissible] and
+    [linux_place_unique] over [Mmap.linux_place], and the cases above
+    are its instances on named ledgers.
 
     IT IS SHALLOW, and the difference is worth
     naming rather than leaving for a reader to notice.  It is
@@ -3010,16 +3260,19 @@ Lemma first_null_grant_admissible :
          a (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true.
 Proof.
   intros mb sp inp len a m' evs Hlen H.
+  pose proof (w_is0_false_pos len Hlen) as Hlpos.
+  pose proof (page_round_up_Z_pos (bv_unsigned len) Hlpos) as Hge.
+  assert (HnPos : (0 < page_round_up_Z (bv_unsigned len))%Z)
+    by (unfold page_size in Hge; lia).
+  assert (HnAl : (page_round_up_Z (bv_unsigned len) mod page_size = 0)%Z)
+    by apply page_round_up_Z_aligned.
   unfold check_mmap in H. rewrite Hlen in H.
   cbn [mmap_modeled_b] in H. cbv zeta in H.
   destruct (errno_ret_in mmap_errnos a) eqn:He; [discriminate|].
-  destruct ((bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
-            && (bv_unsigned a + page_round_up_Z (bv_unsigned len)
-                <=? alloc_top (m_vmmaps (init_model [] 0 mb sp demo_limit inp)))%Z
-            && region_free
-                 (vm_reserved (m_vmmaps (init_model [] 0 mb sp demo_limit inp))
-                  ++ vm_maps (m_vmmaps (init_model [] 0 mb sp demo_limit inp)))
-                 a (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+  destruct (linux_place_is
+              (m_vmmaps (init_model [] 0 mb sp demo_limit inp))
+              (kb_thp (m_kernel (init_model [] 0 mb sp demo_limit inp)))
+              0 (page_round_up_Z (bv_unsigned len)) a
             && mmap_noreserve_backed_ok 34 (init_model [] 0 mb sp demo_limit inp)
                  (page_round_up_Z (bv_unsigned len))
             && listNN_eqb
@@ -3027,13 +3280,8 @@ Proof.
                  [(a, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
     eqn:HC; [|discriminate].
   apply andb_true_iff in HC as [HC _].
-  apply andb_true_iff in HC as [HC _].
-  apply andb_true_iff in HC as [HC Hfree].
-  apply andb_true_iff in HC as [HC Hceil].
-  apply andb_true_iff in HC as [Halign Hpos].
-  apply Z.eqb_eq in Halign. apply Z.ltb_lt in Hpos.
-  apply Z.leb_le in Hceil.
-  repeat split; assumption.
+  apply andb_true_iff in HC as [Hpl _].
+  exact (linux_place_is_admissible _ _ _ _ _ HnPos HnAl Hpl).
 Qed.
 
 (** Reason 1, the negative half of the same [forall]: no resolution whose
@@ -3081,15 +3329,31 @@ Definition top_lo_model : Model :=
 Definition top_hi_model : Model :=
   init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp demo_limit (demo_input [] IEof).
 
+(** BOTH CALLS NAME [demo_top] AS A HINT, and that is what leaves
+    [State.alloc_top] as the only thing separating them.  A free
+    page-aligned hint Linux returns unchanged, and a hint whose range
+    ends past the search window it is checked in it does not
+    (mm/mmap.c, [generic_get_unmapped_area_topdown], the hint test,
+    Linux v6.18.46, commit 1f99e9ab748f).  Under [demo_sp] the hinted
+    range ends one page past that run's [alloc_top], so the hint is
+    not honoured and the top-down search answers somewhere else; under
+    [hi_sp] the same range is 256 MiB below the top and the hint
+    stands.  With a NULL hint instead, BOTH would be refused — the
+    search would answer the highest page under the vdso/vvar pair in
+    either run — and the pair would no longer say anything about the
+    ceiling. *)
+Definition top_hi_reserved : list (word * word) :=
+  vm_reserved (m_vmmaps top_hi_model).
+
 Example grant_at_demo_top_rejected_under_low_sp :
-  check_syscall (mmap_in 4096)
+  check_syscall (mmap_at_in (Z_to_bv 64 demo_top) 4096)
     (mkEffect (Z_to_bv 64 demo_top) [] [(Z_to_bv 64 demo_top, 4096)])
     top_lo_model
   = CheckReject.
 Proof. check_eq. Qed.
 
 Example grant_at_demo_top_admitted_under_high_sp :
-  check_syscall (mmap_in 4096)
+  check_syscall (mmap_at_in (Z_to_bv 64 demo_top) 4096)
     (mkEffect (Z_to_bv 64 demo_top) [] [(Z_to_bv 64 demo_top, 4096)])
     top_hi_model
   = CheckOk
@@ -3099,16 +3363,16 @@ Example grant_at_demo_top_admitted_under_high_sp :
           (Z_to_bv 64 mmap_base_max) hi_sp) top_hi_model) [].
 Proof. check_eq. Qed.
 
-(** The PROT_NONE arm reads the same field. *)
+(** The PROT_NONE arm reads the same field, through the same hint. *)
 Example noaccess_grant_at_demo_top_rejected_under_low_sp :
-  check_syscall (mmap_noaccess_in 4096)
+  check_syscall (mmap_noaccess_at_in (Z_to_bv 64 demo_top) 4096)
     (mkEffectU (Z_to_bv 64 demo_top) [] [] [(Z_to_bv 64 demo_top, 4096)] [] [])
     top_lo_model
   = CheckReject.
 Proof. check_eq. Qed.
 
 Example noaccess_grant_at_demo_top_admitted_under_high_sp :
-  check_syscall (mmap_noaccess_in 4096)
+  check_syscall (mmap_noaccess_at_in (Z_to_bv 64 demo_top) 4096)
     (mkEffectU (Z_to_bv 64 demo_top) [] [] [(Z_to_bv 64 demo_top, 4096)] [] [])
     top_hi_model
   = CheckOk
@@ -3155,8 +3419,10 @@ Proof. check_eq. Qed.
    [Mmap.mmap_spec]'s two NOREPLACE shapes take the MAP_FIXED argument
    gate and then split ONCE on the ledger: a range meeting nothing in
    [vm_reserved ++ vm_maps] is the free-range MAP_FIXED sub-case, and a
-   range meeting anything is -EEXIST with nothing changed ([do_mmap],
-   mm/mmap.c:361-362 and :410-412, Linux v6.18.46; the section in
+   range meeting anything is -EEXIST with nothing changed ([do_mmap]'s
+   fold of MAP_FIXED_NOREPLACE into MAP_FIXED and its
+   [find_vma_intersection] test, mm/mmap.c, Linux v6.18.46, commit
+   1f99e9ab748f; the section in
    [Sys/Mm/Mmap.v] carries the reading).  Every example below is one
    a live run cannot state on its own, for one of the four reasons at
    the top of [Checks/Examples.v]: the LEDGER after each call is named
@@ -3357,7 +3623,8 @@ Example mmap_noreplace_over_live_einval_rejected :
 Proof. check_eq. Qed.
 
 (** …while -ENOMEM is admitted beside it: [mm->map_count >
-    sysctl_max_map_count] (mm/mmap.c:377-378, Linux v6.18.46) is tested
+    sysctl_max_map_count] (in [do_mmap], mm/mmap.c, Linux v6.18.46,
+    commit 1f99e9ab748f) is tested
     before the intersection, and the model tracks no map count, so the
     environment failure every mmap arm admits stays admitted here. *)
 Example mmap_noreplace_over_live_enomem_admitted :
@@ -3422,8 +3689,9 @@ Proof. check_eq. Qed.
 (* ---- both bits ---- *)
 
 (** MAP_FIXED | MAP_FIXED_NOREPLACE is MAP_FIXED_NOREPLACE.  [do_mmap]
-    folds the NOREPLACE bit into MAP_FIXED at mm/mmap.c:361-362 and
-    tests the NOREPLACE bit alone at :410, so the combined word answers
+    (mm/mmap.c, Linux v6.18.46, commit 1f99e9ab748f)
+    folds the NOREPLACE bit into MAP_FIXED near its top and
+    tests the NOREPLACE bit alone after [__get_unmapped_area], so the combined word answers
     -EEXIST on a live page, and the replacement MAP_FIXED alone would
     perform is rejected.  Reason 4: a kernel that let MAP_FIXED win
     would be the wrong kernel. *)
@@ -3490,7 +3758,9 @@ Proof. split; [check_eq | split; check_eq]. Qed.
 (* ---- the argument gate, and the flag bits that still decline ---- *)
 
 (** Order is behavior: the alignment -EINVAL of [__get_unmapped_area]
-    (mm/mmap.c:859) is decided before the intersection test at :410, so
+    (its [offset_in_page(addr)] test, mm/mmap.c, Linux v6.18.46, commit
+    1f99e9ab748f) is decided before [do_mmap]'s MAP_FIXED_NOREPLACE
+    intersection test, so
     an unaligned address INSIDE the live page is -EINVAL, and -EEXIST for
     it is rejected. *)
 Example mmap_noreplace_unaligned_inside_live_is_einval :
@@ -3764,7 +4034,10 @@ Definition budget_ledgers (m : Model)
 Definition budget_s0 : Model :=
   init_model brk_reserved 65536 0 demo_sp 8192 (demo_input [] IEof).
 
-Definition mmap_at_in (a n prot flags : word) : SyscallInput :=
+(** The budget trace's own call builder: four argument words rather
+    than the two [mmap_at_in] above fixes, because this section varies
+    [prot] and [flags] as well as the address. *)
+Definition mmap_flags_in (a n prot flags : word) : SyscallInput :=
   mkInput 222 [a; n; prot; flags; mmap_fd_none; 0] (fun _ => None) (fun _ => None).
 
 Definition munmap_in (a n : word) : SyscallInput :=
@@ -3774,15 +4047,22 @@ Definition munmap_in (a n : word) : SyscallInput :=
     PROT_NONE over [[P, P + 4096)]. *)
 Definition budget_prefix : list (SyscallInput * SyscallEffect) :=
   [ (brk_in 69732, mkEffect 69732 [] [(65536, 8192)]);
-    (mmap_at_in 69632 4096 0 50, mkEffectU 69632 [] [] [(69632, 4096)] [] []) ].
+    (mmap_flags_in 69632 4096 0 50, mkEffectU 69632 [] [] [(69632, 4096)] [] []) ].
 
-(** A fresh page that spends the rest of the budget. *)
+(** A fresh page that spends the rest of the budget.  0x20000 is a
+    HINT: this trace's ledger has [vm_mmap_base] 0, so its top-down
+    window is empty, and Linux returns a free page-aligned hint
+    unchanged (mm/mmap.c, the hint test in
+    [generic_get_unmapped_area_topdown],
+    Linux v6.18.46, commit 1f99e9ab748f). *)
 Definition budget_fill : SyscallInput * SyscallEffect :=
-  (mmap_at_in 0 4096 3 34, mkEffect 131072 [] [(131072, 4096)]).
+  (mmap_flags_in 131072 4096 3 34, mkEffect 131072 [] [(131072, 4096)]).
 
 (** BRK SHRINK.  brk(P) from P + 100: [newbrk = P] and [oldbrk = P +
-    4096] differ, so [SYSCALL_DEFINE1(brk)] hands [[P, P + 4096)] to
-    [do_vmi_align_munmap] (mm/mmap.c:153-177, Linux v6.18.46), which
+    4096] differ, so [SYSCALL_DEFINE1(brk)]'s shrink arm hands
+    [[P, P + 4096)] to
+    [do_vmi_align_munmap] (mm/mmap.c, Linux v6.18.46, commit
+    1f99e9ab748f), which
     takes the PROT_NONE VMA there whole.  Linux is left with the brk VMA
     [[S, P)] and the fill page: 8192 bytes.  The logical cut [[P, P +
     100)] alone would leave the PROT_NONE entry's remnant [(P + 100,
@@ -3798,10 +4078,12 @@ Proof. check_eq. Qed.
 
 (** EXACT MUNMAP.  A same-page brk grow to P + 200 records the grant
     [(P + 100, 100)] inside the PROT_NONE page with no address-space test
-    ([Mmap.brk_grow_ok]; Linux only moves [mm->brk], mm/mmap.c:155-158),
+    ([Mmap.brk_grow_ok]; Linux only moves [mm->brk], the [oldbrk ==
+    newbrk] early exit of [SYSCALL_DEFINE1(brk)], mm/mmap.c),
     and charges nothing while the protection covers it.  munmap(P, 4096)
     names the PROT_NONE mapping exactly; [do_vmi_munmap] unmaps every VMA
-    in [[P, P + 4096)] (mm/vma.c:1604-1626).  Linux is left with [[S, P)]
+    in [[P, P + 4096)] (mm/vma.c, Linux v6.18.46, commit 1f99e9ab748f).
+    Linux is left with [[S, P)]
     and the fill page: 8192 bytes.  Removing only the entry based at P
     would leave the grant, its protection cut, charged at 100 more. *)
 Example munmap_exact_takes_the_grant_inside_the_page :

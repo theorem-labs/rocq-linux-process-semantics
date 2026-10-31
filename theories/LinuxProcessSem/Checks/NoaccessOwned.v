@@ -736,11 +736,9 @@ Proof.
     difn H E; [|discriminate]. injection H as <- <-.
     unfold na_inv. rewrite vmm_mmap_backing, vmm_vmmaps.
     cbn [vm_maps vm_noaccess vm_brk].
-    apply andb_true_iff in E as [E Hus].
-    apply andb_true_iff in E as [E Hfree].
-    apply andb_true_iff in E as [E Hceil].
-    apply andb_true_iff in E as [Halign Hpos].
-    apply Z.leb_le in Hceil. apply Z.eqb_eq in Halign.
+    apply andb_true_iff in E as [Hplace Hus].
+    destruct (Placement.linux_place_is_admissible _ _ _ _ _ HnZ Hnal Hplace)
+      as (Halign & Hpos & Hceil & Hfree).
     apply na_inv_cons_both;
       [exact Halign | rewrite u64 by lia; exact Hnal | rewrite u64 by lia; exact HnZ
       | rewrite u64 by lia; unfold two_pow_64; lia | exact Hna]. }
