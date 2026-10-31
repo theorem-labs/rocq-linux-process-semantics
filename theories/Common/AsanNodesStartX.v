@@ -25,7 +25,7 @@
     [H_off_segments_vis], the [vis]-only twins of APS's lemmas), the loop
     itself being the image-independent [AsanNodesAux.env_loop] / [pn_loop]. *)
 
-(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)); AT_HWCAP is the auxv's fourth pair (10 pairs / 20 words, auxv_size 160); the mapped image is [Run.entry_stack_image] (block ++ page slack). *)
+(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 29 pairs / 464 bytes ([StackLayout.auxv_size] under CONFIG_RSEQ) and AT_HWCAP is its eleventh pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From Stdlib Require Import FunctionalExtensionality.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -92,31 +92,48 @@ Section NodesD.
 
   (** ---- the argument block and what [SINV] says about it ---- *)
   Variable ph : PhdrInfo.
+  (** the launch: the input carries argv, envp, the credentials, the exec file
+      name and the kernel build; the entry pc is the auxv's AT_ENTRY, and the
+      draw carries the stack VMA's end *)
+  Variable inp : ProcInput.
+  Variable mbase : word.
+  Variable entry : word.
   Variable sp : word.
-  Variable rdraw : EntryDraw.   (* the entry draw [Run.en_draw]; ed_random = the AT_RANDOM bytes, ed_slack = the page tail above the block *)
-  Variables argv envp : list (list byte).
-  Variable uid : word.                  (* the auxv carries the uid *)
-  Variable hw : word.                   (* AT_HWCAP, the auxv's fourth pair *)
-  Hypothesis Hva : valid_argv argv.
-  Hypothesis Hve : valid_envp envp.
+  Variable brk : word.
+  Variable rdraw : EntryDraw.   (* the entry draw [Run.en_draw]; ed_random = the AT_RANDOM bytes, ed_top = the stack VMA's end *)
+  Hypothesis Hva : valid_argv (in_argv inp).
+  Hypothesis Hve : valid_envp (in_envp inp).
+  Hypothesis Hvl : valid_launch inp.
+  (** [Run.valid_entry]'s FIFTH conjunct.  It is what pins the
+      [arch_align_stack] pad, hence argv[0]'s address: the strings now sit at
+      the TOP of the stack VMA, so no sp-relative constant reaches them. *)
+  Hypothesis Hlau : entry_launch_ok_va Sv48 (mkEntry sp brk mbase rdraw) inp.
   Hypothesis Hsp_lo : sp_window_lo <= bv_unsigned sp.
   Hypothesis Hsp_hi : bv_unsigned sp <= sp_window_hi.
 
+  Let argv := in_argv inp.
+  Let envp := in_envp inp.
+  Let execfn := in_execfn inp.
+  Let rseq := kb_rseq (in_kernel inp).
+  Let top := ed_top rdraw.
   Let usp := bv_unsigned sp.
   Let argc := Z.of_nat (length argv).
   Let envc := Z.of_nat (length envp).
   Let s0 := nth 0 argv [].
-  Let bsb := build_stack_bytes ph sp argv envp uid hw rdraw.
-  (** envp array base, argv[0] string address *)
+  Let bsb := entry_stack_image inp mbase ph entry sp rdraw.
+  (** envp array base, argv[0] string address.  [STR0] WAS
+      [usp + 8*argc + 8*envc + 184]: the strings came right above the auxv.
+      Now it is [usp + C + pad], the top of the AT_RANDOM bytes plus the pad
+      [arch_align_stack] left ([CatExec.cat_string_off]). *)
   Let EA := usp + 8 * argc + 16.
-  Let STR0 := usp + 8 * argc + 8 * envc + 184.   (* 184 includes the 16-byte AT_HWCAP pair *)
+  Let STR0 := usp + Z.of_nat (cat_string_off rseq sp top argv envp execfn).
 
   Hypothesis SINV_vals : forall E M, SINV E M ->
     uE E e_envp = EA /\ ev E V_ENVC = Z_to_bv 64 envc /\ uE E e_str0 = STR0.
   Hypothesis SINV_envp : forall E M (a : word), SINV E M ->
-    EA <= bv_unsigned a < EA + 8 * envc + 8 -> M a = wrap_mem ph sp argv envp uid hw rdraw a.
+    EA <= bv_unsigned a < EA + 8 * envc + 8 -> M a = wrap_mem inp mbase ph entry sp rdraw a.
   Hypothesis SINV_str0 : forall E M (a : word), SINV E M ->
-    STR0 <= bv_unsigned a <= STR0 + Z.of_nat (length s0) -> M a = wrap_mem ph sp argv envp uid hw rdraw a.
+    STR0 <= bv_unsigned a <= STR0 + Z.of_nat (length s0) -> M a = wrap_mem inp mbase ph entry sp rdraw a.
 
   (* ----------------------------------------------------------------------- *)
   (** ** Layout facts                                                          *)
@@ -133,60 +150,103 @@ Section NodesD.
   Lemma usp_hi : usp <= 0x800000000000.
   Proof. unfold usp. unfold sp_window_hi in Hsp_hi. lia. Qed.
   Lemma bsb_nw : usp + Z.of_nat (length bsb) < 2 ^ 64.
-  Proof. unfold usp, bsb. apply lay_bsb_nw; assumption. Qed.
-
-  Lemma STR0_eq : cat_argv_ptr sp argv envp 0 = Z_to_bv 64 STR0.
   Proof.
-    pose proof len_av. pose proof len_ev. pose proof usp_hi.
-    rewrite (cat_argv_ptr_offset sp argv envp 0) by (destruct Hva as [Hl _]; lia).
-    unfold cat_string_base. rewrite nat_to_word_add_merge, word_add_nat.
-    lazymatch goal with |- Z_to_bv 64 ?a = Z_to_bv 64 ?b => replace a with b; [reflexivity|] end.
+    unfold usp, bsb.
+    exact (entry_stack_image_no_wrap Sv48 inp mbase ph entry sp brk rdraw Hlau).
+  Qed.
+
+  (** the block's length, piece by piece: the head C, the [arch_align_stack]
+      pad, the strings L and the eight bytes [create_init_stack_vma] skipped
+      ([StackLayout.length_build_stack_bytes]) *)
+  Lemma length_bsb_sum : Z.of_nat (length bsb)
+    = Z.of_nat (cat_string_off rseq sp top argv envp execfn)
+      + Z.of_nat (launch_string_bytes argv envp execfn) + 8.
+  Proof.
+    unfold bsb. rewrite entry_stack_image_block, length_build_stack_bytes.
+    unfold cat_string_off, rseq, argv, envp, execfn, top.
+    change (la_rseq (launch_auxv inp mbase)) with (kb_rseq (in_kernel inp)). lia.
+  Qed.
+
+  (** argv[0] and its NUL lie inside the string area: [copy_strings] (fs/exec.c,
+      Linux v6.18.46, commit 1f99e9ab748f) copied them there, so L is at least
+      [|argv[0]| + 1] *)
+  Lemma s0_le_strings :
+    Z.of_nat (length s0) + 1 <= Z.of_nat (launch_string_bytes argv envp execfn).
+  Proof.
+    unfold launch_string_bytes, s0, argv, envp.
+    pose proof (Nat2Z.is_nonneg (length (flatten_strings (in_envp inp)))).
+    pose proof (Nat2Z.is_nonneg (length (in_execfn inp))).
+    destruct (in_argv inp) as [|a t] eqn:Ea.
+    - destruct Hva as [[H _] _]. rewrite Ea in H. cbn in H. lia.
+    - cbn [flatten_strings flat_map nth]. rewrite !length_app. cbn [length]. lia.
+  Qed.
+
+  Lemma str0_hi : STR0 + Z.of_nat (length s0) + 1 <= usp + Z.of_nat (length bsb).
+  Proof.
+    pose proof s0_le_strings. pose proof length_bsb_sum. unfold STR0, usp in *. lia.
+  Qed.
+
+  Lemma STR0_eq : cat_argv_ptr top argv envp execfn 0 = Z_to_bv 64 STR0.
+  Proof.
+    pose proof len_av. pose proof len_ev. pose proof usp_hi. pose proof usp_lo. pose proof bsb_nw.
+    rewrite (cat_argv_ptr_offset top argv envp execfn 0) by (destruct Hva as [Hl _]; lia).
     change (total_arg_bytes_nat (firstn 0 argv)) with 0%nat.
-    unfold cat_struct_size, auxv_size, STR0, usp, argc, envc. lia.
+    rewrite (cat_string_base_offset Sv48 inp mbase sp brk rdraw Hlau).
+    rewrite word_add_0, word_add_nat. f_equal. unfold STR0, usp. lia.
   Qed.
 
   (** reading the envp array / argv[0] out of a memory that holds the image there *)
   Lemma rd_envp_k : forall M k, (k < length envp)%nat ->
-    (forall a : word, EA <= bv_unsigned a < EA + 8 * envc + 8 -> M a = wrap_mem ph sp argv envp uid hw rdraw a) ->
-    rdn SEGS M (Z_to_bv 64 (EA + 8 * Z.of_nat k)) 8 = Some (word_to_le_bytes 8 (cat_envp_ptr sp argv envp k)).
+    (forall a : word, EA <= bv_unsigned a < EA + 8 * envc + 8 -> M a = wrap_mem inp mbase ph entry sp rdraw a) ->
+    rdn SEGS M (Z_to_bv 64 (EA + 8 * Z.of_nat k)) 8 = Some (word_to_le_bytes 8 (cat_envp_ptr top argv envp execfn k)).
   Proof.
     intros M k Hk HM. pose proof len_av. pose proof len_ev. pose proof usp_lo. pose proof usp_hi.
     assert (Hk' : Z.of_nat k < envc) by (unfold envc; lia).
-    rewrite (rdn_ext SEGS 8 M (wrap_mem ph sp argv envp uid hw rdraw)).
+    rewrite (rdn_ext SEGS 8 M (wrap_mem inp mbase ph entry sp rdraw)).
     - rewrite rdn_wrap_stack_above; [| rewrite u64_lit; unfold EA in *; lia | rewrite u64_lit; unfold EA in *; [change (Z.of_nat 8) with 8|]; lia].
+      unfold argv, envp, execfn, top.
       rewrite <- n_to_le_8_spec.
-      rewrite <- (read_envp_ptr_k SEGS ph sp rdraw argv envp uid hw Hva Hve Hsp_hi k Hk).
+      rewrite <- (read_envp_ptr_k SEGS Sv48 inp mbase ph entry sp brk rdraw Hva Hve Hvl Hlau k Hk).
       f_equal. rewrite word_add_nat. f_equal. unfold envp_off, EA, argc, usp. lia.
     - rewrite u64_lit; unfold EA in *; [change (Z.of_nat 8) with 8|]; lia.
     - intros a Ha. rewrite u64_lit in Ha by (unfold EA in *; lia). change (Z.of_nat 8) with 8 in Ha. apply HM. lia.
   Qed.
 
   Lemma rd_envp_null : forall M,
-    (forall a : word, EA <= bv_unsigned a < EA + 8 * envc + 8 -> M a = wrap_mem ph sp argv envp uid hw rdraw a) ->
+    (forall a : word, EA <= bv_unsigned a < EA + 8 * envc + 8 -> M a = wrap_mem inp mbase ph entry sp rdraw a) ->
     rdn SEGS M (Z_to_bv 64 (EA + 8 * Z.of_nat (length envp))) 8 = Some (word_to_le_bytes 8 (Z_to_bv 64 0)).
   Proof.
     intros M HM. pose proof len_av. pose proof len_ev. pose proof usp_lo. pose proof usp_hi.
-    rewrite (rdn_ext SEGS 8 M (wrap_mem ph sp argv envp uid hw rdraw)).
+    rewrite (rdn_ext SEGS 8 M (wrap_mem inp mbase ph entry sp rdraw)).
     - rewrite rdn_wrap_stack_above; [| rewrite u64_lit; unfold EA, envc in *; lia | rewrite u64_lit; unfold EA, envc in *; [change (Z.of_nat 8) with 8|]; lia].
+      unfold argv, envp, execfn, top.
       rewrite <- n_to_le_8_spec.
-      rewrite <- (read_envp_null SEGS ph sp rdraw argv envp uid hw Hva Hve Hsp_hi).
+      rewrite <- (read_envp_null SEGS Sv48 inp mbase ph entry sp brk rdraw Hva Hve Hvl Hlau).
       f_equal. rewrite word_add_nat. f_equal. unfold envp_off, EA, argc, usp. lia.
     - rewrite u64_lit; unfold EA, envc in *; [change (Z.of_nat 8) with 8|]; lia.
     - intros a Ha. rewrite u64_lit in Ha by (unfold EA, envc in *; lia). change (Z.of_nat 8) with 8 in Ha. apply HM. unfold envc. lia.
   Qed.
 
   Lemma rd_str0_j : forall M j, (j <= length s0)%nat ->
-    (forall a : word, STR0 <= bv_unsigned a <= STR0 + Z.of_nat (length s0) -> M a = wrap_mem ph sp argv envp uid hw rdraw a) ->
+    (forall a : word, STR0 <= bv_unsigned a <= STR0 + Z.of_nat (length s0) -> M a = wrap_mem inp mbase ph entry sp rdraw a) ->
     rdn SEGS M (Z_to_bv 64 (STR0 + Z.of_nat j)) 1 = Some [byte_at s0 j].
   Proof.
     intros M j Hj HM. pose proof len_av. pose proof len_ev. pose proof usp_lo. pose proof usp_hi. pose proof len_s0.
-    rewrite (rdn_ext SEGS 1 M (wrap_mem ph sp argv envp uid hw rdraw)).
+    pose proof bsb_nw. pose proof str0_hi.
+    rewrite (rdn_ext SEGS 1 M (wrap_mem inp mbase ph entry sp rdraw)).
     - rewrite rdn_wrap_stack_above; [| rewrite u64_lit; unfold STR0 in *; lia | rewrite u64_lit; unfold STR0 in *; [change (Z.of_nat 1) with 1|]; lia].
-      unfold byte_at, s0.
-      rewrite <- (read_argv_byte_k ph SEGS sp argv envp 0 j uid hw rdraw ltac:(destruct Hva as [Hl _]; lia) Hj bsb_nw).
+      unfold byte_at, s0, argv, envp, execfn, top.
+      rewrite <- (read_argv_byte_k Sv48 SEGS inp mbase ph entry sp brk rdraw 0 j Hlau ltac:(destruct Hva as [Hl _]; lia) Hj).
       f_equal. rewrite STR0_eq, word_add_nat, u64_lit by (unfold STR0 in *; lia). reflexivity.
     - rewrite u64_lit; unfold STR0 in *; [change (Z.of_nat 1) with 1|]; lia.
     - intros a Ha. rewrite u64_lit in Ha by (unfold STR0 in *; lia). change (Z.of_nat 1) with 1 in Ha. apply HM. lia.
+  Qed.
+
+  Lemma envp_ptr_nz : forall k, (k < length envp)%nat ->
+    bv_unsigned (cat_envp_ptr top argv envp execfn k) <> 0.
+  Proof.
+    intros k Hk.
+    exact (cat_envp_ptr_nz SEGS Sv48 inp mbase ph entry sp brk rdraw Hva Hve Hvl Hlau k Hk).
   Qed.
 
   (* ----------------------------------------------------------------------- *)
@@ -210,12 +270,12 @@ Section NodesD.
     (* the loop on the restricted state *)
     set (H2 := Hv E cs model).
     set (ms := mkst R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS)).
-    assert (HM : forall a : word, EA <= bv_unsigned a < EA + 8 * envc + 8 -> mrestrict H2 FULL a = wrap_mem ph sp argv envp uid hw rdraw a).
+    assert (HM : forall a : word, EA <= bv_unsigned a < EA + 8 * envc + 8 -> mrestrict H2 FULL a = wrap_mem inp mbase ph entry sp rdraw a).
     { intros a Ha. unfold H2. rewrite mrestrict_Hv_high by (unfold EA, CEIL in *; lia). eapply SINV_envp; [exact HS | exact Ha]. }
     destruct (env_loop SEGS (x_envscan A) we1 we2 we3 ltac:(lia) Fe1 Fe2 Fe3 Ee1 Ee2 Ee3 De1 De2 De3
-                (mrestrict H2 FULL) (seg_rom SEGS) EA (length envp) (cat_envp_ptr sp argv envp)
+                (mrestrict H2 FULL) (seg_rom SEGS) EA (length envp) (cat_envp_ptr top argv envp execfn)
                 ltac:(unfold EA, envc in *; lia)
-                ltac:(intros k Kk; split; [apply rd_envp_k; [exact Kk | exact HM] | apply (cat_envp_ptr_nz ph sp rdraw argv envp uid hw Hva Hve Hsp_lo Hsp_hi k Kk)])
+                ltac:(intros k Kk; split; [apply rd_envp_k; [exact Kk | exact HM] | apply (envp_ptr_nz k Kk)])
                 (rd_envp_null _ HM) (length envp) 0%nat R ltac:(lia) H9') as [R' [Hms Hpost]].
     unfold cfg_of. fold ms.
     assert (Hms' : msteps SEGS (restrict H2 ms) (mkst R' (Z_to_bv 64 (x_envscan A + 12)) (mrestrict H2 FULL) (seg_rom SEGS))).
@@ -286,7 +346,7 @@ Section NodesD.
     set (ms := mkst R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS)).
     assert (Hst0 : store_ok SEGS M0 (Z_to_bv 64 p) 8 = true).
     { eapply store_ok_mono; [apply Mr_grows_Hv | exact HKW]. }
-    assert (HM : forall a : word, STR0 <= bv_unsigned a <= STR0 + Z.of_nat (length s0) -> M0 a = wrap_mem ph sp argv envp uid hw rdraw a).
+    assert (HM : forall a : word, STR0 <= bv_unsigned a <= STR0 + Z.of_nat (length s0) -> M0 a = wrap_mem inp mbase ph entry sp rdraw a).
     { intros a Ha. unfold M0, H2. rewrite mrestrict_Hv_high by (unfold STR0, CEIL in *; lia). eapply SINV_str0; [exact HS | exact Ha]. }
     destruct (pn_loop SEGS (x_pnscan A) wp0 wp1 wp2 wp3 wp4 ltac:(lia) Fp0 Fp1 Fp2 Fp3 Fp4 Ep0 Ep1 Ep2 Ep3 Ep4 Dp0 Dp1 Dp2 Dp3 Dp4
                 M0 (seg_rom SEGS) p STR0 s0

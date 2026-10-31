@@ -1052,8 +1052,7 @@ Definition init_machine_state (inp : ProcInput) : machine_state :=
 (** The initial configuration for one run of THIS image on the
     caller-supplied inputs [inp]. *)
 Definition init_config (inp : ProcInput) : config :=
-  mkCfg (init_machine_state (in_argv inp) (in_envp inp) (in_uid inp)
-                            (in_hwcap inp))
+  mkCfg (init_machine_state inp)
         (init_model (segments_reserved mi_loaded_segments) mi_init_brk
                     mi_mmap_base mi_init_sp mi_alloc_limit inp).
 
@@ -2639,8 +2638,8 @@ Definition valid_envp (envp : list (list byte)) : Prop :=
 
     [fd] is a descriptor number, so it is decimal without a leading
     zero and at most [sysctl_nr_open_max] - 1 = 0x7fffffbf
-    (fs/file.c: [__const_min(INT_MAX, ~(size_t)0/sizeof(void *)) & -BITS_PER_LONG]
-    is 0x7fffffc0 on rv64).  The part after [/dev/fd/N/] is the
+    (fs/file.c: [sysctl_nr_open_max] is [INT_MAX] masked down to a
+    multiple of [BITS_PER_LONG], 0x7fffffc0 on rv64).  The part after [/dev/fd/N/] is the
     caller's own relative name, so it is 1 to 4095 bytes and does not
     start with "/".
 
@@ -2665,7 +2664,8 @@ Definition valid_path_name (p : list byte) : Prop :=
   (1 <= Z.of_nat (length p) <= 4095)%Z /\ ~ In (Z_to_bv 8 0) p.
 
 Definition dev_fd_prefix : list byte :=
-  map (fun c => Z_to_bv 8 c) [47; 100; 101; 118; 47; 102; 100; 47]. (* "/dev/fd/" *)
+  [ Z_to_bv 8 47; Z_to_bv 8 100; Z_to_bv 8 101; Z_to_bv 8 118;
+    Z_to_bv 8 47; Z_to_bv 8 102; Z_to_bv 8 100; Z_to_bv 8 47 ].  (* "/dev/fd/" *)
 
 Definition valid_execfn (fn : list byte) : Prop :=
   valid_path_name fn
@@ -2682,7 +2682,7 @@ Definition valid_execfn (fn : list byte) : Prop :=
       [limit = _STK_LIM / 4 * 3;]                      (6 MiB)
       [limit = min(limit, bprm->rlim_stack.rlim_cur / 4);]   (2 MiB at the 8 MiB limit)
       [limit = max_t(unsigned long, limit, ARG_MAX);]        (128 KiB)
-      [ptr_size = max(bprm->argc, 1) + bprm->envc;  ptr_size *= sizeof(void *);]
+      [ptr_size = (max(bprm->argc, 1) + bprm->envc) * 8;]
       [if (limit <= ptr_size) return -E2BIG;]
       [limit -= ptr_size;]
 
@@ -3136,23 +3136,419 @@ Definition launch_entry_va (v : VaSize) (inp : ProcInput) (brk : word)
           (Z_to_bv 64 (mmap_base_of v (in_kernel inp) 0))
           (mkDraw rnd top vd).
 
-(** The witness is admitted.  The arithmetic in one place:
+(* ------------------------------------------------------------------
+   THE ARITHMETIC OF THE FIFTH CONJUNCT
 
-    - [ed_top = STACK_TOP] is page-aligned and the top of rule 1's
-      range under either randomization mode.
-    - [sp] is rule 2's upper end, so it is 16-aligned (C is a multiple
-      of 16) and in rule 2's interval.  It is below STACK_TOP by at
-      least [8 + L + C] and above [STACK_TOP - 2 GiB], because
-      [valid_launch] caps [L] at 2 MiB and [valid_argv]/[valid_envp]
-      cap [C] at 10752 bytes (1024 argv slots, 256 envp slots, 29 auxv
-      entries).
-    - the base is rule 3's with [r = 0], the HIGHEST base of the
-      launch, which is at most [STACK_TOP - MIN_GAP] and at least
-      [State.mmap_base_min] under Sv48 and Sv57 — the bound
-      [State.stack_guard_gap_bytes] imposes — and at least 0 under
-      Sv39.
-    - [entry_stack_fits_va] follows from the sp bound, because
-      [entry_stack_span] is below [8 + L + C]. *)
+   The kernel's three masks -- [PAGE_ALIGN], [x & ~0xf] and the gap
+   clamp in [mmap_base] (mm/util.c, Linux v6.18.46, commit
+   1f99e9ab748f) -- as inequalities, once.  Every bound below is a
+   closed bound on a huge literal, so each division is turned into an
+   inequality here and no later goal reaches [lia] with one still in
+   it.
+   ------------------------------------------------------------------ *)
+
+Lemma launch_page_round_up_ge : forall z, (z <= page_round_up_Z z)%Z.
+Proof.
+  intros z. unfold page_round_up_Z, page_size.
+  pose proof (Z.div_mod (z + 4096 - 1) 4096 ltac:(discriminate)).
+  pose proof (Z.mod_pos_bound (z + 4096 - 1) 4096 ltac:(lia)).
+  lia.
+Qed.
+
+Lemma launch_page_round_up_lt : forall z, (page_round_up_Z z < z + page_size)%Z.
+Proof.
+  intros z. unfold page_round_up_Z, page_size.
+  pose proof (Z.div_mod (z + 4096 - 1) 4096 ltac:(discriminate)).
+  pose proof (Z.mod_pos_bound (z + 4096 - 1) 4096 ltac:(lia)).
+  lia.
+Qed.
+
+(** [PAGE_ALIGN] reaches no further than the first page boundary at or
+    above its argument, so a page-aligned ceiling survives it. *)
+Lemma launch_page_round_up_le : forall z b,
+  (z <= b)%Z -> (b mod page_size = 0)%Z -> (page_round_up_Z z <= b)%Z.
+Proof.
+  intros z b Hzb Hb. unfold page_round_up_Z, page_size in *.
+  pose proof (Z.div_mod (z + 4096 - 1) 4096 ltac:(discriminate)).
+  pose proof (Z.mod_pos_bound (z + 4096 - 1) 4096 ltac:(lia)).
+  pose proof (Z.div_mod b 4096 ltac:(discriminate)).
+  lia.
+Qed.
+
+Lemma launch_page_round_up_mod : forall z,
+  (page_round_up_Z z mod page_size = 0)%Z.
+Proof. intros z. unfold page_round_up_Z. apply Z_mod_mult. Qed.
+
+Lemma align_down16_le : forall x, (align_down16 x <= x)%Z.
+Proof.
+  intros x. unfold align_down16.
+  pose proof (Z.mod_pos_bound x 16 ltac:(lia)). lia.
+Qed.
+
+Lemma align_down16_ge : forall x, (x - 15 <= align_down16 x)%Z.
+Proof.
+  intros x. unfold align_down16.
+  pose proof (Z.mod_pos_bound x 16 ltac:(lia)). lia.
+Qed.
+
+(** Why rule 2 ranges over a closed INTERVAL rather than a scattered
+    set: [arch_align_stack] subtracts 0 to 4095 and then masks, and the
+    mask is monotone. *)
+Lemma align_down16_mono : forall x y,
+  (x <= y)%Z -> (align_down16 x <= align_down16 y)%Z.
+Proof.
+  intros x y Hxy. unfold align_down16.
+  pose proof (Z.div_mod x 16 ltac:(discriminate)).
+  pose proof (Z.div_mod y 16 ltac:(discriminate)).
+  pose proof (Z.mod_pos_bound x 16 ltac:(lia)).
+  pose proof (Z.mod_pos_bound y 16 ltac:(lia)).
+  lia.
+Qed.
+
+Lemma align_down16_mod16 : forall x, (align_down16 x mod 16 = 0)%Z.
+Proof.
+  intros x. unfold align_down16.
+  pose proof (Z.div_mod x 16 ltac:(discriminate)).
+  replace (x - x mod 16)%Z with (16 * (x / 16))%Z by lia.
+  rewrite Z.mul_comm. apply Z_mod_mult.
+Qed.
+
+(** C, the head of the block, in this file's own vocabulary: it moves
+    with the two pointer arrays and with nothing else, because
+    [StackLayout.auxv_count] is 27 or 29 and [STACK_ROUND] adds at most
+    one eight-byte word. *)
+Lemma block_head_size_bounds : forall rseq argv envp,
+  (8 * (Z.of_nat (length argv) + Z.of_nat (length envp)) + 472
+   <= Z.of_nat (block_head_size rseq argv envp)
+   <= 8 * (Z.of_nat (length argv) + Z.of_nat (length envp)) + 512)%Z.
+Proof.
+  intros rseq argv envp.
+  unfold block_head_size, block_items, auxv_size, auxv_count.
+  assert (Hm : (Nat.modulo (length argv + length envp + 3) 2 < 2)%nat)
+    by (apply Nat.mod_upper_bound; discriminate).
+  destruct rseq; lia.
+Qed.
+
+(** C is a multiple of 16, which is why [STACK_ROUND]'s result is: the
+    [8 * items] of the pointer arrays and the [8 * (items mod 2)] the
+    mask removes always pair up. *)
+Lemma block_head_size_mod16 : forall rseq argv envp,
+  (Z.of_nat (block_head_size rseq argv envp) mod 16 = 0)%Z.
+Proof.
+  intros rseq argv envp.
+  assert (Hk : exists k, block_head_size rseq argv envp = (16 * k)%nat).
+  { unfold block_head_size, block_items, auxv_size, auxv_count.
+    exists (((length argv + length envp + 3) / 2)
+            + ((length argv + length envp + 3) mod 2)
+            + (if rseq then 29 else 27) + 1)%nat.
+    pose proof (Nat.div_mod_eq (length argv + length envp + 3) 2).
+    destruct rseq; lia. }
+  destruct Hk as [k Hk]. rewrite Hk, Nat2Z.inj_mul.
+  change (Z.of_nat 16) with 16%Z. rewrite Z.mul_comm. apply Z_mod_mult.
+Qed.
+
+(** The strings [copy_strings] (fs/exec.c) copied, counted twice over:
+    [StackLayout.flatten_strings] lays each string and its NUL, which
+    is what [total_arg_bytes] sums. *)
+Lemma length_flatten_strings : forall l,
+  Z.of_nat (length (flatten_strings l)) = total_arg_bytes l.
+Proof.
+  induction l as [|a l IH]; [reflexivity|].
+  unfold flatten_strings, total_arg_bytes in *.
+  cbn [flat_map fold_right]. rewrite !length_app. cbn [length]. lia.
+Qed.
+
+Lemma launch_string_bytes_ge : forall argv envp execfn,
+  (total_arg_bytes argv + total_arg_bytes envp + 1
+   <= Z.of_nat (launch_string_bytes argv envp execfn))%Z.
+Proof.
+  intros argv envp execfn. unfold launch_string_bytes.
+  pose proof (length_flatten_strings argv).
+  pose proof (length_flatten_strings envp).
+  pose proof (Nat2Z.is_nonneg (length execfn)).
+  lia.
+Qed.
+
+(** [mmap_base]'s clamp, with the gap abstracted: whatever the
+    unclamped gap is, the result lies between MIN_GAP and MAX_GAP, and
+    it never exceeds the larger of MIN_GAP and the unclamped gap. *)
+Lemma launch_clamp_facts : forall g lo hi : Z,
+  (lo < hi)%Z ->
+  (lo <= (if (g <? lo)%Z && (lo <? hi)%Z then lo
+          else if (g >? hi)%Z then hi else g) <= hi)%Z
+  /\ ((if (g <? lo)%Z && (lo <? hi)%Z then lo
+       else if (g >? hi)%Z then hi else g) <= Z.max lo g)%Z.
+Proof.
+  intros g lo hi Hlh.
+  destruct ((g <? lo)%Z && (lo <? hi)%Z) eqn:E1.
+  - split; lia.
+  - apply andb_false_iff in E1 as [E1 | E1]; apply Z.ltb_ge in E1; [| exfalso; lia].
+    destruct ((g >? hi)%Z) eqn:E2.
+    + apply Z.gtb_lt in E2. split; lia.
+    + rewrite Z.gtb_ltb in E2. apply Z.ltb_ge in E2. split; lia.
+Qed.
+
+Lemma mmap_gap_bounds : forall v kb,
+  (mmap_min_gap <= mmap_gap v kb <= mmap_max_gap v)%Z
+  /\ (mmap_gap v kb
+      <= Z.max mmap_min_gap
+               (stack_max_size + stack_guard_gap_bytes kb + stack_rnd_max))%Z.
+Proof.
+  intros v kb.
+  assert (Hmm : (mmap_min_gap < mmap_max_gap v)%Z)
+    by (destruct v; vm_compute; reflexivity).
+  pose proof (stack_guard_gap_bytes_bounds kb) as Hguard.
+  unfold mmap_gap. cbv zeta.
+  set (pad := (stack_guard_gap_bytes kb
+               + (if kb_aslr kb then stack_rnd_max else 0))%Z).
+  assert (Hpad : (0 <= pad <= stack_guard_gap_bytes kb + stack_rnd_max)%Z)
+    by (unfold pad; destruct (kb_aslr kb); unfold stack_rnd_max; lia).
+  set (g := (if ((stack_max_size + pad) mod two_pow_64 >? stack_max_size)%Z
+             then (stack_max_size + pad)%Z else stack_max_size)).
+  assert (Hgle : (g <= stack_max_size + pad)%Z).
+  { unfold g.
+    destruct ((stack_max_size + pad) mod two_pow_64 >? stack_max_size)%Z;
+      unfold stack_max_size; lia. }
+  destruct (launch_clamp_facts g mmap_min_gap (mmap_max_gap v) Hmm) as [Hb Hc].
+  split; [exact Hb |]. unfold stack_max_size in *. lia.
+Qed.
+
+(* ------------------------------------------------------------------
+   THE FOUR OLDER CONJUNCTS ARE CONSEQUENCES OF THE FIFTH
+   ------------------------------------------------------------------ *)
+
+(** [valid_sp_va] from the launch conjunct.  [valid_launch] is a real
+    premise and the only one: it is the E2BIG cap, and it bounds the
+    strings AND the pointer arrays jointly, so [valid_argv] and
+    [valid_envp] add nothing here.  Without a cap the block could reach
+    below the bottom of the sp window. *)
+Lemma entry_launch_ok_va_sp : forall v en inp,
+  valid_launch inp -> entry_launch_ok_va v en inp -> valid_sp_va v (en_sp en).
+Proof.
+  intros v [sp brk0 mbase draw] inp [_ Hlb] Hok.
+  cbn [en_sp] in *. cbn [entry_launch_ok_va] in Hok.
+  destruct Hok as [Htop [Hsp _]].
+  unfold valid_stack_top_va in Htop. destruct Htop as [_ [Htople Htopge]].
+  unfold valid_launch_sp in Hsp. destruct Hsp as [Hspmod [Hsplo Hsphi]].
+  unfold launch_bytes in Hlb.
+  pose proof (block_head_size_bounds (kb_rseq (in_kernel inp))
+                (in_argv inp) (in_envp inp)) as [HCl HCh].
+  pose proof (launch_string_bytes_ge (in_argv inp) (in_envp inp)
+                (in_execfn inp)) as HL.
+  pose proof (total_arg_bytes_nonneg (in_argv inp)).
+  pose proof (total_arg_bytes_nonneg (in_envp inp)).
+  pose proof (Nat2Z.is_nonneg (length (in_argv inp))).
+  pose proof (Nat2Z.is_nonneg (length (in_envp inp))).
+  unfold launch_sp_hi in Hsphi. unfold launch_sp_lo in Hsplo.
+  pose proof (align_down16_le
+    (bv_unsigned (ed_top draw) - 8
+     - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                     (in_execfn inp)))) as Hal1.
+  pose proof (align_down16_ge
+    (bv_unsigned (ed_top draw) - 8
+     - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                     (in_execfn inp)) - 4095)) as Hal2.
+  unfold valid_sp_va, va_sp_window_lo, va_sp_window_hi, e2big_limit in *.
+  split; [| split; [| exact Hspmod]].
+  - destruct (kb_aslr (in_kernel inp));
+      unfold stack_rnd_max, page_size in *; lia.
+  - lia.
+Qed.
+
+(** [entry_stack_fits_va] from the launch conjunct, with the same
+    premise: [entry_stack_span] counts the pointer arrays, the strings,
+    a 160-byte auxv and 31 bytes of slack, and the real block's
+    [8 + L + C] is larger term for term. *)
+Lemma entry_launch_ok_va_fits : forall v en inp,
+  valid_launch inp -> entry_launch_ok_va v en inp ->
+  entry_stack_fits_va v (en_sp en) (in_argv inp) (in_envp inp).
+Proof.
+  intros v [sp brk0 mbase draw] inp [_ Hlb] Hok.
+  cbn [en_sp] in *. cbn [entry_launch_ok_va] in Hok.
+  destruct Hok as [Htop [Hsp _]].
+  unfold valid_stack_top_va in Htop. destruct Htop as [_ [Htople _]].
+  unfold valid_launch_sp in Hsp. destruct Hsp as [_ [_ Hsphi]].
+  pose proof (block_head_size_bounds (kb_rseq (in_kernel inp))
+                (in_argv inp) (in_envp inp)) as [HCl _].
+  pose proof (launch_string_bytes_ge (in_argv inp) (in_envp inp)
+                (in_execfn inp)) as HL.
+  unfold launch_sp_hi in Hsphi.
+  pose proof (align_down16_le
+    (bv_unsigned (ed_top draw) - 8
+     - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                     (in_execfn inp)))) as Hal1.
+  unfold entry_stack_fits_va, entry_stack_span, va_sp_window_hi in *. lia.
+Qed.
+
+(** [valid_mmap_base_va] from the launch conjunct, with no premise at
+    all: rule 3 pins the base to [PAGE_ALIGN(STACK_TOP - gap - rnd)],
+    the gap is at least MIN_GAP, and [State.stack_guard_gap_bytes]
+    together with [State.mmap_rnd_bits_max] keeps the base at or above
+    [State.mmap_base_min] under Sv48 and Sv57.  Under Sv39 the clamp at
+    MAX_GAP can fire and the kernel's own subtraction can pass zero, so
+    the floor there is zero, which every address meets. *)
+Lemma entry_launch_ok_va_base : forall v en inp,
+  entry_launch_ok_va v en inp -> valid_mmap_base_va v (en_mmap_base en).
+Proof.
+  intros v [sp brk0 mbase draw] inp Hok.
+  cbn [en_mmap_base] in *. cbn [entry_launch_ok_va] in Hok.
+  destruct Hok as [_ [_ Hbase]].
+  unfold valid_launch_base in Hbase.
+  destruct Hbase as [r [Hr0 [Hrt [Hrf Heq]]]].
+  pose proof (mmap_gap_bounds v (in_kernel inp)) as [[Hgl _] Hgmax].
+  pose proof (stack_guard_gap_bytes_bounds (in_kernel inp)) as Hguard.
+  pose proof (bv_unsigned_in_range 64 mbase) as Hmr.
+  assert (Hrb : (page_size * r <= 35184372084736)%Z).
+  { destruct (kb_aslr (in_kernel inp)).
+    - pose proof (mmap_rnd_bits_bounds v (in_kernel inp)) as [_ Hb].
+      assert (Hmax : (mmap_rnd_bits_max v <= 33)%Z)
+        by (destruct v; cbn; lia).
+      assert (Hp : (2 ^ mmap_rnd_bits v (in_kernel inp) <= 8589934592)%Z).
+      { replace 8589934592%Z with (2 ^ 33)%Z by (vm_compute; reflexivity).
+        apply Z.pow_le_mono_r; lia. }
+      pose proof (Hrt eq_refl). unfold page_size. lia.
+    - rewrite (Hrf eq_refl). unfold page_size. lia. }
+  split; [| split].
+  - destruct v.
+    + (* Sv39: no address is below zero *)
+      unfold va_mmap_base_min. lia.
+    + rewrite Heq. unfold mmap_base_of.
+      eapply Z.le_trans; [| apply launch_page_round_up_ge].
+      unfold va_mmap_base_min, mmap_base_min, va_stack_top, sp_window_hi,
+        mmap_min_gap, stack_max_size, stack_rnd_max, page_size in *. lia.
+    + rewrite Heq. unfold mmap_base_of.
+      eapply Z.le_trans; [| apply launch_page_round_up_ge].
+      unfold va_mmap_base_min, mmap_base_min, va_stack_top, sp_window_hi,
+        mmap_min_gap, stack_max_size, stack_rnd_max, page_size in *. lia.
+  - rewrite Heq. unfold mmap_base_of. apply launch_page_round_up_le.
+    + unfold va_mmap_base_max, mmap_min_gap, page_size in *. lia.
+    + destruct v; vm_compute; reflexivity.
+  - rewrite Heq. unfold mmap_base_of. apply launch_page_round_up_mod.
+Qed.
+
+(* ------------------------------------------------------------------
+   THE WITNESS SATISFIES THE LAUNCH CONJUNCT
+   ------------------------------------------------------------------ *)
+
+Lemma launch_top_unsigned : forall v,
+  bv_unsigned (Z_to_bv 64 (va_stack_top v)) = va_stack_top v.
+Proof.
+  intros v. apply bv_unsigned_Z_to_bv_u64.
+  destruct v; unfold va_stack_top, sv39_task_size, sp_window_hi, two_pow_64;
+    split; [lia | vm_compute; reflexivity | lia | vm_compute; reflexivity
+           | lia | vm_compute; reflexivity].
+Qed.
+
+(** The witness stack pointer is a real address: the block below
+    STACK_TOP is at most [8 + 4095 + 15] bytes of masks plus the E2BIG
+    cap plus C, far less than the 2^38 of the smallest STACK_TOP. *)
+Lemma launch_sp_hi_range : forall v inp,
+  valid_launch inp ->
+  (0 < launch_sp_hi (Z_to_bv 64 (va_stack_top v)) inp < two_pow_64)%Z.
+Proof.
+  intros v inp [_ Hlb]. unfold launch_bytes in Hlb.
+  unfold launch_sp_hi. rewrite launch_top_unsigned.
+  pose proof (block_head_size_bounds (kb_rseq (in_kernel inp))
+                (in_argv inp) (in_envp inp)) as [HCl HCh].
+  pose proof (launch_string_bytes_ge (in_argv inp) (in_envp inp)
+                (in_execfn inp)) as HL.
+  pose proof (total_arg_bytes_nonneg (in_argv inp)).
+  pose proof (total_arg_bytes_nonneg (in_envp inp)).
+  pose proof (Nat2Z.is_nonneg (length (in_argv inp))).
+  pose proof (Nat2Z.is_nonneg (length (in_envp inp))).
+  pose proof (align_down16_le
+    (va_stack_top v - 8
+     - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                     (in_execfn inp)))) as Hal1.
+  pose proof (align_down16_ge
+    (va_stack_top v - 8
+     - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                     (in_execfn inp)))) as Hal2.
+  assert (H64 : two_pow_64 = 18446744073709551616%Z)
+    by (vm_compute; reflexivity).
+  unfold e2big_limit in *. rewrite H64.
+  destruct v; unfold va_stack_top, sv39_task_size, sp_window_hi in *; lia.
+Qed.
+
+(** The witness mmap base is a real address too: the gap is at most
+    MAX_GAP = [STACK_TOP / 6 * 5], so with the draw at 0 the base stays
+    a sixth of the address space above zero. *)
+Lemma launch_mmap_base_range : forall v kb,
+  (0 < mmap_base_of v kb 0 < two_pow_64)%Z.
+Proof.
+  intros v kb.
+  pose proof (mmap_gap_bounds v kb) as [[Hgl Hgh] _].
+  pose proof (launch_page_round_up_ge (va_stack_top v - mmap_gap v kb - 0)) as H1.
+  pose proof (launch_page_round_up_lt (va_stack_top v - mmap_gap v kb - 0)) as H2.
+  assert (H64 : two_pow_64 = 18446744073709551616%Z)
+    by (vm_compute; reflexivity).
+  unfold mmap_base_of. rewrite H64.
+  destruct v;
+    [ assert (Hmg : mmap_max_gap Sv39 = 229064922450%Z)
+        by (vm_compute; reflexivity)
+    | assert (Hmg : mmap_max_gap Sv48 = 117281240296105%Z)
+        by (vm_compute; reflexivity)
+    | assert (Hmg : mmap_max_gap Sv57 = 117281240296105%Z)
+        by (vm_compute; reflexivity) ];
+    rewrite Hmg in Hgh;
+    unfold va_stack_top, sv39_task_size, sp_window_hi, mmap_min_gap,
+      page_size in *; lia.
+Qed.
+
+(** THE WITNESS IS A LINUX LAUNCH.  The stack at the very top (the
+    launch with no stack draw), the stack pointer at the top of rule 2
+    (no [arch_align_stack] pad), the mmap base of rule 3 with the draw
+    at 0.  [valid_launch] is what makes [sp] an address at all. *)
+Lemma launch_entry_va_launch_ok : forall v inp brk rnd vd,
+  valid_launch inp ->
+  entry_launch_ok_va v (launch_entry_va v inp brk rnd vd) inp.
+Proof.
+  intros v inp brk rnd vd Hl.
+  pose proof (launch_top_unsigned v) as Htop.
+  pose proof (launch_sp_hi_range v inp Hl) as Hspr.
+  cbn [launch_entry_va entry_launch_ok_va ed_top].
+  split; [| split].
+  - unfold valid_stack_top_va. rewrite Htop.
+    split; [destruct v; vm_compute; reflexivity |].
+    split; [lia |].
+    destruct (kb_aslr (in_kernel inp)); unfold stack_rnd_max, page_size; lia.
+  - unfold valid_launch_sp.
+    assert (Hu : bv_unsigned
+                   (Z_to_bv 64 (launch_sp_hi (Z_to_bv 64 (va_stack_top v)) inp))
+                 = launch_sp_hi (Z_to_bv 64 (va_stack_top v)) inp)
+      by (apply bv_unsigned_Z_to_bv_u64; lia).
+    rewrite Hu. split; [| split; [| lia]].
+    + unfold launch_sp_hi.
+      rewrite Zminus_mod, align_down16_mod16, block_head_size_mod16.
+      reflexivity.
+    + unfold launch_sp_lo, launch_sp_hi.
+      pose proof (align_down16_mono
+        (bv_unsigned (Z_to_bv 64 (va_stack_top v)) - 8
+         - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                         (in_execfn inp)) - 4095)
+        (bv_unsigned (Z_to_bv 64 (va_stack_top v)) - 8
+         - Z.of_nat (launch_string_bytes (in_argv inp) (in_envp inp)
+                                         (in_execfn inp)))
+        ltac:(lia)).
+      lia.
+  - unfold valid_launch_base. exists 0%Z.
+    split; [lia |].
+    split.
+    + intros _. pose proof (mmap_rnd_bits_bounds v (in_kernel inp)) as [Hb _].
+      apply Z.pow_pos_nonneg; lia.
+    + split; [intros _; reflexivity |].
+      rewrite Z.mul_0_r. apply bv_unsigned_Z_to_bv_u64.
+      pose proof (launch_mmap_base_range v (in_kernel inp)). lia.
+Qed.
+
+(** THE WITNESS, in one lemma.  The launch conjunct is proved directly
+    and the four older ones are read off it by the three implications
+    above, so there is one piece of arithmetic and not five.
+
+    [valid_argv] and [valid_envp] are premises because the statement is
+    the one every consumer has: the proof needs only [valid_launch],
+    whose E2BIG cap bounds the strings and the pointer arrays together.
+    [brk] stays an argument, a fact about the image's reservations. *)
 Lemma launch_entry_va_valid : forall v segs pc ph inp brk rnd vd,
   valid_argv (in_argv inp) ->
   valid_envp (in_envp inp) ->
@@ -3160,7 +3556,16 @@ Lemma launch_entry_va_valid : forall v segs pc ph inp brk rnd vd,
   valid_brk segs brk ->
   valid_entry_va v (mkImage segs pc ph) (launch_entry_va v inp brk rnd vd) inp.
 Proof.
-Admitted.
+  intros v segs pc ph inp brk rnd vd Ha He Hl Hbrk.
+  pose proof (launch_entry_va_launch_ok v inp brk rnd vd Hl) as Hok.
+  cbn [valid_entry_va launch_entry_va].
+  split; [| split; [| split; [| split]]].
+  - exact (entry_launch_ok_va_sp v (launch_entry_va v inp brk rnd vd) inp Hl Hok).
+  - exact Hbrk.
+  - exact (entry_launch_ok_va_base v (launch_entry_va v inp brk rnd vd) inp Hok).
+  - exact (entry_launch_ok_va_fits v (launch_entry_va v inp brk rnd vd) inp Hl Hok).
+  - exact Hok.
+Qed.
 
 (** Validity predicate for the user and group a process is launched as
     — the credential half of a [State.ProcInput], and the model's answer

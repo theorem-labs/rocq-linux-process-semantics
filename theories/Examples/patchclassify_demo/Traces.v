@@ -300,10 +300,9 @@ Proof.
   cbn [run bh_traces]. unfold init_config.
   (* the machine half: the premise holds at this run's initial state *)
   assert (Hms : exits_c segs code fuel
-                  (init_machine_state segs pc ph sp rnd (in_argv inp)
-                     (in_envp inp) (in_uid inp) (in_hwcap inp)) = true).
-  { destruct (init_machine_state_abstracts segs pc ph sp rnd (in_argv inp)
-                (in_envp inp) (in_uid inp) (in_hwcap inp)) as (mem & rom & Hshape).
+                  (init_machine_state segs pc ph sp mbase rnd inp) = true).
+  { destruct (init_machine_state_abstracts segs pc ph sp mbase rnd inp)
+      as (mem & rom & Hshape).
     rewrite Hshape. apply Hc. }
   (* the model half, at this run's initial model *)
   pose proof (m_halted_init_model (segments_reserved segs) brk0 mbase sp lim inp)

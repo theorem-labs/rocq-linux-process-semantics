@@ -119,10 +119,22 @@ Definition wit_mmap_base : word := Z_to_bv 64 mmap_base_min.
 
 (** The witness ledger.  [State.mkVmMaps] would default [vm_mmap_base] to
     zero, which is below [State.mmap_base_min]; this fixes it at the
-    admissible value instead and is otherwise that same constructor. *)
+    admissible value instead and is otherwise that same constructor.
+
+    THE RESERVED LIST IS [State.init_reserved], not [wit_reserved]
+    alone.  [State.init_model] reserves the image AND the vdso/vvar pair
+    [execve] installs above it ([setup_rt_sigreturn_trampoline] and
+    [_install_special_mapping], arch/riscv/kernel/vdso.c, Linux
+    v6.18.46, commit 1f99e9ab748f), placed at the ledger's [vdso_top].
+    No step below touches that pair, so every [wit_sN] has to carry it
+    too or the expected model would differ from the one the checker
+    hands back in a field no step wrote. *)
 Definition wit_vm (maps : list (word * word)) (start_brk brk : word)
     (limit : Z) : VmMaps :=
-  mkVmMapsFull wit_reserved maps [] start_brk brk limit wit_mmap_base
+  mkVmMapsFull
+    (init_reserved wit_reserved wit_mmap_base (Z_to_bv 64 sp_window_lo)
+       default_kernel)
+    maps [] start_brk brk limit wit_mmap_base
     (Z_to_bv 64 sp_window_lo).
 
 Definition wit_s0 : Model :=

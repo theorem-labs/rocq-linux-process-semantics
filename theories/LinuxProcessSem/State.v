@@ -3240,12 +3240,33 @@ Proof.
   pose proof (vdso_text_pages_pos kb). pose proof (vdso_text_pages_le kb). lia.
 Qed.
 
-(** The build a model gets when nobody names one: no transparent huge
-    pages, image 1 (two text pages under the body above).  A run built
-    from a [ProcInput] never sees it — [init_model] installs
-    [in_kernel] — exactly as with [default_nofile]. *)
+(** The build a model gets when nobody names one, and the build a
+    positional [mkProcInput] literal is launched on.  EVERY FIELD NAMES
+    A REAL LAUNCH, and between them they name the ORDINARY one, so a
+    fixture written through [mkProcInput] describes a launch Linux
+    gives rather than a corner of the record:
+
+    - no transparent huge pages (the riscv defconfig,
+      arch/riscv/configs/defconfig);
+    - vDSO image 1, two text pages under [vdso_text_pages] above;
+    - randomisation ON: [randomize_va_space] (mm/memory.c) defaults to
+      1 or 2, never 0, and the personality carries no ADDR_NO_RANDOMIZE;
+    - a stack guard gap of 256 pages, which is [stack_guard_gap]'s own
+      default (mm/mmap.c, [stack_guard_gap = 256UL << PAGE_SHIFT]);
+    - [vm.mmap_rnd_bits] 18, which [mmap_rnd_bits] gives for 0: riscv64
+      sets no ARCH_MMAP_RND_BITS_DEFAULT, so the boot value is
+      ARCH_MMAP_RND_BITS_MIN (arch/riscv/Kconfig, arch/Kconfig);
+    - CONFIG_RSEQ on, riscv64's default (init/Kconfig, arch/riscv/Kconfig
+      selects HAVE_RSEQ);
+    - no vector unit and no cache leaves reported, which is what a
+      machine whose devicetree carries neither gives
+      ([get_cacheinfo] finds no leaf, arch/riscv/kernel/cacheinfo.c).
+
+    A run built from a [ProcInput] never sees this value — [init_model]
+    installs [in_kernel] — exactly as with [default_nofile].
+    Linux v6.18.46, commit 1f99e9ab748f, throughout. *)
 Definition default_kernel : KernelBuild :=
-  mkKernelBuild false 1%N true 0%N 0%N true 0%N cache_view_absent.
+  mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent.
 
 (** THE GUARD GAP IN BYTES.  [stack_guard_gap] (mm/mmap.c, Linux
     v6.18.46, commit 1f99e9ab748f) is [256UL << PAGE_SHIFT], and

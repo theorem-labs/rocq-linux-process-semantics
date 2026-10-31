@@ -944,7 +944,8 @@ Definition image_input_tmp (fs0 tmp0 : Fs.Fs) : ProcInput :=
      the image inputs declare [default_urandom] (as [Cases.Prelude]'s
      fixture does) rather than [IEof]. *)
   mkProcInput_full [[]] [] fs0 IEof demo_uid demo_gid demo_groups net_silent
-                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom tmp0.
+                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom tmp0
+                   default_kernel default_execfn.
 
 Definition image_input (fs0 : Fs.Fs) : ProcInput := image_input_tmp fs0 [].
 
@@ -1021,6 +1022,19 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons
                  | apply not_in_bytes_of_existsb; vm_compute; reflexivity
                  | key_byte_neq | split | cbn; lia | reflexivity | intros [] ].
+  (* [Run.valid_launch], the twelfth conjunct: the fixture declares
+     [State.default_execfn], the one-byte relative name "a" that
+     [getname_flags] (fs/namei.c, Linux v6.18.46, commit 1f99e9ab748f)
+     can return -- one byte, no NUL -- so the first arm of
+     [Run.valid_execfn] applies, and the launch it makes is a handful of
+     bytes, far under the E2BIG limit [bprm_stack_limits] (fs/exec.c)
+     computes. *)
+  all: try (left; split;
+            [ cbn; lia
+            | cbn; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  all: try (vm_compute; discriminate).
 Qed.
 
 (** And on those admitted images the three opens are ANSWERED: the
@@ -1227,7 +1241,7 @@ Example urandom_same_bytes_on_both_sides :
   let inp := mkProcInput_full [[]] [] [] IEof
                demo_uid demo_gid demo_groups net_silent
                default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-               (urandom_stream urandom_decl) [] in
+               (urandom_stream urandom_decl) [] default_kernel default_execfn in
   let src := with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit inp))
                          3 FdUrandom)
                (init_model [] 0 0 demo_sp demo_limit inp) in

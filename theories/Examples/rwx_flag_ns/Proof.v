@@ -4,7 +4,8 @@
     [strong_universal_T]: observable trace equivalence between the source
     image (Source) and the target image (Target) for all valid stack
     pointers and every valid process input (one [State.ProcInput]
-    record: argv, envp, file system, stdin).
+    record: argv, envp, file system, stdin, the credentials, the kernel
+    build and the exec file name).
 
     Both binaries store 5 into a writable global byte, load it back and
     exit with it — no output, exit 5, on every input — so the two
@@ -44,8 +45,20 @@ Proof.
   pose proof (valid_input_va_size _ Hvalid) as Hsv48.
   rewrite (valid_entry_sv48 _ _ _ Hsv48) in Hens.
   rewrite (valid_entry_sv48 _ _ _ Hsv48) in Hent.
-  destruct Hens as (Hspr & _). destruct Hent as (Hspa & _).
-  destruct Hvalid as (Hva & Hve & _).
+  (* The FIFTH conjunct of each entry predicate is [Run.entry_launch_ok_va]:
+     this stack top, stack pointer and mmap base are ones a Linux
+     launch can give ([create_elf_tables] and [setup_arg_pages],
+     fs/binfmt_elf.c and fs/exec.c, Linux v6.18.46, commit
+     1f99e9ab748f).  The source derivation reads argc off the initial
+     stack and fetches through the overlay, so it needs that conjunct
+     and the TWELFTH conjunct of [Run.valid_input], [Run.valid_launch]:
+     together they bound the entry block and put [sp] at or below the
+     stack VMA's end.  The target reads nothing off the stack and needs
+     neither. *)
+  destruct Hens as (Hspr & _ & _ & _ & Hlaunch_source).
+  destruct Hent as (Hspa & _).
+  destruct Hvalid as
+    (Hva & _ & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hlaunch_inp).
   destruct Hspr as (Hr_lo & Hr_hi & _).
   destruct Hspa as (Ha_lo & Ha_hi & _).
   apply (cat_omni_strong_equiv_te
@@ -53,7 +66,7 @@ Proof.
            target_segs TargetMemImage_init_pc TargetMemImage_phdrs sp_target brk_target mb_target rnd_target
            [] (Z_to_bv 64 5) inp).
   - rewrite source_init_pc_val.
-    apply source_wexit; assumption.
+    apply source_wexit with (rbrk := brk_source); assumption.
   - rewrite target_init_pc_val.
     apply target_wexit; assumption.
   - (* Neither binary writes anything, so there is no buffer to bound. *)

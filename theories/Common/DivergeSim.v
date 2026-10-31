@@ -774,8 +774,8 @@ Proof. div_vm_refl. Qed.
 
 Lemma spin_img_to_spin : forall sp brk0 mbase (rnd : EntryDraw) lim inp,
   to_spin spin_segs
-    (init_machine_state spin_segs 0x10000 (mkPhdrInfo 0x10040 56 6) sp rnd
-       (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state spin_segs 0x10000 (mkPhdrInfo 0x10040 56 6) sp mbase rnd
+       inp)
     (init_model (segments_reserved spin_segs) brk0 mbase sp lim inp).
 Proof.
   intros sp brk0 mbase rnd lim inp.
@@ -819,16 +819,27 @@ Proof.
 Qed.
 
 (** The executable path closes the same goal by computation when the
-    inputs are concrete. *)
+    inputs are concrete.
+
+    [spin_exec_input] is the same [State.ProcInput] both sides take, so
+    the entry image and the model agree on argv, envp, the credentials
+    and the kernel build.  The draw's [ed_top] is the top of the Sv48
+    user stack: this example proves a self-jump spins, which reads no
+    stack byte, so the block's placement is free and the witness launch's
+    own top is the one to name. *)
+Definition spin_exec_input : ProcInput :=
+  mkProcInput [[]] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1002) []
+    net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48.
+
 Example spin_img_to_spin_by_execution :
   to_spin spin_segs
     (init_machine_state spin_segs 0x10000 (mkPhdrInfo 0x10040 56 6)
-       (Z_to_bv 64 65536) (mkDraw (Z_to_bv 128 0) (fun _ => Z_to_bv 8 0))
-       [[]] [] (Z_to_bv 64 1000) hwcap_rv64gc)
+       (Z_to_bv 64 65536) (Z_to_bv 64 0x7fff7f800000)
+       (mkDraw (Z_to_bv 128 0) (Z_to_bv 64 (va_stack_top Sv48)) vdso_keeps_all)
+       spin_exec_input)
     (init_model (segments_reserved spin_segs) (Z_to_bv 64 1048576)
        (Z_to_bv 64 0x7fff7f800000) (Z_to_bv 64 65536) 0x40000000%Z
-       (mkProcInput [[]] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1002) []
-          net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48)).
+       spin_exec_input).
 Proof. prove_to_spin 1%nat. Qed.
 
 End SelfJumpImage.

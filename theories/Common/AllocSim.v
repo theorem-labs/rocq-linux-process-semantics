@@ -1427,7 +1427,7 @@ End WithSegs.
 
 (** The run-level omni judgment of a brk-branching run. *)
 Lemma alloc_omni_run : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_outcomes segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  to_outcomes segs (init_machine_state segs pc ph sp mb rnd inp)
               (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (outcomes_post (in_fs inp) U).
 Proof.
@@ -1437,14 +1437,14 @@ Proof.
 Qed.
 
 Lemma alloc_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_outcomes segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  to_outcomes segs (init_machine_state segs pc ph sp mb rnd inp)
               (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
     <-> exists o, U o /\ is_prefix tr (outcome_trace (in_fs inp) o).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto tr.
   unfold init_config.
-  set (ms := init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
+  set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
   assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None)
     by reflexivity.
   assert (Hlazy : m_vm_lazy
@@ -1464,7 +1464,7 @@ Proof.
 Qed.
 
 Lemma alloc_no_error_run : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_outcomes segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  to_outcomes segs (init_machine_state segs pc ph sp mb rnd inp)
               (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
   ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
 Proof.
@@ -1478,10 +1478,10 @@ Qed.
 Lemma alloc_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd U inp,
   to_outcomes source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
     (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp) U ->
   to_outcomes target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state target_segs apc aph asp amb arnd inp)
     (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) U ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
@@ -1512,10 +1512,10 @@ Lemma alloc_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
          U inp,
   to_outcomes source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
     (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) U ->
   to_outcomes target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state target_segs apc aph asp amb arnd inp)
     (init_model (segments_reserved target_segs) abrk amb asp alim inp) U ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)

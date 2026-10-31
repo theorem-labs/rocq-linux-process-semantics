@@ -602,42 +602,34 @@ Proof.
 Qed.
 
 (** The entry is satisfiable FOR A GIVEN VALID INPUT, since
-    [Run.valid_entry]'s stack-image conjunct reads argv and envp: the
-    witness stack pointer is the bottom of the sp window, which leaves
-    two gigabytes of room below [sp_window_hi] for a block the
-    [valid_argv]/[valid_envp] limits cap at [entry_stack_span_max]
-    (2238671 bytes).  So adding that conjunct did not open a second way
-    to empty the entry quantifier, which is the exact failure this
-    boolean exists to rule out. *)
+    [Run.valid_entry]'s last two conjuncts read the input: the stack
+    image has to fit, and the whole (stack top, sp, mmap base) triple
+    has to be one a Linux v6.18.46 launch can give
+    ([Run.entry_launch_ok_va]).  So adding either conjunct did not open
+    a second way to empty the entry quantifier, which is the exact
+    failure this boolean exists to rule out.
+
+    THE WITNESS IS THE CORE'S, [Run.launch_entry_va]: the stack at the
+    very top of the address space, the stack pointer at the top of the
+    sp rule (the launch with no [arch_align_stack] pad), the mmap base
+    of the base rule with the draw at 0, and a vDSO that leaves its
+    caller's registers and frame alone ([Run.vdso_keeps_all]).  The
+    break is the one [image_brk_satisfiable_sound] reads off the image,
+    which is the only part of the entry this file has to supply --
+    [Run.launch_entry_va_valid] discharges the other four conjuncts
+    from [Run.valid_argv], [Run.valid_envp] and [Run.valid_launch],
+    all three of which [Run.valid_input] carries. *)
 Lemma image_brk_satisfiable_entry : forall img inp,
   valid_input inp ->
   image_brk_satisfiable (img_segments img) = true ->
   exists en, valid_entry img en inp.
 Proof.
   intros [segs pc ph] inp Hv H.
-  pose proof (valid_input_va_size _ Hv) as Hsize.
-  destruct Hv as (Hargv & Henvp & _ & _).
   destruct (image_brk_satisfiable_sound segs H) as [brk Hbrk].
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp) as Hspan.
-  exists (mkEntry (Z_to_bv 64 sp_window_lo) brk
-            (Z_to_bv 64 mmap_base_max)
-            (mkDraw (Z_to_bv 128 0) (fun _ => Z_to_bv 8 0))).
-  rewrite (valid_entry_sv48 _ _ _ Hsize).
-  cbn. split; [| split; [exact Hbrk | split]].
-  - unfold valid_sp, sp_window_lo, sp_window_hi.
-    rewrite Z_to_bv_unsigned, bv_wrap_small
-      by (unfold bv_modulus; cbn; lia).
-    lia.
-  - unfold valid_mmap_base, mmap_base_min, mmap_base_max, sp_window_hi,
-      page_size.
-    rewrite Z_to_bv_unsigned, bv_wrap_small
-      by (unfold bv_modulus; cbn; lia).
-    lia.
-  - unfold entry_stack_fits.
-    rewrite Z_to_bv_unsigned, bv_wrap_small
-      by (unfold bv_modulus, sp_window_lo; cbn; lia).
-    unfold entry_stack_span_max in Hspan.
-    unfold sp_window_lo, sp_window_hi. lia.
+  destruct Hv as (Hargv & Henvp & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hlaunch).
+  exists (launch_entry_va (in_va_size inp) inp brk (Z_to_bv 128 0)
+            vdso_keeps_all).
+  apply launch_entry_va_valid; assumption.
 Qed.
 
 (** The check bites: an image whose reservations reach the top of the
@@ -1132,30 +1124,22 @@ End SPEC_ERROR_FREE.
     declares. *)
 
 (** The entry predicates are inhabited under every declaration, by the
-    same witness [image_brk_satisfiable_entry] uses moved to the declared
-    size's window.  Stated over [valid_input_va_any] and the size read off
-    the input, so that one lemma serves the three pinned predicates. *)
+    same witness [image_brk_satisfiable_entry] uses: [Run.launch_entry_va]
+    takes the address-space size as an argument, so the one witness
+    moves to the declared size's window on its own.  Stated over
+    [valid_input_va_any] and the size read off the input, so that one
+    lemma serves the three pinned predicates. *)
 Lemma image_brk_satisfiable_entry_va : forall img inp,
   valid_input_va_any inp ->
   image_brk_satisfiable (img_segments img) = true ->
   exists en, valid_entry img en inp.
 Proof.
-  intros [segs pc ph] inp (Hargv & Henvp & _ & _) H.
+  intros [segs pc ph] inp
+    (Hargv & Henvp & _ & _ & _ & _ & _ & _ & _ & _ & Hlaunch) H.
   destruct (image_brk_satisfiable_sound segs H) as [brk Hbrk].
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp) as Hspan.
-  unfold entry_stack_span_max in Hspan.
-  exists (mkEntry (Z_to_bv 64 (va_sp_window_lo (in_va_size inp))) brk
-            (Z_to_bv 64 (va_mmap_base_max (in_va_size inp)))
-            (mkDraw (Z_to_bv 128 0) (fun _ => Z_to_bv 8 0))).
-  unfold valid_entry. cbn [valid_entry_va].
-  unfold valid_sp_va, valid_mmap_base_va, entry_stack_fits_va,
-    va_sp_window_lo, va_sp_window_hi, va_mmap_base_min, va_mmap_base_max,
-    va_stack_top.
-  destruct (in_va_size inp);
-    unfold sp_window_hi, sv39_task_size, mmap_base_min, page_size;
-    (split; [| split; [exact Hbrk | split]]);
-    rewrite Z_to_bv_unsigned, bv_wrap_small by (unfold bv_modulus; cbn; lia);
-    lia.
+  exists (launch_entry_va (in_va_size inp) inp brk (Z_to_bv 128 0)
+            vdso_keeps_all).
+  apply launch_entry_va_valid; assumption.
 Qed.
 
 Section SpecVa.

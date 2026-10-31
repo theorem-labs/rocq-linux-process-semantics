@@ -57,7 +57,7 @@
     [KFill] cases are everywhere (treated
     like KZero); [summary_fill] emits [KFill] for nonzero fill bytes. *)
 
-(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)); AT_HWCAP is the auxv's fourth pair (10 pairs / 20 words, auxv_size 160); the mapped image is [Run.entry_stack_image] (block ++ page slack). *)
+(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 29 pairs / 464 bytes ([StackLayout.auxv_size] under CONFIG_RSEQ) and AT_HWCAP is its eleventh pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
 From Stdlib Require Import ZArith NArith List Lia Bool FunctionalExtensionality.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType State Run.
@@ -3051,25 +3051,54 @@ Definition V_S1 : nat := 0.     (** sp / 32768 *)
 Definition V_ARGC : nat := 1.
 Definition V_ENVC : nat := 2.
 Definition V_L0 : nat := 3.     (** strlen(argv[0]) *)
-Definition V_W : nat := 4.      (** (string bytes + padding) / 8 *)
+Definition V_W : nat := 4.      (** [StackLayout.block_pad_len]: the bytes
+                                    [arch_align_stack] (arch/riscv/kernel/process.c,
+                                    Linux v6.18.46, commit 1f99e9ab748f) left between
+                                    the AT_RANDOM block and argv[0]'s first byte.
+                                    It WAS (string bytes + padding) / 8, when the
+                                    strings sat below the random bytes. *)
 Definition V_BRK : nat := 5.    (** initial break / 4096 *)
 Definition V_S2 : nat := 6.     (** (sp mod 32768) / 16, in [0, 2047] *)
 Definition V_L1 : nat := 7.     (** strlen(argv[1]) when argc >= 2 (else 0) *)
 Definition V_UID : nat := 8.    (** the launching uid (auxv AT_UID = AT_EUID value) *)
+Definition V_G : nat := 9.      (** [StackLayout.block_items argv envp mod 2]: the
+                                    8-byte gap [STACK_ROUND] (fs/binfmt_elf.c,
+                                    [create_elf_tables]) clears below the AT_RANDOM
+                                    block so that it lands 16-aligned.  No linear form
+                                    over argc and envc can spell "mod 2", so the gap
+                                    is its own variable. *)
+
+(** The auxv's size in bytes, [StackLayout.auxv_size] at the kernel build a
+    positional [State.mkProcInput] literal declares ([State.default_kernel],
+    CONFIG_RSEQ on): 29 entries of 16 bytes.  [AUXSZ_eq] is the tie to the model,
+    and the literal is written out so that the expressions below stay in the
+    executor's normal form. *)
+Definition AUXSZ : Z := 464.
+Lemma AUXSZ_eq : AUXSZ = Z.of_nat (StackLayout.auxv_size (kb_rseq default_kernel)).
+Proof. vm_compute. reflexivity. Qed.
 
 (** sp = 32768*s1 + 16*s2 (two variables so that the stack-shadow code's
     case split on sp mod 32 KiB is a PSplit on s2, F3) *)
 Definition e_sp0 : expr := eadd (escale 32768 (EVar V_S1)) (escale 16 (EVar V_S2)).
-(** envp = sp0 + 8*argc + 16 ; auxv = envp + 8*envc + 8 ; strings = auxv + 160 (10 auxv pairs incl. AT_HWCAP) *)
+(** Linux's block, bottom to top ([StackLayout.build_stack_bytes]):
+      envp     = sp0 + 8*argc + 16          (argc, the argv pointers, their NULL)
+      auxv     = envp + 8*envc + 8          (the envp pointers and their NULL)
+      atrandom = auxv + AUXSZ + 8*g         (the auxv, then [STACK_ROUND]'s gap)
+      str0     = atrandom + 16 + pad        (the sixteen random bytes, then the
+                                             [arch_align_stack] pad)
+    The strings are ABOVE the random bytes now, not below them: [create_elf_tables]
+    lays the vector down from the random bytes, which sit just under the strings
+    [copy_strings] already put at the top of the stack VMA (fs/exec.c, fs/binfmt_elf.c,
+    Linux v6.18.46, commit 1f99e9ab748f). *)
 Definition e_envp : expr := eadd e_sp0 (eadd (escale 8 (EVar V_ARGC)) (ELit 16)).
 Definition e_auxv : expr := eadd e_envp (eadd (escale 8 (EVar V_ENVC)) (ELit 8)).
-Definition e_str0 : expr := eaddz e_auxv 160.
+Definition e_atrandom : expr := eadd (eaddz e_auxv AUXSZ) (escale 8 (EVar V_G)).
+Definition e_str0 : expr := eadd (eaddz e_atrandom 16) (EVar V_W).
 Definition e_str1 : expr := eadd e_str0 (eaddz (EVar V_L0) 1).
-Definition e_atrandom : expr := eadd e_str0 (escale 8 (EVar V_W)).
-(** (e_atrandom - 184) / 8 as a linear form (the initial knowledge bounds it:
+(** (e_atrandom - 24 - AUXSZ) / 8 as a linear form (the initial knowledge bounds it:
     the "sum fact" that bounds shadow addresses of the argument block) *)
 Definition e_atr8 : expr :=
-  eadd (eadd (escale 4096 (EVar V_S1)) (escale 2 (EVar V_S2))) (eadd (EVar V_ARGC) (eadd (EVar V_ENVC) (EVar V_W))).
+  eadd (eadd (escale 4096 (EVar V_S1)) (escale 2 (EVar V_S2))) (eadd (EVar V_ARGC) (eadd (EVar V_ENVC) (EVar V_G))).
 
 (** the word at sp0+16 for EVERY argc: argv[1] (= argv[0] + L0 + 1) when
     argc >= 2, the argv NULL terminator when argc = 1 — spelled
@@ -3645,7 +3674,7 @@ End WithSegs.
 
 (** Brk ASLR window [State.brk_aslr_max] and the initial-variable count. *)
 Definition BRK_ASLR : Z := 0x80000000.
-Definition NX0 : nat := 9.   (** includes V_UID *)
+Definition NX0 : nat := 10.   (** includes V_UID and V_G *)
 
 (** the 16 AT_RANDOM bytes are a per-run kernel draw
     ([ed_random] of [Run.en_draw], a [StackLayout.EntryDraw]).  The FAITHFUL initial knowledge reads them as byte string [K_RND], bound to
@@ -3665,23 +3694,38 @@ Definition auxw (i : Z) (ty : Z) (v : expr) : list kentry :=
 (** What the checker knows at [_start] (justified by AsanInit.init_cs_ok):
     ranges of the initial variables and the sum facts (most specific first),
     the zero-filled writable window below sp (6144513 bytes, [StoreOk.stack_window_depth]:
-    the 8 MiB less [StoreOk.stack_window_reach], a bound on the page-rounded entry image), argc / argv[0] / the sp0+16 word,
-    the 20 auxv words (AT_UID/AT_EUID = EVar V_UID; AT_HWCAP = the hwcap word), the AT_RANDOM block ([atr]: the faithful byte-string
+    the 8 MiB less [StoreOk.stack_window_reach], a bound on the entry image), argc / argv[0] / the sp0+16 word,
+    nine of the 29 auxv pairs (AT_UID/AT_EUID = EVar V_UID), the AT_RANDOM block ([atr]: the faithful byte-string
     entry, or the zero entry), the image hull with no
-    overlay and its writable window. *)
+    overlay and its writable window.
+
+    The pair INDICES are [auxv_entries]' order (StackLayout.v): ARCH_DLINFO's ten
+    (AT_SYSINFO_EHDR, the eight cache words, AT_MINSIGSTKSZ) come first, because
+    [create_elf_tables] expands ARCH_DLINFO before its own entries
+    (fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f).  AT_NULL is pair 28
+    under CONFIG_RSEQ, which [State.default_kernel] declares.
+
+    [KRange (EVar V_W) 0 4110]: [arch_align_stack] subtracts [r] in [0, 4095] and
+    then clears the low four bits, so the pad it leaves is [r] plus a remainder
+    below 16 ([Run.launch_sp_lo] / [Run.launch_sp_hi]).
+    [KRange e_atr8 .. 0xFFFFFFFFFC1]: [e_atr8] is [(at_random - 24 - AUXSZ) / 8] and
+    the sixteen random bytes end at or below 2^47, so it is at most
+    (2^47 - 16 - 24 - 464) / 8.  It WAS 0xFFFFFFFFFE9, with a 160-byte auxv and no gap. *)
 Definition init_kn_with (atr : kentry) (A : atable) : list kentry :=
   [KRange (EVar V_S1) 0xFFFF0000 0xFFFFFFFF; KRange (EVar V_S2) 0 2047;
-   KRange (eaddz e_atrandom 16) 0x7fff800000c0 0x800000000000; KRange e_atr8 0xFFFF0000001 0xFFFFFFFFFE9;
+   KRange (eaddz e_atrandom 16) 0x7fff800000c0 0x800000000000; KRange e_atr8 0xFFFF0000001 0xFFFFFFFFFC1;
    KRange e_sp0 0x7fff80000000 0x7fffffffff40;
    KRange (eadd (escale 4096 (EVar V_S1)) (escale 2 (EVar V_S2))) 0xFFFF0000000 0xFFFFFFFFFE8;
    KRange (EVar V_ARGC) 1 1024; KRange (EVar V_ENVC) 0 256; KRange (EVar V_L0) 0 131071; KRange (EVar V_L1) 0 131071;
-   KRange (EVar V_UID) 0 0xFFFFFFFE;
-   KRange (EVar V_W) 0 280000; KRange (EVar V_BRK) (img_hi A / 4096) ((img_hi A + BRK_ASLR) / 4096);
+   KRange (EVar V_UID) 0 0xFFFFFFFE; KRange (EVar V_G) 0 1;
+   KRange (EVar V_W) 0 4110; KRange (EVar V_BRK) (img_hi A / 4096) ((img_hi A + BRK_ASLR) / 4096);
    KWr (SA e_sp0 (-6144513)) (ELit 6144513); KZero (SA e_sp0 (-6144513)) (ELit 6144513);
    KWord (SA e_sp0 0) 8 (EVar V_ARGC); KWord (SA e_sp0 8) 8 e_str0; kw_argv1 e_argv1w]
-  (* pair 3 is (AT_HWCAP = 16, the run's hwcap word) — not claimed (no plan variable denotes it); pairs 4..9 follow *)
-  ++ auxw 0 3 (ELit (ph_addr_z A)) ++ auxw 1 4 (ELit (ph_ent_z A)) ++ auxw 2 5 (ELit (ph_num_z A)) ++ auxw 4 6 (ELit 4096)
-  ++ auxw 5 11 (EVar V_UID) ++ auxw 6 12 (EVar V_UID) ++ auxw 7 23 (ELit 0) ++ auxw 8 25 e_atrandom ++ auxw 9 0 (ELit 0)
+  (* not claimed, because no plan variable denotes the value: ARCH_DLINFO's pairs 0..9,
+     AT_HWCAP (10), AT_CLKTCK (12), AT_BASE (16), AT_FLAGS (17), AT_ENTRY (18),
+     AT_GID/AT_EGID (21, 22), AT_EXECFN (25) and the CONFIG_RSEQ pair (26, 27) *)
+  ++ auxw 13 3 (ELit (ph_addr_z A)) ++ auxw 14 4 (ELit (ph_ent_z A)) ++ auxw 15 5 (ELit (ph_num_z A)) ++ auxw 11 6 (ELit 4096)
+  ++ auxw 19 11 (EVar V_UID) ++ auxw 20 12 (EVar V_UID) ++ auxw 23 23 (ELit 0) ++ auxw 24 25 e_atrandom ++ auxw 28 0 (ELit 0)
   ++ [atr;
       KImg (img_lo A) (img_hi A); KWr (SA (ELit 0) (rw_lo A)) (ELit (rw_len A))].
 
