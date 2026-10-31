@@ -115,6 +115,10 @@ Hypothesis IT_ok : itab_sound SEGS IT.
 Variable A : atable.
 Variable nx0 : nat.
 Variable LIMIT : Z.
+(** the run's allocation ceiling (the checker's grant/stack boundary); the
+    state invariant [cs_ok] pins it to the run ([co_ceil] below) *)
+Variable CEIL : Z.
+Hypothesis CEIL_ok : ceil_ok CEIL.
 Variable HS : nat -> option acs.
 (** hooked extension nodes ([PExt id args]) and emitting nodes ([PEmit id args]) *)
 Variable XN : nat -> list expr -> acs -> option acs.

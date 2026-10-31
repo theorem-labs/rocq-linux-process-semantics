@@ -494,8 +494,13 @@ Example clock_getres_null_and_invalid_clock :
   /\ check_syscall (getres_input 10 0 (fun _ => None))
        (mkEffect (errno_ret EINVAL) [] []) (clock_model 0)
        = CheckOk (clock_model 0) []
+  (* A NULL [tp] is ANSWERED even when address 0 is writable, because
+     Linux skips the copy for it ([SYSCALL_DEFINE2(clock_getres)],
+     kernel/time/posix-timers.c, v6.18.46).  The arm declined this input
+     while the model also described QEMU user mode, which attempts the
+     copy and discards its result. *)
   /\ check_syscall (getres_input 1 0 (fun _ => Some (Z_to_bv 8 0)))
-       (mkEffect 0 [] []) (clock_model 0) = CheckUnmodeled
+       (mkEffect 0 [] []) (clock_model 0) = CheckOk (clock_model 0) []
   /\ check_syscall (getres_input 10 0 (fun _ => None))
        (mkEffect 0 [] []) (clock_model 0) = CheckReject.
 Proof. repeat split; check_eq. Qed.

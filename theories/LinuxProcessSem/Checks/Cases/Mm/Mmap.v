@@ -1624,26 +1624,33 @@ Definition mmap_file_model : Model :=
       ((Z_to_bv 64 3, FdFile [102] (Z_to_bv 64 0)) :: m_fds noaccess_base)
       noaccess_base).
 
-(** The negative, twice.  MAP_ANONYMOUS clear is the file-backed path and
-    every call on it declines, so no errno presented there conforms --
-    not the -EINVAL of a zero length, and not the -EBADF Linux really
-    gives for a closed fd (mm/mmap.c:511-515), which [Mmap.mmap_spec]'s
-    file-backed branch explains why it does not claim. *)
+(** THE CLOSED-fd CORNER IS ANSWERED, and the rest of the file-backed
+    path declines.  [ksys_mmap_pgoff] (mm/mmap.c, Linux v6.18.46, commit
+    1f99e9ab748f) runs [fget] before [do_mmap], so an fd the process
+    does not hold is -EBADF whatever the other arguments say — a zero
+    length included, because [do_mmap]'s own -EINVAL runs later.  The
+    arm declined this corner while the model also described QEMU user
+    mode, whose [target_mmap] never resolves the fd. *)
 
-Example mmap_zero_len_file_backed_is_unmodeled :
+Example mmap_zero_len_closed_fd_is_ebadf :
   check_syscall
     (mkInput 222 [0; 0; 3; 2; 999; 0]
       (fun _ => None) (fun _ => None))
-    (mkEffect (errno_ret EINVAL) [] []) noaccess_base
-  = CheckUnmodeled.
-Proof. check_eq. Qed.
+    (mkEffect (errno_ret EBADF) [] []) noaccess_base
+  = CheckOk noaccess_base []
+  /\ check_syscall
+       (mkInput 222 [0; 0; 3; 2; 999; 0]
+         (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) noaccess_base
+     = CheckReject.
+Proof. split; check_eq. Qed.
 
-Example mmap_file_backed_closed_fd_ebadf_is_unmodeled :
+Example mmap_file_backed_closed_fd_is_ebadf :
   check_syscall
     (mkInput 222 [0; 4096; 1; 2; 999; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect (errno_ret EBADF) [] []) noaccess_base
-  = CheckUnmodeled.
+  = CheckOk noaccess_base [].
 Proof. check_eq. Qed.
 
 (** A LIVE fd is the same decline, at the two prots that matter.  fd 3
@@ -1703,22 +1710,29 @@ Example mmap_anonymous_misaligned_offset_is_einval :
   = CheckOk noaccess_base [].
 Proof. check_eq. Qed.
 
-(** And the one misaligned-offset shape the gate does NOT answer: a
-    length within a page of 2^64 rounds to zero in the kernel's own
-    arithmetic, and qemu-user reaches the call in the other order --
-    -ENOMEM from [target_mmap]'s length check, measured on
-    qemu-riscv64, against the kernel's -EINVAL.  The model declines;
-    [Mmap.mmap_pglen_ok_b] carries the argument.  2^64 - 1 is the
-    length here; 2^64 - 4096 rounds to itself and is answered by the
-    case above it. *)
+(** The misaligned offset outranks a length within a page of 2^64 too,
+    which rounds to zero in the kernel's own arithmetic.  On Linux
+    v6.18.46 the -EINVAL is certain for every length:
+    [riscv_sys_mmap] (arch/riscv/kernel/sys_riscv.c) tests the offset
+    before [ksys_mmap_pgoff] reads the length.  The arm declined this
+    shape while the model also described QEMU user mode, which reaches
+    the call in the other order -- [target_mmap] (linux-user/mmap.c,
+    QEMU 10.0.11) rounds and tests the length first and answers
+    -ENOMEM.  2^64 - 1 is the length here; 2^64 - 4096 rounds to itself
+    and is the case below. *)
 
-Example mmap_misaligned_offset_wrapping_len_is_unmodeled :
+Example mmap_misaligned_offset_wrapping_len_is_einval :
   check_syscall
     (mkInput 222 [0; 18446744073709551615; 1; 2; 999; 1]
       (fun _ => None) (fun _ => None))
     (mkEffect (errno_ret EINVAL) [] []) noaccess_base
-  = CheckUnmodeled.
-Proof. check_eq. Qed.
+  = CheckOk noaccess_base []
+  /\ check_syscall
+       (mkInput 222 [0; 18446744073709551615; 1; 2; 999; 1]
+         (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] []) noaccess_base
+     = CheckReject.
+Proof. split; check_eq. Qed.
 
 Example mmap_misaligned_offset_page_len_is_einval :
   check_syscall
@@ -3746,11 +3760,15 @@ Example mmap_noreplace_other_shapes_stay_unmodeled :
       (fun _ => None) (fun _ => None))
     (mkEffect 69632 [] [(69632, 4096)]) one_map_model
   = CheckUnmodeled
+  (* MAP_ANONYMOUS clear is the file-backed path, and fd 3 is not open
+     in this model, so the answer is Linux's -EBADF ([ksys_mmap_pgoff],
+     mm/mmap.c) and the mapping presented here is REFUSED rather than
+     declined. *)
   /\ check_syscall
     (mkInput 222 [69632; 4096; 3; Z_to_bv 64 0x100002; 3; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 69632 [] [(69632, 4096)]) one_map_model
-  = CheckUnmodeled.
+  = CheckReject.
 Proof.
   split; [check_eq | split; [check_eq | split; [check_eq | split;
     [check_eq | split; check_eq]]]].

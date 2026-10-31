@@ -44,7 +44,7 @@ Import ListNotations.
 Open Scope bv_scope.
 
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
-  Prelude Uaccess VaSize MmapBase Hwcap Brk
+  Prelude Uaccess VaSize MmapBase Hwcap Brk LinuxOnly
   Fs.File Fs.ReadWrite Fs.Open Fs.Stat Fs.Sync Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe Fs.EventFd
   Fs.EventPoll

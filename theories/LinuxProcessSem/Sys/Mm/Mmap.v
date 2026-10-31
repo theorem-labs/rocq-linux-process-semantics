@@ -798,41 +798,27 @@ Definition mmap_anon_b (flags : word) : bool :=
 Definition mmap_off_aligned_b (off : word) : bool :=
   Z.eqb (bv_unsigned off mod page_size) 0.
 
-(** Does [PAGE_ALIGN(len)] stay inside an [unsigned long]?  The kernel
-    rounds the length in machine arithmetic, so a [len] within a page of
-    2^64 rounds to ZERO there, and [do_mmap] answers -ENOMEM for it
-    (mm/mmap.c, [do_mmap]: [len = PAGE_ALIGN(len); if (!len) return
-    -ENOMEM;]).  This model computes the rounding in [Z], where nothing
-    wraps, so the condition has to be spelled out; the MAP_FIXED arms
-    below already test the same quantity through
+(** The page-rounded length, in [Z].  The kernel rounds the length in
+    machine arithmetic, so a [len] within a page of 2^64 rounds to ZERO
+    there and [do_mmap] answers -ENOMEM for it (mm/mmap.c, [do_mmap]:
+    [len = PAGE_ALIGN(len); if (!len) return -ENOMEM;], Linux v6.18.46).
+    This model computes the rounding in [Z], where nothing wraps; the
+    MAP_FIXED arms below test the same quantity through
     [two_pow_64 <=? addr + nZ].
 
-    It guards the -EINVAL above, and the reason is not about Linux.  On
-    Linux v6.18.46 the -EINVAL is certain for every [len]: riscv's
-    offset test runs before [do_mmap] reads the length at all.  QEMU's
-    user-mode emulation reaches the same call the other way round --
-    [target_mmap] (linux-user/mmap.c) validates the request itself
-    before it performs any mapping, and its length check comes first,
-    [len = TARGET_PAGE_ALIGN(len); if (len == 0 || len >
-    (abi_ulong)-start)] answering -ENOMEM.  Measured on qemu-riscv64:
-    [mmap(0, (size_t)-1, PROT_READ, MAP_PRIVATE, 999, 1)] answers
-    -ENOMEM there against -EINVAL on Linux.  Every other
-    misaligned-offset shape measured on the same binary -- zero length,
-    huge non-wrapping lengths, an invalid MAP_TYPE, an unknown prot bit,
-    MAP_FIXED at an unaligned address, MAP_HUGETLB, an address hint --
-    answers -EINVAL on both.
-
-    WHOSE RULE THIS FOLLOWS, since the answer differs by implementation
-    and this file should not pretend otherwise.  README.md's design-priorities
-    section counts QEMU's user-mode emulation of the syscall interface
-    among the supported implementations, so priority 1 forbids proving
-    -EINVAL as certain here: doing so would prove a behaviour outside
-    the intersection of what the supported implementations produce,
-    since qemu-riscv64 answers -ENOMEM for the case measured above.
-    The decline costs coverage, never soundness -- it is what this
-    guard takes. *)
-Definition mmap_pglen_ok_b (len : word) : bool :=
-  (page_round_up_Z (bv_unsigned len) <? two_pow_64)%Z.
+    NOTHING GATES THE -EINVAL ABOVE ON IT any more, and that is the
+    point of this note.  On Linux v6.18.46 a misaligned [off] is
+    -EINVAL for EVERY [len]: [riscv_sys_mmap] runs its offset test
+    before [ksys_mmap_pgoff], so [do_mmap] never reads the length.  The
+    arm once declined the wrapping length because QEMU user mode
+    reaches the call in the other order -- [target_mmap]
+    (linux-user/mmap.c, QEMU 10.0.11) rounds and tests the length,
+    [len = TARGET_PAGE_ALIGN(len); if (!len || len != (size_t)len) {
+    errno = ENOMEM; return -1; }], before [if (offset &
+    ~TARGET_PAGE_MASK)], and so answers -ENOMEM where Linux answers
+    -EINVAL.  LPS describes Linux v6.18.46, so the -EINVAL is certain
+    and the gate is gone; SCOPE.md's list "Where QEMU user mode
+    differs" carries QEMU's answer. *)
 
 (** The offset the model's anonymous shapes pin: 0.  This is a
     narrowing: a MISALIGNED offset is
@@ -1568,13 +1554,13 @@ Definition mmap_noreplace_noaccess_b (prot flags off : word) : bool :=
 
     A MISALIGNED [off] is -EINVAL, whatever else the call says: riscv's
     [riscv_sys_mmap] tests it before it calls into generic mm at all
-    ([mmap_off_aligned_b]).  The one exception is a [len] whose
-    page-rounding wraps, which is declined rather than answered because
-    qemu-user reaches the call in the other order -- see
-    [mmap_pglen_ok_b], which also says which policy that follows.
+    ([mmap_off_aligned_b]), so it outranks the length, the flags and
+    the fd alike.  There is no exception: the note above
+    [mmap_anon_offset] says why the wrapping length is no longer one.
 
-    Then MAP_ANONYMOUS.  With the bit CLEAR the request is FILE-BACKED,
-    and the whole path is [unmodeled]; the branch below says why in
+    Then MAP_ANONYMOUS.  With the bit CLEAR the request is FILE-BACKED.
+    An [fd] the process does not hold is -EBADF; every other
+    file-backed call is [unmodeled].  The branch below says why in
     full, and which real answer it declines to give.  The short version
     is that the model can neither hold a readable-but-not-writable page
     nor tie a mapping to the file it came from.
@@ -1630,8 +1616,7 @@ Definition mmap_noreplace_noaccess_b (prot flags off : word) : bool :=
     [word] only when the bound check already confines it below
     [alloc_top]. *)
 Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
-  if negb (mmap_off_aligned_b off) then
-    (if mmap_pglen_ok_b len then err_ret EINVAL else unmodeled)
+  if negb (mmap_off_aligned_b off) then err_ret EINVAL
   else if negb (mmap_anon_b flags) then
     (* FILE-BACKED: MAP_ANONYMOUS is clear, so Linux resolves [fd] and
        maps a file's pages.  Everything here is [unmodeled], and there
@@ -1669,9 +1654,8 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
        ([write], [writev], [ftruncate], [openat] with O_TRUNC,
        [unlinkat]).
 
-       ONE ANSWER ON THIS PATH IS DELIBERATELY NOT TAKEN, and it is
-       worth saying which and why.  [ksys_mmap_pgoff] opens the
-       file-backed path with
+       A CLOSED fd IS -EBADF, AND THAT IS THE ONE ANSWER THIS PATH
+       GIVES.  [ksys_mmap_pgoff] opens the file-backed path with
 
          if (!(flags & MAP_ANONYMOUS)) {
                  audit_mmap_fd(fd, flags);
@@ -1679,30 +1663,32 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
                  if (!file)
                          return -EBADF;
 
-       (mm/mmap.c, [ksys_mmap_pgoff], Linux v6.18.46), decided before
-       the length and before [do_mmap] runs at all, so an [fd] the
-       process does not hold is -EBADF on Linux whatever the other
-       arguments say -- and the model holds the fd table that would
-       answer it.  QEMU's user-mode emulation never resolves the fd at
-       all: [target_mmap] (linux-user/mmap.c) validates the request
-       itself and lets the host mmap discover the descriptor, so it
-       answers its own -EINVAL or -ENOMEM wherever one of its checks
-       fires first.  Measured on qemu-riscv64, against the -EBADF
-       Linux v6.18.46 gives for each: a zero length, a length within a
-       page of 2^64, an invalid MAP_TYPE, an unknown prot bit, and
-       MAP_FIXED at an unaligned address.  The two walls above already
-       force the decline for every LIVE fd, so what this paragraph
-       settles is only the closed-fd corner.  README.md's design-priorities
-       section counts QEMU's user-mode emulation among the supported
-       implementations, and it made each of those five qemu-user answers
-       a real behaviour, so an unconditional -EBADF would claim a
-       behaviour outside the intersection.  An -EBADF hedged by a list of
-       argument shapes would be the only sound version, and it would sit
-       in front of a path that declines for two other reasons anyway, so
-       this arm declines outright instead.  Reconsidering it is a
-       decision about whether those answers are QEMU's bugs or its
-       behaviour, not a decision about this arm. *)
-    unmodeled
+       (mm/mmap.c, [ksys_mmap_pgoff], Linux v6.18.46, commit
+       1f99e9ab748f), decided before the length and before [do_mmap]
+       runs at all, so an [fd] the process does not hold is -EBADF
+       whatever the other arguments say -- a zero length, a length
+       within a page of 2^64, an invalid MAP_TYPE, an unknown prot bit
+       and MAP_FIXED at an unaligned address alike, since every one of
+       those is [do_mmap]'s or [__get_unmapped_area]'s and runs later.
+       [fget] takes an [unsigned int], so the fd is read through
+       [Syscall.fd32], and the model holds the fd table that answers
+       it.
+
+       THE ARM ONCE DECLINED THIS CORNER TOO, for QEMU's sake: QEMU
+       user mode never resolves the fd, because [target_mmap]
+       (linux-user/mmap.c, QEMU 10.0.11) validates the request itself
+       and lets the host mmap discover the descriptor, so it answers
+       its own -EINVAL or -ENOMEM for each of those five shapes before
+       any host call.  LPS describes Linux v6.18.46, so the -EBADF is
+       certain; SCOPE.md's list "Where QEMU user mode differs" carries
+       QEMU's five answers.  The two walls above still force the
+       decline for every LIVE fd, which is what the [Some _] arm
+       takes. *)
+    (m <- get_model ;;
+     match fd_lookup (m_fds m) (fd32 fd) with
+     | None => err_ret EBADF
+     | Some _ => unmodeled
+     end)
   else if w_is0 len then
     (if mmap_plain_anon_b flags then err_ret EINVAL else unmodeled)
   else if mmap_modeled_b prot flags off then
