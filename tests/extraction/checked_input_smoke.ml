@@ -51,7 +51,8 @@ let seed : M.rawProcInput = {
   rpi_uid = z "0"; rpi_gid = z "0"; rpi_groups = []; rpi_net = [];
   rpi_nofile = z "1024"; rpi_sigmask = z "0"; rpi_hwcap = z "4397";
   rpi_abort_terminal = false; rpi_va_size = M.Sv48;
-  rpi_urandom = []; rpi_tmp = [] }
+  rpi_urandom = []; rpi_tmp = []; rpi_channel_reader = true;
+  rpi_sigpipe_default = true }
 
 let model =
   match M.init_model_checked [] (z "4096") (z "4096") (z "4096") (z "0") seed with

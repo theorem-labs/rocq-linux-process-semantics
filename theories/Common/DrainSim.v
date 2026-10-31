@@ -873,14 +873,14 @@ Proof.
                 ms rest _ model evs (SNext (mkCfg ms' model'))
                 Hh Hlazy Hfdc Hbm Hwl Hss) as (n & Hn1 & Hn2 & _ & Hc2 & Ht2).
     inversion Hc2; subst.
-    right. left. cbn. repeat split; try assumption.
+    right. left. cbn. split; [exact Hfd1 | repeat split; try assumption].
     exists (skipn n rest).
     split; [apply buf_modeled_skipn; exact Hbm | exact Ht2].
   - (* twt_step *)
     destruct (sstep_instr_inv segs ms model msS' evs (SNext (mkCfg ms' model'))
                 Hlazy HsvcS HstepS Hss) as [_ Hc2].
     inversion Hc2; subst.
-    right. left. cbn. repeat split; try assumption.
+    right. left. cbn. split; [exact Hfd1 | repeat split; try assumption].
     exists rest. split; [exact Hbm | exact Ht'].
 Qed.
 Lemma dinv_step : forall c evs c',
@@ -898,7 +898,7 @@ Proof.
                   Hh Hlazy Hfd0 Hsvc Hno Hg0 Hg1 Hg2 Hw Haok Hss)
         as [(Hs & Hevs & Hc2) | (bs & Hlo & Hhi & Hpre & Hevs & Hc2)];
         inversion Hc2; subst.
-      * right. left. cbn. repeat split; try assumption.
+      * right. left. cbn. split; [exact Hfd1 | repeat split; try assumption].
         exists (out a).
         split; [exact Hobm | exact (to_out_wall_tail _ _ Hout)].
       * pose proof (Hbytes bs Hlo Hhi) as Hcont.

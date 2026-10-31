@@ -565,7 +565,12 @@ Record RawProcInput := mkRawProcInput {
   rpi_abort_terminal : bool;
   rpi_va_size : VaSize;
   rpi_urandom : list Z;                   (* the declared prefix; zeros after *)
-  rpi_tmp   : list (list Z * list Z)
+  rpi_tmp   : list (list Z * list Z);
+  rpi_channel_reader : bool;              (* whether the far end of fds 1 and 2
+                                             has a reader ([State.in_channel_reader]);
+                                             a bool, so every value is in type *)
+  rpi_sigpipe_default : bool              (* SIGPIPE's disposition is SIG_DFL
+                                             ([State.in_sigpipe_default]); a bool *)
 }.
 
 Fixpoint stream_of_bytes (l : list byte) : InputStream :=
@@ -633,7 +638,8 @@ Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
           Some (mkProcInput_full argv envp image_fs (stream_of_bytes stdin)
                   uid gid groups net nofile sigmask hwcap
                   (rpi_abort_terminal r) (rpi_va_size r)
-                  (urandom_of_bytes urandom) tmp)
+                  (urandom_of_bytes urandom) tmp (rpi_channel_reader r)
+                  (rpi_sigpipe_default r))
       | _, _, _, _, _ => None
       end
   | _, _, _, _, _, _, _, _ => None
