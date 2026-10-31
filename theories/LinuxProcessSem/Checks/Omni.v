@@ -544,16 +544,15 @@ Theorem exit0_strong_universal_error_free_abort :
 Proof. intros en_s en_t inp _ _ _. apply exit0_strong_equiv_error_free_abort_any. Qed.
 
 (** The declaration-off half, which the either conjunction needs beside
-    it: the same per-input fact with [error_free_unkilled] weakened to
-    [error_free], since the off triple asks only that. *)
+    it: the same per-input fact.  The declaration-off triple asks for
+    [error_free_unkilled] too now -- a SIGPIPE death needs no
+    declaration -- so the abort-declared fact is the off fact as it
+    stands. *)
 Theorem exit0_strong_universal_error_free :
   strong_universal_error_free_T exit0_image exit0_image.
 Proof.
   intros en_s en_t inp _ _ _.
-  destruct (exit0_strong_equiv_error_free_abort_any en_s en_t inp)
-    as (Hsef & Htef & Htr).
-  split; [exact (error_free_unkilled_error_free _ Hsef)|].
-  split; [exact (error_free_unkilled_error_free _ Htef) | exact Htr].
+  exact (exit0_strong_equiv_error_free_abort_any en_s en_t inp).
 Qed.
 
 Theorem exit0_strong_universal_error_free_either :
@@ -1115,6 +1114,9 @@ Proof.
   assert (Hrb : read_bytes_map (in_mem i) (in_arg i 1) (in_arg i 2) = Some [wloop_byte])
     by (vm_compute; reflexivity).
   assert (Hne : [wloop_byte] <> []) by discriminate.
+  (* [demo_proc_input] is built by the 13-place [State.mkProcInput], which
+     launches with a reader on the far end of stdout *)
+  assert (Hrdr : m_channel_reader (wloop_model lim) = true) by reflexivity.
   (* The count bound, which [write_channel_outcome] asks for by name.
      The channel arm's gate is [Uaccess.modeled_rw_range], a
      DISJUNCTION, so the lemma states the disjunct its proof uses instead
@@ -1122,7 +1124,7 @@ Proof.
      [addi a2, x0, 1] in [wloop_segment]. *)
   assert (Hmax : (bv_unsigned (in_arg i 2) <= rw_bytes_max)%Z)
     by (vm_compute; discriminate).
-  destruct (write_channel_outcome _ _ _ _ _ _ _ _ _ _ Hfd Hch Hmax Hrb Hne Hspec)
+  destruct (write_channel_outcome _ _ _ _ _ _ _ _ _ _ Hfd Hch Hrdr Hmax Hrb Hne Hspec)
     as (_ & n & Hn1 & Hn2 & Heff & Hm & Hevs).
   cbn [length] in Hn2. assert (n = 1%nat) by lia. subst n.
   split; [| split; [exact Hm | exact Hevs]].

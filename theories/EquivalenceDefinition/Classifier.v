@@ -426,7 +426,7 @@ Lemma good_input_refuted_by_source_error : forall O1 O2 inp en1 en2,
 Proof.
   intros O1 O2 inp en1 en2 H1 H2 Herr Hg.
   destruct (Hg en1 en2 H1 H2) as (Hef & _ & _).
-  exact (Hef Herr).
+  exact (error_free_unkilled_error_free _ Hef Herr).
 Qed.
 
 (** ... and it has the same vacuity route, from EITHER image alone.
@@ -529,7 +529,17 @@ Qed.
     two slice obligations would then be about different runs from the
     one the gate sorted. *)
 Definition error_free_input (O : Image) (inp : ProcInput) : Prop :=
-  forall en, valid_entry O en inp -> error_free (run O source_alloc_limit en inp).
+  forall en, valid_entry O en inp ->
+    error_free_unkilled (run O source_alloc_limit en inp).
+  (* [error_free_unkilled] AND NOT [error_free]: the gate is named for
+     an input that does not make the original crash, and a death by a
+     fatal signal is a crash that takes no error transition.  Before
+     the write arms could raise SIGPIPE no run under [Run.valid_input]
+     could end in one, so the two predicates agreed; one can now
+     ([Sys.Fs.ReadWrite.write_spec]), and with the weaker predicate
+     this gate would sort an input on which the original dies into the
+     error-free side.  The same decision [Equivalence.strong_equiv_error_free]
+     takes, for the same reason. *)
 
 (** ... and the consequence just argued for: on an error-free input the
     original is also covered by the model at every valid entry.  The
@@ -541,7 +551,8 @@ Lemma error_free_input_modeled : forall O inp en,
   modeled (run O source_alloc_limit en inp).
 Proof.
   intros O inp en Hef Hen.
-  exact (run_error_free_modeled _ _ _ _ (Hef en Hen)).
+  exact (run_error_free_modeled _ _ _ _
+           (error_free_unkilled_error_free _ (Hef en Hen))).
 Qed.
 
 (** THE BITE.  One erroring resolution, at one valid entry, and the
@@ -564,7 +575,7 @@ Lemma error_free_input_refuted_by_error : forall O inp en,
   ~ error_free_input O inp.
 Proof.
   intros O inp en Hen Herr Hef.
-  exact (Hef en Hen Herr).
+  exact (error_free_unkilled_error_free _ (Hef en Hen) Herr).
 Qed.
 
 (** THE VACUITY ROUTE, in the family's style and with the same answer.
@@ -1401,7 +1412,7 @@ Lemma good_input_s_refuted_by_source_error : forall cfg O1 O2 inp en1 en2,
 Proof.
   intros cfg O1 O2 inp en1 en2 H1 H2 Herr Hg.
   destruct (Hg en1 en2 H1 H2) as (Hef & _ & _).
-  exact (Hef Herr).
+  exact (error_free_unkilled_error_free _ Hef Herr).
 Qed.
 
 (* -------------------------------------------------------------------------
@@ -1860,7 +1871,8 @@ Qed.
     the regions would be carved by a different notion of "buggy" from
     the one the slice obligations are stated under. *)
 Definition error_free_input_s (cfg : SpuriousCfg) (O : Image) (inp : ProcInput) : Prop :=
-  forall en, valid_entry O en inp -> error_free (run_scfg cfg O source_alloc_limit en inp).
+  forall en, valid_entry O en inp ->
+    error_free_unkilled (run_scfg cfg O source_alloc_limit en inp).
 
 (** At [Run.may_fail_cfg] it is the property above, which is what lets
     the unparameterized statements keep their text.  Through
@@ -1869,9 +1881,11 @@ Definition error_free_input_s (cfg : SpuriousCfg) (O : Image) (inp : ProcInput) 
 Lemma error_free_input_s_may_fail : forall O inp,
   error_free_input_s may_fail_cfg O inp <-> error_free_input O inp.
 Proof.
-  intros O inp. unfold error_free_input_s, error_free_input, error_free.
-  split; intros H en Hen Herr; apply (H en Hen);
-    apply (proj1 (proj2 (run_scfg_may_fail O source_alloc_limit en inp))); exact Herr.
+  intros O inp. unfold error_free_input_s, error_free_input.
+  split; intros H en Hen;
+    [ apply (proj1 (error_free_unkilled_scfg_may_fail O source_alloc_limit en inp))
+    | apply (proj2 (error_free_unkilled_scfg_may_fail O source_alloc_limit en inp)) ];
+    exact (H en Hen).
 Qed.
 
 (** Turning a family OFF cannot make an original buggy: fewer executions
@@ -1886,7 +1900,8 @@ Lemma error_free_input_s_of_error_free_input : forall cfg O inp,
   error_free_input O inp -> error_free_input_s cfg O inp.
 Proof.
   intros cfg O inp H en Hen.
-  exact (error_free_scfg_of_error_free cfg O source_alloc_limit en inp (H en Hen)).
+  exact (error_free_unkilled_scfg_of_error_free_unkilled cfg O source_alloc_limit
+           en inp (H en Hen)).
 Qed.
 
 (** ... and it BITES under every configuration, exactly as the
@@ -1901,7 +1916,7 @@ Lemma error_free_input_s_refuted_by_error : forall cfg O inp en,
   ~ error_free_input_s cfg O inp.
 Proof.
   intros cfg O inp en Hen Herr Hef.
-  exact (Hef en Hen Herr).
+  exact (error_free_unkilled_error_free _ (Hef en Hen) Herr).
 Qed.
 
 (** The vacuity route survives the parameterisation untouched, because
@@ -1926,7 +1941,8 @@ Lemma error_free_input_s_modeled : forall cfg O inp en,
   modeled (run_scfg cfg O source_alloc_limit en inp).
 Proof.
   intros cfg O inp en Hef Hen Hun.
-  exact (Hef en Hen (run_scfg_unmodeled_errors cfg O source_alloc_limit en inp Hun)).
+  exact (error_free_unkilled_error_free _ (Hef en Hen)
+           (run_scfg_unmodeled_errors cfg O source_alloc_limit en inp Hun)).
 Qed.
 
 (** The positive relation to [good_input_s], the [_s] twin of

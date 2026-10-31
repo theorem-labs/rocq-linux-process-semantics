@@ -70,7 +70,8 @@ let seed : M.rawProcInput = {
   rpi_nofile = z "1024"; rpi_sigmask = z "0"; rpi_hwcap = z "4397";
   rpi_abort_terminal = false; rpi_va_size = M.Sv48;
   rpi_urandom = []; rpi_tmp = [];
-  rpi_kernel = kernel_default; rpi_execfn = execfn_default }
+  rpi_kernel = kernel_default; rpi_execfn = execfn_default;
+  rpi_channel_reader = true; rpi_sigpipe_default = true }
 
 let model =
   match M.init_model_checked [] (z "4096") (z "4096") (z "4096") (z "0") seed with
@@ -240,7 +241,8 @@ let () =
                                  rcl_assoc = z "8"; rcl_line = z "64" };
                       rcv_l3 = { M.rcl_acpi = true; rcl_size = z "33554432";
                                  rcl_assoc = z "16"; rcl_line = z "64" } } };
-              rpi_execfn = [z "47"; z "97"] }))
+              rpi_execfn = [z "47"; z "97"];
+              rpi_channel_reader = true; rpi_sigpipe_default = true }))
 
 (* ----------------------------------------------------------------- *)
 (* the file-system image the run is launched over                     *)

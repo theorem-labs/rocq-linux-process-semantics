@@ -770,10 +770,22 @@ Definition strong_universal_T : Prop :=
     two [Run.ExecEntry] records are quantified independently, the
     [State.ProcInput] is shared, and each run is seeded with its role's
     allocation budget. *)
+(** [error_free_unkilled] AND NOT [error_free], and the reason is the
+    same one the abort twin below gives, now live under the PLAIN
+    stance: a death by a fatal signal takes no error transition, so
+    [error_free] alone stops seeing it.  Until the write arms could
+    raise SIGPIPE, no run under [Run.valid_input] could end in a
+    [State.KillEv] at all and the two predicates agreed on every run
+    this shape quantifies over; a write to a pipe, a socket or a
+    channel whose far end has no reader ends one now
+    ([Sys.Fs.ReadWrite.write_spec]), and with [error_free] this shape
+    would quietly certify a pair of binaries that both die by signal 13
+    under prose that says the source never even faults.  Keeping the
+    claim as it reads is what this predicate does. *)
 Definition strong_equiv_error_free (en_source en_target : ExecEntry)
     (inp : ProcInput) : Prop :=
-  error_free (run source_image source_alloc_limit en_source inp)
-  /\ error_free (run target_image target_alloc_limit en_target inp)
+  error_free_unkilled (run source_image source_alloc_limit en_source inp)
+  /\ error_free_unkilled (run target_image target_alloc_limit en_target inp)
   /\ trace_equiv
        (bh_traces (run source_image source_alloc_limit en_source inp))
        (bh_traces (run target_image target_alloc_limit en_target inp)).
@@ -819,8 +831,9 @@ Proof.
   intros en_source en_target inp Hef.
   destruct Hef as (Hsef & Htef & Htr).
   split.
-  - apply run_error_free_modeled, Hsef.
-  - right. split; [exact Htr | exact Htef].
+  - apply run_error_free_modeled, (error_free_unkilled_error_free _ Hsef).
+  - right. split;
+      [exact Htr | exact (error_free_unkilled_error_free _ Htef)].
 Qed.
 
 (** The error-free statement is genuinely STRONGER: a proof of it
@@ -857,7 +870,7 @@ Lemma strong_equiv_error_free_no_all_errors_escape :
 Proof.
   intros en_source en_target inp Hall Hef.
   destruct Hef as (Hsef & _ & _).
-  apply Hsef, run_all_errors_errors, Hall.
+  apply (error_free_unkilled_error_free _ Hsef), run_all_errors_errors, Hall.
 Qed.
 
 (** The same bite at the TOP level: one valid triple on which the source
@@ -883,7 +896,7 @@ Lemma strong_universal_error_free_refuted_by_source_error :
 Proof.
   intros en_source en_target inp Hsrc Htgt Hinp Herr H.
   destruct (H en_source en_target inp Hsrc Htgt Hinp) as (Hsef & _ & _).
-  exact (Hsef Herr).
+  exact (error_free_unkilled_error_free _ Hsef Herr).
 Qed.
 
 (* =========================================================================
@@ -1026,6 +1039,120 @@ Proof. intros (H & _). exact H. Qed.
 Lemma strong_universal_error_free_T_either_implies_abort :
   strong_universal_error_free_T_either -> strong_universal_error_free_T_abort.
 Proof. intros (_ & H). exact H. Qed.
+
+(* =========================================================================
+   The SIGPIPE-ignored statements: the same obligations, quantified over
+   the launches that ignore signal 13
+   ========================================================================= *)
+
+(** THE QUANTIFIER IS AGAIN THE WHOLE DIFFERENCE, and here it is the
+    TASK'S launch declaration rather than the environment's.
+    [Run.valid_input] pins [State.in_sigpipe_default] to [true]: the
+    launch left signal 13 at SIG_DFL, so a write whose far end has no
+    reader ENDS the process ([Sys.Fs.ReadWrite.raise_sigpipe]).
+    [Run.valid_input_sigpipe_ignored] pins it to [false]: the launcher
+    ran `signal(SIGPIPE, SIG_IGN)` before execve -- which execve
+    preserves, see [State.in_sigpipe_default] -- so the same write
+    answers -EPIPE and the program runs on.
+
+    WHAT A PROOF OF THIS BUYS, AND WHAT IT COSTS.  It buys a world in
+    which NO write arm can end the run, so a program that writes to a
+    channel, a pipe or a socket with no reader is still running
+    afterwards and its halting is decided by its own code.  It costs
+    the error: the -EPIPE is a real error return, so a source that
+    writes to a reader-less descriptor fails the error-free shape here
+    where under [Run.valid_input] it merely died.  Neither statement
+    implies the other, and that is why both exist.
+
+    ONE PER-TRIPLE OBLIGATION, UNLIKE THE ABORT PAIR.  The abort
+    stances needed two, because the declaration-on statement had to ask
+    [error_free_unkilled] where the other asked [error_free].  Here
+    both stances already ask [error_free_unkilled] -- the plain family
+    was moved to it when SIGPIPE became reachable from ordinary state --
+    so these shapes are quantifier shells over the SAME triple
+    obligation, and the either shape below is a shell too. *)
+Definition strong_universal_T_sigpipe_ignored : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input_sigpipe_ignored inp ->
+    strong_equiv en_source en_target inp.
+
+Definition strong_universal_error_free_T_sigpipe_ignored : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input_sigpipe_ignored inp ->
+    strong_equiv_error_free en_source en_target inp.
+
+(** Neither SIGPIPE stance pinned: the obligation over every input the
+    shared clauses accept.  It is exactly the conjunction of the two
+    stances, so a task that says nothing about the disposition its
+    launcher left is held to both readings. *)
+Definition strong_universal_T_sigpipe_either : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input_sigpipe_either inp ->
+    strong_equiv en_source en_target inp.
+
+Lemma strong_universal_T_sigpipe_either_splits :
+  strong_universal_T_sigpipe_either
+  <-> (strong_universal_T /\ strong_universal_T_sigpipe_ignored).
+Proof.
+  split.
+  - intros H. split; intros en_s en_t inp Hs Ht Hv; apply H;
+      try assumption;
+      [ exact (valid_input_sigpipe_either_of_valid_input _ Hv)
+      | exact (valid_input_sigpipe_either_of_valid_input_sigpipe_ignored
+                 _ Hv) ].
+  - intros (Hdfl & Hign) en_s en_t inp Hs Ht Hv.
+    destruct (valid_input_sigpipe_either_splits _ Hv) as [Hv' | Hv'];
+      [ exact (Hdfl _ _ _ Hs Ht Hv') | exact (Hign _ _ _ Hs Ht Hv') ].
+Qed.
+
+Lemma strong_universal_T_sigpipe_either_implies :
+  strong_universal_T_sigpipe_either -> strong_universal_T.
+Proof.
+  intros H. exact (proj1 (proj1 strong_universal_T_sigpipe_either_splits H)).
+Qed.
+
+Lemma strong_universal_T_sigpipe_either_implies_ignored :
+  strong_universal_T_sigpipe_either -> strong_universal_T_sigpipe_ignored.
+Proof.
+  intros H. exact (proj2 (proj1 strong_universal_T_sigpipe_either_splits H)).
+Qed.
+
+Definition strong_universal_error_free_T_sigpipe_either : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input_sigpipe_either inp ->
+    strong_equiv_error_free en_source en_target inp.
+
+Lemma strong_universal_error_free_T_sigpipe_either_splits :
+  strong_universal_error_free_T_sigpipe_either
+  <-> (strong_universal_error_free_T
+       /\ strong_universal_error_free_T_sigpipe_ignored).
+Proof.
+  split.
+  - intros H. split; intros en_s en_t inp Hs Ht Hv; apply H;
+      try assumption;
+      [ exact (valid_input_sigpipe_either_of_valid_input _ Hv)
+      | exact (valid_input_sigpipe_either_of_valid_input_sigpipe_ignored
+                 _ Hv) ].
+  - intros (Hdfl & Hign) en_s en_t inp Hs Ht Hv.
+    destruct (valid_input_sigpipe_either_splits _ Hv) as [Hv' | Hv'];
+      [ exact (Hdfl _ _ _ Hs Ht Hv') | exact (Hign _ _ _ Hs Ht Hv') ].
+Qed.
+
+Lemma strong_universal_error_free_T_sigpipe_ignored_implies :
+  strong_universal_error_free_T_sigpipe_ignored ->
+  strong_universal_T_sigpipe_ignored.
+Proof.
+  intros H en_s en_t inp Hs Ht Hv.
+  apply strong_equiv_error_free_implies, H; assumption.
+Qed.
 
 (** And it bites on an abort: a source that can be killed on one valid
     triple refutes it.  This is the clause that keeps "the reference can
@@ -1533,6 +1660,32 @@ Proof.
   tauto.
 Qed.
 
+(** MEANING PRESERVED at [Run.may_fail_cfg]: death by a signal is read
+    off the trace set, which the two runs share at may-fail, so the
+    error-free shapes that see a death ([error_free_unkilled], which is
+    what [strong_equiv_error_free] and its configured and budgeted
+    twins ask for) say the same thing under [Run.may_fail_cfg] as
+    unconfigured.  Stated HERE, above [SpecScfg], because that section
+    and [SpecScfgBudgets] both consume it. *)
+Lemma dies_by_signal_scfg_may_fail : forall img lim en inp,
+  dies_by_signal (run_scfg may_fail_cfg img lim en inp) <-> dies_by_signal (run img lim en inp).
+Proof.
+  intros img lim en inp. unfold dies_by_signal.
+  destruct (run_scfg_may_fail img lim en inp) as (Ht & _).
+  split; intros (tr & sig & fs & Htr & Hin); exists tr, sig, fs; split; try exact Hin;
+    apply Ht; exact Htr.
+Qed.
+
+Lemma error_free_unkilled_scfg_may_fail : forall img lim en inp,
+  error_free_unkilled (run_scfg may_fail_cfg img lim en inp)
+  <-> error_free_unkilled (run img lim en inp).
+Proof.
+  intros img lim en inp. unfold error_free_unkilled.
+  rewrite (error_free_behavior_equiv _ _ (run_scfg_may_fail img lim en inp)).
+  rewrite (dies_by_signal_scfg_may_fail img lim en inp). reflexivity.
+Qed.
+
+
 Section SpecScfg.
 
 Variable cfg : SpuriousCfg.
@@ -1557,8 +1710,8 @@ Definition strong_universal_T_scfg : Prop :=
 
 Definition strong_equiv_error_free_scfg (en_source en_target : ExecEntry)
     (inp : ProcInput) : Prop :=
-  error_free (run_scfg cfg source_image source_alloc_limit en_source inp)
-  /\ error_free (run_scfg cfg target_image target_alloc_limit en_target inp)
+  error_free_unkilled (run_scfg cfg source_image source_alloc_limit en_source inp)
+  /\ error_free_unkilled (run_scfg cfg target_image target_alloc_limit en_target inp)
   /\ trace_equiv
        (bh_traces (run_scfg cfg source_image source_alloc_limit en_source inp))
        (bh_traces (run_scfg cfg target_image target_alloc_limit en_target inp)).
@@ -1579,8 +1732,10 @@ Lemma strong_equiv_error_free_scfg_implies : forall en_source en_target inp,
 Proof.
   intros en_source en_target inp (Hsef & Htef & Htr).
   split.
-  - intros Hun. apply Hsef, run_scfg_unmodeled_errors, Hun.
-  - right. split; [exact Htr | exact Htef].
+  - intros Hun.
+    apply (error_free_unkilled_error_free _ Hsef), run_scfg_unmodeled_errors, Hun.
+  - right. split;
+      [exact Htr | exact (error_free_unkilled_error_free _ Htef)].
 Qed.
 
 Lemma strong_universal_error_free_T_scfg_implies :
@@ -1766,7 +1921,7 @@ Lemma strong_universal_error_free_scfg_refuted_by_source_error :
 Proof.
   intros en_source en_target inp Hsrc Htgt Hinp Herr H.
   destruct (H en_source en_target inp Hsrc Htgt Hinp) as (Hsef & _ & _).
-  exact (Hsef Herr).
+  exact (error_free_unkilled_error_free _ Hsef Herr).
 Qed.
 
 End SpecScfg.
@@ -1799,8 +1954,8 @@ Proof.
   intros s t en_s en_t inp. unfold strong_equiv_error_free_scfg, strong_equiv_error_free.
   pose proof (run_scfg_may_fail s source_alloc_limit en_s inp) as Hs.
   pose proof (run_scfg_may_fail t target_alloc_limit en_t inp) as Ht.
-  pose proof (error_free_behavior_equiv _ _ Hs).
-  pose proof (error_free_behavior_equiv _ _ Ht).
+  pose proof (error_free_unkilled_scfg_may_fail s source_alloc_limit en_s inp).
+  pose proof (error_free_unkilled_scfg_may_fail t target_alloc_limit en_t inp).
   pose proof (trace_equiv_behavior_equiv _ _ _ _ Hs Ht).
   tauto.
 Qed.
@@ -1881,6 +2036,24 @@ Qed.
 Lemma error_free_scfg_of_error_free : forall cfg img lim en inp,
   error_free (run img lim en inp) -> error_free (run_scfg cfg img lim en inp).
 Proof. intros cfg img lim en inp Hef Herr. apply Hef, (run_scfg_sub_errors cfg), Herr. Qed.
+
+(** The same inheritance for the predicate that SEES A DEATH, and the
+    second conjunct runs the same way for the same reason: a
+    configuration REMOVES executions, so it can add neither an error
+    ([Run.run_scfg_sub_errors]) nor a trace carrying a [State.KillEv]
+    ([Run.run_scfg_sub_traces]).  Both halves are therefore downward,
+    and the converse fails for both. *)
+Lemma error_free_unkilled_scfg_of_error_free_unkilled :
+  forall cfg img lim en inp,
+  error_free_unkilled (run img lim en inp) ->
+  error_free_unkilled (run_scfg cfg img lim en inp).
+Proof.
+  intros cfg img lim en inp (Hef & Hk). split.
+  - exact (error_free_scfg_of_error_free cfg img lim en inp Hef).
+  - intros (tr & sig & fs & Htr & Hin).
+    apply Hk. exists tr, sig, fs.
+    split; [exact (run_scfg_sub_traces cfg img lim en inp tr Htr) | exact Hin].
+Qed.
 
 Lemma modeled_scfg_of_modeled : forall cfg img lim en inp,
   modeled (run img lim en inp) -> modeled (run_scfg cfg img lim en inp).
@@ -2177,8 +2350,8 @@ Definition strong_equiv_budgets (en_source en_target : ExecEntry)
     flavour-pair obligation. *)
 Definition strong_equiv_error_free_budgets (en_source en_target : ExecEntry)
     (inp : ProcInput) : Prop :=
-  error_free (run source_image lim_source en_source inp)
-  /\ error_free (run target_image lim_target en_target inp)
+  error_free_unkilled (run source_image lim_source en_source inp)
+  /\ error_free_unkilled (run target_image lim_target en_target inp)
   /\ trace_equiv
        (bh_traces (run source_image lim_source en_source inp))
        (bh_traces (run target_image lim_target en_target inp)).
@@ -2235,8 +2408,9 @@ Lemma strong_equiv_error_free_budgets_implies : forall en_source en_target inp,
 Proof.
   intros en_source en_target inp (Hsef & Htef & Htr).
   split.
-  - apply run_error_free_modeled, Hsef.
-  - right. split; [exact Htr | exact Htef].
+  - apply run_error_free_modeled, (error_free_unkilled_error_free _ Hsef).
+  - right. split;
+      [exact Htr | exact (error_free_unkilled_error_free _ Htef)].
 Qed.
 
 Lemma strong_equiv_error_free_budgets_abort_implies : forall en_source en_target inp,
@@ -2280,7 +2454,7 @@ Lemma strong_universal_error_free_T_budgets_refuted_by_source_error :
 Proof.
   intros en_source en_target inp Hsrc Htgt Hinp Hb Herr H.
   destruct (H en_source en_target inp Hsrc Htgt Hinp Hb) as (Hsef & _ & _).
-  exact (Hsef Herr).
+  exact (error_free_unkilled_error_free _ Hsef Herr).
 Qed.
 
 (** ** The declared capability word, in the two UNCONFIGURED budget cells
@@ -2516,7 +2690,7 @@ Definition strong_universal_error_free_T_budgets_only : Prop :=
     valid_entry target_image en_target inp ->
     valid_input inp ->
     source_within_budget_only en_source inp ->
-    error_free (run source_image lim_source en_source inp)
+    error_free_unkilled (run source_image lim_source en_source inp)
     /\ (source_within_budget en_source inp ->
         strong_equiv_error_free_budgets en_source en_target inp).
 
@@ -2540,7 +2714,7 @@ Lemma strong_universal_error_free_T_budgets_only_refuted_by_source_error :
 Proof.
   intros en_source en_target inp Hsrc Htgt Hinp Hb Herr H.
   destruct (H en_source en_target inp Hsrc Htgt Hinp Hb) as (Hsef & _).
-  exact (Hsef Herr).
+  exact (error_free_unkilled_error_free _ Hsef Herr).
 Qed.
 
 (** The abort-declared twin.  The source part asks [error_free_unkilled],
@@ -2714,8 +2888,8 @@ Definition strong_equiv_budgets_scfg (en_source en_target : ExecEntry)
 (** [strong_equiv_error_free_scfg] with the budgets abstracted. *)
 Definition strong_equiv_error_free_budgets_scfg (en_source en_target : ExecEntry)
     (inp : ProcInput) : Prop :=
-  error_free (run_scfg cfg source_image lim_source en_source inp)
-  /\ error_free (run_scfg cfg target_image lim_target en_target inp)
+  error_free_unkilled (run_scfg cfg source_image lim_source en_source inp)
+  /\ error_free_unkilled (run_scfg cfg target_image lim_target en_target inp)
   /\ trace_equiv
        (bh_traces (run_scfg cfg source_image lim_source en_source inp))
        (bh_traces (run_scfg cfg target_image lim_target en_target inp)).
@@ -2742,8 +2916,8 @@ Lemma strong_equiv_error_free_budgets_scfg_implies : forall en_source en_target 
 Proof.
   intros en_source en_target inp (Hsef & Htef & Htr).
   split.
-  - intros Hun. apply Hsef, run_scfg_unmodeled_errors, Hun.
-  - right. split; [exact Htr | exact Htef].
+  - intros Hun. apply (error_free_unkilled_error_free _ Hsef), run_scfg_unmodeled_errors, Hun.
+  - right. split; [exact Htr | exact (error_free_unkilled_error_free _ Htef)].
 Qed.
 
 Lemma strong_universal_error_free_T_scfg_budgets_implies :
@@ -2766,7 +2940,7 @@ Lemma strong_universal_error_free_T_scfg_budgets_refuted_by_source_error :
 Proof.
   intros en_source en_target inp Hsrc Htgt Hinp Hb Herr H.
   destruct (H en_source en_target inp Hsrc Htgt Hinp Hb) as (Hsef & _ & _).
-  exact (Hsef Herr).
+  exact (error_free_unkilled_error_free _ Hsef Herr).
 Qed.
 
 
@@ -3123,7 +3297,7 @@ Definition strong_universal_error_free_T_scfg_budgets_only : Prop :=
     valid_entry target_image en_target inp ->
     valid_input inp ->
     source_within_budget_scfg_only en_source inp ->
-    error_free (run_scfg cfg source_image lim_source en_source inp)
+    error_free_unkilled (run_scfg cfg source_image lim_source en_source inp)
     /\ (source_within_budget_scfg en_source inp ->
         strong_equiv_error_free_budgets_scfg en_source en_target inp).
 
@@ -3147,7 +3321,7 @@ Lemma strong_universal_error_free_T_scfg_budgets_only_refuted_by_source_error :
 Proof.
   intros en_source en_target inp Hsrc Htgt Hinp Hb Herr H.
   destruct (H en_source en_target inp Hsrc Htgt Hinp Hb) as (Hsef & _).
-  exact (Hsef Herr).
+  exact (error_free_unkilled_error_free _ Hsef Herr).
 Qed.
 
 Definition strong_universal_error_free_T_scfg_budgets_only_abort : Prop :=
@@ -3240,8 +3414,8 @@ Proof.
   unfold strong_equiv_error_free_budgets_scfg, strong_equiv_error_free_budgets.
   pose proof (run_scfg_may_fail s ls en_s inp) as Hs.
   pose proof (run_scfg_may_fail t lt en_t inp) as Ht.
-  pose proof (error_free_behavior_equiv _ _ Hs).
-  pose proof (error_free_behavior_equiv _ _ Ht).
+  pose proof (error_free_unkilled_scfg_may_fail s ls en_s inp).
+  pose proof (error_free_unkilled_scfg_may_fail t lt en_t inp).
   pose proof (trace_equiv_behavior_equiv _ _ _ _ Hs Ht).
   tauto.
 Qed.
@@ -3305,27 +3479,6 @@ Lemma strong_universal_error_free_T_scfg_budgets_abort_of_scfg : forall cfg s t,
   strong_universal_error_free_T_scfg_budgets_abort cfg source_alloc_limit target_alloc_limit s t.
 Proof. intros cfg s t H en_s en_t inp Hs Ht Hv _. exact (H en_s en_t inp Hs Ht Hv). Qed.
 
-
-(** MEANING PRESERVED at [Run.may_fail_cfg] for the abort-declared cell:
-    each statement is its [SpecBudgets] twin.  Death by a signal is read
-    off the trace set, which the two runs share at may-fail. *)
-Lemma dies_by_signal_scfg_may_fail : forall img lim en inp,
-  dies_by_signal (run_scfg may_fail_cfg img lim en inp) <-> dies_by_signal (run img lim en inp).
-Proof.
-  intros img lim en inp. unfold dies_by_signal.
-  destruct (run_scfg_may_fail img lim en inp) as (Ht & _).
-  split; intros (tr & sig & fs & Htr & Hin); exists tr, sig, fs; split; try exact Hin;
-    apply Ht; exact Htr.
-Qed.
-
-Lemma error_free_unkilled_scfg_may_fail : forall img lim en inp,
-  error_free_unkilled (run_scfg may_fail_cfg img lim en inp)
-  <-> error_free_unkilled (run img lim en inp).
-Proof.
-  intros img lim en inp. unfold error_free_unkilled.
-  rewrite (error_free_behavior_equiv _ _ (run_scfg_may_fail img lim en inp)).
-  rewrite (dies_by_signal_scfg_may_fail img lim en inp). reflexivity.
-Qed.
 
 Lemma strong_equiv_error_free_budgets_scfg_abort_may_fail : forall ls lt s t en_s en_t inp,
   strong_equiv_error_free_budgets_scfg_abort may_fail_cfg ls lt s t en_s en_t inp

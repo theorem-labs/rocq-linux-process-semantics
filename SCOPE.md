@@ -281,7 +281,7 @@ them. A proof says nothing about a program in such a case.
 | Area | Limit |
 | --- | --- |
 | Threads | The model has one thread. It has no scheduler and no shared-memory interleaving. For `fork`-like calls, the model describes the parent only. It does not run the child. |
-| Signals | The model does not run signal handlers. |
+| Signals | The model does not run signal handlers. It has two signals and both are fatal: `SIGABRT`, raised by `tkill`/`tgkill` on the abort path, and `SIGPIPE`, raised by a write whose far end has no reader. Each ends the run with a death that is not an exit (`State.KillEv`), or, where the launch mask blocks it, returns the errno and leaves the signal pending until a `rt_sigprocmask` uncovers it. `rt_sigaction` declines every install that would change either disposition, so no modeled call moves one. For `SIGABRT` the model assumes the launch left the disposition at `SIG_DFL`. For `SIGPIPE` it no longer assumes: the launch declares it (`State.in_sigpipe_default`), `Run.valid_input` pins the declaration to `SIG_DFL`, and `Run.valid_input_sigpipe_ignored` is the launch that ran `signal(SIGPIPE, SIG_IGN)` before `execve` — a launch `execve` preserves (`fs/exec.c`, `begin_new_exec`'s `flush_signal_handlers` with `force_default = 0`, Linux v6.18.46), under which the same write returns `-EPIPE` and the program runs on. No other signal is modeled: `SIGSEGV` is reported as the error transition rather than as a death, `SIGCHLD`'s default action is to ignore it, `SIGXFSZ` needs an `RLIMIT_FSIZE` the model does not carry, and nothing outside the process can send one. |
 | Address-space size | The system call specifications use Sv48. Thus you cannot prove the Sv39 and Sv57 statements for an image that can run. |
 | Stack limit | The stack limit is 8 MiB. A larger or unlimited `RLIMIT_STACK`, which selects the legacy mmap layout, is outside the model. The model counts the whole entry block against this limit, from the stack VMA's end `StackLayout.ed_top` down, as Linux counts it. |
 | Arguments | `Run.valid_input` requires that the arguments after `argv[0]` do not contain `/` and are not `..`. Thus a proof about `cp src dst` does not apply to `cp /tmp/src dst`. It also bounds the lists (`Run.valid_argv`, `Run.valid_envp`): 1 to 1024 arguments and at most 2 MiB of argument bytes, at most 256 environment variables and at most 128 KiB of environment bytes, and at most 131071 bytes in each string. Each count of bytes includes the terminating NUL of each string. These are the model's own per-list bounds. Linux's own bound is joint, and `Run.valid_launch` carries it: the exec file name, the envp strings and the argv strings with their NULs, plus 8 bytes for each argv and envp pointer, are at most 2 MiB together at the 8 MiB stack limit (`bprm_stack_limits`, `fs/exec.c`). Linux answers `E2BIG` for a larger launch. `Run.valid_launch` also says which exec file names `execve` can present (`State.in_execfn`): a path of 1 to 4095 bytes without a NUL, or `/dev/fd/N`, or `/dev/fd/N/` and such a path that does not start with `/` (`getname_flags` in `fs/namei.c`, `alloc_bprm` in `fs/exec.c`). Both binaries of a pair run under the same exec file name, as they run on the same input. A launch outside these bounds is outside the model. |
@@ -345,6 +345,35 @@ not apply.
   `Sys/Kernel/Exit.v`). `execve` does not reap a child in Linux, so a
   launcher that forks a grandchild, or attaches a tracee, before it
   execs the image makes this assumption false.
+- The launch left `SIGPIPE` at its default disposition, and the
+  statements say which launch they mean rather than assuming one. On
+  Linux a write to a pipe or a socket whose reader has gone raises
+  `SIGPIPE` and the default action ends the program — as in
+  `fuzz_target input | true`, once `true` has exited (`anon_pipe_write`,
+  `fs/pipe.c`, and `sk_stream_error`, `net/core/stream.c`, Linux
+  v6.18.46, commit `1f99e9ab748f`). **The model gives that ending**
+  (`State.with_killed`, `Run.sstep_killed`), so a run under the ordinary
+  statements can end by signal 13 rather than by `exit`, and a halts
+  statement that only accepts an exit status is refuted by such a run
+  rather than silently assuming it away. Which world a statement is
+  about is a declared field, `State.in_sigpipe_default`: `Run.valid_input`
+  pins it to the default disposition, and `Run.valid_input_sigpipe_ignored`
+  is the launch that ran `signal(SIGPIPE, SIG_IGN)` before `execve` — a
+  disposition `execve` preserves (`begin_new_exec` calls
+  `flush_signal_handlers` with `force_default = 0`, `fs/exec.c`) — under
+  which the same write returns `-EPIPE` and the program runs on. **The
+  shape of the reader is declared too, and pinned**:
+  `State.in_channel_reader` is a launch fact with one value for the
+  whole run, and `Run.valid_input` pins it present — the run whose
+  standard output is read throughout — so the ordinary statements are
+  about that launch and no other. The reader-gone launch has its own
+  name, `Run.valid_input_channel_closed`, in the shape
+  `Run.valid_input_abort` has for the abort declaration, and a
+  statement that means both readings asks for
+  `Run.valid_input_channel_either` (the stream owner's answer to
+  dispatch://OSSV-266/ask/77724e06). A reader that goes away PART WAY
+  through the output is a third thing the model has no term for, and a
+  program whose reader goes away mid-output is outside the model.
 - No write to a regular file fails. The model has no `ENOSPC`, `EDQUOT`
   or `EIO` out of the page cache (the write arm of
   `Sys/Fs/ReadWrite.v`). The one failure `write` injects is not a
@@ -571,10 +600,35 @@ equivalence) can be true of the model and false of Linux.
   classifies fds 1 and 2 as channels without knowing whether the far end
   is a pipe, a terminal or a file, so it admits the short return for all
   three.
-- **A channel with no reader.** The same arm cannot see whether the
-  channel still has a reader. A write to stdout or stderr whose reader is
-  gone gets a count. Linux raises `SIGPIPE`, which kills the process, or
-  answers `EPIPE`.
+- **A channel with no reader — fixed, and what it cost.** This used to
+  be a gap: the write arm could not see whether fds 1 and 2 still had a
+  reader, so a write to a stdout whose reader was gone got a count,
+  where Linux raises `SIGPIPE` and kills the process. The model now has
+  a death that is not an exit, and the launch says which case it is
+  (`State.ProcInput.in_channel_reader`). `Run.valid_input` pins that
+  field present, so every ordinary statement is about the run whose
+  standard output is read; the writing end of `prog | head -1` is
+  `Run.valid_input_channel_closed`, named the way
+  `Run.valid_input_abort` names the aborting launch, and a statement
+  that means both readings asks for `Run.valid_input_channel_either`
+  (the stream owner's answer to dispatch://OSSV-266/ask/77724e06).
+  What is left is NOT the
+  SIGPIPE disposition: that was an unstated premise and is now a
+  declaration (`State.ProcInput.in_sigpipe_default`, pinned to
+  `SIG_DFL` by `Run.valid_input`, with
+  `Run.valid_input_sigpipe_ignored` for the launch that ignored the
+  signal; see "Signals"). What is left is that the model has ONE answer
+  per run: a reader that goes away at a point the model can see is not
+  expressible, so a program whose reader goes away in the middle of its
+  output is outside the model.
+- **A socket write that delivers.** A write to a socket with no
+  connection is answered — `-EPIPE`, and the `SIGPIPE` that goes with
+  it (`net/core/stream.c`, `sk_stream_wait_connect` and
+  `sk_stream_error`). A write to a CONNECTED socket is still
+  `unmodeled`: it would have to choose a short count, or consume a
+  pending peer error and rewrite the descriptor, which is
+  `sendto`/`sendmsg`'s machinery. So `write(2)` on a socket is covered
+  exactly where the connection is absent.
 - **After a vDSO call.** The model does not run the vDSO's
   instructions. It applies the exported function's system-call
   specification in one step, so the caller-saved registers other than

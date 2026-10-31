@@ -106,13 +106,17 @@ Open Scope sys_scope.
         outside the view, [DecodeC.is_defined_illegal] in [decode_exec],
         and the odd-pc / unmapped / non-executable arms of
         [fetch_failure].
-      - SIGPIPE (13) — a modeled [write].  [ReadWrite.write_spec]
-        classifies fds 1 and 2 as [FdChannel] without knowing whether the
-        far end is a pipe, so a real channel with a closed reader raises
-        SIGPIPE at a call the model answers.  The model has no EPIPE arm
-        and assumes a live reader; that assumption is what makes
-        SIGPIPE's disposition unobservable HERE, which is not the same as
-        unraisable, so it stays out.
+      - SIGPIPE (13) — a modeled [write], and the model RAISES it: the
+        channel, pipe and socket arms of [ReadWrite.write_spec] send it
+        through [ReadWrite.raise_sigpipe] when the far end has no
+        reader.  That is exactly why it must stay off this list.  The
+        model has one disposition for signal 13, SIG_DFL, and the
+        launch premise above [Run.unmodeled_at] is what supplies it;
+        an accepted [rt_sigaction] here would let a program install
+        SIG_IGN or a handler and then take a write this spec answers as
+        a death, which is a wrong MODELED answer.  It is out for
+        SIGABRT's reason rather than for an absence, and that is the
+        stronger of the two.
       - SIGXFSZ (25) — a modeled [write], and a modeled [ftruncate] as
         well: neither [ReadWrite.write_spec] nor [Open.ftruncate_spec]
         consults RLIMIT_FSIZE, where Linux raises SIGXFSZ alongside
@@ -175,8 +179,8 @@ Open Scope sys_scope.
     premise, and SIGINT and SIGTERM still need the premise in full.
 
     THE INVARIANT TO KEEP: this list is a claim about the REST of the
-    model.  If a later change gives [ReadWrite.write_spec] an EPIPE arm,
-    or gives the model a timer, a controlling terminal, or any
+    model.  If a later change gives the model a timer, a controlling
+    terminal, or any
     [kill]-shaped syscall, the corresponding signal must leave
     [sigaction_accepted] in the SAME commit — or better, in a commit
     AHEAD of it, so that no ordering of the
@@ -571,10 +575,16 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
     [generic_write_check_limits] (fs/read_write.c), which sends SIGXFSZ
     past RLIMIT_FSIZE; [ftruncate] (46) reaches [inode_newsize_ok]
     (fs/attr.c), which sends SIGXFSZ on the same limit before returning
-    -EFBIG.  What is true is the weaker and sufficient claim: NO SPEC IN
-    THIS MODEL RAISES A SIGNAL, because [write_spec] assumes a live
-    reader and neither it nor [ftruncate_spec] carries a file-size
-    limit.  The live reader is an assumption nothing checks.  The
+    -EFBIG.
+
+    WHICH SPECS RAISE ONE, AND WHICH ASSUMPTION COVERS THE REST.
+    [write_spec] DOES raise signal 13, through
+    [ReadWrite.raise_sigpipe], on each of its three arms whose far end
+    has no reader, and this spec is what decides between the death and
+    the -EPIPE: the mask is READ there.  What stays assumed rather
+    than raised is SIGXFSZ: neither [write_spec] nor
+    [ftruncate_spec] carries a file-size
+    limit.  The
     RLIMIT_FSIZE half of the limit is a premise of the run —
     RLIM_INFINITY at exec, and the set fails closed, see
     [Open.ftruncate_spec] — and the [s_maxbytes] half, which the model
@@ -593,10 +603,12 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
     file adds no wrong answer — the missing limit owns it, with or
     without this file — but it is a pair the
     equivalence relation cannot separate.  The obligation the invariant below states
-    therefore binds those three specs too: an -EPIPE arm in
-    [ReadWrite.write_spec], or a file-size limit in [ftruncate_spec],
-    turns a blocked mask into something the model reads, and must give
-    this spec state in the same commit.
+    therefore binds those specs too: a file-size limit in
+    [ftruncate_spec] would turn a blocked mask into something the model
+    reads, and must give this spec state in the same commit.  The
+    -EPIPE arm in [ReadWrite.write_spec] is the case that already
+    happened, and it brought [State.procst_sigpipe_pending] and
+    [sigmask_deliver_model]'s second branch with it.
 
     With that stated, [oset] is the ONLY window onto the mask that is
     open, and this spec is the only thing that writes one.  The list
@@ -756,19 +768,18 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
     Signal delivery of any kind is the obvious one.  So is any of the
     numbers enumerated above, and so is relaxing [Fs.Select]'s
     [PsSigReal] decline, which is the only such window inside
-    [Specs.modeled_sysnos] today.  The one that would not announce
-    itself is an -EPIPE arm in [ReadWrite.write_spec]: SIGPIPE blocked
-    turns a write to a channel with a closed reader from process death
-    into a return of -EPIPE, which is a mask READ at a call this model
-    already answers.  WHAT KEEPS THAT SHUT: the model has real pipes
-    ([Fs.Pipe]), so it HAS
-    a notion of a live reader, and a pipe whose reader is gone is [unmodeled] —
-    [ReadWrite.write_spec]'s [pipe_end_live] arm — because SIGPIPE's
-    default disposition terminates the process and this model has no
-    death that is not [exit].  So the -EPIPE arm is held off by a
-    DECLINE, not by an absence, which is the stronger of the two;
-    the live-reader assumption holds only for [FdChannel], where the model
-    cannot see whether the far end is closed. *)
+    [Specs.modeled_sysnos] today.  The reader that used to be named
+    here as the one that would not announce itself -- an -EPIPE arm in
+    [ReadWrite.write_spec] -- HAS LANDED, and it announced itself
+    exactly as this paragraph asked: SIGPIPE blocked turns a write to a
+    far end with no reader from process death into a return of -EPIPE,
+    so the three write arms read the mask through
+    [Uapi.sigpipe_blocked] at a call this model answers, and
+    [State.procst_sigpipe_pending] records what the block left behind.
+    [sigmask_deliver_model] above is the writer that pairs with it:
+    the install that uncovers signal 13 kills there, in the same way
+    the SIGABRT branch does, so [oset]'s value stays the value of a
+    mask the next reader will agree with. *)
 
 (** [how] is [int] ([SYSCALL_DEFINE4(rt_sigprocmask, int, how, ...)]),
     so the kernel sees only the low half of the register and
@@ -1086,8 +1097,23 @@ Definition write_oset (oset old : word) : Sys SyscallEffect :=
 Definition sigabrt_blocked (mask : word) : bool :=
   negb (w_is0 (bv_and mask (Z_to_bv 64 sigabrt_mask))).
 
-(** ONE [State] FUNCTION AND ONE [Monad.modify], rather than a branch
-    over two monadic steps, because that is what the checker and the
+(** TWO SIGNALS, IN THE KERNEL'S ORDER.  A mask install that uncovers a
+    pending signal delivers it on the way back to user space, and both
+    signals this model can raise are FATAL at their default
+    disposition, so the install that uncovers one ends the process.
+
+    SIGABRT IS TESTED FIRST, and that is [next_signal]'s rule rather
+    than a choice: kernel/signal.c [get_signal] dequeues through
+    [dequeue_signal], which takes the LOWEST-numbered pending signal,
+    and 6 is below 13.  A fatal one never returns to the loop, so a
+    process with both pending and both uncovered dies of SIGABRT and
+    signal 13 is never dequeued.  That is only visible in the NUMBER the
+    trace carries, and it is visible: [State.KillEv] carries it, and a
+    waiting parent reads it through WTERMSIG.  Linux v6.18.46, commit
+    1f99e9ab748f.
+
+    ONE [State] FUNCTION AND ONE [Monad.modify], rather than a branch
+    over monadic steps, because that is what the checker and the
     witness can follow: [Checks.Sys.Kernel.Signal] and
     [Checks.Witness.Kernel.Signal] discharge this call with the same
     [modify_ok] they discharged the plain [set_sigmask] with, and the
@@ -1095,26 +1121,32 @@ Definition sigabrt_blocked (mask : word) : bool :=
 Definition sigmask_deliver_model (new : word) (m : Model) : Model :=
   if (m_sigabrt_pending m && negb (sigabrt_blocked new))%bool
   then with_killed (Z_to_bv 64 SIGABRT) (with_sigmask new m)
+  else if (m_sigpipe_pending m && negb (sigpipe_blocked new))%bool
+  then with_killed (Z_to_bv 64 SIGPIPE) (with_sigmask new m)
   else with_sigmask new m.
 
 Definition set_sigmask_deliver (new : word) : Sys unit :=
   modify (sigmask_deliver_model new).
 
-(** MEANING PRESERVED: with nothing pending -- every state a run whose
-    task did not declare the abort path can reach, since
-    [State.with_sigabrt_pending]'s only caller is [tkill_spec] and that
-    spec declines outright with the declaration off -- installing a mask
-    is plain [with_sigmask]. *)
+(** MEANING PRESERVED: with NEITHER signal pending, installing a mask is
+    plain [with_sigmask].  [State.with_sigabrt_pending]'s only caller is
+    [tkill_spec], which declines outright with the declaration off, so
+    every state a run whose task did not declare the abort path can
+    reach has the first bit clear; the second is clear until a write
+    finds a far end with no reader while signal 13 is blocked
+    ([Fs.ReadWrite.raise_sigpipe]), which is NOT behind a declaration. *)
 Lemma sigmask_deliver_model_no_pending : forall new m,
   m_sigabrt_pending m = false ->
+  m_sigpipe_pending m = false ->
   sigmask_deliver_model new m = with_sigmask new m.
 Proof.
-  intros new m Hp. unfold sigmask_deliver_model. rewrite Hp. reflexivity.
+  intros new m Ha Hp. unfold sigmask_deliver_model.
+  rewrite Ha, Hp. reflexivity.
 Qed.
 
 (** The two projections the checker and the witness need through the
     delivery: the mask installed is the mask asked for, and the address
-    space is untouched.  Both branches of [sigmask_deliver_model] go
+    space is untouched.  Every branch of [sigmask_deliver_model] goes
     through [State.with_sigmask], and [State.with_killed] on top of it
     rebuilds [ProcState] alone. *)
 Lemma m_sigmask_sigmask_deliver_model : forall new m,
@@ -1122,6 +1154,8 @@ Lemma m_sigmask_sigmask_deliver_model : forall new m,
 Proof.
   intros new m. unfold sigmask_deliver_model.
   destruct (m_sigabrt_pending m && negb (sigabrt_blocked new))%bool;
+    [autorewrite with model; reflexivity|].
+  destruct (m_sigpipe_pending m && negb (sigpipe_blocked new))%bool;
     autorewrite with model; reflexivity.
 Qed.
 
@@ -1130,15 +1164,18 @@ Lemma m_vmmaps_sigmask_deliver_model : forall new m,
 Proof.
   intros new m. unfold sigmask_deliver_model.
   destruct (m_sigabrt_pending m && negb (sigabrt_blocked new))%bool;
+    [autorewrite with model; reflexivity|].
+  destruct (m_sigpipe_pending m && negb (sigpipe_blocked new))%bool;
     autorewrite with model; reflexivity.
 Qed.
 
 Lemma set_sigmask_deliver_no_pending : forall new i m o,
   m_sigabrt_pending m = false ->
+  m_sigpipe_pending m = false ->
   (set_sigmask_deliver new i m o <-> set_sigmask new i m o).
 Proof.
-  intros new i m o Hp. unfold set_sigmask_deliver, set_sigmask, modify.
-  rewrite sigmask_deliver_model_no_pending by exact Hp. reflexivity.
+  intros new i m o Ha Hp. unfold set_sigmask_deliver, set_sigmask, modify.
+  rewrite sigmask_deliver_model_no_pending by assumption. reflexivity.
 Qed.
 
 Definition rt_sigprocmask_spec (how nset oset ss : word) : Sys SyscallEffect :=
