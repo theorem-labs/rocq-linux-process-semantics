@@ -11,10 +11,10 @@ Rocq file is 594 lines, most of them the reading and writing lemmas that join
 `lib/Lib/Mem.v:125-135`, and so on). Those lemmas have NO Lean twin, and
 neither has the vocabulary they are about: a grep of the Lean port's
 `LinuxProcessSemantics/Common/` for `bytes_at`, `wr_at`, `mrd`, `ro_addr`,
-`mem_inv`, `ro_bytes` and `upd_bytes` returns
-nothing (OSSV-265 gaps row T-8: the symbols of our Rocq `proofs/lib/Lib/` have
-no Lean name at all). The model's own reader is `Common.PropExec.rdn`, whose
-lemmas are about the model's `wbytes` and overlay, not about these predicates.
+`mem_inv`, `ro_bytes` and `upd_bytes` returns nothing (OSSV-265 gaps row T-8:
+the symbols of our Rocq `proofs/lib/Lib/` have no Lean name at all). The
+model's own reader is `Common.PropExec.rdn`, whose lemmas are about the
+model's `wbytes` and overlay, not about these predicates.
 That is why each ported contract takes the read it needs as a HYPOTHESIS where
 the Rocq contract derives it from `rw_cells` (OSSV-265 gaps row T-11).
 
