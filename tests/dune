@@ -225,6 +225,16 @@
    --out StartStateDefconfigSeed2LongMoved.v
    --perturb-byte 7000 --sibling StartStateDefconfigSeed2Long)))
 
+; LinuxProcessSemantics.Common is a theory of its own (theories/Common/dune)
+; and must be named here: VdsoReservedWitness.v requires AxSymExec3, AsanPlan
+; and AsanPlanSound from it.  Its files are reachable by path without this
+; line, because the main theory is rooted at theories/ and Common/ is inside
+; it -- but then dune has no edge ordering the two, and schedules this
+; theory's files whenever it likes.  Measured: from a cold tree it never
+; bites; after `dune build tests/StartStateNorandmapsSeed1Fixture.vo`, which
+; reports/a4-start-state.md tells a reader to run, the next `dune build`
+; compiles VdsoReservedWitness.v while theories/Common is still building and
+; fails with "Unable to locate library AxSymExec3".
 (rocq.theory
  (name LinuxProcessSemantics.Tests)
- (theories Stdlib stdpp ReadFile LinuxProcessSemantics))
+ (theories Stdlib stdpp ReadFile LinuxProcessSemantics LinuxProcessSemantics.Common))
