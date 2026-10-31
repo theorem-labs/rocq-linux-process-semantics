@@ -1,0 +1,41 @@
+; Extract the verified checker and run the input boundary's checks on the
+; GENERATED OCaml.  This is the only place the build compiles
+; theories/LinuxProcessSem/Checks/Extraction.v, which theories/dune
+; excludes from the batch build because compiling it writes a .ml file as
+; a side effect; here that side effect is the point, and a change that
+; breaks extraction now breaks the build rather than nothing.
+;
+; The directory is its own because tests/dune's (rocq.theory) takes every
+; .v beside it, and the copy below is a .v that must not join that theory.
+
+(rule
+ (target Extraction.v)
+ (action
+  (copy
+   %{project_root}/theories/LinuxProcessSem/Checks/Extraction.v
+   Extraction.v)))
+
+; rocq writes syscall_model.ml/.mli into the working directory, which is
+; this one.  The .vo files of the whole theory are the real dependency;
+; the plain `rocq c` (no -boot) finds Stdlib, stdpp, ReadFile and Flocq on
+; the installed load path, as a user of the published package would.
+(rule
+ (targets syscall_model.ml syscall_model.mli Extraction.vo Extraction.glob)
+ (deps
+  Extraction.v
+  (glob_files_rec %{project_root}/theories/*.vo))
+ (action
+  (run rocq c -R %{project_root}/theories LinuxProcessSemantics Extraction.v)))
+
+; The extracted code is generated, so its warnings are not ours to fix.
+(executable
+ (name checked_input_smoke)
+ (modules syscall_model checked_input_smoke)
+ (libraries zarith)
+ (flags
+  (:standard -w -a)))
+
+(rule
+ (alias default)
+ (action
+  (run ./checked_input_smoke.exe)))
