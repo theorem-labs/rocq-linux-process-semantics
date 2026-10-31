@@ -252,14 +252,18 @@ is one of these:
 - `bufs = []`: the program writes nothing, so the reader does not matter.
   Give `left; left; reflexivity`.
 - `in_channel_reader inp = true`: give `left; right`.
-- No reader and signal 13 not blocked in `in_sigmask inp`: each first
-  write kills its process with SIGPIPE, so both runs end in the same
-  `KillEv`. Give `right` and a `CatSim.wfirst_ok` fact for each binary:
-  the first write passes `access_ok`.
+- No reader, and SIGPIPE is fatal (`CatSim.sigpipe_fatal`: the
+  disposition is the default and `in_sigmask inp` does not block signal
+  13). Each first write kills its process with SIGPIPE, so both runs end
+  in the same `KillEv`. Give `right`, the `sigpipe_fatal` fact (under
+  `Run.valid_input` the disposition is pinned to the default) and a
+  `CatSim.wfirst_ok` fact for each binary: the first write passes
+  `access_ok`.
 
 The lemma does not cover a program that writes when the reader is gone
-and signal 13 is blocked. There the first write returns -EPIPE and the
-program continues, and `to_wexit` has no node for that return value.
+and signal 13 is blocked or ignored. There the first write returns -EPIPE
+and the program continues, and `to_wexit` has no node for that return
+value.
 
 A typical `Proof.v`:
 

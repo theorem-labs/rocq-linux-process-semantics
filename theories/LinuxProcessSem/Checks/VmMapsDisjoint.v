@@ -1644,7 +1644,8 @@ Lemma check_sigpipe_write_frame : forall eff m m' evs,
 Proof.
   intros eff m m' evs H. unfold check_sigpipe_write in H.
   apply check_ret_only_model in H; subst.
-  unfold raise_sigpipe. destruct (sigpipe_blocked (m_sigmask m)); reflexivity.
+  unfold raise_sigpipe.
+  destruct (m_sigpipe_default m), (sigpipe_blocked (m_sigmask m)); reflexivity.
 Qed.
 
 Lemma check_sigpipe_writev_frame : forall reads eff m m' evs,
@@ -1652,7 +1653,8 @@ Lemma check_sigpipe_writev_frame : forall reads eff m m' evs,
 Proof.
   intros reads eff m m' evs H. unfold check_sigpipe_writev in H.
   apply check_ret_only_copyins_model in H; subst.
-  unfold raise_sigpipe. destruct (sigpipe_blocked (m_sigmask m)); reflexivity.
+  unfold raise_sigpipe.
+  destruct (m_sigpipe_default m), (sigpipe_blocked (m_sigmask m)); reflexivity.
 Qed.
 
 Lemma check_readv_gap_frame : forall m' evs,
