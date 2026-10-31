@@ -6309,6 +6309,43 @@ Lemma init_model_is_the_setter_chain :
     = init_model_setter_chain reserved brk0 mbase sp lim inp.
 Proof. reflexivity. Qed.
 
+(** AND THE CHECK THAT THE EQUALITY ABOVE IS NOT.  The lemma says the two
+    forms denote the same model; it says nothing about the SHAPE of
+    [init_model], which is the whole of the performance property.  Both
+    forms satisfy it, so a later edit that wraps the constructor in one
+    setter leaves that lemma true and restores the defect.
+
+    MEASURED, and this is why the check is here and not in a timer:
+    wrapping [init_model]'s body in ONE [with_abort_terminal] costs the
+    [Checks.Cases.Prelude] Example 0.009 s (0.053 s against 0.044 s) and
+    the whole file nothing at all -- 12.6 s either way.  The chain's cost
+    is in the NESTING, 0.053 s at one link and 441 s at six, so nothing
+    that watches a build time can see the first wrap.  Only the term's
+    shape can.
+
+    WHAT IT CATCHES: any wrapper around the whole body, whatever its name,
+    including the first.  WHAT IT DOES NOT: a setter applied inside one
+    FIELD of the [mkModelOf] below, and any other definition that could
+    blow up the same way -- it is about the shape of this one definition
+    and nothing else.
+
+    It costs about a millisecond and needs no CI step: [cbv delta] unfolds
+    [init_model] once, [beta] reduces the application, and the match looks
+    only at the head.  Nothing is computed. *)
+Section InitModelIsOneConstructor.
+Variables (reserved : list (word * word)) (brk0 mbase sp : word)
+          (lim : Z) (inp : ProcInput).
+Goal True.
+  let t := eval cbv delta [init_model] beta in
+             (init_model reserved brk0 mbase sp lim inp) in
+  lazymatch t with
+  | mkModelOf _ _ _ _ _ _ _ => idtac
+  | _ => fail 0 "init_model is not one mkModelOf application: a new field goes beside the others in it, never into a setter wrapped around the result (see the comment above this Section)"
+  end.
+  exact I.
+Qed.
+End InitModelIsOneConstructor.
+
 (** The base case of the nonemptiness invariant: a run starts with NO
     protected range at all.  Every reachable [vm_noaccess] is therefore
     reached from [[]] by the writers in [Mm/Mmap.v] and
