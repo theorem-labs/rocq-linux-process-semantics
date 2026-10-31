@@ -4535,6 +4535,32 @@ Definition pipe_write_room (st : PipeBuf) (n : Z) : bool :=
   | (_ :: _, used) => (used + n <=? PIPE_BUF)%Z
   end.
 
+(** MUST THIS WRITE ASK THE ALLOCATOR FOR A PAGE?  It is the same
+    split [pipe_write_room] above makes, read for the other thing that
+    turns on it, and in the band that guard admits it is exactly the
+    kernel's.
+
+    [anon_pipe_write] (fs/pipe.c, Linux v6.18.46) tries the MERGE path
+    first, under [if (chars && !was_empty)] (:478): it copies into the
+    page the last buffer already holds and allocates nothing.  An EMPTY
+    queue fails [!was_empty] and falls through to the ring loop, whose
+    first statement past [!pipe_full] is
+    [page = anon_pipe_get_page(pipe)] (:515) — a [pipe->tmp_page] cache
+    hit, or [alloc_page], which may come back NULL.  A NONEMPTY queue
+    under [pipe_write_room] carries [used >= 1] and [n <= PIPE_BUF -
+    used < PAGE_SIZE], so [chars] is the whole count, the merge's
+    [offset + chars <= PAGE_SIZE] holds, and the loop is never entered;
+    [ReadWrite.write_spec]'s pipe arm spells that argument out where it
+    uses it.
+
+    So this is [true] exactly where Linux can answer -ENOMEM before it
+    has copied a byte. *)
+Definition pipe_needs_page (st : PipeBuf) : bool :=
+  match st with
+  | ([], _) => true
+  | (_ :: _, _) => false
+  end.
+
 (** The queue after appending [bs].  An empty queue restarts the mark at
     the new page's fill; a nonempty one carries it up. *)
 Definition pipe_append (st : PipeBuf) (bs : list byte) : PipeBuf :=

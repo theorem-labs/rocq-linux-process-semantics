@@ -32,8 +32,13 @@ Proof.
   destruct (negb (modeled_rw_range buf count)); cbv iota in Hspec; [discriminate|].
   lazymatch type of Hspec with (if ?b then _ else _) = _ => destruct b end;
     cbv iota in Hspec.
-  - (* -EFAULT: no writes, no events *)
-    apply check_ret_only_ok_iff in Hspec. destruct Hspec as (_ & _ & Hev). exact Hev.
+  - (* -EFAULT: no writes, no events, whatever the file it extends *)
+    unfold check_write_fault_extend in Hspec.
+    destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; [|discriminate].
+    destruct (negb (modeled_zero_fill (bv_unsigned off) data));
+      cbv iota in Hspec; [discriminate|].
+    apply check_ret_only_copyins_ok_iff in Hspec.
+    destruct Hspec as (_ & _ & Hev). exact Hev.
   - (* the range verdict a zero-length write still faces, then the file *)
     destruct (w_is0 count); cbv iota in Hspec;
       [ unfold check_access_ok_zero in Hspec;
@@ -2589,7 +2594,14 @@ Proof.
   all: cbv zeta in H.
   all: destruct (negb (w_is0 count)
                  && Nat.eqb (length (write_source (in_mem i) buf count)) 0);
-       [now destruct (Hro _ _ _ H)|].
+       [ (* the faulting source answers with an empty ledger too, over
+            the file it extends *)
+         unfold check_write_fault_extend in H;
+         destruct (fs_lookup (m_fs m) p) as [data|]; [|discriminate];
+         destruct (negb (modeled_zero_fill (bv_unsigned pos) data));
+           [discriminate|];
+         apply check_ret_only_copyins_ok_iff in H;
+         destruct H as (-> & _ & _); cbn in Hc; discriminate |].
   all: destruct (fs_lookup (m_fs m) p) as [data|]; [|discriminate].
   all: destruct (negb (modeled_file_gap data pos
                          (write_source (in_mem i) buf count)));
@@ -2638,3 +2650,109 @@ Example pipe_read_over_rw_bytes_max_is_judged :
        (mkEffect 1 [(4096, [97])] []) pipe_queued_model
      = CheckReject.
 Proof. split; [vm_compute; reflexivity|check_eq]. Qed.
+
+(* =========================================================================
+   PART 6 — what a write LEAVES BEHIND when its source faults
+   ========================================================================= *)
+
+(** [Cases.Prelude.wpast_model] is the fixture these three need: a file
+    "hi" on fd 3, O_WRONLY, with [f_pos] two bytes PAST its end.  Only
+    an [lseek] can put it there, and it is the one shape in which
+    [shmem_write_end]'s size test is not a no-op.
+
+    The same file through an iovec array, with ONLY the array readable:
+    [import_iovec] succeeds, and the gathered prefix is then empty. *)
+
+
+Definition mem_iovecs_only : word -> option byte :=
+  fun a => if bv_leu 8192 a && bv_ltu a 8224 then mem_writev_ab a else None.
+
+(** A FAULTING SOURCE IS NOT A NO-OP ON THE FILE.  Linux runs
+    [a_ops->write_begin] BEFORE the copy and [a_ops->write_end] with
+    [copied = 0] after it ([generic_perform_write], mm/filemap.c,
+    v6.18.46), and [shmem_write_end] (mm/shmem.c) opens
+    [if (pos + copied > inode->i_size) i_size_write(inode, pos + copied);]
+    — so the file comes out extended to the write's own offset, with the
+    hole reading back as zeros, and only THEN does the loop answer
+    -EFAULT ([fault_in_iov_iter_readable] cannot fault the range in,
+    [if (!written) return status;]).  [f_pos] does not move:
+    [new_sync_write] (fs/read_write.c) writes a position back only under
+    [if (ret > 0 && ppos)].
+
+    The first conjunct is that post-state, read out of the model the
+    checker returns.  The second is THE ANSWER THIS CALL USED TO GIVE —
+    the same -EFAULT over an untouched model — now refused.  The third
+    is the same statement for [writev], which reaches the same
+    [vfs_write] body: the iovec array is readable, so the import
+    succeeds and the empty gathered prefix is what faults.  The fourth
+    is the APPEND arm, where the kernel's own arithmetic makes the
+    extension a no-op ([ki_pos] IS [i_size], so [pos + 0 > i_size] is
+    false) and the file is untouched. *)
+Example write_with_a_faulting_source_extends_the_file :
+  match check_syscall (mkInput 64 [3; 4096; 2; 0; 0; 0]
+                         (fun _ => None) (fun _ => None))
+          (mkEffect (errno_ret EFAULT) [] []) wpast_model with
+  | CheckOk m [] =>
+      fs_lookup (m_fs m) [102] = Some [104; 105; 0; 0]
+      /\ fd_lookup (m_fds m) 3 = Some (FdFileW [102] 4)
+  | _ => False
+  end
+  /\ check_syscall (mkInput 64 [3; 4096; 2; 0; 0; 0]
+                      (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) wpast_model
+     <> CheckOk wpast_model []
+  /\ match check_syscall (mkInput 66 [3; 8192; 2; 0; 0; 0]
+                            mem_iovecs_only (fun _ => None))
+             (with_copyins (import_iovecs_accesses mem_iovecs_only 8192 2)
+                (mkEffect (errno_ret EFAULT) [] [])) wpast_model with
+     | CheckOk m [] => fs_lookup (m_fs m) [102] = Some [104; 105; 0; 0]
+     | _ => False
+     end
+  /\ check_syscall (mkInput 64 [3; 4096; 2; 0; 0; 0]
+                      (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) apast_model
+     = CheckOk apast_model [].
+Proof.
+  split; [vm_compute; split; check_eq|].
+  split; [vm_compute; discriminate|].
+  split; [vm_compute; check_eq|check_eq].
+Qed.
+
+(** A pipe whose queue is EMPTY, on the descriptors [Pipe.pipe2_spec]
+    hands out: 3 the read end, 4 the write end. *)
+Definition pipe_empty_model : Model :=
+  with_pipes [(0, (@nil byte, 0%Z))]
+    (mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+              (3, FdPipe 0 false); (4, FdPipe 0 true)]
+       (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
+
+(** A WRITE INTO AN EMPTY PIPE CAN ANSWER -ENOMEM, and that answer was
+    not in the model before.  [anon_pipe_write] (fs/pipe.c, v6.18.46)
+    guards its merge path with [if (chars && !was_empty)] (:478), so an
+    empty queue falls through to the ring loop, whose first act is
+    [page = anon_pipe_get_page(pipe); if (unlikely(!page)) { if (!ret)
+    ret = -ENOMEM; break; }] (:515-519) — a [break] with [ret] still 0,
+    so no byte was copied and the pipe is untouched.  Whether
+    [alloc_page(GFP_HIGHUSER | __GFP_ACCOUNT)] fails is the
+    ENVIRONMENT's, not the model's state: [ReadWrite.write_errnos] is
+    the injected answer and [Run.injected_table] registers it, exactly
+    as [Open.openat_errnos] and [Pipe.pipe2_errnos] do for their own
+    allocations.
+
+    The first conjunct is the new answer, with the pipe left as it was;
+    before this arm it was [CheckReject].  The second is that the
+    DELIVERY is still admitted beside it, so nothing was traded away.
+    The third is the bound: on a NONEMPTY queue the write merges into
+    the page that is already there and allocates nothing
+    ([State.pipe_needs_page]), so -ENOMEM is refused there. *)
+Example pipe_write_into_an_empty_pipe_may_be_enomem :
+  check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+    (mkEffect (errno_ret ENOMEM) [] []) pipe_empty_model
+  = CheckOk pipe_empty_model []
+  /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (with_copyins [(4096, 2%nat)] (mkEffect 2 [] [])) pipe_empty_model
+     = CheckOk (with_pipes [(0, ([97; 98], 2%Z))] pipe_empty_model) []
+  /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] []) pipe_queued_model
+     = CheckReject.
+Proof. split; [check_eq | split; [check_eq | vm_compute; reflexivity]]. Qed.

@@ -33,14 +33,15 @@
       filter never removes an answer the state determines, whatever the
       list says.
     - the table itself: sorted, and every number in it dispatches.
-    - three refusals no state forces, at every input and model:
+    - four refusals no state forces, at every input and model:
       [munmap]'s -ENOMEM on a whole or a partial unmap (alloc),
       [faccessat2]'s -ENOMEM
-      and -EACCES and [getdents64]'s -ENOENT (fs).  Wherever the spec
+      and -EACCES, [getdents64]'s -ENOENT and [write]'s -ENOMEM on a
+      pipe whose queue is empty (fs).  Wherever the spec
       admits one of them it admits a non-refusal beside it, so a
       configuration that reads the family as forced-only removes every
       such answer and one that reads it as may-fail keeps it: forced-only
-      removes all three, [alloc_only_cfg false] only [munmap]'s.
+      removes all four, [alloc_only_cfg false] only [munmap]'s.
     - run level: the exit-0 image must-exits under forced-only exactly
       as it does under may-fail, and the undecodable image refutes the
       predicate under forced-only as it does under may-fail — the two
@@ -1025,3 +1026,71 @@ Example getdents64_dir_enoent_kept_under_alloc_only :
   ~ spurious_refusal_cfg (alloc_only_cfg false) (getdents64_in 5 0)
       getdents64_model (errno_eff ENOENT).
 Proof. apply fs_refusals_kept_alloc_only. vm_compute. left. reflexivity. Qed.
+
+(** A WRITE INTO AN EMPTY PIPE, answered -ENOMEM: the page
+    [anon_pipe_get_page] (fs/pipe.c, Linux v6.18.46) could not get.
+    [Checks.Cases.Fs.ReadWrite.pipe_write_into_an_empty_pipe_may_be_enomem]
+    is the arm; this is what the two readings do with it.
+
+    IT IS NEVER FORCED, and here that is not an argument about states
+    but a fact about the arm's shape: [ReadWrite.write_spec] offers the
+    errno under an [alt] whose other side is the delivery, so wherever
+    the spec admits this refusal it admits the delivery at the same
+    input and model.  The third conjunct of
+    [spurious_refusal_cfg] is therefore discharged by exhibiting that
+    delivery, which is what the proof below does, rather than through
+    [unforced_refusal_spurious] — that theorem is stated over the three
+    numbers whose avoidability needed a lemma each.
+
+    SO THE TWO READINGS PART HERE, and a task has to know which it is
+    using.  [forced_only_cfg] reads the fs family as forced-only and
+    removes this answer; [alloc_only_cfg false] — the reading most
+    statements in this tree use — switches only the ALLOCATION family
+    and leaves fs at may-fail, so it KEEPS it, exactly as it keeps
+    [getdents64]'s -ENOENT and [faccessat2]'s -ENOMEM.  The family is
+    fs rather than alloc because [Run.injected_table]'s allocation
+    family is the one whose forcing condition is the MODEL's own budget
+    ([State.source_alloc_limit] and the marks beside it), and a pipe's
+    page is not drawn against that budget.
+
+    BEING KEPT UNDER THE ALLOC READING IS THE RIGHT CONSEQUENCE AND NOT
+    A COST TO AVOID, which is the question a reader asks here next.
+    [alloc_only_cfg false] says a MEMORY REQUEST fails only where the
+    state forces it; this refusal is not a memory request of the
+    program at all — the program asked to write bytes, and the page is
+    one the kernel takes for its own pipe buffer — so that reading has
+    nothing to say about it and leaves it where may-fail put it. *)
+Definition write_pipe_enomem_i : SyscallInput :=
+  mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None).
+
+Example write_pipe_enomem_admitted :
+  syscall_spec write_pipe_enomem_i pipe_empty_model
+    (Ok (errno_eff ENOMEM) pipe_empty_model []).
+Proof. apply check_syscall_sound_ok. check_eq. Qed.
+
+Example write_pipe_delivery_admitted_beside_it :
+  syscall_spec write_pipe_enomem_i pipe_empty_model
+    (Ok (with_copyins [(4096, 2%nat)] (mkEffect 2 [] []))
+       (with_pipes [(0, ([97; 98], 2%Z))] pipe_empty_model) []).
+Proof. apply check_syscall_sound_ok. check_eq. Qed.
+
+Example write_pipe_enomem_spurious_under_forced_only :
+  spurious_refusal_cfg forced_only_cfg write_pipe_enomem_i pipe_empty_model
+    (errno_eff ENOMEM).
+Proof.
+  split; [vm_compute; reflexivity |].
+  split; [vm_compute; reflexivity |].
+  exists (with_copyins [(4096, 2%nat)] (mkEffect 2 [] [])),
+         (with_pipes [(0, ([97; 98], 2%Z))] pipe_empty_model), [].
+  split; [exact write_pipe_delivery_admitted_beside_it | vm_compute; reflexivity].
+Qed.
+
+Example write_pipe_enomem_kept_under_alloc_only :
+  ~ spurious_refusal_cfg (alloc_only_cfg false) write_pipe_enomem_i
+      pipe_empty_model (errno_eff ENOMEM).
+Proof. apply spurious_refusal_family_on. vm_compute. reflexivity. Qed.
+
+Example write_pipe_enomem_kept_under_may_fail :
+  ~ spurious_refusal_cfg may_fail_cfg write_pipe_enomem_i pipe_empty_model
+      (errno_eff ENOMEM).
+Proof. apply spurious_refusal_may_fail. Qed.
