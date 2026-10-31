@@ -64,7 +64,7 @@ let model =
 
 let input : M.rawInput = {
   M.rin_sysno = z "96"; rin_args = List.map z ["274877906944"; "0"; "0"; "0"; "0"; "0"];
-  rin_mem = []; rin_wmem = [] }
+  rin_mem = []; rin_wmem = M.wmem_ranges [] }
 
 let effect_of ret : M.rawEffect = {
   M.reff_ret = z ret; reff_writes = []; reff_zeros = []; reff_unmaps = [];
@@ -89,9 +89,12 @@ let () =
        (effect_of "0"));
   check "a captured byte above 255 is refused"
     (refused { input with M.rin_mem = [(z "4096", [z "0"; z "256"])] } (effect_of "0"));
-  check "an out-of-range writable range is refused"
-    (refused { input with M.rin_wmem = [(z "4096", z "18446744073709551616")] }
-       (effect_of "0"));
+  (* The writable view is a predicate: a [bool] has no erased invariant,
+     so there is nothing there to refuse.  What is checked instead is
+     that the view answers where the reader says it may. *)
+  check "the writable view follows the reader's predicate"
+    (not (refused { input with M.rin_wmem = M.wmem_ranges [(z "4096", z "16")] }
+            (effect_of "0")));
   check "a written byte above 255 is refused"
     (refused input { (effect_of "0") with
                      M.reff_writes = [(z "4096", [z "256"])] });

@@ -30,8 +30,9 @@
     The checker's raw syscall acceptor is verified against the relational
     specs, then its successful post-model is charged for the effect's
     copy-in/copy-out ranges exactly as [Run.sstep_syscall] charges them.  A
-    caller assembles a [RawInput] (registers plus the captured pre-syscall
-    memory, as the byte runs and writable ranges it holds) and a
+    caller assembles a [RawInput] (registers, the captured pre-syscall
+    memory as the byte runs it holds, and a predicate saying which
+    addresses the kernel may write) and a
     [RawEffect] (observed return value plus the captured output buffers)
     for each real syscall and folds this accounted checker over the run.
 
@@ -54,7 +55,9 @@ Require Extraction.
    record constructors a caller fills in ([mkRawInput], [mkRawEffect],
    [mkRawProcInput], [mkRawPeer]), the two scalar checkers a caller needs
    to validate a value it is about to put somewhere else ([word_of_Z],
-   [byte_of_Z]), and [raw_of_effect], the way back for an effect the
+   [byte_of_Z]), [wmem_ranges], the writable-address predicate a reader
+   that holds ranges rather than a per-page test hands in, and
+   [raw_of_effect], the way back for an effect the
    caller built with the model's own constructors below -- it is checked
    like any other outside value, so no root hands the checker a word that
    did not pass the boundary.  Then: the
@@ -91,6 +94,7 @@ Extraction "syscall_model.ml"
   mkRawProcInput
   mkRawPeer
   raw_of_effect
+  wmem_ranges
   word_of_Z
   byte_of_Z
   fd_lookup

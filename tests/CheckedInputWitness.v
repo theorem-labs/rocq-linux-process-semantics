@@ -65,7 +65,7 @@ Proof. vm_compute. reflexivity. Qed.
     argument, no captured memory and no writable range (the call reads
     and writes nothing). *)
 Definition witness_input : RawInput :=
-  mkRawInput 96 [274877906944; 0; 0; 0; 0; 0] [] [].
+  mkRawInput 96 [274877906944; 0; 0; 0; 0; 0] [] (wmem_ranges []).
 
 Definition witness_effect_2_64 : RawEffect :=
   mkRawEffect 18446744073709551616 [] [] [] [] [].
@@ -106,37 +106,46 @@ Qed.
 (* word: the syscall number *)
 Example sysno_out_of_range_refused : forall m,
   check_syscall_for_run_checked
-    (mkRawInput 18446744073709551616 [] [] []) witness_effect_ok m
+    (mkRawInput 18446744073709551616 [] [] (wmem_ranges [])) witness_effect_ok m
   = CheckedRefused.
 Proof. intro m. vm_compute. reflexivity. Qed.
 
 (* word: a register argument *)
 Example arg_out_of_range_refused : forall m,
   check_syscall_for_run_checked
-    (mkRawInput 96 [0; 18446744073709551616] [] []) witness_effect_ok m
+    (mkRawInput 96 [0; 18446744073709551616] [] (wmem_ranges []))
+    witness_effect_ok m
   = CheckedRefused.
 Proof. intro m. vm_compute. reflexivity. Qed.
 
 (* word: the address of a captured readable run *)
 Example mem_address_out_of_range_refused : forall m,
   check_syscall_for_run_checked
-    (mkRawInput 96 [] [(18446744073709551616, [1])] []) witness_effect_ok m
+    (mkRawInput 96 [] [(18446744073709551616, [1])] (wmem_ranges []))
+    witness_effect_ok m
   = CheckedRefused.
 Proof. intro m. vm_compute. reflexivity. Qed.
 
 (* byte: a captured readable byte *)
 Example mem_byte_out_of_range_refused : forall m,
   check_syscall_for_run_checked
-    (mkRawInput 96 [] [(4096, [0; 256])] []) witness_effect_ok m
+    (mkRawInput 96 [] [(4096, [0; 256])] (wmem_ranges []))
+    witness_effect_ok m
   = CheckedRefused.
 Proof. intro m. vm_compute. reflexivity. Qed.
 
-(* word: a writable range *)
-Example wmem_range_out_of_range_refused : forall m,
-  check_syscall_for_run_checked
-    (mkRawInput 96 [] [] [(4096, 18446744073709551616)]) witness_effect_ok m
-  = CheckedRefused.
-Proof. intro m. vm_compute. reflexivity. Qed.
+(* The writable view is a PREDICATE, so it has nothing to refuse: its
+   result is a [bool] and the address it is asked about is one the
+   boundary built.  What is tested instead is that the view it builds
+   answers where the reader says it may, and nowhere else. *)
+Example wmem_view_follows_the_predicate :
+  wmem_view (wmem_ranges [(4096, 16)]) (Z_to_bv 64%N 4100) <> None
+  /\ wmem_view (wmem_ranges [(4096, 16)]) (Z_to_bv 64%N 4112) = None.
+Proof.
+  split.
+  - vm_compute. discriminate.
+  - vm_compute. reflexivity.
+Qed.
 
 (* byte: a byte the kernel is said to have written *)
 Example write_byte_out_of_range_refused : forall m,

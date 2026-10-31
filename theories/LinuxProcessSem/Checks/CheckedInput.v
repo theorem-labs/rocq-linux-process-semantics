@@ -266,19 +266,28 @@ Proof.
       exists base', bs'. split; [now right | exact Hb].
 Qed.
 
-(** The writable view: exactly the addresses the kernel may write into,
-    described as ranges.  The model reads this view for DEFINEDNESS — an
-    output buffer that is unmapped or read-only is [unmodeled] — and the
-    byte it answers with is the zero every reader already supplies for it.
-    The ranges are read in [Z] over unsigned values, so a range that runs
-    off the top of the address space covers what it says and nothing more. *)
-Definition range_has (r : word * word) (a : word) : bool :=
-  (bv_unsigned (fst r) <=? bv_unsigned a)%Z
-  && (bv_unsigned a <? bv_unsigned (fst r) + bv_unsigned (snd r))%Z.
+(** The writable view is a PREDICATE on the address, and that is not a
+    weaker boundary than the readable view's data: the model reads this
+    view for DEFINEDNESS only — an output buffer that is unmapped or
+    read-only is [unmodeled] — and every arm reads it through
+    [State.read_bytes_map] or [copy_bytes_map] and matches [Some]/[None],
+    never the byte.  So the byte is fixed here at zero, the value both
+    existing readers already supply for it.
 
-Definition wmem_view (rs : list (word * word)) : word -> option byte :=
-  fun a => if existsb (fun r => range_has r a) rs
-           then Some (Z_to_bv 8 0) else None.
+    A predicate carries nothing that extraction could erase: its result
+    is a [bool], which has no well-formedness condition, and the [Z] it
+    is asked about is [bv_unsigned] of an address this boundary built.
+    Taking it as data instead would cost a reader that decides
+    writability one page at a time the enumeration of every writable
+    page, which is not a thing it can do over a 2^47 address space. *)
+Definition wmem_view (p : Z -> bool) : word -> option byte :=
+  fun a => if p (bv_unsigned a) then Some (Z_to_bv 8 0) else None.
+
+(** The predicate a reader that holds RANGES hands in: [(base, length)]
+    pairs, read in [Z] over unsigned values, so a range that runs off the
+    top of the address space covers what it says and nothing more. *)
+Definition wmem_ranges (rs : list (Z * Z)) : Z -> bool :=
+  fun a => existsb (fun r => (fst r <=? a)%Z && (a <? fst r + snd r)%Z) rs.
 
 (* =========================================================================
    What a reader hands in
@@ -291,7 +300,7 @@ Record RawInput := mkRawInput {
   rin_sysno : Z;                   (* a7 at ecall *)
   rin_args  : list Z;              (* a0..a5 at ecall *)
   rin_mem   : list (Z * list Z);   (* captured readable runs: (address, bytes) *)
-  rin_wmem  : list (Z * Z)         (* writable ranges: (base, length) *)
+  rin_wmem  : Z -> bool            (* is this address one the kernel may write? *)
 }.
 
 (** The observed effect as the outside world has it: field for field
@@ -307,10 +316,10 @@ Record RawEffect := mkRawEffect {
 
 Definition input_of_raw (r : RawInput) : option SyscallInput :=
   match word_of_Z (rin_sysno r), words_of_Z (rin_args r),
-        runs_of_Z (rin_mem r), pairs_of_Z (rin_wmem r) with
-  | Some sysno, Some args, Some runs, Some rs =>
-      Some (mkInput sysno args (mem_view runs) (wmem_view rs))
-  | _, _, _, _ => None
+        runs_of_Z (rin_mem r) with
+  | Some sysno, Some args, Some runs =>
+      Some (mkInput sysno args (mem_view runs) (wmem_view (rin_wmem r)))
+  | _, _, _ => None
   end.
 
 Definition effect_of_raw (r : RawEffect) : option SyscallEffect :=
@@ -378,13 +387,11 @@ Proof.
     destruct (word_of_Z (rin_sysno ri)) as [sysno|] eqn:Hs; [|discriminate].
     destruct (words_of_Z (rin_args ri)); [|discriminate].
     destruct (runs_of_Z (rin_mem ri)); [|discriminate].
-    destruct (pairs_of_Z (rin_wmem ri)); [|discriminate].
     injection Hi as <-. cbn. now apply bv_of_Z_value.
   - unfold input_of_raw in Hi.
     destruct (word_of_Z (rin_sysno ri)); [|discriminate].
     destruct (words_of_Z (rin_args ri)) as [args|] eqn:Ha; [|discriminate].
     destruct (runs_of_Z (rin_mem ri)); [|discriminate].
-    destruct (pairs_of_Z (rin_wmem ri)); [|discriminate].
     injection Hi as <-. cbn. clear - Ha.
     revert args Ha. unfold words_of_Z.
     induction (rin_args ri) as [|z l IH]; cbn; intros args Ha.
