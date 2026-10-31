@@ -467,11 +467,12 @@ Definition LOCK_MAND : Z := 32%Z.
     it, because it is one bit of one ABI and so one constant. *)
 (** O_APPEND is read by TWO things, like O_DIRECT below:
     [Fcntl.setfl_acted_on], for which it is a status bit F_SETFL really
-    changes, and [Open.append_create_flags], the open shape that mints a
-    [State.FdFileA].  The two readings are coupled rather than
-    independent — the append open is the one admitted shape whose
-    residue meets [setfl_acted_on], and [Fcntl.setfl_noop_on]'s
-    [FdFileA] arm is what keeps that sound. *)
+    changes, and the open shapes that mint a [State.FdFileA]
+    ([Open.append_create_flags] and [Open.is_excl_append_create]).  The
+    two readings are coupled rather than independent — the append opens
+    are the admitted shapes whose residues meet [setfl_acted_on]
+    ([Fcntl.append_open_words_carry_o_append]), and
+    [Fcntl.setfl_noop_on]'s [FdFileA] arm is what keeps that sound. *)
 Definition O_APPEND   : Z := 1024%Z.     (* 02000    *)
 Definition FASYNC     : Z := 8192%Z.     (* 020000   *)
 (** O_DIRECT is read by TWO things: [Fcntl.setfl_acted_on], for which it

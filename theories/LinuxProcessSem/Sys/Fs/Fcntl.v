@@ -111,17 +111,18 @@ Definition setfl_acted_on : Z :=
     ([open_ignored_flags_clear_of_setfl_current]).  Nothing else in the
     modeled surface can set either bit afterwards.
 
-    THAT THEOREM COVERS FOUR OF THE FIVE ADMITTED WORDS, and the fifth
-    is why this predicate has an [FdFileA] arm.
-    [Open.append_create_flags] is admitted by
-    [Open.modeled_open_flags] and its residue is NOT disjoint from
-    [setfl_acted_on]: the residue IS O_APPEND, a bit of it.  What keeps
-    the arms above sound is therefore not that every admitted word is
-    clear, but that the one that is not mints a DIFFERENT fd kind --
-    [Open.openat_append_spec] hands back [State.FdFileA], which this
-    match declines outright.  The remark below is stated over the four
+    THAT THEOREM COVERS EVERY ADMITTED WORD BUT THOSE CARRYING
+    O_APPEND, and those are why this predicate has an [FdFileA] arm.
+    [Open.append_create_flags] and the [Open.is_excl_append_create]
+    words are admitted by [Open.modeled_open_flags] and their residues
+    are NOT disjoint from [setfl_acted_on]: each contains O_APPEND, a
+    bit of it.  What keeps the arms above sound is therefore not that
+    every admitted word is clear, but that the words that are not mint
+    a DIFFERENT fd kind -- [Open.openat_append_spec], under both words,
+    hands back [State.FdFileA], which this
+    match declines outright.  The remark below is stated over the other
     words for that reason, and the [FdFileA] arm carries the argument
-    for the fifth.
+    for these.
 
     O_NONBLOCK IS ADMITTED AND DOES REACH [f_flags], which is why the
     second of those remarks is stated over the two bits rather than over
@@ -180,7 +181,8 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
       (* AN APPEND FD IS THE CASE THIS ARM WAS WARNED ABOUT, and it is
          the one kind here whose [f_flags] provably CARRIES a bit
          [setfl] reads.  [State.FdFileA] is minted by
-         [Open.openat_append_spec] from a flag word containing O_APPEND,
+         [Open.openat_append_spec], under either of its two flag words,
+         each containing O_APPEND,
          and [do_dentry_open] (fs/open.c, v6.18.46) clears only
          O_CREAT|O_EXCL|O_NOCTTY|O_TRUNC from [f_flags], so the bit is
          still there when [setfl] runs.  Two things then go wrong at
@@ -200,8 +202,8 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
            would go on answering for an append fd -- a confident wrong
            write POSITION, not a gap.
 
-         Neither is something [Open.openat_append_spec] can fix from its
-         own side, so the decline lives here.  Closing it needs the
+         Neither is something an open arm can fix from its own side, so
+         the decline lives here.  Closing it needs the
          [f_flags] word recorded on the [FdEntry] (the change
          [getfl_f_flags] below already names) TOGETHER with an
          [IS_APPEND] notion in [State.v]; the second is not optional,
@@ -272,13 +274,14 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
     quantified because [Open.modeled_open_flags] is an equality against
     a NAMED list — so widening it with a word whose residue meets
     [setfl_acted_on] leaves this remark true and no longer SUFFICIENT,
-    which is the thing that has to be noticed.  Two of the admitted
-    words fall on opposite sides of that test.
+    which is the thing that has to be noticed.  The widenings since
+    fall on both sides of that test.
     O_DIRECTORY is outside [setfl_acted_on], and the disjunct below is
     what says so rather than a reader checking two octal constants
-    against each other.  [Open.append_create_flags] is NOT: its residue
-    is O_APPEND, it is deliberately absent from the disjunction below,
-    and what covers it is [setfl_noop_on]'s [FdFileA] arm rather than
+    against each other.  [Open.append_create_flags] and the
+    [Open.is_excl_append_create] words are NOT: their residues contain
+    O_APPEND, they are deliberately absent from the disjunction below,
+    and what covers them is [setfl_noop_on]'s [FdFileA] arm rather than
     this proof.  The two have to be read together.
 
     THE SIX O_RDWR WORDS ARE IN THE DISJUNCTION, on the O_DIRECTORY side
@@ -301,6 +304,20 @@ Proof.
   - unfold is_rdwr_excl_create in H.
     apply Bool.orb_true_iff in H as [H | H]; apply Z.eqb_eq in H; subst;
       reflexivity.
+Qed.
+
+(** The other side of the same test, mechanized for the same reason: the
+    words absent from the disjunction above really do carry O_APPEND, so
+    leaving them out is forced and not an oversight.  Adding either to
+    the remark above breaks its proof. *)
+Remark append_open_words_carry_o_append : forall fl,
+  (fl = append_create_flags \/ is_excl_append_create fl = true) ->
+  Z.land fl O_APPEND = O_APPEND.
+Proof.
+  intros fl [-> | H]; [reflexivity|].
+  unfold is_excl_append_create in H.
+  apply Bool.orb_true_iff in H as [H | H]; apply Z.eqb_eq in H; subst;
+    reflexivity.
 Qed.
 
 (** ...and this one is the STRIPPED BITS, the half a residue argument
