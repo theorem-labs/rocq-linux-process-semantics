@@ -427,7 +427,8 @@ Definition low_segment : Segment := {|
   seg_base  := 0x100;
   seg_size  := 24;
   seg_perms := "r-x"%string;
-  seg_bytes := ["b70280009382f2fb9392820163745100033300006f000000"%pstring]
+  seg_bytes := ["b70280009382f2fb9392820163745100033300006f000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition low_segments : list Segment := [low_segment].
 Definition low_image : Image := mkImage low_segments 0x100 witness_phdrs.
@@ -436,7 +437,8 @@ Definition high_segment : Segment := {|
   seg_base  := 0x100;
   seg_size  := 24;
   seg_perms := "r-x"%string;
-  seg_bytes := ["b70200029382f2ff9392620163f42200033300006f000000"%pstring]
+  seg_bytes := ["b70200029382f2ff9392620163f42200033300006f000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition high_segments : list Segment := [high_segment].
 Definition high_image : Image := mkImage high_segments 0x100 witness_phdrs.
