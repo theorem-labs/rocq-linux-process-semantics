@@ -23,7 +23,12 @@ now. The model does not check claims about them.
 Each configuration choice that the model fixes is an assumption about the
 Linux system. "Assumptions that the model does not check" below lists
 them; `CONFIG_EVENTFD=y` is one, and `eventfd2` therefore answers
-`-EINVAL` for a refused flag word and never `-ENOSYS`.
+`-EINVAL` for a refused flag word and never `-ENOSYS`. `CONFIG_UNIX=y`
+is another: `socketpair(AF_UNIX, SOCK_STREAM, 0)` succeeds only on a
+kernel with AF_UNIX registered. The riscv64 defconfig gets it from
+`CONFIG_NET_9P_FD`, which has `imply UNIX` (`net/9p/Kconfig`); the
+generated `.config` has `CONFIG_UNIX=y` and `CONFIG_AF_UNIX_OOB=y`
+(dispatch://OSSV-287/artifact/skb-sizes-md).
 
 ## Where QEMU user mode differs
 
@@ -304,9 +309,13 @@ three rules are `randomize_stack_top` and `setup_arg_pages`
 The launch's own facts are therefore premises of each statement:
 whether the launch randomises, the `stack_guard_gap` boot parameter,
 `vm.mmap_rnd_bits`, `CONFIG_RSEQ`, the vector unit's `VLENB`, the
-machine's four cache leaves and which vDSO image the build carries.
-They are fields of `State.KernelBuild`, which is part of the input, so
-both binaries of a pair are launched on one machine by one launcher.
+machine's four cache leaves, which vDSO image the build carries, and
+the socket-buffer numbers: `sizeof(struct sk_buff)` and the
+`net.core.wmem_default`, `rmem_default`, `wmem_max` and `rmem_max`
+sysctls. They are fields of `State.KernelBuild`, which is part of the
+input, so both binaries of a pair are launched on one machine by one
+launcher. A build whose `struct sk_buff` is larger than 1 KiB is outside
+the model (`State.skb_head_bytes`).
 
 These cases stay outside the model:
 
@@ -359,6 +368,27 @@ not apply.
   `Sys/Kernel/Exit.v`). `execve` does not reap a child in Linux, so a
   launcher that forks a grandchild, or attaches a tracee, before it
   execs the image makes this assumption false.
+- An in-process stream pair (`socketpair(AF_UNIX, SOCK_STREAM, 0)`,
+  `State.FdStream`) is used by this one thread only. Both ends are in
+  this process and no modeled call shares one: `dup`, `dup3`, `F_DUPFD`
+  and a `clone` holding one are declined, and `sendmsg` on one is
+  declined, so no descriptor travels by `SCM_RIGHTS`. A blocking read of
+  an empty queue whose peer is open, and a blocking send that might
+  wait for room, are declined: on Linux such a call never returns,
+  because the only task that could act on the peer is the one that
+  waits. A program that reaches either is outside the model. After one
+  end is closed, two calls on the other end are declined too: a read of
+  its empty queue (Linux gives end of file, or first one `-ECONNRESET`
+  when the closed end left bytes unread) and `ppoll` on it. The model's
+  `close` does not record which of the two the closed end left, because
+  a `close` that changed another descriptor's entry would make false
+  the published lemmas that say a `close` only removes its own entry
+  (`theories/Common/FileSim.v`, `tfo_close`).
+- The `net.core` sysctls `wmem_default`, `rmem_default`, `wmem_max` and
+  `rmem_max` do not change while the program runs. The model reads them
+  from `State.KernelBuild`, which a launch states once; statements
+  quantify over every value. Another process that writes
+  `/proc/sys/net/core/*` during the run makes this assumption false.
 - The launch left `SIGPIPE` at its default disposition, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises
@@ -524,6 +554,17 @@ equivalence) can be true of the model and false of Linux.
   two, and the value of `hrtimer_resolution`, follow the kernel build and
   the boot (`CONFIG_HIGH_RES_TIMERS`, `CONFIG_HZ`). The model does not
   constrain later calls to use the same resolution.
+- **The count of a non-blocking send on a stream pair.** Linux cuts the
+  send into skbs and stops at the first one that the sender's
+  `sk_wmem_alloc`, counted in TRUESIZE, does not admit
+  (`unix_stream_sendmsg`, `sock_alloc_send_pskb`). Truesize depends on
+  kmalloc rounding, which the model does not carry. So
+  `State.stream_send_ok` admits every count from the first skb's size
+  to the bound the send buffer allows, and Linux gives only some of
+  them; and a send onto a non-empty queue may answer `-EAGAIN` where
+  Linux would admit one more skb. Readiness has the same cause: in the
+  band where `unix_writable` turns on truesize, `ppoll` and `pselect6`
+  decline a request for POLLOUT rather than answer it.
 - **R-a, an mmap base above `State.alloc_top`.** The model's stack window is
   `[sp - 8 MiB, sp)`. Linux measures its 8 MiB from the end of the stack
   VMA, which is above `sp` by the entry image. With an entry image of more

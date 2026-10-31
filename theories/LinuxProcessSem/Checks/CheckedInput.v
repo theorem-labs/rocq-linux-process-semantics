@@ -82,9 +82,10 @@
       extraction.  No root of either artifact takes one in argument
       position — every width this surface names is fixed inside Rocq
       — and the one place the outside world declares a value the
-      MODEL holds as an [N], the kernel build's eight numeric
-      components ([State.KernelBuild] and the four [State.CacheLeaf]
-      it carries), takes it as a [Z] and converts it here.  Boundary:
+      MODEL holds as an [N], the kernel build's numeric components
+      ([State.KernelBuild]'s nine and the three of each of the four
+      [State.CacheLeaf] it carries), takes it as a [Z] and converts it
+      here.  Boundary:
       [n_of_Z] in [Riscv.CheckedBv], beside [bv_of_Z] and for the
       same reason, reached through [kernel_of_raw] in
       [proc_input_of_raw].  A root that took an [N] ITSELF would
@@ -620,7 +621,12 @@ Record RawKernelBuild := mkRawKernelBuild {
   rkb_rnd_bits : Z;     (* vm.mmap_rnd_bits *)
   rkb_rseq     : bool;  (* CONFIG_RSEQ *)
   rkb_vlenb    : Z;     (* the vector unit's VLENB CSR *)
-  rkb_cache    : RawCacheView
+  rkb_cache    : RawCacheView;
+  rkb_skb_head     : Z;  (* sizeof(struct sk_buff), in bytes *)
+  rkb_wmem_default : Z;  (* net.core.wmem_default *)
+  rkb_rmem_default : Z;  (* net.core.rmem_default *)
+  rkb_wmem_max     : Z;  (* net.core.wmem_max *)
+  rkb_rmem_max     : Z   (* net.core.rmem_max *)
 }.
 
 (** It is built with [State.mkProcInput_full], the record's own
@@ -813,17 +819,24 @@ Definition cache_view_of_raw (c : RawCacheView) : option CacheView :=
 (** [State.KernelBuild]'s own comment says that EVERY VALUE OF EVERY
     FIELD NAMES A REAL BUILD — [vdso_text_pages], [mmap_rnd_bits],
     [stack_guard_gap_pages] and [launch_vlenb] each wrap their field
-    into the range the kernel admits — so [Run.valid_input] carries no
-    clause about this record and there is no launch condition to
-    decide here.  What is left to check is the one invariant
-    extraction erases: an [N] is not negative. *)
+    into the range the kernel admits, and [skb_head_bytes] and the four
+    [sysctl_*] accessors do the same for the five socket numbers — so
+    [Run.valid_input] carries no clause about this record and there is
+    no launch condition to decide here.  What is left to check is the
+    one invariant extraction erases: an [N] is not negative. *)
 Definition kernel_of_raw (k : RawKernelBuild) : option KernelBuild :=
   match n_of_Z (rkb_vdso k), n_of_Z (rkb_guard k), n_of_Z (rkb_rnd_bits k),
-        n_of_Z (rkb_vlenb k), cache_view_of_raw (rkb_cache k) with
-  | Some vdso, Some guard, Some rnd_bits, Some vlenb, Some cache =>
+        n_of_Z (rkb_vlenb k), cache_view_of_raw (rkb_cache k),
+        n_of_Z (rkb_skb_head k), n_of_Z (rkb_wmem_default k),
+        n_of_Z (rkb_rmem_default k), n_of_Z (rkb_wmem_max k),
+        n_of_Z (rkb_rmem_max k) with
+  | Some vdso, Some guard, Some rnd_bits, Some vlenb, Some cache,
+    Some skb_head, Some wmem_default, Some rmem_default, Some wmem_max,
+    Some rmem_max =>
       Some (mkKernelBuild (rkb_thp k) vdso (rkb_aslr k) guard rnd_bits
-              (rkb_rseq k) vlenb cache)
-  | _, _, _, _, _ => None
+              (rkb_rseq k) vlenb cache skb_head wmem_default rmem_default
+              wmem_max rmem_max)
+  | _, _, _, _, _, _, _, _, _, _ => None
   end.
 
 (** THE EXEC FILE NAME, [bprm->filename] without its NUL (fs/exec.c,
@@ -1079,8 +1092,9 @@ Proof.
   now destruct (kernel_of_raw (rpi_kernel r)).
 Qed.
 
-(** THE KERNEL BUILD, component by component.  The four numbers of the
-    record itself first. *)
+(** THE KERNEL BUILD, component by component, in the order the
+    boundary decodes them.  The four launch numbers of the record
+    itself first; its five socket numbers come after the cache leaves. *)
 Theorem init_model_checked_refuses_out_of_range_kernel_vdso :
   forall reserved brk0 mbase sp lim r,
   ~ (0 <= rkb_vdso (rpi_kernel r))%Z ->
@@ -1185,6 +1199,91 @@ Proof.
     now destruct (n_of_Z (rcl_assoc l)).
 Qed.
 
+(** ... and the five socket numbers, [sizeof(struct sk_buff)] and the
+    four [net.core] buffer sysctls, which the boundary decodes after
+    the cache view.  One refused number refuses the build whatever
+    the numbers before it say. *)
+Lemma kernel_of_raw_None_socket : forall k,
+  n_of_Z (rkb_skb_head k) = None \/ n_of_Z (rkb_wmem_default k) = None \/
+  n_of_Z (rkb_rmem_default k) = None \/ n_of_Z (rkb_wmem_max k) = None \/
+  n_of_Z (rkb_rmem_max k) = None ->
+  kernel_of_raw k = None.
+Proof.
+  intros k H. unfold kernel_of_raw.
+  destruct (n_of_Z (rkb_vdso k)); [|reflexivity].
+  destruct (n_of_Z (rkb_guard k)); [|reflexivity].
+  destruct (n_of_Z (rkb_rnd_bits k)); [|reflexivity].
+  destruct (n_of_Z (rkb_vlenb k)); [|reflexivity].
+  destruct (cache_view_of_raw (rkb_cache k)); [|reflexivity].
+  destruct H as [H | [H | [H | [H | H]]]]; rewrite H.
+  - reflexivity.
+  - now destruct (n_of_Z (rkb_skb_head k)).
+  - destruct (n_of_Z (rkb_skb_head k)); [|reflexivity].
+    now destruct (n_of_Z (rkb_wmem_default k)).
+  - destruct (n_of_Z (rkb_skb_head k)); [|reflexivity].
+    destruct (n_of_Z (rkb_wmem_default k)); [|reflexivity].
+    now destruct (n_of_Z (rkb_rmem_default k)).
+  - destruct (n_of_Z (rkb_skb_head k)); [|reflexivity].
+    destruct (n_of_Z (rkb_wmem_default k)); [|reflexivity].
+    destruct (n_of_Z (rkb_rmem_default k)); [|reflexivity].
+    now destruct (n_of_Z (rkb_wmem_max k)).
+Qed.
+
+Theorem init_model_checked_refuses_out_of_range_kernel_skb_head :
+  forall reserved brk0 mbase sp lim r,
+  ~ (0 <= rkb_skb_head (rpi_kernel r))%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r Hout.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_kernel. apply kernel_of_raw_None_socket.
+  left. exact (proj2 (n_of_Z_refused _) Hout).
+Qed.
+
+Theorem init_model_checked_refuses_out_of_range_kernel_wmem_default :
+  forall reserved brk0 mbase sp lim r,
+  ~ (0 <= rkb_wmem_default (rpi_kernel r))%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r Hout.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_kernel. apply kernel_of_raw_None_socket.
+  right; left. exact (proj2 (n_of_Z_refused _) Hout).
+Qed.
+
+Theorem init_model_checked_refuses_out_of_range_kernel_rmem_default :
+  forall reserved brk0 mbase sp lim r,
+  ~ (0 <= rkb_rmem_default (rpi_kernel r))%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r Hout.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_kernel. apply kernel_of_raw_None_socket.
+  right; right; left. exact (proj2 (n_of_Z_refused _) Hout).
+Qed.
+
+Theorem init_model_checked_refuses_out_of_range_kernel_wmem_max :
+  forall reserved brk0 mbase sp lim r,
+  ~ (0 <= rkb_wmem_max (rpi_kernel r))%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r Hout.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_kernel. apply kernel_of_raw_None_socket.
+  right; right; right; left. exact (proj2 (n_of_Z_refused _) Hout).
+Qed.
+
+Theorem init_model_checked_refuses_out_of_range_kernel_rmem_max :
+  forall reserved brk0 mbase sp lim r,
+  ~ (0 <= rkb_rmem_max (rpi_kernel r))%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r Hout.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_kernel. apply kernel_of_raw_None_socket.
+  right; right; right; right. exact (proj2 (n_of_Z_refused _) Hout).
+Qed.
+
 (** NOTHING THE MODEL CAN SAY IS LOST, for the kernel build: every
     [State.KernelBuild] has a raw form the boundary accepts and
     returns unchanged, so a refusal here is never a build a launch
@@ -1201,7 +1300,10 @@ Definition raw_of_cache_view (c : CacheView) : RawCacheView :=
 Definition raw_of_kernel (kb : KernelBuild) : RawKernelBuild :=
   mkRawKernelBuild (kb_thp kb) (Z.of_N (kb_vdso kb)) (kb_aslr kb)
     (Z.of_N (kb_guard kb)) (Z.of_N (kb_rnd_bits kb)) (kb_rseq kb)
-    (Z.of_N (kb_vlenb kb)) (raw_of_cache_view (kb_cache kb)).
+    (Z.of_N (kb_vlenb kb)) (raw_of_cache_view (kb_cache kb))
+    (Z.of_N (kb_skb_head kb)) (Z.of_N (kb_wmem_default kb))
+    (Z.of_N (kb_rmem_default kb)) (Z.of_N (kb_wmem_max kb))
+    (Z.of_N (kb_rmem_max kb)).
 
 Lemma cache_leaf_of_raw_of_leaf : forall l,
   cache_leaf_of_raw (raw_of_cache_leaf l) = Some l.
@@ -1224,7 +1326,8 @@ Theorem kernel_of_raw_of_kernel : forall kb,
 Proof.
   intros kb. unfold kernel_of_raw, raw_of_kernel.
   cbn [rkb_thp rkb_vdso rkb_aslr rkb_guard rkb_rnd_bits rkb_rseq rkb_vlenb
-       rkb_cache].
+       rkb_cache rkb_skb_head rkb_wmem_default rkb_rmem_default
+       rkb_wmem_max rkb_rmem_max].
   rewrite !n_of_Z_total, cache_view_of_raw_of_view.
   destruct kb; reflexivity.
 Qed.

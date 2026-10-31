@@ -51,6 +51,161 @@ Proof.
   eapply bind_step; [apply modify_ok|]. apply pure_ok.
 Qed.
 
+(* ------------------------------------------------- stream-pair ends *)
+
+(** [ReadWrite.stream_read_empty]'s one outcome per branch: a closed
+    peer and a blocking read decline, a shut receive side is end of
+    file, and a call that may not wait is -EAGAIN. *)
+Definition witness_stream_read_empty (id : word) (side : bool) (st : StreamEnd)
+    (nonblock : bool) (m : Model) : outcome SyscallEffect :=
+  match stream_peer (m_fds m) id side with
+  | None => Unmodeled
+  | Some _ =>
+      if se_shut_rd st then ret_outcome (Z_to_bv 64 0) m
+      else if nonblock then ret_outcome (errno_ret EAGAIN) m
+      else Unmodeled
+  end.
+
+Lemma witness_stream_read_empty_ok : forall id side st nonblock i m,
+  stream_read_empty id side st nonblock m i m
+    (witness_stream_read_empty id side st nonblock m).
+Proof.
+  intros. unfold stream_read_empty, witness_stream_read_empty.
+  destruct (stream_peer (m_fds m) id side); cbv beta iota; [|apply unmodeled_intro].
+  destruct (se_shut_rd st); cbv beta iota; [apply pure_ok|].
+  destruct nonblock; cbv beta iota; [apply pure_ok|apply unmodeled_intro].
+Qed.
+
+(** [ReadWrite.stream_read]'s one outcome per branch: the read is
+    deterministic, so the witness IS the delivery. *)
+Definition witness_stream_read (fd id : word) (side : bool) (st : StreamEnd)
+    (nonblock : bool) (buf count : word) (i : SyscallInput) (m : Model)
+    : outcome SyscallEffect :=
+  match se_rx st with
+  | [] => witness_stream_read_empty id side st nonblock m
+  | q =>
+      let del := pipe_take q (rw_count_clamp count) in
+      match read_bytes_map (in_wmem i) buf (len_word del) with
+      | None =>
+          match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+          | None => ret_outcome (errno_ret EFAULT) m
+          | Some _ => Unmodeled              (* partially writable destination *)
+          end
+      | Some _ =>
+          Ok (mkEffect (len_word del) (delivered_writes buf del) [])
+             (with_fds (fd_insert (m_fds m) fd
+                          (FdStream id side (se_set_rx st (skipn (length del) q)))) m)
+             []
+      end
+  end.
+
+Lemma witness_stream_read_ok : forall fd id side st nonblock buf count i m,
+  stream_read fd id side st nonblock buf count i m i m
+    (witness_stream_read fd id side st nonblock buf count i m).
+Proof.
+  intros. unfold stream_read, witness_stream_read.
+  destruct (se_rx st) as [|b q0]; cbv beta iota zeta.
+  { apply witness_stream_read_empty_ok. }
+  destruct (read_bytes_map (in_wmem i) buf
+              (len_word (pipe_take (b :: q0) (rw_count_clamp count))));
+    cbv beta iota.
+  - eapply bind_step; [apply modify_ok|]. apply pure_ok.
+  - destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)); cbv beta iota;
+      [apply unmodeled_intro|apply pure_ok].
+Qed.
+
+(** [ReadWrite.stream_send]'s witness: where the spec moves bytes it
+    moves ALL the bound allows -- the [c] below, which
+    [State.stream_send_ok] admits whenever the queue is not full -- and
+    everywhere else its one answer. *)
+Definition witness_stream_send (id : word) (side : bool) (st : StreamEnd)
+    (nonblock nosignal : bool) (n : Z) (src : Z -> list byte)
+    (ledger : nat -> list (word * nat)) (m : Model) : outcome SyscallEffect :=
+  let pipe_err :=
+    if nosignal then ret_outcome (errno_ret EPIPE) m
+    else ret_outcome (errno_ret EPIPE) (raise_sigpipe m) in
+  match stream_peer (m_fds m) id side with
+  | None => pipe_err
+  | Some (pfd, pst) =>
+      if se_shut_wr st then pipe_err
+      else if Z.eqb n 0 then ret_outcome (Z_to_bv 64 0) m
+      else
+      let q := se_rx_len pst in
+      let s := se_sndbuf st in
+      if stream_send_full q s then
+        (if nonblock then ret_outcome (errno_ret EAGAIN) m else Unmodeled)
+      else
+      let c := Z.min n (s + s / 2 - q) in
+      let bs := src c in
+      if negb (Z.eqb (Z.of_nat (length bs)) c) then Unmodeled
+      else
+      let sent (k : Z) : outcome SyscallEffect :=
+        Ok (with_copyins (ledger (Z.to_nat k)) (mkEffect (Z_to_bv 64 k) [] []))
+           (with_fds (fd_insert (m_fds m) pfd
+                        (FdStream id (negb side)
+                           (se_set_rx pst (se_rx pst ++ firstn (Z.to_nat k) bs)))) m)
+           [] in
+      if nonblock then sent c
+      else if stream_send_fits_one q s n then sent n
+      else Unmodeled
+  end.
+
+(** The send's length is never negative at any caller ([rw_count_clamp]
+    and [iovs_total] are both sums of unsigned values), and that is what
+    makes the full send [c] a count [State.stream_send_ok] admits. *)
+Lemma witness_stream_send_ok : forall id side st nonblock nosignal n src ledger i m,
+  (0 <= n)%Z ->
+  stream_send id side st nonblock nosignal n src ledger m i m
+    (witness_stream_send id side st nonblock nosignal n src ledger m).
+Proof.
+  intros id side st nonblock nosignal n src ledger i m Hn.
+  unfold stream_send, witness_stream_send. cbv zeta.
+  destruct (stream_peer (m_fds m) id side) as [[pfd pst]|]; cbv beta iota.
+  2:{ destruct nosignal; cbv beta iota; [apply pure_ok|].
+      unfold sigpipe_write. eapply bind_step; [apply modify_ok|]. apply pure_ok. }
+  destruct (se_shut_wr st); cbv beta iota.
+  { destruct nosignal; cbv beta iota; [apply pure_ok|].
+    unfold sigpipe_write. eapply bind_step; [apply modify_ok|]. apply pure_ok. }
+  destruct (Z.eqb n 0) eqn:Hn0; cbv beta iota; [apply pure_ok|].
+  set (q := se_rx_len pst). set (s := se_sndbuf st).
+  destruct (stream_send_full q s) eqn:Hfull; cbv beta iota.
+  { destruct nonblock; cbv beta iota; [apply pure_ok|apply unmodeled_intro]. }
+  set (c := Z.min n (s + s / 2 - q)). set (bs := src c).
+  destruct (negb (Z.eqb (Z.of_nat (length bs)) c)); cbv beta iota;
+    [apply unmodeled_intro|].
+  destruct nonblock; cbv beta iota.
+  - assert (Hq : (0 <= q)%Z) by (unfold q, se_rx_len; lia).
+    assert (Hok : stream_send_ok q s n c).
+    { unfold stream_send_full in Hfull. apply Z.leb_gt in Hfull.
+      apply Z.eqb_neq in Hn0.
+      assert (Hs2 : (0 <= s / 2)%Z) by (apply Z.div_pos; lia).
+      unfold stream_send_ok, c. lia. }
+    destruct (stream_send_may_refuse q); cbv beta iota; [apply alt_r|];
+      (eapply bind_step; [apply (choose_ok _ c); exact Hok|]); cbv beta;
+      (eapply bind_step; [apply modify_ok|]);
+      (apply record_copyins_ok_empty; [reflexivity|apply pure_ok]).
+  - destruct (stream_send_fits_one q s n); cbv beta iota; [|apply unmodeled_intro].
+    eapply bind_step; [apply modify_ok|].
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
+Qed.
+
+(** [ReadWrite.stream_write]'s witness: [witness_stream_send] over one
+    flat buffer. *)
+Definition witness_stream_write (id : word) (side : bool) (st : StreamEnd)
+    (nonblock nosignal : bool) (buf count : word) (i : SyscallInput) (m : Model)
+    : outcome SyscallEffect :=
+  witness_stream_send id side st nonblock nosignal (rw_count_clamp count)
+    (fun c => readable_bytes (in_mem i) buf (Z_to_bv 64 c))
+    (fun k => [(buf, k)]) m.
+
+Lemma witness_stream_write_ok : forall id side st nonblock nosignal buf count i m,
+  stream_write id side st nonblock nosignal buf count i m i m
+    (witness_stream_write id side st nonblock nosignal buf count i m).
+Proof.
+  intros. unfold stream_write, witness_stream_write.
+  apply witness_stream_send_ok. pose proof (rw_count_clamp_range count). lia.
+Qed.
+
 Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
@@ -182,6 +337,11 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m
       else read_urandom_witness buf count i m
+  | Some (FdStream id side st) =>
+      if negb (access_okb buf (bv_unsigned count))
+      then ret_outcome (errno_ret EFAULT) m      (* [vfs_read]'s access_ok *)
+      else if w_is0 count then ret_outcome (Z_to_bv 64 0) m
+      else witness_stream_read fd id side st (se_nonblock st) buf count i m
   | Some (FdPipe id w) =>
       if w then ret_outcome (errno_ret EBADF) m   (* write end: read is -EBADF *)
       else if negb (modeled_rw_range buf count) then Unmodeled
@@ -218,7 +378,8 @@ Lemma read_witness_ok : forall fd buf count i m,
   read_spec fd buf count i m (read_witness fd buf count i m).
 Proof.
   intros. unfold read_spec, read_witness.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd)
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
   9:{ (* /dev/null *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
@@ -230,6 +391,14 @@ Proof.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. destruct (negb (access_okb buf (bv_unsigned count)));
         cbv beta iota; [apply pure_ok | apply read_urandom_witness_ok]. }
+  9:{ (* stream-pair end: the range verdict, the zero count, then
+         [stream_read] *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd. destruct (negb (access_okb buf (bv_unsigned count)));
+        cbv beta iota; [apply pure_ok|].
+      destruct (w_is0 count); cbv beta iota; [apply pure_ok|].
+      apply witness_stream_read_ok. }
   - (* channel *)
     destruct (negb (w_is0 ch)) eqn:Hm.
     { eapply bind_step; [apply input_ok|]. cbv beta.
@@ -642,6 +811,10 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       then ret_outcome (errno_ret EFAULT) m
       else ret_outcome (errno_ret EPIPE) (raise_sigpipe m)
         (* no connection to send on: -EPIPE and SIGPIPE *)
+  | Some (FdStream id side st) =>
+      if negb (access_okb buf (bv_unsigned count))
+      then ret_outcome (errno_ret EFAULT) m      (* [vfs_write]'s access_ok *)
+      else witness_stream_write id side st (se_nonblock st) false buf count i m
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
@@ -680,7 +853,8 @@ Lemma write_witness_ok : forall fd buf count i m,
 Proof.
   intros. unfold write_spec, write_range_gate, write_file_tail,
     write_fault_keep, write_ledger, write_witness.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd)
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
   9:{ (* /dev/null *)
       destruct wr; cbn [negb]; cbv beta iota.
       2:{ eapply bind_step; [apply input_ok|]. cbv beta.
@@ -702,6 +876,12 @@ Proof.
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. apply pure_ok. }
+  9:{ (* stream-pair end: the range verdict, then [stream_write] *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd. destruct (negb (access_okb buf (bv_unsigned count)));
+        cbv beta iota; [apply pure_ok|].
+      apply witness_stream_write_ok. }
   - destruct (w_is0 ch) eqn:Hm.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
@@ -973,6 +1153,7 @@ Definition pread64_witness (fd buf count pos : word) (i : SyscallInput)
   | Some (FdChannel _) => ret_outcome (errno_ret ESPIPE) m
   | Some (FdPipe _ _) => ret_outcome (errno_ret ESPIPE) m
   | Some (FdSocket _) => ret_outcome (errno_ret ESPIPE) m
+  | Some (FdStream _ _ _) => ret_outcome (errno_ret ESPIPE) m   (* a socket file *)
   | Some (FdFileW _ _) => ret_outcome (errno_ret EBADF) m
   | Some (FdFileA _ _) => ret_outcome (errno_ret EBADF) m
   | Some (FdDevNull rd _) =>
@@ -1022,7 +1203,8 @@ Lemma pread64_witness_ok : forall fd buf count pos i m,
 Proof.
   intros. unfold pread64_spec, pread64_witness.
   destruct (ppos_einvalb pos) eqn:Hpos; [apply pure_ok|].
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd)
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
   9:{ (* /dev/null *)
     destruct rd; cbn [negb]; cbv beta iota;
       [ destruct (access_okb buf (bv_unsigned count)) eqn:Hok; cbn [negb];
@@ -1041,6 +1223,10 @@ Proof.
       destruct (rw_pos_einvalb pos (bv_unsigned count)); cbv beta iota;
         [apply pure_ok|].
       apply read_urandom_witness_ok. }
+  9:{ (* stream-pair end: a socket file, -ESPIPE *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd. apply pure_ok. }
   - (* channel *)
     eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|].
@@ -1141,6 +1327,7 @@ Definition pwrite64_witness (fd buf count pos : word) (i : SyscallInput)
   | Some (FdFile _ _) => ret_outcome (errno_ret EBADF) m
   | Some FdDir => ret_outcome (errno_ret EBADF) m
   | Some (FdFileA _ _) => Unmodeled        (* see [ReadWrite.pwrite64_spec] *)
+  | Some (FdStream _ _ _) => ret_outcome (errno_ret ESPIPE) m   (* a socket file *)
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
@@ -1178,7 +1365,8 @@ Lemma pwrite64_witness_ok : forall fd buf count pos i m,
 Proof.
   intros. unfold pwrite64_spec, pwrite64_witness.
   destruct (ppos_einvalb pos) eqn:Hpos; [apply pure_ok|].
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd)
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
     try (eapply bind_step; [apply input_ok|]; cbv beta;
          (eapply bind_step; [apply get_model_ok|]);
          cbv beta iota zeta; srw Hfd; apply pure_ok).
@@ -1318,6 +1506,20 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                then ret_outcome (Z_to_bv 64 0) m   (* zero aggregate: above the file kind *)
                else Unmodeled                      (* vectored pipe writes *)
            end)
+  | Some (FdStream id side st) =>
+      outcome_copyins
+        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+        (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
+           | ImpFault => ret_outcome (errno_ret EFAULT) m
+           | ImpInval => ret_outcome (errno_ret EINVAL) m
+           | ImpOk iovs0 =>
+               if Z.eqb (iovs_total (cap_iovecs iovs0)) 0
+               then ret_outcome (Z_to_bv 64 0) m   (* zero aggregate *)
+               else witness_stream_send id side st (se_nonblock st) false
+                      (iovs_total (cap_iovecs iovs0))
+                      (fun c => firstn (Z.to_nat c) (writev_gathered (in_mem i) iovs0))
+                      (iov_prefix_accesses (cap_iovecs iovs0)) m
+         end)
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
@@ -1429,7 +1631,8 @@ Lemma writev_witness_ok : forall fd iov iovcnt i m,
 Proof.
   intros. unfold writev_witness, writev_spec, writev_file_arm,
     write_fault_keep, writev_ledger.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd.
+  destruct (fd_lookup (m_fds m) fd)
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
   9:{ (* /dev/null *)
       destruct wr.
       2:{ wvw_open Hfd. apply pure_ok. }
@@ -1437,6 +1640,13 @@ Proof.
       destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv;
         (wvw_open Hfd; srw Hiv; eapply bind_step; [apply pure_ok|apply pure_ok]). }
   9:{ (* /dev/urandom: -EBADF *) wvw_open Hfd. apply pure_ok. }
+  9:{ (* stream-pair end: the import's answers, then [stream_send] *)
+      wvw_open Hfd. apply record_copyins_outcome.
+      destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |];
+        cbv beta iota; [|apply pure_ok|apply pure_ok].
+      destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0); cbv beta iota;
+        [apply pure_ok|].
+      apply witness_stream_send_ok. apply iovs_total_nonneg. }
   - destruct (w_is0 ch) eqn:Hm.
     { wvw_open Hfd. srw Hm. apply pure_ok. }
     destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv.
@@ -1655,6 +1865,25 @@ Definition readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                           end
                       end
                   end
+              | RdStream id side st =>
+                  match se_rx st with
+                  | [] => witness_stream_read_empty id side st (se_nonblock st) m
+                  | q =>
+                      let del := pipe_take q total in
+                      match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
+                      | None => ret_outcome (errno_ret EFAULT) m
+                      | Some _ =>
+                          match scatter_iovecs (in_wmem i) iovs del with
+                          | None => Unmodeled   (* partially writable destination *)
+                          | Some writes =>
+                              Ok (mkEffect (len_word del) writes [])
+                                 (with_fds (fd_insert (m_fds m) fd
+                                    (FdStream id side
+                                       (se_set_rx st (skipn (length del) q)))) m)
+                                 []
+                          end
+                      end
+                  end
               | RdPipe _ => Unmodeled   (* vectored pipe reads *)
               | RdDevNull => ret_outcome (Z_to_bv 64 0) m
               | RdUrandom => Unmodeled   (* vectored device reads decline *)
@@ -1775,7 +2004,7 @@ Proof.
     eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
     srw Hfd; srw Hr; srw Himp; srw Htotal.
     eapply bind_step; [apply pure_ok|apply pure_ok]. }
-  destruct r as [ch|p off|p off| |sk|id| | ].
+  destruct r as [ch|p off|p off| |sk|id| | |sid side st].
   7:{ eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd; srw Hr; srw Himp; srw Htotal.
@@ -1785,6 +2014,30 @@ Proof.
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd; srw Hr; srw Himp; srw Htotal.
       unfold readv_buf_gap. left. apply unmodeled_intro. }
+  7:{ (* stream-pair end: [stream_read] over the scatter *)
+      destruct (se_rx st) as [|b q0] eqn:Hq.
+      { eapply bind_step; [apply input_ok|]. cbv beta.
+        eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+        srw Hfd; srw Hr; srw Himp; srw Htotal; srw Hq.
+        apply record_copyins_outcome. apply witness_stream_read_empty_ok. }
+      destruct (scatter_iovecs (in_wmem i) (cap_iovecs iovs0) [Z_to_bv 8 0])
+        as [zero_writes|] eqn:Hzero.
+      2:{ eapply bind_step; [apply input_ok|]. cbv beta.
+          eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+          srw Hfd; srw Hr; srw Himp; srw Htotal; srw Hq; srw Hzero.
+          apply record_copyins_outcome. apply pure_ok. }
+      destruct (scatter_iovecs (in_wmem i) (cap_iovecs iovs0)
+                  (pipe_take (b :: q0) (iovs_total (cap_iovecs iovs0))))
+        as [writes|] eqn:Hdel.
+      2:{ eapply bind_step; [apply input_ok|]. cbv beta.
+          eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+          srw Hfd; srw Hr; srw Himp; srw Htotal; srw Hq; srw Hzero; srw Hdel.
+          apply record_copyins_outcome. unfold readv_buf_gap. apply unmodeled_intro. }
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd; srw Hr; srw Himp; srw Htotal; srw Hq; srw Hzero; srw Hdel.
+      apply record_copyins_outcome.
+      eapply bind_step; [apply modify_ok|]. apply pure_ok. }
   - destruct (m_stdin m) as [|b s] eqn:Hstdin.
     { eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
@@ -1999,6 +2252,7 @@ Definition lseek_witness (fd off whence : word) (m : Model)
       match e with
       | FdChannel _ => ret_outcome (errno_ret ESPIPE) m
       | FdSocket _ => ret_outcome (errno_ret ESPIPE) m  (* a socket has no offset *)
+      | FdStream _ _ _ => ret_outcome (errno_ret ESPIPE) m   (* a socket file *)
       | FdPipe _ _ => ret_outcome (errno_ret ESPIPE) m
       | FdDevNull _ _ => ret_outcome (Z_to_bv 64 0) m
       | FdUrandom => ret_outcome (Z_to_bv 64 0) m
@@ -2070,7 +2324,8 @@ Lemma lseek_witness_ok : forall fd off whence i m,
   lseek_spec fd off whence i m (lseek_witness fd off whence m).
 Proof.
   intros. unfold lseek_spec, lseek_witness.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| ]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd)
+    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
     try (destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw;
          [ eapply bind_step; [apply get_model_ok|];
            cbv beta iota; srw Hfd; apply pure_ok |]).
@@ -2148,6 +2403,9 @@ Proof.
     eapply bind_step; [apply get_model_ok|].
     cbv beta iota; srw Hfd. apply pure_ok.
   - (* /dev/urandom: [noop_llseek]'s pinned 0 *)
+    eapply bind_step; [apply get_model_ok|].
+    cbv beta iota; srw Hfd. apply pure_ok.
+  - (* stream-pair end: -ESPIPE, as for any socket *)
     eapply bind_step; [apply get_model_ok|].
     cbv beta iota; srw Hfd. apply pure_ok.
   - eapply bind_step; [apply get_model_ok|].

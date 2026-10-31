@@ -21,6 +21,7 @@ Definition fsync_witness (fd : word) (m : Model) : outcome SyscallEffect :=
   | None => ret_outcome (errno_ret EBADF) m
   | Some (FdChannel _) => ret_outcome (errno_ret EINVAL) m
   | Some (FdSocket _)  => ret_outcome (errno_ret EINVAL) m  (* no [.fsync] on a socket *)
+  | Some (FdStream _ _ _) => ret_outcome (errno_ret EINVAL) m  (* [socket_file_ops] too *)
   | Some (FdPipe _ _)  => ret_outcome (errno_ret EINVAL) m
   | Some (FdDevNull _ _) => ret_outcome (errno_ret EINVAL) m
   | Some FdUrandom => ret_outcome (errno_ret EINVAL) m

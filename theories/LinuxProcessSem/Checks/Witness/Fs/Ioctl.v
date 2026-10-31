@@ -20,7 +20,7 @@ Definition ioctl_witness (fd req : word) (m : Model) : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | None => ret_outcome (errno_ret EBADF) m
   | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _) | Some FdDir
-  | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdFileA _ _)
+  | Some (FdSocket _) | Some (FdStream _ _ _) | Some (FdPipe _ _) | Some (FdFileA _ _)
   | Some (FdFileRW _ _) | Some (FdDevNull _ _) =>
       if tty_only_request req then ret_outcome (errno_ret ENOTTY) m
       else Unmodeled

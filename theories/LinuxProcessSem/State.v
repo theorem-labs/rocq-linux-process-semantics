@@ -610,7 +610,12 @@ Definition EROFS  : Z := 30%Z.
    can fail (see [Kernel.Sys.setid_errnos]).  It is deliberately NOT in
    any other syscall's injection set — admitting a blocking-style EAGAIN
    where no kernel produces one would add nondeterminism a target could
-   hide behavior in, and programs handle it inconsistently anyway. *)
+   hide behavior in, and programs handle it inconsistently anyway.
+   It is also ANSWERED, never injected, by the non-blocking transfers on
+   a stream-pair end ([FdStream]): [Fs.ReadWrite.stream_read_empty] and
+   [Fs.ReadWrite.stream_send] return it exactly where
+   [unix_stream_read_generic] and [sock_alloc_send_pskb] can, from the
+   end's O_NONBLOCK and its queues. *)
 Definition EAGAIN : Z := 11%Z.
 
 (** Socket errno values.  All from the asm-generic table
@@ -2719,6 +2724,89 @@ Definition PIPE_BUF : Z := 4096%Z.
     need a second slot is declined rather than guessed at. *)
 Definition PipeBuf : Type := list byte * Z.
 
+(** ONE END OF AN IN-PROCESS STREAM PAIR: everything Linux keeps on one
+    of the two AF_UNIX/SOCK_STREAM sockets [socketpair] joins, as far as
+    this model reads it.  Every claim in this block is Linux v6.18.46
+    (commit 1f99e9ab748f): net/unix/af_unix.c, net/socket.c and
+    net/core/sock.c.
+
+    - [se_rx] is this end's [sk_receive_queue], counted in bytes.  The
+      queue lives HERE, on the RECEIVING end, because that is where Linux
+      keeps it: [unix_stream_sendmsg] appends every skb to
+      [other->sk_receive_queue], and [unix_stream_read_generic] takes
+      from its own.  So a write through one end appends to the OTHER
+      end's [se_rx], and a read consumes the reader's own.  Two
+      consequences come free from the layout and are Linux's: closing an
+      end drops its queue with its entry ([unix_release_sock] purges
+      [sk_receive_queue]), and the bytes an end wrote before it closed
+      stay readable on the survivor, whose queue they are in.
+    - [se_nonblock] is O_NONBLOCK in the open file's [f_flags], which
+      [sock_read_iter], [sock_write_iter], [__sys_sendto] and
+      [__sys_recvfrom] all turn into MSG_DONTWAIT.  It belongs to the
+      [struct file], not to the socket; it is carried on the end because
+      no descriptor of this kind is ever duplicated (see [FdStream]), so
+      the end and its one file are the same object here.
+    - [se_sndbuf] is [sk_sndbuf]: what getsockopt(SO_SNDBUF) reports,
+      and the bound on what this end may have queued on its PEER.
+      [sock_alloc_send_pskb] admits a new skb only while the WRITER's
+      [sk_wmem_alloc] is below the WRITER's [sk_sndbuf], so the capacity
+      of the direction A -> B is A's [se_sndbuf], read against B's
+      [se_rx].  That one number is what the write arms bound by, what
+      the readiness arm's [unix_writable] tests, and what SO_SNDBUF
+      reports.
+    - [se_rcvbuf] is [sk_rcvbuf]: what getsockopt(SO_RCVBUF) reports.
+      No AF_UNIX stream path reads it -- neither [unix_stream_sendmsg]
+      nor [unix_stream_read_generic] mentions it -- so it is a value
+      reported back and nothing else.
+    - [se_shut_rd] and [se_shut_wr] are the [RCV_SHUTDOWN] and
+      [SEND_SHUTDOWN] bits of [sk_shutdown] as [shutdown] left them.
+      [unix_shutdown] sets the caller's bits and the MIRRORED bits on the
+      peer (a SHUT_WR here is RCV_SHUTDOWN there).
+
+    WHAT A CLOSE DOES TO THE SURVIVOR IS NOT STORED HERE: A CHOSEN
+    BOUNDARY, NOT A GAP.  [unix_release_sock] ORs [SHUTDOWN_MASK] into the
+    survivor and sets its [sk_err = ECONNRESET] when the closing end still
+    held unread bytes.  The model keeps [Fs.Open.close_spec] KIND-BLIND
+    instead — the entry goes and nothing else moves — because a close
+    that writes into another descriptor's entry would make false every
+    published lemma that says a close only removes its entry
+    (theories/Common/FileSim.v [tfo_close] and [tfo_close_rec]), and
+    keeping those would need a premise on them.  78 of the 89 published
+    proof trees vendor them, and 34 of those 78 are trees that the new
+    [FdStream] constructor does not otherwise break (it breaks 48), so
+    the premise would reach trees this change never touches (counted on
+    oss-verify-proofs-internal ossv/recipes 87c4b944; the LPSREV owner's
+    decision, 2026-10-31, on dispatch://OSSV-287).
+
+    So the survivor reads "the peer has closed" off the table —
+    [stream_peer] is [None] — and every arm treats that as
+    [SHUTDOWN_MASK]: a send is -EPIPE, select reports readable and
+    writable.  WHAT IS NOT MODELED is the survivor's error state: whether
+    the close left [sk_err] set.  The two answers that turn on it DECLINE
+    rather than guess: an empty read on the survivor (end of file, or one
+    -ECONNRESET first) and a [ppoll] on it, whose filter always holds
+    EPOLLERR.  No call of curl_fuzzer_proto_http reaches either: curl's
+    end closes first, with its own queue empty, and the other end then
+    closes without reading.
+
+    WHAT IS NOT HERE, and deliberately.  No ADDRESS: a [socketpair] end
+    is unbound, [unix_getname] reports the unnamed address, and nothing
+    in this model binds or connects one.  No DEADLINE: no timeout option
+    is modeled, so a call either answers now or is declined.  No SECOND
+    THREAD: both ends are held by this one process, so a call that would
+    wait for the peer to act waits forever, and the arms decline that
+    case rather than represent a run that cannot progress (see
+    [Fs.ReadWrite.stream_read]).  Each of the three is a chosen boundary,
+    not a gap a later reader should fill by guessing. *)
+Record StreamEnd := mkStreamEnd {
+  se_rx       : list byte;
+  se_nonblock : bool;
+  se_sndbuf   : Z;
+  se_rcvbuf   : Z;
+  se_shut_rd  : bool;
+  se_shut_wr  : bool
+}.
+
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
 
@@ -2866,7 +2954,33 @@ Definition PipeBuf : Type := list byte * Z.
       from [urandom_fops] and the VFS path that reaches it; the rest
       fail closed.  THE ENVIRONMENT ASSUMPTION IT RESTS ON -- the
       environment's /dev/urandom is the random device -- is stated once, at
-      the openat arm, and pointed to from everywhere else. *)
+      the openat arm, and pointed to from everywhere else.
+    - [FdStream id side st]: ONE END of an AF_UNIX/SOCK_STREAM pair made
+      by [socketpair] (see [Net.Socket.socketpair_spec]), with both ends
+      held by this process.  [id] names the pair -- both ends carry the
+      same one -- and [side] says which end this is; the PEER of
+      [(id, side)] is the one live entry [(id, negb side)], found by
+      [stream_peer].  [st] is everything Linux keeps on this end's
+      socket that the model reads, [StreamEnd], INCLUDING THIS END'S
+      RECEIVE QUEUE: unlike a pipe, whose bytes belong to neither end and
+      live in [m_pipes], a stream pair's bytes are on the socket that
+      will read them, because that is where [unix_stream_sendmsg] puts
+      them.  So this kind needs no side table and no field of [FdState].
+
+      A NEW KIND, NOT A WIDENING OF [FdSocket].  [SkConnected] names a
+      peer OUTSIDE the process and a script the environment supplies;
+      making it name a descriptor of this same process would change what
+      every existing accepted-socket arm quantifies over.  A constructor
+      of its own touches only the arms that match it, and every [FdEntry]
+      match that enumerates now has to say what this kind does -- the
+      reason this type enumerates at all.
+
+      AT MOST ONE DESCRIPTOR PER END.  [Fs.File.dup_modeled_entry]
+      declines this kind, as it declines a pipe end, and
+      [Kernel.Fork.clone_no_shared_file_b] declines a clone holding one,
+      so no second entry ever names [(id, side)] and [socketpair] is the
+      only constructor.  [stream_peer] relies on that, and so does
+      [se_nonblock] living on the end rather than on a file. *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
   | FdFile (p : path) (offset : word)
@@ -2877,7 +2991,8 @@ Inductive FdEntry :=
   | FdSocket (sk : SockState)
   | FdPipe (id : word) (writer : bool)
   | FdDevNull (rd wr : bool)
-  | FdUrandom.
+  | FdUrandom
+  | FdStream (id : word) (side : bool) (st : StreamEnd).
 
 (** Virtual-memory bookkeeping: a ledger of allocator decisions the model
     has already committed to (the flat byte-map memory can't encode
@@ -3349,6 +3464,22 @@ Record KernelBuild := mkKernelBuild {
   kb_cache : CacheView
     (* the machine's four cache leaves, which [ARCH_DLINFO] publishes
        as eight auxv words *);
+  kb_skb_head : N
+    (* [sizeof(struct sk_buff)] of the build, in bytes: the one structure
+       size the socket-buffer floors turn on ([SOCK_MIN_SNDBUF],
+       [SOCK_MIN_RCVBUF]).  [skb_head_bytes] below aligns it as
+       [SKB_DATA_ALIGN] does and holds it in range *);
+  kb_wmem_default : N
+    (* the [net.core.wmem_default] sysctl: a new socket's [sk_sndbuf]
+       ([sock_init_data], net/core/sock.c).  [sysctl_wmem_default]
+       holds it in the sysctl's own range *);
+  kb_rmem_default : N
+    (* [net.core.rmem_default]: a new socket's [sk_rcvbuf] *);
+  kb_wmem_max : N
+    (* [net.core.wmem_max]: the ceiling [setsockopt(SO_SNDBUF)] clamps
+       a request to before doubling it *);
+  kb_rmem_max : N
+    (* [net.core.rmem_max]: the same for SO_RCVBUF *)
 }.
 
 (** The vvar pages the kernel maps below the vDSO text: four, fixed by
@@ -3415,13 +3546,88 @@ Qed.
       selects HAVE_RSEQ);
     - no vector unit and no cache leaves reported, which is what a
       machine whose devicetree carries neither gives
-      ([get_cacheinfo] finds no leaf, arch/riscv/kernel/cacheinfo.c).
+      ([get_cacheinfo] finds no leaf, arch/riscv/kernel/cacheinfo.c);
+    - the socket-buffer numbers of the riscv64 defconfig with stock
+      sysctls.  [sizeof(struct sk_buff)] = 224 was MEASURED, not
+      assumed: pahole on the DWARF of that configuration
+      ([make ARCH=riscv defconfig] at v6.18.46 plus
+      CONFIG_DEBUG_INFO_DWARF5 for the debug info alone; the layout was
+      confirmed unchanged against the build without it, by the kernel's
+      own [sizeof] evaluated under each build's exact compile command),
+      recorded at dispatch://OSSV-287/artifact/skb-sizes-md.  So
+      [SKB_DATA_ALIGN] of it is 256, [SOCK_MIN_SNDBUF] 4608 and
+      [SOCK_MIN_RCVBUF] 2304.  [net.core.wmem_default] and
+      [rmem_default] are at their boot value [SK_WMEM_DEFAULT] =
+      [SKB_TRUESIZE(256) * 256] = (256 + 256 + 320) * 256 = 212992
+      (include/net/sock.h; the 320 is the measured
+      [SKB_DATA_ALIGN(sizeof(struct skb_shared_info))]), and [wmem_max]
+      and [rmem_max] at their boot value [4 << 20] (net/core/sock.c).
+      All five are FIELDS of the run's build, which a launch states for
+      itself; these are only the values a model gets when it states
+      none.
 
     A run built from a [ProcInput] never sees this value — [init_model]
     installs [in_kernel] — exactly as with [default_nofile].
     Linux v6.18.46, commit 1f99e9ab748f, throughout. *)
 Definition default_kernel : KernelBuild :=
-  mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent.
+  mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent
+                224%N 212992%N 212992%N 4194304%N 4194304%N.
+
+(** [INT_MAX], the ceiling of every [int] sysctl and of [sk_sndbuf]. *)
+Definition INT_MAX : Z := 2147483647%Z.
+
+(** [SKB_DATA_ALIGN(sizeof(struct sk_buff))] for the build [kb] names:
+    [kb_skb_head] rounded up to a whole number of riscv64's 64-byte
+    cache lines ([SMP_CACHE_BYTES], which [SKB_DATA_ALIGN] aligns to,
+    include/linux/skbuff.h) and held to one to sixteen lines.  EVERY
+    [N] gives one; a build whose [struct sk_buff] is larger than 1 KiB
+    is not one this model describes, and SCOPE.md says so.  It is a
+    FIELD of the run's build, not a constant, because the structure's
+    size moves with the configuration (debug and netfilter options add
+    members); the default is the measured value. *)
+Definition skb_head_bytes (kb : KernelBuild) : Z :=
+  (64 * Z.max 1 (Z.min 16 ((Z.of_N (kb_skb_head kb) + 63) / 64)))%Z.
+
+(** [SOCK_MIN_RCVBUF] = [TCP_SKB_MIN_TRUESIZE] =
+    [2048 + SKB_DATA_ALIGN(sizeof(struct sk_buff))], and
+    [SOCK_MIN_SNDBUF] is twice it (include/net/sock.h, Linux v6.18.46):
+    the floor every buffer size is raised to, and the floor of the
+    sysctls below. *)
+Definition sock_min_rcvbuf (kb : KernelBuild) : Z := (2048 + skb_head_bytes kb)%Z.
+Definition sock_min_sndbuf (kb : KernelBuild) : Z := (2 * sock_min_rcvbuf kb)%Z.
+
+(** The four buffer sysctls, each held in its own range: net/core/
+    sysctl_net_core.c registers [wmem_max] and [wmem_default] with
+    [proc_dointvec_minmax] and [extra1 = &min_sndbuf]
+    ([SOCK_MIN_SNDBUF]), [rmem_max] and [rmem_default] with
+    [extra1 = &min_rcvbuf], and none with an [extra2], so each is an
+    [int] no smaller than its floor.  They are the launch's
+    CONFIGURATION rather than its build, and sit in this record because
+    they are fixed for the run like the rest of it; the clamp makes
+    every [N] a value the sysctl can hold. *)
+Definition sysctl_wmem_default (kb : KernelBuild) : Z :=
+  Z.max (sock_min_sndbuf kb) (Z.min INT_MAX (Z.of_N (kb_wmem_default kb))).
+Definition sysctl_rmem_default (kb : KernelBuild) : Z :=
+  Z.max (sock_min_rcvbuf kb) (Z.min INT_MAX (Z.of_N (kb_rmem_default kb))).
+Definition sysctl_wmem_max (kb : KernelBuild) : Z :=
+  Z.max (sock_min_sndbuf kb) (Z.min INT_MAX (Z.of_N (kb_wmem_max kb))).
+Definition sysctl_rmem_max (kb : KernelBuild) : Z :=
+  Z.max (sock_min_rcvbuf kb) (Z.min INT_MAX (Z.of_N (kb_rmem_max kb))).
+
+(** What [setsockopt(SO_SNDBUF, val)] stores ([sk_setsockopt],
+    net/core/sock.c, Linux v6.18.46): [val] clamped as a [u32] to
+    [sysctl_wmem_max] ([min_t(u32, val, ...)]), then to [INT_MAX / 2]
+    so the doubling cannot overflow, doubled, and raised to
+    [SOCK_MIN_SNDBUF].  [v] is the option's four bytes read as the
+    [u32] [min_t] compares. *)
+Definition sndbuf_after_set (kb : KernelBuild) (v : Z) : Z :=
+  Z.max (2 * Z.min (Z.min v (sysctl_wmem_max kb)) (INT_MAX / 2)) (sock_min_sndbuf kb).
+
+(** What [setsockopt(SO_RCVBUF, val)] stores: the same against
+    [sysctl_rmem_max], through [__sock_set_rcvbuf], raised to
+    [SOCK_MIN_RCVBUF]. *)
+Definition rcvbuf_after_set (kb : KernelBuild) (v : Z) : Z :=
+  Z.max (2 * Z.min (Z.min v (sysctl_rmem_max kb)) (INT_MAX / 2)) (sock_min_rcvbuf kb).
 
 (** THE GUARD GAP IN BYTES.  [stack_guard_gap] (mm/mmap.c, Linux
     v6.18.46, commit 1f99e9ab748f) is [256UL << PAGE_SHIFT], and
@@ -5125,20 +5331,26 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     kernel's counter but a WRONG one.
 
     What closes it is an arm in a different file, and the coupling is
-    worth stating because nobody would look for it here:
-    [Net.Socket.socket_spec] answers [unmodeled] for every family but
-    AF_INET, and at v6.18.46 fd-passing is AF_UNIX only —
-    [unix_attach_fds] (net/unix/af_unix.c:1958) is the sole path from an
-    SCM_RIGHTS control message to an installed descriptor, and SCM_RIGHTS
-    appears nowhere in net/ipv4: [ip_cmsg_send] (net/ipv4/ip_sockglue.c)
-    understands IP_RETOPTS, IP_PKTINFO, IP_TTL, IP_TOS and IP_PROTOCOL,
-    none of which carries an fd.  So no modeled socket can transport one.
+    worth stating because nobody would look for it here.  At v6.18.46
+    fd-passing is AF_UNIX only — [unix_attach_fds]
+    (net/unix/af_unix.c) is the sole path from an SCM_RIGHTS control
+    message to an installed descriptor, and SCM_RIGHTS appears nowhere
+    in net/ipv4: [ip_cmsg_send] (net/ipv4/ip_sockglue.c) understands
+    IP_RETOPTS, IP_PKTINFO, IP_TTL, IP_TOS and IP_PROTOCOL, none of which
+    carries an fd.  [Net.Socket.socket_spec] still answers [unmodeled]
+    for every family but AF_INET, so the only AF_UNIX sockets the model
+    has are the [FdStream] ends [Net.Socket.socketpair_spec] makes.
 
-    THE CONDITION THAT FALSIFIES THIS: modelling AF_UNIX.  A change that
-    admits that family reopens the case above, and it must either decline
-    a pipe end at [sendmsg]'s control data or give this model a notion of
-    a pipe end held by nothing in the fd table.  The decline in
-    [socket_spec] is load-bearing for pipe end-of-file, not only for
+    THE CONDITION THAT FALSIFIED THIS WAS MODELLING AF_UNIX, AND IT HAS
+    HAPPENED, so the argument now rests on the gate that condition named.
+    An SCM_RIGHTS message rides only in a [sendmsg]'s control data —
+    [write], [writev] and [sendto] carry none ([__sys_sendto] sets
+    [msg_control] to NULL) — and [Net.Socket.sendmsg_spec] DECLINES
+    every [FdStream] end outright, control data or not.  So no modeled
+    socket can carry a pipe end, or a stream end, in flight.  A change
+    that answers [sendmsg] on this kind must decline its control data or
+    give this model a notion of a file held by nothing in the fd table;
+    that decline is load-bearing for pipe end-of-file, not only for
     sockets.
 
     THE GENERAL CLAIM, since the paragraphs above each argue one route and
@@ -5166,10 +5378,10 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
       by an arm.  [Fcntl.fcntl_spec] carries the obligation in its own
       prose too, beside its [F_DUPFD] bullet, because this file is not
       where someone widening fcntl's command set will look;
-    - a reference IN FLIGHT is closed by two gates, the AF_INET one
-      argued above and [Net.Socket.sendmsg_spec]'s
-      [if negb (w_is0 ctllen) then unmodeled], which the paragraph above
-      names only as something a future AF_UNIX change would need.
+    - a reference IN FLIGHT is closed by [Net.Socket.sendmsg_spec]: it
+      declines every [FdStream] end, the only AF_UNIX sockets there are,
+      and keeps [if negb (w_is0 ctllen) then unmodeled] for an AF_INET
+      one, which could not carry SCM_RIGHTS anyway.
 
     ONLY THE WRITER DIRECTION IS A SOUNDNESS EXPOSURE, which is what
     decides how much any future widening costs.  Under-reporting a WRITER
@@ -5205,6 +5417,7 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
   | (_, FdSocket _) :: r => pipe_end_live r id writer
   | (_, FdDevNull _ _) :: r => pipe_end_live r id writer
   | (_, FdUrandom) :: r => pipe_end_live r id writer
+  | (_, FdStream _ _ _) :: r => pipe_end_live r id writer
   end.
 
 (** A 32-bit value as the four little-endian bytes the kernel's
@@ -5222,6 +5435,179 @@ Definition le32_bytes (v : word) : list byte :=
     [fd[0] = fdr] and [fd[1] = fdw] set at :1005-1006, v6.18.46). *)
 Definition pipe_fd_bytes (fdr fdw : word) : list byte :=
   le32_bytes fdr ++ le32_bytes fdw.
+
+(* =========================================================================
+   Stream-pair helpers — the [FdStream] ends [socketpair] makes
+   ========================================================================= *)
+
+(** The live end [(id, side)] of a stream pair: its descriptor and its
+    state, or [None] once that end is closed.  The first match wins, and
+    there is never a second: an end is made only by
+    [Net.Socket.socketpair_spec], which takes [id] from [stream_new_id],
+    and no modeled call duplicates one (see [FdStream]).
+
+    ENUMERATED, for [pipe_end_live]'s reason: a later [FdEntry]
+    constructor able to name a stream end must stop the build here.  A
+    missed end would make [stream_peer] answer "closed" for a live peer,
+    and every arm that reads the peer would then answer -EPIPE or end of
+    file where Linux delivers. *)
+Fixpoint stream_end (fds : list (word * FdEntry)) (id : word) (side : bool)
+    : option (word * StreamEnd) :=
+  match fds with
+  | [] => None
+  | (fd, FdStream id' s st) :: r =>
+      if (bv_eqb id' id && Bool.eqb s side)%bool then Some (fd, st)
+      else stream_end r id side
+  | (_, FdChannel _) :: r => stream_end r id side
+  | (_, FdFile _ _) :: r => stream_end r id side
+  | (_, FdFileW _ _) :: r => stream_end r id side
+  | (_, FdFileA _ _) :: r => stream_end r id side
+  | (_, FdFileRW _ _) :: r => stream_end r id side
+  | (_, FdDir) :: r => stream_end r id side
+  | (_, FdSocket _) :: r => stream_end r id side
+  | (_, FdPipe _ _) :: r => stream_end r id side
+  | (_, FdDevNull _ _) :: r => stream_end r id side
+  | (_, FdUrandom) :: r => stream_end r id side
+  end.
+
+(** The PEER of end [(id, side)]: [unix_peer] of that socket, while the
+    peer's descriptor is still open.  [None] means the peer has closed:
+    [unix_release_sock] ran for it. *)
+Definition stream_peer (fds : list (word * FdEntry)) (id : word) (side : bool)
+    : option (word * StreamEnd) :=
+  stream_end fds id (negb side).
+
+(** The largest pair id a live end carries, or -1 when none does. *)
+Fixpoint stream_max_id (fds : list (word * FdEntry)) : Z :=
+  match fds with
+  | [] => (-1)%Z
+  | (_, FdStream id _ _) :: r => Z.max (bv_unsigned id) (stream_max_id r)
+  | (_, FdChannel _) :: r => stream_max_id r
+  | (_, FdFile _ _) :: r => stream_max_id r
+  | (_, FdFileW _ _) :: r => stream_max_id r
+  | (_, FdFileA _ _) :: r => stream_max_id r
+  | (_, FdFileRW _ _) :: r => stream_max_id r
+  | (_, FdDir) :: r => stream_max_id r
+  | (_, FdSocket _) :: r => stream_max_id r
+  | (_, FdPipe _ _) :: r => stream_max_id r
+  | (_, FdDevNull _ _) :: r => stream_max_id r
+  | (_, FdUrandom) :: r => stream_max_id r
+  end.
+
+(** The id a new pair gets: one above every LIVE pair's.  Unlike
+    [pipe_new_id] it need not avoid dead pairs, because a stream pair has
+    no side table for a dead one to haunt: its bytes left with its
+    entries.  What it must avoid is a LIVE end, whose [stream_peer] a
+    reused id would confuse, and one above the largest live id does.
+    [Net.Socket.socketpair_spec] still checks that no live end carries
+    it, so the one way to fail -- a live id of 2^64 - 1, where the
+    successor wraps to 0 -- declines rather than aliases. *)
+Definition stream_new_id (fds : list (word * FdEntry)) : word :=
+  Z_to_bv 64 (stream_max_id fds + 1).
+
+(** Does some live end carry pair id [id], on either side? *)
+Definition stream_id_live (fds : list (word * FdEntry)) (id : word) : bool :=
+  match stream_end fds id false, stream_end fds id true with
+  | None, None => false
+  | _, _ => true
+  end.
+
+(** A fresh end, as [unix_create1] leaves a socket and [unix_socketpair]
+    then connects it: an empty receive queue, no shutdown bit, and the two
+    buffer sizes and the file's O_NONBLOCK as the caller decides them. *)
+Definition stream_fresh (nonblock : bool) (sndbuf rcvbuf : Z) : StreamEnd :=
+  mkStreamEnd [] nonblock sndbuf rcvbuf false false.
+
+(** The bytes this end has queued for it to read, in [Z]. *)
+Definition se_rx_len (st : StreamEnd) : Z := Z.of_nat (length (se_rx st)).
+
+(** One-field updates.  Rocq has no record-update syntax, so each spells
+    the record whole; they are the only places that do. *)
+Definition se_set_rx (st : StreamEnd) (q : list byte) : StreamEnd :=
+  mkStreamEnd q (se_nonblock st) (se_sndbuf st) (se_rcvbuf st)
+              (se_shut_rd st) (se_shut_wr st).
+Definition se_set_nonblock (st : StreamEnd) (b : bool) : StreamEnd :=
+  mkStreamEnd (se_rx st) b (se_sndbuf st) (se_rcvbuf st)
+              (se_shut_rd st) (se_shut_wr st).
+Definition se_set_sndbuf (st : StreamEnd) (v : Z) : StreamEnd :=
+  mkStreamEnd (se_rx st) (se_nonblock st) v (se_rcvbuf st)
+              (se_shut_rd st) (se_shut_wr st).
+Definition se_set_rcvbuf (st : StreamEnd) (v : Z) : StreamEnd :=
+  mkStreamEnd (se_rx st) (se_nonblock st) (se_sndbuf st) v
+              (se_shut_rd st) (se_shut_wr st).
+
+(** OR shutdown bits into an end: [rd] for RCV_SHUTDOWN, [wr] for
+    SEND_SHUTDOWN.  Bits are only ever added -- [unix_shutdown] writes
+    [sk_shutdown | mode] -- so this cannot clear one. *)
+Definition se_add_shut (st : StreamEnd) (rd wr : bool) : StreamEnd :=
+  mkStreamEnd (se_rx st) (se_nonblock st) (se_sndbuf st) (se_rcvbuf st)
+              (se_shut_rd st || rd) (se_shut_wr st || wr).
+
+(** HOW MANY BYTES A NON-BLOCKING SEND MAY MOVE, as a relation: [k] bytes
+    of an [n]-byte send, onto a peer queue that already holds [q] bytes
+    this end wrote, with this end's [sk_sndbuf] at [s].
+
+    Linux decides it in [unix_stream_sendmsg] (net/unix/af_unix.c,
+    v6.18.46), which cuts the send into skbs of at most
+    [(sk_sndbuf >> 1) - 64] bytes and asks [sock_alloc_send_pskb]
+    (net/core/sock.c) for each; that admits an skb only while
+    [sk_wmem_alloc_get(sk) < sk_sndbuf], and otherwise returns -EAGAIN to
+    a call that may not wait, which [unix_stream_sendmsg] turns into the
+    count sent so far or, with nothing sent, the -EAGAIN.  [sk_wmem_alloc]
+    counts the TRUESIZE of every skb this end has queued on the peer and
+    the peer has not yet consumed -- the data plus the [struct sk_buff],
+    the shared info and kmalloc's rounding.  Truesize is a function of
+    the kernel build that the model does not carry, so the model does not
+    say exactly where the queue fills.  It says what truesize >= data
+    lets it say:
+
+    - [sk_wmem_alloc] is at least [q], so an skb is admitted only while
+      the queued DATA is below [s], and the last one admitted adds at
+      most [s/2 - 64] more.  So [q + k < s + s/2], and here [<=], which
+      is weaker and keeps the relation inhabited for every [s];
+    - [k] is at least 1 and at most [n], since a send that moves nothing
+      returns -EAGAIN instead of 0 (decided by the callers, see
+      [stream_send_full] and [stream_send_may_refuse]);
+    - [k] is at least the FIRST skb's size, [min n ((s >> 1) - 64)
+      (SKB_MAX_HEAD(0) + UNIX_SKB_FRAGS_SZ)]: once that skb is admitted
+      its bytes are copied whole (a fault declines, see
+      [Fs.ReadWrite.stream_send]) and queued, and only a LATER skb can be
+      refused, which returns the bytes already sent.  The model writes
+      32768 for the last term, which is below its measured 36544 on the
+      riscv64 defconfig (dispatch://OSSV-287/artifact/skb-sizes-md), so
+      the bound is no larger than Linux's.
+
+    Every count Linux can return satisfies this, which is what makes it
+    sound; it admits more than Linux does — any total between the first
+    skb and the last admitted one, where Linux's totals are sums of skb
+    sizes cut at truesize-dependent points — which is what makes it an
+    over-approximation, named in SCOPE.md's gaps in precision. *)
+Definition stream_send_ok (q s n k : Z) : Prop :=
+  (1 <= k <= n)%Z /\ (Z.min n (Z.min (s / 2 - 64) 32768) <= k)%Z
+  /\ (q + k <= s + s / 2)%Z.
+
+(** THE QUEUE IS CERTAINLY FULL: the data alone reaches [s], so
+    [sk_wmem_alloc >= s] and [sock_alloc_send_pskb] admits nothing. *)
+Definition stream_send_full (q s : Z) : bool := (s <=? q)%Z.
+
+(** THE FIRST SKB MAY BE REFUSED: some data is queued, so [sk_wmem_alloc]
+    may already be at [s], depending on truesize.  An EMPTY queue has no
+    skb left on it -- [unix_stream_read_generic] unlinks and consumes
+    each skb it empties -- so [sk_wmem_alloc] is 0 there and the first
+    skb is always admitted. *)
+Definition stream_send_may_refuse (q : Z) : bool := (0 <? q)%Z.
+
+(** A BLOCKING SEND THAT CANNOT WAIT: one skb carries all [n] bytes and
+    the queue is empty, so the one [sock_alloc_send_pskb] is admitted and
+    the send returns [n] without sleeping.  One skb carries
+    [min n ((s >> 1) - 64) (SKB_MAX_HEAD(0) + UNIX_SKB_FRAGS_SZ)] bytes,
+    and [UNIX_SKB_FRAGS_SZ] is [PAGE_SIZE << get_order(32768)] = 32768 on
+    riscv64 (include/net/af_unix.h, net/unix/af_unix.c), a lower bound on
+    that last term.  Outside this test a blocking send may sleep for
+    room only the peer -- this same thread -- could make, and the arms
+    decline it. *)
+Definition stream_send_fits_one (q s n : Z) : bool :=
+  ((q =? 0) && (n <=? Z.min (s / 2 - 64) 32768))%Z.
 
 (* =========================================================================
    VmMaps helpers — interval arithmetic in Z over unsigned values

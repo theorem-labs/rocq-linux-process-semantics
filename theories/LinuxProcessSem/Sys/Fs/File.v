@@ -152,6 +152,16 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      file]s on the random device draw from one generator.  Copying the
      entry loses nothing. *)
   | FdUrandom => true
+  (* A STREAM-PAIR END DECLINES, for the pipe's reason and one of its
+     own.  [State.stream_peer] finds an end's peer by scanning the fd
+     table, and [unix_release_sock] runs at the LAST [fput] of a socket
+     file, not at each close, so a second fd naming one end would make
+     a close of either look like the peer going away.  And the end
+     carries its file's O_NONBLOCK ([State.se_nonblock]), which two
+     copies would let drift apart where Linux's two fds share one
+     [f_flags].  [State.FdStream]'s own note relies on this decline:
+     it is what keeps [socketpair] the only thing that makes an end. *)
+  | FdStream _ _ _ => false
   end.
 
 (** dup's injectable failures: fd-table exhaustion at RLIMIT_NOFILE

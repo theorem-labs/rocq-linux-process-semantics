@@ -31,6 +31,7 @@ Definition getdents64_witness (fd count : word) (m : Model)
   | Some (FdFileRW _ _) => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdPipe _ _)  => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdSocket _)  => ret_outcome (errno_ret ENOTDIR) m
+  | Some (FdStream _ _ _) => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdDevNull _ _) => ret_outcome (errno_ret ENOTDIR) m
   | Some FdUrandom => ret_outcome (errno_ret ENOTDIR) m
   | Some FdDir =>

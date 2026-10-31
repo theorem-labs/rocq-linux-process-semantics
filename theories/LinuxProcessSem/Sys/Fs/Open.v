@@ -1485,7 +1485,17 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     pipe-specific code here.
     Buffered bytes are NOT dropped: the [m_pipes] entry stays (see
     [State.pipe_new_id]), and a reader whose end is still open still
-    sees them, as it does on Linux. *)
+    sees them, as it does on Linux.
+
+    A STREAM-PAIR END ([State.FdStream]) IS KIND-BLIND TOO, by choice and
+    at a price stated where it is paid.  [unix_release_sock] also writes
+    into the PEER — [SHUTDOWN_MASK], and [sk_err = ECONNRESET] when this
+    end held unread bytes — and the model does not copy that here, so
+    that this arm stays "the entry goes and nothing else moves", which
+    published proofs rely on (theories/Common/FileSim.v [tfo_close]).
+    The survivor reads its peer's close off the table instead
+    ([State.stream_peer] is [None]); [State.StreamEnd]'s note says which
+    answers that gives and which two decline. *)
 Definition close_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
@@ -1711,6 +1721,8 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
                                                     inode is S_ISSOCK, so [do_ftruncate]'s
                                                     !S_ISREG test answers -EINVAL before FMODE_WRITE
                                                     is consulted *)
+  | Some (FdStream _ _ _) => err_ret EINVAL      (* a stream-pair end is a socket too: S_ISSOCK,
+                                                    the same [!S_ISREG] -EINVAL *)
   | Some (FdPipe _ _) => err_ret EINVAL          (* the same answer for the same reason, on an fd
                                                     the model KNOWS is a pipe — see the header *)
   | Some (FdDevNull _ _) => err_ret EINVAL       (* and on /dev/null: a character device is not
