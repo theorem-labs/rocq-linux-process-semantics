@@ -1,0 +1,83 @@
+name: Lean twin
+
+# The Lean twin of the Rocq model lives in `lean/` (see lean/README.md).
+# This workflow is separate from ci.yml on purpose: it is not a step of any
+# of the four lanes there, it runs only for a pull request that touches
+# `lean/`, and `continue-on-error` keeps it from failing the run. A red
+# Lean build must never stop a Rocq pull request from merging.
+
+on:
+  pull_request:
+    paths:
+      - 'lean/**'
+      - '.github/workflows/lean-twin.yml'
+  # `lean/twin` itself, so the branch is still built after a slice merges
+  # into it: a pull request's build is of its own head, not of the result.
+  push:
+    branches:
+      - 'lean/twin'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lean-twin-build:
+    name: Lean twin (lake build, not required)
+    runs-on: ubuntu-latest
+    # The measured cold build is 26 minutes on 64 CPUs; a GitHub runner has
+    # 4, so 120 minutes is room and not a day.
+    timeout-minutes: 120
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan
+        run: |
+          # A pinned release of the installer, not the tip of master, and the
+          # digest is compared rather than printed.
+          curl -fsSL https://raw.githubusercontent.com/leanprover/elan/v4.1.2/elan-init.sh \
+            -o elan-init.sh
+          echo "4bacca9502cb89736fe63d2685abc2947cfbf34dc87673504f1bb4c43eda9264  elan-init.sh" \
+            | sha256sum -c -
+          sh elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Tool versions
+        working-directory: lean
+        run: |
+          lean --version
+          lake --version
+
+      # Another stream's Lean job got a cold build from about 47-50 minutes
+      # down to 738 s and 585 s by sizing lake's job count from memory and
+      # never setting LEAN_NUM_THREADS=1
+      # (dispatch://BET-59/artifact/speed-log-md, tick 46).  Half of that
+      # does not apply here: the pinned toolchain's Lake is 5.0.0-src+293d5d0
+      # (Lean 4.34.0) and has no job option -- `lake build -j 41` answers
+      # "error: unknown short option '-j'", and neither `lake --help` nor
+      # `lake help build` has a jobs or threads option.  The lakefile sizes
+      # the per-module worker pool itself (`moreLeanArgs := #["-j2"]`).  So
+      # this step sets nothing, which is the other half of that measurement:
+      # LEAN_NUM_THREADS is left unset.
+      - name: lake build
+        working-directory: lean
+        run: |
+          awk '/^MemAvailable:/ {print "MemAvailable " $2 " kiB"}' /proc/meminfo
+          nproc
+          lake build
+
+      # `lake build` traces one of the 175 Rocq files the generators read
+      # (`lean/lakefile.lean:340`); its own comment leaves the rest to
+      # these two `--check` runs, which upstream runs in a job this
+      # repository does not have.  They need no toolchain and take seconds,
+      # and they are what notices a Rocq change that should have moved the
+      # rendered table.
+      - name: The generated tables are current against the Rocq tree
+        run: |
+          python3 lean/tools/gen_lean_registry.py --check .
+          python3 lean/tools/gen_lean_checked.py --check .
