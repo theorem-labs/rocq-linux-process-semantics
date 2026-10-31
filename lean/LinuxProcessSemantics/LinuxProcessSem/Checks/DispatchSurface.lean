@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/DispatchSurface.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Examples
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
@@ -121,10 +122,7 @@ def probe_model_abort : Model :=
 
 /-- The model a probe of `n` runs against. -/
 def probe_model_for (n : Int) : Model :=
-  if n = 130 || n = 131 then probe_model_abort
-  else if n = 216 then
-    with_vmmaps (VmMaps.mkVmMapsFull [] [(65536, 4096)] [] 0 0 8192 0 (Z_to_bv 64 sp_window_lo)) probe_model
-  else probe_model
+  if n = 130 || n = 131 then probe_model_abort else probe_model
 
 /-- Where `clone3`'s probe finds a fork-shaped `struct clone_args`. -/
 def clone3_probe_uargs : word := Z_to_bv 64 0x10000
@@ -180,7 +178,7 @@ def probe_args (n : Int) : List word :=
   -- errno precedence; LOCK_EX keeps the universally shared EBADF answer.
   else if n = 32 then [AT_FDCWD, Z_to_bv 64 LOCK_EX, z, z, z, z]
   else if n = 222 then [AT_FDCWD, z, z, Z_to_bv 64 (MAP_PRIVATE + MAP_ANONYMOUS), z, z]
-  else if n = 216 then [65536, 4096, 8192, Z_to_bv 64 MREMAP_MAYMOVE, z, z]
+  else if n = 216 then [AT_FDCWD, z, z, Z_to_bv 64 MREMAP_MAYMOVE, z, z]
   else if n = 261 then [z, Z_to_bv 64 RLIMIT_CORE, z, Z_to_bv 64 4096, z, z]
   else if n = 199 then [Z_to_bv 64 AF_INET, Z_to_bv 64 SOCK_STREAM, z, z, z, z]
   else if n = 113 then [Z_to_bv 64 CLOCK_REALTIME, z, z, z, z, z]

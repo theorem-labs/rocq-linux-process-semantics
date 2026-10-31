@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/DispatchSurface.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.DispatchSurface
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Checks.Sys.Dispatch
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Checks.Sys.Table
@@ -290,11 +291,15 @@ theorem mmap_probe_is_anonymous_private_and_empty :
     (probe_args 222).getD 3 (Z_to_bv 64 0) = Z_to_bv 64 34
       ∧ (probe_args 222).getD 1 (Z_to_bv 64 0) = Z_to_bv 64 0 := by decide
 
-/-- The mremap probe grows a tracked page because the former
-misaligned/zero-size probe now declines (#1426).
-kernel: mm/mremap.c:expand_vma@v6.18.46 -/
+/-- The mremap probe at `f1006fe8`: `AT_FDCWD` as `old_addr`, which is not
+page aligned, so the arm answers -EINVAL before it reaches the ledger and
+the probe needs no mapping in the model.  `ff0313ba4f` probed a tracked
+page at 65536 instead, with a `probe_model_for` arm to hold it.
+kernel: mm/mremap.c:SYSCALL_DEFINE5(mremap)@v6.18.46 -/
 theorem mremap_probe_may_move :
-    probe_args 216 = [65536, 4096, 8192, 1, 0, 0] := by decide
+    probe_args 216 = [Sys.Uapi.AT_FDCWD, Z_to_bv 64 0, Z_to_bv 64 0,
+                      Z_to_bv 64 Sys.Uapi.MREMAP_MAYMOVE, Z_to_bv 64 0,
+                      Z_to_bv 64 0] := by decide
 
 /-- `prlimit64(pid, resource, new_rlim, old_rlim)`: the caller's own
 `RLIMIT_CORE`, read into a writable page; the Lean `spec_table` carries no
