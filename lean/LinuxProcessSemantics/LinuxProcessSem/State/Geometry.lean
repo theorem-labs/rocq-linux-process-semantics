@@ -1,6 +1,7 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/State.v
 import LinuxProcessSemantics.LinuxProcessSem.BvBase
 
-/-! rocq-baseline: 7b4cf49586658ecbffbab14145ab0969272a0b23 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.State.Geometry — the address-space constants
 
@@ -28,6 +29,13 @@ def page_size : Int := 4096
 
 def page_round_up_Z (n : Int) : Int := ((n + page_size - 1) / page_size) * page_size
 def page_round_down_Z (n : Int) : Int := (n / page_size) * page_size
+
+/-- Rounding a positive length up reaches at least one page: the length
+the allocator charges for a nonempty request is never zero.
+Rocq: `State.page_round_up_Z_pos`. -/
+theorem page_round_up_Z_pos (n : Int) (hn : 0 < n) : page_size ≤ page_round_up_Z n := by
+  unfold page_round_up_Z page_size
+  omega
 
 /-- RLIMIT_STACK's soft limit: the zero-mapped window below the entry sp. -/
 def stack_max_size : Int := 8 * 1024 * 1024

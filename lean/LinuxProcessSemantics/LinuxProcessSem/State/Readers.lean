@@ -1,7 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/State.v
 import LinuxProcessSemantics.LinuxProcessSem.BvBase
 import LinuxProcessSemantics.LinuxProcessSem.State.Geometry
 
-/-! rocq-baseline: 7b4cf49586658ecbffbab14145ab0969272a0b23 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.State.Readers — reading user memory
 
@@ -372,7 +373,8 @@ unreadable byte, or the fuel.  No longer than what `getname()` issues, and
 usually shorter, since `strncpy_from_user` loads whole words except on
 an unaligned source (lib/strncpy_from_user.c, `do_strncpy_from_user`,
 v6.18.46); the cost is argued on
-`State.cstr_access_len_aux` and in bugs/openat-getname-word-at-a-time.md. -/
+`State.cstr_access_len_aux` and in
+`linux-process-semantics@ff0313ba4f:bugs/openat-getname-word-at-a-time.md`. -/
 def cstr_access_len_aux (mp : word → Option byte) (a : word) (fuel : Nat) : Nat :=
   match fuel with
   | 0 => 0
@@ -476,7 +478,8 @@ arguments that are not kernel facts — why `read_iovecs_aux` has no caller
 in the model and exists for
 the OCaml conformance tester, why `read_iovecs` bounds the fuel at
 `IOV_MAX` and loses nothing by it, why `MAX_RW_COUNT` is scoped to 4 KiB
-page hosts (bugs/max-rw-count-hardcoded-page-size.md) — are on the Rocq
+page hosts (
+`linux-process-semantics@ff0313ba4f:bugs/max-rw-count-hardcoded-page-size.md`) — are on the Rocq
 definitions (`State.read_iovecs_aux`, `State.read_iovecs`,
 `State.MAX_RW_COUNT`, `State.import_iovecs`) and are not repeated here.
 Every kernel claim below was read at Linux v6.18.46 (commit
@@ -511,7 +514,7 @@ def read_iovecs_aux (mp : word → Option byte) (a : word) (k : Nat)
 (include/linux/fs.h, `MAX_RW_COUNT`, v6.18.46).  `PAGE_MASK` is a host
 property, so this is the 4 KiB-page value; that scope, and why it is not
 made configurable, are on `State.MAX_RW_COUNT` and in
-bugs/max-rw-count-hardcoded-page-size.md. -/
+`linux-process-semantics@ff0313ba4f:bugs/max-rw-count-hardcoded-page-size.md`. -/
 def MAX_RW_COUNT : Int := 0x7ffff000
 
 /-- The scalar clamp: `if (count > MAX_RW_COUNT) count = MAX_RW_COUNT;`
@@ -670,7 +673,7 @@ the consumers clamp afterwards.  Three shapes, in the kernel's order:
 - every other count is `iovec_from_user` (the `UIO_MAXIOV` test, then —
   for counts above `UIO_FASTIOV` = 8 — a `kmalloc_array` whose failure is
   a `-ENOMEM` outside the model,
-  bugs/writev-heap-iovec-enomem-not-admitted.md, then
+  `linux-process-semantics@ff0313ba4f:bugs/writev-heap-iovec-enomem-not-admitted.md`, then
   `copy_iovec_from_user` with `user_access_begin` over the whole array,
   then the index-ordered `-EFAULT`/`-EINVAL` walk) followed by
   `__import_iovec`'s SECOND pass, `access_ok` on each UNCAPPED length.
