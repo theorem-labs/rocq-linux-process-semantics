@@ -333,6 +333,19 @@ EXPECT = {
  "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_heard.lean:178:lib/Prog/reac_knock_struct.v": ("decl:knock_sx32_unsigned", ""),
  "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_heard.lean:179:lib/Prog/reac_knock_struct.v": ("decl:knock_sx32_eqb", ""),
  "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_heard.lean:214:lib/Prog/reac_knock_heard_c.v": ("fixed:25-25", "read: `(knock_cells (if Z.eqb st 0 then 2 else st) p1 opened due a1 g p2))`"),
+
+ # K1Step: proofs/lib/Prog/reac_knock_step_c.lean (the contract)
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_step_c.lean@OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_step_c#lib/Lib/Cells.v#1": ("decl:cells_at_read", ""),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_step_c.lean@OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_step_c#lib/Lib/Step.v#1": ("decl:rw_cells_read", ""),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_step_c.lean@knock_step_mem#lib/Prog/reac_knock_step_c.v#1": ("fixed:35-35", "read: the post conjunct `rw_cells rsegs m' (bv_unsigned a0) (knock_cells st' p1 opened due' heard g' p2)`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_step_c.lean@EOF#lib/Prog/reac_knock_step_c.v#1": ("fixed:25-25", "read: the premise `rw_cells rsegs m (bv_unsigned a0) (knock_cells st p1 opened due heard g p2)`"),
+
+ # K1Step: proofs/lib/Prog/reac_knock_step.lean (the walk)
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_step.lean@knock_sx32_unsigned#lib/Prog/reac_knock_struct.v#1": ("decl:knock_sx32_unsigned", ""),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_step.lean@ret_pc_jalr#lib/Lib/MState.v#1": ("decl:ret_pc", ""),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_step.lean@store_ok_of_wr_at#lib/Lib/Step.v#1": ("decl:rw_cells_store_ok", ""),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_step.lean@munch_store#lib/Prog/reac_knock_step_c.v#1": ("fixed:31-31", "read: the post conjunct `munch [(bv_unsigned a0, bv_unsigned a0 + 40)] m m'`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_step.lean@EOF#lib/Prog/reac_knock_step_c.v#1": ("fixed:25-25", "read: the premise `rw_cells rsegs m (bv_unsigned a0) (knock_cells st p1 opened due heard g p2)`"),
 }
 
 

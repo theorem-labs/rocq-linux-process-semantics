@@ -423,11 +423,10 @@ private theorem memset_sub_init (r : reg) (h : init_clobbers r = false) :
       → (BitVec.ofFin i) ∉ memset_clobber := by decide
   exact h32 r.toFin h
 
-/-! ## 4. The walk
+/-! ## 4. The walk -/
 
-`lib/Prog/reac_knock_init.v:28-51`. -/
-
-/-- The twin of `reac_knock_init_holds` (`lib/Prog/reac_knock_init.v:28`). -/
+/-- The twin of `reac_knock_init_holds`
+(`lib/Prog/reac_knock_init.v:28-51`). -/
 theorem reac_knock_init_holds (hmemset : memset_contract) : reac_knock_init_contract := by
   intro regs m lo junk hrw hmi hstk hlo hSA
   -- names for the three addresses the contract is stated over

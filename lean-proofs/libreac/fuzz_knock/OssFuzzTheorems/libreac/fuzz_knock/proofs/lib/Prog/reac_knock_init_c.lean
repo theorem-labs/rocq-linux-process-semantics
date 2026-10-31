@@ -40,12 +40,12 @@ theorem-labs/oss-verify-proofs-internal `ossv/recipes` `9b0ac6f0e6`, under
 Two differences from the Rocq statement, both of them the ones OSSV-265 slice
 T already recorded for `reac_knock_heard`:
 
-* `lib/Prog/reac_knock_init_c.v:32` builds the state with `MS`, which leaves
+* `lib/Prog/reac_knock_init_c.v:32-33` builds the state with `MS`, which leaves
   `ms_fregs`, `ms_fcsr` and `ms_resv` free; the Lean library's step lemmas are
   stated over `LinuxProcessSemantics.Common.PropExec.mkst`, which pins all
   three, so the contract is over `mkst` and the Rocq parameters `F` and `fc`
   are gone (gaps row T-6).
-* `lib/Prog/reac_knock_init_c.v:13` names the 31 registers one by one and
+* `lib/Prog/reac_knock_init_c.v:13-13` names the 31 registers one by one and
   `mkR` rebuilds them; a Lean register file is one `bvmap 5 word` read by
   `getr`, so "`ra sp gp tp s0 s1 s2..s11` come back unchanged" is the
   quantified equation over `init_clobbers` below (gaps row T-10). -/

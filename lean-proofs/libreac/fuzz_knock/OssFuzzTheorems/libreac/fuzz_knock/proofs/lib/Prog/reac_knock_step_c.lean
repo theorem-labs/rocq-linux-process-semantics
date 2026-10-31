@@ -49,8 +49,8 @@ Differences from the Rocq contract, all of them forced by the Lean library:
   `a0 + 40 ≤ 2^64` bound are derived from the `wr_at` conjunct of `rw_cells`
   in `reac_knock_step.lean`, by `store_ok_of_wr_at` over
   `StoreOk.store_ok_of_all`. It does NOT carry the read side: the bridge from
-  `rw_cells` to a 4- or 8-byte read (`lib/Lib/Cells.v:94` `cells_at_read`,
-  `lib/Lib/Step.v:28` `rw_cells_read`) has no Lean twin, so the three reads
+  `rw_cells` to a 4- or 8-byte read (`lib/Lib/Cells.v:94-109` `cells_at_read`,
+  `lib/Lib/Step.v:28-31` `rw_cells_read`) has no Lean twin, so the three reads
   are taken as `rdn` hypotheses (gaps row T-11), as slice T's probe did
   (`probe/ossv265-t/Probe/Heard.lean` of theorem-labs/oss-verify-proofs-internal,
   branch `mcsl/lean-convert-probe` `4054974252`). The post-state's memory
