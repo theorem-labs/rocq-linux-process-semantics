@@ -4,10 +4,12 @@
 
     Image-INDEPENDENT.
 
-    The initial overlay ([PropExec.wrap_mem]) is: the argv/envp/auxv block
-    at/above the initial stack pointer [sp0]; [Some 0] on the RLIMIT_STACK
-    window [[Run.stack_window_lo], sp0), whose lower end depends on the
-    size of the entry image; [None] (fall through to the image)
+    The initial overlay ([PropExec.wrap_mem]) is: Linux's entry block
+    from the initial stack pointer [sp0] up to the stack VMA's end
+    [StackLayout.ed_top]; [Some 0] on the RLIMIT_STACK window
+    [[Run.stack_window_lo], sp0), whose lower end is the higher of
+    [ed_top - 8 MiB] and the guard gap above the mmap base; [None]
+    (fall through to the image)
     everywhere else.  A program's stores land either in the window
     (stack frames) or below it (.data/.bss).  [cmem sp0 mem0 J D] keeps
     the three regions apart, at the image-independent line
@@ -27,7 +29,7 @@
     ([StoreOk.stack_window_lo_valid]).  [cmem_init] rewrites the initial
     overlay into this form, with [J] the initial window [stack_zero]. *)
 
-(* The entry draw ([Run.en_draw]) fixes the AT_RANDOM bytes (at_random_bytes (ed_random draw)); AT_HWCAP is the auxv's fourth pair (10 pairs / 20 words, auxv_size 160); the mapped image is [Run.entry_stack_image] (block ++ page slack). *)
+(* The entry draw gives the AT_RANDOM bytes (at_random_bytes (ed_random draw)) and the stack VMA's end (ed_top); the mapped image is [Run.entry_stack_image], Linux's whole block from sp to that end. *)
 From Stdlib Require Import ZArith List Lia Bool.
 From Stdlib Require Import FunctionalExtensionality.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -143,7 +145,7 @@ Qed.
 
 Definition win_lo (sp0 : word) : Z := bv_unsigned sp0 - stack_max_size.
 
-(** An address at or above every admissible launch's [Run.stack_window_lo] ([StoreOk.stack_window_lo_valid]): every such launch maps [[wok_lo sp0, sp0)]. *)
+(** An address at or above every admissible launch's [Run.stack_window_lo] ([StoreOk.stack_window_lo_valid]): every launch the fifth conjunct of [Run.valid_entry_va] admits maps [[wok_lo sp0, sp0)]. *)
 Definition wok_lo (sp0 : word) : Z :=
   bv_unsigned sp0 + stack_window_reach - stack_max_size.
 
@@ -172,23 +174,27 @@ Proof. intros sp0 J a bs H x Hx. apply wbytes_grows. apply H. exact Hx. Qed.
 Definition stack_zero (lo : Z) : word -> option byte :=
   fun x => if lo <=? bv_unsigned x then Some (Z_to_bv 8 0) else None.
 
-Lemma wfJ_stack_zero : forall ph sp0 av ev uid hw (rdraw : EntryDraw),
-  valid_argv av -> valid_envp ev ->
-  wfJ sp0 (stack_zero (stack_window_lo sp0 (entry_stack_image ph sp0 av ev uid hw rdraw))).
+Lemma wfJ_stack_zero : forall inp (sp0 brk0 mbase : word) (rdraw : EntryDraw),
+  valid_launch inp ->
+  entry_launch_ok_va Sv48 (mkEntry sp0 brk0 mbase rdraw) inp ->
+  wfJ sp0 (stack_zero (stack_window_lo (in_kernel inp) mbase rdraw)).
 Proof.
-  intros ph sp0 av ev uid hw rdraw Hva Hve x Hx. unfold in_win, wok_lo in Hx.
-  pose proof (stack_window_lo_valid ph sp0 av ev uid hw rdraw Hva Hve).
+  intros inp sp0 brk0 mbase rdraw Hvl Hlau x Hx. unfold in_win, wok_lo in Hx.
+  pose proof (stack_window_lo_valid inp sp0 brk0 mbase rdraw Hvl Hlau).
   unfold stack_zero. rewrite (proj2 (Z.leb_le _ _)) by lia. discriminate.
 Qed.
 
 (** Reading [in_win] through the initial window gives zeros. *)
-Lemma stack_zero_in_win : forall ph sp0 av ev uid hw (rdraw : EntryDraw) (x : word),
-  valid_argv av -> valid_envp ev -> in_win sp0 x ->
-  stack_zero (stack_window_lo sp0 (entry_stack_image ph sp0 av ev uid hw rdraw)) x
+Lemma stack_zero_in_win :
+  forall inp (sp0 brk0 mbase : word) (rdraw : EntryDraw) (x : word),
+  valid_launch inp ->
+  entry_launch_ok_va Sv48 (mkEntry sp0 brk0 mbase rdraw) inp ->
+  in_win sp0 x ->
+  stack_zero (stack_window_lo (in_kernel inp) mbase rdraw) x
   = Some (Z_to_bv 8 0).
 Proof.
-  intros ph sp0 av ev uid hw rdraw x Hva Hve Hx. unfold in_win, wok_lo in Hx.
-  pose proof (stack_window_lo_valid ph sp0 av ev uid hw rdraw Hva Hve).
+  intros inp sp0 brk0 mbase rdraw x Hvl Hlau Hx. unfold in_win, wok_lo in Hx.
+  pose proof (stack_window_lo_valid inp sp0 brk0 mbase rdraw Hvl Hlau).
   unfold stack_zero. rewrite (proj2 (Z.leb_le _ _)) by lia. reflexivity.
 Qed.
 
@@ -349,22 +355,27 @@ End CMem.
 
 (** The initial overlay in three-region form: the window region is the
     launch's own [stack_zero], unmapped below [Run.stack_window_lo]. *)
-Lemma cmem_init : forall ph (sp0 : word) av ev uid hw (rdraw : EntryDraw),
-  wrap_mem ph sp0 av ev uid hw rdraw
-  = cmem sp0 (wrap_mem ph sp0 av ev uid hw rdraw)
-      (stack_zero (stack_window_lo sp0 (entry_stack_image ph sp0 av ev uid hw rdraw)))
+Lemma cmem_init :
+  forall inp mbase ph entry (sp0 brk0 : word) (rdraw : EntryDraw),
+  entry_launch_ok_va Sv48 (mkEntry sp0 brk0 mbase rdraw) inp ->
+  wrap_mem inp mbase ph entry sp0 rdraw
+  = cmem sp0 (wrap_mem inp mbase ph entry sp0 rdraw)
+      (stack_zero (stack_window_lo (in_kernel inp) mbase rdraw))
       (fun _ => None).
 Proof.
-  intros ph sp0 av ev uid hw rdraw. apply functional_extensionality. intro x.
-  pose proof (stack_window_lo_ge sp0 (entry_stack_image ph sp0 av ev uid hw rdraw)) as Hge.
+  intros inp mbase ph entry sp0 brk0 rdraw Hlau.
+  apply functional_extensionality. intro x.
+  pose proof (stack_window_lo_ge_sp inp sp0 brk0 mbase rdraw Hlau) as Hge.
   unfold cmem.
   destruct (bv_unsigned sp0 <=? bv_unsigned x) eqn:E1; [reflexivity|].
   apply Z.leb_gt in E1.
   unfold wrap_mem, win_lo, stack_zero.
-  assert (Hst : stack_to_mem sp0 (entry_stack_image ph sp0 av ev uid hw rdraw) x = None).
+  assert (Hst : stack_to_mem sp0 (entry_stack_image inp mbase ph entry sp0 rdraw) x
+                = None).
   { unfold stack_to_mem. rewrite (proj2 (Z.leb_gt _ _)) by lia. reflexivity. }
   rewrite Hst. rewrite (proj2 (Z.ltb_lt _ _) E1), andb_true_r.
-  destruct (bv_unsigned sp0 - stack_max_size <=? bv_unsigned x) eqn:E2; [reflexivity|].
+  destruct (bv_unsigned sp0 - stack_max_size <=? bv_unsigned x) eqn:E2;
+    [reflexivity|].
   apply Z.leb_gt in E2.
   rewrite (proj2 (Z.leb_gt _ _)) by lia. reflexivity.
 Qed.

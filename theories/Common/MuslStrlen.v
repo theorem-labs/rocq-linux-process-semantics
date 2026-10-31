@@ -56,15 +56,17 @@
     machine faults and the proof dies.
 
     The argument here is specific to ARGV/ENVP STRINGS in the INITIAL
-    STACK IMAGE.  [StackLayout.build_stack_bytes] lays out the argv/envp
-    string blob and then ALWAYS appends [pad ++ at_random_bytes] — at
-    least 16 further readable bytes — so there are >= 16 readable bytes
-    after the last argv string's NUL.  [bsb_len_lower] states that lower
-    bound on the image length, [total_arg_bytes_firstn_S] locates string
-    [k] inside the blob, [bsb_word_k] splits the image just before byte
-    [m] of string [k] leaving >= 8 bytes, and [read_word_stack] turns
-    that split into a total 8-byte [rdn].  [argv_word_readable] is the
-    same fact stated over [wrap_mem].
+    STACK IMAGE.  [StackLayout.build_stack_bytes] lays the argv strings
+    in the middle of the string area at the TOP of the block, and
+    ALWAYS puts the envp strings, the exec file name, its NUL and the
+    eight-byte slot [create_init_stack_vma] skipped above them — at
+    least nine further readable bytes — so there are >= 8 readable
+    bytes from the last argv string's NUL on.  [bsb_len_lower] states
+    that lower bound on the image length, [total_arg_bytes_firstn_S]
+    locates string [k] inside the blob, [bsb_word_k] splits the image
+    just before byte [m] of string [k] leaving >= 8 bytes, and
+    [read_word_stack] turns that split into a total 8-byte [rdn].
+    [argv_word_readable] is the same fact stated over [wrap_mem].
 
     WARNING.  This soundness argument does NOT transfer to:
 
@@ -612,39 +614,42 @@ Proof.
     rewrite (IH k ltac:(lia)). lia.
 Qed.
 
-Lemma bsb_len_lower : forall ph (sp : word) (a e : list (list byte)) uid hw rnd,
-  (cat_struct_size a e + total_arg_bytes_nat a + 16
-   <= length (build_stack_bytes ph sp a e uid hw rnd))%nat.
+Lemma bsb_len_lower : forall inp mbase ph entry (sp : word) draw,
+  (cat_string_off (kb_rseq (in_kernel inp)) sp (ed_top draw)
+     (in_argv inp) (in_envp inp) (in_execfn inp)
+   + total_arg_bytes_nat (in_argv inp) + 8
+   <= length (entry_stack_image inp mbase ph entry sp draw))%nat.
 Proof.
-  intros ph sp a e uid hw rnd.
-  unfold build_stack_bytes, cat_struct_size. cbv zeta.
-  rewrite (string_addrs_pair a). cbv beta iota.
-  rewrite (string_addrs_pair e). cbv beta iota.
-  rewrite !length_app, !length_flat_map_le8,
-    !length_string_addrs_fst, !length_n_to_le_8, length_auxv_bytes,
-    !length_flatten_strings, !repeat_length, length_at_random_bytes.
-  lia.
+  intros inp mbase ph entry sp draw.
+  unfold entry_stack_image. rewrite length_build_stack_bytes.
+  unfold cat_string_off, launch_string_bytes.
+  cbn [launch_auxv la_rseq].
+  rewrite !length_flatten_strings. lia.
 Qed.
 
-(** [build_stack_bytes] split just before byte [m] of argv string [k],
-    with at least 8 readable bytes left. *)
-Lemma bsb_word_k : forall ph (sp : word) a e k m uid hw rnd, (k < length a)%nat ->
-  (m <= length (nth k a []))%nat ->
+(** The initial stack image split just before byte [m] of argv string
+    [k], with at least 8 readable bytes left. *)
+Lemma bsb_word_k : forall inp mbase ph entry (sp : word) draw k m,
+  (k < length (in_argv inp))%nat ->
+  (m <= length (nth k (in_argv inp) []))%nat ->
   exists pre post,
-    build_stack_bytes ph sp a e uid hw rnd = pre ++ post
-    /\ length pre = (cat_struct_size a e + total_arg_bytes_nat (firstn k a) + m)%nat
+    entry_stack_image inp mbase ph entry sp draw = pre ++ post
+    /\ length pre = (cat_string_off (kb_rseq (in_kernel inp)) sp (ed_top draw)
+                       (in_argv inp) (in_envp inp) (in_execfn inp)
+                     + total_arg_bytes_nat (firstn k (in_argv inp)) + m)%nat
     /\ (8 <= length post)%nat.
 Proof.
-  intros ph sp a e k m uid hw rnd Hk Hm.
-  destruct (bsb_byte_k ph sp a e k uid hw rnd Hk) as [pre0 [post0 [E Hlen0]]].
-  pose proof (bsb_len_lower ph sp a e uid hw rnd) as Hlow.
-  pose proof (total_arg_bytes_firstn_le (S k) a) as Hmono.
-  pose proof (total_arg_bytes_firstn_S a k Hk) as Hstep.
-  set (s1 := (nth k a [] ++ [Z_to_bv 8 0])) in *.
-  assert (Hs1 : length s1 = (length (nth k a []) + 1)%nat)
+  intros inp mbase ph entry sp draw k m Hk Hm.
+  destruct (bsb_byte_k inp mbase ph entry sp draw k Hk)
+    as [pre0 [post0 [E Hlen0]]].
+  pose proof (bsb_len_lower inp mbase ph entry sp draw) as Hlow.
+  pose proof (total_arg_bytes_firstn_le (S k) (in_argv inp)) as Hmono.
+  pose proof (total_arg_bytes_firstn_S (in_argv inp) k Hk) as Hstep.
+  set (s1 := (nth k (in_argv inp) [] ++ [Z_to_bv 8 0])) in *.
+  assert (Hs1 : length s1 = (length (nth k (in_argv inp) []) + 1)%nat)
     by (unfold s1; rewrite length_app; cbn [length]; lia).
-  assert (Hpost0 : (16 <= length post0)%nat).
-  { assert (Hl : length (build_stack_bytes ph sp a e uid hw rnd)
+  assert (Hpost0 : (8 <= length post0)%nat).
+  { assert (Hl : length (entry_stack_image inp mbase ph entry sp draw)
                  = (length pre0 + length s1 + length post0)%nat)
       by (rewrite E, !length_app; lia).
     lia. }
@@ -656,21 +661,30 @@ Proof.
   - rewrite length_app, length_skipn. lia.
 Qed.
 
-Lemma read_word_stack : forall ph segs (sp : word) a e k m uid hw rnd,
-  (k < length a)%nat -> (m <= length (nth k a []))%nat ->
-  (bv_unsigned sp + Z.of_nat (length (build_stack_bytes ph sp a e uid hw rnd)) < 2^64)%Z ->
+Lemma read_word_stack : forall v segs inp mbase ph entry (sp brk : word) draw k m,
+  entry_launch_ok_va v (mkEntry sp brk mbase draw) inp ->
+  (k < length (in_argv inp))%nat ->
+  (m <= length (nth k (in_argv inp) []))%nat ->
+  (bv_unsigned sp
+   + Z.of_nat (length (entry_stack_image inp mbase ph entry sp draw)) < 2^64)%Z ->
   exists bs, length bs = 8%nat /\
-    rdn segs (stack_to_mem sp (entry_stack_image ph sp a e uid hw rnd))
-        (cat_argv_ptr sp a e k + nat_to_word m) 8%nat = Some bs.
+    rdn segs (stack_to_mem sp (entry_stack_image inp mbase ph entry sp draw))
+        (cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp) (in_execfn inp) k
+         + nat_to_word m) 8%nat = Some bs.
 Proof.
-  intros ph segs sp a e k m uid hw rnd Hk Hm Hnw.
-  destruct (bsb_word_k ph sp a e k m uid hw rnd Hk Hm) as [pre [post [E [Hlen Hpost]]]].
+  intros v segs inp mbase ph entry sp brk draw k m Hlau Hk Hm Hnw.
+  destruct (bsb_word_k inp mbase ph entry sp draw k m Hk Hm)
+    as [pre [post [E [Hlen Hpost]]]].
   exists (firstn 8 post). split; [apply firstn_length_le; lia|].
-  replace (cat_argv_ptr sp a e k + nat_to_word m)
+  replace (cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp) (in_execfn inp) k
+           + nat_to_word m)
     with (sp + nat_to_word (length pre)).
-  2:{ rewrite Hlen, (cat_argv_ptr_offset sp a e k Hk). unfold cat_string_base.
+  2:{ rewrite Hlen,
+        (cat_argv_ptr_offset (ed_top draw) (in_argv inp) (in_envp inp)
+           (in_execfn inp) k Hk),
+        (cat_string_base_offset v inp mbase sp brk draw Hlau).
       rewrite !nat_to_word_add_merge. f_equal. f_equal. lia. }
-  apply (read_at_offset_image segs ph sp a e uid hw rnd
+  apply (read_at_offset_image segs inp mbase ph entry sp draw
            pre (firstn 8 post) (skipn 8 post) 8%nat).
   - rewrite E. f_equal. symmetry. apply firstn_skipn.
   - apply firstn_length_le. lia.
@@ -700,28 +714,33 @@ Qed.
 (* ######################################################################### *)
 (* Section form: readability of the strlen word load over [wrap_mem]         *)
 (*                                                                           *)
-(* Same shape as [Common/ArgvEnv.v]: a section over                          *)
-(* [(segs, ph, sp, av, ev)] plus the four ambient startup hypotheses, so a   *)
-(* per-binary file instantiates each lemma with one [apply ...; assumption].  *)
+(* Same shape as [Common/ArgvEnv.v]: a section over the launch         *)
+(* [(segs, inp, mbase, ph, entry, sp, brk, draw)] plus the ambient      *)
+(* startup hypotheses, so a per-binary file instantiates each lemma     *)
+(* with one [apply ...; assumption].                                    *)
 (* ######################################################################### *)
 
 Section ArgvWord.
 
   Variable segs : list Segment.
+  Variable v : VaSize.
+  Variable inp : ProcInput.
+  Variable mbase : word.
   Variable ph : PhdrInfo.
-  Variable sp : word.
-  Variable av ev : list (list byte).
-  Variable uid : word.
-  Variable hw : word.
+  Variable entry : word.
+  Variable sp brk : word.
 
-  (** The run's AT_RANDOM draw (the [ed_random] half of [Run.ExecEntry]'s [en_draw]): the last
-      16 bytes of the initial stack image.  The over-read soundness
-      argument below is exactly the claim that a word load past the last
-      argv NUL lands in these bytes, so it must not be constrained. *)
-  Variable rnd : EntryDraw.
+  (** The run's entry draw: [ed_random] is the sixteen AT_RANDOM bytes
+      and [ed_top] the stack VMA's end.  The over-read soundness
+      argument below is the claim that a word load past the last argv
+      NUL lands in the string area above it, so neither half is
+      constrained here. *)
+  Variable draw : EntryDraw.
 
-  Hypothesis Hva : valid_argv av.
-  Hypothesis Hve : valid_envp ev.
+  Hypothesis Hva : valid_argv (in_argv inp).
+  Hypothesis Hve : valid_envp (in_envp inp).
+  Hypothesis Hvl : valid_launch inp.
+  Hypothesis Hlau : entry_launch_ok_va v (mkEntry sp brk mbase draw) inp.
   Hypothesis Hsp_lo : (sp_window_lo <= bv_unsigned sp)%Z.
   Hypothesis Hsp_hi : (bv_unsigned sp <= sp_window_hi)%Z.
 
@@ -735,42 +754,54 @@ Section ArgvWord.
   Proof. exact Hsp_hi. Qed.
 
   Lemma mstr_bsb_nw :
-    (bv_unsigned sp + Z.of_nat (length (build_stack_bytes ph sp av ev uid hw rnd)) < 2^64)%Z.
+    (bv_unsigned sp
+     + Z.of_nat (length (entry_stack_image inp mbase ph entry sp draw)) < 2^64)%Z.
   Proof.
-    pose proof (bsb_bound ph sp av ev uid hw rnd Hva Hve). pose proof mstr_sp_hi. lia.
+    pose proof (bsb_bound v inp mbase ph entry sp brk draw Hvl Hlau).
+    pose proof mstr_sp_hi. lia.
   Qed.
 
   (** Room for a whole word past ANY offset inside argv string [k]: the
-      stack image always keeps 16 more bytes (pad + AT_RANDOM) after the
-      last argv string's NUL.  This is the quantitative form of the
-      over-read soundness argument. *)
-  Lemma argv_ptr_room : forall k, (k < length av)%nat ->
-    (bv_unsigned (cat_argv_ptr sp av ev k)
-       + Z.of_nat (length (nth k av [])) + 17
-     <= bv_unsigned sp + Z.of_nat (length (build_stack_bytes ph sp av ev uid hw rnd)))%Z.
+      stack image always keeps the envp strings, the exec file name, its
+      NUL and the eight-byte top slot -- at least nine more bytes --
+      above the last argv string's NUL.  This is the quantitative form
+      of the over-read soundness argument. *)
+  Lemma argv_ptr_room : forall k, (k < length (in_argv inp))%nat ->
+    (bv_unsigned (cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp)
+                    (in_execfn inp) k)
+       + Z.of_nat (length (nth k (in_argv inp) [])) + 9
+     <= bv_unsigned sp
+        + Z.of_nat (length (entry_stack_image inp mbase ph entry sp draw)))%Z.
   Proof.
     intros k Hk.
     pose proof mstr_sp_lo. pose proof mstr_sp_hi.
     pose proof mstr_bsb_nw as Hnw.
-    pose proof (bsb_len_lower ph sp av ev uid hw rnd) as Hlow.
-    pose proof (total_arg_bytes_firstn_le (S k) av) as Hmono.
-    pose proof (total_arg_bytes_firstn_S av k Hk) as Hstep.
-    assert (Hptr : cat_argv_ptr sp av ev k
-      = sp + nat_to_word (cat_struct_size av ev + total_arg_bytes_nat (firstn k av))).
-    { rewrite (cat_argv_ptr_offset sp av ev k Hk). unfold cat_string_base.
+    pose proof (bsb_len_lower inp mbase ph entry sp draw) as Hlow.
+    pose proof (total_arg_bytes_firstn_le (S k) (in_argv inp)) as Hmono.
+    pose proof (total_arg_bytes_firstn_S (in_argv inp) k Hk) as Hstep.
+    assert (Hptr : cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp)
+                     (in_execfn inp) k
+      = sp + nat_to_word (cat_string_off (kb_rseq (in_kernel inp)) sp (ed_top draw)
+                            (in_argv inp) (in_envp inp) (in_execfn inp)
+                          + total_arg_bytes_nat (firstn k (in_argv inp)))).
+    { rewrite (cat_argv_ptr_offset (ed_top draw) (in_argv inp) (in_envp inp)
+                 (in_execfn inp) k Hk),
+              (cat_string_base_offset v inp mbase sp brk draw Hlau).
       rewrite nat_to_word_add_merge. reflexivity. }
     rewrite Hptr, word_add_nat, u_Z2bv by lia. lia.
   Qed.
 
   (** Address bounds for the [k]-th argv pointer (the [source_ptr_bounds]
       twin; restated here so this file is self-contained). *)
-  Lemma mstr_argv_ptr_bounds : forall k, (k < length av)%nat ->
-    (bv_unsigned sp <= bv_unsigned (cat_argv_ptr sp av ev k))%Z /\
-    (bv_unsigned (cat_argv_ptr sp av ev k)
-       + Z.of_nat (length (nth k av [])) + 1 < 2^64)%Z.
+  Lemma mstr_argv_ptr_bounds : forall k, (k < length (in_argv inp))%nat ->
+    (bv_unsigned sp
+     <= bv_unsigned (cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp)
+                       (in_execfn inp) k))%Z /\
+    (bv_unsigned (cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp)
+                    (in_execfn inp) k)
+       + Z.of_nat (length (nth k (in_argv inp) [])) + 1 < 2^64)%Z.
   Proof.
-    intros k Hk. apply argv_ptr_bounds; try assumption.
-    pose proof mstr_sp_hi. unfold argv_layout_slack. lia.
+    intros k Hk. exact (argv_ptr_bounds v inp mbase sp brk draw k Hlau Hk).
   Qed.
 
   (** THE load-bearing readability fact: an 8-byte load at ANY offset [m]
@@ -779,21 +810,27 @@ Section ArgvWord.
       lifts this to its own overlay by peeling the overlay down to
       [wrap_mem] first (see [grep_args_ns]'s [read_word_m]). *)
   Lemma argv_word_readable : forall k m,
-    (k < length av)%nat -> (m <= length (nth k av []))%nat ->
+    (k < length (in_argv inp))%nat ->
+    (m <= length (nth k (in_argv inp) []))%nat ->
     exists bs, length bs = 8%nat /\
-      rdn segs (wrap_mem ph sp av ev uid hw rnd)
-          (cat_argv_ptr sp av ev k + nat_to_word m) 8%nat = Some bs.
+      rdn segs (wrap_mem inp mbase ph entry sp draw)
+          (cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp) (in_execfn inp) k
+           + nat_to_word m) 8%nat = Some bs.
   Proof.
     intros k m Hk Hm.
     pose proof mstr_sp_lo. pose proof mstr_sp_hi.
     destruct (mstr_argv_ptr_bounds k Hk) as [Hge Hup].
     pose proof (argv_ptr_room k Hk) as Hroom.
     pose proof mstr_bsb_nw as Hnw.
-    pose proof (u64_range (cat_argv_ptr sp av ev k)).
-    assert (Hu : bv_unsigned (cat_argv_ptr sp av ev k + nat_to_word m)
-                 = (bv_unsigned (cat_argv_ptr sp av ev k) + Z.of_nat m)%Z)
+    pose proof (u64_range (cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp)
+                             (in_execfn inp) k)).
+    assert (Hu : bv_unsigned (cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp)
+                                (in_execfn inp) k + nat_to_word m)
+                 = (bv_unsigned (cat_argv_ptr (ed_top draw) (in_argv inp)
+                                   (in_envp inp) (in_execfn inp) k) + Z.of_nat m)%Z)
       by (rewrite word_add_nat; apply u_Z2bv; lia).
-    destruct (read_word_stack ph segs sp av ev k m uid hw rnd Hk Hm Hnw) as [bs [Hl Hr]].
+    destruct (read_word_stack v segs inp mbase ph entry sp brk draw k m
+                Hlau Hk Hm Hnw) as [bs [Hl Hr]].
     exists bs. split; [exact Hl|].
     rewrite rdn_wrap_stack_above by (rewrite Hu; lia).
     exact Hr.

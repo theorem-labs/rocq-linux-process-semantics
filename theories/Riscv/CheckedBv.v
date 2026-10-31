@@ -90,6 +90,54 @@ Lemma byte_of_Z_total : forall b : bv 8, byte_of_Z (bv_unsigned b) = Some b.
 Proof. intros b. apply bv_of_Z_total. Qed.
 
 (* =========================================================================
+   The other erased invariant: [N]
+   ========================================================================= *)
+
+(** [N] is realized by zarith too, and its whole well-formedness
+    condition is that it is not negative — which the extracted code
+    does not hold it to, exactly as it does not hold a [bv] to its
+    width.  A value the MODEL holds as an [N] and a caller declares
+    from outside therefore needs this on the way in, and it is here
+    rather than in one boundary because both artifacts will want it:
+    [Checks.CheckedInput] takes the kernel build's eight numeric
+    components through it, and a root of the ISA model that took a
+    width or a shift amount would take the same check.
+
+    It is NOT [Z.to_N], which answers 0 for a negative integer and so
+    would turn a value no machine can produce into a different value a
+    machine might — the same reason [Z_to_bv_checked] is not
+    [Z_to_bv]. *)
+Definition n_of_Z (z : Z) : option N :=
+  if (0 <=? z)%Z then Some (Z.to_N z) else None.
+
+(** What a [Some] and a [None] mean, as [bv_of_Z_value] and
+    [bv_of_Z_refused] say it for a bitvector.  Non-negativity is the
+    whole of [N]'s invariant, so the second iff is complete. *)
+Lemma n_of_Z_value : forall z n, n_of_Z z = Some n -> Z.of_N n = z.
+Proof.
+  intros z n H. unfold n_of_Z in H.
+  destruct (0 <=? z)%Z eqn:Hle; [|discriminate].
+  injection H as <-. apply Z2N.id. now apply Z.leb_le.
+Qed.
+
+Lemma n_of_Z_refused : forall z, n_of_Z z = None <-> ~ (0 <= z)%Z.
+Proof.
+  intros z. unfold n_of_Z. destruct (0 <=? z)%Z eqn:Hle.
+  - apply Z.leb_le in Hle.
+    split; [intros H; discriminate H | intros Hout; contradiction].
+  - apply Z.leb_gt in Hle.
+    split; [intros _; lia | intros _; reflexivity].
+Qed.
+
+(** Nothing the model can say is refused. *)
+Lemma n_of_Z_total : forall n : N, n_of_Z (Z.of_N n) = Some n.
+Proof.
+  intros n. unfold n_of_Z.
+  rewrite (proj2 (Z.leb_le 0 (Z.of_N n)) (N2Z.is_nonneg n)).
+  now rewrite N2Z.id.
+Qed.
+
+(* =========================================================================
    Checking a vector of values
    ========================================================================= *)
 

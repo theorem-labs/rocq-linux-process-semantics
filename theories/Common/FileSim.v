@@ -458,46 +458,66 @@ Qed.
 (* argv strings as NUL-terminated byte runs and prefixes                     *)
 (* ========================================================================= *)
 
-Lemma read_argv_cstr_k : forall ph segs (sp : word) av ev k uid hw rnd,
-  (k < length av)%nat ->
-  (bv_unsigned sp + Z.of_nat (length (build_stack_bytes ph sp av ev uid hw rnd)) < 2^64)%Z ->
-  rdn segs (stack_to_mem sp (entry_stack_image ph sp av ev uid hw rnd))
-      (cat_argv_ptr sp av ev k) (length (nth k av []) + 1)
-  = Some (nth k av [] ++ [Z_to_bv 8 0]).
+Lemma read_argv_cstr_k :
+  forall v segs inp mbase ph entry (sp brk : word) draw k,
+  entry_launch_ok_va v (mkEntry sp brk mbase draw) inp ->
+  (k < length (in_argv inp))%nat ->
+  rdn segs (stack_to_mem sp (entry_stack_image inp mbase ph entry sp draw))
+      (cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp) (in_execfn inp) k)
+      (length (nth k (in_argv inp) []) + 1)
+  = Some (nth k (in_argv inp) [] ++ [Z_to_bv 8 0]).
 Proof.
-  intros ph segs sp av ev k uid hw rnd Hk Hnw.
-  destruct (bsb_byte_k ph sp av ev k uid hw rnd Hk) as [pre [post [E Hlen]]].
-  pose proof (read_at_offset_image segs ph sp av ev uid hw rnd
-    pre (nth k av [] ++ [Z_to_bv 8 0]) post (length (nth k av []) + 1)) as H.
+  intros v segs inp mbase ph entry sp brk draw k Hlaunch Hk.
+  pose proof (entry_stack_image_no_wrap v inp mbase ph entry sp brk draw Hlaunch)
+    as Hnw.
+  destruct (bsb_byte_k inp mbase ph entry sp draw k Hk) as [pre [post [E Hlen]]].
+  pose proof (read_at_offset_image segs inp mbase ph entry sp draw
+    pre (nth k (in_argv inp) [] ++ [Z_to_bv 8 0]) post
+    (length (nth k (in_argv inp) []) + 1)) as H.
   rewrite Hlen in H.
-  replace (cat_argv_ptr sp av ev k)
-    with (sp + nat_to_word (cat_struct_size av ev + total_arg_bytes_nat (firstn k av))).
-  2:{ rewrite (cat_argv_ptr_offset sp av ev k Hk). unfold cat_string_base.
+  replace (cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp)
+             (in_execfn inp) k)
+    with (sp + nat_to_word
+                 (cat_string_off (kb_rseq (in_kernel inp)) sp (ed_top draw)
+                    (in_argv inp) (in_envp inp) (in_execfn inp)
+                  + total_arg_bytes_nat (firstn k (in_argv inp)))).
+  2:{ rewrite (cat_argv_ptr_offset _ _ _ _ k Hk),
+        (cat_string_base_offset v inp mbase sp brk draw Hlaunch).
       rewrite nat_to_word_add_merge. reflexivity. }
   apply H; [exact E | | exact Hnw].
   rewrite length_app. cbn [length]. lia.
 Qed.
 
-Lemma read_argv_prefix_k : forall ph segs (sp : word) av ev k n uid hw rnd,
-  (k < length av)%nat -> (n <= length (nth k av []))%nat ->
-  (bv_unsigned sp + Z.of_nat (length (build_stack_bytes ph sp av ev uid hw rnd)) < 2^64)%Z ->
-  rdn segs (stack_to_mem sp (entry_stack_image ph sp av ev uid hw rnd))
-      (cat_argv_ptr sp av ev k) n
-  = Some (firstn n (nth k av [])).
+Lemma read_argv_prefix_k :
+  forall v segs inp mbase ph entry (sp brk : word) draw k n,
+  entry_launch_ok_va v (mkEntry sp brk mbase draw) inp ->
+  (k < length (in_argv inp))%nat ->
+  (n <= length (nth k (in_argv inp) []))%nat ->
+  rdn segs (stack_to_mem sp (entry_stack_image inp mbase ph entry sp draw))
+      (cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp) (in_execfn inp) k) n
+  = Some (firstn n (nth k (in_argv inp) [])).
 Proof.
-  intros ph segs sp av ev k n uid hw rnd Hk Hn Hnw.
-  destruct (bsb_byte_k ph sp av ev k uid hw rnd Hk) as [pre [post [E Hlen]]].
-  pose proof (read_at_offset_image segs ph sp av ev uid hw rnd
-    pre (firstn n (nth k av []))
-    ((skipn n (nth k av []) ++ [Z_to_bv 8 0]) ++ post) n) as H.
+  intros v segs inp mbase ph entry sp brk draw k n Hlaunch Hk Hn.
+  pose proof (entry_stack_image_no_wrap v inp mbase ph entry sp brk draw Hlaunch)
+    as Hnw.
+  destruct (bsb_byte_k inp mbase ph entry sp draw k Hk) as [pre [post [E Hlen]]].
+  pose proof (read_at_offset_image segs inp mbase ph entry sp draw
+    pre (firstn n (nth k (in_argv inp) []))
+    ((skipn n (nth k (in_argv inp) []) ++ [Z_to_bv 8 0]) ++ post) n) as H.
   rewrite Hlen in H.
-  replace (cat_argv_ptr sp av ev k)
-    with (sp + nat_to_word (cat_struct_size av ev + total_arg_bytes_nat (firstn k av))).
-  2:{ rewrite (cat_argv_ptr_offset sp av ev k Hk). unfold cat_string_base.
+  replace (cat_argv_ptr (ed_top draw) (in_argv inp) (in_envp inp)
+             (in_execfn inp) k)
+    with (sp + nat_to_word
+                 (cat_string_off (kb_rseq (in_kernel inp)) sp (ed_top draw)
+                    (in_argv inp) (in_envp inp) (in_execfn inp)
+                  + total_arg_bytes_nat (firstn k (in_argv inp)))).
+  2:{ rewrite (cat_argv_ptr_offset _ _ _ _ k Hk),
+        (cat_string_base_offset v inp mbase sp brk draw Hlaunch).
       rewrite nat_to_word_add_merge. reflexivity. }
   apply H; [| |exact Hnw].
   - rewrite E. rewrite <- !app_assoc.
-    rewrite (app_assoc (firstn n (nth k av [])) (skipn n (nth k av []))).
+    rewrite (app_assoc (firstn n (nth k (in_argv inp) []))
+               (skipn n (nth k (in_argv inp) []))).
     rewrite firstn_skipn. reflexivity.
   - apply firstn_length_le. exact Hn.
 Qed.
@@ -2342,7 +2362,7 @@ End OpenNodes.
 
 (** The run-level omni judgment of a file-copying run. *)
 Lemma fout_omni_run : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_fout segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  to_fout segs (init_machine_state segs pc ph sp mb rnd inp)
           (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (fout_post U).
 Proof.
@@ -2352,14 +2372,14 @@ Proof.
 Qed.
 
 Lemma fout_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_fout segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  to_fout segs (init_machine_state segs pc ph sp mb rnd inp)
           (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
     <-> exists o, U o /\ is_prefix tr (fout_trace o).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto tr.
   unfold init_config.
-  set (ms := init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
+  set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
   assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None)
     by reflexivity.
   assert (Hlazy : m_vm_lazy (init_model (segments_reserved segs) brk0 mb sp lim inp) = [])
@@ -2375,7 +2395,7 @@ Proof.
 Qed.
 
 Lemma fout_no_error_run : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_fout segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  to_fout segs (init_machine_state segs pc ph sp mb rnd inp)
           (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
   ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
 Proof.
@@ -2389,10 +2409,10 @@ Qed.
 Lemma fout_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd U inp,
   to_fout source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
     (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp) U ->
   to_fout target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state target_segs apc aph asp amb arnd inp)
     (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) U ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
@@ -2420,10 +2440,10 @@ Qed.
 Lemma fout_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim U inp,
   to_fout source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
     (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) U ->
   to_fout target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state target_segs apc aph asp amb arnd inp)
     (init_model (segments_reserved target_segs) abrk amb asp alim inp) U ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)

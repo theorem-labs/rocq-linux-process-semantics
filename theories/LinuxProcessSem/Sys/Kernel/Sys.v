@@ -355,8 +355,12 @@ Definition rlim64_wf (bs : list byte) : bool :=
 
     - [RLIMIT_STACK] is ALREADY modeled, as [State.stack_max_size] = 8
       MiB.  It is observable — [Run.init_machine_state] zero-maps exactly
-      [[Run.stack_window_lo], init_sp)], what is left below [init_sp] of
-      the [stack_max_size] bytes under the top of the entry image, and a store outside that
+      [[Run.stack_window_lo], init_sp)], whose floor is the higher of
+      [stack_max_size] below the stack VMA's end [StackLayout.ed_top]
+      and the guard gap above the mmap base, so under a launch
+      [Run.entry_launch_ok_va] admits it is what is left below
+      [init_sp] of the [stack_max_size] bytes under that end, and a
+      store outside that
       window is a [RiscvSemantics.MachineFault] — and it also fixes
       [State.alloc_top] relative to the run's stack pointer.  It is a
       CONSTANT, so a [setrlimit] that

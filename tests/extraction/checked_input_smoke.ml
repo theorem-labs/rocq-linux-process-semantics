@@ -46,12 +46,31 @@ let () =
 (* a model to judge against                                           *)
 (* ----------------------------------------------------------------- *)
 
+(* The kernel build the launch ran on, as State.default_kernel names it:
+   no transparent huge pages, vDSO image 1, randomizing, the 256-page
+   stack_guard_gap, no extra mmap_rnd_bits, CONFIG_RSEQ, no vector unit,
+   and the four cache leaves absent.  Each N of the model arrives as a Z
+   and is refused here when negative. *)
+let leaf_absent : M.rawCacheLeaf = {
+  M.rcl_acpi = false; rcl_size = z "0"; rcl_assoc = z "0"; rcl_line = z "0" }
+
+let kernel_default : M.rawKernelBuild = {
+  M.rkb_thp = false; rkb_vdso = z "1"; rkb_aslr = true; rkb_guard = z "256";
+  rkb_rnd_bits = z "0"; rkb_rseq = true; rkb_vlenb = z "0";
+  rkb_cache = { M.rcv_l1i = leaf_absent; rcv_l1d = leaf_absent;
+                rcv_l2 = leaf_absent; rcv_l3 = leaf_absent } }
+
+(* The exec file name, without its NUL: the one-byte relative name "a",
+   which Run.valid_execfn admits. *)
+let execfn_default = [z "97"]
+
 let seed : M.rawProcInput = {
   M.rpi_argv = []; rpi_envp = []; rpi_image_fs = []; rpi_stdin = [];
   rpi_uid = z "0"; rpi_gid = z "0"; rpi_groups = []; rpi_net = [];
   rpi_nofile = z "1024"; rpi_sigmask = z "0"; rpi_hwcap = z "4397";
   rpi_abort_terminal = false; rpi_va_size = M.Sv48;
-  rpi_urandom = []; rpi_tmp = [] }
+  rpi_urandom = []; rpi_tmp = [];
+  rpi_kernel = kernel_default; rpi_execfn = execfn_default }
 
 let model =
   match M.init_model_checked [] (z "4096") (z "4096") (z "4096") (z "0") seed with
@@ -170,6 +189,32 @@ let () =
     (seed_refused { seed with M.rpi_net =
       [{ M.rpe_addr = z "0"; rpe_port = z "80"; rpe_bytes = [z "256"];
          rpe_end = M.RneFin }] });
+  check "a negative vDSO image number is refused"
+    (seed_refused { seed with M.rpi_kernel =
+      { kernel_default with M.rkb_vdso = z "-1" } });
+  check "a negative stack_guard_gap is refused"
+    (seed_refused { seed with M.rpi_kernel =
+      { kernel_default with M.rkb_guard = z "-1" } });
+  check "a negative cache associativity is refused"
+    (seed_refused { seed with M.rpi_kernel =
+      { kernel_default with M.rkb_cache =
+        { M.rcv_l1i = leaf_absent; rcv_l1d = leaf_absent;
+          rcv_l2 = { leaf_absent with M.rcl_assoc = z "-1" };
+          rcv_l3 = leaf_absent } } });
+  check "an empty exec file name is refused"
+    (seed_refused { seed with M.rpi_execfn = [] });
+  check "an exec file name with a NUL byte is refused"
+    (seed_refused { seed with M.rpi_execfn = [z "47"; z "0"; z "97"] });
+  check "an exec file name byte above 255 is refused"
+    (seed_refused { seed with M.rpi_execfn = [z "47"; z "256"] });
+  (* the launch condition on its own, which a caller asks to tell a name
+     that is not a VALUE from one no launch could have presented *)
+  check "the exec name shape test rejects the empty name"
+    (not (M.execfn_shape_b []));
+  check "the exec name shape test rejects a NUL byte"
+    (not (M.execfn_shape_b [z "47"; z "0"; z "97"]));
+  check "the exec name shape test takes a name of two bytes"
+    (M.execfn_shape_b [z "47"; z "97"]);
   check "an in-range seed in every structured field is accepted"
     (not (seed_refused ~reserved:[(z "4096", z "4096")] ~brk0:"8192"
             ~mbase:"12288" ~sp:"16384"
@@ -181,7 +226,62 @@ let () =
                            rpe_bytes = [z "255"]; rpe_end = M.RneRst }];
               rpi_nofile = z "1024"; rpi_sigmask = z "0"; rpi_hwcap = z "4397";
               rpi_abort_terminal = false; rpi_va_size = M.Sv48;
-              rpi_urandom = [z "7"]; rpi_tmp = [([z "98"], [z "2"])] }))
+              rpi_urandom = [z "7"]; rpi_tmp = [([z "98"], [z "2"])];
+              rpi_kernel =
+                { M.rkb_thp = true; rkb_vdso = z "3"; rkb_aslr = true;
+                  rkb_guard = z "1"; rkb_rnd_bits = z "20"; rkb_rseq = true;
+                  rkb_vlenb = z "4";
+                  rkb_cache =
+                    { M.rcv_l1i = { M.rcl_acpi = false; rcl_size = z "32768";
+                                    rcl_assoc = z "8"; rcl_line = z "64" };
+                      rcv_l1d = { M.rcl_acpi = false; rcl_size = z "32768";
+                                  rcl_assoc = z "8"; rcl_line = z "64" };
+                      rcv_l2 = { M.rcl_acpi = false; rcl_size = z "1048576";
+                                 rcl_assoc = z "8"; rcl_line = z "64" };
+                      rcv_l3 = { M.rcl_acpi = true; rcl_size = z "33554432";
+                                 rcl_assoc = z "16"; rcl_line = z "64" } } };
+              rpi_execfn = [z "47"; z "97"] }))
+
+(* ----------------------------------------------------------------- *)
+(* the file-system image the run is launched over                     *)
+(* ----------------------------------------------------------------- *)
+
+(* "a" and "a/b": one name is a regular file and the directory the
+   other name lives under, which no Linux file system holds -- one
+   name in one directory is one inode.  Run.valid_input carries that
+   clause (Fs.fs_image_real) since revision/linux-only, and the
+   boundary refuses the image here.  Beside it "a" and "ab", which
+   differ in one byte of the second key and name two files.
+
+   The two roots answer the two questions apart: fs_of_raw says
+   whether the image is a VALUE, image_shape_b whether it is a
+   launch. *)
+let image_prefix_key =
+  [([z "97"], [z "104"]); ([z "97"; z "47"; z "98"], [z "104"])]
+let image_flat_keys =
+  [([z "97"], [z "104"]); ([z "97"; z "98"], [z "104"])]
+
+let converts l = match M.fs_of_raw l with Some _ -> true | None -> false
+
+let () =
+  check "an image whose key is also a directory is refused"
+    (seed_refused { seed with M.rpi_image_fs = image_prefix_key });
+  check "that image is a VALUE: fs_of_raw converts it"
+    (converts image_prefix_key);
+  check "the image shape test says that image is no launch"
+    (not (M.image_shape_b image_prefix_key));
+  check "the image shape test takes the two flat keys"
+    (M.image_shape_b image_flat_keys);
+  check "the image with two flat keys is converted"
+    (not (seed_refused { seed with M.rpi_image_fs = image_flat_keys }));
+  check "a non-canonical key names no file a directory can hold"
+    (not (M.image_shape_b [([z "46"; z "47"; z "97"], [z "104"])]));
+  check "an image byte above 255 is not a value at all"
+    (not (converts [([z "97"], [z "256"])]));
+  (* the /tmp declaration carries no reality condition in Run, so the
+     same nesting is converted there *)
+  check "the same nesting in the /tmp declaration is converted"
+    (not (seed_refused { seed with M.rpi_tmp = image_prefix_key }))
 
 let () =
   if !failures = 0 then print_endline "checked-input smoke: all checks passed"

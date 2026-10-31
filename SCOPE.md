@@ -67,6 +67,22 @@ mode answers. QEMU citations are QEMU 10.0.11.
 
 ### The start state and the address space
 
+- **The entry block.** The model lays Linux's block, from the entry
+  stack pointer up to the stack VMA's end, with an auxiliary vector of
+  27 entries, or 29 with `CONFIG_RSEQ`
+  (`StackLayout.build_stack_bytes`, `StackLayout.auxv_entries`). QEMU
+  user mode builds another one (`create_elf_tables`, `setup_arg_pages`
+  and `load_elf_binary` in `linux-user/elfload.c`): 18 auxv entries in
+  another order, with `AT_SYSINFO_EHDR` last and pointing at QEMU's own
+  vDSO (`load_elf_vdso`), no cache entries, no `AT_MINSIGSTKSZ` and no
+  rseq entries; no `arch_align_stack` pad; and a stack top where
+  `target_mmap(0, ...)` puts an 8 MiB mapping, not `STACK_TOP` less a
+  draw. Only the order of the strings and the `AT_RANDOM` block is the
+  same. So the model admits no QEMU start state at all, and this
+  difference reaches any program whose output or control flow depends
+  on an entry address or on an auxv entry beyond those musl reads by
+  type.
+
 - **Where a new mapping goes.** The model gives the address Linux
   v6.18.46 gives: the hint if the hint is free, else the highest free
   range below `mm->mmap_base`, else the lowest free range from
@@ -239,29 +255,42 @@ them. A proof says nothing about a program in such a case.
 | Threads | The model has one thread. It has no scheduler and no shared-memory interleaving. For `fork`-like calls, the model describes the parent only. It does not run the child. |
 | Signals | The model does not run signal handlers. |
 | Address-space size | The system call specifications use Sv48. Thus you cannot prove the Sv39 and Sv57 statements for an image that can run. |
-| Stack limit | The stack limit is 8 MiB. A larger or unlimited `RLIMIT_STACK`, which selects the legacy mmap layout, is outside the model. The model counts its own entry image against this limit, but not the parts of a real entry image that it leaves out; see "Stack floor" in "Known gaps in precision". |
-| Arguments | `Run.valid_input` requires that the arguments after `argv[0]` do not contain `/` and are not `..`. Thus a proof about `cp src dst` does not apply to `cp /tmp/src dst`. It also bounds the lists (`Run.valid_argv`, `Run.valid_envp`): 1 to 1024 arguments and at most 2 MiB of argument bytes, at most 256 environment variables and at most 128 KiB of environment bytes, and at most 131071 bytes in each string. Each count of bytes includes the terminating NUL of each string. A launch outside these bounds is outside the model. |
+| Stack limit | The stack limit is 8 MiB. A larger or unlimited `RLIMIT_STACK`, which selects the legacy mmap layout, is outside the model. The model counts the whole entry block against this limit, from the stack VMA's end `StackLayout.ed_top` down, as Linux counts it. |
+| Arguments | `Run.valid_input` requires that the arguments after `argv[0]` do not contain `/` and are not `..`. Thus a proof about `cp src dst` does not apply to `cp /tmp/src dst`. It also bounds the lists (`Run.valid_argv`, `Run.valid_envp`): 1 to 1024 arguments and at most 2 MiB of argument bytes, at most 256 environment variables and at most 128 KiB of environment bytes, and at most 131071 bytes in each string. Each count of bytes includes the terminating NUL of each string. These are the model's own per-list bounds. Linux's own bound is joint, and `Run.valid_launch` carries it: the exec file name, the envp strings and the argv strings with their NULs, plus 8 bytes for each argv and envp pointer, are at most 2 MiB together at the 8 MiB stack limit (`bprm_stack_limits`, `fs/exec.c`). Linux answers `E2BIG` for a larger launch. `Run.valid_launch` also says which exec file names `execve` can present (`State.in_execfn`): a path of 1 to 4095 bytes without a NUL, or `/dev/fd/N`, or `/dev/fd/N/` and such a path that does not start with `/` (`getname_flags` in `fs/namei.c`, `alloc_bprm` in `fs/exec.c`). Both binaries of a pair run under the same exec file name, as they run on the same input. A launch outside these bounds is outside the model. |
 | Standard input and output | The fds 0, 1 and 2 are external channels, and their direction is fixed: 0 is read-only, 1 and 2 are write-only (`State.FdChannel`). The model answers `-EBADF` for the other direction. Thus a proof says nothing about a program that is handed a connected socket on fd 0, as an inetd-style server is. |
 | Network | The list of connections is never empty. Thus the model does not include an environment where no peer ever connects. |
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. The `*_budgets_only` statements have a finer premise for the source: it excludes a first-touch or a cumulative refusal, but not a single request that is larger than the whole budget (`Run.alloc_refuse_reason`). |
 | Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
 
-The entry premises also limit the launches that a statement covers.
-`Run.valid_sp` requires an entry stack pointer in the top 2 GiB of the
-Sv48 user address space (`State.sp_window_lo` to `State.sp_window_hi`).
-On Linux with Sv48 or Sv57, the pointer stays in this window for each
-stack limit, with address randomisation on or off (`randomize_stack_top`
-in `mm/util.c`, `setup_arg_pages` in `fs/exec.c`). The statements say
-nothing about a launch that puts the pointer below the window. QEMU user
-mode does put it below the window in three of four cases; "Where QEMU
-user mode differs" has the measurements.
+The entry premises also limit the launches that a statement covers, and
+they limit them to Linux's own. For one input and one kernel build
+(`State.KernelBuild`), `Run.entry_launch_ok_va` admits exactly the
+stack VMA ends, entry stack pointers and mmap bases that a Linux
+v6.18.46 launch gives, and `StackLayout.build_stack_bytes` lays Linux's
+bytes between the stack pointer and that end. There is no band. The
+three rules are `randomize_stack_top` and `setup_arg_pages`
+(`mm/util.c`, `fs/exec.c`) for the end, `create_elf_tables`
+(`fs/binfmt_elf.c`) for the stack pointer, and `mmap_base` with
+`arch_mmap_rnd` (`mm/util.c`) for the base.
 
-The model also builds its own auxiliary vector, with ten entries
-(`StackLayout.auxv_entries`). Linux publishes more entries. Thus a
-program can see a different vector in the model than on a real launch.
-This occurs when the program reads an entry that the model omits, or
-reads the whole vector in sequence. "The auxiliary vector" in "Known
-gaps in precision" names the entries.
+The launch's own facts are therefore premises of each statement:
+whether the launch randomises, the `stack_guard_gap` boot parameter,
+`vm.mmap_rnd_bits`, `CONFIG_RSEQ`, the vector unit's `VLENB`, the
+machine's four cache leaves and which vDSO image the build carries.
+They are fields of `State.KernelBuild`, which is part of the input, so
+both binaries of a pair are launched on one machine by one launcher.
+
+These cases stay outside the model:
+
+- QEMU user mode. It builds another entry block entirely; "Where QEMU
+  user mode differs" below gives it.
+- A kernel whose vDSO image the model does not hold. `State.KernelBuild`
+  names an image, so a statement says nothing about a build whose image
+  is not among them.
+- Sv39 with a large `stack_guard_gap`. `mmap_base` then clamps the gap
+  at `STACK_TOP / 6 * 5`, and Linux's top-down search stops at the
+  stack's guard region instead (`mm/vma.c`), so the vDSO's address and
+  the stack floor can differ from the model's. The proofs use Sv48.
 
 ## Assumptions that the model does not check
 
@@ -312,21 +341,43 @@ not apply.
   the random offset. That base can be below the floor of
   `Run.valid_mmap_base`, and then the model has no start state for that
   launch.
-- `vm.mmap_rnd_bits` is at most 24, or the stack guard gap is at most
-  0x4aba6a2ab000 bytes (about 74.7 TiB; the `stack_guard_gap` boot
-  parameter gives the gap in pages, so this is 0x4aba6a2ab pages). The boot
-  value of `vm.mmap_rnd_bits` is `CONFIG_ARCH_MMAP_RND_BITS`, which is
-  18 to 24 on riscv64. Root can set it to at most 33 under Sv48. With 33
-  bits and a larger guard gap, Linux can put the mmap base below the
-  floor of `Run.valid_mmap_base`. With fewer bits the guard gap must be
-  larger for that (about 106.6 TiB at 25 bits). With the default guard
-  gap (256 pages), 33 bits keep the base in the band. Under these two
-  assumptions the band is exactly the set of bases that Linux gives
-  (`Checks.Cases.MmapBase.sv48_band_is_linux_set`). A guard gap within
-  about 1 GiB of 2^64 bytes wraps the kernel's arithmetic, and the mmap
-  base can then lie above the bottom of the stack. Linux can then place a
-  mapping where the model refuses it (`State.alloc_top`), so a proof says
-  nothing about a process with such a guard gap.
+- The stack guard gap is at most 0x4aba6a2ab000 bytes (about 74.7 TiB;
+  the `stack_guard_gap` boot parameter gives the gap in pages, so this
+  is 0x4aba6a2ab pages). `State.stack_guard_gap_bytes` states the bound
+  by construction, so every value of `State.KernelBuild`'s `kb_guard`
+  names a machine the model describes, with any `vm.mmap_rnd_bits`.
+  Under Sv48 and Sv57, below that bound, `mmap_base` never clamps the
+  gap at `STACK_TOP / 6 * 5`, and the mmap base never falls below the
+  floor of `Run.valid_mmap_base`: with 33 bits and the largest gap the
+  lowest base is exactly `State.mmap_base_min`. A larger gap can put
+  the base below that floor, and the model then has no start state for
+  the launch. A guard gap within about 1 GiB of 2^64 bytes wraps the
+  kernel's arithmetic, and the mmap base can then lie above the bottom
+  of the stack; the bound excludes that too.
+- `execve` loads the binary directly, not through `binfmt_misc` and not
+  as a script. `bprm->have_execfd` is then 0, so the auxv carries no
+  `AT_EXECFD`, `AT_FLAGS` is 0, and the exec file name is the one the
+  caller passed (`fs/exec.c`, `alloc_bprm`).
+- The launch is not a secure exec. The binary has no set-user-id bit,
+  no set-group-id bit and no file capability, and no LSM asks for
+  secure mode (`cap_bprm_creds_from_file` in `security/commoncap.c`,
+  `security/selinux/hooks.c`). `AT_SECURE` is therefore 0. The model
+  also cannot express such a launch: `State.ProcInput` has no effective
+  id, so `State.init_model` derives the effective and saved ids from
+  the real ones.
+- The machine has one view of its caches. `get_cacheinfo`
+  (`arch/riscv/kernel/cacheinfo.c`) reads the CPU that runs the
+  `execve`, and `State.KernelBuild` holds one `State.CacheView`. The
+  kernel's own comment says the interface assumes a homogeneous view.
+- A file system limits each name component, for example to 255 bytes on
+  ext4 and 1024 on FUSE. `Run.valid_execfn` bounds the whole name and
+  does not look at components, so it admits an exec file name that some
+  file system refuses.
+- The file that `AT_EXECFN` names holds the image. On Linux the name
+  resolves to the file `execve` loaded. The model holds the image's
+  segments, not its file, so `State.in_fs` need not hold a file at that
+  name and a program that opens its own `AT_EXECFN` gets the file
+  system's answer.
 
 ## Known gaps in precision
 
@@ -341,7 +392,12 @@ equivalence) can be true of the model and false of Linux.
   makes the choice the same way each time. Also, the source and the target
   can make different choices, as if they ran on different machines.
   "Assumptions that the model does not check" above pins each
-  configuration the model does fix.
+  configuration the model does fix. This holds for the system calls. It
+  does not hold for the start state: the launch's randomisation mode, its
+  guard gap, its `vm.mmap_rnd_bits`, its `CONFIG_RSEQ`, its vector unit,
+  its caches and its vDSO image are fields of `State.KernelBuild`, which
+  the two binaries of a pair share, so there the model does carry a
+  parameter for the machine and both binaries read the same one.
 - **Clock resolution.** For supported non-CPU clock IDs, `clock_getres`
   accepts any positive nanosecond value below one second. Linux returns
   1 ns or a tick-based resolution (`posix_get_hrtimer_res` and
@@ -388,58 +444,35 @@ equivalence) can be true of the model and false of Linux.
   channel still has a reader. A write to stdout or stderr whose reader is
   gone gets a count. Linux raises `SIGPIPE`, which kills the process, or
   answers `EPIPE`.
-- **The auxiliary vector.** The model publishes ten entries
-  (`StackLayout.auxv_entries`). A real kernel also supplies `AT_GID`,
-  `AT_EGID`, `AT_BASE`, `AT_ENTRY`, `AT_FLAGS`, `AT_CLKTCK`, `AT_EXECFN`
-  and, from riscv's `ARCH_DLINFO`, `AT_SYSINFO_EHDR`, the
-  cache-descriptor entries and `AT_MINSIGSTKSZ` (or `AT_IGNORE`), and
-  with `CONFIG_RSEQ` also `AT_RSEQ_FEATURE_SIZE` and `AT_RSEQ_ALIGN`,
-  which this one leaves out. Neither supplies `AT_PLATFORM`, because
-  riscv's `ELF_PLATFORM` is `NULL`
-  (`arch/riscv/include/asm/elf.h`). The 16
-  bytes that `AT_RANDOM` points at are the highest bytes of the image,
-  above the strings, where Linux puts them below the strings
-  (`StackLayout.build_stack_bytes`). A libc reads the vector as a lookup
-  table and sees no difference. A program that walks its own auxv, or
-  that echoes the bytes around the `AT_RANDOM` block, has a modeled trace
-  that its real trace does not match.
-- **Stack floor.** `Run.init_machine_state` maps the entry image up to
-  `Run.entry_page_top` and, below the entry `sp`, the window
-  `[Run.stack_window_lo, sp)`. `Run.stack_window_lo` is
-  `Run.entry_page_top - State.stack_max_size`, so the model counts its own
-  entry image against the 8 MiB stack limit. Linux counts the whole
-  stack VMA against `RLIMIT_STACK`, from its page-aligned top `vm_end`
-  down: `expand_downwards` (`mm/vma.c`, Linux v6.18.46) passes
+- **After a vDSO call.** The model does not run the vDSO's
+  instructions. It applies the exported function's system-call
+  specification in one step, so the caller-saved registers other than
+  `a0`, and the bytes of the frame the call used below `sp`, are the
+  entry's own `StackLayout.ed_vdso` choice. One of those choices is
+  what the real image leaves, so for a statement that must hold at
+  every entry the other choices cost precision only. For a statement
+  with "there is an entry" they can cost soundness, as any extra start
+  state can.
+- **The vvar pages, other fetches in the vDSO text, and a vDSO call
+  that would return `-EFAULT`** are `unmodeled`. The model has no bytes
+  for the vvar pages and does not run the vDSO's code.
+- **Stack floor.** `Run.init_machine_state` lays the entry block from
+  the entry `sp` up to the stack VMA's end `StackLayout.ed_top`, and
+  below `sp` it zero-maps the window `[Run.stack_window_lo, sp)`.
+  `Run.stack_window_lo` is the higher of `ed_top - 8 MiB` and the mmap
+  base plus the stack guard gap. Both are Linux's own floors at entry:
+  `expand_downwards` (`mm/vma.c`, Linux v6.18.46) passes
   `size = vm_end - address` to `acct_stack_growth`, which answers
-  `-ENOMEM` when `size` passes the limit. That VMA holds the whole entry
-  image: `do_execveat_common` (`fs/exec.c`) copies the exec filename and
-  the argv and envp strings into it, `setup_arg_pages` (`fs/exec.c`)
-  gives it its page-aligned top, and `create_elf_tables`
-  (`fs/binfmt_elf.c`) writes `AT_RANDOM`, the auxv, `argc` and the
-  pointers in it. So Linux never grows the stack below `vm_end - 8 MiB`.
-  `vm_end` is at or above `Run.entry_page_top`, and can be pages higher,
-  because the kernel's entry image carries more than the model's: the
-  auxv entries of the bullet above, the exec filename, and the random
-  pad of less than 4 KiB that `create_elf_tables` (`fs/binfmt_elf.c`)
-  takes through `arch_align_stack` (`arch/riscv/kernel/process.c`).
-  The separate call in `setup_arg_pages` adds nothing here: `PAGE_ALIGN`
-  rounds its result back up, so that call moves the top by a whole page
-  or not at all, and the same `stack_shift` moves the entry image with
-  it. The model carries no `vm_end`.
-  Thus the lowest `vm_end - Run.entry_page_top` bytes of the model's
-  window, at most a few pages, are never stack on Linux.
-  An access in that band succeeds in the model and faults on Linux, so
-  a statement about a run whose stack reaches it
-  can be true of the model and false of the real systems, and this one
-  need not compare sets of behaviors: a single-run statement is enough.
-  A program reaches the band only when its stack goes below
-  `vm_end - 8 MiB`, which is at most a few pages above `Run.stack_window_lo`.
-  The depth of the window below `sp` is `8 MiB - (Run.entry_page_top - sp)`,
-  so it moves with the page offset of `sp` over a range of 4080 bytes. A
-  program whose stack reaches a depth in that range faults under some
-  stack addresses and not others, and a proof cannot show it equivalent
-  even to itself. Linux's floor moves over a range of about the same
-  size, through the pad above.
+  `-ENOMEM` when `size` passes `RLIMIT_STACK`, and `expand_downwards`
+  also refuses to grow within `stack_guard_gap` of the mapping below,
+  which at entry is the vDSO text directly below the mmap base. The
+  model carries `ed_top` as part of the entry, so this floor is exact
+  at entry and there is no band.
+  A mapping that the program makes later can raise Linux's floor, and
+  the model's ledger does not raise the stack window with it. That is
+  the residual: a program that maps a page just below its stack and
+  then grows the stack into the guard gap above that mapping faults on
+  Linux where the model answers.
   QEMU user mode has a band of the same kind, for a different reason;
   "Where QEMU user mode differs" above says where the guest stack goes.
 - **A failing store-conditional on a write-only segment.** The model

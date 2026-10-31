@@ -146,51 +146,114 @@ Proof. reflexivity. Qed.
 Example abrt_input_valid : valid_input_abort abrt_input.
 Proof.
   unfold valid_input_abort, abrt_input, valid_argv, valid_envp.
-  cbn [mkProcInput in_argv in_envp in_fs].
+  cbn [mkProcInput in_argv in_envp in_fs in_execfn].
   repeat split; cbn;
     try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
     try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
     try (unfold valid_hwcap; left; reflexivity);
+    (* [Fs.fs_image_real], the FIFTH conjunct: the image is the empty
+       one, with no key to be non-canonical and no key under another,
+       so the boolean computes to [true]. *)
+    try (unfold fs_image_real; vm_compute; reflexivity);
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
   all: try valid_urandom_default.
+  (* [Run.valid_launch]'s first half: the launch name is
+     [State.default_execfn], "a" -- one byte, no NUL -- so it is a name
+     [getname_flags] (fs/namei.c, Linux v6.18.46, commit 1f99e9ab748f)
+     can return, and the first of [Run.valid_execfn]'s three arms
+     applies. *)
+  all: try (unfold valid_execfn, default_execfn, valid_path_name;
+            left; split;
+            [ cbn [length]; lia
+            | cbn [In]; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  (* ... and its second half: this launch is eleven bytes -- the empty
+     argument's NUL, the name and its NUL, and one pointer slot --
+     against the E2BIG limit [bprm_stack_limits] (fs/exec.c) computes. *)
+  all: try (unfold launch_bytes, e2big_limit, default_execfn;
+            cbn [in_argv in_envp in_execfn]; vm_compute; discriminate).
 Qed.
 
-(** The entry is [Checks.Examples.demo_entry], and it is valid here for
-    the reason it is valid there: this image's only segment sits in the
-    first page, so the same break base serves, and the fourth conjunct
-    is decided by [Run.entry_stack_span_bound] from the argv and envp
-    clauses alone — which [Run.valid_input_abort] carries in the same
-    two positions [Run.valid_input] does. *)
+(** The entry is the one [Checks.Examples.demo_entry_of] gives this
+    launch: [Run.launch_entry_va], the placement [execve] itself would
+    compute from the input.  [Run.launch_entry_va_valid] proves every
+    conjunct of [Run.valid_entry] but [Run.valid_brk] from the launch
+    alone, and [Run.valid_brk] is the only one this image can change:
+    its single segment sits in the first page, so the break base
+    [Checks.Examples] uses serves here too.
+
+    THE ENTRY IS A FUNCTION OF THE INPUT rather than a constant, which
+    is what the fifth conjunct of [Run.valid_entry_va]
+    ([Run.entry_launch_ok_va]) forces: the entry stack pointer has to
+    lie in the window [create_elf_tables] (fs/binfmt_elf.c, Linux
+    v6.18.46, commit 1f99e9ab748f) leaves for THAT launch's strings and
+    auxiliary vector, so no one address serves every input.  The
+    quantifier over inputs survives unchanged; only the entry moves
+    with them.  Taking the address size from [State.in_va_size] inside
+    [Checks.Examples.demo_entry_of] is what makes the conclusion
+    [Run.valid_entry] with no rewrite. *)
 Example demo_entry_valid_abrt : forall inp,
-  valid_input_abort inp -> valid_entry abrt_image demo_entry inp.
+  valid_input_abort inp -> valid_entry abrt_image (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_abort_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [abrt_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
-  rewrite Z_to_bv_unsigned, bv_wrap_small
-    by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
-  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  (* Guarded rather than positional: [Run.valid_input_abort] grows a
+     conjunct whenever the input class learns to say something new, and
+     the three clauses this proof needs -- [Run.valid_argv],
+     [Run.valid_envp] and [Run.valid_launch] -- are then found by
+     [assumption] rather than by counting.  [match goal] is syntactic,
+     so [red] is what makes it fire, and [valid_launch] stays folded
+     under it and arrives whole. *)
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  unfold valid_entry, demo_entry_of, abrt_image.
+  apply launch_entry_va_valid; try assumption.
+  unfold valid_brk.
+  repeat split; vm_compute; try reflexivity; try discriminate.
 Qed.
+
+(** The entry this file's RUNS are stepped at: the entry of the input
+    they are run on.  [Checks.Examples.demo_entry] is the entry of that
+    file's own launch, and two launches whose argument vectors differ
+    get different stack pointers, so a fixture names its own. *)
+Definition abrt_entry : ExecEntry := demo_entry_of abrt_input.
+
+Lemma abrt_entry_valid : valid_entry abrt_image abrt_entry abrt_input.
+Proof. exact (demo_entry_valid_abrt _ abrt_input_valid). Qed.
 
 (* =========================================================================
    Walking the run
    ========================================================================= *)
+
+(** THE PLACEMENT IS [abrt_entry]'S, READ OFF IT rather than repeated
+    as literals: the entry's four fields are what [Run.init_config]
+    passes, so the run stated at [abrt_entry] and the states walked
+    below agree whatever placement [Checks.Examples.demo_entry_of]
+    computes for this launch.  [Run.init_machine_state] lays the entry
+    block from [abrt_sp] up to the stack VMA's end
+    [StackLayout.ed_top] of [abrt_draw], so the two have to come from
+    the same entry. *)
+Definition abrt_sp : word := en_sp abrt_entry.
+Definition abrt_brk : word := en_brk abrt_entry.
+Definition abrt_mbase : word := en_mmap_base abrt_entry.
+Definition abrt_draw : EntryDraw := en_draw abrt_entry.
+
+Lemma abrt_entry_fields :
+  abrt_entry = mkEntry abrt_sp abrt_brk abrt_mbase abrt_draw.
+Proof.
+  unfold abrt_sp, abrt_brk, abrt_mbase, abrt_draw. destruct abrt_entry.
+  reflexivity.
+Qed.
 
 (** The states along the first leg, named by their step count, with the
     memory abstracted exactly as [Checks.Omni]'s [wloop_msk] family
     abstracts it: no instruction of this image writes memory, so every
     state on the way carries the initial one's. *)
 Definition abrt_ms0 : machine_state :=
-  init_machine_state abrt_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    demo_draw
-    (in_argv abrt_input) (in_envp abrt_input) (in_uid abrt_input)
-    (in_hwcap abrt_input).
+  init_machine_state abrt_segments 0x100 demo_phdrs abrt_sp abrt_mbase
+    abrt_draw abrt_input.
 Definition abrt_msk (k : nat) : machine_state :=
   match run_steps k abrt_segments abrt_ms0 with
   | Some ms => ms
@@ -200,13 +263,13 @@ Definition abrt_s (k : nat) : machine_state :=
   with_mem (abrt_msk k) (ms_mem abrt_ms0).
 
 Definition abrt_model (lim : Z) : Model :=
-  init_model (segments_reserved abrt_segments) (Z_to_bv 64 0x1000)
-    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) lim abrt_input.
+  init_model (segments_reserved abrt_segments) abrt_brk abrt_mbase abrt_sp
+    lim abrt_input.
 Definition abrt_c (lim : Z) : config := mkCfg (abrt_s 0) (abrt_model lim).
 
 Lemma abrt_config : forall lim,
-  init_config abrt_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw lim abrt_input
+  init_config abrt_segments 0x100 demo_phdrs abrt_sp abrt_brk abrt_mbase
+    abrt_draw lim abrt_input
   = abrt_c lim.
 Proof.
   intros lim. unfold init_config, abrt_c.
@@ -370,10 +433,10 @@ Qed.
     [Equivalence.strong_universal_error_free_T_abort_refuted_by_abort]
     takes as an assumption. *)
 Theorem abrt_dies_by_signal : forall lim,
-  dies_by_signal (run abrt_image lim demo_entry abrt_input).
+  dies_by_signal (run abrt_image lim abrt_entry abrt_input).
 Proof.
   intros lim.
-  cbn [run bh_traces abrt_image demo_entry].
+  rewrite abrt_entry_fields. cbn [run bh_traces abrt_image].
   rewrite abrt_config.
   exists (abrt_trace lim), (Z_to_bv 64 6), (m_fs (abrt_killed_model lim)).
   split.
@@ -394,9 +457,8 @@ Theorem abrt_refutes_error_free_abort :
   ~ strong_universal_error_free_T_abort abrt_image abrt_image.
 Proof.
   apply (strong_universal_error_free_T_abort_refuted_by_abort
-           abrt_image abrt_image demo_entry demo_entry abrt_input
-           (demo_entry_valid_abrt _ abrt_input_valid)
-           (demo_entry_valid_abrt _ abrt_input_valid)
+           abrt_image abrt_image abrt_entry abrt_entry abrt_input
+           abrt_entry_valid abrt_entry_valid
            abrt_input_valid).
   exact (abrt_dies_by_signal source_alloc_limit).
 Qed.
@@ -416,9 +478,8 @@ Lemma abrt_tkill_declined_undeclared :
   check_syscall (sys_input abrt_segments (abrt_t 3) (Z_to_bv 64 130))
     (mkEffect (Z_to_bv 64 0) [] [])
     (with_tid abort_tid
-       (init_model (segments_reserved abrt_segments) (Z_to_bv 64 0x1000)
-          (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000)
-          source_alloc_limit abrt_input_undeclared))
+       (init_model (segments_reserved abrt_segments) abrt_brk abrt_mbase
+          abrt_sp source_alloc_limit abrt_input_undeclared))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -490,7 +551,7 @@ Proof. intros lim. vm_compute. reflexivity. Qed.
     configuration.  [may_fail_cfg] is stated because it is what a task
     gets by saying nothing, not because the wider claim would fail. *)
 Theorem abrt_dies_by_signal_scfg : forall lim,
-  dies_by_signal (run_scfg may_fail_cfg abrt_image lim demo_entry abrt_input).
+  dies_by_signal (run_scfg may_fail_cfg abrt_image lim abrt_entry abrt_input).
 Proof.
   intros lim.
   apply (dies_by_signal_behavior_equiv _ _ (run_scfg_may_fail _ _ _ _)).
@@ -509,9 +570,8 @@ Theorem abrt_refutes_error_free_scfg_abort :
   ~ strong_universal_error_free_T_scfg_abort may_fail_cfg abrt_image abrt_image.
 Proof.
   apply (strong_universal_error_free_T_scfg_abort_refuted_by_abort
-           may_fail_cfg abrt_image abrt_image demo_entry demo_entry abrt_input
-           (demo_entry_valid_abrt _ abrt_input_valid)
-           (demo_entry_valid_abrt _ abrt_input_valid)
+           may_fail_cfg abrt_image abrt_image abrt_entry abrt_entry abrt_input
+           abrt_entry_valid abrt_entry_valid
            abrt_input_valid).
   exact (abrt_dies_by_signal_scfg source_alloc_limit).
 Qed.
@@ -624,32 +684,68 @@ Proof. split; vm_compute; reflexivity. Qed.
 Example abrt_blocked_input_valid : valid_input_abort abrt_blocked_input.
 Proof.
   unfold valid_input_abort, abrt_blocked_input, valid_argv, valid_envp.
-  cbn [mkProcInput in_argv in_envp in_fs].
+  cbn [mkProcInput in_argv in_envp in_fs in_execfn].
   repeat split; cbn;
     try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
     try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
     try (unfold valid_hwcap; left; reflexivity);
+    (* [Fs.fs_image_real], the FIFTH conjunct, as at
+       [abrt_input_valid]: the image is empty. *)
+    try (unfold fs_image_real; vm_compute; reflexivity);
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
   all: try valid_urandom_default.
+  (* [Run.valid_launch], as at [abrt_input_valid]: the launch name is
+     [State.default_execfn], one byte and no NUL, and the launch is
+     eleven bytes against the E2BIG limit [bprm_stack_limits]
+     (fs/exec.c, Linux v6.18.46, commit 1f99e9ab748f) computes.  The
+     blocked mask changes neither half. *)
+  all: try (unfold valid_execfn, default_execfn, valid_path_name;
+            left; split;
+            [ cbn [length]; lia
+            | cbn [In]; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  all: try (unfold launch_bytes, e2big_limit, default_execfn;
+            cbn [in_argv in_envp in_execfn]; vm_compute; discriminate).
 Qed.
 
-(** The entry is [Checks.Examples.demo_entry] again: this segment, too,
-    ends inside the first page. *)
+(** The entry is [Checks.Examples.demo_entry_of]'s again, valid for
+    this image for the reason it is valid for the first one: this
+    segment, too, ends inside the first page, so the same break base
+    serves and [Run.valid_brk] is the only conjunct the image can
+    change.  Quantified over inputs with the entry a function of them,
+    for the reason [demo_entry_valid_abrt] is. *)
 Example demo_entry_valid_abrt_blocked : forall inp,
-  valid_input_abort inp -> valid_entry abrt_blocked demo_entry inp.
+  valid_input_abort inp -> valid_entry abrt_blocked (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_abort_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [abrt_blocked demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
-  rewrite Z_to_bv_unsigned, bv_wrap_small
-    by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
-  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  unfold valid_entry, demo_entry_of, abrt_blocked.
+  apply launch_entry_va_valid; try assumption.
+  unfold valid_brk.
+  repeat split; vm_compute; try reflexivity; try discriminate.
+Qed.
+
+(** The entry the second image's run is stepped at: the entry of the
+    launch it runs on, which is the blocked-mask one. *)
+Definition blk_entry : ExecEntry := demo_entry_of abrt_blocked_input.
+
+Lemma blk_entry_valid : valid_entry abrt_blocked blk_entry abrt_blocked_input.
+Proof. exact (demo_entry_valid_abrt_blocked _ abrt_blocked_input_valid). Qed.
+
+Definition blk_sp : word := en_sp blk_entry.
+Definition blk_brk : word := en_brk blk_entry.
+Definition blk_mbase : word := en_mmap_base blk_entry.
+Definition blk_draw : EntryDraw := en_draw blk_entry.
+
+Lemma blk_entry_fields :
+  blk_entry = mkEntry blk_sp blk_brk blk_mbase blk_draw.
+Proof.
+  unfold blk_sp, blk_brk, blk_mbase, blk_draw. destruct blk_entry.
+  reflexivity.
 Qed.
 
 (** ** The legs between the syscalls
@@ -971,31 +1067,34 @@ Ltac blk_svc :=
     [sigmask_apply] give: [app_mask] and [all_mask] lose SIGKILL's and
     SIGSTOP's bits (1 << 8, 1 << 18). *)
 Definition blk_L0 : machine_state :=
-  init_machine_state abrt_blocked_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    demo_draw
-    (in_argv abrt_blocked_input) (in_envp abrt_blocked_input)
-    (in_uid abrt_blocked_input) (in_hwcap abrt_blocked_input).
+  init_machine_state abrt_blocked_segments 0x100 demo_phdrs blk_sp blk_mbase
+    blk_draw abrt_blocked_input.
 
 Definition blk_m0 (lim : Z) : Model :=
-  init_model (segments_reserved abrt_blocked_segments) (Z_to_bv 64 0x1000)
-    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) lim abrt_blocked_input.
+  init_model (segments_reserved abrt_blocked_segments) blk_brk blk_mbase
+    blk_sp lim abrt_blocked_input.
 Definition blk_c (lim : Z) : config := mkCfg (blk_leg blk_L0 0) (blk_m0 lim).
 
 Lemma blk_config : forall lim,
-  init_config abrt_blocked_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw lim abrt_blocked_input
+  init_config abrt_blocked_segments 0x100 demo_phdrs blk_sp blk_brk
+    blk_mbase blk_draw lim abrt_blocked_input
   = blk_c lim.
 Proof. intros lim. unfold blk_c. rewrite blk_leg_0. reflexivity. Qed.
 
 (** The effects: the old mask written to [set] (eight bytes, 1 << 5),
     the eight bytes of each [sigset_t] the kernel read, and the 24 bytes
-    of the [struct k_sigaction] that [rt_sigaction] read. *)
+    of the [struct k_sigaction] that [rt_sigaction] read.  [set] is the
+    eight bytes below the entry stack pointer, which is where the image
+    puts it with [addi a2, sp, -8], so the address is read off
+    [blk_sp] rather than written out. *)
+Definition blk_set_addr : word := Z_to_bv 64 (bv_unsigned blk_sp - 8).
+
 Definition blk_e2 : SyscallEffect :=
   with_copyins [(Z_to_bv 64 0x190, 8%nat)]
-    (mkEffect (Z_to_bv 64 0) [(Z_to_bv 64 0x7fff7ffffff8, Z_to_le_bytes 8 32)] []).
+    (mkEffect (Z_to_bv 64 0) [(blk_set_addr, Z_to_le_bytes 8 32)] []).
 Definition blk_e0 : SyscallEffect := mkEffect (Z_to_bv 64 0) [] [].
 Definition blk_e4 : SyscallEffect :=
-  with_copyins [(Z_to_bv 64 0x7fff7ffffff8, 8%nat)] (mkEffect (Z_to_bv 64 0) [] []).
+  with_copyins [(blk_set_addr, 8%nat)] (mkEffect (Z_to_bv 64 0) [] []).
 Definition blk_e5 : SyscallEffect :=
   with_copyins [(Z_to_bv 64 0x198, 8%nat)] (mkEffect (Z_to_bv 64 0) [] []).
 Definition blk_e6 : SyscallEffect :=
@@ -1391,18 +1490,20 @@ Qed.
     any value [Kernel.Fork.set_tid_address_spec] allows, and the
     [rt_sigaction] on abort's second path is answered. *)
 Theorem abrt_blocked_error_free : forall lim,
-  error_free (run abrt_blocked lim demo_entry abrt_blocked_input).
+  error_free (run abrt_blocked lim blk_entry abrt_blocked_input).
 Proof.
-  intros lim. unfold error_free. cbn [run bh_errors abrt_blocked demo_entry].
+  intros lim. unfold error_free.
+  rewrite blk_entry_fields. cbn [run bh_errors abrt_blocked].
   rewrite blk_config. apply exec_no_error.
   eapply exec_conseq; [exact (blk_exec lim) |]. intros tr o [H _]. exact H.
 Qed.
 
 (** ... and the run ends where Linux's does: death by SIGABRT. *)
 Theorem abrt_blocked_dies_by_signal : forall lim,
-  dies_by_signal (run abrt_blocked lim demo_entry abrt_blocked_input).
+  dies_by_signal (run abrt_blocked lim blk_entry abrt_blocked_input).
 Proof.
-  intros lim. cbn [run bh_traces abrt_blocked demo_entry]. rewrite blk_config.
+  intros lim. rewrite blk_entry_fields.
+  cbn [run bh_traces abrt_blocked]. rewrite blk_config.
   destruct (exec_realizes _ _ _ (blk_exec lim)) as (tr & o & Hm & Hne & sig & fs & Hin).
   destruct o as [c | c]; [| exfalso; exact (Hne I)].
   destruct (mexec_halt_star _ _ _ _ Hm c eq_refl) as [Hstar _].
