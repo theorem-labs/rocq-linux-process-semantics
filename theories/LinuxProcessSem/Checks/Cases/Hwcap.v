@@ -179,7 +179,7 @@ Example the_default_refuses_a_word_outside_the_pair :
   /\ ~ valid_input (hwcap_input (Z_to_bv 64 0x112C))
   /\ ~ valid_input (hwcap_input (Z_to_bv 64 0x40112D)).
 Proof.
-  repeat split; intros (_ & _ & _ & _ & _ & _ & _ & [H | H] & _ & _);
+  repeat split; intros (_ & _ & _ & _ & _ & _ & _ & _ & [H | H] & _ & _);
     apply (f_equal bv_unsigned) in H; vm_compute in H; discriminate.
 Qed.
 
@@ -361,7 +361,7 @@ Example the_word_declaration_does_not_carry_the_stance :
   ~ valid_input_hwcap_rv64gc (hwcap_abort_input hwcap_rv64gc)
   /\ ~ valid_input_abort_hwcap_rv64gc (hwcap_input hwcap_rv64gc).
 Proof.
-  split; intros (_ & _ & _ & _ & _ & _ & _ & _ & H & _); discriminate H.
+  split; intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & H & _); discriminate H.
 Qed.
 
 (** ** (vi) The budget cells' split lemmas, their shape pinned

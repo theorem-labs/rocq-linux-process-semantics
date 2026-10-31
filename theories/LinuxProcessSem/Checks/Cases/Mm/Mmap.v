@@ -3540,11 +3540,15 @@ Example mmap_noreplace_other_shapes_stay_unmodeled :
       (fun _ => None) (fun _ => None))
     (mkEffect 69632 [] [(69632, 4096)]) one_map_model
   = CheckUnmodeled
+  (* MAP_ANONYMOUS clear is the file-backed path, and fd 3 is not open
+     in this model, so the answer is Linux's -EBADF ([ksys_mmap_pgoff],
+     mm/mmap.c) and the mapping presented here is REFUSED rather than
+     declined. *)
   /\ check_syscall
     (mkInput 222 [69632; 4096; 3; Z_to_bv 64 0x100002; 3; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 69632 [] [(69632, 4096)]) one_map_model
-  = CheckUnmodeled.
+  = CheckReject.
 Proof.
   split; [check_eq | split; [check_eq | split; [check_eq | split;
     [check_eq | split; check_eq]]]].
