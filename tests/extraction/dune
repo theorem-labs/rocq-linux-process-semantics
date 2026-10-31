@@ -1,13 +1,16 @@
-; Extract the verified checker and run the input boundary's checks on the
-; GENERATED OCaml.  This is the only place the build compiles
-; theories/LinuxProcessSem/Checks/Extraction.v, which theories/dune
-; excludes from the batch build because compiling it writes a .ml file as
-; a side effect; here that side effect is the point, and a change that
-; breaks extraction now breaks the build rather than nothing.
+; Extract both OCaml artifacts and run each boundary's checks on the
+; GENERATED code.  This is the only place the build compiles
+; theories/LinuxProcessSem/Checks/Extraction.v and
+; theories/Riscv/Extraction.v, which theories/dune excludes from the
+; batch build because compiling either writes a .ml file as a side
+; effect; here that side effect is the point, and a change that breaks
+; extraction now breaks the build rather than nothing.
 ;
 ; The directory is its own because tests/dune's (rocq.theory) takes every
-; .v beside it, and the copy below is a .v that must not join that theory.
-
+; .v beside it, and the copies below are .v files that must not join that
+; theory.  They are copied under distinct names because they land in one
+; directory; the name of the file decides nothing, the [Extraction]
+; command inside it names its own output.
 (rule
  (target Extraction.v)
  (action
@@ -39,3 +42,33 @@
  (alias default)
  (action
   (run ./checked_input_smoke.exe)))
+
+(rule
+ (target RiscvExtraction.v)
+ (action
+  (copy %{project_root}/theories/Riscv/Extraction.v RiscvExtraction.v)))
+
+(rule
+ (targets
+  riscv_model.ml
+  riscv_model.mli
+  RiscvExtraction.vo
+  RiscvExtraction.glob)
+ (deps
+  RiscvExtraction.v
+  (glob_files_rec %{project_root}/theories/*.vo))
+ (action
+  (run rocq c -R %{project_root}/theories LinuxProcessSemantics
+   RiscvExtraction.v)))
+
+(executable
+ (name checked_isa_smoke)
+ (modules riscv_model checked_isa_smoke)
+ (libraries zarith)
+ (flags
+  (:standard -w -a)))
+
+(rule
+ (alias default)
+ (action
+  (run ./checked_isa_smoke.exe)))
