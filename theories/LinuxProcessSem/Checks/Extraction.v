@@ -83,9 +83,10 @@ Require Extraction.
    [check_syscall_for_run], [init_model], [mkInput], [mkEffectU],
    [mkCopy] and [net_silent] are NOT roots any more: each is reached
    through its checked form, and naming one here would publish a way into
-   the checker that no boundary guards.  (Extraction writes one flat .ml
-   with no .mli, so they are still present in the generated file; the
-   roots are what this tree supports, and what a reader must use.) *)
+   the checker that no boundary guards.  (The generated .mli publishes
+   everything the roots reach, these included, so no choice of roots can
+   hide them; the roots are what this tree supports, and what a reader
+   must use.) *)
 Extraction "syscall_model.ml"
   check_syscall_for_run_checked
   init_model_checked

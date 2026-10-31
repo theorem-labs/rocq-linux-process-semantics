@@ -26,28 +26,35 @@
     (arch/riscv/include/asm/syscall.h, [syscall_set_return_value], Linux
     v6.18.46, commit 1f99e9ab748f), so no kernel produces that answer.)
 
-    WHAT IT DOES.  This file is the one input: every entry point it offers takes the outside world's values as
-    [Z] — plain integers, with no invariant to break — and REFUSES, before
-    the checker runs, any integer that is not in the Rocq type it would have
-    to inhabit.  A refusal is a THIRD answer ([CheckedRefused]), distinct
+    WHAT IT DOES.  This file is the extracted checker's one input
+    boundary.  Every entry point it offers takes the outside world's
+    values as [Z] — plain integers, with no invariant to break — and
+    REFUSES, before the checker runs, any integer that is not in the Rocq
+    type it would have to inhabit.  A refusal is a THIRD answer
+    ([CheckedRefused], and [None] from [init_model_checked]), distinct
     from every verdict: [CheckReject] says the kernel did something the
     model forbids, and a refusal says this is not a kernel observation at
     all.
 
     No value reaches a verdict except through [Z_to_bv_checked], which
     returns the bitvector only when the integer is in range
-    ([Z_to_bv_checked_Some]).  The two components of a [SyscallInput] that
-    are FUNCTIONS in the model — the readable and the writable memory views —
-    are not taken from the caller as functions, because the bytes a function
-    would answer with cannot be checked before it is asked: they are taken
-    as the data every reader already holds (captured byte runs, and the
-    writable ranges), checked byte by byte, and built here.
+    ([Z_to_bv_checked_Some]).  What a [SyscallInput] and a [ProcInput]
+    carry as FUNCTIONS or as INFINITE objects in the model — the readable
+    memory view, the two byte streams, the network queue — is not taken
+    from the caller in that shape, because what such an object would
+    answer with cannot be checked before it is asked: each is taken as
+    the finite data every reader already holds, checked value by value,
+    and built here.  The writable memory view is the exception and says
+    why at [wmem_view]: the model reads it for definedness alone, so it
+    is taken as a predicate, whose [bool] result carries nothing to
+    erase.
 
-    WHAT IT DOES NOT DO.  Extraction writes one flat .ml with no .mli, so
-    the raw constructors ([mkInput], [mkEffectU], [init_model], ...) remain
-    present in the generated file whether or not they are extraction roots:
-    they are reachable from the checked entry points.  The guarantee this
-    file carries is therefore about the SUPPORTED surface — the roots of
+    WHAT IT DOES NOT DO.  Extraction writes a .mli beside the .ml, but it
+    publishes everything the roots reach, [ExecutableSpecs.
+    check_syscall_for_run], [State.init_model] and the [SyscallInput] and
+    [SyscallEffect] record types included: the checked entry points reach
+    them, so no choice of roots can hide them.  The guarantee this file
+    carries is therefore about the SUPPORTED surface — the roots of
     [Checks/Extraction.v] — and that surface offers no way to reach a
     verdict without this boundary. *)
 
