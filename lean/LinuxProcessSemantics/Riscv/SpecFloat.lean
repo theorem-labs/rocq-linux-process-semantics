@@ -21,18 +21,19 @@ Lean core is all it uses.
 The versions this repository builds against, read from
 `rocq-linux-process-semantics-core.opam` (`"rocq-core" {>= "9.2" & < "9.3"}`,
 `"rocq-stdlib" {>= "9.0"}`, `"coq-flocq" {>= "4.2"}`) and resolved in the opam
-switch that builds the Rocq tree on this machine
-(`/home/sami/.opam/bet-b0adcb15`, `.opam-switch/packages`: `rocq-core.9.2.0`,
-`rocq-stdlib.9.2.0`, `coq-flocq.4.2.2`).  The text ported is that switch's
-installed source:
+switch that builds the Rocq tree to `rocq-core.9.2.0`, `rocq-stdlib.9.2.0` and
+`coq-flocq.4.2.2`.  The text ported is that switch's installed source:
 
-- `rocq-stdlib 9.2.0:theories/Floats/SpecFloat.v`
-  (`lib/coq/theories/Floats/SpecFloat.v`)
+- `rocq-core 9.2.0:theories/Corelib/Floats/SpecFloat.v`.  `rocq-stdlib`'s
+  `theories/Floats/SpecFloat.v` is a one-line re-export of it, and the
+  installed file read is `lib/coq/theories/Floats/SpecFloat.v`.
 - `coq-flocq 4.2.2:Flocq/IEEE754/BinarySingleNaN.v` and
   `coq-flocq 4.2.2:Flocq/Calc/Round.v`, `coq-flocq 4.2.2:Flocq/Core/FLT.v`
   (`lib/coq/user-contrib/Flocq/...`)
-- `rocq-stdlib 9.2.0:theories/BinNums/IntDef.v` for the `Z` operations
-  (`Z.div_eucl`, `Z.even`, `Z.div2`, `Z.sqrtrem`, `Z.shiftl`, `Z.log2`).
+- `rocq-core 9.2.0:theories/Corelib/BinNums/IntDef.v` for `Z.div_eucl`,
+  `Z.even`, `Z.div2`, `Z.sqrtrem` and `Z.shiftl`, and
+  `rocq-stdlib 9.2.0:theories/BinInt/BinIntDef.v` for `Z.log2`, which
+  `IntDef.v` does not define.
 
 Line numbers in the docstrings below are those files' lines.
 
@@ -66,8 +67,9 @@ pinning a negative case where the three conventions disagree.
 
 ## Reducibility
 
-`theories/Riscv/FpuTests.v`'s pins are `vm_compute`-and-`reflexivity` in Rocq
-and `by decide`/`by rfl` in the twin, which the Lean KERNEL must discharge.
+`theories/Riscv/FpuTests.v`'s pins are `:= eq_refl` in Rocq, with no tactic at
+all, and `by decide`/`by rfl` in the twin, which the Lean KERNEL must
+discharge.
 A definition elaborated by well-founded recursion does not reduce in the
 kernel, so nothing here is well-founded: every recursion is structural on a
 `Nat`, and the bulk of the arithmetic is `Nat` primitives the kernel evaluates
@@ -310,7 +312,9 @@ def shr_fexp (prec emax m e : Int) (l : location) : shr_record × Int :=
 
 /-- `SpecFloat.v:141-145`: shift a mantissa LEFT to reach the smaller exponent
 `ex'`, and do nothing when `ex'` is not smaller (Rocq matches `Zneg d`, i.e.
-`ex' - ex < 0`, and then `Pos.iter xO mx d` is `mx * 2 ^ d`). -/
+`ex' - ex < 0`, and then `Pos.iter xO mx d` is `mx * 2 ^ d`).  At `mx = 0`,
+which Rocq's `positive` cannot hold, this returns `(0, ex')` or `(0, ex)`, the
+natural extension; no caller passes it. -/
 def shl_align (mx : Nat) (ex ex' : Int) : Nat × Int :=
   if ex' - ex < 0 then (mx * 2 ^ (ex - ex').toNat, ex') else (mx, ex)
 
@@ -499,7 +503,9 @@ def binary_overflow (prec emax : Int) (m : mode) (s : Bool) : spec_float :=
   if overflow_to_inf m s then S754_infinity s
   else S754_finite s (2 ^ prec.toNat - 1) (emax - prec)
 
-/-- `BinarySingleNaN.v:1229-1231`: deliver the rounded datum, or overflow. -/
+/-- `BinarySingleNaN.v:1229-1231`: deliver the rounded datum, or overflow.  At
+`mx = 0`, which Rocq's `positive` cannot hold, this returns
+`S754_finite sx 0 ex`, the natural extension; no caller passes it. -/
 def binary_fit_aux (prec emax : Int) (m : mode) (sx : Bool) (mx : Nat) (ex : Int) :
     spec_float :=
   if ex ≤ emax - prec then S754_finite sx mx ex else binary_overflow prec emax m sx

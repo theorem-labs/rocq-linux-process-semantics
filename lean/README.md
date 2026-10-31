@@ -81,6 +81,7 @@ neither. The twin has nine `divergence:` lines today
 a differing verdict
 (`linux-process-semantics@ff0313ba4f:tools/lean_replay.py:1534,1587-1592`).
 That register is empty at `ff0313ba4f`.
+
 ## What the twin has ported
 
 One line per slice, naming the files and the Rocq commit they are complete

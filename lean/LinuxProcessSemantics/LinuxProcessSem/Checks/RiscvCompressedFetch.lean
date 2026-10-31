@@ -168,6 +168,24 @@ theorem cli_misaligned_step_illegal :
     step cli_segments (st0 cli_segments (Z_to_bv 64 0x101)) = MachineFault := by
   rfl
 
+/-- Lean-only, and the reason the two above are not vacuous.  `cli_segment`
+is two bytes long, so a halfword read at `0x101` leaves the segment and
+would be `none` with no alignment gate at all.  `addi_segment` is four
+bytes, so the halfword at `0x101` is mapped, executable and entirely
+inside the segment, and only the IALIGN=16 gate can refuse it.  Deleting
+that gate from `fetch_tail` turns this pin red; it leaves
+`cli_misaligned_fetch_tail_none` green.  The Rocq file has the same two
+checks over the same two-byte fixture and no such witness
+(`RiscvCompressedFetch.v:25-31,154-159`). -/
+theorem addi_misaligned_fetch_tail_none :
+    fetch_tail addi_segments (Z_to_bv 64 0x101) = none := by
+  decide +kernel
+
+/-- The same for the externally visible step. -/
+theorem addi_misaligned_step_fault :
+    step addi_segments (st0 addi_segments (Z_to_bv 64 0x101)) = MachineFault := by
+  rfl
+
 /- ================================================================= -/
 /- WHY the fetch failed: the model declining vs. the process crashing -/
 /- ================================================================= -/
