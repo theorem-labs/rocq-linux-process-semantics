@@ -1315,8 +1315,8 @@ Lemma cat_omni_strong_equiv_te :
   to_wexit source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp) bufs code ->
   to_wexit target_segs (init_machine_state target_segs apc aph asp amb arnd inp) bufs code ->
   bufs_modeled bufs ->
-  cat_launch source_segs (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-             target_segs (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  cat_launch source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
+             target_segs (init_machine_state target_segs apc aph asp amb arnd inp)
              bufs inp ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
@@ -1369,8 +1369,8 @@ Lemma cat_strong_equiv_te :
   to_wexit source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp) bufs code ->
   to_wexit target_segs (init_machine_state target_segs apc aph asp amb arnd inp) bufs code ->
   bufs_modeled bufs ->
-  cat_launch source_segs (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-             target_segs (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  cat_launch source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
+             target_segs (init_machine_state target_segs apc aph asp amb arnd inp)
              bufs inp ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
