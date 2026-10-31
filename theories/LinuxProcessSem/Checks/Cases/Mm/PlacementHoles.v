@@ -327,3 +327,136 @@ Example vdso_brk_grow_into_the_pair_keeps_the_old_break :
       place_brk_model
     = CheckOk m' evs.
 Proof. vm_compute. eexists; eexists; reflexivity. Qed.
+
+(* =========================================================================
+   The general facts, carrying the fixture
+   ========================================================================= *)
+
+(** WHY THIS SECTION EXISTS.  Everything above is computation: the
+    checker reduces a closed term and the answer is a literal.  That
+    shows the model gives Linux's answer FOR THIS KERNEL BUILD, and it
+    exercises none of the general facts [State] proves about the pair.
+    Until this section those facts — [State.vdso_reserved_above],
+    [State.vdso_reserved_nonzero], [State.vdso_len_page] and
+    [State.vdso_reserved_entry_ok] — had no consumer anywhere in the
+    model: each appeared once, in its own statement.
+
+    A lemma nothing uses has never had to discharge an obligation,
+    which is the one test that exposes a premise no caller can produce
+    or a conclusion that stops short of the fact a caller needs.  The
+    cases below are that test.  They take the general lemmas in
+    [Checks.Placement] — which take [State]'s four — and discharge
+    every premise at this launch by computation.  If a premise were
+    unproducible, this file would not compile.
+
+    They also say what a port must carry.  A port's kernel build is not
+    this fixture's, so a port cannot reduce: it applies the general
+    lemma and owes the room premise, which [place_vdso_room_premise]
+    below names and measures. *)
+
+(** The launch's ledger, in the form the general lemmas take. *)
+Definition place_reserved : list (word * word) :=
+  init_reserved [] (Z_to_bv 64 mmap_base_min) (Z_to_bv 64 sp_window_lo)
+    (m_kernel place_model).
+
+Example place_reserved_is_the_fixture_ledger :
+  vm_reserved (m_vmmaps place_model) = place_reserved.
+Proof. now vm_compute. Qed.
+
+(** THE ROOM PREMISE, MEASURED.  [State.vdso_reserved] emits the pair
+    only when it fits above the first page, and that is the one premise
+    [Checks.Placement.init_reserved_entry_ok] cannot discharge for its
+    caller.  Here the top is 23387528589312 and the pair is 24576
+    bytes, so the premise holds and holds widely. *)
+Example place_vdso_room_premise :
+  (page_size + vdso_len (m_kernel place_model)
+   <= launch_vdso_top (Z_to_bv 64 mmap_base_min) (Z_to_bv 64 sp_window_lo))%Z.
+Proof. now vm_compute. Qed.
+
+Example place_launch_top_in_range :
+  (launch_vdso_top (Z_to_bv 64 mmap_base_min) (Z_to_bv 64 sp_window_lo)
+   < two_pow_64)%Z.
+Proof. now vm_compute. Qed.
+
+(** NO ENTRY OF THE LAUNCH'S LEDGER IS ZERO WIDTH, by the general
+    lemma rather than by reducing the list.  An entry of zero width
+    passes [State.region_free] over a range it holds no byte of, which
+    is how a grant could be certified on top of the vDSO. *)
+Example place_ledger_entries_nonzero : entries_nonzero place_reserved.
+Proof.
+  unfold place_reserved. apply init_reserved_nonzero.
+  - exact entries_nonzero_nil.
+  - exact place_launch_top_in_range.
+Qed.
+
+(** EVERY ENTRY NAMES A BYTE AND STARTS AND ENDS ON A PAGE, again by
+    the general lemma.  The image's own reservations are empty here, so
+    the whole content of the conclusion comes from the pair. *)
+Example place_ledger_entry_ok : forall a n,
+  In (a, n) place_reserved ->
+  (0 < bv_unsigned n)%Z /\ (bv_unsigned a mod page_size = 0)%Z
+  /\ (bv_unsigned n mod page_size = 0)%Z.
+Proof.
+  intros a n Hin. unfold place_reserved in Hin.
+  assert (Hres : forall b m, In (b, m) (@nil (word * word)) ->
+            (0 < bv_unsigned m)%Z /\ (bv_unsigned b mod page_size = 0)%Z
+            /\ (bv_unsigned m mod page_size = 0)%Z)
+    by (intros b m []).
+  destruct (init_reserved_entry_ok [] (Z_to_bv 64 mmap_base_min)
+              (Z_to_bv 64 sp_window_lo) (m_kernel place_model) a n
+              place_vdso_room_premise place_launch_top_in_range Hres Hin)
+    as (H1 & H2 & H3 & _).
+  repeat split; assumption.
+Qed.
+
+(** EVERY ENTRY IS THE IMAGE'S OR LIES IN THE PAIR'S HULL.  The image
+    is empty here, so this says the ledger IS the pair's hull. *)
+Example place_ledger_entry_place : forall a n,
+  In (a, n) place_reserved ->
+  (launch_vdso_top (Z_to_bv 64 mmap_base_min) (Z_to_bv 64 sp_window_lo)
+     - vdso_len (m_kernel place_model) <= bv_unsigned a)%Z
+  /\ (bv_unsigned a + bv_unsigned n
+      <= launch_vdso_top (Z_to_bv 64 mmap_base_min)
+           (Z_to_bv 64 sp_window_lo))%Z.
+Proof.
+  intros a n Hin. unfold place_reserved in Hin.
+  destruct (init_reserved_entry_place [] (Z_to_bv 64 mmap_base_min)
+              (Z_to_bv 64 sp_window_lo) (m_kernel place_model) a n
+              place_launch_top_in_range Hin) as [[] | Hhull].
+  exact Hhull.
+Qed.
+
+(** THE GRANT THE RULE CHOOSES MISSES THE PAIR, by the general lemma
+    and not by reduction.  [place_first_grant_is_under_the_vdso] above
+    COMPUTES the address; this DERIVES the same separation from
+    [Checks.Placement.linux_place_misses_vdso], whose premises are the
+    ledger split and the checker's own test.  The two together are the
+    point: the computed answer and the general argument agree at the
+    one state where both can be run. *)
+Example place_ledger_splits :
+  vm_reserved (m_vmmaps place_model)
+  = [] ++ vdso_reserved (m_kernel place_model)
+            (vdso_top (m_vmmaps place_model)).
+Proof. now vm_compute. Qed.
+
+Example place_first_grant_is_chosen :
+  linux_place_is (m_vmmaps place_model) false (Z_to_bv 64 0) 4096
+    (Z_to_bv 64 23387528560640) = true.
+Proof. now vm_compute. Qed.
+
+Example place_first_grant_misses_the_pair : forall a n,
+  In (a, n) (vdso_reserved (m_kernel place_model)
+               (vdso_top (m_vmmaps place_model))) ->
+  (23387528560640 + 4096 <= bv_unsigned a)%Z
+  \/ (bv_unsigned a + bv_unsigned n <= 23387528560640)%Z.
+Proof.
+  intros a n Hin.
+  assert (Hr : bv_unsigned (Z_to_bv 64 23387528560640) = 23387528560640%Z)
+    by now vm_compute.
+  rewrite <- Hr.
+  apply (linux_place_misses_vdso (m_vmmaps place_model) false (Z_to_bv 64 0)
+           4096 (Z_to_bv 64 23387528560640) (m_kernel place_model) [] a n);
+    [ now vm_compute | now vm_compute | now vm_compute
+    | exact place_ledger_splits | exact place_first_grant_is_chosen
+    | exact Hin ].
+Qed.
