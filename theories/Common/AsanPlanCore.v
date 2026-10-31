@@ -57,7 +57,7 @@
     [KFill] cases are everywhere (treated
     like KZero); [summary_fill] emits [KFill] for nonzero fill bytes. *)
 
-(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)); AT_HWCAP is the auxv's fourth pair (10 pairs / 20 words, auxv_size 160); the mapped image is [Run.entry_stack_image] (block ++ page slack). *)
+(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 29 pairs / 464 bytes ([StackLayout.auxv_size] under CONFIG_RSEQ) and AT_HWCAP is its eleventh pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
 From Stdlib Require Import ZArith NArith List Lia Bool FunctionalExtensionality.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType State Run.
@@ -3146,25 +3146,128 @@ Definition V_S1 : nat := 0.     (** sp / 32768 *)
 Definition V_ARGC : nat := 1.
 Definition V_ENVC : nat := 2.
 Definition V_L0 : nat := 3.     (** strlen(argv[0]) *)
-Definition V_W : nat := 4.      (** (string bytes + padding) / 8 *)
+Definition V_W : nat := 4.      (** [StackLayout.block_pad_len]: the bytes
+                                    [arch_align_stack] (arch/riscv/kernel/process.c,
+                                    Linux v6.18.46, commit 1f99e9ab748f) left between
+                                    the AT_RANDOM block and argv[0]'s first byte.
+                                    It WAS (string bytes + padding) / 8, when the
+                                    strings sat below the random bytes. *)
 Definition V_BRK : nat := 5.    (** initial break / 4096 *)
 Definition V_S2 : nat := 6.     (** (sp mod 32768) / 16, in [0, 2047] *)
 Definition V_L1 : nat := 7.     (** strlen(argv[1]) when argc >= 2 (else 0) *)
 Definition V_UID : nat := 8.    (** the launching uid (auxv AT_UID = AT_EUID value) *)
+Definition V_G : nat := 9.      (** [StackLayout.block_items argv envp mod 2]: the
+                                    8-byte gap [STACK_ROUND] (fs/binfmt_elf.c,
+                                    [create_elf_tables]) clears below the AT_RANDOM
+                                    block so that it lands 16-aligned.  No linear form
+                                    over argc and envc can spell "mod 2", so the gap
+                                    is its own variable. *)
+
+(** The auxv's size in bytes, as a literal so the expressions below stay in
+    the executor's normal form.  464 is [StackLayout.auxv_size] with
+    CONFIG_RSEQ ON: 29 entries of 16 bytes.  WITHOUT it the vector is 27
+    entries and 432 bytes, and every address above the auxv in a plan built
+    on this literal is 32 bytes out.
+
+    [AUXSZ_of] is the tie to the model and it reads THE RUN'S OWN kernel
+    build, under an explicit hypothesis.  That is the point of its shape: a
+    consumer that wants the literal must discharge
+    [kb_rseq (in_kernel inp) = true] for the input its plan is about, and a
+    fixture that declares the flag the other way gets a FAILED HYPOTHESIS
+    rather than a silently wrong address.
+
+    [AUXSZ_eq] below is the special case for [State.default_kernel], which is
+    what the thirteen-place [State.mkProcInput] fills in, and it is kept
+    because [AsanInit]'s own input is built that way.  It is NOT the general
+    tie: it says 464 is the size at the DEFAULT build, and it stays true
+    whatever a fixture declares — which is exactly why it cannot be the
+    guard.  [Run.valid_input] constrains the kernel build not at all, so
+    nothing but [AUXSZ_of]'s hypothesis stands between a
+    [State.mkProcInput_full] fixture with the flag off and a plan whose
+    addresses are wrong.
+
+    WHAT THE HYPOTHESIS DOES NOT COVER: the literal itself. [AUXSZ] is a
+    [Definition] and any file may unfold it without going through either
+    lemma.  The guard binds a consumer that RELATES the plan to a run — the
+    [e_atrandom], [e_str0] and [e_atr8] forms below, and every soundness
+    result that reads them against [Run.entry_stack_image] — because those
+    are the only places where being wrong about a run is possible.  A reader
+    who wants the number and nothing else is not making a claim about a
+    launch. *)
+Definition AUXSZ : Z := 464.
+
+Lemma AUXSZ_of : forall inp,
+  kb_rseq (in_kernel inp) = true ->
+  AUXSZ = Z.of_nat (StackLayout.auxv_size (kb_rseq (in_kernel inp))).
+Proof. intros inp H. rewrite H. vm_compute. reflexivity. Qed.
+
+(** The size at the build the positional constructor declares. *)
+Lemma AUXSZ_eq : AUXSZ = Z.of_nat (StackLayout.auxv_size (kb_rseq default_kernel)).
+Proof. vm_compute. reflexivity. Qed.
+
+(** The flag is the fact and the constructor is only the mechanism: an input
+    built by the thirteen-place [State.mkProcInput] carries
+    [State.default_kernel], whose flag is on, so such a fixture discharges
+    [AUXSZ_of]'s hypothesis by computation. *)
+Lemma kb_rseq_mkProcInput : forall argv envp fs stdin uid gid groups net
+    nofile sigmask hwcap abort va,
+  kb_rseq (in_kernel (mkProcInput argv envp fs stdin uid gid groups net
+                        nofile sigmask hwcap abort va)) = true.
+Proof. reflexivity. Qed.
+
+(** THE PAIR THAT BITES.  The admitted half: the default fixture discharges
+    the hypothesis and 464 is its auxv size.  The refused half: the same
+    fixture through [State.mkProcInput_full] with CONFIG_RSEQ declared OFF
+    has a 432-byte vector, so the hypothesis is false of it AND the literal
+    is wrong by 32 bytes for it.  Without the second half the first shows
+    only that the guard admits something, not that it refuses anything. *)
+Example auxsz_admits_the_default_build :
+  AUXSZ = Z.of_nat (StackLayout.auxv_size
+                      (kb_rseq (in_kernel
+                        (mkProcInput [[]] [] [] IEof (Z_to_bv 64 1000)
+                           (Z_to_bv 64 1000) [] net_silent default_nofile
+                           (Z_to_bv 64 0) StackLayout.hwcap_rv64gc false Sv48)))).
+Proof.
+  apply AUXSZ_of. apply kb_rseq_mkProcInput.
+Qed.
+
+Definition auxsz_rseq_off_input : ProcInput :=
+  mkProcInput_full [[]] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
+    net_silent default_nofile (Z_to_bv 64 0) StackLayout.hwcap_rv64gc false
+    Sv48 default_urandom []
+    (mkKernelBuild false 1%N true 256%N 0%N false 0%N cache_view_absent)
+    default_execfn.
+
+Example auxsz_refuses_a_build_without_rseq :
+  kb_rseq (in_kernel auxsz_rseq_off_input) = false
+  /\ Z.of_nat (StackLayout.auxv_size (kb_rseq (in_kernel auxsz_rseq_off_input)))
+     = 432%Z
+  /\ AUXSZ <> Z.of_nat (StackLayout.auxv_size
+                          (kb_rseq (in_kernel auxsz_rseq_off_input))).
+Proof. repeat split; vm_compute; discriminate. Qed.
 
 (** sp = 32768*s1 + 16*s2 (two variables so that the stack-shadow code's
     case split on sp mod 32 KiB is a PSplit on s2, F3) *)
 Definition e_sp0 : expr := eadd (escale 32768 (EVar V_S1)) (escale 16 (EVar V_S2)).
-(** envp = sp0 + 8*argc + 16 ; auxv = envp + 8*envc + 8 ; strings = auxv + 160 (10 auxv pairs incl. AT_HWCAP) *)
+(** Linux's block, bottom to top ([StackLayout.build_stack_bytes]):
+      envp     = sp0 + 8*argc + 16          (argc, the argv pointers, their NULL)
+      auxv     = envp + 8*envc + 8          (the envp pointers and their NULL)
+      atrandom = auxv + AUXSZ + 8*g         (the auxv, then [STACK_ROUND]'s gap)
+      str0     = atrandom + 16 + pad        (the sixteen random bytes, then the
+                                             [arch_align_stack] pad)
+    The strings are ABOVE the random bytes now, not below them: [create_elf_tables]
+    lays the vector down from the random bytes, which sit just under the strings
+    [copy_strings] already put at the top of the stack VMA (fs/exec.c, fs/binfmt_elf.c,
+    Linux v6.18.46, commit 1f99e9ab748f). *)
 Definition e_envp : expr := eadd e_sp0 (eadd (escale 8 (EVar V_ARGC)) (ELit 16)).
 Definition e_auxv : expr := eadd e_envp (eadd (escale 8 (EVar V_ENVC)) (ELit 8)).
-Definition e_str0 : expr := eaddz e_auxv 160.
+Definition e_atrandom : expr := eadd (eaddz e_auxv AUXSZ) (escale 8 (EVar V_G)).
+Definition e_str0 : expr := eadd (eaddz e_atrandom 16) (EVar V_W).
 Definition e_str1 : expr := eadd e_str0 (eaddz (EVar V_L0) 1).
-Definition e_atrandom : expr := eadd e_str0 (escale 8 (EVar V_W)).
-(** (e_atrandom - 184) / 8 as a linear form (the initial knowledge bounds it:
+(** (e_atrandom - 24 - AUXSZ) / 8 as a linear form (the initial knowledge bounds it:
     the "sum fact" that bounds shadow addresses of the argument block) *)
 Definition e_atr8 : expr :=
-  eadd (eadd (escale 4096 (EVar V_S1)) (escale 2 (EVar V_S2))) (eadd (EVar V_ARGC) (eadd (EVar V_ENVC) (EVar V_W))).
+  eadd (eadd (escale 4096 (EVar V_S1)) (escale 2 (EVar V_S2))) (eadd (EVar V_ARGC) (eadd (EVar V_ENVC) (EVar V_G))).
 
 (** the word at sp0+16 for EVERY argc: argv[1] (= argv[0] + L0 + 1) when
     argc >= 2, the argv NULL terminator when argc = 1 — spelled
@@ -3740,7 +3843,7 @@ End WithSegs.
 
 (** Brk ASLR window [State.brk_aslr_max] and the initial-variable count. *)
 Definition BRK_ASLR : Z := 0x80000000.
-Definition NX0 : nat := 9.   (** includes V_UID *)
+Definition NX0 : nat := 10.   (** includes V_UID and V_G *)
 
 (** the 16 AT_RANDOM bytes are a per-run kernel draw
     ([ed_random] of [Run.en_draw], a [StackLayout.EntryDraw]).  The FAITHFUL initial knowledge reads them as byte string [K_RND], bound to
@@ -3760,23 +3863,38 @@ Definition auxw (i : Z) (ty : Z) (v : expr) : list kentry :=
 (** What the checker knows at [_start] (justified by AsanInit.init_cs_ok):
     ranges of the initial variables and the sum facts (most specific first),
     the zero-filled writable window below sp (6144513 bytes, [StoreOk.stack_window_depth]:
-    the 8 MiB less [StoreOk.stack_window_reach], a bound on the page-rounded entry image), argc / argv[0] / the sp0+16 word,
-    the 20 auxv words (AT_UID/AT_EUID = EVar V_UID; AT_HWCAP = the hwcap word), the AT_RANDOM block ([atr]: the faithful byte-string
+    the 8 MiB less [StoreOk.stack_window_reach], a bound on the entry image), argc / argv[0] / the sp0+16 word,
+    nine of the 29 auxv pairs (AT_UID/AT_EUID = EVar V_UID), the AT_RANDOM block ([atr]: the faithful byte-string
     entry, or the zero entry), the image hull with no
-    overlay and its writable window. *)
+    overlay and its writable window.
+
+    The pair INDICES are [auxv_entries]' order (StackLayout.v): ARCH_DLINFO's ten
+    (AT_SYSINFO_EHDR, the eight cache words, AT_MINSIGSTKSZ) come first, because
+    [create_elf_tables] expands ARCH_DLINFO before its own entries
+    (fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f).  AT_NULL is pair 28
+    under CONFIG_RSEQ, which [State.default_kernel] declares.
+
+    [KRange (EVar V_W) 0 4110]: [arch_align_stack] subtracts [r] in [0, 4095] and
+    then clears the low four bits, so the pad it leaves is [r] plus a remainder
+    below 16 ([Run.launch_sp_lo] / [Run.launch_sp_hi]).
+    [KRange e_atr8 .. 0xFFFFFFFFFC1]: [e_atr8] is [(at_random - 24 - AUXSZ) / 8] and
+    the sixteen random bytes end at or below 2^47, so it is at most
+    (2^47 - 16 - 24 - 464) / 8.  It WAS 0xFFFFFFFFFE9, with a 160-byte auxv and no gap. *)
 Definition init_kn_with (atr : kentry) (A : atable) : list kentry :=
   [KRange (EVar V_S1) 0xFFFF0000 0xFFFFFFFF; KRange (EVar V_S2) 0 2047;
-   KRange (eaddz e_atrandom 16) 0x7fff800000c0 0x800000000000; KRange e_atr8 0xFFFF0000001 0xFFFFFFFFFE9;
+   KRange (eaddz e_atrandom 16) 0x7fff800000c0 0x800000000000; KRange e_atr8 0xFFFF0000001 0xFFFFFFFFFC1;
    KRange e_sp0 0x7fff80000000 0x7fffffffff40;
    KRange (eadd (escale 4096 (EVar V_S1)) (escale 2 (EVar V_S2))) 0xFFFF0000000 0xFFFFFFFFFE8;
    KRange (EVar V_ARGC) 1 1024; KRange (EVar V_ENVC) 0 256; KRange (EVar V_L0) 0 131071; KRange (EVar V_L1) 0 131071;
-   KRange (EVar V_UID) 0 0xFFFFFFFE;
-   KRange (EVar V_W) 0 280000; KRange (EVar V_BRK) (img_hi A / 4096) ((img_hi A + BRK_ASLR) / 4096);
+   KRange (EVar V_UID) 0 0xFFFFFFFE; KRange (EVar V_G) 0 1;
+   KRange (EVar V_W) 0 4110; KRange (EVar V_BRK) (img_hi A / 4096) ((img_hi A + BRK_ASLR) / 4096);
    KWr (SA e_sp0 (-6144513)) (ELit 6144513); KZero (SA e_sp0 (-6144513)) (ELit 6144513);
    KWord (SA e_sp0 0) 8 (EVar V_ARGC); KWord (SA e_sp0 8) 8 e_str0; kw_argv1 e_argv1w]
-  (* pair 3 is (AT_HWCAP = 16, the run's hwcap word) — not claimed (no plan variable denotes it); pairs 4..9 follow *)
-  ++ auxw 0 3 (ELit (ph_addr_z A)) ++ auxw 1 4 (ELit (ph_ent_z A)) ++ auxw 2 5 (ELit (ph_num_z A)) ++ auxw 4 6 (ELit 4096)
-  ++ auxw 5 11 (EVar V_UID) ++ auxw 6 12 (EVar V_UID) ++ auxw 7 23 (ELit 0) ++ auxw 8 25 e_atrandom ++ auxw 9 0 (ELit 0)
+  (* not claimed, because no plan variable denotes the value: ARCH_DLINFO's pairs 0..9,
+     AT_HWCAP (10), AT_CLKTCK (12), AT_BASE (16), AT_FLAGS (17), AT_ENTRY (18),
+     AT_GID/AT_EGID (21, 22), AT_EXECFN (25) and the CONFIG_RSEQ pair (26, 27) *)
+  ++ auxw 13 3 (ELit (ph_addr_z A)) ++ auxw 14 4 (ELit (ph_ent_z A)) ++ auxw 15 5 (ELit (ph_num_z A)) ++ auxw 11 6 (ELit 4096)
+  ++ auxw 19 11 (EVar V_UID) ++ auxw 20 12 (EVar V_UID) ++ auxw 23 23 (ELit 0) ++ auxw 24 25 e_atrandom ++ auxw 28 0 (ELit 0)
   ++ [atr;
       KImg (img_lo A) (img_hi A); KWr (SA (ELit 0) (rw_lo A)) (ELit (rw_len A))].
 
@@ -3833,7 +3951,7 @@ Definition init_acs_of_zero (A : atable) (CEIL : Z) : acs := init_acs_of_with (i
     (their address +4), musl memset 0x116934 / memcpy 0x116530 (their address -0xf18), __init_libc
     env-scan loop 0x10d5e4 (exit 0x10d5f0), progname scan 0x10d6a8 (exit 0x10d6b4). *)
 Definition ASAN : atable :=
-  {| img_lo := 0x10000; img_hi := 0x671000; n_res := 4; n_resx := 0; p_resx := 0; shadow_off := 0x7fff8000;
+  {| img_lo := 0x10000; img_hi := 0x671000; n_res := 4; n_resx := 2; p_resx := 20; shadow_off := 0x7fff8000;
      a_entry := 0x4ba64; rw_lo := 0x142000; rw_len := 0x52f000; ph_addr_z := 0x10040; ph_ent_z := 56; ph_num_z := 11;
      x_imemset := 0xe1ea4; x_imemcpy := 0xe1e28; x_memset := 0x116934; x_memcpy := 0x116530; x_memiszero := 0xe2508;
      x_istrncpy := 0xe23b8; x_sealed := 0x1205f; x_popfree := 0x52a70;
@@ -3850,7 +3968,7 @@ Definition asan_init (CEIL : Z) : acs := init_acs_of ASAN CEIL.
     for everything below pni_sniff_header (0x1414dc); same segment layout
     (not confirmed; data delta assumed 0). *)
 Definition BOTH : atable :=
-  {| img_lo := 0x10000; img_hi := 0x671000; n_res := 4; n_resx := 0; p_resx := 0; shadow_off := 0x7fff8000;
+  {| img_lo := 0x10000; img_hi := 0x671000; n_res := 4; n_resx := 2; p_resx := 20; shadow_off := 0x7fff8000;
      a_entry := 0x4ba54; rw_lo := 0x142000; rw_len := 0x52f000; ph_addr_z := 0x10040; ph_ent_z := 56; ph_num_z := 11;
      x_imemset := 0xe1e94; x_imemcpy := 0xe1e18; x_memset := 0x116924; x_memcpy := 0x116520; x_memiszero := 0xe24f8;
      x_istrncpy := 0xe23a8; x_sealed := 0x1205f; x_popfree := 0x52a60;

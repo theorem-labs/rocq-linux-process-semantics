@@ -122,11 +122,14 @@ Definition wit_mmap_base : word := Z_to_bv 64 mmap_base_min.
     zero, which is below [State.mmap_base_min]; this fixes it at the
     admissible value instead and is otherwise that same constructor.
 
-    Its reserved list is [State.init_reserved]'s, not [wit_reserved]:
-    since the placement change, [init_model] puts the vdso/vvar pair
-    the kernel installed at [execve] into [vm_reserved] beside the
-    image, and every state in this walk is reached from [wit_s0] by
-    steps that leave [vm_reserved] alone. *)
+    THE RESERVED LIST IS [State.init_reserved], not [wit_reserved]
+    alone.  [State.init_model] reserves the image AND the vdso/vvar pair
+    [execve] installs above it ([setup_rt_sigreturn_trampoline] and
+    [_install_special_mapping], arch/riscv/kernel/vdso.c, Linux
+    v6.18.46, commit 1f99e9ab748f), placed at the ledger's [vdso_top].
+    No step below touches that pair, so every [wit_sN] has to carry it
+    too or the expected model would differ from the one the checker
+    hands back in a field no step wrote. *)
 Definition wit_vm (maps : list (word * word)) (start_brk brk : word)
     (limit : Z) : VmMaps :=
   mkVmMapsFull

@@ -194,9 +194,8 @@ Theorem undecodable_image_refutes_halts_allowed : forall S,
 Proof.
   intros S.
   apply (halts_allowed_T_refuted_by_error S undecodable_image demo_entry
-           (mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-              default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48)).
-  - exact (demo_entry_valid_undecodable _ demo_input_valid).
+           demo_proc_input).
+  - exact (demo_entry_valid_undecodable demo_proc_input demo_input_valid).
   - exact demo_input_valid.
   - apply run_unmodeled_errors,
       run_of_undecodable_image_is_unmodeled_at_demo_entry.
@@ -210,11 +209,10 @@ Theorem undecodable_image_refutes_halts_allowed_forced_only : forall S,
 Proof.
   intros S H.
   apply (must_exit_in_scfg_refuted_by_error forced_only_cfg S undecodable_image
-           source_alloc_limit demo_entry
-           (mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-              default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48)).
+           source_alloc_limit demo_entry demo_proc_input).
   - apply run_scfg_unmodeled_errors.
-    cbn [run_scfg bh_unmodeled undecodable_image demo_entry]. unfold init_config.
+    rewrite demo_entry_fields.
+    cbn [run_scfg bh_unmodeled undecodable_image]. unfold init_config.
     match goal with
     | |- reaches_unmodeled_cfg _ _ ?c => exists [], c
     end.
@@ -225,9 +223,9 @@ Proof.
     | |- mi_account_step ?segs ?ms ?model = _ =>
         rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
     end.
-    cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
     rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
-  - apply H; [exact (demo_entry_valid_undecodable _ demo_input_valid)
+  - apply H; [exact (demo_entry_valid_undecodable demo_proc_input
+                       demo_input_valid)
             | exact demo_input_valid].
 Qed.
 
@@ -236,12 +234,20 @@ Qed.
    ========================================================================= *)
 
 (** The killed run of [Checks.AbortWitness], in the shape
-    [MustExit.must_exit_in_refuted_by_kill] takes. *)
+    [MustExit.must_exit_in_refuted_by_kill] takes.
+
+    The entry is [Checks.AbortWitness.abrt_entry], not
+    [Checks.Examples.demo_entry]: an entry is a function of its input
+    now ([Run.entry_launch_ok_va] ties the stack pointer to the
+    lengths of THAT input's strings, [create_elf_tables],
+    fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f), and this
+    run is on [abrt_input], whose argv differs from
+    [demo_proc_input]'s. *)
 Lemma abrt_run_reaches_killed : forall lim,
-  run_reaches_killed abrt_image lim demo_entry abrt_input.
+  run_reaches_killed abrt_image lim abrt_entry abrt_input.
 Proof.
-  intros lim. cbn [run_reaches_killed abrt_image demo_entry].
-  rewrite abrt_config.
+  intros lim. rewrite abrt_entry_fields.
+  cbn [run_reaches_killed abrt_image]. rewrite abrt_config.
   exists (abrt_trace lim), (mkCfg (abrt_t 3) (abrt_killed_model lim)),
     (Z_to_bv 64 6).
   split; [exact (abrt_star lim) |].
@@ -257,10 +263,10 @@ Qed.
     the signal.  So "halts with an allowed status" really does mean
     [exit_group] and not "stops running". *)
 Theorem abrt_refutes_must_exit_in : forall S lim,
-  ~ must_exit_in S abrt_image lim demo_entry abrt_input.
+  ~ must_exit_in S abrt_image lim abrt_entry abrt_input.
 Proof.
   intros S lim.
-  exact (must_exit_in_refuted_by_kill S abrt_image lim demo_entry abrt_input
+  exact (must_exit_in_refuted_by_kill S abrt_image lim abrt_entry abrt_input
            (abrt_run_reaches_killed lim)).
 Qed.
 
@@ -350,7 +356,8 @@ Qed.
 Lemma exit1_must_exit_reject : forall lim,
   must_exit_with verdict_reject exit1_image lim demo_entry demo_proc_input.
 Proof.
-  intros lim. cbn [must_exit_with exit1_image demo_entry]. unfold init_config.
+  intros lim. rewrite demo_entry_fields.
+  cbn [must_exit_with exit1_image]. unfold init_config.
   apply (exits_c_must_exit_at _ _ 8); [reflexivity | reflexivity |].
   vm_compute. reflexivity.
 Qed.
@@ -366,25 +373,25 @@ Qed.
     The [Run.star] comes from [MustExit.must_exit_at_realizes], which is
     the file's own non-vacuity guard used as a tool: the guard says the
     predicate really produces an exit, and that exit is what the
-    refutation needs a witness of. *)
+    refutation needs a witness of.  Its halted-field premise is proved
+    in place rather than asserted at a written-out configuration:
+    [Checks.Examples.demo_entry] is built by [Run.launch_entry_va] now,
+    so its four fields are that file's to move and nothing here repeats
+    them. *)
 Theorem exit1_refutes_halts_allowed_zero :
   ~ halts_allowed_T [verdict_accept] exit1_image.
 Proof.
   pose proof (exit1_must_exit_reject source_alloc_limit) as Hme.
-  cbn [must_exit_with exit1_image demo_entry] in Hme.
-  assert (Hnone : m_halted
-                    (cfg_model (init_config exit1_segments 0x100 demo_phdrs
-                       (Z_to_bv 64 0x7fff80000000) (Z_to_bv 64 0x1000)
-                       (Z_to_bv 64 mmap_base_max) demo_draw
-                       source_alloc_limit demo_proc_input))
-                  = None)
-    by (cbn [init_config cfg_model]; reflexivity).
-  destruct (must_exit_at_realizes _ _ _ Hme Hnone) as (tr & fs & c' & Hstar & Hh).
+  rewrite demo_entry_fields in Hme.
+  cbn [must_exit_with exit1_image] in Hme.
+  destruct (must_exit_at_realizes _ _ _ Hme
+              ltac:(cbn [init_config cfg_model]; reflexivity))
+    as (tr & fs & c' & Hstar & Hh).
   apply (halts_allowed_T_refuted_by_wrong_status _ exit1_image demo_entry
            demo_proc_input (tr ++ [ExitEv verdict_reject fs]) c' verdict_reject).
-  - apply demo_entry_valid_exit1. exact demo_input_valid.
+  - exact (demo_entry_valid_exit1 demo_proc_input demo_input_valid).
   - exact demo_input_valid.
-  - cbn [exit1_image demo_entry]. exact Hstar.
+  - rewrite demo_entry_fields. cbn [exit1_image]. exact Hstar.
   - exact Hh.
   - intros Hin. apply In_status_allowed in Hin. vm_compute in Hin. discriminate.
 Qed.

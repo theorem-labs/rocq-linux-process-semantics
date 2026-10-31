@@ -637,6 +637,18 @@ Proof. split; check_eq. Qed.
     v6.18.46, commit 1f99e9ab748f).  The example is about the two
     ledgers, not about the search; the companion below pins what the
     search does with no hint. *)
+(** THE RESERVED FIELD IS NOT [[]] in the expected ledgers below that
+    sit over a RAW [State.init_model] base.  [init_model] seeds
+    [vm_reserved] with [State.init_reserved], which appends the
+    kernel's own vvar and vDSO VMAs to the image:
+    [__setup_additional_pages] (arch/riscv/kernel/vdso.c, Linux
+    v6.18.46, commit 1f99e9ab748f) maps that pair directly below the
+    mmap base before the process runs.  [[]] there would state a ledger
+    the checker never produces, so each such case READS the field off
+    its own base model instead of restating it: the two sides cannot
+    disagree about the vdso/vvar pair, nor about the [mmap_base], the
+    stack pointer or the [State.KernelBuild] that fix where the pair
+    sits, because only one of them is written down. *)
 Example mmap_fresh_noaccess_records_both_ledgers :
   check_syscall
     (mkInput 222 [65536; 4096; 0; 34; mmap_fd_none; 0]
@@ -644,7 +656,8 @@ Example mmap_fresh_noaccess_records_both_ledgers :
     (mkEffectU 65536 [] [] [(65536, 4096)] [] []) noaccess_base
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(65536, 4096)] [(65536, 4096)] 0 0 16384 0 demo_sp)
+        (mkVmMapsFull (vm_reserved (m_vmmaps noaccess_base))
+          [(65536, 4096)] [(65536, 4096)] 0 0 16384 0 demo_sp)
         noaccess_base) [].
 Proof. check_eq. Qed.
 
@@ -1808,7 +1821,9 @@ Example mmap_anonymous_other_fd_grants :
       (fun _ => None) (fun _ => None))
     (mkEffect 65536 [] [(65536, 4096)]) noaccess_base
   = CheckOk
-      (with_vmmaps (mkVmMapsFull [] [(65536, 4096)] [] 0 0 16384 0 demo_sp)
+      (with_vmmaps
+        (mkVmMapsFull (vm_reserved (m_vmmaps noaccess_base))
+          [(65536, 4096)] [] 0 0 16384 0 demo_sp)
         noaccess_base) [].
 Proof. check_eq. Qed.
 
@@ -1818,7 +1833,9 @@ Example mmap_anonymous_live_fd_grants :
       (fun _ => None) (fun _ => None))
     (mkEffect 65536 [] [(65536, 4096)]) noaccess_base
   = CheckOk
-      (with_vmmaps (mkVmMapsFull [] [(65536, 4096)] [] 0 0 16384 0 demo_sp)
+      (with_vmmaps
+        (mkVmMapsFull (vm_reserved (m_vmmaps noaccess_base))
+          [(65536, 4096)] [] 0 0 16384 0 demo_sp)
         noaccess_base) [].
 Proof. check_eq. Qed.
 
@@ -2649,7 +2666,9 @@ Definition m_tight_brk : Model := init_model brk_reserved 65536 0 demo_sp 4096 (
 
 Example brk_grow_within_budget_grants :
   check_syscall (brk_in 69632) (mkEffect 69632 [] [(65536, 4096)]) m_tight_brk
-  = CheckOk (with_vmmaps (mkVmMaps brk_reserved [(65536, 4096)] 65536 69632 4096)
+  = CheckOk (with_vmmaps
+               (mkVmMaps (vm_reserved (m_vmmaps m_tight_brk))
+                  [(65536, 4096)] 65536 69632 4096)
                m_tight_brk) [].
 Proof. check_eq. Qed.
 
@@ -2946,9 +2965,8 @@ Example mmap_null_hint_lands_under_the_vdso :
     placement_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull placement_reserved
-          [(Z_to_bv 64 placement_search_answer, 4096)] []
-          0 0 demo_limit
+        (mkVmMapsFull (vm_reserved (m_vmmaps placement_model))
+          [(Z_to_bv 64 placement_search_answer, 4096)] [] 0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) demo_sp) placement_model) [].
 Proof. check_eq. Qed.
 
@@ -2970,7 +2988,7 @@ Example mmap_noaccess_null_hint_lands_under_the_vdso :
     placement_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull placement_reserved
+        (mkVmMapsFull (vm_reserved (m_vmmaps placement_model))
           [(Z_to_bv 64 placement_search_answer, 4096)]
           [(Z_to_bv 64 placement_search_answer, 4096)] 0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) demo_sp) placement_model) [].
@@ -2992,8 +3010,8 @@ Example mmap_nonnull_hint_low_grant_admitted :
     placement_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull placement_reserved [(Z_to_bv 64 0x80000000, 4096)] []
-          0 0 demo_limit
+        (mkVmMapsFull (vm_reserved (m_vmmaps placement_model))
+          [(Z_to_bv 64 0x80000000, 4096)] [] 0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) demo_sp) placement_model) [].
 Proof. check_eq. Qed.
 
@@ -3340,8 +3358,8 @@ Example grant_at_demo_top_admitted_under_high_sp :
     top_hi_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull top_hi_reserved [(Z_to_bv 64 demo_top, 4096)] []
-          0 0 demo_limit
+        (mkVmMapsFull (vm_reserved (m_vmmaps top_hi_model))
+          [(Z_to_bv 64 demo_top, 4096)] [] 0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) hi_sp) top_hi_model) [].
 Proof. check_eq. Qed.
 
@@ -3359,7 +3377,8 @@ Example noaccess_grant_at_demo_top_admitted_under_high_sp :
     top_hi_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull top_hi_reserved [(Z_to_bv 64 demo_top, 4096)]
+        (mkVmMapsFull (vm_reserved (m_vmmaps top_hi_model))
+          [(Z_to_bv 64 demo_top, 4096)]
           [(Z_to_bv 64 demo_top, 4096)] 0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) hi_sp) top_hi_model) [].
 Proof. check_eq. Qed.

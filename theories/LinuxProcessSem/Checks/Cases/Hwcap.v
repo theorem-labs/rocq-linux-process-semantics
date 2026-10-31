@@ -78,6 +78,18 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
   all: try valid_urandom_default.
+  (* [Run.valid_launch], the thirteenth conjunct: a positional
+     [mkProcInput] gets [State.default_execfn], the one-byte relative
+     name "a" that [getname_flags] (fs/namei.c, Linux v6.18.46, commit
+     1f99e9ab748f) can return -- one byte, no NUL -- and the launch it
+     makes is a handful of bytes, far under the E2BIG limit
+     [bprm_stack_limits] (fs/exec.c) computes. *)
+  all: try (left; split;
+            [ cbn; lia
+            | cbn; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  all: try (vm_compute; discriminate).
 Qed.
 
 Example hwcap_input_gcv_declared :
@@ -92,6 +104,14 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
   all: try valid_urandom_default.
+  (* [Run.valid_launch], as in [hwcap_input_gc_declared]: the launch of
+     the one-byte name "a" is far under the E2BIG limit. *)
+  all: try (left; split;
+            [ cbn; lia
+            | cbn; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  all: try (vm_compute; discriminate).
 Qed.
 
 (** Both words are admitted by the DEFAULT, which is what makes a
@@ -202,25 +222,27 @@ Qed.
     strength [Cases.Prelude] already had; nothing here weakens it and
     nothing here extends it. *)
 Example the_rv64gc_declaration_publishes_the_v_less_word :
-  forall inp ph at_random,
+  forall inp la ph entry at_random at_execfn,
     valid_input_hwcap_rv64gc inp ->
     filter (fun e => bv_eqb (fst e) AT_HWCAP)
-           (auxv_entries ph at_random (in_uid inp) (in_hwcap inp))
+           (auxv_entries la ph entry (in_uid inp) (in_gid inp) (in_hwcap inp)
+                         at_random at_execfn)
     = [(AT_HWCAP, hwcap_rv64gc)].
 Proof.
-  intros inp ph at_random H.
+  intros inp la ph entry at_random at_execfn H.
   rewrite auxv_hwcap_is_exactly_the_launch_word.
   rewrite (valid_input_hwcap_rv64gc_word _ H). reflexivity.
 Qed.
 
 Example the_rv64gcv_declaration_publishes_the_v_word :
-  forall inp ph at_random,
+  forall inp la ph entry at_random at_execfn,
     valid_input_hwcap_rv64gcv inp ->
     filter (fun e => bv_eqb (fst e) AT_HWCAP)
-           (auxv_entries ph at_random (in_uid inp) (in_hwcap inp))
+           (auxv_entries la ph entry (in_uid inp) (in_gid inp) (in_hwcap inp)
+                         at_random at_execfn)
     = [(AT_HWCAP, hwcap_rv64gcv)].
 Proof.
-  intros inp ph at_random H.
+  intros inp la ph entry at_random at_execfn H.
   rewrite auxv_hwcap_is_exactly_the_launch_word.
   rewrite (valid_input_hwcap_rv64gcv_word _ H). reflexivity.
 Qed.
@@ -308,6 +330,13 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
   all: try valid_urandom_default.
+  (* [Run.valid_launch], as in [hwcap_input_gc_declared]. *)
+  all: try (left; split;
+            [ cbn; lia
+            | cbn; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  all: try (vm_compute; discriminate).
 Qed.
 
 Example hwcap_abort_input_gcv_declared :
@@ -322,6 +351,13 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
   all: try valid_urandom_default.
+  (* [Run.valid_launch], as in [hwcap_input_gc_declared]. *)
+  all: try (left; split;
+            [ cbn; lia
+            | cbn; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  all: try (vm_compute; discriminate).
 Qed.
 
 (** The abort-stance split lemma, fired, and naming which arm catches

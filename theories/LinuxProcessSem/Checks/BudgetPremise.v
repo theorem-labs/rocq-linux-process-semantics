@@ -77,6 +77,15 @@ Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
 
+(** An [Run.ExecEntry] is its four fields.  The fixtures below are
+    placed at [Checks.Examples.demo_entry], which is no longer a
+    [mkEntry] literal but [Run.launch_entry_va] at the input, so a
+    proof that has to reduce [Run.run]'s match on the entry rewrites
+    with this first and keeps reading the fields by name. *)
+Lemma entry_eta : forall en : ExecEntry,
+  en = mkEntry (en_sp en) (en_brk en) (en_mmap_base en) (en_draw en).
+Proof. intros [sp brk0 mbase draw]. reflexivity. Qed.
+
 (* =========================================================================
    PART 1 — the grant clause, arm by arm
    ========================================================================= *)
@@ -1481,11 +1490,13 @@ Definition mm_image : Image := mkImage mm_segments 0x100 demo_phdrs.
 
 Definition mm_budget : Z := page_size.
 
+(** The placement is [Checks.Examples.demo_entry]'s own, read off its
+    fields rather than written out: the entry is now
+    [Run.launch_entry_va] at this input, so its stack pointer, break,
+    mmap base and draw are the fixture's to move. *)
 Definition mm_ms0 : machine_state :=
-  init_machine_state mm_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    demo_draw
-    (in_argv demo_proc_input) (in_envp demo_proc_input) (in_uid demo_proc_input)
-    (in_hwcap demo_proc_input).
+  init_machine_state mm_segments 0x100 demo_phdrs (en_sp demo_entry)
+    (en_mmap_base demo_entry) (en_draw demo_entry) demo_proc_input.
 Definition mm_msk (k : nat) : machine_state :=
   match run_steps k mm_segments mm_ms0 with
   | Some ms => ms
@@ -1494,13 +1505,14 @@ Definition mm_msk (k : nat) : machine_state :=
 Definition mm_s (k : nat) : machine_state := with_mem (mm_msk k) (ms_mem mm_ms0).
 
 Definition mm_model : Model :=
-  init_model (segments_reserved mm_segments) (Z_to_bv 64 0x1000)
-    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) mm_budget demo_proc_input.
+  init_model (segments_reserved mm_segments) (en_brk demo_entry)
+    (en_mmap_base demo_entry) (en_sp demo_entry) mm_budget demo_proc_input.
 Definition mm_c : config := mkCfg (mm_s 0) mm_model.
 
 Lemma mm_config :
-  init_config mm_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw mm_budget demo_proc_input
+  init_config mm_segments 0x100 demo_phdrs (en_sp demo_entry)
+    (en_brk demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry)
+    mm_budget demo_proc_input
   = mm_c.
 Proof. unfold init_config, mm_c. f_equal; try exact (with_mem_eta mm_ms0). Qed.
 
@@ -1550,10 +1562,8 @@ Qed.
 Theorem mm_run_budget_refused :
   run_budget_refused mm_image mm_budget demo_entry demo_proc_input.
 Proof.
-  change (reaches_budget_refused mm_segments
-            (init_config mm_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-               (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw mm_budget
-               demo_proc_input)).
+  unfold run_budget_refused, mm_image.
+  rewrite (entry_eta demo_entry). cbn beta iota.
   rewrite mm_config.
   eapply reaches_budget_refused_star; [exact mm_star |].
   apply reaches_budget_refused_intro. exact mm_ecall_is_budget_refused.
@@ -1814,26 +1824,48 @@ Qed.
     nobody fires is indistinguishable from one whose hypotheses cannot
     be met, so both refutation lemmas are fired on it here, against a
     target with a valid entry. *)
-Example demo_entry_valid_ebreak : forall inp,
-  valid_input inp -> valid_entry ebreak_image demo_entry inp.
+(** An entry valid for one image is valid for any image whose segments
+    reserve the same top.  [Run.valid_entry] mentions the image in ONE
+    of its five conjuncts, [Run.valid_brk], and that one reads the
+    segments only through [reserved_top]; the launch conjunct
+    [Run.entry_launch_ok_va] — the stack top, the stack pointer and the
+    mmap base a Linux v6.18.46 [execve] could have chosen — speaks
+    about the entry and the input alone.
+
+    Every image here puts its only segment inside the first page, so
+    the hypothesis is one [vm_compute], and the three statements below
+    are then the validity [Checks.Examples] and [Checks.AbortWitness]
+    already proved for the same entry at the same input.  Taking them
+    from there rather than recomputing them is what keeps this file off
+    [demo_entry]'s literal stack pointer, break and mmap base: those
+    are the fixture's to choose. *)
+Lemma valid_entry_same_reserved : forall segs pc ph segs' pc' ph' en inp,
+  reserved_top (segments_reserved segs')
+  = reserved_top (segments_reserved segs) ->
+  valid_entry (mkImage segs pc ph) en inp ->
+  valid_entry (mkImage segs' pc' ph') en inp.
 Proof.
-  intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [ebreak_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
-  rewrite Z_to_bv_unsigned, bv_wrap_small
-    by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
-  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  intros segs pc ph segs' pc' ph' [sp brk0 mbase draw] inp Hr H.
+  unfold valid_entry, valid_entry_va in H |- *.
+  destruct H as (Hsp & Hbrk & Hmb & Hfits & Hlaunch).
+  assert (Hbrk' : valid_brk segs' brk0).
+  { unfold valid_brk in *. rewrite Hr. exact Hbrk. }
+  exact (conj Hsp (conj Hbrk' (conj Hmb (conj Hfits Hlaunch)))).
+Qed.
+
+Example demo_entry_valid_ebreak : forall inp,
+  valid_input inp -> valid_entry ebreak_image (demo_entry_of inp) inp.
+Proof.
+  intros inp Hvalid. unfold ebreak_image.
+  apply (valid_entry_same_reserved exit0_segments 0x100 demo_phdrs);
+    [vm_compute; reflexivity | exact (demo_entry_valid_exit0 inp Hvalid)].
 Qed.
 
 Lemma ebreak_source_within_budget : forall lim,
   source_within_budget lim ebreak_image demo_entry demo_proc_input.
 Proof.
-  intros lim. unfold source_within_budget, run_budget_refused.
-  cbn [ebreak_image demo_entry]. rewrite ebreak_config.
+  intros lim. unfold source_within_budget, run_budget_refused, ebreak_image.
+  rewrite (entry_eta demo_entry). cbn beta iota. rewrite ebreak_config.
   intros (tr & c & Hstar & Hb).
   inversion Hstar as [c0 Heq | c1 evs c2 tr' c3 Hss Hstar']; subst.
   - exact (ebreak_fault_is_not_budget_refused lim Hb).
@@ -1843,7 +1875,9 @@ Qed.
 Lemma ebreak_errors : forall lim,
   bh_errors (run ebreak_image lim demo_entry demo_proc_input).
 Proof.
-  intros lim. cbn [run ebreak_image demo_entry bh_errors]. rewrite ebreak_config.
+  intros lim. unfold run, ebreak_image.
+  rewrite (entry_eta demo_entry). cbn beta iota delta [bh_errors].
+  rewrite ebreak_config.
   exists [], (mkCfg ebreak_ms (ebreak_model lim)), []. split; [apply star_refl |].
   apply sstep_instr_fault; [reflexivity | reflexivity |].
   no_lazy. rewrite ebreak_faults. reflexivity.
@@ -1852,7 +1886,9 @@ Qed.
 Lemma ebreak_errors_cfg : forall cfg lim,
   bh_errors (run_scfg cfg ebreak_image lim demo_entry demo_proc_input).
 Proof.
-  intros cfg lim. cbn [run_scfg ebreak_image demo_entry bh_errors]. rewrite ebreak_config.
+  intros cfg lim. unfold run_scfg, ebreak_image.
+  rewrite (entry_eta demo_entry). cbn beta iota delta [bh_errors].
+  rewrite ebreak_config.
   exists [], (mkCfg ebreak_ms (ebreak_model lim)), []. split; [apply star_cfg_refl |].
   apply sstep_cfg_instr_fault; [reflexivity | reflexivity |].
   no_lazy. rewrite ebreak_faults. reflexivity.
@@ -1895,25 +1931,19 @@ Qed.
     [Checks.AbortWitness.abrt_input] is the demo input with the abort
     declaration on, valid for [Run.valid_input_abort]
     ([Checks.AbortWitness.abrt_input_valid]).  The exit-0 image is
-    entered at [demo_entry] as before — the entry's validity reads only
-    the argv and envp clauses, which both stances carry in the same
-    positions — and its trace set under any configuration is the
-    prefixes of its one exit ([exit0_obs_cfg]), so it is never killed
-    and the abort-declared configured statement holds of the pair at
-    every configuration and budget pair. *)
+    entered at [demo_entry] as before — the entry is the one
+    [Checks.AbortWitness.demo_entry_valid_abrt] already validated for
+    this stance, and only the image changes, which [Run.valid_entry]
+    sees through [reserved_top] alone — and its trace set under any
+    configuration is the prefixes of its one exit ([exit0_obs_cfg]), so
+    it is never killed and the abort-declared configured statement
+    holds of the pair at every configuration and budget pair. *)
 Example demo_entry_valid_exit0_abort : forall inp,
-  valid_input_abort inp -> valid_entry exit0_image demo_entry inp.
+  valid_input_abort inp -> valid_entry exit0_image (demo_entry_of inp) inp.
 Proof.
-  intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_abort_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [exit0_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
-  rewrite Z_to_bv_unsigned, bv_wrap_small
-    by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
-  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  intros inp Hvalid. unfold exit0_image.
+  apply (valid_entry_same_reserved abrt_segments 0x100 demo_phdrs);
+    [vm_compute; reflexivity | exact (demo_entry_valid_abrt inp Hvalid)].
 Qed.
 
 Lemma exit0_never_dies_by_signal_cfg : forall cfg lim en inp,
@@ -1964,58 +1994,73 @@ End Exit0ScfgBudgetsAbortBaselineChecked.
     [Checks.Omni.ebreak_image] serves under the declaration as it does
     without it: its one instruction faults before any syscall, so the
     declaration — which only changes what [tkill] does — never comes
-    into play.  The machine state at [abrt_input] is [Checks.Omni.ebreak_ms]
-    (the two inputs differ only in the declaration, which the entry
-    does not read); only the model carries the flag. *)
+    into play.
+
+    THE PLACEMENT IS THE LAUNCH AT THIS INPUT.
+    [Checks.Examples.demo_entry_of] is [Run.launch_entry_va] at the
+    input it is given, so the abort-declared run is entered at
+    [abrt_entry], not at [Checks.Examples.demo_entry]: the two inputs
+    differ only in the declaration, which no launch rule reads, but
+    the entry is a function of the input and the fixtures here read
+    its fields rather than any literal.  Only the model carries the
+    flag. *)
+Definition abrt_entry : ExecEntry := demo_entry_of abrt_input.
+
+Definition ebreak_ms_abort : machine_state :=
+  init_machine_state ebreak_segments 0x100 demo_phdrs (en_sp abrt_entry)
+    (en_mmap_base abrt_entry) (en_draw abrt_entry) abrt_input.
+
+Lemma ebreak_faults_abort :
+  RiscvSemantics.step ebreak_segments ebreak_ms_abort = MachineFault.
+Proof. vm_compute. reflexivity. Qed.
+
 Definition ebreak_model_abort (lim : Z) : Model :=
-  init_model (segments_reserved ebreak_segments) (Z_to_bv 64 0x1000)
-    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) lim abrt_input.
+  init_model (segments_reserved ebreak_segments) (en_brk abrt_entry)
+    (en_mmap_base abrt_entry) (en_sp abrt_entry) lim abrt_input.
 
 Lemma ebreak_config_abort : forall lim,
-  init_config ebreak_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw lim abrt_input
-  = mkCfg ebreak_ms (ebreak_model_abort lim).
+  init_config ebreak_segments 0x100 demo_phdrs (en_sp abrt_entry)
+    (en_brk abrt_entry) (en_mmap_base abrt_entry) (en_draw abrt_entry)
+    lim abrt_input
+  = mkCfg ebreak_ms_abort (ebreak_model_abort lim).
 Proof. reflexivity. Qed.
 
 Lemma ebreak_only_abort : forall lim evs st,
-  sstep ebreak_segments (mkCfg ebreak_ms (ebreak_model_abort lim)) evs st ->
+  sstep ebreak_segments (mkCfg ebreak_ms_abort (ebreak_model_abort lim)) evs st ->
   evs = [] /\ st = SError.
 Proof.
-  intros lim. apply sstep_fault_only; [reflexivity | reflexivity | exact ebreak_faults].
+  intros lim. apply sstep_fault_only;
+    [first [reflexivity | vm_compute; reflexivity]
+    |first [reflexivity | vm_compute; reflexivity]
+    |exact ebreak_faults_abort].
 Qed.
 
 (** The fault is not a budget refusal whatever the model beside it:
     [ebreak_fault_is_not_budget_refused] generalised. *)
 Lemma ebreak_fault_is_not_budget_refused_any : forall model,
-  ~ budget_refused_at ebreak_segments (mkCfg ebreak_ms model).
+  ~ budget_refused_at ebreak_segments (mkCfg ebreak_ms_abort model).
 Proof.
   intros model (_ & [(_ & r & E & _) | (x8 & Hx8 & _)]); cbn [cfg_ms cfg_model] in *.
-  - pose proof (drop_step_accesses ebreak_segments ebreak_ms) as Hd.
-    rewrite E, ebreak_faults in Hd. discriminate Hd.
-  - assert (Hnone : ms_svc_pending ebreak_ms = None) by reflexivity.
+  - pose proof (drop_step_accesses ebreak_segments ebreak_ms_abort) as Hd.
+    rewrite E, ebreak_faults_abort in Hd. discriminate Hd.
+  - assert (Hnone : ms_svc_pending ebreak_ms_abort = None)
+      by (vm_compute; reflexivity).
     congruence.
 Qed.
 
 Example demo_entry_valid_ebreak_abort : forall inp,
-  valid_input_abort inp -> valid_entry ebreak_image demo_entry inp.
+  valid_input_abort inp -> valid_entry ebreak_image (demo_entry_of inp) inp.
 Proof.
-  intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_abort_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [ebreak_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
-  rewrite Z_to_bv_unsigned, bv_wrap_small
-    by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
-  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  intros inp Hvalid. unfold ebreak_image.
+  apply (valid_entry_same_reserved abrt_segments 0x100 demo_phdrs);
+    [vm_compute; reflexivity | exact (demo_entry_valid_abrt inp Hvalid)].
 Qed.
 
 Lemma ebreak_source_within_budget_abort : forall lim,
-  source_within_budget lim ebreak_image demo_entry abrt_input.
+  source_within_budget lim ebreak_image abrt_entry abrt_input.
 Proof.
-  intros lim. unfold source_within_budget, run_budget_refused.
-  cbn [ebreak_image demo_entry]. rewrite ebreak_config_abort.
+  intros lim. unfold source_within_budget, run_budget_refused, ebreak_image.
+  rewrite (entry_eta abrt_entry). cbn beta iota. rewrite ebreak_config_abort.
   intros (tr & c & Hstar & Hb).
   inversion Hstar as [c0 Heq | c1 evs c2 tr' c3 Hss Hstar']; subst.
   - exact (ebreak_fault_is_not_budget_refused_any _ Hb).
@@ -2023,13 +2068,15 @@ Proof.
 Qed.
 
 Lemma ebreak_errors_cfg_abort : forall cfg lim,
-  bh_errors (run_scfg cfg ebreak_image lim demo_entry abrt_input).
+  bh_errors (run_scfg cfg ebreak_image lim abrt_entry abrt_input).
 Proof.
-  intros cfg lim. cbn [run_scfg ebreak_image demo_entry bh_errors].
+  intros cfg lim. unfold run_scfg, ebreak_image.
+  rewrite (entry_eta abrt_entry). cbn beta iota delta [bh_errors].
   rewrite ebreak_config_abort.
-  exists [], (mkCfg ebreak_ms (ebreak_model_abort lim)), []. split; [apply star_cfg_refl |].
+  exists [], (mkCfg ebreak_ms_abort (ebreak_model_abort lim)), [].
+  split; [apply star_cfg_refl |].
   apply sstep_cfg_instr_fault; [reflexivity | reflexivity |].
-  no_lazy. rewrite ebreak_faults. reflexivity.
+  no_lazy. rewrite ebreak_faults_abort. reflexivity.
 Qed.
 
 Theorem ebreak_refutes_error_free_scfg_budgets_abort : forall cfg lim_source lim_target,
@@ -2038,7 +2085,7 @@ Theorem ebreak_refutes_error_free_scfg_budgets_abort : forall cfg lim_source lim
 Proof.
   intros cfg ls lt.
   apply (strong_universal_error_free_T_scfg_budgets_abort_refuted_by_source_error
-           _ _ _ _ _ demo_entry demo_entry abrt_input).
+           _ _ _ _ _ abrt_entry abrt_entry abrt_input).
   - apply demo_entry_valid_ebreak_abort. exact abrt_input_valid.
   - apply demo_entry_valid_exit0_abort. exact abrt_input_valid.
   - exact abrt_input_valid.

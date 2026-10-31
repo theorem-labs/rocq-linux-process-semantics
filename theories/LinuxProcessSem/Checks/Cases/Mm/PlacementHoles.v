@@ -47,8 +47,16 @@ Definition place_model : Model :=
   init_model [] (Z_to_bv 64 0x11000) (Z_to_bv 64 mmap_base_min)
     (Z_to_bv 64 sp_window_lo) target_alloc_limit (demo_input [] IEof).
 
+(** The SAME launch with transparent huge pages, and the only field
+    that differs is [kb_thp]: written as a projection-wise copy of
+    [default_kernel] so that a field added to [State.KernelBuild]
+    changes this fixture in one place and not in its meaning. *)
 Definition place_thp : Model :=
-  with_kernel (mkKernelBuild true 1%N) place_model.
+  with_kernel (mkKernelBuild true (kb_vdso default_kernel)
+                 (kb_aslr default_kernel) (kb_guard default_kernel)
+                 (kb_rnd_bits default_kernel) (kb_rseq default_kernel)
+                 (kb_vlenb default_kernel) (kb_cache default_kernel))
+    place_model.
 
 (** The three addresses every case below is written against, as the
     model computes them.  [mmap_top] is the mmap base rather than

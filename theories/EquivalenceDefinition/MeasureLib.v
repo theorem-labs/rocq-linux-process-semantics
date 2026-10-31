@@ -2119,12 +2119,12 @@ Qed.
    ========================================================================= *)
 
 (** A canonical [FinInput.FinProcInput] over a given core.  The four
-    core fields are copied; the six LAUNCH ENVIRONMENT fields are
-    invented, and the choices are these:
+    core fields are copied; the nine LAUNCH ENVIRONMENT fields and the
+    two declarations are invented, and the choices are these:
 
     - [fin_uid], [fin_gid], [fin_nofile] and [fin_sigmask] are all
-      [Z_to_bv 64 0].  [Run.valid_input] constrains exactly these four
-      of the seven — the ids through [Run.valid_creds] and [Run.valid_id]
+      [Z_to_bv 64 0].  [Run.valid_input] constrains four
+      of the nine — the ids through [Run.valid_creds] and [Run.valid_id]
       ([bv_unsigned] below [2 ^ 32 - 1]), the descriptor limit through
       [Run.valid_nofile] ([bv_unsigned] at most [2 ^ 31 - 64]), and the
       blocked mask through [Run.valid_sigmask] (no [SIGKILL] or
@@ -2138,14 +2138,23 @@ Qed.
       this use of it).
       [Run.valid_input] constrains neither field, as [FinInput]'s record
       header records.
+    - [fin_kernel] is [State.default_kernel], the build [State.mkProcInput]
+      fills in; [Run.valid_input] does not constrain it either.
+    - [fin_execfn] is [State.default_execfn], the one-byte name "a".
+      [Run.valid_launch] DOES constrain it, and this is the value that
+      can be valid: it is a name [getname_flags] (fs/namei.c, Linux
+      v6.18.46, commit 1f99e9ab748f) can return, and it adds two bytes
+      to a launch whose limit is two megabytes, so the joint E2BIG test
+      of [bprm_stack_limits] (fs/exec.c) is decided by the core's argv
+      and envp rather than by this choice.
     - [fin_abort_terminal] is [false], the task declaration
       [Run.valid_input] pins and so the one this embedding has to make
-      if the record is to be valid at all.  It is the seventh field and
-      the only one of the seven that [Run.valid_input] fixes rather than
-      bounds.
+      if the record is to be valid at all.  It and [fin_va_size] are
+      the declarations rather than environment facts, and the only
+      fields [Run.valid_input] fixes rather than bounds.
 
     The choice is arbitrary and is allowed to be, because
-    [FinInput.fin_core] forgets all seven ([FinInput.fin_core_env_eq]
+    [FinInput.fin_core] forgets all eleven ([FinInput.fin_core_env_eq]
     pins that it forgets these and nothing else).  What the embedding is
     FOR is [fin_core_core_input]: it is a section of
     [FinInput.fin_core], so a statement about a list of cores can be
@@ -2160,7 +2169,7 @@ Definition core_input (c : FinCore) : FinProcInput :=
   mkFinProcInput (core_argv c) (core_envp c) (core_fs c) (core_stdin c)
                  (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
                  (Z_to_bv 64 0) (Z_to_bv 64 0) hwcap_rv64gc false Sv48 [] []
-                 default_kernel.
+                 default_kernel default_execfn.
 
 (** THE LAUNCH-ENVIRONMENT FIELDS ARE NOT ARBITRARY, even though this
     definition claims nothing about them.  A caller proving its own
@@ -2176,7 +2185,10 @@ Definition core_input (c : FinCore) : FinProcInput :=
 
     [fin_abort_terminal] is [false], the declaration [Run.valid_input]
     pins, for the same reason: it is the only value that can be valid
-    under the predicate this library's callers discharge. *)
+    under the predicate this library's callers discharge.  [fin_execfn]
+    is [State.default_execfn] on the same ground -- the empty name is
+    one [Run.valid_execfn] refuses, so a caller that wanted validity
+    could not get there from it. *)
 
 (** The embedding is a section of [FinInput.fin_core]: wrapping a core
     up and reading it back gives the core.  By [destruct] and

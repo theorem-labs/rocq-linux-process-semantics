@@ -23,6 +23,13 @@
     needs the floor above the ASan high shadow.  A lower floor would make
     those proofs false, not only longer.
 
+    The kernel's [mmap_base] is transcribed TWICE in this tree: as
+    [topdown_base] below, and as [Run.mmap_gap] with [Run.mmap_base_of],
+    which [Run.valid_launch_base] holds the start state to.  Two
+    transcriptions can drift, so the last section proves them equal at
+    the base, and derives that no base the launch rule admits falls
+    outside the band.
+
     [Checks/Examples.v] keeps what is not per-syscall and re-exports
     this module; the helper lemmas are [Local], so the re-export adds
     only the definitions and the results.  Reason 3 of that file
@@ -443,4 +450,177 @@ Proof.
     remember (clamp_gap sv39_task_size (unclamped_gap guard randomize)) as c eqn:Hce.
     apply page_round_up_Z_le; [reflexivity|].
     unfold sv39_task_size, min_gap, page_size in *. clear - Hc1 Hk. lia.
+Qed.
+
+(** ** ONE derivation, not two
+
+    [Run.mmap_gap] and [Run.mmap_base_of] transcribe the same
+    [mmap_base] (mm/util.c:434-463, Linux v6.18.46, commit
+    1f99e9ab748f) that [topdown_base] above does, and the start state
+    is held to [Run.valid_launch_base], which is built from them.  Two
+    transcriptions of one kernel function can drift apart, so they are
+    proved EQUAL here, at the BASE and not merely at the gap.
+
+    The arguments correspond:
+
+    - [topdown_base]'s [stack_top] is [State.va_stack_top v], the
+      [STACK_TOP] of the address-space depth [Run.mmap_base_of] takes
+      as its [v];
+    - its [guard] is [State.stack_guard_gap_bytes kb], the byte count
+      [stack_guard_gap] holds, which [cmdline_parse_stack_guard_gap]
+      (mm/mmap.c:941-954) sets from the boot command line and
+      [Run.mmap_gap] reads off the [State.KernelBuild];
+    - its [randomize] is [State.kb_aslr kb], the [PF_RANDOMIZE] flag
+      [arch_pick_mmap_layout] (mm/util.c:465-478) tests;
+    - [rnd] is [arch_mmap_rnd]'s draw in bytes (mm/util.c:399-411) in
+      both.  [Run.valid_launch_base] writes it [page_size * r] and
+      [sv48_linux_base] writes it [k * page_size].
+
+    THE ONE PLACE THE TWO TEXTS DIFFER.  [mmap_base] clamps with
+
+      if (gap < MIN_GAP && MIN_GAP < MAX_GAP) gap = MIN_GAP;
+      else if (gap > MAX_GAP) gap = MAX_GAP;
+
+    [Run.mmap_gap] writes both tests out; [clamp_gap] leaves [MIN_GAP <
+    MAX_GAP] out.  [min_gap_lt_max_gap_va] settles that with no
+    hypothesis: [MAX_GAP] is [STACK_TOP / 6 * 5] (mm/util.c:432) and
+    the smallest [STACK_TOP] the model has is Sv39's 2^38, whose
+    [MAX_GAP] is 0x3555555552, far above [MIN_GAP] = 128 MiB.  The
+    second test is dead at every [VaSize], so the two clamps agree
+    everywhere and the equality below needs no side condition. *)
+
+(** [MIN_GAP < MAX_GAP] at each depth: 0x8000000 against 0x3555555552
+    under Sv39 and against 0x6aaaaaaaaaa9 under Sv48 and Sv57. *)
+Local Lemma min_gap_lt_max_gap_va : forall v : VaSize,
+  min_gap < max_gap (va_stack_top v).
+Proof. intros []; vm_compute; reflexivity. Qed.
+
+(** [Run.stack_rnd_max] is [STACK_RND_MASK << PAGE_SHIFT]
+    (arch/riscv/include/asm/elf.h:56-58) as one literal; [stack_rnd_pad]
+    writes the shift out. *)
+Local Lemma stack_rnd_max_is_stack_rnd_pad : stack_rnd_max = stack_rnd_pad.
+Proof. vm_compute. reflexivity. Qed.
+
+Lemma run_mmap_gap_is_clamp_gap : forall (v : VaSize) (kb : KernelBuild),
+  mmap_gap v kb
+  = clamp_gap (va_stack_top v)
+      (unclamped_gap (stack_guard_gap_bytes kb) (kb_aslr kb)).
+Proof.
+  intros v kb.
+  pose proof (stack_guard_gap_bytes_bounds kb) as [Hg0 Hg1].
+  pose proof (stack_pad_range (kb_aslr kb)) as Hp.
+  pose proof (min_gap_lt_max_gap_va v) as Hmm.
+  assert (Hdom : stack_rlimit + stack_guard_gap_bytes kb
+                 + (if kb_aslr kb then stack_rnd_pad else 0) < two_pow_64).
+  { rewrite two_pow_64_val.
+    unfold stack_rlimit, stack_rnd_pad, page_size in *. lia. }
+  rewrite (unclamped_gap_in_domain (stack_guard_gap_bytes kb) (kb_aslr kb) Hg0 Hdom).
+  unfold mmap_gap. cbv zeta.
+  replace (if kb_aslr kb then stack_rnd_max else 0)
+    with (if kb_aslr kb then stack_rnd_pad else 0)
+    by (destruct (kb_aslr kb);
+        [symmetry; exact stack_rnd_max_is_stack_rnd_pad | reflexivity]).
+  set (gb := stack_guard_gap_bytes kb) in *.
+  set (pd := (if kb_aslr kb then stack_rnd_pad else 0)) in *.
+  (* The kernel's own overflow guard, [if (gap + pad > gap) gap += pad]
+     at mm/util.c:452-454, never fires in the model: the guard gap is
+     under 0x4aba6a2ab000 bytes ([State.stack_guard_gap_bytes_bounds])
+     and the stack pad under 0x40000000, so the sum stays in
+     [unsigned long] and both texts take it. *)
+  rewrite (Z.mod_small (stack_max_size + (gb + pd)))
+    by (rewrite two_pow_64_val;
+        unfold stack_max_size, stack_rnd_pad, page_size in *; lia).
+  replace (if (stack_max_size + (gb + pd) >? stack_max_size)
+           then stack_max_size + (gb + pd) else stack_max_size)
+    with (stack_rlimit + gb + pd)
+    by (rewrite Z.gtb_ltb;
+        destruct (Z.ltb_spec stack_max_size (stack_max_size + (gb + pd)));
+        unfold stack_rlimit, stack_max_size in *; lia).
+  unfold clamp_gap, mmap_min_gap, mmap_max_gap, min_gap, max_gap in *.
+  rewrite (proj2 (Z.ltb_lt _ _) Hmm), andb_true_r, Z.gtb_ltb.
+  reflexivity.
+Qed.
+
+(** The base itself, so a change to either transcription fails the
+    build. *)
+Theorem run_mmap_base_of_is_topdown_base :
+  forall (v : VaSize) (kb : KernelBuild) (rnd : Z),
+  mmap_base_of v kb rnd
+  = topdown_base (va_stack_top v) (stack_guard_gap_bytes kb) (kb_aslr kb) rnd.
+Proof.
+  intros v kb rnd. unfold mmap_base_of, topdown_base.
+  rewrite run_mmap_gap_is_clamp_gap. reflexivity.
+Qed.
+
+(** The draw [Run.valid_launch_base] admits is one [launch_ok] admits
+    at the depth's [mmap_rnd_bits_max]: the sysctl is at most that
+    ([State.mmap_rnd_bits_bounds]), and without [PF_RANDOMIZE]
+    [arch_pick_mmap_layout] (mm/util.c:465-478) draws nothing. *)
+Local Lemma launch_draw_in_range : forall (v : VaSize) (kb : KernelBuild) (r : Z),
+  0 <= r -> (kb_aslr kb = true -> r < 2 ^ mmap_rnd_bits v kb) ->
+  (kb_aslr kb = false -> r = 0) ->
+  0 <= r < 2 ^ mmap_rnd_bits_max v.
+Proof.
+  intros v kb r Hr0 Hrt Hrf.
+  pose proof (mmap_rnd_bits_bounds v kb) as [Hb1 Hb2].
+  destruct (kb_aslr kb) eqn:Ha.
+  - split; [exact Hr0|].
+    eapply Z.lt_le_trans; [exact (Hrt eq_refl)|].
+    apply Z.pow_le_mono_r; lia.
+  - rewrite (Hrf eq_refl). split; [lia|]. apply Z.pow_pos_nonneg; lia.
+Qed.
+
+(** The guard the model admits is one [launch_ok] admits, and it is at
+    most [floor_guard_max], so [named_config]'s second clause holds
+    whatever the bit count. *)
+Local Lemma guard_bytes_launch_ok : forall kb : KernelBuild,
+  (0 <= stack_guard_gap_bytes kb /\ stack_guard_gap_bytes kb < two_pow_64)
+  /\ stack_guard_gap_bytes kb mod page_size = 0
+  /\ stack_guard_gap_bytes kb <= floor_guard_max.
+Proof.
+  intros kb. pose proof (stack_guard_gap_bytes_bounds kb) as [H0 H1].
+  split; [split; [exact H0 | rewrite two_pow_64_val; lia]|].
+  split; [unfold stack_guard_gap_bytes; rewrite Z.mul_comm; apply Z_mod_mult|].
+  unfold floor_guard_max. lia.
+Qed.
+
+(** So no base the model's own launch rule admits falls outside the
+    band: [Run.valid_launch_base] and [sv48_band_is_linux_set] cannot
+    drift apart without this failing. *)
+Theorem valid_launch_base_sv48_in_band : forall (kb : KernelBuild) (mbase : word),
+  valid_launch_base Sv48 kb mbase -> valid_mmap_base mbase.
+Proof.
+  intros kb mbase (r & Hr0 & Hrt & Hrf & Heq).
+  pose proof (launch_draw_in_range Sv48 kb r Hr0 Hrt Hrf) as [Hk0 Hk1].
+  cbn [mmap_rnd_bits_max] in Hk1.
+  pose proof (guard_bytes_launch_ok kb) as ((Hg0 & Hg64) & Hgal & Hgf).
+  apply (proj2 (sv48_band_is_linux_set mbase)).
+  unfold sv48_linux_base, named_config, launch_ok.
+  exists 33, (stack_guard_gap_bytes kb), (kb_aslr kb), r.
+  split; [split; [lia | right; exact Hgf]|].
+  split.
+  - split; [split; [exact Hg0 | exact Hg64]|].
+    split; [exact Hgal|].
+    split; [split; [exact Hk0 | exact Hk1] | exact Hrf].
+  - rewrite Heq, run_mmap_base_of_is_topdown_base.
+    cbn [va_stack_top]. rewrite (Z.mul_comm page_size r). reflexivity.
+Qed.
+
+(** The same under Sv39, where the band is every non-wrapped base. *)
+Theorem valid_launch_base_sv39_in_band : forall (kb : KernelBuild) (mbase : word),
+  valid_launch_base Sv39 kb mbase -> valid_mmap_base_va Sv39 mbase.
+Proof.
+  intros kb mbase (r & Hr0 & Hrt & Hrf & Heq).
+  pose proof (launch_draw_in_range Sv39 kb r Hr0 Hrt Hrf) as [Hk0 Hk1].
+  cbn [mmap_rnd_bits_max] in Hk1.
+  pose proof (guard_bytes_launch_ok kb) as ((Hg0 & Hg64) & Hgal & _).
+  apply (proj2 (sv39_band_is_linux_set mbase)).
+  unfold sv39_linux_base, launch_ok.
+  exists (stack_guard_gap_bytes kb), (kb_aslr kb), r.
+  split.
+  - split; [split; [exact Hg0 | exact Hg64]|].
+    split; [exact Hgal|].
+    split; [split; [exact Hk0 | exact Hk1] | exact Hrf].
+  - rewrite Heq, run_mmap_base_of_is_topdown_base.
+    cbn [va_stack_top]. rewrite (Z.mul_comm page_size r). reflexivity.
 Qed.

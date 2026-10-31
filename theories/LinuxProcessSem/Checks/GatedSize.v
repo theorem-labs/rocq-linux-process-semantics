@@ -101,18 +101,18 @@ Definition exit1_image : Image := mkImage exit1_segments 0x100 demo_phdrs.
     environment, an empty file system, no standard input.  A
     [FinInput.FinProcInput], because that is what a slice predicate is
     defined on; [FinInput.to_proc_input] carries it to the
-    [State.ProcInput] the runs consume, and
-    [gated_demo_to_proc_input] pins that the two agree by
-    computation rather than by the reader's eye. *)
+    [State.ProcInput] the runs consume — which is
+    [Checks.Examples.demo_proc_input], the record that file's entry and
+    run fixtures are stated at, so the rewrites below land on exactly
+    the terms those lemmas carry.  [gated_demo_to_proc_input] pins that
+    the two agree by computation rather than by the reader's eye. *)
 Definition gated_demo_fin : FinProcInput :=
   mkFinProcInput [[]] [] [] [] demo_uid demo_gid demo_groups net_silent
                  default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] []
-                 default_kernel.
+                 default_kernel default_execfn.
 
 Lemma gated_demo_to_proc_input :
-  to_proc_input gated_demo_fin
-  = mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-                default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48.
+  to_proc_input gated_demo_fin = demo_proc_input.
 Proof. reflexivity. Qed.
 
 (** It is a VALID finite input, which every statement below needs: an
@@ -125,25 +125,40 @@ Proof.
   exact demo_input_valid.
 Qed.
 
-(** The exit-1 image really is startable at
-    [Checks.Examples.demo_entry] on this input.  Copied from
-    [Checks.Examples.demo_entry_valid_exit0] because the two images have
-    the same reservation, and needed for the refusal below: a refutation
-    of [Classifier.accepts] that named an INVALID entry would refute
-    nothing, since the definition never quantified over it. *)
+(** The exit-1 image really is startable at the launch entry
+    [Checks.Examples.demo_entry_of] builds for an input, on every valid
+    input.  Copied from [Checks.Examples.demo_entry_valid_exit0]
+    because the two images have the same reservation — the entry's
+    image-dependent conjunct is [Run.valid_brk] and nothing else — and
+    needed for the refusal below: a refutation of [Classifier.accepts]
+    that named an INVALID entry would refute nothing, since the
+    definition never quantified over it.
+
+    The entry is a FUNCTION of the input now, and it has to be: the
+    fifth conjunct of [Run.valid_entry_va] pins the stack VMA's end,
+    the entry stack pointer and the mmap base to the kernel's own
+    rules, and those read the input's argv, envp, exec file name and
+    [State.KernelBuild].  No fixed entry is valid at every valid input,
+    so the statement takes [demo_entry_of inp] and
+    [Run.launch_entry_va_valid] discharges it: its three input premises
+    are conjuncts of [Run.valid_input], and the fourth is this image's
+    reservation arithmetic. *)
 Lemma demo_entry_valid_exit1 : forall inp,
-  valid_input inp -> valid_entry exit1_image demo_entry inp.
+  valid_input inp -> valid_entry exit1_image (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [exit1_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
-  rewrite Z_to_bv_unsigned, bv_wrap_small
-    by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
-  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  (* Guarded rather than positional: [Run.valid_input] grows a conjunct
+     whenever the input class learns to say something new, and the three
+     clauses this proof needs -- [Run.valid_argv], [Run.valid_envp] and
+     [Run.valid_launch] -- are then found by [assumption] rather than by
+     counting.  [match goal] is syntactic, so [red] is what makes it
+     fire, and [valid_launch] stays folded under it and arrives whole. *)
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  unfold valid_entry, demo_entry_of, exit1_image.
+  apply launch_entry_va_valid; try assumption.
+  unfold valid_brk.
+  repeat split; vm_compute; try reflexivity; try discriminate.
 Qed.
 
 (** The accepting verdict, AT EVERY ENTRY.  [Classifier.accepts] is a
@@ -182,9 +197,10 @@ Lemma gate_exit1_rejects : Classifier.rejects exit1_image gated_demo_fin.
 Proof.
   apply (rejects_by_exit1 _ _ demo_entry).
   - exact gated_demo_fin_valid.
-  - apply demo_entry_valid_exit1. rewrite gated_demo_to_proc_input.
-    exact demo_input_valid.
-  - cbn [must_exit_with exit1_image demo_entry]. unfold init_config.
+  - rewrite gated_demo_to_proc_input.
+    exact (demo_entry_valid_exit1 demo_proc_input demo_input_valid).
+  - rewrite demo_entry_fields.
+    cbn [must_exit_with exit1_image]. unfold init_config.
     apply (exits_c_must_exit_at _ _ 8); [reflexivity | reflexivity |].
     vm_compute. reflexivity.
 Qed.
@@ -417,7 +433,7 @@ Qed.
 Definition gated_demo_fin_stdin : FinProcInput :=
   mkFinProcInput [[]] [] [] [Z_to_bv 8 65] demo_uid demo_gid demo_groups
                  net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-                 [] [] default_kernel.
+                 [] [] default_kernel default_execfn.
 
 Lemma gated_demo_fin_stdin_valid : valid_fin_input gated_demo_fin_stdin.
 Proof.
@@ -441,8 +457,14 @@ Proof.
   apply proj2 with (A := valid_fin_input gated_demo_fin_stdin).
   apply (rejects_by_exit1 _ _ demo_entry).
   - exact gated_demo_fin_stdin_valid.
-  - apply demo_entry_valid_exit1. exact gated_demo_fin_stdin_valid.
-  - cbn [must_exit_with exit1_image demo_entry]. unfold init_config.
+  - (* [demo_entry] carries [Checks.Examples.demo_proc_input], and this
+       input differs from it in [fin_stdin] alone — a field no rule of
+       the fifth conjunct reads — so the two launch entries are the
+       same record and the conversion check closes the gap. *)
+    exact (demo_entry_valid_exit1 (to_proc_input gated_demo_fin_stdin)
+             gated_demo_fin_stdin_valid).
+  - rewrite demo_entry_fields.
+    cbn [must_exit_with exit1_image]. unfold init_config.
     apply (exits_c_must_exit_at _ _ 8); [reflexivity | reflexivity |].
     vm_compute. reflexivity.
 Qed.
@@ -549,8 +571,10 @@ Proof.
   apply (gated_slice_refuted _ _ _ gated_demo_fin demo_entry demo_entry).
   - exact gated_demo_fin_valid.
   - apply slice_rest_nil.
-  - apply demo_entry_valid_undecodable. exact gated_demo_fin_valid.
-  - apply demo_entry_valid_undecodable. exact gated_demo_fin_valid.
+  - exact (demo_entry_valid_undecodable (to_proc_input gated_demo_fin)
+             gated_demo_fin_valid).
+  - exact (demo_entry_valid_undecodable (to_proc_input gated_demo_fin)
+             gated_demo_fin_valid).
   - intros [Hmodeled _]. apply Hmodeled.
     rewrite gated_demo_to_proc_input.
     exact run_of_undecodable_image_is_unmodeled_at_demo_entry.
@@ -571,8 +595,10 @@ Proof.
   apply (gated_slice_error_free_refuted _ _ _ gated_demo_fin demo_entry demo_entry).
   - exact gated_demo_fin_valid.
   - apply slice_rest_nil.
-  - apply demo_entry_valid_undecodable. exact gated_demo_fin_valid.
-  - apply demo_entry_valid_undecodable. exact gated_demo_fin_valid.
+  - exact (demo_entry_valid_undecodable (to_proc_input gated_demo_fin)
+             gated_demo_fin_valid).
+  - exact (demo_entry_valid_undecodable (to_proc_input gated_demo_fin)
+             gated_demo_fin_valid).
   - intros (Hsrc & _ & _). apply Hsrc, run_unmodeled_errors.
     rewrite gated_demo_to_proc_input.
     exact run_of_undecodable_image_is_unmodeled_at_demo_entry.
@@ -623,9 +649,10 @@ Lemma gate_exit1_rejects_fo : Classifier.rejects_fo exit1_image gated_demo_fin.
 Proof.
   apply (rejects_fo_by_exit1 _ _ demo_entry).
   - exact gated_demo_fin_valid.
-  - apply demo_entry_valid_exit1. rewrite gated_demo_to_proc_input.
-    exact demo_input_valid.
-  - cbn [must_exit_with_scfg exit1_image demo_entry]. unfold init_config.
+  - rewrite gated_demo_to_proc_input.
+    exact (demo_entry_valid_exit1 demo_proc_input demo_input_valid).
+  - rewrite demo_entry_fields.
+    cbn [must_exit_with_scfg exit1_image]. unfold init_config.
     apply (exits_c_must_exit_at_cfg _ _ _ 8); [reflexivity | reflexivity |].
     vm_compute. reflexivity.
 Qed.
@@ -737,8 +764,8 @@ Lemma undecodable_unmodeled_scfg_at_demo_entry : forall cfg,
                   (to_proc_input gated_demo_fin)).
 Proof.
   intros cfg.
-  rewrite gated_demo_to_proc_input.
-  cbn [run_scfg bh_unmodeled undecodable_image demo_entry]. unfold init_config.
+  rewrite gated_demo_to_proc_input, demo_entry_fields.
+  cbn [run_scfg bh_unmodeled undecodable_image]. unfold init_config.
   match goal with
   | |- reaches_unmodeled_cfg _ _ ?c => exists [], c
   end.
@@ -749,7 +776,6 @@ Proof.
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
   rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
 Qed.
 
@@ -769,8 +795,10 @@ Proof.
   apply (gated_slice_T_scfg_refuted _ _ _ _ gated_demo_fin demo_entry demo_entry).
   - exact gated_demo_fin_valid.
   - apply slice_rest_fo_nil.
-  - apply demo_entry_valid_undecodable. exact gated_demo_fin_valid.
-  - apply demo_entry_valid_undecodable. exact gated_demo_fin_valid.
+  - exact (demo_entry_valid_undecodable (to_proc_input gated_demo_fin)
+             gated_demo_fin_valid).
+  - exact (demo_entry_valid_undecodable (to_proc_input gated_demo_fin)
+             gated_demo_fin_valid).
   - intros [Hmodeled _]. apply Hmodeled.
     exact (undecodable_unmodeled_scfg_at_demo_entry cfg).
 Qed.
@@ -784,8 +812,10 @@ Proof.
            demo_entry demo_entry).
   - exact gated_demo_fin_valid.
   - apply slice_rest_fo_nil.
-  - apply demo_entry_valid_undecodable. exact gated_demo_fin_valid.
-  - apply demo_entry_valid_undecodable. exact gated_demo_fin_valid.
+  - exact (demo_entry_valid_undecodable (to_proc_input gated_demo_fin)
+             gated_demo_fin_valid).
+  - exact (demo_entry_valid_undecodable (to_proc_input gated_demo_fin)
+             gated_demo_fin_valid).
   - intros (Hsrc & _ & _). apply Hsrc, run_scfg_unmodeled_errors.
     exact (undecodable_unmodeled_scfg_at_demo_entry cfg).
 Qed.

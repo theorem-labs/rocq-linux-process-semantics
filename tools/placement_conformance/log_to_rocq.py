@@ -301,10 +301,24 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs
 Import ListNotations.
 Open Scope bv_scope.
 
-(** The kernel build the log came from: whether it was built with
-    CONFIG_TRANSPARENT_HUGEPAGE, and the size of its vDSO text
-    ({text_pages} page(s), so [kb_vdso_text] is {kb_vdso_text}). *)
-Definition replay_kernel : KernelBuild := mkKernelBuild {thp} {kb_vdso_text}%N.
+(** The kernel build the log came from.  Two fields are MEASURED from
+    this boot: whether it was built with CONFIG_TRANSPARENT_HUGEPAGE,
+    and the size of its vDSO text ({text_pages} page(s), so [kb_vdso]
+    is {kb_vdso_text}).  [kb_aslr] is the boot's own: false under
+    `norandmaps`, true otherwise.
+
+    The remaining five are [State.default_kernel]'s, and the replay
+    does not depend on them: [Sys/Mm/Mmap.linux_place] reads [kb_thp],
+    and [State.vdso_reserved] reads [kb_vdso], and nothing in a
+    placement reads the guard gap, the randomisation width, rseq, the
+    vector length or the cache words.  A start-state replay does read
+    them, and that is what tools/placement_conformance's start-state
+    rules are for. *)
+Definition replay_kernel : KernelBuild :=
+  mkKernelBuild {thp} {kb_vdso_text}%N {kb_aslr}
+    (kb_guard default_kernel) (kb_rnd_bits default_kernel)
+    (kb_rseq default_kernel) (kb_vlenb default_kernel)
+    (kb_cache default_kernel).
 
 (** The launch.  Nothing below reads the argument vector, the environment,
     the file system or the credentials, so they are empty or ordinary; the
@@ -313,7 +327,7 @@ Definition replay_kernel : KernelBuild := mkKernelBuild {thp} {kb_vdso_text}%N.
 Definition replay_input : ProcInput :=
   mkProcInput_full [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
     net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48
-    default_urandom [] replay_kernel.
+    default_urandom [] replay_kernel default_execfn.
 
 (** The probe's own image, as /proc/self/maps reported it.  The vDSO pair is
     not here: [init_model] appends it from [replay_kernel]. *)
@@ -373,6 +387,7 @@ def emit(state, steps, module, log, expect, provenance):
         text_pages=state["text_pages"],
         kb_vdso_text=state["text_pages"] - 1,
         thp="true" if state["thp"] else "false",
+        kb_aslr="false" if "norandmaps" in str(log) else "true",
         reserved=reserved,
         brk0=w(state["brk0"]),
         mbase=w(state["mbase"]),
