@@ -54,12 +54,55 @@ Definition w1x_input (reader : bool) : ProcInput :=
     default_kernel default_execfn reader true.
 
 (* ========================================================================= *)
+(* The entry: [Checks.Examples.demo_entry_of] the launch, as a record.       *)
+(* ========================================================================= *)
+
+(** A valid entry is a function of the input ([Run.valid_launch_sp] reads
+    its arguments, environment and exec file name), so the entry each
+    launch runs at is [demo_entry_of] that launch, and its four fields
+    are what [Run.launch_entry_va] computes for it: the two launches
+    share every field the computation reads, so they share the entry.
+    The values are [Checks.Examples.demo_entry_fields]'. *)
+Definition w1x_sp : word := Z_to_bv 64 0x7ffffffffdf0.
+Definition w1x_brk : word := Z_to_bv 64 0x1000.
+Definition w1x_mbase : word := Z_to_bv 64 0x7fffbf701000.
+Definition w1x_draw : EntryDraw :=
+  mkDraw demo_random (Z_to_bv 64 0x800000000000) vdso_keeps_all.
+
+Lemma w1x_entry_fields : forall r,
+  demo_entry_of (w1x_input r) = mkEntry w1x_sp w1x_brk w1x_mbase w1x_draw.
+Proof.
+  intros r. unfold w1x_sp, w1x_brk, w1x_mbase, w1x_draw.
+  destruct r; unfold demo_entry_of, launch_entry_va; cbv zeta; f_equal.
+  all: try (apply bv_eq; vm_compute; reflexivity).
+  all: f_equal; apply bv_eq; vm_compute; reflexivity.
+Qed.
+
+(** The entry is a VALID one at every valid input, as
+    [Checks.Examples.demo_entry_valid_exit0] is for its image: the break
+    is the only conjunct that reads the image, and this image's only
+    segment sits in the first page. *)
+Lemma w1x_entry_valid : forall inp,
+  valid_input inp -> valid_entry w1x_image (demo_entry_of inp) inp.
+Proof.
+  intros inp Hvalid.
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  unfold valid_entry, demo_entry_of, w1x_image.
+  apply launch_entry_va_valid; try assumption.
+  unfold valid_brk.
+  rewrite Z_to_bv_unsigned, bv_wrap_small
+    by (unfold bv_modulus; cbn; lia).
+  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+Qed.
+
+(* ========================================================================= *)
 (* The derivation: five silent steps, the write, three silent steps, exit.   *)
 (* ========================================================================= *)
 
 Definition w1x_ms0 : machine_state :=
-  init_machine_state w1x_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    demo_mbase demo_draw (w1x_input true).
+  init_machine_state w1x_segments 0x100 demo_phdrs w1x_sp w1x_mbase w1x_draw
+    (w1x_input true).
 
 (** [n] instruction steps, refusing at a pending syscall: a [Some] answer
     is a run of [CatSim.msteps]. *)
@@ -162,16 +205,16 @@ Qed.
     the same term whatever [r] is. *)
 Lemma w1x_te : forall r,
   to_wexit w1x_segments
-    (init_machine_state w1x_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-       demo_mbase demo_draw (w1x_input r))
+    (init_machine_state w1x_segments 0x100 demo_phdrs w1x_sp w1x_mbase w1x_draw
+       (w1x_input r))
     [[w1x_byte]] (Z_to_bv 64 0).
 Proof. intros r. exact w1x_te0. Qed.
 
 (** The write is the first syscall, and its range passes [access_ok]. *)
 Lemma w1x_wfirst : forall r,
   wfirst_ok w1x_segments
-    (init_machine_state w1x_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-       demo_mbase demo_draw (w1x_input r)).
+    (init_machine_state w1x_segments 0x100 demo_phdrs w1x_sp w1x_mbase w1x_draw
+       (w1x_input r)).
 Proof.
   intros r. change (wfirst_ok w1x_segments w1x_ms0).
   apply (msteps_wfirst_ok w1x_segments _ w1x_s5);
@@ -224,9 +267,10 @@ Qed.
     the trace [write 0x93; exit 0] is one of its observations, and it
     never dies by a signal.
 
-    Both launches are VALID inputs, which is what makes the first half
-    bite under the ordinary quantifier: [Run.valid_input] says nothing
-    of the reader, and it PINS [in_sigpipe_default] to [true]
+    Both launches are VALID inputs at VALID entries -- [demo_entry_of]
+    each launch, by [w1x_entry_valid] -- which is what makes the first
+    half bite under the ordinary quantifier: [Run.valid_input] says
+    nothing of the reader, and it PINS [in_sigpipe_default] to [true]
     ([Run.valid_input_sigpipe_default]), so the SIG_DFL half of the
     [sigpipe_fatal] premise the kill path needs costs a caller nothing;
     the other half is the launch mask, empty here.  Under
@@ -235,39 +279,46 @@ Qed.
     which this pair does not cover. *)
 Example w1x_sigpipe_pair : forall lim,
   valid_input (w1x_input false) /\ valid_input (w1x_input true)
+  /\ valid_entry w1x_image (demo_entry_of (w1x_input false)) (w1x_input false)
+  /\ valid_entry w1x_image (demo_entry_of (w1x_input true)) (w1x_input true)
   (* no reader: killed by signal 13 *)
-  /\ omni_run w1x_image lim demo_entry (w1x_input false)
+  /\ omni_run w1x_image lim (demo_entry_of (w1x_input false)) (w1x_input false)
        (wkill_post (in_fs (w1x_input false)))
-  /\ dies_by_signal (run w1x_image lim demo_entry (w1x_input false))
-  /\ (forall tr e, bh_traces (run w1x_image lim demo_entry (w1x_input false)) tr ->
+  /\ dies_by_signal (run w1x_image lim (demo_entry_of (w1x_input false)) (w1x_input false))
+  /\ (forall tr e,
+        bh_traces (run w1x_image lim (demo_entry_of (w1x_input false)) (w1x_input false)) tr ->
         In e tr -> e = KillEv (Z_to_bv 64 SIGPIPE) (in_fs (w1x_input false)))
   (* a reader: the byte, then exit 0 *)
-  /\ must_exit_with (Z_to_bv 64 0) w1x_image lim demo_entry (w1x_input true)
-  /\ bh_traces (run w1x_image lim demo_entry (w1x_input true))
+  /\ must_exit_with (Z_to_bv 64 0) w1x_image lim (demo_entry_of (w1x_input true))
+       (w1x_input true)
+  /\ bh_traces (run w1x_image lim (demo_entry_of (w1x_input true)) (w1x_input true))
        [WriteEv (Z_to_bv 64 1) w1x_byte; ExitEv (Z_to_bv 64 0) (in_fs (w1x_input true))]
-  /\ ~ dies_by_signal (run w1x_image lim demo_entry (w1x_input true)).
+  /\ ~ dies_by_signal (run w1x_image lim (demo_entry_of (w1x_input true)) (w1x_input true)).
 Proof.
   intros lim.
+  split; [exact demo_input_valid |].
+  split; [exact demo_input_valid |].
+  split; [apply w1x_entry_valid; exact demo_input_valid |].
+  split; [apply w1x_entry_valid; exact demo_input_valid |].
+  rewrite !w1x_entry_fields.
   pose proof (fun tr => cat_kill_obs_iff_te w1x_segments 0x100 demo_phdrs
-                (Z_to_bv 64 0x7fff80000000) (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max)
-                demo_draw lim (w1x_input false) [[w1x_byte]] (Z_to_bv 64 0)
+                w1x_sp w1x_brk w1x_mbase w1x_draw lim (w1x_input false)
+                [[w1x_byte]] (Z_to_bv 64 0)
                 (w1x_te false) ltac:(discriminate) (w1x_wfirst false) eq_refl w1x_fatal tr)
     as Hdead.
   pose proof (fun tr => cat_obs_iff_te w1x_segments 0x100 demo_phdrs
-                (Z_to_bv 64 0x7fff80000000) (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max)
-                demo_draw lim (w1x_input true) [[w1x_byte]] (Z_to_bv 64 0)
+                w1x_sp w1x_brk w1x_mbase w1x_draw lim (w1x_input true)
+                [[w1x_byte]] (Z_to_bv 64 0)
                 (w1x_te true) w1x_modeled (or_intror eq_refl) tr)
     as Hlive.
-  cbn [run bh_traces w1x_image demo_entry].
-  split; [exact demo_input_valid |].
-  split; [exact demo_input_valid |].
+  cbn [run bh_traces w1x_image].
   split.
   { exact (cat_kill_omni_run_te w1x_segments 0x100 demo_phdrs
-             (Z_to_bv 64 0x7fff80000000) (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max)
-             demo_draw lim (w1x_input false) [[w1x_byte]] (Z_to_bv 64 0)
+             w1x_sp w1x_brk w1x_mbase w1x_draw lim (w1x_input false)
+             [[w1x_byte]] (Z_to_bv 64 0)
              (w1x_te false) ltac:(discriminate) (w1x_wfirst false) eq_refl w1x_fatal). }
   split.
-  { unfold dies_by_signal. cbn [run bh_traces w1x_image demo_entry].
+  { unfold dies_by_signal. cbn [run bh_traces w1x_image].
     exists [KillEv (Z_to_bv 64 SIGPIPE) (in_fs (w1x_input false))],
       (Z_to_bv 64 SIGPIPE), (in_fs (w1x_input false)).
     split; [apply Hdead; apply is_prefix_refl | left; reflexivity]. }
@@ -277,14 +328,14 @@ Proof.
     reflexivity. }
   split.
   { exact (cat_must_exit_with_te w1x_segments 0x100 demo_phdrs
-             (Z_to_bv 64 0x7fff80000000) (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max)
-             demo_draw lim (w1x_input true) [[w1x_byte]] (Z_to_bv 64 0)
+             w1x_sp w1x_brk w1x_mbase w1x_draw lim (w1x_input true)
+             [[w1x_byte]] (Z_to_bv 64 0)
              (w1x_te true) w1x_modeled (or_intror eq_refl)). }
   split.
   { apply Hlive. exists [WriteEv (Z_to_bv 64 1) w1x_byte].
     split; [| apply is_prefix_refl].
     exact (wp_cons (Z_to_bv 64 1) [w1x_byte] [] 1 [] (le_n 1) (le_n 1) (wp_nil _)). }
-  unfold dies_by_signal. cbn [run bh_traces w1x_image demo_entry].
+  unfold dies_by_signal. cbn [run bh_traces w1x_image].
   intros (tr & sig & fs & Htr & Hin).
   destruct (proj1 (Hlive tr) Htr) as (full & Hpick & Hp).
   pose proof (is_prefix_In _ _ _ Hp Hin) as Hin'.
