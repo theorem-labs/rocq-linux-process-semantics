@@ -757,7 +757,7 @@ Proof. check_eq. Qed.
 
 (** [nfds = 0] STILL RANGE-CHECKS [ufds], and the answer is -EFAULT.
     [do_sys_poll] guards its write-back loop with
-    [if (!user_write_access_begin(ufds, nfds * sizeof(*ufds))) goto
+    [if (!user_write_access_begin(ufds, nfds * sizeof pollfd)) goto
     out_fds] (fs/select.c) and runs that call for every [nfds],
     including 0; [out_fds] returns the [err = -EFAULT] the function
     opened with.  riscv64's [user_write_access_begin] is [access_ok]

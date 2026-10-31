@@ -1503,7 +1503,8 @@ Lemma check_write_sound_ok : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_write in H.
-  unfold write_spec, write_range_gate, write_file_tail, write_ledger.
+  unfold write_spec, write_range_gate, write_file_tail, write_fault_keep,
+    write_ledger.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd.
   9:{ (* /dev/null: -EBADF without FMODE_WRITE, the range gate, the range
          verdict, then the clamped count *)
@@ -1801,7 +1802,8 @@ Lemma check_write_sound_unmodeled : forall i fd buf count eff m,
   write_spec fd buf count i m Unmodeled.
 Proof.
   intros i fd buf count eff m H.
-  unfold check_write in H. unfold write_spec, write_range_gate, write_file_tail, write_ledger.
+  unfold check_write in H. unfold write_spec, write_range_gate,
+    write_file_tail, write_fault_keep, write_ledger.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd.
   9:{ destruct wr; cbn [negb] in H; cbv beta iota in H;
         [ destruct (modeled_rw_range buf count) eqn:Hg; cbn [negb] in H;
@@ -2000,7 +2002,8 @@ Lemma check_write_complete_ok : forall i fd buf count eff m m' evs,
   check_write i fd buf count eff m = CheckOk m' evs.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold write_spec, write_range_gate, write_file_tail, write_ledger in H.
+  unfold write_spec, write_range_gate, write_file_tail, write_fault_keep,
+    write_ledger in H.
   unfold check_write. sys_unfold.
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd; hall Hfd; inv_ok.
@@ -2037,6 +2040,7 @@ Proof.
       destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok.
       destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
         hall Hz; inv_ok.
+      sys_unfold; inv_ok.
       unfold check_write_fault_extend. rewrite Hfs, Hz.
       unfold check_ret_only_copyins, check_ret_only, clear_copyins; cbn;
         rewrite ?bv_eqb_refl, ?Nat.eqb_refl; reflexivity.
@@ -2076,6 +2080,7 @@ Proof.
       destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok.
       destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
         hall Hz; inv_ok.
+      sys_unfold; inv_ok.
       unfold check_write_fault_extend. rewrite Hfs, Hz.
       unfold check_ret_only_copyins, check_ret_only, clear_copyins; cbn;
         rewrite ?bv_eqb_refl, ?Nat.eqb_refl; reflexivity.
@@ -2133,7 +2138,8 @@ Lemma check_write_complete_unmodeled : forall i fd buf count m eff,
   check_write i fd buf count eff m = CheckUnmodeled.
 Proof.
   intros i fd buf count m eff H.
-  unfold write_spec, write_range_gate, write_file_tail, write_ledger in H.
+  unfold write_spec, write_range_gate, write_file_tail, write_fault_keep,
+    write_ledger in H.
   unfold check_write. sys_unfold.
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd; hall Hfd; inv_ok;
@@ -2158,7 +2164,8 @@ Proof.
       destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
         try discriminate; [|reflexivity].
       destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
-        hall Hz; inv_ok; try discriminate; reflexivity. }
+        hall Hz; inv_ok; try discriminate; [reflexivity|];
+        sys_unfold; inv_ok. }
     destruct (w_is0 count); [ok_zero_split buf count|].
     all: destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
          try discriminate; try reflexivity.
@@ -2193,7 +2200,8 @@ Proof.
       destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
         try discriminate; [|reflexivity].
       destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
-        hall Hz; inv_ok; try discriminate; reflexivity. }
+        hall Hz; inv_ok; try discriminate; [reflexivity|];
+        sys_unfold; inv_ok. }
     destruct (w_is0 count); [ok_zero_split buf count|].
     all: destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
          try discriminate; try reflexivity.
@@ -2201,6 +2209,8 @@ Proof.
                            (write_source (in_mem i) buf count))) eqn:Hk;
          hall Hk; inv_ok; try discriminate.
     all: reflexivity.
+  - (* socket: unmodeled on both sides, whatever the buffer *)
+    reflexivity.
   - (* pipe *)
     destruct w; cbn [negb] in *; cbv beta iota zeta in *; inv_ok;
       try discriminate.
@@ -2938,6 +2948,7 @@ Proof.
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok.
     destruct (negb (modeled_zero_fill (bv_unsigned pos) data)) eqn:Hz;
       hall Hz; inv_ok.
+    sys_unfold; inv_ok.
     unfold check_write_fault_extend. rewrite Hfs, Hz.
     apply check_ret_only_copyins_ok_iff. repeat split; reflexivity. }
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok.
@@ -2961,6 +2972,7 @@ Proof.
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok.
     destruct (negb (modeled_zero_fill (bv_unsigned pos) data)) eqn:Hz;
       hall Hz; inv_ok.
+    sys_unfold; inv_ok.
     unfold check_write_fault_extend. rewrite Hfs, Hz.
     apply check_ret_only_copyins_ok_iff. repeat split; reflexivity. }
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok.
@@ -3007,7 +3019,8 @@ Proof.
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
       try discriminate; [|reflexivity].
     destruct (negb (modeled_zero_fill (bv_unsigned pos) data)) eqn:Hz;
-      hall Hz; inv_ok; try discriminate; reflexivity. }
+      hall Hz; inv_ok; try discriminate; [reflexivity|];
+      sys_unfold; inv_ok. }
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
     [|reflexivity].
   destruct (negb (modeled_file_gap data pos
@@ -3029,7 +3042,8 @@ Proof.
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
       try discriminate; [|reflexivity].
     destruct (negb (modeled_zero_fill (bv_unsigned pos) data)) eqn:Hz;
-      hall Hz; inv_ok; try discriminate; reflexivity. }
+      hall Hz; inv_ok; try discriminate; [reflexivity|];
+      sys_unfold; inv_ok. }
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
     [|reflexivity].
   destruct (negb (modeled_file_gap data pos
@@ -3271,7 +3285,8 @@ Lemma check_writev_sound_ok : forall i fd iov iovcnt eff m m' evs,
   writev_spec fd iov iovcnt i m (Ok eff m' evs).
 Proof.
   intros i fd iov iovcnt eff m m' evs H.
-  unfold check_writev in H. unfold writev_spec, writev_file_arm, writev_ledger.
+  unfold check_writev in H. unfold writev_spec, writev_file_arm,
+    write_fault_keep, writev_ledger.
   unfold writev_gathered in H |- *.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd.
   9:{ (* /dev/null: -EBADF without FMODE_WRITE, else the import's answer *)
@@ -3491,7 +3506,8 @@ Lemma check_writev_sound_unmodeled : forall i fd iov iovcnt eff m,
   writev_spec fd iov iovcnt i m Unmodeled.
 Proof.
   intros i fd iov iovcnt eff m H.
-  unfold check_writev in H. unfold writev_spec, writev_file_arm, writev_ledger.
+  unfold check_writev in H. unfold writev_spec, writev_file_arm,
+    write_fault_keep, writev_ledger.
   unfold writev_gathered in H |- *.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd.
   9:{ destruct wr.
@@ -3639,7 +3655,8 @@ Lemma check_writev_complete_ok : forall i fd iov iovcnt eff m m' evs,
   check_writev i fd iov iovcnt eff m = CheckOk m' evs.
 Proof.
   intros i fd iov iovcnt eff m m' evs H.
-  unfold writev_spec, writev_file_arm, writev_ledger in H. unfold check_writev.
+  unfold writev_spec, writev_file_arm, write_fault_keep, writev_ledger in H.
+  unfold check_writev.
   unfold writev_gathered in H |- *.
   unfold writev_buf_gap in H. sys_unfold. cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd; hall Hfd; inv_ok.
@@ -3684,6 +3701,7 @@ Proof.
       destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok.
       destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
         hall Hz; inv_ok.
+      sys_unfold; inv_ok.
       unfold check_write_fault_extend. rewrite Hfs, Hz.
       wv_errno_complete. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok.
@@ -3730,6 +3748,7 @@ Proof.
       destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok.
       destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
         hall Hz; inv_ok.
+      sys_unfold; inv_ok.
       unfold check_write_fault_extend. rewrite Hfs, Hz.
       wv_errno_complete. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok.
@@ -3767,7 +3786,8 @@ Lemma check_writev_complete_unmodeled : forall i fd iov iovcnt m eff,
   check_writev i fd iov iovcnt eff m = CheckUnmodeled.
 Proof.
   intros i fd iov iovcnt m eff H.
-  unfold writev_spec, writev_file_arm, writev_ledger in H. unfold check_writev.
+  unfold writev_spec, writev_file_arm, write_fault_keep, writev_ledger in H.
+  unfold check_writev.
   unfold writev_gathered in H |- *.
   unfold writev_buf_gap in H. sys_unfold. cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd; hall Hfd; inv_ok;
@@ -3798,7 +3818,8 @@ Proof.
       destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
         try discriminate; [|reflexivity].
       destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
-        hall Hz; inv_ok; try discriminate; reflexivity. }
+        hall Hz; inv_ok; try discriminate; [reflexivity|];
+        sys_unfold; inv_ok. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
       try discriminate.
     + destruct (negb (modeled_file_gap data off
@@ -3841,7 +3862,8 @@ Proof.
       destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
         try discriminate; [|reflexivity].
       destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
-        hall Hz; inv_ok; try discriminate; reflexivity. }
+        hall Hz; inv_ok; try discriminate; [reflexivity|];
+        sys_unfold; inv_ok. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
       try discriminate.
     + destruct (negb (modeled_file_gap data off

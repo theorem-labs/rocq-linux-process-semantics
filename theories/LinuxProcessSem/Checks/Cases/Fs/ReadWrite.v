@@ -32,8 +32,13 @@ Proof.
   destruct (negb (modeled_rw_range buf count)); cbv iota in Hspec; [discriminate|].
   lazymatch type of Hspec with (if ?b then _ else _) = _ => destruct b end;
     cbv iota in Hspec.
-  - (* -EFAULT: no writes, no events *)
-    apply check_ret_only_ok_iff in Hspec. destruct Hspec as (_ & _ & Hev). exact Hev.
+  - (* -EFAULT: no writes, no events, whatever the file it extends *)
+    unfold check_write_fault_extend in Hspec.
+    destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; [|discriminate].
+    destruct (negb (modeled_zero_fill (bv_unsigned off) data));
+      cbv iota in Hspec; [discriminate|].
+    apply check_ret_only_copyins_ok_iff in Hspec.
+    destruct Hspec as (_ & _ & Hev). exact Hev.
   - (* the range verdict a zero-length write still faces, then the file *)
     destruct (w_is0 count); cbv iota in Hspec;
       [ unfold check_access_ok_zero in Hspec;

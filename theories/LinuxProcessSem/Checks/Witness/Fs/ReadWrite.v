@@ -636,7 +636,7 @@ Lemma write_witness_ok : forall fd buf count i m,
   write_spec fd buf count i m (write_witness fd buf count i m).
 Proof.
   intros. unfold write_spec, write_range_gate, write_file_tail,
-    write_ledger, write_witness.
+    write_fault_keep, write_ledger, write_witness.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd.
   9:{ (* /dev/null *)
       destruct wr; cbn [negb]; cbv beta iota.
@@ -1336,7 +1336,8 @@ Local Ltac wvw_open Hfd :=
 Lemma writev_witness_ok : forall fd iov iovcnt i m,
   writev_spec fd iov iovcnt i m (writev_witness fd iov iovcnt i m).
 Proof.
-  intros. unfold writev_witness, writev_spec, writev_file_arm, writev_ledger.
+  intros. unfold writev_witness, writev_spec, writev_file_arm,
+    write_fault_keep, writev_ledger.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd.
   9:{ (* /dev/null *)
       destruct wr.

@@ -1011,7 +1011,7 @@ Fixpoint ppoll_writeback (p : word) (rs : list Z) : list (word * list byte) :=
     loop breaks at [if (!len) break] before [copy_from_user], [do_poll]
     walks no entry and the write-back loop writes none -- but
     [do_sys_poll] guards that loop with
-    [if (!user_write_access_begin(ufds, nfds * sizeof(*ufds))) goto
+    [if (!user_write_access_begin(ufds, nfds * sizeof pollfd)) goto
     out_fds] (fs/select.c), which it runs UNCONDITIONALLY, and
     [out_fds] returns the [err = -EFAULT] the function opened with.
     riscv64's [user_write_access_begin] is [access_ok] on the untagged
@@ -1047,7 +1047,7 @@ Definition ppoll_core (i : SyscallInput) (m : Model) (ufds nfds : word)
         end
     end.
 
-(** [user_write_access_begin(ufds, nfds * sizeof(*ufds))] (fs/select.c),
+(** [user_write_access_begin(ufds, nfds * sizeof pollfd)] (fs/select.c),
     the range test [do_sys_poll] makes on the write-back band.
 
     IT RUNS AFTER [do_poll], which is the whole reason it is a second
