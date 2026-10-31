@@ -38,10 +38,19 @@ unfinished.
 
 ## What this file does NOT port, and why
 
-- `theories/Shapes.v`'s shapes 3 and 4 — `disagrees_at_most`, `classifies`,
-  `classifier_rejects_at_most`, `agreement_decidable` and their `_rv64gc`
-  variants. They rest on `EquivalenceDefinition.Classifier.good_input_s` and
-  `weight_bound_T_fo`, which the Lean model does not carry at
+- `theories/Shapes.v`'s shapes 3 and 4 (`theories/Shapes.v:326-501`): the seven
+  definitions `disagrees_at_most`, `classifies`, `classifier_rejects_at_most`,
+  `agreement_decidable`, `disagrees_at_most_rv64gc`, `classifies_rv64gc` and
+  `agreement_decidable_rv64gc` (`classifier_rejects_at_most` has no `_rv64gc`
+  variant), and the ten lemmas about them: `classifies_is_lps`,
+  `classifier_rejects_at_most_is_lps`, `classifies_rv64gc_is_lps`,
+  `classifies_rv64gc_of_classifies`, `disagrees_at_most_mono`,
+  `classifier_rejects_at_most_mono`, `disagrees_at_most_of_classifier`,
+  `agreement_decidable_of_classifier`,
+  `disagrees_at_most_rv64gc_of_classifier` and
+  `agreement_decidable_rv64gc_of_classifier`. They rest on
+  `EquivalenceDefinition.Classifier.good_input_s` and `weight_bound_T_fo`,
+  which the Lean model does not carry at
   `ff0313ba4f2e9baffcf5b5f50bc9d31628ae8556`, and no statement of
   `libreac/fuzz_knock` has those shapes (its nine are four `_halts`, two
   `_halts_may_fail` and three `_agrees`). OSSV-265 gaps row K1-1.
@@ -73,7 +82,7 @@ open LinuxProcessSemantics.Riscv.Prelude (Z_to_bv)
 /-! ## Parameters -/
 
 /-! Memory budgets in bytes, for the plain build and the sanitizer build
-(`theories/Shapes.v:54-66`). -/
+(`theories/Shapes.v:54-62`). -/
 namespace Budgets
 
 /-! Rocq's `Equivalence.ShippedBudgets`: 16 GiB for the plain build, 512 GiB for
@@ -100,17 +109,17 @@ end Asan
 
 end Budgets
 
-/-- `theories/Shapes.v:68-71`. -/
+/-- `theories/Shapes.v:64-66`. -/
 theorem standard_budgets :
     Budgets.Standard.lim_source = 0x400000000 ∧ Budgets.Standard.lim_target = 0x8000000000 :=
   ⟨rfl, rfl⟩
 
-/-- `theories/Shapes.v:73-76`. -/
+/-- `theories/Shapes.v:68-70`. -/
 theorem asan_budgets :
     Budgets.Asan.lim_source = 0x80000000 ∧ Budgets.Asan.lim_target = 0x8000000000 :=
   ⟨rfl, rfl⟩
 
-/-! How much the environment may refuse (`theories/Shapes.v:79-89`). -/
+/-! How much the environment may refuse (`theories/Shapes.v:72-82`). -/
 namespace Env
 /-- Any system call the model lets fail may fail, at any time: memory, file
 system, descriptors, network, credentials, interruption. -/
@@ -123,7 +132,7 @@ def forced_only : SpuriousCfg := forced_only_cfg
 end Env
 
 /-! The three readings, spelled as the model's six per-family switches (memory
-first; `true` means "may fail without cause") (`theories/Shapes.v:91-100`). -/
+first; `true` means "may fail without cause") (`theories/Shapes.v:84-93`). -/
 
 theorem may_fail_is : Env.may_fail = SpuriousCfg.mkSpuriousCfg true true true true true true := rfl
 
@@ -133,7 +142,7 @@ theorem alloc_forced_only_is :
 theorem forced_only_is :
     Env.forced_only = SpuriousCfg.mkSpuriousCfg false false false false false false := rfl
 
-/-! Sets of allowed exit statuses (`theories/Shapes.v:102-123`). -/
+/-! Sets of allowed exit statuses (`theories/Shapes.v:95-113`). -/
 namespace Exits
 /-- 0..255: the statement says only that the process exits. Rocq takes it from
 `HaltsAllowed.AnyExit.codes`, whose one member is `byte_codes`. -/
@@ -157,7 +166,7 @@ of entries, IF the plain build's run is never refused memory for exceeding
 `lim_plain`, THEN no execution of either build reaches an error, and the two
 builds have exactly the same finite traces. The environment may refuse any call,
 in either build (`Env.may_fail`). The budget premise is on the plain build only.
-(`theories/Shapes.v:126-145`) -/
+(`theories/Shapes.v:115-141`) -/
 def agrees (lim_plain lim_san : Int) (plain san : Image) : Prop :=
   ∀ (en_plain en_san : ExecEntry) (inp : ProcInput),
     valid_entry plain en_plain inp →
@@ -173,7 +182,7 @@ theorem agrees_is_lps (lp ls : Int) (p s : Image) :
     agrees lp ls p s = strong_universal_error_free_T_budgets lp ls p s := rfl
 
 /-- `agrees_in env ...`: the same claim when the environment refuses only what
-`env` allows (`theories/Shapes.v:147-166`). -/
+`env` allows (`theories/Shapes.v:143-164`). -/
 def agrees_in (env : SpuriousCfg) (lim_plain lim_san : Int) (plain san : Image) : Prop :=
   ∀ (en_plain en_san : ExecEntry) (inp : ProcInput),
     valid_entry plain en_plain inp →
@@ -190,12 +199,12 @@ theorem agrees_in_is_lps (env : SpuriousCfg) (lp ls : Int) (p s : Image) :
 
 /-- `agrees` is `agrees_in Env.may_fail`. They are different terms (one is
 stated over `run`, the other over `run_scfg`), so this is an equivalence
-(`theories/Shapes.v:168-177`). -/
+(`theories/Shapes.v:166-174`). -/
 theorem agrees_iff_agrees_in_may_fail (lp ls : Int) (p s : Image) :
     agrees lp ls p s ↔ agrees_in Env.may_fail lp ls p s :=
   (strong_universal_error_free_T_scfg_budgets_may_fail lp ls p s).symm
 
-/-- `theories/Shapes.v:179-193`: the same claim under the model's other reading
+/-- `theories/Shapes.v:176-195`: the same claim under the model's other reading
 of abort(), in which abort is death by SIGABRT rather than an unmodelled step.
 The claim still forbids it: both runs must be error-free AND never killed by a
 signal. -/
@@ -213,7 +222,7 @@ def agrees_abort_modelled (lim_plain lim_san : Int) (plain san : Image) : Prop :
 theorem agrees_abort_modelled_is_lps (lp ls : Int) (p s : Image) :
     agrees_abort_modelled lp ls p s = strong_universal_error_free_T_budgets_abort lp ls p s := rfl
 
-/-- `theories/Shapes.v:195-207`. -/
+/-- `theories/Shapes.v:197-212`. -/
 def agrees_in_abort_modelled (env : SpuriousCfg) (lim_plain lim_san : Int)
     (plain san : Image) : Prop :=
   ∀ (en_plain en_san : ExecEntry) (inp : ProcInput),
@@ -231,7 +240,7 @@ theorem agrees_in_abort_modelled_is_lps (env : SpuriousCfg) (lp ls : Int) (p s :
       = strong_universal_error_free_T_scfg_budgets_abort env lp ls p s := rfl
 
 /-! The `_rv64gc` variants, on the inputs whose advertised machine (AT_HWCAP) is
-RV64GC, with no vector unit (`theories/Shapes.v:209-253`). -/
+RV64GC, with no vector unit (`theories/Shapes.v:214-268`). -/
 
 def agrees_rv64gc (lim_plain lim_san : Int) (plain san : Image) : Prop :=
   ∀ (en_plain en_san : ExecEntry) (inp : ProcInput),
@@ -287,7 +296,7 @@ runs forever (the predicate is inductive), gets stuck, reaches an error, or dies
 by a signal. Nothing is said about output. Under `Env.forced_only` a memory
 request is refused only when the budget is spent or no address range is free,
 and address-space reservations that are never touched (PROT_NONE, MAP_NORESERVE)
-are not charged to the budget. (`theories/Shapes.v:255-287`) -/
+are not charged to the budget. (`theories/Shapes.v:270-292`) -/
 def halts_within_budget (lim : Int) (allowed : List word) (img : Image) : Prop :=
   ∀ (en : ExecEntry) (inp : ProcInput),
     valid_entry img en inp →
@@ -303,7 +312,7 @@ theorem halts_within_budget_is_lps (lim : Int) (allowed : List word) (img : Imag
 environment refuses (`Env.may_fail`), at the model's single-binary budget
 (16 GiB). Stronger, and false for any build whose start-up waits forever when a
 reservation is refused, which is why no AddressSanitizer build has a statement
-of this shape. (`theories/Shapes.v:289-299`) -/
+of this shape. (`theories/Shapes.v:294-307`) -/
 def halts_may_fail (allowed : List word) (img : Image) : Prop :=
   ∀ (en : ExecEntry) (inp : ProcInput),
     valid_entry img en inp →
@@ -313,7 +322,7 @@ def halts_may_fail (allowed : List word) (img : Image) : Prop :=
 theorem halts_may_fail_is_lps (allowed : List word) (img : Image) :
     halts_may_fail allowed img = halts_allowed_T_scfg may_fail_cfg allowed img := rfl
 
-/-! Widening the allowed set weakens both readings (`theories/Shapes.v:309-325`). -/
+/-! Widening the allowed set weakens both readings (`theories/Shapes.v:309-324`). -/
 
 theorem halts_within_budget_mono (lim : Int) (S1 S2 : List word) (img : Image)
     (hsub : ∀ code, code ∈ S1 → code ∈ S2) :

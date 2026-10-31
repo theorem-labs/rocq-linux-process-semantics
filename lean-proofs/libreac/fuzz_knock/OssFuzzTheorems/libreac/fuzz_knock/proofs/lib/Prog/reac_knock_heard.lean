@@ -173,24 +173,76 @@ private theorem v_jalr_ret_pc (a : word) : v_jalr a (bv_signed (0 : BitVec 12)) 
   rw [hs, BitVec.add_zero] at h
   exact h.symm
 
+/-! ## The sign-extended load against the stored integer
+
+`knock_sx32_unsigned` (`lib/Prog/reac_knock_struct.v:12-28`) and
+`knock_sx32_eqb` (`:30-36`) rest on stdpp's `bv_swrap` lemma set, which the
+Lean port does not carry (OSSV-265 gaps row T-12); they follow from Lean's
+own `Int` arithmetic. They are `private` here, as they are in the sibling
+`reac_knock_step.lean:63` and `:77`, because
+`…Prog.reac_knock_struct`, where their Rocq twins live, is another agent's
+file. -/
+
+private theorem knock_sx32_unsigned (s : Int) (h0 : 0 ≤ s) (h1 : s < 2 ^ 32) :
+    bv_unsigned (sx32 (Z_to_bv 64 s)) =
+      if s < 2 ^ 31 then s else s + (2 ^ 64 - 2 ^ 32) := by
+  have p31 : (2 : Int) ^ 31 = 2147483648 := by decide
+  have p32 : (2 : Int) ^ 32 = 4294967296 := by decide
+  have p64 : (2 : Int) ^ 64 = 18446744073709551616 := by decide
+  unfold sx32
+  rw [Z_to_bv_unsigned, Z_to_bv_unsigned, bv_wrap64_mod, bv_wrap64_mod]
+  unfold bv_swrap bv_wrap bv_half_modulus bv_modulus
+  rw [p31, p32, p64] at *
+  split <;> omega
+
+private theorem sx32_v_lw (v : word) : sx32 v = v_lw v := rfl
+
+private theorem knock_sx32_eqb (s c : Int) (h0 : 0 ≤ s) (h1 : s < 2 ^ 32)
+    (hc0 : 0 ≤ c) (hc1 : c < 2 ^ 31) :
+    bv_eqb (sx32 (Z_to_bv 64 s)) (Z_to_bv 64 c) = decide (s = c) := by
+  have hu := knock_sx32_unsigned s h0 h1
+  have p31 : (2 : Int) ^ 31 = 2147483648 := by decide
+  have p32 : (2 : Int) ^ 32 = 4294967296 := by decide
+  have p64 : (2 : Int) ^ 64 = 18446744073709551616 := by decide
+  rw [bv_eqb_Z, hu, Z_to_bv_unsigned, bv_wrap64_mod]
+  rw [p31, p32, p64] at *
+  rw [Int.emod_eq_of_lt hc0 (by omega)]
+  split <;> exact decide_eq_decide.2 (by omega)
+
+/-- The `beq a2, x0` of `0x12da4` against Rocq's `Z.eqb st 0`
+(`lib/Prog/reac_knock_heard_c.v:25`). -/
+private theorem branch_eq_decide (s : Int) (h0 : 0 ≤ s) (h1 : s < 2 ^ 32) :
+    branch_taken .BC_EQ (v_lw (Z_to_bv 64 s)) (Z_to_bv 64 0) = decide (s = 0) := by
+  show bv_eqb (v_lw (Z_to_bv 64 s)) (Z_to_bv 64 0) = _
+  rw [← sx32_v_lw]
+  exact knock_sx32_eqb s 0 h0 h1 (by decide) (by decide)
+
 /-! ## The walk -/
 
-private theorem heard_mem_true (regs : bvmap 5 word) (mem : word → Option byte) (v : word)
-    (h : branch_taken .BC_EQ (v_lw v) (Z_to_bv 64 0) = true) :
-    heard_mem regs mem v =
+private theorem heard_mem_true (regs : bvmap 5 word) (mem : word → Option byte) (st : Int)
+    (h : st = 0) :
+    heard_mem regs mem st =
       wbytes (wbytes mem (v_addi (getr regs 10) 24) (word_to_le_bytes 8 (getr regs 11)))
         (v_addi (getr regs 10) 0) (word_to_le_bytes 4 (Z_to_bv 64 2)) := by
   simp only [heard_mem, h, ↓reduceIte]
 
-private theorem heard_mem_false (regs : bvmap 5 word) (mem : word → Option byte) (v : word)
-    (h : branch_taken .BC_EQ (v_lw v) (Z_to_bv 64 0) = false) :
-    heard_mem regs mem v =
+private theorem heard_mem_false (regs : bvmap 5 word) (mem : word → Option byte) (st : Int)
+    (h : ¬ st = 0) :
+    heard_mem regs mem st =
       wbytes mem (v_addi (getr regs 10) 24) (word_to_le_bytes 8 (getr regs 11)) := by
-  simp only [heard_mem, h, Bool.false_eq_true, ↓reduceIte]
+  simp only [heard_mem, h, ↓reduceIte]
 
 /-- `lib/Prog/reac_knock_heard.v:12-29`. -/
 theorem reac_knock_heard_holds : reac_knock_heard_contract := by
-  intro regs mem st p1 opened due heard g p2 bs v _hst _hst' _hg _hg' hrw hread hbs
+  intro regs mem st p1 opened due heard g p2 bs hst0 hst1 _hg _hg' hrw hread hbsst
+  -- the loaded word: the stored integer, sign-extended by the `lw`
+  obtain ⟨v, hvdef⟩ : ∃ v : word, v = Z_to_bv 64 st := ⟨_, rfl⟩
+  have hvu : bv_unsigned v = st := by
+    rw [hvdef, Z_to_bv_unsigned]
+    exact Int.emod_eq_of_lt hst0 (by omega)
+  have hbs : bytes_le_to_Z bs = bv_unsigned v := by rw [hvu]; exact hbsst
+  have hbe : branch_taken branch_cond.BC_EQ (v_lw v) (Z_to_bv 64 0) = decide (st = 0) := by
+    rw [hvdef]; exact branch_eq_decide st hst0 hst1
   obtain ⟨-, hwr⟩ := hrw
   have hsz : cells_size (reac_knock_struct.knock_cells st p1 opened due heard g p2) = 40 := rfl
   rw [hsz] at hwr
@@ -246,7 +298,8 @@ theorem reac_knock_heard_holds : reac_knock_heard_contract := by
   rw [hpc1]
   cases hbt : branch_taken branch_cond.BC_EQ (v_lw v) (Z_to_bv 64 0) with
   | true =>
-    -- taken: 0x12dac
+    -- taken: the stored state is zero, Rocq's `Z.eqb st 0`; 0x12dac
+    have hz : st = 0 := of_decide_eq_true (by rw [← hbe]; exact hbt)
     have hbt' : branch_taken branch_cond.BC_EQ
         (getr (regupd regs 12 (v_lw v)) 12) (getr (regupd regs 12 (v_lw v)) 0) = true := by
       rw [g12, getr_zero]; exact hbt
@@ -301,9 +354,10 @@ theorem reac_knock_heard_holds : reac_knock_heard_contract := by
       rw [hmu0 _ x hout, hmu1 x hout]
     · exact fun x hx => wview_grows Img0.rsegs mem _ x
         (mem_grows_trans mem _ _ (wbytes_grows _ mem _) (wbytes_grows _ _ _)) hx
-    · exact (heard_mem_true regs mem v hbt).symm
+    · exact (heard_mem_true regs mem st hz).symm
   | false =>
-    -- not taken: 0x12da8, return
+    -- not taken: the stored state is not zero; 0x12da8, return
+    have hz : ¬ st = 0 := of_decide_eq_false (by rw [← hbe]; exact hbt)
     have hbt' : branch_taken branch_cond.BC_EQ
         (getr (regupd regs 12 (v_lw v)) 12) (getr (regupd regs 12 (v_lw v)) 0) = false := by
       rw [g12, getr_zero]; exact hbt
@@ -329,6 +383,6 @@ theorem reac_knock_heard_holds : reac_knock_heard_contract := by
       obtain ⟨hout, -⟩ := hx
       exact hmu1 x hout
     · exact fun x hx => wview_grows Img0.rsegs mem _ x (wbytes_grows _ mem _) hx
-    · exact (heard_mem_false regs mem v hbt).symm
+    · exact (heard_mem_false regs mem st hz).symm
 
 end OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_heard
