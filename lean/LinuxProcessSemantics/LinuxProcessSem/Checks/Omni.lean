@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Omni.v
 import LinuxProcessSemantics.LinuxProcessSem.OmniRun
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
@@ -1601,7 +1602,9 @@ theorem demo_input_valid : valid_input demo_proc_input := by
   have hargv : valid_argv demo_proc_input.in_argv := by unfold valid_argv; decide
   have henvp : valid_envp demo_proc_input.in_envp := by unfold valid_envp; decide
   have hfs : Fs.valid_fs demo_proc_input.in_fs := by unfold Fs.valid_fs; decide
-  have himg : Fs.fs_image_real demo_proc_input.in_image_fs = true := by decide
+  have himg : Fs.fs_keys_relative demo_proc_input.in_image_fs := by
+    intro pf hpf
+    cases hpf
   have hcreds : valid_creds demo_proc_input := by unfold valid_creds valid_id; decide
   have hnofile : valid_nofile demo_proc_input.in_nofile := by unfold valid_nofile; decide
   have hsig : valid_sigmask demo_proc_input := by unfold valid_sigmask; decide

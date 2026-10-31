@@ -31,6 +31,9 @@ theorem launch_is_valid : valid_fin_input launch := by
         valid_nofile, valid_sigmask, valid_hwcap]
        set_option maxRecDepth 32768 in decide)
     | rfl
+    | -- `Fs.fs_keys_relative` on the fixture's empty image; a bounded ∀ over
+      -- a `match`-defined Prop, so `decide` finds no instance for it.
+      (unfold Fs.fs_keys_relative; intro pf hpf; cases hpf)
     | exact stream_of_list_then_infinite _ _ default_urandom_infinite
     | fail "valid_fin_input: a clause matched none of the shapes"
 

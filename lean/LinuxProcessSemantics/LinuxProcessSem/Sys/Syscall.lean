@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Syscall.v
 import LinuxProcessSemantics.LinuxProcessSem.Monad
 
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
@@ -210,6 +211,18 @@ theorem w_is0_pos (w : word) : 0 < bv_unsigned w → w_is0 w = false := by
   intro hw
   subst hw
   simp [bv_unsigned, Z_to_bv] at h
+
+/-- …and the converse, which is the direction an ARM reads it in: past a
+`w_is0` gate the length is positive, and a spec that goes on to record a
+range derived from it is recording real bytes.
+Rocq: `Syscall.w_is0_false_pos`. -/
+theorem w_is0_false_pos (w : word) (h : w_is0 w = false) : 0 < bv_unsigned w := by
+  unfold w_is0 bv_eqb at h
+  simp only [beq_eq_false_iff_ne, ne_eq] at h
+  unfold bv_unsigned
+  have hz : (Z_to_bv 64 0 : word).toNat = 0 := by decide
+  have hne : w.toNat ≠ 0 := fun h0 => h (BitVec.eq_of_toNat_eq (by rw [h0, hz]))
+  omega
 
 /-- The low 32 bits of a register, zero-extended back into a `word` — the
 C conversion an `int` / `unsigned int` parameter performs.  NOT

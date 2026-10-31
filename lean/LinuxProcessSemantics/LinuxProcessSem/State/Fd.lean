@@ -142,8 +142,8 @@ the caller's `alt (errno_from …) (… lowest_fd …)` — openat, dup, pipe2,
 socket, accept4 — is left with the injected errno as its only outcome,
 so Linux's success at 4097 is neither admitted nor declared unmodeled;
 `Net.Socket.socketpair_fds` alone declines.  A twin keeps that shape:
-bugs/fd-allocation-ignores-rlimit-nofile.md records what it costs and
-names the decline as a fix not taken, not as the rule.  This header
+`linux-process-semantics@ff0313ba4f:bugs/fd-allocation-ignores-rlimit-nofile.md` records what it
+costs and names the decline as a fix not taken, not as the rule.  This header
 carries the kernel reading behind the LOWEST-free answer, which the Rocq
 prose leaves to `Fs.File.lowest_fd`.
 

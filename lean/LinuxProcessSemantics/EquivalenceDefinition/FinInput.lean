@@ -305,6 +305,10 @@ theorem valid_fin_input_inhabited : ∃ f, valid_fin_input f := by
         valid_nofile, valid_sigmask, valid_hwcap]
        set_option maxRecDepth 32768 in decide)
     | rfl
+    | -- `Fs.fs_keys_relative` on the empty image, the clause f1006fe8 puts
+      -- where `Fs.fs_image_real … = true` used to be.  It is a bounded ∀
+      -- over a `match`-defined Prop, so `decide` finds no instance for it.
+      (unfold Fs.fs_keys_relative; intro pf hpf; cases hpf)
     | exact default_urandom_infinite
     | fail "valid_fin_input: a clause matched none of the shapes"
 

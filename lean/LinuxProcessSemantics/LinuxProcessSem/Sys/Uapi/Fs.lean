@@ -25,8 +25,8 @@ TRUST BOUNDARY: this file is part of the trusted specification.
 
 Every header line below is read at Linux v6.18.46, commit
 1f99e9ab748fc5c32120de9c4eca31abfe54a4d5, the citation baseline
-AGENTS.md pins.  riscv64 takes the asm-generic fcntl.h, ioctls.h and
-stat.h unchanged: arch/riscv/include/uapi/asm/Kbuild generates only
+linux-process-semantics@ff0313ba4f:AGENTS.md pins.  riscv64 takes the asm-generic fcntl.h, ioctls.h
+and stat.h unchanged: arch/riscv/include/uapi/asm/Kbuild generates only
 unistd_32.h and unistd_64.h, and include/uapi/asm-generic/Kbuild lists
 ioctls.h among its `mandatory-y` headers (line 13), so the generic header
 is the riscv64 ABI verbatim.
@@ -200,7 +200,8 @@ keys the descriptor's stat pin under it.  The
 assumption the name rests on — the image's /dev/urandom is the random
 device, character major 1 minor 9, `devlist[9]` of `memory_open`
 (drivers/char/mem.c, Linux v6.18.46) — is stated once, at the openat arm,
-and recorded in bugs/openat-urandom-assumed-random-device.md. -/
+and recorded in
+`linux-process-semantics@ff0313ba4f:bugs/openat-urandom-assumed-random-device.md`. -/
 def urandom_path : path :=
   [Z_to_bv 8 47, Z_to_bv 8 100, Z_to_bv 8 101, Z_to_bv 8 118, Z_to_bv 8 47,
    Z_to_bv 8 117, Z_to_bv 8 114, Z_to_bv 8 97, Z_to_bv 8 110, Z_to_bv 8 100,
@@ -423,7 +424,7 @@ shared-fcntl mask WIDENED BY ONE BIT, which is the whole difference from
 which refuses it: `eventfd2(0, 1)` hands back a descriptor and
 `timerfd_create(CLOCK_MONOTONIC, 1)` is -EINVAL, so a model that spelled
 one gate with the other's mask would be wrong on exactly one input each
-way.  testing/syscall-check/tests/eventfd2.c pins that input. -/
+way.  linux-process-semantics@ff0313ba4f:testing/syscall-check/tests/eventfd2.c pins that input. -/
 def EFD_FLAGS_SET : Int :=
   ((O_CLOEXEC.toNat ||| O_NONBLOCK.toNat ||| EFD_SEMAPHORE.toNat : Nat) : Int)
 
@@ -557,7 +558,7 @@ def stat_ifmt (bs : List byte) : Int :=
 
 /-- Whether the kernel called the object a REGULAR FILE.  A question
 ABOUT THE ANSWER, not a claim by the model: the model does not know a
-path's type (bugs/fs-paths-assumed-regular-files.md), and
+path's type (linux-process-semantics@ff0313ba4f:bugs/fs-paths-assumed-regular-files.md), and
 `Fs.Stat.fstat_spec` uses this only to decide whether its `st_size`
 obligation applies. -/
 def stat_is_reg (bs : List byte) : Bool :=
@@ -595,8 +596,8 @@ For a regular file `st_size` is the file's length: `generic_fillattr`
 resolves that is the length of the byte list `Fs` carries — the premise
 `ReadWrite.read_spec` already makes, and no more.  The implication keeps
 the arm from FALSELY REJECTING a path Linux calls a character device
-(bugs/fs-paths-assumed-regular-files.md): there the true answer is
-S_IFCHR with `st_size` 0, and the model says nothing.  The comparison
+(`linux-process-semantics@ff0313ba4f:bugs/fs-paths-assumed-regular-files.md`):
+there the true answer is S_IFCHR with `st_size` 0, and the model says nothing.  The comparison
 wraps at 2^64 because `stat_field_le` reads eight bytes and a length is
 an unbounded `Nat`; a file that long is not constructible, so the wrap is
 unreachable, and it is written this way so the predicate is TOTAL. -/
@@ -615,7 +616,8 @@ was made;
 (`write_null` returns without touching the inode, drivers/char/mem.c,
 Linux v6.18.46), and `st_blocks` is `i_blocks`, 0 for the same reason.
 The two zeros are a consequence of the environment premise rather than a
-kernel invariant (bugs/openat-devnull-assumed-null-device.md).  NOT
+kernel invariant
+(`linux-process-semantics@ff0313ba4f:bugs/openat-devnull-assumed-null-device.md`).  NOT
 asserted, and chosen once per descriptor by `Fs.Stat.fstat_devnull_spec`'s
 pin: the permission bits and owner (devtmpfs takes 0666 and root from
 `mem_devnode`, drivers/char/mem.c, Linux v6.18.46, but a container runtime
@@ -644,7 +646,7 @@ v6.18.46) — `(9 & 0xff) | (1 << 8)`.  The zero st_size and st_blocks rest on
 the same environment premise the null device's do: a node made by mknod or
 devtmpfs and never resized, and `random_write_iter` (drivers/char/random.c,
 same version) mixes into the pool and touches no inode member; recorded in
-bugs/openat-urandom-assumed-random-device.md. -/
+`linux-process-semantics@ff0313ba4f:bugs/openat-urandom-assumed-random-device.md`. -/
 def URANDOM_RDEV : Int := 265
 
 /-- The members of a /dev/urandom `struct stat` that come from the kernel;

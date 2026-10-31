@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Uapi.v
 import LinuxProcessSemantics.LinuxProcessSem.BvBase
 
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
@@ -22,15 +23,15 @@ open LinuxProcessSemantics.LinuxProcessSem.BvBase
 
 /-! ## The POSIX clock ids the model interprets (include/uapi/linux/time.h)
 
-A clock id gets a name here when some spec TESTS it, not when it exists.
-The first three are `clock_gettime`'s.  The last three are
-`Fs.Timerfd.timerfd_create_spec`'s, named for the OPPOSITE reason: that
-spec's whole content is a five-way membership test written out of
-Linux's own, so each id it admits has to be stateable.  The two families
-OVERLAP but neither contains the other — `timerfd_create` takes
-`CLOCK_BOOTTIME` and the two alarm clocks that `clock_gettime` declines,
-and declines `CLOCK_PROCESS_CPUTIME_ID`, which `clock_gettime` answers.
-Do not read either list as "the clocks the model supports". -/
+A clock id gets a name here when some spec TESTS it, not when it exists:
+the ids nothing tests are deliberately left unnamed, because a constant
+only a comment reads is dead weight.
+`Kernel.Time.PosixTimers.clock_gettime_spec` names the ids it declines in
+prose rather than as constants.
+
+`clock_gettime` and `timerfd_create` cover DIFFERENT SETS of ids: each
+set is in that call's own specification, and neither is a list of "the
+clocks the model supports".  Read the specification. -/
 
 /-- `#define CLOCK_REALTIME 0` (include/uapi/linux/time.h:49, Linux
 v6.18.46, commit 1f99e9ab748f). -/
@@ -43,6 +44,18 @@ def CLOCK_MONOTONIC : Int := 1
 /-- `#define CLOCK_PROCESS_CPUTIME_ID 2` (include/uapi/linux/time.h:51,
 Linux v6.18.46, commit 1f99e9ab748f). -/
 def CLOCK_PROCESS_CPUTIME_ID : Int := 2
+
+/-- `#define CLOCK_MONOTONIC_RAW 4` (include/uapi/linux/time.h:53, Linux
+v6.18.46, commit 1f99e9ab748f). -/
+def CLOCK_MONOTONIC_RAW : Int := 4
+
+/-- `#define CLOCK_REALTIME_COARSE 5` (include/uapi/linux/time.h:54,
+Linux v6.18.46, commit 1f99e9ab748f). -/
+def CLOCK_REALTIME_COARSE : Int := 5
+
+/-- `#define CLOCK_MONOTONIC_COARSE 6` (include/uapi/linux/time.h:55,
+Linux v6.18.46, commit 1f99e9ab748f). -/
+def CLOCK_MONOTONIC_COARSE : Int := 6
 
 /-- `#define CLOCK_BOOTTIME 7` (include/uapi/linux/time.h:56, Linux
 v6.18.46, commit 1f99e9ab748f). -/

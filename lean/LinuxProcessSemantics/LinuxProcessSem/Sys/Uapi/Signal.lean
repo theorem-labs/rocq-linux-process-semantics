@@ -54,7 +54,7 @@ one 64-bit word.  The same eight bytes as `kernel_sigset_bytes`, which
 specs arrived at the constant independently, and folding them is a
 cleanup neither owns.  NOT musl's userspace `sigset_t`, which is 128
 bytes (include/signal.h) — the 8-vs-128 confusion is what
-testing/syscall-check/tests/rt_sigprocmask_spec.c pins from both
+linux-process-semantics@ff0313ba4f:testing/syscall-check/tests/rt_sigprocmask_spec.c pins from both
 sides. -/
 def NSIG_BYTES : Int := 8
 

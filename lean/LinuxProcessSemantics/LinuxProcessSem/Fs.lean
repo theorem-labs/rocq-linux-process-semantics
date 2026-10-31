@@ -1,18 +1,14 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Fs.v
 import LinuxProcessSemantics.LinuxProcessSem.BvBase
 
 /-! rocq-baseline: 9f9a96b29a12dd26b54bff74b47ba1c4a6e01ad3 -/
 
 /-! # LinuxProcessSem.Fs — the interpreted file-system model
 
-Mirrors `theories/LinuxProcessSem/Fs.v`: every definition of that file
-under its Rocq name, every lemma of it but four, plus the helper lemmas
-those twins' proofs need and nothing else.  The four lemmas at this
-file's `rocq-baseline` with no twin are `path_ltb_total`,
-`fs_set_lt_head`, `fs_set_sorted` and `fs_set_keys` (added at f8c71ab2),
-the sortedness half of `fs_set`'s canonical form; they wait on a port,
-and `State.fs_seed_tmp_valid` with them.  Delete this sentence with that
-port: `check_lean_spec_parity.py` compares definitions, not lemmas, so
-nothing else will notice.  The
+Mirrors `theories/LinuxProcessSem/Fs.v` at rocq-linux-process-semantics
+`f1006fe8`: every definition of that file under its Rocq name, every
+lemma of it, plus the helper lemmas those twins' proofs need and nothing
+else.  The
 pins, and the `fs_remove` lookup laws that are no twin of a Rocq lemma,
 are `Checks/Cases/Fs.lean`.  `bv_eqb_eq`
 is the one twin declared `protected`: `Riscv/Prelude.lean` already proves it
@@ -240,6 +236,154 @@ theorem fs_remove_sorted (fs : Fs) (p : path) :
       simp only [↓reduceIte]
       exact hr
 
+/-- `path_ltb` is a total order on distinct keys: two keys that compare
+neither below nor equal compare above.  This is what `fs_set` needs to
+keep the canonical form when it walks past a key.
+Rocq: `Fs.path_ltb_total`. -/
+theorem path_ltb_total (p q : path) :
+    path_ltb p q = false → path_eqb p q = false → path_ltb q p = true := by
+  induction p generalizing q with
+  | nil =>
+    cases q with
+    | nil => intro _ heq; simp [path_eqb] at heq
+    | cons b q => intro hlt _; simp [path_ltb] at hlt
+  | cons a p ih =>
+    cases q with
+    | nil => intro _ _; rfl
+    | cons b q =>
+      intro hlt heq
+      simp only [path_ltb, Bool.or_eq_false_iff, Bool.and_eq_false_iff] at hlt
+      simp only [path_eqb, Bool.and_eq_false_iff] at heq
+      obtain ⟨hab, hrest⟩ := hlt
+      cases he : bv_eqb a b with
+      | true =>
+        have hba : bv_eqb b a = true := by
+          have hab' := (bv_eqb_eq a b).1 he
+          exact (bv_eqb_eq b a).2 hab'.symm
+        have hr : path_ltb p q = false := by
+          rcases hrest with h | h
+          · rw [he] at h; exact absurd h (by decide)
+          · exact h
+        have hqe : path_eqb p q = false := by
+          rcases heq with h | h
+          · rw [he] at h; exact absurd h (by decide)
+          · exact h
+        simp [path_ltb, hba, ih q hr hqe]
+      | false =>
+        have hne : a ≠ b := fun h => by rw [h] at he; simp [bv_eqb] at he
+        have hlt' : ¬ (a.toNat < b.toNat) := by
+          simpa [bv_ltu, BitVec.ult] using hab
+        have hnat : a.toNat ≠ b.toNat := fun h => hne (BitVec.eq_of_toNat_eq h)
+        have hba : bv_ltu b a = true := by
+          simp only [bv_ltu, BitVec.ult, decide_eq_true_eq]
+          omega
+        simp [path_ltb, hba]
+
+/-- Inserting a key above `a` keeps `a` below the head.
+Rocq: `Fs.fs_set_lt_head`. -/
+theorem fs_set_lt_head (fs : Fs) (a p : path) (d : List byte) :
+    path_ltb a p = true → fs_lt_head a fs = true →
+    fs_lt_head a (fs_set fs p d) = true := by
+  induction fs with
+  | nil => intro hap _; exact hap
+  | cons qe r ih =>
+    obtain ⟨q, e⟩ := qe
+    intro hap hh
+    simp only [fs_set]
+    cases hpq : path_ltb p q with
+    | true => simpa [fs_lt_head] using hap
+    | false =>
+      cases hpe : path_eqb p q with
+      | true => simpa [fs_lt_head] using hap
+      | false => simpa [fs_lt_head] using hh
+
+/-- Insert-or-replace preserves the canonical form, so a modeled create
+or write keeps the final `Fs` comparable with `=` (see the CANONICAL FORM
+note above).  Rocq: `Fs.fs_set_sorted`. -/
+theorem fs_set_sorted (fs : Fs) (p : path) (d : List byte) :
+    fs_sorted fs = true → fs_sorted (fs_set fs p d) = true := by
+  induction fs with
+  | nil => intro _; rfl
+  | cons qe r ih =>
+    obtain ⟨q, e⟩ := qe
+    intro hs
+    simp only [fs_set]
+    cases hpq : path_ltb p q with
+    | true =>
+      simp only [↓reduceIte]
+      rw [fs_sorted_cons, Bool.and_eq_true]
+      exact ⟨by simpa [fs_lt_head] using hpq, hs⟩
+    | false =>
+      cases hpe : path_eqb p q with
+      | true =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        have hqp : p = q := (path_eqb_eq p q).1 hpe
+        subst hqp
+        rw [fs_sorted_cons]
+        rw [fs_sorted_cons] at hs
+        exact hs
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        rw [fs_sorted_cons, Bool.and_eq_true]
+        rw [fs_sorted_cons, Bool.and_eq_true] at hs
+        obtain ⟨hh, hr⟩ := hs
+        exact ⟨fs_set_lt_head r q p d (path_ltb_total p q hpq hpe) hh, ih hr⟩
+
+/-- A fact that holds of every key of an image and of the key being set
+holds of every key afterwards.  `State.fs_seed_tmp_keys` is the caller
+this is written for.  Rocq: `Fs.fs_set_keys`. -/
+theorem fs_set_keys (P : path → Prop) (fs : Fs) (p : path) (d : List byte)
+    (hfs : ∀ pf ∈ fs, P pf.1) (hp : P p) : ∀ pf ∈ fs_set fs p d, P pf.1 := by
+  induction fs with
+  | nil =>
+    intro pf hpf
+    simp only [fs_set, List.mem_singleton] at hpf
+    subst hpf
+    exact hp
+  | cons qe r ih =>
+    obtain ⟨q, e⟩ := qe
+    simp only [fs_set]
+    cases hpq : path_ltb p q with
+    | true =>
+      simp only [↓reduceIte]
+      intro pf hpf
+      rcases List.mem_cons.1 hpf with rfl | hpf'
+      · exact hp
+      · exact hfs pf hpf'
+    | false =>
+      cases hpe : path_eqb p q with
+      | true =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        intro pf hpf
+        rcases List.mem_cons.1 hpf with rfl | hpf'
+        · exact hp
+        · exact hfs pf (List.mem_cons_of_mem _ hpf')
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        intro pf hpf
+        rcases List.mem_cons.1 hpf with rfl | hpf'
+        · exact hfs (q, e) (List.mem_cons_self ..)
+        · exact ih (fun x hx => hfs x (List.mem_cons_of_mem _ hx)) pf hpf'
+
+/-- A lookup misses when no key IS the path.  The counterpart of
+`fs_set_keys` for the read side: a caller holding a fact about every key
+of an image gets the `none` from it without unfolding the recursion.
+`Run.absolute_divergent_not_seeded` is the caller this is written for.
+Rocq: `Fs.fs_lookup_none_of_keys`. -/
+theorem fs_lookup_none_of_keys (fs : Fs) (p : path) (h : ∀ qd ∈ fs, qd.1 ≠ p) :
+    fs_lookup fs p = none := by
+  induction fs with
+  | nil => rfl
+  | cons qd r ih =>
+    obtain ⟨q, d⟩ := qd
+    have hq : q ≠ p := h (q, d) (List.mem_cons_self ..)
+    simp only [fs_lookup]
+    cases hpq : path_eqb p q with
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte]
+      exact ih (fun x hx => h x (List.mem_cons_of_mem _ hx))
+    | true => exact absurd ((path_eqb_eq p q).1 hpq).symm hq
+
 /-- Validity predicate for an initial file-system image: it must be in
 the CANONICAL sorted form (trace events compare final file systems with
 `=`, so the representation must be unique — see the header note), and
@@ -249,84 +393,53 @@ def valid_fs (fs0 : Fs) : Prop :=
   fs_sorted fs0 = true ∧
   ∀ pf ∈ fs0, ¬ (Z_to_bv 8 0) ∈ pf.1
 
-/-- `q` is `p`, a separator, then anything: `p` names a directory that `q`
-lives in.  The test `Sys.Fs.Namei.dir_prefixb` makes, spelled again
-because this file sits below Namei; the separator is the byte 47, "/".
-Rocq: `Fs.key_dir_prefixb`. -/
-def key_dir_prefixb (p q : path) : Bool :=
-  match p, q with
-  | [], [] => false
-  | [], c :: _ => bv_eqb c (Z_to_bv 8 47)
-  | _ :: _, [] => false
-  | a :: p', b :: q' => bv_eqb a b && key_dir_prefixb p' q'
+/-- The byte '/', the one byte this file has to interpret.
 
-/-- No key of the image is also a directory another key lives in: "a"
-beside "a/b" would make `a` a regular file and a directory at once, which
-no file system can hold.  Rocq: `Fs.fs_no_dir_key`. -/
-def fs_no_dir_key (fs0 : Fs) : Bool :=
-  fs0.all (fun pf => !(fs0.any (fun qf => key_dir_prefixb pf.1 qf.1)))
+Paths are uninterpreted here (see the header), and the separator's
+MEANING lives in `Sys.Fs.Namei` — `path_has_slash`, `dir_prefixb` and the
+trailing-separator tests are all there.  What is needed at this rung is
+only the byte itself, for `key_is_relative` below, and that file sits
+above this one, so the constant is spelled here too.  The two are pinned
+equal where the second is defined
+(`Sys.Fs.Namei.slash_byte_is_path_slash_byte`), so moving either is a
+compile error rather than a silent divergence.
+Rocq: `Fs.path_slash_byte`. -/
+def path_slash_byte : byte := Z_to_bv 8 47
 
-/-- The components of a path: the byte strings between its separators,
-empty ones included.  Rocq: `Fs.key_components`. -/
-def key_components (p : path) : List path :=
+/-- A key is CWD-RELATIVE when it does not begin with the separator.
+
+THE EMPTY KEY COUNTS AS RELATIVE.  It begins with nothing, so it begins
+with no '/'; and it is a key no program can name anyway
+(`Uaccess.read_cstr` of an empty pathname is the -ENOENT every path spec
+answers before it looks anything up), so admitting it costs no reachable
+behaviour and excluding it would be a clause about a key nothing reads.
+
+This is a statement about the FIRST byte and about nothing else: a key
+may still carry separators inside it ("a/b"), and that key is relative.
+What "relative" buys is exactly the one thing the device arms need — such
+a key is not, and does not live under, an absolute path like "/dev/null".
+Rocq: `Fs.key_is_relative`. -/
+def key_is_relative (p : path) : Prop :=
   match p with
-  | [] => [[]]
-  | b :: r =>
-    if bv_eqb b (Z_to_bv 8 47) then [] :: key_components r
-    else match key_components r with
-      | c :: cs => (b :: c) :: cs
-      | [] => [[b]]
+  | [] => True
+  | b :: _ => b ≠ path_slash_byte
 
-/-- A component a directory entry can carry: not empty, not ".", not "..".
-Rocq: `Fs.key_component_okb`. -/
-def key_component_okb (c : path) : Bool :=
-  !(path_eqb c []) && !(path_eqb c [Z_to_bv 8 46])
-  && !(path_eqb c [Z_to_bv 8 46, Z_to_bv 8 46])
+/-- Every key of an image is cwd-relative.
 
-/-- A canonical key: one leading separator at most, then components that
-are each a name a directory entry can carry; so no "//", no trailing "/",
-no "." or ".." component, and no empty key.  Rocq: `Fs.key_canonicalb`. -/
-def key_canonicalb (p : path) : Bool :=
-  match p with
-  | [] => false
-  | b :: r => (key_components (if bv_eqb b (Z_to_bv 8 47) then r else p)).all key_component_okb
+THIS IS NOT A CLAUSE OF `valid_fs`, and the reason is the seeding.
+`Run.valid_input` reads `valid_fs` on `State.in_fs`, the image AFTER
+`State.fs_seed_tmp` has inserted each declared /tmp entry under the
+absolute key "/tmp/<name>"; a clause here would therefore make every
+input with a non-empty declaration invalid and silently remove those
+inputs from every theorem.  So this predicate is carried by
+`Run.valid_input` over `State.in_image_fs`, the PRE-SEED image, as a
+conjunct of its own — see the note on that definition.
 
-/-- Every key of the image is canonical.  Rocq: `Fs.fs_keys_canonical`. -/
-def fs_keys_canonical (fs0 : Fs) : Bool :=
-  fs0.all (fun pf => key_canonicalb pf.1)
-
-/-- The image describes a file system: every key canonical, and no key
-also a directory another key lives in.  NOT a clause of `valid_fs`:
-`Run.valid_input` reads `valid_fs` on the SEEDED image, and the declared
-/tmp names are unconstrained by ruling, so it is carried by
-`Run.valid_input` over `State.in_image_fs`, the pre-seed image.  The
-argument in full is at the Rocq definition.  Rocq: `Fs.fs_image_real`. -/
-def fs_image_real (fs0 : Fs) : Bool :=
-  fs_keys_canonical fs0 && fs_no_dir_key fs0
-
-/-- What the clause gives a proof: every key is canonical.  Rocq:
-`Fs.fs_image_real_canonical`. -/
-theorem fs_image_real_canonical (fs0 : Fs) (p : path) (d : List byte)
-    (h : fs_image_real fs0 = true) (hp : (p, d) ∈ fs0) : key_canonicalb p = true := by
-  unfold fs_image_real fs_keys_canonical at h
-  rw [Bool.and_eq_true, List.all_eq_true] at h
-  exact h.1 (p, d) hp
-
-/-- What the clause gives a proof: no key of the image names a directory
-another key of it lives in.  Rocq: `Fs.fs_image_real_no_dir_key`. -/
-theorem fs_image_real_no_dir_key (fs0 : Fs) (p : path) (d : List byte) (q : path) (e : List byte)
-    (h : fs_image_real fs0 = true) (hp : (p, d) ∈ fs0) (hq : (q, e) ∈ fs0) :
-    key_dir_prefixb p q = false := by
-  unfold fs_image_real fs_no_dir_key at h
-  rw [Bool.and_eq_true, List.all_eq_true] at h
-  have h1 := h.2 (p, d) hp
-  cases hk : key_dir_prefixb p q with
-  | false => rfl
-  | true =>
-    have hany : (fs0.any (fun qf => key_dir_prefixb (p, d).1 qf.1)) = true :=
-      List.any_eq_true.2 ⟨(q, e), hq, hk⟩
-    rw [hany] at h1
-    exact absurd h1 (by decide)
+No boolean twin, because `valid_fs` beside it has none: the image
+predicates in this file are read by proofs, not computed by the checker.
+Rocq: `Fs.fs_keys_relative`. -/
+def fs_keys_relative (fs : Fs) : Prop :=
+  ∀ pf ∈ fs, key_is_relative pf.1
 
 /-! ## File contents: byte-list read/write at an offset -/
 
