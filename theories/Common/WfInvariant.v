@@ -1522,3 +1522,72 @@ apply (BudgetPremise.mremap_move_budget_admits_fresh m old old_n dst new_n
 - exact Hmv.
 Qed.
 
+(* ==================================================================== *)
+(* [LZ_NZ]'s TWO BUILDING BLOCKS.
+
+   Every post-state lazy ledger in the model is built from exactly two
+   things: [State.lazy_interior], which mmap and mremap push for a fresh
+   MAP_NORESERVE mapping, and [State.maps_subtract], which every forget
+   applies.  So [LZ_NZ]'s arms all reduce to these two lemmas, and the
+   per-arm ladders are bookkeeping on top of them. *)
+(* ==================================================================== *)
+
+(* The interior is the PAGE-ALIGNED inside of a mapping, so when it is
+   present at all it is a single entry of at least one page. *)
+Lemma lazy_interior_nz : forall A N a n,
+(bv_unsigned A + bv_unsigned N <= 2 ^ 64)%Z ->
+In (a, n) (lazy_interior A N) -> (0 < bv_unsigned n)%Z.
+Proof.
+intros A N a n Hfit Hin.
+pose proof (word_range A) as RA. pose proof (word_range N) as RN.
+unfold lazy_interior in Hin. cbv zeta in Hin.
+set (lo := bv_unsigned A) in *. set (hi := (lo + bv_unsigned N)%Z) in *.
+set (lo' := (((lo + page_size - 1) / page_size) * page_size)%Z) in *.
+set (hi' := ((hi / page_size) * page_size)%Z) in *.
+assert (Hlo0 : (0 <= lo')%Z).
+{ subst lo'. unfold page_size.
+  pose proof (Z.div_pos (lo + 4096 - 1) 4096 ltac:(lia) ltac:(lia)). nia. }
+assert (Hhi0 : (hi' <= hi)%Z).
+{ subst hi'. unfold page_size.
+  pose proof (Z.div_mod hi 4096 ltac:(lia)) as D.
+  pose proof (Z.mod_pos_bound hi 4096 ltac:(lia)) as B. lia. }
+assert (Hhieq : hi = (lo + bv_unsigned N)%Z) by reflexivity.
+assert (Hlo' : (lo <= lo')%Z).
+{ subst lo'. unfold page_size.
+  pose proof (Z.div_mod (lo + 4096 - 1) 4096 ltac:(lia)) as D.
+  pose proof (Z.mod_pos_bound (lo + 4096 - 1) 4096 ltac:(lia)) as B. lia. }
+destruct (Z.ltb_spec lo' hi') as [Hc|Hc]; cbn [In] in Hin; [|destruct Hin].
+destruct Hin as [Heq|[]]. injection Heq as <- <-.
+rewrite u64 by lia. lia.
+Qed.
+
+(* A cut never manufactures an empty entry from a nonempty one: the left
+   remnant is [min sz (lo - a)] with [a < lo], the right is
+   [a + sz - max a hi] with [hi < a + sz], and both are positive.  This is
+   the first conjunct of [maps_subtract_entry_inv], named on its own
+   because the arms want it without the sub-interval. *)
+Lemma maps_subtract_nz : forall L lo hi a n,
+MapsFit.maps_fit L ->
+(forall b m, In (b, m) L -> (0 < bv_unsigned m)%Z) ->
+In (a, n) (maps_subtract L lo hi) -> (0 < bv_unsigned n)%Z.
+Proof.
+intros L lo hi a n Hfit Hnz Hin.
+exact (proj1 (maps_subtract_entry_inv L lo hi a n Hfit Hnz Hin)).
+Qed.
+
+(* [LZ_NZ] at the start of every run: the ledger is [[]]. *)
+Lemma init_config_LZ_NZ : forall segs pc ph sp brk0 mbase rnd lim inp,
+LZ_NZ (cfg_model (init_config segs pc ph sp brk0 mbase rnd lim inp)).
+Proof.
+intros segs pc ph sp brk0 mbase rnd lim inp a n Hin.
+rewrite (init_lazy_nil segs pc ph sp brk0 mbase rnd lim inp) in Hin.
+destruct Hin.
+Qed.
+
+(* An arm that leaves [m_vm] alone preserves it, as [WF_of_vm_eq] does for
+   [WF] -- the ~78 non-writer arms of [checked_table] close with this. *)
+Lemma LZ_NZ_of_vm_eq : forall m m', m_vm m' = m_vm m -> LZ_NZ m -> LZ_NZ m'.
+Proof.
+intros m m' E H. unfold LZ_NZ, m_vm_lazy in *. rewrite E. exact H.
+Qed.
+
