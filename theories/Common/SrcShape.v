@@ -580,31 +580,69 @@ Lemma srz_exit : forall ms model x8,
             (t_exit (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)).
 Proof. intros. apply srz_realizes. eapply rz_exit; eassumption. Qed.
 
+(** A silent node whose every resolution continues as the SAME shape;
+    the [unit]-indexed [srz_silent1] generalised. *)
+Lemma srz_silent_all : forall c (I : Type) (nx : I -> config) (T : TSet) (i0 : I),
+  node_ok segs c I (fun _ => []) nx ->
+  (forall i, srealizes (nx i) T) ->
+  srealizes c T.
+Proof.
+  intros c I nx T i0 Hnode HT.
+  assert (HT0 : T []) by (eapply srealizes_nonempty; apply (HT i0)).
+  apply (srz_conseq c (t_alt (fun _ : I => t_emit [] T))).
+  - apply (srz_node c I (fun _ => []) nx (fun _ => T) i0 Hnode).
+    intros i; exact (HT i).
+  - intro tr. split.
+    + intros [i Hi]. exact (proj1 (t_emit_nil_eq T HT0 tr) Hi).
+    + intro H. exists i0. exact (proj2 (t_emit_nil_eq T HT0 tr) H).
+Qed.
+
 Lemma srz_munmap : forall ms model x8 T,
   m_halted model = None ->
   m_vm_lazy model = [] ->
   ms_svc_pending ms = Some x8 ->
   bv_unsigned x8 = 215%Z ->
   munmap_args_ok ms model ->
+  (forall e, In e munmap_errnos ->
+     srealizes (mkCfg (advance_past_svc (set_gpr0 ms (errno_ret e))) model) T) ->
   srealizes (mkCfg (advance_past_svc (apply_effect ms (munmap_eff ms)))
                    (munmap_model (ms_gpr ms 0) (page_round_up (ms_gpr ms 1)) model)) T ->
   srealizes (mkCfg ms model) T.
 Proof.
-  intros ms model x8 T Hh Hlazy Hsvc Hno Hargs Hc.
-  eapply srz_silent1; [| exact Hc]. split.
-  - intros []. apply (sstep_syscall segs ms model x8 (munmap_eff ms)
+  intros ms model x8 T Hh Hlazy Hsvc Hno Hargs Hfail Hc.
+  apply (srz_silent_all (mkCfg ms model) ({e : Z | In e munmap_errnos} + unit)
+           (fun i => match i with
+              | inl (exist _ e _) =>
+                  mkCfg (advance_past_svc (set_gpr0 ms (errno_ret e))) model
+              | inr _ =>
+                  mkCfg (advance_past_svc (apply_effect ms (munmap_eff ms)))
                         (munmap_model (ms_gpr ms 0) (page_round_up (ms_gpr ms 1)) model)
-                        (munmap_model (ms_gpr ms 0) (page_round_up (ms_gpr ms 1)) model) []).
-    + exact Hh.
-    + exact Hsvc.
-    + apply munmap_ok; assumption.
-    + rewrite munmap_model_halted; exact Hh.
-    + apply materialize_model_accesses_no_lazy.
-      exact (munmap_model_no_lazy _ _ _ Hlazy).
-  - intros e st Hss.
-    destruct (sstep_munmap_inv segs ms model x8 e st Hh Hlazy Hsvc Hno Hargs Hss)
-      as [-> ->].
-    exists tt. split; reflexivity.
+              end) T (inr tt)).
+  - split.
+    + intros [[e He] | []]; cbn.
+      * rewrite <- (apply_effect_no_write ms (errno_ret e)).
+        apply (sstep_syscall segs ms model x8 (mkEffect (errno_ret e) [] [])
+                 model model []).
+        -- exact Hh.
+        -- exact Hsvc.
+        -- apply munmap_fail_ok; assumption.
+        -- exact Hh.
+        -- apply materialize_model_accesses_no_lazy. exact Hlazy.
+      * apply (sstep_syscall segs ms model x8 (munmap_eff ms)
+                 (munmap_model (ms_gpr ms 0) (page_round_up (ms_gpr ms 1)) model)
+                 (munmap_model (ms_gpr ms 0) (page_round_up (ms_gpr ms 1)) model) []).
+        -- exact Hh.
+        -- exact Hsvc.
+        -- apply munmap_ok; assumption.
+        -- rewrite munmap_model_halted; exact Hh.
+        -- apply materialize_model_accesses_no_lazy.
+           exact (munmap_model_no_lazy _ _ _ Hlazy).
+    + intros e st Hss.
+      destruct (sstep_munmap_inv segs ms model x8 e st Hh Hlazy Hsvc Hno Hargs Hss)
+        as [-> [(er & Her & ->) | ->]].
+      * exists (inl (exist _ er Her)). split; reflexivity.
+      * exists (inr tt). split; reflexivity.
+  - intros [[e He] | []]; cbn; [exact (Hfail e He) | exact Hc].
 Qed.
 
 (** The [mmap] node: failure resolutions continue as [A] (typically the

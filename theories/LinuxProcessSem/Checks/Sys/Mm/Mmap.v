@@ -371,7 +371,12 @@ Definition check_munmap (addr len : word) (eff : SyscallEffect) (m : Model)
     if map_has (vm_maps (m_vmmaps m)) addr n then
       match eff with
       | mkEffectU r [] [] us [] [] =>
-          if w_is0 r && listNN_eqb us [(addr, n)]
+          if errno_ret_in munmap_errnos r
+          then match us with
+               | [] => CheckOk m []
+               | _ => CheckReject
+               end
+          else if w_is0 r && listNN_eqb us [(addr, n)]
           then CheckOk (with_mmap_destroyed addr n
                           (mmap_fixed_destroyed_next (m_vmmaps m) addr n) m) []
           else CheckReject
@@ -1724,17 +1729,26 @@ Proof.
   - destruct eff as [r ws zs us cs copyins]; destruct ws as [|? ?];
       [destruct zs as [|? ?]|]; try discriminate.
     destruct cs as [|? ?]; [destruct copyins as [|? ?]|]; try discriminate.
-    destruct (w_is0 r
-              && listNN_eqb us [(addr, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
-      eqn:HC; [|discriminate].
-    inversion H; clear H; subst.
-    apply andb_true_iff in HC as [Hr Hus].
-    unfold w_is0 in Hr. apply bv_eqb_eq in Hr; subst r.
-    apply listNN_eqb_eq in Hus; subst us.
     eapply bind_ok0; [apply get_vmmaps_ok|]. cbv beta zeta.
     srw Hhas.
-    eapply bind_ok0; [apply modify_ok|].
-    eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+    destruct (errno_ret_in munmap_errnos r) eqn:He.
+    + (* -ENOMEM, nothing unmapped *)
+      destruct us as [|? ?]; [|discriminate].
+      inversion H; clear H; subst.
+      apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
+      apply alt_l.
+      eapply bind_ok0; [apply (choose_ok _ e); exact HIn|]. apply pure_ok.
+    + (* the cut *)
+      destruct (w_is0 r
+                && listNN_eqb us [(addr, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
+        eqn:HC; [|discriminate].
+      inversion H; clear H; subst.
+      apply andb_true_iff in HC as [Hr Hus].
+      unfold w_is0 in Hr. apply bv_eqb_eq in Hr; subst r.
+      apply listNN_eqb_eq in Hus; subst us.
+      apply alt_r.
+      eapply bind_ok0; [apply modify_ok|].
+      eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
   - destruct (munmap_free_ok (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len)))
       eqn:Hfree.
@@ -1784,9 +1798,11 @@ Proof.
       [destruct zs as [|? ?];
        [destruct cs as [|? ?];
         [destruct copyins as [|? ?];
-         [destruct (w_is0 r
-                  && listNN_eqb us
-                       [(addr, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])|]|]|]|];
+         [destruct (errno_ret_in munmap_errnos r);
+          [destruct us
+          |destruct (w_is0 r
+                   && listNN_eqb us
+                        [(addr, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])]|]|]|]|];
       discriminate.
   - destruct (munmap_free_ok (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len)))
@@ -1824,7 +1840,18 @@ Proof.
   destruct (map_has (vm_maps (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hhas;
     hall Hhas; inv_ok.
-  - cbv iota. unfold w_is0. rewrite bv_eqb_refl.
+  - (* -ENOMEM on the whole mapping *)
+    cbv iota.
+    match goal with
+    | |- context [errno_ret_in ?es (errno_ret ?e)] =>
+        rewrite (errno_ret_in_intro es e) by assumption
+    end.
+    reflexivity.
+  - (* the cut *)
+    cbv iota.
+    replace (errno_ret_in munmap_errnos (Z_to_bv 64 0)) with false
+      by reflexivity.
+    unfold w_is0. rewrite bv_eqb_refl.
     rewrite (proj2 (listNN_eqb_eq _ _) eq_refl). reflexivity.
   - destruct (munmap_free_ok (m_vmmaps m) addr
                 (page_round_up_Z (bv_unsigned len)))
