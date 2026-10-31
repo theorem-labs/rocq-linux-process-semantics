@@ -52,6 +52,36 @@ runs.
    its imported bytes carries no such header; its provenance is upstream's
    commit in `UPSTREAM`.
 
+## References in a Lean file
+
+The imported files cite upstream's tree. The rule (LeanLead, 2026-10-31):
+
+1. Leave every machine-read metadata line exactly as upstream has it: a
+   `probe:` line, a `divergence:` header line (both `-- inherited` and
+   `-- fixed: <theorem>`) and an `inherited-divergence:` tag.
+   `tools/lean_replay.py` (`:1476-1531`) and
+   `tools/check_lean_pin_evidence.py` (`:1053-1055`) parse them with exact
+   patterns, and they open the paths under `--root`. A rewritten line
+   breaks a parser or a register entry.
+2. Prose that cites a file this repository does not have names the
+   repository and the commit instead of being deleted: a sentence citing
+   `bugs/x.md` or `AGENTS.md` becomes
+   `linux-process-semantics@ff0313ba4f:bugs/x.md`.
+3. A difference with no `SCOPE.md` entry still gets a row in the slice's
+   gaps file.
+
+The twin's tools run with `--root` at a linux-process-semantics checkout,
+which is also where the corpus and the harness are, so a `bugs/` or
+`testing/` path in such a line resolves although this repository has
+neither. The twin has ten `divergence:` lines today
+(`EquivalenceDefinition/Equivalence.lean` 2, `.../FinInput.lean` 1,
+`LinuxProcessSem/Sys/Fs/EventFd.lean` 1, `.../Sys/Mm/Mmap.lean` 5), all
+`-- inherited`, which key to no syscall number and forgive nothing. A
+`-- fixed: <theorem>` line is in the replay's verdict path: an entry of
+`testing/syscall-check/traces/lean-divergences/` rests on it and forgives
+a differing verdict (`lean_replay.py:1534`, `:1587-1592`). That register
+is empty at `ff0313ba4f`.
+
 ## Build it
 
 Lean comes from elan, which reads `lean/lean-toolchain`
@@ -61,8 +91,9 @@ Lean comes from elan, which reads `lean/lean-toolchain`
 cd lean && lake build
 ```
 
-Run it on a build VM, not on sami-rocqperf. The measured cold build is in
-`sdd/ossv-265/scale/task-Z1-report.md` of the oss-verifier checkout.
+Run it on a build VM, not on sami-rocqperf. A cold build of 653 jobs took
+26 minutes on 64 CPUs (ossv-mcsl-rp, 2026-10-31); three of the example
+image modules take 4 to 10 minutes each on their own.
 
 `lake build` runs Python generators that render the syscall table, the
 checked table and the example images. They are in `lean/tools/`, and the

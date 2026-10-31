@@ -25,7 +25,9 @@
   (tools/gen_fd_lemmas.py as gen-fd-lemmas)
   (tools/elf_snapshot.py as elf-snapshot)))
 
-; The Lean twin in `lean/` (lean/README.md) is not part of any dune target
-; and not in any opam package: dune never reads inside it, no package names
-; it, and nothing it contains can reach the extracted checker.
-(data_only_dirs lean)
+; The Lean twin in `lean/` (lean/README.md) is outside dune's view: dune
+; reads no file under it, declares no rule for it and copies none of it
+; into _build, so nothing it holds can reach a package or the extracted
+; checker.  `data_only_dirs` would be weaker: it still copies the files
+; into _build/default as plain data.
+(dirs :standard \ lean)
