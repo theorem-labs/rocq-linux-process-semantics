@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Net/Socket.v theories/LinuxProcessSem/Checks/Witness/Net/Socket.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Net.Socket
@@ -1753,7 +1754,7 @@ theorem check_how_and_socketpair_boundaries :
     check_shutdown_row (shutdown_in 8 (Z_to_bv 64 (2 ^ 31))) (mkEffect (errno_ret EINVAL) [] [])
       socket_states_model = CheckOk socket_states_model [] ∧
     check_socketpair_row (socketpair_in 2 16 0 4096 wmem_open)
-      (mkEffect (errno_ret EINVAL) [] []) socketpair_model = CheckUnmodeled ∧
+      (mkEffect (errno_ret EINVAL) [] []) socketpair_model = CheckOk socketpair_model [] ∧
     check_socketpair_row (socketpair_in 2 (Z_to_bv 64 (2 ^ 32 + 1)) (Z_to_bv 64 (2 ^ 32)) 4096
         wmem_open)
       (mkEffect (errno_ret EOPNOTSUPP) [(4096, [3, 0, 0, 0]), (4100, [4, 0, 0, 0])] [])
@@ -1838,17 +1839,23 @@ theorem check_socketpair_dgram_and_flagged_stream_are_modeled :
       socketpair_model = CheckOk socketpair_model [] := by
   refine ⟨?_, ?_⟩ <;> check_norm
 
-/-- The first gate declines Linux's -EINVAL and QEMU's stripped-word
-answer before writes; see `Net.Socket.socketpair_spec`.
-model: checker unknown-bit decline justified on Net.Socket.socket_spec and socketpair_spec -/
+/-- Rocq's `socketpair_flag_check_precedes_the_writes`: the first gate
+answers -EINVAL before anything is reserved, whatever the family.
+`__sys_socketpair` tests the flag bits (net/socket.c:1771-1773, Linux
+v6.18.46) before the two `get_unused_fd_flags` reservations, so AF_INET
+and AF_UNIX at `SOCK_STREAM|0x100` are both -EINVAL with nothing
+written, and the same errno carrying the two descriptor stores is
+refused.  AF_UNIX at a legal type still declines: the family is outside
+the model, and the flag gate has let it through.
+kernel: net/socket.c:__sys_socketpair; net/core/sock.c:sock_no_socketpair@v6.18.46 -/
 theorem check_socketpair_flag_check_precedes_the_writes :
     check_socketpair_row (socketpair_in 2 257 0 4096 wmem_open)
-      (mkEffect (errno_ret EINVAL) [] []) socketpair_model = CheckUnmodeled ∧
+      (mkEffect (errno_ret EINVAL) [] []) socketpair_model = CheckOk socketpair_model [] ∧
     check_socketpair_row (socketpair_in 2 257 0 4096 wmem_open)
-      (mkEffect (errno_ret EOPNOTSUPP) [] [])
-      socketpair_model = CheckUnmodeled ∧
+      (mkEffect (errno_ret EINVAL) [(4096, [3, 0, 0, 0]), (4100, [4, 0, 0, 0])] [])
+      socketpair_model = CheckReject ∧
     check_socketpair_row (socketpair_in 1 257 0 4096 wmem_open)
-      (mkEffect (errno_ret EINVAL) [] []) socketpair_model = CheckUnmodeled ∧
+      (mkEffect (errno_ret EINVAL) [] []) socketpair_model = CheckOk socketpair_model [] ∧
     check_socketpair_row (socketpair_in 1 1 0 4096 wmem_open)
       (mkEffect 0 [(4096, [3, 0, 0, 0]), (4100, [4, 0, 0, 0])] []) socketpair_model
       = CheckUnmodeled := by
@@ -2231,15 +2238,16 @@ theorem shutdown_witness_names_each_arm :
     shutdown_witness 10 1 socket_states_model = Unmodeled := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> witness_norm
 
-/-- The unknown-bit witness follows the implementation-dependent decline.
-For the destination arms, the reservation errno needs neither writes nor
-a fault, so the witness can choose it before either store.
+/-- An unknown type-flag bit is -EINVAL, before the family is judged and
+before either descriptor is reserved, so AF_INET and AF_UNIX answer it
+alike.  For the destination arms, the reservation errno needs neither
+writes nor a fault, so the witness can choose it before either store.
 kernel: net/socket.c:__sys_socketpair; fs/file.c:alloc_fd,alloc_fdtable@v6.18.46 -/
 theorem socketpair_witness_names_each_arm :
     socketpair_witness 2 257 0 4096 (socketpair_in 2 257 0 4096 wmem_open) socketpair_model
-      = Unmodeled ∧
+      = Ok (mkEffect (errno_ret EINVAL) [] []) socketpair_model [] ∧
     socketpair_witness 1 257 0 4096 (socketpair_in 1 257 0 4096 wmem_open) socketpair_model
-      = Unmodeled ∧
+      = Ok (mkEffect (errno_ret EINVAL) [] []) socketpair_model [] ∧
     socketpair_witness 1 1 0 4096 (socketpair_in 1 1 0 4096 wmem_open) socketpair_model
       = Unmodeled ∧
     socketpair_witness 2 1 0 4096 (socketpair_in 2 1 0 4096 wmem_open) socketpair_model
@@ -3616,21 +3624,27 @@ theorem check_socket_arguments_are_32_bits :
       (mkEffect 5 [] []) listening_socket_model = CheckReject := by
   refine ⟨?_, ?_⟩ <;> alloc_norm
 
-/-- The early decline prevents later answers bypassing Linux's first
-unknown-bit test; see `Net.Socket.socket_spec`.
-model: checker unknown-bit decline justified on Net.Socket.socket_spec and socketpair_spec -/
-theorem check_socket_flag_bit_declines_first :
-    check_socket_row (socket_in 2 257 17) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled ∧
+/-- AN UNKNOWN FLAG BIT IS -EINVAL, and it is answered before the family,
+the type and the protocol are read: `__sys_socket_create` tests
+`type & ~SOCK_TYPE_MASK & ~(SOCK_CLOEXEC|SOCK_NONBLOCK)` first
+(net/socket.c:1697-1698, Linux v6.18.46).  So `socket(AF_INET,
+SOCK_STREAM|0x100, IPPROTO_UDP)` is -EINVAL and not the walk's answer,
+and the same bit beside SOCK_NONBLOCK is -EINVAL too, the unknown bit
+being tested before SOCK_NONBLOCK is looked at.
+kernel: net/socket.c:__sys_socket_create@v6.18.46 -/
+theorem check_socket_flag_bit_is_einval_first :
+    check_socket_row (socket_in 2 257 17) (mkEffect (errno_ret EINVAL) [] [])
+      listening_socket_model = CheckOk listening_socket_model [] ∧
     check_socket_row (socket_in 2 2305 0) (mkEffect (errno_ret EINVAL) [] [])
-      listening_socket_model = CheckUnmodeled := by
+      listening_socket_model = CheckOk listening_socket_model [] := by
   refine ⟨?_, ?_⟩ <;> alloc_norm
 
-/-- QEMU's stripped-word answer must reach the same decline.
-model: checker unknown-bit decline justified on Net.Socket.socket_spec and socketpair_spec -/
-theorem check_socket_flag_bit_declines_the_walk_answer :
+/-- …and the walk's answer is refused at that input, since the flag test
+answers first.
+kernel: net/socket.c:__sys_socket_create; net/ipv4/af_inet.c:inet_create@v6.18.46 -/
+theorem check_socket_flag_bit_refuses_the_walk_answer :
     check_socket_row (socket_in 2 257 17)
-      (mkEffect (errno_ret EPROTONOSUPPORT) [] []) listening_socket_model = CheckUnmodeled := by
+      (mkEffect (errno_ret EPROTONOSUPPORT) [] []) listening_socket_model = CheckReject := by
   alloc_norm
 
 /-- SOCK_NONBLOCK DECLINES: the model has no O_NONBLOCK to set on the new
@@ -3755,9 +3769,9 @@ theorem check_socket_dgram_and_raw_still_take_the_protocol_range :
       listening_socket_model = CheckUnmodeled := by
   refine ⟨?_, ?_, ?_⟩ <;> alloc_norm
 
-/-- SCTP (132), MPTCP (262) and SMC (256) under SOCK_STREAM,
-and SOCK_SEQPACKET, are each answered by what the kernel build
-registered, so their -EPROTONOSUPPORT or -ESOCKTNOSUPPORT is declined;
+/-- SCTP (132) and MPTCP (262) under SOCK_STREAM, and SOCK_SEQPACKET,
+are each answered by what the kernel build registered, so their
+-EPROTONOSUPPORT or -ESOCKTNOSUPPORT is declined;
 UDP under SOCK_STREAM and SOCK_RDM, which no AF_INET protosw in the
 v6.18.46 tree registers (the `inet_register_protosw` callers under net/
 register types 1, 2, 3 and 5, and no type-1 entry takes protocol 17),
@@ -3766,14 +3780,13 @@ kernels that could build DCCP, whose module registered `dccp_v4_protosw`
 with type SOCK_DCCP (read at v5.4 and v6.15, in the ipv4.c of the DCCP
 directory those trees have): at v6.18.46 the tree has no `net/dccp`
 directory and no type-6 protosw, so type 6 is -ESOCKTNOSUPPORT there,
-the spec twin's priority-3 cost.
+the spec twin's priority-3 cost.  SMC (256) is answered, not declined:
+the pin below this one states it with the rest of 256-262.
 kernel: net/ipv4/af_inet.c:inet_create@v6.18.46 -/
 theorem check_socket_kernel_build_answers_are_declined :
     check_socket_row (socket_in 2 1 132) (mkEffect (errno_ret EPROTONOSUPPORT) [] [])
       listening_socket_model = CheckUnmodeled ∧
     check_socket_row (socket_in 2 1 262) (mkEffect (errno_ret EPROTONOSUPPORT) [] [])
-      listening_socket_model = CheckUnmodeled ∧
-    check_socket_row (socket_in 2 1 256) (mkEffect (errno_ret EPROTONOSUPPORT) [] [])
       listening_socket_model = CheckUnmodeled ∧
     check_socket_row (socket_in 2 5 0) (mkEffect (errno_ret ESOCKTNOSUPPORT) [] [])
       listening_socket_model = CheckUnmodeled ∧
@@ -3783,25 +3796,36 @@ theorem check_socket_kernel_build_answers_are_declined :
       listening_socket_model = CheckOk listening_socket_model [] ∧
     check_socket_row (socket_in 2 4 0) (mkEffect (errno_ret ESOCKTNOSUPPORT) [] [])
       listening_socket_model = CheckOk listening_socket_model [] := by
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> alloc_norm
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> alloc_norm
 
-/-- PROTOCOLS 256-262 DECLINE on every type `inet_create` judges: they are
--EINVAL on Linux v4.17 through v5.5, where `IPPROTO_MAX` was 256
-(include/uapi/linux/in.h:77-79 at v4.17), and the walk's answer from v5.6,
-so the checker declines the walk's errno and the -EINVAL alike; 255 and
-263 on either side keep their answers.
+/-- PROTOCOLS 256-262 ARE INSIDE THE PROTOCOL RANGE: `IPPROTO_MAX` is the
+enumerator after `IPPROTO_MPTCP`, 263 (include/uapi/linux/in.h:88-90,
+Linux v6.18.46), so `inet_create`'s range test lets 256, 257 and 261
+through to the `inetsw` walk, which answers -EPROTONOSUPPORT for each;
+262 is IPPROTO_MPTCP and declines with SCTP, the pin above; on types the
+walk never reaches, 4 and 0, the last arm answers -ESOCKTNOSUPPORT at 256
+and at 262 alike.  255 and 263 on either side of the band keep their
+answers, and -ENFILE, which no validation arm offers, is refused on each
+of the three: the errno pool is the descriptor arm's alone.
 kernel: net/socket.c:__sock_create; net/ipv4/af_inet.c:inet_create@v6.18.46 -/
-theorem check_socket_pre_v5_6_range_declines :
+theorem check_socket_protocols_above_255_are_answered :
     check_socket_row (socket_in 2 1 257) (mkEffect (errno_ret EPROTONOSUPPORT) [] [])
-      listening_socket_model = CheckUnmodeled ∧
+      listening_socket_model = CheckOk listening_socket_model [] ∧
     check_socket_row (socket_in 2 1 257) (mkEffect (errno_ret EINVAL) [] [])
-      listening_socket_model = CheckUnmodeled ∧
-    check_socket_row (socket_in 2 4 256) (mkEffect (errno_ret ESOCKTNOSUPPORT) [] [])
-      listening_socket_model = CheckUnmodeled ∧
-    check_socket_row (socket_in 2 0 262) (mkEffect (errno_ret EINVAL) [] [])
-      listening_socket_model = CheckUnmodeled ∧
+      listening_socket_model = CheckReject ∧
+    check_socket_row (socket_in 2 1 256) (mkEffect (errno_ret EPROTONOSUPPORT) [] [])
+      listening_socket_model = CheckOk listening_socket_model [] ∧
+    check_socket_row (socket_in 2 1 256) (mkEffect 4 [] []) listening_socket_model
+      = CheckReject ∧
     check_socket_row (socket_in 2 1 (Z_to_bv 64 (2 ^ 32 + 261)))
-      (mkEffect (errno_ret EPROTONOSUPPORT) [] []) listening_socket_model = CheckUnmodeled ∧
+      (mkEffect (errno_ret EPROTONOSUPPORT) [] []) listening_socket_model
+      = CheckOk listening_socket_model [] ∧
+    check_socket_row (socket_in 2 4 256) (mkEffect (errno_ret ESOCKTNOSUPPORT) [] [])
+      listening_socket_model = CheckOk listening_socket_model [] ∧
+    check_socket_row (socket_in 2 0 262) (mkEffect (errno_ret ESOCKTNOSUPPORT) [] [])
+      listening_socket_model = CheckOk listening_socket_model [] ∧
+    check_socket_row (socket_in 2 0 262) (mkEffect (errno_ret EINVAL) [] [])
+      listening_socket_model = CheckReject ∧
     check_socket_row (socket_in 2 1 255) (mkEffect (errno_ret EPROTONOSUPPORT) [] [])
       listening_socket_model = CheckOk listening_socket_model [] ∧
     check_socket_row (socket_in 2 1 255) (mkEffect (errno_ret EINVAL) [] [])
@@ -3811,23 +3835,12 @@ theorem check_socket_pre_v5_6_range_declines :
     check_socket_row (socket_in 2 4 263) (mkEffect (errno_ret EINVAL) [] [])
       listening_socket_model = CheckOk listening_socket_model [] ∧
     check_socket_row (socket_in 2 1 255) (mkEffect (errno_ret ENFILE) [] [])
-      listening_socket_model = CheckOk listening_socket_model [] ∧
+      listening_socket_model = CheckReject ∧
     check_socket_row (socket_in 2 4 255) (mkEffect (errno_ret ENFILE) [] [])
-      listening_socket_model = CheckOk listening_socket_model [] ∧
+      listening_socket_model = CheckReject ∧
     check_socket_row (socket_in 2 4 263) (mkEffect (errno_ret ENFILE) [] [])
-      listening_socket_model = CheckOk listening_socket_model [] := by
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> alloc_norm
-
-/-- With SMC built in or loadable, `smc_inet_protosw` answers
-`socket(AF_INET, SOCK_STREAM, 256)` with a descriptor, and without it the
-walk answers -EPROTONOSUPPORT, so the checker declines both.
-kernel: net/ipv4/af_inet.c:inet_create@v6.18.46 -/
-theorem check_socket_stream_smc_declines :
-    check_socket_row (socket_in 2 1 256) (mkEffect 4 [] []) listening_socket_model
-      = CheckUnmodeled ∧
-    check_socket_row (socket_in 2 1 256) (mkEffect (errno_ret EPROTONOSUPPORT) [] [])
-      listening_socket_model = CheckUnmodeled := by
-  refine ⟨?_, ?_⟩ <;> alloc_norm
+      listening_socket_model = CheckReject := by
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> alloc_norm
 
 /-- Rocq's `socket_still_answers_its_pure_argument_errors`: UDP under
 SOCK_STREAM is -EPROTONOSUPPORT, and SOCK_RDM (4) and type 0, whose
@@ -3986,7 +3999,7 @@ theorem check_accept_arms_around_the_accepted_state :
     check_accept4_row (accept4_in 1 0 0 0) (mkEffect (errno_ret ENOTSOCK) [] [])
       listening_socket_model = CheckOk listening_socket_model [] ∧
     check_accept4_row (accept4_in 9 0 0 1) (mkEffect (errno_ret EBADF) [] [])
-      listening_socket_model = CheckUnmodeled ∧
+      listening_socket_model = CheckOk listening_socket_model [] ∧
     check_accept4_row (accept4_in 3 0 0 1) (mkEffect (errno_ret EINVAL) [] [])
       listening_socket_model = CheckOk listening_socket_model [] ∧
     check_accept4_row (accept4_in 3 0 0 524288) (mkEffect 4 [] []) listening_socket_model
@@ -4028,7 +4041,12 @@ theorem check_accept_flag_bit_beside_nonblock_is_einval :
       listening_socket_model = CheckOk listening_socket_model [] := by
   alloc_norm
 
-/-- QEMU 11.1.1 linux-user/syscall.c do_accept4 validates the address length before its host call.
+/-- THE FLAGS COME BEFORE THE KIND, AND THE ADDRESS AFTER NEITHER: on the
+non-socket at 3 a bad flag bit is -EINVAL and -ENOTSOCK is the lie,
+while with the flag word empty the same descriptor is -ENOTSOCK whatever
+the address argument is — `do_accept` reaches `move_addr_to_user` only
+past `sock_from_file` (net/socket.c:1962-1964 and :1993, Linux v6.18.46),
+so a non-NULL address changes no answer here.
 kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
 theorem check_accept4_flags_then_kind :
     check_accept4_row (accept4_in 3 0 0 1) (mkEffect (errno_ret EINVAL) [] [])
@@ -4036,14 +4054,18 @@ theorem check_accept4_flags_then_kind :
     check_accept4_row (accept4_in 3 0 0 1) (mkEffect (errno_ret ENOTSOCK) [] [])
       socket_call_model = CheckReject ∧
     check_accept4_row (accept4_in 3 4096 4104 0) (mkEffect (errno_ret ENOTSOCK) [] [])
-      socket_call_model = CheckUnmodeled := by
+      socket_call_model = CheckOk socket_call_model [] := by
   refine ⟨?_, ?_, ?_⟩ <;> alloc_norm
 
-/-- Linux v4.17 net/socket.c __sys_accept4 checks flags before lookup; the current kernel resolves the descriptor first.
+/-- A CLOSED DESCRIPTOR IS -EBADF BEFORE THE FLAGS ARE READ:
+`__sys_accept4` resolves the fd (net/socket.c:2054-2057, Linux v6.18.46)
+and only `__sys_accept4_file` tests the flag word (:2019-2020), so the
+-EINVAL Linux v4.17's `__sys_accept4` answered there (lines 1550-1551 of
+that tree's net/socket.c) is refused.
 kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept@v6.18.46 -/
 theorem check_accept4_closed_fd_refuses_the_flag_einval :
     check_accept4_row (accept4_in 9 0 0 1) (mkEffect (errno_ret EINVAL) [] [])
-      listening_socket_model = CheckUnmodeled := by
+      listening_socket_model = CheckReject := by
   alloc_norm
 
 /-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
@@ -4106,17 +4128,24 @@ theorem check_accept4_off_listen_is_einval :
       socket_states_model = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> alloc_norm
 
-/-- Allocation failures before socket-kind and listening-state checks.
-kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
+/-- THE ALLOCATION ERRNOS ARE REFUSED OFF THE SUCCESS PATH: -ENOTSOCK and
+the not-listening -EINVAL are plain returns, so the -EMFILE and -ENFILE
+`get_unused_fd_flags` and `sock_alloc` can raise before `do_accept`
+reaches either test are not the checker's to accept there.  Linux can
+answer them: `__sys_accept4_file` reserves the descriptor
+(net/socket.c:2025-2027, Linux v6.18.46) before `do_accept` looks at the
+file's kind (:1962-1964), so the refusals here are the model's order and
+not the kernel's, and closing that gap flips these four verdicts.
+model: the spec's order, which answers -ENOTSOCK and the not-listening -EINVAL before any allocation errno, refusing the -EMFILE and -ENFILE Linux reserves the descriptor early enough to answer; a divergence restated on the checker so that closing it is a visible flip -/
 theorem check_accept4_refuses_the_narrowed_allocation_errnos :
     check_accept4_row (accept4_in 1 0 0 0) (mkEffect (errno_ret EMFILE) [] [])
-      listening_socket_model = CheckOk listening_socket_model [] ∧
+      listening_socket_model = CheckReject ∧
     check_accept4_row (accept4_in 0 0 0 0) (mkEffect (errno_ret EMFILE) [] [])
-      socket_call_model = CheckOk socket_call_model [] ∧
+      socket_call_model = CheckReject ∧
     check_accept4_row (accept4_in 4 0 0 0) (mkEffect (errno_ret ENFILE) [] [])
-      accepted_socket_model = CheckOk accepted_socket_model [] ∧
+      accepted_socket_model = CheckReject ∧
     check_accept4_row (accept4_in 6 0 0 0) (mkEffect (errno_ret ENFILE) [] [])
-      socket_states_model = CheckOk socket_states_model [] := by
+      socket_states_model = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_⟩ <;> alloc_norm
 
 /-- A NON-NULL ADDRESS DECLINES above the socket's state, not only on
@@ -4533,19 +4562,18 @@ scoped macro "alloc_witness_norm" : tactic =>
              first | done | sys_simp_pass +ground +decide -failIfUnchanged;
              first | done | alloc_witness_open +ground +decide))
 
-/-- socket's witness, arm by arm: `Unmodeled` on a bad flag bit and
+/-- socket's witness, arm by arm: -EINVAL on a bad flag bit, `Unmodeled`
 on SOCK_NONBLOCK, -EAFNOSUPPORT past the family range, -EINVAL past the
 type range, `Unmodeled` on AF_UNIX and on SOCK_PACKET, -EINVAL past the
-protocol range, `Unmodeled` on SCTP and, through the 256-262 decline,
-on MPTCP and SMC, -EPROTONOSUPPORT on
-UDP, and on the passing call -ENOMEM, the head of `socket_errnos` — an
-answer the call can give, from `sk_alloc` or `sock_alloc_file`, and not
-the descriptor — then `Unmodeled` on SOCK_DGRAM and SOCK_SEQPACKET and
--ESOCKTNOSUPPORT on SOCK_RDM.
+protocol range, `Unmodeled` on SCTP and on MPTCP, -EPROTONOSUPPORT on
+SMC and on UDP, and on the passing call -ENOMEM, the head of
+`socket_errnos` — an answer the call can give, from `sk_alloc` or
+`sock_alloc_file`, and not the descriptor — then `Unmodeled` on
+SOCK_DGRAM and SOCK_SEQPACKET and -ESOCKTNOSUPPORT on SOCK_RDM.
 kernel: net/socket.c:__sys_socket_create,__sock_create,sock_alloc_file; net/ipv4/af_inet.c:inet_create; fs/file_table.c:alloc_path_pseudo,alloc_empty_file@v6.18.46 -/
 theorem socket_witness_names_each_arm :
     socket_witness 2 257 17 listening_socket_model
-      = Unmodeled ∧
+      = Ok (mkEffect (errno_ret EINVAL) [] []) listening_socket_model [] ∧
     socket_witness 2 2049 0 listening_socket_model = Unmodeled ∧
     socket_witness 46 1 0 listening_socket_model
       = Ok (mkEffect (errno_ret EAFNOSUPPORT) [] []) listening_socket_model [] ∧
@@ -4557,7 +4585,8 @@ theorem socket_witness_names_each_arm :
       = Ok (mkEffect (errno_ret EINVAL) [] []) listening_socket_model [] ∧
     socket_witness 2 1 132 listening_socket_model = Unmodeled ∧
     socket_witness 2 1 262 listening_socket_model = Unmodeled ∧
-    socket_witness 2 1 256 listening_socket_model = Unmodeled ∧
+    socket_witness 2 1 256 listening_socket_model
+      = Ok (mkEffect (errno_ret EPROTONOSUPPORT) [] []) listening_socket_model [] ∧
     socket_witness 2 1 17 listening_socket_model
       = Ok (mkEffect (errno_ret EPROTONOSUPPORT) [] []) listening_socket_model [] ∧
     socket_witness 2 1 0 listening_socket_model
@@ -4659,7 +4688,7 @@ the same three passes, opening the four rows, the four checkers, the two
 shared halves, the range verdict `check_access_ok_zero` and the acceptors
 `check_ret_only` and `check_ret_only_copyins`, and deciding what is
 closed; its own macro for the options section's reason.  The header walk
-behind a sendmsg pin, `copy_bytes_map` over the spec file's
+behind a sendmsg pin, `read_bytes_map` over the spec file's
 `send_msghdr_mem`, and the import behind it are evaluated by the ground
 pass.  The two pipe-end twins run `check_norm` on their bind cells, bind
 being a lifecycle checker.  The witness pins run `io_witness_norm`.  None
@@ -4671,7 +4700,7 @@ open LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Uaccess
 open LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Uaccess
 
 def check_sendto_row (i : SyscallInput) (eff : SyscallEffect) (m : Model) : check_result :=
-  check_sendto i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) eff m
+  check_sendto i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) eff m
 
 def check_recvfrom_row (i : SyscallInput) (eff : SyscallEffect) (m : Model) : check_result :=
   check_recvfrom i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) eff m
@@ -4682,10 +4711,12 @@ def check_sendmsg_row (i : SyscallInput) (eff : SyscallEffect) (m : Model) : che
 def check_recvmsg_row (i : SyscallInput) (eff : SyscallEffect) (m : Model) : check_result :=
   check_recvmsg (fd32 (in_arg i 0)) (in_arg i 2) eff m
 
-/-- sendto's row: a0 through `fd32`, a1..a5 whole.  `SYSCALL_DEFINE6(sendto,
-int, fd, …)` (net/socket.c:2248, Linux v6.18.46) takes the fd as an
-`int`; the flags are an `unsigned int`, which the spec narrows itself
-(`sendflags32`).
+/-- sendto's row: a0 through `fd32`, a1 to a4 whole, and a5 — the address
+length — read by no arm, since the checker takes no `addrlen` argument.
+`SYSCALL_DEFINE6(sendto, int, fd, …)` (net/socket.c:2248, Linux v6.18.46)
+takes the fd as an `int`; the flags are an `unsigned int`, which the spec
+narrows itself (`sendflags32`), and the spec still reads a5, which is why
+`check_sendto_sound_ok` is applied to it here.
 kernel: net/socket.c:sendto,__sys_sendto@v6.18.46 -/
 theorem sendto_row_is_the_arm (i : SyscallInput) (eff : SyscallEffect) (m m' : Model)
     (evs : List event) (h : check_sendto_row i eff m = CheckOk m' evs) :
@@ -4802,14 +4833,19 @@ theorem check_sendto_address_declines :
       fresh_socket_model = CheckUnmodeled := by
   refine ⟨?_, ?_, ?_⟩ <;> io_norm
 
-/-- qemu-user's
-`do_sendto` tests `(int)addrlen < 0` first and answers -EINVAL.
+/-- THE ADDRESS LENGTH IS NOT READ WITHOUT AN ADDRESS: with `addrp` NULL
+the checker never looks at a5, so the `int` -1 beside it is the plain
+call and the dead socket answers -EPIPE; the -EINVAL qemu-user's
+`do_sendto` answers for `(int)addrlen < 0` before its host call is the
+lie here, and Linux does not answer it either —
+`__sys_sendto` hands `move_addr_to_kernel` the length only inside its
+`addr != NULL` branch (net/socket.c:2235, Linux v6.18.46).
 kernel: net/socket.c:__sys_sendto,move_addr_to_kernel; net/core/stream.c:sk_stream_wait_connect@v6.18.46 -/
-theorem check_sendto_negative_addrlen_declines :
+theorem check_sendto_negative_addrlen_is_not_read :
     check_sendto_row (sendto_in 3 4096 1 16384 0 (Z_to_bv 64 (-1)) mem_ab)
-      (mkEffect (errno_ret EPIPE) [] []) fresh_socket_model = CheckUnmodeled ∧
+      (mkEffect (errno_ret EPIPE) [] []) fresh_socket_model = CheckOk fresh_socket_model [] ∧
     check_sendto_row (sendto_in 3 4096 1 16384 0 (Z_to_bv 64 (-1)) mem_ab)
-      (mkEffect (errno_ret EINVAL) [] []) fresh_socket_model = CheckUnmodeled := by
+      (mkEffect (errno_ret EINVAL) [] []) fresh_socket_model = CheckReject := by
   refine ⟨?_, ?_⟩ <;> io_norm
 
 /-- THE COUNT'S BOUND: one byte past `Uaccess.rw_bytes_max` declines before
@@ -4861,25 +4897,30 @@ theorem check_sendto_range_verdict_precedes_the_fd :
     check_sendto_row (sendto_in (Z_to_bv 64 (-1)) (Z_to_bv 64 (2 ^ 47 - 7)) 8 16384 0 0 mem_ab)
       (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckOk fresh_socket_model [] ∧
     check_sendto_row (sendto_in 9 (Z_to_bv 64 (2 ^ 47 - 7)) 7 16384 0 0 mem_ab)
-      (mkEffect (errno_ret EBADF) [] []) fresh_socket_model = CheckUnmodeled ∧
+      (mkEffect (errno_ret EBADF) [] []) fresh_socket_model = CheckOk fresh_socket_model [] ∧
     check_sendto_row (sendto_in 9 (Z_to_bv 64 (2 ^ 47 - 7)) 7 16384 0 0 mem_ab)
-      (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckUnmodeled := by
+      (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> io_norm
 
-/-- qemu-user's `do_sendto` never locks a zero-length
-buffer and hands the host call a NULL one (linux-user/syscall.c:3648 and
-:3671, QEMU v11.1.1), so at `2^63` it answers whatever the host's fd 9
-does, -EBADF where nothing holds it.
+/-- A ZERO-LENGTH BUFFER IS STILL PUT THROUGH THE RANGE TEST:
+`import_ubuf` calls `access_ok` on every count (lib/iov_iter.c:1437-1438,
+Linux v6.18.46), so at `2^63` and at `2^47 + 1` the answer is -EFAULT and
+the closed fd's -EBADF is the lie, while `2^47` itself — `TASK_SIZE`
+with nothing to read — passes, and fd 9 answers -EBADF.  qemu-user's
+`do_sendto` never locks a zero-length buffer and hands the host call a
+NULL one (linux-user/syscall.c:3648 and :3671, QEMU v11.1.1), so at
+`2^63` it answers whatever the host's fd 9 does: that is the cell the
+-EFAULT here costs.
 kernel: lib/iov_iter.c:import_ubuf; net/socket.c:__sys_sendto@v6.18.46 -/
 theorem check_sendto_zero_length_range_is_tested :
     check_sendto_row (sendto_in 9 (Z_to_bv 64 (2 ^ 63)) 0 16384 0 0 mem_ab)
-      (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckUnmodeled ∧
+      (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckOk fresh_socket_model [] ∧
     check_sendto_row (sendto_in 9 (Z_to_bv 64 (2 ^ 63)) 0 16384 0 0 mem_ab)
-      (mkEffect (errno_ret EBADF) [] []) fresh_socket_model = CheckUnmodeled ∧
+      (mkEffect (errno_ret EBADF) [] []) fresh_socket_model = CheckReject ∧
     check_sendto_row (sendto_in 9 (Z_to_bv 64 (2 ^ 47 + 1)) 0 16384 0 0 mem_ab)
-      (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckUnmodeled ∧
+      (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckOk fresh_socket_model [] ∧
     check_sendto_row (sendto_in 9 (Z_to_bv 64 (2 ^ 47 + 1)) 0 16384 0 0 mem_ab)
-      (mkEffect (errno_ret EBADF) [] []) fresh_socket_model = CheckUnmodeled ∧
+      (mkEffect (errno_ret EBADF) [] []) fresh_socket_model = CheckReject ∧
     check_sendto_row (sendto_in 9 (Z_to_bv 64 (2 ^ 47)) 0 16384 0 0 mem_ab)
       (mkEffect (errno_ret EBADF) [] []) fresh_socket_model = CheckOk fresh_socket_model [] ∧
     check_sendto_row (sendto_in 9 (Z_to_bv 64 (2 ^ 47)) 0 16384 0 0 mem_ab)
@@ -5017,21 +5058,26 @@ theorem check_send_on_a_consumed_reset_is_epipe :
       reset_socket_model = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> io_norm
 
-/-- Rocq's `sendto_unlockable_in_range_buffer_declines`, with the
-address from the failing qemu run: an unmapped buffer below `TASK_SIZE`
-passes `import_ubuf`'s range test, so the fd is resolved and the socket
-answers before any byte is copied.
+/-- Rocq's `sendto_unmapped_buffer_in_range_faults_on_the_copy`, whose
+third cell this twin keeps: at the address from the failing qemu run an
+unmapped buffer passes `import_ubuf`'s range test, so the fd is resolved
+and the listening socket answers -EPIPE before any byte is copied, with
+-EFAULT refused.  Rocq's first two cells send on the connection and
+fault on the copy; this twin declines every connected state (the
+mapping above), so the connection's two answers are declines here and
+not the -EFAULT.  qemu-user locks the buffer before its host call and
+answers -EFAULT on the listener too, which is what the -EPIPE costs.
 kernel: lib/iov_iter.c:import_ubuf; net/core/stream.c:sk_stream_wait_connect@v6.18.46 -/
-theorem check_sendto_unlockable_in_range_buffer_declines :
+theorem check_sendto_unlockable_in_range_buffer_is_not_faulted :
     check_sendto_row (sendto_in 4 46912512909312 1 16384 0 0 (fun _ => none))
       (mkEffect (errno_ret EFAULT) [] []) accepted_socket_model = CheckUnmodeled ∧
     check_sendto_row (sendto_in 4 46912512909312 1 16384 0 0 (fun _ => none))
       (mkEffect (errno_ret EPIPE) [] []) accepted_socket_model = CheckUnmodeled ∧
     check_sendto_row (sendto_in 3 46912512909312 1 16384 0 0 (fun _ => none))
       (mkEffect (errno_ret EPIPE) [] []) listening_socket_model
-      = CheckUnmodeled ∧
+      = CheckOk listening_socket_model [] ∧
     check_sendto_row (sendto_in 3 46912512909312 1 16384 0 0 (fun _ => none))
-      (mkEffect (errno_ret EFAULT) [] []) listening_socket_model = CheckUnmodeled := by
+      (mkEffect (errno_ret EFAULT) [] []) listening_socket_model = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_⟩ <;> io_norm
 
 /-- Rocq's `send_emits_on_the_connections_channel`,
@@ -5109,19 +5155,23 @@ imports the descriptors.  Every -EPIPE, -EFAULT and -EINVAL past the
 header carries the header's 56 bytes and each 16-byte descriptor read as
 its ledger. -/
 
-/-- kernel: net/socket.c:__sys_sendmsg,copy_msghdr_from_user@v6.18.46 -/
+/-- THE FD IS RESOLVED BEFORE THE HEADER: the closed 9 is -EBADF and the
+channel at 1 -ENOTSOCK whatever the header is, an unreadable one
+included, where `copy_msghdr_from_user`'s -EFAULT is the lie; and
+neither answer carries the header's bytes, nothing having been copied.
+kernel: net/socket.c:__sys_sendmsg,copy_msghdr_from_user@v6.18.46 -/
 theorem check_sendmsg_resolves_the_fd_before_the_header :
     check_sendmsg_row (sendmsg_in 9 8192 16384 msg_ab) (mkEffect (errno_ret EBADF) [] [])
       accepted_socket_model = CheckOk accepted_socket_model [] ∧
     check_sendmsg_row (sendmsg_in 1 8192 16384 msg_ab) (mkEffect (errno_ret ENOTSOCK) [] [])
       accepted_socket_model = CheckOk accepted_socket_model [] ∧
     check_sendmsg_row (sendmsg_in 9 8192 16384 (fun _ => none)) (mkEffect (errno_ret EFAULT) [] [])
-      accepted_socket_model = CheckUnmodeled ∧
+      accepted_socket_model = CheckReject ∧
     check_sendmsg_row (sendmsg_in 1 8192 16384 msg_ab)
       (SyscallEffect.mkEffectU (errno_ret ENOTSOCK) [] [] [] [] [(8192, 56)])
       accepted_socket_model = CheckReject ∧
     check_sendmsg_row (sendmsg_in 9 8192 16384 (fun _ => none)) (mkEffect (errno_ret EBADF) [] [])
-      accepted_socket_model = CheckUnmodeled := by
+      accepted_socket_model = CheckOk accepted_socket_model [] := by
   refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> io_norm
 
 /-- Rocq's `sendmsg_reads_the_argument_never_the_struct_field`: its two
@@ -5228,12 +5278,18 @@ theorem check_sendmsg_every_non_socket_kind_is_enotsock :
       socket_kinds_model = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> io_norm
 
-/-- THE HEADER, ON A SOCKET: nothing readable at 8192, or a header wrapping
-past the top of the address space, or one whose 56 bytes end one past
-`TASK_SIZE`, is `copy_msghdr_from_user`'s -EFAULT with nothing ledgered;
-one byte lower the zeroed header is read, and is a send of nothing on the
-dead socket, -EPIPE with the header ledgered.
-kernel: net/socket.c:copy_msghdr_from_user; net/core/stream.c:sk_stream_wait_connect@v6.18.46 -/
+/-- THE HEADER, ON A SOCKET: nothing readable at 8192 is
+`copy_msghdr_from_user`'s -EFAULT with nothing ledgered, and the dead
+socket's -EPIPE and a ledger beside the fault are refused.  The read
+carries no range test of its own — `read_bytes_map` walks the 56 bytes
+in word arithmetic and wraps at 2^64 — so over a memory that maps
+everything a header eight bytes below the top of the address space, one
+whose 56 bytes end one past `TASK_SIZE`, and one whose 56 bytes end
+exactly at it, are all READ, and each is a send of nothing on the dead
+socket: -EPIPE with its own 56 bytes ledgered, -EFAULT the lie.  Linux
+answers -EFAULT for the first two, `copy_from_user`'s `access_ok`
+refusing the range, so those cells are the model's own.
+model: the header read, which walks 56 bytes with no `access_ok` and wraps at 2^64, answering the socket's -EPIPE where Linux answers -EFAULT; a divergence restated on the checker so that closing it is a visible flip -/
 theorem check_sendmsg_header_is_copied_at_the_socket :
     check_sendmsg_row (sendmsg_in 3 8192 16384 (fun _ => none)) (mkEffect (errno_ret EFAULT) [] [])
       fresh_socket_model = CheckOk fresh_socket_model [] ∧
@@ -5243,15 +5299,21 @@ theorem check_sendmsg_header_is_copied_at_the_socket :
       (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56)]) fresh_socket_model
       = CheckReject ∧
     check_sendmsg_row (sendmsg_in 3 (Z_to_bv 64 (2 ^ 64 - 8)) 16384 rmem_open)
-      (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckOk fresh_socket_model [] ∧
+      (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] []
+        [(Z_to_bv 64 (2 ^ 64 - 8), 56)]) fresh_socket_model = CheckOk fresh_socket_model [] ∧
+    check_sendmsg_row (sendmsg_in 3 (Z_to_bv 64 (2 ^ 64 - 8)) 16384 rmem_open)
+      (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckReject ∧
     check_sendmsg_row (sendmsg_in 3 (Z_to_bv 64 (2 ^ 47 - 55)) 16384 rmem_open)
-      (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckOk fresh_socket_model [] ∧
+      (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] []
+        [(Z_to_bv 64 (2 ^ 47 - 55), 56)]) fresh_socket_model = CheckOk fresh_socket_model [] ∧
+    check_sendmsg_row (sendmsg_in 3 (Z_to_bv 64 (2 ^ 47 - 55)) 16384 rmem_open)
+      (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckReject ∧
     check_sendmsg_row (sendmsg_in 3 (Z_to_bv 64 (2 ^ 47 - 56)) 16384 rmem_open)
       (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(Z_to_bv 64 (2 ^ 47 - 56), 56)])
       fresh_socket_model = CheckOk fresh_socket_model [] ∧
     check_sendmsg_row (sendmsg_in 3 (Z_to_bv 64 (2 ^ 47 - 56)) 16384 rmem_open)
       (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckReject := by
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> io_norm
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> io_norm
 
 /-- A DESTINATION IN THE HEADER DECLINES, as sendto's does, while a NULL
 `msg_name` beside a negative `msg_namelen` is never validated — a NULL
@@ -5322,39 +5384,35 @@ theorem check_sendmsg_heap_band_declines :
       fresh_socket_model = CheckOk fresh_socket_model [] := by
   refine ⟨?_, ?_, ?_⟩ <;> io_norm
 
-/-- A FAULT AT THE HEAD OF THE IMPORT IS -EFAULT: a descriptor naming a
-kernel address, alone or first of two, an unreadable array on a page of
-its own, an array at a kernel address or straddling `TASK_SIZE`, and an
-in-range array of two that nothing maps — each with the ledger its own
-path read, the header alone where `copy_iovec_from_user`'s range test
-refuses the array before any load.  One entry ending exactly at
-`TASK_SIZE`, at `2^47 - 16`, passes that test and faults on the load, so
-its ledger carries the entry and the header alone is refused beside it.
-The dead socket's -EPIPE is refused beside the first, and Rocq's ledger
-with the array's first entry beside the kernel-address array.
-kernel: lib/iov_iter.c:import_ubuf,__import_iovec,copy_iovec_from_user; net/core/stream.c:sk_stream_wait_connect@v6.18.46 -/
+/-- AN UNREADABLE DESCRIPTOR ARRAY IS -EFAULT, and the ledger carries the
+descriptor the walk attempted: `copy_iovec_from_user` reads each entry in
+index order and stops at the first it cannot load (lib/iov_iter.c, Linux
+v6.18.46), so an array on a page of its own, an array at a kernel
+address, one straddling `TASK_SIZE`, one ending exactly at it, and an
+array of two that nothing maps, are each -EFAULT with the header and
+that one sixteen-byte entry ledgered, the header alone refused beside
+them.  The walk carries no range test, which is why the array at `2^63`
+is attempted and ledgered at all: Linux refuses that range in
+`user_access_begin` before any load and ledgers nothing.
+model: the descriptor walk, which attempts an array `access_ok` would refuse and ledgers it, where Linux refuses the range before any load; a divergence restated on the checker so that closing it is a visible flip -/
 theorem check_sendmsg_fault_at_the_head_is_efault :
-    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_kbase)
-      (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (8320, 16)])
-      fresh_socket_model = CheckOk fresh_socket_model [] ∧
-    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_kbase)
-      (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (8320, 16)])
-      fresh_socket_model = CheckReject ∧
-    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_kbase_first_of_two)
-      (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (8320, 16), (8336, 16)])
-      fresh_socket_model = CheckOk fresh_socket_model [] ∧
     check_sendmsg_row (sendmsg_in 3 8192 16384 msg_noarray)
       (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (12288, 16)])
       fresh_socket_model = CheckOk fresh_socket_model [] ∧
-    check_sendmsg_row (sendmsg_in 3 8192 16384 (msg_array_at (Z_to_bv 64 (2 ^ 63)) 1))
-      (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56)])
-      fresh_socket_model = CheckOk fresh_socket_model [] ∧
+    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_noarray)
+      (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (12288, 16)])
+      fresh_socket_model = CheckReject ∧
     check_sendmsg_row (sendmsg_in 3 8192 16384 (msg_array_at (Z_to_bv 64 (2 ^ 63)) 1))
       (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] []
-        [(8192, 56), (Z_to_bv 64 (2 ^ 63), 16)]) fresh_socket_model = CheckReject ∧
-    check_sendmsg_row (sendmsg_in 3 8192 16384 (msg_array_at (Z_to_bv 64 (2 ^ 47 - 8)) 1))
+        [(8192, 56), (Z_to_bv 64 (2 ^ 63), 16)]) fresh_socket_model
+      = CheckOk fresh_socket_model [] ∧
+    check_sendmsg_row (sendmsg_in 3 8192 16384 (msg_array_at (Z_to_bv 64 (2 ^ 63)) 1))
       (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56)])
-      fresh_socket_model = CheckOk fresh_socket_model [] ∧
+      fresh_socket_model = CheckReject ∧
+    check_sendmsg_row (sendmsg_in 3 8192 16384 (msg_array_at (Z_to_bv 64 (2 ^ 47 - 8)) 1))
+      (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] []
+        [(8192, 56), (Z_to_bv 64 (2 ^ 47 - 8), 16)]) fresh_socket_model
+      = CheckOk fresh_socket_model [] ∧
     check_sendmsg_row (sendmsg_in 3 8192 16384 (msg_array_at (Z_to_bv 64 (2 ^ 47 - 16)) 1))
       (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] []
         [(8192, 56), (Z_to_bv 64 (2 ^ 47 - 16), 16)]) fresh_socket_model
@@ -5365,63 +5423,41 @@ theorem check_sendmsg_fault_at_the_head_is_efault :
     check_sendmsg_row (sendmsg_in 3 8192 16384 (msg_array_at 12288 2))
       (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (12288, 16)])
       fresh_socket_model = CheckOk fresh_socket_model [] := by
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> io_norm
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> io_norm
 
-/-- THE RANGE TEST IS ON THE WHOLE ENTRY: with every byte past the header
-readable (`msg_straddle_readable`), the one descriptor straddling
-`TASK_SIZE` would load as `(0, 0)`, and is still the header-only -EFAULT,
-where an `iov_fault_at_head` testing its first eight bytes alone would
-find it loadable and decline; Rocq's ledger with the entry beside it is
-refused, since `user_access_begin` refuses the range before the load.
-kernel: lib/iov_iter.c:copy_iovec_from_user@v6.18.46 -/
-theorem check_sendmsg_readable_straddle_is_efault :
-    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_straddle_readable)
-      (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56)])
-      fresh_socket_model = CheckOk fresh_socket_model [] ∧
-    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_straddle_readable)
-      (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] []
-        [(8192, 56), (Z_to_bv 64 (2 ^ 47 - 8), 16)]) fresh_socket_model = CheckReject := by
-  refine ⟨?_, ?_⟩ <;> io_norm
-
-/-- kernel: lib/iov_iter.c:__import_iovec,__import_iovec_ubuf,import_ubuf; net/core/stream.c:sk_stream_wait_connect@v6.18.46 -/
-theorem check_sendmsg_segment_range_edge :
-    check_sendmsg_row
-      (sendmsg_in 3 8192 16384 (send_msghdr_mem 0 0 1 0 0 0 [(Z_to_bv 64 (2 ^ 47 - 1), 1)]))
+/-- A DESCRIPTOR'S OWN BASE IS NEVER TESTED: the walk loads the two
+fields and refuses only a negative length, so a base no user mapping can
+hold — `2^63`, alone, under a zero length, first of two or at index 1 —
+is imported as it stands, and the dead socket answers -EPIPE with the
+header and each entry read in the ledger; the -EFAULT is the lie.  Linux
+refuses each of them from `__import_iovec`'s per-segment `access_ok`
+(lib/iov_iter.c:1377-1392, Linux v6.18.46), and from `import_ubuf`'s
+(:1437-1438) for a vector of one, which `__import_iovec_ubuf` calls
+(:1346, :1360-1361), so every cell here is the model's own.
+model: the import, which admits a descriptor base Linux's per-segment `access_ok` refuses and answers the socket's -EPIPE where Linux answers -EFAULT; a divergence restated on the checker so that closing it is a visible flip -/
+theorem check_sendmsg_kernel_address_segments_are_not_tested :
+    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_kbase)
       (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (8320, 16)])
-      fresh_socket_model = CheckUnmodeled ∧
-    check_sendmsg_row
-      (sendmsg_in 3 8192 16384 (send_msghdr_mem 0 0 1 0 0 0 [(Z_to_bv 64 (2 ^ 47 - 1), 1)]))
-      (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (8320, 16)])
-      fresh_socket_model = CheckUnmodeled ∧
-    check_sendmsg_row
-      (sendmsg_in 3 8192 16384 (send_msghdr_mem 0 0 1 0 0 0 [(Z_to_bv 64 (2 ^ 47), 1)]))
-      (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (8320, 16)])
       fresh_socket_model = CheckOk fresh_socket_model [] ∧
-    check_sendmsg_row
-      (sendmsg_in 3 8192 16384 (send_msghdr_mem 0 0 1 0 0 0 [(Z_to_bv 64 (2 ^ 47), 1)]))
+    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_kbase)
+      (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (8320, 16)])
+      fresh_socket_model = CheckReject ∧
+    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_kbase_zero)
       (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (8320, 16)])
-      fresh_socket_model = CheckReject := by
-  refine ⟨?_, ?_, ?_, ?_⟩ <;> io_norm
-
-/-- A FAULT PAST THE HEAD DECLINES: a kernel address at index 1, and a
-zero-length one first of two, are Linux's -EFAULT from `__import_iovec`'s
-range test of every segment (lib/iov_iter.c:1377-1392, Linux
-v6.18.46), and a zero-length one alone is `import_ubuf`'s (:1437-1438),
-which `__import_iovec_ubuf` calls (:1346) for a vector of one
-(:1360-1361); qemu-user sends what it could lock in each, so neither
-answer is the checker's to accept.
-kernel: lib/iov_iter.c:__import_iovec,__import_iovec_ubuf,import_ubuf; net/core/stream.c:sk_stream_wait_connect@v6.18.46 -/
-theorem check_sendmsg_fault_past_the_head_declines :
+      fresh_socket_model = CheckOk fresh_socket_model [] ∧
+    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_kbase_first_of_two)
+      (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (8320, 16), (8336, 16)])
+      fresh_socket_model = CheckOk fresh_socket_model [] ∧
+    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_kbase_second)
+      (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (8320, 16), (8336, 16)])
+      fresh_socket_model = CheckOk fresh_socket_model [] ∧
     check_sendmsg_row (sendmsg_in 3 8192 16384 msg_kbase_second)
       (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (8320, 16), (8336, 16)])
-      fresh_socket_model = CheckUnmodeled ∧
-    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_kbase_zero)
-      (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (8320, 16)])
-      fresh_socket_model = CheckUnmodeled ∧
+      fresh_socket_model = CheckReject ∧
     check_sendmsg_row (sendmsg_in 3 8192 16384 msg_kbase_zero_first_of_two)
       (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (8320, 16), (8336, 16)])
-      fresh_socket_model = CheckUnmodeled := by
-  refine ⟨?_, ?_, ?_⟩ <;> io_norm
+      fresh_socket_model = CheckOk fresh_socket_model [] := by
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> io_norm
 
 /-- A NEGATIVE `iov_len` IS -EINVAL, header and descriptor ledgered, and
 -EFAULT is the lie.
@@ -5441,8 +5477,8 @@ total one byte past `Uaccess.rw_bytes_max` declines, while the bound
 itself is modeled.  The control gate follows the import as the kernel's
 own test does: `____sys_sendmsg` tests `msg_controllen` and copies the
 block only after `___sys_sendmsg`'s `sendmsg_copy_msghdr` has imported
-the vector, so a control block beside a descriptor naming a kernel
-address is the import's ledgered -EFAULT.
+the vector, so a control block beside a descriptor whose length is
+negative is the import's ledgered -EINVAL.
 kernel: net/socket.c:____sys_sendmsg,___sys_sendmsg,sendmsg_copy_msghdr; lib/iov_iter.c:__import_iovec,import_ubuf; net/core/stream.c:sk_stream_wait_connect@v6.18.46 -/
 theorem check_sendmsg_control_and_total_gates :
     check_sendmsg_row (sendmsg_in 3 8192 16384 msg_ctl)
@@ -5457,9 +5493,8 @@ theorem check_sendmsg_control_and_total_gates :
     check_sendmsg_row (sendmsg_in 3 8192 16384 msg_at_max)
       (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (8320, 16)])
       fresh_socket_model = CheckOk fresh_socket_model [] ∧
-    check_sendmsg_row
-      (sendmsg_in 3 8192 16384 (send_msghdr_mem 0 0 1 8400 16 0 [(Z_to_bv 64 (2 ^ 63), 1)]))
-      (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (8320, 16)])
+    check_sendmsg_row (sendmsg_in 3 8192 16384 msg_neglen_ctl)
+      (SyscallEffect.mkEffectU (errno_ret EINVAL) [] [] [] [] [(8192, 56), (8320, 16)])
       fresh_socket_model = CheckOk fresh_socket_model [] := by
   refine ⟨?_, ?_, ?_, ?_, ?_⟩
   · io_norm
@@ -5838,35 +5873,36 @@ destination address and on a count past the bound, each also beside a
 buffer at `2^63` and the closed 9; -EFAULT on that buffer, before the
 closed fd, once the three pass; -EBADF on the closed fd; -ENOTSOCK on the
 channel; -EPIPE on the fresh socket, and at the count's bound itself;
-`Unmodeled` on the accepted connection.
+`Unmodeled` on the accepted connection.  The witness takes no `addrlen`,
+as the checker does not: the length reaches the spec and no arm of it.
 kernel: lib/iov_iter.c:import_ubuf; net/socket.c:__sys_sendto; net/core/stream.c:sk_stream_wait_connect@v6.18.46 -/
 theorem sendto_witness_names_each_arm :
-    sendto_witness 3 4096 1 0 0 0 (sendto_in 3 4096 1 0 0 0 mem_ab) fresh_socket_model
+    sendto_witness 3 4096 1 0 0 (sendto_in 3 4096 1 0 0 0 mem_ab) fresh_socket_model
       = Unmodeled ∧
-    sendto_witness 3 4096 1 16384 8192 16 (sendto_in 3 4096 1 16384 8192 16 mem_ab)
+    sendto_witness 3 4096 1 16384 8192 (sendto_in 3 4096 1 16384 8192 16 mem_ab)
       fresh_socket_model = Unmodeled ∧
-    sendto_witness 3 4096 131073 16384 0 0 (sendto_in 3 4096 131073 16384 0 0 mem_ab)
+    sendto_witness 3 4096 131073 16384 0 (sendto_in 3 4096 131073 16384 0 0 mem_ab)
       fresh_socket_model = Unmodeled ∧
-    sendto_witness 9 (Z_to_bv 64 (2 ^ 63)) 1 0 0
+    sendto_witness 9 (Z_to_bv 64 (2 ^ 63)) 1 0
       0 (sendto_in 9 (Z_to_bv 64 (2 ^ 63)) 1 0 0 0 mem_ab) fresh_socket_model = Unmodeled ∧
-    sendto_witness 9 (Z_to_bv 64 (2 ^ 63)) 1 16384 8192
-      16 (sendto_in 9 (Z_to_bv 64 (2 ^ 63)) 1 16384 8192 16 mem_ab) fresh_socket_model
+    sendto_witness 9 (Z_to_bv 64 (2 ^ 63)) 1 16384
+      8192 (sendto_in 9 (Z_to_bv 64 (2 ^ 63)) 1 16384 8192 16 mem_ab) fresh_socket_model
       = Unmodeled ∧
-    sendto_witness 9 (Z_to_bv 64 (2 ^ 63)) 131073 16384 0
+    sendto_witness 9 (Z_to_bv 64 (2 ^ 63)) 131073 16384
       0 (sendto_in 9 (Z_to_bv 64 (2 ^ 63)) 131073 16384 0 0 mem_ab) fresh_socket_model
       = Unmodeled ∧
-    sendto_witness 9 (Z_to_bv 64 (2 ^ 63)) 1 16384 0
+    sendto_witness 9 (Z_to_bv 64 (2 ^ 63)) 1 16384
       0 (sendto_in 9 (Z_to_bv 64 (2 ^ 63)) 1 16384 0 0 mem_ab) fresh_socket_model
       = Ok (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model [] ∧
-    sendto_witness 9 4096 1 16384 0 0 (sendto_in 9 4096 1 16384 0 0 mem_ab) fresh_socket_model
+    sendto_witness 9 4096 1 16384 0 (sendto_in 9 4096 1 16384 0 0 mem_ab) fresh_socket_model
       = Ok (mkEffect (errno_ret EBADF) [] []) fresh_socket_model [] ∧
-    sendto_witness 1 4096 1 16384 0 0 (sendto_in 1 4096 1 16384 0 0 mem_ab) fresh_socket_model
+    sendto_witness 1 4096 1 16384 0 (sendto_in 1 4096 1 16384 0 0 mem_ab) fresh_socket_model
       = Ok (mkEffect (errno_ret ENOTSOCK) [] []) fresh_socket_model [] ∧
-    sendto_witness 3 4096 1 16384 0 0 (sendto_in 3 4096 1 16384 0 0 mem_ab) fresh_socket_model
+    sendto_witness 3 4096 1 16384 0 (sendto_in 3 4096 1 16384 0 0 mem_ab) fresh_socket_model
       = Ok (mkEffect (errno_ret EPIPE) [] []) fresh_socket_model [] ∧
-    sendto_witness 3 4096 131072 16384 0 0 (sendto_in 3 4096 131072 16384 0 0 rmem_open)
+    sendto_witness 3 4096 131072 16384 0 (sendto_in 3 4096 131072 16384 0 0 rmem_open)
       fresh_socket_model = Ok (mkEffect (errno_ret EPIPE) [] []) fresh_socket_model [] ∧
-    sendto_witness 4 4096 2 16384 0 0 (sendto_in 4 4096 2 16384 0 0 mem_ab) accepted_socket_model
+    sendto_witness 4 4096 2 16384 0 (sendto_in 4 4096 2 16384 0 0 mem_ab) accepted_socket_model
       = Unmodeled := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · io_witness_norm
@@ -5879,8 +5915,7 @@ theorem sendto_witness_names_each_arm :
   · io_witness_norm
   · io_witness_norm
   · io_witness_norm
-  · simp only [sendto_witness, sendto_in.eq_1, t172_seg_lockable_rmem_open,
-      show (m_vmmaps fresh_socket_model).vm_reserved = [] from rfl, load_write_free_nil]
+  · simp only [sendto_witness, sendto_in.eq_1]
     rfl
   · io_witness_norm
 
@@ -5958,26 +5993,25 @@ theorem sendmsg_witness_heap_band_declines :
            fresh_socket_model [] := by
   refine ⟨?_, ?_, ?_⟩ <;> io_witness_norm
 
-/-- sendmsg's witness at the import and the socket, arm by arm: -EFAULT
-on a kernel descriptor, a control block beside it too, and `Unmodeled`
-on one past the head; -EINVAL on a negative length; `Unmodeled` on a
-control block, and the ledgered -EPIPE on a control pointer under a zero
-length, so the gate reads the length and not the pointer; `Unmodeled`
-on a total past the bound, and the ledgered -EPIPE at the bound itself;
-the ledgered -EPIPE on the fresh socket; `Unmodeled` on the accepted
-connection.
+/-- sendmsg's witness at the import and the socket, arm by arm: the
+ledgered -EPIPE on a descriptor naming a kernel address, which the
+import does not test, and `Unmodeled` where a control block follows one;
+-EINVAL on a negative length; `Unmodeled` on a control block, and the
+ledgered -EPIPE on a control pointer under a zero length, so the gate
+reads the length and not the pointer; `Unmodeled` on a total past the
+bound, and the ledgered -EPIPE at the bound itself; the ledgered -EPIPE
+on the fresh socket; `Unmodeled` on the accepted connection.
 kernel: net/socket.c:____sys_sendmsg; lib/iov_iter.c:__import_iovec,copy_iovec_from_user,import_ubuf; net/core/stream.c:sk_stream_wait_connect@v6.18.46 -/
 theorem sendmsg_witness_names_each_import_arm :
     sendmsg_witness 3 8192 16384 (sendmsg_in 3 8192 16384 msg_kbase) fresh_socket_model
-      = Ok (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (8320, 16)])
+      = Ok (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (8320, 16)])
            fresh_socket_model [] ∧
     sendmsg_witness 3 8192 16384
       (sendmsg_in 3 8192 16384 (send_msghdr_mem 0 0 1 8400 16 0 [(Z_to_bv 64 (2 ^ 63), 1)]))
-      fresh_socket_model
-      = Ok (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (8320, 16)])
-           fresh_socket_model [] ∧
+      fresh_socket_model = Unmodeled ∧
     sendmsg_witness 3 8192 16384 (sendmsg_in 3 8192 16384 msg_kbase_second) fresh_socket_model
-      = Unmodeled ∧
+      = Ok (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] []
+             [(8192, 56), (8320, 16), (8336, 16)]) fresh_socket_model [] ∧
     sendmsg_witness 3 8192 16384 (sendmsg_in 3 8192 16384 msg_neglen) fresh_socket_model
       = Ok (SyscallEffect.mkEffectU (errno_ret EINVAL) [] [] [] [] [(8192, 56), (8320, 16)])
            fresh_socket_model [] ∧
@@ -6005,15 +6039,15 @@ theorem sendmsg_witness_names_each_import_arm :
   · io_witness_norm
   · io_witness_norm
   · simp only [sendmsg_witness, sendmsg_in.eq_1,
-      show (m_vmmaps fresh_socket_model).vm_reserved = [] from rfl, sendmsg_load_free_nil,
       show fd_lookup (m_fds fresh_socket_model) 3 = some (.FdSocket .SkFresh) from rfl,
-      show copy_bytes_map msg_at_max 8192 MSGHDR_SIZE = some (msghdr_bytes 0 0 1 0 0 0) by decide]
+      show read_bytes_map msg_at_max 8192 (Z_to_bv 64 MSGHDR_SIZE)
+        = some (msghdr_bytes 0 0 1 0 0 0) by decide]
     simp only [show le_bytes_to_word ((msghdr_bytes 0 0 1 0 0 0).take 8) = 0 by decide,
       show le_bytes_to_word (((msghdr_bytes 0 0 1 0 0 0).drop 16).take 8) = 8320 by decide,
       show le_bytes_to_word (((msghdr_bytes 0 0 1 0 0 0).drop 24).take 8) = 1 by decide,
       show le_bytes_to_word (((msghdr_bytes 0 0 1 0 0 0).drop 40).take 8) = 0 by decide,
-      show import_iovecs msg_at_max 8320 1 = .ImpOk [(16384, 131072)] by decide,
-      iovs_lockable, List.all_cons, List.all_nil, t172_seg_lockable_msg_at_max]
+      show copy_iovecs_aux msg_at_max 8320 (word_to_nat 1) = .ImpOk [(16384, 131072)] by decide,
+      show copy_iovecs_accesses msg_at_max 8320 (word_to_nat 1) = [(8320, 16)] by decide]
     rfl
   · io_witness_norm
   · io_witness_norm
@@ -6070,113 +6104,6 @@ theorem recvmsg_witness_names_each_arm :
       = Ok (mkEffect (errno_ret ENOTSOCK) [] []) socket_call_model [] ∧
     recvmsg_witness 9 0 socket_states_model = Unmodeled := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> io_witness_norm
-
-/-- The checker declines each fixture where send ordering remains unresolved.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_t172_send_declines :
-    check_sendto_row (sendto_in 3 4096 1 16384 0 (Z_to_bv 64 (2 ^ 31)) mem_ab)
-      (mkEffect (errno_ret EPIPE) [] []) fresh_socket_model = CheckUnmodeled ∧
-    check_sendto_row (sendto_in 9 12288 1 16384 0 0 mem_ab)
-      (mkEffect (errno_ret EBADF) [] []) fresh_socket_model = CheckUnmodeled ∧
-    check_sendmsg_row (sendmsg_in 3 8192 16384 t172_msg_unreadable_head)
-      (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (8320, 16)])
-      fresh_socket_model = CheckUnmodeled ∧
-    check_sendmsg_row (sendmsg_in 3 8192 16384 t172_msg_negative_after_unreadable_head)
-      (SyscallEffect.mkEffectU (errno_ret EINVAL) [] [] [] [] [(8192, 56), (8320, 16), (8336, 16)])
-      fresh_socket_model = CheckUnmodeled := by
-  refine ⟨?_, ?_, ?_, ?_⟩ <;> io_norm
-
-/-- The checker preserves the closed-fd and negative-length answers while rejecting EFAULT.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_t172_send_kept_answers :
-    check_sendmsg_row (sendmsg_in 9 8192 16384 (bytes_at 8192 (List.replicate 56 0)))
-      (mkEffect (errno_ret EBADF) [] []) fresh_socket_model = CheckOk fresh_socket_model [] ∧
-    check_sendmsg_row (sendmsg_in 9 8192 16384 (bytes_at 8192 (List.replicate 56 0)))
-      (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model = CheckReject ∧
-    check_sendmsg_row (sendmsg_in 3 8192 16384 t172_msg_negative_after_readable_head)
-      (SyscallEffect.mkEffectU (errno_ret EINVAL) [] [] [] [] [(8192, 56), (8320, 16), (8336, 16)])
-      fresh_socket_model = CheckOk fresh_socket_model [] ∧
-    check_sendmsg_row (sendmsg_in 3 8192 16384 t172_msg_negative_after_readable_head)
-      (SyscallEffect.mkEffectU (errno_ret EFAULT) [] [] [] [] [(8192, 56), (8320, 16), (8336, 16)])
-      fresh_socket_model = CheckReject := by
-  refine ⟨?_, ?_, ?_, ?_⟩ <;> io_norm
-
-/-- The checker cannot accept EPIPE with this negative address length.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendto_negative_addrlen_epipe_rejected (m' : Model) (evs : List event) :
-    check_sendto_row (sendto_in 3 4096 1 16384 0 (Z_to_bv 64 (-1)) mem_ab) (mkEffect (errno_ret EPIPE) [] []) fresh_socket_model ≠ CheckOk m' evs := by
-  io_norm
-
-/-- The checker cannot accept EFAULT for this zero-length high buffer.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendto_zero_kernel_count_efault_rejected (m' : Model) (evs : List event) :
-    check_sendto_row (sendto_in 9 (Z_to_bv 64 (2 ^ 63)) 0 16384 0 0 mem_ab) (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model ≠ CheckOk m' evs := by
-  io_norm
-
-/-- The checker cannot accept EPIPE for this unreadable dead-socket payload.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendto_unreadable_dead_epipe_rejected (m' : Model) (evs : List event) :
-    check_sendto_row (sendto_in 3 46912512909312 1 16384 0 0 (fun _ => none)) (mkEffect (errno_ret EPIPE) [] []) fresh_socket_model ≠ CheckOk m' evs := by
-  io_norm
-
-/-- The checker cannot accept EBADF for this unreadable sendto payload.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendto_unreadable_closed_ebadf_rejected (m' : Model) (evs : List event) :
-    check_sendto_row (sendto_in 9 12288 1 16384 0 0 mem_ab) (mkEffect (errno_ret EBADF) [] []) fresh_socket_model ≠ CheckOk m' evs := by
-  io_norm
-
-/-- The checker cannot accept EBADF for this unreadable buffer below the address limit.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendto_below_edge_ebadf_rejected (m' : Model) (evs : List event) :
-    check_sendto_row (sendto_in 9 (Z_to_bv 64 (2 ^ 47 - 7)) 7 16384 0 0 mem_ab) (mkEffect (errno_ret EBADF) [] []) fresh_socket_model ≠ CheckOk m' evs := by
-  io_norm
-
-/-- The checker cannot accept EBADF with an unreadable message header.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendmsg_unreadable_header_ebadf_rejected (m' : Model) (evs : List event) :
-    check_sendmsg_row (sendmsg_in 9 8192 16384 (fun _ => none)) (mkEffect (errno_ret EBADF) [] []) accepted_socket_model ≠ CheckOk m' evs := by
-  io_norm
-
-/-- The checker cannot accept EPIPE with an unreadable first segment.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendmsg_unreadable_segment_zero_epipe_rejected (m' : Model) (evs : List event) :
-    check_sendmsg_row (sendmsg_in 3 8192 16384 t172_msg_unreadable_head) (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (8320, 16)]) fresh_socket_model ≠ CheckOk m' evs := by
-  io_norm
-
-/-- The checker cannot accept EINVAL after this unreadable first payload.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendmsg_negative_after_unlockable_head_einval_rejected (m' : Model) (evs : List event) :
-    check_sendmsg_row (sendmsg_in 3 8192 16384 t172_msg_negative_after_unreadable_head) (SyscallEffect.mkEffectU (errno_ret EINVAL) [] [] [] [] [(8192, 56), (8320, 16), (8336, 16)]) fresh_socket_model ≠ CheckOk m' evs := by
-  io_norm
-
-/-- The checker cannot accept ENOTSOCK with this oversized iovec count.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendmsg_over_iov_max_file_enotsock_rejected (m' : Model) (evs : List event) :
-    check_sendmsg_row (sendmsg_in 4 8192 16384 msg_iovlen_1025) (mkEffect (errno_ret ENOTSOCK) [] []) socket_call_model ≠ CheckOk m' evs := by
-  io_norm
-
-/-- The checker cannot accept EPIPE for this unreadable listening-socket payload.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendto_unreadable_listening_epipe_rejected (m' : Model) (evs : List event) :
-    check_sendto_row (sendto_in 3 46912512909312 1 16384 0 0 (fun _ => none))
-      (mkEffect (errno_ret EPIPE) [] []) listening_socket_model ≠ CheckOk m' evs := by
-  io_norm
-
-/-- The checker declines the socket fixture with a later unreadable payload.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendmsg_later_unlockable_segment_socket_declines :
-    check_sendmsg_row (sendmsg_in 3 8192 16384 (send_msghdr_mem 0 0 2 0 0 0 [(4096, 1), (12288, 1)]))
-      (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (8320, 16), (8336, 16)])
-      fresh_socket_model = CheckUnmodeled := by
-  io_norm
-
-/-- The checker cannot accept EPIPE with this later unreadable payload.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendmsg_later_unlockable_segment_socket_epipe_rejected (m' : Model) (evs : List event) :
-    check_sendmsg_row (sendmsg_in 3 8192 16384 (send_msghdr_mem 0 0 2 0 0 0 [(4096, 1), (12288, 1)]))
-      (SyscallEffect.mkEffectU (errno_ret EPIPE) [] [] [] [] [(8192, 56), (8320, 16), (8336, 16)])
-      fresh_socket_model ≠ CheckOk m' evs := by
-  io_norm
 
 end IO
 
@@ -6932,6 +6859,34 @@ theorem dispatcher_accept4_success_rejected :
     check_syscall (accept4_in 999 0 0 0) (mkEffect 0 [] []) socket_call_model = CheckReject := by
   rfl
 
+/-- The accept4 call Rocq's `accept4_answering` asks, through the real
+dispatcher: `accept4(3, NULL, NULL, 0)` offered the return `r`. -/
+def accept4_answering (m : Model) (r : word) : check_result :=
+  check_syscall (SyscallInput.mkInput 242 [3, 0, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+    (mkEffect r [] []) m
+
+/-- Rocq's `accept4_declines_at`. -/
+def accept4_declines_at (m : Model) (r : word) : Bool :=
+  match accept4_answering m r with
+  | CheckUnmodeled => true
+  | _ => false
+
+/-- Rocq's `accept_at_the_wrap_never_declines`, over EVERY return rather
+than Rocq's first 4096: at the exhausted counter the checker declines
+nothing.  The guard sends the listening arm to `check_errno_only
+accept_errnos`, which answers `CheckOk` on the three allocation errnos
+and `CheckReject` on everything else, so the wrap costs the descriptor
+and no coverage beside it.  Rocq states this of the returns 0 to 4095
+and the errnos 1 to 4095 by `vm_compute`; the quantified form holds of
+those and of every other register value too.
+kernel: fs/file.c:alloc_fd; net/socket.c:do_accept,sock_alloc_file; fs/file_table.c:alloc_path_pseudo,alloc_empty_file@v6.18.46 -/
+theorem accept_at_the_wrap_never_declines (r : word) :
+    accept4_declines_at exhausted_listening_model r = false := by
+  have h : accept4_answering exhausted_listening_model r
+      = check_errno_only accept_errnos (mkEffect r [] []) exhausted_listening_model := rfl
+  cases hb : errno_ret_in accept_errnos r <;>
+    simp [accept4_declines_at, h, check_errno_only, hb]
+
 end V_Net_Socket_lifecycle
 
 -- lean-port sentinel: ticket V-Net-Socket-io appends below this line
@@ -7143,575 +7098,5 @@ theorem dispatcher_io_fail_closed_modes :
   refine ⟨?_, ?_, ?_, ?_⟩ <;> rfl
 
 end V_Net_Socket_io
-
-
-/-! ## T149: executable verdicts for allocation and argument order -/
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
-theorem t149_accept_notsock_emfile :
-    check_accept4 1 0 0 0 (mkEffect (errno_ret EMFILE) [] []) listening_socket_model
-      = CheckOk listening_socket_model [] := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
-theorem t149_accept_notsock_enomem_rejected :
-    check_accept4 1 0 0 0 (mkEffect (errno_ret ENOMEM) [] []) listening_socket_model
-      = CheckReject := by
-  alloc_norm
-
-/-- kernel: fs/file.c:alloc_fd,expand_files,alloc_fdtable,close_fd,dup_fd@v6.18.46 -/
-theorem t149_accept_notsock_at64_unmodeled_enomem :
-    check_accept4 1 0 0 0 (mkEffect (errno_ret ENOMEM) [] []) (t149_fd_boundary_model 64)
-      = CheckUnmodeled := by
-  alloc_norm
-
-/-- kernel: fs/file.c:alloc_fd,expand_files,alloc_fdtable,close_fd,dup_fd@v6.18.46 -/
-theorem t149_accept_notsock_at64_unmodeled_emfile :
-    check_accept4 1 0 0 0 (mkEffect (errno_ret EMFILE) [] []) (t149_fd_boundary_model 64)
-      = CheckUnmodeled := by
-  alloc_norm
-
-/-- kernel: net/socket.c:sock_from_file,do_accept; fs/file.c:alloc_fd,expand_files,alloc_fdtable,close_fd,dup_fd@v6.18.46 -/
-theorem t149_accept_notsock_at64_unmodeled_enotsock :
-    check_accept4 1 0 0 0 (mkEffect (errno_ret ENOTSOCK) [] []) (t149_fd_boundary_model 64)
-      = CheckUnmodeled := by
-  alloc_norm
-
-/-- kernel: fs/file.c:alloc_fd,expand_files,alloc_fdtable,close_fd,dup_fd@v6.18.46 -/
-theorem t149_accept_notsock_at64_effect_is_unmodeled (eff : SyscallEffect) :
-    check_accept4 1 0 0 0 eff (t149_fd_boundary_model 64) = CheckUnmodeled := by
-  alloc_norm
-
-/-- kernel: fs/file.c:alloc_fd,expand_files,alloc_fdtable,close_fd,dup_fd@v6.18.46 -/
-theorem t149_accept_notsock_at65_unmodeled_enomem :
-    alloc_fd (m_fds (t149_fd_boundary_model 65)) = 65 ∧
-    check_accept4 1 0 0 0 (mkEffect (errno_ret ENOMEM) [] []) (t149_fd_boundary_model 65)
-      = CheckUnmodeled := by
-  constructor <;> alloc_norm
-
-/-- kernel: fs/file.c:alloc_fd,expand_files,alloc_fdtable,close_fd,dup_fd@v6.18.46 -/
-theorem t149_accept_notsock_sparse_at64_unmodeled_enomem :
-    alloc_fd (m_fds (with_fds (fd_insert (m_fds (t149_fd_boundary_model 64)) 100 (.FdChannel 1))
-      listening_socket_model)) = 64 ∧
-    check_accept4 1 0 0 0 (mkEffect (errno_ret ENOMEM) [] []) (with_fds (fd_insert (m_fds (t149_fd_boundary_model 64)) 100 (.FdChannel 1))
-      listening_socket_model)
-      = CheckUnmodeled := by
-  constructor <;> alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4_file@v6.18.46 -/
-theorem t149_accept_notsock_at64_badflags_einval :
-    check_accept4 1 4096 4104 1073741824 (mkEffect (errno_ret EINVAL) [] [])
-      (t149_fd_boundary_model 64) = CheckOk (t149_fd_boundary_model 64) [] := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4_file; fs/file.c:alloc_fd,expand_files,alloc_fdtable@v6.18.46 -/
-theorem t149_accept_notsock_at64_badflags_enomem_rejected :
-    check_accept4 1 4096 4104 1073741824 (mkEffect (errno_ret ENOMEM) [] [])
-      (t149_fd_boundary_model 64) = CheckReject := by
-  alloc_norm
-
-/-- kernel: fs/file.c:alloc_fd,expand_files,alloc_fdtable@v6.18.46 -/
-theorem t149_accept_notsock_at63_enomem_rejected :
-    check_accept4 1 0 0 0 (mkEffect (errno_ret ENOMEM) [] []) (t149_fd_boundary_model 63)
-      = CheckReject := by
-  alloc_norm
-
-/-- kernel: fs/file.c:alloc_fd,expand_files,alloc_fdtable@v6.18.46 -/
-theorem t149_accept_notsock_at63_emfile :
-    check_accept4 1 0 0 0 (mkEffect (errno_ret EMFILE) [] []) (t149_fd_boundary_model 63)
-      = CheckOk (t149_fd_boundary_model 63) [] := by
-  alloc_norm
-
-/-- kernel: net/socket.c:sock_from_file,do_accept; fs/file.c:alloc_fd,expand_files,alloc_fdtable,close_fd,dup_fd@v6.18.46 -/
-theorem t149_accept_notsock_at63_enotsock :
-    check_accept4 1 0 0 0 (mkEffect (errno_ret ENOTSOCK) [] []) (t149_fd_boundary_model 63)
-      = CheckOk (t149_fd_boundary_model 63) [] := by
-  alloc_norm
-
-/-- A high descriptor does not remove the low hole.
-kernel: fs/file.c:alloc_fd,expand_files,alloc_fdtable@v6.18.46 -/
-theorem t149_accept_notsock_sparse_enomem_rejected :
-    check_accept4 1 0 0 0 (mkEffect (errno_ret ENOMEM) [] [])
-      (with_fds (fd_insert (m_fds (t149_fd_boundary_model 63)) 100 (.FdChannel 1))
-      listening_socket_model) = CheckReject := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
-theorem t149_accept_notlisten_emfile :
-    check_accept4 4 0 0 0 (mkEffect (errno_ret EMFILE) [] []) accepted_socket_model
-      = CheckOk accepted_socket_model [] := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
-theorem t149_accept_notlisten_enomem :
-    check_accept4 4 0 0 0 (mkEffect (errno_ret ENOMEM) [] []) accepted_socket_model
-      = CheckOk accepted_socket_model [] := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
-theorem t149_accept_notlisten_enfile :
-    check_accept4 4 0 0 0 (mkEffect (errno_ret ENFILE) [] []) accepted_socket_model
-      = CheckOk accepted_socket_model [] := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sock_create,sock_map_fd; fs/file.c:alloc_fd; net/ipv4/af_inet.c:inet_create@v6.18.46 -/
-theorem t149_socket_range_enfile :
-    check_socket 2 1 263 (mkEffect (errno_ret ENFILE) [] []) listening_socket_model
-      = CheckOk listening_socket_model [] := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sock_create,sock_map_fd; fs/file.c:alloc_fd; net/ipv4/af_inet.c:inet_create@v6.18.46 -/
-theorem t149_socket_range_emfile_rejected :
-    check_socket 2 1 263 (mkEffect (errno_ret EMFILE) [] []) listening_socket_model
-      = CheckReject := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sock_create,sock_map_fd; fs/file.c:alloc_fd; net/ipv4/af_inet.c:inet_create@v6.18.46 -/
-theorem t149_socket_protocol_enfile :
-    check_socket 2 1 17 (mkEffect (errno_ret ENFILE) [] []) listening_socket_model
-      = CheckOk listening_socket_model [] := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sock_create,sock_map_fd; fs/file.c:alloc_fd; net/ipv4/af_inet.c:inet_create@v6.18.46 -/
-theorem t149_socket_protocol_emfile_rejected :
-    check_socket 2 1 17 (mkEffect (errno_ret EMFILE) [] []) listening_socket_model
-      = CheckReject := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sock_create,sock_map_fd; fs/file.c:alloc_fd; net/ipv4/af_inet.c:inet_create@v6.18.46 -/
-theorem t149_socket_type_enfile :
-    check_socket 2 4 0 (mkEffect (errno_ret ENFILE) [] []) listening_socket_model
-      = CheckOk listening_socket_model [] := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sock_create,sock_map_fd; fs/file.c:alloc_fd; net/ipv4/af_inet.c:inet_create@v6.18.46 -/
-theorem t149_socket_type_emfile_rejected :
-    check_socket 2 4 0 (mkEffect (errno_ret EMFILE) [] []) listening_socket_model
-      = CheckReject := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sock_create,sock_map_fd; fs/file.c:alloc_fd; net/ipv4/af_inet.c:inet_create@v6.18.46 -/
-theorem t149_socket_zero_type_enfile :
-    check_socket 2 0 0 (mkEffect (errno_ret ENFILE) [] []) listening_socket_model
-      = CheckOk listening_socket_model [] := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sock_create,sock_map_fd; fs/file.c:alloc_fd; net/ipv4/af_inet.c:inet_create@v6.18.46 -/
-theorem t149_socket_zero_type_emfile_rejected :
-    check_socket 2 0 0 (mkEffect (errno_ret EMFILE) [] []) listening_socket_model
-      = CheckReject := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
-theorem t149_accept_notsock_enfile_rejected :
-    check_accept4 1 0 0 0 (mkEffect (errno_ret ENFILE) [] []) listening_socket_model
-      = CheckReject := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
-theorem t149_accept_notlisten_enotsock_rejected :
-    check_accept4 4 0 0 0 (mkEffect (errno_ret ENOTSOCK) [] []) accepted_socket_model
-      = CheckReject := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept@v6.18.46 -/
-theorem t149_accept_closed_badflags_declined :
-    check_accept4 9 0 0 1073741824 (mkEffect (errno_ret EBADF) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept@v6.18.46 -/
-theorem t149_accept_closed_badflags_einval_declined :
-    check_accept4 9 0 0 1073741824 (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept@v6.18.46 -/
-theorem t149_accept_closed_address_declined :
-    check_accept4 9 4096 4104 0 (mkEffect (errno_ret EBADF) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept@v6.18.46 -/
-theorem t149_accept_notsock_address_declined :
-    check_accept4 1 4096 4104 0 (mkEffect (errno_ret ENOTSOCK) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
-theorem t149_accept_open_badflags_einval :
-    check_accept4 1 4096 4104 1073741824 (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckOk listening_socket_model [] := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
-theorem t149_accept_open_badflags_ebadf_rejected :
-    check_accept4 1 4096 4104 1073741824 (mkEffect (errno_ret EBADF) [] []) listening_socket_model
-      = CheckReject := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
-theorem t149_accept_open_badflags_enotsock_rejected :
-    check_accept4 1 4096 4104 1073741824 (mkEffect (errno_ret ENOTSOCK) [] []) listening_socket_model
-      = CheckReject := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
-theorem t149_accept_open_badflags_emfile_rejected :
-    check_accept4 1 4096 4104 1073741824 (mkEffect (errno_ret EMFILE) [] []) listening_socket_model
-      = CheckReject := by
-  alloc_norm
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file,do_accept; fs/file.c:alloc_fd,alloc_fdtable,expand_files@v6.18.46 -/
-theorem t149_accept_open_badflags_enomem_rejected :
-    check_accept4 1 4096 4104 1073741824 (mkEffect (errno_ret ENOMEM) [] []) listening_socket_model
-      = CheckReject := by
-  alloc_norm
-
-
-/-! T149: quantified counterparts of the Rocq Examples section. -/
-
-/-- kernel: net/socket.c:__sys_accept4,__sys_accept4_file@v6.18.46 -/
-theorem t149_accept_closed_badflags_effect_is_unmodeled (eff : SyscallEffect) :
-    check_accept4 9 0 0 1073741824 eff listening_socket_model = CheckUnmodeled := by
-  rfl
-
-/-- kernel: net/socket.c:__sys_accept4@v6.18.46 -/
-theorem t149_accept_closed_address_effect_is_unmodeled (eff : SyscallEffect) :
-    check_accept4 9 4096 4104 0 eff listening_socket_model = CheckUnmodeled := by
-  rfl
-
-/-- kernel: net/socket.c:__sys_accept4,do_accept@v6.18.46 -/
-theorem t149_accept_notsock_address_effect_is_unmodeled (eff : SyscallEffect) :
-    check_accept4 1 4096 4104 0 eff listening_socket_model = CheckUnmodeled := by
-  rfl
-
-/-- kernel: net/socket.c:__sys_accept4@v6.18.46 -/
-theorem t149_accept_closed_badflags_ebadf_not_ok (m' : Model) (evs : List event) :
-    check_accept4 9 0 0 1073741824 (mkEffect (errno_ret EBADF) [] [])
-      listening_socket_model ≠ CheckOk m' evs := by
-  rw [t149_accept_closed_badflags_effect_is_unmodeled]
-  simp
-
-/-- kernel: net/socket.c:__sys_accept4_file@v6.18.46 -/
-theorem t149_accept_closed_badflags_einval_not_ok (m' : Model) (evs : List event) :
-    check_accept4 9 0 0 1073741824 (mkEffect (errno_ret EINVAL) [] [])
-      listening_socket_model ≠ CheckOk m' evs := by
-  rw [t149_accept_closed_badflags_effect_is_unmodeled]
-  simp
-
-/-- kernel: net/socket.c:__sock_create; net/ipv4/af_inet.c:inet_create@v6.18.46 -/
-theorem t149_socket_sock_alloc_enfile_before_protocol :
-    check_socket 2 1 263 (mkEffect (errno_ret ENFILE) [] []) listening_socket_model
-      = CheckOk listening_socket_model [] := by
-  alloc_norm
-
-/-- kernel: net/socket.c:sock_map_fd; fs/file.c:alloc_fd; net/ipv4/af_inet.c:inet_create@v6.18.46 -/
-theorem t149_socket_fd_allocation_emfile_after_protocol_rejected :
-    check_socket 2 1 263 (mkEffect (errno_ret EMFILE) [] []) listening_socket_model
-      = CheckReject := by
-  alloc_norm
-
-
-open LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
-
-/-- T172: concrete effects through the real dispatcher separate a coordinated
-spec/checker regression from the implementation answers. Type 16 strips to
-type 0 (ESOCKTNOSUPPORT: Linux v6.18.46 net/ipv4/af_inet.c `inet_create`,
-`inetsw_array`); its EOPNOTSUPP pin is an additional submitted effect.
-model: unknown-bit decline justified on Net.Socket.socket_spec and socketpair_spec -/
-theorem t172_socket_16_linux_declined :
-    check_syscall (socket_in 2 16 0) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_16_stripped_declined :
-    check_syscall (socket_in 2 16 0) (mkEffect (errno_ret ESOCKTNOSUPPORT) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socketpair_16_linux_declined :
-    check_syscall (socketpair_in 2 16 0 4096 wmem_open) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socketpair_16_stripped_declined :
-    check_syscall (socketpair_in 2 16 0 4096 wmem_open) (mkEffect (errno_ret ESOCKTNOSUPPORT) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socketpair_16_eopnotsupp_declined :
-    check_syscall (socketpair_in 2 16 0 4096 wmem_open) (mkEffect (errno_ret EOPNOTSUPP) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_257_linux_declined :
-    check_syscall (socket_in 2 257 0) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_257_stripped_declined :
-    check_syscall (socket_in 2 257 0) (mkEffect 4 [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_257_protocol_declined :
-    check_syscall (socket_in 2 257 17) (mkEffect (errno_ret EPROTONOSUPPORT) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socketpair_257_linux_declined :
-    check_syscall (socketpair_in 2 257 0 4096 wmem_open) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socketpair_257_stripped_declined :
-    check_syscall (socketpair_in 2 257 0 4096 wmem_open) (mkEffect (errno_ret EOPNOTSUPP) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_2147483649_linux_declined :
-    check_syscall (socket_in 2 2147483649 0) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_2147483649_stripped_declined :
-    check_syscall (socket_in 2 2147483649 0) (mkEffect 4 [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_2147483649_protocol_declined :
-    check_syscall (socket_in 2 2147483649 17) (mkEffect (errno_ret EPROTONOSUPPORT) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socketpair_2147483649_linux_declined :
-    check_syscall (socketpair_in 2 2147483649 0 4096 wmem_open) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socketpair_2147483649_stripped_declined :
-    check_syscall (socketpair_in 2 2147483649 0 4096 wmem_open) (mkEffect (errno_ret EOPNOTSUPP) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_2305_linux_declined :
-    check_syscall (socket_in 2 2305 0) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_2305_stripped_declined :
-    check_syscall (socket_in 2 2305 0) (mkEffect 4 [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_2305_protocol_declined :
-    check_syscall (socket_in 2 2305 17) (mkEffect (errno_ret EPROTONOSUPPORT) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socketpair_2305_linux_declined :
-    check_syscall (socketpair_in 2 2305 0 4096 wmem_open) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socketpair_2305_stripped_declined :
-    check_syscall (socketpair_in 2 2305 0 4096 wmem_open) (mkEffect (errno_ret EOPNOTSUPP) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_bad_family_linux_declined :
-    check_syscall (socket_in 9999 257 0) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_bad_family_qemu_declined :
-    check_syscall (socket_in 9999 257 0) (mkEffect (errno_ret EAFNOSUPPORT) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Keep this submitted effect behind the unknown-bit boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_agreeing_einval_declined :
-    check_syscall (socket_in 2 267 0) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-- Exercise the netlink type-range boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_netlink_einval_declined :
-    check_syscall (socket_in 16 11 5) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rw [socket_dispatch]
-  alloc_norm
-
-/-- Exercise the netlink type-range boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_netlink_eprotonosupport_declined :
-    check_syscall (socket_in 16 11 5) (mkEffect (errno_ret EPROTONOSUPPORT) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rw [socket_dispatch]
-  alloc_norm
-
-/-- Exercise the netlink type-range boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_netlink_route_declined :
-    check_syscall (socket_in 16 11 0) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rw [socket_dispatch]
-  alloc_norm
-
-/-- Exercise the netlink type-range boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_netlink_audit_einval_ok :
-    check_syscall (socket_in 16 11 9) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckOk listening_socket_model [] := by
-  rw [socket_dispatch]
-  alloc_norm
-
-/-- Exercise the netlink type-range boundary through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_netlink_audit_eprotonosupport_rejected :
-    check_syscall (socket_in 16 11 9) (mkEffect (errno_ret EPROTONOSUPPORT) [] []) listening_socket_model
-      = CheckReject := by
-  rw [socket_dispatch]
-  alloc_norm
-
-/-- Exercise historical family bounds through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_af44_declined :
-    check_syscall (socket_in 44 11 0) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rw [socket_dispatch]
-  alloc_norm
-
-/-- Exercise historical family bounds through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_af45_declined :
-    check_syscall (socket_in 45 11 0) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rw [socket_dispatch]
-  alloc_norm
-
-/-- Exercise historical family bounds through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_af43_einval_ok :
-    check_syscall (socket_in 43 11 0) (mkEffect (errno_ret EINVAL) [] []) listening_socket_model
-      = CheckOk listening_socket_model [] := by
-  rw [socket_dispatch]
-  alloc_norm
-
-/-- Exercise historical family bounds through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_af43_eafnosupport_rejected :
-    check_syscall (socket_in 43 11 0) (mkEffect (errno_ret EAFNOSUPPORT) [] []) listening_socket_model
-      = CheckReject := by
-  rw [socket_dispatch]
-  alloc_norm
-
-/-- Exercise argument truncation through the registered socket arm.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_high_half_truncated :
-    check_syscall (socket_in 2 4294967297 0) (mkEffect 4 [] []) listening_socket_model
-      = CheckOk socket_created_model [] := by
-  rw [socket_dispatch]
-  alloc_norm
-
-/-- Exercise the CLOEXEC control through the registered socket arm.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_cloexec_modeled :
-    check_syscall (socket_in 2 524289 0) (mkEffect 4 [] []) listening_socket_model
-      = CheckOk socket_created_model [] := by
-  rw [socket_dispatch]
-  alloc_norm
-
-/-- Keep the NONBLOCK boundary visible through the real dispatcher.
-model: T172 concrete check_syscall regression pin -/
-theorem t172_socket_nonblock_declined :
-    check_syscall (socket_in 2 2049 0) (mkEffect 4 [] []) listening_socket_model
-      = CheckUnmodeled := by
-  rfl
-
-/-! ## Writable LOAD reservations decline before the send answers -/
-
-/-- A writable LOAD byte makes qemu-user's read lock answer -EFAULT before
-its host can answer -EBADF or -EPIPE (accel/tcg/user-exec.c:538-541, QEMU 11.1.1).
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendto_writable_load_byte_declines :
-    check_sendto_row (SyscallInput.mkInput 206 [9, 12288, 1, 16384, 0, 0]
-      t172_wload_byte t172_wload_byte) (mkEffect (errno_ret EBADF) [] [])
-      t172_wload_model = CheckUnmodeled ∧
-    check_sendto_row (SyscallInput.mkInput 206 [9, 12288, 1, 16384, 0, 0]
-      t172_wload_byte t172_wload_byte) (mkEffect (errno_ret EFAULT) [] [])
-      t172_wload_model = CheckUnmodeled ∧
-    check_sendto_row (SyscallInput.mkInput 206 [3, 12288, 1, 16384, 0, 0]
-      t172_wload_byte t172_wload_byte) (mkEffect (errno_ret EPIPE) [] [])
-      t172_wload_model = CheckUnmodeled := by
-  refine ⟨?_, ?_, ?_⟩ <;> io_norm
-
-/-- The same byte outside a LOAD reservation retains the closed fd's answer.
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendto_writable_unreserved_byte_is_ebadf :
-    check_sendto_row (SyscallInput.mkInput 206 [9, 12288, 1, 16384, 0, 0]
-      t172_wload_byte t172_wload_byte) (mkEffect (errno_ret EBADF) [] [])
-      fresh_socket_model = CheckOk fresh_socket_model [] ∧
-    check_sendto_row (SyscallInput.mkInput 206 [9, 12288, 1, 16384, 0, 0]
-      t172_wload_byte t172_wload_byte) (mkEffect (errno_ret EFAULT) [] [])
-      fresh_socket_model = CheckReject := by
-  constructor <;> io_norm
-
-/-- A writable LOAD header makes qemu-user answer -EFAULT before resolving
-the fd (linux-user/syscall.c:3445-3450, QEMU 11.1.1).
-model: closed computation over the send checker rows and these fixtures -/
-theorem check_sendmsg_writable_load_header_declines :
-    check_sendmsg_row (SyscallInput.mkInput 211 [9, 8192, 16384, 0, 0, 0]
-      t172_wload_msg t172_wload_msg) (mkEffect (errno_ret EBADF) [] [])
-      t172_wload_hdr_model = CheckUnmodeled ∧
-    check_sendmsg_row (SyscallInput.mkInput 211 [9, 8192, 16384, 0, 0, 0]
-      t172_wload_msg t172_wload_msg) (mkEffect (errno_ret EFAULT) [] [])
-      t172_wload_hdr_model = CheckUnmodeled := by
-  constructor <;> io_norm
 
 end LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Checks.Sys.Net.Socket

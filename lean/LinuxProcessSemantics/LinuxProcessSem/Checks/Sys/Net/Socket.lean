@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Net/Socket.v theories/LinuxProcessSem/Checks/Witness/Net/Socket.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Net.Socket
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Uaccess
@@ -5,7 +6,7 @@ import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs.Open
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Uaccess
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Checks.Sys.Net.Socket — the checkers of `Sys/Net/Socket.lean`, their witnesses, and their proofs
 
@@ -46,7 +47,7 @@ where that arm will read them.  Every definition keeps its Rocq name.
 WHAT IS NOT HERE.  No `CheckedArm` value, no `checked_table` row, no
 `arm_unfold` lemma and no frame lemma: registration and the frame lemma
 the registered arm owes `Checks/VmMapsDisjoint.lean` are the V ticket's
-(docs/lean-port/BRIEF.md, section 5).  What the arm
+(linux-process-semantics@ff0313ba4f:docs/lean-port/BRIEF.md, section 5).  What the arm
 will build from is the five theorems each syscall carries below —
 `check_<name>_sound_ok`, `check_<name>_sound_unmodeled`,
 `check_<name>_complete_ok`, `check_<name>_complete_unmodeled` and
@@ -90,12 +91,11 @@ and `check_send_on_socket_complete_unmodeled` state the directions that
 hold instead.  That one is fail-closed, at the cost of every send on a
 connected socket.  Rocq's `check_sendmsg` reads the header with
 `read_bytes_map` and its six fields with `read_u64`, matching the six
-reads together with a second, catch-all arm that is unreachable; `sendmsg_spec`
-copies the header through `State.copy_bytes_map`, decodes the four
-fields it reads from the 56 bytes, imports through `State.import_iovecs`
-with `State.import_iovecs_accesses` as the ledger, and declines an import
--EFAULT qemu-user does not give (`iov_fault_at_head`), and
-`check_sendmsg` and `sendmsg_witness` follow it arm for arm.  And Rocq's `recvfrom_spec`
+reads together with a second, catch-all arm that is unreachable;
+`sendmsg_spec` reads the header with the same `State.read_bytes_map`,
+decodes the four fields it reads from the 56 bytes, and imports through
+`State.copy_iovecs_aux` with `State.copy_iovecs_accesses` as the ledger,
+and `check_sendmsg` and `sendmsg_witness` follow it arm for arm.  And Rocq's `recvfrom_spec`
 binds the input it never reads, where the twin's does not, so the
 recvfrom proofs peel one reader where Rocq's peel two; no answer changes.
 
@@ -1925,7 +1925,7 @@ test that picks the acceptor.  The section header reads the kernel.  Rocq:
 `Checks.Sys.Net.Socket.check_socketpair`. -/
 def check_socketpair (i : SyscallInput) (family type protocol sv : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
-  if ¬ (socketpair_flags_ok type) then CheckUnmodeled
+  if ¬ (socketpair_flags_ok type) then check_ret_only eff (errno_ret EINVAL) m []
   else if ¬ (socketpair_modeled_b family type protocol) then CheckUnmodeled
   else
   match socketpair_fds (m_fds m) with
@@ -1944,7 +1944,9 @@ theorem check_socketpair_sound_ok (i : SyscallInput) (family type protocol sv : 
   unfold socketpair_spec
   cases hfl : socketpair_flags_ok type with
   | false =>
-    simp only [hfl, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, reduceCtorEq] at h
+    simp only [hfl, Bool.false_eq_true, not_false_eq_true, ↓reduceIte] at h ⊢
+    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+    exact pure_ok _ i _
   | true =>
     simp only [hfl, not_true_eq_false, ↓reduceIte] at h ⊢
     cases hmo : socketpair_modeled_b family type protocol with
@@ -1980,8 +1982,8 @@ theorem check_socketpair_sound_unmodeled (i : SyscallInput) (family type protoco
   unfold socketpair_spec
   cases hfl : socketpair_flags_ok type with
   | false =>
-    simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
-    exact unmodeled_intro i m
+    simp only [hfl, Bool.false_eq_true, not_false_eq_true, ↓reduceIte] at h
+    exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   | true =>
     simp only [hfl, not_true_eq_false, ↓reduceIte] at h ⊢
     cases hmo : socketpair_modeled_b family type protocol with
@@ -2021,7 +2023,10 @@ theorem check_socketpair_complete_ok (i : SyscallInput) (family type protocol sv
   unfold check_socketpair
   cases hfl : socketpair_flags_ok type with
   | false =>
-    simp only [hfl, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
+    simp only [hfl, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, err_ret, ret_only,
+      pure_iff] at h ⊢
+    obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
+    exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
   | true =>
     simp only [hfl, not_true_eq_false, ↓reduceIte] at h ⊢
     cases hmo : socketpair_modeled_b family type protocol with
@@ -2059,7 +2064,8 @@ theorem check_socketpair_complete_unmodeled (i : SyscallInput) (family type prot
   unfold check_socketpair
   cases hfl : socketpair_flags_ok type with
   | false =>
-    simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
+    simp only [hfl, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, err_ret, ret_only,
+      pure_iff, reduceCtorEq] at h
   | true =>
     simp only [hfl, not_true_eq_false, ↓reduceIte] at h ⊢
     cases hmo : socketpair_modeled_b family type protocol with
@@ -2095,22 +2101,9 @@ v6.18.46), the family and type ranges in `__sock_create` (:1535, at
 descriptor last, in `sock_map_fd` (net/socket.c:504, at :507, v6.18.46).
 So a call two gates would refuse is answered by the earlier one, and only
 a call past the protocol lookup reaches the descriptor-minting acceptor.
-Linux v6.18.46 net/socket.c `sock_alloc` can return ENFILE before
-`inet_create` reaches its protocol checks; their checker leaves use
-`check_errno_only` for that alternative. The LSM configuration work is
-tracked by issue #1472. QEMU v11.1.1 linux-user/syscall.c
-`target_to_host_sock_type` (:3183-3215) drops unknown type-flag bits;
-`do_socket` (:3233) calls the host with the stripped word. The first gate
-declines that class (see `socket_spec`), including Linux's -EINVAL and
-QEMU's stripped-word answers. Separately,
-`do_socket` (:3233) answers -EPROTONOSUPPORT for an AF_NETLINK protocol
-other than NETLINK_KOBJECT_UEVENT, NETLINK_AUDIT and, under
-CONFIG_RTNETLINK, NETLINK_ROUTE (:3243-3249), having kept an out-of-range
-type as it is (:3195-3196), so `socket(16, 11, 5)` is -EPROTONOSUPPORT
-there where the type range makes it -EINVAL in Linux
-(net/socket.c:1547-1548, v6.18.46). The type-range gate therefore declines
-AF_NETLINK unless the protocol is NETLINK_AUDIT or NETLINK_KOBJECT_UEVENT,
-which reach the host (see `socket_spec`).  Each
+The LSM run configuration is tracked by linux-process-semantics@ff0313ba4f
+issue #1472 (T152), which rocq-linux-process-semantics f1006fe8 does not
+name.  Each
 gate is spelled exactly as `socket_spec` spells it — on the low 32 bits of
 `type` as a `word`, `sint32` of the family and the protocol — so one
 `by_cases` on the shared proposition decides the checker and the spec
@@ -2215,92 +2208,34 @@ theorem errno_only_no_unmodeled (es : List Int) (i : SyscallInput) (m : Model) :
   simp only [alt_iff, bind_choose_iff, err_ret, ret_only, pure_iff, Monad.choose, reduceCtorEq,
     and_false, exists_false, or_self] at h
 
-/-- The validation errno and the allocations that can precede it. -/
-theorem check_errno_only_head_sound_ok (e : Int) (es : List Int) (i : SyscallInput)
-    (eff : SyscallEffect) (m m' : Model) (evs : List event)
-    (h : check_errno_only (e :: es) eff m = CheckOk m' evs) :
-    alt (err_ret e) (er <- errno_from es ;; err_ret er) i m (Ok eff m' evs) := by
-  obtain ⟨hm, rfl, ret, rfl, hin⟩ := check_errno_only_ok_inv _ _ _ _ _ h
-  rw [hm]
-  obtain ⟨er, he, rfl⟩ := (errno_ret_in_true _ ret).mp hin
-  rcases List.mem_cons.mp he with rfl | he
-  · exact alt_l _ _ i m _ (pure_ok _ i m)
-  · exact alt_r _ _ i m _
-      (bind_ok0 _ _ i m er m _ _ _ (errno_from_witness es er i m he) (pure_ok _ i m))
-
-/-- The paired protocol and socket-allocation errors. -/
-theorem check_errno_only_pair_sound_ok (e1 e2 : Int) (i : SyscallInput)
-    (eff : SyscallEffect) (m m' : Model) (evs : List event)
-    (h : check_errno_only [e1, e2] eff m = CheckOk m' evs) :
-    alt (err_ret e1) (err_ret e2) i m (Ok eff m' evs) := by
-  obtain ⟨hm, rfl, ret, rfl, hin⟩ := check_errno_only_ok_inv _ _ _ _ _ h
-  rw [hm]
-  obtain ⟨er, he, rfl⟩ := (errno_ret_in_true _ ret).mp hin
-  simp only [List.mem_cons, List.not_mem_nil, or_false] at he
-  rcases he with rfl | rfl
-  · exact alt_l _ _ i m _ (pure_ok _ i m)
-  · exact alt_r _ _ i m _ (pure_ok _ i m)
-
-/-- Completeness for a validation errno and a following errno list. -/
-theorem check_errno_only_head_complete_ok (e : Int) (es : List Int) (i : SyscallInput)
-    (eff : SyscallEffect) (m m' : Model) (evs : List event)
-    (h : alt (err_ret e) (er <- errno_from es ;; err_ret er) i m (Ok eff m' evs)) :
-    check_errno_only (e :: es) eff m = CheckOk m' evs := by
-  rw [alt_iff] at h
-  rcases h with h | h
-  · simp only [err_ret, ret_only, pure_iff] at h
-    obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
-    simp only [check_errno_only, errno_ret_in_intro _ e (List.mem_cons_self ..), ↓reduceIte]
-  · unfold errno_from at h
-    rw [bind_choose_iff] at h
-    obtain ⟨er, he, h⟩ := h
-    simp only [err_ret, ret_only, pure_iff] at h
-    obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
-    simp only [check_errno_only, errno_ret_in_intro _ er (List.mem_cons_of_mem e he), ↓reduceIte]
-
-/-- Completeness for the paired protocol and allocation errors. -/
-theorem check_errno_only_pair_complete_ok (e1 e2 : Int) (i : SyscallInput)
-    (eff : SyscallEffect) (m m' : Model) (evs : List event)
-    (h : alt (err_ret e1) (err_ret e2) i m (Ok eff m' evs)) :
-    check_errno_only [e1, e2] eff m = CheckOk m' evs := by
-  rw [alt_iff] at h
-  rcases h with h | h <;> simp only [err_ret, ret_only, pure_iff] at h
-  · obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
-    simp only [check_errno_only, errno_ret_in_intro [e1, e2] e1 (by simp), ↓reduceIte]
-  · obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
-    simp only [check_errno_only, errno_ret_in_intro [e1, e2] e2 (by simp), ↓reduceIte]
-
-/-- Rocq: `Checks.Sys.Net.Socket.check_socket`. The SMC decline follows
-this tree's spec twin. -/
+/-- Rocq: `Checks.Sys.Net.Socket.check_socket`.  The SCTP and MPTCP
+declines follow this tree's spec twin. -/
 def check_socket (domain type protocol : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   let tu := abi_low32 type
   let flagbits := bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK))
   if ¬ (bv_unsigned (bv_and flagbits
           (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0)
-  then CheckUnmodeled
+  then check_ret_only eff (errno_ret EINVAL) m []
   else if ¬ (bv_unsigned (bv_and flagbits (Z_to_bv 64 SOCK_NONBLOCK)) = 0) then CheckUnmodeled
   else
     let ty : Int := bv_unsigned (bv_and tu (Z_to_bv 64 SOCK_TYPE_MASK))
     let fam : Int := sint32 domain
     let pro : Int := sint32 protocol
     if fam < 0 ∨ NPROTO ≤ fam then check_ret_only eff (errno_ret EAFNOSUPPORT) m []
-    else if SOCK_MAX ≤ ty then
-      if AF_MAX_V4_17 ≤ fam ∨ (fam = AF_NETLINK ∧ ¬ (pro = NETLINK_AUDIT ∨ pro = NETLINK_KOBJECT_UEVENT))
-      then CheckUnmodeled else check_ret_only eff (errno_ret EINVAL) m []
+    else if SOCK_MAX ≤ ty then check_ret_only eff (errno_ret EINVAL) m []
     else if ¬ (fam = AF_INET) then CheckUnmodeled
     else if ty = SOCK_PACKET then CheckUnmodeled
-    else if pro < 0 ∨ IPPROTO_MAX ≤ pro then check_errno_only [EINVAL, ENFILE] eff m
-    else if IPPROTO_MAX_PRE_V5_6 ≤ pro then CheckUnmodeled
+    else if pro < 0 ∨ IPPROTO_MAX ≤ pro then check_ret_only eff (errno_ret EINVAL) m []
     else if ty = SOCK_STREAM then
-      if pro = IPPROTO_SCTP then CheckUnmodeled
+      if pro = IPPROTO_SCTP ∨ pro = IPPROTO_MPTCP then CheckUnmodeled
       else if ¬ (pro = IPPROTO_IP ∨ pro = IPPROTO_TCP)
-      then check_errno_only [EPROTONOSUPPORT, ENFILE] eff m
+      then check_ret_only eff (errno_ret EPROTONOSUPPORT) m []
       else check_new_fd_result socket_errnos eff m
              (fun fd => with_fds (fd_insert (m_fds m) fd (.FdSocket .SkFresh)) m)
     else if ty = SOCK_DGRAM ∨ ty = SOCK_RAW then CheckUnmodeled
     else if ty = SOCK_SEQPACKET ∨ ty = SOCK_DCCP then CheckUnmodeled
-    else check_errno_only [ESOCKTNOSUPPORT, ENFILE] eff m
+    else check_ret_only eff (errno_ret ESOCKTNOSUPPORT) m []
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_socket_sound_ok`.  Every accepting
 leaf is the spec's: a `check_ret_only` verdict is the spec's `err_ret`,
@@ -2321,7 +2256,9 @@ theorem check_socket_sound_ok (domain type protocol : word) (eff : SyscallEffect
   by_cases h1 : bv_unsigned (bv_and (bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK)))
       (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0
   case neg =>
-    simp only [h1, not_false_eq_true, ↓reduceIte, reduceCtorEq] at h
+    simp only [h1, not_false_eq_true, ↓reduceIte] at h ⊢
+    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+    exact pure_ok _ i _
   simp only [h1, not_true_eq_false, ↓reduceIte] at h ⊢
   by_cases h2 : bv_unsigned (bv_and (bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK)))
       (Z_to_bv 64 SOCK_NONBLOCK)) = 0
@@ -2336,9 +2273,6 @@ theorem check_socket_sound_ok (domain type protocol : word) (eff : SyscallEffect
   simp only [h3, ↓reduceIte] at h ⊢
   by_cases h4 : SOCK_MAX ≤ ty
   · simp only [h4, ↓reduceIte] at h ⊢
-    by_cases h4n : AF_MAX_V4_17 ≤ fam ∨ (fam = AF_NETLINK ∧ ¬ (pro = NETLINK_AUDIT ∨ pro = NETLINK_KOBJECT_UEVENT))
-    · simp only [h4n, ↓reduceIte, reduceCtorEq] at h
-    simp only [h4n, ↓reduceIte] at h ⊢
     obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
     exact pure_ok _ i _
   simp only [h4, ↓reduceIte] at h ⊢
@@ -2351,21 +2285,19 @@ theorem check_socket_sound_ok (domain type protocol : word) (eff : SyscallEffect
   simp only [h6, ↓reduceIte] at h ⊢
   by_cases h7 : pro < 0 ∨ IPPROTO_MAX ≤ pro
   · simp only [h7, ↓reduceIte] at h ⊢
-    exact check_errno_only_pair_sound_ok _ _ i _ _ _ _ h
+    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+    exact pure_ok _ i _
   simp only [h7, ↓reduceIte] at h ⊢
-  by_cases h7r : IPPROTO_MAX_PRE_V5_6 ≤ pro
-  · simp only [h7r, ↓reduceIte] at h ⊢
-    cases h
-  simp only [h7r, ↓reduceIte] at h ⊢
   by_cases h8 : ty = SOCK_STREAM
   · simp only [h8, ↓reduceIte] at h ⊢
-    by_cases h9 : pro = IPPROTO_SCTP
+    by_cases h9 : pro = IPPROTO_SCTP ∨ pro = IPPROTO_MPTCP
     · simp only [h9, ↓reduceIte, reduceCtorEq] at h
     simp only [h9, ↓reduceIte] at h ⊢
     by_cases h10 : pro = IPPROTO_IP ∨ pro = IPPROTO_TCP
     case neg =>
       simp only [h10, not_false_eq_true, ↓reduceIte] at h ⊢
-      exact check_errno_only_pair_sound_ok _ _ i _ _ _ _ h
+      obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+      exact pure_ok _ i _
     simp only [h10, not_true_eq_false, ↓reduceIte] at h ⊢
     obtain ⟨rfl, ret, rfl, hcase⟩ := check_new_fd_result_ok_inv socket_errnos eff m _ m' evs h
     unfold errno_from lowest_fd set_fds
@@ -2385,7 +2317,8 @@ theorem check_socket_sound_ok (domain type protocol : word) (eff : SyscallEffect
   by_cases h12 : ty = SOCK_SEQPACKET ∨ ty = SOCK_DCCP
   · simp only [h12, ↓reduceIte, reduceCtorEq] at h
   simp only [h12, ↓reduceIte] at h ⊢
-  exact check_errno_only_pair_sound_ok _ _ i _ _ _ _ h
+  obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+  exact pure_ok _ i _
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_socket_sound_unmodeled`.  The
 acceptors the checker reaches do not decline (`check_ret_only_no_unmodeled`,
@@ -2405,8 +2338,8 @@ theorem check_socket_sound_unmodeled (domain type protocol : word) (eff : Syscal
   by_cases h1 : bv_unsigned (bv_and (bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK)))
       (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0
   case neg =>
-    simp only [h1, not_false_eq_true, ↓reduceIte]
-    exact unmodeled_intro i m
+    simp only [h1, not_false_eq_true, ↓reduceIte] at h
+    exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   simp only [h1, not_true_eq_false, ↓reduceIte] at h ⊢
   by_cases h2 : bv_unsigned (bv_and (bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK)))
       (Z_to_bv 64 SOCK_NONBLOCK)) = 0
@@ -2420,11 +2353,7 @@ theorem check_socket_sound_unmodeled (domain type protocol : word) (eff : Syscal
     exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   simp only [h3, ↓reduceIte] at h ⊢
   by_cases h4 : SOCK_MAX ≤ ty
-  · simp only [h4, ↓reduceIte] at h ⊢
-    by_cases h4n : AF_MAX_V4_17 ≤ fam ∨ (fam = AF_NETLINK ∧ ¬ (pro = NETLINK_AUDIT ∨ pro = NETLINK_KOBJECT_UEVENT))
-    · simp only [h4n, ↓reduceIte]
-      exact unmodeled_intro i m
-    simp only [h4n, ↓reduceIte] at h
+  · simp only [h4, ↓reduceIte] at h
     exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   simp only [h4, ↓reduceIte] at h ⊢
   by_cases h5 : fam = AF_INET
@@ -2438,22 +2367,18 @@ theorem check_socket_sound_unmodeled (domain type protocol : word) (eff : Syscal
   simp only [h6, ↓reduceIte] at h ⊢
   by_cases h7 : pro < 0 ∨ IPPROTO_MAX ≤ pro
   · simp only [h7, ↓reduceIte] at h
-    exact absurd h (check_errno_only_no_unmodeled _ _ _)
+    exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   simp only [h7, ↓reduceIte] at h ⊢
-  by_cases h7r : IPPROTO_MAX_PRE_V5_6 ≤ pro
-  · simp only [h7r, ↓reduceIte] at h ⊢
-    exact unmodeled_intro i m
-  simp only [h7r, ↓reduceIte] at h ⊢
   by_cases h8 : ty = SOCK_STREAM
   · simp only [h8, ↓reduceIte] at h ⊢
-    by_cases h9 : pro = IPPROTO_SCTP
+    by_cases h9 : pro = IPPROTO_SCTP ∨ pro = IPPROTO_MPTCP
     · simp only [h9, ↓reduceIte]
       exact unmodeled_intro i m
     simp only [h9, ↓reduceIte] at h ⊢
     by_cases h10 : pro = IPPROTO_IP ∨ pro = IPPROTO_TCP
     case neg =>
       simp only [h10, not_false_eq_true, ↓reduceIte] at h
-      exact absurd h (check_errno_only_no_unmodeled _ _ _)
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
     simp only [h10, not_true_eq_false, ↓reduceIte] at h
     exact absurd h (check_new_fd_result_no_unmodeled _ _ _ _)
   simp only [h8, ↓reduceIte] at h ⊢
@@ -2465,7 +2390,7 @@ theorem check_socket_sound_unmodeled (domain type protocol : word) (eff : Syscal
   · simp only [h12, ↓reduceIte]
     exact unmodeled_intro i m
   simp only [h12, ↓reduceIte] at h
-  exact absurd h (check_errno_only_no_unmodeled _ _ _)
+  exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_socket_complete_ok`. -/
 theorem check_socket_complete_ok (domain type protocol : word) (eff : SyscallEffect)
@@ -2482,7 +2407,9 @@ theorem check_socket_complete_ok (domain type protocol : word) (eff : SyscallEff
   by_cases h1 : bv_unsigned (bv_and (bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK)))
       (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0
   case neg =>
-    simp only [h1, not_false_eq_true, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
+    simp only [h1, not_false_eq_true, ↓reduceIte, err_ret, ret_only, pure_iff] at h ⊢
+    obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
+    exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
   simp only [h1, not_true_eq_false, ↓reduceIte] at h ⊢
   by_cases h2 : bv_unsigned (bv_and (bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK)))
       (Z_to_bv 64 SOCK_NONBLOCK)) = 0
@@ -2497,10 +2424,7 @@ theorem check_socket_complete_ok (domain type protocol : word) (eff : SyscallEff
     exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
   simp only [h3, ↓reduceIte] at h ⊢
   by_cases h4 : SOCK_MAX ≤ ty
-  · simp only [h4, ↓reduceIte] at h ⊢
-    by_cases h4n : AF_MAX_V4_17 ≤ fam ∨ (fam = AF_NETLINK ∧ ¬ (pro = NETLINK_AUDIT ∨ pro = NETLINK_KOBJECT_UEVENT))
-    · simp only [h4n, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
-    simp only [h4n, ↓reduceIte, err_ret, ret_only, pure_iff] at h ⊢
+  · simp only [h4, ↓reduceIte, err_ret, ret_only, pure_iff] at h ⊢
     obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
     exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
   simp only [h4, ↓reduceIte] at h ⊢
@@ -2514,22 +2438,21 @@ theorem check_socket_complete_ok (domain type protocol : word) (eff : SyscallEff
     exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
   simp only [h6, ↓reduceIte] at h ⊢
   by_cases h7 : pro < 0 ∨ IPPROTO_MAX ≤ pro
-  · simp only [h7, ↓reduceIte] at h ⊢
-    exact check_errno_only_pair_complete_ok _ _ i _ _ _ _ h
+  · simp only [h7, ↓reduceIte, err_ret, ret_only, pure_iff] at h ⊢
+    obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
+    exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
   simp only [h7, ↓reduceIte] at h ⊢
-  by_cases h7r : IPPROTO_MAX_PRE_V5_6 ≤ pro
-  · simp only [h7r, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h ⊢
-  simp only [h7r, ↓reduceIte] at h ⊢
   by_cases h8 : ty = SOCK_STREAM
   · simp only [h8, ↓reduceIte] at h ⊢
-    by_cases h9 : pro = IPPROTO_SCTP
+    by_cases h9 : pro = IPPROTO_SCTP ∨ pro = IPPROTO_MPTCP
     · simp only [h9, ↓reduceIte] at h
       exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
     simp only [h9, ↓reduceIte] at h ⊢
     by_cases h10 : pro = IPPROTO_IP ∨ pro = IPPROTO_TCP
     case neg =>
-      simp only [h10, not_false_eq_true, ↓reduceIte] at h ⊢
-      exact check_errno_only_pair_complete_ok _ _ i _ _ _ _ h
+      simp only [h10, not_false_eq_true, ↓reduceIte, err_ret, ret_only, pure_iff] at h ⊢
+      obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
+      exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
     simp only [h10, not_true_eq_false, ↓reduceIte] at h ⊢
     unfold errno_from lowest_fd set_fds at h
     rw [alt_iff] at h
@@ -2555,7 +2478,9 @@ theorem check_socket_complete_ok (domain type protocol : word) (eff : SyscallEff
   · simp only [h12, ↓reduceIte] at h
     exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
   simp only [h12, ↓reduceIte] at h ⊢
-  exact check_errno_only_pair_complete_ok _ _ i _ _ _ _ h
+  simp only [err_ret, ret_only, pure_iff] at h
+  obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
+  exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_socket_complete_unmodeled`.  Where the
 spec declines, the checker declines whatever effect it is offered; on the
@@ -2575,7 +2500,8 @@ theorem check_socket_complete_unmodeled (domain type protocol : word) (m : Model
   by_cases h1 : bv_unsigned (bv_and (bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK)))
       (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0
   case neg =>
-    simp only [h1, not_false_eq_true, ↓reduceIte]
+    simp only [h1, not_false_eq_true, ↓reduceIte, err_ret, ret_only, pure_iff,
+      reduceCtorEq] at h
   simp only [h1, not_true_eq_false, ↓reduceIte] at h ⊢
   by_cases h2 : bv_unsigned (bv_and (bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK)))
       (Z_to_bv 64 SOCK_NONBLOCK)) = 0
@@ -2587,10 +2513,7 @@ theorem check_socket_complete_unmodeled (domain type protocol : word) (m : Model
   · simp only [h3, ↓reduceIte, err_ret, ret_only, pure_iff, reduceCtorEq] at h
   simp only [h3, ↓reduceIte] at h ⊢
   by_cases h4 : SOCK_MAX ≤ ty
-  · simp only [h4, ↓reduceIte] at h ⊢
-    by_cases h4n : AF_MAX_V4_17 ≤ fam ∨ (fam = AF_NETLINK ∧ ¬ (pro = NETLINK_AUDIT ∨ pro = NETLINK_KOBJECT_UEVENT))
-    · simp only [h4n, ↓reduceIte]
-    simp only [h4n, ↓reduceIte, err_ret, ret_only, pure_iff, reduceCtorEq] at h
+  · simp only [h4, ↓reduceIte, err_ret, ret_only, pure_iff, reduceCtorEq] at h
   simp only [h4, ↓reduceIte] at h ⊢
   by_cases h5 : fam = AF_INET
   case neg =>
@@ -2600,20 +2523,17 @@ theorem check_socket_complete_unmodeled (domain type protocol : word) (m : Model
   · simp only [h6, ↓reduceIte]
   simp only [h6, ↓reduceIte] at h ⊢
   by_cases h7 : pro < 0 ∨ IPPROTO_MAX ≤ pro
-  · simp only [h7, ↓reduceIte, err_ret, ret_only, pure_iff, alt_iff, reduceCtorEq, or_self] at h
+  · simp only [h7, ↓reduceIte, err_ret, ret_only, pure_iff, reduceCtorEq] at h
   simp only [h7, ↓reduceIte] at h ⊢
-  by_cases h7r : IPPROTO_MAX_PRE_V5_6 ≤ pro
-  · simp only [h7r, ↓reduceIte] at h ⊢
-  simp only [h7r, ↓reduceIte] at h ⊢
   by_cases h8 : ty = SOCK_STREAM
   · simp only [h8, ↓reduceIte] at h ⊢
-    by_cases h9 : pro = IPPROTO_SCTP
+    by_cases h9 : pro = IPPROTO_SCTP ∨ pro = IPPROTO_MPTCP
     · simp only [h9, ↓reduceIte]
     simp only [h9, ↓reduceIte] at h ⊢
     by_cases h10 : pro = IPPROTO_IP ∨ pro = IPPROTO_TCP
     case neg =>
-      simp only [h10, not_false_eq_true, ↓reduceIte, err_ret, ret_only, pure_iff, alt_iff,
-        reduceCtorEq, or_self] at h
+      simp only [h10, not_false_eq_true, ↓reduceIte, err_ret, ret_only, pure_iff,
+        reduceCtorEq] at h
     simp only [h10, not_true_eq_false, ↓reduceIte] at h
     unfold errno_from lowest_fd set_fds at h
     simp only [alt_iff, bind_choose_iff, err_ret, ret_only, pure_iff, bind_modify_iff,
@@ -2624,13 +2544,13 @@ theorem check_socket_complete_unmodeled (domain type protocol : word) (m : Model
   simp only [h11, ↓reduceIte] at h ⊢
   by_cases h12 : ty = SOCK_SEQPACKET ∨ ty = SOCK_DCCP
   · simp only [h12, ↓reduceIte]
-  simp only [h12, ↓reduceIte, err_ret, ret_only, pure_iff, alt_iff, reduceCtorEq, or_self] at h
+  simp only [h12, ↓reduceIte, err_ret, ret_only, pure_iff, reduceCtorEq] at h
 
 /-! ## accept (202) and accept4 (242)
 
-`accept` reaches this checker with zero flags. The descriptor and address
-ordering declines follow `accept4_spec`; validation errors include the
-allocation alternatives from its named errno lists. -/
+`accept` reaches this checker with zero flags.  -EBADF comes before the
+flags are even looked at, and the descriptor and address ordering below
+it follows `accept4_spec`. -/
 
 /-- The errnos of `accept_errnos` are in `[1, 4095]`, which is what
 `Open.errno_ret_in_alloc_fd` asks of the set. -/
@@ -2641,12 +2561,7 @@ set_option linter.unusedVariables false in
 def check_accept4 (fd addrp addrlenp flags : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   match fd_lookup (m_fds m) fd with
-  | none =>
-      if ¬ (bv_unsigned (bv_and (abi_low32 flags)
-          (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0)
-      then CheckUnmodeled
-      else if ¬ (w_is0 addrp) then CheckUnmodeled
-      else check_ret_only eff (errno_ret EBADF) m []
+  | none => check_ret_only eff (errno_ret EBADF) m []
   | some e =>
       let fl := abi_low32 flags
       if ¬ (bv_unsigned (bv_and fl
@@ -2669,10 +2584,8 @@ def check_accept4 (fd addrp addrlenp flags : word) (eff : SyscallEffect) (m : Mo
                            (.FdSocket (.SkConnected (nq_peer (m_net m))
                                                     (conn_channel (m_conn_ix m))
                                                     (nq_script (m_net m))))) m)
-            | _ => check_errno_only (EINVAL :: accept_notlisten_errnos) eff m)
-       | _ => if ¬ (w_is0 addrp) then CheckUnmodeled
-              else if NR_OPEN_DEFAULT ≤ bv_unsigned (alloc_fd (m_fds m)) then CheckUnmodeled
-              else check_errno_only (ENOTSOCK :: accept_notsock_errnos) eff m)
+            | _ => check_ret_only eff (errno_ret EINVAL) m [])
+       | _ => check_ret_only eff (errno_ret ENOTSOCK) m [])
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_accept4_sound_ok`.  The same
 descriptor, flag, kind, address and state tests as the spec; the listening
@@ -2691,14 +2604,8 @@ theorem check_accept4_sound_ok (fd addrp addrlenp flags : word) (eff : SyscallEf
   generalize fd_lookup (m_fds m) fd = r at h ⊢
   cases r with
   | none =>
-    by_cases hf : bv_unsigned (bv_and fl
-        (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0
-    · simp only [hf, not_true_eq_false, ↓reduceIte] at h ⊢
-      cases ha : w_is0 addrp <;> simp only [ha, Bool.false_eq_true,
-        not_false_eq_true, not_true_eq_false, ↓reduceIte, reduceCtorEq] at h ⊢
-      obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
-      exact pure_ok _ i _
-    · simp only [hf, not_false_eq_true, ↓reduceIte, reduceCtorEq] at h
+    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+    exact pure_ok _ i _
   | some e =>
     simp only [] at h ⊢
     by_cases h1 : bv_unsigned (bv_and fl
@@ -2740,15 +2647,12 @@ theorem check_accept4_sound_ok (fd addrp addrlenp flags : word) (eff : SyscallEf
               refine bind_ok0 _ _ i m ret m _ _ _ (choose_ok _ ret i m (And.intro hnone hfd')) ?_
               refine bind_ok0 _ _ i m () _ _ _ _ (modify_ok _ i m) ?_
               exact pure_ok _ i _
-        all_goals exact check_errno_only_head_sound_ok _ _ i _ _ _ _ h
+        all_goals
+          obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+          exact pure_ok _ i _
     all_goals
-      simp only [] at h ⊢
-      cases ha : w_is0 addrp <;> simp only [ha, Bool.false_eq_true,
-        not_false_eq_true, not_true_eq_false, ↓reduceIte, reduceCtorEq] at h ⊢
-      by_cases hc : NR_OPEN_DEFAULT ≤ bv_unsigned (alloc_fd (m_fds m))
-      · simp only [hc, ↓reduceIte, reduceCtorEq] at h
-      · simp only [hc, ↓reduceIte] at h ⊢
-        exact check_errno_only_head_sound_ok _ _ i _ _ _ _ h
+      obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+      exact pure_ok _ i _
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_accept4_sound_unmodeled`.  As for
 `check_socket`: the acceptors do not decline (`check_ret_only_no_unmodeled`,
@@ -2766,17 +2670,7 @@ theorem check_accept4_sound_unmodeled (fd addrp addrlenp flags : word) (eff : Sy
   simp only [] at h ⊢
   generalize fd_lookup (m_fds m) fd = r at h ⊢
   cases r with
-  | none =>
-    by_cases hf : bv_unsigned (bv_and fl
-        (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0
-    · simp only [hf, not_true_eq_false, ↓reduceIte] at h ⊢
-      cases ha : w_is0 addrp
-      · simp only [ Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
-        exact unmodeled_intro i m
-      · simp only [ha, not_true_eq_false, ↓reduceIte] at h
-        exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-    · simp only [hf, not_false_eq_true, ↓reduceIte]
-      exact unmodeled_intro i m
+  | none => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   | some e =>
     simp only [] at h ⊢
     by_cases h1 : bv_unsigned (bv_and fl
@@ -2809,18 +2703,8 @@ theorem check_accept4_sound_unmodeled (fd addrp addrlenp flags : word) (eff : Sy
           | false =>
             simp only [hx, Bool.false_eq_true, ↓reduceIte] at h
             exact absurd h (check_new_fd_result_no_unmodeled _ _ _ _)
-        all_goals exact absurd h (check_errno_only_no_unmodeled _ _ _)
-    all_goals
-      simp only [] at h ⊢
-      cases ha : w_is0 addrp
-      · simp only [ Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
-        exact unmodeled_intro i m
-      · simp only [ha, not_true_eq_false, ↓reduceIte] at h ⊢
-        by_cases hc : NR_OPEN_DEFAULT ≤ bv_unsigned (alloc_fd (m_fds m))
-        · simp only [hc, ↓reduceIte]
-          exact unmodeled_intro i m
-        · simp only [hc, ↓reduceIte] at h
-          exact absurd h (check_errno_only_no_unmodeled _ _ _)
+        all_goals exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    all_goals exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_accept4_complete_ok`.  Every outcome
 the spec admits is accepted with the spec's model and events; on the
@@ -2839,15 +2723,9 @@ theorem check_accept4_complete_ok (fd addrp addrlenp flags : word) (eff : Syscal
   generalize fd_lookup (m_fds m) fd = r at h ⊢
   cases r with
   | none =>
-    by_cases hf : bv_unsigned (bv_and fl
-        (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0
-    · simp only [hf, not_true_eq_false, ↓reduceIte] at h ⊢
-      cases ha : w_is0 addrp <;> simp only [ha, Bool.false_eq_true,
-        not_false_eq_true, not_true_eq_false, ↓reduceIte, unmodeled_iff,
-        err_ret, ret_only, pure_iff, reduceCtorEq] at h ⊢
-      obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
-      exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
-    · simp only [hf, not_false_eq_true, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
+    simp only [err_ret, ret_only, pure_iff] at h
+    obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
+    exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
   | some e =>
     simp only [] at h ⊢
     by_cases h1 : bv_unsigned (bv_and fl
@@ -2895,15 +2773,14 @@ theorem check_accept4_complete_ok (fd addrp addrlenp flags : word) (eff : Syscal
               subst hfd'
               simp only [check_new_fd_result, errno_ret_in_alloc_fd _ _ accept_errnos_ok,
                 Bool.false_eq_true, ↓reduceIte, hnone, bv_eqb_refl]
-        all_goals exact check_errno_only_head_complete_ok _ _ i _ _ _ _ h
+        all_goals
+          simp only [err_ret, ret_only, pure_iff] at h
+          obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
+          exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
     all_goals
-      simp only [] at h ⊢
-      cases ha : w_is0 addrp <;> simp only [ha, Bool.false_eq_true,
-        not_false_eq_true, not_true_eq_false, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h ⊢
-      by_cases hc : NR_OPEN_DEFAULT ≤ bv_unsigned (alloc_fd (m_fds m))
-      · simp only [hc, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
-      · simp only [hc, ↓reduceIte] at h ⊢
-        exact check_errno_only_head_complete_ok _ _ i _ _ _ _ h
+      simp only [err_ret, ret_only, pure_iff] at h
+      obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
+      exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_accept4_complete_unmodeled`.  Where
 the spec declines, the checker declines whatever effect it is offered; the
@@ -2919,14 +2796,7 @@ theorem check_accept4_complete_unmodeled (fd addrp addrlenp flags : word) (m : M
   simp only [] at h ⊢
   generalize fd_lookup (m_fds m) fd = r at h ⊢
   cases r with
-  | none =>
-    by_cases hf : bv_unsigned (bv_and fl
-        (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0
-    · simp only [hf, not_true_eq_false, ↓reduceIte] at h ⊢
-      cases ha : w_is0 addrp <;> simp only [ha, Bool.false_eq_true,
-        not_false_eq_true, not_true_eq_false, ↓reduceIte, err_ret,
-        ret_only, pure_iff, reduceCtorEq] at h ⊢
-    · simp only [hf, not_false_eq_true, ↓reduceIte]
+  | none => simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
   | some e =>
     simp only [] at h ⊢
     by_cases h1 : bv_unsigned (bv_and fl
@@ -2958,17 +2828,8 @@ theorem check_accept4_complete_unmodeled (fd addrp addrlenp flags : word) (m : M
             unfold errno_from lowest_fd at h
             simp only [alt_iff, bind_choose_iff, err_ret, ret_only, pure_iff, bind_modify_iff,
               reduceCtorEq, and_false, exists_false, or_self] at h
-        all_goals
-          simp only [alt_iff, errno_from, bind_choose_iff, err_ret,
-            ret_only, pure_iff, reduceCtorEq, and_false, exists_false, or_self] at h
-    all_goals
-      simp only [] at h ⊢
-      cases ha : w_is0 addrp <;> simp only [ha, Bool.false_eq_true,
-        not_false_eq_true, not_true_eq_false, ↓reduceIte] at h ⊢
-      by_cases hc : NR_OPEN_DEFAULT ≤ bv_unsigned (alloc_fd (m_fds m))
-      · simp only [hc, ↓reduceIte]
-      · simp only [hc, ↓reduceIte, alt_iff, errno_from, bind_choose_iff,
-          err_ret, ret_only, pure_iff, reduceCtorEq, and_false, exists_false, or_self] at h
+        all_goals simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
+    all_goals simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
 
 /-! ## sendto (206), sendmsg (211), recvfrom (207), recvmsg (212)
 
@@ -3011,19 +2872,19 @@ def check_send_on_socket (pre : List (word × Nat)) (acc : Nat → List (word ×
   | .SendErr _ _ _ => CheckUnmodeled
   | .SendGoes _ => CheckUnmodeled
 
-/-- Rocq: `Checks.Sys.Net.Socket.check_sendto`. -/
-def check_sendto (i : SyscallInput) (fd buf count flags addrp addrlen : word) (eff : SyscallEffect)
+/-- `sendto`: the three gates, then `import_ubuf`'s range verdict, then
+the fd — and the fd match stays INSIDE `check_access_ok_zero`, because
+that nesting is what makes `sendto(-1, unmapped, n, ...)` -EFAULT rather
+than -EBADF.  `addrlen` is not a parameter here: the spec never reads it.
+Rocq: `Checks.Sys.Net.Socket.check_sendto`. -/
+def check_sendto (i : SyscallInput) (fd buf count flags addrp : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
   if ¬ (send_flags_modeled flags) then CheckUnmodeled
   else if ¬ (w_is0 addrp) then CheckUnmodeled
-  else if addrlen.getLsbD 31 then CheckUnmodeled
   else if ¬ (Sys.Uaccess.modeled_rw_count count) then CheckUnmodeled
-  else if w_is0 count && !access_okb buf 0 then CheckUnmodeled
   else
     check_access_ok_zero buf count eff m
-      (if !(w_is0 count) && !(seg_lockable i.in_mem buf count &&
-                  load_write_free (m_vmmaps m).vm_reserved i.in_wmem buf count) then CheckUnmodeled
-     else match fd_lookup (m_fds m) fd with
+      (match fd_lookup (m_fds m) fd with
        | none => check_ret_only eff (errno_ret EBADF) m []
        | some (.FdSocket sk) =>
            check_send_on_socket [] (fun n => [(buf, n)]) fd sk count
@@ -3034,30 +2895,26 @@ def check_sendto (i : SyscallInput) (fd buf count flags addrp addrlen : word) (e
 header, the opposite nesting to `check_sendto` and deliberately not
 shared with it.  Each arm spells out the ledger it expects where it
 answers — the header alone at -EMSGSIZE, the header and
-`import_iovecs_accesses` at the import's -EFAULT and -EINVAL and as the
+`copy_iovecs_accesses` at the import's -EFAULT and -EINVAL and as the
 socket half's `pre` — so a reader sees at each answer which user bytes
 had been read by then.  The four header fields are the spec's, decoded
-from the 56 bytes `copy_bytes_map` returned, where Rocq's checker reads
+from the 56 bytes `read_bytes_map` returned, where Rocq's checker reads
 six with `read_u64` (this file's header).
 Rocq: `Checks.Sys.Net.Socket.check_sendmsg`. -/
 def check_sendmsg (i : SyscallInput) (fd msgp flags : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if ¬ (send_flags_modeled flags) then CheckUnmodeled
-  else if !(sendmsg_load_free i.in_mem i.in_wmem (m_vmmaps m).vm_reserved msgp) then CheckUnmodeled
   else
   match fd_lookup (m_fds m) fd with
-  | none => if sendmsg_prehost_quiet i.in_mem msgp then check_ret_only eff (errno_ret EBADF) m [] else CheckUnmodeled
-  | some (.FdChannel _) => if sendmsg_prehost_quiet i.in_mem msgp then check_ret_only eff (errno_ret ENOTSOCK) m [] else CheckUnmodeled
-  | some (.FdFile _ _) => if sendmsg_prehost_quiet i.in_mem msgp then check_ret_only eff (errno_ret ENOTSOCK) m [] else CheckUnmodeled
-  | some (.FdFileW _ _) => if sendmsg_prehost_quiet i.in_mem msgp then check_ret_only eff (errno_ret ENOTSOCK) m [] else CheckUnmodeled
-  | some (.FdFileA _ _) => CheckUnmodeled
-  | some (.FdFileRW _ _) => CheckUnmodeled
-  | some .FdDir => if sendmsg_prehost_quiet i.in_mem msgp then check_ret_only eff (errno_ret ENOTSOCK) m [] else CheckUnmodeled
-  | some (.FdPipe _ _) => if sendmsg_prehost_quiet i.in_mem msgp then check_ret_only eff (errno_ret ENOTSOCK) m [] else CheckUnmodeled
-  | some (.FdDevNull _ _) => if sendmsg_prehost_quiet i.in_mem msgp then check_ret_only eff (errno_ret ENOTSOCK) m [] else CheckUnmodeled
-  | some .FdUrandom => if sendmsg_prehost_quiet i.in_mem msgp then check_ret_only eff (errno_ret ENOTSOCK) m [] else CheckUnmodeled
+  | none => check_ret_only eff (errno_ret EBADF) m []
+  | some (.FdChannel _) | some (.FdFile _ _)
+  | some (.FdFileW _ _) | some (.FdFileA _ _) | some (.FdFileRW _ _)
+  | some .FdDir
+  | some (.FdPipe _ _)
+  | some (.FdDevNull _ _)
+  | some .FdUrandom => check_ret_only eff (errno_ret ENOTSOCK) m []
   | some (.FdSocket sk) =>
-      match copy_bytes_map i.in_mem msgp MSGHDR_SIZE with
+      match read_bytes_map i.in_mem msgp (Z_to_bv 64 MSGHDR_SIZE) with
       | none => check_ret_only eff (errno_ret EFAULT) m []
       | some hdr =>
           let name := le_bytes_to_word (hdr.take 8)
@@ -3069,27 +2926,23 @@ def check_sendmsg (i : SyscallInput) (fd msgp flags : word) (eff : SyscallEffect
           then check_ret_only_copyins [(msgp, MSGHDR_SIZE.toNat)] eff (errno_ret EMSGSIZE) m []
           else if Sys.Fs.ReadWrite.UIO_FASTIOV < bv_unsigned iovlen then CheckUnmodeled
           else
-            match import_iovecs i.in_mem iov iovlen with
+            match copy_iovecs_aux i.in_mem iov (word_to_nat iovlen) with
             | .ImpFault =>
-                if ¬ (iov_fault_at_head i.in_mem iov iovlen) then CheckUnmodeled
-                else
                 check_ret_only_copyins ([(msgp, MSGHDR_SIZE.toNat)]
-                                        ++ import_iovecs_accesses i.in_mem iov iovlen)
+                                        ++ copy_iovecs_accesses i.in_mem iov (word_to_nat iovlen))
                   eff (errno_ret EFAULT) m []
             | .ImpInval =>
-                if ¬ (iov_inval_at_head i.in_mem iov iovlen) then CheckUnmodeled
-                else
                 check_ret_only_copyins ([(msgp, MSGHDR_SIZE.toNat)]
-                                        ++ import_iovecs_accesses i.in_mem iov iovlen)
+                                        ++ copy_iovecs_accesses i.in_mem iov (word_to_nat iovlen))
                   eff (errno_ret EINVAL) m []
             | .ImpOk iovs0 =>
                 if ¬ (w_is0 ctllen) then CheckUnmodeled
                 else if ¬ (iovs_total (cap_iovecs iovs0) ≤ Sys.Uaccess.rw_bytes_max)
                 then CheckUnmodeled
-                else if ¬ (iovs_lockable i.in_mem i.in_wmem (m_vmmaps m).vm_reserved iovs0) then CheckUnmodeled
                 else
                   check_send_on_socket
-                    ([(msgp, MSGHDR_SIZE.toNat)] ++ import_iovecs_accesses i.in_mem iov iovlen)
+                    ([(msgp, MSGHDR_SIZE.toNat)]
+                     ++ copy_iovecs_accesses i.in_mem iov (word_to_nat iovlen))
                     (fun n => iov_prefix_accesses (cap_iovecs iovs0) n) fd sk
                     (Z_to_bv 64 (iovs_total (cap_iovecs iovs0)))
                     (writev_gathered i.in_mem iovs0) eff m
@@ -3176,7 +3029,7 @@ split on the same `Bool`s on both sides, `ok_zero_cases` opens the range
 verdict, and the socket arm is `check_send_on_socket_sound_ok`. -/
 theorem check_sendto_sound_ok (i : SyscallInput) (fd buf count flags addrp addrlen : word)
     (eff : SyscallEffect) (m m' : Model) (evs : List event)
-    (h : check_sendto i fd buf count flags addrp addrlen eff m = CheckOk m' evs) :
+    (h : check_sendto i fd buf count flags addrp eff m = CheckOk m' evs) :
     sendto_spec fd buf count flags addrp addrlen i m (Ok eff m' evs) := by
   unfold check_sendto at h
   unfold sendto_spec
@@ -3188,45 +3041,34 @@ theorem check_sendto_sound_ok (i : SyscallInput) (fd buf count flags addrp addrl
     | false => simp only [ha, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, reduceCtorEq] at h
     | true =>
       simp only [ha, not_true_eq_false, ↓reduceIte] at h ⊢
-      by_cases hlen : (addrlen.getLsbD 31) = true
-      · simp only [hlen, ↓reduceIte, reduceCtorEq] at h ⊢
-      · simp only [hlen, Bool.false_eq_true, ↓reduceIte] at h ⊢
-        cases hc : Sys.Uaccess.modeled_rw_count count with
-        | false =>
-          simp only [hc, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, reduceCtorEq] at h
-        | true =>
-          simp only [hc, not_true_eq_false, ↓reduceIte] at h ⊢
-          by_cases hzero : (w_is0 count && !access_okb buf 0) = true
-          · simp only [hzero, ↓reduceIte, reduceCtorEq] at h ⊢
-          · simp only [hzero, Bool.false_eq_true, ↓reduceIte] at h ⊢
-            apply bind_ok0 _ _ i m i m _ _ _ (input_ok i m)
-            apply bind_ok0 _ _ i m m m _ _ _ (get_model_ok i m)
-            ok_zero_cases h buf count
-            · obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+      cases hc : Sys.Uaccess.modeled_rw_count count with
+      | false =>
+        simp only [hc, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, reduceCtorEq] at h
+      | true =>
+        simp only [hc, not_true_eq_false, ↓reduceIte] at h ⊢
+        apply bind_ok0 _ _ i m i m _ _ _ (input_ok i m)
+        apply bind_ok0 _ _ i m m m _ _ _ (get_model_ok i m)
+        ok_zero_cases h buf count
+        · obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+          exact pure_ok _ i _
+        · generalize fd_lookup (m_fds m) fd = r at h ⊢
+          cases r with
+          | none =>
+            obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+            exact pure_ok _ i _
+          | some e =>
+            cases e
+            case FdSocket sk => exact check_send_on_socket_sound_ok _ _ _ _ _ _ _ _ _ _ i h
+            all_goals
+              obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
               exact pure_ok _ i _
-            ·
-              by_cases hlock : (!(w_is0 count) && !(seg_lockable i.in_mem buf count &&
-                  load_write_free (m_vmmaps m).vm_reserved i.in_wmem buf count)) = true
-              · simp only [hlock, ↓reduceIte, reduceCtorEq] at h ⊢
-              · simp only [hlock, Bool.false_eq_true, ↓reduceIte] at h ⊢
-                generalize fd_lookup (m_fds m) fd = r at h ⊢
-                cases r with
-                | none =>
-                  obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
-                  exact pure_ok _ i _
-                | some e =>
-                  cases e
-                  case FdSocket sk => exact check_send_on_socket_sound_ok _ _ _ _ _ _ _ _ _ _ i h
-                  all_goals
-                    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
-                    exact pure_ok _ i _
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_sendto_sound_unmodeled`.  A
 decline is a gate's or the socket half's; every other leaf is an
 acceptor, which never declines. -/
 theorem check_sendto_sound_unmodeled (i : SyscallInput) (fd buf count flags addrp addrlen : word)
     (eff : SyscallEffect) (m : Model)
-    (h : check_sendto i fd buf count flags addrp addrlen eff m = CheckUnmodeled) :
+    (h : check_sendto i fd buf count flags addrp eff m = CheckUnmodeled) :
     sendto_spec fd buf count flags addrp addrlen i m Unmodeled := by
   unfold check_sendto at h
   unfold sendto_spec
@@ -3242,34 +3084,23 @@ theorem check_sendto_sound_unmodeled (i : SyscallInput) (fd buf count flags addr
       exact unmodeled_intro i m
     | true =>
       simp only [ha, not_true_eq_false, ↓reduceIte] at h ⊢
-      by_cases hlen : (addrlen.getLsbD 31) = true
-      · simp only [hlen, ↓reduceIte, unmodeled_iff] at h ⊢
-      · simp only [hlen, Bool.false_eq_true, ↓reduceIte] at h ⊢
-        cases hc : Sys.Uaccess.modeled_rw_count count with
-        | false =>
-          simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
-          exact unmodeled_intro i m
-        | true =>
-          simp only [hc, not_true_eq_false, ↓reduceIte] at h ⊢
-          by_cases hzero : (w_is0 count && !access_okb buf 0) = true
-          · simp only [hzero, ↓reduceIte, unmodeled_iff] at h ⊢
-          · simp only [hzero, Bool.false_eq_true, ↓reduceIte] at h ⊢
-            apply bind_unmodeled2 _ _ i m i m [] (input_ok i m)
-            apply bind_unmodeled2 _ _ i m m m [] (get_model_ok i m)
-            ok_zero_cases h buf count
-            · exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-            ·
-              by_cases hlock : (!(w_is0 count) && !(seg_lockable i.in_mem buf count &&
-                  load_write_free (m_vmmaps m).vm_reserved i.in_wmem buf count)) = true
-              · simp only [hlock, ↓reduceIte, unmodeled_iff] at h ⊢
-              · simp only [hlock, Bool.false_eq_true, ↓reduceIte] at h ⊢
-                generalize fd_lookup (m_fds m) fd = r at h ⊢
-                cases r with
-                | none => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-                | some e =>
-                  cases e
-                  case FdSocket sk => exact check_send_on_socket_sound_unmodeled _ _ _ _ _ _ _ _ i h
-                  all_goals exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+      cases hc : Sys.Uaccess.modeled_rw_count count with
+      | false =>
+        simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
+        exact unmodeled_intro i m
+      | true =>
+        simp only [hc, not_true_eq_false, ↓reduceIte] at h ⊢
+        apply bind_unmodeled2 _ _ i m i m [] (input_ok i m)
+        apply bind_unmodeled2 _ _ i m m m [] (get_model_ok i m)
+        ok_zero_cases h buf count
+        · exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+        · generalize fd_lookup (m_fds m) fd = r at h ⊢
+          cases r with
+          | none => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+          | some e =>
+            cases e
+            case FdSocket sk => exact check_send_on_socket_sound_unmodeled _ _ _ _ _ _ _ _ i h
+            all_goals exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_sendto_complete_ok`.  Rocq's proof
 splits the range verdict with `ok_zero_split`; this one writes the split
@@ -3278,7 +3109,7 @@ checker goal. -/
 theorem check_sendto_complete_ok (i : SyscallInput) (fd buf count flags addrp addrlen : word)
     (eff : SyscallEffect) (m m' : Model) (evs : List event)
     (h : sendto_spec fd buf count flags addrp addrlen i m (Ok eff m' evs)) :
-    check_sendto i fd buf count flags addrp addrlen eff m = CheckOk m' evs := by
+    check_sendto i fd buf count flags addrp eff m = CheckOk m' evs := by
   unfold sendto_spec at h
   unfold check_sendto
   cases hf : send_flags_modeled flags with
@@ -3293,53 +3124,43 @@ theorem check_sendto_complete_ok (i : SyscallInput) (fd buf count flags addrp ad
         reduceCtorEq] at h
     | true =>
       simp only [ha, not_true_eq_false, ↓reduceIte] at h ⊢
-      by_cases hlen : (addrlen.getLsbD 31) = true
-      · simp only [hlen, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h ⊢
-      · simp only [hlen, Bool.false_eq_true, ↓reduceIte] at h ⊢
-        cases hc : Sys.Uaccess.modeled_rw_count count with
+      cases hc : Sys.Uaccess.modeled_rw_count count with
+      | false =>
+        simp only [hc, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, unmodeled_iff,
+          reduceCtorEq] at h
+      | true =>
+        simp only [hc, not_true_eq_false, ↓reduceIte] at h ⊢
+        have h := bind_input_model_inv _ i m _ h
+        unfold access_ok_zero at h
+        unfold check_access_ok_zero
+        generalize access_okb buf (bv_unsigned count) = ok at h ⊢
+        cases ok with
         | false =>
-          simp only [hc, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, unmodeled_iff,
-            reduceCtorEq] at h
+          simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+          simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at h
+          obtain ⟨rfl, rfl, rfl⟩ := h
+          exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
         | true =>
-          simp only [hc, not_true_eq_false, ↓reduceIte] at h ⊢
-          by_cases hzero : (w_is0 count && !access_okb buf 0) = true
-          · simp only [hzero, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h ⊢
-          · simp only [hzero, Bool.false_eq_true, ↓reduceIte] at h ⊢
-            have h := bind_input_model_inv _ i m _ h
-            unfold access_ok_zero at h
-            unfold check_access_ok_zero
-            generalize access_okb buf (bv_unsigned count) = ok at h ⊢
-            cases ok with
-            | false =>
-              simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+          simp only [↓reduceIte] at h ⊢
+          generalize fd_lookup (m_fds m) fd = r at h ⊢
+          cases r with
+          | none =>
+            simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at h
+            obtain ⟨rfl, rfl, rfl⟩ := h
+            exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
+          | some e =>
+            cases e
+            case FdSocket sk => exact check_send_on_socket_complete_ok _ _ _ _ _ _ _ _ _ _ i h
+            all_goals
               simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at h
               obtain ⟨rfl, rfl, rfl⟩ := h
               exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
-            | true =>
-              simp only [↓reduceIte] at h ⊢
-              by_cases hlock : (!(w_is0 count) && !(seg_lockable i.in_mem buf count &&
-                  load_write_free (m_vmmaps m).vm_reserved i.in_wmem buf count)) = true
-              · simp only [hlock, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h ⊢
-              · simp only [hlock, Bool.false_eq_true, ↓reduceIte] at h ⊢
-                generalize fd_lookup (m_fds m) fd = r at h ⊢
-                cases r with
-                | none =>
-                  simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at h
-                  obtain ⟨rfl, rfl, rfl⟩ := h
-                  exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
-                | some e =>
-                  cases e
-                  case FdSocket sk => exact check_send_on_socket_complete_ok _ _ _ _ _ _ _ _ _ _ i h
-                  all_goals
-                    simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at h
-                    obtain ⟨rfl, rfl, rfl⟩ := h
-                    exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_sendto_complete_unmodeled`. -/
 theorem check_sendto_complete_unmodeled (i : SyscallInput)
     (fd buf count flags addrp addrlen : word) (m : Model) (eff : SyscallEffect)
     (h : sendto_spec fd buf count flags addrp addrlen i m Unmodeled) :
-    check_sendto i fd buf count flags addrp addrlen eff m = CheckUnmodeled := by
+    check_sendto i fd buf count flags addrp eff m = CheckUnmodeled := by
   unfold sendto_spec at h
   unfold check_sendto
   cases hf : send_flags_modeled flags with
@@ -3350,38 +3171,28 @@ theorem check_sendto_complete_unmodeled (i : SyscallInput)
     | false => simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
     | true =>
       simp only [ha, not_true_eq_false, ↓reduceIte] at h ⊢
-      by_cases hlen : (addrlen.getLsbD 31) = true
-      · simp only [hlen, ↓reduceIte, unmodeled_iff] at h ⊢
-      · simp only [hlen, Bool.false_eq_true, ↓reduceIte] at h ⊢
-        cases hc : Sys.Uaccess.modeled_rw_count count with
-        | false => simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
+      cases hc : Sys.Uaccess.modeled_rw_count count with
+      | false => simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
+      | true =>
+        simp only [hc, not_true_eq_false, ↓reduceIte] at h ⊢
+        have h := bind_input_model_inv _ i m _ h
+        unfold access_ok_zero at h
+        unfold check_access_ok_zero
+        generalize access_okb buf (bv_unsigned count) = ok at h ⊢
+        cases ok with
+        | false =>
+          simp only [Bool.false_eq_true, ↓reduceIte, err_ret, ret_only, pure_iff,
+            reduceCtorEq] at h
         | true =>
-          simp only [hc, not_true_eq_false, ↓reduceIte] at h ⊢
-          by_cases hzero : (w_is0 count && !access_okb buf 0) = true
-          · simp only [hzero, ↓reduceIte, unmodeled_iff] at h ⊢
-          · simp only [hzero, Bool.false_eq_true, ↓reduceIte] at h ⊢
-            have h := bind_input_model_inv _ i m _ h
-            unfold access_ok_zero at h
-            unfold check_access_ok_zero
-            generalize access_okb buf (bv_unsigned count) = ok at h ⊢
-            cases ok with
-            | false =>
-              simp only [Bool.false_eq_true, ↓reduceIte, err_ret, ret_only, pure_iff,
-                reduceCtorEq] at h
-            | true =>
-              simp only [↓reduceIte] at h ⊢
-              by_cases hlock : (!(w_is0 count) && !(seg_lockable i.in_mem buf count &&
-                  load_write_free (m_vmmaps m).vm_reserved i.in_wmem buf count)) = true
-              · simp only [hlock, ↓reduceIte, unmodeled_iff] at h ⊢
-              · simp only [hlock, Bool.false_eq_true, ↓reduceIte] at h ⊢
-                generalize fd_lookup (m_fds m) fd = r at h ⊢
-                cases r with
-                | none => simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
-                | some e =>
-                  cases e
-                  case FdSocket sk =>
-                    exact check_send_on_socket_complete_unmodeled _ _ _ _ _ _ _ i _ h
-                  all_goals simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
+          simp only [↓reduceIte] at h ⊢
+          generalize fd_lookup (m_fds m) fd = r at h ⊢
+          cases r with
+          | none => simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
+          | some e =>
+            cases e
+            case FdSocket sk =>
+              exact check_send_on_socket_complete_unmodeled _ _ _ _ _ _ _ i _ h
+            all_goals simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_sendmsg_sound_ok`.  Every gate is
 split once, on the term both sides spell, and each ledger leaf is the
@@ -3398,24 +3209,16 @@ theorem check_sendmsg_sound_ok (i : SyscallInput) (fd msgp flags : word) (eff : 
     simp only [hf, not_true_eq_false, ↓reduceIte] at h ⊢
     apply bind_ok0 _ _ i m i m _ _ _ (input_ok i m)
     apply bind_ok0 _ _ i m m m _ _ _ (get_model_ok i m)
-    by_cases hload : (!(sendmsg_load_free i.in_mem i.in_wmem (m_vmmaps m).vm_reserved msgp)) = true
-    · simp only [hload, ↓reduceIte, reduceCtorEq] at h
-    simp only [hload, Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize fd_lookup (m_fds m) fd = r at h ⊢
     cases r with
     | none =>
-      by_cases hquiet : (sendmsg_prehost_quiet i.in_mem msgp) = true
-      · simp only [hquiet, ↓reduceIte] at h ⊢
-        obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
-        exact pure_ok _ i _
-      · simp only [hquiet, Bool.false_eq_true, ↓reduceIte, reduceCtorEq] at h ⊢
+      obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+      exact pure_ok _ i _
     | some e =>
       cases e
-      case FdFileA _ _ => cases h
-      case FdFileRW _ _ => cases h
       case FdSocket sk =>
         simp only [] at h ⊢
-        generalize copy_bytes_map i.in_mem msgp MSGHDR_SIZE = rh at h ⊢
+        generalize read_bytes_map i.in_mem msgp (Z_to_bv 64 MSGHDR_SIZE) = rh at h ⊢
         cases rh with
         | none =>
           obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
@@ -3439,28 +3242,16 @@ theorem check_sendmsg_sound_ok (i : SyscallInput) (fd msgp flags : word) (eff : 
               by_cases hfa : Sys.Fs.ReadWrite.UIO_FASTIOV < bv_unsigned iovlen
               · simp only [hfa, ↓reduceIte, reduceCtorEq] at h
               · simp only [hfa, ↓reduceIte] at h ⊢
-                generalize import_iovecs i.in_mem iov iovlen = ri at h ⊢
+                generalize copy_iovecs_aux i.in_mem iov (word_to_nat iovlen) = ri at h ⊢
                 cases ri with
                 | ImpFault =>
                   simp only [] at h ⊢
-                  cases hh : iov_fault_at_head i.in_mem iov iovlen with
-                  | false =>
-                    simp only [hh, Bool.false_eq_true, not_false_eq_true, ↓reduceIte,
-                      reduceCtorEq] at h
-                  | true =>
-                    simp only [hh, not_true_eq_false, ↓reduceIte] at h ⊢
-                    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
-                    exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
+                  obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
+                  exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
                 | ImpInval =>
                   simp only [] at h ⊢
-                  cases hh : iov_inval_at_head i.in_mem iov iovlen with
-                  | false =>
-                    simp only [hh, Bool.false_eq_true, not_false_eq_true, ↓reduceIte,
-                      reduceCtorEq] at h
-                  | true =>
-                    simp only [hh, not_true_eq_false, ↓reduceIte] at h ⊢
-                    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
-                    exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
+                  obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
+                  exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
                 | ImpOk iovs0 =>
                   simp only [] at h ⊢
                   cases hc : w_is0 ctllen with
@@ -3471,17 +3262,11 @@ theorem check_sendmsg_sound_ok (i : SyscallInput) (fd msgp flags : word) (eff : 
                     simp only [hc, not_true_eq_false, ↓reduceIte] at h ⊢
                     by_cases ht : iovs_total (cap_iovecs iovs0) ≤ Sys.Uaccess.rw_bytes_max
                     · simp only [ht, not_true_eq_false, ↓reduceIte] at h ⊢
-                      by_cases hlock : (iovs_lockable i.in_mem i.in_wmem (m_vmmaps m).vm_reserved iovs0) = true
-                      · simp only [hlock, not_true_eq_false, ↓reduceIte] at h ⊢
-                        exact check_send_on_socket_sound_ok _ _ _ _ _ _ _ _ _ _ i h
-                      · simp only [hlock, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, reduceCtorEq] at h ⊢
+                      exact check_send_on_socket_sound_ok _ _ _ _ _ _ _ _ _ _ i h
                     · simp only [ht, not_false_eq_true, ↓reduceIte, reduceCtorEq] at h
       all_goals
-        by_cases hquiet : (sendmsg_prehost_quiet i.in_mem msgp) = true
-        · simp only [hquiet, ↓reduceIte] at h ⊢
-          obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
-          exact pure_ok _ i _
-        · simp only [hquiet, Bool.false_eq_true, ↓reduceIte, reduceCtorEq] at h ⊢
+        obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+        exact pure_ok _ i _
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_sendmsg_sound_unmodeled`. -/
 theorem check_sendmsg_sound_unmodeled (i : SyscallInput) (fd msgp flags : word)
@@ -3498,23 +3283,14 @@ theorem check_sendmsg_sound_unmodeled (i : SyscallInput) (fd msgp flags : word)
     simp only [hf, not_true_eq_false, ↓reduceIte] at h ⊢
     apply bind_unmodeled2 _ _ i m i m [] (input_ok i m)
     apply bind_unmodeled2 _ _ i m m m [] (get_model_ok i m)
-    by_cases hload : (!(sendmsg_load_free i.in_mem i.in_wmem (m_vmmaps m).vm_reserved msgp)) = true
-    · simp only [hload, ↓reduceIte, unmodeled_iff]
-    simp only [hload, Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize fd_lookup (m_fds m) fd = r at h ⊢
     cases r with
-    | none =>
-      by_cases hquiet : (sendmsg_prehost_quiet i.in_mem msgp) = true
-      · simp only [hquiet, ↓reduceIte] at h ⊢
-        exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-      · simp only [hquiet, Bool.false_eq_true, ↓reduceIte, unmodeled_iff] at h ⊢
+    | none => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
     | some e =>
       cases e
-      case FdFileA _ _ => exact unmodeled_intro i m
-      case FdFileRW _ _ => exact unmodeled_intro i m
       case FdSocket sk =>
         simp only [] at h ⊢
-        generalize copy_bytes_map i.in_mem msgp MSGHDR_SIZE = rh at h ⊢
+        generalize read_bytes_map i.in_mem msgp (Z_to_bv 64 MSGHDR_SIZE) = rh at h ⊢
         cases rh with
         | none => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
         | some hdr =>
@@ -3537,26 +3313,14 @@ theorem check_sendmsg_sound_unmodeled (i : SyscallInput) (fd msgp flags : word)
               · simp only [hfa, ↓reduceIte]
                 exact unmodeled_intro i m
               · simp only [hfa, ↓reduceIte] at h ⊢
-                generalize import_iovecs i.in_mem iov iovlen = ri at h ⊢
+                generalize copy_iovecs_aux i.in_mem iov (word_to_nat iovlen) = ri at h ⊢
                 cases ri with
                 | ImpFault =>
-                  simp only [] at h ⊢
-                  cases hh : iov_fault_at_head i.in_mem iov iovlen with
-                  | false =>
-                    simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
-                    exact unmodeled_intro i m
-                  | true =>
-                    simp only [hh, not_true_eq_false, ↓reduceIte] at h
-                    exact absurd h (check_ret_only_copyins_no_unmodeled _ _ _ _ _)
+                  simp only [] at h
+                  exact absurd h (check_ret_only_copyins_no_unmodeled _ _ _ _ _)
                 | ImpInval =>
-                  simp only [] at h ⊢
-                  cases hh : iov_inval_at_head i.in_mem iov iovlen with
-                  | false =>
-                    simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
-                    exact unmodeled_intro i m
-                  | true =>
-                    simp only [hh, not_true_eq_false, ↓reduceIte] at h
-                    exact absurd h (check_ret_only_copyins_no_unmodeled _ _ _ _ _)
+                  simp only [] at h
+                  exact absurd h (check_ret_only_copyins_no_unmodeled _ _ _ _ _)
                 | ImpOk iovs0 =>
                   simp only [] at h ⊢
                   cases hc : w_is0 ctllen with
@@ -3567,22 +3331,15 @@ theorem check_sendmsg_sound_unmodeled (i : SyscallInput) (fd msgp flags : word)
                     simp only [hc, not_true_eq_false, ↓reduceIte] at h ⊢
                     by_cases ht : iovs_total (cap_iovecs iovs0) ≤ Sys.Uaccess.rw_bytes_max
                     · simp only [ht, not_true_eq_false, ↓reduceIte] at h ⊢
-                      by_cases hlock : (iovs_lockable i.in_mem i.in_wmem (m_vmmaps m).vm_reserved iovs0) = true
-                      · simp only [hlock, not_true_eq_false, ↓reduceIte] at h ⊢
-                        exact check_send_on_socket_sound_unmodeled _ _ _ _ _ _ _ _ i h
-                      · simp only [hlock, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, unmodeled_iff] at h ⊢
+                      exact check_send_on_socket_sound_unmodeled _ _ _ _ _ _ _ _ i h
                     · simp only [ht, not_false_eq_true, ↓reduceIte]
                       exact unmodeled_intro i m
-      all_goals
-        by_cases hquiet : (sendmsg_prehost_quiet i.in_mem msgp) = true
-        · simp only [hquiet, ↓reduceIte] at h ⊢
-          exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-        · simp only [hquiet, Bool.false_eq_true, ↓reduceIte, unmodeled_iff] at h ⊢
+      all_goals exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_sendmsg_complete_ok`.  Each
 ledger leaf inverts `record_copyins` and hands the checker the ledger
 the spec built — the header alone at -EMSGSIZE, the header and
-`import_iovecs_accesses` after the import — in front of `err_ret`'s
+`copy_iovecs_accesses` after the import — in front of `err_ret`'s
 empty one. -/
 theorem check_sendmsg_complete_ok (i : SyscallInput) (fd msgp flags : word)
     (eff : SyscallEffect) (m m' : Model) (evs : List event)
@@ -3597,25 +3354,17 @@ theorem check_sendmsg_complete_ok (i : SyscallInput) (fd msgp flags : word)
   | true =>
     simp only [hf, not_true_eq_false, ↓reduceIte] at h ⊢
     have h := bind_input_model_inv _ i m _ h
-    by_cases hload : (!(sendmsg_load_free i.in_mem i.in_wmem (m_vmmaps m).vm_reserved msgp)) = true
-    · simp only [hload, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
-    simp only [hload, Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize fd_lookup (m_fds m) fd = r at h ⊢
     cases r with
     | none =>
-      by_cases hquiet : (sendmsg_prehost_quiet i.in_mem msgp) = true
-      · simp only [hquiet, ↓reduceIte] at h ⊢
-        simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at h
-        obtain ⟨rfl, rfl, rfl⟩ := h
-        exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
-      · simp only [hquiet, Bool.false_eq_true, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h ⊢
+      simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at h
+      obtain ⟨rfl, rfl, rfl⟩ := h
+      exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
     | some e =>
       cases e
-      case FdFileA _ _ => simp only [unmodeled_iff, reduceCtorEq] at h
-      case FdFileRW _ _ => simp only [unmodeled_iff, reduceCtorEq] at h
       case FdSocket sk =>
         simp only [] at h ⊢
-        generalize copy_bytes_map i.in_mem msgp MSGHDR_SIZE = rh at h ⊢
+        generalize read_bytes_map i.in_mem msgp (Z_to_bv 64 MSGHDR_SIZE) = rh at h ⊢
         cases rh with
         | none =>
           simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at h
@@ -3644,34 +3393,22 @@ theorem check_sendmsg_complete_ok (i : SyscallInput) (fd msgp flags : word)
               by_cases hfa : Sys.Fs.ReadWrite.UIO_FASTIOV < bv_unsigned iovlen
               · simp only [hfa, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
               · simp only [hfa, ↓reduceIte] at h ⊢
-                generalize import_iovecs i.in_mem iov iovlen = ri at h ⊢
+                generalize copy_iovecs_aux i.in_mem iov (word_to_nat iovlen) = ri at h ⊢
                 cases ri with
                 | ImpFault =>
                   simp only [] at h ⊢
-                  cases hh : iov_fault_at_head i.in_mem iov iovlen with
-                  | false =>
-                    simp only [hh, Bool.false_eq_true, not_false_eq_true, ↓reduceIte,
-                      unmodeled_iff, reduceCtorEq] at h
-                  | true =>
-                    simp only [hh, not_true_eq_false, ↓reduceIte] at h ⊢
-                    obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
-                    simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at hcore
-                    obtain ⟨rfl, rfl, rfl⟩ := hcore
-                    simp only [mkEffect, List.append_nil]
-                    exact check_ret_only_copyins_refl _ _ _ _
+                  obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
+                  simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at hcore
+                  obtain ⟨rfl, rfl, rfl⟩ := hcore
+                  simp only [mkEffect, List.append_nil]
+                  exact check_ret_only_copyins_refl _ _ _ _
                 | ImpInval =>
                   simp only [] at h ⊢
-                  cases hh : iov_inval_at_head i.in_mem iov iovlen with
-                  | false =>
-                    simp only [hh, Bool.false_eq_true, not_false_eq_true, ↓reduceIte,
-                      unmodeled_iff, reduceCtorEq] at h
-                  | true =>
-                    simp only [hh, not_true_eq_false, ↓reduceIte] at h ⊢
-                    obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
-                    simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at hcore
-                    obtain ⟨rfl, rfl, rfl⟩ := hcore
-                    simp only [mkEffect, List.append_nil]
-                    exact check_ret_only_copyins_refl _ _ _ _
+                  obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
+                  simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at hcore
+                  obtain ⟨rfl, rfl, rfl⟩ := hcore
+                  simp only [mkEffect, List.append_nil]
+                  exact check_ret_only_copyins_refl _ _ _ _
                 | ImpOk iovs0 =>
                   simp only [] at h ⊢
                   cases hc : w_is0 ctllen with
@@ -3682,19 +3419,13 @@ theorem check_sendmsg_complete_ok (i : SyscallInput) (fd msgp flags : word)
                     simp only [hc, not_true_eq_false, ↓reduceIte] at h ⊢
                     by_cases ht : iovs_total (cap_iovecs iovs0) ≤ Sys.Uaccess.rw_bytes_max
                     · simp only [ht, not_true_eq_false, ↓reduceIte] at h ⊢
-                      by_cases hlock : (iovs_lockable i.in_mem i.in_wmem (m_vmmaps m).vm_reserved iovs0) = true
-                      · simp only [hlock, not_true_eq_false, ↓reduceIte] at h ⊢
-                        exact check_send_on_socket_complete_ok _ _ _ _ _ _ _ _ _ _ i h
-                      · simp only [hlock, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h ⊢
+                      exact check_send_on_socket_complete_ok _ _ _ _ _ _ _ _ _ _ i h
                     · simp only [ht, not_false_eq_true, ↓reduceIte, unmodeled_iff,
                         reduceCtorEq] at h
       all_goals
-        by_cases hquiet : (sendmsg_prehost_quiet i.in_mem msgp) = true
-        · simp only [hquiet, ↓reduceIte] at h ⊢
-          simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at h
-          obtain ⟨rfl, rfl, rfl⟩ := h
-          exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
-        · simp only [hquiet, Bool.false_eq_true, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h ⊢
+        simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at h
+        obtain ⟨rfl, rfl, rfl⟩ := h
+        exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
 
 /-- Rocq: `Checks.Sys.Net.Socket.check_sendmsg_complete_unmodeled`. -/
 theorem check_sendmsg_complete_unmodeled (i : SyscallInput) (fd msgp flags : word)
@@ -3707,23 +3438,14 @@ theorem check_sendmsg_complete_unmodeled (i : SyscallInput) (fd msgp flags : wor
   | true =>
     simp only [hf, not_true_eq_false, ↓reduceIte] at h ⊢
     have h := bind_input_model_inv _ i m _ h
-    by_cases hload : (!(sendmsg_load_free i.in_mem i.in_wmem (m_vmmaps m).vm_reserved msgp)) = true
-    · simp only [hload, ↓reduceIte]
-    simp only [hload, Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize fd_lookup (m_fds m) fd = r at h ⊢
     cases r with
-    | none =>
-      by_cases hquiet : (sendmsg_prehost_quiet i.in_mem msgp) = true
-      · simp only [hquiet, ↓reduceIte] at h ⊢
-        simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
-      · simp only [hquiet, Bool.false_eq_true, ↓reduceIte, unmodeled_iff] at h ⊢
+    | none => simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
     | some e =>
       cases e
-      case FdFileA _ _ => rfl
-      case FdFileRW _ _ => rfl
       case FdSocket sk =>
         simp only [] at h ⊢
-        generalize copy_bytes_map i.in_mem msgp MSGHDR_SIZE = rh at h ⊢
+        generalize read_bytes_map i.in_mem msgp (Z_to_bv 64 MSGHDR_SIZE) = rh at h ⊢
         cases rh with
         | none => simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
         | some hdr =>
@@ -3744,24 +3466,16 @@ theorem check_sendmsg_complete_unmodeled (i : SyscallInput) (fd msgp flags : wor
               by_cases hfa : Sys.Fs.ReadWrite.UIO_FASTIOV < bv_unsigned iovlen
               · simp only [hfa, ↓reduceIte]
               · simp only [hfa, ↓reduceIte] at h ⊢
-                generalize import_iovecs i.in_mem iov iovlen = ri at h ⊢
+                generalize copy_iovecs_aux i.in_mem iov (word_to_nat iovlen) = ri at h ⊢
                 cases ri with
                 | ImpFault =>
-                  simp only [] at h ⊢
-                  cases hh : iov_fault_at_head i.in_mem iov iovlen with
-                  | false => simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
-                  | true =>
-                    simp only [hh, not_true_eq_false, ↓reduceIte] at h
-                    have h := record_copyins_unmodeled_inv _ _ i m h
-                    simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
+                  simp only [] at h
+                  have h := record_copyins_unmodeled_inv _ _ i m h
+                  simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
                 | ImpInval =>
-                  simp only [] at h ⊢
-                  cases hh : iov_inval_at_head i.in_mem iov iovlen with
-                  | false => simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
-                  | true =>
-                    simp only [hh, not_true_eq_false, ↓reduceIte] at h
-                    have h := record_copyins_unmodeled_inv _ _ i m h
-                    simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
+                  simp only [] at h
+                  have h := record_copyins_unmodeled_inv _ _ i m h
+                  simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
                 | ImpOk iovs0 =>
                   simp only [] at h ⊢
                   cases hc : w_is0 ctllen with
@@ -3770,16 +3484,9 @@ theorem check_sendmsg_complete_unmodeled (i : SyscallInput) (fd msgp flags : wor
                     simp only [hc, not_true_eq_false, ↓reduceIte] at h ⊢
                     by_cases ht : iovs_total (cap_iovecs iovs0) ≤ Sys.Uaccess.rw_bytes_max
                     · simp only [ht, not_true_eq_false, ↓reduceIte] at h ⊢
-                      by_cases hlock : (iovs_lockable i.in_mem i.in_wmem (m_vmmaps m).vm_reserved iovs0) = true
-                      · simp only [hlock, not_true_eq_false, ↓reduceIte] at h ⊢
-                        exact check_send_on_socket_complete_unmodeled _ _ _ _ _ _ _ i _ h
-                      · simp only [hlock, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, unmodeled_iff] at h ⊢
+                      exact check_send_on_socket_complete_unmodeled _ _ _ _ _ _ _ i _ h
                     · simp only [ht, not_false_eq_true, ↓reduceIte]
-      all_goals
-        by_cases hquiet : (sendmsg_prehost_quiet i.in_mem msgp) = true
-        · simp only [hquiet, ↓reduceIte] at h ⊢
-          simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
-        · simp only [hquiet, Bool.false_eq_true, ↓reduceIte, unmodeled_iff] at h ⊢
+      all_goals simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
 
 /-- `recv_fd_answer` as an acceptor: the errno `sockfd_lookup_errno`
 gives, or the decline a socket takes at these two entry points, as a
@@ -4365,7 +4072,7 @@ shapes fail with -EMFILE, the head of `socketpair_reserve_errnos`, which
 is admitted by `socketpair_written` and `socketpair_faulted` alike. -/
 def socketpair_witness (family type protocol sv : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
-  if ¬ (socketpair_flags_ok type) then Unmodeled
+  if ¬ (socketpair_flags_ok type) then ret_outcome (errno_ret EINVAL) m
   else if ¬ (socketpair_modeled_b family type protocol) then Unmodeled
   else
   match socketpair_fds (m_fds m) with
@@ -4383,7 +4090,7 @@ theorem socketpair_witness_ok (family type protocol sv : word) (i : SyscallInput
   cases socketpair_flags_ok type with
   | false =>
     simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
-    exact unmodeled_intro i m
+    exact pure_ok _ i _
   | true =>
     simp only [not_true_eq_false, ↓reduceIte]
     cases socketpair_modeled_b family type protocol with
@@ -4426,22 +4133,19 @@ def socket_witness (domain type protocol : word) (m : Model) : outcome SyscallEf
   let flagbits := bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK))
   if ¬ (bv_unsigned (bv_and flagbits
           (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0)
-  then Unmodeled
+  then ret_outcome (errno_ret EINVAL) m
   else if ¬ (bv_unsigned (bv_and flagbits (Z_to_bv 64 SOCK_NONBLOCK)) = 0) then Unmodeled
   else
     let ty : Int := bv_unsigned (bv_and tu (Z_to_bv 64 SOCK_TYPE_MASK))
     let fam : Int := sint32 domain
     let pro : Int := sint32 protocol
     if fam < 0 ∨ NPROTO ≤ fam then ret_outcome (errno_ret EAFNOSUPPORT) m
-    else if SOCK_MAX ≤ ty then
-      if AF_MAX_V4_17 ≤ fam ∨ (fam = AF_NETLINK ∧ ¬ (pro = NETLINK_AUDIT ∨ pro = NETLINK_KOBJECT_UEVENT))
-      then Unmodeled else ret_outcome (errno_ret EINVAL) m
+    else if SOCK_MAX ≤ ty then ret_outcome (errno_ret EINVAL) m
     else if ¬ (fam = AF_INET) then Unmodeled
     else if ty = SOCK_PACKET then Unmodeled
     else if pro < 0 ∨ IPPROTO_MAX ≤ pro then ret_outcome (errno_ret EINVAL) m
-    else if IPPROTO_MAX_PRE_V5_6 ≤ pro then Unmodeled   -- 256-262: -EINVAL below v5.6
     else if ty = SOCK_STREAM then
-      if pro = IPPROTO_SCTP then Unmodeled
+      if pro = IPPROTO_SCTP ∨ pro = IPPROTO_MPTCP then Unmodeled
       else if ¬ (pro = IPPROTO_IP ∨ pro = IPPROTO_TCP)
       then ret_outcome (errno_ret EPROTONOSUPPORT) m
       else ret_outcome (errno_ret witness_errno) m
@@ -4462,7 +4166,7 @@ theorem socket_witness_ok (domain type protocol : word) (i : SyscallInput) (m : 
       (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0
   case neg =>
     simp only [h1, not_false_eq_true, ↓reduceIte]
-    exact unmodeled_intro i m
+    exact pure_ok _ i _
   simp only [h1, not_true_eq_false, ↓reduceIte]
   by_cases h2 : bv_unsigned (bv_and (bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK)))
       (Z_to_bv 64 SOCK_NONBLOCK)) = 0
@@ -4479,10 +4183,6 @@ theorem socket_witness_ok (domain type protocol : word) (i : SyscallInput) (m : 
   by_cases h4 : SOCK_MAX ≤ ty
   case pos =>
     simp only [h4, ↓reduceIte]
-    by_cases h4n : AF_MAX_V4_17 ≤ fam ∨ (fam = AF_NETLINK ∧ ¬ (pro = NETLINK_AUDIT ∨ pro = NETLINK_KOBJECT_UEVENT))
-    · simp only [h4n, ↓reduceIte]
-      exact unmodeled_intro i m
-    simp only [h4n, ↓reduceIte]
     exact pure_ok _ i _
   simp only [h4, ↓reduceIte]
   by_cases h5 : fam = AF_INET
@@ -4498,17 +4198,12 @@ theorem socket_witness_ok (domain type protocol : word) (i : SyscallInput) (m : 
   by_cases h7 : pro < 0 ∨ IPPROTO_MAX ≤ pro
   case pos =>
     simp only [h7, ↓reduceIte]
-    exact alt_l _ _ i m _ (pure_ok _ i m)
+    exact pure_ok _ i _
   simp only [h7, ↓reduceIte]
-  by_cases h7r : IPPROTO_MAX_PRE_V5_6 ≤ pro
-  case pos =>
-    simp only [h7r, ↓reduceIte]
-    exact unmodeled_intro i m
-  simp only [h7r, ↓reduceIte]
   by_cases h8 : ty = SOCK_STREAM
   case pos =>
     simp only [h8, ↓reduceIte]
-    by_cases h9 : pro = IPPROTO_SCTP
+    by_cases h9 : pro = IPPROTO_SCTP ∨ pro = IPPROTO_MPTCP
     case pos =>
       simp only [h9, ↓reduceIte]
       exact unmodeled_intro i m
@@ -4516,7 +4211,7 @@ theorem socket_witness_ok (domain type protocol : word) (i : SyscallInput) (m : 
     by_cases h10 : pro = IPPROTO_IP ∨ pro = IPPROTO_TCP
     case neg =>
       simp only [h10, not_false_eq_true, ↓reduceIte]
-      exact alt_l _ _ i m _ (pure_ok _ i m)
+      exact pure_ok _ i _
     simp only [h10, not_true_eq_false, ↓reduceIte]
     apply alt_l
     refine bind_step _ _ i m witness_errno m _ (errno_head_witness _ _ i m) ?_
@@ -4532,7 +4227,7 @@ theorem socket_witness_ok (domain type protocol : word) (i : SyscallInput) (m : 
     simp only [h12, ↓reduceIte]
     exact unmodeled_intro i m
   simp only [h12, ↓reduceIte]
-  exact alt_l _ _ i m _ (pure_ok _ i m)
+  exact pure_ok _ i _
 
 /-- Rocq: `Checks.Witness.Net.Socket.accept4_witness`.  The checker's shape
 with one outcome per leaf; the listening arm takes the ERRNO side of the
@@ -4542,12 +4237,7 @@ accepted socket's state, and why the exhausted counter's empty success
 branch does not have to be looked at. -/
 def accept4_witness (fd addrp flags : word) (m : Model) : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
-  | none =>
-      if ¬ (bv_unsigned (bv_and (abi_low32 flags)
-          (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0)
-      then Unmodeled
-      else if ¬ (w_is0 addrp) then Unmodeled
-      else ret_outcome (errno_ret EBADF) m
+  | none => ret_outcome (errno_ret EBADF) m
   | some e =>
       let fl := abi_low32 flags
       if ¬ (bv_unsigned (bv_and fl
@@ -4562,12 +4252,11 @@ def accept4_witness (fd addrp flags : word) (m : Model) : outcome SyscallEffect 
            (match sk with
             | .SkListening => ret_outcome (errno_ret witness_errno) m
             | _ => ret_outcome (errno_ret EINVAL) m)
-       | _ => if ¬ (w_is0 addrp) then Unmodeled
-              else if NR_OPEN_DEFAULT ≤ bv_unsigned (alloc_fd (m_fds m)) then Unmodeled
-              else ret_outcome (errno_ret ENOTSOCK) m)
+       | _ => ret_outcome (errno_ret ENOTSOCK) m)
 
 /-- Rocq: `Checks.Witness.Net.Socket.accept4_witness_ok`.
-The non-socket witness chooses ENOTSOCK below the fd-table floor. -/
+The non-socket witness is -ENOTSOCK, the verdict the spec reaches
+whatever the address argument is. -/
 theorem accept4_witness_ok (fd addrp addrlenp flags : word) (i : SyscallInput) (m : Model) :
     accept4_spec fd addrp addrlenp flags i m (accept4_witness fd addrp flags m) := by
   unfold accept4_spec accept4_witness
@@ -4576,16 +4265,7 @@ theorem accept4_witness_ok (fd addrp addrlenp flags : word) (i : SyscallInput) (
   simp only []
   generalize fd_lookup (m_fds m) fd = r
   cases r with
-  | none =>
-    by_cases hf : bv_unsigned (bv_and fl
-        (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0
-    · simp only [hf, not_true_eq_false, ↓reduceIte]
-      cases ha : w_is0 addrp <;> simp only [ Bool.false_eq_true,
-        not_false_eq_true, not_true_eq_false, ↓reduceIte]
-      · exact unmodeled_intro i m
-      · exact pure_ok _ i _
-    · simp only [hf, not_false_eq_true, ↓reduceIte]
-      exact unmodeled_intro i m
+  | none => exact pure_ok _ i _
   | some e =>
     simp only []
     by_cases h1 : bv_unsigned (bv_and fl
@@ -4614,17 +4294,8 @@ theorem accept4_witness_ok (fd addrp addrlenp flags : word) (i : SyscallInput) (
           apply alt_l
           refine bind_step _ _ i m witness_errno m _ (errno_head_witness _ _ i m) ?_
           exact pure_ok _ i m
-        all_goals exact alt_l _ _ i m _ (pure_ok _ i m)
-    all_goals
-      simp only []
-      cases ha : w_is0 addrp <;> simp only [ Bool.false_eq_true,
-        not_false_eq_true, not_true_eq_false, ↓reduceIte]
-      · exact unmodeled_intro i m
-      · by_cases hc : NR_OPEN_DEFAULT ≤ bv_unsigned (alloc_fd (m_fds m))
-        · simp only [hc, ↓reduceIte]
-          exact unmodeled_intro i m
-        · simp only [hc, ↓reduceIte]
-          exact alt_l _ _ i m _ (pure_ok _ i m)
+        all_goals exact pure_ok _ i m
+    all_goals exact pure_ok _ i m
 
 set_option linter.unusedVariables false in
 /-- Rocq: `Checks.Witness.Net.Socket.send_on_socket_witness`.  `SendDead`'s
@@ -4656,18 +4327,14 @@ theorem send_on_socket_witness_ok (pre : List (word × Nat)) (acc : Nat → List
 
 /-- Rocq: `Checks.Witness.Net.Socket.sendto_witness`.  The checker's
 nesting with one outcome per leaf, the fd inside the range verdict. -/
-def sendto_witness (fd buf count flags addrp addrlen : word) (i : SyscallInput) (m : Model)
+def sendto_witness (fd buf count flags addrp : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   if ¬ (send_flags_modeled flags) then Unmodeled
   else if ¬ (w_is0 addrp) then Unmodeled
-  else if addrlen.getLsbD 31 then Unmodeled
   else if ¬ (Sys.Uaccess.modeled_rw_count count) then Unmodeled
-  else if w_is0 count && !access_okb buf 0 then Unmodeled
   else
     access_ok_zero_witness buf count m
-      (if !(w_is0 count) && !(seg_lockable i.in_mem buf count &&
-                  load_write_free (m_vmmaps m).vm_reserved i.in_wmem buf count) then Unmodeled
-     else match fd_lookup (m_fds m) fd with
+      (match fd_lookup (m_fds m) fd with
        | none => ret_outcome (errno_ret EBADF) m
        | some (.FdSocket sk) =>
            send_on_socket_witness [] (fun n => [(buf, n)]) fd sk count
@@ -4678,7 +4345,7 @@ def sendto_witness (fd buf count flags addrp addrlen : word) (i : SyscallInput) 
 theorem sendto_witness_ok (fd buf count flags addrp addrlen : word) (i : SyscallInput)
     (m : Model) :
     sendto_spec fd buf count flags addrp addrlen i m
-      (sendto_witness fd buf count flags addrp addrlen i m) := by
+      (sendto_witness fd buf count flags addrp i m) := by
   unfold sendto_spec sendto_witness
   cases send_flags_modeled flags with
   | false =>
@@ -4692,59 +4359,45 @@ theorem sendto_witness_ok (fd buf count flags addrp addrlen : word) (i : Syscall
       exact unmodeled_intro i m
     | true =>
       simp only [not_true_eq_false, ↓reduceIte]
-      by_cases hlen : (addrlen.getLsbD 31) = true
-      · simp only [hlen, ↓reduceIte, unmodeled_iff]
-      · simp only [hlen, Bool.false_eq_true, ↓reduceIte]
-        cases Sys.Uaccess.modeled_rw_count count with
+      cases Sys.Uaccess.modeled_rw_count count with
+      | false =>
+        simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
+        exact unmodeled_intro i m
+      | true =>
+        simp only [not_true_eq_false, ↓reduceIte]
+        apply bind_step _ _ i m i m _ (input_ok i m)
+        apply bind_step _ _ i m m m _ (get_model_ok i m)
+        unfold access_ok_zero access_ok_zero_witness
+        cases access_okb buf (bv_unsigned count) with
         | false =>
-          simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
-          exact unmodeled_intro i m
+          simp only [Bool.false_eq_true, ↓reduceIte]
+          exact pure_ok _ i _
         | true =>
-          simp only [not_true_eq_false, ↓reduceIte]
-          by_cases hzero : (w_is0 count && !access_okb buf 0) = true
-          · simp only [hzero, ↓reduceIte, unmodeled_iff]
-          · simp only [hzero, Bool.false_eq_true, ↓reduceIte]
-            apply bind_step _ _ i m i m _ (input_ok i m)
-            apply bind_step _ _ i m m m _ (get_model_ok i m)
-            unfold access_ok_zero access_ok_zero_witness
-            cases access_okb buf (bv_unsigned count) with
-            | false =>
-              simp only [Bool.false_eq_true, ↓reduceIte]
-              exact pure_ok _ i _
-            | true =>
-              simp only [↓reduceIte]
-              by_cases hlock : (!(w_is0 count) && !(seg_lockable i.in_mem buf count &&
-                  load_write_free (m_vmmaps m).vm_reserved i.in_wmem buf count)) = true
-              · simp only [hlock, ↓reduceIte, unmodeled_iff]
-              · simp only [hlock, Bool.false_eq_true, ↓reduceIte]
-                generalize fd_lookup (m_fds m) fd = r
-                cases r with
-                | none => exact pure_ok _ i _
-                | some e =>
-                  cases e
-                  case FdSocket sk => exact send_on_socket_witness_ok _ _ _ _ _ _ i m
-                  all_goals exact pure_ok _ i _
+          simp only [↓reduceIte]
+          generalize fd_lookup (m_fds m) fd = r
+          cases r with
+          | none => exact pure_ok _ i _
+          | some e =>
+            cases e
+            case FdSocket sk => exact send_on_socket_witness_ok _ _ _ _ _ _ i m
+            all_goals exact pure_ok _ i _
 
 /-- Rocq: `Checks.Witness.Net.Socket.sendmsg_witness`.  The checker's
 nesting with one outcome per leaf, the fd before the header. -/
 def sendmsg_witness (fd msgp flags : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   if ¬ (send_flags_modeled flags) then Unmodeled
-  else if !(sendmsg_load_free i.in_mem i.in_wmem (m_vmmaps m).vm_reserved msgp) then Unmodeled
   else
   match fd_lookup (m_fds m) fd with
-  | none => if sendmsg_prehost_quiet i.in_mem msgp then ret_outcome (errno_ret EBADF) m else Unmodeled
-  | some (.FdChannel _) => if sendmsg_prehost_quiet i.in_mem msgp then ret_outcome (errno_ret ENOTSOCK) m else Unmodeled
-  | some (.FdFile _ _) => if sendmsg_prehost_quiet i.in_mem msgp then ret_outcome (errno_ret ENOTSOCK) m else Unmodeled
-  | some (.FdFileW _ _) => if sendmsg_prehost_quiet i.in_mem msgp then ret_outcome (errno_ret ENOTSOCK) m else Unmodeled
-  | some (.FdFileA _ _) => Unmodeled
-  | some (.FdFileRW _ _) => Unmodeled
-  | some .FdDir => if sendmsg_prehost_quiet i.in_mem msgp then ret_outcome (errno_ret ENOTSOCK) m else Unmodeled
-  | some (.FdPipe _ _) => if sendmsg_prehost_quiet i.in_mem msgp then ret_outcome (errno_ret ENOTSOCK) m else Unmodeled
-  | some (.FdDevNull _ _) => if sendmsg_prehost_quiet i.in_mem msgp then ret_outcome (errno_ret ENOTSOCK) m else Unmodeled
-  | some .FdUrandom => if sendmsg_prehost_quiet i.in_mem msgp then ret_outcome (errno_ret ENOTSOCK) m else Unmodeled
+  | none => ret_outcome (errno_ret EBADF) m
+  | some (.FdChannel _) | some (.FdFile _ _)
+  | some (.FdFileW _ _) | some (.FdFileA _ _) | some (.FdFileRW _ _)
+  | some .FdDir
+  | some (.FdPipe _ _)
+  | some (.FdDevNull _ _)
+  | some .FdUrandom => ret_outcome (errno_ret ENOTSOCK) m
   | some (.FdSocket sk) =>
-      match copy_bytes_map i.in_mem msgp MSGHDR_SIZE with
+      match read_bytes_map i.in_mem msgp (Z_to_bv 64 MSGHDR_SIZE) with
       | none => ret_outcome (errno_ret EFAULT) m
       | some hdr =>
           let name := le_bytes_to_word (hdr.take 8)
@@ -4756,27 +4409,23 @@ def sendmsg_witness (fd msgp flags : word) (i : SyscallInput) (m : Model)
           then outcome_copyins [(msgp, MSGHDR_SIZE.toNat)] (ret_outcome (errno_ret EMSGSIZE) m)
           else if Sys.Fs.ReadWrite.UIO_FASTIOV < bv_unsigned iovlen then Unmodeled
           else
-            match import_iovecs i.in_mem iov iovlen with
+            match copy_iovecs_aux i.in_mem iov (word_to_nat iovlen) with
             | .ImpFault =>
-                if ¬ (iov_fault_at_head i.in_mem iov iovlen) then Unmodeled
-                else
                 outcome_copyins ([(msgp, MSGHDR_SIZE.toNat)]
-                                 ++ import_iovecs_accesses i.in_mem iov iovlen)
+                                 ++ copy_iovecs_accesses i.in_mem iov (word_to_nat iovlen))
                   (ret_outcome (errno_ret EFAULT) m)
             | .ImpInval =>
-                if ¬ (iov_inval_at_head i.in_mem iov iovlen) then Unmodeled
-                else
                 outcome_copyins ([(msgp, MSGHDR_SIZE.toNat)]
-                                 ++ import_iovecs_accesses i.in_mem iov iovlen)
+                                 ++ copy_iovecs_accesses i.in_mem iov (word_to_nat iovlen))
                   (ret_outcome (errno_ret EINVAL) m)
             | .ImpOk iovs0 =>
                 if ¬ (w_is0 ctllen) then Unmodeled
                 else if ¬ (iovs_total (cap_iovecs iovs0) ≤ Sys.Uaccess.rw_bytes_max)
                 then Unmodeled
-                else if ¬ (iovs_lockable i.in_mem i.in_wmem (m_vmmaps m).vm_reserved iovs0) then Unmodeled
                 else
                   send_on_socket_witness
-                    ([(msgp, MSGHDR_SIZE.toNat)] ++ import_iovecs_accesses i.in_mem iov iovlen)
+                    ([(msgp, MSGHDR_SIZE.toNat)]
+                     ++ copy_iovecs_accesses i.in_mem iov (word_to_nat iovlen))
                     (fun n => iov_prefix_accesses (cap_iovecs iovs0) n) fd sk
                     (Z_to_bv 64 (iovs_total (cap_iovecs iovs0)))
                     (writev_gathered i.in_mem iovs0) m
@@ -4793,23 +4442,14 @@ theorem sendmsg_witness_ok (fd msgp flags : word) (i : SyscallInput) (m : Model)
     simp only [not_true_eq_false, ↓reduceIte]
     apply bind_step _ _ i m i m _ (input_ok i m)
     apply bind_step _ _ i m m m _ (get_model_ok i m)
-    by_cases hload : (!(sendmsg_load_free i.in_mem i.in_wmem (m_vmmaps m).vm_reserved msgp)) = true
-    · simp only [hload, ↓reduceIte, unmodeled_iff]
-    simp only [hload, Bool.false_eq_true, ↓reduceIte]
     generalize fd_lookup (m_fds m) fd = r
     cases r with
-    | none =>
-      by_cases hquiet : (sendmsg_prehost_quiet i.in_mem msgp) = true
-      · simp only [hquiet, ↓reduceIte]
-        exact pure_ok _ i _
-      · simp only [hquiet, Bool.false_eq_true, ↓reduceIte, unmodeled_iff]
+    | none => exact pure_ok _ i _
     | some e =>
       cases e
-      case FdFileA _ _ => exact unmodeled_intro i m
-      case FdFileRW _ _ => exact unmodeled_intro i m
       case FdSocket sk =>
         simp only []
-        generalize copy_bytes_map i.in_mem msgp MSGHDR_SIZE = rh
+        generalize read_bytes_map i.in_mem msgp (Z_to_bv 64 MSGHDR_SIZE) = rh
         cases rh with
         | none => exact pure_ok _ i _
         | some hdr =>
@@ -4832,26 +4472,14 @@ theorem sendmsg_witness_ok (fd msgp flags : word) (i : SyscallInput) (m : Model)
               · simp only [hfa, ↓reduceIte]
                 exact unmodeled_intro i m
               · simp only [hfa, ↓reduceIte]
-                generalize import_iovecs i.in_mem iov iovlen = ri
+                generalize copy_iovecs_aux i.in_mem iov (word_to_nat iovlen) = ri
                 cases ri with
                 | ImpFault =>
                   simp only []
-                  cases iov_fault_at_head i.in_mem iov iovlen with
-                  | false =>
-                    simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
-                    exact unmodeled_intro i m
-                  | true =>
-                    simp only [not_true_eq_false, ↓reduceIte]
-                    exact record_copyins_outcome _ _ i m _ (pure_ok _ i _)
+                  exact record_copyins_outcome _ _ i m _ (pure_ok _ i _)
                 | ImpInval =>
                   simp only []
-                  cases iov_inval_at_head i.in_mem iov iovlen with
-                  | false =>
-                    simp only [Bool.false_eq_true, not_false_eq_true, ↓reduceIte]
-                    exact unmodeled_intro i m
-                  | true =>
-                    simp only [not_true_eq_false, ↓reduceIte]
-                    exact record_copyins_outcome _ _ i m _ (pure_ok _ i _)
+                  exact record_copyins_outcome _ _ i m _ (pure_ok _ i _)
                 | ImpOk iovs0 =>
                   simp only []
                   cases w_is0 ctllen with
@@ -4862,18 +4490,10 @@ theorem sendmsg_witness_ok (fd msgp flags : word) (i : SyscallInput) (m : Model)
                     simp only [not_true_eq_false, ↓reduceIte]
                     by_cases ht : iovs_total (cap_iovecs iovs0) ≤ Sys.Uaccess.rw_bytes_max
                     · simp only [ht, not_true_eq_false, ↓reduceIte]
-                      by_cases hlock : (iovs_lockable i.in_mem i.in_wmem (m_vmmaps m).vm_reserved iovs0) = true
-                      · simp only [hlock, not_true_eq_false, ↓reduceIte]
-                        exact send_on_socket_witness_ok _ _ _ _ _ _ i m
-                      · simp only [hlock, Bool.false_eq_true, not_false_eq_true, ↓reduceIte, unmodeled_iff]
+                      exact send_on_socket_witness_ok _ _ _ _ _ _ i m
                     · simp only [ht, not_false_eq_true, ↓reduceIte]
                       exact unmodeled_intro i m
-      all_goals
-        by_cases hquiet : (sendmsg_prehost_quiet i.in_mem msgp) = true
-        · simp only [hquiet, ↓reduceIte]
-          exact pure_ok _ i _
-
-        · simp only [hquiet, Bool.false_eq_true, ↓reduceIte, unmodeled_iff]
+      all_goals exact pure_ok _ i _
 
 set_option linter.unusedVariables false in
 

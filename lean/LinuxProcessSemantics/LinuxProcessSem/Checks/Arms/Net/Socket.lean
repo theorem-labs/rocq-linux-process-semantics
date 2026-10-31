@@ -1,20 +1,21 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Dispatch.v theories/LinuxProcessSem/Checks/VmMapsDisjoint.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Arms.Fs.ReadWrite
 import LinuxProcessSemantics.LinuxProcessSem.Checks.InvariantRegistry
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Net.Socket
 import LinuxProcessSemantics.LinuxProcessSem.Sys.SyscallTable
 import LinuxProcessSemantics.LinuxProcessSem.SysSimp
 
-/-! rocq-baseline: f44244ad6b8041aa83053d9ca91e090037ed743b -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Checks.Arms.Net.Socket — socket checker registration
 
 Registrations of the checkers in `Checks/Sys/Net/Socket.lean`.
-`tools/gen_lean_checked.py`'s docstring defines the arm-file contract and
+`linux-process-semantics@ff0313ba4f:tools/gen_lean_checked.py`'s docstring defines the arm-file contract and
 the tables generated from it.
 
 Rocq's `arm_setsockopt` and `arm_getsockopt` in
-`theories/LinuxProcessSem/Checks/Sys/Dispatch.v` read the same at
-f44244ad6b80 and at 753eaff8c. The checker docstrings explain their gates;
+`theories/LinuxProcessSem/Checks/Sys/Dispatch.v` read as these do at
+f1006fe8178338a4. The checker docstrings explain their gates;
 the registration supplies the ABI argument reading.
 
 The frame lemmas live here because the checker belongs to its C ticket
@@ -477,7 +478,9 @@ theorem check_socket_ok_post (domain type protocol : word) (eff : SyscallEffect)
   by_cases h1 : bv_unsigned (bv_and (bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK)))
       (bv_not (bv_or (Z_to_bv 64 SOCK_CLOEXEC) (Z_to_bv 64 SOCK_NONBLOCK)))) = 0
   case neg =>
-    simp only [h1, not_false_eq_true, ↓reduceIte, reduceCtorEq] at h
+    simp only [h1, not_false_eq_true, ↓reduceIte] at h
+    obtain ⟨-, hm, -⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+    exact Or.inl hm
   simp only [h1, not_true_eq_false, ↓reduceIte] at h
   by_cases h2 : bv_unsigned (bv_and (bv_and tu (bv_not (Z_to_bv 64 SOCK_TYPE_MASK)))
       (Z_to_bv 64 SOCK_NONBLOCK)) = 0
@@ -492,9 +495,6 @@ theorem check_socket_ok_post (domain type protocol : word) (eff : SyscallEffect)
   simp only [h3, ↓reduceIte] at h
   by_cases h4 : SOCK_MAX ≤ ty
   · simp only [h4, ↓reduceIte] at h
-    by_cases h4n : AF_MAX_V4_17 ≤ fam ∨ (fam = AF_NETLINK ∧ ¬ (pro = NETLINK_AUDIT ∨ pro = NETLINK_KOBJECT_UEVENT))
-    · simp only [h4n, ↓reduceIte, reduceCtorEq] at h
-    simp only [h4n, ↓reduceIte] at h
     obtain ⟨-, hm, -⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
     exact Or.inl hm
   simp only [h4, ↓reduceIte] at h
@@ -507,21 +507,18 @@ theorem check_socket_ok_post (domain type protocol : word) (eff : SyscallEffect)
   simp only [h6, ↓reduceIte] at h
   by_cases h7 : pro < 0 ∨ IPPROTO_MAX ≤ pro
   · simp only [h7, ↓reduceIte] at h
-    obtain ⟨hm, -⟩ := check_errno_only_ok_inv _ _ _ _ _ h
+    obtain ⟨-, hm, -⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
     exact Or.inl hm
   simp only [h7, ↓reduceIte] at h
-  by_cases h7r : IPPROTO_MAX_PRE_V5_6 ≤ pro
-  · simp only [h7r, ↓reduceIte, reduceCtorEq] at h
-  simp only [h7r, ↓reduceIte] at h
   by_cases h8 : ty = SOCK_STREAM
   · simp only [h8, ↓reduceIte] at h
-    by_cases h9 : pro = IPPROTO_SCTP
+    by_cases h9 : pro = IPPROTO_SCTP ∨ pro = IPPROTO_MPTCP
     · simp only [h9, ↓reduceIte, reduceCtorEq] at h
     simp only [h9, ↓reduceIte] at h
     by_cases h10 : pro = IPPROTO_IP ∨ pro = IPPROTO_TCP
     case neg =>
       simp only [h10, not_false_eq_true, ↓reduceIte] at h
-      obtain ⟨hm, -⟩ := check_errno_only_ok_inv _ _ _ _ _ h
+      obtain ⟨-, hm, -⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
       exact Or.inl hm
     simp only [h10, not_true_eq_false, ↓reduceIte] at h
     obtain ⟨-, ret, -, hcase⟩ := Checks.Sys.Fs.Open.check_new_fd_result_ok_inv socket_errnos eff m _ m' evs h
@@ -535,7 +532,7 @@ theorem check_socket_ok_post (domain type protocol : word) (eff : SyscallEffect)
   by_cases h12 : ty = SOCK_SEQPACKET ∨ ty = SOCK_DCCP
   · simp only [h12, ↓reduceIte, reduceCtorEq] at h
   simp only [h12, ↓reduceIte] at h
-  obtain ⟨hm, -⟩ := check_errno_only_ok_inv _ _ _ _ _ h
+  obtain ⟨-, hm, -⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
   exact Or.inl hm
 
 /-- Rocq's `VmMapsDisjoint.check_socket_frame`, projected from
@@ -982,8 +979,8 @@ the fd is an `int`, read through `fd32`, and the other five words go
 whole to the spec. -/
 def arm_sendto : CheckedArm where
   ca_arm := SpecArm.mkSpecArm 206 (fun i => Sys.Net.Socket.sendto_spec (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) i)
-  ca_check := fun i eff m => check_sendto i (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) eff m
-  ca_witness := fun i m => sendto_witness (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) i m
+  ca_check := fun i eff m => check_sendto i (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) eff m
+  ca_witness := fun i m => sendto_witness (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) i m
   ca_sound_ok := fun i eff m m' evs h => check_sendto_sound_ok i (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) eff m m' evs h
   ca_sound_unmodeled := fun i eff m h => check_sendto_sound_unmodeled i (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) eff m h
   ca_complete_ok := fun i eff m m' evs h => check_sendto_complete_ok i (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) eff m m' evs h
@@ -991,9 +988,9 @@ def arm_sendto : CheckedArm where
   ca_receptive := fun i m => sendto_witness_ok (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) i m
 
 @[arm_unfold] theorem ca_check_arm_sendto (i : SyscallInput) (eff : SyscallEffect) (m : Model) :
-    arm_sendto.ca_check i eff m = check_sendto i (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) eff m := rfl
+    arm_sendto.ca_check i eff m = check_sendto i (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) eff m := rfl
 @[arm_unfold] theorem ca_witness_arm_sendto (i : SyscallInput) (m : Model) :
-    arm_sendto.ca_witness i m = sendto_witness (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) i m := rfl
+    arm_sendto.ca_witness i m = sendto_witness (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) i m := rfl
 @[arm_unfold] theorem sa_spec_arm_sendto (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
     arm_sendto.ca_arm.sa_spec i m o = Sys.Net.Socket.sendto_spec (Sys.Syscall.fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) i m o := rfl
 @[arm_unfold] theorem ca_no_arm_sendto : ca_no arm_sendto = 206 := rfl
