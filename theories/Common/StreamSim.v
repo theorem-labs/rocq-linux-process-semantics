@@ -1166,7 +1166,7 @@ Qed.
 (** The whole-run lemmas below are about a launch with a reader on the
     far end of fd 1 ([M_loop]'s [fd1chan]). *)
 Lemma stream_obs_iff : forall pc ph sp brk0 mb rnd lim inp,
-  to_rd (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_rd (init_machine_state segs pc ph sp mb rnd inp) ->
   in_channel_reader inp = true ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
              <-> stream_traces cnt (in_fs inp) (in_stdin inp) tr.
@@ -1174,7 +1174,7 @@ Proof.
   intros pc ph sp brk0 mb rnd lim inp Hrd Hrdr tr.
   set (fs0 := in_fs inp) in *; set (stdin0 := in_stdin inp) in *.
   unfold init_config.
-  set (ms0 := init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
+  set (ms0 := init_machine_state segs pc ph sp mb rnd inp) in *.
   pose proof (init_M_loop (segments_reserved segs) brk0 mb sp lim inp Hrdr) as HM0.
   set (model0 := init_model (segments_reserved segs) brk0 mb sp lim inp) in *.
   assert (Hst0 : m_stdin model0 = stdin0) by reflexivity.
@@ -1195,7 +1195,7 @@ Proof.
 Qed.
 
 Lemma stream_no_error : forall pc ph sp brk0 mb rnd lim inp,
-  to_rd (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_rd (init_machine_state segs pc ph sp mb rnd inp) ->
   in_channel_reader inp = true ->
   ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
 Proof.
@@ -1219,7 +1219,7 @@ Proof.
 Qed.
 
 Lemma stream_omni_corun : forall pc ph sp brk0 mb rnd lim inp,
-  to_rd (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_rd (init_machine_state segs pc ph sp mb rnd inp) ->
   in_channel_reader inp = true ->
   omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp never_errors.
 Proof.
@@ -1228,7 +1228,7 @@ Proof.
 Qed.
 
 Lemma stream_omni_cosafe : forall pc ph sp brk0 mb rnd lim inp,
-  to_rd (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_rd (init_machine_state segs pc ph sp mb rnd inp) ->
   in_channel_reader inp = true ->
   omni_cosafe (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
     (stream_traces cnt (in_fs inp) (in_stdin inp)).
@@ -1255,8 +1255,8 @@ Lemma stream_omni_strong_equiv :
   forall source_segs rLH rpc rph rsp rbrk rmb rrnd target_segs aLH apc aph asp abrk amb arnd inp,
   (forall ms, rLH ms -> to_rd source_segs rLH cnt ms) ->
   (forall ms, aLH ms -> to_rd target_segs aLH cnt ms) ->
-  to_rd source_segs rLH cnt (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
-  to_rd target_segs aLH cnt (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_rd source_segs rLH cnt (init_machine_state source_segs rpc rph rsp rmb rrnd inp) ->
+  to_rd target_segs aLH cnt (init_machine_state target_segs apc aph asp amb arnd inp) ->
   in_channel_reader inp = true ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
@@ -1281,8 +1281,8 @@ Lemma stream_strong_equiv :
   forall source_segs rLH rpc rph rsp rbrk rmb rrnd rlim target_segs aLH apc aph asp abrk amb arnd alim inp,
   (forall ms, rLH ms -> to_rd source_segs rLH cnt ms) ->
   (forall ms, aLH ms -> to_rd target_segs aLH cnt ms) ->
-  to_rd source_segs rLH cnt (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
-  to_rd target_segs aLH cnt (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_rd source_segs rLH cnt (init_machine_state source_segs rpc rph rsp rmb rrnd inp) ->
+  to_rd target_segs aLH cnt (init_machine_state target_segs apc aph asp amb arnd inp) ->
   in_channel_reader inp = true ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)

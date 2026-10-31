@@ -80,9 +80,15 @@
     - [N] and [positive], realized by zarith: a [positive] is at least
       1 and an [N] is not negative, and neither invariant survives
       extraction.  No root of either artifact takes one in argument
-      position — every width this surface names is fixed inside Rocq —
-      so there is nothing to check.  A root that took one would need a
-      boundary here.
+      position — every width this surface names is fixed inside Rocq
+      — and the one place the outside world declares a value the
+      MODEL holds as an [N], the kernel build's eight numeric
+      components ([State.KernelBuild] and the four [State.CacheLeaf]
+      it carries), takes it as a [Z] and converts it here.  Boundary:
+      [n_of_Z] in [Riscv.CheckedBv], beside [bv_of_Z] and for the
+      same reason, reached through [kernel_of_raw] in
+      [proc_input_of_raw].  A root that took an [N] ITSELF would
+      still need a boundary of its own.
     - [nat], left as unary Peano by [ExtrOcamlZBigInt], has no
       invariant.  A copy-in length is still refused when negative, in
       [copyin_of_Z], because [Z.to_nat] would silently answer 0.
@@ -99,7 +105,15 @@
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.Riscv Require Export CheckedBv.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Run.
+(* [Run] is here for ONE launch condition, [Run.valid_execfn], which
+   [execfn_of_Z] below decides the decidable part of and
+   [execfn_of_Z_valid] is proved against.  The dependency is in the
+   PROOF and not in the extracted term: [valid_execfn] is a [Prop],
+   which extraction erases, and no root of [Checks/Extraction.v]
+   reaches [Run], so syscall_model.ml does not grow by a line.  A root
+   that DID reach [Run] would make this import a real question
+   again. *)
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
 Import ListNotations.
 Open Scope bv_scope.
@@ -544,6 +558,48 @@ Record RawPeer := mkRawPeer {
   rpe_end   : RawNetEnd (* how its stream ends *)
 }.
 
+(** THE KERNEL BUILD THE LAUNCH RAN ON, as the outside world has it:
+    field for field [State.KernelBuild] and the [State.CacheView] it
+    carries, with each [N] a [Z] — the reader declares an integer, and
+    nothing holds it to the non-negative ones until [n_of_Z] does —
+    and each [bool] a [bool], which carries no well-formedness
+    condition for extraction to erase.
+
+    A RECORD PER MODEL RECORD, which is what [RawPeer] already is for
+    [State.Peer], rather than the flatter shape (eight numbers in one
+    row, or a list of them).  The reason is the reader, not the proof:
+    the eight components are same-typed neighbours, [cl_assoc] and
+    [cl_line] are read by one function ([State.cache_geometry_word])
+    and are the pair most easily transposed, and the four leaves are
+    distinguished by nothing but position.  Under the flat shape a
+    transposition is a well-typed seed that names a different machine
+    and no boundary can see it; under this one it is a type error. *)
+Record RawCacheLeaf := mkRawCacheLeaf {
+  rcl_acpi  : bool;   (* did ACPI PPTT report it, rather than devicetree? *)
+  rcl_size  : Z;      (* [cl_size]: the leaf's size in bytes *)
+  rcl_assoc : Z;      (* [cl_assoc]: the ways, before [cache_ways] reads it *)
+  rcl_line  : Z       (* [cl_line]: the coherency line, before [cache_line] *)
+}.
+
+(** The four leaves in [ARCH_DLINFO]'s order, as [State.CacheView]. *)
+Record RawCacheView := mkRawCacheView {
+  rcv_l1i : RawCacheLeaf;
+  rcv_l1d : RawCacheLeaf;
+  rcv_l2  : RawCacheLeaf;
+  rcv_l3  : RawCacheLeaf
+}.
+
+Record RawKernelBuild := mkRawKernelBuild {
+  rkb_thp      : bool;  (* CONFIG_TRANSPARENT_HUGEPAGE *)
+  rkb_vdso     : Z;     (* which vDSO image the build carries *)
+  rkb_aslr     : bool;  (* does the launch randomize? *)
+  rkb_guard    : Z;     (* the [stack_guard_gap] boot parameter, in pages *)
+  rkb_rnd_bits : Z;     (* vm.mmap_rnd_bits *)
+  rkb_rseq     : bool;  (* CONFIG_RSEQ *)
+  rkb_vlenb    : Z;     (* the vector unit's VLENB CSR *)
+  rkb_cache    : RawCacheView
+}.
+
 (** It is built with [State.mkProcInput_full], the record's own
     constructor, and NOT with the thirteen-place [State.mkProcInput]: a
     field added to the end of [ProcInput] must break this file, so that
@@ -566,6 +622,8 @@ Record RawProcInput := mkRawProcInput {
   rpi_va_size : VaSize;
   rpi_urandom : list Z;                   (* the declared prefix; zeros after *)
   rpi_tmp   : list (list Z * list Z);
+  rpi_kernel : RawKernelBuild;            (* the build the launch ran on *)
+  rpi_execfn : list Z;                    (* [bprm->filename], without its NUL *)
   rpi_channel_reader : bool;              (* whether the far end of fds 1 and 2
                                              has a reader ([State.in_channel_reader]);
                                              a bool, so every value is in type *)
@@ -624,23 +682,244 @@ Fixpoint fs_of_raw (l : list (list Z * list Z)) : option Fs.Fs :=
       end
   end.
 
+(** THE IMAGE DESCRIBES A FILE SYSTEM, the launch condition
+    [Fs.fs_image_real] that [revision/linux-only] added to
+    [Run.valid_input] (and to its nine siblings) over
+    [State.in_image_fs], and that the boundary did not enforce until
+    here: [fs_of_raw] accepts ANY image, so a seed the model's own
+    validity predicate forbids reached [init_model] through
+    [proc_input_of_raw] and was judged by theorems that do not cover
+    it.  The clause arrived on that branch; it is closed on this one.
+
+    WHAT THE CLAUSE SAYS: every key is canonical, and no key is also a
+    directory another key lives in.  Without it an image with the keys
+    "a" and "a/b" is admitted, which no Linux file system holds -- one
+    name in one directory is one inode -- and the model answers as if
+    "a" were a regular file and a directory at once: a read open hands
+    out the regular file while a write-create answers EISDIR.
+
+    ON THE IMAGE ONLY, NOT ON [rpi_tmp].  The two raw fields share
+    [fs_of_raw], so the test is applied in the CALLER and not inside
+    it.  [State.in_tmp] carries no reality condition anywhere in
+    [Run]: [Fs.fs_image_real]'s own comment and [Run.valid_input]'s
+    give the reason -- the declared /tmp entries are seeded into
+    [State.in_fs] under absolute keys by [State.fs_seed_tmp], the
+    declaration itself is unconstrained by ruling, and a clause over
+    it would delete from every theorem the inputs whose declared /tmp
+    names nest ("x" and "x/y") or are not names ("." or "").  So a
+    test inside [fs_of_raw] would refuse seeds the model admits.
+
+    AND ON THE CONVERTED IMAGE.  [Fs.fs_image_real] reads the keys as
+    [path]s -- it compares each byte against "/" -- so the question
+    can only be asked after the bytes are [byte]s.  Asking it of the
+    [list Z] instead would need a second spelling of canonicity, and
+    truncating an out-of-range value into a [byte] would change the
+    answer (303 would become "/").
+
+    WHICH REFUSAL HAPPENED, as for the exec file name above: a byte
+    above 255 says the image is not a VALUE, and this test says it is
+    no image Linux could have mounted.  The two are different news for
+    the reader, so [None] here must not come to mean both.
+    [image_shape_b] is the launch condition on its own and is a root
+    of [Checks/Extraction.v] for that reason, and [fs_of_raw] is a
+    root beside it: a caller asks [fs_of_raw] first -- [None] there is
+    the value question, answered alone -- and then [image_shape_b],
+    whose [false] on an image [fs_of_raw] converted is the launch
+    question, answered alone.  [execfn_shape_b] needs no companion
+    root because its two tests, the length and the NUL, are facts
+    about the [list Z] itself.
+
+    It is NOT named [image_valid_b]: it decides [Run.valid_input]'s
+    [Fs.fs_image_real] conjunct and no other conjunct over the image
+    ([Fs.fs_keys_relative] is a [Prop] this does not decide), and a
+    name claiming the whole predicate would be the kind of claim this
+    file exists to stop. *)
+Definition image_shape_b (l : list (list Z * list Z)) : bool :=
+  match fs_of_raw l with
+  | Some fs0 => Fs.fs_image_real fs0
+  | None => false
+  end.
+
+Definition image_fs_of_raw (l : list (list Z * list Z)) : option Fs.Fs :=
+  match fs_of_raw l with
+  | Some fs0 => if Fs.fs_image_real fs0 then Some fs0 else None
+  | None => None
+  end.
+
+(** Every image this converts satisfies the clause, so no seed the
+    boundary builds is one [Run.valid_input] forbids on this count. *)
+Theorem image_fs_of_raw_real : forall l fs0,
+  image_fs_of_raw l = Some fs0 -> Fs.fs_image_real fs0 = true.
+Proof.
+  intros l fs0 H. unfold image_fs_of_raw in H.
+  destruct (fs_of_raw l) as [fs1|]; [|discriminate].
+  destruct (Fs.fs_image_real fs1) eqn:Hr; [|discriminate].
+  injection H as <-. exact Hr.
+Qed.
+
+(** The published test and the conversion agree, which is what lets a
+    caller read a [None] from [init_model_checked] by asking
+    [image_shape_b] rather than by guessing. *)
+Lemma image_fs_of_raw_None_shape : forall l,
+  image_shape_b l = false -> image_fs_of_raw l = None.
+Proof.
+  intros l H. unfold image_shape_b in H. unfold image_fs_of_raw.
+  destruct (fs_of_raw l) as [fs0|]; [|reflexivity].
+  rewrite H. reflexivity.
+Qed.
+
+Definition cache_leaf_of_raw (l : RawCacheLeaf) : option CacheLeaf :=
+  match n_of_Z (rcl_size l), n_of_Z (rcl_assoc l), n_of_Z (rcl_line l) with
+  | Some size, Some assoc, Some line =>
+      Some (mkCacheLeaf (rcl_acpi l) size assoc line)
+  | _, _, _ => None
+  end.
+
+(** The four leaves as a list, so one statement covers all twelve of
+    their numeric components. *)
+Definition raw_cache_leaves (c : RawCacheView) : list RawCacheLeaf :=
+  [rcv_l1i c; rcv_l1d c; rcv_l2 c; rcv_l3 c].
+
+Definition cache_view_of_raw (c : RawCacheView) : option CacheView :=
+  match cache_leaf_of_raw (rcv_l1i c), cache_leaf_of_raw (rcv_l1d c),
+        cache_leaf_of_raw (rcv_l2 c), cache_leaf_of_raw (rcv_l3 c) with
+  | Some l1i, Some l1d, Some l2, Some l3 => Some (mkCacheView l1i l1d l2 l3)
+  | _, _, _, _ => None
+  end.
+
+(** [State.KernelBuild]'s own comment says that EVERY VALUE OF EVERY
+    FIELD NAMES A REAL BUILD — [vdso_text_pages], [mmap_rnd_bits],
+    [stack_guard_gap_pages] and [launch_vlenb] each wrap their field
+    into the range the kernel admits — so [Run.valid_input] carries no
+    clause about this record and there is no launch condition to
+    decide here.  What is left to check is the one invariant
+    extraction erases: an [N] is not negative. *)
+Definition kernel_of_raw (k : RawKernelBuild) : option KernelBuild :=
+  match n_of_Z (rkb_vdso k), n_of_Z (rkb_guard k), n_of_Z (rkb_rnd_bits k),
+        n_of_Z (rkb_vlenb k), cache_view_of_raw (rkb_cache k) with
+  | Some vdso, Some guard, Some rnd_bits, Some vlenb, Some cache =>
+      Some (mkKernelBuild (rkb_thp k) vdso (rkb_aslr k) guard rnd_bits
+              (rkb_rseq k) vlenb cache)
+  | _, _, _, _, _ => None
+  end.
+
+(** THE EXEC FILE NAME, [bprm->filename] without its NUL (fs/exec.c,
+    [alloc_bprm], Linux v6.18.46, commit 1f99e9ab748f), which the
+    model holds as [State.ProcInput]'s [in_execfn].  Unlike the kernel
+    build, this field HAS a launch condition, [Run.valid_execfn], and
+    it is a [Prop] with three disjuncts: the name is one
+    [getname_flags] (fs/namei.c) returned, or one [alloc_bprm] built
+    for an [execveat] as "/dev/fd/" and a descriptor's digits, or one
+    it built as that prefix, the digits, a separator and the caller's
+    relative name.
+
+    WHAT THIS DECIDES: the first disjunct, [Run.valid_path_name] — 1
+    to 4095 bytes, and no NUL byte.  Both are facts about the LIST, so
+    a boundary can read them off; the other two disjuncts are
+    existentials over a SPLIT of the list, and this does not search
+    for one.
+
+    WHAT IT THEREFORE REFUSES THAT THE MODEL WOULD HAVE ADMITTED,
+    exactly: a name of MORE than 4095 bytes of the third shape.
+    Nothing else.  A name of the second shape is the eight-byte prefix
+    and at most ten digits, so at most 18 bytes, and every byte of it
+    is nonzero; a name of the third shape is NUL-free for the same
+    reason together with [valid_path_name] on its tail, and is at most
+    8 + 10 + 1 + 4095 bytes.  So every name the second and third
+    disjuncts admit is already a [valid_path_name] unless it is longer
+    than 4095 bytes.
+
+    AND THAT DIRECTION IS THE SAFE ONE.  A refusal is the third answer
+    and is not a verdict: nothing is judged, and the reader is told
+    its declaration was not taken, so it can hand in the descriptor's
+    own path instead.  Accepting a name no launch could present would
+    instead seed [init_model] with an input that fails
+    [Run.valid_launch].  [init_model] does not REQUIRE that predicate
+    — it is a premise of the STATEMENTS about a run, quantified where
+    they are stated, not a precondition of building a model — and
+    that is exactly why the refusal is worth having here: the model
+    would be built and judged, and the theorems that cover the
+    judgement would not apply to it.
+
+    WHICH REFUSAL HAPPENED is a question a reader can ask, and must
+    be able to: a byte above 255 says the declaration is not a VALUE,
+    and the length or the NUL says it is not a LAUNCH Linux could
+    have performed, and the two are different news for the reader.
+    [execfn_shape_b] is the second test on its own, and is a root of
+    [Checks/Extraction.v] for that reason: a caller asks it first and
+    learns which of the two a [None] from [init_model_checked] would
+    have been.  It is NOT named [execfn_valid_b], because it is
+    strictly stronger than [Run.valid_execfn] by the paragraph above,
+    and a name claiming that equivalence would be the kind of claim
+    this file exists to stop. *)
+Definition execfn_shape_b (zs : list Z) : bool :=
+  andb (andb (1 <=? Z.of_nat (length zs))%Z (Z.of_nat (length zs) <=? 4095)%Z)
+       (negb (existsb (fun z => Z.eqb z 0) zs)).
+
+Definition execfn_of_Z (zs : list Z) : option (list byte) :=
+  if execfn_shape_b zs then bytes_of_Z zs else None.
+
+(** Every name this accepts is one the launch could have presented:
+    the boundary is a FILTER on the extracted representation and, here,
+    a narrowing of the model as well, in the refusing direction only. *)
+Theorem execfn_of_Z_valid : forall zs fn,
+  execfn_of_Z zs = Some fn -> valid_execfn fn.
+Proof.
+  intros zs fn H. unfold execfn_of_Z in H.
+  destruct (execfn_shape_b zs) eqn:Hshape; [|discriminate].
+  unfold execfn_shape_b in Hshape.
+  apply andb_prop in Hshape as [Hlen Hnul].
+  apply andb_prop in Hlen as [Hlo Hhi].
+  apply Z.leb_le in Hlo. apply Z.leb_le in Hhi.
+  apply negb_true_iff in Hnul.
+  assert (Hvals : map bv_unsigned fn = zs) by (now apply bytes_of_Z_values).
+  assert (Hlength : length fn = length zs)
+    by (rewrite <- Hvals; symmetry; apply length_map).
+  unfold valid_execfn. left. unfold valid_path_name. split.
+  - rewrite Hlength. lia.
+  - intros Hin. apply (in_map bv_unsigned) in Hin. rewrite Hvals in Hin.
+    assert (Hz0 : bv_unsigned (Z_to_bv 8 0) = 0%Z)
+      by (rewrite Z_to_bv_unsigned; reflexivity).
+    rewrite Hz0 in Hin.
+    assert (Hex : existsb (fun z => Z.eqb z 0) zs = true)
+      by (apply existsb_exists; exists 0%Z; split; [exact Hin | reflexivity]).
+    rewrite Hex in Hnul. discriminate Hnul.
+Qed.
+
+(** A NEW FIELD OF [State.ProcInput] BREAKS THIS FUNCTION, and that is
+    the design working rather than a nuisance to route around.  It is
+    built with [State.mkProcInput_full] for exactly that reason (see
+    the note above [RawProcInput]): [State.mkProcInput] would DEFAULT
+    the new field instead, and a defaulted environment field is a
+    claim about the run that nobody made — the launch would be seeded
+    with a value no reader declared and no statement quantified over.
+    The break is how a new input gets a raw counterpart here and a
+    declaration in every reader.  It has fired for [in_kernel] and
+    [in_execfn] — [rpi_kernel] and [rpi_execfn] below are what it
+    bought — and for revision/sigpipe's [in_channel_reader] and
+    [in_sigpipe_default], which bought [rpi_channel_reader] and
+    [rpi_sigpipe_default]; those two are bools, so every value is in
+    type and their check is the type itself.  The repair is a raw
+    field and its check, never [mkProcInput] and never a default. *)
 Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
   match bytes_list_of_Z (rpi_argv r), bytes_list_of_Z (rpi_envp r),
-        fs_of_raw (rpi_image_fs r), bytes_of_Z (rpi_stdin r),
+        image_fs_of_raw (rpi_image_fs r), bytes_of_Z (rpi_stdin r),
         word_of_Z (rpi_uid r), word_of_Z (rpi_gid r),
         words_of_Z (rpi_groups r), net_of_raw (rpi_net r) with
   | Some argv, Some envp, Some image_fs, Some stdin,
     Some uid, Some gid, Some groups, Some net =>
       match word_of_Z (rpi_nofile r), word_of_Z (rpi_sigmask r),
             word_of_Z (rpi_hwcap r), bytes_of_Z (rpi_urandom r),
-            fs_of_raw (rpi_tmp r) with
-      | Some nofile, Some sigmask, Some hwcap, Some urandom, Some tmp =>
+            fs_of_raw (rpi_tmp r), kernel_of_raw (rpi_kernel r),
+            execfn_of_Z (rpi_execfn r) with
+      | Some nofile, Some sigmask, Some hwcap, Some urandom, Some tmp,
+        Some kernel, Some execfn =>
           Some (mkProcInput_full argv envp image_fs (stream_of_bytes stdin)
                   uid gid groups net nofile sigmask hwcap
                   (rpi_abort_terminal r) (rpi_va_size r)
-                  (urandom_of_bytes urandom) tmp (rpi_channel_reader r)
-                  (rpi_sigpipe_default r))
-      | _, _, _, _, _ => None
+                  (urandom_of_bytes urandom) tmp kernel execfn
+                  (rpi_channel_reader r) (rpi_sigpipe_default r))
+      | _, _, _, _, _, _, _ => None
       end
   | _, _, _, _, _, _, _, _ => None
   end.
@@ -678,7 +957,7 @@ Proof.
     rewrite (proj2 (word_of_Z_refused (rpi_uid r)) Hout).
     destruct (bytes_list_of_Z (rpi_argv r)); [|reflexivity].
     destruct (bytes_list_of_Z (rpi_envp r)); [|reflexivity].
-    destruct (fs_of_raw (rpi_image_fs r)); [|reflexivity].
+    destruct (image_fs_of_raw (rpi_image_fs r)); [|reflexivity].
     now destruct (bytes_of_Z (rpi_stdin r)). }
   rewrite Hp.
   destruct (pairs_of_Z reserved); [|reflexivity].
@@ -706,7 +985,7 @@ Proof.
   { unfold proc_input_of_raw. rewrite Hnet.
     destruct (bytes_list_of_Z (rpi_argv r)); [|reflexivity].
     destruct (bytes_list_of_Z (rpi_envp r)); [|reflexivity].
-    destruct (fs_of_raw (rpi_image_fs r)); [|reflexivity].
+    destruct (image_fs_of_raw (rpi_image_fs r)); [|reflexivity].
     destruct (bytes_of_Z (rpi_stdin r)); [|reflexivity].
     destruct (word_of_Z (rpi_uid r)); [|reflexivity].
     destruct (word_of_Z (rpi_gid r)); [|reflexivity].
@@ -716,4 +995,327 @@ Proof.
   destruct (word_of_Z brk0); [|reflexivity].
   destruct (word_of_Z mbase); [|reflexivity].
   now destruct (word_of_Z sp).
+Qed.
+
+(* =========================================================================
+   The seed's two last environment fields, refused component by component
+   ========================================================================= *)
+
+(** The three lemmas the refusals below share, so that each theorem
+    says only what it refuses.  They are the destructuring the two
+    theorems above do inline, named once because there are now eleven
+    of them. *)
+Lemma init_model_checked_None_of_input :
+  forall reserved brk0 mbase sp lim r,
+  proc_input_of_raw r = None ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r H. unfold init_model_checked. rewrite H.
+  destruct (pairs_of_Z reserved); [|reflexivity].
+  destruct (word_of_Z brk0); [|reflexivity].
+  destruct (word_of_Z mbase); [|reflexivity].
+  now destruct (word_of_Z sp).
+Qed.
+
+Lemma proc_input_of_raw_None_kernel : forall r,
+  kernel_of_raw (rpi_kernel r) = None -> proc_input_of_raw r = None.
+Proof.
+  intros r H. unfold proc_input_of_raw. rewrite H.
+  destruct (bytes_list_of_Z (rpi_argv r)); [|reflexivity].
+  destruct (bytes_list_of_Z (rpi_envp r)); [|reflexivity].
+  destruct (image_fs_of_raw (rpi_image_fs r)); [|reflexivity].
+  destruct (bytes_of_Z (rpi_stdin r)); [|reflexivity].
+  destruct (word_of_Z (rpi_uid r)); [|reflexivity].
+  destruct (word_of_Z (rpi_gid r)); [|reflexivity].
+  destruct (words_of_Z (rpi_groups r)); [|reflexivity].
+  destruct (net_of_raw (rpi_net r)); [|reflexivity].
+  destruct (word_of_Z (rpi_nofile r)); [|reflexivity].
+  destruct (word_of_Z (rpi_sigmask r)); [|reflexivity].
+  destruct (word_of_Z (rpi_hwcap r)); [|reflexivity].
+  destruct (bytes_of_Z (rpi_urandom r)); [|reflexivity].
+  now destruct (fs_of_raw (rpi_tmp r)).
+Qed.
+
+Lemma proc_input_of_raw_None_execfn : forall r,
+  execfn_of_Z (rpi_execfn r) = None -> proc_input_of_raw r = None.
+Proof.
+  intros r H. unfold proc_input_of_raw. rewrite H.
+  destruct (bytes_list_of_Z (rpi_argv r)); [|reflexivity].
+  destruct (bytes_list_of_Z (rpi_envp r)); [|reflexivity].
+  destruct (image_fs_of_raw (rpi_image_fs r)); [|reflexivity].
+  destruct (bytes_of_Z (rpi_stdin r)); [|reflexivity].
+  destruct (word_of_Z (rpi_uid r)); [|reflexivity].
+  destruct (word_of_Z (rpi_gid r)); [|reflexivity].
+  destruct (words_of_Z (rpi_groups r)); [|reflexivity].
+  destruct (net_of_raw (rpi_net r)); [|reflexivity].
+  destruct (word_of_Z (rpi_nofile r)); [|reflexivity].
+  destruct (word_of_Z (rpi_sigmask r)); [|reflexivity].
+  destruct (word_of_Z (rpi_hwcap r)); [|reflexivity].
+  destruct (bytes_of_Z (rpi_urandom r)); [|reflexivity].
+  destruct (fs_of_raw (rpi_tmp r)); [|reflexivity].
+  now destruct (kernel_of_raw (rpi_kernel r)).
+Qed.
+
+(** THE KERNEL BUILD, component by component.  The four numbers of the
+    record itself first. *)
+Theorem init_model_checked_refuses_out_of_range_kernel_vdso :
+  forall reserved brk0 mbase sp lim r,
+  ~ (0 <= rkb_vdso (rpi_kernel r))%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r Hout.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_kernel. unfold kernel_of_raw.
+  rewrite (proj2 (n_of_Z_refused _) Hout). reflexivity.
+Qed.
+
+Theorem init_model_checked_refuses_out_of_range_kernel_guard :
+  forall reserved brk0 mbase sp lim r,
+  ~ (0 <= rkb_guard (rpi_kernel r))%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r Hout.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_kernel. unfold kernel_of_raw.
+  rewrite (proj2 (n_of_Z_refused _) Hout).
+  now destruct (n_of_Z (rkb_vdso (rpi_kernel r))).
+Qed.
+
+Theorem init_model_checked_refuses_out_of_range_kernel_rnd_bits :
+  forall reserved brk0 mbase sp lim r,
+  ~ (0 <= rkb_rnd_bits (rpi_kernel r))%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r Hout.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_kernel. unfold kernel_of_raw.
+  rewrite (proj2 (n_of_Z_refused _) Hout).
+  destruct (n_of_Z (rkb_vdso (rpi_kernel r))); [|reflexivity].
+  now destruct (n_of_Z (rkb_guard (rpi_kernel r))).
+Qed.
+
+Theorem init_model_checked_refuses_out_of_range_kernel_vlenb :
+  forall reserved brk0 mbase sp lim r,
+  ~ (0 <= rkb_vlenb (rpi_kernel r))%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r Hout.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_kernel. unfold kernel_of_raw.
+  rewrite (proj2 (n_of_Z_refused _) Hout).
+  destruct (n_of_Z (rkb_vdso (rpi_kernel r))); [|reflexivity].
+  destruct (n_of_Z (rkb_guard (rpi_kernel r))); [|reflexivity].
+  now destruct (n_of_Z (rkb_rnd_bits (rpi_kernel r))).
+Qed.
+
+(** One refused leaf refuses the view, as one refused element refuses
+    a list above. *)
+Lemma cache_view_of_raw_elem_None : forall c l,
+  In l (raw_cache_leaves c) -> cache_leaf_of_raw l = None ->
+  cache_view_of_raw c = None.
+Proof.
+  intros c l Hin Hl. unfold raw_cache_leaves in Hin. simpl in Hin.
+  unfold cache_view_of_raw.
+  destruct Hin as [E | [E | [E | [E | []]]]]; rewrite <- E in Hl.
+  - rewrite Hl. reflexivity.
+  - rewrite Hl. now destruct (cache_leaf_of_raw (rcv_l1i c)).
+  - rewrite Hl.
+    destruct (cache_leaf_of_raw (rcv_l1i c)); [|reflexivity].
+    now destruct (cache_leaf_of_raw (rcv_l1d c)).
+  - rewrite Hl.
+    destruct (cache_leaf_of_raw (rcv_l1i c)); [|reflexivity].
+    destruct (cache_leaf_of_raw (rcv_l1d c)); [|reflexivity].
+    now destruct (cache_leaf_of_raw (rcv_l2 c)).
+Qed.
+
+Lemma kernel_of_raw_None_cache : forall k,
+  cache_view_of_raw (rkb_cache k) = None -> kernel_of_raw k = None.
+Proof.
+  intros k H. unfold kernel_of_raw. rewrite H.
+  destruct (n_of_Z (rkb_vdso k)); [|reflexivity].
+  destruct (n_of_Z (rkb_guard k)); [|reflexivity].
+  destruct (n_of_Z (rkb_rnd_bits k)); [|reflexivity].
+  now destruct (n_of_Z (rkb_vlenb k)).
+Qed.
+
+(** ... and the twelve numbers of the four cache leaves, in one
+    statement, because which leaf a reader filled wrong is not what
+    the refusal turns on. *)
+Theorem init_model_checked_refuses_out_of_range_cache_component :
+  forall reserved brk0 mbase sp lim r l,
+  In l (raw_cache_leaves (rkb_cache (rpi_kernel r))) ->
+  ~ (0 <= rcl_size l)%Z \/ ~ (0 <= rcl_assoc l)%Z \/ ~ (0 <= rcl_line l)%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r l Hin Hbad.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_kernel.
+  apply kernel_of_raw_None_cache.
+  apply (cache_view_of_raw_elem_None _ l Hin).
+  unfold cache_leaf_of_raw.
+  destruct Hbad as [H | [H | H]].
+  - rewrite (proj2 (n_of_Z_refused _) H). reflexivity.
+  - rewrite (proj2 (n_of_Z_refused _) H).
+    now destruct (n_of_Z (rcl_size l)).
+  - rewrite (proj2 (n_of_Z_refused _) H).
+    destruct (n_of_Z (rcl_size l)); [|reflexivity].
+    now destruct (n_of_Z (rcl_assoc l)).
+Qed.
+
+(** NOTHING THE MODEL CAN SAY IS LOST, for the kernel build: every
+    [State.KernelBuild] has a raw form the boundary accepts and
+    returns unchanged, so a refusal here is never a build a launch
+    could have run on.  [raw_of_effect] and [effect_of_raw_of_effect]
+    say it for an effect. *)
+Definition raw_of_cache_leaf (l : CacheLeaf) : RawCacheLeaf :=
+  mkRawCacheLeaf (cl_acpi l) (Z.of_N (cl_size l)) (Z.of_N (cl_assoc l))
+    (Z.of_N (cl_line l)).
+
+Definition raw_of_cache_view (c : CacheView) : RawCacheView :=
+  mkRawCacheView (raw_of_cache_leaf (cv_l1i c)) (raw_of_cache_leaf (cv_l1d c))
+    (raw_of_cache_leaf (cv_l2 c)) (raw_of_cache_leaf (cv_l3 c)).
+
+Definition raw_of_kernel (kb : KernelBuild) : RawKernelBuild :=
+  mkRawKernelBuild (kb_thp kb) (Z.of_N (kb_vdso kb)) (kb_aslr kb)
+    (Z.of_N (kb_guard kb)) (Z.of_N (kb_rnd_bits kb)) (kb_rseq kb)
+    (Z.of_N (kb_vlenb kb)) (raw_of_cache_view (kb_cache kb)).
+
+Lemma cache_leaf_of_raw_of_leaf : forall l,
+  cache_leaf_of_raw (raw_of_cache_leaf l) = Some l.
+Proof.
+  intros l. unfold cache_leaf_of_raw, raw_of_cache_leaf.
+  cbn [rcl_acpi rcl_size rcl_assoc rcl_line].
+  rewrite !n_of_Z_total. destruct l; reflexivity.
+Qed.
+
+Lemma cache_view_of_raw_of_view : forall c,
+  cache_view_of_raw (raw_of_cache_view c) = Some c.
+Proof.
+  intros c. unfold cache_view_of_raw, raw_of_cache_view.
+  cbn [rcv_l1i rcv_l1d rcv_l2 rcv_l3].
+  rewrite !cache_leaf_of_raw_of_leaf. destruct c; reflexivity.
+Qed.
+
+Theorem kernel_of_raw_of_kernel : forall kb,
+  kernel_of_raw (raw_of_kernel kb) = Some kb.
+Proof.
+  intros kb. unfold kernel_of_raw, raw_of_kernel.
+  cbn [rkb_thp rkb_vdso rkb_aslr rkb_guard rkb_rnd_bits rkb_rseq rkb_vlenb
+       rkb_cache].
+  rewrite !n_of_Z_total, cache_view_of_raw_of_view.
+  destruct kb; reflexivity.
+Qed.
+
+(** THE EXEC FILE NAME.  A byte of it that no [byte] holds is refused
+    like any other byte the boundary is handed; the other three are
+    the length bounds and the NUL that [Run.valid_path_name] forbids,
+    which no [list Z] enforces at all. *)
+Theorem init_model_checked_refuses_out_of_range_execfn_byte :
+  forall reserved brk0 mbase sp lim r z,
+  In z (rpi_execfn r) -> ~ (0 <= z < 2 ^ 8)%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r z Hin Hout.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_execfn. unfold execfn_of_Z.
+  destruct (execfn_shape_b (rpi_execfn r)); [|reflexivity].
+  apply (bytes_of_Z_elem_None _ _ Hin (proj2 (byte_of_Z_refused z) Hout)).
+Qed.
+
+Theorem init_model_checked_refuses_empty_execfn :
+  forall reserved brk0 mbase sp lim r,
+  rpi_execfn r = [] ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r Hnil.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_execfn.
+  unfold execfn_of_Z. rewrite Hnil. reflexivity.
+Qed.
+
+Theorem init_model_checked_refuses_long_execfn :
+  forall reserved brk0 mbase sp lim r,
+  (4095 < Z.of_nat (length (rpi_execfn r)))%Z ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r Hlong.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_execfn.
+  unfold execfn_of_Z, execfn_shape_b.
+  replace (Z.of_nat (length (rpi_execfn r)) <=? 4095)%Z with false
+    by (symmetry; apply Z.leb_gt; exact Hlong).
+  rewrite andb_false_r. reflexivity.
+Qed.
+
+Theorem init_model_checked_refuses_nul_execfn :
+  forall reserved brk0 mbase sp lim r,
+  In 0%Z (rpi_execfn r) ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r Hin.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_execfn.
+  unfold execfn_of_Z, execfn_shape_b.
+  replace (existsb (fun z => Z.eqb z 0) (rpi_execfn r)) with true
+    by (symmetry; apply existsb_exists; exists 0%Z;
+        split; [exact Hin | reflexivity]).
+  rewrite andb_false_r. reflexivity.
+Qed.
+
+(* =========================================================================
+   The image, refused when it describes no file system
+   ========================================================================= *)
+
+Lemma proc_input_of_raw_None_image : forall r,
+  image_fs_of_raw (rpi_image_fs r) = None -> proc_input_of_raw r = None.
+Proof.
+  intros r H. unfold proc_input_of_raw. rewrite H.
+  destruct (bytes_list_of_Z (rpi_argv r)); [|reflexivity].
+  now destruct (bytes_list_of_Z (rpi_envp r)).
+Qed.
+
+(** THE CLAUSE [revision/linux-only] ADDED, closed at the boundary:
+    an image that describes no file system seeds no model.  It is
+    stated about [init_model_checked] rather than about [fs_of_raw]
+    because what a caller gets is the [None], and about
+    [image_shape_b] because that is the test the caller can run
+    itself. *)
+Theorem init_model_checked_refuses_unreal_image :
+  forall reserved brk0 mbase sp lim r,
+  image_shape_b (rpi_image_fs r) = false ->
+  init_model_checked reserved brk0 mbase sp lim r = None.
+Proof.
+  intros reserved brk0 mbase sp lim r H.
+  apply init_model_checked_None_of_input.
+  apply proc_input_of_raw_None_image.
+  now apply image_fs_of_raw_None_shape.
+Qed.
+
+(** And the other direction, which is what makes the refusal worth
+    having: every seed the boundary DOES build satisfies the clause,
+    so [Run.valid_input]'s conjunct over [State.in_image_fs] holds of
+    it without the caller being asked for a proof. *)
+Theorem proc_input_of_raw_image_real : forall r inp,
+  proc_input_of_raw r = Some inp ->
+  Fs.fs_image_real (in_image_fs inp) = true.
+Proof.
+  intros r inp H. unfold proc_input_of_raw in H.
+  destruct (bytes_list_of_Z (rpi_argv r)); [|discriminate].
+  destruct (bytes_list_of_Z (rpi_envp r)); [|discriminate].
+  destruct (image_fs_of_raw (rpi_image_fs r)) as [image_fs|] eqn:Himg;
+    [|discriminate].
+  destruct (bytes_of_Z (rpi_stdin r)); [|discriminate].
+  destruct (word_of_Z (rpi_uid r)); [|discriminate].
+  destruct (word_of_Z (rpi_gid r)); [|discriminate].
+  destruct (words_of_Z (rpi_groups r)); [|discriminate].
+  destruct (net_of_raw (rpi_net r)); [|discriminate].
+  destruct (word_of_Z (rpi_nofile r)); [|discriminate].
+  destruct (word_of_Z (rpi_sigmask r)); [|discriminate].
+  destruct (word_of_Z (rpi_hwcap r)); [|discriminate].
+  destruct (bytes_of_Z (rpi_urandom r)); [|discriminate].
+  destruct (fs_of_raw (rpi_tmp r)); [|discriminate].
+  destruct (kernel_of_raw (rpi_kernel r)); [|discriminate].
+  destruct (execfn_of_Z (rpi_execfn r)); [|discriminate].
+  injection H as <-.
+  exact (image_fs_of_raw_real _ _ Himg).
 Qed.

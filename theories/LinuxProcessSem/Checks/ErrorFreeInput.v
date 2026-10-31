@@ -64,10 +64,12 @@ Open Scope bv_scope.
 (** One empty argument, no environment, an empty file system, no
     standard input — the input [Checks/Examples.v]'s own witnesses use,
     named here so the statements below read as claims about a fixed
-    input rather than about a literal repeated eleven times. *)
-Definition efi_demo_input : ProcInput :=
-  mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-              default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48.
+    input rather than about a literal repeated eleven times.  It is
+    that file's [Checks.Examples.demo_proc_input] under a local name
+    and not a second copy of the record: [Checks.Examples.demo_entry]
+    and the unmodeled-step witnesses are stated at that constant, and
+    the rewrites below have to land on the term those lemmas carry. *)
+Definition efi_demo_input : ProcInput := demo_proc_input.
 
 Lemma efi_demo_input_valid : valid_input efi_demo_input.
 Proof. exact demo_input_valid. Qed.
@@ -82,7 +84,8 @@ Proof. exact demo_input_valid. Qed.
     reader's eye. *)
 Definition efi_demo_fin : FinProcInput :=
   mkFinProcInput [[]] [] [] [] demo_uid demo_gid demo_groups net_silent
-                 default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] [] true true.
+                 default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] []
+                 default_kernel default_execfn true true.
 
 Lemma efi_demo_to_proc_input : to_proc_input efi_demo_fin = efi_demo_input.
 Proof. reflexivity. Qed.
@@ -167,7 +170,7 @@ Lemma undecodable_not_error_free_input :
   ~ error_free_input undecodable_image efi_demo_input.
 Proof.
   apply (error_free_input_refuted_by_error _ _ demo_entry).
-  - apply demo_entry_valid_undecodable. exact efi_demo_input_valid.
+  - exact (demo_entry_valid_undecodable efi_demo_input efi_demo_input_valid).
   - apply run_unmodeled_errors,
       run_of_undecodable_image_is_unmodeled_at_demo_entry.
 Qed.
@@ -214,7 +217,7 @@ Proof.
            undecodable_image C efi_demo_fin demo_entry enC Hdec
            efi_demo_fin_valid).
   - rewrite efi_demo_to_proc_input.
-    apply demo_entry_valid_undecodable. exact efi_demo_input_valid.
+    exact (demo_entry_valid_undecodable efi_demo_input efi_demo_input_valid).
   - rewrite efi_demo_to_proc_input.
     apply run_unmodeled_errors,
       run_of_undecodable_image_is_unmodeled_at_demo_entry.
@@ -238,7 +241,7 @@ Proof.
            undecodable_image C efi_demo_fin demo_entry enC Hdec
            efi_demo_fin_valid).
   - rewrite efi_demo_to_proc_input.
-    apply demo_entry_valid_undecodable. exact efi_demo_input_valid.
+    exact (demo_entry_valid_undecodable efi_demo_input efi_demo_input_valid).
   - rewrite efi_demo_to_proc_input.
     apply run_unmodeled_errors,
       run_of_undecodable_image_is_unmodeled_at_demo_entry.
@@ -359,7 +362,8 @@ Lemma undecodable_unmodeled_scfg : forall cfg,
                   efi_demo_input).
 Proof.
   intros cfg.
-  cbn [run_scfg bh_unmodeled undecodable_image demo_entry]. unfold init_config.
+  unfold efi_demo_input. rewrite demo_entry_fields.
+  cbn [run_scfg bh_unmodeled undecodable_image]. unfold init_config.
   eexists [], _. split; [apply star_cfg_refl |].
   unfold unmodeled_at. cbn [cfg_ms cfg_model].
   split; [reflexivity |]. left. split; [reflexivity |].
@@ -367,7 +371,6 @@ Proof.
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  unfold efi_demo_input. cbn [mkProcInput in_argv in_envp in_uid in_hwcap].
   rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
 Qed.
 
@@ -381,7 +384,7 @@ Lemma undecodable_not_error_free_input_s : forall cfg,
 Proof.
   intros cfg.
   apply (error_free_input_s_refuted_by_error cfg _ _ demo_entry).
-  - apply demo_entry_valid_undecodable. exact efi_demo_input_valid.
+  - exact (demo_entry_valid_undecodable efi_demo_input efi_demo_input_valid).
   - apply run_scfg_unmodeled_errors, undecodable_unmodeled_scfg.
 Qed.
 

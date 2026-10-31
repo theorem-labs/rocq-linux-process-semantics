@@ -58,7 +58,10 @@ Proof. reflexivity. Qed.  (* by definition *)
 (** The predicates, not only the numbers: under an [Sv48] input,
     [Run.valid_entry] is the literal predicate conjunct for conjunct
     ([Run.valid_entry_sv48]), fired here at the fixture input so the
-    lemma is seen to apply to the inputs the examples use. *)
+    lemma is seen to apply to the inputs the examples use.  The fifth
+    conjunct is the launch one: the stack top, the sp window around it
+    and the mmap base are what [Run.entry_launch_ok_va] pins, and the
+    first four are read off it rather than standing beside it. *)
 Example demo_entry_predicate_is_the_sv48_one : forall img en fs0 s,
   valid_entry img en (demo_input fs0 s)
   <-> match img, en with
@@ -66,6 +69,7 @@ Example demo_entry_predicate_is_the_sv48_one : forall img en fs0 s,
         valid_sp sp /\ valid_brk segs brk0 /\ valid_mmap_base mbase
         /\ entry_stack_fits sp (in_argv (demo_input fs0 s))
              (in_envp (demo_input fs0 s))
+        /\ entry_launch_ok_va Sv48 en (demo_input fs0 s)
       end.
 Proof. intros. apply valid_entry_sv48. reflexivity. Qed.
 
@@ -198,6 +202,21 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
   all: try valid_urandom_default.
+  (* [Run.valid_launch]'s first half: a positional [mkProcInput] gets
+     [State.default_execfn], the one-byte relative name "a".  That is a
+     name [getname_flags] (fs/namei.c, Linux v6.18.46, commit
+     1f99e9ab748f) can return -- one byte, no NUL -- so the first of
+     [Run.valid_execfn]'s three arms applies. *)
+  all: try (left; split;
+            [ cbn; lia
+            | cbn; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  (* ...and its second half: this launch is a handful of bytes -- one
+     empty argv string's NUL, the name and its NUL, and one pointer
+     slot -- far under the E2BIG limit [bprm_stack_limits] (fs/exec.c)
+     computes. *)
+  all: try (vm_compute; discriminate).
 Qed.
 
 (** Each instance from the unpinned predicate, without counting

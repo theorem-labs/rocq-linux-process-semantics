@@ -2796,7 +2796,8 @@ Proof. split; [check_eq | split; [check_eq | vm_compute; reflexivity]]. Qed.
 Definition noreader_input : ProcInput :=
   mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-                   default_urandom [] false true.
+                   default_urandom [] default_kernel default_execfn
+                   false true.
 
 (** The same launch again, with SIGPIPE at SIG_IGN: the launcher ran
     `signal(SIGPIPE, SIG_IGN)` before execve and execve kept it
@@ -2805,7 +2806,8 @@ Definition noreader_input : ProcInput :=
 Definition noreader_ignored_input : ProcInput :=
   mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-                   default_urandom [] false false.
+                   default_urandom [] default_kernel default_execfn
+                   false false.
 
 Definition noreader_model : Model :=
   init_model [] 0 0 demo_sp demo_limit noreader_input.

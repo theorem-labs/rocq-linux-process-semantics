@@ -51,7 +51,7 @@ Definition w1x_byte : byte := Z_to_bv 8 0x93.
 Definition w1x_input (reader : bool) : ProcInput :=
   mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
     default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom []
-    reader true.
+    default_kernel default_execfn reader true.
 
 (* ========================================================================= *)
 (* The derivation: five silent steps, the write, three silent steps, exit.   *)

@@ -17,6 +17,148 @@
   (run python3 %{project_root}/tools/test_elf_snapshot.py
    --emit-large-rocq-check LargeChunkImage.v)))
 
+; THE REAL-KERNEL START STATE (OSSV-257 A4, tools/placement_conformance).
+; Each rule turns one start-state log of the probe into a Rocq file that
+; states the recorded launch as LPS terms and closes three lemmas by
+; computation: Run.entry_launch_ok_va of the recorded stack end, stack
+; pointer and mmap base; Run.entry_stack_image equal to the bytes the kernel
+; wrote, every byte of them; and StackLayout.auxv_entries equal to the
+; recorded auxiliary vector.  So each file compiles exactly when LPS's entry
+; block is the block that kernel laid.  dune makes the files in _build only;
+; the README in tools/placement_conformance says how a log is made.
+(rule
+ (targets StartStateNorandmapsSeed1Fixture.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-norandmaps-seed1-fixture.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-norandmaps-seed1-fixture.log
+   --out StartStateNorandmapsSeed1Fixture.v)))
+
+(rule
+ (targets StartStateNorandmapsSeed1Long.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-norandmaps-seed1-long.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-norandmaps-seed1-long.log
+   --out StartStateNorandmapsSeed1Long.v)))
+
+(rule
+ (targets StartStateDefconfigSeed1Fixture.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-seed1-fixture.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-seed1-fixture.log
+   --out StartStateDefconfigSeed1Fixture.v)))
+
+(rule
+ (targets StartStateDefconfigSeed1Long.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-seed1-long.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-seed1-long.log
+   --out StartStateDefconfigSeed1Long.v)))
+
+(rule
+ (targets StartStateDefconfigSeed2Fixture.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-seed2-fixture.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-seed2-fixture.log
+   --out StartStateDefconfigSeed2Fixture.v)))
+
+(rule
+ (targets StartStateDefconfigSeed2Long.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-seed2-long.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-seed2-long.log
+   --out StartStateDefconfigSeed2Long.v)))
+
+; The "cache" boots run on a devicetree in which the boot CPU carries an
+; L1I, an L1D and an L2 (patch_dtb.py), so the eight AT_L*_CACHE* words are
+; not all zero and State.cache_size_word and State.cache_geometry_word are
+; checked against what the kernel published.
+(rule
+ (targets StartStateDefconfigCacheSeed1Fixture.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-cache-seed1-fixture.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-cache-seed1-fixture.log
+   --out StartStateDefconfigCacheSeed1Fixture.v)))
+
+(rule
+ (targets StartStateDefconfigCacheSeed1Long.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-cache-seed1-long.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-cache-seed1-long.log
+   --out StartStateDefconfigCacheSeed1Long.v)))
+
+(rule
+ (targets StartStateThpSeed1Fixture.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-thp-seed1-fixture.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-thp-seed1-fixture.log
+   --out StartStateThpSeed1Fixture.v)))
+
+(rule
+ (targets StartStateThpSeed1Long.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-thp-seed1-long.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-thp-seed1-long.log
+   --out StartStateThpSeed1Long.v)))
+
+; THE NEGATIVES.  Each takes a record, moves one byte of the block the
+; kernel wrote, and demands that the model DISAGREE with it, so a block_ok
+; that had stopped computing anything would not stay green.  One on the
+; shortest record and one on the longest, moving a byte in a different part
+; of the block: argc's low byte at the bottom, and a byte of the string area
+; near the top.  Each names its admitted neighbour, which is the same record
+; with the byte the kernel wrote.
+(rule
+ (targets StartStateNorandmapsSeed1FixtureMoved.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-norandmaps-seed1-fixture.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-norandmaps-seed1-fixture.log
+   --out StartStateNorandmapsSeed1FixtureMoved.v
+   --perturb-byte 0 --sibling StartStateNorandmapsSeed1Fixture)))
+
+(rule
+ (targets StartStateDefconfigSeed2LongMoved.v)
+ (deps
+  %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+  placement/linux-6.18.46-defconfig-seed2-long.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/start_state_to_rocq.py
+   placement/linux-6.18.46-defconfig-seed2-long.log
+   --out StartStateDefconfigSeed2LongMoved.v
+   --perturb-byte 7000 --sibling StartStateDefconfigSeed2Long)))
+
 (rocq.theory
  (name LinuxProcessSemantics.Tests)
  (theories Stdlib stdpp ReadFile LinuxProcessSemantics))

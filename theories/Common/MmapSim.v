@@ -1706,7 +1706,7 @@ Qed.
     process, so the write nodes these derivations take do not describe
     that launch. *)
 Lemma mmap_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bf cf bs cs,
-  tmw segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  tmw segs (init_machine_state segs pc ph sp mb rnd inp)
       (init_model (segments_reserved segs) brk0 mb sp lim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
@@ -1715,7 +1715,7 @@ Lemma mmap_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bf cf bs cs,
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bf cf bs cs Hte Hbf Hbs Hr tr.
   unfold init_config in *.
-  set (ms := init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
+  set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
   assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None) by reflexivity.
   assert (Hlazy : m_vm_lazy
       (init_model (segments_reserved segs) brk0 mb sp lim inp) = []) by reflexivity.
@@ -1740,7 +1740,7 @@ Proof.
 Qed.
 
 Lemma mmap_no_error_run_te : forall segs pc ph sp brk0 mb rnd lim inp bf cf bs cs,
-  tmw segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  tmw segs (init_machine_state segs pc ph sp mb rnd inp)
       (init_model (segments_reserved segs) brk0 mb sp lim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
@@ -1758,7 +1758,7 @@ Qed.
 (** The run-level omni judgment and equivalence of a fail-or-succeed
     mmap run, at the two role budgets. *)
 Lemma mmap_omni_run_te : forall segs pc ph sp brk0 mb rnd lim inp bf cf bs cs,
-  tmw segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  tmw segs (init_machine_state segs pc ph sp mb rnd inp)
       (init_model (segments_reserved segs) brk0 mb sp lim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
@@ -1772,9 +1772,9 @@ Qed.
 
 Lemma mmap_omni_strong_equiv_te :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bf cf bs cs inp,
-  tmw source_segs (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  tmw source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
       (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp) bf cf bs cs ->
-  tmw target_segs (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  tmw target_segs (init_machine_state target_segs apc aph asp amb arnd inp)
       (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
@@ -1805,9 +1805,9 @@ Qed.
 
 Lemma mmap_strong_equiv_te :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim bf cf bs cs inp,
-  tmw source_segs (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  tmw source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
       (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) bf cf bs cs ->
-  tmw target_segs (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+  tmw target_segs (init_machine_state target_segs apc aph asp amb arnd inp)
       (init_model (segments_reserved target_segs) abrk amb asp alim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->

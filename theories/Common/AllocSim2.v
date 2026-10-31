@@ -36,11 +36,11 @@ Definition two_outcomes (bf : list (list byte)) (cf : word)
 Lemma alloc_mmap_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim bf cf bs cs inp,
   to_outcomes source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
     (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp)
     (two_outcomes bf cf bs cs) ->
   tmw target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state target_segs apc aph asp amb arnd inp)
     (init_model (segments_reserved target_segs) abrk amb asp alim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
@@ -75,11 +75,11 @@ Qed.
 Lemma alloc_mmap_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bf cf bs cs inp,
   to_outcomes source_segs
-    (init_machine_state source_segs rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
     (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp)
     (two_outcomes bf cf bs cs) ->
   tmw target_segs
-    (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
+    (init_machine_state target_segs apc aph asp amb arnd inp)
     (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->

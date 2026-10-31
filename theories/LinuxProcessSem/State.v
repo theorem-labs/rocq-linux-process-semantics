@@ -73,6 +73,53 @@ Proof.
   lia.
 Qed.
 
+(** Rounding down never goes up, is monotone, and is idempotent.  Three
+    one-line facts about [Z.div]'s floor, kept here because the
+    placement rule's top ([mmap_top], [vdso_top]) is a minimum of a
+    rounded and an unrounded bound and needs all three. *)
+Lemma page_round_down_Z_le : forall x, (page_round_down_Z x <= x)%Z.
+Proof.
+  intro x. unfold page_round_down_Z, page_size.
+  pose proof (Z.mul_div_le x 4096 ltac:(lia)). lia.
+Qed.
+
+Lemma page_round_down_Z_mono : forall x y,
+  (x <= y)%Z -> (page_round_down_Z x <= page_round_down_Z y)%Z.
+Proof.
+  intros x y H. unfold page_round_down_Z, page_size.
+  pose proof (Z.div_le_mono x y 4096 ltac:(lia) H). lia.
+Qed.
+
+Lemma page_round_down_Z_idem : forall x,
+  page_round_down_Z (page_round_down_Z x) = page_round_down_Z x.
+Proof.
+  intro x. unfold page_round_down_Z, page_size.
+  rewrite Z.div_mul by lia. reflexivity.
+Qed.
+
+(** Rounding the SECOND argument of a minimum first changes nothing
+    once the whole minimum is rounded.  This is why [mmap_top] may
+    round [alloc_top] (which [vm_init_sp] leaves 16-byte aligned) while
+    [vdso_top] still equals the rounded minimum of the raw bounds. *)
+Lemma page_round_down_Z_min_r : forall x y,
+  page_round_down_Z (Z.min x (page_round_down_Z y))
+  = page_round_down_Z (Z.min x y).
+Proof.
+  intros x y.
+  pose proof (page_round_down_Z_le y) as Hle.
+  destruct (Z.le_gt_cases x (page_round_down_Z y)) as [H1|H1].
+  - rewrite (Z.min_l x (page_round_down_Z y)) by lia.
+    rewrite (Z.min_l x y) by lia. reflexivity.
+  - rewrite (Z.min_r x (page_round_down_Z y)) by lia.
+    rewrite page_round_down_Z_idem.
+    destruct (Z.le_gt_cases x y) as [H2|H2].
+    + rewrite (Z.min_l x y) by lia.
+      pose proof (page_round_down_Z_mono _ _ H2) as Hm.
+      pose proof (page_round_down_Z_mono _ _ (Z.lt_le_incl _ _ H1)) as Hm2.
+      rewrite page_round_down_Z_idem in Hm2. lia.
+    + rewrite (Z.min_r x y) by lia. reflexivity.
+Qed.
+
 (** Maximum stack size (Linux default [RLIMIT_STACK] = 8 MiB).  Like
     Linux, the model counts it from the top of the entry image, not from
     the initial SP: [Run.init_machine_state] zero-maps the window
@@ -2875,6 +2922,45 @@ Ltac alloc_top_bounds :=
   | _ => pose proof stack_max_size_val
   end.
 
+(** THE TOP OF THE TOP-DOWN SEARCH, the bound Linux's
+    [generic_get_unmapped_area_topdown] passes to [vm_unmapped_area] as
+    [info.high_limit] (Linux v6.18.46, commit 1f99e9ab748f,
+    mm/mmap.c, [generic_get_unmapped_area_topdown]; mm/vma.c,
+    [unmapped_area_topdown]).
+
+    Linux's value is [mm->mmap_base] alone, which [vm_mmap_base]
+    carries.  This takes the minimum with [alloc_top] as well, because
+    the model keeps the dynamic stack OUT of the ledger and bounds every
+    grant by [alloc_top] instead (see the [vm_init_sp] note above).  A
+    base drawn above [alloc_top] would otherwise let the search return a
+    range the stack owns.  The difference is residual R-b of SCOPE.md:
+    Linux's search reaches up to [STACK_TOP_MAX] for a free HINT and its
+    bottom-up fallback reaches the stack's guard gap, and this model
+    stops at [alloc_top].
+
+    [page_round_down_Z] on [alloc_top] because [alloc_top] is
+    [sp - stack_max_size] and [sp] is only 16-byte aligned
+    ([Run.valid_sp]), while every address the search returns is a page
+    base. *)
+Definition mmap_top (h : VmMaps) : Z :=
+  Z.min (bv_unsigned (vm_mmap_base h)) (page_round_down_Z (alloc_top h)).
+
+(** WHERE THE vdso/vvar PAIR SITS, as a page base.
+
+    [__setup_additional_pages] (arch/riscv/kernel/vdso.c) is the FIRST
+    [get_unmapped_area] of the run — [load_elf_binary] calls
+    [ARCH_SETUP_ADDITIONAL_PAGES] after it has mapped the segments and
+    before it randomizes brk (fs/binfmt_elf.c) — and for a static
+    ET_EXEC image nothing is mapped below [mm->mmap_base] yet, so the
+    top-down search hands back the highest range that fits: the pair
+    ends exactly at the search top.
+
+    Both [vm_mmap_base] and [vm_init_sp] are immutable for the whole
+    run, so this value is the same at every step, and a reader outside
+    [init_model] (the vDSO's own load and fetch arms) may call it on the
+    current ledger. *)
+Definition vdso_top (h : VmMaps) : Z := page_round_down_Z (mmap_top h).
+
 (** Compatibility constructor for ledgers containing only rw memory.
     Existing examples and allocator simulations need not mention the
     empty protection ledger, nor the placement base (seeded 0, which
@@ -2989,6 +3075,353 @@ Record FdState := mkFdState {
   fdst_pipes : list (word * PipeBuf);
 }.
 
+(** ONE CACHE LEAF as the kernel publishes it, for one of the four
+    levels [ARCH_DLINFO] reports (arch/riscv/include/asm/elf.h, Linux
+    v6.18.46, commit 1f99e9ab748f).
+
+    [cl_acpi] says which of the two firmware paths filled the leaf,
+    because they fill different fields:
+
+    - DEVICETREE.  [cache_associativity] (drivers/base/cacheinfo.c)
+      derives the ways from the size, the number of sets and the line
+      size.  [cl_assoc] is then the NUMBER OF SETS.
+    - ACPI.  [update_cache_properties] (drivers/acpi/pptt.c) copies the
+      PPTT's own associativity and line-size fields, which are 8 and 16
+      bits wide.  [cl_assoc] is then that 8-bit associativity.
+
+    A leaf the machine does not report is all zeros, which gives two
+    zero auxv words — [get_cache_size] and [get_cache_geometry]
+    (arch/riscv/kernel/cacheinfo.c) both answer 0 when [get_cacheinfo]
+    finds no leaf.
+
+    RESIDUAL: [get_cacheinfo] reads the CPU that runs the [execve], and
+    this record holds ONE view.  The kernel's own interface assumes a
+    homogeneous one; SCOPE.md records the gap. *)
+Record CacheLeaf := mkCacheLeaf {
+  cl_acpi  : bool;
+  cl_size  : N;
+  cl_assoc : N;
+  cl_line  : N
+}.
+
+Definition cache_leaf_absent : CacheLeaf := mkCacheLeaf false 0%N 0%N 0%N.
+
+(** The four leaves [ARCH_DLINFO] reports, in its order: L1
+    instruction, L1 data, L2 unified, L3 unified. *)
+Record CacheView := mkCacheView {
+  cv_l1i : CacheLeaf;
+  cv_l1d : CacheLeaf;
+  cv_l2  : CacheLeaf;
+  cv_l3  : CacheLeaf
+}.
+
+Definition cache_view_absent : CacheView :=
+  mkCacheView cache_leaf_absent cache_leaf_absent cache_leaf_absent
+              cache_leaf_absent.
+
+(** [ways_of_associativity], as the two firmware paths set it.  The
+    devicetree arm is [cache_associativity] (drivers/base/cacheinfo.c,
+    Linux v6.18.46, commit 1f99e9ab748f), whose guard is
+
+      [if (!(nr_sets == 1) && (nr_sets > 0 && size > 0 && line_size > 0))]
+
+    so a FULLY ASSOCIATIVE leaf (one set) keeps 0 ways, as does a leaf
+    missing any of the three properties.  There is no devicetree
+    property for the ways; this is the only place they are computed. *)
+Definition cache_ways (l : CacheLeaf) : N :=
+  if cl_acpi l then (cl_assoc l mod 2 ^ 8)%N
+  else if andb (negb (N.eqb (cl_assoc l) 1))
+               (andb (negb (N.eqb (cl_assoc l) 0))
+                     (andb (negb (N.eqb (cl_size l) 0))
+                           (negb (N.eqb (cl_line l) 0))))
+       then ((cl_size l / cl_assoc l) / cl_line l)%N
+       else 0%N.
+
+(** [coherency_line_size]: the PPTT's 16-bit field on the ACPI path,
+    the devicetree property on the other. *)
+Definition cache_line (l : CacheLeaf) : N :=
+  if cl_acpi l then (cl_line l mod 2 ^ 16)%N else cl_line l.
+
+(** [get_cache_size] returns [this_leaf->size], an [unsigned int], and
+    [get_cache_geometry] returns
+    [this_leaf->ways_of_associativity << 16 | this_leaf->coherency_line_size],
+    also an [unsigned int] (arch/riscv/kernel/cacheinfo.c).  Both are
+    widened into the auxv's 64-bit slot, so both are taken mod 2^32. *)
+Definition cache_size_word (l : CacheLeaf) : Z :=
+  (Z.of_N (cl_size l) mod 2 ^ 32)%Z.
+Definition cache_geometry_word (l : CacheLeaf) : Z :=
+  (Z.lor (Z.of_N (cache_ways l) * 2 ^ 16) (Z.of_N (cache_line l))
+   mod 2 ^ 32)%Z.
+
+
+(** * THE KERNEL BUILD THE RUN WAS LAUNCHED ON
+
+    Two facts about the launch that no trace reveals and that the model
+    cannot derive, and that are FIXED for a kernel image rather than
+    drawn per run: which optional memory-management behaviour the kernel
+    was built with, and which vDSO image it carries.  They sit together
+    in one record so that a later launch fact of the same kind costs one
+    field and no signature.
+
+    A run carries the record in its input ([ProcInput]'s [in_kernel]),
+    not in its entry: a pair of builds compared for equivalence runs on
+    ONE machine, which is why [in_hwcap] and [in_va_size] are inputs
+    too.  [init_model] copies it into [VmState]'s [vmst_kernel], where
+    [m_kernel] reads it.
+
+    EVERY VALUE OF EVERY FIELD NAMES A REAL BUILD, so [Run.valid_input]
+    carries no clause about this record and no consumer's destructuring
+    pattern changes.  That is what [vdso_text_pages]'s wrap below is
+    for. *)
+Record KernelBuild := mkKernelBuild {
+  kb_thp : bool
+    (* was the kernel built with CONFIG_TRANSPARENT_HUGEPAGE?  It
+       decides whether an anonymous request whose length is a multiple
+       of [pmd_size] takes the padded search and the 2 MiB alignment of
+       [thp_get_unmapped_area_vmflags] (Linux v6.18.46, commit
+       1f99e9ab748f, mm/huge_memory.c), which
+       [Sys/Mm/Mmap.linux_place] reads.  Both answers describe real
+       kernels: the riscv defconfig
+       (arch/riscv/configs/defconfig) does not set it, and
+       distribution kernels do *);
+  kb_vdso : N
+    (* which vDSO image the kernel build carries.  Its one use here is
+       the image's SIZE, through [vdso_text_pages] below; the image's
+       CONTENT belongs to the vDSO rules *);
+  kb_aslr : bool
+    (* does the launch RANDOMIZE?  [load_elf_binary] (fs/binfmt_elf.c)
+       sets PF_RANDOMIZE when the personality carries no
+       ADDR_NO_RANDOMIZE and [randomize_va_space] (mm/memory.c) is not
+       0.  It decides the stack draw ([randomize_stack_top], mm/util.c),
+       the mmap-base draw ([arch_mmap_rnd]) and the stack-randomization
+       pad [mmap_base] adds to the gap.  [Run.entry_launch_ok_va] reads
+       it *);
+  kb_guard : N
+    (* the [stack_guard_gap] boot parameter in PAGES
+       ([cmdline_parse_stack_guard_gap], mm/mmap.c; the default is 256
+       pages).  [stack_guard_gap_bytes] wraps it to SCOPE.md's
+       assumed range: at most 0x4aba6a2ab pages, which is what keeps
+       [mmap_base]'s MAX_GAP clamp inactive under Sv48 and Sv57 *);
+  kb_rnd_bits : N
+    (* [vm.mmap_rnd_bits], how many bits [arch_mmap_rnd] (mm/util.c)
+       draws.  [mmap_rnd_bits] wraps it to the sysctl's own range:
+       [ARCH_MMAP_RND_BITS_MIN] = 18 (arch/riscv/Kconfig) up to
+       [mmap_rnd_bits_max] ([set_mmap_rnd_bits_max],
+       arch/riscv/mm/init.c), 33 under Sv48 and Sv57, 24 under Sv39 *);
+  kb_rseq : bool
+    (* was the kernel built with CONFIG_RSEQ (init/Kconfig; riscv64
+       selects HAVE_RSEQ in arch/riscv/Kconfig and the option defaults
+       to y)?  [create_elf_tables] then emits AT_RSEQ_FEATURE_SIZE and
+       AT_RSEQ_ALIGN, so the auxv is 29 entries rather than 27.  It is
+       the ONE build fact that moves an address in the entry block *);
+  kb_vlenb : N
+    (* the vector unit's VLENB CSR, as [riscv_v_setup_vsize]
+       (arch/riscv/kernel/vector.c) read it.  AT_MINSIGSTKSZ is
+       computed from it; [launch_vlenb] below says which values the
+       encoding admits and why each names a real machine *);
+  kb_cache : CacheView
+    (* the machine's four cache leaves, which [ARCH_DLINFO] publishes
+       as eight auxv words *);
+}.
+
+(** The vvar pages the kernel maps below the vDSO text: four, fixed by
+    the build ([__VDSO_PAGES], arch/riscv/include/asm/vdso.h;
+    [VDSO_NR_PAGES], lib/vdso/datastore.c, Linux v6.18.46, commit
+    1f99e9ab748f). *)
+Definition vdso_vvar_pages : Z := 4.
+
+(** HOW MANY PAGES THE vDSO TEXT TAKES, for the build [kb] names.
+
+    One to sixteen, and EVERY [N] gives one, so no validity clause is
+    needed: a build whose image is larger than sixteen pages is not a
+    build this model describes, and SCOPE.md says so.
+
+    This is the ONE place the size of the image is read.  Everything
+    below — [vdso_len], [vdso_reserved], the placement rule, the
+    examples — goes through it, and every proof about the pair uses
+    [vdso_text_pages_pos] and [vdso_text_pages_le] rather than this
+    body, so a lane that gives the model a table of MEASURED images
+    replaces this body alone. *)
+Definition vdso_text_pages (kb : KernelBuild) : Z :=
+  (1 + Z.of_N (kb_vdso kb) mod 16)%Z.
+
+Lemma vdso_text_pages_pos : forall kb, (1 <= vdso_text_pages kb)%Z.
+Proof.
+  intros kb. unfold vdso_text_pages.
+  pose proof (Z.mod_pos_bound (Z.of_N (kb_vdso kb)) 16 ltac:(lia)). lia.
+Qed.
+
+Lemma vdso_text_pages_le : forall kb, (vdso_text_pages kb <= 16)%Z.
+Proof.
+  intros kb. unfold vdso_text_pages.
+  pose proof (Z.mod_pos_bound (Z.of_N (kb_vdso kb)) 16 ltac:(lia)). lia.
+Qed.
+
+(** The whole pair's width in bytes: the vvar pages and the text pages. *)
+Definition vdso_len (kb : KernelBuild) : Z :=
+  ((vdso_vvar_pages + vdso_text_pages kb) * page_size)%Z.
+
+Lemma vdso_len_bounds : forall kb,
+  (5 * page_size <= vdso_len kb <= 20 * page_size)%Z.
+Proof.
+  intros kb. unfold vdso_len, vdso_vvar_pages, page_size.
+  pose proof (vdso_text_pages_pos kb). pose proof (vdso_text_pages_le kb). lia.
+Qed.
+
+(** The build a model gets when nobody names one, and the build a
+    positional [mkProcInput] literal is launched on.  EVERY FIELD NAMES
+    A REAL LAUNCH, and between them they name the ORDINARY one, so a
+    fixture written through [mkProcInput] describes a launch Linux
+    gives rather than a corner of the record:
+
+    - no transparent huge pages (the riscv defconfig,
+      arch/riscv/configs/defconfig);
+    - vDSO image 1, two text pages under [vdso_text_pages] above;
+    - randomisation ON: [randomize_va_space] (mm/memory.c) defaults to
+      1 or 2, never 0, and the personality carries no ADDR_NO_RANDOMIZE;
+    - a stack guard gap of 256 pages, which is [stack_guard_gap]'s own
+      default (mm/mmap.c, [stack_guard_gap = 256UL << PAGE_SHIFT]);
+    - [vm.mmap_rnd_bits] 18, which [mmap_rnd_bits] gives for 0: riscv64
+      sets no ARCH_MMAP_RND_BITS_DEFAULT, so the boot value is
+      ARCH_MMAP_RND_BITS_MIN (arch/riscv/Kconfig, arch/Kconfig);
+    - CONFIG_RSEQ on, riscv64's default (init/Kconfig, arch/riscv/Kconfig
+      selects HAVE_RSEQ);
+    - no vector unit and no cache leaves reported, which is what a
+      machine whose devicetree carries neither gives
+      ([get_cacheinfo] finds no leaf, arch/riscv/kernel/cacheinfo.c).
+
+    A run built from a [ProcInput] never sees this value — [init_model]
+    installs [in_kernel] — exactly as with [default_nofile].
+    Linux v6.18.46, commit 1f99e9ab748f, throughout. *)
+Definition default_kernel : KernelBuild :=
+  mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent.
+
+(** THE GUARD GAP IN BYTES.  [stack_guard_gap] (mm/mmap.c, Linux
+    v6.18.46, commit 1f99e9ab748f) is [256UL << PAGE_SHIFT], and
+    [cmdline_parse_stack_guard_gap] replaces it with
+    [val << PAGE_SHIFT] for a decimal [val] on the boot command line.
+    So the parameter is a PAGE COUNT, and [kb_guard] holds it.
+
+    The [mod] is SCOPE.md's assumption about the machines the model
+    describes, not the kernel's own range: the kernel takes any
+    [unsigned long].  Below 0x4aba6a2ac pages, [mmap_base] (mm/util.c)
+    never clamps the gap at [MAX_GAP = STACK_TOP / 6 * 5] under Sv48 or
+    Sv57, so the base never falls below [mmap_base_min] even with 33
+    bits of randomization. *)
+Definition stack_guard_gap_pages (kb : KernelBuild) : Z :=
+  Z.of_N (kb_guard kb mod 0x4aba6a2ac).
+Definition stack_guard_gap_bytes (kb : KernelBuild) : Z :=
+  (page_size * stack_guard_gap_pages kb)%Z.
+
+Lemma stack_guard_gap_pages_bounds : forall kb,
+  (0 <= stack_guard_gap_pages kb <= 0x4aba6a2ab)%Z.
+Proof.
+  intros kb. unfold stack_guard_gap_pages.
+  split; [apply N2Z.is_nonneg|].
+  assert (Hlt : (stack_guard_gap_pages kb < 0x4aba6a2ac)%Z).
+  { unfold stack_guard_gap_pages.
+    replace 0x4aba6a2ac%Z with (Z.of_N 0x4aba6a2ac) by reflexivity.
+    apply N2Z.inj_lt, N.mod_lt. discriminate. }
+  unfold stack_guard_gap_pages in Hlt. lia.
+Qed.
+
+Lemma stack_guard_gap_bytes_bounds : forall kb,
+  (0 <= stack_guard_gap_bytes kb <= 0x4aba6a2ab000)%Z.
+Proof.
+  intros kb. unfold stack_guard_gap_bytes, page_size.
+  pose proof (stack_guard_gap_pages_bounds kb). lia.
+Qed.
+
+(** [vm.mmap_rnd_bits], the number of bits [arch_mmap_rnd] (mm/util.c)
+    draws for the mmap base.  [set_mmap_rnd_bits_max]
+    (arch/riscv/mm/init.c) sets the ceiling to
+    [MMAP_VA_BITS - PAGE_SHIFT - 3], which is 33 under Sv48 and Sv57
+    ([MMAP_VA_BITS_64] caps [VA_BITS] at 48, arch/riscv/include/asm/pgtable.h)
+    and 24 under Sv39; [ARCH_MMAP_RND_BITS_MIN] (arch/riscv/Kconfig) is
+    18 on 64-bit, and that is also the boot default, because riscv sets
+    no [ARCH_MMAP_RND_BITS_DEFAULT].  A root write to the sysctl moves
+    it anywhere in between, so the model quantifies over the range. *)
+Definition mmap_rnd_bits_max (v : VaSize) : Z :=
+  match v with Sv39 => 24%Z | Sv48 => 33%Z | Sv57 => 33%Z end.
+Definition mmap_rnd_bits (v : VaSize) (kb : KernelBuild) : Z :=
+  (18 + Z.of_N (kb_rnd_bits kb mod Z.to_N (mmap_rnd_bits_max v - 17)))%Z.
+
+Lemma mmap_rnd_bits_bounds : forall v kb,
+  (18 <= mmap_rnd_bits v kb <= mmap_rnd_bits_max v)%Z.
+Proof.
+  intros v kb. unfold mmap_rnd_bits.
+  pose proof (N2Z.is_nonneg (kb_rnd_bits kb mod Z.to_N (mmap_rnd_bits_max v - 17))).
+  assert (Hlt : (Z.of_N (kb_rnd_bits kb mod Z.to_N (mmap_rnd_bits_max v - 17))
+                 < Z.of_N (Z.to_N (mmap_rnd_bits_max v - 17)))%Z).
+  { apply N2Z.inj_lt, N.mod_lt. destruct v; discriminate. }
+  rewrite Z2N.id in Hlt by (destruct v; cbn; lia).
+  lia.
+Qed.
+
+(** VLENB, the vector unit's register length in bytes, as
+    [riscv_v_setup_vsize] (arch/riscv/kernel/vector.c) read it:
+    [riscv_v_vsize] is [32 * vlenb].
+
+    A hart whose AT_HWCAP carries the V bit has a RATIFIED vector unit,
+    whose VLEN is a power of two from 128 to 65536 bits, so VLENB is
+    [16 * 2^k] for [k] from 0 to 9.  The V bit is bit 21 of the mask,
+    [1 << ('V' - 'A')] (arch/riscv/include/uapi/asm/hwcap.h,
+    COMPAT_HWCAP_ISA_V).
+
+    WITHOUT THE BIT the machine may still have a vector unit, and
+    AT_MINSIGSTKSZ still reflects it: [signal_minsigstksz] is computed
+    once at boot by [init_rt_signal_env] (arch/riscv/kernel/signal.c)
+    from [has_vector() || has_xtheadvector()], a fact of the hart,
+    while [ELF_HWCAP] clears the V bit for a process that asked for it
+    with PR_RISCV_V_SET_CONTROL (arch/riscv/kernel/cpufeature.c).  So 0
+    means no vector unit here and any other value is a VLENB from 1 to
+    2^32 - 1, the width of [riscv_v_vsize]'s own type.
+
+    UNSETTLED: whether this encoding gives exactly the producible
+    values.  Two points are open — which vector units can set
+    AT_HWCAP's V bit, and the ACPI path's other cache fields.  What
+    would change it: a value the encoding admits that no kernel
+    publishes, or the reverse. *)
+Definition hwcap_has_v (h : word) : bool := Z.testbit (bv_unsigned h) 21.
+
+Definition launch_vlenb (kb : KernelBuild) (hwcap : word) : Z :=
+  if hwcap_has_v hwcap then (16 * 2 ^ Z.of_N (kb_vlenb kb mod 10))%Z
+  else if N.eqb (kb_vlenb kb) 0 then 0%Z
+  else (1 + Z.of_N ((kb_vlenb kb - 1) mod (2 ^ 32 - 1)))%Z.
+
+(** AT_MINSIGSTKSZ: [signal_minsigstksz]
+    (arch/riscv/kernel/signal.c), which [init_rt_signal_env] computes
+    once as [get_rt_frame_size(true)]:
+
+      [frame_size = sizeof(struct rt_sigframe);]
+      [if (has_vector() || has_xtheadvector()) frame_size += riscv_v_sc_size;]
+      [frame_size = round_up(frame_size, 16);]
+
+    with
+    [riscv_v_sc_size = sizeof(struct __riscv_ctx_hdr) + sizeof(struct __sc_riscv_v_state) + riscv_v_vsize]
+    = [8 + 48 + 32 * vlenb].
+
+    [sizeof(struct rt_sigframe)] is 1088 on rv64: 128 bytes of
+    [siginfo] ([SI_MAX_SIZE], include/uapi/asm-generic/siginfo.h) and
+    960 of [struct ucontext] (arch/riscv/include/uapi/asm/ucontext.h) —
+    8 + 8 for [uc_flags] and [uc_link], 24 for [stack_t], 8 for
+    [sigset_t], 120 for [__unused], 8 of padding, then 784 for
+    [struct sigcontext] (256 for [user_regs_struct] and 528 for the
+    floating-point union).  A4's real-kernel run checks the number.
+
+    [ARCH_DLINFO] emits AT_IGNORE instead when [signal_minsigstksz] is
+    0, which it never is: the frame is at least 1088 bytes. *)
+Definition rt_sigframe_size : Z := 1088%Z.
+
+Definition min_sigframe_size (kb : KernelBuild) (hwcap : word) : Z :=
+  let v := launch_vlenb kb hwcap in
+  let vsz := if Z.eqb v 0 then 0%Z else (8 + 48 + 32 * v)%Z in
+  ((rt_sigframe_size + vsz + 15) / 16 * 16)%Z.
+
+(** THE EXEC FILE NAME a positional [mkProcInput] literal gets: the
+    one-byte relative path "a", which [Run.valid_execfn] admits. *)
+Definition default_execfn : list byte := [Z_to_bv 8 97].
+
 (** The virtual-memory subsystem.  [vmst_lazy] records page-aligned sparse
     anonymous reservations whose backing is charged on first data access;
     [vmst_materialized] is the deduplicated set of page bases already charged.
@@ -2997,6 +3430,10 @@ Record VmState := mkVmState {
   vmst_maps : VmMaps;
   vmst_lazy : list (word * word);
   vmst_materialized : list word;
+  vmst_kernel : KernelBuild
+    (* the build the run was launched on, copied from [ProcInput]'s
+       [in_kernel] by [init_model] and written by nothing else.  Read it
+       with [m_kernel] *);
 }.
 
 (** The channels.  Standard input carries the UNCONSUMED remainder of the
@@ -3685,6 +4122,8 @@ Definition m_vmmaps (m : Model) : VmMaps := vmst_maps (m_vm m).
 Definition m_vm_lazy (m : Model) : list (word * word) := vmst_lazy (m_vm m).
 Definition m_vm_materialized (m : Model) : list word :=
   vmst_materialized (m_vm m).
+(** The kernel build this run was launched on; see [KernelBuild]. *)
+Definition m_kernel (m : Model) : KernelBuild := vmst_kernel (m_vm m).
 Definition m_stdin (m : Model) : InputStream := iost_stdin (m_io m).
 Definition m_urandom (m : Model) : InputStream := iost_urandom (m_io m).
 Definition m_net (m : Model) : NetQueue := iost_net (m_io m).
@@ -3768,7 +4207,7 @@ Definition default_nofile : word := Z_to_bv 64 1024.
 Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
     (stdin : InputStream) (fs : Fs.Fs) (halted : option word)
     (tid : option word) (rlim : option (list byte)) : Model :=
-  mkModelOf (mkFdState fds []) (mkVmState vm [] [])
+  mkModelOf (mkFdState fds []) (mkVmState vm [] [] default_kernel)
             (mkIoState stdin IEof net_silent (Z_to_bv 64 0)) (mkFsState fs)
             (mkProcState halted tid
                (mkCreds overflow_id overflow_id overflow_id
@@ -3789,11 +4228,17 @@ Definition with_pipes (ps : list (word * PipeBuf)) (m : Model) : Model :=
     (m_lim m) (m_time m).
 Definition with_vmmaps (h : VmMaps) (m : Model) : Model :=
   mkModelOf (m_fd m)
-    (mkVmState h (m_vm_lazy m) (m_vm_materialized m))
+    (mkVmState h (m_vm_lazy m) (m_vm_materialized m) (m_kernel m))
     (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
 Definition with_vm_backing (lazy : list (word * word))
     (materialized : list word) (m : Model) : Model :=
-  mkModelOf (m_fd m) (mkVmState (m_vmmaps m) lazy materialized)
+  mkModelOf (m_fd m) (mkVmState (m_vmmaps m) lazy materialized (m_kernel m))
+    (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
+(** Install the launch's kernel build.  Its ONE caller is [init_model]:
+    the build is a fact about the machine, and no step changes it. *)
+Definition with_kernel (kb : KernelBuild) (m : Model) : Model :=
+  mkModelOf (m_fd m)
+    (mkVmState (m_vmmaps m) (m_vm_lazy m) (m_vm_materialized m) kb)
     (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
 Definition with_stdin (s : InputStream) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (mkIoState s (m_urandom m) (m_net m) (m_conn_ix m))
@@ -4856,6 +5301,68 @@ Proof.
   change (bv_modulus 64) with two_pow_64. exact Hz.
 Qed.
 
+(** THE vdso/vvar PAIR AS LEDGER ENTRIES, ending at [top].
+
+    [__setup_additional_pages] (arch/riscv/kernel/vdso.c, Linux
+    v6.18.46, commit 1f99e9ab748f) asks [get_unmapped_area] for
+    [vdso_text_len + VVAR_SIZE] in one request, maps the vvar pages at
+    the bottom of what it gets and the text above them.  So the vvar
+    entry comes first and the text ends at [top].
+
+    [[]] WHEN THE PAIR WOULD NOT FIT above the first page: a ledger
+    whose [top] is that low describes no launch, and an entry at a
+    negative address is not a word.
+
+    They go in [vm_reserved] rather than [vm_maps] (the OSSV-231 plan,
+    decision D4): the placement search, an in-place [mremap] grow and
+    MAP_FIXED_NOREPLACE all read [vm_reserved], while a whole [munmap]
+    of a [vm_maps] entry would SUCCEED, and Linux's answer to an
+    [munmap] of part of the pair is not that. *)
+Definition vdso_reserved (kb : KernelBuild) (top : Z) : list (word * word) :=
+  let base := (top - vdso_len kb)%Z in
+  if (base <? page_size)%Z then []
+  else [ (Z_to_bv 64 base, Z_to_bv 64 (vdso_vvar_pages * page_size));
+         (Z_to_bv 64 (base + vdso_vvar_pages * page_size),
+          Z_to_bv 64 (vdso_text_pages kb * page_size)) ].
+
+(** The pair lies inside [[top - vdso_len kb, top)] — what a proof
+    about the INITIAL ledger needs in order to say that a range below
+    the pair, or at or above [top], misses it. *)
+Lemma vdso_reserved_above : forall kb top a n,
+  (top < two_pow_64)%Z ->
+  In (a, n) (vdso_reserved kb top) ->
+  ((top - vdso_len kb <= bv_unsigned a)%Z
+   /\ (bv_unsigned a + bv_unsigned n <= top)%Z).
+Proof.
+  intros kb top a n Htop Hin. unfold vdso_reserved in Hin.
+  pose proof (vdso_text_pages_pos kb). pose proof (vdso_text_pages_le kb).
+  pose proof (vdso_len_bounds kb).
+  unfold vdso_len, vdso_vvar_pages, page_size in *.
+  destruct (Z.ltb_spec (top - (4 + vdso_text_pages kb) * 4096) 4096) as [Hlt|Hge];
+    [cbn in Hin; contradiction|].
+  cbn in Hin. destruct Hin as [Heq|[Heq|[]]]; inversion Heq; subst a n;
+    rewrite !bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia);
+    unfold two_pow_64 in *; lia.
+Qed.
+
+(** Every entry of the pair names at least one byte, so neither closes
+    a [region_free] gate over a range it holds no byte of (see
+    [entries_nonzero] below). *)
+Lemma vdso_reserved_nonzero : forall kb top a n,
+  (top < two_pow_64)%Z ->
+  In (a, n) (vdso_reserved kb top) ->
+  (0 < bv_unsigned n)%Z.
+Proof.
+  intros kb top a n Htop Hin. unfold vdso_reserved in Hin.
+  pose proof (vdso_text_pages_pos kb). pose proof (vdso_text_pages_le kb).
+  pose proof (vdso_len_bounds kb).
+  unfold vdso_len, vdso_vvar_pages, page_size in *.
+  destruct (Z.ltb_spec (top - (4 + vdso_text_pages kb) * 4096) 4096) as [Hlt|Hge];
+    [cbn in Hin; contradiction|].
+  cbn in Hin. destruct Hin as [Heq|[Heq|[]]]; inversion Heq; subst a n;
+    rewrite bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia); lia.
+Qed.
+
 (** Cutting a NONEMPTY entry leaves nonempty remnants: each of the two
     is emitted under exactly the guard that makes its size positive. *)
 Lemma iv_subtract_nonzero : forall (a sz : word) loZ hiZ,
@@ -5665,8 +6172,38 @@ Record ProcInput := mkProcInput_full {
 
        [Run.valid_input] has NO clause naming it: [fs_seed_tmp] seeds
        any list into the canonical form, so every value is one a launch
-       could present ([fs_seed_tmp_valid]). *)
-;
+       could present ([fs_seed_tmp_valid]). *);
+  in_kernel : KernelBuild
+    (* THE ENVIRONMENT'S DECLARATION of the kernel build the process
+       was launched on: see [KernelBuild] for what it holds and why it
+       is an input rather than a field of the entry.  [init_model]
+       copies it into [vmst_kernel], where [m_kernel] reads it, and
+       [Sys/Mm/Mmap.linux_place] is its one consumer today.
+
+       [Run.valid_input] has NO clause naming it: every value of every
+       field names a build a launch could present.  [Run.valid_entry]
+       reads it too, to decide which stack tops, stack pointers and
+       mmap bases this launch can give *);
+  in_execfn : list byte
+    (* THE EXEC FILE NAME, [bprm->filename] (fs/exec.c, [alloc_bprm],
+       Linux v6.18.46, commit 1f99e9ab748f), WITHOUT its NUL.
+
+       It is on the input rather than on the entry because a statement
+       compares the two binaries on ONE input: a name per entry would
+       compare two binaries launched under different names, while the
+       bytes of the name sit on the initial stack of both.
+       [do_execveat_common] copies it FIRST
+       ([copy_string_kernel], then [bprm->exec = bprm->p]), so it
+       sits at the top of the string area and AT_EXECFN points at it
+       ([StackLayout.at_execfn_ptr]).  [Run.valid_execfn] says which
+       names [getname_flags] (fs/namei.c) and [alloc_bprm] can
+       produce, and [Run.valid_launch] counts its bytes against the
+       E2BIG limit of [bprm_stack_limits].
+
+       RESIDUAL: on Linux the name resolves to the image's file.  This
+       model holds the image's SEGMENTS, not its file, so [in_fs] need
+       not hold a file at this name, and a program that opens its own
+       AT_EXECFN gets [in_fs]'s answer.  SCOPE.md records it *);
   in_channel_reader : bool
     (* THE ENVIRONMENT'S DECLARATION of whether the far end of
        descriptors 1 and 2 still has a reader.  [true]: a write to
@@ -5681,11 +6218,10 @@ Record ProcInput := mkProcInput_full {
        as it carries none for the launching uid or the blocked mask.
        What makes this one matter is that the answer changes the
        OUTCOME and not only a returned number: with no reader, Linux
-       raises SIGPIPE at the write (fs/pipe.c [anon_pipe_write]
-       :460-465 for a pipe, net/core/stream.c [sk_stream_error]
-       :190-198 for a socket, Linux v6.18.46, commit 1f99e9ab748f) and
-       the process DIES, where the model used to answer a byte count
-       and let the program run on.
+       raises SIGPIPE at the write ([anon_pipe_write], fs/pipe.c, for a
+       pipe; [sk_stream_error], net/core/stream.c, for a socket; Linux
+       v6.18.46, commit 1f99e9ab748f) and the process DIES, where the
+       model used to answer a byte count and let the program run on.
 
        A LAUNCH FACT AND NOT A PER-CALL CHOICE, for the reason
        [procst_utsname] is pinned rather than chosen afresh: a [choose]
@@ -5693,22 +6229,27 @@ Record ProcInput := mkProcInput_full {
        finds a reader and the next does not with no close in between,
        which no launch produces.  One run has one answer.
 
-       [Run.valid_input] DOES NOT CONSTRAIN IT, and that is the whole
-       point of the revision this field came in with.  Both values name
-       a real launch, so every statement quantified over [valid_input]
-       covers both: the run whose standard output is read, and the run
+       WHETHER [Run.valid_input] CONSTRAINS IT IS AN OPEN DECISION of
+       the stream owner (dispatch://OSSV-266/ask/77724e06), and BOTH
+       READINGS ARE WRITTEN so that the answer is one definition and
+       not a day's work.  Today the ordinary predicate leaves it free,
+       so every statement quantified over [Run.valid_input] covers both
+       launches: the run whose standard output is read, and the run
        that is the writing end of `prog | head -1` after `head` has had
-       its line.  Before this field the write arm ADMITTED a byte count
-       for the second kind of launch and let the program run on, so
-       every such statement was silently sound only for the first; the
-       field does not add that assumption, it removes it.  The one
-       place the reader-present reading survives is
-       [EquivalenceDefinition.FinInput.to_proc_input], which fills this
-       with [true] because [FinProcInput] has no field for it.
+       its line.  [Run.valid_input_channel_closed] is the named other
+       world, in the shape [Run.valid_input_sigpipe_ignored] has, ready
+       for the reading in which the ordinary predicate pins the reader
+       PRESENT and the closed launch is asked for by name.
+
+       WHAT IS NOT OPEN: before this field the write arm ADMITTED a
+       byte count for the reader-less launch and let the program run
+       on, so every such statement was silently sound only for the
+       other one.  The field does not add that assumption, it makes it
+       sayable.  The one place the reader-present reading survives
+       unasked is [EquivalenceDefinition.FinInput.to_proc_input].
 
        [init_model] copies this into [procst_channel_reader] and
-       nothing else writes it *)
-;
+       nothing else writes it *);
   in_sigpipe_default : bool
     (* THE TASK'S DECLARATION of whether SIGPIPE is still at its
        DEFAULT DISPOSITION when the program starts.  [true]: SIG_DFL,
@@ -5728,38 +6269,39 @@ Record ProcInput := mkProcInput_full {
        install for signal 13.  Ignoring SIGPIPE is what a service
        manager, a shell wrapper and several language runtimes do.
 
-       [Run.valid_input] PINS IT TO [true], and that is the difference
-       from [in_channel_reader] above.  The two fields gate the same
-       death, but this one is the TASK's stance and not the
-       environment's, so it is declared the way the abort stance is:
-       [Run.valid_input] is the ordinary launch, and
-       [Run.valid_input_sigpipe_ignored] is the other world, with
-       [Run.valid_input_sigpipe_either] asserting both.  Without the
-       field every statement here would carry the SIG_DFL launch as an
-       UNSTATED premise, and a launcher that ignores SIGPIPE would be
-       handed a model that kills the process where Linux returns -EPIPE
-       and runs on.
+       [Run.valid_input] PINS IT TO [true], and that is settled where
+       the reader above is not.  The two fields gate the same death,
+       but this one is the TASK's stance and not the environment's, so
+       it is declared the way the abort stance is: [Run.valid_input] is
+       the ordinary launch, [Run.valid_input_sigpipe_ignored] is the
+       other world, and [Run.valid_input_sigpipe_either] asserts both.
+       Without the field every statement here would carry the SIG_DFL
+       launch as an UNSTATED premise, and a launcher that ignores
+       SIGPIPE would be handed a model that kills the process where
+       Linux returns -EPIPE and runs on.
 
        [init_model] copies this into [procst_sigpipe_default] and
        nothing else writes it *)
 }.
 
-(** THE POSITIONAL-LITERAL FORM: every field except the four
+(** THE POSITIONAL-LITERAL FORM: every field except the six
     TRAILING DECLARATION fields of the record ([in_urandom], [in_tmp],
-    [in_channel_reader], [in_sigpipe_default]).
+    [in_kernel], [in_execfn], [in_channel_reader],
+    [in_sigpipe_default]).
 
     The record's own constructor is [mkProcInput_full] and takes every
     field.  This takes the first thirteen, in that order, and fills the
-    last four with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, A LIVE
-    CHANNEL READER and SIGPIPE AT SIG_DFL: [default_urandom], which is
-    zero bytes forever; a private /tmp that starts empty; [true], the
-    reading every literal written before [in_channel_reader] existed was
-    already assuming (and which [Run.valid_input] deliberately does NOT
-    pin, so both readings are covered); and [true] again, the SIG_DFL
-    launch [Run.valid_input] DOES pin.  So a literal written through
-    this name denotes an input in an environment that holds no file of
-    its own, whose standard output is read, and whose SIGPIPE still
-    kills.
+    last six with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
+    DEFAULT KERNEL BUILD, THE DEFAULT EXEC NAME, A LIVE CHANNEL READER
+    and SIGPIPE AT SIG_DFL: [default_urandom], which is zero bytes
+    forever; a private /tmp that starts empty; [default_kernel], a
+    kernel built without transparent huge pages; [default_execfn], the
+    one-byte name "a"; [true], the reading every literal written before
+    [in_channel_reader] existed was already assuming; and [true] again,
+    the SIG_DFL launch [Run.valid_input] pins.  So a literal written
+    through this name denotes an input in an environment that holds no
+    file of its own, on an ordinary kernel, launched as "a", whose
+    standard output is read, and whose SIGPIPE still kills.
 
     THE RANDOM DEFAULT IS NOT [IEof]: under
     [Run.valid_urandom] every valid input declares an endless stream, so
@@ -5784,7 +6326,8 @@ Definition mkProcInput
     (nofile sigmask hwcap : word) (abort_terminal : bool)
     (va_size : VaSize) : ProcInput :=
   mkProcInput_full argv envp image_fs stdin uid gid groups net
-    nofile sigmask hwcap abort_terminal va_size default_urandom [] true true.
+    nofile sigmask hwcap abort_terminal va_size default_urandom []
+    default_kernel default_execfn true true.
 
 (** THE FILE SYSTEM THE RUN STARTS WITH: the image, with the run's
     declared private /tmp seeded into it under absolute keys.
@@ -5846,6 +6389,22 @@ Definition in_fs (inp : ProcInput) : Fs.Fs :=
    effective id differs — is not an input this model can state.
    ========================================================================= *)
 
+(** THE INITIAL RESERVED LEDGER: the image the kernel mapped, and the
+    vdso/vvar pair [execve] installed above it.
+
+    The pair ends at [vdso_top] of the ledger this very function
+    builds, which for [mkVmMapsFull reserved [] [] brk0 brk0 lim mbase
+    sp] is [page_round_down_Z (Z.min mbase (sp - stack_max_size))].
+    Written out here rather than called on the finished model because
+    the model is what this term is building; [vm_reserved_init_model]
+    below states the two forms are the same. *)
+Definition init_reserved (reserved : list (word * word))
+    (mbase sp : word) (kb : KernelBuild) : list (word * word) :=
+  reserved
+  ++ vdso_reserved kb
+       (page_round_down_Z
+          (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
+
 (** BUILT WITH ONE CONSTRUCTOR, not with a chain of [with_*] setters,
     and that is a performance fact worth stating where it is easy to
     undo.
@@ -5887,7 +6446,9 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     (mkFdState [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
                  (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
                  (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ] [])
-    (mkVmState (mkVmMapsFull reserved [] [] brk0 brk0 lim mbase sp) [] [])
+    (mkVmState (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
+                             [] [] brk0 brk0 lim mbase sp)
+               [] [] (in_kernel inp))
     (mkIoState (in_stdin inp) (in_urandom inp) (in_net inp) (Z_to_bv 64 0))
     (mkFsState (in_fs inp))
     (mkProcState None None
@@ -5913,6 +6474,7 @@ Definition init_model_setter_chain (reserved : list (word * word))
   (with_nofile (in_nofile inp)
    (with_net (in_net inp)
    (with_urandom (in_urandom inp)
+   (with_kernel (in_kernel inp)
    (with_creds
     (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
              (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
@@ -5920,12 +6482,172 @@ Definition init_model_setter_chain (reserved : list (word * word))
        [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
          (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
          (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
-       (mkVmMapsFull reserved [] [] brk0 brk0 lim mbase sp)
+       (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
+          [] [] brk0 brk0 lim mbase sp)
        (in_stdin inp)
        (in_fs inp)
        None
        None
-       None)))))))).
+       None))))))))).
+
+Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
+  m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_init_model : model.
+
+Lemma vdso_top_init_model : forall reserved brk0 mbase sp lim inp,
+  vdso_top (m_vmmaps (init_model reserved brk0 mbase sp lim inp))
+  = page_round_down_Z
+      (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size)).
+Proof.
+  intros. unfold vdso_top, mmap_top, alloc_top. cbn.
+  apply page_round_down_Z_min_r.
+Qed.
+
+Lemma vm_reserved_init_model : forall reserved brk0 mbase sp lim inp,
+  vm_reserved (m_vmmaps (init_model reserved brk0 mbase sp lim inp))
+  = reserved
+    ++ vdso_reserved (in_kernel inp)
+         (vdso_top (m_vmmaps (init_model reserved brk0 mbase sp lim inp))).
+Proof.
+  intros. rewrite vdso_top_init_model. reflexivity.
+Qed.
+
+(** THE KERNEL BUILD SURVIVES EVERY SETTER, because no step changes the
+    machine the run is on.  [with_kernel] is the one writer, and its one
+    caller is [init_model].  Registered in [model] so a proof that
+    reaches [m_kernel] through a stack of setters writes
+    [autorewrite with model] and names no field. *)
+Lemma m_kernel_with_kernel : forall kb m, m_kernel (with_kernel kb m) = kb.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_kernel : model.
+
+Lemma m_kernel_with_vmmaps : forall v m,
+  m_kernel (with_vmmaps v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_vmmaps : model.
+
+Lemma m_kernel_with_vm_backing : forall lz mt m,
+  m_kernel (with_vm_backing lz mt m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_vm_backing : model.
+
+Lemma m_kernel_with_fds : forall v m, m_kernel (with_fds v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_fds : model.
+
+Lemma m_kernel_with_pipes : forall v m, m_kernel (with_pipes v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_pipes : model.
+
+Lemma m_kernel_with_stdin : forall v m, m_kernel (with_stdin v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_stdin : model.
+
+Lemma m_kernel_with_urandom : forall v m,
+  m_kernel (with_urandom v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_urandom : model.
+
+Lemma m_kernel_with_net : forall v m, m_kernel (with_net v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_net : model.
+
+Lemma m_kernel_with_accepted : forall v m,
+  m_kernel (with_accepted v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_accepted : model.
+
+Lemma m_kernel_with_fs : forall v m, m_kernel (with_fs v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_fs : model.
+
+Lemma m_kernel_with_halted : forall v m, m_kernel (with_halted v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_halted : model.
+
+Lemma m_kernel_with_killed : forall v m, m_kernel (with_killed v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_killed : model.
+
+Lemma m_kernel_with_tid : forall v m, m_kernel (with_tid v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_tid : model.
+
+Lemma m_kernel_with_rlimit_core : forall v m,
+  m_kernel (with_rlimit_core v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_rlimit_core : model.
+
+Lemma m_kernel_with_nofile : forall v m, m_kernel (with_nofile v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_nofile : model.
+
+Lemma m_kernel_with_utsname : forall v m,
+  m_kernel (with_utsname v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_utsname : model.
+
+Lemma m_kernel_with_statpin : forall p bs m,
+  m_kernel (with_statpin p bs m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_statpin : model.
+
+Lemma m_kernel_with_abort_terminal : forall v m,
+  m_kernel (with_abort_terminal v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_abort_terminal : model.
+
+(** The two launch declarations this revision added are setters of the
+    same kind, so they get the same row: the kernel build is not theirs
+    to change either. *)
+Lemma m_kernel_with_channel_reader : forall v m,
+  m_kernel (with_channel_reader v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_channel_reader : model.
+
+Lemma m_kernel_with_sigpipe_default : forall v m,
+  m_kernel (with_sigpipe_default v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigpipe_default : model.
+
+Lemma m_kernel_with_sigpipe_pending : forall m,
+  m_kernel (with_sigpipe_pending m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigpipe_pending : model.
+
+Lemma m_kernel_with_creds : forall v m, m_kernel (with_creds v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_creds : model.
+
+Lemma m_kernel_with_setsid_succeeded : forall m,
+  m_kernel (with_setsid_succeeded m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_setsid_succeeded : model.
+
+Lemma m_kernel_with_children : forall m,
+  m_kernel (with_children m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_children : model.
+
+Lemma m_kernel_with_sigmask : forall v m,
+  m_kernel (with_sigmask v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigmask : model.
+
+Lemma m_kernel_with_sigaltstack_installed : forall m,
+  m_kernel (with_sigaltstack_installed m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigaltstack_installed : model.
+
+Lemma m_kernel_with_sigabrt_pending : forall m,
+  m_kernel (with_sigabrt_pending m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigabrt_pending : model.
+
+Lemma m_kernel_with_clock : forall v m, m_kernel (with_clock v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_clock : model.
 
 Lemma init_model_is_the_setter_chain :
   forall reserved brk0 mbase sp lim inp,
@@ -8625,7 +9347,8 @@ Proof. reflexivity. Qed.
 
 Lemma m_vmmaps_init_model : forall reserved brk0 mbase sp lim inp,
   m_vmmaps (init_model reserved brk0 mbase sp lim inp) =
-  mkVmMapsFull reserved [] [] brk0 brk0 lim mbase sp.
+  mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
+    [] [] brk0 brk0 lim mbase sp.
 Proof. reflexivity. Qed.
 
 (** The grant bound of the model a run starts from, in the form the

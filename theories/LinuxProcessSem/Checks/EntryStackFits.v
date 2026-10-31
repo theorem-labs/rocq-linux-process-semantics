@@ -19,17 +19,22 @@
     - PART 2, the conjunct EXCLUDES NOTHING REAL: [near_top_sp], a
       stack pointer just below the top of the address space, is still
       admitted.  Its offset is stated once, at that definition, and so
-      is what it does and does not claim: it is the MODEL's minimal
-      image rounded up, not a placement a kernel produces, and the real
-      placements it stands in for are argued there.  This is the
-      direction an alternative — subtracting the worst-case
-      image from [sp_window_hi] once and for all — would get
-      wrong, and Part 2 says so with the arithmetic rather than in
-      prose.
-    - PART 3, the SPAN is not slack: [Run.entry_stack_span] is the bound
-      [entry_stack_fits] is stated against, and an over-estimate there
-      would silently reintroduce Part 2's exclusion.  It is attained
-      exactly at the minimal input.
+      is what it does and does not claim: it is the model's SPAN
+      rounded up, not the block a launch writes and not a placement a
+      kernel produces.  The kernel placement is stated beside it, read
+      off [Run.launch_sp_hi] — 528 bytes below the top for the minimal
+      input — and it is inside the same band.  This is the direction an
+      alternative — subtracting the worst-case image from
+      [sp_window_hi] once and for all — would get wrong, and Part 2
+      says so with the arithmetic rather than in prose.
+    - PART 3, the SPAN is a FLOOR the real block clears:
+      [Run.entry_stack_span] is the bound [entry_stack_fits] is stated
+      against, and the launch now writes a 27-entry auxv — 29 with
+      CONFIG_RSEQ — and the exec file name on top of the vectors, so
+      the real head plus strings is LARGER than the span at every
+      input.  The ceiling therefore never pretends the block is
+      smaller than the launch writes it, and it still leaves Part 2's
+      band open.
     - PART 4, what the conjunct does to the statements ABOVE it: an
       entry-inhabitation hypothesis may only be asked at the VALID
       inputs.  Over all inputs it is unsatisfiable — an argv nothing
@@ -67,7 +72,7 @@ Proof.
   pose proof (total_arg_bytes_nonneg envp).
   pose proof (Nat2Z.is_nonneg (length argv)).
   pose proof (Nat2Z.is_nonneg (length envp)).
-  unfold entry_stack_span, auxv_size. lia.
+  unfold entry_stack_span. lia.
 Qed.
 
 (** The top of the sp window is a 16-byte-aligned address inside it, so
@@ -116,11 +121,11 @@ Proof.
     rewrite Z_to_bv_unsigned, bv_wrap_small in Hhi
       by (unfold bv_modulus, sp_window_hi; cbn; lia).
     unfold sp_window_hi in Hhi. lia.
-  - destruct H as [_ [_ [_ Hfits]]].
+  - destruct H as [_ [_ [_ [Hfits _]]]].
     apply entry_stack_fits_va_sv48 in Hfits.
     exact (entry_stack_fits_refuses_window_top _ _ Hfits).
   - (* Sv57 shares the Sv48 ceiling *)
-    destruct H as [_ [_ [_ Hfits]]].
+    destruct H as [_ [_ [_ [Hfits _]]]].
     unfold entry_stack_fits_va, va_sp_window_hi, va_stack_top in Hfits.
     exact (entry_stack_fits_refuses_window_top _ _ Hfits).
 Qed.
@@ -140,7 +145,7 @@ Proof.
   pose proof (total_arg_bytes_nonneg envp).
   pose proof (Nat2Z.is_nonneg (length argv)).
   pose proof (Nat2Z.is_nonneg (length envp)).
-  unfold entry_stack_span, auxv_size in H. lia.
+  unfold entry_stack_span in H. lia.
 Qed.
 
 (* =========================================================================
@@ -149,8 +154,9 @@ Qed.
 
 (** The minimal input Linux delivers: argc = 1 with an empty argv[0] (the
     kernel rewrites an empty [execve] argv to exactly this, commit
-    dcd46d897adb — see [valid_argv]) and no environment.  Its stack image
-    is 216 bytes. *)
+    dcd46d897adb — see [valid_argv]) and no environment.  Its SPAN is
+    216 bytes; the block the launch really writes at it is larger, and
+    [minimal_head_and_strings] in Part 3 measures both. *)
 Definition minimal_argv : list (list byte) := [[]].
 Definition minimal_envp : list (list byte) := [].
 
@@ -158,16 +164,16 @@ Lemma minimal_span : entry_stack_span minimal_argv minimal_envp = 216%Z.
 Proof. reflexivity. Qed.
 
 (** 224 bytes below the top of the address space: 16-byte aligned, inside
-    the sp window, and enough room for that 216-byte image.  224 is the
-    MODEL's minimal image rounded up, not a kernel measurement, and no
-    kernel puts [sp] exactly here — Linux writes a larger block than this
-    model does.  [create_elf_tables] emits 16 unconditional
-    [NEW_AUX_ENT]s and expands riscv's [ARCH_DLINFO] on top of them,
-    which adds [AT_SYSINFO_EHDR] and eight cache-descriptor entries,
-    against [StackLayout]'s 10; it also pushes the [AT_EXECFN] pathname
-    string.  So a real entry [sp] with randomization off lands some
-    hundreds of bytes lower than this.  What this
-    witness is for is the COMPARISON in
+    the sp window, and enough room for that 216-byte span.  224 is the
+    SPAN rounded up to a multiple of 16 — not a block, and not a kernel
+    measurement.  The launch's own minimal block is larger and its
+    entry [sp] is 528 bytes below the top ([minimal_launch_sp_hi]),
+    because [StackLayout]'s auxv carries all 27 entries
+    [create_elf_tables] and riscv's [ARCH_DLINFO] emit — 16
+    unconditional [NEW_AUX_ENT]s, [AT_SYSINFO_EHDR], eight
+    cache-descriptor entries and [AT_MINSIGSTKSZ], 29 of them with
+    CONFIG_RSEQ — and the launch pushes the [AT_EXECFN] pathname
+    string below them.  What this witness is for is the COMPARISON in
     [worst_case_ceiling_would_refuse_a_real_placement] below: with
     [PF_RANDOMIZE] clear, [randomize_stack_top] returns
     [PAGE_ALIGN(STACK_TOP)] unchanged (mm/util.c, Linux v6.18.46, commit
@@ -175,9 +181,11 @@ Proof. reflexivity. Qed.
     [arch_align_stack]'s subtraction (fs/exec.c, same tree), so the entry
     [sp] a kernel really produces for a small argv and envp is within a
     few hundred bytes of [sp_window_hi] — far above
-    [sp_window_hi - entry_stack_span_max], which is the line the absolute
-    alternative would draw.  The witness is model-side; the placements it
-    stands in for are not. *)
+    [sp_window_hi - entry_stack_span_max], which is the line the
+    absolute alternative would draw.  That real placement is no longer
+    argued in prose alone: the fifth conjunct of [Run.valid_entry_va]
+    pins it, and [worst_case_ceiling_would_refuse_the_real_launch]
+    states the comparison at it. *)
 Definition near_top_sp : word := Z_to_bv 64 (sp_window_hi - 224).
 
 Lemma near_top_sp_unsigned : bv_unsigned near_top_sp = (sp_window_hi - 224)%Z.
@@ -220,27 +228,90 @@ Proof.
   unfold entry_stack_span_max, sp_window_hi. lia.
 Qed.
 
+(** The same comparison at the placement the fifth conjunct of
+    [Run.valid_entry_va] really admits, rather than at a model-side
+    rounding of the span.  [Run.launch_sp_hi] reads the exec file name,
+    argv, envp and the [State.KernelBuild] of the input it is given and
+    nothing else, so the credentials, file system and input stream of
+    this record are filler — it exists to carry the minimal argv and
+    envp into [launch_sp_hi], not to be a valid input. *)
+Definition minimal_input : ProcInput :=
+  mkProcInput minimal_argv minimal_envp [] IEof (Z_to_bv 64 0) (Z_to_bv 64 0)
+              [] net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false
+              Sv48.
+
+(** With no draw at all — the stack VMA ending exactly at [STACK_TOP]
+    and [arch_align_stack] subtracting nothing — Linux puts the entry
+    stack pointer 528 bytes below the top of the address space: a
+    512-byte head ([StackLayout.block_head_size] with CONFIG_RSEQ: four
+    vector items and a 29-entry auxv), three bytes of strings, and the
+    eight-byte slot [create_init_stack_vma] (mm/vma_exec.c, Linux
+    v6.18.46, commit 1f99e9ab748f) leaves at the top, with
+    [create_elf_tables]'s 16-alignment mask taking the remainder. *)
+Lemma minimal_launch_sp_hi :
+  launch_sp_hi (Z_to_bv 64 sp_window_hi) minimal_input
+  = (sp_window_hi - 528)%Z.
+Proof. vm_compute. reflexivity. Qed.
+
+(** ...and 528 bytes is INSIDE the band the absolute alternative
+    refuses, by more than two megabytes.  This is Part 2's claim at a
+    kernel placement, not at a witness chosen here. *)
+Lemma worst_case_ceiling_would_refuse_the_real_launch :
+  (sp_window_hi - entry_stack_span_max
+   < launch_sp_hi (Z_to_bv 64 sp_window_hi) minimal_input)%Z.
+Proof.
+  rewrite minimal_launch_sp_hi.
+  unfold entry_stack_span_max, sp_window_hi. lia.
+Qed.
+
 (* =========================================================================
-   PART 3 — the span is the image's size, not a comfortable over-estimate
+   PART 3 — the span is a floor the real block clears, not a ceiling on it
    ========================================================================= *)
 
 (** [entry_stack_fits] is stated against [entry_stack_span] rather than
-    against [build_stack_bytes] itself, so that [Run] can reason about it
-    without [StackLayout]'s layout arithmetic.  That is only safe while
-    the span stays an upper bound ([PropExec.build_stack_bytes_within_span])
-    that is not slack: every byte of slack is a byte of the address space
-    the premise refuses to let a real image use, i.e. Part 2's exclusion
-    creeping back in a smaller size.
+    against [build_stack_bytes] itself, so that [Run] can reason about
+    it without [StackLayout]'s layout arithmetic.  The span counts a
+    160-byte auxv and no exec file name — the sizes the model's own
+    launch had while its auxv was ten entries — so it is now a FLOOR on
+    the real head plus strings and not a ceiling on them.  What keeps
+    the real image inside the address space is the fifth conjunct,
+    [Run.entry_launch_ok_va], which pins the stack VMA's end, the entry
+    stack pointer and the mmap base to the kernel's own three rules;
+    [Run.entry_launch_ok_va_fits] derives this ceiling from it, so the
+    two cannot drift apart.
 
-    At the minimal input the bound is ATTAINED — the span is the image's
-    length exactly, for every program-header record, stack pointer and
-    uid, none of which change the auxv's size.  So the near-top placement
-    Part 2 admits is admitted because the image really fits, not because
-    the bound happens to be generous there. *)
-Lemma entry_stack_span_attained_at_the_minimum : forall ph (sp : word) uid hw rnd,
-  Z.of_nat (length (build_stack_bytes ph sp minimal_argv minimal_envp uid hw rnd))
-  = entry_stack_span minimal_argv minimal_envp.
-Proof. reflexivity. Qed.
+    Keeping the ceiling BELOW the block is what makes it safe: a
+    premise that over-estimated the block would refuse address space a
+    real image can use, which is Part 2's exclusion creeping back in a
+    smaller size.  The floor below holds at every input and for either
+    CONFIG_RSEQ setting, and the measurement after it shows the gap at
+    the minimal input is 307 bytes — nothing beside the 2238671-byte
+    band Part 2 is about. *)
+Lemma entry_stack_span_is_a_floor_on_the_block :
+  forall rseq argv envp execfn,
+  (entry_stack_span argv envp
+   <= Z.of_nat (block_head_size rseq argv envp
+                + launch_string_bytes argv envp execfn + 8))%Z.
+Proof.
+  intros rseq argv envp execfn.
+  pose proof (block_head_size_bounds rseq argv envp) as [HCl _].
+  pose proof (launch_string_bytes_ge argv envp execfn) as HL.
+  pose proof (total_arg_bytes_nonneg argv).
+  pose proof (total_arg_bytes_nonneg envp).
+  rewrite !Nat2Z.inj_add.
+  unfold entry_stack_span. lia.
+Qed.
+
+(** The three measurements at the minimal input, under
+    [State.default_kernel] (CONFIG_RSEQ on, so a 29-entry auxv) and the
+    one-byte [State.default_execfn]: a 512-byte head and three bytes of
+    strings, against a 216-byte span. *)
+Lemma minimal_head_and_strings :
+  (Z.of_nat (block_head_size (kb_rseq default_kernel) minimal_argv minimal_envp),
+   Z.of_nat (launch_string_bytes minimal_argv minimal_envp default_execfn),
+   entry_stack_span minimal_argv minimal_envp)
+  = (512%Z, 3%Z, 216%Z).
+Proof. vm_compute. reflexivity. Qed.
 
 (* =========================================================================
    PART 4 — the conjunct bounds where an inhabitation hypothesis may be asked
@@ -296,7 +367,7 @@ Qed.
 Definition oversized_input : FinProcInput :=
   mkFinProcInput oversized_argv [] [] [] (Z_to_bv 64 0) (Z_to_bv 64 0) []
                  net_silent (Z_to_bv 64 0) (Z_to_bv 64 0) hwcap_rv64gc false Sv48
-                 [] [] true true.
+                 [] [] default_kernel default_execfn true true.
 
 (** The band the POINTER ARRAY alone excludes, stated over every [sp],
     argv and envp rather than at the witness: 268435457 argv entries need
@@ -314,7 +385,7 @@ Proof.
   pose proof (total_arg_bytes_nonneg argv).
   pose proof (total_arg_bytes_nonneg envp).
   pose proof (Nat2Z.is_nonneg (length envp)).
-  unfold sp_window_lo in Hlo. unfold sp_window_hi, auxv_size in H.
+  unfold sp_window_lo in Hlo. unfold sp_window_hi in H.
   lia.
 Qed.
 
@@ -329,7 +400,7 @@ Proof.
   intros [segs pc ph] H.
   destruct (H oversized_input) as [[sp brk mb rnd] Hen].
   unfold valid_entry in Hen. cbn [valid_entry_va in_va_size to_proc_input fin_va_size oversized_input] in Hen.
-  destruct Hen as [[Hlo _] [_ [_ Hfits]]].
+  destruct Hen as [[Hlo _] [_ [_ [Hfits _]]]].
   apply entry_stack_fits_va_sv48 in Hfits.
   unfold va_sp_window_lo, va_stack_top in Hlo.
   change (sp_window_hi - 2 * 1024 * 1024 * 1024)%Z with sp_window_lo in Hlo.

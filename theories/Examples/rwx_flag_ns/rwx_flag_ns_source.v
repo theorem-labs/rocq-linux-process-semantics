@@ -34,60 +34,87 @@ Open Scope bv_scope.
 
 Section SourceProof.
 
-Variable av ev : list (list byte).
-Hypothesis Hva : valid_argv av.
-Hypothesis Hve : valid_envp ev.
+(** The launch, as [Run.init_machine_state] now takes it: the whole
+    [State.ProcInput] record, the entry's mmap base, its stack pointer,
+    its program break and its draw.  The argv and envp lists, the
+    credentials, AT_HWCAP and the exec file name are FIELDS of [inp]
+    rather than separate arguments, because Linux builds the entry
+    block from exactly those ([create_elf_tables], fs/binfmt_elf.c,
+    Linux v6.18.46, commit 1f99e9ab748f), and the stack VMA's end is
+    [StackLayout.ed_top] of the draw.  So one [State.ProcInput] and one
+    [StackLayout.EntryDraw] fix the whole initial stack image.  The
+    shared form of this scaffolding is [Common.ArgvEnv]; it is written
+    out here because this file predates that module. *)
+Variable inp : ProcInput.
+Hypothesis Hva : valid_argv (in_argv inp).
+Hypothesis Hvl : valid_launch inp.
 
 (** The initial stack pointer is QUANTIFIED (ASLR): the whole section is
-    generic over any [rsp] in the valid window. *)
-Variable rsp : word.
+    generic over any [rsp] in the valid window.  So are the program
+    break and the mmap base, for the same reason. *)
+Variable rsp rbrk rmb : word.
 
 (** The entry stack draw this run was started with
     ([Run.ExecEntry]'s [en_draw]): the 16 AT_RANDOM bytes the kernel
-    picks afresh at every [execve], and the bytes of the entry stack's
-    last page above the block.  This proof may assume NOTHING about
-    either, exactly as it may assume nothing about where the stack
-    landed.  Quantified per binary, so the target's draw below is a
-    different variable. *)
+    picks afresh at every [execve], and the stack VMA's end
+    [StackLayout.ed_top] that [setup_arg_pages] (fs/exec.c, Linux
+    v6.18.46, commit 1f99e9ab748f) page-aligns.  This proof may assume
+    NOTHING about either beyond the launch conjunct below, exactly as
+    it may assume nothing about where the stack landed.  Quantified per
+    binary, so the target's draw below is a different variable. *)
 Variable rrnd : EntryDraw.
 Hypothesis Hsp_lo : (sp_window_lo <= bv_unsigned rsp)%Z.
 Hypothesis Hsp_hi : (bv_unsigned rsp <= sp_window_hi)%Z.
 
-Variable uid : word.
-
-Variable hw : word.
+(** The fifth conjunct of [Run.valid_entry_va]: this placement is one a
+    Linux launch can give.  It is what bounds the entry block (through
+    [StepTac.bsb_bound]) and what puts [rsp] at or below
+    [StackLayout.ed_top], hence the zero-filled stack window at or
+    above [rsp - 8 MiB] that the frame invariant needs
+    ([WxExec.mem_clear_wrap]).  [Run.valid_argv] and [Run.valid_envp]
+    no longer bound the block: the strings sit at the TOP of it now, and
+    the exec file name and [arch_align_stack]'s pad are in it too, so
+    the E2BIG cap of [Run.valid_launch] is the real bound. *)
+Hypothesis Hlaunch : entry_launch_ok_va Sv48 (mkEntry rsp rbrk rmb rrnd) inp.
 
 Lemma rsp_lo_num : (0x7fff80000000 <= bv_unsigned rsp)%Z.
 Proof. exact Hsp_lo. Qed.
 Lemma rsp_hi_num : (bv_unsigned rsp <= 0x800000000000)%Z.
 Proof. exact Hsp_hi. Qed.
 
-Definition argcN : word := len_word av.
+Definition argcN : word := len_word (in_argv inp).
 
-Lemma u_argcN : bv_unsigned argcN = Z.of_nat (length av).
+Lemma u_argcN : bv_unsigned argcN = Z.of_nat (length (in_argv inp)).
 Proof.
-  pose proof (valid_argv_len av Hva).
+  pose proof (valid_argv_len (in_argv inp) Hva).
   unfold argcN, len_word. apply u_Z2bv; lia.
 Qed.
 
 (** No-overflow bound for the initial stack image (feeds the stack-read
-    lemmas' side conditions). *)
-Lemma source_bsb_nw :
-  (bv_unsigned rsp + Z.of_nat (length (build_stack_bytes source_phdrs rsp av ev uid hw rrnd)) < 2^64)%Z.
+    lemmas' side conditions).  Quantified over the entry word because
+    the auxv's AT_ENTRY carries it and the block therefore mentions it,
+    while nothing here cares which value it is. *)
+Lemma source_bsb_nw : forall entry : word,
+  (bv_unsigned rsp
+   + Z.of_nat (length (entry_stack_image inp rmb source_phdrs entry rsp rrnd))
+     < 2^64)%Z.
 Proof.
-  pose proof (bsb_bound source_phdrs rsp av ev uid hw rrnd Hva Hve). pose proof rsp_hi_num. lia.
+  intros entry.
+  pose proof (bsb_bound Sv48 inp rmb source_phdrs entry rsp rbrk rrnd
+                Hvl Hlaunch).
+  pose proof rsp_hi_num. lia.
 Qed.
 
 (** The pointer _start stores into musl's [__environ] slot at 0x100e8. *)
 Definition envp_ptr : word :=
-  Z_to_bv 64 (bv_unsigned rsp + 8 + 8 * Z.of_nat (length av) + 8).
+  Z_to_bv 64 (bv_unsigned rsp + 8 + 8 * Z.of_nat (length (in_argv inp)) + 8).
 
 (** The value _start computes in a2 equals [envp_ptr]. *)
 Lemma envp_ptr_eq :
   v_addi (v_add (Z_to_bv 64 (bv_unsigned rsp + 8)) (v_slli argcN 3)) 8 = envp_ptr.
 Proof.
   pose proof rsp_hi_num. pose proof rsp_lo_num.
-  pose proof (valid_argv_len av Hva) as Hlen.
+  pose proof (valid_argv_len (in_argv inp) Hva) as Hlen.
   apply bv_eq. unfold envp_ptr, v_addi.
   rewrite !Z_to_bv_unsigned.
   rewrite v_add_small
@@ -106,10 +133,20 @@ Qed.
 (** Re-establish the frame invariant on the CURRENT overlay: peel the
     [wbytes] of the stores made so far (each lands at/above [stext_hi],
     so the [left] disjunct closes) down to the initial [wrap_mem],
-    which misses everything below the stack window. *)
+    which misses everything below the stack window.
+
+    The base arm is an [eapply] because [WxExec.mem_clear_wrap] now
+    takes the launch conjunct, whose address-space size and program
+    break the conclusion does not mention; [Hlaunch] fixes both.  Its
+    arithmetic arm is what says the zero-filled window stops at or
+    above [rsp - 8 MiB]: RLIMIT_STACK is counted from the stack VMA's
+    end rather than from [rsp] ([expand_downwards], mm/vma.c, Linux
+    v6.18.46, commit 1f99e9ab748f), and the launch conjunct is what
+    puts [rsp] at or below that end. *)
 Ltac src_clear :=
   first
-    [ apply mem_clear_wrap; unfold stack_max_size; lia
+    [ eapply mem_clear_wrap;
+        [ exact Hlaunch | unfold stack_max_size; lia ]
     | apply mem_clear_wbytes;
         [ src_clear
         | rewrite ?length_word_to_le_bytes; cbn [length];
@@ -134,11 +171,11 @@ Ltac wxf SF :=
 
 Lemma source_wexit :
   to_wexit source_segs
-    (init_machine_state source_segs 0x10078 source_phdrs rsp rrnd av ev uid hw)
+    (init_machine_state source_segs 0x10078 source_phdrs rsp rmb rrnd inp)
     [] (Z_to_bv 64 5).
 Proof.
   pose proof rsp_lo_num as Hlo. pose proof rsp_hi_num as Hhi.
-  pose proof (valid_argv_len av Hva) as Hargc.
+  pose proof (valid_argv_len (in_argv inp) Hva) as Hargc.
   rewrite init_mkst. norm_pc.
   (* 0x10078 auipc gp, 0x1 *)
   eapply tw_step;
@@ -157,7 +194,7 @@ Proof.
       [ wxf SF_10080 | reflexivity | exact SD_10080
       | getr_resolve; imm_norm; rewrite v_addi_0;
         rewrite rdn_wrap_stack_above by (u_norm; lia);
-        apply read_argc; exact source_bsb_nw
+        apply read_argc; apply source_bsb_nw
       | apply bytes_le_n_to_le_8 ]
     | step_simpl ].
   (* 0x10084 addi a1, sp, 8 *)
