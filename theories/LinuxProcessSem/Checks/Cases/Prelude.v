@@ -150,7 +150,7 @@ Definition demo_input_tmp (fs0 tmp0 : Fs.Fs) (stdin0 : InputStream)
     : ProcInput :=
   mkProcInput_full [] [] fs0 stdin0 demo_uid demo_gid demo_groups
                    net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false
-                   Sv48 default_urandom tmp0.
+                   Sv48 default_urandom tmp0 default_kernel.
 
 (** The credentials [demo_input] produces: an ordinary user whose real,
     effective and saved ids all agree, because [State.init_model] derives

@@ -10,7 +10,7 @@
     vector, and null-terminated string data. *)
 
 From Stdlib Require Import ZArith NArith List.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType Vdso.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -315,10 +315,40 @@ Proof. reflexivity. Qed.
     the bytes are stored memory in Linux, and a model that redrew them
     would call two programs that each echo their own byte equivalent
     when they are not. *)
-Record EntryDraw := mkDraw {
+Record EntryDraw := mkDraw_full {
   ed_random : bv 128;
-  ed_slack  : word -> byte
+  ed_slack  : word -> byte;
+  ed_vdso   : VdsoDraw
+    (* WHAT A vDSO CALL LEAVES BEHIND: from the index of the call in
+       the run, the caller-saved registers before it, the bytes of
+       [[sp - F, sp)] before it and the call's result, to the
+       caller-saved registers and those bytes after it.  F is the
+       chosen image's largest frame ([Vdso.vi_frame]).
+
+       It is part of the DRAW, beside [ed_random] and [ed_slack], for
+       the same reason they are: Linux's answer is what the vDSO's
+       compiled code left, a function of the same inputs and of time
+       values this model lets the environment choose, and the model
+       has no term for that code.  Drawing it once per launch — rather
+       than afresh at each call — is what makes two calls with the same
+       inputs leave the same bytes, as they do on a real run; the
+       call's INDEX is an argument so that two calls that are not the
+       same call still may differ.  [Run.init_config] copies it into
+       the model, where [Run.sstep]'s vDSO arm reads it. *)
 }.
+
+(** THE TWO-PLACE FORM: the entropy draw and the slack bytes, with the
+    vDSO draw filled by [Vdso.vdso_draw_keep] — the draw that gives
+    back the registers and frame bytes a call started with, which is
+    one Linux also gives (a vDSO function that touched neither a
+    scratch register nor its frame).
+
+    It exists for the reason [State.mkProcInput] does: the development
+    holds positional [mkDraw] literals, and a fixture that is not about
+    the leftovers should not have to name them.  A fixture that IS
+    about them writes [mkDraw_full]. *)
+Definition mkDraw (random : bv 128) (slack : word -> byte) : EntryDraw :=
+  mkDraw_full random slack vdso_draw_keep.
 
 (** The 16 bytes AT_RANDOM points at: this run's entropy draw
     (the [ed_random] half of [Run.ExecEntry]'s [en_draw]; see the auxv comment above for the

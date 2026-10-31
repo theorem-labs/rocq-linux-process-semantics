@@ -22,7 +22,7 @@
     fd-table/VmMaps helpers. *)
 
 From Stdlib Require Import ZArith List Bool.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs Vdso.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -3089,31 +3089,76 @@ Record KernelBuild := mkKernelBuild {
     1f99e9ab748f). *)
 Definition vdso_vvar_pages : Z := 4.
 
-(** HOW MANY PAGES THE vDSO TEXT TAKES, for the build [kb] names.
+(** WHICH MEASURED IMAGE THIS BUILD'S vDSO IS.
 
-    One to sixteen, and EVERY [N] gives one, so no validity clause is
-    needed: a build whose image is larger than sixteen pages is not a
-    build this model describes, and SCOPE.md says so.
+    [kb_vdso] names an entry of [Vdso.vdso_images], the images this
+    development has measured, by its position modulo their number.  So
+    every [N] names a real kernel build, and no [Run.valid_input]
+    clause is needed; a build whose image is NOT in the list is a build
+    no statement of this development speaks about, and SCOPE.md says
+    so.
+
+    Modulo the length rather than a bounds clause for the reason
+    [kb_thp] is a [bool]: the encoding is what keeps the launch facts
+    out of [valid_input], and a clause there would have to be
+    destructed by every proof that destructs an input. *)
+Definition vdso_image_of (kb : KernelBuild) : VdsoImage :=
+  nth (Nat.modulo (N.to_nat (kb_vdso kb)) (length vdso_images))
+      vdso_images vdso_image_default.
+
+(** HOW MANY PAGES THE vDSO TEXT TAKES, for the build [kb] names: the
+    page count of that build's MEASURED image.
 
     This is the ONE place the size of the image is read.  Everything
     below — [vdso_len], [vdso_reserved], the placement rule, the
     examples — goes through it, and every proof about the pair uses
     [vdso_text_pages_pos] and [vdso_text_pages_le] rather than this
-    body, so a lane that gives the model a table of MEASURED images
-    replaces this body alone. *)
+    body. *)
 Definition vdso_text_pages (kb : KernelBuild) : Z :=
-  (1 + Z.of_N (kb_vdso kb) mod 16)%Z.
+  Z.of_N (vi_pages (vdso_image_of kb)).
+
+(** Every measured image is between one and sixteen pages, and so is
+    the one [vdso_image_default] names, so the two bounds below hold
+    whatever [kb_vdso] is.  Both facts are about the concrete list, and
+    both are decided by the list itself: a measurement that broke
+    either would fail the build here rather than later, in a placement
+    proof that could not say why.  Neither proof names an entry, so
+    adding a measured image costs them nothing. *)
+Lemma vdso_images_pages_ok :
+  Forall (fun im => (1 <= vi_pages im <= 16)%N) vdso_images.
+Proof.
+  apply Forall_forall. intros im Hin.
+  repeat (destruct Hin as [<- | Hin]; [cbn [vi_pages]; lia |]).
+  destruct Hin.
+Qed.
+
+Lemma vdso_image_default_pages :
+  (1 <= vi_pages vdso_image_default <= 16)%N.
+Proof.
+  unfold vdso_image_default, vdso_images. cbn [vi_pages]. lia.
+Qed.
+
+Lemma vdso_image_of_pages : forall kb,
+  (1 <= vi_pages (vdso_image_of kb) <= 16)%N.
+Proof.
+  intros kb. unfold vdso_image_of.
+  set (i := Nat.modulo (N.to_nat (kb_vdso kb)) (length vdso_images)).
+  destruct (Nat.lt_ge_cases i (length vdso_images)) as [Hlt|Hge].
+  - apply (proj1 (Forall_forall _ _) vdso_images_pages_ok).
+    apply nth_In. exact Hlt.
+  - rewrite nth_overflow by exact Hge. exact vdso_image_default_pages.
+Qed.
 
 Lemma vdso_text_pages_pos : forall kb, (1 <= vdso_text_pages kb)%Z.
 Proof.
   intros kb. unfold vdso_text_pages.
-  pose proof (Z.mod_pos_bound (Z.of_N (kb_vdso kb)) 16 ltac:(lia)). lia.
+  pose proof (vdso_image_of_pages kb) as [H _]. lia.
 Qed.
 
 Lemma vdso_text_pages_le : forall kb, (vdso_text_pages kb <= 16)%Z.
 Proof.
   intros kb. unfold vdso_text_pages.
-  pose proof (Z.mod_pos_bound (Z.of_N (kb_vdso kb)) 16 ltac:(lia)). lia.
+  pose proof (vdso_image_of_pages kb) as [_ H]. lia.
 Qed.
 
 (** The whole pair's width in bytes: the vvar pages and the text pages. *)
@@ -3145,6 +3190,18 @@ Record VmState := mkVmState {
     (* the build the run was launched on, copied from [ProcInput]'s
        [in_kernel] by [init_model] and written by nothing else.  Read it
        with [m_kernel] *);
+  vmst_vdso : VdsoRun
+    (* WHAT A vDSO CALL LEAVES BEHIND, and how many calls the run has
+       made.  The draw is the launch's [StackLayout.ed_vdso], copied
+       from [Run.ExecEntry]'s draw by [Run.init_config] and written by
+       nothing else; the count is bumped by [Run.sstep]'s vDSO arm and
+       by nothing else.  Read both with [m_vdso].
+
+       It is HERE, in the model, rather than reachable from the step
+       relation's other arguments, because the draw is a fact of the
+       LAUNCH — like the kernel build beside it — and the step relation
+       sees the launch only through the model.  See Vdso.v for why the
+       leftovers are drawn at all. *)
 }.
 
 (** The channels.  Standard input carries the UNCONSUMED remainder of the
@@ -3693,6 +3750,8 @@ Definition m_vm_materialized (m : Model) : list word :=
   vmst_materialized (m_vm m).
 (** The kernel build this run was launched on; see [KernelBuild]. *)
 Definition m_kernel (m : Model) : KernelBuild := vmst_kernel (m_vm m).
+(** The launch's vDSO draw and the run's call count; see [Vdso.VdsoRun]. *)
+Definition m_vdso (m : Model) : VdsoRun := vmst_vdso (m_vm m).
 Definition m_stdin (m : Model) : InputStream := iost_stdin (m_io m).
 Definition m_urandom (m : Model) : InputStream := iost_urandom (m_io m).
 Definition m_net (m : Model) : NetQueue := iost_net (m_io m).
@@ -3762,7 +3821,8 @@ Definition default_nofile : word := Z_to_bv 64 1024.
 Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
     (stdin : InputStream) (fs : Fs.Fs) (halted : option word)
     (tid : option word) (rlim : option (list byte)) : Model :=
-  mkModelOf (mkFdState fds []) (mkVmState vm [] [] default_kernel)
+  mkModelOf (mkFdState fds [])
+            (mkVmState vm [] [] default_kernel (vdso_run_init vdso_draw_keep))
             (mkIoState stdin IEof net_silent (Z_to_bv 64 0)) (mkFsState fs)
             (mkProcState halted tid
                (mkCreds overflow_id overflow_id overflow_id
@@ -3782,18 +3842,56 @@ Definition with_pipes (ps : list (word * PipeBuf)) (m : Model) : Model :=
     (m_lim m) (m_time m).
 Definition with_vmmaps (h : VmMaps) (m : Model) : Model :=
   mkModelOf (m_fd m)
-    (mkVmState h (m_vm_lazy m) (m_vm_materialized m) (m_kernel m))
+    (mkVmState h (m_vm_lazy m) (m_vm_materialized m) (m_kernel m) (m_vdso m))
     (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
 Definition with_vm_backing (lazy : list (word * word))
     (materialized : list word) (m : Model) : Model :=
-  mkModelOf (m_fd m) (mkVmState (m_vmmaps m) lazy materialized (m_kernel m))
+  mkModelOf (m_fd m)
+    (mkVmState (m_vmmaps m) lazy materialized (m_kernel m) (m_vdso m))
     (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
 (** Install the launch's kernel build.  Its ONE caller is [init_model]:
     the build is a fact about the machine, and no step changes it. *)
 Definition with_kernel (kb : KernelBuild) (m : Model) : Model :=
   mkModelOf (m_fd m)
-    (mkVmState (m_vmmaps m) (m_vm_lazy m) (m_vm_materialized m) kb)
+    (mkVmState (m_vmmaps m) (m_vm_lazy m) (m_vm_materialized m) kb (m_vdso m))
     (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
+(** Install the launch's vDSO draw.  Its ONE caller is
+    [Run.init_config], which reads it off the entry's draw; a step
+    never changes the draw.  [with_vdso_calls] is the other half: the
+    vDSO arm of [Run.sstep] bumps the count and nothing else does. *)
+Definition with_vdso (v : VdsoRun) (m : Model) : Model :=
+  mkModelOf (m_fd m)
+    (mkVmState (m_vmmaps m) (m_vm_lazy m) (m_vm_materialized m) (m_kernel m) v)
+    (m_io m) (m_fsys m) (m_proc m) (m_lim m) (m_time m).
+Definition with_vdso_bump (m : Model) : Model :=
+  with_vdso (vdso_run_bump (m_vdso m)) m.
+
+(** The vDSO setters rebuild the VM subsystem and nothing else, so
+    every other subsystem is theirs unchanged.  These are the frame
+    facts the step relation's consequences need; the pattern is the one
+    the [with_*] block's header states. *)
+Lemma m_proc_with_vdso : forall v m, m_proc (with_vdso v m) = m_proc m.
+Proof. reflexivity. Qed.
+Lemma m_proc_with_vdso_bump : forall m, m_proc (with_vdso_bump m) = m_proc m.
+Proof. reflexivity. Qed.
+Lemma m_vmmaps_with_vdso : forall v m, m_vmmaps (with_vdso v m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+Lemma m_vmmaps_with_vdso_bump : forall m,
+  m_vmmaps (with_vdso_bump m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+Lemma m_kernel_with_vdso : forall v m, m_kernel (with_vdso v m) = m_kernel m.
+Proof. reflexivity. Qed.
+Lemma m_kernel_with_vdso_bump : forall m,
+  m_kernel (with_vdso_bump m) = m_kernel m.
+Proof. reflexivity. Qed.
+Lemma m_vdso_with_vdso : forall v m, m_vdso (with_vdso v m) = v.
+Proof. reflexivity. Qed.
+Lemma m_vm_lazy_with_vdso : forall v m,
+  m_vm_lazy (with_vdso v m) = m_vm_lazy m.
+Proof. reflexivity. Qed.
+Lemma m_vm_materialized_with_vdso : forall v m,
+  m_vm_materialized (with_vdso v m) = m_vm_materialized m.
+Proof. reflexivity. Qed.
 Definition with_stdin (s : InputStream) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (mkIoState s (m_urandom m) (m_net m) (m_conn_ix m))
             (m_fsys m) (m_proc m) (m_lim m) (m_time m).

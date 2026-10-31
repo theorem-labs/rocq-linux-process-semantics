@@ -717,21 +717,24 @@ Definition omni_run (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
     (Q : post) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-      exec segs (init_config segs pc ph sp brk0 mbase rnd lim inp) Q
+      let vsegs := run_segments segs inp sp mbase in
+      exec vsegs (init_config vsegs pc ph sp brk0 mbase rnd lim inp) Q
   end.
 
 Definition omni_corun (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
     (Q : post) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-      coexec segs (init_config segs pc ph sp brk0 mbase rnd lim inp) Q
+      let vsegs := run_segments segs inp sp mbase in
+      coexec vsegs (init_config vsegs pc ph sp brk0 mbase rnd lim inp) Q
   end.
 
 Definition omni_cosafe (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
     (P : list event -> Prop) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-      cosafe segs (init_config segs pc ph sp brk0 mbase rnd lim inp) P
+      let vsegs := run_segments segs inp sp mbase in
+      cosafe vsegs (init_config vsegs pc ph sp brk0 mbase rnd lim inp) P
   end.
 
 (** SOME maximal execution satisfies [Q]: the existential twin. *)
@@ -739,7 +742,8 @@ Definition omni_may (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
     (Q : post) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-      exists tr o, mexec segs (init_config segs pc ph sp brk0 mbase rnd lim inp) tr o
+      let vsegs := run_segments segs inp sp mbase in
+      exists tr o, mexec vsegs (init_config vsegs pc ph sp brk0 mbase rnd lim inp) tr o
                    /\ Q tr o
   end.
 

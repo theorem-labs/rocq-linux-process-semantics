@@ -486,7 +486,15 @@ Record FinProcInput := mkFinProcInput {
     (* the run's declared private /tmp, mirroring [State.in_tmp].  It
        is already inductive -- a [Fs.Fs] is a list -- so unlike
        [fin_stdin] and [fin_urandom] it adds no clause to
-       [finite_input].  It is NOT part of [fin_core] -- see there *)
+       [finite_input].  It is NOT part of [fin_core] -- see there *);
+  fin_kernel : KernelBuild
+    (* the kernel build the run was launched on, mirroring
+       [State.in_kernel].  A field rather than a pin, for the reason
+       [fin_abort_terminal] is one: every value of the record names a
+       real launch environment, so pinning it here would put the build
+       out of reach of every classifier shape while leaving it in reach
+       of the equivalence shapes.  It is finite already, so it adds no
+       clause to [finite_input] *)
 }.
 
 (** The process input a [FinProcInput] denotes.  Built with
@@ -500,7 +508,7 @@ Definition to_proc_input (f : FinProcInput) : ProcInput :=
               (fin_nofile f) (fin_sigmask f) (fin_hwcap f)
               (fin_abort_terminal f) (fin_va_size f)
               (stream_of_list_then (fin_urandom f) State.default_urandom)
-              (fin_tmp f).
+              (fin_tmp f) (fin_kernel f).
 
 (** Validity of a finite input is validity of the input it denotes —
     [Run.valid_input] and nothing else.  Deliberately not a new
@@ -803,7 +811,7 @@ Proof.
   - unfold to_proc_input, base.
     cbn [fin_argv fin_envp fin_image_fs fin_stdin fin_urandom fin_uid
          fin_gid fin_groups fin_net fin_nofile fin_sigmask fin_hwcap
-         fin_abort_terminal fin_va_size fin_tmp stream_of_list_then].
+         fin_abort_terminal fin_va_size fin_tmp fin_kernel stream_of_list_then].
     unfold State.default_urandom. now rewrite <- State.stream_const_unfold.
 Qed.
 
@@ -817,14 +825,14 @@ Proof.
   (* [State.ProcInput]'s constructor order, the two ENVIRONMENT fields
      last: argv, envp, image, stdin, ids, queue, limits, declarations,
      then [in_urandom] and [in_tmp] *)
-  intros [a e fs s u g gs n nf sm hc ab va r tm] Hfin.
+  intros [a e fs s u g gs n nf sm hc ab va r tm kb] Hfin.
   unfold finite_input in Hfin. cbn [in_stdin in_urandom] in Hfin.
   destruct Hfin as [Hfin [lr Hlr]].
   destruct (finite_stream_of_list _ Hfin) as [l Hl].
-  exists (mkFinProcInput a e fs l u g gs n nf sm hc ab va lr tm).
+  exists (mkFinProcInput a e fs l u g gs n nf sm hc ab va lr tm kb).
   unfold to_proc_input.
   cbn [fin_argv fin_envp fin_image_fs fin_tmp fin_stdin fin_urandom fin_uid fin_gid fin_groups fin_net
-       fin_nofile fin_sigmask fin_hwcap fin_abort_terminal fin_va_size].
+       fin_nofile fin_sigmask fin_hwcap fin_abort_terminal fin_va_size fin_kernel].
   rewrite Hl, Hlr. reflexivity.
 Qed.
 

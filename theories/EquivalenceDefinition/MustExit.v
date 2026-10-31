@@ -198,7 +198,9 @@ Lemma sstep_next_halts_by_exit : forall segs c evs c',
 Proof.
   intros segs c evs c' Hss.
   inversion Hss as [ms model ms' model' Hh Hsvc Hacc Heq1 Heq2 Heq3
-                   | | |ms model x8 eff model' model'' evs1 Hh Hsvc Hspec Hh' Hmat Heq1 Heq2 Heq3
+                   | | |ms model fn n eff model' model'' evs1 Hh Hsvc Hfn Hno Hspec Hef Hh' Hmat Heq1 Heq2 Heq3
+                   | |
+                   |ms model x8 eff model' model'' evs1 Hh Hsvc Hspec Hh' Hmat Heq1 Heq2 Heq3
                    | |ms model x8 eff model' evs1 code Hh Hsvc Hspec Hh' Hk Heq1 Heq2 Heq3
                    |ms model x8 eff model' evs1 sig Hh Hsvc Hspec Hk Heq1 Heq2 Heq3
                    | ]; subst.
@@ -207,6 +209,12 @@ Proof.
     destruct (mi_account_step_model_frame _ _ _ _ _ Hacc)
       as (_ & _ & _ & _ & _ & Hproc & _).
     unfold m_halted in *. rewrite Hproc. exact Hh.
+  - (* sstep_vdso_call: materialization keeps [m_proc], and so does the
+       call count *)
+    left. cbn [cfg_model].
+    destruct (materialize_model_accesses_frame _ _ _ Hmat)
+      as (_ & _ & _ & _ & _ & Hproc & _).
+    unfold m_halted in *. rewrite m_proc_with_vdso_bump, Hproc. exact Hh'.
   - (* sstep_syscall *)
     left. cbn [cfg_model].
     destruct (materialize_model_accesses_frame _ _ _ Hmat)
