@@ -484,6 +484,21 @@ Qed.
    write (64) — witness: the (deterministic) full write, or [Unmodeled]
    ========================================================================= *)
 
+(** [ReadWrite.write_fault_extend] as a witness: the -EFAULT a
+    positional file write answers when no source byte is readable, over
+    the model it leaves behind -- the file extended to [off], the
+    descriptor untouched -- and [Unmodeled] where the spec declines the
+    hole.  [write], [writev] and [pwrite64] all exhibit through this. *)
+Definition write_fault_extend_witness (m : Model) (p : path) (off : word)
+    : outcome SyscallEffect :=
+  match fs_lookup (m_fs m) p with
+  | None => Unmodeled
+  | Some data =>
+      if negb (modeled_zero_fill (bv_unsigned off) data) then Unmodeled
+      else ret_outcome (errno_ret EFAULT)
+             (with_fs (fs_set (m_fs m) p (file_extend data off)) m)
+  end.
+
 Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
@@ -520,7 +535,9 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       else
       let bs := write_source (in_mem i) buf count in
       if negb (w_is0 count) && Nat.eqb (length bs) 0
-      then ret_outcome (errno_ret EFAULT) m    (* nothing readable: -EFAULT *)
+      then write_fault_extend_witness m p off
+        (* nothing readable: -EFAULT, over the file that write still
+           extends; see [ReadWrite.write_file_tail] *)
       else
         let k :=
           match fs_lookup (m_fs m) p with
@@ -544,7 +561,7 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       else
       let bs := write_source (in_mem i) buf count in
       if negb (w_is0 count) && Nat.eqb (length bs) 0
-      then ret_outcome (errno_ret EFAULT) m    (* nothing readable: -EFAULT *)
+      then write_fault_extend_witness m p off
       else
         let k :=
           match fs_lookup (m_fs m) p with
@@ -636,7 +653,7 @@ Lemma write_witness_ok : forall fd buf count i m,
   write_spec fd buf count i m (write_witness fd buf count i m).
 Proof.
   intros. unfold write_spec, write_range_gate, write_file_tail,
-    write_ledger, write_witness.
+    write_fault_keep, write_ledger, write_witness.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd.
   9:{ (* /dev/null *)
       destruct wr; cbn [negb]; cbv beta iota.
@@ -711,9 +728,16 @@ Proof.
     destruct (negb (w_is0 count)
               && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
       eqn:Hg.
-    + eapply bind_step; [apply input_ok|].
+    + (* the faulting source: -EFAULT over the file it still extends *)
+      unfold write_fault_extend_witness.
+      eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hg. apply pure_ok.
+      cbv beta iota zeta; srw Hfd; srw Hg. unfold write_fault_extend.
+      destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
+        [ destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
+          [ apply unmodeled_intro
+          | eapply bind_step; [apply modify_ok|]; apply pure_ok ]
+        | apply unmodeled_intro ].
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd; srw Hg.
@@ -776,9 +800,16 @@ Proof.
     destruct (negb (w_is0 count)
               && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
       eqn:Hg.
-    + eapply bind_step; [apply input_ok|].
+    + (* the faulting source: the [FdFileW] branch above *)
+      unfold write_fault_extend_witness.
+      eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hfd; srw Hg. apply pure_ok.
+      cbv beta iota zeta; srw Hfd; srw Hg. unfold write_fault_extend.
+      destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
+        [ destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
+          [ apply unmodeled_intro
+          | eapply bind_step; [apply modify_ok|]; apply pure_ok ]
+        | apply unmodeled_intro ].
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd; srw Hg.
@@ -865,8 +896,13 @@ Proof.
     cbv beta. eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta; srw Hfd; rewrite ?Hn, ?Hc; cbv beta iota zeta;
       srw Hrd; srw Hp; srw Hroom; srw Hsrc.
-    eapply bind_step; [apply modify_ok|].
-    unfold record_copyins. eapply bind_step; [apply pure_ok|]. apply pure_ok.
+    (* the delivery is the witness on both sides of the page the empty
+       pipe's write must allocate: under [alt] it is the right one *)
+    destruct (pipe_needs_page st) eqn:Hpg; cbv beta iota zeta;
+      [apply alt_r|];
+      (eapply bind_step; [apply modify_ok|];
+       unfold record_copyins; eapply bind_step; [apply pure_ok|];
+       apply pure_ok).
   - eapply bind_step; [apply input_ok|].
     cbv beta. eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta; srw Hfd. apply pure_ok.
@@ -1077,7 +1113,7 @@ Definition pwrite64_witness (fd buf count pos : word) (i : SyscallInput)
       let bs := write_source (in_mem i) buf count in
         (* no count gate: see [ReadWrite.pwrite64_spec] *)
       if negb (w_is0 count) && Nat.eqb (length bs) 0
-      then ret_outcome (errno_ret EFAULT) m
+      then write_fault_extend_witness m p pos
       else
       match fs_lookup (m_fs m) p with
       | None => Unmodeled
@@ -1122,9 +1158,16 @@ Proof.
     cbv beta iota zeta; srw Hfd. apply pure_ok. }
   destruct (negb (w_is0 count)
             && Nat.eqb (length (write_source (in_mem i) buf count)) 0) eqn:Hg.
-  { eapply bind_step; [apply input_ok|]. cbv beta.
+  { (* the faulting source: -EFAULT over the file it still extends *)
+    unfold write_fault_extend_witness.
+    eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|].
-    cbv beta iota zeta; srw Hfd; srw Hg. apply pure_ok. }
+    cbv beta iota zeta; srw Hfd; srw Hg. unfold write_fault_extend.
+    destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
+      [ destruct (negb (modeled_zero_fill (bv_unsigned pos) data)) eqn:Hz;
+        [ apply unmodeled_intro
+        | eapply bind_step; [apply modify_ok|]; apply pure_ok ]
+      | apply unmodeled_intro ]. }
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
   2: { eapply bind_step; [apply input_ok|]. cbv beta.
        eapply bind_step; [apply get_model_ok|].
@@ -1152,9 +1195,16 @@ Proof.
     cbv beta iota zeta; srw Hfd. apply pure_ok. }
   destruct (negb (w_is0 count)
             && Nat.eqb (length (write_source (in_mem i) buf count)) 0) eqn:Hg.
-  { eapply bind_step; [apply input_ok|]. cbv beta.
+  { (* the faulting source: the branch above, on the O_RDWR kind *)
+    unfold write_fault_extend_witness.
+    eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|].
-    cbv beta iota zeta; srw Hfd; srw Hg. apply pure_ok. }
+    cbv beta iota zeta; srw Hfd; srw Hg. unfold write_fault_extend.
+    destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
+      [ destruct (negb (modeled_zero_fill (bv_unsigned pos) data)) eqn:Hz;
+        [ apply unmodeled_intro
+        | eapply bind_step; [apply modify_ok|]; apply pure_ok ]
+      | apply unmodeled_intro ]. }
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
   2: { eapply bind_step; [apply input_ok|]. cbv beta.
        eapply bind_step; [apply get_model_ok|].
@@ -1246,7 +1296,7 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                if Z.eqb total 0 then ret_outcome (Z_to_bv 64 0) m
                else if rw_pos_einvalb off total then ret_outcome (errno_ret EINVAL) m
                else if Nat.eqb (length bs) 0
-               then ret_outcome (errno_ret EFAULT) m
+               then write_fault_extend_witness m p off
                else
                  match fs_lookup (m_fs m) p with
                  | None => Unmodeled
@@ -1275,7 +1325,7 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                if Z.eqb total 0 then ret_outcome (Z_to_bv 64 0) m
                else if rw_pos_einvalb off total then ret_outcome (errno_ret EINVAL) m
                else if Nat.eqb (length bs) 0
-               then ret_outcome (errno_ret EFAULT) m
+               then write_fault_extend_witness m p off
                else
                  match fs_lookup (m_fs m) p with
                  | None => Unmodeled
@@ -1332,7 +1382,8 @@ Local Ltac wvw_open Hfd :=
 Lemma writev_witness_ok : forall fd iov iovcnt i m,
   writev_spec fd iov iovcnt i m (writev_witness fd iov iovcnt i m).
 Proof.
-  intros. unfold writev_witness, writev_spec, writev_file_arm, writev_ledger.
+  intros. unfold writev_witness, writev_spec, writev_file_arm,
+    write_fault_keep, writev_ledger.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd.
   9:{ (* /dev/null *)
       destruct wr.
@@ -1396,8 +1447,17 @@ Proof.
     { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
-    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
-      eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    { (* the faulting source: -EFAULT over the file it still extends *)
+      unfold write_fault_extend_witness.
+      wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
+      unfold write_fault_extend.
+      destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
+        [ destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
+          [ left; apply unmodeled_intro
+          | eapply bind_step;
+            [ eapply bind_step; [apply modify_ok|]; apply pure_ok
+            | apply pure_ok ] ]
+        | left; apply unmodeled_intro ]. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
     2:{ wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs.
         left. unfold writev_buf_gap. apply unmodeled_intro. }
@@ -1453,8 +1513,17 @@ Proof.
     { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
-    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
-      eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    { (* the faulting source: the [FdFileW] bullet above *)
+      unfold write_fault_extend_witness.
+      wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
+      unfold write_fault_extend.
+      destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
+        [ destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
+          [ left; apply unmodeled_intro
+          | eapply bind_step;
+            [ eapply bind_step; [apply modify_ok|]; apply pure_ok
+            | apply pure_ok ] ]
+        | left; apply unmodeled_intro ]. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
     2:{ wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs.
         left. unfold writev_buf_gap. apply unmodeled_intro. }

@@ -1495,10 +1495,25 @@ Theorem mm_not_within_budget :
   ~ source_within_budget mm_budget mm_image demo_entry demo_proc_input.
 Proof. intros H. exact (H mm_run_budget_refused). Qed.
 
+(** The exit-0 image is never killed — its trace set is the prefixes of
+    one exit event — so it is [error_free_unkilled] at every budget.  The
+    error-free statement below and its abort-declared twin both use
+    this. *)
+Lemma exit0_never_dies_by_signal : forall lim en inp,
+  ~ dies_by_signal (run exit0_image lim en inp).
+Proof.
+  intros lim [sp brk0 mbase rnd] inp (tr & sig & fs & Htr & Hin).
+  cbn [run exit0_image bh_traces] in Htr. apply exit0_obs in Htr.
+  destruct tr as [| e tr']; [exact Hin |].
+  destruct Htr as [-> Htr']. destruct tr' as [| e' tr'']; [| destruct Htr'].
+  destruct Hin as [Hin | []]. discriminate Hin.
+Qed.
+
 (** ** The sealed ascription
 
     The exit-0 pair satisfies the error-free budget statement at EVERY
-    pair of budgets — the image never touches the heap — and so seals
+    pair of budgets — the image never touches the heap and is never
+    killed ([exit0_never_dies_by_signal]) — and so seals
     [Equivalence.SPEC_ERROR_FREE_BUDGETS] under the shipped budgets,
     which is the ascription a generated Checker makes for a flavour
     pair. *)
@@ -1506,11 +1521,13 @@ Theorem exit0_strong_universal_error_free_budgets : forall lim_source lim_target
   strong_universal_error_free_T_budgets lim_source lim_target exit0_image exit0_image.
 Proof.
   intros ls lt [sps brks mbs rnds] [spt brkt mbt rndt] inp _ _ _ _.
-  unfold strong_equiv_error_free_budgets.
+  unfold strong_equiv_error_free_budgets, error_free_unkilled.
   split; [| split].
-  - apply error_free_iff. cbn [omni_corun exit0_image img_segments].
+  - split; [| apply exit0_never_dies_by_signal].
+    apply error_free_iff. cbn [omni_corun exit0_image img_segments].
     apply exit0_never_errors.
-  - apply error_free_iff. cbn [omni_corun exit0_image img_segments].
+  - split; [| apply exit0_never_dies_by_signal].
+    apply error_free_iff. cbn [omni_corun exit0_image img_segments].
     apply exit0_never_errors.
   - intros tr. cbn [run exit0_image bh_traces].
     rewrite !exit0_obs. reflexivity.
@@ -1521,19 +1538,6 @@ Module Exit0BudgetsChecked <: SPEC_ERROR_FREE_BUDGETS ShippedBudgets Exit0Image 
     exit0_strong_universal_error_free_budgets
       ShippedBudgets.lim_source ShippedBudgets.lim_target.
 End Exit0BudgetsChecked.
-
-(** The abort twin: the exit-0 image is never killed — its trace set is
-    the prefixes of one exit event — so it is [error_free_unkilled] at
-    every budget, and the abort-declared statement holds of the pair. *)
-Lemma exit0_never_dies_by_signal : forall lim en inp,
-  ~ dies_by_signal (run exit0_image lim en inp).
-Proof.
-  intros lim [sp brk0 mbase rnd] inp (tr & sig & fs & Htr & Hin).
-  cbn [run exit0_image bh_traces] in Htr. apply exit0_obs in Htr.
-  destruct tr as [| e tr']; [exact Hin |].
-  destruct Htr as [-> Htr']. destruct tr' as [| e' tr'']; [| destruct Htr'].
-  destruct Hin as [Hin | []]. discriminate Hin.
-Qed.
 
 Theorem exit0_strong_universal_error_free_budgets_abort : forall lim_source lim_target,
   strong_universal_error_free_T_budgets_abort lim_source lim_target exit0_image exit0_image.

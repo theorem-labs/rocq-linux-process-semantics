@@ -1693,7 +1693,8 @@ Lemma check_write_frame : forall i fd buf count eff m m' evs,
   check_write i fd buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_write, check_access_ok_zero in H. vm_frame2 H.
+  unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
+  vm_frame2 H.
 Qed.
 
 (** A positional transfer touches no mapping.  [check_pread64] returns
@@ -1713,7 +1714,7 @@ Lemma check_pwrite64_frame : forall i fd buf count pos eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count pos eff m m' evs H.
-  unfold check_pwrite64 in H. vm_frame2 H.
+  unfold check_pwrite64, check_write_fault_extend in H. vm_frame2 H.
 Qed.
 
 Lemma check_openat_frame : forall i dirfd pathp flags eff m m' evs,
@@ -1785,7 +1786,7 @@ Lemma check_writev_frame : forall i fd iov iovcnt eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd iov iovcnt eff m m' evs H.
-  unfold check_writev in H. vm_frame2 H.
+  unfold check_writev, check_write_fault_extend in H. vm_frame2 H.
 Qed.
 
 Lemma check_readv_imported_frame : forall i fd r iovs0 eff m m' evs,
