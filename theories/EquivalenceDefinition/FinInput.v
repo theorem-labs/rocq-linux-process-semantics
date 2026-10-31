@@ -670,15 +670,17 @@ Lemma fin_core_env_eq : forall f g,
   fin_hwcap f = fin_hwcap g ->
   fin_abort_terminal f = fin_abort_terminal g ->
   fin_va_size f = fin_va_size g ->
+  fin_channel_reader f = fin_channel_reader g ->
   f = g.
 Proof.
-  intros [a1 e1 fs1 s1 u1 g1 gs1 n1 nf1 sm1 hc1 ab1 va1 r1 tm1]
-         [a2 e2 fs2 s2 u2 g2 gs2 n2 nf2 sm2 hc2 ab2 va2 r2 tm2]
-    Hcore Htm Hr Hu Hg Hgs Hn Hnf Hsm Hhc Hab Hva.
+  intros [a1 e1 fs1 s1 u1 g1 gs1 n1 nf1 sm1 hc1 ab1 va1 r1 tm1 cr1]
+         [a2 e2 fs2 s2 u2 g2 gs2 n2 nf2 sm2 hc2 ab2 va2 r2 tm2 cr2]
+    Hcore Htm Hr Hu Hg Hgs Hn Hnf Hsm Hhc Hab Hva Hcr.
   unfold fin_core in Hcore.
   cbn [fin_argv fin_envp fin_image_fs fin_tmp fin_stdin fin_urandom fin_uid fin_gid fin_groups fin_net
-       fin_nofile fin_sigmask fin_hwcap fin_abort_terminal fin_va_size]
-    in Hcore, Htm, Hr, Hu, Hg, Hgs, Hn, Hnf, Hsm, Hhc, Hab, Hva.
+       fin_nofile fin_sigmask fin_hwcap fin_abort_terminal fin_va_size
+       fin_channel_reader]
+    in Hcore, Htm, Hr, Hu, Hg, Hgs, Hn, Hnf, Hsm, Hhc, Hab, Hva, Hcr.
   injection Hcore as Ha He Hfs Hs.
   subst. reflexivity.
 Qed.

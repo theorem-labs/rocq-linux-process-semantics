@@ -2141,11 +2141,18 @@ Qed.
     - [fin_abort_terminal] is [false], the task declaration
       [Run.valid_input] pins and so the one this embedding has to make
       if the record is to be valid at all.  It is the seventh field and
-      the only one of the seven that [Run.valid_input] fixes rather than
+      the only one of the eight that [Run.valid_input] fixes rather than
       bounds.
+    - [fin_channel_reader] is [true], the launch whose standard output
+      is read.  It is the EIGHTH field, and [Run.valid_input] constrains
+      it at neither value -- both name a real launch -- so the choice
+      here is arbitrary in the way the first six are rather than forced
+      in the way the seventh is.  A measure statement is about a list of
+      CORES, and the core forgets this field like the other seven, so
+      picking either value changes no sum.
 
     The choice is arbitrary and is allowed to be, because
-    [FinInput.fin_core] forgets all seven ([FinInput.fin_core_env_eq]
+    [FinInput.fin_core] forgets all eight ([FinInput.fin_core_env_eq]
     pins that it forgets these and nothing else).  What the embedding is
     FOR is [fin_core_core_input]: it is a section of
     [FinInput.fin_core], so a statement about a list of cores can be

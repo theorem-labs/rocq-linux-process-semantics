@@ -899,7 +899,7 @@ Lemma strong_universal_error_free_refuted_by_source_error :
 Proof.
   intros en_source en_target inp Hsrc Htgt Hinp Herr H.
   destruct (H en_source en_target inp Hsrc Htgt Hinp) as (Hsef & _ & _).
-  exact (Hsef Herr).
+  exact (error_free_unkilled_error_free _ Hsef Herr).
 Qed.
 
 (* =========================================================================
