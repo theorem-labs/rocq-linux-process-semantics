@@ -252,9 +252,12 @@ Proof.
 Qed.
 
 (** The same statement for [clone3], where the flag word is a field of a
-    struct in user memory rather than a register. *)
+    struct in user memory rather than a register.  The premise is the
+    COPY, [State.copy_bytes_map], and not the bare walk: a range
+    [access_ok] refuses is -EFAULT before any field is judged
+    ([Fork.clone3_spec]), so the flags never reach a decision there. *)
 Lemma clone3_sharing_flags_unmodeled : forall uargs size i m bs,
-  read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE) = Some bs ->
+  copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE = Some bs ->
   (Z.land (bv_unsigned (clone_args_field bs 0)) clone_sharing_bits <> 0)%Z ->
   clone3_spec uargs size i m Unmodeled.
 Proof.
@@ -331,8 +334,12 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)));
     cbv iota in H; [unfold unmodeled in H; discriminate|].
   sys_unfold. cbv iota in H. inv_ok.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
     as [bs|] eqn:Hbs; hall Hbs; inv_ok.
+  2: { (* a refused range answers -EFAULT, which is not 0 either *)
+       destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs; hall Hs; inv_ok.
+       cbn [eff_ret]. intro Hc. apply (f_equal bv_unsigned) in Hc.
+       vm_compute in Hc. discriminate. }
   destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
   match goal with
   | Hr : clone3_resolve _ _ _ (Ok _ _ _) |- _ =>
@@ -369,6 +376,44 @@ Proof.
   apply (dispatch_arm spec_table i m o
            (mkSpecArm 435%Z (fun i => clone3_spec (in_arg i 0) (in_arg i 1) i))).
   rewrite H. reflexivity.
+Qed.
+
+(** The separation [clone_resolve_declines_or_sets_children] below states,
+    for ANY errno list [es] that contains [Fork.clone_errnos] and stays
+    inside the errno band: an answer in [es] leaves the model untouched,
+    and any answer outside it records the child.  Both obligations survive
+    the widening — a pid is outside every such list, by
+    [errno_ret_in_below] — so an entry point that answers more errnos than
+    [clone_resolve] does names its own list here, and the decline it adds
+    is stated, not excluded.  The lemma below the note is the instance at
+    [Fork.clone_errnos]. *)
+Lemma clone_resolve_declines_or_sets_children_in : forall es i m eff m' evs,
+  incl clone_errnos es -> errnos_ok es = true ->
+  clone_resolve i m (Ok eff m' evs) ->
+  (errno_ret_in es (eff_ret eff) = true -> m' = m) /\
+  (errno_ret_in es (eff_ret eff) = false -> m_has_children m' = true).
+Proof.
+  intros es i m eff m' evs Hincl Hok H.
+  unfold clone_resolve in H. sys_unfold. cbv iota in H. inv_ok.
+  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+  (* one goal per alternative: an errno from [clone_errnos], and a pid *)
+  - match goal with
+    | Hin : In ?e clone_errnos |- _ =>
+        assert (Hyes := errno_ret_in_intro es e (Hincl e Hin))
+    end.
+    cbn [eff_ret]. split; intros He; [reflexivity | congruence].
+  - match goal with
+    | Hv : clone_pid_ok_b ?mm ?r = true |- _ =>
+        assert (Hno : errno_ret_in es r = false);
+        [ unfold clone_pid_ok_b in Hv;
+          apply andb_true_iff in Hv as [Hrange _];
+          apply andb_true_iff in Hrange as [_ Hhi]; apply Z.ltb_lt in Hhi;
+          apply errno_ret_in_below; [exact Hok|];
+          change PID_MAX_ENVELOPE with 4194304%Z in Hhi;
+          unfold two_pow_64; lia
+        | ]
+    end.
+    cbn [eff_ret]. split; intros He; [congruence | reflexivity].
 Qed.
 
 (** ** EITHER IT DECLINES, OR IT RECORDS THE CHILD
@@ -413,52 +458,56 @@ Lemma clone_resolve_declines_or_sets_children : forall i m eff m' evs,
   (errno_ret_in clone_errnos (eff_ret eff) = false -> m_has_children m' = true).
 Proof.
   intros i m eff m' evs H.
-  unfold clone_resolve in H. sys_unfold. cbv iota in H. inv_ok.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
-  (* one goal per alternative: an errno from [clone_errnos], and a pid *)
-  - match goal with
-    | Hin : In ?e clone_errnos |- _ =>
-        assert (Hyes := errno_ret_in_intro clone_errnos e Hin)
-    end.
-    cbn [eff_ret]. split; intros He; [reflexivity | congruence].
-  - match goal with
-    | Hv : clone_pid_ok_b ?mm ?r = true |- _ =>
-        assert (Hno := clone_pid_not_errno mm r Hv)
-    end.
-    cbn [eff_ret]. split; intros He; [congruence | reflexivity].
+  exact (clone_resolve_declines_or_sets_children_in clone_errnos i m eff m' evs
+           (incl_refl clone_errnos) eq_refl H).
 Qed.
 
 (** The same claim at the dispatcher, over both entry points at once.
     [clone3] adds a copy-in ledger and nothing else — [clone3_resolve_inv]
     strips it and hands back the very [clone_resolve] outcome, with the
     same post-model — so one lemma covers 220 and 435 and the two cannot
-    drift apart. *)
+    drift apart.
+
+    -EFAULT JOINED THE LIST because [copy_struct_from_user]'s [access_ok]
+    now answers it for a [uargs] range it refuses ([Fork.clone3_spec]),
+    and that answer creates no child: the first implication covers it and
+    says the model is left untouched. *)
 Lemma clone_success_sets_children : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
   syscall_spec i m (Ok eff m' evs) ->
-  (errno_ret_in clone_errnos (eff_ret eff) = true -> m' = m) /\
-  (errno_ret_in clone_errnos (eff_ret eff) = false -> m_has_children m' = true).
+  (errno_ret_in (EFAULT :: clone_errnos) (eff_ret eff) = true -> m' = m) /\
+  (errno_ret_in (EFAULT :: clone_errnos) (eff_ret eff) = false ->
+   m_has_children m' = true).
 Proof.
   intros i m eff m' evs [Hno|Hno] H.
   - apply (clone_is_clone_spec i m _ Hno) in H.
     unfold clone_spec in H.
     destruct (clone_fork_flags_b (in_arg i 0));
       [|unfold unmodeled in H; discriminate].
-    exact (clone_resolve_declines_or_sets_children _ _ _ _ _ H).
+    exact (clone_resolve_declines_or_sets_children_in (EFAULT :: clone_errnos)
+             _ _ _ _ _ (incl_tl EFAULT (incl_refl clone_errnos)) eq_refl H).
   - apply (clone3_is_clone3_spec i m _ Hno) in H.
     unfold clone3_spec in H.
     destruct (negb (bv_eqb (in_arg i 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
       cbv iota in H; [unfold unmodeled in H; discriminate|].
     sys_unfold. cbv iota in H. inv_ok.
-    destruct (read_bytes_map (in_mem i) (in_arg i 0)
-                (Z_to_bv 64 CLONE_ARGS_SIZE)) as [bs|] eqn:Hbs;
-      hall Hbs; inv_ok.
+    destruct (copy_bytes_map (in_mem i) (in_arg i 0) CLONE_ARGS_SIZE)
+      as [bs|] eqn:Hbs; hall Hbs; inv_ok.
+    2: { (* the refused range: -EFAULT is in the list, and the model is
+            untouched *)
+         destruct (negb (access_okb (in_arg i 0) CLONE_ARGS_SIZE)) eqn:Hs;
+           hall Hs; inv_ok.
+         cbn [eff_ret]. split; intros He; [reflexivity|].
+         rewrite (errno_ret_in_intro (EFAULT :: clone_errnos) EFAULT
+                    (in_eq _ _)) in He.
+         discriminate He. }
     destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
     match goal with
     | Hr : clone3_resolve _ _ _ (Ok _ _ _) |- _ =>
         apply clone3_resolve_inv in Hr as (e0 & H0 & Hret); rewrite Hret
     end.
-    exact (clone_resolve_declines_or_sets_children _ _ _ _ _ H0).
+    exact (clone_resolve_declines_or_sets_children_in (EFAULT :: clone_errnos)
+             _ _ _ _ _ (incl_tl EFAULT (incl_refl clone_errnos)) eq_refl H0).
 Qed.
 
 (** And for the executable checker, which is the half a
@@ -471,8 +520,9 @@ Qed.
 Corollary check_clone_success_sets_children : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
   check_syscall i eff m = CheckOk m' evs ->
-  (errno_ret_in clone_errnos (eff_ret eff) = true -> m' = m) /\
-  (errno_ret_in clone_errnos (eff_ret eff) = false -> m_has_children m' = true).
+  (errno_ret_in (EFAULT :: clone_errnos) (eff_ret eff) = true -> m' = m) /\
+  (errno_ret_in (EFAULT :: clone_errnos) (eff_ret eff) = false ->
+   m_has_children m' = true).
 Proof.
   intros i m eff m' evs Hno H.
   apply clone_success_sets_children with (i := i) (eff := eff) (evs := evs);

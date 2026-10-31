@@ -440,7 +440,8 @@ Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
 
 
 (** The pathname copy-in is the prefix through the first NUL, the first
-    faulting byte, or [PATH_MAX] — [State.cstr_access_len_aux].  That is
+    faulting byte, the last byte below [TASK_SIZE], or [PATH_MAX] —
+    [State.cstr_access_len_aux].  That is
     the range the model records, not the one [getname()] loads:
     [strncpy_from_user] reads a word at a time and so runs to the end of
     the word holding the NUL, up to 7 bytes further, without moving the

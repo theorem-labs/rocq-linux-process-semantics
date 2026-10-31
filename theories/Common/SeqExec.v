@@ -428,6 +428,8 @@ Lemma tw_write_ret : forall segs regs pc mem rom buf bufs code,
                    ms_svc_pending := Some (getr regs 17); ms_resv := None; ms_fcsr := fp_csr;
                    ms_mem := mem; ms_rom := rom |}
     (reg_get regs 11) (reg_get regs 12) = Some buf ->
+  (* the range [vfs_write]'s [access_ok] accepts; see [CatSim.write1_check_n] *)
+  access_okb (reg_get regs 11) (bv_unsigned (reg_get regs 12)) = true ->
   (1 <= length buf)%nat ->
   (forall n, (1 <= n)%nat -> (n <= length buf)%nat ->
      to_wexit segs (mkst (regupd regs 10 (len_word (firstn n buf)))
@@ -437,12 +439,13 @@ Lemma tw_write_ret : forall segs regs pc mem rom buf bufs code,
                    ms_mem := mem; ms_rom := rom |}
     (buf :: bufs) code.
 Proof.
-  intros segs regs pc mem rom buf bufs code H17 H10 Hr Hnb Hcont.
+  intros segs regs pc mem rom buf bufs code H17 H10 Hr Hok Hnb Hcont.
   eapply tw_write.
   - cbn [ms_svc_pending]. reflexivity.
   - exact H17.
   - unfold ms_gpr. cbn [ms_regs]. rewrite arg_reg_0. exact H10.
   - unfold ms_gpr. cbn [ms_regs]. rewrite arg_reg_1, arg_reg_2. exact Hr.
+  - unfold ms_gpr. cbn [ms_regs]. rewrite arg_reg_1, arg_reg_2. exact Hok.
   - exact Hnb.
   - intros n Hn1 Hn2. rewrite adv_set. apply Hcont; assumption.
 Qed.

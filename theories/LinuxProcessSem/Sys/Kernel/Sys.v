@@ -541,6 +541,21 @@ Definition rlim64_wf (bs : list byte) : bool :=
     -EFAULT, but which bytes of the mask the kernel read is not something
     the ledger can state, so it declines the same way.
 
+    THE RANGE TEST COMES BEFORE THE WALK in both arms: each reads
+    through [State.copy_bytes_map], whose note says why that order is
+    the guard and not a style choice.  Asked only after a failed walk,
+    the test would let a 16-byte range that wraps past 2^64 and reads
+    back from 0 reach the answering branch.  Both copies are
+    [SYSCALL_DEFINE4(prlimit64)]'s own (kernel/sys.c at v6.18.46): the
+    [copy_from_user] of [new_rlim] before the pid lookup, and the
+    [copy_to_user] of [old_rlim] after [do_prlimit] returns, each of
+    which tests [access_ok] over all 16 bytes before it moves one.  So a
+    wrapping [old_rlim] is -EFAULT with nothing stored and no limit
+    pinned, and a wrapping [new_rlim] is -EFAULT with an empty copy-in
+    ledger and the record unchanged.  [Checks.Cases.Kernel.Sys]'s
+    [prlimit64_wrap_] groups pin both, each beside a neighbour at the
+    top of what [access_ok] accepts.
+
     WHAT THE DECLINES COST THE EQUIVALENCE THEOREM.  Not an escape — a
     REFUSAL TO CERTIFY.  [Equivalence.strong_equiv] is [modeled] of the
     SOURCE conjoined with [equiv], and [modeled] is an obligation to
@@ -570,7 +585,7 @@ Definition prlimit64_spec (pid resource new_rlim old_rlim : word)
   m <- get_model ;;
   if w_is0 new_rlim then
     (* (5) the READ *)
-    match read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16) with
+    match copy_bytes_map (in_wmem i) old_rlim 16 with
     | None =>
         if negb (access_okb old_rlim 16) then err_ret EFAULT
         else unmodeled
@@ -588,7 +603,7 @@ Definition prlimit64_spec (pid resource new_rlim old_rlim : word)
     match m_rlimit_core m with
     | None => unmodeled          (* no recorded hard limit to compare against *)
     | Some bs0 =>
-        match read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16) with
+        match copy_bytes_map (in_mem i) new_rlim 16 with
         | None =>
             if negb (access_okb new_rlim 16) then err_ret EFAULT
             else unmodeled
@@ -1018,9 +1033,9 @@ Definition utsname_wf (bs : list byte) : bool :=
       word arithmetic while [State.access_okb] subtracts in [Z], so a
       [name] near 2^64 whose 390 bytes wrap round onto mapped low
       addresses reads as "wholly writable" to the walk and is refused by
-      Linux.  Asking the walk first is a known defect, and both
-      [prlimit64_spec] arms have it; this arm is written the way
-      [Net.Socket.socketpair_spec] and [Fs.Pipe.pipe2_spec] are,
+      Linux.  Asking the walk first is a defect; this arm is written the
+      way [Net.Socket.socketpair_spec], [Fs.Pipe.pipe2_spec] and
+      [prlimit64_spec] are,
       and [Checks.Cases.Kernel.Sys]'s [uname_wrap_] group pins both
       directions.
     - [access_ok] admits the range and it is WHOLLY WRITABLE: the modeled
