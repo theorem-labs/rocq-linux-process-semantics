@@ -58,7 +58,7 @@
 
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run OmniRun.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import Fs.ReadWrite.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim CatSim WallSim.
 
@@ -1153,17 +1153,16 @@ Qed.
 (* ------------------------------------------------------------------------- *)
 
 Lemma stream_obs_iff : forall pc ph sp brk0 mb rnd lim inp,
-  to_rd (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_rd (init_machine_state segs pc ph sp mb rnd inp) ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
              <-> stream_traces cnt (in_fs inp) (in_stdin inp) tr.
 Proof.
   intros pc ph sp brk0 mb rnd lim inp Hrd tr.
   set (fs0 := in_fs inp) in *; set (stdin0 := in_stdin inp) in *.
   unfold init_config.
-  set (ms0 := init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
+  set (ms0 := init_machine_state segs pc ph sp mb rnd inp) in *.
   pose proof (init_M_loop (segments_reserved segs) brk0 mb sp lim inp) as HM0.
-  set (model0 := with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved segs) brk0 mb sp lim inp)) in *.
+  set (model0 := init_model (segments_reserved segs) brk0 mb sp lim inp) in *.
   assert (Hst0 : m_stdin model0 = stdin0) by reflexivity.
   assert (Hfs0 : m_fs model0 = fs0) by reflexivity.
   split.
@@ -1182,7 +1181,7 @@ Proof.
 Qed.
 
 Lemma stream_no_error : forall pc ph sp brk0 mb rnd lim inp,
-  to_rd (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  to_rd (init_machine_state segs pc ph sp mb rnd inp) ->
   ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros pc ph sp brk0 mb rnd lim inp Hrd.
@@ -1204,28 +1203,20 @@ Proof.
   apply (inv_coexec segs sinv sinv_step sinv_no_error). left; cbn; auto.
 Qed.
 
-(** Stated for an image whose RUN segment list is this section's
-    [segs]: [Run.run_segments] appends the vDSO pair [execve] installs,
-    and that extended list is what the step relation reads. *)
-Lemma stream_omni_corun : forall isegs pc ph sp brk0 mb rnd lim inp,
-  run_segments isegs inp sp mb = segs ->
-  to_rd (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
-  omni_corun (mkImage isegs pc ph) lim (mkEntry sp brk0 mb rnd) inp never_errors.
+Lemma stream_omni_corun : forall pc ph sp brk0 mb rnd lim inp,
+  to_rd (init_machine_state segs pc ph sp mb rnd inp) ->
+  omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp never_errors.
 Proof.
-  intros isegs pc ph sp brk0 mb rnd lim inp Hseg Hrd. cbn [omni_corun]. unfold init_config. rewrite Hseg.
+  intros pc ph sp brk0 mb rnd lim inp Hrd. cbn [omni_corun]. unfold init_config.
   apply to_rd_coexec; [apply init_M_loop | exact Hrd].
 Qed.
 
-(** Stated for an image whose RUN segment list is this section's
-    [segs]: [Run.run_segments] appends the vDSO pair [execve] installs,
-    and that extended list is what the step relation reads. *)
-Lemma stream_omni_cosafe : forall isegs pc ph sp brk0 mb rnd lim inp,
-  run_segments isegs inp sp mb = segs ->
-  to_rd (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
-  omni_cosafe (mkImage isegs pc ph) lim (mkEntry sp brk0 mb rnd) inp
+Lemma stream_omni_cosafe : forall pc ph sp brk0 mb rnd lim inp,
+  to_rd (init_machine_state segs pc ph sp mb rnd inp) ->
+  omni_cosafe (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
     (stream_traces cnt (in_fs inp) (in_stdin inp)).
 Proof.
-  intros isegs pc ph sp brk0 mb rnd lim inp Hseg Hrd. cbn [omni_cosafe]. unfold init_config. rewrite Hseg.
+  intros pc ph sp brk0 mb rnd lim inp Hrd. cbn [omni_cosafe].
   apply cosafe_obs_iff.
   - intros t t' Ht Hp. eapply stream_traces_prefix_closed; eauto.
   - intros tr Hobs. apply (stream_obs_iff pc ph sp brk0 mb rnd lim inp Hrd). exact Hobs.
@@ -1245,45 +1236,35 @@ End Loop.
 Lemma stream_omni_strong_equiv :
   forall cnt : word, (0 < bv_unsigned cnt <= rw_bytes_max)%Z ->
   forall source_segs rLH rpc rph rsp rbrk rmb rrnd target_segs aLH apc aph asp abrk amb arnd inp,
-  (forall ms, rLH ms -> to_rd (run_segments source_segs inp rsp rmb) rLH cnt ms) ->
-  (forall ms, aLH ms -> to_rd (run_segments target_segs inp asp amb) aLH cnt ms) ->
-  to_rd (run_segments source_segs inp rsp rmb) rLH cnt
-    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rrnd
-       (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
-  to_rd (run_segments target_segs inp asp amb) aLH cnt
-    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp arnd
-       (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  (forall ms, rLH ms -> to_rd source_segs rLH cnt ms) ->
+  (forall ms, aLH ms -> to_rd target_segs aLH cnt ms) ->
+  to_rd source_segs rLH cnt (init_machine_state source_segs rpc rph rsp rmb rrnd inp) ->
+  to_rd target_segs aLH cnt (init_machine_state target_segs apc aph asp amb arnd inp) ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
 Proof.
   intros cnt Hcnt source_segs rLH rpc rph rsp rbrk rmb rrnd target_segs aLH apc aph asp abrk amb arnd
          inp HrLH HaLH Hr Ha.
   split.
-  { cbn [image_run_segments img_segments en_sp en_mmap_base].
+  { cbn [img_segments].
     eapply coexec_conseq;
-      [exact (stream_omni_corun (run_segments source_segs inp rsp rmb) rLH cnt Hcnt HrLH
-                source_segs rpc rph rsp rbrk rmb rrnd
-                source_alloc_limit inp eq_refl Hr) | apply never_errors_covered]. }
+      [exact (stream_omni_corun source_segs rLH cnt Hcnt HrLH rpc rph rsp rbrk rmb rrnd
+                source_alloc_limit inp Hr) | apply never_errors_covered]. }
   right. split.
   - apply trace_equiv_iff_omni. intro tr. cbn.
-    rewrite (stream_obs_iff (run_segments source_segs inp rsp rmb) rLH cnt Hcnt HrLH rpc rph rsp rbrk rmb rrnd source_alloc_limit inp Hr tr).
-    rewrite (stream_obs_iff (run_segments target_segs inp asp amb) aLH cnt Hcnt HaLH apc aph asp abrk amb arnd target_alloc_limit inp Ha tr).
+    rewrite (stream_obs_iff source_segs rLH cnt Hcnt HrLH rpc rph rsp rbrk rmb rrnd source_alloc_limit inp Hr tr).
+    rewrite (stream_obs_iff target_segs aLH cnt Hcnt HaLH apc aph asp abrk amb arnd target_alloc_limit inp Ha tr).
     reflexivity.
-  - exact (stream_omni_corun (run_segments target_segs inp asp amb) aLH cnt Hcnt HaLH
-             target_segs apc aph asp abrk amb arnd target_alloc_limit inp eq_refl Ha).
+  - exact (stream_omni_corun target_segs aLH cnt Hcnt HaLH apc aph asp abrk amb arnd target_alloc_limit inp Ha).
 Qed.
 
 Lemma stream_strong_equiv :
   forall cnt : word, (0 < bv_unsigned cnt <= rw_bytes_max)%Z ->
   forall source_segs rLH rpc rph rsp rbrk rmb rrnd rlim target_segs aLH apc aph asp abrk amb arnd alim inp,
-  (forall ms, rLH ms -> to_rd (run_segments source_segs inp rsp rmb) rLH cnt ms) ->
-  (forall ms, aLH ms -> to_rd (run_segments target_segs inp asp amb) aLH cnt ms) ->
-  to_rd (run_segments source_segs inp rsp rmb) rLH cnt
-    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rrnd
-       (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
-  to_rd (run_segments target_segs inp asp amb) aLH cnt
-    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp arnd
-       (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  (forall ms, rLH ms -> to_rd source_segs rLH cnt ms) ->
+  (forall ms, aLH ms -> to_rd target_segs aLH cnt ms) ->
+  to_rd source_segs rLH cnt (init_machine_state source_segs rpc rph rsp rmb rrnd inp) ->
+  to_rd target_segs aLH cnt (init_machine_state target_segs apc aph asp amb arnd inp) ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
                        (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).
@@ -1292,12 +1273,11 @@ Proof.
          inp HrLH HaLH Hr Ha.
   split.
   { apply no_error_run_modeled.
-    apply (stream_no_error (run_segments source_segs inp rsp rmb) rLH cnt Hcnt HrLH
-             rpc rph rsp rbrk rmb rrnd rlim inp Hr). }
+    apply (stream_no_error source_segs rLH cnt Hcnt HrLH rpc rph rsp rbrk rmb rrnd rlim inp Hr). }
   right. split.
   - intro tr. cbn.
-    rewrite (stream_obs_iff (run_segments source_segs inp rsp rmb) rLH cnt Hcnt HrLH rpc rph rsp rbrk rmb rrnd rlim inp Hr tr).
-    rewrite (stream_obs_iff (run_segments target_segs inp asp amb) aLH cnt Hcnt HaLH apc aph asp abrk amb arnd alim inp Ha tr).
+    rewrite (stream_obs_iff source_segs rLH cnt Hcnt HrLH rpc rph rsp rbrk rmb rrnd rlim inp Hr tr).
+    rewrite (stream_obs_iff target_segs aLH cnt Hcnt HaLH apc aph asp abrk amb arnd alim inp Ha tr).
     reflexivity.
   - cbn. apply (stream_no_error target_segs aLH cnt Hcnt HaLH apc aph asp abrk amb arnd alim inp Ha).
 Qed.

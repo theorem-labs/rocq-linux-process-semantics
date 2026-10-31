@@ -60,7 +60,7 @@
 From Stdlib Require Import NArith ZArith List Lia Bool.
 From Stdlib Require Import FunctionalExtensionality.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run OmniRun.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import Mm.Mmap.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim PropExec CatSim CatExec SeqExec StreamSim AllocSim.
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
@@ -1702,28 +1702,23 @@ Proof.
 Qed.
 
 Lemma mmap_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bf cf bs cs,
-  tmw (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-      (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) bf cf bs cs ->
+  tmw segs (init_machine_state segs pc ph sp mb rnd inp)
+      (init_model (segments_reserved segs) brk0 mb sp lim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
-  forall tr, obs_trace (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
+  forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
              <-> two_traces bf cf bs cs (in_fs inp) tr.
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bf cf bs cs Hte Hbf Hbs tr.
   unfold init_config in *.
-  set (ms := init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
-  assert (Hh : m_halted (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = None) by reflexivity.
+  set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
+  assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None) by reflexivity.
   assert (Hlazy : m_vm_lazy
-      (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = []) by reflexivity.
-  assert (Hfd : fd1chan (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))) by reflexivity.
-  assert (Hfs : m_fs (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = in_fs inp) by reflexivity.
+      (init_model (segments_reserved segs) brk0 mb sp lim inp) = []) by reflexivity.
+  assert (Hfd : fd1chan (init_model (segments_reserved segs) brk0 mb sp lim inp)) by reflexivity.
+  assert (Hfs : m_fs (init_model (segments_reserved segs) brk0 mb sp lim inp) = in_fs inp) by reflexivity.
   split.
   - intros (tr' & c & Hstar & Hp).
-    pose proof (tmw_star_only (run_segments segs inp sp mb) ms _ bf cf bs cs Hte Hbf Hbs Hh Hlazy Hfd
+    pose proof (tmw_star_only segs ms _ bf cf bs cs Hte Hbf Hbs Hh Hlazy Hfd
                   tr' c Hstar) as H2.
     rewrite Hfs in H2.
     eapply two_traces_prefix_closed; eauto.
@@ -1739,16 +1734,14 @@ Proof.
 Qed.
 
 Lemma mmap_no_error_run_te : forall segs pc ph sp brk0 mb rnd lim inp bf cf bs cs,
-  tmw (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-      (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) bf cf bs cs ->
+  tmw segs (init_machine_state segs pc ph sp mb rnd inp)
+      (init_model (segments_reserved segs) brk0 mb sp lim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
-  ~ reaches_error (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp).
+  ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bf cf bs cs Hte Hbf Hbs.
   unfold init_config.
-  apply (tmw_no_error segs _ (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) bf cf bs cs);
+  apply (tmw_no_error segs _ (init_model (segments_reserved segs) brk0 mb sp lim inp) bf cf bs cs);
     [reflexivity | reflexivity | reflexivity | exact Hte | exact Hbf | exact Hbs].
 Qed.
 
@@ -1757,23 +1750,22 @@ Qed.
 (** The run-level omni judgment and equivalence of a fail-or-succeed
     mmap run, at the two role budgets. *)
 Lemma mmap_omni_run_te : forall segs pc ph sp brk0 mb rnd lim inp bf cf bs cs,
-  tmw (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-      (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) bf cf bs cs ->
+  tmw segs (init_machine_state segs pc ph sp mb rnd inp)
+      (init_model (segments_reserved segs) brk0 mb sp lim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (tmw_post bf cf bs cs (in_fs inp)).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bf cf bs cs Hte Hbf Hbs.
   cbn [omni_run]. unfold init_config.
-  exact (tmw_exec (run_segments segs inp sp mb) _ _ bf cf bs cs Hte Hbf Hbs eq_refl eq_refl eq_refl).
+  exact (tmw_exec segs _ _ bf cf bs cs Hte Hbf Hbs eq_refl eq_refl eq_refl).
 Qed.
 
 Lemma mmap_omni_strong_equiv_te :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bf cf bs cs inp,
-  tmw (run_segments source_segs inp rsp rmb) (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-      (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp source_alloc_limit inp) bf cf bs cs ->
-  tmw (run_segments target_segs inp asp amb) (init_machine_state (run_segments target_segs inp asp amb) apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-      (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp target_alloc_limit inp) bf cf bs cs ->
+  tmw source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
+      (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp) bf cf bs cs ->
+  tmw target_segs (init_machine_state target_segs apc aph asp amb arnd inp)
+      (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
@@ -1781,7 +1773,7 @@ Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bf cf bs cs inp
     Hsource Htarget Hbf Hbs.
   split.
-  { cbn [image_run_segments img_segments en_sp en_mmap_base].
+  { cbn [img_segments].
     eapply coexec_conseq;
       [apply exec_coexec;
        exact (mmap_omni_run_te source_segs rpc rph rsp rbrk rmb rrnd source_alloc_limit inp bf cf bs cs
@@ -1802,10 +1794,10 @@ Qed.
 
 Lemma mmap_strong_equiv_te :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim bf cf bs cs inp,
-  tmw (run_segments source_segs inp rsp rmb) (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-      (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp rlim inp) bf cf bs cs ->
-  tmw (run_segments target_segs inp asp amb) (init_machine_state (run_segments target_segs inp asp amb) apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-      (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp alim inp) bf cf bs cs ->
+  tmw source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
+      (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) bf cf bs cs ->
+  tmw target_segs (init_machine_state target_segs apc aph asp amb arnd inp)
+      (init_model (segments_reserved target_segs) abrk amb asp alim inp) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)

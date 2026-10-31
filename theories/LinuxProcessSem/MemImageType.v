@@ -177,7 +177,9 @@ Definition seg_kernel_map (seg : Segment) : bool :=
     ([PhdrInfo]).  Nothing
     else in the image comes from the binary — the initial register file is
     fixed by the process model ([Run.init_machine_state]): the stack pointer
-    is quantified over the ASLR window ([Run.valid_sp]) and every other
+    is quantified over the launches [execve] can give ([Run.valid_sp] for
+    the ASLR window, and [Run.entry_launch_ok_va] for the stack VMA's end
+    and the pad below it), and every other
     register, [a0] included, starts at 0 on Linux entry (argc/argv live on
     the stack, not in registers).  Both the source binary and the target
     binary are packaged as [MemImage] modules, and the [Equivalence] functor

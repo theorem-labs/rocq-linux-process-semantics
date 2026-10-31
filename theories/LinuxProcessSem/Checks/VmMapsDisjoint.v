@@ -119,19 +119,22 @@ Definition wit_mmap_base : word := Z_to_bv 64 mmap_base_min.
 
 (** The witness ledger.  [State.mkVmMaps] would default [vm_mmap_base] to
     zero, which is below [State.mmap_base_min]; this fixes it at the
-    admissible value instead and is otherwise that same constructor. *)
-(** The reservations the witness run really starts with: the image's
-    LOAD pages ([wit_reserved]) and the vdso/vvar pair [execve]
-    installs, which [State.init_reserved] adds.  [wit_reserved] alone
-    is the IMAGE's half, which is what [wit_valid_brk] below reads;
-    this is the whole ledger. *)
-Definition wit_reserved_init : list (word * word) :=
-  init_reserved wit_reserved wit_mmap_base (Z_to_bv 64 sp_window_lo)
-    default_kernel.
+    admissible value instead and is otherwise that same constructor.
 
+    THE RESERVED LIST IS [State.init_reserved], not [wit_reserved]
+    alone.  [State.init_model] reserves the image AND the vdso/vvar pair
+    [execve] installs above it ([setup_rt_sigreturn_trampoline] and
+    [_install_special_mapping], arch/riscv/kernel/vdso.c, Linux
+    v6.18.46, commit 1f99e9ab748f), placed at the ledger's [vdso_top].
+    No step below touches that pair, so every [wit_sN] has to carry it
+    too or the expected model would differ from the one the checker
+    hands back in a field no step wrote. *)
 Definition wit_vm (maps : list (word * word)) (start_brk brk : word)
     (limit : Z) : VmMaps :=
-  mkVmMapsFull wit_reserved_init maps [] start_brk brk limit wit_mmap_base
+  mkVmMapsFull
+    (init_reserved wit_reserved wit_mmap_base (Z_to_bv 64 sp_window_lo)
+       default_kernel)
+    maps [] start_brk brk limit wit_mmap_base
     (Z_to_bv 64 sp_window_lo).
 
 Definition wit_s0 : Model :=
@@ -1288,8 +1291,6 @@ Proof.
   dif H; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   dif H; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   dif H; [discriminate|].
-  (* the vdso/vvar gate: a request that meets the pair is unmodeled *)
-  dif H; [discriminate|].
   dif H.
   - destruct ws, us, cs, ci; try discriminate.
     dif H.
@@ -1329,9 +1330,10 @@ Proof.
   pose proof (word_range len) as Hlenr.
   pose proof (word_range addr) as Haddrr.
   destruct (negb (mmap_off_aligned_b off)) eqn:Eoff.
-  { destruct (mmap_pglen_ok_b len); [|discriminate].
+  { apply check_ret_only_model in H; subst m'; exact Hwf. }
+  destruct (negb (mmap_anon_b flags)) eqn:Eanon.
+  { destruct (fd_lookup (m_fds m) (fd32 fd)); [discriminate|].
     apply check_ret_only_model in H; subst m'; exact Hwf. }
-  destruct (negb (mmap_anon_b flags)) eqn:Eanon; [discriminate|].
   destruct (w_is0 len) eqn:Elen.
   { destruct (mmap_plain_anon_b flags); [|discriminate].
     apply check_ret_only_model in H; subst m'; exact Hwf. }
@@ -2202,7 +2204,7 @@ Lemma check_socket_frame : forall domain type protocol eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros domain type protocol eff m m' evs H.
-  unfold check_socket, check_new_fd_result in H. vm_frame2 H.
+  unfold check_socket, check_new_fd_result, check_errno_or_list in H. vm_frame2 H.
 Qed.
 
 Lemma check_bind_frame : forall i fd addrp addrlen eff m m' evs,
@@ -2242,7 +2244,7 @@ Proof.
      [vm_step] sees no [if] or [match] through a folded definition, so
      without the unfold that branch leaves an open goal. *)
   unfold check_accept4, check_new_fd_result, check_errno_or_success,
-    check_errno_only in H. vm_frame2 H.
+    check_errno_only, check_errno_or_list in H. vm_frame2 H.
 Qed.
 
 Lemma check_fcntl_frame : forall fd cmd arg eff m m' evs,

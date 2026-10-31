@@ -41,7 +41,7 @@
 
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run OmniRun.
 From LinuxProcessSemantics.Common Require Import ExitSim PropExec CatSim.
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
 Import ListNotations.
@@ -59,15 +59,12 @@ Lemma step_lbu_fault : forall segs regs pc mem rom w rd rs (imm : bv 12) (isz : 
   fetch_word segs pc = Some w -> is_ecall w = false ->
   decode_any w = Some (Load SZ1 false rd rs imm, isz) ->
   rdn segs mem (v_addi (getr regs rs) (bv_signed imm)) 1%nat = None ->
-  (* ... and the range is not the vvar pages, where a missing byte is
-     the MODEL declining rather than the process crashing (Vdso.v). *)
-  range_meets_vvar segs (v_addi (getr regs rs) (bv_signed imm)) 1%nat = false ->
   RiscvSemantics.step segs (mkst regs pc mem rom) = MachineFault.
 Proof.
-  intros segs regs pc mem rom w rd rs imm isz Hfetch Hecall Hdecode Hread Hvv.
+  intros segs regs pc mem rom w rd rs imm isz Hfetch Hecall Hdecode Hread.
   step_pipeline Hfetch Hecall Hdecode.
-  unfold getr in Hread, Hvv; rewrite ?bv_eqb0_is_x0 in Hread, Hvv.
-  rewrite ov_rdn, b_addsext, Hread. rewrite Hvv.
+  unfold getr in Hread; rewrite ?bv_eqb0_is_x0 in Hread.
+  rewrite ov_rdn, b_addsext, Hread.
   reflexivity.
 Qed.
 
@@ -76,15 +73,12 @@ Lemma step_ld_fault : forall segs regs pc mem rom w rd rs (imm : bv 12) (isz : Z
   fetch_word segs pc = Some w -> is_ecall w = false ->
   decode_any w = Some (Load SZ8 true rd rs imm, isz) ->
   rdn segs mem (v_addi (getr regs rs) (bv_signed imm)) 8%nat = None ->
-  (* ... and the range is not the vvar pages, where a missing byte is
-     the MODEL declining rather than the process crashing (Vdso.v). *)
-  range_meets_vvar segs (v_addi (getr regs rs) (bv_signed imm)) 8%nat = false ->
   RiscvSemantics.step segs (mkst regs pc mem rom) = MachineFault.
 Proof.
-  intros segs regs pc mem rom w rd rs imm isz Hfetch Hecall Hdecode Hread Hvv.
+  intros segs regs pc mem rom w rd rs imm isz Hfetch Hecall Hdecode Hread.
   step_pipeline Hfetch Hecall Hdecode.
-  unfold getr in Hread, Hvv; rewrite ?bv_eqb0_is_x0 in Hread, Hvv.
-  rewrite ov_rdn, b_addsext, Hread. rewrite Hvv.
+  unfold getr in Hread; rewrite ?bv_eqb0_is_x0 in Hread.
+  rewrite ov_rdn, b_addsext, Hread.
   reflexivity.
 Qed.
 
@@ -150,12 +144,11 @@ Proof.
   - exists [], SError. apply sstep_instr_fault; [assumption | assumption |].
     rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill. reflexivity.
   - intros evs Hss. inversion Hss; subst; split; reflexivity.
-  - intros evs c' Hnext. exfalso. inversion Hnext; subst; try congruence;
-      match goal with
-      | H : mi_account_step segs ms model = _ |- _ =>
-          rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill in H;
-          discriminate
-      end.
+  - intros evs c' Hnext. exfalso. inversion Hnext; subst; try congruence.
+    match goal with H : mi_account_step segs ms model = MachineOk _ |- _ =>
+      rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill in H;
+      discriminate
+    end.
 Qed.
 
 (** One ordinary instruction in front of any omni judgment: the
@@ -213,10 +206,7 @@ Lemma fault_covered_at : forall ms model,
   RiscvSemantics.step segs ms = MachineFault ->
   ~ unmodeled_at segs (mkCfg ms model).
 Proof.
-  intros ms model Hlazy Hsvc Hfault
-    (_ & [(_ & Hum & _) | [(_ & Hum & _) | (x8 & Hsvc' & _)]]); cbn in *.
-  - rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hfault in Hum.
-    discriminate.
+  intros ms model Hlazy Hsvc Hfault (_ & [(_ & Hum) | (x8 & Hsvc' & _)]); cbn in *.
   - rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hfault in Hum.
     discriminate.
   - congruence.
@@ -304,12 +294,11 @@ Proof.
   constructor.
   - exists [], SError. apply sstep_instr_fault; [assumption | assumption |].
     rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill. reflexivity.
-  - intros evs c' Hnext. inversion Hnext; subst; try congruence;
-      match goal with
-      | H : mi_account_step segs ms model = _ |- _ =>
-          rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill in H;
-          discriminate
-      end.
+  - intros evs c' Hnext. inversion Hnext; subst; try congruence.
+    match goal with H : mi_account_step segs ms model = MachineOk _ |- _ =>
+      rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill in H;
+      discriminate
+    end.
 Qed.
 
 (** Prepending the unique ordinary instruction transition preserves the
@@ -402,17 +391,13 @@ Lemma fault_no_unmodeled : forall ms model,
 Proof.
   intros ms model Hlazy Hsvc Hfault (tr & c & Hstar & Hun).
   assert (Hno : forall evs c2, ~ sstep segs (mkCfg ms model) evs (SNext c2)).
-  { intros evs c2 Hss. inversion Hss; subst; try congruence;
-      match goal with
-      | H : mi_account_step segs ms model = _ |- _ =>
-          rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hfault in H;
-          discriminate
-      end. }
+  { intros evs c2 Hss. inversion Hss; subst; try congruence.
+    match goal with H : mi_account_step segs ms model = MachineOk _ |- _ =>
+      rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hfault in H;
+      discriminate
+    end. }
   rewrite (star_stuck_refl _ tr c Hno Hstar) in Hun.
-  destruct Hun as (_ & [(_ & Hum & _) | [(_ & Hum & _) | (x8 & Hsvc' & _)]]);
-    cbn in *.
-  - rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hfault in Hum.
-    discriminate.
+  destruct Hun as (_ & [(_ & Hum) | (x8 & Hsvc' & _)]); cbn in *.
   - rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hfault in Hum.
     discriminate.
   - congruence.
@@ -428,10 +413,7 @@ Lemma instr_no_unmodeled : forall ms ms' model,
 Proof.
   intros ms ms' model Hlazy Hsvc Hstep Hnext (tr & c & Hstar & Hun).
   inversion Hstar as [| c1 evs c2 tr2 c3 Hss Hrest]; subst.
-  - destruct Hun as (_ & [(_ & Hum & _) | [(_ & Hum & _) | (x8 & Hsvc' & _)]]);
-      cbn in *.
-    + rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hstep in Hum.
-      discriminate.
+  - destruct Hun as (_ & [(_ & Hum) | (x8 & Hsvc' & _)]); cbn in *.
     + rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hstep in Hum.
       discriminate.
     + congruence.
@@ -470,9 +452,9 @@ End NoUnmodeledWithSegs.
 (** The omni escape, per run: the source's judgment at any budget ... *)
 Lemma err_escape_omni_run :
   forall segs pc ph sp brk0 mb rnd lim inp ms',
-  msteps (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ms' ->
+  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
+  RiscvSemantics.step segs ms' = MachineFault ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp errors.
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp ms' Hm Hsvc Hill.
@@ -483,10 +465,10 @@ Qed.
 (** ... its coverage ... *)
 Lemma err_escape_omni_covered :
   forall segs pc ph sp brk0 mb rnd lim inp ms',
-  msteps (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ms' ->
+  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
-  omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (covered (run_segments segs inp sp mb)).
+  RiscvSemantics.step segs ms' = MachineFault ->
+  omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (covered segs).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp ms' Hm Hsvc Hill.
   cbn [omni_corun]. unfold init_config.
@@ -496,9 +478,9 @@ Qed.
 (** ... [OmniEquivalence.omni_equiv] against ANY target run ... *)
 Lemma err_escape_omni_equiv :
   forall segs pc ph sp brk0 mb rnd lim inp T limT et ms',
-  msteps (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ms' ->
+  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
+  RiscvSemantics.step segs ms' = MachineFault ->
   omni_equiv (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) T limT et inp.
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp T limT et ms' Hm Hsvc Hill.
@@ -509,14 +491,14 @@ Qed.
     that deterministically faults, against any target image and entry. *)
 Lemma err_escape_omni_strong_equiv :
   forall segs pc ph sp brk0 mb rnd inp T et ms',
-  msteps (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ms' ->
+  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
+  RiscvSemantics.step segs ms' = MachineFault ->
   omni_strong_equiv (mkImage segs pc ph) T (mkEntry sp brk0 mb rnd) et inp.
 Proof.
   intros segs pc ph sp brk0 mb rnd inp T et ms' Hm Hsvc Hill.
   split.
-  - cbn [image_run_segments img_segments en_sp en_mmap_base]. eapply err_escape_omni_covered; eassumption.
+  - cbn [img_segments]. eapply err_escape_omni_covered; eassumption.
   - eapply err_escape_omni_equiv; eassumption.
 Qed.
 
@@ -526,9 +508,9 @@ Qed.
     judgment through [OmniRun.bh_all_errors_iff]. *)
 Lemma err_escape_equiv :
   forall segs pc ph sp brk0 mb rnd lim inp (target : behavior) ms',
-  msteps (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ms' ->
+  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
+  RiscvSemantics.step segs ms' = MachineFault ->
   Equivalence.equiv (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp) target.
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp target ms' Hm Hsvc Hill.
@@ -542,22 +524,22 @@ Qed.
     [OmniEquivalence.modeled_iff]. *)
 Lemma err_escape_modeled :
   forall segs pc ph sp brk0 mb rnd lim inp ms',
-  msteps (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ms' ->
+  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
+  RiscvSemantics.step segs ms' = MachineFault ->
   Equivalence.modeled (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp ms' Hm Hsvc Hill.
-  apply modeled_iff. cbn [image_run_segments img_segments en_sp en_mmap_base]. eapply err_escape_omni_covered; eassumption.
+  apply modeled_iff. cbn [img_segments]. eapply err_escape_omni_covered; eassumption.
 Qed.
 
 (** The packaged escape: both clauses of [Equivalence.strong_equiv] for a
     source that deterministically faults, against ANY target. *)
 Lemma err_escape_strong_equiv :
   forall segs pc ph sp brk0 mb rnd lim inp (target : behavior) ms',
-  msteps (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ms' ->
+  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
+  RiscvSemantics.step segs ms' = MachineFault ->
   Equivalence.modeled (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp)
   /\ Equivalence.equiv (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp)
        target.

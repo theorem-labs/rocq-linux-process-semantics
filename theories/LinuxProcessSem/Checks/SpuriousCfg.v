@@ -542,13 +542,20 @@ Qed.
 
 (** ... and the undecodable image refutes it there too, at every code:
     the fetch that leaves the modeled surface is an instruction step, and
-    the filter touches no instruction step. *)
+    the filter touches no instruction step.
+
+    The stack pointer is [Cases.Prelude.demo_sp] and not the 65536 the
+    older fixtures used, because the entry carries
+    [Cases.Prelude.demo_draw], whose [StackLayout.ed_top] is one page
+    above [demo_sp]: the entry image is EVERYTHING between the stack
+    pointer and that top, so a lower pointer would ask the model to lay
+    about 2^47 bytes.  The break is a different one from
+    [Checks.Examples.demo_entry]'s on purpose — the refutation is about
+    the fetch, not about any placement. *)
 Example undecodable_image_refutes_must_exit_under_forced_only :
   ~ must_exit_with_scfg forced_only_cfg verdict_accept undecodable_image demo_limit
-      (mkEntry (Z_to_bv 64 65536) (Z_to_bv 64 1048576)
-         (Z_to_bv 64 mmap_base_max) demo_draw)
-      (mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-                       default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48).
+      (mkEntry demo_sp (Z_to_bv 64 1048576) demo_mbase demo_draw)
+      demo_proc_input.
 Proof.
   apply must_exit_with_scfg_refuted_by_error, run_scfg_unmodeled_errors.
   cbn [run_scfg bh_unmodeled undecodable_image]. unfold init_config.
@@ -557,12 +564,15 @@ Proof.
   end.
   split; [apply star_cfg_refl |].
   split; [reflexivity |]. left. split; [reflexivity |].
-  cbn [cfg_ms cfg_model]. split; [| vm_compute; reflexivity].
+  cbn [cfg_ms cfg_model].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  vm_compute. reflexivity.
+  (* No [cbn] over [mkProcInput]'s projections: [init_machine_state]
+     takes the input WHOLE now, and unfolding the constructor here
+     would stop [undecodable_step_unmodeled] matching. *)
+  rewrite undecodable_step_unmodeled. reflexivity.
 Qed.
 
 (* =========================================================================

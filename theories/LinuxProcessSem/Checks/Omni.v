@@ -59,19 +59,37 @@
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase Fs State Monad Specs Vdso Run StackLayout MemImageType RiscvSemantics OmniRun.
+  BvBase Fs State Monad Specs Run StackLayout MemImageType RiscvSemantics OmniRun.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs Examples Progress.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import
   Equivalence MustExit Classifier OmniEquivalence.
 Import ListNotations.
 Open Scope bv_scope.
 
-(** The process input every concrete pin below runs on — the one
-    [Checks.Examples.demo_input_valid] validates: one empty argument,
-    no environment, an empty file system, end of input. *)
-Definition demo_proc_input : ProcInput :=
-  mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-              default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48.
+(** The process input every concrete pin below runs on is
+    [Checks.Examples.demo_proc_input] — the one
+    [Checks.Examples.demo_input_valid] validates: one empty argument, no
+    environment, an empty file system, end of input, and the default
+    kernel build and exec file name.
+
+    The [execve] placement is [Checks.Examples.demo_entry], which is
+    [Run.launch_entry_va] on that input: the stack VMA's end at the top
+    of the address space, the stack pointer at the top of the sp rule
+    (the launch with no [arch_align_stack] pad) and the mmap base of
+    the base rule with the draw at 0.  Its four fields are therefore no
+    longer literals this file can spell — the stack pointer depends on
+    the input's own string lengths, which is what the fifth conjunct of
+    [Run.valid_entry_va] asks — so every fixture below reads them off
+    the entry with [Run.en_sp] and its siblings.
+
+    [demo_entry_eta] puts the entry back into the constructor form that
+    [Run.run], [Run.init_config] and [Run.valid_entry] match on, which
+    is what [cbn] needs to reach the configuration underneath. *)
+Lemma demo_entry_eta :
+  mkEntry (en_sp demo_entry) (en_brk demo_entry) (en_mmap_base demo_entry)
+          (en_draw demo_entry)
+  = demo_entry.
+Proof. destruct demo_entry; reflexivity. Qed.
 
 (* =========================================================================
    PART 1 — receptiveness lifted to [Run.sstep]
@@ -104,39 +122,7 @@ Proof.
   - destruct (mi_account_step segs ms model) as [[ms' model'] | |] eqn:Hacc.
     + eexists; eexists. eapply sstep_instr; eassumption.
     + eexists; eexists. eapply sstep_instr_fault; eassumption.
-    + (* The model declined the instruction.  At an exported vDSO entry
-         that is not the end of it: the three vDSO arms answer there,
-         and the case split below shows one of them always fires, so
-         such a configuration is not stuck either. *)
-      destruct (vdso_entry_fn segs (ms_pc ms)) as [fn |] eqn:Hfn;
-        [| eexists; eexists; eapply sstep_instr_unmodeled; eassumption].
-      destruct (vdso_fn_sysno fn) as [n |] eqn:Hno;
-        [| eexists; eexists; eapply sstep_vdso_unmodeled;
-           try eassumption; left; exact Hno].
-      pose proof (receptive (sys_input segs ms (Z_to_bv 64 n)) model) as Hr.
-      set (w := syscall_spec_witness (sys_input segs ms (Z_to_bv 64 n)) model)
-        in Hr.
-      clearbody w. destruct w as [eff model' evs |];
-        [| eexists; eexists; eapply sstep_vdso_unmodeled;
-           try eassumption; right; left; exists n; split;
-           [exact Hno | exact Hr]].
-      destruct (bv_eqb (eff_ret eff) (errno_ret EFAULT)) eqn:He.
-      * eexists; eexists. eapply sstep_vdso_unmodeled; try eassumption.
-        right; right. exists n, eff, model', evs.
-        split; [exact Hno | split; [exact Hr |]].
-        left. apply bv_eqb_eq. exact He.
-      * destruct (m_halted model') as [code |] eqn:Hh'.
-        -- eexists; eexists. eapply sstep_vdso_unmodeled; try eassumption.
-           right; right. exists n, eff, model', evs.
-           split; [exact Hno | split; [exact Hr |]].
-           right. rewrite Hh'. discriminate.
-        -- destruct (materialize_model_accesses model'
-                       (syscall_effect_accesses eff)) as [model'' |] eqn:Hm.
-           ++ eexists; eexists. eapply sstep_vdso_call; try eassumption.
-              intro Hc. rewrite Hc, bv_eqb_refl in He. discriminate.
-           ++ eexists; eexists.
-              eapply sstep_vdso_materialization_fault; try eassumption.
-              intro Hc. rewrite Hc, bv_eqb_refl in He. discriminate.
+    + eexists; eexists. eapply sstep_instr_unmodeled; eassumption.
 Qed.
 
 (** Hence the progress-carrying variant is no stronger here. *)
@@ -376,43 +362,41 @@ Qed.
     and on EVERY input: it makes no memory access beyond its own
     fetches, and the fetch reads the segment image, which no placement
     touches.  Stated with the stack memory abstracted, exactly so that
-    [vm_compute] never has to look at it. *)
-Lemma exit0_exits_c : forall extra sp rnd argv envp uid hw,
-  exits_c (exit0_segments ++ extra) verdict_accept 8
-    (init_machine_state (exit0_segments ++ extra) 0x100 demo_phdrs sp rnd
-       argv envp uid hw)
+    [vm_compute] never has to look at it.
+
+    [Run.init_machine_state] takes the whole [State.ProcInput] and the
+    mmap base now, because the auxv it lays down carries the kernel
+    build's vDSO base, cache words and minimum signal-frame size
+    ([Run.launch_auxv]); the four loose values this lemma used to
+    quantify over are projections of that input. *)
+Lemma exit0_exits_c : forall sp mbase draw inp,
+  exits_c exit0_segments verdict_accept 8
+    (init_machine_state exit0_segments 0x100 demo_phdrs sp mbase draw inp)
   = true.
 Proof.
-  intros. rewrite (with_mem_eta (init_machine_state _ _ _ _ _ _ _ _ _)).
-  generalize (ms_mem (init_machine_state (exit0_segments ++ extra) 0x100
-                        demo_phdrs sp rnd argv envp uid hw)).
+  intros. rewrite (with_mem_eta (init_machine_state _ _ _ _ _ _ _)).
+  generalize (ms_mem (init_machine_state exit0_segments 0x100 demo_phdrs sp
+                        mbase draw inp)).
   intros mem. vm_compute. reflexivity.
 Qed.
 
 (** One omni judgment for the whole image: every execution halts with
     code 0 after emitting exactly the exit event, at any budget. *)
 Lemma exit0_exec : forall sp brk0 mbase rnd lim inp,
-  exec (run_segments exit0_segments inp sp mbase)
-    (init_config (run_segments exit0_segments inp sp mbase) 0x100 demo_phdrs
-       sp brk0 mbase rnd lim inp)
+  exec exit0_segments (init_config exit0_segments 0x100 demo_phdrs sp brk0 mbase rnd lim inp)
     (fun tr o => tr = [ExitEv verdict_accept (in_fs inp)]
                  /\ exits_with verdict_accept tr o).
 Proof.
-  intros. unfold init_config, run_segments.
-  refine (exits_c_exec (exit0_segments ++ _) verdict_accept 8
-            (init_machine_state (exit0_segments ++ _) 0x100 demo_phdrs sp rnd
-               (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-            (with_vdso (vdso_run_init (ed_vdso rnd))
-               (init_model (segments_reserved (exit0_segments ++ _))
-                  brk0 mbase sp lim inp))
-            eq_refl eq_refl (exit0_exits_c _ _ _ _ _ _ _)).
+  intros. unfold init_config.
+  refine (exits_c_exec exit0_segments verdict_accept 8
+            (init_machine_state exit0_segments 0x100 demo_phdrs sp mbase rnd inp)
+            (init_model (segments_reserved exit0_segments) brk0 mbase sp lim inp)
+            eq_refl eq_refl (exit0_exits_c _ _ _ _)).
 Qed.
 
 (** What the one judgment yields: the exact trace set ... *)
 Lemma exit0_obs : forall sp brk0 mbase rnd lim inp tr,
-  obs_trace (run_segments exit0_segments inp sp mbase)
-    (init_config (run_segments exit0_segments inp sp mbase) 0x100 demo_phdrs
-       sp brk0 mbase rnd lim inp) tr
+  obs_trace exit0_segments (init_config exit0_segments 0x100 demo_phdrs sp brk0 mbase rnd lim inp) tr
   <-> is_prefix tr [ExitEv verdict_accept (in_fs inp)].
 Proof.
   intros. apply exec_obs_iff.
@@ -422,9 +406,7 @@ Qed.
 
 (** ... and error-freedom, hence coverage. *)
 Lemma exit0_never_errors : forall sp brk0 mbase rnd lim inp,
-  coexec (run_segments exit0_segments inp sp mbase)
-    (init_config (run_segments exit0_segments inp sp mbase) 0x100 demo_phdrs
-       sp brk0 mbase rnd lim inp)
+  coexec exit0_segments (init_config exit0_segments 0x100 demo_phdrs sp brk0 mbase rnd lim inp)
     never_errors.
 Proof.
   intros. apply exec_coexec. eapply exec_conseq; [apply exit0_exec |].
@@ -665,7 +647,7 @@ Proof. apply must_exit_with_iff. exact exit0_image_must_exit_zero. Qed.
 Example exit0_omni_exits_zero_direct :
   omni_run exit0_image demo_limit demo_entry demo_proc_input (exits_with verdict_accept).
 Proof.
-  cbn [omni_run exit0_image demo_entry].
+  rewrite <- demo_entry_eta. cbn [omni_run exit0_image].
   eapply exec_conseq; [apply exit0_exec |]. intros tr o (_ & Hx). exact Hx.
 Qed.
 
@@ -677,7 +659,7 @@ Proof. apply must_exit_with_iff. exact exit0_omni_exits_zero_direct. Qed.
 Example exit0_omni_not_exits_one :
   ~ omni_run exit0_image demo_limit demo_entry demo_proc_input (exits_with verdict_reject).
 Proof.
-  intros H. cbn [omni_run exit0_image demo_entry] in H.
+  intros H. rewrite <- demo_entry_eta in H. cbn [omni_run exit0_image] in H.
   destruct (exec_realizes _ _ _ H) as (tr & o & Hm & Hx).
   destruct (exec_sound _ _ _ (exit0_exec _ _ _ _ _ _) _ _ Hm) as (_ & Hx0).
   destruct o as [c | c]; [| exact Hx].
@@ -689,26 +671,43 @@ Qed.
    PART 3 — the undecodable image refutes them
    ========================================================================= *)
 
+(** The first fetch of the undecodable image, with the stack memory
+    abstracted so that [vm_compute] never looks at it — the idiom of
+    [exit0_exits_c].  Stated here rather than taken from
+    [Checks.Examples] because the placement's stack pointer, mmap base
+    and draw are read off [Checks.Examples.demo_entry]. *)
+Lemma undecodable_step_unmodeled_here :
+  RiscvSemantics.step undecodable_segments
+    (init_machine_state undecodable_segments 0x100 demo_phdrs
+       (en_sp demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry)
+       demo_proc_input)
+  = MachineUnmodeled.
+Proof.
+  rewrite (with_mem_eta (init_machine_state _ _ _ _ _ _ _)).
+  generalize (ms_mem (init_machine_state undecodable_segments 0x100 demo_phdrs
+                        (en_sp demo_entry) (en_mmap_base demo_entry)
+                        (en_draw demo_entry) demo_proc_input)).
+  intros mem. vm_compute. reflexivity.
+Qed.
+
 (** Its first fetch leaves the modeled surface, at the ASLR-valid
     entry and at either role budget. *)
 Lemma undecodable_unmodeled_at_demo_entry : forall lim,
   bh_unmodeled (run undecodable_image lim demo_entry demo_proc_input).
 Proof.
   intros lim.
-  cbn [run bh_unmodeled undecodable_image demo_entry]. unfold init_config.
-  apply reaches_unmodeled_intro;
-    [reflexivity | reflexivity | | vm_compute; reflexivity].
+  rewrite <- demo_entry_eta.
+  cbn [run bh_unmodeled undecodable_image]. unfold init_config.
+  apply reaches_unmodeled_intro; [reflexivity | reflexivity |].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  cbn [mkProcInput in_argv in_envp in_uid in_hwcap demo_proc_input].
-  vm_compute. reflexivity.
+  rewrite undecodable_step_unmodeled_here. reflexivity.
 Qed.
 
 Example undecodable_omni_not_covered : forall lim,
-  ~ omni_corun undecodable_image lim demo_entry demo_proc_input
-      (covered (image_run_segments undecodable_image demo_entry demo_proc_input)).
+  ~ omni_corun undecodable_image lim demo_entry demo_proc_input (covered undecodable_segments).
 Proof.
   intros lim H.
   exact (proj2 (bh_unmodeled_iff undecodable_image lim demo_entry demo_proc_input) H
@@ -726,8 +725,7 @@ Qed.
 (** The positive may-fact behind both: some maximal execution errors
     from an uncovered configuration. *)
 Example undecodable_omni_may_uncovered : forall lim,
-  omni_may undecodable_image lim demo_entry demo_proc_input
-    (uncovered (image_run_segments undecodable_image demo_entry demo_proc_input)).
+  omni_may undecodable_image lim demo_entry demo_proc_input (uncovered undecodable_segments).
 Proof.
   intros lim. apply bh_unmodeled_may_iff. exact (undecodable_unmodeled_at_demo_entry lim).
 Qed.
@@ -748,23 +746,21 @@ Qed.
 Example undecodable_omni_errors : forall lim,
   omni_run undecodable_image lim demo_entry demo_proc_input errors.
 Proof.
-  intros lim. cbn [omni_run undecodable_image demo_entry].
+  intros lim. rewrite <- demo_entry_eta. cbn [omni_run undecodable_image].
   apply exec_step; [reflexivity | | intros; exact I |].
-  - unfold init_config. eexists; eexists. apply sstep_instr_unmodeled;
-      [reflexivity | reflexivity | | vm_compute; reflexivity].
+  - unfold init_config. eexists; eexists. apply sstep_instr_unmodeled; [reflexivity | reflexivity |].
     match goal with
     | |- mi_account_step ?segs ?ms ?model = _ =>
         rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
     end.
-    vm_compute. reflexivity.
+    rewrite undecodable_step_unmodeled_here. reflexivity.
   - intros evs c' Hss. exfalso. unfold init_config in Hss.
-    revert Hss. apply unmodeled_no_next;
-      [reflexivity | | vm_compute; reflexivity].
+    revert Hss. apply unmodeled_no_next; [reflexivity |].
     match goal with
     | |- mi_account_step ?segs ?ms ?model = _ =>
         rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
     end.
-    vm_compute. reflexivity.
+    rewrite undecodable_step_unmodeled_here. reflexivity.
 Qed.
 
 (** With the undecodable image as SOURCE, the universal statement is
@@ -786,16 +782,15 @@ Qed.
 Lemma undecodable_cosafe_nil : forall lim,
   omni_cosafe undecodable_image lim demo_entry demo_proc_input (fun tr => tr = []).
 Proof.
-  intros lim. cbn [omni_cosafe undecodable_image demo_entry].
+  intros lim. rewrite <- demo_entry_eta. cbn [omni_cosafe undecodable_image].
   apply cosafe_intro; [reflexivity |].
   intros evs c' Hss. exfalso. unfold init_config in Hss.
-  revert Hss. apply unmodeled_no_next;
-    [reflexivity | | vm_compute; reflexivity].
+  revert Hss. apply unmodeled_no_next; [reflexivity |].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
-  vm_compute. reflexivity.
+  rewrite undecodable_step_unmodeled_here. reflexivity.
 Qed.
 
 (** A DIFFERING pair with a sound source: exit-0 against the
@@ -811,14 +806,20 @@ Proof.
               (demo_entry_valid_exit0 _ demo_input_valid)
               (demo_entry_valid_undecodable _ demo_input_valid)
               demo_input_valid) as (_ & [Hall | (Htr & _)]).
-  - cbn [omni_run exit0_image demo_entry] in Hall.
-    destruct (exec_realizes _ _ _ (exit0_exec (Z_to_bv 64 0x7fff80000000) (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw source_alloc_limit demo_proc_input))
+  - rewrite <- demo_entry_eta in Hall. cbn [omni_run exit0_image] in Hall.
+    destruct (exec_realizes _ _ _
+                (exit0_exec (en_sp demo_entry) (en_brk demo_entry)
+                   (en_mmap_base demo_entry) (en_draw demo_entry)
+                   source_alloc_limit demo_proc_input))
       as (tr & o & Hm & _ & Hx).
     exact (exits_with_never_errors _ _ _ Hx (exec_sound _ _ _ Hall _ _ Hm)).
   - specialize (Htr _ prefix_closed_nil).
     destruct Htr as (_ & Hnil). specialize (Hnil (undecodable_cosafe_nil _)).
-    cbn [omni_cosafe exit0_image demo_entry] in Hnil.
-    destruct (exec_realizes _ _ _ (exit0_exec (Z_to_bv 64 0x7fff80000000) (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw source_alloc_limit demo_proc_input))
+    rewrite <- demo_entry_eta in Hnil. cbn [omni_cosafe exit0_image] in Hnil.
+    destruct (exec_realizes _ _ _
+                (exit0_exec (en_sp demo_entry) (en_brk demo_entry)
+                   (en_mmap_base demo_entry) (en_draw demo_entry)
+                   source_alloc_limit demo_proc_input))
       as (tr & [c' | c'] & Hm & Heq & Hx); [| destruct Hx].
     subst tr. destruct (mexec_halt_star _ _ _ _ Hm c' eq_refl) as (Hstar & _).
     discriminate (cosafe_star _ _ _ _ _ Hnil Hstar).
@@ -835,40 +836,31 @@ Definition ebreak_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x"%string;
-  seg_bytes := ["73001000"%pstring];
-  seg_kind  := SegLoader
+  seg_bytes := ["73001000"%pstring]
 |}.
 Definition ebreak_segments : list Segment := [ebreak_segment].
 Definition ebreak_image : Image := mkImage ebreak_segments 0x100 demo_phdrs.
 
-Definition ebreak_run_segments : list Segment :=
-  run_segments ebreak_segments demo_proc_input (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 mmap_base_max).
-
 Definition ebreak_ms : machine_state :=
-  init_machine_state ebreak_run_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    demo_draw
-    (in_argv demo_proc_input) (in_envp demo_proc_input) (in_uid demo_proc_input)
-    (in_hwcap demo_proc_input).
+  init_machine_state ebreak_segments 0x100 demo_phdrs (en_sp demo_entry)
+    (en_mmap_base demo_entry) (en_draw demo_entry) demo_proc_input.
 
 Definition ebreak_model (lim : Z) : Model :=
-  with_vdso (vdso_run_init (ed_vdso demo_draw))
-    (init_model (segments_reserved ebreak_run_segments) (Z_to_bv 64 0x1000)
-       (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) lim
-       demo_proc_input).
+  init_model (segments_reserved ebreak_segments) (en_brk demo_entry)
+    (en_mmap_base demo_entry) (en_sp demo_entry) lim demo_proc_input.
 
 Lemma ebreak_config : forall lim,
-  init_config ebreak_run_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw lim demo_proc_input
+  init_config ebreak_segments 0x100 demo_phdrs (en_sp demo_entry)
+    (en_brk demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry) lim
+    demo_proc_input
   = mkCfg ebreak_ms (ebreak_model lim).
 Proof. reflexivity. Qed.
 
-Lemma ebreak_faults :
-  RiscvSemantics.step ebreak_run_segments ebreak_ms = MachineFault.
+Lemma ebreak_faults : RiscvSemantics.step ebreak_segments ebreak_ms = MachineFault.
 Proof. vm_compute. reflexivity. Qed.
 
 Lemma ebreak_only : forall lim evs st,
-  sstep ebreak_run_segments (mkCfg ebreak_ms (ebreak_model lim)) evs st ->
+  sstep ebreak_segments (mkCfg ebreak_ms (ebreak_model lim)) evs st ->
   evs = [] /\ st = SError.
 Proof.
   intros lim. apply sstep_fault_only; [reflexivity | reflexivity | exact ebreak_faults].
@@ -878,28 +870,24 @@ Qed.
 Example ebreak_omni_errors : forall lim,
   omni_run ebreak_image lim demo_entry demo_proc_input errors.
 Proof.
-  intros lim. cbn [omni_run ebreak_image demo_entry].
-  fold ebreak_run_segments. rewrite ebreak_config.
+  intros lim. rewrite <- demo_entry_eta. cbn [omni_run ebreak_image].
+  rewrite ebreak_config.
   apply exec_step; [reflexivity | | intros; exact I |].
   - eexists; eexists. apply sstep_instr_fault; [reflexivity | reflexivity |].
-    no_lazy. vm_compute. reflexivity.
+    no_lazy. rewrite ebreak_faults. reflexivity.
   - intros evs c' Hss. destruct (ebreak_only _ _ _ Hss) as (_ & Habs). discriminate Habs.
 Qed.
 
 (** ... the crash is COVERED, because the configuration it is taken
     from is one the model has an answer for ... *)
 Example ebreak_omni_covered : forall lim,
-  omni_corun ebreak_image lim demo_entry demo_proc_input
-    (covered (image_run_segments ebreak_image demo_entry demo_proc_input)).
+  omni_corun ebreak_image lim demo_entry demo_proc_input (covered ebreak_segments).
 Proof.
-  intros lim. cbn [omni_corun ebreak_image demo_entry image_run_segments img_segments
-       en_sp en_mmap_base].
-  fold ebreak_run_segments. rewrite ebreak_config.
+  intros lim. rewrite <- demo_entry_eta. cbn [omni_corun ebreak_image].
+  rewrite ebreak_config.
   apply coexec_step; [reflexivity | |].
-  - intros evs _ (_ & [(_ & Hun & _) | [(_ & Hun & _) | (x8 & Hsvc & _)]]);
-      cbn [cfg_ms cfg_model] in *.
-    + no_lazy_in Hun. vm_compute in Hun. discriminate Hun.
-    + no_lazy_in Hun. vm_compute in Hun. discriminate Hun.
+  - intros evs _ (_ & [(_ & Hun) | (x8 & Hsvc & _)]); cbn [cfg_ms cfg_model] in *.
+    + no_lazy_in Hun. rewrite ebreak_faults in Hun. discriminate Hun.
     + vm_compute in Hsvc. discriminate Hsvc.
   - intros evs c' Hss. destruct (ebreak_only _ _ _ Hss) as (_ & Habs). discriminate Habs.
 Qed.
@@ -909,11 +897,11 @@ Qed.
 Example ebreak_omni_not_never_errors : forall lim,
   ~ omni_corun ebreak_image lim demo_entry demo_proc_input never_errors.
 Proof.
-  intros lim H. cbn [omni_corun ebreak_image demo_entry] in H.
-  fold ebreak_run_segments in H. rewrite ebreak_config in H.
+  intros lim H. rewrite <- demo_entry_eta in H.
+  cbn [omni_corun ebreak_image] in H. rewrite ebreak_config in H.
   refine (coexec_sound _ _ _ _ (mexec_error _ _ _ _) _ H I).
   apply sstep_instr_fault; [reflexivity | reflexivity |].
-  no_lazy. vm_compute. reflexivity.
+  no_lazy. rewrite ebreak_faults. reflexivity.
 Qed.
 
 Example ebreak_omni_may_errors : forall lim,
@@ -961,8 +949,7 @@ Definition loop_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x"%string;
-  seg_bytes := ["6f000000"%pstring];
-  seg_kind  := SegLoader
+  seg_bytes := ["6f000000"%pstring]
 |}.
 Definition loop_segments : list Segment := [loop_segment].
 Definition loop_image : Image := mkImage loop_segments 0x100 demo_phdrs.
@@ -971,8 +958,7 @@ Definition wloop_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 24;
   seg_perms := "r-x"%string;
-  seg_bytes := ["93080004130510009305001013061000730000006f000000"%pstring];
-  seg_kind  := SegLoader
+  seg_bytes := ["93080004130510009305001013061000730000006f000000"%pstring]
 |}.
 Definition wloop_segments : list Segment := [wloop_segment].
 Definition wloop_image : Image := mkImage wloop_segments 0x100 demo_phdrs.
@@ -981,49 +967,27 @@ Definition wloop_image : Image := mkImage wloop_segments 0x100 demo_phdrs.
 Definition wloop_byte : byte := Z_to_bv 8 0x93.
 Definition wloop_trace : list event := [WriteEv (Z_to_bv 64 1) wloop_byte].
 
-Definition loop_run_segments : list Segment :=
-  run_segments loop_segments demo_proc_input (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 mmap_base_max).
-
 Definition loop_ms : machine_state :=
-  init_machine_state loop_run_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    demo_draw
-    (in_argv demo_proc_input) (in_envp demo_proc_input) (in_uid demo_proc_input)
-    (in_hwcap demo_proc_input).
+  init_machine_state loop_segments 0x100 demo_phdrs (en_sp demo_entry)
+    (en_mmap_base demo_entry) (en_draw demo_entry) demo_proc_input.
 Definition loop_model (lim : Z) : Model :=
-  with_vdso (vdso_run_init (ed_vdso demo_draw))
-    (init_model (segments_reserved loop_run_segments) (Z_to_bv 64 0x1000)
-    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) lim demo_proc_input).
+  init_model (segments_reserved loop_segments) (en_brk demo_entry)
+    (en_mmap_base demo_entry) (en_sp demo_entry) lim demo_proc_input.
 Definition loop_c (lim : Z) : config := mkCfg loop_ms (loop_model lim).
 
 Lemma loop_config : forall lim,
-  init_config loop_run_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw lim demo_proc_input = loop_c lim.
+  init_config loop_segments 0x100 demo_phdrs (en_sp demo_entry)
+    (en_brk demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry) lim
+    demo_proc_input
+  = loop_c lim.
 Proof. reflexivity. Qed.
 
 (** [jal x0, 0] maps the initial state to itself: the pc gains 0 and
     the write to x0 is dropped, so nothing changes.  With the memory
     abstracted, both sides normalise to the same term. *)
-(** ABSTRACT THE vDSO PAIR BEFORE COMPUTING.  [Run.run_segments]
-    appends the pair, whose text segment carries the whole measured
-    image, and a [vm_compute] over a state whose memory is a VARIABLE
-    cannot stop at a stuck test before it has normalised those bytes.
-    Every fixture of this file answers inside its own segment, which
-    comes first, so making the tail a local variable costs nothing and
-    keeps the computation to the size of the fixture.  Without it one
-    [Example] here ran for 59 minutes. *)
-Ltac abstract_vdso_tail :=
-  set (vdso_tail := vdso_segments (in_kernel demo_proc_input)
-                      (Z_to_bv 64 0x7fff80000000) (Z_to_bv 64 mmap_base_max))
-    in *;
-  clearbody vdso_tail.
-
 Lemma loop_fix : forall mem,
-  RiscvSemantics.step loop_run_segments (with_mem loop_ms mem) = MachineOk (with_mem loop_ms mem).
-Proof.
-  intros. unfold loop_ms, loop_run_segments, run_segments in *.
-  abstract_vdso_tail. vm_compute. reflexivity.
-Qed.
+  RiscvSemantics.step loop_segments (with_mem loop_ms mem) = MachineOk (with_mem loop_ms mem).
+Proof. intros. vm_compute. reflexivity. Qed.
 
 Lemma loop_only : forall lim evs st,
   sstep loop_segments (loop_c lim) evs st -> evs = [] /\ st = SNext (loop_c lim).
@@ -1056,17 +1020,11 @@ Fixpoint run_steps (n : nat) (segs : list Segment) (ms : machine_state)
             end
   end.
 
-Definition wloop_run_segments : list Segment :=
-  run_segments wloop_segments demo_proc_input (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 mmap_base_max).
-
 Definition wloop_ms0 : machine_state :=
-  init_machine_state wloop_run_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    demo_draw
-    (in_argv demo_proc_input) (in_envp demo_proc_input) (in_uid demo_proc_input)
-    (in_hwcap demo_proc_input).
+  init_machine_state wloop_segments 0x100 demo_phdrs (en_sp demo_entry)
+    (en_mmap_base demo_entry) (en_draw demo_entry) demo_proc_input.
 Definition wloop_msk (k : nat) : machine_state :=
-  match run_steps k wloop_run_segments wloop_ms0 with
+  match run_steps k wloop_segments wloop_ms0 with
   | Some ms => ms
   | None => wloop_ms0
   end.
@@ -1075,14 +1033,15 @@ Definition wloop_msk (k : nat) : machine_state :=
 Definition wloop_s (k : nat) : machine_state := with_mem (wloop_msk k) (ms_mem wloop_ms0).
 
 Definition wloop_model (lim : Z) : Model :=
-  with_vdso (vdso_run_init (ed_vdso demo_draw))
-    (init_model (segments_reserved wloop_run_segments) (Z_to_bv 64 0x1000)
-    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) lim demo_proc_input).
+  init_model (segments_reserved wloop_segments) (en_brk demo_entry)
+    (en_mmap_base demo_entry) (en_sp demo_entry) lim demo_proc_input.
 Definition wloop_c (lim : Z) : config := mkCfg (wloop_s 0) (wloop_model lim).
 
 Lemma wloop_config : forall lim,
-  init_config wloop_run_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw lim demo_proc_input = wloop_c lim.
+  init_config wloop_segments 0x100 demo_phdrs (en_sp demo_entry)
+    (en_brk demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry) lim
+    demo_proc_input
+  = wloop_c lim.
 Proof. intros lim. unfold init_config, wloop_c. f_equal; try exact (with_mem_eta wloop_ms0). Qed.
 
 (** The effect the write is forced to have: one byte copied in from
@@ -1095,12 +1054,10 @@ Definition wloop_eff : SyscallEffect :=
 Definition wloop_s6 : machine_state := advance_past_svc (apply_effect (wloop_s 5) wloop_eff).
 
 Lemma wloop_step : forall k, (k < 5)%nat -> forall mem,
-  RiscvSemantics.step wloop_run_segments (with_mem (wloop_msk k) mem)
+  RiscvSemantics.step wloop_segments (with_mem (wloop_msk k) mem)
   = MachineOk (with_mem (wloop_msk (S k)) mem).
 Proof.
   intros k Hk mem.
-  unfold wloop_msk, wloop_ms0, wloop_run_segments, run_segments in *.
-  abstract_vdso_tail.
   do 5 (destruct k as [| k]; [vm_compute; reflexivity |]). lia.
 Qed.
 
@@ -1108,12 +1065,8 @@ Lemma wloop_svc5 : ms_svc_pending (wloop_s 5) = Some (Z_to_bv 64 64).
 Proof. vm_compute. first [reflexivity | f_equal; apply bv_eq; reflexivity]. Qed.
 
 Lemma wloop_fix : forall mem,
-  RiscvSemantics.step wloop_run_segments (with_mem wloop_s6 mem) = MachineOk (with_mem wloop_s6 mem).
-Proof.
-  intros. unfold wloop_s6, wloop_s, wloop_msk, wloop_ms0,
-    wloop_run_segments, run_segments in *.
-  abstract_vdso_tail. vm_compute. reflexivity.
-Qed.
+  RiscvSemantics.step wloop_segments (with_mem wloop_s6 mem) = MachineOk (with_mem wloop_s6 mem).
+Proof. intros. vm_compute. reflexivity. Qed.
 
 (** The five instruction transitions, each the only one from its
     configuration. *)
@@ -1347,8 +1300,9 @@ Theorem loop_wloop_not_omni_trace_equiv :
   ~ omni_trace_equiv loop_image source_alloc_limit demo_entry
                      wloop_image target_alloc_limit demo_entry demo_proc_input.
 Proof.
-  unfold omni_trace_equiv. cbn [omni_cosafe loop_image wloop_image demo_entry].
-  fold loop_run_segments wloop_run_segments. rewrite loop_config, wloop_config. apply loop_wloop_cosafe_disagree.
+  unfold omni_trace_equiv. rewrite <- demo_entry_eta.
+  cbn [omni_cosafe loop_image wloop_image].
+  rewrite loop_config, wloop_config. apply loop_wloop_cosafe_disagree.
 Qed.
 
 Theorem loop_wloop_not_omni_equiv :
@@ -1356,8 +1310,8 @@ Theorem loop_wloop_not_omni_equiv :
                wloop_image target_alloc_limit demo_entry demo_proc_input.
 Proof.
   intros [Hall | (Htr & _)].
-  - cbn [omni_run loop_image demo_entry] in Hall.
-    fold loop_run_segments in Hall. rewrite loop_config in Hall.
+  - rewrite <- demo_entry_eta in Hall. cbn [omni_run loop_image] in Hall.
+    rewrite loop_config in Hall.
     exact (loop_no_exec _ _ Hall).
   - exact (loop_wloop_not_omni_trace_equiv Htr).
 Qed.
@@ -1375,42 +1329,52 @@ Example loop_wloop_never_errors : forall lim,
   omni_corun loop_image lim demo_entry demo_proc_input never_errors
   /\ omni_corun wloop_image lim demo_entry demo_proc_input never_errors.
 Proof.
-  intros lim. cbn [omni_corun loop_image wloop_image demo_entry].
-  fold loop_run_segments wloop_run_segments. rewrite loop_config, wloop_config.
+  intros lim. rewrite <- demo_entry_eta.
+  cbn [omni_corun loop_image wloop_image].
+  rewrite loop_config, wloop_config.
   split; [apply loop_coexec_any | apply wloop_coexec_any].
 Qed.
 
 (** Both images put their only segment inside the first page, so the
-    demo entry is valid for either — which is what makes the
-    universal refutation below a refutation at a VALID triple. *)
+    same break is valid for either and [Run.launch_entry_va_valid]
+    closes all five conjuncts of [Run.valid_entry] at once, from the
+    [Run.valid_argv], [Run.valid_envp] and [Run.valid_launch] that
+    [Run.valid_input] carries plus the break fact, which is the only
+    image-dependent one.
+
+    Stated at [Checks.Examples.demo_entry_of inp] rather than at one
+    fixed entry: the fifth conjunct of [Run.valid_entry_va]
+    ([Run.entry_launch_ok_va]) pins the stack pointer to the input's own
+    string lengths through [Run.launch_sp_hi], so NO single
+    [Run.ExecEntry] is valid for every input.  At [demo_proc_input] the
+    entry is [Checks.Examples.demo_entry], which is what the refutation
+    below fires at. *)
 Example demo_entry_valid_loop : forall inp,
-  valid_input inp -> valid_entry loop_image demo_entry inp.
+  valid_input inp -> valid_entry loop_image (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [loop_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
-  rewrite Z_to_bv_unsigned, bv_wrap_small
-    by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
-  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  (* Guarded rather than positional: [Run.valid_input] grows a conjunct
+     whenever the input class learns to say something new, and the three
+     clauses [Run.launch_entry_va_valid] asks for are then found by
+     [assumption] rather than by counting.  [match goal] is syntactic,
+     so [red] is what makes it fire, and [valid_launch] stays folded
+     under it and arrives whole. *)
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  unfold valid_entry, demo_entry_of, loop_image.
+  apply launch_entry_va_valid; try assumption.
+  unfold valid_brk. repeat split; vm_compute; try reflexivity; try discriminate.
 Qed.
 
 Example demo_entry_valid_wloop : forall inp,
-  valid_input inp -> valid_entry wloop_image demo_entry inp.
+  valid_input inp -> valid_entry wloop_image (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [wloop_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
-  rewrite Z_to_bv_unsigned, bv_wrap_small
-    by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
-  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  unfold valid_entry, demo_entry_of, wloop_image.
+  apply launch_entry_va_valid; try assumption.
+  unfold valid_brk. repeat split; vm_compute; try reflexivity; try discriminate.
 Qed.
 
 Theorem loop_wloop_refutes_omni_strong_universal :

@@ -3048,6 +3048,85 @@ Record FdState := mkFdState {
   fdst_pipes : list (word * PipeBuf);
 }.
 
+(** ONE CACHE LEAF as the kernel publishes it, for one of the four
+    levels [ARCH_DLINFO] reports (arch/riscv/include/asm/elf.h, Linux
+    v6.18.46, commit 1f99e9ab748f).
+
+    [cl_acpi] says which of the two firmware paths filled the leaf,
+    because they fill different fields:
+
+    - DEVICETREE.  [cache_associativity] (drivers/base/cacheinfo.c)
+      derives the ways from the size, the number of sets and the line
+      size.  [cl_assoc] is then the NUMBER OF SETS.
+    - ACPI.  [update_cache_properties] (drivers/acpi/pptt.c) copies the
+      PPTT's own associativity and line-size fields, which are 8 and 16
+      bits wide.  [cl_assoc] is then that 8-bit associativity.
+
+    A leaf the machine does not report is all zeros, which gives two
+    zero auxv words — [get_cache_size] and [get_cache_geometry]
+    (arch/riscv/kernel/cacheinfo.c) both answer 0 when [get_cacheinfo]
+    finds no leaf.
+
+    RESIDUAL: [get_cacheinfo] reads the CPU that runs the [execve], and
+    this record holds ONE view.  The kernel's own interface assumes a
+    homogeneous one; SCOPE.md records the gap. *)
+Record CacheLeaf := mkCacheLeaf {
+  cl_acpi  : bool;
+  cl_size  : N;
+  cl_assoc : N;
+  cl_line  : N
+}.
+
+Definition cache_leaf_absent : CacheLeaf := mkCacheLeaf false 0%N 0%N 0%N.
+
+(** The four leaves [ARCH_DLINFO] reports, in its order: L1
+    instruction, L1 data, L2 unified, L3 unified. *)
+Record CacheView := mkCacheView {
+  cv_l1i : CacheLeaf;
+  cv_l1d : CacheLeaf;
+  cv_l2  : CacheLeaf;
+  cv_l3  : CacheLeaf
+}.
+
+Definition cache_view_absent : CacheView :=
+  mkCacheView cache_leaf_absent cache_leaf_absent cache_leaf_absent
+              cache_leaf_absent.
+
+(** [ways_of_associativity], as the two firmware paths set it.  The
+    devicetree arm is [cache_associativity] (drivers/base/cacheinfo.c,
+    Linux v6.18.46, commit 1f99e9ab748f), whose guard is
+
+      [if (!(nr_sets == 1) && (nr_sets > 0 && size > 0 && line_size > 0))]
+
+    so a FULLY ASSOCIATIVE leaf (one set) keeps 0 ways, as does a leaf
+    missing any of the three properties.  There is no devicetree
+    property for the ways; this is the only place they are computed. *)
+Definition cache_ways (l : CacheLeaf) : N :=
+  if cl_acpi l then (cl_assoc l mod 2 ^ 8)%N
+  else if andb (negb (N.eqb (cl_assoc l) 1))
+               (andb (negb (N.eqb (cl_assoc l) 0))
+                     (andb (negb (N.eqb (cl_size l) 0))
+                           (negb (N.eqb (cl_line l) 0))))
+       then ((cl_size l / cl_assoc l) / cl_line l)%N
+       else 0%N.
+
+(** [coherency_line_size]: the PPTT's 16-bit field on the ACPI path,
+    the devicetree property on the other. *)
+Definition cache_line (l : CacheLeaf) : N :=
+  if cl_acpi l then (cl_line l mod 2 ^ 16)%N else cl_line l.
+
+(** [get_cache_size] returns [this_leaf->size], an [unsigned int], and
+    [get_cache_geometry] returns
+    [this_leaf->ways_of_associativity << 16 | this_leaf->coherency_line_size],
+    also an [unsigned int] (arch/riscv/kernel/cacheinfo.c).  Both are
+    widened into the auxv's 64-bit slot, so both are taken mod 2^32. *)
+Definition cache_size_word (l : CacheLeaf) : Z :=
+  (Z.of_N (cl_size l) mod 2 ^ 32)%Z.
+Definition cache_geometry_word (l : CacheLeaf) : Z :=
+  (Z.lor (Z.of_N (cache_ways l) * 2 ^ 16) (Z.of_N (cache_line l))
+   mod 2 ^ 32)%Z.
+
+
 (** * THE KERNEL BUILD THE RUN WAS LAUNCHED ON
 
     Two facts about the launch that no trace reveals and that the model
@@ -3082,6 +3161,40 @@ Record KernelBuild := mkKernelBuild {
     (* which vDSO image the kernel build carries.  Its one use here is
        the image's SIZE, through [vdso_text_pages] below; the image's
        CONTENT belongs to the vDSO rules *);
+  kb_aslr : bool
+    (* does the launch RANDOMIZE?  [load_elf_binary] (fs/binfmt_elf.c)
+       sets PF_RANDOMIZE when the personality carries no
+       ADDR_NO_RANDOMIZE and [randomize_va_space] (mm/memory.c) is not
+       0.  It decides the stack draw ([randomize_stack_top], mm/util.c),
+       the mmap-base draw ([arch_mmap_rnd]) and the stack-randomization
+       pad [mmap_base] adds to the gap.  [Run.entry_launch_ok_va] reads
+       it *);
+  kb_guard : N
+    (* the [stack_guard_gap] boot parameter in PAGES
+       ([cmdline_parse_stack_guard_gap], mm/mmap.c; the default is 256
+       pages).  [stack_guard_gap_bytes] wraps it to SCOPE.md's
+       assumed range: at most 0x4aba6a2ab pages, which is what keeps
+       [mmap_base]'s MAX_GAP clamp inactive under Sv48 and Sv57 *);
+  kb_rnd_bits : N
+    (* [vm.mmap_rnd_bits], how many bits [arch_mmap_rnd] (mm/util.c)
+       draws.  [mmap_rnd_bits] wraps it to the sysctl's own range:
+       [ARCH_MMAP_RND_BITS_MIN] = 18 (arch/riscv/Kconfig) up to
+       [mmap_rnd_bits_max] ([set_mmap_rnd_bits_max],
+       arch/riscv/mm/init.c), 33 under Sv48 and Sv57, 24 under Sv39 *);
+  kb_rseq : bool
+    (* was the kernel built with CONFIG_RSEQ (init/Kconfig; riscv64
+       selects HAVE_RSEQ in arch/riscv/Kconfig and the option defaults
+       to y)?  [create_elf_tables] then emits AT_RSEQ_FEATURE_SIZE and
+       AT_RSEQ_ALIGN, so the auxv is 29 entries rather than 27.  It is
+       the ONE build fact that moves an address in the entry block *);
+  kb_vlenb : N
+    (* the vector unit's VLENB CSR, as [riscv_v_setup_vsize]
+       (arch/riscv/kernel/vector.c) read it.  AT_MINSIGSTKSZ is
+       computed from it; [launch_vlenb] below says which values the
+       encoding admits and why each names a real machine *);
+  kb_cache : CacheView
+    (* the machine's four cache leaves, which [ARCH_DLINFO] publishes
+       as eight auxv words *);
 }.
 
 (** The vvar pages the kernel maps below the vDSO text: four, fixed by
@@ -3173,11 +3286,159 @@ Proof.
   pose proof (vdso_text_pages_pos kb). pose proof (vdso_text_pages_le kb). lia.
 Qed.
 
-(** The build a model gets when nobody names one: no transparent huge
-    pages, image 1 (two text pages under the body above).  A run built
-    from a [ProcInput] never sees it — [init_model] installs
-    [in_kernel] — exactly as with [default_nofile]. *)
-Definition default_kernel : KernelBuild := mkKernelBuild false 1%N.
+(** The build a model gets when nobody names one, and the build a
+    positional [mkProcInput] literal is launched on.  EVERY FIELD NAMES
+    A REAL LAUNCH, and between them they name the ORDINARY one, so a
+    fixture written through [mkProcInput] describes a launch Linux
+    gives rather than a corner of the record:
+
+    - no transparent huge pages (the riscv defconfig,
+      arch/riscv/configs/defconfig);
+    - vDSO image 1, two text pages under [vdso_text_pages] above;
+    - randomisation ON: [randomize_va_space] (mm/memory.c) defaults to
+      1 or 2, never 0, and the personality carries no ADDR_NO_RANDOMIZE;
+    - a stack guard gap of 256 pages, which is [stack_guard_gap]'s own
+      default (mm/mmap.c, [stack_guard_gap = 256UL << PAGE_SHIFT]);
+    - [vm.mmap_rnd_bits] 18, which [mmap_rnd_bits] gives for 0: riscv64
+      sets no ARCH_MMAP_RND_BITS_DEFAULT, so the boot value is
+      ARCH_MMAP_RND_BITS_MIN (arch/riscv/Kconfig, arch/Kconfig);
+    - CONFIG_RSEQ on, riscv64's default (init/Kconfig, arch/riscv/Kconfig
+      selects HAVE_RSEQ);
+    - no vector unit and no cache leaves reported, which is what a
+      machine whose devicetree carries neither gives
+      ([get_cacheinfo] finds no leaf, arch/riscv/kernel/cacheinfo.c).
+
+    A run built from a [ProcInput] never sees this value — [init_model]
+    installs [in_kernel] — exactly as with [default_nofile].
+    Linux v6.18.46, commit 1f99e9ab748f, throughout. *)
+Definition default_kernel : KernelBuild :=
+  mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent.
+
+(** THE GUARD GAP IN BYTES.  [stack_guard_gap] (mm/mmap.c, Linux
+    v6.18.46, commit 1f99e9ab748f) is [256UL << PAGE_SHIFT], and
+    [cmdline_parse_stack_guard_gap] replaces it with
+    [val << PAGE_SHIFT] for a decimal [val] on the boot command line.
+    So the parameter is a PAGE COUNT, and [kb_guard] holds it.
+
+    The [mod] is SCOPE.md's assumption about the machines the model
+    describes, not the kernel's own range: the kernel takes any
+    [unsigned long].  Below 0x4aba6a2ac pages, [mmap_base] (mm/util.c)
+    never clamps the gap at [MAX_GAP = STACK_TOP / 6 * 5] under Sv48 or
+    Sv57, so the base never falls below [mmap_base_min] even with 33
+    bits of randomization. *)
+Definition stack_guard_gap_pages (kb : KernelBuild) : Z :=
+  Z.of_N (kb_guard kb mod 0x4aba6a2ac).
+Definition stack_guard_gap_bytes (kb : KernelBuild) : Z :=
+  (page_size * stack_guard_gap_pages kb)%Z.
+
+Lemma stack_guard_gap_pages_bounds : forall kb,
+  (0 <= stack_guard_gap_pages kb <= 0x4aba6a2ab)%Z.
+Proof.
+  intros kb. unfold stack_guard_gap_pages.
+  split; [apply N2Z.is_nonneg|].
+  assert (Hlt : (stack_guard_gap_pages kb < 0x4aba6a2ac)%Z).
+  { unfold stack_guard_gap_pages.
+    replace 0x4aba6a2ac%Z with (Z.of_N 0x4aba6a2ac) by reflexivity.
+    apply N2Z.inj_lt, N.mod_lt. discriminate. }
+  unfold stack_guard_gap_pages in Hlt. lia.
+Qed.
+
+Lemma stack_guard_gap_bytes_bounds : forall kb,
+  (0 <= stack_guard_gap_bytes kb <= 0x4aba6a2ab000)%Z.
+Proof.
+  intros kb. unfold stack_guard_gap_bytes, page_size.
+  pose proof (stack_guard_gap_pages_bounds kb). lia.
+Qed.
+
+(** [vm.mmap_rnd_bits], the number of bits [arch_mmap_rnd] (mm/util.c)
+    draws for the mmap base.  [set_mmap_rnd_bits_max]
+    (arch/riscv/mm/init.c) sets the ceiling to
+    [MMAP_VA_BITS - PAGE_SHIFT - 3], which is 33 under Sv48 and Sv57
+    ([MMAP_VA_BITS_64] caps [VA_BITS] at 48, arch/riscv/include/asm/pgtable.h)
+    and 24 under Sv39; [ARCH_MMAP_RND_BITS_MIN] (arch/riscv/Kconfig) is
+    18 on 64-bit, and that is also the boot default, because riscv sets
+    no [ARCH_MMAP_RND_BITS_DEFAULT].  A root write to the sysctl moves
+    it anywhere in between, so the model quantifies over the range. *)
+Definition mmap_rnd_bits_max (v : VaSize) : Z :=
+  match v with Sv39 => 24%Z | Sv48 => 33%Z | Sv57 => 33%Z end.
+Definition mmap_rnd_bits (v : VaSize) (kb : KernelBuild) : Z :=
+  (18 + Z.of_N (kb_rnd_bits kb mod Z.to_N (mmap_rnd_bits_max v - 17)))%Z.
+
+Lemma mmap_rnd_bits_bounds : forall v kb,
+  (18 <= mmap_rnd_bits v kb <= mmap_rnd_bits_max v)%Z.
+Proof.
+  intros v kb. unfold mmap_rnd_bits.
+  pose proof (N2Z.is_nonneg (kb_rnd_bits kb mod Z.to_N (mmap_rnd_bits_max v - 17))).
+  assert (Hlt : (Z.of_N (kb_rnd_bits kb mod Z.to_N (mmap_rnd_bits_max v - 17))
+                 < Z.of_N (Z.to_N (mmap_rnd_bits_max v - 17)))%Z).
+  { apply N2Z.inj_lt, N.mod_lt. destruct v; discriminate. }
+  rewrite Z2N.id in Hlt by (destruct v; cbn; lia).
+  lia.
+Qed.
+
+(** VLENB, the vector unit's register length in bytes, as
+    [riscv_v_setup_vsize] (arch/riscv/kernel/vector.c) read it:
+    [riscv_v_vsize] is [32 * vlenb].
+
+    A hart whose AT_HWCAP carries the V bit has a RATIFIED vector unit,
+    whose VLEN is a power of two from 128 to 65536 bits, so VLENB is
+    [16 * 2^k] for [k] from 0 to 9.  The V bit is bit 21 of the mask,
+    [1 << ('V' - 'A')] (arch/riscv/include/uapi/asm/hwcap.h,
+    COMPAT_HWCAP_ISA_V).
+
+    WITHOUT THE BIT the machine may still have a vector unit, and
+    AT_MINSIGSTKSZ still reflects it: [signal_minsigstksz] is computed
+    once at boot by [init_rt_signal_env] (arch/riscv/kernel/signal.c)
+    from [has_vector() || has_xtheadvector()], a fact of the hart,
+    while [ELF_HWCAP] clears the V bit for a process that asked for it
+    with PR_RISCV_V_SET_CONTROL (arch/riscv/kernel/cpufeature.c).  So 0
+    means no vector unit here and any other value is a VLENB from 1 to
+    2^32 - 1, the width of [riscv_v_vsize]'s own type.
+
+    UNSETTLED: whether this encoding gives exactly the producible
+    values.  Two points are open — which vector units can set
+    AT_HWCAP's V bit, and the ACPI path's other cache fields.  What
+    would change it: a value the encoding admits that no kernel
+    publishes, or the reverse. *)
+Definition hwcap_has_v (h : word) : bool := Z.testbit (bv_unsigned h) 21.
+
+Definition launch_vlenb (kb : KernelBuild) (hwcap : word) : Z :=
+  if hwcap_has_v hwcap then (16 * 2 ^ Z.of_N (kb_vlenb kb mod 10))%Z
+  else if N.eqb (kb_vlenb kb) 0 then 0%Z
+  else (1 + Z.of_N ((kb_vlenb kb - 1) mod (2 ^ 32 - 1)))%Z.
+
+(** AT_MINSIGSTKSZ: [signal_minsigstksz]
+    (arch/riscv/kernel/signal.c), which [init_rt_signal_env] computes
+    once as [get_rt_frame_size(true)]:
+
+      [frame_size = sizeof(struct rt_sigframe);]
+      [if (has_vector() || has_xtheadvector()) frame_size += riscv_v_sc_size;]
+      [frame_size = round_up(frame_size, 16);]
+
+    with
+    [riscv_v_sc_size = sizeof(struct __riscv_ctx_hdr) + sizeof(struct __sc_riscv_v_state) + riscv_v_vsize]
+    = [8 + 48 + 32 * vlenb].
+
+    [sizeof(struct rt_sigframe)] is 1088 on rv64: 128 bytes of
+    [siginfo] ([SI_MAX_SIZE], include/uapi/asm-generic/siginfo.h) and
+    960 of [struct ucontext] (arch/riscv/include/uapi/asm/ucontext.h) —
+    8 + 8 for [uc_flags] and [uc_link], 24 for [stack_t], 8 for
+    [sigset_t], 120 for [__unused], 8 of padding, then 784 for
+    [struct sigcontext] (256 for [user_regs_struct] and 528 for the
+    floating-point union).  A4's real-kernel run checks the number.
+
+    [ARCH_DLINFO] emits AT_IGNORE instead when [signal_minsigstksz] is
+    0, which it never is: the frame is at least 1088 bytes. *)
+Definition rt_sigframe_size : Z := 1088%Z.
+
+Definition min_sigframe_size (kb : KernelBuild) (hwcap : word) : Z :=
+  let v := launch_vlenb kb hwcap in
+  let vsz := if Z.eqb v 0 then 0%Z else (8 + 48 + 32 * v)%Z in
+  ((rt_sigframe_size + vsz + 15) / 16 * 16)%Z.
+
+(** THE EXEC FILE NAME a positional [mkProcInput] literal gets: the
+    one-byte relative path "a", which [Run.valid_execfn] admits. *)
+Definition default_execfn : list byte := [Z_to_bv 8 97].
 
 (** The virtual-memory subsystem.  [vmst_lazy] records page-aligned sparse
     anonymous reservations whose backing is charged on first data access;
@@ -5725,21 +5986,44 @@ Record ProcInput := mkProcInput_full {
        [Sys/Mm/Mmap.linux_place] is its one consumer today.
 
        [Run.valid_input] has NO clause naming it: every value of every
-       field names a build a launch could present *)
+       field names a build a launch could present.  [Run.valid_entry]
+       reads it too, to decide which stack tops, stack pointers and
+       mmap bases this launch can give *);
+  in_execfn : list byte
+    (* THE EXEC FILE NAME, [bprm->filename] (fs/exec.c, [alloc_bprm],
+       Linux v6.18.46, commit 1f99e9ab748f), WITHOUT its NUL.
+
+       It is on the input rather than on the entry because a statement
+       compares the two binaries on ONE input: a name per entry would
+       compare two binaries launched under different names, while the
+       bytes of the name sit on the initial stack of both.
+       [do_execveat_common] copies it FIRST
+       ([copy_string_kernel], then [bprm->exec = bprm->p]), so it
+       sits at the top of the string area and AT_EXECFN points at it
+       ([StackLayout.at_execfn_ptr]).  [Run.valid_execfn] says which
+       names [getname_flags] (fs/namei.c) and [alloc_bprm] can
+       produce, and [Run.valid_launch] counts its bytes against the
+       E2BIG limit of [bprm_stack_limits].
+
+       RESIDUAL: on Linux the name resolves to the image's file.  This
+       model holds the image's SEGMENTS, not its file, so [in_fs] need
+       not hold a file at this name, and a program that opens its own
+       AT_EXECFN gets [in_fs]'s answer.  SCOPE.md records it *)
 }.
 
-(** THE POSITIONAL-LITERAL FORM: every field except the three
+(** THE POSITIONAL-LITERAL FORM: every field except the four
     ENVIRONMENT fields at the end of the record ([in_urandom],
-    [in_tmp], [in_kernel]).
+    [in_tmp], [in_kernel], [in_execfn]).
 
     The record's own constructor is [mkProcInput_full] and takes every
     field.  This takes the first thirteen, in that order, and fills the
-    last three with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp and THE
-    DEFAULT KERNEL BUILD: [default_urandom], which is zero bytes
-    forever, a private /tmp that starts empty, and [default_kernel], a
-    kernel built without transparent huge pages.  So a literal written
+    last four with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
+    DEFAULT KERNEL BUILD and THE DEFAULT EXEC NAME: [default_urandom],
+    which is zero bytes forever, a private /tmp that starts empty,
+    [default_kernel], a kernel built without transparent huge pages,
+    and [default_execfn], the one-byte name "a".  So a literal written
     through this name denotes an input in an environment that holds no
-    file of its own, on an ordinary kernel.
+    file of its own, on an ordinary kernel, launched as "a".
 
     THE RANDOM DEFAULT IS NOT [IEof]: under
     [Run.valid_urandom] every valid input declares an endless stream, so
@@ -5765,7 +6049,7 @@ Definition mkProcInput
     (va_size : VaSize) : ProcInput :=
   mkProcInput_full argv envp image_fs stdin uid gid groups net
     nofile sigmask hwcap abort_terminal va_size default_urandom []
-    default_kernel.
+    default_kernel default_execfn.
 
 (** THE FILE SYSTEM THE RUN STARTS WITH: the image, with the run's
     declared private /tmp seeded into it under absolute keys.
@@ -5885,7 +6169,7 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
                  (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
                  (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ] [])
     (mkVmState (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
-                  [] [] brk0 brk0 lim mbase sp)
+                             [] [] brk0 brk0 lim mbase sp)
                [] [] (in_kernel inp) (vdso_run_init vdso_draw_keep))
     (mkIoState (in_stdin inp) (in_urandom inp) (in_net inp) (Z_to_bv 64 0))
     (mkFsState (in_fs inp))

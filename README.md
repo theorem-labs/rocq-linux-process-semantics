@@ -18,32 +18,36 @@ program.
 
 ## Design priorities
 
-The model describes the *supported systems*: stable Linux v6.18.46 and QEMU
-user mode, on riscv64, with the RISC-V specification for instructions. Bugs
-in Linux or QEMU do not count. The model does not choose one system: it
-describes the behaviors that the supported systems can give, taken
-together.
+The model describes **one system**: stable Linux v6.18.46 (commit
+`1f99e9ab748fc5c32120de9c4eca31abfe54a4d5`) on riscv64. For instructions it
+uses the RISC-V specification (RV64GC). Bugs in Linux do not count.
+
+QEMU user mode is not a supported system. Where a rule of Linux and a rule
+of QEMU user mode give different answers, the model gives Linux's.
+[SCOPE.md](SCOPE.md) lists each difference in "Where QEMU user mode
+differs". A run under `qemu-riscv64` shows a Linux run only when it depends
+on none of them.
 
 The model has three design priorities, in order of importance. Comments in
 the code refer to them by number.
 
 1. **Sound (required).** A statement that you prove with this model is true
-   of the supported systems, under the assumptions in
+   of Linux v6.18.46, under the assumptions in
    [SCOPE.md](SCOPE.md). Where the model cannot be sound, it says
    `unmodeled`.
-2. **Precise (goal).** The model includes no behavior that no supported
-   system gives.
+2. **Precise (goal).** The model includes no behavior that Linux v6.18.46
+   does not give.
 3. **Covered (goal).** The model has no `unmodeled` cases.
 
 Priorities 2 and 3 together make the model complete: a statement that is
-true of the supported systems is provable with this model. The exception is
-a statement that depends on a detail that the documented interface (man
-pages, POSIX) leaves open, or that differs between the supported systems.
-An example is the address that `mmap` chooses.
+true of Linux v6.18.46 is provable with this model. The exception is a
+statement that depends on a detail that the kernel leaves to the
+configuration or to the boot, such as the resolution that `clock_getres`
+reports.
 
 A failure of priority 2 can also break priority 1. If the model includes a
-behavior that no supported system gives, a statement that compares sets of
-behaviors, such as equivalence, can be false of the supported systems.
+behavior that Linux does not give, a statement that compares sets of
+behaviors, such as equivalence, can be false of Linux.
 [SCOPE.md](SCOPE.md) lists the known gaps.
 
 Comments that state kernel behavior name the file and the function in Linux
@@ -51,14 +55,13 @@ v6.18.46 (commit `1f99e9ab748fc5c32120de9c4eca31abfe54a4d5`).
 
 ## Packages
 
-The repository has four opam packages. One dune project builds all of them.
+The repository has three opam packages. One dune project builds all of them.
 
 | opam package | Rocq theory | Directory | Contents |
 | --- | --- | --- | --- |
-| `rocq-linux-process-semantics-core` | `LinuxProcessSemantics` | `theories/` (except `Common/` and `Examples/`) | The model and the statements. Also the tools `elf-snapshot` and `gen-fd-lemmas`. |
-| `rocq-linux-process-semantics-common` | `LinuxProcessSemantics.Common` | `theories/Common/` | The proof library. |
+| `rocq-linux-process-semantics-core` | `LinuxProcessSemantics`, `LinuxProcessSemantics.Common` | `theories/` (except `Examples/`) | The model, the statements and the proof library. Also the tools `elf-snapshot` and `gen-fd-lemmas`. |
 | `rocq-linux-process-semantics-examples` | `LinuxProcessSemantics.Examples` | `theories/Examples/` | The example proofs. |
-| `rocq-linux-process-semantics` | none | none | Installs the three packages above. |
+| `rocq-linux-process-semantics` | none | none | Installs the two packages above. |
 
 `tests/` holds tests that are not in a package.
 
@@ -79,7 +82,7 @@ other dependencies. CI tests Rocq 9.2, 9.3 and the development version.
    opam pin add https://github.com/theorem-labs/rocq-linux-process-semantics.git
    ```
 
-   opam finds the four `.opam` files at the top of the repository and pins
+   opam finds the three `.opam` files at the top of the repository and pins
    all of them.
 
 To install only one package, pin with `--no-action`, then install that

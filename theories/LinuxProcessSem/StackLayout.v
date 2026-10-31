@@ -5,11 +5,41 @@
     Addresses are [word = bv 64], stack bytes are [byte = bv 8].  Auxv
     types/values are word constants, serialized via [BvBase.word_le8].
 
-    Builds the byte sequence that the kernel places on the stack at
-    process startup: argc, argv pointers, envp pointers, auxiliary
-    vector, and null-terminated string data. *)
+    Builds the byte sequence Linux v6.18.46 (commit 1f99e9ab748f) places
+    on the stack at process startup, from the stack VMA's top DOWN to
+    the entry stack pointer: the eight-byte slot
+    [create_init_stack_vma] skips (mm/vma_exec.c), the exec file name
+    and the envp and argv strings [do_execveat_common] copies
+    (fs/exec.c), the pad [arch_align_stack] leaves
+    (arch/riscv/kernel/process.c), the sixteen AT_RANDOM bytes, the
+    auxiliary vector, and the argv and envp pointer arrays with argc
+    ([create_elf_tables], fs/binfmt_elf.c).
 
-From Stdlib Require Import ZArith NArith List.
+    WHERE THE SHAPE COMES FROM, in the kernel's own order.  The model is
+    an exact transcription of these four steps; [Run.entry_launch_ok_va]
+    states the arithmetic they leave free and this file lays the bytes.
+
+    1. [create_init_stack_vma] (mm/vma_exec.c) sets
+       [bprm->p] to [vma->vm_end] less the size of a pointer, so the top eight bytes
+       of the stack VMA are never written.
+    2. [do_execveat_common] (fs/exec.c) copies [bprm->filename] first
+       ([copy_string_kernel]), records [bprm->exec = bprm->p] — the
+       value AT_EXECFN carries — then the envp strings, then the argv
+       strings, each with [copy_strings] working DOWN.  So from the top:
+       the eight-byte slot, the file name and its NUL, the envp strings,
+       the argv strings; [argv[0]] is the lowest string byte.
+    3. [create_elf_tables] (fs/binfmt_elf.c) takes the sixteen
+       [get_random_bytes] bytes off the bottom of the string area with
+       [STACK_ALLOC], applies [arch_align_stack] (it subtracts 0 to
+       4095 bytes and then masks the low four bits, so the pad it
+       leaves is up to 4110), lays [ei_index] auxv words below
+       that with [STACK_ADD], and rounds down with
+       [STACK_ROUND(sp, items)], [items = (argc + 1) + (envc + 1) + 1].
+    4. The vector itself is [ARCH_DLINFO]
+       (arch/riscv/include/asm/elf.h) followed by [create_elf_tables]'s
+       own unconditional entries, in the order [auxv_entries] lists. *)
+
+From Stdlib Require Import ZArith NArith List Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType Vdso.
 Import ListNotations.
 Open Scope bv_scope.
@@ -27,16 +57,40 @@ Fixpoint string_addrs (base : word) (strs : list (list byte))
 Definition flatten_strings (strs : list (list byte)) : list byte :=
   flat_map (fun s => s ++ [Z_to_bv 8 0]) strs.
 
+(** ** The auxv types this launch publishes
+
+    Values from include/uapi/linux/auxvec.h and
+    arch/riscv/include/uapi/asm/auxvec.h, Linux v6.18.46 (commit
+    1f99e9ab748f). *)
 Definition AT_NULL    : word := Z_to_bv 64 0.
 Definition AT_PHDR    : word := Z_to_bv 64 3.
 Definition AT_PHENT   : word := Z_to_bv 64 4.
 Definition AT_PHNUM   : word := Z_to_bv 64 5.
 Definition AT_PAGESZ  : word := Z_to_bv 64 6.
-Definition AT_HWCAP   : word := Z_to_bv 64 16.
+Definition AT_BASE    : word := Z_to_bv 64 7.
+Definition AT_FLAGS   : word := Z_to_bv 64 8.
+Definition AT_ENTRY   : word := Z_to_bv 64 9.
 Definition AT_UID     : word := Z_to_bv 64 11.
 Definition AT_EUID    : word := Z_to_bv 64 12.
+Definition AT_GID     : word := Z_to_bv 64 13.
+Definition AT_EGID    : word := Z_to_bv 64 14.
+Definition AT_HWCAP   : word := Z_to_bv 64 16.
+Definition AT_CLKTCK  : word := Z_to_bv 64 17.
 Definition AT_SECURE  : word := Z_to_bv 64 23.
 Definition AT_RANDOM  : word := Z_to_bv 64 25.
+Definition AT_RSEQ_FEATURE_SIZE : word := Z_to_bv 64 27.
+Definition AT_RSEQ_ALIGN        : word := Z_to_bv 64 28.
+Definition AT_EXECFN  : word := Z_to_bv 64 31.
+Definition AT_SYSINFO_EHDR      : word := Z_to_bv 64 33.
+Definition AT_L1I_CACHESIZE     : word := Z_to_bv 64 40.
+Definition AT_L1I_CACHEGEOMETRY : word := Z_to_bv 64 41.
+Definition AT_L1D_CACHESIZE     : word := Z_to_bv 64 42.
+Definition AT_L1D_CACHEGEOMETRY : word := Z_to_bv 64 43.
+Definition AT_L2_CACHESIZE      : word := Z_to_bv 64 44.
+Definition AT_L2_CACHEGEOMETRY  : word := Z_to_bv 64 45.
+Definition AT_L3_CACHESIZE      : word := Z_to_bv 64 46.
+Definition AT_L3_CACHEGEOMETRY  : word := Z_to_bv 64 47.
+Definition AT_MINSIGSTKSZ       : word := Z_to_bv 64 51.
 
 (** ** The two AT_HWCAP masks this model admits
 
@@ -46,278 +100,240 @@ Definition AT_RANDOM  : word := Z_to_bv 64 25.
     letter X is [1 << (X - 'A')] (arch/riscv/include/uapi/asm/hwcap.h,
     the [COMPAT_HWCAP_ISA_*] macros, Linux v6.18.46, commit
     1f99e9ab748f), so A=0x1, C=0x4, D=0x8, F=0x20, I=0x100, M=0x1000 and
-    V=0x200000.  [Run.valid_hwcap] admits exactly these two words; the
-    argument for the pair is in the [AT_HWCAP] bullet below. *)
+    V=0x200000. *)
 Definition hwcap_rv64gc  : word := Z_to_bv 64 0x112D.
 Definition hwcap_rv64gcv : word := Z_to_bv 64 0x20112D.
 
-(** The auxiliary vector the model's kernel provides, as (type, value)
-    pairs, terminated by AT_NULL (AT_PAGESZ for musl, no secure-exec).
-    Notable entries:
+(** ** The eight cache words
 
-    - [AT_PHDR / AT_PHENT / AT_PHNUM]: the binary's own program header
-      table, taken from the image's [MemImageType.PhdrInfo] (see there
-      for how the loader derives it and why the model needs it).  This
-      is what lets a static libc find the segments the kernel describes
-      nowhere else — above all PT_TLS, which musl's [__init_tls] locates
-      by walking exactly this table before it lays out THREAD-LOCAL
-      STORAGE and sets [tp].  The table's BYTES are already in the
-      image; the auxv only says where they are.
-    - [AT_HWCAP = hwcap]: which single-letter ISA extensions the HART
-      running this process implements.  This is a QUANTIFIED value, not
-      a constant: [Run.valid_hwcap] names the two masks it may take and
-      [State.ProcInput]'s [in_hwcap] carries the choice, so
-      [Equivalence.strong_universal_T] ranges over both — the same way
-      [Run.valid_sp] ranges over the stack ASLR window instead of
-      picking one stack address.
+    [ARCH_DLINFO] (arch/riscv/include/asm/elf.h) emits a size and a
+    geometry word for each of four leaves — L1 instruction, L1 data, L2
+    unified, L3 unified — from [get_cache_size] and
+    [get_cache_geometry] (arch/riscv/kernel/cacheinfo.c).  A leaf the
+    machine does not report gives two zero words.
 
-      Linux emits the entry UNCONDITIONALLY, and first:
-      [create_elf_tables] opens the vector with
-      [NEW_AUX_ENT(AT_HWCAP, ELF_HWCAP)] immediately before the
-      [AT_PAGESZ] line (fs/binfmt_elf.c:249, Linux v6.18.46, commit
-      1f99e9ab748f), which is why the entry sits where it does below.
-      On riscv64 [ELF_HWCAP] is [riscv_get_elf_hwcap()]
-      (arch/riscv/include/asm/elf.h:66), and that function masks
-      [elf_hwcap] down to bits 0..25 — [RISCV_ISA_EXT_BASE] is 26
-      (arch/riscv/include/asm/hwcap.h:33) — so nothing but
-      SINGLE-LETTER extensions can appear
-      (arch/riscv/kernel/cpufeature.c:1108).  [elf_hwcap] is only ever
-      assigned [this_hwcap] or [elf_hwcap & this_hwcap] — the
-      intersection over the harts, at arch/riscv/kernel/cpufeature.c
-      lines 860-863 and 1011-1014 — and [this_hwcap] is accumulated out
-      of [isa2hwcap], which [riscv_fill_hwcap]
-      (arch/riscv/kernel/cpufeature.c:1053) seeds at exactly seven
-      indices, i m a f d c v (lines 1059-1065), leaving the other
-      nineteen zero.  The WHOLE range of AT_HWCAP on this architecture
-      is therefore the subsets of {A,C,D,F,I,M,V}, with F implying D
-      (the same function masks F off a hart that lacks D, at line 1082).
+    The words are carried as a record rather than a list so that the
+    vector's LENGTH is fixed by the type: every address in the block
+    below is a function of (sp, the stack top, argv, envp, the exec
+    name, CONFIG_RSEQ), and nothing a machine reports can move one.
+    [State.cache_words_of] derives the record from the launch's four
+    [State.CacheLeaf] facts with the kernel's own formulas. *)
+Record CacheWords := mkCacheWords {
+  cw_l1i_size : word;
+  cw_l1i_geom : word;
+  cw_l1d_size : word;
+  cw_l1d_geom : word;
+  cw_l2_size  : word;
+  cw_l2_geom  : word;
+  cw_l3_size  : word;
+  cw_l3_geom  : word
+}.
 
-      Of that range the model fixes six bits and leaves one free.  The
-      six are fixed by the ISA the model EXECUTES: [Riscv.Decode] is an
-      RV64IMAFD decoder and [Riscv.DecodeC] adds C, so a hart without
-      one of those six would not run the instructions this semantics
-      interprets, and a statement about this process on such a hart
-      would be a statement about a machine the model does not describe.
-      The free bit is V.  The model cannot decode a vector instruction —
-      but [RiscvSemantics.decode_exec_accesses] answers an undecodable
-      word with [MachineUnmodeled] rather than a trap, precisely because
-      such a word "may be a genuinely illegal encoding, but it may
-      equally be a hole in THIS decoder".  The model therefore does not
-      claim the hart lacks V, and must not publish an AT_HWCAP that says
-      so.  Nor is the bit a property of the silicon alone: [ELF_HWCAP]
-      clears it whenever [riscv_v_vstate_ctrl_user_allowed()] is false
-      (arch/riscv/kernel/cpufeature.c:1114-1115), which a process
-      controls through [PR_RISCV_V_SET_CONTROL], so the kernel
-      produces both masks on one machine.
+Definition cache_words_zero : CacheWords :=
+  let z := Z_to_bv 64 0 in mkCacheWords z z z z z z z z.
 
-      WHAT THE FREE BIT COSTS, and why it is worth it.  A runtime that
-      dispatches on [AT_HWCAP & COMPAT_HWCAP_ISA_V] selects its vector
-      path under [hwcap_rv64gcv], and the first vector instruction it
-      executes is a word [DecodeC.decode_any] returns [None] for, so
-      that run is [MachineUnmodeled] and no [error_free] statement about
-      the binary survives.  That is the honest answer and it is the
-      point of the entry.  Without the entry, every such runtime would
-      read the zero its lookup defaults to, take its scalar path, and the
-      model would prove that path AS CERTAIN for a process a real kernel
-      sends down the other one.  The cost is the mirror image: a program
-      that ECHOES its AT_HWCAP word has no single modeled answer, so it is
-      not provable here — a residual of the same kind as AT_RANDOM's
-      below, but on the side that declines rather than the side that
-      guesses.
+(** ** What the LAUNCH, rather than the image or the caller, puts in the
+       vector
 
-    - [AT_UID = AT_EUID = uid] and [AT_SECURE = 0]: both entries carry
-      the [uid] argument, which [Run.init_machine_state] fills from the
-      run's [State.in_uid] — the SAME field [State.init_model] copies
-      into the credentials [Kernel.Sys.getid_spec] reads.  One source,
-      so a program that reads AT_UID off its own initial stack and
-      compares it with [getuid] gets the agreement every kernel gives.
-      Linux ties the two together the same way: [create_elf_tables]
-      (fs/binfmt_elf.c) emits
-      [NEW_AUX_ENT(AT_UID, from_kuid_munged(cred->user_ns, cred->uid))]
-      and the [AT_EUID] line beside it off [cred = current_cred()], and
-      [SYSCALL_DEFINE0(getuid)] (kernel/sys.c) returns
-      [from_kuid_munged(current_user_ns(), current_uid())] — the same
-      munge of the same field of the same [struct cred], since
-      [current_uid()] is [current_cred()->uid].  The creds are already
-      the post-exec ones at that point: [load_elf_binary] calls
-      [begin_new_exec], which [commit_creds(bprm->cred)], BEFORE it
-      calls [create_elf_tables], so a set-user-id exec publishes the
-      new ids rather than the caller's.  Both texts are read off Linux
-      v6.18.46 (commit 1f99e9ab748f) and are byte-identical there and at
-      every mainline release tag from v4.4 through v6.18, and both are
-      unconditional — no config guards the four id entries.
-      The EQUALITY of the two entries is what keeps libc's secure-exec
-      path (which would probe and sanitize fds 0-2) dead code: its
-      syscalls are never issued, so the model does not cover them.  The
-      equality holds by CONSTRUCTION: [State.ProcInput] carries only the
-      REAL ids, and [State.init_model] builds the effective and saved
-      ones from them, so a launch whose effective id differs cannot be
-      expressed — which is why one [uid] argument serves both entries
-      rather than two.  musl's [__init_libc] computes [libc.secure] from
-      the INEQUALITY [AT_UID != AT_EUID] (and [AT_GID != AT_EGID], and
-      [AT_SECURE]), so the equality is the whole of what libc reads here.
-      Residual infidelity, of the same kind as the
-      absent entries below: a real kernel also emits AT_GID and AT_EGID,
-      which this vector does not carry at all, so it reports no group id
-      rather than a wrong one.  [State.in_gid] therefore has nothing to
-      fill here; adding the pair is an entry-SET change (it moves
-      [auxv_size]) and belongs with the other absentees.
-    - [AT_RANDOM = at_random_ptr …]: the address of 16 bytes of startup
-      entropy that [build_stack_bytes] materializes at the very end of
-      the initial stack image, as the kernel does.  A libc that seeds
-      its stack canary from AT_RANDOM (musl's [__init_ssp]) dereferences
-      this pointer, so it must be a valid address.  The BYTES are the
-      run's own draw, not a constant: [create_elf_tables]
-      (fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f) calls
-      [get_random_bytes(k_rand_bytes, sizeof(k_rand_bytes))], copies the
-      16 bytes to the new stack, and emits
-      [NEW_AUX_ENT(AT_RANDOM, (elf_addr_t)(unsigned long)u_rand_bytes)]
-      pointing at the copy, so every [execve] gets fresh ones.  The
-      model quantifies over them exactly as it quantifies over the stack
-      pointer and the program break: [at_random_bytes] is a function of
-      the [ed_random] half of [Run.ExecEntry]'s [en_draw], a [bv 128]
-      carrying no validity clause (every 128-bit value is a draw the kernel can make and every
-      draw is a 128-bit value), quantified INDEPENDENTLY per binary in
-      [Equivalence.strong_universal_T].  The LAYOUT is untouched:
-      [at_random_ptr] and every other address here stay functions of
-      (sp, argv, envp) alone, so only the 16 bytes themselves move with
-      the draw.  A binary that echoes its AT_RANDOM bytes is therefore
-      not modeled as echoing zeros — it is a binary no equivalence proof
-      can close, since the two runs may draw differently, which is the
-      same stance this file's [Run] neighbours take on a program that
-      leaks its stack address.
-      Residual infidelity, and it is about WHERE the block sits rather
-      than what is in it: this layout puts the 16 bytes ABOVE the argv
-      and envp strings, at the top of the image, while Linux puts them
-      BELOW the strings — [copy_strings] (fs/exec.c) has already placed
-      the strings at the high end when [create_elf_tables] runs, and
-      [STACK_ALLOC] takes the block off the bottom of that area.  Both
-      put it above [sp], which is the only relation anything in this tree
-      checks, so a program comparing the AT_RANDOM pointer with a string
-      address is modeled with that comparison inverted.
+    Four facts of the machine and of the kernel build that reach the
+    auxv and nothing else in this file.  [Run.launch_auxv] derives them
+    from [State.KernelBuild] and the entry's mmap base; they are
+    arguments here so that this file stays free of [State].
 
-    Entries a real kernel also supplies and this one does not (AT_BASE,
-    AT_ENTRY, AT_FLAGS, AT_CLKTCK, AT_PLATFORM, AT_EXECFN, …)
-    are absent rather than zeroed, which reads to libc as "not
-    provided"; musl treats every one of them as optional.  Every libc
-    reads the auxv as a lookup table (musl's [__init_libc] switches on
-    the type of each pair), so to STARTUP CODE the order of the entries
-    is not observable — only which types are present, and their values.
-    Residual infidelity, of the same kind as the absent AT_GID/AT_EGID
-    pair above: a program that walks its own auxv and echoes the raw
-    (type, value) words produces a trace that depends on the order and on
-    the exact entry set, so such a program's modeled trace differs from
-    its real one. *)
-Definition auxv_entries (ph : PhdrInfo) (at_random : word) (uid : word)
-    (hwcap : word) : list (word * word) :=
-  [ (AT_PHDR,   Z_to_bv 64 (Z.of_N (ph_addr ph)));
-    (AT_PHENT,  Z_to_bv 64 (Z.of_N (ph_ent ph)));
-    (AT_PHNUM,  Z_to_bv 64 (Z.of_N (ph_num ph)));
+    - [la_sysinfo_ehdr]: AT_SYSINFO_EHDR, the address of the vDSO text.
+      [__setup_additional_pages] (arch/riscv/kernel/vdso.c) maps the
+      vvar pages and the text directly below the mmap base, and
+      [ARCH_DLINFO] publishes [mm->context.vdso], the text's start.
+    - [la_cache]: the eight words above.
+    - [la_minsigstksz]: AT_MINSIGSTKSZ, [get_min_sigframe_size()]
+      (arch/riscv/kernel/signal.c) — [round_up(F + V, 16)] with F the
+      size of [struct rt_sigframe] and V the vector context
+      ([init_rt_signal_env], [get_rt_frame_size]).
+    - [la_rseq]: the kernel has CONFIG_RSEQ (init/Kconfig; riscv64
+      selects HAVE_RSEQ in arch/riscv/Kconfig and the option defaults to
+      y), so [create_elf_tables] emits AT_RSEQ_FEATURE_SIZE and
+      AT_RSEQ_ALIGN.  It is the ONE fact that moves the vector's length,
+      which is why [auxv_count] and every address below take it. *)
+Record LaunchAuxv := mkLaunchAuxv {
+  la_sysinfo_ehdr : word;
+  la_cache        : CacheWords;
+  la_minsigstksz  : word;
+  la_rseq         : bool
+}.
+
+(** The auxiliary vector, in the order [create_elf_tables] writes it.
+
+    [ARCH_DLINFO] comes FIRST — fs/binfmt_elf.c expands it before its
+    own entries, with the comment "ARCH_DLINFO must come first so PPC
+    can do its special alignment of AUXV" — and on riscv64 it is ten
+    entries: AT_SYSINFO_EHDR, the eight cache words, AT_MINSIGSTKSZ.
+    Then [create_elf_tables]'s unconditional sixteen, then the
+    CONFIG_RSEQ pair, then AT_NULL.  Twenty-seven entries, or
+    twenty-nine with CONFIG_RSEQ.
+
+    Entries this launch does NOT carry, and why each is absent rather
+    than wrong:
+
+    - AT_HWCAP2, AT_HWCAP3, AT_HWCAP4: riscv64 defines no [ELF_HWCAP2],
+      [ELF_HWCAP3] or [ELF_HWCAP4], so the [#ifdef]s around those three
+      [NEW_AUX_ENT] lines are false.
+    - AT_PLATFORM and AT_BASE_PLATFORM: emitted only when
+      [ELF_PLATFORM] / [ELF_BASE_PLATFORM] are defined, which riscv64
+      does not define.
+    - AT_EXECFD: emitted only for [bprm->have_execfd], which
+      [binfmt_misc] and the script loader set.  SCOPE.md's assumption
+      that [execve] loads the file directly excludes both.
+    - AT_NOTELF, AT_IGNORE: never emitted by this loader.
+
+    The VALUES that are constants here, each with its source:
+
+    - AT_PAGESZ is [ELF_EXEC_PAGESIZE] = [PAGE_SIZE] = 4096
+      (arch/riscv/include/asm/page.h, with CONFIG_RISCV_4K_PAGES).
+    - AT_CLKTCK is [USER_HZ] = 100 (include/asm-generic/param.h; riscv
+      has no asm/param.h of its own).
+    - AT_PHENT is [sizeof(struct elf_phdr)] = 56 for ELF64, and
+      [load_elf_phdrs] (fs/binfmt_elf.c) refuses an image whose
+      [e_phentsize] is anything else, so the model's [PhdrInfo] carries
+      the same number.
+    - AT_BASE is [interp_load_addr], which is 0 for an image with no
+      PT_INTERP — SCOPE.md's static [ET_EXEC] assumption.
+    - AT_FLAGS is 0: [create_elf_tables] writes the literal.
+    - AT_SECURE is [bprm->secureexec], 0 here.  [State.ProcInput] has no
+      effective-id field, so [State.init_model] derives the effective
+      and saved ids from the real ones and a set-id launch cannot be
+      stated; SCOPE.md records the matching assumption that no file
+      capability and no LSM transition asks for secure mode
+      (security/commoncap.c [cap_bprm_creds_from_file],
+      security/selinux/hooks.c).
+    - AT_RSEQ_FEATURE_SIZE is [offsetof(struct rseq, end)] = 28 and
+      AT_RSEQ_ALIGN is [__alignof__(struct rseq)] = 32
+      (include/uapi/linux/rseq.h).
+
+    AT_UID and AT_EUID both carry [uid], AT_GID and AT_EGID both carry
+    [gid], for the reason AT_SECURE is 0: the model cannot express a
+    launch whose effective id differs from its real one, so musl's
+    [__init_libc] reads [libc.secure = 0] and its secure-exec path —
+    which probes and sanitizes fds 0-2 with syscalls outside
+    [Specs.modeled_sysnos] — stays dead code.  [Kernel.Sys.getid_spec]
+    reads the same [State.in_uid] and [State.in_gid], so a program that
+    compares its auxv with [getuid] gets the agreement every kernel
+    gives.
+
+    AT_RANDOM's sixteen bytes are the run's own draw, not a constant:
+    [create_elf_tables] calls
+    [get_random_bytes(k_rand_bytes, sizeof(k_rand_bytes))] on every
+    [execve].  The model quantifies over them through [ed_random], a
+    [bv 128] with no validity clause, independently per binary in
+    [Equivalence.strong_universal_T], so a binary that echoes them is a
+    binary no equivalence proof can close. *)
+Definition auxv_entries (la : LaunchAuxv) (ph : PhdrInfo) (entry : word)
+    (uid gid hwcap at_random at_execfn : word) : list (word * word) :=
+  let c := la_cache la in
+  [ (AT_SYSINFO_EHDR,      la_sysinfo_ehdr la);
+    (AT_L1I_CACHESIZE,     cw_l1i_size c);
+    (AT_L1I_CACHEGEOMETRY, cw_l1i_geom c);
+    (AT_L1D_CACHESIZE,     cw_l1d_size c);
+    (AT_L1D_CACHEGEOMETRY, cw_l1d_geom c);
+    (AT_L2_CACHESIZE,      cw_l2_size c);
+    (AT_L2_CACHEGEOMETRY,  cw_l2_geom c);
+    (AT_L3_CACHESIZE,      cw_l3_size c);
+    (AT_L3_CACHEGEOMETRY,  cw_l3_geom c);
+    (AT_MINSIGSTKSZ,       la_minsigstksz la);
     (AT_HWCAP,  hwcap);
     (AT_PAGESZ, Z_to_bv 64 4096);
+    (AT_CLKTCK, Z_to_bv 64 100);
+    (AT_PHDR,   Z_to_bv 64 (Z.of_N (ph_addr ph)));
+    (AT_PHENT,  Z_to_bv 64 (Z.of_N (ph_ent ph)));
+    (AT_PHNUM,  Z_to_bv 64 (Z.of_N (ph_num ph)));
+    (AT_BASE,   Z_to_bv 64 0);
+    (AT_FLAGS,  Z_to_bv 64 0);
+    (AT_ENTRY,  entry);
     (AT_UID,    uid);
     (AT_EUID,   uid);
+    (AT_GID,    gid);
+    (AT_EGID,   gid);
     (AT_SECURE, Z_to_bv 64 0);
     (AT_RANDOM, at_random);
-    (AT_NULL,   Z_to_bv 64 0) ].
+    (AT_EXECFN, at_execfn) ]
+  ++ (if la_rseq la
+      then [ (AT_RSEQ_FEATURE_SIZE, Z_to_bv 64 28);
+             (AT_RSEQ_ALIGN,        Z_to_bv 64 32) ]
+      else [])
+  ++ [ (AT_NULL, Z_to_bv 64 0) ].
 
 (** Serialize an auxv: each entry is two little-endian 64-bit words. *)
 Definition build_auxv (entries : list (word * word)) : list byte :=
   flat_map (fun e => word_le8 (fst e) ++ word_le8 (snd e)) entries.
 
-Definition auxv_bytes (ph : PhdrInfo) (at_random : word) (uid : word)
-    (hwcap : word) : list byte :=
-  build_auxv (auxv_entries ph at_random uid hwcap).
+Definition auxv_bytes (la : LaunchAuxv) (ph : PhdrInfo) (entry : word)
+    (uid gid hwcap at_random at_execfn : word) : list byte :=
+  build_auxv (auxv_entries la ph entry uid gid hwcap at_random at_execfn).
 
-(** The serialized auxv's SIZE — 10 entries of two 64-bit words.  It
-    depends on neither the image, nor the launching user, nor the hart
-    ([PhdrInfo] fills in three of the VALUES, [uid] two more and
-    [hwcap] one, and no argument adds or removes an entry), so every
-    ADDRESS in the layout below — where the strings start, where
-    AT_RANDOM points — stays a function of (sp, argv, envp) alone.
-    Only the bytes stored in those
-    six slots move.  This is what keeps AT_HWCAP's two admissible masks
-    from being an addressing question: the quantifier
-    [Equivalence.strong_universal_T] ranges over changes the CONTENTS of
-    one 8-byte slot and nothing else. *)
-Definition auxv_size : nat := 160%nat.
+(** The vector's entry count and byte size.  CONFIG_RSEQ is the only
+    thing that moves either: [PhdrInfo] fills three values, the
+    credentials four, [hwcap] one, the launch ten, and no argument but
+    [la_rseq] adds or removes an entry. *)
+Definition auxv_count (rseq : bool) : nat := if rseq then 29%nat else 27%nat.
+Definition auxv_size (rseq : bool) : nat := (16 * auxv_count rseq)%nat.
 
-Lemma length_auxv_bytes : forall ph at_random uid hwcap,
-  length (auxv_bytes ph at_random uid hwcap) = auxv_size.
-Proof. reflexivity. Qed.
+Lemma length_auxv_bytes : forall la ph entry uid gid hwcap ar ae,
+  length (auxv_bytes la ph entry uid gid hwcap ar ae)
+  = auxv_size (la_rseq la).
+Proof.
+  intros [ehdr c msz [|]] ph entry uid gid hwcap ar ae; reflexivity.
+Qed.
 
-(** …and the size does not move with the hart: the two masks
-    [Run.valid_hwcap] admits give byte-identical LAYOUTS, differing only
-    in the eight bytes of AT_HWCAP's value slot.  Stated separately from
-    [length_auxv_bytes] because it is the property the addressing
-    argument above actually rests on. *)
-Lemma length_auxv_bytes_hwcap_invariant : forall ph at_random uid h h',
-  length (auxv_bytes ph at_random uid h)
-  = length (auxv_bytes ph at_random uid h').
-Proof. reflexivity. Qed.
+(** …and the size does not move with the hart, with the machine's
+    caches, or with the vDSO's address: the arguments other than
+    [la_rseq] change the CONTENTS of value slots and nothing else.
+    Stated separately from [length_auxv_bytes] because it is the
+    property the addressing argument rests on. *)
+Lemma length_auxv_bytes_value_invariant :
+  forall la la' ph ph' e e' u u' g g' h h' ar ar' ae ae',
+  la_rseq la = la_rseq la' ->
+  length (auxv_bytes la ph e u g h ar ae)
+  = length (auxv_bytes la' ph' e' u' g' h' ar' ae').
+Proof.
+  intros [ehdr c msz r] [ehdr' c' msz' r'] ph ph' e e' u u' g g' h h' ar ar' ae ae' Hr.
+  cbn in Hr; subst r'. destruct r; reflexivity.
+Qed.
 
-(** ** What [execve] drew for this process's entry stack
+(** ** What [execve] drew for this process's entry, and where it put the
+       stack
 
-    The two byte-level choices in the entry stack image that the model
-    does NOT determine, carried together in [Run.ExecEntry]'s [en_draw]
-    beside the three placement draws [en_sp], [en_brk] and
-    [en_mmap_base].  Neither has a validity predicate, because every
-    value of either is one a kernel can produce, and both are quantified
-    INDEPENDENTLY for the two binaries in
-    [Equivalence.strong_universal_T] — which is what makes a program
-    whose output depends on either unprovable against anything, the same
-    treatment, for the same reason, as a program that leaks its stack
-    address.
+    [Run.ExecEntry]'s [en_draw], beside the three placement draws
+    [en_sp], [en_brk] and [en_mmap_base].
 
-    - [ed_random]: the 16 bytes AT_RANDOM points at.  [create_elf_tables]
-      (fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f) calls
-      [get_random_bytes(k_rand_bytes, sizeof(k_rand_bytes))] and copies
-      the result onto the new stack for AT_RANDOM to point at.  Read by
-      exactly one thing, the last 16 bytes of [build_stack_bytes]
-      ([build_stack_bytes_split_random]).
+    - [ed_random]: the sixteen bytes AT_RANDOM points at
+      ([get_random_bytes] in [create_elf_tables], fs/binfmt_elf.c).  No
+      validity clause: every 128-bit value is a draw the kernel can
+      make and every draw is a 128-bit value.
 
-    - [ed_slack]: the bytes of the entry stack's LAST PAGE that lie above
-      that block.  Linux's stack is a VMA and a VMA covers whole pages —
-      [setup_arg_pages] (fs/exec.c) fixes its top with
-      [stack_top = arch_align_stack(stack_top); stack_top = PAGE_ALIGN(stack_top);]
-      — so those addresses are mapped, and what they hold is the tail of
-      the string area, the exec filename [AT_EXECFN] points at
-      ([do_execveat_common] copies [bprm->filename] first, so it sits
-      highest), and the pointer-sized run of bytes below the VMA's top
-      that [create_init_stack_vma] (mm/vma_exec.c) skipped — it hands
-      [exec] the first string address as [vm_end] minus the size of a
-      pointer — and nothing wrote.
-      This model lays out none of that — it publishes no AT_EXECFN and
-      builds no filename string — so no address up there has a fixed
-      counterpart in the kernel's image, and WHICH of them hold filename
-      and which hold untouched zeros depends on how the program was
-      invoked.
+    - [ed_top]: the stack VMA's [vm_end].  [setup_arg_pages]
+      (fs/exec.c) fixes it with
+      [stack_top = arch_align_stack(randomize_stack_top(STACK_TOP));
+       stack_top = PAGE_ALIGN(stack_top);], so it is a page-aligned
+      address at most 2^30 below STACK_TOP
+      ([Run.valid_stack_top_va] states the exact set).  It is the
+      block's upper end: every byte from [en_sp] to [ed_top] is laid
+      here, and there is no slack.
 
-      The mismatch starts lower than the strings, which is why a
-      zero-part plus choice-part SPLIT is impossible rather than merely
-      inconvenient: the kernel's own auxv is far longer than this one.
-      [create_elf_tables] writes 16 unconditional [NEW_AUX_ENT]s and
-      expands riscv's [ARCH_DLINFO] on top of them, which adds
-      [AT_SYSINFO_EHDR] and eight cache-descriptor entries
-      (arch/riscv/include/asm/elf.h), against this vector's ten.  So for
-      a short argv the model's block ends INSIDE the kernel's auxv and
-      the first bytes above it in a real process are auxv words — not
-      string bytes, and not the filename the paragraph above starts
-      from.  Read by [Run.entry_slack].
+    - [ed_vdso]: what a vDSO call leaves behind.  LPS applies the
+      exported function's syscall specification in ONE step rather than
+      running the image's instructions, so the caller-saved registers
+      other than a0, and the bytes of [sp - F, sp) the call's frame
+      used, are the environment's choice.  The arguments are the index
+      of the call in the run, the register values before it, the frame
+      bytes before it, and the call's result, so a choice that keeps an
+      unwritten value gives a run Linux also gives.  Quantified per
+      binary, as [ed_random] is.
 
-    Indexed by ADDRESS rather than by offset because the region's
-    position and length are functions of [sp] and of the caller's
-    argv/envp, and the draw is meant to be independent of both.  A choice
-    rather than zeros for the same reason as [ed_random]: a
-    model that committed the bytes to a value would prove a program that
-    reads one equivalent to a program that really writes that value.  A
-    choice rather than a fresh value per read for the opposite reason:
-    the bytes are stored memory in Linux, and a model that redrew them
-    would call two programs that each echo their own byte equivalent
-    when they are not. *)
-Record EntryDraw := mkDraw_full {
+    [ed_slack] is GONE.  It carried the bytes of the entry stack's last
+    page above the model's own shorter block; the block now runs to
+    [ed_top], so there is nothing above it to choose. *)
+Record EntryDraw := mkDraw {
   ed_random : bv 128;
-  ed_slack  : word -> byte;
+  ed_top    : word;
   ed_vdso   : VdsoDraw
     (* WHAT A vDSO CALL LEAVES BEHIND: from the index of the call in
        the run, the caller-saved registers before it, the bytes of
@@ -325,55 +341,27 @@ Record EntryDraw := mkDraw_full {
        caller-saved registers and those bytes after it.  F is the
        chosen image's largest frame ([Vdso.vi_frame]).
 
-       It is part of the DRAW, beside [ed_random] and [ed_slack], for
-       the same reason they are: Linux's answer is what the vDSO's
-       compiled code left, a function of the same inputs and of time
-       values this model lets the environment choose, and the model
-       has no term for that code.  Drawing it once per launch — rather
-       than afresh at each call — is what makes two calls with the same
-       inputs leave the same bytes, as they do on a real run; the
-       call's INDEX is an argument so that two calls that are not the
-       same call still may differ.  [Run.init_config] copies it into
-       the model, where [Run.sstep]'s vDSO arm reads it. *)
+       It is part of the DRAW, beside [ed_random], for the same reason
+       that one is: Linux's answer is what the vDSO's compiled code
+       left, a function of the same inputs and of time values this
+       model lets the environment choose, and the model has no term for
+       that code.  Drawing it once per launch — rather than afresh at
+       each call — is what makes two calls with the same inputs leave
+       the same bytes, as they do on a real run; the call's INDEX is an
+       argument so that two calls that are not the same call still may
+       differ.  [Run.init_config] copies it into the model, where
+       [Run.sstep]'s vDSO arm reads it.
+
+       Its result is [Vdso.VdsoLeftovers] rather than a bare pair, so
+       that the registers and the frame bytes are named where they are
+       read; [Vdso.vdso_draw_keep] is the draw that gives back what the
+       call started with, which is one Linux also gives. *)
 }.
 
-(** THE TWO-PLACE FORM: the entropy draw and the slack bytes, with the
-    vDSO draw filled by [Vdso.vdso_draw_keep] — the draw that gives
-    back the registers and frame bytes a call started with, which is
-    one Linux also gives (a vDSO function that touched neither a
-    scratch register nor its frame).
-
-    It exists for the reason [State.mkProcInput] does: the development
-    holds positional [mkDraw] literals, and a fixture that is not about
-    the leftovers should not have to name them.  A fixture that IS
-    about them writes [mkDraw_full]. *)
-Definition mkDraw (random : bv 128) (slack : word -> byte) : EntryDraw :=
-  mkDraw_full random slack vdso_draw_keep.
-
-(** The 16 bytes AT_RANDOM points at: this run's entropy draw
-    (the [ed_random] half of [Run.ExecEntry]'s [en_draw]; see the auxv comment above for the
-    kernel side), serialized little-endian.
-
-    The draw is a [bv 128] rather than a 16-element [list byte] because
-    the LENGTH is then fixed by the type.  Every layout lemma below needs
-    that length and gets it by computation
-    ([length_at_random_bytes]), so the entry carries NO validity clause
-    and no statement that quantifies over an entry grows a side
-    condition — the same reason [State.in_stdin] has no predicate.  Byte
-    [k] of the block is [bv_extract (8 * k) 8 rnd] by definition, so a
-    proof that reads one byte back out of the image gets a bare extract
-    of the draw rather than a value it can compute with.
-
-    Their address: the stack image ends with
-    [raw ++ pad ++ at_random_bytes rnd], so the block sits at
-    [sp + struct size + string bytes + pad], the HIGHEST address in the
-    image — above the strings, where Linux puts it below them — the same arithmetic
-    [build_stack_bytes] below performs on the built lists ([auxv_size] =
-    length of the auxv).  The offset is computed in [nat]/[Z] and re-wrapped
-    with [nat_to_word] (the image never wraps the address space), and it
-    does not mention the draw: the layout is a function of
-    (sp, argv, envp) alone ([build_stack_bytes_split_random] states
-    this). *)
+(** The sixteen bytes AT_RANDOM points at, serialized little-endian.
+    The draw is a [bv 128] rather than a list so the LENGTH is fixed by
+    the type and no statement that quantifies over an entry grows a side
+    condition. *)
 Definition at_random_bytes (rnd : bv 128) : list byte :=
   [ bv_extract 0 8 rnd;    bv_extract 8 8 rnd;
     bv_extract 16 8 rnd;   bv_extract 24 8 rnd;
@@ -387,62 +375,169 @@ Definition at_random_bytes (rnd : bv 128) : list byte :=
 Lemma length_at_random_bytes : forall rnd, length (at_random_bytes rnd) = 16%nat.
 Proof. reflexivity. Qed.
 
-Definition at_random_ptr (sp : word) (argv envp : list (list byte)) : word :=
-  let struct_size :=
-    (8 + (length argv + 1) * 8 + (length envp + 1) * 8 + auxv_size)%nat in
-  let len := (struct_size + length (flatten_strings argv)
-                          + length (flatten_strings envp))%nat in
-  let pad := Z.to_nat ((8 - Z.of_nat len mod 8) mod 8)%Z in
-  sp + nat_to_word (len + pad).
+(* =========================================================================
+   The block's measurements
+   ========================================================================= *)
 
-(** The initial stack image.  [rnd] is the run's AT_RANDOM draw and is
-    read by NOTHING but the final [at_random_bytes] block: the argc/argv/
-    envp/auxv struct, the strings and the alignment pad are all functions
-    of the other arguments, which is what
-    [build_stack_bytes_split_random] below says and what keeps every
-    concrete-layout proof in the tree computing as it did. *)
-Definition build_stack_bytes (ph : PhdrInfo) (sp : word) (argv : list (list byte))
-    (envp : list (list byte)) (uid : word) (hwcap : word)
-    (draw : EntryDraw) : list byte :=
-  let argc := len_word argv in
-  let envc := length envp in
-  let n_argv_slots := (length argv + 1)%nat in
-  let n_envp_slots := (envc + 1)%nat in
-  let auxv := auxv_bytes ph (at_random_ptr sp argv envp) uid hwcap in
-  let struct_size :=
-    (8 + n_argv_slots * 8 + n_envp_slots * 8 + length auxv)%nat in
-  let string_base := sp + nat_to_word struct_size in
-  let '(argv_ptrs, env_str_base) := string_addrs string_base argv in
+(** [items] in [create_elf_tables]: [(argc + 1) + (envc + 1) + 1], the
+    pointer-sized slots below the auxv — argc, the argv pointers and
+    their NULL, the envp pointers and their NULL. *)
+Definition block_items (argv envp : list (list byte)) : nat :=
+  (length argv + length envp + 3)%nat.
+
+(** C, the distance from the entry stack pointer to the TOP of the
+    sixteen AT_RANDOM bytes.
+
+    [create_elf_tables] lays the block downwards from the random bytes:
+    [sp = STACK_ADD(p, ei_index)] subtracts [16 * n_aux] from their
+    address, [STACK_ROUND(sp, items)] subtracts [8 * items] and then
+    clears the low four bits.  The random bytes sit at a 16-aligned
+    address ([arch_align_stack] returns one) and [16 * n_aux] is a
+    multiple of 16, so the mask removes exactly
+    [8 * (items mod 2)] further bytes — which is the zero gap between
+    the end of the vector and the random bytes. *)
+Definition block_head_size (rseq : bool) (argv envp : list (list byte)) : nat :=
+  let items := block_items argv envp in
+  (8 * items + auxv_size rseq + 8 * (items mod 2) + 16)%nat.
+
+(** L, the string bytes with their NULs: the argv strings, the envp
+    strings and the exec file name, each NUL-terminated
+    ([copy_strings] and [copy_string_kernel], fs/exec.c). *)
+Definition launch_string_bytes (argv envp : list (list byte))
+    (execfn : list byte) : nat :=
+  (length (flatten_strings argv) + length (flatten_strings envp)
+   + length execfn + 1)%nat.
+
+(** The lowest string byte — [argv[0]], which [create_elf_tables]
+    publishes as [mm->arg_start] and the first argv pointer.  The eight
+    bytes below [top] are the slot [create_init_stack_vma] skipped. *)
+Definition string_base_addr (top : word) (argv envp : list (list byte))
+    (execfn : list byte) : word :=
+  top - nat_to_word (8 + launch_string_bytes argv envp execfn).
+
+(** AT_EXECFN: [bprm->exec], the address [do_execveat_common] records
+    right after [copy_string_kernel] has put the file name at the top of
+    the string area. *)
+Definition at_execfn_ptr (top : word) (execfn : list byte) : word :=
+  top - nat_to_word (8 + length execfn + 1).
+
+(** AT_RANDOM: the bottom of the sixteen bytes, [C - 16] above sp. *)
+Definition at_random_ptr (sp : word) (rseq : bool)
+    (argv envp : list (list byte)) : word :=
+  sp + nat_to_word (block_head_size rseq argv envp - 16).
+
+(** The pad [arch_align_stack] left between the sixteen AT_RANDOM
+    bytes and the lowest string byte: whatever is left of
+    [top - sp] once the head [C], the strings [L] and the eight-byte
+    slot are taken out.
+
+    Clamped at 0 by [Z.to_nat], so the block is defined for every [sp]
+    and [top].  Under [Run.entry_launch_ok_va] it is between 0 and
+    4095, which is the range [arch_align_stack]
+    (arch/riscv/kernel/process.c, Linux v6.18.46, commit 1f99e9ab748f)
+    can leave. *)
+Definition block_pad_len (rseq : bool) (sp top : word)
+    (argv envp : list (list byte)) (execfn : list byte) : nat :=
+  Z.to_nat (bv_unsigned top - 8
+            - Z.of_nat (launch_string_bytes argv envp execfn)
+            - bv_unsigned sp
+            - Z.of_nat (block_head_size rseq argv envp)).
+
+(* =========================================================================
+   The block
+   ========================================================================= *)
+
+(** The initial stack image, from the entry stack pointer [sp] to the
+    stack VMA's end [top].  Linux's layout, bottom to top:
+
+      argc, the argv pointers, NULL, the envp pointers, NULL   8*items
+      the auxiliary vector                                     16*n_aux
+      zero gap, so the random bytes land 16-aligned            0 or 8
+      the sixteen AT_RANDOM bytes                              16
+      the pad [arch_align_stack] left                          0..4110
+      the argv strings, the envp strings, the exec name + NUL  L
+      the slot [create_init_stack_vma] skipped                 8
+
+    The pads are ZERO because Linux never writes them: the stack's pages
+    are fresh anonymous pages ([get_arg_page], fs/exec.c).
+
+    The pad's length is whatever is left, clamped at 0 by [Z.to_nat], so
+    the definition is total for every [sp] and [top].  Under
+    [Run.entry_launch_ok_va] it is between 0 and 4110 and the image's
+    length is exactly [top - sp]
+    ([Run.length_entry_stack_image_launch]).
+
+    WHY 4110 AND NOT 4095.  [arch_align_stack]
+    (arch/riscv/kernel/process.c, Linux v6.18.46, commit 1f99e9ab748f)
+    subtracts [r] in [0, 4095] AND THEN masks the low four bits, so the
+    distance from the lowest string byte down to the top of the
+    AT_RANDOM block is [r + ((top - 8 - L - r) mod 16)], at most
+    [4095 + 15].  The 4095 is the kernel's draw; the pad is the draw
+    plus the alignment remainder.  [Run.launch_sp_lo] and
+    [Run.launch_sp_hi] are stated with [align_down16] and so carry the
+    true range without naming either number.
+
+    [rnd] is read by NOTHING but the sixteen-byte block
+    ([build_stack_bytes_split_random]): every address here is a function
+    of (sp, top, argv, envp, the exec name, [la_rseq]) alone. *)
+Definition build_stack_bytes (la : LaunchAuxv) (ph : PhdrInfo) (entry : word)
+    (sp top : word) (argv envp : list (list byte)) (execfn : list byte)
+    (uid gid hwcap : word) (draw : EntryDraw) : list byte :=
+  let items := block_items argv envp in
+  let sbase := string_base_addr top argv envp execfn in
+  let '(argv_ptrs, env_str_base) := string_addrs sbase argv in
   let '(envp_ptrs, _) := string_addrs env_str_base envp in
-  let raw :=
-    word_le8 argc
+  let auxv :=
+    auxv_bytes la ph entry uid gid hwcap
+      (at_random_ptr sp (la_rseq la) argv envp)
+      (at_execfn_ptr top execfn) in
+  let head :=
+    word_le8 (len_word argv)
     ++ flat_map word_le8 argv_ptrs
     ++ word_le8 (Z_to_bv 64 0)
     ++ flat_map word_le8 envp_ptrs
     ++ word_le8 (Z_to_bv 64 0)
     ++ auxv
-    ++ flatten_strings argv
-    ++ flatten_strings envp in
-  let len := Z.of_nat (length raw) in
-  let pad := Z.to_nat ((8 - len mod 8) mod 8)%Z in
-  raw ++ repeat (Z_to_bv 8 0) pad ++ at_random_bytes (ed_random draw).
+    ++ repeat (Z_to_bv 8 0) (8 * (items mod 2))
+    ++ at_random_bytes (ed_random draw) in
+  let strs :=
+    flatten_strings argv ++ flatten_strings envp ++ execfn ++ [Z_to_bv 8 0] in
+  let pad := block_pad_len (la_rseq la) sp top argv envp execfn in
+  head ++ repeat (Z_to_bv 8 0) pad ++ strs ++ repeat (Z_to_bv 8 0) 8.
 
-(** The image is a draw-INDEPENDENT prefix followed by the 16 bytes of
-    the draw.  The proof is where the claim bites: the existential
-    witness is introduced BEFORE [rnd] is, so a prefix that mentioned the
-    draw could not close it — put another way, this lemma stops holding
-    the day someone routes [rnd] into an address, a length or a pad.
-    Two consequences a reader should take from it: two entries differing
-    only in [ed_random] give images that agree everywhere but the last
-    16 bytes, and every existing concrete-layout computation is
-    unaffected, because it lives in the prefix. *)
-Lemma build_stack_bytes_split_random :
-  forall ph (sp : word) (argv envp : list (list byte)) (uid hwcap : word),
-  exists pre, forall draw,
-    build_stack_bytes ph sp argv envp uid hwcap draw
-    = pre ++ at_random_bytes (ed_random draw).
+(** The pointer list [string_addrs] returns has one entry per string:
+    the addresses are a function of the base and the lengths, not of
+    the bytes. *)
+Lemma length_fst_string_addrs : forall strs base,
+  length (fst (string_addrs base strs)) = length strs.
 Proof.
-  intros ph sp argv envp uid hwcap. eexists. intro draw.
+  induction strs as [|s rest IH]; intro base; [reflexivity|].
+  cbn [string_addrs].
+  rewrite (surjective_pairing (string_addrs (base + len_word s + 1) rest)).
+  cbn [fst length]. rewrite IH. reflexivity.
+Qed.
+
+Lemma length_flat_map_word_le8 : forall (l : list word),
+  length (flat_map word_le8 l) = (8 * length l)%nat.
+Proof.
+  induction l as [|w rest IH]; [reflexivity|].
+  cbn [flat_map length]. rewrite length_app, IH. cbn [length word_le8]. lia.
+Qed.
+
+(** The block runs from [sp] to [top]: its head is [C], its tail is the
+    strings and the eight-byte slot, and the pad is whatever lies
+    between.  Clamped at 0 by [Z.to_nat], so this holds for every [sp]
+    and [top]; [Run.length_entry_stack_image_launch] reads it under the
+    launch conjunct, where the pad is between 0 and 4110 and the sum
+    collapses to [top - sp]. *)
+Lemma length_build_stack_bytes :
+  forall la ph entry sp top argv envp execfn uid gid hwcap draw,
+  length (build_stack_bytes la ph entry sp top argv envp execfn uid gid hwcap draw)
+  = (block_head_size (la_rseq la) argv envp
+     + block_pad_len (la_rseq la) sp top argv envp execfn
+     + launch_string_bytes argv envp execfn + 8)%nat.
+Proof.
+  intros la ph entry sp top argv envp execfn uid gid hwcap draw.
   unfold build_stack_bytes. cbv zeta.
   match goal with
   | |- context [string_addrs ?b argv] =>
@@ -454,7 +549,64 @@ Proof.
       rewrite (surjective_pairing (string_addrs b envp))
   end.
   cbv beta iota.
-  rewrite !app_assoc. reflexivity.
+  rewrite !length_app, !repeat_length, !length_flat_map_word_le8,
+          !length_fst_string_addrs, length_auxv_bytes,
+          length_at_random_bytes.
+  unfold block_head_size, launch_string_bytes, block_items.
+  cbn [length word_le8]. lia.
+Qed.
+
+(** ** The block's three pieces
+
+    The part BELOW the sixteen AT_RANDOM bytes — argc, the pointer
+    arrays, the auxv and the alignment gap — and the part ABOVE them —
+    the [arch_align_stack] pad, the strings and the eight-byte slot.
+    Named so that a proof can read one byte of the block by its offset
+    without unfolding the whole layout, and so that the draw's
+    independence below is a computation rather than a search. *)
+Definition block_below_random (la : LaunchAuxv) (ph : PhdrInfo)
+    (entry : word) (sp top : word) (argv envp : list (list byte))
+    (execfn : list byte) (uid gid hwcap : word) : list byte :=
+  let sbase := string_base_addr top argv envp execfn in
+  let '(argv_ptrs, env_str_base) := string_addrs sbase argv in
+  let '(envp_ptrs, _) := string_addrs env_str_base envp in
+  word_le8 (len_word argv)
+  ++ flat_map word_le8 argv_ptrs
+  ++ word_le8 (Z_to_bv 64 0)
+  ++ flat_map word_le8 envp_ptrs
+  ++ word_le8 (Z_to_bv 64 0)
+  ++ auxv_bytes la ph entry uid gid hwcap
+       (at_random_ptr sp (la_rseq la) argv envp)
+       (at_execfn_ptr top execfn)
+  ++ repeat (Z_to_bv 8 0) (8 * (block_items argv envp mod 2)).
+
+Definition block_above_random (rseq : bool) (sp top : word)
+    (argv envp : list (list byte)) (execfn : list byte) : list byte :=
+  repeat (Z_to_bv 8 0) (block_pad_len rseq sp top argv envp execfn)
+  ++ flatten_strings argv ++ flatten_strings envp ++ execfn
+  ++ [Z_to_bv 8 0]
+  ++ repeat (Z_to_bv 8 0) 8.
+
+(** THE DRAW IS READ BY NOTHING BUT THE SIXTEEN BYTES.  Two entries
+    that differ only in [ed_random] give blocks that agree everywhere
+    else, and every address in the layout is a function of (sp, top,
+    argv, envp, the exec name, [la_rseq]) alone.  The lemma stops
+    holding the day someone routes the draw into an address, a length
+    or a pad. *)
+Lemma build_stack_bytes_split_random :
+  forall la ph entry sp top argv envp execfn uid gid hwcap draw,
+  build_stack_bytes la ph entry sp top argv envp execfn uid gid hwcap draw
+  = block_below_random la ph entry sp top argv envp execfn uid gid hwcap
+    ++ at_random_bytes (ed_random draw)
+    ++ block_above_random (la_rseq la) sp top argv envp execfn.
+Proof.
+  intros la ph entry sp top argv envp execfn uid gid hwcap draw.
+  unfold build_stack_bytes, block_below_random, block_above_random.
+  cbv zeta.
+  destruct (string_addrs (string_base_addr top argv envp execfn) argv)
+    as [ap eb] eqn:E1.
+  destruct (string_addrs eb envp) as [ep fin] eqn:E2.
+  rewrite <- !app_assoc. reflexivity.
 Qed.
 
 (** The stack image as a partial byte map based at [base].  The

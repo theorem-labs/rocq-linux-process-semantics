@@ -198,9 +198,9 @@ Theorem mm_within_budget_only :
   source_within_budget_only mm_budget mm_image demo_entry demo_proc_input.
 Proof.
   change (~ reaches_budget_only_refused mm_segments
-            (init_config mm_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-               (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw mm_budget
-               demo_proc_input)).
+            (init_config mm_segments 0x100 demo_phdrs (en_sp demo_entry)
+               (en_brk demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry)
+               mm_budget demo_proc_input)).
   rewrite mm_config.
   intros (tr & c & Hstar & Hb).
   exact (mm_never_bor_k 0 ltac:(lia) tr c Hstar Hb).
@@ -212,7 +212,7 @@ Qed.
 (** The mm run errors: the refusal, then a fetch fault. *)
 Lemma mm_errors : bh_errors (run mm_image mm_budget demo_entry demo_proc_input).
 Proof.
-  cbn [run mm_image demo_entry bh_errors]. rewrite mm_config.
+  rewrite <- demo_entry_eta. cbn [run mm_image bh_errors]. rewrite mm_config.
   exists ([] ++ []), (mkCfg mm_ms7 mm_model), []. split.
   - eapply star_trans; [exact mm_star |].
     apply star_one.
@@ -227,19 +227,33 @@ Proof.
     no_lazy. rewrite mm_ms7_faults. reflexivity.
 Qed.
 
+(** [BudgetPremise.mm_image] puts its only segment inside the first
+    page, so [Run.launch_entry_va_valid] closes all five conjuncts of
+    [Run.valid_entry] from the [Run.valid_argv], [Run.valid_envp] and
+    [Run.valid_launch] that [Run.valid_input] carries, plus the break
+    fact, which is the only image-dependent one.
+
+    Stated at [Checks.Examples.demo_entry_of inp] rather than at one
+    fixed entry: the fifth conjunct of [Run.valid_entry_va]
+    ([Run.entry_launch_ok_va]) pins the stack pointer to the input's own
+    string lengths through [Run.launch_sp_hi], so NO single
+    [Run.ExecEntry] is valid for every input.  At [demo_proc_input] the
+    entry is [Checks.Examples.demo_entry]. *)
 Lemma demo_entry_valid_mm : forall inp,
-  valid_input inp -> valid_entry mm_image demo_entry inp.
+  valid_input inp -> valid_entry mm_image (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
-  rewrite (valid_entry_sv48 _ _ _ (valid_input_va_size _ Hvalid)).
-  destruct Hvalid as (Hargv & Henvp & _).
-  pose proof (entry_stack_span_bound _ _ Hargv Henvp).
-  cbn [mm_image demo_entry].
-  unfold valid_sp, valid_brk, valid_mmap_base, entry_stack_fits.
-  rewrite Z_to_bv_unsigned, bv_wrap_small
-    by (unfold bv_modulus; cbn; lia).
-  unfold entry_stack_span_max, sp_window_lo, sp_window_hi in *.
-  repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  (* Guarded rather than positional: [Run.valid_input] grows a conjunct
+     whenever the input class learns to say something new, and the three
+     clauses [Run.launch_entry_va_valid] asks for are then found by
+     [assumption] rather than by counting.  [match goal] is syntactic,
+     so [red] is what makes it fire, and [valid_launch] stays folded
+     under it and arrives whole. *)
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  unfold valid_entry, demo_entry_of, mm_image.
+  apply launch_entry_va_valid; try assumption.
+  unfold valid_brk. repeat split; vm_compute; try reflexivity; try discriminate.
 Qed.
 
 (** [strong_universal_error_free_T_budgets_only_refuted_by_source_error],
@@ -292,10 +306,8 @@ Definition cm_image : Image := mkImage cm_segments 0x100 demo_phdrs.
 Definition cm_budget : Z := page_size.
 
 Definition cm_ms0 : machine_state :=
-  init_machine_state cm_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    demo_draw
-    (in_argv demo_proc_input) (in_envp demo_proc_input) (in_uid demo_proc_input)
-    (in_hwcap demo_proc_input).
+  init_machine_state cm_segments 0x100 demo_phdrs (en_sp demo_entry)
+    (en_mmap_base demo_entry) (en_draw demo_entry) demo_proc_input.
 Definition cm_msk (k : nat) : machine_state :=
   match run_steps k cm_segments cm_ms0 with
   | Some ms => ms
@@ -304,13 +316,14 @@ Definition cm_msk (k : nat) : machine_state :=
 Definition cm_s (k : nat) : machine_state := with_mem (cm_msk k) (ms_mem cm_ms0).
 
 Definition cm_model : Model :=
-  init_model (segments_reserved cm_segments) (Z_to_bv 64 0x1000)
-    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) cm_budget demo_proc_input.
+  init_model (segments_reserved cm_segments) (en_brk demo_entry)
+    (en_mmap_base demo_entry) (en_sp demo_entry) cm_budget demo_proc_input.
 Definition cm_c : config := mkCfg (cm_s 0) cm_model.
 
 Lemma cm_config :
-  init_config cm_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw cm_budget demo_proc_input
+  init_config cm_segments 0x100 demo_phdrs (en_sp demo_entry)
+    (en_brk demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry)
+    cm_budget demo_proc_input
   = cm_c.
 Proof. unfold init_config, cm_c. f_equal; try exact (with_mem_eta cm_ms0). Qed.
 
@@ -445,9 +458,9 @@ Theorem cm_run_budget_only_refused :
   run_budget_only_refused cm_image cm_budget demo_entry demo_proc_input.
 Proof.
   change (reaches_budget_only_refused cm_segments
-            (init_config cm_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-               (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw cm_budget
-               demo_proc_input)).
+            (init_config cm_segments 0x100 demo_phdrs (en_sp demo_entry)
+               (en_brk demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry)
+               cm_budget demo_proc_input)).
   rewrite cm_config.
   eexists. eexists. split; [| exact cm_ecall2_is_budget_only_refused].
   eapply star_trans; [exact cm_star6 |].

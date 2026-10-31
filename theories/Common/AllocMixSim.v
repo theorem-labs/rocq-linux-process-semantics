@@ -33,7 +33,7 @@
 
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run OmniRun.
 From LinuxProcessSemantics.Common Require Import ExitSim PropExec CatSim AllocSim ErrEscape.
 
 Import ListNotations.
@@ -316,24 +316,20 @@ End WithSegs.
     erroring branch contributes only the empty trace, which is a prefix
     of every outcome trace). *)
 Lemma alloc_mix_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
-  to_outcomes_mix segs (init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-                  (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) U ->
+  to_outcomes_mix segs (init_machine_state segs pc ph sp mb rnd inp)
+                  (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
   (exists o, U o) ->
-  forall tr, obs_trace (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
+  forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
     <-> exists o, U o /\ is_prefix tr (outcome_trace (in_fs inp) o).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto Hne tr.
   unfold init_config.
-  set (ms := init_machine_state (run_segments segs inp sp mb) pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) in *.
-  assert (Hh : m_halted (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = None)
+  set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
+  assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None)
     by reflexivity.
   assert (Hlazy : m_vm_lazy
-      (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = []) by reflexivity.
-  assert (Hfs : m_fs (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = in_fs inp)
+      (init_model (segments_reserved segs) brk0 mb sp lim inp) = []) by reflexivity.
+  assert (Hfs : m_fs (init_model (segments_reserved segs) brk0 mb sp lim inp) = in_fs inp)
     by reflexivity.
   split.
   - intros (tr' & c & Hstar & Hp).
@@ -360,11 +356,11 @@ Lemma alloc_mix_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
          U inp,
   to_outcomes_mix source_segs
-    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp rlim inp) U ->
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
+    (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) U ->
   to_outcomes target_segs
-    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp alim inp) U ->
+    (init_machine_state target_segs apc aph asp amb arnd inp)
+    (init_model (segments_reserved target_segs) abrk amb asp alim inp) U ->
   (exists o, U o) ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
@@ -397,11 +393,11 @@ Qed.
 Lemma alloc_mix_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd U inp,
   to_outcomes_mix source_segs
-    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rrnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp source_alloc_limit inp) U ->
+    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
+    (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp) U ->
   to_outcomes target_segs
-    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp))
-    (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp target_alloc_limit inp) U ->
+    (init_machine_state target_segs apc aph asp amb arnd inp)
+    (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) U ->
   (exists o, U o) ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.

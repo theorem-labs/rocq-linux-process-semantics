@@ -654,20 +654,35 @@ Definition ms_writable_byte (ms : machine_state) (addr : word) : option byte :=
     quantifications — and [strong_universal] is then arguably false
     even for a reference against itself.  Real Linux faults at the
     RLIMIT_STACK limit instead, which [Run.init_machine_state] already
-    zero-maps as the window [[Run.stack_window_lo], init_sp): what is
-    left below [init_sp] of the [stack_max_size] bytes under the top of
-    the entry image.  That point is not fully ASLR-independent: the
-    window's depth below [init_sp] is [stack_max_size] less
-    [Run.entry_page_top - init_sp], which moves by up to 4080 bytes with
-    the page offset of the drawn [init_sp].  A program whose stack,
-    driven by its input, ends in that 4080-byte range faults under some admissible
-    [init_sp] and not under others, so [strong_universal] fails for it
-    even against itself.  Linux's floor moves over a range of about the
-    same size, by the random pad [create_elf_tables] (fs/binfmt_elf.c)
-    takes through [arch_align_stack]: its [vm_end] is page-aligned and
-    [init_sp] sits the entry image's own size below it, so the pad is
-    the only term of [vm_end - init_sp] that a second launch with the
-    same argv, envp and exec filename can change.
+    zero-maps as the window [[Run.stack_window_lo], init_sp).  That
+    floor is the HIGHER of the two [expand_downwards] (mm/vma.c, Linux
+    v6.18.46, commit 1f99e9ab748f) applies: the RLIMIT_STACK one,
+    [State.stack_max_size] below the stack VMA's end
+    [StackLayout.ed_top], and the stack guard gap above the mmap
+    region, [mmap_base] plus [State.stack_guard_gap_bytes].
+    [Run.entry_page_top] IS that VMA end: the entry image runs from
+    [init_sp] all the way to it, with no page tail above the block.
+
+    That floor is not fully ASLR-independent.  Where the RLIMIT one is
+    the higher of the two, the window's depth below [init_sp] is
+    [stack_max_size] less the WHOLE entry image, [ed_top - init_sp].
+    For one input and one stack top, [Run.valid_launch_sp] admits
+    every 16-aligned [init_sp] from
+    [align_down16(ed_top - 8 - L - 4095) - C] up to
+    [align_down16(ed_top - 8 - L) - C], where [L] is
+    [StackLayout.launch_string_bytes] and [C] is
+    [StackLayout.block_head_size], so the depth moves over a range of
+    between 4080 and 4096 bytes with the pad the launch drew.  A
+    program whose stack, driven by its input, ends in that range
+    faults under some admissible [init_sp] and not under others, so
+    [strong_universal] fails for it even against itself.  The range is
+    LINUX'S OWN, not a modelling artefact: [vm_end] is page aligned
+    ([setup_arg_pages], fs/exec.c) and [init_sp] sits the entry
+    image's own size below it, so the pad [create_elf_tables]
+    (fs/binfmt_elf.c) takes through [arch_align_stack]
+    (arch/riscv/kernel/process.c) is the only term of
+    [vm_end - init_sp] that a second launch with the same argv, envp
+    and exec filename can change.
 
     So the ledger this needs already exists, and is exactly [wview]:
     the initial stack block and its zero window, every brk/mmap grant

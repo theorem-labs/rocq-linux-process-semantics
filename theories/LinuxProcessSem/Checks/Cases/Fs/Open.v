@@ -1051,7 +1051,8 @@ Definition image_input_tmp (fs0 tmp0 : Fs.Fs) : ProcInput :=
      the image inputs declare [default_urandom] (as [Cases.Prelude]'s
      fixture does) rather than [IEof]. *)
   mkProcInput_full [[]] [] fs0 IEof demo_uid demo_gid demo_groups net_silent
-                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom tmp0 default_kernel.
+                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom tmp0
+                   default_kernel default_execfn.
 
 Definition image_input (fs0 : Fs.Fs) : ProcInput := image_input_tmp fs0 [].
 
@@ -1128,7 +1129,114 @@ Proof.
     repeat first [ apply Forall_nil | apply Forall_cons
                  | apply not_in_bytes_of_existsb; vm_compute; reflexivity
                  | key_byte_neq | split | cbn; lia | reflexivity | intros [] ].
+  (* [Run.valid_launch], the thirteenth conjunct: the fixture declares
+     [State.default_execfn], the one-byte relative name "a" that
+     [getname_flags] (fs/namei.c, Linux v6.18.46, commit 1f99e9ab748f)
+     can return -- one byte, no NUL -- so the first arm of
+     [Run.valid_execfn] applies, and the launch it makes is a handful of
+     bytes, far under the E2BIG limit [bprm_stack_limits] (fs/exec.c)
+     computes. *)
+  all: try (left; split;
+            [ cbn; lia
+            | cbn; intros [H | []];
+              apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H;
+              discriminate ]).
+  all: try (vm_compute; discriminate).
 Qed.
+
+(* ========================= a key that is also a directory another key lives in
+
+   The same shape of pin, for [Fs.fs_image_real].  An image with the
+   keys "a" and "a/b" says that "a" is a regular file AND the directory
+   "b" lives in.  No file system holds both: one name in one directory
+   is one inode.  The model has no such rule in [Fs.valid_fs], which
+   asks only for sorted NUL-free keys, so without the clause
+   [Run.valid_input] admits the image and every statement quantified
+   there covers a launch no kernel can produce.
+
+   THE CONTROL IS THE POINT here too: the refused image and the
+   admitted one differ by the one separator that makes "a" a directory
+   ("a" and "ab" nest nowhere). *)
+
+(** The pathological image: "a" is a file, and "a/b" puts a file in the
+    directory "a".  [Fs.valid_fs] admits it and so does
+    [Fs.fs_keys_relative] — neither key begins with "/" — so the
+    refutation below rests on [Fs.fs_image_real] and on nothing else. *)
+Definition prefix_key_image : Fs.Fs :=
+  [([Z_to_bv 8 97], [Z_to_bv 8 104]);
+   ([Z_to_bv 8 97; Z_to_bv 8 47; Z_to_bv 8 98], [Z_to_bv 8 104])].
+
+(** The same two names with no separator between them: an ordinary
+    image. *)
+Definition flat_key_image : Fs.Fs :=
+  [([Z_to_bv 8 97], [Z_to_bv 8 104]);
+   ([Z_to_bv 8 97; Z_to_bv 8 98], [Z_to_bv 8 104])].
+
+(** The clause that separates them, and the two it does NOT rest on. *)
+Example fs_prefix_key_image_is_not_real :
+  fs_image_real prefix_key_image = false
+  /\ fs_image_real flat_key_image = true
+  /\ fs_sorted prefix_key_image = true
+  /\ fs_keys_relative prefix_key_image.
+Proof.
+  repeat split; try (vm_compute; reflexivity).
+  repeat first [ apply Forall_nil | apply Forall_cons | cbn; key_byte_neq ].
+Qed.
+
+(** …so no run has it: the fixture over the image is refused by
+    [Run.valid_input], THROUGH the image clause, while the fixture over
+    the flat image is admitted. *)
+Example fs_prefix_key_input_is_not_valid :
+  ~ valid_input (image_input prefix_key_image).
+Proof.
+  intros (_ & _ & _ & _ & Hr & _).
+  vm_compute in Hr. discriminate.
+Qed.
+
+Example fs_flat_key_input_is_valid :
+  let tmp0 := [([Z_to_bv 8 102], [Z_to_bv 8 105])] in
+  valid_input (image_input_tmp flat_key_image tmp0).
+Proof.
+  repeat split; cbn;
+    try valid_urandom_default;
+    try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
+    try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
+    try (unfold valid_hwcap; left; reflexivity);
+    (* [Run.valid_launch], the last conjunct: [State.mkProcInput_full]
+       here carries [State.default_execfn], the one-byte relative path
+       "a", which takes [Run.valid_execfn]'s first arm
+       ([Run.valid_path_name]), and this launch's string and pointer
+       bytes are far under [Run.e2big_limit].  Two arms rather than
+       one, because [repeat split] reaches inside [valid_launch]
+       wherever the conjunct has already been split. *)
+    try (unfold valid_launch; split;
+         [ unfold valid_execfn, valid_path_name, default_execfn; left; split;
+           [ cbn; lia
+           | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+             vm_compute in Hz; discriminate ]
+         | unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity ]);
+    try (unfold valid_execfn, valid_path_name, default_execfn; left; split;
+         [ cbn; lia
+         | cbn; intros [Hz | []]; apply (f_equal bv_unsigned) in Hz;
+           vm_compute in Hz; discriminate ]);
+    try (unfold e2big_limit; apply Z.leb_le; vm_compute; reflexivity);
+    try (vm_compute; reflexivity);
+    try lia;
+    repeat first [ apply Forall_nil | apply Forall_cons
+                 | apply not_in_bytes_of_existsb; vm_compute; reflexivity
+                 | key_byte_neq | split | cbn; lia | reflexivity | intros [] ].
+Qed.
+
+(** A non-canonical key is refused by the same clause: "./a" and "a/"
+    and "a//b" each spell a path a walk resolves elsewhere, and a
+    directory entry named "." cannot exist. *)
+Example fs_noncanonical_keys_are_not_real :
+  fs_image_real [([Z_to_bv 8 46; Z_to_bv 8 47; Z_to_bv 8 97], [])] = false
+  /\ fs_image_real [([Z_to_bv 8 97; Z_to_bv 8 47], [])] = false
+  /\ fs_image_real [([Z_to_bv 8 97; Z_to_bv 8 47; Z_to_bv 8 47;
+                      Z_to_bv 8 98], [])] = false
+  /\ fs_image_real [([], [])] = false.
+Proof. repeat split; vm_compute; reflexivity. Qed.
 
 (** And on those admitted images the three opens are ANSWERED: the
     seeded "/tmp/f" key did not trip a guard, and neither did the
@@ -1334,7 +1442,7 @@ Example urandom_same_bytes_on_both_sides :
   let inp := mkProcInput_full [[]] [] [] IEof
                demo_uid demo_gid demo_groups net_silent
                default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-               (urandom_stream urandom_decl) [] default_kernel in
+               (urandom_stream urandom_decl) [] default_kernel default_execfn in
   let src := with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit inp))
                          3 FdUrandom)
                (init_model [] 0 0 demo_sp demo_limit inp) in
