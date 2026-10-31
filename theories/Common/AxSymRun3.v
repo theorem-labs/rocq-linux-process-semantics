@@ -23,7 +23,7 @@
 
 (* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes
    (ed_random draw)) and the stack VMA's end ([ed_top]); AT_HWCAP is one pair of
-   the 27 (29 with CONFIG_RSEQ) the auxv carries, [StackLayout.auxv_size]
+   the 26 (28 with CONFIG_RSEQ) the auxv carries, [StackLayout.auxv_size]
    bytes in all; the mapped image is [Run.entry_stack_image], which IS the
    block, from sp up to [ed_top] with no page tail above it. *)
 From Stdlib Require Import ZArith NArith List Lia Bool.

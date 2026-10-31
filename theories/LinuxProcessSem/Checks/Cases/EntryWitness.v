@@ -10,16 +10,18 @@
     envp, exec file name "a", uid = gid = 1000, AT_HWCAP without V,
     CONFIG_RSEQ on, a guard gap of 256 pages, [vm.mmap_rnd_bits] 18, no
     vector unit, no cache leaves, the first vDSO image.  With those the
-    auxv has 29 entries, [items] is 4, C = 512 and L = 4, so the whole
-    block is 528 bytes and the admitted stack pointers for
-    [ed_top = STACK_TOP] run from 0x7fffffffedf0 to 0x7ffffffffdf0.
+    auxv has 28 entries — Linux's 29 less the AT_SYSINFO_EHDR this
+    model does not publish ([StackLayout.LaunchAuxv]) — [items] is 4,
+    C = 496 and L = 4, so the whole block is 512 bytes and the
+    admitted stack pointers for [ed_top = STACK_TOP] run from
+    0x7fffffffee00 to 0x7ffffffffe00.
 
     (a) THE MISSING START STATE.  Linux puts argv[0] at
         [top - 8 - L] = 0x7ffffffffff4 — [create_init_stack_vma]
         (mm/vma_exec.c) skips the top eight bytes and
         [do_execveat_common] (fs/exec.c) copies the strings down from
         there — so the eight bytes at sp + 8 hold that address and
-        [argv[0] - sp] is 516.  Before this change the model laid its
+        [argv[0] - sp] is 500.  Before this change the model laid its
         own ten-entry vector and put argv[0] at sp + 192, so those
         bytes read 0x7ffffffffeb0 and [argv[0] - sp] was 192 at EVERY
         admitted entry.  [witness_argv0_pointer] is the byte check and
@@ -38,7 +40,7 @@
         change the model admitted sp = [State.sp_window_lo] =
         0x7fff80000000, where [low_image] faults, so both sides of that
         conjunct held and [agree] was provable — and false on Linux,
-        whose lowest stack pointer for this input is 0x7fffffffddf0,
+        whose lowest stack pointer for this input is 0x7fffffffde00,
         far above [low_image]'s threshold, while [high_image] faults at
         every launch with randomization off.  [low_image_error_free]
         and [refutes_agree] are the two halves of the refutation.
@@ -85,7 +87,7 @@ Definition witness_input : ProcInput :=
     [PAGE_ALIGN(STACK_TOP - max(128 MiB, 8 MiB + 1 MiB))] =
     0x7ffff8000000 (mm/util.c [mmap_base]). *)
 Definition witness_top   : word := Z_to_bv 64 0x800000000000.
-Definition witness_sp    : word := Z_to_bv 64 0x7ffffffffdf0.
+Definition witness_sp    : word := Z_to_bv 64 0x7ffffffffe00.
 Definition witness_mbase : word := Z_to_bv 64 0x7ffff8000000.
 
 (** The initial break: the page above the one segment of either image
@@ -119,7 +121,7 @@ Proof. reflexivity. Qed.
 
 Local Lemma witness_C : Z.of_nat
   (block_head_size (kb_rseq (in_kernel witness_input))
-                   (in_argv witness_input) (in_envp witness_input)) = 512%Z.
+                   (in_argv witness_input) (in_envp witness_input)) = 496%Z.
 Proof. reflexivity. Qed.
 
 Local Lemma bvu_brk : bv_unsigned witness_brk = 0x1000%Z.
@@ -139,10 +141,10 @@ Proof. reflexivity. Qed.
 Local Lemma admitted_bounds : forall img en,
   valid_entry img en witness_input ->
   (0x7ffffffff000 <= bv_unsigned (ed_top (en_draw en)) <= 0x800000000000)%Z
-  /\ (align_down16 (bv_unsigned (ed_top (en_draw en)) - 8 - 4 - 4095) - 512
+  /\ (align_down16 (bv_unsigned (ed_top (en_draw en)) - 8 - 4 - 4095) - 496
       <= bv_unsigned (en_sp en))%Z
   /\ (bv_unsigned (en_sp en)
-      <= align_down16 (bv_unsigned (ed_top (en_draw en)) - 8 - 4) - 512)%Z.
+      <= align_down16 (bv_unsigned (ed_top (en_draw en)) - 8 - 4) - 496)%Z.
 Proof.
   intros [segs pc ph] [sp brk mbase draw] Hen.
   unfold valid_entry in Hen. rewrite witness_va_size in Hen.
@@ -197,19 +199,19 @@ Proof.
   vm_compute in H. discriminate H.
 Qed.
 
-(** ... and argv[0] really is 516 bytes above sp here, which is what
+(** ... and argv[0] really is 500 bytes above sp here, which is what
     makes the program of the Problem section — abort when
     [argv[0] - sp] is above 0x100 — abort. *)
 Example witness_argv0_offset :
-  (bv_unsigned witness_argv0 - bv_unsigned witness_sp)%Z = 516%Z.
+  (bv_unsigned witness_argv0 - bv_unsigned witness_sp)%Z = 500%Z.
 Proof. vm_compute. reflexivity. Qed.
 
 (** THE STATEMENT ABOUT THE ADMITTED SET, which is what makes A2 (a) a
     claim about the quantifier of every statement and not about one
     entry: at EVERY entry [Run.valid_entry] admits for this input,
     argv[0] is at least 480 bytes above the entry stack pointer.  The
-    real distance is at least C = 512 — rule 2 puts sp a whole block
-    head below the lowest string — and exactly 516 at the entry above.
+    real distance is at least C = 496 — rule 2 puts sp a whole block
+    head below the lowest string — and exactly 500 at the entry above.
 
     Before this change the model put argv[0] 192 bytes above sp at
     every admitted entry, so the same program was provably
@@ -569,7 +571,7 @@ Qed.
     rules 1 and 2 buy here: the stack VMA ends at STACK_TOP or one page
     below, and [create_elf_tables] (fs/binfmt_elf.c) puts sp at most
     [4095 + 15 + 8 + L + C] below that end.  So the lowest admitted
-    stack pointer is 0x7fffffffddf0, nowhere near 0x7fffbf000000.
+    stack pointer is 0x7fffffffde00, nowhere near 0x7fffbf000000.
     Before this change [Run.valid_sp] alone admitted
     [State.sp_window_lo] = 0x7fff80000000, which is below it. *)
 Local Lemma admitted_sp_high : forall img en,
@@ -638,14 +640,14 @@ Local Lemma high_step2 : forall sp mem rom,
   = MachineOk (high_s3 sp mem rom).
 Proof. intros. check_eq. Qed.
 
-(** At the witness entry sp is 0x7ffffffffdf0, above the constant, so
+(** At the witness entry sp is 0x7ffffffffe00, above the constant, so
     the branch is NOT taken and the next instruction is the load. *)
 Local Lemma high_step3 : forall mem rom,
   RiscvSemantics.step high_segments (high_s3 witness_sp mem rom)
   = MachineOk (high_s4 witness_sp mem rom).
 Proof. intros. check_eq. Qed.
 
-(** The byte maps of the witness launch: the 528-byte entry block at sp
+(** The byte maps of the witness launch: the 512-byte entry block at sp
     with the zeroed stack window below it, and the image's one segment
     from 0x100.  Address 0 is in neither — the stack window's floor is
     [max(ed_top - 8 MiB, base + guard gap)] (mm/vma.c
@@ -712,7 +714,7 @@ Qed.
 (* ---- the witness entry is admitted ------------------------------------- *)
 
 (** The start state of A1's fixture without randomization: stack top at
-    STACK_TOP, sp = 0x7ffffffffdf0, mmap base 0x7ffff8000000.  Stated
+    STACK_TOP, sp = 0x7ffffffffe00, mmap base 0x7ffff8000000.  Stated
     for any image, because the refutation needs an entry of each. *)
 Local Lemma witness_entry_admitted_for : forall segs pc ph,
   valid_brk segs witness_brk ->

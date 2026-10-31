@@ -19,7 +19,7 @@
       the components of [Run.init_config] ([PropExec.init_mkst] form), and
       [init_cfg_eq]: init_config = cfg_of R0 (a_entry A) FULL0 model0. *)
 
-(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 29 pairs / 464 bytes ([StackLayout.auxv_size] under CONFIG_RSEQ) and AT_HWCAP is its eleventh pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
+(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 28 pairs / 448 bytes ([StackLayout.auxv_size] under CONFIG_RSEQ, with no AT_SYSINFO_EHDR) and AT_HWCAP is its tenth pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
@@ -245,16 +245,18 @@ Section Init.
   Lemma gap_range : 0 <= G <= 1.
   Proof. unfold G. pose proof (Nat.mod_upper_bound (block_items argv envp) 2 ltac:(lia)). lia. Qed.
 
-  (** C = 8*items + 464 + 8*g + 16, with items = argc + envc + 3 and the auxv
-      29 entries under CONFIG_RSEQ ([State.default_kernel]) *)
-  Lemma chead_eq : CHEAD = 8 * argc + 8 * envc + 504 + 8 * G.
+  (** C = 8*items + 448 + 8*g + 16, with items = argc + envc + 3 and the auxv
+      28 entries under CONFIG_RSEQ ([State.default_kernel]) — Linux's 29 less
+      AT_SYSINFO_EHDR, which this model does not publish
+      ([StackLayout.LaunchAuxv]) *)
+  Lemma chead_eq : CHEAD = 8 * argc + 8 * envc + 488 + 8 * G.
   Proof.
     unfold CHEAD, G, argc, envc, block_head_size, block_items.
-    replace (auxv_size rseq) with 464%nat by (vm_compute; reflexivity).
+    replace (auxv_size rseq) with 448%nat by (vm_compute; reflexivity).
     lia.
   Qed.
 
-  Lemma chead_range : 512 <= CHEAD <= 10752.
+  Lemma chead_range : 496 <= CHEAD <= 10736.
   Proof. pose proof chead_eq. pose proof len_av. pose proof len_ev. pose proof gap_range. lia. Qed.
 
   (** L >= 2: [copy_string_kernel] copies the exec file name and its NUL
@@ -340,9 +342,9 @@ Section Init.
   Qed.
 
   (** everything the block holds, in order: the pointer vector (8*items), the
-      auxv (464), the gap, the sixteen random bytes, the pad, the strings
+      auxv (448), the gap, the sixteen random bytes, the pad, the strings
       (at least the exec name and its NUL) and the eight-byte slot *)
-  Lemma bsb_ge : 8 * argc + 8 * envc + 514 <= Z.of_nat (length bsb).
+  Lemma bsb_ge : 8 * argc + 8 * envc + 498 <= Z.of_nat (length bsb).
   Proof.
     pose proof length_bsb_sum. pose proof chead_eq. pose proof lstr_lo. pose proof pad_range.
     pose proof gap_range. lia.
@@ -436,7 +438,7 @@ Section Init.
   Qed.
 
   (** the AT_RANDOM bytes sit [C - 16] above sp, with [C - 16 =
-      8*items + 464 + 8*g].  They are NO LONGER at the top of the image. *)
+      8*items + 448 + 8*g].  They are NO LONGER at the top of the image. *)
   Lemma u_e_atrandom : uE E0 e_atrandom = usp + CHEAD - 16.
   Proof.
     pose proof usp_lo. pose proof usp_fit. pose proof len_av. pose proof len_ev.

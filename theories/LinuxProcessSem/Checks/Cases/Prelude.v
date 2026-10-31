@@ -532,23 +532,27 @@ Definition demo_mem (draw : EntryDraw) : word -> option byte :=
   ms_mem (init_machine_state [] demo_pc demo_phdrs demo_block_sp demo_mbase
             draw demo_x_input).
 
-(** The vector this layout publishes is the 29-entry one: the kernel
+(** The vector this layout publishes is the 28-entry one: the kernel
     build [State.default_kernel] has CONFIG_RSEQ, so [create_elf_tables]
-    (fs/binfmt_elf.c) emits AT_RSEQ_FEATURE_SIZE and AT_RSEQ_ALIGN.  The
-    offsets every check below counts with come from that number. *)
+    (fs/binfmt_elf.c) emits AT_RSEQ_FEATURE_SIZE and AT_RSEQ_ALIGN, and
+    the launch publishes no AT_SYSINFO_EHDR, which is why it is 28 and
+    not Linux's 29 ([StackLayout.LaunchAuxv]).  The offsets every check
+    below counts with come from that number. *)
 
 Example demo_auxv_has_the_rseq_pair :
   (la_rseq demo_la, auxv_count (la_rseq demo_la), auxv_size (la_rseq demo_la))
-  = (true, 29%nat, 464%nat).
+  = (true, 28%nat, 448%nat).
 Proof. check_eq. Qed.
 
 (** The block runs from [sp] to [StackLayout.ed_top]: its length is the
     distance between them, and the pad [arch_align_stack]
     (arch/riscv/kernel/process.c) left is whatever is over once the
     head, the strings and the skipped slot are taken out — 0 to 4095
-    bytes, and 4 here, because this fixture is the launch with the
-    SMALLEST pad.  A model that laid a shorter block and drew the bytes
-    above it, as this one used to, fails the first of these. *)
+    bytes, and 20 here: this fixture is the launch with the smallest
+    pad for the OLD head, and the head lost the 16 bytes of the
+    AT_SYSINFO_EHDR entry, which the pad took up.  A model that laid a
+    shorter block and drew the bytes above it, as this one used to,
+    fails the first of these. *)
 
 Example the_block_runs_from_sp_to_the_stack_top :
   Z.of_nat (length demo_block)
@@ -561,7 +565,7 @@ Example the_block_measurements_are_linuxs :
    block_pad_len (la_rseq demo_la) demo_block_sp demo_block_top demo_argv []
      default_execfn,
    length demo_block)
-  = (512%nat, 4%nat, 4%nat, 528%nat).
+  = (496%nat, 4%nat, 20%nat, 528%nat).
 Proof. check_eq. Qed.
 
 (** …and the model maps exactly that range.  The last byte of the block
@@ -654,14 +658,14 @@ Qed.
 
 (** The pointer really is what the auxv slot stores: reading the value
     half of the AT_RANDOM entry back out of the image yields
-    [at_random_ptr].  AT_RANDOM is the twenty-fifth of the twenty-nine
-    entries [create_elf_tables] writes (index 24, counting
-    [ARCH_DLINFO]'s ten first), so its value word starts [16 * 24 + 8]
-    bytes into the vector. *)
+    [at_random_ptr].  AT_RANDOM is the twenty-fourth of the
+    twenty-eight entries this launch writes (index 23, counting
+    [ARCH_DLINFO]'s nine first — Linux's ten less AT_SYSINFO_EHDR), so
+    its value word starts [16 * 23 + 8] bytes into the vector. *)
 
 Example at_random_auxv_slot_stores_the_pointer :
   let auxv_start := (8 + (1 + 1) * 8 + (0 + 1) * 8)%nat in
-  firstn 8 (skipn (auxv_start + 16 * 24 + 8)%nat demo_block)
+  firstn 8 (skipn (auxv_start + 16 * 23 + 8)%nat demo_block)
   = word_le8 (at_random_ptr demo_block_sp (la_rseq demo_la) demo_argv []).
 Proof. check_eq. Qed.
 
@@ -682,9 +686,9 @@ Proof. check_eq. Qed.
 
 (** THREAD-LOCAL STORAGE hinges on this: a static libc finds PT_TLS only
     by walking the program header table, and finds the table only through
-    AT_PHDR/AT_PHENT/AT_PHNUM.  They are entries 13, 14 and 15 of the
-    vector — [ARCH_DLINFO]'s ten come first, then AT_HWCAP, AT_PAGESZ
-    and AT_CLKTCK — so their (type, value) words are words 26..31 of
+    AT_PHDR/AT_PHENT/AT_PHNUM.  They are entries 12, 13 and 14 of the
+    vector — [ARCH_DLINFO]'s nine come first, then AT_HWCAP, AT_PAGESZ
+    and AT_CLKTCK — so their (type, value) words are words 24..29 of
     the auxv, which starts right after argc, the argv pointers (+ NULL)
     and the envp pointers (+ NULL).  Read them straight back out of the
     initial stack image and check they carry the IMAGE's numbers, not
@@ -692,7 +696,7 @@ Proof. check_eq. Qed.
 
 Example auxv_publishes_the_program_header_table :
   let auxv_start := (8 + (1 + 1) * 8 + (0 + 1) * 8)%nat in
-  map (fun k => firstn 8 (skipn (auxv_start + 8 * k)%nat demo_block)) (seq 26 6)
+  map (fun k => firstn 8 (skipn (auxv_start + 8 * k)%nat demo_block)) (seq 24 6)
   = [ word_le8 AT_PHDR;  word_le8 (Z_to_bv 64 0x10040);
       word_le8 AT_PHENT; word_le8 (Z_to_bv 64 56);
       word_le8 AT_PHNUM; word_le8 (Z_to_bv 64 6) ].
@@ -718,12 +722,12 @@ Proof. check_eq. Qed.
     evidence instead.
 
     Read back out of the built image, the way the program header entries
-    are above: AT_UID, AT_EUID, AT_GID and AT_EGID are entries 19 to 22,
-    so their (type, value) words are words 38..45 of the vector. *)
+    are above: AT_UID, AT_EUID, AT_GID and AT_EGID are entries 18 to 21,
+    so their (type, value) words are words 36..43 of the vector. *)
 
 Example auxv_publishes_the_launching_uid :
   let auxv_start := (8 + (1 + 1) * 8 + (0 + 1) * 8)%nat in
-  map (fun k => firstn 8 (skipn (auxv_start + 8 * k)%nat demo_block)) (seq 38 8)
+  map (fun k => firstn 8 (skipn (auxv_start + 8 * k)%nat demo_block)) (seq 36 8)
   = [ word_le8 AT_UID;  word_le8 demo_uid;
       word_le8 AT_EUID; word_le8 demo_uid;
       word_le8 AT_GID;  word_le8 demo_gid;
@@ -743,7 +747,7 @@ Lemma auxv_ids_are_exactly_the_launching_ids :
                        (orb (bv_eqb (fst e) AT_GID) (bv_eqb (fst e) AT_EGID)))
          (auxv_entries la ph entry uid gid hw ar ae)
   = [(AT_UID, uid); (AT_EUID, uid); (AT_GID, gid); (AT_EGID, gid)].
-Proof. intros [ehdr c msz [|]] ph entry uid gid hw ar ae; reflexivity. Qed.
+Proof. intros [c msz [|]] ph entry uid gid hw ar ae; reflexivity. Qed.
 
 (** …and those ids are the ones the READERS answer, not a second copy
     that could drift from them: all four entries hold the credentials
@@ -761,7 +765,7 @@ Lemma auxv_ids_are_the_credentials_the_readers_answer :
     = [ (AT_UID,  cr_uid  (m_creds m)); (AT_EUID, cr_euid (m_creds m));
         (AT_GID,  cr_gid  (m_creds m)); (AT_EGID, cr_egid (m_creds m)) ].
 Proof.
-  intros reserved brk0 mbase sp lim inp [ehdr c msz [|]] ph entry ar ae;
+  intros reserved brk0 mbase sp lim inp [c msz [|]] ph entry ar ae;
     reflexivity.
 Qed.
 
@@ -780,13 +784,15 @@ Qed.
     initial stack.
 
     First the entry is THERE, and where Linux puts it: AT_HWCAP is the
-    first entry [create_elf_tables] writes after [ARCH_DLINFO]'s ten,
-    immediately before AT_PAGESZ, so it is entry 10 and its (type,
-    value) words are words 20 and 21 of the vector. *)
+    first entry [create_elf_tables] writes after [ARCH_DLINFO], which
+    this model publishes as NINE entries rather than Linux's ten (no
+    AT_SYSINFO_EHDR — [StackLayout.LaunchAuxv]), immediately before
+    AT_PAGESZ.  So it is entry 9 here, entry 10 on Linux, and its
+    (type, value) words are words 18 and 19 of this vector. *)
 
 Example auxv_publishes_the_hart_capabilities :
   let auxv_start := (8 + (1 + 1) * 8 + (0 + 1) * 8)%nat in
-  map (fun k => firstn 8 (skipn (auxv_start + 8 * k)%nat demo_block)) (seq 20 4)
+  map (fun k => firstn 8 (skipn (auxv_start + 8 * k)%nat demo_block)) (seq 18 4)
   = [ word_le8 AT_HWCAP;  word_le8 demo_hwcap;
       word_le8 AT_PAGESZ; word_le8 (Z_to_bv 64 4096) ].
 Proof. check_eq. Qed.
@@ -801,7 +807,7 @@ Lemma auxv_hwcap_is_exactly_the_launch_word :
   filter (fun e => bv_eqb (fst e) AT_HWCAP)
          (auxv_entries la ph entry uid gid hw ar ae)
   = [(AT_HWCAP, hw)].
-Proof. intros [ehdr c msz [|]] ph entry uid gid hw ar ae; reflexivity. Qed.
+Proof. intros [c msz [|]] ph entry uid gid hw ar ae; reflexivity. Qed.
 
 (** BOTH masks are admitted.  Without this the disjunction could have
     been written with an unsatisfiable second arm and every proof would
@@ -886,21 +892,23 @@ Example the_hwcap_less_auxv_is_refuted :
   map (fun e => bv_unsigned (fst e))
       (auxv_entries demo_la demo_phdrs (Z_to_bv 64 0) demo_uid demo_gid
          demo_hwcap (Z_to_bv 64 0) (Z_to_bv 64 0))
-  <> [33; 40; 41; 42; 43; 44; 45; 46; 47; 51;
+  <> [40; 41; 42; 43; 44; 45; 46; 47; 51;
       6; 17; 3; 4; 5; 7; 8; 9; 11; 12; 13; 14; 23; 25; 31; 27; 28; 0]%Z.
 Proof. vm_compute. discriminate. Qed.
 
 (** The entry set the model DOES build, in order, as the positive twin
-    of that refutation: [ARCH_DLINFO]'s ten
+    of that refutation: [ARCH_DLINFO]'s entries
     (arch/riscv/include/asm/elf.h) first, because fs/binfmt_elf.c
-    expands it before its own entries, then [create_elf_tables]'s
-    sixteen, then the CONFIG_RSEQ pair, then AT_NULL. *)
+    expands it before its own entries — NINE of them here, Linux's ten
+    less the AT_SYSINFO_EHDR this model does not publish
+    ([StackLayout.LaunchAuxv]) — then [create_elf_tables]'s sixteen,
+    then the CONFIG_RSEQ pair, then AT_NULL. *)
 
 Example the_auxv_entry_types_in_order :
   map (fun e => bv_unsigned (fst e))
       (auxv_entries demo_la demo_phdrs (Z_to_bv 64 0) demo_uid demo_gid
          demo_hwcap (Z_to_bv 64 0) (Z_to_bv 64 0))
-  = [33; 40; 41; 42; 43; 44; 45; 46; 47; 51;
+  = [40; 41; 42; 43; 44; 45; 46; 47; 51;
      16; 6; 17; 3; 4; 5; 7; 8; 9; 11; 12; 13; 14; 23; 25; 31; 27; 28; 0]%Z.
 Proof. vm_compute. reflexivity. Qed.
 

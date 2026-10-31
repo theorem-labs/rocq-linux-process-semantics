@@ -57,7 +57,7 @@
     [KFill] cases are everywhere (treated
     like KZero); [summary_fill] emits [KFill] for nonzero fill bytes. *)
 
-(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 29 pairs / 464 bytes ([StackLayout.auxv_size] under CONFIG_RSEQ) and AT_HWCAP is its eleventh pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
+(* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 28 pairs / 448 bytes ([StackLayout.auxv_size] under CONFIG_RSEQ, with no AT_SYSINFO_EHDR) and AT_HWCAP is its tenth pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
 From Stdlib Require Import ZArith NArith List Lia Bool FunctionalExtensionality.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType State Run.
@@ -3164,10 +3164,12 @@ Definition V_G : nat := 9.      (** [StackLayout.block_items argv envp mod 2]: t
                                     is its own variable. *)
 
 (** The auxv's size in bytes, as a literal so the expressions below stay in
-    the executor's normal form.  464 is [StackLayout.auxv_size] with
-    CONFIG_RSEQ ON: 29 entries of 16 bytes.  WITHOUT it the vector is 27
-    entries and 432 bytes, and every address above the auxv in a plan built
-    on this literal is 32 bytes out.
+    the executor's normal form.  448 is [StackLayout.auxv_size] with
+    CONFIG_RSEQ ON: 28 entries of 16 bytes — Linux's 29 less
+    AT_SYSINFO_EHDR, which this model does not publish while it maps no
+    vDSO bytes ([StackLayout.LaunchAuxv]).  WITHOUT CONFIG_RSEQ the vector
+    is 26 entries and 416 bytes, and every address above the auxv in a plan
+    built on this literal is 32 bytes out.
 
     [AUXSZ_of] is the tie to the model and it reads THE RUN'S OWN kernel
     build, under an explicit hypothesis.  That is the point of its shape: a
@@ -3179,7 +3181,7 @@ Definition V_G : nat := 9.      (** [StackLayout.block_items argv envp mod 2]: t
     [AUXSZ_eq] below is the special case for [State.default_kernel], which is
     what the thirteen-place [State.mkProcInput] fills in, and it is kept
     because [AsanInit]'s own input is built that way.  It is NOT the general
-    tie: it says 464 is the size at the DEFAULT build, and it stays true
+    tie: it says 448 is the size at the DEFAULT build, and it stays true
     whatever a fixture declares — which is exactly why it cannot be the
     guard.  [Run.valid_input] constrains the kernel build not at all, so
     nothing but [AUXSZ_of]'s hypothesis stands between a
@@ -3194,7 +3196,7 @@ Definition V_G : nat := 9.      (** [StackLayout.block_items argv envp mod 2]: t
     are the only places where being wrong about a run is possible.  A reader
     who wants the number and nothing else is not making a claim about a
     launch. *)
-Definition AUXSZ : Z := 464.
+Definition AUXSZ : Z := 448.
 
 Lemma AUXSZ_of : forall inp,
   kb_rseq (in_kernel inp) = true ->
@@ -3216,9 +3218,9 @@ Lemma kb_rseq_mkProcInput : forall argv envp fs stdin uid gid groups net
 Proof. reflexivity. Qed.
 
 (** THE PAIR THAT BITES.  The admitted half: the default fixture discharges
-    the hypothesis and 464 is its auxv size.  The refused half: the same
+    the hypothesis and 448 is its auxv size.  The refused half: the same
     fixture through [State.mkProcInput_full] with CONFIG_RSEQ declared OFF
-    has a 432-byte vector, so the hypothesis is false of it AND the literal
+    has a 416-byte vector, so the hypothesis is false of it AND the literal
     is wrong by 32 bytes for it.  Without the second half the first shows
     only that the guard admits something, not that it refuses anything. *)
 Example auxsz_admits_the_default_build :
@@ -3241,7 +3243,7 @@ Definition auxsz_rseq_off_input : ProcInput :=
 Example auxsz_refuses_a_build_without_rseq :
   kb_rseq (in_kernel auxsz_rseq_off_input) = false
   /\ Z.of_nat (StackLayout.auxv_size (kb_rseq (in_kernel auxsz_rseq_off_input)))
-     = 432%Z
+     = 416%Z
   /\ AUXSZ <> Z.of_nat (StackLayout.auxv_size
                           (kb_rseq (in_kernel auxsz_rseq_off_input))).
 Proof. repeat split; vm_compute; discriminate. Qed.
@@ -3864,25 +3866,29 @@ Definition auxw (i : Z) (ty : Z) (v : expr) : list kentry :=
     ranges of the initial variables and the sum facts (most specific first),
     the zero-filled writable window below sp (6144513 bytes, [StoreOk.stack_window_depth]:
     the 8 MiB less [StoreOk.stack_window_reach], a bound on the entry image), argc / argv[0] / the sp0+16 word,
-    nine of the 29 auxv pairs (AT_UID/AT_EUID = EVar V_UID), the AT_RANDOM block ([atr]: the faithful byte-string
+    nine of the 28 auxv pairs (AT_UID/AT_EUID = EVar V_UID), the AT_RANDOM block ([atr]: the faithful byte-string
     entry, or the zero entry), the image hull with no
     overlay and its writable window.
 
-    The pair INDICES are [auxv_entries]' order (StackLayout.v): ARCH_DLINFO's ten
-    (AT_SYSINFO_EHDR, the eight cache words, AT_MINSIGSTKSZ) come first, because
-    [create_elf_tables] expands ARCH_DLINFO before its own entries
-    (fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f).  AT_NULL is pair 28
+    The pair INDICES are [auxv_entries]' order (StackLayout.v): ARCH_DLINFO's
+    entries come first, because [create_elf_tables] expands ARCH_DLINFO before
+    its own (fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f).  On Linux
+    they are ten; HERE THEY ARE NINE — the eight cache words and
+    AT_MINSIGSTKSZ, with no AT_SYSINFO_EHDR, because the model maps no vDSO
+    bytes and publishes no address for one ([StackLayout.LaunchAuxv]).  So
+    every index below is ONE LESS than the kernel's, and AT_NULL is pair 27
     under CONFIG_RSEQ, which [State.default_kernel] declares.
 
     [KRange (EVar V_W) 0 4110]: [arch_align_stack] subtracts [r] in [0, 4095] and
     then clears the low four bits, so the pad it leaves is [r] plus a remainder
     below 16 ([Run.launch_sp_lo] / [Run.launch_sp_hi]).
-    [KRange e_atr8 .. 0xFFFFFFFFFC1]: [e_atr8] is [(at_random - 24 - AUXSZ) / 8] and
+    [KRange e_atr8 .. 0xFFFFFFFFFC3]: [e_atr8] is [(at_random - 24 - AUXSZ) / 8] and
     the sixteen random bytes end at or below 2^47, so it is at most
-    (2^47 - 16 - 24 - 464) / 8.  It WAS 0xFFFFFFFFFE9, with a 160-byte auxv and no gap. *)
+    (2^47 - 16 - 24 - 448) / 8.  It WAS 0xFFFFFFFFFC1 with the 464-byte vector,
+    and 0xFFFFFFFFFE9 with a 160-byte auxv and no gap. *)
 Definition init_kn_with (atr : kentry) (A : atable) : list kentry :=
   [KRange (EVar V_S1) 0xFFFF0000 0xFFFFFFFF; KRange (EVar V_S2) 0 2047;
-   KRange (eaddz e_atrandom 16) 0x7fff800000c0 0x800000000000; KRange e_atr8 0xFFFF0000001 0xFFFFFFFFFC1;
+   KRange (eaddz e_atrandom 16) 0x7fff800000c0 0x800000000000; KRange e_atr8 0xFFFF0000001 0xFFFFFFFFFC3;
    KRange e_sp0 0x7fff80000000 0x7fffffffff40;
    KRange (eadd (escale 4096 (EVar V_S1)) (escale 2 (EVar V_S2))) 0xFFFF0000000 0xFFFFFFFFFE8;
    KRange (EVar V_ARGC) 1 1024; KRange (EVar V_ENVC) 0 256; KRange (EVar V_L0) 0 131071; KRange (EVar V_L1) 0 131071;
@@ -3890,11 +3896,11 @@ Definition init_kn_with (atr : kentry) (A : atable) : list kentry :=
    KRange (EVar V_W) 0 4110; KRange (EVar V_BRK) (img_hi A / 4096) ((img_hi A + BRK_ASLR) / 4096);
    KWr (SA e_sp0 (-6144513)) (ELit 6144513); KZero (SA e_sp0 (-6144513)) (ELit 6144513);
    KWord (SA e_sp0 0) 8 (EVar V_ARGC); KWord (SA e_sp0 8) 8 e_str0; kw_argv1 e_argv1w]
-  (* not claimed, because no plan variable denotes the value: ARCH_DLINFO's pairs 0..9,
-     AT_HWCAP (10), AT_CLKTCK (12), AT_BASE (16), AT_FLAGS (17), AT_ENTRY (18),
-     AT_GID/AT_EGID (21, 22), AT_EXECFN (25) and the CONFIG_RSEQ pair (26, 27) *)
-  ++ auxw 13 3 (ELit (ph_addr_z A)) ++ auxw 14 4 (ELit (ph_ent_z A)) ++ auxw 15 5 (ELit (ph_num_z A)) ++ auxw 11 6 (ELit 4096)
-  ++ auxw 19 11 (EVar V_UID) ++ auxw 20 12 (EVar V_UID) ++ auxw 23 23 (ELit 0) ++ auxw 24 25 e_atrandom ++ auxw 28 0 (ELit 0)
+  (* not claimed, because no plan variable denotes the value: ARCH_DLINFO's pairs 0..8,
+     AT_HWCAP (9), AT_CLKTCK (11), AT_BASE (15), AT_FLAGS (16), AT_ENTRY (17),
+     AT_GID/AT_EGID (20, 21), AT_EXECFN (24) and the CONFIG_RSEQ pair (25, 26) *)
+  ++ auxw 12 3 (ELit (ph_addr_z A)) ++ auxw 13 4 (ELit (ph_ent_z A)) ++ auxw 14 5 (ELit (ph_num_z A)) ++ auxw 10 6 (ELit 4096)
+  ++ auxw 18 11 (EVar V_UID) ++ auxw 19 12 (EVar V_UID) ++ auxw 22 23 (ELit 0) ++ auxw 23 25 e_atrandom ++ auxw 27 0 (ELit 0)
   ++ [atr;
       KImg (img_lo A) (img_hi A); KWr (SA (ELit 0) (rw_lo A)) (ELit (rw_len A))].
 

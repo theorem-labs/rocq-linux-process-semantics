@@ -69,8 +69,10 @@ mode answers. QEMU citations are QEMU 10.0.11.
 
 - **The entry block.** The model lays Linux's block, from the entry
   stack pointer up to the stack VMA's end, with an auxiliary vector of
-  27 entries, or 29 with `CONFIG_RSEQ`
-  (`StackLayout.build_stack_bytes`, `StackLayout.auxv_entries`). QEMU
+  26 entries, or 28 with `CONFIG_RSEQ`
+  (`StackLayout.build_stack_bytes`, `StackLayout.auxv_entries`). That
+  is ONE ENTRY SHORT of Linux's 27 or 29, and the next bullet says
+  which entry and why. QEMU
   user mode builds another one (`create_elf_tables`, `setup_arg_pages`
   and `load_elf_binary` in `linux-user/elfload.c`): 18 auxv entries in
   another order, with `AT_SYSINFO_EHDR` last and pointing at QEMU's own
@@ -82,6 +84,42 @@ mode answers. QEMU citations are QEMU 10.0.11.
   difference reaches any program whose output or control flow depends
   on an entry address or on an auxv entry beyond those musl reads by
   type.
+
+- **No `AT_SYSINFO_EHDR`, deliberately.** riscv64 Linux publishes a
+  vDSO on every launch: `__setup_additional_pages`
+  (`arch/riscv/kernel/vdso.c`) maps four vvar pages and the text below
+  the mmap base, and `ARCH_DLINFO`
+  (`arch/riscv/include/asm/elf.h`) publishes the text's start as
+  `AT_SYSINFO_EHDR`. THE MODEL IS NARROWER HERE. It maps no vDSO
+  bytes: `State.vdso_reserved` records the pair as (address, length)
+  RESERVATIONS, there is no content behind them anywhere in the model,
+  and no step dispatches a vDSO call. So the vector carries no
+  `AT_SYSINFO_EHDR` (`StackLayout.LaunchAuxv`,
+  `StackLayout.auxv_entries`), and a program that looks for a vDSO
+  finds none, as on a kernel built without one.
+
+  It used to carry one. Every launch published `mmap_base - T`, with T
+  the build's vDSO text pages, with no condition and never zero. A
+  program that followed it read an ELF header at an address with
+  nothing behind it: the load missed every mapping and was a
+  `RiscvSemantics.MachineFault`, the model's SIGSEGV analogue, for a
+  program that runs on Linux. A plain run that seeds a hash table hit
+  this inside the C library's clock initialisation, on its first
+  `clock_gettime`.
+
+  WHAT IT COSTS. No statement about a program that CALLS the vDSO can
+  be proved — `clock_gettime`, `gettimeofday`, `getcpu` and
+  `rt_sigreturn` through the vDSO path — because no program can now
+  find one. Such a program takes its syscall fallback instead, which
+  the model does cover. Nothing that was provable becomes false: the
+  entry's `StackLayout.ed_vdso` choice is read by no step of the
+  model, so no result rested on a vDSO call, and the only results that
+  move are the block's measurements, which are 16 bytes shorter.
+  The RESERVATION is untouched: the placement search, `munmap`,
+  `mremap` and `MAP_FIXED_NOREPLACE` all read it, and the pair is
+  still the first thing a top-down search meets below the mmap base.
+  The lane that gives the model the measured vDSO images restores the
+  entry together with the bytes behind it — in that order.
 
 - **Where a new mapping goes.** The model gives the address Linux
   v6.18.46 gives: the hint if the hint is free, else the highest free
@@ -643,18 +681,19 @@ equivalence) can be true of the model and false of Linux.
   pending peer error and rewrite the descriptor, which is
   `sendto`/`sendmsg`'s machinery. So `write(2)` on a socket is covered
   exactly where the connection is absent.
-- **After a vDSO call.** The model does not run the vDSO's
-  instructions. It applies the exported function's system-call
-  specification in one step, so the caller-saved registers other than
-  `a0`, and the bytes of the frame the call used below `sp`, are the
-  entry's own `StackLayout.ed_vdso` choice. One of those choices is
-  what the real image leaves, so for a statement that must hold at
-  every entry the other choices cost precision only. For a statement
-  with "there is an entry" they can cost soundness, as any extra start
-  state can.
-- **The vvar pages, other fetches in the vDSO text, and a vDSO call
-  that would return `-EFAULT`** are `unmodeled`. The model has no bytes
-  for the vvar pages and does not run the vDSO's code.
+- **A vDSO call.** There is none to make. The model maps no vDSO
+  bytes and publishes no `AT_SYSINFO_EHDR` ("No `AT_SYSINFO_EHDR`,
+  deliberately" above), so no program reaches the vDSO's text, and no
+  step of the model dispatches a vDSO call. The entry draw carries a
+  field for what such a call would leave behind — the caller-saved
+  registers other than `a0` and the bytes of the frame it used below
+  `sp`, `StackLayout.ed_vdso` — and NOTHING READS IT today. It is the
+  shape the choice must have for the lane that maps the measured
+  images; while nothing reads it, the extra choices cost nothing.
+- **The vvar pages and every fetch in the vDSO text.** The model has
+  no bytes for either. An access to the reserved range is not a
+  mapping the model can read, so a load there faults, as a load from
+  any unmapped address does.
 - **Stack floor.** `Run.init_machine_state` lays the entry block from
   the entry `sp` up to the stack VMA's end `StackLayout.ed_top`, and
   below `sp` it zero-maps the window `[Run.stack_window_lo, sp)`.

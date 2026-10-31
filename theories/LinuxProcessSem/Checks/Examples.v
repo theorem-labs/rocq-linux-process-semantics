@@ -893,14 +893,15 @@ Definition demo_entry : ExecEntry := demo_entry_of demo_proc_input.
 (** The same entry as a RECORD, for the statements that step the run
     and so need the four fields rather than the derivation.  At
     [demo_proc_input] the exec file name is [State.default_execfn] and
-    CONFIG_RSEQ is on ([State.default_kernel]), so the auxv has 29
-    entries, [StackLayout.block_head_size] is 512 and
-    [StackLayout.launch_string_bytes] is 3: the stack pointer is
-    [align_down16 (2^47 - 8 - 3) - 512] and the whole entry block is
-    the 528 bytes between it and the top. *)
+    CONFIG_RSEQ is on ([State.default_kernel]), so the auxv has 28
+    entries — Linux's 29 less the AT_SYSINFO_EHDR this model does not
+    publish ([StackLayout.LaunchAuxv]) — [StackLayout.block_head_size]
+    is 496 and [StackLayout.launch_string_bytes] is 3: the stack
+    pointer is [align_down16 (2^47 - 8 - 3) - 496] and the whole entry
+    block is the 512 bytes between it and the top. *)
 Lemma demo_entry_fields :
   demo_entry
-  = mkEntry (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x1000)
+  = mkEntry (Z_to_bv 64 0x7ffffffffe00) (Z_to_bv 64 0x1000)
             (Z_to_bv 64 0x7fffbf701000)
             (mkDraw demo_random (Z_to_bv 64 0x800000000000) vdso_keeps_all).
 Proof.
@@ -1160,12 +1161,12 @@ Qed.
     every placement field — this one is the launch
     [Run.launch_entry_va] names, so its stack pointer is
     [Run.launch_sp_hi] at the top of the address space and its block
-    is 528 bytes, where the other one's is a page at
+    is 512 bytes, where the other one's is a page at
     [Cases.Prelude.demo_sp]. *)
 Example undecodable_step_unmodeled_at_demo_entry :
   RiscvSemantics.step undecodable_segments
     (init_machine_state undecodable_segments 0x100 demo_phdrs
-       (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x7fffbf701000)
+       (Z_to_bv 64 0x7ffffffffe00) (Z_to_bv 64 0x7fffbf701000)
        (mkDraw demo_random (Z_to_bv 64 0x800000000000) vdso_keeps_all)
        demo_proc_input)
   = MachineUnmodeled.

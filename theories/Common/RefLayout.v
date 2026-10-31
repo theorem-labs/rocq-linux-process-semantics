@@ -10,7 +10,7 @@
 
     *)
 
-(* The entry draw gives the AT_RANDOM bytes (at_random_bytes (ed_random draw)) and the stack VMA's end (ed_top); the auxv is 27 pairs, or 29 under CONFIG_RSEQ (StackLayout.auxv_count); the mapped image is [Run.entry_stack_image], Linux's whole block from sp to that end. *)
+(* The entry draw gives the AT_RANDOM bytes (at_random_bytes (ed_random draw)) and the stack VMA's end (ed_top); the auxv is 26 pairs, or 28 under CONFIG_RSEQ (StackLayout.auxv_count), with no AT_SYSINFO_EHDR because the model maps no vDSO bytes; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to that end. *)
 From Stdlib Require Import NArith ZArith List Lia Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
@@ -121,7 +121,7 @@ Lemma length_auxv_words : forall la ph entry uid gid hwcap ar ae,
   length (auxv_words la ph entry uid gid hwcap ar ae)
   = (2 * auxv_count (la_rseq la))%nat.
 Proof.
-  intros [ehdr c msz [|]] ph entry uid gid hwcap ar ae; reflexivity.
+  intros [c msz [|]] ph entry uid gid hwcap ar ae; reflexivity.
 Qed.
 
 Section Layout.
@@ -428,19 +428,19 @@ Section Layout.
                     (length (in_argv inp) + length (in_envp inp) + 3) 2 ltac:(lia)).
       destruct (kb_rseq (in_kernel inp));
         [ replace (8 * (length (in_argv inp) + length (in_envp inp) + 3)
-                   + 16 * 29
+                   + 16 * 28
                    + 8 * ((length (in_argv inp) + length (in_envp inp) + 3) mod 2)
                    + 16 - 16)%nat
             with (8 * ((length (in_argv inp) + length (in_envp inp) + 3)
-                       + 58
+                       + 56
                        + ((length (in_argv inp) + length (in_envp inp) + 3) mod 2)))%nat
             by lia
         | replace (8 * (length (in_argv inp) + length (in_envp inp) + 3)
-                   + 16 * 27
+                   + 16 * 26
                    + 8 * ((length (in_argv inp) + length (in_envp inp) + 3) mod 2)
                    + 16 - 16)%nat
             with (8 * ((length (in_argv inp) + length (in_envp inp) + 3)
-                       + 54
+                       + 52
                        + ((length (in_argv inp) + length (in_envp inp) + 3) mod 2)))%nat
             by lia ];
         rewrite Nat2Z.inj_mul; change (Z.of_nat 8) with 8%Z;

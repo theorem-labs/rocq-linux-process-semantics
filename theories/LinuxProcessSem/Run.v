@@ -1030,16 +1030,37 @@ Qed.
 (** ** What the launch, rather than the image or the caller, puts in
        the auxv
 
-    [StackLayout.LaunchAuxv] from the run's [State.KernelBuild], the
-    entry's mmap base and the declared address-space size.
+    [StackLayout.LaunchAuxv] from the run's [State.KernelBuild]: the
+    cache words, the minimum signal-frame size and CONFIG_RSEQ.
 
-    AT_SYSINFO_EHDR is [base - T]: [__setup_additional_pages]
-    (arch/riscv/kernel/vdso.c, Linux v6.18.46, commit 1f99e9ab748f)
-    maps the vvar pages and then the text with [get_unmapped_area],
-    which under the top-down layout returns the highest free range
-    below [mm->mmap_base].  At that moment only the image's segments
-    and the stack exist, so the pair lands directly below the base and
-    the text's start is [base - vdso_text_pages * 4096]. *)
+    NO AT_SYSINFO_EHDR, AND THE MMAP BASE NO LONGER REACHES THE
+    VECTOR.  It used to: the launch published [mbase - T], where T is
+    [State.vdso_text_pages] pages, because that is where
+    [__setup_additional_pages] (arch/riscv/kernel/vdso.c, Linux
+    v6.18.46, commit 1f99e9ab748f) puts the vDSO text under the
+    top-down layout.  The address was unconditional and never equal to
+    the base, so EVERY launch handed a program an address — and
+    nothing in this model maps a byte of the vDSO.
+    [State.vdso_reserved] is a ledger of (address, length)
+    RESERVATIONS; there is no content for them anywhere, and no step
+    dispatches a vDSO call.  A program that followed the published
+    address read an ELF header that is not there, missed every mapping
+    and took a [RiscvSemantics.MachineFault] — the SIGSEGV analogue —
+    where Linux returns it a function pointer.  The model now
+    publishes nothing it cannot back; [StackLayout.LaunchAuxv] carries
+    the whole argument, including why the reservation stays and what
+    the omission costs.
+
+    [mbase] stays an argument of this function and of
+    [entry_stack_image] below because it is the entry's placement, and
+    the block's interface is shared with a hundred call sites; it is
+    read by nothing here while the model maps no vDSO bytes.  The
+    reserved pair does NOT depend on it either: [State.init_reserved]
+    measures its base from [State.vdso_top], the page-rounded minimum
+    of the mmap base and the stack's floor, which is below [mbase]
+    whenever the stack is the lower of the two.  So the address this
+    launch used to publish was not even the address the ledger
+    reserved. *)
 Definition launch_cache_words (kb : KernelBuild) : CacheWords :=
   let w := fun l => Z_to_bv 64 (cache_size_word l) in
   let g := fun l => Z_to_bv 64 (cache_geometry_word l) in
@@ -1049,13 +1070,9 @@ Definition launch_cache_words (kb : KernelBuild) : CacheWords :=
                (w (cv_l2 c))  (g (cv_l2 c))
                (w (cv_l3 c))  (g (cv_l3 c)).
 
-Definition vdso_text_base (kb : KernelBuild) (mbase : word) : word :=
-  Z_to_bv 64 (bv_unsigned mbase - vdso_text_pages kb * page_size).
-
 Definition launch_auxv (inp : ProcInput) (mbase : word) : LaunchAuxv :=
   let kb := in_kernel inp in
-  mkLaunchAuxv (vdso_text_base kb mbase)
-               (launch_cache_words kb)
+  mkLaunchAuxv (launch_cache_words kb)
                (Z_to_bv 64 (min_sigframe_size kb (in_hwcap inp)))
                (kb_rseq kb).
 
@@ -2892,17 +2909,24 @@ Definition valid_launch (inp : ProcInput) : Prop :=
     1f99e9ab748f.  So [sp + block <= STACK_TOP] holds of every real
     placement.
 
-    The model's block is strictly SMALLER than the kernel's for every
-    input, so the premise cannot exclude a placement Linux can produce.
-    [StackLayout]'s auxv is 10 entries ([auxv_size] = 160 bytes).
-    [create_elf_tables] writes 16 unconditional [NEW_AUX_ENT]s
-    (fs/binfmt_elf.c) and then expands riscv's [ARCH_DLINFO], which adds
-    [AT_SYSINFO_EHDR] and eight cache-descriptor entries
-    (arch/riscv/include/asm/elf.h); it also pushes the [AT_EXECFN]
-    pathname string.  Not [AT_PLATFORM]: riscv defines
-    [ELF_PLATFORM] as [NULL] (same header), and both the entry and its
-    string are under [if (k_platform)], so neither is ever emitted on
-    this architecture.  All at Linux v6.18.46, commit 1f99e9ab748f.  The
+    The ceiling [entry_stack_span] counts is strictly SMALLER than the
+    kernel's block for every input, so the premise cannot exclude a
+    placement Linux can produce.  It charges 160 bytes for the auxv —
+    the literal from the days when this model's own vector was ten
+    entries — while [create_elf_tables] writes 16 unconditional
+    [NEW_AUX_ENT]s (fs/binfmt_elf.c) and then expands riscv's
+    [ARCH_DLINFO], which adds [AT_SYSINFO_EHDR] and eight
+    cache-descriptor entries (arch/riscv/include/asm/elf.h); it also
+    pushes the [AT_EXECFN] pathname string.  Not [AT_PLATFORM]: riscv
+    defines [ELF_PLATFORM] as [NULL] (same header), and both the entry
+    and its string are under [if (k_platform)], so neither is ever
+    emitted on this architecture.  This model's OWN vector is
+    [StackLayout.auxv_size], 448 bytes under CONFIG_RSEQ: one entry
+    short of the kernel's 464, because it publishes no AT_SYSINFO_EHDR
+    ([StackLayout.LaunchAuxv]).  Both are far above the 160 charged
+    here, which is why the charge is a LOWER bound on a real launch's
+    vector and not a measurement of either.
+    All at Linux v6.18.46, commit 1f99e9ab748f.  The
     premise is therefore LOOSER than the kernel's own ceiling, by a few
     hundred bytes, which costs priority 2 a band of placements no kernel
     produces and costs priority 1 nothing.  This
@@ -3363,12 +3387,12 @@ Qed.
 
 (** C, the head of the block, in this file's own vocabulary: it moves
     with the two pointer arrays and with nothing else, because
-    [StackLayout.auxv_count] is 27 or 29 and [STACK_ROUND] adds at most
+    [StackLayout.auxv_count] is 26 or 28 and [STACK_ROUND] adds at most
     one eight-byte word. *)
 Lemma block_head_size_bounds : forall rseq argv envp,
-  (8 * (Z.of_nat (length argv) + Z.of_nat (length envp)) + 472
+  (8 * (Z.of_nat (length argv) + Z.of_nat (length envp)) + 456
    <= Z.of_nat (block_head_size rseq argv envp)
-   <= 8 * (Z.of_nat (length argv) + Z.of_nat (length envp)) + 512)%Z.
+   <= 8 * (Z.of_nat (length argv) + Z.of_nat (length envp)) + 496)%Z.
 Proof.
   intros rseq argv envp.
   unfold block_head_size, block_items, auxv_size, auxv_count.
@@ -3388,7 +3412,7 @@ Proof.
   { unfold block_head_size, block_items, auxv_size, auxv_count.
     exists (((length argv + length envp + 3) / 2)
             + ((length argv + length envp + 3) mod 2)
-            + (if rseq then 29 else 27) + 1)%nat.
+            + (if rseq then 28 else 26) + 1)%nat.
     pose proof (Nat.div_mod_eq (length argv + length envp + 3) 2).
     destruct rseq; lia. }
   destruct Hk as [k Hk]. rewrite Hk, Nat2Z.inj_mul.

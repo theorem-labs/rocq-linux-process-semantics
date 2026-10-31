@@ -80,7 +80,7 @@ Qed.
     are what [Run.launch_entry_va] computes for it: the two launches
     share every field the computation reads, so they share the entry.
     The values are [Checks.Examples.demo_entry_fields]'. *)
-Definition w1x_sp : word := Z_to_bv 64 0x7ffffffffdf0.
+Definition w1x_sp : word := Z_to_bv 64 0x7ffffffffe00.
 Definition w1x_brk : word := Z_to_bv 64 0x1000.
 Definition w1x_mbase : word := Z_to_bv 64 0x7fffbf701000.
 Definition w1x_draw : EntryDraw :=

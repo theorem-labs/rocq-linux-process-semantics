@@ -1118,9 +1118,16 @@ Qed.
 
 (** C, the distance [create_elf_tables] (fs/binfmt_elf.c, Linux
     v6.18.46, commit 1f99e9ab748f) puts between the entry stack pointer
-    and the top of AT_RANDOM, is the pointer vector plus at most 512
-    fixed bytes: 29 auxv pairs at most (464), the three NULL/argc slots
-    (24), [STACK_ALLOC]'s 16 and [STACK_ROUND]'s odd-item 8. *)
+    and the top of AT_RANDOM, is the pointer vector plus at most 496
+    fixed bytes: 28 auxv pairs at most (448 — Linux's 29 less the
+    AT_SYSINFO_EHDR this model does not publish,
+    [StackLayout.LaunchAuxv]), the three NULL/argc slots (24),
+    [STACK_ALLOC]'s 16 and [STACK_ROUND]'s odd-item 8.  The bound
+    below is kept at 512, the number from the 29-entry vector: it is
+    still a bound, [Run.block_head_size_bounds] is where the exact
+    pair lives, and every constant derived from this one
+    ([launch_top_minus_sp]'s 2101782 and the stack-window depth under
+    it) stays put rather than moving for 16 bytes of slack. *)
 Lemma block_head_size_le : forall rseq argv envp,
   (Z.of_nat (block_head_size rseq argv envp)
    <= 8 * Z.of_nat (length argv) + 8 * Z.of_nat (length envp) + 512)%Z.

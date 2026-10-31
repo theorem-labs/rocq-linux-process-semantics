@@ -12,8 +12,10 @@
     ["a"], no envp, exec file name "a", uid = gid = 1000, AT_HWCAP
     without V, CONFIG_RSEQ on, a guard gap of 256 pages,
     [vm.mmap_rnd_bits] 18, no vector unit, no cache leaf reported and
-    the first vDSO image.  With those the auxv is 29 entries, [items]
-    is 4, C = 512 and L = 4.  Everything below is under Sv48 except
+    the first vDSO image.  With those the auxv is 28 entries — Linux's
+    29 less the AT_SYSINFO_EHDR this model does not publish
+    ([StackLayout.LaunchAuxv]) — [items] is 4, C = 496 and L = 4.
+    Everything below is under Sv48 except
     [entry_launch_ok_va_is_linux], which is stated for every
     [State.VaSize], every entry and every input.
 
@@ -21,10 +23,10 @@
     pin; each has one name here.
 
     - admitted without randomization, [ed_top] = 0x800000000000,
-      sp = 0x7ffffffffdf0, base = 0x7ffff8000000:
+      sp = 0x7ffffffffe00, base = 0x7ffff8000000:
       [a1_no_aslr_admitted].
     - admitted with randomization, [ed_top] = 0x7fffc0000000,
-      sp = 0x7fffbfffedf0, base 0x7fffbf701000 (no mmap draw) or
+      sp = 0x7fffbfffee00, base 0x7fffbf701000 (no mmap draw) or
       0x7fff7f702000 (the draw at its largest, 18 bits):
       [a1_aslr_admitted_base_hi] and [a1_aslr_admitted_base_lo].
     - refused for every [ed_top] and every value of the launch facts,
@@ -34,8 +36,8 @@
       sp = 0x7fff80000000 with base = 0x154555557000 (kind 2):
       [a1_kind2_sp_refused].
     - refused for every [ed_top] without randomization,
-      sp = 0x7fffffffdde0 with base = 0x7ffff8000000, sixteen bytes
-      below the bottom 0x7fffffffddf0 of the raced range:
+      sp = 0x7fffffffddf0 with base = 0x7ffff8000000, sixteen bytes
+      below the bottom 0x7fffffffde00 of the raced range:
       [a1_sp_below_raced_range_refused].
     - refused for every sp and every [ed_top] (kind 5):
       [a1_kind5_base_with_aslr_refused] (base = 0x7ffff8000000 with
@@ -256,8 +258,8 @@ Proof.
   pose proof (Nat.div_mod_eq (block_items argv envp) 2) as Hd.
   pose proof (Nat.mod_upper_bound (block_items argv envp) 2 ltac:(lia)) as Hm.
   destruct rseq;
-    [ exists (block_items argv envp / 2 + block_items argv envp mod 2 + 30)%nat
-    | exists (block_items argv envp / 2 + block_items argv envp mod 2 + 28)%nat ];
+    [ exists (block_items argv envp / 2 + block_items argv envp mod 2 + 29)%nat
+    | exists (block_items argv envp / 2 + block_items argv envp mod 2 + 27)%nat ];
     lia.
 Qed.
 
@@ -521,12 +523,12 @@ Definition a1_input_kb (kb : KernelBuild) : ProcInput :=
 Definition a1_input (aslr : bool) : ProcInput := a1_input_kb (a1_kernel aslr).
 
 (** The three measurements the spec's "The block" names for this
-    fixture, read off [StackLayout]'s own definitions: the vector is 29
-    entries, [items] is 4, C = 512 and L = 4. *)
+    fixture, read off [StackLayout]'s own definitions: the vector is 28
+    entries, [items] is 4, C = 496 and L = 4. *)
 Example a1_fixture_measurements :
-  auxv_count true = 29%nat
+  auxv_count true = 28%nat
   /\ block_items a1_argv [] = 4%nat
-  /\ block_head_size true a1_argv [] = 512%nat
+  /\ block_head_size true a1_argv [] = 496%nat
   /\ launch_string_bytes a1_argv [] a1_execfn = 4%nat.
 Proof. repeat split. Qed.
 
@@ -561,13 +563,13 @@ Qed.
     and nothing is drawn, so the base is STACK_TOP - 128 MiB. *)
 Example a1_no_aslr_admitted :
   entry_launch_ok_va Sv48
-    (a1_entry 0x7ffffffffdf0 0x7ffff8000000 0x800000000000) (a1_input false).
+    (a1_entry 0x7ffffffffe00 0x7ffff8000000 0x800000000000) (a1_input false).
 Proof.
   cbn [entry_launch_ok_va a1_entry a1_draw en_draw ed_top].
   split; [|split].
   - unfold valid_stack_top_va. rewrite (bvu 0x800000000000 ltac:(lia)).
     repeat split; vm_compute; congruence.
-  - unfold valid_launch_sp. rewrite (bvu 0x7ffffffffdf0 ltac:(lia)).
+  - unfold valid_launch_sp. rewrite (bvu 0x7ffffffffe00 ltac:(lia)).
     repeat split; vm_compute; congruence.
   - exists 0. split; [lia|]. split; [intros Hc; discriminate Hc|].
     split; [intros _; reflexivity|].
@@ -582,13 +584,13 @@ Qed.
     randomized launch. *)
 Example a1_aslr_admitted_base_hi :
   entry_launch_ok_va Sv48
-    (a1_entry 0x7fffbfffedf0 0x7fffbf701000 0x7fffc0000000) (a1_input true).
+    (a1_entry 0x7fffbfffee00 0x7fffbf701000 0x7fffc0000000) (a1_input true).
 Proof.
   cbn [entry_launch_ok_va a1_entry a1_draw en_draw ed_top].
   split; [|split].
   - unfold valid_stack_top_va. rewrite (bvu 0x7fffc0000000 ltac:(lia)).
     repeat split; vm_compute; congruence.
-  - unfold valid_launch_sp. rewrite (bvu 0x7fffbfffedf0 ltac:(lia)).
+  - unfold valid_launch_sp. rewrite (bvu 0x7fffbfffee00 ltac:(lia)).
     repeat split; vm_compute; congruence.
   - exists 0. split; [lia|]. split; [intros _; vm_compute; congruence|].
     split; [intros Hc; discriminate Hc|].
@@ -600,13 +602,13 @@ Qed.
     gives. *)
 Example a1_aslr_admitted_base_lo :
   entry_launch_ok_va Sv48
-    (a1_entry 0x7fffbfffedf0 0x7fff7f702000 0x7fffc0000000) (a1_input true).
+    (a1_entry 0x7fffbfffee00 0x7fff7f702000 0x7fffc0000000) (a1_input true).
 Proof.
   cbn [entry_launch_ok_va a1_entry a1_draw en_draw ed_top].
   split; [|split].
   - unfold valid_stack_top_va. rewrite (bvu 0x7fffc0000000 ltac:(lia)).
     repeat split; vm_compute; congruence.
-  - unfold valid_launch_sp. rewrite (bvu 0x7fffbfffedf0 ltac:(lia)).
+  - unfold valid_launch_sp. rewrite (bvu 0x7fffbfffee00 ltac:(lia)).
     repeat split; vm_compute; congruence.
   - exists 262143. split; [lia|]. split; [intros _; vm_compute; congruence|].
     split; [intros Hc; discriminate Hc|].
@@ -690,11 +692,11 @@ Proof.
 Qed.
 
 (** The bottom of rule 2 for this fixture, as a function of the stack
-    top: the strings are 4 bytes and C is 512 with CONFIG_RSEQ, 480
+    top: the strings are 4 bytes and C is 496 with CONFIG_RSEQ, 464
     without, which are the only two values the launch facts can give
     it. *)
 Local Lemma a1_sp_lo_ge : forall kb (top : word) u,
-  bv_unsigned top = u -> u - 4634 <= launch_sp_lo top (a1_input_kb kb).
+  bv_unsigned top = u -> u - 4618 <= launch_sp_lo top (a1_input_kb kb).
 Proof.
   intros kb top u Hu. unfold launch_sp_lo.
   cbn [a1_input_kb a1_input_argv in_argv in_envp in_execfn in_kernel].
@@ -703,16 +705,16 @@ Proof.
     by reflexivity.
   pose proof (align_down16_ge (u - 8 - 4 - 4095)).
   destruct (kb_rseq kb);
-    [ replace (Z.of_nat (block_head_size true a1_argv [])) with 512
+    [ replace (Z.of_nat (block_head_size true a1_argv [])) with 496
         by reflexivity
-    | replace (Z.of_nat (block_head_size false a1_argv [])) with 480
+    | replace (Z.of_nat (block_head_size false a1_argv [])) with 464
         by reflexivity ]; lia.
 Qed.
 
 (** The bottom of rule 2 at the two stack tops a launch with no page
-    draw gives.  C is 512 with CONFIG_RSEQ and 480 without, and those
+    draw gives.  C is 496 with CONFIG_RSEQ and 464 without, and those
     are the only two values the launch facts can give it, so the lowest
-    stack pointer of the raced range is 0x7fffffffdff0 - 512. *)
+    stack pointer of the raced range is 0x7fffffffdff0 - 496. *)
 Local Lemma a1_sp_lo_value : forall kb (top : word) u,
   bv_unsigned top = u ->
   launch_sp_lo top (a1_input_kb kb)
@@ -729,12 +731,12 @@ Proof.
 Qed.
 
 Local Lemma a1_C_le : forall b,
-  Z.of_nat (block_head_size b a1_argv []) <= 512.
+  Z.of_nat (block_head_size b a1_argv []) <= 496.
 Proof.
   destruct b;
-    [ replace (Z.of_nat (block_head_size true a1_argv [])) with 512
+    [ replace (Z.of_nat (block_head_size true a1_argv [])) with 496
         by reflexivity
-    | replace (Z.of_nat (block_head_size false a1_argv [])) with 480
+    | replace (Z.of_nat (block_head_size false a1_argv [])) with 464
         by reflexivity ]; lia.
 Qed.
 
@@ -744,11 +746,11 @@ Proof. vm_compute. reflexivity. Qed.
 Local Lemma ad16_top1 : align_down16 (0x7ffffffff000 - 4107) = 0x7fffffffdff0.
 Proof. vm_compute. reflexivity. Qed.
 
-(** THE BOTTOM OF THE RACED RANGE IS 0x7fffffffddf0, whichever of the
+(** THE BOTTOM OF THE RACED RANGE IS 0x7fffffffde00, whichever of the
     two tops the launch got and whichever value CONFIG_RSEQ has. *)
 Local Lemma a1_sp_lo_raced_min : forall kb (top : word),
   (bv_unsigned top = 0x800000000000 \/ bv_unsigned top = 0x7ffffffff000) ->
-  0x7fffffffddf0 <= launch_sp_lo top (a1_input_kb kb).
+  0x7fffffffde00 <= launch_sp_lo top (a1_input_kb kb).
 Proof.
   intros kb top Hu.
   pose proof (a1_sp_lo_value kb top (bv_unsigned top) eq_refl) as Hval.
@@ -805,13 +807,13 @@ Qed.
     pointer can still be two pages below the unraced launch's, because
     [arch_align_stack] reads [randomize_va_space] again
     (dispatch://OSSV-257/ask/a4606aae); the lowest it reaches is
-    0x7fffffffddf0.  Sixteen bytes below that is no launch, for every
+    0x7fffffffde00.  Sixteen bytes below that is no launch, for every
     stack top and every value of the launch facts with randomization
     off. *)
 Lemma a1_sp_below_raced_range_refused :
   forall kb brk (sp mbase : word) rnd vd (top : word),
   kb_aslr kb = false ->
-  bv_unsigned sp = 0x7fffffffdde0 ->
+  bv_unsigned sp = 0x7fffffffddf0 ->
   bv_unsigned mbase = 0x7ffff8000000 ->
   ~ entry_launch_ok_va Sv48 (mkEntry sp brk mbase (mkDraw rnd top vd))
       (a1_input_kb kb).
@@ -941,7 +943,7 @@ Definition a1_img_entry : word := Z_to_bv 64 0x10100.
 
 Definition a1_block : list byte :=
   entry_stack_image (a1_input false) (Z_to_bv 64 0x7ffff8000000) a1_phdr
-    a1_img_entry (Z_to_bv 64 0x7ffffffffdf0) (a1_draw 0x800000000000).
+    a1_img_entry (Z_to_bv 64 0x7ffffffffe00) (a1_draw 0x800000000000).
 
 (** An eight-byte little-endian word of the block, by byte offset from
     sp, and the auxv read out of those words. *)
@@ -963,10 +965,15 @@ Definition w8 (x : Z) : list Z :=
 (** THE AUXILIARY VECTOR THIS LAUNCH PUBLISHES, computed by hand from
     the spec's "The block" and Design "The vDSO pages":
 
-    - AT_SYSINFO_EHDR (33) is the vDSO text, directly below the mmap
-      base; the first image is one text page
-      ([State.vdso_text_pages] of [kb_vdso] = 0), so it is
-      0x7ffff8000000 - 4096.
+    - NO AT_SYSINFO_EHDR (33).  riscv64 Linux publishes it, and its
+      value here would be the vDSO text directly below the mmap base,
+      0x7ffff8000000 - 8192 for the two text pages of this build.  The
+      model maps no vDSO bytes, so it publishes no address for one and
+      the entry is absent; [StackLayout.LaunchAuxv] carries the whole
+      argument, and [a1_auxv_publishes_no_vdso] below is the check.
+      The vvar and text pages are still RESERVED
+      ([State.vdso_reserved]), which is what the placement results in
+      [Checks.Cases.Mm] rest on.
     - the eight cache words (40 to 47) are 0: no leaf is reported, so
       [get_cache_size] and [get_cache_geometry]
       (arch/riscv/kernel/cacheinfo.c) find nothing.
@@ -980,15 +987,14 @@ Definition w8 (x : Z) : list Z :=
       entry.
     - AT_UID (11), AT_EUID (12), AT_GID (13), AT_EGID (14) are 1000 and
       AT_SECURE (23) is 0.
-    - AT_RANDOM (25) is sp + C - 16 = 0x7ffffffffdf0 + 496, and
+    - AT_RANDOM (25) is sp + C - 16 = 0x7ffffffffe00 + 480, and
       AT_EXECFN (31) is the exec name at the top of the string area,
       [ed_top] - 8 - 1 - 1.
     - AT_RSEQ_FEATURE_SIZE (27) is [offsetof(struct rseq, end)] = 28
       and AT_RSEQ_ALIGN (28) is 32 (include/uapi/linux/rseq.h).
     - AT_NULL (0) closes it. *)
 Definition a1_expected_auxv : list (Z * Z) :=
-  [ (33, 0x7ffff7fff000);
-    (40, 0); (41, 0); (42, 0); (43, 0); (44, 0); (45, 0); (46, 0); (47, 0);
+  [ (40, 0); (41, 0); (42, 0); (43, 0); (44, 0); (45, 0); (46, 0); (47, 0);
     (51, 1088);
     (16, 0x112D); (6, 4096); (17, 100);
     (3, 0x10040); (4, 56); (5, 4);
@@ -999,9 +1005,9 @@ Definition a1_expected_auxv : list (Z * Z) :=
     (0, 0) ].
 
 (** The block runs from sp to the stack VMA's end and nowhere else:
-    0x800000000000 - 0x7ffffffffdf0 = 528 bytes, which is
-    C + pad + L + 8 = 512 + 4 + 4 + 8. *)
-Example a1_block_length : length a1_block = 528%nat.
+    0x800000000000 - 0x7ffffffffe00 = 512 bytes, which is
+    C + pad + L + 8 = 496 + 4 + 4 + 8. *)
+Example a1_block_length : length a1_block = 512%nat.
 Proof. vm_compute. reflexivity. Qed.
 
 (** The three addresses the auxv and the pointer array carry, each
@@ -1014,9 +1020,9 @@ Example a1_block_addresses :
                                 a1_execfn) = 0x7ffffffffff4
   /\ bv_unsigned (at_execfn_ptr (Z_to_bv 64 0x800000000000) a1_execfn)
      = 0x7ffffffffff6
-  /\ bv_unsigned (at_random_ptr (Z_to_bv 64 0x7ffffffffdf0) true a1_argv [])
+  /\ bv_unsigned (at_random_ptr (Z_to_bv 64 0x7ffffffffe00) true a1_argv [])
      = 0x7fffffffffe0
-  /\ block_pad_len true (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x800000000000)
+  /\ block_pad_len true (Z_to_bv 64 0x7ffffffffe00) (Z_to_bv 64 0x800000000000)
                    a1_argv [] a1_execfn = 4%nat.
 Proof. repeat split; vm_compute; reflexivity. Qed.
 
@@ -1030,9 +1036,9 @@ Example a1_block_head_words :
 Proof. repeat split; vm_compute; reflexivity. Qed.
 
 (** The whole vector, read out of the block's bytes at sp + 8 * items:
-    twenty-nine (type, value) pairs. *)
+    twenty-eight (type, value) pairs. *)
 Example a1_block_auxv_is_linuxs :
-  auxv_read a1_block 32 29 = a1_expected_auxv.
+  auxv_read a1_block 32 28 = a1_expected_auxv.
 Proof. vm_compute. reflexivity. Qed.
 
 (** AND THE WHOLE BLOCK, byte for byte: argc and the two pointer
@@ -1049,6 +1055,47 @@ Example a1_block_is_linuxs_bytes :
     ++ [0; 0; 0; 0]
     ++ [97; 0; 97; 0]
     ++ [0; 0; 0; 0; 0; 0; 0; 0].
+Proof. vm_compute. reflexivity. Qed.
+
+(** THE ENTRY THE MODEL DOES NOT PUBLISH, and the control beside it.
+
+    The first half is what this lane is for: no pair of the vector this
+    launch lays carries the type AT_SYSINFO_EHDR.  Read out of the
+    BLOCK'S BYTES, not out of [auxv_entries], so it is a statement
+    about what a program finds on its stack: a libc that walks the
+    vector for a vDSO (musl's [__libc_start_main] /
+    [__vdsosym], glibc's [setup_vdso]) finds none and takes its
+    syscall path, instead of following an address at which this model
+    has no bytes and faulting.
+
+    The second half is the control: everything else about the launch is
+    where it was.  The reserved vDSO pair is UNCHANGED — this lane
+    removed a publication, not a reservation — and the four vvar pages
+    and one text page still end at the mmap base, with the text at
+    0x7ffff7fff000, the address the vector used to publish.  So are the
+    four entries a program is most likely to read, the block's length
+    and the argc word at its base.  Without this half the first would
+    also pass for a model that had quietly stopped laying an auxv at
+    all, or that had dropped the reservation with the entry. *)
+Example a1_auxv_publishes_no_vdso :
+  filter (fun tv => Z.eqb (fst tv) (bv_unsigned AT_SYSINFO_EHDR))
+         (auxv_read a1_block 32 28)
+  = [].
+Proof. vm_compute. reflexivity. Qed.
+
+Example a1_everything_else_is_unchanged :
+  (init_reserved [] (Z_to_bv 64 0x7ffff8000000) (Z_to_bv 64 0x7ffffffffe00)
+     (a1_kernel false),
+   filter (fun tv => orb (orb (Z.eqb (fst tv) 3) (Z.eqb (fst tv) 25))
+                         (orb (Z.eqb (fst tv) 16) (Z.eqb (fst tv) 51)))
+          (auxv_read a1_block 32 28),
+   length a1_block,
+   le8_at a1_block 0)
+  = ([ (Z_to_bv 64 0x7ffff7ffb000, Z_to_bv 64 16384);
+       (Z_to_bv 64 0x7ffff7fff000, Z_to_bv 64 4096) ],
+     [ (51, 1088); (16, 0x112D); (3, 0x10040); (25, 0x7fffffffffe0) ],
+     512%nat,
+     1).
 Proof. vm_compute. reflexivity. Qed.
 
 (* ========================================================================= *)

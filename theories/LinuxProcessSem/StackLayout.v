@@ -61,7 +61,12 @@ Definition flatten_strings (strs : list (list byte)) : list byte :=
 
     Values from include/uapi/linux/auxvec.h and
     arch/riscv/include/uapi/asm/auxvec.h, Linux v6.18.46 (commit
-    1f99e9ab748f). *)
+    1f99e9ab748f).
+
+    One of them, AT_SYSINFO_EHDR, is declared and NOT published: see
+    [LaunchAuxv] below for why, and
+    [Checks.Cases.EntryLaunch.a1_auxv_publishes_no_vdso] for the check
+    that names the type in order to state its absence. *)
 Definition AT_NULL    : word := Z_to_bv 64 0.
 Definition AT_PHDR    : word := Z_to_bv 64 3.
 Definition AT_PHENT   : word := Z_to_bv 64 4.
@@ -135,15 +140,11 @@ Definition cache_words_zero : CacheWords :=
 (** ** What the LAUNCH, rather than the image or the caller, puts in the
        vector
 
-    Four facts of the machine and of the kernel build that reach the
+    Three facts of the machine and of the kernel build that reach the
     auxv and nothing else in this file.  [Run.launch_auxv] derives them
-    from [State.KernelBuild] and the entry's mmap base; they are
-    arguments here so that this file stays free of [State].
+    from [State.KernelBuild]; they are arguments here so that this file
+    stays free of [State].
 
-    - [la_sysinfo_ehdr]: AT_SYSINFO_EHDR, the address of the vDSO text.
-      [__setup_additional_pages] (arch/riscv/kernel/vdso.c) maps the
-      vvar pages and the text directly below the mmap base, and
-      [ARCH_DLINFO] publishes [mm->context.vdso], the text's start.
     - [la_cache]: the eight words above.
     - [la_minsigstksz]: AT_MINSIGSTKSZ, [get_min_sigframe_size()]
       (arch/riscv/kernel/signal.c) — [round_up(F + V, 16)] with F the
@@ -153,9 +154,36 @@ Definition cache_words_zero : CacheWords :=
       selects HAVE_RSEQ in arch/riscv/Kconfig and the option defaults to
       y), so [create_elf_tables] emits AT_RSEQ_FEATURE_SIZE and
       AT_RSEQ_ALIGN.  It is the ONE fact that moves the vector's length,
-      which is why [auxv_count] and every address below take it. *)
+      which is why [auxv_count] and every address below take it.
+
+    THERE IS NO vDSO ADDRESS IN THIS RECORD, AND ITS ABSENCE IS A
+    CHOICE.  riscv64 Linux always publishes AT_SYSINFO_EHDR:
+    [ARCH_DLINFO] (arch/riscv/include/asm/elf.h) emits
+    [mm->context.vdso], the start of the text
+    [__setup_additional_pages] (arch/riscv/kernel/vdso.c) has just
+    mapped, and every real riscv64 launch carries it.  THE MODEL IS
+    NARROWER THAN LINUX HERE, deliberately, because it maps no vDSO
+    bytes: [State.vdso_reserved] puts the vvar pages and the text into
+    the ledger as (address, length) RESERVATIONS, with no backing and
+    no content anywhere in the model, and no step dispatches a vDSO
+    call.  An address published under AT_SYSINFO_EHDR would therefore
+    name an ELF header that is not there, and the first load a program
+    makes through it would miss every mapping and be a
+    [RiscvSemantics.MachineFault] — the model's SIGSEGV analogue, the
+    PROGRAM dying — for a program that runs on Linux.  Publishing an
+    address the model cannot back is worse than publishing none, so
+    the launch publishes none and the entry is ABSENT rather than
+    wrong; [auxv_entries] below says it again where the vector is
+    built.
+
+    THE RESERVATION STAYS.  It is not the defect: the placement search,
+    [munmap], [mremap] and MAP_FIXED_NOREPLACE all read it, and without
+    it the model's occupied set would be smaller than the kernel's.
+    What is withdrawn is only the CLAIM TO A PROGRAM that it can find a
+    vDSO there.  A lane that gives the model the measured vDSO images
+    restores the field and the entry together with the bytes behind
+    them — in that order, never the entry alone. *)
 Record LaunchAuxv := mkLaunchAuxv {
-  la_sysinfo_ehdr : word;
   la_cache        : CacheWords;
   la_minsigstksz  : word;
   la_rseq         : bool
@@ -167,13 +195,26 @@ Record LaunchAuxv := mkLaunchAuxv {
     own entries, with the comment "ARCH_DLINFO must come first so PPC
     can do its special alignment of AUXV" — and on riscv64 it is ten
     entries: AT_SYSINFO_EHDR, the eight cache words, AT_MINSIGSTKSZ.
-    Then [create_elf_tables]'s unconditional sixteen, then the
-    CONFIG_RSEQ pair, then AT_NULL.  Twenty-seven entries, or
-    twenty-nine with CONFIG_RSEQ.
+    THIS VECTOR CARRIES NINE OF THEM: the eight cache words and
+    AT_MINSIGSTKSZ, with AT_SYSINFO_EHDR omitted for the reason
+    [LaunchAuxv] gives above.  Then [create_elf_tables]'s
+    unconditional sixteen, then the CONFIG_RSEQ pair, then AT_NULL.
+    Twenty-six entries, or twenty-eight with CONFIG_RSEQ.
 
     Entries this launch does NOT carry, and why each is absent rather
     than wrong:
 
+    - AT_SYSINFO_EHDR: the ONE entry whose absence is not Linux's own
+      [#ifdef] but this model's boundary.  riscv64 Linux publishes it
+      on every launch; this model maps no vDSO bytes, so publishing an
+      address would hand a program an ELF header that is not there and
+      turn its first probe into a [RiscvSemantics.MachineFault].  The
+      pair ([State.vdso_reserved]) is still RESERVED in the ledger, and
+      a program that reads the vector simply finds no vDSO, as it does
+      on a kernel built without one.  See [LaunchAuxv] above; the cost
+      is that no statement about a program that CALLS the vDSO can be
+      proved, and that is the honest reading of a model with no vDSO
+      bytes.
     - AT_HWCAP2, AT_HWCAP3, AT_HWCAP4: riscv64 defines no [ELF_HWCAP2],
       [ELF_HWCAP3] or [ELF_HWCAP4], so the [#ifdef]s around those three
       [NEW_AUX_ENT] lines are false.
@@ -229,8 +270,7 @@ Record LaunchAuxv := mkLaunchAuxv {
 Definition auxv_entries (la : LaunchAuxv) (ph : PhdrInfo) (entry : word)
     (uid gid hwcap at_random at_execfn : word) : list (word * word) :=
   let c := la_cache la in
-  [ (AT_SYSINFO_EHDR,      la_sysinfo_ehdr la);
-    (AT_L1I_CACHESIZE,     cw_l1i_size c);
+  [ (AT_L1I_CACHESIZE,     cw_l1i_size c);
     (AT_L1I_CACHEGEOMETRY, cw_l1i_geom c);
     (AT_L1D_CACHESIZE,     cw_l1d_size c);
     (AT_L1D_CACHEGEOMETRY, cw_l1d_geom c);
@@ -271,21 +311,24 @@ Definition auxv_bytes (la : LaunchAuxv) (ph : PhdrInfo) (entry : word)
 
 (** The vector's entry count and byte size.  CONFIG_RSEQ is the only
     thing that moves either: [PhdrInfo] fills three values, the
-    credentials four, [hwcap] one, the launch ten, and no argument but
-    [la_rseq] adds or removes an entry. *)
-Definition auxv_count (rseq : bool) : nat := if rseq then 29%nat else 27%nat.
+    credentials four, [hwcap] one, the launch nine, and no argument but
+    [la_rseq] adds or removes an entry.  The launch's share is nine and
+    not Linux's ten because AT_SYSINFO_EHDR is omitted — see
+    [LaunchAuxv] — so these two numbers are each ONE LESS than the
+    kernel's for the same build. *)
+Definition auxv_count (rseq : bool) : nat := if rseq then 28%nat else 26%nat.
 Definition auxv_size (rseq : bool) : nat := (16 * auxv_count rseq)%nat.
 
 Lemma length_auxv_bytes : forall la ph entry uid gid hwcap ar ae,
   length (auxv_bytes la ph entry uid gid hwcap ar ae)
   = auxv_size (la_rseq la).
 Proof.
-  intros [ehdr c msz [|]] ph entry uid gid hwcap ar ae; reflexivity.
+  intros [c msz [|]] ph entry uid gid hwcap ar ae; reflexivity.
 Qed.
 
-(** …and the size does not move with the hart, with the machine's
-    caches, or with the vDSO's address: the arguments other than
-    [la_rseq] change the CONTENTS of value slots and nothing else.
+(** …and the size does not move with the hart or with the machine's
+    caches: the arguments other than [la_rseq] change the CONTENTS of
+    value slots and nothing else.
     Stated separately from [length_auxv_bytes] because it is the
     property the addressing argument rests on. *)
 Lemma length_auxv_bytes_value_invariant :
@@ -294,7 +337,7 @@ Lemma length_auxv_bytes_value_invariant :
   length (auxv_bytes la ph e u g h ar ae)
   = length (auxv_bytes la' ph' e' u' g' h' ar' ae').
 Proof.
-  intros [ehdr c msz r] [ehdr' c' msz' r'] ph ph' e e' u u' g g' h h' ar ar' ae ae' Hr.
+  intros [c msz r] [c' msz' r'] ph ph' e e' u u' g g' h h' ar ar' ae ae' Hr.
   cbn in Hr; subst r'. destruct r; reflexivity.
 Qed.
 
@@ -318,15 +361,17 @@ Qed.
       block's upper end: every byte from [en_sp] to [ed_top] is laid
       here, and there is no slack.
 
-    - [ed_vdso]: what a vDSO call leaves behind.  LPS applies the
-      exported function's syscall specification in ONE step rather than
-      running the image's instructions, so the caller-saved registers
-      other than a0, and the bytes of [sp - F, sp) the call's frame
-      used, are the environment's choice.  The arguments are the index
-      of the call in the run, the register values before it, the frame
-      bytes before it, and the call's result, so a choice that keeps an
-      unwritten value gives a run Linux also gives.  Quantified per
-      binary, as [ed_random] is.
+    - [ed_vdso]: what a vDSO call would leave behind — the caller-saved
+      registers other than a0, and the bytes of [sp - F, sp) the call's
+      frame used — taking the index of the call in the run, the
+      register values before it, the frame bytes before it, and the
+      call's result.  NO STEP OF THE MODEL READS THIS FIELD TODAY, and
+      no run can: the model maps no vDSO bytes and the auxv publishes
+      no AT_SYSINFO_EHDR ([auxv_entries] above), so a program has no
+      vDSO to call.  The field is the shape the choice must have for
+      the lane that maps the measured images, kept here rather than
+      invented twice; it is quantified per binary, as [ed_random] is,
+      and while nothing reads it the extra choices cost nothing.
 
     [ed_slack] is GONE.  It carried the bytes of the entry stack's last
     page above the model's own shorter block; the block now runs to

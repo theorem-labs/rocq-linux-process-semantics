@@ -167,12 +167,14 @@ Proof. reflexivity. Qed.
     the sp window, and enough room for that 216-byte span.  224 is the
     SPAN rounded up to a multiple of 16 — not a block, and not a kernel
     measurement.  The launch's own minimal block is larger and its
-    entry [sp] is 528 bytes below the top ([minimal_launch_sp_hi]),
-    because [StackLayout]'s auxv carries all 27 entries
+    entry [sp] is 512 bytes below the top ([minimal_launch_sp_hi]),
+    because [StackLayout]'s auxv carries 26 of the 27 entries
     [create_elf_tables] and riscv's [ARCH_DLINFO] emit — 16
-    unconditional [NEW_AUX_ENT]s, [AT_SYSINFO_EHDR], eight
-    cache-descriptor entries and [AT_MINSIGSTKSZ], 29 of them with
-    CONFIG_RSEQ — and the launch pushes the [AT_EXECFN] pathname
+    unconditional [NEW_AUX_ENT]s, eight cache-descriptor entries and
+    [AT_MINSIGSTKSZ], 28 of them with CONFIG_RSEQ, with
+    [AT_SYSINFO_EHDR] left out because the model maps no vDSO bytes
+    ([StackLayout.LaunchAuxv]) — and the launch pushes the
+    [AT_EXECFN] pathname
     string below them.  What this witness is for is the COMPARISON in
     [worst_case_ceiling_would_refuse_a_real_placement] below: with
     [PF_RANDOMIZE] clear, [randomize_stack_top] returns
@@ -242,18 +244,18 @@ Definition minimal_input : ProcInput :=
 
 (** With no draw at all — the stack VMA ending exactly at [STACK_TOP]
     and [arch_align_stack] subtracting nothing — Linux puts the entry
-    stack pointer 528 bytes below the top of the address space: a
-    512-byte head ([StackLayout.block_head_size] with CONFIG_RSEQ: four
-    vector items and a 29-entry auxv), three bytes of strings, and the
+    stack pointer 512 bytes below the top of the address space: a
+    496-byte head ([StackLayout.block_head_size] with CONFIG_RSEQ: four
+    vector items and a 28-entry auxv), three bytes of strings, and the
     eight-byte slot [create_init_stack_vma] (mm/vma_exec.c, Linux
     v6.18.46, commit 1f99e9ab748f) leaves at the top, with
     [create_elf_tables]'s 16-alignment mask taking the remainder. *)
 Lemma minimal_launch_sp_hi :
   launch_sp_hi (Z_to_bv 64 sp_window_hi) minimal_input
-  = (sp_window_hi - 528)%Z.
+  = (sp_window_hi - 512)%Z.
 Proof. vm_compute. reflexivity. Qed.
 
-(** ...and 528 bytes is INSIDE the band the absolute alternative
+(** ...and 512 bytes is INSIDE the band the absolute alternative
     refuses, by more than two megabytes.  This is Part 2's claim at a
     kernel placement, not at a witness chosen here. *)
 Lemma worst_case_ceiling_would_refuse_the_real_launch :
@@ -285,7 +287,7 @@ Qed.
     real image can use, which is Part 2's exclusion creeping back in a
     smaller size.  The floor below holds at every input and for either
     CONFIG_RSEQ setting, and the measurement after it shows the gap at
-    the minimal input is 307 bytes — nothing beside the 2238671-byte
+    the minimal input is 291 bytes — nothing beside the 2238671-byte
     band Part 2 is about. *)
 Lemma entry_stack_span_is_a_floor_on_the_block :
   forall rseq argv envp execfn,
@@ -303,14 +305,14 @@ Proof.
 Qed.
 
 (** The three measurements at the minimal input, under
-    [State.default_kernel] (CONFIG_RSEQ on, so a 29-entry auxv) and the
-    one-byte [State.default_execfn]: a 512-byte head and three bytes of
+    [State.default_kernel] (CONFIG_RSEQ on, so a 28-entry auxv) and the
+    one-byte [State.default_execfn]: a 496-byte head and three bytes of
     strings, against a 216-byte span. *)
 Lemma minimal_head_and_strings :
   (Z.of_nat (block_head_size (kb_rseq default_kernel) minimal_argv minimal_envp),
    Z.of_nat (launch_string_bytes minimal_argv minimal_envp default_execfn),
    entry_stack_span minimal_argv minimal_envp)
-  = (512%Z, 3%Z, 216%Z).
+  = (496%Z, 3%Z, 216%Z).
 Proof. vm_compute. reflexivity. Qed.
 
 (* =========================================================================
