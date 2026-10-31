@@ -1,6 +1,7 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Fs/Sync.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Sys.Fs.Sync — fsync (82), fdatasync (83)
 
@@ -18,16 +19,10 @@ Rocq's own comment cites most of these functions over a v6.10-v6.15 window
 with no line numbers; every line number below was read at v6.18.46 and is
 labelled so.
 
-FDFILERW AND FDFILEA DECLINE HERE, beyond Rocq.  `fsync_spec` answers
-`unmodeled` on a read-write or an append-mode file, where Rocq's arm answers
-0 as for `FdFile` (`vfs_fsync_range` reads `f_op->fsync`, never `f_flags` or
-`f_mode`).  The base change that added the two constructors ported Rocq's
-arm into every pure helper that names either and declined both in every spec
-arm that does, so that each arm is ported later against pins of its own;
-`Checks/Cases/Fs/Sync.lean`'s `a17_rdwr_fsync_declines` and
-`a17_append_fsync_declines` hold the declines.  No run an example can reach
-is narrowed: none can hold either kind yet (`State/Fd.lean`'s constructor
-notes say why, and when that stops being true). -/
+THE ACCESS MODE IS NOT READ.  `FdFile`, `FdFileW`, `FdFileA` and `FdFileRW`
+all answer 0: `vfs_fsync_range` reads `f_op->fsync`, never `f_flags` or
+`f_mode`, so append mode and O_RDWR change nothing here, and O_RDONLY is
+not an error. -/
 
 namespace LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Sync
 
@@ -190,8 +185,9 @@ def fsync_spec (fd : word) : Sys SyscallEffect :=
   | some .FdUrandom       => err_ret EINVAL         -- nor on /dev/urandom: no `.fsync` in `urandom_fops`
   | some (.FdFile _ _)    => ret_only (Z_to_bv 64 0) -- O_RDONLY is not an error: no `f_mode` check
   | some (.FdFileW _ _)   => ret_only (Z_to_bv 64 0)
-  | some (.FdFileA _ _) => unmodeled -- declined: see the file header
-  | some (.FdFileRW _ _) => unmodeled -- declined: see the file header
+  | some (.FdFileA _ _)   => ret_only (Z_to_bv 64 0) -- append mode: `vfs_fsync_range` reads
+                                                     -- `f_op->fsync`, never `f_flags`
+  | some (.FdFileRW _ _)  => ret_only (Z_to_bv 64 0) -- O_RDWR: no access mode is read either
   | some .FdDir           => ret_only (Z_to_bv 64 0) -- a directory fsync succeeds
 
 end LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Sync

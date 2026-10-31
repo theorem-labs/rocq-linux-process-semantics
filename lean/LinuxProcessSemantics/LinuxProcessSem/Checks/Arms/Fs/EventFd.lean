@@ -112,10 +112,9 @@ open LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Dispatch
 open LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Table
 open LinuxProcessSemantics.LinuxProcessSem.Checks.VmMapsDisjoint
 
-/-- `eventfd2` (19): on either answer the checker accepts — the -EINVAL
+/-- `eventfd2` (19): on the one answer the checker accepts — the -EINVAL
 `do_eventfd` returns before it allocates anything (fs/eventfd.c:390-393,
-Linux v6.18.46), or the -ENOSYS kernel/sys_ni.c `sys_ni_syscall` returns
-on a kernel without CONFIG_EVENTFD (Linux v6.18.46) — the accepted model
+Linux v6.18.46) — the accepted model
 is the model handed in, so the ledger is what it was
 (`check_eventfd2_frame`, stated beside the checker in
 `Checks/Sys/Fs/EventFd.lean`). -/
@@ -139,11 +138,10 @@ open LinuxProcessSemantics.LinuxProcessSem.Checks.VmMapsDisjoint
 theorem vm_wf_arm_eventfd2 : arm_preserves inv_vm_wf arm_eventfd2 :=
   Arms.arm_eventfd2_preserves_vm
 
-/-- `fd_table_unique` × `eventfd2`: neither accepted answer reserves or
-binds a descriptor — the -EINVAL `do_eventfd` returns before either
-operation (fs/eventfd.c:390-391, :405 and :416, Linux v6.18.46), or the
--ENOSYS from kernel/sys_ni.c `sys_ni_syscall` (Linux v6.18.46), which
-never enters fs/eventfd.c — and the gate-passing word that would bind
+/-- `fd_table_unique` × `eventfd2`: the accepted answer reserves and
+binds no descriptor — the -EINVAL `do_eventfd` returns before either
+operation (fs/eventfd.c:390-391, :405 and :416, Linux v6.18.46) — and
+the gate-passing word that would bind
 one is declined; the frame is stated beside the checker. -/
 theorem fd_table_unique_arm_eventfd2 : arm_preserves inv_fd_table_unique arm_eventfd2 :=
   arm_preserves_of_view_frame inv_fd_table_unique arm_eventfd2 (fun i eff m m' evs h => by

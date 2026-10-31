@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Namei.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs.Namei
@@ -122,46 +123,48 @@ def tmp_name256_under_model : Model :=
 /-! ## The implied directory -/
 
 /-- A key living UNDER a name means reality has a DIRECTORY that the flat
-map only implies, and a non-empty one (#1753): Linux answers -EISDIR for
-unlink, in `may_delete` (fs/namei.c:3290, the `d_is_dir(victim)` test of
-the non-`isdir` call), and -ENOTEMPTY for AT_REMOVEDIR, from the
-filesystem's `->rmdir` through `vfs_rmdir` (4552; `simple_rmdir`,
-fs/libfs.c:801-802).  The flat map's -ENOENT, a removal, the file's
--ENOTDIR and an injectable errno are refused.  This image holds "a/b" and
-NOT "a", the REALIZABLE shape.
+map only implies: Linux answers -EISDIR for unlink, in `may_delete`
+(fs/namei.c:3290, the `d_is_dir(victim)` test of the non-`isdir` call),
+and for AT_REMOVEDIR the filesystem's `->rmdir` through `vfs_rmdir`
+(4552; `simple_rmdir`, fs/libfs.c:801-802) — -ENOTEMPTY where the
+directory holds something and 0 where it does not, which the map cannot
+tell apart.  The checker DECLINES the shape under either flag, whatever
+is offered: the kernel's own two answers, the flat map's -ENOENT, a
+removal, the file's -ENOTDIR and an injectable errno are all left
+unanswered.  This image holds "a/b" and NOT "a", the REALIZABLE shape.
 kernel: fs/namei.c:may_delete,vfs_rmdir,generic_permission; fs/libfs.c:simple_rmdir@v6.18.46 -/
-theorem unlinkat_implied_directory_answers :
+theorem unlinkat_implied_directory_unmodeled :
     check_unlinkat_row (unlink_call 0 (name_at [97])) (ledgered (errno_ret EISDIR) 2)
-      implied_dir_model = CheckOk implied_dir_model []
+      implied_dir_model = CheckUnmodeled
     ∧ check_unlinkat_row (unlink_call 0 (name_at [97])) (ledgered (errno_ret ENOENT) 2)
-      implied_dir_model = CheckReject
+      implied_dir_model = CheckUnmodeled
     ∧ check_unlinkat_row (unlink_call 0 (name_at [97])) (ledgered 0 2) implied_dir_model
-      = CheckReject
+      = CheckUnmodeled
     ∧ check_unlinkat_row (unlink_call 0 (name_at [97])) (ledgered (errno_ret EACCES) 2)
-      implied_dir_model = CheckReject
+      implied_dir_model = CheckUnmodeled
     ∧ check_unlinkat_row (unlink_call 512 (name_at [97])) (ledgered (errno_ret ENOTEMPTY) 2)
-      implied_dir_model = CheckOk implied_dir_model []
+      implied_dir_model = CheckUnmodeled
     ∧ check_unlinkat_row (unlink_call 512 (name_at [97])) (ledgered (errno_ret ENOTDIR) 2)
-      implied_dir_model = CheckReject
+      implied_dir_model = CheckUnmodeled
     ∧ check_unlinkat_row (unlink_call 512 (name_at [97])) (ledgered 0 2) implied_dir_model
-      = CheckReject :=
+      = CheckUnmodeled :=
   ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
-/-- The same answers on the UNREALIZABLE image holding both "a" and "a/b".
-Here the lookup of "a" would SUCCEED, so a test placed after the lookup
+/-- The same decline on the UNREALIZABLE image holding both "a" and "a/b".
+Here the lookup of "a" would SUCCEED, so a guard placed after the lookup
 would remove the file and return 0 (flags 0) or answer the file's
--ENOTDIR (AT_REMOVEDIR); this is the case that pins the test's place,
+-ENOTDIR (AT_REMOVEDIR); this is the case that pins the guard's place,
 since on the realizable image the lookup misses either way.
 kernel: fs/namei.c:may_delete,vfs_rmdir; fs/libfs.c:simple_rmdir@v6.18.46 -/
-theorem unlinkat_implied_directory_unrealizable_image :
+theorem unlinkat_implied_directory_unrealizable_image_unmodeled :
     check_unlinkat_row (unlink_call 0 (name_at [97])) (ledgered (errno_ret EISDIR) 2)
-      unrealizable_model = CheckOk unrealizable_model []
+      unrealizable_model = CheckUnmodeled
     ∧ check_unlinkat_row (unlink_call 0 (name_at [97])) (ledgered 0 2) unrealizable_model
-      = CheckReject
+      = CheckUnmodeled
     ∧ check_unlinkat_row (unlink_call 512 (name_at [97])) (ledgered (errno_ret ENOTEMPTY) 2)
-      unrealizable_model = CheckOk unrealizable_model []
+      unrealizable_model = CheckUnmodeled
     ∧ check_unlinkat_row (unlink_call 512 (name_at [97])) (ledgered (errno_ret ENOTDIR) 2)
-      unrealizable_model = CheckReject :=
+      unrealizable_model = CheckUnmodeled :=
   ⟨rfl, rfl, rfl, rfl⟩
 
 /-- The contrast: "ab" does not live under "a", so the guard is a COMPONENT
@@ -952,15 +955,15 @@ theorem unlinkat_witness_declines :
     ∧ unlinkat_witness_row (unlink_call 0 (name_at [97])) open_fd_model = Unmodeled :=
   ⟨rfl, rfl⟩
 
-/-- The implied directory is answered (#1753): `may_delete`'s -EISDIR
-(fs/namei.c:3289-3290) for unlink and the filesystem's -ENOTEMPTY through
-`vfs_rmdir` (4552) for AT_REMOVEDIR.
+/-- The implied directory is DECLINED by the witness too, under either
+flag, as the spec declines it: Linux's answers there are `may_delete`'s
+-EISDIR (fs/namei.c:3289-3290) for unlink and the filesystem's through
+`vfs_rmdir` (4552) for AT_REMOVEDIR, and the flat map cannot say which of
+-ENOTEMPTY and 0 the latter is.
 kernel: fs/namei.c:may_delete,vfs_rmdir; fs/libfs.c:simple_rmdir@v6.18.46 -/
 theorem unlinkat_witness_implied_directory :
-    unlinkat_witness_row (unlink_call 0 (name_at [97])) implied_dir_model
-      = Ok (ledgered (errno_ret EISDIR) 2) implied_dir_model []
-    ∧ unlinkat_witness_row (unlink_call 512 (name_at [97])) implied_dir_model
-      = Ok (ledgered (errno_ret ENOTEMPTY) 2) implied_dir_model [] :=
+    unlinkat_witness_row (unlink_call 0 (name_at [97])) implied_dir_model = Unmodeled
+    ∧ unlinkat_witness_row (unlink_call 512 (name_at [97])) implied_dir_model = Unmodeled :=
   ⟨rfl, rfl⟩
 
 set_option maxRecDepth 8192 in
@@ -1078,25 +1081,26 @@ theorem lookup_unlinkat_input (args : List word) (mem wmem : word → Option byt
       = some arm_unlinkat :=
   lookup_ca_checked_table_unlinkat
 
-/-- The implied directory is answered through the table as through the row
-checker: -EISDIR from the directory type check at fs/namei.c:3289-3290 and
--ENOTEMPTY from `vfs_rmdir` (4552).
+/-- The implied directory is declined through the table as through the row
+checker, whichever of Linux's two answers is offered: -EISDIR from the
+directory type check at fs/namei.c:3289-3290 and -ENOTEMPTY from
+`vfs_rmdir` (4552).
 kernel: fs/namei.c:may_delete,vfs_rmdir; fs/libfs.c:simple_rmdir@v6.18.46 -/
-theorem unlinkat_implied_directory_answers_over_the_real_table :
+theorem unlinkat_implied_directory_unmodeled_over_the_real_table :
     check_syscall (unlink_call 0 (name_at [97])) (ledgered (errno_ret EISDIR) 2)
-      implied_dir_model = CheckOk implied_dir_model []
+      implied_dir_model = CheckUnmodeled
     ∧ check_syscall (unlink_call 512 (name_at [97])) (ledgered (errno_ret ENOTEMPTY) 2)
-      implied_dir_model = CheckOk implied_dir_model [] :=
+      implied_dir_model = CheckUnmodeled :=
   ⟨rfl, rfl⟩
 
-/-- The unrealizable file-and-child image gets the directory's answers ahead
-of the lookup; fs/namei.c:3289-3290 checks the victim type.
+/-- The unrealizable file-and-child image declines ahead of the lookup;
+fs/namei.c:3289-3290 checks the victim type.
 kernel: fs/namei.c:may_delete,vfs_rmdir; fs/libfs.c:simple_rmdir@v6.18.46 -/
-theorem unlinkat_implied_directory_unrealizable_image_over_the_real_table :
+theorem unlinkat_implied_directory_unrealizable_image_unmodeled_over_the_real_table :
     check_syscall (unlink_call 0 (name_at [97])) (ledgered (errno_ret EISDIR) 2)
-      unrealizable_model = CheckOk unrealizable_model []
+      unrealizable_model = CheckUnmodeled
     ∧ check_syscall (unlink_call 512 (name_at [97])) (ledgered (errno_ret ENOTEMPTY) 2)
-      unrealizable_model = CheckOk unrealizable_model [] :=
+      unrealizable_model = CheckUnmodeled :=
   ⟨rfl, rfl⟩
 
 /-- The held file is removed through fs/namei.c:4741; the sibling key survives.

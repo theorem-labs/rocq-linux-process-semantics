@@ -1,7 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Fs/Namei.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude
 
-/-! rocq-baseline: b22b2a23f1adb9c4468cc1dcb8f15e53edf17745
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
 unported: unlinkat_open -- the Witness file's Ltac prologue; its two steps are the two `bind_step` refines written out in `unlinkat_witness_ok` -/
 
 /-! # LinuxProcessSem.Checks.Sys.Fs.Namei — the unlinkat (35) checker, its witness, and their proofs
@@ -27,14 +28,14 @@ every checker module.  Here the two go into one `CheckedArm`, whose
 `Checks/Progress.lean` and `Checks/ExecutableSpecs.lean` take the table
 rather than the modules, so nothing needs the split.
 
-THE HEADER'S BASELINE is the squash that landed #1193, the commit
-`Sys/Fs/Namei.lean` records: it is where `unlinkat_tmp_spec`'s
-implied-directory arm became an answer, `may_delete`'s -EISDIR, rather
-than a decline, and `check_unlinkat_tmp` and `unlinkat_tmp_witness`
-below follow it.  The port's common baseline f44244ad predates the split
-of `unlink_found_spec` out of `unlinkat_tmp_spec` and the /tmp arm
-itself, so a checker read there would grade a spec this tree does not
-have.  This stops being the right baseline the day either Rocq file
+THE HEADER'S BASELINE is the commit both Rocq files were read at, the
+one `Sys/Fs/Namei.lean` records: there `unlinkat_body_spec`'s
+implied-directory arm is a DECLINE, and the spec, checker, witness and
+lemmas of the implied-directory removal are gone with it, while
+`unlinkat_tmp_spec`'s own implied-directory arm answers `may_delete`'s
+-EISDIR; `check_unlinkat_body`, `check_unlinkat_tmp`,
+`unlinkat_body_witness` and `unlinkat_tmp_witness` below follow that.
+This stops being the right baseline the day either Rocq file
 moves again: `tools/check_lean_spec_parity.py` reads the spec twin's
 header, and the proofs below, against the spec twin, are what would
 stop closing.
@@ -47,8 +48,7 @@ its two return expressions (fs/namei.c:4777-4782), so that arm is OUTSIDE
 the copy-in wrapper and an honest
 -EINVAL there carries an empty ledger — `unlinkat_bad_flags_records_no_copyin`
 in `Checks/Cases/Checks/Sys/Fs/Namei.lean` is the pin.  And a removal
-is accepted only through the six-field match of `check_unlink_result` or
-`check_rmdir_implied_result`: a bare
+is accepted only through the six-field match of `check_unlink_result`: a bare
 return with every ledger empty, so a forged write, zero, unmap, copy or
 copy-in on a syscall that performs none reaches `CheckReject` and not
 the model.
@@ -76,8 +76,7 @@ lemma says why that does not carry over), and
 `check_unlinkat_fd_state_frame` beside it.
 
 LEAN-ONLY LEMMAS, none with a Rocq twin: `check_unlink_result_ok_inv`,
-`check_unlink_found_ok_inv`, `check_rmdir_implied_result_ok_inv`,
-`check_rmdir_implied_ok_inv`, `check_unlinkat_tmp_ok_inv` and
+`check_unlink_found_ok_inv`, `check_unlinkat_tmp_ok_inv` and
 `check_unlinkat_body_ok_inv`, each `eff.eff_copyins = [] ∧ m_vmmaps m' =
 m_vmmaps m ∧ m'.m_fd = m.m_fd` for one layer's `CheckOk`, and
 `check_unlinkat_fd_state_frame`, the last conjunct at the top.  Rocq proves
@@ -134,24 +133,6 @@ def check_unlink_found (p c : path) (flags : word) (eff : SyscallEffect) (m : Mo
   else if fd_names_path (m_fds m) c then CheckUnmodeled
   else check_unlink_result c eff m
 
-/-- The acceptor for `rmdir_implied_spec`'s choice: -ENOTEMPTY with no state
-change, or the removal returning 0, under the same five empty ledgers as
-`check_unlink_result`.  Rocq: `Namei.check_rmdir_implied_result`. -/
-def check_rmdir_implied_result (c : path) (eff : SyscallEffect) (m : Model) : check_result :=
-  match eff with
-  | SyscallEffect.mkEffectU ret [] [] [] [] [] =>
-      if bv_eqb ret (errno_ret ENOTEMPTY) then CheckOk m []
-      else if bv_eqb ret (Z_to_bv 64 0) then
-        CheckOk (with_fs (fs_rmdir_implied (m_fs m) c) m) []
-      else CheckReject
-  | _ => CheckReject
-
-/-- Mirrors `rmdir_implied_spec`.  Rocq: `Namei.check_rmdir_implied`. -/
-def check_rmdir_implied (c : path) (eff : SyscallEffect) (m : Model) : check_result :=
-  if fs_entry_under (m_fs m) c then check_ret_only eff (errno_ret ENOTEMPTY) m []
-  else if fd_names_key_under (m_fds m) (m_fs m) c then CheckUnmodeled
-  else check_rmdir_implied_result c eff m
-
 /-- Mirrors `unlinkat_tmp_spec`; that definition carries the premise, says
 what the absent key's -ENOENT and the implied directory's -EISDIR rest on
 (`may_delete`, fs/namei.c:3289-3290, Linux v6.18.46, tested BEFORE the
@@ -193,9 +174,7 @@ def check_unlinkat_body (i : SyscallInput) (dirfd pathp flags : word) (eff : Sys
         (if unlink_rmdir flags then check_ret_only eff (errno_ret ENOTEMPTY) m []
          else check_ret_only eff (errno_ret EISDIR) m [])
       else if NAME_MAX < c.length then CheckUnmodeled
-      else if fs_under (m_fs m) c then
-        (if unlink_rmdir flags then check_rmdir_implied c eff m
-         else check_ret_only eff (errno_ret EISDIR) m [])
+      else if fs_under (m_fs m) c then CheckUnmodeled
       else
         match fs_lookup (m_fs m) c with
         | none => check_ret_only eff (errno_ret ENOENT) m []
@@ -224,14 +203,6 @@ def unlink_found_witness (p c : path) (flags : word) (m : Model) : outcome Sysca
   else if path_trailing_slash p then ret_outcome (errno_ret ENOTDIR) m
   else if fd_names_path (m_fds m) c then Unmodeled
   else ret_outcome (errno_ret witness_errno) m
-
-/-- Mirrors `rmdir_implied_spec`: the choice is witnessed by the `alt`'s
-LEFT branch, -ENOTEMPTY, so the witness never builds the changed file
-system either.  Rocq: `Witness.Fs.Namei.rmdir_implied_witness`. -/
-def rmdir_implied_witness (c : path) (m : Model) : outcome SyscallEffect :=
-  if fs_entry_under (m_fs m) c then ret_outcome (errno_ret ENOTEMPTY) m
-  else if fd_names_key_under (m_fds m) (m_fs m) c then Unmodeled
-  else ret_outcome (errno_ret ENOTEMPTY) m
 
 /-- Mirrors `unlinkat_tmp_spec`.  Rocq: `Witness.Fs.Namei.unlinkat_tmp_witness`. -/
 def unlinkat_tmp_witness (n p c : path) (flags : word) (m : Model) : outcome SyscallEffect :=
@@ -268,9 +239,7 @@ def unlinkat_body_witness (dirfd pathp flags : word) (i : SyscallInput) (m : Mod
         (if unlink_rmdir flags then ret_outcome (errno_ret ENOTEMPTY) m
          else ret_outcome (errno_ret EISDIR) m)
       else if NAME_MAX < c.length then Unmodeled
-      else if fs_under (m_fs m) c then
-        (if unlink_rmdir flags then rmdir_implied_witness c m
-         else ret_outcome (errno_ret EISDIR) m)
+      else if fs_under (m_fs m) c then Unmodeled
       else
         match fs_lookup (m_fs m) c with
         | none => ret_outcome (errno_ret ENOENT) m
@@ -424,102 +393,6 @@ theorem check_unlink_found_ok_copyins_nil (p c : path) (flags : word) (eff : Sys
     eff.eff_copyins = [] :=
   (check_unlink_found_ok_inv p c flags eff m m' evs h).1
 
-/-- Rocq: `Namei.check_rmdir_implied_sound_ok`. -/
-theorem check_rmdir_implied_sound_ok (i : SyscallInput) (c : path) (eff : SyscallEffect)
-    (m m' : Model) (evs : List event) (h : check_rmdir_implied c eff m = CheckOk m' evs) :
-    rmdir_implied_spec c m i m (Ok eff m' evs) := by
-  unfold check_rmdir_implied at h
-  unfold rmdir_implied_spec
-  cases hent : fs_entry_under (m_fs m) c
-  · simp only [hent, Bool.false_eq_true, ↓reduceIte] at h ⊢
-    cases hfd : fd_names_key_under (m_fds m) (m_fs m) c
-    · simp only [hfd, Bool.false_eq_true, ↓reduceIte] at h ⊢
-      unfold check_rmdir_implied_result at h
-      obtain ⟨ret, ws, zs, us, cs, cis⟩ := eff
-      cases ws <;> cases zs <;> cases us <;> cases cs <;> cases cis <;> dsimp only at h <;>
-        try (cases h)
-      cases he : bv_eqb ret (errno_ret ENOTEMPTY)
-      · simp only [he, Bool.false_eq_true, ↓reduceIte] at h
-        cases heq : bv_eqb ret (Z_to_bv 64 0)
-        · simp only [heq, Bool.false_eq_true, ↓reduceIte] at h
-          cases h
-        · simp only [heq, ↓reduceIte] at h
-          cases h
-          obtain rfl : ret = Z_to_bv 64 0 := (bv_eqb_eq _ _).mp heq
-          exact alt_r _ _ i _ _
-            (bind_ok0 _ _ i _ () _ _ _ _ (modify_ok _ i _) (pure_ok _ i _))
-      · simp only [he, ↓reduceIte] at h
-        cases h
-        obtain rfl : ret = errno_ret ENOTEMPTY := (bv_eqb_eq _ _).mp he
-        exact alt_l _ _ i _ _ (pure_ok _ i _)
-    · simp only [hfd, ↓reduceIte] at h
-      cases h
-  · simp only [hent, ↓reduceIte] at h ⊢
-    rw [check_ret_only_ok_iff] at h
-    obtain ⟨rfl, rfl, rfl⟩ := h
-    exact pure_ok _ i _
-
-/-- Rocq: `Namei.check_rmdir_implied_sound_unmodeled`. -/
-theorem check_rmdir_implied_sound_unmodeled (i : SyscallInput) (c : path) (eff : SyscallEffect)
-    (m : Model) (h : check_rmdir_implied c eff m = CheckUnmodeled) :
-    rmdir_implied_spec c m i m Unmodeled := by
-  unfold check_rmdir_implied at h
-  unfold rmdir_implied_spec
-  cases hent : fs_entry_under (m_fs m) c
-  · simp only [hent, Bool.false_eq_true, ↓reduceIte] at h ⊢
-    cases hfd : fd_names_key_under (m_fds m) (m_fs m) c
-    · simp only [hfd, Bool.false_eq_true, ↓reduceIte] at h
-      exfalso
-      unfold check_rmdir_implied_result at h
-      obtain ⟨ret, ws, zs, us, cs, cis⟩ := eff
-      cases ws <;> cases zs <;> cases us <;> cases cs <;> cases cis <;> dsimp only at h <;>
-        try (cases h)
-      split at h <;> (try split at h) <;> cases h
-    · simp only [↓reduceIte]
-      exact unmodeled_intro i m
-  · simp only [hent, ↓reduceIte] at h
-    exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-
-/-- The `check_unlink_result_ok_inv` shape for the rmdir choice.  No Rocq
-twin. -/
-theorem check_rmdir_implied_result_ok_inv (c : path) (eff : SyscallEffect) (m m' : Model)
-    (evs : List event) (h : check_rmdir_implied_result c eff m = CheckOk m' evs) :
-    eff.eff_copyins = [] ∧ m_vmmaps m' = m_vmmaps m ∧ m'.m_fd = m.m_fd := by
-  unfold check_rmdir_implied_result at h
-  obtain ⟨ret, ws, zs, us, cs, cis⟩ := eff
-  cases ws <;> cases zs <;> cases us <;> cases cs <;> cases cis <;> dsimp only at h <;>
-    try (cases h)
-  split at h
-  · cases h
-    exact ⟨rfl, rfl, rfl⟩
-  · split at h
-    · cases h
-      exact ⟨rfl, rfl, rfl⟩
-    · cases h
-
-/-- The `check_unlink_result_ok_inv` shape one level up.  No Rocq twin. -/
-theorem check_rmdir_implied_ok_inv (c : path) (eff : SyscallEffect) (m m' : Model)
-    (evs : List event) (h : check_rmdir_implied c eff m = CheckOk m' evs) :
-    eff.eff_copyins = [] ∧ m_vmmaps m' = m_vmmaps m ∧ m'.m_fd = m.m_fd := by
-  unfold check_rmdir_implied at h
-  cases hent : fs_entry_under (m_fs m) c
-  · simp only [hent, Bool.false_eq_true, ↓reduceIte] at h
-    cases hfd : fd_names_key_under (m_fds m) (m_fs m) c
-    · simp only [hfd, Bool.false_eq_true, ↓reduceIte] at h
-      exact check_rmdir_implied_result_ok_inv c eff m m' evs h
-    · simp only [hfd, ↓reduceIte] at h
-      cases h
-  · simp only [hent, ↓reduceIte] at h
-    rw [check_ret_only_ok_iff] at h
-    obtain ⟨rfl, rfl, -⟩ := h
-    exact ⟨rfl, rfl, rfl⟩
-
-/-- Rocq: `Namei.check_rmdir_implied_ok_copyins_nil`. -/
-theorem check_rmdir_implied_ok_copyins_nil (c : path) (eff : SyscallEffect) (m m' : Model)
-    (evs : List event) (h : check_rmdir_implied c eff m = CheckOk m' evs) :
-    eff.eff_copyins = [] :=
-  (check_rmdir_implied_ok_inv c eff m m' evs h).1
-
 /-- Rocq: `Namei.check_unlinkat_tmp_sound_ok`. -/
 theorem check_unlinkat_tmp_sound_ok (i : SyscallInput) (n p c : path) (flags : word)
     (eff : SyscallEffect) (m m' : Model) (evs : List event)
@@ -663,14 +536,8 @@ theorem check_unlinkat_body_sound_ok (i : SyscallInput) (dirfd pathp flags : wor
                     | some data =>
                       simp only [hfs] at h
                       exact check_unlink_found_sound_ok i p _ flags eff m m' evs h
-                  · simp only [hun, ↓reduceIte] at h ⊢
-                    cases hrm : unlink_rmdir flags
-                    · simp only [hrm, Bool.false_eq_true, ↓reduceIte] at h ⊢
-                      rw [check_ret_only_ok_iff] at h
-                      obtain ⟨rfl, rfl, rfl⟩ := h
-                      exact pure_ok _ i _
-                    · simp only [hrm, ↓reduceIte] at h ⊢
-                      exact check_rmdir_implied_sound_ok i _ eff m m' evs h
+                  · simp only [hun, ↓reduceIte] at h
+                    cases h
               · simp only [hdd, ↓reduceIte] at h ⊢
                 cases hrm : unlink_rmdir flags
                 · simp only [hrm, Bool.false_eq_true, ↓reduceIte] at h ⊢
@@ -759,11 +626,7 @@ theorem check_unlinkat_body_sound_unmodeled (i : SyscallInput) (dirfd pathp flag
                       simp only [hfs] at h
                       exact check_unlink_found_sound_unmodeled i p _ flags eff m h
                   · simp only [hun, ↓reduceIte] at h ⊢
-                    cases hrm : unlink_rmdir flags
-                    · simp only [hrm, Bool.false_eq_true, ↓reduceIte] at h
-                      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-                    · simp only [hrm, ↓reduceIte] at h ⊢
-                      exact check_rmdir_implied_sound_unmodeled i _ eff m h
+                    exact unmodeled_intro i m
               · simp only [hdd, ↓reduceIte] at h
                 cases hrm : unlink_rmdir flags
                 · simp only [hrm, Bool.false_eq_true, ↓reduceIte] at h
@@ -843,13 +706,7 @@ theorem check_unlinkat_body_ok_inv (i : SyscallInput) (dirfd pathp flags : word)
                       simp only [hfs] at h
                       exact check_unlink_found_ok_inv p _ flags eff m m' evs h
                   · simp only [hun, ↓reduceIte] at h
-                    cases hrm : unlink_rmdir flags
-                    · simp only [hrm, Bool.false_eq_true, ↓reduceIte] at h
-                      rw [check_ret_only_ok_iff] at h
-                      obtain ⟨rfl, rfl, -⟩ := h
-                      exact ⟨rfl, rfl, rfl⟩
-                    · simp only [hrm, ↓reduceIte] at h
-                      exact check_rmdir_implied_ok_inv _ eff m m' evs h
+                    cases h
               · simp only [hdd, ↓reduceIte] at h
                 cases hrm : unlink_rmdir flags
                 · simp only [hrm, Bool.false_eq_true, ↓reduceIte] at h
@@ -895,8 +752,7 @@ theorem check_unlinkat_body_ok_inv (i : SyscallInput) (dirfd pathp flags : word)
 
 /-- No arm of the body claims a copy-in of its own: each returns either
 through `check_ret_only`, which forces every ledger empty, or through
-`check_unlink_result` or `check_rmdir_implied_result`, which match six
-empty lists.  That is what lets
+`check_unlink_result`, which matches six empty lists.  That is what lets
 `check_unlinkat_complete_ok` equate the WHOLE claimed ledger with the one
 pathname range rather than with a prefix of it.  Rocq:
 `Namei.check_unlinkat_body_ok_copyins_nil`. -/
@@ -969,58 +825,6 @@ theorem check_unlink_found_complete_unmodeled (i : SyscallInput) (p c : path) (f
     · simp only [hts, ↓reduceIte] at h
       cases (pure_iff _ i _ _).mp h
   · simp only [hrm, ↓reduceIte] at h
-    cases (pure_iff _ i _ _).mp h
-
-/-- 0 and -ENOTEMPTY differ, so the two halves of `rmdir_implied_spec`'s
-choice never accept the same return.  Rocq:
-`Namei.rmdir_implied_zero_not_enotempty`. -/
-theorem rmdir_implied_zero_not_enotempty :
-    bv_eqb (Z_to_bv 64 0) (errno_ret ENOTEMPTY) = false := by
-  decide
-
-/-- Rocq: `Namei.check_rmdir_implied_complete_ok`. -/
-theorem check_rmdir_implied_complete_ok (i : SyscallInput) (c : path) (eff : SyscallEffect)
-    (m m' : Model) (evs : List event) (h : rmdir_implied_spec c m i m (Ok eff m' evs)) :
-    check_rmdir_implied c eff m = CheckOk m' evs := by
-  unfold rmdir_implied_spec at h
-  unfold check_rmdir_implied
-  cases hent : fs_entry_under (m_fs m) c
-  · simp only [hent, Bool.false_eq_true, ↓reduceIte] at h ⊢
-    cases hfd : fd_names_key_under (m_fds m) (m_fs m) c
-    · simp only [hfd, Bool.false_eq_true, ↓reduceIte] at h ⊢
-      rcases h with h | h
-      · -- -ENOTEMPTY: no state change
-        cases (pure_iff _ i _ _).mp h
-        simp only [check_rmdir_implied_result, bv_eqb_refl, ↓reduceIte]
-      · -- the removal itself
-        have h' := (bind_modify_iff (with_fs (fs_rmdir_implied (m_fs m) c))
-          (fun _ => ret_only (Z_to_bv 64 0)) i m _).mp h
-        cases (pure_iff _ i _ _).mp h'
-        simp only [check_rmdir_implied_result, rmdir_implied_zero_not_enotempty, bv_eqb_refl,
-          Bool.false_eq_true, ↓reduceIte]
-    · simp only [hfd, ↓reduceIte] at h
-      cases (unmodeled_iff _ _ _).mp h
-  · simp only [hent, ↓reduceIte] at h ⊢
-    cases (pure_iff _ i _ _).mp h
-    exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
-
-/-- Rocq: `Namei.check_rmdir_implied_complete_unmodeled`. -/
-theorem check_rmdir_implied_complete_unmodeled (i : SyscallInput) (c : path) (m : Model)
-    (eff : SyscallEffect) (h : rmdir_implied_spec c m i m Unmodeled) :
-    check_rmdir_implied c eff m = CheckUnmodeled := by
-  unfold rmdir_implied_spec at h
-  unfold check_rmdir_implied
-  cases hent : fs_entry_under (m_fs m) c
-  · simp only [hent, Bool.false_eq_true, ↓reduceIte] at h ⊢
-    cases hfd : fd_names_key_under (m_fds m) (m_fs m) c
-    · simp only [hfd, Bool.false_eq_true, ↓reduceIte] at h
-      rcases h with h | h
-      · cases (pure_iff _ i _ _).mp h
-      · have h' := (bind_modify_iff (with_fs (fs_rmdir_implied (m_fs m) c))
-          (fun _ => ret_only (Z_to_bv 64 0)) i m _).mp h
-        cases (pure_iff _ i _ _).mp h'
-    · simp only [↓reduceIte]
-  · simp only [hent, ↓reduceIte] at h
     cases (pure_iff _ i _ _).mp h
 
 /-- Rocq: `Namei.check_unlinkat_tmp_complete_ok`. -/
@@ -1123,13 +927,8 @@ theorem check_unlinkat_body_complete_ok (i : SyscallInput) (dirfd pathp flags : 
                     | some data =>
                       simp only [hfs] at h
                       exact check_unlink_found_complete_ok i p _ flags eff m m' evs h
-                  · simp only [hun, ↓reduceIte] at h ⊢
-                    cases hrm : unlink_rmdir flags
-                    · simp only [hrm, Bool.false_eq_true, ↓reduceIte] at h ⊢
-                      cases (pure_iff _ i _ _).mp h
-                      exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
-                    · simp only [hrm, ↓reduceIte] at h ⊢
-                      exact check_rmdir_implied_complete_ok i _ eff m m' evs h
+                  · simp only [hun, ↓reduceIte] at h
+                    cases (unmodeled_iff _ _ _).mp h
               · simp only [hdd, ↓reduceIte] at h ⊢
                 cases hrm : unlink_rmdir flags
                 · simp only [hrm, Bool.false_eq_true, ↓reduceIte] at h ⊢
@@ -1207,12 +1006,7 @@ theorem check_unlinkat_body_complete_unmodeled (i : SyscallInput) (dirfd pathp f
                     | some data =>
                       simp only [hfs] at h
                       exact check_unlink_found_complete_unmodeled i p _ flags m eff h
-                  · simp only [hun, ↓reduceIte] at h ⊢
-                    cases hrm : unlink_rmdir flags
-                    · simp only [hrm, Bool.false_eq_true, ↓reduceIte] at h
-                      cases (pure_iff _ i _ _).mp h
-                    · simp only [hrm, ↓reduceIte] at h ⊢
-                      exact check_rmdir_implied_complete_unmodeled i _ m eff h
+                  · simp only [hun, ↓reduceIte]
               · simp only [hdd, ↓reduceIte] at h
                 cases hrm : unlink_rmdir flags
                 · simp only [hrm, Bool.false_eq_true, ↓reduceIte] at h
@@ -1339,20 +1133,6 @@ theorem unlink_found_witness_ok (p c : path) (flags : word) (i : SyscallInput) (
   · simp only [↓reduceIte]
     exact pure_ok _ i _
 
-/-- Rocq: `Witness.Fs.Namei.rmdir_implied_witness_ok`. -/
-theorem rmdir_implied_witness_ok (c : path) (i : SyscallInput) (m : Model) :
-    rmdir_implied_spec c m i m (rmdir_implied_witness c m) := by
-  unfold rmdir_implied_spec rmdir_implied_witness
-  cases fs_entry_under (m_fs m) c
-  · simp only [Bool.false_eq_true, ↓reduceIte]
-    cases fd_names_key_under (m_fds m) (m_fs m) c
-    · simp only [Bool.false_eq_true, ↓reduceIte]
-      exact alt_l _ _ i m _ (pure_ok _ i _)
-    · simp only [↓reduceIte]
-      exact unmodeled_intro i m
-  · simp only [↓reduceIte]
-    exact pure_ok _ i _
-
 /-- Rocq: `Witness.Fs.Namei.unlinkat_tmp_witness_ok`. -/
 theorem unlinkat_tmp_witness_ok (n p c : path) (flags : word) (i : SyscallInput) (m : Model) :
     unlinkat_tmp_spec n p c flags m i m (unlinkat_tmp_witness n p c flags m) := by
@@ -1408,11 +1188,7 @@ theorem unlinkat_body_witness_ok (dirfd pathp flags : word) (i : SyscallInput) (
                     · exact pure_ok _ i _
                     · exact unlink_found_witness_ok p _ flags i m
                   · simp only [↓reduceIte]
-                    cases unlink_rmdir flags
-                    · simp only [Bool.false_eq_true, ↓reduceIte]
-                      exact pure_ok _ i _
-                    · simp only [↓reduceIte]
-                      exact rmdir_implied_witness_ok _ i m
+                    exact unmodeled_intro i m
               · simp only [↓reduceIte]
                 cases unlink_rmdir flags
                 · simp only [Bool.false_eq_true, ↓reduceIte]
@@ -1454,7 +1230,7 @@ theorem unlinkat_witness_ok (dirfd pathp flags : word) (i : SyscallInput) (m : M
 
 /-- The checker never moves the VM ledger: every accepting arm is a
 `check_ret_only`, which hands the model straight back, or
-`check_unlink_result` or `check_rmdir_implied_result`, whose one change
+`check_unlink_result`, whose one change
 is `with_fs`.  Rocq:
 `VmMapsDisjoint.check_unlinkat_frame`, closed there by `vm_frame2`; here
 the body's half comes from `check_unlinkat_body_ok_inv`, since `split` on

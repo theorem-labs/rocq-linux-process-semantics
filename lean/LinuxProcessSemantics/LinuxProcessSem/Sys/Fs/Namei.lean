@@ -1,7 +1,6 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Fs/Namei.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
-
-/-! rocq-baseline: 6ab7557a684ee74d4862dd515a2f4bac1aa205fe -/
 
 /-! # LinuxProcessSem.Sys.Fs.Namei — unlinkat (35)
 
@@ -55,6 +54,14 @@ ahead of the first component (fs/namei.c:2450-2454, Linux v6.18.46) and
 between components (:2502-2504). -/
 def slash_byte : byte := Z_to_bv 8 47
 
+/-- The SAME byte is spelled in `Fs`, as `Fs.path_slash_byte`, because
+`Fs.key_is_relative` needs it at a rung below this one and this file sits
+above it.  The separator's MEANING stays here — the component tests below
+are what a separator is for — and the two spellings are pinned equal so
+that moving either is a compile error rather than a silent divergence.
+Rocq: `Namei.slash_byte_is_path_slash_byte`. -/
+theorem slash_byte_is_path_slash_byte : slash_byte = path_slash_byte := rfl
+
 /-- Does the path contain a component separator? -/
 def path_has_slash (p : path) : Bool :=
   p.any (fun b => bv_eqb b slash_byte)
@@ -103,6 +110,47 @@ def fs_under (fs : Fs) (p : path) : Bool :=
   | [] => false
   | (q, _) :: r => dir_prefixb p q || fs_under r p
 
+/-- `dir_prefixb` read back: a `true` exhibits the rest of the key.  This
+is what lets a caller holding a fact about the BYTES of a key rule the
+test out — `Run.absolute_divergent_not_seeded` is the one that does, for a
+key the seeding minted under "/tmp/".  Rocq: `Namei.dir_prefixb_app`. -/
+theorem dir_prefixb_app : ∀ p q : path, dir_prefixb p q = true →
+    ∃ r, q = p ++ slash_byte :: r := by
+  intro p
+  induction p with
+  | nil =>
+    intro q h
+    cases q with
+    | nil => simp only [dir_prefixb] at h; cases h
+    | cons c q =>
+      refine ⟨q, ?_⟩
+      simp only [dir_prefixb] at h
+      rw [(bv_eqb_eq c slash_byte).1 h]; rfl
+  | cons a p ih =>
+    intro q h
+    cases q with
+    | nil => simp only [dir_prefixb] at h; cases h
+    | cons b q =>
+      simp only [dir_prefixb, Bool.and_eq_true] at h
+      obtain ⟨hab, hr⟩ := h
+      obtain ⟨r, hq⟩ := ih q hr
+      refine ⟨r, ?_⟩
+      rw [(bv_eqb_eq a b).1 hab, hq]; rfl
+
+/-- Neither half of `fs_under` can fire on a list of keys none of which
+continues `p` with a separator.  Rocq: `Namei.fs_under_false_of_keys`. -/
+theorem fs_under_false_of_keys : ∀ (fs : Fs) (p : path),
+    (∀ qd ∈ fs, dir_prefixb p qd.1 = false) → fs_under fs p = false := by
+  intro fs
+  induction fs with
+  | nil => intro p _; rfl
+  | cons qd fs ih =>
+    intro p h
+    have hq : dir_prefixb p qd.1 = false := h qd (List.mem_cons_self ..)
+    have hr : fs_under fs p = false := ih p (fun x hx => h x (List.mem_cons_of_mem _ hx))
+    obtain ⟨q, d⟩ := qd
+    simp only [fs_under, hq, hr, Bool.or_self]
+
 /-- Strip a fixed prefix off a path, or say it is not there.  Rocq:
 `Namei.path_strip_prefix`. -/
 def path_strip_prefix (pre p : path) : Option path :=
@@ -132,78 +180,6 @@ theorem path_strip_prefix_app (pre : path) :
         simp only [hab, ↓reduceIte] at h
         rw [(bv_eqb_eq a b).1 hab, ih p n h]; rfl
 
-/-- The first component of a path: the bytes before its first separator,
-all of it when there is none.  Rocq: `Namei.path_first_component`. -/
-def path_first_component (p : path) : path :=
-  match p with
-  | [] => []
-  | b :: r => if bv_eqb b slash_byte then [] else b :: path_first_component r
-
-/-- Drop the leading components of a path that leave the walk where it is:
-the empty ones a run of separators makes, and ".".  "./b", "//b" and
-".//./b" all become "b"; "." and "./" become nothing.  `link_path_walk`
-skips every separator between components (fs/namei.c:2502-2504, Linux
-v6.18.46), and a "." component is `LAST_DOT` (:2480-2482), which
-`walk_component` hands to `handle_dots`, and that moves nowhere.  ".." and
-a name that only starts with a dot (".b") are left in place.  Rocq:
-`Namei.path_skip_noop_components`. -/
-def path_skip_noop_components (p : path) : path :=
-  match p with
-  | [] => []
-  | b :: r =>
-    if bv_eqb b slash_byte then path_skip_noop_components r
-    else if bv_eqb b (Z_to_bv 8 46) then
-      match r with
-      | [] => []
-      | b' :: r' => if bv_eqb b' slash_byte then path_skip_noop_components r' else p
-    else p
-
-/-- Does a key of `fs` show an ENTRY inside the directory `c`: a key spelled
-`c ++ "/" ++ …` whose first component that moves the walk
-(`path_skip_noop_components`) is a name, not "..", and is there at all?
-`fs_under` says only that `c` is a directory; this says it is not empty,
-which a key "a/b" does (the walk finds "b" inside "a", `link_path_walk`,
-fs/namei.c:2441-2537, Linux v6.18.46), and so do "a/./b" and "a//b".  A
-key "a/../b" does not (the walk passes through "a" and back out, and an
-empty "a" resolves it too), nor do "a/" and "a/.", which name "a" itself.
-Rocq: `Namei.fs_entry_under`. -/
-def fs_entry_under (fs : Fs) (c : path) : Bool :=
-  match fs with
-  | [] => false
-  | (q, _) :: r =>
-    match path_strip_prefix (c ++ [slash_byte]) q with
-    | some rest =>
-      let n := path_first_component (path_skip_noop_components rest)
-      (!(path_eqb n []) && !(path_eqb n dotdot_path))
-      || fs_entry_under r c
-    | none => fs_entry_under r c
-
-/-- The image once an implied directory `c` that shows no entry
-(`fs_entry_under` is false) has been removed: rmdir's 0 in
-`rmdir_implied_spec`.  A key that names `c` itself ("c/", "c/.", "c/./")
-goes with it; a key that leaves `c` again by ".." ("c/../x", "c/./..//x")
-becomes the path after the "..", here "x", the file the walk reaches
-without `c`, with its contents; a ".." naming the working directory itself
-("c/..", "c/../") goes too.  Every other key stays.  The result is rebuilt
-with `fs_set`, so it is in the canonical form whatever it is built from
-(Rocq's `Namei.fs_rmdir_implied_sorted`, which waits on the `fs_set_sorted`
-port `Fs.lean`'s header names); where a renamed key meets one the image
-already holds, the key earlier in the image wins.  Rocq:
-`Namei.fs_rmdir_implied`. -/
-def fs_rmdir_implied (fs : Fs) (c : path) : Fs :=
-  match fs with
-  | [] => []
-  | (q, d) :: r =>
-    let r' := fs_rmdir_implied r c
-    match path_strip_prefix (c ++ [slash_byte]) q with
-    | none => fs_set r' q d
-    | some rest =>
-      match path_strip_prefix (dotdot_path ++ [slash_byte]) (path_skip_noop_components rest) with
-      | some x =>
-        let x' := path_skip_noop_components x
-        if path_eqb x' [] then r' else fs_set r' x' d
-      | none => r'
-
 /-- THE ONE PATHNAME SHAPE UNDER /tmp THE MODEL ANSWERS FOR: an ABSOLUTE
 path "/tmp/<name>" with exactly one further component.  `some name` is
 the component; `none` is every other spelling, and every other spelling
@@ -220,7 +196,8 @@ it types a relative name (:2472-2486).  So "/tmp/<name>" reaches
 that is the directory /tmp rather than the working directory — and the
 flat map can answer for that parent only under the premise that the run's
 own table is the whole truth about it (`State.in_tmp`, seeded under
-absolute keys by `State.fs_seed_tmp`; bugs/tmp-assumed-private-directory.md).
+absolute keys by `State.fs_seed_tmp`;
+linux-process-semantics@ff0313ba4f:bugs/tmp-assumed-private-directory.md).
 
 REJECTED, each for the reason Rocq's `Namei.tmp_name` gives: a path that
 does not begin "/tmp/" (a bare "/tmp", "/tmp/" with nothing after it,
@@ -231,8 +208,8 @@ mention such a name, and then some key lives under "/tmp/a", which the
 arms see through `fs_under`; and "." and "..", which name /tmp and its
 parent rather than a file in it.  A name with a NUL cannot arrive here:
 every pathname comes out of `read_cstr`, which stops at the first NUL, and
-the seeding drops the declared entries no program could name.  Issue
-#562, rung 4 of #696. -/
+the seeding drops the declared entries no program could name.  The premise
+the arms rest on is `State.in_tmp`'s. -/
 def tmp_name (p : path) : Option path :=
   match path_strip_prefix tmp_prefix p with
   | none => none
@@ -276,7 +253,7 @@ represent Linux's unlinked-but-still-open file — see `unlinkat_spec`.
 
 THE NON-FILE ENTRIES ARE ENUMERATED rather than swept up by a catch-all,
 for the reason Rocq's `Namei.fd_names_path` gives: a catch-all is right
-today and stays green through the next constructor while silently
+today and would still compile after the next constructor while silently
 answering "names no path" for it.  Listing them makes the next
 constructor a compile error.
 
@@ -362,31 +339,6 @@ def unlink_found_spec (p c : path) (flags : word) (m : Model) : Sys SyscallEffec
   else alt (e <- errno_from unlinkat_errnos ;; err_ret e)  -- untracked env failure
            (set_fs (fs_remove (m_fs m) c) ;; ret_only (Z_to_bv 64 0))
 
-/-- Does an open descriptor name a key spelled through the directory `c`?
-Those are the keys `fs_rmdir_implied` renames or drops.  Rocq:
-`Namei.fd_names_key_under`. -/
-def fd_names_key_under (fds : List (word × FdEntry)) (fs : Fs) (c : path) : Bool :=
-  fs.any (fun qd => dir_prefixb c qd.1 && fd_names_path fds qd.1)
-
-/-- AT_REMOVEDIR OF AN IMPLIED DIRECTORY `c`.  `do_rmdir` reaches
-`vfs_rmdir` (fs/namei.c:4529-4567, Linux v6.18.46), which hands a directory
-to the filesystem's `->rmdir`: -ENOTEMPTY for a non-empty one, and the
-removal of an empty one.  A key that shows an entry in `c`
-(`fs_entry_under`) makes it -ENOTEMPTY.  Keys that show none ("c/../x",
-"c/") leave it open, since an empty directory inside `c` leaves no key:
-both -ENOTEMPTY and the removal, 0, are admitted, the removal changing the
-map the way it changes the tree (`fs_rmdir_implied`), after which nothing
-lives under `c` and a second call is -ENOENT.  An open descriptor naming a
-key the removal renames or drops would be left naming nothing, the reason
-for `unlink_found_spec`'s open-fd guard, so that state declines; every path
-with a separator `Open.openat_spec` opens is absolute, so no descriptor a
-program opens names one.  Rocq: `Namei.rmdir_implied_spec`. -/
-def rmdir_implied_spec (c : path) (m : Model) : Sys SyscallEffect :=
-  if fs_entry_under (m_fs m) c then err_ret ENOTEMPTY  -- the filesystem's ->rmdir
-  else if fd_names_key_under (m_fds m) (m_fs m) c then unmodeled
-  else alt (err_ret ENOTEMPTY)  -- c holds only empty directories, which leave no key
-           (set_fs (fs_rmdir_implied (m_fs m) c) ;; ret_only (Z_to_bv 64 0))  -- c was empty
-
 /-- THE /tmp ARM: removing a file the run HOLDS in its own private
 temporary directory (`tmp_name`, `State.in_tmp`).  It sits inside the
 separator branch of `unlinkat_body_spec`, tested before that branch
@@ -396,7 +348,7 @@ What it declines, each for Rocq's reason (`Namei.unlinkat_tmp_spec`):
 AT_REMOVEDIR — Linux answers -ENOTDIR for a regular file
 (`may_delete`, fs/namei.c:3284-3286, Linux v6.18.46) and, for a directory,
 -ENOTEMPTY or 0, and which of the three it is turns on /tmp holding a
-DIRECTORY, the thing this rung defers, so the ruling on #562 declines the
+DIRECTORY, the thing this arm does not model, so the arm declines the
 flag rather than answering the one case the model could judge; a component
 over NAME_MAX, whose -ENAMETOOLONG comes out of the filesystem's own lookup
 (`simple_lookup`, fs/libfs.c:71-72, Linux v6.18.46, on tmpfs; `ext4_lookup`,
@@ -414,22 +366,25 @@ spelling gets the same -EISDIR by another route, `do_unlinkat`'s
 order is load-bearing: an implied directory is not a key the run holds, so
 the -ENOENT below would otherwise claim the name is absent.  It also
 covers the unrealizable image `Fs.valid_fs` admits, where "/tmp/a" and
-"/tmp/a/b" are both keys.
+"/tmp/a/b" are both keys.  The working-directory arm of `unlinkat_body_spec`
+DECLINES that shape instead, and the asymmetry is one of SCOPE and nothing
+deeper: `may_delete` does not care which directory the victim is in.
 
 WHAT IT ANSWERS BESIDE THE REMOVAL: a key the run does NOT hold is
--ENOENT, the ruling on #1136.  That is `lookup_one_qstr_excl`'s answer for
+-ENOENT.  That is `lookup_one_qstr_excl`'s answer for
 a negative dentry (:1713-1716), and what makes it true here rather than the
 flat map's guess is the privacy premise — the run's /tmp is its own, so
 what `State.in_tmp` declared plus what `Open.create_wronly` created minus
 what this arm removed is the whole truth about the directory
-(bugs/tmp-assumed-private-directory.md).  The premise is the WHOLE of what
+(linux-process-semantics@ff0313ba4f:bugs/tmp-assumed-private-directory.md).
+The premise is the WHOLE of what
 carries this answer; `Stat.newfstatat_core_spec`'s -ENOENT for the same name
 is NOT a second reading of it, being the flat map's answer for any absent
-path and recorded as a false rejection
-(bugs/newfstatat-flat-namespace-false-rejections.md).  `openat`'s /tmp arm
-still declines an `O_RDONLY` of a name not held because the ruling did not
-reach it, not for any structural reason.  Rocq: `Namei.unlinkat_tmp_spec`
-carries the argument in full.
+path and a false rejection
+(linux-process-semantics@ff0313ba4f:bugs/newfstatat-flat-namespace-false-rejections.md).
+`openat`'s /tmp arm declines an `O_RDONLY` of a name not held; nothing
+structural keeps it declined.  Rocq:
+`Namei.unlinkat_tmp_spec` carries the argument in full.
 
 There is no ignored-flag mask here and none is wanted: the flag word has
 already been narrowed to exactly 0 or AT_REMOVEDIR by `modeled_unlink_flags`
@@ -453,7 +408,7 @@ directory entry.  This is the one modeled syscall that DELETES from the
 file system, and the final file system is observable, so the removal is
 real: `Fs.fs_remove`, which `Fs.fs_remove_sorted` proves keeps the
 canonical sorted form.  The argument in full — the world the flat map is
-exact in, the two guards that keep the spec inside it, what closing
+exact in, the three guards that keep the spec inside it, what closing
 each would cost, and the approximation every deterministic arm carries —
 is on Rocq's `Namei.unlinkat_body_spec`; what follows is the kernel each
 arm rests on, read at Linux v6.18.46 (commit 1f99e9ab748f).
@@ -506,7 +461,7 @@ unlink callers use, never invokes it.  Rocq's `Namei.unlinkat_body_spec`
 carries that argument, and the reason a spec for a lookup must not reuse
 `path_strip_trailing_slashes` on the strength of this one.
 
-THE TWO GUARDS, each an `unmodeled` where the flat map would answer with
+THE THREE GUARDS, each an `unmodeled` where the flat map would answer with
 confidence and be wrong, in Rocq's words and order: a path with a "/"
 anywhere but at the end once the trailing ones are stripped, leading
 separators included — with the one exception `unlinkat_tmp_spec` carves
@@ -519,31 +474,20 @@ a name longer than NAME_MAX (include/uapi/linux/limits.h:12, Linux v6.18.46), wh
 `getname()`'s PATH_MAX bound lets through and the FILESYSTEM then refuses
 (`ext4_lookup`, fs/ext4/namei.c:1768-1769, Linux v6.18.46; on the harness's tmpfs
 working directory `simple_lookup`, fs/libfs.c:71-72, Linux v6.18.46, which
-mm/shmem.c:5285 installs).
+mm/shmem.c:5285 installs); and a name some key lives UNDER (`fs_under`),
+which means reality has a DIRECTORY the flat map cannot hold — unlinking
+"a" where "a/b" is a key is -EISDIR on Linux (`may_delete`,
+fs/namei.c:3289-3290, Linux v6.18.46) and -ENOENT here.  That guard runs
+BEFORE the lookup, so it also covers the unrealizable images
+`Fs.valid_fs` admits, where "a" and "a/b" are both keys.
 
-A NAME SOME KEY LIVES UNDER (`fs_under`) is an implied directory, and it
-is ANSWERED (#1753), where it used to be a third guard: flags 0 is
--EISDIR, `may_delete`'s refusal of a directory victim (fs/namei.c:3289-3290,
-Linux v6.18.46), or `do_unlinkat`'s `slashes:` label for "a/"
-(:4767-4772); AT_REMOVEDIR is -ENOTEMPTY when a key shows an entry in the
-directory (`fs_entry_under`), which `vfs_rmdir` (:4529-4567) gets from the
-filesystem's `->rmdir` — `ext4_rmdir` (fs/ext4/namei.c:3165-3167, Linux v6.18.46),
-`simple_rmdir` (fs/libfs.c:801-802, Linux v6.18.46), `shmem_rmdir`
-(mm/shmem.c:4034-4035, Linux v6.18.46) and `btrfs_rmdir`
-(fs/btrfs/inode.c:4839-4840, Linux v6.18.46) all refuse a non-empty
-directory that way — and is -ENOTEMPTY or the removal when the keys show
-no entry ("a/../b", or a key "a/" or "a/." that names "a" itself), since
-an empty directory is removed (`rmdir_implied_spec`).  The answers take
-the image's directories to be real ones, not symlinks to directories,
-whose unlink would remove the link
-(bugs/unlinkat-implied-directory-assumed-real.md).  The answers allow no
-`unlinkat_errnos` alternative, the narrowing the APPROXIMATION paragraph below
-describes (here it also leaves out `vfs_rmdir`'s -EBUSY for a mount
-point, :4543-4546).  The test runs before the lookup on purpose, so it
-also covers the unrealizable images `Fs.valid_fs` allows, where "a" and
-"a/b" are both keys.  The empty real directory, which no key implies, and
-why it is an environment precondition today, is
-bugs/unlinkat-empty-directory-premise-widened.md.  Rocq's
+An EMPTY real directory leaves no key at all, so nothing distinguishes it
+from an absent name
+(linux-process-semantics@ff0313ba4f:bugs/unlinkat-empty-directory-premise-widened.md):
+`fs_under` sees nothing under it and `fs_lookup` misses, which is why
+AT_REMOVEDIR of such a name can never correctly succeed here, and why
+closing that gap means directories become state in their own right —
+state a successful rmdir MUTATES.  Rocq's
 `Namei.unlinkat_body_spec` has the argument in full.
 
 THE OPEN-FD GUARD.  Linux keeps an unlinked file's contents reachable
@@ -603,9 +547,7 @@ def unlinkat_body_spec (dirfd pathp flags : word) (i : SyscallInput) (m : Model)
       else if path_eqb c dotdot_path then
         (if unlink_rmdir flags then err_ret ENOTEMPTY else err_ret EISDIR)
       else if NAME_MAX < c.length then unmodeled  -- the filesystem's own -ENAMETOOLONG
-      else if fs_under (m_fs m) c then             -- c names an implied directory
-        (if unlink_rmdir flags then rmdir_implied_spec c m
-         else err_ret EISDIR)      -- may_delete's -EISDIR
+      else if fs_under (m_fs m) c then unmodeled  -- c names an implied directory
       else
         (match fs_lookup (m_fs m) c with
          | none => err_ret ENOENT              -- absent: real -ENOENT, not a modeling gap
@@ -640,7 +582,8 @@ arm is a real -EINVAL the kernel reaches before `getname()` is evaluated —
 recording a copy there would claim a read Linux did not perform.  The
 range is the prefix through the first NUL, the first faulting byte, or
 PATH_MAX (`State.cstr_access_len_aux`), which
-bugs/openat-getname-word-at-a-time.md argues for openat.  Rocq:
+linux-process-semantics@ff0313ba4f:bugs/openat-getname-word-at-a-time.md
+argues for openat.  Rocq:
 `Namei.unlinkat_spec`. -/
 def unlinkat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
   i <- input ;;

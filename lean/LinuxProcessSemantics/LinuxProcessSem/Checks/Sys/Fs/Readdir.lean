@@ -1,8 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Fs/Readdir.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Readdir
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Checks.Sys.Fs.Readdir — the getdents64 (61) checker, its witness, and their proofs
 
@@ -24,8 +25,8 @@ it in `checked_table` (`Checks/Sys/Dispatch.v`), registers the `arm_unfold`
 equations (`ca_check_arm_getdents64`, `ca_witness_arm_getdents64`,
 `sa_spec_arm_getdents64` and `ca_no_arm_getdents64`), and names
 `check_getdents64_frame` in the alternation of `Checks/VmMapsDisjoint.v`.  In the Lean port those are the registration
-step of the conformance ticket for this arm, not this file's (BRIEF.md
-section 5, the CHECK and VERIFY blocks): the checker lands on the preludes
+step of the conformance ticket for this arm, not this file's: the checker
+lands on the preludes
 and the spec alone, and the checked table's row, its `arm_unfold` lemmas
 and the ledger's per-arm alternative are written when the arm is
 registered.  The frame lemma itself IS here, in the last section, as
@@ -41,8 +42,9 @@ files, the spec `Sys/Fs/Readdir.v` cites the same functions at the same
 version and no line numbers, and the three this file mirrors name the
 functions and no version.
 
-The FdFileRW and FdFileA declines follow the spec twin's declared narrowing
-(`Sys/Fs/Readdir.lean`, module header).
+EVERY REGULAR FILE IS -ENOTDIR here, `FdFileA` and `FdFileRW` with
+`FdFile` and `FdFileW` (`Sys/Fs/Readdir.lean`, module header), so the
+only decline is the directory arm's roomy half.
 
 THE PROOFS take the same route as Rocq's but spell the steps Rocq's
 `inv_ok` and `sys_unfold` take in one word: `bind_get_model_iff` for the
@@ -236,8 +238,9 @@ v6.18.46):
   (security/security.c:2944, Linux v6.18.46) and `fsnotify_file_perm`
   (include/linux/fsnotify.h:204, Linux v6.18.46), called at fs/readdir.c:93
   and 97 — are the spec twin's declared narrowing
-  (bugs/getdents64-lsm-and-fanotify-denials-not-admitted.md), which this
-  checker inherits: their -EACCES and -EPERM are refused, not admitted.
+  (linux-process-semantics@ff0313ba4f:bugs/getdents64-lsm-and-fanotify-denials-not-admitted.md),
+  which this checker inherits: their -EACCES and -EPERM are refused, not
+  admitted.
 
 All the admitted answers are a bare return with FIVE EMPTY LEDGERS: the
 kernel reaches `user_write_access_begin` (the `user_access_begin` alias of
@@ -255,8 +258,8 @@ def check_getdents64 (fd count : word) (eff : SyscallEffect) (m : Model) : check
   | some (.FdChannel _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | some (.FdFile _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | some (.FdFileW _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
-  | some (.FdFileA _ _) => CheckUnmodeled
-  | some (.FdFileRW _ _) => CheckUnmodeled
+  | some (.FdFileA _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
+  | some (.FdFileRW _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | some (.FdPipe _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | some (.FdSocket _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | some (.FdDevNull _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
@@ -288,8 +291,6 @@ theorem check_getdents64_sound_ok (fd count : word) (eff : SyscallEffect) (m m' 
     exact err_ret_of_check_ret_only EBADF eff m m' evs i h
   | some e =>
     cases e <;> intro h
-    case FdFileA _ _ => cases h
-    case FdFileRW _ _ => cases h
     case FdDir =>
       cases hroom : getdents64_no_room count with
       | false =>
@@ -331,14 +332,14 @@ theorem check_getdents64_sound_ok (fd count : word) (eff : SyscallEffect) (m m' 
             exact pure_ok _ i m
           | false =>
             simp only [hq, Bool.false_eq_true, ↓reduceIte, reduceCtorEq] at h
-    -- the -EBADF-less seven: every other non-directory kind is a plain -ENOTDIR
+    -- the nine non-directory kinds: each is a plain -ENOTDIR
     all_goals exact err_ret_of_check_ret_only ENOTDIR eff m m' evs i h
 
 /-- The one decline is the directory arm's roomy half — the listing the
 model cannot produce.  Inside the small-buffer half every effect shape is
-either accepted or rejected, never declined, and so is every non-directory
-fd but the read-write and append-mode files, which decline with the spec
-twin.  Rocq: `Checks.Sys.Fs.Readdir.check_getdents64_sound_unmodeled`. -/
+either accepted or rejected, never declined, and so is every
+non-directory fd, the append-mode and read-write files with the rest.
+Rocq: `Checks.Sys.Fs.Readdir.check_getdents64_sound_unmodeled`. -/
 theorem check_getdents64_sound_unmodeled (fd count : word) (eff : SyscallEffect) (m : Model)
     (i : SyscallInput) (h : check_getdents64 fd count eff m = CheckUnmodeled) :
     getdents64_spec fd count i m Unmodeled := by
@@ -352,8 +353,6 @@ theorem check_getdents64_sound_unmodeled (fd count : word) (eff : SyscallEffect)
     exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   | some e =>
     cases e <;> intro h
-    case FdFileA _ _ => exact unmodeled_intro i m
-    case FdFileRW _ _ => exact unmodeled_intro i m
     case FdDir =>
       cases hroom : getdents64_no_room count with
       | false =>
@@ -396,8 +395,6 @@ theorem check_getdents64_complete_ok (fd count : word) (eff : SyscallEffect) (m 
   | some e =>
     rw [hfd] at h
     cases e
-    case FdFileA _ _ => simp only [unmodeled_iff, reduceCtorEq] at h
-    case FdFileRW _ _ => simp only [unmodeled_iff, reduceCtorEq] at h
     case FdDir =>
       cases hroom : getdents64_no_room count with
       | false =>
@@ -439,8 +436,6 @@ theorem check_getdents64_complete_unmodeled (fd count : word) (m : Model) (i : S
   | some e =>
     rw [hfd] at h
     cases e
-    case FdFileA _ _ => rfl
-    case FdFileRW _ _ => rfl
     case FdDir =>
       cases hroom : getdents64_no_room count with
       | false => simp only [Bool.false_eq_true, ↓reduceIte]
@@ -472,8 +467,8 @@ def getdents64_witness (fd count : word) (m : Model) : outcome SyscallEffect :=
   | some (.FdChannel _) => ret_outcome (errno_ret ENOTDIR) m
   | some (.FdFile _ _) => ret_outcome (errno_ret ENOTDIR) m
   | some (.FdFileW _ _) => ret_outcome (errno_ret ENOTDIR) m
-  | some (.FdFileA _ _) => Unmodeled
-  | some (.FdFileRW _ _) => Unmodeled
+  | some (.FdFileA _ _) => ret_outcome (errno_ret ENOTDIR) m
+  | some (.FdFileRW _ _) => ret_outcome (errno_ret ENOTDIR) m
   | some (.FdPipe _ _) => ret_outcome (errno_ret ENOTDIR) m
   | some (.FdSocket _) => ret_outcome (errno_ret ENOTDIR) m
   | some (.FdDevNull _ _) => ret_outcome (errno_ret ENOTDIR) m
@@ -491,8 +486,6 @@ theorem getdents64_witness_ok (fd count : word) (i : SyscallInput) (m : Model) :
   | none => exact pure_ok _ i m
   | some e =>
     cases e
-    case FdFileA _ _ => exact unmodeled_intro i m
-    case FdFileRW _ _ => exact unmodeled_intro i m
     case FdDir =>
       cases getdents64_no_room count with
       | true =>
@@ -545,8 +538,6 @@ theorem check_getdents64_frame (fd count : word) (eff : SyscallEffect) (m m' : M
   | some e =>
     rw [hfd] at h
     cases e
-    case FdFileA _ _ => cases h
-    case FdFileRW _ _ => cases h
     case FdDir =>
       dsimp only at h
       split at h

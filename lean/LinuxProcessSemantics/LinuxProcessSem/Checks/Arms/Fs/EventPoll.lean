@@ -270,8 +270,8 @@ open LinuxProcessSemantics.LinuxProcessSem.Checks.VmMapsDisjoint
 /-! ## The model frame the two descriptor-state facts rest on
 
 The two registry entries beside `vm_wf` read the `m_fd` subsystem.  The
-three checkers accept only `CheckOk m []`, through `check_ret_only` or
-`check_ep_answer`, with the model handed in.  One lemma per
+three checkers accept only `CheckOk m []`, through `check_ret_only`,
+with the model handed in.  One lemma per
 checker saying exactly that answers both entries.  The file
 `Checks/Sys/Fs/EventPoll.lean` is not this registration's to edit, so the
 lemmas stand here.  Rocq registers no `m_fd` invariant, so none has a twin. -/
@@ -294,9 +294,7 @@ theorem check_epoll_ctl_keeps_the_model (i : SyscallInput) (epfd op32 tfd ev : w
   unfold Checks.Sys.Fs.EventPoll.check_epoll_ctl at h
   split at h
   · cases h
-  · exact (by
-      obtain ⟨_, _, _, hm, _⟩ := (Checks.Sys.Fs.EventPoll.check_ep_answer_ok_iff _ _ _ _ _).mp h
-      exact hm)
+  · exact ((check_ret_only_ok_iff _ _ _ _ _ _).mp h).2.1
 
 /-- `check_epoll_pwait` accepts only with the model it was handed. -/
 theorem check_epoll_pwait_keeps_the_model (i : SyscallInput)
@@ -308,9 +306,7 @@ theorem check_epoll_pwait_keeps_the_model (i : SyscallInput)
   unfold Checks.Sys.Fs.EventPoll.check_epoll_pwait at h
   split at h
   · cases h
-  · exact (by
-      obtain ⟨_, _, _, hm, _⟩ := (Checks.Sys.Fs.EventPoll.check_ep_answer_ok_iff _ _ _ _ _).mp h
-      exact hm)
+  · exact ((check_ret_only_ok_iff _ _ _ _ _ _).mp h).2.1
 
 /-- `vm_wf` × `epoll_create1`: the ledger fact above. -/
 theorem vm_wf_arm_epoll_create1 : arm_preserves inv_vm_wf arm_epoll_create1 :=

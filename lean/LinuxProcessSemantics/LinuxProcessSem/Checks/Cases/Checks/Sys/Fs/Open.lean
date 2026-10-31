@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Fs/Open.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs.Open
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.Open
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.Pipe
@@ -78,20 +79,20 @@ through the dispatcher after the open — the read of `/tmp/out.gif` and its
 `unlinkat` in `openat_tmp_create_read_unlink`, the `write`, `read`, `close`
 and `fstat` legs of the device examples — only the openat leg lands here;
 the rest is the other checkers' and the dispatcher's.  Four of Rocq's
-examples, `openat_append_flag_word`, `openat_rdwr_flag_words`,
-`openat_rdwr_errnos` and `openat_rdwr_dirref`, pin arms this checker does
-not have (the header of `Checks/Sys/Fs/Open.lean` says why); what this
-file pins in their place is that the checker DECLINES those words, so that
-the descriptor Linux hands out for them is refused rather than guessed at.
-Where Rocq ANSWERS a write-capable word on an implied directory
-(`openat_implied_directory_other_write_words`) this file pins a decline
-too — and there the reason is narrower than the constructor gap: Linux
-hands out an errno, not a descriptor, and Rocq names it without either
-missing kind.  The decline is the spec twin's, which dispatches on the
-WORD before any arm sees the name (`openat_resolved_spec` ends
-`unmodeled` after the `O_DIRECTORY` arm), and the checker follows the
-spec it is proved against; it is wider than it strictly needs to be, and
-admissible because it fails closed.
+examples are over the words this checker now has arms for —
+`openat_append_flag_word`, `openat_rdwr_flag_words`, `openat_rdwr_errnos`
+and `openat_rdwr_dirref` — and are twinned below under those names, with
+`openat_implied_directory_other_write_words` beside them: the append word
+(1089) mints `State.FdFileA` and leaves an existing file's bytes alone,
+the four read-write words (2, 514, 66, 578) and the two exclusive
+read-write words (194, 706) mint `State.FdFileRW`, and on a directory
+reference or an implied directory each answers the errno Linux gives it,
+-EISDIR for the five non-exclusive words and -EEXIST for the exclusive
+one.  The words BESIDE those — O_WRONLY|O_CREAT|O_EXCL|O_APPEND (1217)
+and the same with O_TRUNC (1729), O_WRONLY|O_CREAT|O_APPEND|O_TRUNC
+(1601), O_RDWR|O_APPEND (1026), O_RDWR|O_EXCL without O_CREAT (130) —
+have no arm in spec or checker and are declined by the flag gate, before
+the pathname is read.
 
 WHY A CHECKER NEEDS PINS OF ITS OWN.  The lemmas of the checker's file tie
 `check_openat` to `openat_spec` in both directions, and a checker that
@@ -278,23 +279,140 @@ theorem flags_high_half_declines :
     check_openat_row (openat_in [102] 4294967296) (eff_ret 3 2) have_model = CheckUnmodeled :=
   rfl
 
-/-- The append word (1089), the read-write words (2, 514, 66, 578) and the
-read-write exclusive words (194, 706) on a PLAIN name are declined: Linux
-answers each of them — opening the file for six, and -EEXIST for the
-exclusive read-write word on a held name (`do_open`, fs/namei.c:3949-3950)
-— and the model's arms for them are not ported yet (the header of
-`Sys/Fs/Open.lean` says why), so every answer is refused rather than a
-descriptor admitted under some other kind.  Rocq accepts these; the
-`unported:` lines of the checker's header name the arms.
-kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem append_and_rdwr_words_decline_on_a_plain_name :
-    check_openat_row (openat_in [102] 1089) (eff_ret 3 2) have_model = CheckUnmodeled
-    ∧ check_openat_row (openat_in [102] 2) (eff_ret 3 2) have_model = CheckUnmodeled
-    ∧ check_openat_row (openat_in [102] 514) (eff_ret 3 2) have_model = CheckUnmodeled
-    ∧ check_openat_row (openat_in [97] 66) (eff_ret 3 2) absent_model = CheckUnmodeled
-    ∧ check_openat_row (openat_in [97] 578) (eff_ret 3 2) absent_model = CheckUnmodeled
-    ∧ check_openat_row (openat_in [97] 194) (eff_ret 3 2) absent_model = CheckUnmodeled
-    ∧ check_openat_row (openat_in [102] 706) (eff_errno EEXIST 2) have_model = CheckUnmodeled :=
+/-- THE APPEND WORD, O_WRONLY|O_CREAT|O_APPEND (1089), on a plain name:
+the descriptor is `State.FdFileA` at offset 0, an ABSENT name is created
+empty and an EXISTING one KEEPS its bytes — where the clobbering word
+(577), stated beside it on the same image, empties the file.  O_NONBLOCK
+beside the word (3137) changes no answer, an equality between two flag
+words no probe can state.  A directory reference is -EISDIR, and the
+-EEXIST a reader gets backwards there is refused.  The spellings next to
+the word stay declined: with O_TRUNC (1601), with O_EXCL (1217),
+O_WRONLY|O_APPEND (1025) and O_RDWR|O_CREAT|O_APPEND (1090);
+`modeled_open_flags` (`Sys/Fs/Open.lean`) names each and says why.
+`lookup_open` creates the absent name (fs/namei.c:3787-3798, Linux
+v6.18.46), `do_open` leaves an existing file's bytes alone with no
+O_TRUNC (:3967-3970) and answers -EISDIR for the directory inside its
+O_CREAT block (:3951-3952), and O_APPEND itself reaches `f_flags` and
+nothing an arm reads (`init_file`, fs/file_table.c:198).  Rocq:
+`openat_append_flag_word`.
+kernel: fs/namei.c:lookup_open,do_open; fs/file_table.c:init_file@v6.18.46 -/
+theorem openat_append_flag_word :
+    check_openat_row (openat_in [102] 3137) (eff_ret 3 2) have_model
+      = check_openat_row (openat_in [102] 1089) (eff_ret 3 2) have_model
+    ∧ check_openat_row (openat_in [102] 1089) (eff_ret 3 2) have_model
+        = CheckOk (fixture_of (fds := (3, .FdFileA [102] 0) :: init_fds) (fs := have_fs)) []
+    ∧ check_openat_row (openat_in [102] 1089) (eff_ret 3 2) absent_model
+        = CheckOk (fixture_of (fds := (3, .FdFileA [102] 0) :: init_fds)
+                              (fs := [([102], [])])) []
+    ∧ check_openat_row (openat_in [102] 577) (eff_ret 3 2) have_model
+        = CheckOk (fixture_of (fds := (3, .FdFileW [102] 0) :: init_fds)
+                              (fs := [([102], [])])) []
+    ∧ check_openat_row (openat_in [46] 1089) (eff_errno EISDIR 2) absent_model
+        = CheckOk absent_model []
+    ∧ check_openat_row (openat_in [46] 1089) (eff_errno EEXIST 2) absent_model = CheckReject
+    ∧ check_openat_row (openat_in [102] 1601) (eff_ret 3 2) have_model = CheckUnmodeled
+    ∧ check_openat_row (openat_in [102] 1217) (eff_ret 3 2) have_model = CheckUnmodeled
+    ∧ check_openat_row (openat_in [102] 1025) (eff_ret 3 2) have_model = CheckUnmodeled
+    ∧ check_openat_row (openat_in [102] 1090) (eff_ret 3 2) have_model = CheckUnmodeled :=
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+
+/-- THE SIX READ-WRITE WORDS, as the table the two bits decide.  Every
+one of them mints `State.FdFileRW` at offset 0; O_TRUNC decides whether
+an EXISTING file keeps its bytes (2 and 66 keep, 514 and 578 empty), and
+O_CREAT what an ABSENT name gets (66, 578, 194 and 706 create it empty).
+O_NONBLOCK beside O_RDWR (2050) changes no answer — an equality between
+two flag words no probe can state.  The spellings beside them stay
+declined: O_RDWR|O_APPEND (1026), O_RDWR|O_CREAT|O_APPEND (1090),
+O_RDWR|O_EXCL without O_CREAT (130), the same with O_TRUNC (642) and
+O_RDWR|O_DIRECTORY (65538).  `lookup_open` creates the absent name
+(fs/namei.c:3787-3798, Linux v6.18.46), `do_open` truncates an existing
+one only under O_TRUNC (:3967-3970), and `OPEN_FMODE` gives the
+description both FMODE_READ and FMODE_WRITE (fs/file_table.c:199).
+Rocq: `openat_rdwr_flag_words`.
+kernel: fs/namei.c:lookup_open,do_open; fs/file_table.c:init_file@v6.18.46 -/
+theorem openat_rdwr_flag_words :
+    check_openat_row (openat_in [102] 2050) (eff_ret 3 2) have_model
+      = check_openat_row (openat_in [102] 2) (eff_ret 3 2) have_model
+    ∧ check_openat_row (openat_in [102] 2) (eff_ret 3 2) have_model
+        = CheckOk (fixture_of (fds := (3, .FdFileRW [102] 0) :: init_fds) (fs := have_fs)) []
+    ∧ check_openat_row (openat_in [102] 66) (eff_ret 3 2) have_model
+        = CheckOk (fixture_of (fds := (3, .FdFileRW [102] 0) :: init_fds) (fs := have_fs)) []
+    ∧ check_openat_row (openat_in [102] 514) (eff_ret 3 2) have_model
+        = CheckOk (fixture_of (fds := (3, .FdFileRW [102] 0) :: init_fds)
+                              (fs := [([102], [])])) []
+    ∧ check_openat_row (openat_in [102] 578) (eff_ret 3 2) have_model
+        = CheckOk (fixture_of (fds := (3, .FdFileRW [102] 0) :: init_fds)
+                              (fs := [([102], [])])) []
+    ∧ check_openat_row (openat_in [102] 66) (eff_ret 3 2) absent_model
+        = CheckOk (fixture_of (fds := (3, .FdFileRW [102] 0) :: init_fds)
+                              (fs := [([102], [])])) []
+    ∧ check_openat_row (openat_in [102] 578) (eff_ret 3 2) absent_model
+        = CheckOk (fixture_of (fds := (3, .FdFileRW [102] 0) :: init_fds)
+                              (fs := [([102], [])])) []
+    ∧ check_openat_row (openat_in [102] 194) (eff_ret 3 2) absent_model
+        = CheckOk (fixture_of (fds := (3, .FdFileRW [102] 0) :: init_fds)
+                              (fs := [([102], [])])) []
+    ∧ check_openat_row (openat_in [102] 706) (eff_ret 3 2) absent_model
+        = CheckOk (fixture_of (fds := (3, .FdFileRW [102] 0) :: init_fds)
+                              (fs := [([102], [])])) []
+    ∧ check_openat_row (openat_in [102] 1026) (eff_ret 3 2) have_model = CheckUnmodeled
+    ∧ check_openat_row (openat_in [102] 1090) (eff_ret 3 2) have_model = CheckUnmodeled
+    ∧ check_openat_row (openat_in [102] 130) (eff_ret 3 2) have_model = CheckUnmodeled
+    ∧ check_openat_row (openat_in [102] 642) (eff_ret 3 2) have_model = CheckUnmodeled
+    ∧ check_openat_row (openat_in [102] 65538) (eff_ret 3 2) have_model = CheckUnmodeled :=
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+
+/-- THE ERRNO HALF OF THE SAME TABLE, and the -EMFILE refusals that pin
+two of its branches as DETERMINISTIC.  A read-write word with no O_CREAT
+on a name that is not there is the walk's own -ENOENT (`traverse_mounts`,
+fs/namei.c:1537-1538, Linux v6.18.46), and an exclusive read-write word
+on a name that IS there is `do_open`'s -EEXIST (:3949-3950); neither
+admits an `openat_errnos` alternative, so the -EMFILE a real kernel can
+raise first (`do_sys_openat2` reserves the descriptor at fs/open.c:1435
+through `get_unused_fd_flags`, fs/file.c:591-593) is REFUSED — the
+narrowing `openat_body_spec`'s docstring records, not an impossibility.
+An open that can SUCCEED admits it, and admits -ENOMEM with it.  Rocq:
+`openat_rdwr_errnos`.
+kernel: fs/namei.c:traverse_mounts,do_open; fs/open.c:do_sys_openat2; fs/file.c:alloc_fd@v6.18.46 -/
+theorem openat_rdwr_errnos :
+    check_openat_row (openat_in [102] 2) (eff_errno ENOENT 2) absent_model
+        = CheckOk absent_model []
+    ∧ check_openat_row (openat_in [102] 514) (eff_errno ENOENT 2) absent_model
+        = CheckOk absent_model []
+    ∧ check_openat_row (openat_in [102] 194) (eff_errno EEXIST 2) have_model
+        = CheckOk have_model []
+    ∧ check_openat_row (openat_in [102] 2) (eff_errno EMFILE 2) absent_model = CheckReject
+    ∧ check_openat_row (openat_in [102] 194) (eff_errno EMFILE 2) have_model = CheckReject
+    ∧ check_openat_row (openat_in [102] 2) (eff_errno EMFILE 2) have_model
+        = CheckOk have_model []
+    ∧ check_openat_row (openat_in [102] 66) (eff_errno ENOMEM 2) absent_model
+        = CheckOk absent_model [] :=
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+
+/-- A DIRECTORY REFERENCE under the read-write words, whose two answers
+come from two different kernel tests reached in the same call.  Without
+O_CREAT nothing in `do_open`'s O_CREAT block runs and the -EISDIR is
+`may_open`'s S_IFDIR arm under `acc_mode & MAY_WRITE`, which O_RDWR
+carries through `ACC_MODE` (fs/namei.c:3540-3542, Linux v6.18.46); with
+O_CREAT it is `do_open`'s own `d_is_dir` (:3951-3952) — unless O_EXCL is
+set, which is tested first and answers -EEXIST (:3949-3950).  No real run
+separates the two -EISDIRs; the -EEXIST is the one a reader gets
+backwards, so the last two conjuncts refuse each errno under the other's
+word.  Rocq: `openat_rdwr_dirref`.
+kernel: fs/namei.c:do_open,may_open@v6.18.46 -/
+theorem openat_rdwr_dirref :
+    check_openat_row (openat_in [46] 2) (eff_errno EISDIR 2) absent_model
+        = CheckOk absent_model []
+    ∧ check_openat_row (openat_in [46] 514) (eff_errno EISDIR 2) absent_model
+        = CheckOk absent_model []
+    ∧ check_openat_row (openat_in [46] 66) (eff_errno EISDIR 2) absent_model
+        = CheckOk absent_model []
+    ∧ check_openat_row (openat_in [46] 578) (eff_errno EISDIR 2) absent_model
+        = CheckOk absent_model []
+    ∧ check_openat_row (openat_in [46] 194) (eff_errno EEXIST 2) absent_model
+        = CheckOk absent_model []
+    ∧ check_openat_row (openat_in [46] 194) (eff_errno EISDIR 2) absent_model = CheckReject
+    ∧ check_openat_row (openat_in [46] 2) (eff_errno EEXIST 2) absent_model = CheckReject :=
   ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-- O_NONBLOCK, O_CLOEXEC and O_LARGEFILE are masked before the word is
@@ -775,26 +893,30 @@ theorem implied_directory_excl_is_eexist :
   ⟨rfl, rfl, rfl, rfl⟩
 
 /-- The other write-capable words on an implied directory ("a" over a held
-"a/b").  Linux answers each: -EISDIR for the append word and the
-read-write words with and without O_CREAT and O_TRUNC — through
-`do_open`'s `d_is_dir` inside its O_CREAT block (fs/namei.c:3948-3952)
-for the O_CREAT words, through `may_open`'s S_IFDIR arm (:3540-3542) for
-the rest — and -EEXIST for the exclusive read-write word (:3949-3950).
-Rocq ACCEPTS those answers (`openat_implied_directory_other_write_words`);
-this checker has no arm for the words (the header of
-`Checks/Sys/Fs/Open.lean`), so each is declined, the kernel's own errno
-and a descriptor alike.  Stated so that the decline is seen to sit on the
-WORD and not on the implied directory: the same words decline on a plain
-name in `append_and_rdwr_words_decline_on_a_plain_name`.
+"a/b").  Each answers the errno Linux gives it: -EISDIR for the append
+word and for the read-write words with and without O_CREAT and O_TRUNC —
+through `do_open`'s `d_is_dir` inside its O_CREAT block
+(fs/namei.c:3948-3952, Linux v6.18.46) for the O_CREAT words, through
+`may_open`'s S_IFDIR arm (:3540-3542) for the rest, the same errno by a
+different route — and -EEXIST for the exclusive read-write word
+(:3949-3950).  The last conjunct refuses the descriptor under the create
+word, so that the arms are seen to answer the errno and not to open the
+implied directory.  Rocq: `openat_implied_directory_other_write_words`.
 kernel: fs/namei.c:do_open,may_open@v6.18.46 -/
-theorem implied_directory_other_write_words_decline :
-    check_openat_row (openat_in [97] 1089) (eff_errno EISDIR 2) under_model = CheckUnmodeled
-    ∧ check_openat_row (openat_in [97] 66) (eff_errno EISDIR 2) under_model = CheckUnmodeled
-    ∧ check_openat_row (openat_in [97] 578) (eff_errno EISDIR 2) under_model = CheckUnmodeled
-    ∧ check_openat_row (openat_in [97] 2) (eff_errno EISDIR 2) under_model = CheckUnmodeled
-    ∧ check_openat_row (openat_in [97] 514) (eff_errno EISDIR 2) under_model = CheckUnmodeled
-    ∧ check_openat_row (openat_in [97] 194) (eff_errno EEXIST 2) under_model = CheckUnmodeled
-    ∧ check_openat_row (openat_in [97] 66) (eff_ret 3 2) under_model = CheckUnmodeled :=
+theorem openat_implied_directory_other_write_words :
+    check_openat_row (openat_in [97] 1089) (eff_errno EISDIR 2) under_model
+        = CheckOk under_model []
+    ∧ check_openat_row (openat_in [97] 66) (eff_errno EISDIR 2) under_model
+        = CheckOk under_model []
+    ∧ check_openat_row (openat_in [97] 578) (eff_errno EISDIR 2) under_model
+        = CheckOk under_model []
+    ∧ check_openat_row (openat_in [97] 2) (eff_errno EISDIR 2) under_model
+        = CheckOk under_model []
+    ∧ check_openat_row (openat_in [97] 514) (eff_errno EISDIR 2) under_model
+        = CheckOk under_model []
+    ∧ check_openat_row (openat_in [97] 194) (eff_errno EEXIST 2) under_model
+        = CheckOk under_model []
+    ∧ check_openat_row (openat_in [97] 66) (eff_ret 3 2) under_model = CheckReject :=
   ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-! ## O_DIRECTORY
@@ -1125,24 +1247,27 @@ theorem urandom_rdwr_excl_is_eexist_and_the_rest_declines :
     ∧ check_openat_row (openat_in urandom_path 578) (eff_ret 3 13) absent_model = CheckUnmodeled :=
   ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
-/-- The exclusive append words (1217, and 1729 with O_TRUNC; #1752) are
--EEXIST on both devices, a descriptor refused: `do_open`'s O_EXCL test
-(fs/namei.c:3949-3950) refuses the existing node before either device is
-opened, which is why `check_openat_urandom` answers this write word where it
-declines the others.  Rocq: the exclusive append legs of
-`devnull_open_by_word` and `urandom_open_by_word`.
+/-- The exclusive append words (1217, and 1729 with O_TRUNC) are
+DECLINED on both devices, whatever the kernel is offered as having said:
+`do_open`'s O_EXCL test does refuse the existing device node with
+-EEXIST (fs/namei.c:3949-3950), but neither spec nor checker has an arm
+for the word — `modeled_open_flags` refuses it before the pathname is
+read — so the errno is refused rather than guessed at, and so is the
+descriptor.  The arms beside it answer: the exclusive read-write words
+above are -EEXIST on both devices.
 kernel: fs/namei.c:do_open@v6.18.46 -/
 theorem excl_append_word_on_the_devices :
     check_openat_row (openat_in devnull_path 1217) (eff_errno EEXIST 10) absent_model
-        = CheckOk absent_model []
+        = CheckUnmodeled
     ∧ check_openat_row (openat_in devnull_path 1729) (eff_errno EEXIST 10) absent_model
-        = CheckOk absent_model []
-    ∧ check_openat_row (openat_in devnull_path 1217) (eff_ret 3 10) absent_model = CheckReject
+        = CheckUnmodeled
+    ∧ check_openat_row (openat_in devnull_path 1217) (eff_ret 3 10) absent_model = CheckUnmodeled
     ∧ check_openat_row (openat_in urandom_path 1217) (eff_errno EEXIST 13) absent_model
-        = CheckOk absent_model []
+        = CheckUnmodeled
     ∧ check_openat_row (openat_in urandom_path 1729) (eff_errno EEXIST 13) absent_model
-        = CheckOk absent_model []
-    ∧ check_openat_row (openat_in urandom_path 1217) (eff_ret 3 13) absent_model = CheckReject :=
+        = CheckUnmodeled
+    ∧ check_openat_row (openat_in urandom_path 1217) (eff_ret 3 13) absent_model
+        = CheckUnmodeled :=
   ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-- The create, append and read-write words decline — Linux opens each
@@ -1353,8 +1478,10 @@ WITH the pathname copy-in recorded — so the -ENOMEM it names is
 (`do_sys_openat2`, fs/open.c:1431), and not `getname_flags`'s own
 (fs/namei.c:146-148), which fails before any byte is read and would leave
 the ledger empty.  The checker accepts that effect with the model
-unchanged.  "f" held under the read word, "/dev/null" under it, and "a"
-under the create word.
+unchanged.  "f" held under the read word, "/dev/null" under it, "a"
+under the create word, and the three arms that mint the two new kinds:
+"f" held under the append word and under O_RDWR, and "a" absent under
+the exclusive read-write word.
 kernel: fs/file_table.c:alloc_empty_file; fs/namei.c:path_openat@v6.18.46 -/
 theorem witness_draws_enomem_where_a_descriptor_is_minted :
     openat_witness_row (openat_in [102] 0) have_model = Ok (eff_errno ENOMEM 2) have_model []
@@ -1365,13 +1492,27 @@ theorem witness_draws_enomem_where_a_descriptor_is_minted :
         = CheckOk absent_model []
     ∧ openat_witness_row (openat_in [97] 577) absent_model = Ok (eff_errno ENOMEM 2) absent_model []
     ∧ check_openat_row (openat_in [97] 577) (eff_errno ENOMEM 2) absent_model
+        = CheckOk absent_model []
+    ∧ openat_witness_row (openat_in [102] 1089) have_model
+        = Ok (eff_errno ENOMEM 2) have_model []
+    ∧ check_openat_row (openat_in [102] 1089) (eff_errno ENOMEM 2) have_model
+        = CheckOk have_model []
+    ∧ openat_witness_row (openat_in [102] 2) have_model = Ok (eff_errno ENOMEM 2) have_model []
+    ∧ check_openat_row (openat_in [102] 2) (eff_errno ENOMEM 2) have_model
+        = CheckOk have_model []
+    ∧ openat_witness_row (openat_in [97] 194) absent_model
+        = Ok (eff_errno ENOMEM 2) absent_model []
+    ∧ check_openat_row (openat_in [97] 194) (eff_errno ENOMEM 2) absent_model
         = CheckOk absent_model [] :=
-  ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-- On a deterministic branch the witness is that branch's errno: -ENOENT
-for an absent name, the empty path and "/etc/localtime"; -EEXIST for the
-exclusive word on a held name; -ENOTDIR for O_DIRECTORY on one; -EISDIR for
-the create word on an implied directory; -EFAULT for an unmapped pathname.
+for an absent name, the empty path, "/etc/localtime" and a read-write
+word with no O_CREAT on a name that is not there; -EEXIST for the
+exclusive word on a held name and for the exclusive read-write word on
+one; -ENOTDIR for O_DIRECTORY on a held name; -EISDIR for the create
+word, the append word and the read-write words on an implied directory;
+-EFAULT for an unmapped pathname.
 kernel: fs/namei.c:traverse_mounts,getname_flags,do_open,path_init; lib/strncpy_from_user.c:strncpy_from_user@v6.18.46 -/
 theorem witness_names_the_deterministic_errno :
     openat_witness_row (openat_in [97] 0) absent_model = Ok (eff_errno ENOENT 2) absent_model []
@@ -1381,17 +1522,24 @@ theorem witness_names_the_deterministic_errno :
     ∧ openat_witness_row (openat_in [102] 193) have_model = Ok (eff_errno EEXIST 2) have_model []
     ∧ openat_witness_row (openat_in [102] 65536) have_model = Ok (eff_errno ENOTDIR 2) have_model []
     ∧ openat_witness_row (openat_in [97] 577) under_model = Ok (eff_errno EISDIR 2) under_model []
-    ∧ openat_witness_row (unmapped_in 0) absent_model = Ok (eff_errno EFAULT 1) absent_model [] :=
-  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+    ∧ openat_witness_row (unmapped_in 0) absent_model = Ok (eff_errno EFAULT 1) absent_model []
+    ∧ openat_witness_row (openat_in [97] 2) absent_model = Ok (eff_errno ENOENT 2) absent_model []
+    ∧ openat_witness_row (openat_in [102] 194) have_model = Ok (eff_errno EEXIST 2) have_model []
+    ∧ openat_witness_row (openat_in [97] 1089) under_model = Ok (eff_errno EISDIR 2) under_model []
+    ∧ openat_witness_row (openat_in [97] 2) under_model = Ok (eff_errno EISDIR 2) under_model []
+    ∧ openat_witness_row (openat_in [97] 194) under_model = Ok (eff_errno EEXIST 2) under_model [] :=
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-- Where the spec declines, the witness is `Unmodeled`: the O_NOCTTY word
-before the fetch, a live dirfd, the append word on a plain name, an
-absolute plain key, and "/tmp/x" the run does not hold.
+before the fetch, a live dirfd, the exclusive append word (1217) on a
+plain name — the flag gate refuses it, where the append word beside it
+now draws -ENOMEM — an absolute plain key, and "/tmp/x" the run does not
+hold.
 kernel: fs/open.c:build_open_flags; fs/namei.c:path_init,link_path_walk@v6.18.46 -/
 theorem witness_is_unmodeled_where_the_spec_declines :
     openat_witness_row (unmapped_in 256) absent_model = Unmodeled
     ∧ openat_witness_row (openat_in' 1 8192 0 (open_path_mem [102])) have_model = Unmodeled
-    ∧ openat_witness_row (openat_in [102] 1089) have_model = Unmodeled
+    ∧ openat_witness_row (openat_in [102] 1217) have_model = Unmodeled
     ∧ openat_witness_row (openat_in [47, 97] 577) absent_model = Unmodeled
     ∧ openat_witness_row (openat_in [47, 116, 109, 112, 47, 120] 0) absent_model = Unmodeled :=
   ⟨rfl, rfl, rfl, rfl, rfl⟩
@@ -3789,6 +3937,89 @@ theorem ftruncate_dangling_fd_declines (eff : SyscallEffect) :
         (fixture_of (fds := [(3, .FdFileW [102] 0)])) = CheckUnmodeled :=
   ⟨rfl, rfl, rfl⟩
 
+/-! ## The append and the read-write descriptor take the write-only body
+
+`do_ftruncate`'s test is `!S_ISREG(inode->i_mode) || !(file->f_mode &
+FMODE_WRITE)` (fs/open.c:175-176, Linux v6.18.46), and an O_APPEND or an
+O_RDWR description passes both halves exactly as an O_WRONLY one does:
+O_APPEND rides on O_WRONLY, which is what sets FMODE_WRITE, and
+`do_ftruncate` reads the flag nowhere.  So the two kinds `openat` mints
+for the append word and the read-write words take the write-only arm's
+body — the image lookup, the `modeled_truncate_gap` guard, the resized
+image and 0 — and leave the offset alone, which a shrink can therefore
+leave past end-of-file.  `ft_model` holds neither kind, so this section
+brings its own table. -/
+
+/-- An append descriptor at 3 on "f" and a read-write one at 4 on "g",
+each file three bytes long, and each offset past what a shrink leaves. -/
+def ft_new_fds : List (word × FdEntry) :=
+  [ (3, .FdFileA [102] 9), (4, .FdFileRW [103] 2) ]
+def ft_new_fs : Fs.Fs := [([102], [120, 121, 122]), ([103], [121, 122, 123])]
+def ft_new_model : Model := fixture_of (fds := ft_new_fds) (fs := ft_new_fs)
+
+/-- `ft_new_model` with the file behind 3 holding `data`, the other kept. -/
+def ft_new_with_3 (data : List byte) : Model :=
+  fixture_of (fds := ft_new_fds) (fs := [([102], data), ([103], [121, 122, 123])])
+
+/-- …and with the file behind 4 holding it. -/
+def ft_new_with_4 (data : List byte) : Model :=
+  fixture_of (fds := ft_new_fds) (fs := [([102], [120, 121, 122]), ([103], data)])
+
+/-- THE APPEND DESCRIPTOR resizes its file: a shrink keeps the prefix, a
+grow zero-fills, the current length changes nothing, and the answer is 0
+— not the -EINVAL the kinds `do_ftruncate` refuses get, and not the
+length.  The descriptor table is untouched, the offset at 9 with it.  The
+witness names the same 0 over the same model.
+kernel: fs/open.c:do_sys_ftruncate,do_ftruncate,do_truncate@v6.18.46 -/
+theorem ftruncate_append_fd_resizes_the_file :
+    check_ftruncate 3 1 (mkEffect 0 [] []) ft_new_model = CheckOk (ft_new_with_3 [120]) []
+    ∧ check_ftruncate 3 0 (mkEffect 0 [] []) ft_new_model = CheckOk (ft_new_with_3 []) []
+    ∧ check_ftruncate 3 5 (mkEffect 0 [] []) ft_new_model
+        = CheckOk (ft_new_with_3 [120, 121, 122, 0, 0]) []
+    ∧ check_ftruncate 3 3 (mkEffect 0 [] []) ft_new_model
+        = CheckOk (ft_new_with_3 [120, 121, 122]) []
+    ∧ check_ftruncate 3 1 (mkEffect (errno_ret EINVAL) [] []) ft_new_model = CheckReject
+    ∧ check_ftruncate 3 1 (mkEffect 1 [] []) ft_new_model = CheckReject
+    ∧ ftruncate_witness 3 1 ft_new_model = Ok (mkEffect 0 [] []) (ft_new_with_3 [120]) []
+    ∧ check_ftruncate_row (ftruncate_call 3 1) (mkEffect 0 [] []) ft_new_model
+        = CheckOk (ft_new_with_3 [120]) [] :=
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+
+/-- THE READ-WRITE DESCRIPTOR does the same, through the arm it shares
+with the write-only kind: the shrink, the grow, the 0, the -EINVAL
+refused, the witness and the row.
+kernel: fs/open.c:do_sys_ftruncate,do_ftruncate,do_truncate@v6.18.46 -/
+theorem ftruncate_rdwr_fd_resizes_the_file :
+    check_ftruncate 4 1 (mkEffect 0 [] []) ft_new_model = CheckOk (ft_new_with_4 [121]) []
+    ∧ check_ftruncate 4 5 (mkEffect 0 [] []) ft_new_model
+        = CheckOk (ft_new_with_4 [121, 122, 123, 0, 0]) []
+    ∧ check_ftruncate 4 1 (mkEffect (errno_ret EINVAL) [] []) ft_new_model = CheckReject
+    ∧ check_ftruncate 4 1 (mkEffect (errno_ret EBADF) [] []) ft_new_model = CheckReject
+    ∧ ftruncate_witness 4 1 ft_new_model = Ok (mkEffect 0 [] []) (ft_new_with_4 [121]) []
+    ∧ check_ftruncate_row (ftruncate_call 4 1) (mkEffect 0 [] []) ft_new_model
+        = CheckOk (ft_new_with_4 [121]) [] :=
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+
+/-- …and they decline where the write-only kind declines, and only there:
+on a path the image does not hold, and on a grow past
+`modeled_truncate_gap` (131075 is the last length a three-byte file is
+judged at).  A negative length is still the -EINVAL decided before the
+descriptor is looked at.  Both declines are the model's own — Linux
+resizes the inode behind the open file and leaves a hole for free — so
+the evidence is `model:`.
+model: `fs_lookup` by path and `modeled_truncate_gap`, the model's zero-fill bound; neither decline is a kernel test -/
+theorem ftruncate_new_kinds_decline_where_the_write_only_kind_does (eff : SyscallEffect) :
+    check_ftruncate 5 0 eff (fixture_of (fds := [(5, .FdFileA [104] 0)])) = CheckUnmodeled
+    ∧ ftruncate_witness 5 0 (fixture_of (fds := [(5, .FdFileA [104] 0)])) = Unmodeled
+    ∧ check_ftruncate 6 0 eff (fixture_of (fds := [(6, .FdFileRW [104] 0)])) = CheckUnmodeled
+    ∧ ftruncate_witness 6 0 (fixture_of (fds := [(6, .FdFileRW [104] 0)])) = Unmodeled
+    ∧ check_ftruncate 3 (Z_to_bv 64 131076) eff ft_new_model = CheckUnmodeled
+    ∧ check_ftruncate 4 (Z_to_bv 64 131076) eff ft_new_model = CheckUnmodeled
+    ∧ check_ftruncate 3 (Z_to_bv 64 (2 ^ 64 - 1)) (mkEffect (errno_ret EINVAL) [] []) ft_new_model
+        = CheckOk ft_new_model []
+    ∧ check_ftruncate 4 (Z_to_bv 64 (2 ^ 64 - 1)) (mkEffect 0 [] []) ft_new_model = CheckReject :=
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+
 /-! ## The bound: judged up to it, declined past it -/
 
 /-- Wherever the guard holds on a held write-only file, the checker
@@ -4020,10 +4251,11 @@ theorem ftruncate_row_length_is_the_whole_register :
 /-! ## Where it declines, and the witness -/
 
 /-- The checker declines only past the sign test and only on a writable
-descriptor — a write-only one whether or not the file system holds its
-path, and an append-mode or a read-write one outright, the spec twin's
-declared declines (`Sys/Fs/Open.lean`'s header): every other input is
-accepted or refused.
+descriptor — a write-only, an append or a read-write one, and only where
+the image does not hold its path or the grow is past
+`modeled_truncate_gap`: every other input is accepted or refused.  The
+three kinds share one body, so the disjunction below is over the kinds
+and not over three answers.
 This is the `CheckUnmodeled` the refutations above leave open, closed on
 the checker's own terms.
 kernel: fs/open.c:do_sys_ftruncate,do_ftruncate@v6.18.46 -/
@@ -4531,9 +4763,10 @@ forgives every decline under, so that the replay would file a
 regression declining that shape as declared; and
 `o_nonblock_dot_and_absent_name_land_where_read_does`, for the same
 reason, on "." and an absent name under 2048.  The other pins above stay
-on the row, among them `append_and_rdwr_words_decline_on_a_plain_name`,
-which the header sets in place of the four Rocq examples whose arms
-this checker does not have.  `check_syscall_openat_in'` finds
+on the row, among them `openat_append_flag_word`,
+`openat_rdwr_flag_words`, `openat_rdwr_errnos` and `openat_rdwr_dirref`,
+the four the header names, whose errno halves the last section of this
+file states again through the dispatcher.  `check_syscall_openat_in'` finds
 `arm_openat` (`Checks/Arms/Fs/Open.lean`) at 56 and unfolds its
 `ca_check` to `check_openat_row`, and `check_syscall_openat_in` is the
 same over the ordinary call.  Each twin is its pin's statement with the
@@ -4817,23 +5050,27 @@ theorem implied_directory_excl_is_eexist_over_the_real_table :
   simp only [check_syscall_openat_in]
   exact implied_directory_excl_is_eexist
 
-/-- `implied_directory_other_write_words_decline` through `check_syscall`: its
-statement with the dispatch in place of `check_openat_row`, closed by
-`check_syscall_openat_in`. Rocq ACCEPTS those answers
-(`openat_implied_directory_other_write_words`); this checker has no arm for
-the words (the header of `Checks/Sys/Fs/Open.lean`), so each is declined,
-the kernel's own errno and a descriptor alike.
+/-- `openat_implied_directory_other_write_words` through `check_syscall`:
+its statement with the dispatch in place of `check_openat_row`, closed by
+`check_syscall_openat_in`.  Rocq:
+`openat_implied_directory_other_write_words`.
 kernel: fs/namei.c:do_open,may_open@v6.18.46 -/
-theorem implied_directory_other_write_words_decline_over_the_real_table :
-    check_syscall (openat_in [97] 1089) (eff_errno EISDIR 2) under_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [97] 66) (eff_errno EISDIR 2) under_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [97] 578) (eff_errno EISDIR 2) under_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [97] 2) (eff_errno EISDIR 2) under_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [97] 514) (eff_errno EISDIR 2) under_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [97] 194) (eff_errno EEXIST 2) under_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [97] 66) (eff_ret 3 2) under_model = CheckUnmodeled := by
+theorem implied_directory_other_write_words_over_the_real_table :
+    check_syscall (openat_in [97] 1089) (eff_errno EISDIR 2) under_model
+        = CheckOk under_model []
+    ∧ check_syscall (openat_in [97] 66) (eff_errno EISDIR 2) under_model
+        = CheckOk under_model []
+    ∧ check_syscall (openat_in [97] 578) (eff_errno EISDIR 2) under_model
+        = CheckOk under_model []
+    ∧ check_syscall (openat_in [97] 2) (eff_errno EISDIR 2) under_model
+        = CheckOk under_model []
+    ∧ check_syscall (openat_in [97] 514) (eff_errno EISDIR 2) under_model
+        = CheckOk under_model []
+    ∧ check_syscall (openat_in [97] 194) (eff_errno EEXIST 2) under_model
+        = CheckOk under_model []
+    ∧ check_syscall (openat_in [97] 66) (eff_ret 3 2) under_model = CheckReject := by
   simp only [check_syscall_openat_in]
-  exact implied_directory_other_write_words_decline
+  exact openat_implied_directory_other_write_words
 
 /-- `dir_word_answers` through `check_syscall`: its statement with the dispatch
 in place of `check_openat_row`, closed by `check_syscall_openat_in`.  Its
@@ -5057,20 +5294,20 @@ theorem urandom_rdwr_excl_is_eexist_and_the_rest_declines_over_the_real_table :
 
 /-- `excl_append_word_on_the_devices` through `check_syscall`: its statement
 with the dispatch in place of `check_openat_row`, closed by
-`check_syscall_openat_in`.  Rocq: the exclusive append legs of
-`devnull_open_by_word` and `urandom_open_by_word`.
+`check_syscall_openat_in`.
 kernel: fs/namei.c:do_open@v6.18.46 -/
 theorem excl_append_word_on_the_devices_over_the_real_table :
     check_syscall (openat_in devnull_path 1217) (eff_errno EEXIST 10) absent_model
-        = CheckOk absent_model []
+        = CheckUnmodeled
     ∧ check_syscall (openat_in devnull_path 1729) (eff_errno EEXIST 10) absent_model
-        = CheckOk absent_model []
-    ∧ check_syscall (openat_in devnull_path 1217) (eff_ret 3 10) absent_model = CheckReject
+        = CheckUnmodeled
+    ∧ check_syscall (openat_in devnull_path 1217) (eff_ret 3 10) absent_model = CheckUnmodeled
     ∧ check_syscall (openat_in urandom_path 1217) (eff_errno EEXIST 13) absent_model
-        = CheckOk absent_model []
+        = CheckUnmodeled
     ∧ check_syscall (openat_in urandom_path 1729) (eff_errno EEXIST 13) absent_model
-        = CheckOk absent_model []
-    ∧ check_syscall (openat_in urandom_path 1217) (eff_ret 3 13) absent_model = CheckReject := by
+        = CheckUnmodeled
+    ∧ check_syscall (openat_in urandom_path 1217) (eff_ret 3 13) absent_model
+        = CheckUnmodeled := by
   simp only [check_syscall_openat_in]
   exact excl_append_word_on_the_devices
 
@@ -5443,35 +5680,34 @@ theorem flags_high_half_declines_over_the_real_table :
     check_syscall (openat_in [102] (Z_to_bv 64 (2^32))) (eff_ret 3 2) have_model
       = CheckUnmodeled := rfl
 
-/-- Rocq: openat_rdwr_errnos, its two -EMFILE reject conjuncts. A missing
+/-- Rocq: openat_rdwr_errnos, through the dispatcher. A missing
 non-create name reaches -ENOENT (fs/namei.c:traverse_mounts:1537-1538),
 and an existing exclusive name reaches -EEXIST (do_open:3949-3950).
-Rocq rejects -EMFILE on those deterministic branches, an existing narrowing:
-Linux can fail allocation first (fs/open.c:1435; fs/file.c:591-593).
-Lean instead declines both words, including the expected path errnos,
-under Checks/Sys/Fs/Open.lean's `unported: check_openat_rdwr` and
-`unported: check_openat_rdwr_excl`. The descriptor kinds now exist;
-these arms remain unported.
+Both branches are deterministic, so the -EMFILE Linux can raise before
+the walk (fs/open.c:1435; fs/file.c:591-593) is refused on them, the
+narrowing openat_body_spec records; an open that can succeed admits it.
+The row pin `openat_rdwr_errnos` states the same conjuncts on
+`check_openat_row`.
 kernel: fs/namei.c:traverse_mounts,do_open; fs/open.c:do_sys_openat2; fs/file.c:alloc_fd@v6.18.46 -/
 theorem openat_rdwr_errnos_over_the_real_table :
-    check_syscall (openat_in [102] 2) (eff_errno ENOENT 2) absent_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [102] 194) (eff_errno EEXIST 2) have_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [102] 2) (eff_errno EMFILE 2) absent_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [102] 194) (eff_errno EMFILE 2) have_model = CheckUnmodeled :=
-  ⟨rfl, rfl, rfl, rfl⟩
+    check_syscall (openat_in [102] 2) (eff_errno ENOENT 2) absent_model = CheckOk absent_model []
+    ∧ check_syscall (openat_in [102] 194) (eff_errno EEXIST 2) have_model = CheckOk have_model []
+    ∧ check_syscall (openat_in [102] 2) (eff_errno EMFILE 2) absent_model = CheckReject
+    ∧ check_syscall (openat_in [102] 194) (eff_errno EMFILE 2) have_model = CheckReject
+    ∧ check_syscall (openat_in [102] 2) (eff_errno EMFILE 2) have_model = CheckOk have_model [] :=
+  ⟨rfl, rfl, rfl, rfl, rfl⟩
 
-/-- Rocq: openat_rdwr_dirref, the swapped-errno reject conjuncts. At
-v6.18.46 do_open's O_EXCL test precedes its directory test
-(fs/namei.c:3949-3952); without O_CREAT, may_open's S_IFDIR write test
-answers -EISDIR (:3540-3542). Rocq rejects the swapped pair. Lean declines
-both the expected and swapped answers under Checks/Sys/Fs/Open.lean's
-`unported: check_openat_rdwr` and `unported: check_openat_rdwr_excl`.
+/-- Rocq: openat_rdwr_dirref, through the dispatcher. At v6.18.46
+do_open's O_EXCL test precedes its directory test (fs/namei.c:3949-3952);
+without O_CREAT, may_open's S_IFDIR write test answers -EISDIR
+(:3540-3542). The arms answer each errno under its own word and refuse
+the swapped pair.
 kernel: fs/namei.c:do_open,may_open@v6.18.46 -/
 theorem openat_rdwr_dirref_over_the_real_table :
-    check_syscall (openat_in [46] 194) (eff_errno EEXIST 2) absent_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [46] 2) (eff_errno EISDIR 2) absent_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [46] 194) (eff_errno EISDIR 2) absent_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [46] 2) (eff_errno EEXIST 2) absent_model = CheckUnmodeled :=
+    check_syscall (openat_in [46] 194) (eff_errno EEXIST 2) absent_model = CheckOk absent_model []
+    ∧ check_syscall (openat_in [46] 2) (eff_errno EISDIR 2) absent_model = CheckOk absent_model []
+    ∧ check_syscall (openat_in [46] 194) (eff_errno EISDIR 2) absent_model = CheckReject
+    ∧ check_syscall (openat_in [46] 2) (eff_errno EEXIST 2) absent_model = CheckReject :=
   ⟨rfl, rfl, rfl, rfl⟩
 
 /-- Rocq: openat_localtime_enoent, its two O_RDONLY reject conjuncts.
@@ -5501,17 +5737,15 @@ theorem openat_directory_answers_over_the_real_table :
       = CheckOk exact_model []
     ∧ check_syscall (openat_in [97] 622592) (eff_ret 3 2) exact_model = CheckReject := ⟨rfl, rfl⟩
 
-/-- Rocq: openat_excl_append_flag_word, all five reject conjuncts.
-At v6.18.46 do_open refuses an existing exclusive name with -EEXIST
-(fs/namei.c:3949-3950), and the nonexclusive create on dot with -EISDIR
-(:3951-3952). Rocq's check_openat_append also allows -EISDIR for exclusive
-dot to cover older kernels; neither fd3 nor -ENOENT is in that pair.
-Its held-name -EMFILE rejection is its deterministic-arm narrowing:
-allocation can fail before the walk (fs/open.c:1435; fs/file.c:591-593).
-Lean declines all five offers under Checks/Sys/Fs/Open.lean's
-`unported: check_openat_append`, including its exclusive variant, described
-in Sys/Fs/Open.lean's THREE DECLARED DECLINES paragraph. The first conjunct pins the decline on the
-v6.18.46 expected held-name answer as well.
+/-- Rocq had `openat_excl_append_flag_word` before f1006fe8 and has it no
+longer; the word it is about, O_WRONLY|O_CREAT|O_EXCL|O_APPEND (1217),
+has no arm in spec or checker, so the pin stays as a decline.  At
+v6.18.46 do_open refuses an existing exclusive name with -EEXIST
+(fs/namei.c:3949-3950) and the non-exclusive create on dot with -EISDIR
+(:3951-3952); the flag gate refuses the word before the pathname is
+read, so each offer is declined.  The last conjunct is the control: the
+append word WITHOUT O_EXCL on dot is answered, -EISDIR, so the -EEXIST
+offered there is refused and not declined.
 kernel: fs/namei.c:do_open,traverse_mounts; fs/open.c:do_sys_openat2; fs/file.c:alloc_fd@v6.18.46 -/
 theorem openat_excl_append_flag_word_over_the_real_table :
     check_syscall (openat_in [102] 1217) (eff_errno EEXIST 2) have_model = CheckUnmodeled
@@ -5519,18 +5753,15 @@ theorem openat_excl_append_flag_word_over_the_real_table :
     ∧ check_syscall (openat_in [102] 1217) (eff_errno EMFILE 2) have_model = CheckUnmodeled
     ∧ check_syscall (openat_in [46] 1217) (eff_ret 3 2) absent_model = CheckUnmodeled
     ∧ check_syscall (openat_in [46] 1217) (eff_errno ENOENT 2) absent_model = CheckUnmodeled
-    ∧ check_syscall (openat_in [46] 1089) (eff_errno EEXIST 2) absent_model = CheckUnmodeled :=
+    ∧ check_syscall (openat_in [46] 1089) (eff_errno EEXIST 2) absent_model = CheckReject :=
   ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
-/-- Rocq: openat_implied_directory_other_write_words, its two new
-exclusive-append rejects. The existing "a/b" key implies directory "a";
-O_EXCL gives -EEXIST before the directory's -EISDIR in do_open
-(fs/namei.c:3949-3952, v6.18.46). Rocq's check_openat_append true tests
-fs_under before lookup and refuses both offers. Lean declines even the
-expected -EEXIST under Checks/Sys/Fs/Open.lean's
-`unported: check_openat_append` (the exclusive variant is described in
-Sys/Fs/Open.lean's THREE DECLARED DECLINES paragraph). The older O_RDWR|O_CREAT descriptor conjunct is
-already in implied_directory_other_write_words_decline_over_the_real_table.
+/-- The same word on an IMPLIED DIRECTORY ("a" over a held "a/b"): the
+flag gate refuses it before the pathname is read, so the -EEXIST
+`do_open`'s O_EXCL test would give (fs/namei.c:3949-3952, v6.18.46), the
+-EISDIR behind it and a descriptor are all declined.  The five words
+beside it ANSWER there, in
+`implied_directory_other_write_words_over_the_real_table`.
 kernel: fs/namei.c:do_open@v6.18.46 -/
 theorem openat_implied_directory_other_write_words_over_the_real_table :
     check_syscall (openat_in [97] 1217) (eff_errno EEXIST 2) under_model = CheckUnmodeled
@@ -5553,16 +5784,22 @@ theorem openat_minting_path_witness_over_the_real_table :
       = CheckOk (fixture_of (fds := (3, .FdFile [102] 0) :: init_fds) (fs := have_fs)) [] :=
   ⟨rfl, rfl, rfl⟩
 
-/-- The append witness still declines despite FdFileA now existing:
-Sys/Fs/Open.lean declares `unported: open_append` and
-`unported: openat_append_spec`, and Checks/Sys/Fs/Open.lean declares
-`unported: check_open_append` and `unported: check_openat_append`. Rocq's openat_core_witness instead selects
--ENOMEM here, an alloc_empty_file outcome (fs/file_table.c:258-260,
-v6.18.46), while openat_append_spec can also open the held file unchanged.
-This pins only Lean's declared witness decline.
-kernel: fs/file_table.c:alloc_empty_file; fs/namei.c:do_open@v6.18.46 -/
+/-- Rocq's openat_core_witness draws witness_errno (-ENOMEM) on the
+append word over a held name, as it does on the read word: the arm can
+succeed, so the alternative the witness takes is an openat_errnos one
+(alloc_empty_file, fs/file_table.c:258-260, v6.18.46). Through the real
+table the witness names that effect and the checker accepts it; the same
+call also accepts the descriptor, minted as State.FdFileA at the lowest
+free number with the file's bytes kept.
+kernel: fs/file_table.c:alloc_empty_file; fs/namei.c:do_open; fs/file.c:alloc_fd@v6.18.46 -/
 theorem openat_append_witness_over_the_real_table :
-    syscall_spec_witness (openat_in [102] 1089) have_model = Unmodeled := rfl
+    syscall_spec_witness (openat_in [102] 1089) have_model
+      = Ok (eff_errno ENOMEM 2) have_model []
+    ∧ check_syscall (openat_in [102] 1089) (eff_errno ENOMEM 2) have_model
+      = CheckOk have_model []
+    ∧ check_syscall (openat_in [102] 1089) (eff_ret 3 2) have_model
+      = CheckOk (fixture_of (fds := (3, .FdFileA [102] 0) :: init_fds) (fs := have_fs)) [] :=
+  ⟨rfl, rfl, rfl⟩
 
 end V_Fs_Open_openat_Rederived
 end LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Checks.Sys.Fs.Open

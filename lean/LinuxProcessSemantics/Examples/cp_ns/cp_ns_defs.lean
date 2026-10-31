@@ -586,8 +586,8 @@ theorem write_file_uniq (segs : List Segment) (ms : machine_state) (x8 : word)
     simp only [check_write, Hfd32, Hfd, rw_range_in_range _ _ Hcnt,
       Bool.false_eq_true, ↓reduceIte,
       write_source_of_rw _ _ _ Hcnt, readable_bytes_full _ _ _ _ Hrb,
-      Hfs, unreadable_source_past_eof, Hnz, Hbeq,
-      Bool.not_false, Bool.true_and, Bool.false_and, Hgap, Hret]
+      Hfs, Hnz, Hbeq,
+      Bool.not_false, Bool.true_and, Hgap, Hret]
   have Hagree : lookups_agree_at (bv_unsigned (sys_input segs ms x8).in_sysno) := by
     rw [in_sysno_si, Hno]; rfl
   refine ⟨?_, ?_, ?_⟩

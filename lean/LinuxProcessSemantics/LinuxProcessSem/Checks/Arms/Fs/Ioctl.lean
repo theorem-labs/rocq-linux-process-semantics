@@ -94,15 +94,20 @@ theorem check_ioctl_ok_model (fd req : word) (eff : SyscallEffect) (m m' : Model
     (h : Checks.Sys.Fs.Ioctl.check_ioctl fd req eff m = CheckOk m' evs) :
     m' = m ∧ evs = [] := by
   unfold Checks.Sys.Fs.Ioctl.check_ioctl at h
-  split at h
-  · cases h
-  · split at h <;>
-      first
-      | exact ((check_ret_only_ok_iff _ _ _ _ _ _).mp h).2
-      | cases h
-      | (split at h
-         · exact ((check_ret_only_ok_iff _ _ _ _ _ _).mp h).2
-         · cases h)
+  -- One goal per arm of the checker's fd-kind match: -EBADF on a closed
+  -- fd, the terminal-only `if` on the nine answering kinds, and the bare
+  -- `CheckUnmodeled` of `/dev/urandom`.  An answering arm is a
+  -- `check_ret_only … m []`, whose `Ok` shape is exactly `m' = m ∧ evs = []`;
+  -- a declining one is the constructor `CheckUnmodeled`, refuted against
+  -- `CheckOk`.
+  split at h <;>
+    first
+    | exact ((check_ret_only_ok_iff _ _ _ _ _ _).mp h).2
+    | cases h
+    | (split at h <;>
+        first
+        | exact ((check_ret_only_ok_iff _ _ _ _ _ _).mp h).2
+        | cases h)
 
 /-- From `check_ioctl_frame` beside the checker (Rocq: `VmMapsDisjoint.check_ioctl_frame`). -/
 theorem arm_ioctl_preserves_vm : arm_preserves_vm arm_ioctl :=

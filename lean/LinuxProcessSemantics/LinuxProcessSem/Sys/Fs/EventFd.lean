@@ -1,9 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Fs/EventFd.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570
-divergence: bugs/eventfd2-enosys-beside-einval-admits-mixed-runs.md -- inherited
-drift-ticket: eventfd2_spec R-Fs-EventFd-rebase -- Rocq admits -ENOSYS beside -EINVAL for CONFIG_EVENTFD=n (#1354) and declines refused words accepted by sparc64, mips or parisc qemu-user hosts (#1694); baseline moves after the T169 PR lands -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+divergence: bugs/eventfd2-enosys-beside-einval-admits-mixed-runs.md -- inherited -/
 
 /-! # LinuxProcessSem.Sys.Fs.EventFd — eventfd2 (19)
 
@@ -18,7 +18,7 @@ kernel citation each decision rests on — file, function, and the line
 numbers at Linux v6.18.46 (commit 1f99e9ab748f) — and point at the Rocq
 definition for the argument in full, so there is one place to correct it.
 The Rocq header is where the version windows and the `CONFIG_EVENTFD`
-alternative are argued, and neither is restated here.  The walk of every
+premise are argued, and neither is restated here.  The walk of every
 errno below the gate IS restated below, because the Rocq header's walk
 omits an errno the path can produce (-ENFILE).
 
@@ -57,9 +57,6 @@ imported from one place would agree with itself however wrong it was.
 Rocq: `negb (Z.eqb (Z.ldiff (bv_unsigned flags) EFD_FLAGS_SET) 0)`. -/
 def eventfd2_einval_b (flags : word) : Bool :=
   !(bv_unsigned (bv_and flags (bv_not (Z_to_bv 64 EFD_FLAGS_SET))) == 0)
-
-/-- Linux v6.18.46 include/uapi/asm-generic/errno.h `ENOSYS`. -/
-def ENOSYS : Int := 38
 
 /-- `eventfd2 count flags`: create a descriptor holding a 64-bit counter.
 
@@ -120,139 +117,21 @@ CONFIG_BPF_LSM (kernel/bpf/Kconfig:92, Linux v6.18.46) a BPF program
 attached to the hook may return any errno: `bpf_lsm_get_retval_range`
 (kernel/bpf/bpf_lsm.c:447-467, Linux v6.18.46) admits `[-MAX_ERRNO, 0]`.
 That is a kernel configuration and policy choice, so CLAUDE.md's scope
-admits it. Native riscv64 `do_eventfd` refuses words outside its mask at
-fs/eventfd.c:390-391 (Linux v6.18.46) before any allocation or hook.
-Words that can reach allocation, including guest-refused words accepted
-through QEMU's host translation below, are declined whatever they return.
-Nothing here turns on the list.
+admits it.  Native riscv64 `do_eventfd` refuses words outside its mask at
+fs/eventfd.c:390-391 (Linux v6.18.46) before any allocation or hook, so
+nothing here turns on the list.
 
--ENOSYS IS ADMITTED BESIDE THE -EINVAL.  Linux v6.18.46
-fs/Makefile builds eventfd.o under obj-$(CONFIG_EVENTFD);
-kernel/sys_ni.c `COND_SYSCALL(eventfd2)` and riscv64's
-arch/riscv/include/asm/syscall_wrapper.h `COND_SYSCALL` route the
-missing syscall to kernel/sys_ni.c `sys_ni_syscall` (Linux v6.18.46),
-returning -ENOSYS.
-init/Kconfig's EVENTFD prompt is conditional on EXPERT and defaults
-to y.  Its selectors are MEMCG (init/Kconfig), KVM_COMMON
-(virt/kvm/Kconfig), MSHV_ROOT (drivers/hv/Kconfig), VFIO_VIRQFD
-(drivers/vfio/Kconfig), VFIO_CDX (drivers/vfio/cdx/Kconfig),
-VFIO_FSL_MC (drivers/vfio/fsl-mc/Kconfig), and ACRN_HSM
-(drivers/virt/acrn/Kconfig), all Linux v6.18.46: disabling EVENTFD
-requires an EXPERT configuration with every selector off too.
-
-QEMU v11.1.1 linux-user/syscall.c `do_syscall1` compiles its
-TARGET_NR_eventfd2 case only under CONFIG_EVENTFD.  meson.build sets
-that from a build-time link test against host libc's eventfd, not a
-host-kernel test.  Without it, the default returns -TARGET_ENOSYS;
-with it, the case forwards the host answer, including -ENOSYS from
-a CONFIG_EVENTFD=n host.
-
-No example reaches eventfd2. Declining every input
-would collide with Checks/DispatchSurface.v modeled_sysnos_exact and
-tools/check_lean_pins.py PIN-8, which require an answered shape for
-19. It costs priority 2: mixed runs with -EINVAL then -ENOSYS, or the
-reverse, on refused words are admitted though no single implementation
-produces both.  See
-bugs/eventfd2-enosys-beside-einval-admits-mixed-runs.md.  The proper
-fix is a declared run configuration (a kernel built without
-CONFIG_EVENTFD), part of the coming run-environment design for
-LSM/seccomp/prlimit. Retire that entry when the declaration fixes
-availability for the whole run and tests reject both mixed orders
-while accepting both configurations. Both answers touch no memory,
-emit no event and change no state; kernel/sys_ni.c `sys_ni_syscall`
-(Linux v6.18.46) touches nothing.
-
-QEMU v11.1.1 linux-user/syscall.c `do_syscall1`:13865-13879 clears the
-target's `TARGET_O_NONBLOCK_MASK | TARGET_O_CLOEXEC` bits.  It sets the
-host O_NONBLOCK or O_CLOEXEC when the target's `TARGET_O_NONBLOCK` or
-`TARGET_O_CLOEXEC` bit is set.  It gives the other low 32 bits to host
-libc `eventfd` unchanged.  `TARGET_O_NONBLOCK_MASK` is `TARGET_O_NONBLOCK`
-(syscall.c:312-313), except on hppa.  QEMU v11.1.1
-linux-user/hppa/target_fcntl.h:12 adds bit 2 to the hppa mask.  Thus an
-hppa layer clears bit 2 and does not translate it.  The riscv64 target
-takes QEMU v11.1.1 linux-user/generic/fcntl.h:32,56.  Thus a riscv64
-layer clears bits 11 and 19 and passes the other low bits unchanged.
-QEMU v5.2.0 uses `TARGET_O_NONBLOCK` in place of the mask. Its
-linux-user/hppa/target_fcntl.h:11 defines `TARGET_O_NONBLOCK` as
-000200004. Thus bit 2 or bit 16 sets the host O_NONBLOCK there.
-v0.12.0 to v1.4.2 translate nothing. Their
-`do_syscall` calls `eventfd(arg1, arg2)` (QEMU v1.4.2
-linux-user/syscall.c:8745-8747).
-Linux v6.18.46 (commit 1f99e9ab748fc5c32120de9c4eca31abfe54a4d5)
-arch/sparc/include/uapi/asm/fcntl.h:11,21 gives O_NONBLOCK = 2^14 and
-O_CLOEXEC = 2^22; arch/mips/include/uapi/asm/fcntl.h:16 gives
-O_NONBLOCK = 2^7. include/linux/eventfd.h EFD_FLAGS_SET uses those
-host values, so fs/eventfd.c do_eventfd can allocate a descriptor.
-QEMU v11.1.1 configure:392-397 and :472-475 select the sparc64 host;
-v11.0.0 configure:449-452 still selects the mips64 host. CLAUDE.md
-pins no single QEMU version (11.1.1 is only the VM tracer's), so older
-linux-user hosts count; this decline costs priority 3 only.
-QEMU can itself run under qemu-user (QEMU v11.1.1 https://github.com/qemu/qemu/blob/v11.1.1/docs/user/main.rst#L59-L61).
-For example, a riscv64 QEMU built for sparc64 can run under qemu-sparc64
-on mips64: the inner layer passes 0x4080, and the outer layer maps
-SPARC's 0x4000 to MIPS's 0x80 while passing the existing 0x80 through.
-The result reaches fs/eventfd.c do_eventfd as a valid MIPS flag word.
-QEMU v11.1.1 linux-user/sparc/target_fcntl.h:17,27 and
-linux-user/mips/target_fcntl.h:13 give the target values.
-Every layer runs a QEMU binary, so its target must itself be a QEMU host
-architecture of the QEMU release that runs it.
-
-The riscv64 layer is QEMU v2.12.0 or later: v2.12.0's configure is the
-first to know the riscv64 target
-(https://github.com/qemu/qemu/blob/v2.12.0/configure#L6870-L6874),
-while v2.11.0's configure names no riscv target
-(https://github.com/qemu/qemu/blob/v2.11.0/configure).
-The layers outside it emulate its host, not riscv64, so they can be
-older releases. QEMU v1.6.0 supports an hppa Linux host:
-https://github.com/qemu/qemu/blob/v1.6.0/configure#L417-L419 selects hppa,
-https://github.com/qemu/qemu/blob/v1.6.0/configure#L544-L548 enables linux-user,
-and https://github.com/qemu/qemu/blob/v1.6.0/user-exec.c#L597 supplies its
-host signal handler. Thus a riscv64 QEMU built for i386 can run under
-v1.6.0 i386-linux-user on parisc, passing bit 21 through both layers.
-Linux v6.18.46 arch/parisc/include/uapi/asm/fcntl.h:11,15 defines
-O_NONBLOCK = 2^16 and O_CLOEXEC = 2^21.
-arch/parisc/kernel/syscalls/syscall.tbl:353 routes eventfd2 to
-arch/parisc/kernel/sys_parisc.c parisc_eventfd2:355-359, which calls
-FIX_O_NONBLOCK:317-329 to clear the old bit 2 before sys_eventfd2.
-Bits 2, 16 and 21 can reach allocation, alone or beside the SPARC/MIPS
-bits above. After removing guest flags, test against the union
-U = {2^2, 2^7, 2^14, 2^16, 2^21, 2^22} = 0x614084.
-
-WHY A BIT OUTSIDE U IS ANSWERED.  Take a flag word with a bit b outside
-U and outside EFD_FLAGS_SET.  Native riscv64 Linux refuses it at
-fs/eventfd.c:390-391 (Linux v6.18.46).  The riscv64 qemu-user layer passes b unchanged.
-An outer layer passes b unchanged too: in each surveyed QEMU release,
-each target's `TARGET_O_NONBLOCK`, `TARGET_O_NONBLOCK_MASK` and
-`TARGET_O_CLOEXEC` lies in U plus bits 11 and 19.  At the bottom, each
-Linux arch's O_NONBLOCK and O_CLOEXEC lies in the same set.  At
-v6.18.46, the values come from
-arch/{alpha,mips,parisc,sparc}/include/uapi/asm/fcntl.h and from
-include/uapi/asm-generic/fcntl.h for the other arches.  Linux v4.17
-arch/parisc/include/uapi/asm/fcntl.h:12 (O_NONBLOCK 000200004) adds only
-bit 2.  At v6.18.46 the only arch wrapper, parisc_eventfd2, clears only
-bit 2.  Thus the host's do_eventfd refuses b before it allocates.
-Host libc keeps b.  glibc 2.42 sysdeps/unix/sysv/linux/syscalls.list:11
-makes `eventfd` the eventfd2 syscall.  Without `__ASSUME_EVENTFD2`,
-glibc 2.17 sysdeps/unix/sysv/linux/eventfd.c `eventfd` turns -ENOSYS
-into EINVAL for nonzero flags.  musl 1.2.5 src/linux/eventfd.c
-`eventfd` calls the flagless eventfd only for zero flags.  QEMU without
-CONFIG_EVENTFD answers -ENOSYS.  Thus the answer is -EINVAL or -ENOSYS.
-The survey read the 190 three-part QEMU release tags v0.10.0 to
-v11.1.2.  The design review also read v1.0, v2.4.0.1, v2.5.1.1,
-v2.8.1.1 and v3.1.1.1.  This argument stops being true in four cases:
-- a QEMU target mask, or a Linux arch O_NONBLOCK or O_CLOEXEC, gains a
-  bit outside U plus bits 11 and 19;
-- an eventfd2 case maps or drops a bit outside its target's masks;
-- an arch wrapper rewrites another flag bit;
-- a host libc drops flags, or calls the flagless eventfd with nonzero
-  flags. -/
+CONFIG_EVENTFD IS ASSUMED ON.  fs/Makefile builds eventfd.o under
+obj-$(CONFIG_EVENTFD) and kernel/sys_ni.c carries
+`COND_SYSCALL(eventfd2)`, so a kernel built without it answers -ENOSYS to
+every input this arm calls -EINVAL; init/Kconfig gives `config EVENTFD` a
+`default y` and hides its prompt behind EXPERT.  It is stated rather than
+tested because no syscall argument distinguishes the two builds, and it
+is the ONE premise outside this call's own arguments that the -EINVAL
+rests on. -/
 def eventfd2_spec (flags : word) : Sys SyscallEffect :=
   if eventfd2_einval_b flags
-  then if (bv_unsigned (bv_and (bv_and flags (bv_not (Z_to_bv 64 EFD_FLAGS_SET)))
-                    (bv_not (Z_to_bv 64 (2 ^ 2 + 2 ^ 7 + 2 ^ 14 + 2 ^ 16 + 2 ^ 21 + 2 ^ 22)))) == 0)
-       -- A host can allocate here; see the source argument above.
-       then unmodeled
-       else alt (err_ret EINVAL) (err_ret ENOSYS) -- both return before anything is allocated
-  else unmodeled           -- ENOMEM / EMFILE / ENFILE / ENOSYS / the descriptor: fail closed
+  then err_ret EINVAL      -- real -EINVAL, decided before anything is allocated
+  else unmodeled           -- ENOMEM / EMFILE / ENFILE / the descriptor: fail closed
 
 end LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.EventFd

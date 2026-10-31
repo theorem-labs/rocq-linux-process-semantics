@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Stat.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs.Stat
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.Stat
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
@@ -19,7 +20,7 @@ or a refutation over `fstat_spec`.  Rocq states the same examples over the
 CHECKER, `check_syscall … = CheckReject`, and that is a different claim: it
 says the executable acceptor computes the verdict, on these bytes, in one
 `vm_compute`.  The two agree by the checkers' soundness and completeness
-lemmas, but those proofs are what AGENTS.md says the proofs cannot check —
+lemmas, but those proofs are what linux-process-semantics@ff0313ba4f:AGENTS.md says the proofs cannot check —
 a spec and a checker altered the same wrong way still agree — so the
 concrete answers are pinned on the checker too, from outside.  The
 fixtures are that file's, imported, bar the six one-byte variants of
@@ -37,8 +38,7 @@ argument 0 through `fd32`, its low 32 bits; for `newfstatat` the pathname
 pointer from argument 1 and the flag word from argument 3 through
 `flag32`, its `statbuf` in argument 2 never read; for `newfstat` `statbuf`
 from argument 1 (Rocq's `arm_readlinkat`, `arm_newfstatat` and `arm_fstat`
-in `Checks/Sys/Dispatch.v`) — are built at that registration (BRIEF.md
-section 5, the VERIFY block: registration first).
+in `Checks/Sys/Dispatch.v`) — are built at that registration.
 So every pin here applies a checker to its register values directly, in
 the kernel's register order (fs/stat.c, Linux v6.18.46: dfd first for
 readlinkat, whose other three registers the spec never reads; dfd,
@@ -55,11 +55,7 @@ Rocq file at its mirrored path and none sits at this one, so this file is
 listed `unmirrored` — a status, not a finding —; the Rocq example each one
 twins is named in its prose.
 
-WHAT THE ROCQ EXAMPLES ARE NOT PORTED.  `fstat_read_write_fd_answers_as_a_file`
-and `fstat_read_write_wrong_size_rejected`: `fstat_spec` declines
-`FdFileRW` (`Sys/Fs/Stat.lean`'s header) where Rocq answers through
-`fstat_file_spec`, so the checker declines too; they land with the port
-of that arm.
+WHICH ROCQ EXAMPLES ARE NOT PORTED.
 `fstat_pin_dies_with_the_file` and `fstat_pin_survives_a_rewrite` are
 about `State.with_fs`, not about a checker, and the spec's Cases file
 already twins them.
@@ -94,8 +90,8 @@ open LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
 
 Six records the spec's Cases file has no use for, each `stat_truthful`
 with one byte or one bit changed, and their predicate readings decided by
-the kernel and handed to `check_norm` below (a reading only these pins use
-lives beside them, BRIEF.md section 4).  Three poison the LAST byte of a
+the kernel and handed to `check_norm` below (a reading only these pins
+use lives beside them).  Three poison the LAST byte of a
 padding member where the spec's Cases file poisons the first, so a
 one-byte-short width in `Uapi`'s `ST_PAD1_OFF`, `ST_PAD2_OFF` or
 `ST_UNUSED45_OFF` read — bytes 47, 63 and 127 going unchecked — fails a
@@ -184,7 +180,7 @@ theorem check_readlinkat_success_rejected (m : Model) :
 
 /-- A zero return — a kernel claiming a zero-length target — is refused
 too: a count is `vfs_readlink`'s answer (fs/stat.c:590, v6.18.46) for a
-link the spec's commitment (bugs/readlinkat-path-not-interpreted.md) says
+link the spec's commitment (linux-process-semantics@ff0313ba4f:bugs/readlinkat-path-not-interpreted.md) says
 nothing in the image is.  `tests/readlinkat_dirfd.c` mutates to this lie
 (`ret=0 -- ok`).
 kernel: fs/stat.c:do_readlinkat; fs/namei.c:path_init@v6.18.46 -/
@@ -208,10 +204,10 @@ the spec, which never reads `bufsiz`, commits to -EINVAL without reading
 the name, so the checker refuses a conforming trace here.  (With
 `bufsiz <= 0` the kernel answers -EINVAL at fs/stat.c:571-572, v6.18.46,
 before any lookup, and the refusal is the kernel's own.)  That is the false rejection
-bugs/readlinkat-path-not-interpreted.md records; the pin fixes the
+linux-process-semantics@ff0313ba4f:bugs/readlinkat-path-not-interpreted.md records; the pin fixes the
 checker's answer so that the bug entry and the code cannot drift apart.
 model: the spec's -EINVAL-without-reading commitment; see
-bugs/readlinkat-path-not-interpreted.md -/
+linux-process-semantics@ff0313ba4f:bugs/readlinkat-path-not-interpreted.md -/
 theorem check_readlinkat_enoent_rejected (m : Model) :
     check_readlinkat (fd32 AT_FDCWD) (mkEffect (errno_ret ENOENT) [] []) m = CheckReject := by
   check_norm
@@ -233,7 +229,7 @@ commitment as the -ENOENT refusal above; for `bufsiz <= 0` it reads
 nothing (fs/stat.c:571-572) and the empty ledger is the kernel's.  This
 pin fixes the commitment's checker-level shape.
 model: the spec's -EINVAL-without-reading commitment; see
-bugs/readlinkat-path-not-interpreted.md -/
+linux-process-semantics@ff0313ba4f:bugs/readlinkat-path-not-interpreted.md -/
 theorem check_readlinkat_einval_with_copyin_rejected (m : Model) :
     check_readlinkat (fd32 AT_FDCWD)
         (with_copyins [(0x2000, 2)] (mkEffect (errno_ret EINVAL) [] [])) m
@@ -281,11 +277,11 @@ theorem check_newfstatat_ledger_dropped_rejected :
 /-- Nor may it over-report: the ledger is exactly `cstr_access_len_aux`'s
 count for "f\0", two bytes, and three is refused.  The count is the
 MODEL's: Linux's `strncpy_from_user` loads a whole word at an aligned
-pointer (bugs/openat-getname-word-at-a-time.md), so its read set here is
+pointer (linux-process-semantics@ff0313ba4f:bugs/openat-getname-word-at-a-time.md), so its read set here is
 eight bytes, and the harness supplies the checker the model's two — the
 comparison is model against model, as the section header says.
 model: `State.cstr_access_len_aux`'s count, the convention the harness
-supplies; see bugs/openat-getname-word-at-a-time.md -/
+supplies; see linux-process-semantics@ff0313ba4f:bugs/openat-getname-word-at-a-time.md -/
 theorem check_newfstatat_ledger_grown_rejected :
     check_newfstatat (statat_input path_f) (fd32 AT_FDCWD) 0x2000 0
         (with_copyins [(0x2000, 3)] (mkEffect (errno_ret ENOENT) [] [])) statat_absent_model
@@ -395,13 +391,43 @@ theorem check_fstat_first_answer_pins :
 
 /-- Rocq's `fstat_character_device_answer_admitted`: the model does NOT
 claim the file is regular.  S_IFCHR with `st_size` 0 — the true answer for
-the character device bugs/fs-paths-assumed-regular-files.md exhibits — is
+the character device linux-process-semantics@ff0313ba4f:bugs/fs-paths-assumed-regular-files.md exhibits — is
 accepted; this is what would fail if `stat_size_ok`'s implication were
 strengthened to an assertion.
 kernel: fs/stat.c:cp_new_stat,generic_fillattr@v6.18.46 -/
 theorem check_fstat_character_device_answer_accepted :
     check_fstat fstat_input 3 4096 (mkEffect 0 [(4096, stat_ifchr_zero)] []) fstat_model
       = CheckOk (with_statpin fstat_path stat_ifchr_zero fstat_model) [] := by
+  check_norm
+
+/-! ### The read-write descriptor answers as the other file kinds do
+
+A stat reads the INODE: neither `f_mode` nor `f_flags` is a member of
+`struct stat` (`cp_new_stat`/`generic_fillattr`, fs/stat.c:88-106 and
+:470-507, Linux v6.18.46, commit 1f99e9ab748f), so how a descriptor was
+opened is not something a stat can report.  The accepting half and the
+rejecting half are both here, so the pair attributes the answer to the
+arm rather than to the checker being lax about a kind it does not
+recognise. -/
+
+/-- Rocq's `fstat_read_write_fd_answers_as_a_file`: `FdFileRW` gets the
+SAME answer as `FdFile` does above, from the same `check_fstat_file`
+under the same implication, and pins it the same way.
+kernel: fs/stat.c:vfs_fstat,cp_new_stat,generic_fillattr@v6.18.46 -/
+theorem check_fstat_read_write_fd_answers_as_a_file :
+    check_fstat fstat_input 3 4096 (mkEffect 0 [(4096, stat_truthful)] []) fstat_model_rw
+      = CheckOk (with_statpin fstat_path stat_truthful fstat_model_rw) [] := by
+  check_norm
+
+/-- Rocq's `fstat_read_write_wrong_size_rejected`: the length obligation
+BITES through the read-write descriptor too.  Eight bytes under the
+kernel's own S_IFREG where the map holds nine: inadmissible, exactly as
+for `FdFile`.  Without this the pin above would pass just as happily if
+the arm declined, since a decline is not a rejection.
+kernel: fs/stat.c:cp_new_stat,generic_fillattr@v6.18.46 -/
+theorem check_fstat_read_write_wrong_size_rejected :
+    check_fstat fstat_input 3 4096 (mkEffect 0 [(4096, stat_short_size)] []) fstat_model_rw
+      = CheckReject := by
   check_norm
 
 /-! ### What the length obligation refuses -/
@@ -819,7 +845,7 @@ ledger is what is accepted, not the ledger alone. -/
 (`getname_flags` fs/namei.c:167-171, `filename_lookup` :2702-2703,
 `path_init` :2590 onwards, v6.18.46), and the model's one byte charged —
 the NUL `cstr_access_len_aux` counts, where the kernel's aligned read is
-the word (bugs/openat-getname-word-at-a-time.md).
+the word (linux-process-semantics@ff0313ba4f:bugs/openat-getname-word-at-a-time.md).
 kernel: fs/namei.c:getname_flags,filename_lookup,path_init; fs/stat.c:vfs_fstatat@v6.18.46 -/
 theorem check_newfstatat_empty_path_preempts_dirfd_accepted :
     check_newfstatat (statat_call 5 0 path_empty) 5 0x2000 0
@@ -895,7 +921,7 @@ theorem check_newfstatat_toolong_ledger_4095_rejected :
 by `getname_flags` (fs/namei.c:162-165); the model charges two bytes, the
 one read and the one that faulted (`cstr_access_len_aux`'s count — the
 kernel's word read at this aligned pointer touches neither exactly,
-bugs/openat-getname-word-at-a-time.md).
+linux-process-semantics@ff0313ba4f:bugs/openat-getname-word-at-a-time.md).
 kernel: lib/strncpy_from_user.c:strncpy_from_user; fs/namei.c:getname_flags,path_init@v6.18.46 -/
 theorem check_newfstatat_runoff_efault_accepted :
     check_newfstatat (statat_input path_runoff) (fd32 AT_FDCWD) 0x2000 0
@@ -932,7 +958,7 @@ theorem check_newfstatat_runoff_enametoolong_rejected :
 /-- The runoff ledger is two bytes, not one: `cstr_access_len_aux` charges
 the faulting byte, and the checker holds the ledger to that count.
 model: `State.cstr_access_len_aux`'s count, the convention the harness
-supplies; see bugs/openat-getname-word-at-a-time.md -/
+supplies; see linux-process-semantics@ff0313ba4f:bugs/openat-getname-word-at-a-time.md -/
 theorem check_newfstatat_runoff_ledger_1_rejected :
     check_newfstatat (statat_input path_runoff) (fd32 AT_FDCWD) 0x2000 0
         (with_copyins [(0x2000, 1)] (mkEffect (errno_ret EFAULT) [] [])) statat_absent_model
@@ -942,7 +968,7 @@ theorem check_newfstatat_runoff_ledger_1_rejected :
 /-- Nothing mapped at the pathname under dirfd 5: -EFAULT, the dirfd never
 consulted, and the model's one byte charged — the byte that faulted, where
 the kernel's faulting word load records no read at all
-(bugs/openat-getname-word-at-a-time.md).
+(linux-process-semantics@ff0313ba4f:bugs/openat-getname-word-at-a-time.md).
 kernel: lib/strncpy_from_user.c:strncpy_from_user; fs/namei.c:getname_flags,filename_lookup,path_init@v6.18.46 -/
 theorem check_newfstatat_unmapped_path_preempts_dirfd_accepted :
     check_newfstatat (statat_call 5 0 path_none) 5 0x2000 0
@@ -1489,13 +1515,13 @@ theorem check_fstat_grown_size_unpinned_pins :
 the four-byte member are zero in every record Linux writes.  `Uapi.stat_ifmt`
 masks the low half only and no predicate reads the rest, so a record with
 bit 16 set beside `S_IFREG` is accepted and pinned: the spec's, inherited by
-the checker, of the class the `bugs/` entry on fstat's unpinned members
+the checker, of the class the `linux-process-semantics@ff0313ba4f:bugs/` entry on fstat's unpinned members
 over-admitting records (its path is on the Rocq `stat_stable_eqb`, as
 `Sys/Uapi/Fs.lean` spells it; it does not list this member yet).  The pin
 fixes the acceptance so that tightening `Uapi.stat_buf_wf` goes red here
 rather than silently.
 model: `Uapi.stat_ifmt` reads the low half of `st_mode` only; an
-over-admission of the class the `bugs/` entry on fstat's unpinned members
+over-admission of the class the `linux-process-semantics@ff0313ba4f:bugs/` entry on fstat's unpinned members
 records -/
 theorem check_fstat_high_mode_bit_accepted :
     check_fstat fstat_input 3 4096 (mkEffect 0 [(4096, stat_high_mode_bit)] []) fstat_model
@@ -1514,8 +1540,7 @@ open LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
 /-! ## V-Fs-Stat — the decoded registers over the real checked table
 
 The Rocq checker examples below reuse the imported fixtures, including
-aliases for Rocq's literal struct bytes. Only the two `FdFileRW` examples
-are omitted, for the reason in the header. The register pins additionally
+aliases for Rocq's literal struct bytes. The register pins additionally
 separate the arm's decoding from a wrong reading; checker-level pins
 cannot see that boundary. Citations below were read in Linux v6.18.46,
 commit 1f99e9ab748f. -/
@@ -1565,7 +1590,7 @@ theorem lookup_fstat_number :
 /-- `getname_flags` copies the pathname at fs/namei.c:157, reached
 from `vfs_fstatat` at fs/stat.c:370 before its error is returned at :378.
 The literal two-byte ledger pins the model's copy-in convention (Linux's
-word loads are the bound documented in bugs/openat-getname-word-at-a-time.md);
+word loads are the bound documented in linux-process-semantics@ff0313ba4f:bugs/openat-getname-word-at-a-time.md);
 dropping, growing or shifting that ledger is rejected, with an accepting control.
 Twins `theories/LinuxProcessSem/Checks/Cases/Fs/Stat.v`'s
 `newfstatat_pathname_copyin_is_charged`.
@@ -1601,7 +1626,7 @@ theorem fstat_first_answer_pins_over_the_real_table :
 
 /-- `generic_fillattr` (fs/stat.c:90) reads the actual inode mode;
 `cp_new_stat` copies it at :488 and size at :495. A modeled path is not
-a guarantee of S_IFREG (bugs/fs-paths-assumed-regular-files.md).
+a guarantee of S_IFREG (linux-process-semantics@ff0313ba4f:bugs/fs-paths-assumed-regular-files.md).
 Twins `theories/LinuxProcessSem/Checks/Cases/Fs/Stat.v`'s
 `fstat_character_device_answer_admitted`.
 kernel: fs/stat.c:cp_new_stat,generic_fillattr@v6.18.46 -/

@@ -199,21 +199,25 @@ kernel: include/uapi/asm-generic/unistd.h:__NR_getcwd; fs/file.c:__fget_light; i
 theorem the_default_probe_hands_at_fdcwd_in_a0 :
     (probe_args 17).getD 0 (Z_to_bv 64 0) = Z_to_bv 64 (-100) := by decide
 
-/-- Raw DEL bypasses event copying and reaches the closed epfd in both halves.
+/-- Raw DEL copies no event struct and reaches the closed epfd, which
+answers -EBADF.
 model: the concrete answering witness for syscall 21 in checked_table -/
 theorem epoll_ctl_del_probe_has_an_answer : probe_answers 21 = true := rfl
 
-/-- The previous fixture defined bytes at NULL: Linux copied them before
-returning EBADF, but QEMU's explicit NULL check answered EFAULT.
-model: the previous surface fixture now has an Unmodeled witness -/
-theorem epoll_ctl_old_null_event_probe_is_unmodeled :
+/-- An `epoll_ctl` whose `op` is 0, not `EPOLL_CTL_DEL`, so the entry copies
+the 16-byte event struct first; `probe_mem` maps every address, so the copy
+passes and the next step, the `epfd` lookup, answers -EBADF — `AT_FDCWD` is
+open in no table.  The event pointer therefore changes nothing here: the
+copy is a verdict and not a store.
+kernel: fs/eventpoll.c:epoll_ctl,do_epoll_ctl@v6.18.46 -/
+theorem epoll_ctl_old_null_event_probe_answers_ebadf :
     table_witness checked_table
       (SyscallInput.mkInput (Z_to_bv 64 21)
         [Z_to_bv 64 (-100), 0, 0, 0, 0, 0] probe_mem probe_mem)
-      probe_model = Unmodeled := rfl
+      probe_model = Ok (mkEffect (errno_ret EBADF) [] []) probe_model [] := rfl
 
-/-- The epoll surface witness has a nonnull mask with size zero and count
-zero. Linux rejects the mask size; QEMU rejects the count with the same errno.
+/-- The epoll surface witness has a nonnull mask with size zero, which
+`set_user_sigmask` refuses with -EINVAL before the epfd is looked up.
 model: the concrete answering witness for syscall 22 in checked_table; no kernel behaviour is claimed -/
 theorem epoll_pwait_probe_has_an_answer : probe_answers 22 = true := rfl
 
@@ -222,24 +226,27 @@ model: the concrete registers of the epoll surface fixture -/
 theorem epoll_pwait_probe_uses_bad_mask_size_and_zero_count :
     probe_args 22 = [Z_to_bv 64 (-100), 0, 0, 0, 1, 0] := rfl
 
-/-- Lean declines the previous closed-descriptor/count-one fixture, so it
-cannot witness an answering input on the narrowed surface.
-model: the previous surface fixture now has an Unmodeled witness -/
-theorem epoll_pwait_old_count_one_probe_is_unmodeled :
+/-- The closed-descriptor fixture with `maxevents` one and a NULL signal
+mask: the mask installs nothing, so the first fallible step is the `epfd`
+lookup, and `AT_FDCWD` is open in no table, so the answer is -EBADF before
+`maxevents` is read at all.
+kernel: fs/eventpoll.c:do_epoll_pwait,do_epoll_wait@v6.18.46 -/
+theorem epoll_pwait_old_count_one_probe_answers_ebadf :
     table_witness checked_table
       (SyscallInput.mkInput (Z_to_bv 64 22)
         [Z_to_bv 64 (-100), 0, 1, 0, 0, 0] probe_mem probe_mem)
-      probe_model = Unmodeled := rfl
+      probe_model = Ok (mkEffect (errno_ret EBADF) [] []) probe_model [] := rfl
 
-/-- Restoring the old all-zero trailing registers makes this closed-epfd
-fixture decline at maxevents zero, so it cannot witness that 22 has an
-answering input for checked_sysnos_probes_answer.
-model: the former probe_args default at syscall 22 is an Unmodeled witness; no kernel behaviour is claimed -/
-theorem epoll_pwait_old_zero_count_probe_is_unmodeled :
+/-- The all-zero trailing registers give a NULL signal mask and a zero
+`maxevents`, and the answer is still -EBADF: the `epfd` lookup precedes the
+`maxevents` check, which is the reverse of the `epoll_ctl` order, so the
+zero count is never reached.
+kernel: fs/eventpoll.c:do_epoll_wait,ep_check_params@v6.18.46 -/
+theorem epoll_pwait_old_zero_count_probe_answers_ebadf :
     table_witness checked_table
       (SyscallInput.mkInput (Z_to_bv 64 22)
         [Z_to_bv 64 (-100), 0, 0, 0, 0, 0] probe_mem probe_mem)
-      probe_model = Unmodeled := rfl
+      probe_model = Ok (mkEffect (errno_ret EBADF) [] []) probe_model [] := rfl
 
 /-! ### Every other row, register by register
 
@@ -247,10 +254,10 @@ The header says why these are here.  Each names the register the kernel
 reads the value from and, where the row leaves a register zero on
 purpose, pins that too, so that a value moved one register over fails. -/
 
-/-- The ioctl probe keeps the closed fd and selects a fd-first request.
-Linux resolves the fd first; QEMU's entry for TIOCGWINSZ also reaches
-safe_ioctl before copying to the guest (the source argument is on
-Sys.Fs.Ioctl.ioctl_fd_first_request).
+/-- The ioctl probe keeps the closed fd and a request the tty list holds.
+The fd is resolved first for every request, as Linux does, so the closed
+descriptor answers -EBADF whatever the request word is; TIOCGWINSZ is the
+request this row carries.
 kernel: fs/ioctl.c:ioctl; drivers/tty/tty_io.c:tty_ioctl@v6.18.46 -/
 theorem ioctl_probe_carries_tiocgwinsz_in_a1 :
     (probe_args 29).getD 0 0 = Z_to_bv 64 (-100)
@@ -262,14 +269,14 @@ theorem ioctl_probe_witness_answers_ebadf :
     table_witness checked_table (probe_input 29) probe_model
       = Ok (mkEffect (errno_ret EBADF) [] []) probe_model [] := rfl
 
-/-- The old request-zero fixture declines: a closed fd alone no longer
-makes an ioctl probe answer. QEMU do_ioctl can return ENOTTY before fd
-lookup, unlike Linux fs/ioctl.c ioctl; the fd-first gate records that gap.
+/-- The request-zero fixture answers -EBADF too: the fd lookup precedes
+every request test, so a closed fd alone decides the answer and the
+request word is never read.
 kernel: fs/ioctl.c:ioctl@v6.18.46 -/
-theorem ioctl_default_request_witness_declines :
+theorem ioctl_default_request_witness_answers_ebadf :
     table_witness checked_table
       (SyscallInput.mkInput 29 [Z_to_bv 64 (-100), 0, 0, 0, 0, 0] probe_mem probe_mem)
-      probe_model = Unmodeled := rfl
+      probe_model = Ok (mkEffect (errno_ret EBADF) [] []) probe_model [] := rfl
 
 /-- `eventfd2(count, flags)`: `O_LARGEFILE` in the flag word, outside
 `EFD_FLAGS_SET`, which `do_eventfd` refuses with `-EINVAL` — an answer on

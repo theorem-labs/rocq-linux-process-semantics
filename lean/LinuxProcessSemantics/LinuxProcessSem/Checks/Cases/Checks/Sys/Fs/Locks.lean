@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Locks.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs.Locks
@@ -24,12 +25,11 @@ everything. Rocq's
 `theories/LinuxProcessSem/Checks/Cases/Fs/Locks.v` provides the matching
 examples. `Checks/Cases/Fs/Locks.lean` carries their cases register and
 spec pins; the acceptor-level twins are here, with dispatcher-level pins
-in `V_Fs_Locks` below.  Six of the thirteen conjuncts of Rocq's
-`flock_every_file_kind_counts_as_an_opener` have no twin here: the three
-on `FdFileA` and the three on `FdFileRW`.  The spec twin declines every
-lock request on an open fd (`Sys/Fs/Locks.lean`'s header, T202), so the
-lock conjuncts kept here pin declines where Rocq grants;
-`Checks/Cases/Fs/Locks.lean` pins the declines and the counting.
+in `V_Fs_Locks` below.  Rocq's
+`flock_every_file_kind_counts_as_an_opener` is covered here arm by arm:
+a sole opener of each file kind is accepted at 0, and a second
+descriptor on the same name declines;
+`Checks/Cases/Fs/Locks.lean` pins the same answers on the spec.
 
 The fixtures are `Checks/Cases/Fs/Locks.lean`'s, imported rather than
 copied, so that the spec pins and the checker pins read the same tables.
@@ -62,20 +62,16 @@ that no event was emitted, is a statement about the model's own state,
 and the `CheckOk flock_model []` below is the whole of it: the accepted
 post-model is the SAME model, and the event list is empty. -/
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_ex_on_sole_opener_declines :
-    check_flock 4 2 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckUnmodeled := rfl
+/-- The sole opener of "g" is accepted at 0: the lock's owner is the
+`struct file`, so a sole opener has nothing to conflict with.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_ex_on_sole_opener_accepts_zero :
+    check_flock 4 2 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckOk flock_model [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_ex_on_sole_opener_declines_eagain :
-    check_flock 4 2 (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckUnmodeled := rfl
-
-/-- T202: Keep the refusal on an answered unlock as well.
-kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_ex_on_sole_opener_rejects_eagain_on_unlock :
-    check_flock 4 8 (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckReject := rfl
+/-- …and the -EAGAIN of a conflicting holder is refused there.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_ex_on_sole_opener_rejects_eagain :
+    check_flock 4 2 (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckReject := rfl
 
 /-- LOCK_UN on a directory reference: 0 without consulting the fd kind.
 kernel: fs/locks.c:flock,flock_lock_inode@v6.18.46 -/
@@ -88,13 +84,15 @@ kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
 theorem flock_un_on_dir_rejects_einval :
     check_flock 5 8 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckReject := rfl
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_on_open_fd_is_unmodeled :
-    check_flock 1 32 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckUnmodeled := rfl
+/-- `LOCK_MAND` is answered 0 before the descriptor is resolved.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_mand_on_open_fd_is_zero :
+    check_flock 1 32 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckOk flock_model [] := rfl
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_on_open_fd_declines_ebadf :
-    check_flock 1 32 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := rfl
+/-- …and -EBADF is refused on it.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_mand_on_open_fd_rejects_ebadf :
+    check_flock 1 32 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := rfl
 
 end SuccessIsInert
 
@@ -144,45 +142,47 @@ kernel: fs/locks.c:flock@v6.18.46 -/
 theorem flock_un_on_closed_fd_rejects_success :
     check_flock 9999 8 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckReject := rfl
 
-/-- Every unrecognized word on a closed fd declines, not operation 0 alone:
-`LOCK_SH|LOCK_EX` is -EINVAL from v6.0 onward, translated before the
-lookup, and -EBADF from the lookup at v5.19 and older, so neither is
-accepted.
-Read at Linux v5.19: fs/locks.c, SYSCALL_DEFINE2(flock), performs fd lookup before command translation.
-probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- combinedclosed -/
-theorem flock_combined_op_on_closed_fd_is_unmodeled :
-    check_flock 9999 3 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled ∧
-    check_flock 9999 3 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled ∧
+/-- Every unrecognized word on a closed fd is -EINVAL, not operation 0
+alone: `LOCK_SH|LOCK_EX` is translated before the lookup, so the -EBADF
+of the lookup is refused.
+probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- combinedclosed
+kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem flock_combined_op_on_closed_fd_is_einval :
+    check_flock 9999 3 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckOk flock_model [] ∧
+    check_flock 9999 3 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject ∧
     check_flock 9999 3 (mkEffect (errno_ret EBADF) [] []) flock_model ≠ CheckOk flock_model [] := by
   refine ⟨rfl, rfl, ?_⟩
   intro h; cases h
 
-/-- `LOCK_UN|LOCK_EX` on a closed fd: the same two answers, so declined.
+/-- `LOCK_UN|LOCK_EX` on a closed fd: the same, -EINVAL.
 kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
-theorem flock_unlock_ex_on_closed_fd_is_unmodeled :
-    check_flock 9999 10 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled ∧
-    check_flock 9999 10 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled :=
+theorem flock_unlock_ex_on_closed_fd_is_einval :
+    check_flock 9999 10 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckOk flock_model [] ∧
+    check_flock 9999 10 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject :=
   ⟨rfl, rfl⟩
 
 /-- `LOCK_EX` with bit 31 set on a closed fd: unrecognized whole, so
-declined.
-probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- highcmdclosed -/
-theorem flock_sign_bit_op_on_closed_fd_is_unmodeled :
-    check_flock 9999 0x80000002 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled ∧
-    check_flock 9999 0x80000002 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled ∧
+-EINVAL.
+probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- highcmdclosed
+kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem flock_sign_bit_op_on_closed_fd_is_einval :
+    check_flock 9999 0x80000002 (mkEffect (errno_ret EINVAL) [] []) flock_model
+      = CheckOk flock_model [] ∧
+    check_flock 9999 0x80000002 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject ∧
     check_flock 9999 0x80000002 (mkEffect (errno_ret EBADF) [] []) flock_model ≠ CheckOk flock_model [] := by
   refine ⟨rfl, rfl, ?_⟩
   intro h; cases h
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_ex_nb_on_sole_opener_declines :
-    check_flock 4 6 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckUnmodeled := rfl
+/-- `LOCK_NB` changes no answer: the nonblocking take on the sole opener
+is accepted at 0.
+kernel: fs/locks.c:flock,flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_ex_nb_on_sole_opener_accepts_zero :
+    check_flock 4 6 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckOk flock_model [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_ex_nb_on_sole_opener_declines_einval :
-    check_flock 4 6 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled := rfl
+/-- …and -EINVAL is refused there: the word is recognized.
+kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem flock_ex_nb_on_sole_opener_rejects_einval :
+    check_flock 4 6 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -211,13 +211,15 @@ kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
 theorem flock_sh_and_ex_rejects_success :
     check_flock 3 3 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckReject := rfl
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_with_un_is_unmodeled :
-    check_flock 3 40 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckUnmodeled := rfl
+/-- `LOCK_MAND | LOCK_UN` carries the bit, so it is 0 before anything
+else is read.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_mand_with_un_is_zero :
+    check_flock 3 40 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckOk flock_model [] := rfl
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_with_un_declines_einval :
-    check_flock 3 40 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_mand_with_un_rejects_einval :
+    check_flock 3 40 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckReject := rfl
 
 /-- Bit 31 survives the `unsigned int` narrowing; `flock_translate_cmd`
 takes an `int`, sees a negative word that is none of the three cases, and
@@ -232,46 +234,46 @@ kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
 theorem flock_high_bit_operation_rejects_success :
     check_flock 3 0x80000000 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_sh_on_sole_opener_declines :
-    check_flock 3 1 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckUnmodeled := rfl
+/-- The sole opener of "f" is accepted at 0 for a shared request too.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_sh_on_sole_opener_accepts_zero :
+    check_flock 3 1 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckOk flock_model [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_sh_on_sole_opener_declines_eagain :
-    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckUnmodeled := rfl
+/-- …and its -EAGAIN is refused.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_sh_on_sole_opener_rejects_eagain :
+    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem flock_sh_on_sole_opener_rejects_eagain_on_unlock :
     check_flock 3 8 (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_effect_with_a_write_declines :
-    check_flock 4 2 (mkEffect (Z_to_bv 64 0) [(0x10000, [0])] []) flock_model = CheckUnmodeled := rfl
+/-- The grant is a bare return: a write beside the 0 is refused.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_effect_with_a_write_rejected :
+    check_flock 4 2 (mkEffect (Z_to_bv 64 0) [(0x10000, [0])] []) flock_model = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem flock_effect_with_a_write_rejected_on_unlock :
     check_flock 4 8 (mkEffect (Z_to_bv 64 0) [(0x10000, [0])] []) flock_model = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_effect_with_a_zero_range_declines :
-    check_flock 4 2 (mkEffect (Z_to_bv 64 0) [] [(0x10000, 16)]) flock_model = CheckUnmodeled := rfl
+/-- …and so is a zero-filled range.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_effect_with_a_zero_range_rejected :
+    check_flock 4 2 (mkEffect (Z_to_bv 64 0) [] [(0x10000, 16)]) flock_model = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem flock_effect_with_a_zero_range_rejected_on_unlock :
     check_flock 4 8 (mkEffect (Z_to_bv 64 0) [] [(0x10000, 16)]) flock_model = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_effect_with_a_copyin_declines :
+/-- …and so is a copy-in: `flock` reads no user memory.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_effect_with_a_copyin_rejected :
     check_flock 4 2 (with_copyins [(0x10000, 4)] (mkEffect (Z_to_bv 64 0) [] [])) flock_model
-      = CheckUnmodeled := rfl
+      = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -296,25 +298,25 @@ kernel: fs/locks.c:flock,flock_lock_inode@v6.18.46 -/
 theorem flock_ex_on_closed_fd_rejects_enoent :
     check_flock 9999 2 (mkEffect (errno_ret ENOENT) [] []) flock_model = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_ex_nb_on_sole_opener_declines_eagain :
-    check_flock 4 6 (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckUnmodeled := rfl
+/-- The nonblocking take on the sole opener refuses -EAGAIN as well.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_ex_nb_on_sole_opener_rejects_eagain :
+    check_flock 4 6 (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem flock_ex_nb_on_sole_opener_rejects_eagain_on_unlock :
     check_flock 4 12 (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_sh_nb_on_sole_opener_declines :
-    check_flock 3 5 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckUnmodeled := rfl
+/-- The nonblocking shared take on the sole opener is accepted at 0.
+kernel: fs/locks.c:flock,flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_sh_nb_on_sole_opener_accepts_zero :
+    check_flock 3 5 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckOk flock_model [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_sh_nb_on_sole_opener_declines_eagain :
-    check_flock 3 5 (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckUnmodeled := rfl
+/-- …and refuses -EAGAIN.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_sh_nb_on_sole_opener_rejects_eagain :
+    check_flock 3 5 (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -331,15 +333,15 @@ section EveryArmIsRetOnly
 2183, Linux v6.18.46) reads and writes no user memory on any path, and
 neither maps nor unmaps anything. -/
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_arm_declines_a_write :
-    check_flock 1 32 (mkEffect (Z_to_bv 64 0) [(0x10000, [0])] []) flock_model = CheckUnmodeled :=
+/-- kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_mand_arm_rejects_a_write :
+    check_flock 1 32 (mkEffect (Z_to_bv 64 0) [(0x10000, [0])] []) flock_model = CheckReject :=
   rfl
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_arm_declines_a_copyin :
+/-- kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_mand_arm_rejects_a_copyin :
     check_flock 1 32 (with_copyins [(0x10000, 4)] (mkEffect (Z_to_bv 64 0) [] [])) flock_model
-      = CheckUnmodeled := rfl
+      = CheckReject := rfl
 
 /-- The -EINVAL arm with a write beside its errno.
 kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
@@ -383,11 +385,11 @@ theorem flock_un_arm_rejects_a_copyin :
     check_flock 5 8 (with_copyins [(0x10000, 4)] (mkEffect (Z_to_bv 64 0) [] [])) flock_model
       = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_grant_declines_an_unmap :
+/-- The grant arm maps nothing: an unmap beside its 0 is refused.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_grant_rejects_an_unmap :
     check_flock 4 2 (SyscallEffect.mkEffectU (Z_to_bv 64 0) [] [] [(0x10000, 4096)] [] [])
-      flock_model = CheckUnmodeled := rfl
+      flock_model = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -395,12 +397,12 @@ theorem flock_grant_rejects_an_unmap_on_unlock :
     check_flock 4 8 (SyscallEffect.mkEffectU (Z_to_bv 64 0) [] [] [(0x10000, 4096)] [] [])
       flock_model = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_grant_declines_a_copy :
+/-- …and copies nothing.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_grant_rejects_a_copy :
     check_flock 4 2
       (SyscallEffect.mkEffectU (Z_to_bv 64 0) [] [] [] [MemCopy.mkCopy 0x10000 0x11000 16] [])
-      flock_model = CheckUnmodeled := rfl
+      flock_model = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -436,20 +438,20 @@ kernel: fs/locks.c:flock,flock_translate_cmd; include/linux/syscalls.h:__SYSCALL
 theorem flock_einval_as_a_32_bit_word_is_rejected :
     check_flock 1 0 (mkEffect (Z_to_bv 64 0xFFFFFFEA) [] []) flock_model = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_success_with_an_upper_word_declines :
-    check_flock 4 2 (mkEffect (Z_to_bv 64 0x100000000) [] []) flock_model = CheckUnmodeled := rfl
+/-- A 0 with a stray upper word is not the 0 the grant arm takes.
+kernel: fs/locks.c:flock; include/linux/syscalls.h:__SYSCALL_DEFINEx@v6.18.46 -/
+theorem flock_success_with_an_upper_word_is_rejected :
+    check_flock 4 2 (mkEffect (Z_to_bv 64 0x100000000) [] []) flock_model = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem flock_success_with_an_upper_word_is_rejected_on_unlock :
     check_flock 4 8 (mkEffect (Z_to_bv 64 0x100000000) [] []) flock_model = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_eagain_as_a_32_bit_word_declines :
-    check_flock 4 2 (mkEffect (Z_to_bv 64 0xFFFFFFF5) [] []) flock_model = CheckUnmodeled := rfl
+/-- -EAGAIN as a 32-bit word is refused on the grant arm as well.
+kernel: fs/locks.c:flock; include/linux/syscalls.h:__SYSCALL_DEFINEx@v6.18.46 -/
+theorem flock_eagain_as_a_32_bit_word_is_rejected :
+    check_flock 4 2 (mkEffect (Z_to_bv 64 0xFFFFFFF5) [] []) flock_model = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -478,14 +480,14 @@ def flock_mapped_model : Model :=
     m_vm := { flock_model.m_vm with
       vmst_maps := { flock_model.m_vm.vmst_maps with vm_maps := [(0x10000, 4096)] } } }
 
-/-- kernel: fs/locks.c:flock,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_arm_with_mapping_is_unmodeled :
+/-- kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_mand_arm_keeps_the_mapping :
     check_flock 1 32 (mkEffect (Z_to_bv 64 0) [] []) flock_mapped_model
-      = CheckUnmodeled := rfl
+      = CheckOk flock_mapped_model [] := rfl
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_arm_on_mapped_model_declines_ebadf :
-    check_flock 1 32 (mkEffect (errno_ret EBADF) [] []) flock_mapped_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_mand_arm_on_mapped_model_rejects_ebadf :
+    check_flock 1 32 (mkEffect (errno_ret EBADF) [] []) flock_mapped_model = CheckReject := rfl
 
 /-- So does the unlock arm.
 kernel: fs/locks.c:flock,flock_lock_inode@v6.18.46 -/
@@ -500,16 +502,16 @@ kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem flock_un_arm_on_mapped_model_rejects_einval :
     check_flock 5 8 (mkEffect (errno_ret EINVAL) [] []) flock_mapped_model = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_lock_on_mapped_model_declines :
+/-- The grant arm keeps the mapping too.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_lock_on_mapped_model_keeps_the_mapping :
     check_flock 4 2 (mkEffect (Z_to_bv 64 0) [] []) flock_mapped_model
-      = CheckUnmodeled := rfl
+      = CheckOk flock_mapped_model [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_grant_on_mapped_model_declines_eagain :
-    check_flock 4 2 (mkEffect (errno_ret EAGAIN) [] []) flock_mapped_model = CheckUnmodeled := rfl
+/-- …and refuses -EAGAIN on the sole opener there.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_grant_on_mapped_model_rejects_eagain :
+    check_flock 4 2 (mkEffect (errno_ret EAGAIN) [] []) flock_mapped_model = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -527,11 +529,17 @@ kernel: fs/locks.c:flock@v6.18.46 -/
 theorem flock_ebadf_arm_on_mapped_model_rejects_success :
     check_flock 9999 2 (mkEffect (Z_to_bv 64 0) [] []) flock_mapped_model = CheckReject := rfl
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
+/-- The accepted post-model is the one handed in, mapping included: the
+bare fixture is not it.
+kernel: fs/locks.c:flock@v6.18.46 -/
 theorem flock_grant_does_not_hand_back_another_model :
     ¬ (check_flock 4 2 (mkEffect (Z_to_bv 64 0) [] []) flock_mapped_model
         = CheckOk flock_model []) := by
-  intro h; cases h
+  intro h
+  change CheckOk flock_mapped_model [] = CheckOk flock_model [] at h
+  injection h with hm _
+  have hmaps := congrArg (fun m => (m_vmmaps m).vm_maps) hm
+  exact List.cons_ne_nil _ _ hmaps
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -645,14 +653,16 @@ kernel: fs/locks.c:flock,flock_make_lock,flock_locks_conflict,locks_conflict,flo
 theorem flock_sh_nb_with_second_opener_declines_success :
     check_flock 3 5 (mkEffect (Z_to_bv 64 0) [] []) flock_two_openers_model = CheckUnmodeled := rfl
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_with_ex_on_second_opener_is_unmodeled :
+/-- `LOCK_MAND | LOCK_EX` carries the bit, so the two-opener table is
+never read: 0.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_mand_with_ex_on_second_opener_is_zero :
     check_flock 3 34 (mkEffect (Z_to_bv 64 0) [] []) flock_two_openers_model
-      = CheckUnmodeled := rfl
+      = CheckOk flock_two_openers_model [] := rfl
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_with_ex_on_second_opener_declines_eagain :
-    check_flock 3 34 (mkEffect (errno_ret EAGAIN) [] []) flock_two_openers_model = CheckUnmodeled :=
+/-- kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_mand_with_ex_on_second_opener_rejects_eagain :
+    check_flock 3 34 (mkEffect (errno_ret EAGAIN) [] []) flock_two_openers_model = CheckReject :=
   rfl
 
 /-- `LOCK_UN` on the same descriptor of the same two-opener table: 0,
@@ -670,9 +680,9 @@ theorem flock_un_with_second_opener_rejects_eagain :
 
 end LockRequestsDecline
 
-section EveryFileKindDeclines
+section EveryFileKindCounts
 
-/-! ## Lock requests decline across file kinds
+/-! ## The opener count across file kinds
 
 `SYSCALL_DEFINE2(flock)` reads `f_mode`
 only to refuse, with -EBADF, a LOCK REQUEST on a file open with NEITHER
@@ -691,7 +701,7 @@ FMODE_PATH | FMODE_OPENED, and no modeled open passes it). -/
 
 /-- `LOCK_EX` on fd 3, the descriptor each table below puts on "f"; the
 effect claims the success, so a decline shows as `CheckUnmodeled` and a
-wrong success as `CheckReject`. Rocq: `flock_lock_on_3` with command 2. -/
+wrong success as `CheckReject`. Rocq: `flock_ex_on_3`. -/
 def flock_ex_on_3 (m : Model) : check_result :=
   check_flock 3 2 (mkEffect (Z_to_bv 64 0) [] []) m
 
@@ -712,13 +722,45 @@ def flock_pair (k : path → word → FdEntry) : Model :=
 def flock_mixed (k : path → word → FdEntry) : Model :=
   flock_openers_model [(3, k [102] (Z_to_bv 64 0)), (4, .FdFile [102] (Z_to_bv 64 5))]
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_sh_on_sole_file_declines : check_flock 3 1 (mkEffect 0 [] []) (flock_sole .FdFile) = CheckUnmodeled := rfl
+/-- The sole opener is accepted at 0 on every file kind, this one an
+`FdFile`.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_sh_on_sole_file_accepts_zero :
+    check_flock 3 1 (mkEffect 0 [] []) (flock_sole .FdFile) = CheckOk (flock_sole .FdFile) [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_ex_on_sole_filew_declines : flock_ex_on_3 (flock_sole .FdFileW) = CheckUnmodeled := rfl
+/-- …an `FdFileW`.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_ex_on_sole_filew_accepts_zero :
+    flock_ex_on_3 (flock_sole .FdFileW) = CheckOk (flock_sole .FdFileW) [] := rfl
+
+/-- …an `FdFileA`: O_APPEND is no input of the lock.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_ex_on_sole_filea_accepts_zero :
+    flock_ex_on_3 (flock_sole .FdFileA) = CheckOk (flock_sole .FdFileA) [] := rfl
+
+/-- …and an `FdFileRW`: the access mode is no input of it either.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_ex_on_sole_filerw_accepts_zero :
+    flock_ex_on_3 (flock_sole .FdFileRW) = CheckOk (flock_sole .FdFileRW) [] := rfl
+
+/-- A second descriptor of the same kind on the same name declines, on
+`FdFileA`…
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_ex_on_pair_filea_declines : flock_ex_on_3 (flock_pair .FdFileA) = CheckUnmodeled := rfl
+
+/-- …and on `FdFileRW`.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_ex_on_pair_filerw_declines : flock_ex_on_3 (flock_pair .FdFileRW) = CheckUnmodeled := rfl
+
+/-- A second descriptor of a DIFFERENT kind counts as an opener too, on
+`FdFileA`…
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_ex_on_mixed_filea_declines : flock_ex_on_3 (flock_mixed .FdFileA) = CheckUnmodeled := rfl
+
+/-- …and on `FdFileRW`.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_ex_on_mixed_filerw_declines :
+    flock_ex_on_3 (flock_mixed .FdFileRW) = CheckUnmodeled := rfl
 
 /-- kernel: fs/locks.c:flock,flock_lock_inode@v6.18.46 -/
 theorem flock_sh_on_pair_file_declines : check_flock 3 1 (mkEffect 0 [] []) (flock_pair .FdFile) = CheckUnmodeled := rfl
@@ -766,27 +808,28 @@ theorem flock_un_on_pair_rdwr_is_inert :
     check_flock 3 8 (mkEffect (Z_to_bv 64 0) [] []) (flock_pair .FdFileRW) = CheckOk (flock_pair .FdFileRW) [] :=
   rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_ex_on_sole_filew_declines_eagain :
-    flock_ex_eagain_on_3 (flock_sole .FdFileW) = CheckUnmodeled := rfl
+/-- The sole `FdFileW` opener refuses -EAGAIN: it has nothing to
+conflict with.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_ex_on_sole_filew_rejects_eagain :
+    flock_ex_eagain_on_3 (flock_sole .FdFileW) = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem flock_ex_on_sole_filew_rejects_eagain_on_unlock :
     check_flock 3 8 (mkEffect (errno_ret EAGAIN) [] []) (flock_sole .FdFileW) = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_sh_on_sole_file_declines_eagain :
-    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_sole .FdFile) = CheckUnmodeled := rfl
+/-- …and so does the sole `FdFile` opener.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_sh_on_sole_file_rejects_eagain :
+    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_sole .FdFile) = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem flock_sh_on_sole_file_rejects_eagain_on_unlock :
     check_flock 3 8 (mkEffect (errno_ret EAGAIN) [] []) (flock_sole .FdFile) = CheckReject := rfl
 
-end EveryFileKindDeclines
+end EveryFileKindCounts
 
 section OtherKindsDecline
 
@@ -1019,13 +1062,15 @@ kernel: include/uapi/asm-generic/fcntl.h:LOCK_RW; fs/locks.c:flock,flock_transla
 theorem flock_lock_rw_rejects_success :
     check_flock 3 192 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckReject := rfl
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_read_is_unmodeled :
-    check_flock 3 96 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckUnmodeled := rfl
+/-- `LOCK_MAND | LOCK_READ` carries the bit, so it is 0 and not the
+-EINVAL the word alone would get.
+kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem flock_mand_read_is_zero :
+    check_flock 3 96 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckOk flock_model [] := rfl
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_read_declines_einval :
-    check_flock 3 96 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem flock_mand_read_rejects_einval :
+    check_flock 3 96 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckReject := rfl
 
 end UnrecognisedWords
 
@@ -1042,7 +1087,8 @@ by `sysctl_nr_open_max` (fs/file.c:100-101), below 2^31.  So every such
 word is a closed descriptor: -EBADF at the `fd_empty` test
 (include/linux/file.h) that `flock` makes right after the lookup
 (fs/locks.c:2158-2159, Linux v6.18.46) once the two cmd tests have
-passed; the other two closed-fd shapes decline.  The checker's
+passed; a word carrying LOCK_MAND is 0 on such a descriptor, and a word
+`flock_translate_cmd` does not recognize is -EINVAL on it.  The checker's
 `fd_lookup` finds no such key in any fixture; a checker that read the fd
 as a signed index, or masked bit 31, would find fd 3 under 0x80000003
 and grant. -/
@@ -1069,41 +1115,38 @@ kernel: fs/locks.c:flock; include/linux/fdtable.h:files_lookup_fd_raw@v6.18.46 -
 theorem flock_ex_on_all_ones_fd_rejects_success :
     check_flock 0xFFFFFFFF 2 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckReject := rfl
 
-/-- `LOCK_MAND` on the all-ones word, which no table holds: v6.0 onward
-answers 0 before the lookup, so the 0 is not accepted.
+/-- `LOCK_MAND` on the all-ones word, which no table holds: the bit is
+tested before the lookup, so the answer is 0 and not -EBADF.
 probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- mandclosed -/
-theorem flock_mand_on_all_ones_fd_zero_is_unmodeled :
-    check_flock 0xFFFFFFFF 32 (mkEffect (Z_to_bv 64 0) [] []) flock_model = CheckUnmodeled ∧
-    check_flock 0xFFFFFFFF 32 (mkEffect (Z_to_bv 64 0) [] []) flock_model ≠ CheckOk flock_model [] := by
-  constructor
-  · rfl
-  · intro h; cases h
+theorem flock_mand_on_all_ones_fd_is_zero :
+    check_flock 0xFFFFFFFF 32 (mkEffect (Z_to_bv 64 0) [] []) flock_model
+      = CheckOk flock_model [] := rfl
 
-/-- …nor is the -EBADF v5.19 and older answer from the lookup.
+/-- …and the -EBADF of a lookup-first order is refused there.
 Read at Linux v5.19: fs/locks.c, SYSCALL_DEFINE2(flock), performs fd lookup before command translation.
 probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- mandclosed -/
-theorem flock_mand_on_all_ones_fd_ebadf_is_unmodeled :
-    check_flock 0xFFFFFFFF 32 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled ∧
+theorem flock_mand_on_all_ones_fd_ebadf_is_rejected :
+    check_flock 0xFFFFFFFF 32 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject ∧
     check_flock 0xFFFFFFFF 32 (mkEffect (errno_ret EBADF) [] []) flock_model ≠ CheckOk flock_model [] := by
   constructor
   · rfl
   · intro h; cases h
 
-/-- An unrecognized operation on the all-ones word: v6.0 onward answers
--EINVAL before the lookup, so the -EINVAL is not accepted.
+/-- An unrecognized operation on the all-ones word: `flock_translate_cmd`
+falls off its switch before the descriptor is looked up, so the answer is
+-EINVAL on a closed fd exactly as on an open one, and the checker accepts
+it.
 probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- badcmdclosed -/
-theorem flock_bad_op_on_all_ones_fd_einval_is_unmodeled :
-    check_flock 0xFFFFFFFF 0 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled ∧
-    check_flock 0xFFFFFFFF 0 (mkEffect (errno_ret EINVAL) [] []) flock_model ≠ CheckOk flock_model [] := by
-  constructor
-  · rfl
-  · intro h; cases h
+theorem flock_bad_op_on_all_ones_fd_einval_is_accepted :
+    check_flock 0xFFFFFFFF 0 (mkEffect (errno_ret EINVAL) [] []) flock_model
+      = CheckOk flock_model [] := rfl
 
-/-- …nor is the -EBADF v5.19 and older answer from the lookup.
+/-- …and the -EBADF a lookup-first order would give is refused there: the
+command word is translated before the fd is resolved.
 Read at Linux v5.19: fs/locks.c, SYSCALL_DEFINE2(flock), performs fd lookup before command translation.
 probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- badcmdclosed -/
-theorem flock_bad_op_on_all_ones_fd_ebadf_is_unmodeled :
-    check_flock 0xFFFFFFFF 0 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled ∧
+theorem flock_bad_op_on_all_ones_fd_ebadf_is_rejected :
+    check_flock 0xFFFFFFFF 0 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject ∧
     check_flock 0xFFFFFFFF 0 (mkEffect (errno_ret EBADF) [] []) flock_model ≠ CheckOk flock_model [] := by
   constructor
   · rfl
@@ -1115,11 +1158,11 @@ section DeclinesBesideOtherKinds
 
 /-! ## Lock requests beside other descriptor kinds
 
-These pins check declines with a file and a socket, pipe, directory or
-device in either table order, including tables with two file entries.
-The model records neither filesystem identity nor lock ownership.
-`flock_lock_inode` (fs/locks.c, Linux v6.18.46) reads that ownership
-when it checks a conflict. -/
+These pins check the grant and the decline with a file and a socket,
+pipe, directory or device in either table order, including tables with
+two file entries.  A descriptor of another kind is no opener of the
+file's path, so the file stays the sole opener and the take is granted;
+a second file entry on the same name declines. -/
 
 /-- The skipped descriptor at 3, the file's sole opener at 4. -/
 def flock_beside_file (e : FdEntry) : Model :=
@@ -1137,17 +1180,17 @@ def flock_file_hidden_by (e : FdEntry) : Model :=
 def flock_pair_after (e : FdEntry) : Model :=
   flock_openers_model [(3, e), (4, .FdFile [102] 0), (5, .FdFile [102] 5)]
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_sole_file_beside_socket_declines :
+/-- A socket is no opener of "f": the file is still the sole opener.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_sole_file_beside_socket_accepts_zero :
     check_flock 4 1 (mkEffect (Z_to_bv 64 0) [] []) (flock_beside_file (.FdSocket .SkFresh))
-      = CheckUnmodeled := rfl
+      = CheckOk (flock_beside_file (.FdSocket .SkFresh)) [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_sole_file_beside_socket_declines_eagain :
+/-- …and -EAGAIN is refused there.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_sole_file_beside_socket_rejects_eagain :
     check_flock 4 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_beside_file (.FdSocket .SkFresh))
-      = CheckUnmodeled := rfl
+      = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1155,16 +1198,16 @@ theorem flock_sole_file_beside_socket_rejects_eagain_on_unlock :
     check_flock 4 8 (mkEffect (errno_ret EAGAIN) [] []) (flock_beside_file (.FdSocket .SkFresh))
       = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_socket_beside_file_declines :
+/-- The same with the socket listed after the file.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_socket_beside_file_accepts_zero :
     check_flock 3 1 (mkEffect (Z_to_bv 64 0) [] []) (flock_file_beside (.FdSocket .SkFresh))
-      = CheckUnmodeled := rfl
+      = CheckOk (flock_file_beside (.FdSocket .SkFresh)) [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_socket_beside_opener_declines_eagain :
-    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_beside (.FdSocket .SkFresh)) = CheckUnmodeled := rfl
+/-- …and -EAGAIN is refused there too.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_socket_beside_opener_rejects_eagain :
+    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_beside (.FdSocket .SkFresh)) = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1179,17 +1222,17 @@ theorem flock_socket_beside_two_files_declines :
 theorem flock_socket_beside_two_files_declines_eagain :
     check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_hidden_by (.FdSocket .SkFresh)) = CheckUnmodeled := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_sole_file_beside_pipe_declines :
+/-- A pipe end is no opener of "f" either.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_sole_file_beside_pipe_accepts_zero :
     check_flock 4 1 (mkEffect (Z_to_bv 64 0) [] []) (flock_beside_file (.FdPipe 7 false))
-      = CheckUnmodeled := rfl
+      = CheckOk (flock_beside_file (.FdPipe 7 false)) [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_sole_file_beside_pipe_declines_eagain :
+/-- …and -EAGAIN is refused there.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_sole_file_beside_pipe_rejects_eagain :
     check_flock 4 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_beside_file (.FdPipe 7 false))
-      = CheckUnmodeled := rfl
+      = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1197,16 +1240,16 @@ theorem flock_sole_file_beside_pipe_rejects_eagain_on_unlock :
     check_flock 4 8 (mkEffect (errno_ret EAGAIN) [] []) (flock_beside_file (.FdPipe 7 false))
       = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_pipe_beside_file_declines :
+/-- The same with the pipe end listed after the file.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_pipe_beside_file_accepts_zero :
     check_flock 3 1 (mkEffect (Z_to_bv 64 0) [] []) (flock_file_beside (.FdPipe 7 false))
-      = CheckUnmodeled := rfl
+      = CheckOk (flock_file_beside (.FdPipe 7 false)) [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_pipe_beside_opener_declines_eagain :
-    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_beside (.FdPipe 7 false)) = CheckUnmodeled := rfl
+/-- …and -EAGAIN is refused there too.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_pipe_beside_opener_rejects_eagain :
+    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_beside (.FdPipe 7 false)) = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1221,17 +1264,17 @@ theorem flock_pipe_beside_two_files_declines :
 theorem flock_pipe_beside_two_files_declines_eagain :
     check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_hidden_by (.FdPipe 7 false)) = CheckUnmodeled := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_sole_file_beside_dir_declines :
+/-- A directory reference is no opener of "f".
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_sole_file_beside_dir_accepts_zero :
     check_flock 4 1 (mkEffect (Z_to_bv 64 0) [] []) (flock_beside_file (.FdDir))
-      = CheckUnmodeled := rfl
+      = CheckOk (flock_beside_file (.FdDir)) [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_sole_file_beside_dir_declines_eagain :
+/-- …and -EAGAIN is refused there.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_sole_file_beside_dir_rejects_eagain :
     check_flock 4 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_beside_file (.FdDir))
-      = CheckUnmodeled := rfl
+      = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1239,16 +1282,16 @@ theorem flock_sole_file_beside_dir_rejects_eagain_on_unlock :
     check_flock 4 8 (mkEffect (errno_ret EAGAIN) [] []) (flock_beside_file (.FdDir))
       = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_dir_beside_file_declines :
+/-- The same with the directory listed after the file.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_dir_beside_file_accepts_zero :
     check_flock 3 1 (mkEffect (Z_to_bv 64 0) [] []) (flock_file_beside (.FdDir))
-      = CheckUnmodeled := rfl
+      = CheckOk (flock_file_beside (.FdDir)) [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_dir_beside_opener_declines_eagain :
-    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_beside (.FdDir)) = CheckUnmodeled := rfl
+/-- …and -EAGAIN is refused there too.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_dir_beside_opener_rejects_eagain :
+    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_beside (.FdDir)) = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1263,17 +1306,17 @@ theorem flock_dir_beside_two_files_declines :
 theorem flock_dir_beside_two_files_declines_eagain :
     check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_hidden_by (.FdDir)) = CheckUnmodeled := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_sole_file_beside_devnull_declines :
+/-- /dev/null is no opener of "f".
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_sole_file_beside_devnull_accepts_zero :
     check_flock 4 1 (mkEffect (Z_to_bv 64 0) [] []) (flock_beside_file (.FdDevNull true true))
-      = CheckUnmodeled := rfl
+      = CheckOk (flock_beside_file (.FdDevNull true true)) [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_sole_file_beside_devnull_declines_eagain :
+/-- …and -EAGAIN is refused there.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_sole_file_beside_devnull_rejects_eagain :
     check_flock 4 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_beside_file (.FdDevNull true true))
-      = CheckUnmodeled := rfl
+      = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1281,16 +1324,16 @@ theorem flock_sole_file_beside_devnull_rejects_eagain_on_unlock :
     check_flock 4 8 (mkEffect (errno_ret EAGAIN) [] []) (flock_beside_file (.FdDevNull true true))
       = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_devnull_beside_file_declines :
+/-- The same with /dev/null listed after the file.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_devnull_beside_file_accepts_zero :
     check_flock 3 1 (mkEffect (Z_to_bv 64 0) [] []) (flock_file_beside (.FdDevNull true true))
-      = CheckUnmodeled := rfl
+      = CheckOk (flock_file_beside (.FdDevNull true true)) [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_devnull_beside_opener_declines_eagain :
-    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_beside (.FdDevNull true true)) = CheckUnmodeled := rfl
+/-- …and -EAGAIN is refused there too.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_devnull_beside_opener_rejects_eagain :
+    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_beside (.FdDevNull true true)) = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1305,17 +1348,17 @@ theorem flock_devnull_beside_two_files_declines :
 theorem flock_devnull_beside_two_files_declines_eagain :
     check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_hidden_by (.FdDevNull true true)) = CheckUnmodeled := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_sole_file_beside_urandom_declines :
+/-- /dev/urandom is no opener of "f".
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_sole_file_beside_urandom_accepts_zero :
     check_flock 4 1 (mkEffect (Z_to_bv 64 0) [] []) (flock_beside_file (.FdUrandom))
-      = CheckUnmodeled := rfl
+      = CheckOk (flock_beside_file (.FdUrandom)) [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_sole_file_beside_urandom_declines_eagain :
+/-- …and -EAGAIN is refused there.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_sole_file_beside_urandom_rejects_eagain :
     check_flock 4 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_beside_file (.FdUrandom))
-      = CheckUnmodeled := rfl
+      = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1323,16 +1366,16 @@ theorem flock_sole_file_beside_urandom_rejects_eagain_on_unlock :
     check_flock 4 8 (mkEffect (errno_ret EAGAIN) [] []) (flock_beside_file (.FdUrandom))
       = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_urandom_beside_file_declines :
+/-- The same with /dev/urandom listed after the file.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_urandom_beside_file_accepts_zero :
     check_flock 3 1 (mkEffect (Z_to_bv 64 0) [] []) (flock_file_beside (.FdUrandom))
-      = CheckUnmodeled := rfl
+      = CheckOk (flock_file_beside (.FdUrandom)) [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_urandom_beside_opener_declines_eagain :
-    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_beside (.FdUrandom)) = CheckUnmodeled := rfl
+/-- …and -EAGAIN is refused there too.
+kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem flock_urandom_beside_opener_rejects_eagain :
+    check_flock 3 1 (mkEffect (errno_ret EAGAIN) [] []) (flock_file_beside (.FdUrandom)) = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1388,24 +1431,28 @@ every arm is one `flock_witness_ok` would still prove, were the spec
 wrong the same way.  So the ground pins name it, one per arm, with the
 return the spec pins read off the kernel. -/
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_witness_mand_on_open_fd_is_unmodeled :
-    flock_witness 1 32 flock_model = Unmodeled := rfl
+/-- kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_witness_mand_on_open_fd_is_zero :
+    flock_witness 1 32 flock_model = Ok (mkEffect (Z_to_bv 64 0) [] []) flock_model [] := rfl
 
-/-- The witness preserves uncertainty between supported kernel orderings.
-kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
-theorem flock_witness_mand_on_closed_fd_is_unmodeled :
-    flock_witness 9999 32 flock_model = Unmodeled := rfl
+/-- The witness answers the `LOCK_MAND` word before the lookup, so a
+closed descriptor gets the same 0.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_witness_mand_on_closed_fd_is_zero :
+    flock_witness 9999 32 flock_model = Ok (mkEffect (Z_to_bv 64 0) [] []) flock_model [] := rfl
 
-/-- An invalid command on a closed fd has the same ordering uncertainty.
+/-- An invalid command on a closed fd is -EINVAL, the translation
+running before the lookup.
 kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
-theorem flock_witness_badcmd_on_closed_fd_is_unmodeled :
-    flock_witness 9999 0 flock_model = Unmodeled := rfl
+theorem flock_witness_badcmd_on_closed_fd_is_einval :
+    flock_witness 9999 0 flock_model
+      = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := rfl
 
-/-- …and so does every other unrecognized word, `LOCK_SH|LOCK_EX` among them.
+/-- …and so is every other unrecognized word, `LOCK_SH|LOCK_EX` among them.
 kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
-theorem flock_witness_combined_op_on_closed_fd_is_unmodeled :
-    flock_witness 9999 3 flock_model = Unmodeled := rfl
+theorem flock_witness_combined_op_on_closed_fd_is_einval :
+    flock_witness 9999 3 flock_model
+      = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := rfl
 
 /-- The unrecognized word's witness: -EINVAL, `LOCK_NB` alone on an open
 file.
@@ -1423,15 +1470,15 @@ kernel: fs/locks.c:flock,flock_lock_inode@v6.18.46 -/
 theorem flock_witness_un_on_dir :
     flock_witness 5 8 flock_model = Ok (mkEffect (Z_to_bv 64 0) [] []) flock_model [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_witness_ex_on_sole_opener_declines :
-    flock_witness 4 2 flock_model = Unmodeled := rfl
+/-- The sole opener's witness is the grant.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_witness_ex_on_sole_opener_is_zero :
+    flock_witness 4 2 flock_model = Ok (mkEffect (Z_to_bv 64 0) [] []) flock_model [] := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_witness_sh_on_sole_opener_declines :
-    flock_witness 3 1 flock_model = Unmodeled := rfl
+/-- …on the shared request as well.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_witness_sh_on_sole_opener_is_zero :
+    flock_witness 3 1 flock_model = Ok (mkEffect (Z_to_bv 64 0) [] []) flock_model [] := rfl
 
 /-- With a second opener the mode-matching SH witness is `Unmodeled`.
 An exclusive lock on the other opener can conflict with this shared request
@@ -1490,10 +1537,9 @@ open LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
 
 /-! ## V-Fs-Locks — Rocq's examples through the real table
 
-Read at f44244ad6b8041aa83053d9ca91e090037ed743b in
+Read at f1006fe8178338a499b5e5c41be83006c4edd058 in
 `theories/LinuxProcessSem/Checks/Cases/Fs/Locks.v`. The inputs below
-are Rocq's; the file-kind example omits the conjuncts on `FdFileA` and
-`FdFileRW`, for the reasons the file header gives.
+are Rocq's, the file-kind example's four kinds included.
 The fixtures are imported from `Checks/Cases/Fs/Locks.lean`.
 The narrowing pins separately exercise each register, so narrowing only
 one cannot satisfy them. -/
@@ -1506,23 +1552,23 @@ theorem lookup_flock_input (args : List word) (mem wmem : word → Option byte) 
       = some arm_flock :=
   lookup_ca_checked_table_flock
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_success_declines_over_the_real_table :
+/-- Rocq: `flock_success_is_inert`, through the real table.
+kernel: fs/locks.c:flock,flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_success_is_inert_over_the_real_table :
     check_syscall (SyscallInput.mkInput 32 [3, 1, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect 0 [] []) flock_model = CheckUnmodeled
+        (mkEffect 0 [] []) flock_model = CheckOk flock_model []
     ∧ check_syscall (SyscallInput.mkInput 32 [3, 1, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckUnmodeled
+        (mkEffect (errno_ret EAGAIN) [] []) flock_model = CheckReject
     ∧ check_syscall (SyscallInput.mkInput 32 [5, 8, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
         (mkEffect 0 [] []) flock_model = CheckOk flock_model []
     ∧ check_syscall (SyscallInput.mkInput 32 [5, 8, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
         (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckReject
-    ∧ check_syscall (SyscallInput.mkInput 32 [1, 32, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect 0 [] []) flock_model = CheckUnmodeled
-    ∧ check_syscall (SyscallInput.mkInput 32 [1, 32, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+    ∧ check_syscall (SyscallInput.mkInput 32 [9999, 32, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect 0 [] []) flock_model = CheckOk flock_model []
+    ∧ check_syscall (SyscallInput.mkInput 32 [9999, 32, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
-/-- T202: Keep the refusal on an answered unlock as well.
+/-- …and the same inputs with `LOCK_UN` in place of the take.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem flock_success_is_inert_over_the_real_table_on_unlock :
     check_syscall (SyscallInput.mkInput 32 [3, 8, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
@@ -1534,43 +1580,70 @@ theorem flock_success_is_inert_over_the_real_table_on_unlock :
     ∧ check_syscall (SyscallInput.mkInput 32 [5, 8, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
         (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckReject
     ∧ check_syscall (SyscallInput.mkInput 32 [1, 32, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect 0 [] []) flock_model = CheckUnmodeled
+        (mkEffect 0 [] []) flock_model = CheckOk flock_model []
     ∧ check_syscall (SyscallInput.mkInput 32 [1, 32, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+        (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_every_file_kind_declines_over_the_real_table :
-    check_syscall (SyscallInput.mkInput 32 [3, 1, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFile [102] 0)]) = CheckUnmodeled
+/-- Rocq: `flock_every_file_kind_counts_as_an_opener`, through the real
+table: the sole opener of each kind is granted, a second descriptor of
+the same kind or of another declines, and the unlock on the pair still
+answers 0.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem flock_every_file_kind_counts_as_an_opener_over_the_real_table :
+    check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFile [102] 0)])
+      = CheckOk (flock_openers_model [(3, .FdFile [102] 0)]) []
     ∧ check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileW [102] 0)]) = CheckUnmodeled
-    ∧ check_syscall (SyscallInput.mkInput 32 [3, 1, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileW [102] 0)])
+      = CheckOk (flock_openers_model [(3, .FdFileW [102] 0)]) []
+    ∧ check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileA [102] 0)])
+      = CheckOk (flock_openers_model [(3, .FdFileA [102] 0)]) []
+    ∧ check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileRW [102] 0)])
+      = CheckOk (flock_openers_model [(3, .FdFileRW [102] 0)]) []
+    ∧ check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
         (mkEffect 0 [] []) (flock_openers_model [(3, .FdFile [102] 0), (4, .FdFile [102] 5)]) = CheckUnmodeled
     ∧ check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
         (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileW [102] 0), (4, .FdFileW [102] 5)]) = CheckUnmodeled
     ∧ check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileW [102] 0), (4, .FdFile [102] 5)]) = CheckUnmodeled := ⟨rfl, rfl, rfl, rfl, rfl⟩
+        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileA [102] 0), (4, .FdFileA [102] 5)]) = CheckUnmodeled
+    ∧ check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileRW [102] 0), (4, .FdFileRW [102] 5)]) = CheckUnmodeled
+    ∧ check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileW [102] 0), (4, .FdFile [102] 5)]) = CheckUnmodeled
+    ∧ check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileA [102] 0), (4, .FdFile [102] 5)]) = CheckUnmodeled
+    ∧ check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileRW [102] 0), (4, .FdFile [102] 5)]) = CheckUnmodeled
+    ∧ check_syscall (SyscallInput.mkInput 32 [3, 8, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileRW [102] 0), (4, .FdFileRW [102] 5)])
+      = CheckOk (flock_openers_model [(3, .FdFileRW [102] 0), (4, .FdFileRW [102] 5)]) []
+    ∧ check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect (errno_ret EAGAIN) [] []) (flock_openers_model [(3, .FdFileRW [102] 0)])
+      = CheckReject :=
+  ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_lock_inode@v6.18.46 -/
+/-- Rocq: `flock_second_opener_declines`, through the real table.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
 theorem flock_second_opener_declines_over_the_real_table :
-    check_syscall (SyscallInput.mkInput 32 [3, 1, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect 0 [] []) flock_model = CheckUnmodeled
-    ∧ check_syscall (SyscallInput.mkInput 32 [3, 1, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+    check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
+        (mkEffect 0 [] []) flock_model = CheckOk flock_model []
+    ∧ check_syscall (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
         (mkEffect 0 [] []) flock_two_openers_model = CheckUnmodeled
     ∧ check_syscall (SyscallInput.mkInput 32 [3, 8, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
         (mkEffect 0 [] []) flock_two_openers_model = CheckOk flock_two_openers_model []
     ∧ check_syscall (SyscallInput.mkInput 32 [3, 8, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
         (mkEffect (errno_ret EAGAIN) [] []) flock_two_openers_model = CheckReject := ⟨rfl, rfl, rfl, rfl⟩
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_fd_truncates_to_32_bits_over_the_real_table_declines :
+/-- The fd register narrows to 32 bits, so `2^32 + 3` is fd 3 and the
+sole opener is granted.
+kernel: fs/locks.c:flock; include/linux/syscalls.h:__SC_CAST@v6.18.46 -/
+theorem flock_fd_truncates_to_32_bits_over_the_real_table :
     check_syscall (SyscallInput.mkInput 32 [4294967299, 1, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect 0 [] []) flock_model = CheckUnmodeled
+        (mkEffect 0 [] []) flock_model = CheckOk flock_model []
     ∧ check_syscall (SyscallInput.mkInput 32 [4294967299, 1, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := ⟨rfl, rfl⟩
+        (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := ⟨rfl, rfl⟩
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1593,11 +1666,11 @@ theorem flock_cmd_truncates_to_32_bits_over_the_real_table :
     ∧ check_syscall (SyscallInput.mkInput 32 [3, 4294967304, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
         (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckReject := ⟨rfl, rfl⟩
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_shared_lock_nonzero_declines_over_the_real_table :
+/-- A count of 1 is not the 0 the grant arm takes.
+kernel: fs/locks.c:flock,flock_lock_inode@v6.18.46 -/
+theorem flock_shared_lock_nonzero_rejected_over_the_real_table :
     check_syscall (SyscallInput.mkInput 32 [3, 1, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        (mkEffect 1 [] []) flock_model = CheckUnmodeled := rfl
+        (mkEffect 1 [] []) flock_model = CheckReject := rfl
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1612,94 +1685,102 @@ theorem flock_bad_fd_success_rejected_over_the_real_table :
     check_syscall (SyscallInput.mkInput 32 [9999, 1, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
         (mkEffect 0 [] []) flock_model = CheckReject := rfl
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem flock_witness_narrows_both_registers_over_the_real_table_declines :
+/-- Both registers narrow, and the witness names the answer each one
+leads to: the grant on the narrowed fd, the unlock on the narrowed cmd.
+kernel: fs/locks.c:flock; include/linux/syscalls.h:__SC_CAST@v6.18.46 -/
+theorem flock_witness_narrows_both_registers_over_the_real_table :
     syscall_spec_witness
         (SyscallInput.mkInput 32 [4294967299, 1, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
-        flock_model = Unmodeled ∧ syscall_spec_witness
+        flock_model = Ok (mkEffect 0 [] []) flock_model [] ∧ syscall_spec_witness
         (SyscallInput.mkInput 32 [3, 4294967304, 0, 0, 0, 0] (fun _ => none) (fun _ => none))
         flock_model = Ok (mkEffect 0 [] []) flock_model [] := ⟨rfl, rfl⟩
 
 end V_Fs_Locks
 
+/-- The `LOCK_MAND` arm answers, whatever effect it is shown: it accepts
+the 0 and refuses everything else, and never declines.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_mand_any_effect_is_not_unmodeled (eff : SyscallEffect) :
+    check_flock 1 32 eff flock_model ≠ CheckUnmodeled :=
+  check_ret_only_no_unmodeled _ _ _ _
+
 /-- kernel: fs/locks.c:flock@v6.18.46 -/
-theorem flock_mand_any_effect_is_unmodeled (eff : SyscallEffect) :
-    check_flock 1 32 eff flock_model = CheckUnmodeled := rfl
+theorem flock_mand_einval_rejected :
+    check_flock 1 32 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckReject := rfl
 
-/-- kernel: fs/locks.c:flock; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_mand_einval_declines :
-    check_flock 1 32 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem flock_ro_ex_any_effect_is_not_unmodeled (eff : SyscallEffect) :
+    check_flock 3 2 eff flock_model ≠ CheckUnmodeled :=
+  check_ret_only_no_unmodeled _ _ _ _
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_ro_ex_any_effect_is_unmodeled (eff : SyscallEffect) :
-    check_flock 3 2 eff flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem flock_ro_ex_zero_accepted :
+    check_flock 3 2 (mkEffect 0 [] []) flock_model = CheckOk flock_model [] := rfl
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_ro_ex_zero_declines :
-    check_flock 3 2 (mkEffect 0 [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem flock_ro_ex_einval_rejected :
+    check_flock 3 2 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckReject := rfl
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_ro_ex_einval_declines :
-    check_flock 3 2 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_ro_ex_ebadf_rejected :
+    check_flock 3 2 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := rfl
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_ro_ex_ebadf_declines :
-    check_flock 3 2 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem flock_ro_ex_nb_any_effect_is_not_unmodeled (eff : SyscallEffect) :
+    check_flock 3 6 eff flock_model ≠ CheckUnmodeled :=
+  check_ret_only_no_unmodeled _ _ _ _
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_ro_ex_nb_any_effect_is_unmodeled (eff : SyscallEffect) :
-    check_flock 3 6 eff flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem flock_ro_ex_nb_zero_accepted :
+    check_flock 3 6 (mkEffect 0 [] []) flock_model = CheckOk flock_model [] := rfl
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_ro_ex_nb_zero_declines :
-    check_flock 3 6 (mkEffect 0 [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem flock_ro_ex_nb_einval_rejected :
+    check_flock 3 6 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckReject := rfl
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_ro_ex_nb_einval_declines :
-    check_flock 3 6 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_ro_ex_nb_ebadf_rejected :
+    check_flock 3 6 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := rfl
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_ro_ex_nb_ebadf_declines :
-    check_flock 3 6 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem flock_wo_sh_any_effect_is_not_unmodeled (eff : SyscallEffect) :
+    check_flock 4 1 eff flock_model ≠ CheckUnmodeled :=
+  check_ret_only_no_unmodeled _ _ _ _
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_wo_sh_any_effect_is_unmodeled (eff : SyscallEffect) :
-    check_flock 4 1 eff flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem flock_wo_sh_zero_accepted :
+    check_flock 4 1 (mkEffect 0 [] []) flock_model = CheckOk flock_model [] := rfl
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_wo_sh_zero_declines :
-    check_flock 4 1 (mkEffect 0 [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem flock_wo_sh_einval_rejected :
+    check_flock 4 1 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckReject := rfl
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_wo_sh_einval_declines :
-    check_flock 4 1 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_wo_sh_ebadf_rejected :
+    check_flock 4 1 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := rfl
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_wo_sh_ebadf_declines :
-    check_flock 4 1 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem flock_wo_sh_nb_any_effect_is_not_unmodeled (eff : SyscallEffect) :
+    check_flock 4 5 eff flock_model ≠ CheckUnmodeled :=
+  check_ret_only_no_unmodeled _ _ _ _
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_wo_sh_nb_any_effect_is_unmodeled (eff : SyscallEffect) :
-    check_flock 4 5 eff flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem flock_wo_sh_nb_zero_accepted :
+    check_flock 4 5 (mkEffect 0 [] []) flock_model = CheckOk flock_model [] := rfl
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_wo_sh_nb_zero_declines :
-    check_flock 4 5 (mkEffect 0 [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem flock_wo_sh_nb_einval_rejected :
+    check_flock 4 5 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckReject := rfl
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_wo_sh_nb_einval_declines :
-    check_flock 4 5 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled := rfl
+/-- kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_wo_sh_nb_ebadf_rejected :
+    check_flock 4 5 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := rfl
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem flock_wo_sh_nb_ebadf_declines :
-    check_flock 4 5 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := rfl
-
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_ro_sh_declines_zero_and_ebadf :
-    check_flock 3 1 (mkEffect 0 [] []) flock_model = CheckUnmodeled ∧
-    check_flock 3 1 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := ⟨rfl, rfl⟩
+/-- The sole read-only opener: the 0 is accepted and -EBADF refused.
+kernel: fs/locks.c:flock,flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_ro_sh_accepts_zero_and_refuses_ebadf :
+    check_flock 3 1 (mkEffect 0 [] []) flock_model = CheckOk flock_model [] ∧
+    check_flock 3 1 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := ⟨rfl, rfl⟩
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1707,11 +1788,11 @@ theorem flock_ro_sh_unlock_answers_and_refuses_ebadf :
     check_flock 3 8 (mkEffect 0 [] []) flock_model = CheckOk flock_model [] ∧
     check_flock 3 8 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := ⟨rfl, rfl⟩
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_ro_sh_nb_declines_zero_and_ebadf :
-    check_flock 3 5 (mkEffect 0 [] []) flock_model = CheckUnmodeled ∧
-    check_flock 3 5 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := ⟨rfl, rfl⟩
+/-- The same with `LOCK_NB`.
+kernel: fs/locks.c:flock,flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_ro_sh_nb_accepts_zero_and_refuses_ebadf :
+    check_flock 3 5 (mkEffect 0 [] []) flock_model = CheckOk flock_model [] ∧
+    check_flock 3 5 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := ⟨rfl, rfl⟩
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1719,11 +1800,11 @@ theorem flock_ro_sh_nb_unlock_answers_and_refuses_ebadf :
     check_flock 3 12 (mkEffect 0 [] []) flock_model = CheckOk flock_model [] ∧
     check_flock 3 12 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := ⟨rfl, rfl⟩
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_wo_ex_declines_zero_and_ebadf :
-    check_flock 4 2 (mkEffect 0 [] []) flock_model = CheckUnmodeled ∧
-    check_flock 4 2 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := ⟨rfl, rfl⟩
+/-- The sole write-only opener, exclusive request.
+kernel: fs/locks.c:flock,flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_wo_ex_accepts_zero_and_refuses_ebadf :
+    check_flock 4 2 (mkEffect 0 [] []) flock_model = CheckOk flock_model [] ∧
+    check_flock 4 2 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := ⟨rfl, rfl⟩
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1731,11 +1812,11 @@ theorem flock_wo_ex_unlock_answers_and_refuses_ebadf :
     check_flock 4 8 (mkEffect 0 [] []) flock_model = CheckOk flock_model [] ∧
     check_flock 4 8 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := ⟨rfl, rfl⟩
 
-/-- T202: Lock requests decline independently of the offered effect.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if; fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem flock_wo_ex_nb_declines_zero_and_ebadf :
-    check_flock 4 6 (mkEffect 0 [] []) flock_model = CheckUnmodeled ∧
-    check_flock 4 6 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := ⟨rfl, rfl⟩
+/-- …and with `LOCK_NB`.
+kernel: fs/locks.c:flock,flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem flock_wo_ex_nb_accepts_zero_and_refuses_ebadf :
+    check_flock 4 6 (mkEffect 0 [] []) flock_model = CheckOk flock_model [] ∧
+    check_flock 4 6 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := ⟨rfl, rfl⟩
 
 /-- T202: Keep the refusal on an answered unlock as well.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1743,29 +1824,33 @@ theorem flock_wo_ex_nb_unlock_answers_and_refuses_ebadf :
     check_flock 4 12 (mkEffect 0 [] []) flock_model = CheckOk flock_model [] ∧
     check_flock 4 12 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := ⟨rfl, rfl⟩
 
-/-- kernel: fs/locks.c:flock@v6.18.46 -/
-theorem flock_mand_any_fd_kind_any_effect_is_unmodeled (e : FdEntry) (eff : SyscallEffect) :
-    check_flock 3 32 eff (flock_openers_model [(3, e)]) = CheckUnmodeled := rfl
+/-- The `LOCK_MAND` arm answers on every descriptor kind, so it never
+declines there either.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem flock_mand_any_fd_kind_any_effect_is_not_unmodeled (e : FdEntry) (eff : SyscallEffect) :
+    check_flock 3 32 eff (flock_openers_model [(3, e)]) ≠ CheckUnmodeled :=
+  check_ret_only_no_unmodeled _ _ _ _
 
-/-- T202: Decline the shape without rejecting a filesystem answer.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem t202_ro_sh_eacces_declines :
-    check_flock 3 1 (mkEffect (errno_ret EACCES) [] []) flock_model = CheckUnmodeled := rfl
+/-- The sole opener's grant refuses -EACCES, the answer a filesystem with
+its own `.flock` could give; the modeled band assumes none.
+kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem t202_ro_sh_eacces_rejected :
+    check_flock 3 1 (mkEffect (errno_ret EACCES) [] []) flock_model = CheckReject := rfl
 
-/-- T202: Decline the shape without rejecting a filesystem answer.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem t202_ro_sh_nb_eacces_declines :
-    check_flock 3 5 (mkEffect (errno_ret EACCES) [] []) flock_model = CheckUnmodeled := rfl
+/-- …and the nonblocking shared request refuses it too.
+kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem t202_ro_sh_nb_eacces_rejected :
+    check_flock 3 5 (mkEffect (errno_ret EACCES) [] []) flock_model = CheckReject := rfl
 
-/-- T202: Decline the shape without rejecting a filesystem answer.
-kernel: fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem t202_wo_ex_eacces_declines :
-    check_flock 4 2 (mkEffect (errno_ret EACCES) [] []) flock_model = CheckUnmodeled := rfl
+/-- …and the exclusive request on the sole writer.
+kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem t202_wo_ex_eacces_rejected :
+    check_flock 4 2 (mkEffect (errno_ret EACCES) [] []) flock_model = CheckReject := rfl
 
-/-- T202: Decline the shape without rejecting a filesystem answer.
-kernel: fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem t202_wo_ex_nb_eacces_declines :
-    check_flock 4 6 (mkEffect (errno_ret EACCES) [] []) flock_model = CheckUnmodeled := rfl
+/-- …and the same with `LOCK_NB`.
+kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem t202_wo_ex_nb_eacces_rejected :
+    check_flock 4 6 (mkEffect (errno_ret EACCES) [] []) flock_model = CheckReject := rfl
 
 /-- T202: Retain unlock under the recorded filesystem premise.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1783,50 +1868,52 @@ theorem t202_sign_bit_unlock_zero_rejected :
     check_flock 3 0x80000008 (mkEffect 0 [] []) flock_model = CheckReject := rfl
 
 /-- T202: Extra command bits survive validation; these words carry LOCK_EX and an invalid extra bit.
-The fd-1 answer uses bugs/channel-fds-assume-unidirectional-stdio.md.
+The fd-1 answer uses linux-process-semantics@ff0313ba4f:bugs/channel-fds-assume-unidirectional-stdio.md.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem t202_extra_42_zero_rejected :
     check_flock 1 0x42 (mkEffect 0 [] []) flock_model = CheckReject := rfl
 
 /-- T202: Extra command bits survive validation; these words carry LOCK_EX and an invalid extra bit.
-The fd-1 answer uses bugs/channel-fds-assume-unidirectional-stdio.md.
+The fd-1 answer uses linux-process-semantics@ff0313ba4f:bugs/channel-fds-assume-unidirectional-stdio.md.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem t202_extra_82_zero_rejected :
     check_flock 1 0x82 (mkEffect 0 [] []) flock_model = CheckReject := rfl
 
 /-- T202: Extra command bits survive validation; these words carry LOCK_EX and an invalid extra bit.
-The fd-1 answer uses bugs/channel-fds-assume-unidirectional-stdio.md.
+The fd-1 answer uses linux-process-semantics@ff0313ba4f:bugs/channel-fds-assume-unidirectional-stdio.md.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem t202_extra_10002_zero_rejected :
     check_flock 1 0x10002 (mkEffect 0 [] []) flock_model = CheckReject := rfl
 
 /-- T202: Extra command bits survive validation; LOCK_UN controls expose a dropped bit.
-The fd-1 answer uses bugs/channel-fds-assume-unidirectional-stdio.md.
+The fd-1 answer uses linux-process-semantics@ff0313ba4f:bugs/channel-fds-assume-unidirectional-stdio.md.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem t202_extra_48_zero_rejected :
     check_flock 1 0x48 (mkEffect 0 [] []) flock_model = CheckReject := rfl
 
 /-- T202: Extra command bits survive validation; LOCK_UN controls expose a dropped bit.
-The fd-1 answer uses bugs/channel-fds-assume-unidirectional-stdio.md.
+The fd-1 answer uses linux-process-semantics@ff0313ba4f:bugs/channel-fds-assume-unidirectional-stdio.md.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem t202_extra_88_zero_rejected :
     check_flock 1 0x88 (mkEffect 0 [] []) flock_model = CheckReject := rfl
 
 /-- T202: Extra command bits survive validation; LOCK_UN controls expose a dropped bit.
-The fd-1 answer uses bugs/channel-fds-assume-unidirectional-stdio.md.
+The fd-1 answer uses linux-process-semantics@ff0313ba4f:bugs/channel-fds-assume-unidirectional-stdio.md.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem t202_extra_10008_zero_rejected :
     check_flock 1 0x10008 (mkEffect 0 [] []) flock_model = CheckReject := rfl
 
-/-- T202: The lookup/validation ordering differs between supported kernels.
-kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem t202_closed_extra_ex_einval_declines :
-    check_flock 9999 0x42 (mkEffect (errno_ret EINVAL) [] []) flock_model = CheckUnmodeled := rfl
+/-- An unrecognized word on a closed descriptor is -EINVAL: the
+translation runs before the lookup.
+kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem t202_closed_extra_ex_einval_accepted :
+    check_flock 9999 0x42 (mkEffect (errno_ret EINVAL) [] []) flock_model
+      = CheckOk flock_model [] := rfl
 
-/-- T202: The lookup/validation ordering differs between supported kernels.
-kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem t202_closed_extra_ex_ebadf_declines :
-    check_flock 9999 0x42 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckUnmodeled := rfl
+/-- …and the -EBADF of a lookup-first order is refused.
+kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem t202_closed_extra_ex_ebadf_rejected :
+    check_flock 9999 0x42 (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject := rfl
 
 /-- T202: Refute a 31-bit command mask through the real dispatcher.
 kernel: fs/locks.c:flock,flock_translate_cmd; include/linux/syscalls.h:__SC_CAST@v6.18.46 -/
@@ -1866,28 +1953,27 @@ kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
 theorem t202_file_extra_48_zero_rejected :
     check_flock 3 0x48 (mkEffect 0 [] []) flock_model = CheckReject := rfl
 
-/-- Decline the offered errno because filesystem identity and lock history
-are unknown. A blocking CIFS relock can wait on itself.
-kernel: fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem t202_wa_ex_eacces_declines :
+/-- The append-mode sole opener is granted, so -EACCES is refused: the
+modeled band assumes no filesystem with its own `.flock`.
+kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem t202_wa_ex_eacces_rejected :
     check_flock 3 2 (mkEffect (errno_ret EACCES) [] [])
-      (flock_openers_model [(3, .FdFileA [102] 0)]) = CheckUnmodeled := rfl
+      (flock_openers_model [(3, .FdFileA [102] 0)]) = CheckReject := rfl
 
-/-- Decline the offered errno because filesystem identity and lock history
-are unknown. A blocking CIFS relock can wait on itself.
-kernel: fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem t202_rw_ex_eacces_declines :
+/-- …and so is the read-write sole opener's.
+kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem t202_rw_ex_eacces_rejected :
     check_flock 3 2 (mkEffect (errno_ret EACCES) [] [])
-      (flock_openers_model [(3, .FdFileRW [102] 0)]) = CheckUnmodeled := rfl
+      (flock_openers_model [(3, .FdFileRW [102] 0)]) = CheckReject := rfl
 
 /-- The model commits to the LOCK_UN premise recorded in
-bugs/flock-answers-assume-no-flock-f-op.md and rejects -ENOLCK here.
+linux-process-semantics@ff0313ba4f:bugs/flock-answers-assume-no-flock-f-op.md and rejects -ENOLCK here.
 kernel: fs/locks.c:flock,flock_lock_inode@v6.18.46 -/
 theorem t202_unlock_on_file_rejects_enolck :
     check_flock 3 8 (mkEffect (errno_ret 37) [] []) flock_model = CheckReject := rfl
 
 /-- The model commits to the LOCK_UN premise recorded in
-bugs/flock-answers-assume-no-flock-f-op.md and rejects -EIO here.
+linux-process-semantics@ff0313ba4f:bugs/flock-answers-assume-no-flock-f-op.md and rejects -EIO here.
 kernel: fs/locks.c:flock,flock_lock_inode@v6.18.46 -/
 theorem t202_unlock_on_file_rejects_eio :
     check_flock 3 8 (mkEffect (errno_ret 5) [] []) flock_model = CheckReject := rfl

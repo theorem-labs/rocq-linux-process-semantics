@@ -1,9 +1,10 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/ReadWrite.v
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.StreamLaws
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
 
-/-! rocq-cases: a71fd38a08571d519b9cfc5f66308db5c26da570
+/-! rocq-cases: f1006fe8178338a499b5e5c41be83006c4edd058
 covers: file_write_emits_nothing -- file_write_emits_nothing
 covers: read_after_eof_deterministic -- stdin_at_eof_is_zero
 covers: read_eof_is_sticky -- stdin_at_eof_delivery_rejected, stdin_zero_with_input_rejected
@@ -20,40 +21,35 @@ covers: read_bad_fd_success_rejected -- closed_fd_success_rejected
 covers: write_fd_truncates_to_32_bits -- write_fd_truncates_to_32_bits
 covers: write_fd_high_bits_ebadf_rejected -- write_fd_high_bits_ebadf_rejected
 covers: read_fd_truncates_to_32_bits -- fd_truncates_to_32_bits, fd_2_32_ebadf_rejected
-covers: write_count_bound_declines_on_every_file_kind -- write_count_bound_declines_on_the_write_only_kind, write_count_at_the_bound_is_judged_on_the_write_only_kind, write_count_over_the_bound_at_a_mapped_buffer_is_judged, write_count_bound_decline_is_not_a_short_write
-covers: write_range_boundary_pins_the_three_file_kinds -- write_range_boundary_pins_the_write_only_kind
-covers: writev_aggregate_past_the_retired_bound_is_judged_by_every_file_kind -- writev_aggregate_past_the_retired_bound_is_judged_on_a_file, writev_aggregate_past_the_retired_bound_pipe_is_the_control, writev_arm_aggregate_past_the_retired_bound_is_imported
-unpinned: rdwr_fd_refuses_ebadf_in_either_direction -- `read_spec` and `write_spec` decline `FdFileRW` (`Sys/Fs/ReadWrite.lean`'s header; `a17_rdwr_read_declines`, `a17_rdwr_write_declines`), where Rocq answers the transfer; both refused -EBADFs are lies because `vfs_read` (fs/read_write.c:556-557, v6.18.46) and `vfs_write` (fs/read_write.c:670-671) test `FMODE_READ` and `FMODE_WRITE`, both of which `OPEN_FMODE(O_RDWR)` (include/linux/fs.h:3981) sets; lands with the port of those arms
-unpinned: rdwr_read_then_write_shares_one_offset -- `read_spec` and `write_spec` decline `FdFileRW` (`Sys/Fs/ReadWrite.lean`'s header), so there is no read for the write to follow; lands with the port of those arms
+covers: write_count_bound_declines_on_every_file_kind -- write_count_bound_declines_on_the_write_only_kind, write_count_bound_declines_on_the_read_write_kind, write_count_bound_declines_on_the_append_kind, write_count_at_the_bound_is_judged_on_the_write_only_kind, write_count_at_the_bound_is_judged_on_the_read_write_kind, write_count_at_the_bound_is_judged_on_the_append_kind, write_count_over_the_bound_at_a_mapped_buffer_is_judged, write_count_bound_decline_is_not_a_short_write
+covers: write_range_boundary_pins_the_three_file_kinds -- write_range_boundary_pins_the_write_only_kind, write_range_boundary_pins_the_read_write_kind, write_range_boundary_pins_the_append_kind, write_range_boundary_append_is_not_the_write_only_answer
+covers: writev_aggregate_past_the_retired_bound_is_judged_by_every_file_kind -- writev_aggregate_past_the_retired_bound_is_judged_on_a_file, writev_aggregate_past_the_retired_bound_is_judged_on_a_read_write_file, writev_aggregate_past_the_retired_bound_is_judged_on_an_append_file, writev_aggregate_past_the_retired_bound_pipe_is_the_control, writev_arm_aggregate_past_the_retired_bound_is_imported
+covers: rdwr_fd_refuses_ebadf_in_either_direction -- a17_rdwr_read_ebadf_refuted, a17_rdwr_write_ebadf_refuted, a17_rdwr_readv_ebadf_refuted, a17_rdwr_writev_ebadf_refuted, a17_rdwr_pread64_ebadf_refuted, a17_rdwr_pwrite64_ebadf_refuted
+covers: rdwr_read_then_write_shares_one_offset -- a17_rdwr_read_delivers_and_keeps_the_kind, a17_rdwr_read_then_write_shares_one_offset, a17_rdwr_write_after_read_does_not_restart
 covers: create_write_updates_fs -- file_write_lands_at_the_offset_iff
 covers: write_zero_len_past_eof_leaves_file_alone -- write_zero_len_past_eof_leaves_file_alone
 covers: write_zero_len_rejects_zero_length_copyin -- write_zero_len_rejects_zero_length_copyin
 covers: write_one_byte_past_eof_zero_fills -- write_one_byte_past_eof_zero_fills
 covers: write_zero_len_within_file_is_a_noop -- write_zero_len_within_file_is_a_noop
-unpinned: append_write_ignores_the_offset -- `write_spec` declines `FdFileA` (`Sys/Fs/ReadWrite.lean`'s header; `a17_append_write_declines`), where Rocq's arm writes at the end of the file; lands with the port of that arm
-unpinned: append_zero_write_leaves_the_offset_alone -- `write_spec` declines `FdFileA` (`Sys/Fs/ReadWrite.lean`'s header), and `a17_append_write_declines` pins that decline on this very zero-length write; lands with the port of that arm
-unpinned: append_write_at_llong_max_is_einval -- `write_spec` declines `FdFileA` (`Sys/Fs/ReadWrite.lean`'s header; `a17_append_write_declines`), where Rocq's arm writes at the end of the file; the refused answer 1 is a lie because `rw_verify_area` (fs/read_write.c:467-469, v6.18.46) answers -EINVAL when `(loff_t)(pos + count) < 0` on the fd's real position, before any byte moves; lands with the port of that arm
-unpinned: append_write_access_ok_precedes_the_position_test -- `write_spec` declines `FdFileA` (`Sys/Fs/ReadWrite.lean`'s header; `a17_append_write_declines`), where Rocq's arm writes at the end of the file; the refused -EINVAL is a lie because `vfs_write` (fs/read_write.c:674-677, v6.18.46) runs `access_ok` and answers -EFAULT before it calls `rw_verify_area`; lands with the port of that arm
-unpinned: non_append_write_at_the_same_offset_differs -- `write_spec` declines `FdFileA` (`Sys/Fs/ReadWrite.lean`'s header; `a17_append_write_declines`), where Rocq's arm writes at the end of the file, so there is no append-mode write to contrast with the write-only one; lands with the port of that arm
-covers: writev_channel_outcome -- writev_stdout_delivers_a_prefix_iff, writev_ab_short_delivery, writev_ab_zero_delivery_rejected, t139_writev_stdout_empty_is_zero, t139_writev_stdout_empty_efault_refuted
-covers: writev_outcome_is_write_outcome -- writev_outcome_is_write_outcome
-covers: write_outcome_is_writev_outcome -- write_outcome_is_writev_outcome
-covers: writev_two_iovecs_equals_one_write -- writev_two_iovecs_equals_one_write, writev_ab_events, writev_ab_over_total_rejected, writev_arm_gathers_and_records, writev_file_lands_at_the_offset_iff
-covers: writev_wide_iovcnt_is_unmodeled -- writev_iovcnt_wide_count_declines, writev_raw_count_2_32_declines, writev_raw_count_2_32_einval_rejected, writev_count_1025_is_einval, writev_count_minus_one_is_einval, writev_arm_raw_count_truncates, writev_arm_raw_count_einval_rejected, writev_arm_raw_count_2_32_is_zero, writev_arm_count_over_max_is_einval
-covers: writev_over_max_with_small_low32_is_unmodeled -- writev_raw_count_delivery_refuted, writev_raw_count_einval_rejected, writev_in_range_count_einval_rejected, t139_writev_wide_iov_max_any_memory_declines, t139_writev_wide_iov_max_declines, t139_writev_wide_iov_max_zero_refuted
+covers: append_write_ignores_the_offset -- a17_append_write_lands_at_the_end, a17_append_write_at_the_offset_refuted
+covers: append_zero_write_leaves_the_offset_alone -- a17_append_write_zero_count_is_zero, append_zero_length_keeps_the_offset
+covers: append_write_at_llong_max_is_einval -- rw_pos_past_llong_max_is_einval, rw_pos_at_llong_max_is_not_einval
+covers: append_write_access_ok_precedes_the_position_test -- write_range_boundary_pins_the_append_kind, write_range_boundary_append_is_not_the_write_only_answer
+covers: non_append_write_at_the_same_offset_differs -- a17_append_write_lands_at_the_end, a17_rdwr_write_lands_at_the_offset
+covers: writev_channel_outcome -- writev_stdout_delivers_a_prefix_iff, writev_ab_short_delivery, writev_ab_zero_delivery_rejected
+covers: writev_two_iovecs_equals_one_write -- writev_two_iovecs_equals_one_write, writev_ab_events, writev_ab_over_total_rejected, writev_arm_gathers_and_records, writev_file_lands_at_the_offset_iff, writev_outcome_is_write_outcome, write_outcome_is_writev_outcome
+covers: writev_iovcnt_truncates_to_32_bits -- writev_iovcnt_truncates_to_32_bits, writev_raw_count_delivers_a_prefix_iff, writev_raw_count_2_32_is_zero, writev_raw_count_2_32_einval_rejected, writev_count_1025_is_einval, writev_count_minus_one_is_einval, writev_arm_raw_count_truncates, writev_arm_raw_count_einval_rejected, writev_arm_raw_count_2_32_is_zero, writev_arm_count_over_max_is_einval
+covers: writev_over_max_truncates_only -- writev_raw_count_delivers_both_bytes, writev_raw_count_einval_rejected, writev_in_range_count_einval_rejected
 covers: writev_import_range_fault_beats_the_gather -- writev_import_range_fault_beats_the_gather, writev_import_range_fault_short_write_rejected, writev_zero_length_past_top_is_efault, writev_zero_length_past_top_zero_rejected, writev_arm_import_range_fault_beats_the_gather, writev_arm_import_range_fault_short_write_rejected, writev_arm_zero_length_past_top_is_efault, writev_arm_zero_length_past_top_zero_rejected
 covers: writev_at_llong_max_is_einval -- writev_at_llong_max_is_einval, writev_at_llong_max_write_rejected, writev_arm_at_llong_max_is_einval, writev_arm_at_llong_max_write_rejected
-covers: writev_wide_count_over_rw_bytes_max_is_unmodeled -- writev_wide_count_over_rw_bytes_max_is_unmodeled, writev_wide_count_over_rw_bytes_max_old_answer_refuted
-covers: writev_over_rw_bytes_max_total_is_judged -- writev_over_rw_bytes_max_total_is_judged, writev_over_rw_bytes_max_delivers_one_byte, writev_over_rw_bytes_max_einval_rejected, writev_arm_aggregate_past_the_retired_bound_is_imported, writev_arm_aggregate_past_the_retired_bound_einval_rejected
+covers: writev_over_rw_bytes_max_total_is_judged -- writev_over_rw_bytes_max_total_is_judged, writev_over_rw_bytes_max_delivers_one_byte, writev_over_rw_bytes_max_einval_rejected, writev_over_rw_bytes_max_decline_refuted, writev_arm_aggregate_past_the_retired_bound_is_imported, writev_arm_aggregate_past_the_retired_bound_einval_rejected
 covers: readv_single_iovec_caps_before_access_ok -- readv_single_descriptor_caps_before_access_ok, readv_single_descriptor_efault_rejected, readv_array_path_checks_the_raw_length, readv_array_path_zero_rejected
 covers: readv_huge_len_delivers_one_byte_without_unary_expansion -- readv_huge_descriptor_delivers_the_input, readv_huge_descriptor_efault_rejected, readv_huge_descriptor_on_a_file, readv_huge_descriptor_on_a_file_efault_rejected
 covers: readv_huge_file_offset_is_bounded_by_file_length -- readv_huge_offset_is_eof
 covers: readv_heap_iovec_boundary_fails_closed -- readv_eight_descriptors_are_judged, readv_eight_descriptors_enomem_rejected, readv_nine_descriptors_decline, readv_nine_descriptors_zero_rejected, readv_nine_descriptors_enomem_rejected, readv_iov_max_descriptors_decline, readv_raw_heap_count_declines, readv_raw_heap_count_einval_rejected
-covers: readv_closed_fd_empty_first_entry_is_ebadf -- readv_closed_fd_empty_first_entry_is_ebadf, readv_closed_fd_empty_first_entry_zero_refuted, t139_readv_closed_iov_max_is_ebadf, t139_readv_closed_iov_max_unmodeled_refuted, t139_readv_closed_iov_max_zero_refuted, t139_readv_closed_nine_empty_is_ebadf, t139_readv_closed_nine_empty_unmodeled_refuted, t139_readv_closed_nine_empty_zero_refuted, t139_readv_closed_over_iov_max_declines, t139_readv_closed_over_iov_max_ebadf_refuted
-covers: writev_closed_fd_empty_first_entry_is_ebadf -- writev_closed_fd_empty_first_entry_is_ebadf, writev_closed_fd_empty_first_entry_zero_refuted, t139_writev_closed_iov_max_is_ebadf, t139_writev_closed_iov_max_unmodeled_refuted, t139_writev_closed_iov_max_zero_refuted, t139_writev_closed_nine_empty_is_ebadf, t139_writev_closed_nine_empty_unmodeled_refuted, t139_writev_closed_nine_empty_zero_refuted, t139_writev_closed_over_iov_max_declines, t139_writev_closed_over_iov_max_ebadf_refuted
-covers: readv_wide_iovcnt_is_unmodeled -- readv_iovcnt_wide_count_declines, readv_count_one_at_eof_is_zero, readv_second_descriptor_unreadable_is_efault, readv_second_descriptor_unreadable_zero_rejected
-covers: readv_over_max_with_small_low32_is_unmodeled -- readv_iovcnt_wide_count_declines, readv_raw_count_over_max_einval_rejected
-covers: readv_write_only_fd_unreadable_array_is_unmodeled -- readv_stdout_declines_before_import, readv_stdout_efault_rejected, readv_write_only_file_declines_before_the_band, readv_pipe_write_end_declines, readv_devnull_write_only_declines
+covers: readv_iovcnt_truncates_to_32_bits -- readv_iovcnt_truncates_to_32_bits, readv_raw_count_at_eof_is_zero, readv_count_one_at_eof_is_zero, readv_second_descriptor_unreadable_is_efault, readv_second_descriptor_unreadable_zero_rejected
+covers: readv_over_max_truncates_only -- readv_raw_count_over_max_einval_rejected, readv_in_range_count_einval_rejected
+covers: readv_write_only_fd_is_ebadf_before_import -- readv_stdout_is_ebadf_before_import, readv_stdout_decline_refuted, readv_stdout_efault_rejected, readv_write_only_file_is_ebadf_before_the_band, readv_pipe_write_end_is_ebadf, readv_devnull_write_only_is_ebadf
 covers: readv_zero_prefix_then_bad_base_is_efault_on_a_file -- readv_file_zero_prefix_then_bad_base_is_efault, readv_file_zero_prefix_zero_rejected, readv_file_eisdir_rejected
 covers: readv_directory_never_consults_the_destination -- readv_dir_never_consults_the_destination, readv_dir_zero_rejected, readv_dir_later_null_efault_rejected, readv_dir_writable_first_then_null_is_eisdir
 covers: readv_directory_import_range_fault_beats_eisdir -- readv_dir_import_range_fault_beats_eisdir, readv_dir_import_range_fault_eisdir_rejected
@@ -80,70 +76,29 @@ covers: pwrite64_writes_at_the_named_position -- pwrite64_writes_at_the_named_po
 covers: pwrite64_over_rw_bytes_max_is_judged -- pwrite64_over_rw_bytes_max_is_judged, pwrite64_over_rw_bytes_max_short_rejected
 covers: pwrite64_copyin_clamped -- pwrite64_copyin_clamped
 covers: pipe_read_over_rw_bytes_max_is_judged -- pipe_read_over_rw_bytes_max_is_judged, pipe_read_over_rw_bytes_max_short_rejected
-covers: pipe_write_empty_enomem_unchanged -- pipe_write_empty_enomem_unchanged
-covers: pipe_write_nonempty_enomem_rejected -- pipe_write_nonempty_enomem_rejected
-covers: pipe_write_empty_enomem_copyin_rejected -- pipe_write_empty_enomem_copyin_rejected
-covers: pipe_write_empty_delivery -- pipe_write_empty_delivery
-covers: pipe_write_nonempty_delivery -- pipe_write_nonempty_delivery
-covers: pipe_write_drained_enomem_unchanged -- pipe_write_into_a_drained_pipe
-covers: pipe_write_drained_delivery -- pipe_write_into_a_drained_pipe
-covers: writev_stdin_alias_is_ebadf -- writev_stdin_alias_is_ebadf
-covers: writev_urandom_is_ebadf -- writev_urandom_is_ebadf
-covers: writev_devnull_read_only_is_ebadf -- writev_devnull_read_only_is_ebadf
-covers: writev_read_only_file_is_ebadf -- writev_read_only_file_is_ebadf
-covers: writev_directory_is_ebadf -- writev_directory_is_ebadf
-covers: writev_pipe_read_end_is_ebadf -- writev_pipe_read_end_is_ebadf
-covers: writev_stdin_channel_is_ebadf -- writev_stdin_channel_is_ebadf
-covers: readv_stdout_is_ebadf_before_import -- readv_stdout_is_ebadf_before_import
-covers: readv_stderr_is_ebadf -- readv_stderr_is_ebadf
-covers: readv_devnull_write_only_is_ebadf -- readv_devnull_write_only_is_ebadf
-covers: readv_pipe_write_end_is_ebadf -- readv_pipe_write_end_is_ebadf
-covers: t139_writev_open_high_empty_is_unmodeled -- t139_writev_open_high_empty_is_unmodeled
-covers: t139_writev_open_high_empty_ebadf_is_not_ok -- t139_writev_open_high_empty_ebadf_is_not_ok
-covers: t139_readv_open_high_empty_is_unmodeled -- t139_readv_open_high_empty_is_unmodeled
-covers: t139_readv_open_high_empty_ebadf_is_not_ok -- t139_readv_open_high_empty_ebadf_is_not_ok
-covers: t139_writev_open_eight_empty_is_ebadf -- t139_writev_open_eight_empty_is_ebadf
-covers: t139_readv_open_eight_empty_is_ebadf -- t139_readv_open_eight_empty_is_ebadf
-covers: t139_writev_open_nine_empty_is_unmodeled -- t139_writev_open_nine_empty_is_unmodeled
-covers: t139_writev_open_nine_empty_ebadf_is_not_ok -- t139_writev_open_nine_empty_ebadf_is_not_ok
-covers: t139_writev_open_uncapped_later_is_unmodeled -- t139_writev_open_uncapped_later_is_unmodeled
-covers: t139_writev_open_uncapped_later_ebadf_is_not_ok -- t139_writev_open_uncapped_later_ebadf_is_not_ok
-covers: t139_writev_open_file_high_empty_is_unmodeled -- t139_writev_open_file_high_empty_is_unmodeled
-covers: t139_writev_open_file_high_empty_ebadf_is_not_ok -- t139_writev_open_file_high_empty_ebadf_is_not_ok
-covers: t139_writev_open_file_nine_empty_is_unmodeled -- t139_writev_open_file_nine_empty_is_unmodeled
-covers: t139_writev_open_file_nine_empty_ebadf_is_not_ok -- t139_writev_open_file_nine_empty_ebadf_is_not_ok
-covers: t139_writev_open_file_uncapped_later_is_unmodeled -- t139_writev_open_file_uncapped_later_is_unmodeled
-covers: t139_writev_open_file_uncapped_later_ebadf_is_not_ok -- t139_writev_open_file_uncapped_later_ebadf_is_not_ok
-covers: t139_writev_open_dir_high_empty_is_unmodeled -- t139_writev_open_dir_high_empty_is_unmodeled
-covers: t139_writev_open_dir_high_empty_ebadf_is_not_ok -- t139_writev_open_dir_high_empty_ebadf_is_not_ok
-covers: t139_writev_open_dir_nine_empty_is_unmodeled -- t139_writev_open_dir_nine_empty_is_unmodeled
-covers: t139_writev_open_dir_nine_empty_ebadf_is_not_ok -- t139_writev_open_dir_nine_empty_ebadf_is_not_ok
-covers: t139_writev_open_dir_uncapped_later_is_unmodeled -- t139_writev_open_dir_uncapped_later_is_unmodeled
-covers: t139_writev_open_dir_uncapped_later_ebadf_is_not_ok -- t139_writev_open_dir_uncapped_later_ebadf_is_not_ok
-covers: t139_writev_open_urandom_high_empty_is_unmodeled -- t139_writev_open_urandom_high_empty_is_unmodeled
-covers: t139_writev_open_urandom_high_empty_ebadf_is_not_ok -- t139_writev_open_urandom_high_empty_ebadf_is_not_ok
-covers: t139_writev_open_urandom_nine_empty_is_unmodeled -- t139_writev_open_urandom_nine_empty_is_unmodeled
-covers: t139_writev_open_urandom_nine_empty_ebadf_is_not_ok -- t139_writev_open_urandom_nine_empty_ebadf_is_not_ok
-covers: t139_writev_open_urandom_uncapped_later_is_unmodeled -- t139_writev_open_urandom_uncapped_later_is_unmodeled
-covers: t139_writev_open_urandom_uncapped_later_ebadf_is_not_ok -- t139_writev_open_urandom_uncapped_later_ebadf_is_not_ok
-covers: t139_writev_open_devnull_ro_high_empty_is_unmodeled -- t139_writev_open_devnull_ro_high_empty_is_unmodeled
-covers: t139_writev_open_devnull_ro_high_empty_ebadf_is_not_ok -- t139_writev_open_devnull_ro_high_empty_ebadf_is_not_ok
-covers: t139_writev_open_devnull_ro_nine_empty_is_unmodeled -- t139_writev_open_devnull_ro_nine_empty_is_unmodeled
-covers: t139_writev_open_devnull_ro_nine_empty_ebadf_is_not_ok -- t139_writev_open_devnull_ro_nine_empty_ebadf_is_not_ok
-covers: t139_writev_open_devnull_ro_uncapped_later_is_unmodeled -- t139_writev_open_devnull_ro_uncapped_later_is_unmodeled
-covers: t139_writev_open_devnull_ro_uncapped_later_ebadf_is_not_ok -- t139_writev_open_devnull_ro_uncapped_later_ebadf_is_not_ok
-covers: t139_writev_open_pipe_read_high_empty_is_unmodeled -- t139_writev_open_pipe_read_high_empty_is_unmodeled
-covers: t139_writev_open_pipe_read_high_empty_ebadf_is_not_ok -- t139_writev_open_pipe_read_high_empty_ebadf_is_not_ok
-covers: t139_writev_open_pipe_read_nine_empty_is_unmodeled -- t139_writev_open_pipe_read_nine_empty_is_unmodeled
-covers: t139_writev_open_pipe_read_nine_empty_ebadf_is_not_ok -- t139_writev_open_pipe_read_nine_empty_ebadf_is_not_ok
-covers: t139_writev_open_pipe_read_uncapped_later_is_unmodeled -- t139_writev_open_pipe_read_uncapped_later_is_unmodeled
-covers: t139_writev_open_pipe_read_uncapped_later_ebadf_is_not_ok -- t139_writev_open_pipe_read_uncapped_later_ebadf_is_not_ok
-covers: t139_readv_open_nine_empty_is_unmodeled -- t139_readv_open_nine_empty_is_unmodeled
-covers: t139_readv_open_nine_empty_ebadf_is_not_ok -- t139_readv_open_nine_empty_ebadf_is_not_ok
-covers: t139_readv_open_uncapped_later_is_unmodeled -- t139_readv_open_uncapped_later_is_unmodeled
-covers: t139_readv_open_uncapped_later_ebadf_is_not_ok -- t139_readv_open_uncapped_later_ebadf_is_not_ok
-covers: t139_readv_closed_high_empty_is_ebadf -- t139_readv_closed_high_empty_is_ebadf
-covers: t139_writev_closed_high_empty_is_ebadf -- t139_writev_closed_high_empty_is_ebadf
+
+DELETED AT f1006fe8, so their Lean twins went with them: the whole T169
+pipe-allocation family (`pipe_empty_model`, `pipe_drained_model`,
+`pipe_write_empty_enomem_unchanged`, `pipe_write_nonempty_enomem_rejected`,
+`pipe_write_empty_enomem_copyin_rejected`, `pipe_write_empty_delivery`,
+`pipe_write_nonempty_delivery`, `pipe_write_drained_enomem_unchanged`,
+`pipe_write_drained_delivery`), the whole T139 wrong-mode family
+(`t139_wrongmode_model` and every `t139_*` pin over it, plus
+`writev_stdin_channel_is_ebadf`, `writev_stdin_alias_is_ebadf`,
+`writev_urandom_is_ebadf`, `writev_devnull_read_only_is_ebadf`,
+`writev_read_only_file_is_ebadf`, `writev_directory_is_ebadf`,
+`writev_pipe_read_end_is_ebadf`, `readv_stdout_is_ebadf_before_import`,
+`readv_stderr_is_ebadf`, `readv_devnull_write_only_is_ebadf`,
+`readv_pipe_write_end_is_ebadf`),
+`readv_closed_fd_empty_first_entry_is_ebadf`,
+`writev_closed_fd_empty_first_entry_is_ebadf`,
+`writev_wide_iovcnt_is_unmodeled`,
+`writev_over_max_with_small_low32_is_unmodeled`,
+`writev_wide_count_over_rw_bytes_max_is_unmodeled`,
+`readv_wide_iovcnt_is_unmodeled`, `readv_over_max_with_small_low32_is_unmodeled`
+and `readv_write_only_fd_unreadable_array_is_unmodeled`.  What those
+named is now stated by the wrong-mode -EBADF pins in the body, each
+beside a refutation of the decline this twin used to make.
 -/
 
 /-! # Checks.Cases.Fs.ReadWrite — what each of `read`, `write`, `readv`, `writev`, `lseek`, `pread64` and `pwrite64` admits, read off against Linux
@@ -2466,7 +2421,6 @@ fd 4 at offset 3, one byte past it. -/
 
 attribute [sys_simp low] write_spec.eq_1 write_range_gate.eq_1 write_ledger.eq_1
   write_file_tail.eq_1 modeled_file_gap.eq_1 modeled_file_gap.eq_2 modeled_zero_fill.eq_1
-  unreadable_source_past_eof.eq_1 unreadable_source_past_eof.eq_2
 
 /- `access_ok_zero` is `Sys/Uaccess.lean`'s, shared by every arm that
 answers a zero count from `access_ok` alone; its unfolding is registered
@@ -2622,7 +2576,8 @@ attribute [local sys_simp low] write_fds.eq_1 write_pipes.eq_1 write_fs.eq_1
 
 /-- The file "hi" held for writing through fd 3 at offset 2, EXACTLY its
 end, and through fd 4 at offset 3, ONE byte past it, and nothing else in
-the table: the two edges `unreadable_source_past_eof`'s `<` is judged on.
+the table: the two positions the spec now answers ALIKE, where the
+dropped `unreadable_source_past_eof` once separated them.
 `Checks/Cases/Prelude.lean`'s `wpast_model` is the same file at offset 4,
 two bytes past the end. -/
 def wend_model : Model :=
@@ -3734,10 +3689,12 @@ Linux zero-fills the gap between the file's end and the offset, with no
 bound of its own; the model walks that gap byte for byte and stops at
 `rw_bytes_max` (`modeled_zero_fill`), the inherited bound `Sys/Uaccess.lean`
 carries.  A hole of exactly the bound is judged; one byte more declines.
-A source with no readable byte at an offset past the end is declined
-ahead of both, on either side of the bound — the one decline this twin
-makes beyond Rocq's (`unreadable_source_past_eof`, and the pins after the
-bound's). -/
+THAT IS THE ONLY DECLINE HERE.  This twin once carried a second one —
+`unreadable_source_past_eof`, a source with no readable byte at an
+offset past the end — which Rocq never had and the spec no longer makes:
+`write_file_tail` answers -EFAULT with the file untouched, and it
+answers it BEFORE the gap walk, so an unreadable source never reaches
+the hole guard at all. -/
 
 /-- A hole one byte over the bound declines.
 probe: testing/syscall-check/tests/write_window.c#fail-closed -- gap-over
@@ -3753,87 +3710,86 @@ theorem write_gap_over_the_bound_is_not_delivered (m' : Model) (evs : List event
         (Ok (with_copyins [(4096, 1)] (mkEffect 1 [] [])) m' evs) := by
   rw_refute
 
-/-- An unreadable source at the gap-declining offset declines too, and
-not for the hole's size: it is the one shape `write_spec` declines where
-Rocq answers.  Rocq's `write_file_tail` says -EFAULT with the file
-untouched.  Linux v6.18.46 does not leave it untouched: `generic_perform_write`
-(mm/filemap.c:4244-4335) has no pre-fault, calls `write_begin` (:4272)
-before the copy (:4290) and `write_end` (:4293) after it, and tmpfs's
-`shmem_write_end` (mm/shmem.c:3346-3368) moves `i_size` to `pos + copied`
-whenever that passes the old size (:3352-3353) — `copied` being 0 — before
-the loop answers -EFAULT for the byte that would not fault in
-(:4321-4323, :4331-4332).  The file grows to the offset and the call
-still returns -EFAULT.  Linux v4.17 through v6.13 fault the source in
-ahead of `write_begin` and leave the file alone, as qemu-user does
+/-- An unreadable source at the gap-declining offset is -EFAULT, NOT the
+hole's decline: `write_file_tail` tests the readable prefix before it
+hands the bytes to the kind, so the gap walk never runs.  THAT IS THE
+ORDER THIS PIN FIXES.  Linux v6.18.46 does not leave the file untouched
+there: `generic_perform_write` (mm/filemap.c:4244-4335) has no
+pre-fault, calls `write_begin` (:4272) before the copy (:4290) and
+`write_end` (:4293) after it, and tmpfs's `shmem_write_end`
+(mm/shmem.c:3346-3368) moves `i_size` to `pos + copied` whenever that
+passes the old size (:3352-3353) — `copied` being 0 — before the loop
+answers -EFAULT for the byte that would not fault in (:4321-4323,
+:4331-4332).  So the answer is a known divergence from Linux v5.18 on —
+`linux-process-semantics@ff0313ba4f:bugs/write-file-past-eof-unreadable-source-answers-an-unchanged-file.md`
+records it — and agrees with Linux v4.17 through v5.17 and with qemu-user, which
+fault the source in ahead of `write_begin` and leave the file alone
 (`lock_user` before the host write, linux-user/syscall.c:9848-9849,
-QEMU 11.1.1).  No post-state is in the intersection, so the arm declines
-(`unreadable_source_past_eof`);
-bugs/write-file-past-eof-unreadable-source-answers-an-unchanged-file.md
-records the Rocq answer.  The same decline within the bound is
-`write_past_eof_unreadable_source_declines`.
+QEMU 11.1.1).  Rocq's `write_file_tail` gives this same -EFAULT.
 kernel: mm/shmem.c:shmem_write_end@v6.18.46 -/
-theorem write_gap_unreadable_source_declines (o : outcome SyscallEffect) :
-    syscall_spec (write_in 33 4096 1 mem_none) write_model o ↔ o = Unmodeled := by
+theorem write_gap_unreadable_source_is_efault (o : outcome SyscallEffect) :
+    syscall_spec (write_in 33 4096 1 mem_none) write_model o ↔
+      o = Ok (mkEffect (errno_ret EFAULT) [] []) write_model [] := by
   rw_norm
 
-/-- …and Rocq's -EFAULT with the file untouched is refused.
+/-- …and the hole's decline is refused there.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem write_gap_unreadable_source_is_not_efault :
-    ¬ syscall_spec (write_in 33 4096 1 mem_none) write_model
-        (Ok (mkEffect (errno_ret EFAULT) [] []) write_model []) := by
+theorem write_gap_unreadable_source_is_not_a_decline :
+    ¬ syscall_spec (write_in 33 4096 1 mem_none) write_model Unmodeled := by
   rw_refute
 
-/-- Within the bound the same shape declines: one byte from an unreadable
+/-- Within the bound the same -EFAULT: one byte from an unreadable
 source two bytes past the end of "hi" (`wpast_model`), where a readable
 byte lands (`write_one_byte_past_eof_zero_fills`) and a zero count is a
-no-op (`write_zero_len_past_eof_leaves_file_alone`).  The kernel argument
-is `write_gap_unreadable_source_declines`'s.
+no-op (`write_zero_len_past_eof_leaves_file_alone`).  The kernel
+argument is `write_gap_unreadable_source_is_efault`'s.
 kernel: mm/shmem.c:shmem_write_end@v6.18.46 -/
-theorem write_past_eof_unreadable_source_declines (o : outcome SyscallEffect) :
-    syscall_spec (write_in 3 4096 1 mem_none) wpast_model o ↔ o = Unmodeled := by
+theorem write_past_eof_unreadable_source_is_efault (o : outcome SyscallEffect) :
+    syscall_spec (write_in 3 4096 1 mem_none) wpast_model o ↔
+      o = Ok (mkEffect (errno_ret EFAULT) [] []) wpast_model [] := by
   rw_norm
 
-/-- …and the untouched-file -EFAULT is refused there too.
+/-- …and the decline this twin used to make is refused there too.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem write_past_eof_unreadable_source_is_not_efault :
-    ¬ syscall_spec (write_in 3 4096 1 mem_none) wpast_model
-        (Ok (mkEffect (errno_ret EFAULT) [] []) wpast_model []) := by
+theorem write_past_eof_unreadable_source_is_not_a_decline :
+    ¬ syscall_spec (write_in 3 4096 1 mem_none) wpast_model Unmodeled := by
   rw_refute
 
-/-- AT the end of file the decline does not fire.  With `pos` equal to
-`i_size`, `pos + copied` at `copied` 0 does not pass it (`shmem_write_end`,
-mm/shmem.c:3352, v6.18.46; `ext4_da_do_write_end`, fs/ext4/inode.c:3246,
-compares the same sum), so v6.18.46 leaves the file alone like every
-other implementation, and -EFAULT with the file untouched is in the
-intersection: the edge of `unreadable_source_past_eof`'s `<`.  The
--EFAULT itself is `generic_perform_write`'s (mm/filemap.c:4321-4323,
-:4331-4332, v6.18.46).
+/-- AT the end of file the SAME -EFAULT, and there every implementation
+agrees: with `pos` equal to `i_size`, `pos + copied` at `copied` 0 does
+not pass it (`shmem_write_end`, mm/shmem.c:3352, v6.18.46;
+`ext4_da_do_write_end`, fs/ext4/inode.c:3246, compares the same sum), so
+v6.18.46 leaves the file alone like the others.  The -EFAULT itself is
+`generic_perform_write`'s (mm/filemap.c:4321-4323, :4331-4332,
+v6.18.46).
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
 theorem write_at_eof_unreadable_source_is_efault (o : outcome SyscallEffect) :
     syscall_spec (write_in 3 4096 1 mem_none) wend_model o ↔
       o = Ok (mkEffect (errno_ret EFAULT) [] []) wend_model [] := by
   rw_norm
 
-/-- …and is not the decline.
+/-- …and is not a decline.
 kernel: mm/shmem.c:shmem_write_end@v6.18.46 -/
 theorem write_at_eof_unreadable_source_is_not_a_decline :
     ¬ syscall_spec (write_in 3 4096 1 mem_none) wend_model Unmodeled := by
   rw_refute
 
-/-- ONE byte past the end the decline fires: `pos + 0` is 3 against an
-`i_size` of 2, so `shmem_write_end` (mm/shmem.c:3352-3353, v6.18.46) moves
-the size by one byte before the -EFAULT, and the smallest hole is a hole.
-The other side of the edge the pin above sits on.
+/-- ONE byte past the end answers ALIKE, which is the whole of what
+dropping the past-end decline changed: `shmem_write_end`
+(mm/shmem.c:3352-3353, v6.18.46) does move `i_size` by one byte before
+the -EFAULT there, so this answer is a known divergence from Linux v5.18
+on and agrees with the older kernels and with qemu-user.  The edge the
+pin above used to sit on no longer separates two answers.
 kernel: mm/shmem.c:shmem_write_end@v6.18.46 -/
-theorem write_one_past_eof_unreadable_source_declines (o : outcome SyscallEffect) :
-    syscall_spec (write_in 4 4096 1 mem_none) wend_model o ↔ o = Unmodeled := by
+theorem write_one_past_eof_unreadable_source_is_efault (o : outcome SyscallEffect) :
+    syscall_spec (write_in 4 4096 1 mem_none) wend_model o ↔
+      o = Ok (mkEffect (errno_ret EFAULT) [] []) wend_model [] := by
   rw_norm
 
-/-- …and the untouched-file -EFAULT is refused one byte past the end.
+/-- …and the decline is refused one byte past the end.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem write_one_past_eof_unreadable_source_is_not_efault :
-    ¬ syscall_spec (write_in 4 4096 1 mem_none) wend_model
-        (Ok (mkEffect (errno_ret EFAULT) [] []) wend_model []) := by
+theorem write_one_past_eof_unreadable_source_is_not_a_decline :
+    ¬ syscall_spec (write_in 4 4096 1 mem_none) wend_model Unmodeled := by
   rw_refute
 
 /-- A hole of exactly `rw_bytes_max` past "hi" is within the model.
@@ -3854,15 +3810,46 @@ theorem write_zero_bytes_open_no_gap :
     modeled_file_gap [104, 105] (Z_to_bv 64 (2 ^ 62)) [] = true := by
   decide
 
-/-! ### The count bound on the write-only kind
+/-! ### The count bound on EVERY file kind
 
 Rocq's `write_count_bound_declines_on_every_file_kind` and
-`write_range_boundary_pins_the_three_file_kinds` walk `FdFileW`, `FdFileA`
-and `FdFileRW`; the write-only third of each is pinned here, because
-`write_spec` declines the other two kinds (the header of
-`Sys/Fs/ReadWrite.lean` says so).  The boundary pin states the recorded
-divergence `bugs/write-out-of-range-short-write.md`: a range that fails
-`access_ok` by four bytes is judged by its readable prefix. -/
+`write_range_boundary_pins_the_three_file_kinds` walk `FdFileW`,
+`FdFileA` and `FdFileRW`, and so do the pins below: every one of the
+three now has an arm, and the three reach their count gate through ONE
+helper, `write_range_gate`.  Agreeing on the helper's NAME is not
+enough, and these check the ANSWER: a helper the arms agree on can
+still be given the wrong boundary, and no proof in this development
+relates the three arms.
+
+THE BUFFER IS AT THE TOP OF THE ADDRESS SPACE, and it has to be.  The
+gate is the DISJUNCTION `modeled_rw_count count || access_okb buf
+count`, so a count past `rw_bytes_max` at an ordinary mapped buffer is
+admitted by the right disjunct and declines on no kind at all.  Putting
+`buf` where the right disjunct fails is what leaves the left one
+deciding, and a count four bytes under `TASK_SIZE` is the shortest way
+to do that.
+
+The boundary pins state the divergence
+`linux-process-semantics@ff0313ba4f:bugs/write-out-of-range-short-write.md`
+records: a range that fails `access_ok` by four bytes is judged by its
+readable prefix, where
+`vfs_write` answers -EFAULT to the whole range.  The write-only and
+read-write arms take the readable prefix; the APPEND arm models
+`access_ok` and refuses, which is why its answer differs from the other
+two and is pinned apart. -/
+
+/-- The file "g" = 103 held through one descriptor of each writable
+kind: fd 4 write-only, fd 5 read-write, fd 6 append, all at offset 0
+over the one-byte file "j".  Rocq spells the same three as `call_at …
+over FdFileW / FdFileA / FdFileRW`. -/
+def write_kinds_fds : List (word × FdEntry) :=
+  [(4, .FdFileW [103] 0), (5, .FdFileRW [103] 0), (6, .FdFileA [103] 0)]
+
+def write_kinds_fs : Fs.Fs := [([103], [106])]
+
+def write_kinds_model : Model := fixture_of (fds := write_kinds_fds) (fs := write_kinds_fs)
+
+attribute [sys_simp low] write_kinds_model.eq_1 write_kinds_fds.eq_1 write_kinds_fs.eq_1
 
 /-- Rocq's `write_count_bound_declines_on_every_file_kind`, the `FdFileW`
 third: one byte over `rw_bytes_max` at four bytes below the limit declines.
@@ -3889,11 +3876,48 @@ theorem write_count_at_the_bound_is_judged_on_the_write_only_kind :
         Unmodeled := by
   rw_refute
 
+/-- …and the `FdFileRW` third declines at the same count: the read-write
+arm reaches `write_range_gate` through the same helper and the same
+boundary.
+rocq-twin: write_count_bound_declines_on_every_file_kind
+kernel: fs/read_write.c:vfs_write@v6.18.46 -/
+theorem write_count_bound_declines_on_the_read_write_kind (o : outcome SyscallEffect) :
+    syscall_spec (write_in 5 near_top (Z_to_bv 64 131073) (mem_z_at near_top)) write_kinds_model o ↔
+      o = Unmodeled := by
+  rw_norm
+
+/-- …and the `FdFileA` third too, which is the point of the three: a
+gate re-acquired on one arm alone would move exactly one of them.
+rocq-twin: write_count_bound_declines_on_every_file_kind
+kernel: fs/read_write.c:vfs_write@v6.18.46 -/
+theorem write_count_bound_declines_on_the_append_kind (o : outcome SyscallEffect) :
+    syscall_spec (write_in 6 near_top (Z_to_bv 64 131073) (mem_z_at near_top)) write_kinds_model o ↔
+      o = Unmodeled := by
+  rw_norm
+
+/-- …and AT the bound none of the three declines: the read-write arm.
+rocq-twin: write_count_bound_declines_on_every_file_kind
+probe: testing/syscall-check/tests/rw_bytes_bound.c#conform -- w-at -/
+theorem write_count_at_the_bound_is_judged_on_the_read_write_kind :
+    ¬ syscall_spec (write_in 5 near_top (Z_to_bv 64 131072) (mem_z_at near_top)) write_kinds_model
+        Unmodeled := by
+  rw_refute
+
+/-- …and the append arm.
+rocq-twin: write_count_bound_declines_on_every_file_kind
+probe: testing/syscall-check/tests/rw_bytes_bound.c#conform -- w-at -/
+theorem write_count_at_the_bound_is_judged_on_the_append_kind :
+    ¬ syscall_spec (write_in 6 near_top (Z_to_bv 64 131072) (mem_z_at near_top)) write_kinds_model
+        Unmodeled := by
+  rw_refute
+
 /-- Rocq's `write_range_boundary_pins_the_three_file_kinds`, the `FdFileW`
 third: eight bytes at four below the limit, one of them readable, land as
-one byte — the divergence `bugs/write-out-of-range-short-write.md` records:
-`vfs_write` (fs/read_write.c:674-675, v6.18.46) would answer -EFAULT to
-the whole range through `access_ok` — on riscv64 the `untagged_addr`
+one byte — the divergence
+`linux-process-semantics@ff0313ba4f:bugs/write-out-of-range-short-write.md`
+records, where Linux answers -EFAULT to the
+whole range through `access_ok` in `vfs_write`
+(fs/read_write.c:674-675, v6.18.46) — on riscv64 the `untagged_addr`
 form, arch/riscv/include/asm/uaccess.h:42, over `__access_ok`'s
 `addr <= TASK_SIZE_MAX - size` (include/asm-generic/access_ok.h:31-41),
 all v6.18.46 — and the model judges the readable prefix.
@@ -3906,7 +3930,42 @@ theorem write_range_boundary_pins_the_write_only_kind (o : outcome SyscallEffect
                (with_fs (fs_set write_fs [103] [122]) write_model)) [] := by
   rw_norm
 
-/-! ## A pipe: the whole count, a fresh page's -ENOMEM, or a decline
+/-- …THE READ-WRITE THIRD TAKES THE WRITE-ONLY ANSWER, because it calls
+the same two helpers with the same empty middle in front of them: the
+one readable byte lands at offset 0 of "j" and the descriptor moves to
+1, under its own kind.
+rocq-twin: write_range_boundary_pins_the_three_file_kinds
+kernel: fs/read_write.c:vfs_write@v6.18.46 -/
+theorem write_range_boundary_pins_the_read_write_kind (o : outcome SyscallEffect) :
+    syscall_spec (write_in 5 near_top 8 (mem_z_at near_top)) write_kinds_model o ↔
+      o = Ok (with_copyins [(near_top, 1)] (mkEffect 1 [] []))
+             (with_fds (fd_insert write_kinds_fds 5 (.FdFileRW [103] 1))
+               (with_fs (fs_set write_kinds_fs [103] [122]) write_kinds_model)) [] := by
+  rw_norm
+
+/-- …AND THE APPEND THIRD DIFFERS, which is why the three are stated
+apart: the append arm models `vfs_write`'s `access_ok`
+(fs/read_write.c:674-675, v6.18.46) and refuses a delivering write whose
+NAMED range passes `TASK_SIZE`, so eight bytes four below the limit are
+-EFAULT with the file untouched, where the other two judge the readable
+prefix.
+rocq-twin: write_range_boundary_pins_the_three_file_kinds
+kernel: fs/read_write.c:vfs_write@v6.18.46 -/
+theorem write_range_boundary_pins_the_append_kind (o : outcome SyscallEffect) :
+    syscall_spec (write_in 6 near_top 8 (mem_z_at near_top)) write_kinds_model o ↔
+      o = Ok (mkEffect (errno_ret EFAULT) [] []) write_kinds_model [] := by
+  rw_norm
+
+/-- …so the write-only answer is refused on the append kind, which is
+the whole content of the three being pinned separately.
+rocq-twin: write_range_boundary_pins_the_three_file_kinds
+kernel: fs/read_write.c:vfs_write@v6.18.46 -/
+theorem write_range_boundary_append_is_not_the_write_only_answer (m' : Model) (evs : List event) :
+    ¬ syscall_spec (write_in 6 near_top 8 (mem_z_at near_top)) write_kinds_model
+        (Ok (with_copyins [(near_top, 1)] (mkEffect 1 [] [])) m' evs) := by
+  rw_refute
+
+/-! ## A pipe: the whole count, or a decline
 
 `anon_pipe_write` (fs/pipe.c:431-601, v6.18.46) copies the whole request
 while slots remain — merged into the last buffer when it fits there
@@ -3914,13 +3973,14 @@ while slots remain — merged into the last buffer when it fits there
 16 (include/linux/pipe_fs_i.h:5) — and sleeps for a reader only once
 every slot is taken (`pipe_full`, :510; the wait at :573).  The model's
 ring is ONE page (`PipeBuf`, `pipe_write_room`), so the arm answers the
-whole count when the source is readable and that page has room — and,
-into an empty ring, also the -ENOMEM of a fresh page that fails to
-allocate before the copy (`anon_pipe_get_page`, :515-519), which the
-merge into a nonempty ring never calls — and declines everything else:
-the second page Linux would take, the sleep the model cannot schedule, a
-closed read end whose SIGPIPE (:460-465) has a disposition the model does
-not carry, a short source whose two copy sites answer differently. -/
+whole count when the source is readable and that page has room, and
+DECLINES everything else: the second page Linux would take, the sleep
+the model cannot schedule, a closed read end whose SIGPIPE (:460-465)
+has a disposition the model does not carry, a short source whose two
+copy sites answer differently.  The delivery is UNCONDITIONAL AND
+DETERMINISTIC: the -ENOMEM of a fresh page that fails to allocate before
+the copy (`anon_pipe_get_page`, :515-519) stands beside it no longer,
+which is Rocq's arm. -/
 
 /-- "cd" after "ab" in pipe 0: appended, the count returned, the mark
 carried up.
@@ -3969,51 +4029,64 @@ theorem pipe_write_unchanged_queue_rejected (evs : List event) :
   intro h
   sys_refute at h
 
-/-- Into an empty pipe: a fresh page, the mark at the bytes written.
+/-- Into an empty pipe: a fresh page, the mark at the bytes written, and
+NOTHING ELSE.  The arm is deterministic — the -ENOMEM of a fresh page
+that fails to allocate (`anon_pipe_get_page`, fs/pipe.c:515-519,
+v6.18.46) is no longer admitted beside the delivery, as Rocq's arm has
+it, so a caller cannot be handed two answers for one call.
 kernel: fs/pipe.c:anon_pipe_write@v6.18.46 -/
 theorem pipe_write_into_an_empty_pipe (o : outcome SyscallEffect) :
     write_spec 17 4096 2 (write_in 17 4096 2 mem_cd) write_model o ↔
-      o = Ok (mkEffect (errno_ret ENOMEM) [] []) write_model [] ∨
       o = Ok (with_copyins [(4096, 2)] (mkEffect 2 [] []))
              (with_pipes (pipe_insert write_pipes 1 ([99, 100], 2)) write_model) [] := by
   rw_norm
 
-/-! ### T169 / #1349: allocation failure before the first copy
+/-! ### Allocation failure is not an answer this arm gives
 
-No probe can force a page allocation to fail on demand.  The empty queue
-uses `anon_pipe_get_page` before copying; a nonempty queue merges without
-allocating (fs/pipe.c, `anon_pipe_write`, Linux v6.18.46). -/
+Linux v6.18.46 fs/pipe.c `anon_pipe_write` calls `anon_pipe_get_page`
+before the empty pipe's copy and can return -ENOMEM when the allocation
+fails; a nonempty queue merges without allocating.  The model carries no
+allocation state, so it does not offer that answer on either queue, and
+the pins below refuse it on both.  A caller that needs the failure
+described has to be given state the model does not hold. -/
 
-/-- A drained pipe either returns -ENOMEM unchanged or delivers both bytes
-with the new page's mark at two, independent of the old mark.
+/-- A drained pipe — its byte read back and its mark kept at 3 — is as
+empty to `anon_pipe_write` as a fresh one (`was_empty`), and delivers
+both bytes with the new page's mark at two, independent of the old mark.
 kernel: fs/pipe.c:anon_pipe_write@v6.18.46 -/
 theorem pipe_write_into_a_drained_pipe (o : outcome SyscallEffect) :
     write_spec 17 4096 2 (write_in 17 4096 2 mem_cd)
       (with_pipes (pipe_insert write_pipes 1 ([], 3)) write_model) o ↔
-      o = Ok (mkEffect (errno_ret ENOMEM) [] [])
-        (with_pipes (pipe_insert write_pipes 1 ([], 3)) write_model) [] ∨
       o = Ok (with_copyins [(4096, 2)] (mkEffect 2 [] []))
         (with_pipes
           (pipe_insert (pipe_insert write_pipes 1 ([], 3)) 1 ([99, 100], 2))
           (with_pipes (pipe_insert write_pipes 1 ([], 3)) write_model)) [] := by
   rw_norm
 
-/-- The fresh-page failure leaves every component of the model unchanged.
+/-- The fresh-page failure is REFUSED on the empty queue, where this
+twin used to admit it beside the delivery.
 kernel: fs/pipe.c:anon_pipe_write@v6.18.46 -/
-theorem pipe_write_empty_enomem_unchanged :
-    write_spec 17 4096 2 (write_in 17 4096 2 mem_cd) write_model
-      (Ok (mkEffect (errno_ret ENOMEM) [] []) write_model []) := by
-  rw [pipe_write_into_an_empty_pipe]
-  exact Or.inl rfl
+theorem pipe_write_empty_enomem_rejected (m' : Model) (evs : List event) :
+    ¬ write_spec 17 4096 2 (write_in 17 4096 2 mem_cd) write_model
+      (Ok (mkEffect (errno_ret ENOMEM) [] []) m' evs) := by
+  rw_refute
 
-/-- The allocation can also succeed and deliver the complete request.
+/-- …and on the drained queue, which `was_empty` treats alike.
+kernel: fs/pipe.c:anon_pipe_write@v6.18.46 -/
+theorem pipe_write_drained_enomem_rejected (m' : Model) (evs : List event) :
+    ¬ write_spec 17 4096 2 (write_in 17 4096 2 mem_cd)
+      (with_pipes (pipe_insert write_pipes 1 ([], 3)) write_model)
+      (Ok (mkEffect (errno_ret ENOMEM) [] []) m' evs) := by
+  rw_refute
+
+/-- The allocation succeeds and delivers the complete request: the one
+answer the empty queue gives.
 kernel: fs/pipe.c:anon_pipe_write@v6.18.46 -/
 theorem pipe_write_empty_delivery :
     write_spec 17 4096 2 (write_in 17 4096 2 mem_cd) write_model
       (Ok (with_copyins [(4096, 2)] (mkEffect 2 [] []))
         (with_pipes (pipe_insert write_pipes 1 ([99, 100], 2)) write_model) []) := by
   rw [pipe_write_into_an_empty_pipe]
-  exact Or.inr rfl
 
 /-- The nonempty queue still delivers the complete request by merging.
 kernel: fs/pipe.c:anon_pipe_write@v6.18.46 -/
@@ -4023,14 +4096,16 @@ theorem pipe_write_nonempty_delivery :
         (with_pipes (pipe_insert write_pipes 0 ([97, 98, 99, 100], 4)) write_model) []) := by
   rw_norm
 
-/-- The merge path allocates no page, so cannot return this failure.
+/-- The merge path allocates no page, so cannot return this failure
+either.
 kernel: fs/pipe.c:anon_pipe_write@v6.18.46 -/
 theorem pipe_write_nonempty_enomem_rejected (m' : Model) (evs : List event) :
     ¬ write_spec 15 4096 2 (write_in 15 4096 2 mem_cd) write_model
       (Ok (mkEffect (errno_ret ENOMEM) [] []) m' evs) := by
   rw_refute
 
-/-- A failed allocation has not read the source, so has no copy-in ledger.
+/-- A failed allocation with a copy-in ledger is refused twice over: the
+failure is not an answer here, and it would not have read the source.
 kernel: fs/pipe.c:anon_pipe_write@v6.18.46 -/
 theorem pipe_write_empty_enomem_copyin_rejected (m' : Model) (evs : List event) :
     ¬ write_spec 17 4096 2 (write_in 17 4096 2 mem_cd) write_model
@@ -4424,11 +4499,11 @@ theorem write_count_bound_decline_is_not_a_short_write (m' : Model) (evs : List 
 `rw_verify_area` (fs/read_write.c:460-470, v6.18.46) answers -EINVAL when
 `(loff_t) (pos + count) < 0` (:467-469): the sum wrapping past LLONG_MAX.
 `rw_pos_einvalb` is that test on the model's unsigned offset, and its edge
-is 2^63 - 1 exactly.  No `write` arm here calls it yet (the `FdFileA` and
-`FdFileRW` arms are another ticket's, module header; `pread64_spec` and
-`pwrite64_spec` do, pinned below), so the helper is pinned on its own — and so is `append_new_pos`, which Rocq's `FdFileA`
-arms of `write` and `writev` call and nothing here calls yet, whose
-zero-length arm is the whole of its argument. -/
+is 2^63 - 1 exactly.  `write_spec`'s `FdFileA` arm calls it, and so do
+`pread64_spec` and `pwrite64_spec` (pinned below) and `writev_file_arm`;
+the helper is pinned here on its own, and so is `append_new_pos`, which
+the `FdFileA` arms of `write` and `writev` call and whose zero-length
+arm is the whole of its argument. -/
 
 /-- A sum of exactly LLONG_MAX is not negative: no -EINVAL.
 kernel: fs/read_write.c:rw_verify_area@v6.18.46 -/
@@ -4619,11 +4694,10 @@ over the choice closes the readv pins (`readv_stdin_delivers_a_prefix_iff`,
 `readv_stdin_full_delivery` gives. -/
 
 attribute [sys_simp low] readv_spec.eq_1 readv_heap_gap.eq_1 readv_buf_gap.eq_1
-  writev_file_arm.eq_1 writev_file_arm.eq_2 writev_ledger.eq_1 writev_buf_gap.eq_1
--- `writev_file_arm` has two equations, not one: its match on `data`, the file
--- the kind found, is on a parameter, so Lean splits the unfolding into the
--- `some` case (`eq_1`) and the `none` case (`eq_2`); the pins on a kind that
--- found no file read the second.
+  writev_file_arm.eq_1 writev_ledger.eq_1 writev_buf_gap.eq_1
+-- `writev_file_arm` has ONE equation at `f1006fe8`: the `data` parameter the
+-- Lean twin used to carry, which split its unfolding into a `some` and a
+-- `none` case, is not in Rocq's helper and the port removed it.
 attribute [sys_simp low] readable_fd.eq_1 readable_fd.eq_2 readable_fd.eq_3 readable_fd.eq_4
   readable_fd.eq_5 readable_fd.eq_6 readable_fd.eq_7 readable_fd.eq_8
 
@@ -4798,32 +4872,31 @@ attribute [sys_simp] ICons_eq_ICons NCons_eq_NCons
 before `vfs_readv` (:1080), whose first test is `FMODE_READ` (:999-1000),
 ahead of `import_iovec` (:1004-1005), since b8e1425bae85 in v6.8.
 Linux v4.17 through v6.7 imports first (fs/read_write.c, vfs_readv,
-v6.6:913), then checks the mode in do_iter_read. In v6.8+ a closed fd and an fd open
-without `FMODE_READ` are -EBADF whatever the array holds — even when no
-byte of it is readable, which is the shape qemu-user answers -EFAULT for
-(its `lock_iovec` locks the array before it dispatches on the fd).
-The spec declines these disagreements and answers -EBADF only on the
-shared readable-array, empty-first-entry shape; an open wrong-mode fd
-also needs count ≤ 8 and every uncapped range to pass access_ok. -/
+v6.6:913), then checks the mode in do_iter_read.  A closed fd and an fd
+open without `FMODE_READ` are therefore -EBADF WHATEVER THE ARRAY HOLDS
+— even when no byte of it is readable, and even when the count sits in
+the heap-backed band — which is what the pins below fix, each against
+the answer qemu-user gives for the same shape (its `lock_iovec` locks
+the array before it dispatches on the fd, so it answers -EFAULT, or
+-EINVAL for a count over IOV_MAX, or 0 for a count of zero). -/
 
-/-- For readv on closed fd 30, count 2 names an unreadable array at 8192. Linux returns -EBADF
-and qemu-user returns -EFAULT; the pin declines this call as `Unmodeled`.
+/-- For readv on closed fd 30, count 2 names an unreadable array at 8192.
+The -EBADF is decided before the array is touched, so the array that
+cannot be read changes nothing.
 probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdiov -/
-theorem readv_closed_fd_declines (o : outcome SyscallEffect) :
-    readv_spec 30 8192 2 (readv_in 30 8192 2 wmem_none wmem_none) read_model o ↔ o = Unmodeled := by
+theorem readv_closed_fd_is_ebadf (o : outcome SyscallEffect) :
+    readv_spec 30 8192 2 (readv_in 30 8192 2 wmem_none wmem_none) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For readv on closed fd 30, count 2 names an unreadable array at 8192. Linux returns -EBADF
-and qemu-user returns -EFAULT; the pin refuses the former concrete `-EBADF` outcome.
+/-- …and the decline this twin used to make is refused.
 probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdiov -/
-theorem readv_closed_fd_declines_old_answer_refuted :
-    ¬ readv_spec 30 8192 2 (readv_in 30 8192 2 wmem_none wmem_none) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+theorem readv_closed_fd_decline_refuted :
+    ¬ readv_spec 30 8192 2 (readv_in 30 8192 2 wmem_none wmem_none) read_model Unmodeled := by
   rw_refute
 
 /-- Readv on closed fd 30 with count 2 and an unreadable array at 8192 returns -EBADF in Linux
-and -EFAULT in qemu-user. The dispatcher pin refuses a zero-return outcome for this declined
-shape.
+and -EFAULT in qemu-user.  The dispatcher pin refuses a zero-return outcome.
 probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdiov -/
 theorem readv_closed_fd_zero_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (readv_in 30 8192 2 wmem_none wmem_none) read_model
@@ -4831,40 +4904,45 @@ theorem readv_closed_fd_zero_rejected (m' : Model) (evs : List event) :
   rw_refute
 
 /-- For readv on closed fd 30, count 5000 exceeds IOV_MAX and the array at 8192 is unreadable.
-Linux returns -EBADF and qemu-user rejects the count with -EINVAL; the pin declines this call as
-`Unmodeled`.
+The fd is resolved BEFORE the count is validated, so the answer is the
+same -EBADF; qemu-user rejects the count with -EINVAL instead.
 probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdover -/
-theorem readv_closed_fd_bad_count_declines (o : outcome SyscallEffect) :
-    readv_spec 30 8192 5000 (readv_in 30 8192 5000 wmem_none wmem_none) read_model o ↔ o = Unmodeled := by
+theorem readv_closed_fd_bad_count_is_ebadf (o : outcome SyscallEffect) :
+    readv_spec 30 8192 5000 (readv_in 30 8192 5000 wmem_none wmem_none) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For readv on closed fd 30, count 5000 exceeds IOV_MAX and the array at 8192 is unreadable.
-Linux returns -EBADF and qemu-user rejects the count with -EINVAL; the pin refuses the former
-concrete `-EBADF` outcome.
+/-- …and qemu-user's -EINVAL for that raw count is refused, which is
+what the order above buys.
 probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdover -/
-theorem readv_closed_fd_bad_count_declines_old_answer_refuted :
+theorem readv_closed_fd_bad_count_einval_refuted (m' : Model) (evs : List event) :
     ¬ readv_spec 30 8192 5000 (readv_in 30 8192 5000 wmem_none wmem_none) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+      (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
   rw_refute
 
-/-- For readv on write-only stdout fd 1, count 2 names an unreadable array at 8192. Linux v6.8+
-returns -EBADF and qemu-user returns -EFAULT; the pin declines this call as `Unmodeled`.
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_stdout_declines_before_import (o : outcome SyscallEffect) :
-    readv_spec 1 8192 2 (readv_in 1 8192 2 wmem_none wmem_none) read_model o ↔ o = Unmodeled := by
+/-- AN FD NOT OPEN FOR READING IS -EBADF DECIDED BEFORE THE IOVEC ARRAY
+IS IMPORTED, Rocq's `readv_write_only_fd_is_ebadf_before_import`: fd 1 is
+stdout and here NO memory is readable at all, so the array import would
+fault if it ran — `vfs_readv`'s `FMODE_READ` test (fs/read_write.c
+:999-1000, v6.18.46) precedes its `import_iovec` call (:1004-1005),
+where commit b8e1425bae85 hoisted it, first released in v6.8.
+rocq-twin: readv_write_only_fd_is_ebadf_before_import
+kernel: fs/read_write.c:vfs_readv@v6.18.46 -/
+theorem readv_stdout_is_ebadf_before_import (o : outcome SyscallEffect) :
+    readv_spec 1 8192 2 (readv_in 1 8192 2 wmem_none wmem_none) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For readv on write-only stdout fd 1, count 2 names an unreadable array at 8192. Linux v6.8+
-returns -EBADF and qemu-user returns -EFAULT; the pin refuses the former concrete `-EBADF`
-outcome.
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_stdout_declines_before_import_old_answer_refuted :
-    ¬ readv_spec 1 8192 2 (readv_in 1 8192 2 wmem_none wmem_none) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+/-- …and the decline this twin used to make is refused.
+rocq-twin: readv_write_only_fd_is_ebadf_before_import
+kernel: fs/read_write.c:vfs_readv@v6.18.46 -/
+theorem readv_stdout_decline_refuted :
+    ¬ readv_spec 1 8192 2 (readv_in 1 8192 2 wmem_none wmem_none) read_model Unmodeled := by
   rw_refute
 
-/-- …so the -EFAULT the array would have earned is refused.
-rocq-twin: readv_write_only_fd_unreadable_array_is_unmodeled
+/-- …and the -EFAULT qemu-user gives the unreadable array is refused,
+which is the ORDER the pin above states.
+rocq-twin: readv_write_only_fd_is_ebadf_before_import
 kernel: fs/read_write.c:vfs_readv@v6.18.46 -/
 theorem readv_stdout_efault_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (readv_in 1 8192 2 wmem_none wmem_none) read_model
@@ -4872,89 +4950,87 @@ theorem readv_stdout_efault_rejected (m' : Model) (evs : List event) :
   rw_refute
 
 /-- For readv on write-only file fd 4, count 9 requests eight readable {0,0} entries and an
-absent ninth at 8320. Linux v6.8+ returns -EBADF and qemu-user fails the array lock with -EFAULT; the
-pin declines this call as `Unmodeled`.
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_write_only_file_declines_before_the_band (o : outcome SyscallEffect) :
-    readv_spec 4 8192 9 (readv_in 4 8192 9 mem_readv_eight_zero wmem_none) read_model o ↔ o = Unmodeled := by
+absent ninth at 8320.  The mode gate runs BEFORE the heap-backed count
+band, so the answer is -EBADF and not the band's decline.
+kernel: fs/read_write.c:vfs_readv@v6.18.46 -/
+theorem readv_write_only_file_is_ebadf_before_the_band (o : outcome SyscallEffect) :
+    readv_spec 4 8192 9 (readv_in 4 8192 9 mem_readv_eight_zero wmem_none) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For readv on write-only file fd 4, count 9 requests eight readable {0,0} entries and an
-absent ninth at 8320. Linux v6.8+ returns -EBADF and qemu-user fails the array lock with -EFAULT; the
-pin refuses the former concrete `-EBADF` outcome.
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_write_only_file_declines_before_the_band_old_answer_refuted :
+/-- …and the band's decline is refused there, which is the order.
+kernel: fs/read_write.c:vfs_readv@v6.18.46 -/
+theorem readv_write_only_file_band_decline_refuted :
     ¬ readv_spec 4 8192 9 (readv_in 4 8192 9 mem_readv_eight_zero wmem_none) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+      Unmodeled := by
   rw_refute
 
 /-- For readv on closed fd 30, count 9 requests eight readable {0,0} entries and an absent ninth
-at 8320. Linux returns -EBADF and qemu-user returns -EFAULT; the pin declines this call as
-`Unmodeled`.
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_closed_fd_inside_the_band_declines (o : outcome SyscallEffect) :
-    readv_spec 30 8192 9 (readv_in 30 8192 9 mem_readv_eight_zero wmem_none) read_model o ↔ o = Unmodeled := by
+at 8320.  The fd lookup runs before the band too, so the answer is the
+same -EBADF.
+kernel: fs/read_write.c:do_readv@v6.18.46 -/
+theorem readv_closed_fd_inside_the_band_is_ebadf (o : outcome SyscallEffect) :
+    readv_spec 30 8192 9 (readv_in 30 8192 9 mem_readv_eight_zero wmem_none) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For readv on closed fd 30, count 9 requests eight readable {0,0} entries and an absent ninth
-at 8320. Linux returns -EBADF and qemu-user returns -EFAULT; the pin refuses the former concrete
-`-EBADF` outcome.
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_closed_fd_inside_the_band_declines_old_answer_refuted :
+/-- …and the band's decline is refused there.
+kernel: fs/read_write.c:do_readv@v6.18.46 -/
+theorem readv_closed_fd_inside_the_band_decline_refuted :
     ¬ readv_spec 30 8192 9 (readv_in 30 8192 9 mem_readv_eight_zero wmem_none) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+      Unmodeled := by
   rw_refute
 
 /-- Readv on closed fd 30 requests count 9 from eight readable {0,0} entries at 8192 and an
-absent ninth. Linux returns -EBADF and qemu-user returns -EFAULT, so the dispatcher pin refuses
-the concrete -EBADF outcome.
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_closed_fd_inside_the_band_old_ebadf_refuted :
-    ¬ syscall_spec (readv_in 30 8192 9 mem_readv_eight_zero wmem_none) read_model (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
-  rw_refute
-
-/-- For readv on pipe write end fd 15, count 2 selects {4096,2},{4098,3}, with five writable
-destination bytes. The pin declines this call as `Unmodeled`.
-probe: testing/syscall-check/tests/pipe2_spec.c#fail-closed --expect-unmodeled readv -- wrongend-readv -/
-theorem readv_pipe_write_end_declines (o : outcome SyscallEffect) :
-    readv_spec 15 8192 2 (readv_in 15 8192 2 iov_2_3 (wmem_first 5)) read_model o ↔ o = Unmodeled := by
+absent ninth.  Through the dispatcher the answer is the same -EBADF, so
+the table's `fd32` narrowing is under test with the arm.
+kernel: fs/read_write.c:do_readv@v6.18.46 -/
+theorem readv_closed_fd_inside_the_band_is_ebadf_through_the_dispatcher (o : outcome SyscallEffect) :
+    syscall_spec (readv_in 30 8192 9 mem_readv_eight_zero wmem_none) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
 /-- For readv on pipe write end fd 15, count 2 selects {4096,2},{4098,3}, with five writable
-destination bytes. The pin refuses the former concrete `-EBADF` outcome.
+destination bytes.  The write end is O_WRONLY — `create_pipe_files` opens
+`res[1]` that way (fs/pipe.c:944-945, v6.18.46) — so the -EBADF is the
+kernel's own answer and not a shortage of state.
 probe: testing/syscall-check/tests/pipe2_spec.c#fail-closed --expect-unmodeled readv -- wrongend-readv -/
-theorem readv_pipe_write_end_declines_old_answer_refuted :
-    ¬ readv_spec 15 8192 2 (readv_in 15 8192 2 iov_2_3 (wmem_first 5)) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+theorem readv_pipe_write_end_is_ebadf (o : outcome SyscallEffect) :
+    readv_spec 15 8192 2 (readv_in 15 8192 2 iov_2_3 (wmem_first 5)) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
+  rw_norm
+
+/-- …and the decline this twin used to make is refused.
+probe: testing/syscall-check/tests/pipe2_spec.c#fail-closed --expect-unmodeled readv -- wrongend-readv -/
+theorem readv_pipe_write_end_decline_refuted :
+    ¬ readv_spec 15 8192 2 (readv_in 15 8192 2 iov_2_3 (wmem_first 5)) read_model Unmodeled := by
   rw_refute
 
 /-- Readv on pipe write end fd 15 uses count 2 and {4096,2},{4098,3}, with five writable
-destination bytes. The dispatcher pin refuses a concrete -EINVAL outcome because the nonempty
-first entry makes this shape decline.
+destination bytes.  The dispatcher pin refuses a concrete -EINVAL outcome.
 probe: testing/syscall-check/tests/pipe2_spec.c#fail-closed --expect-unmodeled readv -- wrongend-readv -/
 theorem readv_pipe_write_end_einval_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (readv_in 15 8192 2 iov_2_3 (wmem_first 5)) read_model
         (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
   rw_refute
 
-/-- For readv on pipe write end fd 15, count 0 leaves the unreadable array at 8192 unused. Linux
-returns -EBADF and qemu-user returns 0; the pin declines this call as `Unmodeled`.
+/-- For readv on pipe write end fd 15, count 0 leaves the unreadable array at 8192 unused.
+The mode gate is ahead of the count, so a count of zero is the same
+-EBADF; qemu-user answers 0.
 probe: testing/syscall-check/tests/pipe2_spec.c#fail-closed --expect-unmodeled readv -- wrongend0-readv -/
-theorem readv_pipe_write_end_count_zero_declines (o : outcome SyscallEffect) :
-    readv_spec 15 8192 0 (readv_in 15 8192 0 wmem_none wmem_none) read_model o ↔ o = Unmodeled := by
+theorem readv_pipe_write_end_count_zero_is_ebadf (o : outcome SyscallEffect) :
+    readv_spec 15 8192 0 (readv_in 15 8192 0 wmem_none wmem_none) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For readv on pipe write end fd 15, count 0 leaves the unreadable array at 8192 unused. Linux
-returns -EBADF and qemu-user returns 0; the pin refuses the former concrete `-EBADF` outcome.
+/-- …and the decline this twin used to make is refused.
 probe: testing/syscall-check/tests/pipe2_spec.c#fail-closed --expect-unmodeled readv -- wrongend0-readv -/
-theorem readv_pipe_write_end_count_zero_declines_old_answer_refuted :
-    ¬ readv_spec 15 8192 0 (readv_in 15 8192 0 wmem_none wmem_none) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+theorem readv_pipe_write_end_count_zero_decline_refuted :
+    ¬ readv_spec 15 8192 0 (readv_in 15 8192 0 wmem_none wmem_none) read_model Unmodeled := by
   rw_refute
 
 /-- Readv on pipe write end fd 15 with count 0 and an unused unreadable array returns -EBADF in
-Linux and 0 in qemu-user. The dispatcher pin refuses the concrete zero return because the shape
-declines.
+Linux and 0 in qemu-user.  The dispatcher pin refuses the concrete zero return.
 probe: testing/syscall-check/tests/pipe2_spec.c#fail-closed --expect-unmodeled readv -- wrongend0-readv -/
 theorem readv_pipe_write_end_count_zero_zero_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (readv_in 15 8192 0 wmem_none wmem_none) read_model
@@ -4962,18 +5038,19 @@ theorem readv_pipe_write_end_count_zero_zero_rejected (m' : Model) (evs : List e
   rw_refute
 
 /-- For readv on write-only /dev/null fd 9, count 1 selects {4096,1}, with that destination byte
-writable. The pin declines this call as `Unmodeled`.
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_devnull_write_only_declines (o : outcome SyscallEffect) :
-    readv_spec 9 8192 1 (readv_in 9 8192 1 mem_readv_iov wmem_readv_one) read_model o ↔ o = Unmodeled := by
+writable.  The access mode the open granted IS `FMODE_READ`, so the gate
+is exact in both directions: this is -EBADF and the read-only /dev/null
+answers 0.
+kernel: fs/read_write.c:vfs_readv@v6.18.46 -/
+theorem readv_devnull_write_only_is_ebadf (o : outcome SyscallEffect) :
+    readv_spec 9 8192 1 (readv_in 9 8192 1 mem_readv_iov wmem_readv_one) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For readv on write-only /dev/null fd 9, count 1 selects {4096,1}, with that destination byte
-writable. The pin refuses the former concrete `-EBADF` outcome.
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_devnull_write_only_declines_old_answer_refuted :
-    ¬ readv_spec 9 8192 1 (readv_in 9 8192 1 mem_readv_iov wmem_readv_one) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+/-- …and the decline this twin used to make is refused.
+kernel: fs/read_write.c:vfs_readv@v6.18.46 -/
+theorem readv_devnull_write_only_decline_refuted :
+    ¬ readv_spec 9 8192 1 (readv_in 9 8192 1 mem_readv_iov wmem_readv_one) read_model Unmodeled := by
   rw_refute
 
 /-- The fd is narrowed to 32 bits by the table: fd 2^32 + 26 is fd 26, a
@@ -4985,88 +5062,68 @@ theorem readv_fd_truncates_to_32_bits (o : outcome SyscallEffect) :
       o = Ok (with_copyins [(8192, 16)] (mkEffect 0 [] [])) read_model [] := by
   rw_norm
 
-/-- Readv on closed fd 30 uses count 1 and a readable {0,0} entry at 8192. The empty first entry
-lets qemu-user reach the host fd lookup, so both implementations return -EBADF and the pin
-accepts exactly that outcome.
-probe: testing/syscall-check/tests/readv_spec.c#conform -- badfd -/
-theorem readv_closed_fd_empty_first_entry_is_ebadf (o : outcome SyscallEffect) :
-    readv_spec 30 8192 1 (SyscallInput.mkInput 65 [30, 8192, 1, 0, 0, 0] mem_readv_eight_zero wmem_none) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- Readv on closed fd 30 uses count 1 and a readable {0,0} entry at 8192, letting both
-implementations reach -EBADF. The pin refuses a zero-return outcome for this shared-error
-control.
-probe: testing/syscall-check/tests/readv_spec.c#reject --stdin abc --mutate readv:ret=0 -- badfd -/
-theorem readv_closed_fd_empty_first_entry_zero_refuted (m' : Model) (evs : List event) :
-    ¬ readv_spec 30 8192 1 (SyscallInput.mkInput 65 [30, 8192, 1, 0, 0, 0] mem_readv_eight_zero wmem_none) read_model
-      (Ok (mkEffect 0 [] []) m' evs) := by
-  rw_refute
-
-/-- Writev on closed fd 30 uses count 1 and a readable {0,0} entry at 8192. The empty first
-entry lets qemu-user reach the host fd lookup, so both implementations return -EBADF and the pin
-accepts exactly that outcome.
-probe: testing/syscall-check/tests/writev_adversarial.c#conform -- badfdempty -/
-theorem writev_closed_fd_empty_first_entry_is_ebadf (o : outcome SyscallEffect) :
-    writev_spec 30 8192 1 (SyscallInput.mkInput 66 [30, 8192, 1, 0, 0, 0] mem_readv_eight_zero wmem_none) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  unfold writev_spec
-  rw_norm
-
-/-- Writev on closed fd 30 uses count 1 and a readable {0,0} entry at 8192, letting both
-implementations reach -EBADF. The pin refuses a zero-return outcome for this shared-error
-control.
-probe: testing/syscall-check/tests/writev_adversarial.c#reject --mutate writev:ret=0 -- badfdempty -/
-theorem writev_closed_fd_empty_first_entry_zero_refuted (m' : Model) (evs : List event) :
-    ¬ writev_spec 30 8192 1 (SyscallInput.mkInput 66 [30, 8192, 1, 0, 0, 0] mem_readv_eight_zero wmem_none) read_model
-      (Ok (mkEffect 0 [] []) m' evs) := by
-  unfold writev_spec
-  rw_refute
-
-/-! ## The count: raw disagreement gate, then narrowed import and allocation band
+/-! ## The count: the narrowed import, then the allocation band
 
 `import_iovec` takes the count through `unsigned nr_segs`
-(lib/iov_iter.c:1424-1425, v6.18.46), so Linux imports its low 32 bits.
-The spec first declines raw counts above `IOV_MAX` whose low word fits,
-because QEMU 11.1.1 checks the raw count in linux-user/syscall.c
-`lock_iovec`. On the remaining shapes, a narrowed count of one takes `__import_iovec_ubuf` (:1360-1361)
-and never meets the `UIO_MAXIOV` test; zero copies nothing
+(lib/iov_iter.c:1424-1425, v6.18.46), so Linux uses its low 32 bits and
+NOTHING ELSE: a raw count over `IOV_MAX` whose low word fits behaves
+exactly as that low word does, and qemu-user's raw-count -EINVAL
+(linux-user/syscall.c `lock_iovec`, QEMU 11.1.1) is refused rather than
+admitted.  On the narrowed count: one takes `__import_iovec_ubuf`
+(:1360-1361) and never meets the `UIO_MAXIOV` test; zero copies nothing
 (`iovec_from_user`, :1304-1305); above `IOV_MAX` is -EINVAL before a
 descriptor is read (:1306-1307); and 9 through `IOV_MAX` allocate the
 array with `kmalloc_array` (:1308-1312), whose -ENOMEM the model does not
-represent — that band is declined. -/
+represent — that band is declined, KEYED ON THE NARROWED COUNT, so a raw
+2^32 + 9 lands in it too. -/
 
 /-- Readv on stdin fd 0 at EOF uses count 2^32+1 and one readable {4096,1} entry at 8192, with
-no writable destination. Linux narrows the count and returns 0, while qemu-user returns -EINVAL,
-so the pin declines the call.
+no writable destination: the raw count narrows to 1, the one descriptor
+is imported and the end of input answers 0.
 probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh -/
-theorem readv_iovcnt_wide_count_declines (o : outcome SyscallEffect) :
-    readv_spec 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none) read_model o ↔ o = Unmodeled := by
+theorem readv_raw_count_at_eof_is_zero (o : outcome SyscallEffect) :
+    syscall_spec (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none) read_model o ↔
+      o = Ok (with_copyins [(8192, 16)] (mkEffect 0 [] [])) read_model [] := by
   rw_norm
 
-/-- Readv on stdin fd 0 at EOF uses count 2^32+1 and {4096,1} at 8192, with no writable
-destination. Linux returns 0 after narrowing the count and qemu-user returns -EINVAL; the pin
-refuses the former zero outcome with its descriptor-read ledger.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh -/
-theorem readv_iovcnt_wide_count_declines_old_answer_refuted :
-    ¬ readv_spec 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none) read_model
-      (Ok (with_copyins [(8192, 16)] (mkEffect 0 [] [])) read_model []) := by
-  rw_refute
-
-/-- An ordinary count of one remains the modeled EOF return of zero.
-rocq-twin: readv_wide_iovcnt_is_unmodeled
+/-- An ordinary count of one is the same modeled EOF return of zero.
+rocq-twin: readv_iovcnt_truncates_to_32_bits
 kernel: lib/iov_iter.c:import_iovec@v6.18.46 -/
 theorem readv_count_one_at_eof_is_zero (o : outcome SyscallEffect) :
     syscall_spec (readv_in 0 8192 1 mem_readv_iov wmem_none) read_model o ↔
       o = Ok (with_copyins [(8192, 16)] (mkEffect 0 [] [])) read_model [] := by
   rw_norm
 
+/-- READV'S COUNT TRUNCATES TO 32 BITS, Rocq's
+`readv_iovcnt_truncates_to_32_bits`: a raw count of 2^32 + 1 behaves
+EXACTLY as 1, stated as an equality of the two whole answer sets.  Such
+a count takes the SINGLE-DESCRIPTOR import path and never reaches the
+`UIO_MAXIOV` test at all, which is why the answer is a plain 0 and not
+-EINVAL.  (qemu-user validates the FULL 64-bit count in `lock_iovec`
+before dispatching, and answers -EINVAL instead.)
+rocq-twin: readv_iovcnt_truncates_to_32_bits
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh -/
+theorem readv_iovcnt_truncates_to_32_bits (o : outcome SyscallEffect) :
+    syscall_spec (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none) read_model o ↔
+      syscall_spec (readv_in 0 8192 1 mem_readv_iov wmem_none) read_model o := by
+  rw [readv_raw_count_at_eof_is_zero, readv_count_one_at_eof_is_zero]
+
 /-- Readv on stdin fd 0 at EOF with count 2^32+1 and {4096,1} at 8192 gives Linux's narrowed-
-count 0 and qemu-user's raw-count -EINVAL. The dispatcher pin refuses the concrete -EINVAL
-outcome because the call declines.
+count 0; the dispatcher pin REJECTS qemu-user's raw-count -EINVAL, where
+an older reading of this model declined it.
+rocq-twin: readv_over_max_truncates_only
 probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh -/
 theorem readv_raw_count_over_max_einval_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none) read_model
+        (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
+  rw_refute
+
+/-- …and an IN-RANGE count of one rejects -EINVAL too, which keeps the
+count band honest from the other side.
+rocq-twin: readv_over_max_truncates_only
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh -/
+theorem readv_in_range_count_einval_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (readv_in 0 8192 1 mem_readv_iov wmem_none) read_model
         (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
   rw_refute
 
@@ -5177,8 +5234,9 @@ theorem readv_iov_max_descriptors_decline (o : outcome SyscallEffect) :
       o = Unmodeled := by
   rw_norm
 
-/-- A raw 2^32 + 9 declines at the leading wide-count gate. An ordinary
-count of nine separately declines at the allocation band.
+/-- THE BAND IS KEYED ON THE NARROWED COUNT, so a raw 2^32 + 9 lands in
+it too and declines exactly as a bare 9 does: the raw high bits do not
+change whether the model can describe the call.
 rocq-twin: readv_heap_iovec_boundary_fails_closed
 probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- rawheap -/
 theorem readv_raw_heap_count_declines (o : outcome SyscallEffect) :
@@ -6236,14 +6294,14 @@ attribute [sys_simp low] writev_place_none.eq_1 writev_place_fdw.eq_1 writev_mod
 /-- An unreadable array is -EFAULT: the import's, before `place`.
 kernel: lib/iov_iter.c:copy_iovec_from_user@v6.18.46 -/
 theorem writev_arm_unreadable_array_is_efault (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm wmem_none 8192 2 0 (some []) writev_place_none i writev_model o ↔
+    writev_file_arm wmem_none 8192 2 0 writev_place_none i writev_model o ↔
       o = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) writev_model [] := by
   rw_norm
 
 /-- A negative length is -EINVAL, both descriptors read.
 kernel: lib/iov_iter.c:copy_iovec_from_user@v6.18.46 -/
 theorem writev_arm_negative_length_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm (mem_iov_pair 4096 1 4096 (Z_to_bv 64 (2 ^ 63))) 8192 2 0 (some []) writev_place_none i writev_model o ↔
+    writev_file_arm (mem_iov_pair 4096 1 4096 (Z_to_bv 64 (2 ^ 63))) 8192 2 0 writev_place_none i writev_model o ↔
       o = Ok (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EINVAL) [] [])) writev_model [] := by
   rw_norm
 
@@ -6255,7 +6313,7 @@ short write a gather without the check would give.
 rocq-twin: writev_import_range_fault_beats_the_gather
 kernel: lib/iov_iter.c:__import_iovec; include/asm-generic/access_ok.h:__access_ok@v6.18.46 -/
 theorem writev_arm_import_range_fault_beats_the_gather (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm (mem_iov_pair 4096 1 1 at_top) 8192 2 0 (some []) (writev_place_fdw 0) i writev_model o ↔
+    writev_file_arm (mem_iov_pair 4096 1 1 at_top) 8192 2 0 (writev_place_fdw 0) i writev_model o ↔
       o = Ok (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EFAULT) [] [])) writev_model [] := by
   rw_norm
 
@@ -6263,7 +6321,7 @@ theorem writev_arm_import_range_fault_beats_the_gather (i : SyscallInput) (o : o
 rocq-twin: writev_import_range_fault_beats_the_gather
 kernel: lib/iov_iter.c:__import_iovec@v6.18.46 -/
 theorem writev_arm_import_range_fault_short_write_rejected (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ writev_file_arm (mem_iov_pair 4096 1 1 at_top) 8192 2 0 (some []) (writev_place_fdw 0) i writev_model
+    ¬ writev_file_arm (mem_iov_pair 4096 1 1 at_top) 8192 2 0 (writev_place_fdw 0) i writev_model
         (Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1)] (mkEffect 1 [] [])) m' evs) := by
   rw_refute
 
@@ -6272,7 +6330,7 @@ single path range-checks the capped length, zero included.
 rocq-twin: writev_import_range_fault_beats_the_gather
 kernel: lib/iov_iter.c:import_ubuf@v6.18.46 -/
 theorem writev_arm_zero_length_past_top_is_efault (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 0 0) 8192 1 0 (some []) (writev_place_fdw 0) i writev_model o ↔
+    writev_file_arm (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 0 0) 8192 1 0 (writev_place_fdw 0) i writev_model o ↔
       o = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) writev_model [] := by
   rw_norm
 
@@ -6280,7 +6338,7 @@ theorem writev_arm_zero_length_past_top_is_efault (i : SyscallInput) (o : outcom
 rocq-twin: writev_import_range_fault_beats_the_gather
 kernel: lib/iov_iter.c:import_ubuf@v6.18.46 -/
 theorem writev_arm_zero_length_past_top_zero_rejected (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ writev_file_arm (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 0 0) 8192 1 0 (some []) (writev_place_fdw 0) i writev_model
+    ¬ writev_file_arm (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 0 0) 8192 1 0 (writev_place_fdw 0) i writev_model
         (Ok (with_copyins [(8192, 16)] (mkEffect 0 [] [])) m' evs) := by
   rw_refute
 
@@ -6288,23 +6346,23 @@ theorem writev_arm_zero_length_past_top_zero_rejected (i : SyscallInput) (m' : M
 the declining middle does not decline — and without a source byte read.
 kernel: fs/read_write.c:vfs_writev@v6.18.46 -/
 theorem writev_arm_zero_aggregate_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm (mem_iov_pair 4096 0 0 0) 8192 2 0 (some []) writev_place_none i writev_model o ↔
+    writev_file_arm (mem_iov_pair 4096 0 0 0) 8192 2 0 writev_place_none i writev_model o ↔
       o = Ok (with_copyins [(8192, 16), (8208, 16)] (mkEffect 0 [] [])) writev_model [] := by
   rw_norm
 
 /-- A count narrowed to zero — raw 2^32 — is the same 0, no ledger.
-rocq-twin: writev_wide_iovcnt_is_unmodeled
+rocq-twin: writev_iovcnt_truncates_to_32_bits
 kernel: lib/iov_iter.c:import_iovec@v6.18.46 -/
 theorem writev_arm_raw_count_2_32_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm mem_writev_ab 8192 (Z_to_bv 64 (2 ^ 32)) 0 (some []) writev_place_none i writev_model o ↔
+    writev_file_arm mem_writev_ab 8192 (Z_to_bv 64 (2 ^ 32)) 0 writev_place_none i writev_model o ↔
       o = Ok (mkEffect 0 [] []) writev_model [] := by
   rw_norm
 
 /-- A count whose low 32 bits are 1025 is -EINVAL; so is -1's.
-rocq-twin: writev_wide_iovcnt_is_unmodeled
+rocq-twin: writev_iovcnt_truncates_to_32_bits
 kernel: lib/iov_iter.c:iovec_from_user@v6.18.46 -/
 theorem writev_arm_count_over_max_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm mem_writev_ab 8192 (Z_to_bv 64 (2 ^ 64 - 1)) 0 (some []) writev_place_none i writev_model o ↔
+    writev_file_arm mem_writev_ab 8192 (Z_to_bv 64 (2 ^ 64 - 1)) 0 writev_place_none i writev_model o ↔
       o = Ok (mkEffect (errno_ret EINVAL) [] []) writev_model [] := by
   rw_norm
 
@@ -6314,7 +6372,7 @@ offset `LLONG_MAX` are -EINVAL, the file and offset untouched, before
 rocq-twin: writev_at_llong_max_is_einval
 kernel: fs/read_write.c:rw_verify_area@v6.18.46 -/
 theorem writev_arm_at_llong_max_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm mem_writev_ab 8192 2 (Z_to_bv 64 (2 ^ 63 - 1)) (some []) (writev_place_fdw (Z_to_bv 64 (2 ^ 63 - 1))) i writev_model o ↔
+    writev_file_arm mem_writev_ab 8192 2 (Z_to_bv 64 (2 ^ 63 - 1)) (writev_place_fdw (Z_to_bv 64 (2 ^ 63 - 1))) i writev_model o ↔
       o = Ok (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EINVAL) [] [])) writev_model [] := by
   rw_norm
 
@@ -6322,7 +6380,7 @@ theorem writev_arm_at_llong_max_is_einval (i : SyscallInput) (o : outcome Syscal
 rocq-twin: writev_at_llong_max_is_einval
 kernel: fs/read_write.c:rw_verify_area@v6.18.46 -/
 theorem writev_arm_at_llong_max_write_rejected (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ writev_file_arm mem_writev_ab 8192 2 (Z_to_bv 64 (2 ^ 63 - 1)) (some []) (writev_place_fdw (Z_to_bv 64 (2 ^ 63 - 1))) i writev_model
+    ¬ writev_file_arm mem_writev_ab 8192 2 (Z_to_bv 64 (2 ^ 63 - 1)) (writev_place_fdw (Z_to_bv 64 (2 ^ 63 - 1))) i writev_model
         (Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) m' evs) := by
   rw_refute
 
@@ -6332,14 +6390,14 @@ overflow test the pin above reaches (:467-469): one byte at 2^63 is
 -EINVAL, the file and offset untouched, before `place`.
 kernel: fs/read_write.c:rw_verify_area@v6.18.46 -/
 theorem writev_arm_negative_position_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm (iov_array [(4096, 1)]) 8192 1 (Z_to_bv 64 (2 ^ 63)) (some []) (writev_place_fdw (Z_to_bv 64 (2 ^ 63))) i writev_model o ↔
+    writev_file_arm (iov_array [(4096, 1)]) 8192 1 (Z_to_bv 64 (2 ^ 63)) (writev_place_fdw (Z_to_bv 64 (2 ^ 63))) i writev_model o ↔
       o = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) writev_model [] := by
   rw_norm
 
 /-- …the one-byte write refused there.
 kernel: fs/read_write.c:rw_verify_area@v6.18.46 -/
 theorem writev_arm_negative_position_write_rejected (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ writev_file_arm (iov_array [(4096, 1)]) 8192 1 (Z_to_bv 64 (2 ^ 63)) (some []) (writev_place_fdw (Z_to_bv 64 (2 ^ 63))) i writev_model
+    ¬ writev_file_arm (iov_array [(4096, 1)]) 8192 1 (Z_to_bv 64 (2 ^ 63)) (writev_place_fdw (Z_to_bv 64 (2 ^ 63))) i writev_model
         (Ok (with_copyins [(8192, 16), (4096, 1)] (mkEffect 1 [] [])) m' evs) := by
   rw_refute
 
@@ -6350,14 +6408,14 @@ position test would refuse is still 0.  No `lseek` reaches the offset;
 what the pin fixes is the ORDER of the two tests.
 kernel: fs/read_write.c:vfs_writev@v6.18.46 -/
 theorem writev_arm_zero_aggregate_beats_the_position_test (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm (mem_iov_pair 4096 0 0 0) 8192 2 (Z_to_bv 64 (2 ^ 63)) (some []) (writev_place_fdw (Z_to_bv 64 (2 ^ 63))) i writev_model o ↔
+    writev_file_arm (mem_iov_pair 4096 0 0 0) 8192 2 (Z_to_bv 64 (2 ^ 63)) (writev_place_fdw (Z_to_bv 64 (2 ^ 63))) i writev_model o ↔
       o = Ok (with_copyins [(8192, 16), (8208, 16)] (mkEffect 0 [] [])) writev_model [] := by
   rw_norm
 
 /-- …and not the -EINVAL the position test would give.
 kernel: fs/read_write.c:vfs_writev@v6.18.46 -/
 theorem writev_arm_zero_aggregate_einval_rejected (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ writev_file_arm (mem_iov_pair 4096 0 0 0) 8192 2 (Z_to_bv 64 (2 ^ 63)) (some []) (writev_place_fdw (Z_to_bv 64 (2 ^ 63))) i writev_model
+    ¬ writev_file_arm (mem_iov_pair 4096 0 0 0) 8192 2 (Z_to_bv 64 (2 ^ 63)) (writev_place_fdw (Z_to_bv 64 (2 ^ 63))) i writev_model
         (Ok (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EINVAL) [] [])) m' evs) := by
   rw_refute
 
@@ -6370,57 +6428,54 @@ nothing to copy is never reached — the source is not consulted before the
 position is judged.
 kernel: fs/read_write.c:vfs_writev,rw_verify_area@v6.18.46 -/
 theorem writev_arm_position_test_beats_the_gather (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm (iov_array [(4096, 1), (4097, 1)]) 8192 2 (Z_to_bv 64 (2 ^ 63 - 1)) (some []) (writev_place_fdw (Z_to_bv 64 (2 ^ 63 - 1))) i writev_model o ↔
+    writev_file_arm (iov_array [(4096, 1), (4097, 1)]) 8192 2 (Z_to_bv 64 (2 ^ 63 - 1)) (writev_place_fdw (Z_to_bv 64 (2 ^ 63 - 1))) i writev_model o ↔
       o = Ok (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EINVAL) [] [])) writev_model [] := by
   rw_norm
 
 /-- …and not -EFAULT.
 kernel: fs/read_write.c:rw_verify_area@v6.18.46 -/
 theorem writev_arm_position_test_efault_rejected (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ writev_file_arm (iov_array [(4096, 1), (4097, 1)]) 8192 2 (Z_to_bv 64 (2 ^ 63 - 1)) (some []) (writev_place_fdw (Z_to_bv 64 (2 ^ 63 - 1))) i writev_model
+    ¬ writev_file_arm (iov_array [(4096, 1), (4097, 1)]) 8192 2 (Z_to_bv 64 (2 ^ 63 - 1)) (writev_place_fdw (Z_to_bv 64 (2 ^ 63 - 1))) i writev_model
         (Ok (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EFAULT) [] [])) m' evs) := by
   rw_refute
 
-/-- Nothing gatherable of a nonzero request is -EFAULT
+/-- NOTHING GATHERABLE OF A NONZERO REQUEST IS A FLAT -EFAULT
 (`generic_perform_write`'s `if (unlikely(status == 0))` … `-EFAULT`),
-before `place` — at offset 0 of the empty file the kind found, its end,
-where the past-end decline does not fire.
+before `place` and whatever the offset says: the helper tests only
+whether the gather is EMPTY.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
 theorem writev_arm_nothing_gatherable_is_efault (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm (iov_array [(4096, 1), (4097, 1)]) 8192 2 0 (some []) writev_place_none i writev_model o ↔
+    writev_file_arm (iov_array [(4096, 1), (4097, 1)]) 8192 2 0 writev_place_none i writev_model o ↔
       o = Ok (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EFAULT) [] [])) writev_model [] := by
   rw_norm
 
-/-- The shared helper's first decline beyond Rocq's: handed the file the
-kind found (an empty one) and an offset two bytes past its end, a one-byte
-gather with no readable byte is `Unmodeled`, where Rocq's `writev_file_arm`
-answers -EFAULT with the file untouched.  The kernel walk — `vfs_writev`
-(fs/read_write.c:1056-1057, v6.18.46) to `generic_perform_write`
-(mm/filemap.c:4244-4335), whose `shmem_write_end` (mm/shmem.c:3352-3353)
-moves `i_size` before the -EFAULT, against the pre-fault of v4.17 through
-v6.13 and qemu-user's `lock_iovec` — is the twin's, on `writev_file_arm`
-and the module header; it is not repeated here.
+/-- …and the SAME -EFAULT two bytes past the file's end, where this twin
+once declined: the empty-gather test reads the gather and not the
+offset, so past the end and at it answer alike, as Rocq's
+`writev_file_arm` has it.  Linux v6.18.46's `shmem_write_end`
+(mm/shmem.c:3352-3353) does move `i_size` before its -EFAULT there, so
+the answer is a known divergence from it and agrees with Linux v4.17
+through v5.17 and with qemu-user.
 kernel: mm/shmem.c:shmem_write_end@v6.18.46 -/
-theorem writev_arm_past_eof_unreadable_source_declines (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm (iov_array [(4096, 1)]) 8192 1 2 (some []) (writev_place_fdw 2) i writev_model o ↔
-      o = Unmodeled := by
+theorem writev_arm_past_eof_unreadable_source_is_efault (i : SyscallInput) (o : outcome SyscallEffect) :
+    writev_file_arm (iov_array [(4096, 1)]) 8192 1 2 (writev_place_fdw 2) i writev_model o ↔
+      o = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) writev_model [] := by
   rw_norm
 
-/-- …and refuses the untouched-file -EFAULT.
+/-- …and the decline this twin used to make there is refused.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem writev_arm_past_eof_unreadable_source_efault_rejected (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ writev_file_arm (iov_array [(4096, 1)]) 8192 1 2 (some []) (writev_place_fdw 2) i writev_model
-        (Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) m' evs) := by
+theorem writev_arm_past_eof_unreadable_source_is_not_a_decline (i : SyscallInput) :
+    ¬ writev_file_arm (iov_array [(4096, 1)]) 8192 1 2 (writev_place_fdw 2) i writev_model
+        Unmodeled := by
   rw_refute
 
-/-- A kind that found no file keeps Rocq's -EFAULT: the `none` arm of the
-match on the lookup answers it, and `openat` minted every `FdFileW` into
-the fs, so the state is unreachable and the test does not widen the
-decline to it; the -EFAULT is `generic_perform_write`'s
-(mm/filemap.c:4321-4323, :4331-4332, v6.18.46).
+/-- THE -EFAULT SITS AHEAD OF `place`: the same empty gather on the
+DECLINING middle is the same -EFAULT, so a kind that would decline is
+never consulted.  That is the whole of the order between the two, and
+what a helper testing the gather behind `place` would move.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem writev_arm_missing_file_keeps_efault (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm (iov_array [(4096, 1)]) 8192 1 2 none writev_place_none i writev_model o ↔
+theorem writev_arm_empty_gather_beats_place (i : SyscallInput) (o : outcome SyscallEffect) :
+    writev_file_arm (iov_array [(4096, 1)]) 8192 1 2 writev_place_none i writev_model o ↔
       o = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) writev_model [] := by
   rw_norm
 
@@ -6428,7 +6483,7 @@ theorem writev_arm_missing_file_keeps_efault (i : SyscallInput) (o : outcome Sys
 gatherable bytes on the declining middle.
 kernel: fs/read_write.c:vfs_writev@v6.18.46 -/
 theorem writev_arm_declining_kind_declines (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm mem_writev_ab 8192 2 0 (some []) writev_place_none i writev_model o ↔ o = Unmodeled := by
+    writev_file_arm mem_writev_ab 8192 2 0 writev_place_none i writev_model o ↔ o = Unmodeled := by
   rw_norm
 
 /-- THE GATHER AND THE LEDGER: two one-byte descriptors gather "ab"; the
@@ -6437,7 +6492,7 @@ and the middle's update is applied.
 rocq-twin: writev_two_iovecs_equals_one_write
 kernel: fs/read_write.c:vfs_writev@v6.18.46 -/
 theorem writev_arm_gathers_and_records (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm mem_writev_ab 8192 2 0 (some []) (writev_place_fdw 0) i writev_model o ↔
+    writev_file_arm mem_writev_ab 8192 2 0 (writev_place_fdw 0) i writev_model o ↔
       o = Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] []))
              (with_fds [(3, .FdFileW [102] 2)] writev_model) [] := by
   rw_norm
@@ -6445,95 +6500,95 @@ theorem writev_arm_gathers_and_records (i : SyscallInput) (o : outcome SyscallEf
 /-- The total is exact: 3 for a two-byte gather is refused.
 probe: testing/syscall-check/tests/writev_adversarial.c#reject --mutate writev#1:ret+1 -/
 theorem writev_arm_over_total_rejected (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ writev_file_arm mem_writev_ab 8192 2 0 (some []) (writev_place_fdw 0) i writev_model
+    ¬ writev_file_arm mem_writev_ab 8192 2 0 (writev_place_fdw 0) i writev_model
         (Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 3 [] [])) m' evs) := by
   rw_refute
 
 /-- A raw count of 2^32 + 2 is two descriptors: the same gather.
-rocq-twin: writev_wide_iovcnt_is_unmodeled
+rocq-twin: writev_iovcnt_truncates_to_32_bits
 kernel: lib/iov_iter.c:import_iovec@v6.18.46 -/
 theorem writev_arm_raw_count_truncates (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm mem_writev_ab 8192 (Z_to_bv 64 (2 ^ 32 + 2)) 0 (some []) (writev_place_fdw 0) i writev_model o ↔
+    writev_file_arm mem_writev_ab 8192 (Z_to_bv 64 (2 ^ 32 + 2)) 0 (writev_place_fdw 0) i writev_model o ↔
       o = Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] []))
              (with_fds [(3, .FdFileW [102] 2)] writev_model) [] := by
   rw_norm
 
-/-- The imported file helper follows Linux's low-32-bit import; the outer
-spec now declines this wide-count call before the helper is reached.
+/-- …and the -EINVAL qemu-user gives the raw count is refused: the helper
+follows Linux's low-32-bit import, and so does the spec that calls it.
+rocq-twin: writev_iovcnt_truncates_to_32_bits
 kernel: lib/iov_iter.c:import_iovec@v6.18.46 -/
 theorem writev_arm_raw_count_einval_rejected (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ writev_file_arm mem_writev_ab 8192 (Z_to_bv 64 (2 ^ 32 + 2)) 0 (some []) (writev_place_fdw 0) i writev_model
+    ¬ writev_file_arm mem_writev_ab 8192 (Z_to_bv 64 (2 ^ 32 + 2)) 0 (writev_place_fdw 0) i writev_model
         (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
   rw_refute
 
-/-- A LATER-SEGMENT FAULT DECLINES — the second of the twin's two file-write
-declines (module header of `Sys/Fs/ReadWrite.lean`): the first byte
-readable, the second not, the gatherable prefix one byte of an aggregate
-of two.  Linux v5.18 on delivers the byte and answers 1 (`generic_perform_write` bails only when `fault_in_iov_iter_readable`
-faults nothing of the chunk in, mm/filemap.c:4321-4324 at v6.18.46), Linux
-v4.17 through v5.17 fault the chunk in ahead of `write_begin` — at offset
-0 one chunk holds both bytes — and answer -EFAULT with the file untouched
-(mm/filemap.c:3129-3131 at v4.17,
-:3760-3763 at v5.15, :3755 at v5.17), and qemu-user delivers the bytes of
-the descriptors before the faulting one and none of that one's
-(`lock_iovec`, linux-user/syscall.c:3120-3134, QEMU 11.1.1) — 1 here by
-the shape's coincidence, 2 where Linux writes 3 on `{good,2},{half,2}`.
-No answer is in the intersection at this offset.  The helper's docstring
-has the walk;
-Rocq's `writev_file_arm` declines the shape too.
+/-- A LATER-SEGMENT FAULT IS A SHORT WRITE, Rocq's answer, where this
+twin declined: the first byte readable, the second not, the gatherable
+prefix one byte of an aggregate of two, and the prefix is PLACED — the
+helper tests only whether the gather is empty.  Linux v5.18 on agrees
+(`generic_perform_write` bails only when `fault_in_iov_iter_readable`
+faults nothing of the chunk in, mm/filemap.c:4321-4324 at v6.18.46).
+Linux v4.17 through v5.17 fault the chunk in ahead of `write_begin` — at
+offset 0 one chunk holds both bytes — and answer -EFAULT with the file
+untouched (mm/filemap.c:3129-3131 at v4.17, :3760-3763 at v5.15, :3755 at
+v5.17), and qemu-user delivers the bytes of the descriptors before the
+faulting one and none of that one's (`lock_iovec`,
+linux-user/syscall.c:3120-3134, QEMU 11.1.1), so the answer is a known
+divergence from those two.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem writev_arm_later_fault_declines (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm (mem_iov_pair 4096 1 4097 1) 8192 2 0 (some []) (writev_place_fdw 0) i writev_model o ↔
-      o = Unmodeled := by
+theorem writev_arm_later_fault_is_a_short_write (i : SyscallInput) (o : outcome SyscallEffect) :
+    writev_file_arm (mem_iov_pair 4096 1 4097 1) 8192 2 0 (writev_place_fdw 0) i writev_model o ↔
+      o = Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1)] (mkEffect 1 [] []))
+             (with_fds [(3, .FdFileW [102] 1)] writev_model) [] := by
   rw_norm
 
-/-- …so the certain short write — 1, the byte landed, the descriptor at
-1 — is not proved here.
+/-- …and the decline this twin used to make is refused.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem writev_arm_later_fault_short_write_not_certain (i : SyscallInput) (evs : List event) :
-    ¬ writev_file_arm (mem_iov_pair 4096 1 4097 1) 8192 2 0 (some []) (writev_place_fdw 0) i writev_model
-        (Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1)] (mkEffect 1 [] []))
-            (with_fds [(3, .FdFileW [102] 1)] writev_model) evs) := by
+theorem writev_arm_later_fault_is_not_a_decline (i : SyscallInput) :
+    ¬ writev_file_arm (mem_iov_pair 4096 1 4097 1) 8192 2 0 (writev_place_fdw 0) i writev_model
+        Unmodeled := by
   rw_refute
 
-/-- THE DECLINE COVERS THE COINCIDENCE (module header): the same two
-descriptors at offset 4095, where the unreadable byte opens the second
-descriptor AND falls on the page boundary at 4096.  There every
-implementation answers 1: Linux v5.18 on writes the readable byte; Linux
-v4.17 through v5.17 take `bytes = min(PAGE_SIZE - offset, count)`, one
-byte at 4095 (mm/filemap.c:3114-3116 at v4.17), write that chunk, fail
-the next chunk's fault-in and return `written` (:3178 at v4.17); qemu-user
-zeroes the second descriptor (`lock_iovec`, linux-user/syscall.c:3120-3134,
-QEMU 11.1.1) and writes the first.  The helper's test reads the gather
-and not the offset, so it declines here too — sound, and costing only
-completeness, a refinement left undone.  A refinement that answers 1 here
-has to move this pin, and the offset-0 pins above have to stay.
+/-- THE SAME ANSWER AT THE PAGE BOUNDARY: the same two descriptors at
+offset 4095, where the unreadable byte opens the second descriptor AND
+falls on the page boundary at 4096.  There every implementation answers
+1: Linux v5.18 on writes the readable byte; Linux v4.17 through v5.17
+take `bytes = min(PAGE_SIZE - offset, count)`, one byte at 4095
+(mm/filemap.c:3114-3116 at v4.17), write that chunk, fail the next
+chunk's fault-in and return `written` (:3178 at v4.17); qemu-user zeroes
+the second descriptor (`lock_iovec`, linux-user/syscall.c:3120-3134,
+QEMU 11.1.1) and writes the first.  The helper reads the gather and not
+the offset, so it answers 1 here as it does at offset 0, and here that
+answer is every implementation's.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem writev_arm_later_fault_at_the_page_boundary_declines (i : SyscallInput) (o : outcome SyscallEffect) :
-    writev_file_arm (mem_iov_pair 4096 1 4097 1) 8192 2 4095 (some []) (writev_place_fdw 4095) i writev_model o ↔
-      o = Unmodeled := by
+theorem writev_arm_later_fault_at_the_page_boundary_is_a_short_write (i : SyscallInput) (o : outcome SyscallEffect) :
+    writev_file_arm (mem_iov_pair 4096 1 4097 1) 8192 2 4095 (writev_place_fdw 4095) i writev_model o ↔
+      o = Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1)] (mkEffect 1 [] []))
+             (with_fds [(3, .FdFileW [102] 4096)] writev_model) [] := by
   rw_norm
 
-/-- THE RETIRED BOUND IS NOT IN FRONT OF THE VECTORED WRITE: a single
-descriptor of `rw_bytes_max + 1` bytes — `Uaccess.rw_bytes_max` is the
-harness bound issue #460 retired from the model — is imported, not
-declined at the import.  With one descriptor `__import_iovec_ubuf` hands
-the pair to `import_ubuf`, whose only bound is the `MAX_RW_COUNT` cap
+/-- …and the decline this twin used to make there is refused.
+kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
+theorem writev_arm_later_fault_at_the_page_boundary_is_not_a_decline (i : SyscallInput) :
+    ¬ writev_file_arm (mem_iov_pair 4096 1 4097 1) 8192 2 4095 (writev_place_fdw 4095) i writev_model
+        Unmodeled := by
+  rw_refute
+
+/-- NO AGGREGATE BOUND OF THE MODEL'S OWN IN FRONT OF THE VECTORED
+WRITE: a single descriptor of `rw_bytes_max + 1` bytes is imported, not
+declined at the import, and the one readable byte of it is DELIVERED.
+With one descriptor `__import_iovec_ubuf` hands the pair to
+`import_ubuf`, whose only bound is the `MAX_RW_COUNT` cap
 (lib/iov_iter.c:1330-1350, :1433-1442, v6.18.46) ahead of the range test
 (`__access_ok`, include/asm-generic/access_ok.h); the count is `2^32 + 1`,
-so the narrowing to one descriptor is exercised as well.  The outcome is
-then the gather's: one readable byte of 131073 is the partial source this
-twin declines (`writev_arm_later_fault_declines`), where Rocq's
-`writev_over_rw_bytes_max_total_is_judged` delivers the byte.  A source
-readable throughout at this length is past what `sys_norm` normalises, so
-the bound's absence is pinned by the refutation below and the decline's
-reason by the two-byte shape above.
+so the narrowing to one descriptor is exercised as well.
 rocq-twin: writev_over_rw_bytes_max_total_is_judged
 kernel: lib/iov_iter.c:__import_iovec_ubuf,import_ubuf@v6.18.46 -/
 theorem writev_arm_aggregate_past_the_retired_bound_is_imported (i : SyscallInput) (o : outcome SyscallEffect) :
     writev_file_arm (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0) 8192 (Z_to_bv 64 (2 ^ 32 + 1)) 0
-        (some []) (writev_place_fdw 0) i writev_model o ↔
-      o = Unmodeled := by
+        (writev_place_fdw 0) i writev_model o ↔
+      o = Ok (with_copyins [(8192, 16), (4096, 1)] (mkEffect 1 [] []))
+             (with_fds [(3, .FdFileW [102] 1)] writev_model) [] := by
   rw_norm
 
 /-- …and not the -EINVAL a bound in front of the import would give.
@@ -6541,7 +6596,7 @@ rocq-twin: writev_over_rw_bytes_max_total_is_judged
 kernel: lib/iov_iter.c:__import_iovec_ubuf,import_ubuf@v6.18.46 -/
 theorem writev_arm_aggregate_past_the_retired_bound_einval_rejected (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ writev_file_arm (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0) 8192 (Z_to_bv 64 (2 ^ 32 + 1)) 0
-        (some []) (writev_place_fdw 0) i writev_model
+        (writev_place_fdw 0) i writev_model
         (Ok (with_copyins [(8192, 16), (4096, 1)] (mkEffect (errno_ret EINVAL) [] [])) m' evs) := by
   rw_refute
 
@@ -6738,34 +6793,49 @@ theorem write_outcome_is_writev_outcome (ds : List byte) :
   rw [writev_stdout_delivers_a_prefix_iff]
   exact ⟨ds, rfl, h1, hds'⟩
 
-/-- Writev on stdout fd 1 uses count 2^32+2 and {4096,1},{4097,1} over readable "ab". Linux
-imports two entries and can write both bytes, while qemu-user returns -EINVAL; the pin declines
-the call.
+/-- The delivery iff AT A RAW COUNT OF 2^32 + 2, which is
+`writev_stdout_delivers_a_prefix_iff`'s statement word for word: the high
+bits are dropped by `iovcnt32` before anything else happens
+(`import_iovec`'s `unsigned nr_segs`, lib/iov_iter.c:1424-1425, v6.18.46),
+so the two descriptors are imported and "ab" is gathered exactly as at a
+count of 2.
 probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2 -/
-theorem writev_iovcnt_wide_count_declines (o : outcome SyscallEffect) :
-    writev_spec 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab) read_model o ↔ o = Unmodeled := by
+theorem writev_raw_count_delivers_a_prefix_iff (o : outcome SyscallEffect) :
+    syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab) read_model o ↔
+      ∃ ds : List byte,
+        o = Ok (with_copyins ([(8192, 16), (8208, 16)] ++ iov_prefix_accesses [(4096, 1), (4097, 1)] ds.length)
+                 (mkEffect (len_word ds) [] [])) read_model (List.map (WriteEv 1) ds)
+        ∧ 1 ≤ (ds.length : Int)
+        ∧ ds = List.take ds.length [97, 98] := by
   rw_norm
 
-/-- Writev on stdout fd 1 uses count 2^32 beside {4096,1},{4097,1} over readable "ab". Linux
-narrows the count to zero and returns 0 without importing entries, while qemu-user returns
--EINVAL; the pin declines the call.
+/-- WRITEV'S COUNT TRUNCATES TO 32 BITS, Rocq's
+`writev_iovcnt_truncates_to_32_bits`: with the same two-iovec array, a
+raw count of 2^32 + 2 writes 2 iovecs EXACTLY as a count of 2 does —
+stated as an equality of the two whole answer sets, which is the actual
+claim and the one a model comparing the full register would falsify.
+Commits bc917be8 and 0504c074 (Al Viro, first released in v4.1) put the
+`unsigned` boundary there.  (qemu-user's `lock_iovec` validates the raw
+64-bit count and answers -EINVAL instead.)
+rocq-twin: writev_iovcnt_truncates_to_32_bits
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2 -/
+theorem writev_iovcnt_truncates_to_32_bits (o : outcome SyscallEffect) :
+    syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab) read_model o ↔
+      syscall_spec (writev_in 1 8192 2 mem_writev_ab) read_model o := by
+  rw [writev_raw_count_delivers_a_prefix_iff, writev_stdout_delivers_a_prefix_iff]
+
+/-- …and a raw count of 2^32 narrows to ZERO: an empty writev returning
+0, no descriptor imported and no buffer inspected.
+rocq-twin: writev_iovcnt_truncates_to_32_bits
 probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw0 -/
-theorem writev_raw_count_2_32_declines (o : outcome SyscallEffect) :
-    writev_spec 1 8192 (Z_to_bv 64 (2 ^ 32)) (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32)) mem_writev_ab) read_model o ↔ o = Unmodeled := by
+theorem writev_raw_count_2_32_is_zero (o : outcome SyscallEffect) :
+    syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32)) mem_writev_ab) read_model o ↔
+      o = Ok (mkEffect 0 [] []) read_model [] := by
   rw_norm
 
-/-- Writev on stdout fd 1 uses count 2^32 beside the readable "ab" vector {4096,1},{4097,1}.
-Linux returns 0 after narrowing and qemu-user returns -EINVAL, so the pin refuses the former
-zero-return outcome.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw0 -/
-theorem writev_raw_count_2_32_declines_old_answer_refuted :
-    ¬ writev_spec 1 8192 (Z_to_bv 64 (2 ^ 32)) (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32)) mem_writev_ab) read_model
-      (Ok (mkEffect 0 [] []) read_model []) := by
-  rw_refute
-
-/-- Writev on stdout fd 1 with count 2^32 leaves its readable "ab" vector {4096,1},{4097,1}
-unused in Linux, which returns 0; qemu-user returns -EINVAL. The dispatcher pin refuses that
-concrete -EINVAL because the shape declines.
+/-- …and qemu-user's -EINVAL for that raw count is REFUSED, which is what
+an answered arm buys over a fail-closed one.
+rocq-twin: writev_iovcnt_truncates_to_32_bits
 probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw0 -/
 theorem writev_raw_count_2_32_einval_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32)) mem_writev_ab) read_model
@@ -6775,7 +6845,7 @@ theorem writev_raw_count_2_32_einval_rejected (m' : Model) (evs : List event) :
 /-- On this open writable fd, count 1025 is -EINVAL at import
 (`iovec_from_user`, lib/iov_iter.c:1306-1307, v6.18.46), before any
 descriptor is read.
-rocq-twin: writev_wide_iovcnt_is_unmodeled
+rocq-twin: writev_iovcnt_truncates_to_32_bits
 kernel: lib/iov_iter.c:iovec_from_user@v6.18.46 -/
 theorem writev_count_1025_is_einval (o : outcome SyscallEffect) :
     syscall_spec (writev_in 1 8192 1025 mem_writev_ab) read_model o ↔
@@ -6783,31 +6853,42 @@ theorem writev_count_1025_is_einval (o : outcome SyscallEffect) :
   rw_norm
 
 /-- …and so are -1's low 32 bits.
-rocq-twin: writev_wide_iovcnt_is_unmodeled
+rocq-twin: writev_iovcnt_truncates_to_32_bits
 kernel: lib/iov_iter.c:iovec_from_user@v6.18.46 -/
 theorem writev_count_minus_one_is_einval (o : outcome SyscallEffect) :
     syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 64 - 1)) mem_writev_ab) read_model o ↔
       o = Ok (mkEffect (errno_ret EINVAL) [] []) read_model [] := by
   rw_norm
 
-/-- Writev on stdout fd 1 with count 2^32+2 selects {4096,1},{4097,1} over readable "ab" after
-Linux narrows the count, but qemu-user returns -EINVAL. The dispatcher pin refuses the two-byte
-delivery and its source-read ledger for this declined call.
+/-- A RAW COUNT OVER IOV_MAX WHOSE LOW 32 BITS ARE IN RANGE IS THE
+TRUNCATED TRANSFER AND NOTHING ELSE, Rocq's
+`writev_over_max_truncates_only`: the two-byte delivery at a raw count of
+2^32 + 2 is admitted, with the two source ranges in the ledger behind the
+two descriptor reads.
+rocq-twin: writev_over_max_truncates_only
 probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2 -/
-theorem writev_raw_count_delivery_refuted :
-    ¬ syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab) read_model
+theorem writev_raw_count_delivers_both_bytes :
+    syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab) read_model
       (Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] []))
           read_model [WriteEv 1 97, WriteEv 1 98]) := by
-  rw_refute
+  rw [writev_raw_count_delivers_a_prefix_iff]
+  exact ⟨[97, 98], by rw_norm, by decide, rfl⟩
 
-/-- Writev on stdout fd 1 with count 2^32+2 and readable "ab" in {4096,1},{4097,1} can deliver
-two bytes in Linux but returns -EINVAL in qemu-user. The dispatcher pin refuses that concrete
--EINVAL as an outcome of the declined shape.
+/-- …and the bare -EINVAL qemu-user's `lock_iovec` answers for the raw
+count is REJECTED, where an older reading of this model declined it.
+rocq-twin: writev_over_max_truncates_only
 probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2 -/
 theorem writev_raw_count_einval_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab) read_model
         (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
-  rw_refute
+  rw [writev_raw_count_delivers_a_prefix_iff]
+  rintro ⟨ds, hok, h1, hds⟩
+  rcases ds with _ | ⟨a, _ | ⟨b, _ | ⟨c, t⟩⟩⟩
+  · exact absurd h1 (by decide)
+  · sys_refute at hok
+  · sys_refute at hok
+  · exact absurd (congrArg List.length hds)
+      (by simp only [List.length_take, List.length_cons, List.length_nil]; omega)
 
 /-- …and an IN-RANGE count accepts the delivery and not -EINVAL either,
 even with the descriptor reads in the ledger.
@@ -6880,17 +6961,20 @@ theorem writev_at_llong_max_write_rejected (m' : Model) (evs : List event) :
         (Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) m' evs) := by
   rw_refute
 
-/-- THE AGGREGATE IS THE KERNEL'S, NOT THE MODEL'S (issue #460): a normal
-count of one imports one descriptor, and with that descriptor one byte
-over the retired `Uaccess.rw_bytes_max` the call is JUDGED — a one-byte
-short write to stdout, only 4096 being mapped — where the aggregate bound
-used to decline it.  The delivery is the channel's, so this is the iff
-on that fixture; the one byte gatherable makes every outcome the same
-one.
+/-- THE AGGREGATE IS THE KERNEL'S, NOT THE MODEL'S.  A RAW count of
+2^32 + 1 truncates to one segment; with that segment one byte over
+`Uaccess.rw_bytes_max` the call is JUDGED — a one-byte short write to
+stdout, only 4096 being mapped — and not declined.  The import already
+clamps the aggregate at the kernel's own `State.MAX_RW_COUNT`
+(`State.cap_iovecs`), so a bound of the model's own in front of it would
+only narrow what is judged.  The delivery is the channel's, so this is
+the iff on that fixture; the one byte gatherable makes every outcome the
+same one.
 rocq-twin: writev_over_rw_bytes_max_total_is_judged
-kernel: lib/iov_iter.c:__import_iovec_ubuf,import_ubuf@v6.18.46 -/
+probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max -/
 theorem writev_over_rw_bytes_max_total_is_judged (o : outcome SyscallEffect) :
-    syscall_spec (writev_in 1 8192 1 (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model o ↔
+    syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
+                   (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model o ↔
       ∃ ds : List byte,
         o = Ok (with_copyins ([(8192, 16)] ++ iov_prefix_accesses [(4096, Z_to_bv 64 (rw_bytes_max + 1))] ds.length)
                  (mkEffect (len_word ds) [] [])) read_model (List.map (WriteEv 1) ds)
@@ -6900,50 +6984,79 @@ theorem writev_over_rw_bytes_max_total_is_judged (o : outcome SyscallEffect) :
 
 /-- …the one byte delivered, the ledger the descriptor read and the byte.
 rocq-twin: writev_over_rw_bytes_max_total_is_judged
-kernel: lib/iov_iter.c:__import_iovec_ubuf,import_ubuf@v6.18.46 -/
+probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max -/
 theorem writev_over_rw_bytes_max_delivers_one_byte :
-    syscall_spec (writev_in 1 8192 1 (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model
+    syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
+                   (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model
       (Ok (with_copyins [(8192, 16), (4096, 1)] (mkEffect 1 [] [])) read_model [WriteEv 1 97]) := by
   rw [writev_over_rw_bytes_max_total_is_judged]
   exact ⟨[97], by rw_norm, by decide, rfl⟩
 
-/-- A normal count of one cannot produce an import-count -EINVAL here.
+/-- THE NEGATIVE HALF: qemu-user's raw-count -EINVAL is REJECTED here
+rather than declined, which is what an answered arm buys over a
+fail-closed one.
 rocq-twin: writev_over_rw_bytes_max_total_is_judged
-kernel: lib/iov_iter.c:__import_iovec_ubuf,import_ubuf@v6.18.46 -/
+probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max -/
 theorem writev_over_rw_bytes_max_einval_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (writev_in 1 8192 1 (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model
+    ¬ syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
+                     (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model
         (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
-  rw_refute
+  rw [writev_over_rw_bytes_max_total_is_judged]
+  rintro ⟨ds, hok, h1, hds⟩
+  rcases ds with _ | ⟨a, _ | ⟨b, t⟩⟩
+  · exact absurd h1 (by decide)
+  · sys_refute at hok
+  · exact absurd (congrArg List.length hds)
+      (by simp only [List.length_take, List.length_cons, List.length_nil]; omega)
 
-/-- Writev on stdout fd 1 uses count 2^32+1 and {4096,rw_bytes_max+1},{0,0}, with only source
-byte 97 at 4096 readable. The pin declines this wide-count call, including the low-word import
-of one oversized buffer.
-rocq-twin: writev_wide_count_over_rw_bytes_max_is_unmodeled
+/-- …and the decline this twin used to make at that raw count is
+refused: the high bits do not change whether the model can describe the
+call.
+rocq-twin: writev_over_rw_bytes_max_total_is_judged
 probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max -/
-theorem writev_wide_count_over_rw_bytes_max_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 1 8192 (Z_to_bv 64 (2 ^ 32 + 1)) (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1)) (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model o ↔ o = Unmodeled := by
-  rw_norm
+theorem writev_over_rw_bytes_max_decline_refuted :
+    ¬ syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
+                     (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model Unmodeled := by
+  rw [writev_over_rw_bytes_max_total_is_judged]
+  exact fun h => by rcases h with ⟨ds, hok, -, -⟩; exact absurd hok (by simp)
 
-/-- Writev on stdout fd 1 uses count 2^32+1 and {4096,rw_bytes_max+1},{0,0}, with only source
-byte 97 at 4096 readable. The pin refuses the former one-byte write and its descriptor/source
-ledger for this declined shape.
-probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max -/
-theorem writev_wide_count_over_rw_bytes_max_old_answer_refuted :
-    ¬ writev_spec 1 8192 (Z_to_bv 64 (2 ^ 32 + 1)) (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1)) (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model
-      (Ok (with_copyins [(8192, 16), (4096, 1)] (mkEffect 1 [] [])) read_model [WriteEv 1 97]) := by
-  rw_refute
-
-/-- THE RETIRED BOUND IS IN FRONT OF NO FILE KIND, Rocq's
-`writev_aggregate_past_the_retired_bound_is_judged_by_every_file_kind` on
-the one file kind the Lean `FdEntry` has: a single descriptor of
-`rw_bytes_max + 1` bytes at an unmapped source, on the `FdFileW`, is
-imported and judged -EFAULT against a claimed length of 1 — not declined,
-which is what the retired gate made the read-write arm do.
+/-- NO AGGREGATE BOUND OF THE MODEL'S OWN IN FRONT OF ANY FILE KIND,
+Rocq's `writev_aggregate_past_the_retired_bound_is_judged_by_every_file_kind`:
+a single descriptor of `rw_bytes_max + 1` bytes at an unmapped source,
+on the `FdFileW`, is imported and judged -EFAULT against a claimed
+length of 1 — not declined, which is what an arm keeping such a gate
+would do.
 rocq-twin: writev_aggregate_past_the_retired_bound_is_judged_by_every_file_kind
 kernel: lib/iov_iter.c:__import_iovec_ubuf,import_ubuf@v6.18.46 -/
 theorem writev_aggregate_past_the_retired_bound_is_judged_on_a_file (o : outcome SyscallEffect) :
     syscall_spec (writev_in 4 8192 1 (iov_array [(4096, Z_to_bv 64 (rw_bytes_max + 1))])) read_model o ↔
       o = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model [] := by
+  rw_norm
+
+/-- …and on the `FdFileRW`, which is where such a gate did the damage:
+the same `writev` would decline on an O_RDWR descriptor what it delivers
+on an O_WRONLY one.  Not a wrong answer — a decline never is — but the
+same call judged by which descriptor it holds.
+rocq-twin: writev_aggregate_past_the_retired_bound_is_judged_by_every_file_kind
+kernel: lib/iov_iter.c:__import_iovec_ubuf,import_ubuf@v6.18.46 -/
+theorem writev_aggregate_past_the_retired_bound_is_judged_on_a_read_write_file
+    (o : outcome SyscallEffect) :
+    syscall_spec (writev_in 5 8192 1 (iov_array [(4096, Z_to_bv 64 (rw_bytes_max + 1))]))
+        write_kinds_model o ↔
+      o = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) write_kinds_model [] := by
+  rw_norm
+
+/-- …and on the `FdFileA`: THE THREE ANSWER ALIKE HERE, which is what
+the example asserts.  The source address is unmapped, so every kind
+gathers nothing and answers -EFAULT against a claimed length of 1; none
+of them declines.
+rocq-twin: writev_aggregate_past_the_retired_bound_is_judged_by_every_file_kind
+kernel: lib/iov_iter.c:__import_iovec_ubuf,import_ubuf@v6.18.46 -/
+theorem writev_aggregate_past_the_retired_bound_is_judged_on_an_append_file
+    (o : outcome SyscallEffect) :
+    syscall_spec (writev_in 6 8192 1 (iov_array [(4096, Z_to_bv 64 (rw_bytes_max + 1))]))
+        write_kinds_model o ↔
+      o = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) write_kinds_model [] := by
   rw_norm
 
 /-- THE PIPE IS THE CONTROL: the same call on the pipe write end declines
@@ -6975,34 +7088,39 @@ errnos and the zero aggregate are pinned once per arm because the arm
 repeats the import per kind — a mutation of one copy is invisible to the
 others' pins. -/
 
-/-- For writev on closed fd 30, count 2 selects {4096,1},{4097,1} over readable "ab". The pin
-declines this call as `Unmodeled`.
+/-- For writev on closed fd 30, count 2 selects {4096,1},{4097,1} over readable "ab".
+A closed fd is -EBADF, Rocq's answer: `do_writev` resolves the fd
+(`CLASS(fd_pos, f)(fd)`, fs/read_write.c:1094-1097, v6.18.46) and answers
+-EBADF on an empty slot before the array is imported, so the readable
+source never matters.
 probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty -/
-theorem writev_closed_fd_declines (o : outcome SyscallEffect) :
-    writev_spec 30 8192 2 (writev_in 30 8192 2 mem_writev_ab) read_model o ↔ o = Unmodeled := by
+theorem writev_closed_fd_is_ebadf (o : outcome SyscallEffect) :
+    writev_spec 30 8192 2 (writev_in 30 8192 2 mem_writev_ab) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For writev on closed fd 30, count 2 selects {4096,1},{4097,1} over readable "ab". The pin
-refuses the former concrete `-EBADF` outcome.
+/-- …and the decline this twin used to make is refused.
 probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty -/
-theorem writev_closed_fd_declines_old_answer_refuted :
-    ¬ writev_spec 30 8192 2 (writev_in 30 8192 2 mem_writev_ab) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+theorem writev_closed_fd_decline_refuted :
+    ¬ writev_spec 30 8192 2 (writev_in 30 8192 2 mem_writev_ab) read_model Unmodeled := by
   rw_refute
 
-/-- For writev on closed fd 30, count 2 names an unreadable array at 8192. Linux returns -EBADF
-and qemu-user returns -EFAULT; the pin declines this call as `Unmodeled`.
+/-- For writev on closed fd 30, count 2 names an unreadable array at 8192.
+The -EBADF is decided BEFORE the import, so the array that cannot be read
+changes nothing.  (qemu-user's `lock_iovec` locks the array before it
+dispatches on the fd and answers -EFAULT instead.)
 probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdiov -/
-theorem writev_closed_fd_unreadable_array_declines (o : outcome SyscallEffect) :
-    writev_spec 30 8192 2 (writev_in 30 8192 2 wmem_none) read_model o ↔ o = Unmodeled := by
+theorem writev_closed_fd_unreadable_array_is_ebadf (o : outcome SyscallEffect) :
+    writev_spec 30 8192 2 (writev_in 30 8192 2 wmem_none) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For writev on closed fd 30, count 2 names an unreadable array at 8192. Linux returns -EBADF
-and qemu-user returns -EFAULT; the pin refuses the former concrete `-EBADF` outcome.
+/-- …and qemu-user's -EFAULT for the unreadable array is refused, which
+is what the order above buys.
 probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdiov -/
-theorem writev_closed_fd_unreadable_array_declines_old_answer_refuted :
+theorem writev_closed_fd_unreadable_array_efault_refuted (m' : Model) (evs : List event) :
     ¬ writev_spec 30 8192 2 (writev_in 30 8192 2 wmem_none) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+      (Ok (mkEffect (errno_ret EFAULT) [] []) m' evs) := by
   rw_refute
 
 /-- Writev on closed fd 30 uses count 5000 beside {4096,1},{4097,1} over readable "ab". Linux
@@ -7014,19 +7132,20 @@ theorem writev_closed_fd_count_einval_rejected (m' : Model) (evs : List event) :
         (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
   rw_refute
 
-/-- For writev on read-only file fd 3, count 2 selects {4096,1},{4097,1} over readable "ab". The
-pin declines this call as `Unmodeled`.
+/-- For writev on read-only file fd 3, count 2 selects {4096,1},{4097,1} over readable "ab".
+An fd open O_RDONLY is -EBADF: `vfs_writev` tests `FMODE_WRITE`
+(fs/read_write.c:1037-1038, v6.18.46) ahead of `import_iovec`
+(:1042-1043).
 probe: testing/syscall-check/tests/fd_modes.c#fail-closed --expect-unmodeled writev -- nonempty -/
-theorem writev_read_only_file_declines (o : outcome SyscallEffect) :
-    writev_spec 3 8192 2 (writev_in 3 8192 2 mem_writev_ab) read_model o ↔ o = Unmodeled := by
+theorem writev_read_only_file_is_ebadf (o : outcome SyscallEffect) :
+    writev_spec 3 8192 2 (writev_in 3 8192 2 mem_writev_ab) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For writev on read-only file fd 3, count 2 selects {4096,1},{4097,1} over readable "ab". The
-pin refuses the former concrete `-EBADF` outcome.
+/-- …and the decline this twin used to make is refused.
 probe: testing/syscall-check/tests/fd_modes.c#fail-closed --expect-unmodeled writev -- nonempty -/
-theorem writev_read_only_file_declines_old_answer_refuted :
-    ¬ writev_spec 3 8192 2 (writev_in 3 8192 2 mem_writev_ab) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+theorem writev_read_only_file_decline_refuted :
+    ¬ writev_spec 3 8192 2 (writev_in 3 8192 2 mem_writev_ab) read_model Unmodeled := by
   rw_refute
 
 /-- …so the gather a writable description performs is refused.
@@ -7037,18 +7156,19 @@ theorem writev_read_only_file_delivery_rejected (m' : Model) (evs : List event) 
   rw_refute
 
 /-- For writev on read-only directory fd 5, count 2 selects {4096,1},{4097,1} over readable
-"ab". The pin declines this call as `Unmodeled`.
+"ab".  A directory fd is O_RDONLY — `may_open` answers -EISDIR to
+MAY_WRITE on S_IFDIR (fs/namei.c:3540-3542, v6.18.46) — so the same
+`FMODE_WRITE` test answers -EBADF.
 probe: testing/syscall-check/tests/dirfd_spec.c#fail-closed --expect-unmodeled writev -- writev-nonempty -/
-theorem writev_directory_declines (o : outcome SyscallEffect) :
-    writev_spec 5 8192 2 (writev_in 5 8192 2 mem_writev_ab) read_model o ↔ o = Unmodeled := by
+theorem writev_directory_is_ebadf (o : outcome SyscallEffect) :
+    writev_spec 5 8192 2 (writev_in 5 8192 2 mem_writev_ab) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For writev on read-only directory fd 5, count 2 selects {4096,1},{4097,1} over readable
-"ab". The pin refuses the former concrete `-EBADF` outcome.
+/-- …and the decline this twin used to make is refused.
 probe: testing/syscall-check/tests/dirfd_spec.c#fail-closed --expect-unmodeled writev -- writev-nonempty -/
-theorem writev_directory_declines_old_answer_refuted :
-    ¬ writev_spec 5 8192 2 (writev_in 5 8192 2 mem_writev_ab) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+theorem writev_directory_decline_refuted :
+    ¬ writev_spec 5 8192 2 (writev_in 5 8192 2 mem_writev_ab) read_model Unmodeled := by
   rw_refute
 
 /-- …not the -EISDIR of the open that could not have produced this fd,
@@ -7081,33 +7201,36 @@ theorem writev_socket_delivery_rejected (m' : Model) (evs : List event) :
   rw_refute
 
 /-- For writev on read-only stdin fd 0, count 2 selects {4096,1},{4097,1} over readable "ab".
-The pin declines this call as `Unmodeled`.
+Channel 0 is -EBADF, the same `FMODE_WRITE` test
+(fs/read_write.c:1037-1038, v6.18.46) ahead of the import.  That the
+channel is read-only is the FIXTURE's premise — piped stdio — and not
+the fd number: the kernel fact is only that a description without
+`FMODE_WRITE` is -EBADF before the array is touched.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_stdin_channel_declines (o : outcome SyscallEffect) :
-    writev_spec 0 8192 2 (writev_in 0 8192 2 mem_writev_ab) read_model o ↔ o = Unmodeled := by
+theorem writev_stdin_channel_is_ebadf (o : outcome SyscallEffect) :
+    writev_spec 0 8192 2 (writev_in 0 8192 2 mem_writev_ab) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For writev on read-only stdin fd 0, count 2 selects {4096,1},{4097,1} over readable "ab".
-The pin refuses the former concrete `-EBADF` outcome.
+/-- …and the decline this twin used to make is refused.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_stdin_channel_declines_old_answer_refuted :
-    ¬ writev_spec 0 8192 2 (writev_in 0 8192 2 mem_writev_ab) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+theorem writev_stdin_channel_decline_refuted :
+    ¬ writev_spec 0 8192 2 (writev_in 0 8192 2 mem_writev_ab) read_model Unmodeled := by
   rw_refute
 
 /-- For writev on fd 26, an alias of read-only stdin, count 2 selects {4096,1},{4097,1} over
-readable "ab". The pin declines this call as `Unmodeled`.
+readable "ab".  The answer follows the channel the descriptor NAMES and
+not the fd number, so the alias is -EBADF too.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_stdin_alias_declines (o : outcome SyscallEffect) :
-    writev_spec 26 8192 2 (writev_in 26 8192 2 mem_writev_ab) read_model o ↔ o = Unmodeled := by
+theorem writev_stdin_alias_is_ebadf (o : outcome SyscallEffect) :
+    writev_spec 26 8192 2 (writev_in 26 8192 2 mem_writev_ab) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For writev on fd 26, an alias of read-only stdin, count 2 selects {4096,1},{4097,1} over
-readable "ab". The pin refuses the former concrete `-EBADF` outcome.
+/-- …and the decline this twin used to make is refused.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_stdin_alias_declines_old_answer_refuted :
-    ¬ writev_spec 26 8192 2 (writev_in 26 8192 2 mem_writev_ab) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+theorem writev_stdin_alias_decline_refuted :
+    ¬ writev_spec 26 8192 2 (writev_in 26 8192 2 mem_writev_ab) read_model Unmodeled := by
   rw_refute
 
 /-- …never the delivery standard output gives the same call.
@@ -7188,8 +7311,9 @@ descriptor read, the file and descriptor untouched (`generic_perform_write`
 answers -EFAULT only when nothing was copied: the `status = -EFAULT` at
 mm/filemap.c:4322-4323 is returned under `if (!written)`, :4331-4332, v6.18.46).
 The offset is 0 on a one-byte file, WITHIN it, where every implementation
-leaves the file alone; past its end the arm declines instead
-(`writev_arm_past_eof_unreadable_source_declines`).
+leaves the file alone; past its end the arm gives the SAME -EFAULT
+(`writev_arm_past_eof_unreadable_source_is_efault`), which is where the
+implementations part.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
 theorem writev_file_unreadable_source_is_efault (o : outcome SyscallEffect) :
     syscall_spec (writev_in 4 8192 1 (iov_array [(4096, 2)])) read_model o ↔
@@ -7320,30 +7444,30 @@ theorem writev_file_far_offset_write_rejected (m' : Model) (evs : List event) :
         (Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) m' evs) := by
   rw_refute
 
-/-- An unreadable source at an offset past the file's end declines through
-the table: the one shape `writev_file_arm` declines where Rocq's answers
--EFAULT with the file untouched.  The kernel argument is
-`writev_arm_past_eof_unreadable_source_declines`'s, the helper-level pin;
-bugs/write-file-past-eof-unreadable-source-answers-an-unchanged-file.md
-records the Rocq answer and names this arm.
-kernel: mm/shmem.c:shmem_write_end@v6.18.46 -/
-theorem writev_file_past_eof_unreadable_source_declines (o : outcome SyscallEffect) :
-    syscall_spec (writev_in 3 8192 1 (iov_array [(4096, 1)])) writev_hole_model o ↔ o = Unmodeled := by
+/-- An unreadable source at an offset past the file's end is -EFAULT
+with the file untouched, Rocq's answer
+(`linux-process-semantics@ff0313ba4f:bugs/write-file-past-eof-unreadable-source-answers-an-unchanged-file.md`
+records it), where this twin once declined.
+`writev_file_arm` tests only whether the gather is EMPTY, and that test
+sits ahead of `place`, so the file's end plays no part in it.  The
+ledger is the import's one read of the array.
+kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
+theorem writev_file_past_eof_unreadable_source_is_efault (o : outcome SyscallEffect) :
+    syscall_spec (writev_in 3 8192 1 (iov_array [(4096, 1)])) writev_hole_model o ↔
+      o = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) writev_hole_model [] := by
   rw_norm
 
-/-- …and Rocq's -EFAULT with the file untouched is refused.
+/-- …and the decline the twin used to make there is refused.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem writev_file_past_eof_unreadable_source_is_not_efault :
-    ¬ syscall_spec (writev_in 3 8192 1 (iov_array [(4096, 1)])) writev_hole_model
-        (Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) writev_hole_model []) := by
+theorem writev_file_past_eof_unreadable_source_is_not_a_decline :
+    ¬ syscall_spec (writev_in 3 8192 1 (iov_array [(4096, 1)])) writev_hole_model Unmodeled := by
   rw_refute
 
-/-- AT the end of file the decline does not fire: with `pos` equal to
-`i_size`, `pos + copied` at `copied` 0 does not pass it (`shmem_write_end`,
-mm/shmem.c:3352, v6.18.46), so v6.18.46 leaves the modeled file — bytes,
-length, offset — alone as every other implementation does, and -EFAULT
-with the file untouched is in the intersection — the edge of the `<` in `writev_file_arm`'s past-end test.
-The -EFAULT is `generic_perform_write`'s
+/-- AT the end of file the same -EFAULT, and here every implementation
+agrees: with `pos` equal to `i_size`, `pos + copied` at `copied` 0 does
+not pass it (`shmem_write_end`, mm/shmem.c:3352, v6.18.46), so v6.18.46
+leaves the modeled file — bytes, length, offset — alone as the others
+do.  The -EFAULT is `generic_perform_write`'s
 (mm/filemap.c:4321-4323, :4331-4332, v6.18.46); the ledger is the
 import's one read of the array.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
@@ -7358,53 +7482,60 @@ theorem writev_file_at_eof_unreadable_source_is_not_a_decline :
     ¬ syscall_spec (writev_in 3 8192 1 (iov_array [(4096, 1)])) wend_model Unmodeled := by
   rw_refute
 
-/-- ONE byte past the end the decline fires: `pos + 0` is 3 against an
-`i_size` of 2, so `shmem_write_end` (mm/shmem.c:3352-3353, v6.18.46) moves
-the size by one byte before the -EFAULT.  The other side of the edge.
+/-- ONE byte past the end answers ALIKE, which is what dropping the
+past-end decline changed: `shmem_write_end` (mm/shmem.c:3352-3353,
+v6.18.46) does move `i_size` by one byte before the -EFAULT there, so
+this answer is a known divergence from Linux v5.18 on — and agrees with
+Linux v4.17 through v5.17 and with qemu-user.
 kernel: mm/shmem.c:shmem_write_end@v6.18.46 -/
-theorem writev_file_one_past_eof_unreadable_source_declines (o : outcome SyscallEffect) :
-    syscall_spec (writev_in 4 8192 1 (iov_array [(4096, 1)])) wend_model o ↔ o = Unmodeled := by
+theorem writev_file_one_past_eof_unreadable_source_is_efault (o : outcome SyscallEffect) :
+    syscall_spec (writev_in 4 8192 1 (iov_array [(4096, 1)])) wend_model o ↔
+      o = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) wend_model [] := by
   rw_norm
 
-/-- …and the untouched-file -EFAULT is refused one byte past the end.
+/-- …and the decline is refused one byte past the end.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem writev_file_one_past_eof_unreadable_source_is_not_efault :
-    ¬ syscall_spec (writev_in 4 8192 1 (iov_array [(4096, 1)])) wend_model
-        (Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) wend_model []) := by
+theorem writev_file_one_past_eof_unreadable_source_is_not_a_decline :
+    ¬ syscall_spec (writev_in 4 8192 1 (iov_array [(4096, 1)])) wend_model Unmodeled := by
   rw_refute
 
-/-- Past the hole the model could not build the same source declines, and
-not for the hole's size: the decline sits ahead of `place`, so it is the
-`Unmodeled` a readable byte's oversize hole would be
-(`writev_file_far_offset_declines`), reached one test earlier.
+/-- Past the hole the model could not build, the same unreadable source
+is -EFAULT and NOT the hole's decline: the empty-gather test sits ahead
+of `place`, so the gap walk a readable byte would reach
+(`writev_file_far_offset_declines`) is never run.  THAT IS THE ORDER
+THIS PIN FIXES.
 kernel: mm/shmem.c:shmem_write_end@v6.18.46 -/
-theorem writev_file_far_offset_unreadable_source_declines (o : outcome SyscallEffect) :
-    syscall_spec (writev_in 3 8192 1 (iov_array [(4096, 1)])) writev_far_offset_model o ↔ o = Unmodeled := by
+theorem writev_file_far_offset_unreadable_source_is_efault (o : outcome SyscallEffect) :
+    syscall_spec (writev_in 3 8192 1 (iov_array [(4096, 1)])) writev_far_offset_model o ↔
+      o = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] []))
+             writev_far_offset_model [] := by
   rw_norm
 
-/-- …and Rocq's -EFAULT is refused there too.
+/-- …and the hole's decline is refused there.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem writev_file_far_offset_unreadable_source_is_not_efault :
+theorem writev_file_far_offset_unreadable_source_is_not_a_decline :
     ¬ syscall_spec (writev_in 3 8192 1 (iov_array [(4096, 1)])) writev_far_offset_model
-        (Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) writev_far_offset_model []) := by
+        Unmodeled := by
   rw_refute
 
 /-- THE ORDER: at `LLONG_MAX` with a one-byte unreadable source,
 `rw_verify_area` (fs/read_write.c:451-478, the test at :467-469, v6.18.46)
 answers -EINVAL from `vfs_writev` (:1051) before `write_iter` is called
-(:1056-1057), so the decline, which models the loop, sits behind the
-position test and is never reached.  Rocq's arm has the -EINVAL in the
-same place.
+(:1056-1057), so the -EFAULT of the empty gather, which models the loop,
+sits behind the position test and is never reached.  Rocq's arm has the
+-EINVAL in the same place.
 kernel: fs/read_write.c:vfs_writev@v6.18.46 -/
-theorem writev_file_position_test_beats_the_decline (o : outcome SyscallEffect) :
+theorem writev_file_position_test_beats_the_fault (o : outcome SyscallEffect) :
     syscall_spec (writev_in 3 8192 1 (iov_array [(4096, 1)])) writev_llong_max_model o ↔
       o = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) writev_llong_max_model [] := by
   rw_norm
 
-/-- …and is not the decline.
+/-- …and is not the -EFAULT.
 kernel: fs/read_write.c:rw_verify_area@v6.18.46 -/
-theorem writev_file_position_test_decline_rejected :
-    ¬ syscall_spec (writev_in 3 8192 1 (iov_array [(4096, 1)])) writev_llong_max_model Unmodeled := by
+theorem writev_file_position_test_fault_rejected :
+    ¬ syscall_spec (writev_in 3 8192 1 (iov_array [(4096, 1)])) writev_llong_max_model
+        (Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] []))
+          writev_llong_max_model []) := by
   rw_refute
 
 /-- An `FdFileW` on fd 3 whose path the file system does not hold: a
@@ -7425,18 +7556,19 @@ theorem writev_file_path_absent_declines (o : outcome SyscallEffect) :
 /-! ### The random device, /dev/null and the pipe ends -/
 
 /-- For writev on read-only /dev/urandom fd 24, count 2 selects {4096,1},{4097,1} over readable
-"ab". The pin declines this call as `Unmodeled`.
+"ab".  Every descriptor of this kind is O_RDONLY — the open declines the
+write words — so the `FMODE_WRITE` test (fs/read_write.c:1037-1038,
+v6.18.46) answers -EBADF before the array is imported.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_urandom_declines (o : outcome SyscallEffect) :
-    writev_spec 24 8192 2 (writev_in 24 8192 2 mem_writev_ab) read_model o ↔ o = Unmodeled := by
+theorem writev_urandom_is_ebadf (o : outcome SyscallEffect) :
+    writev_spec 24 8192 2 (writev_in 24 8192 2 mem_writev_ab) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For writev on read-only /dev/urandom fd 24, count 2 selects {4096,1},{4097,1} over readable
-"ab". The pin refuses the former concrete `-EBADF` outcome.
+/-- …and the decline this twin used to make is refused.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_urandom_declines_old_answer_refuted :
-    ¬ writev_spec 24 8192 2 (writev_in 24 8192 2 mem_writev_ab) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+theorem writev_urandom_decline_refuted :
+    ¬ writev_spec 24 8192 2 (writev_in 24 8192 2 mem_writev_ab) read_model Unmodeled := by
   rw_refute
 
 /-- …so the count a writable description would answer is refused.
@@ -7447,18 +7579,19 @@ theorem writev_urandom_count_rejected (m' : Model) (evs : List event) :
   rw_refute
 
 /-- For writev on read-only /dev/null fd 8, count 2 selects {4096,1},{4097,1} over readable
-"ab". The pin declines this call as `Unmodeled`.
+"ab".  The access mode the open granted is what the gate reads, so a
+read-only /dev/null is -EBADF exactly as a read-only file is, and the
+write-only one below answers the aggregate.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_devnull_read_only_declines (o : outcome SyscallEffect) :
-    writev_spec 8 8192 2 (writev_in 8 8192 2 mem_writev_ab) read_model o ↔ o = Unmodeled := by
+theorem writev_devnull_read_only_is_ebadf (o : outcome SyscallEffect) :
+    writev_spec 8 8192 2 (writev_in 8 8192 2 mem_writev_ab) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For writev on read-only /dev/null fd 8, count 2 selects {4096,1},{4097,1} over readable
-"ab". The pin refuses the former concrete `-EBADF` outcome.
+/-- …and the decline this twin used to make is refused.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_devnull_read_only_declines_old_answer_refuted :
-    ¬ writev_spec 8 8192 2 (writev_in 8 8192 2 mem_writev_ab) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+theorem writev_devnull_read_only_decline_refuted :
+    ¬ writev_spec 8 8192 2 (writev_in 8 8192 2 mem_writev_ab) read_model Unmodeled := by
   rw_refute
 
 /-- …not the count the write-only description answers.
@@ -7564,28 +7697,31 @@ theorem writev_devnull_nine_zero_descriptors_decline_rejected :
     ¬ syscall_spec (writev_in 9 8192 9 mem_writev_nine_zero) read_model Unmodeled := by
   rw_refute
 
-/-- For writev on pipe read end fd 14, count 2 selects {4096,1},{4097,1} over readable "ab". The
-pin declines this call as `Unmodeled`.
+/-- For writev on pipe read end fd 14, count 2 selects {4096,1},{4097,1} over readable "ab".
+The read end is O_RDONLY — `create_pipe_files` opens `res[0]` that way
+(fs/pipe.c:956, v6.18.46) — so the `FMODE_WRITE` test answers -EBADF, the
+kernel's own answer and not a modeling gap, ahead of the import and
+ahead of the vectored-pipe decline the WRITE end makes.
 probe: testing/syscall-check/tests/pipe2_spec.c#fail-closed --expect-unmodeled writev -- wrongend-writev -/
-theorem writev_pipe_read_end_declines (o : outcome SyscallEffect) :
-    writev_spec 14 8192 2 (writev_in 14 8192 2 mem_writev_ab) read_model o ↔ o = Unmodeled := by
+theorem writev_pipe_read_end_is_ebadf (o : outcome SyscallEffect) :
+    writev_spec 14 8192 2 (writev_in 14 8192 2 mem_writev_ab) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
   rw_norm
 
-/-- For writev on pipe read end fd 14, count 2 selects {4096,1},{4097,1} over readable "ab". The
-pin refuses the former concrete `-EBADF` outcome.
+/-- …and the decline this twin used to make is refused.
 probe: testing/syscall-check/tests/pipe2_spec.c#fail-closed --expect-unmodeled writev -- wrongend-writev -/
-theorem writev_pipe_read_end_declines_old_answer_refuted :
-    ¬ writev_spec 14 8192 2 (writev_in 14 8192 2 mem_writev_ab) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
+theorem writev_pipe_read_end_decline_refuted :
+    ¬ writev_spec 14 8192 2 (writev_in 14 8192 2 mem_writev_ab) read_model Unmodeled := by
   rw_refute
 
-/-- Writev on pipe read end fd 14 uses count 2 and {4096,1},{4097,1} over readable "ab". The
-dispatcher pin refuses the concrete -EBADF outcome because the nonempty first entry makes the
-call decline.
+/-- Writev on pipe read end fd 14 uses count 2 and {4096,1},{4097,1} over readable "ab".
+Through the dispatcher the answer is the same -EBADF, so the fd table's
+`fd32` narrowing is under test with the arm.
 probe: testing/syscall-check/tests/pipe2_spec.c#fail-closed --expect-unmodeled writev -- wrongend-writev -/
-theorem writev_pipe_read_end_old_ebadf_refuted :
-    ¬ syscall_spec (writev_in 14 8192 2 mem_writev_ab) read_model (Ok (mkEffect (errno_ret EBADF) [] []) read_model []) := by
-  rw_refute
+theorem writev_pipe_read_end_is_ebadf_through_the_dispatcher (o : outcome SyscallEffect) :
+    syscall_spec (writev_in 14 8192 2 mem_writev_ab) read_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
+  rw_norm
 
 /-- A pipe's write end with zero descriptors: 0, `vfs_writev`'s `!tot_len`
 exit (fs/read_write.c:1047-1049, v6.18.46) ahead of the pipe's own write.
@@ -9914,12 +10050,14 @@ theorem pwrite64_devnull_unclamped_count_clamp_rejected (m' : Model) (evs : List
 /-- The write-only file (fd 3 of `readv_write_only_model`) at the same
 count and position admits Linux's -EINVAL, which `vfs_write` reaches
 before the copy is attempted.  One-directional on purpose: the source is
-unreadable so that a spec testing the clamped count evaluates cheaply
-(it declines through `unreadable_source_past_eof`), and with an
+unreadable, so a spec testing the clamped count evaluates
+cheaply, answering -EFAULT without walking the count, and with an
 unreadable source qemu-user's `lock_user` answers -EFAULT first
 (linux-user/syscall.c:12275-12278, QEMU 11.1.1), an answer the arm does
-not yet accept (bugs/read-write-transfer-answers-are-linux-order-not-qemu-user.md);
-an `iff` here would pin that refusal.
+not accept — a known divergence from qemu-user,
+`linux-process-semantics@ff0313ba4f:bugs/read-write-transfer-answers-are-linux-order-not-qemu-user.md`
+— so an `iff` here would
+pin that refusal.
 kernel: fs/read_write.c:vfs_write,rw_verify_area@v6.18.46 -/
 theorem pwrite64_file_unclamped_count_admits_einval :
     syscall_spec (pwrite_in 3 4096 (Z_to_bv 64 (2 ^ 32)) (Z_to_bv 64 (2 ^ 63 - 2 ^ 31)) mem_none)
@@ -9927,39 +10065,53 @@ theorem pwrite64_file_unclamped_count_admits_einval :
         (Ok (mkEffect (errno_ret EINVAL) [] []) readv_write_only_model []) := by
   rw_norm
 
-/-! ### The hole past end-of-file, and the one decline beyond Rocq's
+/-! ### The hole past end-of-file
 
 Linux zero-fills from the file's end to the named position with no bound
 of its own; the model walks that gap and stops at `rw_bytes_max`
 (`modeled_file_gap`, the bound `Sys/Uaccess.lean` carries), exactly as
-`write` does past end-of-file.  And the decline `write`'s twin makes
-beyond Rocq's — a source with NO readable byte at a position past the
-end — is made here too (`unreadable_source_past_eof`, tested after the
--EFAULT of the range and the -EINVAL of the position, and before the
--EFAULT it displaces): `generic_perform_write` faults in the source
-page by page inside a loop that has already extended the file's size
-when the copy comes up empty, so the kernel's answer there is not the
-untouched file the arm would otherwise report.
-bugs/write-file-past-eof-unreadable-source-answers-an-unchanged-file.md
-records it for both calls: Rocq's `pwrite64_spec` answers the untouched
-file too, and the entry closes only when both Rocq arms decline. -/
+`write` does past end-of-file.  THAT IS THE ONLY DECLINE LEFT HERE.  The
+twin once carried a second one — a source with NO readable byte at a
+position past the end, `unreadable_source_past_eof` — which Rocq never
+had and the spec no longer makes: `pwrite64_spec` answers -EFAULT with
+the file untouched, as Rocq's arm does, and the -EFAULT is decided
+BEFORE the hole guard, so an unreadable source never reaches the gap
+walk at all.  Linux v6.18.46 does not leave the file untouched there —
+`generic_perform_write` (mm/filemap.c:4244-4335) has no pre-fault and
+tmpfs's `shmem_write_end` (mm/shmem.c:3352-3353) moves `i_size` to
+`pos + copied` with `copied` 0 before the loop answers -EFAULT — so the
+answer is a known divergence from it, which
+`linux-process-semantics@ff0313ba4f:bugs/write-file-past-eof-unreadable-source-answers-an-unchanged-file.md`
+records, and Linux v4.17 through v5.17 and
+qemu-user (`lock_user`, linux-user/syscall.c:9848-9849, QEMU 11.1.1)
+agree with the model instead.  The pins below state the order: the
+-EFAULT first, the gap walk only on a READABLE source. -/
 
 /-- One byte at position 2^63 - 2 into the empty file, from a source
 with no readable byte: the position passes `rw_verify_area` (the sum is
-`LLONG_MAX`), and what follows is a decline, not an answer — the
-unreadable source past the end, tested ahead of the hole the model could
-not walk.  The source is unreadable on purpose: a readable byte here
-would make a spec with the hole guard removed build the 2^63-byte fill,
-and a pin the tester cannot evaluate protects nothing; the hole guard
-itself is pinned at the bound, below.
+`LLONG_MAX`), and the answer is the -EFAULT of the unreadable source —
+not the decline of the 2^63-byte hole behind it, because the gap walk
+never runs.  THAT IS THE ORDER THIS PIN FIXES, and it is why the source
+is unreadable: a readable byte here would make the spec build the fill,
+and a pin the tester cannot evaluate protects nothing.  The hole guard
+itself is pinned on a readable source, below.
 kernel: fs/read_write.c:rw_verify_area; mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem pwrite64_hole_far_past_eof_declines (o : outcome SyscallEffect) :
+theorem pwrite64_hole_far_past_eof_is_efault (o : outcome SyscallEffect) :
     syscall_spec (pwrite_in 3 4096 1 (Z_to_bv 64 (2 ^ 63 - 2)) mem_none) readv_write_only_model o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect (errno_ret EFAULT) [] []) readv_write_only_model [] := by
   rw_norm
 
-/-- A hole one byte over the bound declines… the walk from the file's end
-stops at `rw_bytes_max` (`modeled_file_gap`, the section header above).
+/-- …and the decline the gap walk would make there is refused: the
+-EFAULT is ahead of it.
+kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
+theorem pwrite64_hole_far_past_eof_is_not_a_decline :
+    ¬ syscall_spec (pwrite_in 3 4096 1 (Z_to_bv 64 (2 ^ 63 - 2)) mem_none)
+        readv_write_only_model Unmodeled := by
+  rw_refute
+
+/-- A hole one byte over the bound declines, on a READABLE source: the
+walk from the file's end stops at `rw_bytes_max` (`modeled_file_gap`, the
+section header above).  This is the one decline the arm still makes.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
 theorem pwrite64_hole_over_the_bound_declines (o : outcome SyscallEffect) :
     syscall_spec (pwrite_in 3 4096 1 (Z_to_bv 64 (rw_bytes_max + 1)) mem_a) readv_write_only_model o ↔
@@ -9974,14 +10126,23 @@ theorem pwrite64_hole_at_the_bound_is_modeled :
   decide
 
 /-- An unreadable source at position 1 of the EMPTY file — one byte past
-its end — declines: the decline beyond Rocq's, on the pwrite path.
+its end — is -EFAULT with the file untouched, Rocq's answer, where this
+twin once declined.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem pwrite64_unreadable_source_past_eof_declines (o : outcome SyscallEffect) :
-    syscall_spec (pwrite_in 3 4096 1 1 mem_none) readv_write_only_model o ↔ o = Unmodeled := by
+theorem pwrite64_unreadable_source_past_eof_is_efault (o : outcome SyscallEffect) :
+    syscall_spec (pwrite_in 3 4096 1 1 mem_none) readv_write_only_model o ↔
+      o = Ok (mkEffect (errno_ret EFAULT) [] []) readv_write_only_model [] := by
   rw_norm
 
-/-- …while the same unreadable source AT the end (position 0 of the
-empty file) is the judged -EFAULT: the decline is on the gap alone.
+/-- …and the decline the twin used to make there is refused.
+kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
+theorem pwrite64_unreadable_source_past_eof_is_not_a_decline :
+    ¬ syscall_spec (pwrite_in 3 4096 1 1 mem_none) readv_write_only_model Unmodeled := by
+  rw_refute
+
+/-- …and the same unreadable source AT the end (position 0 of the empty
+file) is the same -EFAULT: past the end and at it answer ALIKE now, which
+is the whole of what dropping the decline changed.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
 theorem pwrite64_unreadable_source_at_eof_is_efault (o : outcome SyscallEffect) :
     syscall_spec (pwrite_in 3 4096 1 0 mem_none) readv_write_only_model o ↔
@@ -10008,23 +10169,25 @@ theorem pwrite64_unreadable_source_at_the_end_of_hi_is_efault (o : outcome Sysca
       o = Ok (mkEffect (errno_ret EFAULT) [] []) wend_model [] := by
   rw_norm
 
-/-- …while position 3, one past the end, declines, through fd 3 whose own
-offset, 2, is exactly the end: the decline is on the position the call
-names, not the descriptor's.
+/-- …and position 3, one past the end, through fd 3 whose own offset, 2,
+is exactly the end, is the SAME -EFAULT: the answer does not turn on
+where the position sits against the file's end, nor on the descriptor's
+own offset.
 kernel: mm/filemap.c:generic_perform_write; mm/shmem.c:shmem_write_end@v6.18.46 -/
-theorem pwrite64_unreadable_source_past_the_end_of_hi_declines (o : outcome SyscallEffect) :
-    syscall_spec (pwrite_in 3 4096 1 3 mem_none) wend_model o ↔ o = Unmodeled := by
+theorem pwrite64_unreadable_source_past_the_end_of_hi_is_efault (o : outcome SyscallEffect) :
+    syscall_spec (pwrite_in 3 4096 1 3 mem_none) wend_model o ↔
+      o = Ok (mkEffect (errno_ret EFAULT) [] []) wend_model [] := by
   rw_norm
 
-/-- The position test comes before the decline: one byte at position
+/-- The position test comes before the -EFAULT: one byte at position
 2^63 - 1 from an unreadable source admits `rw_verify_area`'s -EINVAL
 (fs/read_write.c:467-469, v6.18.46), which Linux reaches before any byte
-is copied, rather than declining as the same source past the end does at
-a smaller position.  One-directional for the reason
+is copied, rather than the -EFAULT the same source gets at a smaller
+position.  One-directional for the reason
 `pwrite64_file_unclamped_count_admits_einval` gives: qemu-user answers
 this unreadable source -EFAULT first.
 kernel: fs/read_write.c:vfs_write,rw_verify_area@v6.18.46 -/
-theorem pwrite64_position_test_precedes_the_decline :
+theorem pwrite64_position_test_precedes_the_fault :
     syscall_spec (pwrite_in 3 4096 1 (Z_to_bv 64 (2 ^ 63 - 1)) mem_none) readv_write_only_model
         (Ok (mkEffect (errno_ret EINVAL) [] []) readv_write_only_model []) := by
   rw_norm
@@ -10073,8 +10236,36 @@ theorem pread64_leaves_the_model_alone (fd buf count pos : word) (i : SyscallInp
     | none => simp only [err_ret, ret_only] at h; exact bare _ _ h rfl rfl rfl
     | some e =>
       cases e with
-      | FdFileA p off => simp only [unmodeled_iff, reduceCtorEq] at h
-      | FdFileRW p off => simp only [unmodeled_iff, reduceCtorEq] at h
+      | FdFileA p off => simp only [err_ret, ret_only] at h; exact bare _ _ h rfl rfl rfl
+      | FdFileRW p off =>
+        -- the `FdFile` branch below WORD FOR WORD: the two arms share one
+        -- body in the spec, and neither moves the descriptor
+        cases ha : access_okb buf (bv_unsigned count) with
+        | false =>
+          simp only [ha, Bool.not_false, ↓reduceIte, err_ret, ret_only] at h
+          exact bare _ _ h rfl rfl rfl
+        | true =>
+          simp only [ha, Bool.not_true, Bool.false_eq_true, ↓reduceIte] at h
+          cases hp : rw_pos_einvalb pos (bv_unsigned count) with
+          | true =>
+            simp only [hp, ↓reduceIte, err_ret, ret_only] at h
+            exact bare _ _ h rfl rfl rfl
+          | false =>
+            simp only [hp, Bool.false_eq_true, ↓reduceIte] at h
+            generalize fs_lookup (m_fs m) p = fl at h
+            cases fl with
+            | none => simp only [unmodeled_iff, reduceCtorEq] at h
+            | some data =>
+              simp only at h
+              generalize read_bytes_map i.in_wmem buf
+                (len_word (file_read data pos (Z_to_bv 64 (rw_count_clamp count)))) = r1 at h
+              cases r1 with
+              | some _ => simp only at h; exact bare _ _ h rfl rfl rfl
+              | none =>
+                generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = r2 at h
+                cases r2 with
+                | none => simp only [err_ret, ret_only] at h; exact bare _ _ h rfl rfl rfl
+                | some _ => simp only [unmodeled_iff, reduceCtorEq] at h
       | FdChannel c => simp only [err_ret, ret_only] at h; exact bare _ _ h rfl rfl rfl
       | FdPipe id w => simp only [err_ret, ret_only] at h; exact bare _ _ h rfl rfl rfl
       | FdSocket sk => simp only [err_ret, ret_only] at h; exact bare _ _ h rfl rfl rfl
@@ -10274,7 +10465,52 @@ theorem pwrite64_copyin_clamped (fd buf count pos : word) (i : SyscallInput) (m 
     | some e =>
       cases e with
       | FdFileA p off => simp only [unmodeled_iff, reduceCtorEq] at h
-      | FdFileRW p off => simp only [unmodeled_iff, reduceCtorEq] at h
+      | FdFileRW p off =>
+        -- the `FdFileW` branch below WORD FOR WORD: the two arms share
+        -- one body in the spec, and the ledger is the same on both
+        cases ha : access_okb buf (bv_unsigned count) with
+        | false =>
+          simp only [ha, Bool.not_false, ↓reduceIte, err_ret, ret_only] at h
+          exact (bare _ _ h rfl).elim
+        | true =>
+          simp only [ha, Bool.not_true, Bool.false_eq_true, ↓reduceIte] at h
+          cases hp : rw_pos_einvalb pos (bv_unsigned count) with
+          | true =>
+            simp only [hp, ↓reduceIte, err_ret, ret_only] at h
+            exact (bare _ _ h rfl).elim
+          | false =>
+            simp only [hp, Bool.false_eq_true, ↓reduceIte] at h
+            generalize hbs : write_source i.in_mem buf count = bs at h
+            cases hz : (!w_is0 count && bs.length == 0) with
+            | true =>
+              simp only [hz, ↓reduceIte, err_ret, ret_only] at h
+              exact (bare _ _ h rfl).elim
+            | false =>
+              simp only [hz, Bool.false_eq_true, ↓reduceIte] at h
+              generalize fs_lookup (m_fs m) p = fl at h
+              cases fl with
+              | none => simp only [unmodeled_iff, reduceCtorEq] at h
+              | some data =>
+                cases hg : modeled_file_gap data pos bs with
+                | false =>
+                  simp only [hg, Bool.not_false, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
+                | true =>
+                  simp only [hg, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
+                    bind_set_fs_iff] at h
+                  cases hw : w_is0 count with
+                  | true =>
+                    simp only [hw, ↓reduceIte, ret_only] at h
+                    exact (bare _ _ h rfl).elim
+                  | false =>
+                    simp only [hw, Bool.false_eq_true, ↓reduceIte, record_copyins_ok_iff,
+                      ret_only, pure_iff, outcome.Ok.injEq] at h
+                    obtain ⟨e0, ⟨rfl, -, -⟩, rfl⟩ := h
+                    simp only [with_copyins, List.cons_append, List.nil_append,
+                      List.cons.injEq, Prod.mk.injEq, and_true] at hc
+                    obtain ⟨-, rfl⟩ := hc
+                    subst hbs
+                    exact Int.le_trans (write_source_length_le _ _ _)
+                      (rw_count_clamp_range count).2
       | FdChannel c => simp only [err_ret, ret_only] at h; exact (bare _ _ h rfl).elim
       | FdPipe id w => simp only [err_ret, ret_only] at h; exact (bare _ _ h rfl).elim
       | FdSocket sk => simp only [err_ret, ret_only] at h; exact (bare _ _ h rfl).elim
@@ -10315,776 +10551,66 @@ theorem pwrite64_copyin_clamped (fd buf count pos : word) (i : SyscallInput) (m 
           | false =>
             simp only [hp, Bool.false_eq_true, ↓reduceIte] at h
             generalize hbs : write_source i.in_mem buf count = bs at h
-            cases hu : unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) pos with
-            | true => simp only [hu, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
+            cases hz : (!w_is0 count && bs.length == 0) with
+            | true =>
+              simp only [hz, ↓reduceIte, err_ret, ret_only] at h
+              exact (bare _ _ h rfl).elim
             | false =>
-              simp only [hu, Bool.false_eq_true, ↓reduceIte] at h
-              cases hz : (!w_is0 count && bs.length == 0) with
-              | true =>
-                simp only [hz, ↓reduceIte, err_ret, ret_only] at h
-                exact (bare _ _ h rfl).elim
-              | false =>
-                simp only [hz, Bool.false_eq_true, ↓reduceIte] at h
-                generalize fs_lookup (m_fs m) p = fl at h
-                cases fl with
-                | none => simp only [unmodeled_iff, reduceCtorEq] at h
-                | some data =>
-                  cases hg : modeled_file_gap data pos bs with
-                  | false =>
-                    simp only [hg, Bool.not_false, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
+              simp only [hz, Bool.false_eq_true, ↓reduceIte] at h
+              generalize fs_lookup (m_fs m) p = fl at h
+              cases fl with
+              | none => simp only [unmodeled_iff, reduceCtorEq] at h
+              | some data =>
+                cases hg : modeled_file_gap data pos bs with
+                | false =>
+                  simp only [hg, Bool.not_false, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
+                | true =>
+                  simp only [hg, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
+                    bind_set_fs_iff] at h
+                  cases hw : w_is0 count with
                   | true =>
-                    simp only [hg, Bool.not_true, Bool.false_eq_true, ↓reduceIte,
-                      bind_set_fs_iff] at h
-                    cases hw : w_is0 count with
-                    | true =>
-                      simp only [hw, ↓reduceIte, ret_only] at h
-                      exact (bare _ _ h rfl).elim
-                    | false =>
-                      simp only [hw, Bool.false_eq_true, ↓reduceIte, record_copyins_ok_iff,
-                        ret_only, pure_iff, outcome.Ok.injEq] at h
-                      obtain ⟨e0, ⟨rfl, -, -⟩, rfl⟩ := h
-                      simp only [with_copyins, List.cons_append, List.nil_append,
-                        List.cons.injEq, Prod.mk.injEq, and_true] at hc
-                      obtain ⟨-, rfl⟩ := hc
-                      subst hbs
-                      exact Int.le_trans (write_source_length_le _ _ _)
-                        (rw_count_clamp_range count).2
-
-
-/-- The readable single empty entry has an in-range base and needs no allocation.
-Linux v6.8+ tests the mode before importing (fs/read_write.c, vfs_readv /
-vfs_writev; b8e1425bae85 and 1c8aa833034a). Linux v4.17 through v6.7
-imports first (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6),
-then reaches the same mode error in do_iter_read / do_iter_write.
-rocq-twin: writev_stdin_channel_is_ebadf
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_stdin_channel_is_ebadf (o : outcome SyscallEffect) :
-    writev_spec 0 8192 1 (writev_in 0 8192 1 (mem_iov_pair 4096 0 4096 0)) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- The readable single empty entry has an in-range base and needs no allocation.
-Linux v6.8+ tests the mode before importing (fs/read_write.c, vfs_readv /
-vfs_writev; b8e1425bae85 and 1c8aa833034a). Linux v4.17 through v6.7
-imports first (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6),
-then reaches the same mode error in do_iter_read / do_iter_write.
-rocq-twin: writev_stdin_alias_is_ebadf
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_stdin_alias_is_ebadf (o : outcome SyscallEffect) :
-    writev_spec 26 8192 1 (writev_in 26 8192 1 (mem_iov_pair 4096 0 4096 0)) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- The readable single empty entry has an in-range base and needs no allocation.
-Linux v6.8+ tests the mode before importing (fs/read_write.c, vfs_readv /
-vfs_writev; b8e1425bae85 and 1c8aa833034a). Linux v4.17 through v6.7
-imports first (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6),
-then reaches the same mode error in do_iter_read / do_iter_write.
-rocq-twin: writev_urandom_is_ebadf
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_urandom_is_ebadf (o : outcome SyscallEffect) :
-    writev_spec 24 8192 1 (writev_in 24 8192 1 (mem_iov_pair 4096 0 4096 0)) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- The readable single empty entry has an in-range base and needs no allocation.
-Linux v6.8+ tests the mode before importing (fs/read_write.c, vfs_readv /
-vfs_writev; b8e1425bae85 and 1c8aa833034a). Linux v4.17 through v6.7
-imports first (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6),
-then reaches the same mode error in do_iter_read / do_iter_write.
-rocq-twin: writev_devnull_read_only_is_ebadf
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_devnull_read_only_is_ebadf (o : outcome SyscallEffect) :
-    writev_spec 8 8192 1 (writev_in 8 8192 1 (mem_iov_pair 4096 0 4096 0)) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- The readable single empty entry has an in-range base and needs no allocation.
-Linux v6.8+ tests the mode before importing (fs/read_write.c, vfs_readv /
-vfs_writev; b8e1425bae85 and 1c8aa833034a). Linux v4.17 through v6.7
-imports first (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6),
-then reaches the same mode error in do_iter_read / do_iter_write.
-rocq-twin: writev_read_only_file_is_ebadf
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_read_only_file_is_ebadf (o : outcome SyscallEffect) :
-    writev_spec 3 8192 1 (writev_in 3 8192 1 (mem_iov_pair 4096 0 4096 0)) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- The readable single empty entry has an in-range base and needs no allocation.
-Linux v6.8+ tests the mode before importing (fs/read_write.c, vfs_readv /
-vfs_writev; b8e1425bae85 and 1c8aa833034a). Linux v4.17 through v6.7
-imports first (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6),
-then reaches the same mode error in do_iter_read / do_iter_write.
-rocq-twin: writev_directory_is_ebadf
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_directory_is_ebadf (o : outcome SyscallEffect) :
-    writev_spec 5 8192 1 (writev_in 5 8192 1 (mem_iov_pair 4096 0 4096 0)) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- The readable single empty entry has an in-range base and needs no allocation.
-Linux v6.8+ tests the mode before importing (fs/read_write.c, vfs_readv /
-vfs_writev; b8e1425bae85 and 1c8aa833034a). Linux v4.17 through v6.7
-imports first (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6),
-then reaches the same mode error in do_iter_read / do_iter_write.
-rocq-twin: writev_pipe_read_end_is_ebadf
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem writev_pipe_read_end_is_ebadf (o : outcome SyscallEffect) :
-    writev_spec 14 8192 1 (writev_in 14 8192 1 (mem_iov_pair 4096 0 4096 0)) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- The readable single empty entry has an in-range base and needs no allocation.
-Linux v6.8+ tests the mode before importing (fs/read_write.c, vfs_readv /
-vfs_writev; b8e1425bae85 and 1c8aa833034a). Linux v4.17 through v6.7
-imports first (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6),
-then reaches the same mode error in do_iter_read / do_iter_write.
-rocq-twin: readv_stdout_is_ebadf_before_import
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_stdout_is_ebadf_before_import (o : outcome SyscallEffect) :
-    readv_spec 1 8192 1 (readv_in 1 8192 1 (mem_iov_pair 4096 0 4096 0) wmem_none) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- The readable single empty entry has an in-range base and needs no allocation.
-Linux v6.8+ tests the mode before importing (fs/read_write.c, vfs_readv /
-vfs_writev; b8e1425bae85 and 1c8aa833034a). Linux v4.17 through v6.7
-imports first (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6),
-then reaches the same mode error in do_iter_read / do_iter_write.
-rocq-twin: readv_stderr_is_ebadf
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_stderr_is_ebadf (o : outcome SyscallEffect) :
-    readv_spec 2 8192 1 (readv_in 2 8192 1 (mem_iov_pair 4096 0 4096 0) wmem_none) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- The readable single empty entry has an in-range base and needs no allocation.
-Linux v6.8+ tests the mode before importing (fs/read_write.c, vfs_readv /
-vfs_writev; b8e1425bae85 and 1c8aa833034a). Linux v4.17 through v6.7
-imports first (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6),
-then reaches the same mode error in do_iter_read / do_iter_write.
-rocq-twin: readv_devnull_write_only_is_ebadf
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_devnull_write_only_is_ebadf (o : outcome SyscallEffect) :
-    readv_spec 9 8192 1 (readv_in 9 8192 1 (mem_iov_pair 4096 0 4096 0) wmem_none) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- The readable single empty entry has an in-range base and needs no allocation.
-Linux v6.8+ tests the mode before importing (fs/read_write.c, vfs_readv /
-vfs_writev; b8e1425bae85 and 1c8aa833034a). Linux v4.17 through v6.7
-imports first (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6),
-then reaches the same mode error in do_iter_read / do_iter_write.
-rocq-twin: readv_pipe_write_end_is_ebadf
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem readv_pipe_write_end_is_ebadf (o : outcome SyscallEffect) :
-    readv_spec 15 8192 1 (readv_in 15 8192 1 (mem_iov_pair 4096 0 4096 0) wmem_none) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-
-/-- Nine complete empty descriptors isolate the old heap-allocation band. -/
-def t139_nine_empty_iovecs : word → Option byte :=
-  bytes_at 8192 (List.replicate 144 0)
-
-def t139_eight_empty_iovecs : word → Option byte :=
-  bytes_at 8192 (List.replicate 128 0)
-
-/-- Eight complete empty descriptors stay on the fast path: UIO_FASTIOV is 8, so v4.17 through v6.7 import them without kmalloc_array (lib/iov_iter.c, iovec_from_user, v6.6) and then reach the mode error; v6.8+ tests the mode first (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46). This is the band's upper edge; nine entries are declined.
-rocq-twin: t139_writev_open_eight_empty_is_ebadf
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_eight_empty_is_ebadf (o : outcome SyscallEffect) :
-    writev_spec 0 8192 8 (writev_in 0 8192 8 t139_eight_empty_iovecs) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- Eight complete empty descriptors stay on the fast path: UIO_FASTIOV is 8, so v4.17 through v6.7 import them without kmalloc_array (lib/iov_iter.c, iovec_from_user, v6.6) and then reach the mode error; v6.8+ tests the mode first (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46). This is the band's upper edge; nine entries are declined.
-rocq-twin: t139_readv_open_eight_empty_is_ebadf
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_readv_open_eight_empty_is_ebadf (o : outcome SyscallEffect) :
-    readv_spec 1 8192 8 (readv_in 1 8192 8 t139_eight_empty_iovecs wmem_none) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_high_empty_is_unmodeled
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- wrongmode-highbase -/
-theorem t139_writev_open_high_empty_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 0 8192 1 (writev_in 0 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_high_empty_ebadf_is_not_ok
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- wrongmode-highbase -/
-theorem t139_writev_open_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 0 8192 1 (writev_in 0 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_readv_open_high_empty_is_unmodeled
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- wrongmode-highbase -/
-theorem t139_readv_open_high_empty_is_unmodeled (o : outcome SyscallEffect) :
-    readv_spec 1 8192 1 (readv_in 1 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0) wmem_none) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_readv_open_high_empty_ebadf_is_not_ok
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- wrongmode-highbase -/
-theorem t139_readv_open_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ readv_spec 1 8192 1 (readv_in 1 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0) wmem_none) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_nine_empty_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_nine_empty_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 0 8192 9 (writev_in 0 8192 9 t139_nine_empty_iovecs) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_nine_empty_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 0 8192 9 (writev_in 0 8192 9 t139_nine_empty_iovecs) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_uncapped_later_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_uncapped_later_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 0 8192 2 (writev_in 0 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_uncapped_later_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 0 8192 2 (writev_in 0 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_file_high_empty_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_file_high_empty_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 3 8192 1 (writev_in 3 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_file_high_empty_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_file_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 3 8192 1 (writev_in 3 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_file_nine_empty_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_file_nine_empty_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 3 8192 9 (writev_in 3 8192 9 t139_nine_empty_iovecs) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_file_nine_empty_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_file_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 3 8192 9 (writev_in 3 8192 9 t139_nine_empty_iovecs) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_file_uncapped_later_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_file_uncapped_later_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 3 8192 2 (writev_in 3 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_file_uncapped_later_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_file_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 3 8192 2 (writev_in 3 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_dir_high_empty_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_dir_high_empty_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 5 8192 1 (writev_in 5 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_dir_high_empty_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_dir_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 5 8192 1 (writev_in 5 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_dir_nine_empty_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_dir_nine_empty_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 5 8192 9 (writev_in 5 8192 9 t139_nine_empty_iovecs) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_dir_nine_empty_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_dir_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 5 8192 9 (writev_in 5 8192 9 t139_nine_empty_iovecs) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_dir_uncapped_later_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_dir_uncapped_later_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 5 8192 2 (writev_in 5 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_dir_uncapped_later_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_dir_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 5 8192 2 (writev_in 5 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_urandom_high_empty_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_urandom_high_empty_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 24 8192 1 (writev_in 24 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_urandom_high_empty_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_urandom_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 24 8192 1 (writev_in 24 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_urandom_nine_empty_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_urandom_nine_empty_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 24 8192 9 (writev_in 24 8192 9 t139_nine_empty_iovecs) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_urandom_nine_empty_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_urandom_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 24 8192 9 (writev_in 24 8192 9 t139_nine_empty_iovecs) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_urandom_uncapped_later_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_urandom_uncapped_later_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 24 8192 2 (writev_in 24 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_urandom_uncapped_later_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_urandom_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 24 8192 2 (writev_in 24 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_devnull_ro_high_empty_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_devnull_ro_high_empty_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 8 8192 1 (writev_in 8 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_devnull_ro_high_empty_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_devnull_ro_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 8 8192 1 (writev_in 8 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_devnull_ro_nine_empty_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_devnull_ro_nine_empty_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 8 8192 9 (writev_in 8 8192 9 t139_nine_empty_iovecs) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_devnull_ro_nine_empty_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_devnull_ro_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 8 8192 9 (writev_in 8 8192 9 t139_nine_empty_iovecs) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_devnull_ro_uncapped_later_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_devnull_ro_uncapped_later_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 8 8192 2 (writev_in 8 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_devnull_ro_uncapped_later_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_devnull_ro_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 8 8192 2 (writev_in 8 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_pipe_read_high_empty_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_pipe_read_high_empty_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 14 8192 1 (writev_in 14 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_pipe_read_high_empty_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_pipe_read_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 14 8192 1 (writev_in 14 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_pipe_read_nine_empty_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_pipe_read_nine_empty_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 14 8192 9 (writev_in 14 8192 9 t139_nine_empty_iovecs) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_pipe_read_nine_empty_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_pipe_read_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 14 8192 9 (writev_in 14 8192 9 t139_nine_empty_iovecs) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_pipe_read_uncapped_later_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_pipe_read_uncapped_later_is_unmodeled (o : outcome SyscallEffect) :
-    writev_spec 14 8192 2 (writev_in 14 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_writev_open_pipe_read_uncapped_later_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_writev_open_pipe_read_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ writev_spec 14 8192 2 (writev_in 14 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_readv_open_nine_empty_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_readv_open_nine_empty_is_unmodeled (o : outcome SyscallEffect) :
-    readv_spec 1 8192 9 (readv_in 1 8192 9 t139_nine_empty_iovecs wmem_none) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_readv_open_nine_empty_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_readv_open_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ readv_spec 1 8192 9 (readv_in 1 8192 9 t139_nine_empty_iovecs wmem_none) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_readv_open_uncapped_later_is_unmodeled
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_readv_open_uncapped_later_is_unmodeled (o : outcome SyscallEffect) :
-    readv_spec 1 8192 2 (readv_in 1 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62))) wmem_none) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-rocq-twin: t139_readv_open_uncapped_later_ebadf_is_not_ok
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem t139_readv_open_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    ¬ readv_spec 1 8192 2 (readv_in 1 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62))) wmem_none) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw_refute
-
-/-- A closed fd is rejected by fdget_pos in do_readv / do_writev before import on every supported Linux (fs/read_write.c, v4.17 and v6.18.46). QEMU skips locking a zero-length first buffer (linux-user/syscall.c, lock_iovec, QEMU 11.1.1), so the high empty base does not change -EBADF.
-rocq-twin: t139_readv_closed_high_empty_is_ebadf
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_readv_closed_high_empty_is_ebadf (o : outcome SyscallEffect) :
-    readv_spec 30 8192 1 (readv_in 30 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0) wmem_none) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- A closed fd is rejected by fdget_pos in do_readv / do_writev before import on every supported Linux (fs/read_write.c, v4.17 and v6.18.46). QEMU skips locking a zero-length first buffer (linux-user/syscall.c, lock_iovec, QEMU 11.1.1), so the high empty base does not change -EBADF.
-rocq-twin: t139_writev_closed_high_empty_is_ebadf
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_writev_closed_high_empty_is_ebadf (o : outcome SyscallEffect) :
-    writev_spec 30 8192 1 (writev_in 30 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- model: constant zero memory makes descriptor decoding independent of the address. -/
-theorem t139_zero_iovec_entry (a : word) :
-    read_iovec_entry (fun _ => some 0) a = IovEntry 0 0 := by
-  rfl
-
-/-- model: induction avoids reducing 1024 descriptor loads in each boundary pin. -/
-theorem t139_copy_zero_iovecs (a : word) (k : Nat) :
-    copy_iovecs_aux (fun _ => some 0) a k = ImpOk (List.replicate k (0, 0)) := by
-  induction k generalizing a with
-  | zero => rfl
-  | succ k ih =>
-      simp only [copy_iovecs_aux, t139_zero_iovec_entry, ih, List.replicate_succ]
-
-/-- Linux rejects the closed fd before import; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) accepts the count and skips the empty buffers.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_readv_closed_iov_max_is_ebadf (o : outcome SyscallEffect) :
-    readv_spec 30 8192 1024 (readv_in 30 8192 1024 (fun _ => some 0) wmem_none) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  unfold readv_spec
-  rw [bind_input_iff, bind_get_model_iff]
-  erw [t139_copy_zero_iovecs]
-  rw [show word_to_nat (1024 : word) = 1023 + 1 from rfl, List.replicate_succ]
-  rw_norm
-
-/-- Linux rejects the closed fd before import; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) accepts the count and skips the empty buffers.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_readv_closed_iov_max_unmodeled_refuted :
-    ¬ readv_spec 30 8192 1024 (readv_in 30 8192 1024 (fun _ => some 0) wmem_none) read_model Unmodeled := by
-  rw [t139_readv_closed_iov_max_is_ebadf]; simp
-
-/-- Linux rejects the closed fd before import; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) accepts the count and skips the empty buffers.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_readv_closed_iov_max_zero_refuted (m' : Model) (evs : List event) :
-    ¬ readv_spec 30 8192 1024 (readv_in 30 8192 1024 (fun _ => some 0) wmem_none) read_model
-      (Ok (mkEffect 0 [] []) m' evs) := by
-  rw [t139_readv_closed_iov_max_is_ebadf]; rw_refute
-
-/-- Linux rejects the closed fd before import; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) accepts the count and skips the empty buffers.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_readv_closed_nine_empty_is_ebadf (o : outcome SyscallEffect) :
-    readv_spec 30 8192 9 (readv_in 30 8192 9 t139_nine_empty_iovecs wmem_none) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- Linux rejects the closed fd before import; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) accepts the count and skips the empty buffers.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_readv_closed_nine_empty_unmodeled_refuted :
-    ¬ readv_spec 30 8192 9 (readv_in 30 8192 9 t139_nine_empty_iovecs wmem_none) read_model Unmodeled := by
-  rw [t139_readv_closed_nine_empty_is_ebadf]; simp
-
-/-- Linux rejects the closed fd before import; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) accepts the count and skips the empty buffers.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_readv_closed_nine_empty_zero_refuted (m' : Model) (evs : List event) :
-    ¬ readv_spec 30 8192 9 (readv_in 30 8192 9 t139_nine_empty_iovecs wmem_none) read_model
-      (Ok (mkEffect 0 [] []) m' evs) := by
-  rw [t139_readv_closed_nine_empty_is_ebadf]; rw_refute
-
-/-- Linux rejects the closed fd first; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) rejects count > IOV_MAX before the host fd lookup.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_readv_closed_over_iov_max_declines (o : outcome SyscallEffect) :
-    readv_spec 30 8192 1025 (readv_in 30 8192 1025 (fun _ => some 0) wmem_none) read_model o ↔ o = Unmodeled := by
-  unfold readv_spec
-  rw [bind_input_iff, bind_get_model_iff]
-  erw [t139_copy_zero_iovecs]
-  rw [show word_to_nat (1025 : word) = 1024 + 1 from rfl, List.replicate_succ]
-  rw_norm
-
-/-- Linux rejects the closed fd first; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) rejects count > IOV_MAX before the host fd lookup.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_readv_closed_over_iov_max_ebadf_refuted (m' : Model) (evs : List event) :
-    ¬ readv_spec 30 8192 1025 (readv_in 30 8192 1025 (fun _ => some 0) wmem_none) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw [t139_readv_closed_over_iov_max_declines]; simp
-
-/-- Linux rejects the closed fd before import; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) accepts the count and skips the empty buffers.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_writev_closed_iov_max_is_ebadf (o : outcome SyscallEffect) :
-    writev_spec 30 8192 1024 (writev_in 30 8192 1024 (fun _ => some 0)) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  unfold writev_spec
-  rw [bind_input_iff, bind_get_model_iff]
-  erw [t139_copy_zero_iovecs]
-  rw [show word_to_nat (1024 : word) = 1023 + 1 from rfl, List.replicate_succ]
-  rw_norm
-
-/-- Linux rejects the closed fd before import; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) accepts the count and skips the empty buffers.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_writev_closed_iov_max_unmodeled_refuted :
-    ¬ writev_spec 30 8192 1024 (writev_in 30 8192 1024 (fun _ => some 0)) read_model Unmodeled := by
-  rw [t139_writev_closed_iov_max_is_ebadf]; simp
-
-/-- Linux rejects the closed fd before import; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) accepts the count and skips the empty buffers.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_writev_closed_iov_max_zero_refuted (m' : Model) (evs : List event) :
-    ¬ writev_spec 30 8192 1024 (writev_in 30 8192 1024 (fun _ => some 0)) read_model
-      (Ok (mkEffect 0 [] []) m' evs) := by
-  rw [t139_writev_closed_iov_max_is_ebadf]; rw_refute
-
-/-- Linux rejects the closed fd before import; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) accepts the count and skips the empty buffers.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_writev_closed_nine_empty_is_ebadf (o : outcome SyscallEffect) :
-    writev_spec 30 8192 9 (writev_in 30 8192 9 t139_nine_empty_iovecs) read_model o ↔
-      o = Ok (mkEffect (errno_ret EBADF) [] []) read_model [] := by
-  rw_norm
-
-/-- Linux rejects the closed fd before import; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) accepts the count and skips the empty buffers.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_writev_closed_nine_empty_unmodeled_refuted :
-    ¬ writev_spec 30 8192 9 (writev_in 30 8192 9 t139_nine_empty_iovecs) read_model Unmodeled := by
-  rw [t139_writev_closed_nine_empty_is_ebadf]; simp
-
-/-- Linux rejects the closed fd before import; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) accepts the count and skips the empty buffers.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_writev_closed_nine_empty_zero_refuted (m' : Model) (evs : List event) :
-    ¬ writev_spec 30 8192 9 (writev_in 30 8192 9 t139_nine_empty_iovecs) read_model
-      (Ok (mkEffect 0 [] []) m' evs) := by
-  rw [t139_writev_closed_nine_empty_is_ebadf]; rw_refute
-
-/-- Linux rejects the closed fd first; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) rejects count > IOV_MAX before the host fd lookup.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_writev_closed_over_iov_max_declines (o : outcome SyscallEffect) :
-    writev_spec 30 8192 1025 (writev_in 30 8192 1025 (fun _ => some 0)) read_model o ↔ o = Unmodeled := by
-  unfold writev_spec
-  rw [bind_input_iff, bind_get_model_iff]
-  erw [t139_copy_zero_iovecs]
-  rw [show word_to_nat (1025 : word) = 1024 + 1 from rfl, List.replicate_succ]
-  rw_norm
-
-/-- Linux rejects the closed fd first; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) rejects count > IOV_MAX before the host fd lookup.
-kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
-theorem t139_writev_closed_over_iov_max_ebadf_refuted (m' : Model) (evs : List event) :
-    ¬ writev_spec 30 8192 1025 (writev_in 30 8192 1025 (fun _ => some 0)) read_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
-  rw [t139_writev_closed_over_iov_max_declines]; simp
-
-/-- Linux v6.18.46 fs/read_write.c, vfs_writev returns zero for an empty
-aggregate before invoking the write operation; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) skips locking the empty buffer.
-kernel: fs/read_write.c:vfs_writev@v6.18.46 -/
-theorem t139_writev_stdout_empty_is_zero (o : outcome SyscallEffect) :
-    writev_spec 1 8192 1 (writev_in 1 8192 1 (mem_iov_pair 4096 0 4096 0)) read_model o ↔
-      o = Ok (with_copyins [(8192, 16)] (mkEffect 0 [] [])) read_model [] := by
-  rw_norm
-
-/-- Linux v6.18.46 fs/read_write.c, vfs_writev returns zero for an empty
-aggregate before invoking the write operation; QEMU 11.1.1 lock_iovec
-(linux-user/syscall.c) skips locking the empty buffer.
-kernel: fs/read_write.c:vfs_writev@v6.18.46 -/
-theorem t139_writev_stdout_empty_efault_refuted (m' : Model) (evs : List event) :
-    ¬ writev_spec 1 8192 1 (writev_in 1 8192 1 (mem_iov_pair 4096 0 4096 0)) read_model
-      (Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) m' evs) := by
-  rw [t139_writev_stdout_empty_is_zero]; rw_refute
-
-/-- Linux narrows nr_segs to unsigned in lib/iov_iter.c, import_iovec
-(v6.18.46); QEMU 11.1.1 lock_iovec (linux-user/syscall.c) tests the raw
-count against IOV_MAX before reading descriptors.
-kernel: lib/iov_iter.c:import_iovec@v6.18.46 -/
-theorem t139_writev_wide_iov_max_any_memory_declines (mem : word → Option byte) (o : outcome SyscallEffect) :
-    writev_spec 1 8192 (Z_to_bv 64 (2 ^ 32 + 1024))
-      (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1024)) mem) read_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- Linux narrows nr_segs to unsigned in lib/iov_iter.c, import_iovec
-(v6.18.46); QEMU 11.1.1 lock_iovec (linux-user/syscall.c) tests the raw
-count against IOV_MAX before reading descriptors.
-kernel: lib/iov_iter.c:import_iovec@v6.18.46 -/
-theorem t139_writev_wide_iov_max_declines (o : outcome SyscallEffect) :
-    writev_spec 1 8192 (Z_to_bv 64 (2 ^ 32 + 1024))
-      (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1024)) (fun _ => some 0)) read_model o ↔ o = Unmodeled := by
-  exact t139_writev_wide_iov_max_any_memory_declines (fun _ => some 0) o
-
-/-- Linux narrows nr_segs to unsigned in lib/iov_iter.c, import_iovec
-(v6.18.46); QEMU 11.1.1 lock_iovec (linux-user/syscall.c) tests the raw
-count against IOV_MAX before reading descriptors.
-kernel: lib/iov_iter.c:import_iovec@v6.18.46 -/
-theorem t139_writev_wide_iov_max_zero_refuted (reads : List (word × Nat)) (m' : Model) (evs : List event) :
-    ¬ writev_spec 1 8192 (Z_to_bv 64 (2 ^ 32 + 1024))
-      (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1024)) (fun _ => some 0)) read_model
-      (Ok (with_copyins reads (mkEffect 0 [] [])) m' evs) := by
-  rw [t139_writev_wide_iov_max_declines]; simp
-
-/-! ## A17: FdFileRW and FdFileA -/
-
-def a17_readwrite_model : Model :=
-  fixture_of (fds := [(3, .FdFileRW [102] 0)]) (fs := [([102], [120])])
-
-attribute [sys_simp low] a17_readwrite_model.eq_1
-
-/-- Rocq: `ReadWrite.readable_fd`, ReadWrite.v:2130 at 96c2debdb.
+                    simp only [hw, ↓reduceIte, ret_only] at h
+                    exact (bare _ _ h rfl).elim
+                  | false =>
+                    simp only [hw, Bool.false_eq_true, ↓reduceIte, record_copyins_ok_iff,
+                      ret_only, pure_iff, outcome.Ok.injEq] at h
+                    obtain ⟨e0, ⟨rfl, -, -⟩, rfl⟩ := h
+                    simp only [with_copyins, List.cons_append, List.nil_append,
+                      List.cons.injEq, Prod.mk.injEq, and_true] at hc
+                    obtain ⟨-, rfl⟩ := hc
+                    subst hbs
+                    exact Int.le_trans (write_source_length_le _ _ _)
+                      (rw_count_clamp_range count).2
+
+
+/-! ## A17: FdFileRW and FdFileA
+
+The two file kinds every arm of this module now answers for, pinned one
+syscall at a time.  `FdFileRW` is the O_RDWR description, so it carries
+`FMODE_READ` and `FMODE_WRITE` both (`OPEN_FMODE`, include/linux/fs.h,
+v6.18.46) and answers in BOTH directions, writing its entry back under
+its own kind so a read cannot turn the description read-only.  `FdFileA`
+is O_WRONLY with O_APPEND: `FMODE_READ` is clear, so every read-side call
+is -EBADF, and every write lands at end-of-file whatever the offset says.
+
+ONE DECLINE IS LEFT, `pwrite64` on an append fd: `iocb_flags`
+(include/linux/fs.h, v6.18.46) turns O_APPEND into IOCB_APPEND and
+`generic_write_checks` (mm/filemap.c, v6.18.46) then overwrites `ki_pos`
+with `i_size_read(inode)`, so the `pos` the call named is DISCARDED.
+Placing the bytes at `pos` would be a wrong modeled answer rather than a
+missing one, so that arm fails closed — and `a17_append_pwrite64_declines`
+is the pin that says so. -/
+
+def a17_rdwr_fds : List (word × FdEntry) := [(3, .FdFileRW [102] 0)]
+
+/-- The one-byte file "x" both A17 fixtures hold at path `f` = 102. -/
+def a17_file_fs : Fs.Fs := [([102], [120])]
+
+def a17_readwrite_model : Model := fixture_of (fds := a17_rdwr_fds) (fs := a17_file_fs)
+
+attribute [sys_simp low] a17_readwrite_model.eq_1 a17_rdwr_fds.eq_1 a17_file_fs.eq_1
+
+/-- Rocq: `ReadWrite.readable_fd`, Sys/Fs/ReadWrite.v:2048 at f1006fe8.
 O_RDWR passes FMODE_READ in fs/read_write.c, vfs_readv, Linux v6.18.46.
 Keeping the kind prevents a read from turning the description read-only.
 kernel: fs/read_write.c:vfs_readv@v6.18.46 -/
@@ -11092,66 +10618,143 @@ theorem a17_rdwr_readable_keeps_kind :
     readable_fd (.FdFileRW [102] 7) = some (.RdFileRW [102] 7) := by
   rfl
 
-/-- `read` of 0 bytes through a read-write file declines (the header of
-`Sys/Fs/ReadWrite.lean` declares the narrowing).  The same call on an
-`FdFile` answers 0 and leaves the offset at 0 (`vfs_read`,
-fs/read_write.c, Linux v6.18.46, passes O_RDWR's `FMODE_READ` as it does
-O_RDONLY's), so a mutant answering this kind as `FdFile` fails here.
+/-- `read` of 0 bytes through a read-write file answers 0 with the offset
+where it was, exactly as the same call on an `FdFile` does: `vfs_read`
+(fs/read_write.c:556-557, v6.18.46) passes O_RDWR's `FMODE_READ` as it
+does O_RDONLY's, and `ksys_read` writes the unmoved `f_pos` back (:716-717).
+The unmapped destination is never inspected, because a zero count reads
+no byte.  The `iff` refuses every other outcome, the -EBADF of a
+write-only description and the decline among them.
 kernel: fs/read_write.c:vfs_read@v6.18.46 -/
-theorem a17_rdwr_read_declines (o : outcome SyscallEffect) :
-    syscall_spec (read_in 3 4096 0 (fun _ => none)) a17_readwrite_model o ↔ o = Unmodeled := by
+theorem a17_rdwr_read_zero_count_is_zero (o : outcome SyscallEffect) :
+    syscall_spec (read_in 3 4096 0 (fun _ => none)) a17_readwrite_model o ↔
+      o = Ok (mkEffect 0 [] [])
+             (with_fds (fd_insert a17_rdwr_fds 3 (.FdFileRW [102] 0)) a17_readwrite_model) [] := by
   rw_norm
 
-/-- `write` of 0 bytes through a read-write file declines (the header of
-`Sys/Fs/ReadWrite.lean` declares the narrowing).  The same call on an
-`FdFileW` answers 0 and leaves the offset at 0 (`vfs_write`,
-fs/read_write.c, Linux v6.18.46, passes O_RDWR's `FMODE_WRITE` as it
-does O_WRONLY's), so a mutant answering this kind as `FdFileW` fails
-here.
-kernel: fs/read_write.c:vfs_write@v6.18.46 -/
-theorem a17_rdwr_write_declines (o : outcome SyscallEffect) :
-    syscall_spec (write_in 3 4096 0 (fun _ => none)) a17_readwrite_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- `pread64` of 0 bytes through a read-write file declines (the header
-of `Sys/Fs/ReadWrite.lean` declares the narrowing).  The same call on an
-`FdFile` answers 0 without moving the offset (`vfs_read`,
-fs/read_write.c, Linux v6.18.46), so a mutant answering this kind as
-`FdFile` fails here.
+/-- …and the -EBADF a description without `FMODE_READ` would answer is
+refused.
 kernel: fs/read_write.c:vfs_read@v6.18.46 -/
-theorem a17_rdwr_pread64_declines (o : outcome SyscallEffect) :
-    syscall_spec (pread_in 3 4096 0 0 (fun _ => none)) a17_readwrite_model o ↔ o = Unmodeled := by
+theorem a17_rdwr_read_ebadf_refuted (m' : Model) (evs : List event) :
+    ¬ syscall_spec (read_in 3 4096 0 (fun _ => none)) a17_readwrite_model
+        (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+  rw_refute
+
+/-- A read-write file DELIVERS: one byte at offset 0 is the file's "x",
+the offset advances to 1 and the entry is written back under the O_RDWR
+kind (`ksys_read`'s `f_pos` store, fs/read_write.c:716-717, v6.18.46).
+Writing it back as an `FdFile` would turn the description read-only, and
+the `iff` refuses that model too.
+kernel: fs/read_write.c:vfs_read@v6.18.46 -/
+theorem a17_rdwr_read_delivers_and_keeps_the_kind (o : outcome SyscallEffect) :
+    syscall_spec (read_in 3 4096 1 wmem_readv_one) a17_readwrite_model o ↔
+      o = Ok (mkEffect 1 [(4096, [120])] [])
+             (with_fds (fd_insert a17_rdwr_fds 3 (.FdFileRW [102] 1)) a17_readwrite_model) [] := by
   rw_norm
 
-/-- `pwrite64` of 0 bytes through a read-write file declines (the header
-of `Sys/Fs/ReadWrite.lean` declares the narrowing).  The same call on an
-`FdFileW` answers 0 without moving the offset (`vfs_write`,
-fs/read_write.c, Linux v6.18.46), so a mutant answering this kind as
-`FdFileW` fails here.
+/-- `write` of 0 bytes through a read-write file answers 0, leaves the
+offset at 0 and the file as it was: `vfs_write` (fs/read_write.c:670-671,
+v6.18.46) passes O_RDWR's `FMODE_WRITE` as it does O_WRONLY's, and a
+zero-length write opens no hole (`write_zero_bytes_open_no_gap`) and
+records no copy-in (`write_ledger`).
 kernel: fs/read_write.c:vfs_write@v6.18.46 -/
-theorem a17_rdwr_pwrite64_declines (o : outcome SyscallEffect) :
-    syscall_spec (pwrite_in 3 4096 0 0 (fun _ => none)) a17_readwrite_model o ↔ o = Unmodeled := by
+theorem a17_rdwr_write_zero_count_is_zero (o : outcome SyscallEffect) :
+    syscall_spec (write_in 3 4096 0 (fun _ => none)) a17_readwrite_model o ↔
+      o = Ok (mkEffect 0 [] [])
+             (with_fds (fd_insert a17_rdwr_fds 3 (.FdFileRW [102] 0))
+               (with_fs (fs_set a17_file_fs [102] [120]) a17_readwrite_model)) [] := by
   rw_norm
 
-/-- `writev` of an empty vector through a read-write file declines (the
-header of `Sys/Fs/ReadWrite.lean` declares the narrowing).  The same
-call on an `FdFileW` answers 0 (`vfs_writev`, fs/read_write.c, Linux
-v6.18.46), so a mutant answering this kind as `FdFileW` fails here.
+/-- …and the -EBADF a read-only description answers is refused.
+kernel: fs/read_write.c:vfs_write@v6.18.46 -/
+theorem a17_rdwr_write_ebadf_refuted (m' : Model) (evs : List event) :
+    ¬ syscall_spec (write_in 3 4096 0 (fun _ => none)) a17_readwrite_model
+        (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+  rw_refute
+
+/-- A read-write file TAKES THE BYTES: "a" at 4096 overwrites the file's
+one byte at offset 0, the offset advances to 1 under the O_RDWR kind, and
+the copy-in is recorded.
+kernel: fs/read_write.c:vfs_write@v6.18.46 -/
+theorem a17_rdwr_write_lands_at_the_offset (o : outcome SyscallEffect) :
+    syscall_spec (write_in 3 4096 1 mem_a) a17_readwrite_model o ↔
+      o = Ok (with_copyins [(4096, 1)] (mkEffect 1 [] []))
+             (with_fds (fd_insert a17_rdwr_fds 3 (.FdFileRW [102] 1))
+               (with_fs (fs_set a17_file_fs [102] [97]) a17_readwrite_model)) [] := by
+  rw_norm
+
+/-- `pread64` of 0 bytes through a read-write file answers 0 and moves
+NO descriptor: `ksys_pread64` hands `vfs_read` the address of its own
+`pos` parameter (fs/read_write.c:763, v6.18.46) and discards the advance,
+so the fd table is exactly as it was found.
+kernel: fs/read_write.c:ksys_pread64@v6.18.46 -/
+theorem a17_rdwr_pread64_zero_count_is_zero (o : outcome SyscallEffect) :
+    syscall_spec (pread_in 3 4096 0 0 (fun _ => none)) a17_readwrite_model o ↔
+      o = Ok (mkEffect 0 [] []) a17_readwrite_model [] := by
+  rw_norm
+
+/-- …and the -EBADF of a description without `FMODE_READ` is refused.
+kernel: fs/read_write.c:ksys_pread64@v6.18.46 -/
+theorem a17_rdwr_pread64_ebadf_refuted (m' : Model) (evs : List event) :
+    ¬ syscall_spec (pread_in 3 4096 0 0 (fun _ => none)) a17_readwrite_model
+        (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+  rw_refute
+
+/-- `pwrite64` of 0 bytes through a read-write file answers 0, the file
+unchanged and the descriptor's offset untouched (`ksys_pwrite64` gives
+`vfs_write` its own `pos`, fs/read_write.c:793, v6.18.46).
+kernel: fs/read_write.c:ksys_pwrite64@v6.18.46 -/
+theorem a17_rdwr_pwrite64_zero_count_is_zero (o : outcome SyscallEffect) :
+    syscall_spec (pwrite_in 3 4096 0 0 (fun _ => none)) a17_readwrite_model o ↔
+      o = Ok (mkEffect 0 [] [])
+             (with_fs (fs_set a17_file_fs [102] [120]) a17_readwrite_model) [] := by
+  rw_norm
+
+/-- …and the -EBADF of a read-only description is refused.
+kernel: fs/read_write.c:ksys_pwrite64@v6.18.46 -/
+theorem a17_rdwr_pwrite64_ebadf_refuted (m' : Model) (evs : List event) :
+    ¬ syscall_spec (pwrite_in 3 4096 0 0 (fun _ => none)) a17_readwrite_model
+        (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+  rw_refute
+
+/-- `writev` of an empty vector through a read-write file answers 0
+before `rw_verify_area` and before the write operation (`vfs_writev`'s
+`if (!tot_len) goto out`, fs/read_write.c:1047-1049, v6.18.46).  The
+descriptor array is still imported, so the import's access is in the
+ledger — and here there is none to import, the count being zero.
 kernel: fs/read_write.c:vfs_writev@v6.18.46 -/
-theorem a17_rdwr_writev_declines (o : outcome SyscallEffect) :
-    syscall_spec (writev_in 3 8192 0 (fun _ => none)) a17_readwrite_model o ↔ o = Unmodeled := by
+theorem a17_rdwr_writev_empty_vector_is_zero (o : outcome SyscallEffect) :
+    syscall_spec (writev_in 3 8192 0 (fun _ => none)) a17_readwrite_model o ↔
+      o = Ok (mkEffect 0 [] []) a17_readwrite_model [] := by
   rw_norm
 
-/-- `readv` through a read-write file declines in `readv_imported` (the
-header of `Sys/Fs/ReadWrite.lean` declares the narrowing; `readable_fd`
-lets the kind through as Rocq's does).  The same call on an `FdFile`
-answers 1, delivers the byte 120 and advances the offset to 1
-(`vfs_readv`, fs/read_write.c, Linux v6.18.46), so a mutant answering
-this kind as `FdFile` fails here.
+/-- …and the -EBADF a description without `FMODE_WRITE` answers is
+refused.
+kernel: fs/read_write.c:vfs_writev@v6.18.46 -/
+theorem a17_rdwr_writev_ebadf_refuted (m' : Model) (evs : List event) :
+    ¬ syscall_spec (writev_in 3 8192 0 (fun _ => none)) a17_readwrite_model
+        (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+  rw_refute
+
+/-- `readv` through a read-write file delivers: the one descriptor
+`{4096,1}` takes the file's byte, and the entry is written back under the
+O_RDWR kind with its offset advanced to 1 (`do_readv`'s `f_pos` store,
+fs/read_write.c:1082, v6.18.46).  `readable_fd` lets the kind through as
+Rocq's does (`a17_rdwr_readable_keeps_kind`).
 kernel: fs/read_write.c:vfs_readv@v6.18.46 -/
-theorem a17_rdwr_readv_declines (o : outcome SyscallEffect) :
-    syscall_spec (readv_in 3 8192 1 mem_readv_iov wmem_readv_one) a17_readwrite_model o ↔ o = Unmodeled := by
+theorem a17_rdwr_readv_delivers (o : outcome SyscallEffect) :
+    syscall_spec (readv_in 3 8192 1 mem_readv_iov wmem_readv_one) a17_readwrite_model o ↔
+      o = Ok (with_copyins [(8192, 16)] (mkEffect 1 [(4096, [120])] []))
+             (with_fds (fd_insert a17_rdwr_fds 3 (.FdFileRW [102] 1)) a17_readwrite_model) [] := by
   rw_norm
+
+/-- …and the -EBADF a `readable_fd` that turned `FdFileRW` away would
+answer is refused.
+kernel: fs/read_write.c:vfs_readv@v6.18.46 -/
+theorem a17_rdwr_readv_ebadf_refuted (m' : Model) (evs : List event) :
+    ¬ syscall_spec (readv_in 3 8192 1 mem_readv_iov wmem_readv_one) a17_readwrite_model
+        (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+  rw_refute
 
 /-- O_RDWR passes `FMODE_READ` in `vfs_readv` (fs/read_write.c,
 Linux v6.18.46).  `import_iovec` copies the one 16-byte iovec at 8192;
@@ -11174,22 +10777,61 @@ theorem a17_rdwr_readv_empty_vector_ebadf_refuted (m' : Model) (evs : List event
         (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
   rw_refute
 
-/-- `lseek(fd, 0, SEEK_SET)` through a read-write file declines (the
-header of `Sys/Fs/ReadWrite.lean` declares the narrowing).  The same
-call on an `FdFile` answers 0 and sets the offset to 0 (`ksys_lseek`,
-fs/read_write.c, Linux v6.18.46), so a mutant answering this kind as
-`FdFile` fails here.
+/-- `lseek(fd, 0, SEEK_SET)` through a read-write file answers 0 and sets
+the offset to 0 under the O_RDWR kind: the position it sets is the one
+the next read AND the next write both start from (`ksys_lseek`,
+fs/read_write.c:393-408, v6.18.46, reads no access mode).
 kernel: fs/read_write.c:ksys_lseek@v6.18.46 -/
-theorem a17_rdwr_lseek_declines (o : outcome SyscallEffect) :
-    syscall_spec (lseek_in 3 0 0) a17_readwrite_model o ↔ o = Unmodeled := by
+theorem a17_rdwr_lseek_seek_set_is_zero (o : outcome SyscallEffect) :
+    syscall_spec (lseek_in 3 0 0) a17_readwrite_model o ↔
+      o = Ok (mkEffect 0 [] [])
+             (with_fds (fd_insert a17_rdwr_fds 3 (.FdFileRW [102] 0)) a17_readwrite_model) [] := by
   rw_norm
 
-def a17_readwrite_append_model : Model :=
-  fixture_of (fds := [(3, .FdFileA [102] 0)]) (fs := [([102], [120])])
+/-- …and SEEK_END reports the file's one byte, the kind preserved.
+kernel: fs/read_write.c:ksys_lseek@v6.18.46 -/
+theorem a17_rdwr_lseek_seek_end_reports_the_size (o : outcome SyscallEffect) :
+    syscall_spec (lseek_in 3 0 2) a17_readwrite_model o ↔
+      o = Ok (mkEffect 1 [] [])
+             (with_fds (fd_insert a17_rdwr_fds 3 (.FdFileRW [102] 1)) a17_readwrite_model) [] := by
+  rw_norm
 
-attribute [sys_simp low] a17_readwrite_append_model.eq_1
+/-- THE READ AND THE WRITE SHARE ONE OFFSET, Rocq's
+`rdwr_read_then_write_shares_one_offset`: the read above left `f_pos` at
+1 (`a17_rdwr_read_delivers_and_keeps_the_kind`), and the write that
+follows lands THERE and not at 0 — the file becomes "xa" and the offset
+reaches 2.  One descriptor, one position, both directions: that is the
+whole of what an O_RDWR description is, and a model that kept two
+positions, or wrote the entry back under another kind, would move this.
+kernel: fs/read_write.c:ksys_write@v6.18.46 -/
+theorem a17_rdwr_read_then_write_shares_one_offset (o : outcome SyscallEffect) :
+    syscall_spec (write_in 3 4096 1 mem_a)
+        (with_fds (fd_insert a17_rdwr_fds 3 (.FdFileRW [102] 1)) a17_readwrite_model) o ↔
+      o = Ok (with_copyins [(4096, 1)] (mkEffect 1 [] []))
+             (with_fds (fd_insert (fd_insert a17_rdwr_fds 3 (.FdFileRW [102] 1)) 3
+                          (.FdFileRW [102] 2))
+               (with_fs (fs_set a17_file_fs [102] [120, 97])
+                 (with_fds (fd_insert a17_rdwr_fds 3 (.FdFileRW [102] 1))
+                   a17_readwrite_model))) [] := by
+  rw_norm
 
-/-- Rocq: `ReadWrite.readable_fd`, ReadWrite.v:2136 at 96c2debdb.
+/-- …and the overwrite at 0 a model with two positions would perform is
+refused.
+kernel: fs/read_write.c:ksys_write@v6.18.46 -/
+theorem a17_rdwr_write_after_read_does_not_restart (m' : Model) (evs : List event) :
+    ¬ syscall_spec (write_in 3 4096 1 mem_a)
+        (with_fds (fd_insert a17_rdwr_fds 3 (.FdFileRW [102] 1)) a17_readwrite_model)
+        (Ok (with_copyins [(4096, 1)] (mkEffect 1 [] []))
+          (with_fs (fs_set a17_file_fs [102] [97]) m') evs) := by
+  rw_refute
+
+def a17_append_fds : List (word × FdEntry) := [(3, .FdFileA [102] 0)]
+
+def a17_readwrite_append_model : Model := fixture_of (fds := a17_append_fds) (fs := a17_file_fs)
+
+attribute [sys_simp low] a17_readwrite_append_model.eq_1 a17_append_fds.eq_1
+
+/-- Rocq: `ReadWrite.readable_fd`, Sys/Fs/ReadWrite.v:2054 at f1006fe8.
 The append word carries O_WRONLY, so FMODE_READ is clear and fs/read_write.c,
 vfs_readv, Linux v6.18.46 answers -EBADF, as for a write-only file.
 kernel: fs/read_write.c:vfs_readv@v6.18.46 -/
@@ -11197,54 +10839,112 @@ theorem a17_append_readable_is_none :
     readable_fd (.FdFileA [102] 7) = none := by
   rfl
 
-/-- `read` of 0 bytes through an append-mode file declines (the header of
-`Sys/Fs/ReadWrite.lean` declares the narrowing).  Rocq's arm and an
-`FdFileW` answer -EBADF (`vfs_read`, fs/read_write.c, Linux v6.18.46:
-O_APPEND rides on O_WRONLY, so `FMODE_READ` is clear), so a mutant
-answering this kind as `FdFileW` fails here.
+/-- `read` through an append-mode file is -EBADF, as through a write-only
+one: O_APPEND rides on O_WRONLY, so `FMODE_READ` is clear and `vfs_read`
+(fs/read_write.c:556-557, v6.18.46) turns the call away before the buffer
+is looked at.  The count is zero and the destination unmapped, and
+neither changes the answer.
 kernel: fs/read_write.c:vfs_read@v6.18.46 -/
-theorem a17_append_read_declines (o : outcome SyscallEffect) :
-    syscall_spec (read_in 3 4096 0 (fun _ => none)) a17_readwrite_append_model o ↔ o = Unmodeled := by
+theorem a17_append_read_is_ebadf (o : outcome SyscallEffect) :
+    syscall_spec (read_in 3 4096 0 (fun _ => none)) a17_readwrite_append_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) a17_readwrite_append_model [] := by
   rw_norm
 
-/-- `write` of 0 bytes through an append-mode file declines (the header of
-`Sys/Fs/ReadWrite.lean` declares the narrowing).  The same call on an
-`FdFileW` answers 0 and leaves the offset at 0 (`vfs_write`,
-fs/read_write.c, Linux v6.18.46), so a mutant answering this kind as
-`FdFileW` fails here.
-kernel: fs/read_write.c:vfs_write@v6.18.46 -/
-theorem a17_append_write_declines (o : outcome SyscallEffect) :
-    syscall_spec (write_in 3 4096 0 (fun _ => none)) a17_readwrite_append_model o ↔ o = Unmodeled := by
-  rw_norm
-
-/-- `pread64` of 0 bytes through an append-mode file declines (the header
-of `Sys/Fs/ReadWrite.lean` declares the narrowing).  Rocq's arm and an
-`FdFileW` answer -EBADF (`vfs_read`, fs/read_write.c, Linux v6.18.46:
-`FMODE_READ` is clear), so a mutant answering this kind as `FdFileW`
-fails here.
+/-- …and the 0 a readable description answers is refused.
 kernel: fs/read_write.c:vfs_read@v6.18.46 -/
-theorem a17_append_pread64_declines (o : outcome SyscallEffect) :
-    syscall_spec (pread_in 3 4096 0 0 (fun _ => none)) a17_readwrite_append_model o ↔ o = Unmodeled := by
+theorem a17_append_read_zero_refuted (m' : Model) (evs : List event) :
+    ¬ syscall_spec (read_in 3 4096 0 (fun _ => none)) a17_readwrite_append_model
+        (Ok (mkEffect 0 [] []) m' evs) := by
+  rw_refute
+
+/-- `write` of 0 bytes through an append-mode file answers 0, the file
+and the offset where they were.  `append_new_pos` keeps `f_pos` for an
+empty write (`append_zero_length_keeps_the_offset`), and the destination
+being end-of-file rather than `f_pos` is invisible at zero length.
+kernel: fs/read_write.c:vfs_write@v6.18.46 -/
+theorem a17_append_write_zero_count_is_zero (o : outcome SyscallEffect) :
+    syscall_spec (write_in 3 4096 0 (fun _ => none)) a17_readwrite_append_model o ↔
+      o = Ok (mkEffect 0 [] [])
+             (with_fds (fd_insert a17_append_fds 3 (.FdFileA [102] 0))
+               (with_fs (fs_set a17_file_fs [102] [120]) a17_readwrite_append_model)) [] := by
   rw_norm
 
-/-- `pwrite64` of 0 bytes through an append-mode file declines, as Rocq's arm
-does (the header of `Sys/Fs/ReadWrite.lean`).  The same call on an
-`FdFileW` answers 0 without moving the offset (`vfs_write`,
-fs/read_write.c, Linux v6.18.46), so a mutant answering this kind as
-`FdFileW` fails here.
+/-- …and the -EBADF of a read-only description is refused.
 kernel: fs/read_write.c:vfs_write@v6.18.46 -/
+theorem a17_append_write_ebadf_refuted (m' : Model) (evs : List event) :
+    ¬ syscall_spec (write_in 3 4096 0 (fun _ => none)) a17_readwrite_append_model
+        (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+  rw_refute
+
+/-- AN APPEND WRITE LANDS AT END-OF-FILE AND NOT AT `f_pos`: with the
+descriptor's offset at 0 and the file holding one byte, "a" lands AFTER
+it — `iocb_flags` (include/linux/fs.h, v6.18.46) sets IOCB_APPEND and
+`generic_write_checks` (mm/filemap.c) then assigns
+`ki_pos = i_size_read(inode)` — and `f_pos` moves to the new end, 2
+(`append_new_pos`).  A non-append arm at the same offset would overwrite
+the byte and answer an offset of 1.
+kernel: mm/filemap.c:generic_write_checks@v6.18.46 -/
+theorem a17_append_write_lands_at_the_end (o : outcome SyscallEffect) :
+    syscall_spec (write_in 3 4096 1 mem_a) a17_readwrite_append_model o ↔
+      o = Ok (with_copyins [(4096, 1)] (mkEffect 1 [] []))
+             (with_fds (fd_insert a17_append_fds 3 (.FdFileA [102] 2))
+               (with_fs (fs_set a17_file_fs [102] [120, 97]) a17_readwrite_append_model)) [] := by
+  rw_norm
+
+/-- …so the overwrite at `f_pos` a non-append arm performs is refused.
+kernel: mm/filemap.c:generic_write_checks@v6.18.46 -/
+theorem a17_append_write_at_the_offset_refuted (m' : Model) (evs : List event) :
+    ¬ syscall_spec (write_in 3 4096 1 mem_a) a17_readwrite_append_model
+        (Ok (with_copyins [(4096, 1)] (mkEffect 1 [] []))
+          (with_fds (fd_insert a17_append_fds 3 (.FdFileA [102] 1))
+            (with_fs (fs_set a17_file_fs [102] [97]) a17_readwrite_append_model)) []) := by
+  rw_refute
+
+/-- `pread64` through an append-mode file is -EBADF: `FMODE_READ` is
+clear, and `ksys_pread64` reaches `vfs_read`'s test (fs/read_write.c:763,
+:556-557, v6.18.46) because a regular file keeps `FMODE_PREAD` whatever
+its access mode.
+kernel: fs/read_write.c:ksys_pread64@v6.18.46 -/
+theorem a17_append_pread64_is_ebadf (o : outcome SyscallEffect) :
+    syscall_spec (pread_in 3 4096 0 0 (fun _ => none)) a17_readwrite_append_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) a17_readwrite_append_model [] := by
+  rw_norm
+
+/-- …and the 0 a readable description answers is refused.
+kernel: fs/read_write.c:ksys_pread64@v6.18.46 -/
+theorem a17_append_pread64_zero_refuted (m' : Model) (evs : List event) :
+    ¬ syscall_spec (pread_in 3 4096 0 0 (fun _ => none)) a17_readwrite_append_model
+        (Ok (mkEffect 0 [] []) m' evs) := by
+  rw_refute
+
+/-- `pwrite64` of 0 bytes through an append-mode file DECLINES, as Rocq's
+arm does: `iocb_flags` (include/linux/fs.h, v6.18.46) turns O_APPEND into
+IOCB_APPEND and `generic_write_checks` (mm/filemap.c) overwrites `ki_pos`
+with `i_size_read(inode)`, so the `pos` the call named is discarded.  The
+file arm would put the bytes at `pos`, which is a wrong modeled answer
+rather than a missing one, so the arm fails closed.
+kernel: mm/filemap.c:generic_write_checks@v6.18.46 -/
 theorem a17_append_pwrite64_declines (o : outcome SyscallEffect) :
-    syscall_spec (pwrite_in 3 4096 0 0 (fun _ => none)) a17_readwrite_append_model o ↔ o = Unmodeled := by
+    syscall_spec (pwrite_in 3 4096 0 0 (fun _ => none)) a17_readwrite_append_model o ↔
+      o = Unmodeled := by
   rw_norm
 
-/-- `writev` of an empty vector through an append-mode file declines (the
-header of `Sys/Fs/ReadWrite.lean` declares the narrowing).  The same call
-on an `FdFileW` answers 0 (`vfs_writev`, fs/read_write.c, Linux
-v6.18.46), so a mutant answering this kind as `FdFileW` fails here.
+/-- `writev` of an empty vector through an append-mode file answers 0,
+the same `if (!tot_len) goto out` (`vfs_writev`, fs/read_write.c:1047-1049,
+v6.18.46) the read-write kind takes, ahead of `rw_verify_area` and of the
+write operation.
 kernel: fs/read_write.c:vfs_writev@v6.18.46 -/
-theorem a17_append_writev_declines (o : outcome SyscallEffect) :
-    syscall_spec (writev_in 3 8192 0 (fun _ => none)) a17_readwrite_append_model o ↔ o = Unmodeled := by
+theorem a17_append_writev_empty_vector_is_zero (o : outcome SyscallEffect) :
+    syscall_spec (writev_in 3 8192 0 (fun _ => none)) a17_readwrite_append_model o ↔
+      o = Ok (mkEffect 0 [] []) a17_readwrite_append_model [] := by
   rw_norm
+
+/-- …and the -EBADF of a description without `FMODE_WRITE` is refused.
+kernel: fs/read_write.c:vfs_writev@v6.18.46 -/
+theorem a17_append_writev_ebadf_refuted (m' : Model) (evs : List event) :
+    ¬ syscall_spec (writev_in 3 8192 0 (fun _ => none)) a17_readwrite_append_model
+        (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+  rw_refute
 
 /-- `readv` through an append-mode file answers -EBADF, as through a
 write-only file: `readable_fd` turns the kind away (`vfs_readv`,
@@ -11258,14 +10958,27 @@ theorem a17_append_readv_is_ebadf (o : outcome SyscallEffect) :
       o = Ok (mkEffect (errno_ret EBADF) [] []) a17_readwrite_append_model [] := by
   rw_norm
 
-/-- `lseek(fd, 0, SEEK_SET)` through an append-mode file declines (the header
-of `Sys/Fs/ReadWrite.lean` declares the narrowing).  The same call on an
-`FdFileW` answers 0 and sets the offset to 0 (`ksys_lseek`,
-fs/read_write.c, Linux v6.18.46, moves `f_pos` whatever O_APPEND says), so
-a mutant answering this kind as `FdFileW` fails here.
+/-- `lseek(fd, 0, SEEK_SET)` through an append-mode file answers 0 and
+sets the offset to 0: nothing on the llseek path reads O_APPEND
+(`ksys_lseek`, fs/read_write.c:393-408, v6.18.46), so an append fd
+repositions and REPORTS exactly as a write-only one.
 kernel: fs/read_write.c:ksys_lseek@v6.18.46 -/
-theorem a17_append_lseek_declines (o : outcome SyscallEffect) :
-    syscall_spec (lseek_in 3 0 0) a17_readwrite_append_model o ↔ o = Unmodeled := by
+theorem a17_append_lseek_seek_set_is_zero (o : outcome SyscallEffect) :
+    syscall_spec (lseek_in 3 0 0) a17_readwrite_append_model o ↔
+      o = Ok (mkEffect 0 [] [])
+             (with_fds (fd_insert a17_append_fds 3 (.FdFileA [102] 0))
+               a17_readwrite_append_model) [] := by
+  rw_norm
+
+/-- …and SEEK_END reports the file's one byte, the append kind preserved:
+the position lseek sets is NOT where the next write lands, which is the
+whole of what O_APPEND changes.
+kernel: fs/read_write.c:ksys_lseek@v6.18.46 -/
+theorem a17_append_lseek_seek_end_reports_the_size (o : outcome SyscallEffect) :
+    syscall_spec (lseek_in 3 0 2) a17_readwrite_append_model o ↔
+      o = Ok (mkEffect 1 [] [])
+             (with_fds (fd_insert a17_append_fds 3 (.FdFileA [102] 1))
+               a17_readwrite_append_model) [] := by
   rw_norm
 
 end LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.ReadWrite

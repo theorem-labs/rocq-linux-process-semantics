@@ -1,8 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Fs/Locks.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Locks
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Checks.Sys.Fs.Locks — the flock (32) checker, witness, and their proofs
 
@@ -31,11 +32,10 @@ file adds is the ACCEPTOR reading of each arm: which `(effect, model,
 events)` triple the checker admits, which it rejects, and where it
 declines.
 
-`FdUrandom` is declined by the spec and the checker alike, as Rocq's are
-at the baseline (the arm arrived with #794, which is why the baseline is
-that commit and not the day's earlier one), and every arm is named rather
-than wildcarded so that the build stops here when a constructor is added.
-Both matches below are wildcard-free for that reason.
+`FdUrandom` is declined by the spec and the checker alike, and every arm
+is named rather than wildcarded so that the build stops here when a
+constructor is added.  Both matches below are wildcard-free for that
+reason.
 
 Spellings that differ from Rocq without changing a value: `negb` is `!`,
 written `!(flock_cmd_ok_b cmd)` exactly as the spec writes it, so the
@@ -71,9 +71,16 @@ it takes or drops lives in the inode's `struct file_lock_context`
 (include/linux/filelock.h, Linux v6.18.46), which the model does not
 carry.  What each arm RETURNS is the spec's business — `flock_spec`'s
 docstring in `Sys/Fs/Locks.lean` argues it arm by arm — and is not
-restated here.  The acceptor's pins rest on two arguments that the spec's
-docstring does not make, every line of fs/locks.c below read at Linux
-v6.18.46.
+restated here.  The acceptor's pins rest on three arguments that the
+spec's docstring does not make, every line of fs/locks.c below read at
+Linux v6.18.46.
+
+THE ORDER OF THE TESTS IS WHAT THE FIRST THREE ARMS PIN.  The
+`LOCK_MAND` test and `flock_translate_cmd` both run before
+`CLASS(fd, f)(fd)` (:2153 against :2157), so the acceptor takes the 0
+and the -EINVAL on a descriptor that is not open and REJECTS the -EBADF
+there; only a recognized operation reaches the lookup, where a closed
+descriptor is -EBADF and the 0 is rejected.
 
 The `LOCK_UN` arm accepts the 0 on any open descriptor, whatever its
 kind, and rejects -EAGAIN: on an unlock `flock_lock_inode`
@@ -84,35 +91,31 @@ only to drop the caller's own entry (:1101-1109) and leaves at the
 does not set — and with no lock context answers 0 at :1084-1088.
 Other files' locks are walked past, never read into the answer.
 
-A lock request on an open descriptor DECLINES — `CheckUnmodeled`, never
-`CheckReject` — whatever its kind and however many openers its path has
-(T202).  A sole opener's grant is not certain: `flock_spec`'s header
-gives the AFS `LOCK_SH` and the CIFS `LOCK_EX` relock, which a
-filesystem with its own `.flock` answers with -EACCES, or under CIFS
-without `LOCK_NB` does not answer at all.  On a second opener the
-decline has a second reason: the model has no lock table to say what a
-conflicting holder makes the kernel answer: `flock_lock_inode`
-(fs/locks.c:1074-1144, Linux v6.18.46) returns -EAGAIN at :1121-1123
-only when the request lacks `FL_SLEEP`, which `SYSCALL_DEFINE2(flock)`
-sets exactly when `LOCK_NB` is clear (fs/locks.c:2170-2172, Linux
-v6.18.46); otherwise it defers (:1124-1126) and `flock_lock_inode_wait`
-(fs/locks.c:2079-2093, Linux v6.18.46) loops until a later
-`flock_lock_inode` grants, 0, or `wait_event_interruptible`
-(include/linux/wait.h:501-508, Linux v6.18.46) is interrupted, which
-is -ERESTARTSYS (`prepare_to_wait_event`, kernel/sched/wait.c:309,
-Linux v6.18.46), never -EINTR inside the kernel.  `flock` returns that
-word (fs/locks.c:2179-2182, Linux v6.18.46) into a0, where
+A take on a file descriptor whose path NO OTHER DESCRIPTOR NAMES is
+accepted at 0 and rejects every errno: a lock's owner is the
+`struct file` (`flock_make_lock` sets `flc_owner = filp`, and
+`flock_locks_conflict` returns false when both locks name one file), so
+a sole opener has nothing to conflict with, and the grant is `0` with no
+write and no event.  On a SECOND opener the acceptor DECLINES —
+`CheckUnmodeled`, never `CheckReject` — because the model has no lock
+table to say what a conflicting holder makes the kernel answer:
+`flock_lock_inode` returns -EAGAIN at :1121-1123 only when the request
+lacks `FL_SLEEP`, which `SYSCALL_DEFINE2(flock)` sets exactly when
+`LOCK_NB` is clear (fs/locks.c:2170-2172, Linux v6.18.46); otherwise it
+defers (:1124-1126) and `flock_lock_inode_wait` (fs/locks.c:2079-2093)
+loops until a later `flock_lock_inode` grants, 0, or
+`wait_event_interruptible` (include/linux/wait.h:501-508, Linux
+v6.18.46) is interrupted, which is -ERESTARTSYS
+(`prepare_to_wait_event`, kernel/sched/wait.c:309, Linux v6.18.46),
+never -EINTR inside the kernel.  `flock` returns that word
+(fs/locks.c:2179-2182, Linux v6.18.46) into a0, where
 `arch_do_signal_or_restart` (arch/riscv/kernel/signal.c:396-463, Linux
 v6.18.46) reads it (:407) and restarts the syscall (:417-423) unless a
 handler without SA_RESTART is delivered, when a0 becomes -EINTR
-(:437-444).  So, on the `locks_lock_file_wait` path a file without an
-`.flock` of its own takes (fs/locks.c:2178-2179, Linux v6.18.46), a
-conflicting shape shows the process 0 or -EAGAIN under `LOCK_NB`,
-and 0 or -EINTR without it; the decline is on the SHAPE, before any
-answer is read, and the pins offer every declined shape the 0 and
-the -EAGAIN, the probe's `ro_sh` and `wo_ex` modes and their nonblocking
-pin shapes the -EACCES, and the two-opener table's blocking `LOCK_EX` and
-`LOCK_SH` the -EINTR as well.
+(:437-444).  So a contended shape shows the process 0 or -EAGAIN under
+`LOCK_NB`, and 0 or -EINTR without it; the decline is on the SHAPE,
+before any answer is read, and the two-opener pins offer the declining
+arms both the 0 and the -EAGAIN.
 
 The two arguments arrive as 64-bit words but are read as the kernel's
 `unsigned int`s (fs/locks.c:2135, Linux v6.18.46): the narrowing is the
@@ -123,22 +126,31 @@ row in `Sys/SyscallTable.lean` applies them before `flock_spec` — so
 this checker assumes `fd` and `cmd` already below 2^32 and states
 nothing about the upper word. -/
 def check_flock (fd cmd : word) (eff : SyscallEffect) (m : Model) : check_result :=
-  match fd_lookup (m_fds m) fd with
-  | none =>
-      if flock_mand_b cmd then CheckUnmodeled
-      else if !(flock_cmd_ok_b cmd) then CheckUnmodeled
-      else check_ret_only eff (errno_ret EBADF) m []
-  | some e =>
-      if flock_mand_b cmd then CheckUnmodeled
-      else if !(flock_cmd_ok_b cmd) then check_ret_only eff (errno_ret EINVAL) m []
-      else
+  if flock_mand_b cmd then check_ret_only eff (Z_to_bv 64 0) m []
+  else if !(flock_cmd_ok_b cmd) then check_ret_only eff (errno_ret EINVAL) m []
+  else
+    match fd_lookup (m_fds m) fd with
+    | none => check_ret_only eff (errno_ret EBADF) m []
+    | some e =>
         if flock_unlock_b cmd then check_ret_only eff (Z_to_bv 64 0) m []
         else
           match e with
-          | .FdFile _ _ => CheckUnmodeled
-          | .FdFileW _ _ => CheckUnmodeled
-          | .FdFileA _ _ => CheckUnmodeled
-          | .FdFileRW _ _ => CheckUnmodeled
+          | .FdFile p _ =>
+              if flock_sole_opener (m_fds m) p
+              then check_ret_only eff (Z_to_bv 64 0) m []
+              else CheckUnmodeled
+          | .FdFileW p _ =>
+              if flock_sole_opener (m_fds m) p
+              then check_ret_only eff (Z_to_bv 64 0) m []
+              else CheckUnmodeled
+          | .FdFileA p _ =>
+              if flock_sole_opener (m_fds m) p
+              then check_ret_only eff (Z_to_bv 64 0) m []
+              else CheckUnmodeled
+          | .FdFileRW p _ =>
+              if flock_sole_opener (m_fds m) p
+              then check_ret_only eff (Z_to_bv 64 0) m []
+              else CheckUnmodeled
           | .FdChannel _ => CheckUnmodeled
           | .FdDir => CheckUnmodeled
           | .FdSocket _ => CheckUnmodeled
@@ -148,11 +160,12 @@ def check_flock (fd cmd : word) (eff : SyscallEffect) (m : Model) : check_result
 
 /-! ## Soundness: what the checker accepts, the spec admits
 
-The two cmd-only tests (`flock_mand_b`, `flock_cmd_ok_b`) do not mention the model the bind
-introduces, so a `cases` on them settles both the hypothesis and the goal;
-`fd_lookup`, which reads `m`, does too, once the model has been bound by
-`get_model`.  Each arm names the equation it substitutes, so that the
-`simp only` that follows uses every argument it is given. -/
+The two cmd-only tests (`flock_mand_b`, `flock_cmd_ok_b`) do not mention
+the model the bind introduces, so a `cases` on them settles both the
+hypothesis and the goal; `fd_lookup` and `flock_sole_opener`, which read
+`m`, do too, once the model has been bound by `get_model`.  Each arm
+names the equation it substitutes, so that the `simp only` that follows
+uses every argument it is given. -/
 
 /-- Rocq: `Locks.check_flock_sound_ok`. -/
 theorem check_flock_sound_ok (fd cmd : word) (eff : SyscallEffect) (m m' : Model)
@@ -162,20 +175,12 @@ theorem check_flock_sound_ok (fd cmd : word) (eff : SyscallEffect) (m m' : Model
   unfold check_flock at h
   unfold flock_spec
   refine bind_ok0 _ _ i m m m _ _ _ (get_model_ok i m) ?_
-  cases hfd : fd_lookup (m_fds m) fd with
-  | none =>
-    simp only [hfd] at h ⊢
-    cases hmand : flock_mand_b cmd <;> cases hok : flock_cmd_ok_b cmd <;>
-      simp only [hmand, hok, Bool.not_true, Bool.not_false, Bool.false_eq_true,
-        ↓reduceIte, reduceCtorEq] at h ⊢
+  cases hmand : flock_mand_b cmd with
+  | true =>
+    simp only [hmand, ↓reduceIte] at h ⊢
     rw [check_ret_only_ok_iff] at h
     obtain ⟨rfl, rfl, rfl⟩ := h
     exact pure_ok _ i _
-  | some e =>
-  simp only [hfd] at h ⊢
-  cases hmand : flock_mand_b cmd with
-  | true =>
-    simp only [hmand, ↓reduceIte, reduceCtorEq] at h
   | false =>
   cases hok : flock_cmd_ok_b cmd with
   | false =>
@@ -185,6 +190,14 @@ theorem check_flock_sound_ok (fd cmd : word) (eff : SyscallEffect) (m m' : Model
     exact pure_ok _ i _
   | true =>
   simp only [hmand, hok, Bool.false_eq_true, Bool.not_true, ↓reduceIte] at h ⊢
+  cases hfd : fd_lookup (m_fds m) fd with
+  | none =>
+    simp only [hfd] at h ⊢
+    rw [check_ret_only_ok_iff] at h
+    obtain ⟨rfl, rfl, rfl⟩ := h
+    exact pure_ok _ i _
+  | some e =>
+  simp only [hfd] at h ⊢
   cases hun : flock_unlock_b cmd with
   | true =>
     simp only [hun, ↓reduceIte] at h ⊢
@@ -194,10 +207,46 @@ theorem check_flock_sound_ok (fd cmd : word) (eff : SyscallEffect) (m m' : Model
   | false =>
   simp only [hun, Bool.false_eq_true, ↓reduceIte] at h ⊢
   cases e with
-  | FdFile _ _ => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
-  | FdFileW _ _ => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
-  | FdFileA _ _ => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
-  | FdFileRW _ _ => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFile p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h ⊢
+      rw [check_ret_only_ok_iff] at h
+      obtain ⟨rfl, rfl, rfl⟩ := h
+      exact pure_ok _ i _
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFileW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h ⊢
+      rw [check_ret_only_ok_iff] at h
+      obtain ⟨rfl, rfl, rfl⟩ := h
+      exact pure_ok _ i _
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFileA p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h ⊢
+      rw [check_ret_only_ok_iff] at h
+      obtain ⟨rfl, rfl, rfl⟩ := h
+      exact pure_ok _ i _
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFileRW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h ⊢
+      rw [check_ret_only_ok_iff] at h
+      obtain ⟨rfl, rfl, rfl⟩ := h
+      exact pure_ok _ i _
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
   | FdChannel c => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
   | FdDir => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
   | FdSocket sk => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
@@ -213,22 +262,10 @@ theorem check_flock_sound_unmodeled (fd cmd : word) (eff : SyscallEffect) (m : M
   unfold check_flock at h
   unfold flock_spec
   refine bind_unmodeled2 _ _ i m m m [] (get_model_ok i m) ?_
-  cases hfd : fd_lookup (m_fds m) fd with
-  | none =>
-    simp only [hfd] at h ⊢
-    cases hmand : flock_mand_b cmd <;> cases hok : flock_cmd_ok_b cmd <;>
-      simp only [hmand, hok, Bool.not_true, Bool.not_false, Bool.false_eq_true,
-        ↓reduceIte] at h ⊢
-    · exact unmodeled_intro i m
-    · exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-    · exact unmodeled_intro i m
-    · exact unmodeled_intro i m
-  | some e =>
-  simp only [hfd] at h ⊢
   cases hmand : flock_mand_b cmd with
   | true =>
-    simp only [↓reduceIte]
-    exact unmodeled_intro i m
+    simp only [hmand, ↓reduceIte] at h
+    exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   | false =>
   cases hok : flock_cmd_ok_b cmd with
   | false =>
@@ -236,6 +273,12 @@ theorem check_flock_sound_unmodeled (fd cmd : word) (eff : SyscallEffect) (m : M
     exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   | true =>
   simp only [hmand, hok, Bool.false_eq_true, Bool.not_true, ↓reduceIte] at h ⊢
+  cases hfd : fd_lookup (m_fds m) fd with
+  | none =>
+    simp only [hfd] at h
+    exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+  | some e =>
+  simp only [hfd] at h ⊢
   cases hun : flock_unlock_b cmd with
   | true =>
     simp only [hun, ↓reduceIte] at h
@@ -243,10 +286,38 @@ theorem check_flock_sound_unmodeled (fd cmd : word) (eff : SyscallEffect) (m : M
   | false =>
   simp only [hun, Bool.false_eq_true, ↓reduceIte] at h ⊢
   cases e with
-  | FdFile _ _ => exact unmodeled_intro i m
-  | FdFileW _ _ => exact unmodeled_intro i m
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+  | FdFile p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte]
+      exact unmodeled_intro i m
+  | FdFileW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte]
+      exact unmodeled_intro i m
+  | FdFileA p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte]
+      exact unmodeled_intro i m
+  | FdFileRW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte]
+      exact unmodeled_intro i m
   | FdChannel c => exact unmodeled_intro i m
   | FdDir => exact unmodeled_intro i m
   | FdSocket sk => exact unmodeled_intro i m
@@ -270,25 +341,14 @@ theorem check_flock_complete_ok (fd cmd : word) (eff : SyscallEffect) (m m' : Mo
   unfold flock_spec at h
   have h := bind_model_inv _ i m _ h
   unfold check_flock
-  cases hfd : fd_lookup (m_fds m) fd with
-  | none =>
-    simp only [hfd] at h ⊢
-    cases hmand : flock_mand_b cmd <;> cases hok : flock_cmd_ok_b cmd <;>
-      simp only [hmand, hok, Bool.not_true, Bool.not_false, Bool.false_eq_true,
-        ↓reduceIte] at h ⊢
-    all_goals first
-      | exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
-      | unfold err_ret ret_only at h
-        rw [pure_iff] at h
-        injection h with heff hm' hevs
-        subst heff hm' hevs
-        exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
-  | some e =>
-  simp only [hfd] at h ⊢
   cases hmand : flock_mand_b cmd with
   | true =>
-    simp only [hmand, ↓reduceIte] at h
-    exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
+    simp only [hmand, ↓reduceIte] at h ⊢
+    unfold ret_only at h
+    rw [pure_iff] at h
+    injection h with heff hm' hevs
+    subst heff hm' hevs
+    exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
   | false =>
   cases hok : flock_cmd_ok_b cmd with
   | false =>
@@ -300,6 +360,16 @@ theorem check_flock_complete_ok (fd cmd : word) (eff : SyscallEffect) (m m' : Mo
     exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
   | true =>
   simp only [hmand, hok, Bool.false_eq_true, Bool.not_true, ↓reduceIte] at h ⊢
+  cases hfd : fd_lookup (m_fds m) fd with
+  | none =>
+    simp only [hfd] at h ⊢
+    unfold err_ret ret_only at h
+    rw [pure_iff] at h
+    injection h with heff hm' hevs
+    subst heff hm' hevs
+    exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
+  | some e =>
+  simp only [hfd] at h ⊢
   cases hun : flock_unlock_b cmd with
   | true =>
     simp only [hun, ↓reduceIte] at h ⊢
@@ -311,18 +381,54 @@ theorem check_flock_complete_ok (fd cmd : word) (eff : SyscallEffect) (m m' : Mo
   | false =>
   simp only [hun, Bool.false_eq_true, ↓reduceIte] at h ⊢
   cases e with
-  | FdFile _ _ =>
-    dsimp only at h
-    exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
-  | FdFileW _ _ =>
-    dsimp only at h
-    exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
-  | FdFileA _ _ =>
-    dsimp only at h
-    exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
-  | FdFileRW _ _ =>
-    dsimp only at h
-    exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFile p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h ⊢
+      unfold ret_only at h
+      rw [pure_iff] at h
+      injection h with heff hm' hevs
+      subst heff hm' hevs
+      exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFileW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h ⊢
+      unfold ret_only at h
+      rw [pure_iff] at h
+      injection h with heff hm' hevs
+      subst heff hm' hevs
+      exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFileA p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h ⊢
+      unfold ret_only at h
+      rw [pure_iff] at h
+      injection h with heff hm' hevs
+      subst heff hm' hevs
+      exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFileRW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h ⊢
+      unfold ret_only at h
+      rw [pure_iff] at h
+      injection h with heff hm' hevs
+      subst heff hm' hevs
+      exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
   | FdChannel c =>
     dsimp only at h
     exact absurd ((unmodeled_iff i m _).mp h) (by simp only [reduceCtorEq, not_false_eq_true])
@@ -349,20 +455,12 @@ theorem check_flock_complete_unmodeled (fd cmd : word) (m : Model) (i : SyscallI
   unfold flock_spec at h
   have h := bind_model_inv _ i m _ h
   unfold check_flock
-  cases hfd : fd_lookup (m_fds m) fd with
-  | none =>
-    simp only [hfd] at h ⊢
-    cases hmand : flock_mand_b cmd <;> cases hok : flock_cmd_ok_b cmd <;>
-      simp only [hmand, hok, Bool.not_true, Bool.not_false, Bool.false_eq_true,
-        ↓reduceIte] at h ⊢
-    unfold err_ret ret_only at h
-    rw [pure_iff] at h
-    exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
-  | some e =>
-  simp only [hfd] at h ⊢
   cases hmand : flock_mand_b cmd with
   | true =>
-    simp only [↓reduceIte]
+    simp only [hmand, ↓reduceIte] at h
+    unfold ret_only at h
+    rw [pure_iff] at h
+    exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
   | false =>
   cases hok : flock_cmd_ok_b cmd with
   | false =>
@@ -372,6 +470,14 @@ theorem check_flock_complete_unmodeled (fd cmd : word) (m : Model) (i : SyscallI
     exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
   | true =>
   simp only [hmand, hok, Bool.false_eq_true, Bool.not_true, ↓reduceIte] at h ⊢
+  cases hfd : fd_lookup (m_fds m) fd with
+  | none =>
+    simp only [hfd] at h
+    unfold err_ret ret_only at h
+    rw [pure_iff] at h
+    exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | some e =>
+  simp only [hfd] at h ⊢
   cases hun : flock_unlock_b cmd with
   | true =>
     simp only [hun, ↓reduceIte] at h
@@ -381,10 +487,42 @@ theorem check_flock_complete_unmodeled (fd cmd : word) (m : Model) (i : SyscallI
   | false =>
   simp only [hun, Bool.false_eq_true, ↓reduceIte] at h ⊢
   cases e with
-  | FdFile _ _ => rfl
-  | FdFileW _ _ => rfl
-  | FdFileA _ _ => rfl
-  | FdFileRW _ _ => rfl
+  | FdFile p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      unfold ret_only at h
+      rw [pure_iff] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte]
+  | FdFileW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      unfold ret_only at h
+      rw [pure_iff] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte]
+  | FdFileA p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      unfold ret_only at h
+      rw [pure_iff] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte]
+  | FdFileRW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      unfold ret_only at h
+      rw [pure_iff] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte]
   | FdChannel c => rfl
   | FdDir => rfl
   | FdSocket sk => rfl
@@ -410,20 +548,12 @@ theorem check_flock_frame (fd cmd : word) (eff : SyscallEffect) (m m' : Model)
     (evs : List event) (h : check_flock fd cmd eff m = CheckOk m' evs) :
     m_vmmaps m' = m_vmmaps m := by
   unfold check_flock at h
-  cases hfd : fd_lookup (m_fds m) fd with
-  | none =>
-    simp only [hfd] at h
-    cases hmand : flock_mand_b cmd <;> cases hok : flock_cmd_ok_b cmd <;>
-      simp only [hmand, hok, Bool.not_true, Bool.not_false, Bool.false_eq_true,
-        ↓reduceIte, reduceCtorEq] at h
+  cases hmand : flock_mand_b cmd with
+  | true =>
+    simp only [hmand, ↓reduceIte] at h
     rw [check_ret_only_ok_iff] at h
     obtain ⟨-, rfl, -⟩ := h
     rfl
-  | some e =>
-  simp only [hfd] at h
-  cases hmand : flock_mand_b cmd with
-  | true =>
-    simp only [hmand, ↓reduceIte, reduceCtorEq] at h
   | false =>
   cases hok : flock_cmd_ok_b cmd with
   | false =>
@@ -433,6 +563,14 @@ theorem check_flock_frame (fd cmd : word) (eff : SyscallEffect) (m m' : Model)
     rfl
   | true =>
   simp only [hmand, hok, Bool.false_eq_true, Bool.not_true, ↓reduceIte] at h
+  cases hfd : fd_lookup (m_fds m) fd with
+  | none =>
+    simp only [hfd] at h
+    rw [check_ret_only_ok_iff] at h
+    obtain ⟨-, rfl, -⟩ := h
+    rfl
+  | some e =>
+  simp only [hfd] at h
   cases hun : flock_unlock_b cmd with
   | true =>
     simp only [hun, ↓reduceIte] at h
@@ -442,10 +580,46 @@ theorem check_flock_frame (fd cmd : word) (eff : SyscallEffect) (m m' : Model)
   | false =>
   simp only [hun, Bool.false_eq_true, ↓reduceIte] at h
   cases e with
-  | FdFile _ _ => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
-  | FdFileW _ _ => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
-  | FdFileA _ _ => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
-  | FdFileRW _ _ => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFile p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      rw [check_ret_only_ok_iff] at h
+      obtain ⟨-, rfl, -⟩ := h
+      rfl
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFileW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      rw [check_ret_only_ok_iff] at h
+      obtain ⟨-, rfl, -⟩ := h
+      rfl
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFileA p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      rw [check_ret_only_ok_iff] at h
+      obtain ⟨-, rfl, -⟩ := h
+      rfl
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFileRW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      rw [check_ret_only_ok_iff] at h
+      obtain ⟨-, rfl, -⟩ := h
+      rfl
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
   | FdChannel c => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
   | FdDir => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
   | FdSocket sk => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
@@ -459,29 +633,29 @@ theorem check_flock_frame (fd cmd : word) (eff : SyscallEffect) (m m' : Model)
 Rocq: `Checks/Witness/Fs/Locks.v`.  Every modeled arm is deterministic —
 the spec draws no errno and chooses nothing — so the witness is the answer
 itself, `ret_outcome` where the checker has `check_ret_only`, and
-`Unmodeled` on the shapes the spec declines, where the spec admits exactly
-that outcome. -/
+`Unmodeled` on the shapes the spec declines. -/
 
 /-- The one outcome `flock_spec` admits at each input, as data.  Rocq:
 `Locks.flock_witness`.  `Checks/Cases/Checks/Sys/Fs/Locks.lean` pins the
 outcome per arm and that `check_flock` accepts it. -/
 def flock_witness (fd cmd : word) (m : Model) : outcome SyscallEffect :=
-  match fd_lookup (m_fds m) fd with
-  | none =>
-      if flock_mand_b cmd then Unmodeled
-      else if !(flock_cmd_ok_b cmd) then Unmodeled
-      else ret_outcome (errno_ret EBADF) m
-  | some e =>
-      if flock_mand_b cmd then Unmodeled
-      else if !(flock_cmd_ok_b cmd) then ret_outcome (errno_ret EINVAL) m
-      else
+  if flock_mand_b cmd then ret_outcome (Z_to_bv 64 0) m
+  else if !(flock_cmd_ok_b cmd) then ret_outcome (errno_ret EINVAL) m
+  else
+    match fd_lookup (m_fds m) fd with
+    | none => ret_outcome (errno_ret EBADF) m
+    | some e =>
         if flock_unlock_b cmd then ret_outcome (Z_to_bv 64 0) m
         else
           match e with
-          | .FdFile _ _ => Unmodeled
-          | .FdFileW _ _ => Unmodeled
-          | .FdFileA _ _ => Unmodeled
-          | .FdFileRW _ _ => Unmodeled
+          | .FdFile p _ =>
+              if flock_sole_opener (m_fds m) p then ret_outcome (Z_to_bv 64 0) m else Unmodeled
+          | .FdFileW p _ =>
+              if flock_sole_opener (m_fds m) p then ret_outcome (Z_to_bv 64 0) m else Unmodeled
+          | .FdFileA p _ =>
+              if flock_sole_opener (m_fds m) p then ret_outcome (Z_to_bv 64 0) m else Unmodeled
+          | .FdFileRW p _ =>
+              if flock_sole_opener (m_fds m) p then ret_outcome (Z_to_bv 64 0) m else Unmodeled
           | .FdChannel _ => Unmodeled
           | .FdDir => Unmodeled
           | .FdSocket _ => Unmodeled
@@ -495,16 +669,10 @@ theorem flock_witness_ok (fd cmd : word) (i : SyscallInput) (m : Model) :
     flock_spec fd cmd i m (flock_witness fd cmd m) := by
   unfold flock_spec flock_witness
   refine bind_step _ _ i m m m _ (get_model_ok i m) ?_
-  cases hfd : fd_lookup (m_fds m) fd with
-  | none =>
-    cases hmand : flock_mand_b cmd <;> cases hok : flock_cmd_ok_b cmd <;>
-      simp only [Bool.not_true, Bool.not_false, Bool.false_eq_true, ↓reduceIte]
-    all_goals first | exact pure_ok _ i _ | exact unmodeled_intro i m
-  | some e =>
   cases hmand : flock_mand_b cmd with
   | true =>
     simp only [↓reduceIte]
-    exact unmodeled_intro i m
+    exact pure_ok _ i _
   | false =>
   cases hok : flock_cmd_ok_b cmd with
   | false =>
@@ -512,6 +680,10 @@ theorem flock_witness_ok (fd cmd : word) (i : SyscallInput) (m : Model) :
     exact pure_ok _ i _
   | true =>
   simp only [Bool.false_eq_true, Bool.not_true, ↓reduceIte]
+  cases hfd : fd_lookup (m_fds m) fd with
+  | none =>
+    exact pure_ok _ i _
+  | some e =>
   cases hun : flock_unlock_b cmd with
   | true =>
     simp only [↓reduceIte]
@@ -519,10 +691,22 @@ theorem flock_witness_ok (fd cmd : word) (i : SyscallInput) (m : Model) :
   | false =>
   simp only [Bool.false_eq_true, ↓reduceIte]
   cases e with
-  | FdFile _ _ => exact unmodeled_intro i m
-  | FdFileW _ _ => exact unmodeled_intro i m
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+  | FdFile p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true => simp only [hsole, ↓reduceIte]; exact pure_ok _ i _
+    | false => simp only [hsole, Bool.false_eq_true, ↓reduceIte]; exact unmodeled_intro i m
+  | FdFileW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true => simp only [hsole, ↓reduceIte]; exact pure_ok _ i _
+    | false => simp only [hsole, Bool.false_eq_true, ↓reduceIte]; exact unmodeled_intro i m
+  | FdFileA p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true => simp only [hsole, ↓reduceIte]; exact pure_ok _ i _
+    | false => simp only [hsole, Bool.false_eq_true, ↓reduceIte]; exact unmodeled_intro i m
+  | FdFileRW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true => simp only [hsole, ↓reduceIte]; exact pure_ok _ i _
+    | false => simp only [hsole, Bool.false_eq_true, ↓reduceIte]; exact unmodeled_intro i m
   | FdChannel c => exact unmodeled_intro i m
   | FdDir => exact unmodeled_intro i m
   | FdSocket sk => exact unmodeled_intro i m

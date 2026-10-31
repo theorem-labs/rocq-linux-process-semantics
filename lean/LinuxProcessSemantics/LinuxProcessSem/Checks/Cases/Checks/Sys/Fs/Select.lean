@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Fs/Select.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs.Select
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.Select
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
@@ -901,8 +902,7 @@ theorem ppoll_efault_for_nfds_zero_is_rejected :
       = CheckReject := by
   rfl
 
-/-- THE ONE DECLINE THE LEAN SPEC ADDS TO ROCQ'S, restated on the checker.
-With `nfds = 0` the write-back's access check at fs/select.c:1012 is
+/-- With `nfds = 0` the write-back's access check at fs/select.c:1012 is
 zero-length, and `__access_ok` (include/asm-generic/access_ok.h:40) accepts
 `addr <= TASK_SIZE_MAX` for a size of 0, so a `ufds` exactly at the top of
 user space is answered 0…
@@ -913,18 +913,18 @@ theorem ppoll_checker_answers_nfds_zero_at_the_top_of_user_space :
       = CheckOk pselect_model [] := by
   rfl
 
-/-- …and one byte above it is declined, neither answered nor rejected: Linux
-is -EFAULT there, and QEMU 11.1.1's user-mode `do_ppoll`
-(linux-user/syscall.c:1553-1563) never looks at the pointer when `nfds` is
-0 and answers 0, so no single answer is in the intersection.  The
-spec-level pin `ppoll_nfds_zero_one_byte_above_user_space_is_declined` in
-`Checks/Cases/Fs/Select.lean` carries the argument; this is the checker
-saying the same.
+/-- …and so is one byte above it, where Linux answers -EFAULT: the
+zero-length call answers 0 for any pointer, which is the recorded
+difference the spec-level pin
+`ppoll_nfds_zero_one_byte_above_user_space_is_zero` in
+`Checks/Cases/Fs/Select.lean` carries; this is the checker saying the
+same.  QEMU 11.1.1's user-mode `do_ppoll` (linux-user/syscall.c:1553-1563)
+never looks at the pointer when `nfds` is 0 and answers 0 too.
 kernel: fs/select.c:do_sys_poll; include/asm-generic/access_ok.h:__access_ok@v6.18.46 -/
-theorem ppoll_checker_declines_nfds_zero_above_user_space :
+theorem ppoll_checker_answers_nfds_zero_above_user_space :
     check_ppoll_row (pp_in (user_top + 1) 0 pp_tsp 0 0 (bytes_at pp_tsp (pp_ts 0 0)) pp_wmem)
       (mkEffect 0 [] []) pselect_model
-      = CheckUnmodeled := by
+      = CheckOk pselect_model [] := by
   rfl
 
 /-! ## The deadline -/

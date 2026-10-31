@@ -84,19 +84,11 @@ theorem check_flock_ok_model (fd cmd : word) (eff : SyscallEffect) (m m' : Model
     (evs : List event) (h : check_flock fd cmd eff m = CheckOk m' evs) :
     m' = m ∧ evs = [] := by
   unfold check_flock at h
-  cases hfd : fd_lookup (m_fds m) fd with
-  | none =>
-    simp only [hfd] at h
-    cases hmand : flock_mand_b cmd <;> cases hok : flock_cmd_ok_b cmd <;>
-      simp only [hmand, hok, Bool.not_true, Bool.not_false, Bool.false_eq_true,
-        ↓reduceIte, reduceCtorEq] at h
-    rw [check_ret_only_ok_iff] at h
-    exact h.2
-  | some e =>
-  simp only [hfd] at h
   cases hmand : flock_mand_b cmd with
   | true =>
-    simp only [hmand, ↓reduceIte, reduceCtorEq] at h
+    simp only [hmand, ↓reduceIte] at h
+    rw [check_ret_only_ok_iff] at h
+    exact h.2
   | false =>
   cases hok : flock_cmd_ok_b cmd with
   | false =>
@@ -105,6 +97,13 @@ theorem check_flock_ok_model (fd cmd : word) (eff : SyscallEffect) (m m' : Model
     exact h.2
   | true =>
   simp only [hmand, hok, Bool.false_eq_true, Bool.not_true, ↓reduceIte] at h
+  cases hfd : fd_lookup (m_fds m) fd with
+  | none =>
+    simp only [hfd] at h
+    rw [check_ret_only_ok_iff] at h
+    exact h.2
+  | some e =>
+  simp only [hfd] at h
   cases hun : flock_unlock_b cmd with
   | true =>
     simp only [hun, ↓reduceIte] at h
@@ -113,10 +112,42 @@ theorem check_flock_ok_model (fd cmd : word) (eff : SyscallEffect) (m m' : Model
   | false =>
   simp only [hun, Bool.false_eq_true, ↓reduceIte] at h
   cases e with
-  | FdFile _ _ => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
-  | FdFileW _ _ => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
-  | FdFileA _ _ => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
-  | FdFileRW _ _ => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFile p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      rw [check_ret_only_ok_iff] at h
+      exact h.2
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFileW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      rw [check_ret_only_ok_iff] at h
+      exact h.2
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFileA p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      rw [check_ret_only_ok_iff] at h
+      exact h.2
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
+  | FdFileRW p off =>
+    cases hsole : flock_sole_opener (m_fds m) p with
+    | true =>
+      simp only [hsole, ↓reduceIte] at h
+      rw [check_ret_only_ok_iff] at h
+      exact h.2
+    | false =>
+      simp only [hsole, Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
   | FdChannel c => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
   | FdDir => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])
   | FdSocket sk => dsimp only at h; exact absurd h (by simp only [reduceCtorEq, not_false_eq_true])

@@ -1,7 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Fs/Select.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Sys.Fs.Select — pselect6 (72) and ppoll (73)
 
@@ -59,12 +60,11 @@ Rocq's wildcards because its body is a `let`, which gives it a single
 unfolding equation, and the match inside is then reduced by its matcher,
 where overlap is harmless; `ppoll_outcome` is written the same way.
 
-ONE DECLINE BEYOND ROCQ'S, and it is named here because
-docs/syscalls/ppoll.md is the Rocq contract and stays as it is: `ppoll_core`
-declines `nfds = 0` with a `ufds` that fails `access_okb`, where Rocq
-answers 0 and Linux answers -EFAULT (the docstring of `ppoll_core` has the
-kernel lines; bugs/ppoll-nfds-zero-answers-a-kernel-space-ufds.md records
-the Rocq defect).  Every other `unmodeled` arm is Rocq's.
+`nfds = 0` ANSWERS 0 FOR ANY `ufds`, Rocq's answer and the one
+`docs/syscalls/ppoll.md` contracts.  Linux answers -EFAULT for a `ufds`
+above `TASK_SIZE`, so this is a known Rocq defect, recorded in
+bugs/ppoll-nfds-zero-answers-a-kernel-space-ufds.md; the docstring of
+`ppoll_core` has the kernel lines.  Every `unmodeled` arm is Rocq's.
 
 THE ENVIRONMENT OBLIGATION `bits_all_pollable` RESTS ON IS NOT DISCHARGED
 HERE EITHER.  `vfs_poll` (include/linux/poll.h:78-83, Linux v6.18.46) hands back
@@ -208,11 +208,14 @@ def bits_all_pollable (fds : List (word × FdEntry)) (v : word) (k : Nat) : Bool
             -- Listing the kinds that ARE unconditionally pollable makes a
             -- new constructor a compile error instead.
             | some (.FdFile _ _) | some (.FdFileW _ _) | some .FdDir => true
-            | some (.FdFileA _ _) => true
             | some (.FdFileRW _ _) => true
             -- the same regular file, opened O_RDWR.  A regular file has no
             -- `->poll` whatever its access mode, so `vfs_poll` hands back
             -- `DEFAULT_POLLMASK` here as it does for the kinds above
+            | some (.FdFileA _ _) => true
+            -- the same regular file, opened in append mode.  O_APPEND
+            -- changes where a write lands, not which `->poll` the inode
+            -- has, and a regular file still has none
             | some (.FdChannel _) | some (.FdSocket _) | none => false
             -- A PIPE END IS THE `FdChannel` CASE WITH THE PEER INSIDE THE
             -- MODEL, and it declines for the same reason.  `pipeanon_fops`
@@ -675,13 +678,18 @@ def ppoll_revents_of (fds : List (word × FdEntry)) (fd events : Int) : Option I
   if fd < 0 then some 0
   else match fd_lookup fds (Z_to_bv 64 fd) with
        | none => some POLLNVAL
-       -- `FdFileA` and `FdFileRW` are the same regular file opened
-       -- O_APPEND or O_RDWR: no `->poll` whatever its access mode, so
-       -- `vfs_poll` hands back `DEFAULT_POLLMASK` for them as for the three
-       -- kinds beside them -- the argument `bits_all_pollable` makes for
-       -- pselect6
-       | some (.FdFile _ _) | some (.FdFileW _ _) | some .FdDir
-       | some (.FdFileA _ _) | some (.FdFileRW _ _) =>
+       | some (.FdFile _ _) | some (.FdFileW _ _) | some .FdDir =>
+           some ((default_pollmask.toNat &&& events.toNat : Nat) : Int)
+       | some (.FdFileRW _ _) =>
+           -- the same regular file, opened O_RDWR.  A regular file has no
+           -- `->poll` whatever its access mode, so `vfs_poll` hands back
+           -- `DEFAULT_POLLMASK` here as it does for the three kinds above —
+           -- the same argument `bits_all_pollable` makes for pselect6
+           some ((default_pollmask.toNat &&& events.toNat : Nat) : Int)
+       | some (.FdFileA _ _) =>
+           -- the same regular file in append mode: O_APPEND changes where a
+           -- write lands, not which `->poll` the inode has, and a regular
+           -- file still has none
            some ((default_pollmask.toNat &&& events.toNat : Nat) : Int)
        -- ENUMERATED ON PURPOSE, exactly as `bits_all_pollable` is and for
        -- the same reason: a `some _ => true` catch-all would be
@@ -753,34 +761,25 @@ limit gets the kernel's -EINVAL rather than a decline.
 
 `nfds = 0` copies nothing: `len` is 0 (:984), the loop breaks before the
 copy (:988-989), `do_poll` walks no entries and the write-back loop writes
-none (:1019-1020).  But `user_write_access_begin(ufds, 0)` still runs
-(:1012-1013).  On riscv64 that is `user_access_begin`
-(arch/riscv/include/asm/uaccess.h:456-462, Linux v6.18.46;
-include/linux/uaccess.h:568-569 makes the write form the same call), which
-is `access_ok`, and `__access_ok` (include/asm-generic/access_ok.h:31-41,
-Linux v6.18.46) with a `size` of 0 is
+none (:1019-1020), so the call answers 0 however wild the pointer is.
+
+That is Rocq's answer, and Linux does not give it for every pointer:
+`user_write_access_begin(ufds, 0)` still runs (:1012-1013).  On riscv64 that
+is `user_access_begin` (arch/riscv/include/asm/uaccess.h:456-462, Linux
+v6.18.46; include/linux/uaccess.h:568-569 makes the write form the same
+call), which is `access_ok`, and `__access_ok`
+(include/asm-generic/access_ok.h:31-41, Linux v6.18.46) with a `size` of 0 is
 `addr <= TASK_SIZE_MAX`, `TASK_SIZE_MAX` being `TASK_SIZE` (:15-17).  So a
 `ufds` above `TASK_SIZE` fails it, `do_sys_poll` jumps to `out_fds` with
-`err` still the -EFAULT it started as (:971), and the call is -EFAULT — after
-`do_poll` has run, so under a deadline the expiry is waited out first.  A
-user-space `ufds` that is merely unmapped passes, and `nfds = 0` on it is
-answered as Rocq answers it.
-
-THE ONE DECLINE THIS FILE ADDS TO ROCQ'S.  Rocq's `ppoll_core` answers 0 for
-that kernel-space `ufds` too ("however wild the pointer is"), which is an
-answer Linux does not give; bugs/ppoll-nfds-zero-answers-a-kernel-space-ufds.md
-records it.  The Lean twin declines the shape — `nfds = 0` with
-`access_okb ufds 0` false, `State.access_okb` being the model's
-`__access_ok` — rather than answering the -EFAULT, because an answer the Rocq
-twin does not give would be the two specs disagreeing on an admitted
-behaviour, while a declared decline is the shape a port may add.  The gate
-sits where the kernel's test sits relative to the copy: nothing is read for
-`nfds = 0`, so it is judged before the read. -/
+`err` still the -EFAULT it started as (:971), and Linux answers -EFAULT.  The
+Rocq defect is recorded in
+bugs/ppoll-nfds-zero-answers-a-kernel-space-ufds.md and is corrected in Rocq,
+not here.  A user-space `ufds` that is merely unmapped passes the test, and
+Linux answers 0 for it as this spec does. -/
 def ppoll_core (i : SyscallInput) (m : Model) (ufds nfds : word) : PselectCore :=
   let n := bv_unsigned nfds
   if bv_unsigned (m_nofile m) < n then .PsCoreErr EINVAL
   else if ppoll_nfds_max < n then .PsCoreGap
-  else if n == 0 && !(access_okb ufds 0) then .PsCoreGap
   else
     match read_bytes_map i.in_mem ufds (Z_to_bv 64 (pollfd_bytes * n)) with
     | none => .PsCoreErr EFAULT

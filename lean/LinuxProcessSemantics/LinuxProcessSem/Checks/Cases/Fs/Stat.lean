@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Stat.v
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
@@ -28,7 +29,7 @@ WHAT THE ROCQ FILE PINS AND WHAT IT PROBES.  Rocq's `Checks/Cases/Fs/Stat.v`
 keeps the copy-in ledger example for `newfstatat` and its examples over the
 bytes `fstat` delivers, and sends the rest — every errno arm, the
 truncation, the kinds that decline — to probes against a real kernel
-(`testing/syscall-check/tests/fstat_spec.c`, `newfstatat_spec.c`,
+(`linux-process-semantics@ff0313ba4f:testing/syscall-check/tests/fstat_spec.c`, `newfstatat_spec.c`,
 `readlinkat_dirfd.c` and `errno_readlinkat.c`).  This file pins every arm
 in Lean: the Rocq examples as twins (`rocq-twin:`); each probed arm on the
 case that recorded it (`probe:`) where the pin's registers — descriptor
@@ -36,12 +37,11 @@ numbers, flag words, sizes — are the probe's; and otherwise on the kernel
 functions that decide it (`kernel:`), with the probe's case named in
 prose, so a reader can go from a pin to the kernel run it stands on.
 
-NOT PORTED: Rocq's `fstat_model_rw`, `fstat_read_write_fd_answers_as_a_file`
-and `fstat_read_write_wrong_size_rejected`: `fstat_spec` declines
-`FdFileRW` (`Sys/Fs/Stat.lean`'s header) where Rocq answers through
-`fstat_file_spec`, so there is no answer for the two to state;
-`a17_rdwr_fstat_declines` below holds the decline, and the three land
-with the port of that arm.
+Rocq's `fstat_model_rw` is below, beside the other `fstat` fixtures; its
+two examples, `fstat_read_write_fd_answers_as_a_file` and
+`fstat_read_write_wrong_size_rejected`, are checker examples and live in
+`Checks/Cases/Checks/Sys/Fs/Stat.lean` with the rest of this syscall's
+checker pins.
 
 NOTHING HERE COMPARES THE LEAN SPEC TO THE ROCQ ONE.  What these pins prove
 is that this spec and a named line of Linux agree. -/
@@ -304,6 +304,14 @@ def fstat_fds : List (word × FdEntry) := [(3, .FdFile fstat_path 0)]
 def fstat_model_of (d : List byte) : Model := fixture_of (fds := fstat_fds) (fs := [(fstat_path, d)])
 def fstat_model : Model := fstat_model_of fstat_data
 def fstat_model_grown : Model := fstat_model_of fstat_data_grown
+
+/-- Rocq's `fstat_model_rw`: the same file and the same nine bytes, held
+through a READ-WRITE descriptor instead of a read-only one.  The examples
+over it are the whole difference the fourth file kind makes to `fstat`:
+none. -/
+def fstat_fds_rw : List (word × FdEntry) := [(3, .FdFileRW fstat_path 0)]
+def fstat_model_rw : Model :=
+  fixture_of (fds := fstat_fds_rw) (fs := [(fstat_path, fstat_data)])
 
 /-- A descriptor on a path the map does not hold: what `unlinkat` leaves. -/
 def fstat_model_unlinked : Model := fixture_of (fds := fstat_fds)
@@ -673,6 +681,12 @@ theorem m_fds_fstat_model_unlinked : m_fds fstat_model_unlinked = fstat_fds := r
 /-- model: a fixture projection, a rewrite for `sys_norm`. -/
 theorem m_fs_fstat_model_unlinked : m_fs fstat_model_unlinked = [] := rfl
 /-- model: a fixture projection, a rewrite for `sys_norm`. -/
+theorem m_fds_fstat_model_rw : m_fds fstat_model_rw = fstat_fds_rw := rfl
+/-- model: a fixture projection, a rewrite for `sys_norm`. -/
+theorem m_fs_fstat_model_rw : m_fs fstat_model_rw = [(fstat_path, fstat_data)] := rfl
+/-- model: a fixture projection, a rewrite for `sys_norm`. -/
+theorem m_statpins_fstat_model_rw : m_statpins fstat_model_rw = [] := rfl
+/-- model: a fixture projection, a rewrite for `sys_norm`. -/
 theorem m_fds_fstat_model_pinned : m_fds fstat_model_pinned = fstat_fds := rfl
 /-- model: a fixture projection, a rewrite for `sys_norm`. -/
 theorem m_fs_fstat_model_pinned : m_fs fstat_model_pinned = [(fstat_path, fstat_data)] := rfl
@@ -791,6 +805,12 @@ theorem fs_fstat_model_unlinked : fstat_model_unlinked.m_fsys.fsst_image = [] :=
 /-- model: a fixture projection, a rewrite for `sys_norm`. -/
 theorem pins_fstat_model_unlinked : fstat_model_unlinked.m_proc.procst_statpins = [] := rfl
 /-- model: a fixture projection, a rewrite for `sys_norm`. -/
+theorem fds_fstat_model_rw : fstat_model_rw.m_fd.fdst_table = fstat_fds_rw := rfl
+/-- model: a fixture projection, a rewrite for `sys_norm`. -/
+theorem fs_fstat_model_rw : fstat_model_rw.m_fsys.fsst_image = [(fstat_path, fstat_data)] := rfl
+/-- model: a fixture projection, a rewrite for `sys_norm`. -/
+theorem pins_fstat_model_rw : fstat_model_rw.m_proc.procst_statpins = [] := rfl
+/-- model: a fixture projection, a rewrite for `sys_norm`. -/
 theorem fds_fstat_model_pinned : fstat_model_pinned.m_fd.fdst_table = fstat_fds := rfl
 /-- model: a fixture projection, a rewrite for `sys_norm`. -/
 theorem fs_fstat_model_pinned : fstat_model_pinned.m_fsys.fsst_image = [(fstat_path, fstat_data)] := rfl
@@ -872,6 +892,8 @@ theorem lookup_fstat_12345 : fd_lookup fstat_fds 12345 = none := rfl
 /-- model: a closed `fd_lookup` at a numeral, a rewrite for `sys_norm`. -/
 theorem lookup_fstat_ffffffff : fd_lookup fstat_fds 4294967295 = none := rfl
 /-- model: a closed `fd_lookup` at a numeral, a rewrite for `sys_norm`. -/
+theorem lookup_fstat_rw_3 : fd_lookup fstat_fds_rw 3 = some (.FdFileRW fstat_path 0) := rfl
+/-- model: a closed `fd_lookup` at a numeral, a rewrite for `sys_norm`. -/
 theorem lookup_two_3 : fd_lookup fstat_two_fds 3 = some (.FdFile fstat_path 0) := rfl
 /-- model: a closed `fd_lookup` at a numeral, a rewrite for `sys_norm`. -/
 theorem lookup_two_4 : fd_lookup fstat_two_fds 4 = some (.FdFile [103] 0) := rfl
@@ -935,6 +957,9 @@ attribute [sys_simp]
   m_fds_fstat_model m_fs_fstat_model m_statpins_fstat_model
   m_fds_fstat_model_grown m_fs_fstat_model_grown m_statpins_fstat_model_grown
   m_fds_fstat_model_unlinked m_fs_fstat_model_unlinked
+  m_fds_fstat_model_rw m_fs_fstat_model_rw m_statpins_fstat_model_rw
+  fds_fstat_model_rw fs_fstat_model_rw pins_fstat_model_rw
+  lookup_fstat_rw_3
   m_fds_fstat_model_pinned m_fs_fstat_model_pinned m_statpins_fstat_model_pinned
   m_fds_fstat_model_grown_pinned m_fs_fstat_model_grown_pinned m_statpins_fstat_model_grown_pinned
   m_fds_fstat_model_recreated m_fs_fstat_model_recreated m_statpins_fstat_model_recreated
@@ -986,7 +1011,7 @@ resolved path that is not a symlink and has no `->readlink`, answers
 -EINVAL (fs/stat.c:585-594, v6.18.46).  The spec reads the dirfd alone, so under
 AT_FDCWD every call is that -EINVAL: Linux's answer for a name that
 resolves to a non-symlink, and the FALSE REJECTION
-bugs/readlinkat-path-not-interpreted.md records for a name that does not
+linux-process-semantics@ff0313ba4f:bugs/readlinkat-path-not-interpreted.md records for a name that does not
 resolve (Linux: -ENOENT) or a pointer that cannot be read (-EFAULT).  The
 two are pinned apart below.  Under any other dirfd the answer depends on
 a directory the model cannot name, and the spec declines.  Nothing in
@@ -1052,7 +1077,7 @@ system does not hold is -ENOENT on Linux — the walk's own answer
 (`walk_component`, fs/namei.c:2134-2158, v6.18.46, through `step_into`,
 :1984-2022), which the probe's `missing` case records as a `reject` —
 and this spec answers -EINVAL for it all the same: the coarsening
-bugs/readlinkat-path-not-interpreted.md carries, admitted by the probe
+linux-process-semantics@ff0313ba4f:bugs/readlinkat-path-not-interpreted.md carries, admitted by the probe
 only under the mutation that makes the kernel say the model's answer.
 probe: testing/syscall-check/tests/readlinkat_dirfd.c#conform --mutate readlinkat:ret=-EINVAL -- missing -/
 theorem readlinkat_missing_path_is_einval_here (o : outcome SyscallEffect) :
@@ -1574,7 +1599,7 @@ theorem dot_enoent_rejected (m' : Model) (evs : List event) :
 what it is: Linux resolves it to the parent (`handle_dots`,
 fs/namei.c:2096-2132, v6.18.46) and stats it, and this spec lets it fall
 to the map's -ENOENT — the shape
-bugs/newfstatat-flat-namespace-false-rejections.md carries, which the
+linux-process-semantics@ff0313ba4f:bugs/newfstatat-flat-namespace-false-rejections.md carries, which the
 probe admits only under the mutation that makes the kernel say the
 model's answer.
 probe: testing/syscall-check/tests/newfstatat_spec.c#conform --mutate newfstatat:ret=-ENOENT -- dotdot -/
@@ -1878,7 +1903,7 @@ theorem first_answer_must_pin (evs : List event) :
 
 /-- The model does NOT claim the file is regular.  Offered S_IFCHR with
 `st_size` 0 — the true answer for the character device
-bugs/fs-paths-assumed-regular-files.md exhibits, a path this model
+linux-process-semantics@ff0313ba4f:bugs/fs-paths-assumed-regular-files.md exhibits, a path this model
 resolves and holds nine bytes for — the spec ADMITS; this is the example
 that would fail if the implication in `stat_size_ok` were ever
 strengthened to an assertion.
@@ -2638,15 +2663,18 @@ def a17_stat_model : Model :=
 
 attribute [sys_simp low] a17_stat_model.eq_1
 
-/-- `fstat` through a read-write file declines (`Sys/Fs/Stat.lean`'s
-header declares the narrowing).  The same call on an `FdFile` answers
--EFAULT at the buffer past `TASK_SIZE` (`vfs_fstat`, fs/stat.c, Linux
-v6.18.46, fills the kstat that the copy-out then fails on), so a mutant
-answering this kind as `FdFile` fails here.
-kernel: fs/stat.c:vfs_fstat@v6.18.46 -/
-theorem a17_rdwr_fstat_declines (o : outcome SyscallEffect) :
+/-- `fstat` through a read-write file goes through `fstat_file_spec`, as
+it does through an `FdFile`: a stat reads the INODE, and neither `f_mode`
+nor `f_flags` is a member of `struct stat` (`generic_fillattr` reads the
+inode alone, fs/stat.c:88-106, Linux v6.18.46).  The `statbuf` here is at
+`TASK_SIZE`, so the arm reached is that spec's `access_ok` -EFAULT
+(fs/stat.c:506), the same answer the read-only kind gives at the same
+address.  A mutant declining this kind fails here.
+kernel: fs/stat.c:vfs_fstat,cp_new_stat,generic_fillattr@v6.18.46 -/
+theorem a17_rdwr_fstat_answers_as_a_file (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 80 [3, Z_to_bv 64 TASK_SIZE, 0, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_stat_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_stat_model o
+      ↔ o = Ok (mkEffect (errno_ret EFAULT) [] []) a17_stat_model [] := by
   sys_norm
 
 def a17_stat_append_model : Model :=
@@ -2654,15 +2682,17 @@ def a17_stat_append_model : Model :=
 
 attribute [sys_simp low] a17_stat_append_model.eq_1
 
-/-- `fstat` through an append-mode file declines (`Sys/Fs/Stat.lean`'s
-header declares the narrowing).  The same call on an `FdFileW` answers
--EFAULT at the buffer past `TASK_SIZE` (`vfs_fstat`, fs/stat.c, Linux
-v6.18.46, fills the kstat that the copy-out then fails on), so a mutant
-answering this kind as `FdFileW` fails here.
-kernel: fs/stat.c:vfs_fstat@v6.18.46 -/
-theorem a17_append_fstat_declines (o : outcome SyscallEffect) :
+/-- `fstat` through an append-mode file goes through `fstat_file_spec`,
+as it does through an `FdFileW`: append mode is a bit of `f_flags`, and
+`struct stat` has no member for it.  The `statbuf` is again at
+`TASK_SIZE`, so the answer is that spec's `access_ok` -EFAULT
+(fs/stat.c:506, Linux v6.18.46).  A mutant declining this kind fails
+here.
+kernel: fs/stat.c:vfs_fstat,cp_new_stat,generic_fillattr@v6.18.46 -/
+theorem a17_append_fstat_answers_as_a_file (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 80 [3, Z_to_bv 64 TASK_SIZE, 0, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_stat_append_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_stat_append_model o
+      ↔ o = Ok (mkEffect (errno_ret EFAULT) [] []) a17_stat_append_model [] := by
   sys_norm
 
 end LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.Stat
