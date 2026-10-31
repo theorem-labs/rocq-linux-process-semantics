@@ -1,4 +1,3 @@
--- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Uapi.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 
 /-! # Checks.Cases.Sys.Uapi.Time — the `Sys.Uapi.Time` constants, read off
