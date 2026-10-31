@@ -2,6 +2,7 @@
 import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_heard_c
 import OssFuzzTheorems.libreac.fuzz_knock.Image.PlainCode
 import LinuxProcessSemantics.Common.StoreOk
+import LinuxProcessSemantics.Riscv.DecodeC
 
 /-! `lib/Prog/reac_knock_heard.v`: the walk of `reac_knock_heard`.
 
@@ -22,6 +23,7 @@ What this file adds beyond the Rocq proof, and why, is in the docstring of
 namespace OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_heard
 
 open LinuxProcessSemantics.Riscv.Prelude
+open LinuxProcessSemantics.Riscv.DecodeC
 open LinuxProcessSemantics.Riscv.Instr
 open LinuxProcessSemantics.Riscv.Sem
 open LinuxProcessSemantics.LinuxProcessSem.BvBase
@@ -138,11 +140,10 @@ private theorem store_ok_of_wr_at (segs : List Segment) (m : word → Option byt
   intro x hx
   obtain ⟨hx1, hx2⟩ := hx
   rw [hu] at hx1 hx2
-  have hxe : x = wa (A + (bv_unsigned x - A)) := by
-    unfold wa
-    rw [show A + (bv_unsigned x - A) = bv_unsigned x by ring, Z_to_bv_bv_unsigned64]
-  rw [hxe]
-  exact hall _ (by omega) (by omega)
+  have hx' := hall (bv_unsigned x - A) (by omega) (by omega)
+  unfold wa at hx'
+  rw [show A + (bv_unsigned x - A) = bv_unsigned x by omega, Z_to_bv_bv_unsigned64] at hx'
+  exact hx'
 
 /-! ## The frame -/
 
@@ -164,7 +165,7 @@ private theorem munch_one (A off : Int) (n : Nat) (m : word → Option byte) (bs
 /-- `lib/Lib/MState.v:140` against the model's own `jalr` target: the two
 spellings of a return address agree (OSSV-265 gaps row T-9). -/
 private theorem v_jalr_ret_pc (a : word) : v_jalr a (bv_signed (0 : BitVec 12)) = ret_pc a := by
-  have hs : sext 64 (0 : BitVec 12) = (0 : word) := by decide
+  have hs : sext 64 (0 : BitVec 12) = 0#64 := by decide
   have h := b_jalr a 0
   rw [hs, BitVec.add_zero] at h
   exact h.symm
@@ -190,7 +191,7 @@ theorem reac_knock_heard_holds : reac_knock_heard_contract := by
   obtain ⟨-, hwr⟩ := hrw
   have hsz : cells_size (reac_knock_struct.knock_cells st p1 opened due heard g p2) = 40 := rfl
   rw [hsz] at hwr
-  obtain ⟨hA0, hA40, -⟩ := hwr
+  obtain ⟨hA0, hA40, -⟩ := id hwr
   have hz12 : bv_signed (0 : BitVec 12) = 0 := by decide
   have h24 : bv_signed (0x18 : BitVec 12) = 24 := by decide
   -- the store bounds the Rocq proof reads off `rw_cells`
@@ -285,7 +286,9 @@ theorem reac_knock_heard_holds : reac_knock_heard_contract := by
           (v_addi (getr regs 10) 0) (word_to_le_bytes 4 (Z_to_bv 64 2)))
         (seg_rom Img0.rsegs) 0x00008067#32 1 0 (getr regs 1) F6 E3
         Image.PlainCode.D_12db4 h1)) ?_
-    refine evt_done ⟨regupd (regupd regs 12 (v_lw v)) 11 (Z_to_bv 64 2), _, ?_, ?_, ?_, ?_, ?_⟩
+    refine evt_done ⟨regupd (regupd regs 12 (v_lw v)) 11 (Z_to_bv 64 2),
+      wbytes (wbytes mem (v_addi (getr regs 10) 24) (word_to_le_bytes 8 (getr regs 11)))
+        (v_addi (getr regs 10) 0) (word_to_le_bytes 4 (Z_to_bv 64 2)), ?_, ?_, ?_, ?_, ?_⟩
     · rw [v_jalr_ret_pc]
     · intro r hr11 hr12
       rw [getr_other (regupd regs 12 (v_lw v)) 11 _ r hr11,
@@ -313,7 +316,9 @@ theorem reac_knock_heard_holds : reac_knock_heard_contract := by
         (wbytes mem (v_addi (getr regs 10) 24) (word_to_le_bytes 8 (getr regs 11)))
         (seg_rom Img0.rsegs) 0x00008067#32 1 0 (getr regs 1) F3 E3
         Image.PlainCode.D_12da8 g1)) ?_
-    refine evt_done ⟨regupd regs 12 (v_lw v), _, ?_, ?_, ?_, ?_, ?_⟩
+    refine evt_done ⟨regupd regs 12 (v_lw v),
+      wbytes mem (v_addi (getr regs 10) 24) (word_to_le_bytes 8 (getr regs 11)),
+      ?_, ?_, ?_, ?_, ?_⟩
     · rw [v_jalr_ret_pc]
     · intro r _ hr12
       exact getr_other regs 12 _ r hr12

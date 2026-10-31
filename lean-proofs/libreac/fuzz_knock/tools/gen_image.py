@@ -48,7 +48,7 @@ import sys
 
 CHUNK = 256      # bytes per mixed hex chunk
 RUN_MIN = 64     # a run of one repeated byte this long or longer becomes its own chunk
-RUN_CAP = 32768  # and is cut no longer than this, for the `rfl` recursion depth
+RUN_CAP = 32768  # and is cut no longer than this; `String.ofList` keeps its cost O(1)
 
 # `rfl` between a chunk's literal and its character list recurses in proportion
 # to the chunk's length; a chunk longer than one page gets its own limit.
@@ -361,22 +361,19 @@ def image_module(image: Img, module: str, elf_name: str, sha: str) -> str:
         chunk_list = seg.chunks
         for name, content in chunk_list:
             term = chars_term(content)
-            simp = ", ".join([f"{name}_chars"] + [lemma for lemma, shape in
-                             (("List.all_append", " ++ "), ("List.all_replicate", "List.replicate "))
-                             if shape in term])
-            lines += [f"def {name} : String := {json.dumps(content)}",
-                      f"def {name}_chars : List Char := {term}",
-                      *chunk_depth(content),
+            # A chunk that is one `List.replicate` is decided in ONE step through
+            # `List.all_replicate`, however long it is; anything else is decided
+            # element by element, and a `simp only` in front of that is dead weight.
+            rep = term.startswith("List.replicate ") and " ++ " not in term
+            closes = (f"  simp only [{name}_chars, List.all_replicate]\n  decide +kernel"
+                      if rep else "  decide +kernel")
+            lines += [f"def {name}_chars : List Char := {term}",
+                      f"def {name} : String := String.ofList {name}_chars",
                       f"theorem {name}_chars_eq : {name} = String.ofList {name}_chars := rfl",
                       f"theorem {name}_ascii : {name}_chars.all (fun c => c.utf8Size == 1) = true := by",
-                      f"  simp only [{simp}]",
-                      "  decide +kernel",
+                      closes,
                       f"theorem {name}_hex : {name}_chars.all (fun c => decide (hex_nybble c.toUInt8 < 16)) = true := by",
-                      f"  simp only [{simp}]",
-                      "  decide +kernel",
-                      f"theorem {name}_size : {name}.utf8ByteSize = {len(content)} := by",
-                      f"  rw [{name}_chars_eq, utf8ByteSize_ofList_ascii _ {name}_ascii]",
-                      "  decide +kernel", ""]
+                      closes, ""]
         lines += [f"def {seg.name} : Segment :=",
                   f"  {{ seg_base := 0x{seg.base:x}, seg_size := 0x{seg.size:x},",
                   f"    seg_perms := {json.dumps(seg.perms)},",
@@ -519,6 +516,32 @@ def code_module(image: Img, module: str, ranges: list) -> str:
 # --check: read the emitted image module back and compare it with the ELF
 # --------------------------------------------------------------------------- #
 
+def _chars_term_hex(term: str) -> str:
+    """Read back a `chars_term` rendering: the hex digits it denotes.
+
+    The inverse of `chars_term`, so that `--check` compares the ELF with the
+    TERM the module carries, not with a second rendering of it.
+    """
+    import re
+    out = []
+    for part in term.split(" ++ "):
+        part = part.strip()
+        rep = re.fullmatch(r"List\.replicate (\d+) '(.)'", part)
+        if rep:
+            out.append(rep.group(2) * int(rep.group(1)))
+            continue
+        lit = re.fullmatch(r"\[(.*)\]", part)
+        if lit is None:
+            raise ValueError(f"gen_image.py --check: unreadable character term {part!r}")
+        if lit.group(1).strip():
+            for c in lit.group(1).split(", "):
+                m = re.fullmatch(r"'(.)'", c.strip())
+                if m is None:
+                    raise ValueError(f"gen_image.py --check: unreadable character {c!r}")
+                out.append(m.group(1))
+    return "".join(out)
+
+
 def check(image: Img, text: str) -> None:
     """Re-read the emitted image module's records and compare with the ELF."""
     import re
@@ -535,11 +558,11 @@ def check(image: Img, text: str) -> None:
                        f"against the ELF's {seg.base:x},{seg.size:x},{seg.perms}")
         got = ""
         for name in [n.strip() for n in m.group(4).split(",")]:
-            c = re.search(rf'def {name} : String := "([0-9a-f]*)"', text)
+            c = re.search(rf"def {name}_chars : List Char := (.*)\n", text)
             if c is None:
-                bad.append(f"{name}: no chunk literal")
+                bad.append(f"{name}: no character list")
                 break
-            got += c.group(1)
+            got += _chars_term_hex(c.group(1))
         else:
             if got != seg.data.hex():
                 bad.append(f"{seg.name}: the chunk literals are not the segment's bytes")

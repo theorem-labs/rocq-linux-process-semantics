@@ -65,7 +65,7 @@ word for word. -/
 namespace OssFuzzTheorems.libreac.fuzz_knock.Statements
 
 open OssFuzzTheorems.Core.Shapes
-open OssFuzzTheorems.libreac.fuzz_knock (Images)
+open OssFuzzTheorems.libreac.fuzz_knock
 
 /-! ## Halting -/
 

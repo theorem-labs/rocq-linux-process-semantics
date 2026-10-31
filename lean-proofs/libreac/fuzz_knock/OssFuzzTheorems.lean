@@ -10,3 +10,7 @@ import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Exec
 import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.MState
 import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Step
 import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_struct
+import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.LLVMFuzzerTestOneInput_c
+import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.LLVMFuzzerTestOneInput
+import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_heard_c
+import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_heard

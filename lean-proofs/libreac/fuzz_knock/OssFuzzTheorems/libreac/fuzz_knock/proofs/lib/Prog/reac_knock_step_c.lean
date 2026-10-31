@@ -4,6 +4,7 @@ import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Frame
 import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.MState
 import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Step
 import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_struct
+import LinuxProcessSemantics.Common.CatExec
 import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Img0
 
 /-! `lib/Prog/reac_knock_step_c.v`: the contract of `reac_knock_step`.
@@ -63,7 +64,6 @@ open LinuxProcessSemantics.LinuxProcessSem.MemImageType
 open LinuxProcessSemantics.LinuxProcessSem.RiscvSemantics
 open LinuxProcessSemantics.Common.PropExec
 open LinuxProcessSemantics.Common.CatExec (wbytes)
-open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib (Img0)
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Mem (le4 le8)
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.Frame (munch wmono)
 open OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Lib.MState (ret_pc)
