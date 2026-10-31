@@ -1001,6 +1001,7 @@ Proof.
     | erewrite check_exit_frame by eassumption; exact Hna
     | erewrite check_set_tid_address_frame by eassumption; exact Hna
     | erewrite check_getpid_frame by eassumption; exact Hna
+    | erewrite check_getppid_frame by eassumption; exact Hna
     | erewrite check_gettid_frame by eassumption; exact Hna
     | erewrite check_setsid_frame by eassumption; exact Hna
     | erewrite check_uname_frame by eassumption; exact Hna
@@ -1042,6 +1043,7 @@ Proof.
     | erewrite check_set_robust_list_frame by eassumption; exact Hna
     | erewrite check_clone_frame by eassumption; exact Hna
     | erewrite check_clone3_frame by eassumption; exact Hna
+    | erewrite check_close_range_frame by eassumption; exact Hna
     | erewrite check_getsockname_frame by eassumption; exact Hna
     | erewrite check_getpeername_frame by eassumption; exact Hna
     | erewrite check_setsockopt_frame by eassumption; exact Hna

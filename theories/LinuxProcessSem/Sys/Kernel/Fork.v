@@ -287,10 +287,13 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
     into the unblocked one and both halves rest on the disposition.
     The DISPOSITION: [rt_sigaction] (134) IS modeled, so
     what carries this
-    half is [Signal.sigaction_accepted] — its accepted set is {SIGINT,
-    SIGTERM}, so an install FOR SIGCHLD fails closed at the signal and
-    the disposition SIGCHLD is delivered against stays the inherited
-    one.  [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled]
+    half is its signal gate — [Signal.sigaction_accepted], whose
+    accepted set is {SIGINT, SIGTERM}, and [Signal.sigchld_dfl_install],
+    which answers a SIGCHLD install only when its handler word is
+    [SIG_DFL].  So the disposition SIGCHLD is delivered against is the
+    inherited one or [SIG_DFL], both of which discard it, and every
+    install that would change that fails closed at the signal.
+    [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled]
     pins that, and the note above [Signal.sigaction_accepted] records
     the obligation this arm puts on it.  The
     STARTING disposition and mask are inherited across [execve] —

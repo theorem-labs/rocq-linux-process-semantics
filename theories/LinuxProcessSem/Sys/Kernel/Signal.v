@@ -14,6 +14,10 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Syscall Uapi Uaccess.
+(* [Kernel.Fork.SIGCHLD], the one signal number [sigchld_dfl_install]
+   names; imported, not exported, so this module's namespace is
+   unchanged for its importers. *)
+From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Kernel.Fork.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
@@ -141,13 +145,20 @@ Open Scope sys_scope.
     does not disturb that: a mask decides DELIVERY, not sending, and
     what the premise below rules out is a signal arriving at all.
 
-    ONE INSTALL OUTSIDE THIS LIST IS ANSWERED, AND IT IS NOT A NO-OP OF
-    THE KIND THIS NOTE IS ABOUT: SIG_DFL FOR SIGABRT
-    ([sigabrt_dfl_install]).  A modeled operation does raise SIGABRT
-    ([tkill_self]), and the model delivers it at SIG_DFL.  The install
-    sets that disposition, so its soundness does not rest on SIGABRT
-    being unraisable: after it, Linux has the disposition the model
-    already assumes.  Every other SIGABRT install fails closed.
+    TWO INSTALLS OUTSIDE THIS LIST ARE ANSWERED, AND NEITHER IS A NO-OP
+    OF THE KIND THIS NOTE IS ABOUT.  Each sets SIG_DFL, the disposition
+    the model already assumes for that signal, so neither rests on the
+    signal being unraisable:
+    - SIG_DFL FOR SIGABRT ([sigabrt_dfl_install]).  A modeled operation
+      does raise SIGABRT ([tkill_self]), and the model delivers it at
+      SIG_DFL.  After the install Linux has the disposition the model
+      already assumes.  Every other SIGABRT install fails closed.
+    - SIG_DFL FOR SIGCHLD ([sigchld_dfl_install]).  A child's exit
+      raises SIGCHLD, and [Fork.clone_spec]'s argument that nothing
+      comes of it is an argument about SIG_DFL, under which the signal
+      is discarded when it is generated.  After the install that is the
+      disposition.  Every other SIGCHLD install -- SIG_IGN, a handler --
+      fails closed.
 
     SIGCHLD (17) IS NOT ACCEPTED, AND THAT IS THE INVARIANT BELOW
     BEING DISCHARGED.  That invariant says the
@@ -156,13 +167,16 @@ Open Scope sys_scope.
     that change — it is an admission that a child can exist — and so
     would be a modeled [wait4], which is an admission that one can be
     reaped.  An accepted set NARROWER than the operational test demands
-    costs coverage and cannot cost soundness.
+    costs coverage and cannot cost soundness.  The SIG_DFL install
+    above is not a member of the set: membership answers an install
+    whatever its handler word, and SIGCHLD is answered for one handler
+    word only.
 
-    What it costs is one install the model
-    declines: [sigaction(SIGCHLD, &act, NULL, 8)], the shape dropbear
-    uses to reap its children.  A decline is not a wrong answer — it puts
-    such a program outside the theorem's coverage rather than making a
-    false claim about it.
+    What it costs is the SIGCHLD install with a HANDLER, which the
+    model declines: [sigaction(SIGCHLD, &act, NULL, 8)] with a reaping
+    function, the shape dropbear uses.  A decline is not a wrong answer
+    — it puts such a program outside the theorem's coverage rather than
+    making a false claim about it.
 
     WHAT THE OPERATIONAL RULE NEVER ESTABLISHED IS THAT REALITY HAS NO
     SENDER.  This model begins AT [execve]: [State.ProcInput] carries
@@ -174,9 +188,12 @@ Open Scope sys_scope.
     rule, which only narrows who could send it: "arrives only from
     outside the process" says the model cannot raise it, not that it is
     never raised.  That gap matters most for SIGCHLD, since
-    a child survives [execve] and could raise a real one at any moment;
-    the decline closes that instance rather than leaving it to the
-    premise, and SIGINT and SIGTERM still need the premise in full.
+    a child survives [execve] and could raise a real one at any moment.
+    The decline of every SIGCHLD handler and of SIG_IGN closes that
+    instance rather than leaving it to the premise, and the one SIGCHLD
+    install the model answers, SIG_DFL, does not reopen it: a real
+    SIGCHLD arriving at SIG_DFL is discarded on arrival.  SIGINT and
+    SIGTERM still need the premise in full.
 
     THE INVARIANT TO KEEP: this list is a claim about the REST of the
     model.  If a later change gives the model a timer, a controlling
@@ -204,8 +221,9 @@ Definition sig32 (sig : word) : word := abi_low32 sig.
     a fact about [rt_sigaction]: read the note above before touching this
     list.  Every other signal — the four fault signals above all, and
     SIGCHLD, because the model can have a child —
-    fails closed at an install, with one exception that this list does
-    not carry: SIG_DFL for SIGABRT, which [sigabrt_dfl_install] admits. *)
+    fails closed at an install, with two exceptions that this list does
+    not carry, both SIG_DFL: for SIGABRT, which [sigabrt_dfl_install]
+    admits, and for SIGCHLD, which [sigchld_dfl_install] admits. *)
 Definition sigaction_accepted (sig : word) : bool :=
   let s := bv_unsigned sig in
   (Z.eqb s 2 || Z.eqb s 15)%bool.
@@ -422,6 +440,69 @@ Definition sigabrt_dfl_install (sig : word) (mp : word -> option byte) (act : wo
   | None => false
   end.
 
+(** The second install outside [sigaction_accepted] that the spec
+    answers: SIG_DFL for SIGCHLD, under a flag word [sa_flags_ok]
+    admits.  bwrap 0.13.1 makes it first thing in [main]
+    ([struct sigaction sa = {}; sa.sa_handler = SIG_DFL;
+    sigaction(SIGCHLD, &sa, NULL)], to undo a SIG_IGN its launcher may
+    have left); musl passes that as [rt_sigaction(SIGCHLD, act, NULL,
+    8)] with a zero flag word.
+
+    kernel/signal.c [SYSCALL_DEFINE4(rt_sigaction)], [do_sigaction], [sig_handler_ignored], [do_notify_parent], read at v6.18.44; identical at v6.18.46.
+    include/linux/signal.h [SIG_KERNEL_IGNORE_MASK], [sig_kernel_ignore], read at v6.18.44; identical at v6.18.46.
+
+    WHY 0.  SIGCHLD (17) is in 1..64 and is not SIGKILL or SIGSTOP, and
+    no live process carries SA_IMMUTABLE (the note at
+    [rt_sigaction_spec]), so [do_sigaction] stores [*act] and returns 0,
+    and with [oact] NULL so does the syscall.
+
+    WHY NO STATE.  After the call SIGCHLD's disposition is SIG_DFL, and a
+    SIG_DFL SIGCHLD is the disposition every SIGCHLD argument in this
+    model is written against, so the install moves the process TOWARDS
+    the model's assumption rather than away from it:
+    - [Fork.clone_spec]'s header argues that the SIGCHLD a child's exit
+      sends comes to nothing because it is discarded at generation:
+      [sig_handler_ignored] holds for SIG_DFL on a signal in
+      [SIG_KERNEL_IGNORE_MASK], SIGCHLD is in that mask, and
+      [__send_signal_locked] skips the queue.  After this install that
+      is certain; before it, the disposition is the launch's -- SIG_DFL,
+      or a SIG_IGN [execve] kept -- and both discard.
+    - [do_sigaction] itself flushes a pending SIGCHLD here, because
+      [sig_handler_ignored(SIG_DFL, SIGCHLD)] holds (POSIX 3.3.1.3).
+      The model carries no SIGCHLD queue, and a queued SIGCHLD would
+      have been discarded at delivery anyway ([get_signal] finds
+      SIG_DFL and [sig_kernel_ignore]), so nothing observable moves.
+      [posixtimer_sig_unignore] is not reached: it runs only when the
+      new handler is NOT ignored.
+    - Of the flags [sa_flags_ok] admits, two are read for SIGCHLD.
+      SA_NOCLDSTOP stops a child's STOP from raising SIGCHLD, which
+      SIG_DFL discards anyway.  SA_NOCLDWAIT makes [do_notify_parent]
+      autoreap an exiting child, which changes what a later [wait4]
+      finds -- but [Exit.wait4_spec] answers only while
+      [State.m_has_children] is false, when there is no child to reap,
+      and declines once a modeled [clone] has recorded one.  The rest
+      ([sa_mask], SA_SIGINFO, SA_ONSTACK, SA_NODEFER, SA_RESETHAND,
+      SA_EXPOSE_TAGBITS) describe how a handler runs, and SIG_DFL runs
+      none.
+
+    WHAT STAYS DECLINED: SIGCHLD with SIG_IGN or a handler address.  A
+    handler is unsound outright: it would run on each child's exit, and
+    could interrupt a modeled call with an -EINTR or a restart this
+    model does not have.  SIG_IGN discards as SIG_DFL does, but it also
+    autoreaps every child and is the one disposition [execve] passes on
+    ([flush_signal_handlers] keeps it), so admitting it would have to be
+    argued against every child-facing arm; nothing in scope needs it,
+    and declining it keeps the disposition after any answered SIGCHLD
+    install exactly the SIG_DFL named above.  The tripwire is
+    [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled]. *)
+Definition sigchld_dfl_install (sig : word) (mp : word -> option byte) (act : word)
+    : bool :=
+  Z.eqb (bv_unsigned sig) SIGCHLD &&
+  match sigaction_handler mp act with
+  | Some h => w_is0 h
+  | None => false
+  end.
+
 (** [rt_sigaction sig act oact sigsetsize].  [sig] arrives already
     truncated (see [sig32]).  The arms follow the kernel's own order
     (Linux v6.10-v6.15, kernel/signal.c, [SYSCALL_DEFINE4(rt_sigaction)]
@@ -466,7 +547,9 @@ Definition sigabrt_dfl_install (sig : word) (mp : word -> option byte) (act : wo
          [sa_flags_accepted]; then 0 for a signal in
          [sigaction_accepted], storing no disposition; then 0 for SIGABRT
          with the handler SIG_DFL ([sigabrt_dfl_install]), storing no
-         disposition; and UNMODELED for every other signal and handler.
+         disposition; then 0 for SIGCHLD with the handler SIG_DFL
+         ([sigchld_dfl_install]), storing no disposition; and UNMODELED
+         for every other signal and handler.
          Every answer after the copy records the 24
          bytes in [State.eff_copyins]: [SYSCALL_DEFINE4(rt_sigaction)]
          (kernel/signal.c:4650, v6.18.46) has already read them with
@@ -505,6 +588,7 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
          else if negb (sa_flags_ok fl) then unmodeled
          else if sigaction_accepted sig then ret_only (Z_to_bv 64 0)
          else if sigabrt_dfl_install sig (in_mem i) act then ret_only (Z_to_bv 64 0)
+         else if sigchld_dfl_install sig (in_mem i) act then ret_only (Z_to_bv 64 0)
          else unmodeled)         (* a signal a modeled operation can raise: fail closed *)
     end.
 
@@ -1516,8 +1600,8 @@ Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
       question rather than a kernel one.
     - any other signal in 1..64.  The model has a disposition for
       SIGABRT and for no other signal: [rt_sigaction_spec] answers an
-      install only for SIGINT and SIGTERM, and for SIGABRT only with the
-      handler SIG_DFL, so what SIGKILL or SIGUSR1 would do to this
+      install only for SIGINT and SIGTERM, and for SIGABRT and SIGCHLD
+      only with the handler SIG_DFL, so what SIGKILL or SIGUSR1 would do to this
       process is not something the model can read off its own state.
     - [State.m_tid] not yet pinned.  Nothing has made the tid
       observable, so there is no value to compare [pid] against.

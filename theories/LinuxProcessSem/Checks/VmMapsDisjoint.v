@@ -1757,6 +1757,17 @@ Lemma check_close_frame : forall fd eff m m' evs,
   check_close fd eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros fd eff m m' evs H. unfold check_close in H. vm_frame2 H. Qed.
 
+(** [close_range] removes descriptors and nothing else: its one
+    model-changing arm is [with_fds] over [File.close_range_fds], which
+    carries the VM subsystem across untouched. *)
+Lemma check_close_range_frame : forall fd max_fd flags eff m m' evs,
+  check_close_range fd max_fd flags eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros fd max_fd flags eff m m' evs H. unfold check_close_range in H.
+  vm_frame2 H.
+Qed.
+
 Lemma check_lseek_frame : forall fd off whence eff m m' evs,
   check_lseek fd off whence eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
@@ -1951,6 +1962,12 @@ Lemma check_gettid_frame : forall eff m m' evs,
   check_gettid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. exact check_set_tid_address_frame. Qed.
 
+(** [getppid] hands back [m] itself: its answer is a fresh choice and
+    nothing is pinned. *)
+Lemma check_getppid_frame : forall eff m m' evs,
+  check_getppid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof. intros eff m m' evs H. unfold check_getppid in H. vm_frame2 H. Qed.
+
 (** [setsid] takes no arguments and writes no memory, so neither arm can
     touch [vm_maps]: the -EPERM arm hands back [m] itself, and the
     success arm hands back [with_setsid_succeeded (with_tid ret m)],
@@ -1959,13 +1976,13 @@ Lemma check_setsid_frame : forall eff m m' evs,
   check_setsid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros eff m m' evs H. unfold check_setsid in H. vm_frame2 H. Qed.
 
-(** [prctl] answers [PR_CAPBSET_READ] out of a constant and declines
-    every other option, so no arm of it touches the model at all: both
-    accepting branches hand back [m] itself. *)
-Lemma check_prctl_frame : forall option_ arg2 eff m m' evs,
-  check_prctl option_ arg2 eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+(** [prctl] answers its four options out of their arguments and
+    declines every other option, so no arm of it touches the model at
+    all: every accepting branch hands back [m] itself. *)
+Lemma check_prctl_frame : forall i option_ arg2 eff m m' evs,
+  check_prctl i option_ arg2 eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros option_ arg2 eff m m' evs H. unfold check_prctl in H. vm_frame2 H.
+  intros i option_ arg2 eff m m' evs H. unfold check_prctl in H. vm_frame2 H.
 Qed.
 
 (** The four clock arms.  [gettimeofday], [clock_gettime], and [clock_getres] hand back
@@ -2218,10 +2235,12 @@ Proof.
   intros gidsetsize eff m m' evs H. unfold check_getgroups in H. vm_frame2 H.
 Qed.
 
-Lemma check_setgroups_frame : forall eff m m' evs,
-  check_setgroups eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+(** [setgroups]'s one model-changing arm is [with_creds], which rebuilds
+    only [ProcState]. *)
+Lemma check_setgroups_frame : forall i eff m m' evs,
+  check_setgroups i eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros eff m m' evs H. unfold check_setgroups in H. vm_frame2 H.
+  intros i eff m m' evs H. unfold check_setgroups in H. vm_frame2 H.
 Qed.
 
 Lemma check_socket_frame : forall domain type protocol eff m m' evs,
@@ -2565,6 +2584,7 @@ Proof.
     | erewrite check_exit_frame by eassumption; exact Hwf
     | erewrite check_set_tid_address_frame by eassumption; exact Hwf
     | erewrite check_getpid_frame by eassumption; exact Hwf
+    | erewrite check_getppid_frame by eassumption; exact Hwf
     | erewrite check_gettid_frame by eassumption; exact Hwf
     | erewrite check_setsid_frame by eassumption; exact Hwf
     | erewrite check_uname_frame by eassumption; exact Hwf
@@ -2606,6 +2626,7 @@ Proof.
     | erewrite check_set_robust_list_frame by eassumption; exact Hwf
     | erewrite check_clone_frame by eassumption; exact Hwf
     | erewrite check_clone3_frame by eassumption; exact Hwf
+    | erewrite check_close_range_frame by eassumption; exact Hwf
     | erewrite check_getsockname_frame by eassumption; exact Hwf
     | erewrite check_getpeername_frame by eassumption; exact Hwf
     | erewrite check_setsockopt_frame by eassumption; exact Hwf
