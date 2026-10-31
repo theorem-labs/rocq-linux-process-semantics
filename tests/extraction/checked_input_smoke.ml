@@ -182,7 +182,8 @@ let () =
                            rpe_bytes = [z "255"]; rpe_end = M.RneRst }];
               rpi_nofile = z "1024"; rpi_sigmask = z "0"; rpi_hwcap = z "4397";
               rpi_abort_terminal = false; rpi_va_size = M.Sv48;
-              rpi_urandom = [z "7"]; rpi_tmp = [([z "98"], [z "2"])] }))
+              rpi_urandom = [z "7"]; rpi_tmp = [([z "98"], [z "2"])];
+              rpi_channel_reader = true; rpi_sigpipe_default = true }))
 
 let () =
   if !failures = 0 then print_endline "checked-input smoke: all checks passed"
