@@ -3774,7 +3774,7 @@ Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
                (mkCreds overflow_id overflow_id overflow_id
                         overflow_id overflow_id overflow_id [])
                false (Z_to_bv 64 0) false None false false false false []
-               false true)
+               false true true)
             (mkLimState rlim default_nofile)
             (mkTimeState (Z_to_bv 64 0)).
 

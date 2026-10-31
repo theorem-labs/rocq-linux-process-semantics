@@ -376,20 +376,23 @@ Proof.
 Qed.
 
 (* ========================================================================= *)
-(* The reader-gone write.  With no reader on the far end of fd 1 and signal *)
-(* 13 open in the mask, a nonzero write past [access_ok] KILLS the process: *)
-(* [ReadWrite.raise_sigpipe] is [State.with_killed] there, the effect is     *)
-(* -EPIPE with an empty ledger, and [Run.sstep_killed] discards it.          *)
+(* The reader-gone write.  With no reader on the far end of fd 1, SIGPIPE at *)
+(* its default disposition and signal 13 open in the mask, a nonzero write  *)
+(* past [access_ok] KILLS the process: [ReadWrite.raise_sigpipe] is         *)
+(* [State.with_killed] there, the effect is -EPIPE with an empty ledger,    *)
+(* and [Run.sstep_killed] discards it.                                      *)
 (* ========================================================================= *)
 
-(** fd 1 is channel 1, its far end has NO reader, and the mask leaves
-    SIGPIPE open.  The third conjunct is what makes the write a death:
-    with signal 13 blocked [ReadWrite.raise_sigpipe] records it as
-    pending instead and the write RETURNS -EPIPE, a continuation no
+(** fd 1 is channel 1, its far end has NO reader, SIGPIPE's disposition
+    is SIG_DFL and the mask leaves it open.  The last two conjuncts are
+    what make the write a death: under SIG_IGN [ReadWrite.raise_sigpipe]
+    discards the signal, and with signal 13 blocked it records it as
+    pending; either way the write RETURNS -EPIPE, a continuation no
     [to_wexit] derivation carries. *)
 Definition fd1dead (model : Model) : Prop :=
   fd_lookup (m_fds model) (Z_to_bv 64 1) = Some (FdChannel (Z_to_bv 64 1))
   /\ m_channel_reader model = false
+  /\ m_sigpipe_default model = true
   /\ sigpipe_blocked (m_sigmask model) = false.
 
 (** The checker's answer, whatever the claimed effect: -EPIPE over the
@@ -407,7 +410,7 @@ Lemma write1_dead_check : forall segs ms x8 model eff,
   = check_ret_only eff (errno_ret EPIPE)
       (with_killed (Z_to_bv 64 SIGPIPE) model) [].
 Proof.
-  intros segs ms x8 model eff (Hfd & Hrdr & Hmask) Hg Hok Hc.
+  intros segs ms x8 model eff (Hfd & Hrdr & Hdef & Hmask) Hg Hok Hc.
   unfold check_write.
   rewrite Hg; norm_fd32; rewrite Hfd.
   change (w_is0 (Z_to_bv 64 1)) with false. cbv beta iota.
@@ -415,7 +418,7 @@ Proof.
   rewrite Hc. cbv beta iota.
   rewrite Hrdr. change (negb false) with true. cbv beta iota.
   rewrite Hok. change (negb true) with false. cbv beta iota.
-  unfold check_sigpipe_write, raise_sigpipe. rewrite Hmask. reflexivity.
+  unfold check_sigpipe_write, raise_sigpipe. rewrite Hdef, Hmask. reflexivity.
 Qed.
 
 Lemma write1_dead_ok : forall segs ms x8 model,
@@ -1098,13 +1101,19 @@ Proof.
     [left; exact Hnil | right; apply init_model_fd1chan; exact Hr].
 Qed.
 
+(** SIGPIPE kills at this launch: its disposition is SIG_DFL
+    ([State.in_sigpipe_default], which [Run.valid_input] pins) and the
+    launch mask leaves signal 13 open. *)
+Definition sigpipe_fatal (inp : ProcInput) : Prop :=
+  in_sigpipe_default inp = true /\ sigpipe_blocked (in_sigmask inp) = false.
+
 Lemma init_model_fd1dead : forall reserved brk0 mb sp lim inp,
   in_channel_reader inp = false ->
-  sigpipe_blocked (in_sigmask inp) = false ->
+  sigpipe_fatal inp ->
   fd1dead (init_model reserved brk0 mb sp lim inp).
 Proof.
-  intros reserved brk0 mb sp lim inp Hr Hm.
-  split; [reflexivity | split; [exact Hr | exact Hm]].
+  intros reserved brk0 mb sp lim inp Hr (Hd & Hm).
+  split; [reflexivity | split; [exact Hr | split; [exact Hd | exact Hm]]].
 Qed.
 
 (* ========================================================================= *)
@@ -1218,7 +1227,7 @@ Lemma cat_kill_omni_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
   bufs <> [] ->
   wfirst_ok segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
   in_channel_reader inp = false ->
-  sigpipe_blocked (in_sigmask inp) = false ->
+  sigpipe_fatal inp ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
     (wkill_post (in_fs inp)).
 Proof.
@@ -1234,7 +1243,7 @@ Lemma cat_kill_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
   bufs <> [] ->
   wfirst_ok segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
   in_channel_reader inp = false ->
-  sigpipe_blocked (in_sigmask inp) = false ->
+  sigpipe_fatal inp ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
              <-> is_prefix tr [KillEv (Z_to_bv 64 SIGPIPE) (in_fs inp)].
 Proof.
@@ -1250,7 +1259,7 @@ Lemma cat_kill_no_error_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs c
   bufs <> [] ->
   wfirst_ok segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
   in_channel_reader inp = false ->
-  sigpipe_blocked (in_sigmask inp) = false ->
+  sigpipe_fatal inp ->
   ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bufs code Hte Hne Hfo Hr Hm.
@@ -1262,30 +1271,32 @@ Qed.
 
 (** THE LAUNCHES THE AGREEMENT LEMMAS COVER, for two runs that write the
     same buffers and exit with the same code.  [wexit_launch]: a reader
-    on fd 1, or no write at all.  Or no reader with signal 13 open in the
-    mask: each run's first write kills it, so both trace sets are the
-    prefixes of [KillEv 13] over the launch file system, which the two
-    runs share -- they agree, and neither errors.  That needs each run's
-    first write to pass [access_ok] ([wfirst_ok]); past it the arm
-    raises the signal, before it the arm answers -EFAULT.
+    on fd 1, or no write at all.  Or no reader with SIGPIPE fatal
+    ([sigpipe_fatal]: SIG_DFL and open in the mask): each run's first
+    write kills it, so both trace sets are the prefixes of [KillEv 13]
+    over the launch file system, which the two runs share -- they agree,
+    and neither errors.  That needs each run's first write to pass
+    [access_ok] ([wfirst_ok]); past it the arm raises the signal, before
+    it the arm answers -EFAULT.
 
-    NOT COVERED: no reader with signal 13 BLOCKED, for a run that writes.
-    [ReadWrite.raise_sigpipe] records the signal as pending and the first
-    write RETURNS -EPIPE; the run goes on, and [to_wexit]'s write node --
-    ret-oblivious over the delivered counts [1 .. length buf] only -- has
-    no continuation for that return. *)
+    NOT COVERED: no reader with signal 13 BLOCKED or IGNORED, for a run
+    that writes.  [ReadWrite.raise_sigpipe] records the signal as pending
+    or discards it, and the first write RETURNS -EPIPE; the run goes on,
+    and [to_wexit]'s write node -- ret-oblivious over the delivered
+    counts [1 .. length buf] only -- has no continuation for that
+    return. *)
 Definition cat_launch (source_segs : list Segment) (ms_source : machine_state)
     (target_segs : list Segment) (ms_target : machine_state)
     (bufs : list (list byte)) (inp : ProcInput) : Prop :=
   wexit_launch bufs inp
-  \/ (sigpipe_blocked (in_sigmask inp) = false
+  \/ (sigpipe_fatal inp
       /\ wfirst_ok source_segs ms_source /\ wfirst_ok target_segs ms_target).
 
 Lemma cat_launch_cases : forall source_segs ms_source target_segs ms_target bufs inp,
   cat_launch source_segs ms_source target_segs ms_target bufs inp ->
   wexit_launch bufs inp
   \/ (bufs <> [] /\ in_channel_reader inp = false
-      /\ sigpipe_blocked (in_sigmask inp) = false
+      /\ sigpipe_fatal inp
       /\ wfirst_ok source_segs ms_source /\ wfirst_ok target_segs ms_target).
 Proof.
   intros source_segs ms_source target_segs ms_target bufs inp
