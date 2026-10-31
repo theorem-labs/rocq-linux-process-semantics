@@ -479,7 +479,6 @@ Definition check_write_fault_extend (reads : list (word * nat))
       else check_ret_only_copyins reads eff (errno_ret EFAULT)
              (with_fs (fs_set (m_fs m) p (file_extend data off)) m) []
   end.
-
 Definition check_write (i : SyscallInput) (fd buf count : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match fd_lookup (m_fds m) fd with

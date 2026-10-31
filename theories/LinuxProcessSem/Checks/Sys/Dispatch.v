@@ -503,7 +503,7 @@ Definition arm_set_robust_list : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 99%Z (fun i => set_robust_list_spec (in_arg i 1) i))
                        (fun i eff m => check_set_robust_list (in_arg i 1) eff m)
-                       (fun i m => set_robust_list_witness m)
+                       (fun i m => set_robust_list_witness (in_arg i 1) m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_set_robust_list_sound_ok, check_set_robust_list_sound_unmodeled, check_set_robust_list_complete_ok, check_set_robust_list_complete_unmodeled, set_robust_list_witness_ok.
@@ -1598,7 +1598,7 @@ Lemma ca_check_arm_set_robust_list : forall i eff m,
   ca_check arm_set_robust_list i eff m = check_set_robust_list (in_arg i 1) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_set_robust_list : forall i m,
-  ca_witness arm_set_robust_list i m = set_robust_list_witness m.
+  ca_witness arm_set_robust_list i m = set_robust_list_witness (in_arg i 1) m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_set_robust_list : forall i m o,
   sa_spec (ca_arm arm_set_robust_list) i m o = set_robust_list_spec (in_arg i 1) i m o.
