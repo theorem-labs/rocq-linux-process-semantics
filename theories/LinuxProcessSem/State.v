@@ -3868,6 +3868,44 @@ Record Creds := mkCreds {
 Definition creds_privileged (c : Creds) : bool :=
   bv_eqb (cr_euid c) (Z_to_bv 64 0).
 
+(** SIGPIPE's ACTION, as far as this model carries one: the three
+    fields of the [struct sigaction] in [sighand->action[SIGPIPE-1]]
+    that a riscv64 [rt_sigaction] stores and reads back (handler, flags,
+    mask; riscv has no [sa_restorer], see [Kernel.Signal.sigaction_flags]).
+
+    - [spa_default] is the handler, as a boolean: [true] is SIG_DFL (0),
+      [false] is SIG_IGN (1) (include/uapi/asm-generic/signal-defs.h).
+      There is no third value because the model holds no handler that
+      runs: [Kernel.Signal.rt_sigaction_sigpipe] declines an install of
+      a handler address, and that is a chosen boundary, not a gap.  The
+      polarity is SIG_DFL = [true] so that [State.m_sigpipe_default]
+      keeps its old meaning and a model [init_model] builds REDUCES to
+      [in_sigpipe_default] (Common/CatSim.v relies on that conversion).
+    - [spa_flags] is [sa_flags] as [do_sigaction] stores it,
+      [act->sa.sa_flags &= UAPI_SA_FLAGS] ([Uapi.UAPI_SA_FLAGS]).  With
+      no handler running none of these bits has an effect; they are
+      stored because an [oldact] reads them back.
+    - [spa_mask] is [sa_mask] as [do_sigaction] stores it, with SIGKILL
+      and SIGSTOP removed ([sigdelsetmask]).  The same: it would be
+      added to the blocked mask while a handler runs, none runs, and an
+      [oldact] reads it back.
+
+    Both numbers are held in [Z] and are in [0, 2^64) by construction:
+    the seed is 0, and the install arm stores a masked [bv_unsigned]. *)
+Record SigpipeAction := mkSigpipeAction {
+  spa_default : bool;
+  spa_flags   : Z;
+  spa_mask    : Z
+}.
+
+(** The action an execve leaves SIGPIPE with, from the one launch fact
+    that decides it: kernel/signal.c [flush_signal_handlers], called as
+    [flush_signal_handlers(me, 0)] by fs/exec.c [begin_new_exec] (Linux
+    v6.18.46), keeps a SIG_IGN handler and resets any other to SIG_DFL,
+    and sets [sa_flags = 0] and an empty [sa_mask] for every signal. *)
+Definition sigpipe_action_at_exec (dfl : bool) : SigpipeAction :=
+  mkSigpipeAction dfl 0 0.
+
 (** The process itself: whether it has halted, its identity, who it runs
     as, and whether it has led a session. *)
 Record ProcState := mkProcState {
@@ -4200,18 +4238,27 @@ Record ProcState := mkProcState {
                                     process dies there, which is why this field
                                     is not the common case.
 
-                                    WHO CLEARS IT: nothing, and
-                                    [Kernel.Signal.sigmask_deliver_model] is why
-                                    that is right.  A pending SIGPIPE is
-                                    delivered by the mask install that uncovers
-                                    it, and that delivery KILLS, so the state
-                                    after it is a halted one and no later reader
-                                    exists.  SIGPIPE's default action is
-                                    terminate (it is in none of
-                                    SIG_KERNEL_IGNORE_MASK, SIG_KERNEL_STOP_MASK
-                                    or SIG_KERNEL_COREDUMP_MASK,
-                                    include/linux/signal.h), so there is no
-                                    disposition under which the delivery returns.
+                                    WHO CLEARS IT: [with_sigpipe_install] of
+                                    SIG_IGN, as [do_sigaction]'s
+                                    [flush_sigqueue_mask] does, and nothing
+                                    else.  [Kernel.Signal.sigmask_deliver_model]
+                                    is why nothing else needs to: a pending
+                                    SIGPIPE is delivered by the mask install
+                                    that uncovers it, and that delivery KILLS,
+                                    so the state after it is a halted one and no
+                                    later reader exists.  It kills because the
+                                    handler is SIG_DFL whenever this bit is
+                                    set: [raise_sigpipe] sets it only under
+                                    SIG_DFL, and the one install that moves the
+                                    handler to SIG_IGN clears it.  SIGPIPE's
+                                    default action is terminate (it is in none
+                                    of SIG_KERNEL_IGNORE_MASK,
+                                    SIG_KERNEL_STOP_MASK or
+                                    SIG_KERNEL_COREDUMP_MASK,
+                                    include/linux/signal.h).  A SIGPIPE queued
+                                    under SIG_IGN is not recorded here at all;
+                                    the note above [Sys.Fs.ReadWrite.raise_sigpipe]
+                                    gives the invariant that makes that right.
 
                                     A BOOL AND NOT A SIGSET, for
                                     [procst_sigabrt_pending]'s reason: one write
@@ -4265,52 +4312,55 @@ Record ProcState := mkProcState {
                                     inside the write arm -- is no longer
                                     assumed anywhere. *)
 ;
-  procst_sigpipe_default : bool  (* THE THIRD FIELD OF THIS RECORD THAT IS NOT
-                                    KERNEL STATE IN THE USUAL SENSE: whether the
-                                    process was launched with SIGPIPE at its
-                                    DEFAULT DISPOSITION (SIG_DFL).  [true] is
-                                    SIG_DFL and so death on delivery; [false] is
-                                    SIG_IGN, under which the kernel never
-                                    delivers the signal at all and the write
-                                    simply returns -EPIPE.  Seeded by
-                                    [init_model] from [ProcInput]'s
-                                    [in_sigpipe_default] and written by nothing,
-                                    so one run has one answer.
+  procst_sigpipe_action : SigpipeAction
+                                 (* SIGPIPE's ACTION: its handler (SIG_DFL or
+                                    SIG_IGN), flags and mask, as Linux keeps
+                                    them in [sighand->action[SIGPIPE-1]]
+                                    (kernel/signal.c, Linux v6.18.46, commit
+                                    1f99e9ab748f).  [SigpipeAction] carries
+                                    the per-field argument; this note says
+                                    who writes it.
 
-                                    WHY THE MODEL HAS TO BE TOLD, AND WHY THIS IS
-                                    THE TASK'S DECLARATION RATHER THAN THE
-                                    ENVIRONMENT'S.  A disposition SURVIVES
-                                    execve when it is SIG_IGN: fs/exec.c
-                                    [begin_new_exec] calls
-                                    kernel/signal.c [flush_signal_handlers] with
-                                    [force_default = 0], which resets only
-                                    handlers that are neither SIG_DFL nor
-                                    SIG_IGN (Linux v6.18.46, commit
-                                    1f99e9ab748f).  So `signal(SIGPIPE, SIG_IGN)`
+                                    THE START IS THE TASK'S DECLARATION.  A
+                                    handler SURVIVES execve when it is SIG_IGN:
+                                    fs/exec.c [begin_new_exec] calls
+                                    kernel/signal.c [flush_signal_handlers]
+                                    with [force_default = 0], which resets to
+                                    SIG_DFL every handler that is not SIG_IGN
+                                    and sets every action's flags to 0 and its
+                                    mask empty.  So `signal(SIGPIPE, SIG_IGN)`
                                     in a launcher -- what a shell job-control
                                     wrapper, a service manager or a language
                                     runtime that wants EPIPE instead of death
                                     does -- hands this process a world in which
-                                    no write kills it.  The model cannot derive
-                                    which world it is in, because nothing inside
-                                    the modeled surface can observe or change it:
-                                    [Kernel.Signal.rt_sigaction_spec] declines
-                                    every install for signal 13.
+                                    no write kills it, and the model cannot
+                                    derive which world it is in.
+                                    [init_model] therefore seeds this field
+                                    from [ProcInput]'s [in_sigpipe_default] and
+                                    NOTHING ELSE ([sigpipe_action_at_exec]):
+                                    the handler from it, the flags and the mask
+                                    0, which is what [flush_signal_handlers]
+                                    leaves.  The launch gains no free choice.
+                                    [Run.valid_input] pins the declaration to
+                                    SIG_DFL, the world every statement in this
+                                    tree was written under; the other world is
+                                    [Run.valid_input_sigpipe_ignored].
 
-                                    IT IS PINNED, UNLIKE [procst_channel_reader].
-                                    [Run.valid_input] pins it to [true], because
-                                    that is the world every statement in this
-                                    tree was written under -- the ordinary
-                                    launch, in which a reader-less write ends the
-                                    program.  The other world is a predicate of
-                                    its own, [Run.valid_input_sigpipe_ignored],
-                                    exactly as the abort stance is
-                                    [Run.valid_input_abort].  Without the field
-                                    that pinning would be an UNSTATED premise of
-                                    every theorem here, and a launcher that
-                                    ignores SIGPIPE would hand the model a
-                                    process it kills where Linux returns -EPIPE
-                                    and runs on. *)
+                                    THE ONE WRITER INSIDE A RUN is
+                                    [with_sigpipe_install], and its only caller
+                                    is the SIGPIPE install arm of
+                                    [Kernel.Signal.rt_sigaction_spec]
+                                    ([Kernel.Signal.rt_sigaction_sigpipe]).
+                                    Every other setter of this record carries
+                                    the field across unchanged.  Before that
+                                    arm existed every SIGPIPE install was
+                                    [unmodeled], so a run modeled before it
+                                    installs nothing, keeps the seeded action,
+                                    and reads the same [m_sigpipe_default] it
+                                    read when this field was a bare boolean:
+                                    such a run behaves exactly as it did.
+                                    [Kernel.Signal.rt_sigaction_sigpipe] gives
+                                    the commands that check this. *)
 }.
 
 (** The resource limits the process has been observed to have. *)
@@ -4457,12 +4507,20 @@ Definition m_sigpipe_pending (m : Model) : bool :=
     value; see [procst_channel_reader]. *)
 Definition m_channel_reader (m : Model) : bool :=
   procst_channel_reader (m_proc m).
-(** Whether SIGPIPE is still at SIG_DFL, the launch declaration
+(** SIGPIPE's current action: handler, flags and mask, as the last
+    install left them or as the launch seeded them.  See
+    [procst_sigpipe_action]. *)
+Definition m_sigpipe_action (m : Model) : SigpipeAction :=
+  procst_sigpipe_action (m_proc m).
+(** Whether SIGPIPE's handler is SIG_DFL -- the one bit of the action
     [Sys.Fs.ReadWrite.raise_sigpipe] reads before it ends the process.
-    [Run.valid_input] pins it to [true]; the other reading is
-    [Run.valid_input_sigpipe_ignored].  See [procst_sigpipe_default]. *)
+    The same meaning this name had when the handler was a bare launch
+    declaration: [Run.valid_input] pins the declaration to SIG_DFL, the
+    other reading is [Run.valid_input_sigpipe_ignored], and a run that
+    installs nothing keeps the seeded value ([with_sigpipe_install] is
+    the only writer after [init_model]). *)
 Definition m_sigpipe_default (m : Model) : bool :=
-  procst_sigpipe_default (m_proc m).
+  spa_default (m_sigpipe_action m).
 Definition m_utsname (m : Model) : option (list byte) :=
   procst_utsname (m_proc m).
 Definition m_statpins (m : Model) : list (Fs.path * list byte) :=
@@ -4515,7 +4573,7 @@ Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
                (mkCreds overflow_id overflow_id overflow_id
                         overflow_id overflow_id overflow_id [])
                false (Z_to_bv 64 0) false None false false false false []
-               false true true)
+               false true (sigpipe_action_at_exec true))
             (mkLimState rlim default_nofile)
             (mkTimeState (Z_to_bv 64 0)).
 
@@ -4598,7 +4656,7 @@ Definition with_fs (fs : Fs.Fs) (m : Model) : Model :=
                          (m_abort_terminal m)
                          (statpins_restrict fs (m_statpins m))
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 (** Halt the process by an EXIT, which is the other half of what the
     kill flag distinguishes: this clears it, so a model this produced has
@@ -4616,7 +4674,7 @@ Definition with_halted (code : word) (m : Model) : Model :=
                          false (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 Definition with_tid (tid : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -4627,7 +4685,7 @@ Definition with_tid (tid : word) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
@@ -4651,7 +4709,7 @@ Definition with_utsname (bs : list byte) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 (** Look a file's stat pin up by path.  [None] means no [fstat] has
     delivered a [struct stat] for that file yet, which is the branch
@@ -4689,7 +4747,7 @@ Definition with_statpin (p : Fs.path) (bs : list byte) (m : Model) : Model :=
                          (m_abort_terminal m)
                          ((p, bs) :: m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 
 (** Seed the soft descriptor limit.  Its only caller is [init_model], for
@@ -4717,7 +4775,7 @@ Definition with_abort_terminal (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m) b
                          (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 
 Definition with_nofile (n : word) (m : Model) : Model :=
@@ -4732,7 +4790,7 @@ Definition with_creds (c : Creds) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 Definition with_setsid_succeeded (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -4742,7 +4800,7 @@ Definition with_setsid_succeeded (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 
 (** Record that the process now has something to reap.
@@ -4770,7 +4828,7 @@ Definition with_children (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 (** Install a new blocked mask.  [Kernel.Signal.rt_sigprocmask_spec] is
     the only caller, and the only kernel path that reaches
@@ -4792,7 +4850,7 @@ Definition with_sigmask (s : word) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 
 (** Record that a [sigaltstack] has installed an alternate stack.
@@ -4821,7 +4879,7 @@ Definition with_sigaltstack_installed (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 
 (** Record that SIGABRT has been sent and is BLOCKED, so it waits in
@@ -4849,7 +4907,7 @@ Definition with_sigabrt_pending (m : Model) : Model :=
                          (procst_killed (m_proc m)) true (m_abort_terminal m)
                          (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 
 (** Record that SIGPIPE has been sent and is BLOCKED, the same shape as
@@ -4858,11 +4916,11 @@ Definition with_sigabrt_pending (m : Model) : Model :=
     reaches here only when [Sys.Uapi.sigpipe_blocked] holds of the
     process's mask; with the mask open it calls [with_killed] instead.
 
-    NOTHING CLEARS IT, for [procst_sigabrt_pending]'s reason and more
-    simply: SIGPIPE's default action is TERMINATE and the model admits
-    no other disposition for it ([Kernel.Signal.rt_sigaction_spec]
-    declines every install for signal 13), so the delivery that would
-    dequeue it is the step that ends the process. *)
+    ONE THING CLEARS IT: [with_sigpipe_install] of SIG_IGN, as
+    [do_sigaction]'s [flush_sigqueue_mask] does (kernel/signal.c, Linux
+    v6.18.46).  Nothing else does, for [procst_sigabrt_pending]'s reason:
+    SIGPIPE's default action is TERMINATE, so the delivery that would
+    dequeue it under SIG_DFL is the step that ends the process. *)
 Definition with_sigpipe_pending (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
@@ -4872,7 +4930,7 @@ Definition with_sigpipe_pending (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          true (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 
 (** Seed the environment's channel-reader fact.  Its only caller is
@@ -4892,18 +4950,21 @@ Definition with_channel_reader (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) b
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 
-(** Seed the task's SIGPIPE disposition.  Its only caller is
-    [init_model], for the reason [with_abort_terminal] gives: the
-    disposition is a parameter of the RUN -- it was decided before
-    execve and survives it ([procst_sigpipe_default] names the kernel
-    site) -- so the one place that may install it is the one that turns
-    a [ProcInput] into a model.  Nothing inside the modeled surface
-    writes it: [Kernel.Signal.rt_sigaction_spec] declines every install
-    for signal 13, so it is constant along every run. *)
-Definition with_sigpipe_default (b : bool) (m : Model) : Model :=
+(** Seed SIGPIPE's action from the launch declaration [dfl] (SIG_DFL
+    when [true], SIG_IGN when [false]), as [sigpipe_action_at_exec]
+    builds it.  Its only caller is [init_model_setter_chain], the chain
+    [init_model] is proved equal to; [init_model] itself builds the same
+    seed inline.  That is for the reason [with_abort_terminal] gives:
+    the handler was decided before execve and survives it
+    ([procst_sigpipe_action] names the kernel site), so the one place
+    that may install the starting action is the one that
+    turns a [ProcInput] into a model.  The flags and the mask are 0
+    here because execve leaves them 0, not because the launch chose
+    them. *)
+Definition with_sigpipe_default (dfl : bool) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
                          (m_setsid_succeeded m) (m_sigmask m)
@@ -4912,7 +4973,33 @@ Definition with_sigpipe_default (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         b)
+                         (sigpipe_action_at_exec dfl))
+            (m_lim m) (m_time m).
+
+(** INSTALL [a] AS SIGPIPE's ACTION: the one writer of
+    [procst_sigpipe_action] inside a run.  Its only caller is
+    [Kernel.Signal.rt_sigaction_sigpipe], the SIGPIPE install arm of
+    [Kernel.Signal.rt_sigaction_spec]; [with_sigpipe_default] above is
+    the other writer, and it runs only in [init_model].
+
+    [do_sigaction] (kernel/signal.c, Linux v6.18.46) does two things
+    here: [*k = *act] stores the action, and when the new handler
+    passes [sig_handler_ignored] -- for SIGPIPE that is SIG_IGN alone,
+    since 13 is not in SIG_KERNEL_IGNORE_MASK (include/linux/signal.h)
+    -- [flush_sigqueue_mask] discards a pending SIGPIPE, "whether or not
+    it is blocked" (POSIX 3.3.1.3, quoted there).  So the pending bit is
+    cleared exactly when [a] is SIG_IGN, and kept when [a] is SIG_DFL. *)
+Definition with_sigpipe_install (a : SigpipeAction) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m && spa_default a)%bool
+                         (m_channel_reader m)
+                         a)
             (m_lim m) (m_time m).
 
 (** End the process by a fatal signal.  It writes the signal number into
@@ -4950,11 +5037,13 @@ Definition with_sigpipe_default (b : bool) (m : Model) : Model :=
     purpose.  [procst_channel_reader] is the ENVIRONMENT's -- whether
     anything still reads descriptors 1 and 2 -- and [Run.valid_input]
     CONSTRAINS NEITHER VALUE, so every statement covers both worlds.
-    [procst_sigpipe_default] is the TASK's -- whether SIGPIPE is still
-    at SIG_DFL -- and [Run.valid_input] pins it to [true], the world
-    every statement in this tree was written under; the other world is
-    [Run.valid_input_sigpipe_ignored], where this setter is never
-    reached because [raise_sigpipe] discards the signal. *)
+    [procst_sigpipe_action]'s handler is the TASK's at launch -- whether
+    SIGPIPE is still at SIG_DFL -- and [Run.valid_input] pins it to
+    [true], the world every statement in this tree was written under;
+    the other world is [Run.valid_input_sigpipe_ignored].  An install of
+    SIG_IGN inside the run moves it there too ([with_sigpipe_install]);
+    with SIG_IGN this setter is never reached for signal 13, because
+    [raise_sigpipe] discards the signal. *)
 Definition with_killed (sig : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (Some sig) (m_tid m) (m_creds m)
@@ -4964,7 +5053,7 @@ Definition with_killed (sig : word) (m : Model) : Model :=
                          true (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_action m))
             (m_lim m) (m_time m).
 
 (** The invariant the two fields are written under, stated where the
@@ -6789,13 +6878,13 @@ Record ProcInput := mkProcInput_full {
        [begin_new_exec] calls kernel/signal.c [flush_signal_handlers]
        with [force_default = 0], which resets handlers but leaves
        SIG_DFL and SIG_IGN alone (Linux v6.18.46, commit 1f99e9ab748f).
-       So the disposition the program runs under was decided by its
+       So the handler the program starts under was decided by its
        launcher, exactly as the launching uid and the blocked mask
-       were, and nothing inside the modeled surface can observe or
-       change it: [Kernel.Signal.rt_sigaction_spec] declines every
-       install for signal 13.  Ignoring SIGPIPE is what a service
-       manager, a shell wrapper and several language runtimes do.
-
+       were.  Ignoring SIGPIPE is what a service manager, a shell
+       wrapper and several language runtimes do.  The program may
+       change it afterwards: [Kernel.Signal.rt_sigaction_spec] answers
+       an install of SIG_DFL or SIG_IGN for signal 13, and this field is
+       the value it changes FROM.
        [Run.valid_input] PINS IT TO [true], and that is settled where
        the reader above is not.  The two fields gate the same death,
        but this one is the TASK's stance and not the environment's, so
@@ -6807,8 +6896,8 @@ Record ProcInput := mkProcInput_full {
        SIGPIPE would be handed a model that kills the process where
        Linux returns -EPIPE and runs on.
 
-       [init_model] copies this into [procst_sigpipe_default] and
-       nothing else writes it *)
+       [init_model] seeds [procst_sigpipe_action] from this and nothing
+       else ([sigpipe_action_at_exec]: this handler, flags 0, mask 0) *)
 }.
 
 (** THE POSITIONAL-LITERAL FORM: every field except the six
@@ -7005,7 +7094,7 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
                 (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
        false (in_sigmask inp) false None false false false
        (in_abort_terminal inp) [] false (in_channel_reader inp)
-       (in_sigpipe_default inp))
+       (sigpipe_action_at_exec (in_sigpipe_default inp)))
     (mkLimState None (in_nofile inp))
     (mkTimeState (Z_to_bv 64 0)).
 
@@ -7164,6 +7253,11 @@ Lemma m_kernel_with_sigpipe_pending : forall m,
   m_kernel (with_sigpipe_pending m) = m_kernel m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_sigpipe_pending : model.
+
+Lemma m_kernel_with_sigpipe_install : forall a m,
+  m_kernel (with_sigpipe_install a m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigpipe_install : model.
 
 Lemma m_kernel_with_creds : forall v m, m_kernel (with_creds v m) = m_kernel m.
 Proof. reflexivity. Qed.
