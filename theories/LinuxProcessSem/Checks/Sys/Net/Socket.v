@@ -360,7 +360,7 @@ Definition check_connect (i : SyscallInput) (fd addrp addrlen : word)
       if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al)
       then check_ret_only eff (errno_ret EINVAL) m []
       else
-      match copy_bytes_map (in_mem i) addrp al with
+      match move_addr_bytes (in_mem i) addrp al with
       | None => check_ret_only eff (errno_ret EFAULT) m []
       | Some bs =>
           let copied := if Z.eqb al 0 then [] else [(addrp, length bs)] in
@@ -1141,7 +1141,7 @@ Proof.
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        cbv beta iota zeta in H |- *; [ connect_ret H | ].
-  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
+  all: destruct (move_addr_bytes (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; cbv beta iota zeta in H |- *; [ | connect_ret H ].
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez;
        cbv beta iota zeta in H |- *.
@@ -1176,7 +1176,7 @@ Proof.
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        cbv beta iota zeta in H |- *;
        [ now apply check_ret_only_no_unmodeled in H | ].
-  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
+  all: destruct (move_addr_bytes (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; cbv beta iota zeta in H |- *;
        [ | now apply check_ret_only_no_unmodeled in H ].
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez;
@@ -1213,7 +1213,7 @@ Proof.
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        hall E1; inv_ok; [ cbn; try rewrite bv_eqb_refl; reflexivity | ].
-  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
+  all: destruct (move_addr_bytes (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; hall Hrb; inv_ok;
        [ | cbn; try rewrite bv_eqb_refl; reflexivity ].
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez; hall Ez; inv_ok.
@@ -1242,7 +1242,7 @@ Proof.
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        hall E1; inv_ok; try discriminate.
-  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
+  all: destruct (move_addr_bytes (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; hall Hrb; inv_ok; try discriminate.
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez; hall Ez; inv_ok;
        try discriminate.

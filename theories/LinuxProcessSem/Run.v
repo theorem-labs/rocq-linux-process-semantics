@@ -297,8 +297,10 @@ Variable mi_init_brk : word.
     section).  The untrusted search in
     theories/Common/PlacementSearch.v takes its floor as a bare argument
     rather than off a [VmMaps].  The ASan plan checker's placement gate
-    ([Common.AsanCeil.placement_ok]) reads it too, under that checker's
-    named [placement_policy] hypothesis.  The PREDICATE over the value
+    ([Common.AsanCeil.placement_ok]) reads it too; that gate is the
+    theorem [Common.AsanCeil.placement_policy_holds], proved from
+    [Mmap.linux_place], and no longer a hypothesis the checker names.
+    The PREDICATE over the value
     is what [valid_entry] carries — see [valid_mmap_base]. *)
 Variable mi_mmap_base : word.
 
@@ -2999,8 +3001,9 @@ Qed.
     discharge — which is why the field strengthens every
     statement in the tree that quantifies over an entry without changing
     one of their texts.  No ADDRESS moves with the draw either
-    ([StackLayout.build_stack_bytes_split_random],
-    [entry_stack_image_block_prefix]), so [entry_stack_fits] stays a
+    ([StackLayout.build_stack_bytes_split_random], carried to the
+    mapped image by [PropExec.entry_stack_image_block]), so
+    [entry_stack_fits] stays a
     function of (sp, argv, envp) — and it still bounds the whole mapped
     region, page rounding included
     ([PropExec.entry_page_top_within_window]).

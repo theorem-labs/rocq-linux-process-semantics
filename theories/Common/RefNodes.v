@@ -941,7 +941,7 @@ Proof.
   rewrite Z.max_r by lia. reflexivity.
 Qed.
 
-(** Size bounds survive subtraction (for [grant_exists]'s hypothesis). *)
+(** Size bounds survive subtraction (for [maps_subtract_sizes] below). *)
 Lemma iv_subtract_sizes : forall (a sz : word) (lo hi : Z) N,
   0 <= lo -> hi < 2 ^ 64 ->
   bv_unsigned sz <= N ->
@@ -1067,7 +1067,7 @@ Proof.
 Qed.
 
 (** [file_read] delivers at most [count] and at most the remaining bytes
-    (for [rz_read_file]'s length side conditions). *)
+    (for the length side conditions of the file-read node). *)
 Lemma file_read_length_eq : forall data (off count : word),
   length (file_read data off count) = Nat.min (word_to_nat count) (length data - word_to_nat off).
 Proof. intros. rewrite length_file_read. reflexivity. Qed.

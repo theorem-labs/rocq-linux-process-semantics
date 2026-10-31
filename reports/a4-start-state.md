@@ -343,8 +343,13 @@ come from different `Qed`-opaque lemmas (`bv_extract`'s and `Z_to_bv`'s) that
 `bv_wf_pi`, which `bv_eq` rests on), so the witness carries no information.
 The values are still compared by computation.
 
-No generated file contains `Admitted`, `Axiom`, `admit` or `Parameter`;
-`.github/check_assumptions.py` is part of LPS CI and passes over them.
+No generated file contains `Admitted`, `Axiom`, `admit` or `Parameter`. What
+shows it is the `Print Assumptions` results reported in
+`reports/evidence-start-state.md`, NOT `.github/check_assumptions.py`: that
+script walks `theories/Examples/<name>/` for a `Proof.v` and compiles the
+`Checker.v` dune generated beside it (`.github/check_assumptions.py:49` and
+`:81-83`), so it never opens `tests/StartState*.v` and exits 0 whatever those
+files hold.
 
 ### What is fed in rather than checked
 
@@ -491,8 +496,16 @@ same ten logs under `tests/placement/` and the same generator under
 cd <revision/entry clone>
 dune build                                            # all ten
 dune build tests/StartStateNorandmapsSeed1Fixture.vo  # one
-python3 .github/check_assumptions.py                  # no Admitted, Axiom,
-                                                      # admit or Parameter
+```
+
+`.github/check_assumptions.py` is NOT the assumption check for these files —
+it reads `theories/Examples/*/Checker.v` only. For a generated start-state
+file, ask Rocq directly, which is what `reports/evidence-start-state.md`
+reports:
+
+```coq
+From LinuxProcessSemantics.Tests Require Import StartStateNorandmapsSeed1Fixture.
+Print Assumptions launch_ok.    (* and block_ok, and auxv_ok *)
 ```
 
 To read a generated file rather than build it:

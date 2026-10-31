@@ -2292,12 +2292,31 @@ Proof. check_eq. Qed.
     The two hand-built states below KEEP that orphan shape anyway,
     because what they are for is the mremap predicate rather than brk:
     [Mremap.mremap_fresh_b] never consults [vm_noaccess], so what keeps
-    a moved destination off a protected range is a [vm_maps] entry
-    reaching into its page.  The pair differs only in whether that
-    residual entry is there; the source at 131072 is an unrelated clean
-    mapping to move.  Neither state is reachable from [init_model]
-    today, which is said here rather than left for a reader to assume
-    from their shape. *)
+    a moved destination off a protected range is the residual entry
+    [(65536, 4084)] — a shrink that TRUNCATES the owning entry rather
+    than removing it, so a page-aligned destination low enough to touch
+    the orphan must cross the residual first.  The pair differs only in
+    whether that residual is there; the source at 131072 is an
+    unrelated clean mapping to move.
+
+    NEITHER STATE IS REACHABLE, AND THEY ARE UNREACHABLE BY TWO
+    SEPARATE ROUTES — said here rather than left for a reader to infer
+    from their shape, because seeing one reason invites the conclusion
+    that the other state is reachable.
+    [m_brk_orphan_without_residual] was already unreachable before this
+    revision, by the [a <= page_floor r < r] argument
+    ([Mremap.mremap_fresh_b]'s note): a nonempty orphan forces the
+    truncated entry to survive.  [m_brk_orphan_with_source] joined it
+    when [Mmap.brk_maps_next] became page-granular.
+
+    WHERE THE BOUNDARY IS PINNED, and it is not where it reads: on the
+    GUARD, in [Cases/Mm/Mremap.v]
+    ([mremap_fresh_above_brk_orphan_accepts]), whose two destinations
+    differ only in the page, one apart across the orphan's end (69632).
+    The syscall cases on this state reach no moved destination at all —
+    the grow has room above the source and expands in place — so they
+    are both [CheckReject] for that reason and pin nothing about the
+    orphan. *)
 
 Definition m_brk_orphan_with_source : Model :=
   with_vmmaps
@@ -2309,9 +2328,12 @@ Definition m_brk_orphan_with_source : Model :=
     shrink TRUNCATES the owning entry rather than removing it, and a
     nonempty orphan forces the protected base [a] to satisfy
     [a <= page_floor r < r], so [[page_floor r, r)] is always still in
-    [vm_maps].  Take the residual out anyway and the move onto the orphan
-    page is ACCEPTED — the model would place a mapping onto protected
-    memory.  So the property [Mremap.mremap_fresh_b] actually leans on is
+    [vm_maps].  Take the residual out anyway and the guard
+    [Mremap.mremap_fresh_b] ADMITS the destination onto the orphan page
+    ([Cases/Mm/Mremap.v]'s
+    [mremap_fresh_onto_orphan_without_residual_accepts]) — the model
+    would place a mapping onto protected memory.  So the property
+    [Mremap.mremap_fresh_b] actually leans on is
     "truncated, not removed", not the containment prose: the orphan's
     presence in [vm_noaccess] does none of the work, because the
     predicate never reads it. *)
@@ -2355,8 +2377,8 @@ Proof.
 Qed.
 
 (** And it FAILS on the counterfactual state, the one where the residual
-    entry was taken away and the move onto protected memory was accepted
-    just above.  So the invariant is exactly what separates the reachable
+    entry was taken away and the guard admits a destination onto
+    protected memory.  So the invariant is exactly what separates the reachable
     state from the unreachable one: it is not vacuous, and it is not
     trivially true of anything with a nonempty [vm_noaccess]. *)
 

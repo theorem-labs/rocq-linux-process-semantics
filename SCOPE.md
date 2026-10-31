@@ -320,6 +320,20 @@ These cases stay outside the model:
   stack's guard region instead (`mm/vma.c`), so the vDSO's address and
   the stack floor can differ from the model's. The proofs use Sv48.
 
+The finite input record is a surjection onto the finite inputs, not an
+encoding of them. `EquivalenceDefinition/FinInput.v`'s `to_proc_input`
+pads the record's random field with `State.default_urandom`, the
+all-zero stream, so a record carrying no random bytes and one carrying a
+list of zeros denote the same input: `to_proc_input_not_inj` exhibits
+that collision, and `to_proc_input_inj` holds only with the random
+fields assumed equal. Nothing is lost to a statement quantified over
+inputs, because everything the record denotes is finite and every finite
+input is denoted (`finite_input_surjection`,
+`valid_finite_input_surjection`), so the two quantifiers coincide. What
+an argument may not do is count finite records, or conclude that two
+runs differ because their records differ. `FinInput.v`'s header carries
+the reasoning.
+
 ## Assumptions that the model does not check
 
 If one of these assumptions is false, a proof can be correct but it does
