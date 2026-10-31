@@ -1,19 +1,10 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/EventFd.v
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
 unported: eventfd_model -- the spec reads no field of the model, so every pin here quantifies over the model instead of naming one -/
-
-/-! rocq-cases: a71fd38a08571d519b9cfc5f66308db5c26da570
-covers: eventfd2_host_words_decline -- sparc_nonblock_declines, sparc_cloexec_declines, sparc_both_declines, mips_nonblock_declines, sparc_with_mask_declines, mips_with_semaphore_declines, sparc_with_cloexec_declines, mixed_hosts_declines, mips_sparc_cloexec_declines, all_host_bits_declines, mips_with_nonblock_declines, mips_with_cloexec_declines, mips_with_mask_declines, parisc_old_nonblock_declines, parisc_nonblock_declines, parisc_cloexec_declines, all_six_host_bits_declines, all_six_host_bits_with_mask_declines
-covers: eventfd2_host_neighbours_answered -- all_host_bits_with_bad_bit_answered, sparc_bad_neighbour_answered, sparc_cloexec_bad_bit_answered, mips_bad_neighbour_answered, host_neighbour_13_answered, host_neighbour_23_answered, host_neighbour_6_answered, host_neighbour_8_answered, host_neighbour_3_answered, host_neighbour_17_answered, dropped_bit_20_is_einval, all_six_host_bits_with_bad_bit_answered
-covers: eventfd2_refused_errno_pair -- refused_enosys, refused_eperm, dropped_bit_enomem_rejected, accepted_enosys
-covers: eventfd2_dropped_flag_bits_are_einval -- dropped_bit_1_is_einval, dropped_bit_1_descriptor_rejected, dropped_bit_10_is_einval, dropped_bit_15_is_einval, dropped_bit_15_descriptor_rejected, dropped_bit_20_is_einval
-covers: eventfd2_accepted_flag_words_decline -- semaphore_declines, semaphore_einval_rejected, empty_flags_declines, empty_flags_descriptor_not_admitted, cloexec_declines, nonblock_declines, whole_mask_declines, dropped_bit_20_is_einval
-covers: eventfd2_counter_is_not_judged -- counter_bit_20_is_not_judged, swapped_arguments_rejected, counter_max_is_not_judged, wild_counter_bad_flags_is_einval
-covers: eventfd2_narrows_the_flag_word -- high_half_aliases_to_empty, full_register_einval_rejected, high_half_over_semaphore_declines, high_half_over_bad_bit_is_einval
-covers: eventfd2_sign_bit_is_still_a_bad_bit -- sign_bit_is_einval, sign_bit_through_the_table_is_einval, sign_bit_descriptor_rejected, sign_bit_beside_semaphore_is_einval -/
 
 /-! # Checks.Cases.Fs.EventFd — what `eventfd2` admits, read off against Linux
 
@@ -22,6 +13,10 @@ Worked examples over `Sys.Fs.EventFd.eventfd2_spec`, the twin of
 trusted specification: this file is QA on the definitions, written to be
 READ, and every claim in it is a claim about what the kernel does, with the
 citation beside it.
+
+WHAT THE ARM ANSWERS, in one line: a flag word with a bit outside
+`EFD_FLAGS_SET` is -EINVAL, the model unchanged and no event; every other
+word is declined.  There is no second answer and no third arm.
 
 HOW THESE ARE STATED.  The Rocq file reads the spec through the executable
 checker and the dispatcher (`check_syscall` on inputs built by `efd_in`).
@@ -66,10 +61,6 @@ open LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
 Tactic.lean`'s register says what a spec owes); its gate
 `eventfd2_einval_b` is decided, never unfolded. -/
 attribute [sys_simp low] eventfd2_spec.eq_1
-
-/-- `ENOSYS` is 38.
-kernel: include/uapi/asm-generic/errno.h:ENOSYS@v6.18.46 -/
-theorem enosys_is_38 : ENOSYS = 38 := by decide
 
 /-! ## The flag words these checks spell out
 
@@ -120,49 +111,40 @@ example : 2 * O_CLOEXEC = 2 ^ 20 := by decide
 that can fail: the three `BUILD_BUG_ON`s above it (lines 386-388) are
 compile-time.  Everything that can answer anything else — the `kmalloc`
 (line 393), `get_unused_fd_flags` (line 405), `anon_inode_getfile_fmode`
-(line 409) — sits below it. The answered words below have a stray bit
-outside the host union as well as the guest mask. For those words,
--EINVAL or -ENOSYS is the answer, the model is untouched and no event
-is emitted, whatever the counter and whatever the model. Each
-`iff` below pins all of that at once; the refutations name the lies. -/
+(line 409) — sits below it.  For a word with a bit outside the mask the
+answer is -EINVAL, the model is untouched and no event is emitted,
+whatever the counter and whatever the model.  Each `iff` below pins all
+of that at once; the refutations name the lies. -/
 
 /-- Bit 1, the bit immediately above `EFD_SEMAPHORE`: the likeliest
 off-by-one when a reader remembers "eventfd2 takes a low bit".  -EINVAL
-from the gate (fs/eventfd.c:390-391, Linux v6.18.46), or -ENOSYS
-from kernel/sys_ni.c `sys_ni_syscall` without CONFIG_EVENTFD.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+from the gate (fs/eventfd.c:390-391, Linux v6.18.46).
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem dropped_bit_1_is_einval (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec 2 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+    eventfd2_spec 2 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-- Bit 10, just below `O_NONBLOCK`'s bit 11: the same gate.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem dropped_bit_10_is_einval (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec 1024 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+    eventfd2_spec 1024 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-- Bit 15, `O_LARGEFILE`'s bit, which musl ORs into every `open` it
 issues and which this call does NOT accept: `EFD_FLAGS_SET` has no
 `O_LARGEFILE` (include/linux/eventfd.h:26-27, Linux v6.18.46), so the
-gate answers -EINVAL, or kernel/sys_ni.c `sys_ni_syscall` answers
--ENOSYS without CONFIG_EVENTFD (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+gate answers -EINVAL.
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem dropped_bit_15_is_einval (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec 32768 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+    eventfd2_spec 32768 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-- Bit 20, the bit immediately above the mask's top bit (`O_CLOEXEC`,
 bit 19): the sharpest witness that the mask is a mask and not a bound.
--EINVAL from the gate (fs/eventfd.c:390-391, Linux v6.18.46), or
--ENOSYS from kernel/sys_ni.c `sys_ni_syscall` without CONFIG_EVENTFD
-(Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+-EINVAL from the gate (fs/eventfd.c:390-391, Linux v6.18.46).
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem dropped_bit_20_is_einval (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec 1048576 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+    eventfd2_spec 1048576 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-- The whole mask and one bit outside it (bit 1): accepted bits do not
@@ -170,21 +152,18 @@ excuse a refused one, because the residue `flags & ~EFD_FLAGS_SET` keeps
 only the bits outside the mask (fs/eventfd.c:390-391, Linux v6.18.46).
 testing/syscall-check/tests/eventfd2.c's `einval` case passes this word
 to the pinned kernel.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem mask_plus_one_bad_bit_is_einval (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec 526339 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+    eventfd2_spec 526339 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-- Every bit of the 32-bit word — what `eventfd2(0, -1)` and
 `eventfd2(0, 0xFFFFFFFF)` both arrive as after the `int` narrowing, and
 the words testing/syscall-check/tests/eventfd2.c's `einval` case sends:
--EINVAL (fs/eventfd.c:390-391, Linux v6.18.46), or -ENOSYS from
-kernel/sys_ni.c `sys_ni_syscall` without CONFIG_EVENTFD (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+-EINVAL (fs/eventfd.c:390-391, Linux v6.18.46).
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem every_flag_bit_is_einval (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec 4294967295 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+    eventfd2_spec 4294967295 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-! ### The lies a kernel could tell on a refused word
@@ -276,9 +255,19 @@ theorem dropped_bit_enoent_rejected (i : SyscallInput) (m m' : Model) (evs : Lis
     ¬ eventfd2_spec 2 i m (Ok (mkEffect (errno_ret ENOENT) [] []) m' evs) := by
   sys_refute
 
-/-- kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
+/-- A refused word is ANSWERED and never declined: the arm leaves no
+room for a fail-closed reading of a word the gate judges.
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem dropped_bit_never_unmodeled (i : SyscallInput) (m : Model) :
     ¬ eventfd2_spec 2 i m Unmodeled := by
+  sys_refute
+
+/-- No policy errno at this gate: `do_eventfd` tests the flag word and
+nothing about the caller (fs/eventfd.c:390-391, Linux v6.18.46), so
+-EPERM is a lie on a refused word as surely as a descriptor is.
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
+theorem refused_eperm (i : SyscallInput) (m m' : Model) (evs : List event) :
+    ¬ eventfd2_spec 2 i m (Ok (mkEffect (errno_ret EPERM) [] []) m' evs) := by
   sys_refute
 
 /-- The -EINVAL is INERT: `do_eventfd` returns before any store or
@@ -313,20 +302,18 @@ A spec that compared the residue against 0 with `>` on a signed reading
 would accept this word; testing/syscall-check/tests/eventfd2.c's `dropped`
 pair pins it against a real run. -/
 
-/-- Bit 31 alone: -EINVAL or -ENOSYS.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+/-- Bit 31 alone: -EINVAL.
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem sign_bit_is_einval (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec 2147483648 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+    eventfd2_spec 2147483648 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-- …and beside an accepted bit (`EFD_SEMAPHORE`), so the sign bit is not
 excused by the company it keeps.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem sign_bit_beside_semaphore_is_einval (i : SyscallInput) (m : Model)
     (o : outcome SyscallEffect) :
-    eventfd2_spec 2147483649 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+    eventfd2_spec 2147483649 i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-- The `dropped` mutation of testing/syscall-check/tests/eventfd2.c: a
@@ -357,11 +344,10 @@ calls at fs/eventfd.c:409-410); or the descriptor number — never
 `dropped_bit_enoent_rejected`, and all of it under the LSM premise the
 Sys header states.
 The model has no eventfd descriptor kind, so the arm declines these — the
-Rocq file header's argument, priority 3 and nothing else.  The `iff`s
-below say the decline is keyed on the flag word and on nothing else, and
-the refutations say what the decline is NOT: it is not an -EINVAL a
-narrower mask would produce, and it is not an admission of the
-descriptor. -/
+Rocq file header's argument.  The `iff`s below say the decline is keyed
+on the flag word and on nothing else, and the refutations say what the
+decline is NOT: it is not an -EINVAL a narrower mask would produce, and
+it is not an admission of the descriptor. -/
 
 /-- The empty flag word, which is what glibc's and musl's `eventfd(0, 0)`
 compile to: past the gate, declined.
@@ -433,6 +419,37 @@ theorem empty_flags_descriptor_not_admitted (i : SyscallInput) (m m' : Model) (e
     ¬ eventfd2_spec 0 i m (Ok (mkEffect 3 [] []) m' evs) := by
   sys_refute
 
+/-! ## Single-bit sweeps
+
+The two sweeps between them say what the mask is, bit by bit, without
+leaning on which single words happen to have a pin of their own: every
+bit outside `EFD_FLAGS_SET` is answered -EINVAL and every bit inside it
+declines.  A mask widened or narrowed by one bit fails one of the two. -/
+
+/-- Every single bit outside the mask is -EINVAL.  This is what catches
+a mask that grew a bit the kernel's `EFD_FLAGS_SET` does not have
+(include/linux/eventfd.h:26-27, Linux v6.18.46).
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
+theorem every_single_bit_outside_the_mask_is_einval (b : Nat) (hb : b < 32)
+    (h0 : b ≠ 0) (h11 : b ≠ 11) (h19 : b ≠ 19)
+    (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
+    eventfd2_spec (2 ^ b) i m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
+  have hb' : b = 1 ∨ b = 2 ∨ b = 3 ∨ b = 4 ∨ b = 5 ∨ b = 6 ∨ b = 7 ∨ b = 8 ∨ b = 9 ∨ b = 10 ∨
+      b = 12 ∨ b = 13 ∨ b = 14 ∨ b = 15 ∨ b = 16 ∨ b = 17 ∨ b = 18 ∨ b = 20 ∨ b = 21 ∨ b = 22 ∨
+      b = 23 ∨ b = 24 ∨ b = 25 ∨ b = 26 ∨ b = 27 ∨ b = 28 ∨ b = 29 ∨ b = 30 ∨ b = 31 := by omega
+  rcases hb' with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl |
+    rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
+    sys_norm
+
+/-- Every single bit inside the mask declines.  This is what catches a
+mask that lost one of the three bits `EFD_FLAGS_SET` has.
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
+theorem every_single_guest_mask_bit_declines (b : Nat)
+    (hb : b = 0 ∨ b = 11 ∨ b = 19)
+    (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
+    eventfd2_spec (2 ^ b) i m o ↔ o = Unmodeled := by
+  rcases hb with rfl | rfl | rfl <;> sys_norm
+
 /-! ## Through the table: the flag word is argument 1, and it narrows
 
 `SYSCALL_DEFINE2(eventfd2, unsigned int, count, int, flags)`
@@ -462,12 +479,10 @@ kernel: include/uapi/asm-generic/unistd.h:__NR_eventfd2@v6.18.46 -/
 example : (19 : Int) ∈ modeled_sysnos := by decide
 
 /-- …and it reaches the gate with a1 as the flag word: bit 1 in a1 gives
-the -EINVAL or -ENOSYS of `dropped_bit_1_is_einval`, through the
-dispatcher.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+the -EINVAL of `dropped_bit_1_is_einval`, through the dispatcher.
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem sysno_19_is_eventfd2 (m : Model) (o : outcome SyscallEffect) :
-    syscall_spec (efd_in 0 2) m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+    syscall_spec (efd_in 0 2) m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-! ### The counter is not judged
@@ -494,12 +509,11 @@ theorem counter_max_is_not_judged (m : Model) (o : outcome SyscallEffect) :
   sys_norm
 
 /-- A wild counter does not rescue a BAD flag word either: bit 20 in a1
-still yields -EINVAL or -ENOSYS whatever a0 holds.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+still yields -EINVAL whatever a0 holds.
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem wild_counter_bad_flags_is_einval (m : Model) (o : outcome SyscallEffect) :
     syscall_spec (efd_in 4294967295 1048576) m o
-      ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+      ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-- The swapped-argument lie: an arm judging a0 against `EFD_FLAGS_SET`
@@ -533,23 +547,20 @@ theorem high_half_over_semaphore_declines (m : Model) (o : outcome SyscallEffect
   sys_norm
 
 /-- …and the high half does not rescue a BAD low half: aliasing is not a
-second chance.  Bit 20 under bit 32 yields -EINVAL or -ENOSYS.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+second chance.  Bit 20 under bit 32 yields -EINVAL.
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem high_half_over_bad_bit_is_einval (m : Model) (o : outcome SyscallEffect) :
     syscall_spec (efd_in 0 (4294967296 + 1048576)) m o
-      ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+      ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-- The full register set, `eventfd2(0, -1)` as a 64-bit word: the low
 half is every flag bit, so -EINVAL (fs/eventfd.c:390-391, Linux
-v6.18.46), or -ENOSYS from kernel/sys_ni.c `sys_ni_syscall` without
-CONFIG_EVENTFD (Linux v6.18.46);
-testing/syscall-check/tests/eventfd2.c's `einval` case sends this word.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+v6.18.46); testing/syscall-check/tests/eventfd2.c's `einval` case sends
+this word.
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem all_ones_register_is_einval (m : Model) (o : outcome SyscallEffect) :
-    syscall_spec (efd_in 0 (-1)) m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+    syscall_spec (efd_in 0 (-1)) m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-- The full-register lie: -EINVAL for a word whose low 32 bits are clean.
@@ -565,396 +576,19 @@ carries bits 1..30) and answer nothing here.  `flag32` keeps all 32, and
 the kernel's `int` keeps all 32 (include/linux/syscalls.h:132, Linux
 v6.18.46), so bit 31 in a1 is -EINVAL at the gate (fs/eventfd.c:390-391),
 as testing/syscall-check/tests/eventfd2.c's `dropped` case observes.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem sign_bit_through_the_table_is_einval (m : Model) (o : outcome SyscallEffect) :
-    syscall_spec (efd_in 0 2147483648) m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+    syscall_spec (efd_in 0 2147483648) m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
 
 /-- …and as a C caller really passes `INT_MIN`: sign-extended to the
 64-bit register, `0xFFFFFFFF80000000`.  The `int` cast keeps the low 32
 bits, `0x80000000`, and the gate refuses them (fs/eventfd.c:390-391,
 Linux v6.18.46); the high half changes nothing.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
+kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
 theorem sign_extended_int_min_is_einval (m : Model) (o : outcome SyscallEffect) :
-    syscall_spec (efd_in 0 (-2147483648)) m o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
+    syscall_spec (efd_in 0 (-2147483648)) m o
+      ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] := by
   sys_norm
-
-/-- inherited-divergence: bugs/eventfd2-enosys-beside-einval-admits-mixed-runs.md --
-The disabled implementation answers before inspecting the flags; this pin
-fixes its individual answer without claiming cross-call consistency.
-kernel: kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem refused_enosys (i : SyscallInput) (m : Model) :
-    eventfd2_spec 2 i m (Ok (mkEffect (errno_ret ENOSYS) [] []) m []) := by
-  sys_norm
-
-/-- Neither implementation returns a policy errno at this gate.
-kernel: kernel/sys_ni.c:sys_ni_syscall; fs/eventfd.c:do_eventfd@v6.18.46 -/
-theorem refused_eperm (i : SyscallInput) (m m' : Model) (evs : List event) :
-    ¬ eventfd2_spec 2 i m (Ok (mkEffect (errno_ret EPERM) [] []) m' evs) := by
-  sys_refute
-
-/-- Accepted words retain the fail-closed boundary even for the stub
-answer.
-kernel: kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem accepted_enosys (i : SyscallInput) (m : Model) :
-    ¬ eventfd2_spec 0 i m (Ok (mkEffect (errno_ret ENOSYS) [] []) m []) := by
-  sys_refute
-
-/-- The stub has no user-memory effects.
-kernel: kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem enosys_with_a_write_rejected (i : SyscallInput) (m m' : Model) (evs : List event) :
-    ¬ eventfd2_spec 2 i m (Ok (mkEffect (errno_ret ENOSYS) [(0, [0])] []) m' evs) := by
-  sys_refute
-
-
-/-- SPARC O_NONBLOCK can allocate a descriptor on its host, so an errno-only answer is unsound.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host values are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 (bits 14 and 22) and
-arch/mips/include/uapi/asm/fcntl.h:16 (bit 7).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem sparc_nonblock_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 14) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- SPARC O_CLOEXEC can allocate a descriptor on its host, so an errno-only answer is unsound.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host values are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 (bits 14 and 22) and
-arch/mips/include/uapi/asm/fcntl.h:16 (bit 7).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem sparc_cloexec_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 22) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- both SPARC bits can allocate a descriptor on its host, so an errno-only answer is unsound.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host values are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 (bits 14 and 22) and
-arch/mips/include/uapi/asm/fcntl.h:16 (bit 7).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem sparc_both_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 14 + 2 ^ 22) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- MIPS O_NONBLOCK can allocate a descriptor on its host, so an errno-only answer is unsound.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host values are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 (bits 14 and 22) and
-arch/mips/include/uapi/asm/fcntl.h:16 (bit 7).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem mips_nonblock_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 7) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- SPARC bit beside every guest flag can allocate a descriptor on its host, so an errno-only answer is unsound.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host values are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 (bits 14 and 22) and
-arch/mips/include/uapi/asm/fcntl.h:16 (bit 7).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem sparc_with_mask_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 14 + EFD_FLAGS_SET) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- MIPS bit beside EFD_SEMAPHORE can allocate a descriptor on its host, so an errno-only answer is unsound.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host values are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 (bits 14 and 22) and
-arch/mips/include/uapi/asm/fcntl.h:16 (bit 7).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem mips_with_semaphore_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 7 + EFD_SEMAPHORE) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- SPARC bit beside translated guest O_CLOEXEC can allocate a descriptor on its host, so an errno-only answer is unsound.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host values are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 (bits 14 and 22) and
-arch/mips/include/uapi/asm/fcntl.h:16 (bit 7).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem sparc_with_cloexec_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 22 + O_CLOEXEC) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- Nested QEMU can translate the MIPS and SPARC nonblock bits.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host bits are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 and
-arch/mips/include/uapi/asm/fcntl.h:16.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem mixed_hosts_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 7 + 2 ^ 14) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- Nested QEMU can translate MIPS nonblock and SPARC cloexec bits.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host bits are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 and
-arch/mips/include/uapi/asm/fcntl.h:16.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem mips_sparc_cloexec_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 7 + 2 ^ 22) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- Nested QEMU can translate the SPARC and MIPS host bits together.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host bits are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 and
-arch/mips/include/uapi/asm/fcntl.h:16.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem all_host_bits_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 7 + 2 ^ 14 + 2 ^ 22) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- Guest nonblock must be removed before testing the stray MIPS bit.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host bits are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 and
-arch/mips/include/uapi/asm/fcntl.h:16.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem mips_with_nonblock_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 7 + O_NONBLOCK) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- Guest cloexec must be removed before testing the stray MIPS bit.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host bits are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 and
-arch/mips/include/uapi/asm/fcntl.h:16.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem mips_with_cloexec_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 7 + O_CLOEXEC) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- Every guest flag must be removed before testing the stray MIPS bit.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host bits are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 and
-arch/mips/include/uapi/asm/fcntl.h:16.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem mips_with_mask_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 7 + EFD_FLAGS_SET) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- Bit 1 survives every host translation, even beside the SPARC and MIPS host bits;
-`all_six_host_bits_with_bad_bit_answered` adds the parisc bits.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host bits are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 and
-arch/mips/include/uapi/asm/fcntl.h:16.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem all_host_bits_with_bad_bit_answered (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 7 + 2 ^ 14 + 2 ^ 22 + 2 ^ 1) i m o ↔
-      o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
-  sys_norm
-
-/-- The extra bit 15 defeats the SPARC subset; the iff admits both errnos and excludes descriptors, EPERM and Unmodeled.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host values are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 (bits 14 and 22) and
-arch/mips/include/uapi/asm/fcntl.h:16 (bit 7).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem sparc_bad_neighbour_answered (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 14 + 2 ^ 15) i m o ↔
-      o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
-  sys_norm
-
-/-- The extra bit 1 defeats the SPARC subset; the iff admits both errnos and excludes descriptors, EPERM and Unmodeled.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host values are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 (bits 14 and 22) and
-arch/mips/include/uapi/asm/fcntl.h:16 (bit 7).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem sparc_cloexec_bad_bit_answered (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 22 + 2 ^ 1) i m o ↔
-      o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
-  sys_norm
-
-/-- The extra bit 8 defeats the MIPS subset; the iff admits both errnos and excludes descriptors, EPERM and Unmodeled.
-The QEMU route is the versioned source argument on `eventfd2_spec` (Sys/Fs/EventFd.lean). Host values are Linux v6.18.46
-arch/sparc/include/uapi/asm/fcntl.h:11,21 (bits 14 and 22) and
-arch/mips/include/uapi/asm/fcntl.h:16 (bit 7).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem mips_bad_neighbour_answered (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 7 + 2 ^ 8) i m o ↔
-      o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
-  sys_norm
-
-/-- An adjacent bit is outside the host union; the iff admits both errnos and excludes descriptors, EPERM and Unmodeled.
-The host union is Sys/Fs/EventFd.lean's source argument.
-Host O_NONBLOCK/O_CLOEXEC definitions: arch/sparc/include/uapi/asm/fcntl.h; arch/mips/include/uapi/asm/fcntl.h; arch/parisc/include/uapi/asm/fcntl.h (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem host_neighbour_13_answered (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 13) i m o ↔
-      o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
-  sys_norm
-
-/-- An adjacent bit is outside the host union; the iff admits both errnos and excludes descriptors, EPERM and Unmodeled.
-The host union is Sys/Fs/EventFd.lean's source argument.
-Host O_NONBLOCK/O_CLOEXEC definitions: arch/sparc/include/uapi/asm/fcntl.h; arch/mips/include/uapi/asm/fcntl.h; arch/parisc/include/uapi/asm/fcntl.h (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem host_neighbour_23_answered (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 23) i m o ↔
-      o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
-  sys_norm
-
-/-- An adjacent bit is outside the host union; the iff admits both errnos and excludes descriptors, EPERM and Unmodeled.
-The host union is Sys/Fs/EventFd.lean's source argument.
-Host O_NONBLOCK/O_CLOEXEC definitions: arch/sparc/include/uapi/asm/fcntl.h; arch/mips/include/uapi/asm/fcntl.h; arch/parisc/include/uapi/asm/fcntl.h (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem host_neighbour_6_answered (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 6) i m o ↔
-      o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
-  sys_norm
-
-/-- An adjacent bit is outside the host union; the iff admits both errnos and excludes descriptors, EPERM and Unmodeled.
-The host union is Sys/Fs/EventFd.lean's source argument.
-Host O_NONBLOCK/O_CLOEXEC definitions: arch/sparc/include/uapi/asm/fcntl.h; arch/mips/include/uapi/asm/fcntl.h; arch/parisc/include/uapi/asm/fcntl.h (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem host_neighbour_8_answered (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 8) i m o ↔
-      o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
-  sys_norm
-
-/-- Bit 2 alone: parisc_eventfd2 clears it, the old O_NONBLOCK bit, before sys_eventfd2, so a parisc host can allocate.
-The older-outer-layer route is Sys/Fs/EventFd.lean's source argument.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall; arch/parisc/kernel/sys_parisc.c:parisc_eventfd2,FIX_O_NONBLOCK@v6.18.46 -/
-theorem parisc_old_nonblock_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 2) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- Bit 16 alone: parisc's O_NONBLOCK.
-The older-outer-layer route is Sys/Fs/EventFd.lean's source argument.
-Host O_NONBLOCK/O_CLOEXEC definitions: arch/parisc/include/uapi/asm/fcntl.h (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall; arch/parisc/kernel/sys_parisc.c:parisc_eventfd2,FIX_O_NONBLOCK@v6.18.46 -/
-theorem parisc_nonblock_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 16) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- Bit 21 alone: parisc's O_CLOEXEC.
-The older-outer-layer route is Sys/Fs/EventFd.lean's source argument.
-Host O_NONBLOCK/O_CLOEXEC definitions: arch/parisc/include/uapi/asm/fcntl.h (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall; arch/parisc/kernel/sys_parisc.c:parisc_eventfd2,FIX_O_NONBLOCK@v6.18.46 -/
-theorem parisc_cloexec_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 21) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- All six host bits at once: sparc64's, mips's and parisc's.
-The older-outer-layer route is Sys/Fs/EventFd.lean's source argument.
-Host O_NONBLOCK/O_CLOEXEC definitions: arch/sparc/include/uapi/asm/fcntl.h; arch/mips/include/uapi/asm/fcntl.h; arch/parisc/include/uapi/asm/fcntl.h (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall; arch/parisc/kernel/sys_parisc.c:parisc_eventfd2,FIX_O_NONBLOCK@v6.18.46 -/
-theorem all_six_host_bits_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 2 + 2 ^ 7 + 2 ^ 14 + 2 ^ 16 + 2 ^ 21 + 2 ^ 22) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- All six host bits beside the whole guest mask: the guest flags are removed before the union test.
-The older-outer-layer route is Sys/Fs/EventFd.lean's source argument.
-Host O_NONBLOCK/O_CLOEXEC definitions: arch/sparc/include/uapi/asm/fcntl.h; arch/mips/include/uapi/asm/fcntl.h; arch/parisc/include/uapi/asm/fcntl.h (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall; arch/parisc/kernel/sys_parisc.c:parisc_eventfd2,FIX_O_NONBLOCK@v6.18.46 -/
-theorem all_six_host_bits_with_mask_declines (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 2 + 2 ^ 7 + 2 ^ 14 + 2 ^ 16 + 2 ^ 21 + 2 ^ 22 + EFD_FLAGS_SET) i m o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- Bit 3, beside host bit 2, lies outside the union: answered, so the union has not widened onto it.
-The older-outer-layer route is Sys/Fs/EventFd.lean's source argument.
-Host O_NONBLOCK/O_CLOEXEC definitions: arch/sparc/include/uapi/asm/fcntl.h; arch/mips/include/uapi/asm/fcntl.h; arch/parisc/include/uapi/asm/fcntl.h (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall; arch/parisc/kernel/sys_parisc.c:parisc_eventfd2,FIX_O_NONBLOCK@v6.18.46 -/
-theorem host_neighbour_3_answered (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 3) i m o ↔
-      o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
-  sys_norm
-
-/-- Bit 17, beside host bit 16, lies outside the union: answered, so the union has not widened onto it.
-The older-outer-layer route is Sys/Fs/EventFd.lean's source argument.
-Host O_NONBLOCK/O_CLOEXEC definitions: arch/sparc/include/uapi/asm/fcntl.h; arch/mips/include/uapi/asm/fcntl.h; arch/parisc/include/uapi/asm/fcntl.h (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall; arch/parisc/kernel/sys_parisc.c:parisc_eventfd2,FIX_O_NONBLOCK@v6.18.46 -/
-theorem host_neighbour_17_answered (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 17) i m o ↔
-      o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
-  sys_norm
-
-/-- All six host bits plus bit 1: one bit outside the union keeps the word answered.
-The older-outer-layer route is Sys/Fs/EventFd.lean's source argument.
-Host O_NONBLOCK/O_CLOEXEC definitions: arch/sparc/include/uapi/asm/fcntl.h; arch/mips/include/uapi/asm/fcntl.h; arch/parisc/include/uapi/asm/fcntl.h (Linux v6.18.46).
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall; arch/parisc/kernel/sys_parisc.c:parisc_eventfd2,FIX_O_NONBLOCK@v6.18.46 -/
-theorem all_six_host_bits_with_bad_bit_answered (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ 2 + 2 ^ 7 + 2 ^ 14 + 2 ^ 16 + 2 ^ 21 + 2 ^ 22 + 2 ^ 1) i m o ↔
-      o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
-  sys_norm
-
-/-! ## Single-bit sweeps -/
-
-/-- The sweep pins the errno pair for isolated bits outside the guest mask and host union.
-It catches a widened union in the spec text at positions without a single-word pin.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall@v6.18.46 -/
-theorem every_single_bit_outside_the_union_answered (b : Nat) (hb : b < 32)
-    (h0 : b ≠ 0) (h11 : b ≠ 11) (h19 : b ≠ 19)
-    (h2 : b ≠ 2) (h7 : b ≠ 7) (h14 : b ≠ 14)
-    (h16 : b ≠ 16) (h21 : b ≠ 21) (h22 : b ≠ 22)
-    (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ b) i m o ↔
-      o = Ok (mkEffect (errno_ret EINVAL) [] []) m [] ∨
-      o = Ok (mkEffect (errno_ret ENOSYS) [] []) m [] := by
-  have hb' : b = 1 ∨ b = 3 ∨ b = 4 ∨ b = 5 ∨ b = 6 ∨ b = 8 ∨ b = 9 ∨ b = 10 ∨ b = 12 ∨ b = 13 ∨ b = 15 ∨ b = 17 ∨ b = 18 ∨ b = 20 ∨ b = 23 ∨ b = 24 ∨ b = 25 ∨ b = 26 ∨ b = 27 ∨ b = 28 ∨ b = 29 ∨ b = 30 ∨ b = 31 := by omega
-  rcases hb' with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> sys_norm
-
-/-- The sweep pins declines for isolated host union bits.
-It catches a narrowed union in the spec text without depending on selected single-word pins.
-kernel: fs/eventfd.c:do_eventfd; kernel/sys_ni.c:sys_ni_syscall; arch/parisc/kernel/sys_parisc.c:parisc_eventfd2,FIX_O_NONBLOCK@v6.18.46 -/
-theorem every_single_union_bit_declines (b : Nat)
-    (hb : b = 2 ∨ b = 7 ∨ b = 14 ∨ b = 16 ∨ b = 21 ∨ b = 22)
-    (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ b) i m o ↔ o = Unmodeled := by
-  rcases hb with rfl | rfl | rfl | rfl | rfl | rfl <;> sys_norm
-
-/-- The sweep pins declines for isolated guest mask bits.
-It catches a narrowed mask in the spec text without depending on selected single-word pins.
-kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
-theorem every_single_guest_mask_bit_declines (b : Nat)
-    (hb : b = 0 ∨ b = 11 ∨ b = 19)
-    (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
-    eventfd2_spec (2 ^ b) i m o ↔ o = Unmodeled := by
-  rcases hb with rfl | rfl | rfl <;> sys_norm
-
-/-- The `branch-then` mutant of `eventfd2_spec`, written out with the
-outer condition replaced by `True`. When the original gate is false,
-the stray set is empty, hence a subset of the host union, so this
-copy still answers `unmodeled`.
-
-Nothing checks that this copy stays byte-for-byte the tool's rewrite.
-If the then-branch of `eventfd2_spec` changes, mirror it here and in the
-allowlist reason; the proof alone cannot establish that correspondence.
-kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
-def eventfd2_einval_gate_dropped (flags : word) : Sys SyscallEffect :=
-  if True
-  then if (bv_unsigned (bv_and (bv_and flags (bv_not (Z_to_bv 64 EFD_FLAGS_SET)))
-                    (bv_not (Z_to_bv 64 (2 ^ 2 + 2 ^ 7 + 2 ^ 14 + 2 ^ 16 + 2 ^ 21 + 2 ^ 22)))) == 0)
-       -- A host can allocate here; see the source argument above.
-       then unmodeled
-       else alt (err_ret EINVAL) (err_ret ENOSYS) -- both return before anything is allocated
-  else unmodeled           -- ENOMEM / EMFILE / ENFILE / ENOSYS / the descriptor: fail closed
-
-/-- Where the original gate is false, the empty stray set is a subset
-of the host union, so the mutant answers `unmodeled`, just as the
-deleted else-arm did. On refused words the two texts are the same text.
-
-STATED THIS WAY ON PURPOSE. An equality against `eventfd2_spec` would
-also break on later non-equivalent mutants of that definition, counting
-them as killed without testing a kernel claim. This theorem instead
-checks the copy on the deleted arm's domain. Nothing checks that the
-copy stays byte-for-byte the rewrite: mirror any then-branch change in
-the copy and the allowlist reason.
-kernel: fs/eventfd.c:do_eventfd@v6.18.46 -/
-theorem eventfd2_einval_gate_dropped_is_unmodeled_when_gate_false
-    (flags : word) (h : eventfd2_einval_b flags = false) :
-    eventfd2_einval_gate_dropped flags = unmodeled := by
-  have hz : bv_unsigned (bv_and flags (bv_not (Z_to_bv 64 EFD_FLAGS_SET))) = 0 := by
-    simpa only [eventfd2_einval_b, Bool.not_eq_false', beq_iff_eq] using h
-  have hw : bv_and flags (bv_not (Z_to_bv 64 EFD_FLAGS_SET)) = 0#64 := by
-    apply BitVec.eq_of_toNat_eq
-    unfold bv_unsigned at hz
-    simpa only [BitVec.toNat_zero] using (Int.ofNat_inj.mp hz)
-  unfold eventfd2_einval_gate_dropped
-  rw [hw]
-  simp only [bv_and, BitVec.zero_and, bv_unsigned, BitVec.toNat_zero,
-    Int.natCast_zero, beq_self_eq_true, ite_true]
 
 end LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.EventFd

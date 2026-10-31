@@ -1,16 +1,11 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Namei.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Namei
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.PreludeCore
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.TacticCore
 
-/-! rocq-cases: b22b2a23f1adb9c4468cc1dcb8f15e53edf17745
-covers: unlinkat_implied_directory_answers -- implied_directory_unlink_is_eisdir, implied_directory_unlink_answers_rejected, implied_directory_rmdir_is_enotempty, implied_directory_rmdir_answers_rejected
-covers: unlinkat_implied_directory_trailing_slash -- implied_directory_trailing_slash_answers
-covers: unlinkat_implied_directory_unrealizable_image -- unrealizable_image_answers, unrealizable_image_removal_rejected
-covers: unlinkat_implied_directory_emptiness_unknown -- implied_directory_emptiness_unknown, implied_directory_emptiness_unknown_rejected
-covers: unlinkat_implied_directory_removal -- implied_directory_removal
-covers: unlinkat_implied_directory_removal_fd_guard -- implied_directory_removal_fd_guard
-covers: unlinkat_implied_directory_edges -- implied_directory_without_an_entry, byte_prefix_shows_no_entry, over_name_max_precedes_implied_directory
-covers: unlinkat_implied_directory_noop_components -- noop_components_show_the_entry, noop_components_removal_rejected, noop_components_edges
+/-! rocq-cases: f1006fe8178338a499b5e5c41be83006c4edd058
+covers: unlinkat_implied_directory_unmodeled -- implied_directory_unlink_declines, implied_directory_unlink_answers_declined
+covers: unlinkat_implied_directory_unrealizable_image_unmodeled -- unrealizable_image_declines, unrealizable_image_removal_rejected
 covers: unlinkat_byte_prefix_is_not_a_directory -- byte_prefix_is_not_a_directory
 covers: unlinkat_bad_flags_records_no_copyin -- bad_flag_ledger_rejected
 covers: unlinkat_bad_flags_empty_ledger_ok -- bad_flag_is_einval
@@ -28,7 +23,6 @@ covers: unlinkat_tmp_declared_key_removed -- tmp_declared_key_removed
 covers: unlinkat_tmp_image_key_removed -- tmp_image_key_removed
 covers: unlinkat_tmp_excluded_shapes_unmodeled -- tmp_rmdir_declines, tmp_second_component_declines, tmp_directory_itself_declines
 covers: unlinkat_tmp_implied_directory_is_eisdir -- tmp_implied_directory_is_eisdir, tmp_implied_directory_removal_rejected
-covers: unlinkat_tmp_implied_directory_rmdir_declines -- tmp_implied_directory_rmdir_declines
 covers: unlinkat_tmp_implied_directory_precedes_not_held -- tmp_implied_directory_enoent_rejected, tmp_not_held_beside_a_directory_is_enoent
 covers: unlinkat_tmp_implied_directory_sibling_still_unlinks -- tmp_sibling_of_a_directory_still_unlinks
 covers: unlinkat_tmp_name_max_boundary -- tmp_name_max_component_removed, tmp_over_name_max_declines
@@ -101,9 +95,8 @@ open LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
 equation in the set; they are registered here, beside the pins that read
 them, rather than in that file's register, because this port edits only its
 own two files.  `record_copyins` is a calling-convention wrapper of
-`Sys/Syscall.lean`, and the equations of `fs_lookup`, `fs_remove` and
-`fs_rmdir_implied` are what let the lookup and the two removals reduce on
-the first pass; those, and
+`Sys/Syscall.lean`, and the equations of `fs_lookup` and `fs_remove` are
+what let the lookup and the removal reduce on the first pass; those, and
 the `fixture_of` unfolding, are registered `local`, so that a file
 importing this one does not inherit a choice made for these pins (the
 fixture facts below are keyed on this file's own literals and inert
@@ -115,10 +108,9 @@ a generic unfolding would fire on the still-symbolic pathname inside the
 long key needs would then find nothing to match. -/
 
 attribute [sys_simp low] unlinkat_spec.eq_1 unlinkat_body_spec.eq_1 unlinkat_errnos.eq_1
-attribute [sys_simp low] unlink_found_spec.eq_1 unlinkat_tmp_spec.eq_1 rmdir_implied_spec.eq_1
+attribute [sys_simp low] unlink_found_spec.eq_1 unlinkat_tmp_spec.eq_1
 attribute [local sys_simp low] record_copyins.eq_1 fixture_of.eq_1
 attribute [local sys_simp low] fs_lookup.eq_1 fs_lookup.eq_2 fs_remove.eq_1 fs_remove.eq_2
-attribute [local sys_simp low] fs_rmdir_implied.eq_1 fs_rmdir_implied.eq_2
 
 /-! ## The constants these checks spell out
 
@@ -224,9 +216,10 @@ def byte_prefix_entry_model : Model :=
   fixture_of (fs := [([97, 47, 46, 46, 47, 98], [104]), ([97, 98, 47, 99], [])])
 def long_key_model : Model := fixture_of (fs := [(name256 ++ [47, 98], [104])])
 
-/-- Keys whose separator runs and "." components leave the walk inside `a`
-(`path_skip_noop_components`): `a/./b`, `a//b` and `a/.//./b` show `b` in
-`a`; `a/./../b` and `a/./` show nothing in it; `a/.b` shows the name `.b`. -/
+/-- Keys whose separator runs and "." components leave the walk inside `a`:
+`a/./b`, `a//b` and `a/.//./b` show `b` in `a`; `a/./../b` and `a/./` show
+nothing in it; `a/.b` shows the name `.b`.  Every one of them makes `a` a
+directory the flat map only implies. -/
 def dot_entry_model : Model := fixture_of (fs := [([97, 47, 46, 47, 98], [104])])
 def slash_entry_model : Model := fixture_of (fs := [([97, 47, 47, 98], [104])])
 def mixed_entry_model : Model := fixture_of (fs := [([97, 47, 46, 47, 47, 46, 47, 98], [104])])
@@ -234,34 +227,26 @@ def dot_dotdot_key_model : Model := fixture_of (fs := [([97, 47, 46, 47, 46, 46,
 def dot_slash_key_model : Model := fixture_of (fs := [([97, 47, 46, 47], [104])])
 def dot_name_entry_model : Model := fixture_of (fs := [([97, 47, 46, 98], [104])])
 
-/-- What the removal of an implied directory `a` that shows no entry leaves
-(`fs_rmdir_implied`): `a/../b` becomes `b`; beside `ab/c`, which does not
-pass through `a`, the same; and, from one image holding every shape, `a/`,
-`a/..` and `a/../` go, `a/../../c` becomes `../c`, `a/./..//b` becomes `b`
-and `ab` stays.  `clash_model` holds `a/../b` beside `b`, the same file
-spelled twice; the removal keeps the earlier key's contents. -/
+/-- The image a removal of `a` would have left when the key only implies
+it, kept because the pins below read it as an image in its own right:
+`b` alone, where no key lives under `a`.  `shapes_model` holds every
+spelling that implies `a` at once, and `clash_model` holds `a/../b`
+beside a key `b` the renaming would meet. -/
 def dotdot_removed_model : Model := fixture_of (fs := [([98], [104])])
-def byte_prefix_removed_model : Model := fixture_of (fs := [([97, 98, 47, 99], []), ([98], [104])])
 def shapes_model : Model :=
   fixture_of (fs := [([97, 47], [1]), ([97, 47, 46, 46], [2]), ([97, 47, 46, 46, 47], [3]),
     ([97, 47, 46, 46, 47, 46, 46, 47, 99], [4]), ([97, 47, 46, 47, 46, 46, 47, 47, 98], [5]),
     ([97, 98], [6])])
-def shapes_removed_model : Model :=
-  fixture_of (fs := [([46, 46, 47, 99], [4]), ([97, 98], [6]), ([98], [5])])
 def clash_model : Model := fixture_of (fs := [([97, 47, 46, 46, 47, 98], [104]), ([98], [105])])
 
 /-- `a/../b` with the file held open through fd 3 under that key; and
-`a/../b` beside `x`, with fd 3 on `x`, a key the removal leaves alone, and
-that image after the removal. -/
+`a/../b` beside `x`, with fd 3 on `x`, a key no spelling of `a` reaches. -/
 def dotdot_held_model : Model :=
   fixture_of (fds := init_fds ++ [(3, .FdFile [97, 47, 46, 46, 47, 98] 0)])
     (fs := [([97, 47, 46, 46, 47, 98], [104])])
 def dotdot_other_held_model : Model :=
   fixture_of (fds := init_fds ++ [(3, .FdFile [120] 0)])
     (fs := [([97, 47, 46, 46, 47, 98], [104]), ([120], [1])])
-def dotdot_other_held_removed_model : Model :=
-  fixture_of (fds := init_fds ++ [(3, .FdFile [120] 0)])
-    (fs := [([98], [104]), ([120], [1])])
 
 /-- `a/b`, which shows an entry in `a`, held open through fd 3. -/
 def implied_dir_held_model : Model :=
@@ -362,8 +347,8 @@ attribute [sys_simp low]
   slash_key_model.eq_1 dot_key_model.eq_1 byte_prefix_entry_model.eq_1 long_key_model.eq_1
   dot_entry_model.eq_1 slash_entry_model.eq_1 mixed_entry_model.eq_1 dot_dotdot_key_model.eq_1
   dot_slash_key_model.eq_1 dot_name_entry_model.eq_1 dotdot_removed_model.eq_1
-  byte_prefix_removed_model.eq_1 shapes_model.eq_1 shapes_removed_model.eq_1 clash_model.eq_1
-  dotdot_held_model.eq_1 dotdot_other_held_model.eq_1 dotdot_other_held_removed_model.eq_1
+  shapes_model.eq_1 clash_model.eq_1
+  dotdot_held_model.eq_1 dotdot_other_held_model.eq_1
   implied_dir_held_model.eq_1
 
 /-- The effect of an arm past the flag test: a return value under the
@@ -1237,7 +1222,7 @@ above: `/tmp/<one component>`, over the run's declared private /tmp
 `State.fs_seed_tmp`), on the premise that /tmp is a distinct, writable
 directory PRIVATE to this run, so that the run's own table is the whole
 truth about it (issue #562, rung 4 of #696;
-bugs/tmp-assumed-private-directory.md).  What Linux does with such a
+linux-process-semantics@ff0313ba4f:bugs/tmp-assumed-private-directory.md).  What Linux does with such a
 path: `path_init` starts an absolute pathname at the root
 (fs/namei.c:2582-2587, Linux v6.18.46) through `nd_jump_root`, which sets
 `nd->path = nd->root` (:1042, :1050), and never reads the dirfd; `link_path_walk` walks
@@ -1704,112 +1689,121 @@ theorem over_name_max_answers_rejected (m' : Model) (evs : List event) :
 
 /-! ## The implied directory: a key living under the name
 
-A key "a/b" means reality has a DIRECTORY "a", and a non-empty one (#1753):
-unlinking "a" is -EISDIR, from `may_delete`'s `d_is_dir(victim)`
-(fs/namei.c:3289-3290, Linux v6.18.46) through `vfs_unlink` (:4658), and
-removing it with AT_REMOVEDIR is -ENOTEMPTY, from the filesystem's
-`->rmdir` through `vfs_rmdir` (:4552; on the harness's tmpfs that is
-`shmem_rmdir`, mm/shmem.c:4034-4035, Linux v6.18.46).  The image's
+A key "a/b" means reality has a DIRECTORY "a", a thing the flat map
+cannot hold: unlinking "a" is -EISDIR on Linux, from `may_delete`'s
+`d_is_dir(victim)` (fs/namei.c:3289-3290, Linux v6.18.46) through
+`vfs_unlink` (:4658), and removing it with AT_REMOVEDIR is the
+filesystem's `->rmdir` through `vfs_rmdir` (:4552; on the harness's tmpfs
+`shmem_rmdir`, mm/shmem.c:4034-4035) — -ENOTEMPTY where the directory
+holds something, 0 where it does not, and the map cannot tell the two
+apart, an EMPTY real directory leaving no key at all.  The image's
 directories are taken to be real ones, not symlinks to directories
-(bugs/unlinkat-implied-directory-assumed-real.md).  The test runs before the lookup so that the
-unrealizable image with both keys gets the directory's answers.  Only a
+(linux-process-semantics@ff0313ba4f:bugs/unlinkat-implied-directory-assumed-real.md).
+The working-directory arm therefore DECLINES the whole shape
+(`Sys/Fs/Namei.lean`'s `fs_under` guard), and the pins below fix that the
+decline is paid on every spelling of it and that neither the real answers
+nor the flat map's own -ENOENT is admitted.  The guard runs before the
+lookup, so the unrealizable image with both keys declines too.  Only a
 literal can set this up — the harness always starts from an empty
 directory, and no syscall a probe can issue puts a separator in a key. -/
 
-/-- The realizable image, `a/b` and not `a`: unlink is -EISDIR.
-rocq-twin: unlinkat_implied_directory_answers
+/-- The realizable image, `a/b` and not `a`: unlink declines.
+rocq-twin: unlinkat_implied_directory_unmodeled
 kernel: fs/namei.c:may_delete,vfs_unlink@v6.18.46 -/
-theorem implied_directory_unlink_is_eisdir (o : outcome SyscallEffect) :
+theorem implied_directory_unlink_declines (o : outcome SyscallEffect) :
     unlinkat_spec cwd_fd 8192 0 (mem_in (name_at [97])) implied_dir_model o
-      ↔ o = Ok (ledgered (errno_ret EISDIR) 2) implied_dir_model [] := by
+      ↔ o = Unmodeled := by
   sys_norm
 
-/-- …and neither the map's -ENOENT nor a removal is claimed, nor an
-injectable errno: the answer is deterministic.
-rocq-twin: unlinkat_implied_directory_answers
+/-- …so Linux's own -EISDIR is DECLINED there, and with it the map's
+-ENOENT, a removal and an injectable errno: the arm answers nothing on
+this shape.
+rocq-twin: unlinkat_implied_directory_unmodeled
 kernel: fs/namei.c:may_delete@v6.18.46 -/
-theorem implied_directory_unlink_answers_rejected (m' : Model) (evs : List event) :
+theorem implied_directory_unlink_answers_declined (m' : Model) (evs : List event) :
     ¬ unlinkat_spec cwd_fd 8192 0 (mem_in (name_at [97])) implied_dir_model
+        (Ok (ledgered (errno_ret EISDIR) 2) m' evs)
+    ∧ ¬ unlinkat_spec cwd_fd 8192 0 (mem_in (name_at [97])) implied_dir_model
         (Ok (ledgered (errno_ret ENOENT) 2) m' evs)
     ∧ ¬ unlinkat_spec cwd_fd 8192 0 (mem_in (name_at [97])) implied_dir_model
         (Ok (ledgered (Z_to_bv 64 0) 2) m' evs)
     ∧ ¬ unlinkat_spec cwd_fd 8192 0 (mem_in (name_at [97])) implied_dir_model
         (Ok (ledgered (errno_ret EACCES) 2) m' evs) := by
-  refine ⟨?_, ?_, ?_⟩ <;> sys_refute
+  refine ⟨?_, ?_, ?_, ?_⟩ <;> sys_refute
 
-/-- Under AT_REMOVEDIR the same image is -ENOTEMPTY: `b` is in `a`.
-rocq-twin: unlinkat_implied_directory_answers
+/-- Under AT_REMOVEDIR the same image declines: `b` is in `a`, so Linux
+answers -ENOTEMPTY, and the map cannot say that of a directory it only
+implies.
 kernel: fs/namei.c:do_rmdir,vfs_rmdir; fs/libfs.c:simple_rmdir@v6.18.46 -/
-theorem implied_directory_rmdir_is_enotempty (o : outcome SyscallEffect) :
+theorem implied_directory_rmdir_declines (o : outcome SyscallEffect) :
     unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) implied_dir_model o
-      ↔ o = Ok (ledgered (errno_ret ENOTEMPTY) 2) implied_dir_model [] := by
+      ↔ o = Unmodeled := by
   sys_norm
 
-/-- …refusing the regular file's -ENOTDIR, the other call's -EISDIR and a
-removal.
-rocq-twin: unlinkat_implied_directory_answers
+/-- …declining the real -ENOTEMPTY with it, and refusing the regular
+file's -ENOTDIR, the other call's -EISDIR and a removal.
 kernel: fs/namei.c:may_delete,vfs_rmdir@v6.18.46 -/
-theorem implied_directory_rmdir_answers_rejected (m' : Model) (evs : List event) :
+theorem implied_directory_rmdir_answers_declined (m' : Model) (evs : List event) :
     ¬ unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) implied_dir_model
+        (Ok (ledgered (errno_ret ENOTEMPTY) 2) m' evs)
+    ∧ ¬ unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) implied_dir_model
         (Ok (ledgered (errno_ret ENOTDIR) 2) m' evs)
     ∧ ¬ unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) implied_dir_model
         (Ok (ledgered (errno_ret EISDIR) 2) m' evs)
     ∧ ¬ unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) implied_dir_model
         (Ok (ledgered (Z_to_bv 64 0) 2) m' evs) := by
-  refine ⟨?_, ?_, ?_⟩ <;> sys_refute
+  refine ⟨?_, ?_, ?_, ?_⟩ <;> sys_refute
 
-/-- The trailing-separator spelling `a/`: unlink reaches `do_unlinkat`'s
-`slashes:` label (:4767-4772), whose `d_is_dir` is -EISDIR; rmdir has no
-such label and is -ENOTEMPTY.
-rocq-twin: unlinkat_implied_directory_trailing_slash
+/-- The trailing-separator spelling `a/` declines under either flag: the
+trailing separators are stripped before the guard reads the name, so the
+shape is the same one, where Linux answers -EISDIR through
+`do_unlinkat`'s `slashes:` label (:4767-4772) and -ENOTEMPTY through
+`do_rmdir`.
 kernel: fs/namei.c:do_unlinkat,do_rmdir@v6.18.46 -/
-theorem implied_directory_trailing_slash_answers (o o' : outcome SyscallEffect) :
+theorem implied_directory_trailing_slash_declines (o o' : outcome SyscallEffect) :
     (unlinkat_spec cwd_fd 8192 0 (mem_in (name_at [97, 47])) implied_dir_model o
-       ↔ o = Ok (ledgered (errno_ret EISDIR) 3) implied_dir_model [])
+       ↔ o = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97, 47])) implied_dir_model o'
-       ↔ o' = Ok (ledgered (errno_ret ENOTEMPTY) 3) implied_dir_model []) := by
+       ↔ o' = Unmodeled) := by
   constructor <;> sys_norm
 
-/-- The UNREALIZABLE image, where `a` and `a/b` are both keys: here the
-lookup of `a` would SUCCEED, so a test placed after it would remove the
-file (flags 0) or answer the file's -ENOTDIR (AT_REMOVEDIR).
-rocq-twin: unlinkat_implied_directory_unrealizable_image
+/-- The UNREALIZABLE image, where `a` and `a/b` are both keys: the guard
+runs BEFORE the lookup, so this declines too, where a test placed after
+the lookup would have removed the file (flags 0) or answered the file's
+-ENOTDIR (AT_REMOVEDIR).
+rocq-twin: unlinkat_implied_directory_unrealizable_image_unmodeled
 kernel: fs/namei.c:may_delete,vfs_unlink,vfs_rmdir; fs/libfs.c:simple_rmdir@v6.18.46 -/
-theorem unrealizable_image_answers (o o' : outcome SyscallEffect) :
+theorem unrealizable_image_declines (o o' : outcome SyscallEffect) :
     (unlinkat_spec cwd_fd 8192 0 (mem_in (name_at [97])) unrealizable_model o
-       ↔ o = Ok (ledgered (errno_ret EISDIR) 2) unrealizable_model [])
+       ↔ o = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) unrealizable_model o'
-       ↔ o' = Ok (ledgered (errno_ret ENOTEMPTY) 2) unrealizable_model []) := by
+       ↔ o' = Unmodeled) := by
   constructor <;> sys_norm
 
-/-- …and the removal is refused on it.
-rocq-twin: unlinkat_implied_directory_unrealizable_image
+/-- …and the removal the lookup alone would have licensed is refused on it.
+rocq-twin: unlinkat_implied_directory_unrealizable_image_unmodeled
 kernel: fs/namei.c:may_delete@v6.18.46 -/
 theorem unrealizable_image_removal_rejected (m' : Model) (evs : List event) :
     ¬ unlinkat_spec cwd_fd 8192 0 (mem_in (name_at [97])) unrealizable_model
         (Ok (ledgered (Z_to_bv 64 0) 2) m' evs) := by
   sys_refute
 
-/-- A key `a/../b` says `a` is a directory and nothing about what is in it
-(`fs_entry_under`): unlink is still -EISDIR, and rmdir is -ENOTEMPTY or the
-removal, 0, since an empty directory inside `a` would leave no key; the
-removal turns the key into `b` (`fs_rmdir_implied`).  Beside a key `a/c`
-that does show an entry, rmdir is -ENOTEMPTY alone again.
-rocq-twin: unlinkat_implied_directory_emptiness_unknown
+/-- A key `a/../b` says `a` is a directory and nothing about what is in
+it, so Linux's rmdir there could be either -ENOTEMPTY or a success: the
+arm declines, under either flag, and declines beside a key `a/c` that
+does show an entry.
 kernel: fs/namei.c:link_path_walk,may_delete,vfs_rmdir; fs/libfs.c:simple_rmdir@v6.18.46 -/
-theorem implied_directory_emptiness_unknown (o o' o'' : outcome SyscallEffect) :
+theorem implied_directory_emptiness_unknown_declines (o o' o'' : outcome SyscallEffect) :
     (unlinkat_spec cwd_fd 8192 0 (mem_in (name_at [97])) dotdot_key_model o
-       ↔ o = Ok (ledgered (errno_ret EISDIR) 2) dotdot_key_model [])
+       ↔ o = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) dotdot_key_model o'
-       ↔ (o' = Ok (ledgered (errno_ret ENOTEMPTY) 2) dotdot_key_model []
-          ∨ o' = Ok (ledgered (Z_to_bv 64 0) 2) dotdot_removed_model []))
+       ↔ o' = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) dotdot_and_entry_model o''
-       ↔ o'' = Ok (ledgered (errno_ret ENOTEMPTY) 2) dotdot_and_entry_model []) := by
+       ↔ o'' = Unmodeled) := by
   refine ⟨?_, ?_, ?_⟩ <;> sys_norm
 
-/-- …refusing an injectable errno, and a removal that leaves the map as it
+/-- …refusing an injectable errno and a removal that leaves the map as it
 was.
-rocq-twin: unlinkat_implied_directory_emptiness_unknown
 kernel: fs/namei.c:vfs_rmdir@v6.18.46 -/
 theorem implied_directory_emptiness_unknown_rejected (evs : List event) :
     ¬ unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) dotdot_key_model
@@ -1818,117 +1812,105 @@ theorem implied_directory_emptiness_unknown_rejected (evs : List event) :
         (Ok (ledgered (Z_to_bv 64 0) 2) dotdot_key_model evs) := by
   constructor <;> sys_refute
 
-/-- The removal changes the map the way it changes the tree: from one image
-holding every shape, `a/`, `a/..` and `a/../` go, `a/../../c` becomes
-`../c`, `a/./..//b` becomes `b` and `ab` stays; beside a key `b` already
-held, the renamed `a/../b` keeps its own contents; and after the removal a
-second rmdir of `a` is -ENOENT, as on Linux.
-rocq-twin: unlinkat_implied_directory_removal
+/-- Every spelling that makes `a` a directory declines, whatever the rest
+of the image holds: an image of `a/`, `a/..`, `a/../`, `a/../../c`,
+`a/./..//b` and `ab` together, and one where the renamed key would meet a
+key `b` already held.  Past them, an image with NO key under `a` answers
+again: on the map holding only `b`, rmdir of `a` is the lookup's -ENOENT.
 kernel: fs/namei.c:link_path_walk,do_rmdir,vfs_rmdir,lookup_one_qstr_excl@v6.18.46 -/
-theorem implied_directory_removal (o o' o'' : outcome SyscallEffect) :
+theorem implied_directory_shapes_decline (o o' o'' : outcome SyscallEffect) :
     (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) shapes_model o
-       ↔ (o = Ok (ledgered (errno_ret ENOTEMPTY) 2) shapes_model []
-          ∨ o = Ok (ledgered (Z_to_bv 64 0) 2) shapes_removed_model []))
+       ↔ o = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) clash_model o'
-       ↔ (o' = Ok (ledgered (errno_ret ENOTEMPTY) 2) clash_model []
-          ∨ o' = Ok (ledgered (Z_to_bv 64 0) 2) dotdot_removed_model []))
+       ↔ o' = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) dotdot_removed_model o''
        ↔ o'' = Ok (ledgered (errno_ret ENOENT) 2) dotdot_removed_model []) := by
   refine ⟨?_, ?_, ?_⟩ <;> sys_norm
 
-/-- A descriptor naming the key the removal would rename leaves the call
-declined, rather than leave the descriptor naming nothing; a descriptor on
-a key the removal leaves alone (`x`) does not.  A key that shows an entry
-(`a/b`) makes the answer -ENOTEMPTY before the guard is read, held
-descriptor or not.
-rocq-twin: unlinkat_implied_directory_removal_fd_guard
+/-- A held descriptor changes nothing on this shape: the implied-directory
+guard runs ahead of the open-fd guard, so a descriptor naming the key
+under `a`, one naming a key the shape leaves alone, and one on a key that
+shows an entry all decline alike.
 kernel: fs/namei.c:do_rmdir,vfs_rmdir@v6.18.46 -/
-theorem implied_directory_removal_fd_guard (o o' o'' : outcome SyscallEffect) :
+theorem implied_directory_fd_guard_declines (o o' o'' : outcome SyscallEffect) :
     (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) dotdot_held_model o
       ↔ o = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) dotdot_other_held_model o'
-      ↔ (o' = Ok (ledgered (errno_ret ENOTEMPTY) 2) dotdot_other_held_model []
-         ∨ o' = Ok (ledgered (Z_to_bv 64 0) 2) dotdot_other_held_removed_model []))
+      ↔ o' = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) implied_dir_held_model o''
-      ↔ o'' = Ok (ledgered (errno_ret ENOTEMPTY) 2) implied_dir_held_model []) := by
+      ↔ o'' = Unmodeled) := by
   refine ⟨?_, ?_, ?_⟩ <;> sys_norm
 
-/-- Keys `a/` and `a/.` imply the directory `a` but name `a` itself and show
-nothing in it (`fs_entry_under`'s empty test, which `a/.` reaches through
-`path_skip_noop_components`): unlink is still -EISDIR, and rmdir is
--ENOTEMPTY or the removal, which drops the key.
-rocq-twin: unlinkat_implied_directory_edges
+/-- Keys `a/` and `a/.` imply the directory `a` and show nothing in it, so
+Linux's rmdir there would succeed and the arm declines; unlink of `a`,
+-EISDIR on Linux, declines with it.
 kernel: fs/namei.c:may_delete,vfs_rmdir; fs/libfs.c:simple_rmdir@v6.18.46 -/
-theorem implied_directory_without_an_entry (o o' o'' o''' : outcome SyscallEffect) :
+theorem implied_directory_without_an_entry_declines
+    (o o' o'' o''' : outcome SyscallEffect) :
     (unlinkat_spec cwd_fd 8192 0 (mem_in (name_at [97])) slash_key_model o
-       ↔ o = Ok (ledgered (errno_ret EISDIR) 2) slash_key_model [])
+       ↔ o = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) slash_key_model o'
-       ↔ (o' = Ok (ledgered (errno_ret ENOTEMPTY) 2) slash_key_model []
-          ∨ o' = Ok (ledgered (Z_to_bv 64 0) 2) unlinked_model []))
+       ↔ o' = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 0 (mem_in (name_at [97])) dot_key_model o''
-       ↔ o'' = Ok (ledgered (errno_ret EISDIR) 2) dot_key_model [])
+       ↔ o'' = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) dot_key_model o'''
-       ↔ (o''' = Ok (ledgered (errno_ret ENOTEMPTY) 2) dot_key_model []
-          ∨ o''' = Ok (ledgered (Z_to_bv 64 0) 2) unlinked_model [])) := by
+       ↔ o''' = Unmodeled) := by
   refine ⟨?_, ?_, ?_, ?_⟩ <;> sys_norm
 
-/-- `ab/c` shows nothing in `a`: beside `a/../b`, rmdir is still -ENOTEMPTY
-or the removal, which keeps `ab/c`, so the entry test reads a component and
-not a byte prefix.
-rocq-twin: unlinkat_implied_directory_edges
+/-- `ab/c` shows nothing in `a`, and the guard reads a COMPONENT prefix:
+beside `a/../b` the call still declines, and the removal a byte-prefix
+reading would have performed is refused.
 kernel: fs/namei.c:link_path_walk,vfs_rmdir; fs/libfs.c:simple_rmdir@v6.18.46 -/
-theorem byte_prefix_shows_no_entry (o : outcome SyscallEffect) :
-    unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) byte_prefix_entry_model o
-      ↔ (o = Ok (ledgered (errno_ret ENOTEMPTY) 2) byte_prefix_entry_model []
-         ∨ o = Ok (ledgered (Z_to_bv 64 0) 2) byte_prefix_removed_model []) := by
-  sys_norm
+theorem byte_prefix_shows_no_entry (o : outcome SyscallEffect) (m' : Model)
+    (evs : List event) :
+    (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) byte_prefix_entry_model o
+       ↔ o = Unmodeled)
+    ∧ ¬ unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) byte_prefix_entry_model
+        (Ok (ledgered (Z_to_bv 64 0) 2) m' evs) := by
+  refine ⟨?_, ?_⟩
+  · sys_norm
+  · sys_refute
 
 /-- `a/./b`, `a//b` and `a/.//./b` each name `b` inside `a`: separator runs
-and "." components do not move the walk (`path_skip_noop_components`), so
-rmdir is -ENOTEMPTY, and unlink is still -EISDIR.
-rocq-twin: unlinkat_implied_directory_noop_components
+and "." components do not move the walk, so each is the implied-directory
+shape and each declines, under either flag.
 kernel: fs/namei.c:link_path_walk,handle_dots,may_delete,vfs_rmdir; fs/libfs.c:simple_rmdir@v6.18.46 -/
-theorem noop_components_show_the_entry (o o' o'' o''' : outcome SyscallEffect) :
+theorem noop_components_decline (o o' o'' o''' : outcome SyscallEffect) :
     (unlinkat_spec cwd_fd 8192 0 (mem_in (name_at [97])) dot_entry_model o
-       ↔ o = Ok (ledgered (errno_ret EISDIR) 2) dot_entry_model [])
+       ↔ o = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) dot_entry_model o'
-       ↔ o' = Ok (ledgered (errno_ret ENOTEMPTY) 2) dot_entry_model [])
+       ↔ o' = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) slash_entry_model o''
-       ↔ o'' = Ok (ledgered (errno_ret ENOTEMPTY) 2) slash_entry_model [])
+       ↔ o'' = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) mixed_entry_model o'''
-       ↔ o''' = Ok (ledgered (errno_ret ENOTEMPTY) 2) mixed_entry_model []) := by
+       ↔ o''' = Unmodeled) := by
   refine ⟨?_, ?_, ?_, ?_⟩ <;> sys_norm
 
 /-- …and a removal is refused on `a/./b`.
-rocq-twin: unlinkat_implied_directory_noop_components
 kernel: fs/namei.c:vfs_rmdir@v6.18.46 -/
 theorem noop_components_removal_rejected (m' : Model) (evs : List event) :
     ¬ unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) dot_entry_model
         (Ok (ledgered (Z_to_bv 64 0) 2) m' evs) := by
   sys_refute
 
-/-- `a/./../b` passes through `a` and back out, and `a/./` names `a` itself:
-neither shows an entry, so rmdir is -ENOTEMPTY or the removal, which makes
-the first `b` and drops the second.  `a/.b` shows the name `.b`, which only
-starts with a dot, so rmdir is -ENOTEMPTY alone.
-rocq-twin: unlinkat_implied_directory_noop_components
+/-- `a/./../b` passes through `a` and back out, `a/./` names `a` itself and
+`a/.b` shows the name `.b`: each makes `a` a directory the map only
+implies, so each declines.
 kernel: fs/namei.c:link_path_walk,handle_dots,vfs_rmdir; fs/libfs.c:simple_rmdir@v6.18.46 -/
-theorem noop_components_edges (o o' o'' : outcome SyscallEffect) :
+theorem noop_components_edges_decline (o o' o'' : outcome SyscallEffect) :
     (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) dot_dotdot_key_model o
-       ↔ (o = Ok (ledgered (errno_ret ENOTEMPTY) 2) dot_dotdot_key_model []
-          ∨ o = Ok (ledgered (Z_to_bv 64 0) 2) dotdot_removed_model []))
+       ↔ o = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) dot_slash_key_model o'
-       ↔ (o' = Ok (ledgered (errno_ret ENOTEMPTY) 2) dot_slash_key_model []
-          ∨ o' = Ok (ledgered (Z_to_bv 64 0) 2) unlinked_model []))
+       ↔ o' = Unmodeled)
     ∧ (unlinkat_spec cwd_fd 8192 512 (mem_in (name_at [97])) dot_name_entry_model o''
-       ↔ o'' = Ok (ledgered (errno_ret ENOTEMPTY) 2) dot_name_entry_model []) := by
+       ↔ o'' = Unmodeled) := by
   refine ⟨?_, ?_, ?_⟩ <;> sys_norm
 
 set_option maxRecDepth 32768 in
-/-- A 256-byte name with a key under it declines ahead of the
-implied-directory answers: the filesystem's -ENAMETOOLONG comes from its
-lookup, before `may_delete` and `->rmdir` run.
-rocq-twin: unlinkat_implied_directory_edges
+/-- A 256-byte name with a key under it declines at the NAME_MAX bound
+rather than at the implied-directory guard: the filesystem's
+-ENAMETOOLONG comes from its lookup, before `may_delete` and `->rmdir`
+run, and the spec tests the bound first.
 kernel: fs/ext4/namei.c:ext4_lookup; fs/libfs.c:simple_lookup@v6.18.46 -/
 theorem over_name_max_precedes_implied_directory (o o' : outcome SyscallEffect) :
     (unlinkat_spec cwd_fd 8192 0 (mem_in (name_at name256)) long_key_model o ↔ o = Unmodeled)

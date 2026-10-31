@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Sync.v
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
@@ -22,9 +23,9 @@ decide what is closed; the two that are not, `success_moves_no_offset` and
 WHAT THE ROCQ FILE PINS AND WHAT IT PROBES.  Rocq's `Checks/Cases/Fs/Sync.v`
 keeps three examples — the channel arm on fd 0, the `fd32` aliasing onto
 it, and that success is inert — and sends everything else to a probe
-against a real kernel (`testing/syscall-check/tests/fsync_spec.c`).  Its
+against a real kernel (`linux-process-semantics@ff0313ba4f:testing/syscall-check/tests/fsync_spec.c`).  Its
 stated reason for keeping the first two, that the harness makes fd 0 a
-regular file no probe can reach, no longer holds: `testing/vm/tracer.c`
+regular file no probe can reach, no longer holds: `linux-process-semantics@ff0313ba4f:testing/vm/tracer.c`
 makes three pipes and `dup2`s them onto 0, 1 and 2, and `fsync_spec.c`'s
 `chan0` selector probes fd 0 and fd 2^32 directly.  That is Rocq's comment
 to correct, not a reason this file inherits.  This file pins every arm:
@@ -314,7 +315,7 @@ misattribute; `vfs_fsync_range` (:183-187) reads `f_op` and the inode, and
 the `.fsync` it finds is the member of `ext4_file_operations`
 (fs/ext4/file.c:975) or of `shmem_file_operations` (mm/shmem.c:5263) — the
 filesystems a run sits on, the premise
-`bugs/fsync-dirfd-premise-widened-by-dotdot.md` records for this arm.
+`linux-process-semantics@ff0313ba4f:bugs/fsync-dirfd-premise-widened-by-dotdot.md` records for this arm.
 kernel: fs/sync.c:do_fsync,vfs_fsync_range; fs/ext4/fsync.c:ext4_sync_file; fs/libfs.c:noop_fsync@v6.18.46 -/
 theorem readonly_file_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     fsync_spec 3 i fsync_model o ↔ o = Ok (mkEffect 0 [] []) fsync_model [] := by
@@ -332,7 +333,7 @@ theorem readonly_file_is_not_ebadf (i : SyscallInput) (m' : Model) (evs : List e
 whose table has no `.fsync` (`generic_ro_fops`, fs/read_write.c:28-33;
 `squashfs_file_operations`, fs/squashfs/file.c:774-779) — is refused: the
 model's file sits on ext4 or tmpfs, and
-`bugs/fsync-dirfd-premise-widened-by-dotdot.md` records what that premise
+`linux-process-semantics@ff0313ba4f:bugs/fsync-dirfd-premise-widened-by-dotdot.md` records what that premise
 costs on the file arms, as `dir_is_not_einval` does for the directory.
 kernel: fs/sync.c:vfs_fsync_range; fs/ext4/fsync.c:ext4_sync_file; fs/libfs.c:noop_fsync@v6.18.46 -/
 theorem readonly_file_is_not_einval (i : SyscallInput) (m' : Model) (evs : List event) :
@@ -405,55 +406,32 @@ theorem dir_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
 /-- The answer a procfs or sysfs directory would give — `proc_dir_operations`
 (fs/proc/generic.c:346-350) and `kernfs_dir_fops` (fs/kernfs/dir.c:1924-1929)
 set no `.fsync` — is refused: the model's directory fd is on the
-filesystems above, and `bugs/fsync-dirfd-premise-widened-by-dotdot.md`
+filesystems above, and `linux-process-semantics@ff0313ba4f:bugs/fsync-dirfd-premise-widened-by-dotdot.md`
 records what that premise costs.
 kernel: fs/ext4/fsync.c:ext4_fsync_journal; fs/libfs.c:noop_fsync@v6.18.46 -/
 theorem dir_is_not_einval (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ fsync_spec 5 i fsync_model (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
   sys_refute
 
-/-- A lookup answers only an entry of the table it walks, which is what
-lets `fsync_never_unmodeled_on_kinds` refute a kind the fixture does not
-hold without unfolding the lookup entry by entry.
-model: `fd_lookup` (`State/Fd.lean`) returns the entry of a pair it finds. -/
-theorem fd_lookup_mem_snd (fds : List (word × FdEntry)) (fd : word) (e : FdEntry)
-    (h : fd_lookup fds fd = some e) : e ∈ fds.map Prod.snd := by
-  induction fds with
-  | nil => unfold fd_lookup at h; cases h
-  | cons x r ih =>
-    obtain ⟨k, e'⟩ := x
-    unfold fd_lookup at h
-    split at h
-    · cases h; exact List.mem_cons_self
-    · exact List.mem_cons_of_mem _ (ih h)
-
-/-- No arm declines on this fixture: every fd kind it holds is answered,
-and so is a number that names none.  It holds no append-mode or
-read-write file, the two kinds `fsync_spec` declines (`Sys/Fs/Sync.lean`'s
-header; `a17_append_fsync_declines`, `a17_rdwr_fsync_declines`), so those
-cases of the split are refuted on the lookup itself.  Any other decline
-would be a modeling gap, not a kernel behaviour, and there is none.  The
-fd is symbolic, so the lookup is case-split by hand before the normalizer
-reads each arm: `sys_norm` reads a spec whose gates are decided, and a
-`match` on an open lookup is not one.
+/-- No arm declines on this fixture, and none declines anywhere: every fd
+kind is answered and so is a number that names none, the four file kinds
+included (`Sys/Fs/Sync.lean`'s header; `a17_append_fsync_is_zero`,
+`a17_rdwr_fsync_is_zero`).  A decline would be a modeling gap, not a
+kernel behaviour, and there is none.  The fd is symbolic, so the lookup
+is case-split by hand before the normalizer reads each arm: `sys_norm`
+reads a spec whose gates are decided, and a `match` on an open lookup is
+not one.
 kernel: fs/sync.c:do_fsync,vfs_fsync_range@v6.18.46 -/
 theorem fsync_never_unmodeled_on_kinds (fd : word) (i : SyscallInput) :
     ¬ fsync_spec fd i fsync_kinds_model Unmodeled := by
   intro h
   unfold fsync_spec at h
   rw [bind_get_model_iff, m_fds_fsync_kinds_model] at h
-  generalize hr : fd_lookup fsync_kinds_fds fd = r at h
+  generalize fd_lookup fsync_kinds_fds fd = r at h
   cases r with
   | none => sys_refute at h
   | some e =>
     cases e
-    case FdFileA p off | FdFileRW p off =>
-      -- no entry of the fixture is an append-mode or read-write file, and
-      -- a lookup answers only an entry of the table it walks
-      have hm := fd_lookup_mem_snd _ _ _ hr
-      simp only [fsync_kinds_fds, fsync_fds, List.cons_append, List.nil_append,
-        List.map_cons, List.map_nil, List.mem_cons, List.not_mem_nil, reduceCtorEq,
-        or_false] at hm
     all_goals sys_refute at h
 
 /-! ## The dispatcher: two numbers, one function, one 32-bit fd
@@ -656,14 +634,17 @@ def a17_sync_model : Model :=
 
 attribute [sys_simp low] a17_sync_model.eq_1
 
-/-- `fsync` through a read-write file declines (`Sys/Fs/Sync.lean`'s
-header declares the narrowing).  The same call on an `FdFile` answers 0
-(`do_fsync`, fs/sync.c, Linux v6.18.46, never reads the access mode),
-so a mutant answering this kind as `FdFile` fails here.
-kernel: fs/sync.c:do_fsync@v6.18.46 -/
-theorem a17_rdwr_fsync_declines (o : outcome SyscallEffect) :
+/-- `fsync` through a read-write file answers 0, as it does through an
+`FdFile`: `vfs_fsync_range` (fs/sync.c:183-185, Linux v6.18.46) reads
+`file->f_op->fsync` and then `datasync`, and consults neither `f_mode`
+nor `f_flags`, so the access mode decides nothing here.  A mutant
+declining this kind, or answering it -EINVAL as it answers a pipe, fails
+here.
+kernel: fs/sync.c:do_fsync,vfs_fsync_range@v6.18.46 -/
+theorem a17_rdwr_fsync_is_zero (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 82 [3, 0, 0, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_sync_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_sync_model o
+      ↔ o = Ok (mkEffect 0 [] []) a17_sync_model [] := by
   sys_norm
 
 def a17_sync_append_model : Model :=
@@ -671,14 +652,16 @@ def a17_sync_append_model : Model :=
 
 attribute [sys_simp low] a17_sync_append_model.eq_1
 
-/-- `fsync` through an append-mode file declines (`Sys/Fs/Sync.lean`'s
-header declares the narrowing).  The same call on an `FdFileW` answers 0
-(`do_fsync`, fs/sync.c, Linux v6.18.46, never reads the access mode), so a
-mutant answering this kind as `FdFileW` fails here.
-kernel: fs/sync.c:do_fsync@v6.18.46 -/
-theorem a17_append_fsync_declines (o : outcome SyscallEffect) :
+/-- `fsync` through an append-mode file answers 0, as it does through an
+`FdFileW`: append mode is a bit of `f_flags`, which `vfs_fsync_range`
+(fs/sync.c:183-185, Linux v6.18.46) never reads — it reads
+`file->f_op->fsync`, the inode's own operation table.  A mutant declining
+this kind, or answering it -EINVAL, fails here.
+kernel: fs/sync.c:do_fsync,vfs_fsync_range@v6.18.46 -/
+theorem a17_append_fsync_is_zero (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 82 [3, 0, 0, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_sync_append_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_sync_append_model o
+      ↔ o = Ok (mkEffect 0 [] []) a17_sync_append_model [] := by
   sys_norm
 
 end LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.Sync

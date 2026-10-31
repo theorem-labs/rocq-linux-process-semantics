@@ -1,7 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Fs/Stat.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Sys.Fs.Stat — readlinkat (78), newfstatat (79), fstat (80)
 
@@ -30,17 +31,10 @@ descriptor guard) the docstring says what v6.18.46 does instead.
 Two spellings differ from Rocq without changing a value: Rocq's `Z.eqb`
 on `bv_unsigned` is `==` on `Int`, and Rocq's section-free `negb` is `!`.
 
-FDFILERW AND FDFILEA DECLINE HERE, beyond Rocq.  `fstat_spec` answers
-`unmodeled` on a read-write or an append-mode file, where Rocq's arm answers
-through `fstat_file_spec` as for `FdFile` (the file kinds share one inode,
-and neither `f_mode` nor `f_flags` is a member of `struct stat`).  The base
-change that added the two constructors ported Rocq's arm into every pure
-helper that names either and declined both in every spec arm that does, so
-that each arm is ported later against pins of its own;
-`Checks/Cases/Fs/Stat.lean`'s `a17_rdwr_fstat_declines` and
-`a17_append_fstat_declines` hold the declines.  No run an example can reach
-is narrowed: none can hold either kind yet (`State/Fd.lean`'s constructor
-notes say why, and when that stops being true). -/
+ALL FOUR FILE KINDS ANSWER THROUGH `fstat_file_spec`.  `FdFile`, `FdFileW`,
+`FdFileA` and `FdFileRW` share one inode, and neither `f_mode` nor
+`f_flags` is a member of `struct stat`, so append mode and O_RDWR report
+what the read-only kind reports. -/
 
 namespace LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Stat
 
@@ -501,8 +495,11 @@ def fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
   | some (.FdChannel _)   => unmodeled              -- pipe, socket or terminal: even the type bits are undecided
   | some (.FdFile p _)    => fstat_file_spec p statbuf   -- `cp_new_stat` over the file's inode
   | some (.FdFileW p _)   => fstat_file_spec p statbuf   -- the same inode, opened for writing
-  | some (.FdFileA _ _) => unmodeled -- declined: see the file header
-  | some (.FdFileRW _ _) => unmodeled -- declined: see the file header
+  | some (.FdFileA p _)   => fstat_file_spec p statbuf   -- and again in append mode
+  | some (.FdFileRW p _)  => fstat_file_spec p statbuf
+                                                    -- and again opened O_RDWR: the same inode, and
+                                                    -- `st_size` is a function of the CURRENT contents,
+                                                    -- not of the descriptor
   | some .FdDir           => unmodeled              -- S_IFDIR is known; a directory's size and blocks are not
   | some (.FdSocket _)    => unmodeled              -- mode/uid/gid are known; ino, dev and the timestamps are not
   | some (.FdPipe _ _)    => unmodeled              -- S_IFIFO is known; a pipe's size and blocks are not the queue's length

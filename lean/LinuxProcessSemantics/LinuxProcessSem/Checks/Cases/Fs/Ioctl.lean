@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Ioctl.v
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
@@ -48,7 +49,8 @@ FIOCLEX or FIOQSIZE; those arms rest on the kernel reading alone.  The
 probes that would close the gap, each one `CASE:` line on an existing or
 new probe: `ioctl(dirfd, TIOCSCTTY, 0)` -ENOTTY (`conform`, with a `ret=0`
 reject twin), `ioctl(dirfd, FIOQSIZE, &q)` 0 (`fail-closed`),
-`ioctl(devnull, TCGETS, buf)` -ENOTTY (`fail-closed`),
+`ioctl(devnull, TCGETS, buf)` -ENOTTY (`conform`, with a `ret=0` reject
+twin),
 `ioctl(urandom, TCGETS, buf)` -EINVAL (`fail-closed`), TIOCOUTQ on a
 socket and FIOCLEX on a file, both 0 (`fail-closed`), and `socket_rw.c`'s
 first `ioctl` mutated to -EFAULT (`reject`).
@@ -59,9 +61,7 @@ commit 1f99e9ab748f) down: `fd_empty` → -EBADF (:588-589);
 `security_file_ioctl` (:591-593, null under the harness); `do_vfs_ioctl`
 (:595, the fd-generic list); `vfs_ioctl` (:596-597, the file's own
 handler, -ENOTTY by default).  The `unmodeled` pins say, each, what the
-model lacks to answer. The fd-first gate also declines implementation
-disagreements: qemu-user may answer before Linux would resolve the fd, as
-`Sys.Fs.Ioctl.ioctl_fd_first_request` explains.
+model lacks to answer.
 
 NOTHING HERE COMPARES THE LEAN SPEC TO THE ROCQ ONE. -/
 
@@ -141,7 +141,7 @@ def FIOQSIZE : word := 0x5460
 /-- kernel: include/uapi/asm-generic/ioctls.h:FIOQSIZE@v6.18.46 -/
 example : FIOQSIZE = 21600 := by decide
 
-/-- The original eight terminal-only requests, including the three now declined. -/
+/-- The eight terminal-only requests. -/
 def tty_only_requests : List word :=
   [TCGETS, TCSETS, TIOCSCTTY, TIOCGWINSZ, TIOCSWINSZ, TIOCNOTTY, TIOCGPTN, TIOCSPTLCK]
 
@@ -164,21 +164,6 @@ kernel: fs/ioctl.c:do_vfs_ioctl,vfs_ioctl@v6.18.46 -/
 theorem tty_only_request_iff_mem (r : word) :
     tty_only_request r = true ↔ r ∈ tty_only_requests := by
   simp only [tty_only_request, Bool.or_eq_true, bv_eqb_eq, tty_only_requests,
-    List.mem_cons, List.not_mem_nil, or_false, or_assoc]
-/-- The five requests the fd-first gate lets reach the fd check. -/
-def ioctl_fd_first_requests : List word :=
-  [TCGETS, TIOCSCTTY, TIOCGWINSZ, TIOCNOTTY, TIOCGPTN]
-
-/-- The fd-first gate admits EXACTLY the five, in both directions.  A gate
-widened by one more word -- TCSETSW, say, which qemu-user answers -EFAULT
-from `lock_user` before the fd (linux-user/syscall.c:do_ioctl, QEMU
-v11.1.1) -- would claim Linux's -EBADF on a closed fd as certain, and no
-pin naming single requests catches that word.
-kernel: fs/ioctl.c:ioctl,do_vfs_ioctl@v6.18.46
-rocq-twin: ioctl_fd_first_request_iff_mem -/
-theorem ioctl_fd_first_request_iff_mem (r : word) :
-    ioctl_fd_first_request r = true ↔ r ∈ ioctl_fd_first_requests := by
-  simp only [ioctl_fd_first_request, Bool.or_eq_true, bv_eqb_eq, ioctl_fd_first_requests,
     List.mem_cons, List.not_mem_nil, or_false, or_assoc]
 /-- FIONREAD is claimed by `do_vfs_ioctl` (fs/ioctl.c:549-554, Linux v6.18.46), so the gate refuses it.
 kernel: fs/ioctl.c:do_vfs_ioctl@v6.18.46 -/
@@ -217,12 +202,12 @@ theorem ioc_type_of_tty_only_requests :
   simp only [tty_only_requests, List.mem_cons, List.not_mem_nil, or_false] at hr
   rcases hr with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> decide
 
-/-! ## Closed descriptors and the request gate
+/-! ## Closed descriptors
 
 `SYSCALL_DEFINE3(ioctl, …)` returns -EBADF from `fd_empty(f)`
-(fs/ioctl.c:588-589, Linux v6.18.46) before `cmd` is read by anything.
-QEMU may answer first from the request or its input buffer, so the spec
-checks the fd-first gate before claiming that errno.
+(fs/ioctl.c:588-589, Linux v6.18.46) before `cmd` is read by anything, so
+the arm answers that errno for EVERY request on a closed fd, the eight of
+`tty_only_request` and their neighbours alike.
 `demo_model` holds fds 0, 1 and 2 only. -/
 
 /-- TCGETS on fd 7, which is not open: -EBADF, the model untouched.
@@ -232,24 +217,21 @@ theorem closed_fd_tcgets_is_ebadf (i : SyscallInput) (o : outcome SyscallEffect)
       o = Ok (mkEffect (errno_ret EBADF) [] []) demo_model [] := by
   sys_norm
 
-/-- FIONBIO on a closed fd is now declined. The request gate declines before fd lookup because QEMU v11.1.1
-linux-user/syscall.c do_ioctl can answer before safe_ioctl; the full source
-argument is on Sys.Fs.Ioctl.ioctl_fd_first_request.
-
-In Linux, FIONBIO on a closed fd is -EBADF: the fd check fires first (fs/ioctl.c:588-589 precedes :507).
+/-- FIONBIO on a closed fd is -EBADF, as every request is: the fd check
+fires first (fs/ioctl.c:588-589 precedes :507, Linux v6.18.46), so the
+request the file's own handler would have answered never reaches it.
 kernel: fs/ioctl.c:ioctl,do_vfs_ioctl@v6.18.46 -/
-theorem closed_fd_fionbio_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
+theorem closed_fd_fionbio_is_ebadf (i : SyscallInput) (o : outcome SyscallEffect) :
     ioctl_spec 7 FIONBIO i demo_model o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect (errno_ret EBADF) [] []) demo_model [] := by
   sys_norm
 
-/-- Linux's EBADF for closed-fd FIONBIO is not a modeled answer. The request gate declines before fd lookup because QEMU v11.1.1
-linux-user/syscall.c do_ioctl can answer before safe_ioctl; the full source
-argument is on Sys.Fs.Ioctl.ioctl_fd_first_request.
+/-- …so the closed fd is not a decline here: a request outside the eight
+is `Unmodeled` only on an OPEN fd (fs/ioctl.c:588-589 before :507, Linux
+v6.18.46).
 kernel: fs/ioctl.c:ioctl,do_vfs_ioctl@v6.18.46 -/
-theorem closed_fd_fionbio_ebadf_declined (i : SyscallInput) :
-    ¬ ioctl_spec 7 FIONBIO i demo_model
-      (Ok (mkEffect (errno_ret EBADF) [] []) demo_model []) := by
+theorem closed_fd_fionbio_unmodeled_rejected (i : SyscallInput) :
+    ¬ ioctl_spec 7 FIONBIO i demo_model Unmodeled := by
   sys_refute
 
 /-- A kernel answering -ENOTTY on a closed fd is lying: `fd_empty` returns
@@ -260,24 +242,23 @@ theorem closed_fd_enotty_rejected (i : SyscallInput) (m' : Model) (evs : List ev
     ¬ ioctl_spec 7 TCGETS i demo_model (Ok (mkEffect (errno_ret ENOTTY) [] []) m' evs) := by
   sys_refute
 
-/-- On every model, a closed fd answers EBADF when the request passes
-the fd-first gate. Linux fs/ioctl.c ioctl checks fd_empty before cmd; the
-gate restricts this claim to requests on which QEMU also reaches the fd.
+/-- On every model and for every request, a closed fd answers EBADF.
+Linux fs/ioctl.c ioctl checks fd_empty before cmd is read by anything, so
+the request does not enter the claim.
 kernel: fs/ioctl.c:ioctl@v6.18.46 -/
 theorem closed_fd_is_ebadf (fd req : word) (i : SyscallInput) (m : Model)
-    (o : outcome SyscallEffect) (h : fd_lookup (m_fds m) fd = none)
-    (hg : ioctl_fd_first_request req = true) :
+    (o : outcome SyscallEffect) (h : fd_lookup (m_fds m) fd = none) :
     ioctl_spec fd req i m o ↔ o = Ok (mkEffect (errno_ret EBADF) [] []) m [] := by
-  simp only [ioctl_spec.eq_1, hg, Bool.not_true, Bool.false_eq_true, ↓reduceIte, bind_get_model_iff, h]
+  simp only [ioctl_spec.eq_1, bind_get_model_iff, h]
   sys_norm
 
 /-! ## `vfs_ioctl` answers -ENOTTY on every open kind
 
 Each kind's handler is walked on `ioctl_spec`'s docstring; the pins here
-take one fd of each kind the Lean `FdEntry` can hold. The fd-first
-requests retain -ENOTTY; the write-file and pipe-writer fixtures exercise
-the new IOC_W declines.  The refutations name the lies: a success (the answer a real
-terminal gives TCGETS, `tty_mode_ioctl`, drivers/tty/tty_ioctl.c:811-815, Linux v6.18.46),
+take one fd of each kind the Lean `FdEntry` can hold, and each of the
+eight terminal-only requests is -ENOTTY on every one of them.  The
+refutations name the lies: a success (the answer a real terminal gives
+TCGETS, `tty_mode_ioctl`, drivers/tty/tty_ioctl.c:811-815, Linux v6.18.46),
 -EBADF, a written byte, a changed model, and `Unmodeled`. -/
 
 /-- TIOCGWINSZ on stdout — the request musl's stdio issues to choose a
@@ -289,19 +270,14 @@ theorem stdout_tiocgwinsz_is_enotty (i : SyscallInput) (o : outcome SyscallEffec
       o = Ok (mkEffect (errno_ret ENOTTY) [] []) demo_model [] := by
   sys_norm
 
-/-- Keep all eight original requests: the three IOC_W requests decline;
-the five fd-first requests retain ENOTTY. The request gate declines before fd lookup because QEMU v11.1.1
-linux-user/syscall.c do_ioctl can answer before safe_ioctl; the full source
-argument is on Sys.Fs.Ioctl.ioctl_fd_first_request.
-
-Each falls out of `do_vfs_ioctl` at
+/-- All eight terminal-only requests on stdout are -ENOTTY; Rocq's
+`ioctl_tty_only_requests_all_enotty`.  Each falls out of `do_vfs_ioctl` at
 -ENOIOCTLCMD (fs/ioctl.c:580) and `vfs_ioctl` answers -ENOTTY (:46-53).
 kernel: fs/ioctl.c:do_vfs_ioctl,vfs_ioctl@v6.18.46 -/
-theorem stdout_tty_only_requests_enotty_or_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
+theorem stdout_tty_only_requests_all_enotty (i : SyscallInput) (o : outcome SyscallEffect) :
     ∀ r ∈ tty_only_requests,
       (ioctl_spec 1 r i demo_model o ↔
-        o = (if r = TCSETS ∨ r = TIOCSWINSZ ∨ r = TIOCSPTLCK then Unmodeled
-          else Ok (mkEffect (errno_ret ENOTTY) [] []) demo_model [])) := by
+        o = Ok (mkEffect (errno_ret ENOTTY) [] []) demo_model []) := by
   intro r hr
   simp only [tty_only_requests, List.mem_cons, List.not_mem_nil, or_false] at hr
   rcases hr with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> sys_norm
@@ -331,14 +307,13 @@ theorem file_tcgets_is_enotty (i : SyscallInput) (o : outcome SyscallEffect) :
       o = Ok (mkEffect (errno_ret ENOTTY) [] []) (fixture_of (fds := [(3, .FdFile [97] 0)])) [] := by
   sys_norm
 
-/-- TIOCSWINSZ on a write-only file declines: Linux returns ENOTTY,
-but QEMU can return EFAULT before consulting the host fd. The request gate declines before fd lookup because QEMU v11.1.1
-linux-user/syscall.c do_ioctl can answer before safe_ioctl; the full source
-argument is on Sys.Fs.Ioctl.ioctl_fd_first_request.
+/-- TIOCSWINSZ on a write-only file: -ENOTTY, as on a file open for
+reading — `__ext4_ioctl`'s default arm (fs/ext4/ioctl.c:1929-1930, Linux
+v6.18.46) reads neither the access mode nor the window it is handed.
 kernel: fs/ext4/ioctl.c:__ext4_ioctl; drivers/tty/tty_io.c:tty_ioctl@v6.18.46 -/
-theorem filew_tiocswinsz_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
+theorem filew_tiocswinsz_is_enotty (i : SyscallInput) (o : outcome SyscallEffect) :
     ioctl_spec 3 TIOCSWINSZ i (fixture_of (fds := [(3, .FdFileW [97] 0)])) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect (errno_ret ENOTTY) [] []) (fixture_of (fds := [(3, .FdFileW [97] 0)])) [] := by
   sys_norm
 
 /-- A directory: `do_vfs_ioctl`'s default arm runs `file_ioctl` only for
@@ -384,17 +359,14 @@ theorem pipe_reader_tiocgwinsz_is_enotty (i : SyscallInput) (o : outcome Syscall
       o = Ok (mkEffect (errno_ret ENOTTY) [] []) (fixture_of (fds := [(3, .FdPipe 0 false)])) [] := by
   sys_norm
 
-/-- TCSETS on a pipe writer declines: Linux returns ENOTTY, but QEMU
-can return EFAULT while copying the argument first. The request gate declines before fd lookup because QEMU v11.1.1
-linux-user/syscall.c do_ioctl can answer before safe_ioctl; the full source
-argument is on Sys.Fs.Ioctl.ioctl_fd_first_request.
-
-The direction of the end does not enter
-`pipe_ioctl`.
+/-- TCSETS on a pipe writer: -ENOTTY.  The direction of the end does not
+enter `pipe_ioctl`, whose default arm (fs/pipe.c:653-654, Linux v6.18.46)
+answers -ENOIOCTLCMD for this request as for the other seven, and
+`vfs_ioctl` maps it (fs/ioctl.c:51-53).
 kernel: fs/pipe.c:pipe_ioctl; fs/ioctl.c:vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl@v6.18.46 -/
-theorem pipe_writer_tcsets_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
+theorem pipe_writer_tcsets_is_enotty (i : SyscallInput) (o : outcome SyscallEffect) :
     ioctl_spec 4 TCSETS i (fixture_of (fds := [(4, .FdPipe 0 true)])) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect (errno_ret ENOTTY) [] []) (fixture_of (fds := [(4, .FdPipe 0 true)])) [] := by
   sys_norm
 
 /-! ### The same, for every model and every payload of each kind
@@ -402,71 +374,72 @@ theorem pipe_writer_tcsets_is_unmodeled (i : SyscallInput) (o : outcome SyscallE
 The concrete fixtures above evaluate; these state the same answer with the
 fd's payload symbolic — any channel, any path and offset, any socket state,
 either pipe end — on any model whose table holds it, and with the request
-symbolic behind the gate.  They are the claim the docstring makes: the
+symbolic behind `tty_only_request`.  They are the claim the docstring makes: the
 handler each kind reaches reads none of that.  `pipe_ioctl`'s default arm
 (fs/pipe.c:653-654, Linux v6.18.46) reads neither the pipe nor the end;
 `__ext4_ioctl`'s (fs/ext4/ioctl.c:1929-1930) neither path nor offset;
 `tcp_ioctl`'s (net/ipv4/tcp.c:682-683) and `is_socket_ioctl_cmd`
 (include/linux/netdevice.h:4251-4254) no socket state. -/
 
-/-- Any standard channel, on any model, for a request passing both gates: -ENOTTY from `vfs_ioctl`'s default (fs/ioctl.c:46-53, Linux v6.18.46) once `do_vfs_ioctl` has declined (:580).
+/-- Any standard channel, on any model, for any terminal-only request: -ENOTTY from `vfs_ioctl`'s default (fs/ioctl.c:46-53, Linux v6.18.46) once `do_vfs_ioctl` has declined (:580).
 kernel: fs/ioctl.c:do_vfs_ioctl,vfs_ioctl@v6.18.46 -/
 theorem channel_tty_request_is_enotty (fd req c : word) (i : SyscallInput) (m : Model)
     (o : outcome SyscallEffect) (h : fd_lookup (m_fds m) fd = some (.FdChannel c))
-    (hr : tty_only_request req = true) (hg : ioctl_fd_first_request req = true) :
+    (hr : tty_only_request req = true) :
     ioctl_spec fd req i m o ↔ o = Ok (mkEffect (errno_ret ENOTTY) [] []) m [] := by
-  simp only [ioctl_spec.eq_1, hg, Bool.not_true, Bool.false_eq_true, bind_get_model_iff, h, hr, ↓reduceIte]
+  simp only [ioctl_spec.eq_1, bind_get_model_iff, h, hr, ↓reduceIte]
   sys_norm
 
 /-- Any regular file, any path and offset: ext4's `__ext4_ioctl` default arm (fs/ext4/ioctl.c:1929-1930, Linux v6.18.46) reads neither.
 kernel: fs/ext4/ioctl.c:__ext4_ioctl@v6.18.46 -/
 theorem file_tty_request_is_enotty (fd req : word) (p : Fs.path) (off : word) (i : SyscallInput)
     (m : Model) (o : outcome SyscallEffect) (h : fd_lookup (m_fds m) fd = some (.FdFile p off))
-    (hr : tty_only_request req = true) (hg : ioctl_fd_first_request req = true) :
+    (hr : tty_only_request req = true) :
     ioctl_spec fd req i m o ↔ o = Ok (mkEffect (errno_ret ENOTTY) [] []) m [] := by
-  simp only [ioctl_spec.eq_1, hg, Bool.not_true, Bool.false_eq_true, bind_get_model_iff, h, hr, ↓reduceIte]
+  simp only [ioctl_spec.eq_1, bind_get_model_iff, h, hr, ↓reduceIte]
   sys_norm
 
 /-- …and one open for writing: the same handler, the same answer.
 kernel: fs/ext4/ioctl.c:__ext4_ioctl@v6.18.46 -/
 theorem filew_tty_request_is_enotty (fd req : word) (p : Fs.path) (off : word) (i : SyscallInput)
     (m : Model) (o : outcome SyscallEffect) (h : fd_lookup (m_fds m) fd = some (.FdFileW p off))
-    (hr : tty_only_request req = true) (hg : ioctl_fd_first_request req = true) :
+    (hr : tty_only_request req = true) :
     ioctl_spec fd req i m o ↔ o = Ok (mkEffect (errno_ret ENOTTY) [] []) m [] := by
-  simp only [ioctl_spec.eq_1, hg, Bool.not_true, Bool.false_eq_true, bind_get_model_iff, h, hr, ↓reduceIte]
+  simp only [ioctl_spec.eq_1, bind_get_model_iff, h, hr, ↓reduceIte]
   sys_norm
 
 /-- Any directory: `do_vfs_ioctl`'s default arm runs `file_ioctl` only for `S_ISREG` (fs/ioctl.c:574-577, Linux v6.18.46), so the answer comes through `vfs_ioctl` — its own first-branch -ENOTTY (:48-49) where the directory's `file_operations` has no `.unlocked_ioctl` (tmpfs, `simple_offset_dir_operations`, fs/libfs.c:568-573), and `__ext4_ioctl`'s default-arm -ENOTTY (fs/ext4/ioctl.c:1929-1930) relayed at :55 on ext4, whose `ext4_dir_operations` sets `.unlocked_ioctl = ext4_ioctl` (fs/ext4/dir.c:687); neither reads the directory.
 kernel: fs/ioctl.c:do_vfs_ioctl,vfs_ioctl; fs/ext4/ioctl.c:__ext4_ioctl@v6.18.46 -/
 theorem dir_tty_request_is_enotty (fd req : word) (i : SyscallInput) (m : Model)
     (o : outcome SyscallEffect) (h : fd_lookup (m_fds m) fd = some .FdDir)
-    (hr : tty_only_request req = true) (hg : ioctl_fd_first_request req = true) :
+    (hr : tty_only_request req = true) :
     ioctl_spec fd req i m o ↔ o = Ok (mkEffect (errno_ret ENOTTY) [] []) m [] := by
-  simp only [ioctl_spec.eq_1, hg, Bool.not_true, Bool.false_eq_true, bind_get_model_iff, h, hr, ↓reduceIte]
+  simp only [ioctl_spec.eq_1, bind_get_model_iff, h, hr, ↓reduceIte]
   sys_norm
 
 /-- Any socket state: `tcp_ioctl`'s default arm (net/ipv4/tcp.c:682-683, Linux v6.18.46) and `is_socket_ioctl_cmd` read no socket state, so the answer is `sock_do_ioctl`'s -ENOTTY (net/socket.c:1264-1265).
 kernel: net/socket.c:sock_do_ioctl; net/ipv4/tcp.c:tcp_ioctl; include/linux/netdevice.h:is_socket_ioctl_cmd@v6.18.46 -/
 theorem socket_tty_request_is_enotty (fd req : word) (sk : SockState) (i : SyscallInput)
     (m : Model) (o : outcome SyscallEffect) (h : fd_lookup (m_fds m) fd = some (.FdSocket sk))
-    (hr : tty_only_request req = true) (hg : ioctl_fd_first_request req = true) :
+    (hr : tty_only_request req = true) :
     ioctl_spec fd req i m o ↔ o = Ok (mkEffect (errno_ret ENOTTY) [] []) m [] := by
-  simp only [ioctl_spec.eq_1, hg, Bool.not_true, Bool.false_eq_true, bind_get_model_iff, h, hr, ↓reduceIte]
+  simp only [ioctl_spec.eq_1, bind_get_model_iff, h, hr, ↓reduceIte]
   sys_norm
 
 /-- Either end of any pipe: `pipe_ioctl`'s default arm (fs/pipe.c:653-654, Linux v6.18.46) reads neither.
 kernel: fs/pipe.c:pipe_ioctl; fs/ioctl.c:vfs_ioctl@v6.18.46 -/
 theorem pipe_tty_request_is_enotty (fd req id : word) (w : Bool) (i : SyscallInput) (m : Model)
     (o : outcome SyscallEffect) (h : fd_lookup (m_fds m) fd = some (.FdPipe id w))
-    (hr : tty_only_request req = true) (hg : ioctl_fd_first_request req = true) :
+    (hr : tty_only_request req = true) :
     ioctl_spec fd req i m o ↔ o = Ok (mkEffect (errno_ret ENOTTY) [] []) m [] := by
-  simp only [ioctl_spec.eq_1, hg, Bool.not_true, Bool.false_eq_true, bind_get_model_iff, h, hr, ↓reduceIte]
+  simp only [ioctl_spec.eq_1, bind_get_model_iff, h, hr, ↓reduceIte]
   sys_norm
 
 /-- THE TERMINAL LIE: TCGETS succeeding on stdout is what a real terminal
 answers (`tty_mode_ioctl`, drivers/tty/tty_ioctl.c:811-815, Linux
 v6.18.46) and what this arm must refuse, because the run's standard
-descriptors are not terminals (bugs/ioctl-constant-answer-surface.md).
+descriptors are not terminals
+(linux-process-semantics@ff0313ba4f:bugs/ioctl-constant-answer-surface.md).
 kernel: drivers/tty/tty_ioctl.c:tty_mode_ioctl; fs/ioctl.c:vfs_ioctl@v6.18.46 -/
 theorem stdout_tcgets_success_rejected (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ ioctl_spec 1 TCGETS i demo_model (Ok (mkEffect 0 [] []) m' evs) := by
@@ -699,17 +672,14 @@ theorem pipe_fioqsize_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect
   sys_norm
 
 /-- For EVERY request outside the eight, on the standard channel: the arm
-declines.  The gate is the whole decision, so the pin is stated on it.
+declines.  `tty_only_request` is the whole decision, so the pin is stated
+on it.
 kernel: fs/ioctl.c:do_vfs_ioctl,vfs_ioctl@v6.18.46 -/
 theorem stdout_other_request_is_unmodeled (req : word) (i : SyscallInput)
     (o : outcome SyscallEffect) (h : tty_only_request req = false) :
     ioctl_spec 1 req i demo_model o ↔ o = Unmodeled := by
-  cases hg : ioctl_fd_first_request req with
-  | false => simp only [ioctl_spec, hg, Bool.not_false, ↓reduceIte, unmodeled_iff]
-  | true =>
-    simp only [ioctl_spec.eq_1, hg, Bool.not_true, Bool.false_eq_true, ↓reduceIte]
-    sys_norm
-    simp only [h, Bool.false_eq_true, ↓reduceIte, unmodeled_iff]
+  sys_norm
+  simp only [h, Bool.false_eq_true, ↓reduceIte, unmodeled_iff]
 
 /-- For EVERY open kind, `/dev/null` and `/dev/urandom` included, EVERY
 request outside the eight, on any model: the arm declines.  Stated over the entry itself, so a
@@ -720,48 +690,63 @@ theorem open_fd_other_request_is_unmodeled (fd req : word) (e : FdEntry) (i : Sy
     (m : Model) (o : outcome SyscallEffect) (h : fd_lookup (m_fds m) fd = some e)
     (hr : tty_only_request req = false) :
     ioctl_spec fd req i m o ↔ o = Unmodeled := by
-  cases hg : ioctl_fd_first_request req with
-  | false => simp only [ioctl_spec, hg, Bool.not_false, ↓reduceIte, unmodeled_iff]
-  | true =>
-    simp only [ioctl_spec.eq_1, hg, Bool.not_true, Bool.false_eq_true, ↓reduceIte, bind_get_model_iff, h]
-    cases e <;> simp only [hr, Bool.false_eq_true, ↓reduceIte, unmodeled_iff]
+  simp only [ioctl_spec.eq_1, bind_get_model_iff, h]
+  cases e <;> simp only [hr, Bool.false_eq_true, ↓reduceIte, unmodeled_iff]
 
-/-! ## `/dev/null` is declined on every request
+/-! ## `/dev/null` answers the eight and declines the rest
 
 `null_fops` (drivers/char/mem.c:644-652, Linux v6.18.46) has no
 `.unlocked_ioctl`, so `vfs_ioctl` answers -ENOTTY to the eight from its
-first branch (fs/ioctl.c:48-49); that answer is REAL and the arm declines
-it all the same, as Rocq's does — the docstring on `ioctl_spec` says why
-it was left unwritten.  The pins fix both halves: `Unmodeled` is the only
-outcome, and the real -ENOTTY is not admitted. -/
+first branch (fs/ioctl.c:48-49), and the arm writes that answer down, as
+Rocq's does: the kind is the one that reaches -ENOTTY through the
+no-method branch rather than through an -ENOIOCTLCMD, and musl's
+`__fdopen` issues TIOCGWINSZ on a stream freshly opened on the device, so
+a declining kind would leave the modeled surface one syscall after an
+`fopen` of "/dev/null".  Every request outside the eight is declined here
+as on every other open kind. -/
 
-/-- TCGETS on `/dev/null`: declined, though `vfs_ioctl` would answer -ENOTTY from its first branch (fs/ioctl.c:48-49, Linux v6.18.46), `null_fops` having no `.unlocked_ioctl`.
+/-- TCGETS on `/dev/null`: -ENOTTY, from `vfs_ioctl`'s first branch (fs/ioctl.c:48-49, Linux v6.18.46), `null_fops` having no `.unlocked_ioctl`.
 kernel: fs/ioctl.c:vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl@v6.18.46 -/
-theorem devnull_tcgets_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    ioctl_spec 3 TCGETS i (fixture_of (fds := [(3, .FdDevNull true false)])) o ↔ o = Unmodeled := by
+theorem devnull_tcgets_is_enotty (i : SyscallInput) (o : outcome SyscallEffect) :
+    ioctl_spec 3 TCGETS i (fixture_of (fds := [(3, .FdDevNull true false)])) o ↔
+      o = Ok (mkEffect (errno_ret ENOTTY) [] []) (fixture_of (fds := [(3, .FdDevNull true false)])) [] := by
   sys_norm
-/-- …and that real -ENOTTY is not admitted: the arm is fail-closed on this kind, as Rocq's is.
-kernel: fs/ioctl.c:vfs_ioctl@v6.18.46 -/
-theorem devnull_tcgets_enotty_declined (i : SyscallInput) (m' : Model) (evs : List event) :
+/-- …and -EINVAL is not admitted there: that is `/dev/urandom`'s answer,
+`random_ioctl`'s default arm (drivers/char/random.c:1550-1551, Linux
+v6.18.46), and the lie a model confusing the two character devices would
+tell; `null_fops` has no handler to reach it.
+kernel: drivers/char/random.c:random_ioctl; fs/ioctl.c:vfs_ioctl@v6.18.46 -/
+theorem devnull_tcgets_einval_rejected (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ ioctl_spec 3 TCGETS i (fixture_of (fds := [(3, .FdDevNull true false)]))
-        (Ok (mkEffect (errno_ret ENOTTY) [] []) m' evs) := by
+        (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
   sys_refute
-/-- FIONBIO on `/dev/null` opened for writing: declined too; `do_vfs_ioctl` (fs/ioctl.c:507-508, Linux v6.18.46) would set O_NONBLOCK on it.
+/-- All eight terminal-only requests on `/dev/null`, opened for writing as
+an `fopen` of the device leaves it; Rocq's
+`ioctl_devnull_tty_only_requests_all_enotty`.
+kernel: fs/ioctl.c:vfs_ioctl; drivers/char/mem.c:memory_open@v6.18.46 -/
+theorem devnull_tty_only_requests_all_enotty (i : SyscallInput) (o : outcome SyscallEffect) :
+    ∀ r ∈ tty_only_requests,
+      (ioctl_spec 3 r i (fixture_of (fds := [(3, .FdDevNull false true)])) o ↔
+        o = Ok (mkEffect (errno_ret ENOTTY) [] [])
+          (fixture_of (fds := [(3, .FdDevNull false true)])) []) := by
+  intro r hr
+  simp only [tty_only_requests, List.mem_cons, List.not_mem_nil, or_false] at hr
+  rcases hr with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> sys_norm
+/-- FIONBIO on `/dev/null` opened for writing: declined, as on every open kind; `do_vfs_ioctl` (fs/ioctl.c:507-508, Linux v6.18.46) would set O_NONBLOCK on it.
 kernel: fs/ioctl.c:vfs_ioctl,do_vfs_ioctl@v6.18.46 -/
 theorem devnull_fionbio_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
     ioctl_spec 3 FIONBIO i (fixture_of (fds := [(3, .FdDevNull false true)])) o ↔ o = Unmodeled := by
   sys_norm
 
-/-- …with either access mode, on any model, for every request: the decline
-does not read the mode `open` granted.
+/-- …with either access mode, on any model, for every terminal-only
+request: the answer does not read the mode `open` granted.
 kernel: fs/ioctl.c:vfs_ioctl@v6.18.46 -/
-theorem devnull_any_request_is_unmodeled (fd req : word) (rd wr : Bool) (i : SyscallInput)
-    (m : Model) (o : outcome SyscallEffect) (h : fd_lookup (m_fds m) fd = some (.FdDevNull rd wr)) :
-    ioctl_spec fd req i m o ↔ o = Unmodeled := by
-  cases hg : ioctl_fd_first_request req with
-  | false => simp only [ioctl_spec, hg, Bool.not_false, ↓reduceIte, unmodeled_iff]
-  | true =>
-    simp only [ioctl_spec.eq_1, hg, Bool.not_true, Bool.false_eq_true, ↓reduceIte, bind_get_model_iff, h, unmodeled_iff]
+theorem devnull_tty_request_is_enotty (fd req : word) (rd wr : Bool) (i : SyscallInput)
+    (m : Model) (o : outcome SyscallEffect) (h : fd_lookup (m_fds m) fd = some (.FdDevNull rd wr))
+    (hr : tty_only_request req = true) :
+    ioctl_spec fd req i m o ↔ o = Ok (mkEffect (errno_ret ENOTTY) [] []) m [] := by
+  simp only [ioctl_spec.eq_1, bind_get_model_iff, h, hr, ↓reduceIte]
+  sys_norm
 
 /-! ## `/dev/urandom` is declined on every request, and its real answer is -EINVAL
 
@@ -811,10 +796,7 @@ kernel: drivers/char/random.c:random_ioctl@v6.18.46 -/
 theorem urandom_any_request_is_unmodeled (fd req : word) (i : SyscallInput) (m : Model)
     (o : outcome SyscallEffect) (h : fd_lookup (m_fds m) fd = some .FdUrandom) :
     ioctl_spec fd req i m o ↔ o = Unmodeled := by
-  cases hg : ioctl_fd_first_request req with
-  | false => simp only [ioctl_spec, hg, Bool.not_false, ↓reduceIte, unmodeled_iff]
-  | true =>
-    simp only [ioctl_spec.eq_1, hg, Bool.not_true, Bool.false_eq_true, ↓reduceIte, bind_get_model_iff, h, unmodeled_iff]
+  simp only [ioctl_spec.eq_1, bind_get_model_iff, h, unmodeled_iff]
 
 /-! ## Through the dispatcher: the table line and the two 32-bit arguments
 
@@ -872,20 +854,15 @@ def ioctl_dispatch_input (fd req arg : word) (mem wmem : word → Option byte) :
 
 attribute [local sys_simp low] ioctl_dispatch_input.eq_1
 
-/-- All eight original requests through the dispatcher, including the
-three new declines. The request gate declines before fd lookup because QEMU v11.1.1
-linux-user/syscall.c do_ioctl can answer before safe_ioctl; the full source
-argument is on Sys.Fs.Ioctl.ioctl_fd_first_request.
-
-`cmd32` is the identity on each request word — the two
+/-- All eight terminal-only requests through the dispatcher, each
+-ENOTTY on stdout.  `cmd32` is the identity on each request word — the two
 `_IOR`/`_IOW` ones carry bits 30 and 31, inside the low 32.
 kernel: fs/ioctl.c:do_vfs_ioctl,vfs_ioctl@v6.18.46 -/
-theorem sysno_29_tty_only_requests_enotty_or_unmodeled (mem wmem : word → Option byte)
+theorem sysno_29_tty_only_requests_all_enotty (mem wmem : word → Option byte)
     (o : outcome SyscallEffect) :
     ∀ r ∈ tty_only_requests,
       (syscall_spec (ioctl_dispatch_input 1 r 4096 mem wmem) demo_model o ↔
-        o = (if r = TCSETS ∨ r = TIOCSWINSZ ∨ r = TIOCSPTLCK then Unmodeled
-          else Ok (mkEffect (errno_ret ENOTTY) [] []) demo_model [])) := by
+        o = Ok (mkEffect (errno_ret ENOTTY) [] []) demo_model []) := by
   intro r hr
   simp only [tty_only_requests, List.mem_cons, List.not_mem_nil, or_false] at hr
   rcases hr with rfl | rfl | rfl | rfl | rfl | rfl | rfl | rfl <;> sys_norm
@@ -978,24 +955,16 @@ theorem negative_fd_is_ebadf (mem wmem : word → Option byte) (o : outcome Sysc
       ↔ o = Ok (mkEffect (errno_ret EBADF) [] []) demo_model [] := by
   sys_norm
 
-/-- On a closed fd, the narrowed command determines whether the model
-answers EBADF or declines. The third argument remains symbolic because
-the spec cannot distinguish QEMU's readable and unreadable arguments. The request gate declines before fd lookup because QEMU v11.1.1
-linux-user/syscall.c do_ioctl can answer before safe_ioctl; the full source
-argument is on Sys.Fs.Ioctl.ioctl_fd_first_request.
-
-A closed fd with the request AND the third argument SYMBOLIC, through
-the dispatcher: in Linux, `cmd` is truncated and then never read, and `arg` is
-never read at all, because `fd_empty` returns first (fs/ioctl.c:585-589,
-Linux v6.18.46).
+/-- A closed fd with the request AND the third argument SYMBOLIC, through
+the dispatcher: -EBADF whatever they are.  `cmd` is truncated and then
+never read, and `arg` is never read at all, because `fd_empty` returns
+first (fs/ioctl.c:585-589, Linux v6.18.46).
 kernel: fs/ioctl.c:ioctl@v6.18.46 -/
-theorem closed_fd_cmd_is_ebadf_or_unmodeled (req arg : word) (mem wmem : word → Option byte)
+theorem closed_fd_cmd_is_ebadf (req arg : word) (mem wmem : word → Option byte)
     (o : outcome SyscallEffect) :
     syscall_spec (ioctl_dispatch_input 7 req arg mem wmem) demo_model o
-      ↔ o = (if !ioctl_fd_first_request (cmd32 req) then Unmodeled
-        else Ok (mkEffect (errno_ret EBADF) [] []) demo_model []) := by
-  cases hg : ioctl_fd_first_request (cmd32 req) <;> sys_norm <;>
-    simp only [hg, Bool.not_false, ↓reduceIte, unmodeled_iff] <;> sys_norm
+      ↔ o = Ok (mkEffect (errno_ret EBADF) [] []) demo_model [] := by
+  sys_norm
 
 /-- A NULL third argument on a socket is not -EFAULT: before v5.15
 `sock_do_ioctl` copied an `ifreq` from `arg` before testing the request
@@ -1051,175 +1020,160 @@ theorem arg_not_read (arg : word) (mem wmem : word → Option byte) (o : outcome
       ↔ o = Ok (mkEffect (errno_ret ENOTTY) [] []) demo_model [] := by
   sys_norm
 
-/-- QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- A request outside the eight on a CLOSED fd: -EBADF, like every other
+request there.  Linux `ioctl` resolves the fd first (fs/ioctl.c:585-589,
+Linux v6.18.46), so the unknown request never reaches a handler.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem closed_fd_unknown_gate_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    ioctl_spec 7 0xdeadbeef i demo_model o ↔ o = Unmodeled := by
+theorem closed_fd_unknown_request_is_ebadf (i : SyscallInput) (o : outcome SyscallEffect) :
+    ioctl_spec 7 0xdeadbeef i demo_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) demo_model [] := by
   sys_norm
 
-/-- The real EBADF answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- …so the arm does not decline there: the fd decides, not the request
+(fs/ioctl.c:585-589, Linux v6.18.46).
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem closed_fd_unknown_ebadf_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ ioctl_spec 7 0xdeadbeef i demo_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+theorem closed_fd_unknown_unmodeled_rejected (i : SyscallInput) :
+    ¬ ioctl_spec 7 0xdeadbeef i demo_model Unmodeled := by
   sys_refute
 
-/-- The real ENOTTY answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- -ENOTTY on that closed fd is a lie: `fd_empty` answers before
+`vfs_ioctl` could (fs/ioctl.c:588-589 against :596-597, Linux v6.18.46).
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
 theorem closed_fd_unknown_enotty_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ ioctl_spec 7 0xdeadbeef i demo_model (Ok (mkEffect (errno_ret ENOTTY) [] []) m' evs) := by
   sys_refute
 
-/-- QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- TCSETS on a closed fd: -EBADF, decided before the termios pointer is
+read (fs/ioctl.c:585-589, Linux v6.18.46).
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem closed_fd_tcsets_gate_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    ioctl_spec 7 TCSETS i demo_model o ↔ o = Unmodeled := by
+theorem closed_fd_tcsets_is_ebadf (i : SyscallInput) (o : outcome SyscallEffect) :
+    ioctl_spec 7 TCSETS i demo_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) demo_model [] := by
   sys_norm
 
-/-- The real EBADF answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- …and the arm does not decline it.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem closed_fd_tcsets_ebadf_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ ioctl_spec 7 TCSETS i demo_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+theorem closed_fd_tcsets_unmodeled_rejected (i : SyscallInput) :
+    ¬ ioctl_spec 7 TCSETS i demo_model Unmodeled := by
   sys_refute
 
-/-- The real EFAULT answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- -EFAULT on that closed fd is not admitted: a terminal's `set_termios`
+copy-in (drivers/tty/tty_ioctl.c:462-465, Linux v6.18.46) is reached only
+through an OPEN descriptor, and `fd_empty` answers first
+(fs/ioctl.c:588-589).
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
 theorem closed_fd_tcsets_efault_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ ioctl_spec 7 TCSETS i demo_model (Ok (mkEffect (errno_ret EFAULT) [] []) m' evs) := by
   sys_refute
 
-/-- QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- TCSETS on the standard channel: -ENOTTY, as the other seven are
+(fs/ioctl.c:46-53 after :580, Linux v6.18.46).
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem open_fd_tcsets_gate_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    ioctl_spec 1 TCSETS i demo_model o ↔ o = Unmodeled := by
+theorem open_fd_tcsets_is_enotty (i : SyscallInput) (o : outcome SyscallEffect) :
+    ioctl_spec 1 TCSETS i demo_model o ↔
+      o = Ok (mkEffect (errno_ret ENOTTY) [] []) demo_model [] := by
   sys_norm
 
-/-- The real ENOTTY answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- …so the arm does not decline it on an open fd either.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem open_fd_tcsets_enotty_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ ioctl_spec 1 TCSETS i demo_model (Ok (mkEffect (errno_ret ENOTTY) [] []) m' evs) := by
+theorem open_fd_tcsets_unmodeled_rejected (i : SyscallInput) :
+    ¬ ioctl_spec 1 TCSETS i demo_model Unmodeled := by
   sys_refute
 
-/-- The real EFAULT answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- -EFAULT is not admitted on the open channel: the copy-in that returns
+it is a terminal's (`set_termios`, drivers/tty/tty_ioctl.c:462-465, Linux
+v6.18.46), and the standard channels are not terminals.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
 theorem open_fd_tcsets_efault_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ ioctl_spec 1 TCSETS i demo_model (Ok (mkEffect (errno_ret EFAULT) [] []) m' evs) := by
   sys_refute
 
-/-- QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- TIOCSWINSZ on a closed fd: -EBADF.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem closed_fd_tiocswinsz_gate_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    ioctl_spec 7 TIOCSWINSZ i demo_model o ↔ o = Unmodeled := by
+theorem closed_fd_tiocswinsz_is_ebadf (i : SyscallInput) (o : outcome SyscallEffect) :
+    ioctl_spec 7 TIOCSWINSZ i demo_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) demo_model [] := by
   sys_norm
 
-/-- The real EBADF answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- …and the arm does not decline it.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem closed_fd_tiocswinsz_ebadf_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ ioctl_spec 7 TIOCSWINSZ i demo_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+theorem closed_fd_tiocswinsz_unmodeled_rejected (i : SyscallInput) :
+    ¬ ioctl_spec 7 TIOCSWINSZ i demo_model Unmodeled := by
   sys_refute
 
-/-- The real EFAULT answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- -EFAULT on that closed fd is not admitted: the window a terminal reads
+through the pointer (`tty_ioctl`, drivers/tty/tty_io.c:2709-2710, Linux
+v6.18.46) is never read, `fd_empty` answering first (fs/ioctl.c:588-589).
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
 theorem closed_fd_tiocswinsz_efault_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ ioctl_spec 7 TIOCSWINSZ i demo_model (Ok (mkEffect (errno_ret EFAULT) [] []) m' evs) := by
   sys_refute
 
-/-- QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- TIOCSWINSZ on the standard channel: -ENOTTY.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem open_fd_tiocswinsz_gate_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    ioctl_spec 1 TIOCSWINSZ i demo_model o ↔ o = Unmodeled := by
+theorem open_fd_tiocswinsz_is_enotty (i : SyscallInput) (o : outcome SyscallEffect) :
+    ioctl_spec 1 TIOCSWINSZ i demo_model o ↔
+      o = Ok (mkEffect (errno_ret ENOTTY) [] []) demo_model [] := by
   sys_norm
 
-/-- The real ENOTTY answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- …so the arm does not decline it on an open fd.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem open_fd_tiocswinsz_enotty_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ ioctl_spec 1 TIOCSWINSZ i demo_model (Ok (mkEffect (errno_ret ENOTTY) [] []) m' evs) := by
+theorem open_fd_tiocswinsz_unmodeled_rejected (i : SyscallInput) :
+    ¬ ioctl_spec 1 TIOCSWINSZ i demo_model Unmodeled := by
   sys_refute
 
-/-- The real EFAULT answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- -EFAULT is not admitted on the open channel: only a terminal reads the
+window through the pointer (`tty_ioctl`, drivers/tty/tty_io.c:2709-2710,
+Linux v6.18.46).
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
 theorem open_fd_tiocswinsz_efault_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ ioctl_spec 1 TIOCSWINSZ i demo_model (Ok (mkEffect (errno_ret EFAULT) [] []) m' evs) := by
   sys_refute
 
-/-- QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- TIOCSPTLCK on a closed fd: -EBADF.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem closed_fd_tiocsptlck_gate_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    ioctl_spec 7 TIOCSPTLCK i demo_model o ↔ o = Unmodeled := by
+theorem closed_fd_tiocsptlck_is_ebadf (i : SyscallInput) (o : outcome SyscallEffect) :
+    ioctl_spec 7 TIOCSPTLCK i demo_model o ↔
+      o = Ok (mkEffect (errno_ret EBADF) [] []) demo_model [] := by
   sys_norm
 
-/-- The real EBADF answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- …and the arm does not decline it.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem closed_fd_tiocsptlck_ebadf_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ ioctl_spec 7 TIOCSPTLCK i demo_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+theorem closed_fd_tiocsptlck_unmodeled_rejected (i : SyscallInput) :
+    ¬ ioctl_spec 7 TIOCSPTLCK i demo_model Unmodeled := by
   sys_refute
 
-/-- The real EFAULT answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- -EFAULT on that closed fd is not admitted: the lock flag a pty master
+reads through the pointer (`pty_unix98_ioctl`, drivers/tty/pty.c:654-655,
+Linux v6.18.46) is never read, `fd_empty` answering first
+(fs/ioctl.c:588-589).
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
 theorem closed_fd_tiocsptlck_efault_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ ioctl_spec 7 TIOCSPTLCK i demo_model (Ok (mkEffect (errno_ret EFAULT) [] []) m' evs) := by
   sys_refute
 
-/-- QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- TIOCSPTLCK on the standard channel: -ENOTTY.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem open_fd_tiocsptlck_gate_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    ioctl_spec 1 TIOCSPTLCK i demo_model o ↔ o = Unmodeled := by
+theorem open_fd_tiocsptlck_is_enotty (i : SyscallInput) (o : outcome SyscallEffect) :
+    ioctl_spec 1 TIOCSPTLCK i demo_model o ↔
+      o = Ok (mkEffect (errno_ret ENOTTY) [] []) demo_model [] := by
   sys_norm
 
-/-- The real ENOTTY answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- …so the arm does not decline it on an open fd.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
-theorem open_fd_tiocsptlck_enotty_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ ioctl_spec 1 TIOCSPTLCK i demo_model (Ok (mkEffect (errno_ret ENOTTY) [] []) m' evs) := by
+theorem open_fd_tiocsptlck_unmodeled_rejected (i : SyscallInput) :
+    ¬ ioctl_spec 1 TIOCSPTLCK i demo_model Unmodeled := by
   sys_refute
 
-/-- The real EFAULT answer is declined, not admitted. QEMU v11.1.1 linux-user/syscall.c do_ioctl checks the request and
-locks IOC_W input before safe_ioctl; see the source argument on
-Sys.Fs.Ioctl.ioctl_fd_first_request. Linux fs/ioctl.c ioctl resolves the fd first.
+/-- -EFAULT is not admitted on the open channel: only a pty master reads
+the lock flag through the pointer (`pty_unix98_ioctl`,
+drivers/tty/pty.c:654-655, Linux v6.18.46).
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
 theorem open_fd_tiocsptlck_efault_not_ok (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ ioctl_spec 1 TIOCSPTLCK i demo_model (Ok (mkEffect (errno_ret EFAULT) [] []) m' evs) := by
   sys_refute
 
-/-- A retained fd-first request still answers on a closed fd.
+/-- TIOCGWINSZ on a closed fd: -EBADF, as on every closed fd.
 kernel: fs/ioctl.c:ioctl,vfs_ioctl; drivers/tty/tty_ioctl.c:tty_mode_ioctl; drivers/tty/tty_io.c:tty_ioctl; drivers/tty/pty.c:pty_unix98_ioctl@v6.18.46 -/
 theorem closed_fd_tiocgwinsz_is_ebadf (i : SyscallInput) (o : outcome SyscallEffect) :
     ioctl_spec 7 TIOCGWINSZ i demo_model o ↔
@@ -1233,15 +1187,15 @@ def a17_ioctl_model : Model :=
 
 attribute [sys_simp low] a17_ioctl_model.eq_1
 
-/-- `ioctl(TCGETS)` through a read-write file declines
-(`Sys/Fs/Ioctl.lean`'s header declares the narrowing).  The same call on
-an `FdFile` answers -ENOTTY (`vfs_ioctl`, fs/ioctl.c, Linux v6.18.46: a
-regular file's `f_op` has no terminal handler), so a mutant answering
-this kind as `FdFile` fails here.
+/-- `ioctl(TCGETS)` through a read-write file is -ENOTTY, the answer the
+same call takes on an `FdFile` (`vfs_ioctl`, fs/ioctl.c, Linux v6.18.46:
+a regular file's `f_op` has no terminal handler), so the access mode the
+`open` granted is not read.
 kernel: fs/ioctl.c:vfs_ioctl@v6.18.46 -/
-theorem a17_rdwr_ioctl_declines (o : outcome SyscallEffect) :
+theorem a17_rdwr_ioctl_is_enotty (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 29 [3, 0x5401, 0, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_ioctl_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_ioctl_model o ↔
+      o = Ok (mkEffect (errno_ret ENOTTY) [] []) a17_ioctl_model [] := by
   sys_norm
 
 def a17_ioctl_append_model : Model :=
@@ -1249,15 +1203,14 @@ def a17_ioctl_append_model : Model :=
 
 attribute [sys_simp low] a17_ioctl_append_model.eq_1
 
-/-- `ioctl(TCGETS)` through an append-mode file declines
-(`Sys/Fs/Ioctl.lean`'s header declares the narrowing).  The same call on
-an `FdFileW` answers -ENOTTY (`vfs_ioctl`, fs/ioctl.c, Linux v6.18.46: a
-regular file's `f_op` has no terminal handler), so a mutant answering
-this kind as `FdFileW` fails here.
+/-- `ioctl(TCGETS)` through an append-mode file is -ENOTTY, the answer the
+same call takes on an `FdFileW` (`vfs_ioctl`, fs/ioctl.c, Linux v6.18.46:
+a regular file's `f_op` has no terminal handler), so O_APPEND is not read.
 kernel: fs/ioctl.c:vfs_ioctl@v6.18.46 -/
-theorem a17_append_ioctl_declines (o : outcome SyscallEffect) :
+theorem a17_append_ioctl_is_enotty (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 29 [3, 0x5401, 0, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_ioctl_append_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_ioctl_append_model o ↔
+      o = Ok (mkEffect (errno_ret ENOTTY) [] []) a17_ioctl_append_model [] := by
   sys_norm
 
 end LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.Ioctl

@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Fs/ReadWrite.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs.ReadWrite
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.ReadWrite
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
@@ -108,12 +109,13 @@ the narrowing being the row's and not the checker's, the stream fixture
 that never ends, and the witness-through-completeness facts.  The write
 section's are the ones its own paragraph on `model:` lines names, and
 `WriteThroughTheTable` restates write pins with theirs.
-No pin here reaches `FdFileRW` or `FdFileA`: the spec twin declines a
-read-write file in both directions and an append-mode one in every arm
-but readv's gate (`Sys/Fs/ReadWrite.lean`'s header), so Rocq's
-`rdwr_fd_refuses_ebadf_in_either_direction` and
-`rdwr_read_then_write_shares_one_offset` are not restated here, and
-`Checks/Cases/Fs/ReadWrite.lean` registers them `unpinned:`.
+Pins here now reach `FdFileRW` and `FdFileA`: the spec twin gives a
+read-write file a full read, write, pread64, pwrite64, readv, writev and
+lseek arm, and an append-mode one every arm but pread64's and
+pwrite64's, which are -EBADF and a decline (`Sys/Fs/ReadWrite.lean`'s
+header).  Rocq's `rdwr_fd_refuses_ebadf_in_either_direction` and
+`rdwr_read_then_write_shares_one_offset` are restated at the spec level
+in `Checks/Cases/Fs/ReadWrite.lean`, which holds their register lines.
 
 WHICH ROCQ EXAMPLE EACH THEOREM RESTATES.  This file mirrors no Rocq file,
 so `tools/check_lean_cases_parity.py` would refuse a coverage register here
@@ -1857,8 +1859,45 @@ theorem read_delivery_clamped (fd buf count : word) (i : SyscallInput) (m : Mode
   | none => exact hro _ _ _ h
   | some e =>
     cases e with
-    | FdFileA _ _ => cases h
-    | FdFileRW _ _ => cases h
+    | FdFileA _ _ => exact hro _ _ _ h
+    | FdFileRW p off =>
+      dsimp only at h
+      generalize (!access_okb buf (bv_unsigned count)) = g at h
+      cases g with
+      | true => simp only [↓reduceIte] at h; exact hro _ _ _ h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        generalize fs_lookup (m_fs m) p = fl at h
+        cases fl with
+        | none => cases h
+        | some data =>
+          dsimp only at h
+          have hlen := file_read_clamped_len data off count
+          generalize hbsRW : file_read data off (Z_to_bv 64 (rw_count_clamp count)) = bsRW at h hlen
+          generalize read_bytes_map i.in_wmem buf (len_word bsRW) = w1 at h
+          cases w1 with
+          | none =>
+            dsimp only at h
+            generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w2 at h
+            cases w2 with
+            | none => exact hro _ _ _ h
+            | some _ => cases h
+          | some _ =>
+            dsimp only at h
+            cases bsRW with
+            | nil => exact hro _ _ _ h
+            | cons b bs0 =>
+              dsimp only at h
+              split at h
+              · simp only [List.cons.injEq, Prod.mk.injEq, and_true] at hws
+                obtain ⟨rfl, rfl⟩ := hws
+                split at h
+                · rename_i hg
+                  simp only [Bool.and_eq_true, listN_eqb_eq] at hg
+                  obtain ⟨⟨-, rfl⟩, -⟩ := hg
+                  exact hlen
+                · cases h
+              · cases h
     | FdFileW _ _ => exact hro _ _ _ h
     | FdDir =>
       dsimp only at h
@@ -2319,7 +2358,8 @@ kernel reading and the refusing half a recorded divergence.
   together as `check_writev_two_iovecs_equals_one_write`
 
 Rocq's `rdwr_*` and `append_*` examples and the `FdFileA`/`FdFileRW`
-conjuncts are not restated, for the reason the header gives for read's.
+conjuncts are not restated here: the spec twin answers those kinds, and
+`Checks/Cases/Fs/ReadWrite.lean` holds their spec-level pins.
 The groups after the Rocq examples are this section's own. -/
 
 /-! ## The dispatcher's application of the write checker -/
@@ -3092,22 +3132,20 @@ theorem file_write_rejects_lies_on_the_checker :
     ∧ check_write_row (write_in 4 4096 2 mem_ab) (mkEffect (errno_ret EINTR) [] []) write_model
       = CheckReject := ⟨rfl, rfl⟩
 
-/-- THE EDGE OF `unreadable_source_past_eof`.  AT the end of "hi" an
-unreadable source is -EFAULT with the file untouched: `shmem_write_end`
-moves `i_size` only when `pos + copied` passes it (mm/shmem.c:3352-3353,
-Linux v6.18.46), and at `copied` 0 from the end it does not.  ONE byte
-past the end, and two, it does — the file grows to the offset and the
-call still answers -EFAULT on v6.18.46, where v4.17 through v6.13 leave
-the file alone — so no post-state is in the intersection and the arm
-declines.  The spec twin's docstring carries the argument.
+/-- AN UNREADABLE SOURCE IS -EFAULT WHEREVER THE OFFSET SITS, and the file
+is untouched: at the end of "hi", one byte past it and two into an empty
+file alike.  `generic_perform_write` returns -EFAULT with nothing copied
+(mm/filemap.c:4321-4323, :4331-4332, Linux v6.18.46), so `shmem_write_end`
+never moves `i_size`, which it does only when `pos + copied` passes it
+(mm/shmem.c:3352-3353).  The spec twin's docstring carries the argument.
 kernel: mm/filemap.c:generic_perform_write; mm/shmem.c:shmem_write_end@v6.18.46 -/
-theorem file_write_past_eof_edge_on_the_checker :
+theorem file_write_past_eof_unreadable_source_is_efault_on_the_checker :
     check_write_row (write_in 3 4096 1 mem_none) (mkEffect (errno_ret EFAULT) [] []) wend_model
       = CheckOk wend_model []
     ∧ check_write_row (write_in 4 4096 1 mem_none) (mkEffect (errno_ret EFAULT) [] []) wend_model
-      = CheckUnmodeled
+      = CheckOk wend_model []
     ∧ check_write_row (write_in 3 4096 1 mem_none) (mkEffect (errno_ret EFAULT) [] []) wpast_model
-      = CheckUnmodeled := ⟨rfl, rfl, rfl⟩
+      = CheckOk wpast_model [] := ⟨rfl, rfl, rfl⟩
 
 /-- A path the file system does not hold (fd 27) declines a delivery, and
 a zero count in range; the source is read first, so an unreadable one is
@@ -3172,9 +3210,9 @@ section WritePipes
 `anon_pipe_write` (fs/pipe.c:431-601, Linux v6.18.46) copies the whole
 request while the ring has room.  The model's ring is one page, so the
 arm answers the whole count when the source is readable and the page has
-room — and, into an empty ring, also the -ENOMEM of a fresh page that
-fails to allocate before the copy — and declines the rest; the spec's
-docstring gives each reason. -/
+room, and declines the rest; the spec's docstring gives each reason.
+The delivery is DETERMINISTIC: no -ENOMEM stands beside it, on an empty
+ring or on a full one. -/
 
 /-- "cd" after "ab" in pipe 0, into the empty pipe 1, and one byte into
 the one byte of room pipe 5 has: appended, the count returned, the mark
@@ -3251,11 +3289,12 @@ theorem pipe_write_zero_count_on_the_checker :
 
 /-! ### T169 / #1349: fresh-page allocation and the merge control -/
 
-/-- A failed fresh-page allocation returns before copying or changing state.
+/-- A fresh-page -ENOMEM is refused: the delivery into an empty ring is the
+one answer the arm gives.
 kernel: fs/pipe.c:anon_pipe_write@v6.18.46 -/
-theorem pipe_write_empty_enomem_unchanged :
+theorem pipe_write_empty_enomem_rejected :
     check_write_row (write_in 17 4096 2 mem_cd)
-      (mkEffect (errno_ret ENOMEM) [] []) write_model = CheckOk write_model [] := rfl
+      (mkEffect (errno_ret ENOMEM) [] []) write_model = CheckReject := rfl
 
 /-- A nonempty pipe merges into its existing page, without allocating.
 kernel: fs/pipe.c:anon_pipe_write@v6.18.46 -/
@@ -3284,15 +3323,17 @@ theorem pipe_write_nonempty_delivery :
       (with_copyins [(4096, 2)] (mkEffect 2 [] [])) write_model =
       CheckOk (with_pipes (pipe_insert write_pipes 0 ([97, 98, 99, 100], 4)) write_model) [] := rfl
 
-/-- Allocation failure after draining leaves the empty queue and its old mark unchanged.
+/-- A fresh-page -ENOMEM after draining is refused too: the drained ring
+takes the bytes.
 Probe case: `testing/syscall-check/tests/pipe_write_enomem.c#conform --mutate write#2:ret=-ENOMEM,drop-copyins -- drained`.
+The twin refuses the -ENOMEM, as rocq-linux-process-semantics f1006fe8 does; upstream's case
+expects it to be admitted (linux-process-semantics@ff0313ba4f).
 kernel: fs/pipe.c:anon_pipe_write@v6.18.46
 -/
-theorem pipe_write_drained_enomem_unchanged :
+theorem pipe_write_drained_enomem_rejected :
     check_write_row (write_in 17 4096 2 mem_cd)
       (mkEffect (errno_ret ENOMEM) [] [])
-      (with_pipes (pipe_insert write_pipes 1 ([], 3)) write_model) =
-      CheckOk (with_pipes (pipe_insert write_pipes 1 ([], 3)) write_model) [] := rfl
+      (with_pipes (pipe_insert write_pipes 1 ([], 3)) write_model) = CheckReject := rfl
 
 /-- Delivery after draining starts the new page's mark at the bytes written.
 Probe case: `testing/syscall-check/tests/pipe_write_enomem.c#conform -- drained`.
@@ -3327,8 +3368,8 @@ and the last three say the checker accepts whatever the witness names. -/
 
 /-- On the deterministic arms the witness is the kernel's answer: -EBADF
 on a closed fd and a read-only file, the count on /dev/null, 0 for a zero
-count on a pipe, and -EFAULT for an unreadable source on a file and on
-standard output.
+count on a pipe, and -EFAULT for an unreadable source on a file, on
+standard output, and on a file whose offset sits one byte past the end.
 kernel: fs/read_write.c:ksys_write,vfs_write; drivers/char/mem.c:write_null; fs/pipe.c:anon_pipe_write; mm/filemap.c:generic_perform_write@v6.18.46 -/
 theorem write_witness_names_the_deterministic_answer :
     write_witness_row (write_in 30 4096 2 mem_ab) write_model
@@ -3342,7 +3383,9 @@ theorem write_witness_names_the_deterministic_answer :
     ∧ write_witness_row (write_in 4 4096 2 mem_none) write_model
       = Ok (mkEffect (errno_ret EFAULT) [] []) write_model []
     ∧ write_witness_row (write_in 1 4096 2 mem_none) write_model
-      = Ok (mkEffect (errno_ret EFAULT) [] []) write_model [] := ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+      = Ok (mkEffect (errno_ret EFAULT) [] []) write_model []
+    ∧ write_witness_row (write_in 4 4096 1 mem_none) wend_model
+      = Ok (mkEffect (errno_ret EFAULT) [] []) wend_model [] := ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-- Where the spec CHOOSES — a channel — the witness names the whole
 readable prefix with one event per byte; where the delivery is computed —
@@ -3361,18 +3404,18 @@ theorem write_witness_names_a_delivery :
   ⟨rfl, rfl, rfl⟩
 
 /-- Where the spec declines, the witness is `Unmodeled`: a socket, a path
-the file system does not hold, an unreadable source one past the end of
-file, a pipe with no reader, a pipe id the table does not hold, and a
-pipe source readable in part.
-kernel: net/socket.c:sock_write_iter; mm/shmem.c:shmem_write_end; fs/pipe.c:anon_pipe_write@v6.18.46 -/
+the file system does not hold, a pipe with no reader, a pipe id the table
+does not hold, and a pipe source readable in part.  An unreadable source
+past the end of file is NOT among them: that answer is -EFAULT, which
+`file_write_past_eof_unreadable_source_is_efault_on_the_checker` pins.
+kernel: net/socket.c:sock_write_iter; fs/pipe.c:anon_pipe_write@v6.18.46 -/
 theorem write_witness_is_unmodeled_where_the_spec_declines :
     write_witness_row (write_in 20 4096 2 mem_ab) write_model = Unmodeled
     ∧ write_witness_row (write_in 27 4096 2 mem_ab) write_model = Unmodeled
-    ∧ write_witness_row (write_in 4 4096 1 mem_none) wend_model = Unmodeled
     ∧ write_witness_row (write_in 28 4096 1 (mem_z_at 4096)) write_model = Unmodeled
     ∧ write_witness_row (write_in 32 4096 1 (mem_z_at 4096)) write_model = Unmodeled
     ∧ write_witness_row (write_in 15 4096 2 mem_a) write_model = Unmodeled :=
-  ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+  ⟨rfl, rfl, rfl, rfl, rfl⟩
 
 /-- Where the decline is the model's own bound, the witness is `Unmodeled`
 too: a count of 2^20 from `near_top` on standard output, the file and
@@ -4345,23 +4388,20 @@ theorem check_pwrite64_unreadable_source_at_eof_is_efault :
       = CheckReject := by
   refine ⟨?_, ?_⟩ <;> rwp_norm
 
-/-- …while ONE BYTE PAST the end it is declined, on the -EFAULT effect
-Rocq's checker accepts there: the verdict that separates this checker
-from Rocq's, mirroring `unreadable_source_past_eof`.  The supported
-implementations all answer -EFAULT but do not agree on the file:
-`generic_perform_write` (mm/filemap.c:4244-4335, Linux v6.18.46) calls
-`write_end` before it faults the source in, and tmpfs's `shmem_write_end`
-(mm/shmem.c:3352-3353) has by then raised `i_size` to the position with
-nothing copied, while the older kernels and qemu-user refuse before the
-file moves.  No post-model is in the intersection;
-`unreadable_source_past_eof`'s docstring in `Sys/Fs/ReadWrite.lean`
-walks both halves line by line.
+/-- …and ONE BYTE PAST the end it is -EFAULT as well, with the file
+untouched: `generic_perform_write` faults the source in, copies nothing
+and returns -EFAULT (mm/filemap.c:4321-4323, :4331-4332, Linux v6.18.46),
+so `shmem_write_end` (mm/shmem.c:3352-3353) never raises `i_size`, and a
+claimed one-byte write is refused.
 kernel: mm/filemap.c:generic_perform_write; mm/shmem.c:shmem_write_end@v6.18.46 -/
-theorem check_pwrite64_unreadable_source_past_eof_declines :
+theorem check_pwrite64_unreadable_source_past_eof_is_efault :
     check_pwrite64_row (pwrite_in 3 4096 1 1 mem_none) (mkEffect (errno_ret EFAULT) [] [])
         readv_write_only_model
-      = CheckUnmodeled := by
-  rwp_norm
+      = CheckOk readv_write_only_model []
+    ∧ check_pwrite64_row (pwrite_in 3 4096 1 1 mem_none)
+        (with_copyins [(4096, 1)] (mkEffect 1 [] [])) readv_write_only_model
+      = CheckReject := by
+  refine ⟨?_, ?_⟩ <;> rwp_norm
 
 /-- WHERE THE SPEC DECLINES, THE CHECKER DOES: a hole one byte over the
 bound `modeled_file_gap` walks, and a write-only descriptor on a path the
@@ -4420,16 +4460,15 @@ theorem check_pwrite64_file_range_precedes_the_position :
       = CheckReject := by
   refine ⟨?_, ?_⟩ <;> rwp_norm
 
-/-- THE PAST-THE-END DECLINE COMES AFTER THE RANGE AND THE POSITION: the
-decline stands in for what `generic_perform_write` does with an unreadable
-source, and `vfs_write` (fs/read_write.c:674-679, Linux v6.18.46) never
-reaches it when its range check or `rw_verify_area` answers first.  So an
-unreadable one-byte source one byte past the empty file's end is still the
-range check's -EFAULT when the source is past the top, and still the
+/-- THE RANGE AND THE POSITION COME FIRST: `vfs_write`
+(fs/read_write.c:674-679, Linux v6.18.46) answers its range check or
+`rw_verify_area` before `generic_perform_write` sees the source at all.
+So an unreadable one-byte source one byte past the empty file's end is
+the range check's -EFAULT when the source is past the top, and the
 -EINVAL of `rw_verify_area` (fs/read_write.c:467-469) at position
 2^63 - 1; the one-byte write is refused at both.
 kernel: fs/read_write.c:vfs_write,rw_verify_area@v6.18.46 -/
-theorem check_pwrite64_decline_follows_the_range_and_position :
+theorem check_pwrite64_range_and_position_precede_the_source :
     check_pwrite64_row (pwrite_in 3 (Z_to_bv 64 (2 ^ 47 + 1)) 1 1 mem_none)
         (mkEffect (errno_ret EFAULT) [] []) readv_write_only_model
       = CheckOk readv_write_only_model []
@@ -4850,7 +4889,8 @@ theorem pread64_witness_is_unmodeled_where_the_spec_declines :
 
 /-- The pwrite64 witness names the transfer — the bytes landed at the
 position, the copy-in recorded, fd 3 unmoved — /dev/null's swallowed
-count, and -EFAULT for an unreadable source at the end of the file.
+count, and -EFAULT for an unreadable source at the end of the file and
+one byte past it.
 kernel: fs/read_write.c:ksys_pwrite64,vfs_write; mm/filemap.c:generic_perform_write; drivers/char/mem.c:write_null@v6.18.46 -/
 theorem pwrite64_witness_names_the_answer :
     pwrite64_witness_row (pwrite_in 3 4096 2 4 mem_ab) readv_write_only_model
@@ -4859,16 +4899,18 @@ theorem pwrite64_witness_names_the_answer :
     ∧ pwrite64_witness_row (pwrite_in 9 4096 2 0 mem_none) write_model
       = Ok (mkEffect 2 [] []) write_model []
     ∧ pwrite64_witness_row (pwrite_in 3 4096 1 0 mem_none) readv_write_only_model
+      = Ok (mkEffect (errno_ret EFAULT) [] []) readv_write_only_model []
+    ∧ pwrite64_witness_row (pwrite_in 3 4096 1 1 mem_none) readv_write_only_model
       = Ok (mkEffect (errno_ret EFAULT) [] []) readv_write_only_model [] := by
-  refine ⟨?_, ?_, ?_⟩ <;> rwp_witness_norm
+  refine ⟨?_, ?_, ?_, ?_⟩ <;> rwp_witness_norm
 
-/-- …and is `Unmodeled` where the spec declines: the unreadable source one
-byte past the end, and the path the tables do not hold.
+/-- …and is `Unmodeled` where the spec declines: the path the tables do
+not hold.  The unreadable source one byte past the end is NOT a decline:
+it is the -EFAULT the pin above names.
 kernel: fs/read_write.c:vfs_write; mm/filemap.c:generic_perform_write@v6.18.46 -/
 theorem pwrite64_witness_is_unmodeled_where_the_spec_declines :
-    pwrite64_witness_row (pwrite_in 3 4096 1 1 mem_none) readv_write_only_model = Unmodeled
-    ∧ pwrite64_witness_row (pwrite_in 27 4096 1 0 mem_a) write_model = Unmodeled := by
-  refine ⟨?_, ?_⟩ <;> rwp_witness_norm
+    pwrite64_witness_row (pwrite_in 27 4096 1 0 mem_a) write_model = Unmodeled := by
+  rwp_witness_norm
 
 /-- The lseek witness names SEEK_END's size with the offset moved, the
 whence gate's -EINVAL and the channel's -ESPIPE, and is `Unmodeled` on
@@ -5253,8 +5295,40 @@ theorem check_pread64_delivery_clamped (i : SyscallInput) (fd buf count pos : wo
     | none => exact hro _ _ _ h
     | some e =>
       cases e with
-      | FdFileA _ _ => cases h
-      | FdFileRW _ _ => cases h
+      | FdFileA _ _ => exact hro _ _ _ h
+      | FdFileRW p _ =>
+        refine hgates _ (fun hz => ?_) h
+        generalize fs_lookup (m_fs m) p = fl at hz
+        cases fl with
+        | none => cases hz
+        | some data =>
+          dsimp only at hz
+          have hlen := file_read_clamped_len data pos count
+          generalize file_read data pos (Z_to_bv 64 (rw_count_clamp count)) = bsRW at hz hlen
+          generalize read_bytes_map i.in_wmem buf (len_word bsRW) = w1 at hz
+          cases w1 with
+          | none =>
+            dsimp only at hz
+            generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w2 at hz
+            cases w2 with
+            | none => exact hro _ _ _ hz
+            | some _ => cases hz
+          | some _ =>
+            dsimp only at hz
+            cases bsRW with
+            | nil => exact hro _ _ _ hz
+            | cons b bs0 =>
+              dsimp only at hz
+              split at hz
+              · simp only [List.cons.injEq, Prod.mk.injEq, and_true] at hws
+                obtain ⟨rfl, rfl⟩ := hws
+                split at hz
+                · rename_i hg
+                  simp only [Bool.and_eq_true, listN_eqb_eq] at hg
+                  obtain ⟨⟨-, rfl⟩, -⟩ := hg
+                  exact hlen
+                · cases hz
+              · cases hz
       | FdChannel _ => exact hro _ _ _ h
       | FdPipe _ _ => exact hro _ _ _ h
       | FdSocket _ => exact hro _ _ _ h
@@ -5362,8 +5436,35 @@ theorem pread64_witness_delivery_clamped (fd buf count pos : word) (i : SyscallI
     | none => exact hro _ _ hw
     | some e =>
       cases e with
-      | FdFileA _ _ => cases hw
-      | FdFileRW _ _ => cases hw
+      | FdFileA _ _ => exact hro _ _ hw
+      | FdFileRW p _ =>
+        refine hgates _ (fun hz => ?_) hw
+        generalize fs_lookup (m_fs m) p = fl at hz
+        cases fl with
+        | none => cases hz
+        | some data =>
+          dsimp only at hz
+          have hlen := file_read_clamped_len data pos count
+          generalize file_read data pos (Z_to_bv 64 (rw_count_clamp count)) = bsRW at hz hlen
+          generalize read_bytes_map i.in_wmem buf (len_word bsRW) = w1 at hz
+          cases w1 with
+          | none =>
+            dsimp only at hz
+            generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w2 at hz
+            cases w2 with
+            | none => exact hro _ _ hz
+            | some _ => cases hz
+          | some _ =>
+            dsimp only at hz
+            injection hz with h1 _ _
+            subst h1
+            unfold delivered_writes at hws
+            cases bsRW with
+            | nil => cases hws
+            | cons b bs0 =>
+              simp only [List.cons.injEq, Prod.mk.injEq, and_true] at hws
+              obtain ⟨-, rfl⟩ := hws
+              exact hlen
       | FdChannel _ => exact hro _ _ hw
       | FdPipe _ _ => exact hro _ _ hw
       | FdSocket _ => exact hro _ _ hw
@@ -5446,11 +5547,12 @@ out. Neither says that the table's row for 64 IS that application; this
 section does. `check_syscall_write_in` finds `arm_write` at 64 and unfolds
 its `ca_check` to `check_write_row`, and each Rocq example is then stated
 through the dispatch under its Rocq name with `_over_the_real_table`.
-Where a Rocq example has conjuncts on `FdFileA` or `FdFileRW`, kinds
-whose write arms the spec twin declines, the twin keeps the `FdFileW`
-conjuncts and its docstring says so; a Rocq example the section above
-splits over two row theorems is split here the same way, named for the
-part it keeps. The same restatement for eventfd2 is in
+Where a Rocq example has conjuncts on `FdFileA` or `FdFileRW`, the twin
+keeps the `FdFileW` conjuncts and its docstring says so: the spec twin
+now answers those kinds too, and the missing conjuncts are coverage this
+file does not add rather than arms that decline. A Rocq example the
+section above splits over two row theorems is split here the same way,
+named for the part it keeps. The same restatement for eventfd2 is in
 `Checks/Cases/Checks/Sys/Fs/EventFd.lean`.
 
 `write_fd_truncates_to_32_bits_over_the_real_table` is the pin on the
@@ -5581,7 +5683,7 @@ theorem bit31_is_part_of_the_32_bit_arguments_write_over_the_real_table :
 /-- Rocq's `write_count_bound_declines_on_every_file_kind` through `check_syscall`, its
 `FdFileW` conjuncts at `near_top` (over the bound, and at it); the mapped-buffer
 `FdFileW` conjunct is the next theorem, and the `FdFileA`/`FdFileRW` ones are
-not stated (file header). `check_write_count_bound_declines_on_the_write_only_kind`'s
+stated at the spec level in `Checks/Cases/Fs/ReadWrite.lean`. `check_write_count_bound_declines_on_the_write_only_kind`'s
 statement with the dispatch in place of the row, closed by
 `check_syscall_write_in`.
 model: the decline is the inherited `rw_bytes_max` bound of Sys/Uaccess.lean and the at-bound answer the recorded divergence bugs/write-out-of-range-short-write.md -/
@@ -5610,8 +5712,8 @@ theorem write_count_bound_declines_on_every_file_kind_mapped_over_the_real_table
   exact check_write_over_the_bound_at_a_mapped_buffer_is_judged
 
 /-- Rocq's `write_range_boundary_pins_the_three_file_kinds` through `check_syscall`, its
-`FdFileW` conjunct; the `FdFileA`/`FdFileRW` ones are not stated (file
-header). `check_write_range_boundary_pins_the_write_only_kind`'s
+`FdFileW` conjunct; the `FdFileA`/`FdFileRW` ones are stated at the spec
+level in `Checks/Cases/Fs/ReadWrite.lean`. `check_write_range_boundary_pins_the_write_only_kind`'s
 statement with the dispatch in place of the row, closed by
 `check_syscall_write_in`.
 model: the recorded divergence bugs/write-out-of-range-short-write.md, the write-only arm judging an out-of-range source by its readable prefix -/
@@ -5968,7 +6070,7 @@ section ReadThroughTheTable
 
 `RocqExamples` above restates on `check_read_row`, the arm's application
 written out, the Rocq read `Example`s the header maps to a theorem (the
-two `rdwr_` ones have no fixture yet, as the header says); this section
+two `rdwr_` ones are pinned at the spec level instead); this section
 states them through `check_syscall`, as `WriteThroughTheTable` does the
 write examples.  `check_syscall_read_in` finds `arm_read` at 63 and
 unfolds its `ca_check` to `check_read_row`, and each of those examples is
@@ -6112,41 +6214,40 @@ section Vectored
 
 /-! ## readv (65) and writev (66): the checkers and their witnesses
 
-T139/#1439 changes the count and descriptor-order boundary. QEMU 11.1.1
-runs `lock_iovec` before the host call in `TARGET_NR_readv` and
-`TARGET_NR_writev` (linux-user/syscall.c), while Linux v6.18.46 resolves
-the descriptor and, from v6.8, its mode before `import_iovec` (fs/read_write.c,
-`do_readv`, `vfs_readv`, `do_writev`, `vfs_writev`). The shared -EBADF
-shape for a closed fd uses a raw count in 1..IOV_MAX, a readable descriptor
-array with nonnegative lengths, and an empty first entry; an open wrong-mode
-fd additionally needs count ≤ 8 and every uncapped range in the address space. The first-entry bound
-avoids claiming that a whole-buffer lock succeeds from a prefix read.
-A count whose raw value exceeds IOV_MAX but whose low32 value fits is
-also declined on an open descriptor.
+THE DESCRIPTOR DECIDES FIRST.  QEMU 11.1.1 runs `lock_iovec` before the
+host call in `TARGET_NR_readv` and `TARGET_NR_writev`
+(linux-user/syscall.c), so it can answer 0, -EINVAL, -EFAULT or -ENOMEM
+over a descriptor Linux has already refused; Linux v6.18.46 resolves the
+descriptor and, from v6.8, its mode before `import_iovec`
+(fs/read_write.c, `do_readv`, `vfs_readv`, `do_writev`, `vfs_writev`).
+The spec takes Linux's order, so a closed slot and a wrong-mode
+descriptor are a plain -EBADF at every count, with every array shape and
+with no ledger: the count, the entry lengths and the array are behind
+the gate and are never read.  qemu-user's earlier answer is refused on
+each, and the pins below say so case by case.  A count whose raw value
+exceeds IOV_MAX but whose low 32 bits fit is judged on those low bits
+(`iovcnt32`), on an open descriptor as on a closed one.
 
-Decline pins pair the all-effect verdict with a refutation of the former
-certain answer. Still-answered controls keep the empty-first-entry
--EBADF and normal-count transfers observable. Each declaration cites either its matching probe or the kernel source;
-the high-base probes accept failure from either kernel order.
+The probe line of such a pin still names upstream's case, which expects
+a decline; the line under it records that the twin answers the kernel's
+-EBADF instead.
 
-Linux v4.17 through v6.7 imports an open descriptor's array before its mode
-check (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6:913,930;
+Linux v4.17 through v6.7 imports an open descriptor's array before its
+mode check (fs/read_write.c, vfs_readv / vfs_writev, read at v6.6:913,930;
 do_iter_read / do_iter_write checks the mode afterwards). The moves
-b8e1425bae85 and 1c8aa833034a put that check first in v6.8. Thus even an
-empty first entry needs every uncapped range valid, including zero-length
-ranges, and at most UIO_FASTIOV entries to avoid an import-first error.
-The new pins below isolate that range test and the nine-entry allocation band.
+b8e1425bae85 and 1c8aa833034a put that check first in v6.8, which is the
+order the model takes.  The nine-entry allocation band is the one count
+band that still declines: `iovec_from_user`'s `kmalloc_array` may answer
+-ENOMEM (lib/iov_iter.c:1308-1311), and only `readv` carries it.
 
 The descriptor-copy and delivery ledgers remain explicit constants in
 the pins. Computing them with the same helper as the checker would make
 the test agree with a wrong helper. The older bulk-copy ledger and the
-other inherited transfer limitations remain separate from T139; their
+other inherited transfer limitations remain separate; their
 source arguments are in the corresponding spec and per-case comments.
 
 `rwv_norm` and `rwv_witness_norm` unfold the checker or witness while
-keeping the ground byte maps folded, then reduce their closed gates.
-The raw count reaches the new gates before `iovcnt32` is used by the
-ordinary import. -/
+keeping the ground byte maps folded, then reduce their closed gates. -/
 
 /-- `check_readv` as the dispatcher applies it: the descriptor narrowed
 by `fd32` from a0, `iov` and `iovcnt` whole from a1 and a2 — the row for
@@ -6249,86 +6350,101 @@ theorem check_readv_closed_fd_empty_first_entry_is_ebadf :
   constructor <;> rwv_norm
 
 /-- Readv on closed fd 30 uses count 0 and an unused unreadable array at 8192. Linux returns
--EBADF and qemu-user returns 0; the checker declines any supplied effect and cannot accept it as
-an unchanged-model outcome.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdcnt0 -/
-theorem check_readv_closed_zero_declines (eff : SyscallEffect) :
-    (check_readv_row (readv_in 30 8192 0 mem_none wmem_none) eff read_model
-      = CheckUnmodeled
-      ∧ check_readv_row (readv_in 30 8192 0 mem_none wmem_none) eff read_model ≠ CheckOk read_model []) := by
-  rwv_norm
-
-/-- Readv on closed fd 30 uses count 0 and an unused unreadable array at 8192. Linux returns
--EBADF and qemu-user returns 0; the pin rules out a successful checker verdict for the offered
--EBADF effect, regardless of the resulting model or events.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdcnt0 -/
-theorem check_readv_closed_zero_old_answer_refuted (m' : Model) (evs : List event) :
+-EBADF and qemu-user returns 0; the spec resolves the descriptor before the count and before
+the array, so the checker accepts -EBADF with the model unchanged and rejects the 0.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdcnt0
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_readv_closed_zero_is_ebadf :
     check_readv_row (readv_in 30 8192 0 mem_none wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
+    ∧ check_readv_row (readv_in 30 8192 0 mem_none wmem_none) (mkEffect 0 [] []) read_model = CheckReject := by
+  constructor <;> rwv_norm
+
+/-- Readv on closed fd 30 uses count 0 and an unused unreadable array at 8192. qemu-user's 0 is
+refused: Linux answers -EBADF, so no model and no event list make that 0 a successful verdict.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdcnt0
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_readv_closed_zero_old_answer_refuted (m' : Model) (evs : List event) :
+    check_readv_row (readv_in 30 8192 0 mem_none wmem_none) (mkEffect 0 [] []) read_model
       ≠ CheckOk m' evs := by
-  rw [(check_readv_closed_zero_declines _).1]
+  rw [check_readv_closed_zero_is_ebadf.2]
   intro h
   cases h
 
 /-- Readv on closed fd 30 uses count 2^32+2 beside eight readable {0,0} entries at 8192. Linux
-returns -EBADF and qemu-user rejects the raw count with -EINVAL; the checker declines any
-supplied effect and cannot accept it as an unchanged-model outcome.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdwide -/
-theorem check_readv_closed_wide_declines (eff : SyscallEffect) :
-    (check_readv_row (readv_in 30 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_readv_eight_zero wmem_none) eff read_model
-      = CheckUnmodeled
-      ∧ check_readv_row (readv_in 30 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_readv_eight_zero wmem_none) eff read_model ≠ CheckOk read_model []) := by
-  rwv_norm
-
-/-- Readv on closed fd 30 uses count 2^32+2 beside eight readable {0,0} entries at 8192. Linux
-returns -EBADF and qemu-user rejects the raw count with -EINVAL; the pin rules out a successful
-checker verdict for the offered -EBADF effect, regardless of the resulting model or events.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdwide -/
-theorem check_readv_closed_wide_old_answer_refuted (m' : Model) (evs : List event) :
+returns -EBADF and qemu-user rejects the raw count with -EINVAL; the descriptor is resolved
+before the count is looked at, so the checker accepts -EBADF and rejects the -EINVAL.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdwide
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_readv_closed_wide_is_ebadf :
     check_readv_row (readv_in 30 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_readv_eight_zero wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
+    ∧ check_readv_row (readv_in 30 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_readv_eight_zero wmem_none) (mkEffect (errno_ret EINVAL) [] []) read_model = CheckReject := by
+  constructor <;> rwv_norm
+
+/-- Readv on closed fd 30 uses count 2^32+2 beside eight readable {0,0} entries at 8192.
+qemu-user's -EINVAL for the raw count is refused: Linux answers -EBADF, so no model and no
+event list make that -EINVAL a successful verdict.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdwide
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_readv_closed_wide_old_answer_refuted (m' : Model) (evs : List event) :
+    check_readv_row (readv_in 30 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_readv_eight_zero wmem_none) (mkEffect (errno_ret EINVAL) [] []) read_model
       ≠ CheckOk m' evs := by
-  rw [(check_readv_closed_wide_declines _).1]
+  rw [check_readv_closed_wide_is_ebadf.2]
   intro h
   cases h
 
 /-- Readv on closed fd 30 uses count 1 and an unreadable array at 8192. Linux returns -EBADF and
-qemu-user returns -EFAULT; the checker declines any supplied effect and cannot accept it as an
-unchanged-model outcome.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdiov -/
-theorem check_readv_closed_unreadable_declines (eff : SyscallEffect) :
-    (check_readv_row (readv_in 30 8192 1 mem_none wmem_none) eff read_model
-      = CheckUnmodeled
-      ∧ check_readv_row (readv_in 30 8192 1 mem_none wmem_none) eff read_model ≠ CheckOk read_model []) := by
-  rwv_norm
-
-/-- Readv on closed fd 30 uses count 1 and an unreadable array at 8192. Linux returns -EBADF and
-qemu-user returns -EFAULT; the pin rules out a successful checker verdict for the offered -EBADF
-effect, regardless of the resulting model or events.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdiov -/
-theorem check_readv_closed_unreadable_old_answer_refuted (m' : Model) (evs : List event) :
+qemu-user returns -EFAULT; the descriptor is resolved before the array is read, so the checker
+accepts -EBADF and rejects the -EFAULT.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdiov
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_readv_closed_unreadable_is_ebadf :
     check_readv_row (readv_in 30 8192 1 mem_none wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
+    ∧ check_readv_row (readv_in 30 8192 1 mem_none wmem_none) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
+  constructor <;> rwv_norm
+
+/-- Readv on closed fd 30 uses count 1 and an unreadable array at 8192. qemu-user's -EFAULT is
+refused: Linux answers -EBADF, so no model and no event list make that -EFAULT a successful
+verdict.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdiov
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_readv_closed_unreadable_old_answer_refuted (m' : Model) (evs : List event) :
+    check_readv_row (readv_in 30 8192 1 mem_none wmem_none) (mkEffect (errno_ret EFAULT) [] []) read_model
       ≠ CheckOk m' evs := by
-  rw [(check_readv_closed_unreadable_declines _).1]
+  rw [check_readv_closed_unreadable_is_ebadf.2]
   intro h
   cases h
 
 /-- Readv on closed fd 30 uses count 2 and {4096,2},{4098,3} at 8192, with no writable
-destination bytes. The checker declines any supplied effect and cannot accept it as an
-unchanged-model outcome.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdnonempty -/
-theorem check_readv_closed_nonempty_declines (eff : SyscallEffect) :
-    (check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none) eff read_model
-      = CheckUnmodeled
-      ∧ check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none) eff read_model ≠ CheckOk read_model []) := by
-  rwv_norm
+destination bytes. The descriptor decides the call: -EBADF is accepted with the model unchanged
+and the delivery of five bytes is rejected.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdnonempty
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_readv_closed_nonempty_is_ebadf :
+    check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
+    ∧ check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none) (mkEffect 5 [] []) read_model = CheckReject := by
+  constructor <;> rwv_norm
 
 /-- Readv on closed fd 30 uses count 2 and {4096,2},{4098,3} at 8192, with no writable
-destination bytes. The pin rules out a successful checker verdict for the offered -EBADF effect,
-regardless of the resulting model or events.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdnonempty -/
+destination bytes. A five-byte delivery is refused under every model and event list: the
+descriptor is closed.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdnonempty
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
 theorem check_readv_closed_nonempty_old_answer_refuted (m' : Model) (evs : List event) :
-    check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model
+    check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none) (mkEffect 5 [] []) read_model
       ≠ CheckOk m' evs := by
-  rw [(check_readv_closed_nonempty_declines _).1]
+  rw [check_readv_closed_nonempty_is_ebadf.2]
   intro h
   cases h
 
@@ -6343,86 +6459,101 @@ theorem check_writev_closed_fd_empty_first_entry_is_ebadf :
   constructor <;> rwv_norm
 
 /-- Writev on closed fd 30 uses count 0 and an unused unreadable array at 8192. Linux returns
--EBADF and qemu-user returns 0; the checker declines any supplied effect and cannot accept it as
-an unchanged-model outcome.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdcnt0 -/
-theorem check_writev_closed_zero_declines (eff : SyscallEffect) :
-    (check_writev_row (writev_in 30 8192 0 mem_none) eff read_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 30 8192 0 mem_none) eff read_model ≠ CheckOk read_model []) := by
-  rwv_norm
-
-/-- Writev on closed fd 30 uses count 0 and an unused unreadable array at 8192. Linux returns
--EBADF and qemu-user returns 0; the pin rules out a successful checker verdict for the offered
--EBADF effect, regardless of the resulting model or events.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdcnt0 -/
-theorem check_writev_closed_zero_old_answer_refuted (m' : Model) (evs : List event) :
+-EBADF and qemu-user returns 0; the spec resolves the descriptor before the count and before
+the array, so the checker accepts -EBADF with the model unchanged and rejects the 0.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdcnt0
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_writev_closed_zero_is_ebadf :
     check_writev_row (writev_in 30 8192 0 mem_none) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
+    ∧ check_writev_row (writev_in 30 8192 0 mem_none) (mkEffect 0 [] []) read_model = CheckReject := by
+  constructor <;> rwv_norm
+
+/-- Writev on closed fd 30 uses count 0 and an unused unreadable array at 8192. qemu-user's 0 is
+refused: Linux answers -EBADF, so no model and no event list make that 0 a successful verdict.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdcnt0
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_writev_closed_zero_old_answer_refuted (m' : Model) (evs : List event) :
+    check_writev_row (writev_in 30 8192 0 mem_none) (mkEffect 0 [] []) read_model
       ≠ CheckOk m' evs := by
-  rw [(check_writev_closed_zero_declines _).1]
+  rw [check_writev_closed_zero_is_ebadf.2]
   intro h
   cases h
 
 /-- Writev on closed fd 30 uses count 2^32+2 beside eight readable {0,0} entries at 8192. Linux
-returns -EBADF and qemu-user rejects the raw count with -EINVAL; the checker declines any
-supplied effect and cannot accept it as an unchanged-model outcome.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdwide -/
-theorem check_writev_closed_wide_declines (eff : SyscallEffect) :
-    (check_writev_row (writev_in 30 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_readv_eight_zero) eff read_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 30 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_readv_eight_zero) eff read_model ≠ CheckOk read_model []) := by
-  rwv_norm
-
-/-- Writev on closed fd 30 uses count 2^32+2 beside eight readable {0,0} entries at 8192. Linux
-returns -EBADF and qemu-user rejects the raw count with -EINVAL; the pin rules out a successful
-checker verdict for the offered -EBADF effect, regardless of the resulting model or events.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdwide -/
-theorem check_writev_closed_wide_old_answer_refuted (m' : Model) (evs : List event) :
+returns -EBADF and qemu-user rejects the raw count with -EINVAL; the descriptor is resolved
+before the count is looked at, so the checker accepts -EBADF and rejects the -EINVAL.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdwide
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_writev_closed_wide_is_ebadf :
     check_writev_row (writev_in 30 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_readv_eight_zero) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
+    ∧ check_writev_row (writev_in 30 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_readv_eight_zero) (mkEffect (errno_ret EINVAL) [] []) read_model = CheckReject := by
+  constructor <;> rwv_norm
+
+/-- Writev on closed fd 30 uses count 2^32+2 beside eight readable {0,0} entries at 8192.
+qemu-user's -EINVAL for the raw count is refused: Linux answers -EBADF, so no model and no
+event list make that -EINVAL a successful verdict.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdwide
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_writev_closed_wide_old_answer_refuted (m' : Model) (evs : List event) :
+    check_writev_row (writev_in 30 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_readv_eight_zero) (mkEffect (errno_ret EINVAL) [] []) read_model
       ≠ CheckOk m' evs := by
-  rw [(check_writev_closed_wide_declines _).1]
+  rw [check_writev_closed_wide_is_ebadf.2]
   intro h
   cases h
 
 /-- Writev on closed fd 30 uses count 1 and an unreadable array at 8192. Linux returns -EBADF
-and qemu-user returns -EFAULT; the checker declines any supplied effect and cannot accept it as
-an unchanged-model outcome.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdiov -/
-theorem check_writev_closed_unreadable_declines (eff : SyscallEffect) :
-    (check_writev_row (writev_in 30 8192 1 mem_none) eff read_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 30 8192 1 mem_none) eff read_model ≠ CheckOk read_model []) := by
-  rwv_norm
-
-/-- Writev on closed fd 30 uses count 1 and an unreadable array at 8192. Linux returns -EBADF
-and qemu-user returns -EFAULT; the pin rules out a successful checker verdict for the offered
--EBADF effect, regardless of the resulting model or events.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdiov -/
-theorem check_writev_closed_unreadable_old_answer_refuted (m' : Model) (evs : List event) :
+and qemu-user returns -EFAULT; the descriptor is resolved before the array is read, so the
+checker accepts -EBADF and rejects the -EFAULT.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdiov
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_writev_closed_unreadable_is_ebadf :
     check_writev_row (writev_in 30 8192 1 mem_none) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
+    ∧ check_writev_row (writev_in 30 8192 1 mem_none) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
+  constructor <;> rwv_norm
+
+/-- Writev on closed fd 30 uses count 1 and an unreadable array at 8192. qemu-user's -EFAULT is
+refused: Linux answers -EBADF, so no model and no event list make that -EFAULT a successful
+verdict.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdiov
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_writev_closed_unreadable_old_answer_refuted (m' : Model) (evs : List event) :
+    check_writev_row (writev_in 30 8192 1 mem_none) (mkEffect (errno_ret EFAULT) [] []) read_model
       ≠ CheckOk m' evs := by
-  rw [(check_writev_closed_unreadable_declines _).1]
+  rw [check_writev_closed_unreadable_is_ebadf.2]
   intro h
   cases h
 
 /-- Writev on closed fd 30 uses count 2 and {4096,2},{4098,3} at 8192, with no readable source
-bytes. The checker declines any supplied effect and cannot accept it as an unchanged-model
-outcome.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty -/
-theorem check_writev_closed_nonempty_declines (eff : SyscallEffect) :
-    (check_writev_row (writev_in 30 8192 2 iov_2_3) eff read_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 30 8192 2 iov_2_3) eff read_model ≠ CheckOk read_model []) := by
-  rwv_norm
+bytes. The descriptor decides the call: -EBADF is accepted with the model unchanged and the
+-EFAULT a gather of nothing would give on a live fd is rejected.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_writev_closed_nonempty_is_ebadf :
+    check_writev_row (writev_in 30 8192 2 iov_2_3) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
+    ∧ check_writev_row (writev_in 30 8192 2 iov_2_3) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
+  constructor <;> rwv_norm
 
 /-- Writev on closed fd 30 uses count 2 and {4096,2},{4098,3} at 8192, with no readable source
-bytes. The pin rules out a successful checker verdict for the offered -EBADF effect, regardless
-of the resulting model or events.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty -/
+bytes. The -EFAULT a live fd would answer is refused under every model and event list: the
+descriptor is closed.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
 theorem check_writev_closed_nonempty_old_answer_refuted (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 30 8192 2 iov_2_3) (mkEffect (errno_ret EBADF) [] []) read_model
+    check_writev_row (writev_in 30 8192 2 iov_2_3) (mkEffect (errno_ret EFAULT) [] []) read_model
       ≠ CheckOk m' evs := by
-  rw [(check_writev_closed_nonempty_declines _).1]
+  rw [check_writev_closed_nonempty_is_ebadf.2]
   intro h
   cases h
 
@@ -6436,15 +6567,17 @@ theorem check_readv_closed_empty_first_positive_later_is_ebadf :
     ∧ check_readv_row (readv_in 30 8192 2 (mem_iov_pair 0 0 0 1) wmem_none) (mkEffect 0 [] []) read_model = CheckReject := by
   constructor <;> rwv_norm
 
-/-- Readv on closed fd 30 uses count 2 and {0,0},{0,2^63} at 8192. Linux returns -EBADF but
-qemu-user rejects the second entry's negative signed length with -EINVAL, so the checker
-declines any supplied effect.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdlaterneg -/
-theorem check_readv_closed_empty_first_negative_later_declines (eff : SyscallEffect) :
-    (check_readv_row (readv_in 30 8192 2 (mem_iov_pair 0 0 0 (Z_to_bv 64 (2 ^ 63))) wmem_none) eff read_model
-      = CheckUnmodeled
-      ∧ check_readv_row (readv_in 30 8192 2 (mem_iov_pair 0 0 0 (Z_to_bv 64 (2 ^ 63))) wmem_none) eff read_model ≠ CheckOk read_model []) := by
-  rwv_norm
+/-- Readv on closed fd 30 uses count 2 and {0,0},{0,2^63} at 8192. Linux returns -EBADF where
+qemu-user rejects the second entry's negative signed length with -EINVAL; the descriptor is
+resolved before the array, so the checker accepts -EBADF and rejects the -EINVAL.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdlaterneg
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_readv_closed_empty_first_negative_later_is_ebadf :
+    check_readv_row (readv_in 30 8192 2 (mem_iov_pair 0 0 0 (Z_to_bv 64 (2 ^ 63))) wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
+    ∧ check_readv_row (readv_in 30 8192 2 (mem_iov_pair 0 0 0 (Z_to_bv 64 (2 ^ 63))) wmem_none) (mkEffect (errno_ret EINVAL) [] []) read_model = CheckReject := by
+  constructor <;> rwv_norm
 
 /-- Writev on closed fd 30 uses count 2 and readable {0,0},{0,1} entries at 8192. The empty
 first entry and nonnegative lengths let qemu-user reach the host fd check, matching Linux's
@@ -6456,15 +6589,17 @@ theorem check_writev_closed_empty_first_positive_later_is_ebadf :
     ∧ check_writev_row (writev_in 30 8192 2 (mem_iov_pair 0 0 0 1)) (mkEffect 0 [] []) read_model = CheckReject := by
   constructor <;> rwv_norm
 
-/-- Writev on closed fd 30 uses count 2 and {0,0},{0,2^63} at 8192. Linux returns -EBADF but
-qemu-user rejects the second entry's negative signed length with -EINVAL, so the checker
-declines any supplied effect.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdlaterneg -/
-theorem check_writev_closed_empty_first_negative_later_declines (eff : SyscallEffect) :
-    (check_writev_row (writev_in 30 8192 2 (mem_iov_pair 0 0 0 (Z_to_bv 64 (2 ^ 63)))) eff read_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 30 8192 2 (mem_iov_pair 0 0 0 (Z_to_bv 64 (2 ^ 63)))) eff read_model ≠ CheckOk read_model []) := by
-  rwv_norm
+/-- Writev on closed fd 30 uses count 2 and {0,0},{0,2^63} at 8192. Linux returns -EBADF where
+qemu-user rejects the second entry's negative signed length with -EINVAL; the descriptor is
+resolved before the array, so the checker accepts -EBADF and rejects the -EINVAL.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdlaterneg
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_writev_closed_empty_first_negative_later_is_ebadf :
+    check_writev_row (writev_in 30 8192 2 (mem_iov_pair 0 0 0 (Z_to_bv 64 (2 ^ 63)))) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
+    ∧ check_writev_row (writev_in 30 8192 2 (mem_iov_pair 0 0 0 (Z_to_bv 64 (2 ^ 63)))) (mkEffect (errno_ret EINVAL) [] []) read_model = CheckReject := by
+  constructor <;> rwv_norm
 
 /-! ### Rocq's writev examples, on the checker -/
 
@@ -6490,65 +6625,72 @@ theorem check_writev_two_iovecs_equals_one_write :
   refine ⟨?_, ?_⟩ <;> rwv_norm
 
 /-- On stdout fd 1 with {4096,1},{4097,1} over readable "ab", Linux narrows counts 2^32+2 and
-2^32 to two and zero, whereas qemu-user returns -EINVAL; the checker declines the offered two-
-byte and zero results. Counts 1025 and 2^64-1 exceed IOV_MAX in both readings, so their shared
+2^32 to two and zero, whereas qemu-user returns -EINVAL.  The spec judges the count on its low
+32 bits (`iovcnt32`), so the two-byte delivery and the zero are the answers, and qemu-user's
+-EINVAL is refused.  Counts 1025 and 2^64-1 exceed IOV_MAX in both readings, so their shared
 -EINVAL controls are accepted.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2 -/
-theorem check_writev_wide_iovcnt_is_unmodeled :
-    (check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2
+The twin judges the count on its low 32 bits, as rocq-linux-process-semantics f1006fe8 does;
+upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_writev_wide_iovcnt_is_judged :
+    check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) demo_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
-        (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) demo_model ≠ CheckOk demo_model [WriteEv 1 97, WriteEv 1 98])
+      = CheckOk demo_model [WriteEv 1 97, WriteEv 1 98]
+    ∧ check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
+        (mkEffect (errno_ret EINVAL) [] []) demo_model
+      = CheckReject
     ∧ check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32)) mem_writev_ab) (mkEffect 0 [] [])
         demo_model
-      = CheckUnmodeled
+      = CheckOk demo_model []
     ∧ check_writev_row (writev_in 1 8192 1025 mem_writev_ab) (mkEffect (errno_ret EINVAL) [] [])
         demo_model
       = CheckOk demo_model []
     ∧ check_writev_row (writev_in 1 8192 (Z_to_bv 64 (two_pow_64 - 1)) mem_writev_ab)
         (mkEffect (errno_ret EINVAL) [] []) demo_model
       = CheckOk demo_model [] := by
-  refine ⟨?_, ?_, ?_, ?_⟩ <;> rwv_norm
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
 /-- Writev with count 2^32 and an unreadable array at 8192 returns 0 on pipe write end fd 15 and
--EBADF on read end fd 14 in Linux, while qemu-user returns -EINVAL on either fd. The pin
-declines the offered 0, -EINVAL and 5 on fd 15 and -EBADF, 0 and -EINVAL on fd 14.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2 -/
-theorem check_pipe_writev_wide_zero_count_is_unmodeled :
-    (check_writev_row (writev_in 15 8192 (Z_to_bv 64 (2 ^ 32)) mem_none) (mkEffect 0 [] []) read_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 15 8192 (Z_to_bv 64 (2 ^ 32)) mem_none) (mkEffect 0 [] []) read_model ≠ CheckOk read_model [])
+-EBADF on read end fd 14 in Linux, while qemu-user returns -EINVAL on either fd.  The count is
+judged on its low 32 bits, which are zero, so the array is never read: fd 15 answers the zero
+aggregate ahead of the vectored-pipe decline and fd 14 answers -EBADF ahead of the import.
+qemu-user's -EINVAL is refused on both.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2
+The twin judges the count on its low 32 bits, as rocq-linux-process-semantics f1006fe8 does;
+upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_pipe_writev_wide_zero_count_is_judged :
+    check_writev_row (writev_in 15 8192 (Z_to_bv 64 (2 ^ 32)) mem_none) (mkEffect 0 [] []) read_model
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 15 8192 (Z_to_bv 64 (2 ^ 32)) mem_none)
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 15 8192 (Z_to_bv 64 (2 ^ 32)) mem_none) (mkEffect 5 [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 (Z_to_bv 64 (2 ^ 32)) mem_none)
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 14 8192 (Z_to_bv 64 (2 ^ 32)) mem_none) (mkEffect 0 [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 (Z_to_bv 64 (2 ^ 32)) mem_none)
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
-/-- Writev on stdout fd 1 with count 2^32+2 and {4096,1},{4097,1} over readable "ab" can deliver
-two bytes in Linux, while qemu-user returns -EINVAL. The checker declines both offered answers
-and rejects -EINVAL at the ordinary count-2 control.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2 -/
-theorem check_writev_over_max_with_small_low32_is_unmodeled :
-    (check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
+/-- Writev on stdout fd 1 with count 2^32+2 and {4096,1},{4097,1} over readable "ab" delivers
+two bytes in Linux, while qemu-user returns -EINVAL.  The low 32 bits are the count, so the
+delivery is the answer and the -EINVAL is refused, here and at the ordinary count-2 control.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2
+The twin judges the count on its low 32 bits, as rocq-linux-process-semantics f1006fe8 does;
+upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_writev_over_max_with_small_low32_is_judged :
+    check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) demo_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
-        (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) demo_model ≠ CheckOk demo_model [WriteEv 1 97, WriteEv 1 98])
+      = CheckOk demo_model [WriteEv 1 97, WriteEv 1 98]
     ∧ check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
         (mkEffect (errno_ret EINVAL) [] []) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 1 8192 2 mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EINVAL) [] [])) demo_model
       = CheckReject := by
@@ -6629,27 +6771,29 @@ theorem check_writev_over_rw_bytes_max_total_is_judged :
   refine ⟨?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
 /-- Writev on stdout fd 1 uses count 2^32+1 with {4096,rw_bytes_max+1},{0,0}, only byte 97
-readable, or with {4096,1},{4097,1} over "ab". The checker declines the offered -EINVAL, one-
-byte and two-byte results, including the mismatched source ledgers, and refuses acceptance of
-the former one-byte result.
-probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max -/
-theorem check_writev_wide_count_over_rw_bytes_max_is_unmodeled :
-    (check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
-          (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0))
-        (mkEffect (errno_ret EINVAL) [] []) demo_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1)) (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) (with_copyins [(8192, 16), (4096, 1)] (mkEffect 1 [] [])) demo_model ≠ CheckOk demo_model [WriteEv 1 97])
-    ∧ check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
+readable, or with {4096,1},{4097,1} over "ab".  The low 32 bits are the count, so the call is
+the one-descriptor write the count-1 control above answers: the gatherable byte is delivered,
+and qemu-user's -EINVAL, the mismatched source ledgers and the two-byte result over the
+one-entry import are all refused.
+probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max
+The twin judges the count on its low 32 bits, as rocq-linux-process-semantics f1006fe8 does;
+upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_writev_wide_count_over_rw_bytes_max_is_judged :
+    check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
           (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0))
         (with_copyins [(8192, 16), (4096, 1)] (mkEffect 1 [] [])) demo_model
-      = CheckUnmodeled
+      = CheckOk demo_model [WriteEv 1 97]
+    ∧ check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
+          (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0))
+        (mkEffect (errno_ret EINVAL) [] []) demo_model
+      = CheckReject
     ∧ check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
           (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0))
         (with_copyins [(8192, 16), (4096, 2)] (mkEffect 2 [] [])) demo_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
 /-- THE RETIRED BOUND IS IN FRONT OF NO FILE KIND: one descriptor of
@@ -6756,10 +6900,13 @@ theorem check_readv_huge_file_offset_is_bounded_by_file_length :
 
 /-- Readv uses eight readable {0,0} entries at 8192: on stdin fd 0 both implementations return 0
 at count 8 and -EINVAL at 1025, which the checker accepts while rejecting -ENOMEM at 8. The pin
-declines counts 9, 1024 and 2^32+9 on stdin, count 9 on closed fd 5, and counts 9 and 1025 on
-write-only file fd 3; the absent ninth entry and oversized count prevent the latter -EBADF cases
-from being shared answers.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdiov -/
+declines counts 9, 1024 and 2^32+9 on stdin, the heap-backed band the model will not name an
+allocation verdict for.  Closed fd 5 and write-only file fd 3 are -EBADF at any of these
+counts: the descriptor and the read mode are decided ahead of the band, so the band never
+reaches them.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdiov
+The twin answers -EBADF on the closed and write-only descriptors, as rocq-linux-process-semantics
+f1006fe8 does; upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
 theorem check_readv_heap_iovec_boundary_fails_closed :
     check_readv_row (readv_in 0 8192 8 mem_readv_eight_zero wmem_none)
         (with_copyins [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16),
@@ -6769,10 +6916,9 @@ theorem check_readv_heap_iovec_boundary_fails_closed :
         (with_copyins [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16),
             (8288, 16), (8304, 16)] (mkEffect (errno_ret ENOMEM) [] [])) demo_model
       = CheckReject
-    ∧ (check_readv_row (readv_in 0 8192 9 mem_readv_eight_zero wmem_none) (mkEffect 0 [] [])
+    ∧ check_readv_row (readv_in 0 8192 9 mem_readv_eight_zero wmem_none) (mkEffect 0 [] [])
         demo_model
       = CheckUnmodeled
-      ∧ check_readv_row (readv_in 5 8192 9 mem_readv_eight_zero wmem_none) (mkEffect (errno_ret EBADF) [] []) demo_model ≠ CheckOk demo_model [])
     ∧ check_readv_row (readv_in 0 8192 9 mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret ENOMEM) [] []) demo_model
       = CheckUnmodeled
@@ -6781,10 +6927,10 @@ theorem check_readv_heap_iovec_boundary_fails_closed :
       = CheckUnmodeled
     ∧ check_readv_row (readv_in 5 8192 9 mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret EBADF) [] []) demo_model
-      = CheckUnmodeled
+      = CheckOk demo_model []
     ∧ check_readv_row (readv_in 3 8192 9 mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret EBADF) [] []) readv_write_only_model
-      = CheckUnmodeled
+      = CheckOk readv_write_only_model []
     ∧ check_readv_row (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 9)) mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret EINVAL) [] []) demo_model
       = CheckUnmodeled
@@ -6796,31 +6942,31 @@ theorem check_readv_heap_iovec_boundary_fails_closed :
       = CheckOk demo_model []
     ∧ check_readv_row (readv_in 3 8192 9 mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret ENOMEM) [] []) readv_write_only_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 3 8192 9 mem_readv_eight_zero wmem_none)
         (with_copyins [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16),
             (8288, 16), (8304, 16), (8320, 16)] (mkEffect (errno_ret EFAULT) [] []))
         readv_write_only_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 3 8192 9 mem_readv_eight_zero wmem_none)
         (with_copyins [(8192, 144)] (mkEffect (errno_ret EFAULT) [] [])) readv_write_only_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 3 8192 1025 mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret EINVAL) [] []) readv_write_only_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
 /-- Readv on stdin fd 0 at EOF with count 2^32+1 and one {4096,1} entry at 8192 returns 0 after
-Linux narrows the count, but -EINVAL in qemu-user. The checker declines that zero effect,
-accepts the count-1 EOF result despite the unwritable destination, and rejects a count-2 zero
-result because the second descriptor is absent.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh -/
-theorem check_readv_wide_iovcnt_is_unmodeled :
-    (check_readv_row (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
+Linux narrows the count, where qemu-user answers -EINVAL.  The spec narrows it the same way, so
+the zero IS the answer; the count-1 control gives it too, despite the unwritable destination,
+and a count-2 zero result is rejected because the second descriptor is absent.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh
+The twin judges the count on its low 32 bits, as rocq-linux-process-semantics f1006fe8 does;
+upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_readv_wide_iovcnt_is_judged :
+    check_readv_row (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
         (with_copyins [(8192, 16)] (mkEffect 0 [] [])) demo_model
-      = CheckUnmodeled
-      ∧ check_readv_row (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
-        (with_copyins [(8192, 16)] (mkEffect 0 [] [])) demo_model ≠ CheckOk demo_model [])
+      = CheckOk demo_model []
     ∧ check_readv_row (readv_in 0 8192 1 mem_readv_iov wmem_none)
         (with_copyins [(8192, 16)] (mkEffect 0 [] [])) demo_model
       = CheckOk demo_model []
@@ -6830,42 +6976,41 @@ theorem check_readv_wide_iovcnt_is_unmodeled :
   refine ⟨?_, ?_, ?_⟩ <;> rwv_norm
 
 /-- Readv on stdin fd 0 at EOF with count 2^32+1 and one {4096,1} entry at 8192 gives Linux's 0
-and qemu-user's -EINVAL. The checker declines both offered answers and rejects an import-count
--EINVAL at the ordinary count-1 control.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh -/
-theorem check_readv_over_max_with_small_low32_is_unmodeled :
-    (check_readv_row (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
+and qemu-user's -EINVAL.  The low 32 bits are the count, so the 0 is accepted and qemu-user's
+-EINVAL is refused, here and at the ordinary count-1 control.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh
+The twin judges the count on its low 32 bits, as rocq-linux-process-semantics f1006fe8 does;
+upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_readv_over_max_with_small_low32_is_judged :
+    check_readv_row (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
         (with_copyins [(8192, 16)] (mkEffect 0 [] [])) demo_model
-      = CheckUnmodeled
-      ∧ check_readv_row (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
-        (with_copyins [(8192, 16)] (mkEffect 0 [] [])) demo_model ≠ CheckOk demo_model [])
+      = CheckOk demo_model []
     ∧ check_readv_row (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
         (mkEffect (errno_ret EINVAL) [] []) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 0 8192 1 mem_readv_iov wmem_none)
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) demo_model
       = CheckReject := by
   refine ⟨?_, ?_, ?_⟩ <;> rwv_norm
 
-/-- Readv on write-only stdout fd 1 with count 2 and an unreadable array at 8192 gives Linux v6.8+'s
--EBADF and qemu-user's -EFAULT. The checker declines the offered -EBADF and the -EFAULT effects
-with empty, one-descriptor or whole-array copy-in ledgers.
+/-- Readv on write-only stdout fd 1 with count 2 and an unreadable array at 8192 gives Linux
+v6.8+'s -EBADF and qemu-user's -EFAULT.  `readable_fd` turns the channel away ahead of the
+import, so nothing is read from the array: -EBADF with an empty ledger is the answer, and every
+-EFAULT, with or without a descriptor ledger, is refused.
 kernel: fs/read_write.c:vfs_readv; lib/iov_iter.c:copy_iovec_from_user@v6.18.46 -/
-theorem check_readv_write_only_fd_unreadable_array_is_unmodeled :
-    (check_readv_row (readv_in 1 8192 2 mem_none wmem_none) (mkEffect (errno_ret EBADF) [] [])
+theorem check_readv_write_only_fd_unreadable_array_is_ebadf :
+    check_readv_row (readv_in 1 8192 2 mem_none wmem_none) (mkEffect (errno_ret EBADF) [] [])
         demo_model
-      = CheckUnmodeled
-      ∧ check_readv_row (readv_in 1 8192 2 mem_none wmem_none) (mkEffect (errno_ret EBADF) [] [])
-        demo_model ≠ CheckOk demo_model [])
+      = CheckOk demo_model []
     ∧ check_readv_row (readv_in 1 8192 2 mem_none wmem_none)
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 1 8192 2 mem_none wmem_none)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EFAULT) [] [])) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 1 8192 2 mem_none wmem_none) (mkEffect (errno_ret EFAULT) [] [])
         demo_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
 /-- The readable empty entry lets both implementations reach the fd's read mode.
@@ -6895,23 +7040,19 @@ theorem check_readv_pipe_gate_splits_the_two_ends :
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
 /-- Readv on pipe write end fd 15 or write-only file fd 4 uses count 1 and an unreadable array
-at 4096. Linux returns -EBADF and qemu-user returns -EFAULT, so the pin declines the offered
--EBADF and rules out its acceptance on either fd.
+at 4096.  Linux returns -EBADF and qemu-user returns -EFAULT; the read-mode gate runs ahead of
+the import on both descriptors, so -EBADF is the answer and the -EFAULT is refused.
 kernel: fs/read_write.c:vfs_readv; lib/iov_iter.c:copy_iovec_from_user@v6.18.46 -/
-theorem check_readv_pipe_wrong_mode_unreadable_array_is_unmodeled :
+theorem check_readv_pipe_wrong_mode_unreadable_array_is_ebadf :
     check_readv_row (readv_in 15 4096 1 mem_none wmem_none)
-      (mkEffect (errno_ret EBADF) [] []) read_model = CheckUnmodeled
+      (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model []
     ∧ check_readv_row (readv_in 15 4096 1 mem_none wmem_none)
-      (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk read_model []
+      (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject
     ∧ check_readv_row (readv_in 4 4096 1 mem_none wmem_none)
-      (mkEffect (errno_ret EBADF) [] []) read_model = CheckUnmodeled
+      (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model []
     ∧ check_readv_row (readv_in 4 4096 1 mem_none wmem_none)
-      (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk read_model [] := by
-  have h15 : check_readv_row (readv_in 15 4096 1 mem_none wmem_none)
-      (mkEffect (errno_ret EBADF) [] []) read_model = CheckUnmodeled := by rwv_norm
-  have h4 : check_readv_row (readv_in 4 4096 1 mem_none wmem_none)
-      (mkEffect (errno_ret EBADF) [] []) read_model = CheckUnmodeled := by rwv_norm
-  exact ⟨h15, (by rw [h15]; intro h; cases h), h4, (by rw [h4]; intro h; cases h)⟩
+      (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
+  refine ⟨?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
 
 /-- A ZERO-LENGTH ENTRY, THEN A BAD BASE, ON A FILE: the empty entry is
@@ -7117,18 +7258,18 @@ theorem check_writev_ab_short_delivery :
       = CheckOk demo_model [WriteEv 1 97] := by
   rwv_norm
 
-/-- Writev on read-only stdin fd 0 uses count 2 and {4096,1},{4097,1} over readable "ab"; the
-checker declines the offered -EBADF and delivery effects, including the alternate import
-ledgers. On stdout fd 1 it accepts -EFAULT for count 1 with {4096,1} and no source byte, and 0
-for count 2 with {4096,0},{4096,0}, rejecting the swapped returns.
+/-- Writev on read-only stdin fd 0 uses count 2 and {4096,1},{4097,1} over readable "ab": the
+channel's read-only mode is decided ahead of the import, so -EBADF with an empty ledger is the
+answer and the delivery and the ledgered -EBADF are refused. On stdout fd 1 the checker accepts
+-EFAULT for count 1 with {4096,1} and no source byte, and 0 for count 2 with {4096,0},{4096,0},
+rejecting the swapped returns.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
 theorem check_writev_channel_edges :
-    (check_writev_row (writev_in 0 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) demo_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 0 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) demo_model ≠ CheckOk demo_model [])
+    check_writev_row (writev_in 0 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) demo_model
+      = CheckOk demo_model []
     ∧ check_writev_row (writev_in 0 8192 2 mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 1 8192 1 (iov_array [(4096, 1)]))
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) demo_model
       = CheckOk demo_model []
@@ -7143,10 +7284,10 @@ theorem check_writev_channel_edges :
       = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EBADF) [] [])) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 mem_writev_ab)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EBADF) [] [])) demo_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
 /-- A FILE WRITEV LANDS AT THE OFFSET AND MOVES IT: the two gathered bytes
@@ -7176,24 +7317,21 @@ theorem check_writev_file_lands_at_the_offset :
           [] := by
   refine ⟨?_, ?_, ?_⟩ <;> rwv_norm
 
-/-- THE FIRST DECLINE BEYOND ROCQ'S, ON THE CHECKER, WITH BOTH EDGES: an
-unreadable source at an offset past the file's end is declined — one
-past a two-byte file, and two into an empty one — while the same source
-at exactly the end is -EFAULT and 0 is refused.  Past the end,
-`shmem_write_end` moves `i_size` to `pos + copied` (mm/shmem.c:3352-3353,
-Linux v6.18.46) before `generic_perform_write`'s fault-in fails
-(mm/filemap.c:4321-4323) and -EFAULT is returned (:4331-4332), where
-kernels before the pre-fault's removal leave the file alone
-(`Sys.Fs.ReadWrite.writev_file_arm`); at the end `pos + copied` does not
-pass `i_size`, so every supported kernel answers the one -EFAULT.
+/-- AN UNREADABLE SOURCE IS -EFAULT WHEREVER THE OFFSET SITS, and the file
+is left alone: one past a two-byte file, two into an empty one, and at
+exactly the end, the gather reaches no byte and `writev_file_arm` answers
+the flat -EFAULT before it places anything; 0 is refused.
+`generic_perform_write`'s fault-in fails (mm/filemap.c:4321-4323, Linux
+v6.18.46) and -EFAULT is returned (:4331-4332) with nothing copied, so
+`shmem_write_end` never moves `i_size` (mm/shmem.c:3352-3353).
 kernel: mm/shmem.c:shmem_write_end; mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem check_writev_past_eof_unreadable_source_declines :
+theorem check_writev_past_eof_unreadable_source_is_efault :
     check_writev_row (writev_in 4 8192 1 (iov_array [(4096, 1)]))
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) wend_model
-      = CheckUnmodeled
+      = CheckOk wend_model []
     ∧ check_writev_row (writev_in 3 8192 1 (iov_array [(4096, 1)]))
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) writev_hole_model
-      = CheckUnmodeled
+      = CheckOk writev_hole_model []
     ∧ check_writev_row (writev_in 3 8192 1 (iov_array [(4096, 1)]))
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) wend_model
       = CheckOk wend_model []
@@ -7202,23 +7340,20 @@ theorem check_writev_past_eof_unreadable_source_declines :
       = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
-/-- THE SECOND DECLINE, ON THE CHECKER: a source readable at
-its first byte and not its second is declined on the file — the one-byte
-write and the -EFAULT alike, since no answer is
-shared by every supported kernel (`Sys.Fs.ReadWrite.writev_file_arm`:
-Linux v5.18 on writes what the fault-in reached, `generic_perform_write`
-at mm/filemap.c:4321-4324, Linux v6.18.46; older kernels answer a whole
-chunk or -EFAULT).  The same vector on the channel is judged, not
-declined — `check_writev_channel_partial_source` — which is the control
-that shows the decline belongs to the file arm.
+/-- A PARTIAL SOURCE ON A FILE IS THE GATHERABLE PREFIX: readable at its
+first byte and not its second, the vector writes one byte at the offset,
+moves the offset to 1 and returns 1; the -EFAULT is refused.
+`generic_perform_write` writes what the fault-in reached
+(mm/filemap.c:4321-4324, Linux v6.18.46).  The same vector on the channel
+gives the same one-byte answer — `check_writev_channel_partial_source`.
 kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
-theorem check_writev_partial_source_declines :
+theorem check_writev_partial_source_is_the_gatherable_prefix :
     check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 1 4097 1))
         (with_copyins [(8192, 16), (8208, 16), (4096, 1)] (mkEffect 1 [] [])) writev_model
-      = CheckUnmodeled
+      = CheckOk (with_fds [(3, .FdFileW [102] 1)] (with_fs [([102], [97])] writev_model)) []
     ∧ check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 1 4097 1))
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EFAULT) [] [])) writev_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   refine ⟨?_, ?_⟩ <;> rwv_norm
 
 /-- A CHANNEL SOURCE READABLE IN ITS FIRST BYTE ONLY is judged by its
@@ -7245,10 +7380,11 @@ theorem check_writev_channel_partial_source :
       = CheckReject := by
   refine ⟨?_, ?_, ?_⟩ <;> rwv_norm
 
-/-- A readable empty first entry with in-range bases keeps -EBADF on every wrong-mode
-kind. Linux v4.17 through v6.7 imports first (fs/read_write.c, vfs_writev,
-v6.6), while v6.8+ tests the mode first (1c8aa833034a). The later rows
-keep the invalid-count, incomplete-array and invalid-range declines separate.
+/-- The write-mode gate runs on the descriptor alone, ahead of the import, so every wrong-mode
+kind answers -EBADF whatever the count and whatever the array holds: an invalid count, an
+incomplete array and an out-of-range entry are all behind it.  Linux v4.17 through v6.7 imports
+first (fs/read_write.c, vfs_writev, v6.6), while v6.8+ tests the mode first (1c8aa833034a); the
+model takes v6.8+'s order.  A ledger is refused with the error, since no descriptor is read.
 kernel: fs/read_write.c:vfs_writev; fs/namei.c:may_open; lib/iov_iter.c:iovec_from_user,copy_iovec_from_user@v6.18.46 -/
 theorem check_writev_kind_verdicts :
     (check_writev_row (writev_in 30 8192 1 (mem_iov_pair 4096 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model
@@ -7274,418 +7410,420 @@ theorem check_writev_kind_verdicts :
       = CheckReject
     ∧ check_writev_row (writev_in 3 8192 1025 mem_writev_ab) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 3 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 5 8192 1025 mem_writev_ab) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 5 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 5 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 5 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 24 8192 1025 mem_writev_ab) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 24 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 24 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 24 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 8 8192 1025 mem_writev_ab) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 8 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 8 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 8 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 14 8192 1025 mem_writev_ab) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 14 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 14 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 14 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 0 8192 1025 mem_writev_ab) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 0 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 0 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 0 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 3 8192 2 mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 2 mem_writev_ab)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 2 mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 1025 mem_writev_ab) (mkEffect (errno_ret EINVAL) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 2 mem_writev_ab)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 2 mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 2 mem_writev_ab)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 2 mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 2 mem_writev_ab)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 2 mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 2 mem_writev_ab)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 1025 mem_writev_ab) (mkEffect (errno_ret EINVAL) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 1025 mem_writev_ab) (mkEffect (errno_ret EINVAL) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 1025 mem_writev_ab) (mkEffect (errno_ret EINVAL) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 1025 mem_writev_ab) (mkEffect (errno_ret EINVAL) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 1025 mem_writev_ab) (mkEffect (errno_ret EINVAL) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 mem_writev_ab)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 1 (mem_iov_pair 4096 0 4096 0)) (mkEffect (errno_ret EBADF) [] [])
         read_model
       = CheckOk read_model []
     ∧ check_writev_row (writev_in 5 8192 1025 mem_writev_ab) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 9 mem_readv_eight_zero)
         (with_copyins
           [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16), (8288, 16),
           (8304, 16), (8320, 16)]
           (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 9 mem_readv_eight_zero)
         (with_copyins
           [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16), (8288, 16),
           (8304, 16), (8320, 16)]
           (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 9 mem_readv_eight_zero)
         (with_copyins
           [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16), (8288, 16),
           (8304, 16), (8320, 16)]
           (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 9 mem_readv_eight_zero)
         (with_copyins
           [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16), (8288, 16),
           (8304, 16), (8320, 16)]
           (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 9 mem_readv_eight_zero)
         (with_copyins
           [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16), (8288, 16),
           (8304, 16), (8320, 16)]
           (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 9 mem_readv_eight_zero)
         (with_copyins
           [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16), (8288, 16),
           (8304, 16), (8320, 16)]
           (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 9 mem_readv_eight_zero)
         (with_copyins [(8192, 144)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 9 mem_readv_eight_zero)
         (with_copyins [(8192, 144)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 9 mem_readv_eight_zero)
         (with_copyins [(8192, 144)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 9 mem_readv_eight_zero)
         (with_copyins [(8192, 144)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 9 mem_readv_eight_zero)
         (with_copyins [(8192, 144)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 9 mem_readv_eight_zero)
         (with_copyins [(8192, 144)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 9 mem_readv_eight_zero) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 (mem_iov_pair 4096 1 1 at_top))
         (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_,
     ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_,
     ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_,
     ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_,
     ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
-/-- The checker declines writev on closed fd 30 and on read-only file, directory, urandom, null,
-pipe and stdin fds 3, 5, 24, 8, 14 and 0 with count 2 over readable "ab" in {4096,1},{4097,1}: a
-nonempty first entry is a buffer qemu-user's `lock_iovec` locks before the host call, so its
--EFAULT can precede the -EBADF Linux gives. The positive rows of `check_writev_kind_verdicts`
-are the same kinds with an empty first entry.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- closednonempty -/
-theorem check_writev_kind_nonempty_first_entry_declines :
-    (check_writev_row (writev_in 30 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 30 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk read_model [])
+/-- A NONEMPTY FIRST ENTRY CHANGES NOTHING: closed fd 30 and the read-only file, directory,
+urandom, null, pipe read end and stdin fds 3, 5, 24, 8, 14 and 0 answer -EBADF with count 2
+over readable "ab" in {4096,1},{4097,1}, as they do with an empty first entry in
+`check_writev_kind_verdicts`.  qemu-user's `lock_iovec` locks that buffer before the host call
+and can answer -EFAULT first; the model keeps Linux's -EBADF.  A directory's -EISDIR is
+refused: `vfs_write`'s mode test comes first.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- closednonempty
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_writev_kind_nonempty_first_entry_is_ebadf :
+    check_writev_row (writev_in 30 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 3 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 5 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 5 8192 2 mem_writev_ab) (mkEffect (errno_ret EISDIR) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 8 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 14 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 0 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled := by
+      = CheckOk read_model [] := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
 /-- Writev on read-only file fd 3, directory fd 5, /dev/urandom fd 24, /dev/null fd 8, pipe read
-end fd 14 and stdin fd 0 uses count 2 and an unreadable array at 8192. Linux v6.8+ returns -EBADF and
-qemu-user returns -EFAULT; the checker declines the offered errors with the listed empty, per-
-descriptor and bulk-array ledgers.
+end fd 14 and stdin fd 0 uses count 2 and an unreadable array at 8192.  Linux v6.8+ returns
+-EBADF where qemu-user returns -EFAULT: the write-mode gate runs ahead of the import, so the
+array is never read.  -EBADF with an empty ledger is accepted, and every -EFAULT, with a
+per-descriptor ledger, a bulk-array ledger or none, is refused.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_writev_read_only_fd_unreadable_array_is_unmodeled :
-    (check_writev_row (writev_in 3 8192 2 mem_none) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 3 8192 2 mem_none) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk read_model [])
+theorem check_writev_read_only_fd_unreadable_array_is_ebadf :
+    check_writev_row (writev_in 3 8192 2 mem_none) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 3 8192 2 mem_none)
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 2 mem_none) (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 3 8192 2 mem_none)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 2 mem_none) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 5 8192 2 mem_none)
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 5 8192 2 mem_none) (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 2 mem_none) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 24 8192 2 mem_none)
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 2 mem_none) (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 2 mem_none) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 8 8192 2 mem_none)
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 2 mem_none) (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 2 mem_none) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 14 8192 2 mem_none)
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 2 mem_none) (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 mem_none) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 0 8192 2 mem_none)
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 mem_none) (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     <;> rwv_norm
 
@@ -7784,9 +7922,10 @@ an array whose ninth descriptor is unreadable, and a writable
 ledger (the first five conjuncts) — the divergence
 `bugs/writev-heap-iovec-enomem-not-admitted.md` records.  Where the arm
 declines whatever the answer it declines the -ENOMEM too: a fresh socket
-and a connected one, a pipe's write end with a nonzero aggregate at a
-heap count and at a count of two (`writev_buf_gap`), and the write-only
-file with a source shorter than the vector (the next five).
+and a connected one, and a pipe's write end with a nonzero aggregate at
+a heap count and at a count of two (`writev_buf_gap`).  The write-only
+file with a source shorter than the vector refuses it instead: that
+write lands the gatherable prefix (the tenth).
 Beside the refusals the answer the kernel gives when the allocation
 passes is accepted on each of the four arms (conjuncts eleven through
 fifteen): over the unreadable ninth descriptor, the -EFAULT the import
@@ -7819,8 +7958,9 @@ it allocates (lib/iov_iter.c:1304-1307), and `lock_iovec` returns before
 `g_try_new0` (linux-user/syscall.c:3082-3089, QEMU 11.1.1), so the
 eighteenth through twentieth conjuncts refuse it: on standard output at
 a count of zero and past the limit, and on the directory past the
-limit, where Linux v6.8 and later answer -EBADF first and the older
-kernels and qemu-user the count test's -EINVAL.  Beside the count-zero
+limit, where Linux v6.8 and later answer -EBADF first — the answer the
+twentieth's second half accepts — and the older kernels and qemu-user
+the count test's -EINVAL.  Beside the count-zero
 refusal the zero every implementation answers there is accepted (the
 twenty-first conjunct): `vfs_writev` returns it on the empty aggregate
 (fs/read_write.c:1047-1049), and qemu-user's `lock_iovec` returns no
@@ -7909,7 +8049,7 @@ theorem check_writev_enomem_is_refused_or_declined :
         (writev_in 4 8192 9 (fun a => if bv_eqb a 4096 then some 97
           else iov_array ((4096, 2) :: List.replicate 8 (0, 0)) a))
         (mkEffect (errno_ret ENOMEM) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 1 8192 9 mem_readv_eight_zero)
         (with_copyins [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16),
           (8288, 16), (8304, 16), (8320, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
@@ -7944,8 +8084,8 @@ theorem check_writev_enomem_is_refused_or_declined :
       = CheckReject
     ∧ (check_writev_row (writev_in 5 8192 1025 mem_writev_ab) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 5 8192 1025 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk read_model [])
+      = CheckReject
+      ∧ check_writev_row (writev_in 5 8192 1025 mem_writev_ab) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [])
     ∧ check_writev_row (writev_in 1 8192 0 mem_writev_ab) (mkEffect 0 [] []) read_model
       = CheckOk read_model []
     ∧ check_writev_row (writev_in 1 8192 2 mem_writev_ab)
@@ -8272,22 +8412,22 @@ theorem check_readv_zero_aggregate_answers_zero :
       = CheckOk (with_stdin hello_stdin demo_model) [] := by
   refine ⟨?_, ?_, ?_⟩ <;> rwv_norm
 
-/-- For count 2 with {4096,2},{4098,3} and no writable destinations, the checker declines readv
-on closed fd 30 and write-only file, pipe and null fds 4, 15 and 9, including their alternate
-ledgers; fd 4 also declines count 1025, a first length of 2^63, and a second range
-{1,TASK_SIZE}. The readable null and socket controls accept their stated EOF, -ENOTCONN and
--ECONNRESET effects and refuse the offered -EFAULT effects or fresh-socket zero.
+/-- For count 2 with {4096,2},{4098,3} and no writable destinations, readv on closed fd 30 and
+on write-only file, pipe and null fds 4, 15 and 9 is -EBADF: the descriptor and the read mode
+are decided ahead of the import, so the count, the entry lengths and the array are never
+reached, and a copy-in ledger beside the error is refused.  The readable null and socket
+controls accept their stated EOF, -ENOTCONN and -ECONNRESET effects and refuse the offered
+-EFAULT effects or fresh-socket zero.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
 theorem check_readv_kind_verdicts :
-    (check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
-      ∧ check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk read_model [])
+    check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model
+      = CheckOk read_model []
     ∧ check_readv_row (readv_in 4 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_readv_row (readv_in 15 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_readv_row (readv_in 9 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_readv_row (readv_in 8 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect 0 [] [])) read_model
       = CheckOk read_model []
@@ -8308,61 +8448,61 @@ theorem check_readv_kind_verdicts :
       = CheckOk read_model []
     ∧ check_readv_row (readv_in 4 8192 1025 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_readv_row (readv_in 4 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1) wmem_none)
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_readv_row (readv_in 4 8192 2 (mem_iov_pair 4096 1 1 at_top) wmem_none)
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_readv_row (readv_in 4 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 4 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 15 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 9 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 4 8192 1025 iov_2_3 wmem_none) (mkEffect (errno_ret EINVAL) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 4 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1) wmem_none)
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 15 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 9 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 4 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1) wmem_none)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 4 8192 2 (mem_iov_pair 4096 1 1 at_top) wmem_none)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 4 8192 2 (mem_iov_pair 4096 1 1 at_top) wmem_none)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EFAULT) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 4 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 15 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 9 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 8 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EFAULT) [] [])) read_model
       = CheckReject
@@ -8380,29 +8520,30 @@ theorem check_readv_kind_verdicts :
       = CheckReject
     ∧ check_readv_row (readv_in 4 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1) wmem_none)
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 4 8192 2 (mem_iov_pair 4096 1 1 at_top) wmem_none)
         (mkEffect (errno_ret EFAULT) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_,
     ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     <;> rwv_norm
 
 /-- At readv count 2 with {4096,2},{4098,3} and no writable destinations, -ENOMEM is declined on
-pipe read end 14, urandom 24, missing-file 7, wrong-end 15 and closed fd 30, but rejected on
-regular file 3, readable null 8, fresh socket 10 and EOF stdin 0. The range-fault, negative-
-length, unreadable-array and two-empty-entry variants on fds 14, 24 and 7 reject -ENOMEM and
-accept their stated -EFAULT, -EINVAL or zero controls; the regular-file fault and stdin EOF
-controls are accepted too.
+pipe read end 14, urandom 24 and missing-file 7, and rejected on regular file 3, readable null
+8, fresh socket 10, EOF stdin 0, the pipe's write end 15 and closed fd 30 — the last two answer
+-EBADF, the write end's from the read-mode gate and the closed slot's from the lookup.  The
+range-fault, negative-length, unreadable-array and two-empty-entry variants on fds 14, 24 and 7
+reject -ENOMEM and accept their stated -EFAULT, -EINVAL or zero controls; the regular-file
+fault and stdin EOF controls are accepted too.
 kernel: fs/read_write.c:vfs_readv; lib/iov_iter.c:iovec_from_user,copy_iovec_from_user@v6.18.46 -/
 theorem check_readv_enomem_below_the_band :
     (check_readv_row (readv_in 14 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret ENOMEM) [] [])) read_model
       = CheckUnmodeled
-      ∧ check_readv_row (readv_in 15 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk read_model [])
+      ∧ check_readv_row (readv_in 15 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [])
     ∧ check_readv_row (readv_in 24 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret ENOMEM) [] [])) read_model
       = CheckUnmodeled
@@ -8423,10 +8564,10 @@ theorem check_readv_enomem_below_the_band :
       = CheckReject
     ∧ check_readv_row (readv_in 15 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 30 8192 2 iov_2_3 wmem_none) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 14 8192 2 (mem_iov_pair 4096 1 1 at_top) wmem_none)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret ENOMEM) [] [])) read_model
       = CheckReject
@@ -8476,8 +8617,8 @@ theorem check_readv_enomem_below_the_band :
 
 /-- Readv with count 0 on readable file fd 3 leaves {4096,2},{4098,3} unused and returns 0 in
 both implementations; count 1025 on stdin fd 0 rejects the count with -EINVAL before reading its
-eight {0,0} entries. The checker accepts those results and rejects -ENOMEM, but declines count
-1025 on write-only file fd 4, where Linux v6.8+'s -EBADF differs from qemu-user's -EINVAL.
+eight {0,0} entries. The checker accepts those results and rejects -ENOMEM.  Count 1025 on
+write-only file fd 4 is -EBADF, Linux v6.8+'s answer, where qemu-user gives -EINVAL.
 kernel: fs/read_write.c:vfs_readv; lib/iov_iter.c:iovec_from_user@v6.18.46 -/
 theorem check_readv_enomem_at_counts_that_allocate_nothing :
     check_readv_row (readv_in 3 8192 0 iov_2_3 wmem_none) (mkEffect (errno_ret ENOMEM) [] [])
@@ -8488,9 +8629,9 @@ theorem check_readv_enomem_at_counts_that_allocate_nothing :
       = CheckReject
     ∧ (check_readv_row (readv_in 4 8192 1025 iov_2_3 wmem_none) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
       ∧ check_readv_row (readv_in 4 8192 1025 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] [])
-        read_model ≠ CheckOk read_model [])
+        read_model = CheckOk read_model [])
     ∧ check_readv_row (readv_in 3 8192 0 iov_2_3 wmem_none) (mkEffect 0 [] []) read_model
       = CheckOk read_model []
     ∧ check_readv_row (readv_in 0 8192 1025 mem_readv_eight_zero wmem_none)
@@ -8499,11 +8640,13 @@ theorem check_readv_enomem_at_counts_that_allocate_nothing :
   refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> rwv_norm
 
 /-- Writev on read-only file fd 3 with counts 1 and 3 through 8 over eight readable {0,0}
-entries accepts the shared -EBADF and rejects -ENOMEM. The pin instead declines the offered
--ENOMEM for count 2 over readable "ab" in {4096,1},{4097,1} on read-only file, directory,
-urandom, null, pipe and stdin fds 3, 5, 24, 8, 14 and 0, and for readv count 1 with {4096,2} on
-write-only file fd 4; its former -EBADF effects are refused too.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty -/
+entries accepts the shared -EBADF and rejects -ENOMEM.  The same holds for count 2 over
+readable "ab" in {4096,1},{4097,1} on read-only file, directory, urandom, null, pipe and stdin
+fds 3, 5, 24, 8, 14 and 0, and for readv count 1 with {4096,2} on write-only file fd 4: each is
+-EBADF, and the -ENOMEM qemu-user's `lock_iovec` could give is refused.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
 theorem check_vectored_lock_iovec_enomem_refused_below_the_band :
     check_writev_row (writev_in 3 8192 1 mem_readv_eight_zero) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
@@ -8549,132 +8692,133 @@ theorem check_vectored_lock_iovec_enomem_refused_below_the_band :
       = CheckOk read_model []
     ∧ (check_writev_row (writev_in 3 8192 2 mem_writev_ab) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
       ∧ check_writev_row (writev_in 3 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] [])
-        read_model ≠ CheckOk read_model [])
+        read_model = CheckOk read_model [])
     ∧ check_writev_row (writev_in 5 8192 2 mem_writev_ab) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 24 8192 2 mem_writev_ab) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 8 8192 2 mem_writev_ab) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 14 8192 2 mem_writev_ab) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 0 8192 2 mem_writev_ab) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 4 8192 1 iov_2_3 wmem_none) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 4 8192 1 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled := by
+      = CheckOk read_model [] := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_,
     ?_⟩ <;> rwv_norm
 
-/-- On closed fd 30, readv and writev return -EBADF in Linux, but qemu-user returns -EFAULT for
-count 9 with only eight {0,0} entries or count 2 with an unreadable array, -EINVAL for count
-1025 or a first length of 2^63, and 0 for count 0. The pin declines the listed effects for these
-shapes and for writev count 2 with {4096,2},{4098,3} and no source bytes, including the offered
--ENOMEM and zero results.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty -/
-theorem check_vectored_closed_slot_order_declines :
-    (check_readv_row (readv_in 30 8192 9 mem_readv_eight_zero wmem_none)
+/-- On closed fd 30, readv and writev return -EBADF in Linux, where qemu-user returns -EFAULT
+for count 9 with only eight {0,0} entries or count 2 with an unreadable array, -EINVAL for
+count 1025 or a first length of 2^63, and 0 for count 0.  The slot is read first, so -EBADF is
+the answer in every one of those shapes and in writev count 2 with {4096,2},{4098,3} and no
+source bytes; qemu-user's answers and the offered -ENOMEM are refused.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
+theorem check_vectored_closed_slot_order_is_ebadf :
+    check_readv_row (readv_in 30 8192 9 mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
-      ∧ check_readv_row (readv_in 30 8192 9 mem_readv_eight_zero wmem_none)
-        (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk read_model [])
+      = CheckOk read_model []
     ∧ check_readv_row
         (readv_in 30 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1) wmem_none)
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 30 8192 9 mem_readv_eight_zero)
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 30 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_readv_row (readv_in 30 8192 0 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 30 8192 0 mem_writev_ab) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_readv_row (readv_in 30 8192 9 mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret ENOMEM) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row
         (readv_in 30 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1) wmem_none)
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 30 8192 0 iov_2_3 wmem_none) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 30 8192 9 mem_readv_eight_zero)
         (mkEffect (errno_ret ENOMEM) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 30 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 30 8192 0 iov_2_3 wmem_none) (mkEffect 0 [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 30 8192 0 mem_writev_ab) (mkEffect 0 [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 30 8192 1025 iov_2_3 wmem_none) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 30 8192 1025 mem_writev_ab) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_readv_row (readv_in 30 8192 2 wmem_none wmem_none) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 30 8192 2 mem_none) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 30 8192 2 iov_2_3) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_readv_row (readv_in 30 8192 1025 iov_2_3 wmem_none)
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 30 8192 1025 mem_writev_ab) (mkEffect (errno_ret EINVAL) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 30 8192 2 wmem_none wmem_none) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 30 8192 2 mem_none) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 30 8192 2 iov_2_3) (mkEffect (errno_ret EFAULT) [] [])
         read_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_,
     ?_, ?_⟩ <;> rwv_norm
 
-/-- Fd 26 aliases read-only stdin at EOF: the pin declines writev count 2 over readable "ab" in
-{4096,1},{4097,1} and the {4096,2^63},{4096,1} variant, including their delivery, -EBADF,
--EINVAL and -ENOMEM effects. Its readv count-2 controls accept 0 for {4096,2},{4098,3} and
--EINVAL for the negative first length, while rejecting -EBADF, -ENOMEM and the bulk-copy ledger
-on the negative-length result.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty -/
+/-- Fd 26 aliases read-only stdin at EOF: writev on it is -EBADF, decided on the descriptor's
+read-only mode ahead of the import, for count 2 over readable "ab" in {4096,1},{4097,1} and for
+the {4096,2^63},{4096,1} variant; the delivery, the -EINVAL, the -ENOMEM and every copy-in
+ledger beside the error are refused.  Its readv count-2 controls accept 0 for {4096,2},{4098,3}
+and -EINVAL for the negative first length, while rejecting -EBADF, -ENOMEM and the bulk-copy
+ledger on the negative-length result.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
 theorem check_vectored_stdin_alias_answers_as_stdin :
-    (check_writev_row (writev_in 26 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] [])
+    check_writev_row (writev_in 26 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] [])
         read_model
-      = CheckUnmodeled
-      ∧ check_writev_row (writev_in 26 8192 2 mem_writev_ab) (mkEffect (errno_ret EBADF) [] [])
-        read_model ≠ CheckOk read_model [])
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 26 8192 2 mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 26 8192 2 mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 26 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect 0 [] [])) read_model
       = CheckOk read_model []
@@ -8683,25 +8827,25 @@ theorem check_vectored_stdin_alias_answers_as_stdin :
       = CheckReject
     ∧ check_writev_row (writev_in 26 8192 2 mem_writev_ab)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EBADF) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 26 8192 2 mem_writev_ab) (mkEffect (errno_ret ENOMEM) [] [])
         read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 26 8192 2 iov_2_3 wmem_none)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret ENOMEM) [] [])) read_model
       = CheckReject
     ∧ check_writev_row (writev_in 26 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EBADF) [] []) read_model
-      = CheckUnmodeled
+      = CheckOk read_model []
     ∧ check_writev_row (writev_in 26 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 26 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (mkEffect (errno_ret EINVAL) [] []) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_writev_row (writev_in 26 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1))
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EINVAL) [] [])) read_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_readv_row (readv_in 26 8192 2 (mem_iov_pair 4096 (Z_to_bv 64 (2 ^ 63)) 4096 1) wmem_none)
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) read_model
       = CheckOk read_model []
@@ -8793,26 +8937,33 @@ theorem check_readv_declines :
 
 /-! ### The witnesses -/
 
-/-- The writev witness for count 2 over readable "ab" in {4096,1},{4097,1} declines closed fd
-30, writes two bytes to writable file fd 3, returns 2 on writable /dev/null fd 9, and returns
--EINVAL at file offset LLONG_MAX. Its count-1 control on writable file fd 3 at EOF returns
--EFAULT for {4096,1} with no readable source, with the stated descriptor ledger and file
-updates.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty -/
+/-- The writev witness for count 2 over readable "ab" in {4096,1},{4097,1} answers -EBADF on
+closed fd 30, writes two bytes to writable file fd 3, returns 2 on writable /dev/null fd 9, and
+returns -EINVAL at file offset LLONG_MAX. Its count-1 control on writable file fd 3 at EOF
+returns -EFAULT for {4096,1} with no readable source, with the stated descriptor ledger and
+file updates.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- badfdnonempty
+The twin answers -EBADF, as rocq-linux-process-semantics f1006fe8 does; upstream's case expects
+a decline (linux-process-semantics@ff0313ba4f). -/
 theorem writev_witness_names_the_answer :
     writev_witness_row (writev_in 3 8192 2 mem_writev_ab) writev_model
       = Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] []))
           (with_fds [(3, .FdFileW [102] 2)] (with_fs [([102], [97, 98])] writev_model)) []
     ∧ writev_witness_row (writev_in 30 8192 2 mem_writev_ab) read_model
-      = Unmodeled
+      = Ok (mkEffect (errno_ret EBADF) [] []) read_model []
     ∧ writev_witness_row (writev_in 9 8192 2 mem_writev_ab) read_model
       = Ok (with_copyins [(8192, 16), (8208, 16)] (mkEffect 2 [] [])) read_model []
     ∧ writev_witness_row (writev_in 3 8192 2 mem_writev_ab) writev_llong_max_model
       = Ok (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EINVAL) [] []))
           writev_llong_max_model []
     ∧ writev_witness_row (writev_in 3 8192 1 (iov_array [(4096, 1)])) wend_model
-      = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) wend_model [] := by
-  refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> rwv_witness_norm
+      = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) wend_model []
+    ∧ writev_witness_row (writev_in 4 8192 1 (iov_array [(4096, 1)])) wend_model
+      = Ok (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) wend_model []
+    ∧ writev_witness_row (writev_in 3 8192 2 (mem_iov_pair 4096 1 4097 1)) writev_model
+      = Ok (with_copyins [(8192, 16), (8208, 16), (4096, 1)] (mkEffect 1 [] []))
+          (with_fds [(3, .FdFileW [102] 1)] (with_fs [([102], [97])] writev_model)) [] := by
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> rwv_witness_norm
 
 /-- ON A CHANNEL THE WITNESS NAMES THE ONE-BYTE DELIVERY, the shortest
 nonempty prefix of the gathered "ab".  That answer is the channel's
@@ -8827,27 +8978,23 @@ theorem writev_witness_names_the_short_channel_answer :
           [WriteEv 1 97] := by
   rwv_witness_norm
 
-/-- …AND IS `Unmodeled` WHERE THE CHECKER DECLINES: the unreadable
-source past a file's end, the partly readable source on a file, the pipe
-write end and the socket — four of the declines
-`check_writev_past_eof_unreadable_source_declines`,
-`check_writev_partial_source_declines` and `check_writev_declines` pin on
-the checker.  The first two rest on `generic_perform_write`'s fault-in
-(mm/filemap.c:4321-4324, Linux v6.18.46), whose answer the supported
-kernels do not share.
-kernel: mm/filemap.c:generic_perform_write@v6.18.46 -/
+/-- …AND IS `Unmodeled` WHERE THE CHECKER DECLINES: the pipe write end and
+the socket, the two declines `check_writev_declines` pins on the checker.
+The vectored pipe write is `writev_buf_gap` — the scalar arm's atomicity
+argument is per transfer, not per vector — and the socket is
+`write_spec`'s decline.
+kernel: fs/pipe.c:anon_pipe_write@v6.18.46 -/
 theorem writev_witness_is_unmodeled_where_the_spec_declines :
-    writev_witness_row (writev_in 4 8192 1 (iov_array [(4096, 1)])) wend_model = Unmodeled
-    ∧ writev_witness_row (writev_in 3 8192 2 (mem_iov_pair 4096 1 4097 1)) writev_model = Unmodeled
-    ∧ writev_witness_row (writev_in 15 8192 2 mem_writev_ab) read_model = Unmodeled
+    writev_witness_row (writev_in 15 8192 2 mem_writev_ab) read_model = Unmodeled
     ∧ writev_witness_row (writev_in 10 8192 2 mem_writev_ab) read_model = Unmodeled := by
-  refine ⟨?_, ?_, ?_, ?_⟩ <;> rwv_witness_norm
+  refine ⟨?_, ?_⟩ <;> rwv_witness_norm
 
 /-- For readv count 2 with {4096,2},{4098,3}, the witness delivers one byte from stdin "hello"
 or five from file "abcde" when five destinations are writable, and returns -EFAULT for stdin
-when none are writable. It declines write-only stdout fd 1 with an unreadable array, returns
--EISDIR on directory fd 5 with {0,0},{0,1}, and returns -EFAULT on stdin when the first
-descriptor lacks its base bytes despite its readable length 2^63.
+when none are writable. It answers -EBADF on write-only stdout fd 1 with an unreadable array —
+the read-mode gate runs ahead of the import — returns -EISDIR on directory fd 5 with
+{0,0},{0,1}, and returns -EFAULT on stdin when the first descriptor lacks its base bytes
+despite its readable length 2^63.
 kernel: fs/read_write.c:vfs_readv; fs/libfs.c:generic_read_dir; fs/pipe.c:anon_pipe_read; lib/iov_iter.c:copy_iovec_from_user@v6.18.46 -/
 theorem readv_witness_names_the_answer :
     readv_witness_row (readv_in 0 8192 2 iov_2_3 (wmem_first 5)) (with_stdin hello_stdin demo_model)
@@ -8858,7 +9005,7 @@ theorem readv_witness_names_the_answer :
       = Ok (with_copyins [(8192, 16), (8208, 16)]
             (mkEffect 5 [(4096, [97, 98]), (4098, [99, 100, 101])] [])) (readv_abcde_model 5) []
     ∧ readv_witness_row (readv_in 1 8192 2 mem_none wmem_none) demo_model
-      = Unmodeled
+      = Ok (mkEffect (errno_ret EBADF) [] []) demo_model []
     ∧ readv_witness_row (readv_in 5 8192 2 (mem_iov_pair 0 0 0 1) wmem_none) read_model
       = Ok (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EISDIR) [] [])) read_model []
     ∧ readv_witness_row (readv_in 0 8192 2 iov_2_3 wmem_none) (with_stdin hello_stdin demo_model)
@@ -9115,14 +9262,25 @@ theorem check_readv_pipe_write_end_is_ebadf :
       (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
   rwv_norm
 
-/-- Eight complete empty descriptors stay on the fast path: UIO_FASTIOV is 8, so v4.17 through v6.7 import them without kmalloc_array (lib/iov_iter.c, iovec_from_user, v6.6) and then reach the mode error; v6.8+ tests the mode first (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46). This is the band's upper edge; nine entries are declined.
+/-- Eight complete empty iovec descriptors at 8192, exactly `UIO_FASTIOV`
+(include/uapi/linux/uio.h:45, v6.18.46): 128 zero bytes, sixteen per entry.
+Local to this file: the spec-level cases file holds no such fixture. -/
+def t139_eight_empty_iovecs : word → Option byte :=
+  bytes_at 8192 (List.replicate 128 0)
+
+/-- Nine complete empty iovec descriptors at 8192, one past `UIO_FASTIOV`:
+144 zero bytes.  Local to this file, for the same reason. -/
+def t139_nine_empty_iovecs : word → Option byte :=
+  bytes_at 8192 (List.replicate 144 0)
+
+/-- Eight complete empty descriptors, exactly `UIO_FASTIOV`, on a descriptor open in the wrong mode: `vfs_writev` tests `FMODE_WRITE` (fs/read_write.c:1037-1038, v6.18.46) and `vfs_readv` tests `FMODE_READ` (:556-557) BEFORE the import, so the answer is -EBADF with an empty ledger whatever the vector holds, and no entry is ever read.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
 theorem check_t139_writev_open_eight_empty_is_ebadf :
     check_writev_row (writev_in 0 8192 8 t139_eight_empty_iovecs)
       (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
   rwv_norm
 
-/-- Eight complete empty descriptors stay on the fast path: UIO_FASTIOV is 8, so v4.17 through v6.7 import them without kmalloc_array (lib/iov_iter.c, iovec_from_user, v6.6) and then reach the mode error; v6.8+ tests the mode first (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46). This is the band's upper edge; nine entries are declined.
+/-- Eight complete empty descriptors, exactly `UIO_FASTIOV`, on a descriptor open in the wrong mode: `vfs_writev` tests `FMODE_WRITE` (fs/read_write.c:1037-1038, v6.18.46) and `vfs_readv` tests `FMODE_READ` (:556-557) BEFORE the import, so the answer is -EBADF with an empty ledger whatever the vector holds, and no entry is ever read.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
 theorem check_t139_readv_open_eight_empty_is_ebadf :
     check_readv_row (readv_in 1 8192 8 t139_eight_empty_iovecs wmem_none)
@@ -9132,338 +9290,296 @@ theorem check_t139_readv_open_eight_empty_is_ebadf :
 /-- The empty range above TASK_SIZE fails access_ok even at length zero.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_high_empty_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 0 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_high_empty_is_ebadf :
+    check_writev_row (writev_in 0 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
   rwv_norm
 
 /-- The empty range above TASK_SIZE fails access_ok even at length zero.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- wrongmode-highbase -/
-theorem check_t139_writev_open_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 0 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_high_empty_is_unmodeled]
-  intro h
-  cases h
+theorem check_t139_writev_open_high_empty_efault_refused :
+    check_writev_row (writev_in 0 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
+  rwv_norm
 
 /-- The empty range above TASK_SIZE fails access_ok even at length zero.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_readv_open_high_empty_is_unmodeled (eff : SyscallEffect) :
-    check_readv_row (readv_in 1 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0) wmem_none) eff read_model = CheckUnmodeled := by
+theorem check_t139_readv_open_high_empty_is_ebadf :
+    check_readv_row (readv_in 1 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0) wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
   rwv_norm
 
 /-- The empty range above TASK_SIZE fails access_ok even at length zero.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- wrongmode-highbase -/
-theorem check_t139_readv_open_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_readv_row (readv_in 1 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0) wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_readv_open_high_empty_is_unmodeled]
-  intro h
-  cases h
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_nine_empty_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 0 8192 9 t139_nine_empty_iovecs) eff read_model = CheckUnmodeled := by
+theorem check_t139_readv_open_high_empty_efault_refused :
+    check_readv_row (readv_in 1 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0) wmem_none) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
   rwv_norm
 
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_writev / vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 0 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_nine_empty_is_unmodeled]
-  intro h
-  cases h
+theorem check_t139_writev_open_nine_empty_is_ebadf :
+    check_writev_row (writev_in 0 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
 
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_writev / vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_uncapped_later_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 0 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_nine_empty_enomem_refused :
+    check_writev_row (writev_in 0 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret ENOMEM) [] []) read_model = CheckReject := by
   rwv_norm
 
 /-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 0 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_uncapped_later_is_unmodeled]
-  intro h
-  cases h
+theorem check_t139_writev_open_uncapped_later_is_ebadf :
+    check_writev_row (writev_in 0 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
 
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
+/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_file_high_empty_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 3 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_uncapped_later_efault_refused :
+    check_writev_row (writev_in 0 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
   rwv_norm
 
 /-- The empty range above TASK_SIZE fails access_ok even at length zero.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_file_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 3 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_file_high_empty_is_unmodeled]
-  intro h
-  cases h
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_file_nine_empty_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 3 8192 9 t139_nine_empty_iovecs) eff read_model = CheckUnmodeled := by
-  rwv_norm
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_file_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 3 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_file_nine_empty_is_unmodeled]
-  intro h
-  cases h
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_file_uncapped_later_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) eff read_model = CheckUnmodeled := by
-  rwv_norm
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_file_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_file_uncapped_later_is_unmodeled]
-  intro h
-  cases h
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_dir_high_empty_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 5 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_file_high_empty_is_ebadf :
+    check_writev_row (writev_in 3 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
   rwv_norm
 
 /-- The empty range above TASK_SIZE fails access_ok even at length zero.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_dir_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 5 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_dir_high_empty_is_unmodeled]
-  intro h
-  cases h
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_dir_nine_empty_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 5 8192 9 t139_nine_empty_iovecs) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_file_high_empty_efault_refused :
+    check_writev_row (writev_in 3 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
   rwv_norm
 
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_writev / vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_dir_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 5 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_dir_nine_empty_is_unmodeled]
-  intro h
-  cases h
+theorem check_t139_writev_open_file_nine_empty_is_ebadf :
+    check_writev_row (writev_in 3 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
 
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_writev / vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_dir_uncapped_later_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 5 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_file_nine_empty_enomem_refused :
+    check_writev_row (writev_in 3 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret ENOMEM) [] []) read_model = CheckReject := by
   rwv_norm
 
 /-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_dir_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 5 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_dir_uncapped_later_is_unmodeled]
-  intro h
-  cases h
+theorem check_t139_writev_open_file_uncapped_later_is_ebadf :
+    check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
 
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
+/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_urandom_high_empty_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 24 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_file_uncapped_later_efault_refused :
+    check_writev_row (writev_in 3 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
   rwv_norm
 
 /-- The empty range above TASK_SIZE fails access_ok even at length zero.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_urandom_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 24 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_urandom_high_empty_is_unmodeled]
-  intro h
-  cases h
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_urandom_nine_empty_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 24 8192 9 t139_nine_empty_iovecs) eff read_model = CheckUnmodeled := by
-  rwv_norm
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_urandom_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 24 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_urandom_nine_empty_is_unmodeled]
-  intro h
-  cases h
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_urandom_uncapped_later_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 24 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) eff read_model = CheckUnmodeled := by
-  rwv_norm
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_urandom_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 24 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_urandom_uncapped_later_is_unmodeled]
-  intro h
-  cases h
-
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_devnull_ro_high_empty_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 8 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_dir_high_empty_is_ebadf :
+    check_writev_row (writev_in 5 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
   rwv_norm
 
 /-- The empty range above TASK_SIZE fails access_ok even at length zero.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_devnull_ro_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 8 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_devnull_ro_high_empty_is_unmodeled]
-  intro h
-  cases h
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_devnull_ro_nine_empty_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 8 8192 9 t139_nine_empty_iovecs) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_dir_high_empty_efault_refused :
+    check_writev_row (writev_in 5 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
   rwv_norm
 
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_writev / vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_devnull_ro_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 8 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_devnull_ro_nine_empty_is_unmodeled]
-  intro h
-  cases h
+theorem check_t139_writev_open_dir_nine_empty_is_ebadf :
+    check_writev_row (writev_in 5 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
 
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_writev / vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_devnull_ro_uncapped_later_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 8 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_dir_nine_empty_enomem_refused :
+    check_writev_row (writev_in 5 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret ENOMEM) [] []) read_model = CheckReject := by
   rwv_norm
 
 /-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_devnull_ro_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 8 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_devnull_ro_uncapped_later_is_unmodeled]
-  intro h
-  cases h
+theorem check_t139_writev_open_dir_uncapped_later_is_ebadf :
+    check_writev_row (writev_in 5 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
 
-/-- The empty range above TASK_SIZE fails access_ok even at length zero.
+/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_pipe_read_high_empty_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 14 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_dir_uncapped_later_efault_refused :
+    check_writev_row (writev_in 5 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
   rwv_norm
 
 /-- The empty range above TASK_SIZE fails access_ok even at length zero.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_pipe_read_high_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 14 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_pipe_read_high_empty_is_unmodeled]
-  intro h
-  cases h
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_pipe_read_nine_empty_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 14 8192 9 t139_nine_empty_iovecs) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_urandom_high_empty_is_ebadf :
+    check_writev_row (writev_in 24 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
   rwv_norm
 
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
+/-- The empty range above TASK_SIZE fails access_ok even at length zero.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_pipe_read_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 14 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_pipe_read_nine_empty_is_unmodeled]
-  intro h
-  cases h
+theorem check_t139_writev_open_urandom_high_empty_efault_refused :
+    check_writev_row (writev_in 24 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
+  rwv_norm
 
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_writev / vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_pipe_read_uncapped_later_is_unmodeled (eff : SyscallEffect) :
-    check_writev_row (writev_in 14 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_urandom_nine_empty_is_ebadf :
+    check_writev_row (writev_in 24 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
+
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_writev / vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_urandom_nine_empty_enomem_refused :
+    check_writev_row (writev_in 24 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret ENOMEM) [] []) read_model = CheckReject := by
   rwv_norm
 
 /-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_writev_open_pipe_read_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_writev_row (writev_in 14 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_writev_open_pipe_read_uncapped_later_is_unmodeled]
-  intro h
-  cases h
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_readv_open_nine_empty_is_unmodeled (eff : SyscallEffect) :
-    check_readv_row (readv_in 1 8192 9 t139_nine_empty_iovecs wmem_none) eff read_model = CheckUnmodeled := by
-  rwv_norm
-
-/-- Nine entries may fail kmalloc_array with -ENOMEM before the mode test (lib/iov_iter.c, iovec_from_user, v6.6).
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_readv_open_nine_empty_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_readv_row (readv_in 1 8192 9 t139_nine_empty_iovecs wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_readv_open_nine_empty_is_unmodeled]
-  intro h
-  cases h
-
-/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
-Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
-kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_readv_open_uncapped_later_is_unmodeled (eff : SyscallEffect) :
-    check_readv_row (readv_in 1 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62))) wmem_none) eff read_model = CheckUnmodeled := by
+theorem check_t139_writev_open_urandom_uncapped_later_is_ebadf :
+    check_writev_row (writev_in 24 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
   rwv_norm
 
 /-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
 Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
 kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
-theorem check_t139_readv_open_uncapped_later_ebadf_is_not_ok (m' : Model) (evs : List event) :
-    check_readv_row (readv_in 1 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62))) wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model ≠ CheckOk m' evs := by
-  rw [check_t139_readv_open_uncapped_later_is_unmodeled]
-  intro h
-  cases h
+theorem check_t139_writev_open_urandom_uncapped_later_efault_refused :
+    check_writev_row (writev_in 24 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
+  rwv_norm
+
+/-- The empty range above TASK_SIZE fails access_ok even at length zero.
+Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_devnull_ro_high_empty_is_ebadf :
+    check_writev_row (writev_in 8 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
+
+/-- The empty range above TASK_SIZE fails access_ok even at length zero.
+Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_devnull_ro_high_empty_efault_refused :
+    check_writev_row (writev_in 8 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
+  rwv_norm
+
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_writev / vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_devnull_ro_nine_empty_is_ebadf :
+    check_writev_row (writev_in 8 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
+
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_writev / vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_devnull_ro_nine_empty_enomem_refused :
+    check_writev_row (writev_in 8 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret ENOMEM) [] []) read_model = CheckReject := by
+  rwv_norm
+
+/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
+Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_devnull_ro_uncapped_later_is_ebadf :
+    check_writev_row (writev_in 8 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
+
+/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
+Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_devnull_ro_uncapped_later_efault_refused :
+    check_writev_row (writev_in 8 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
+  rwv_norm
+
+/-- The empty range above TASK_SIZE fails access_ok even at length zero.
+Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_pipe_read_high_empty_is_ebadf :
+    check_writev_row (writev_in 14 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
+
+/-- The empty range above TASK_SIZE fails access_ok even at length zero.
+Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_pipe_read_high_empty_efault_refused :
+    check_writev_row (writev_in 14 8192 1 (mem_iov_pair (Z_to_bv 64 (2 ^ 63)) 0 4096 0)) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
+  rwv_norm
+
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_writev / vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_pipe_read_nine_empty_is_ebadf :
+    check_writev_row (writev_in 14 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
+
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_writev / vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_pipe_read_nine_empty_enomem_refused :
+    check_writev_row (writev_in 14 8192 9 t139_nine_empty_iovecs) (mkEffect (errno_ret ENOMEM) [] []) read_model = CheckReject := by
+  rwv_norm
+
+/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
+Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_pipe_read_uncapped_later_is_ebadf :
+    check_writev_row (writev_in 14 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
+
+/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
+Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_writev_open_pipe_read_uncapped_later_efault_refused :
+    check_writev_row (writev_in 14 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62)))) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
+  rwv_norm
+
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_readv_open_nine_empty_is_ebadf :
+    check_readv_row (readv_in 1 8192 9 t139_nine_empty_iovecs wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
+
+/-- Nine complete empty descriptors, one past `UIO_FASTIOV`, on a wrongly moded descriptor.
+The mode test runs before the import (fs/read_write.c, vfs_readv, v6.18.46), so the heap allocation of `iovec_from_user` (lib/iov_iter.c:1308-1312, v6.18.46) is out of reach: -EBADF with an empty ledger is the answer, and the -ENOMEM that allocation could give is refused.
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_readv_open_nine_empty_enomem_refused :
+    check_readv_row (readv_in 1 8192 9 t139_nine_empty_iovecs wmem_none) (mkEffect (errno_ret ENOMEM) [] []) read_model = CheckReject := by
+  rwv_norm
+
+/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
+Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_readv_open_uncapped_later_is_ebadf :
+    check_readv_row (readv_in 1 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62))) wmem_none) (mkEffect (errno_ret EBADF) [] []) read_model = CheckOk read_model [] := by
+  rwv_norm
+
+/-- The later uncapped range fails access_ok despite its nonnegative length; an empty first entry cannot hide that failure.
+Linux v4.17 through v6.7 imports before checking the mode (fs/read_write.c, vfs_writev / vfs_readv, v6.6). In v4.17, fs/read_write.c, rw_copy_check_uvector checks every uncapped range; v6.8+ mode-first gives -EBADF instead (fs/read_write.c, vfs_readv / vfs_writev, v6.18.46).
+kernel: fs/read_write.c:vfs_readv,vfs_writev@v6.18.46 -/
+theorem check_t139_readv_open_uncapped_later_efault_refused :
+    check_readv_row (readv_in 1 8192 2 (mem_iov_pair 4096 0 4096 (Z_to_bv 64 (2 ^ 62))) wmem_none) (mkEffect (errno_ret EFAULT) [] []) read_model = CheckReject := by
+  rwv_norm
 
 /-- A closed fd is rejected by fdget_pos in do_readv / do_writev before import on every supported Linux (fs/read_write.c, v4.17 and v6.18.46). QEMU skips locking a zero-length first buffer (linux-user/syscall.c, lock_iovec, QEMU 11.1.1), so the high empty base does not change -EBADF.
 kernel: fs/read_write.c:do_readv,do_writev@v6.18.46 -/
@@ -9558,18 +9674,22 @@ theorem writev_two_iovecs_equals_one_write_over_the_real_table :
 
 /-- Through the registered writev table entry, on stdout fd 1 with {4096,1},{4097,1} over
 readable "ab", Linux narrows counts 2^32+2 and 2^32 to two and zero, whereas qemu-user returns
--EINVAL; the checker declines the offered two-byte and zero results. Counts 1025 and 2^64-1
-exceed IOV_MAX in both readings, so their shared -EINVAL controls are accepted.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2 -/
-theorem writev_wide_iovcnt_is_unmodeled_over_the_real_table :
-    (check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
+-EINVAL; the spec narrows them the same way, so the two-byte delivery and the zero are the
+answers and the -EINVAL is refused.  Counts 1025 and 2^64-1 exceed IOV_MAX in both readings, so
+their shared -EINVAL controls are accepted.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2
+The twin judges the count on its low 32 bits, as rocq-linux-process-semantics f1006fe8 does;
+upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
+theorem writev_wide_iovcnt_is_judged_over_the_real_table :
+    check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) demo_model
-      = CheckUnmodeled
-      ∧ check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
-        (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) demo_model ≠ CheckOk demo_model [WriteEv 1 97, WriteEv 1 98])
+      = CheckOk demo_model [WriteEv 1 97, WriteEv 1 98]
+    ∧ check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
+        (mkEffect (errno_ret EINVAL) [] []) demo_model
+      = CheckReject
     ∧ check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32)) mem_writev_ab) (mkEffect 0 [] [])
         demo_model
-      = CheckUnmodeled
+      = CheckOk demo_model []
     ∧ check_syscall (writev_in 1 8192 1025 mem_writev_ab) (mkEffect (errno_ret EINVAL) [] [])
         demo_model
       = CheckOk demo_model []
@@ -9577,27 +9697,27 @@ theorem writev_wide_iovcnt_is_unmodeled_over_the_real_table :
         (mkEffect (errno_ret EINVAL) [] []) demo_model
       = CheckOk demo_model [] := by
   simp only [check_syscall_writev_in]
-  exact check_writev_wide_iovcnt_is_unmodeled
+  exact check_writev_wide_iovcnt_is_judged
 
 /-- Through the registered syscall table, writev on stdout fd 1 with count 2^32+2 and
-{4096,1},{4097,1} over readable "ab" can deliver two bytes in Linux, while qemu-user returns
--EINVAL. The checker declines both offered answers and rejects -EINVAL at the ordinary count-2
-control.
-probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2 -/
-theorem writev_over_max_with_small_low32_is_unmodeled_over_the_real_table :
-    (check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
+{4096,1},{4097,1} over readable "ab" delivers two bytes in Linux, while qemu-user returns
+-EINVAL.  The low 32 bits are the count, so the delivery is the answer and the -EINVAL is
+refused, here and at the ordinary count-2 control.
+probe: testing/syscall-check/tests/writev_adversarial.c#fail-closed --expect-unmodeled writev -- raw2
+The twin judges the count on its low 32 bits, as rocq-linux-process-semantics f1006fe8 does;
+upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
+theorem writev_over_max_with_small_low32_is_judged_over_the_real_table :
+    check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) demo_model
-      = CheckUnmodeled
-      ∧ check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
-        (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) demo_model ≠ CheckOk demo_model [WriteEv 1 97, WriteEv 1 98])
+      = CheckOk demo_model [WriteEv 1 97, WriteEv 1 98]
     ∧ check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 2)) mem_writev_ab)
         (mkEffect (errno_ret EINVAL) [] []) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_syscall (writev_in 1 8192 2 mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect (errno_ret EINVAL) [] [])) demo_model
       = CheckReject := by
   simp only [check_syscall_writev_in]
-  exact check_writev_over_max_with_small_low32_is_unmodeled
+  exact check_writev_over_max_with_small_low32_is_judged
 
 /-- `check_writev_import_range_fault_beats_the_gather` through dispatch, with its checker conjuncts.
 Linux v6.18.46, lib/iov_iter.c:1380-1385, `__import_iovec`, faults at import before gathering; `import_ubuf` at :1437 tests the single range.
@@ -9660,29 +9780,30 @@ theorem writev_over_rw_bytes_max_total_is_judged_over_the_real_table :
   exact check_writev_over_rw_bytes_max_total_is_judged
 
 /-- Through the registered writev arm, writev on stdout fd 1 uses count 2^32+1 with
-{4096,rw_bytes_max+1},{0,0}, only byte 97 readable, or with {4096,1},{4097,1} over "ab". The
-checker declines the offered -EINVAL, one-byte and two-byte results, including the mismatched
-source ledgers, and refuses acceptance of the former one-byte result.
-probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max -/
-theorem writev_wide_count_over_rw_bytes_max_is_unmodeled_over_the_real_table :
-    (check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
-          (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0))
-        (mkEffect (errno_ret EINVAL) [] []) demo_model
-      = CheckUnmodeled
-      ∧ check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1)) (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) (with_copyins [(8192, 16), (4096, 1)] (mkEffect 1 [] [])) demo_model ≠ CheckOk demo_model [WriteEv 1 97])
-    ∧ check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
+{4096,rw_bytes_max+1},{0,0}, only byte 97 readable, or with {4096,1},{4097,1} over "ab".  The
+low 32 bits are the count, so the gatherable byte is delivered and qemu-user's -EINVAL, the
+mismatched source ledgers and the two-byte result over the one-entry import are refused.
+probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max
+The twin judges the count on its low 32 bits, as rocq-linux-process-semantics f1006fe8 does;
+upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
+theorem writev_wide_count_over_rw_bytes_max_is_judged_over_the_real_table :
+    check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
           (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0))
         (with_copyins [(8192, 16), (4096, 1)] (mkEffect 1 [] [])) demo_model
-      = CheckUnmodeled
+      = CheckOk demo_model [WriteEv 1 97]
+    ∧ check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
+          (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0))
+        (mkEffect (errno_ret EINVAL) [] []) demo_model
+      = CheckReject
     ∧ check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_writev_ab)
         (with_copyins [(8192, 16), (8208, 16), (4096, 1), (4097, 1)] (mkEffect 2 [] [])) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_syscall (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
           (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0))
         (with_copyins [(8192, 16), (4096, 2)] (mkEffect 2 [] [])) demo_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   simp only [check_syscall_writev_in]
-  exact check_writev_wide_count_over_rw_bytes_max_is_unmodeled
+  exact check_writev_wide_count_over_rw_bytes_max_is_judged
 
 /-- `check_readv_single_iovec_caps_before_access_ok` through dispatch, with its checker conjuncts. Rocq's import equalities are omitted, matching the checker twin.
 Linux v6.18.46, lib/iov_iter.c:1435-1438, `import_ubuf`, caps before checking the range; `__import_iovec` at :1380-1388 reverses that order for an array.
@@ -9743,10 +9864,12 @@ theorem readv_huge_file_offset_is_bounded_by_file_length_over_the_real_table :
 
 /-- Through the registered readv table entry, readv uses eight readable {0,0} entries at 8192:
 on stdin fd 0 both implementations return 0 at count 8 and -EINVAL at 1025, which the checker
-accepts while rejecting -ENOMEM at 8. The pin declines counts 9, 1024 and 2^32+9 on stdin, count
-9 on closed fd 5, and counts 9 and 1025 on write-only file fd 3; the absent ninth entry and
-oversized count prevent the latter -EBADF cases from being shared answers.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdiov -/
+accepts while rejecting -ENOMEM at 8. The pin declines counts 9, 1024 and 2^32+9 on stdin, the
+heap-backed band.  Closed fd 5 and write-only file fd 3 are -EBADF at those counts: the
+descriptor and the read mode are decided ahead of the band.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv -- badfdiov
+The twin answers -EBADF on the closed and write-only descriptors, as rocq-linux-process-semantics
+f1006fe8 does; upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
 theorem readv_heap_iovec_boundary_fails_closed_over_the_real_table :
     check_syscall (readv_in 0 8192 8 mem_readv_eight_zero wmem_none)
         (with_copyins [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16),
@@ -9756,10 +9879,9 @@ theorem readv_heap_iovec_boundary_fails_closed_over_the_real_table :
         (with_copyins [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16),
             (8288, 16), (8304, 16)] (mkEffect (errno_ret ENOMEM) [] [])) demo_model
       = CheckReject
-    ∧ (check_syscall (readv_in 0 8192 9 mem_readv_eight_zero wmem_none) (mkEffect 0 [] [])
+    ∧ check_syscall (readv_in 0 8192 9 mem_readv_eight_zero wmem_none) (mkEffect 0 [] [])
         demo_model
       = CheckUnmodeled
-      ∧ check_syscall (readv_in 5 8192 9 mem_readv_eight_zero wmem_none) (mkEffect (errno_ret EBADF) [] []) demo_model ≠ CheckOk demo_model [])
     ∧ check_syscall (readv_in 0 8192 9 mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret ENOMEM) [] []) demo_model
       = CheckUnmodeled
@@ -9768,10 +9890,10 @@ theorem readv_heap_iovec_boundary_fails_closed_over_the_real_table :
       = CheckUnmodeled
     ∧ check_syscall (readv_in 5 8192 9 mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret EBADF) [] []) demo_model
-      = CheckUnmodeled
+      = CheckOk demo_model []
     ∧ check_syscall (readv_in 3 8192 9 mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret EBADF) [] []) readv_write_only_model
-      = CheckUnmodeled
+      = CheckOk readv_write_only_model []
     ∧ check_syscall (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 9)) mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret EINVAL) [] []) demo_model
       = CheckUnmodeled
@@ -9783,32 +9905,32 @@ theorem readv_heap_iovec_boundary_fails_closed_over_the_real_table :
       = CheckOk demo_model []
     ∧ check_syscall (readv_in 3 8192 9 mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret ENOMEM) [] []) readv_write_only_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_syscall (readv_in 3 8192 9 mem_readv_eight_zero wmem_none)
         (with_copyins [(8192, 16), (8208, 16), (8224, 16), (8240, 16), (8256, 16), (8272, 16),
             (8288, 16), (8304, 16), (8320, 16)] (mkEffect (errno_ret EFAULT) [] []))
         readv_write_only_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_syscall (readv_in 3 8192 9 mem_readv_eight_zero wmem_none)
         (with_copyins [(8192, 144)] (mkEffect (errno_ret EFAULT) [] [])) readv_write_only_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_syscall (readv_in 3 8192 1025 mem_readv_eight_zero wmem_none)
         (mkEffect (errno_ret EINVAL) [] []) readv_write_only_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   simp only [check_syscall_readv_in]
   exact check_readv_heap_iovec_boundary_fails_closed
 
 /-- Through the registered readv arm, readv on stdin fd 0 at EOF with count 2^32+1 and one
-{4096,1} entry at 8192 returns 0 after Linux narrows the count, but -EINVAL in qemu-user. The
-checker declines that zero effect, accepts the count-1 EOF result despite the unwritable
-destination, and rejects a count-2 zero result because the second descriptor is absent.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh -/
-theorem readv_wide_iovcnt_is_unmodeled_over_the_real_table :
-    (check_syscall (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
+{4096,1} entry at 8192 returns 0 after Linux narrows the count, where qemu-user answers
+-EINVAL.  The spec narrows it the same way, so the zero is the answer; the count-1 control
+gives it too, and a count-2 zero result is rejected because the second descriptor is absent.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh
+The twin judges the count on its low 32 bits, as rocq-linux-process-semantics f1006fe8 does;
+upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
+theorem readv_wide_iovcnt_is_judged_over_the_real_table :
+    check_syscall (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
         (with_copyins [(8192, 16)] (mkEffect 0 [] [])) demo_model
-      = CheckUnmodeled
-      ∧ check_syscall (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
-        (with_copyins [(8192, 16)] (mkEffect 0 [] [])) demo_model ≠ CheckOk demo_model [])
+      = CheckOk demo_model []
     ∧ check_syscall (readv_in 0 8192 1 mem_readv_iov wmem_none)
         (with_copyins [(8192, 16)] (mkEffect 0 [] [])) demo_model
       = CheckOk demo_model []
@@ -9816,49 +9938,47 @@ theorem readv_wide_iovcnt_is_unmodeled_over_the_real_table :
         (with_copyins [(8192, 16), (8208, 16)] (mkEffect 0 [] [])) demo_model
       = CheckReject := by
   simp only [check_syscall_readv_in]
-  exact check_readv_wide_iovcnt_is_unmodeled
+  exact check_readv_wide_iovcnt_is_judged
 
 /-- Through the registered syscall table, readv on stdin fd 0 at EOF with count 2^32+1 and one
-{4096,1} entry at 8192 gives Linux's 0 and qemu-user's -EINVAL. The checker declines both
-offered answers and rejects an import-count -EINVAL at the ordinary count-1 control.
-probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh -/
-theorem readv_over_max_with_small_low32_is_unmodeled_over_the_real_table :
-    (check_syscall (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
+{4096,1} entry at 8192 gives Linux's 0 and qemu-user's -EINVAL.  The low 32 bits are the count,
+so the 0 is accepted and the -EINVAL is refused, here and at the ordinary count-1 control.
+probe: testing/syscall-check/tests/readv_spec.c#fail-closed --expect-unmodeled readv --stdin hello -- rawhigh
+The twin judges the count on its low 32 bits, as rocq-linux-process-semantics f1006fe8 does;
+upstream's case expects a decline (linux-process-semantics@ff0313ba4f). -/
+theorem readv_over_max_with_small_low32_is_judged_over_the_real_table :
+    check_syscall (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
         (with_copyins [(8192, 16)] (mkEffect 0 [] [])) demo_model
-      = CheckUnmodeled
-      ∧ check_syscall (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
-        (with_copyins [(8192, 16)] (mkEffect 0 [] [])) demo_model ≠ CheckOk demo_model [])
+      = CheckOk demo_model []
     ∧ check_syscall (readv_in 0 8192 (Z_to_bv 64 (2 ^ 32 + 1)) mem_readv_iov wmem_none)
         (mkEffect (errno_ret EINVAL) [] []) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_syscall (readv_in 0 8192 1 mem_readv_iov wmem_none)
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EINVAL) [] [])) demo_model
       = CheckReject := by
   simp only [check_syscall_readv_in]
-  exact check_readv_over_max_with_small_low32_is_unmodeled
+  exact check_readv_over_max_with_small_low32_is_judged
 
 /-- Through the registered readv table entry, readv on write-only stdout fd 1 with count 2 and
-an unreadable array at 8192 gives Linux's -EBADF and qemu-user's -EFAULT. The checker declines
-the offered -EBADF and the -EFAULT effects with empty, one-descriptor or whole-array copy-in
-ledgers.
+an unreadable array at 8192 gives Linux's -EBADF and qemu-user's -EFAULT.  The read-mode gate
+runs ahead of the import, so -EBADF with an empty ledger is accepted and every -EFAULT is
+refused.
 kernel: fs/read_write.c:vfs_readv; lib/iov_iter.c:copy_iovec_from_user@v6.18.46 -/
-theorem readv_write_only_fd_unreadable_array_is_unmodeled_over_the_real_table :
-    (check_syscall (readv_in 1 8192 2 mem_none wmem_none) (mkEffect (errno_ret EBADF) [] [])
+theorem readv_write_only_fd_unreadable_array_is_ebadf_over_the_real_table :
+    check_syscall (readv_in 1 8192 2 mem_none wmem_none) (mkEffect (errno_ret EBADF) [] [])
         demo_model
-      = CheckUnmodeled
-      ∧ check_syscall (readv_in 1 8192 2 mem_none wmem_none) (mkEffect (errno_ret EBADF) [] [])
-        demo_model ≠ CheckOk demo_model [])
+      = CheckOk demo_model []
     ∧ check_syscall (readv_in 1 8192 2 mem_none wmem_none)
         (with_copyins [(8192, 16)] (mkEffect (errno_ret EFAULT) [] [])) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_syscall (readv_in 1 8192 2 mem_none wmem_none)
         (with_copyins [(8192, 32)] (mkEffect (errno_ret EFAULT) [] [])) demo_model
-      = CheckUnmodeled
+      = CheckReject
     ∧ check_syscall (readv_in 1 8192 2 mem_none wmem_none) (mkEffect (errno_ret EFAULT) [] [])
         demo_model
-      = CheckUnmodeled := by
+      = CheckReject := by
   simp only [check_syscall_readv_in]
-  exact check_readv_write_only_fd_unreadable_array_is_unmodeled
+  exact check_readv_write_only_fd_unreadable_array_is_ebadf
 
 /-- `check_readv_zero_prefix_then_bad_base_is_efault_on_a_file` through dispatch, with its checker conjuncts.
 Linux v6.18.46, mm/shmem.c:3479-3487, `shmem_file_read_iter`, returns -EFAULT when the first copy transfers no bytes.

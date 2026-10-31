@@ -1,8 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Fs/Sync.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Sync
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Checks.Sys.Fs.Sync — the fsync (82), fdatasync (83) checker, witness, and their proofs
 
@@ -19,15 +20,14 @@ of the spec.  Its pins are `Checks/Cases/Checks/Sys/Fs/Sync.lean`.
 
 THE BASELINE NAMED ABOVE is the commit all three Rocq files — the two
 mirrored here and the spec's — were read at and the last one to touch
-them, and it is the commit the spec twin `Sys/Fs/Sync.lean` names.  The
-port plan's baseline, `f44244ad`, is not an ancestor of this history and
-predates the `FdUrandom` arm the Rocq files gained with the /dev/urandom
-descriptor; the checker and the witness below carry that arm, so the
-header names the commit they were actually read at rather than one that
-lacks it.
+them, and it is the commit the spec twin `Sys/Fs/Sync.lean` names.
 
-The FdFileRW and FdFileA declines follow the spec twin's declared narrowing
-(`Sys/Fs/Sync.lean`, module header).
+EVERY FD KIND IS ANSWERED.  `check_fsync` never declines: each `FdEntry`
+gets a return and so does a closed fd, which is why
+`check_fsync_sound_unmodeled` and `check_fsync_complete_unmodeled` are
+discharged by ruling their hypothesis out rather than by exhibiting a
+declining run.  `FdFileA` and `FdFileRW` answer 0 with the other two file
+kinds (`Sys/Fs/Sync.lean`, module header).
 
 WHAT THIS FILE HOLDS, AND WHAT WAITS.  The checker, its four lemmas, the
 witness with its proof and the frame lemma need only the two preludes and
@@ -55,19 +55,18 @@ it.  The C ticket's acceptance text assigns it to the registration step;
 this file states it where `Checks/Sys/Kernel/Exit.lean` and
 `Checks/Sys/Mm/Madvise.lean` state theirs.
 
-THE PROOFS keep Rocq's shape.  Every arm but the read-write and append-mode
-files' is a `check_ret_only`, so each direction is the lookup split —
-`none`, then one case per constructor — and one prelude lemma per arm:
-`check_ret_only_ok_iff` for the two `Ok` directions,
-`check_ret_only_no_unmodeled` where the checker is supposed to have
-declined, and a constructor mismatch where the spec is; the `FdFileRW` and
-`FdFileA` cases are the declines on both sides.  The lookup is generalised
-out of both the checker and the spec before the split, because Lean's
-`cases` on a `match` discriminant otherwise leaves the hypothesis and the
-goal on different copies of it.  The witness proof is the same split under
-one `bind_step` over the `get_model`, and `pure_ok` closes every arm but
-those two: the witness is the checker's accepting answer written out,
-`ret_outcome r m` wherever the checker has `check_ret_only eff r m []`. -/
+THE PROOFS keep Rocq's shape.  Every arm is a `check_ret_only`, so each
+direction is the lookup split — `none`, then one case per constructor —
+and one prelude lemma per arm: `check_ret_only_ok_iff` for the two `Ok`
+directions and `check_ret_only_no_unmodeled` for the two `Unmodeled`
+ones, whose hypothesis is therefore false at every arm.  The lookup is
+generalised out of both the checker and the spec before the split,
+because Lean's `cases` on a `match` discriminant otherwise leaves the
+hypothesis and the goal on different copies of it.  The witness proof is
+the same split under one `bind_step` over the `get_model`, and `pure_ok`
+closes every arm: the witness is the checker's accepting answer written
+out, `ret_outcome r m` wherever the checker has
+`check_ret_only eff r m []`. -/
 
 namespace LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs.Sync
 
@@ -81,8 +80,8 @@ open LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 open LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude (ret_outcome bind_step)
 
 /-- Accept an observed `fsync`/`fdatasync` effect exactly when `fsync_spec`
-admits it.  Every arm of the spec but the read-write and append-mode files'
-is return-only, so every such arm here is `check_ret_only` against the one
+admits it.  Every arm of the spec is return-only, so every arm here is
+`check_ret_only` against the one
 return the spec names for the fd's kind, with the model handed back
 unchanged and no event: `-EBADF` for a number with no open file, which
 `do_fsync` (fs/sync.c:209-210, Linux v6.18.46) answers before any file is
@@ -94,8 +93,9 @@ checker, is on the spec's docstring.
 
 Any other return, any write, any zeroing and any event is rejected — the
 lies the checker exists to refuse, and
-`Checks/Cases/Checks/Sys/Fs/Sync.lean` pins them.  The two declines are the
-read-write and append-mode files', the spec twin's declared narrowing. -/
+`Checks/Cases/Checks/Sys/Fs/Sync.lean` pins them.  There is no decline:
+the append-mode and read-write files answer 0 with the other two file
+kinds. -/
 def check_fsync (fd : word) (eff : SyscallEffect) (m : Model) : check_result :=
   match fd_lookup (m_fds m) fd with
   | none                  => check_ret_only eff (errno_ret EBADF) m []
@@ -106,8 +106,8 @@ def check_fsync (fd : word) (eff : SyscallEffect) (m : Model) : check_result :=
   | some .FdUrandom       => check_ret_only eff (errno_ret EINVAL) m []
   | some (.FdFile _ _)    => check_ret_only eff (Z_to_bv 64 0) m []
   | some (.FdFileW _ _)   => check_ret_only eff (Z_to_bv 64 0) m []
-  | some (.FdFileA _ _) => CheckUnmodeled
-  | some (.FdFileRW _ _) => CheckUnmodeled
+  | some (.FdFileA _ _)   => check_ret_only eff (Z_to_bv 64 0) m []
+  | some (.FdFileRW _ _)  => check_ret_only eff (Z_to_bv 64 0) m []
   | some .FdDir           => check_ret_only eff (Z_to_bv 64 0) m []
 
 /-- Accepting is sound: an accepted effect is one the spec admits, with the
@@ -127,17 +127,15 @@ theorem check_fsync_sound_ok (fd : word) (eff : SyscallEffect) (m m' : Model) (e
     exact pure_ok _ i _
   | some e =>
     cases e
-    case FdFileA _ _ => cases h
-    case FdFileRW _ _ => cases h
     all_goals
       (dsimp only at h ⊢
        rw [check_ret_only_ok_iff] at h
        obtain ⟨rfl, rfl, rfl⟩ := h
        exact pure_ok _ i _)
 
-/-- Declining is sound: the two `CheckUnmodeled` arms are the read-write and
-append-mode files', where the spec declines too.  Rocq:
-`Sync.check_fsync_sound_unmodeled`. -/
+/-- Declining is sound, vacuously: `check_fsync` has no `CheckUnmodeled`
+arm, so the hypothesis is ruled out at every fd kind and at a closed fd.
+Rocq: `Sync.check_fsync_sound_unmodeled`. -/
 theorem check_fsync_sound_unmodeled (fd : word) (eff : SyscallEffect) (m : Model)
     (i : SyscallInput) (h : check_fsync fd eff m = CheckUnmodeled) :
     fsync_spec fd i m Unmodeled := by
@@ -152,8 +150,6 @@ theorem check_fsync_sound_unmodeled (fd : word) (eff : SyscallEffect) (m : Model
     exact check_ret_only_no_unmodeled _ _ _ _ h
   | some e =>
     cases e
-    case FdFileA _ _ => exact unmodeled_intro i m
-    case FdFileRW _ _ => exact unmodeled_intro i m
     all_goals
       (exfalso
        dsimp only at h
@@ -176,17 +172,15 @@ theorem check_fsync_complete_ok (fd : word) (eff : SyscallEffect) (m m' : Model)
     exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
   | some e =>
     cases e
-    case FdFileA _ _ => simp only [unmodeled_iff, reduceCtorEq] at h
-    case FdFileRW _ _ => simp only [unmodeled_iff, reduceCtorEq] at h
     all_goals
       (dsimp only at h ⊢
        simp only [err_ret, ret_only, pure_iff] at h
        obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
        exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩)
 
-/-- Declining is complete: the spec's two `unmodeled` arms are the
-read-write and append-mode files', where the checker declines too.  Rocq:
-`Sync.check_fsync_complete_unmodeled`. -/
+/-- Declining is complete, vacuously: `fsync_spec` has no `unmodeled` arm,
+so the hypothesis is contradictory at every fd kind and at a closed fd.
+Rocq: `Sync.check_fsync_complete_unmodeled`. -/
 theorem check_fsync_complete_unmodeled (fd : word) (m : Model) (i : SyscallInput)
     (eff : SyscallEffect) (h : fsync_spec fd i m Unmodeled) :
     check_fsync fd eff m = CheckUnmodeled := by
@@ -201,8 +195,6 @@ theorem check_fsync_complete_unmodeled (fd : word) (m : Model) (i : SyscallInput
     cases h
   | some e =>
     cases e
-    case FdFileA _ _ => rfl
-    case FdFileRW _ _ => rfl
     all_goals
       (dsimp only at h
        simp only [err_ret, ret_only, pure_iff] at h
@@ -218,9 +210,8 @@ answer written out — `ret_outcome r m`, the "return `r`, change nothing,
 emit nothing" triple, wherever `check_fsync` has `check_ret_only eff r m []`
 — so an arm the witness answered differently from the checker is caught by
 `Checks/Cases/Checks/Sys/Fs/Sync.lean`, which feeds the witness back to the
-checker.  The two `Unmodeled` arms here are the read-write and append-mode
-files', the spec twin's declared declines; every other arm is `pure`, and
-exhibiting it is exhibiting the spec's own answer. -/
+checker.  Every arm is `pure`, and exhibiting it is exhibiting the spec's
+own answer. -/
 
 /-- Rocq: `Checks.Witness.Fs.Sync.fsync_witness`.  Which return each kind
 of fd gets, and which kernel line makes it so, is on `check_fsync` above
@@ -235,14 +226,14 @@ def fsync_witness (fd : word) (m : Model) : outcome SyscallEffect :=
   | some .FdUrandom       => ret_outcome (errno_ret EINVAL) m
   | some (.FdFile _ _)    => ret_outcome (Z_to_bv 64 0) m
   | some (.FdFileW _ _)   => ret_outcome (Z_to_bv 64 0) m
-  | some (.FdFileA _ _) => Unmodeled
-  | some (.FdFileRW _ _) => Unmodeled
+  | some (.FdFileA _ _)   => ret_outcome (Z_to_bv 64 0) m
+  | some (.FdFileRW _ _)  => ret_outcome (Z_to_bv 64 0) m
   | some .FdDir           => ret_outcome (Z_to_bv 64 0) m
 
 /-- The spec admits the witness at every fd, input and model.  Rocq:
 `Checks.Witness.Fs.Sync.fsync_witness_ok`; the proof keeps its shape — one
 `bind_step` over the `get_model`, the lookup split, and `pure_ok` on every
-arm but the read-write and append-mode files', which are `unmodeled_intro`. -/
+arm. -/
 theorem fsync_witness_ok (fd : word) (i : SyscallInput) (m : Model) :
     fsync_spec fd i m (fsync_witness fd m) := by
   unfold fsync_spec fsync_witness
@@ -252,8 +243,6 @@ theorem fsync_witness_ok (fd : word) (i : SyscallInput) (m : Model) :
   | none => exact pure_ok _ i _
   | some e =>
     cases e
-    case FdFileA _ _ => exact unmodeled_intro i m
-    case FdFileRW _ _ => exact unmodeled_intro i m
     all_goals exact pure_ok _ i _
 
 /-! ## The frame lemma -/
@@ -275,8 +264,6 @@ theorem check_fsync_frame (fd : word) (eff : SyscallEffect) (m m' : Model) (evs 
     rfl
   | some e =>
     cases e
-    case FdFileA _ _ => cases h
-    case FdFileRW _ _ => cases h
     all_goals
       (dsimp only at h
        rw [check_ret_only_ok_iff] at h

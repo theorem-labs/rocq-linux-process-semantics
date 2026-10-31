@@ -1,14 +1,10 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Fs/Open.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Open
 import LinuxProcessSemantics.LinuxProcessSem.Checks.VmMapsDisjoint
 
-/-! rocq-baseline: b22b2a23f1adb9c4468cc1dcb8f15e53edf17745
-unported: check_open_append -- accepts the `FdFileA` descriptor of `open_append`, which the spec twin leaves unported; the spec twin declines the append word on a plain name, so nothing reaches it
-unported: check_openat_append -- the `append_create_flags` arm of `openat_resolved_spec`, which the spec twin declines (its header)
-unported: check_open_rdwr -- accepts the `FdFileRW` descriptor of `open_rdwr`, which the spec twin leaves unported; the spec twin declines the read-write words on a plain name, so nothing reaches it
-unported: check_openat_rdwr -- the `rdwr_open_word` arm of `openat_resolved_spec`, which the spec twin declines (its header)
-unported: check_openat_rdwr_excl -- the `is_rdwr_excl_create` arm of `openat_resolved_spec`, which the spec twin declines (its header) -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Checks.Sys.Fs.Open — the openat (56), faccessat (48), faccessat2 (439), close (57) and ftruncate (46) checkers, their proofs, and their witnesses
 
@@ -33,34 +29,24 @@ specification: each checker is the computable side of its spec, and these
 lemmas are what lets a verdict of the checker stand for an answer of the
 spec.  Its pins are `Checks/Cases/Checks/Sys/Fs/Open.lean`.
 
-THE BASELINE NAMED ABOVE, b22b2a23f (#1193), is the commit both Rocq
-files were read at and the last one to touch them, and it is the commit
-the spec twin `Sys/Fs/Open.lean` names.  It sends `check_openat_tmp`'s
-create word through `check_openat_create`, so that a `/tmp` name the
-image implies is a directory answers -EISDIR, and moves that arm's
-`fs_under` decline into its read branch; the checker and the witness
-below follow it.  The port plan's baseline, `f44244ad`, is not an
-ancestor of this history and predates the `/dev/urandom` and `/tmp` arms
-both Rocq files carry; the checker below carries them, so the header
-names the commit it was actually read at rather than one that lacks them.
-The faccessat and close halves of both Rocq files are byte-identical at
-the two commits, so the same baseline serves the faccessat and close
-ports.  At `f44244ad` the ftruncate half lacks the `FdUrandom` arm of
-`check_ftruncate` and `ftruncate_witness` (and that arm's slot in their
-`destruct` patterns), which the checker below carries.
+THE BASELINE NAMED ABOVE, f1006fe8, is the commit both Rocq files were
+read at, and it is the commit the spec twin `Sys/Fs/Open.lean` names.  It
+sends `check_openat_tmp`'s create word through `check_openat_create`, so
+that a `/tmp` name the image implies is a directory answers -EISDIR, and
+moves that arm's `fs_under` decline into its read branch; the checker and
+the witness below follow it.
 
-THE DECLINES ARE THE SPEC TWIN'S, for the reasons its header gives:
-`openat_resolved_spec` declines the append word and the six read-write words
-on a pathname with no separator, where Rocq answers them.  The checker
-follows the spec it is proved against: `check_openat_resolved` ends in
-`CheckUnmodeled` after the `O_DIRECTORY` arm, and the three Rocq arms that
-would follow it, with the two `check_open_*` acceptors they rest on, are the
-`unported:` lines above.  The `/dev/null` arm is unaffected — its append and
-read-write words mint `FdDevNull` — and is ported whole.  When the spec twin
-ports those arms, the checker arms are written with them, and the reviewer
-owes the comparison with Rocq's arms (`Checks/Sys/Fs/Open.v`,
-`check_openat_append` and `check_openat_rdwr`) by hand.  `check_ftruncate`'s
-`FdFileA` and `FdFileRW` arms decline with the spec's.
+EVERY ARM OF ROCQ'S CHECKER IS HERE.  `check_openat_resolved` answers the
+append word (`check_openat_append`), the six read-write words
+(`check_openat_rdwr`, with `creat` and `trunc` read off the word) and the
+read-write exclusive-create word (`check_openat_rdwr_excl`), on the two
+acceptors `check_open_append` and `check_open_rdwr`, which bind a
+`State.FdFileA` and a `State.FdFileRW`.  O_WRONLY|O_CREAT|O_EXCL|O_APPEND
+is not an arm of either: `modeled_open_flags` does not admit that word, so
+the checker declines it before the pathname is read, and the `/dev/null`
+and `/dev/urandom` arms answer it nowhere.  `check_ftruncate`
+writes the writable body for `FdFileA` and again for `FdFileW | FdFileRW`,
+as `ftruncate_spec` does.
 
 THE ORDER OF THE GATES IS THE KERNEL'S, and it is what the top-level
 `check_openat` pins first.  `do_sys_openat2` (fs/open.c, Linux v6.18.46)
@@ -290,6 +276,25 @@ def check_create_wronly (p : path) (eff : SyscallEffect) (m : Model) : check_res
     (fun fd => with_fds (fd_insert (m_fds m) fd (.FdFileW p (Z_to_bv 64 0)))
                  (with_fs (fs_set (m_fs m) p []) m))
 
+/-- The append acceptor: the descriptor is a `FdFileA` at offset 0 and
+the image holds `p`, created empty only if it was absent — the two
+effects `open_append` performs, in that order.  Rocq:
+`check_open_append`. -/
+def check_open_append (p : path) (eff : SyscallEffect) (m : Model) : check_result :=
+  check_open_result eff m
+    (fun fd => with_fds (fd_insert (m_fds m) fd (.FdFileA p (Z_to_bv 64 0)))
+                 (with_fs (append_open_fs (m_fs m) p) m))
+
+/-- The read-write acceptor: the descriptor is a `FdFileRW` at offset 0
+over the image `fs'` its caller computed — `open_rdwr` takes the image as
+an argument because the four non-exclusive words differ only in it.
+Rocq: `check_open_rdwr`. -/
+def check_open_rdwr (p : path) (fs' : Fs.Fs) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  check_open_result eff m
+    (fun fd => with_fds (fd_insert (m_fds m) fd (.FdFileRW p (Z_to_bv 64 0)))
+                 (with_fs fs' m))
+
 /-! ### The acceptor's ledger frame — `VmMapsDisjoint.v`
 
 Rocq states `check_open_result_frame` in `Checks/VmMapsDisjoint.v` and
@@ -362,6 +367,33 @@ def check_openat_create (p : path) (eff : SyscallEffect) (m : Model) : check_res
   if path_is_dirref p || fs_under (m_fs m) p then check_ret_only eff (errno_ret EISDIR) m []
   else check_create_wronly p eff m
 
+/-- The append word on a plain name.  Rocq: `check_openat_append`. -/
+def check_openat_append (p : path) (eff : SyscallEffect) (m : Model) : check_result :=
+  if path_is_dirref p || fs_under (m_fs m) p then check_ret_only eff (errno_ret EISDIR) m []
+  else check_open_append p eff m
+
+/-- The six non-exclusive read-write words on a plain name, with `creat`
+and `trunc` the two bits that separate them.  Rocq: `check_openat_rdwr`. -/
+def check_openat_rdwr (creat trunc : Bool) (p : path) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  if path_is_dirref p || fs_under (m_fs m) p then check_ret_only eff (errno_ret EISDIR) m []
+  else
+    match fs_lookup (m_fs m) p with
+    | none =>
+        if creat then check_open_rdwr p (fs_set (m_fs m) p []) eff m
+        else check_ret_only eff (errno_ret ENOENT) m []
+    | some _ =>
+        check_open_rdwr p (if trunc then fs_set (m_fs m) p [] else m_fs m) eff m
+
+/-- The read-write exclusive-create word on a plain name.  Rocq:
+`check_openat_rdwr_excl`. -/
+def check_openat_rdwr_excl (p : path) (eff : SyscallEffect) (m : Model) : check_result :=
+  if path_is_dirref p || fs_under (m_fs m) p then check_ret_only eff (errno_ret EEXIST) m []
+  else
+    match fs_lookup (m_fs m) p with
+    | some _ => check_ret_only eff (errno_ret EEXIST) m []
+    | none => check_open_rdwr p (fs_set (m_fs m) p []) eff m
+
 /-- The exclusive-create words on a plain name.  Rocq: `check_openat_excl`. -/
 def check_openat_excl (p : path) (eff : SyscallEffect) (m : Model) : check_result :=
   if path_is_dirref p || fs_under (m_fs m) p then check_ret_only eff (errno_ret EEXIST) m []
@@ -413,7 +445,6 @@ def check_openat_devnull (flags : word) (eff : SyscallEffect) (m : Model) : chec
         else if fl == append_create_flags then check_open_devnull false true eff m
         else if rdwr_open_word fl then check_open_devnull true true eff m
         else if is_rdwr_excl_create fl then check_ret_only eff (errno_ret EEXIST) m []
-        else if is_excl_append_create fl then check_ret_only eff (errno_ret EEXIST) m []
         else CheckUnmodeled
 
 /-- A `/dev/urandom` descriptor.  Rocq: `check_open_urandom`. -/
@@ -432,7 +463,6 @@ def check_openat_urandom (flags : word) (eff : SyscallEffect) (m : Model) : chec
         else if is_excl_create fl then check_ret_only eff (errno_ret EEXIST) m []
         else if fl == O_DIRECTORY then check_ret_only eff (errno_ret ENOTDIR) m []
         else if is_rdwr_excl_create fl then check_ret_only eff (errno_ret EEXIST) m []
-        else if is_excl_append_create fl then check_ret_only eff (errno_ret EEXIST) m []
         else CheckUnmodeled
 
 /-- `/tmp/<n>`, with `p` the whole key.  Rocq: `check_openat_tmp`. -/
@@ -460,9 +490,8 @@ def check_openat_sep (p : path) (flags : word) (eff : SyscallEffect) (m : Model)
     | some n => check_openat_tmp n p flags eff m
     | none => CheckUnmodeled
 
-/-- A resolved pathname, by word.  Ends in `CheckUnmodeled` after the
-`O_DIRECTORY` arm where Rocq goes on to the append and read-write arms
-(header).  Rocq: `check_openat_resolved`. -/
+/-- A resolved pathname, by word, in the order `openat_resolved_spec`
+tries them.  Rocq: `check_openat_resolved`. -/
 def check_openat_resolved (p : path) (flags : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if path_has_slash p then check_openat_sep p flags eff m
@@ -472,6 +501,10 @@ def check_openat_resolved (p : path) (flags : word) (eff : SyscallEffect) (m : M
     else if fl == wr_create_flags then check_openat_create p eff m
     else if is_excl_create fl then check_openat_excl p eff m
     else if fl == O_DIRECTORY then check_openat_dir p eff m
+    else if fl == append_create_flags then check_openat_append p eff m
+    else if rdwr_open_word fl then
+      check_openat_rdwr (flag_set fl O_CREAT) (flag_set fl O_TRUNC) p eff m
+    else if is_rdwr_excl_create fl then check_openat_rdwr_excl p eff m
     else CheckUnmodeled
 
 /-- The body after the flag gate: the three answers of `getname_flags`
@@ -497,8 +530,8 @@ ledger cleared.  The range is a model of what `getname_flags` reads and
 not of how: `strncpy_from_user` reads a word at a time
 (`do_strncpy_from_user`, lib/strncpy_from_user.c, Linux v6.18.46), so
 the kernel's own accesses can run past the NUL within the last word, and
-bugs/openat-getname-word-at-a-time.md records the gap.  Rocq:
-`check_openat`. -/
+`linux-process-semantics@ff0313ba4f:bugs/openat-getname-word-at-a-time.md`
+records the gap.  Rocq: `check_openat`. -/
 def check_openat (i : SyscallInput) (dirfd pathp flags : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
   if !modeled_open_flags flags then CheckUnmodeled
@@ -565,6 +598,43 @@ theorem check_create_wronly_sound_ok (i : SyscallInput) (p : path) (eff : Syscal
   · apply alt_r
     refine bind_ok0 _ _ i m ret m _ _ _ (choose_ok _ ret i m (And.intro hnone hfd)) ?_
     refine bind_ok0 _ _ i m () (with_fs (fs_set (m_fs m) p []) m) _ _ _ (modify_ok _ i m) ?_
+    refine bind_ok0 _ _ i _ () _ _ _ _ (modify_ok _ i _) ?_
+    exact pure_ok _ i _
+
+/-- Rocq: `check_open_append_sound_ok`. -/
+theorem check_open_append_sound_ok (i : SyscallInput) (p : path) (eff : SyscallEffect)
+    (m m' : Model) (evs : List event) (h : check_open_append p eff m = CheckOk m' evs) :
+    open_append p m i m (Ok eff m' evs) := by
+  unfold check_open_append check_open_result at h
+  obtain ⟨rfl, ret, rfl, hcase⟩ := check_new_fd_result_ok_inv openat_errnos eff m _ m' evs h
+  unfold open_append errno_from lowest_fd set_fs set_fds
+  rcases hcase with ⟨he, hm⟩ | ⟨hnone, hfd, hm⟩ <;> subst m'
+  · obtain ⟨e, hmem, rfl⟩ := (errno_ret_in_true openat_errnos ret).mp he
+    apply alt_l
+    refine bind_ok0 _ _ i m e m _ _ _ (choose_ok _ e i m hmem) ?_
+    exact pure_ok _ i m
+  · apply alt_r
+    refine bind_ok0 _ _ i m ret m _ _ _ (choose_ok _ ret i m (And.intro hnone hfd)) ?_
+    refine bind_ok0 _ _ i m () (with_fs (append_open_fs (m_fs m) p) m) _ _ _ (modify_ok _ i m) ?_
+    refine bind_ok0 _ _ i _ () _ _ _ _ (modify_ok _ i _) ?_
+    exact pure_ok _ i _
+
+/-- Rocq: `check_open_rdwr_sound_ok`. -/
+theorem check_open_rdwr_sound_ok (i : SyscallInput) (p : path) (fs' : Fs.Fs)
+    (eff : SyscallEffect) (m m' : Model) (evs : List event)
+    (h : check_open_rdwr p fs' eff m = CheckOk m' evs) :
+    open_rdwr p fs' m i m (Ok eff m' evs) := by
+  unfold check_open_rdwr check_open_result at h
+  obtain ⟨rfl, ret, rfl, hcase⟩ := check_new_fd_result_ok_inv openat_errnos eff m _ m' evs h
+  unfold open_rdwr errno_from lowest_fd set_fs set_fds
+  rcases hcase with ⟨he, hm⟩ | ⟨hnone, hfd, hm⟩ <;> subst m'
+  · obtain ⟨e, hmem, rfl⟩ := (errno_ret_in_true openat_errnos ret).mp he
+    apply alt_l
+    refine bind_ok0 _ _ i m e m _ _ _ (choose_ok _ e i m hmem) ?_
+    exact pure_ok _ i m
+  · apply alt_r
+    refine bind_ok0 _ _ i m ret m _ _ _ (choose_ok _ ret i m (And.intro hnone hfd)) ?_
+    refine bind_ok0 _ _ i m () (with_fs fs' m) _ _ _ (modify_ok _ i m) ?_
     refine bind_ok0 _ _ i _ () _ _ _ _ (modify_ok _ i _) ?_
     exact pure_ok _ i _
 
@@ -659,6 +729,78 @@ theorem check_openat_dir_sound_ok (i : SyscallInput) (p : path) (eff : SyscallEf
         | some _ =>
           dsimp only at h ⊢
           exact check_ret_only_sound_ok i eff (errno_ret ENOTDIR) m m' evs h
+
+/-- Rocq: `check_openat_append_sound_ok`. -/
+theorem check_openat_append_sound_ok (i : SyscallInput) (p : path) (eff : SyscallEffect)
+    (m m' : Model) (evs : List event) (h : check_openat_append p eff m = CheckOk m' evs) :
+    openat_append_spec p m i m (Ok eff m' evs) := by
+  unfold check_openat_append at h
+  unfold openat_append_spec
+  generalize (path_is_dirref p || fs_under (m_fs m) p) = b at h ⊢
+  cases b with
+  | true =>
+    simp only [↓reduceIte] at h ⊢
+    exact check_ret_only_sound_ok i eff (errno_ret EISDIR) m m' evs h
+  | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    exact check_open_append_sound_ok i p eff m m' evs h
+
+/-- Rocq: `check_openat_rdwr_sound_ok`. -/
+theorem check_openat_rdwr_sound_ok (i : SyscallInput) (creat trunc : Bool) (p : path)
+    (eff : SyscallEffect) (m m' : Model) (evs : List event)
+    (h : check_openat_rdwr creat trunc p eff m = CheckOk m' evs) :
+    openat_rdwr_spec creat trunc p m i m (Ok eff m' evs) := by
+  unfold check_openat_rdwr at h
+  unfold openat_rdwr_spec
+  generalize (path_is_dirref p || fs_under (m_fs m) p) = b at h ⊢
+  cases b with
+  | true =>
+    simp only [↓reduceIte] at h ⊢
+    exact check_ret_only_sound_ok i eff (errno_ret EISDIR) m m' evs h
+  | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = r at h ⊢
+    cases r with
+    | none =>
+      dsimp only at h ⊢
+      cases creat with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        exact check_open_rdwr_sound_ok i p (fs_set (m_fs m) p []) eff m m' evs h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+        exact check_ret_only_sound_ok i eff (errno_ret ENOENT) m m' evs h
+    | some _ =>
+      dsimp only at h ⊢
+      cases trunc with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        exact check_open_rdwr_sound_ok i p (fs_set (m_fs m) p []) eff m m' evs h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+        exact check_open_rdwr_sound_ok i p (m_fs m) eff m m' evs h
+
+/-- Rocq: `check_openat_rdwr_excl_sound_ok`. -/
+theorem check_openat_rdwr_excl_sound_ok (i : SyscallInput) (p : path) (eff : SyscallEffect)
+    (m m' : Model) (evs : List event) (h : check_openat_rdwr_excl p eff m = CheckOk m' evs) :
+    openat_rdwr_excl_spec p m i m (Ok eff m' evs) := by
+  unfold check_openat_rdwr_excl at h
+  unfold openat_rdwr_excl_spec
+  generalize (path_is_dirref p || fs_under (m_fs m) p) = b at h ⊢
+  cases b with
+  | true =>
+    simp only [↓reduceIte] at h ⊢
+    exact check_ret_only_sound_ok i eff (errno_ret EEXIST) m m' evs h
+  | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = r at h ⊢
+    cases r with
+    | some _ =>
+      dsimp only at h ⊢
+      exact check_ret_only_sound_ok i eff (errno_ret EEXIST) m m' evs h
+    | none =>
+      dsimp only at h ⊢
+      exact check_open_rdwr_sound_ok i p (fs_set (m_fs m) p []) eff m m' evs h
 
 /-- Rocq: `check_openat_localtime_sound_ok`. -/
 theorem check_openat_localtime_sound_ok (i : SyscallInput) (flags : word) (eff : SyscallEffect)
@@ -755,14 +897,7 @@ theorem check_openat_devnull_sound_ok (i : SyscallInput) (flags : word) (eff : S
                   | true =>
                     simp only [↓reduceIte] at h ⊢
                     exact check_ret_only_sound_ok i eff (errno_ret EEXIST) m m' evs h
-                  | false =>
-                    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-                    generalize is_excl_append_create fl = b at h ⊢
-                    cases b with
-                    | true =>
-                      simp only [↓reduceIte] at h ⊢
-                      exact check_ret_only_sound_ok i eff (errno_ret EEXIST) m m' evs h
-                    | false => simp only [Bool.false_eq_true, ↓reduceIte, reduceCtorEq] at h
+                  | false => simp only [Bool.false_eq_true, ↓reduceIte, reduceCtorEq] at h
 
 /-- Rocq: `check_open_urandom_sound_ok`. -/
 theorem check_open_urandom_sound_ok (i : SyscallInput) (eff : SyscallEffect)
@@ -814,14 +949,7 @@ theorem check_openat_urandom_sound_ok (i : SyscallInput) (flags : word) (eff : S
             | true =>
               simp only [↓reduceIte] at h ⊢
               exact check_ret_only_sound_ok i eff (errno_ret EEXIST) m m' evs h
-            | false =>
-              simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-              generalize is_excl_append_create fl = b at h ⊢
-              cases b with
-              | true =>
-                simp only [↓reduceIte] at h ⊢
-                exact check_ret_only_sound_ok i eff (errno_ret EEXIST) m m' evs h
-              | false => simp only [Bool.false_eq_true, ↓reduceIte, reduceCtorEq] at h
+            | false => simp only [Bool.false_eq_true, ↓reduceIte, reduceCtorEq] at h
 
 /-- Rocq: `check_openat_tmp_sound_ok`. -/
 theorem check_openat_tmp_sound_ok (i : SyscallInput) (n p : path) (flags : word)
@@ -934,7 +1062,28 @@ theorem check_openat_resolved_sound_ok (i : SyscallInput) (p : path) (flags : wo
           | true =>
             simp only [↓reduceIte] at h ⊢
             exact check_openat_dir_sound_ok i p eff m m' evs h
-          | false => simp only [Bool.false_eq_true, ↓reduceIte, reduceCtorEq] at h
+          | false =>
+            simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+            generalize (fl == append_create_flags) = b at h ⊢
+            cases b with
+            | true =>
+              simp only [↓reduceIte] at h ⊢
+              exact check_openat_append_sound_ok i p eff m m' evs h
+            | false =>
+              simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+              generalize rdwr_open_word fl = b at h ⊢
+              cases b with
+              | true =>
+                simp only [↓reduceIte] at h ⊢
+                exact check_openat_rdwr_sound_ok i _ _ p eff m m' evs h
+              | false =>
+                simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+                generalize is_rdwr_excl_create fl = b at h ⊢
+                cases b with
+                | true =>
+                  simp only [↓reduceIte] at h ⊢
+                  exact check_openat_rdwr_excl_sound_ok i p eff m m' evs h
+                | false => simp only [Bool.false_eq_true, ↓reduceIte, reduceCtorEq] at h
 
 /-- Rocq: `check_openat_body_spec_sound_ok`. -/
 theorem check_openat_body_spec_sound_ok (i : SyscallInput) (dirfd pathp flags : word)
@@ -1098,6 +1247,81 @@ theorem check_openat_dir_sound_unmodeled (i : SyscallInput) (p : path) (eff : Sy
           dsimp only at h
           exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
 
+/-- Rocq: `check_openat_append_no_unmodeled`. -/
+theorem check_openat_append_no_unmodeled (p : path) (eff : SyscallEffect) (m : Model) :
+    check_openat_append p eff m ≠ CheckUnmodeled := by
+  intro h
+  unfold check_openat_append at h
+  generalize (path_is_dirref p || fs_under (m_fs m) p) = b at h
+  cases b with
+  | true =>
+    simp only [↓reduceIte] at h
+    exact check_ret_only_no_unmodeled _ _ _ _ h
+  | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    exact check_open_result_no_unmodeled _ _ _ h
+
+/-- Rocq: `check_open_rdwr_no_unmodeled`. -/
+theorem check_open_rdwr_no_unmodeled (p : path) (fs' : Fs.Fs) (eff : SyscallEffect) (m : Model) :
+    check_open_rdwr p fs' eff m ≠ CheckUnmodeled := by
+  intro h
+  unfold check_open_rdwr at h
+  exact check_open_result_no_unmodeled _ _ _ h
+
+/-- Rocq: `check_openat_rdwr_no_unmodeled`. -/
+theorem check_openat_rdwr_no_unmodeled (creat trunc : Bool) (p : path) (eff : SyscallEffect)
+    (m : Model) : check_openat_rdwr creat trunc p eff m ≠ CheckUnmodeled := by
+  intro h
+  unfold check_openat_rdwr at h
+  generalize (path_is_dirref p || fs_under (m_fs m) p) = b at h
+  cases b with
+  | true =>
+    simp only [↓reduceIte] at h
+    exact check_ret_only_no_unmodeled _ _ _ _ h
+  | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    generalize fs_lookup (m_fs m) p = r at h
+    cases r with
+    | none =>
+      dsimp only at h
+      cases creat with
+      | true =>
+        simp only [↓reduceIte] at h
+        exact check_open_rdwr_no_unmodeled _ _ _ _ h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        exact check_ret_only_no_unmodeled _ _ _ _ h
+    | some _ =>
+      dsimp only at h
+      cases trunc with
+      | true =>
+        simp only [↓reduceIte] at h
+        exact check_open_rdwr_no_unmodeled _ _ _ _ h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        exact check_open_rdwr_no_unmodeled _ _ _ _ h
+
+/-- Rocq: `check_openat_rdwr_excl_no_unmodeled`. -/
+theorem check_openat_rdwr_excl_no_unmodeled (p : path) (eff : SyscallEffect) (m : Model) :
+    check_openat_rdwr_excl p eff m ≠ CheckUnmodeled := by
+  intro h
+  unfold check_openat_rdwr_excl at h
+  generalize (path_is_dirref p || fs_under (m_fs m) p) = b at h
+  cases b with
+  | true =>
+    simp only [↓reduceIte] at h
+    exact check_ret_only_no_unmodeled _ _ _ _ h
+  | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    generalize fs_lookup (m_fs m) p = r at h
+    cases r with
+    | some _ =>
+      dsimp only at h
+      exact check_ret_only_no_unmodeled _ _ _ _ h
+    | none =>
+      dsimp only at h
+      exact check_open_rdwr_no_unmodeled _ _ _ _ h
+
 /-- Rocq: `check_openat_localtime_sound_unmodeled`. -/
 theorem check_openat_localtime_sound_unmodeled (i : SyscallInput) (flags : word)
     (eff : SyscallEffect) (m : Model) (h : check_openat_localtime flags eff m = CheckUnmodeled) :
@@ -1197,15 +1421,8 @@ theorem check_openat_devnull_sound_unmodeled (i : SyscallInput) (flags : word)
                     simp only [↓reduceIte] at h
                     exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
                   | false =>
-                    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-                    generalize is_excl_append_create fl = b at h ⊢
-                    cases b with
-                    | true =>
-                      simp only [↓reduceIte] at h
-                      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-                    | false =>
-                      simp only [Bool.false_eq_true, ↓reduceIte]
-                      exact unmodeled_intro i m
+                    simp only [Bool.false_eq_true, ↓reduceIte]
+                    exact unmodeled_intro i m
 
 /-- Rocq: `check_openat_urandom_sound_unmodeled`. -/
 theorem check_openat_urandom_sound_unmodeled (i : SyscallInput) (flags : word)
@@ -1255,15 +1472,8 @@ theorem check_openat_urandom_sound_unmodeled (i : SyscallInput) (flags : word)
               simp only [↓reduceIte] at h
               exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
             | false =>
-              simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-              generalize is_excl_append_create fl = b at h ⊢
-              cases b with
-              | true =>
-                simp only [↓reduceIte] at h
-                exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-              | false =>
-                simp only [Bool.false_eq_true, ↓reduceIte]
-                exact unmodeled_intro i m
+              simp only [Bool.false_eq_true, ↓reduceIte]
+              exact unmodeled_intro i m
 
 /-- Rocq: `check_openat_tmp_sound_unmodeled`. -/
 theorem check_openat_tmp_sound_unmodeled (i : SyscallInput) (n p : path) (flags : word)
@@ -1383,8 +1593,29 @@ theorem check_openat_resolved_sound_unmodeled (i : SyscallInput) (p : path) (fla
             simp only [↓reduceIte] at h ⊢
             exact check_openat_dir_sound_unmodeled i p eff m h
           | false =>
-            simp only [Bool.false_eq_true, ↓reduceIte]
-            exact unmodeled_intro i m
+            simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+            generalize (fl == append_create_flags) = b at h ⊢
+            cases b with
+            | true =>
+              simp only [↓reduceIte] at h
+              exact absurd h (check_openat_append_no_unmodeled _ _ _)
+            | false =>
+              simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+              generalize rdwr_open_word fl = b at h ⊢
+              cases b with
+              | true =>
+                simp only [↓reduceIte] at h
+                exact absurd h (check_openat_rdwr_no_unmodeled _ _ _ _ _)
+              | false =>
+                simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+                generalize is_rdwr_excl_create fl = b at h ⊢
+                cases b with
+                | true =>
+                  simp only [↓reduceIte] at h
+                  exact absurd h (check_openat_rdwr_excl_no_unmodeled _ _ _)
+                | false =>
+                  simp only [Bool.false_eq_true, ↓reduceIte]
+                  exact unmodeled_intro i m
 
 /-- Rocq: `check_openat_body_spec_sound_unmodeled`. -/
 theorem check_openat_body_spec_sound_unmodeled (i : SyscallInput) (dirfd pathp flags : word)
@@ -1519,6 +1750,55 @@ theorem check_create_wronly_complete_ok (i : SyscallInput) (p : path) (eff : Sys
       errno_ret_in_alloc_fd _ _ openat_errnos_ok, Bool.false_eq_true, ↓reduceIte, hnone,
       bv_eqb_refl]
 
+/-- Rocq: `check_open_append_complete_ok`. -/
+theorem check_open_append_complete_ok (i : SyscallInput) (p : path) (eff : SyscallEffect)
+    (m m' : Model) (evs : List event) (h : open_append p m i m (Ok eff m' evs)) :
+    check_open_append p eff m = CheckOk m' evs ∧ eff.eff_copyins = [] := by
+  unfold open_append errno_from lowest_fd set_fs set_fds at h
+  rw [alt_iff] at h
+  rcases h with h | h
+  · rw [bind_choose_iff] at h
+    obtain ⟨e, he, h⟩ := h
+    simp only [err_ret, ret_only, pure_iff] at h
+    obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
+    refine ⟨?_, rfl⟩
+    simp only [check_open_append, check_open_result, check_new_fd_result,
+      errno_ret_in_intro openat_errnos e he, ↓reduceIte]
+  · rw [bind_choose_iff] at h
+    obtain ⟨fd, ⟨hnone, hfd⟩, h⟩ := h
+    simp only [bind_modify_iff, ret_only, pure_iff] at h
+    obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
+    subst hfd
+    refine ⟨?_, rfl⟩
+    simp only [check_open_append, check_open_result, check_new_fd_result,
+      errno_ret_in_alloc_fd _ _ openat_errnos_ok, Bool.false_eq_true, ↓reduceIte, hnone,
+      bv_eqb_refl]
+
+/-- Rocq: `check_open_rdwr_complete_ok`. -/
+theorem check_open_rdwr_complete_ok (i : SyscallInput) (p : path) (fs' : Fs.Fs)
+    (eff : SyscallEffect) (m m' : Model) (evs : List event)
+    (h : open_rdwr p fs' m i m (Ok eff m' evs)) :
+    check_open_rdwr p fs' eff m = CheckOk m' evs ∧ eff.eff_copyins = [] := by
+  unfold open_rdwr errno_from lowest_fd set_fs set_fds at h
+  rw [alt_iff] at h
+  rcases h with h | h
+  · rw [bind_choose_iff] at h
+    obtain ⟨e, he, h⟩ := h
+    simp only [err_ret, ret_only, pure_iff] at h
+    obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
+    refine ⟨?_, rfl⟩
+    simp only [check_open_rdwr, check_open_result, check_new_fd_result,
+      errno_ret_in_intro openat_errnos e he, ↓reduceIte]
+  · rw [bind_choose_iff] at h
+    obtain ⟨fd, ⟨hnone, hfd⟩, h⟩ := h
+    simp only [bind_modify_iff, ret_only, pure_iff] at h
+    obtain ⟨rfl, rfl, rfl⟩ := outcome.Ok.inj h
+    subst hfd
+    refine ⟨?_, rfl⟩
+    simp only [check_open_rdwr, check_open_result, check_new_fd_result,
+      errno_ret_in_alloc_fd _ _ openat_errnos_ok, Bool.false_eq_true, ↓reduceIte, hnone,
+      bv_eqb_refl]
+
 /-- Rocq: `check_openat_read_complete_ok`. -/
 theorem check_openat_read_complete_ok (i : SyscallInput) (p : path) (eff : SyscallEffect)
     (m m' : Model) (evs : List event) :
@@ -1618,6 +1898,84 @@ theorem check_openat_dir_complete_ok (i : SyscallInput) (p : path) (eff : Syscal
         | some _ =>
           dsimp only at h ⊢
           exact check_ret_only_complete_ok i eff (errno_ret ENOTDIR) m m' evs h
+
+/-- Rocq: `check_openat_append_complete_ok`. -/
+theorem check_openat_append_complete_ok (i : SyscallInput) (p : path) (eff : SyscallEffect)
+    (m m' : Model) (evs : List event) :
+    completes_ok i m eff m' evs (openat_append_spec p m) (check_openat_append p eff m) := by
+  unfold completes_ok
+  intro h
+  unfold openat_append_spec at h
+  unfold check_openat_append
+  generalize (path_is_dirref p || fs_under (m_fs m) p) = b at h ⊢
+  cases b with
+  | true =>
+    simp only [↓reduceIte] at h ⊢
+    exact check_ret_only_complete_ok i eff (errno_ret EISDIR) m m' evs h
+  | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    exact check_open_append_complete_ok i p eff m m' evs h
+
+/-- Rocq: `check_openat_rdwr_complete_ok`. -/
+theorem check_openat_rdwr_complete_ok (i : SyscallInput) (creat trunc : Bool) (p : path)
+    (eff : SyscallEffect) (m m' : Model) (evs : List event) :
+    completes_ok i m eff m' evs (openat_rdwr_spec creat trunc p m)
+      (check_openat_rdwr creat trunc p eff m) := by
+  unfold completes_ok
+  intro h
+  unfold openat_rdwr_spec at h
+  unfold check_openat_rdwr
+  generalize (path_is_dirref p || fs_under (m_fs m) p) = b at h ⊢
+  cases b with
+  | true =>
+    simp only [↓reduceIte] at h ⊢
+    exact check_ret_only_complete_ok i eff (errno_ret EISDIR) m m' evs h
+  | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = r at h ⊢
+    cases r with
+    | none =>
+      dsimp only at h ⊢
+      cases creat with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        exact check_open_rdwr_complete_ok i p (fs_set (m_fs m) p []) eff m m' evs h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+        exact check_ret_only_complete_ok i eff (errno_ret ENOENT) m m' evs h
+    | some _ =>
+      dsimp only at h ⊢
+      cases trunc with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        exact check_open_rdwr_complete_ok i p (fs_set (m_fs m) p []) eff m m' evs h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+        exact check_open_rdwr_complete_ok i p (m_fs m) eff m m' evs h
+
+/-- Rocq: `check_openat_rdwr_excl_complete_ok`. -/
+theorem check_openat_rdwr_excl_complete_ok (i : SyscallInput) (p : path) (eff : SyscallEffect)
+    (m m' : Model) (evs : List event) :
+    completes_ok i m eff m' evs (openat_rdwr_excl_spec p m) (check_openat_rdwr_excl p eff m) := by
+  unfold completes_ok
+  intro h
+  unfold openat_rdwr_excl_spec at h
+  unfold check_openat_rdwr_excl
+  generalize (path_is_dirref p || fs_under (m_fs m) p) = b at h ⊢
+  cases b with
+  | true =>
+    simp only [↓reduceIte] at h ⊢
+    exact check_ret_only_complete_ok i eff (errno_ret EEXIST) m m' evs h
+  | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = r at h ⊢
+    cases r with
+    | some _ =>
+      dsimp only at h ⊢
+      exact check_ret_only_complete_ok i eff (errno_ret EEXIST) m m' evs h
+    | none =>
+      dsimp only at h ⊢
+      exact check_open_rdwr_complete_ok i p (fs_set (m_fs m) p []) eff m m' evs h
 
 /-- Rocq: `check_openat_localtime_complete_ok`. -/
 theorem check_openat_localtime_complete_ok (i : SyscallInput) (flags : word)
@@ -1719,14 +2077,7 @@ theorem check_openat_devnull_complete_ok (i : SyscallInput) (flags : word) (eff 
                   | true =>
                     simp only [↓reduceIte] at h ⊢
                     exact check_ret_only_complete_ok i eff (errno_ret EEXIST) m m' evs h
-                  | false =>
-                    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-                    generalize is_excl_append_create fl = b at h ⊢
-                    cases b with
-                    | true =>
-                      simp only [↓reduceIte] at h ⊢
-                      exact check_ret_only_complete_ok i eff (errno_ret EEXIST) m m' evs h
-                    | false => simp only [Bool.false_eq_true, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
+                  | false => simp only [Bool.false_eq_true, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
 
 /-- Rocq: `check_open_urandom_complete_ok`. -/
 theorem check_open_urandom_complete_ok (i : SyscallInput) (eff : SyscallEffect)
@@ -1780,14 +2131,7 @@ theorem check_openat_urandom_complete_ok (i : SyscallInput) (flags : word) (eff 
             | true =>
               simp only [↓reduceIte] at h ⊢
               exact check_ret_only_complete_ok i eff (errno_ret EEXIST) m m' evs h
-            | false =>
-              simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-              generalize is_excl_append_create fl = b at h ⊢
-              cases b with
-              | true =>
-                simp only [↓reduceIte] at h ⊢
-                exact check_ret_only_complete_ok i eff (errno_ret EEXIST) m m' evs h
-              | false => simp only [Bool.false_eq_true, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
+            | false => simp only [Bool.false_eq_true, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
 
 /-- Rocq: `check_openat_tmp_complete_ok`. -/
 theorem check_openat_tmp_complete_ok (i : SyscallInput) (n p : path) (flags : word)
@@ -1904,7 +2248,29 @@ theorem check_openat_resolved_complete_ok (i : SyscallInput) (p : path) (flags :
           | true =>
             simp only [↓reduceIte] at h ⊢
             exact check_openat_dir_complete_ok i p eff m m' evs h
-          | false => simp only [Bool.false_eq_true, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
+          | false =>
+            simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+            generalize (fl == append_create_flags) = b at h ⊢
+            cases b with
+            | true =>
+              simp only [↓reduceIte] at h ⊢
+              exact check_openat_append_complete_ok i p eff m m' evs h
+            | false =>
+              simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+              generalize rdwr_open_word fl = b at h ⊢
+              cases b with
+              | true =>
+                simp only [↓reduceIte] at h ⊢
+                exact check_openat_rdwr_complete_ok i _ _ p eff m m' evs h
+              | false =>
+                simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+                generalize is_rdwr_excl_create fl = b at h ⊢
+                cases b with
+                | true =>
+                  simp only [↓reduceIte] at h ⊢
+                  exact check_openat_rdwr_excl_complete_ok i p eff m m' evs h
+                | false =>
+                  simp only [Bool.false_eq_true, ↓reduceIte, unmodeled_iff, reduceCtorEq] at h
 
 /-- Rocq: `check_openat_body_complete_ok`. -/
 theorem check_openat_body_complete_ok (i : SyscallInput) (dirfd pathp flags : word)
@@ -2105,6 +2471,102 @@ theorem check_openat_dir_complete_unmodeled (i : SyscallInput) (p : path) (eff :
           dsimp only at h
           exact absurd h (ret_only_no_unmodeled _ i m)
 
+/-- Rocq: `open_append_no_unmodeled`. -/
+theorem open_append_no_unmodeled (p : path) (m : Model) (i : SyscallInput) :
+    ¬ open_append p m i m Unmodeled := by
+  intro h
+  unfold open_append errno_from lowest_fd set_fs set_fds at h
+  rw [alt_iff] at h
+  rcases h with h | h
+  · rw [bind_choose_iff] at h
+    obtain ⟨e, -, h⟩ := h
+    simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
+  · rw [bind_choose_iff] at h
+    obtain ⟨fd, -, h⟩ := h
+    simp only [bind_modify_iff, ret_only, pure_iff, reduceCtorEq] at h
+
+/-- Rocq: `openat_append_spec_no_unmodeled`. -/
+theorem openat_append_spec_no_unmodeled (p : path) (m : Model) (i : SyscallInput) :
+    ¬ openat_append_spec p m i m Unmodeled := by
+  intro h
+  unfold openat_append_spec at h
+  generalize (path_is_dirref p || fs_under (m_fs m) p) = b at h
+  cases b with
+  | true =>
+    simp only [↓reduceIte] at h
+    exact ret_only_no_unmodeled _ i m h
+  | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    exact open_append_no_unmodeled p m i h
+
+/-- Rocq: `open_rdwr_no_unmodeled`. -/
+theorem open_rdwr_no_unmodeled (p : path) (fs' : Fs.Fs) (m : Model) (i : SyscallInput) :
+    ¬ open_rdwr p fs' m i m Unmodeled := by
+  intro h
+  unfold open_rdwr errno_from lowest_fd set_fs set_fds at h
+  rw [alt_iff] at h
+  rcases h with h | h
+  · rw [bind_choose_iff] at h
+    obtain ⟨e, -, h⟩ := h
+    simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
+  · rw [bind_choose_iff] at h
+    obtain ⟨fd, -, h⟩ := h
+    simp only [bind_modify_iff, ret_only, pure_iff, reduceCtorEq] at h
+
+/-- Rocq: `openat_rdwr_spec_no_unmodeled`. -/
+theorem openat_rdwr_spec_no_unmodeled (creat trunc : Bool) (p : path) (m : Model)
+    (i : SyscallInput) : ¬ openat_rdwr_spec creat trunc p m i m Unmodeled := by
+  intro h
+  unfold openat_rdwr_spec at h
+  generalize (path_is_dirref p || fs_under (m_fs m) p) = b at h
+  cases b with
+  | true =>
+    simp only [↓reduceIte] at h
+    exact ret_only_no_unmodeled _ i m h
+  | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    generalize fs_lookup (m_fs m) p = r at h
+    cases r with
+    | none =>
+      dsimp only at h
+      cases creat with
+      | true =>
+        simp only [↓reduceIte] at h
+        exact open_rdwr_no_unmodeled p _ m i h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        exact ret_only_no_unmodeled _ i m h
+    | some _ =>
+      dsimp only at h
+      cases trunc with
+      | true =>
+        simp only [↓reduceIte] at h
+        exact open_rdwr_no_unmodeled p _ m i h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        exact open_rdwr_no_unmodeled p _ m i h
+
+/-- Rocq: `openat_rdwr_excl_spec_no_unmodeled`. -/
+theorem openat_rdwr_excl_spec_no_unmodeled (p : path) (m : Model) (i : SyscallInput) :
+    ¬ openat_rdwr_excl_spec p m i m Unmodeled := by
+  intro h
+  unfold openat_rdwr_excl_spec at h
+  generalize (path_is_dirref p || fs_under (m_fs m) p) = b at h
+  cases b with
+  | true =>
+    simp only [↓reduceIte] at h
+    exact ret_only_no_unmodeled _ i m h
+  | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    generalize fs_lookup (m_fs m) p = r at h
+    cases r with
+    | some _ =>
+      dsimp only at h
+      exact ret_only_no_unmodeled _ i m h
+    | none =>
+      dsimp only at h
+      exact open_rdwr_no_unmodeled p _ m i h
+
 /-- Rocq: `check_openat_localtime_complete_unmodeled`. -/
 theorem check_openat_localtime_complete_unmodeled (i : SyscallInput) (flags : word)
     (eff : SyscallEffect) (m : Model) :
@@ -2202,14 +2664,7 @@ theorem check_openat_devnull_complete_unmodeled (i : SyscallInput) (flags : word
                   | true =>
                     simp only [↓reduceIte] at h
                     exact absurd h (ret_only_no_unmodeled _ i m)
-                  | false =>
-                    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-                    generalize is_excl_append_create fl = b at h ⊢
-                    cases b with
-                    | true =>
-                      simp only [↓reduceIte] at h
-                      exact absurd h (ret_only_no_unmodeled _ i m)
-                    | false => simp only [Bool.false_eq_true, ↓reduceIte]
+                  | false => simp only [Bool.false_eq_true, ↓reduceIte]
 
 /-- Rocq: `open_urandom_no_unmodeled`. -/
 theorem open_urandom_no_unmodeled (m : Model) (i : SyscallInput) :
@@ -2261,14 +2716,7 @@ theorem check_openat_urandom_complete_unmodeled (i : SyscallInput) (flags : word
             | true =>
               simp only [↓reduceIte] at h
               exact absurd h (ret_only_no_unmodeled _ i m)
-            | false =>
-              simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-              generalize is_excl_append_create fl = b at h ⊢
-              cases b with
-              | true =>
-                simp only [↓reduceIte] at h
-                exact absurd h (ret_only_no_unmodeled _ i m)
-              | false => simp only [Bool.false_eq_true, ↓reduceIte]
+            | false => simp only [Bool.false_eq_true, ↓reduceIte]
 
 /-- Rocq: `check_openat_tmp_complete_unmodeled`. -/
 theorem check_openat_tmp_complete_unmodeled (i : SyscallInput) (n p : path) (flags : word)
@@ -2384,7 +2832,28 @@ theorem check_openat_resolved_complete_unmodeled (i : SyscallInput) (p : path) (
           | true =>
             simp only [↓reduceIte] at h ⊢
             exact check_openat_dir_complete_unmodeled i p eff m h
-          | false => simp only [Bool.false_eq_true, ↓reduceIte]
+          | false =>
+            simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+            generalize (fl == append_create_flags) = b at h ⊢
+            cases b with
+            | true =>
+              simp only [↓reduceIte] at h
+              exact absurd h (openat_append_spec_no_unmodeled p m i)
+            | false =>
+              simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+              generalize rdwr_open_word fl = b at h ⊢
+              cases b with
+              | true =>
+                simp only [↓reduceIte] at h
+                exact absurd h (openat_rdwr_spec_no_unmodeled _ _ p m i)
+              | false =>
+                simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+                generalize is_rdwr_excl_create fl = b at h ⊢
+                cases b with
+                | true =>
+                  simp only [↓reduceIte] at h
+                  exact absurd h (openat_rdwr_excl_spec_no_unmodeled p m i)
+                | false => simp only [Bool.false_eq_true, ↓reduceIte]
 
 /-- Rocq: `check_openat_body_spec_complete_unmodeled`. -/
 theorem check_openat_body_spec_complete_unmodeled (i : SyscallInput) (dirfd pathp flags : word)
@@ -3425,11 +3894,8 @@ theorem check_close_complete_unmodeled (fd : word) (m : Model) (i : SyscallInput
 /-! ### ftruncate (46) — the checker
 
 Mirrors the `ftruncate` half of `theories/LinuxProcessSem/Checks/Sys/Fs/Open.v`
-at the header's baseline, `b22b2a23f`, the baseline the spec twin names
-and, at this head, the last commit to touch either Rocq file.  That
-stops holding when the open #1243 lands (branch
-`model/proc-self-status`, whose `8ab75bbcb` edits both files, their
-`ftruncate` halves included).  The decisions are the spec's, in the
+at the header's baseline, `f1006fe8`, the baseline the spec twin names.
+The decisions are the spec's, in the
 kernel's order, so which errno wins when two conditions hold is not this
 file's choice:
 `do_sys_ftruncate` (fs/open.c:202-211, Linux v6.18.46) refuses a negative
@@ -3437,14 +3903,15 @@ length before its `CLASS(fd, f)(fd)` looks the descriptor up, and
 `do_ftruncate` (fs/open.c:163-200, Linux v6.18.46) makes its
 `S_ISREG`-and-`FMODE_WRITE` test before the size is handed on.  The
 model's zero-fill bound, `modeled_truncate_gap`, is consulted after both,
-on the write-only file alone, so a huge length on any kind that is not
+on a writable file alone, so a huge length on any kind that is not
 writable is still the kernel's -EINVAL and not a decline
 (`check_ftruncate_declines_only_on_a_held_writable_file`).
 
-THE APPEND-MODE AND READ-WRITE FILES DECLINE OUTRIGHT, as the spec twin's
-`ftruncate_spec` does (its header declares the narrowing).  Rocq writes the
-writable body for `FdFileW | FdFileRW` and again for `FdFileA`; the one
-written here is `FdFileW`'s.
+EVERY WRITABLE REGULAR FILE TAKES THE WRITABLE BODY, as the spec twin's
+`ftruncate_spec` does: Rocq writes that body for `FdFileW | FdFileRW` and
+again for `FdFileA`, and both are written here.  An O_APPEND or an O_RDWR
+description carries FMODE_WRITE on an S_ISREG inode exactly as an
+O_WRONLY one does, and `do_ftruncate`'s test reads nothing else.
 
 WHAT THE ACCEPTED MODEL IS.  On the write-only file, the model the checker
 hands back is `with_fs` over the resized image and nothing else: the
@@ -3484,7 +3951,7 @@ def check_ftruncate (fd len : word) (eff : SyscallEffect) (m : Model) : check_re
   | some .FdUrandom => check_ret_only eff (errno_ret EINVAL) m []
   | some (.FdFile _ _) => check_ret_only eff (errno_ret EINVAL) m []
   | some .FdDir => check_ret_only eff (errno_ret EINVAL) m []
-  | some (.FdFileW p _) =>
+  | some (.FdFileA p _) =>
       match fs_lookup (m_fs m) p with
       | none => CheckUnmodeled
       | some data =>
@@ -3492,8 +3959,14 @@ def check_ftruncate (fd len : word) (eff : SyscallEffect) (m : Model) : check_re
           else
             check_ret_only eff (Z_to_bv 64 0)
               (with_fs (fs_set (m_fs m) p (file_truncate data len)) m) []
-  | some (.FdFileA _ _) => CheckUnmodeled
-  | some (.FdFileRW _ _) => CheckUnmodeled
+  | some (.FdFileW p _) | some (.FdFileRW p _) =>
+      match fs_lookup (m_fs m) p with
+      | none => CheckUnmodeled
+      | some data =>
+          if (!modeled_truncate_gap data len) then CheckUnmodeled
+          else
+            check_ret_only eff (Z_to_bv 64 0)
+              (with_fs (fs_set (m_fs m) p (file_truncate data len)) m) []
 
 /-- Rocq: `Checks.Sys.Fs.Open.check_ftruncate_sound_ok`.  A `CheckOk` is an
 outcome of the spec: an errno over the model unchanged, or the 0 over
@@ -3517,9 +3990,7 @@ theorem check_ftruncate_sound_ok (fd len : word) (eff : SyscallEffect) (m m' : M
     exact pure_ok _ i _
   | some e =>
     cases e
-    case FdFileA _ _ => cases h
-    case FdFileRW _ _ => cases h
-    case FdFileW p _ =>
+    case FdFileA p _ | FdFileW p _ | FdFileRW p _ =>
       dsimp only at h ⊢
       generalize fs_lookup (m_fs m) p = r at h ⊢
       cases r with
@@ -3554,9 +4025,7 @@ theorem check_ftruncate_sound_unmodeled (fd len : word) (eff : SyscallEffect) (m
   | none => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   | some e =>
     cases e
-    case FdFileA _ _ => exact unmodeled_intro i m
-    case FdFileRW _ _ => exact unmodeled_intro i m
-    case FdFileW p _ =>
+    case FdFileA p _ | FdFileW p _ | FdFileRW p _ =>
       dsimp only at h ⊢
       generalize fs_lookup (m_fs m) p = r at h ⊢
       cases r with
@@ -3594,9 +4063,7 @@ theorem check_ftruncate_complete_ok (fd len : word) (eff : SyscallEffect) (m m' 
     exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
   | some e =>
     cases e
-    case FdFileA _ _ => simp only [unmodeled_iff, reduceCtorEq] at h
-    case FdFileRW _ _ => simp only [unmodeled_iff, reduceCtorEq] at h
-    case FdFileW p _ =>
+    case FdFileA p _ | FdFileW p _ | FdFileRW p _ =>
       dsimp only at h ⊢
       generalize fs_lookup (m_fs m) p = r at h ⊢
       cases r with
@@ -3634,9 +4101,7 @@ theorem check_ftruncate_complete_unmodeled (fd len : word) (m : Model) (i : Sysc
   | none => simp only [err_ret, ret_only, pure_iff, reduceCtorEq] at h
   | some e =>
     cases e
-    case FdFileA _ _ => rfl
-    case FdFileRW _ _ => rfl
-    case FdFileW p _ =>
+    case FdFileA p _ | FdFileW p _ | FdFileRW p _ =>
       dsimp only at h ⊢
       generalize fs_lookup (m_fs m) p = r at h ⊢
       cases r with
@@ -3751,9 +4216,7 @@ theorem check_ftruncate_ok_model (fd len : word) (eff : SyscallEffect) (m m' : M
   | none => exact Or.inl ((check_ret_only_ok_iff _ _ _ _ _ _).mp h).2.1
   | some e =>
     cases e
-    case FdFileA _ _ => cases h
-    case FdFileRW _ _ => cases h
-    case FdFileW p _ =>
+    case FdFileA p _ | FdFileW p _ | FdFileRW p _ =>
       dsimp only at h
       generalize fs_lookup (m_fs m) p = r at h
       cases r with
@@ -3850,7 +4313,6 @@ def openat_core_witness (dirfd pathp flags : word) (i : SyscallInput) (m : Model
                   else if fl == append_create_flags then ret_outcome (errno_ret witness_errno) m
                   else if rdwr_open_word fl then ret_outcome (errno_ret witness_errno) m
                   else if is_rdwr_excl_create fl then ret_outcome (errno_ret EEXIST) m
-                  else if is_excl_append_create fl then ret_outcome (errno_ret EEXIST) m
                   else Unmodeled
           else if path_eqb p urandom_path then
             match fs_lookup (m_fs m) urandom_path with
@@ -3863,7 +4325,6 @@ def openat_core_witness (dirfd pathp flags : word) (i : SyscallInput) (m : Model
                   else if is_excl_create fl then ret_outcome (errno_ret EEXIST) m
                   else if fl == O_DIRECTORY then ret_outcome (errno_ret ENOTDIR) m
                   else if is_rdwr_excl_create fl then ret_outcome (errno_ret EEXIST) m
-                  else if is_excl_append_create fl then ret_outcome (errno_ret EEXIST) m
                   else Unmodeled
           else
             match tmp_name p with
@@ -3907,6 +4368,23 @@ def openat_core_witness (dirfd pathp flags : word) (i : SyscallInput) (m : Model
               match fs_lookup (m_fs m) p with
               | none => ret_outcome (errno_ret ENOENT) m
               | some _ => ret_outcome (errno_ret ENOTDIR) m
+          else if fl == append_create_flags then
+            if path_is_dirref p || fs_under (m_fs m) p then ret_outcome (errno_ret EISDIR) m
+            else ret_outcome (errno_ret witness_errno) m
+          else if rdwr_open_word fl then
+            if path_is_dirref p || fs_under (m_fs m) p then ret_outcome (errno_ret EISDIR) m
+            else
+              match fs_lookup (m_fs m) p with
+              | none =>
+                  if flag_set fl O_CREAT then ret_outcome (errno_ret witness_errno) m
+                  else ret_outcome (errno_ret ENOENT) m
+              | some _ => ret_outcome (errno_ret witness_errno) m
+          else if is_rdwr_excl_create fl then
+            if path_is_dirref p || fs_under (m_fs m) p then ret_outcome (errno_ret EEXIST) m
+            else
+              match fs_lookup (m_fs m) p with
+              | some _ => ret_outcome (errno_ret EEXIST) m
+              | none => ret_outcome (errno_ret witness_errno) m
           else Unmodeled
 
 /-- The `openat` witness: the core's outcome with the pathname copy-in
@@ -3930,6 +4408,22 @@ theorem open_result_spec_witness (m : Model) (mk : word → Model → Model) (i 
 theorem create_wronly_witness (p : path) (m : Model) (i : SyscallInput) :
     create_wronly p m i m (ret_outcome (errno_ret witness_errno) m) := by
   unfold create_wronly
+  apply alt_l
+  apply bind_step _ _ i m witness_errno m _ (errno_head_witness _ _ i m)
+  exact pure_ok _ i m
+
+/-- The same for `open_append`. -/
+theorem open_append_witness (p : path) (m : Model) (i : SyscallInput) :
+    open_append p m i m (ret_outcome (errno_ret witness_errno) m) := by
+  unfold open_append
+  apply alt_l
+  apply bind_step _ _ i m witness_errno m _ (errno_head_witness _ _ i m)
+  exact pure_ok _ i m
+
+/-- The same for `open_rdwr`, whatever image the arm computed. -/
+theorem open_rdwr_witness (p : path) (fs' : Fs.Fs) (m : Model) (i : SyscallInput) :
+    open_rdwr p fs' m i m (ret_outcome (errno_ret witness_errno) m) := by
+  unfold open_rdwr
   apply alt_l
   apply bind_step _ _ i m witness_errno m _ (errno_head_witness _ _ i m)
   exact pure_ok _ i m
@@ -4078,14 +4572,7 @@ theorem openat_core_witness_ok (dirfd pathp flags : word) (i : SyscallInput) (m 
                                   exact pure_ok _ i m
                                 | false =>
                                   simp only [Bool.false_eq_true, ↓reduceIte]
-                                  generalize is_excl_append_create fl = b
-                                  cases b with
-                                  | true =>
-                                    simp only [↓reduceIte]
-                                    exact pure_ok _ i m
-                                  | false =>
-                                    simp only [Bool.false_eq_true, ↓reduceIte]
-                                    exact unmodeled_intro i m
+                                  exact unmodeled_intro i m
               | false =>
                 simp only [Bool.false_eq_true, ↓reduceIte]
                 generalize path_eqb p urandom_path = b
@@ -4136,14 +4623,7 @@ theorem openat_core_witness_ok (dirfd pathp flags : word) (i : SyscallInput) (m 
                               exact pure_ok _ i m
                             | false =>
                               simp only [Bool.false_eq_true, ↓reduceIte]
-                              generalize is_excl_append_create fl = b
-                              cases b with
-                              | true =>
-                                simp only [↓reduceIte]
-                                exact pure_ok _ i m
-                              | false =>
-                                simp only [Bool.false_eq_true, ↓reduceIte]
-                                exact unmodeled_intro i m
+                              exact unmodeled_intro i m
                 | false =>
                   simp only [Bool.false_eq_true, ↓reduceIte]
                   generalize tmp_name p = r
@@ -4207,6 +4687,7 @@ theorem openat_core_witness_ok (dirfd pathp flags : word) (i : SyscallInput) (m 
           | false =>
             simp only [Bool.false_eq_true, ↓reduceIte]
             unfold openat_read_spec openat_create_spec openat_excl_spec openat_dir_spec
+              openat_append_spec openat_rdwr_spec openat_rdwr_excl_spec
             generalize bv_unsigned (bv_and flags (bv_not (Z_to_bv 64 open_ignored_flags))) = fl
             generalize (fl == 0) = b
             cases b with
@@ -4296,7 +4777,70 @@ theorem openat_core_witness_ok (dirfd pathp flags : word) (i : SyscallInput) (m 
                             exact pure_ok _ i m
                   | false =>
                     simp only [Bool.false_eq_true, ↓reduceIte]
-                    exact unmodeled_intro i m
+                    generalize (fl == append_create_flags) = b
+                    cases b with
+                    | true =>
+                      simp only [↓reduceIte]
+                      generalize (path_is_dirref p || fs_under (m_fs m) p) = b
+                      cases b with
+                      | true =>
+                        simp only [↓reduceIte]
+                        exact pure_ok _ i m
+                      | false =>
+                        simp only [Bool.false_eq_true, ↓reduceIte]
+                        exact open_append_witness p m i
+                    | false =>
+                      simp only [Bool.false_eq_true, ↓reduceIte]
+                      generalize rdwr_open_word fl = b
+                      cases b with
+                      | true =>
+                        simp only [↓reduceIte]
+                        generalize (path_is_dirref p || fs_under (m_fs m) p) = b
+                        cases b with
+                        | true =>
+                          simp only [↓reduceIte]
+                          exact pure_ok _ i m
+                        | false =>
+                          simp only [Bool.false_eq_true, ↓reduceIte]
+                          generalize fs_lookup (m_fs m) p = r
+                          cases r with
+                          | none =>
+                            dsimp only
+                            generalize flag_set fl O_CREAT = c
+                            cases c with
+                            | true =>
+                              simp only [↓reduceIte]
+                              exact open_rdwr_witness p _ m i
+                            | false =>
+                              simp only [Bool.false_eq_true, ↓reduceIte]
+                              exact pure_ok _ i m
+                          | some _ =>
+                            dsimp only
+                            exact open_rdwr_witness p _ m i
+                      | false =>
+                        simp only [Bool.false_eq_true, ↓reduceIte]
+                        generalize is_rdwr_excl_create fl = b
+                        cases b with
+                        | true =>
+                          simp only [↓reduceIte]
+                          generalize (path_is_dirref p || fs_under (m_fs m) p) = b
+                          cases b with
+                          | true =>
+                            simp only [↓reduceIte]
+                            exact pure_ok _ i m
+                          | false =>
+                            simp only [Bool.false_eq_true, ↓reduceIte]
+                            generalize fs_lookup (m_fs m) p = r
+                            cases r with
+                            | some _ =>
+                              dsimp only
+                              exact pure_ok _ i m
+                            | none =>
+                              dsimp only
+                              exact open_rdwr_witness p _ m i
+                        | false =>
+                          simp only [Bool.false_eq_true, ↓reduceIte]
+                          exact unmodeled_intro i m
 
 /-- Rocq: `Checks.Witness.Fs.Open.openat_witness_ok`. -/
 theorem openat_witness_ok (dirfd pathp flags : word) (i : SyscallInput) (m : Model) :
@@ -4527,10 +5071,9 @@ Mirrors the `ftruncate` half of
 checker section names.  `ftruncate_spec` has no `alt` and no `errno_from`,
 so the witness is the spec's own answer on each arm and draws nothing: an
 errno over the model unchanged, `Unmodeled` where the spec declines, and on
-the writable file the 0 over the resized image.  Rocq's `FdFileA` arm and
-the `FdFileRW` half of its `FdFileW | FdFileRW` arm are two of those
-declines (the checker section).  `ftruncate_witness_ok` is what the
-registration step's receptiveness field for 46 becomes. -/
+a writable file — `FdFileA` as much as `FdFileW` and `FdFileRW` — the 0
+over the resized image.  `ftruncate_witness_ok` is what the registration
+step's receptiveness field for 46 becomes. -/
 
 /-- Rocq: `Checks.Witness.Fs.Open.ftruncate_witness`. -/
 def ftruncate_witness (fd len : word) (m : Model) : outcome SyscallEffect :=
@@ -4545,14 +5088,18 @@ def ftruncate_witness (fd len : word) (m : Model) : outcome SyscallEffect :=
   | some .FdUrandom => ret_outcome (errno_ret EINVAL) m
   | some (.FdFile _ _) => ret_outcome (errno_ret EINVAL) m
   | some .FdDir => ret_outcome (errno_ret EINVAL) m
-  | some (.FdFileW p _) =>
+  | some (.FdFileA p _) =>
       match fs_lookup (m_fs m) p with
       | none => Unmodeled
       | some data =>
           if (!modeled_truncate_gap data len) then Unmodeled
           else ret_outcome (Z_to_bv 64 0) (with_fs (fs_set (m_fs m) p (file_truncate data len)) m)
-  | some (.FdFileA _ _) => Unmodeled
-  | some (.FdFileRW _ _) => Unmodeled
+  | some (.FdFileW p _) | some (.FdFileRW p _) =>
+      match fs_lookup (m_fs m) p with
+      | none => Unmodeled
+      | some data =>
+          if (!modeled_truncate_gap data len) then Unmodeled
+          else ret_outcome (Z_to_bv 64 0) (with_fs (fs_set (m_fs m) p (file_truncate data len)) m)
 
 /-- Rocq: `Checks.Witness.Fs.Open.ftruncate_witness_ok`; the proof keeps
 its shape — the length gate, one `bind_step` over the `get_model`, then the
@@ -4571,9 +5118,7 @@ theorem ftruncate_witness_ok (fd len : word) (i : SyscallInput) (m : Model) :
   | none => exact pure_ok _ i _
   | some e =>
     cases e
-    case FdFileA _ _ => exact unmodeled_intro i m
-    case FdFileRW _ _ => exact unmodeled_intro i m
-    case FdFileW p _ =>
+    case FdFileA p _ | FdFileW p _ | FdFileRW p _ =>
       dsimp only
       generalize fs_lookup (m_fs m) p = r
       cases r with

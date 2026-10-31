@@ -1,24 +1,21 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Fs/Stat.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Time.PosixTimers
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Stat
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Checks.Sys.Fs.Stat — the readlinkat (78), newfstatat (79) and fstat (80) checkers, and their witnesses
 
 Twin of `theories/LinuxProcessSem/Checks/Sys/Fs/Stat.v` (the checkers) and
 `theories/LinuxProcessSem/Checks/Witness/Fs/Stat.v` (the witnesses), both
-read at the day branch's a71fd38a, where they are byte-identical to this
-tree's HEAD.  The checkers are the computable side of `Sys/Fs/Stat.lean`'s
+read at the f1006fe8 named above, which is the commit
+`Sys/Fs/Stat.lean` names too.  The checkers are the computable side of
+`Sys/Fs/Stat.lean`'s
 specs and are NOT part of the trusted specification: what a run may trust
 is the spec, and the lemmas here are what lets a verdict of a checker stand
-for an answer of the spec.  The ticket names f44244ad as the common
-baseline; that commit predates the `/dev/null` and `/dev/urandom` arms
-(`check_fstat_chrdev`, `check_fstat_urandom`, the `stat_chrdev_witness_base`
-family), and `Sys/Fs/Stat.lean`'s `fstat_spec` already carries both at its
-own a71fd38a header, so a checker read at f44244ad could not be total over
-its `FdEntry` match.
+for an answer of the spec.
 
 The two Rocq files are one Lean module because the witnesses close
 `ca_receptive` for the same `CheckedArm` the checkers close `ca_sound_*`
@@ -49,7 +46,7 @@ WHAT IS NOT HERE, AND WHOSE IT IS.  Rocq builds `arm_readlinkat`,
 proves `check_readlinkat_frame`, `check_newfstatat_frame` and
 `check_fstat_frame` in `Checks/VmMapsDisjoint.v`.  In the Lean port those
 are the registration step of the conformance ticket for these arms, not
-this file's (BRIEF.md section 5, the CHECK and VERIFY blocks): the
+this file's: the
 checkers land on the two preludes and the spec alone, and the checked
 table's rows, the frame lemmas and the per-arm alternatives of the
 `vm_maps` preservation proof are written when the arms are registered.
@@ -113,7 +110,7 @@ answers -EINVAL at two sites.  The first is its `bufsiz <= 0` gate
 (fs/stat.c:571-572), taken before `getname_flags` (:575) reads a byte: for
 that half of the calls the spec's errno and its empty ledger are the
 kernel's own, whatever the name (the spec never reads `bufsiz`, so it
-cannot tell the halves apart; bugs/readlinkat-path-not-interpreted.md
+cannot tell the halves apart; linux-process-semantics@ff0313ba4f:bugs/readlinkat-path-not-interpreted.md
 names the gate).  The second is the `else` arm (fs/stat.c:592-594,
 v6.18.46; the errno is the ternary at :593), which a call with a positive `bufsiz`
 reaches only for a name that RESOLVES to something other than a symlink —
@@ -122,7 +119,7 @@ is about that half.  A name that resolves to nothing is -ENOENT from
 `filename_lookup` (fs/namei.c:2697-2705, Linux v6.18.46), which
 `do_readlinkat` reaches before its `else` arm (fs/stat.c:576-579, Linux
 v6.18.46), and the spec answers -EINVAL there too: one of the class of false
-rejections bugs/readlinkat-path-not-interpreted.md records.  The class has a
+rejections linux-process-semantics@ff0313ba4f:bugs/readlinkat-path-not-interpreted.md records.  The class has a
 member that entry does not list yet: `lookup_flags` is `LOOKUP_EMPTY` from the
 start (fs/stat.c:569, Linux v6.18.46), so an empty name passes
 `getname_flags`, which refuses it only without that flag (fs/namei.c:167-171,
@@ -1166,8 +1163,8 @@ def check_fstat (i : SyscallInput) (fd statbuf : word) (eff : SyscallEffect) (m 
   | some (.FdChannel _) => CheckUnmodeled
   | some (.FdFile p _) => check_fstat_file i p statbuf eff m
   | some (.FdFileW p _) => check_fstat_file i p statbuf eff m
-  | some (.FdFileA _ _) => CheckUnmodeled
-  | some (.FdFileRW _ _) => CheckUnmodeled
+  | some (.FdFileA p _) => check_fstat_file i p statbuf eff m
+  | some (.FdFileRW p _) => check_fstat_file i p statbuf eff m
   | some .FdDir => CheckUnmodeled
   | some (.FdSocket _) => CheckUnmodeled
   | some (.FdPipe _ _) => CheckUnmodeled
@@ -1175,16 +1172,18 @@ def check_fstat (i : SyscallInput) (fd statbuf : word) (eff : SyscallEffect) (m 
   | some .FdUrandom => check_fstat_urandom i statbuf eff m
 
 /-- Rocq: `Stat.fstat_witness` (Checks/Witness/Fs/Stat.v).  Its `FdFileRW`
-and `FdFileA` arms decline, as `check_fstat`'s and the spec twin's do
-(`Sys/Fs/Stat.lean`'s header). -/
+and `FdFileA` arms go through `fstat_file_witness`, as `check_fstat`'s and
+the spec twin's do (`Sys/Fs/Stat.lean`'s header): the four file kinds
+share one inode, and `struct stat` has no member the access mode or
+`f_flags` decides. -/
 def fstat_witness (fd statbuf : word) (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | none => ret_outcome (errno_ret EBADF) m
   | some (.FdChannel _) => Unmodeled
   | some (.FdFile p _) => fstat_file_witness p statbuf i m
   | some (.FdFileW p _) => fstat_file_witness p statbuf i m
-  | some (.FdFileA _ _) => Unmodeled
-  | some (.FdFileRW _ _) => Unmodeled
+  | some (.FdFileA p _) => fstat_file_witness p statbuf i m
+  | some (.FdFileRW p _) => fstat_file_witness p statbuf i m
   | some .FdDir => Unmodeled
   | some (.FdSocket _) => Unmodeled
   | some (.FdPipe _ _) => Unmodeled
@@ -1210,8 +1209,8 @@ theorem check_fstat_sound_ok (i : SyscallInput) (fd statbuf : word) (eff : Sysca
     · cases h                                                     -- FdChannel
     · exact check_fstat_file_sound_ok _ _ _ _ _ _ _ h             -- FdFile
     · exact check_fstat_file_sound_ok _ _ _ _ _ _ _ h             -- FdFileW
-    · cases h
-    · cases h                                                     -- FdFileRW
+    · exact check_fstat_file_sound_ok _ _ _ _ _ _ _ h             -- FdFileA
+    · exact check_fstat_file_sound_ok _ _ _ _ _ _ _ h             -- FdFileRW
     · cases h                                                     -- FdDir
     · cases h                                                     -- FdSocket
     · cases h                                                     -- FdPipe
@@ -1235,8 +1234,8 @@ theorem check_fstat_sound_unmodeled (i : SyscallInput) (fd statbuf : word) (eff 
     · exact unmodeled_intro i m                                   -- FdChannel
     · exact check_fstat_file_sound_unmodeled _ _ _ _ _ h          -- FdFile
     · exact check_fstat_file_sound_unmodeled _ _ _ _ _ h          -- FdFileW
-    · exact unmodeled_intro i m
-    · exact unmodeled_intro i m                                   -- FdFileRW
+    · exact check_fstat_file_sound_unmodeled _ _ _ _ _ h          -- FdFileA
+    · exact check_fstat_file_sound_unmodeled _ _ _ _ _ h          -- FdFileRW
     · exact unmodeled_intro i m                                   -- FdDir
     · exact unmodeled_intro i m                                   -- FdSocket
     · exact unmodeled_intro i m                                   -- FdPipe
@@ -1263,8 +1262,8 @@ theorem check_fstat_complete_ok (i : SyscallInput) (fd statbuf : word) (eff : Sy
     · rw [unmodeled_iff] at hb; cases hb                          -- FdChannel
     · exact check_fstat_file_complete_ok _ _ _ _ _ _ _ hb         -- FdFile
     · exact check_fstat_file_complete_ok _ _ _ _ _ _ _ hb         -- FdFileW
-    · rw [unmodeled_iff] at hb; cases hb
-    · rw [unmodeled_iff] at hb; cases hb                          -- FdFileRW
+    · exact check_fstat_file_complete_ok _ _ _ _ _ _ _ hb         -- FdFileA
+    · exact check_fstat_file_complete_ok _ _ _ _ _ _ _ hb         -- FdFileRW
     · rw [unmodeled_iff] at hb; cases hb                          -- FdDir
     · rw [unmodeled_iff] at hb; cases hb                          -- FdSocket
     · rw [unmodeled_iff] at hb; cases hb                          -- FdPipe
@@ -1288,6 +1287,8 @@ theorem check_fstat_complete_unmodeled (i : SyscallInput) (fd statbuf : word) (m
     cases e <;> simp only [hfd] at hb ⊢
     · exact check_fstat_file_complete_unmodeled _ _ _ _ _ hb      -- FdFile
     · exact check_fstat_file_complete_unmodeled _ _ _ _ _ hb      -- FdFileW
+    · exact check_fstat_file_complete_unmodeled _ _ _ _ _ hb      -- FdFileA
+    · exact check_fstat_file_complete_unmodeled _ _ _ _ _ hb      -- FdFileRW
     · exact check_fstat_chrdev_complete_unmodeled _ _ _ _ _ _ hb  -- FdDevNull
     · exact check_fstat_chrdev_complete_unmodeled _ _ _ _ _ _ hb  -- FdUrandom
 
@@ -1306,8 +1307,8 @@ theorem fstat_witness_ok (fd statbuf : word) (i : SyscallInput) (m : Model) :
     · exact unmodeled_intro i m                                   -- FdChannel
     · exact fstat_file_witness_ok _ _ i m                         -- FdFile
     · exact fstat_file_witness_ok _ _ i m                         -- FdFileW
-    · exact unmodeled_intro i m
-    · exact unmodeled_intro i m                                   -- FdFileRW
+    · exact fstat_file_witness_ok _ _ i m                         -- FdFileA
+    · exact fstat_file_witness_ok _ _ i m                         -- FdFileRW
     · exact unmodeled_intro i m                                   -- FdDir
     · exact unmodeled_intro i m                                   -- FdSocket
     · exact unmodeled_intro i m                                   -- FdPipe

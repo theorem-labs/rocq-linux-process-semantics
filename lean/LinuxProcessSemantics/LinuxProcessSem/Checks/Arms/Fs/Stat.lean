@@ -294,8 +294,10 @@ theorem check_fstat_frame (i : SyscallInput) (fd statbuf : word)
   · cases h
   · exact check_fstat_file_frame _ _ _ _ _ _ _ h
   · exact check_fstat_file_frame _ _ _ _ _ _ _ h
-  · cases h
-  · cases h
+  -- `FdFileA` and `FdFileRW` go through `check_fstat_file` with the other
+  -- two file kinds, so they take the file frame, not a decline.
+  · exact check_fstat_file_frame _ _ _ _ _ _ _ h
+  · exact check_fstat_file_frame _ _ _ _ _ _ _ h
   · cases h
   · cases h
   · cases h
@@ -363,8 +365,14 @@ theorem check_fstat_fd_state_frame (i : SyscallInput) (fd statbuf : word)
   · cases Arms.check_fstat_file_ok_post _ _ _ _ _ _ _ h with
     | inl hm => simp only [hm]
     | inr hp => obtain ⟨_, rfl⟩ := hp; rfl
-  · cases h
-  · cases h
+  -- The two file kinds added to `check_fstat`'s file arm: same post-model
+  -- case split as `FdFile` and `FdFileW` above.
+  · cases Arms.check_fstat_file_ok_post _ _ _ _ _ _ _ h with
+    | inl hm => simp only [hm]
+    | inr hp => obtain ⟨_, rfl⟩ := hp; rfl
+  · cases Arms.check_fstat_file_ok_post _ _ _ _ _ _ _ h with
+    | inl hm => simp only [hm]
+    | inr hp => obtain ⟨_, rfl⟩ := hp; rfl
   · cases h
   · cases h
   · cases h

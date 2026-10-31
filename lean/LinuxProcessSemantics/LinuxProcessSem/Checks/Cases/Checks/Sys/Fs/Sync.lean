@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Sync.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs.Sync
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.Sync
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
@@ -266,7 +267,7 @@ theorem nonzero_success_rejected :
 copied into an arm that has no such test — fs/sync.c consults `f_mode`
 nowhere.  A kernel answering -EBADF on the read-only file is refused
 outright.  -EINVAL is refused on a PREMISE the spec twin's header states
-and `bugs/fsync-dirfd-premise-widened-by-dotdot.md` records: the file sits
+and `linux-process-semantics@ff0313ba4f:bugs/fsync-dirfd-premise-widened-by-dotdot.md` records: the file sits
 on ext4 or tmpfs, whose regular files carry an `.fsync`
 (`ext4_file_operations`, fs/ext4/file.c:963-983, the member at :975).  A
 read-only image filesystem's do not — `generic_ro_fops`
@@ -308,7 +309,7 @@ fs/libfs.c:1629-1632), so the -EINVAL a procfs or sysfs directory would
 give — `proc_dir_operations` (fs/proc/generic.c:346-350) and
 `kernfs_dir_fops` (fs/kernfs/dir.c:1924-1929) set no `.fsync`, which
 `vfs_fsync_range` answers with -EINVAL (fs/sync.c:183-184) — is refused
-here; `bugs/fsync-dirfd-premise-widened-by-dotdot.md` records what that
+here; `linux-process-semantics@ff0313ba4f:bugs/fsync-dirfd-premise-widened-by-dotdot.md` records what that
 premise costs.
 kernel: fs/sync.c:vfs_fsync_range; fs/ext4/fsync.c:ext4_sync_file; fs/libfs.c:noop_fsync@v6.18.46 -/
 theorem dir_einval_rejected :
@@ -703,8 +704,6 @@ theorem check_fsync_accepts_its_witness (fd : word) (m : Model) (e : SyscallEffe
     exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
   | some k =>
     cases k
-    case FdFileA _ _ => cases h
-    case FdFileRW _ _ => cases h
     all_goals
       (dsimp only at h ⊢
        unfold ret_outcome at h
@@ -712,25 +711,20 @@ theorem check_fsync_accepts_its_witness (fd : word) (m : Model) (e : SyscallEffe
        subst he hm hevs
        exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩)
 
-/-- …and the witness declines at no fd and no model but at an append-mode
-or a read-write file, the fail-closed answer a witness of this syscall
-must not give where the spec answers: `fsync_spec` declines nothing else
-(its header declares those two declines, and
-`fsync_never_unmodeled_on_kinds` in `Checks/Cases/Fs/Sync.lean` refutes
-one on every other kind), and neither does its witness.
-model: `fsync_witness`'s shape, an `Ok` on every arm of the lookup but two -/
-theorem fsync_witness_is_never_unmodeled (fd : word) (m : Model)
-    (ha : ∀ p pos, fd_lookup (m_fds m) fd ≠ some (.FdFileA p pos))
-    (hrw : ∀ p pos, fd_lookup (m_fds m) fd ≠ some (.FdFileRW p pos)) :
+/-- …and the witness declines at no fd and no model at all, the
+fail-closed answer a witness of this syscall must not give where the spec
+answers: `fsync_spec` declines nothing
+(`fsync_never_unmodeled_on_kinds` in `Checks/Cases/Fs/Sync.lean` refutes
+a decline on every kind), and neither does its witness.
+model: `fsync_witness`'s shape, an `Ok` on every arm of the lookup -/
+theorem fsync_witness_is_never_unmodeled (fd : word) (m : Model) :
     fsync_witness fd m ≠ Unmodeled := by
   unfold fsync_witness
-  generalize fd_lookup (m_fds m) fd = r at ha hrw ⊢
+  generalize fd_lookup (m_fds m) fd = r
   cases r with
   | none => exact fun h => nomatch h
   | some k =>
     cases k
-    case FdFileA p pos => exact absurd rfl (ha p pos)
-    case FdFileRW p pos => exact absurd rfl (hrw p pos)
     all_goals exact fun h => nomatch h
 
 -- lean-port sentinel: ticket V-Fs-Sync

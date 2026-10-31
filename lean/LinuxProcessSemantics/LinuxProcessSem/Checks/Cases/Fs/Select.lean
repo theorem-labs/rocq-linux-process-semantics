@@ -1,8 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Select.v
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
 
-/-! rocq-cases: a71fd38a08571d519b9cfc5f66308db5c26da570
+/-! rocq-cases: f1006fe8178338a499b5e5c41be83006c4edd058
 covers: pselect_a_file_counts_once_per_set -- a_file_counts_once_per_set, a_descriptor_count_is_rejected
 covers: pselect_exceptfds_comes_back_zeroed -- exceptfds_comes_back_zeroed, an_exceptional_file_is_rejected
 covers: pselect_bits_at_or_above_n_are_invisible -- bits_at_or_above_n_are_invisible, a_bit_above_n_surviving_is_rejected
@@ -86,10 +87,11 @@ array raise `maxRecDepth`, as `Checks/Cases/Sys/Uapi/Fs.lean` does, since a
 248-byte list is past that default too.  Each is a limit of the tactic,
 recorded here so the next file does not rediscover it.
 
-ONE DECLINE IS THE LEAN TWIN'S ALONE.  `nfds = 0` with a kernel-space `ufds`
-is declined by `Sys/Fs/Select.lean`'s `ppoll_core` where Rocq answers 0 and
-Linux -EFAULT (its docstring has the lines); the two pins under "the
-zero-length call" state the decline and refuse the 0.
+`nfds = 0` ANSWERS 0 FOR ANY `ufds`, wherever it points.  Linux answers
+-EFAULT for a `ufds` above `TASK_SIZE`, so the three pins under "the
+zero-length call" state the 0 this spec gives and refuse that -EFAULT;
+`ppoll_core`'s docstring in `Sys/Fs/Select.lean` has the kernel lines
+and names the Rocq defect note the answer rests on.
 
 NOTHING HERE COMPARES THE LEAN SPEC TO THE ROCQ ONE.  What these pins prove
 is that this spec and a named line of Linux agree. -/
@@ -978,7 +980,7 @@ theorem the_normalized_deadline_is_rejected (m' : Model) (evs : List event) :
 (fs/select.c:688-690, Linux v6.18.46) and the last write wins; the effect ledger names the
 writes in that same order.  No memory snapshot can observe two writes to one
 address, which is why these are pinned here and recorded in
-bugs/pselect6-overlapping-sets.md. -/
+linux-process-semantics@ff0313ba4f:bugs/pselect6-overlapping-sets.md. -/
 
 /-- `readfds` aliased with `exceptfds`, the pair whose two words DIFFER: the
 file is readable but never exceptional, so the address takes the imported
@@ -1416,47 +1418,48 @@ theorem ppoll_nfds_zero_never_dereferences_ufds (o : outcome SyscallEffect) :
 Linux v6.18.46) runs at `nfds = 0` too; on riscv64 it is `user_access_begin`
 (arch/riscv/include/asm/uaccess.h:456-462, Linux v6.18.46), which is
 `access_ok`, and `__access_ok` (include/asm-generic/access_ok.h:31-41, Linux
-v6.18.46) with a size of 0 is
-`addr <= TASK_SIZE_MAX`.  A pointer above `TASK_SIZE` fails it and the call
-is -EFAULT (`err`, :971).  Rocq's spec answers 0 there; the Lean twin
-declines, for the reason its `ppoll_core` docstring gives. -/
+v6.18.46) with a size of 0 is `addr <= TASK_SIZE_MAX`.  A pointer above
+`TASK_SIZE` fails it and the call is -EFAULT (`err`, :971).  This spec
+answers 0 there, as Rocq does; the difference is recorded in
+linux-process-semantics@ff0313ba4f:bugs/ppoll-nfds-zero-answers-a-kernel-space-ufds.md
+and is corrected in Rocq, not here. -/
 
 /-- `nfds = 0` with `ufds` in the kernel half of the address space is
-declined: Linux answers -EFAULT through `access_ok`, and Rocq's 0 is not an
-answer this twin may keep.
+answered 0, the answer the zero-length call gives for any pointer.
 kernel: fs/select.c:do_sys_poll; arch/riscv/include/asm/uaccess.h:user_access_begin; include/asm-generic/access_ok.h:__access_ok@v6.18.46 -/
-theorem ppoll_nfds_zero_with_a_kernel_space_ufds_is_declined (o : outcome SyscallEffect) :
+theorem ppoll_nfds_zero_with_a_kernel_space_ufds_is_zero (o : outcome SyscallEffect) :
     syscall_spec (pp_in (Z_to_bv 64 0xffff800000000000) 0 pp_tsp 0 0
         (bytes_at pp_tsp (pp_ts 0 0)) pp_wmem) pselect_model o
-      ↔ o = Unmodeled := by
+      ↔ o = Ok (mkEffect 0 [] []) pselect_model [] := by
   sys_norm
 
-/-- …and in particular the 0 the Rocq spec answers is refused.
+/-- …and in particular the -EFAULT Linux gives there is not an outcome of
+this spec: the difference is the recorded defect, not a second answer.
 kernel: fs/select.c:do_sys_poll; arch/riscv/include/asm/uaccess.h:user_access_begin; include/asm-generic/access_ok.h:__access_ok@v6.18.46 -/
-theorem ppoll_zero_for_a_kernel_space_ufds_is_rejected (m' : Model) (evs : List event) :
+theorem ppoll_efault_for_a_kernel_space_ufds_is_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (pp_in (Z_to_bv 64 0xffff800000000000) 0 pp_tsp 0 0
         (bytes_at pp_tsp (pp_ts 0 0)) pp_wmem) pselect_model
-        (Ok (mkEffect 0 [] []) m' evs) := by
+        (Ok (mkEffect (errno_ret EFAULT) [] []) m' evs) := by
   sys_refute
 
 /-- THE EDGE IS `TASK_SIZE` ITSELF.  `__access_ok` with a size of 0 accepts
 `addr <= TASK_SIZE_MAX - 0` (include/asm-generic/access_ok.h:40), so a `ufds`
-exactly at the top of user space passes and the zero-length call is
-answered 0, as it is for any user-space pointer.
+exactly at the top of user space passes it in Linux; the zero-length call is
+answered 0 here, as it is for any pointer.
 kernel: fs/select.c:do_sys_poll; include/asm-generic/access_ok.h:__access_ok@v6.18.46 -/
 theorem ppoll_nfds_zero_at_the_top_of_user_space_is_answered (o : outcome SyscallEffect) :
     syscall_spec (pp_in user_top 0 pp_tsp 0 0 (bytes_at pp_tsp (pp_ts 0 0)) pp_wmem) pselect_model o
       ↔ o = Ok (mkEffect 0 [] []) pselect_model [] := by
   sys_norm
 
-/-- …and one byte above it is declined: Linux answers -EFAULT there, and
-QEMU 11.1.1's `do_ppoll` (linux-user/syscall.c:1553-1563) never looks at the
-pointer when `nfds` is 0 and answers 0, so no single answer is in the
-intersection.
+/-- …and one byte above it is answered 0 as well, which is where this
+spec and Linux part company: Linux answers -EFAULT there.  QEMU 11.1.1's
+`do_ppoll` (linux-user/syscall.c:1553-1563) never looks at the pointer
+when `nfds` is 0 and answers 0, as this spec does.
 kernel: fs/select.c:do_sys_poll; include/asm-generic/access_ok.h:__access_ok@v6.18.46 -/
-theorem ppoll_nfds_zero_one_byte_above_user_space_is_declined (o : outcome SyscallEffect) :
+theorem ppoll_nfds_zero_one_byte_above_user_space_is_zero (o : outcome SyscallEffect) :
     syscall_spec (pp_in (user_top + 1) 0 pp_tsp 0 0 (bytes_at pp_tsp (pp_ts 0 0)) pp_wmem) pselect_model o
-      ↔ o = Unmodeled := by
+      ↔ o = Ok (mkEffect 0 [] []) pselect_model [] := by
   sys_norm
 
 /-- TWO ENTRIES, TWO WRITES, EACH AT ITS OWN OFFSET.  `do_sys_poll` writes
@@ -1690,8 +1693,9 @@ whose `f_op` has no `.poll` whatever its access mode, and the request
 mask keeps POLLIN|POLLOUT.  That the modeled file has no `.poll` is a
 premise about the image (a tmpfs cwd), not a fact about S_IFREG:
 `Sys/Fs/Select.lean`'s header and
-bugs/pselect6-unchecked-environment-obligations.md carry it.  The pinned
-guest answers exactly this on `testing/syscall-check/tests/ppoll_spec.c`'s
+linux-process-semantics@ff0313ba4f:bugs/pselect6-unchecked-environment-obligations.md
+carry it.  The pinned guest answers exactly this on
+linux-process-semantics@ff0313ba4f:testing/syscall-check/tests/ppoll_spec.c's
 `rdwr` case.  The `iff` refuses every other outcome, the idle 0 with
 zeroed `revents` among them.
 kernel: fs/select.c:do_pollfd@v6.18.46 -/
@@ -1732,8 +1736,9 @@ for a file whose `f_op` has no `.poll` whatever its access mode, and the
 request mask keeps POLLIN|POLLOUT.  That the modeled file has no `.poll`
 is a premise about the image (a tmpfs cwd), not a fact about S_IFREG:
 `Sys/Fs/Select.lean`'s header and
-bugs/pselect6-unchecked-environment-obligations.md carry it.  The `iff`
-refuses every other outcome, the idle 0 with zeroed `revents` among them.
+linux-process-semantics@ff0313ba4f:bugs/pselect6-unchecked-environment-obligations.md
+carry it.  The `iff` refuses every other outcome, the idle 0 with zeroed
+`revents` among them.
 kernel: fs/select.c:do_pollfd@v6.18.46 -/
 theorem a17_ppoll_append_polls_as_any_other (o : outcome SyscallEffect) :
     syscall_spec (pp_in pp_ufds 1 0 0 0 (bytes_at pp_ufds (pp_entry 3 5)) pp_wmem)

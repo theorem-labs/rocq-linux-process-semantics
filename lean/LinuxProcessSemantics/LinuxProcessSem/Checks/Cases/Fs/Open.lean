@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Open.v
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.StreamLaws
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
@@ -41,18 +42,16 @@ read), `getname_flags` (the three fetch answers, before the dirfd),
 family answered ahead of the separator decline.
 
 A DECLINE HERE IS A COVERAGE GAP, NOT AN EMPTY INTERSECTION, unless the pin
-says otherwise.  Two groups of `Unmodeled` below are declines Rocq does not
-make (the header of `Sys/Fs/Open.lean` names them): the append word and the
-read-write words on a plain name, whose arms mint `FdFileA` and `FdFileRW`,
-kinds every spec arm that would write or resize either descriptor, or read
-the read-write one, declines so far.  Each is pinned with the kernel's real
-answer REFUSED beside the `Unmodeled`, so a later arm has to land the state
-before it can answer.  The rest are Rocq's own declines: a flag word outside
-the interpreted set, a dirfd other than AT_FDCWD, a separator-bearing path,
-the O_DIRECTORY arm's two guards, the two device arms' image guards, and the
-`/tmp` arm's ruling (issue #562): every word but the create word and a read
-of a held name, a second component, a component over NAME_MAX, and a READ of
-an implied directory (whose create word now answers -EISDIR instead).
+says otherwise.  Every decline below is Rocq's own: a flag word outside
+the interpreted set — O_WRONLY|O_CREAT|O_EXCL|O_APPEND, with or without
+O_TRUNC, among them — a dirfd other than AT_FDCWD, a separator-bearing
+path, the O_DIRECTORY arm's two guards, the two device arms' image
+guards, and the `/tmp` arm's two answered words: every other word, and a
+read of a name the run does not hold, a second component, a component
+over NAME_MAX, and a READ of an implied directory (whose create word
+answers -EISDIR instead).  The append word and the six read-write words
+are ANSWERED, each by the arm Rocq gives it, and mint `FdFileA` and
+`FdFileRW`.
 
 THE ROCQ WORKED CASES, and where each lives here.  This is a prose
 register that no tool reads: `check_lean_cases_parity.py` (T9) judges only
@@ -70,13 +69,21 @@ its reason:
 - `openat_empty_path_enoent` → `empty_path_is_enoent`
 - `o_nonblock_is_an_ignored_open_flag` → `nonblock_read_lands_where_read_does`
   and siblings under "build_open_flags: the ignored bits"; its
-  `O_RDWR|O_NONBLOCK = O_RDWR` conjunct is `rdwr_nonblock_declines`, and its
-  append and read-write conjuncts are the declared declines pinned under
-  "the declared declines"
+  `O_RDWR|O_NONBLOCK = O_RDWR` conjunct is
+  `rdwr_nonblock_lands_where_rdwr_does`, and its append conjunct is
+  `append_nonblock_lands_where_append_does`, both under "the append word
+  and the six read-write words"
 - `openat_append_flag_word`, `openat_rdwr_flag_words`, `openat_rdwr_errnos`,
-  `openat_rdwr_dirref`, `openat_implied_directory_other_write_words`:
-  UNPINNED — their arms are the declared declines; what is pinned is that
-  each such word is `Unmodeled` and that the kernel's success is refused
+  `openat_rdwr_dirref` → the "append word and the six read-write words"
+  section
+- `openat_implied_directory_other_write_words` →
+  `append_word_implied_directory_is_eisdir`,
+  `rdwr_create_implied_directory_is_eisdir`,
+  `rdwr_create_implied_directory_fd_rejected`,
+  `rdwr_create_trunc_implied_directory_is_eisdir`,
+  `rdwr_implied_directory_is_eisdir`,
+  `rdwr_trunc_implied_directory_is_eisdir`,
+  `rdwr_excl_implied_directory_is_eexist`
 - `openat_absolute_create_unmodeled` → `absolute_create_declines_a_success`,
   `absolute_create_declines_an_enoent`
 - `openat_plain_create_still_mints_the_key` → `plain_create_mints_the_key`
@@ -102,8 +109,9 @@ its reason:
   (46) leg is `devnull_ftruncate_is_einval` in the ftruncate part; the
   read (63), write (64), lseek (62), pread64 (67) and pwrite64 (68) legs
   belong to the ReadWrite twin's Cases file, and the fstat, dup, fcntl,
-  flock, fsync, ioctl and getdents64 legs to those twins' own.  The open
-  half is pinned here
+  flock, fsync, ioctl and getdents64 legs to those twins' own — the
+  ioctl legs being the TCGETS that `FdDevNull` answers -ENOTTY and the
+  FIONBIO (0x5421) that stays declined.  The open half is pinned here
 - `openat_dotdot_answers_as_dot_does` → the "handle_dots" section
 - `openat_dot3_is_an_ordinary_name` → `dot3_is_an_ordinary_name`
 - `openat_empty_path_beats_o_creat` → `empty_path_beats_o_creat`,
@@ -124,8 +132,17 @@ its reason:
   `urandom_ftruncate_is_einval` in the ftruncate part; the read (63),
   write (64), lseek (62), pread64 (67) and pwrite64 (68) legs belong to
   the ReadWrite twin's Cases file, and the fstat, dup, fcntl, flock,
-  fsync, ioctl and getdents64 legs to those twins' own.  The open half is
-  pinned here
+  fsync, ioctl and getdents64 legs to those twins' own — pwrite64 and
+  writev being the two -EBADFs.  The open half is pinned here
+- `image_input_tmp`, `image_input`, `key_of`, `devnull_key`,
+  `localtime_key`, `urandom_key`, `devnull_relative_key`,
+  `localtime_relative_key`, `urandom_relative_key`,
+  `not_in_bytes_of_existsb`, `device_key_images_are_not_relative`,
+  `device_key_inputs_are_not_valid`, `relative_key_inputs_are_valid` →
+  the "images those three declines are about" section, under the same
+  names; `device_opens_answer_on_a_valid_image` →
+  `devnull_opens_on_a_valid_image`, `urandom_opens_on_a_valid_image`,
+  `localtime_answers_on_a_valid_image`
 - `openat_tmp_create_read_unlink` → `tmp_create_mints_the_key`,
   `tmp_create_on_held_key_empties_it`, `tmp_read_held_mints_the_reader`,
   `tmp_create_cloexec_lands_where_create_does`,
@@ -219,9 +236,6 @@ theorem append_create_flags_is_1089 : append_create_flags = 1089 := by decide
 /-- The exclusive read-write create word: 2 + 64 + 128.
 kernel: include/uapi/asm-generic/fcntl.h:O_RDWR,O_CREAT,O_EXCL@v6.18.46 -/
 theorem rdwr_excl_create_flags_is_194 : rdwr_excl_create_flags = 194 := by decide
-/-- The exclusive append create word: 1 + 64 + 128 + 1024.
-kernel: include/uapi/asm-generic/fcntl.h:O_WRONLY,O_CREAT,O_EXCL,O_APPEND@v6.18.46 -/
-theorem excl_append_create_flags_is_1217 : excl_append_create_flags = 1217 := by decide
 /-- The ignored bits: 524288 + 32768 + 2048.
 kernel: include/uapi/asm-generic/fcntl.h:O_CLOEXEC,O_LARGEFILE,O_NONBLOCK@v6.18.46 -/
 theorem open_ignored_flags_is_559104 : open_ignored_flags = 559104 := by decide
@@ -995,12 +1009,11 @@ theorem append_trunc_fd_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (openat_in [102] 1601) have_model (forged 3 2 m' evs) := by
   sys_refute
 
-/-- The append word with O_EXCL (1217), the exclusive append word (#1752),
-on the existing "f": Linux answers -EEXIST (`do_open`, fs/namei.c:3949-3950,
-Linux v6.18.46), and Rocq's arm for the word (`Open.openat_append_spec`)
-answers it too; this twin declines the word before that arm, which is
-unported because its creation mints `FdFileA` (file header).
-The probe's `exists` case (openat_excl_append.c) is the kernel's -EEXIST.
+/-- The append word with O_EXCL (1217), the exclusive append word, on the
+existing "f": Linux answers -EEXIST (`do_open`, fs/namei.c:3949-3950,
+Linux v6.18.46), and Rocq does not — the word is outside
+`Open.modeled_open_flags`, so the flag gate declines it before the
+pathname is fetched and no arm sees it.
 kernel: fs/namei.c:do_open@v6.18.46 -/
 theorem append_excl_declines (o : outcome SyscallEffect) :
     syscall_spec (openat_in [102] 1217) have_model o ↔ o = Unmodeled := by
@@ -1052,6 +1065,21 @@ another word.
 kernel: fs/namei.c:do_open@v6.18.46 -/
 theorem rdwr_excl_without_creat_fd_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (openat_in [102] 130) have_model (forged 3 2 m' evs) := by
+  sys_refute
+
+/-- …and its O_TRUNC spelling (642), which is still O_EXCL without
+O_CREAT: `rdwr_open_word` admits neither it nor 130, so the gate
+declines both.
+rocq-twin: openat_rdwr_flag_words
+kernel: fs/open.c:build_open_flags@v6.18.46 -/
+theorem rdwr_trunc_excl_without_creat_declines (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [102] 642) have_model o ↔ o = Unmodeled := by
+  sys_norm
+
+/-- …with the descriptor Linux hands out there refused too.
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem rdwr_trunc_excl_without_creat_fd_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (openat_in [102] 642) have_model (forged 3 2 m' evs) := by
   sys_refute
 
 /-- O_WRONLY|O_EXCL without O_CREAT (129), likewise.
@@ -1115,8 +1143,8 @@ carries close-on-exec; `SYSCALL_DEFINE4(openat, …)` ORs O_LARGEFILE
 into every open (fs/open.c:1466-1467, Linux v6.18.46); and O_NONBLOCK reaches `f_flags`
 (fs/file_table.c:198, Linux v6.18.46) and nothing a modeled arm reads.  An open with any
 of them lands EXACTLY where the same open without them lands — an
-equality between two flag words, which a probe (one word per run) cannot
-state. -/
+equality between two flag words, which a real run cannot state: a run
+issues one word. -/
 
 /-- O_RDONLY|O_NONBLOCK is O_RDONLY.
 rocq-twin: o_nonblock_is_an_ignored_open_flag
@@ -1397,7 +1425,7 @@ theorem runoff_fd_rejected (m' : Model) (evs : List event) :
 
 /-- The ledger ends at the NUL: a two-byte fetch of ".\0" that claims three
 bytes is refused (`getname` reads no further than the string, whatever
-word `strncpy_from_user` loads; bugs/openat-getname-word-at-a-time.md).
+word `strncpy_from_user` loads; linux-process-semantics@ff0313ba4f:bugs/openat-getname-word-at-a-time.md).
 probe: testing/syscall-check/tests/openat_path_errnos.c#reject --mutate openat:grow-copyins:1 -- ok-dot-open -/
 theorem ledger_ends_at_the_nul (m' : Model) (evs : List event) :
     ¬ syscall_spec (openat_in [46] 0) absent_model (forged 3 3 m' evs) := by
@@ -2065,8 +2093,8 @@ directory dentry with FMODE_CREATED clear (`lookup_fast_for_open`,
 fs/namei.c:3837-3845, Linux v6.18.46, and `lookup_open`, fs/namei.c:3714 and
 :3734-3737), and `do_open`
 answers it -EEXIST under O_EXCL (:3949-3950) and -EISDIR otherwise
-(:3951-3952).  No probe can set the image up — the harness starts in an
-empty directory — so both halves are pinned here. -/
+(:3951-3952).  No modeled syscall creates a directory, so only the
+starting image can set this up — so both halves are pinned here. -/
 
 /-- With "a/b" in the image, the clobbering create of "a" is -EISDIR and the
 model is untouched.
@@ -2343,8 +2371,8 @@ theorem dir_name_max_255_answers (i : SyscallInput) (p : path)
 /-! ## "/etc/localtime", the answered exception
 
 `openat_localtime_spec` answers -ENOENT for exactly this byte string under
-a maintainer-declared assumption about the image (issue #696,
-bugs/openat-localtime-assumed-absent.md): the walk of the last component
+a maintainer-declared assumption about the image (the image has no
+/etc/localtime; linux-process-semantics@ff0313ba4f:bugs/openat-localtime-assumed-absent.md): the walk of the last component
 finds no inode, so `open_last_lookups` (fs/namei.c:3919-3922, Linux v6.18.46) hands a
 negative dentry to step_into, and `traverse_mounts` (fs/namei.c:1537-1538, Linux v6.18.46)
 answers -ENOENT before `do_open` looks at any flag.  Fail-closed wherever the
@@ -2440,9 +2468,11 @@ theorem localtime_append_declines (o : outcome SyscallEffect) :
     syscall_spec (openat_in localtime_path 1089) absent_model o ↔ o = Unmodeled := by
   sys_norm
 
-/-- …the exclusive append word, which carries O_CREAT too (#1752)…
-rocq-twin: openat_localtime_enoent
-kernel: fs/namei.c:lookup_open@v6.18.46 -/
+/-- …the exclusive append word, which this arm never sees: it is outside
+`modeled_open_flags`, so the flag gate declines it before the pathname
+is fetched…
+rocq-twin: the word is outside `Open.modeled_open_flags`
+kernel: fs/open.c:build_open_flags@v6.18.46 -/
 theorem localtime_excl_append_declines (o : outcome SyscallEffect) :
     syscall_spec (openat_in localtime_path 1217) absent_model o ↔ o = Unmodeled := by
   sys_norm
@@ -2546,7 +2576,7 @@ theorem localtime_double_slash_enoent_rejected (m' : Model) (evs : List event) :
 
 `openat_devnull_spec` answers the exact byte string ahead of the separator
 decline and mints `FdDevNull` with the granted mode, on the assumption
-(issue #696, bugs/openat-devnull-assumed-null-device.md) that the image's
+(linux-process-semantics@ff0313ba4f:bugs/openat-devnull-assumed-null-device.md) that the image's
 /dev/null is the null device: `devlist[3]` (drivers/char/mem.c:694, Linux v6.18.46) and
 `memory_open` installing `null_fops` (:707-727, :644-652) out of
 `chrdev_open` (fs/char_dev.c:373-424, Linux v6.18.46).  Every word below is decided in
@@ -2665,17 +2695,30 @@ theorem devnull_excl_fd_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (openat_in devnull_path 193) absent_model (forged 3 10 m' evs) := by
   sys_refute
 
-/-- The exclusive append word is -EEXIST too (#1752): O_EXCL is tested before
-anything else in `do_open`'s O_CREAT block (fs/namei.c:3949-3950, Linux
-v6.18.46), so the device is never opened and O_APPEND never matters.
-probe: testing/syscall-check/tests/openat_excl_append.c#conform -- devnull -/
-theorem devnull_excl_append_is_eexist (o : outcome SyscallEffect) :
-    syscall_spec (openat_in devnull_path 1217) absent_model o ↔ o = errno 17 10 absent_model := by
+/-- The exclusive append word (1217) is DECLINED here, device name or
+not: `modeled_open_flags` does not admit it, so the flag gate answers
+before the pathname is fetched and this arm never sees the word.  Linux
+answers it -EEXIST — O_EXCL is tested before anything else in
+`do_open`'s O_CREAT block (fs/namei.c:3949-3950, Linux v6.18.46), so the
+device is never opened and O_APPEND never matters — and that answer is
+refused here beside the decline.
+rocq-twin: the word is outside `Open.modeled_open_flags`
+kernel: fs/open.c:build_open_flags@v6.18.46 -/
+theorem devnull_excl_append_declines (o : outcome SyscallEffect) :
+    syscall_spec (openat_in devnull_path 1217) absent_model o ↔ o = Unmodeled := by
   sys_norm
+
+/-- …the kernel's -EEXIST refused, so the decline is on the WORD and not
+a guess at the device's answer.
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem devnull_excl_append_eexist_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (openat_in devnull_path 1217) absent_model (forged_errno 17 10 m' evs) := by
+  sys_refute
 
 /-- …and the descriptor a kernel that opened the device would hand back is
 refused.
-probe: testing/syscall-check/tests/openat_excl_append.c#reject --mutate openat:ret=3 -- devnull -/
+probe: testing/syscall-check/tests/openat_excl_append.c#reject --mutate openat:ret=3 -- devnull
+kernel: fs/namei.c:do_open@v6.18.46 -/
 theorem devnull_excl_append_fd_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (openat_in devnull_path 1217) absent_model (forged 3 10 m' evs) := by
   sys_refute
@@ -2753,13 +2796,13 @@ theorem devnull_double_slash_fd_rejected (m' : Model) (evs : List event) :
 `openat_tmp_spec` answers two words for a path `Namei.tmp_name` accepts —
 "/tmp/" and one component that is not empty, "." or ".." — over the run's
 declared private /tmp (`State.in_tmp`, seeded under absolute keys by
-`State.fs_seed_tmp`; bugs/tmp-assumed-private-directory.md; issue #562,
-rung 4 of #696).  Linux starts the absolute name at the root (`path_init`,
+`State.fs_seed_tmp`; linux-process-semantics@ff0313ba4f:bugs/tmp-assumed-private-directory.md).
+Linux starts the absolute name at the root (`path_init`,
 fs/namei.c:2582-2587, Linux v6.18.46), walks "tmp" as a non-final component
 (`link_path_walk`, :2517-2519) and reaches `lookup_open` and `do_open` with
 the same `last` a relative name would, in a parent that is /tmp; the flat
 map answers for that parent under the privacy premise and declines every
-shape the ruling left out. -/
+shape the arm leaves out. -/
 
 /-- The create word on a name the run does not hold: `lookup_open` finds
 the negative dentry and creates (fs/namei.c:3788-3800, Linux v6.18.46),
@@ -2894,17 +2937,17 @@ theorem tmp_seed_unsorted_is_canonical :
     ∧ fs_seed_tmp [([47, 116, 109, 112, 47, 120], [1])] [([120], [2])] = [([47, 116, 109, 112, 47, 120], [2])] := by
   decide
 
-/-! ### What the ruling declines, each on the model that HOLDS the key
+/-! ### What the arm declines, each on the model that HOLDS the key
 
 None below is declining for want of the file; the one exception, a read of
 a name the run does NOT hold, is stated on the empty image beside them.
 Linux answers every one of them, and the intersection would let the model
-derive several; the ruling (issue #562) takes the shapes the reported
+derive several; the arm takes the shapes the reported
 programs need and leaves the rest, the narrower choice at each. -/
 
 /-- A read of a name the run does not hold: the privacy premise would give
 the negative dentry's -ENOENT (`traverse_mounts`, fs/namei.c:1537-1538, Linux v6.18.46,
-on the trailing `step_into`, :1989-1992); the ruling declines instead.
+on the trailing `step_into`, :1989-1992); the arm declines instead.
 rocq-twin: openat_tmp_excluded_shapes_unmodeled
 kernel: fs/namei.c:traverse_mounts,step_into@v6.18.46 -/
 theorem tmp_read_not_held_declines (o : outcome SyscallEffect) :
@@ -3089,7 +3132,7 @@ FILESYSTEM's own lookup rather than out of fs/namei.c — tmpfs from
 `simple_lookup` (fs/libfs.c:71-72, Linux v6.18.46), ext4 from `ext4_lookup`
 (fs/ext4/namei.c:1768-1769, Linux v6.18.46) — so the guard is one-sided: it
 defends against a filesystem whose limit is larger than 255 and not against
-one whose limit is smaller (bugs/tmp-assumed-private-directory.md). -/
+one whose limit is smaller (linux-process-semantics@ff0313ba4f:bugs/tmp-assumed-private-directory.md). -/
 
 set_option maxRecDepth 8192 in
 /-- A 256-byte component is declined at the create word.
@@ -3341,81 +3384,148 @@ theorem tmp_trailing_slash_eisdir_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (openat_in [47, 116, 109, 112, 47, 120, 47] 577) tmp_held_model (forged_errno 21 8 m' evs) := by
   sys_refute
 
-/-! ## The declared declines
+/-! ## The append word and the six read-write words
 
-Two groups of words Rocq answers and this twin declines, each because a
-piece of the port is missing rather than because the kernel is unclear (the
-header of `Sys/Fs/Open.lean`): the append word's arm mints `FdFileA` and the
-read-write words' arms mint `FdFileRW`, and every spec arm that would write
-or resize either descriptor, or read the read-write one, declines so far.
-Each is pinned with the kernel's real answer REFUSED beside the `Unmodeled`,
-so a later arm has to land that piece before it can answer, and cannot turn
-the gap into a guess. -/
+`openat_resolved_spec` answers each of these words with the arm Rocq
+gives it — `openat_append_spec`, `openat_rdwr_spec` and
+`openat_rdwr_excl_spec` (`Sys/Fs/Open.lean`'s header) — and the fd it
+mints is the APPEND kind or the READ-WRITE kind rather than the
+write-only one, at offset 0.
 
-/-- The append word on an absent plain name: Linux creates the file and
-hands back fd 3 (`lookup_open` fs/namei.c:3788-3800); the arm that says so
-mints `FdFileA`, which every spec arm that would write or resize it declines
-so far, so the open is a declared decline (`Sys/Fs/Open.lean`'s header).
-The probe's `create` case (openat_append.c) is the kernel's success.
+WHAT THE TABLE SAYS, and it is exactly the two arms' claim: O_TRUNC
+decides whether an EXISTING file keeps its bytes, and O_CREAT what an
+ABSENT name gets.  The file-content contrasts are stated against ONE
+image, so a pair is a real contrast rather than two unrelated runs, and
+each equation between TWO FLAG WORDS is a claim only a literal can make:
+a real run issues one word.
+
+TWO ANSWERS HERE ADMIT AN `openat_errnos` ALTERNATIVE AND TWO DO NOT,
+and no real run can separate them: a run is shown one answer, and the
+claim is that a kernel offering a DIFFERENT one is refused.  An open
+that can succeed may instead report the -EMFILE a real kernel raises
+before path resolution; an arm that reports a path-resolution errno
+insists on it.
+
+The words beside these stay declined, each for its own reason on
+`modeled_open_flags`: O_WRONLY|O_APPEND without O_CREAT, the O_TRUNC and
+the O_EXCL spellings of the append word, O_RDWR|O_APPEND with and
+without O_CREAT, O_RDWR|O_EXCL without O_CREAT and O_RDWR|O_DIRECTORY.
+Those are pinned under "build_open_flags" above. -/
+
+/-! ### O_WRONLY|O_CREAT|O_APPEND -/
+
+/-- The append word on an absent plain name creates the file empty and
+binds an APPEND descriptor at the lowest free fd: `lookup_open` creates
+the negative dentry's file (fs/namei.c:3788-3800, Linux v6.18.46) and
+nothing on the O_APPEND path truncates, so `append_open_fs` records the
+key with no bytes.  Or one of the four environment errnos, with nothing
+minted.
+rocq-twin: openat_append_flag_word
 kernel: fs/namei.c:lookup_open@v6.18.46 -/
-theorem append_word_declines_the_create (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [97] 1089) absent_model o ↔ o = Unmodeled := by
+theorem append_word_creates_the_absent_name (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 1089) absent_model o ↔
+      (env_errnos 2 absent_model o ∨
+       o = ret 3 2 (fixture_of (fds := (3, .FdFileA [97] 0) :: init_fds) (fs := [([97], [])]))) := by
   sys_norm
 
-/-- …and the kernel's descriptor is refused, not admitted by another arm.
-kernel: fs/namei.c:lookup_open@v6.18.46 -/
-theorem append_word_create_fd_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [97] 1089) absent_model (forged 3 2 m' evs) := by
-  sys_refute
-
-/-- The append word on an existing file, which Linux opens without
-truncating.
-The probe's `no-truncate` case (openat_append.c) is the kernel's success.
+/-- …and the WRITE-ONLY entry is refused there: the kind the word mints
+is the one `Fcntl.setfl_acted_on` can see, and a model that routed this
+word to `FdFileW` would make `Fcntl.setfl_noop_on` unsound (the argument
+is on Rocq's `Open.append_create_flags`).
 kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem append_word_declines_the_existing (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [102] 1089) have_model o ↔ o = Unmodeled := by
+theorem append_word_create_wronly_entry_rejected (evs : List event) :
+    ¬ syscall_spec (openat_in [97] 1089) absent_model
+        (forged 3 2 (fixture_of (fds := (3, .FdFileW [97] 0) :: init_fds) (fs := [([97], [])])) evs) := by
+  intro h; sys_refute at h
+
+/-- The append word on the EXISTING "f" opens it and KEEPS its bytes,
+which is the reason the arm exists: `handle_truncate` is armed by O_TRUNC
+alone (fs/namei.c:3967-3972, Linux v6.18.46), and O_APPEND is a status
+flag `init_file` copies into `f_flags` (fs/file_table.c:198) that is read
+at write time.
+rocq-twin: openat_append_flag_word
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem append_word_keeps_the_bytes (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [102] 1089) have_model o ↔
+      (env_errnos 2 have_model o ∨
+       o = ret 3 2 (fixture_of (fds := (3, .FdFileA [102] 0) :: init_fds) (fs := have_fs))) := by
   sys_norm
 
-/-- …and whatever model and events a kernel claims beside that descriptor: refused, so the decline is fail-closed rather than an alias of
-another word.
-kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem append_word_existing_fd_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [102] 1089) have_model (forged 3 2 m' evs) := by
-  sys_refute
+/-- …where the CLOBBERING word empties it (`create_existing_truncates`
+above states that half), so a success that emptied "f" under the append
+word is refused: the pair is the contrast, stated on one image.
+kernel: fs/namei.c:do_open,handle_truncate@v6.18.46 -/
+theorem append_word_emptying_the_file_rejected (evs : List event) :
+    ¬ syscall_spec (openat_in [102] 1089) have_model
+        (forged 3 2 (fixture_of (fds := (3, .FdFileA [102] 0) :: init_fds) (fs := [([102], [])])) evs) := by
+  intro h; sys_refute at h
 
-/-- …refusing a descriptor bound to a WRITE-ONLY file entry, the answer a
-model that routed the word to `FdFileW` would give and that would make
-`Fcntl.setfl_noop_on` unsound (the argument is on Rocq's
-`Open.append_create_flags`).
+/-- …and a descriptor bound to a WRITE-ONLY file entry is refused on the
+existing name too, the answer a model that routed the word to `FdFileW`
+would give.
 kernel: fs/namei.c:do_open@v6.18.46 -/
 theorem append_word_existing_wronly_entry_rejected (evs : List event) :
     ¬ syscall_spec (openat_in [102] 1089) have_model
         (forged 3 2 (fixture_of (fds := (3, .FdFileW [102] 0) :: init_fds) (fs := have_fs)) evs) := by
   intro h; sys_refute at h
 
-/-- The append word on ".": Linux answers -EISDIR (`do_open`,
-fs/namei.c:3951-3952); this twin declines the word before the arm and
-refuses that -EISDIR too, so the decline is one on the WORD, not a guess
-at the dot answer.
-The probe's `dot` case (openat_append.c) is the kernel's -EISDIR.
-kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem append_word_declines_the_dot (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [46] 1089) absent_model o ↔ o = Unmodeled := by
+/-- THE IGNORED BIT IS IGNORED ON THIS ARM TOO: the append word with
+O_NONBLOCK beside it (3137) lands EXACTLY where the bare word lands.  An
+equality between two flag words, which a real run cannot state.
+rocq-twin: openat_append_flag_word
+kernel: fs/open.c:build_open_flags@v6.18.46 -/
+theorem append_nonblock_lands_where_append_does (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [102] 3137) have_model o ↔
+      syscall_spec (openat_in [102] 1089) have_model o := by
   sys_norm
 
-/-- …the -EISDIR `do_open`'s O_CREAT block answers for "." (fs/namei.c:3951-3952, Linux v6.18.46): refused, so the decline is fail-closed rather than an alias of
-another word.
+/-- The append word on "." is -EISDIR, the clobbering shape's answer and
+not the exclusive shape's -EEXIST: `do_open` returns -EEXIST only under
+O_EXCL (fs/namei.c:3949-3950, Linux v6.18.46), which this word does not
+carry, and the next test is `d_is_dir` (:3951-3952).
+rocq-twin: openat_implied_directory_other_write_words
 kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem append_word_dot_eisdir_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [46] 1089) absent_model (forged_errno 21 2 m' evs) := by
+theorem append_word_dot_is_eisdir (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [46] 1089) absent_model o ↔ o = errno 21 2 absent_model := by
+  sys_norm
+
+/-- …with the descriptor refused, so the -EISDIR is not an arm that
+admits everything.
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem append_word_dot_fd_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (openat_in [46] 1089) absent_model (forged 3 2 m' evs) := by
   sys_refute
 
-/-- The exclusive append word (#1752) on an absent plain name: Linux creates
-the file and hands back fd 3 (`lookup_open` fs/namei.c:3788-3800, with
-O_APPEND kept in `f_flags`, fs/open.c:981); the arm that says so mints
-`FdFileA`, which the Lean `FdEntry` lacks, so the model declines.
-The probe's `create` case (openat_excl_append.c) is the kernel's success.
-kernel: fs/namei.c:lookup_open@v6.18.46 -/
+/-- …and -EEXIST, the answer the O_EXCL words give "." , is refused here:
+this word carries no O_EXCL.
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem append_word_dot_eexist_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (openat_in [46] 1089) absent_model (forged_errno 17 2 m' evs) := by
+  sys_refute
+
+/-- The append word on the IMPLIED directory "a" (a map holding "a/b") is
+-EISDIR by the same route: the dentry the lookup finds is positive and
+`d_is_dir`, and the word carries no O_EXCL.
+rocq-twin: openat_implied_directory_other_write_words
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem append_word_implied_directory_is_eisdir (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 1089) under_model o ↔ o = errno 21 2 under_model := by
+  sys_norm
+
+/-! ### O_WRONLY|O_CREAT|O_EXCL|O_APPEND, the one write word still declined
+
+The exclusive append word (1217) is OUTSIDE `modeled_open_flags`, as it
+is in Rocq, so the flag gate answers for it before the pathname is
+fetched and no arm below sees it.  Linux answers it — `do_open`'s
+-EEXIST on a name that exists, its creation on a name that does not —
+and both answers are refused here beside the decline. -/
+
+/-- The exclusive append word on an absent plain name: Linux creates the
+file and hands back fd 3 (`lookup_open`, fs/namei.c:3788-3800, Linux
+v6.18.46, with O_APPEND kept in `f_flags`, fs/open.c:981); the model
+declines the WORD, ahead of the pathname.
+rocq-twin: the word is outside `Open.modeled_open_flags`
+kernel: fs/open.c:build_open_flags@v6.18.46 -/
 theorem excl_append_word_declines_the_create (o : outcome SyscallEffect) :
     syscall_spec (openat_in [97] 1217) absent_model o ↔ o = Unmodeled := by
   sys_norm
@@ -3426,184 +3536,337 @@ theorem excl_append_word_create_fd_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (openat_in [97] 1217) absent_model (forged 3 2 m' evs) := by
   sys_refute
 
-/- The same word on the existing "f" is `append_excl_declines` above. -/
-
-/-- O_RDWR on the existing "f": Linux opens it read-write at fd 3; the arm
-mints `FdFileRW`, which every spec arm that would read, write or resize it
-declines so far, so the open is a declared decline (`Sys/Fs/Open.lean`'s
-header).
-The probe's `open-existing` case (openat_rdwr.c) is the kernel's success.
-kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem rdwr_word_declines_the_read (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [102] 2) have_model o ↔ o = Unmodeled := by
-  sys_norm
-
-/-- …the kernel's descriptor refused.
-kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem rdwr_word_read_fd_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [102] 2) have_model (forged 3 2 m' evs) := by
-  sys_refute
-
-/-- O_RDWR|O_NONBLOCK (2050) lands where O_RDWR lands — here the decline; the
-ignored bit is still ignored on a declined word (Rocq's
-`o_nonblock_is_an_ignored_open_flag` states the same equation as two
-successes).
+/-- …the O_TRUNC spelling of the same bits (1729) is declined too: it is
+outside `modeled_open_flags` for the same reason.
+rocq-twin: the word is outside `Open.modeled_open_flags`
 kernel: fs/open.c:build_open_flags@v6.18.46 -/
-theorem rdwr_nonblock_declines (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [102] 2050) have_model o ↔ o = Unmodeled := by
+theorem excl_append_trunc_word_declines (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 1729) absent_model o ↔ o = Unmodeled := by
   sys_norm
 
-/-- …the read-write descriptor Linux hands out, O_NONBLOCK inert: refused, so the decline is fail-closed rather than an alias of
-another word.
+/- The same word on the EXISTING "f", and the -EEXIST Linux answers
+there, are `append_excl_declines` above. -/
+
+/-! ### O_RDWR, with and without O_CREAT and O_TRUNC -/
+
+/-- O_RDWR on the EXISTING "f" opens it read-write at the lowest free fd,
+bytes intact, offset 0 for both directions: `init_file` zeroes `f_pos`
+(fs/file_table.c:216, Linux v6.18.46) and nothing on the O_RDWR path
+assigns to it at open time.
+rocq-twin: openat_rdwr_flag_words
 kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem rdwr_nonblock_fd_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [102] 2050) have_model (forged 3 2 m' evs) := by
-  sys_refute
-
-
-/-- O_RDWR|O_CREAT on an absent name.
-The probe's `create` case (openat_rdwr.c) is the kernel's success.
-kernel: fs/namei.c:lookup_open@v6.18.46 -/
-theorem rdwr_create_declines (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [97] 66) absent_model o ↔ o = Unmodeled := by
+theorem rdwr_word_reads_the_existing (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [102] 2) have_model o ↔
+      (env_errnos 2 have_model o ∨
+       o = ret 3 2 (fixture_of (fds := (3, .FdFileRW [102] 0) :: init_fds) (fs := have_fs))) := by
   sys_norm
 
-/-- …the descriptor Linux hands out for the file it creates: refused, so the decline is fail-closed rather than an alias of
-another word.
-kernel: fs/namei.c:lookup_open@v6.18.46 -/
-theorem rdwr_create_fd_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [97] 66) absent_model (forged 3 2 m' evs) := by
-  sys_refute
+/-- …and the READ-ONLY entry is refused there: `OPEN_FMODE(O_RDWR)`
+(include/linux/fs.h:3981, Linux v6.18.46) sets FMODE_READ and
+FMODE_WRITE, so a model that minted the bare read kind would let a later
+`write` be answered -EBADF where Linux writes.
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem rdwr_word_read_only_entry_rejected (evs : List event) :
+    ¬ syscall_spec (openat_in [102] 2) have_model
+        (forged 3 2 (fixture_of (fds := (3, .FdFile [102] 0) :: init_fds) (fs := have_fs)) evs) := by
+  intro h; sys_refute at h
 
-/-- O_RDWR|O_TRUNC on the existing file.
-The probe's `trunc` case (openat_rdwr.c) is the kernel's truncating success.
+/-- O_RDWR|O_NONBLOCK (2050) lands EXACTLY where O_RDWR lands: the fifth
+ignored-bit equation, and a success at fd 3 rather than two matching
+refusals (the `iff` above says which success).
+rocq-twin: o_nonblock_is_an_ignored_open_flag
+kernel: fs/open.c:build_open_flags@v6.18.46 -/
+theorem rdwr_nonblock_lands_where_rdwr_does (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [102] 2050) have_model o ↔
+      syscall_spec (openat_in [102] 2) have_model o := by
+  sys_norm
+
+/-- O_RDWR|O_TRUNC (514) on the existing "f" EMPTIES it and binds the
+read-write descriptor: `do_open` arms `handle_truncate` on
+`d_is_reg && O_TRUNC` (fs/namei.c:3967-3972, :3978-3979, Linux v6.18.46).
+The offset is not moved by the truncation.
+rocq-twin: openat_rdwr_flag_words
 kernel: fs/namei.c:do_open,handle_truncate@v6.18.46 -/
-theorem rdwr_trunc_declines (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [102] 514) have_model o ↔ o = Unmodeled := by
+theorem rdwr_trunc_empties_the_existing (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [102] 514) have_model o ↔
+      (env_errnos 2 have_model o ∨
+       o = ret 3 2 (fixture_of (fds := (3, .FdFileRW [102] 0) :: init_fds) (fs := [([102], [])]))) := by
   sys_norm
 
-/-- …the descriptor Linux hands out after truncating "f": refused, so the decline is fail-closed rather than an alias of
-another word.
-kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem rdwr_trunc_fd_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [102] 514) have_model (forged 3 2 m' evs) := by
-  sys_refute
+/-- O_RDWR|O_CREAT (66) on the existing "f" KEEPS its bytes: O_CREAT
+without O_TRUNC arms no truncation, and `lookup_open` finds the positive
+dentry rather than creating.
+rocq-twin: openat_rdwr_flag_words
+kernel: fs/namei.c:lookup_open@v6.18.46 -/
+theorem rdwr_create_keeps_the_existing (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [102] 66) have_model o ↔
+      (env_errnos 2 have_model o ∨
+       o = ret 3 2 (fixture_of (fds := (3, .FdFileRW [102] 0) :: init_fds) (fs := have_fs))) := by
+  sys_norm
 
-/-- O_RDWR|O_CREAT|O_TRUNC on the existing file.
-The probe's `creat-trunc` case (openat_rdwr.c) is the kernel's success.
+/-- O_RDWR|O_CREAT|O_TRUNC (578) on the existing "f" empties it: the
+O_TRUNC bit decides, O_CREAT changes nothing about a name that is there.
+rocq-twin: openat_rdwr_flag_words
 kernel: fs/namei.c:do_open,handle_truncate@v6.18.46 -/
-theorem rdwr_create_trunc_declines (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [102] 578) have_model o ↔ o = Unmodeled := by
+theorem rdwr_create_trunc_empties_the_existing (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [102] 578) have_model o ↔
+      (env_errnos 2 have_model o ∨
+       o = ret 3 2 (fixture_of (fds := (3, .FdFileRW [102] 0) :: init_fds) (fs := [([102], [])]))) := by
   sys_norm
 
-/-- …the descriptor Linux hands out after truncating the existing "f": refused, so the decline is fail-closed rather than an alias of
-another word.
-kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem rdwr_create_trunc_fd_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [102] 578) have_model (forged 3 2 m' evs) := by
-  sys_refute
+/-- O_RDWR|O_CREAT on an ABSENT name creates it EMPTY: the O_CREAT bit
+decides what an absent name gets.
+rocq-twin: openat_rdwr_flag_words
+kernel: fs/namei.c:lookup_open@v6.18.46 -/
+theorem rdwr_create_creates_the_absent (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 66) absent_model o ↔
+      (env_errnos 2 absent_model o ∨
+       o = ret 3 2 (fixture_of (fds := (3, .FdFileRW [97] 0) :: init_fds) (fs := [([97], [])]))) := by
+  sys_norm
 
-/-- O_RDWR alone on an absent name: Linux answers -ENOENT, and the model
-declines rather than answering it, since the word has no arm.
-The probe's `absent` case (openat_rdwr.c) is the kernel's -ENOENT.
+/-- …the O_TRUNC spelling of the same bits creates the same empty key:
+there is nothing for the truncation to drop.
+rocq-twin: openat_rdwr_flag_words
+kernel: fs/namei.c:lookup_open@v6.18.46 -/
+theorem rdwr_create_trunc_creates_the_absent (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 578) absent_model o ↔
+      (env_errnos 2 absent_model o ∨
+       o = ret 3 2 (fixture_of (fds := (3, .FdFileRW [97] 0) :: init_fds) (fs := [([97], [])]))) := by
+  sys_norm
+
+/-- …and -ENOMEM is admitted on the create, with nothing minted
+(`alloc_empty_file`, fs/file_table.c:258-260, Linux v6.18.46).
+rocq-twin: openat_rdwr_errnos
+kernel: fs/file_table.c:alloc_empty_file@v6.18.46 -/
+theorem rdwr_create_absent_enomem_admitted :
+    syscall_spec (openat_in [97] 66) absent_model (errno 12 2 absent_model) := by
+  sys_norm
+
+/-- O_RDWR ALONE on an absent name is the kernel's own -ENOENT: without
+O_CREAT `lookup_open` creates nothing (fs/namei.c:3788-3800, Linux
+v6.18.46) and the trailing `step_into` answers -ENOENT
+(`traverse_mounts`, :1537-1538).  DETERMINISTIC: no environment errno.
+rocq-twin: openat_rdwr_errnos
 kernel: fs/namei.c:traverse_mounts@v6.18.46 -/
-theorem rdwr_absent_declines (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [97] 2) absent_model o ↔ o = Unmodeled := by
+theorem rdwr_absent_is_enoent (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 2) absent_model o ↔ o = errno 2 2 absent_model := by
   sys_norm
 
-/-- …the -ENOENT refused.
+/-- …so a kernel that answered -EMFILE there is REFUSED rather than
+admitted: the arm reports a path-resolution errno and insists on it.
+rocq-twin: openat_rdwr_errnos
+kernel: fs/file.c:alloc_fd@v6.18.46 -/
+theorem rdwr_absent_emfile_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (openat_in [97] 2) absent_model (forged_errno 24 2 m' evs) := by
+  sys_refute
+
+/-- …and a descriptor on a name that is not there is refused.
 kernel: fs/namei.c:traverse_mounts@v6.18.46 -/
-theorem rdwr_absent_enoent_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [97] 2) absent_model (forged_errno 2 2 m' evs) := by
+theorem rdwr_absent_fd_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (openat_in [97] 2) absent_model (forged 3 2 m' evs) := by
   sys_refute
 
-/-- The exclusive read-write words on an absent name.
-The probe's `excl-absent` case (openat_rdwr.c) is the kernel's success.
-kernel: fs/namei.c:lookup_open@v6.18.46 -/
-theorem rdwr_excl_declines (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [97] 194) absent_model o ↔ o = Unmodeled := by
+/-- O_RDWR|O_TRUNC (514) on an absent name is the same -ENOENT: the
+O_TRUNC bit decides nothing when there is no file.
+rocq-twin: openat_rdwr_errnos
+kernel: fs/namei.c:traverse_mounts@v6.18.46 -/
+theorem rdwr_trunc_absent_is_enoent (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 514) absent_model o ↔ o = errno 2 2 absent_model := by
   sys_norm
 
-/-- …the descriptor Linux hands out for the file it creates: refused, so the decline is fail-closed rather than an alias of
-another word.
-kernel: fs/namei.c:lookup_open@v6.18.46 -/
-theorem rdwr_excl_fd_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [97] 194) absent_model (forged 3 2 m' evs) := by
-  sys_refute
-
-/-- …its O_TRUNC spelling…
-The probe's `excl-trunc-absent` case (openat_rdwr.c) is the kernel's success.
-kernel: fs/namei.c:lookup_open@v6.18.46 -/
-theorem rdwr_excl_trunc_declines (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [97] 706) absent_model o ↔ o = Unmodeled := by
+/-- …while an open that CAN succeed admits the -EMFILE a real kernel
+raises before path resolution (`alloc_fd` at RLIMIT_NOFILE,
+fs/file.c:591-593, Linux v6.18.46).  The contrast with
+`rdwr_absent_emfile_rejected` is the whole claim.
+rocq-twin: openat_rdwr_errnos
+kernel: fs/file.c:alloc_fd@v6.18.46 -/
+theorem rdwr_existing_emfile_admitted :
+    syscall_spec (openat_in [102] 2) have_model (errno 24 2 have_model) := by
   sys_norm
 
-/-- …the descriptor Linux hands out for the file it creates: refused, so the decline is fail-closed rather than an alias of
-another word.
-kernel: fs/namei.c:lookup_open@v6.18.46 -/
-theorem rdwr_excl_trunc_fd_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [97] 706) absent_model (forged 3 2 m' evs) := by
-  sys_refute
+/-! ### O_RDWR|O_CREAT|O_EXCL, with and without O_TRUNC -/
 
-/-- …and on the existing file, where Linux answers -EEXIST: refused, since
-the word is declined before the arm.
-The probe's `excl-exists` case (openat_rdwr.c) is the kernel's -EEXIST.
+/-- The exclusive read-write word (194) on an absent name creates the key
+empty and binds the READ-WRITE descriptor: the shape of the write-only
+exclusive arm with the fd kind changed and no other difference.
+rocq-twin: openat_rdwr_flag_words
+kernel: fs/namei.c:lookup_open@v6.18.46 -/
+theorem rdwr_excl_creates_the_absent (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 194) absent_model o ↔
+      (env_errnos 2 absent_model o ∨
+       o = ret 3 2 (fixture_of (fds := (3, .FdFileRW [97] 0) :: init_fds) (fs := [([97], [])]))) := by
+  sys_norm
+
+/-- …and its O_TRUNC spelling (706) lands in exactly the same place:
+`do_open` tests O_EXCL before O_TRUNC is read, so the extra bit is inert.
+rocq-twin: openat_rdwr_flag_words
 kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem rdwr_excl_existing_declines (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [102] 194) have_model o ↔ o = Unmodeled := by
+theorem rdwr_excl_trunc_lands_where_rdwr_excl_does (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 706) absent_model o ↔
+      syscall_spec (openat_in [97] 194) absent_model o := by
   sys_norm
 
-/-- …the -EEXIST `do_open`'s O_CREAT block answers for the existing "f" (fs/namei.c:3949-3950, Linux v6.18.46): refused, so the decline is fail-closed rather than an alias of
-another word.
+/-- …which is a SUCCESS and not two matching refusals: the O_TRUNC
+spelling creates the key too.
+rocq-twin: openat_rdwr_flag_words
+kernel: fs/namei.c:lookup_open@v6.18.46 -/
+theorem rdwr_excl_trunc_creates_the_absent (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 706) absent_model o ↔
+      (env_errnos 2 absent_model o ∨
+       o = ret 3 2 (fixture_of (fds := (3, .FdFileRW [97] 0) :: init_fds) (fs := [([97], [])]))) := by
+  sys_norm
+
+/-- The exclusive read-write word on the EXISTING "f" is -EEXIST and the
+file is untouched: `do_open` tests `(open_flag & O_EXCL) &&
+!(file->f_mode & FMODE_CREATED)` (fs/namei.c:3949-3950, Linux v6.18.46)
+before everything else in the O_CREAT block.
+rocq-twin: openat_rdwr_errnos
 kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem rdwr_excl_existing_eexist_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [102] 194) have_model (forged_errno 17 2 m' evs) := by
+theorem rdwr_excl_existing_is_eexist (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [102] 194) have_model o ↔ o = errno 17 2 have_model := by
+  sys_norm
+
+/-- …DETERMINISTICALLY, so the -EMFILE is refused there as it is on the
+-ENOENT arm.
+rocq-twin: openat_rdwr_errnos
+kernel: fs/file.c:alloc_fd@v6.18.46 -/
+theorem rdwr_excl_existing_emfile_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (openat_in [102] 194) have_model (forged_errno 24 2 m' evs) := by
   sys_refute
 
-/-- O_RDWR on ".": Linux answers -EISDIR from `may_open`'s S_IFDIR arm
-(fs/namei.c:3540-3542); refused here with the word.
-The probe's `dot` case (openat_rdwr.c) is the kernel's -EISDIR.
+/-- …and no kernel opens an existing name exclusively.
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem rdwr_excl_existing_fd_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (openat_in [102] 194) have_model (forged 3 2 m' evs) := by
+  sys_refute
+
+/-! ### A directory reference under the read-write words
+
+Two answers from two different kernel tests reached in the same call.
+Without O_CREAT nothing in `do_open`'s O_CREAT block runs and the -EISDIR
+is `may_open`'s S_IFDIR arm under `acc_mode & MAY_WRITE`, which O_RDWR
+carries through ACC_MODE (fs/namei.c:3540-3542 and fs/open.c, Linux
+v6.18.46).  With O_CREAT it is `do_open`'s own `d_is_dir` — unless O_EXCL
+is set, which is tested first and answers -EEXIST.  No real run separates
+the two -EISDIRs, and the -EEXIST is the one a reader gets backwards. -/
+
+/-- O_RDWR on ".": -EISDIR, from `may_open`.
+rocq-twin: openat_rdwr_dirref
 kernel: fs/namei.c:may_open@v6.18.46 -/
-theorem rdwr_dot_declines (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [46] 2) absent_model o ↔ o = Unmodeled := by
+theorem rdwr_dot_is_eisdir (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [46] 2) absent_model o ↔ o = errno 21 2 absent_model := by
   sys_norm
 
-/-- …the -EISDIR refused.
+/-- …O_RDWR|O_TRUNC on ".": the same -EISDIR by the same route.
+rocq-twin: openat_rdwr_dirref
 kernel: fs/namei.c:may_open@v6.18.46 -/
-theorem rdwr_dot_eisdir_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [46] 2) absent_model (forged_errno 21 2 m' evs) := by
-  sys_refute
-
-/-- The read-write words on the implied directory "a" (Rocq answers -EISDIR
-and -EEXIST): declined with the words.
-kernel: fs/namei.c:do_open,may_open@v6.18.46 -/
-theorem rdwr_implied_directory_declines (o : outcome SyscallEffect) :
-    syscall_spec (openat_in [97] 66) under_model o ↔ o = Unmodeled := by
+theorem rdwr_trunc_dot_is_eisdir (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [46] 514) absent_model o ↔ o = errno 21 2 absent_model := by
   sys_norm
 
-/-- …the -EISDIR `do_open`'s O_CREAT block answers for the implied directory "a" (fs/namei.c:3951-3952, Linux v6.18.46): refused, so the decline is fail-closed rather than an alias of
-another word.
+/-- …O_RDWR|O_CREAT on ".": -EISDIR again, this time from `do_open`'s own
+`d_is_dir` inside the O_CREAT block.
+rocq-twin: openat_rdwr_dirref
 kernel: fs/namei.c:do_open@v6.18.46 -/
-theorem rdwr_implied_directory_eisdir_rejected (m' : Model) (evs : List event) :
-    ¬ syscall_spec (openat_in [97] 66) under_model (forged_errno 21 2 m' evs) := by
+theorem rdwr_create_dot_is_eisdir (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [46] 66) absent_model o ↔ o = errno 21 2 absent_model := by
+  sys_norm
+
+/-- …and O_RDWR|O_CREAT|O_TRUNC on "." likewise.
+rocq-twin: openat_rdwr_dirref
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem rdwr_create_trunc_dot_is_eisdir (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [46] 578) absent_model o ↔ o = errno 21 2 absent_model := by
+  sys_norm
+
+/-- The exclusive read-write word on "." is -EEXIST, NOT -EISDIR: the
+O_EXCL test comes first.
+rocq-twin: openat_rdwr_dirref
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem rdwr_excl_dot_is_eexist (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [46] 194) absent_model o ↔ o = errno 17 2 absent_model := by
+  sys_norm
+
+/-- …so the -EISDIR is refused for the exclusive word…
+rocq-twin: openat_rdwr_dirref
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem rdwr_excl_dot_eisdir_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (openat_in [46] 194) absent_model (forged_errno 21 2 m' evs) := by
   sys_refute
 
-/-! ## "/dev/urandom", the random device (#712)
+/-- …and the -EEXIST refused for the plain one.
+rocq-twin: openat_rdwr_dirref
+kernel: fs/namei.c:may_open@v6.18.46 -/
+theorem rdwr_dot_eexist_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (openat_in [46] 2) absent_model (forged_errno 17 2 m' evs) := by
+  sys_refute
+
+/-! ### An implied directory under the read-write words -/
+
+/-- O_RDWR|O_CREAT on the implied directory "a" (a map holding "a/b") is
+-EISDIR, and the model is untouched by it.
+rocq-twin: openat_implied_directory_other_write_words
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem rdwr_create_implied_directory_is_eisdir (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 66) under_model o ↔ o = errno 21 2 under_model := by
+  sys_norm
+
+/-- …and the descriptor is refused, which is what keeps the row from
+being satisfied by an arm that answers everything.
+rocq-twin: openat_implied_directory_other_write_words
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem rdwr_create_implied_directory_fd_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (openat_in [97] 66) under_model (forged 3 2 m' evs) := by
+  sys_refute
+
+/-- …the O_TRUNC spelling answers -EISDIR too.
+rocq-twin: openat_implied_directory_other_write_words
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem rdwr_create_trunc_implied_directory_is_eisdir (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 578) under_model o ↔ o = errno 21 2 under_model := by
+  sys_norm
+
+/-- …the O_CREAT-free word reaches the same errno by a different route,
+`may_open`'s S_IFDIR arm.
+rocq-twin: openat_implied_directory_other_write_words
+kernel: fs/namei.c:may_open@v6.18.46 -/
+theorem rdwr_implied_directory_is_eisdir (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 2) under_model o ↔ o = errno 21 2 under_model := by
+  sys_norm
+
+/-- …and so does its O_TRUNC spelling.
+rocq-twin: openat_implied_directory_other_write_words
+kernel: fs/namei.c:may_open@v6.18.46 -/
+theorem rdwr_trunc_implied_directory_is_eisdir (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 514) under_model o ↔ o = errno 21 2 under_model := by
+  sys_norm
+
+/-- The exclusive read-write shape answers -EEXIST on the same image, the
+O_EXCL test again coming first.
+rocq-twin: openat_implied_directory_other_write_words
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem rdwr_excl_implied_directory_is_eexist (o : outcome SyscallEffect) :
+    syscall_spec (openat_in [97] 194) under_model o ↔ o = errno 17 2 under_model := by
+  sys_norm
+
+/-! ## "/dev/urandom", the random device
 
 `openat_urandom_spec` answers the exact byte string ahead of the separator
 decline and mints `FdUrandom`, the read-only entry whose reads hand out the
-run's declared stream, on the assumption (issue #696,
-bugs/openat-urandom-assumed-random-device.md) that the image's
+run's declared stream (`State.in_urandom`: arbitrary but fixed, a
+parameter of the execution like argv and envp), on the assumption
+(linux-process-semantics@ff0313ba4f:bugs/openat-urandom-assumed-random-device.md)
+that the image's
 /dev/urandom is the random device: `devlist[9]` (drivers/char/mem.c:701,
 Linux v6.18.46) and `memory_open` installing `urandom_fops` (:707-727;
 drivers/char/random.c:1572-1581) out of `chrdev_open` (fs/char_dev.c:373-424,
 Linux v6.18.46).  Every word below is decided in `do_open` before that open
 runs.  What is pinned is the open under each word, Rocq's
-`urandom_open_by_word` and `urandom_open_declines`; the census shapes that
-read the descriptor are the T9 register's.  No probe can conform past the
-open — the harness cannot declare the kernel generator's bytes
-(`testing/syscall-check/tests/dev_urandom_decline.c` says so) — so the
-kernel side of each pin is read in the source.
+`urandom_open_by_word` and `urandom_open_declines`; the open, read, close
+sequence that reads the descriptor is the T9 register's.  No real run can
+conform past the open — a run cannot declare the kernel generator's
+bytes (linux-process-semantics@ff0313ba4f:testing/syscall-check/tests/dev_urandom_decline.c
+says so) — so the kernel side of each pin is read in the source.
 
 A device cgroup can refuse the open with -EPERM: `may_open` asks
 `inode_permission` for MAY_OPEN|acc_mode (fs/namei.c:3565-3567, Linux
@@ -3684,16 +3947,28 @@ theorem urandom_excl_fd_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (openat_in urandom_path 193) absent_model (forged 3 13 m' evs) := by
   sys_refute
 
-/-- The exclusive append word is -EEXIST (#1752), although it is a write
-word the arm otherwise declines: O_EXCL refuses the existing node in
-`do_open` (fs/namei.c:3949-3950, Linux v6.18.46) before the device is opened.
-probe: testing/syscall-check/tests/openat_excl_append.c#conform -- urandom -/
-theorem urandom_excl_append_is_eexist (o : outcome SyscallEffect) :
-    syscall_spec (openat_in urandom_path 1217) absent_model o ↔ o = errno 17 13 absent_model := by
+/-- The exclusive append word (1217) is DECLINED here, device name or
+not: `modeled_open_flags` does not admit it, so the flag gate answers
+before the pathname is fetched and this arm never sees the word.  Linux
+answers it -EEXIST — O_EXCL refuses the existing node in `do_open`
+(fs/namei.c:3949-3950, Linux v6.18.46) before the device is opened — and
+that answer is refused here beside the decline.
+rocq-twin: the word is outside `Open.modeled_open_flags`
+kernel: fs/open.c:build_open_flags@v6.18.46 -/
+theorem urandom_excl_append_declines (o : outcome SyscallEffect) :
+    syscall_spec (openat_in urandom_path 1217) absent_model o ↔ o = Unmodeled := by
   sys_norm
 
+/-- …the kernel's -EEXIST refused, so the decline is on the WORD and not a
+guess at the device's answer.
+kernel: fs/namei.c:do_open@v6.18.46 -/
+theorem urandom_excl_append_eexist_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (openat_in urandom_path 1217) absent_model (forged_errno 17 13 m' evs) := by
+  sys_refute
+
 /-- …and the descriptor refused.
-probe: testing/syscall-check/tests/openat_excl_append.c#reject --mutate openat:ret=3 -- urandom -/
+probe: testing/syscall-check/tests/openat_excl_append.c#reject --mutate openat:ret=3 -- urandom
+kernel: fs/namei.c:do_open@v6.18.46 -/
 theorem urandom_excl_append_fd_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (openat_in urandom_path 1217) absent_model (forged 3 13 m' evs) := by
   sys_refute
@@ -3826,7 +4101,7 @@ theorem urandom_double_slash_fd_rejected (m' : Model) (evs : List event) :
 
 /-- …and so is "/dev/random", the next device over: Linux opens it
 (`random_fops`, drivers/char/random.c:1560, Linux v6.18.46, whose read
-blocks until the pool is ready), and the ruling on #696 does not name it,
+blocks until the pool is ready), and the arm does not name it,
 so the separator decline stands.
 rocq-twin: urandom_open_declines
 probe: testing/syscall-check/tests/dev_urandom_decline.c#fail-closed --expect-unmodeled openat --no-fs-check -- devrandom -/
@@ -3842,6 +4117,206 @@ theorem urandom_dev_random_fd_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (openat_in [47, 100, 101, 118, 47, 114, 97, 110, 100, 111, 109] 0) absent_model
         (forged 3 12 m' evs) := by
   sys_refute
+
+/-! ## The images those three declines are about
+
+`localtime_key_in_image_declines`, `devnull_key_in_image_declines` and
+`urandom_key_in_image_declines` above each pin what the arm does on an
+image that ships the device's name as a key: it declines.  That answer
+is the courtesy the arms' docstrings call it, and the pins stay — an
+`Fs.Fs` is a type, and a spec handed one of those maps really does
+answer `Unmodeled`.
+
+The other half is here: such a map is not an image a run can have.
+`Run.valid_input` carries `Fs.fs_keys_relative` over
+`State.in_image_fs`, so a statement quantified over valid inputs never
+reaches those declines, and the pins below say so at both ends — the
+pathological image is refused by the validity predicate, and an image
+the predicate ADMITS answers the open.
+
+THE CONTROL IS THE POINT.  "Not a valid input" is easy to prove for the
+wrong reason: `Checks.Cases.Prelude.demo_input` has an empty argv, which
+`Run.valid_argv` already refuses, so a refutation over it would hold
+with no premise about keys at all.  So these run over a fixture with the
+one empty argument `Run.valid_argv` asks for, and each refutation is
+paired with the SAME fixture over a key that differs by the leading
+separator alone, which is admitted. -/
+
+/-- The launchable fixture: `Cases.Prelude.demo_input_tmp` with
+`Run.valid_argv`'s one empty argument, so that `Run.valid_input` of it
+turns on the image and on the declaration and on nothing else.
+`valid_input` asks the declared /dev/urandom stream to be infinite, so
+the image inputs declare `State.default_urandom` (as the Prelude's
+fixture does) rather than `IEof`.
+rocq-twin: image_input_tmp -/
+def image_input_tmp (fs0 tmp0 : Fs.Fs) : ProcInput :=
+  ProcInput.mkProcInput_full [[]] [] fs0 IEof demo_uid demo_gid demo_groups net_silent
+    default_nofile (Z_to_bv 64 0) demo_hwcap false .Sv48 default_urandom tmp0
+
+/-- …with no declared /tmp.
+rocq-twin: image_input -/
+def image_input (fs0 : Fs.Fs) : ProcInput := image_input_tmp fs0 []
+
+/-- A list of byte values as an `Fs.path`.
+rocq-twin: key_of -/
+def key_of (bs : List Int) : path := bs.map (Z_to_bv 8)
+
+/-- The three device names as keys.  Each is the arm's own path constant
+(`devnull_path_bytes` and its two siblings pin the bytes).
+rocq-twin: devnull_key -/
+def devnull_key : path := key_of [47, 100, 101, 118, 47, 110, 117, 108, 108]
+/-- rocq-twin: localtime_key -/
+def localtime_key : path :=
+  key_of [47, 101, 116, 99, 47, 108, 111, 99, 97, 108, 116, 105, 109, 101]
+/-- rocq-twin: urandom_key -/
+def urandom_key : path :=
+  key_of [47, 100, 101, 118, 47, 117, 114, 97, 110, 100, 111, 109]
+
+/-- …and the same three with the leading separator dropped —
+"dev/null", "etc/localtime", "dev/urandom", which are ordinary
+cwd-relative names a launch really can hand a process, separators and
+all.
+rocq-twin: devnull_relative_key -/
+def devnull_relative_key : path := key_of [100, 101, 118, 47, 110, 117, 108, 108]
+/-- rocq-twin: localtime_relative_key -/
+def localtime_relative_key : path :=
+  key_of [101, 116, 99, 47, 108, 111, 99, 97, 108, 116, 105, 109, 101]
+/-- rocq-twin: urandom_relative_key -/
+def urandom_relative_key : path :=
+  key_of [100, 101, 118, 47, 117, 114, 97, 110, 100, 111, 109]
+
+/-- The three keys ARE the arms' path constants, and the relative ones
+are those with the head dropped: the pins below are about the names the
+arms match, not about look-alikes.
+model: a closed list equality, so the section's fixtures are tied to
+`devnull_path`, `localtime_path` and `urandom_path`. -/
+theorem device_keys_are_the_path_constants :
+    devnull_key = devnull_path ∧ localtime_key = localtime_path
+    ∧ urandom_key = urandom_path
+    ∧ devnull_relative_key = devnull_path.tail
+    ∧ localtime_relative_key = localtime_path.tail
+    ∧ urandom_relative_key = urandom_path.tail := by
+  refine ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
+
+/-- `Fs.valid_fs`'s NUL-free clause, decided rather than case-split: on a
+concrete key the membership is the boolean test `State.tmp_nul_free`
+already runs.
+rocq-twin: not_in_bytes_of_existsb
+model: a reading of `List.any`; no kernel claim. -/
+theorem not_in_bytes_of_existsb (b : byte) (l : List byte)
+    (h : l.any (fun c => bv_eqb c b) = false) : b ∉ l := by
+  intro hin
+  have hc : l.any (fun c => bv_eqb c b) = true :=
+    List.any_eq_true.mpr ⟨b, hin, (bv_eqb_eq b b).2 rfl⟩
+  rw [hc] at h
+  exact Bool.noConfusion h
+
+/-- An image keyed by a device name is not `Fs.fs_keys_relative`: the key
+begins with the separator.
+rocq-twin: device_key_images_are_not_relative
+model: `Fs.key_is_relative` at a literal key; no kernel claim. -/
+theorem device_key_images_are_not_relative :
+    ¬ fs_keys_relative [(devnull_key, [104])]
+    ∧ ¬ fs_keys_relative [(localtime_key, [104])]
+    ∧ ¬ fs_keys_relative [(urandom_key, [104])] :=
+  ⟨fun h => h _ (List.mem_cons_self ..) rfl,
+   fun h => h _ (List.mem_cons_self ..) rfl,
+   fun h => h _ (List.mem_cons_self ..) rfl⟩
+
+/-- …so no run has one: the fixture over it is refused by
+`Run.valid_input`, and refused THROUGH the keys clause — the conjunct the
+projection below names is the one that fails.
+rocq-twin: device_key_inputs_are_not_valid
+model: `Run.valid_input`'s fourth conjunct at the three fixtures. -/
+theorem device_key_inputs_are_not_valid :
+    ¬ Run.valid_input (image_input [(devnull_key, [104])])
+    ∧ ¬ Run.valid_input (image_input [(localtime_key, [104])])
+    ∧ ¬ Run.valid_input (image_input [(urandom_key, [104])]) :=
+  ⟨fun h => device_key_images_are_not_relative.1 h.2.2.2.1,
+   fun h => device_key_images_are_not_relative.2.1 h.2.2.2.1,
+   fun h => device_key_images_are_not_relative.2.2 h.2.2.2.1⟩
+
+/-- THE CONTROL.  Drop the leading separator and the very same fixture IS
+valid — with a declared private /tmp beside it, so the seeded image
+really does carry the absolute key "/tmp/f" and the clause is seen to be
+about the PRE-SEED image rather than about the map the run starts from.
+rocq-twin: relative_key_inputs_are_valid
+model: `Run.valid_input` at three launchable fixtures. -/
+theorem relative_key_inputs_are_valid :
+    Run.valid_input (image_input_tmp [(devnull_relative_key, [104])] [([102], [105])])
+    ∧ Run.valid_input (image_input_tmp [(localtime_relative_key, [104])] [([102], [105])])
+    ∧ Run.valid_input (image_input_tmp [(urandom_relative_key, [104])] [([102], [105])]) := by
+  refine ⟨?_, ?_, ?_⟩ <;>
+  · unfold Run.valid_input
+    repeat' with_reducible apply And.intro
+    all_goals first
+      | (simp only [Run.valid_argv, Run.valid_envp, Fs.valid_fs, Run.valid_creds,
+          Run.valid_id, Run.valid_nofile, Run.valid_sigmask, Run.valid_hwcap]
+         set_option maxRecDepth 32768 in decide)
+      | (intro pf hpf
+         simp only [List.mem_singleton] at hpf
+         subst hpf
+         exact fun hc => Bool.noConfusion ((bv_eqb_eq _ _).2 hc))
+      | (refine fun pf hpf => ?_
+         simp only [image_input_tmp, List.mem_cons, List.not_mem_nil, or_false] at hpf
+         subst hpf
+         dsimp only [Fs.key_is_relative, devnull_relative_key, localtime_relative_key,
+           urandom_relative_key, key_of, List.map, Fs.path_slash_byte]
+         decide)
+      | rfl
+      | exact default_urandom_infinite
+      | fail "relative_key_inputs_are_valid: a clause matched none of the shapes"
+
+/-- And on those admitted images the three opens are ANSWERED: the seeded
+"/tmp/f" key did not trip a guard, and neither did the relative key that
+spells the device's own name without its leading separator.  /dev/null
+mints `State.FdDevNull`…
+rocq-twin: device_opens_answer_on_a_valid_image
+kernel: drivers/char/mem.c:memory_open@v6.18.46 -/
+theorem devnull_opens_on_a_valid_image (o : outcome SyscallEffect) :
+    syscall_spec (openat_in devnull_path 0)
+        (init_model [] 0 0 demo_sp demo_limit
+          (image_input_tmp [(devnull_relative_key, [104])] [([102], [105])])) o ↔
+      (env_errnos 10
+          (init_model [] 0 0 demo_sp demo_limit
+            (image_input_tmp [(devnull_relative_key, [104])] [([102], [105])])) o ∨
+       o = ret 3 10
+          (with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit
+              (image_input_tmp [(devnull_relative_key, [104])] [([102], [105])])))
+              3 (.FdDevNull true false))
+            (init_model [] 0 0 demo_sp demo_limit
+              (image_input_tmp [(devnull_relative_key, [104])] [([102], [105])])))) := by
+  sys_norm
+
+/-- …/dev/urandom mints `State.FdUrandom`…
+rocq-twin: device_opens_answer_on_a_valid_image
+kernel: drivers/char/random.c:urandom_fops@v6.18.46 -/
+theorem urandom_opens_on_a_valid_image (o : outcome SyscallEffect) :
+    syscall_spec (openat_in urandom_path 0)
+        (init_model [] 0 0 demo_sp demo_limit
+          (image_input_tmp [(urandom_relative_key, [104])] [([102], [105])])) o ↔
+      (env_errnos 13
+          (init_model [] 0 0 demo_sp demo_limit
+            (image_input_tmp [(urandom_relative_key, [104])] [([102], [105])])) o ∨
+       o = ret 3 13
+          (with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit
+              (image_input_tmp [(urandom_relative_key, [104])] [([102], [105])])))
+              3 .FdUrandom)
+            (init_model [] 0 0 demo_sp demo_limit
+              (image_input_tmp [(urandom_relative_key, [104])] [([102], [105])])))) := by
+  sys_norm
+
+/-- …and /etc/localtime is the -ENOENT its declaration promises.
+rocq-twin: device_opens_answer_on_a_valid_image
+kernel: fs/namei.c:traverse_mounts@v6.18.46 -/
+theorem localtime_answers_on_a_valid_image (o : outcome SyscallEffect) :
+    syscall_spec (openat_in localtime_path 0)
+        (init_model [] 0 0 demo_sp demo_limit
+          (image_input_tmp [(localtime_relative_key, [104])] [([102], [105])])) o ↔
+      o = errno 2 15
+          (init_model [] 0 0 demo_sp demo_limit
+            (image_input_tmp [(localtime_relative_key, [104])] [([102], [105])])) := by
+  sys_norm
 
 /-! # faccessat (48) and faccessat2 (439)
 
@@ -5171,7 +5646,7 @@ theorem fa2_both_flags_einval_rejected (m' : Model) (evs : List event) :
   sys_refute
 
 /-- ACCEPTED FLAGS CHANGE NO ANSWER, as an equality between flag words — the
-claim no probe reaches, since a run is shown the answer for the word it
+claim no real run reaches, since a run is shown the answer for the word it
 passed: the call under AT_EACCESS has exactly the outcomes the call under
 0 has.  Assembled from the two `iff`s above.
 rocq-twin: faccessat2_accepted_flags_change_no_answer -/
@@ -6008,7 +6483,7 @@ for the regular files, `ext4_dir_operations` (fs/ext4/dir.c, Linux v6.18.46) and
 `simple_offset_dir_operations` (fs/libfs.c, Linux v6.18.46) for the directories,
 `pipeanon_fops` (fs/pipe.c:1257-1266, Linux v6.18.46) for the pipe ends — and
 for the three channels as the VM harness hands them to a probe, which are
-`pipe2` pipes (`testing/vm/tracer.c`'s `make_pipe`) — `socket_file_ops`
+`pipe2` pipes (linux-process-semantics@ff0313ba4f:testing/vm/tracer.c's `make_pipe`) — `socket_file_ops`
 (net/socket.c), `null_fops` (drivers/char/mem.c) and `urandom_fops`
 (drivers/char/random.c), all Linux v6.18.46 — so fs/open.c:1591-1592
 returns 0 for every kind on them.  The forwarding flush an overlay puts in
@@ -6804,7 +7279,7 @@ theorem channel_huge_len_is_einval (i : SyscallInput) (o : outcome SyscallEffect
   sys_norm
 
 /-- stderr is not -ESPIPE: under the tracer it is a pipe (the harness's
-1 MiB pipes, testing/vm/README.md), and the probe's `kinds` call 3 is
+1 MiB pipes, linux-process-semantics@ff0313ba4f:testing/vm/README.md), and the probe's `kinds` call 3 is
 `ftruncate(2, 0)`, so this channel pin is the one the recorded -ESPIPE
 lie exercises; `pipe_is_not_espipe` below states the same refusal on the
 model's `FdPipe` kind, which THIS probe never opens: `ftruncate_spec.c`
@@ -7439,33 +7914,57 @@ def a17_open_model : Model :=
 
 attribute [sys_simp low] a17_open_model.eq_1
 
-/-- `ftruncate(fd, 0)` through a read-write file declines
-(`Sys/Fs/Open.lean`'s header declares the narrowing).  The same call on
-an `FdFileW` answers 0 and empties the file (`do_ftruncate`, fs/open.c,
-Linux v6.18.46: an O_RDWR file passes the `FMODE_WRITE` test as a
-write-only one does), so a mutant answering this kind as `FdFileW` fails
-here.
+/-- `ftruncate(fd, 0)` through a read-write file answers 0 and empties the
+file: `do_ftruncate` (fs/open.c:175-176, Linux v6.18.46) tests
+`!S_ISREG(inode->i_mode) || !(file->f_mode & FMODE_WRITE)`, and an O_RDWR
+file passes the `FMODE_WRITE` test as a write-only one does
+(`OPEN_FMODE(O_RDWR)`, include/linux/fs.h:3981, sets both bits), so the
+arm gives this kind the body it gives `FdFileW`.  The offset is
+untouched: the class is over `fdget` (include/linux/file.h:83), not
+`fdget_pos`.
 kernel: fs/open.c:do_ftruncate@v6.18.46 -/
-theorem a17_rdwr_ftruncate_declines (o : outcome SyscallEffect) :
+theorem a17_rdwr_ftruncate_empties_the_file (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 46 [3, 0, 0, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_open_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_open_model o ↔
+      o = Ok (mkEffect 0 [] [])
+            (with_fs (fs_set [([102], [120])] [102] []) a17_open_model) [] := by
   sys_norm
+
+/-- …and a success that left the bytes alone is refused, so the resize is
+part of the answer rather than a bare 0 on a kind the arm merely accepts.
+kernel: fs/open.c:do_truncate@v6.18.46 -/
+theorem a17_rdwr_ftruncate_without_the_resize_rejected (evs : List event) :
+    ¬ syscall_spec (SyscallInput.mkInput 46 [3, 0, 0, 0, 0, 0]
+        (fun _ => none) (fun _ => none)) a17_open_model
+        (Ok (mkEffect 0 [] []) a17_open_model evs) := by
+  intro h; sys_refute at h
 
 def a17_open_append_model : Model :=
   fixture_of (fds := [(3, .FdFileA [102] 0)]) (fs := [([102], [120])])
 
 attribute [sys_simp low] a17_open_append_model.eq_1
 
-/-- `ftruncate(fd, 0)` through an append-mode file declines
-(`Sys/Fs/Open.lean`'s header declares the narrowing).  The same call on
-an `FdFileW` answers 0 and empties the file (`do_ftruncate`, fs/open.c,
-Linux v6.18.46: O_APPEND rides on O_WRONLY, which passes the
-`FMODE_WRITE` test, and nothing on the path reads it), so a mutant
-answering this kind as `FdFileW` fails here.
+/-- `ftruncate(fd, 0)` through an append-mode file answers 0 and empties
+the file: O_APPEND rides on O_WRONLY, which passes `do_ftruncate`'s
+`FMODE_WRITE` test (fs/open.c:175-176, Linux v6.18.46), and nothing on
+that path reads the append bit — the append positioning happens per
+write, in `generic_write_checks`.  So the arm gives this kind the same
+body, and the descriptor's offset is left where it was.
 kernel: fs/open.c:do_ftruncate@v6.18.46 -/
-theorem a17_append_ftruncate_declines (o : outcome SyscallEffect) :
+theorem a17_append_ftruncate_empties_the_file (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 46 [3, 0, 0, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_open_append_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_open_append_model o ↔
+      o = Ok (mkEffect 0 [] [])
+            (with_fs (fs_set [([102], [120])] [102] []) a17_open_append_model) [] := by
   sys_norm
+
+/-- …and -EINVAL, the answer `do_ftruncate` keeps for a kind whose
+`f_mode` lacks FMODE_WRITE, is refused here.
+kernel: fs/open.c:do_ftruncate@v6.18.46 -/
+theorem a17_append_ftruncate_einval_rejected (m' : Model) (evs : List event) :
+    ¬ syscall_spec (SyscallInput.mkInput 46 [3, 0, 0, 0, 0, 0]
+        (fun _ => none) (fun _ => none)) a17_open_append_model
+        (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
+  sys_refute
 
 end LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.Open

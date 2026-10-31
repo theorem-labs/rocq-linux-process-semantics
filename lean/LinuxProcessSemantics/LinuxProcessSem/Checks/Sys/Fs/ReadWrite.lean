@@ -1,10 +1,11 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Fs/ReadWrite.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Uaccess
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Uaccess
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.ReadWrite
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
 unported: one_iovec_mem -- a memory fixture of Rocq's closed copy-in accounting example `writev_copyin_reports_table_and_delivered_data`, read by nothing but that example and built with `RiscvSemantics.write_to_mem`, whose module imports the RISC-V decoders and instruction semantics (`Riscv.Decode`, `Riscv.DecodeC`, `Riscv.Sem`): porting it would make this checker module import all three for a fixture no proof reads.  The example's fact is twinned instead in `Checks/Cases/Checks/Sys/Fs/ReadWrite.lean`, under the example's name, over `one_iovec_zero_mem`, a memory holding the same descriptor and reading zero at every other address as `write_to_mem (fun _ => Some 0)` does; the name belongs here the day this module imports `RiscvSemantics`, directly or transitively, for another reason
 unported: invalid_first_iovec_mem -- the fixture of Rocq's closed example `invalid_iovec_charges_only_the_attempted_descriptor`, unported for `one_iovec_mem`'s reason and twinned the same way, under the example's name, over `invalid_first_iovec_zero_mem` -/
 
@@ -24,13 +25,10 @@ shared steps before it; `write` (64), ticket C-Fs-ReadWrite-write's;
 C-Fs-ReadWrite-pread-pwrite-lseek's; and `readv` (65) and `writev` (66),
 ticket C-Fs-ReadWrite-readv-writev's, last.
 
-THE BASELINE.  The header pins a71fd38a08571d519b9cfc5f66308db5c26da570,
-the last commit to touch either Rocq file, at which both are byte-identical
-to the day this was written, rather than the f44244ad6b80 the port plan's
-brief names: that commit stopped being an ancestor of any branch when the
-day's work was rebase-merged, and it predates #712, which added
-`read_urandom` and the `FdUrandom` arms this file ports.  The spec twin,
-`Sys/Fs/ReadWrite.lean`, pins the same commit for the same reason.
+THE BASELINE.  The header pins f1006fe8178338a499b5e5c41be83006c4edd058,
+the Rocq commit this file and its spec twin, `Sys/Fs/ReadWrite.lean`,
+are both ported to.  At that commit every arm of every checker here has
+a Rocq twin, and no arm of this file narrows its spec.
 
 WHAT IS MIRRORED, AND WHAT THE LEAN SHAPES CHANGE.  `check_read` is Rocq's
 arm for arm against the Lean `read_spec`, which is itself Rocq's
@@ -38,10 +36,10 @@ arm for arm against the Lean `read_spec`, which is itself Rocq's
 and is spelled the same way here, so the proofs below step through the two
 in lockstep:
 
-- The `FdFileRW` arm declines, as the spec twin's does (its header
-  declares the narrowing); Rocq's is the `FdFile` arm on another
-  constructor.  The `FdFileA` arm declines with the spec twin's too, where
-  Rocq's answers -EBADF.
+- The `FdFileRW` and `FdFileA` arms answer, each as the spec twin's arm
+  of that kind answers: on `read` an `FdFileRW` is the `FdFile` arm on
+  the O_RDWR constructor, which writes the entry back under that kind,
+  and an `FdFileA` is -EBADF, since an append fd is O_WRONLY.
 - Rocq matches an `InputStream` against `IEof | ICons b s'` and a
   `NetStream` against `NFin | NRst | NTimedOut | NCons b rest`.  Both are
   structures here, so the channel arm looks at `(m_stdin m).uncons` and
@@ -311,6 +309,12 @@ the spec's docstring.  The delivering arms differ in what is checked:
   accepted effect is compared to it byte for byte, an empty file read
   taking the canonical empty-writes shape `check_ret_only` accepts.
 
+A file opened O_RDWR (`FdFileRW`) is the read-only file arm (`FdFile`)
+word for word, and the accepted model writes the advanced entry back
+under `FdFileRW`.  A file opened O_WRONLY|O_APPEND (`FdFileA`) is -EBADF,
+as `FdFileW` is: the append word rides on O_WRONLY, so FMODE_READ is
+clear.
+
 A destination none of whose bytes can land is -EFAULT; one that is
 writable in part is `CheckUnmodeled`, since the copy routine's rounded
 progress is not described (the spec's docstring gives the kernel reading). -/
@@ -319,8 +323,7 @@ def check_read (i : SyscallInput) (fd buf count : word) (eff : SyscallEffect) (m
   match fd_lookup (m_fds m) fd with
   | none => check_ret_only eff (errno_ret EBADF) m []
   | some (.FdFileW _ _) => check_ret_only eff (errno_ret EBADF) m []
-  | some (.FdFileA _ _) => CheckUnmodeled
-  | some (.FdFileRW _ _) => CheckUnmodeled
+  | some (.FdFileA _ _) => check_ret_only eff (errno_ret EBADF) m []
   | some (.FdChannel ch) =>
       if !w_is0 ch then check_ret_only eff (errno_ret EBADF) m []
       else if !access_okb buf (bv_unsigned count) then check_ret_only eff (errno_ret EFAULT) m []
@@ -408,6 +411,28 @@ def check_read (i : SyscallInput) (fd buf count : word) (eff : SyscallEffect) (m
               | some _ => CheckUnmodeled
           | some _ =>
               let m' := with_fds (fd_insert (m_fds m) fd (.FdFile p (off + len_word bs))) m
+              match bs with
+              | [] => check_ret_only eff (Z_to_bv 64 0) m' []
+              | _ :: _ =>
+                match eff with
+                | .mkEffectU ret [(a, bs')] [] [] [] [] =>
+                    if bv_eqb a buf && listN_eqb bs' bs && bv_eqb ret (len_word bs)
+                    then CheckOk m' [] else CheckReject
+                | _ => CheckReject
+  | some (.FdFileRW p off) =>
+      if !access_okb buf (bv_unsigned count) then check_ret_only eff (errno_ret EFAULT) m []
+      else
+        match fs_lookup (m_fs m) p with
+        | none => CheckUnmodeled
+        | some data =>
+          let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count))
+          match read_bytes_map i.in_wmem buf (len_word bs) with
+          | none =>
+              match read_bytes_map i.in_wmem buf (Z_to_bv 64 1) with
+              | none => check_ret_only eff (errno_ret EFAULT) m []
+              | some _ => CheckUnmodeled
+          | some _ =>
+              let m' := with_fds (fd_insert (m_fds m) fd (.FdFileRW p (off + len_word bs))) m
               match bs with
               | [] => check_ret_only eff (Z_to_bv 64 0) m' []
               | _ :: _ =>
@@ -783,8 +808,7 @@ theorem check_read_sound_ok (i : SyscallInput) (fd buf count : word) (eff : Sysc
   | some e =>
   cases e with
   | FdFileW _ _ => exact ret_only_sound _ _ _ _ _ i h
-  | FdFileA _ _ => cases h
-  | FdFileRW _ _ => cases h
+  | FdFileA _ _ => exact ret_only_sound _ _ _ _ _ i h
   | FdChannel ch =>
     dsimp only at h ⊢
     generalize (!w_is0 ch) = b0 at h ⊢
@@ -980,6 +1004,48 @@ theorem check_read_sound_ok (i : SyscallInput) (fd buf count : word) (eff : Sysc
         exact pure_ok _ i _
       · cases h
     · cases h
+  | FdFileRW p off =>
+    dsimp only at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize file_read data off (Z_to_bv 64 (rw_count_clamp count)) = bs at h ⊢
+    generalize read_bytes_map i.in_wmem buf (len_word bs) = w at h ⊢
+    cases w with
+    | none =>
+      dsimp only at h ⊢
+      generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w1 at h ⊢
+      cases w1 with
+      | none => exact ret_only_sound _ _ _ _ _ i h
+      | some _ => cases h
+    | some _ =>
+    dsimp only at h ⊢
+    rw [bind_set_fds_iff]
+    cases bs with
+    | nil =>
+      obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+      exact pure_ok _ i _
+    | cons b bs0 =>
+    dsimp only at h
+    split at h
+    · rename_i ret a bs'
+      split at h
+      · rename_i hg
+        obtain ⟨rfl, rfl⟩ := check_result.CheckOk.inj h
+        simp only [Bool.and_eq_true, bv_eqb_eq, listN_eqb_eq] at hg
+        obtain ⟨⟨rfl, rfl⟩, rfl⟩ := hg
+        exact pure_ok _ i _
+      · cases h
+    · cases h
   | FdPipe id w =>
     dsimp only at h ⊢
     cases w with
@@ -1050,8 +1116,7 @@ theorem check_read_sound_unmodeled (i : SyscallInput) (fd buf count : word) (eff
   | some e =>
   cases e with
   | FdFileW _ _ => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+  | FdFileA _ _ => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   | FdChannel ch =>
     dsimp only at h ⊢
     generalize (!w_is0 ch) = b0 at h ⊢
@@ -1214,6 +1279,39 @@ theorem check_read_sound_unmodeled (i : SyscallInput) (fd buf count : word) (eff
       split at h
       · split at h <;> cases h
       · cases h
+  | FdFileRW p off =>
+    dsimp only at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only at h ⊢
+    generalize file_read data off (Z_to_bv 64 (rw_count_clamp count)) = bs at h ⊢
+    generalize read_bytes_map i.in_wmem buf (len_word bs) = w at h ⊢
+    cases w with
+    | none =>
+      dsimp only at h ⊢
+      generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w1 at h ⊢
+      cases w1 with
+      | none => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+      | some _ => exact unmodeled_intro i m
+    | some _ =>
+    exfalso
+    dsimp only at h
+    cases bs with
+    | nil => exact check_ret_only_no_unmodeled _ _ _ _ h
+    | cons b bs0 =>
+      dsimp only at h
+      split at h
+      · split at h <;> cases h
+      · cases h
   | FdPipe id w =>
     dsimp only at h ⊢
     cases w with
@@ -1279,8 +1377,7 @@ theorem check_read_complete_ok (i : SyscallInput) (fd buf count : word) (eff : S
   | some e =>
   cases e with
   | FdFileW _ _ => exact ret_only_complete _ _ _ _ _ i h
-  | FdFileA _ _ => cases h
-  | FdFileRW _ _ => cases h
+  | FdFileA _ _ => exact ret_only_complete _ _ _ _ _ i h
   | FdChannel ch =>
     dsimp only at h ⊢
     generalize (!w_is0 ch) = b0 at h ⊢
@@ -1459,6 +1556,37 @@ theorem check_read_complete_ok (i : SyscallInput) (fd buf count : word) (eff : S
     | nil => exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
     | cons b bs0 =>
       simp only [delivered_writes, bv_eqb_refl, listN_eqb_refl, Bool.and_self, ↓reduceIte]
+  | FdFileRW p off =>
+    dsimp only at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize file_read data off (Z_to_bv 64 (rw_count_clamp count)) = bs at h ⊢
+    generalize read_bytes_map i.in_wmem buf (len_word bs) = w at h ⊢
+    cases w with
+    | none =>
+      dsimp only at h ⊢
+      generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w1 at h ⊢
+      cases w1 with
+      | none => exact ret_only_complete _ _ _ _ _ i h
+      | some _ => cases h
+    | some _ =>
+    dsimp only at h ⊢
+    simp only [bind_set_fds_iff, pure_iff, outcome.Ok.injEq] at h
+    obtain ⟨rfl, rfl, rfl⟩ := h
+    cases bs with
+    | nil => exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
+    | cons b bs0 =>
+      simp only [delivered_writes, bv_eqb_refl, listN_eqb_refl, Bool.and_self, ↓reduceIte]
   | FdPipe id w =>
     dsimp only at h ⊢
     cases w with
@@ -1522,8 +1650,7 @@ theorem check_read_complete_unmodeled (i : SyscallInput) (fd buf count : word)
   | some e =>
   cases e with
   | FdFileW _ _ => exact (ret_only_not_unmodeled _ i m h).elim
-  | FdFileA _ _ => rfl
-  | FdFileRW _ _ => rfl
+  | FdFileA _ _ => exact (ret_only_not_unmodeled _ i m h).elim
   | FdChannel ch =>
     dsimp only at h ⊢
     generalize (!w_is0 ch) = b0 at h ⊢
@@ -1691,6 +1818,33 @@ theorem check_read_complete_unmodeled (i : SyscallInput) (fd buf count : word)
     exfalso
     dsimp only at h
     simp only [bind_set_fds_iff, pure_iff, reduceCtorEq] at h
+  | FdFileRW p off =>
+    dsimp only at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (ret_only_not_unmodeled _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => rfl
+    | some data =>
+    dsimp only at h ⊢
+    generalize file_read data off (Z_to_bv 64 (rw_count_clamp count)) = bs at h ⊢
+    generalize read_bytes_map i.in_wmem buf (len_word bs) = w at h ⊢
+    cases w with
+    | none =>
+      dsimp only at h ⊢
+      generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w1 at h ⊢
+      cases w1 with
+      | none => exact (ret_only_not_unmodeled _ i m h).elim
+      | some _ => rfl
+    | some _ =>
+    exfalso
+    dsimp only at h
+    simp only [bind_set_fds_iff, pure_iff, reduceCtorEq] at h
   | FdPipe id w =>
     dsimp only at h ⊢
     cases w with
@@ -1795,13 +1949,14 @@ theorem read_urandom_witness_ok (buf count : word) (i : SyscallInput) (m : Model
 and `NCons b rest` arms are the `some (b, s')` of `uncons` and the
 `.NByte b` head of the script, the remainder of the latter being what
 `net_take rx 1` leaves — the term the spec's `set_fds` names for a
-one-byte delivery. -/
+one-byte delivery.  The `FdFileA` arm is -EBADF, as for `FdFileW`; the
+`FdFileRW` arm is the `FdFile` arm word for word, with the entry written
+back under `FdFileRW`. -/
 def read_witness (fd buf count : word) (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | none => ret_outcome (errno_ret EBADF) m
   | some (.FdFileW _ _) => ret_outcome (errno_ret EBADF) m
-  | some (.FdFileA _ _) => Unmodeled
-  | some (.FdFileRW _ _) => Unmodeled
+  | some (.FdFileA _ _) => ret_outcome (errno_ret EBADF) m
   | some (.FdChannel ch) =>
       if !w_is0 ch then ret_outcome (errno_ret EBADF) m
       else if !access_okb buf (bv_unsigned count) then ret_outcome (errno_ret EFAULT) m
@@ -1873,6 +2028,21 @@ def read_witness (fd buf count : word) (i : SyscallInput) (m : Model) : outcome 
           | some _ =>
               Ok (mkEffect (len_word bs) (delivered_writes buf bs) [])
                  (with_fds (fd_insert (m_fds m) fd (.FdFile p (off + len_word bs))) m) []
+  | some (.FdFileRW p off) =>
+      if !access_okb buf (bv_unsigned count) then ret_outcome (errno_ret EFAULT) m
+      else
+        match fs_lookup (m_fs m) p with
+        | none => Unmodeled
+        | some data =>
+          let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count))
+          match read_bytes_map i.in_wmem buf (len_word bs) with
+          | none =>
+              match read_bytes_map i.in_wmem buf (Z_to_bv 64 1) with
+              | none => ret_outcome (errno_ret EFAULT) m
+              | some _ => Unmodeled
+          | some _ =>
+              Ok (mkEffect (len_word bs) (delivered_writes buf bs) [])
+                 (with_fds (fd_insert (m_fds m) fd (.FdFileRW p (off + len_word bs))) m) []
   | some (.FdPipe id w) =>
       if w then ret_outcome (errno_ret EBADF) m
       else if !modeled_rw_range buf count then Unmodeled
@@ -1940,8 +2110,7 @@ theorem read_witness_ok (fd buf count : word) (i : SyscallInput) (m : Model) :
   | some e =>
   cases e with
   | FdFileW _ _ => exact pure_ok _ i _
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+  | FdFileA _ _ => exact pure_ok _ i _
   | FdChannel ch =>
     dsimp only
     generalize (!w_is0 ch) = b0
@@ -2117,6 +2286,32 @@ theorem read_witness_ok (fd buf count : word) (i : SyscallInput) (m : Model) :
     | some _ =>
       dsimp only
       exact (bind_set_fds_iff _ _ i m _).mpr (pure_ok _ i _)
+  | FdFileRW p off =>
+    dsimp only
+    generalize (!access_okb buf (bv_unsigned count)) = b0
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize fs_lookup (m_fs m) p = fl
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only
+    generalize file_read data off (Z_to_bv 64 (rw_count_clamp count)) = bs
+    generalize read_bytes_map i.in_wmem buf (len_word bs) = w
+    cases w with
+    | none =>
+      dsimp only
+      generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w1
+      cases w1 with
+      | none => exact pure_ok _ i _
+      | some _ => exact unmodeled_intro i m
+    | some _ =>
+      dsimp only
+      exact (bind_set_fds_iff _ _ i m _).mpr (pure_ok _ i _)
   | FdPipe id w =>
     dsimp only
     cases w with
@@ -2171,15 +2366,7 @@ theorem read_witness_ok (fd buf count : word) (i : SyscallInput) (m : Model) :
 
 Mirrors the `write` half of `theories/LinuxProcessSem/Checks/Sys/Fs/ReadWrite.v`
 at the header's baseline, ported by ticket C-Fs-ReadWrite-write.  The arms
-are Rocq's, in Rocq's order, but for the `FdFileRW` and `FdFileA` arms,
-which decline (module header).
-One arm departs from Rocq's text, and
-for the reason the spec twin departs from Rocq's `write_spec`: the
-`FdFileW` arm declines `unreadable_source_past_eof` after the range gate
-and ahead of the -EFAULT, as `write_spec` does, since a checker answering
-Rocq's -EFAULT there would accept an outcome the spec it is proved against
-no longer admits.  The argument for the decline is on that definition's
-docstring in `Sys/Fs/ReadWrite.lean`.
+are Rocq's, in Rocq's order.
 
 The channel arm judges the claimed return where `write_spec` chooses the
 delivered prefix: the return names the prefix, so `1 ≤ ret ≤ length bs`
@@ -2227,8 +2414,7 @@ def check_write (i : SyscallInput) (fd buf count : word) (eff : SyscallEffect) (
       if !modeled_rw_range buf count then CheckUnmodeled
       else
         let bs := write_source i.in_mem buf count
-        if unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) off then CheckUnmodeled
-        else if !w_is0 count && bs.length == 0 then check_ret_only eff (errno_ret EFAULT) m []
+        if !w_is0 count && bs.length == 0 then check_ret_only eff (errno_ret EFAULT) m []
         else
           let k :=
             match fs_lookup (m_fs m) p with
@@ -2241,8 +2427,44 @@ def check_write (i : SyscallInput) (fd buf count : word) (eff : SyscallEffect) (
                   if w_is0 count then check_ret_only eff (len_word bs) m' []
                   else check_ret_only_copyins [(buf, bs.length)] eff (len_word bs) m' []
           if w_is0 count then check_access_ok_zero buf count eff m k else k
-  | some (.FdFileA _ _) => CheckUnmodeled
-  | some (.FdFileRW _ _) => CheckUnmodeled
+  | some (.FdFileRW p off) => -- the `FdFileW` arm above, on the O_RDWR kind
+      if !modeled_rw_range buf count then CheckUnmodeled
+      else
+        let bs := write_source i.in_mem buf count
+        if !w_is0 count && bs.length == 0 then check_ret_only eff (errno_ret EFAULT) m []
+        else
+          let k :=
+            match fs_lookup (m_fs m) p with
+            | none => CheckUnmodeled
+            | some data =>
+                if !modeled_file_gap data off bs then CheckUnmodeled
+                else
+                  let m' := with_fds (fd_insert (m_fds m) fd (.FdFileRW p (off + len_word bs)))
+                              (with_fs (fs_set (m_fs m) p (file_write data off bs)) m)
+                  if w_is0 count then check_ret_only eff (len_word bs) m' []
+                  else check_ret_only_copyins [(buf, bs.length)] eff (len_word bs) m' []
+          if w_is0 count then check_access_ok_zero buf count eff m k else k
+  | some (.FdFileA p off) =>
+      -- the arm above with the bytes placed at end-of-file, no `modeled_file_gap`
+      -- guard, and `rw_verify_area`'s test on the fd's real position (`write_spec`)
+      if !modeled_rw_range buf count then CheckUnmodeled
+      else if !access_okb buf (bv_unsigned count) then check_ret_only eff (errno_ret EFAULT) m []
+      else if rw_pos_einvalb off (bv_unsigned count) then
+        check_ret_only eff (errno_ret EINVAL) m []
+      else
+        let bs := write_source i.in_mem buf count
+        if !w_is0 count && bs.length == 0 then check_ret_only eff (errno_ret EFAULT) m []
+        else
+          let k :=
+            match fs_lookup (m_fs m) p with
+            | none => CheckUnmodeled
+            | some data =>
+                let m' :=
+                  with_fds (fd_insert (m_fds m) fd (.FdFileA p (append_new_pos data bs off)))
+                    (with_fs (fs_set (m_fs m) p (file_write data (len_word data) bs)) m)
+                if w_is0 count then check_ret_only eff (len_word bs) m' []
+                else check_ret_only_copyins [(buf, bs.length)] eff (len_word bs) m' []
+          if w_is0 count then check_access_ok_zero buf count eff m k else k
   | some .FdUrandom => check_ret_only eff (errno_ret EBADF) m []
   | some (.FdDevNull _ wr) =>
       if !wr then check_ret_only eff (errno_ret EBADF) m []
@@ -2265,12 +2487,8 @@ def check_write (i : SyscallInput) (fd buf count : word) (eff : SyscallEffect) (
               let bs := write_source i.in_mem buf count
               if !(bs.length == word_to_nat count) then CheckUnmodeled
               else
-                let deliver := check_ret_only_copyins [(buf, bs.length)] eff count
+                check_ret_only_copyins [(buf, bs.length)] eff count
                   (with_pipes (pipe_insert (m_pipes m) id (pipe_append st bs)) m) []
-                match st.1 with
-                | [] => if bv_eqb eff.eff_ret (errno_ret ENOMEM)
-                        then check_ret_only eff (errno_ret ENOMEM) m [] else deliver
-                | _ :: _ => deliver
 
 /-! ### The write acceptor against `write_spec`
 
@@ -2360,13 +2578,6 @@ theorem check_write_sound_ok (i : SyscallInput) (fd buf count : word) (eff : Sys
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize write_source i.in_mem buf count = bs at h ⊢
-    generalize unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) off = u at h ⊢
-    cases u with
-    | true =>
-      simp only [↓reduceIte] at h
-      cases h
-    | false =>
-    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize (!w_is0 count && bs.length == 0) = b1 at h ⊢
     cases b1 with
     | true =>
@@ -2419,8 +2630,128 @@ theorem check_write_sound_ok (i : SyscallInput) (fd buf count : word) (eff : Sys
       rw [bind_set_fs_iff, bind_set_fds_iff]
       obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
       exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
-  | FdFileA _ _ => cases h
-  | FdFileRW _ _ => cases h
+  | FdFileRW p off =>
+    dsimp only at h ⊢
+    generalize (!modeled_rw_range buf count) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h
+      cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize write_source i.in_mem buf count = bs at h ⊢
+    generalize (!w_is0 count && bs.length == 0) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none =>
+      dsimp only at h ⊢
+      generalize w_is0 count = c at h ⊢
+      cases c with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        ok_zero_cases h buf count
+        · exact ret_only_sound _ _ _ _ _ i h
+        · cases h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data off bs) = g at h ⊢
+    cases g with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      generalize w_is0 count = c at h ⊢
+      cases c with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        ok_zero_cases h buf count
+        · exact ret_only_sound _ _ _ _ _ i h
+        · cases h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize w_is0 count = c at h ⊢
+    cases c with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      ok_zero_cases h buf count
+      · exact ret_only_sound _ _ _ _ _ i h
+      · rw [bind_set_fs_iff, bind_set_fds_iff]
+        exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+      rw [bind_set_fs_iff, bind_set_fds_iff]
+      obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
+      exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
+  | FdFileA p off =>
+    dsimp only at h ⊢
+    generalize (!modeled_rw_range buf count) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h
+      cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb off (bv_unsigned count) = b2 at h ⊢
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize write_source i.in_mem buf count = bs at h ⊢
+    generalize (!w_is0 count && bs.length == 0) = b3 at h ⊢
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none =>
+      dsimp only at h ⊢
+      generalize w_is0 count = c at h ⊢
+      cases c with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        ok_zero_cases h buf count
+        · exact ret_only_sound _ _ _ _ _ i h
+        · cases h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize w_is0 count = c at h ⊢
+    cases c with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      ok_zero_cases h buf count
+      · exact ret_only_sound _ _ _ _ _ i h
+      · rw [bind_set_fs_iff, bind_set_fds_iff]
+        exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+      rw [bind_set_fs_iff, bind_set_fds_iff]
+      obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
+      exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
   | FdUrandom => exact ret_only_sound _ _ _ _ _ i h
   | FdDevNull rd wr =>
     dsimp only at h ⊢
@@ -2487,21 +2818,9 @@ theorem check_write_sound_ok (i : SyscallInput) (fd buf count : word) (eff : Sys
       cases h
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-    cases hq : st.1 with
-    | nil =>
-      simp only [hq] at h ⊢
-      split at h
-      · apply alt_l
-        exact ret_only_sound _ _ _ _ _ i h
-      · apply alt_r
-        rw [bind_set_pipes_iff]
-        obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
-        exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
-    | cons x xs =>
-      simp only [hq] at h ⊢
-      rw [bind_set_pipes_iff]
-      obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
-      exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
+    rw [bind_set_pipes_iff]
+    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
+    exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_write_sound_unmodeled`. -/
 theorem check_write_sound_unmodeled (i : SyscallInput) (fd buf count : word)
@@ -2565,13 +2884,6 @@ theorem check_write_sound_unmodeled (i : SyscallInput) (fd buf count : word)
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize write_source i.in_mem buf count = bs at h ⊢
-    generalize unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) off = u at h ⊢
-    cases u with
-    | true =>
-      simp only [↓reduceIte]
-      exact unmodeled_intro i m
-    | false =>
-    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize (!w_is0 count && bs.length == 0) = b1 at h ⊢
     cases b1 with
     | true =>
@@ -2619,8 +2931,118 @@ theorem check_write_sound_unmodeled (i : SyscallInput) (fd buf count : word)
     | false =>
       simp only [Bool.false_eq_true, ↓reduceIte] at h
       exact absurd h (check_ret_only_copyins_no_unmodeled _ _ _ _ _)
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+  | FdFileRW p off =>
+    dsimp only at h ⊢
+    generalize (!modeled_rw_range buf count) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte]
+      exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize write_source i.in_mem buf count = bs at h ⊢
+    generalize (!w_is0 count && bs.length == 0) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none =>
+      dsimp only at h ⊢
+      generalize w_is0 count = c at h ⊢
+      cases c with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        ok_zero_cases h buf count
+        · exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+        · exact unmodeled_intro i m
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        exact unmodeled_intro i m
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data off bs) = g at h ⊢
+    cases g with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      generalize w_is0 count = c at h ⊢
+      cases c with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        ok_zero_cases h buf count
+        · exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+        · exact unmodeled_intro i m
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    generalize w_is0 count = c at h ⊢
+    cases c with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact absurd h (check_access_ok_zero_ret_only_no_unmodeled _ _ _ _ _ _ _)
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (check_ret_only_copyins_no_unmodeled _ _ _ _ _)
+  | FdFileA p off =>
+    dsimp only at h ⊢
+    generalize (!modeled_rw_range buf count) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte]
+      exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb off (bv_unsigned count) = b2 at h ⊢
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize write_source i.in_mem buf count = bs at h ⊢
+    generalize (!w_is0 count && bs.length == 0) = b3 at h ⊢
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none =>
+      dsimp only at h ⊢
+      generalize w_is0 count = c at h ⊢
+      cases c with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        ok_zero_cases h buf count
+        · exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+        · exact unmodeled_intro i m
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        exact unmodeled_intro i m
+    | some data =>
+    dsimp only at h ⊢
+    generalize w_is0 count = c at h ⊢
+    cases c with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact absurd h (check_access_ok_zero_ret_only_no_unmodeled _ _ _ _ _ _ _)
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h
+      exact absurd h (check_ret_only_copyins_no_unmodeled _ _ _ _ _)
   | FdUrandom => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   | FdDevNull rd wr =>
     dsimp only at h ⊢
@@ -2687,15 +3109,7 @@ theorem check_write_sound_unmodeled (i : SyscallInput) (fd buf count : word)
       exact unmodeled_intro i m
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h
-    cases hq : st.1 with
-    | nil =>
-      simp only [hq] at h
-      split at h
-      · exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-      · exact absurd h (check_ret_only_copyins_no_unmodeled _ _ _ _ _)
-    | cons x xs =>
-      simp only [hq] at h
-      exact absurd h (check_ret_only_copyins_no_unmodeled _ _ _ _ _)
+    exact absurd h (check_ret_only_copyins_no_unmodeled _ _ _ _ _)
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_write_complete_ok`. -/
 theorem check_write_complete_ok (i : SyscallInput) (fd buf count : word) (eff : SyscallEffect)
@@ -2776,13 +3190,6 @@ theorem check_write_complete_ok (i : SyscallInput) (fd buf count : word) (eff : 
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize write_source i.in_mem buf count = bs at h ⊢
-    generalize unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) off = u at h ⊢
-    cases u with
-    | true =>
-      simp only [↓reduceIte] at h
-      cases h
-    | false =>
-    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize (!w_is0 count && bs.length == 0) = b1 at h ⊢
     cases b1 with
     | true =>
@@ -2858,8 +3265,167 @@ theorem check_write_complete_ok (i : SyscallInput) (fd buf count : word) (eff : 
       simp only [ret_only, pure_iff, outcome.Ok.injEq] at hcore
       obtain ⟨rfl, rfl, rfl⟩ := hcore
       exact check_ret_only_copyins_refl _ _ _ _
-  | FdFileA _ _ => cases h
-  | FdFileRW _ _ => cases h
+  | FdFileRW p off =>
+    dsimp only at h ⊢
+    generalize (!modeled_rw_range buf count) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h
+      cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize write_source i.in_mem buf count = bs at h ⊢
+    generalize (!w_is0 count && bs.length == 0) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none =>
+      dsimp only at h ⊢
+      generalize w_is0 count = c at h ⊢
+      cases c with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        unfold access_ok_zero at h
+        unfold check_access_ok_zero
+        generalize access_okb buf (bv_unsigned count) = ok at h ⊢
+        cases ok with
+        | false =>
+          simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+          exact ret_only_complete _ _ _ _ _ i h
+        | true =>
+          simp only [↓reduceIte] at h
+          cases h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data off bs) = g at h ⊢
+    cases g with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      generalize w_is0 count = c at h ⊢
+      cases c with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        unfold access_ok_zero at h
+        unfold check_access_ok_zero
+        generalize access_okb buf (bv_unsigned count) = ok at h ⊢
+        cases ok with
+        | false =>
+          simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+          exact ret_only_complete _ _ _ _ _ i h
+        | true =>
+          simp only [↓reduceIte] at h
+          cases h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize w_is0 count = c at h ⊢
+    cases c with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      unfold access_ok_zero at h
+      unfold check_access_ok_zero
+      generalize access_okb buf (bv_unsigned count) = ok at h ⊢
+      cases ok with
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+        exact ret_only_complete _ _ _ _ _ i h
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        rw [bind_set_fs_iff, bind_set_fds_iff] at h
+        exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+      rw [bind_set_fs_iff, bind_set_fds_iff] at h
+      obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i _ _ _ _ h
+      simp only [ret_only, pure_iff, outcome.Ok.injEq] at hcore
+      obtain ⟨rfl, rfl, rfl⟩ := hcore
+      exact check_ret_only_copyins_refl _ _ _ _
+  | FdFileA p off =>
+    dsimp only at h ⊢
+    generalize (!modeled_rw_range buf count) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h
+      cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb off (bv_unsigned count) = b2 at h ⊢
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize write_source i.in_mem buf count = bs at h ⊢
+    generalize (!w_is0 count && bs.length == 0) = b3 at h ⊢
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none =>
+      dsimp only at h ⊢
+      generalize w_is0 count = c at h ⊢
+      cases c with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        unfold access_ok_zero at h
+        unfold check_access_ok_zero
+        generalize access_okb buf (bv_unsigned count) = ok at h ⊢
+        cases ok with
+        | false =>
+          simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+          exact ret_only_complete _ _ _ _ _ i h
+        | true =>
+          simp only [↓reduceIte] at h
+          cases h
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize w_is0 count = c at h ⊢
+    cases c with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      unfold access_ok_zero at h
+      unfold check_access_ok_zero
+      generalize access_okb buf (bv_unsigned count) = ok at h ⊢
+      cases ok with
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+        exact ret_only_complete _ _ _ _ _ i h
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        rw [bind_set_fs_iff, bind_set_fds_iff] at h
+        exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+      rw [bind_set_fs_iff, bind_set_fds_iff] at h
+      obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i _ _ _ _ h
+      simp only [ret_only, pure_iff, outcome.Ok.injEq] at hcore
+      obtain ⟨rfl, rfl, rfl⟩ := hcore
+      exact check_ret_only_copyins_refl _ _ _ _
   | FdUrandom => exact ret_only_complete _ _ _ _ _ i h
   | FdDevNull rd wr =>
     dsimp only at h ⊢
@@ -2911,7 +3477,7 @@ theorem check_write_complete_ok (i : SyscallInput) (fd buf count : word) (eff : 
     | none => cases h
     | some st =>
     dsimp only at h ⊢
-    generalize hroom : (!pipe_write_room st (bv_unsigned count)) = b3 at h ⊢
+    generalize (!pipe_write_room st (bv_unsigned count)) = b3 at h ⊢
     cases b3 with
     | true =>
       simp only [↓reduceIte] at h
@@ -2926,37 +3492,11 @@ theorem check_write_complete_ok (i : SyscallInput) (fd buf count : word) (eff : 
       cases h
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-    cases hq : st.1 with
-    | nil =>
-      simp only [hq, alt_iff] at h ⊢
-      rcases h with h | h
-      · simp only [err_ret, ret_only, pure_iff, outcome.Ok.injEq] at h
-        obtain ⟨rfl, rfl, rfl⟩ := h
-        simp only [bv_eqb_refl, ↓reduceIte]
-        exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
-      · rw [bind_set_pipes_iff] at h
-        obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i _ _ _ _ h
-        simp only [ret_only, pure_iff, outcome.Ok.injEq] at hcore
-        obtain ⟨rfl, rfl, rfl⟩ := hcore
-        have hne : bv_eqb count (errno_ret ENOMEM) = false := by
-          cases heq : bv_eqb count (errno_ret ENOMEM) with
-          | false => rfl
-          | true =>
-            have hc := (bv_eqb_eq _ _).mp heq
-            subst count
-            rcases st with ⟨q, used⟩
-            simp only at hq
-            subst q
-            contradiction
-        simp only [with_copyins, hne, Bool.false_eq_true, ↓reduceIte]
-        exact check_ret_only_copyins_refl _ _ _ _
-    | cons x xs =>
-      simp only [hq] at h ⊢
-      rw [bind_set_pipes_iff] at h
-      obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i _ _ _ _ h
-      simp only [ret_only, pure_iff, outcome.Ok.injEq] at hcore
-      obtain ⟨rfl, rfl, rfl⟩ := hcore
-      exact check_ret_only_copyins_refl _ _ _ _
+    rw [bind_set_pipes_iff] at h
+    obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i _ _ _ _ h
+    simp only [ret_only, pure_iff, outcome.Ok.injEq] at hcore
+    obtain ⟨rfl, rfl, rfl⟩ := hcore
+    exact check_ret_only_copyins_refl _ _ _ _
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_write_complete_unmodeled`. -/
 theorem check_write_complete_unmodeled (i : SyscallInput) (fd buf count : word)
@@ -3017,11 +3557,6 @@ theorem check_write_complete_unmodeled (i : SyscallInput) (fd buf count : word)
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize write_source i.in_mem buf count = bs at h ⊢
-    generalize unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) off = u at h ⊢
-    cases u with
-    | true => simp only [↓reduceIte]
-    | false =>
-    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize (!w_is0 count && bs.length == 0) = b1 at h ⊢
     cases b1 with
     | true =>
@@ -3086,8 +3621,145 @@ theorem check_write_complete_unmodeled (i : SyscallInput) (fd buf count : word)
       simp only [Bool.false_eq_true, ↓reduceIte] at h
       rw [bind_set_fs_iff, bind_set_fds_iff] at h
       exact ret_only_not_unmodeled _ i _ (record_copyins_unmodeled_inv _ _ i _ h)
-  | FdFileA _ _ => rfl
-  | FdFileRW _ _ => rfl
+  | FdFileRW p off =>
+    dsimp only at h ⊢
+    generalize (!modeled_rw_range buf count) = b0 at h ⊢
+    cases b0 with
+    | true => simp only [↓reduceIte]
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize write_source i.in_mem buf count = bs at h ⊢
+    generalize (!w_is0 count && bs.length == 0) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (ret_only_not_unmodeled _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none =>
+      dsimp only at h ⊢
+      generalize w_is0 count = c at h ⊢
+      cases c with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        unfold access_ok_zero at h
+        unfold check_access_ok_zero
+        generalize access_okb buf (bv_unsigned count) = ok at h ⊢
+        cases ok with
+        | false =>
+          simp only [Bool.false_eq_true, ↓reduceIte] at h
+          exact (ret_only_not_unmodeled _ i m h).elim
+        | true => simp only [↓reduceIte]
+      | false => simp only [Bool.false_eq_true, ↓reduceIte]
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data off bs) = g at h ⊢
+    cases g with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      generalize w_is0 count = c at h ⊢
+      cases c with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        unfold access_ok_zero at h
+        unfold check_access_ok_zero
+        generalize access_okb buf (bv_unsigned count) = ok at h ⊢
+        cases ok with
+        | false =>
+          simp only [Bool.false_eq_true, ↓reduceIte] at h
+          exact (ret_only_not_unmodeled _ i m h).elim
+        | true => simp only [↓reduceIte]
+      | false => simp only [Bool.false_eq_true, ↓reduceIte]
+    | false =>
+    exfalso
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    generalize w_is0 count = c at h
+    cases c with
+    | true =>
+      simp only [↓reduceIte] at h
+      unfold access_ok_zero at h
+      generalize access_okb buf (bv_unsigned count) = ok at h
+      cases ok with
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        exact ret_only_not_unmodeled _ i m h
+      | true =>
+        simp only [↓reduceIte] at h
+        rw [bind_set_fs_iff, bind_set_fds_iff] at h
+        exact ret_only_not_unmodeled _ i _ h
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h
+      rw [bind_set_fs_iff, bind_set_fds_iff] at h
+      exact ret_only_not_unmodeled _ i _ (record_copyins_unmodeled_inv _ _ i _ h)
+  | FdFileA p off =>
+    dsimp only at h ⊢
+    generalize (!modeled_rw_range buf count) = b0 at h ⊢
+    cases b0 with
+    | true => simp only [↓reduceIte]
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (ret_only_not_unmodeled _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb off (bv_unsigned count) = b2 at h ⊢
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (ret_only_not_unmodeled _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize write_source i.in_mem buf count = bs at h ⊢
+    generalize (!w_is0 count && bs.length == 0) = b3 at h ⊢
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (ret_only_not_unmodeled _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none =>
+      dsimp only at h ⊢
+      generalize w_is0 count = c at h ⊢
+      cases c with
+      | true =>
+        simp only [↓reduceIte] at h ⊢
+        unfold access_ok_zero at h
+        unfold check_access_ok_zero
+        generalize access_okb buf (bv_unsigned count) = ok at h ⊢
+        cases ok with
+        | false =>
+          simp only [Bool.false_eq_true, ↓reduceIte] at h
+          exact (ret_only_not_unmodeled _ i m h).elim
+        | true => simp only [↓reduceIte]
+      | false => simp only [Bool.false_eq_true, ↓reduceIte]
+    | some data =>
+    exfalso
+    dsimp only at h
+    generalize w_is0 count = c at h
+    cases c with
+    | true =>
+      simp only [↓reduceIte] at h
+      unfold access_ok_zero at h
+      generalize access_okb buf (bv_unsigned count) = ok at h
+      cases ok with
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte] at h
+        exact ret_only_not_unmodeled _ i m h
+      | true =>
+        simp only [↓reduceIte] at h
+        rw [bind_set_fs_iff, bind_set_fds_iff] at h
+        exact ret_only_not_unmodeled _ i _ h
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h
+      rw [bind_set_fs_iff, bind_set_fds_iff] at h
+      exact ret_only_not_unmodeled _ i _ (record_copyins_unmodeled_inv _ _ i _ h)
   | FdUrandom => exact (ret_only_not_unmodeled _ i m h).elim
   | FdDevNull rd wr =>
     dsimp only at h ⊢
@@ -3145,17 +3817,8 @@ theorem check_write_complete_unmodeled (i : SyscallInput) (fd buf count : word)
     | false =>
     exfalso
     simp only [Bool.false_eq_true, ↓reduceIte] at h
-    cases hq : st.1 with
-    | nil =>
-      simp only [hq, alt_iff] at h
-      rcases h with h | h
-      · exact ret_only_not_unmodeled _ i _ h
-      · rw [bind_set_pipes_iff] at h
-        exact ret_only_not_unmodeled _ i _ (record_copyins_unmodeled_inv _ _ i _ h)
-    | cons x xs =>
-      simp only [hq] at h
-      rw [bind_set_pipes_iff] at h
-      exact ret_only_not_unmodeled _ i _ (record_copyins_unmodeled_inv _ _ i _ h)
+    rw [bind_set_pipes_iff] at h
+    exact ret_only_not_unmodeled _ i _ (record_copyins_unmodeled_inv _ _ i _ h)
 
 /-! ## write (64) — the witness
 
@@ -3164,13 +3827,11 @@ at the header's baseline.  Where `write_spec` chooses — the channel's
 delivered prefix — the witness takes the whole readable prefix, as Rocq's
 does: it is nonempty behind the -EFAULT test and within the clamp by
 `write_source_length_le`, so it satisfies the `choose` with nothing more
-to decide.  On an empty pipe the witness chooses the successful allocation
-and delivery; on a nonempty pipe it follows the allocation-free merge. -/
+to decide.  A pipe's delivery is deterministic, so the witness is the one
+outcome `write_spec` admits there. -/
 
 /-- Rocq: `Checks.Witness.Fs.ReadWrite.write_witness`.  The arms are in
-Rocq's order, the `FdFileRW` and `FdFileA` arms declining (module header);
-the `FdFileW` arm carries the spec twin's `unreadable_source_past_eof`
-decline, as `check_write`'s does. -/
+Rocq's order. -/
 def write_witness (fd buf count : word) (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | none => ret_outcome (errno_ret EBADF) m
@@ -3190,8 +3851,7 @@ def write_witness (fd buf count : word) (i : SyscallInput) (m : Model) : outcome
       if !modeled_rw_range buf count then Unmodeled
       else
         let bs := write_source i.in_mem buf count
-        if unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) off then Unmodeled
-        else if !w_is0 count && bs.length == 0 then ret_outcome (errno_ret EFAULT) m
+        if !w_is0 count && bs.length == 0 then ret_outcome (errno_ret EFAULT) m
         else
           let k :=
             match fs_lookup (m_fs m) p with
@@ -3206,8 +3866,46 @@ def write_witness (fd buf count : word) (i : SyscallInput) (m : Model) : outcome
                       []
                   if w_is0 count then out else outcome_copyins [(buf, bs.length)] out
           if w_is0 count then access_ok_zero_witness buf count m k else k
-  | some (.FdFileA _ _) => Unmodeled
-  | some (.FdFileRW _ _) => Unmodeled
+  | some (.FdFileRW p off) => -- the `FdFileW` arm above, on the O_RDWR kind
+      if !modeled_rw_range buf count then Unmodeled
+      else
+        let bs := write_source i.in_mem buf count
+        if !w_is0 count && bs.length == 0 then ret_outcome (errno_ret EFAULT) m
+        else
+          let k :=
+            match fs_lookup (m_fs m) p with
+            | none => Unmodeled
+            | some data =>
+                if !modeled_file_gap data off bs then Unmodeled
+                else
+                  let out :=
+                    Ok (mkEffect (len_word bs) [] [])
+                      (with_fds (fd_insert (m_fds m) fd (.FdFileRW p (off + len_word bs)))
+                        (with_fs (fs_set (m_fs m) p (file_write data off bs)) m))
+                      []
+                  if w_is0 count then out else outcome_copyins [(buf, bs.length)] out
+          if w_is0 count then access_ok_zero_witness buf count m k else k
+  | some (.FdFileA p off) =>
+      -- the arm above with the bytes placed at end-of-file, no `modeled_file_gap`
+      -- guard, and `rw_verify_area`'s test on the fd's real position (`write_spec`)
+      if !modeled_rw_range buf count then Unmodeled
+      else if !access_okb buf (bv_unsigned count) then ret_outcome (errno_ret EFAULT) m
+      else if rw_pos_einvalb off (bv_unsigned count) then ret_outcome (errno_ret EINVAL) m
+      else
+        let bs := write_source i.in_mem buf count
+        if !w_is0 count && bs.length == 0 then ret_outcome (errno_ret EFAULT) m
+        else
+          let k :=
+            match fs_lookup (m_fs m) p with
+            | none => Unmodeled
+            | some data =>
+                let out :=
+                  Ok (mkEffect (len_word bs) [] [])
+                    (with_fds (fd_insert (m_fds m) fd (.FdFileA p (append_new_pos data bs off)))
+                      (with_fs (fs_set (m_fs m) p (file_write data (len_word data) bs)) m))
+                    []
+                if w_is0 count then out else outcome_copyins [(buf, bs.length)] out
+          if w_is0 count then access_ok_zero_witness buf count m k else k
   | some (.FdSocket _) => Unmodeled
   | some .FdUrandom => ret_outcome (errno_ret EBADF) m
   | some (.FdDevNull _ wr) =>
@@ -3234,7 +3932,7 @@ def write_witness (fd buf count : word) (i : SyscallInput) (m : Model) : outcome
 
 /-- `access_ok_zero_witness` over a declined continuation is a run of
 `access_ok_zero` over `unmodeled`: out of range both are the -EFAULT, in
-range both decline.  The file arm's shape where the path or the gap
+range both decline.  The file arms' shape where the path or the gap
 declines behind a zero count. -/
 theorem access_ok_zero_witness_unmodeled (buf count : word) (i : SyscallInput) (m : Model) :
     access_ok_zero buf count unmodeled i m (access_ok_zero_witness buf count m Unmodeled) := by
@@ -3308,13 +4006,6 @@ theorem write_witness_ok (fd buf count : word) (i : SyscallInput) (m : Model) :
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte]
     generalize write_source i.in_mem buf count = bs
-    generalize unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) off = u
-    cases u with
-    | true =>
-      simp only [↓reduceIte]
-      exact unmodeled_intro i m
-    | false =>
-    simp only [Bool.false_eq_true, ↓reduceIte]
     generalize (!w_is0 count && bs.length == 0) = b1
     cases b1 with
     | true =>
@@ -3367,8 +4058,130 @@ theorem write_witness_ok (fd buf count : word) (i : SyscallInput) (m : Model) :
       simp only [Bool.false_eq_true, ↓reduceIte]
       exact (bind_set_fs_iff _ _ i m _).mpr ((bind_set_fds_iff _ _ i _ _).mpr
         (record_copyins_ok _ _ i _ _ _ _ (pure_ok _ i _)))
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+  | FdFileRW p off =>
+    dsimp only
+    generalize (!modeled_rw_range buf count) = b0
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte]
+      exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize write_source i.in_mem buf count = bs
+    generalize (!w_is0 count && bs.length == 0) = b1
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize fs_lookup (m_fs m) p = fl
+    cases fl with
+    | none =>
+      dsimp only
+      generalize w_is0 count = c
+      cases c with
+      | true =>
+        simp only [↓reduceIte]
+        exact access_ok_zero_witness_unmodeled _ _ i m
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        exact unmodeled_intro i m
+    | some data =>
+    dsimp only
+    generalize (!modeled_file_gap data off bs) = g
+    cases g with
+    | true =>
+      simp only [↓reduceIte]
+      generalize w_is0 count = c
+      cases c with
+      | true =>
+        simp only [↓reduceIte]
+        exact access_ok_zero_witness_unmodeled _ _ i m
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize w_is0 count = c
+    cases c with
+    | true =>
+      simp only [↓reduceIte]
+      unfold access_ok_zero access_ok_zero_witness
+      generalize access_okb buf (bv_unsigned count) = ok
+      cases ok with
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        exact pure_ok _ i _
+      | true =>
+        simp only [↓reduceIte]
+        exact (bind_set_fs_iff _ _ i m _).mpr ((bind_set_fds_iff _ _ i _ _).mpr (pure_ok _ i _))
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte]
+      exact (bind_set_fs_iff _ _ i m _).mpr ((bind_set_fds_iff _ _ i _ _).mpr
+        (record_copyins_ok _ _ i _ _ _ _ (pure_ok _ i _)))
+  | FdFileA p off =>
+    dsimp only
+    generalize (!modeled_rw_range buf count) = b0
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte]
+      exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize (!access_okb buf (bv_unsigned count)) = b1
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize rw_pos_einvalb off (bv_unsigned count) = b2
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize write_source i.in_mem buf count = bs
+    generalize (!w_is0 count && bs.length == 0) = b3
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize fs_lookup (m_fs m) p = fl
+    cases fl with
+    | none =>
+      dsimp only
+      generalize w_is0 count = c
+      cases c with
+      | true =>
+        simp only [↓reduceIte]
+        exact access_ok_zero_witness_unmodeled _ _ i m
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        exact unmodeled_intro i m
+    | some data =>
+    dsimp only
+    generalize w_is0 count = c
+    cases c with
+    | true =>
+      simp only [↓reduceIte]
+      unfold access_ok_zero access_ok_zero_witness
+      generalize access_okb buf (bv_unsigned count) = ok
+      cases ok with
+      | false =>
+        simp only [Bool.false_eq_true, ↓reduceIte]
+        exact pure_ok _ i _
+      | true =>
+        simp only [↓reduceIte]
+        exact (bind_set_fs_iff _ _ i m _).mpr ((bind_set_fds_iff _ _ i _ _).mpr (pure_ok _ i _))
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte]
+      exact (bind_set_fs_iff _ _ i m _).mpr ((bind_set_fds_iff _ _ i _ _).mpr
+        (record_copyins_ok _ _ i _ _ _ _ (pure_ok _ i _)))
   | FdUrandom => exact pure_ok _ i _
   | FdDevNull rd wr =>
     dsimp only
@@ -3435,14 +4248,7 @@ theorem write_witness_ok (fd buf count : word) (i : SyscallInput) (m : Model) :
       exact unmodeled_intro i m
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte]
-    cases hq : st.1 with
-    | nil =>
-      simp only
-      apply alt_r
-      exact (bind_set_pipes_iff _ _ i m _).mpr (record_copyins_ok _ _ i _ _ _ _ (pure_ok _ i _))
-    | cons x xs =>
-      simp only
-      exact (bind_set_pipes_iff _ _ i m _).mpr (record_copyins_ok _ _ i _ _ _ _ (pure_ok _ i _))
+    exact (bind_set_pipes_iff _ _ i m _).mpr (record_copyins_ok _ _ i _ _ _ _ (pure_ok _ i _))
 
 -- lean-port sentinel: ticket C-Fs-ReadWrite-pread-pwrite-lseek appends below this line
 
@@ -3451,11 +4257,15 @@ theorem write_witness_ok (fd buf count : word) (i : SyscallInput) (m : Model) :
 Mirrors the `pread64`, `pwrite64` and `lseek` parts of
 `theories/LinuxProcessSem/Checks/Sys/Fs/ReadWrite.v` at the header's
 baseline, ported by ticket C-Fs-ReadWrite-pread-pwrite-lseek.  Each checker
-is its spec twin's definition arm for arm and in the spec's order —
-`pread64_spec`, `pwrite64_spec` and `lseek_spec` in `Sys/Fs/ReadWrite.lean`
-— so the proofs below step through the two in lockstep, and the argument
-for every decision is on the spec's docstring, not repeated here.  What a
-reader of the proofs needs is the order, which is the kernel's.
+is its spec twin's definition arm for arm — `pread64_spec`, `pwrite64_spec`
+and `lseek_spec` in `Sys/Fs/ReadWrite.lean` — so the proofs below step
+through the two in lockstep, and the argument for every decision is on the
+spec's docstring, not repeated here.  The arms come in the spec's order,
+except that `check_lseek` keeps Rocq's checker order for its file arms
+(`FdFile`, `FdFileW`, `FdFileRW`, `FdFileA`) where `lseek_spec` keeps
+Rocq's spec order (`FdFile`, `FdFileRW`, `FdFileW`, `FdFileA`); the
+patterns do not overlap, so that order changes no answer.  What a reader
+of the proofs needs is the order of the tests, which is the kernel's.
 `ksys_pread64` (fs/read_write.c:752-766, Linux v6.18.46, commit
 1f99e9ab748f) and `ksys_pwrite64` (fs/read_write.c:782-796) test `pos < 0`
 before they fetch the descriptor (:755-756, :785-786), answer -EBADF on an
@@ -3475,27 +4285,21 @@ test's, and each checker's arms are ordered so.
 WHAT THE LEAN SHAPES CHANGE.  Every departure is one the spec twin made
 first, spelled the same way here:
 
-- The read-write and append-mode files decline in all three checkers, as
-  in the spec twin (its header declares the narrowing): Rocq's read-write
-  halves of the `check_pread64` and `check_pwrite64` transfer arms,
-  `check_lseek`'s repositioning of either kind and `check_pread64`'s
-  -EBADF on an append descriptor are a `CheckUnmodeled` here;
-  `check_pwrite64`'s decline on an append descriptor is Rocq's own.  Each match enumerates the constructors without a wildcard, as the
-  spec's does, so the day a constructor lands it is a decision here too.
-- `check_pwrite64`'s write-only arm declines exactly where
-  `unreadable_source_past_eof` does, after the two real errnos and before
-  the -EFAULT it displaces, because the spec twin's arm does; Rocq's
-  checker answers -EFAULT there because Rocq's spec does.  The kernel
-  reading is on that definition.
+- Rocq's `FdFile p _ | FdFileRW p _` arm of `check_pread64`, and its
+  `FdFileW p _ | FdFileRW p _` arm of `check_pwrite64`, are each written
+  here as two arms with one body repeated, one arm per constructor, as
+  the spec twin writes them.  Each match enumerates the constructors
+  without a wildcard, as the spec's does, so the day a constructor lands
+  it is a decision here too.
 - Rocq's `Nat.eqb (length bs) 0` is `bs.length == 0`, and its
   `(SEEK_MAX <? bv_unsigned whence)%Z` the decidable `SEEK_MAX <
   bv_unsigned whence`, each as the spec twin writes it.
 
 Like `check_read`, none of the three reads the effect before the arm is
 known: every errno is a `check_ret_only` over the kernel's return, every
-decline is `CheckUnmodeled` whatever the effect, and the two delivering
+decline is `CheckUnmodeled` whatever the effect, and the three delivering
 arms compare the effect with the computed delivery byte for byte —
-`check_pread64`'s file arm here, and its random-device arm through
+`check_pread64`'s two file arms here, and its random-device arm through
 `check_read_urandom`. -/
 
 open LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi (SEEK_MAX)
@@ -3517,8 +4321,7 @@ def check_pread64 (i : SyscallInput) (fd buf count pos : word) (eff : SyscallEff
   | some (.FdPipe _ _) => check_ret_only eff (errno_ret ESPIPE) m []
   | some (.FdSocket _) => check_ret_only eff (errno_ret ESPIPE) m []
   | some (.FdFileW _ _) => check_ret_only eff (errno_ret EBADF) m []
-  | some (.FdFileA _ _) => CheckUnmodeled
-  | some (.FdFileRW _ _) => CheckUnmodeled
+  | some (.FdFileA _ _) => check_ret_only eff (errno_ret EBADF) m []
   | some (.FdDevNull rd _) =>
       if !rd then check_ret_only eff (errno_ret EBADF) m []
       else if !access_okb buf (bv_unsigned count) then check_ret_only eff (errno_ret EFAULT) m []
@@ -3558,13 +4361,37 @@ def check_pread64 (i : SyscallInput) (fd buf count pos : word) (eff : SyscallEff
                     if bv_eqb a buf && listN_eqb bs' bs && bv_eqb ret (len_word bs)
                     then CheckOk m [] else CheckReject
                 | _ => CheckReject
+  | some (.FdFileRW p _) =>
+      if !access_okb buf (bv_unsigned count) then check_ret_only eff (errno_ret EFAULT) m []
+      else if rw_pos_einvalb pos (bv_unsigned count) then
+        check_ret_only eff (errno_ret EINVAL) m []
+      else
+        match fs_lookup (m_fs m) p with
+        | none => CheckUnmodeled
+        | some data =>
+          let bs := file_read data pos (Z_to_bv 64 (rw_count_clamp count))
+          match read_bytes_map i.in_wmem buf (len_word bs) with
+          | none =>
+              match read_bytes_map i.in_wmem buf (Z_to_bv 64 1) with
+              | none => check_ret_only eff (errno_ret EFAULT) m []
+              | some _ => CheckUnmodeled
+          | some _ =>
+              match bs with
+              | [] => check_ret_only eff (Z_to_bv 64 0) m []
+              | _ :: _ =>
+                match eff with
+                | .mkEffectU ret [(a, bs')] [] [] [] [] =>
+                    if bv_eqb a buf && listN_eqb bs' bs && bv_eqb ret (len_word bs)
+                    then CheckOk m [] else CheckReject
+                | _ => CheckReject
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_pwrite64`.  `pwrite64_spec` as an
-acceptor, in the same order.  The one transferring arm accepts exactly the
-readable prefix of the clamped source landed at `pos`, its length returned
-and, for a nonzero count, its copy-in recorded; the descriptor's offset is
-not read and not moved, so the accepted model differs from `m` in the file
-system alone. -/
+acceptor, in the same order.  The two transferring arms, the write-only and
+the read-write file, accept exactly the readable prefix of the clamped
+source landed at `pos`, its length returned and, for a nonzero count, its
+copy-in recorded; the descriptor's offset is not read and not moved, so
+the accepted model differs from `m` in the file system alone.  An append
+descriptor declines, as the spec's arm does. -/
 def check_pwrite64 (i : SyscallInput) (fd buf count pos : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if ppos_einvalb pos then check_ret_only eff (errno_ret EINVAL) m []
@@ -3583,14 +4410,14 @@ def check_pwrite64 (i : SyscallInput) (fd buf count pos : word) (eff : SyscallEf
         check_ret_only eff (errno_ret EINVAL) m []
       else check_ret_only eff (Z_to_bv 64 (rw_count_clamp count)) m []
   | some .FdDir => check_ret_only eff (errno_ret EBADF) m []
+  | some (.FdFileA _ _) => CheckUnmodeled
   | some (.FdFileW p _) =>
       if !access_okb buf (bv_unsigned count) then check_ret_only eff (errno_ret EFAULT) m []
       else if rw_pos_einvalb pos (bv_unsigned count) then
         check_ret_only eff (errno_ret EINVAL) m []
       else
         let bs := write_source i.in_mem buf count
-        if unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) pos then CheckUnmodeled
-        else if !w_is0 count && bs.length == 0 then check_ret_only eff (errno_ret EFAULT) m []
+        if !w_is0 count && bs.length == 0 then check_ret_only eff (errno_ret EFAULT) m []
         else
           match fs_lookup (m_fs m) p with
           | none => CheckUnmodeled
@@ -3600,8 +4427,22 @@ def check_pwrite64 (i : SyscallInput) (fd buf count pos : word) (eff : SyscallEf
                 let m' := with_fs (fs_set (m_fs m) p (file_write data pos bs)) m
                 if w_is0 count then check_ret_only eff (len_word bs) m' []
                 else check_ret_only_copyins [(buf, bs.length)] eff (len_word bs) m' []
-  | some (.FdFileA _ _) => CheckUnmodeled
-  | some (.FdFileRW _ _) => CheckUnmodeled
+  | some (.FdFileRW p _) =>
+      if !access_okb buf (bv_unsigned count) then check_ret_only eff (errno_ret EFAULT) m []
+      else if rw_pos_einvalb pos (bv_unsigned count) then
+        check_ret_only eff (errno_ret EINVAL) m []
+      else
+        let bs := write_source i.in_mem buf count
+        if !w_is0 count && bs.length == 0 then check_ret_only eff (errno_ret EFAULT) m []
+        else
+          match fs_lookup (m_fs m) p with
+          | none => CheckUnmodeled
+          | some data =>
+              if !modeled_file_gap data pos bs then CheckUnmodeled
+              else
+                let m' := with_fs (fs_set (m_fs m) p (file_write data pos bs)) m
+                if w_is0 count then check_ret_only eff (len_word bs) m' []
+                else check_ret_only_copyins [(buf, bs.length)] eff (len_word bs) m' []
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_lseek`.  `lseek_spec` as an
 acceptor: the descriptor, then the whence, then the kind.  Nothing is
@@ -3643,8 +4484,29 @@ def check_lseek (fd off whence : word) (eff : SyscallEffect) (m : Model) : check
                     | none => check_ret_only eff (errno_ret EINVAL) m []
                     | some r =>
                         check_ret_only eff r (with_fds (fd_insert (m_fds m) fd (.FdFileW p r)) m) []
-        | .FdFileA _ _ => CheckUnmodeled
-        | .FdFileRW _ _ => CheckUnmodeled
+        | .FdFileRW p cur =>
+            match fs_lookup (m_fs m) p with
+            | none => CheckUnmodeled
+            | some data =>
+                match lseek_base whence cur (len_word data) with
+                | none => CheckUnmodeled
+                | some base =>
+                    match lseek_dest base off with
+                    | none => check_ret_only eff (errno_ret EINVAL) m []
+                    | some r =>
+                        check_ret_only eff r
+                          (with_fds (fd_insert (m_fds m) fd (.FdFileRW p r)) m) []
+        | .FdFileA p cur =>
+            match fs_lookup (m_fs m) p with
+            | none => CheckUnmodeled
+            | some data =>
+                match lseek_base whence cur (len_word data) with
+                | none => CheckUnmodeled
+                | some base =>
+                    match lseek_dest base off with
+                    | none => check_ret_only eff (errno_ret EINVAL) m []
+                    | some r =>
+                        check_ret_only eff r (with_fds (fd_insert (m_fds m) fd (.FdFileA p r)) m) []
 
 /-! ### The pread64 acceptor against `pread64_spec`
 
@@ -3652,7 +4514,7 @@ The shape of the `read` proofs above: the position test, then the lookup,
 then each arm's gates `generalize`d so that both sides step together, and
 at the leaf a `ret_only` lemma, `check_read_urandom`'s quartet, the
 delivery's comparison, or a constructor clash.  The `_unmodeled`
-directions reach the file arm's two declines — the partially writable
+directions reach each file arm's two declines — the partially writable
 destination and the missing file — and, through `check_read_urandom`'s
 `_unmodeled` lemmas, the random device's two, a declared stream shorter
 than the count and a partially writable destination; they refute every
@@ -3682,8 +4544,7 @@ theorem check_pread64_sound_ok (i : SyscallInput) (fd buf count pos : word)
   | FdPipe _ _ => exact ret_only_sound _ _ _ _ _ i h
   | FdSocket _ => exact ret_only_sound _ _ _ _ _ i h
   | FdFileW _ _ => exact ret_only_sound _ _ _ _ _ i h
-  | FdFileA _ _ => cases h
-  | FdFileRW _ _ => cases h
+  | FdFileA _ _ => exact ret_only_sound _ _ _ _ _ i h
   | FdDevNull rd wr =>
     dsimp only at h ⊢
     cases rd with
@@ -3789,6 +4650,54 @@ theorem check_pread64_sound_ok (i : SyscallInput) (fd buf count pos : word)
         exact pure_ok _ i _
       · cases h
     · cases h
+  | FdFileRW p _ =>
+    dsimp only at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb pos (bv_unsigned count) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize file_read data pos (Z_to_bv 64 (rw_count_clamp count)) = bs at h ⊢
+    generalize read_bytes_map i.in_wmem buf (len_word bs) = w at h ⊢
+    cases w with
+    | none =>
+      dsimp only at h ⊢
+      generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w1 at h ⊢
+      cases w1 with
+      | none => exact ret_only_sound _ _ _ _ _ i h
+      | some _ => cases h
+    | some _ =>
+    dsimp only at h ⊢
+    cases bs with
+    | nil =>
+      obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_ok_iff _ _ _ _ _ _).mp h
+      exact pure_ok _ i _
+    | cons b bs0 =>
+    dsimp only at h
+    split at h
+    · rename_i ret a bs'
+      split at h
+      · rename_i hg
+        obtain ⟨rfl, rfl⟩ := check_result.CheckOk.inj h
+        simp only [Bool.and_eq_true, bv_eqb_eq, listN_eqb_eq] at hg
+        obtain ⟨⟨rfl, rfl⟩, rfl⟩ := hg
+        exact pure_ok _ i _
+      · cases h
+    · cases h
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_pread64_sound_unmodeled`. -/
 theorem check_pread64_sound_unmodeled (i : SyscallInput) (fd buf count pos : word)
@@ -3814,8 +4723,7 @@ theorem check_pread64_sound_unmodeled (i : SyscallInput) (fd buf count pos : wor
   | FdPipe _ _ => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   | FdSocket _ => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   | FdFileW _ _ => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+  | FdFileA _ _ => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
   | FdDevNull rd wr =>
     exfalso
     dsimp only at h
@@ -3915,6 +4823,46 @@ theorem check_pread64_sound_unmodeled (i : SyscallInput) (fd buf count pos : wor
       split at h
       · split at h <;> cases h
       · cases h
+  | FdFileRW p _ =>
+    dsimp only at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb pos (bv_unsigned count) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only at h ⊢
+    generalize file_read data pos (Z_to_bv 64 (rw_count_clamp count)) = bs at h ⊢
+    generalize read_bytes_map i.in_wmem buf (len_word bs) = w at h ⊢
+    cases w with
+    | none =>
+      dsimp only at h ⊢
+      generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w1 at h ⊢
+      cases w1 with
+      | none => exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+      | some _ => exact unmodeled_intro i m
+    | some _ =>
+    exfalso
+    dsimp only at h
+    cases bs with
+    | nil => exact check_ret_only_no_unmodeled _ _ _ _ h
+    | cons b bs0 =>
+      dsimp only at h
+      split at h
+      · split at h <;> cases h
+      · cases h
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_pread64_complete_ok`. -/
 theorem check_pread64_complete_ok (i : SyscallInput) (fd buf count pos : word)
@@ -3940,8 +4888,7 @@ theorem check_pread64_complete_ok (i : SyscallInput) (fd buf count pos : word)
   | FdPipe _ _ => exact ret_only_complete _ _ _ _ _ i h
   | FdSocket _ => exact ret_only_complete _ _ _ _ _ i h
   | FdFileW _ _ => exact ret_only_complete _ _ _ _ _ i h
-  | FdFileA _ _ => cases h
-  | FdFileRW _ _ => cases h
+  | FdFileA _ _ => exact ret_only_complete _ _ _ _ _ i h
   | FdDevNull rd wr =>
     dsimp only at h ⊢
     cases rd with
@@ -4037,6 +4984,44 @@ theorem check_pread64_complete_ok (i : SyscallInput) (fd buf count pos : word)
     | nil => exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
     | cons b bs0 =>
       simp only [delivered_writes, bv_eqb_refl, listN_eqb_refl, Bool.and_self, ↓reduceIte]
+  | FdFileRW p _ =>
+    dsimp only at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb pos (bv_unsigned count) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize file_read data pos (Z_to_bv 64 (rw_count_clamp count)) = bs at h ⊢
+    generalize read_bytes_map i.in_wmem buf (len_word bs) = w at h ⊢
+    cases w with
+    | none =>
+      dsimp only at h ⊢
+      generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w1 at h ⊢
+      cases w1 with
+      | none => exact ret_only_complete _ _ _ _ _ i h
+      | some _ => cases h
+    | some _ =>
+    dsimp only at h ⊢
+    simp only [pure_iff, outcome.Ok.injEq] at h
+    obtain ⟨rfl, rfl, rfl⟩ := h
+    cases bs with
+    | nil => exact (check_ret_only_ok_iff _ _ _ _ _ _).mpr ⟨rfl, rfl, rfl⟩
+    | cons b bs0 =>
+      simp only [delivered_writes, bv_eqb_refl, listN_eqb_refl, Bool.and_self, ↓reduceIte]
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_pread64_complete_unmodeled`. -/
 theorem check_pread64_complete_unmodeled (i : SyscallInput) (fd buf count pos : word)
@@ -4061,8 +5046,7 @@ theorem check_pread64_complete_unmodeled (i : SyscallInput) (fd buf count pos : 
   | FdPipe _ _ => exact (ret_only_not_unmodeled _ i m h).elim
   | FdSocket _ => exact (ret_only_not_unmodeled _ i m h).elim
   | FdFileW _ _ => exact (ret_only_not_unmodeled _ i m h).elim
-  | FdFileA _ _ => rfl
-  | FdFileRW _ _ => rfl
+  | FdFileA _ _ => exact (ret_only_not_unmodeled _ i m h).elim
   | FdDevNull rd wr =>
     exfalso
     dsimp only at h
@@ -4156,15 +5140,49 @@ theorem check_pread64_complete_unmodeled (i : SyscallInput) (fd buf count pos : 
     exfalso
     dsimp only at h
     simp only [pure_iff, reduceCtorEq] at h
+  | FdFileRW p _ =>
+    dsimp only at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (ret_only_not_unmodeled _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb pos (bv_unsigned count) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (ret_only_not_unmodeled _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => rfl
+    | some data =>
+    dsimp only at h ⊢
+    generalize file_read data pos (Z_to_bv 64 (rw_count_clamp count)) = bs at h ⊢
+    generalize read_bytes_map i.in_wmem buf (len_word bs) = w at h ⊢
+    cases w with
+    | none =>
+      dsimp only at h ⊢
+      generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w1 at h ⊢
+      cases w1 with
+      | none => exact (ret_only_not_unmodeled _ i m h).elim
+      | some _ => rfl
+    | some _ =>
+    exfalso
+    dsimp only at h
+    simp only [pure_iff, reduceCtorEq] at h
 
 /-! ### The pwrite64 acceptor against `pwrite64_spec`
 
-The same walk.  The transferring arm's leaves are the zero count's bare
-return and the nonzero count's return with its copy-in, which
-`check_ret_only_copyins` and `record_copyins` state in step; its declines
-are `unreadable_source_past_eof`, the missing file and the hole
-`modeled_file_gap` refuses, each generalized as the Boolean both sides
-test. -/
+The same walk.  Each of the two transferring arms has the same leaves:
+the zero count's bare return and the nonzero count's return with its
+copy-in, which `check_ret_only_copyins` and `record_copyins` state in
+step.  Its declines are the missing file and the hole `modeled_file_gap`
+refuses, each generalized as both sides test it.  The append descriptor
+declines outright. -/
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_pwrite64_sound_ok`. -/
 theorem check_pwrite64_sound_ok (i : SyscallInput) (fd buf count pos : word)
@@ -4215,6 +5233,7 @@ theorem check_pwrite64_sound_ok (i : SyscallInput) (fd buf count pos : word)
     | false =>
       simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
       exact ret_only_sound _ _ _ _ _ i h
+  | FdFileA _ _ => cases h
   | FdFileW p _ =>
     dsimp only at h ⊢
     generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
@@ -4232,13 +5251,6 @@ theorem check_pwrite64_sound_ok (i : SyscallInput) (fd buf count pos : word)
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize write_source i.in_mem buf count = bs at h ⊢
-    generalize unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) pos = u at h ⊢
-    cases u with
-    | true =>
-      simp only [↓reduceIte] at h
-      cases h
-    | false =>
-    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize (!w_is0 count && bs.length == 0) = g at h ⊢
     cases g with
     | true =>
@@ -4268,8 +5280,52 @@ theorem check_pwrite64_sound_ok (i : SyscallInput) (fd buf count pos : word)
       simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
       obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
       exact record_copyins_ok_empty _ _ i _ _ _ [] rfl (pure_ok _ i _)
-  | FdFileA _ _ => cases h
-  | FdFileRW _ _ => cases h
+  | FdFileRW p _ =>
+    dsimp only at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb pos (bv_unsigned count) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize write_source i.in_mem buf count = bs at h ⊢
+    generalize (!w_is0 count && bs.length == 0) = g at h ⊢
+    cases g with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data pos bs) = k at h ⊢
+    cases k with
+    | true =>
+      simp only [↓reduceIte] at h
+      cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    rw [bind_set_fs_iff]
+    generalize w_is0 count = z at h ⊢
+    cases z with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+      obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
+      exact record_copyins_ok_empty _ _ i _ _ _ [] rfl (pure_ok _ i _)
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_pwrite64_sound_unmodeled`. -/
 theorem check_pwrite64_sound_unmodeled (i : SyscallInput) (fd buf count pos : word)
@@ -4321,6 +5377,7 @@ theorem check_pwrite64_sound_unmodeled (i : SyscallInput) (fd buf count pos : wo
     | false =>
       simp only [Bool.false_eq_true, ↓reduceIte] at h
       exact check_ret_only_no_unmodeled _ _ _ _ h
+  | FdFileA _ _ => exact unmodeled_intro i m
   | FdFileW p _ =>
     dsimp only at h ⊢
     generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
@@ -4338,13 +5395,6 @@ theorem check_pwrite64_sound_unmodeled (i : SyscallInput) (fd buf count pos : wo
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize write_source i.in_mem buf count = bs at h ⊢
-    generalize unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) pos = u at h ⊢
-    cases u with
-    | true =>
-      simp only [↓reduceIte]
-      exact unmodeled_intro i m
-    | false =>
-    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize (!w_is0 count && bs.length == 0) = g at h ⊢
     cases g with
     | true =>
@@ -4373,8 +5423,51 @@ theorem check_pwrite64_sound_unmodeled (i : SyscallInput) (fd buf count pos : wo
     | false =>
       simp only [Bool.false_eq_true, ↓reduceIte] at h
       exact check_ret_only_copyins_no_unmodeled _ _ _ _ _ h
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+  | FdFileRW p _ =>
+    dsimp only at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb pos (bv_unsigned count) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize write_source i.in_mem buf count = bs at h ⊢
+    generalize (!w_is0 count && bs.length == 0) = g at h ⊢
+    cases g with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact absurd h (check_ret_only_no_unmodeled _ _ _ _)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data pos bs) = k at h ⊢
+    cases k with
+    | true =>
+      simp only [↓reduceIte]
+      exact unmodeled_intro i m
+    | false =>
+    exfalso
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    generalize w_is0 count = z at h
+    cases z with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact check_ret_only_no_unmodeled _ _ _ _ h
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h
+      exact check_ret_only_copyins_no_unmodeled _ _ _ _ _ h
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_pwrite64_complete_ok`. -/
 theorem check_pwrite64_complete_ok (i : SyscallInput) (fd buf count pos : word)
@@ -4425,6 +5518,7 @@ theorem check_pwrite64_complete_ok (i : SyscallInput) (fd buf count pos : word)
     | false =>
       simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
       exact ret_only_complete _ _ _ _ _ i h
+  | FdFileA _ _ => cases h
   | FdFileW p _ =>
     dsimp only at h ⊢
     generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
@@ -4442,13 +5536,6 @@ theorem check_pwrite64_complete_ok (i : SyscallInput) (fd buf count pos : word)
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize write_source i.in_mem buf count = bs at h ⊢
-    generalize unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) pos = u at h ⊢
-    cases u with
-    | true =>
-      simp only [↓reduceIte] at h
-      cases h
-    | false =>
-    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize (!w_is0 count && bs.length == 0) = g at h ⊢
     cases g with
     | true =>
@@ -4480,8 +5567,54 @@ theorem check_pwrite64_complete_ok (i : SyscallInput) (fd buf count pos : word)
       simp only [ret_only, pure_iff, outcome.Ok.injEq] at hcore
       obtain ⟨rfl, rfl, rfl⟩ := hcore
       exact check_ret_only_copyins_refl _ _ _ _
-  | FdFileA _ _ => cases h
-  | FdFileRW _ _ => cases h
+  | FdFileRW p _ =>
+    dsimp only at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb pos (bv_unsigned count) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize write_source i.in_mem buf count = bs at h ⊢
+    generalize (!w_is0 count && bs.length == 0) = g at h ⊢
+    cases g with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data pos bs) = k at h ⊢
+    cases k with
+    | true =>
+      simp only [↓reduceIte] at h
+      cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    rw [bind_set_fs_iff] at h
+    generalize w_is0 count = z at h ⊢
+    cases z with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+      obtain ⟨core, hcore, rfl⟩ := (record_copyins_ok_iff _ _ _ _ _ _ _).mp h
+      simp only [ret_only, pure_iff, outcome.Ok.injEq] at hcore
+      obtain ⟨rfl, rfl, rfl⟩ := hcore
+      exact check_ret_only_copyins_refl _ _ _ _
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_pwrite64_complete_unmodeled`. -/
 theorem check_pwrite64_complete_unmodeled (i : SyscallInput) (fd buf count pos : word)
@@ -4532,6 +5665,7 @@ theorem check_pwrite64_complete_unmodeled (i : SyscallInput) (fd buf count pos :
     | false =>
       simp only [Bool.false_eq_true, ↓reduceIte] at h
       exact ret_only_not_unmodeled _ i m h
+  | FdFileA _ _ => rfl
   | FdFileW p _ =>
     dsimp only at h ⊢
     generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
@@ -4549,12 +5683,6 @@ theorem check_pwrite64_complete_unmodeled (i : SyscallInput) (fd buf count pos :
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize write_source i.in_mem buf count = bs at h ⊢
-    generalize unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) pos = u at h ⊢
-    cases u with
-    | true =>
-      simp only [↓reduceIte]
-    | false =>
-    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     generalize (!w_is0 count && bs.length == 0) = g at h ⊢
     cases g with
     | true =>
@@ -4583,8 +5711,51 @@ theorem check_pwrite64_complete_unmodeled (i : SyscallInput) (fd buf count pos :
     | false =>
       simp only [Bool.false_eq_true, ↓reduceIte] at h
       exact ret_only_not_unmodeled _ i _ ((record_copyins_unmodeled_iff _ _ _ _).mp h)
-  | FdFileA _ _ => rfl
-  | FdFileRW _ _ => rfl
+  | FdFileRW p _ =>
+    dsimp only at h ⊢
+    generalize (!access_okb buf (bv_unsigned count)) = b0 at h ⊢
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (ret_only_not_unmodeled _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb pos (bv_unsigned count) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (ret_only_not_unmodeled _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize write_source i.in_mem buf count = bs at h ⊢
+    generalize (!w_is0 count && bs.length == 0) = g at h ⊢
+    cases g with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (ret_only_not_unmodeled _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => rfl
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data pos bs) = k at h ⊢
+    cases k with
+    | true =>
+      simp only [↓reduceIte]
+    | false =>
+    exfalso
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    rw [bind_set_fs_iff] at h
+    generalize w_is0 count = z at h
+    cases z with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact ret_only_not_unmodeled _ i _ h
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h
+      exact ret_only_not_unmodeled _ i _ ((record_copyins_unmodeled_iff _ _ _ _).mp h)
 
 /-! ### The lseek acceptor against `lseek_spec`
 
@@ -4656,8 +5827,44 @@ theorem check_lseek_sound_ok (fd off whence : word) (eff : SyscallEffect) (m m' 
       dsimp only at h ⊢
       rw [bind_set_fds_iff]
       exact ret_only_sound _ _ _ _ _ i h
-  | FdFileA _ _ => cases h
-  | FdFileRW _ _ => cases h
+  | FdFileRW p cur =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize lseek_base whence cur (len_word data) = lb at h ⊢
+    cases lb with
+    | none => cases h
+    | some base =>
+    dsimp only at h ⊢
+    generalize lseek_dest base off = ld at h ⊢
+    cases ld with
+    | none => exact ret_only_sound _ _ _ _ _ i h
+    | some r =>
+      dsimp only at h ⊢
+      rw [bind_set_fds_iff]
+      exact ret_only_sound _ _ _ _ _ i h
+  | FdFileA p cur =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize lseek_base whence cur (len_word data) = lb at h ⊢
+    cases lb with
+    | none => cases h
+    | some base =>
+    dsimp only at h ⊢
+    generalize lseek_dest base off = ld at h ⊢
+    cases ld with
+    | none => exact ret_only_sound _ _ _ _ _ i h
+    | some r =>
+      dsimp only at h ⊢
+      rw [bind_set_fds_iff]
+      exact ret_only_sound _ _ _ _ _ i h
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_lseek_sound_unmodeled`. -/
 theorem check_lseek_sound_unmodeled (fd off whence : word) (eff : SyscallEffect) (m : Model)
@@ -4716,8 +5923,40 @@ theorem check_lseek_sound_unmodeled (fd off whence : word) (eff : SyscallEffect)
     cases ld with
     | none => exact check_ret_only_no_unmodeled _ _ _ _ h
     | some r => exact check_ret_only_no_unmodeled _ _ _ _ h
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+  | FdFileRW p cur =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only at h ⊢
+    generalize lseek_base whence cur (len_word data) = lb at h ⊢
+    cases lb with
+    | none => exact unmodeled_intro i m
+    | some base =>
+    exfalso
+    dsimp only at h
+    generalize lseek_dest base off = ld at h
+    cases ld with
+    | none => exact check_ret_only_no_unmodeled _ _ _ _ h
+    | some r => exact check_ret_only_no_unmodeled _ _ _ _ h
+  | FdFileA p cur =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only at h ⊢
+    generalize lseek_base whence cur (len_word data) = lb at h ⊢
+    cases lb with
+    | none => exact unmodeled_intro i m
+    | some base =>
+    exfalso
+    dsimp only at h
+    generalize lseek_dest base off = ld at h
+    cases ld with
+    | none => exact check_ret_only_no_unmodeled _ _ _ _ h
+    | some r => exact check_ret_only_no_unmodeled _ _ _ _ h
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_lseek_complete_ok`. -/
 theorem check_lseek_complete_ok (fd off whence : word) (eff : SyscallEffect) (m m' : Model)
@@ -4780,8 +6019,44 @@ theorem check_lseek_complete_ok (fd off whence : word) (eff : SyscallEffect) (m 
       dsimp only at h ⊢
       rw [bind_set_fds_iff] at h
       exact ret_only_complete _ _ _ _ _ i h
-  | FdFileA _ _ => cases h
-  | FdFileRW _ _ => cases h
+  | FdFileRW p cur =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize lseek_base whence cur (len_word data) = lb at h ⊢
+    cases lb with
+    | none => cases h
+    | some base =>
+    dsimp only at h ⊢
+    generalize lseek_dest base off = ld at h ⊢
+    cases ld with
+    | none => exact ret_only_complete _ _ _ _ _ i h
+    | some r =>
+      dsimp only at h ⊢
+      rw [bind_set_fds_iff] at h
+      exact ret_only_complete _ _ _ _ _ i h
+  | FdFileA p cur =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize lseek_base whence cur (len_word data) = lb at h ⊢
+    cases lb with
+    | none => cases h
+    | some base =>
+    dsimp only at h ⊢
+    generalize lseek_dest base off = ld at h ⊢
+    cases ld with
+    | none => exact ret_only_complete _ _ _ _ _ i h
+    | some r =>
+      dsimp only at h ⊢
+      rw [bind_set_fds_iff] at h
+      exact ret_only_complete _ _ _ _ _ i h
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_lseek_complete_unmodeled`. -/
 theorem check_lseek_complete_unmodeled (fd off whence : word) (m : Model) (i : SyscallInput)
@@ -4846,8 +6121,46 @@ theorem check_lseek_complete_unmodeled (fd off whence : word) (m : Model) (i : S
       dsimp only at h
       rw [bind_set_fds_iff] at h
       exact ret_only_not_unmodeled _ i _ h
-  | FdFileA _ _ => rfl
-  | FdFileRW _ _ => rfl
+  | FdFileRW p cur =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => rfl
+    | some data =>
+    dsimp only at h ⊢
+    generalize lseek_base whence cur (len_word data) = lb at h ⊢
+    cases lb with
+    | none => rfl
+    | some base =>
+    exfalso
+    dsimp only at h
+    generalize lseek_dest base off = ld at h
+    cases ld with
+    | none => exact ret_only_not_unmodeled _ i m h
+    | some r =>
+      dsimp only at h
+      rw [bind_set_fds_iff] at h
+      exact ret_only_not_unmodeled _ i _ h
+  | FdFileA p cur =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => rfl
+    | some data =>
+    dsimp only at h ⊢
+    generalize lseek_base whence cur (len_word data) = lb at h ⊢
+    cases lb with
+    | none => rfl
+    | some base =>
+    exfalso
+    dsimp only at h
+    generalize lseek_dest base off = ld at h
+    cases ld with
+    | none => exact ret_only_not_unmodeled _ i m h
+    | some r =>
+      dsimp only at h
+      rw [bind_set_fds_iff] at h
+      exact ret_only_not_unmodeled _ i _ h
 
 /-! ## The pread64, pwrite64 and lseek witnesses — `Checks/Witness/Fs/ReadWrite.v`
 
@@ -4869,8 +6182,7 @@ def pread64_witness (fd buf count pos : word) (i : SyscallInput) (m : Model)
   | some (.FdPipe _ _) => ret_outcome (errno_ret ESPIPE) m
   | some (.FdSocket _) => ret_outcome (errno_ret ESPIPE) m
   | some (.FdFileW _ _) => ret_outcome (errno_ret EBADF) m
-  | some (.FdFileA _ _) => Unmodeled
-  | some (.FdFileRW _ _) => Unmodeled
+  | some (.FdFileA _ _) => ret_outcome (errno_ret EBADF) m
   | some (.FdDevNull rd _) =>
       if !rd then ret_outcome (errno_ret EBADF) m
       else if !access_okb buf (bv_unsigned count) then ret_outcome (errno_ret EFAULT) m
@@ -4885,6 +6197,20 @@ def pread64_witness (fd buf count pos : word) (i : SyscallInput) (m : Model)
       else if rw_pos_einvalb pos (bv_unsigned count) then ret_outcome (errno_ret EINVAL) m
       else ret_outcome (errno_ret EISDIR) m
   | some (.FdFile p _) =>
+      if !access_okb buf (bv_unsigned count) then ret_outcome (errno_ret EFAULT) m
+      else if rw_pos_einvalb pos (bv_unsigned count) then ret_outcome (errno_ret EINVAL) m
+      else
+        match fs_lookup (m_fs m) p with
+        | none => Unmodeled
+        | some data =>
+          let bs := file_read data pos (Z_to_bv 64 (rw_count_clamp count))
+          match read_bytes_map i.in_wmem buf (len_word bs) with
+          | none =>
+              match read_bytes_map i.in_wmem buf (Z_to_bv 64 1) with
+              | none => ret_outcome (errno_ret EFAULT) m
+              | some _ => Unmodeled
+          | some _ => Ok (mkEffect (len_word bs) (delivered_writes buf bs) []) m []
+  | some (.FdFileRW p _) =>
       if !access_okb buf (bv_unsigned count) then ret_outcome (errno_ret EFAULT) m
       else if rw_pos_einvalb pos (bv_unsigned count) then ret_outcome (errno_ret EINVAL) m
       else
@@ -4920,8 +6246,7 @@ theorem pread64_witness_ok (fd buf count pos : word) (i : SyscallInput) (m : Mod
   | FdPipe _ _ => exact pure_ok _ i _
   | FdSocket _ => exact pure_ok _ i _
   | FdFileW _ _ => exact pure_ok _ i _
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+  | FdFileA _ _ => exact pure_ok _ i _
   | FdDevNull rd wr =>
     dsimp only
     cases rd with
@@ -5010,6 +6335,37 @@ theorem pread64_witness_ok (fd buf count pos : word) (i : SyscallInput) (m : Mod
       | none => exact pure_ok _ i _
       | some _ => exact unmodeled_intro i m
     | some _ => exact pure_ok _ i _
+  | FdFileRW p _ =>
+    dsimp only
+    generalize (!access_okb buf (bv_unsigned count)) = b0
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize rw_pos_einvalb pos (bv_unsigned count) = b1
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize fs_lookup (m_fs m) p = fl
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only
+    generalize file_read data pos (Z_to_bv 64 (rw_count_clamp count)) = bs
+    generalize read_bytes_map i.in_wmem buf (len_word bs) = w
+    cases w with
+    | none =>
+      dsimp only
+      generalize read_bytes_map i.in_wmem buf (Z_to_bv 64 1) = w1
+      cases w1 with
+      | none => exact pure_ok _ i _
+      | some _ => exact unmodeled_intro i m
+    | some _ => exact pure_ok _ i _
 
 /-- Rocq: `Checks.Witness.Fs.ReadWrite.pwrite64_witness`. -/
 def pwrite64_witness (fd buf count pos : word) (i : SyscallInput) (m : Model)
@@ -5029,13 +6385,13 @@ def pwrite64_witness (fd buf count pos : word) (i : SyscallInput) (m : Model)
       else if rw_pos_einvalb pos (bv_unsigned count) then ret_outcome (errno_ret EINVAL) m
       else ret_outcome (Z_to_bv 64 (rw_count_clamp count)) m
   | some .FdDir => ret_outcome (errno_ret EBADF) m
+  | some (.FdFileA _ _) => Unmodeled
   | some (.FdFileW p _) =>
       if !access_okb buf (bv_unsigned count) then ret_outcome (errno_ret EFAULT) m
       else if rw_pos_einvalb pos (bv_unsigned count) then ret_outcome (errno_ret EINVAL) m
       else
         let bs := write_source i.in_mem buf count
-        if unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) pos then Unmodeled
-        else if !w_is0 count && bs.length == 0 then ret_outcome (errno_ret EFAULT) m
+        if !w_is0 count && bs.length == 0 then ret_outcome (errno_ret EFAULT) m
         else
           match fs_lookup (m_fs m) p with
           | none => Unmodeled
@@ -5045,8 +6401,21 @@ def pwrite64_witness (fd buf count pos : word) (i : SyscallInput) (m : Model)
                 let out := Ok (mkEffect (len_word bs) [] [])
                   (with_fs (fs_set (m_fs m) p (file_write data pos bs)) m) []
                 if w_is0 count then out else outcome_copyins [(buf, bs.length)] out
-  | some (.FdFileA _ _) => Unmodeled
-  | some (.FdFileRW _ _) => Unmodeled
+  | some (.FdFileRW p _) =>
+      if !access_okb buf (bv_unsigned count) then ret_outcome (errno_ret EFAULT) m
+      else if rw_pos_einvalb pos (bv_unsigned count) then ret_outcome (errno_ret EINVAL) m
+      else
+        let bs := write_source i.in_mem buf count
+        if !w_is0 count && bs.length == 0 then ret_outcome (errno_ret EFAULT) m
+        else
+          match fs_lookup (m_fs m) p with
+          | none => Unmodeled
+          | some data =>
+              if !modeled_file_gap data pos bs then Unmodeled
+              else
+                let out := Ok (mkEffect (len_word bs) [] [])
+                  (with_fs (fs_set (m_fs m) p (file_write data pos bs)) m) []
+                if w_is0 count then out else outcome_copyins [(buf, bs.length)] out
 
 /-- Rocq: `Checks.Witness.Fs.ReadWrite.pwrite64_witness_ok`. -/
 theorem pwrite64_witness_ok (fd buf count pos : word) (i : SyscallInput) (m : Model) :
@@ -5094,6 +6463,7 @@ theorem pwrite64_witness_ok (fd buf count pos : word) (i : SyscallInput) (m : Mo
     | false =>
       simp only [Bool.false_eq_true, ↓reduceIte]
       exact pure_ok _ i _
+  | FdFileA _ _ => exact unmodeled_intro i m
   | FdFileW p _ =>
     dsimp only
     generalize (!access_okb buf (bv_unsigned count)) = b0
@@ -5111,13 +6481,6 @@ theorem pwrite64_witness_ok (fd buf count pos : word) (i : SyscallInput) (m : Mo
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte]
     generalize write_source i.in_mem buf count = bs
-    generalize unreadable_source_past_eof count bs (fs_lookup (m_fs m) p) pos = u
-    cases u with
-    | true =>
-      simp only [↓reduceIte]
-      exact unmodeled_intro i m
-    | false =>
-    simp only [Bool.false_eq_true, ↓reduceIte]
     generalize (!w_is0 count && bs.length == 0) = g
     cases g with
     | true =>
@@ -5146,8 +6509,51 @@ theorem pwrite64_witness_ok (fd buf count pos : word) (i : SyscallInput) (m : Mo
     | false =>
       simp only [Bool.false_eq_true, ↓reduceIte]
       exact record_copyins_outcome _ _ i _ _ (pure_ok _ i _)
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+  | FdFileRW p _ =>
+    dsimp only
+    generalize (!access_okb buf (bv_unsigned count)) = b0
+    cases b0 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize rw_pos_einvalb pos (bv_unsigned count) = b1
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize write_source i.in_mem buf count = bs
+    generalize (!w_is0 count && bs.length == 0) = g
+    cases g with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize fs_lookup (m_fs m) p = fl
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only
+    generalize (!modeled_file_gap data pos bs) = k
+    cases k with
+    | true =>
+      simp only [↓reduceIte]
+      exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    rw [bind_set_fs_iff]
+    generalize w_is0 count = z
+    cases z with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte]
+      exact record_copyins_outcome _ _ i _ _ (pure_ok _ i _)
 
 /-- Rocq: `Checks.Witness.Fs.ReadWrite.lseek_witness`.  Like `check_lseek`,
 it takes no input. -/
@@ -5184,8 +6590,26 @@ def lseek_witness (fd off whence : word) (m : Model) : outcome SyscallEffect :=
                     match lseek_dest base off with
                     | none => ret_outcome (errno_ret EINVAL) m
                     | some r => ret_outcome r (with_fds (fd_insert (m_fds m) fd (.FdFileW p r)) m)
-        | .FdFileA _ _ => Unmodeled
-        | .FdFileRW _ _ => Unmodeled
+        | .FdFileRW p cur =>
+            match fs_lookup (m_fs m) p with
+            | none => Unmodeled
+            | some data =>
+                match lseek_base whence cur (len_word data) with
+                | none => Unmodeled
+                | some base =>
+                    match lseek_dest base off with
+                    | none => ret_outcome (errno_ret EINVAL) m
+                    | some r => ret_outcome r (with_fds (fd_insert (m_fds m) fd (.FdFileRW p r)) m)
+        | .FdFileA p cur =>
+            match fs_lookup (m_fs m) p with
+            | none => Unmodeled
+            | some data =>
+                match lseek_base whence cur (len_word data) with
+                | none => Unmodeled
+                | some base =>
+                    match lseek_dest base off with
+                    | none => ret_outcome (errno_ret EINVAL) m
+                    | some r => ret_outcome r (with_fds (fd_insert (m_fds m) fd (.FdFileA p r)) m)
 
 /-- Rocq: `Checks.Witness.Fs.ReadWrite.lseek_witness_ok`. -/
 theorem lseek_witness_ok (fd off whence : word) (i : SyscallInput) (m : Model) :
@@ -5240,8 +6664,38 @@ theorem lseek_witness_ok (fd off whence : word) (i : SyscallInput) (m : Model) :
     cases ld with
     | none => exact pure_ok _ i _
     | some r => exact (bind_set_fds_iff _ _ i m _).mpr (pure_ok _ i _)
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+  | FdFileRW p cur =>
+    dsimp only
+    generalize fs_lookup (m_fs m) p = fl
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only
+    generalize lseek_base whence cur (len_word data) = lb
+    cases lb with
+    | none => exact unmodeled_intro i m
+    | some base =>
+    dsimp only
+    generalize lseek_dest base off = ld
+    cases ld with
+    | none => exact pure_ok _ i _
+    | some r => exact (bind_set_fds_iff _ _ i m _).mpr (pure_ok _ i _)
+  | FdFileA p cur =>
+    dsimp only
+    generalize fs_lookup (m_fs m) p = fl
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only
+    generalize lseek_base whence cur (len_word data) = lb
+    cases lb with
+    | none => exact unmodeled_intro i m
+    | some base =>
+    dsimp only
+    generalize lseek_dest base off = ld
+    cases ld with
+    | none => exact pure_ok _ i _
+    | some r => exact (bind_set_fds_iff _ _ i m _).mpr (pure_ok _ i _)
 
 -- lean-port sentinel: ticket C-Fs-ReadWrite-readv-writev appends below this line
 
@@ -5262,25 +6716,28 @@ and `do_readv` (fs/read_write.c:1068-1089, Linux v6.18.46) into `vfs_readv`
 (fs/read_write.c:1162-1166, Linux v6.18.46), both importing through
 `__import_iovec` (lib/iov_iter.c:1352-1400, Linux v6.18.46).
 
-WHAT THE LEAN SHAPES CHANGE, beyond the module header's list:
+WHAT IS MIRRORED, AND WHAT THE LEAN SHAPES CHANGE, beyond the module
+header's list:
 
-- The `FdFileRW` and `RdFileRW` arms decline, as the spec twin's do
-  (module header), and so does `check_writev`'s `FdFileA` arm;
-  `readable_fd` turns an `FdFileA` away, so the `readv` checker answers it
-  as a write-only file, through the wrong-mode gate.
+- The `FdFileRW` and `FdFileA` arms answer, each as the spec twin's arm
+  of that kind answers.  On `writev` an `FdFileRW` is the `FdFileW` arm on
+  the O_RDWR constructor, and an `FdFileA` writes the gathered bytes at
+  the end of the file, with no `modeled_file_gap` guard, and moves the
+  offset to `append_new_pos`; its position test still reads the fd's real
+  offset.  On `readv` an `RdFileRW` is the `RdFile` arm on the O_RDWR
+  constructor, and `readable_fd` turns an `FdFileA` away, so the `readv`
+  checker answers it as a write-only file, through the wrong-mode gate.
+- THE THREE FILE ARMS OF `check_writev` AND OF `writev_witness` write a
+  gathered prefix of any nonzero length, as `writev_file_arm` does: a
+  source that is readable at its first byte but not to its end gives a
+  short write, and an empty gather is -EFAULT at every offset.  The
+  declines that stay on these arms are the spec twin's: a path that the
+  file system does not hold and an error-encoded length, on all three
+  arms, and the `modeled_file_gap` hole test on `FdFileW` and `FdFileRW`.
+  The `FdFileA` arm does not make the hole test (`append_opens_no_gap`).
 - Rocq's `concat (map snd writes)` is `(writes.map Prod.snd).flatten`,
   the shape `State.scatter_iovecs_concat` states; the socket arm's
   catch-all `_` is the three unconnected constructors, as in `check_read`.
-- THE `FdFileW` ARM OF `check_writev` AND OF `writev_witness` CARRY TWO
-  DECLINES: an empty gather at an offset past the file's end, and a
-  gathered prefix shorter than the capped aggregate.  They are the spec
-  twin's, in its positions — the first inside the empty-gather -EFAULT,
-  refining it where the file is shorter than the offset, and the second
-  after it and ahead of the kind's `place` (`Sys.Fs.ReadWrite.writev_file_arm`,
-  whose docstring and module header carry the kernel argument).  Rocq's
-  checker and witness lack the first because Rocq's spec does.  Without
-  them the checker would accept the -EFAULT and the short write the spec
-  twin refuses to prove, and `check_writev_sound_ok` would not close.
 - Rocq's channel acceptor keeps `!addr_is_error_b ret` and its readv
   acceptors keep `bs.length ≤ total`.  Both follow from the spec's own
   constraints — the completeness proofs derive the first from
@@ -5489,30 +6946,13 @@ theorem check_copyin_prefix_record_ok (reads : List (word × Nat)) (core : Sysca
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_writev`. -/
 def check_writev (i : SyscallInput) (fd iov iovcnt : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
-  let wide := decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))
-  let ebadf_safe := (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false)
-  let ebadf := if ebadf_safe then check_ret_only eff (errno_ret EBADF) m [] else CheckUnmodeled
-  let ebadf_open_safe := (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false)
-  let ebadf_open := if ebadf_open_safe then check_ret_only eff (errno_ret EBADF) m [] else CheckUnmodeled
-  if wide then CheckUnmodeled else
   match fd_lookup (m_fds m) fd with
-  | none => ebadf
-  | some (.FdFile _ _) => ebadf_open
-  | some .FdDir => ebadf_open
+  | none => check_ret_only eff (errno_ret EBADF) m []
+  | some (.FdFile _ _) => check_ret_only eff (errno_ret EBADF) m []
+  | some .FdDir => check_ret_only eff (errno_ret EBADF) m []
   | some (.FdSocket _) => CheckUnmodeled
   | some (.FdChannel ch) =>
-      if w_is0 ch then ebadf_open
+      if w_is0 ch then check_ret_only eff (errno_ret EBADF) m []
       else
         match import_iovecs i.in_mem iov (iovcnt32 iovcnt) with
         | .ImpFault => check_ret_only_copyins
@@ -5552,15 +6992,8 @@ def check_writev (i : SyscallInput) (fd iov iovcnt : word) (eff : SyscallEffect)
             (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (Z_to_bv 64 0) m []
           else if rw_pos_einvalb off total then check_ret_only_copyins
             (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (errno_ret EINVAL) m []
-          else if bs.length == 0 then
-            match fs_lookup (m_fs m) p with
-            | some d =>
-                if (d.length : Int) < bv_unsigned off then CheckUnmodeled
-                else check_ret_only_copyins
-                  (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (errno_ret EFAULT) m []
-            | none => check_ret_only_copyins
-                (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (errno_ret EFAULT) m []
-          else if (bs.length : Int) < total then CheckUnmodeled
+          else if bs.length == 0 then check_ret_only_copyins
+            (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (errno_ret EFAULT) m []
           else
             match fs_lookup (m_fs m) p with
             | none => CheckUnmodeled
@@ -5574,10 +7007,65 @@ def check_writev (i : SyscallInput) (fd iov iovcnt : word) (eff : SyscallEffect)
                   (with_fds (fd_insert (m_fds m) fd (.FdFileW p (off + len_word bs)))
                     (with_fs (fs_set (m_fs m) p (file_write data off bs)) m))
                   []
-  | some (.FdFileA _ _) => CheckUnmodeled
-  | some (.FdFileRW _ _) => CheckUnmodeled
+  | some (.FdFileRW p off) =>   -- the `FdFileW` arm above, on the O_RDWR kind
+      match import_iovecs i.in_mem iov (iovcnt32 iovcnt) with
+      | .ImpFault => check_ret_only_copyins
+          (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (errno_ret EFAULT) m []
+      | .ImpInval => check_ret_only_copyins
+          (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (errno_ret EINVAL) m []
+      | .ImpOk iovs0 =>
+          let total := iovs_total (cap_iovecs iovs0)
+          let bs := writev_gathered i.in_mem iovs0
+          if total == 0 then check_ret_only_copyins
+            (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (Z_to_bv 64 0) m []
+          else if rw_pos_einvalb off total then check_ret_only_copyins
+            (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (errno_ret EINVAL) m []
+          else if bs.length == 0 then check_ret_only_copyins
+            (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (errno_ret EFAULT) m []
+          else
+            match fs_lookup (m_fs m) p with
+            | none => CheckUnmodeled
+            | some data =>
+                if !modeled_file_gap data off bs then CheckUnmodeled
+                else if addr_is_error_b (len_word bs) then CheckUnmodeled
+                else check_ret_only_copyins
+                  (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt) ++
+                   iov_prefix_accesses (cap_iovecs iovs0) bs.length)
+                  eff (len_word bs)
+                  (with_fds (fd_insert (m_fds m) fd (.FdFileRW p (off + len_word bs)))
+                    (with_fs (fs_set (m_fs m) p (file_write data off bs)) m))
+                  []
+  | some (.FdFileA p off) =>
+      -- `rw_pos_einvalb` still reads `off`, the fd's real position; only the
+      -- destination moves.  See `Sys.Fs.ReadWrite.writev_spec`'s `FdFileA` arm
+      match import_iovecs i.in_mem iov (iovcnt32 iovcnt) with
+      | .ImpFault => check_ret_only_copyins
+          (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (errno_ret EFAULT) m []
+      | .ImpInval => check_ret_only_copyins
+          (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (errno_ret EINVAL) m []
+      | .ImpOk iovs0 =>
+          let total := iovs_total (cap_iovecs iovs0)
+          let bs := writev_gathered i.in_mem iovs0
+          if total == 0 then check_ret_only_copyins
+            (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (Z_to_bv 64 0) m []
+          else if rw_pos_einvalb off total then check_ret_only_copyins
+            (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (errno_ret EINVAL) m []
+          else if bs.length == 0 then check_ret_only_copyins
+            (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (errno_ret EFAULT) m []
+          else
+            match fs_lookup (m_fs m) p with
+            | none => CheckUnmodeled
+            | some data =>
+                if addr_is_error_b (len_word bs) then CheckUnmodeled
+                else check_ret_only_copyins
+                  (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt) ++
+                   iov_prefix_accesses (cap_iovecs iovs0) bs.length)
+                  eff (len_word bs)
+                  (with_fds (fd_insert (m_fds m) fd (.FdFileA p (append_new_pos data bs off)))
+                    (with_fs (fs_set (m_fs m) p (file_write data (len_word data) bs)) m))
+                  []
   | some (.FdPipe _ w) =>
-      if !w then ebadf_open
+      if !w then check_ret_only eff (errno_ret EBADF) m []
       else
         match import_iovecs i.in_mem iov (iovcnt32 iovcnt) with
         | .ImpFault => check_ret_only_copyins
@@ -5588,9 +7076,9 @@ def check_writev (i : SyscallInput) (fd iov iovcnt : word) (eff : SyscallEffect)
             if iovs_total (cap_iovecs iovs0) == 0 then check_ret_only_copyins
               (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt)) eff (Z_to_bv 64 0) m []
             else CheckUnmodeled
-  | some .FdUrandom => ebadf_open
+  | some .FdUrandom => check_ret_only eff (errno_ret EBADF) m []
   | some (.FdDevNull _ wr) =>
-      if !wr then ebadf_open
+      if !wr then check_ret_only eff (errno_ret EBADF) m []
       else
         match import_iovecs i.in_mem iov (iovcnt32 iovcnt) with
         | .ImpFault => check_ret_only_copyins
@@ -5611,44 +7099,24 @@ theorem check_writev_sound_ok (i : SyscallInput) (fd iov iovcnt : word) (eff : S
   unfold writev_spec writev_file_arm writev_ledger writev_buf_gap
   rw [bind_input_iff, bind_get_model_iff]
   dsimp only at h ⊢
-  generalize (decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))) = wide at h ⊢
-  cases wide with
-  | true =>
-    simp only [↓reduceIte] at h ⊢
-    cases h
-  | false =>
-  simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false) = eb at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false) = eo at h ⊢
   generalize import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt) = A at h ⊢
   generalize import_iovecs i.in_mem iov (iovcnt32 iovcnt) = imp at h ⊢
   generalize fd_lookup (m_fds m) fd = r at h ⊢
   cases r with
-  | none => (cases eb <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_sound _ _ _ _ _ i h | cases h)
+  | none => exact ret_only_sound _ _ _ _ _ i h
   | some e =>
   cases e with
-  | FdFile _ _ => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_sound _ _ _ _ _ i h | cases h)
-  | FdDir => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_sound _ _ _ _ _ i h | cases h)
+  | FdFile _ _ => exact ret_only_sound _ _ _ _ _ i h
+  | FdDir => exact ret_only_sound _ _ _ _ _ i h
   | FdSocket _ => cases h
-  | FdUrandom => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_sound _ _ _ _ _ i h | cases h)
+  | FdUrandom => exact ret_only_sound _ _ _ _ _ i h
   | FdChannel ch =>
     dsimp only at h ⊢
     generalize w_is0 ch = b0 at h ⊢
     cases b0 with
     | true =>
       simp only [↓reduceIte] at h ⊢
-      (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_sound _ _ _ _ _ i h | cases h)
+      exact ret_only_sound _ _ _ _ _ i h
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     cases imp with
@@ -5730,53 +7198,140 @@ theorem check_writev_sound_ok (i : SyscallInput) (fd iov iovcnt : word) (eff : S
     cases b3 with
     | true =>
       simp only [↓reduceIte] at h ⊢
-      cases fl with
-      | none => exact ret_only_copyins_sound _ _ _ _ _ _ i h
-      | some d =>
-        dsimp only at h ⊢
-        by_cases hd : (d.length : Int) < bv_unsigned off
-        · simp only [hd, ↓reduceIte] at h
-          cases h
-        · simp only [hd, ↓reduceIte] at h ⊢
-          exact ret_only_copyins_sound _ _ _ _ _ _ i h
+      exact ret_only_copyins_sound _ _ _ _ _ _ i h
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-    by_cases hlt : (bs.length : Int) < iovs_total (cap_iovecs iovs0)
-    · simp only [hlt, ↓reduceIte] at h
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data off bs) = b4 at h ⊢
+    cases b4 with
+    | true =>
+      simp only [↓reduceIte] at h
       cases h
-    · simp only [hlt, ↓reduceIte] at h ⊢
-      cases fl with
-      | none => cases h
-      | some data =>
-      dsimp only at h ⊢
-      generalize (!modeled_file_gap data off bs) = b4 at h ⊢
-      cases b4 with
-      | true =>
-        simp only [↓reduceIte] at h
-        cases h
-      | false =>
-      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-      generalize addr_is_error_b (len_word bs) = b5 at h ⊢
-      cases b5 with
-      | true =>
-        simp only [↓reduceIte] at h
-        cases h
-      | false =>
-      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-      obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
-      rw [record_copyins_ok_iff]
-      refine ⟨with_copyins (iov_prefix_accesses (cap_iovecs iovs0) bs.length)
-        (mkEffect (len_word bs) [] []), ?_, rfl⟩
-      rw [bind_set_fs_iff, bind_set_fds_iff]
-      exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
-  | FdFileA _ _ => cases h
-  | FdFileRW _ _ => cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize addr_is_error_b (len_word bs) = b5 at h ⊢
+    cases b5 with
+    | true =>
+      simp only [↓reduceIte] at h
+      cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
+    rw [record_copyins_ok_iff]
+    refine ⟨with_copyins (iov_prefix_accesses (cap_iovecs iovs0) bs.length)
+      (mkEffect (len_word bs) [] []), ?_, rfl⟩
+    rw [bind_set_fs_iff, bind_set_fds_iff]
+    exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
+  | FdFileRW p off =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases imp with
+    | ImpFault => exact ret_only_copyins_sound _ _ _ _ _ _ i h
+    | ImpInval => exact ret_only_copyins_sound _ _ _ _ _ _ i h
+    | ImpOk iovs0 =>
+    dsimp only at h ⊢
+    generalize (iovs_total (cap_iovecs iovs0) == 0) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_copyins_sound _ _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b2 at h ⊢
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_copyins_sound _ _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize writev_gathered i.in_mem iovs0 = bs at h ⊢
+    generalize (bs.length == 0) = b3 at h ⊢
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_copyins_sound _ _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data off bs) = b4 at h ⊢
+    cases b4 with
+    | true =>
+      simp only [↓reduceIte] at h
+      cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize addr_is_error_b (len_word bs) = b5 at h ⊢
+    cases b5 with
+    | true =>
+      simp only [↓reduceIte] at h
+      cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
+    rw [record_copyins_ok_iff]
+    refine ⟨with_copyins (iov_prefix_accesses (cap_iovecs iovs0) bs.length)
+      (mkEffect (len_word bs) [] []), ?_, rfl⟩
+    rw [bind_set_fs_iff, bind_set_fds_iff]
+    exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
+  | FdFileA p off =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases imp with
+    | ImpFault => exact ret_only_copyins_sound _ _ _ _ _ _ i h
+    | ImpInval => exact ret_only_copyins_sound _ _ _ _ _ _ i h
+    | ImpOk iovs0 =>
+    dsimp only at h ⊢
+    generalize (iovs_total (cap_iovecs iovs0) == 0) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_copyins_sound _ _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b2 at h ⊢
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_copyins_sound _ _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize writev_gathered i.in_mem iovs0 = bs at h ⊢
+    generalize (bs.length == 0) = b3 at h ⊢
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_copyins_sound _ _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize addr_is_error_b (len_word bs) = b5 at h ⊢
+    cases b5 with
+    | true =>
+      simp only [↓reduceIte] at h
+      cases h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    obtain ⟨rfl, rfl, rfl⟩ := (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mp h
+    rw [record_copyins_ok_iff]
+    refine ⟨with_copyins (iov_prefix_accesses (cap_iovecs iovs0) bs.length)
+      (mkEffect (len_word bs) [] []), ?_, rfl⟩
+    rw [bind_set_fs_iff, bind_set_fds_iff]
+    exact record_copyins_ok_empty _ _ i _ _ _ _ rfl (pure_ok _ i _)
   | FdPipe _ w =>
     dsimp only at h ⊢
     cases w with
     | false =>
       simp only [Bool.not_false, ↓reduceIte] at h ⊢
-      (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_sound _ _ _ _ _ i h | cases h)
+      exact ret_only_sound _ _ _ _ _ i h
     | true =>
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte] at h ⊢
     cases imp with
@@ -5797,7 +7352,7 @@ theorem check_writev_sound_ok (i : SyscallInput) (fd iov iovcnt : word) (eff : S
     cases wr with
     | false =>
       simp only [Bool.not_false, ↓reduceIte] at h ⊢
-      (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_sound _ _ _ _ _ i h | cases h)
+      exact ret_only_sound _ _ _ _ _ i h
     | true =>
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte] at h ⊢
     cases imp with
@@ -5814,44 +7369,24 @@ theorem check_writev_sound_unmodeled (i : SyscallInput) (fd iov iovcnt : word)
   unfold writev_spec writev_file_arm writev_ledger writev_buf_gap
   rw [bind_input_iff, bind_get_model_iff]
   dsimp only at h ⊢
-  generalize (decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))) = wide at h ⊢
-  cases wide with
-  | true =>
-    simp only [↓reduceIte] at h ⊢
-    exact unmodeled_intro i m
-  | false =>
-  simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false) = eb at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false) = eo at h ⊢
   generalize import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt) = A at h ⊢
   generalize import_iovecs i.in_mem iov (iovcnt32 iovcnt) = imp at h ⊢
   generalize fd_lookup (m_fds m) fd = r at h ⊢
   cases r with
-  | none => (cases eb <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (check_ret_only_no_unmodeled _ _ _ _ h).elim | exact unmodeled_intro i m)
+  | none => exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
   | some e =>
   cases e with
-  | FdFile _ _ => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (check_ret_only_no_unmodeled _ _ _ _ h).elim | exact unmodeled_intro i m)
-  | FdDir => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (check_ret_only_no_unmodeled _ _ _ _ h).elim | exact unmodeled_intro i m)
+  | FdFile _ _ => exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
+  | FdDir => exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
   | FdSocket _ => exact unmodeled_intro i m
-  | FdUrandom => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (check_ret_only_no_unmodeled _ _ _ _ h).elim | exact unmodeled_intro i m)
+  | FdUrandom => exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
   | FdChannel ch =>
     dsimp only at h ⊢
     generalize w_is0 ch = b0 at h ⊢
     cases b0 with
     | true =>
       simp only [↓reduceIte] at h
-      (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (check_ret_only_no_unmodeled _ _ _ _ h).elim | exact unmodeled_intro i m)
+      exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     cases imp with
@@ -5912,49 +7447,126 @@ theorem check_writev_sound_unmodeled (i : SyscallInput) (fd iov iovcnt : word)
     generalize (bs.length == 0) = b3 at h ⊢
     cases b3 with
     | true =>
-      simp only [↓reduceIte] at h ⊢
-      cases fl with
-      | none => exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
-      | some d =>
-        dsimp only at h ⊢
-        by_cases hd : (d.length : Int) < bv_unsigned off
-        · simp only [hd, ↓reduceIte]
-          exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
-        · simp only [hd, ↓reduceIte] at h
-          exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
+      simp only [↓reduceIte] at h
+      exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-    by_cases hlt : (bs.length : Int) < iovs_total (cap_iovecs iovs0)
-    · simp only [hlt, ↓reduceIte]
+    cases fl with
+    | none => exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data off bs) = b4 at h ⊢
+    cases b4 with
+    | true =>
+      simp only [↓reduceIte]
       exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
-    · simp only [hlt, ↓reduceIte] at h ⊢
-      cases fl with
-      | none => exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
-      | some data =>
-      dsimp only at h ⊢
-      generalize (!modeled_file_gap data off bs) = b4 at h ⊢
-      cases b4 with
-      | true =>
-        simp only [↓reduceIte]
-        exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
-      | false =>
-      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-      generalize addr_is_error_b (len_word bs) = b5 at h ⊢
-      cases b5 with
-      | true =>
-        simp only [↓reduceIte]
-        exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
-      | false =>
-      simp only [Bool.false_eq_true, ↓reduceIte] at h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize addr_is_error_b (len_word bs) = b5 at h ⊢
+    cases b5 with
+    | true =>
+      simp only [↓reduceIte]
+      exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
+  | FdFileRW p off =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases imp with
+    | ImpFault => exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
+    | ImpInval => exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
+    | ImpOk iovs0 =>
+    dsimp only at h ⊢
+    generalize (iovs_total (cap_iovecs iovs0) == 0) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
       exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b2 at h ⊢
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize writev_gathered i.in_mem iovs0 = bs at h ⊢
+    generalize (bs.length == 0) = b3 at h ⊢
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    cases fl with
+    | none => exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data off bs) = b4 at h ⊢
+    cases b4 with
+    | true =>
+      simp only [↓reduceIte]
+      exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize addr_is_error_b (len_word bs) = b5 at h ⊢
+    cases b5 with
+    | true =>
+      simp only [↓reduceIte]
+      exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
+  | FdFileA p off =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases imp with
+    | ImpFault => exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
+    | ImpInval => exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
+    | ImpOk iovs0 =>
+    dsimp only at h ⊢
+    generalize (iovs_total (cap_iovecs iovs0) == 0) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b2 at h ⊢
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize writev_gathered i.in_mem iovs0 = bs at h ⊢
+    generalize (bs.length == 0) = b3 at h ⊢
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    cases fl with
+    | none => exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
+    | some data =>
+    dsimp only at h ⊢
+    generalize addr_is_error_b (len_word bs) = b5 at h ⊢
+    cases b5 with
+    | true =>
+      simp only [↓reduceIte]
+      exact record_copyins_unmodeled _ _ i m (unmodeled_intro i m)
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ h).elim
   | FdPipe _ w =>
     dsimp only at h ⊢
     cases w with
     | false =>
       simp only [Bool.not_false, ↓reduceIte] at h
-      (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (check_ret_only_no_unmodeled _ _ _ _ h).elim | exact unmodeled_intro i m)
+      exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
     | true =>
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte] at h ⊢
     cases imp with
@@ -5975,7 +7587,7 @@ theorem check_writev_sound_unmodeled (i : SyscallInput) (fd iov iovcnt : word)
     cases wr with
     | false =>
       simp only [Bool.not_false, ↓reduceIte] at h
-      (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (check_ret_only_no_unmodeled _ _ _ _ h).elim | exact unmodeled_intro i m)
+      exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
     | true =>
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte] at h ⊢
     cases imp with
@@ -5992,44 +7604,24 @@ theorem check_writev_complete_ok (i : SyscallInput) (fd iov iovcnt : word) (eff 
   unfold check_writev
   rw [bind_input_iff, bind_get_model_iff] at h
   dsimp only at h ⊢
-  generalize (decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))) = wide at h ⊢
-  cases wide with
-  | true =>
-    simp only [↓reduceIte] at h ⊢
-    cases h
-  | false =>
-  simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false) = eb at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false) = eo at h ⊢
   generalize import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt) = A at h ⊢
   generalize import_iovecs i.in_mem iov (iovcnt32 iovcnt) = imp at h ⊢
   generalize fd_lookup (m_fds m) fd = r at h ⊢
   cases r with
-  | none => (cases eb <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_complete _ _ _ _ _ i h | cases h)
+  | none => exact ret_only_complete _ _ _ _ _ i h
   | some e =>
   cases e with
-  | FdFile _ _ => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_complete _ _ _ _ _ i h | cases h)
-  | FdDir => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_complete _ _ _ _ _ i h | cases h)
+  | FdFile _ _ => exact ret_only_complete _ _ _ _ _ i h
+  | FdDir => exact ret_only_complete _ _ _ _ _ i h
   | FdSocket _ => cases h
-  | FdUrandom => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_complete _ _ _ _ _ i h | cases h)
+  | FdUrandom => exact ret_only_complete _ _ _ _ _ i h
   | FdChannel ch =>
     dsimp only at h ⊢
     generalize w_is0 ch = b0 at h ⊢
     cases b0 with
     | true =>
       simp only [↓reduceIte] at h ⊢
-      (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_complete _ _ _ _ _ i h | cases h)
+      exact ret_only_complete _ _ _ _ _ i h
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     cases imp with
@@ -6117,60 +7709,154 @@ theorem check_writev_complete_ok (i : SyscallInput) (fd iov iovcnt : word) (eff 
     cases b3 with
     | true =>
       simp only [↓reduceIte] at h ⊢
-      cases fl with
-      | none => exact ret_only_copyins_complete _ _ _ _ _ _ i h
-      | some d =>
-        dsimp only at h ⊢
-        by_cases hd : (d.length : Int) < bv_unsigned off
-        · simp only [hd, ↓reduceIte] at h
-          obtain ⟨_, hcore, -⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
-          cases hcore
-        · simp only [hd, ↓reduceIte] at h ⊢
-          exact ret_only_copyins_complete _ _ _ _ _ _ i h
+      exact ret_only_copyins_complete _ _ _ _ _ _ i h
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-    by_cases hlt : (bs.length : Int) < iovs_total (cap_iovecs iovs0)
-    · simp only [hlt, ↓reduceIte] at h
+    cases fl with
+    | none =>
       obtain ⟨_, hcore, -⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
       cases hcore
-    · simp only [hlt, ↓reduceIte] at h ⊢
-      cases fl with
-      | none =>
-        obtain ⟨_, hcore, -⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
-        cases hcore
-      | some data =>
-      dsimp only at h ⊢
-      generalize (!modeled_file_gap data off bs) = b4 at h ⊢
-      cases b4 with
-      | true =>
-        simp only [↓reduceIte] at h
-        obtain ⟨_, hcore, -⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
-        cases hcore
-      | false =>
-      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-      generalize addr_is_error_b (len_word bs) = b5 at h ⊢
-      cases b5 with
-      | true =>
-        simp only [↓reduceIte] at h
-        obtain ⟨_, hcore, -⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
-        cases hcore
-      | false =>
-      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-      obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
-      rw [bind_set_fs_iff, bind_set_fds_iff] at hcore
-      obtain ⟨core2, hcore2, rfl⟩ := record_copyins_ok_inv _ _ i _ _ m' evs hcore
-      simp only [ret_only, pure_iff, outcome.Ok.injEq] at hcore2
-      obtain ⟨rfl, rfl, rfl⟩ := hcore2
-      refine (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mpr ⟨?_, rfl, rfl⟩
-      simp only [with_copyins, List.append_nil]
-  | FdFileA _ _ => cases h
-  | FdFileRW _ _ => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data off bs) = b4 at h ⊢
+    cases b4 with
+    | true =>
+      simp only [↓reduceIte] at h
+      obtain ⟨_, hcore, -⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
+      cases hcore
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize addr_is_error_b (len_word bs) = b5 at h ⊢
+    cases b5 with
+    | true =>
+      simp only [↓reduceIte] at h
+      obtain ⟨_, hcore, -⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
+      cases hcore
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
+    rw [bind_set_fs_iff, bind_set_fds_iff] at hcore
+    obtain ⟨core2, hcore2, rfl⟩ := record_copyins_ok_inv _ _ i _ _ m' evs hcore
+    simp only [ret_only, pure_iff, outcome.Ok.injEq] at hcore2
+    obtain ⟨rfl, rfl, rfl⟩ := hcore2
+    refine (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mpr ⟨?_, rfl, rfl⟩
+    simp only [with_copyins, List.append_nil]
+  | FdFileRW p off =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases imp with
+    | ImpFault => exact ret_only_copyins_complete _ _ _ _ _ _ i h
+    | ImpInval => exact ret_only_copyins_complete _ _ _ _ _ _ i h
+    | ImpOk iovs0 =>
+    dsimp only at h ⊢
+    generalize (iovs_total (cap_iovecs iovs0) == 0) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_copyins_complete _ _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b2 at h ⊢
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_copyins_complete _ _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize writev_gathered i.in_mem iovs0 = bs at h ⊢
+    generalize (bs.length == 0) = b3 at h ⊢
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_copyins_complete _ _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    cases fl with
+    | none =>
+      obtain ⟨_, hcore, -⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
+      cases hcore
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data off bs) = b4 at h ⊢
+    cases b4 with
+    | true =>
+      simp only [↓reduceIte] at h
+      obtain ⟨_, hcore, -⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
+      cases hcore
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize addr_is_error_b (len_word bs) = b5 at h ⊢
+    cases b5 with
+    | true =>
+      simp only [↓reduceIte] at h
+      obtain ⟨_, hcore, -⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
+      cases hcore
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
+    rw [bind_set_fs_iff, bind_set_fds_iff] at hcore
+    obtain ⟨core2, hcore2, rfl⟩ := record_copyins_ok_inv _ _ i _ _ m' evs hcore
+    simp only [ret_only, pure_iff, outcome.Ok.injEq] at hcore2
+    obtain ⟨rfl, rfl, rfl⟩ := hcore2
+    refine (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mpr ⟨?_, rfl, rfl⟩
+    simp only [with_copyins, List.append_nil]
+  | FdFileA p off =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases imp with
+    | ImpFault => exact ret_only_copyins_complete _ _ _ _ _ _ i h
+    | ImpInval => exact ret_only_copyins_complete _ _ _ _ _ _ i h
+    | ImpOk iovs0 =>
+    dsimp only at h ⊢
+    generalize (iovs_total (cap_iovecs iovs0) == 0) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_copyins_complete _ _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b2 at h ⊢
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_copyins_complete _ _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize writev_gathered i.in_mem iovs0 = bs at h ⊢
+    generalize (bs.length == 0) = b3 at h ⊢
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_copyins_complete _ _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    cases fl with
+    | none =>
+      obtain ⟨_, hcore, -⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
+      cases hcore
+    | some data =>
+    dsimp only at h ⊢
+    generalize addr_is_error_b (len_word bs) = b5 at h ⊢
+    cases b5 with
+    | true =>
+      simp only [↓reduceIte] at h
+      obtain ⟨_, hcore, -⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
+      cases hcore
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    obtain ⟨core, hcore, rfl⟩ := record_copyins_ok_inv _ _ i m _ m' evs h
+    rw [bind_set_fs_iff, bind_set_fds_iff] at hcore
+    obtain ⟨core2, hcore2, rfl⟩ := record_copyins_ok_inv _ _ i _ _ m' evs hcore
+    simp only [ret_only, pure_iff, outcome.Ok.injEq] at hcore2
+    obtain ⟨rfl, rfl, rfl⟩ := hcore2
+    refine (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _).mpr ⟨?_, rfl, rfl⟩
+    simp only [with_copyins, List.append_nil]
   | FdPipe _ w =>
     dsimp only at h ⊢
     cases w with
     | false =>
       simp only [Bool.not_false, ↓reduceIte] at h ⊢
-      (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_complete _ _ _ _ _ i h | cases h)
+      exact ret_only_complete _ _ _ _ _ i h
     | true =>
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte] at h ⊢
     cases imp with
@@ -6192,7 +7878,7 @@ theorem check_writev_complete_ok (i : SyscallInput) (fd iov iovcnt : word) (eff 
     cases wr with
     | false =>
       simp only [Bool.not_false, ↓reduceIte] at h ⊢
-      (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_complete _ _ _ _ _ i h | cases h)
+      exact ret_only_complete _ _ _ _ _ i h
     | true =>
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte] at h ⊢
     cases imp with
@@ -6208,43 +7894,24 @@ theorem check_writev_complete_unmodeled (i : SyscallInput) (fd iov iovcnt : word
   unfold check_writev
   rw [bind_input_iff, bind_get_model_iff] at h
   dsimp only at h ⊢
-  generalize (decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))) = wide at h ⊢
-  cases wide with
-  | true =>
-    simp only [↓reduceIte] at h ⊢
-  | false =>
-  simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false) = eb at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false) = eo at h ⊢
   generalize import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt) = A at h ⊢
   generalize import_iovecs i.in_mem iov (iovcnt32 iovcnt) = imp at h ⊢
   generalize fd_lookup (m_fds m) fd = r at h ⊢
   cases r with
-  | none => (cases eb <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (ret_only_not_unmodeled _ i m h).elim | rfl)
+  | none => exact (ret_only_not_unmodeled _ i m h).elim
   | some e =>
   cases e with
-  | FdFile _ _ => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (ret_only_not_unmodeled _ i m h).elim | rfl)
-  | FdDir => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (ret_only_not_unmodeled _ i m h).elim | rfl)
+  | FdFile _ _ => exact (ret_only_not_unmodeled _ i m h).elim
+  | FdDir => exact (ret_only_not_unmodeled _ i m h).elim
   | FdSocket _ => rfl
-  | FdUrandom => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (ret_only_not_unmodeled _ i m h).elim | rfl)
+  | FdUrandom => exact (ret_only_not_unmodeled _ i m h).elim
   | FdChannel ch =>
     dsimp only at h ⊢
     generalize w_is0 ch = b0 at h ⊢
     cases b0 with
     | true =>
       simp only [↓reduceIte] at h
-      (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (ret_only_not_unmodeled _ i m h).elim | rfl)
+      exact (ret_only_not_unmodeled _ i m h).elim
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
     cases imp with
@@ -6306,46 +7973,125 @@ theorem check_writev_complete_unmodeled (i : SyscallInput) (fd iov iovcnt : word
     generalize (bs.length == 0) = b3 at h ⊢
     cases b3 with
     | true =>
-      simp only [↓reduceIte] at h ⊢
-      cases fl with
-      | none => exact (record_ret_only_not_unmodeled _ _ i m h).elim
-      | some d =>
-        dsimp only at h ⊢
-        by_cases hd : (d.length : Int) < bv_unsigned off
-        · simp only [hd, ↓reduceIte]
-        · simp only [hd, ↓reduceIte] at h
-          exact (record_ret_only_not_unmodeled _ _ i m h).elim
+      simp only [↓reduceIte] at h
+      exact (record_ret_only_not_unmodeled _ _ i m h).elim
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-    by_cases hlt : (bs.length : Int) < iovs_total (cap_iovecs iovs0)
-    · simp only [hlt, ↓reduceIte]
-    · simp only [hlt, ↓reduceIte] at h ⊢
-      cases fl with
-      | none => rfl
-      | some data =>
-      dsimp only at h ⊢
-      generalize (!modeled_file_gap data off bs) = b4 at h ⊢
-      cases b4 with
-      | true => simp only [↓reduceIte]
-      | false =>
-      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-      generalize addr_is_error_b (len_word bs) = b5 at h ⊢
-      cases b5 with
-      | true => simp only [↓reduceIte]
-      | false =>
-      exfalso
-      simp only [Bool.false_eq_true, ↓reduceIte] at h
-      have hin := record_copyins_unmodeled_inv _ _ i m h
-      rw [bind_set_fs_iff, bind_set_fds_iff] at hin
-      exact record_ret_only_not_unmodeled _ _ i _ hin
-  | FdFileA _ _ => rfl
-  | FdFileRW _ _ => rfl
+    cases fl with
+    | none => rfl
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data off bs) = b4 at h ⊢
+    cases b4 with
+    | true => simp only [↓reduceIte]
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize addr_is_error_b (len_word bs) = b5 at h ⊢
+    cases b5 with
+    | true => simp only [↓reduceIte]
+    | false =>
+    exfalso
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    have hin := record_copyins_unmodeled_inv _ _ i m h
+    rw [bind_set_fs_iff, bind_set_fds_iff] at hin
+    exact record_ret_only_not_unmodeled _ _ i _ hin
+  | FdFileRW p off =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases imp with
+    | ImpFault => exact (record_ret_only_not_unmodeled _ _ i m h).elim
+    | ImpInval => exact (record_ret_only_not_unmodeled _ _ i m h).elim
+    | ImpOk iovs0 =>
+    dsimp only at h ⊢
+    generalize (iovs_total (cap_iovecs iovs0) == 0) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (record_ret_only_not_unmodeled _ _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b2 at h ⊢
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (record_ret_only_not_unmodeled _ _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize writev_gathered i.in_mem iovs0 = bs at h ⊢
+    generalize (bs.length == 0) = b3 at h ⊢
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (record_ret_only_not_unmodeled _ _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    cases fl with
+    | none => rfl
+    | some data =>
+    dsimp only at h ⊢
+    generalize (!modeled_file_gap data off bs) = b4 at h ⊢
+    cases b4 with
+    | true => simp only [↓reduceIte]
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize addr_is_error_b (len_word bs) = b5 at h ⊢
+    cases b5 with
+    | true => simp only [↓reduceIte]
+    | false =>
+    exfalso
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    have hin := record_copyins_unmodeled_inv _ _ i m h
+    rw [bind_set_fs_iff, bind_set_fds_iff] at hin
+    exact record_ret_only_not_unmodeled _ _ i _ hin
+  | FdFileA p off =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases imp with
+    | ImpFault => exact (record_ret_only_not_unmodeled _ _ i m h).elim
+    | ImpInval => exact (record_ret_only_not_unmodeled _ _ i m h).elim
+    | ImpOk iovs0 =>
+    dsimp only at h ⊢
+    generalize (iovs_total (cap_iovecs iovs0) == 0) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (record_ret_only_not_unmodeled _ _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b2 at h ⊢
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (record_ret_only_not_unmodeled _ _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize writev_gathered i.in_mem iovs0 = bs at h ⊢
+    generalize (bs.length == 0) = b3 at h ⊢
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (record_ret_only_not_unmodeled _ _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    cases fl with
+    | none => rfl
+    | some data =>
+    dsimp only at h ⊢
+    generalize addr_is_error_b (len_word bs) = b5 at h ⊢
+    cases b5 with
+    | true => simp only [↓reduceIte]
+    | false =>
+    exfalso
+    simp only [Bool.false_eq_true, ↓reduceIte] at h
+    have hin := record_copyins_unmodeled_inv _ _ i m h
+    rw [bind_set_fs_iff, bind_set_fds_iff] at hin
+    exact record_ret_only_not_unmodeled _ _ i _ hin
   | FdPipe _ w =>
     dsimp only at h ⊢
     cases w with
     | false =>
       simp only [Bool.not_false, ↓reduceIte] at h
-      (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (ret_only_not_unmodeled _ i m h).elim | rfl)
+      exact (ret_only_not_unmodeled _ i m h).elim
     | true =>
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte] at h ⊢
     cases imp with
@@ -6364,7 +8110,7 @@ theorem check_writev_complete_unmodeled (i : SyscallInput) (fd iov iovcnt : word
     cases wr with
     | false =>
       simp only [Bool.not_false, ↓reduceIte] at h
-      (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (ret_only_not_unmodeled _ i m h).elim | rfl)
+      exact (ret_only_not_unmodeled _ i m h).elim
     | true =>
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte] at h ⊢
     cases imp with
@@ -6461,7 +8207,6 @@ def check_readv_imported (i : SyscallInput) (fd : word) (r : ReadableFd)
   | .RdPipe _ => check_readv_gap   -- vectored pipe reads are unmodeled
   | .RdDevNull => check_ret_only eff (Z_to_bv 64 0) m []
   | .RdUrandom => check_readv_gap   -- vectored device reads decline
-  | .RdFileRW _ _ => check_readv_gap
   | .RdDir => check_ret_only eff (errno_ret EISDIR) m []
   | .RdFile p off =>
       match fs_lookup (m_fs m) p with
@@ -6485,32 +8230,39 @@ def check_readv_imported (i : SyscallInput) (fd : word) (r : ReadableFd)
               match scatter_iovecs i.in_wmem iovs [Z_to_bv 8 0] with
               | none => check_ret_only eff (errno_ret EFAULT) m []
               | some _ => check_readv_gap
+  | .RdFileRW p off =>   -- the `RdFile` arm above, on the O_RDWR kind
+      match fs_lookup (m_fs m) p with
+      | none => check_readv_gap
+      | some data =>
+          if rw_pos_einvalb off total then check_ret_only eff (errno_ret EINVAL) m []
+          else
+          let bs := file_read data off (Z_to_bv 64 total)
+          match scatter_iovecs i.in_wmem iovs bs with
+          | some writes =>
+              if addr_is_error_b (len_word bs) then check_readv_gap
+              else
+              match eff with
+              | .mkEffectU ret writes' [] [] [] [] =>
+                  if bv_eqb ret (len_word bs) && writes_eqb writes' writes
+                  then CheckOk
+                         (with_fds (fd_insert (m_fds m) fd (.FdFileRW p (off + len_word bs))) m) []
+                  else CheckReject
+              | _ => CheckReject
+          | none =>
+              match scatter_iovecs i.in_wmem iovs [Z_to_bv 8 0] with
+              | none => check_ret_only eff (errno_ret EFAULT) m []
+              | some _ => check_readv_gap
 
 /-- Rocq: `Checks.Sys.Fs.ReadWrite.check_readv`. -/
 def check_readv (i : SyscallInput) (fd iov iovcnt : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
-  let wide := decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))
-  let ebadf_safe := (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false)
-  let ebadf := if ebadf_safe then check_ret_only eff (errno_ret EBADF) m [] else CheckUnmodeled
-  let ebadf_open_safe := (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false)
-  let ebadf_open := if ebadf_open_safe then check_ret_only eff (errno_ret EBADF) m [] else CheckUnmodeled
-  if wide then CheckUnmodeled else
   match fd_lookup (m_fds m) fd with
-  | none => ebadf
+  | none => check_ret_only eff (errno_ret EBADF) m []
   | some e =>
       match readable_fd e with
-      | none => ebadf_open
+      | none => check_ret_only eff (errno_ret EBADF) m []
+          -- the read end of a pipe has a `RdPipe`; only the O_WRONLY write
+          -- end reaches this arm, where -EBADF is the kernel's own answer
       | some r =>
           if readv_heap_iovecb iovcnt then check_readv_gap
           else
@@ -6635,9 +8387,50 @@ theorem check_readv_imported_sound_ok (i : SyscallInput) (fd : word) (r : Readab
   | RdPipe _ => cases h
   | RdDevNull => exact ret_only_sound _ _ _ _ _ i h
   | RdUrandom => cases h
-  | RdFileRW _ _ => cases h
   | RdDir => exact ret_only_sound _ _ _ _ _ i h
   | RdFile p off =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_sound _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize file_read data off (Z_to_bv 64 (iovs_total (cap_iovecs iovs0))) = bs at h ⊢
+    generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0) bs = sc at h ⊢
+    cases sc with
+    | some writes =>
+      dsimp only at h ⊢
+      generalize addr_is_error_b (len_word bs) = b2 at h ⊢
+      cases b2 with
+      | true =>
+        simp only [↓reduceIte] at h
+        cases h
+      | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+      split at h
+      · rename_i ret writes'
+        split at h
+        · rename_i hg
+          obtain ⟨rfl, rfl⟩ := check_result.CheckOk.inj h
+          simp only [Bool.and_eq_true, bv_eqb_eq, writes_eqb_eq] at hg
+          obtain ⟨rfl, rfl⟩ := hg
+          exact (bind_set_fds_iff _ _ i m _).mpr (pure_ok _ i _)
+        · cases h
+      · cases h
+    | none =>
+      dsimp only at h ⊢
+      generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0) [Z_to_bv 8 0] = w1 at h ⊢
+      cases w1 with
+      | none => exact ret_only_sound _ _ _ _ _ i h
+      | some _ => cases h
+  | RdFileRW p off =>
     dsimp only at h ⊢
     generalize fs_lookup (m_fs m) p = fl at h ⊢
     cases fl with
@@ -6755,9 +8548,44 @@ theorem check_readv_imported_sound_unmodeled (i : SyscallInput) (fd : word) (r :
   | RdPipe _ => exact unmodeled_intro i m
   | RdDevNull => exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
   | RdUrandom => exact unmodeled_intro i m
-  | RdFileRW _ _ => exact unmodeled_intro i m
   | RdDir => exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
   | RdFile p off =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only at h ⊢
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize file_read data off (Z_to_bv 64 (iovs_total (cap_iovecs iovs0))) = bs at h ⊢
+    generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0) bs = sc at h ⊢
+    cases sc with
+    | some writes =>
+      dsimp only at h ⊢
+      generalize addr_is_error_b (len_word bs) = b2 at h ⊢
+      cases b2 with
+      | true =>
+        simp only [↓reduceIte]
+        exact unmodeled_intro i m
+      | false =>
+      exfalso
+      simp only [Bool.false_eq_true, ↓reduceIte] at h
+      split at h
+      · split at h <;> cases h
+      · cases h
+    | none =>
+      dsimp only at h ⊢
+      generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0) [Z_to_bv 8 0] = w1 at h ⊢
+      cases w1 with
+      | none => exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
+      | some _ => exact unmodeled_intro i m
+  | RdFileRW p off =>
     dsimp only at h ⊢
     generalize fs_lookup (m_fs m) p = fl at h ⊢
     cases fl with
@@ -6891,9 +8719,44 @@ theorem check_readv_imported_complete_ok (i : SyscallInput) (fd : word) (r : Rea
   | RdPipe _ => cases h
   | RdDevNull => exact ret_only_complete _ _ _ _ _ i h
   | RdUrandom => cases h
-  | RdFileRW _ _ => cases h
   | RdDir => exact ret_only_complete _ _ _ _ _ i h
   | RdFile p off =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => cases h
+    | some data =>
+    dsimp only at h ⊢
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h ⊢
+      exact ret_only_complete _ _ _ _ _ i h
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize file_read data off (Z_to_bv 64 (iovs_total (cap_iovecs iovs0))) = bs at h ⊢
+    generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0) bs = sc at h ⊢
+    cases sc with
+    | some writes =>
+      dsimp only at h ⊢
+      generalize addr_is_error_b (len_word bs) = b2 at h ⊢
+      cases b2 with
+      | true =>
+        simp only [↓reduceIte] at h
+        cases h
+      | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+      rw [bind_set_fds_iff] at h
+      simp only [pure_iff, outcome.Ok.injEq] at h
+      obtain ⟨rfl, rfl, rfl⟩ := h
+      simp only [bv_eqb_refl, writes_eqb_refl, Bool.and_self, ↓reduceIte]
+    | none =>
+      dsimp only at h ⊢
+      generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0) [Z_to_bv 8 0] = w1 at h ⊢
+      cases w1 with
+      | none => exact ret_only_complete _ _ _ _ _ i h
+      | some _ => cases h
+  | RdFileRW p off =>
     dsimp only at h ⊢
     generalize fs_lookup (m_fs m) p = fl at h ⊢
     cases fl with
@@ -7017,9 +8880,41 @@ theorem check_readv_imported_complete_unmodeled (i : SyscallInput) (fd : word) (
   | RdPipe _ => rfl
   | RdDevNull => exact (ret_only_not_unmodeled _ i m h).elim
   | RdUrandom => rfl
-  | RdFileRW _ _ => rfl
   | RdDir => exact (ret_only_not_unmodeled _ i m h).elim
   | RdFile p off =>
+    dsimp only at h ⊢
+    generalize fs_lookup (m_fs m) p = fl at h ⊢
+    cases fl with
+    | none => rfl
+    | some data =>
+    dsimp only at h ⊢
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b1 at h ⊢
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte] at h
+      exact (ret_only_not_unmodeled _ i m h).elim
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
+    generalize file_read data off (Z_to_bv 64 (iovs_total (cap_iovecs iovs0))) = bs at h ⊢
+    generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0) bs = sc at h ⊢
+    cases sc with
+    | some writes =>
+      dsimp only at h ⊢
+      generalize addr_is_error_b (len_word bs) = b2 at h ⊢
+      cases b2 with
+      | true => simp only [↓reduceIte]
+      | false =>
+      exfalso
+      simp only [Bool.false_eq_true, ↓reduceIte] at h
+      rw [bind_set_fds_iff] at h
+      cases h
+    | none =>
+      dsimp only at h ⊢
+      generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0) [Z_to_bv 8 0] = w1 at h ⊢
+      cases w1 with
+      | none => exact (ret_only_not_unmodeled _ i m h).elim
+      | some _ => rfl
+  | RdFileRW p off =>
     dsimp only at h ⊢
     generalize fs_lookup (m_fs m) p = fl at h ⊢
     cases fl with
@@ -7061,37 +8956,16 @@ theorem check_readv_sound_ok (i : SyscallInput) (fd iov iovcnt : word) (eff : Sy
   unfold check_readv check_readv_gap at h
   unfold readv_spec
   rw [bind_input_iff, bind_get_model_iff]
-  dsimp only at h ⊢
-  generalize (decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))) = wide at h ⊢
-  cases wide with
-  | true =>
-    simp only [↓reduceIte] at h ⊢
-    cases h
-  | false =>
-  simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false) = eb at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false) = eo at h ⊢
   generalize import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt) = A at h ⊢
   generalize import_iovecs i.in_mem iov (iovcnt32 iovcnt) = imp at h ⊢
   generalize fd_lookup (m_fds m) fd = r at h ⊢
   cases r with
-  | none => (cases eb <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_sound _ _ _ _ _ i h | cases h)
+  | none => exact ret_only_sound _ _ _ _ _ i h
   | some e =>
   dsimp only at h ⊢
   generalize readable_fd e = rd at h ⊢
   cases rd with
-  | none => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_sound _ _ _ _ _ i h | cases h)
+  | none => exact ret_only_sound _ _ _ _ _ i h
   | some r =>
   dsimp only at h ⊢
   generalize readv_heap_iovecb iovcnt = hb at h ⊢
@@ -7118,37 +8992,16 @@ theorem check_readv_sound_unmodeled (i : SyscallInput) (fd iov iovcnt : word)
   unfold check_readv check_readv_gap at h
   unfold readv_spec
   rw [bind_input_iff, bind_get_model_iff]
-  dsimp only at h ⊢
-  generalize (decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))) = wide at h ⊢
-  cases wide with
-  | true =>
-    simp only [↓reduceIte] at h ⊢
-    exact unmodeled_intro i m
-  | false =>
-  simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false) = eb at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false) = eo at h ⊢
   generalize import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt) = A at h ⊢
   generalize import_iovecs i.in_mem iov (iovcnt32 iovcnt) = imp at h ⊢
   generalize fd_lookup (m_fds m) fd = r at h ⊢
   cases r with
-  | none => (cases eb <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (check_ret_only_no_unmodeled _ _ _ _ h).elim | exact unmodeled_intro i m)
+  | none => exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
   | some e =>
   dsimp only at h ⊢
   generalize readable_fd e = rd at h ⊢
   cases rd with
-  | none => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (check_ret_only_no_unmodeled _ _ _ _ h).elim | exact unmodeled_intro i m)
+  | none => exact (check_ret_only_no_unmodeled _ _ _ _ h).elim
   | some r =>
   dsimp only at h ⊢
   generalize readv_heap_iovecb iovcnt = hb at h ⊢
@@ -7175,37 +9028,16 @@ theorem check_readv_complete_ok (i : SyscallInput) (fd iov iovcnt : word) (eff :
   unfold readv_spec at h
   unfold check_readv check_readv_gap
   rw [bind_input_iff, bind_get_model_iff] at h
-  dsimp only at h ⊢
-  generalize (decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))) = wide at h ⊢
-  cases wide with
-  | true =>
-    simp only [↓reduceIte] at h ⊢
-    cases h
-  | false =>
-  simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false) = eb at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false) = eo at h ⊢
   generalize import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt) = A at h ⊢
   generalize import_iovecs i.in_mem iov (iovcnt32 iovcnt) = imp at h ⊢
   generalize fd_lookup (m_fds m) fd = r at h ⊢
   cases r with
-  | none => (cases eb <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_complete _ _ _ _ _ i h | cases h)
+  | none => exact ret_only_complete _ _ _ _ _ i h
   | some e =>
   dsimp only at h ⊢
   generalize readable_fd e = rd at h ⊢
   cases rd with
-  | none => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact ret_only_complete _ _ _ _ _ i h | cases h)
+  | none => exact ret_only_complete _ _ _ _ _ i h
   | some r =>
   dsimp only at h ⊢
   generalize readv_heap_iovecb iovcnt = hb at h ⊢
@@ -7231,36 +9063,16 @@ theorem check_readv_complete_unmodeled (i : SyscallInput) (fd iov iovcnt : word)
   unfold readv_spec at h
   unfold check_readv check_readv_gap
   rw [bind_input_iff, bind_get_model_iff] at h
-  dsimp only at h ⊢
-  generalize (decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))) = wide at h ⊢
-  cases wide with
-  | true =>
-    simp only [↓reduceIte] at h ⊢
-  | false =>
-  simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false) = eb at h ⊢
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false) = eo at h ⊢
   generalize import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt) = A at h ⊢
   generalize import_iovecs i.in_mem iov (iovcnt32 iovcnt) = imp at h ⊢
   generalize fd_lookup (m_fds m) fd = r at h ⊢
   cases r with
-  | none => (cases eb <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (ret_only_not_unmodeled _ i m h).elim | rfl)
+  | none => exact (ret_only_not_unmodeled _ i m h).elim
   | some e =>
   dsimp only at h ⊢
   generalize readable_fd e = rd at h ⊢
   cases rd with
-  | none => (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte] at h ⊢<;> first | exact (ret_only_not_unmodeled _ i m h).elim | rfl)
+  | none => exact (ret_only_not_unmodeled _ i m h).elim
   | some r =>
   dsimp only at h ⊢
   generalize readv_heap_iovecb iovcnt = hb at h ⊢
@@ -7280,30 +9092,15 @@ theorem check_readv_complete_unmodeled (i : SyscallInput) (fd iov iovcnt : word)
 wherever the spec admits an outcome, one of them, chosen arm for arm as
 Rocq's witness chooses, and `Unmodeled` wherever the spec declines;
 `writev_witness_ok` is the statement that every answer is admitted.  The
-`FdFileW` arm carries the spec twin's two declines (the section
-header). -/
+three file arms decline where the spec twin's do: a path the file system
+does not hold, and an error-encoded length; the `FdFileW` and `FdFileRW`
+arms also decline the hole `modeled_file_gap` refuses.  A gathered prefix
+shorter than the capped aggregate is written, as the spec twin writes it. -/
 def writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
-  let wide := decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))
-  let ebadf_safe := (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false)
-  let ebadf := if ebadf_safe then ret_outcome (errno_ret EBADF) m else Unmodeled
-  let ebadf_open_safe := (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false)
-  let ebadf_open := if ebadf_open_safe then ret_outcome (errno_ret EBADF) m else Unmodeled
-  if wide then Unmodeled else
   match fd_lookup (m_fds m) fd with
-  | none => ebadf
+  | none => ret_outcome (errno_ret EBADF) m
   | some (.FdChannel ch) =>
-      if w_is0 ch then ebadf_open   -- stdin is read-only
+      if w_is0 ch then ret_outcome (errno_ret EBADF) m   -- stdin is read-only
       else outcome_copyins (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt))
         (match import_iovecs i.in_mem iov (iovcnt32 iovcnt) with
          | .ImpFault => ret_outcome (errno_ret EFAULT) m
@@ -7317,10 +9114,10 @@ def writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model) : outco
              else outcome_copyins (iov_prefix_accesses (cap_iovecs iovs0) (bs.take 1).length)
                     (Ok (mkEffect (len_word (bs.take 1)) [] []) m
                       (List.map (WriteEv ch) (bs.take 1))))   -- the one-byte delivery
-  | some .FdDir => ebadf_open   -- directory fd is O_RDONLY
-  | some (.FdFile _ _) => ebadf_open   -- read-only file
+  | some .FdDir => ret_outcome (errno_ret EBADF) m   -- directory fd is O_RDONLY
+  | some (.FdFile _ _) => ret_outcome (errno_ret EBADF) m   -- read-only file
   | some (.FdPipe _ w) =>
-      if !w then ebadf_open   -- read end
+      if !w then ret_outcome (errno_ret EBADF) m   -- read end
       else outcome_copyins (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt))
         (match import_iovecs i.in_mem iov (iovcnt32 iovcnt) with
          | .ImpFault => ret_outcome (errno_ret EFAULT) m
@@ -7328,9 +9125,9 @@ def writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model) : outco
          | .ImpOk iovs0 =>
              if iovs_total (cap_iovecs iovs0) == 0 then ret_outcome (Z_to_bv 64 0) m
              else Unmodeled)   -- vectored pipe writes
-  | some .FdUrandom => ebadf_open   -- read-only
+  | some .FdUrandom => ret_outcome (errno_ret EBADF) m   -- read-only
   | some (.FdDevNull _ wr) =>
-      if !wr then ebadf_open
+      if !wr then ret_outcome (errno_ret EBADF) m
       else outcome_copyins (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt))
         (match import_iovecs i.in_mem iov (iovcnt32 iovcnt) with
          | .ImpFault => ret_outcome (errno_ret EFAULT) m
@@ -7346,13 +9143,7 @@ def writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model) : outco
              let bs := writev_gathered i.in_mem iovs0
              if total == 0 then ret_outcome (Z_to_bv 64 0) m
              else if rw_pos_einvalb off total then ret_outcome (errno_ret EINVAL) m
-             else if bs.length == 0 then
-               match fs_lookup (m_fs m) p with
-               | some d =>
-                   if (d.length : Int) < bv_unsigned off then Unmodeled
-                   else ret_outcome (errno_ret EFAULT) m
-               | none => ret_outcome (errno_ret EFAULT) m
-             else if (bs.length : Int) < total then Unmodeled
+             else if bs.length == 0 then ret_outcome (errno_ret EFAULT) m
              else
                match fs_lookup (m_fs m) p with
                | none => Unmodeled
@@ -7364,8 +9155,49 @@ def writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model) : outco
                         (with_fds (fd_insert (m_fds m) fd (.FdFileW p (off + len_word bs)))
                           (with_fs (fs_set (m_fs m) p (file_write data off bs)) m))
                         []))
-  | some (.FdFileA _ _) => Unmodeled
-  | some (.FdFileRW _ _) => Unmodeled
+  | some (.FdFileRW p off) =>   -- the `FdFileW` arm above, on the O_RDWR kind
+      outcome_copyins (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt))
+        (match import_iovecs i.in_mem iov (iovcnt32 iovcnt) with
+         | .ImpFault => ret_outcome (errno_ret EFAULT) m
+         | .ImpInval => ret_outcome (errno_ret EINVAL) m
+         | .ImpOk iovs0 =>
+             let total := iovs_total (cap_iovecs iovs0)
+             let bs := writev_gathered i.in_mem iovs0
+             if total == 0 then ret_outcome (Z_to_bv 64 0) m
+             else if rw_pos_einvalb off total then ret_outcome (errno_ret EINVAL) m
+             else if bs.length == 0 then ret_outcome (errno_ret EFAULT) m
+             else
+               match fs_lookup (m_fs m) p with
+               | none => Unmodeled
+               | some data =>
+                   if !modeled_file_gap data off bs then Unmodeled   -- hole too large
+                   else if addr_is_error_b (len_word bs) then Unmodeled
+                   else outcome_copyins (iov_prefix_accesses (cap_iovecs iovs0) bs.length)
+                     (Ok (mkEffect (len_word bs) [] [])
+                        (with_fds (fd_insert (m_fds m) fd (.FdFileRW p (off + len_word bs)))
+                          (with_fs (fs_set (m_fs m) p (file_write data off bs)) m))
+                        []))
+  | some (.FdFileA p off) =>
+      outcome_copyins (import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt))
+        (match import_iovecs i.in_mem iov (iovcnt32 iovcnt) with
+         | .ImpFault => ret_outcome (errno_ret EFAULT) m
+         | .ImpInval => ret_outcome (errno_ret EINVAL) m
+         | .ImpOk iovs0 =>
+             let total := iovs_total (cap_iovecs iovs0)
+             let bs := writev_gathered i.in_mem iovs0
+             if total == 0 then ret_outcome (Z_to_bv 64 0) m
+             else if rw_pos_einvalb off total then ret_outcome (errno_ret EINVAL) m
+             else if bs.length == 0 then ret_outcome (errno_ret EFAULT) m
+             else
+               match fs_lookup (m_fs m) p with
+               | none => Unmodeled
+               | some data =>
+                   if addr_is_error_b (len_word bs) then Unmodeled
+                   else outcome_copyins (iov_prefix_accesses (cap_iovecs iovs0) bs.length)
+                     (Ok (mkEffect (len_word bs) [] [])
+                        (with_fds (fd_insert (m_fds m) fd (.FdFileA p (append_new_pos data bs off)))
+                          (with_fs (fs_set (m_fs m) p (file_write data (len_word data) bs)) m))
+                        []))
   | some (.FdSocket _) => Unmodeled   -- `Sys.Fs.ReadWrite.writev_buf_gap`
 
 /-- Rocq: `Checks.Witness.Fs.ReadWrite.writev_witness_ok`. -/
@@ -7373,58 +9205,37 @@ theorem writev_witness_ok (fd iov iovcnt : word) (i : SyscallInput) (m : Model) 
     writev_spec fd iov iovcnt i m (writev_witness fd iov iovcnt i m) := by
   unfold writev_spec writev_witness writev_file_arm writev_ledger writev_buf_gap
   rw [bind_input_iff, bind_get_model_iff]
-  dsimp only
-  generalize (decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))) = wide
-  cases wide with
-  | true =>
-    simp only [↓reduceIte]
-    exact unmodeled_intro i m
-  | false =>
-  simp only [Bool.false_eq_true, ↓reduceIte]
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false) = eb
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false) = eo
   generalize import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt) = A
   generalize import_iovecs i.in_mem iov (iovcnt32 iovcnt) = imp
   generalize fd_lookup (m_fds m) fd = r
   cases r with
-  | none => (first | exact pure_ok _ i _ | (cases eb <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+  | none => exact pure_ok _ i _
   | some e =>
   cases e with
-  | FdFile _ _ => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
-  | FdDir => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+  | FdFile _ _ => exact pure_ok _ i _
+  | FdDir => exact pure_ok _ i _
   | FdSocket _ => exact unmodeled_intro i m
-  | FdUrandom => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+  | FdUrandom => exact pure_ok _ i _
   | FdChannel ch =>
     dsimp only
     generalize w_is0 ch = b0
     cases b0 with
     | true =>
       simp only [↓reduceIte]
-      (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+      exact pure_ok _ i _
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte]
     apply record_copyins_outcome
     cases imp with
-    | ImpFault => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
-    | ImpInval => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+    | ImpFault => exact pure_ok _ i _
+    | ImpInval => exact pure_ok _ i _
     | ImpOk iovs0 =>
     dsimp only
     generalize (iovs_total (cap_iovecs iovs0) == 0) = b1
     cases b1 with
     | true =>
       simp only [↓reduceIte]
-      (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+      exact pure_ok _ i _
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte]
     generalize writev_gathered i.in_mem iovs0 = bs
@@ -7432,7 +9243,7 @@ theorem writev_witness_ok (fd iov iovcnt : word) (i : SyscallInput) (m : Model) 
     cases b2 with
     | true =>
       simp only [↓reduceIte]
-      (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+      exact pure_ok _ i _
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte]
     generalize addr_is_error_b (len_word bs) = b3
@@ -7455,22 +9266,22 @@ theorem writev_witness_ok (fd iov iovcnt : word) (i : SyscallInput) (m : Model) 
     generalize fs_lookup (m_fs m) p = fl
     apply record_copyins_outcome
     cases imp with
-    | ImpFault => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
-    | ImpInval => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+    | ImpFault => exact pure_ok _ i _
+    | ImpInval => exact pure_ok _ i _
     | ImpOk iovs0 =>
     dsimp only
     generalize (iovs_total (cap_iovecs iovs0) == 0) = b1
     cases b1 with
     | true =>
       simp only [↓reduceIte]
-      (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+      exact pure_ok _ i _
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte]
     generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b2
     cases b2 with
     | true =>
       simp only [↓reduceIte]
-      (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+      exact pure_ok _ i _
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte]
     generalize writev_gathered i.in_mem iovs0 = bs
@@ -7478,62 +9289,143 @@ theorem writev_witness_ok (fd iov iovcnt : word) (i : SyscallInput) (m : Model) 
     cases b3 with
     | true =>
       simp only [↓reduceIte]
-      cases fl with
-      | none => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
-      | some d =>
-        dsimp only
-        by_cases hd : (d.length : Int) < bv_unsigned off
-        · simp only [hd, ↓reduceIte]
-          exact unmodeled_intro i m
-        · simp only [hd, ↓reduceIte]
-          (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+      exact pure_ok _ i _
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte]
-    by_cases hlt : (bs.length : Int) < iovs_total (cap_iovecs iovs0)
-    · simp only [hlt, ↓reduceIte]
-      exact unmodeled_intro i m
-    · simp only [hlt, ↓reduceIte]
-      cases fl with
-      | none => exact unmodeled_intro i m
-      | some data =>
-      dsimp only
-      generalize (!modeled_file_gap data off bs) = b4
-      cases b4 with
-      | true =>
-        simp only [↓reduceIte]
-        exact unmodeled_intro i m
-      | false =>
-      simp only [Bool.false_eq_true, ↓reduceIte]
-      generalize addr_is_error_b (len_word bs) = b5
-      cases b5 with
-      | true =>
-        simp only [↓reduceIte]
-        exact unmodeled_intro i m
-      | false =>
-      simp only [Bool.false_eq_true, ↓reduceIte]
-      rw [bind_set_fs_iff, bind_set_fds_iff]
-      exact record_copyins_outcome _ _ i _ _ (pure_ok _ i _)
-  | FdFileA _ _ => exact unmodeled_intro i m
-  | FdFileRW _ _ => exact unmodeled_intro i m
-  | FdPipe _ w =>
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
     dsimp only
-    cases w with
-    | false =>
-      simp only [Bool.not_false, ↓reduceIte]
-      (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+    generalize (!modeled_file_gap data off bs) = b4
+    cases b4 with
     | true =>
-    simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+      simp only [↓reduceIte]
+      exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize addr_is_error_b (len_word bs) = b5
+    cases b5 with
+    | true =>
+      simp only [↓reduceIte]
+      exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    rw [bind_set_fs_iff, bind_set_fds_iff]
+    exact record_copyins_outcome _ _ i _ _ (pure_ok _ i _)
+  | FdFileRW p off =>
+    dsimp only
+    generalize fs_lookup (m_fs m) p = fl
     apply record_copyins_outcome
     cases imp with
-    | ImpFault => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
-    | ImpInval => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+    | ImpFault => exact pure_ok _ i _
+    | ImpInval => exact pure_ok _ i _
     | ImpOk iovs0 =>
     dsimp only
     generalize (iovs_total (cap_iovecs iovs0) == 0) = b1
     cases b1 with
     | true =>
       simp only [↓reduceIte]
-      (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b2
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize writev_gathered i.in_mem iovs0 = bs
+    generalize (bs.length == 0) = b3
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only
+    generalize (!modeled_file_gap data off bs) = b4
+    cases b4 with
+    | true =>
+      simp only [↓reduceIte]
+      exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize addr_is_error_b (len_word bs) = b5
+    cases b5 with
+    | true =>
+      simp only [↓reduceIte]
+      exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    rw [bind_set_fs_iff, bind_set_fds_iff]
+    exact record_copyins_outcome _ _ i _ _ (pure_ok _ i _)
+  | FdFileA p off =>
+    dsimp only
+    generalize fs_lookup (m_fs m) p = fl
+    apply record_copyins_outcome
+    cases imp with
+    | ImpFault => exact pure_ok _ i _
+    | ImpInval => exact pure_ok _ i _
+    | ImpOk iovs0 =>
+    dsimp only
+    generalize (iovs_total (cap_iovecs iovs0) == 0) = b1
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b2
+    cases b2 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize writev_gathered i.in_mem iovs0 = bs
+    generalize (bs.length == 0) = b3
+    cases b3 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only
+    generalize addr_is_error_b (len_word bs) = b5
+    cases b5 with
+    | true =>
+      simp only [↓reduceIte]
+      exact unmodeled_intro i m
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    rw [bind_set_fs_iff, bind_set_fds_iff]
+    exact record_copyins_outcome _ _ i _ _ (pure_ok _ i _)
+  | FdPipe _ w =>
+    dsimp only
+    cases w with
+    | false =>
+      simp only [Bool.not_false, ↓reduceIte]
+      exact pure_ok _ i _
+    | true =>
+    simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
+    apply record_copyins_outcome
+    cases imp with
+    | ImpFault => exact pure_ok _ i _
+    | ImpInval => exact pure_ok _ i _
+    | ImpOk iovs0 =>
+    dsimp only
+    generalize (iovs_total (cap_iovecs iovs0) == 0) = b1
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
     | false =>
       simp only [Bool.false_eq_true, ↓reduceIte]
       exact unmodeled_intro i m
@@ -7542,14 +9434,14 @@ theorem writev_witness_ok (fd iov iovcnt : word) (i : SyscallInput) (m : Model) 
     cases wr with
     | false =>
       simp only [Bool.not_false, ↓reduceIte]
-      (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+      exact pure_ok _ i _
     | true =>
     simp only [Bool.not_true, Bool.false_eq_true, ↓reduceIte]
     apply record_copyins_outcome
     cases imp with
-    | ImpFault => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
-    | ImpInval => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
-    | ImpOk iovs0 => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+    | ImpFault => exact pure_ok _ i _
+    | ImpInval => exact pure_ok _ i _
+    | ImpOk iovs0 => exact pure_ok _ i _
 
 /-- A witness for `readv_spec` (Rocq: `Checks.Witness.Fs.ReadWrite.readv_witness`):
 wherever the spec admits an outcome, one of them, chosen arm for arm as
@@ -7560,28 +9452,11 @@ zero byte scatters — byte values do not affect writability
 (`State.scatter_iovecs_singleton_some`) — and answers `Unmodeled` only to
 keep the match total. -/
 def readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
-  let wide := decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))
-  let ebadf_safe := (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false)
-  let ebadf := if ebadf_safe then ret_outcome (errno_ret EBADF) m else Unmodeled
-  let ebadf_open_safe := (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false)
-  let ebadf_open := if ebadf_open_safe then ret_outcome (errno_ret EBADF) m else Unmodeled
-  if wide then Unmodeled else
   match fd_lookup (m_fds m) fd with
-  | none => ebadf
+  | none => ret_outcome (errno_ret EBADF) m
   | some e =>
       match readable_fd e with
-      | none => ebadf_open
+      | none => ret_outcome (errno_ret EBADF) m
       | some r =>
           if readv_heap_iovecb iovcnt then Unmodeled
           else
@@ -7614,7 +9489,6 @@ def readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model) : outcom
               | .RdPipe _ => Unmodeled   -- vectored pipe reads
               | .RdDevNull => ret_outcome (Z_to_bv 64 0) m
               | .RdUrandom => Unmodeled   -- vectored device reads decline
-              | .RdFileRW _ _ => Unmodeled
               | .RdDir => ret_outcome (errno_ret EISDIR) m
               | .RdSocket sk =>
                   match sk with
@@ -7659,6 +9533,23 @@ def readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model) : outcom
                       | none =>
                           match scatter_iovecs i.in_wmem iovs [Z_to_bv 8 0] with
                           | none => ret_outcome (errno_ret EFAULT) m
+                          | some _ => Unmodeled
+              | .RdFileRW p off =>   -- the `RdFile` arm above, on the O_RDWR kind
+                  match fs_lookup (m_fs m) p with
+                  | none => Unmodeled
+                  | some data =>
+                      if rw_pos_einvalb off total then ret_outcome (errno_ret EINVAL) m
+                      else
+                      let bs := file_read data off (Z_to_bv 64 total)
+                      match scatter_iovecs i.in_wmem iovs bs with
+                      | some writes =>
+                          if addr_is_error_b (len_word bs) then Unmodeled
+                          else Ok (mkEffect (len_word bs) writes [])
+                                 (with_fds (fd_insert (m_fds m) fd
+                                   (.FdFileRW p (off + len_word bs))) m) []
+                      | none =>
+                          match scatter_iovecs i.in_wmem iovs [Z_to_bv 8 0] with
+                          | none => ret_outcome (errno_ret EFAULT) m
                           | some _ => Unmodeled)
 
 /-- Rocq: `Checks.Witness.Fs.ReadWrite.readv_witness_ok`. -/
@@ -7666,37 +9557,16 @@ theorem readv_witness_ok (fd iov iovcnt : word) (i : SyscallInput) (m : Model) :
     readv_spec fd iov iovcnt i m (readv_witness fd iov iovcnt i m) := by
   unfold readv_spec readv_witness readv_imported readv_heap_gap readv_buf_gap
   rw [bind_input_iff, bind_get_model_iff]
-  dsimp only
-  generalize (decide (IOV_MAX < bv_unsigned iovcnt) && !decide (IOV_MAX < bv_unsigned (iovcnt32 iovcnt))) = wide
-  cases wide with
-  | true =>
-    simp only [↓reduceIte]
-    exact unmodeled_intro i m
-  | false =>
-  simp only [Bool.false_eq_true, ↓reduceIte]
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((_, len0) :: _) => w_is0 len0
-         | _ => false) = eb
-  generalize (if bv_unsigned iovcnt == 0 then false
-    else if IOV_MAX < bv_unsigned iovcnt then false
-    else if UIO_FASTIOV < bv_unsigned iovcnt then false
-    else match copy_iovecs_aux i.in_mem iov (word_to_nat iovcnt) with
-         | .ImpOk ((base0, len0) :: rest) =>
-             w_is0 len0 && ((base0, len0) :: rest).all
-               (fun entry => access_okb entry.1 (bv_unsigned entry.2))
-         | _ => false) = eo
   generalize import_iovecs_accesses i.in_mem iov (iovcnt32 iovcnt) = A
   generalize import_iovecs i.in_mem iov (iovcnt32 iovcnt) = imp
   generalize fd_lookup (m_fds m) fd = r
   cases r with
-  | none => (first | exact pure_ok _ i _ | (cases eb <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+  | none => exact pure_ok _ i _
   | some e =>
   dsimp only
   generalize readable_fd e = rd
   cases rd with
-  | none => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+  | none => exact pure_ok _ i _
   | some r =>
   dsimp only
   generalize readv_heap_iovecb iovcnt = hb
@@ -7708,27 +9578,27 @@ theorem readv_witness_ok (fd iov iovcnt : word) (i : SyscallInput) (m : Model) :
   simp only [Bool.false_eq_true, ↓reduceIte]
   apply record_copyins_outcome
   cases imp with
-  | ImpFault => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
-  | ImpInval => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+  | ImpFault => exact pure_ok _ i _
+  | ImpInval => exact pure_ok _ i _
   | ImpOk iovs0 =>
   dsimp only
   generalize (iovs_total (cap_iovecs iovs0) == 0) = b0
   cases b0 with
   | true =>
     simp only [↓reduceIte]
-    (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+    exact pure_ok _ i _
   | false =>
   simp only [Bool.false_eq_true, ↓reduceIte]
   cases r with
   | RdChannel ch =>
     dsimp only
     cases hu : (m_stdin m).uncons with
-    | none => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+    | none => exact pure_ok _ i _
     | some u =>
     obtain ⟨b, s'⟩ := u
     dsimp only
     cases hw1 : scatter_iovecs i.in_wmem (cap_iovecs iovs0) [Z_to_bv 8 0] with
-    | none => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+    | none => exact pure_ok _ i _
     | some one =>
     dsimp only
     generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0)
@@ -7754,26 +9624,25 @@ theorem readv_witness_ok (fd iov iovcnt : word) (i : SyscallInput) (m : Model) :
     rw [hst]
     exact (bind_set_stdin_iff _ _ i m _).mpr (emit_pure_ok _ _ i _)
   | RdPipe _ => exact unmodeled_intro i m
-  | RdDevNull => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+  | RdDevNull => exact pure_ok _ i _
   | RdUrandom => exact unmodeled_intro i m
-  | RdFileRW _ _ => exact unmodeled_intro i m
-  | RdDir => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+  | RdDir => exact pure_ok _ i _
   | RdSocket sk =>
     cases sk with
-    | SkFresh => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
-    | SkBound => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
-    | SkListening => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
-    | SkReset _ _ => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+    | SkFresh => exact pure_ok _ i _
+    | SkBound => exact pure_ok _ i _
+    | SkListening => exact pure_ok _ i _
+    | SkReset _ _ => exact pure_ok _ i _
     | SkConnected peer ch rx =>
     dsimp only
     cases hcell : rx.cell_at 0 with
-    | NFin => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+    | NFin => exact pure_ok _ i _
     | NRst => exact (bind_set_fds_iff _ _ i m _).mpr (pure_ok _ i _)
     | NTimedOut => exact (bind_set_fds_iff _ _ i m _).mpr (pure_ok _ i _)
     | NByte b =>
     dsimp only
     cases hw1 : scatter_iovecs i.in_wmem (cap_iovecs iovs0) [Z_to_bv 8 0] with
-    | none => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+    | none => exact pure_ok _ i _
     | some one =>
     dsimp only
     generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0)
@@ -7802,7 +9671,7 @@ theorem readv_witness_ok (fd iov iovcnt : word) (i : SyscallInput) (m : Model) :
     cases b1 with
     | true =>
       simp only [↓reduceIte]
-      (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+      exact pure_ok _ i _
     | false =>
     simp only [Bool.false_eq_true, ↓reduceIte]
     generalize file_read data off (Z_to_bv 64 (iovs_total (cap_iovecs iovs0))) = bs
@@ -7822,7 +9691,40 @@ theorem readv_witness_ok (fd iov iovcnt : word) (i : SyscallInput) (m : Model) :
       dsimp only
       generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0) [Z_to_bv 8 0] = w1
       cases w1 with
-      | none => (first | exact pure_ok _ i _ | (cases eo <;> simp only [Bool.false_eq_true, ↓reduceIte]<;> first | exact pure_ok _ i _ | exact unmodeled_intro i m))
+      | none => exact pure_ok _ i _
+      | some _ => exact unmodeled_intro i m
+  | RdFileRW p off =>
+    dsimp only
+    generalize fs_lookup (m_fs m) p = fl
+    cases fl with
+    | none => exact unmodeled_intro i m
+    | some data =>
+    dsimp only
+    generalize rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)) = b1
+    cases b1 with
+    | true =>
+      simp only [↓reduceIte]
+      exact pure_ok _ i _
+    | false =>
+    simp only [Bool.false_eq_true, ↓reduceIte]
+    generalize file_read data off (Z_to_bv 64 (iovs_total (cap_iovecs iovs0))) = bs
+    generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0) bs = sc
+    cases sc with
+    | some writes =>
+      dsimp only
+      generalize addr_is_error_b (len_word bs) = b2
+      cases b2 with
+      | true =>
+        simp only [↓reduceIte]
+        exact unmodeled_intro i m
+      | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte]
+      exact (bind_set_fds_iff _ _ i m _).mpr (pure_ok _ i _)
+    | none =>
+      dsimp only
+      generalize scatter_iovecs i.in_wmem (cap_iovecs iovs0) [Z_to_bv 8 0] = w1
+      cases w1 with
+      | none => exact pure_ok _ i _
       | some _ => exact unmodeled_intro i m
 
 end LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs.ReadWrite

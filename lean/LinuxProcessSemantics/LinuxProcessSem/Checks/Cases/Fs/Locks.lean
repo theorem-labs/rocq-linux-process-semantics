@@ -1,21 +1,12 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Locks.v
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
 
-/-! rocq-cases: a71fd38a08571d519b9cfc5f66308db5c26da570
-covers: flock_success_is_inert -- sh_on_sole_opener_declines, sh_on_sole_opener_eagain_rejected_on_unlock, unlock_on_dir_is_zero, unlock_on_dir_einval_rejected
-covers: flock_closed_mand_is_unmodeled -- mand_on_closed_fd_is_unmodeled
-covers: flock_closed_badcmd_is_unmodeled -- badcmd_on_closed_fd_is_unmodeled, t202_closed_extra_ex_declines
-covers: flock_closed_combined_cmd_is_unmodeled -- combined_op_on_closed_fd_is_unmodeled, combined_op_on_closed_fd_ebadf_refuted, unlock_ex_on_closed_fd_is_unmodeled, unlock_ex_on_closed_fd_ebadf_refuted, sign_bit_op_on_closed_fd_is_unmodeled, sign_bit_op_on_closed_fd_ebadf_refuted
-covers: flock_closed_recognized_is_ebadf -- closed_fd_ex_is_ebadf, closed_fd_ex_success_rejected, closed_fd_ex_einval_rejected
-covers: flock_open_badcmd_is_einval -- unrecognized_op_on_open_fd_is_einval, unrecognized_op_ebadf_rejected, unrecognized_op_success_rejected, t202_sign_bit_unlock_is_einval, t202_extra_42_is_einval, t202_extra_82_is_einval, t202_extra_10002_is_einval, t202_extra_48_is_einval, t202_extra_88_is_einval, t202_extra_10008_is_einval, t202_sign_bit_unlock_zero_refuted, t202_sign_bit_unlock_survives_narrowing
-covers: flock_second_opener_declines -- sh_on_sole_opener_declines, sh_on_second_opener_is_unmodeled, unlock_on_second_opener_is_zero, unlock_on_second_opener_eagain_rejected
-covers: flock_open_mand_effect_is_unmodeled -- mand_on_open_fd_is_unmodeled, mand_or_ex_is_unmodeled, mand_on_any_fd_kind_is_unmodeled
-covers: flock_mode_mismatch_effect_is_unmodeled -- ro_ex_is_unmodeled, ro_ex_nb_is_unmodeled, wo_sh_is_unmodeled, wo_sh_nb_is_unmodeled, a17_append_mode_mismatch_is_unmodeled
-covers: flock_t149_answers_not_ok -- mand_zero_is_not_an_answer, mand_einval_is_not_an_answer, mand_ebadf_is_not_an_answer, ro_ex_zero_is_not_an_answer, ro_ex_einval_is_not_an_answer, ro_ex_ebadf_is_not_an_answer, ro_ex_nb_zero_is_not_an_answer, ro_ex_nb_einval_is_not_an_answer, ro_ex_nb_ebadf_is_not_an_answer, wo_sh_zero_is_not_an_answer, wo_sh_einval_is_not_an_answer, wo_sh_ebadf_is_not_an_answer, wo_sh_nb_zero_is_not_an_answer, wo_sh_nb_einval_is_not_an_answer, wo_sh_nb_ebadf_is_not_an_answer, a17_append_sh_answers_are_not_answers
-covers: flock_matching_grants_and_unlocks -- matching_locks_decline, matching_unlocks_are_zero, matching_grants_and_unlocks_ebadf_rejected, sh_on_sole_opener_declines, t202_ro_sh_nb_declines, ex_on_sole_opener_declines, ex_nb_on_sole_opener_declines, unlock_never_taken_is_zero, t202_unlock_on_sole_filew_is_zero
-covers: flock_mand_declines_fd_kinds -- mand_on_any_fd_kind_is_unmodeled
-covers: flock_every_file_kind_counts_as_an_opener -- sole_file_declines, sole_filew_declines, pair_file_declines, pair_filew_declines, mixed_filew_declines, unlock_on_pair_filew_is_zero, sole_filew_eagain_rejected, a17_rdwr_counts_as_opener, a17_file_beside_rdwr_declines, a17_rdwr_unlock_on_pair_is_zero, a17_append_counts_as_opener, a17_file_beside_append_declines, a17_append_unlock_on_pair_is_zero -/
+/-! rocq-cases: f1006fe8178338a499b5e5c41be83006c4edd058
+covers: flock_success_is_inert -- ex_on_sole_opener_is_zero, ex_on_sole_opener_eagain_rejected, unlock_on_dir_is_zero, unlock_on_dir_einval_rejected, mand_on_closed_fd_is_zero, mand_on_closed_fd_ebadf_refuted
+covers: flock_second_opener_declines -- sh_on_sole_opener_is_zero, sh_on_second_opener_is_unmodeled, unlock_on_second_opener_is_zero, unlock_on_second_opener_eagain_rejected
+covers: flock_every_file_kind_counts_as_an_opener -- sole_file_is_zero, sole_filew_is_zero, pair_file_declines, pair_filew_declines, mixed_filew_declines, unlock_on_pair_filew_is_zero, sole_filew_eagain_rejected, a17_rdwr_counts_as_opener, a17_file_beside_rdwr_declines, a17_rdwr_unlock_on_pair_is_zero, a17_append_counts_as_opener, a17_file_beside_append_declines, a17_append_unlock_on_pair_is_zero -/
 
 /-! # Checks.Cases.Fs.Locks — what `flock` admits, read off against Linux
 
@@ -38,19 +29,19 @@ untouched) and the negative half (nothing else is — not another errno, not
 a write, not `Unmodeled`) in one statement.  Every arm of `flock` answers
 with a single outcome, so every `iff` here has a single right-hand side and
 is closed by `sys_norm` alone; each is followed by a refutation of the
-concrete alternative answer, closed by `sys_refute`. Supported kernels
-differ in whether command validation precedes the descriptor lookup;
-`flock_spec`'s closed-fd arm carries that source argument. The final
-section pins the resulting uncertainty without choosing either answer.
+concrete alternative answer, closed by `sys_refute`.  The command word is
+judged BEFORE the descriptor: `LOCK_MAND` answers 0 and an unrecognized
+operation -EINVAL whether or not the descriptor is open, and only a
+recognized operation on a closed descriptor reaches -EBADF.
 
 THE TABLES.  `flock_model` is Rocq's: one opener per file, fd 3 reading
-"f", fd 4 writing "g", fd 5 a directory reference.
+"f", fd 4 writing "g", fd 5 a directory reference, so fd 3 and fd 4 are
+each the SOLE opener of their path and are granted.
 `flock_two_openers_model` adds fd 6, a SECOND descriptor on "f" — what a
 second `openat` of the same name produces — and differs in nothing else.
 `flock_kinds_model` adds a socket, a pipe end and the two device nodes.
-These fixtures exercise the decline across different tables. Direct
-`path_openers` pins check the helper kept for Rocq parity; syscall pins
-no longer test its count.
+These fixtures exercise the grant and the decline across different
+tables; `path_openers` is the count the grant turns on.
 
 NOTHING HERE COMPARES THE LEAN SPEC TO THE ROCQ ONE.  What these pins
 prove is that this spec and a named line of Linux agree. -/
@@ -172,14 +163,16 @@ def flock_openers_model (es : List (word × FdEntry)) : Model :=
 attribute [sys_simp low]
   flock_model.eq_1 flock_two_openers_model.eq_1 flock_two_writers_model.eq_1 flock_kinds_model.eq_1 flock_openers_model.eq_1
 
-/-! ## Command validation on open descriptors
+/-! ## Command validation, before the descriptor is resolved
 
-The fixture's fd 1 is open under both kernel orderings; `flock_spec`'s
-closed-fd arm carries the versioned source argument. -/
+`SYSCALL_DEFINE2(flock)` tests `LOCK_MAND` and translates the operation
+before `CLASS(fd, f)(fd)` (fs/locks.c:2153 against :2157, Linux
+v6.18.46), so these answers do not depend on the fixture's table. -/
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem mand_on_open_fd_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 1 32 i flock_model o ↔ o = Unmodeled := by
+/-- `LOCK_MAND` is tested before the descriptor and answers 0.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem mand_on_open_fd_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 1 32 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model [] := by
   sys_norm
 
 /-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -187,10 +180,12 @@ theorem mand_on_open_fd_ebadf_rejected (i : SyscallInput) (m' : Model) (evs : Li
     ¬ flock_spec 1 32 i flock_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
   sys_refute
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem mand_or_ex_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
+/-- The bit is tested, not the whole word, so `LOCK_MAND | LOCK_EX` takes
+the same path and answers 0 on a contended table too.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem mand_or_ex_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 3 34 i flock_two_openers_model o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect 0 [] []) flock_two_openers_model [] := by
   sys_norm
 
 /-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -199,9 +194,11 @@ theorem mand_or_ex_eagain_rejected (i : SyscallInput) (m' : Model) (evs : List e
         (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   sys_refute
 
-/-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem mand_with_unrecognized_op_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 1 96 i flock_model o ↔ o = Unmodeled := by
+/-- `LOCK_MAND | LOCK_READ` is a word the operation switch would refuse,
+and the `LOCK_MAND` test comes first: 0, not -EINVAL.
+kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem mand_with_unrecognized_op_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 1 96 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model [] := by
   sys_norm
 
 /-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -532,10 +529,13 @@ theorem unlock_on_second_opener_eagain_rejected (i : SyscallInput) (m' : Model) 
         (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   sys_refute
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem ex_on_sole_opener_declines (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 4 2 i flock_model o ↔ o = Unmodeled := by
+/-- The sole opener of "g" is provably uncontended: an FLOCK lock's owner
+is the `struct file` (`flock_make_lock` sets `flc_owner = filp`, and
+`flock_locks_conflict` returns false when both locks name one file), so
+the only conflict the model could build is a second opener.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem ex_on_sole_opener_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 4 2 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model [] := by
   sys_norm
 
 /-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -630,10 +630,11 @@ theorem ex_on_sole_opener_moved_table_rejected_on_unlock (i : SyscallInput) (evs
     ¬ flock_spec 4 8 i flock_model (Ok (mkEffect 0 [] []) (with_fds [] flock_model) evs) := by
   sys_refute
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem sh_on_sole_opener_declines (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 3 1 i flock_model o ↔ o = Unmodeled := by
+/-- A shared request on the sole opener of "f" is granted for the same
+reason.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem sh_on_sole_opener_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 3 1 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model [] := by
   sys_norm
 
 /-- kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
@@ -647,10 +648,11 @@ theorem sh_on_sole_opener_eagain_rejected_on_unlock (i : SyscallInput) (m' : Mod
     ¬ flock_spec 3 8 i flock_model (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   sys_refute
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem ex_nb_on_sole_opener_declines (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 4 6 i flock_model o ↔ o = Unmodeled := by
+/-- `LOCK_NB` is stripped before the operation is recognized, so the
+nonblocking exclusive request on the sole opener is the same 0.
+kernel: fs/locks.c:flock,flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem ex_nb_on_sole_opener_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 4 6 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model [] := by
   sys_norm
 
 /-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -669,13 +671,14 @@ theorem ex_on_sole_writer_eagain_rejected (i : SyscallInput) (m' : Model) (evs :
     ¬ flock_spec 4 2 i flock_model (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   sys_refute
 
-/-- T202: AFS/CIFS prevent a certain grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check; fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem matching_locks_decline (i : SyscallInput) (o : outcome SyscallEffect) :
-    (flock_spec 3 1 i flock_model o ↔ o = Unmodeled) ∧
-    (flock_spec 3 5 i flock_model o ↔ o = Unmodeled) ∧
-    (flock_spec 4 2 i flock_model o ↔ o = Unmodeled) ∧
-    (flock_spec 4 6 i flock_model o ↔ o = Unmodeled) := by
+/-- All four take requests on the two sole openers are granted, with and
+without `LOCK_NB`.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem matching_locks_are_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    (flock_spec 3 1 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model []) ∧
+    (flock_spec 3 5 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model []) ∧
+    (flock_spec 4 2 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model []) ∧
+    (flock_spec 4 6 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model []) := by
   refine ⟨?_, ?_, ?_, ?_⟩ <;> sys_norm
 
 /-- T202: Unlock remains answered on both sole file kinds.
@@ -761,11 +764,12 @@ theorem sh_on_second_opener_eagain_rejected (i : SyscallInput) (m' : Model) (evs
         (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   sys_refute
 
-/-- T202: Neither shared nor exclusive requests have a certain answer on read-only files.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem sh_and_ex_on_read_only_decline (i : SyscallInput) (o : outcome SyscallEffect) :
-    (flock_spec 3 1 i flock_model o ↔ o = Unmodeled) ∧
-    (flock_spec 3 2 i flock_model o ↔ o = Unmodeled) := by
+/-- `sys_flock` reads no `f_mode` on the path to `flock_lock_inode_wait`,
+so a read-only description answers both requests the same way: 0.
+kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem sh_and_ex_on_read_only_are_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    (flock_spec 3 1 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model []) ∧
+    (flock_spec 3 2 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model []) := by
   constructor <;> sys_norm
 
 /-- The nonblocking shared request declines because lock ownership and
@@ -790,23 +794,21 @@ theorem sh_nb_on_second_opener_success_rejected (i : SyscallInput) (m' : Model) 
     ¬ flock_spec 3 5 i flock_two_openers_model (Ok (mkEffect 0 [] []) m' evs) := by
   sys_refute
 
-/-! ### Lock requests decline across file kinds
+/-! ### The opener count, kind by kind
 
-The same decline holds with one file entry, two entries of one kind, or
-entries of different kinds. -/
+A sole opener is granted on every file kind; a second descriptor on the
+same name declines, whether it is of the same kind or another. -/
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem sole_file_declines (i : SyscallInput) (o : outcome SyscallEffect) :
+/-- kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem sole_file_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 3 1 i (flock_openers_model [(3, .FdFile [102] 0)]) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect 0 [] []) (flock_openers_model [(3, .FdFile [102] 0)]) [] := by
   sys_norm
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/smb/client/file.c:cifs_find_fid_lock_conflict,cifs_lock_add_if@v6.18.46 -/
-theorem sole_filew_declines (i : SyscallInput) (o : outcome SyscallEffect) :
+/-- kernel: fs/locks.c:flock_make_lock,flock_locks_conflict,flock_lock_inode@v6.18.46 -/
+theorem sole_filew_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 3 2 i (flock_openers_model [(3, .FdFileW [102] 0)]) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileW [102] 0)]) [] := by
   sys_norm
 
 /-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -834,11 +836,13 @@ theorem mixed_file_declines (i : SyscallInput) (o : outcome SyscallEffect) :
       o = Unmodeled := by
   sys_norm
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem other_name_beside_file_declines (i : SyscallInput) (o : outcome SyscallEffect) :
+/-- A descriptor on ANOTHER name is not an opener of this one, so the
+count is still 1 and the request is granted.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem other_name_beside_file_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 3 1 i (flock_openers_model [(3, .FdFile [102] 0), (4, .FdFile [103] 5)]) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect 0 [] [])
+        (flock_openers_model [(3, .FdFile [102] 0), (4, .FdFile [103] 5)]) [] := by
   sys_norm
 
 /-- `LOCK_UN` on the
@@ -873,84 +877,88 @@ theorem sole_filew_eagain_rejected_on_unlock (i : SyscallInput) (m' : Model) (ev
 /-- `path_openers` walks PAST an `FdUrandom` entry rather than stopping at
 it or counting it: the device's inode is no key of `Fs.Fs`, and the one
 `FdFile` on "f" listed after it is still counted.
-model: a direct helper pin kept for Rocq parity; Lean flock no longer calls `path_openers`. -/
+model: a direct pin on the helper the grant arms of `flock_spec` consult. -/
 theorem path_openers_skips_urandom :
     path_openers [(3, .FdUrandom), (4, .FdFile [102] 0)] [102] = 1 := rfl
 
 /-! ### `path_openers` read directly
 
-Lean's `flock_spec` no longer calls `path_openers`, so no syscall pin can
-fix its arms.  These pins fix them on the helper itself.  In each file-kind
-table, two entries name "f" and one names "g": a test that counted every
-entry gives 3, one that counted none gives 0, and an exchanged test gives 1.
-In each skipped-kind table, the skipped entry comes first and two openers of
-"f" follow it: a walk that stopped there gives 0 or 1, not 2. -/
+`flock_sole_opener` is the gate of every grant arm, and `path_openers` is
+the count it reads; these pins fix the walk on the helper itself, where
+one table says what a whole family of syscall pins would.  In each
+file-kind table, two entries name "f" and one names "g": a test that
+counted every entry gives 3, one that counted none gives 0, and an
+exchanged test gives 1.  In each skipped-kind table, the skipped entry
+comes first and two openers of "f" follow it: a walk that stopped there
+gives 0 or 1, not 2. -/
 
 /-- An `FdFile` counts exactly when it names the path.
-model: a direct helper pin kept for Rocq parity; Lean flock no longer calls `path_openers`. -/
+model: a direct pin on the helper the grant arms of `flock_spec` consult. -/
 theorem path_openers_file_counts_its_path :
     path_openers [(3, .FdFile [102] 0), (4, .FdFile [103] 0), (5, .FdFile [102] 0)] [102] = 2 := by
   decide
 
 /-- An `FdFileW` counts exactly when it names the path.
-model: a direct helper pin kept for Rocq parity; Lean flock no longer calls `path_openers`. -/
+model: a direct pin on the helper the grant arms of `flock_spec` consult. -/
 theorem path_openers_filew_counts_its_path :
     path_openers [(3, .FdFileW [102] 0), (4, .FdFileW [103] 0), (5, .FdFileW [102] 0)] [102] = 2 := by
   decide
 
 /-- An `FdFileA` counts exactly when it names the path.
-model: a direct helper pin kept for Rocq parity; Lean flock no longer calls `path_openers`. -/
+model: a direct pin on the helper the grant arms of `flock_spec` consult. -/
 theorem path_openers_filea_counts_its_path :
     path_openers [(3, .FdFileA [102] 0), (4, .FdFileA [103] 0), (5, .FdFileA [102] 0)] [102] = 2 := by
   decide
 
 /-- An `FdFileRW` counts exactly when it names the path.
-model: a direct helper pin kept for Rocq parity; Lean flock no longer calls `path_openers`. -/
+model: a direct pin on the helper the grant arms of `flock_spec` consult. -/
 theorem path_openers_filerw_counts_its_path :
     path_openers [(3, .FdFileRW [102] 0), (4, .FdFileRW [103] 0), (5, .FdFileRW [102] 0)] [102] = 2 := by
   decide
 
 /-- The walk passes an `FdChannel` and counts both openers after it.
-model: a direct helper pin kept for Rocq parity; Lean flock no longer calls `path_openers`. -/
+model: a direct pin on the helper the grant arms of `flock_spec` consult. -/
 theorem path_openers_walks_past_channel :
     path_openers [(0, .FdChannel 0), (3, .FdFile [102] 0), (4, .FdFile [102] 0)] [102] = 2 := by
   decide
 
 /-- The walk passes an `FdDir` and counts both openers after it.
-model: a direct helper pin kept for Rocq parity; Lean flock no longer calls `path_openers`. -/
+model: a direct pin on the helper the grant arms of `flock_spec` consult. -/
 theorem path_openers_walks_past_dir :
     path_openers [(0, .FdDir), (3, .FdFile [102] 0), (4, .FdFile [102] 0)] [102] = 2 := by
   decide
 
 /-- The walk passes an `FdSocket` and counts both openers after it.
-model: a direct helper pin kept for Rocq parity; Lean flock no longer calls `path_openers`. -/
+model: a direct pin on the helper the grant arms of `flock_spec` consult. -/
 theorem path_openers_walks_past_socket :
     path_openers [(0, .FdSocket .SkFresh), (3, .FdFile [102] 0), (4, .FdFile [102] 0)] [102] = 2 := by
   decide
 
 /-- The walk passes an `FdPipe` and counts both openers after it.
-model: a direct helper pin kept for Rocq parity; Lean flock no longer calls `path_openers`. -/
+model: a direct pin on the helper the grant arms of `flock_spec` consult. -/
 theorem path_openers_walks_past_pipe :
     path_openers [(0, .FdPipe 7 false), (3, .FdFile [102] 0), (4, .FdFile [102] 0)] [102] = 2 := by
   decide
 
 /-- The walk passes an `FdDevNull` and counts both openers after it.
-model: a direct helper pin kept for Rocq parity; Lean flock no longer calls `path_openers`. -/
+model: a direct pin on the helper the grant arms of `flock_spec` consult. -/
 theorem path_openers_walks_past_devnull :
     path_openers [(0, .FdDevNull true true), (3, .FdFile [102] 0), (4, .FdFile [102] 0)] [102] = 2 := by
   decide
 
 /-- The walk passes an `FdUrandom` and counts both openers after it.
-model: a direct helper pin kept for Rocq parity; Lean flock no longer calls `path_openers`. -/
+model: a direct pin on the helper the grant arms of `flock_spec` consult. -/
 theorem path_openers_walks_past_urandom_to_two :
     path_openers [(0, .FdUrandom), (3, .FdFile [102] 0), (4, .FdFile [102] 0)] [102] = 2 := by
   decide
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem urandom_beside_file_declines (i : SyscallInput) (o : outcome SyscallEffect) :
+/-- A /dev/urandom descriptor is no opener of "f", so the file is still
+the sole opener and the request is granted.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem urandom_beside_file_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 3 1 i (flock_openers_model [(3, .FdFile [102] 0), (4, .FdUrandom)]) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect 0 [] [])
+        (flock_openers_model [(3, .FdFile [102] 0), (4, .FdUrandom)]) [] := by
   sys_norm
 
 /-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -959,39 +967,44 @@ theorem urandom_does_not_hide_a_second_opener (i : SyscallInput) (o : outcome Sy
       ↔ o = Unmodeled := by
   sys_norm
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem sole_file_beside_socket_declines (i : SyscallInput) (o : outcome SyscallEffect) :
+/-- A socket is no opener of "f" either.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem sole_file_beside_socket_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 4 1 i (flock_openers_model [(3, .FdSocket .SkFresh), (4, .FdFile [102] 0)]) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect 0 [] [])
+        (flock_openers_model [(3, .FdSocket .SkFresh), (4, .FdFile [102] 0)]) [] := by
   sys_norm
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem sole_file_beside_pipe_declines (i : SyscallInput) (o : outcome SyscallEffect) :
+/-- Nor is a pipe end.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem sole_file_beside_pipe_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 4 1 i (flock_openers_model [(3, .FdPipe 7 false), (4, .FdFile [102] 0)]) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect 0 [] [])
+        (flock_openers_model [(3, .FdPipe 7 false), (4, .FdFile [102] 0)]) [] := by
   sys_norm
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem sole_file_beside_dir_declines (i : SyscallInput) (o : outcome SyscallEffect) :
+/-- Nor is a directory reference.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem sole_file_beside_dir_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 4 1 i (flock_openers_model [(3, .FdDir), (4, .FdFile [102] 0)]) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect 0 [] [])
+        (flock_openers_model [(3, .FdDir), (4, .FdFile [102] 0)]) [] := by
   sys_norm
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem sole_file_beside_devnull_declines (i : SyscallInput) (o : outcome SyscallEffect) :
+/-- Nor is /dev/null.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem sole_file_beside_devnull_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 4 1 i (flock_openers_model [(3, .FdDevNull true true), (4, .FdFile [102] 0)]) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect 0 [] [])
+        (flock_openers_model [(3, .FdDevNull true true), (4, .FdFile [102] 0)]) [] := by
   sys_norm
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem socket_beside_file_declines (i : SyscallInput) (o : outcome SyscallEffect) :
+/-- The same with the socket listed after the file.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem socket_beside_file_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 3 1 i (flock_openers_model [(3, .FdFile [102] 0), (4, .FdSocket .SkFresh)]) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect 0 [] [])
+        (flock_openers_model [(3, .FdFile [102] 0), (4, .FdSocket .SkFresh)]) [] := by
   sys_norm
 
 /-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1007,11 +1020,12 @@ theorem socket_beside_opener_eagain_rejected_on_unlock (i : SyscallInput) (m' : 
         (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   sys_refute
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem pipe_end_beside_file_declines (i : SyscallInput) (o : outcome SyscallEffect) :
+/-- The same with the pipe end listed after the file.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem pipe_end_beside_file_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 3 1 i (flock_openers_model [(3, .FdFile [102] 0), (4, .FdPipe 7 false)]) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect 0 [] [])
+        (flock_openers_model [(3, .FdFile [102] 0), (4, .FdPipe 7 false)]) [] := by
   sys_norm
 
 /-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1027,11 +1041,12 @@ theorem pipe_end_beside_opener_eagain_rejected_on_unlock (i : SyscallInput) (m' 
         (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   sys_refute
 
-/-- T202: The filesystem is not recorded, so a sole opener does not establish a grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem devnull_beside_file_declines (i : SyscallInput) (o : outcome SyscallEffect) :
+/-- The same with /dev/null listed after the file.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem devnull_beside_file_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 3 1 i (flock_openers_model [(3, .FdFile [102] 0), (4, .FdDevNull true true)]) o ↔
-      o = Unmodeled := by
+      o = Ok (mkEffect 0 [] [])
+        (flock_openers_model [(3, .FdFile [102] 0), (4, .FdDevNull true true)]) [] := by
   sys_norm
 
 /-- kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
@@ -1279,70 +1294,74 @@ theorem sign_bit_cmd_survives_narrowing (o : outcome SyscallEffect) :
       o = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := by
   sys_norm
 
-/-! ## T139 / #1441: version-dependent closed-fd answers -/
+/-! ## The command word is judged before the descriptor -/
 
-/-- `LOCK_MAND` on a closed fd is declined: v6.0 onward answers 0 before
-the lookup and v5.19 and older -EBADF from it (`flock_spec`'s closed-fd
-arm carries the versions).
-Read at Linux v5.19: fs/locks.c, SYSCALL_DEFINE2(flock), performs fd lookup before command translation.
-kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
-theorem mand_on_closed_fd_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 9999 32 i flock_model o ↔ o = .Unmodeled := by
+/-- `LOCK_MAND` on a CLOSED fd is still 0: the bit is tested first of all
+(fs/locks.c, `SYSCALL_DEFINE2(flock)`, Linux v6.18.46), and what replaced
+mandatory flocks is a successful no-op, so no lookup happens and -EBADF
+cannot arise.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem mand_on_closed_fd_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 9999 32 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model [] := by
   sys_norm
 
-/-- The 0 this pin used to accept is no longer an outcome.
-probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- mandclosed -/
-theorem mand_on_closed_fd_old_answer_refuted (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ flock_spec 9999 32 i flock_model (Ok (mkEffect 0 [] []) m' evs) := by
+/-- A model that translated the operation before testing the bit would
+answer -EINVAL here; that answer is refused.
+kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem mand_on_closed_fd_einval_refuted (i : SyscallInput) (m' : Model) (evs : List event) :
+    ¬ flock_spec 9999 32 i flock_model (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
   sys_refute
 
-/-- …and neither is the -EBADF of v5.19 and older.
-Read at Linux v5.19: fs/locks.c, SYSCALL_DEFINE2(flock), performs fd lookup before command translation.
-probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- mandclosed -/
+/-- …and a model that resolved the descriptor first would answer -EBADF,
+which is refused as well.
+probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- mandclosed
+kernel: fs/locks.c:flock@v6.18.46 -/
 theorem mand_on_closed_fd_ebadf_refuted (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ flock_spec 9999 32 i flock_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
   sys_refute
 
-/-- An unrecognized operation on a closed fd is declined: v6.0 onward
-answers -EINVAL before the lookup and v5.19 and older -EBADF from it.
-Read at Linux v5.19: fs/locks.c, SYSCALL_DEFINE2(flock), performs fd lookup before command translation.
+/-- An unrecognized operation on a closed fd is -EINVAL, not -EBADF:
+`flock_translate_cmd` falls off its switch (fs/locks.c:452-462, Linux
+v6.18.46) before `CLASS(fd, f)(fd)` resolves the descriptor.
 kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
-theorem badcmd_on_closed_fd_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 9999 0 i flock_model o ↔ o = .Unmodeled := by
+theorem badcmd_on_closed_fd_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 9999 0 i flock_model o ↔
+      o = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := by
   sys_norm
 
-/-- The -EINVAL this pin used to accept is no longer an outcome.
-probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- badcmdclosed -/
-theorem badcmd_on_closed_fd_old_answer_refuted (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ flock_spec 9999 0 i flock_model (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) := by
+/-- The 0 of the `LOCK_MAND` arm is not this word's answer.
+kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem badcmd_on_closed_fd_zero_refuted (i : SyscallInput) (m' : Model) (evs : List event) :
+    ¬ flock_spec 9999 0 i flock_model (Ok (mkEffect 0 [] []) m' evs) := by
   sys_refute
 
-/-- …and neither is the -EBADF of v5.19 and older.
-Read at Linux v5.19: fs/locks.c, SYSCALL_DEFINE2(flock), performs fd lookup before command translation.
-probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- badcmdclosed -/
+/-- …and the -EBADF a lookup-first order would give is refused.
+probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- badcmdclosed
+kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
 theorem badcmd_on_closed_fd_ebadf_refuted (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ flock_spec 9999 0 i flock_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
   sys_refute
 
-/-- The decline is on every unrecognized word, not operation 0 alone:
-`LOCK_SH|LOCK_EX` on a closed fd is -EINVAL from v6.0 onward, translated
-before the lookup, and -EBADF from the lookup at v5.19 and older.
-Read at Linux v5.19: fs/locks.c, SYSCALL_DEFINE2(flock), performs fd lookup before command translation.
+/-- The -EINVAL is on every unrecognized word, not operation 0 alone:
+`LOCK_SH|LOCK_EX` is one word the switch has no label for.
 kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
-theorem combined_op_on_closed_fd_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 9999 3 i flock_model o ↔ o = .Unmodeled := by
+theorem combined_op_on_closed_fd_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 9999 3 i flock_model o ↔
+      o = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := by
   sys_norm
 
-/-- …so the -EBADF a test of operation 0 alone would still prove is refused.
-probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- combinedclosed -/
+/-- …so the -EBADF a lookup-first order would give is refused here too.
+probe: testing/syscall-check/tests/flock_spec.c#fail-closed --expect-unmodeled flock -- combinedclosed
+kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
 theorem combined_op_on_closed_fd_ebadf_refuted (i : SyscallInput) (m' : Model) (evs : List event) :
     ¬ flock_spec 9999 3 i flock_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
   sys_refute
 
-/-- `LOCK_UN|LOCK_EX` on a closed fd: the same two answers, so declined.
+/-- `LOCK_UN|LOCK_EX` is unrecognized whole, so -EINVAL as well.
 kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
-theorem unlock_ex_on_closed_fd_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 9999 10 i flock_model o ↔ o = .Unmodeled := by
+theorem unlock_ex_on_closed_fd_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 9999 10 i flock_model o ↔
+      o = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := by
   sys_norm
 
 /-- …and its -EBADF is not an outcome.
@@ -1351,11 +1370,12 @@ theorem unlock_ex_on_closed_fd_ebadf_refuted (i : SyscallInput) (m' : Model) (ev
     ¬ flock_spec 9999 10 i flock_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
   sys_refute
 
-/-- `LOCK_EX` with bit 31 set on a closed fd: the word is unrecognized
-whole (the translation compares the full `cmd & ~LOCK_NB`), so declined.
+/-- `LOCK_EX` with bit 31 set is unrecognized whole (the translation
+compares the full `cmd & ~LOCK_NB`), so -EINVAL.
 kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
-theorem sign_bit_op_on_closed_fd_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 9999 0x80000002 i flock_model o ↔ o = .Unmodeled := by
+theorem sign_bit_op_on_closed_fd_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 9999 0x80000002 i flock_model o ↔
+      o = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := by
   sys_norm
 
 /-- …and its -EBADF is not an outcome.
@@ -1365,8 +1385,8 @@ theorem sign_bit_op_on_closed_fd_ebadf_refuted (i : SyscallInput) (m' : Model) (
   sys_refute
 
 /-- kernel: fs/locks.c:flock@v6.18.46 -/
-theorem mand_zero_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ flock_spec 1 32 i flock_model (Ok (mkEffect 0 [] []) m' evs) := by
+theorem mand_eagain_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List event) :
+    ¬ flock_spec 1 32 i flock_model (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   sys_refute
 
 /-- kernel: fs/locks.c:flock@v6.18.46 -/
@@ -1379,14 +1399,16 @@ theorem mand_ebadf_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List 
     ¬ flock_spec 1 32 i flock_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
   sys_refute
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem ro_ex_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 3 2 i flock_model o ↔ o = Unmodeled := by
+/-- An exclusive request through a READ-ONLY description: `sys_flock`
+reads no `f_mode`, so the sole opener is granted.
+kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem ro_ex_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 3 2 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model [] := by
   sys_norm
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem ro_ex_zero_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ flock_spec 3 2 i flock_model (Ok (mkEffect 0 [] []) m' evs) := by
+/-- kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem ro_ex_eagain_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List event) :
+    ¬ flock_spec 3 2 i flock_model (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   sys_refute
 
 /-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
@@ -1399,14 +1421,14 @@ theorem ro_ex_ebadf_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List
     ¬ flock_spec 3 2 i flock_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
   sys_refute
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem ro_ex_nb_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 3 6 i flock_model o ↔ o = Unmodeled := by
+/-- kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem ro_ex_nb_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 3 6 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model [] := by
   sys_norm
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem ro_ex_nb_zero_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ flock_spec 3 6 i flock_model (Ok (mkEffect 0 [] []) m' evs) := by
+/-- kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem ro_ex_nb_eagain_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List event) :
+    ¬ flock_spec 3 6 i flock_model (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   sys_refute
 
 /-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
@@ -1419,14 +1441,15 @@ theorem ro_ex_nb_ebadf_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : L
     ¬ flock_spec 3 6 i flock_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
   sys_refute
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem wo_sh_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 4 1 i flock_model o ↔ o = Unmodeled := by
+/-- A shared request through a WRITE-ONLY description: the same, 0.
+kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem wo_sh_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 4 1 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model [] := by
   sys_norm
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem wo_sh_zero_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ flock_spec 4 1 i flock_model (Ok (mkEffect 0 [] []) m' evs) := by
+/-- kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem wo_sh_eagain_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List event) :
+    ¬ flock_spec 4 1 i flock_model (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   sys_refute
 
 /-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
@@ -1439,14 +1462,14 @@ theorem wo_sh_ebadf_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List
     ¬ flock_spec 4 1 i flock_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
   sys_refute
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem wo_sh_nb_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 4 5 i flock_model o ↔ o = Unmodeled := by
+/-- kernel: fs/locks.c:flock,flock_lock_inode_wait@v6.18.46 -/
+theorem wo_sh_nb_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 4 5 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model [] := by
   sys_norm
 
-/-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem wo_sh_nb_zero_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List event) :
-    ¬ flock_spec 4 5 i flock_model (Ok (mkEffect 0 [] []) m' evs) := by
+/-- kernel: fs/locks.c:flock_lock_inode@v6.18.46 -/
+theorem wo_sh_nb_eagain_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : List event) :
+    ¬ flock_spec 4 5 i flock_model (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   sys_refute
 
 /-- kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
@@ -1459,12 +1482,14 @@ theorem wo_sh_nb_ebadf_is_not_an_answer (i : SyscallInput) (m' : Model) (evs : L
     ¬ flock_spec 4 5 i flock_model (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
   sys_refute
 
-/-- kernel: fs/locks.c:flock@v6.18.46 -/
-theorem mand_on_any_fd_kind_is_unmodeled (e : FdEntry) (i : SyscallInput)
+/-- The `LOCK_MAND` answer does not depend on the descriptor's kind: the
+bit is read before the table is.
+kernel: fs/locks.c:flock@v6.18.46 -/
+theorem mand_on_any_fd_kind_is_zero (e : FdEntry) (i : SyscallInput)
     (o : outcome SyscallEffect) :
-    flock_spec 3 32 i (flock_openers_model [(3, e)]) o ↔ o = Unmodeled := by
+    flock_spec 3 32 i (flock_openers_model [(3, e)]) o ↔
+      o = Ok (mkEffect 0 [] []) (flock_openers_model [(3, e)]) [] := by
   sys_norm
-  exact unmodeled_iff i _ o
 
 /-! ## A17: FdFileRW and FdFileA -/
 
@@ -1482,19 +1507,22 @@ theorem a17_rdwr_counts_as_opener :
       (4, .FdFile [102] 0)] [102] = 2 := by
   decide
 
-/-- `flock(LOCK_SH)` through a read-write file declines
-(`Sys/Fs/Locks.lean`'s header declares the narrowing).
-kernel: fs/locks.c:flock_make_lock@v6.18.46 -/
-theorem a17_rdwr_flock_declines (o : outcome SyscallEffect) :
+/-- `flock(LOCK_SH)` through a read-write file is granted on the sole
+opener: a regular file's lock is on the inode and the access mode is not
+one of its inputs.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem a17_rdwr_flock_is_zero (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 32 [3, 1, 0, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_locks_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_locks_model o ↔
+      o = Ok (mkEffect 0 [] []) a17_locks_model [] := by
   sys_norm
 
-/-- `flock(LOCK_EX)` through a read-write file declines too.
-kernel: fs/locks.c:flock_make_lock@v6.18.46 -/
-theorem a17_rdwr_flock_ex_declines (o : outcome SyscallEffect) :
+/-- `flock(LOCK_EX)` through a read-write file is granted too.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem a17_rdwr_flock_ex_is_zero (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_locks_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_locks_model o ↔
+      o = Ok (mkEffect 0 [] []) a17_locks_model [] := by
   sys_norm
 
 def a17_locks_two_openers_model : Model :=
@@ -1537,12 +1565,14 @@ theorem a17_append_counts_as_opener :
       (4, .FdFile [102] 0)] [102] = 2 := by
   decide
 
-/-- `flock(LOCK_EX)` through an append-mode file declines
-(`Sys/Fs/Locks.lean`'s header declares the narrowing).
-kernel: fs/locks.c:flock_make_lock@v6.18.46 -/
-theorem a17_append_flock_declines (o : outcome SyscallEffect) :
+/-- `flock(LOCK_EX)` through an append-mode file is granted on the sole
+opener: O_APPEND decides where a write lands, not which `->flock` the
+inode has.
+kernel: fs/locks.c:flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem a17_append_flock_is_zero (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 32 [3, 2, 0, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_locks_append_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_locks_append_model o ↔
+      o = Ok (mkEffect 0 [] []) a17_locks_append_model [] := by
   sys_norm
 
 def a17_locks_two_openers_append_model : Model :=
@@ -1570,36 +1600,37 @@ theorem a17_append_unlock_on_pair_is_zero (i : SyscallInput) (o : outcome Syscal
       o = Ok (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileA [102] 0), (4, .FdFileA [102] 5)]) [] := by
   sys_norm
 
-/-- Rocq's `flock_mode_mismatch_effect_is_unmodeled`, its two `FdFileA`
-conjuncts: `LOCK_SH` and `LOCK_SH | LOCK_NB` on a sole append-mode opener
-decline.  Rocq declines them as the `FdFileW` arm's mode mismatch, the
-NFS check that refuses a read lock on a description without `FMODE_READ`;
-here the kind declines every lock first, and the answer is the same.
-kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem a17_append_mode_mismatch_is_unmodeled (i : SyscallInput) (o : outcome SyscallEffect) :
-    (flock_spec 3 1 i (flock_openers_model [(3, .FdFileA [102] 0)]) o ↔ o = Unmodeled) ∧
-    (flock_spec 3 5 i (flock_openers_model [(3, .FdFileA [102] 0)]) o ↔ o = Unmodeled) := by
+/-- `LOCK_SH` and `LOCK_SH | LOCK_NB` on a sole append-mode opener are
+granted: the append-mode arm counts openers like the other three file
+arms, and `sys_flock` reads no `f_mode`.
+kernel: fs/locks.c:flock,flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem a17_append_sh_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    (flock_spec 3 1 i (flock_openers_model [(3, .FdFileA [102] 0)]) o ↔
+      o = Ok (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileA [102] 0)]) []) ∧
+    (flock_spec 3 5 i (flock_openers_model [(3, .FdFileA [102] 0)]) o ↔
+      o = Ok (mkEffect 0 [] []) (flock_openers_model [(3, .FdFileA [102] 0)]) []) := by
   refine ⟨?_, ?_⟩ <;> sys_norm
 
-/-- Rocq's `flock_t149_answers_not_ok`, its six `FdFileA` conjuncts: none
-of 0, -EINVAL and -EBADF is admitted for `LOCK_SH` or `LOCK_SH | LOCK_NB`
-on that opener.  A local filesystem grants the lock where NFS refuses it
-with -EBADF, and the model does not record which one the file is on.
-kernel: fs/nfs/nfs4proc.c:nfs4_proc_lock@v6.18.46 -/
-theorem a17_append_sh_answers_are_not_answers (i : SyscallInput) (m' : Model)
+/-- …and none of -EINVAL, -EBADF and -EAGAIN is admitted for either word
+on that opener: the operation is recognized, the descriptor is open, and
+the sole opener cannot conflict with itself.
+kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
+theorem a17_append_sh_errnos_are_not_answers (i : SyscallInput) (m' : Model)
     (evs : List event) :
-    ¬ flock_spec 3 1 i (flock_openers_model [(3, .FdFileA [102] 0)]) (Ok (mkEffect 0 [] []) m' evs) ∧
     ¬ flock_spec 3 1 i (flock_openers_model [(3, .FdFileA [102] 0)]) (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) ∧
     ¬ flock_spec 3 1 i (flock_openers_model [(3, .FdFileA [102] 0)]) (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) ∧
-    ¬ flock_spec 3 5 i (flock_openers_model [(3, .FdFileA [102] 0)]) (Ok (mkEffect 0 [] []) m' evs) ∧
+    ¬ flock_spec 3 1 i (flock_openers_model [(3, .FdFileA [102] 0)]) (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) ∧
     ¬ flock_spec 3 5 i (flock_openers_model [(3, .FdFileA [102] 0)]) (Ok (mkEffect (errno_ret EINVAL) [] []) m' evs) ∧
-    ¬ flock_spec 3 5 i (flock_openers_model [(3, .FdFileA [102] 0)]) (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) := by
+    ¬ flock_spec 3 5 i (flock_openers_model [(3, .FdFileA [102] 0)]) (Ok (mkEffect (errno_ret EBADF) [] []) m' evs) ∧
+    ¬ flock_spec 3 5 i (flock_openers_model [(3, .FdFileA [102] 0)]) (Ok (mkEffect (errno_ret EAGAIN) [] []) m' evs) := by
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩ <;> sys_refute
 
-/-- T202: AFS/CIFS can prevent the sole-opener grant.
-kernel: fs/afs/flock.c:afs_do_setlk_check@v6.18.46 -/
-theorem t202_ro_sh_nb_declines (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 3 5 i flock_model o ↔ o = Unmodeled := by
+/-- The nonblocking shared request on the sole read-only opener is
+granted, as the blocking one is: `LOCK_NB` is stripped before the
+operation is recognized and changes no answer the model gives.
+kernel: fs/locks.c:flock,flock_make_lock,flock_locks_conflict@v6.18.46 -/
+theorem t202_ro_sh_nb_is_zero (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 3 5 i flock_model o ↔ o = Ok (mkEffect 0 [] []) flock_model [] := by
   sys_norm
 
 /-- T202: Retain unlock under the recorded filesystem premise.
@@ -1615,51 +1646,53 @@ theorem t202_sign_bit_unlock_is_einval (i : SyscallInput) (o : outcome SyscallEf
   sys_norm
 
 /-- T202: Extra command bits survive validation; these words carry LOCK_EX and an invalid extra bit.
-The fd-1 answer uses bugs/channel-fds-assume-unidirectional-stdio.md.
+The fd-1 answer uses linux-process-semantics@ff0313ba4f:bugs/channel-fds-assume-unidirectional-stdio.md.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem t202_extra_42_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 1 0x42 i flock_model o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := by
   sys_norm
 
 /-- T202: Extra command bits survive validation; these words carry LOCK_EX and an invalid extra bit.
-The fd-1 answer uses bugs/channel-fds-assume-unidirectional-stdio.md.
+The fd-1 answer uses linux-process-semantics@ff0313ba4f:bugs/channel-fds-assume-unidirectional-stdio.md.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem t202_extra_82_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 1 0x82 i flock_model o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := by
   sys_norm
 
 /-- T202: Extra command bits survive validation; these words carry LOCK_EX and an invalid extra bit.
-The fd-1 answer uses bugs/channel-fds-assume-unidirectional-stdio.md.
+The fd-1 answer uses linux-process-semantics@ff0313ba4f:bugs/channel-fds-assume-unidirectional-stdio.md.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem t202_extra_10002_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 1 0x10002 i flock_model o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := by
   sys_norm
 
 /-- T202: Extra command bits survive validation; LOCK_UN controls expose a dropped bit.
-The fd-1 answer uses bugs/channel-fds-assume-unidirectional-stdio.md.
+The fd-1 answer uses linux-process-semantics@ff0313ba4f:bugs/channel-fds-assume-unidirectional-stdio.md.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem t202_extra_48_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 1 0x48 i flock_model o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := by
   sys_norm
 
 /-- T202: Extra command bits survive validation; LOCK_UN controls expose a dropped bit.
-The fd-1 answer uses bugs/channel-fds-assume-unidirectional-stdio.md.
+The fd-1 answer uses linux-process-semantics@ff0313ba4f:bugs/channel-fds-assume-unidirectional-stdio.md.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem t202_extra_88_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 1 0x88 i flock_model o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := by
   sys_norm
 
 /-- T202: Extra command bits survive validation; LOCK_UN controls expose a dropped bit.
-The fd-1 answer uses bugs/channel-fds-assume-unidirectional-stdio.md.
+The fd-1 answer uses linux-process-semantics@ff0313ba4f:bugs/channel-fds-assume-unidirectional-stdio.md.
 kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
 theorem t202_extra_10008_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
     flock_spec 1 0x10008 i flock_model o ↔ o = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := by
   sys_norm
 
-/-- T202: The lookup/validation ordering differs between supported kernels.
-kernel: fs/locks.c:flock,flock_translate_cmd,flock_lock_inode@v6.18.46 -/
-theorem t202_closed_extra_ex_declines (i : SyscallInput) (o : outcome SyscallEffect) :
-    flock_spec 9999 0x42 i flock_model o ↔ o = Unmodeled := by
+/-- An unrecognized word on a closed descriptor is -EINVAL: the
+translation runs before the lookup.
+kernel: fs/locks.c:flock,flock_translate_cmd@v6.18.46 -/
+theorem t202_closed_extra_ex_is_einval (i : SyscallInput) (o : outcome SyscallEffect) :
+    flock_spec 9999 0x42 i flock_model o ↔
+      o = Ok (mkEffect (errno_ret EINVAL) [] []) flock_model [] := by
   sys_norm
 
 /-- T202: A 31-bit command mask would turn this into an answered unlock.

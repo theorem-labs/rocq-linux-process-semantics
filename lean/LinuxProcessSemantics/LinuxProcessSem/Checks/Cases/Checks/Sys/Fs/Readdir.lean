@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Readdir.v
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Fs.Readdir
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.Readdir
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
@@ -473,7 +474,7 @@ theorem check_other_arms_with_room_still_answer :
 
 /-! ## The lies each arm refuses
 
-What the Rocq examples leave to `testing/syscall-check/tests/getdents64_spec.c`,
+What the Rocq examples leave to `linux-process-semantics@ff0313ba4f:testing/syscall-check/tests/getdents64_spec.c`,
 whose `--mutate` cases pin them against a real kernel: the Lean tree has no
 probe replay, so every `reject` case of that probe has its statement on
 the checker here, and beside them the lies the probe cannot inject on
@@ -576,7 +577,7 @@ called by `iterate_dir` between its -ENOTDIR and its -ENOENT
 is decided — an enforcing SELinux's `avc_denied` (security/selinux/avc.c:995-1004,
 Linux v6.18.46) for -EACCES, `fanotify_get_response` (fs/notify/fanotify/fanotify.c:275,
 Linux v6.18.46) for the -EPERM of `FAN_DENY`.  The spec twin refuses both —
-bugs/getdents64-lsm-and-fanotify-denials-not-admitted.md records the
+linux-process-semantics@ff0313ba4f:bugs/getdents64-lsm-and-fanotify-denials-not-admitted.md records the
 narrowing, and `Checks/Cases/Fs/Readdir.lean`'s `dir_fd_no_room_eacces_refused`
 and `dir_fd_no_room_eperm_refused` are its falsifiers — so the checker
 refuses them, and these two stop closing the day `getdents64_errnos` gains
@@ -1053,8 +1054,6 @@ theorem check_getdents64_accepts_its_witness (fd count : word) (m : Model)
   | some k =>
     rw [hfd] at h
     cases k
-    case FdFileA _ _ => cases h
-    case FdFileRW _ _ => cases h
     case FdDir =>
       cases hroom : getdents64_no_room count with
       | false =>
@@ -1116,8 +1115,6 @@ theorem witness_declines_only_where_the_checker_declines (fd count : word) (m : 
   | some k =>
     rw [hfd] at h
     cases k
-    case FdFileA _ _ => rfl
-    case FdFileRW _ _ => rfl
     case FdDir =>
       cases hroom : getdents64_no_room count with
       | false => simp only [Bool.false_eq_true, ↓reduceIte]
@@ -1360,7 +1357,7 @@ theorem small_accepted_over_the_real_table :
 /-- The small-buffer return and smuggle-write lies are refused around
 filldir64 (fs/readdir.c:349-368, Linux v6.18.46, commit 1f99e9ab748f).
 The EACCES/EPERM refusals inherit the declared narrowing in
-bugs/getdents64-lsm-and-fanotify-denials-not-admitted.md.
+linux-process-semantics@ff0313ba4f:bugs/getdents64-lsm-and-fanotify-denials-not-admitted.md.
 kernel: fs/readdir.c:getdents64,iterate_dir,filldir64; include/uapi/asm-generic/errno-base.h:EISDIR,EACCES,EPERM@v6.18.46 -/
 theorem small_lies_rejected_over_the_real_table :
     check_syscall (dents_in 5 73744 0) (mkEffect 0 [] []) readdir_model = CheckReject

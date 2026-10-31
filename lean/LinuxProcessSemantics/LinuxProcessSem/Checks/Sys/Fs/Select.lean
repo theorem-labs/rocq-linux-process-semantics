@@ -1,7 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Fs/Select.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Select
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Checks.Sys.Fs.Select — pselect6 (72) and ppoll (73): checker, witness, frame
 

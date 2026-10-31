@@ -1,71 +1,84 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Fs/EventPoll.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
-import LinuxProcessSemantics.LinuxProcessSem.Sys.Net.Socket
-
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570
-partial: epoll_ctl_outcome -- Lean declines ahead of the Rocq change in #1925 when either implementation declines or QEMU can answer differently; channel epfds can also decline after the target poll check.
-partial: epoll_pwait_outcome -- Lean declines ahead of the Rocq change in #1925 on QEMU disagreement, channel epfds, or the TASK_SIZE-to-LONG_MAX gap; the base answer is declined too.
-drift-ticket: epoll_pwait_outcome R-Fs-EventPoll-rebase -- Rocq now declines a closed epfd beside an out-of-bounds maxevents or an access_ok-refused events range (T139, #1442); baseline moves after the T139 PR lands -/
 
 /-! # LinuxProcessSem.Sys.Fs.EventPoll — epoll_create1 (20), epoll_ctl (21), epoll_pwait (22)
 
-Starts from `theories/LinuxProcessSem/Sys/Fs/EventPoll.v` at the base.
-The QEMU computations prepare #1925's Rocq changes, while Lean declines
-every disagreement with Linux rather than extending the base answer set.
+This file answers to Linux `fs/eventpoll.c`: it holds what the kernel
+defines there, and nothing else.  Which file a spec belongs in is
+therefore not a judgement call — look up where the kernel defines the
+syscall.
 
 TRUST BOUNDARY: this file is part of the trusted specification.  Its pins
 are `Checks/Cases/Fs/EventPoll.lean`.
 
-The original port kept Rocq's definition names. Here `epoll_ctl_linux`
-and `epoll_pwait_linux` carry the base outcome computations, with the
-channel-epfd and LONG_MAX-gap declines added. The public outcome names
-now apply `ep_join`; the QEMU helpers have no counterparts in the base
-Rocq file. The comments beside those additions give their rationale.
 Each Linux decision carries its kernel citation — file, function, and the line
 numbers at Linux v6.18.46 (commit 1f99e9ab748f).  Every line cited here was
 read in a checkout at that commit rather than copied across: the Rocq file
 cites by FUNCTION and gives no line numbers, so the numbers below are this
-file's and not a transcription.  The Rocq file was read at b08e59f8, the
-2026-09-11 commit that carries the `FdUrandom` arm #712 added; the header
-names a71fd38a, the squash that landed that day's work on `main`, at which
-`EventPoll.v` is byte-identical to b08e59f8's: the arm is here.  The
-base Linux arguments remain on the Rocq definitions; their per-function
-version windows are established in the Rocq header, including
-the warning that `fs/eventpoll.c` is NOT frozen across the 6.18.x series
-(a rework lands between v6.18.39 and v6.18.40 — read off both tags: 595 lines
-of fs/eventpoll.c differ between them, and none between v6.18.40 and
-v6.18.46). The Linux citations below identify a particular version,
-not merely "v6.18"; the QEMU additions name their own source version.
+file's and not a transcription.  The per-function version windows are
+established in the Rocq header, including the warning that
+`fs/eventpoll.c` is NOT frozen across the 6.18.x series (a rework lands
+between v6.18.39 and v6.18.40 — read off both tags: 595 lines of
+fs/eventpoll.c differ between them, and none between v6.18.40 and
+v6.18.46).  The Linux citations below identify a particular version, not
+merely "v6.18".
 
-THE BASE DESIGN declines `epoll_create1`'s SUCCESS arm, as the Rocq header
-explains, because an epoll instance is an interest set over exactly the descriptor kinds whose
-readiness this model cannot observe, and a nullary `State.FdEntry`
-constructor for one would let `epoll_pwait` answer 0 on a whole-tree
-absence claim the next change to this file silently falsifies.  Because no
-fd in a modeled state is an epoll instance, `is_file_epoll` is false for
-every descriptor these syscalls can be handed except a channel, whose far
-end can be one and which declines (`ep_epfd_is_channel`), so both
-`epoll_ctl` and `epoll_pwait` reach their -EINVAL arm on the other inputs
-that get that far, and nothing here enters the interest-set machinery.
-`Checks/Cases/Fs/EventPoll.lean` pins the corresponding Lean-only declines
-per descriptor kind, for example `pwait_file_epfd_declines`.
-What remains declined is
-named on the arm that declines it, including the closed-epfd parameter
-conflicts whose Linux ordering changed in v6.15.
+ON riscv64 THERE IS NO `epoll_create` AND NO `epoll_wait`.  The generic
+64-bit syscall table carries `epoll_create1` (20), `epoll_ctl` (21) and
+`epoll_pwait` (22) only; glibc and musl both compile `epoll_create(size)`
+to `epoll_create1(0)` and `epoll_wait(...)` to `epoll_pwait(..., NULL, 0)`.
+So the `size <= 0` check in `SYSCALL_DEFINE1(epoll_create, int, size)` is
+unreachable here and is not modeled.
+
+THE DESIGN declines `epoll_create1`'s SUCCESS arm, and everything else
+follows from that one decision.  An epoll instance is an interest set plus
+a ready list, and `ep_poll` reports READINESS over the descriptors in it.
+This model fixes readiness by construction for exactly the descriptor kinds
+that `epoll_ctl` REFUSES: `Select.bits_all_pollable` can answer for a file
+or a directory because `vfs_poll` hands back the constant `DEFAULT_POLLMASK`
+to any file with no `->poll` method, and `do_epoll_ctl` rejects precisely
+those descriptors with -EPERM because `file_can_poll` tests that same NULL
+`->poll`.  The two predicates partition the descriptor kinds, and epoll gets
+the half this model cannot observe: a pipe's readiness is a function of what
+the peer has written SO FAR, which is wall-clock arrival, and `m_stdin` says
+which bytes will EVENTUALLY arrive, not which have.
+
+THAT LEAVES A CHOICE, AND THE OBVIOUS ONE IS A TRAP.  A nullary
+`State.FdEntry` constructor for an epoll fd would compile, and every
+`epoll_ctl` that could populate an interest set would decline, so no
+reachable state would have a non-empty one, so `epoll_pwait` could answer 0
+on the empty set.  It is still the wrong shape, because the 0 rests on a
+WHOLE-TREE ABSENCE claim — "no modeled transition populates an interest
+set" — that the next change to this file silently falsifies.  So the
+interest set is not represented, no `FdEntry` constructor denotes an epoll
+instance, and `epoll_create1` declines the arm that would mint one.
+
+WHAT THAT BUYS.  Because no fd in a modeled state is an epoll instance,
+`is_file_epoll` is FALSE for every descriptor the model can hand these
+syscalls — so both `epoll_ctl` and `epoll_pwait` reach their -EINVAL arm on
+every input that gets that far, and neither has any reachable path into the
+interest-set machinery at all.  What remains unanswered is small and is
+named on the arm that answers it: `epoll_ctl` declines a CHANNEL target,
+because whether a channel has a `->poll` is the one thing `fd_can_poll`
+cannot decide; `epoll_pwait` declines a real signal mask, which `pselect6`
+already declines for the same reason.  Every other input to either is
+answered.
+
+That reach is load-bearing on a fact about a different type, so it is
+guarded by one: `fd_can_poll` is enumerated over `State.FdEntry` with no
+wildcard, so a new constructor is a COMPILE ERROR here.
 
 ONE IMPORT OF THE ROCQ FILE IS NOT MIRRORED, on purpose.  Rocq imports
 `Fs.Select` for one reason, its own comment says: the Example
 `fd_can_poll_is_select_pollable`, which pins that this file's `fd_can_poll`
 and `Select.bits_all_pollable` stay complementary.  That Example is a check
 and not a dependency of the semantics, and in the Lean tree every check
-lives in `Checks/Cases/` (the mmap template: no theorem in a `Sys/` file),
-so its twin is `Checks/Cases/Fs/EventPoll.lean`'s
-`fd_can_poll_is_select_pollable`, and THAT file imports `Sys.Fs.Select`
-(landed in PR #805).  The trusted specification here depends on nothing
-`Select` defines.
+lives in `Checks/Cases/`, so its twin is `Checks/Cases/Fs/EventPoll.lean`'s
+`fd_can_poll_is_select_pollable`, and THAT file imports `Sys.Fs.Select`.
+The trusted specification here depends on nothing `Select` defines.
 
-THREE PORT SPELLINGS preserve the base computations, independently of
-the additional decline gates:
+THREE PORT SPELLINGS preserve the Rocq computations:
 
 - `epoll_create1_outcome` masks the flag word on the WORD (`bv_and`)
   where Rocq masks `bv_unsigned` of it in `Z` (`Z.land`).  The mask is the
@@ -82,23 +95,7 @@ the additional decline gates:
 THE ENVIRONMENT OBLIGATION `fd_can_poll`'s `some false` arms rest on is not
 discharged here either: it is the obligation `Select.bits_all_pollable`
 carries, stated at length on the Rocq definition and recorded in
-`bugs/pselect6-unchecked-environment-obligations.md`.  The Lean tree has no
-replay harness to discharge it per run, so it is carried here as it is
-carried there.
-
-WHOSE ORDER THESE ERRNOS ARE: Linux's and QEMU's. Lean declines ahead of the
-Rocq change in #1925: an answered join requires every QEMU answer to equal
-Linux's answer. The joined answer set can be restored after the Lean twin
-ports #1925's joined answers. These Lean-only declines reduce coverage; they
-add no answer beyond the base Rocq spec. A program reaching one cannot satisfy
-the modeled conjunct of strong equivalence through this Lean spec.
-QEMU 11.1.1's user-mode emulation of the same interface (linux-user/syscall.c
-of that release, `case TARGET_NR_epoll_pwait` in `do_syscall1`
-at :13973-14050 and the
-`epoll_create1` arm at :13939-13940) tests `maxevents` and locks the events
-range for writing before it reads the sigmask or resolves the epfd, and
-drops from `epoll_create1`'s word every bit its `fcntl_flags_tbl` does not
-carry (QEMU 11.1.1 linux-user/thunk.c, `target_to_host_bitmask_len`). -/
+`bugs/pselect6-unchecked-environment-obligations.md`. -/
 
 namespace LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.EventPoll
 
@@ -122,8 +119,7 @@ def EPOLL_CLOEXEC : Int := O_CLOEXEC
 /-- `EPOLL_CTL_DEL` (include/uapi/linux/eventpoll.h:27, Linux v6.18.46).
 The other two opcodes are deliberately absent: nothing below compares
 against `EPOLL_CTL_ADD` or `EPOLL_CTL_MOD`, because every arm that
-distinguishes them sits past the -EINVAL or the channel-epfd decline that
-this model reaches first
+distinguishes them sits past the -EINVAL this model always reaches first
 (`epoll_ctl_outcome`).  Naming them here would be a constant with no
 consumer. -/
 def EPOLL_CTL_DEL : Int := 2
@@ -221,30 +217,6 @@ def fd_can_poll (e : FdEntry) : Option Bool :=
 
 /-! ## epoll_create1 (20) -/
 
-/-- QEMU 11.1.1 linux-user/syscall.c, `do_syscall1`, translates create flags
-through `fcntl_flags_tbl`.
-QEMU 11.1.1 linux-user/thunk.c, `target_to_host_bitmask_len`, sets the host
-bits of matching rows.
-Words with no matching row can create a descriptor where Linux v6.18.46
-fs/eventpoll.c, `do_epoll_create`, returns EINVAL.
-The gate selects translations retaining a host bit outside `O_CLOEXEC`.
-
-QEMU 11.1.1 linux-user/syscall.c, `fcntl_flags_tbl`, matches access modes
-`O_WRONLY` (1) and `O_RDWR` (2) as a pair of bits.
-Its single-bit rows use riscv64's linux-user/generic/fcntl.h values.
-The mask includes `O_CREAT` through `O_NONBLOCK` (0xFC0).
-It includes `O_DSYNC`, `FASYNC`, and `O_DIRECT` (0x7000).
-It includes `O_DIRECTORY`, `O_NOFOLLOW`, and `O_NOATIME` (0x70000).
-It includes `O_PATH` (0x200000).
-A set `O_DSYNC` bit matches the `O_DSYNC` row or the `O_SYNC` row.
-The mask excludes `O_LARGEFILE` (0x8000), whose host value is zero on a
-64-bit host.
-It excludes `__O_SYNC` (0x100000) and `__O_TMPFILE` (0x400000), which match
-no row alone. -/
-def qemu_epoll_flags_rejected (flags32 : word) : Bool :=
-  let acc := bv_unsigned (bv_and flags32 3)
-  acc == 1 || acc == 2 || !(bv_unsigned (bv_and flags32 0x277FC0) == 0)
-
 /-- `do_epoll_create` (fs/eventpoll.c:2430-2471, Linux v6.18.46):
 
     if (flags & ~EPOLL_CLOEXEC)
@@ -276,8 +248,7 @@ call. -/
 def epoll_create1_outcome (flags32 : word) : Option word :=
   if bv_unsigned (bv_and flags32 (Z_to_bv 64 (2 ^ 32 - 1 - EPOLL_CLOEXEC))) == 0
   then none                            -- a well-formed create: declined
-  else if qemu_epoll_flags_rejected flags32 then some (errno_ret EINVAL)
-  else none
+  else some (errno_ret EINVAL)
 
 def epoll_create1_spec (flags32 : word) : Sys SyscallEffect :=
   match epoll_create1_outcome flags32 with
@@ -330,81 +301,6 @@ def copy_from_user_ok (mp : word → Option byte) (a : word) (len : Int) : Bool 
 
 /-! ## epoll_ctl (21) -/
 
-/-- Until #1925 lands, disagreement declines the entire input shape, including
-Linux's answer. Keep the pair representation so porting #1925's joined answers changes only this join. -/
-def ep_join (l : Option word) (q : Option (List word)) : Option (word × List word) :=
-  match l, q with
-  | some r, some rs => if rs.all (bv_eqb r) then some (r, []) else none
-  | _, _ => none
-
-def ep_answer (o : word × List word) (r : word) : Prop :=
-  r = o.1 ∨ r ∈ o.2
-
-def ep_answerb (o : word × List word) (r : word) : Bool :=
-  bv_eqb r o.1 || o.2.any (bv_eqb r)
-
-def ep_bytes_defined (mp : word → Option byte) (a : word) (len : Int) : Bool :=
-  match read_bytes_map mp a (Z_to_bv 64 len) with
-  | some _ => true
-  | none => false
-
-/-- QEMU 11.1.1 linux-user/uaccess.c, `lock_user`, checks access before
-copying.
-Its linux-user/qemu.h, `access_ok_untagged`, asks
-`guest_range_valid_untagged` and `page_check_range` for the needed
-permissions.
-Read locks require `PAGE_READ`.
-Write locks require `PAGE_READ | PAGE_WRITE`.
-QEMU 11.1.1 linux-user/syscall.c, `do_syscall1`, answers failed epoll locks
-with EFAULT.
-
-The model bounds that verdict with `qemu_lock_may` and `qemu_lock_sure`.
-The former requires a nonwrapping range defined in the view the lock needs.
-Reads use `in_mem`.
-Writes use `in_wmem`.
-QEMU 11.1.1 include/user/guest-host.h,
-`guest_range_valid_untagged_vaddr`, refuses a last byte above
-`guest_addr_max`.
-That limit stays below 2^64.
-The sure gate adds `access_okb`, Socket’s `load_write_free`, and
-`ep_stack_band_free`.
-The arms include EFAULT unless the lock is sure.
-They include later answers when the lock may succeed. -/
-def qemu_lock_may (i : SyscallInput) (write : Bool) (a : word) (len : Int) : Bool :=
-  decide (bv_unsigned a + len ≤ 2 ^ 64) &&
-    ep_bytes_defined (if write then i.in_wmem else i.in_mem) a len
-
-/-- The range misses the entry-stack band `[init_sp - stack_max_size,
-init_sp)`.
-`Run.init_machine_state` fills that band with zeros in both views.
-QEMU's stack need not cover that band.
-QEMU 11.1.1 linux-user/main.c, `handle_arg_stack_size`, lets `-s` or
-`QEMU_STACK_SIZE` lower the default 8 MiB `guest_stack_size`.
-QEMU 11.1.1 linux-user/elfload.c, `setup_arg_pages`, maps that size above a
-`PROT_NONE` guard page.
-The entry sp lies inside the stack.
-The band's low end can lie in the guard page or below the stack.
-A lock there can fail, so the model counts no band byte as sure. -/
-def ep_stack_band_free (m : Model) (a : word) (len : Int) : Bool :=
-  let sp := bv_unsigned (m_vmmaps m).vm_init_sp
-  decide (bv_unsigned a + len ≤ sp - stack_max_size) ||
-    decide (sp ≤ bv_unsigned a)
-
-def qemu_lock_sure (i : SyscallInput) (m : Model) (write : Bool)
-    (a : word) (len : Int) : Bool :=
-  access_okb a len && qemu_lock_may i write a len
-    && LinuxProcessSemantics.LinuxProcessSem.Sys.Net.Socket.load_write_free
-      (m_vmmaps m).vm_reserved i.in_wmem a (Z_to_bv 64 len)
-    && ep_stack_band_free m a len
-
-def qemu_after_lock (i : SyscallInput) (m : Model) (write : Bool)
-    (a : word) (len : Int) (later : Option (List word)) : Option (List word) :=
-  if !(qemu_lock_may i write a len) then some [errno_ret EFAULT]
-  else if qemu_lock_sure i m write a len then later
-  else match later with
-    | some rs => some (errno_ret EFAULT :: rs)
-    | none => none
-
 /-- `ep_op_has_event(op)` is `op != EPOLL_CTL_DEL`
 (include/linux/eventpoll.h:64-67, Linux v6.18.46), and it decides whether
 the syscall entry copies the event struct at all.  `op` is an `int`, so the
@@ -420,34 +316,7 @@ dispatcher arm, is that cast. -/
 def ep_op_has_event (op32 : word) : Bool :=
   !(bv_unsigned op32 == EPOLL_CTL_DEL)
 
-/-- A channel can be an epoll instance.  Whoever runs the process can hand
-it an epoll fd on fd 0, 1 or 2: an epoll fd made without `EPOLL_CLOEXEC`
-survives `execve`.  The model knows no channel's far end (`fd_can_poll`),
-so `is_file_epoll` is unknown for a channel epfd.  Each arm declines at the
-step that asks it (fs/eventpoll.c `do_epoll_ctl`, `ep_check_params`, Linux
-v6.18.46). -/
-def ep_epfd_is_channel (e : FdEntry) : Bool :=
-  match e with
-  | .FdChannel _ => true
-  | _ => false
-
-def epoll_ctl_after_copy (m : Model) (epfd tfd : word) : Option word :=
-  match fd_lookup (m_fds m) epfd with
-  | none => some (errno_ret EBADF)
-  | some ee =>
-      match fd_lookup (m_fds m) tfd with
-      | none => some (errno_ret EBADF)
-      | some te =>
-          match fd_can_poll te with
-          | some false => some (errno_ret EPERM)
-          | some true =>
-              -- `do_epoll_ctl` (fs/eventpoll.c, Linux v6.18.46) tests
-              -- `is_file_epoll(f)` here.  For an epoll epfd it goes on to the
-              -- `switch (op)` and can answer 0, so a channel epfd declines.
-              if ep_epfd_is_channel ee then none else some (errno_ret EINVAL)
-          | none => none        -- a channel: see `fd_can_poll`
-
-/-- `epoll_ctl epfd op fd event` — the Linux outcome, or
+/-- `epoll_ctl epfd op fd event` — the one outcome the model admits, or
 `none` where it declines.
 
 The arms are in the kernel's own decision order, so reading them top to
@@ -463,7 +332,8 @@ and then `do_epoll_ctl` (:2511-2651) in sequence.
 
    So -EFAULT on a bad `event` pointer BEATS -EBADF on `epfd`, -EBADF on
    the target, and -EPERM.  For `EPOLL_CTL_DEL` no copy happens and
-   `event` is never dereferenced, however wild it is.
+   `event` is never dereferenced, however wild it is — `epds` is left
+   uninitialised in that case and the DEL path never reads it.
 2. -EBADF if `epfd` is not open: `CLASS(fd, f)(epfd)` and `fd_empty(f)`
    (:2520-2522).
 3. -EBADF if the target is not open: `CLASS(fd, tf)(fd)` and
@@ -475,7 +345,9 @@ and then `do_epoll_ctl` (:2511-2651) in sequence.
 
    This is the arm worth knowing, because it sits BEFORE the check that
    `epfd` is an epoll fd.  So `epoll_ctl` on two ordinary files answers
-   -EPERM, not -EINVAL.  Between it and step 5 sits
+   -EPERM, not -EINVAL: the epfd's epoll-ness is not tested until step 5,
+   and a reader who assumed -EINVAL wins because "epfd isn't an epoll fd"
+   would have the errno wrong.  Between it and step 5 sits
    `ep_take_care_of_epollwakeup` (:2534-2535), which clears a bit of the
    copied struct and cannot fail.
 5. -EINVAL otherwise:
@@ -486,18 +358,16 @@ and then `do_epoll_ctl` (:2511-2651) in sequence.
 
    No `State.FdEntry` constructor denotes an epoll instance, so
    `is_file_epoll(fd_file(f))` (:478-481) is false for every descriptor
-   reachable here except a channel, which declines (`ep_epfd_is_channel`),
-   and the SECOND disjunct holds for the others (`ctl_socket_target_is_einval`
-   and `ctl_socket_on_itself_is_einval` pin it).  The first
-   disjunct — the self-add check — is consequently never the reason, and
-   the model needs no notion of description identity to get this errno
-   right.
+   reachable here and the SECOND disjunct always holds.  The first
+   disjunct — the self-add check, which compares `struct file` identity and
+   therefore also catches adding a `dup` of the epfd — is consequently
+   never the reason, and the model needs no notion of description identity
+   to get this errno right.
 
 EVERYTHING PAST STEP 5 IS UNREACHABLE, which is why none of it appears
 below: the `EPOLLEXCLUSIVE` rejections (:2551-2556), the `ep_loop_check`
 -ELOOP, and the whole `switch (op)` with its -EEXIST and -ENOENT arms all
-sit behind a `goto error_tgt_fput` that step 5 has already taken, or
-behind step 5's channel-epfd decline.  An
+sit behind a `goto error_tgt_fput` that step 5 has already taken.  An
 unrecognised `op` is likewise -EINVAL through step 5 rather than through
 the switch's fallthrough — the same errno by a different route, which is
 why `op` is read here only to decide whether the event struct is copied.
@@ -511,43 +381,34 @@ faulted in and charged by Linux and not by this model.
 `bugs/epoll-ctl-copyin-not-recorded.md` records it, and that `pselect6` has
 the identical omission.
 
-TWO ARMS DECLINE, named where each is decided: step 4 on a CHANNEL target,
-where `fd_can_poll` cannot say whether the far end has a `->poll`, and
-step 5 on a CHANNEL epfd (`ep_epfd_is_channel`).  Every other step
-answers. -/
-def epoll_ctl_linux (i : SyscallInput) (m : Model)
+ONE ARM DECLINES, named where it is decided: step 4 on a CHANNEL target,
+where `fd_can_poll` cannot say whether the far end has a `->poll`.  Every
+other step answers. -/
+def epoll_ctl_outcome (i : SyscallInput) (m : Model)
     (epfd op32 tfd event : word) : Option word :=
+  let after_copy : Option word :=
+    match fd_lookup (m_fds m) epfd with
+    | none => some (errno_ret EBADF)
+    | some _ =>
+        match fd_lookup (m_fds m) tfd with
+        | none => some (errno_ret EBADF)
+        | some te =>
+            match fd_can_poll te with
+            | some false => some (errno_ret EPERM)
+            | some true => some (errno_ret EINVAL)
+            | none => none        -- a channel: see `fd_can_poll`
   if ep_op_has_event op32
   then if copy_from_user_ok i.in_mem event epoll_event_bytes
-       then epoll_ctl_after_copy m epfd tfd
+       then after_copy
        else some (errno_ret EFAULT)
-  else epoll_ctl_after_copy m epfd tfd
-
-/-- QEMU 11.1.1 linux-user/syscall.c, `do_syscall1`, compares the raw
-operation before locking a non-NULL event. -/
-def epoll_ctl_qemu (i : SyscallInput) (m : Model)
-    (epfd op32 tfd event : word) : Option (List word) :=
-  let host := (epoll_ctl_after_copy m epfd tfd).map (fun r => [r])
-  if w_is0 event then
-    if ep_op_has_event op32 then some [errno_ret EFAULT] else host
-  else if bv_unsigned (in_arg i 1) == EPOLL_CTL_DEL then host
-  else qemu_after_lock i m false event epoll_event_bytes host
-
-/-- `epoll_ctl epfd op fd event` returns the Linux answer alone when every QEMU answer agrees, or
-`none` when either computation declines or the answers disagree. -/
-def epoll_ctl_outcome (i : SyscallInput) (m : Model)
-    (epfd op32 tfd event : word) : Option (word × List word) :=
-  ep_join (epoll_ctl_linux i m epfd op32 tfd event)
-    (epoll_ctl_qemu i m epfd op32 tfd event)
+  else after_copy
 
 def epoll_ctl_spec (epfd op32 tfd event : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
   match epoll_ctl_outcome i m epfd op32 tfd event with
   | none => unmodeled
-  | some o =>
-      r <- choose (ep_answer o) ;;
-      Monad.pure (mkEffect r [] [])
+  | some r => Monad.pure (mkEffect r [] [])
 
 /-! ## epoll_pwait (22) -/
 
@@ -573,8 +434,11 @@ libc's `epoll_wait` outside it.
 narrowed by the dispatcher; a register whose low half is 8 and whose high
 half is set is the wrong size.  `Uapi.kernel_sigset_bytes` is the 8.
 
-A mask that WOULD BE INSTALLED is `unmodeled`, not an answer.
-`Select.pselect_sigpack` declines the identical case. -/
+A mask that WOULD BE INSTALLED is `unmodeled`, not an answer: this model has
+no signals, so it cannot represent `current->blocked` changing, nor the
+`restore_saved_sigmask_unless` that puts it back.
+`Select.pselect_sigpack` declines the identical case for the identical
+reason. -/
 inductive EpollSigmask
   /-- `umask` is NULL: nothing installed -/
   | EpSigNone
@@ -591,14 +455,8 @@ def epoll_sigmask (mp : word → Option byte) (umask sigsetsize : word) : EpollS
   else if copy_from_user_ok mp umask kernel_sigset_bytes then .EpSigReal
   else .EpSigFault
 
-/-- Linux v6.18.46 include/asm-generic/access_ok.h [__access_ok] tests `size <= limit`
-first because its subtraction is unsigned.
-Over `Int`, the address test implies the size test because `bv_unsigned base` is nonnegative. -/
-def access_ok_long_max (base : word) (len : Int) : Bool :=
-  decide (bv_unsigned base ≤ 2 ^ 63 - 1 - len)
-
 /-- `epoll_pwait epfd events maxevents timeout sigmask sigsetsize` — the
-Linux outcome, or `none`.
+one outcome the model admits, or `none`.
 
 ORDER, read off `epoll_pwait` (fs/eventpoll.c:2774-2783, Linux v6.18.46),
 `do_epoll_pwait` (:2753-2772), `do_epoll_wait` (:2715-2738) and
@@ -613,9 +471,9 @@ ORDER, read off `epoll_pwait` (fs/eventpoll.c:2774-2783, Linux v6.18.46),
 2. `set_user_sigmask` (:2763-2765) — the first fallible step, and it
    precedes the epfd lookup.  A bad sigmask therefore BEATS a bad `epfd`.
 3. -EBADF if `epfd` is not open: `CLASS(fd, f)(epfd)` and `fd_empty(f)`
-   (:2722-2724).  Since v6.15 this precedes the parameter checks; through
-   v6.14 it followed them, so the closed-fd arm below declines the shapes
-   for which that changes the errno.
+   (:2722-2724).  Note this precedes the `maxevents` check, which is the
+   reverse of the `epoll_ctl` ordering and is worth stating because the two
+   files' checks look interchangeable and are not.
 4. -EINVAL if `maxevents <= 0 || maxevents > EP_MAX_EVENTS` (:2674-2675).
    `maxevents` is an `int`, read signed (`Syscall.sint32`), and the `<= 0`
    half refuses every non-positive value before the bound is consulted.
@@ -633,17 +491,14 @@ ORDER, read off `epoll_pwait` (fs/eventpoll.c:2774-2783, Linux v6.18.46),
    step 4 has already bounded `maxevents` by `INT_MAX / 16`.  This is a
    pure RANGE check — Linux reads no byte and requires no mapping — and so
    is the model's: `State.access_okb` on the product, with no walk.
-6. -EINVAL if `epfd` is not an epoll fd (:2685-2686).  It is not, for the
-   reason the file header gives, unless `epfd` is a channel, which declines
-   (`ep_epfd_is_channel`).  So the other calls that reach step 6
-   have Linux answer -EINVAL and never reach `ep_poll`. The joined spec
-   can still decline: `pwait_file_epfd_declines` and its siblings pin
-   those Lean-only declines per descriptor kind.
+6. -EINVAL if `epfd` is not an epoll fd (:2685-2686).  It is not, ever, for
+   the reason the file header gives, so every call that reaches step 6
+   answers -EINVAL and `ep_poll` is unreachable.
 
 NOTHING IS WRITTEN ON ANY MODELED PATH.  `ep_poll` is the only writer of
-the `events` array, and step 6 stops short of it.  The `access_ok` of step
-5 is a range verdict and not a store. -/
-def epoll_pwait_linux (i : SyscallInput) (m : Model)
+the `events` array, through `ep_send_events`, and step 6 stops short of it.
+The `access_ok` of step 5 is a range verdict and not a store. -/
+def epoll_pwait_outcome (i : SyscallInput) (m : Model)
     (epfd events maxevents32 sigmask sigsetsize : word) : Option word :=
   match epoll_sigmask i.in_mem sigmask sigsetsize with
   | .EpSigBadSize => some (errno_ret EINVAL)
@@ -651,77 +506,15 @@ def epoll_pwait_linux (i : SyscallInput) (m : Model)
   | .EpSigReal => none
   | .EpSigNone =>
       match fd_lookup (m_fds m) epfd with
-      | none =>
-          /- Commit 6b47d35d4d9e moved the lookup ahead of parameter
-          validation: fs/eventpoll.c:do_epoll_wait read at v6.15 and
-          v6.18.46 returns -EBADF here even with bad parameters.  The same
-          function read at v4.17, v5.10, v6.1, v6.12 and v6.14 checks the
-          count first, giving -EINVAL for bad counts.  For a range past
-          TASK_SIZE, v6.1's access_ok uses TASK_SIZE and gives -EFAULT.
-          On riscv64, arch/riscv/include/asm/pgtable.h defines TASK_SIZE_MAX
-          as LONG_MAX from ad5643cf2f69 until 890ba5be6335, so v6.14 passes
-          that range.  `case TARGET_NR_epoll_pwait` in `do_syscall1`
-          (linux-user/syscall.c, QEMU 11.1.1) checks the count and lock_user()s
-          the events buffer before the host call, giving -EINVAL or -EFAULT
-          too.  Neither answer is certain for these conflicting shapes;
-          when both checks pass every kernel ordering gives -EBADF. -/
-          let n := sint32 maxevents32
-          if n ≤ 0 then none
-          else if EP_MAX_EVENTS < n then none
-          else if access_okb events (n * epoll_event_bytes)
-               then some (errno_ret EBADF)
-               else none
-      | some e =>
+      | none => some (errno_ret EBADF)
+      | some _ =>
           let n := sint32 maxevents32
           if n ≤ 0 then some (errno_ret EINVAL)
           else if EP_MAX_EVENTS < n then some (errno_ret EINVAL)
-          else if access_okb events (n * epoll_event_bytes)
-               then
-                 -- `ep_check_params` (fs/eventpoll.c, Linux v6.18.46) tests
-                 -- `is_file_epoll` last.  For an epoll epfd `ep_poll` runs and can
-                 -- answer 0 or a count, so a channel epfd declines
-                 -- (`ep_epfd_is_channel`).
-                 if ep_epfd_is_channel e then none else some (errno_ret EINVAL)
-               else if access_ok_long_max events (n * epoll_event_bytes)
-                    /- Linux v6.14 arch/riscv/include/asm/pgtable.h uses
-                    LONG_MAX for TASK_SIZE_MAX.
-                    Its fs/eventpoll.c, do_epoll_wait, reaches EINVAL here.
-                    Linux v6.18.46 fs/eventpoll.c, do_epoll_wait, rejects
-                    the range with EFAULT. -/
-                    then none
-                    else some (errno_ret EFAULT)
-
-/-- QEMU 11.1.1 linux-user/syscall.c, `do_syscall1`, checks count, events
-lock, allocation, mask, then host descriptor. -/
-def epoll_pwait_qemu (i : SyscallInput) (m : Model)
-    (epfd events maxevents32 sigmask sigsetsize : word) : Option (List word) :=
-  let n := sint32 maxevents32
-  let later :=
-    (if w_is0 sigmask then
-        match fd_lookup (m_fds m) epfd with
-        | none => some [errno_ret ENOMEM, errno_ret EBADF]
-        | some e => if ep_epfd_is_channel e then none
-                    else some [errno_ret ENOMEM, errno_ret EINVAL]
-    else if !(bv_unsigned sigsetsize == kernel_sigset_bytes)
-         then some [errno_ret ENOMEM, errno_ret EINVAL]
-         /- `process_sigsuspend_mask` (linux-user/signal.c), called by
-         `do_syscall1` (linux-user/syscall.c, QEMU 11.1.1), uses a read
-         lock, not Linux's `access_ok`.
-         Defined bytes past `TASK_SIZE` can therefore reach mask
-         installation.  The model cannot represent that signal state,
-         so even a possible successful lock must decline. -/
-         else if qemu_lock_may i false sigmask 8 then none
-              else some [errno_ret ENOMEM, errno_ret EFAULT])
-  if decide (n ≤ 0) || decide (EP_MAX_EVENTS < n) then some [errno_ret EINVAL]
-  else qemu_after_lock i m true events (n * epoll_event_bytes) later
-
-/-- `epoll_pwait epfd events maxevents timeout sigmask sigsetsize` returns
-the Linux answer alone when every QEMU answer agrees, or `none`
-where either computation declines or the answers disagree. -/
-def epoll_pwait_outcome (i : SyscallInput) (m : Model)
-    (epfd events maxevents32 sigmask sigsetsize : word) : Option (word × List word) :=
-  ep_join (epoll_pwait_linux i m epfd events maxevents32 sigmask sigsetsize)
-    (epoll_pwait_qemu i m epfd events maxevents32 sigmask sigsetsize)
+          else
+            if access_okb events (n * epoll_event_bytes)
+            then some (errno_ret EINVAL)
+            else some (errno_ret EFAULT)
 
 def epoll_pwait_spec (epfd events maxevents32 sigmask sigsetsize : word)
     : Sys SyscallEffect :=
@@ -729,8 +522,6 @@ def epoll_pwait_spec (epfd events maxevents32 sigmask sigsetsize : word)
   m <- get_model ;;
   match epoll_pwait_outcome i m epfd events maxevents32 sigmask sigsetsize with
   | none => unmodeled
-  | some o =>
-      r <- choose (ep_answer o) ;;
-      Monad.pure (mkEffect r [] [])
+  | some r => Monad.pure (mkEffect r [] [])
 
 end LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.EventPoll

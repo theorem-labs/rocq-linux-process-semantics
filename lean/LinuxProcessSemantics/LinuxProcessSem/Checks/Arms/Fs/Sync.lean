@@ -156,8 +156,8 @@ theorem check_fsync_ok_model (fd : word) (eff : SyscallEffect) (m m' : Model)
     exact ⟨h.2.1, h.2.2⟩
   | some e =>
     cases e
-    case FdFileA => dsimp only at h; cases h
-    case FdFileRW => dsimp only at h; cases h
+    -- `FdFileA` and `FdFileRW` answer 0 with the other file kinds now, so
+    -- the return-only closer below carries them too.
     all_goals
       dsimp only at h
       rw [check_ret_only_ok_iff] at h

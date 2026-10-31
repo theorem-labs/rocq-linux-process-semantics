@@ -103,8 +103,8 @@ theorem check_getdents64_ok_model (fd count : word) (eff : SyscallEffect) (m m' 
             · cases h
         · cases h
       · cases h
-    case FdFileA => dsimp only at h; cases h
-    case FdFileRW => dsimp only at h; cases h
+    -- `FdFileA` and `FdFileRW` are -ENOTDIR with the other regular files
+    -- now, so the plain-return closer below carries them too.
     all_goals exact ⟨((check_ret_only_ok_iff _ _ _ _ _ _).mp h).2.1,
       ((check_ret_only_ok_iff _ _ _ _ _ _).mp h).2.2⟩
 

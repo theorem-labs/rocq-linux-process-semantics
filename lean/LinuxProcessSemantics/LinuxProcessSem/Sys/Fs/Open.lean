@@ -1,15 +1,11 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Fs/Open.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.File
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Namei
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.ReadWrite
 
-/-! rocq-baseline: 4d80c33d8337500eb6de1182578751cea75c4995
-unported: open_append -- mints State.FdFileA, which every spec arm that would write or resize it declines so far (State/Fd.lean); the word is a declared decline in openat_resolved_spec
-unported: openat_append_spec -- its success arm is open_append (FdFileA); declared decline in openat_resolved_spec
-unported: open_rdwr -- mints State.FdFileRW, which every spec arm that would read, write or resize it declines so far (State/Fd.lean); the word is a declared decline in openat_resolved_spec
-unported: openat_rdwr_spec -- its success arm is open_rdwr (FdFileRW); declared decline in openat_resolved_spec
-unported: openat_rdwr_excl_spec -- its success arm is open_rdwr (FdFileRW); declared decline in openat_resolved_spec -/
+/-! rocq-baseline: 4d80c33d8337500eb6de1182578751cea75c4995 -/
 
 /-! # LinuxProcessSem.Sys.Fs.Open — openat (56), faccessat (48), faccessat2 (439), close (57), ftruncate (46)
 
@@ -36,37 +32,22 @@ constants are below `2^64` and the residue of a 64-bit word is below
 `2^64`, so the two agree.  Rocq's `Z.eqb` is `==` on `Int`, its
 `Nat.ltb` is the decidable `<` on `Nat`.
 
-THREE DECLARED DECLINES are the only differences from the Rocq spec beyond
-the split.  `modeled_open_flags` admits the append word
-(`append_create_flags`), the six read-write words (`rdwr_open_word`,
-`is_rdwr_excl_create`) and the two exclusive append words
-(`is_excl_append_create`, #1752) exactly as Rocq does, so the flag gate and
-everything it orders stay Rocq's; but `openat_resolved_spec` answers those
-words with `unmodeled` on a plain name — the answer the table would give a
-syscall with no arm — where Rocq opens the file (or, for the exclusive
-append words on a name that exists, answers -EEXIST).  Their arms mint
-`State.FdFileA` and `State.FdFileRW`, which the Lean `FdEntry` carries but
-which every spec arm that would write or resize either descriptor, or read
-the read-write one, declines so far (the third decline is one of them), so
-the open waits for the port that answers them.  The two device arms are
-Rocq's whole: `/dev/null` still answers those words, because `FdDevNull`
-carries the granted mode and nothing else, and `/dev/urandom`
-(`openat_urandom_spec`, #712) mints `State.FdUrandom` and declines the write
-words as Rocq does; both answer the exclusive append words -EEXIST, as Rocq
-does.  Nothing is narrowed silently: each decline is named in the header,
-and `Checks/Cases/Fs/Open.lean` pins each against the kernel's real answer
-so that a later arm has to land the state before it can answer.
+NO DECLARED DECLINE IS LEFT BEYOND THE SPLIT.  `modeled_open_flags` admits
+the append word (`append_create_flags`) and the six read-write words
+(`rdwr_open_word`, `is_rdwr_excl_create`) exactly as Rocq does, and
+`openat_resolved_spec` answers each of them with the arm Rocq gives it:
+`openat_append_spec`, `openat_rdwr_spec` and `openat_rdwr_excl_spec`,
+which mint `State.FdFileA` and `State.FdFileRW`.  `ftruncate_spec` resizes
+both kinds with the body it gives `FdFileW`, as Rocq does.
 
-The third is `ftruncate_spec` on a read-write or an append-mode file: it
-answers `unmodeled` where Rocq resizes the file with the body it gives
-`FdFileW` (the docstring's ONE SUCCESS ARM paragraph).  The base change that
-added the two constructors ported Rocq's arm into every pure helper that
-names either and declined both in every spec arm that does, so that each arm
-is ported later against pins of its own; `Checks/Cases/Fs/Open.lean`'s
-`a17_rdwr_ftruncate_declines` and `a17_append_ftruncate_declines` hold the
-declines on a call `FdFileW` answers.  No run an example can reach is
-narrowed: none can hold either kind yet (`State/Fd.lean`'s constructor notes
-say why, and when that stops being true). -/
+O_WRONLY|O_CREAT|O_EXCL|O_APPEND, with or without O_TRUNC, is OUTSIDE
+`modeled_open_flags`, as it is in Rocq, so the flag gate answers
+`unmodeled` for it before the pathname is fetched and no arm below sees
+it — in particular neither device arm has an -EEXIST branch for it.  That
+word is one Linux answers (`do_open`'s -EEXIST on a name that exists,
+fs/namei.c:3949-3950, Linux v6.18.46), so declining it is a narrowing of
+the modeled surface, not a wrong answer; it is Rocq's narrowing and this
+file states it. -/
 
 namespace LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Open
 
@@ -113,13 +94,13 @@ def is_excl_create (fl : Int) : Bool :=
 /-- The APPEND write-open combination the model covers,
 O_WRONLY|O_CREAT|O_APPEND (include/uapi/asm-generic/fcntl.h:20,23,35, Linux
 v6.18.46, commit 1f99e9ab748f), the word C's `fopen(p, "a")` issues.  A
-SINGLE word, not a mask test: the O_TRUNC spelling beside it is declined,
-for the reason Rocq's `Open.modeled_open_flags` gives, and the O_EXCL
-spellings are their own words (`is_excl_append_create`, below).  Its arm
-mints `State.FdFileA`, whose write and resize arms decline so far, and that
-is why the arm is not here (file header): the constant is kept because
-`modeled_open_flags` and the devnull arm read it.  Rocq:
-`Open.append_create_flags`. -/
+SINGLE word, not a mask test: the O_TRUNC and the O_EXCL spellings beside
+it are declined, each for its own reason, and `modeled_open_flags`'s note
+says which.  THIS IS THE ONE ADMITTED WORD WHOSE RESIDUE MEETS
+`Fs.Fcntl.setfl_acted_on`, because O_APPEND is a bit F_SETFL acts on, and
+that is why the fd it mints is a `State.FdFileA` rather than a
+`State.FdFileW`: `Fs.Fcntl.setfl_noop_on` declines the new kind, and its
+arm carries the argument.  Rocq: `Open.append_create_flags`. -/
 def append_create_flags : Int := O_WRONLY + O_CREAT + O_APPEND
 
 /-- Is bit `b` set in the flag residue `fl`?  Rocq tests
@@ -154,23 +135,6 @@ def rdwr_excl_create_flags : Int := O_RDWR + O_CREAT + O_EXCL
 def is_rdwr_excl_create (fl : Int) : Bool :=
   fl == rdwr_excl_create_flags || fl == rdwr_excl_create_flags + O_TRUNC
 
-/-- The EXCLUSIVE APPEND write-open words: O_WRONLY|O_CREAT|O_EXCL|O_APPEND
-(include/uapi/asm-generic/fcntl.h:20,23,26,35, Linux v6.18.46, commit
-1f99e9ab748f), with or without O_TRUNC.  Each half of the answer is a
-neighbour's: `do_open` refuses every name that exists with O_EXCL's -EEXIST
-before any other test (fs/namei.c:3949-3950, Linux v6.18.46), and a name it
-creates loses O_TRUNC (:3963-3966) and keeps O_APPEND in `f_flags`
-(`do_dentry_open` clears only O_CREAT|O_EXCL|O_NOCTTY|O_TRUNC, fs/open.c:981,
-Linux v6.18.46), so the created
-descriptor is the append kind on a new empty file.  Its arm mints
-`State.FdFileA`, which is why the arm is not here (file header): the
-constants are kept because `modeled_open_flags` and the device arms read
-them.  Rocq: `Open.excl_append_create_flags`, `Open.is_excl_append_create`. -/
-def excl_append_create_flags : Int := O_WRONLY + O_CREAT + O_EXCL + O_APPEND
-
-def is_excl_append_create (fl : Int) : Bool :=
-  fl == excl_append_create_flags || fl == excl_append_create_flags + O_TRUNC
-
 /-- The flag bits every modeled shape accepts and ignores: O_CLOEXEC,
 which Linux HONOURS — `do_sys_openat2` hands the unstripped word to
 get_unused_fd_flags (fs/open.c:1435, Linux v6.18.46) and `alloc_fd` records
@@ -192,8 +156,7 @@ def open_ignored_flags : Int := O_CLOEXEC + O_LARGEFILE + O_NONBLOCK
 /-- The flag WORDS `openat_spec` interprets, each modulo the bits in
 `open_ignored_flags`: O_RDONLY, the clobbering write-create shape, the
 exclusive write-create shapes, O_RDONLY|O_DIRECTORY, the append
-write-create shape, the read-write shapes, and the exclusive append
-shapes.  Linux validates the flags
+write-create shape, and the read-write shapes.  Linux validates the flags
 in `build_open_flags` (fs/open.c:1238-1361, Linux v6.18.46, commit
 1f99e9ab748f) BEFORE `getname` fetches the pathname
 (`do_sys_openat2`, fs/open.c:1427-1431), so this test runs first in
@@ -205,8 +168,8 @@ before `may_open` (:3973) and `vfs_open` (:3974-3975), so the answer does
 not depend on which non-directory the name is (`openat_dir_spec`).
 
 DECLINED, each for its own reason on Rocq's `Open.modeled_open_flags`:
-O_WRONLY|O_APPEND without O_CREAT, the O_TRUNC spelling of the append
-word, O_RDWR beside O_APPEND, O_RDWR|O_DIRECTORY (which
+O_WRONLY|O_APPEND without O_CREAT, the O_TRUNC and the O_EXCL spellings
+of the append word, O_RDWR beside O_APPEND, O_RDWR|O_DIRECTORY (which
 `build_open_flags` admits and `may_open`'s S_IFDIR arm answers -EISDIR,
 fs/namei.c:3540-3542, Linux v6.18.46), O_RDWR|O_EXCL without O_CREAT (`do_open` reads
 O_EXCL only inside its O_CREAT block, :3948-3950), and O_NOCTTY, whose
@@ -227,7 +190,6 @@ def modeled_open_flags (flags : word) : Bool :=
   fl == 0 || fl == wr_create_flags || is_excl_create fl
   || fl == O_DIRECTORY || fl == append_create_flags
   || rdwr_open_word fl || is_rdwr_excl_create fl
-  || is_excl_append_create fl
 
 /-! ### The introduction lemmas, twins of Rocq's
 
@@ -267,11 +229,6 @@ theorem modeled_open_flags_rdwr (flags : word)
 
 theorem modeled_open_flags_rdwr_excl (flags : word)
     (h : is_rdwr_excl_create (bv_unsigned (bv_and flags (bv_not (Z_to_bv 64 open_ignored_flags)))) = true) :
-    modeled_open_flags flags = true := by
-  simp only [modeled_open_flags, h, Bool.or_true, Bool.true_or]
-
-theorem modeled_open_flags_excl_append (flags : word)
-    (h : is_excl_append_create (bv_unsigned (bv_and flags (bv_not (Z_to_bv 64 open_ignored_flags)))) = true) :
     modeled_open_flags flags = true := by
   simp only [modeled_open_flags, h, Bool.or_true]
 
@@ -361,14 +318,57 @@ already there, and carrying a new empty file when it is not.  Nothing on
 the O_APPEND path truncates — O_TRUNC alone arms the truncation, in
 `do_open` (fs/namei.c:3967-3972, Linux v6.18.46, commit 1f99e9ab748f),
 and O_APPEND is a status flag `init_file` copies into `f_flags`
-(fs/file_table.c:198) that is read at write time.  Kept although the arm
-that reads it (`open_append`) is not ported, because it is a top-level
-Rocq definition and the argument is stated on it.  Rocq:
+(fs/file_table.c:198) that is read at write time.  `open_append` is the
+arm that reads it.  Rocq:
 `Open.append_open_fs`. -/
 def append_open_fs (fs : Fs.Fs) (p : path) : Fs.Fs :=
   match fs_lookup fs p with
   | some _ => fs
   | none => fs_set fs p []
+
+/-- The effect a modeled APPEND write-open records: an errno from
+`openat_errnos` (the same untracked environment conditions the other
+write-open shapes admit, this alternative also keeping the spec receptive
+when no free fd < 2^31 exists), or the lowest free fd bound to a
+`State.FdFileA` on `p`, with `p` created empty only if it was absent
+(`append_open_fs`).
+
+THE OFFSET STARTS AT 0 AND THAT IS EXACT: `init_file` zeroes `f_pos`
+(fs/file_table.c:216, Linux v6.18.46, commit 1f99e9ab748f) and no O_APPEND
+path assigns to it at open time, which is why `fopen(p, "a")` has to be
+followed by an `ftell` that seeks to learn the size.  The append
+positioning happens per WRITE, in `generic_write_checks` (mm/filemap.c,
+Linux v6.18.46), and `ReadWrite.write_spec`'s `FdFileA` arm is where the
+model records it.
+
+THE REGULAR-FILE PREMISE OF `create_wronly` IS SHARED, unchanged: `p` is
+an uninterpreted byte string, so a name Linux would resolve to a device, a
+FIFO or a kernfs attribute is recorded here as an ordinary file.  Rocq:
+`Open.open_append`. -/
+def open_append (p : path) (m : Model) : Sys SyscallEffect :=
+  alt (e <- errno_from openat_errnos ;; err_ret e)
+      (fd <- lowest_fd (m_fds m) ;;
+       set_fs (append_open_fs (m_fs m) p) ;;
+       set_fds (fd_insert (m_fds m) fd (.FdFileA p (Z_to_bv 64 0))) ;;
+       ret_only fd)
+
+/-- Resolve the APPEND write-create open shape.
+
+A DIRECTORY REFERENCE IS -EISDIR, the clobbering shape's answer and not
+the exclusive shape's -EEXIST, and the reason is which test `do_open`
+reaches first.  With O_CREAT set it returns -EEXIST only under O_EXCL
+(fs/namei.c:3949-3950, Linux v6.18.46, commit 1f99e9ab748f), which this
+word does not carry; the next test is `d_is_dir(nd->path.dentry)`
+(:3951-3952), and that is -EISDIR.  So "." and ".." answer here exactly as
+they do for O_WRONLY|O_CREAT|O_TRUNC, ahead of `may_open` (:3973), and
+O_APPEND changes nothing about it.  An IMPLIED directory
+(`Namei.fs_under`) takes the same branch for the reason given on
+`openat_create_spec`: the dentry the lookup finds is positive and
+`d_is_dir`, and the word carries no O_EXCL.  An existing file is opened
+and keeps its bytes (`append_open_fs`).  Rocq: `Open.openat_append_spec`. -/
+def openat_append_spec (p : path) (m : Model) : Sys SyscallEffect :=
+  if path_is_dirref p || fs_under (m_fs m) p then err_ret EISDIR
+  else open_append p m
 
 /-- Resolve an exclusive write-create open after pathname fetch.  A
 directory reference, an implied directory and a name the map holds are
@@ -384,6 +384,84 @@ def openat_excl_spec (p : path) (m : Model) : Sys SyscallEffect :=
     match fs_lookup (m_fs m) p with
     | some _ => err_ret EEXIST
     | none => create_wronly p m
+
+/-- The effect a modeled READ-WRITE open records: an errno from
+`openat_errnos`, or the lowest free fd bound to a `State.FdFileRW` on `p`,
+with the file system left as `fs'`.
+
+THE OFFSET STARTS AT 0 for both directions, and it is the same `f_pos`
+both use: `init_file` zeroes it (fs/file_table.c:216, Linux v6.18.46,
+commit 1f99e9ab748f) and nothing on the O_RDWR path assigns to it at open
+time.  O_TRUNC does not move it either — it empties the file through
+`handle_truncate` (fs/namei.c:3967-3972 and :3978-3979, Linux v6.18.46)
+and leaves the position alone, which is why a truncating open is `fs'` and
+not an offset.
+
+THE REGULAR-FILE PREMISE OF `create_wronly` IS SHARED, unchanged, and this
+kind widens its reach by one direction rather than by a new premise: a
+character device opened O_RDWR is readable AND writable in the model,
+where the other kinds open the same name one way at a time.  Rocq:
+`Open.open_rdwr`. -/
+def open_rdwr (p : path) (fs' : Fs.Fs) (m : Model) : Sys SyscallEffect :=
+  alt (e <- errno_from openat_errnos ;; err_ret e)
+      (fd <- lowest_fd (m_fds m) ;;
+       set_fs fs' ;;
+       set_fds (fd_insert (m_fds m) fd (.FdFileRW p (Z_to_bv 64 0))) ;;
+       ret_only fd)
+
+/-- Resolve one of the four non-exclusive READ-WRITE open words, with
+`creat` and `trunc` the two bits that separate them (`rdwr_open_word` says
+why they are one arm).  All four answers are `do_open`'s (fs/namei.c,
+Linux v6.18.46, commit 1f99e9ab748f):
+
+- a DIRECTORY REFERENCE, or an IMPLIED directory (`Namei.fs_under`), is
+  -EISDIR whatever the two bits say, and the two bit settings reach it at
+  different sites: with O_CREAT it is `do_open`'s own
+  `d_is_dir(nd->path.dentry)` (:3951-3952) inside the O_CREAT block;
+  without it, nothing in that block runs and the answer is `may_open`'s
+  `case S_IFDIR: if (acc_mode & MAY_WRITE) return -EISDIR` (:3540-3542),
+  with MAY_WRITE present because `build_open_flags` sets
+  `acc_mode = ACC_MODE(flags)` (fs/open.c:1243, Linux v6.18.46) and
+  ACC_MODE maps O_RDWR to MAY_READ|MAY_WRITE (include/linux/fs.h:3980,
+  Linux v6.18.46).  The second derivation is the one O_RDONLY never
+  reaches, which is why the plain read arm hands "." a descriptor and this
+  arm cannot;
+- an ABSENT name is a fresh empty file under O_CREAT and -ENOENT without
+  it, the negative dentry's -ENOENT out of `traverse_mounts`
+  (fs/namei.c:1537-1538, Linux v6.18.46) on the trailing `step_into`
+  (:1989-1992, :3922), the same answer `openat_read_spec` gives;
+- an EXISTING file is emptied under O_TRUNC and keeps its bytes without
+  it: `do_open` arms `handle_truncate` on
+  `d_is_reg(nd->path.dentry) && open_flag & O_TRUNC` (:3967-3972);
+- a file the open just CREATED is empty either way, which is why `creat`
+  and `trunc` are not composed on that branch: `do_open` clears O_TRUNC
+  under FMODE_CREATED (:3963-3966) before the truncate test, so a created
+  file is never truncated at all.
+
+Rocq: `Open.openat_rdwr_spec`. -/
+def openat_rdwr_spec (creat trunc : Bool) (p : path) (m : Model)
+    : Sys SyscallEffect :=
+  if path_is_dirref p || fs_under (m_fs m) p then err_ret EISDIR
+  else
+    match fs_lookup (m_fs m) p with
+    | none =>
+        if creat then open_rdwr p (fs_set (m_fs m) p []) m
+        else err_ret ENOENT
+    | some _ =>
+        open_rdwr p (if trunc then fs_set (m_fs m) p [] else m_fs m) m
+
+/-- Resolve an exclusive READ-WRITE create open.  The shape of
+`openat_excl_spec` with the fd kind changed and no other difference:
+O_EXCL's -EEXIST is decided before any type test (fs/namei.c:3949-3950,
+Linux v6.18.46, commit 1f99e9ab748f), so a directory reference or an
+implied directory answers -EEXIST here rather than the -EISDIR
+`openat_rdwr_spec` gives it.  Rocq: `Open.openat_rdwr_excl_spec`. -/
+def openat_rdwr_excl_spec (p : path) (m : Model) : Sys SyscallEffect :=
+  if path_is_dirref p || fs_under (m_fs m) p then err_ret EEXIST
+  else
+    match fs_lookup (m_fs m) p with
+    | some _ => err_ret EEXIST
+    | none => open_rdwr p (fs_set (m_fs m) p []) m
 
 /-- Resolve an O_RDONLY|O_DIRECTORY open after pathname fetch.
 
@@ -510,10 +588,9 @@ all decided before that open runs:
 - O_WRONLY|O_CREAT|O_APPEND: the same again; nothing in `null_fops` reads
   `f_flags` (`write_null` :418-422 and `write_iter_null` :429-434 return
   the count without a position), so the append word mints the write-only
-  entry the clobbering word does.  This is the one place the append word
-  is ANSWERED in Lean, since `FdDevNull` needs no new constructor.
-- O_CREAT|O_EXCL, in every admitted word that carries it (either access
-  mode, with or without O_APPEND): `do_open`'s -EEXIST (:3949-3950).
+  entry the clobbering word does.
+- O_CREAT|O_EXCL, in either access mode: `do_open`'s -EEXIST
+  (:3949-3950).
 - O_RDONLY|O_DIRECTORY: `do_open`'s -ENOTDIR (:3958-3959).
 
 Fail-closed on an image whose map holds the key or a key under it; the
@@ -532,7 +609,6 @@ def openat_devnull_spec (flags : word) (m : Model) : Sys SyscallEffect :=
         else if fl == append_create_flags then open_devnull m false true
         else if rdwr_open_word fl then open_devnull m true true
         else if is_rdwr_excl_create fl then err_ret EEXIST
-        else if is_excl_append_create fl then err_ret EEXIST
         else unmodeled
 
 /-- The success shape of the read-only "/dev/urandom" open: the injectable
@@ -563,14 +639,12 @@ runs:
   `may_open` (fs/namei.c:3546-3549), whose S_IFCHR arm tests may_open_dev
   and nothing else (its -EACCES is already an `openat_errnos` alternative)
   and drops O_TRUNC for a device (:3555), then `vfs_open` (:3974-3975).
-- O_CREAT|O_EXCL, in every admitted word that carries it (either access
-  mode, with or without O_APPEND): `do_open`'s -EEXIST (:3949-3950),
-  before `may_open` — deterministic, as on every existing name.  That is
-  why the exclusive append word is answered although it is a write word:
-  it never opens the device.
+- O_CREAT|O_EXCL, in either access mode: `do_open`'s -EEXIST
+  (:3949-3950), before `may_open` — deterministic, as on every existing
+  name.
 - O_RDONLY|O_DIRECTORY: `do_open`'s -ENOTDIR (:3958-3959).
 - THE WRITE WORDS ARE DECLINED, not answered: O_WRONLY and O_RDWR, with
-  or without O_CREAT, O_TRUNC and O_APPEND, and without O_EXCL.  Linux
+  or without O_CREAT, O_TRUNC and O_APPEND.  Linux
   accepts them —
   `may_open` passes and drops the truncation, and a write through the
   descriptor reaches `random_write_iter` (drivers/char/random.c:1448,
@@ -599,7 +673,6 @@ def openat_urandom_spec (flags : word) (m : Model) : Sys SyscallEffect :=
         else if is_excl_create fl then err_ret EEXIST
         else if fl == O_DIRECTORY then err_ret ENOTDIR
         else if is_rdwr_excl_create fl then err_ret EEXIST
-        else if is_excl_append_create fl then err_ret EEXIST
         else unmodeled
 
 /-- "/tmp/<name>", the run's own PRIVATE temporary directory: the third
@@ -691,13 +764,16 @@ separator in it is declined ahead of any arm, with the exceptions
 `link_path_walk` (fs/namei.c:2441-2537, Linux v6.18.46, commit
 1f99e9ab748f) before `open_last_lookups` and `do_open` read the flags, so
 the hoisted position is the faithful one; the soundness argument for the
-decline — the create shapes used to mint a key spelled "/no/such/file"
-where Linux answers -ENOENT — is on Rocq's `Open.openat_resolved_spec`.
+decline — without it the create shapes would mint a key spelled
+"/no/such/file" where Linux answers -ENOENT — is on Rocq's
+`Open.openat_resolved_spec`.
 
-THE FINAL `unmodeled` IS REACHABLE HERE, unlike in Rocq: the append word,
-the six read-write words and the two exclusive append words pass
-`modeled_open_flags` and land in it, the declared declines of the file
-header.  The four arms above it are Rocq's, in Rocq's order. -/
+THE ARMS ARE NOT ALL TOTAL.  All but one answer every pathname they are
+handed; `openat_dir_spec` does not, and its declines are on the path
+rather than on the flag word.  The FINAL `unmodeled` is unreachable — the
+branches exhaust what `modeled_open_flags` admits — but this dispatcher
+does not decline only above an arm: it also declines inside one.  The
+seven arms are Rocq's, in Rocq's order. -/
 def openat_resolved_spec (p : path) (flags : word) (m : Model) : Sys SyscallEffect :=
   if path_has_slash p then openat_sep_spec p flags m else
   let fl := bv_unsigned (bv_and flags (bv_not (Z_to_bv 64 open_ignored_flags)))
@@ -705,6 +781,10 @@ def openat_resolved_spec (p : path) (flags : word) (m : Model) : Sys SyscallEffe
   else if fl == wr_create_flags then openat_create_spec p m
   else if is_excl_create fl then openat_excl_spec p m
   else if fl == O_DIRECTORY then openat_dir_spec p m
+  else if fl == append_create_flags then openat_append_spec p m
+  else if rdwr_open_word fl then
+    openat_rdwr_spec (flag_set fl O_CREAT) (flag_set fl O_TRUNC) p m
+  else if is_rdwr_excl_create fl then openat_rdwr_excl_spec p m
   else unmodeled
 
 /-- `openat dirfd path flags mode` after the flag gate: the pathname fetch,
@@ -1143,7 +1223,8 @@ Linux v6.18.46:
   all.  The two character devices fail S_ISREG whatever mode they were
   opened with, so `FdDevNull`'s two mode bits are not read either;
 - a writable file fd whose path is absent from `m_fs` is `unmodeled`; an
-  `FdFileW` always points into the fs (see openat), so this arm is
+  `FdFileW`, an `FdFileA` and an `FdFileRW` always point into the fs (see
+  openat), so this arm is
   unreachable rather than a judgement;
 - a grow larger than `modeled_truncate_gap` permits is `unmodeled`, fail
   closed, decided after the fd checks Linux makes first.  The gate is
@@ -1152,15 +1233,18 @@ Linux v6.18.46:
   spec that hoisted the bound above the kind dispatch would decline
   there instead.
 
-ONE SUCCESS ARM WHERE ROCQ HAS THREE CONSTRUCTORS.  `do_ftruncate`'s test
-passes an O_WRONLY description and an O_RDWR or O_APPEND one alike —
-O_APPEND rides on O_WRONLY, which is what sets FMODE_WRITE, and the flag is
-read nowhere on this path (`do_truncate` sets the size outright; O_APPEND
-belongs to `generic_write_checks_count` in fs/read_write.c, Linux v6.18.46,
-under `generic_write_checks`) — so Rocq gives `FdFileA`, `FdFileW` and
-`FdFileRW` one body, written twice: an `FdFileA` arm and an `FdFileW |
-FdFileRW` arm.  The `FdFileW` arm below is Rocq's, body for body; `FdFileA`
-and `FdFileRW` decline (file header).
+ONE BODY FOR THREE CONSTRUCTORS.  `do_ftruncate`'s test passes an O_WRONLY
+description and an O_RDWR or O_APPEND one alike — O_APPEND rides on
+O_WRONLY, which is what sets FMODE_WRITE, and the flag is read nowhere on
+this path (`do_truncate` sets the size outright; O_APPEND belongs to
+`generic_write_checks_count` in fs/read_write.c, Linux v6.18.46, under
+`generic_write_checks`) — so `FdFileA`, `FdFileW` and `FdFileRW` share one
+body, written twice as Rocq writes it: an `FdFileA` arm and an
+`FdFileW | FdFileRW` arm.  The inode's APPEND-ONLY attribute is a
+different thing and does bite on an `FdFileA` — `IS_APPEND(inode)` is
+`do_ftruncate`'s own -EPERM (fs/open.c:183-184, Linux v6.18.46) — but it
+is an inode attribute this model does not carry, exactly as for
+`FdFileW`, and the list below already names it.
 
 WHAT THIS SPEC DOES NOT MODEL, and therefore what it assumes of the
 environment.  Four failures are named, each from state the model does
@@ -1298,7 +1382,26 @@ def ftruncate_spec (fd len : word) : Sys SyscallEffect :=
   | some .FdUrandom => err_ret EINVAL         -- a character device too, and read-only besides
   | some (.FdFile _ _) => err_ret EINVAL      -- open read-only: the !FMODE_WRITE half, real -EINVAL and not write's -EBADF
   | some .FdDir => err_ret EINVAL             -- a directory is not S_ISREG: real -EINVAL, not -EISDIR
-  | some (.FdFileW p _) =>
+  | some (.FdFileA p _) =>
+      -- AN APPEND FD IS A WRITABLE REGULAR FILE, so it takes this body
+      -- rather than the -EINVAL the kinds above get: O_APPEND rides on
+      -- O_WRONLY, which is what sets FMODE_WRITE, and `do_ftruncate`
+      -- reads the flag nowhere.  THE OFFSET IS UNTOUCHED, as for every
+      -- other kind, so a shrink can leave `f_pos` past end-of-file —
+      -- observable through `lseek(fd, 0, SEEK_CUR)`, and a decision here.
+      match fs_lookup (m_fs m) p with
+      | none => unmodeled                     -- an FdFileA always points into the fs; see openat
+      | some data =>
+          if (!modeled_truncate_gap data len) then unmodeled
+          else
+            set_fs (fs_set (m_fs m) p (file_truncate data len)) ;;
+            ret_only (Z_to_bv 64 0)
+  | some (.FdFileW p _) | some (.FdFileRW p _) =>
+      -- ONE ARM FOR TWO KINDS: `do_ftruncate`'s test is
+      -- `!S_ISREG(inode->i_mode) || !(file->f_mode & FMODE_WRITE)`
+      -- (fs/open.c:175-176, Linux v6.18.46), and an O_RDWR description
+      -- passes both halves exactly as an O_WRONLY one does; nothing
+      -- further down reads the access mode.
       match fs_lookup (m_fs m) p with
       | none => unmodeled                     -- a writable file fd always points into the fs; see openat
       | some data =>
@@ -1309,7 +1412,5 @@ def ftruncate_spec (fd len : word) : Sys SyscallEffect :=
             set_fs (fs_set (m_fs m) p (file_truncate data len)) ;;
             ret_only (Z_to_bv 64 0)
             -- NO set_fds: the offset is untouched, see the docstring
-  | some (.FdFileA _ _) => unmodeled -- declined: see the file header
-  | some (.FdFileRW _ _) => unmodeled -- declined: see the file header
 
 end LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Open

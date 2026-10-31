@@ -1,6 +1,7 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Fs/Readdir.v
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 
-/-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Sys.Fs.Readdir — getdents64 (61)
 
@@ -21,17 +22,10 @@ either file owes the other one.
 One spelling differs from Rocq without changing a value: the `Z.ltb` Bool
 test of `getdents64_no_room` is Lean's decidable `<` on `Int`.
 
-FDFILERW AND FDFILEA DECLINE HERE, beyond Rocq.  `getdents64_spec` answers
-`unmodeled` on a read-write or an append-mode file, where Rocq's arm answers
--ENOTDIR as for `FdFile` (access mode changes where a write lands, not
-whether the inode has an `.iterate_shared`).  The base change that added the
-two constructors ported Rocq's arm into every pure helper that names either
-and declined both in every spec arm that does, so that each arm is ported
-later against pins of its own; `Checks/Cases/Fs/Readdir.lean`'s
-`a17_rdwr_getdents64_declines` and `a17_append_getdents64_declines` hold the
-declines.  No run an example can reach is narrowed: none can hold either
-kind yet (`State/Fd.lean`'s constructor notes say why, and when that stops
-being true). -/
+EVERY REGULAR FILE IS -ENOTDIR.  `FdFile`, `FdFileW`, `FdFileA` and
+`FdFileRW` all answer -ENOTDIR: append mode changes where a write lands,
+and the access mode changes nothing at all, not whether the inode has an
+`.iterate_shared`. -/
 
 namespace LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Readdir
 
@@ -217,8 +211,10 @@ def getdents64_spec (fd count : word) : Sys SyscallEffect :=
   | some (.FdChannel _) => err_ret ENOTDIR  -- no `.iterate_shared` on any non-directory
   | some (.FdFile _ _) => err_ret ENOTDIR
   | some (.FdFileW _ _) => err_ret ENOTDIR
-  | some (.FdFileA _ _) => unmodeled -- declined: see the file header
-  | some (.FdFileRW _ _) => unmodeled -- declined: see the file header
+  | some (.FdFileA _ _) => err_ret ENOTDIR -- append mode changes where a write lands,
+                                           -- not whether the inode has an `.iterate_shared`
+  | some (.FdFileRW _ _) => err_ret ENOTDIR -- and neither does the access mode: the same
+                                            -- regular file, opened O_RDWR
   | some (.FdPipe _ _) => err_ret ENOTDIR
   | some (.FdSocket _) => err_ret ENOTDIR
   | some (.FdDevNull _ _) => err_ret ENOTDIR -- `null_fops` (drivers/char/mem.c, Linux

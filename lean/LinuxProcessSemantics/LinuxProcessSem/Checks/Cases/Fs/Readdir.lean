@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Fs/Readdir.v
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
@@ -20,7 +21,7 @@ Every proof is `sys_norm` or `sys_refute` (`Checks/Cases/Tactic.lean`).
 
 THE ROCQ FILE SAYS ALMOST NOTHING ABOUT THIS SYSCALL, and says why: every
 arm is reachable from a probe, and
-`testing/syscall-check/tests/getdents64_spec.c` pins the arms against a
+`linux-process-semantics@ff0313ba4f:testing/syscall-check/tests/getdents64_spec.c` pins the arms against a
 real kernel (every kind but `FdDevNull` and `FdUrandom`, which no mode of
 that probe opens).  What it keeps is what a probe reads nothing about —
 where the model puts the buffer-size edge, on both sides of the sign, and
@@ -217,7 +218,7 @@ fd 0 — `may_open` refuses a directory only for MAY_WRITE and MAY_EXEC —
 and there this arm answers `-ENOTDIR` where Linux lists.  So the `iff` pins
 the model's premise, not a theorem about Linux: `State.ProcInput` carries
 no fd table, so nothing the model holds says what a channel names, and
-bugs/getdents64-channel-fd-assumed-not-a-directory.md records the premise.
+linux-process-semantics@ff0313ba4f:bugs/getdents64-channel-fd-assumed-not-a-directory.md records the premise.
 kernel: fs/readdir.c:iterate_dir; fs/namei.c:may_open@v6.18.46 -/
 theorem channel_fd_is_enotdir (i : SyscallInput) (o : outcome SyscallEffect) :
     getdents64_spec 0 0 i readdir_model o ↔
@@ -409,7 +410,7 @@ there.  `buf.prev_reclen` is still 0 either way, so the
 `count - buf.ctx.count` rewrite is skipped.  Two more answers Linux can
 give here are refused on purpose, and pinned as refusals below: the
 `-EACCES` of an enforcing LSM and the `-EPERM` of a `FAN_DENY` listener
-(bugs/getdents64-lsm-and-fanotify-denials-not-admitted.md). -/
+(linux-process-semantics@ff0313ba4f:bugs/getdents64-lsm-and-fanotify-denials-not-admitted.md). -/
 
 /-- `getdents64(dirfd, buf, 0)`: the two admitted answers, in the order
 the kernel would reach them, and nothing else — no success, no write, no
@@ -426,7 +427,7 @@ at position 0 emits "." first (`dir_emit_dots`, include/linux/fs.h:4028-4031,
 Linux v6.18.46), so a 0 return would need a filesystem whose readdir emits
 nothing at position 0 — which neither tmpfs nor sysfs is, and a `subset=pid`
 procfs is (`proc_readdir`, fs/proc/generic.c:335-336; the spec header names
-that bound and bugs/getdents64-position-zero-premise-excludes-pidonly-procfs.md
+that bound and linux-process-semantics@ff0313ba4f:bugs/getdents64-position-zero-premise-excludes-pidonly-procfs.md
 records it) — or an `FdDir` past position 0, which the spec header argues
 no modeled run holds.  Both halves of that premise are the spec's, not this
 pin's: give `FdDir` a position and this refutation has to be re-read.
@@ -463,7 +464,7 @@ theorem dir_fd_no_room_event_rejected (i : SyscallInput) (m' : Model) :
 
 /-- `-EACCES` is a REAL answer this arm refuses: an enforcing LSM gives it
 through `security_file_permission` (security/security.c:2944, Linux v6.18.46),
-which fs/readdir.c:93 calls, between the `-ENOTDIR` and the `-EINVAL`.  bugs/getdents64-lsm-and-fanotify-denials-not-admitted.md
+which fs/readdir.c:93 calls, between the `-ENOTDIR` and the `-EINVAL`.  linux-process-semantics@ff0313ba4f:bugs/getdents64-lsm-and-fanotify-denials-not-admitted.md
 records the refusal as a narrowing kept on purpose, and this statement is
 its Lean falsifier: the day `getdents64_errnos` gains the errno, it stops
 closing and that entry is out of date.
@@ -755,15 +756,17 @@ def a17_readdir_model : Model :=
 
 attribute [sys_simp low] a17_readdir_model.eq_1
 
-/-- `getdents64` through a read-write file declines
-(`Sys/Fs/Readdir.lean`'s header declares the narrowing).  The same call
-on an `FdFile` answers -ENOTDIR (`iterate_dir`, fs/readdir.c, Linux
-v6.18.46: a regular file has no `iterate_shared`), so a mutant answering
-this kind as `FdFile` fails here.
+/-- `getdents64` through a read-write file is -ENOTDIR, as it is through
+an `FdFile`: `iterate_dir` (fs/readdir.c:88-91, Linux v6.18.46) answers
+-ENOTDIR when the file has no `.iterate_shared`, and the access mode
+decides nothing about the inode's operation table.  The count 256 has
+room, so a mutant that declined this kind the way the DIRECTORY arm
+declines a roomy buffer fails here.
 kernel: fs/readdir.c:iterate_dir@v6.18.46 -/
-theorem a17_rdwr_getdents64_declines (o : outcome SyscallEffect) :
+theorem a17_rdwr_getdents64_is_enotdir (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 61 [3, 4096, 256, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_readdir_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_readdir_model o
+      ↔ o = Ok (mkEffect (errno_ret ENOTDIR) [] []) a17_readdir_model [] := by
   sys_norm
 
 def a17_readdir_append_model : Model :=
@@ -771,15 +774,15 @@ def a17_readdir_append_model : Model :=
 
 attribute [sys_simp low] a17_readdir_append_model.eq_1
 
-/-- `getdents64` through an append-mode file declines
-(`Sys/Fs/Readdir.lean`'s header declares the narrowing).  The same call
-on an `FdFileW` answers -ENOTDIR (`iterate_dir`, fs/readdir.c, Linux
-v6.18.46: a regular file has no `iterate_shared`), so a mutant answering
-this kind as `FdFileW` fails here.
+/-- `getdents64` through an append-mode file is -ENOTDIR, as it is
+through an `FdFileW`: append mode changes where a write lands, not
+whether the inode has an `.iterate_shared`, which is what `iterate_dir`
+(fs/readdir.c:88-91, Linux v6.18.46) tests.
 kernel: fs/readdir.c:iterate_dir@v6.18.46 -/
-theorem a17_append_getdents64_declines (o : outcome SyscallEffect) :
+theorem a17_append_getdents64_is_enotdir (o : outcome SyscallEffect) :
     syscall_spec (SyscallInput.mkInput 61 [3, 4096, 256, 0, 0, 0]
-        (fun _ => none) (fun _ => none)) a17_readdir_append_model o ↔ o = Unmodeled := by
+        (fun _ => none) (fun _ => none)) a17_readdir_append_model o
+      ↔ o = Ok (mkEffect (errno_ret ENOTDIR) [] []) a17_readdir_append_model [] := by
   sys_norm
 
 end LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Fs.Readdir

@@ -14,9 +14,11 @@ Ports Rocq lines 1591–1878 and 1890–2084, reusing `Base.record_gpr`.
 The Section variable `segs` is an explicit leading argument.
 The read wrapper uses `StreamExec.adv_apply_write` for a nonempty delivery
 and `Base.adv_eff_ret` for EOF instead of copying `adv_apply_delivered`.
-No lemma from the Open part is needed. The newer checker's
-`unreadable_source_past_eof` guard is false under the original full-buffer
-readability premises; no extra hypothesis is required.
+No lemma from the Open part is needed. The ported `write_spec` has no
+readability guard past end-of-file: the `FdFileW` arm answers `-EFAULT`
+on an empty readable prefix and otherwise walks the gap, so the
+full-buffer readability premises here reach the write arm directly and
+no extra hypothesis is required.
 -/
 
 namespace LinuxProcessSemantics.Common.FileSim
@@ -199,8 +201,8 @@ theorem tfo_write_file (ms : machine_state) (model : Model) (x8 : word)
     simp only [check_write, Hfd32, Hfd, rw_range_in_range _ _ Hcnt,
       Bool.false_eq_true, ↓reduceIte,
       write_source_of_rw _ _ _ Hcnt, readable_bytes_full _ _ _ _ Hrb,
-      Hfs, unreadable_source_past_eof, Hnz, Hbeq,
-      Bool.not_false, Bool.true_and, Bool.false_and, Hgap, Hret]
+      Hfs, Hnz, Hbeq,
+      Bool.not_false, Bool.true_and, Hgap, Hret]
   have Hagree : lookups_agree_at (bv_unsigned (sys_input segs ms x8).in_sysno) := by
     rw [in_sysno_si, Hno]; rfl
   apply tfo_sys_det segs ms model x8
@@ -254,7 +256,7 @@ theorem tfo_write_file_zero (ms : machine_state) (model : Model) (x8 : word)
     simp only [check_write, Hfd32, Hfd, rw_range_in_range _ _ Hcnt,
       Bool.not_true, Bool.false_eq_true, ↓reduceIte,
       write_source_of_rw _ _ _ Hcnt, readable_bytes_full _ _ _ _ Hrb,
-      Hfs, unreadable_source_past_eof, Hz, Bool.false_and, Hgap, Hret,
+      Hfs, Hz, Bool.false_and, Hgap, Hret,
       check_access_ok_zero, Hok]
   have Hagree : lookups_agree_at (bv_unsigned (sys_input segs ms x8).in_sysno) := by
     rw [in_sysno_si, Hno]; rfl

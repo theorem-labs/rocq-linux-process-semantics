@@ -547,7 +547,8 @@ compile of that proof; `Checks/Arms/Mm/Mmap.lean` meets the same limit on
 hypothesis, so the loop ends where it started.  Opened as the loop
 reaches them, each split is over the body of one definition, with the
 definitions it calls still folded.  The descriptor wrappers
-`check_open_devnull`, `check_open_urandom` and `check_create_wronly`
+`check_open_devnull`, `check_open_urandom`, `check_create_wronly`,
+`check_open_append` and `check_open_rdwr`
 have no line here: `check_open_result_frame`'s `vm_done` rule and
 `check_open_result_cases`, both in `Checks/Sys/Fs/Open.lean`, take them
 as they stand. -/
@@ -562,23 +563,26 @@ macro "openat_layer " h:ident : tactic => `(tactic| first
   | rw [Checks.Sys.Fs.Open.check_openat_read] at $h:ident
   | rw [Checks.Sys.Fs.Open.check_openat_create] at $h:ident
   | rw [Checks.Sys.Fs.Open.check_openat_excl] at $h:ident
-  | rw [Checks.Sys.Fs.Open.check_openat_dir] at $h:ident)
+  | rw [Checks.Sys.Fs.Open.check_openat_dir] at $h:ident
+  | rw [Checks.Sys.Fs.Open.check_openat_append] at $h:ident
+  | rw [Checks.Sys.Fs.Open.check_openat_rdwr] at $h:ident
+  | rw [Checks.Sys.Fs.Open.check_openat_rdwr_excl] at $h:ident)
 
 /-- Rocq: `VmMapsDisjoint.check_openat_frame`.  Every model `check_openat`
 accepts is the one it was handed, or, through `check_open_result`, that
-model with a descriptor bound (`with_fds`) and, when the descriptor is
-`check_create_wronly`'s `FdFileW` (the create word on a plain or `/tmp`
-name, an exclusive-create word on a plain one), the path emptied
-(`with_fs`); neither setter reaches `m_vmmaps`.  Rocq's proof unfolds the
+model with a descriptor bound (`with_fds`) and, where the arm writes the
+image too — `check_create_wronly`'s `FdFileW` on an emptied path,
+`check_open_append`'s `FdFileA` over `append_open_fs`,
+`check_open_rdwr`'s `FdFileRW` over the image its arm computed —
+that image (`with_fs`); no setter of either kind reaches `m_vmmaps`.  Rocq's proof unfolds the
 checker's arms and runs `vm_frame2`, whose `vm_done` closes each acceptor
 call through `check_open_result_frame`.  This one runs `vm_frame2`'s loop
 with `openat_layer` as a third alternative, which opens each arm as the
 loop reaches it (that macro's docstring says why), and the `vm_done` rule
 beside `check_open_result_frame` in `Checks/Sys/Fs/Open.lean` closes the
-acceptor calls.  Rocq
-also unfolds `check_openat_append`, `check_openat_rdwr`,
-`check_openat_rdwr_excl`, `check_open_append` and `check_open_rdwr`,
-which are `Checks/Sys/Fs/Open.lean`'s `unported:` lines. -/
+acceptor calls, the three descriptor wrappers
+`check_open_devnull`, `check_open_urandom` and `check_create_wronly`
+among them, and `check_open_append` and `check_open_rdwr` with them. -/
 theorem check_openat_frame (i : SyscallInput) (dirfd pathp flags : word) (eff : SyscallEffect)
     (m m' : Model) (evs : List event)
     (h : Checks.Sys.Fs.Open.check_openat i dirfd pathp flags eff m = CheckOk m' evs) :
