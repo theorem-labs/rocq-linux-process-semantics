@@ -282,7 +282,7 @@ Proof.
   destruct (map_has (vm_maps (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))) eqn:Hhas.
   - eapply bind_step; [apply get_vmmaps_ok|]. cbv beta zeta.
-    cbv iota. srw Hhas.
+    cbv iota. srw Hhas. apply alt_r.
     eapply bind_step; [apply modify_ok|].
     eapply bind_step; [apply modify_ok|]. apply pure_ok.
   - destruct (munmap_free_ok (m_vmmaps m) addr
