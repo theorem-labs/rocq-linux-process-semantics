@@ -3680,7 +3680,7 @@ Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gc : forall inp,
 Proof.
   intros inp (a & b & c & k & r & d & e & f & g & h & v & u).
   exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v u)))))))))))).
+    (conj (or_introl g) (conj h (conj v u))))))))))).
 Qed.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
@@ -3688,7 +3688,7 @@ Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
 Proof.
   intros inp (a & b & c & k & r & d & e & f & g & h & v & u).
   exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v u)))))))))))).
+    (conj (or_intror g) (conj h (conj v u))))))))))).
 Qed.
 
 Lemma valid_input_abort_hwcap_splits : forall inp,

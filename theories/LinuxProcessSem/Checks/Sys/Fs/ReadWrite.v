@@ -2127,7 +2127,8 @@ Proof.
     cbv zeta.
     destruct (negb (Nat.eqb (length (write_source (in_mem i) buf count))
                       (word_to_nat count))) eqn:Hsrc; hall Hsrc; inv_ok;
-      reflexivity.
+      [reflexivity|].
+    destruct (fst st) as [|b0 q0] eqn:Hq; inv_ok; try discriminate.
   - (* /dev/null *)
     destruct wr; cbn [negb] in *; cbv beta iota in *;
       [ destruct (modeled_rw_range buf count) eqn:Hg; hall Hg;
