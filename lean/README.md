@@ -188,3 +188,37 @@ repository's Rocq model, so it says the import is faithful to
 the slices after this one change, area by area. And it cannot record: a
 recording is a live run on the pinned kernel machine, which no build VM
 has.
+
+## Check a pin's evidence
+
+A pin of the twin cites two trees that no checkout holds at once. A
+`rocq-twin:` name is a declaration of THIS repository's `theories/` at the
+commit the file's `-- Ports rocq-linux-process-semantics <commit>:<path>`
+line names, and a `probe:` line is a CASE of
+`linux-process-semantics@ff0313ba4f:testing/syscall-check/tests/*.c`.
+`check_lean_pin_evidence.py` resolves both under one `--root`, so run it
+against a root that holds both:
+
+```sh
+lean/tools/pin_evidence_root.sh <lps-ff03> <linux-v6.18.46> [scratch] [-- args]
+```
+
+The script makes that root out of symlinks in a scratch directory — this
+repository's `theories/` and `lean/`, and `testing/`, `tools/`, `bugs/`
+and `AGENTS.md` from the linux-process-semantics checkout — and runs the
+tool against it. It copies nothing into either repository and writes
+nothing outside the scratch directory.
+
+The Linux tree is not optional. The twin carries 9,702 `kernel:`
+annotations, and the tool refuses a run that has read no kernel, so the
+script makes the argument mandatory rather than letting the tool fail
+late. A shallow clone is enough:
+
+```sh
+git clone --depth 1 --branch v6.18.46 \
+  https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-6.18.46
+```
+
+Measured on a build VM: 2.0 GB for that clone, and **48 s** for a run
+over the whole twin, 13,987 declarations in 94 files. The tool exits 1
+while any finding stands; read the findings, not the exit code alone.
