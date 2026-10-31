@@ -738,9 +738,24 @@ Definition mremap_spec (old old_size new_size flags : word)
     the live-mapping half of "fresh" and [State.noaccess_pages_owned]
     (through [mremap_fresh_avoids_noaccess]) the protected half; the
     lazy and materialized halves are the ledger invariant the writers of
-    [vm_lazy] keep — every reservation lies under a live mapping — which
-    is not yet a proved invariant and is taken as a hypothesis where
-    the lemma is used. *)
+    [vm_lazy] keep — every reservation lies under a live mapping.
+
+    THAT INVARIANT IS NOW PROVED, so the sentence that stood here — "which
+    is not yet a proved invariant and is taken as a hypothesis where the
+    lemma is used" — is withdrawn.  [Common/WfInvariant.v] states it as
+    [LZ_OWNED] and [MAT_OWNED], on the PAGE FLOOR rather than on bytes,
+    establishes it at [Run.init_config] ([init_config_WF]) and preserves it
+    across every writer of the ledgers ([check_brk_WF], [check_mmap_WF],
+    [check_munmap_WF], [check_mprotect_WF], [check_mremap_WF]).  The floor
+    is not a convenience: byte ownership is NOT inductive under a same-page
+    [brk] shrink, because [Mmap.brk_maps_next] cuts byte by byte while
+    [Mmap.brk_unmaps] forgets page-rounded; see that file's header and
+    [brk_floor_outside].
+
+    A CALLER THAT STILL TAKES IT AS A HYPOTHESIS is no longer obliged to:
+    it can discharge it from [Common/WfInvariant.WF] of the state it is
+    reasoning about, which every run carries from its initial
+    configuration.  Those call sites are not rewritten here. *)
 Definition mremap_move_charge (m : Model) (old old_n new_n : word) : Z :=
   let h := m_vmmaps m in
   let old_lo := bv_unsigned old in
