@@ -1025,32 +1025,6 @@ Proof.
     | exact Hlazy | exact Hpages].
 Qed.
 
-(** The same on a state with empty lazy ledgers ([m_vm_lazy] and
-    [m_vm_materialized] both [nil]), where the two lazy-ledger
-    identities hold by computation: what is left to cite is
-    [State.noaccess_pages_owned] and the fit of the live mappings. *)
-Lemma mremap_move_budget_admits_fresh_lazyfree :
-  forall m old old_n dst new_n,
-  m_vm_lazy m = [] ->
-  m_vm_materialized m = [] ->
-  (bv_unsigned dst mod page_size = 0)%Z ->
-  (bv_unsigned new_n mod page_size = 0)%Z ->
-  (0 < bv_unsigned new_n)%Z ->
-  (bv_unsigned dst + bv_unsigned new_n <= alloc_top (m_vmmaps m))%Z ->
-  region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst new_n
-  = true ->
-  noaccess_pages_owned (m_vmmaps m) ->
-  (forall (a sz : word), In (a, sz) (vm_maps (m_vmmaps m)) ->
-     (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
-  mremap_move_budget_b m old old_n new_n = true ->
-  mremap_final_budget_b m old old_n dst new_n = true.
-Proof.
-  intros m old old_n dst new_n Hlz Hmat Hdalign Hnmod Hpos Hdtop Hdfree Hown
-    Hfit Hmv.
-  apply (mremap_move_budget_admits_fresh m old old_n dst new_n
-           Hdalign Hnmod Hpos Hdtop Hdfree Hown Hfit);
-    [rewrite Hlz; reflexivity | rewrite Hmat; reflexivity | exact Hmv].
-Qed.
 
 (** THE DIRECTION OF THE CHANGE: the mark implies the earlier two-gate
     mark, so every input a budget premise kept under the earlier mark
@@ -2099,3 +2073,4 @@ Proof.
     apply ebreak_source_within_budget_abort.
   - apply ebreak_errors_cfg_abort.
 Qed.
+

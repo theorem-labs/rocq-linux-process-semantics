@@ -25,12 +25,16 @@ the pull request's owner the hour it was measured.
 
 ## 1. The Python evidence run, and why 110 is not reproducible
 
-**`check_start_state.py` is not in the pull request's tree.** At `d4d2d93e`,
-`tools/placement_conformance/` carries only `start_state_to_rocq.py`. The
-checker lives on `revision/place`, and none of that branch's commits is an
-ancestor of the head. The ten records and the generator are byte-identical in
-both trees. So the command `reports/a4-start-state.md` gives under "How to
-reproduce" **cannot be run against the head**: it exits 2, file not found.
+**`check_start_state.py` was not in the pull request's tree when this ran.** At
+`d4d2d93e`, `tools/placement_conformance/` carries only
+`start_state_to_rocq.py`. The checker lived on `revision/place`, and none of
+that branch's commits was an ancestor of that head. The ten records and the
+generator are byte-identical in both trees. So the command
+`reports/a4-start-state.md` gives under "How to reproduce" **could not be run
+against `d4d2d93e`**: it exits 2, file not found. **That is fixed in the
+branch's later heads**: `revision/place` merged at `b9c82f0`, so from there on
+`tools/placement_conformance/check_start_state.py` is in the tree and the
+command runs where it is given.
 
 **How the script counts.** It prints no total, one PASSED or FAILED line per
 verdict: three for sub-check 1, four for sub-check 2, three for sub-check 3 —
