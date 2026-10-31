@@ -2191,7 +2191,7 @@ Lemma check_socket_frame : forall domain type protocol eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros domain type protocol eff m m' evs H.
-  unfold check_socket, check_new_fd_result in H. vm_frame2 H.
+  unfold check_socket, check_new_fd_result, check_errno_or_list in H. vm_frame2 H.
 Qed.
 
 Lemma check_bind_frame : forall i fd addrp addrlen eff m m' evs,
@@ -2231,7 +2231,7 @@ Proof.
      [vm_step] sees no [if] or [match] through a folded definition, so
      without the unfold that branch leaves an open goal. *)
   unfold check_accept4, check_new_fd_result, check_errno_or_success,
-    check_errno_only in H. vm_frame2 H.
+    check_errno_only, check_errno_or_list in H. vm_frame2 H.
 Qed.
 
 Lemma check_fcntl_frame : forall fd cmd arg eff m m' evs,

@@ -458,6 +458,27 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
       end
   end.
 
+(** Is the effect exactly "return this errno, touch nothing"?  The
+    empty-queue pipe write admits two answers whose EFFECT SHAPES differ
+    — the -ENOMEM carries no ledger, the delivery always carries the one
+    copy-in range — so the acceptor dispatches on the shape rather than
+    on the return value, and needs no bound on [count]. *)
+Definition is_ret_only_errno (e : Z) (eff : SyscallEffect) : bool :=
+  match eff with
+  | mkEffectU ret [] [] [] [] [] => bv_eqb ret (errno_ret e)
+  | _ => false
+  end.
+
+Lemma is_ret_only_errno_true : forall e eff,
+  is_ret_only_errno e eff = true -> eff = mkEffect (errno_ret e) [] [].
+Proof.
+  intros e eff H. unfold is_ret_only_errno in H.
+  destruct eff as [ret ws zs us cs ci];
+    destruct ws; destruct zs; destruct us; destruct cs; destruct ci;
+    try discriminate.
+  apply bv_eqb_eq in H. now subst.
+Qed.
+
 Definition check_write (i : SyscallInput) (fd buf count : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match fd_lookup (m_fds m) fd with
@@ -623,12 +644,10 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
                  at all, and the delivery always carries the one copy-in
                  range, so [check_ret_only] refuses the delivery whatever
                  [count] is. *)
-              match check_ret_only eff (errno_ret ENOMEM) m [] with
-              | CheckOk m2 evs2 => CheckOk m2 evs2
-              | _ =>
-                  check_ret_only_copyins [(buf, length bs)] eff count
-                    (with_pipes (pipe_insert (m_pipes m) id (pipe_append st bs)) m) []
-              end
+              if is_ret_only_errno ENOMEM eff
+              then check_ret_only eff (errno_ret ENOMEM) m []
+              else check_ret_only_copyins [(buf, length bs)] eff count
+                     (with_pipes (pipe_insert (m_pipes m) id (pipe_append st bs)) m) []
           | _ :: _ =>
               check_ret_only_copyins [(buf, length bs)] eff count
                 (with_pipes (pipe_insert (m_pipes m) id (pipe_append st bs)) m) []
@@ -1727,19 +1746,12 @@ Proof.
     destruct (negb (Nat.eqb (length (write_source (in_mem i) buf count))
                       (word_to_nat count))) eqn:Hfull; [discriminate|].
     destruct (fst st) as [|b0 q0] eqn:Hq.
-    { destruct (check_ret_only eff (errno_ret ENOMEM) m []) eqn:He.
-      - injection H as -> ->.
-        apply check_ret_only_ok_iff in He. destruct He as (-> & -> & ->).
+    { destruct (is_ret_only_errno ENOMEM eff) eqn:He.
+      - apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
         eapply bind_ok0; [apply input_ok|]. cbv beta.
         eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
         srw Hl. srw Hp. srw Hroom. srw Hfull. srw Hq.
         left. apply pure_ok.
-      - apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
-        eapply bind_ok0; [apply input_ok|]. cbv beta.
-        eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
-        srw Hl. srw Hp. srw Hroom. srw Hfull. srw Hq.
-        right. eapply bind_ok0; [apply modify_ok|].
-        apply record_copyins_ok. apply pure_ok.
       - apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
         eapply bind_ok0; [apply input_ok|]. cbv beta.
         eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
@@ -1928,9 +1940,9 @@ Proof.
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. srw Hrd. srw Hp. srw Hroom. srw Hsrc. apply unmodeled_intro. }
     destruct (fst st) as [|b0 q0] eqn:Hq.
-    { destruct (check_ret_only eff (errno_ret ENOMEM) m []) eqn:He;
-        [discriminate | | ];
-        now apply check_ret_only_copyins_no_unmodeled in H. }
+    { destruct (is_ret_only_errno ENOMEM eff) eqn:He;
+        [ now apply check_ret_only_no_unmodeled in H
+        | now apply check_ret_only_copyins_no_unmodeled in H ]. }
     now apply check_ret_only_copyins_no_unmodeled in H.
   - now apply check_ret_only_no_unmodeled in H.
 Qed.

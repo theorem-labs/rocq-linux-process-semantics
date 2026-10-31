@@ -75,7 +75,7 @@ Definition lo_mapped_model : Model :=
 (* =========================================================================
    Q1 — mremap(MREMAP_MAYMOVE) at an EQUAL size
 
-   Linux answers the old address and moves nothing: [mremap_to]
+   Linux answers the old address and moves nothing: [mremap_at]
    (mm/mremap.c, v6.18.46) reaches no relocation when [new_len] equals
    [old_len].  QEMU user mode reserves a fresh range with
    [mmap_find_vma] before the host [mremap] ([target_mremap],
@@ -83,10 +83,10 @@ Definition lo_mapped_model : Model :=
    ========================================================================= *)
 
 Example q1_mremap_equal_size_is_linux_answer_only :
-  check_syscall (mkInput 216 [65536; 8192; 8192; MREMAP_MAYMOVE; 0; 0]
+  check_syscall (mkInput 216 [65536; 8192; 8192; Z_to_bv 64 MREMAP_MAYMOVE; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect 65536 [] []) lo_mapped_model = CheckOk lo_mapped_model []
-  /\ check_syscall (mkInput 216 [65536; 8192; 8192; MREMAP_MAYMOVE; 0; 0]
+  /\ check_syscall (mkInput 216 [65536; 8192; 8192; Z_to_bv 64 MREMAP_MAYMOVE; 0; 0]
                      (fun _ => None) (fun _ => None))
        (mkEffect 131072 [] []) lo_mapped_model = CheckReject.
 Proof. split; check_eq. Qed.
@@ -166,10 +166,10 @@ Proof. split; check_eq. Qed.
    ========================================================================= *)
 
 Example q5_sendto_closed_fd_beside_a_fault_is_ebadf :
-  check_syscall (mkInput 206 [9; 4096; 4; MSG_NOSIGNAL; 0; 0]
+  check_syscall (mkInput 206 [9; 4096; 4; Z_to_bv 64 MSG_NOSIGNAL; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect (errno_ret EBADF) [] []) lo_model = CheckOk lo_model []
-  /\ check_syscall (mkInput 206 [9; 4096; 4; MSG_NOSIGNAL; 0; 0]
+  /\ check_syscall (mkInput 206 [9; 4096; 4; Z_to_bv 64 MSG_NOSIGNAL; 0; 0]
                      (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EFAULT) [] []) lo_model = CheckReject.
 Proof. split; check_eq. Qed.
@@ -202,10 +202,10 @@ Proof. split; check_eq. Qed.
    ========================================================================= *)
 
 Example q7_socket_unknown_flag_bit_is_einval :
-  check_syscall (mkInput 198 [AF_INET; Z_to_bv 64 (1 + 4096); 0; 0; 0; 0]
+  check_syscall (mkInput 198 [Z_to_bv 64 AF_INET; Z_to_bv 64 (1 + 4096); 0; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect (errno_ret EINVAL) [] []) lo_model = CheckOk lo_model []
-  /\ check_syscall (mkInput 198 [AF_INET; Z_to_bv 64 (1 + 4096); 0; 0; 0; 0]
+  /\ check_syscall (mkInput 198 [Z_to_bv 64 AF_INET; Z_to_bv 64 (1 + 4096); 0; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
        (mkEffect 5 [] []) lo_model = CheckReject.
 Proof. split; check_eq. Qed.
