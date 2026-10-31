@@ -308,8 +308,9 @@ Definition brk_aslr_max : Z := (1 * 1024 * 1024 * 1024)%Z.
     show that each assumption is needed.
 
     WHY NOT LOWER, to the smallest base Linux gives without the
-    assumptions: no spec arm reads the base (placement is admissibility
-    alone, see [Mmap.mmap_spec]'s placement section), but the ASan plan
+    assumptions: the base bounds the top-down search ([mmap_top], read
+    by [Mmap.linux_place]), so a lower floor would admit placements no
+    covered kernel makes, and the ASan plan
     checker reads this floor.  [Common.AsanInit] starts its placement
     split at [AsanPlanCore.MBASE_MIN] = this value, and
     [AsanPlacement.kHighMemBeg_below_mmap_base_min] needs it above the
@@ -453,7 +454,8 @@ Definition TASK_SIZE : Z := 0x800000000000%Z.
     base of that set also starts no program: with a base of exactly 0
     the top-down search's top is [0 - 1] (mm/vma.h:502), so the vDSO
     search fails the same way.  The band keeps 0; this costs precision
-    only, as no spec arm reads the base.
+    only: with a base of 0 the model's [mmap_top] leaves the top-down
+    half of [Mmap.linux_place] no room, so it places nothing there.
 
     WHAT THE DECLARATION BUYS TODAY, stated here so nobody reads more
     into it: the spec arms below still compare against [TASK_SIZE], the
@@ -2782,18 +2784,18 @@ Inductive FdEntry :=
         [mmap_base_min]) and IMMUTABLE for the whole run.  Like the
         initial break it is a quantified parameter of the run
         ([Run.mi_mmap_base], any [Run.valid_mmap_base] value,
-        independent per binary).  NO SPEC ARM READS THIS FIELD'S VALUE.
-        Preference-free placement says only
-        that the address is page-aligned, inside the user address space
-        and disjoint from every recorded mapping — a rule with no base
-        in it (the argument is in [Mmap.mmap_spec]'s placement section).
-        The field is NOT thereby inert and must not be removed as one:
+        independent per binary).  THE SPEC READS THIS FIELD'S VALUE:
+        [mmap_top] below is the minimum of this base and the page-rounded
+        [alloc_top], and it is the top-down bound of [Mmap.linux_place],
+        which both fresh-grant arms of [Mmap.mmap_spec] and [mremap]'s
+        move use to choose their address (the argument is in
+        [Mmap.mmap_spec]'s PLACEMENT section).  The field also carries a
+        PREDICATE that the spec needs on its own:
         [Run.valid_mmap_base] is a conjunct of [Run.valid_entry], which
         [Equivalence.strong_universal_T] quantifies its entries under,
         and discharging it is a required step of
         [Equivalence.image_brk_satisfiable_entry], the tree's
-        anti-vacuity lemma.  It is the PREDICATE that is load-bearing in
-        the spec, not the value.  Outside the spec, the ASan plan
+        anti-vacuity lemma.  Outside the spec, the ASan plan
         checker's placement gate ([Common.AsanCeil.placement_ok], taken
         as its named [placement_policy] hypothesis) reads the value, and
         [Common.AsanInit] relies on the predicate's floor (see
@@ -5068,6 +5070,54 @@ Proof.
     [cbn in Hin; contradiction|].
   cbn in Hin. destruct Hin as [Heq|[Heq|[]]]; inversion Heq; subst a n;
     rewrite bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia); lia.
+Qed.
+
+(** The pair's width is a whole number of pages, which is what a
+    consumer needs to see that a page-aligned top leaves a page-aligned
+    base. *)
+Lemma vdso_len_page : forall kb, (vdso_len kb mod page_size = 0)%Z.
+Proof.
+  intro kb. unfold vdso_len, vdso_vvar_pages, page_size.
+  apply Z_mod_mult.
+Qed.
+
+(** EVERYTHING A CONSUMER NEEDS ABOUT ONE ENTRY OF THE PAIR, in one
+    lemma: it names at least one byte, it starts and ends on a page,
+    and it lies inside [[top - vdso_len kb, top)].  The page-aligned
+    [top] is what [State.vdso_top] gives, and the room premise says the
+    pair fits above the first page, which is the condition under which
+    [vdso_reserved] emits anything at all. *)
+Lemma vdso_reserved_entry_ok : forall kb top a n,
+  (page_size + vdso_len kb <= top)%Z -> (top < two_pow_64)%Z ->
+  (top mod page_size = 0)%Z ->
+  In (a, n) (vdso_reserved kb top) ->
+  (0 < bv_unsigned n)%Z
+  /\ (bv_unsigned a mod page_size = 0)%Z
+  /\ (bv_unsigned n mod page_size = 0)%Z
+  /\ (top - vdso_len kb <= bv_unsigned a)%Z
+  /\ (bv_unsigned a + bv_unsigned n <= top)%Z.
+Proof.
+  intros kb top a n Hroom Htop Hal Hin.
+  pose proof (vdso_text_pages_pos kb) as Hp.
+  pose proof (vdso_text_pages_le kb) as Hl.
+  pose proof (vdso_len_bounds kb) as Hb.
+  assert (Hdiv : (4096 | top)%Z)
+    by (apply Z.mod_divide; [lia | unfold page_size in Hal; exact Hal]).
+  unfold vdso_reserved, vdso_len, vdso_vvar_pages, page_size in *.
+  destruct (Z.ltb_spec (top - (4 + vdso_text_pages kb) * 4096) 4096) as [Hlt|Hge];
+    [cbn in Hin; contradiction|].
+  destruct Hdiv as (q & Hq).
+  cbn in Hin. destruct Hin as [Heq|[Heq|[]]]; inversion Heq; subst a n;
+    rewrite !bv_unsigned_Z_to_bv_u64 by (unfold two_pow_64 in *; lia);
+    repeat split; try lia;
+    rewrite Hq; rewrite <- Z.mul_sub_distr_r || idtac;
+    try (apply Z_mod_mult);
+    try (replace (q * 4096 - (4 + vdso_text_pages kb) * 4096)%Z
+           with ((q - (4 + vdso_text_pages kb)) * 4096)%Z by lia;
+         apply Z_mod_mult);
+    try (replace (q * 4096 - (4 + vdso_text_pages kb) * 4096 + 4 * 4096)%Z
+           with ((q - vdso_text_pages kb) * 4096)%Z by lia;
+         apply Z_mod_mult).
 Qed.
 
 (** Cutting a NONEMPTY entry leaves nonempty remnants: each of the two

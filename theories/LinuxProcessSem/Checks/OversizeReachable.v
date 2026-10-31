@@ -368,11 +368,24 @@ Definition cm_i1 : SyscallInput := sys_input cm_segments (cm_s 6) (Z_to_bv 64 22
 Lemma cm_ecall1_not_refused : alloc_refuse_reason cm_i1 cm_model = None.
 Proof. vm_compute. reflexivity. Qed.
 
-(** THE ADDRESS THE MODEL CHOOSES.  The hint-placed branch admits any
-    positive, page-aligned, free address whose mapping ends at or below
-    [State.alloc_top], when its budget gate passes; this effect names
-    one, and [cm_sc1] is the acceptor's statement that it is admissible. *)
-Definition cm_addr : word := Z_to_bv 64 0x10000000.
+(** THE ADDRESS THE MODEL CHOOSES, and since the placement change
+    there is exactly one.  The program asks with no hint, so Linux
+    searches top-down from [mm->mmap_base] and returns the highest
+    page that fits below it (mm/mmap.c,
+    [generic_get_unmapped_area_topdown]; mm/vma.c,
+    [unmapped_area_topdown], Linux v6.18.46, commit 1f99e9ab748f).
+
+    Here [State.mmap_top] is [page_round_down_Z (alloc_top)], because
+    this launch's base is [State.mmap_base_max], above the stack
+    window; the vdso/vvar pair [execve] installed takes the six pages
+    directly below it; so the first grant lands one page under the
+    pair, at [alloc_top - 24576 - 4096].  [Checks.Placement.linux_place_b]
+    computes it, and [cm_sc1] is the acceptor's statement that it is
+    admissible.
+
+    It used to be 0x10000000, a free page-aligned address below
+    [alloc_top] that the old rule admitted and Linux never picks. *)
+Definition cm_addr : word := Z_to_bv 64 140736405151744.
 
 Definition cm_eff1 : SyscallEffect := mkEffect cm_addr [] [(cm_addr, Z_to_bv 64 4096)].
 

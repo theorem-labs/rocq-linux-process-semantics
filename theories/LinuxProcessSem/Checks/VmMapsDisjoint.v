@@ -79,7 +79,8 @@
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs Run MemImageType StackLayout.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
+  ExecutableSpecs Placement.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -107,14 +108,14 @@ Definition wit_reserved : list (word * word) := [(4096, 4096)].
 Definition wit_brk_base : word := 65536.
 Definition wit_limit : Z := 0x40000000%Z.
 
-(** [mm->mmap_base].  Nothing in the spec reads this field, so no
-    step below depends on the value.  It is
+(** [mm->mmap_base].  The placement rule reads this field — it is the
+    top-down bound of [Mmap.linux_place], through [State.mmap_top] —
+    but no step below places a mapping, so no step below depends on the
+    value.  It is
     pinned to an admissible one ([wit_mmap_base_admissible]) so that the
     whole start state is one [execve] can hand out, which is what makes
-    the overlap below reachable rather than hypothetical.  That is the
-    only reason: no spec arm reads the value (the ASan plan checker's
-    placement gate does, outside the spec; see [State]'s [vm_mmap_base]
-    field note). *)
+    the overlap below reachable rather than hypothetical (see [State]'s
+    [vm_mmap_base] field note). *)
 Definition wit_mmap_base : word := Z_to_bv 64 mmap_base_min.
 
 (** The witness ledger.  [State.mkVmMaps] would default [vm_mmap_base] to
@@ -248,42 +249,42 @@ Example wit_step5 :
   = CheckOk wit_s5 [].
 Proof. check_eq. Qed.
 
-(** THE HINT IS NOT LOAD-BEARING.
-    The identical grant with a NULL hint is admitted, because the spec
-    says only three things about a preference-free placement — page
-    alignment, the user range, and disjointness from every recorded
-    mapping — and 0x10000 satisfies all three on this ledger.
+(** THE HINT IS LOAD-BEARING, and since the placement change that is
+    what the pair below says.
 
-    The spec does not pin the search further — at or above a bottom-up
-    floor derived from riscv64's [TASK_UNMAPPED_BASE], or else leaving
-    no fitting free gap up to the run's [mm->mmap_base] — because such a
-    conjunct EXCLUDES placements Linux makes: its highest-fit half would
-    be read on a ledger that does not carry the kernel's own vdso/vvar
-    VMAs, so a real top-down descent would look impossible to the
-    model.  The cost is exactly this: a low placement no ORDINARY
-    kernel run produces is admissible.
-
-    That is a provability cost and not a soundness one, and it is
-    bounded.  It cannot refute a statement by colliding with a runtime's
-    later MAP_FIXED reservation, because [Mmap.mmap_spec] models that
-    MAP_FIXED as the replacement Linux performs rather than declining it;
-    what remains is that a program whose observable behaviour depends on
-    where a mapping landed has a false equivalence statement, which is
-    the correct answer under ASLR.  The pair is kept — the hinted step 5
-    above and this one — because the two together say what the spec does
-    and does not constrain, which is what a reader needs. *)
-Example wit_step5_null_hint_also_admitted :
+    Step 5 above hands the kernel the hint 0x10000, and the hint is
+    free on this ledger, so Linux returns it ([Mmap.linux_place]'s
+    hinted arm; mm/mmap.c, [generic_get_unmapped_area_topdown], the
+    hint test, Linux v6.18.46, commit 1f99e9ab748f).  The SAME grant
+    with a NULL hint is now REFUSED: with no hint the kernel searches
+    top-down from [mm->mmap_base] and 0x10000 is not where that search
+    stops.  Before the change the model admitted it, because the old
+    guard asked only for page alignment, the user range and
+    disjointness, and that is exactly the freedom that let the model
+    refuse a mapping Linux grants (OSSV-210's B2, B3 and N3). *)
+Example wit_step5_null_hint_low_rejected :
   check_syscall
     (mkInput 222 [0; 4096; 3; 34; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 65536 [] [(65536, 4096)]) wit_s4
-  = CheckOk wit_s5 [].
-Proof. check_eq. Qed.
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
 
-(** …and the conditions that DO still refuse are pinned here, so the
-    accept above is not read as "anything goes": the same NULL-hint
-    grant at an unaligned address, and at one that overlaps the live
-    mapping step 5 placed, are both rejected. *)
+(** …and WHERE the search does stop, stated structurally rather than as
+    a constant: the highest page that fits below the vdso/vvar pair,
+    which [execve] put at the top of the search window.  The pair is
+    the first thing the top-down search meets, so the first grant of
+    the run lands one page under it. *)
+Example wit_step5_null_hint_lands_under_the_vdso :
+  linux_place_b (m_vmmaps wit_s4) (kb_thp (m_kernel wit_s4))
+    (Z_to_bv 64 0) 4096
+  = Some (vdso_top (m_vmmaps wit_s4) - vdso_len default_kernel - 4096)%Z.
+Proof. vm_compute. reflexivity. Qed.
+
+(** The conditions that refuse for the OTHER reasons are still pinned,
+    so the rejection above is not read as "the search is the only
+    gate": the same NULL-hint grant at an unaligned address, and at one
+    that overlaps the live mapping step 5 placed. *)
 Example wit_step5_null_hint_unaligned_refused :
   check_syscall
     (mkInput 222 [0; 4096; 3; 34; mmap_fd_none; 0]
@@ -1345,18 +1346,19 @@ Proof.
   { destruct ws, us, cs, ci; try discriminate.
     destruct (errno_ret_in mmap_errnos ret).
     { destruct zs; [|discriminate]. injection H as <- <-. exact Hwf. }
-    (* SIX conjuncts, left associated: alignment, positivity, the
-       ceiling, [region_free], [mmap_noreserve_backed_ok] and the
-       [listNN_eqb] on the grant list.  Only [region_free] and the
-       ceiling are used below; the rest are peeled to reach them. *)
+    (* THREE conjuncts now, left associated: the placement test, the
+       budget gate and the [listNN_eqb] on the grant list.  The four
+       facts the old guard spelled out — alignment, positivity, the
+       ceiling and [region_free] — come from
+       [Placement.linux_place_is_admissible], which is what the
+       placement test entails. *)
     difn H E; [|discriminate]. injection H as <- <-.
     unfold vm_wf. rewrite vmm_mmap_backing, vmm_vmmaps. cbn [vm_maps].
     apply andb_true_iff in E as [E Hzs].
-    apply andb_true_iff in E as [E Hbud].
-    apply andb_true_iff in E as [E Hfree].
-    apply andb_true_iff in E as [E Hceil].
-    apply andb_true_iff in E as [Halign Hpos].
-    apply Z.leb_le in Hceil. apply Z.ltb_lt in Hpos.
+    apply andb_true_iff in E as [Hplace Hbud].
+    destruct (linux_place_is_admissible _ _ _ _ _ HnZ
+                (page_round_up_Z_aligned (bv_unsigned len)) Hplace)
+      as (Halign & Hpos & Hceil & Hfree).
     apply maps_wf_cons_free.
     - exact Hwf.
     - rewrite u64 by lia. lia.
@@ -1365,16 +1367,15 @@ Proof.
   { destruct ws, zs, cs, ci; try discriminate.
     destruct (errno_ret_in mmap_errnos ret).
     { destruct us; [|discriminate]. injection H as <- <-. exact Hwf. }
-    (* FIVE here: the noaccess grant carries no
+    (* TWO here: the noaccess grant carries no
        [mmap_noreserve_backed_ok] conjunct, because it reserves no
        backing. *)
     difn H E; [|discriminate]. injection H as <- <-.
     unfold vm_wf. rewrite vmm_mmap_backing, vmm_vmmaps. cbn [vm_maps].
-    apply andb_true_iff in E as [E Hus].
-    apply andb_true_iff in E as [E Hfree].
-    apply andb_true_iff in E as [E Hceil].
-    apply andb_true_iff in E as [Halign Hpos].
-    apply Z.leb_le in Hceil. apply Z.ltb_lt in Hpos.
+    apply andb_true_iff in E as [Hplace Hus].
+    destruct (linux_place_is_admissible _ _ _ _ _ HnZ
+                (page_round_up_Z_aligned (bv_unsigned len)) Hplace)
+      as (Halign & Hpos & Hceil & Hfree).
     apply maps_wf_cons_free.
     - exact Hwf.
     - rewrite u64 by lia. lia.

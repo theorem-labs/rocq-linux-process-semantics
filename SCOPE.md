@@ -302,9 +302,15 @@ not apply.
 - `/dev/null` is the null device (major 1, minor 3). `/dev/urandom` is the
   random device (major 1, minor 9).
 - No tracer (`ptrace`) or other outside agent changes the process.
-- The binary is a static executable (`ET_EXEC`). `elf-snapshot` does not
-  check this. For a static PIE, the model can give a wrong initial program
-  break.
+- The binary is a static executable (`ET_EXEC`). `tools/elf_snapshot.py`
+  refuses an image whose `e_type` is not `ET_EXEC`, so a snapshot cannot
+  carry a PIE. The model needs this twice. For a static PIE (`ET_DYN` with
+  no `PT_INTERP`) the model can give a wrong initial program break, and
+  Linux maps the segments through the mmap region before it installs the
+  vDSO pair (`fs/binfmt_elf.c`, `load_elf_binary`: the segment mapping has
+  a load bias of 0, and `ARCH_SETUP_ADDITIONAL_PAGES` comes after it), so
+  the pair is not directly below the mmap base and the next bullet is
+  false.
 - At launch the process has no children and no tracees. The model takes
   `-ECHILD` from `wait4` and `waitid` only while no modeled `clone` has
   recorded a child (`State.m_has_children`, the comment at the head of
@@ -324,15 +330,30 @@ not apply.
   `cap_mmap_addr` rejects nothing else at that setting
   (`Sys/Mm/Mmap.v`, the `-EPERM` note). With a larger setting, Linux
   answers `-EPERM` for a fixed mapping below it, and the model admits
-  the mapping.
-- No `munmap` range meets the vDSO or the vvar mapping. Linux installs
-  this pair at `execve`. The model's ledger carries neither
-  (`Sys/Mm/Mmap.v`, the `munmap` arms), so the model answers such a call
-  as if they were not there. Linux unmaps a mapping of the pair that the
-  range covers whole. It refuses with `-EPERM` when the mapping is sealed
-  (`CONFIG_MSEAL_SYSTEM_MAPPINGS`), and with `-EINVAL` when the range
-  starts or ends inside it, because a special mapping cannot be split
-  (`special_mapping_split`, `mm/mmap.c`). The model admits neither error.
+  the mapping. Linux takes the larger of the `vm.mmap_min_addr` sysctl and
+  `CONFIG_LSM_MMAP_MIN_ADDR` (`security/min_addr.c`,
+  `update_mmap_min_addr`). That option depends on SELinux and its default
+  is 65536 (`security/Kconfig`, `LSM_MMAP_MIN_ADDR`). A kernel built with
+  SELinux, which the riscv64 defconfig is, therefore has
+  `mmap_min_addr` = 65536 and is outside this assumption.
+- The vDSO and the vvar mapping are the first pair that the kernel places
+  below the mmap base, with the vvar part lower. Linux installs them at
+  `execve` after it maps the segments: `load_elf_binary` calls
+  `ARCH_SETUP_ADDITIONAL_PAGES` (`fs/binfmt_elf.c`), and
+  `__setup_additional_pages` (`arch/riscv/kernel/vdso.c`) asks
+  `get_unmapped_area` for the two parts together, then installs the vvar
+  part at the result and the text part above it. The model's ledger now
+  carries the pair at that position (`State.vdso_reserved`,
+  `State.init_model`), so it does not assume such a call away: a `munmap`,
+  a fixed `mmap` or an `mremap` whose range meets the pair gets
+  `unmodeled` (`Sys/Mm/Mmap.v`, `munmap_spec`), which is the model's
+  fail-closed answer and not Linux's answer.
+- The kernel build's vDSO text is 1 to 16 pages. The model reads the count
+  from the kernel build in its input (`State.vdso_text_pages`), and the
+  vvar part is always 4 pages (`arch/riscv/include/asm/vdso.h`,
+  `__VDSO_PAGES`, which `__setup_additional_pages` holds `VDSO_NR_PAGES`
+  to). A build with a larger vDSO text puts the pair, and each placement
+  below it, lower than any model state does.
 - The process uses the top-down mmap layout. The process does not have
   the `ADDR_COMPAT_LAYOUT` personality (`setarch -L`), and
   `vm.legacy_va_layout` is 0. (An unlimited `RLIMIT_STACK` also selects
@@ -405,9 +426,54 @@ equivalence) can be true of the model and false of Linux.
   two, and the value of `hrtimer_resolution`, follow the kernel build and
   the boot (`CONFIG_HIGH_RES_TIMERS`, `CONFIG_HZ`). The model does not
   constrain later calls to use the same resolution.
-- **mmap placement.** A mapping without an address hint can go to any free,
-  page-aligned address below `State.alloc_top`. This is wider than the
-  placement policy of each supported system.
+- **R-a, an mmap base above `State.alloc_top`.** The model's stack window is
+  `[sp - 8 MiB, sp)`. Linux measures its 8 MiB from the end of the stack
+  VMA, which is above `sp` by the entry image. With an entry image of more
+  than about 1 MiB and a high base draw, Linux's `mm->mmap_base` can lie
+  above `State.alloc_top`, while the model searches below `alloc_top`. The
+  model's top-down addresses are then lower than Linux's by at most the
+  entry image size less 1 MiB. The refusals differ only when no free range
+  of the requested size is left. It stays open because the model counts
+  only its own entry image against the stack limit (see "Stack floor").
+  LPS pull request #25, which makes the stack window count the entry
+  image, makes `alloc_top` Linux's floor and closes it.
+- **R-b, a hint or a fallback above `State.alloc_top`.** Linux honours a
+  free address hint anywhere up to `STACK_TOP_MAX`, which is 2^47, the band
+  above the stack included, and its bottom-up fallback searches up to the
+  same limit, which reaches the guard gap below the stack (`mm/mmap.c`,
+  `generic_get_unmapped_area_topdown`: the hint test is
+  `mmap_end - len >= addr` with the two gap tests, and the fallback sets
+  `info.high_limit = mmap_end`; `arch/riscv/include/asm/processor.h`,
+  `arch_get_mmap_end`, which gives `STACK_TOP_MAX`). The model honours a
+  hint, and searches, only below `State.alloc_top`. It stays open because
+  the dynamic stack is a bound in this model and not an entry in the
+  ledger, so the model cannot tell a free address above the stack from the
+  stack itself. The stack VMA in the ledger closes it.
+- **R-c, the stack guard gap.** When the stack has grown to its limit,
+  Linux keeps a mapping `stack_guard_gap` below it: the search subtracts
+  that gap from the start of a `VM_GROWSDOWN` VMA
+  (`include/linux/mm.h`, `vm_start_gap`, through `stack_guard_start_gap`;
+  `vm_end_gap` is the matching rule above a `VM_GROWSUP` VMA). The model
+  allows a mapping there when the mmap base or a hint reaches
+  `State.alloc_top`. It stays open for the reason R-b gives: the ledger has
+  no stack VMA, so it has no gap to keep. The stack VMA in the ledger
+  closes it.
+- **R-d, the stack pointer and the mmap base are drawn apart.**
+  `Run.valid_entry_va` takes `sp` and the base from their windows
+  independently. Linux links them. With randomisation on, the base gap
+  holds the full stack draw, so the base is at most 2^47 less 8 MiB, less
+  the guard gap, less 0x3ffff000 (`mm/util.c`, `mmap_base`, which adds
+  `stack_guard_gap` and `STACK_RND_MASK << PAGE_SHIFT` to the stack limit;
+  `arch/riscv/include/asm/elf.h`, `STACK_RND_MASK` = 0x3ffff pages). Also
+  `State.sp_window_lo` is 0x7fff80000000, which is 2^47 less 2 GiB, while
+  Linux's lowest `sp` is about 2^47 less 1 GiB less the entry image
+  (`fs/binfmt_elf.c`, `load_elf_binary`, which calls
+  `randomize_stack_top(STACK_TOP)`). So the model has start states that no
+  Linux launch gives, for example `sp` = 0x7fffe0000000 with the base at
+  0x7ffff8000000. A program that prints the distance between a mapping and
+  its stack can show the difference. It stays open because the model
+  quantifies the two draws separately. One predicate that relates `sp`, the
+  stack limit and the base closes it.
 - **`munmap` failures.** An `munmap` that unmaps pages can answer
   `ENOMEM` at every call, and under a reading that admits only the
   failures the state forces it can answer `ENOMEM` at no call. On Linux

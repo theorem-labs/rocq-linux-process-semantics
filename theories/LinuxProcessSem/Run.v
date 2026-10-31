@@ -289,15 +289,17 @@ Variable mi_init_brk : word.
     model quantifies over the band instead.  The band is exactly the set
     of bases Linux gives under the assumptions SCOPE.md names
     ([Checks.Cases.MmapBase.sv48_band_is_linux_set]).
-    Seeds [State.init_model]'s [vm_mmap_base].  NO SPEC ARM READS THAT
-    VALUE: in the trusted spec placement is admissibility alone (see
-    [Mmap.mmap_spec]'s placement section), and the untrusted search in
+    Seeds [State.init_model]'s [vm_mmap_base].  THE SPEC READS THAT
+    VALUE: both fresh-grant arms of [Mmap.mmap_spec], and [mremap]'s
+    move, choose their address with [Mmap.linux_place], whose top-down
+    half searches below [State.mmap_top], which is the minimum of this
+    base and [State.alloc_top] (see [Mmap.mmap_spec]'s PLACEMENT
+    section).  The untrusted search in
     theories/Common/PlacementSearch.v takes its floor as a bare argument
     rather than off a [VmMaps].  The ASan plan checker's placement gate
-    ([Common.AsanCeil.placement_ok]) does read it, under that checker's
-    named [placement_policy] hypothesis.  What keeps the field in the
-    spec is the PREDICATE over it, not the value — see
-    [valid_mmap_base]. *)
+    ([Common.AsanCeil.placement_ok]) reads it too, under that checker's
+    named [placement_policy] hypothesis.  The PREDICATE over the value
+    is what [valid_entry] carries — see [valid_mmap_base]. *)
 Variable mi_mmap_base : word.
 
 (** The 16 bytes of startup entropy AT_RANDOM points at, drawn afresh at
@@ -1554,6 +1556,19 @@ Proof.
   unfold brk_budget_ok. cbv zeta. rewrite Hsz, Hc. reflexivity.
 Qed.
 
+(** THE MREMAP MARK, READ BACK.  The grow has ONE non-errno
+    resolution, and which one is decided by the room test
+    ([Sys/Mm/Mremap.mremap_inplace_room_b]), so the mark says a
+    different thing in each case: with room, the in-place charge
+    fails; without room, the move's charge fails.  What holds in BOTH
+    is that the in-place resolution is not admitted.
+
+    Before the placement change this lemma could claim both halves at
+    once, because the mark was [negb (inplace_grow || move_budget)].
+    It cannot now, and it should not: Linux with room above the source
+    does not move, so the move's budget says nothing about that
+    call (mm/mremap.c, [vrm_can_expand_in_place] and the accounting
+    failure beside it, Linux v6.18.46, commit 1f99e9ab748f). *)
 Lemma alloc_req_charge_mremap : forall i m,
   bv_unsigned (in_sysno i) = 216%Z ->
   alloc_budget_refused_b i m = true ->
@@ -1561,7 +1576,11 @@ Lemma alloc_req_charge_mremap : forall i m,
   let c := alloc_req_charge_bytes i m in
   (old_nZ < c)%Z
   /\ mremap_inplace_grow_b m (in_arg i 0) (Z_to_bv 64 old_nZ) (Z_to_bv 64 c) old_nZ c = false
-  /\ mremap_move_budget_b m (in_arg i 0) (Z_to_bv 64 old_nZ) (Z_to_bv 64 c) = false.
+  /\ (if mremap_inplace_room_b m (in_arg i 0) (Z_to_bv 64 old_nZ) (Z_to_bv 64 c) old_nZ c
+      then mremap_final_budget_b m (in_arg i 0) (Z_to_bv 64 old_nZ)
+             (in_arg i 0) (Z_to_bv 64 c) = false
+      else mremap_move_budget_b m (in_arg i 0) (Z_to_bv 64 old_nZ)
+             (Z_to_bv 64 c) = false).
 Proof.
   intros i m Hno Hb old_nZ c.
   assert (Hc : c = page_round_up_Z (bv_unsigned (in_arg i 2))).
@@ -1572,14 +1591,21 @@ Proof.
   unfold mremap_budget_refused_b in Hb. cbv zeta in Hb.
   repeat match type of Hb with
          | context [if ?b then _ else _] => destruct b eqn:?; try discriminate Hb
-         end.
-  apply negb_true_iff, orb_false_iff in Hb as [H1 H2].
+         end;
   match goal with
   | [ H : (page_round_up_Z (bv_unsigned (in_arg i 2))
            <=? page_round_up_Z (bv_unsigned (in_arg i 1)))%Z = false |- _ ] =>
       apply Z.leb_gt in H
+  end;
+  apply negb_true_iff in Hb;
+  (split; [assumption|]);
+  unfold mremap_inplace_grow_b;
+  match goal with
+  | [ Hr : mremap_inplace_room_b _ _ _ _ _ _ = true |- _ ] =>
+      rewrite Hr; cbn [andb]; split; [exact Hb | exact Hb]
+  | [ Hr : mremap_inplace_room_b _ _ _ _ _ _ = false |- _ ] =>
+      rewrite Hr; cbn [andb]; split; [reflexivity | exact Hb]
   end.
-  repeat split; assumption.
 Qed.
 
 Lemma alloc_req_charge_mmap : forall i m,
@@ -2507,8 +2533,9 @@ Definition valid_brk (segs : list Segment) (brk : word) : Prop :=
     Quantified independently per binary in
     [Equivalence.strong_universal_T], like [valid_sp] and [valid_brk].
 
-    No spec arm reads [vm_mmap_base] — placement is admissibility
-    alone — so the band constrains no placement the model admits.  But
+    The spec reads [vm_mmap_base]: it is the top-down bound of
+    [Mmap.linux_place], through [State.mmap_top].  So the band is the
+    set of placements the model admits, base by base.  Also,
     [valid_mmap_base] is the third conjunct of [valid_entry], which
     [Equivalence.strong_universal_T] quantifies its entries under, and
     discharging it is a required step of the tree's anti-vacuity lemma

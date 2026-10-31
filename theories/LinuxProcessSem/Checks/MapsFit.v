@@ -235,11 +235,10 @@ Proof.
     difn H E; [|discriminate]. injection H as <- <-.
     unfold vm_fit. rewrite vmm_mmap_backing, vmm_vmmaps. cbn [vm_maps].
     apply andb_true_iff in E as [E Hzs].
-    apply andb_true_iff in E as [E Hbud].
-    apply andb_true_iff in E as [E Hfree].
-    apply andb_true_iff in E as [E Hceil].
-    apply andb_true_iff in E as [Halign Hpos].
-    apply Z.leb_le in Hceil. apply Z.ltb_lt in Hpos.
+    apply andb_true_iff in E as [Hplace Hbud].
+    destruct (Placement.linux_place_is_admissible _ _ _ _ _ HnZ
+                (Placement.page_round_up_Z_aligned (bv_unsigned len)) Hplace)
+      as (Halign & Hpos & Hceil & Hfree).
     apply maps_fit_cons; [exact Hfit | fit_bound]. }
   destruct (mmap_noaccess_b prot flags off) eqn:Enoa.
   { destruct ws, zs, cs, ci; try discriminate.
@@ -247,11 +246,10 @@ Proof.
     { destruct us; [|discriminate]. injection H as <- <-. exact Hfit. }
     difn H E; [|discriminate]. injection H as <- <-.
     unfold vm_fit. rewrite vmm_mmap_backing, vmm_vmmaps. cbn [vm_maps].
-    apply andb_true_iff in E as [E Hus].
-    apply andb_true_iff in E as [E Hfree].
-    apply andb_true_iff in E as [E Hceil].
-    apply andb_true_iff in E as [Halign Hpos].
-    apply Z.leb_le in Hceil. apply Z.ltb_lt in Hpos.
+    apply andb_true_iff in E as [Hplace Hus].
+    destruct (Placement.linux_place_is_admissible _ _ _ _ _ HnZ
+                (Placement.page_round_up_Z_aligned (bv_unsigned len)) Hplace)
+      as (Halign & Hpos & Hceil & Hfree).
     apply maps_fit_cons; [exact Hfit | fit_bound]. }
   destruct (mmap_fixed_noaccess_b prot flags off) eqn:Efix.
   { difn H Enomem; [apply check_ret_only_model in H; subst m'; exact Hfit|].

@@ -187,31 +187,55 @@ Section GenericInit.
     apply andb_true_intro. split; [apply Z.leb_le | apply Z.ltb_lt]; lia.
   Qed.
 
-  Theorem init_x_sound_envscan :
-    x_stmt segs A NX0 LIMIT SINV (argH0 sp rdraw argv envp) FS0 XEnvScan.
+  (** THE RUN'S CEILING for the start extensions.  [AsanInit.CEIL] is
+      [page_round_down_Z (sp - stack_max_size)], so these two are what
+      the nodes ask of it: it lies in the band [ceil_ok] admits, and it
+      is at or below the stack window's floor, because rounding down
+      never goes up. *)
+  Lemma ceil_ok_sp : ceil_ok (CEIL sp).
   Proof.
-    apply (x_sound_envscan segs A NX0 LIMIT SINV (argH0 sp rdraw argv envp) FS0
+    pose proof sp_lo. pose proof sp_hi.
+    unfold ceil_ok, CEIL.
+    split; [unfold page_round_down_Z, page_size; apply Z_mod_mult|].
+    split.
+    - assert (Hl : page_round_down_Z 0x7fff7f800000 = 0x7fff7f800000)
+        by (unfold page_round_down_Z, page_size; reflexivity).
+      rewrite <- Hl. apply page_round_down_Z_mono.
+      unfold stack_max_size, sp_window_lo in *. lia.
+    - pose proof (page_round_down_Z_le (bv_unsigned sp - stack_max_size)).
+      unfold stack_max_size, sp_window_hi in *. lia.
+  Qed.
+
+  Lemma ceil_le_floor : CEIL sp <= bv_unsigned sp - stack_max_size.
+  Proof. apply page_round_down_Z_le. Qed.
+
+  Theorem init_x_sound_envscan :
+    x_stmt segs A NX0 LIMIT (CEIL sp) SINV (argH0 sp rdraw argv envp) FS0 XEnvScan.
+  Proof.
+    apply (x_sound_envscan segs A NX0 LIMIT (CEIL sp) SINV (argH0 sp rdraw argv envp) FS0
               SEGS_wx SEGS_in_hull HULL_ok SINV_frame
               we1 we2 we3 Xenv Fe1 Fe2 Fe3 Ee De1 De2 De3
               ph INP mbase entryw sp brk0 rdraw);
       solve [ assumption | exact sp_lo | exact sp_hi
+            | exact ceil_ok_sp | exact ceil_le_floor
             | exact SINV0_vals | exact SINV0_envp | exact SINV0_str0 ].
   Qed.
 
   Theorem init_x_sound_pnscan :
-    x_stmt segs A NX0 LIMIT SINV (argH0 sp rdraw argv envp) FS0 XPnScan.
+    x_stmt segs A NX0 LIMIT (CEIL sp) SINV (argH0 sp rdraw argv envp) FS0 XPnScan.
   Proof.
-    apply (x_sound_pnscan segs A NX0 LIMIT SINV (argH0 sp rdraw argv envp) FS0
+    apply (x_sound_pnscan segs A NX0 LIMIT (CEIL sp) ceil_ok_sp SINV (argH0 sp rdraw argv envp) FS0
               SEGS_wx SEGS_in_hull HULL_ok
-              (argH0_high apc sp rdraw argv envp Hsp Hva) (argH0_agree sp rdraw argv envp)
+              (argH0_high apc sp rdraw argv envp Hva) (argH0_agree sp rdraw argv envp)
               SINV_frame SINV_agree
               wp0 wp1 wp2 wp3 wp4 Xpn Fp0 Fp1 Fp2 Fp3 Fp4 Ep Dp0 Dp1 Dp2 Dp3 Dp4
               ph INP mbase entryw sp brk0 rdraw);
       solve [ assumption | exact sp_lo | exact sp_hi
+            | exact ceil_ok_sp | exact ceil_le_floor
             | exact SINV0_vals | exact SINV0_envp | exact SINV0_str0 ].
   Qed.
 
   Theorem init_x_sound_layout :
-    x_stmt segs A NX0 LIMIT SINV (argH0 sp rdraw argv envp) FS0 XLayout.
+    x_stmt segs A NX0 LIMIT (CEIL sp) SINV (argH0 sp rdraw argv envp) FS0 XLayout.
   Proof. apply x_sound_layout. Qed.
 End GenericInit.

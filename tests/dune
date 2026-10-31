@@ -17,6 +17,72 @@
   (run python3 %{project_root}/tools/test_elf_snapshot.py
    --emit-large-rocq-check LargeChunkImage.v)))
 
+; THE REAL-KERNEL PLACEMENT REPLAY (tools/placement_conformance).  Each rule
+; below turns one log of the placement probe into a Rocq file that walks that
+; run through the checker and demands CheckOk at every step, so the file
+; compiles exactly when LPS places each mapping where the kernel placed it.
+; The last two are negative: they must compute to false.  The README in
+; tools/placement_conformance says how a log is made and how to make another.
+(rule
+ (targets PlacementReplayDefconfig.v)
+ (deps
+  %{project_root}/tools/placement_conformance/log_to_rocq.py
+  placement/linux-6.18.46-defconfig.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/log_to_rocq.py
+   placement/linux-6.18.46-defconfig.log
+   --out PlacementReplayDefconfig.v --kb-thp 0)))
+
+(rule
+ (targets PlacementReplayThp.v)
+ (deps
+  %{project_root}/tools/placement_conformance/log_to_rocq.py
+  placement/linux-6.18.46-thp.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/log_to_rocq.py
+   placement/linux-6.18.46-thp.log
+   --out PlacementReplayThp.v --kb-thp 1)))
+
+; Under "norandmaps" Linux's mmap base is STACK_TOP - MIN_GAP, 2^47 - 128 MiB
+; (mm/util.c, mmap_base, Linux v6.18.46).  --expect-base fails unless the
+; vDSO pair ends exactly there, which is the check that the pair was the
+; run's first search.
+(rule
+ (targets PlacementReplayNorandmaps.v)
+ (deps
+  %{project_root}/tools/placement_conformance/log_to_rocq.py
+  placement/linux-6.18.46-norandmaps.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/log_to_rocq.py
+   placement/linux-6.18.46-norandmaps.log
+   --out PlacementReplayNorandmaps.v --kb-thp 0
+   --expect-base 0x7ffff8000000)))
+
+; QEMU user mode places a mapping where its own allocator puts it, which is
+; not where Linux puts it: the model must refuse this run.
+(rule
+ (targets PlacementReplayQemuUser.v)
+ (deps
+  %{project_root}/tools/placement_conformance/log_to_rocq.py
+  placement/qemu-user-10.0.11.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/log_to_rocq.py
+   placement/qemu-user-10.0.11.log
+   --out PlacementReplayQemuUser.v --kb-thp 0 --expect reject)))
+
+; The same kernel log with the first grant moved DOWN one page, to an address
+; that is free and is not Linux's: the replay must refuse it.  Without this
+; one, a replay that accepted every free address would still be green.
+(rule
+ (targets PlacementReplayOffByOnePage.v)
+ (deps
+  %{project_root}/tools/placement_conformance/log_to_rocq.py
+  placement/linux-6.18.46-defconfig.log)
+ (action
+  (run python3 %{project_root}/tools/placement_conformance/log_to_rocq.py
+   placement/linux-6.18.46-defconfig.log
+   --out PlacementReplayOffByOnePage.v --kb-thp 0 --expect reject
+   --perturb 0 --perturb-pages -1)))
 ; THE REAL-KERNEL START STATE (OSSV-257 A4, tools/placement_conformance).
 ; Each rule turns one start-state log of the probe into a Rocq file that
 ; states the recorded launch as LPS terms and closes three lemmas by

@@ -45,9 +45,17 @@ Example mremap_shrink_refunds_tail :
   = CheckOk mremap_shrunk_model [].
 Proof. check_eq. Qed.
 
+(** THE HINT IS WHY THE ADDRESS IS 0x20000.  This ledger's
+    [vm_mmap_base] is 0, so the top-down window is empty and a NULL
+    hint would fall to the bottom-up window at
+    [Mmap.task_unmapped_base]; the call therefore names 0x20000 as a
+    HINT, which Linux returns unchanged because the range is free
+    (mm/mmap.c, [generic_get_unmapped_area_topdown], the hint test,
+    Linux v6.18.46, commit 1f99e9ab748f).  The example is about the
+    budget the shrink refunded, not about where the regrant went. *)
 Example mremap_refund_is_regrantable :
   check_syscall
-    (mkInput 222 [0; 4096; 3; 34; mmap_fd_none; 0]
+    (mkInput 222 [131072; 4096; 3; 34; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 131072 [] [(131072, 4096)]) mremap_shrunk_model
   = CheckOk
@@ -146,12 +154,26 @@ Example mremap_inplace_grow_into_image_rejected :
   = CheckReject.
 Proof. check_eq. Qed.
 
+(** THE DESTINATION IS LINUX'S, not a free address of the model's
+    choosing.  [Mremap.mremap_dst_ok] reads [Mmap.linux_place] at hint
+    0 ([mremap] never passes the caller's [new_address] as a hint
+    without MREMAP_FIXED), and this fixture's [vm_mmap_base] is 0 — a
+    property of the fixture, not of Linux — so its top-down window is
+    empty and the search falls to the bottom-up window, whose floor is
+    [Mmap.task_unmapped_base] = 0x2aaaaab000 (TASK_UNMAPPED_BASE, the
+    bottom-up fallback at the end of
+    [generic_get_unmapped_area_topdown], mm/mmap.c, Linux
+    v6.18.46, commit 1f99e9ab748f).  Nothing is mapped there, so that
+    is the lowest fit and the move lands on it.  The example is about
+    the move out of the image's way; the address is the search's. *)
 Example mremap_move_out_of_the_image_accepts :
   check_syscall (mremap_in 4096 8192)
-    (mkEffectU 131072 [] [(135168, 4096)] [(65536, 4096)]
-      [mkCopy 65536 131072 4096] []) mremap_below_image_model
+    (mkEffectU (Z_to_bv 64 0x2aaaaab000) []
+      [(Z_to_bv 64 0x2aaaaac000, 4096)] [(65536, 4096)]
+      [mkCopy 65536 (Z_to_bv 64 0x2aaaaab000) 4096] []) mremap_below_image_model
   = CheckOk
-      (with_vmmaps (mkVmMaps [(69632, 4096)] [(131072, 8192)] 0 0 8192)
+      (with_vmmaps
+        (mkVmMaps [(69632, 4096)] [(Z_to_bv 64 0x2aaaaab000, 8192)] 0 0 8192)
          mremap_below_image_model) [].
 Proof. check_eq. Qed.
 
@@ -183,12 +205,17 @@ Example mremap_inplace_grow_past_ceiling_rejected :
   = CheckReject.
 Proof. check_eq. Qed.
 
+(** The same search answer, for the same reason: the source sits one
+    page under this run's [alloc_top] and cannot grow in place, so the
+    move goes to the bottom-up window's floor. *)
 Example mremap_move_down_from_ceiling_accepts :
   check_syscall (mremap_at_in 140735332478976 4096 8192)
-    (mkEffectU 65536 [] [(69632, 4096)] [(140735332478976, 4096)]
-      [mkCopy 140735332478976 65536 4096] []) mremap_grow_past_ceiling_model
+    (mkEffectU (Z_to_bv 64 0x2aaaaab000) []
+      [(Z_to_bv 64 0x2aaaaac000, 4096)] [(140735332478976, 4096)]
+      [mkCopy 140735332478976 (Z_to_bv 64 0x2aaaaab000) 4096] [])
+    mremap_grow_past_ceiling_model
   = CheckOk
-      (with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 8192)
+      (with_vmmaps (mkVmMaps [] [(Z_to_bv 64 0x2aaaaab000, 8192)] 0 0 8192)
          mremap_grow_past_ceiling_model) [].
 Proof. check_eq. Qed.
 
@@ -207,7 +234,7 @@ Proof. check_eq. Qed.
 (** A NEW SIZE AT THE TOP OF THE ADDRESS SPACE is -EINVAL, not the
     arm's injected -ENOMEM.  It is page aligned, so it passes the
     wrap gate above, and [check_mremap_params] then refuses it for
-    exceeding TASK_SIZE (mm/mremap.c:1775-1776, Linux v6.18.46),
+    exceeding TASK_SIZE (mm/mremap.c, Linux v6.18.46),
     before any VMA is looked up.  These two examples pinned -ENOMEM
     until that gate was added; they pinned an answer Linux never
     gives. *)
@@ -388,24 +415,55 @@ Example mremap_move_onto_brk_orphan_page_rejected :
   = CheckReject.
 Proof. check_eq. Qed.
 
-Example mremap_move_above_brk_orphan_accepts :
+(** A GROW NO LONGER MOVES WHEN THERE IS ROOM ABOVE THE SOURCE, and
+    these four say so.  Linux asks [vrm_can_expand_in_place] first and
+    expands there when it can (mm/mremap.c, Linux v6.18.46, commit
+    1f99e9ab748f); only without room does it call [get_unmapped_area]
+    with no hint and move ([Mmap.linux_place]).  [[0x21000, 0x22000)]
+    is free on this ledger, so the grow of [[0x20000, 0x21000)] stays
+    where it is, and the MOVE the model used to admit — to any free
+    page, 0x11000 among them — is refused.  Were the move taken, its
+    destination would be the bottom-up window's floor
+    [Mmap.task_unmapped_base] = 0x2aaaaab000, because this fixture's
+    [vm_mmap_base] is 0 and its top-down window is therefore empty. *)
+Example mremap_move_above_brk_orphan_rejected :
   check_syscall mremap_orphan_in
     (mkEffectU 69632 [] [(73728, 4096)] [(131072, 4096)]
       [mkCopy 131072 69632 4096] []) m_brk_orphan_with_source
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** …and the resolution that IS admitted, with the brk residual
+    [(65536, 4084)] and the orphaned protected page [(65536, 4096)]
+    both surviving it: that pair in the post-state is what these
+    examples are for. *)
+Example mremap_inplace_grow_above_brk_orphan_accepts :
+  check_syscall mremap_orphan_in
+    (mkEffectU 131072 [] [(135168, 4096)] [] [] []) m_brk_orphan_with_source
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull brk_reserved [(69632, 8192); (65536, 4084)]
+        (mkVmMapsFull brk_reserved [(131072, 8192); (65536, 4084)]
           [(65536, 4096)] 65536 69620 demo_limit 0 demo_sp)
         m_brk_orphan_with_source) [].
 Proof. check_eq. Qed.
 
-Example mremap_move_onto_orphan_without_residual_accepts :
+(** The same on the ledger WITHOUT the residual, which is the contrast
+    these carry: the post-states differ in exactly the residual, and
+    in nothing else. *)
+Example mremap_move_onto_orphan_without_residual_rejected :
   check_syscall mremap_orphan_in
     (mkEffectU 65536 [] [(69632, 4096)] [(131072, 4096)]
       [mkCopy 131072 65536 4096] []) m_brk_orphan_without_residual
+  = CheckReject.
+Proof. check_eq. Qed.
+
+Example mremap_inplace_grow_without_residual_accepts :
+  check_syscall mremap_orphan_in
+    (mkEffectU 131072 [] [(135168, 4096)] [] [] [])
+    m_brk_orphan_without_residual
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull brk_reserved [(65536, 8192)]
+        (mkVmMapsFull brk_reserved [(131072, 8192)]
           [(65536, 4096)] 65536 69620 demo_limit 0 demo_sp)
         m_brk_orphan_without_residual) [].
 Proof. check_eq. Qed.
@@ -452,12 +510,20 @@ Example mremap_lazy_grow_preserves_only_old_charge :
   vm_backing_used post = 4096%Z.
 Proof. cbv zeta. repeat split; check_eq. Qed.
 
-Example mremap_lazy_move_relocates_materialized_pages :
+(** The MOVE of the same lazy page is refused, and the reason is the
+    grow's order rather than anything about backing: [[0x11000,
+    0x12000)] is free, so Linux expands in place
+    ([vrm_can_expand_in_place], mm/mremap.c, Linux v6.18.46, commit
+    1f99e9ab748f) and never reaches [get_unmapped_area].  The model
+    used to admit this move at any free address; it does not now.  The
+    relocation of the two sparse ledgers is still pinned, one example
+    below, on [Mremap.mremap_model_next] itself, which is where that
+    content lives. *)
+Example mremap_lazy_move_with_room_rejected :
   check_syscall (mremap_in 4096 8192)
     (mkEffectU 131072 [] [(135168, 4096)] [(65536, 4096)]
       [mkCopy 65536 131072 4096] []) mremap_lazy_one_page
-  = CheckOk
-      (mremap_model_next mremap_lazy_one_page 65536 4096 131072 8192) [].
+  = CheckReject.
 Proof. check_eq. Qed.
 
 Example mremap_lazy_move_ledgers_follow_contents :
@@ -480,19 +546,16 @@ Example mremap_mixed_backing_fails_closed :
 Proof. check_eq. Qed.
 
 (* -------------------------------------------------------------------------
-   Moved destinations are preference-free placements
+   A moved destination is LINUX'S destination, and a grow moves only
+   when it cannot expand
 
-   Linux picks a MAYMOVE destination with [get_unmapped_area] at
-   [addr = 0] (mm/mremap.c:1170, cited on [Mremap.mremap_fresh_b]), so
-   whatever the spec is entitled to say about a preference-free mmap
-   placement it is entitled to say here, and no more.  That is three
-   conditions — page-aligned, inside the user range, disjoint from every
-   recorded mapping — and these cases pin both halves of it on a move.
-
-   The spec does not pin the search as well: that would exclude
-   placements Linux makes (see the placement section in
-   [Sys/Mm/Mmap.v]), so the low destination is admissible here for
-   exactly the reason it is admissible for a fresh grant.
+   Linux asks [vrm_can_expand_in_place] before anything else
+   (mm/mremap.c, Linux v6.18.46, commit 1f99e9ab748f).  With room
+   above the source it expands there; only without room does it call
+   [get_unmapped_area] at [addr = 0] (cited on
+   [Mremap.mremap_fresh_b]), which is [Mmap.linux_place] at hint 0.
+   So the model has no freedom in a moved destination either, and the
+   low destination these cases used to admit is refused.
 
    Reason 4 for all of them: the kernel's allocator descends from an
    [mmap_base] no lower than [State.mmap_base_min] = 0x154555557000 under
@@ -513,19 +576,35 @@ Definition mremap_placement_model : Model :=
       (Z_to_bv 64 mmap_base_max) demo_sp)
     (init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp 8192 (demo_input [] IEof)).
 
-(** A growing move to a low destination, admitted: 0x80000000 is
-    page-aligned, positive, below the ceiling and free, which is
-    everything the spec asks of a preference-free placement. *)
-Example mremap_move_low_destination_admitted :
+(** A growing move to a low destination, NOW REFUSED.  0x80000000 is
+    page-aligned, positive, below the ceiling and free, and the old
+    rule admitted it on exactly those four grounds.  Two things now
+    refuse it: the page above the source is free, so Linux expands in
+    place and never searches at all; and were it to search, the answer
+    would be the highest fit below this run's [State.mmap_top], not a
+    low address.  Kept as the refusal it is, so a reader can see what
+    the model used to admit. *)
+Example mremap_move_low_destination_rejected :
   check_syscall (mremap_placed_in (Z_to_bv 64 0x2aaaaab000) 4096 8192)
     (mkEffectU (Z_to_bv 64 0x80000000) []
        [(Z_to_bv 64 0x80001000, 4096)]
        [(Z_to_bv 64 0x2aaaaab000, 4096)]
        [mkCopy (Z_to_bv 64 0x2aaaaab000) (Z_to_bv 64 0x80000000) 4096] [])
     mremap_placement_model
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** …and the resolution that IS admitted on this ledger: the in-place
+    expansion, which is what Linux does when the page above the source
+    is free. *)
+Example mremap_inplace_grow_above_the_source_accepts :
+  check_syscall (mremap_placed_in (Z_to_bv 64 0x2aaaaab000) 4096 8192)
+    (mkEffectU (Z_to_bv 64 0x2aaaaab000) []
+       [(Z_to_bv 64 0x2aaaaac000, 4096)] [] [] [])
+    mremap_placement_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 0x80000000, 8192)] [] 0 0 8192
+        (mkVmMapsFull [] [(Z_to_bv 64 0x2aaaaab000, 8192)] [] 0 0 8192
           (Z_to_bv 64 mmap_base_max) demo_sp) mremap_placement_model) [].
 Proof. check_eq. Qed.
 
@@ -644,18 +723,20 @@ Lemma mremap_fresh_b_conjuncts :
        && mremap_final_budget_b m old old_n dst new_n).
 Proof. reflexivity. Qed.
 
-(** …and the ordinary move, one page above the source, is admitted. *)
-Example mremap_move_just_above_source_accepts :
+(** …and the ordinary move, one page above the source, is REFUSED now,
+    for the reason the whole section turns on: that page being free is
+    exactly what lets Linux expand in place, so a grow never moves
+    there ([vrm_can_expand_in_place], mm/mremap.c, Linux v6.18.46,
+    commit 1f99e9ab748f).  The resolution this ledger does admit is
+    [mremap_inplace_grow_above_the_source_accepts] above. *)
+Example mremap_move_just_above_source_rejected :
   check_syscall (mremap_placed_in (Z_to_bv 64 0x2aaaaab000) 4096 8192)
     (mkEffectU (Z_to_bv 64 0x2aaaaac000) []
        [(Z_to_bv 64 0x2aaaaad000, 4096)]
        [(Z_to_bv 64 0x2aaaaab000, 4096)]
        [mkCopy (Z_to_bv 64 0x2aaaaab000) (Z_to_bv 64 0x2aaaaac000) 4096] [])
     mremap_placement_model
-  = CheckOk
-      (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 0x2aaaaac000, 8192)] [] 0 0 8192
-          (Z_to_bv 64 mmap_base_max) demo_sp) mremap_placement_model) [].
+  = CheckReject.
 Proof. check_eq. Qed.
 
 
@@ -683,45 +764,65 @@ Example mremap_inplace_grow_past_demo_top_admitted_under_high_sp :
           (Z_to_bv 64 mmap_base_max) hi_sp) mremap_grow_past_top_hi_model) [].
 Proof. check_eq. Qed.
 
+(** THE SOURCE IS BOXED IN: the page above it is mapped, so the grow
+    cannot expand in place and Linux searches
+    ([get_unmapped_area] at hint 0, which is [Mmap.linux_place]).
+    With [vm_mmap_base] at [mmap_base_max] and no reservation in the
+    way, the top-down window's highest fit for two pages is
+    [State.mmap_top] minus 8192, and [mmap_top] here is the run's own
+    [State.alloc_top] — which is the field the pair is about. *)
 Definition mremap_move_source_lo_model : Model :=
   with_vmmaps
-    (mkVmMapsFull [] [(65536, 4096)] [] 0 0 8192
+    (mkVmMapsFull [] [(65536, 4096); (69632, 4096)] [] 0 0 16384
       (Z_to_bv 64 mmap_base_max) demo_sp)
-    (init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp 16384 (demo_input [] IEof)).
 Definition mremap_move_source_hi_model : Model :=
   with_vmmaps
-    (mkVmMapsFull [] [(65536, 4096)] [] 0 0 8192
+    (mkVmMapsFull [] [(65536, 4096); (69632, 4096)] [] 0 0 16384
       (Z_to_bv 64 mmap_base_max) hi_sp)
-    (init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp 16384 (demo_input [] IEof)).
 
-(** A move whose destination ends one page past [demo_top]. *)
+(** The destination the search gives in the HIGH-sp run, named
+    structurally so no constant can drift from the field it is read
+    from. *)
+Definition mremap_hi_dst : Z :=
+  (alloc_top (m_vmmaps mremap_move_source_hi_model) - 8192)%Z.
+
+(** The same effect against two ledgers differing only in the stack
+    pointer: under [demo_sp] the destination ends 256 MiB past that
+    run's [alloc_top] and is refused… *)
 Example mremap_move_past_demo_top_rejected_under_low_sp :
   check_syscall (mremap_at_in 65536 4096 8192)
-    (mkEffectU (Z_to_bv 64 (demo_top - 4096)) [] [(Z_to_bv 64 demo_top, 4096)]
-       [(65536, 4096)] [mkCopy 65536 (Z_to_bv 64 (demo_top - 4096)) 4096] [])
+    (mkEffectU (Z_to_bv 64 mremap_hi_dst) []
+       [(Z_to_bv 64 (mremap_hi_dst + 4096), 4096)]
+       [(65536, 4096)] [mkCopy 65536 (Z_to_bv 64 mremap_hi_dst) 4096] [])
     mremap_move_source_lo_model
   = CheckReject.
 Proof. check_eq. Qed.
 
+(** …and under [hi_sp] it is exactly where the search stops. *)
 Example mremap_move_past_demo_top_admitted_under_high_sp :
   check_syscall (mremap_at_in 65536 4096 8192)
-    (mkEffectU (Z_to_bv 64 (demo_top - 4096)) [] [(Z_to_bv 64 demo_top, 4096)]
-       [(65536, 4096)] [mkCopy 65536 (Z_to_bv 64 (demo_top - 4096)) 4096] [])
+    (mkEffectU (Z_to_bv 64 mremap_hi_dst) []
+       [(Z_to_bv 64 (mremap_hi_dst + 4096), 4096)]
+       [(65536, 4096)] [mkCopy 65536 (Z_to_bv 64 mremap_hi_dst) 4096] [])
     mremap_move_source_hi_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 (demo_top - 4096), 8192)] [] 0 0 8192
+        (mkVmMapsFull [] [(Z_to_bv 64 mremap_hi_dst, 8192); (69632, 4096)]
+          [] 0 0 16384
           (Z_to_bv 64 mmap_base_max) hi_sp) mremap_move_source_hi_model) [].
 Proof. check_eq. Qed.
 
 (** A NEW LENGTH OVER [State.TASK_SIZE] is -EINVAL, and the answer is
-    deterministic: [check_mremap_params] (mm/mremap.c:1775-1776, Linux
-    v6.18.46) rejects it before any VMA is looked up.  The first three
+    deterministic: [check_mremap_params] (mm/mremap.c, Linux
+    v6.18.46, commit 1f99e9ab748f) rejects it before any VMA is looked
+    up.  The first three
     conjuncts use an [old_size] the model's ledger does NOT hold exactly,
     so before this gate the answer was [Unmodeled]: they pin that the gate
     fires AHEAD of the source test, which is the kernel's order
-    ([do_mremap] calls [check_mremap_params] at :1920-1922 and
-    [vma_lookup] only at :1931).  The fourth and fifth use the source the
+    ([do_mremap] calls [check_mremap_params] before it calls
+    [vma_lookup]).  The fourth and fifth use the source the
     ledger does hold, where the answer before this gate was the arm's
     injected -ENOMEM, the answer Linux never gives here. *)
 Example mremap_new_len_over_task_size_is_einval :
@@ -760,14 +861,20 @@ Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.
    budget, and the last step resizes the NORESERVE mapping.
    ========================================================================= *)
 
+(** The fresh mapping at step four names 0x20000 as a HINT: this
+    trace's ledger has [vm_mmap_base] 0 — a property of the fixture —
+    so its top-down window is empty, and Linux returns a free
+    page-aligned hint unchanged — the specific-address arm of
+    [generic_get_unmapped_area_topdown] (mm/mmap.c, Linux v6.18.46,
+    commit 1f99e9ab748f).  The trace is about the budget. *)
 Definition mremap_budget_prefix : list (SyscallInput * SyscallEffect) :=
   [ (brk_in 69732, mkEffect 69732 [] [(65536, 8192)]);
-    (mmap_at_in 65536 8192 3 16434, mkEffect 65536 [] [(65536, 8192)]);
+    (mmap_flags_in 65536 8192 3 16434, mkEffect 65536 [] [(65536, 8192)]);
     (brk_in 69832, mkEffect 69832 [] []);
-    (mmap_at_in 0 8192 3 34, mkEffect 131072 [] [(131072, 8192)]) ].
+    (mmap_flags_in 131072 8192 3 34, mkEffect 131072 [] [(131072, 8192)]) ].
 
 (** SHRINK IN PLACE to one page: [shrink_vma] hands [[S + 4096, S +
-    8192)] to [do_vmi_munmap] (mm/mremap.c:1326-1338, Linux v6.18.46),
+    8192)] to [do_vmi_munmap] (mm/mremap.c, Linux v6.18.46),
     so the grant's bytes go with the page.  Linux is left with the
     NORESERVE page [[S, P)] (nothing charged until touched) and the
     fresh mapping: 8192 bytes.  Before the fix (68ccc393) the grant
@@ -784,7 +891,7 @@ Proof. check_eq. Qed.
 
 (** GROW IN PLACE by one page from the same state: the grant inside the
     source is no VMA of its own (Linux only moved [mm->brk]), so it is no
-    neighbour [vma_expandable] (mm/mremap.c:1415-1427) could meet, and
+    neighbour [vma_expandable] (mm/mremap.c) could meet, and
     the free page above the source lets the grow stay in place.  The
     grown entry covers the grant's bytes, so the grant is dropped rather
     than counted twice; the grown tail is lazy and charges nothing. *)

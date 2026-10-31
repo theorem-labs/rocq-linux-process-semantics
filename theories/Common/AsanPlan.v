@@ -30,6 +30,7 @@ Variable IT : itab.
 Variable A : atable.
 Variable nx0 : nat.     (** variables below nx0 are the INITIAL ones (splits / shapes may only mention those) *)
 Variable LIMIT : Z.     (** the run's backing budget (vm_limit): target_alloc_limit *)
+Variable CEIL : Z.      (** the run's allocation ceiling: [page_round_down_Z (alloc_top (m_vmmaps model))] *)
 
 (* ######################################################################### *)
 (** * 7. Plans                                                                *)
@@ -162,7 +163,7 @@ Variable bfuel : nat.              (** executor fuel per block *)
     of [PMmapIn]); code 6 = shapes differ, 3 = empty list *)
 Definition check_all (chk : acs -> plan -> cres) (k : plan) (css : list acs) : cres :=
   match css with
-  | [] => CErr 3 k (init_acs_of A)
+  | [] => CErr 3 k (init_acs_of A CEIL)
   | cs0 :: rest =>
       match chk cs0 k with
       | COk s0 =>
@@ -261,7 +262,7 @@ Fixpoint check (fuel : nat) (lc : option loopctx) (cs : acs) (p : plan) {struct 
       else CErr 2 p cs
   | PBrk2 ka kb =>
       if is_ecall_at segs cs then
-        match node_brk2 A LIMIT cs with
+        match node_brk2 A LIMIT CEIL cs with
         | Some (csa, csb) =>
             match check f csa ka with
             | COk sa => match check f csb kb with
@@ -289,7 +290,7 @@ Fixpoint check (fuel : nat) (lc : option loopctx) (cs : acs) (p : plan) {struct 
       else CErr 2 p cs
   | PMmap ka kb =>
       if is_ecall_at segs cs then
-        match node_mmap2 A nx0 LIMIT cs with
+        match node_mmap2 A nx0 LIMIT CEIL cs with
         | Some (csa, csb) =>
             match check f csa ka with
             | COk sa => match check f csb kb with
@@ -303,7 +304,7 @@ Fixpoint check (fuel : nat) (lc : option loopctx) (cs : acs) (p : plan) {struct 
       else CErr 2 p cs
   | PMmapIn ka kb kc =>
       if is_ecall_at segs cs then
-        match node_mmapin A LIMIT false cs with
+        match node_mmapin A LIMIT CEIL false cs with
         | Some (csa, csb, cscs) =>
             match check f csa ka with
             | COk sa => match check f csb kb with
@@ -320,7 +321,7 @@ Fixpoint check (fuel : nat) (lc : option loopctx) (cs : acs) (p : plan) {struct 
       else CErr 2 p cs
   | PMmapInH ka kb kc =>      (* as PMmapIn, destroyed children with the hole token *)
       if is_ecall_at segs cs then
-        match node_mmapin A LIMIT true cs with
+        match node_mmapin A LIMIT CEIL true cs with
         | Some (csa, csb, cscs) =>
             match check f csa ka with
             | COk sa => match check f csb kb with
@@ -337,7 +338,7 @@ Fixpoint check (fuel : nat) (lc : option loopctx) (cs : acs) (p : plan) {struct 
       else CErr 2 p cs
   | PMprotect ka kb =>
       if is_ecall_at segs cs then
-        match node_mprotect2 A LIMIT cs with
+        match node_mprotect2 A LIMIT CEIL cs with
         | Some (csa, csb) =>
             match check f csa ka with
             | COk sa => match check f csb kb with
@@ -397,7 +398,7 @@ Fixpoint check (fuel : nat) (lc : option loopctx) (cs : acs) (p : plan) {struct 
   | PFog i sz k => match node_fog cs i sz with Some cs' => check f cs' k | None => CErr 3 p cs end
   | PFogNew i sz k => match node_fognew cs i sz with Some cs' => check f cs' k | None => CErr 3 p cs end
   | PGhost b n k => match node_ghost LIMIT cs b n with Some cs' => check f cs' k | None => CErr 3 p cs end
-  | PUnvis b n k => match node_unvis A cs b n with Some cs' => check f cs' k | None => CErr 3 p cs end
+  | PUnvis b n k => match node_unvis A CEIL cs b n with Some cs' => check f cs' k | None => CErr 3 p cs end
   | PHavocBrk lo hi k => match node_havocbrk nx0 cs lo hi with Some cs' => check f cs' k | None => CErr 3 p cs end
   | PIntro lo hi k => match node_intro nx0 cs lo hi with Some cs' => check f cs' k | None => CErr 3 p cs end
   | PRename m k => match node_rename gcb cs m with Some cs' => check f cs' k | None => CErr 3 p cs end
