@@ -1217,7 +1217,7 @@ Qed.
 
 (** ** Avoiding the read-only segments, for any number of segments
 
-    [range_avoids_ro_two] above is fixed at two segments.  Each example
+    [range_avoids_two] above is fixed at two segments.  Each example
     proves the same fact about its own image, and the hand-rolled proof
     names every segment explicitly — so it has to be edited by hand
     whenever the segment COUNT changes (for example, gcc can give

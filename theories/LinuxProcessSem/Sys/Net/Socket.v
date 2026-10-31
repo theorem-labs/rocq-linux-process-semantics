@@ -276,8 +276,8 @@ Definition socket_spec (domain type protocol : word) : Sys SyscallEffect :=
                                             (0, 4, 7, 8 and 9): no in-tree AF_INET protocol
                                             registers one, so the walk never runs and the
                                             pre-loop -ESOCKTNOSUPPORT stands.  The -ENFILE
-                                            beside it is [sock_alloc]'s; see
-                                            [socket_alloc_enfile_note] *)
+                                            beside it is [sock_alloc]'s; the argument for it
+                                            is on [socket_alloc_errnos] above *)
 
 (** [bind fd addr addrlen].
 

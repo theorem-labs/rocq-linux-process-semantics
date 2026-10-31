@@ -2936,8 +2936,9 @@ Qed.
     discharge — which is why the field strengthens every
     statement in the tree that quantifies over an entry without changing
     one of their texts.  No ADDRESS moves with the draw either
-    ([StackLayout.build_stack_bytes_split_random],
-    [entry_stack_image_block_prefix]), so [entry_stack_fits] stays a
+    ([StackLayout.build_stack_bytes_split_random], carried to the
+    mapped image by [PropExec.entry_stack_image_block]), so
+    [entry_stack_fits] stays a
     function of (sp, argv, envp) — and it still bounds the whole mapped
     region, page rounding included
     ([PropExec.entry_page_top_within_window]).

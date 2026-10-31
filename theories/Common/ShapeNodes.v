@@ -43,8 +43,8 @@
     ** Conventions
 
     - Errno returns are [errno_ret e = Z_to_bv 64 (- e)]; the arithmetic
-      facts callers branch on are [errno_ret_signed_neg],
-      [errno_ret_unsigned_ge], [errno_ret_ne_small].
+      facts callers branch on are [errno_ret_signed_neg] and
+      [errno_ret_unsigned_ge].
     - Nondeterministic nodes whose resolutions all continue silently
       come in two flavours: an INDEXED rule (continuation shape may
       depend on the resolution: [t_alt]) and a CONSTANT corollary (all

@@ -2274,9 +2274,15 @@ Proof. check_eq. Qed.
     moved destination off that orphan is the residual entry
     [(65536, 4084)] — the shrink truncates the brk entry, it does not
     remove it, and a page-aligned destination low enough to touch the
-    orphan must cross the residual first.  The pair below differs only in
-    the destination, one page apart across the orphan's end (69632); the
-    source at 131072 is an unrelated clean mapping to move. *)
+    orphan must cross the residual first.  The pair that pins this is on
+    the guard itself, in [Cases/Mm/Mremap.v]
+    ([mremap_fresh_above_brk_orphan_accepts]): its two destinations
+    differ only in the page, one apart across the orphan's end (69632).
+    The syscall cases on this state reach no moved destination at all —
+    the grow has room above the source and expands in place — so they
+    are both [CheckReject] for that reason and pin nothing about the
+    orphan.  The source at 131072 is an unrelated clean mapping to
+    move. *)
 
 Definition m_brk_orphan_with_source : Model :=
   with_vmmaps
@@ -2288,9 +2294,12 @@ Definition m_brk_orphan_with_source : Model :=
     shrink TRUNCATES the owning entry rather than removing it, and a
     nonempty orphan forces the protected base [a] to satisfy
     [a <= page_floor r < r], so [[page_floor r, r)] is always still in
-    [vm_maps].  Take the residual out anyway and the move onto the orphan
-    page is ACCEPTED — the model would place a mapping onto protected
-    memory.  So the property [Mremap.mremap_fresh_b] actually leans on is
+    [vm_maps].  Take the residual out anyway and the guard
+    [Mremap.mremap_fresh_b] ADMITS the destination onto the orphan page
+    ([Cases/Mm/Mremap.v]'s
+    [mremap_fresh_onto_orphan_without_residual_accepts]) — the model
+    would place a mapping onto protected memory.  So the property
+    [Mremap.mremap_fresh_b] actually leans on is
     "truncated, not removed", not the containment prose: the orphan's
     presence in [vm_noaccess] does none of the work, because the
     predicate never reads it. *)
@@ -2332,8 +2341,8 @@ Proof.
 Qed.
 
 (** And it FAILS on the counterfactual state, the one where the residual
-    entry was taken away and the move onto protected memory was accepted
-    just above.  So the invariant is exactly what separates the reachable
+    entry was taken away and the guard admits a destination onto
+    protected memory.  So the invariant is exactly what separates the reachable
     state from the unreachable one: it is not vacuous, and it is not
     trivially true of anything with a nonempty [vm_noaccess]. *)
 

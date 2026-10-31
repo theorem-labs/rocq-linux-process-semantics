@@ -468,6 +468,58 @@ Example mremap_inplace_grow_without_residual_accepts :
         m_brk_orphan_without_residual) [].
 Proof. check_eq. Qed.
 
+(** THE BRK-ORPHAN BOUNDARY, PINNED WHERE THE MODEL STILL EXPOSES IT.
+    [Mremap.mremap_fresh_b]'s [region_free] conjunct is what keeps a
+    moved destination off the orphaned protected page
+    [[69620, 69632)] that [m_brk_same_page_shrunk] leaves behind, and
+    the argument on that guard says the residual entry [(65536, 4084)]
+    — the truncated brk entry, not the orphan's presence in
+    [vm_noaccess] — is what does the work.
+
+    NO [check_syscall] CASE CAN SHOW THAT ANY MORE, and the two
+    rejections above are why: on both of these ledgers
+    [Mremap.mremap_inplace_room_b] is TRUE, so Linux expands in place
+    and [check_mremap] refuses every moved destination before
+    [Mremap.mremap_fresh_b] is ever consulted.  Both moves are
+    [CheckReject] for that reason and not for the orphan's, so a
+    syscall-level pair would pin nothing here.  The guard is therefore
+    stated directly, at the arguments [check_mremap] would pass it:
+    [old_nZ = 4096], [new_nZ = 8192], [old = 131072], [old_n = 4096].
+
+    These two differ only in the destination, one page apart across the
+    orphan's end (69632). *)
+Example mremap_fresh_above_brk_orphan_accepts :
+  mremap_fresh_b m_brk_orphan_with_source 4096 8192 131072 4096 69632 8192
+  = true
+  /\ mremap_fresh_b m_brk_orphan_with_source 4096 8192 131072 4096 65536 8192
+     = false.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** …and the counterfactual half, which is the one that does the work:
+    take the residual entry out of the same state and the destination
+    ONTO the orphan page is admitted, so what the guard leans on is
+    "the shrink TRUNCATES the owning entry rather than removing it".
+    The orphan's presence in [vm_noaccess] contributes nothing, because
+    the guard never reads it.  [m_brk_orphan_without_residual] is
+    unreachable — [Cases/Mm/Mmap.v]'s
+    [noaccess_pages_owned_fails_without_residual] is that statement —
+    and the case is checked in so the load-bearing property is visible
+    rather than inferred. *)
+Example mremap_fresh_onto_orphan_without_residual_accepts :
+  mremap_fresh_b m_brk_orphan_without_residual 4096 8192 131072 4096 65536 8192
+  = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(** The premise both of those rest on, measured rather than asserted:
+    the grow of [[131072, 135168)] has room above the source on either
+    ledger, which is why no move is reachable from this input. *)
+Example mremap_orphan_input_has_room_above_the_source :
+  mremap_inplace_room_b m_brk_orphan_with_source 131072 4096 8192 4096 8192
+  = true
+  /\ mremap_inplace_room_b m_brk_orphan_without_residual
+       131072 4096 8192 4096 8192 = true.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
 Definition mremap_lazy_two_pages : Model :=
   with_vm_backing [(65536, 8192)] [65536; 69632]
     (with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 8192)
