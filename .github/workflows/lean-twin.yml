@@ -11,7 +11,15 @@ on:
     paths:
       - 'lean/**'
       - '.github/workflows/lean-twin.yml'
+  # `lean/twin` itself, so the branch is still built after a slice merges
+  # into it: a pull request's build is of its own head, not of the result.
+  push:
+    branches:
+      - 'lean/twin'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,16 +29,21 @@ jobs:
   lean-twin-build:
     name: Lean twin (lake build, not required)
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    # The measured cold build is 26 minutes on 64 CPUs; a GitHub runner has
+    # 4, so 120 minutes is room and not a day.
+    timeout-minutes: 120
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
       - name: Install elan
         run: |
-          curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+          # A pinned release of the installer, not the tip of master, and the
+          # digest is compared rather than printed.
+          curl -fsSL https://raw.githubusercontent.com/leanprover/elan/v4.1.2/elan-init.sh \
             -o elan-init.sh
-          sha256sum elan-init.sh
+          echo "4bacca9502cb89736fe63d2685abc2947cfbf34dc87673504f1bb4c43eda9264  elan-init.sh" \
+            | sha256sum -c -
           sh elan-init.sh -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
@@ -57,3 +70,14 @@ jobs:
           awk '/^MemAvailable:/ {print "MemAvailable " $2 " kiB"}' /proc/meminfo
           nproc
           lake build
+
+      # `lake build` traces one of the 175 Rocq files the generators read
+      # (`lean/lakefile.lean:340`); its own comment leaves the rest to
+      # these two `--check` runs, which upstream runs in a job this
+      # repository does not have.  They need no toolchain and take seconds,
+      # and they are what notices a Rocq change that should have moved the
+      # rendered table.
+      - name: The generated tables are current against the Rocq tree
+        run: |
+          python3 lean/tools/gen_lean_registry.py --check .
+          python3 lean/tools/gen_lean_checked.py --check .

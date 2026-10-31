@@ -17,8 +17,9 @@ which the import made:
 - `lean/README.md` is the twin's own page. Upstream's page is kept, byte
   for byte, as `lean/README.upstream.md`.
 - `lean/UPSTREAM` (this file) is new.
-- `lean/lakefile.lean` has three changed paths, each marked
-  `TWIN CHANGE` and listed below.
+- `lean/lakefile.lean` carries five `TWIN CHANGE` comments, which retarget
+  two roots: the generators' directory and the examples' directory. They
+  are at lines 306, 352, 379, 392 and 411.
 - `lean/tools/` and `lean/examples-rocq/` are new directories, holding
   files upstream keeps outside its own `lean/`; see below.
 
@@ -41,11 +42,15 @@ points at them there:
   `*_seg_*.hex` chunks, from upstream `theories/Examples/`): the image
   bytes the twelve Lean example proofs are checked against. This
   repository has no such examples.
-- `theories/Examples/rwx_flag_ns/` and
-  `theories/LinuxProcessSem/Sys/SyscallTable.v` and
-  `theories/LinuxProcessSem/Bridge/exit.hex` are read from THIS
-  repository, unchanged by the import. The rwx snapshots and hex chunks
-  are byte-identical in the two repositories at these commits.
+- This repository's own Rocq tree is read, unchanged by the import. The
+  generators open 175 files under `theories/` (measured with
+  `sys.addaudithook` over `gen_lean_registry.py`); `lean/lakefile.lean`
+  traces one of them, `theories/LinuxProcessSem/Sys/SyscallTable.v`, and
+  leaves the other 174 to the `--check` runs of the two generators, which
+  the Lean twin's CI job runs. The lakefile also reads
+  `theories/Examples/rwx_flag_ns/` (two snapshots and four `*_seg_*.hex`
+  chunks, byte-identical to upstream's at these commits) and
+  `theories/LinuxProcessSem/Bridge/exit.hex`.
 
 A file still at its imported bytes carries no `-- Ports` header, and
 upstream's commit above is its provenance. A slice that ports a file to
