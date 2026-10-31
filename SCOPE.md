@@ -356,6 +356,11 @@ not apply.
   a `close` that changed another descriptor's entry would make false
   the published lemmas that say a `close` only removes its own entry
   (`theories/Common/FileSim.v`, `tfo_close`).
+- The `net.core` sysctls `wmem_default`, `rmem_default`, `wmem_max` and
+  `rmem_max` do not change while the program runs. The model reads them
+  from `State.KernelBuild`, which a launch states once; statements
+  quantify over every value. Another process that writes
+  `/proc/sys/net/core/*` during the run makes this assumption false.
 - The launch left `SIGPIPE` at its default disposition, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises
@@ -494,6 +499,17 @@ equivalence) can be true of the model and false of Linux.
   two, and the value of `hrtimer_resolution`, follow the kernel build and
   the boot (`CONFIG_HIGH_RES_TIMERS`, `CONFIG_HZ`). The model does not
   constrain later calls to use the same resolution.
+- **The count of a non-blocking send on a stream pair.** Linux cuts the
+  send into skbs and stops at the first one that the sender's
+  `sk_wmem_alloc`, counted in TRUESIZE, does not admit
+  (`unix_stream_sendmsg`, `sock_alloc_send_pskb`). Truesize depends on
+  kmalloc rounding, which the model does not carry. So
+  `State.stream_send_ok` admits every count from the first skb's size
+  to the bound the send buffer allows, and Linux gives only some of
+  them; and a send onto a non-empty queue may answer `-EAGAIN` where
+  Linux would admit one more skb. Readiness has the same cause: in the
+  band where `unix_writable` turns on truesize, `ppoll` and `pselect6`
+  decline a request for POLLOUT rather than answer it.
 - **R-a, an mmap base above `State.alloc_top`.** The model's stack window is
   `[sp - 8 MiB, sp)`. Linux measures its 8 MiB from the end of the stack
   VMA, which is above `sp` by the entry image. With an entry image of more

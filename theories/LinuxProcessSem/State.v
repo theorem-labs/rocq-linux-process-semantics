@@ -5444,13 +5444,24 @@ Definition se_add_shut (st : StreamEnd) (rd wr : bool) : StreamEnd :=
       is weaker and keeps the relation inhabited for every [s];
     - [k] is at least 1 and at most [n], since a send that moves nothing
       returns -EAGAIN instead of 0 (decided by the callers, see
-      [stream_send_full] and [stream_send_may_refuse]).
+      [stream_send_full] and [stream_send_may_refuse]);
+    - [k] is at least the FIRST skb's size, [min n ((s >> 1) - 64)
+      (SKB_MAX_HEAD(0) + UNIX_SKB_FRAGS_SZ)]: once that skb is admitted
+      its bytes are copied whole (a fault declines, see
+      [Fs.ReadWrite.stream_send]) and queued, and only a LATER skb can be
+      refused, which returns the bytes already sent.  The model writes
+      32768 for the last term, which is below its measured 36544 on the
+      riscv64 defconfig (dispatch://OSSV-287/artifact/skb-sizes-md), so
+      the bound is no larger than Linux's.
 
     Every count Linux can return satisfies this, which is what makes it
-    sound; it admits more than Linux does, which is what makes it an
-    over-approximation. *)
+    sound; it admits more than Linux does — any total between the first
+    skb and the last admitted one, where Linux's totals are sums of skb
+    sizes cut at truesize-dependent points — which is what makes it an
+    over-approximation, named in SCOPE.md's gaps in precision. *)
 Definition stream_send_ok (q s n k : Z) : Prop :=
-  (1 <= k <= n)%Z /\ (q + k <= s + s / 2)%Z.
+  (1 <= k <= n)%Z /\ (Z.min n (Z.min (s / 2 - 64) 32768) <= k)%Z
+  /\ (q + k <= s + s / 2)%Z.
 
 (** THE QUEUE IS CERTAINLY FULL: the data alone reaches [s], so
     [sk_wmem_alloc >= s] and [sock_alloc_send_pskb] admits nothing. *)

@@ -869,8 +869,8 @@ Defined.
 Definition arm_getsockname : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 204%Z (fun i => getsockname_spec (fd32 (in_arg i 0)) i))
-                       (fun i eff m => check_getsockname (fd32 (in_arg i 0)) eff m)
-                       (fun i m => getsockname_witness (fd32 (in_arg i 0)) m)
+                       (fun i eff m => check_getsockname i (fd32 (in_arg i 0)) eff m)
+                       (fun i m => getsockname_witness (fd32 (in_arg i 0)) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_getsockname_sound_ok, check_getsockname_sound_unmodeled, check_getsockname_complete_ok, check_getsockname_complete_unmodeled, getsockname_witness_ok.
@@ -880,8 +880,8 @@ Defined.
 Definition arm_getpeername : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 205%Z (fun i => getpeername_spec (fd32 (in_arg i 0)) i))
-                       (fun i eff m => check_getpeername (fd32 (in_arg i 0)) eff m)
-                       (fun i m => getpeername_witness (fd32 (in_arg i 0)) m)
+                       (fun i eff m => check_getpeername i (fd32 (in_arg i 0)) eff m)
+                       (fun i m => getpeername_witness (fd32 (in_arg i 0)) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_getpeername_sound_ok, check_getpeername_sound_unmodeled, check_getpeername_complete_ok, check_getpeername_complete_unmodeled, getpeername_witness_ok.
@@ -913,8 +913,8 @@ Defined.
 Definition arm_setsockopt : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 208%Z (fun i => setsockopt_spec (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i))
-                       (fun i eff m => check_setsockopt (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m)
-                       (fun i m => setsockopt_witness (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) m)
+                       (fun i eff m => check_setsockopt i (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m)
+                       (fun i m => setsockopt_witness (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_setsockopt_sound_ok, check_setsockopt_sound_unmodeled, check_setsockopt_complete_ok, check_setsockopt_complete_unmodeled, setsockopt_witness_ok.
@@ -1934,20 +1934,20 @@ Lemma sa_spec_arm_connect : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_getsockname : forall i eff m,
-  ca_check arm_getsockname i eff m = check_getsockname (fd32 (in_arg i 0)) eff m.
+  ca_check arm_getsockname i eff m = check_getsockname i (fd32 (in_arg i 0)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_getsockname : forall i m,
-  ca_witness arm_getsockname i m = getsockname_witness (fd32 (in_arg i 0)) m.
+  ca_witness arm_getsockname i m = getsockname_witness (fd32 (in_arg i 0)) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_getsockname : forall i m o,
   sa_spec (ca_arm arm_getsockname) i m o = getsockname_spec (fd32 (in_arg i 0)) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_getpeername : forall i eff m,
-  ca_check arm_getpeername i eff m = check_getpeername (fd32 (in_arg i 0)) eff m.
+  ca_check arm_getpeername i eff m = check_getpeername i (fd32 (in_arg i 0)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_getpeername : forall i m,
-  ca_witness arm_getpeername i m = getpeername_witness (fd32 (in_arg i 0)) m.
+  ca_witness arm_getpeername i m = getpeername_witness (fd32 (in_arg i 0)) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_getpeername : forall i m o,
   sa_spec (ca_arm arm_getpeername) i m o = getpeername_spec (fd32 (in_arg i 0)) i m o.
@@ -1974,10 +1974,10 @@ Lemma sa_spec_arm_recvfrom : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_setsockopt : forall i eff m,
-  ca_check arm_setsockopt i eff m = check_setsockopt (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m.
+  ca_check arm_setsockopt i eff m = check_setsockopt i (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_setsockopt : forall i m,
-  ca_witness arm_setsockopt i m = setsockopt_witness (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) m.
+  ca_witness arm_setsockopt i m = setsockopt_witness (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_setsockopt : forall i m o,
   sa_spec (ca_arm arm_setsockopt) i m o = setsockopt_spec (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (int32 (in_arg i 4)) i m o.

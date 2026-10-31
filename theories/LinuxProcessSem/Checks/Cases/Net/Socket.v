@@ -2041,9 +2041,10 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
 
 (** The flag-bit check runs BEFORE the two descriptors are reserved, so
     -EINVAL leaves sv alone — and it is answered for every family, not
-    just the modeled one.  AF_UNIX (family 1) really does hand back two
-    sockets connected to each other, a shape [State.SockState] cannot
-    express: fail closed. *)
+    just the modeled ones.  AF_UNIX SOCK_DGRAM (family 1, type 2) hands
+    back two connected MESSAGE sockets, which no [State.FdEntry]
+    expresses: fail closed.  (AF_UNIX SOCK_STREAM is the pair the model
+    does hold; [Checks.Cases.Net.StreamPair] pins its success.) *)
 Example socketpair_flag_check_precedes_the_writes :
   check_syscall (mkInput 199 [2; 257; 0; 4096; 0; 0] (fun _ => None) wmem_open)
     (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
@@ -2055,7 +2056,7 @@ Example socketpair_flag_check_precedes_the_writes :
   /\ check_syscall (mkInput 199 [1; 257; 0; 4096; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
      = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
-  /\ check_syscall (mkInput 199 [1; 1; 0; 4096; 0; 0] (fun _ => None) wmem_open)
+  /\ check_syscall (mkInput 199 [1; 2; 0; 4096; 0; 0] (fun _ => None) wmem_open)
        (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
        (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
      = CheckUnmodeled.

@@ -272,10 +272,12 @@ Proof.
     destruct (access_okb buf (bv_unsigned count)); cbv iota in Hz;
       exact (Hro _ _ _ Hz). }
   (* Every [State.FdEntry] constructor, not only the files: [FdSocket] delivers
-     too, and so does a pipe READ end and an O_RDWR file, so each gets a
-     bullet rather than a one-line dismissal.  The two write-only kinds
-     ([FdFileW] and the append [FdFileA]) are the -EBADF pair. *)
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd;
+     too, and so does a pipe READ end, a stream-pair end and an O_RDWR file,
+     so each gets a bullet rather than a one-line dismissal.  The two
+     write-only kinds ([FdFileW] and the append [FdFileA]) are the -EBADF
+     pair. *)
+  destruct (fd_lookup (m_fds m) fd)
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
     cbv iota in Hspec;
     [ | | now destruct (Hro _ _ _ Hspec)
       | now destruct (Hro _ _ _ Hspec)
@@ -290,6 +292,14 @@ Proof.
         destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
         [ now destruct (Hro _ _ _ Hspec)
         | exact (check_read_urandom_delivery_clamped _ _ _ _ _ _ _ _ _ Hspec Hws) ]
+      | (* stream-pair end: the range verdict, the zero count, then a
+           delivery of [pipe_take] of the queue at the clamped count *)
+        destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
+          [ now destruct (Hro _ _ _ Hspec) | ];
+        destruct (w_is0 count); cbv iota in Hspec;
+          [ now destruct (Hro _ _ _ Hspec)
+          | exact (check_stream_read_delivery_clamped
+                     _ _ _ _ _ _ _ _ _ _ _ _ _ _ Hspec Hws) ]
       | now destruct (Hro _ _ _ Hspec) ].
   - (* channel *)
     destruct (negb (w_is0 ch)); cbv iota in Hspec;
@@ -2597,7 +2607,7 @@ Proof.
     destruct Hx as (-> & _ & _). cbn in Hc. discriminate. }
   destruct (ppos_einvalb pos); [now destruct (Hro _ _ _ H)|].
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|];
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|];
     cbv iota in H; try (now destruct (Hro _ _ _ H)).
   (* three kinds survive that: the APPEND arm, whose checker is
      [CheckUnmodeled] and so never equals a [CheckOk], and the two

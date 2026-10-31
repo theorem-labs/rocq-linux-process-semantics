@@ -296,7 +296,7 @@ Qed.
 
 (** fstat (80) — -EBADF on a descriptor the process does not hold, a
     delivered [struct stat] on the four file kinds and on the two device
-    kinds, and [Unmodeled] on the other four. *)
+    kinds, and [Unmodeled] on the other five. *)
 Definition fstat_witness (fd statbuf : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
@@ -308,6 +308,7 @@ Definition fstat_witness (fd statbuf : word) (i : SyscallInput) (m : Model)
   | Some (FdFileRW p _) => fstat_file_witness p statbuf i m
   | Some FdDir         => Unmodeled
   | Some (FdSocket _)  => Unmodeled
+  | Some (FdStream _ _ _) => Unmodeled
   | Some (FdPipe _ _)  => Unmodeled
   | Some (FdDevNull _ _) => fstat_devnull_witness statbuf i m
   | Some FdUrandom => fstat_urandom_witness statbuf i m
