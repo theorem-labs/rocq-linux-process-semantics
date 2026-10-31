@@ -346,6 +346,38 @@ EXPECT = {
  "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_step.lean@store_ok_of_wr_at#lib/Lib/Step.v#1": ("decl:rw_cells_store_ok", ""),
  "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_step.lean@munch_store#lib/Prog/reac_knock_step_c.v#1": ("fixed:31-31", "read: the post conjunct `munch [(bv_unsigned a0, bv_unsigned a0 + 40)] m m'`"),
  "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_step.lean@EOF#lib/Prog/reac_knock_step_c.v#1": ("fixed:25-25", "read: the premise `rw_cells rsegs m (bv_unsigned a0) (knock_cells st p1 opened due heard g p2)`"),
+ # memset.lean / memset_c.lean (K1Memset) — spans of `memset_body`'s proof and
+ # of the `mkR` row of `memset_post`, which name no Rocq declaration.
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@k_val#R_memset.v#1": ("fixed:255-261", "read: `remember (Z.land (bv_swrap 32 (0 - A) mod 18446744073709551616) 3) as k` and its `assert (Rk : (0 <= k < 4 /\\ (A + k) mod 4 = 0)%Z)`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@n4_val#R_memset.v#1": ("fixed:263-267", "read: `rewrite land_align_down`, `remember (n - k - (n - k) mod 2^2)%Z as n4` and its `assert (Rn4 : (exists q, n4 = 4 * q)%Z /\\ (n - k - 3 <= n4 <= n - k)%Z)`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@k4_val#R_memset.v#1": ("decl:land4_of_aligned", ""),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@k4_val#R_memset.v#2": ("fixed:285-288", "read: `remember (Z.land (A + k) 4) as k4` and its `assert (Rk4 : ((k4 = 0 \\/ k4 = 4) /\\ (A + k + k4 + 24) mod 8 = 0)%Z)`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@mulhu_splat#R_memset.v#1": ("fixed:268-268", "read: `zstep. setreg 12%Z (Z_to_bv 64 (c * BC4)) ltac:(unfold BC4; brute256 c Rc).`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@splat8_or#R_memset.v#1": ("fixed:296-296", "read: `zstep. zstep. zstep. zstep. setreg 12%Z (Z_to_bv 64 (c * BC8)) ltac:(unfold BC4, BC8; brute256 c Rc).`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@exit_ret#R_memset.v#1": ("fixed:178-186", "read: `Ltac fin_with cover` and `Ltac fin`, the two tactics that close every exit of the walk"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@blk_1ac04#R_memset.v#1": ("fixed:235-240", "read: the opening `zstep`/`if_cases K0`, the first byte's `ms_facts`/`ms_store_ok`/`ms_arr_store`, the `mst (n - 1)` and the `if_cases K3`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@blk_1ac1c#R_memset.v#1": ("fixed:241-246", "read: `mst 1`, `mst 2`, `mst (n - 3)`, `mst (n - 2)` and the `if_cases K7`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@blk_1ac34#R_memset.v#1": ("fixed:247-250", "read: `mst 3`, `mst (n - 4)` and the `if_cases K9`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@step_subw_at#R_memset.v#1": ("fixed:251-272", "read: from the `zstep. zstep.` after the `n < 9` exit, through the `k`, `c * BC4` and `n4` blocks, to the `if_cases K9'`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@blk_1ac6c#R_memset.v#1": ("fixed:270-272", "read: `mst k 4%nat`, `mst (k + n4 - 4)%Z 4%nat` and the `if_cases K9'`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@blk_1ac7c#R_memset.v#1": ("fixed:273-278", "read: `mst (k + 4)`, `mst (k + 8)`, `mst (k + n4 - 12)`, `mst (k + n4 - 8)` and the `if_cases K25`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@blk_1ac94#R_memset.v#1": ("fixed:279-294", "read: `mst (k + 12)` through `mst (k + 24)`, the `Z.land (A + k) 4` block, `mst (k + n4 - 28)` through `mst (k + n4 - 16)` and the `if_cases K32`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@step_or_at#R_memset.v#1": ("fixed:295-300", "read: the four `zstep`s that build `c * BC8`, the `replace (A + k + (k4 + 24))` and the `eapply memset_loop`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@loop_aux#R_memset.v#1": ("decl:memset_loop", ""),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@memset_walk#R_memset.v#1": ("decl:memset_body", ""),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset.lean@memset_holds#R_memset.v#1": ("decl:memset_spec", ""),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset_c.lean@memset_clobber#lib/Prog/memset_c.v#1": ("fixed:13-13", "read: the `mkR` row of `memset_post`, whose fresh variables are t0 t1 t2 a1' a2' a3 a4 a5 a6 a7 t3 t4 t5 t6"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/memset_c.lean@memset_frame#lib/Prog/memset_c.v#1": ("fixed:13-13", "read: the same `mkR` row, which keeps ra sp gp tp s0 s1 a0 s2..s11 and makes the caller-saved registers fresh"),
+
+ # K1Init: proofs/lib/Prog/reac_knock_init_c.lean and reac_knock_init.lean
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_init_c.lean@OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_init_c#lib/Prog/reac_knock_init_c.v#1": ("fixed:32-33", "read: the start state `MS (mkR ra sp ... t6) F (Z_to_bv 64 REAC_KNOCK_INIT) fc None m (seg_rom rsegs)` of reac_knock_init_contract"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_init_c.lean@OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_init_c#lib/Prog/reac_knock_init_c.v#2": ("fixed:13-13", "read: the `forall (ra sp gp tp t0 ... t6 : word)` line of reac_knock_init_contract"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_init_c.lean@init_clobbers#lib/Prog/reac_knock_init_c.v#1": ("fixed:23-24", "read: the post-state `ms' = MS (mkR ra sp gp tp t0' t1' t2' s0 s1 a0' ... t6')` of reac_knock_init_contract's Q"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_init.lean@OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_init#lib/Prog/reac_knock_init.v#1": ("fixed:30-50", "read: the tactic script of reac_knock_init_holds, from `intros MEMS.` to the closing `reflexivity.`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_init.lean@OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_init#lib/Lib/Exec.v#1": ("decl:msteps_trans", ""),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_init.lean@OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_init#lib/Lib/Tac.v#1": ("fixed:250-253", "read: the `call` tactic, `eapply evt_cut; [eapply SPEC | post_call]`"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_init.lean@OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_init#lib/Prog/memset_c.v#1": ("cblock:MEMSET..memset_contract", "the whole of memset_c.v, MEMSET to memset_contract"),
+ "OssFuzzTheorems/libreac/fuzz_knock/proofs/lib/Prog/reac_knock_init.lean@jalr_ret#lib/Lib/MState.v#1": ("decl:ret_pc", ""),
 }
 
 
