@@ -57,11 +57,11 @@ an `SCDisjoint` obligation for it instead.  A load with no deciding entry
 falls through to the base memory.  `sym_exec` itself stops, before calling
 `sym_step`, at a pc it cannot fetch, an `ecall`, an undecodable word, a
 compressed encoding and a `Branch` once `dirs` is used up, and when its fuel
-runs out.  The Lean decoder does not yet decode a compressed or an F/D
-encoding (`decode_any`, `Riscv/DecodeC.lean`; `decode`,
-`Riscv/Decode.lean`), so here both stop `sym_exec` as undecodable words, and
-no F/D instruction reaches `sym_step`; nor does `Load .SZ8 false`, which the
-decoder never produces.
+runs out.  A compressed encoding stops it through the size test, as it does
+in Rocq: `decode_any` (`Riscv/DecodeC.lean`) expands the parcel and reports
+size 2, and `sym_exec` takes only size 4.  An F/D encoding reaches
+`sym_step`, which declines it, again as in Rocq.  `Load .SZ8 false` never
+arrives: the decoder does not produce it.
 
 Left unported (cat1024_ns does not reach them): `E0`, `regs_ok_id`,
 `sc_flat_of_region`, `sc_disjoint_of_regions`, `sc_disjoint_same_region`,

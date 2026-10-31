@@ -1,4 +1,6 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/Riscv/Sem.v
 import LinuxProcessSemantics.Riscv.Instr
+import LinuxProcessSemantics.Riscv.Fpu
 
 /-! # Sem: the abstract RV64 semantics, as a first-order effect tree
 
@@ -19,20 +21,20 @@ instruction's resulting core carries `pc := pc + sz`; `EFault` and
 `EDefinedIllegal` carry the PRE-state (nothing retires); `EIllegal` from
 `step` on an undecodable fetch carries pc NOT advanced.
 
-NOT YET PORTED (each answers `EIllegal cn`, the model declining, which
-`RiscvSemantics.interp_eff` turns into `MachineUnmodeled` — fail closed):
-the F/D arms (`FLoad`, `FStore`, `Fma`, `Fari`, `Fsqrt`, `Fsgnj`,
-`Fminmax`, `Fcmp`, `Fcvt`, `Fmv`, `Fclass`), because `Fpu.v` rests on
-Flocq and floating point stays unmodeled in Lean for now.  The decoder
-does not produce them either (`Decode.decode`), so the arm is
-unreachable today; it is written so that porting the decoder alone does
-not silently change the answer. -/
+F and D execute here in full, arithmetic included: the IEEE side
+(rounding, exception flags, the special cases) lives in `Fpu` as a
+computation over raw bit patterns, and this file owns the ISA side —
+which register file each operand comes from, NaN boxing of
+single-precision values, resolving the instruction's rounding-mode field
+against fcsr's frm, and accruing the flags into fcsr[4:0].  A reserved
+rounding mode is `EIllegal`, not a default. -/
 
 
 namespace LinuxProcessSemantics.Riscv.Sem
 
 open LinuxProcessSemantics.Riscv.Prelude
 open LinuxProcessSemantics.Riscv.Instr
+open LinuxProcessSemantics.Riscv.Fpu
 
 /-! ## Pure helpers -/
 
@@ -90,7 +92,7 @@ def mul_div {n : Nat} (op : mulop) (a b : BitVec n) : BitVec n :=
 not naturally aligned to the operand width (4 for .w, 8 for .d) traps
 (`EFault`, the SIGBUS analogue).  The check runs FIRST, before sc consults
 its reservation; see the Rocq note and
-`bugs/riscv-misaligned-sc-nonmatching.md`. -/
+`linux-process-semantics@ff0313ba4f:bugs/riscv-misaligned-sc-nonmatching.md`. -/
 def amo_bytes (wd : awidth) : Int :=
   match wd with | .AW => 4 | .AD => 8
 
@@ -166,6 +168,31 @@ def slice_set (f : BitVec 32) (lo len : Nat) (v : word) : BitVec 32 :=
   let mask := (2 ^ len - 1) <<< lo
   BitVec.ofNat 32 ((f.toNat &&& ((2 ^ 32 - 1) ^^^ mask)) ||| ((v.toNat <<< lo) &&& mask))
 
+/-- NaN boxing for single-precision values in 64-bit FP registers. -/
+def nan_box (v : BitVec 32) : word := bv_concat (Z_to_bv 32 (-1)) v
+
+/-- An S-format input that is not properly NaN-boxed is treated as the
+canonical NaN. -/
+def unbox_s (v : word) : BitVec 32 :=
+  if (bv_extract 32 32 v).toNat = 0xffffffff then low32 v
+  else Z_to_bv 32 0x7fc00000
+
+/-- Sign injection at any width (n = 32 after unboxing, or 64).
+
+Rocq rebuilds the word as `bv_concat n <sign bit> (bv_extract 0 (n-1) a)`;
+a dependently typed concatenation of widths `1 + (n - 1)` is not `n` in
+Lean, so the same result is computed by clearing the sign bit of `a` and
+OR-ing the chosen one back in. -/
+def sgnj_val {n : Nat} (op : fsgnop) (a b : BitVec n) : BitVec n :=
+  let sa := bit (n - 1) a
+  let sb := bit (n - 1) b
+  let s := match op with
+           | .F_SGNJ => sb
+           | .F_SGNJN => !sb
+           | .F_SGNJX => xor sa sb
+  let m : BitVec n := BitVec.ofNat n (2 ^ (n - 1))
+  bv_or (bv_and a (bv_not m)) (if s then m else 0)
+
 /-! ## Core state: what the ISA owns -/
 
 structure core where
@@ -203,8 +230,42 @@ def fget (c : core) (r : reg) : word := reg_get c.c_fregs r
 def fset (r : reg) (v : word) (c : core) : core :=
   with_fregs (bvmap_set r v) c
 
+/-! ### The FP register file's ISA-side plumbing
+
+`Fpu` speaks raw bit patterns of the FORMAT's width; the register file is
+64 bits wide whatever the format.  These functions are the whole
+translation, and NaN boxing is why they are not the identity: a
+single-precision datum occupies the low 32 bits with the high 32 all
+ones, an input that is not boxed that way reads as the canonical NaN
+(`unbox_s`), and every single-precision result is re-boxed on the way
+out. -/
+
+def fp_format (fmt : ffmt) : format :=
+  match fmt with | .FMT_S => fmt_single | .FMT_D => fmt_double
+
+def fread (c : core) (fmt : ffmt) (r : reg) : Int :=
+  match fmt with
+  | .FMT_S => bv_unsigned (unbox_s (fget c r))
+  | .FMT_D => bv_unsigned (fget c r)
+
+def fwrite (fmt : ffmt) (r : reg) (v : Int) (c : core) : core :=
+  match fmt with
+  | .FMT_S => fset r (nan_box (Z_to_bv 32 v)) c
+  | .FMT_D => fset r (Z_to_bv 64 v) c
+
 /-- fcsr[7:5] is frm, the DYNAMIC rounding mode. -/
 def frm_of (c : core) : Nat := (c.c_fcsr.toNat >>> 5) &&& 7
+
+/-- Rocq's `rmode_of_field (bv_unsigned rm) (frm_of c)`; `frm_of` is a
+`Nat` here, so it is cast to the `Int` `Fpu` takes. -/
+def resolve_rm (rm : BitVec 3) (c : core) : Option rmode :=
+  rmode_of_field (bv_unsigned rm) (Int.ofNat (frm_of c))
+
+/-- Flags ACCRUE: fcsr[4:0] is sticky, so new exceptions are OR-ed in and
+nothing is ever cleared by an arithmetic instruction.  Rocq ORs two
+non-negative `Z`s; the same value is computed on `Nat`. -/
+def accrue (fl : fflags) (c : core) : core :=
+  with_fcsr (BitVec.ofNat 32 (c.c_fcsr.toNat ||| (fflags_bits fl).toNat)) c
 
 /-- A store or AMO from this hart to the reserved address invalidates the
 LR/SC reservation.  The access base address is compared exactly. -/
@@ -268,9 +329,7 @@ def exec_csr (op : csrop) (rd : reg) (operand : word)
 Execute one already-decoded instruction, including the pc update.  `sz` is
 the encoded size (2 for expanded compressed instructions, else 4): it
 determines both the pc advance and the jal/jalr link value.  A direct
-transcription of `Sem.v`'s `exec`, arm for arm and in the same order up
-to `CsrI`; the eleven F/D arms that follow in Rocq are folded into one
-`EIllegal` arm here. -/
+transcription of `Sem.v`'s `exec`, arm for arm and in the same order. -/
 def exec (sz : word) (i : instr) (c : core) : eff :=
   let pc := c.c_pc
   let npc := pc + sz
@@ -367,12 +426,131 @@ def exec (sz : word) (i : instr) (c : core) : eff :=
         | _ => !(uimm.toNat = 0)
       if csr_write_illegal writes csr then EDefinedIllegal c
       else exec_csr op rd (zext 64 uimm) writes csr cn
-  -- F/D: NOT YET PORTED (floating point stays unmodeled in Lean).  The
-  -- model declines, with pc advanced as the in-`exec` `EIllegal`s do.
-  | .FLoad _ _ _ _ | .FStore _ _ _ _ | .Fmv _ _ _ _ | .Fsgnj _ _ _ _ _
-  | .Fari _ _ _ _ _ _ | .Fsqrt _ _ _ _ | .Fma _ _ _ _ _ _ _
-  | .Fminmax _ _ _ _ _ | .Fcmp _ _ _ _ _ | .Fclass _ _ _ | .Fcvt _ _ _ _ _ =>
-      EIllegal cn
+  -- F/D data movement executes concretely.
+  | .FLoad fmt rd rs1 imm =>
+      let a := rget c rs1 + sext 64 imm
+      match fmt with
+      | .FMT_S => ELoad 32 a (fun v => EDone (fset rd (nan_box v) cn))
+      | .FMT_D => ELoad 64 a (fun v => EDone (fset rd v cn))
+  | .FStore fmt rs1 rs2 imm =>
+      let a := rget c rs1 + sext 64 imm
+      let v := fget c rs2
+      (match fmt with
+       | .FMT_S => EStore 32 a (low32 v)
+       | .FMT_D => EStore 64 a v) (EDone (inval_resv a cn))
+  | .Fmv dir fmt rd rs1 =>
+      EDone (match dir, fmt with
+             | .FMV_X_F, .FMT_S => rset rd (sext 64 (low32 (fget c rs1))) cn
+             | .FMV_X_F, .FMT_D => rset rd (fget c rs1) cn
+             | .FMV_F_X, .FMT_S => fset rd (nan_box (low32 (rget c rs1))) cn
+             | .FMV_F_X, .FMT_D => fset rd (rget c rs1) cn)
+  | .Fsgnj op fmt rd rs1 rs2 =>
+      let a := fget c rs1
+      let b := fget c rs2
+      EDone (match fmt with
+             | .FMT_S => fset rd (nan_box (sgnj_val op (unbox_s a) (unbox_s b))) cn
+             | .FMT_D => fset rd (sgnj_val op a b) cn)
+  -- F/D arithmetic.  Every arm has the same shape: resolve the rounding
+  -- mode (a reserved one is `EIllegal`, with pc advanced), read the
+  -- operands out of the FP file at the format's width, call `Fpu`, write
+  -- the result back and OR the flags into fcsr.  The operations with no
+  -- rounding-mode field (fmin/fmax, the compares, fclass) skip the first
+  -- step; their funct3 is a sub-opcode, not an rm.
+  | .Fari op fmt rd rs1 rs2 rm =>
+      match resolve_rm rm cn with
+      | none => EIllegal cn
+      | some md =>
+        let f := fp_format fmt
+        let a := fread c fmt rs1
+        let b := fread c fmt rs2
+        let (v, fl) :=
+          match op with
+          | .F_ADD => fp_add f md a b
+          | .F_SUB => fp_sub f md a b
+          | .F_MUL => fp_mul f md a b
+          | .F_DIV => fp_div f md a b
+        EDone (fwrite fmt rd v (accrue fl cn))
+  | .Fsqrt fmt rd rs1 rm =>
+      match resolve_rm rm cn with
+      | none => EIllegal cn
+      | some md =>
+        let (v, fl) := fp_sqrt (fp_format fmt) md (fread c fmt rs1)
+        EDone (fwrite fmt rd v (accrue fl cn))
+  -- The four fused forms differ only by which of the product and the
+  -- addend is negated, and negation is a SIGN-BIT FLIP applied to an
+  -- operand — not a rounded subtraction — so all four share one fused
+  -- kernel.  Negating rs1 negates the product.
+  | .Fma op fmt rd rs1 rs2 rs3 rm =>
+      match resolve_rm rm cn with
+      | none => EIllegal cn
+      | some md =>
+        let f := fp_format fmt
+        let a := fread c fmt rs1
+        let b := fread c fmt rs2
+        let z := fread c fmt rs3
+        let (a', z') :=
+          match op with
+          | .F_MADD => (a, z)
+          | .F_MSUB => (a, fp_neg f z)
+          | .F_NMSUB => (fp_neg f a, z)
+          | .F_NMADD => (fp_neg f a, fp_neg f z)
+        let (v, fl) := fp_fma f md a' b z'
+        EDone (fwrite fmt rd v (accrue fl cn))
+  | .Fminmax op fmt rd rs1 rs2 =>
+      let (v, fl) :=
+        fp_minmax (fp_format fmt) (match op with | .F_MIN => false | .F_MAX => true)
+                  (fread c fmt rs1) (fread c fmt rs2)
+      EDone (fwrite fmt rd v (accrue fl cn))
+  -- The compares and fclass write an INTEGER register.
+  | .Fcmp op fmt rd rs1 rs2 =>
+      let f := fp_format fmt
+      let a := fread c fmt rs1
+      let b := fread c fmt rs2
+      let (v, fl) :=
+        match op with
+        | .F_EQ => fp_eq f a b
+        | .F_LT => fp_lt f a b
+        | .F_LE => fp_le f a b
+      EDone (rset rd (if v then w1 else w0) (accrue fl cn))
+  | .Fclass fmt rd rs1 =>
+      EDone (rset rd (Z_to_bv 64 (fp_class (fp_format fmt) (fread c fmt rs1))) cn)
+  -- fcvt.  The pair (dst, src) says which of the four directions this is;
+  -- the decoder only ever produces the architecturally valid pairs, so the
+  -- leftover combinations are dead and answer `EIllegal` rather than
+  -- inventing a meaning.  An integer result is SIGN-extended into the
+  -- 64-bit destination even when the conversion is unsigned.
+  | .Fcvt dst src rd rs1 rm =>
+      match resolve_rm rm cn with
+      | none => EIllegal cn
+      | some md =>
+        let ity (t : fcvt_ty) : Option (Bool × Int) :=
+          match t with
+          | .FC_W => some (true, 32) | .FC_WU => some (false, 32)
+          | .FC_L => some (true, 64) | .FC_LU => some (false, 64)
+          | _ => none
+        let fty (t : fcvt_ty) : Option ffmt :=
+          match t with | .FC_S => some .FMT_S | .FC_D => some .FMT_D | _ => none
+        match fty dst, fty src with
+        | some df, some sf =>            -- float -> float
+            let (v, fl) :=
+              fp_convert (fp_format sf) (fp_format df) md (fread c sf rs1)
+            EDone (fwrite df rd v (accrue fl cn))
+        | none, some sf =>               -- float -> integer
+            match ity dst with
+            | none => EIllegal cn
+            | some (sgn, nbits) =>
+              let (v, fl) := fp_to_int (fp_format sf) md sgn nbits (fread c sf rs1)
+              EDone (rset rd (if nbits = 32 then sext 64 (Z_to_bv 32 v)
+                              else Z_to_bv 64 v)
+                          (accrue fl cn))
+        | some df, none =>               -- integer -> float
+            match ity src with
+            | none => EIllegal cn
+            | some (sgn, nbits) =>
+              let (v, fl) :=
+                fp_of_int (fp_format df) md sgn nbits (bv_unsigned (rget c rs1))
+              EDone (fwrite df rd v (accrue fl cn))
+        | none, none => EIllegal cn
 
 /-- Fetch, decode, dispatch.  `decode_any` is supplied by the driver and
 returns the decoded instruction with its size in bytes.  On an undecodable

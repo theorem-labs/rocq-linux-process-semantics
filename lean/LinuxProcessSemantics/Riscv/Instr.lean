@@ -1,3 +1,4 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/Riscv/Instr.v
 import LinuxProcessSemantics.Riscv.Prelude
 
 /-! # Instr: the RV64GC base instruction AST
@@ -6,9 +7,8 @@ Mirrors `theories/Riscv/Instr.v`, constructor for constructor.
 
 Immediates are kept at their *encoded* width with the sign bit included
 (I/S: 12 bits, B: 13, U: 20, J: 21); interpretation is deferred to `Sem`.
-Compressed instructions have their own AST in Rocq's `DecodeC` and are
-expanded into this one, so the execution semantics is written once; the
-Lean `DecodeC` does not carry that half yet. -/
+Compressed instructions have their own AST in `DecodeC` and are expanded
+into this one, so the execution semantics is written once. -/
 
 
 namespace LinuxProcessSemantics.Riscv.Instr
