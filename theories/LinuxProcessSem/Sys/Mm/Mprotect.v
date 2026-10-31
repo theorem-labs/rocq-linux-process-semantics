@@ -271,7 +271,7 @@ Definition mprotect_spec (addr len prot : word) : Sys SyscallEffect :=
      in the first place. *)
   else if (two_pow_64 <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z
   then err_ret ENOMEM
-  else
+  else if mprotect_modeled_b prot then
     m <- get_model ;;
     let h := m_vmmaps m in
     let nZ := page_round_up_Z (bv_unsigned len) in
@@ -292,7 +292,7 @@ Definition mprotect_spec (addr len prot : word) : Sys SyscallEffect :=
        does not speak about. *)
     if negb (region_free (vdso_reserved (m_kernel m) (vdso_top h)) addr n)
     then unmodeled
-    else if mprotect_modeled_b prot then
+    else
     (* The [vm_maps] conjunct is what makes this branch sound on its own,
        including during the documented same-page brk-shrink state where a
        physical [vm_noaccess] tail may extend past byte-granular [vm_maps]
@@ -350,7 +350,7 @@ Definition mprotect_budget_refused_b (addr len prot : word) (m : Model) : bool :
   else if w_is0 len then false
   else if (two_pow_64 <=? bv_unsigned addr + page_round_up_Z (bv_unsigned len))%Z
   then false
-  else
+  else if mprotect_modeled_b prot then
     let h := m_vmmaps m in
     let nZ := page_round_up_Z (bv_unsigned len) in
     let n := Z_to_bv 64 nZ in
@@ -358,8 +358,7 @@ Definition mprotect_budget_refused_b (addr len prot : word) (m : Model) : bool :
        the mark must not fire there either. *)
     if negb (region_free (vdso_reserved (m_kernel m) (vdso_top h)) addr n)
     then false
-    else if mprotect_modeled_b prot then
-      if map_contains (vm_noaccess h) addr n && map_contains (vm_maps h) addr n
-      then negb (mprotect_budget_ok m addr n)
-      else false
-    else false.
+    else if map_contains (vm_noaccess h) addr n && map_contains (vm_maps h) addr n
+    then negb (mprotect_budget_ok m addr n)
+    else false
+  else false.

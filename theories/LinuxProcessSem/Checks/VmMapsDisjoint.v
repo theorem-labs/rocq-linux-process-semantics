@@ -120,9 +120,18 @@ Definition wit_mmap_base : word := Z_to_bv 64 mmap_base_min.
 (** The witness ledger.  [State.mkVmMaps] would default [vm_mmap_base] to
     zero, which is below [State.mmap_base_min]; this fixes it at the
     admissible value instead and is otherwise that same constructor. *)
+(** The reservations the witness run really starts with: the image's
+    LOAD pages ([wit_reserved]) and the vdso/vvar pair [execve]
+    installs, which [State.init_reserved] adds.  [wit_reserved] alone
+    is the IMAGE's half, which is what [wit_valid_brk] below reads;
+    this is the whole ledger. *)
+Definition wit_reserved_init : list (word * word) :=
+  init_reserved wit_reserved wit_mmap_base (Z_to_bv 64 sp_window_lo)
+    default_kernel.
+
 Definition wit_vm (maps : list (word * word)) (start_brk brk : word)
     (limit : Z) : VmMaps :=
-  mkVmMapsFull wit_reserved maps [] start_brk brk limit wit_mmap_base
+  mkVmMapsFull wit_reserved_init maps [] start_brk brk limit wit_mmap_base
     (Z_to_bv 64 sp_window_lo).
 
 Definition wit_s0 : Model :=

@@ -666,15 +666,17 @@ Lemma fin_core_env_eq : forall f g,
   fin_hwcap f = fin_hwcap g ->
   fin_abort_terminal f = fin_abort_terminal g ->
   fin_va_size f = fin_va_size g ->
+  fin_kernel f = fin_kernel g ->
   f = g.
 Proof.
-  intros [a1 e1 fs1 s1 u1 g1 gs1 n1 nf1 sm1 hc1 ab1 va1 r1 tm1]
-         [a2 e2 fs2 s2 u2 g2 gs2 n2 nf2 sm2 hc2 ab2 va2 r2 tm2]
-    Hcore Htm Hr Hu Hg Hgs Hn Hnf Hsm Hhc Hab Hva.
+  intros [a1 e1 fs1 s1 u1 g1 gs1 n1 nf1 sm1 hc1 ab1 va1 r1 tm1 kb1]
+         [a2 e2 fs2 s2 u2 g2 gs2 n2 nf2 sm2 hc2 ab2 va2 r2 tm2 kb2]
+    Hcore Htm Hr Hu Hg Hgs Hn Hnf Hsm Hhc Hab Hva Hkb.
   unfold fin_core in Hcore.
   cbn [fin_argv fin_envp fin_image_fs fin_tmp fin_stdin fin_urandom fin_uid fin_gid fin_groups fin_net
-       fin_nofile fin_sigmask fin_hwcap fin_abort_terminal fin_va_size]
-    in Hcore, Htm, Hr, Hu, Hg, Hgs, Hn, Hnf, Hsm, Hhc, Hab, Hva.
+       fin_nofile fin_sigmask fin_hwcap fin_abort_terminal fin_va_size
+       fin_kernel]
+    in Hcore, Htm, Hr, Hu, Hg, Hgs, Hn, Hnf, Hsm, Hhc, Hab, Hva, Hkb.
   injection Hcore as Ha He Hfs Hs.
   subst. reflexivity.
 Qed.
@@ -719,7 +721,7 @@ Proof.
                      (repeat (Z_to_bv 64 0) n) (fin_net f) (fin_nofile f) (fin_sigmask f)
                      (fin_hwcap f)
                      (fin_abort_terminal f) (fin_va_size f)
-                     (fin_urandom f) (fin_tmp f)).
+                     (fin_urandom f) (fin_tmp f) (fin_kernel f)).
   split; [| split].
   - intros n. reflexivity.
   - intros m n Heq.
@@ -799,12 +801,12 @@ Lemma to_proc_input_not_inj :
 Proof.
   pose (base := mkFinProcInput [] [] []
                   [] (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
-                  (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) false Sv48 [] []).
+                  (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) false Sv48 [] [] default_kernel).
   exists base.
   exists (mkFinProcInput [] [] []
             [] (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
             (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) false Sv48
-            [Z_to_bv 8 0] []).
+            [Z_to_bv 8 0] [] default_kernel).
   split.
   - intro Hc. apply (f_equal fin_urandom) in Hc.
     unfold base in Hc. cbn [fin_urandom] in Hc. discriminate Hc.
@@ -891,7 +893,7 @@ Lemma valid_input_stdin_irrelevant : forall inp s,
   valid_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp) s
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                 (in_urandom inp) (in_tmp inp)).
+                 (in_urandom inp) (in_tmp inp) (in_kernel inp)).
 Proof. intros inp s H. exact H. Qed.
 
 (** THE RANDOM DEVICE'S STREAM IS NOT LIKE STANDARD INPUT.
@@ -910,7 +912,7 @@ Lemma valid_input_urandom_endless_irrelevant : forall inp r,
                  (in_stdin inp)
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                 r (in_tmp inp)).
+                 r (in_tmp inp) (in_kernel inp)).
 Proof.
   intros inp r H Hr.
   (* [valid_input] has eleven conjuncts: keep the first ten and replace the last ([valid_urandom]) with [Hr]. *)
@@ -929,7 +931,7 @@ Lemma valid_fin_input_stdin_irrelevant : forall f l,
                      l
                      (fin_uid f) (fin_gid f) (fin_groups f) (fin_net f)
                      (fin_nofile f) (fin_sigmask f) (fin_hwcap f) (fin_abort_terminal f) (fin_va_size f)
-                     (fin_urandom f) (fin_tmp f)).
+                     (fin_urandom f) (fin_tmp f) (fin_kernel f)).
 Proof. intros f l H. exact H. Qed.
 
 (** And the byte list in [fin_urandom] is unconstrained too — even
@@ -954,7 +956,7 @@ Lemma valid_input_tmp_arbitrary : forall inp t,
                  (in_stdin inp)
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp)
-                 (in_abort_terminal inp) (in_va_size inp) (in_urandom inp) t).
+                 (in_abort_terminal inp) (in_va_size inp) (in_urandom inp) t (in_kernel inp)).
 Proof.
   intros inp t Him H. unfold valid_input in H |- *.
   destruct H as (Ha & He & _ & Hrest).
@@ -969,7 +971,7 @@ Lemma valid_fin_input_urandom_irrelevant : forall f l,
                      (fin_stdin f)
                      (fin_uid f) (fin_gid f) (fin_groups f) (fin_net f)
                      (fin_nofile f) (fin_sigmask f) (fin_hwcap f) (fin_abort_terminal f) (fin_va_size f)
-                     l (fin_tmp f)).
+                     l (fin_tmp f) (fin_kernel f)).
 Proof.
   intros f l H.
   (* Eleven conjuncts: keep the first ten and prove the last ([valid_urandom]) from the padding. *)
@@ -998,7 +1000,7 @@ Qed.
 Definition inhabited_fin_input : FinProcInput :=
   mkFinProcInput [[]] [] [] [] (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
                  default_nofile (Z_to_bv 64 0) StackLayout.hwcap_rv64gc
-                 false Sv48 [] [].
+                 false Sv48 [] [] default_kernel.
 
 (** THE FINITE-RECORD QUANTIFIER IS NOT EMPTY, which is the one the
     classifier and gated-size shapes are written over. *)
@@ -1055,12 +1057,12 @@ Lemma valid_input_not_finite : forall inp,
                  all_zeros
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                 (in_urandom inp) (in_tmp inp))
+                 (in_urandom inp) (in_tmp inp) (in_kernel inp))
   /\ ~ finite_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp)
                       all_zeros
                       (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                       (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                      (in_urandom inp) (in_tmp inp)).
+                      (in_urandom inp) (in_tmp inp) (in_kernel inp)).
 Proof.
   intros inp H. split.
   - apply valid_input_stdin_irrelevant, H.

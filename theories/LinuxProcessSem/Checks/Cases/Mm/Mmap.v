@@ -2697,6 +2697,15 @@ Proof. check_eq. Qed.
 Definition placement_model : Model :=
   init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp demo_limit (demo_input [] IEof).
 
+(** The reservations this model starts with: no LOAD segment, because
+    the fixture gives none, and the vdso/vvar pair [execve] installs,
+    which [State.init_reserved] adds.  Named here so that an expected
+    post-model below does not have to spell the pair out, and does not
+    go stale when a kernel build with a different image joins
+    [Vdso.vdso_images]. *)
+Definition placement_reserved : list (word * word) :=
+  vm_reserved (m_vmmaps placement_model).
+
 (** A LOW FIRST GRANT, admitted.  A first NULL-hint
     grant at 0x80000000 is page-aligned, positive, below the ceiling and
     free, so the spec admits it.
@@ -2715,8 +2724,9 @@ Example mmap_null_hint_low_grant_admitted :
     placement_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 0x80000000, 4096)] [] 0 0 demo_limit
-          (Z_to_bv 64 mmap_base_max) demo_sp) placement_model) [].
+        (mkVmMapsFull placement_reserved [(Z_to_bv 64 0x80000000, 4096)] []
+          0 0 demo_limit (Z_to_bv 64 mmap_base_max) demo_sp)
+        placement_model) [].
 Proof. check_eq. Qed.
 
 (** …and the PROT_NONE arm admits the same placement through the same
@@ -2729,7 +2739,7 @@ Example mmap_null_hint_low_reservation_admitted :
     placement_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 0x80000000, 4096)]
+        (mkVmMapsFull placement_reserved [(Z_to_bv 64 0x80000000, 4096)]
           [(Z_to_bv 64 0x80000000, 4096)] 0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) demo_sp) placement_model) [].
 Proof. check_eq. Qed.
@@ -2747,8 +2757,9 @@ Example mmap_nonnull_hint_low_grant_admitted :
     placement_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 0x80000000, 4096)] [] 0 0 demo_limit
-          (Z_to_bv 64 mmap_base_max) demo_sp) placement_model) [].
+        (mkVmMapsFull placement_reserved [(Z_to_bv 64 0x80000000, 4096)] []
+          0 0 demo_limit (Z_to_bv 64 mmap_base_max) demo_sp)
+        placement_model) [].
 Proof. check_eq. Qed.
 
 (** THE THIRD CASE, and the one easiest to miss: SKIPPING A FITTING
@@ -3044,6 +3055,10 @@ Definition top_lo_model : Model :=
 Definition top_hi_model : Model :=
   init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp demo_limit (demo_input [] IEof).
 
+(** Its reservations: no LOAD segment, and the vdso/vvar pair. *)
+Definition top_hi_reserved : list (word * word) :=
+  vm_reserved (m_vmmaps top_hi_model).
+
 Example grant_at_demo_top_rejected_under_low_sp :
   check_syscall (mmap_in 4096)
     (mkEffect (Z_to_bv 64 demo_top) [] [(Z_to_bv 64 demo_top, 4096)])
@@ -3057,8 +3072,8 @@ Example grant_at_demo_top_admitted_under_high_sp :
     top_hi_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 demo_top, 4096)] [] 0 0 demo_limit
-          (Z_to_bv 64 mmap_base_max) hi_sp) top_hi_model) [].
+        (mkVmMapsFull top_hi_reserved [(Z_to_bv 64 demo_top, 4096)] [] 0 0
+          demo_limit (Z_to_bv 64 mmap_base_max) hi_sp) top_hi_model) [].
 Proof. check_eq. Qed.
 
 (** The PROT_NONE arm reads the same field. *)

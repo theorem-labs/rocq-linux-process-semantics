@@ -198,7 +198,7 @@ Lemma sstep_next_halts_by_exit : forall segs c evs c',
 Proof.
   intros segs c evs c' Hss.
   inversion Hss as [ms model ms' model' Hh Hsvc Hacc Heq1 Heq2 Heq3
-                   | | |ms model fn n eff model' model'' evs1 Hh Hsvc Hfn Hno Hspec Hef Hh' Hmat Heq1 Heq2 Heq3
+                   | | |ms model fn n eff model' model'' evs1 Hh Hsvc Hacc Hfn Hno Hspec Hef Hh' Hmat Heq1 Heq2 Heq3
                    | |
                    |ms model x8 eff model' model'' evs1 Hh Hsvc Hspec Hh' Hmat Heq1 Heq2 Heq3
                    | |ms model x8 eff model' evs1 code Hh Hsvc Hspec Hh' Hk Heq1 Heq2 Heq3
@@ -270,7 +270,8 @@ Definition must_exit_with (code : word) (img : Image) (lim : Z)
     (en : ExecEntry) (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-      must_exit_at segs code (init_config segs pc ph sp brk0 mbase rnd lim inp)
+      let vsegs := run_segments segs inp sp mbase in
+      must_exit_at vsegs code (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 (* =========================================================================
@@ -435,7 +436,8 @@ Proof.
   intros code [segs pc ph] lim [sp brk0 mbase rnd] inp Hme.
   cbn [must_exit_with] in Hme.
   assert (Hnone : m_halted
-                    (cfg_model (init_config segs pc ph sp brk0 mbase rnd lim inp))
+                    (cfg_model (init_config (run_segments segs inp sp mbase)
+                                  pc ph sp brk0 mbase rnd lim inp))
                   = None)
     by (cbn [init_config cfg_model]; reflexivity).
   destruct (must_exit_at_realizes _ _ _ Hme Hnone) as (tr & fs & c' & Hstar & _).
@@ -769,7 +771,8 @@ Definition must_exit_with_scfg (cfg : SpuriousCfg) (code : word) (img : Image) (
     (en : ExecEntry) (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-      must_exit_at_cfg cfg segs code (init_config segs pc ph sp brk0 mbase rnd lim inp)
+      let vsegs := run_segments segs inp sp mbase in
+      must_exit_at_cfg cfg vsegs code (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 (** The one-switch form, as a thin instance: [true] IS
@@ -836,7 +839,8 @@ Proof.
   intros cfg code [segs pc ph] lim [sp brk0 mbase rnd] inp Hme.
   cbn [must_exit_with_scfg] in Hme.
   assert (Hnone : m_halted
-                    (cfg_model (init_config segs pc ph sp brk0 mbase rnd lim inp))
+                    (cfg_model (init_config (run_segments segs inp sp mbase)
+                                  pc ph sp brk0 mbase rnd lim inp))
                   = None)
     by (cbn [init_config cfg_model]; reflexivity).
   destruct (must_exit_at_cfg_realizes _ _ _ _ Hme Hnone) as (tr & fs & c' & Hstar & _).
@@ -866,7 +870,8 @@ Definition run_decided (cfg : SpuriousCfg) (img : Image) (lim : Z) (en : ExecEnt
     (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-      decided_from cfg segs (init_config segs pc ph sp brk0 mbase rnd lim inp)
+      let vsegs := run_segments segs inp sp mbase in
+      decided_from cfg vsegs (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 Lemma must_exit_with_scfg_mono : forall cfg1 cfg2 code img lim en inp,
@@ -955,7 +960,8 @@ Definition must_exit_in (S : list word) (img : Image) (lim : Z)
     (en : ExecEntry) (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-      must_exit_in_at segs S (init_config segs pc ph sp brk0 mbase rnd lim inp)
+      let vsegs := run_segments segs inp sp mbase in
+      must_exit_in_at vsegs S (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 (** What a halted configuration satisfying the predicate must look like.
@@ -1195,8 +1201,9 @@ Definition run_reaches_killed (img : Image) (lim : Z) (en : ExecEntry)
     (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
+      let vsegs := run_segments segs inp sp mbase in
       exists tr c' sig,
-        star segs (init_config segs pc ph sp brk0 mbase rnd lim inp) tr c'
+        star vsegs (init_config vsegs pc ph sp brk0 mbase rnd lim inp) tr c'
         /\ m_killed (cfg_model c') = Some sig
   end.
 
@@ -1258,7 +1265,8 @@ Proof.
   intros S [segs pc ph] lim [sp brk0 mbase rnd] inp Hme.
   cbn [must_exit_in] in Hme.
   assert (Hnone : m_halted
-                    (cfg_model (init_config segs pc ph sp brk0 mbase rnd lim inp))
+                    (cfg_model (init_config (run_segments segs inp sp mbase)
+                                  pc ph sp brk0 mbase rnd lim inp))
                   = None)
     by (cbn [init_config cfg_model]; reflexivity).
   destruct (must_exit_in_at_realizes _ _ _ Hme Hnone)
@@ -1299,7 +1307,8 @@ Definition must_exit_in_scfg (cfg : SpuriousCfg) (S : list word) (img : Image)
     (lim : Z) (en : ExecEntry) (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-      must_exit_in_at_cfg cfg segs S (init_config segs pc ph sp brk0 mbase rnd lim inp)
+      let vsegs := run_segments segs inp sp mbase in
+      must_exit_in_at_cfg cfg vsegs S (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 Lemma must_exit_in_at_cfg_halted_inv : forall cfg segs S c code,
@@ -1393,8 +1402,9 @@ Definition run_reaches_killed_cfg (cfg : SpuriousCfg) (img : Image) (lim : Z)
     (en : ExecEntry) (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
+      let vsegs := run_segments segs inp sp mbase in
       exists tr c' sig,
-        star_cfg segs cfg (init_config segs pc ph sp brk0 mbase rnd lim inp) tr c'
+        star_cfg vsegs cfg (init_config vsegs pc ph sp brk0 mbase rnd lim inp) tr c'
         /\ m_killed (cfg_model c') = Some sig
   end.
 
@@ -1481,7 +1491,8 @@ Proof.
   intros cfg S [segs pc ph] lim [sp brk0 mbase rnd] inp Hme.
   cbn [must_exit_in_scfg] in Hme.
   assert (Hnone : m_halted
-                    (cfg_model (init_config segs pc ph sp brk0 mbase rnd lim inp))
+                    (cfg_model (init_config (run_segments segs inp sp mbase)
+                                  pc ph sp brk0 mbase rnd lim inp))
                   = None)
     by (cbn [init_config cfg_model]; reflexivity).
   destruct (must_exit_in_at_cfg_realizes _ _ _ _ Hme Hnone)

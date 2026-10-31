@@ -774,18 +774,20 @@ Qed.
 
 Lemma bh_unmodeled_iff : forall img lim en inp,
   ~ bh_unmodeled (run img lim en inp)
-  <-> omni_corun img lim en inp (covered (img_segments img)).
+  <-> omni_corun img lim en inp (covered (image_run_segments img en inp)).
 Proof.
   intros [segs pc ph] lim [sp brk0 mbase rnd] inp.
-  cbn [run bh_unmodeled omni_corun img_segments]. apply covered_iff.
+  cbn [run bh_unmodeled omni_corun image_run_segments img_segments en_sp en_mmap_base].
+  apply covered_iff.
 Qed.
 
 Lemma bh_unmodeled_may_iff : forall img lim en inp,
   bh_unmodeled (run img lim en inp)
-  <-> omni_may img lim en inp (uncovered (img_segments img)).
+  <-> omni_may img lim en inp (uncovered (image_run_segments img en inp)).
 Proof.
   intros [segs pc ph] lim [sp brk0 mbase rnd] inp.
-  cbn [run bh_unmodeled omni_may img_segments]. apply reaches_unmodeled_iff_may.
+  cbn [run bh_unmodeled omni_may image_run_segments img_segments en_sp en_mmap_base].
+  apply reaches_unmodeled_iff_may.
 Qed.
 
 (** Trace-set equality of two runs is agreement on every prefix-closed

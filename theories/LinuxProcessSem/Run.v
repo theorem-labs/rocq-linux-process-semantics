@@ -283,6 +283,7 @@ Definition run_segments (segs : list Segment) (inp : ProcInput)
     (sp mbase : word) : list Segment :=
   segs ++ vdso_segments (in_kernel inp) sp mbase.
 
+
 (** Where a step can go: on to another configuration, or the explicit
     error transition. *)
 Inductive step_to :=
@@ -632,6 +633,7 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
 | sstep_vdso_call : forall ms model fn n eff model' model'' evs,
     m_halted model = None ->
     ms_svc_pending ms = None ->
+    mi_account_step ms model = MachineUnmodeled ->
     vdso_entry_fn mi_loaded_segments (ms_pc ms) = Some fn ->
     vdso_fn_sysno fn = Some n ->
     syscall_spec (sys_input ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
@@ -647,6 +649,7 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
 | sstep_vdso_materialization_fault : forall ms model fn n eff model' evs,
     m_halted model = None ->
     ms_svc_pending ms = None ->
+    mi_account_step ms model = MachineUnmodeled ->
     vdso_entry_fn mi_loaded_segments (ms_pc ms) = Some fn ->
     vdso_fn_sysno fn = Some n ->
     syscall_spec (sys_input ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
@@ -661,6 +664,7 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
 | sstep_vdso_unmodeled : forall ms model fn,
     m_halted model = None ->
     ms_svc_pending ms = None ->
+    mi_account_step ms model = MachineUnmodeled ->
     vdso_entry_fn mi_loaded_segments (ms_pc ms) = Some fn ->
     vdso_call_unmodeled ms model fn ->
     sstep (mkCfg ms model) [] SError
@@ -1086,6 +1090,7 @@ Definition unmodeled_at (c : config) : Prop :=
        mi_account_step (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
        vdso_entry_fn mi_loaded_segments (ms_pc (cfg_ms c)) = None)
     \/ (ms_svc_pending (cfg_ms c) = None /\
+        mi_account_step (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
         (exists fn,
            vdso_entry_fn mi_loaded_segments (ms_pc (cfg_ms c)) = Some fn /\
            vdso_call_unmodeled (cfg_ms c) (cfg_model c) fn))
@@ -1105,7 +1110,7 @@ Lemma unmodeled_at_sstep_error : forall c,
   unmodeled_at c -> exists evs, sstep c evs SError.
 Proof.
   intros [ms model]
-    (Hh & [(Hsvc & Hstep & Hv) | [(Hsvc & fn & Hfn & Hu) | (x8 & Hsvc & Hspec)]]);
+    (Hh & [(Hsvc & Hstep & Hv) | [(Hsvc & Hacc & fn & Hfn & Hu) | (x8 & Hsvc & Hspec)]]);
     cbn in *.
   - exists []. apply sstep_instr_unmodeled; assumption.
   - exists []. eapply sstep_vdso_unmodeled; eassumption.
@@ -1498,6 +1503,13 @@ Record ExecEntry := mkEntry {
     The [ProcInput] is passed whole and read by projections, which
     reduce, so [cbn [run …]] reaches [init_config] for a variable [inp]
     too. *)
+(** The same list, named from an [Image] and an [ExecEntry], for the
+    statements that quantify a predicate over the run's segments
+    ([OmniRun.covered] and its dual). *)
+Definition image_run_segments (img : Image) (en : ExecEntry) (inp : ProcInput)
+    : list Segment :=
+  run_segments (img_segments img) inp (en_sp en) (en_mmap_base en).
+
 Definition run (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
     : behavior :=
   match img, en with
@@ -2167,6 +2179,7 @@ Inductive sstep_cfg (cfg : SpuriousCfg) : config -> list event -> step_to -> Pro
 | sstep_cfg_vdso_call : forall ms model fn n eff model' model'' evs,
     m_halted model = None ->
     ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
     vdso_entry_fn segs (ms_pc ms) = Some fn ->
     vdso_fn_sysno fn = Some n ->
     syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
@@ -2180,6 +2193,7 @@ Inductive sstep_cfg (cfg : SpuriousCfg) : config -> list event -> step_to -> Pro
 | sstep_cfg_vdso_materialization_fault : forall ms model fn n eff model' evs,
     m_halted model = None ->
     ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
     vdso_entry_fn segs (ms_pc ms) = Some fn ->
     vdso_fn_sysno fn = Some n ->
     syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
@@ -2190,6 +2204,7 @@ Inductive sstep_cfg (cfg : SpuriousCfg) : config -> list event -> step_to -> Pro
 | sstep_cfg_vdso_unmodeled : forall ms model fn,
     m_halted model = None ->
     ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
     vdso_entry_fn segs (ms_pc ms) = Some fn ->
     vdso_call_unmodeled segs ms model fn ->
     sstep_cfg cfg (mkCfg ms model) [] SError
@@ -2454,7 +2469,7 @@ Lemma reaches_unmodeled_cfg_reaches_error_cfg : forall cfg c0,
   reaches_unmodeled_cfg cfg c0 -> reaches_error_cfg cfg c0.
 Proof.
   intros cfg c0 (tr & [ms model] & Hstar & Hh &
-                 [(Hsvc & Hacc & Hv) | [(Hsvc & fn & Hfn & Hu) | (x8 & Hsvc & Hspec)]]);
+                 [(Hsvc & Hacc & Hv) | [(Hsvc & Hacc2 & fn & Hfn & Hu) | (x8 & Hsvc & Hspec)]]);
     cbn [cfg_ms cfg_model] in *.
   - exists tr, (mkCfg ms model), []. split; [exact Hstar |].
     apply sstep_cfg_instr_unmodeled; assumption.

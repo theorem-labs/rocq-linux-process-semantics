@@ -124,7 +124,22 @@ Definition P_TYPE : Z := 0.        (** [Elf64_Phdr.p_type] *)
 Definition P_OFFSET : Z := 8.      (** [Elf64_Phdr.p_offset] *)
 Definition P_VADDR : Z := 16.      (** [Elf64_Phdr.p_vaddr] *)
 
-Definition DYN_SIZE : Z := 16.     (** sizeof(Elf64_Dyn) *)
+(** THE INDEX UNIT OF THE DYNAMIC WALK IS 8 BYTES, NOT 16.
+
+    musl does not walk [Elf64_Dyn] records.  [src/internal/vdso.c] at
+    musl f21a9653 declares [dynv] as a pointer to [size_t] and reads
+    [dynv[i]] as the tag and [dynv[i+1]] as the value, stepping [i] by
+    TWO: its loop is [for (i=0; dynv[i]; i+=2)], its value is
+    [base + dynv[i+1]], and its switch is on [dynv[i]].
+
+    So the step from one entry to the next is [i += 2] over 8-byte
+    words, which is 16 bytes, while the step from the tag to its value
+    is ONE word.  Writing the index unit as [sizeof(Elf64_Dyn)] reads
+    as correct and is wrong: it skips every second entry.  That is the
+    error this transcription first made, and it was found by running a
+    byte-for-byte mirror of this function over the measured image and
+    seeing it miss [DT_SYMTAB] -- not by reading the code again. *)
+Definition DYN_WORD : Z := 8.
 Definition D_TAG : Z := 0.
 Definition D_VAL : Z := 8.
 
@@ -207,7 +222,7 @@ Fixpoint rd_dyn (base dynv : Z) (fuel : nat) (i : Z) (acc : DynInfo)
   match fuel with
   | O => rd_ret acc
   | S fuel' =>
-      let e := dynv + i * DYN_SIZE in
+      let e := dynv + i * DYN_WORD in
       tag <-- rd_u64 (e + D_TAG) ;;;
       if N.eqb tag 0 then rd_ret acc
       else
@@ -246,7 +261,11 @@ Fixpoint rd_gnu_max_bucket (buckets : Z) (n : nat) (i : Z) (best : N)
       rd_gnu_max_bucket buckets n' (i + 1) (if N.ltb best b then b else best)
   end.
 
-(** [count_syms_gnu]'s [do nsym++; while (!(*hashval++ & 1));] *)
+(** [count_syms_gnu]'s do-while loop over the hash chain.  In C it is
+    [do nsym++; while (!( *hashval++ & 1));] -- a space stands between
+    the two symbols that open a Rocq comment.  It stops at the first
+    chain word with bit 0 set, which marks the end of a bucket's
+    chain. *)
 Fixpoint rd_gnu_chain (hashval : Z) (fuel : nat) (nsym : N) : RD N :=
   match fuel with
   | O => rd_fail
@@ -322,10 +341,10 @@ Fixpoint rd_syms (base syms strings : Z) (versym verdef : option Z)
                 vi <-- rd_u16 (vs + 2 * i) ;;;
                 ok <-- rd_checkver vd strings fuel vd (N.land vi 0x7fff) vername ;;;
                 if ok
-                then v <- rd_u64 (sy + ST_VALUE) ;; rd_ret (Some (base + Z.of_N v))
+                then (v <-- rd_u64 (sy + ST_VALUE) ;;; rd_ret (Some (base + Z.of_N v)))
                 else rd_syms base syms strings versym verdef n' (i + 1) name vername fuel
             | _, _ =>
-                v <-- rd_u64 (sy + ST_VALUE) ;; rd_ret (Some (base + Z.of_N v))
+                v <-- rd_u64 (sy + ST_VALUE) ;;; rd_ret (Some (base + Z.of_N v))
             end
   end.
 
