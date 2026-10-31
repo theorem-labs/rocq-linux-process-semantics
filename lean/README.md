@@ -81,6 +81,17 @@ neither. The twin has nine `divergence:` lines today
 a differing verdict
 (`linux-process-semantics@ff0313ba4f:tools/lean_replay.py:1534,1587-1592`).
 That register is empty at `ff0313ba4f`.
+## What the twin has ported
+
+One line per slice, naming the files and the Rocq commit they are complete
+against. A later slice adds its own line; it does not edit another's.
+
+- The RISC-V model (slice ZR): `LinuxProcessSemantics/Riscv/*` and
+  `LinuxProcessSemantics/LinuxProcessSem/RiscvSemantics.lean` are complete
+  against rocq-linux-process-semantics `f1006fe8`, the compressed decoder
+  and the floating-point unit included, and the six RISC-V witness files
+  of `theories/LinuxProcessSem/Checks/` are ported to
+  `LinuxProcessSemantics/LinuxProcessSem/Checks/Riscv*.lean`.
 
 ## Build it
 

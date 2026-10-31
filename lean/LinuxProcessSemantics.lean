@@ -53,4 +53,15 @@ import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Sys.Uapi.Signal
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Sys.Uapi.Mm
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.BvBase
+-- The RISC-V model's own witness files (slice ZR), ported from
+-- rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Riscv*.v.
+-- Nothing else imports them, so these lines do.
+import LinuxProcessSemantics.LinuxProcessSem.Checks.RiscvAlignment
+import LinuxProcessSemantics.LinuxProcessSem.Checks.RiscvSegmentChunks
+import LinuxProcessSemantics.LinuxProcessSem.Checks.RiscvDefinedIllegal
+import LinuxProcessSemantics.LinuxProcessSem.Checks.RiscvAtomicAlignment
+import LinuxProcessSemantics.LinuxProcessSem.Checks.RiscvAccessReporting
+import LinuxProcessSemantics.LinuxProcessSem.Checks.RiscvCompressedFetch
+-- The in-Lean checks of the FP semantics; nothing else imports them.
+import LinuxProcessSemantics.Riscv.FpuTests
 -- canary: 2026-10-29-0602: the pipeline's daily proof that a one-line change merges unattended (lean-port-ops jobs/canary-job.sh)

@@ -1,12 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/Riscv/Decode.v
 import LinuxProcessSemantics.Riscv.Instr
 
-/-! # Decode: the 32-bit RV64IMA_Zicsr_Zifencei decoder
+/-! # Decode: the 32-bit RV64IMAFD_Zicsr_Zifencei decoder
 
-Mirrors `theories/Riscv/Decode.v`, arm for arm, with the F/D opcodes NOT
-YET PORTED: LOAD-FP (0x07), STORE-FP (0x27), the FMA group and OP-FP (0x53)
-decode to `none` here where Rocq decodes them, so a floating-point
-instruction is `MachineUnmodeled` on the Lean side (fail closed; see
-`lean/README.md`, "What is not yet ported").
+Mirrors `theories/Riscv/Decode.v`, arm for arm.
 
 `decode w = none` means "not a valid 32-bit instruction"; the intent is to
 match binutils objdump byte-for-byte (an objdump differential validates
@@ -48,6 +45,7 @@ def decode (w : BitVec 32) : Option instr :=
   let rs1 := f_rs1 w
   let rs2 := f_rs2 w
   let f7  := (bits 25 7 w).toNat
+  let rm  : BitVec 3 := bits 12 3 w
   match opc with
   -- Words whose low two bits are not 11 fall through to `none` below, as
   -- do the 48-bit-and-up prefixes (bits[4:2] = 111).
@@ -174,10 +172,115 @@ def decode (w : BitVec 32) : Option instr :=
         | 0x1C => am .AMO_MAXU
         | _ => none
       match f3 with | 2 => go .AW | 3 => go .AD | _ => none
-  -- NOT YET PORTED (fail closed): 0x07 LOAD-FP, 0x27 STORE-FP,
-  -- 0x43/0x47/0x4B/0x4F the FMA group, 0x53 OP-FP.  Rocq decodes them;
-  -- here they are `none`, so `RiscvSemantics.step` answers
-  -- `MachineUnmodeled` for every F/D instruction.
+  | 0x07 => -- LOAD-FP: flw/fld only
+      match f3 with
+      | 2 => some (.FLoad .FMT_S rd rs1 (imm_i w))
+      | 3 => some (.FLoad .FMT_D rd rs1 (imm_i w))
+      | _ => none
+  | 0x27 => -- STORE-FP
+      match f3 with
+      | 2 => some (.FStore .FMT_S rs1 rs2 (imm_s w))
+      | 3 => some (.FStore .FMT_D rs1 rs2 (imm_s w))
+      | _ => none
+  | 0x43 | 0x47 | 0x4B | 0x4F => -- FMA group; fmt = bits[26:25]
+      let mo : fmaop :=
+        match opc with
+        | 0x43 => .F_MADD  | 0x47 => .F_MSUB
+        | 0x4B => .F_NMSUB | _    => .F_NMADD
+      -- POLICY: rm kept raw; the reserved rm values 5/6 still decode here —
+      -- check binutils' policy and align in the differ.
+      match (bits 25 2 w).toNat with
+      | 0 => some (instr.Fma mo .FMT_S rd rs1 rs2 (f_rs3 w) rm)
+      | 1 => some (instr.Fma mo .FMT_D rd rs1 rs2 (f_rs3 w) rm)
+      | _ => none  -- fmt 10/11 illegal (no Q/H)
+  | 0x53 => -- OP-FP: funct7 dispatch.  rm kept raw for arith/sqrt/cvt
+            -- (POLICY: reserved rm values 5/6 accepted — differ to align).
+      let cvt_int : Option fcvt_ty :=  -- integer fcvt_ty selected by the rs2 field
+        match rs2.toNat with
+        | 0 => some .FC_W | 1 => some .FC_WU
+        | 2 => some .FC_L | 3 => some .FC_LU
+        | _ => none
+      match f7 with
+      | 0x00 => some (.Fari .F_ADD .FMT_S rd rs1 rs2 rm)
+      | 0x01 => some (.Fari .F_ADD .FMT_D rd rs1 rs2 rm)
+      | 0x04 => some (.Fari .F_SUB .FMT_S rd rs1 rs2 rm)
+      | 0x05 => some (.Fari .F_SUB .FMT_D rd rs1 rs2 rm)
+      | 0x08 => some (.Fari .F_MUL .FMT_S rd rs1 rs2 rm)
+      | 0x09 => some (.Fari .F_MUL .FMT_D rd rs1 rs2 rm)
+      | 0x0C => some (.Fari .F_DIV .FMT_S rd rs1 rs2 rm)
+      | 0x0D => some (.Fari .F_DIV .FMT_D rd rs1 rs2 rm)
+      | 0x2C => if rs2.toNat = 0 then some (.Fsqrt .FMT_S rd rs1 rm) else none
+      | 0x2D => if rs2.toNat = 0 then some (.Fsqrt .FMT_D rd rs1 rm) else none
+      | 0x10 | 0x11 =>
+          let fmt : ffmt := if f7 = 0x10 then .FMT_S else .FMT_D
+          match f3 with
+          | 0 => some (instr.Fsgnj .F_SGNJ fmt rd rs1 rs2)
+          | 1 => some (instr.Fsgnj .F_SGNJN fmt rd rs1 rs2)
+          | 2 => some (instr.Fsgnj .F_SGNJX fmt rd rs1 rs2)
+          | _ => none
+      | 0x14 | 0x15 =>
+          let fmt : ffmt := if f7 = 0x14 then .FMT_S else .FMT_D
+          match f3 with
+          | 0 => some (instr.Fminmax .F_MIN fmt rd rs1 rs2)
+          | 1 => some (instr.Fminmax .F_MAX fmt rd rs1 rs2)
+          | _ => none
+      | 0x50 | 0x51 => -- fcmp: feq/flt/fle = funct3 2/1/0
+          let fmt : ffmt := if f7 = 0x50 then .FMT_S else .FMT_D
+          match f3 with
+          | 2 => some (instr.Fcmp .F_EQ fmt rd rs1 rs2)
+          | 1 => some (instr.Fcmp .F_LT fmt rd rs1 rs2)
+          | 0 => some (instr.Fcmp .F_LE fmt rd rs1 rs2)
+          | _ => none
+      | 0x60 => -- fcvt.{w,wu,l,lu}.s
+          match cvt_int with
+          | some dst => some (instr.Fcvt dst .FC_S rd rs1 rm) | none => none
+      | 0x61 => -- fcvt.{w,wu,l,lu}.d
+          match cvt_int with
+          | some dst => some (instr.Fcvt dst .FC_D rd rs1 rm) | none => none
+      | 0x68 => -- fcvt.s.{w,wu,l,lu}
+          match cvt_int with
+          | some src => some (instr.Fcvt .FC_S src rd rs1 rm) | none => none
+      | 0x69 => -- fcvt.d.{w,wu,l,lu}.  fcvt.d.w/fcvt.d.wu are exact (every
+                -- int32 is representable in double): binutils masks rm to 0
+                -- and rejects rm <> 0 (0xd205c553 is invalid to objdump).
+                -- fcvt.d.l/fcvt.d.lu round, so rm is free.
+          match cvt_int with
+          | some fcvt_ty.FC_W | some fcvt_ty.FC_WU =>
+              if f3 = 0 then
+                match cvt_int with
+                | some src => some (instr.Fcvt .FC_D src rd rs1 rm)
+                | none => none
+              else none
+          | some src => some (instr.Fcvt .FC_D src rd rs1 rm)
+          | none => none
+      | 0x20 => -- fcvt.s.d (rs2 = 1); rs2 = 0 would be fcvt.s.s: illegal
+          if rs2.toNat = 1 then some (.Fcvt .FC_S .FC_D rd rs1 rm) else none
+      | 0x21 => -- fcvt.d.s (rs2 = 0); rs2 = 1 would be fcvt.d.d: illegal.
+                -- The conversion is exact, so binutils masks rm to 0 and
+                -- rejects rm <> 0 (0x4205c553 invalid).
+          if rs2.toNat = 0 && f3 = 0 then some (.Fcvt .FC_D .FC_S rd rs1 rm)
+          else none
+      | 0x70 => -- fmv.x.w (f3 = 0) / fclass.s (f3 = 1); rs2 must be 0
+          if rs2.toNat = 0 then
+            match f3 with
+            | 0 => some (.Fmv .FMV_X_F .FMT_S rd rs1)
+            | 1 => some (.Fclass .FMT_S rd rs1)
+            | _ => none
+          else none
+      | 0x71 => -- fmv.x.d / fclass.d
+          if rs2.toNat = 0 then
+            match f3 with
+            | 0 => some (.Fmv .FMV_X_F .FMT_D rd rs1)
+            | 1 => some (.Fclass .FMT_D rd rs1)
+            | _ => none
+          else none
+      | 0x78 => -- fmv.w.x
+          if rs2.toNat = 0 && f3 = 0 then some (.Fmv .FMV_F_X .FMT_S rd rs1)
+          else none
+      | 0x79 => -- fmv.d.x
+          if rs2.toNat = 0 && f3 = 0 then some (.Fmv .FMV_F_X .FMT_D rd rs1)
+          else none
+      | _ => none
   | _ => none
 
 /-! ## Sanity checks against known encodings
@@ -202,7 +305,7 @@ example : decode 0x00a0100f = none := by decide
 example : decode 0x0ff0080f = none := by decide
 example : decode 0x8120000f = none := by decide
 example : decode 0x341022f3 = some (.Csr .CSR_RS 5 0 0x341) := by decide -- csrrs t0,mepc,zero
--- fcvt.s.s / fcvt.d.d are illegal (in Rocq by the OP-FP arm; here the whole opcode is `none`)
+-- fcvt.s.s / fcvt.d.d are illegal
 example : decode 0x40058553 = none := by decide
 example : decode 0x42158553 = none := by decide
 -- One pin per immediate/format the exit demo does not reach.
@@ -238,8 +341,7 @@ example : decode 0x0000852a = none := by decide
 -- The exit-0 demo's three words (Checks/Examples): addi a7,x0,93; addi a0,x0,0; ecall
 example : decode 0x05d00893 = some (.OpImm .ALU_ADD 17 0 93) := by decide
 example : decode 0x00000513 = some (.OpImm .ALU_ADD 10 0 0) := by decide
--- NOT YET PORTED: an F instruction Rocq decodes (fadd.s fa0,fa1,fa2,rne) is
--- `none` here.  This pin is what a port of the F/D arms must flip.
-example : decode 0x00c58553 = none := by decide
+-- fadd.s fa0,fa1,fa2,rne
+example : decode 0x00c58553 = some (.Fari .F_ADD .FMT_S 10 11 12 0) := by decide
 
 end LinuxProcessSemantics.Riscv.Decode
