@@ -14,3 +14,5 @@ import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.LLVMFuzzerTestOneInput
 import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.LLVMFuzzerTestOneInput
 import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_heard_c
 import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_heard
+import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_step_c
+import OssFuzzTheorems.libreac.fuzz_knock.proofs.lib.Prog.reac_knock_step

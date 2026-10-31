@@ -663,6 +663,7 @@ theorem reac_knock_init_holds (hmemset : memset_contract) : reac_knock_init_cont
   · intro ms' hpost
     simp only [memset_post] at hpost
     obtain ⟨regs4, m4, rfl, hpres, hmu34, hwm34, hmi4, hrw4⟩ := hpost
+    unfold memset_frame at hpres
     -- the registers `memset` gives back
     have hp2 : getr regs4 2 = wa (bv_unsigned (getr regs 2) - 32) := by
       rw [hpres 2 (by decide), getr_other _ 1 _ 2 (by decide),
