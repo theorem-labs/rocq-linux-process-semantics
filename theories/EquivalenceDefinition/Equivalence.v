@@ -773,10 +773,22 @@ Definition strong_universal_T : Prop :=
     two [Run.ExecEntry] records are quantified independently, the
     [State.ProcInput] is shared, and each run is seeded with its role's
     allocation budget. *)
+(** [error_free_unkilled] AND NOT [error_free], and the reason is the
+    same one the abort twin below gives, now live under the PLAIN
+    stance: a death by a fatal signal takes no error transition, so
+    [error_free] alone stops seeing it.  Until the write arms could
+    raise SIGPIPE, no run under [Run.valid_input] could end in a
+    [State.KillEv] at all and the two predicates agreed on every run
+    this shape quantifies over; a write to a pipe, a socket or a
+    channel whose far end has no reader ends one now
+    ([Sys.Fs.ReadWrite.write_spec]), and with [error_free] this shape
+    would quietly certify a pair of binaries that both die by signal 13
+    under prose that says the source never even faults.  Keeping the
+    claim as it reads is what this predicate does. *)
 Definition strong_equiv_error_free (en_source en_target : ExecEntry)
     (inp : ProcInput) : Prop :=
-  error_free (run source_image source_alloc_limit en_source inp)
-  /\ error_free (run target_image target_alloc_limit en_target inp)
+  error_free_unkilled (run source_image source_alloc_limit en_source inp)
+  /\ error_free_unkilled (run target_image target_alloc_limit en_target inp)
   /\ trace_equiv
        (bh_traces (run source_image source_alloc_limit en_source inp))
        (bh_traces (run target_image target_alloc_limit en_target inp)).
@@ -822,8 +834,9 @@ Proof.
   intros en_source en_target inp Hef.
   destruct Hef as (Hsef & Htef & Htr).
   split.
-  - apply run_error_free_modeled, Hsef.
-  - right. split; [exact Htr | exact Htef].
+  - apply run_error_free_modeled, (error_free_unkilled_error_free _ Hsef).
+  - right. split;
+      [exact Htr | exact (error_free_unkilled_error_free _ Htef)].
 Qed.
 
 (** The error-free statement is genuinely STRONGER: a proof of it
@@ -860,7 +873,7 @@ Lemma strong_equiv_error_free_no_all_errors_escape :
 Proof.
   intros en_source en_target inp Hall Hef.
   destruct Hef as (Hsef & _ & _).
-  apply Hsef, run_all_errors_errors, Hall.
+  apply (error_free_unkilled_error_free _ Hsef), run_all_errors_errors, Hall.
 Qed.
 
 (** The same bite at the TOP level: one valid triple on which the source
@@ -1560,8 +1573,8 @@ Definition strong_universal_T_scfg : Prop :=
 
 Definition strong_equiv_error_free_scfg (en_source en_target : ExecEntry)
     (inp : ProcInput) : Prop :=
-  error_free (run_scfg cfg source_image source_alloc_limit en_source inp)
-  /\ error_free (run_scfg cfg target_image target_alloc_limit en_target inp)
+  error_free_unkilled (run_scfg cfg source_image source_alloc_limit en_source inp)
+  /\ error_free_unkilled (run_scfg cfg target_image target_alloc_limit en_target inp)
   /\ trace_equiv
        (bh_traces (run_scfg cfg source_image source_alloc_limit en_source inp))
        (bh_traces (run_scfg cfg target_image target_alloc_limit en_target inp)).
@@ -1582,8 +1595,10 @@ Lemma strong_equiv_error_free_scfg_implies : forall en_source en_target inp,
 Proof.
   intros en_source en_target inp (Hsef & Htef & Htr).
   split.
-  - intros Hun. apply Hsef, run_scfg_unmodeled_errors, Hun.
-  - right. split; [exact Htr | exact Htef].
+  - intros Hun.
+    apply (error_free_unkilled_error_free _ Hsef), run_scfg_unmodeled_errors, Hun.
+  - right. split;
+      [exact Htr | exact (error_free_unkilled_error_free _ Htef)].
 Qed.
 
 Lemma strong_universal_error_free_T_scfg_implies :
@@ -1802,8 +1817,8 @@ Proof.
   intros s t en_s en_t inp. unfold strong_equiv_error_free_scfg, strong_equiv_error_free.
   pose proof (run_scfg_may_fail s source_alloc_limit en_s inp) as Hs.
   pose proof (run_scfg_may_fail t target_alloc_limit en_t inp) as Ht.
-  pose proof (error_free_behavior_equiv _ _ Hs).
-  pose proof (error_free_behavior_equiv _ _ Ht).
+  pose proof (error_free_unkilled_scfg_may_fail s source_alloc_limit en_s inp).
+  pose proof (error_free_unkilled_scfg_may_fail t target_alloc_limit en_t inp).
   pose proof (trace_equiv_behavior_equiv _ _ _ _ Hs Ht).
   tauto.
 Qed.
@@ -2180,8 +2195,8 @@ Definition strong_equiv_budgets (en_source en_target : ExecEntry)
     flavour-pair obligation. *)
 Definition strong_equiv_error_free_budgets (en_source en_target : ExecEntry)
     (inp : ProcInput) : Prop :=
-  error_free (run source_image lim_source en_source inp)
-  /\ error_free (run target_image lim_target en_target inp)
+  error_free_unkilled (run source_image lim_source en_source inp)
+  /\ error_free_unkilled (run target_image lim_target en_target inp)
   /\ trace_equiv
        (bh_traces (run source_image lim_source en_source inp))
        (bh_traces (run target_image lim_target en_target inp)).
@@ -2238,8 +2253,9 @@ Lemma strong_equiv_error_free_budgets_implies : forall en_source en_target inp,
 Proof.
   intros en_source en_target inp (Hsef & Htef & Htr).
   split.
-  - apply run_error_free_modeled, Hsef.
-  - right. split; [exact Htr | exact Htef].
+  - apply run_error_free_modeled, (error_free_unkilled_error_free _ Hsef).
+  - right. split;
+      [exact Htr | exact (error_free_unkilled_error_free _ Htef)].
 Qed.
 
 Lemma strong_equiv_error_free_budgets_abort_implies : forall en_source en_target inp,
@@ -2717,8 +2733,8 @@ Definition strong_equiv_budgets_scfg (en_source en_target : ExecEntry)
 (** [strong_equiv_error_free_scfg] with the budgets abstracted. *)
 Definition strong_equiv_error_free_budgets_scfg (en_source en_target : ExecEntry)
     (inp : ProcInput) : Prop :=
-  error_free (run_scfg cfg source_image lim_source en_source inp)
-  /\ error_free (run_scfg cfg target_image lim_target en_target inp)
+  error_free_unkilled (run_scfg cfg source_image lim_source en_source inp)
+  /\ error_free_unkilled (run_scfg cfg target_image lim_target en_target inp)
   /\ trace_equiv
        (bh_traces (run_scfg cfg source_image lim_source en_source inp))
        (bh_traces (run_scfg cfg target_image lim_target en_target inp)).
@@ -2745,8 +2761,8 @@ Lemma strong_equiv_error_free_budgets_scfg_implies : forall en_source en_target 
 Proof.
   intros en_source en_target inp (Hsef & Htef & Htr).
   split.
-  - intros Hun. apply Hsef, run_scfg_unmodeled_errors, Hun.
-  - right. split; [exact Htr | exact Htef].
+  - intros Hun. apply (error_free_unkilled_error_free _ Hsef), run_scfg_unmodeled_errors, Hun.
+  - right. split; [exact Htr | exact (error_free_unkilled_error_free _ Htef)].
 Qed.
 
 Lemma strong_universal_error_free_T_scfg_budgets_implies :
@@ -3243,8 +3259,8 @@ Proof.
   unfold strong_equiv_error_free_budgets_scfg, strong_equiv_error_free_budgets.
   pose proof (run_scfg_may_fail s ls en_s inp) as Hs.
   pose proof (run_scfg_may_fail t lt en_t inp) as Ht.
-  pose proof (error_free_behavior_equiv _ _ Hs).
-  pose proof (error_free_behavior_equiv _ _ Ht).
+  pose proof (error_free_unkilled_scfg_may_fail s ls en_s inp).
+  pose proof (error_free_unkilled_scfg_may_fail t lt en_t inp).
   pose proof (trace_equiv_behavior_equiv _ _ _ _ Hs Ht).
   tauto.
 Qed.

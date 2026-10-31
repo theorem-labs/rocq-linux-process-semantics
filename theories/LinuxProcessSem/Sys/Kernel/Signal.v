@@ -1086,8 +1086,23 @@ Definition write_oset (oset old : word) : Sys SyscallEffect :=
 Definition sigabrt_blocked (mask : word) : bool :=
   negb (w_is0 (bv_and mask (Z_to_bv 64 sigabrt_mask))).
 
-(** ONE [State] FUNCTION AND ONE [Monad.modify], rather than a branch
-    over two monadic steps, because that is what the checker and the
+(** TWO SIGNALS, IN THE KERNEL'S ORDER.  A mask install that uncovers a
+    pending signal delivers it on the way back to user space, and both
+    signals this model can raise are FATAL at their default
+    disposition, so the install that uncovers one ends the process.
+
+    SIGABRT IS TESTED FIRST, and that is [next_signal]'s rule rather
+    than a choice: kernel/signal.c [get_signal] dequeues through
+    [dequeue_signal], which takes the LOWEST-numbered pending signal,
+    and 6 is below 13.  A fatal one never returns to the loop, so a
+    process with both pending and both uncovered dies of SIGABRT and
+    signal 13 is never dequeued.  That is only visible in the NUMBER the
+    trace carries, and it is visible: [State.KillEv] carries it, and a
+    waiting parent reads it through WTERMSIG.  Linux v6.18.46, commit
+    1f99e9ab748f.
+
+    ONE [State] FUNCTION AND ONE [Monad.modify], rather than a branch
+    over monadic steps, because that is what the checker and the
     witness can follow: [Checks.Sys.Kernel.Signal] and
     [Checks.Witness.Kernel.Signal] discharge this call with the same
     [modify_ok] they discharged the plain [set_sigmask] with, and the
@@ -1095,26 +1110,32 @@ Definition sigabrt_blocked (mask : word) : bool :=
 Definition sigmask_deliver_model (new : word) (m : Model) : Model :=
   if (m_sigabrt_pending m && negb (sigabrt_blocked new))%bool
   then with_killed (Z_to_bv 64 SIGABRT) (with_sigmask new m)
+  else if (m_sigpipe_pending m && negb (sigpipe_blocked new))%bool
+  then with_killed (Z_to_bv 64 SIGPIPE) (with_sigmask new m)
   else with_sigmask new m.
 
 Definition set_sigmask_deliver (new : word) : Sys unit :=
   modify (sigmask_deliver_model new).
 
-(** MEANING PRESERVED: with nothing pending -- every state a run whose
-    task did not declare the abort path can reach, since
-    [State.with_sigabrt_pending]'s only caller is [tkill_spec] and that
-    spec declines outright with the declaration off -- installing a mask
-    is plain [with_sigmask]. *)
+(** MEANING PRESERVED: with NEITHER signal pending, installing a mask is
+    plain [with_sigmask].  [State.with_sigabrt_pending]'s only caller is
+    [tkill_spec], which declines outright with the declaration off, so
+    every state a run whose task did not declare the abort path can
+    reach has the first bit clear; the second is clear until a write
+    finds a far end with no reader while signal 13 is blocked
+    ([Fs.ReadWrite.raise_sigpipe]), which is NOT behind a declaration. *)
 Lemma sigmask_deliver_model_no_pending : forall new m,
   m_sigabrt_pending m = false ->
+  m_sigpipe_pending m = false ->
   sigmask_deliver_model new m = with_sigmask new m.
 Proof.
-  intros new m Hp. unfold sigmask_deliver_model. rewrite Hp. reflexivity.
+  intros new m Ha Hp. unfold sigmask_deliver_model.
+  rewrite Ha, Hp. reflexivity.
 Qed.
 
 (** The two projections the checker and the witness need through the
     delivery: the mask installed is the mask asked for, and the address
-    space is untouched.  Both branches of [sigmask_deliver_model] go
+    space is untouched.  Every branch of [sigmask_deliver_model] goes
     through [State.with_sigmask], and [State.with_killed] on top of it
     rebuilds [ProcState] alone. *)
 Lemma m_sigmask_sigmask_deliver_model : forall new m,
@@ -1122,6 +1143,8 @@ Lemma m_sigmask_sigmask_deliver_model : forall new m,
 Proof.
   intros new m. unfold sigmask_deliver_model.
   destruct (m_sigabrt_pending m && negb (sigabrt_blocked new))%bool;
+    [autorewrite with model; reflexivity|].
+  destruct (m_sigpipe_pending m && negb (sigpipe_blocked new))%bool;
     autorewrite with model; reflexivity.
 Qed.
 
@@ -1130,15 +1153,18 @@ Lemma m_vmmaps_sigmask_deliver_model : forall new m,
 Proof.
   intros new m. unfold sigmask_deliver_model.
   destruct (m_sigabrt_pending m && negb (sigabrt_blocked new))%bool;
+    [autorewrite with model; reflexivity|].
+  destruct (m_sigpipe_pending m && negb (sigpipe_blocked new))%bool;
     autorewrite with model; reflexivity.
 Qed.
 
 Lemma set_sigmask_deliver_no_pending : forall new i m o,
   m_sigabrt_pending m = false ->
+  m_sigpipe_pending m = false ->
   (set_sigmask_deliver new i m o <-> set_sigmask new i m o).
 Proof.
-  intros new i m o Hp. unfold set_sigmask_deliver, set_sigmask, modify.
-  rewrite sigmask_deliver_model_no_pending by exact Hp. reflexivity.
+  intros new i m o Ha Hp. unfold set_sigmask_deliver, set_sigmask, modify.
+  rewrite sigmask_deliver_model_no_pending by assumption. reflexivity.
 Qed.
 
 Definition rt_sigprocmask_spec (how nset oset ss : word) : Sys SyscallEffect :=

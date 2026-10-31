@@ -47,7 +47,7 @@ them. A proof says nothing about a program in such a case.
 | Area | Limit |
 | --- | --- |
 | Threads | The model has one thread. It has no scheduler and no shared-memory interleaving. For `fork`-like calls, the model describes the parent only. It does not run the child. |
-| Signals | The model does not run signal handlers. |
+| Signals | The model does not run signal handlers. It has two signals and both are fatal: `SIGABRT`, raised by `tkill`/`tgkill` on the abort path, and `SIGPIPE`, raised by a write whose far end has no reader. Each ends the run with a death that is not an exit (`State.KillEv`), or, where the launch mask blocks it, returns the errno and leaves the signal pending until a `rt_sigprocmask` uncovers it. The model holds no disposition for either: it assumes the launch left both at `SIG_DFL`, and `rt_sigaction` declines every install that would change one. A launcher that does `signal(SIGPIPE, SIG_IGN)` before `execve` is outside the model, because `execve` keeps an inherited `SIG_IGN` (`fs/exec.c`, `begin_new_exec`'s `flush_signal_handlers`, Linux v6.18.46). No other signal is modeled: `SIGSEGV` is reported as the error transition rather than as a death, `SIGCHLD`'s default action is to ignore it, `SIGXFSZ` needs an `RLIMIT_FSIZE` the model does not carry, and nothing outside the process can send one. |
 | Address-space size | The system call specifications use Sv48. Thus you cannot prove the Sv39 and Sv57 statements for an image that can run. |
 | Stack limit | The stack limit is 8 MiB. A larger or unlimited `RLIMIT_STACK`, which selects the legacy mmap layout, is outside the model. The model counts its own entry image against this limit, but not the parts of a real entry image that it leaves out; see "Stack floor" in "Known gaps in precision". |
 | Arguments | `Run.valid_input` requires that the arguments after `argv[0]` do not contain `/` and are not `..`. Thus a proof about `cp src dst` does not apply to `cp /tmp/src dst`. It also bounds the lists (`Run.valid_argv`, `Run.valid_envp`): 1 to 1024 arguments and at most 2 MiB of argument bytes, at most 256 environment variables and at most 128 KiB of environment bytes, and at most 131071 bytes in each string. Each count of bytes includes the terminating NUL of each string. A launch outside these bounds is outside the model. |
@@ -195,10 +195,27 @@ true of the model and false of the real systems.
   classifies fds 1 and 2 as channels without knowing whether the far end
   is a pipe, a terminal or a file, so it admits the short return for all
   three.
-- **A channel with no reader.** The same arm cannot see whether the
-  channel still has a reader. A write to stdout or stderr whose reader is
-  gone gets a count. Linux raises `SIGPIPE`, which kills the process, or
-  answers `EPIPE`.
+- **A channel with no reader — fixed, and what it cost.** This used to
+  be a gap: the write arm could not see whether fds 1 and 2 still had a
+  reader, so a write to a stdout whose reader was gone got a count,
+  where Linux raises `SIGPIPE` and kills the process. The model now has
+  a death that is not an exit, and the launch says which case it is
+  (`State.ProcInput.in_channel_reader`). `Run.valid_input` constrains
+  that field at neither value, so every statement covers both the run
+  whose standard output is read and the writing end of
+  `prog | head -1`. What is left is a PREMISE and not a gap: the model
+  assumes the launch left `SIGPIPE` at `SIG_DFL` (see "Signals"), and
+  it has one answer per run rather than a reader that goes away at a
+  point the model can see. A program whose reader goes away in the
+  middle of its output is outside the model.
+- **A socket write that delivers.** A write to a socket with no
+  connection is answered — `-EPIPE`, and the `SIGPIPE` that goes with
+  it (`net/core/stream.c`, `sk_stream_wait_connect` and
+  `sk_stream_error`). A write to a CONNECTED socket is still
+  `unmodeled`: it would have to choose a short count, or consume a
+  pending peer error and rewrite the descriptor, which is
+  `sendto`/`sendmsg`'s machinery. So `write(2)` on a socket is covered
+  exactly where the connection is absent.
 - **The auxiliary vector.** The model publishes ten entries
   (`StackLayout.auxv_entries`). A real kernel also supplies `AT_GID`,
   `AT_EGID`, `AT_BASE`, `AT_ENTRY`, `AT_FLAGS`, `AT_CLKTCK`, `AT_EXECFN`

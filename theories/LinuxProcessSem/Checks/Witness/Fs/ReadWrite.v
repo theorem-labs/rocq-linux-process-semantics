@@ -499,6 +499,13 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
           (* count = 0: return 0, but only once the range passes
              [access_ok] — see [Uaccess.access_ok_zero] *)
       else
+      if negb (m_channel_reader m) then
+        (* no reader on the far end: [access_ok] first, then signal 13
+           -- see [ReadWrite.write_spec]'s channel arm *)
+        if negb (access_okb buf (bv_unsigned count))
+        then ret_outcome (errno_ret EFAULT) m
+        else ret_outcome (errno_ret EPIPE) (raise_sigpipe m)
+      else
       let bs := write_source (in_mem i) buf count in
       if Nat.eqb (length bs) 0
       then ret_outcome (errno_ret EFAULT) m    (* nothing readable: -EFAULT *)
@@ -584,7 +591,16 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
               else outcome_copyins [(buf, length bs)] out
           end in
         if w_is0 count then access_ok_zero_witness buf count m k else k
-  | Some (FdSocket _) => Unmodeled  (* writing a socket is unmodeled, permanently *)
+  | Some (FdSocket sk) =>
+      if negb (sock_send_dead sk) then Unmodeled
+        (* a delivering socket write is still unmodeled *)
+      else
+      if negb (modeled_rw_range buf count) then Unmodeled
+      else
+      if negb (access_okb buf (bv_unsigned count))
+      then ret_outcome (errno_ret EFAULT) m
+      else ret_outcome (errno_ret EPIPE) (raise_sigpipe m)
+        (* no connection to send on: -EPIPE and SIGPIPE *)
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
@@ -596,7 +612,8 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       else if negb (modeled_rw_range buf count) then Unmodeled
       else if w_is0 count then
         access_ok_zero_witness buf count m (ret_outcome (Z_to_bv 64 0) m)
-      else if negb (pipe_end_live (m_fds m) id false) then Unmodeled  (* SIGPIPE *)
+      else if negb (pipe_end_live (m_fds m) id false)
+      then ret_outcome (errno_ret EPIPE) (raise_sigpipe m)  (* SIGPIPE *)
       else
       match pipe_lookup (m_pipes m) id with
       | None => Unmodeled
@@ -656,6 +673,17 @@ Proof.
       cbv beta iota zeta; srw Hfd; srw Hm.
       unfold access_ok_zero, access_ok_zero_witness.
       destruct (access_okb buf (bv_unsigned count)); apply pure_ok. }
+    destruct (m_channel_reader m) eqn:Hcr; cycle 1.
+    { (* the far end has no reader: [access_ok], then signal 13 *)
+      eapply bind_step; [apply input_ok|].
+      cbv beta. eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd; srw Hm; srw Hc; srw Hcr; cbn [negb];
+        cbv beta iota.
+      destruct (access_okb buf (bv_unsigned count)) eqn:Hok;
+        cbn [negb]; cbv beta iota.
+      - unfold sigpipe_write.
+        eapply bind_step; [apply modify_ok|]. apply pure_ok.
+      - apply pure_ok. }
     destruct (Nat.eqb (length (write_source (in_mem i) buf count)) 0)
       eqn:Hg.
     + eapply bind_step; [apply input_ok|].
@@ -776,10 +804,28 @@ Proof.
     eapply bind_step; [apply input_ok|].
     cbv beta. eapply bind_step; [apply get_model_ok|].
     cbv beta iota zeta; srw Hfd. apply pure_ok.
-  - (* socket: writing one is unmodeled, permanently *)
+  - (* socket: a delivering write is still unmodeled; a socket with no
+       connection answers -EPIPE and raises signal 13 *)
+    destruct (sock_send_dead sk) eqn:Hsd; cbn [negb]; cbv beta iota.
+    2:{ eapply bind_unmodeled2; [apply input_ok|].
+        cbv beta. eapply bind_unmodeled2; [apply get_model_ok|].
+        cbv beta iota zeta; srw Hfd; srw Hsd; cbn [negb]; cbv beta iota.
+        apply unmodeled_intro. }
+    destruct (modeled_rw_range buf count) eqn:Hn; cbn [negb]; cbv beta iota.
+    2:{ eapply bind_unmodeled2; [apply input_ok|].
+        cbv beta. eapply bind_unmodeled2; [apply get_model_ok|].
+        cbv beta iota zeta; srw Hfd; srw Hsd; cbn [negb]; cbv beta iota;
+          srw Hn; cbn [negb]; cbv beta iota.
+        apply unmodeled_intro. }
     eapply bind_step; [apply input_ok|].
     cbv beta. eapply bind_step; [apply get_model_ok|].
-    cbv beta iota zeta; srw Hfd. apply unmodeled_intro.
+    cbv beta iota zeta; srw Hfd; srw Hsd; cbn [negb]; cbv beta iota;
+      srw Hn; cbn [negb]; cbv beta iota.
+    destruct (access_okb buf (bv_unsigned count)) eqn:Hok;
+      cbn [negb]; cbv beta iota.
+    + unfold sigpipe_write.
+      eapply bind_step; [apply modify_ok|]. apply pure_ok.
+    + apply pure_ok.
   - (* pipe: -EBADF on the read end, else the deterministic append or one
        of the three fail-closed verdicts *)
     destruct w.
@@ -798,10 +844,12 @@ Proof.
       unfold access_ok_zero, access_ok_zero_witness.
       destruct (access_okb buf (bv_unsigned count)); apply pure_ok. }
     destruct (negb (pipe_end_live (m_fds m) id false)) eqn:Hrd.
-    { eapply bind_unmodeled2; [apply input_ok|].
-      cbv beta. eapply bind_unmodeled2; [apply get_model_ok|].
+    { eapply bind_step; [apply input_ok|].
+      cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd; rewrite ?Hn, ?Hc; cbv beta iota zeta;
-        srw Hrd. apply unmodeled_intro. }
+        srw Hrd.
+      unfold sigpipe_write.
+      eapply bind_step; [apply modify_ok|]. apply pure_ok. }
     destruct (pipe_lookup (m_pipes m) id) as [st|] eqn:Hp.
     2:{ eapply bind_unmodeled2; [apply input_ok|].
         cbv beta. eapply bind_unmodeled2; [apply get_model_ok|].

@@ -2159,7 +2159,7 @@ Qed.
 Definition core_input (c : FinCore) : FinProcInput :=
   mkFinProcInput (core_argv c) (core_envp c) (core_fs c) (core_stdin c)
                  (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
-                 (Z_to_bv 64 0) (Z_to_bv 64 0) hwcap_rv64gc false Sv48 [] [].
+                 (Z_to_bv 64 0) (Z_to_bv 64 0) hwcap_rv64gc false Sv48 [] [] true.
 
 (** THE LAUNCH-ENVIRONMENT FIELDS ARE NOT ARBITRARY, even though this
     definition claims nothing about them.  A caller proving its own

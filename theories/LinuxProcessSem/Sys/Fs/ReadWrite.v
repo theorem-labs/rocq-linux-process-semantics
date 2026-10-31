@@ -906,6 +906,56 @@ Definition write_file_tail (mp : word -> option byte) (buf count : word)
       end in
     if w_is0 count then access_ok_zero buf count deliver else deliver.
 
+(** WHAT A WRITE TO A FAR END WITH NO READER DOES TO THE PROCESS.
+
+    Linux sends SIGPIPE and sets the syscall's return to -EPIPE, in that
+    order and unconditionally: fs/pipe.c [anon_pipe_write] does
+    [send_sig(SIGPIPE, current, 0); ret = -EPIPE;] at :460-465 and again
+    at :501-506, and net/core/stream.c [sk_stream_error] does
+    [if (err == -EPIPE && !(flags & MSG_NOSIGNAL)) send_sig(SIGPIPE, current, 0);]
+    at :190-198.  Neither raises a signal write(2) can suppress:
+    [IOCB_NOSIGNAL] is not among the flags [iocb_flags]
+    (include/linux/fs.h) sets, and MSG_NOSIGNAL reaches
+    net/socket.c [sock_write_iter] only from it (:1193-1194).  Linux
+    v6.18.46, commit 1f99e9ab748f.
+
+    WHICH OF THE TWO THE PROCESS SEES IS THE MASK'S DECISION, and that
+    is the whole of this function.  SIGPIPE's default action is
+    TERMINATE ([Uapi.SIGPIPE] says why), so with the signal unblocked
+    kernel/signal.c [get_signal] runs on the way back to user space and
+    reaches [do_group_exit]: the -EPIPE is never returned, and what the
+    world sees is a death by signal 13.  With the signal BLOCKED,
+    [send_signal_locked] leaves it in [task->pending.signal],
+    [recalc_sigpending] leaves TIF_SIGPENDING clear, the return to user
+    space takes no signal, and the program reads -EPIPE -- which is why
+    the errno is this function's answer on BOTH branches, and why the
+    pending bit has to be recorded: an [rt_sigprocmask] that later
+    uncovers signal 13 kills there
+    ([Kernel.Signal.sigmask_deliver_model]).
+
+    THE DISPOSITION IS SIG_DFL BY CONSTRUCTION INSIDE THE MODELED
+    SURFACE: [Kernel.Signal.rt_sigaction_spec] declines every install
+    for signal 13.  That the LAUNCH left it at SIG_DFL is a premise,
+    written above [Run.unmodeled_at]; `signal(SIGPIPE, SIG_IGN)` in a
+    launcher survives execve and is outside what this model covers.
+
+    NO LEDGER AND NO EVENT.  Both kernel sites raise the signal before
+    any byte is copied out of user memory, so the call reads nothing
+    and emits nothing; [State.with_killed] and
+    [State.with_sigpipe_pending] rebuild [State.ProcState] alone, so the
+    file system, the fd table and the address space are untouched.  When
+    the branch kills, [Run.sstep_killed] discards the effect this
+    returns -- exactly as [Run.sstep_exit] discards an [exit]'s -- so
+    the -EPIPE is unobservable there, which is the point. *)
+Definition raise_sigpipe (m : Model) : Model :=
+  if sigpipe_blocked (m_sigmask m)
+  then with_sigpipe_pending m
+  else with_killed (Z_to_bv 64 SIGPIPE) m.
+
+Definition sigpipe_write : Sys SyscallEffect :=
+  modify raise_sigpipe ;;
+  err_ret EPIPE.
+
 Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
@@ -955,6 +1005,38 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
                 which leaves only the range verdict — see
                 [Uaccess.access_ok_zero] *)
       else
+      if negb (m_channel_reader m) then
+        (* THE FAR END HAS NO READER.  [State.in_channel_reader] says
+           the launch put a pipe or a socket on the other side of this
+           descriptor and its reader has gone -- `prog | head -1` once
+           `head` has had its line.  Linux raises SIGPIPE and sets
+           -EPIPE (fs/pipe.c [anon_pipe_write] :460-465 when the far
+           end is a pipe, net/core/stream.c [sk_stream_error] :190-198
+           when it is a socket), and under the default disposition the
+           process DIES; see [raise_sigpipe], which is where the mask
+           decides between the death and the errno.
+
+           AFTER THE ZERO-COUNT BRANCH, because fs/pipe.c returns 0 for
+           a zero-length write at :454-456, BEFORE the [mutex_lock] at
+           :458 and therefore before the [if (!pipe->readers)] test at
+           :460: a zero-length write to a pipe whose reader is gone is
+           0, not -EPIPE, and raises no signal.
+
+           AND BEHIND [access_ok], which is the order fs/read_write.c
+           fixes: [vfs_write] runs
+           [if (unlikely(!access_ok(buf, count))) return -EFAULT;]
+           before it calls [f_op->write_iter], so a buffer whose NAMED
+           range leaves the user address space is -EFAULT whatever is
+           on the other end of the descriptor, and only a call that
+           gets past it reaches the readers test.  The reader-present
+           path below does not make this test and takes a readable
+           prefix instead -- a looseness of that path which this arm
+           cannot inherit, because answering a death where Linux
+           answers -EFAULT is a wrong MODELED answer rather than a
+           short count.  Linux v6.18.46, commit 1f99e9ab748f *)
+        if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+        else sigpipe_write
+      else
       let bs := write_source (in_mem i) buf count in
       if Nat.eqb (length bs) 0
       then err_ret EFAULT                        (* nothing readable at [buf]: real -EFAULT *)
@@ -971,49 +1053,75 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
           (ret_only (len_word ds))               (* the (possibly short) delivered length *)
   | Some FdDir => err_ret EBADF                  (* directory fds are O_RDONLY: write is real -EBADF,
                                                     checked before the source buffer as Linux does *)
-  | Some (FdSocket _) => unmodeled
-      (* WRITING A SOCKET IS UNMODELED, PERMANENTLY — not deferred.
-         Every kernel citation in this arm is v6.12.
-         On a connection the peer has reset, write(2) returns -EPIPE
-         *and raises SIGPIPE*: net/core/stream.c [sk_stream_error] sends
-         the signal whenever the final errno is exactly -EPIPE and
-         MSG_NOSIGNAL is clear, and write(2) cannot set that flag.  The
-         reason is NOT that net/socket.c [sock_write_iter] passes only
-         MSG_DONTWAIT: at v6.18.46 it also raises MSG_NOSIGNAL, from
-         [IOCB_NOSIGNAL], and MSG_EOR for SOCK_SEQPACKET.  What write(2)
-         cannot do is set [IOCB_NOSIGNAL] -- include/linux/fs.h
+  | Some (FdSocket sk) =>
+      if negb (sock_send_dead sk) then unmodeled
+        (* A DELIVERING SOCKET WRITE IS STILL UNMODELED, and this is
+           what is left of the arm that used to decline every socket.
+           [State.sock_send_dead] is false only for [SkConnected],
+           where the send either goes out -- a short count chosen from
+           the gatherable bytes, which is [Net.Socket.send_bytes]'s
+           business and needs that file's machinery -- or reports a
+           pending peer error ONCE and REWRITES the descriptor
+           (include/net/sock.h [sock_error] consumes it with an
+           [xchg]).  Neither raises a signal: [sk_stream_error] replaces
+           the errno with [sock_error]'s before it tests for -EPIPE
+           (net/core/stream.c :192-195), so a reset connection's FIRST
+           write is -ECONNRESET and carries none.  What keeps those
+           states out is the transfer, not the signal, which is why this
+           decline is now bounded and not permanent *)
+      else
+      if negb (modeled_rw_range buf count) then unmodeled
+        (* the count rule every judging arm of this spec applies, after
+           the fd check Linux makes first -- see
+           [Uaccess.modeled_rw_range] *)
+      else
+      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+        (* [vfs_write]'s [access_ok] over the NAMED range, which
+           fs/read_write.c runs before [f_op->write_iter] and therefore
+           before anything the socket decides *)
+      else sigpipe_write
+      (* THE SOCKET HAS NO CONNECTION TO SEND ON, which is every state
+         but [SkConnected]: TCP has no -ENOTCONN on the send path at
+         all.  net/core/stream.c [sk_stream_wait_connect] (:60-88)
+         answers -EPIPE for every state outside SYN_SENT and SYN_RECV,
+         and net/ipv4/tcp.c [tcp_sendmsg_locked] reaches it whenever the
+         state is outside [TCPF_ESTABLISHED | TCPF_CLOSE_WAIT].  That
+         -EPIPE then goes through [sk_stream_error] (:190-198), whose
+         [if (err == -EPIPE && !(flags & MSG_NOSIGNAL)) send_sig(SIGPIPE, ...)]
+         fires because write(2) cannot set MSG_NOSIGNAL: the flag
+         reaches net/socket.c [sock_write_iter] only from
+         [IOCB_NOSIGNAL] (:1193-1194), and include/linux/fs.h
          [iocb_flags] ORs only IOCB_APPEND, IOCB_DIRECT, IOCB_DSYNC and
-         IOCB_SYNC, and RWF_NOSIGNAL reaches a kiocb through
-         [kiocb_set_rw_flags], which no write(2) or writev(2) path calls.  The
-         conclusion is the v6.12 one.  The mechanism was never right:
-         MSG_EOR for SOCK_SEQPACKET is already there at v6.12, so "passes
-         only MSG_DONTWAIT" was wrong when it was written rather than
-         overtaken by a later kernel.  SIGPIPE is
-         in none of SIG_KERNEL_IGNORE_MASK, SIG_KERNEL_STOP_MASK or
+         IOCB_SYNC -- RWF_NOSIGNAL reaches a kiocb through
+         [kiocb_set_rw_flags], which no write(2) or writev(2) path
+         calls.  So the process takes SIGPIPE and, at the default
+         disposition, DIES; [raise_sigpipe] is where the mask decides
+         between that death and the -EPIPE.  SIGPIPE is in none of
+         SIG_KERNEL_IGNORE_MASK, SIG_KERNEL_STOP_MASK or
          SIG_KERNEL_COREDUMP_MASK (include/linux/signal.h), so under
-         SIG_DFL kernel/signal.c [get_signal] reaches [do_group_exit] and
-         the whole thread group dies.
+         SIG_DFL kernel/signal.c [get_signal] reaches [do_group_exit]
+         and the whole thread group dies.  Linux v6.18.46, commit
+         1f99e9ab748f.
 
-         A spec's outcomes are [Ok] and [Unmodeled] and nothing else
-         ([Monad.Sys]), so "the process died" cannot be stated.
-         Returning -EPIPE and continuing asserts the process SURVIVED —
-         a confidently wrong answer of exactly the class [modeled]
-         cannot see — and halting with 141 is indistinguishable from a
-         voluntary exit(141), which would let a target replace a signal
-         death with a normal exit and stay equivalent.  Both are worse
-         than declining.
+         A ZERO-LENGTH WRITE IS NOT AN ESCAPE, which is why no
+         zero-count branch precedes this: [sock_write_iter] has no
+         zero-count short-circuit of the kind [sock_read_iter] has, so
+         [write(sockfd, buf, 0)] on a socket with no connection reaches
+         [tcp_sendmsg_locked] and takes the same -EPIPE and the same
+         signal.  That is the one place this arm differs in SHAPE from
+         the pipe and channel arms, and the difference is Linux's.
 
-         Nor is a never-connected socket an escape:
-         net/core/stream.c [sk_stream_wait_connect] returns -EPIPE for
-         every state outside SYN_SENT/SYN_RECV — there is no -ENOTCONN
-         on the TCP send path at all — so that raises SIGPIPE too.  Nor
-         is zero length: sock_write_iter has no zero-count
-         short-circuit of the kind sock_read_iter has, so
-         [write(sockfd, buf, 0)] on a reset connection is not a no-op.
-
-         The socket write path this model can grow is sendto/sendmsg
-         with MSG_NOSIGNAL REQUIRED and checked first, which works only
-         because the flag is a syscall argument a spec can read. *)
+         WHAT THIS REPLACED.  The arm used to decline every socket
+         write permanently, on the argument that a spec's outcomes are
+         [Ok] and [Unmodeled] only ([Monad.Sys]), so "the process died"
+         could not be stated and answering -EPIPE would assert the
+         process SURVIVED -- a confidently wrong answer of exactly the
+         class [Equivalence.modeled] cannot see.  The model now has a
+         death that is not [exit] ([State.with_killed],
+         [Run.sstep_killed]), so the argument no longer holds and the
+         answer is the kernel's.  The sendto/sendmsg path keeps its own
+         MSG_NOSIGNAL gate, where the flag is an argument a spec can
+         read ([Net.Socket.send_flags_modeled]) *)
   | Some (FdFileW p off) =>
       (* NO LEADING KERNEL TEST, which is a deliberate omission and not
          the helper's doing: this arm models neither [vfs_write]'s
@@ -1172,12 +1280,29 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            pipe whose reader is gone is 0 — NOT -EPIPE, and no SIGPIPE
            (v6.18.46) *)
       else
-      if negb (pipe_end_live (m_fds m) id false) then unmodeled
-        (* NO READER LEFT.  Linux raises SIGPIPE and answers -EPIPE
-           (fs/pipe.c:460-465, v6.18.46), and SIGPIPE's default disposition
-           TERMINATES the process — an outcome this model has no way to
-           express, since it has no signals and no death that is not
-           [exit].  Fail closed *)
+      if negb (pipe_end_live (m_fds m) id false) then
+        (* NO READER LEFT.  fs/pipe.c [anon_pipe_write] takes
+           [if (!pipe->readers) { send_sig(SIGPIPE, current, 0); ret = -EPIPE; goto out; }]
+           at :460-465, and the loop repeats the pair at :501-506
+           (Linux v6.18.46, commit 1f99e9ab748f).  [send_sig] carries
+           no suppressing flag here: the [(iocb->ki_flags & IOCB_NOSIGNAL) == 0]
+           guard is true for write(2), which cannot set that kiocb flag.
+           Under the default disposition the process DIES by signal 13;
+           [raise_sigpipe] is where the mask decides between that death
+           and the -EPIPE a program with signal 13 blocked reads back.
+
+           DECIDED AFTER the zero-count branch above, which is :454-456
+           returning 0 BEFORE the [mutex_lock] at :458 and so before
+           this test, and after [write_range_gate]'s count rule.  No
+           byte of the source is read on this path, exactly as on
+           Linux, so the ledger stays empty.
+
+           THIS USED TO FAIL CLOSED, on the argument that the model had
+           no signals and no death that is not [exit].  It has both now
+           ([State.with_killed], [Run.sstep_killed]), so the pipe write
+           is answered instead of declined, and a program that closes a
+           pipe's read end and writes is a program proofs can cover *)
+        sigpipe_write
       else
       match pipe_lookup (m_pipes m) id with
       | None => unmodeled   (* an FdPipe always names a live table entry; see [Pipe.pipe2_spec] *)

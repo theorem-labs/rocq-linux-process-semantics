@@ -882,7 +882,7 @@ Example the_random_clause_is_what_the_fixture_carries :
   /\ ~ valid_input
         (mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups
                           net_silent default_nofile (Z_to_bv 64 0) demo_hwcap
-                          false Sv48 IEof []).
+                          false Sv48 IEof [] true).
 Proof.
   split.
   - valid_urandom_default.

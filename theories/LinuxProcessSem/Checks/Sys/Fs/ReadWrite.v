@@ -458,6 +458,18 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
       end
   end.
 
+(** The executable form of [ReadWrite.sigpipe_write], shared by the
+    three arms that can raise signal 13.  The answer is -EPIPE with an
+    EMPTY ledger -- no byte of the source is read on this path, on
+    Linux or here -- over the model [ReadWrite.raise_sigpipe] produced,
+    which either records the halt (signal 13 unblocked: the process
+    dies, [Run.sstep_killed] fires and discards this effect) or records
+    the signal as pending (signal 13 blocked: the -EPIPE is what the
+    program reads). *)
+Definition check_sigpipe_write (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  check_ret_only eff (errno_ret EPIPE) (raise_sigpipe m) [].
+
 Definition check_write (i : SyscallInput) (fd buf count : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match fd_lookup (m_fds m) fd with
@@ -473,6 +485,13 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
              (check_ret_only eff (Z_to_bv 64 0) m [])
              (* [count = 0] moves no byte, so only the range verdict is
                 left — see [Uaccess.access_ok_zero] *)
+      else
+      if negb (m_channel_reader m) then
+        (* the far end has no reader: [access_ok] first, as [vfs_write]
+           runs it before [f_op->write_iter], then signal 13 *)
+        if negb (access_okb buf (bv_unsigned count))
+        then check_ret_only eff (errno_ret EFAULT) m []
+        else check_sigpipe_write eff m
       else
       let bs := write_source (in_mem i) buf count in
       if Nat.eqb (length bs) 0
@@ -509,9 +528,18 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
         | _ => CheckReject
         end
   | Some FdDir => check_ret_only eff (errno_ret EBADF) m []
-  | Some (FdSocket _) => CheckUnmodeled
-      (* writing a socket is unmodeled permanently -- a write that would
-         raise SIGPIPE has no encoding; see [ReadWrite.write_spec] *)
+  | Some (FdSocket sk) =>
+      if negb (sock_send_dead sk) then CheckUnmodeled
+        (* a DELIVERING socket write is still unmodeled; see
+           [ReadWrite.write_spec]'s socket arm *)
+      else
+      if negb (modeled_rw_range buf count) then CheckUnmodeled
+      else
+      if negb (access_okb buf (bv_unsigned count))
+      then check_ret_only eff (errno_ret EFAULT) m []
+      else check_sigpipe_write eff m
+        (* no connection to send on: -EPIPE and SIGPIPE, with no
+           zero-count short-circuit -- see [ReadWrite.write_spec] *)
   | Some (FdFileW p off) =>
       if negb (modeled_rw_range buf count) then CheckUnmodeled
       else
@@ -604,7 +632,8 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
       then check_access_ok_zero buf count eff m
              (check_ret_only eff (Z_to_bv 64 0) m [])   (* "Null write succeeds" *)
       else
-      if negb (pipe_end_live (m_fds m) id false) then CheckUnmodeled  (* SIGPIPE *)
+      if negb (pipe_end_live (m_fds m) id false)
+      then check_sigpipe_write eff m   (* no reader: -EPIPE and SIGPIPE *)
       else
       match pipe_lookup (m_pipes m) id with
       | None => CheckUnmodeled

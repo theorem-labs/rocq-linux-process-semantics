@@ -819,6 +819,31 @@ Definition sig_kernel_only_mask : Z := 262400%Z.
 Definition SIGABRT : Z := 6%Z.
 Definition sigabrt_mask : Z := 32%Z.
 
+(** SIGPIPE, the bit it occupies in a [sigset_t], and the test for a
+    mask that blocks it.  13 (include/uapi/asm-generic/signal.h), so
+    [sigmask(SIGPIPE)] is [1 << 12] = 4096 (include/linux/signal.h, the
+    same [sigmask] macro [sig_kernel_only_mask] is built from).
+
+    ITS DEFAULT DISPOSITION IS SIG_TERM -- terminate, and do NOT dump
+    core: 13 is in none of SIG_KERNEL_IGNORE_MASK,
+    SIG_KERNEL_STOP_MASK or SIG_KERNEL_COREDUMP_MASK
+    (include/linux/signal.h), so kernel/signal.c [get_signal] falls
+    through to [do_group_exit] and the whole thread group dies (Linux
+    v6.18.46, commit 1f99e9ab748f).  What reaches the trace is the
+    DEATH and the signal number, which a waiting parent reads through
+    WIFSIGNALED/WTERMSIG and a shell renders as 141.
+
+    WHY THE BLOCKED TEST IS HERE AND [Kernel.Signal.sigabrt_blocked] IS
+    NOT.  Two files need this one and the import goes one way:
+    [Fs.ReadWrite.raise_sigpipe] decides between a death and an -EPIPE
+    with it, and [Kernel.Signal.sigmask_deliver_model] decides with it
+    whether a mask install uncovers a pending signal 13.  The SIGABRT
+    twin has one reader and stays beside it. *)
+Definition SIGPIPE : Z := 13%Z.
+Definition sigpipe_mask : Z := 4096%Z.
+Definition sigpipe_blocked (mask : word) : bool :=
+  negb (w_is0 (bv_and mask (Z_to_bv 64 sigpipe_mask))).
+
 (** [WNOHANG], the one wait4 option this model accepts
     (include/uapi/linux/wait.h, whose [W*] macro block is byte-identical
     in mainline from v3.10 — the oldest tag that still fetches — through

@@ -448,14 +448,16 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
     the two arms are disjoint by [m_killed], which [sstep_exit]
     requires to be [None].
 
-    THE DECLARATION IS NOT A PREMISE HERE.  It is one inside
-    [Kernel.Signal.tkill_spec], which is the only arm that can write
-    [State.m_killed] at all, and putting it here as well would make this
-    rule unable to fire on an outcome the spec layer produced -- which
-    is a STUCK configuration, not a decline, and [sstep_cfg_progress]
-    below would be false.  What carries the compatibility claim instead
-    is [decl_off_frame] above, stated once and consumed by
-    [sstep_off_no_kill]. *)
+    THE DECLARATION IS NOT A PREMISE HERE.  For SIGABRT it is one
+    inside [Kernel.Signal.tkill_spec]; for SIGPIPE there is none at
+    all, because [Sys.Fs.ReadWrite.write_spec]'s three write arms raise
+    it from ordinary modeled state.  Putting a declaration here as well
+    would make this rule unable to fire on an outcome the spec layer
+    produced -- which is a STUCK configuration, not a decline, and
+    [sstep_cfg_progress] below would be false.  What carries the
+    abort-compatibility claim instead is [decl_off_frame] above, stated
+    once and consumed by [sstep_off_no_kill], and it is a claim about
+    SIGABRT alone. *)
 | sstep_killed : forall ms model x8 eff model' evs sig,
     m_halted model = None ->
     ms_svc_pending ms = Some x8 ->
@@ -525,20 +527,31 @@ Qed.
     the traces, errors and uncovered points it would produce if 130 and
     131 had no arms.  Two of the three things that has to mean are facts
     about the SPEC LAYER rather than about this file — that no syscall
-    arm turns the declaration on, that none records a kill under it, and
-    that none emits a [State.KillEv] of its own — and this development
-    has no lemma quantified over the arms of
+    arm turns the declaration on, that none records a SIGABRT kill under
+    it, and that none emits a [State.KillEv] of its own — and this
+    development has no lemma quantified over the arms of
     [Sys.SyscallTable.spec_table] to prove them with.  The arms are not
     counted here on purpose: a number in prose is the part that goes
     stale, which is the rule [Checks.Cases.Kernel.Signal]'s
     [sig_mask_windows] header states and the reason it names its
     syscalls instead.
 
+    IT IS ABOUT SIGABRT AND NOT ABOUT KILLS.  [State.with_killed] has a
+    second signal, SIGPIPE, raised by the three write arms of
+    [Sys.Fs.ReadWrite.write_spec] from ordinary modeled state, and NOTHING
+    gates those on a declaration — a pipe whose read end the program
+    closed is state the program made, not a stance a task took.  So "no
+    kill with the declaration off" is FALSE, and the frame says what is
+    true instead: no kill CARRYING SIGABRT.  A reader who wants the
+    stronger reading will not find it here, and [sstep_off_no_kill] says
+    in as many words what it no longer rules out.
+
     So they are a hypothesis with a name.  [decl_off_frame] states
     exactly what the abort path's code establishes BY
     INSPECTION: [State.with_abort_terminal] has one caller
-    ([State.init_model]); [State.with_killed] has two,
-    [Kernel.Signal.send_sigabrt] and [Kernel.Signal.sigmask_deliver_model];
+    ([State.init_model]); [State.with_killed]'s SIGABRT callers are two,
+    [Kernel.Signal.send_sigabrt] and [Kernel.Signal.sigmask_deliver_model]'s
+    SIGABRT branch;
     and no spec emits any event but [State.ReadEv] and [State.WriteEv].
     Every other setter carries the three fields across, which is what the
     [m_killed_with_*], [m_sigabrt_pending_with_*] and
@@ -546,8 +559,8 @@ Qed.
     theories/LinuxProcessSem/State.v say, one [reflexivity] each.
 
     IT IS AN INVARIANT AND NOT A ONE-SIDED FRAME, and the second
-    hypothesis is the whole reason.  Of [State.with_killed]'s two
-    callers only the first is behind [State.m_abort_terminal]:
+    hypothesis is the whole reason.  Of those two callers only the first
+    is behind [State.m_abort_terminal]:
     [Kernel.Signal.sigmask_deliver_model] branches on
     [State.m_sigabrt_pending] instead, because a signal already pending
     has to be delivered by the mask install that uncovers it whatever
@@ -572,6 +585,12 @@ Qed.
     than that note — the consequences below are mechanized, and the day
     a table-wide frame lemma exists it is discharged rather than
     assumed. *)
+(** The signal the abort path sends, as the word a [State.KillEv] and
+    [State.m_killed] carry.  Named here because the frame below and its
+    two lemmas are claims about THIS SIGNAL and not about kills in
+    general; see the paragraph above them. *)
+Definition sigabrt_word : word := Z_to_bv 64 SIGABRT.
+
 Definition decl_off_frame : Prop :=
   forall i m eff m' evs,
     syscall_spec i m (Ok eff m' evs) ->
@@ -579,7 +598,7 @@ Definition decl_off_frame : Prop :=
     m_sigabrt_pending m = false ->
     m_abort_terminal m' = false
     /\ m_sigabrt_pending m' = false
-    /\ m_killed m' = None
+    /\ m_killed m' <> Some sigabrt_word
     /\ (forall sig fs, ~ In (KillEv sig fs) evs).
 
 (** The form this had before, kept ONLY so that
@@ -606,10 +625,20 @@ Lemma m_sigabrt_pending_proc : forall m1 m2,
 Proof. intros m1 m2 H. unfold m_sigabrt_pending. now rewrite H. Qed.
 
 (** One step, with the declaration off and nothing pending: BOTH bits
-    stay clear, and the events the step contributes carry no kill.  The
-    pending bit is carried for the reason the frame carries it — see
-    [decl_off_frame] — and dropping it from either side makes this
-    lemma's hypothesis the false one. *)
+    stay clear, and the events the step contributes carry no SIGABRT
+    kill.  The pending bit is carried for the reason the frame carries
+    it — see [decl_off_frame] — and dropping it from either side makes
+    this lemma's hypothesis the false one.
+
+    WHAT IT NO LONGER RULES OUT, said once so that nobody reads "no
+    kill" where this says "no SIGABRT kill": a step MAY contribute a
+    [State.KillEv] carrying SIGPIPE (13) with both abort bits clear and
+    the declaration off, because the three write arms of
+    [Sys.Fs.ReadWrite.write_spec] raise that signal from ordinary
+    modeled state — a pipe whose read end the program closed, a socket
+    with no connection, a channel the launch says has no reader — and
+    none of those is behind the abort declaration.  This lemma is about
+    the abort path's inertness and about nothing else. *)
 Lemma sstep_off_no_kill : decl_off_frame ->
   forall ms model evs c',
     m_abort_terminal model = false ->
@@ -617,7 +646,7 @@ Lemma sstep_off_no_kill : decl_off_frame ->
     sstep (mkCfg ms model) evs (SNext c') ->
     m_abort_terminal (cfg_model c') = false
     /\ m_sigabrt_pending (cfg_model c') = false
-    /\ (forall sig fs, ~ In (KillEv sig fs) evs).
+    /\ (forall fs, ~ In (KillEv sigabrt_word fs) evs).
 Proof.
   intros Hframe ms model evs c' Hoff Hpend Hstep.
   inversion Hstep; subst.
@@ -626,7 +655,7 @@ Proof.
     | [ H : mi_account_step _ _ = MachineOk (_, _) |- _ ] =>
         destruct (mi_account_step_model_frame _ _ _ _ H) as (_&_&_&_&_&Hp&_)
     end.
-    cbn [cfg_model]. split; [| split; [| intros sig fs []]].
+    cbn [cfg_model]. split; [| split; [| intros fs []]].
     + rewrite <- Hoff. apply m_abort_terminal_proc. exact Hp.
     + rewrite <- Hpend. apply m_sigabrt_pending_proc. exact Hp.
   - (* a syscall that materializes: the frame, then materialization,
@@ -637,7 +666,8 @@ Proof.
         destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (Hoff' & Hpend' & _ & Hev);
         destruct (materialize_model_accesses_frame _ _ _ Hm) as (_&_&_&_&_&Hp&_)
     end.
-    cbn [cfg_model]. split; [| split; [| exact Hev]].
+    cbn [cfg_model].
+    split; [| split; [| intros fs Hin; exact (Hev _ _ Hin)]].
     + rewrite <- Hoff'. apply m_abort_terminal_proc. exact Hp.
     + rewrite <- Hpend'. apply m_sigabrt_pending_proc. exact Hp.
   - (* exit: the effect is discarded, so the post-model is the spec's *)
@@ -646,39 +676,44 @@ Proof.
         destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (Hoff' & Hpend' & _ & Hev)
     end.
     split; [exact Hoff' | split; [exact Hpend' |]].
-    intros sig fs Hin. apply in_app_or in Hin.
-    destruct Hin as [Hin | [Hin | []]]; [exact (Hev sig fs Hin) | discriminate].
-  - (* kill: the frame says no arm records one from a state with both
-       bits clear *)
+    intros fs Hin. apply in_app_or in Hin.
+    destruct Hin as [Hin | [Hin | []]]; [exact (Hev _ _ Hin) | discriminate].
+  - (* kill: the frame says no arm records a SIGABRT kill from a state
+       with both bits clear, so the appended event carries some OTHER
+       signal, and the two bits come across unchanged *)
     match goal with
     | [ Hs : syscall_spec _ _ (Ok _ _ _) |- _ ] =>
-        destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (_ & _ & Hk & _)
+        destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (Hoff' & Hpend' & Hk & Hev)
     end.
-    congruence.
+    split; [exact Hoff' | split; [exact Hpend' |]].
+    intros fs Hin. apply in_app_or in Hin.
+    destruct Hin as [Hin | [Hin | []]]; [exact (Hev _ _ Hin) |].
+    apply Hk. injection Hin as Hsig Hfs. congruence.
 Qed.
 
 (** In a whole execution, the same.  [State.init_model] clears both bits
     ([State.m_sigabrt_pending_init_model], and
     [State.m_abort_terminal_init_model] reads the declaration off the
     input), so a run whose task did not declare the abort path meets
-    this lemma's hypotheses at its first configuration. *)
+    this lemma's hypotheses at its first configuration.  It says NO
+    SIGABRT KILL and not "no kill"; see [sstep_off_no_kill]. *)
 Lemma star_off_no_kill : decl_off_frame ->
   forall c tr c',
     m_abort_terminal (cfg_model c) = false ->
     m_sigabrt_pending (cfg_model c) = false ->
     star c tr c' ->
-    forall sig fs, ~ In (KillEv sig fs) tr.
+    forall fs, ~ In (KillEv sigabrt_word fs) tr.
 Proof.
   intros Hframe c tr c' Hoff Hpend Hstar.
   revert Hoff Hpend.
   induction Hstar as [c | c1 evs c2 tr c3 Hstep Hstar IH];
-    intros Hoff Hpend; [intros sig fs []|].
+    intros Hoff Hpend; [intros fs []|].
   destruct c1 as [ms model]. cbn [cfg_model] in Hoff, Hpend.
   destruct (sstep_off_no_kill Hframe _ _ _ _ Hoff Hpend Hstep)
     as (Hoff' & Hpend' & Hev).
-  intros sig fs Hin. apply in_app_or in Hin.
+  intros fs Hin. apply in_app_or in Hin.
   destruct Hin as [Hin | Hin];
-    [ exact (Hev sig fs Hin) | exact (IH Hoff' Hpend' sig fs Hin) ].
+    [ exact (Hev fs Hin) | exact (IH Hoff' Hpend' fs Hin) ].
 Qed.
 
 Lemma in_is_prefix {A} : forall (x : A) l1 l2,
@@ -811,7 +846,43 @@ Definition reaches_error (c0 : config) : Prop :=
     incomplete instead.  Two binaries differing only in what they block
     are not equivalent under this theorem, but the answer is right only
     while nothing is delivered.  The reasoning is in
-    [Sys/Kernel/Signal.v]'s header. *)
+    [Sys/Kernel/Signal.v]'s header.
+
+    THE SAME PREMISE, ON A SECOND SIGNAL AND WITHOUT THE DECLARATION:
+    THE PROCESS STARTS WITH SIGPIPE AT ITS DEFAULT DISPOSITION.
+    [Sys.Fs.ReadWrite.write_spec] is a modeled operation that DELIVERS
+    signal 13 -- on a write to a pipe with no reader (fs/pipe.c
+    [anon_pipe_write] :460-465), to a socket with no connection
+    (net/core/stream.c [sk_stream_error] :190-198), and to a channel
+    the launch declares unread ([State.in_channel_reader]) -- so the
+    inherited disposition matters here exactly as it does for SIGABRT,
+    and it matters WITHOUT a declaration to switch it off.
+    The disposition a modeled operation could install is covered the
+    same way: [Kernel.Signal.rt_sigaction_spec] declines EVERY install
+    for signal 13 ([Kernel.Signal.sigaction_accepted] admits 2 and 15,
+    and [Kernel.Signal.sigabrt_dfl_install] admits only signal 6), so
+    nothing a modeled run does can move it.  What is not covered is the
+    disposition the process INHERITS, by the same [flush_signal_handlers]
+    argument: SIG_IGN survives execve, and `signal(SIGPIPE, SIG_IGN)`
+    in a launcher is COMMON -- commoner than ignoring SIGABRT -- so this
+    premise has more teeth than its SIGABRT twin.  A launcher that
+    ignores SIGPIPE and then execs the binary hands this model a process
+    it kills where Linux returns -EPIPE and continues, which is again an
+    ACCEPTANCE of a trace Linux cannot produce rather than a refusal of
+    one it can.
+
+    WHY IT IS A PREMISE AND NOT A FIELD.  The model would need a
+    disposition for signal 13 in [State.ProcState] and an arm of
+    [rt_sigaction_spec] that installs one; nothing else in the model
+    reads a disposition, so the field would have one writer, one reader
+    and no other consequence, and the honest alternative -- declining
+    every write once the launch could have ignored the signal -- gives
+    back exactly the coverage this revision bought.  The premise is
+    written here instead, where a reader of a statement can find it.
+    BLOCKING is a different matter and IS modeled: a launch whose
+    [in_sigmask] blocks signal 13 is a valid input, the write answers
+    -EPIPE, and [State.procst_sigpipe_pending] carries the signal to the
+    [rt_sigprocmask] that uncovers it. *)
 Definition unmodeled_at (c : config) : Prop :=
   m_halted (cfg_model c) = None /\
   ( (ms_svc_pending (cfg_ms c) = None /\
@@ -3250,8 +3321,11 @@ Definition valid_input (inp : ProcInput) : Prop :=
     statements saying what they said: with the declaration off, no
     reachable model has [State.m_abort_terminal] set, so
     [Kernel.Signal.tkill_spec] declines every call and no
-    [State.KillEv] can appear in any trace ([sstep_off_no_kill]).  A
-    task that wants the other reading asks for it by name. *)
+    [State.KillEv] CARRYING SIGABRT can appear in any trace
+    ([sstep_off_no_kill]).  It says nothing about SIGPIPE: that signal
+    has no declaration, and a run under [valid_input] can end in
+    [KillEv 13] -- see [Sys.Fs.ReadWrite.write_spec].  A
+    task that wants the other abort reading asks for it by name. *)
 Definition valid_input_abort (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -3356,8 +3430,10 @@ Qed.
 (** THE ABORT DECLARATION, as an accessor rather than as a position.
     [valid_input] pins [State.in_abort_terminal] to [false] — that is
     what makes [Kernel.Signal.tkill_spec] decline every call under it,
-    and therefore what makes a [State.KillEv] unreachable for every
-    statement quantified over this predicate ([sstep_off_no_kill]).
+    and therefore what makes a [State.KillEv] CARRYING SIGABRT
+    unreachable for every statement quantified over this predicate
+    ([sstep_off_no_kill]).  A SIGPIPE kill is not covered by it and is
+    reachable; see [Sys.Fs.ReadWrite.write_spec].
     Consumers want that one clause and nothing else.
 
     NAMED, BECAUSE THE POSITION MOVES.  This predicate grows a conjunct

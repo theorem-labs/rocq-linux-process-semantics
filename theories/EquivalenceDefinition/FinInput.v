@@ -485,8 +485,20 @@ Record FinProcInput := mkFinProcInput {
   fin_tmp   : Fs.Fs
     (* the run's declared private /tmp, mirroring [State.in_tmp].  It
        is already inductive -- a [Fs.Fs] is a list -- so unlike
-       [fin_stdin] and [fin_urandom] it adds no clause to
-       [finite_input].  It is NOT part of [fin_core] -- see there *)
+       [finite_input].  It is NOT part of [fin_core] -- see there *);
+  fin_channel_reader : bool
+    (* whether the far end of descriptors 1 and 2 still has a reader,
+       mirroring [State.in_channel_reader].  A FIELD RATHER THAN A PIN
+       for [fin_abort_terminal]'s reason, and here the reason has the
+       most bite of the three: [Run.valid_input] constrains this field
+       at neither value, so an equivalence statement covers both the
+       launch whose standard output is read and the writing end of
+       `prog | head -1`.  Pinning it to [true] here would put the
+       second out of reach of every classifier and measure shape while
+       leaving it in reach of the equivalence shapes -- the silent
+       divergence between the two quantifiers this record exists to
+       prevent -- and would make [finite_input_surjection] false, since
+       a launch with no reader is as finite as one with one *)
 }.
 
 (** The process input a [FinProcInput] denotes.  Built with
@@ -500,7 +512,7 @@ Definition to_proc_input (f : FinProcInput) : ProcInput :=
               (fin_nofile f) (fin_sigmask f) (fin_hwcap f)
               (fin_abort_terminal f) (fin_va_size f)
               (stream_of_list_then (fin_urandom f) State.default_urandom)
-              (fin_tmp f).
+              (fin_tmp f) (fin_channel_reader f).
 
 (** Validity of a finite input is validity of the input it denotes —
     [Run.valid_input] and nothing else.  Deliberately not a new
@@ -711,7 +723,7 @@ Proof.
                      (repeat (Z_to_bv 64 0) n) (fin_net f) (fin_nofile f) (fin_sigmask f)
                      (fin_hwcap f)
                      (fin_abort_terminal f) (fin_va_size f)
-                     (fin_urandom f) (fin_tmp f)).
+                     (fin_urandom f) (fin_tmp f) (fin_channel_reader f)).
   split; [| split].
   - intros n. reflexivity.
   - intros m n Heq.
@@ -791,12 +803,12 @@ Lemma to_proc_input_not_inj :
 Proof.
   pose (base := mkFinProcInput [] [] []
                   [] (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
-                  (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) false Sv48 [] []).
+                  (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) false Sv48 [] [] true).
   exists base.
   exists (mkFinProcInput [] [] []
             [] (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
             (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) false Sv48
-            [Z_to_bv 8 0] []).
+            [Z_to_bv 8 0] [] true).
   split.
   - intro Hc. apply (f_equal fin_urandom) in Hc.
     unfold base in Hc. cbn [fin_urandom] in Hc. discriminate Hc.
@@ -817,14 +829,14 @@ Proof.
   (* [State.ProcInput]'s constructor order, the two ENVIRONMENT fields
      last: argv, envp, image, stdin, ids, queue, limits, declarations,
      then [in_urandom] and [in_tmp] *)
-  intros [a e fs s u g gs n nf sm hc ab va r tm] Hfin.
+  intros [a e fs s u g gs n nf sm hc ab va r tm cr] Hfin.
   unfold finite_input in Hfin. cbn [in_stdin in_urandom] in Hfin.
   destruct Hfin as [Hfin [lr Hlr]].
   destruct (finite_stream_of_list _ Hfin) as [l Hl].
-  exists (mkFinProcInput a e fs l u g gs n nf sm hc ab va lr tm).
+  exists (mkFinProcInput a e fs l u g gs n nf sm hc ab va lr tm cr).
   unfold to_proc_input.
   cbn [fin_argv fin_envp fin_image_fs fin_tmp fin_stdin fin_urandom fin_uid fin_gid fin_groups fin_net
-       fin_nofile fin_sigmask fin_hwcap fin_abort_terminal fin_va_size].
+       fin_nofile fin_sigmask fin_hwcap fin_abort_terminal fin_va_size fin_channel_reader].
   rewrite Hl, Hlr. reflexivity.
 Qed.
 
@@ -883,7 +895,7 @@ Lemma valid_input_stdin_irrelevant : forall inp s,
   valid_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp) s
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                 (in_urandom inp) (in_tmp inp)).
+                 (in_urandom inp) (in_tmp inp) (in_channel_reader inp)).
 Proof. intros inp s H. exact H. Qed.
 
 (** THE RANDOM DEVICE'S STREAM IS NOT LIKE STANDARD INPUT.
@@ -902,7 +914,7 @@ Lemma valid_input_urandom_endless_irrelevant : forall inp r,
                  (in_stdin inp)
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                 r (in_tmp inp)).
+                 r (in_tmp inp) (in_channel_reader inp)).
 Proof.
   intros inp r H Hr.
   (* [valid_input] has eleven conjuncts: keep the first ten and replace the last ([valid_urandom]) with [Hr]. *)
@@ -921,7 +933,7 @@ Lemma valid_fin_input_stdin_irrelevant : forall f l,
                      l
                      (fin_uid f) (fin_gid f) (fin_groups f) (fin_net f)
                      (fin_nofile f) (fin_sigmask f) (fin_hwcap f) (fin_abort_terminal f) (fin_va_size f)
-                     (fin_urandom f) (fin_tmp f)).
+                     (fin_urandom f) (fin_tmp f) (fin_channel_reader f)).
 Proof. intros f l H. exact H. Qed.
 
 (** And the byte list in [fin_urandom] is unconstrained too — even
@@ -946,7 +958,8 @@ Lemma valid_input_tmp_arbitrary : forall inp t,
                  (in_stdin inp)
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp)
-                 (in_abort_terminal inp) (in_va_size inp) (in_urandom inp) t).
+                 (in_abort_terminal inp) (in_va_size inp) (in_urandom inp) t
+                 (in_channel_reader inp)).
 Proof.
   intros inp t Him H. unfold valid_input in H |- *.
   destruct H as (Ha & He & _ & Hrest).
@@ -961,7 +974,7 @@ Lemma valid_fin_input_urandom_irrelevant : forall f l,
                      (fin_stdin f)
                      (fin_uid f) (fin_gid f) (fin_groups f) (fin_net f)
                      (fin_nofile f) (fin_sigmask f) (fin_hwcap f) (fin_abort_terminal f) (fin_va_size f)
-                     l (fin_tmp f)).
+                     l (fin_tmp f) (fin_channel_reader f)).
 Proof.
   intros f l H.
   (* Eleven conjuncts: keep the first ten and prove the last ([valid_urandom]) from the padding. *)
@@ -990,7 +1003,7 @@ Qed.
 Definition inhabited_fin_input : FinProcInput :=
   mkFinProcInput [[]] [] [] [] (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
                  default_nofile (Z_to_bv 64 0) StackLayout.hwcap_rv64gc
-                 false Sv48 [] [].
+                 false Sv48 [] [] true.
 
 (** THE FINITE-RECORD QUANTIFIER IS NOT EMPTY, which is the one the
     classifier and gated-size shapes are written over. *)
@@ -1047,12 +1060,12 @@ Lemma valid_input_not_finite : forall inp,
                  all_zeros
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                 (in_urandom inp) (in_tmp inp))
+                 (in_urandom inp) (in_tmp inp) (in_channel_reader inp))
   /\ ~ finite_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp)
                       all_zeros
                       (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                       (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                      (in_urandom inp) (in_tmp inp)).
+                      (in_urandom inp) (in_tmp inp) (in_channel_reader inp)).
 Proof.
   intros inp H. split.
   - apply valid_input_stdin_irrelevant, H.
