@@ -2288,10 +2288,10 @@ Proof. split; [|split; [|split]]; first [check_eq | vm_compute; reflexivity]. Qe
 
    Every one pairs its rejection with the honest answer AT THE SAME CALL.
    That is the point of the pairing: a checker that had become constantly
-   rejecting would fail these examples rather than pass them.  Three of
-   the four discriminate further, and would flip to [CheckOk] if an arm
-   for the limitation were added; [write_channel_epipe_rejected] is the
-   exception and says so at its own docstring.
+   rejecting would fail these examples rather than pass them.  Each of
+   the four discriminates further, and would flip to [CheckOk] if an arm
+   for its limitation were added; [write_channel_epipe_rejected] says at
+   its own docstring which part of its limitation is already modeled.
    ------------------------------------------------------------------------- *)
 
 (** -EINTR on a read.  read(0, buf, 1) with one byte of input delivers
@@ -2334,15 +2334,21 @@ Example write_channel_eintr_rejected :
      = CheckReject.
 Proof. split; check_eq. Qed.
 
-(** -EPIPE on a channel write.  This rejection is the RIGHT answer for a
-    process that installs no handler — SIGPIPE kills it before the errno
-    is returned — and the defect is the other direction: the short write
-    in the first conjunct is admitted in a state where the reader has
-    gone and Linux kills the process instead.  So unlike the other three
-    this pair does NOT discriminate its own limitation: no model state
-    can express "the reader has gone", so neither conjunct would move if
-    it were fixed.  What it carries is that -EPIPE is not admitted here,
-    which is what a premature arm would break. *)
+(** -EPIPE on a channel write, on a launch whose far end HAS a reader.
+    The model answers -EPIPE on a channel now, but only on a launch whose
+    reader has gone ([State.in_channel_reader] false): there the channel
+    arm of [ReadWrite.write_spec] raises SIGPIPE through
+    [ReadWrite.raise_sigpipe] -- a death at the default disposition, the
+    -EPIPE only with signal 13 blocked -- and refuses the short write
+    below.  This launch is [demo_input]'s, built by the 13-place
+    [State.mkProcInput], which says the reader is there, so the short
+    write is admitted and -EPIPE is refused, which is right for a reader
+    that stays for the whole run.  The limitation left is a reader that
+    goes away PARTWAY through a run -- `prog | head -1` once [head] has
+    had its line -- which the model has no term for: the reader is a
+    launch fact ([State.procst_channel_reader]).  An arm that let it go
+    away mid-run would admit the -EPIPE here and break the second
+    conjunct. *)
 
 Example write_channel_epipe_rejected :
   check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))

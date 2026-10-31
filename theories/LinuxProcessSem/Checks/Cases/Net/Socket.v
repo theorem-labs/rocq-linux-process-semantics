@@ -26,38 +26,47 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export Prelude.
    Sockets: the claims no live run can show
    ------------------------------------------------------------------------- *)
 
-(** WRITING A SOCKET IS NEVER ADMITTED — no execution, no input, no
-    socket state.  This is the most important claim in the socket work,
-    and it is a lemma for two reasons.  It is UNIVERSALLY QUANTIFIED,
-    where a live run exhibits one execution.  And a guest cannot reach
-    the arm on its own: reaching it needs a CONNECTED socket.
-    [connect] (203) is dispatched, but it cannot produce
-    one: [Net.Socket.connect_spec] declines the connection ATTEMPT, so
-    no modeled execution ever holds a connected socket it dialled.  And
-    a guest that took the SIGPIPE this arm exists to avoid dies by
-    signal 13, which says nothing about the write's return.
+(** WRITING A CONNECTED SOCKET IS NEVER ADMITTED — no execution, no
+    input, no buffer.  It is a lemma for two reasons.  It is UNIVERSALLY
+    QUANTIFIED, where a live run exhibits one execution.  And a guest
+    cannot reach the arm on its own: reaching it needs a CONNECTED
+    socket.  [connect] (203) is dispatched, but it cannot produce one:
+    [Net.Socket.connect_spec] declines the connection ATTEMPT, so no
+    modeled execution ever holds a connected socket it dialled.
 
-    Why it matters that the answer is [Unmodeled] and not an errno: on a
-    connection the peer has reset, write(2) returns -EPIPE AND raises
-    SIGPIPE, whose default action kills the thread group
-    (net/core/stream.c:sk_stream_error, kernel/signal.c:get_signal,
-    v6.12).  A spec's outcomes are [Ok] and [Unmodeled] and nothing
-    else, so answering -EPIPE would assert the process SURVIVED — a
-    confidently wrong answer of exactly the class [Equivalence.modeled]
-    cannot see.  A later change that admits ANY write to a socket
-    breaks this lemma, which is the point of stating it. *)
+    What keeps the connected states out is the TRANSFER, not the
+    signal.  On [SkConnected] the send either goes out -- a short count
+    chosen from the gatherable bytes, which is [Net.Socket.send_bytes]'s
+    business -- or reports a pending peer error ONCE and rewrites the
+    descriptor (include/net/sock.h [sock_error]), and neither raises
+    SIGPIPE: [sk_stream_error] replaces the errno with [sock_error]'s
+    before it tests for -EPIPE (net/core/stream.c :192-195, v6.18.46).
+
+    A socket with NO connection ([State.sock_send_dead]: fresh, bound,
+    listening or reset-and-consumed) IS answered, and that is why the
+    hypothesis below is here: [vfs_write]'s [access_ok] gives -EFAULT,
+    and past it [sk_stream_wait_connect] gives -EPIPE and
+    [sk_stream_error] sends SIGPIPE, which [ReadWrite.raise_sigpipe]
+    records as a death ([State.with_killed], [Run.sstep_killed]) or,
+    with signal 13 blocked, as a pending signal and the -EPIPE.  The
+    model used to decline those too, because a spec could not say "the
+    process died"; it can now.  A later change that admits a write to a
+    CONNECTED socket breaks this lemma, which is the point of stating
+    it. *)
 Lemma socket_write_never_admitted : forall fd buf count i m sk o,
   fd_lookup (m_fds m) fd = Some (FdSocket sk) ->
+  sock_send_dead sk = false ->
   write_spec fd buf count i m o -> o = Unmodeled.
 Proof.
-  intros fd buf count i m sk o Hfd Hspec.
+  intros fd buf count i m sk o Hfd Hlive Hspec.
   destruct o as [y m2 evs|]; [|reflexivity]. exfalso.
   unfold write_spec, bind, input, get_model, unmodeled in Hspec.
   destruct Hspec as (x & m1 & evs1 & evs2 & Hin & Hrest & _).
   injection Hin as -> -> ->.
   destruct Hrest as (x' & m1' & evs1' & evs2' & Hgm & Hrest' & _).
   injection Hgm as -> -> ->.
-  rewrite Hfd in Hrest'. cbv iota in Hrest'. discriminate.
+  rewrite Hfd in Hrest'. cbv iota in Hrest'.
+  rewrite Hlive in Hrest'. cbn [negb] in Hrest'. discriminate.
 Qed.
 
 (** The same for the vectored form, AT EVERY COUNT.  There is no bound

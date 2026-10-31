@@ -1549,6 +1549,32 @@ Proof.
   tauto.
 Qed.
 
+(** MEANING PRESERVED at [Run.may_fail_cfg]: death by a signal is read
+    off the trace set, which the two runs share at may-fail, so the
+    error-free shapes that see a death ([error_free_unkilled], which is
+    what [strong_equiv_error_free] and its configured and budgeted
+    twins ask for) say the same thing under [Run.may_fail_cfg] as
+    unconfigured.  Stated HERE, above [SpecScfg], because that section
+    and [SpecScfgBudgets] both consume it. *)
+Lemma dies_by_signal_scfg_may_fail : forall img lim en inp,
+  dies_by_signal (run_scfg may_fail_cfg img lim en inp) <-> dies_by_signal (run img lim en inp).
+Proof.
+  intros img lim en inp. unfold dies_by_signal.
+  destruct (run_scfg_may_fail img lim en inp) as (Ht & _).
+  split; intros (tr & sig & fs & Htr & Hin); exists tr, sig, fs; split; try exact Hin;
+    apply Ht; exact Htr.
+Qed.
+
+Lemma error_free_unkilled_scfg_may_fail : forall img lim en inp,
+  error_free_unkilled (run_scfg may_fail_cfg img lim en inp)
+  <-> error_free_unkilled (run img lim en inp).
+Proof.
+  intros img lim en inp. unfold error_free_unkilled.
+  rewrite (error_free_behavior_equiv _ _ (run_scfg_may_fail img lim en inp)).
+  rewrite (dies_by_signal_scfg_may_fail img lim en inp). reflexivity.
+Qed.
+
+
 Section SpecScfg.
 
 Variable cfg : SpuriousCfg.
@@ -3324,27 +3350,6 @@ Lemma strong_universal_error_free_T_scfg_budgets_abort_of_scfg : forall cfg s t,
   strong_universal_error_free_T_scfg_budgets_abort cfg source_alloc_limit target_alloc_limit s t.
 Proof. intros cfg s t H en_s en_t inp Hs Ht Hv _. exact (H en_s en_t inp Hs Ht Hv). Qed.
 
-
-(** MEANING PRESERVED at [Run.may_fail_cfg] for the abort-declared cell:
-    each statement is its [SpecBudgets] twin.  Death by a signal is read
-    off the trace set, which the two runs share at may-fail. *)
-Lemma dies_by_signal_scfg_may_fail : forall img lim en inp,
-  dies_by_signal (run_scfg may_fail_cfg img lim en inp) <-> dies_by_signal (run img lim en inp).
-Proof.
-  intros img lim en inp. unfold dies_by_signal.
-  destruct (run_scfg_may_fail img lim en inp) as (Ht & _).
-  split; intros (tr & sig & fs & Htr & Hin); exists tr, sig, fs; split; try exact Hin;
-    apply Ht; exact Htr.
-Qed.
-
-Lemma error_free_unkilled_scfg_may_fail : forall img lim en inp,
-  error_free_unkilled (run_scfg may_fail_cfg img lim en inp)
-  <-> error_free_unkilled (run img lim en inp).
-Proof.
-  intros img lim en inp. unfold error_free_unkilled.
-  rewrite (error_free_behavior_equiv _ _ (run_scfg_may_fail img lim en inp)).
-  rewrite (dies_by_signal_scfg_may_fail img lim en inp). reflexivity.
-Qed.
 
 Lemma strong_equiv_error_free_budgets_scfg_abort_may_fail : forall ls lt s t en_s en_t inp,
   strong_equiv_error_free_budgets_scfg_abort may_fail_cfg ls lt s t en_s en_t inp
