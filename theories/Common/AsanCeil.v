@@ -244,8 +244,8 @@ Proof. intros z Hz. pose proof (page_round_up_Z_ge z). lia. Qed.
 (* ------------------------------------------------------------------------- *)
 (** ** The AT_RANDOM bytes are a draw                                         *)
 (* ------------------------------------------------------------------------- *)
-(** The 16 bytes the auxv AT_RANDOM entry points at are the fourth [Run.ExecEntry]
-    field [en_random], quantified per binary.  The initial knowledge
+(** The 16 bytes the auxv AT_RANDOM entry points at are the [ed_random] half of
+    the fourth [Run.ExecEntry] field [en_draw], quantified per binary.  The initial knowledge
     [AsanPlanCore.init_kn_zero] asserts that they are ZERO.  The soundness lemma for that entry
     ([AsanInit.atrandom_zero_ok]) therefore holds only under this NAMED hypothesis, which is
     FALSE on every real run: a certificate built on the base [init_kn_zero] proves a

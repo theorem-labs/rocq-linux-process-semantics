@@ -206,7 +206,7 @@ Proof.
     [apply (w1x_srun_msteps 5); exact w1x_srun5 |].
   apply (tw_write w1x_segments w1x_s5 (Z_to_bv 64 64) [w1x_byte] [] (Z_to_bv 64 0));
     [exact w1x_svc5 | vm_compute; reflexivity | exact w1x_a0 | exact w1x_read
-    | cbn [length]; lia |].
+    | exact w1x_access | cbn [length]; lia |].
   intros n Hn1 Hn2. cbn [length] in Hn2.
   assert (n = 1%nat) by lia. subst n.
   change (to_wexit w1x_segments w1x_s5' [] (Z_to_bv 64 0)).

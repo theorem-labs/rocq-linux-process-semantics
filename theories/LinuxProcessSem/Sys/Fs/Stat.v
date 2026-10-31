@@ -293,12 +293,16 @@ Definition newfstatat_proc_spec (statbuf : word) : Sys SyscallEffect :=
     the same [record_copyins] wrapper and the same range
     [Open.openat_spec] uses: [cstr_access_len_aux (in_mem i) pathp
     path_max], the bytes through the first NUL, the first unreadable
-    byte, or PATH_MAX.  The wrapper sits OUTSIDE the flag test, so every
+    byte, the last byte below [TASK_SIZE], or PATH_MAX.  The wrapper
+    sits OUTSIDE the flag test, so every
     arm the spec ANSWERS carries the ledger — the [CstrFault] one
     included, where [cstr_access_len_aux] counts the faulting byte
     itself (a [None] byte is 1, [State.v]): the kernel attempted that
     byte, and an immediate -EFAULT is a fetch that happened, not one
-    that did not.  The declining arms cost nothing, because
+    that did not.  The other [CstrFault], the walk reaching [TASK_SIZE],
+    counts nothing at [TASK_SIZE]: [strncpy_from_user]'s clamp ends the
+    scan below it, so that byte is never fetched ([State.read_cstr_aux]).
+    The declining arms cost nothing, because
     [Syscall.record_copyins_unmodeled] carries [unmodeled] through the
     wrapper untouched — so wrapping the uninterpreted flag word does not
     disturb the ORDER argument above.

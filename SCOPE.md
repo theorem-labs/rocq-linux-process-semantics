@@ -88,7 +88,10 @@ mode answers. QEMU citations are QEMU 10.0.11.
   range below `mm->mmap_base`, else the lowest free range from
   `TASK_UNMAPPED_BASE` up (`mm/mmap.c`, `__get_unmapped_area` and
   `generic_get_unmapped_area_topdown`; `mm/vma.c`, `unmapped_area_topdown`
-  and `unmapped_area`; the model is `Sys/Mm/Mmap.v`, `linux_place`). QEMU
+  and `unmapped_area`; the model is `Sys/Mm/Mmap.v`, `linux_place`). Each
+  of the three is bounded above by `State.alloc_top`, which is not one of
+  Linux's bounds; "Known gaps in precision" gives the difference as R-a,
+  R-b and R-c. QEMU
   user mode instead searches the host process's own free space
   (`linux-user/mmap.c`, `mmap_find_vma`), so a qemu-user run gives a Linux
   address only by chance.
@@ -230,6 +233,31 @@ already says so. These are the known cases.
   `check_mremap_params` (`mm/mremap.c`) tests `new_len > TASK_SIZE`
   unconditionally. Up to v6.16 that test sat inside `mremap_to`, so a
   MAYMOVE grow reached `-ENOMEM` instead.
+- **A `MAP_FIXED` `mmap` at a misaligned address.** The model answers
+  v6.18.46's: `__get_unmapped_area` (`mm/mmap.c`) takes
+  `mmap_end = arch_get_mmap_end(addr, len, flags)`, which on riscv64 is
+  `STACK_TOP_MAX` for every address, so the only `-ENOMEM` before the
+  alignment `-EINVAL` is `len > mmap_end - mmap_min_addr`. Two older
+  riscv64 forms of that macro make `mmap_end` depend on the address, and
+  then the same call answers `-ENOMEM` where v6.18.46 answers `-EINVAL`
+  (`arch/riscv/include/asm/processor.h`):
+
+  - up to v6.9, the three-way form added by `add2cc6b6515` ("RISC-V: mm:
+    Restrict address space for sv39, sv48, sv57"): a nonzero address
+    below `VA_USER_SV48` gives `mmap_end = VA_USER_SV39` = 2^38, so a
+    misaligned fixed `mmap` of more than 2^38 less a page answers
+    `-ENOMEM`. Commit `6be7ee4bebd1` ("riscv: Improve
+    `arch_get_mmap_end()` macro", v6.9) rewrote that form without
+    changing which address gives which end;
+  - v6.9 to v6.11, the hint-as-ceiling form of `b5b4287accd7` ("riscv:
+    mm: Use hint address in mmap if available"): a nonzero address with
+    `addr + len` at or below 2^(VA_BITS-1) gives `mmap_end = addr + len`,
+    so an address of 1 to 4095 answers `-ENOMEM`.
+
+  Commit `2116988d5372` ("riscv: mm: Do not restrict mmap address based
+  on hint", v6.11) made the macro unconditional, which is the form the
+  model follows. The model's own band above `State.alloc_top` is a
+  separate limit and is residual R-b below, not a version difference.
 - **`socket` with a type at or above `SOCK_MAX` and a family of 44 or
   45, and AF_INET protocols 256 to 262.** `NPROTO` and `IPPROTO_MAX`
   grew across the stable series (`include/linux/socket.h`,
@@ -253,7 +281,11 @@ them. A proof says nothing about a program in such a case.
 | Area | Limit |
 | --- | --- |
 | Threads | The model has one thread. It has no scheduler and no shared-memory interleaving. For `fork`-like calls, the model describes the parent only. It does not run the child. |
-| Signals | The model does not run signal handlers. It has two signals and both are fatal: `SIGABRT`, raised by `tkill`/`tgkill` on the abort path, and `SIGPIPE`, raised by a write whose far end has no reader. Each ends the run with a death that is not an exit (`State.KillEv`), or, where the launch mask blocks it, returns the errno and leaves the signal pending until a `rt_sigprocmask` uncovers it. `rt_sigaction` declines every install that would change either disposition, so no modeled call moves one. For `SIGABRT` the model assumes the launch left the disposition at `SIG_DFL`. For `SIGPIPE` it no longer assumes: the launch declares it (`State.in_sigpipe_default`), `Run.valid_input` pins the declaration to `SIG_DFL`, and `Run.valid_input_sigpipe_ignored` is the launch that ran `signal(SIGPIPE, SIG_IGN)` before `execve` — a launch `execve` preserves (`fs/exec.c`, `begin_new_exec`'s `flush_signal_handlers` with `force_default = 0`, Linux v6.18.46), under which the same write returns `-EPIPE` and the program runs on. No other signal is modeled: `SIGSEGV` is reported as the error transition rather than as a death, `SIGCHLD`'s default action is to ignore it, `SIGXFSZ` needs an `RLIMIT_FSIZE` the model does not carry, and nothing outside the process can send one. |
+| Signals | The model does not run signal handlers. It has two signals and both are fatal: `SIGABRT`, raised by `tkill`/`tgkill` on the abort path, and `SIGPIPE`, raised by a write whose far end has no reader. Each ends the run with a death that is not an exit (`State.KillEv`), or, where the launch mask blocks it, returns the errno and leaves the signal pending until a `rt_sigprocmask` uncovers it. `rt_sigaction` declines every install that would change either disposition, so no modeled call moves one. For `SIGABRT` the model assumes the launch left the disposition at `SIG_DFL`. For `SIGPIPE` it no longer assumes: the launch declares it (`State.in_sigpipe_default`), `Run.valid_input` pins the declaration to `SIG_DFL`, and `Run.valid_input_sigpipe_ignored` is the launch that ran `signal(SIGPIPE, SIG_IGN)` before `execve` — a launch `execve` preserves (`fs/exec.c`, `begin_new_exec`'s `flush_signal_handlers` with `force_default = 0`, Linux v6.18.46), under which the same write returns `-EPIPE` and the program runs on. No other signal is modeled: `SIGSEGV` is reported as the error transition rather than as a death, `SIGCHLD`'s default action is to ignore it, `SIGXFSZ` needs an `RLIMIT_FSIZE` the model does not carry, and nothing outside the process can send one. For `SIGCHLD`, `rt_sigaction` answers one install, `SIG_DFL` (0, nothing stored: the disposition the `clone` argument already assumes, `Signal.sigchld_dfl_install`), and declines `SIG_IGN` and every handler. |
+| `prctl` | The model answers four options: `PR_CAPBSET_READ` (always 1, or `-EINVAL` past `CAP_LAST_CAP`), and `PR_SET_PDEATHSIG`, `PR_SET_DUMPABLE` and `PR_SET_NO_NEW_PRIVS` with Linux's 0 or `-EINVAL` (`SYSCALL_DEFINE5(prctl)`, `kernel/sys.c`, v6.18.44). It stores nothing for the last three: no modeled call reads the parent-death signal, the dumpable flag or the no-new-privs bit. A statement that needs one of them set reads the call from the call log, and must take the last such call after the last credential change, because `commit_creds` resets the first two. Every other option is `unmodeled`, the `PR_GET_*` readers of these three included. |
+| Parent process | `getppid` answers any pid below 2^22, 0 included (a parent outside the caller's pid namespace), chosen afresh at each call: the model does not know the parent, and the parent changes when it exits. A statement that needs a particular parent takes it as a premise. |
+| Supplementary groups | `setgroups` answers a privileged caller only for the empty list: 0 with the list cleared, or `-ENOMEM` (`SYSCALL_DEFINE2(setgroups)` and `set_current_groups`, `kernel/groups.c`, v6.18.44). A non-empty list, and a size Linux refuses with `-EINVAL`, are `unmodeled`. An unprivileged caller gets `-EPERM` for every argument. |
+| `close_range` | With flags 0 the model closes every descriptor in the range, of any kind, and answers 0; an unknown flag bit or `fd > max_fd` is `-EINVAL` (`SYSCALL_DEFINE3(close_range)`, `fs/file.c`, v6.18.44). `CLOSE_RANGE_CLOEXEC` and `CLOSE_RANGE_UNSHARE` are `unmodeled`: the model records no close-on-exec bit. |
 | Address-space size | The system call specifications use Sv48. Thus you cannot prove the Sv39 and Sv57 statements for an image that can run. |
 | Stack limit | The stack limit is 8 MiB. A larger or unlimited `RLIMIT_STACK`, which selects the legacy mmap layout, is outside the model. The model counts the whole entry block against this limit, from the stack VMA's end `StackLayout.ed_top` down, as Linux counts it. |
 | Arguments | `Run.valid_input` requires that the arguments after `argv[0]` do not contain `/` and are not `..`. Thus a proof about `cp src dst` does not apply to `cp /tmp/src dst`. It also bounds the lists (`Run.valid_argv`, `Run.valid_envp`): 1 to 1024 arguments and at most 2 MiB of argument bytes, at most 256 environment variables and at most 128 KiB of environment bytes, and at most 131071 bytes in each string. Each count of bytes includes the terminating NUL of each string. These are the model's own per-list bounds. Linux's own bound is joint, and `Run.valid_launch` carries it: the exec file name, the envp strings and the argv strings with their NULs, plus 8 bytes for each argv and envp pointer, are at most 2 MiB together at the 8 MiB stack limit (`bprm_stack_limits`, `fs/exec.c`). Linux answers `E2BIG` for a larger launch. `Run.valid_launch` also says which exec file names `execve` can present (`State.in_execfn`): a path of 1 to 4095 bytes without a NUL, or `/dev/fd/N`, or `/dev/fd/N/` and such a path that does not start with `/` (`getname_flags` in `fs/namei.c`, `alloc_bprm` in `fs/exec.c`). Both binaries of a pair run under the same exec file name, as they run on the same input. A launch outside these bounds is outside the model. |
@@ -292,6 +324,20 @@ These cases stay outside the model:
   stack's guard region instead (`mm/vma.c`), so the vDSO's address and
   the stack floor can differ from the model's. The proofs use Sv48.
 
+The finite input record is a surjection onto the finite inputs, not an
+encoding of them. `EquivalenceDefinition/FinInput.v`'s `to_proc_input`
+pads the record's random field with `State.default_urandom`, the
+all-zero stream, so a record carrying no random bytes and one carrying a
+list of zeros denote the same input: `to_proc_input_not_inj` exhibits
+that collision, and `to_proc_input_inj` holds only with the random
+fields assumed equal. Nothing is lost to a statement quantified over
+inputs, because everything the record denotes is finite and every finite
+input is denoted (`finite_input_surjection`,
+`valid_finite_input_surjection`), so the two quantifiers coincide. What
+an argument may not do is count finite records, or conclude that two
+runs differ because their records differ. `FinInput.v`'s header carries
+the reasoning.
+
 ## Assumptions that the model does not check
 
 If one of these assumptions is false, a proof can be correct but it does
@@ -317,6 +363,18 @@ not apply.
   `Sys/Kernel/Exit.v`). `execve` does not reap a child in Linux, so a
   launcher that forks a grandchild, or attaches a tracee, before it
   execs the image makes this assumption false.
+- No signal arrives from outside the process. In particular the parent
+  does not exit while a parent-death signal is set
+  (`prctl(PR_SET_PDEATHSIG)`): Linux then sends that signal
+  (`forget_original_parent`, `kernel/exit.c`, v6.18.44), and the model
+  has no transition for it. A statement about a program that sets one
+  holds for the runs in which the parent outlives it.
+- The process runs in the init user namespace, under the capability
+  LSM alone, with the capability state `State.creds_privileged`
+  describes. The credential calls, `prctl` and `setgroups` answer for
+  that kernel (the credentials section of `Sys/Kernel/Sys.v`): a second
+  LSM (SELinux, AppArmor, a BPF program on `task_prctl` or
+  `task_fix_setgroups`) can refuse where the model answers 0.
 - The launch left `SIGPIPE` at its default disposition, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises
@@ -383,6 +441,33 @@ not apply.
   `__VDSO_PAGES`, which `__setup_additional_pages` holds `VDSO_NR_PAGES`
   to). A build with a larger vDSO text puts the pair, and each placement
   below it, lower than any model state does.
+- The memory budget is a strict per-process commit limit. The model
+  meters anonymous backing against `State.vm_limit` and forces a
+  refusal once a request would pass it (`Sys/Mm/Mmap.v`,
+  `mmap_noreserve_backed_ok` and `brk_budget_ok`). Linux accounts that
+  way only under `vm.overcommit_memory` = 2, `OVERCOMMIT_NEVER`, where
+  `__vm_enough_memory` (`mm/util.c`) tests the request against
+  `vm_commit_limit()`. The default is `OVERCOMMIT_GUESS` = 0
+  (`sysctl_overcommit_memory` in the same file), under which a request
+  fails only when it alone passes `totalram_pages() + total_swap_pages`,
+  and `OVERCOMMIT_ALWAYS` = 1 never fails. The model holds neither the
+  machine's memory nor its commit limit, so its budget is a parameter of
+  the run (`Run.mi_alloc_limit`) and not a reading of any of those
+  settings. Each refusal the budget forces is also admissible under the
+  errno `alt` of its arm, so the budget narrows which runs a statement
+  covers rather than claiming an answer Linux does not give.
+- The program break is randomised. `Sys/Mm/Mmap.v`'s `min_brk` is
+  `vm_start_brk`, Linux's `mm->start_brk`. `SYSCALL_DEFINE1(brk)`
+  (`mm/mmap.c`) uses that value except under `CONFIG_COMPAT_BRK` with
+  `current->brk_randomized` false, where it takes `mm->end_data`
+  instead — a lower floor, so such a kernel admits a break below the
+  heap base that the model answers with the unchanged break. The
+  assumption holds when the kernel is built without `CONFIG_COMPAT_BRK`,
+  or when it is built with it and `randomize_va_space` is 2, which is
+  what sets `brk_randomized` (`fs/binfmt_elf.c`, `load_elf_binary`).
+  The model's own break placement already assumes the randomised case:
+  `Run.valid_brk` draws the base in `[image top, image top + 1 GiB]`,
+  which is `arch_randomize_brk`'s window.
 - The process uses the top-down mmap layout. The process does not have
   the `ADDR_COMPAT_LAYOUT` personality (`setarch -L`), and
   `vm.legacy_va_layout` is 0. (An unlimited `RLIMIT_STACK` also selects
@@ -487,6 +572,16 @@ equivalence) can be true of the model and false of Linux.
   `State.alloc_top`. It stays open for the reason R-b gives: the ledger has
   no stack VMA, so it has no gap to keep. The stack VMA in the ledger
   closes it.
+  The same gap reaches `brk`: Linux refuses a grow to within a page and
+  `stack_guard_gap` of the stack's start, because the `vma_find` at
+  `SYSCALL_DEFINE1(brk)` (`mm/mmap.c`) searches up to
+  `newbrk + PAGE_SIZE + stack_guard_gap` and compares against
+  `vm_start_gap(next)`. `Sys/Mm/Mmap.v`, `brk_grow_ok` tests only the
+  installed pages and the one page above them, against a ledger with no
+  stack VMA in it, so `State.alloc_top` stands in for that refusal — and
+  stands in for it only while the stack has not grown to within
+  `stack_guard_gap` and a page of that bound. The stack VMA in the
+  ledger closes this too.
 - **R-d, the stack pointer and the mmap base are drawn apart.**
   `Run.valid_entry_va` takes `sp` and the base from their windows
   independently. Linux links them. With randomisation on, the base gap

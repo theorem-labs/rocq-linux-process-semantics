@@ -117,7 +117,8 @@ Ltac fit_bound := unfold two_pow_64; rewrite ?u64 by lia; lia.
    each leaf differs.
    ------------------------------------------------------------------------- *)
 
-(** A brk grant [[old, r)] with [old < r] ends at the word [r]. *)
+(** A brk grant is the page range the gate tested; a shrink cuts the
+    pages the kernel unmaps.  Both stay inside the word. *)
 Lemma brk_model_next_fit : forall h req r,
   vm_fit h -> vm_fit (brk_model_next h req r).
 Proof.
@@ -128,19 +129,41 @@ Proof.
   - unfold brk_unmap_cut. cbv zeta.
     destruct (page_round_up_Z (bv_unsigned r)
               <? page_round_up_Z (bv_unsigned (vm_brk h)))%Z;
-      apply maps_subtract_fit; try apply maps_subtract_fit; exact Hf.
+      [apply maps_subtract_fit; exact Hf | exact Hf].
   - apply maps_fit_app; [|exact Hf].
     unfold brk_grants. destruct (brk_is_grow req r (vm_brk h)) eqn:Egrow;
       [|exact maps_fit_nil].
-    unfold brk_is_grow in Egrow.
-    apply andb_true_iff in Egrow as [_ Hlt]. apply Z.ltb_lt in Hlt.
+    unfold brk_page_range.
+    destruct (Z.ltb (page_round_up_Z (bv_unsigned (vm_brk h)))
+                    (page_round_up_Z (bv_unsigned r))) eqn:Elh;
+      [|exact maps_fit_nil].
+    apply Z.ltb_lt in Elh.
     apply maps_fit_cons; [exact maps_fit_nil|].
     pose proof (word_range r) as Hr. pose proof (word_range (vm_brk h)) as Hb.
-    assert (Hsz : bv_unsigned (r - vm_brk h)%bv
-                  = (bv_unsigned r - bv_unsigned (vm_brk h))%Z).
-    { rewrite bv_sub_unsigned. apply bv_wrap_small.
+    pose proof (page_round_up_Z_nonneg (bv_unsigned (vm_brk h)) ltac:(lia)).
+    assert (Hhi : (page_round_up_Z (bv_unsigned r) <= two_pow_64)%Z).
+    { unfold page_round_up_Z, page_size, two_pow_64.
+      pose proof (Z.div_mod (bv_unsigned r + 4096 - 1) 4096 ltac:(lia)).
+      pose proof (Z.mod_pos_bound (bv_unsigned r + 4096 - 1) 4096 ltac:(lia)).
+      lia. }
+    unfold two_pow_64 in *.
+    assert (U : forall z, (0 <= z < 2 ^ 64)%Z -> bv_unsigned (Z_to_bv 64 z) = z).
+    { intros z Hz. rewrite Z_to_bv_unsigned. apply bv_wrap_small.
       change (bv_modulus 64) with (2 ^ 64)%Z. lia. }
-    rewrite Hsz. unfold two_pow_64. lia.
+    rewrite (U (page_round_up_Z (bv_unsigned (vm_brk h)))) by lia.
+    destruct (Z.eq_dec (page_round_up_Z (bv_unsigned r)
+                        - page_round_up_Z (bv_unsigned (vm_brk h))) (2 ^ 64))
+      as [He|He].
+    + (* the one corner where the size would wrap: it needs the break's
+         page at 0 and the resolution's at 2^64, and then the wrapped
+         size is still under the bound *)
+      pose proof (bv_unsigned_in_range 64
+        (Z_to_bv 64 (page_round_up_Z (bv_unsigned r)
+                     - page_round_up_Z (bv_unsigned (vm_brk h))))) as Hsz.
+      change (bv_modulus 64) with (2 ^ 64)%Z in Hsz. lia.
+    + rewrite (U ((page_round_up_Z (bv_unsigned r)
+                   - page_round_up_Z (bv_unsigned (vm_brk h)))%Z)) by lia.
+      lia.
 Qed.
 
 Lemma check_brk_preserves_fit : forall req eff m m' evs,
@@ -485,6 +508,7 @@ Proof.
     | erewrite check_exit_frame by eassumption; exact Hfit
     | erewrite check_set_tid_address_frame by eassumption; exact Hfit
     | erewrite check_getpid_frame by eassumption; exact Hfit
+    | erewrite check_getppid_frame by eassumption; exact Hfit
     | erewrite check_gettid_frame by eassumption; exact Hfit
     | erewrite check_setsid_frame by eassumption; exact Hfit
     | erewrite check_uname_frame by eassumption; exact Hfit
@@ -526,6 +550,7 @@ Proof.
     | erewrite check_set_robust_list_frame by eassumption; exact Hfit
     | erewrite check_clone_frame by eassumption; exact Hfit
     | erewrite check_clone3_frame by eassumption; exact Hfit
+    | erewrite check_close_range_frame by eassumption; exact Hfit
     | erewrite check_getsockname_frame by eassumption; exact Hfit
     | erewrite check_getpeername_frame by eassumption; exact Hfit
     | erewrite check_setsockopt_frame by eassumption; exact Hfit

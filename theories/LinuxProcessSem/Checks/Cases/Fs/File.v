@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Cases.Fs.File — worked examples over dup (23), dup3 (24)
+(** * LinuxProcessSem.Checks.Cases.Fs.File — worked examples over dup (23), dup3 (24), close_range (436)
 
     Mirrors [Sys/Fs/File.v], which answers to Linux [fs/file.c]: this
     file holds the worked examples for the syscalls defined there, and
@@ -224,3 +224,59 @@ Example dup3_over_the_limit_is_ebadf_before_the_oldfd_lookup :
        (mkEffect 2000 [] []) dup_model
      = CheckReject.
 Proof. split; [check_eq|split; [check_eq | vm_compute; reflexivity]]. Qed.
+
+(* -------------------------------------------------------------------------
+   close_range (436)
+
+   The model before this arm declined every [close_range].  The pairs
+   below pin what is now answered against what still declines, on
+   [dup_model]: three channels, a file at 3 and a directory at 4.
+   ------------------------------------------------------------------------- *)
+
+Definition close_range_in (fd max_fd flags : word) : SyscallInput :=
+  mkInput 436 [fd; max_fd; flags; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+(** [close_range(3, ~0U, 0)] closes every descriptor from 3 up -- the
+    file and the directory alike, since the arm is kind-blind as
+    [close] is -- keeps 0, 1 and 2, and answers 0.  The fds are
+    [unsigned int]s, so a0 = 2^32 + 3 is the same call, and an empty
+    range ([close_range(5, 9, 0)]) is still 0 with nothing removed.  No
+    other answer is admitted. *)
+Example close_range_removes_the_range :
+  check_syscall (close_range_in 3 4294967295 0) (mkEffect 0 [] []) dup_model
+    = CheckOk (with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2)]
+                        dup_model) []
+  /\ check_syscall (close_range_in 4294967299 4294967295 0) (mkEffect 0 [] [])
+       dup_model
+     = CheckOk (with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2)]
+                         dup_model) []
+  /\ check_syscall (close_range_in 5 9 0) (mkEffect 0 [] []) dup_model
+     = CheckOk dup_model []
+  /\ check_syscall (close_range_in 3 4294967295 0)
+       (mkEffect (errno_ret EBADF) [] []) dup_model = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** [close_range(5, 3, 0)] is -EINVAL and closes nothing, and so is an
+    unknown flag bit -- tested FIRST, so even a well-ordered range with
+    flag 8 is -EINVAL -- and an inverted range with a KNOWN flag: the
+    range test comes before the flag is acted on, so that -EINVAL is
+    answered rather than declined. *)
+Example close_range_refuses_an_inverted_range :
+  check_syscall (close_range_in 5 3 0) (mkEffect (errno_ret EINVAL) [] [])
+    dup_model = CheckOk dup_model []
+  /\ check_syscall (close_range_in 5 3 0) (mkEffect 0 [] []) dup_model
+     = CheckReject
+  /\ check_syscall (close_range_in 3 4294967295 8)
+       (mkEffect (errno_ret EINVAL) [] []) dup_model = CheckOk dup_model []
+  /\ check_syscall (close_range_in 5 3 4) (mkEffect (errno_ret EINVAL) [] [])
+       dup_model = CheckOk dup_model [].
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE CONTROL, which the model before this arm passed too:
+    [CLOSE_RANGE_CLOEXEC] (4) and [CLOSE_RANGE_UNSHARE] (2) on a valid
+    range decline, whatever the kernel claims. *)
+Lemma close_range_declines_known_flags : forall eff,
+  check_syscall (close_range_in 3 4294967295 4) eff dup_model = CheckUnmodeled
+  /\ check_syscall (close_range_in 3 4294967295 2) eff dup_model = CheckUnmodeled
+  /\ check_syscall (close_range_in 3 4294967295 6) eff dup_model = CheckUnmodeled.
+Proof. intro eff. repeat split; vm_compute; reflexivity. Qed.

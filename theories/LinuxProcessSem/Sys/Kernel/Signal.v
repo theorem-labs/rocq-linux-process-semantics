@@ -14,6 +14,10 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Syscall Uapi Uaccess.
+(* [Kernel.Fork.SIGCHLD], the one signal number [sigchld_dfl_install]
+   names; imported, not exported, so this module's namespace is
+   unchanged for its importers. *)
+From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Kernel.Fork.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
@@ -141,13 +145,20 @@ Open Scope sys_scope.
     does not disturb that: a mask decides DELIVERY, not sending, and
     what the premise below rules out is a signal arriving at all.
 
-    ONE INSTALL OUTSIDE THIS LIST IS ANSWERED, AND IT IS NOT A NO-OP OF
-    THE KIND THIS NOTE IS ABOUT: SIG_DFL FOR SIGABRT
-    ([sigabrt_dfl_install]).  A modeled operation does raise SIGABRT
-    ([tkill_self]), and the model delivers it at SIG_DFL.  The install
-    sets that disposition, so its soundness does not rest on SIGABRT
-    being unraisable: after it, Linux has the disposition the model
-    already assumes.  Every other SIGABRT install fails closed.
+    TWO INSTALLS OUTSIDE THIS LIST ARE ANSWERED, AND NEITHER IS A NO-OP
+    OF THE KIND THIS NOTE IS ABOUT.  Each sets SIG_DFL, the disposition
+    the model already assumes for that signal, so neither rests on the
+    signal being unraisable:
+    - SIG_DFL FOR SIGABRT ([sigabrt_dfl_install]).  A modeled operation
+      does raise SIGABRT ([tkill_self]), and the model delivers it at
+      SIG_DFL.  After the install Linux has the disposition the model
+      already assumes.  Every other SIGABRT install fails closed.
+    - SIG_DFL FOR SIGCHLD ([sigchld_dfl_install]).  A child's exit
+      raises SIGCHLD, and [Fork.clone_spec]'s argument that nothing
+      comes of it is an argument about SIG_DFL, under which the signal
+      is discarded when it is generated.  After the install that is the
+      disposition.  Every other SIGCHLD install -- SIG_IGN, a handler --
+      fails closed.
 
     SIGCHLD (17) IS NOT ACCEPTED, AND THAT IS THE INVARIANT BELOW
     BEING DISCHARGED.  That invariant says the
@@ -156,13 +167,16 @@ Open Scope sys_scope.
     that change — it is an admission that a child can exist — and so
     would be a modeled [wait4], which is an admission that one can be
     reaped.  An accepted set NARROWER than the operational test demands
-    costs coverage and cannot cost soundness.
+    costs coverage and cannot cost soundness.  The SIG_DFL install
+    above is not a member of the set: membership answers an install
+    whatever its handler word, and SIGCHLD is answered for one handler
+    word only.
 
-    What it costs is one install the model
-    declines: [sigaction(SIGCHLD, &act, NULL, 8)], the shape dropbear
-    uses to reap its children.  A decline is not a wrong answer — it puts
-    such a program outside the theorem's coverage rather than making a
-    false claim about it.
+    What it costs is the SIGCHLD install with a HANDLER, which the
+    model declines: [sigaction(SIGCHLD, &act, NULL, 8)] with a reaping
+    function, the shape dropbear uses.  A decline is not a wrong answer
+    — it puts such a program outside the theorem's coverage rather than
+    making a false claim about it.
 
     WHAT THE OPERATIONAL RULE NEVER ESTABLISHED IS THAT REALITY HAS NO
     SENDER.  This model begins AT [execve]: [State.ProcInput] carries
@@ -174,9 +188,12 @@ Open Scope sys_scope.
     rule, which only narrows who could send it: "arrives only from
     outside the process" says the model cannot raise it, not that it is
     never raised.  That gap matters most for SIGCHLD, since
-    a child survives [execve] and could raise a real one at any moment;
-    the decline closes that instance rather than leaving it to the
-    premise, and SIGINT and SIGTERM still need the premise in full.
+    a child survives [execve] and could raise a real one at any moment.
+    The decline of every SIGCHLD handler and of SIG_IGN closes that
+    instance rather than leaving it to the premise, and the one SIGCHLD
+    install the model answers, SIG_DFL, does not reopen it: a real
+    SIGCHLD arriving at SIG_DFL is discarded on arrival.  SIGINT and
+    SIGTERM still need the premise in full.
 
     THE INVARIANT TO KEEP: this list is a claim about the REST of the
     model.  If a later change gives the model a timer, a controlling
@@ -204,8 +221,9 @@ Definition sig32 (sig : word) : word := abi_low32 sig.
     a fact about [rt_sigaction]: read the note above before touching this
     list.  Every other signal — the four fault signals above all, and
     SIGCHLD, because the model can have a child —
-    fails closed at an install, with one exception that this list does
-    not carry: SIG_DFL for SIGABRT, which [sigabrt_dfl_install] admits. *)
+    fails closed at an install, with two exceptions that this list does
+    not carry, both SIG_DFL: for SIGABRT, which [sigabrt_dfl_install]
+    admits, and for SIGCHLD, which [sigchld_dfl_install] admits. *)
 Definition sigaction_accepted (sig : word) : bool :=
   let s := bv_unsigned sig in
   (Z.eqb s 2 || Z.eqb s 15)%bool.
@@ -331,21 +349,30 @@ Definition sa_flags_ok (fl : word) : bool :=
     syscall entry raises before the copy — arm 1 below — and the [oact]
     [copy_to_user] runs after [do_sigaction], so a bad [oact] with a bad
     [sig] is -EINVAL rather than -EFAULT.  This returns [sa_flags]
-    exactly when all 24 bytes are readable.
+    exactly when [access_ok] admits all 24 bytes and they are readable.
 
-    NO [State.access_okb] GUARD, and that is not an omission.  The
-    delivering syscalls need one because they answer for ranges they do
-    not require to be mapped; here all 24 bytes must be mapped before
-    anything is answered, and a mapping cannot sit above the address
-    space it was made in — so a readable range is below [TASK_SIZE],
-    which is the limit [__access_ok] tests (include/asm-generic/access_ok.h;
-    riscv overrides [access_ok] for pointer masking but not
-    [__access_ok]; see [State.TASK_SIZE]).
-    The word addition in [readable_bytes] cannot manufacture one either:
-    wrapping needs [act] within 24 bytes of 2^64, and no model state has
-    a mapping there ([alloc_top] and [sp_window_hi] both sit at or
-    below 2^47 for any [Run.valid_sp]), so the walk stops on its first unmapped byte and the
-    answer is -EFAULT.
+    THE RANGE TEST IS ASKED, through [State.copy_bytes_map], rather than
+    argued away.  [SYSCALL_DEFINE4(rt_sigaction)] (kernel/signal.c) reads
+    the struct with [copy_from_user] before [do_sigaction] runs, and that
+    is [access_ok] over all 24 bytes before a byte moves
+    (include/linux/uaccess.h, [_inline_copy_from_user];
+    include/asm-generic/access_ok.h, [__access_ok]; riscv overrides
+    [access_ok] for pointer masking but not [__access_ok], see
+    [State.TASK_SIZE]).  This note used to give two reasons for leaving
+    the test out, and only one of them holds.  The WRAP half holds in a
+    run, for a reason other than the one it gave: completing a wrap
+    needs a mapped byte at 2^64-1 and one at 0, and
+    [Equivalence.image_brk_satisfiable], a hypothesis of the IMAGE_WF
+    ascription, bounds every loaded segment's end below 2^64.  The
+    [TASK_SIZE] half does not hold.  That hypothesis bounds the image at
+    2^64 and not at 2^47, and [Run.valid_brk] asks only that the break
+    sit at or above the image's top, so an admissible image may carry a
+    LOAD segment above the user limit whose bytes reach this spec through
+    [in_mem] ([Run.sys_input]); and [Checks.ExecutableSpecs.check_syscall]
+    takes an arbitrary [SyscallInput] besides.  A wholly readable range
+    above [TASK_SIZE] therefore exists, the bare walk answered the call
+    on it, and Linux answers -EFAULT.  The wrap itself is
+    [State.copy_bytes_map]'s note and is not repeated here.
 
     For a signal in [sigaction_accepted] the flags word is the only field
     the model consults.  The handler (SIG_DFL, SIG_IGN or an address) and
@@ -361,19 +388,22 @@ Definition sa_flags_ok (fl : word) : bool :=
     [sigabrt_dfl_install]. *)
 Definition sigaction_flags (mp : word -> option byte) (act : word)
     : option word :=
-  if Nat.eqb (length (readable_bytes mp act (Z_to_bv 64 24))) 24
-  then read_u64 mp (bv_add act (Z_to_bv 64 8))
-  else None.
+  match copy_bytes_map mp act 24 with
+  | Some _ => read_u64 mp (bv_add act (Z_to_bv 64 8))
+  | None => None
+  end.
 
 (** [sa_handler], the eight bytes at offset 0 of the struct above, under
-    the same all-or-nothing readability as [sigaction_flags]: SIG_DFL is
-    0 and SIG_IGN is 1 (include/uapi/asm-generic/signal-defs.h); any other
-    value is the address of a handler. *)
+    the same range test and all-or-nothing readability as
+    [sigaction_flags]: SIG_DFL is 0 and SIG_IGN is 1
+    (include/uapi/asm-generic/signal-defs.h); any other value is the
+    address of a handler. *)
 Definition sigaction_handler (mp : word -> option byte) (act : word)
     : option word :=
-  if Nat.eqb (length (readable_bytes mp act (Z_to_bv 64 24))) 24
-  then read_u64 mp act
-  else None.
+  match copy_bytes_map mp act 24 with
+  | Some _ => read_u64 mp act
+  | None => None
+  end.
 
 (** The one install outside [sigaction_accepted] that the spec answers:
     SIG_DFL for SIGABRT.  musl's [abort] makes it on its second path
@@ -422,6 +452,69 @@ Definition sigabrt_dfl_install (sig : word) (mp : word -> option byte) (act : wo
   | None => false
   end.
 
+(** The second install outside [sigaction_accepted] that the spec
+    answers: SIG_DFL for SIGCHLD, under a flag word [sa_flags_ok]
+    admits.  bwrap 0.13.1 makes it first thing in [main]
+    ([struct sigaction sa = {}; sa.sa_handler = SIG_DFL;
+    sigaction(SIGCHLD, &sa, NULL)], to undo a SIG_IGN its launcher may
+    have left); musl passes that as [rt_sigaction(SIGCHLD, act, NULL,
+    8)] with a zero flag word.
+
+    kernel/signal.c [SYSCALL_DEFINE4(rt_sigaction)], [do_sigaction], [sig_handler_ignored], [do_notify_parent], read at v6.18.44; identical at v6.18.46.
+    include/linux/signal.h [SIG_KERNEL_IGNORE_MASK], [sig_kernel_ignore], read at v6.18.44; identical at v6.18.46.
+
+    WHY 0.  SIGCHLD (17) is in 1..64 and is not SIGKILL or SIGSTOP, and
+    no live process carries SA_IMMUTABLE (the note at
+    [rt_sigaction_spec]), so [do_sigaction] stores [*act] and returns 0,
+    and with [oact] NULL so does the syscall.
+
+    WHY NO STATE.  After the call SIGCHLD's disposition is SIG_DFL, and a
+    SIG_DFL SIGCHLD is the disposition every SIGCHLD argument in this
+    model is written against, so the install moves the process TOWARDS
+    the model's assumption rather than away from it:
+    - [Fork.clone_spec]'s header argues that the SIGCHLD a child's exit
+      sends comes to nothing because it is discarded at generation:
+      [sig_handler_ignored] holds for SIG_DFL on a signal in
+      [SIG_KERNEL_IGNORE_MASK], SIGCHLD is in that mask, and
+      [__send_signal_locked] skips the queue.  After this install that
+      is certain; before it, the disposition is the launch's -- SIG_DFL,
+      or a SIG_IGN [execve] kept -- and both discard.
+    - [do_sigaction] itself flushes a pending SIGCHLD here, because
+      [sig_handler_ignored(SIG_DFL, SIGCHLD)] holds (POSIX 3.3.1.3).
+      The model carries no SIGCHLD queue, and a queued SIGCHLD would
+      have been discarded at delivery anyway ([get_signal] finds
+      SIG_DFL and [sig_kernel_ignore]), so nothing observable moves.
+      [posixtimer_sig_unignore] is not reached: it runs only when the
+      new handler is NOT ignored.
+    - Of the flags [sa_flags_ok] admits, two are read for SIGCHLD.
+      SA_NOCLDSTOP stops a child's STOP from raising SIGCHLD, which
+      SIG_DFL discards anyway.  SA_NOCLDWAIT makes [do_notify_parent]
+      autoreap an exiting child, which changes what a later [wait4]
+      finds -- but [Exit.wait4_spec] answers only while
+      [State.m_has_children] is false, when there is no child to reap,
+      and declines once a modeled [clone] has recorded one.  The rest
+      ([sa_mask], SA_SIGINFO, SA_ONSTACK, SA_NODEFER, SA_RESETHAND,
+      SA_EXPOSE_TAGBITS) describe how a handler runs, and SIG_DFL runs
+      none.
+
+    WHAT STAYS DECLINED: SIGCHLD with SIG_IGN or a handler address.  A
+    handler is unsound outright: it would run on each child's exit, and
+    could interrupt a modeled call with an -EINTR or a restart this
+    model does not have.  SIG_IGN discards as SIG_DFL does, but it also
+    autoreaps every child and is the one disposition [execve] passes on
+    ([flush_signal_handlers] keeps it), so admitting it would have to be
+    argued against every child-facing arm; nothing in scope needs it,
+    and declining it keeps the disposition after any answered SIGCHLD
+    install exactly the SIG_DFL named above.  The tripwire is
+    [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled]. *)
+Definition sigchld_dfl_install (sig : word) (mp : word -> option byte) (act : word)
+    : bool :=
+  Z.eqb (bv_unsigned sig) SIGCHLD &&
+  match sigaction_handler mp act with
+  | Some h => w_is0 h
+  | None => false
+  end.
+
 (** [rt_sigaction sig act oact sigsetsize].  [sig] arrives already
     truncated (see [sig32]).  The arms follow the kernel's own order
     (Linux v6.10-v6.15, kernel/signal.c, [SYSCALL_DEFINE4(rt_sigaction)]
@@ -460,13 +553,16 @@ Definition sigabrt_dfl_install (sig : word) (mp : word -> option byte) (act : wo
          no-op for EVERY valid signal, fault signals included: 0, or
          -EINVAL outside 1..64.  This is also why SIGKILL and SIGSTOP are
          only rejected in arm 4.
-      4. with [act] non-NULL: -EFAULT unless all 24 bytes are readable;
+      4. with [act] non-NULL: -EFAULT unless [access_ok] admits all 24
+         bytes and they are readable;
          then -EINVAL for an out-of-range signal and for SIGKILL/SIGSTOP;
          then fail closed on SA_RESTART and on any bit outside
          [sa_flags_accepted]; then 0 for a signal in
          [sigaction_accepted], storing no disposition; then 0 for SIGABRT
          with the handler SIG_DFL ([sigabrt_dfl_install]), storing no
-         disposition; and UNMODELED for every other signal and handler.
+         disposition; then 0 for SIGCHLD with the handler SIG_DFL
+         ([sigchld_dfl_install]), storing no disposition; and UNMODELED
+         for every other signal and handler.
          Every answer after the copy records the 24
          bytes in [State.eff_copyins]: [SYSCALL_DEFINE4(rt_sigaction)]
          (kernel/signal.c:4650, v6.18.46) has already read them with
@@ -497,7 +593,8 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
   else
     i <- input ;;
     match sigaction_flags (in_mem i) act with
-    | None => err_ret EFAULT   (* the struct is not wholly readable: real -EFAULT *)
+    | None => err_ret EFAULT   (* [access_ok] refuses the struct, or it is not
+                                  wholly readable: real -EFAULT *)
     | Some fl =>
         record_copyins [(act, 24%nat)]
         (if negb (sig_valid sig) then err_ret EINVAL
@@ -505,6 +602,7 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
          else if negb (sa_flags_ok fl) then unmodeled
          else if sigaction_accepted sig then ret_only (Z_to_bv 64 0)
          else if sigabrt_dfl_install sig (in_mem i) act then ret_only (Z_to_bv 64 0)
+         else if sigchld_dfl_install sig (in_mem i) act then ret_only (Z_to_bv 64 0)
          else unmodeled)         (* a signal a modeled operation can raise: fail closed *)
     end.
 
@@ -800,26 +898,29 @@ Definition how_valid (how : word) : bool :=
     installed.  [sizeof(sigset_t)] is [Uapi.NSIG_BYTES] = 8, so this is
     readability of eight bytes and no more.
 
-    NO [State.access_okb] GUARD.  All eight bytes must be mapped
-    before anything is answered, and a mapping cannot sit above the
-    address space it was made in, so a wholly readable range is below
-    [TASK_SIZE].  The word addition inside
-    [State.read_bytes_map] cannot manufacture one either — but NAME THE
-    RIGHT REASON, because the obvious one is incomplete.
-    [State.alloc_top] and [State.sp_window_hi] bound the mmap, brk
-    and stack sources and sit far below 2^64; they say nothing about
-    the third source [in_mem] merges in, which is the ELF ROM image,
-    whose [MemImageType.Segment] carries [seg_base] and [seg_size] as
-    unbounded [N] with no side condition in the trusted tree.  What
-    actually excludes a byte in the last page is
-    [Equivalence.image_brk_satisfiable], a hypothesis of the IMAGE_WF
-    module type each example's generated Checker ascribes — so
-    completing a wrap would need two segments, one supplying the byte
-    at 2^64-1 and one at 0, and that hypothesis forbids it.  Outside
-    that ascription the specs quantify over an arbitrary
-    [mp : word -> option byte], so this is a property of the
-    well-formedness the equivalence theorem is stated under and not of
-    the syscall layer.
+    THE RANGE TEST IS ASKED, through [State.copy_bytes_map], rather than
+    argued away.  [SYSCALL_DEFINE4(rt_sigprocmask)] (kernel/signal.c)
+    copies [nset] with [copy_from_user] and answers -EFAULT before
+    [sigprocmask] runs, and [copy_from_user] is [access_ok] over the
+    eight bytes and then the copy (include/linux/uaccess.h,
+    [_inline_copy_from_user]; include/asm-generic/access_ok.h,
+    [__access_ok]).  This note used to give two reasons for leaving the
+    test out, and only the first survives.  The WRAP is impossible in a
+    run, and the reason is [Equivalence.image_brk_satisfiable], a
+    hypothesis of the IMAGE_WF module type each example's generated
+    Checker ascribes: it bounds every loaded segment's end below 2^64,
+    so no image supplies both a byte at 2^64-1 and one at 0
+    ([State.alloc_top] and [State.sp_window_hi] bound only the mmap, brk
+    and stack sources, not the ELF ROM image [in_mem] merges in).  The
+    [TASK_SIZE] half is false.  That same hypothesis bounds the image at
+    2^64, not at 2^47, and [Run.valid_brk] asks only that the break sit
+    at or above the image's top, so an admissible image may carry a LOAD
+    segment above the user limit whose bytes [Run.sys_input] hands to
+    this spec; and [Checks.ExecutableSpecs.check_syscall] takes an
+    arbitrary [SyscallInput] besides.  A wholly readable [nset] above
+    [TASK_SIZE] therefore exists, the bare walk installed a mask from it,
+    and Linux answers -EFAULT.  The wrap itself is
+    [State.copy_bytes_map]'s note.
 
     THE CONTENTS ARE READ: the value
     decides what gets installed, so the test and the read are one
@@ -827,7 +928,7 @@ Definition how_valid (how : word) : bool :=
     [Sys/Uaccess.v]: it is the [sigset_t] ABI shape, not a uaccess
     policy, and one syscall uses it. *)
 Definition sigset_at (mp : word -> option byte) (p : word) : option word :=
-  match read_bytes_map mp p (Z_to_bv 64 NSIG_BYTES) with
+  match copy_bytes_map mp p NSIG_BYTES with
   | Some bs => Some (le_bytes_to_word bs)
   | None => None
   end.
@@ -859,7 +960,8 @@ Definition sigset_at (mp : word -> option byte) (p : word) : option word :=
          oversight, and it is pinned by
          [Checks.Cases.Kernel.Signal].  The call is
          not a no-op even so: arm 5 still runs, so a query WRITES.
-      4. with [nset] non-NULL: -EFAULT unless all 8 bytes are readable,
+      4. with [nset] non-NULL: -EFAULT unless [access_ok] admits the 8
+         bytes and they are readable,
          then SIGKILL and SIGSTOP are stripped from the new set
          ([sigmask_strip], silently — the call succeeds), then -EINVAL
          for a [how] outside {0, 1, 2}, then the install
@@ -1358,18 +1460,26 @@ Definition ss_mode_ok (fl : word) : bool :=
 
 Definition ss_disabling (fl : word) : bool := Z.eqb (ss_mode fl) SS_DISABLE.
 
-(** The [stack_t] at [uss], or [None] if any of its 24 bytes is
-    unreadable.  All-or-nothing because [SYSCALL_DEFINE2(sigaltstack)]
+(** The [stack_t] at [uss], or [None] if [access_ok] refuses its 24
+    bytes or any of them is unreadable.  All-or-nothing because
+    [SYSCALL_DEFINE2(sigaltstack)]
     fetches the struct with ONE [copy_from_user] before [do_sigaltstack]
     runs, so -EFAULT precedes every other answer this call has.
 
-    NO [State.access_okb] GUARD, for the reason [sigaction_flags] gives
-    above and by the same argument: all 24 bytes must be readable before
-    anything is answered, and the word addition cannot manufacture a
-    readable range across 2^64 because no model state maps one there. *)
+    THE RANGE TEST IS ASKED, through [State.copy_bytes_map]:
+    [SYSCALL_DEFINE2(sigaltstack)] (kernel/signal.c) copies with
+    [copy_from_user], which is [access_ok] over the 24 bytes before the
+    copy, and both come before [do_sigaltstack] runs.  This note used to
+    lean on [sigaction_flags]'s argument for leaving the test out, and
+    that argument is withdrawn there for the reason given there: the
+    wrap is impossible in a run, because
+    [Equivalence.image_brk_satisfiable] bounds the image below 2^64, but
+    nothing bounds a wholly readable range below [TASK_SIZE], so the
+    test is asked rather than argued.  The wrap itself is
+    [State.copy_bytes_map]'s note. *)
 Definition sigaltstack_at (mp : word -> option byte) (uss : word)
     : option (list byte) :=
-  read_bytes_map mp uss (Z_to_bv 64 SIGALTSTACK_BYTES).
+  copy_bytes_map mp uss SIGALTSTACK_BYTES.
 
 (** [sigaltstack uss uoss].  The arms follow the kernel's own order:
 
@@ -1380,7 +1490,8 @@ Definition sigaltstack_at (mp : word -> option byte) (uss : word)
          bit is part of the answer.
       3. with both pointers NULL [do_sigaltstack] runs and does nothing:
          0.
-      4. -EFAULT unless all 24 bytes at [uss] are readable.
+      4. -EFAULT unless [access_ok] admits the 24 bytes at [uss] and
+         they are readable.
       5. -EINVAL for a mode outside {0, SS_ONSTACK, SS_DISABLE}.  It is
          decided AFTER the copy and BEFORE the fast path, exactly where
          the kernel decides it, and after an -EPERM that cannot fire —
@@ -1516,8 +1627,8 @@ Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
       question rather than a kernel one.
     - any other signal in 1..64.  The model has a disposition for
       SIGABRT and for no other signal: [rt_sigaction_spec] answers an
-      install only for SIGINT and SIGTERM, and for SIGABRT only with the
-      handler SIG_DFL, so what SIGKILL or SIGUSR1 would do to this
+      install only for SIGINT and SIGTERM, and for SIGABRT and SIGCHLD
+      only with the handler SIG_DFL, so what SIGKILL or SIGUSR1 would do to this
       process is not something the model can read off its own state.
     - [State.m_tid] not yet pinned.  Nothing has made the tid
       observable, so there is no value to compare [pid] against.

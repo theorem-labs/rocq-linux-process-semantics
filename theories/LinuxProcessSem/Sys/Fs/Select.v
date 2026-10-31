@@ -212,11 +212,24 @@ Definition pselect_touches_sets (n : Z) : bool := negb (Z.eqb n 0).
     word at [p], or all-zero when [p] is NULL ([get_fd_set] memsets its
     kernel copy instead of reading) or when [n] is 0 (a zero-length
     [copy_from_user] always succeeds).  [None] is the unreadable
-    pointer that [get_fd_set] answers -EFAULT for. *)
+    pointer that [get_fd_set] answers -EFAULT for.
+
+    THE RANGE TEST COMES FIRST.  [get_fd_set] (fs/select.c,
+    [get_fd_set]) imports the [FDS_BYTES(n)] = 8 bytes with
+    [copy_from_user], which is [access_ok] and then the copy -- the pair
+    [State.copy_bytes_map] names -- while [State.read_u64] is the walk
+    alone, so [State.access_okb] goes in front of it.  Without it a [p]
+    in the last eight bytes of the address space imported a word made of
+    the bytes below the wrap and the bytes from 0 on, and pselect6 was
+    answered on it where Linux answers -EFAULT before a byte moves; the
+    argument is [State.copy_bytes_map]'s note.  The same test is what
+    bounds [set_fd_set]'s write-back of the same word: see
+    [range_writable]. *)
 Definition read_fd_set (mp : word -> option byte) (p : word) (n : Z)
     : option word :=
   if negb (pselect_touches_sets n) then Some (Z_to_bv 64 0)
   else if w_is0 p then Some (Z_to_bv 64 0)
+  else if negb (access_okb p 8) then None
   else read_u64 mp p.
 
 (** The bits of a requested set that [do_select] actually scans.
@@ -433,9 +446,30 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
     rather than assert a byte count it cannot derive.  The band is
     narrow: an unreadable set already answered -EFAULT at import, so
     what is left is a set that is readable but not writable, i.e. one
-    living in .rodata. *)
+    living in .rodata.
+
+    THE RANGE QUESTION IS ASKED HERE TOO, through [State.copy_bytes_map]
+    rather than the bare walk.  The bare walk wraps at 2^64, and before
+    the imports asked [State.access_okb] a descriptor-set or
+    timespec destination in the last bytes of the address space read
+    back as writable and the call was answered on it.  A refused range
+    cannot reach this test now: every write handed to it lands on a
+    range an import has already accepted.  [set_fd_set] rewrites the
+    word [read_fd_set] imported at the same [p], [put_timespec64] the
+    sixteen bytes [pselect_timeout] imported at the same [tsp], and the
+    [revents] write-back lies inside the array [ppoll_core] imported,
+    whose [access_okb] holds for every [nfds] that writes at all.  If a
+    refused range ever does reach it, the answer is the decline, and
+    that is deliberate, because what Linux does with a refused write
+    differs by writer: [set_fd_set] is [__copy_to_user] and tests no
+    range itself (fs/select.c, [set_fd_set]); [poll_select_finish]
+    discards a failed [put_timespec64] and returns [ret] unchanged
+    (fs/select.c, [poll_select_finish]); [do_sys_poll]'s
+    [user_write_access_begin] is -EFAULT, which [ppoll_writeback_access]
+    already answers.  The mapped-but-not-writable case keeps the decline
+    the paragraph above gives it. *)
 Definition range_writable (i : SyscallInput) (a : word) (len : Z) : bool :=
-  match read_bytes_map (in_wmem i) a (Z_to_bv 64 len) with
+  match copy_bytes_map (in_wmem i) a len with
   | Some _ => true
   | None => false
   end.
@@ -454,13 +488,26 @@ Definition writes_all_writable (i : SyscallInput)
     and modeling only the NULL sixth argument would leave [select]
     itself outside the modeled surface. *)
 Inductive PselectSig :=
-  | PsSigFault      (* the pair itself is unreadable: -EFAULT *)
+  | PsSigFault      (* the pair is unreadable, or [access_ok] refuses it: -EFAULT *)
   | PsSigNone       (* no mask: the sixth argument is NULL, or its first word is *)
   | PsSigBadSize    (* a mask with the wrong [sigsetsize]: -EINVAL *)
   | PsSigReal.      (* a mask that would be installed: unmodeled *)
 
 Definition pselect_sigpack (mp : word -> option byte) (sig : word) : PselectSig :=
   if w_is0 sig then PsSigNone
+  else if negb (access_okb sig 16) then PsSigFault
+    (* [get_sigset_argpack] (fs/select.c, [get_sigset_argpack]) opens
+       with [user_read_access_begin] over [sizeof] of the pack, which on
+       riscv64 is [access_ok] over all sixteen bytes
+       (arch/riscv/include/asm/uaccess.h, [user_access_begin]; riscv64
+       takes no masked branch, as [EventPoll.copy_from_user_ok]'s note
+       records), and only then reads the two fields.  The two
+       [State.read_u64]s below are the walk alone and [sig + 8] is word
+       arithmetic, so without this test a [sig] in the last sixteen bytes
+       of the address space read a pack made of the bytes below the wrap
+       and the bytes from 0 on, and the call went on to be answered; the
+       argument is [State.copy_bytes_map]'s note.  With it the two reads
+       sit at offsets 0 and 8 of a range accepted whole. *)
   else match read_u64 mp sig, read_u64 mp (sig + Z_to_bv 64 8) with
        | Some sp, Some ss =>
            if w_is0 sp then PsSigNone
@@ -497,7 +544,7 @@ Definition pselect_sigpack (mp : word -> option byte) (sig : word) : PselectSig 
     TIMEOUT WRITE-BACK, which is the whole difficulty of this syscall --
     see [pselect_finish]. *)
 Inductive PselectTimeout :=
-  | PsToFault       (* [tsp] unreadable: -EFAULT *)
+  | PsToFault       (* [tsp] unreadable, or [access_ok] refuses it: -EFAULT *)
   | PsToInval       (* [timespec64_valid] rejects it: -EINVAL *)
   | PsToNone        (* [tsp] NULL: no deadline at all *)
   | PsToZero        (* exactly {0,0}: poll once and return *)
@@ -506,6 +553,18 @@ Inductive PselectTimeout :=
 Definition pselect_timeout (mp : word -> option byte) (tsp : word)
     : PselectTimeout :=
   if w_is0 tsp then PsToNone
+  else if negb (access_okb tsp 16) then PsToFault
+    (* [get_timespec64] (kernel/time/time.c, [get_timespec64]) copies the
+       16-byte [struct __kernel_timespec] with [copy_from_user], whose
+       [access_ok] refuses a range passing the top of the address space
+       before a byte moves.  The two [State.read_u64]s below are the walk
+       alone and [tsp + 8] is word arithmetic, so without this test a
+       [tsp] in the last sixteen bytes read a timespec made of the bytes
+       below the wrap and the bytes from 0 on, and pselect6 and ppoll,
+       which share this definition, were both answered on it.  The
+       argument is [State.copy_bytes_map]'s note.  The same test bounds
+       [put_timespec64]'s write-back of the same sixteen bytes: see
+       [range_writable]. *)
   else match read_u64 mp tsp, read_u64 mp (tsp + Z_to_bv 64 8) with
        | Some sec, Some nsec =>
            if (bv_signed sec <? 0)%Z then PsToInval
@@ -1112,7 +1171,7 @@ Definition ppoll_writeback_access (ufds nfds : word) (tmo : PselectTimeout)
 Inductive PpollSig :=
   | PpSigNone       (* no mask: the pointer is NULL *)
   | PpSigBadSize    (* the wrong [sigsetsize]: -EINVAL *)
-  | PpSigFault      (* the mask itself is unreadable: -EFAULT *)
+  | PpSigFault      (* the mask is unreadable, or [access_ok] refuses it: -EFAULT *)
   | PpSigReal.      (* a mask that would be installed: unmodeled *)
 
 Definition ppoll_sigmask (mp : word -> option byte) (sig sigsetsize : word)
@@ -1120,7 +1179,15 @@ Definition ppoll_sigmask (mp : word -> option byte) (sig sigsetsize : word)
   if w_is0 sig then PpSigNone
   else if negb (Z.eqb (bv_unsigned sigsetsize) kernel_sigset_bytes)
   then PpSigBadSize
-  else match read_bytes_map mp sig (Z_to_bv 64 kernel_sigset_bytes) with
+  else match copy_bytes_map mp sig kernel_sigset_bytes with
+       (* [set_user_sigmask] (kernel/signal.c, [set_user_sigmask])
+          copies the mask with [copy_from_user], so the range test comes
+          first, through [State.copy_bytes_map].  The bare walk this
+          replaces wrapped at 2^64: a [sig] in the last eight bytes of
+          the address space read a mask made of the bytes below the wrap
+          and the bytes from 0 on and took the [PpSigReal] decline, where
+          Linux answers -EFAULT.  A decline and not a wrong answer, but
+          not the kernel's answer either. *)
        | Some _ => PpSigReal
        | None => PpSigFault
        end.

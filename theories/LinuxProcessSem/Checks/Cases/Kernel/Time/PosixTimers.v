@@ -203,8 +203,11 @@ Lemma clock_gettime_percall_leaves_the_model_alone :
 Proof.
   intros i clkid tp [ret ws zs us cs copyins] m m' evs Hid H.
   unfold check_clock_gettime in H. rewrite Hid in H. cbv iota in H.
-  destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16));
-    [|discriminate]. cbv iota in H.
+  destruct (copy_bytes_map (in_wmem i) tp 16).
+  2:{ destruct (negb (access_okb tp 16)); [|discriminate].
+      apply check_ret_only_ok_iff in H. destruct H as (_ & -> & ->).
+      split; reflexivity. }
+  cbv iota in H.
   destruct ws as [|[a bs] ws']; [discriminate|].
   destruct ws' as [|? ?]; [|discriminate].
   destruct zs as [|? ?]; [|discriminate].
@@ -329,8 +332,11 @@ Proof.
   { unfold clockid_percall_b.
     rewrite (proj1 (Z.eqb_eq _ _) Hid). reflexivity. }
   unfold check_clock_gettime in H. rewrite Hpc, Hid in H. cbv iota in H.
-  destruct (read_bytes_map (in_wmem i) tp (Z_to_bv 64 16));
-    [|discriminate]. cbv iota in H.
+  destruct (copy_bytes_map (in_wmem i) tp 16).
+  2:{ destruct (negb (access_okb tp 16)); [|discriminate].
+      apply check_ret_only_ok_iff in H. destruct H as (_ & -> & ->).
+      split; reflexivity. }
+  cbv iota in H.
   destruct ws as [|[a bs] ws']; [discriminate|].
   destruct ws' as [|? ?]; [|discriminate].
   destruct zs as [|? ?]; [|discriminate].
@@ -548,3 +554,167 @@ Example clock_getres_alarm_and_memory_edges :
   /\ check_syscall (getres_input 1 0 (fun _ => None))
        (mkEffect 0 [(0, res_1ns)] []) (clock_model 0) = CheckReject.
 Proof. repeat split; check_eq. Qed.
+
+(* =========================================================================
+   THE DESTINATION THAT WALKED OFF THE TOP OF THE ADDRESS SPACE
+
+   The three arms of [clock_gettime_spec] and [clock_getres_dst_ok_b]
+   tested [tp] with [State.read_bytes_map] bare, and that walk WRAPS at
+   2^64 ([State.copy_bytes_map]'s note).  A [tp] in the last sixteen
+   bytes of the address space read the bytes below the wrap and then the
+   bytes from 0, said "writable", and the call answered 0 with its
+   reading written there.  [put_timespec64] (kernel/time/time.c) is one
+   [copy_to_user], whose [access_ok] refuses the range before a byte
+   moves, so Linux answers -EFAULT having written nothing.  All four now
+   go through [State.copy_bytes_map], and [Checks.Cases.Net.Socket]'s
+   wrap groups are the shape these take.
+
+   EACH ARM GETS THE WRAPPING CALL AND A NEIGHBOUR: -EFAULT accepted and
+   the write the bare walk admitted refused at the wrap; the write
+   accepted and -EFAULT refused at the last sixteen bytes
+   [State.access_okb] accepts, so the guard is not a blanket refusal of
+   high addresses.  The control that the bare walk really reads the
+   wrapped range back is one Example per syscall, because the arms of a
+   syscall share the pointer and the memory.  Every memory maps EXACTLY
+   its own sixteen bytes and nothing else.
+   ========================================================================= *)
+
+(* ---- clock_gettime (113) ------------------------------------------------- *)
+
+(** Eight bytes below the top and eight from 0. *)
+Definition clock_gettime_wrap_tp : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition clock_gettime_wrap_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 8)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Definition clock_gettime_wrap_input (clkid : word) : SyscallInput :=
+  mkInput 113 [clkid; clock_gettime_wrap_tp; 0; 0; 0; 0] (fun _ => None)
+    clock_gettime_wrap_mem.
+
+(** THE CONTROL for all three arms below. *)
+Example clock_gettime_wrap_would_pass_the_bare_walk :
+  read_bytes_map clock_gettime_wrap_mem clock_gettime_wrap_tp (Z_to_bv 64 16)
+    <> None.
+Proof. vm_compute. discriminate. Qed.
+
+(** The last sixteen bytes [State.access_okb] accepts, mapped end to
+    end. *)
+Definition clock_gettime_top_tp : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition clock_gettime_top_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 16 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Definition clock_gettime_top_input (clkid : word) : SyscallInput :=
+  mkInput 113 [clkid; clock_gettime_top_tp; 0; 0; 0; 0] (fun _ => None)
+    clock_gettime_top_mem.
+
+(** The per-call arm, at CLOCK_REALTIME. *)
+Example realtime_wrapping_tp_is_efault :
+  check_syscall (clock_gettime_wrap_input 0)
+    (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+  = CheckOk (clock_model 0) []
+  /\ check_syscall (clock_gettime_wrap_input 0)
+       (mkEffect 0 [(clock_gettime_wrap_tp, ts_1s)] []) (clock_model 0)
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+Example realtime_tp_at_the_top_still_answers :
+  check_syscall (clock_gettime_top_input 0)
+    (mkEffect 0 [(clock_gettime_top_tp, ts_1s)] []) (clock_model 0)
+  = CheckOk (clock_model 0) []
+  /\ check_syscall (clock_gettime_top_input 0)
+       (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** The CLOCK_PROCESS_CPUTIME_ID arm. *)
+Example cputime_wrapping_tp_is_efault :
+  check_syscall (clock_gettime_wrap_input 2)
+    (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+  = CheckOk (clock_model 0) []
+  /\ check_syscall (clock_gettime_wrap_input 2)
+       (mkEffect 0 [(clock_gettime_wrap_tp, ts_1s)] []) (clock_model 0)
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+Example cputime_tp_at_the_top_still_answers :
+  check_syscall (clock_gettime_top_input 2)
+    (mkEffect 0 [(clock_gettime_top_tp, ts_1s)] []) (clock_model 0)
+  = CheckOk (clock_model 0) []
+  /\ check_syscall (clock_gettime_top_input 2)
+       (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** The CLOCK_MONOTONIC arm, where the bare walk's answer also moved the
+    model: the reading it admitted would have carried [m_clock] to a
+    second.  The -EFAULT leaves the clock where it was; the neighbour
+    records its reading. *)
+Example monotonic_wrapping_tp_is_efault :
+  check_syscall (clock_gettime_wrap_input 1)
+    (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+  = CheckOk (clock_model 0) []
+  /\ check_syscall (clock_gettime_wrap_input 1)
+       (mkEffect 0 [(clock_gettime_wrap_tp, ts_1s)] []) (clock_model 0)
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+Example monotonic_tp_at_the_top_still_answers :
+  check_syscall (clock_gettime_top_input 1)
+    (mkEffect 0 [(clock_gettime_top_tp, ts_1s)] []) (clock_model 0)
+  = CheckOk (clock_model 1000000000) []
+  /\ check_syscall (clock_gettime_top_input 1)
+       (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- clock_getres (114) -------------------------------------------------- *)
+
+Definition clock_getres_wrap_tp : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition clock_getres_wrap_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 8)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example clock_getres_wrap_would_pass_the_bare_walk :
+  read_bytes_map clock_getres_wrap_mem clock_getres_wrap_tp (Z_to_bv 64 16)
+    <> None.
+Proof. vm_compute. discriminate. Qed.
+
+(** -EFAULT with nothing written, and the resolution the bare walk let
+    through is refused.  On an alarm id the -EINVAL [alarm_clock_getres]
+    (kernel/time/alarmtimer.c) answers before the copy stays admitted
+    beside the -EFAULT. *)
+Example clock_getres_wrapping_tp_is_efault :
+  check_syscall (getres_input 1 clock_getres_wrap_tp clock_getres_wrap_mem)
+    (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+  = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 1 clock_getres_wrap_tp clock_getres_wrap_mem)
+       (mkEffect 0 [(clock_getres_wrap_tp, res_1ns)] []) (clock_model 0)
+     = CheckReject
+  /\ check_syscall (getres_input 8 clock_getres_wrap_tp clock_getres_wrap_mem)
+       (mkEffect (errno_ret EINVAL) [] []) (clock_model 0)
+     = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 8 clock_getres_wrap_tp clock_getres_wrap_mem)
+       (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+     = CheckOk (clock_model 0) [].
+Proof. split; [|split; [|split]]; check_eq. Qed.
+
+Definition clock_getres_top_tp : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition clock_getres_top_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 16 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example clock_getres_tp_at_the_top_still_answers :
+  check_syscall (getres_input 1 clock_getres_top_tp clock_getres_top_mem)
+    (mkEffect 0 [(clock_getres_top_tp, res_1ns)] []) (clock_model 0)
+  = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 1 clock_getres_top_tp clock_getres_top_mem)
+       (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+     = CheckReject.
+Proof. split; check_eq. Qed.

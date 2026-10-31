@@ -287,10 +287,13 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
     into the unblocked one and both halves rest on the disposition.
     The DISPOSITION: [rt_sigaction] (134) IS modeled, so
     what carries this
-    half is [Signal.sigaction_accepted] — its accepted set is {SIGINT,
-    SIGTERM}, so an install FOR SIGCHLD fails closed at the signal and
-    the disposition SIGCHLD is delivered against stays the inherited
-    one.  [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled]
+    half is its signal gate — [Signal.sigaction_accepted], whose
+    accepted set is {SIGINT, SIGTERM}, and [Signal.sigchld_dfl_install],
+    which answers a SIGCHLD install only when its handler word is
+    [SIG_DFL].  So the disposition SIGCHLD is delivered against is the
+    inherited one or [SIG_DFL], both of which discard it, and every
+    install that would change that fails closed at the signal.
+    [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled]
     pins that, and the note above [Signal.sigaction_accepted] records
     the obligation this arm puts on it.  The
     STARTING disposition and mask are inherited across [execve] —
@@ -842,8 +845,10 @@ Proof. reflexivity. Qed.
     The ledger goes on the paths PAST a successful read and nowhere
     else.  A [size] the model declines never reaches the copy; an
     unreadable struct is a copy that FAILED, and Linux charges nothing
-    for it either.  Both of those are [unmodeled] here, which carries no
-    effect at all, so the boundary is exactly "the read succeeded". *)
+    for it either.  A range [access_ok] refuses is -EFAULT with no effect
+    beyond the return, and one it admits that the memory does not wholly
+    back is [unmodeled], which carries no effect at all — so the boundary
+    is exactly "the read succeeded". *)
 Definition clone3_resolve (uargs : word) : Sys SyscallEffect :=
   record_copyins [(uargs, CLONE_ARGS_SIZE_nat)] clone_resolve.
 
@@ -862,12 +867,31 @@ Proof.
   exists e0. rewrite app_nil_r in *. split; [exact H0 | reflexivity].
 Qed.
 
+(** THE RANGE TEST COMES BEFORE THE WALK: the struct is read through
+    [State.copy_bytes_map], whose note says why that order is the guard.
+    [copy_clone_args_from_user] (kernel/fork.c, Linux v6.18.46) reads it
+    with [copy_struct_from_user] (include/linux/uaccess.h), which at the
+    one modeled size calls [copy_from_user] over all 88 bytes; the
+    [access_ok] is in [_inline_copy_from_user] (include/linux/uaccess.h),
+    which riscv64 reaches through [_copy_from_user] (lib/usercopy.c) and
+    which asks it because riscv64 defines no [masked_user_access_begin].
+    So a [uargs] whose range wraps past 2^64 and reads back from 0 is
+    -EFAULT with an empty ledger, before the fields are judged — the bare
+    walk read a fork-shaped struct there and the arm resolved the call.
+    A range [access_ok] admits that the memory does not wholly back stays
+    [unmodeled], for the reason [Kernel.Sys.prlimit64_spec] gives: which
+    bytes Linux read before it faulted is not something the ledger can
+    state.  [Checks.Cases.Kernel.Fork]'s [clone3_wrap_] group pins it,
+    beside a neighbour at the top of what [access_ok] accepts. *)
 Definition clone3_spec (uargs size : word) : Sys SyscallEffect :=
   if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then unmodeled
   else
     i <- input ;;
-    match read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE) with
-    | None => unmodeled       (* the struct is not wholly readable *)
+    match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
+    | None =>
+        if negb (access_okb uargs CLONE_ARGS_SIZE)
+        then err_ret EFAULT      (* [copy_from_user]'s [access_ok]: nothing read *)
+        else unmodeled           (* admitted, not wholly readable *)
     | Some bs =>
         if clone3_fork_args_b bs then clone3_resolve uargs else unmodeled
     end.

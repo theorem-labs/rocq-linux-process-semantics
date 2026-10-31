@@ -157,6 +157,8 @@ Inductive to_wall : machine_state -> list byte -> (machine_state -> Prop) -> Pro
     bv_unsigned x8 = 64%Z ->
     ms_gpr ms 0 = fd ->
     ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some rest ->
+    (* the range [vfs_write]'s [access_ok] accepts; see [CatSim.write1_check_n] *)
+    access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
     (1 <= length rest)%nat ->
     (forall n, (1 <= n)%nat -> (n <= length rest)%nat ->
        to_wall_tail (advance_past_svc (set_gpr0 ms (len_word (firstn n rest))))
@@ -225,9 +227,9 @@ Lemma sstep_to_wall_inv : forall ms rest k model evs st,
 Proof.
   intros ms rest k model evs st Hh Hlazy Hfdc Hbm Hw Hss.
   revert Hbm.
-  destruct Hw as [ms x8 rest k Hsvc Hno Hg Hr Hnb Hcont]. intro Hbm.
+  destruct Hw as [ms x8 rest k Hsvc Hno Hg Hr Hok Hnb Hcont]. intro Hbm.
   destruct (sstep_write_ch_inv segs fd ch Hfd32 ms model x8 rest evs st
-              Hh Hlazy Hfdc Hsvc Hno Hg Hr Hbm Hnb Hss) as (n & Hn1 & Hn2 & Hevs & Hst).
+              Hh Hlazy Hfdc Hsvc Hno Hg Hr Hok Hbm Hnb Hss) as (n & Hn1 & Hn2 & Hevs & Hst).
   exists n. repeat split; try assumption.
   apply (Hcont n Hn1 Hn2).
 Qed.
@@ -275,7 +277,7 @@ Proof.
        (forall ms', k ms' -> exists c, star segs (mkCfg ms' model) tr_k c) ->
        exists c, star segs (mkCfg ms model) (map (WriteEv ch) rest ++ tr_k) c)).
   - (* twl_write: deliver everything in one syscall *)
-    intros ms x8 rest k Hsvc Hno Hg Hr Hnb Hcont IH Hbm Hk.
+    intros ms x8 rest k Hsvc Hno Hg Hr Hok Hnb Hcont IH Hbm Hk.
     destruct (IH (length rest) Hnb (Nat.le_refl _)
                 (buf_modeled_skipn (length rest) rest Hbm) Hk) as [c Hstar].
     exists c.
@@ -370,11 +372,11 @@ Proof.
        forall tr c, star segs (mkCfg ms model) tr c ->
        is_prefix tr (map (WriteEv ch) rest ++ T))).
   - (* twl_write *)
-    intros ms x8 rest k Hsvc Hno Hg Hr Hnb Hcont IH Hbm HK tr c Hstar.
+    intros ms x8 rest k Hsvc Hno Hg Hr Hok Hnb Hcont IH Hbm HK tr c Hstar.
     inversion Hstar as [|c1 evs c2 tr2 c3 Hss Hstar2]; subst.
     { apply is_prefix_nil. }
     destruct (sstep_write_ch_inv segs fd ch Hfd32 ms model x8 rest evs (SNext c2)
-                Hh Hlazy Hfdc Hsvc Hno Hg Hr Hbm Hnb Hss) as (n & Hn1 & Hn2 & Hevs & Hc2).
+                Hh Hlazy Hfdc Hsvc Hno Hg Hr Hok Hbm Hnb Hss) as (n & Hn1 & Hn2 & Hevs & Hc2).
     subst evs. inversion Hc2; subst c2.
     pose proof (IH n Hn1 Hn2 (buf_modeled_skipn n rest Hbm) HK tr2 c Hstar2) as Hp.
     rewrite <- (firstn_skipn n rest) at 2.
@@ -421,6 +423,7 @@ Lemma twl_write_rec : forall (k : machine_state -> Prop) rest regs pc mem rom,
                    ms_svc_pending := Some (getr regs 17); ms_resv := None;
                    ms_fcsr := fp_csr; ms_mem := mem; ms_rom := rom |}
     (reg_get regs 11) (reg_get regs 12) = Some rest ->
+  access_okb (reg_get regs 11) (bv_unsigned (reg_get regs 12)) = true ->
   (1 <= length rest)%nat ->
   (forall n, (1 <= n)%nat -> (n <= length rest)%nat ->
      to_wall_tail (mkst (regupd regs 10 (len_word (firstn n rest)))
@@ -431,7 +434,7 @@ Lemma twl_write_rec : forall (k : machine_state -> Prop) rest regs pc mem rom,
              ms_fcsr := fp_csr; ms_mem := mem; ms_rom := rom |}
     rest k.
 Proof.
-  intros k rest regs pc mem rom H17 H10 Hr Hnb Hcont.
+  intros k rest regs pc mem rom H17 H10 Hr Hok Hnb Hcont.
   assert (E10 : Z_to_bv 5 (10 + Z.of_nat 0) = (10 : reg)) by (apply bv_eq; reflexivity).
   assert (E11 : Z_to_bv 5 (10 + Z.of_nat 1) = (11 : reg)) by (apply bv_eq; reflexivity).
   assert (E12 : Z_to_bv 5 (10 + Z.of_nat 2) = (12 : reg)) by (apply bv_eq; reflexivity).
@@ -440,6 +443,7 @@ Proof.
   - exact H17.
   - unfold ms_gpr. cbn [ms_regs]. rewrite E10. exact H10.
   - unfold ms_gpr. cbn [ms_regs]. rewrite E11, E12. exact Hr.
+  - unfold ms_gpr. cbn [ms_regs]. rewrite E11, E12. exact Hok.
   - exact Hnb.
   - intros n Hn1 Hn2. rewrite adv_set. exact (Hcont n Hn1 Hn2).
 Qed.
@@ -476,7 +480,7 @@ Proof.
   apply (to_wall_mutind
            (fun ms rest k => exists ms', k ms')
            (fun ms rest k => exists ms', k ms')).
-  - intros ms x8 rest k Hsvc Hno Hg Hr Hnb Hcont IH.
+  - intros ms x8 rest k Hsvc Hno Hg Hr Hok Hnb Hcont IH.
     exact (IH (length rest) Hnb (Nat.le_refl _)).
   - intros ms k Hk. exists ms. exact Hk.
   - intros ms rest k Hnb Hw IH. exact IH.
@@ -557,7 +561,7 @@ Proof.
        OmniRun.exec segs (mkCfg ms model)
          (fun tr o => exists tr', tr = map (WriteEv ch) rest ++ tr' /\ Q tr' o))).
   - (* twl_write: every delivered length is a successor, each covered by the IH *)
-    intros ms x8 rest k Hsvc Hno Hg Hr Hnb Hcont IH Hbm HK.
+    intros ms x8 rest k Hsvc Hno Hg Hr Hok Hnb Hcont IH Hbm HK.
     assert (Hw : to_wall ms rest k) by (eapply twl_write; eassumption).
     apply exec_step; [exact Hh | | |].
     + (* progress: deliver everything in one syscall *)
@@ -610,7 +614,7 @@ Proof.
   intros ms bufs code model Hh Hlazy Hte.
   induction Hte as
     [ms x8 Hsvc Hx8
-    | ms x8 buf bufs code Hsvc Hno Hg Hr Hnb Hcont IH
+    | ms x8 buf bufs code Hsvc Hno Hg Hr Hok Hnb Hcont IH
     | ms ms' bufs code Hsvc Hstep Hte IH]; intro Hbufs; [| discriminate Hbufs |].
   - apply (exec_step_only segs _ _
              [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]

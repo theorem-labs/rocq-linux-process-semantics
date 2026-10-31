@@ -252,6 +252,20 @@ Inductive step_to :=
   | SNext (c : config)
   | SError.
 
+(** One system call that RETURNED, as a statement about call order reads
+    it: the number latched from a7 at the [ecall], the argument registers
+    a0..a5 there ([syscall_args]), and a0 once the call has returned
+    ([apply_effect] writes the effect's return value there).  [star_calls]
+    below collects them along a run.  Nothing in the semantics reads this
+    record; it is vocabulary for statements, which is why it carries the
+    registers and not the [SyscallEffect]: a statement says what the
+    program asked and what it was told, in the program's own terms. *)
+Record SysCall := mkSysCall {
+  sc_no   : word;
+  sc_args : list word;
+  sc_ret  : word;
+}.
+
 Section WithMemImage.
 
 Variable mi_loaded_segments : list Segment.
@@ -297,8 +311,10 @@ Variable mi_init_brk : word.
     section).  The untrusted search in
     theories/Common/PlacementSearch.v takes its floor as a bare argument
     rather than off a [VmMaps].  The ASan plan checker's placement gate
-    ([Common.AsanCeil.placement_ok]) reads it too, under that checker's
-    named [placement_policy] hypothesis.  The PREDICATE over the value
+    ([Common.AsanCeil.placement_ok]) reads it too; that gate is the
+    theorem [Common.AsanCeil.placement_policy_holds], proved from
+    [Mmap.linux_place], and no longer a hypothesis the checker names.
+    The PREDICATE over the value
     is what [valid_entry] carries — see [valid_mmap_base]. *)
 Variable mi_mmap_base : word.
 
@@ -891,8 +907,9 @@ Definition reaches_error (c0 : config) : Prop :=
 
     Nothing a modeled run does can move it:
     [Kernel.Signal.rt_sigaction_spec] declines EVERY install for signal
-    13 ([Kernel.Signal.sigaction_accepted] admits 2 and 15, and
-    [Kernel.Signal.sigabrt_dfl_install] admits only signal 6).  What
+    13 ([Kernel.Signal.sigaction_accepted] admits 2 and 15,
+    [Kernel.Signal.sigabrt_dfl_install] admits only signal 6, and
+    [Kernel.Signal.sigchld_dfl_install] only signal 17).  What
     the LAUNCH did is the live question, by the same
     [flush_signal_handlers] argument: SIG_IGN survives execve, and
     `signal(SIGPIPE, SIG_IGN)` before exec is COMMON -- commoner than
@@ -972,6 +989,164 @@ Proof.
   intros ms model Hh Hsvc Hstep.
   exists [], (mkCfg ms model). split; [apply star_refl|].
   split; [exact Hh|]. left. split; assumption.
+Qed.
+
+(* =========================================================================
+   The execve boundary, and the log of the calls before it
+   ========================================================================= *)
+
+(** [s] sits at [p] as a C string: its bytes in order, none of them NUL,
+    then a NUL.  Stated over a memory function rather than computed, so
+    a statement can name the string an argument register points at
+    without fixing a fuel or a length bound; the length is [s]'s own. *)
+Definition cstr_at (mem : word -> option byte) (p : word) (s : list byte)
+    : Prop :=
+  ~ In (Z_to_bv 8 0) s /\
+  (forall k, (k < length s)%nat ->
+     mem (p + Z_to_bv 64 (Z.of_nat k)) = Some (nth k s (Z_to_bv 8 0))) /\
+  mem (p + Z_to_bv 64 (Z.of_nat (length s))) = Some (Z_to_bv 8 0).
+
+(** [w] sits at [a] as the 8-byte little-endian word a riscv64 [ld]
+    reads: the in-memory form of a pointer in an argv or envp array. *)
+Definition word_at (mem : word -> option byte) (a w : word) : Prop :=
+  exists bs, length bs = 8%nat /\
+    (forall k, (k < 8)%nat ->
+       mem (a + Z_to_bv 64 (Z.of_nat k)) = Some (nth k bs (Z_to_bv 8 0))) /\
+    le_bytes_to_word bs = w.
+
+(** [l] sits at [p] as a NULL-terminated array of string pointers, the
+    shape [execve] reads its argv and envp from ([do_execveat_common] ->
+    [count] and [copy_strings], fs/exec.c, Linux v6.18.44; identical at
+    v6.18.46): entry [k] is a non-NULL pointer to the C string [nth k l],
+    and the entry after the last is NULL.  An empty [l] is an array that
+    holds only the NULL, which is what a launcher passes for an empty
+    environment ({NULL}); a NULL [argv] or [envp] POINTER is a different
+    call, and this predicate does not describe it. *)
+Definition strv_at (mem : word -> option byte) (p : word) (l : list (list byte))
+    : Prop :=
+  (forall k, (k < length l)%nat ->
+     exists q, word_at mem (p + Z_to_bv 64 (8 * Z.of_nat k)) q
+               /\ q <> Z_to_bv 64 0
+               /\ cstr_at mem q (nth k l [])) /\
+  word_at mem (p + Z_to_bv 64 (8 * Z.of_nat (length l))) (Z_to_bv 64 0).
+
+(** THE EXECVE BOUNDARY.  [c] is a live configuration whose pending
+    system call is [execve] (riscv64 number 221), with the path at a0,
+    argv at a1 and envp at a2, read from the memory the call would read
+    ([ms_read_byte], the same view [sys_input] hands a spec).
+
+    [execve] HAS NO ARM, ON PURPOSE.  The model describes ONE program
+    image, and what [execve] makes is another; so the model stops here
+    ([execve_boundary_stops]: the only step out of [c] is the [SError]
+    of an uncovered call).  A statement about a launcher -- a program
+    whose job ends in an exec -- is stated AT the boundary instead: what
+    the configuration holds when the call is made (the credentials
+    [m_creds], the descriptor table [m_fds], the strings it passes), and,
+    through [star_calls], which calls returned on the way there.  What
+    the kernel then does with that state (what survives the exec, what
+    the new image is) is a kernel fact, not part of this model.
+
+    The path is read as a C string with no length bound here: [getname]
+    refuses one longer than PATH_MAX, which the CALL would then answer
+    with -ENAMETOOLONG; a statement that needs that bound states it. *)
+Definition execve_boundary (c : config) (path : list byte)
+    (argv envp : list (list byte)) : Prop :=
+  m_halted (cfg_model c) = None /\
+  ms_svc_pending (cfg_ms c) = Some (Z_to_bv 64 221) /\
+  cstr_at (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 0) path /\
+  strv_at (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 1) argv /\
+  strv_at (ms_read_byte (cfg_ms c)) (ms_gpr (cfg_ms c) 2) envp.
+
+(** [execve] is declined on every input: [Sys.SyscallTable.spec_table]
+    has no entry for 221.  This lemma is the tripwire for that design: it
+    stops compiling the day 221 gets an arm, and [execve_boundary]'s
+    reading as "where the model stops" has to be revisited then. *)
+Lemma syscall_spec_execve_unmodeled : forall i m o,
+  in_sysno i = Z_to_bv 64 221 -> syscall_spec i m o -> o = Unmodeled.
+Proof.
+  intros i m o Hno H. unfold syscall_spec, dispatch in H.
+  assert (Hl : lookup_arm spec_table (bv_unsigned (in_sysno i)) = None)
+    by (rewrite Hno; reflexivity).
+  rewrite Hl in H. exact H.
+Qed.
+
+(** The boundary is where the run stops: no event, and the only
+    transition is the error of an uncovered call. *)
+Lemma execve_boundary_stops : forall c path argv envp,
+  execve_boundary c path argv envp ->
+  forall evs s, sstep c evs s -> evs = [] /\ s = SError.
+Proof.
+  intros [ms model] path argv envp (_ & Hsvc & _) evs s Hs. cbn in Hsvc.
+  inversion Hs; subst; try congruence;
+    match goal with
+    | H : syscall_spec _ _ (Ok _ _ _) |- _ =>
+        apply syscall_spec_execve_unmodeled in H; [discriminate H|];
+        cbn; congruence
+    | _ => split; reflexivity
+    end.
+Qed.
+
+(** [star] with the log of the system calls that RETURNED on the way, in
+    order.  An instruction step adds nothing to the log; a system call
+    that returns ([sstep_syscall]'s shape, written out here) adds its
+    [SysCall]; a call that ENDS the process ([sstep_exit],
+    [sstep_killed]) adds its events to the trace and nothing to the log,
+    because it returns to nobody.  [star_calls_star] and
+    [star_star_calls] say that the log is a pure annotation: the runs are
+    exactly [star]'s.
+
+    WHY A LOG AND NOT MORE STATE.  Several facts a statement needs are
+    the RESULT of a call the model does not otherwise remember -- that
+    [prctl(PR_SET_NO_NEW_PRIVS)] returned 0 before the [clone], that
+    [setgroups], [setresgid] and [setresuid] returned 0 in that order
+    before the exec.  The kernel keeps those effects in the task and in
+    its credentials; the model keeps what a modeled call can read back
+    (the credentials) and nothing it cannot.  The log lets a statement
+    say what the program did without the model inventing state no
+    modeled call consults. *)
+Inductive star_calls : config -> list event -> list SysCall -> config -> Prop :=
+| star_calls_refl : forall c, star_calls c [] [] c
+| star_calls_ret : forall ms model x8 eff model' model'' evs tr log c',
+    m_halted model = None ->
+    ms_svc_pending ms = Some x8 ->
+    syscall_spec (sys_input ms x8) model (Ok eff model' evs) ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff)
+      = Some model'' ->
+    star_calls (mkCfg (advance_past_svc (apply_effect ms eff)) model'')
+               tr log c' ->
+    star_calls (mkCfg ms model) (evs ++ tr)
+               (mkSysCall x8 (syscall_args ms) (eff_ret eff) :: log) c'
+| star_calls_other : forall c evs c2 tr log c',
+    sstep c evs (SNext c2) ->
+    (ms_svc_pending (cfg_ms c) = None \/ m_halted (cfg_model c2) <> None) ->
+    star_calls c2 tr log c' ->
+    star_calls c (evs ++ tr) log c'.
+
+Lemma star_calls_star : forall c tr log c',
+  star_calls c tr log c' -> star c tr c'.
+Proof.
+  intros c tr log c' H. induction H.
+  - apply star_refl.
+  - eapply star_step; [|exact IHstar_calls].
+    eapply sstep_syscall; eassumption.
+  - eapply star_step; eassumption.
+Qed.
+
+Lemma star_star_calls : forall c tr c',
+  star c tr c' -> exists log, star_calls c tr log c'.
+Proof.
+  intros c tr c' H. induction H as [c|c1 evs c2 tr c3 Hs Hst (log & IH)].
+  - exists []. apply star_calls_refl.
+  - destruct (ms_svc_pending (cfg_ms c1)) as [x8|] eqn:Hsvc.
+    + inversion Hs; subst; cbn in Hsvc; try congruence.
+      * eexists. eapply star_calls_ret; eassumption.
+      * exists log. eapply star_calls_other; [exact Hs| |exact IH].
+        right. cbn [cfg_model]. congruence.
+      * exists log. eapply star_calls_other; [exact Hs| |exact IH].
+        right. cbn [cfg_model]. unfold m_killed, m_halted in *.
+        destruct (procst_killed (m_proc model')); congruence.
+    + exists log. eapply star_calls_other; [exact Hs|left; exact Hsvc|exact IH].
 Qed.
 
 (** Every maximal execution from [c0] reaches the explicit error
@@ -1418,7 +1593,29 @@ Record InjectedArm := mkInjectedArm {
     injected by a bare [alt] rather than through a named list, so their
     lists are written here.  [faccessat2] draws from
     [faccessat]'s list because both answer through
-    [Fs.Open.access_exists_spec]. *)
+    [Fs.Open.access_exists_spec].
+
+    NANOSLEEP LISTS -EINTR AND NOT -EFAULT, AND THAT ASYMMETRY IS A
+    DECISION rather than an oversight — it is written here because the
+    next reader will otherwise close it in the wrong direction.  Since
+    the remainder pointer took its range test
+    ([Sys.Kernel.Time.Hrtimer.nanosleep_spec]), an [rmtp] that
+    [State.access_okb] refuses answers -EFAULT, and that answer is
+    reachable ONLY through an interruption: a completed sleep never
+    copies the remainder out.  So -EINTR and -EFAULT come from the same
+    injection, and only one of them is in the list.
+    LISTING AN ERRNO MAKES [forced_only_cfg] FILTER THE OUTCOME, so
+    adding -EFAULT here would stop a proof having to handle a case a
+    real run produces — an interrupted sleep whose remainder pointer is
+    out of range.  Leaving it unlisted keeps that outcome and costs a
+    proof one case it can discharge.  The cheap error is the one that
+    keeps the case, so the list stays as it is.
+    What would have to be true for the other choice: that no covered
+    program can present an out-of-range [rmtp] to an interrupted sleep
+    — which is a fact about the programs, not about this table, and
+    nothing in this tree states it.
+    A refused [rqtp] is not affected either way: its -EFAULT is the
+    only outcome at that state, so it is kept under both readings. *)
 Definition injected_table : list InjectedArm :=
   (* getcwd     *) mkInjectedArm  17%Z FamFs    getcwd_errnos ::
   (* dup        *) mkInjectedArm  23%Z FamFd    dup_errnos ::
@@ -1549,16 +1746,17 @@ Definition alloc_budget_refused_b (i : SyscallInput) (m : Model) : bool :=
     not (the charge is the growth above the current break). *)
 Inductive RefuseReason : Set := RefuseBudget | RefuseOversize.
 
-(** The charge of the pending request: the byte growth above the
-    current break for [brk], the page-rounded length or new size for
+(** The charge of the pending request: the PAGES a [brk] grow installs
+    above the current break ([Sys/Mm/Mmap.brk_grow_bytes], the same
+    range the ledger records and the gate charges), the page-rounded
+    length or new size for
     [mremap], [mmap] and [mprotect], and 0 for any other syscall —
     [munmap] included, whose mark never fires.  The argument indices are
     those of [alloc_budget_refused_b]; the per-arm lemmas below tie this
     charge to each arm's gate. *)
 Definition alloc_req_charge_bytes (i : SyscallInput) (m : Model) : Z :=
   let no := bv_unsigned (in_sysno i) in
-  if Z.eqb no 214 then
-    Z.max 0%Z (bv_unsigned (in_arg i 0) - bv_unsigned (vm_brk (m_vmmaps m)))%Z
+  if Z.eqb no 214 then brk_grow_bytes (m_vmmaps m) (in_arg i 0)
   else if Z.eqb no 216 then page_round_up_Z (bv_unsigned (in_arg i 2))
   else if Z.eqb no 222 then page_round_up_Z (bv_unsigned (in_arg i 1))
   else if Z.eqb no 226 then page_round_up_Z (bv_unsigned (in_arg i 1))
@@ -1599,7 +1797,7 @@ Qed.
 Lemma alloc_req_charge_brk : forall i m,
   bv_unsigned (in_sysno i) = 214%Z ->
   alloc_budget_refused_b i m = true ->
-  (0 < alloc_req_charge_bytes i m)%Z
+  (0 <= alloc_req_charge_bytes i m)%Z
   /\ brk_budget_ok m (in_arg i 0)
      = (vm_backing_used m + alloc_req_charge_bytes i m <=? vm_limit (m_vmmaps m))%Z
   /\ brk_budget_ok m (in_arg i 0) = false.
@@ -1609,20 +1807,13 @@ Proof.
   cbn [Z.eqb Pos.eqb] in Hb.
   unfold brk_budget_refused_b in Hb.
   apply andb_true_iff in Hb as [Hb Hok].
-  apply andb_true_iff in Hb as [Hb Hgt].
-  apply andb_true_iff in Hb as [_ Hpos].
-  apply Z.ltb_lt in Hgt. apply Z.ltb_lt in Hpos.
   apply negb_true_iff in Hok.
   assert (Hc : alloc_req_charge_bytes i m
-               = (bv_unsigned (in_arg i 0) - bv_unsigned (vm_brk (m_vmmaps m)))%Z).
-  { unfold alloc_req_charge_bytes. cbv zeta. rewrite Hno. cbn [Z.eqb Pos.eqb]. lia. }
-  assert (Hsz : bv_unsigned (in_arg i 0 - vm_brk (m_vmmaps m))%bv
-                = (bv_unsigned (in_arg i 0) - bv_unsigned (vm_brk (m_vmmaps m)))%Z).
-  { pose proof (bv_unsigned_in_range 64 (in_arg i 0)).
-    pose proof (bv_unsigned_in_range 64 (vm_brk (m_vmmaps m))).
-    rewrite bv_sub_unsigned. apply bv_wrap_small. lia. }
-  split; [lia |]. split; [| exact Hok].
-  unfold brk_budget_ok. cbv zeta. rewrite Hsz, Hc. reflexivity.
+               = brk_grow_bytes (m_vmmaps m) (in_arg i 0)).
+  { unfold alloc_req_charge_bytes. cbv zeta. rewrite Hno.
+    cbn [Z.eqb Pos.eqb]. reflexivity. }
+  split; [rewrite Hc; unfold brk_grow_bytes; lia |]. split; [| exact Hok].
+  unfold brk_budget_ok. cbv zeta. rewrite Hc. reflexivity.
 Qed.
 
 (** THE MREMAP MARK, READ BACK.  The grow has ONE non-errno
@@ -2731,6 +2922,45 @@ Definition valid_argv (argv : list (list byte)) : Prop :=
   Forall (fun a => path_has_slash a = false
                    /\ path_eqb a dotdot_path = false) (tl argv).
 
+(** THE SAME LIST WITH PATH ARGUMENTS ADMITTED: [valid_argv] without its
+    last clause.  The counts and the byte bounds are the same; an
+    argument after argv[0] may contain "/" and may be "..".
+
+    WHY IT IS A SECOND PREDICATE AND NOT A WIDER [valid_argv].  The tail
+    clause above narrows what every statement over [valid_input] covers,
+    and the note on it says why that narrowing is load-bearing for two
+    theorems.  Widening [valid_argv] would change what every existing
+    statement says.  A program whose real launches pass paths -- a
+    sandbox launcher's argv is mostly paths, "--bind /src /dst" -- is
+    covered instead by [valid_input_paths] below, which a statement
+    names when it means those launches.  Nothing in the model reads argv
+    after launch except the program itself, so admitting the separator
+    here admits no new kernel behaviour: what a path argument then MEANS
+    to the kernel is decided by the arms that receive it, each of which
+    still declines what it cannot answer. *)
+Definition valid_argv_paths (argv : list (list byte)) : Prop :=
+  (1 <= Z.of_nat (length argv) <= 1024)%Z /\
+  (total_arg_bytes argv <= 2097152)%Z /\
+  Forall (fun a => (Z.of_nat (length a) <= 131071)%Z) argv /\
+  Forall (fun a => ~ In (Z_to_bv 8 0) a) argv.
+
+Lemma valid_argv_paths_of_valid_argv : forall argv,
+  valid_argv argv -> valid_argv_paths argv.
+Proof.
+  intros argv (H1 & H2 & H3 & H4 & _). exact (conj H1 (conj H2 (conj H3 H4))).
+Qed.
+
+(** And back, given the clause the paths form leaves out. *)
+Lemma valid_argv_of_paths : forall argv,
+  valid_argv_paths argv ->
+  Forall (fun a => path_has_slash a = false
+                   /\ path_eqb a dotdot_path = false) (tl argv) ->
+  valid_argv argv.
+Proof.
+  intros argv (H1 & H2 & H3 & H4) H5.
+  exact (conj H1 (conj H2 (conj H3 (conj H4 H5)))).
+Qed.
+
 (** Validity predicate for envp lists.
     Same structural constraints as argv but with larger bounds:
     up to 256 variables, 131072 bytes total. *)
@@ -3005,8 +3235,9 @@ Qed.
     discharge — which is why the field strengthens every
     statement in the tree that quantifies over an entry without changing
     one of their texts.  No ADDRESS moves with the draw either
-    ([StackLayout.build_stack_bytes_split_random],
-    [entry_stack_image_block_prefix]), so [entry_stack_fits] stays a
+    ([StackLayout.build_stack_bytes_split_random], carried to the
+    mapped image by [PropExec.entry_stack_image_block]), so
+    [entry_stack_fits] stays a
     function of (sp, argv, envp) — and it still bounds the whole mapped
     region, page rounding included
     ([PropExec.entry_page_top_within_window]).
@@ -4352,6 +4583,59 @@ Proof.
   intros inp H. red in H.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   assumption.
+Qed.
+
+(** THE PATH-ARGUMENT LAUNCH: [valid_input] with [valid_argv_paths] in
+    place of [valid_argv], and every other clause the same -- the
+    ordinary world, with the abort path off, SIGPIPE at SIG_DFL, a live
+    reader on descriptors 1 and 2, and Sv48.  It is a second launch
+    predicate beside the ordinary one, as [valid_input_abort] and
+    [valid_input_channel_closed] are, and for their reason: what a proof
+    was made under has to be readable in the statement.  Unlike those
+    two it names no declaration field, because no arm reads argv: the
+    difference between the two launches is in the strings alone.
+
+    WHAT IT IS FOR.  A program that takes paths on its command line --
+    BET-467's sandbox launcher and bubblewrap, whose every real argv
+    holds "/tmp", "/proc" and bind paths -- has no launch at all under
+    [valid_input].  A statement about it quantifies over this predicate
+    instead, and [valid_input_paths_of_valid_input] says it covers every
+    launch [valid_input] does.  [valid_input_of_paths] is the converse
+    given the tail clause, and it is also the guard that keeps the two
+    in step: a conjunct added to [valid_input] and not here stops it
+    from compiling. *)
+Definition valid_input_paths (inp : ProcInput) : Prop :=
+  valid_argv_paths (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
+  /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
+  /\ valid_creds inp /\ valid_nofile (in_nofile inp)
+  /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
+  /\ in_abort_terminal inp = false
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_va_size inp = Sv48
+  /\ valid_urandom inp
+  /\ valid_launch inp.
+
+Lemma valid_input_paths_of_valid_input : forall inp,
+  valid_input inp -> valid_input_paths inp.
+Proof.
+  intros inp H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  split; [apply valid_argv_paths_of_valid_argv; assumption|].
+  repeat match goal with |- _ /\ _ => split end; assumption.
+Qed.
+
+Lemma valid_input_of_paths : forall inp,
+  valid_input_paths inp ->
+  Forall (fun a => path_has_slash a = false
+                   /\ path_eqb a dotdot_path = false) (tl (in_argv inp)) ->
+  valid_input inp.
+Proof.
+  intros inp H Htl. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  split; [apply valid_argv_of_paths; assumption|].
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** THE SIGPIPE DECLARATION, as an accessor rather than as a position,

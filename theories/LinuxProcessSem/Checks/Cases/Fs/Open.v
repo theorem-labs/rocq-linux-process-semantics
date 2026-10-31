@@ -2103,3 +2103,177 @@ Example openat_tmp_implied_directory_sibling_still_creates :
      | _ => False
      end.
 Proof. vm_compute. split; reflexivity. Qed.
+
+(* =========================================================================
+   THE PATHNAME WALK THAT WALKED OFF THE TOP OF THE ADDRESS SPACE
+
+   [State.read_cstr_aux] stepped [a + 1] in the 64-bit word and tested
+   nothing, so a pathname pointer in the last bytes of the address
+   space read the bytes below the wrap and then the bytes from 0 on,
+   said [CstrOk], and [Fs.Open.openat_spec] then ANSWERED the call on
+   that name — a wrong answer, not a decline.  Linux refuses it:
+   [strncpy_from_user] (lib/strncpy_from_user.c, [strncpy_from_user])
+   returns -EFAULT for a source at or above [TASK_SIZE_MAX] and clamps
+   every other scan to end below it, and [getname_flags] (fs/namei.c)
+   returns that -EFAULT.  The walk now tests [State.access_okb a 1] in
+   front of each byte; [State.read_cstr_aux] says why per byte and not
+   once over PATH_MAX.
+
+   The groups follow [Checks.Cases.Net.Socket]'s wrap groups: the
+   wrapping call refused, a neighbouring call at the top of what
+   [State.access_okb] accepts still answered, and the control that the
+   bare walk really would have passed.  The last group is the case the
+   per-byte test exists for: a name that STARTS below [TASK_SIZE] and
+   reaches it faults there, and the ledger records only the byte below.
+
+   THE MEMORIES MAP EXACTLY THEIR OWN BYTES and nothing else, so no
+   refusal can pass because the memory stopped short; [wmem_open] would
+   answer at every address and could not tell a wrapping pointer from
+   any other.
+
+   Every call is a read-only open of "a" on an image that HOLDS "a", so
+   what the bare walk produced on the wrapping pointer was not an errno
+   but a SUCCESS at fd 3.
+   ========================================================================= *)
+
+Definition open_a_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input [([97], [])] IEof).
+
+(* ---- the wrap: 'a' in the last byte of the address space, NUL at 0 ----- *)
+
+Definition open_wrap_pathp : word := Z_to_bv 64 (2 ^ 64 - 1).
+
+Definition open_wrap_mem : word -> option byte :=
+  fun a => if bv_eqb a open_wrap_pathp then Some 97   (* 'a' *)
+           else if bv_eqb a 0 then Some 0             (* NUL *)
+           else None.
+
+Definition open_wrap_input : SyscallInput :=
+  mkInput 56 [AT_FDCWD; open_wrap_pathp; 0; 0; 0; 0] open_wrap_mem (fun _ => None).
+
+(** THE CONTROL.  The old walk read [mp a] and then [mp (a + 1)]; here
+    [a + 1] is 0, and the two bytes at those addresses are 'a' and the
+    NUL.  [read_bytes_map] steps the same wrapping [a + 1], so its
+    answer is the byte sequence the old walk consumed, NUL included:
+    the bare walk would have answered [CstrOk "a"]. *)
+Example openat_wrap_would_pass_the_bare_walk :
+  open_wrap_pathp + 1 = Z_to_bv 64 0
+  /\ read_bytes_map open_wrap_mem open_wrap_pathp (Z_to_bv 64 2)
+     = Some [Z_to_bv 8 97; Z_to_bv 8 0].
+Proof. split; check_eq. Qed.
+
+(** The walk refuses at its first byte, and the ledger counts nothing:
+    [strncpy_from_user] returns before it fetches a byte. *)
+Example openat_wrap_path_is_a_fault :
+  read_cstr open_wrap_mem open_wrap_pathp = CstrFault
+  /\ cstr_access_len_aux open_wrap_mem open_wrap_pathp path_max = 0%nat.
+Proof. split; check_eq. Qed.
+
+(** -EFAULT with an empty range is the model's answer.  The success the
+    bare walk admitted — fd 3 on "a", with the two bytes it claimed
+    across the wrap as the ledger — is refused, and so is an -EFAULT
+    that claims those two bytes. *)
+Example openat_wrapping_path_is_efault :
+  check_syscall open_wrap_input
+    (with_copyins [(open_wrap_pathp, 0%nat)] (mkEffect (errno_ret EFAULT) [] []))
+    open_a_model
+  = CheckOk open_a_model []
+  /\ check_syscall open_wrap_input
+       (with_copyins [(open_wrap_pathp, 2%nat)] (mkEffect 3 [] []))
+       open_a_model
+     = CheckReject
+  /\ check_syscall open_wrap_input
+       (with_copyins [(open_wrap_pathp, 2%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       open_a_model
+     = CheckReject.
+Proof. split; [|split]; check_eq. Qed.
+
+(* ---- the neighbour: the last two bytes [State.access_okb] accepts ------- *)
+
+(** 'a' at [TASK_SIZE - 2] and the NUL at [TASK_SIZE - 1], the last
+    byte of the user address space, and nothing else.  Linux clamps the
+    scan to these two bytes and finds the NUL inside them. *)
+Definition open_top_pathp : word := Z_to_bv 64 (TASK_SIZE - 2).
+
+Definition open_top_mem : word -> option byte :=
+  fun a => if bv_eqb a open_top_pathp then Some 97                     (* 'a' *)
+           else if bv_eqb a (Z_to_bv 64 (TASK_SIZE - 1)) then Some 0  (* NUL *)
+           else None.
+
+Definition open_top_input : SyscallInput :=
+  mkInput 56 [AT_FDCWD; open_top_pathp; 0; 0; 0; 0] open_top_mem (fun _ => None).
+
+(** The walk reads "a" and counts both bytes.  The last conjunct is why
+    the test sits in front of each byte: [State.access_okb] over the
+    whole PATH_MAX bound refuses this pointer, so one test placed in
+    front of the walk would answer -EFAULT where Linux opens the file. *)
+Example openat_path_at_the_top_reads :
+  read_cstr open_top_mem open_top_pathp = CstrOk [Z_to_bv 8 97]
+  /\ cstr_access_len_aux open_top_mem open_top_pathp path_max = 2%nat
+  /\ access_okb open_top_pathp (Z.of_nat path_max) = false.
+Proof. split; [|split]; check_eq. Qed.
+
+(** THE NEIGHBOUR, the half that says the guard is not a blanket refusal
+    of high pointers: the same read-only open of "a" is answered, with
+    the success at fd 3 and the two-byte ledger, and -EFAULT is refused
+    there. *)
+Example openat_path_at_the_top_still_answers :
+  match check_syscall open_top_input
+          (with_copyins [(open_top_pathp, 2%nat)] (mkEffect 3 [] []))
+          open_a_model with
+  | CheckOk m [] =>
+      fd_lookup (m_fds m) (Z_to_bv 64 3)
+      = Some (FdFile [Z_to_bv 8 97] (Z_to_bv 64 0))
+  | _ => False
+  end
+  /\ check_syscall open_top_input
+       (with_copyins [(open_top_pathp, 2%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       open_a_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- the crossing: a name that starts below [TASK_SIZE] and reaches it -- *)
+
+(** 'a' at [TASK_SIZE - 1] and the NUL at [TASK_SIZE] itself.  Linux
+    maps no user page at [TASK_SIZE], but the memory map handed to the
+    model is arbitrary, and this one answers there.  Linux clamps the
+    scan to the one byte below [TASK_SIZE], reads 'a', reaches [max]
+    short of [count], and returns -EFAULT (lib/strncpy_from_user.c,
+    [do_strncpy_from_user]).  The walk faults at [TASK_SIZE] the same
+    way, and the ledger is the one byte it read. *)
+Definition open_cross_pathp : word := Z_to_bv 64 (TASK_SIZE - 1).
+
+Definition open_cross_mem : word -> option byte :=
+  fun a => if bv_eqb a open_cross_pathp then Some 97              (* 'a' *)
+           else if bv_eqb a (Z_to_bv 64 TASK_SIZE) then Some 0   (* NUL *)
+           else None.
+
+Definition open_cross_input : SyscallInput :=
+  mkInput 56 [AT_FDCWD; open_cross_pathp; 0; 0; 0; 0] open_cross_mem (fun _ => None).
+
+(** THE CONTROL for the crossing: the bare walk's two bytes, NUL
+    included, are there. *)
+Example openat_crossing_would_pass_the_bare_walk :
+  read_bytes_map open_cross_mem open_cross_pathp (Z_to_bv 64 2)
+  = Some [Z_to_bv 8 97; Z_to_bv 8 0].
+Proof. check_eq. Qed.
+
+(** -EFAULT with the one byte below [TASK_SIZE] on the ledger; the
+    success the bare walk admitted, and an -EFAULT whose ledger claims
+    the byte AT [TASK_SIZE], are both refused. *)
+Example openat_crossing_path_is_efault :
+  read_cstr open_cross_mem open_cross_pathp = CstrFault
+  /\ cstr_access_len_aux open_cross_mem open_cross_pathp path_max = 1%nat
+  /\ check_syscall open_cross_input
+       (with_copyins [(open_cross_pathp, 1%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       open_a_model
+     = CheckOk open_a_model []
+  /\ check_syscall open_cross_input
+       (with_copyins [(open_cross_pathp, 2%nat)] (mkEffect 3 [] []))
+       open_a_model
+     = CheckReject
+  /\ check_syscall open_cross_input
+       (with_copyins [(open_cross_pathp, 2%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       open_a_model
+     = CheckReject.
+Proof. split; [|split; [|split; [|split]]]; check_eq. Qed.

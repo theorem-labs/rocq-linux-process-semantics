@@ -4,26 +4,46 @@
     style of [Checks/Examples.v], plus the ledger invariant those
     definitions DO maintain.
 
-    One might expect the [vm_maps] intervals to be "pairwise disjoint
-    by construction ([region_free] gates every grant)".  PART 1 below is
-    a machine-checked execution that refutes that: six modeled syscalls
-    from an [execve]-shaped [init_model] state leave the ledger holding
-    two OVERLAPPING entries, and eight leave it holding two entries with
-    the SAME BASE and different sizes.  So neither byte-level pairwise
-    disjointness nor byte-level base uniqueness is an invariant of
-    reachable states, and no proof of either can exist.
+    PART 1 is a machine-checked execution of eight modeled syscalls from
+    an [execve]-shaped [init_model] state.  IT USED TO END WITH THE
+    LEDGER HOLDING TWO OVERLAPPING ENTRIES, and two with the SAME BASE
+    and different sizes, because a brk grow recorded the LOGICAL range
+    [[old, r)] while [Mmap.brk_grow_ok] tests the PAGE-ROUNDED one and
+    tests nothing at all when that is empty.  A brk shrink cut the
+    logical tail [[r, b)] the same way, out of mappings that were not
+    the heap's.  Both are gone: [Mmap.brk_grants] now records the pages
+    the grow installs and [Mmap.brk_maps_next]'s shrink cuts only the
+    pages the kernel unmaps.  The same eight calls are checked here
+    against their new post-states, and the two steps that carried the
+    defect are pinned from both sides:
 
-    PART 2 states and proves what IS invariant, which is the property
-    every consumer of the ledger actually needs: no PAGE-ALIGNED address
-    is owned by two entries.  Every address a syscall can name as a
+    - [wit_step6] shrinks the break by ten bytes inside one page.  The
+      ledger is UNCHANGED — ten granted, unfreed, still-mapped bytes
+      that the logical cut used to drop — and [wit_step6_frees_nothing]
+      states it as the equality.  [wit_step4] beside it is the ordinary
+      page-crossing shrink, which still frees its page.
+    - [wit_step8] grows the break inside one page.  The ledger is
+      UNCHANGED and nothing is charged, because Linux installs nothing;
+      [wit_step1] beside it is the ordinary page-crossing grow, which
+      still records and charges its page.
+    - [wit_no_overlap] and [wit_no_duplicate_base] close the run: every
+      entry is page aligned and page sized, no byte is owned twice, and
+      [live_bytes] of the final ledger is the number of mapped bytes.
+
+    PART 2 states and proves the invariant the model maintains over
+    EVERY reachable state, which is the property every consumer of the
+    ledger needs: no PAGE-ALIGNED address is owned by two entries.
+    Every address a syscall can name as a
     mapping base is page aligned ([munmap], [mremap] and [mprotect]
     answer -EINVAL otherwise, and [mmap] only ever places on a page
     boundary), so this yields base uniqueness exactly where it is used,
     and in particular makes a [map_has] hit name exactly one entry.
+    Part 1 closes the one route by which byte-level overlap was known to
+    be reachable; it does not prove that byte-level disjointness is now
+    an invariant, and Part 2 does not claim it.
 
-    WHY THE WEAKER PROPERTY IS THE RIGHT ONE.  The gap Part 1 exploits is
-    real Linux behaviour, not a modelling slip: [SYSCALL_DEFINE1(brk)]
-    (mm/mmap.c) rounds both breaks and takes
+    WHY THE LEDGER IS PAGE-GRANULAR AND THE BREAK IS NOT.
+    [SYSCALL_DEFINE1(brk)] (mm/mmap.c) rounds both breaks and takes
 
       newbrk = PAGE_ALIGN(brk);
       oldbrk = PAGE_ALIGN(mm->brk);
@@ -51,13 +71,23 @@
     it; and neither does the v6.12 change of the shrink call from
     [do_vma_munmap] to [do_vmi_align_munmap], which is below the exit.
     Window figures sample mainline tags; the v6.18.46 statement is read
-    from that commit itself.  A brk move
-    within one page therefore reaches [mm->brk = brk] with NO
-    ADDRESS-SPACE TEST APPLIED,
-    even when the bytes it walks over belong to some other mapping — a
-    state a real process reaches by unmapping the brk VMA and mapping
-    over it.  Not unconditionally, though: three gates sit ABOVE the
-    exit, none of them about the address space — the killable
+    from that commit itself.
+
+    SO A BRK MOVE WITHIN ONE PAGE REACHES [mm->brk = brk] WITH NO
+    ADDRESS-SPACE TEST APPLIED, and the model must admit it: a gate that
+    required the unrounded range [[old, r)] to be [region_free] would
+    make the model REJECT a call Linux serves.  [brk_r_ok] evaluates the
+    gate at the resolution it is shown, so the tightening would decline
+    the SUCCESS resolution [r = req] — the break Linux hands back —
+    while leaving the no-op resolution [r = old] admissible, its outer
+    guard having degenerated to [old < old].  THAT PERMISSIVENESS IS
+    ABOUT THE BREAK, NOT ABOUT THE LEDGER.  Linux installs no memory on
+    such a call, so there is nothing to record and nothing to charge;
+    the earlier reading, which recorded the logical range because the
+    break had moved, is what turned a faithful permissiveness into an
+    unowned, double-counted entry.  The break is [vm_brk] and it carries
+    the move on its own.  The three gates that DO sit above the exit are
+    none of them about the address space — the killable
     [mmap_write_lock], the [brk < min_brk] floor, and
     [check_data_rlimit(rlimit(RLIMIT_DATA), brk, ...)], which is passed
     the RAW unaligned break precisely so a non-page-aligned limit cannot
@@ -65,16 +95,7 @@
     unchanged.  The model does not carry [RLIMIT_DATA], and does not need
     to: [brk_r_ok] admits [r = vm_brk h] on every grow, which is that
     same unchanged break, so a refusal it does not model is already an
-    admissible outcome.  The model reproduces
-    that faithfully with [brk_grow_ok]'s [else true], and a gate that
-    required the unrounded range [[old, r)] to be [region_free] would
-    make the model REJECT a call Linux serves.  [brk_r_ok] evaluates the
-    gate at the resolution it is shown, so the tightening would decline
-    the SUCCESS resolution [r = req] — the break Linux hands back —
-    while leaving the no-op resolution [r = old] admissible, its outer
-    guard having degenerated to [old < old].  The byte-level overlap is
-    the honest ledger reading of a real kernel state; page-granular
-    ownership is what survives it. *)
+    admissible outcome. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -195,11 +216,13 @@ Example wit_step1 :
 Proof. check_eq. Qed.
 
 (** STEP 2 — brk(0x11064): grow 100 bytes past the page boundary.  The
-    gate checks the ROUNDED range [[69632, 73728)]; the ledger records
-    the LOGICAL range [[69632, 69732)].  The break is now mid-page. *)
+    gate checks the ROUNDED range [[69632, 73728)] and the ledger
+    records it, because that is the page Linux installs.  The break is
+    now mid-page, at 69732, and it is [vm_brk] that carries the hundred
+    bytes, not an entry. *)
 Definition wit_s2 : Model :=
   with_vmmaps
-    (wit_vm [(69632, 100); (65536, 4096)] 65536 69732 wit_limit)
+    (wit_vm [(69632, 4096); (65536, 4096)] 65536 69732 wit_limit)
     wit_s0.
 
 Example wit_step2 :
@@ -211,7 +234,7 @@ Proof. check_eq. Qed.
     unmaps those pages and leaves [mm->brk] alone; so does the model. *)
 Definition wit_s3 : Model :=
   with_vmmaps
-    (wit_vm [(69632, 100)] 65536 69732 wit_limit) wit_s0.
+    (wit_vm [(69632, 4096)] 65536 69732 wit_limit) wit_s0.
 
 Example wit_step3 :
   check_syscall
@@ -220,9 +243,12 @@ Example wit_step3 :
   = CheckOk wit_s3 [].
 Proof. check_eq. Qed.
 
-(** STEP 4 — brk(0x107d0): shrink down into the hole step 3 opened.  The
-    remaining grant is above the new break, so the ledger empties; the
-    break lands mid-page at 67536, with NOTHING below it owned. *)
+(** STEP 4 — brk(0x107d0): shrink down into the hole step 3 opened.  An
+    ORDINARY PAGE-CROSSING SHRINK: the range
+    [[PAGE_ALIGN(67536), PAGE_ALIGN(69732))] is [[69632, 73728)], so the
+    remaining grant is freed and the ledger empties; the
+    break lands mid-page at 67536, with NOTHING below it owned.  This is
+    the partner of [wit_step6] below — the cut that still happens. *)
 Definition wit_s4 : Model :=
   with_vmmaps (wit_vm [] 65536 67536 wit_limit) wit_s0.
 
@@ -301,36 +327,81 @@ Example wit_step5_null_hint_overlapping_refused :
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
-(** THE OVERLAP, in one more step.  brk(0x10834) grows the break by 100
-    bytes without crossing a page boundary, so [brk_grow_ok] computes
-    [lo = hi = 69632] and runs NO address-space test at all; the grant
-    [[67536, 67636)] lands inside the mapping step 5 placed.  Two live
-    [vm_maps] entries now overlap. *)
-Definition wit_overlap : Model :=
-  with_vmmaps
-    (wit_vm [(67536, 100); (65536, 4096)] 65536 67636 wit_limit)
-    wit_s0.
-
-Example wit_overlap_step :
-  check_syscall (brk_in 67636) (mkEffect 67636 [] []) wit_s5
-  = CheckOk wit_overlap [].
-Proof. check_eq. Qed.
-
-(** …and the entries really do overlap.  The grant's OWN entry is
-    dropped before the query, because every nonempty interval overlaps
-    itself: what is checked is that the step-5 mapping alone already
-    covers the range the brk grant just took. *)
-Example wit_overlap_holds :
-  region_free (map_remove (vm_maps (m_vmmaps wit_overlap)) 67536) 67536 100
-  = false.
+(** A HINT INSIDE THE STACK BAND IS NOT HONOURED, which is the other
+    side of the hint rule and worth a case of its own: every arm that
+    places bounds the range by [State.alloc_top], the hinted arm of
+    [Mmap.linux_place] included ([gap_fits maps page_size (alloc_top h)
+    nZ g]), and [alloc_top h] is [vm_init_sp h - stack_max_size], at or
+    below [Run.stack_window_lo] — the lowest address this run's stack
+    can occupy.  So a grant can never reach a byte the stack may grow
+    into, however the caller hints.  Asked here with the hint one page
+    below the top of the user address space, 2^47 - 4096.  Its PARTNER
+    is [wit_step5] above: the same request with a free hint BELOW the
+    top is honoured at that hint, so this is a refusal of the band and
+    not of hints. *)
+Example mmap_hint_in_the_stack_band_is_refused :
+  check_syscall
+    (mkInput 222 [140737488351232; 4096; 3; 34; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect 140737488351232 [] [(140737488351232, 4096)]) wit_s4
+  = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
-(** STEP 6 — brk(0x107c6): a ten-byte shrink, still inside one page.  It
-    SPLITS the step-5 mapping, and the right-hand remnant is based at the
-    OLD break, 67536. *)
+(** …and the arithmetic behind it, so the refusal is not read as an
+    accident of this ledger: the hint's end is above the allocation top,
+    and the allocation top is a stack's width below the stack pointer
+    the run was started with. *)
+Example stack_band_hint_is_above_alloc_top :
+  (alloc_top (m_vmmaps wit_s4) < 140737488351232 + 4096)%Z
+  /\ alloc_top (m_vmmaps wit_s4)
+     = (bv_unsigned (vm_init_sp (m_vmmaps wit_s4)) - stack_max_size)%Z.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** WHERE THE OVERLAP USED TO APPEAR.  brk(0x10834) grows the break by
+    100 bytes without crossing a page boundary, so [brk_grow_ok]
+    computes [lo = hi = 69632] and runs NO address-space test — and
+    grants nothing either, because Linux installs nothing: the
+    [oldbrk == newbrk] exit returns the request with the VMAs untouched.
+    The ledger is step 5's, unchanged; only [vm_brk] moves.  The old
+    model recorded [[67536, 67636)] here, inside the mapping step 5
+    placed, and the two entries overlapped. *)
+Definition wit_grow_inpage : Model :=
+  with_vmmaps
+    (wit_vm [(65536, 4096)] 65536 67636 wit_limit)
+    wit_s0.
+
+Example wit_grow_inpage_step :
+  check_syscall (brk_in 67636) (mkEffect 67636 [] []) wit_s5
+  = CheckOk wit_grow_inpage [].
+Proof. check_eq. Qed.
+
+(** …and the ledger it leaves is the one it started from, entry for
+    entry.  Stated as the equality rather than as a disjointness query,
+    because "records nothing" is the fact. *)
+Example wit_grow_inpage_records_nothing :
+  vm_maps (m_vmmaps wit_grow_inpage) = vm_maps (m_vmmaps wit_s5).
+Proof. vm_compute. reflexivity. Qed.
+
+(** THE PARTNER of that step, so it is not read as "a brk grow records
+    nothing": step 1's ordinary page-crossing grow records its page and
+    charges it.  Both go through the same gate; they differ only in
+    whether a page is installed. *)
+Example wit_page_crossing_grow_records_its_page :
+  vm_maps (m_vmmaps wit_s1) = [(65536, 4096)]
+  /\ vm_live_bytes (m_vmmaps wit_s1) = 4096%Z
+  /\ vm_live_bytes (m_vmmaps wit_s0) = 0%Z.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** STEP 6 — brk(0x107c6): a ten-byte shrink, still inside one page.
+    Linux frees nothing (its [oldbrk == newbrk] exit) and keeps the page
+    mapped, and so does the ledger.  The old model cut [[67526, 67536)]
+    out of the step-5 mapping, SPLITTING a mapping that is not the
+    heap's and losing ten granted, unfreed, still-mapped bytes: the
+    ledger went from [[(65536, 4096)]] to
+    [[(65536, 1990); (67536, 2096)]], 4096 bytes to 4086. *)
 Definition wit_s6 : Model :=
   with_vmmaps
-    (wit_vm [(65536, 1990); (67536, 2096)] 65536 67526 wit_limit)
+    (wit_vm [(65536, 4096)] 65536 67526 wit_limit)
     wit_s0.
 
 Example wit_step6 :
@@ -338,12 +409,27 @@ Example wit_step6 :
   = CheckOk wit_s6 [].
 Proof. check_eq. Qed.
 
-(** STEP 7 — brk(0x107d0): grow the ten bytes back.  Same page, so again
-    no address-space test. *)
+(** The fact, as an equality on the entries and on their sum. *)
+Example wit_step6_frees_nothing :
+  vm_maps (m_vmmaps wit_s6) = vm_maps (m_vmmaps wit_s5)
+  /\ vm_live_bytes (m_vmmaps wit_s6) = 4096%Z.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** THE PARTNER of that step: step 4's page-crossing shrink DOES free
+    its page, so the sub-page rule is not read as "a brk shrink frees
+    nothing". *)
+Example wit_page_crossing_shrink_frees_its_page :
+  vm_live_bytes (m_vmmaps wit_s3) = 4096%Z
+  /\ vm_live_bytes (m_vmmaps wit_s4) = 0%Z.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** STEP 7 — brk(0x107d0): grow the ten bytes back.  Same page again:
+    nothing installed, nothing recorded, nothing charged.  On Linux the
+    page was never released, so its bytes are still there — which is why
+    [brk_zeros] is empty here too. *)
 Definition wit_s7 : Model :=
   with_vmmaps
-    (wit_vm [(67526, 10); (65536, 1990); (67536, 2096)]
-              65536 67536 wit_limit)
+    (wit_vm [(65536, 4096)] 65536 67536 wit_limit)
     wit_s0.
 
 Example wit_step7 :
@@ -351,15 +437,12 @@ Example wit_step7 :
   = CheckOk wit_s7 [].
 Proof. check_eq. Qed.
 
-(** STEP 8 — brk(0x10834): one more same-page grow, from a break that is
-    now the base of the step-6 remnant.  [brk_grants] records
-    [[67536, 67636)] and the ledger ends up with TWO entries based at
-    67536. *)
+(** STEP 8 — brk(0x10834): one more same-page grow, from the break the
+    shrink-and-regrow pair left.  This is the step that used to leave
+    TWO entries based at 67536 with different sizes. *)
 Definition wit_s8 : Model :=
   with_vmmaps
-    (wit_vm
-      [(67536, 100); (67526, 10); (65536, 1990); (67536, 2096)]
-      65536 67636 wit_limit)
+    (wit_vm [(65536, 4096)] 65536 67636 wit_limit)
     wit_s0.
 
 Example wit_step8 :
@@ -367,27 +450,27 @@ Example wit_step8 :
   = CheckOk wit_s8 [].
 Proof. check_eq. Qed.
 
-(** THE VERDICT.  Two DIFFERENT sizes are both "exactly the mapping at
-    67536", so [map_has] does not determine the entry [map_remove] would
-    drop.  Byte-level base uniqueness is therefore not an invariant of
-    reachable states, and no proof of it can exist as the model stands. *)
-Example wit_duplicate_base :
-  map_has (vm_maps (m_vmmaps wit_s8)) 67536 100 = true
-  /\ map_has (vm_maps (m_vmmaps wit_s8)) 67536 2096 = true.
+(** THE VERDICT, and it is the opposite of the one this file used to
+    carry.  After eight calls — two page-crossing grows, a munmap, a
+    page-crossing shrink, a hinted mmap, a sub-page shrink and three
+    sub-page grows — the ledger holds ONE entry, page aligned and page
+    sized, and [live_bytes] of it is the number of bytes actually
+    mapped.  No base is duplicated and no byte is owned twice.  The
+    shrink-and-regrow pair of steps 6 and 7, repeated, used to add its
+    ten bytes to the sum on every round. *)
+Example wit_no_duplicate_base :
+  vm_maps (m_vmmaps wit_s8) = [(65536, 4096)]
+  /\ vm_live_bytes (m_vmmaps wit_s8) = 4096%Z.
 Proof. split; vm_compute; reflexivity. Qed.
 
-(** The duplicated base is NOT page aligned, and Part 2 shows that is no
-    accident: a page-aligned break makes [brk_grow_ok] compute
-    [lo < hi] and the [region_free] test does run. *)
-Example wit_duplicate_base_is_unaligned :
-  (67536 mod page_size <> 0)%Z.
-Proof. vm_compute. discriminate. Qed.
+Example wit_no_overlap :
+  region_free (map_remove (vm_maps (m_vmmaps wit_s8)) 65536) 65536 4096
+  = true.
+Proof. vm_compute. reflexivity. Qed.
 
-(** A simpler route — [mmap] choosing the mid-page break
-    itself as its base — cannot happen, and this is the gate that stops
-    it: [mmap]'s placement is page aligned in every branch that grants,
-    so the route above (a munmap that opens a hole, then a shrink INTO
-    it) is the shorter one that works.  Asked for that base DIRECTLY, by
+(** [mmap] cannot name the mid-page break as a base either, and this is
+    the gate that stops it: [mmap]'s placement is page aligned in every
+    branch that grants.  Asked for that base DIRECTLY, by
     the same hinted request step 5 uses and differing only in the
     address, so the refusal is the alignment test and nothing else. *)
 Example mmap_cannot_place_at_the_midpage_break :
@@ -402,8 +485,10 @@ Proof. vm_compute. reflexivity. Qed.
    PART 2 — the invariant that IS maintained
 
    [owners maps p] counts the live entries that own byte [p].  The
-   invariant is that no PAGE-ALIGNED byte has two owners.  Part 1 shows
-   the same statement is false for an arbitrary byte.
+   invariant proved here is that no PAGE-ALIGNED byte has two owners.
+   That is what every consumer needs and what the proof covers; Part 1
+   closes the one execution by which an unaligned byte was known to get
+   two, and claims nothing beyond it.
    ========================================================================= *)
 
 Local Open Scope Z_scope.
@@ -438,21 +523,19 @@ Definition vm_wf (h : VmMaps) : Prop := maps_wf (vm_maps h).
 
 
 (* -------------------------------------------------------------------------
-   PART 2b — what the overlap does to the byte total
+   PART 2b — the byte total
 
    Two readings of [State.live_bytes] — "exactly the number of
    granted-and-not-freed bytes", and metering "BYTES, not addresses —
    which is what makes the forced out-of-memory point deterministic" —
-   follow from the disjointness Part 1 refutes, and both fail without
-   it.  These cases pin the failure so
-   that neither sentence can be claimed while the overlap is still
-   reachable, and so that closing the gap in [brk_grow_ok] would have to
-   break a case here rather than silently re-truth a comment.
+   need the ledger's entries to be disjoint byte for byte.  They were
+   false while a brk grow could record a logical range inside a live
+   mapping and a brk shrink could cut the logical tail out of one.  The
+   cases below pin both readings on the execution that used to refute
+   them, and keep the measure that would detect a relapse.
 
-   It sits after [owners] rather than beside Part 1's counterexample
-   because the distinct-byte measure below is built from it.
-
-   This is a known limitation of the model.
+   It sits after [owners] rather than beside Part 1 because the
+   distinct-byte measure is built from it.
    ------------------------------------------------------------------------- *)
 
 (** How many of the [n] bytes from [lo] are owned by at least one live
@@ -466,21 +549,43 @@ Fixpoint owned_bytes (maps : list (word * word)) (lo : Z) (n : nat) : nat :=
             + owned_bytes maps (lo + 1) k)%nat
   end.
 
-(** THE DOUBLE COUNT.  [wit_overlap]'s ledger is
-    [[(67536, 100); (65536, 4096)]]: the brk grant lies wholly inside the
-    mapping step 5 placed, so 4096 distinct bytes are granted and
-    [live_bytes] reports 4196.  Exactly 100 bytes are charged twice —
-    the size of the contained entry. *)
-Example live_bytes_over_counts_the_overlap :
-  live_bytes (vm_maps (m_vmmaps wit_overlap)) = 4196%Z
-  /\ owned_bytes (vm_maps (m_vmmaps wit_overlap)) 65536 4196 = 4096%nat.
+(** THE SUM IS THE DISTINCT COUNT, on the final state of Part 1's eight
+    calls — the state that used to hold two entries based at 67536 and
+    report 4196 bytes for 4096 granted ones. *)
+Example live_bytes_is_exact_on_the_witness :
+  live_bytes (vm_maps (m_vmmaps wit_s8)) = 4096%Z
+  /\ owned_bytes (vm_maps (m_vmmaps wit_s8)) 65536 4196 = 4096%nat.
 Proof. split; vm_compute; reflexivity. Qed.
 
-(** THE CONTROL, and the case that makes the one above mean something.
-    The same two SIZES placed end to end instead of nested: [live_bytes]
-    reports 4196 again, and now that IS the distinct-byte count.  Without
-    this pair the case above would pass just as well against an
-    [owned_bytes] that always answered 4096. *)
+(** …and the same at the two states the sub-page steps pass through, so
+    the equality is not an accident of the last call. *)
+Example live_bytes_is_exact_through_the_subpage_steps :
+  live_bytes (vm_maps (m_vmmaps wit_s6)) = 4096%Z
+  /\ owned_bytes (vm_maps (m_vmmaps wit_s6)) 65536 4196 = 4096%nat
+  /\ live_bytes (vm_maps (m_vmmaps wit_s7)) = 4096%Z
+  /\ owned_bytes (vm_maps (m_vmmaps wit_s7)) 65536 4196 = 4096%nat.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** THE CONTROL, and the case that makes the ones above mean something.
+    [owned_bytes] is not a function that always answers [live_bytes]: on
+    a HAND-BUILT ledger whose entries nest — the shape the brk grow used
+    to produce, and which no step of Part 1 now reaches — the sum is
+    4196 while 4096 distinct bytes are owned.  Without this case the
+    equalities above would pass against a measure that merely echoed the
+    sum. *)
+Definition overlapping_ledger : list (word * word) :=
+  [(Z_to_bv 64 67536, Z_to_bv 64 100); (Z_to_bv 64 65536, Z_to_bv 64 4096)].
+
+Example live_bytes_over_counts_a_nested_ledger :
+  live_bytes overlapping_ledger = 4196%Z
+  /\ owned_bytes overlapping_ledger 65536 4196 = 4096%nat.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** …and the end-to-end placement of the same two SIZES, where the sum
+    is exact.  The pair is what shows [live_bytes] cannot tell the two
+    ledgers apart: it is a function of the sizes alone, so it is the
+    distinct-byte count exactly when the entries are disjoint — which is
+    what every writer of [vm_maps] now establishes before it records. *)
 Definition disjoint_ledger : list (word * word) :=
   [(Z_to_bv 64 69632, Z_to_bv 64 100); (Z_to_bv 64 65536, Z_to_bv 64 4096)].
 
@@ -489,36 +594,20 @@ Example live_bytes_is_exact_when_the_entries_are_disjoint :
   /\ owned_bytes disjoint_ledger 65536 4196 = 4196%nat.
 Proof. split; vm_compute; reflexivity. Qed.
 
-(** SO PLACEMENT PLAYS A PART.  The two ledgers hold the same multiset of
-    sizes and [live_bytes] cannot tell them apart, while the number of
-    bytes actually granted differs by 100.  One number cannot be the
-    distinct-byte count of both, so the budget total is a function of
-    WHERE the grants landed and not only of which sizes were granted and
-    freed — which is what the second reading above denies, and the
-    reason the forced out-of-memory point is not determined
-    by the grant-and-free history alone. *)
-Example placement_changes_the_granted_byte_count :
-  live_bytes (vm_maps (m_vmmaps wit_overlap)) = live_bytes disjoint_ledger
-  /\ owned_bytes (vm_maps (m_vmmaps wit_overlap)) 65536 4196
+Example live_bytes_cannot_tell_them_apart :
+  live_bytes overlapping_ledger = live_bytes disjoint_ledger
+  /\ owned_bytes overlapping_ledger 65536 4196
      <> owned_bytes disjoint_ledger 65536 4196.
 Proof. split; [vm_compute; reflexivity | vm_compute; discriminate]. Qed.
 
 (** THE DIRECTION, pinned rather than left to the prose: the sum is never
-    below the distinct count, so every [used + delta <=? limit] gate
-    built on it fires no later than the truth and can fire EARLIER.  The
-    model refuses a call Linux serves; it never grants one Linux would
-    refuse on this account. *)
+    below the distinct count, whatever the entries do.  So a relapse
+    would make a [used + delta <=? limit] gate fire EARLIER than the
+    truth — the model refusing a call Linux serves — and never later. *)
 Example live_bytes_over_counts_never_under :
-  (Z.of_nat (owned_bytes (vm_maps (m_vmmaps wit_overlap)) 65536 4196)
-   <= live_bytes (vm_maps (m_vmmaps wit_overlap)))%Z.
+  (Z.of_nat (owned_bytes overlapping_ledger 65536 4196)
+   <= live_bytes overlapping_ledger)%Z.
 Proof. vm_compute. discriminate. Qed.
-
-(** And the duplicate-base state double counts too, by the size of the
-    smaller of the two entries sharing base 67536. *)
-Example live_bytes_over_counts_the_duplicate_base :
-  live_bytes (vm_maps (m_vmmaps wit_s8)) = 4196%Z
-  /\ owned_bytes (vm_maps (m_vmmaps wit_s8)) 65536 4196 = 4096%nat.
-Proof. split; vm_compute; reflexivity. Qed.
 
 (* -------------------------------------------------------------------------
    Arithmetic and counting lemmas
@@ -1079,15 +1168,18 @@ Proof.
     + apply andb_true_iff in Hok as [_ Hok]. exact Hok.
 Qed.
 
-(** The heart of PART 2, and the exact mirror of PART 1: a brk grant may
-    cover bytes the gate never tested, but every PAGE-ALIGNED byte it
-    covers lies inside the range [region_free] did test. *)
+(** The heart of PART 2: a brk grant records exactly the range
+    [region_free] tested, so the entry it adds meets no other entry at
+    all — the page-aligned statement below is then immediate, and so is
+    the byte-level one it is a weakening of. *)
 Lemma brk_grant_wf : forall m req r,
   brk_r_ok m req r = true ->
   brk_is_grow req r (vm_brk (m_vmmaps m)) = true ->
   vm_wf (m_vmmaps m) ->
-  maps_wf ((vm_brk (m_vmmaps m), (r - vm_brk (m_vmmaps m))%bv)
-           :: vm_maps (m_vmmaps m)).
+  maps_wf (brk_page_range
+             (page_round_up_Z (bv_unsigned (vm_brk (m_vmmaps m))))
+             (page_round_up_Z (bv_unsigned r))
+           ++ vm_maps (m_vmmaps m)).
 Proof.
   intros m req r Hok Hgrow Hwf. set (h := m_vmmaps m) in *.
   pose proof (brk_r_ok_grow m req r Hok Hgrow) as Hgok.
@@ -1096,35 +1188,28 @@ Proof.
   apply andb_true_iff in Hgrow as [_ Hpos].
   apply Z.ltb_lt in Hlt. apply Z.ltb_lt in Hpos.
   pose proof (word_range r) as Hr. pose proof (word_range (vm_brk h)) as Hb.
-  assert (Hsz : bv_unsigned (r - vm_brk h)%bv
-                = bv_unsigned r - bv_unsigned (vm_brk h)).
-  { rewrite bv_sub_unsigned. apply bv_wrap_small.
-    change (bv_modulus 64) with (2 ^ 64). lia. }
-  destruct Hwf as [Hnz Hun]. split.
-  - constructor; [cbn [snd]; lia|exact Hnz].
-  - intros p Hp. cbn [owners]. destruct (owns_b (vm_brk h, (r - vm_brk h)%bv) p) eqn:Ho.
+  unfold brk_grow_ok in Hgok. cbv zeta in Hgok. fold h in Hgok.
+  rewrite (proj2 (Z.ltb_lt 0 (bv_unsigned (vm_brk h))) Hpos) in Hgok.
+  rewrite (proj2 (Z.ltb_lt (bv_unsigned (vm_brk h)) (bv_unsigned r)) Hlt)
+    in Hgok.
+  cbn [andb] in Hgok. apply andb_true_iff in Hgok as [Hgok _].
+  set (lo := page_round_up_Z (bv_unsigned (vm_brk h))) in *.
+  set (hi := page_round_up_Z (bv_unsigned r)) in *.
+  unfold brk_page_range.
+  destruct (Z.ltb lo hi) eqn:Elh; [|cbn [app]; exact Hwf].
+  apply Z.ltb_lt in Elh.
+  apply andb_true_iff in Hgok as [Hceil Hfree].
+  apply Z.leb_le in Hceil.
+  alloc_top_bounds. unfold two_pow_64 in *.
+  assert (Hlo0 : 0 <= lo) by (apply page_round_up_Z_nonneg; lia).
+  assert (Hps : 0 < page_size) by (unfold page_size; lia).
+  pose proof (alloc_top_page_lt h) as Hacp. unfold two_pow_64 in Hacp.
+  destruct Hwf as [Hnz Hun]. cbn [app]. split.
+  - constructor; [cbn [snd]; rewrite u64 by lia; lia | exact Hnz].
+  - intros p Hp. cbn [owners].
+    destruct (owns_b (Z_to_bv 64 lo, Z_to_bv 64 (hi - lo)) p) eqn:Ho.
     2:{ specialize (Hun p Hp). lia. }
-    apply owns_true in Ho. cbn [fst snd] in Ho. rewrite Hsz in Ho.
-    (* the gate ran, because a page-aligned byte of the grant is inside
-       the ROUNDED range *)
-    unfold brk_grow_ok in Hgok. cbv zeta in Hgok. fold h in Hgok.
-    rewrite (proj2 (Z.ltb_lt 0 (bv_unsigned (vm_brk h))) Hpos) in Hgok.
-    rewrite (proj2 (Z.ltb_lt (bv_unsigned (vm_brk h)) (bv_unsigned r)) Hlt)
-      in Hgok.
-    cbn [andb] in Hgok. apply andb_true_iff in Hgok as [Hgok _].
-    set (lo := page_round_up_Z (bv_unsigned (vm_brk h))) in *.
-    set (hi := page_round_up_Z (bv_unsigned r)) in *.
-    assert (Hlop : lo <= p)
-      by (apply page_round_up_Z_le_aligned; [exact Hp|lia]).
-    assert (Hphi : p < hi).
-    { pose proof (page_round_up_Z_ge (bv_unsigned r) ltac:(lia)). lia. }
-    rewrite (proj2 (Z.ltb_lt lo hi) ltac:(lia)) in Hgok.
-    apply andb_true_iff in Hgok as [Hceil Hfree].
-    apply Z.leb_le in Hceil.
-    alloc_top_bounds. unfold two_pow_64 in *.
-    assert (Hlo0 : 0 <= lo) by (apply page_round_up_Z_nonneg; lia).
-    assert (Hps : 0 < page_size) by (unfold page_size; lia).
-    pose proof (alloc_top_page_lt h) as Hacp. unfold two_pow_64 in Hacp.
+    apply owns_true in Ho. cbn [fst snd] in Ho. rewrite !u64 in Ho by lia.
     assert (Hown : owns_b (Z_to_bv 64 lo, Z_to_bv 64 (hi + page_size - lo)) p
                    = true).
     { apply owns_intro; rewrite !u64 by lia; lia. }
@@ -1143,13 +1228,10 @@ Proof.
             && Z.ltb (bv_unsigned r) (bv_unsigned (vm_brk h))) eqn:Eshrink.
   - apply andb_true_iff in Eshrink as [_ Hlt]. apply Z.ltb_lt in Hlt.
     pose proof (word_range r). pose proof (word_range (vm_brk h)).
-    assert (Hcut : maps_wf (maps_subtract (vm_maps h) (bv_unsigned r)
-                              (bv_unsigned (vm_brk h))))
-      by (apply maps_wf_subtract; try lia; exact Hwf).
     unfold brk_unmap_cut. cbv zeta.
     destruct (page_round_up_Z (bv_unsigned r)
               <? page_round_up_Z (bv_unsigned (vm_brk h))) eqn:Ep;
-      [|exact Hcut].
+      [|exact Hwf].
     apply Z.ltb_lt in Ep.
     assert (Hpb : page_round_up_Z (bv_unsigned (vm_brk h)) <= 2 ^ 64).
     { unfold page_round_up_Z, page_size.
@@ -1159,9 +1241,9 @@ Proof.
       lia. }
     pose proof (page_round_up_Z_nonneg (bv_unsigned r) ltac:(lia)).
     unfold two_pow_64.
-    apply maps_wf_subtract; [lia | lia | lia | exact Hcut].
+    apply maps_wf_subtract; [lia | lia | lia | exact Hwf].
   - unfold brk_grants. destruct (brk_is_grow req r (vm_brk h)) eqn:Egrow.
-    + cbn [app]. now apply (brk_grant_wf m req r).
+    + now apply (brk_grant_wf m req r).
     + cbn [app]. exact Hwf.
 Qed.
 
@@ -1757,6 +1839,17 @@ Lemma check_close_frame : forall fd eff m m' evs,
   check_close fd eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros fd eff m m' evs H. unfold check_close in H. vm_frame2 H. Qed.
 
+(** [close_range] removes descriptors and nothing else: its one
+    model-changing arm is [with_fds] over [File.close_range_fds], which
+    carries the VM subsystem across untouched. *)
+Lemma check_close_range_frame : forall fd max_fd flags eff m m' evs,
+  check_close_range fd max_fd flags eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros fd max_fd flags eff m m' evs H. unfold check_close_range in H.
+  vm_frame2 H.
+Qed.
+
 Lemma check_lseek_frame : forall fd off whence eff m m' evs,
   check_lseek fd off whence eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
@@ -1951,6 +2044,12 @@ Lemma check_gettid_frame : forall eff m m' evs,
   check_gettid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. exact check_set_tid_address_frame. Qed.
 
+(** [getppid] hands back [m] itself: its answer is a fresh choice and
+    nothing is pinned. *)
+Lemma check_getppid_frame : forall eff m m' evs,
+  check_getppid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof. intros eff m m' evs H. unfold check_getppid in H. vm_frame2 H. Qed.
+
 (** [setsid] takes no arguments and writes no memory, so neither arm can
     touch [vm_maps]: the -EPERM arm hands back [m] itself, and the
     success arm hands back [with_setsid_succeeded (with_tid ret m)],
@@ -1959,13 +2058,13 @@ Lemma check_setsid_frame : forall eff m m' evs,
   check_setsid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros eff m m' evs H. unfold check_setsid in H. vm_frame2 H. Qed.
 
-(** [prctl] answers [PR_CAPBSET_READ] out of a constant and declines
-    every other option, so no arm of it touches the model at all: both
-    accepting branches hand back [m] itself. *)
-Lemma check_prctl_frame : forall option_ arg2 eff m m' evs,
-  check_prctl option_ arg2 eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+(** [prctl] answers its four options out of their arguments and
+    declines every other option, so no arm of it touches the model at
+    all: every accepting branch hands back [m] itself. *)
+Lemma check_prctl_frame : forall i option_ arg2 eff m m' evs,
+  check_prctl i option_ arg2 eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros option_ arg2 eff m m' evs H. unfold check_prctl in H. vm_frame2 H.
+  intros i option_ arg2 eff m m' evs H. unfold check_prctl in H. vm_frame2 H.
 Qed.
 
 (** The four clock arms.  [gettimeofday], [clock_gettime], and [clock_getres] hand back
@@ -2218,10 +2317,12 @@ Proof.
   intros gidsetsize eff m m' evs H. unfold check_getgroups in H. vm_frame2 H.
 Qed.
 
-Lemma check_setgroups_frame : forall eff m m' evs,
-  check_setgroups eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+(** [setgroups]'s one model-changing arm is [with_creds], which rebuilds
+    only [ProcState]. *)
+Lemma check_setgroups_frame : forall i eff m m' evs,
+  check_setgroups i eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros eff m m' evs H. unfold check_setgroups in H. vm_frame2 H.
+  intros i eff m m' evs H. unfold check_setgroups in H. vm_frame2 H.
 Qed.
 
 Lemma check_socket_frame : forall domain type protocol eff m m' evs,
@@ -2565,6 +2666,7 @@ Proof.
     | erewrite check_exit_frame by eassumption; exact Hwf
     | erewrite check_set_tid_address_frame by eassumption; exact Hwf
     | erewrite check_getpid_frame by eassumption; exact Hwf
+    | erewrite check_getppid_frame by eassumption; exact Hwf
     | erewrite check_gettid_frame by eassumption; exact Hwf
     | erewrite check_setsid_frame by eassumption; exact Hwf
     | erewrite check_uname_frame by eassumption; exact Hwf
@@ -2606,6 +2708,7 @@ Proof.
     | erewrite check_set_robust_list_frame by eassumption; exact Hwf
     | erewrite check_clone_frame by eassumption; exact Hwf
     | erewrite check_clone3_frame by eassumption; exact Hwf
+    | erewrite check_close_range_frame by eassumption; exact Hwf
     | erewrite check_getsockname_frame by eassumption; exact Hwf
     | erewrite check_getpeername_frame by eassumption; exact Hwf
     | erewrite check_setsockopt_frame by eassumption; exact Hwf

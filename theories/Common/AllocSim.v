@@ -412,11 +412,16 @@ Proof.
   rewrite E1, E2, E3. reflexivity.
 Qed.
 
-(** The logical ledger remains byte-granular across the same grow. *)
+(** The ledger records the SAME page-rounded range the zero-fill names:
+    [Mmap.brk_grants] and [Mmap.brk_zeros] are one term, so a grow adds
+    exactly the pages it installs and a grow inside one page adds
+    nothing. *)
 Lemma brk_grants_grow : forall req r old,
   req <> Z_to_bv 64 0 ->
   (0 < bv_unsigned old)%Z -> (bv_unsigned old < bv_unsigned r)%Z ->
-  brk_grants req r old = [(old, r - old)].
+  brk_grants req r old =
+    brk_page_range (page_round_up_Z (bv_unsigned old))
+                   (page_round_up_Z (bv_unsigned r)).
 Proof.
   intros req r old Hreq Hold Hlt. unfold brk_grants, brk_is_grow.
   assert (E1 : w_is0 req = false)
@@ -425,6 +430,11 @@ Proof.
   assert (E3 : (bv_unsigned old <? bv_unsigned r)%Z = true) by (apply Z.ltb_lt; lia).
   rewrite E1, E2, E3. reflexivity.
 Qed.
+
+(** …and that is the same term as the zero-fill, with no hypotheses. *)
+Lemma brk_grants_is_brk_zeros : forall req r old,
+  brk_grants req r old = brk_zeros req r old.
+Proof. reflexivity. Qed.
 
 Lemma brk_zeros_query : forall r old, brk_zeros (Z_to_bv 64 0) r old = [].
 Proof.
@@ -491,7 +501,7 @@ Lemma brk_grow_ok_grow : forall h req r,
                 (Z_to_bv 64 (page_round_up_Z (bv_unsigned r) + page_size
                              - page_round_up_Z (bv_unsigned (vm_brk h))))
       else true)
-     && (vm_backed_bytes h + bv_unsigned (r - vm_brk h) <=? vm_limit h)%Z)%bool.
+     && (vm_backed_bytes h + brk_grow_bytes h r <=? vm_limit h)%Z)%bool.
 Proof.
   intros h req r Hreq H0 Hlt.
   assert (Hmaps : m_vmmaps (vm_model h) = h) by reflexivity.
@@ -608,7 +618,7 @@ Lemma brk_grow_ok_aligned_grow : forall h req r,
       && region_free (vm_reserved h ++ vm_maps h) (vm_brk h)
            (Z_to_bv 64 (page_round_up_Z (bv_unsigned r) + page_size
                         - bv_unsigned (vm_brk h))))
-     && (vm_backed_bytes h + bv_unsigned (r - vm_brk h) <=? vm_limit h)%Z)%bool.
+     && (vm_backed_bytes h + brk_grow_bytes h r <=? vm_limit h)%Z)%bool.
 Proof.
   intros h req r Hreq Hpos Hlt Halign.
   rewrite brk_grow_ok_grow by assumption.
@@ -740,7 +750,8 @@ Definition growable (reserved : list (word * word)) (lim top : Z) (t r : word)
                                (bv_unsigned r + bv_unsigned t)
                               + page_size - page_round_up_Z (bv_unsigned r)))
       else true)
-     && (bv_unsigned t <=? lim)%Z)%bool = true)).
+     && (Z.max 0 (page_round_up_Z (bv_unsigned r + bv_unsigned t)
+                  - page_round_up_Z (bv_unsigned r)) <=? lim)%Z)%bool = true)).
 
 (** Branch outcome set after the FIRST brk resolved to [r].  The exit-4
     element is present iff a failing continuation exists: [r = 0],
@@ -986,7 +997,8 @@ Proof.
         rewrite brk_grow_ok_grow;
           cbn [vm_brk vm_reserved vm_maps vm_limit vm_live_bytes live_bytes];
           [| exact Hwant0 | lia | lia].
-        rewrite app_nil_r, word_add_sub_cancel, Huadd, Z.add_0_l.
+        unfold brk_grow_bytes. cbn [vm_brk].
+        rewrite app_nil_r, Huadd, Z.add_0_l.
         exact Hb.
       * left. split; reflexivity.
   - intros (r2 & Hrok & Hb).
@@ -1000,7 +1012,8 @@ Proof.
       rewrite brk_grow_ok_grow in Hgrow;
         cbn [vm_brk vm_reserved vm_maps vm_limit vm_live_bytes live_bytes] in *;
         [| exact Hwant0 | lia | lia].
-      rewrite app_nil_r, word_add_sub_cancel, Huadd, Z.add_0_l in Hgrow.
+      unfold brk_grow_bytes in Hgrow. cbn [vm_brk] in Hgrow.
+      rewrite app_nil_r, Huadd, Z.add_0_l in Hgrow.
       exact Hgrow.
     + (* failure resolution: r2 = r, and t <> 0 or r2 = want *)
       left. split; [reflexivity |].

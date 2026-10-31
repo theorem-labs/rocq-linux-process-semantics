@@ -425,6 +425,8 @@ Lemma srz_write1 : forall ms model x8 buf T,
   bv_unsigned x8 = 64%Z ->
   ms_gpr ms 0 = Z_to_bv 64 1 ->
   ms_read_bytes ms (ms_gpr ms 1) (ms_gpr ms 2) = Some buf ->
+  (* the range [vfs_write]'s [access_ok] accepts; see [CatSim.write1_check_n] *)
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   buf_modeled buf ->
   (1 <= length buf)%nat ->
   (forall n, (1 <= n)%nat -> (n <= length buf)%nat ->
@@ -432,7 +434,7 @@ Lemma srz_write1 : forall ms model x8 buf T,
                          (set_gpr0 ms (len_word (firstn n buf)))) model) T) ->
   srealizes (mkCfg ms model) (t_write_ch (Z_to_bv 64 1) buf T).
 Proof.
-  intros ms model x8 buf T Hh Hlazy Hfd Hsvc Hno Hg Hr Hbm Hnb Hc.
+  intros ms model x8 buf T Hh Hlazy Hfd Hsvc Hno Hg Hr Hok Hbm Hnb Hc.
   unfold t_write_ch.
   apply (srz_node (mkCfg ms model) (wr_index buf)
            (fun i => map (WriteEv (Z_to_bv 64 1)) (firstn (proj1_sig i) buf))
