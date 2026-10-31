@@ -40,6 +40,20 @@ jobs:
           lean --version
           lake --version
 
+      # Another stream's Lean job got a cold build from about 47-50 minutes
+      # down to 738 s and 585 s by sizing lake's job count from memory and
+      # never setting LEAN_NUM_THREADS=1
+      # (dispatch://BET-59/artifact/speed-log-md, tick 46).  Half of that
+      # does not apply here: the pinned toolchain's Lake is 5.0.0-src+293d5d0
+      # (Lean 4.34.0) and has no job option -- `lake build -j 41` answers
+      # "error: unknown short option '-j'", and neither `lake --help` nor
+      # `lake help build` has a jobs or threads option.  The lakefile sizes
+      # the per-module worker pool itself (`moreLeanArgs := #["-j2"]`).  So
+      # this step sets nothing, which is the other half of that measurement:
+      # LEAN_NUM_THREADS is left unset.
       - name: lake build
         working-directory: lean
-        run: lake build
+        run: |
+          awk '/^MemAvailable:/ {print "MemAvailable " $2 " kiB"}' /proc/meminfo
+          nproc
+          lake build
