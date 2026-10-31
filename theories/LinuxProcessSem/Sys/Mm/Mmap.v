@@ -959,10 +959,18 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
 
    (4) THE SEARCH.  [arch_get_mmap_end] is STACK_TOP_MAX and
    [arch_get_mmap_base] is [mm->mmap_base], whatever the hint
-   (arch/riscv/include/asm/processor.h).
+   (arch/riscv/include/asm/processor.h).  STACK_TOP_MAX is
+   [TASK_SIZE_64], which follows the paging mode the kernel BOOTED
+   with (arch/riscv/include/asm/pgtable.h): it is 2^47 under Sv48, the
+   mode this model describes, and 2^56 under Sv57.  [mm->mmap_base]
+   stays below 2^47 either way, because MMAP_VA_BITS caps at 48.
    [generic_get_unmapped_area_topdown] (mm/mmap.c) returns a nonzero
-   hint when [mmap_end - len >= addr], [addr >= mmap_min_addr] and the
-   range meets no VMA; else it asks [vm_unmapped_area] top-down with
+   hint when [mmap_end - len >= addr], [addr >= mmap_min_addr], the
+   range meets no VMA's start gap and it is at or above the previous
+   VMA's end gap; the last of the four is always true on riscv64,
+   where VM_GROWSUP is never set, so [vm_end_gap] is the VMA's own
+   end and [find_vma_prev] has already put it at or below the hint.
+   Else it asks [vm_unmapped_area] top-down with
    [low_limit = PAGE_SIZE] and [high_limit = mm->mmap_base]; and if
    THAT fails it searches bottom-up from TASK_UNMAPPED_BASE to
    [mmap_end].  [unmapped_area_topdown] (mm/vma.c) returns the END of

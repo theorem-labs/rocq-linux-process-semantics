@@ -86,9 +86,4 @@
 
 (rocq.theory
  (name LinuxProcessSemantics.Tests)
- ; TURN THE REPLAY ON: delete this one line.  It keeps the generated
- ; PlacementReplay* files out of the theory while Checks/Placement.v (the
- ; executable search the replay computes with) is still being written; the
- ; rules above still write the files.  See tools/placement_conformance.
- (modules :standard \ PlacementReplayDefconfig PlacementReplayThp PlacementReplayNorandmaps PlacementReplayQemuUser PlacementReplayOffByOnePage)
  (theories Stdlib stdpp ReadFile LinuxProcessSemantics))

@@ -5721,8 +5721,66 @@ Definition init_reserved (reserved : list (word * word))
        (page_round_down_Z
           (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
 
+(** BUILT WITH ONE CONSTRUCTOR, not with a chain of [with_*] setters,
+    and that is a performance fact worth stating where it is easy to
+    undo.
+
+    Each [with_*] rebuilds [mkModelOf] from SEVEN projections of its
+    argument, so a chain of n of them denotes a term with 7^n copies of
+    the innermost model.  The kernel's conversion does not share those
+    copies.  A goal that reduces [init_model] TWICE — which is every
+    fixture that writes the term on both sides of an equation, as
+    [Checks.Cases.Prelude] does — then costs time exponential in the
+    chain's length.
+
+    Measured in the release checker image, on
+    [Checks.Cases.Prelude]'s [fd_truncation_high_low_halves_all_ebadf],
+    whose proof is [repeat constructor; check_eq] and whose
+    [constructor] asks the kernel to convert the two sides:
+
+    - the model named once ([Definition M0 := init_model …], used
+      twice): 0.012 s;
+    - the term written out twice, as that [Example] writes it, with a
+      seven-link chain: over 120 s;
+    - this definition, written out twice: 0.095 s.
+
+    [Strategy] does not fix it.  [Strategy 1000] on the constants the
+    chain reduces through leaves the same [Example] over its timeout:
+    conversion still has to reduce the term, and deprioritising an
+    unfolding does not make the copies share.  Flattening the term is
+    what removes them.
+
+    The two forms are equal by [reflexivity], so nothing that reads
+    this model changes: [m_vmmaps_init_model], [alloc_top_init],
+    [m_fs_init_model], [m_stdin_init_model] and
+    [m_sigabrt_pending_init_model] are all still closed by it.  A NEW
+    FIELD GOES HERE, beside the others, and not into a new setter
+    wrapped around the result. *)
 Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     (lim : Z) (inp : ProcInput) : Model :=
+  mkModelOf
+    (mkFdState [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
+                 (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
+                 (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ] [])
+    (mkVmState (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
+                  [] [] brk0 brk0 lim mbase sp) [] [] (in_kernel inp))
+    (mkIoState (in_stdin inp) (in_urandom inp) (in_net inp) (Z_to_bv 64 0))
+    (mkFsState (in_fs inp))
+    (mkProcState None None
+       (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
+                (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
+       false (in_sigmask inp) false None false false false
+       (in_abort_terminal inp) [])
+    (mkLimState None (in_nofile inp))
+    (mkTimeState (Z_to_bv 64 0)).
+
+(** THE CHAIN THIS REPLACED, kept only so that the claim above — that
+    the flattening changes the term's shape and not its meaning — is a
+    THEOREM rather than a sentence.  Nothing else reads it.  A field
+    added to one form and not the other fails the build here, which is
+    the point of keeping it. *)
+Definition init_model_setter_chain (reserved : list (word * word))
+    (brk0 mbase sp : word) (lim : Z) (inp : ProcInput) : Model :=
   with_abort_terminal (in_abort_terminal inp)
   (with_sigmask (in_sigmask inp)
   (with_nofile (in_nofile inp)
@@ -5884,6 +5942,12 @@ Proof. reflexivity. Qed.
 Lemma m_kernel_with_clock : forall v m, m_kernel (with_clock v m) = m_kernel m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_clock : model.
+
+Lemma init_model_is_the_setter_chain :
+  forall reserved brk0 mbase sp lim inp,
+    init_model reserved brk0 mbase sp lim inp
+    = init_model_setter_chain reserved brk0 mbase sp lim inp.
+Proof. reflexivity. Qed.
 
 (** The base case of the nonemptiness invariant: a run starts with NO
     protected range at all.  Every reachable [vm_noaccess] is therefore

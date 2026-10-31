@@ -884,7 +884,7 @@ Proof.
       destruct (highest_gap_b (vm_reserved h ++ vm_maps h) page_size
                   (mmap_top h) nZ) as [t|] eqn:Ht.
       + apply (proj1 Hnone eq_refl t). left. now apply Hh1.
-      + exact (proj1 Hh2 Ht g Hg).
+      + exact (proj1 Hh2 eq_refl g Hg).
     - destruct (lowest_gap_b_spec (vm_reserved h ++ vm_maps h)
                   task_unmapped_base (alloc_top h) nZ
                   task_unmapped_base_nonneg HnPos task_unmapped_base_aligned
@@ -899,7 +899,7 @@ Proof.
         * apply (proj1 Hnone eq_refl u). left. now apply Hh1.
         * apply (proj1 Hnone eq_refl t). right.
           split; [now apply Hh2 | now apply Hl1].
-      + exact (proj1 Hl2 Ht g Hg). }
+      + exact (proj1 Hl2 eq_refl g Hg). }
   unfold linux_place. cbv zeta.
   destruct (Z.eqb (hint_address hint) 0) eqn:Hg.
   - destruct (thp && (nZ mod pmd_size =? 0)%Z)%bool.
@@ -1003,4 +1003,52 @@ Proof.
              [exact (Hno Hc) | exact (proj1 Hp2 H a Ha)].
         -- intro H. apply Hp2. intros a Ha.
            exact (H a (or_intror (conj Hno Ha))).
+Qed.
+
+(** THE CHECKER'S ONE TEST: is the address a trace reports the address
+    Linux gives?  Written over the returned [word] so that
+    [Checks.Sys.Mm.Mmap] and [Checks.Sys.Mm.Mremap] carry no [option]
+    plumbing. *)
+Definition linux_place_is (h : VmMaps) (thp : bool) (hint : word) (nZ : Z)
+    (r : word) : bool :=
+  match linux_place_b h thp hint nZ with
+  | Some a => (a =? bv_unsigned r)%Z
+  | None => false
+  end.
+
+Lemma linux_place_is_iff : forall h thp hint nZ r,
+  (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
+  (linux_place_is h thp hint nZ r = true
+   <-> linux_place h thp hint nZ (bv_unsigned r)).
+Proof.
+  intros h thp hint nZ r HnPos HnAl.
+  destruct (linux_place_b_spec h thp hint nZ HnPos HnAl) as [Hsome Hnone].
+  unfold linux_place_is.
+  destruct (linux_place_b h thp hint nZ) as [a|] eqn:Hb.
+  - split.
+    + intro H. apply Z.eqb_eq in H. subst a. now apply Hsome.
+    + intro H. apply Z.eqb_eq.
+      exact (linux_place_unique _ _ _ _ _ _ (proj1 (Hsome a) eq_refl) H).
+  - split; [discriminate|]. intro H. exfalso.
+    exact (proj1 Hnone eq_refl _ H).
+Qed.
+
+(** The checker's test implies the four facts the old guard asked for,
+    in one step, for the proofs in [Checks/Sys/Mm/]. *)
+Lemma linux_place_is_admissible : forall h thp hint nZ r,
+  (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
+  linux_place_is h thp hint nZ r = true ->
+  (bv_unsigned r mod page_size = 0)%Z /\ (0 < bv_unsigned r)%Z
+  /\ (bv_unsigned r + nZ <= alloc_top h)%Z
+  /\ region_free (vm_reserved h ++ vm_maps h) r (Z_to_bv 64 nZ) = true.
+Proof.
+  intros h thp hint nZ r HnPos HnAl H.
+  apply (linux_place_is_iff h thp hint nZ r HnPos HnAl) in H.
+  destruct (linux_place_admissible h thp hint nZ (bv_unsigned r) HnPos HnAl H)
+    as (Hal & Hpos & Hhi & Hfree).
+  assert (Hr : Z_to_bv 64 (bv_unsigned r) = r)
+    by (apply bv_eq; rewrite Z_to_bv_unsigned; apply bv_wrap_small;
+        apply bv_unsigned_in_range).
+  rewrite Hr in Hfree.
+  repeat split; assumption.
 Qed.

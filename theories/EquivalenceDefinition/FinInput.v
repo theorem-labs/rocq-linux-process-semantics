@@ -486,7 +486,17 @@ Record FinProcInput := mkFinProcInput {
     (* the run's declared private /tmp, mirroring [State.in_tmp].  It
        is already inductive -- a [Fs.Fs] is a list -- so unlike
        [fin_stdin] and [fin_urandom] it adds no clause to
-       [finite_input].  It is NOT part of [fin_core] -- see there *)
+       [finite_input].  It is NOT part of [fin_core] -- see there *);
+  fin_kernel : KernelBuild
+    (* the kernel build the run was launched on, mirroring
+       [State.in_kernel].  A FIELD RATHER THAN A PIN for the reason
+       [fin_abort_terminal] is: a classifier statement must range over
+       exactly the inputs an equivalence statement would, minus the
+       infinite ones, and a [bool] and an [N] are not infinite.
+       Pinning it to [default_kernel] here would put the
+       transparent-huge-page build out of reach of every classifier
+       shape while leaving it in reach of the equivalence shapes.  It
+       adds no clause to [finite_input] *)
 }.
 
 (** The process input a [FinProcInput] denotes.  Built with
@@ -500,7 +510,7 @@ Definition to_proc_input (f : FinProcInput) : ProcInput :=
               (fin_nofile f) (fin_sigmask f) (fin_hwcap f)
               (fin_abort_terminal f) (fin_va_size f)
               (stream_of_list_then (fin_urandom f) State.default_urandom)
-              (fin_tmp f).
+              (fin_tmp f) (fin_kernel f).
 
 (** Validity of a finite input is validity of the input it denotes —
     [Run.valid_input] and nothing else.  Deliberately not a new
@@ -883,7 +893,7 @@ Lemma valid_input_stdin_irrelevant : forall inp s,
   valid_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp) s
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                 (in_urandom inp) (in_tmp inp)).
+                 (in_urandom inp) (in_tmp inp) (in_kernel inp)).
 Proof. intros inp s H. exact H. Qed.
 
 (** THE RANDOM DEVICE'S STREAM IS NOT LIKE STANDARD INPUT.
@@ -902,7 +912,7 @@ Lemma valid_input_urandom_endless_irrelevant : forall inp r,
                  (in_stdin inp)
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                 r (in_tmp inp)).
+                 r (in_tmp inp) (in_kernel inp)).
 Proof.
   intros inp r H Hr.
   (* [valid_input] has eleven conjuncts: keep the first ten and replace the last ([valid_urandom]) with [Hr]. *)
@@ -946,7 +956,8 @@ Lemma valid_input_tmp_arbitrary : forall inp t,
                  (in_stdin inp)
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp)
-                 (in_abort_terminal inp) (in_va_size inp) (in_urandom inp) t).
+                 (in_abort_terminal inp) (in_va_size inp) (in_urandom inp) t
+                 (in_kernel inp)).
 Proof.
   intros inp t Him H. unfold valid_input in H |- *.
   destruct H as (Ha & He & _ & Hrest).
@@ -961,7 +972,7 @@ Lemma valid_fin_input_urandom_irrelevant : forall f l,
                      (fin_stdin f)
                      (fin_uid f) (fin_gid f) (fin_groups f) (fin_net f)
                      (fin_nofile f) (fin_sigmask f) (fin_hwcap f) (fin_abort_terminal f) (fin_va_size f)
-                     l (fin_tmp f)).
+                     l (fin_tmp f) (fin_kernel f)).
 Proof.
   intros f l H.
   (* Eleven conjuncts: keep the first ten and prove the last ([valid_urandom]) from the padding. *)
@@ -1047,12 +1058,12 @@ Lemma valid_input_not_finite : forall inp,
                  all_zeros
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                 (in_urandom inp) (in_tmp inp))
+                 (in_urandom inp) (in_tmp inp) (in_kernel inp))
   /\ ~ finite_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp)
                       all_zeros
                       (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                       (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                      (in_urandom inp) (in_tmp inp)).
+                      (in_urandom inp) (in_tmp inp) (in_kernel inp)).
 Proof.
   intros inp H. split.
   - apply valid_input_stdin_irrelevant, H.

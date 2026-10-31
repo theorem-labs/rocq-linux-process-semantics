@@ -13,6 +13,7 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
 Import ListNotations.
 Open Scope bv_scope.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Placement.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude Fs.ReadWrite.
 
@@ -47,9 +48,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
       else
         let nZ := page_round_up_Z (bv_unsigned len) in
         let n := Z_to_bv 64 nZ in
-        if (bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-           && (bv_unsigned r + nZ <=? alloc_top (m_vmmaps m))%Z
-           && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) r n
+        if linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr nZ r
            && mmap_noreserve_backed_ok flags m nZ
            && listNN_eqb zs [(r, n)]
         then CheckOk
@@ -73,9 +72,7 @@ Definition check_mmap (addr len prot flags fd off : word) (eff : SyscallEffect)
       else
         let nZ := page_round_up_Z (bv_unsigned len) in
         let n := Z_to_bv 64 nZ in
-        if (bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-           && (bv_unsigned r + nZ <=? alloc_top (m_vmmaps m))%Z
-           && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) r n
+        if linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr nZ r
            && listNN_eqb us [(r, n)]
         then CheckOk
                (with_mmap_backing flags r n
