@@ -139,10 +139,13 @@ python3 tools/lean_replay.py --root . \
     -j 24 --max-report 100000 --json replay.json
 ```
 
-Step 2 needs more than an OCaml compiler. It needs dune and zarith, which
-the harness links (`testing/syscall-check/dune:5,49`) and nothing in
-`linux-process-semantics.opam` declares, and python3 on `PATH`, because a
-dune rule of the harness (`testing/syscall-check/dune:26-31`) renders
+Step 2 needs more than an OCaml compiler. It needs dune, zarith and
+python3. The harness links zarith (`testing/syscall-check/dune:5,49`),
+and no opam file declares it: `linux-process-semantics.opam` does not, and
+`testing/` has none of its own. It declares the other two, dune as
+`>= 3.23` and python3 as a debian depext, but a switch that has not
+installed that package has neither. python3 is needed because a dune rule
+of the harness (`testing/syscall-check/dune:26-31`) renders
 `syscall_names.ml` with `python3 gen_tables.py`; without it the build
 stops with "Error: Program python3 not found in the tree or in PATH". In
 the image `ocaml/opam:debian-12-ocaml-5.3`, run
