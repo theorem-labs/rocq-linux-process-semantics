@@ -5,7 +5,11 @@ import LinuxProcessSemantics.EquivalenceDefinition.MustExit
 import LinuxProcessSemantics.EquivalenceDefinition.FinInput
 import LinuxProcessSemantics.EquivalenceDefinition.Classifier
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+unported: omni_strong_universal -- Rocq declares it twice as a functor field, in OMNI_SPEC and in the body of OmniOfSpec; Lean carries it as the field of structure OMNI_SPEC and as the argument of the anonymous constructor OmniOfSpec builds, so there is no top-level definition of that name.
+unported: strong_universal -- the same, for SpecOfOmni and the field of Equivalence.SPEC; Lean has it as that structure's field and as SpecOfOmni's constructor argument.
+unported: omni_strong_universal_error_free -- the same, for OMNI_SPEC_ERROR_FREE and OmniOfSpecErrorFree.
+unported: strong_universal_error_free -- the same, for SpecErrorFreeOfOmni and the field of Equivalence.SPEC_ERROR_FREE. -/
 
 /-! # The omni form of the baseline equivalence contract
 

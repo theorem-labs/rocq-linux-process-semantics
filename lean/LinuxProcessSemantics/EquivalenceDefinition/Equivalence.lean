@@ -1,10 +1,11 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/Equivalence.v
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.Base
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.ErrorFree
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.Scfg
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.Budgets
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.Va
 
-/-! rocq-baseline: 1807c1e25ce12708f5cc85213f2df4bf03d978da
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
 divergence: bugs/accept-queue-cannot-run-out.md -- inherited
 divergence: bugs/va-size-declines-every-non-sv48-run.md -- inherited -/
 

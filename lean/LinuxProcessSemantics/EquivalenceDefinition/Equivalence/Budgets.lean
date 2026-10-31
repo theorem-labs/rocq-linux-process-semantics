@@ -3,7 +3,10 @@ import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.Base
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.ErrorFree
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.Scfg
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+unported: lim_source -- Rocq declares it as a Definition inside the instance modules ShippedBudgets and SanitizerBudgets; Lean carries it as a field of structure BUDGETS, which those two instances set, so no top-level definition has that name.
+unported: lim_target -- the same field of structure BUDGETS, set by ShippedBudgets and by SanitizerBudgets.
+unported: headroom -- the same: Rocq proves it per instance module, Lean carries it as the proof field of structure BUDGETS. -/
 
 /-! The source budget premise restricts the input domain; it makes no target-budget
 claim. The 9/8 factor and 261 MiB charge are runtime measurements outside the
