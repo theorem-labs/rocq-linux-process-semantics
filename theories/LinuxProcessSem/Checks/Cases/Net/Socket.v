@@ -2422,6 +2422,59 @@ Example connect_at_the_top_still_answers :
      = CheckReject.
 Proof. split; check_eq. Qed.
 
+(** ---- connect (203): the ZERO LENGTH, WHICH THE RANGE TEST MUST NOT SEE
+
+    [move_addr_to_kernel] is
+    [if (ulen < 0 || ulen > 128) return -EINVAL;
+     if (ulen == 0) return 0;
+     if (copy_from_user(...)) return -EFAULT;] (net/socket.c), so a
+    zero-length address RETURNS BEFORE [copy_from_user] and the pointer
+    is never looked at: [connect(fd, p, 0)] is never -EFAULT, for any
+    [p].  [State.access_okb a 0] is
+    [(0 <=? TASK_SIZE) && (bv_unsigned a <=? TASK_SIZE)], FALSE above
+    the limit, so routing the zero through [State.copy_bytes_map] made
+    this call -EFAULT — a wrong answer, not a decline, and the one the
+    guard itself introduced.  [Net.Socket.move_addr_bytes] is the fix.
+
+    THE PAIR.  The first two conjuncts are the case the model used to
+    get wrong, on a socket and on a channel fd — the two different
+    answers a zero length has, which is why connect cannot borrow
+    [bind_spec]'s single -EINVAL arm — and each refuses -EFAULT beside
+    it.  The last two are the CONTROL at the SAME pointer with ONE byte
+    asked for: there [copy_from_user] really does run, [access_ok]
+    really does refuse the range, and -EFAULT is still the only answer.
+    A fix that dropped the range test instead of ordering the zero
+    ahead of it would pass the first half and fail this one.
+
+    Every arm here is ABOVE the ledger or records nothing, so
+    [connect_answering] is the right spelling throughout: a zero-length
+    address reads no user byte. *)
+Example connect_zero_length_never_faults :
+  connect_answering (fun _ => None) listening_socket_model
+    3 connect_wrap_addrp 0 (errno_ret EINVAL) = CheckOk listening_socket_model []
+  /\ connect_answering (fun _ => None) listening_socket_model
+       3 connect_wrap_addrp 0 (errno_ret EFAULT) = CheckReject
+  /\ connect_answering (fun _ => None) listening_socket_model
+       1 connect_wrap_addrp 0 (errno_ret ENOTSOCK) = CheckOk listening_socket_model []
+  /\ connect_answering (fun _ => None) listening_socket_model
+       1 connect_wrap_addrp 0 (errno_ret EFAULT) = CheckReject
+  /\ connect_answering (fun _ => None) listening_socket_model
+       3 connect_wrap_addrp 1 (errno_ret EFAULT) = CheckOk listening_socket_model []
+  /\ connect_answering (fun _ => None) listening_socket_model
+       3 connect_wrap_addrp 1 (errno_ret EINVAL) = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+(** THE ZERO LENGTH IS UNCHANGED WHERE IT WAS ALREADY RIGHT, which is
+    what says the repair is an ORDERING and not a new acceptance: at a
+    readable pointer well below [State.TASK_SIZE] the answer is the same
+    -EINVAL it always was, and a success is still refused. *)
+Example connect_zero_length_below_the_limit_is_unchanged :
+  connect_answering connect_addr_mem listening_socket_model 3 8192 0
+    (errno_ret EINVAL) = CheckOk listening_socket_model []
+  /\ connect_answering connect_addr_mem listening_socket_model 3 8192 0 0
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
 (* ---- getsockopt (209): the four-byte [optlen] --------------------------- *)
 
 (** Two bytes below the top and two from 0.  Here the ERRNO does not

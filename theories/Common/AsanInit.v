@@ -498,8 +498,11 @@ Section Init.
       (arch/riscv/kernel/vdso.c [arch_setup_additional_pages], Linux
       v6.18.46, commit 1f99e9ab748f).  For [State.default_kernel] that pair
       is four vvar pages and two text pages, 24576 bytes, just below
-      [mm->mmap_base] — NOT the empty list the checker's [AsanPlanSound.co_res]
-      still assumes. *)
+      [mm->mmap_base].  The ledger is therefore NOT the image's
+      reservations alone, which is why the checker's
+      [AsanPlanSound.co_res] reads it as those reservations followed by
+      an existential tail; [init_cs_ok] below closes that tail with
+      [RESX]. *)
   (** [State.vdso_top] of the initial ledger: [page_round_down_Z] of the
       smaller of the mmap base and the allocation top, which for
       [mkVmMapsFull reserved [] [] brk0 brk0 lim mbase sp] is
@@ -1055,16 +1058,14 @@ Section Init.
     split; lia.
   Qed.
 
-  (** THE THREE OPEN GOALS OF [init_cs_ok], AND THEIR WITNESS.
+  (** THE THREE LEDGER GOALS OF [init_cs_ok], AND THEIR WITNESS.
 
       [State.init_model] seeds [vm_reserved] with [State.init_reserved], which
       appends the vDSO pair ([State.vdso_reserved]) to the image's own
       reservations; [model0_facts] above states that and proves it by
-      [reflexivity].  [AsanPlanSound.cs_ok] still says the ledger is the
-      image's reservations alone, so [co_res], [co_totsz] and [co_split] do
-      not close on this branch.  The shape that closes them is
-      [LpsStartState.VdsoReservedLane]'s, on `revision/vdso-reserved-asan`,
-      head c7747642, green:
+      [reflexivity].  [AsanPlanSound.cs_ok] reads the ledger as the image's
+      reservations followed by an EXISTENTIAL TAIL, which is what lets
+      [co_res], [co_totsz] and [co_split] close on this launch:
 
         co_res : exists rx : list (word * word),
                    vm_reserved (m_vmmaps model) = segments_reserved SEGS ++ rx
@@ -1078,7 +1079,7 @@ Section Init.
       frame lemmas [rewrite ?Evm] over every field to turn [m_vmmaps model']
       into [m_vmmaps model], and [rewrite] cannot see under an unexpanded
       definition, so a named [reserved_ok] stops the field being closed by
-      [try assumption].  [co_mres] is a new LAST field, after [co_sinv],
+      [try assumption].  [co_mres] is the LAST field, after [co_sinv],
       discharged here by [constructor] because [vm_maps model0 = []].
 
       The witness is [RESX], and its four clauses are:
@@ -1123,19 +1124,19 @@ Section Init.
       derivation unsound for a pair sitting below it, and the mmap node could
       then certify a grant overlapping the vDSO.  Do not raise it.
 
-      [AsanPlanCore.v] COMES WHOLE FROM THAT BRANCH, not field by field: it
-      carries the [atable] fields [n_resx] and [p_resx] and [resx_bytes], the
-      new [a_totsz] and [a_ylo] in [init_acs_of_with], AND two further changes
-      that are needed and easy to miss — [gap_ok]'s count becomes
+      [AsanPlanCore.v] carries the whole of that shape rather than a field of
+      it: the [atable] fields [n_resx] and [p_resx] and [resx_bytes], the
+      [a_totsz] and [a_ylo] of [init_acs_of_with], AND two further pieces that
+      are needed and easy to miss — [gap_ok]'s count is
       [n_res A + n_resx A + length (a_maps cs)], because the extra
       reservations are intervals the gap lemma measures, and
       [mmap_fixed_free]'s free path reads
       [fixed_args cs (resx_clear cs)] with [resx_clear cs = Z.min KHI (a_ylo cs)],
       so a candidate range the checker cannot place against the pair falls
-      through to the hole path and is REFUSED rather than admitted.  What this
-      branch adds on top is [n_resx := 2] and [p_resx := 20] in [ASAN] and
-      [BOTH]: 0 is the honest bound at b1243062, where [State.init_reserved]
-      does not yet exist and the launch reserves nothing. *)
+      through to the hole path and is REFUSED rather than admitted.  [ASAN] and
+      [BOTH] carry [n_resx := 2] and [p_resx := 20]; 0 is the honest bound for
+      a launch that reserves nothing extra, which is what an image without
+      [State.init_reserved]'s pair has. *)
   Theorem init_cs_ok : cs_ok segs A LIMIT CEIL SINV0 argH0 fs E0 cs0 R0 FULL0 model0.
   Proof.
     destruct model0_facts as (M1 & M2 & M3 & M4 & M5 & M6 & M7 & M8 & M9 & M10 & M11 & M12 & M13).

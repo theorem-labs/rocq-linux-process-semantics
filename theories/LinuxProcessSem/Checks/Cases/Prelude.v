@@ -498,11 +498,18 @@ Qed.
     finish one [vm_compute] below in thirty minutes, and these 528
     bytes finish in seconds.  Part of that was [State.init_model]
     being a chain of [with_*] setters — each rebuilds the record from
-    its argument's fields, so a chain of n of them denotes a term with
-    7^n copies of the innermost model, and a fixture that writes the
-    term twice costs time exponential in n.  [init_model] is one
-    constructor since, which is what makes 528 bytes cheap; the
-    four-kilobyte block was not measured again after that. *)
+    its argument's fields, so the chain denotes a term holding the
+    PRODUCT of the setters' own copy counts, NOT a power of seven:
+    25,071,039 copies of the innermost model over the seven links of
+    [State.init_model_setter_chain], against the 823,543 that [7^7]
+    would give.  That count and the timings behind it are at
+    [State.init_model], measured rather than restated here, and a
+    fixture that writes the term twice costs time exponential in the
+    chain's length.  [init_model] is one constructor since — a factor
+    of 9,935 on this file's own
+    [fd_truncation_high_low_halves_all_ebadf] — which is what makes 528
+    bytes cheap; the four-kilobyte block was not measured again after
+    that. *)
 
 Definition demo_block_top : word := Z_to_bv 64 sp_window_hi.
 Definition demo_block_sp : word := Z_to_bv 64 0x7ffffffffdf0.

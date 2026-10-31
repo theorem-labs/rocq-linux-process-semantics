@@ -282,7 +282,7 @@ Definition connect_witness (fd addrp addrlen : word) (i : SyscallInput)
       if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al)
       then ret_outcome (errno_ret EINVAL) m
       else
-      match copy_bytes_map (in_mem i) addrp al with
+      match move_addr_bytes (in_mem i) addrp al with
       | None => ret_outcome (errno_ret EFAULT) m
       | Some bs =>
           outcome_copyins (if Z.eqb al 0 then [] else [(addrp, length bs)])
@@ -322,7 +322,7 @@ Proof.
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen)));
        cbv beta iota zeta; [ apply pure_ok | ].
-  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
+  all: destruct (move_addr_bytes (in_mem i) addrp (sint32 addrlen))
          as [bs|]; cbv beta iota zeta; [ | apply pure_ok ].
   all: apply record_copyins_outcome; cbv beta iota zeta.
   (* seven non-socket entries answer -ENOTSOCK below the copy *)
