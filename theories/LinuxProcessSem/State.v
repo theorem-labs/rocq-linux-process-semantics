@@ -6084,24 +6084,46 @@ Definition init_reserved (reserved : list (word * word))
     and that is a performance fact worth stating where it is easy to
     undo.
 
-    Each [with_*] rebuilds [mkModelOf] from SEVEN projections of its
-    argument, so a chain of n of them denotes a term with 7^n copies of
-    the innermost model.  The kernel's conversion does not share those
-    copies.  A goal that reduces [init_model] TWICE — which is every
+    Each [with_*] rebuilds [mkModelOf] from the projections of its
+    argument, so a chain of them denotes a term holding the PRODUCT of
+    their per-setter counts — not a power.  Only [with_nofile] takes
+    seven; a setter that rebuilds a sub-record takes more, because every
+    field of that record is another projection.  Counted at this commit,
+    over [init_model_setter_chain]'s seven links:
+
+      with_abort_terminal 17   with_sigmask 17   with_nofile  7
+      with_net             9   with_urandom  9   with_creds  17
+      with_kernel          9
+
+    17·17·7·9·9·17·9 = 25,071,039 copies of the innermost model, against
+    the 823,543 that "7^7" would give.  The kernel's conversion does not
+    share them.  A goal that reduces [init_model] TWICE — which is every
     fixture that writes the term on both sides of an equation, as
     [Checks.Cases.Prelude] does — then costs time exponential in the
     chain's length.
 
-    Measured in the release checker image, on
-    [Checks.Cases.Prelude]'s [fd_truncation_high_low_halves_all_ebadf],
-    whose proof is [repeat constructor; check_eq] and whose
-    [constructor] asks the kernel to convert the two sides:
+    MEASURED, five runs each, on [Checks.Cases.Prelude]'s
+    [fd_truncation_high_low_halves_all_ebadf], whose proof is
+    [repeat constructor; check_eq] and whose [constructor] asks the
+    kernel to convert the two sides.  A cold [.vo] for that one file and
+    a warm cone, in the release checker image
+    ([rc2-checker:1b59b23d],
+    [sha256:e9fa8b19d7cbab6127dfa522f9b9a02ad8c086febd809e58510ad96e78e24e14]),
+    on a 16-vCPU machine, timed by Rocq's own [-time] line for the
+    Example's own sentences:
 
-    - the model named once ([Definition M0 := init_model …], used
-      twice): 0.012 s;
-    - the term written out twice, as that [Example] writes it, with a
-      seven-link chain: over 120 s;
-    - this definition, written out twice: 0.095 s.
+    - the six-link chain this replaced, written out twice, at [ba8a152]:
+      437.6 to 445.6 s, mean 441.1 s — about 227 s in the tactic and
+      about 214 s in the [Qed];
+    - this definition, written out twice: 0.044 to 0.046 s, mean
+      0.0444 s.
+
+    A factor of 9,935.  The three figures this comment used to give —
+    0.012 s, "over 120 s" and 0.095 s — were not measurements of any
+    chain this tree holds: the first names a form that is not in the
+    tree, the second is a lower bound rather than a time, and neither it
+    nor the third names a machine.  The run behind them is unrecoverable;
+    these replace them.
 
     [Strategy] does not fix it.  [Strategy 1000] on the constants the
     chain reduces through leaves the same [Example] over its timeout:
