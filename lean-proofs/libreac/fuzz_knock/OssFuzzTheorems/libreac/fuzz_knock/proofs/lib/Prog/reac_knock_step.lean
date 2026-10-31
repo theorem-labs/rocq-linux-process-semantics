@@ -172,7 +172,7 @@ private theorem u_addi (a : word) (k : Int) (h0 : 0 ≤ k)
   exact Int.emod_eq_of_lt (by have := (u64_range a).1; omega) h1
 
 /-- From the `wr_at` half of Rocq's `rw_cells` to the model's store bound:
-what `lib/Lib/Step.v:25` gives the Rocq proof for free. Over
+what `lib/Lib/Step.v:70` gives the Rocq proof for free. Over
 `StoreOk.store_ok_of_all`; the same text as `reac_knock_heard.lean`'s, which
 wrote it first in this slice. -/
 private theorem store_ok_of_wr_at (segs : List Segment) (m : word → Option byte)
