@@ -1,9 +1,10 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Run.v
 import LinuxProcessSemantics.LinuxProcessSem.RiscvSemantics
 import LinuxProcessSemantics.LinuxProcessSem.StackLayout
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Namei
 
-/-! rocq-baseline: 9f9a96b29a12dd26b54bff74b47ba1c4a6e01ad3 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Run — Kleene-star trace semantics
 
@@ -73,7 +74,7 @@ open LinuxProcessSemantics.LinuxProcessSem.Sys.Mm.Mremap (mremap_budget_refused_
 open LinuxProcessSemantics.LinuxProcessSem.Sys.Mm.Mprotect (mprotect_budget_refused_b mprotect_errnos)
 open LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.DPath (getcwd_errnos)
 open LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.File (dup_errnos)
-open LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Open (faccessat_errnos openat_errnos)
+open LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Open (faccessat_errnos openat_errnos localtime_path)
 open LinuxProcessSemantics.LinuxProcessSem.Sys.Fs.Pipe (pipe2_errnos)
 open LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Sys (setid_errnos)
 open LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Fork (clone_errnos)
@@ -882,8 +883,8 @@ lowest free descriptor beside the -EMFILE even where `alloc_fd`'s
 RLIMIT_NOFILE, forces Linux to -EMFILE; with the arm's family off, `sc_fd`
 for `dup`, the filter removes the -EMFILE and leaves only the descriptor
 (`Checks/Cases/Run.lean`'s `dup_emfile_at_the_soft_limit_is_filtered`).
-bugs/fd-allocation-ignores-rlimit-nofile.md records the allocator's gap,
-not this consequence of it.
+`linux-process-semantics@ff0313ba4f:bugs/fd-allocation-ignores-rlimit-nofile.md`
+records the allocator's gap, not this consequence of it.
 
 `setsid` from a session or process-group leader.  `ksys_setsid`
 (kernel/sys.c:1268-1301, Linux v6.18.46) answers -EPERM when the caller
@@ -922,8 +923,9 @@ gives is removed (`Checks/Cases/Run.lean`'s
 `brk_refusal_b`, in `Run.v` first: narrowing `brk_r_ok` instead would take
 the older kernels' and QEMU's answer out of `run` too.  The other two are
 GROWs Linux refuses and `brk_r_ok` admits: into the stack guard gap
-(bugs/brk-grow-ignores-stack-guard-gap.md), and onto the vvar/vdso pair,
-which the ledger does not hold (bugs/grants-into-the-stack-band.md).
+(`linux-process-semantics@ff0313ba4f:bugs/brk-grow-ignores-stack-guard-gap.md`),
+and onto the vvar/vdso pair, which the ledger does not hold
+(`linux-process-semantics@ff0313ba4f:bugs/grants-into-the-stack-band.md`).
 
 The filtered run is a subset of `run` (`sstep_cfg_sub` and the `_sub`
 lemmas below) and agrees with it at `may_fail_cfg`, step for step
@@ -1999,7 +2001,7 @@ an empty `execve` argv to a single empty string).  The fifth clause is NOT
 a fact about Linux: it narrows the theorem's domain so the whole-program
 examples cannot reach `openat`'s separator decline; the argument and its
 cost are on the Rocq definition and in
-`bugs/valid-argv-excludes-slash-and-dotdot.md`. -/
+`linux-process-semantics@ff0313ba4f:bugs/valid-argv-excludes-slash-and-dotdot.md`. -/
 def valid_argv (argv : List (List byte)) : Prop :=
   (1 ≤ (argv.length : Int) ∧ (argv.length : Int) ≤ 1024) ∧
   total_arg_bytes argv ≤ 2097152 ∧
@@ -2128,7 +2130,7 @@ def valid_urandom (inp : ProcInput) : Prop :=
 
 def valid_input (inp : ProcInput) : Prop :=
   valid_argv inp.in_argv ∧ valid_envp inp.in_envp ∧ valid_fs inp.in_fs
-  ∧ fs_image_real inp.in_image_fs = true
+  ∧ fs_keys_relative inp.in_image_fs
   ∧ valid_creds inp ∧ valid_nofile inp.in_nofile
   ∧ valid_sigmask inp ∧ valid_hwcap inp.in_hwcap ∧ inp.in_abort_terminal = false
   ∧ inp.in_va_size = .Sv48 ∧ valid_urandom inp
@@ -2159,7 +2161,7 @@ appear in any trace (`star_off_no_kill`).  A task that wants the other
 reading asks for it by name. -/
 def valid_input_abort (inp : ProcInput) : Prop :=
   valid_argv inp.in_argv ∧ valid_envp inp.in_envp ∧ valid_fs inp.in_fs
-  ∧ fs_image_real inp.in_image_fs = true
+  ∧ fs_keys_relative inp.in_image_fs
   ∧ valid_creds inp ∧ valid_nofile inp.in_nofile
   ∧ valid_sigmask inp ∧ valid_hwcap inp.in_hwcap ∧ inp.in_abort_terminal = true
   ∧ inp.in_va_size = .Sv48 ∧ valid_urandom inp
@@ -2171,7 +2173,7 @@ makes forgetting to choose the safe failure rather than the dangerous
 one. -/
 def valid_input_either (inp : ProcInput) : Prop :=
   valid_argv inp.in_argv ∧ valid_envp inp.in_envp ∧ valid_fs inp.in_fs
-  ∧ fs_image_real inp.in_image_fs = true
+  ∧ fs_keys_relative inp.in_image_fs
   ∧ valid_creds inp ∧ valid_nofile inp.in_nofile
   ∧ valid_sigmask inp ∧ valid_hwcap inp.in_hwcap
   ∧ inp.in_va_size = .Sv48 ∧ valid_urandom inp
@@ -2182,21 +2184,21 @@ statement in the tree was written against.  All three keep the abort
 stance off, as in Rocq. -/
 def valid_input_sv39 (inp : ProcInput) : Prop :=
   valid_argv inp.in_argv ∧ valid_envp inp.in_envp ∧ valid_fs inp.in_fs
-  ∧ fs_image_real inp.in_image_fs = true
+  ∧ fs_keys_relative inp.in_image_fs
   ∧ valid_creds inp ∧ valid_nofile inp.in_nofile
   ∧ valid_sigmask inp ∧ valid_hwcap inp.in_hwcap ∧ inp.in_abort_terminal = false
   ∧ inp.in_va_size = .Sv39 ∧ valid_urandom inp
 
 def valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv inp.in_argv ∧ valid_envp inp.in_envp ∧ valid_fs inp.in_fs
-  ∧ fs_image_real inp.in_image_fs = true
+  ∧ fs_keys_relative inp.in_image_fs
   ∧ valid_creds inp ∧ valid_nofile inp.in_nofile
   ∧ valid_sigmask inp ∧ valid_hwcap inp.in_hwcap ∧ inp.in_abort_terminal = false
   ∧ inp.in_va_size = .Sv57 ∧ valid_urandom inp
 
 def valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv inp.in_argv ∧ valid_envp inp.in_envp ∧ valid_fs inp.in_fs
-  ∧ fs_image_real inp.in_image_fs = true
+  ∧ fs_keys_relative inp.in_image_fs
   ∧ valid_creds inp ∧ valid_nofile inp.in_nofile
   ∧ valid_sigmask inp ∧ valid_hwcap inp.in_hwcap ∧ inp.in_abort_terminal = false
   ∧ valid_urandom inp
@@ -2255,7 +2257,15 @@ theorem valid_input_abort_terminal (inp : ProcInput) (h : valid_input inp) :
 
 /-- The remaining clauses, each by name, so that no consumer is left with a
 reason to reach in by position (the rule above `valid_input_va_size`).
-Rocq `valid_input_argv` … `valid_input_hwcap`. -/
+
+NO COUNTERPART AT `f1006fe8`.  The Rocq file this twin ports has no
+projection lemma for these clauses and no `valid_input_clauses` tactic:
+its own consumers destructure the conjunction where they stand.  The
+lemmas are kept here because they are derived — each is proved from
+`valid_input` and adds no definition and no axiom — and because the Lean
+files above this one are written against them.  The one that went is
+`valid_input_image_real`: its statement named `Fs.fs_image_real`, which
+`f1006fe8` does not define, and nothing read it. -/
 theorem valid_input_argv (inp : ProcInput) (h : valid_input inp) : valid_argv inp.in_argv := by
   unfold valid_input at h; (repeat obtain ⟨_, h⟩ := (h : _ ∧ _)); repeat' (first | with_reducible assumption | refine ⟨?_, ?_⟩)
 
@@ -2263,10 +2273,6 @@ theorem valid_input_envp (inp : ProcInput) (h : valid_input inp) : valid_envp in
   unfold valid_input at h; (repeat obtain ⟨_, h⟩ := (h : _ ∧ _)); repeat' (first | with_reducible assumption | refine ⟨?_, ?_⟩)
 
 theorem valid_input_fs (inp : ProcInput) (h : valid_input inp) : valid_fs inp.in_fs := by
-  unfold valid_input at h; (repeat obtain ⟨_, h⟩ := (h : _ ∧ _)); repeat' (first | with_reducible assumption | refine ⟨?_, ?_⟩)
-
-theorem valid_input_image_real (inp : ProcInput) (h : valid_input inp) :
-    fs_image_real inp.in_image_fs = true := by
   unfold valid_input at h; (repeat obtain ⟨_, h⟩ := (h : _ ∧ _)); repeat' (first | with_reducible assumption | refine ⟨?_, ?_⟩)
 
 theorem valid_input_creds (inp : ProcInput) (h : valid_input inp) : valid_creds inp := by
@@ -2351,14 +2357,14 @@ refuses, and the statement would then hold vacuously.  Both keep the abort
 stance off and the size at Sv48, as the per-size predicates do. -/
 def valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   valid_argv inp.in_argv ∧ valid_envp inp.in_envp ∧ valid_fs inp.in_fs
-  ∧ fs_image_real inp.in_image_fs = true
+  ∧ fs_keys_relative inp.in_image_fs
   ∧ valid_creds inp ∧ valid_nofile inp.in_nofile
   ∧ valid_sigmask inp ∧ inp.in_hwcap = hwcap_rv64gc ∧ inp.in_abort_terminal = false
   ∧ inp.in_va_size = .Sv48 ∧ valid_urandom inp
 
 def valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv inp.in_argv ∧ valid_envp inp.in_envp ∧ valid_fs inp.in_fs
-  ∧ fs_image_real inp.in_image_fs = true
+  ∧ fs_keys_relative inp.in_image_fs
   ∧ valid_creds inp ∧ valid_nofile inp.in_nofile
   ∧ valid_sigmask inp ∧ inp.in_hwcap = hwcap_rv64gcv ∧ inp.in_abort_terminal = false
   ∧ inp.in_va_size = .Sv48 ∧ valid_urandom inp
@@ -2423,14 +2429,14 @@ of the two that do — and neither do the per-size predicates. -/
 
 def valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   valid_argv inp.in_argv ∧ valid_envp inp.in_envp ∧ valid_fs inp.in_fs
-  ∧ fs_image_real inp.in_image_fs = true
+  ∧ fs_keys_relative inp.in_image_fs
   ∧ valid_creds inp ∧ valid_nofile inp.in_nofile
   ∧ valid_sigmask inp ∧ inp.in_hwcap = hwcap_rv64gc ∧ inp.in_abort_terminal = true
   ∧ inp.in_va_size = .Sv48 ∧ valid_urandom inp
 
 def valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv inp.in_argv ∧ valid_envp inp.in_envp ∧ valid_fs inp.in_fs
-  ∧ fs_image_real inp.in_image_fs = true
+  ∧ fs_keys_relative inp.in_image_fs
   ∧ valid_creds inp ∧ valid_nofile inp.in_nofile
   ∧ valid_sigmask inp ∧ inp.in_hwcap = hwcap_rv64gcv ∧ inp.in_abort_terminal = true
   ∧ inp.in_va_size = .Sv48 ∧ valid_urandom inp
@@ -2481,5 +2487,138 @@ theorem valid_input_abort_hwcap_rv64gc_abort_terminal (inp : ProcInput)
 theorem valid_input_abort_hwcap_rv64gcv_abort_terminal (inp : ProcInput)
     (h : valid_input_abort_hwcap_rv64gcv inp) : inp.in_abort_terminal = true := by
   unfold valid_input_abort_hwcap_rv64gcv at h; (repeat obtain ⟨_, h⟩ := (h : _ ∧ _)); repeat' (first | with_reducible assumption | refine ⟨?_, ?_⟩)
+
+/-! ## The image premise, consumed: the device arms' guards are unreachable
+
+`valid_input`'s `Fs.fs_keys_relative` conjunct is a premise about the
+environment, and a premise earns its place by being USED.  What it is for
+is here: the three device arms of `Sys.Fs.Open` and the key lookup of
+`Sys.Fs.Stat.newfstatat_core_spec` each ask the initial file system
+whether it holds an absolute path, or something under it, and answer
+`unmodeled` when it does.  Under the premise it never does, so those
+branches are dead on every valid input and the guards stay in the arms as
+the courtesy their comments say they are — NO ARM IS CHANGED by this: the
+premise makes the guards dead, it does not delete them.
+
+The lemmas live here rather than in `State` because they name
+`Sys.Fs.Namei.fs_under` and the arms' own path constants, which sit above
+`State`; the seeding half of the argument
+(`State.seeded_absolute_key_is_tmp`) is down there where the seeding is. -/
+
+/-- THE ONE FACT THE ARMS NEED.  `p` begins with the separator and
+DIVERGES from the seeding prefix at a byte position both of them have.
+Then no key of a seeded image is `p`, and none lives under it — so
+`Fs.fs_lookup` misses and `Sys.Fs.Namei.fs_under` is false.
+
+Both halves come from `State.seeded_absolute_key_is_tmp`: a key is
+relative, and then it does not even start the way `p` does, or the seeding
+minted it and it is `State.tmp_key n`, which agrees with
+`State.tmp_prefix` at position `i` where `p` does not.  The divergence is
+stated as an index rather than as "p is not under /tmp" because the
+`fs_under` half needs more than non-prefixhood: "/tmp" is not a /tmp key
+and yet every /tmp key lives under it.
+Rocq: `Run.absolute_divergent_not_seeded`. -/
+theorem absolute_divergent_not_seeded (fs t : Fs) (r : path) (i : Nat) (a b : byte)
+    (hrel : fs_keys_relative fs)
+    (hp : (path_slash_byte :: r)[i]? = some a)
+    (ht : tmp_prefix[i]? = some b)
+    (hab : a ≠ b) :
+    fs_lookup (fs_seed_tmp fs t) (path_slash_byte :: r) = none
+    ∧ fs_under (fs_seed_tmp fs t) (path_slash_byte :: r) = false := by
+  obtain ⟨hi, -⟩ := List.getElem?_eq_some_iff.1 hp
+  obtain ⟨hj, -⟩ := List.getElem?_eq_some_iff.1 ht
+  have hall := seeded_absolute_key_is_tmp t fs hrel
+  have hkey : ∀ qd ∈ fs_seed_tmp fs t, ∀ n, qd.1 = tmp_key n → qd.1[i]? = some b := by
+    intro qd _ n hn
+    rw [hn, tmp_key, List.getElem?_append_left hj]
+    exact ht
+  refine ⟨?_, ?_⟩
+  · refine fs_lookup_none_of_keys _ _ (fun qd hqd heq => ?_)
+    rcases hall qd hqd with hq | ⟨n, hn⟩
+    · rw [heq] at hq
+      exact absurd rfl hq
+    · have hx := hkey qd hqd n hn
+      rw [heq, hp] at hx
+      exact hab (Option.some.inj hx)
+  · refine fs_under_false_of_keys _ _ (fun qd hqd => ?_)
+    rcases hall qd hqd with hq | ⟨n, hn⟩
+    · cases hqd' : qd.1 with
+      | nil => rfl
+      | cons c q' =>
+        rw [hqd'] at hq
+        simp only [dir_prefixb]
+        have hc : bv_eqb path_slash_byte c = false := by
+          cases hcc : bv_eqb path_slash_byte c with
+          | false => rfl
+          | true => exact absurd ((bv_eqb_eq _ _).1 hcc).symm hq
+        simp [hc]
+    · cases hd : dir_prefixb (path_slash_byte :: r) qd.1 with
+      | false => rfl
+      | true =>
+        obtain ⟨rest, hrest⟩ := dir_prefixb_app _ _ hd
+        have hx := hkey qd hqd n hn
+        rw [hrest, List.getElem?_append_left hi, hp] at hx
+        exact absurd (Option.some.inj hx) hab
+
+/-- The three DEVICE paths of `Sys.Fs.Open`, each of which diverges from
+"/tmp/" at its second byte ('d', 'e', 'd' against 't').  This is the
+statement that the arms' image guards are unreachable: each reads
+`fs_lookup (m_fs m) p` and, on `none`, `fs_under (m_fs m) p`, so both
+branches that answer `unmodeled` there are ruled out.  The paths are the
+arms' OWN constants, so a path that moves moves here too.
+Rocq: `Run.device_paths_never_seeded`. -/
+theorem device_paths_never_seeded (fs t : Fs) (p : path)
+    (hrel : fs_keys_relative fs)
+    (hin : p ∈ [devnull_path, localtime_path, urandom_path]) :
+    fs_lookup (fs_seed_tmp fs t) p = none ∧ fs_under (fs_seed_tmp fs t) p = false := by
+  -- 'd' and 'e' against the 't' of "/tmp/": the second byte is where each
+  -- of the three parts company with the seeding prefix.
+  have hd : (Z_to_bv 8 100 : byte) ≠ Z_to_bv 8 116 := by decide
+  have he : (Z_to_bv 8 101 : byte) ≠ Z_to_bv 8 116 := by decide
+  simp only [List.mem_cons, List.not_mem_nil, or_false] at hin
+  rcases hin with rfl | rfl | rfl
+  · exact absolute_divergent_not_seeded fs t _ 1 (Z_to_bv 8 100) (Z_to_bv 8 116) hrel rfl rfl hd
+  · exact absolute_divergent_not_seeded fs t _ 1 (Z_to_bv 8 101) (Z_to_bv 8 116) hrel rfl rfl he
+  · exact absolute_divergent_not_seeded fs t _ 1 (Z_to_bv 8 100) (Z_to_bv 8 116) hrel rfl rfl hd
+
+/-- The same, at a model whose file system is the run's initial one.
+
+`m` is any model carrying `State.ProcInput.in_fs inp` — the initial model
+`State.init_model` builds is one, and so is every later state that has not
+written the map.  Whether a LATER state can be one is a question about the
+write arms rather than about the premise: the only specs that mint a key
+are `Sys.Fs.Open`'s create arms, which sit behind the separator gate, and
+the /tmp arm, whose key is `State.tmp_key` of one component — so no
+run-time creation puts a device path in the map.  That is an argument
+about arms this lemma does not quantify over, so it is said here and not
+claimed by the statement.
+Rocq: `Run.valid_input_device_guards_unreachable`. -/
+theorem valid_input_device_guards_unreachable (inp : ProcInput) (m : Model) (p : path)
+    (hrel : fs_keys_relative inp.in_image_fs)
+    (hm : m_fs m = inp.in_fs)
+    (hin : p ∈ [devnull_path, localtime_path, urandom_path]) :
+    fs_lookup (m_fs m) p = none ∧ fs_under (m_fs m) p = false := by
+  rw [hm, ProcInput.in_fs]
+  exact device_paths_never_seeded _ _ p hrel hin
+
+/-- `Sys.Fs.Stat.newfstatat_core_spec`'s half of the same fact.  That spec
+answers `unmodeled` when the path it was handed IS a key, and -ENOENT when
+it is not; under the premise every absolute pathname that is not a /tmp
+key misses, so the `unmodeled` branch is unreachable for it and the answer
+is the real -ENOENT.  Stated over the divergence index rather than over a
+list of paths, because `newfstatat` takes its path from the program rather
+than from a constant.
+Rocq: `Run.valid_input_absolute_key_absent`. -/
+theorem valid_input_absolute_key_absent (inp : ProcInput) (m : Model) (r : path) (i : Nat)
+    (a b : byte)
+    (hrel : fs_keys_relative inp.in_image_fs)
+    (hm : m_fs m = inp.in_fs)
+    (hp : (path_slash_byte :: r)[i]? = some a)
+    (ht : tmp_prefix[i]? = some b)
+    (hab : a ≠ b) :
+    fs_lookup (m_fs m) (path_slash_byte :: r) = none
+    ∧ fs_under (m_fs m) (path_slash_byte :: r) = false := by
+  rw [hm, ProcInput.in_fs]
+  exact absolute_divergent_not_seeded _ _ r i a b hrel hp ht hab
 
 end LinuxProcessSemantics.LinuxProcessSem.Run

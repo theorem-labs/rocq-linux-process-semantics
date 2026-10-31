@@ -1,8 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/State.v
 import LinuxProcessSemantics.LinuxProcessSem.Fs
 import LinuxProcessSemantics.LinuxProcessSem.State.Fd
 import LinuxProcessSemantics.LinuxProcessSem.State.Vm
 
-/-! rocq-baseline: 7b4cf49586658ecbffbab14145ab0969272a0b23 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.State.Model — the seven subsystems and the model
 
@@ -501,6 +502,80 @@ def fs_seed_tmp (fs : Fs.Fs) (t : Fs.Fs) : Fs.Fs :=
        if tmp_nul_free e.1 then Fs.fs_set acc (tmp_key e.1) e.2 else acc)
     fs
 
+/-- The seeding prefix carries no NUL.  Rocq: `State.tmp_prefix_nul_free`. -/
+theorem tmp_prefix_nul_free : (Z_to_bv 8 0) ∉ tmp_prefix := by decide
+
+/-- Nor does a key the seeding mints from a NUL-free name.
+Rocq: `State.tmp_key_nul_free`. -/
+theorem tmp_key_nul_free (name : Fs.path) (hn : tmp_nul_free name = true) :
+    (Z_to_bv 8 0) ∉ tmp_key name := by
+  intro hin
+  unfold tmp_key at hin
+  rcases List.mem_append.1 hin with h | h
+  · exact tmp_prefix_nul_free h
+  · have hn' : name.any (fun b => bv_eqb b (Z_to_bv 8 0)) = false := by
+      simpa [tmp_nul_free] using hn
+    have hc : name.any (fun b => bv_eqb b (Z_to_bv 8 0)) = true :=
+      List.any_eq_true.2 ⟨Z_to_bv 8 0, h, (bv_eqb_eq _ _).2 rfl⟩
+    rw [hc] at hn'
+    exact Bool.noConfusion hn'
+
+/-- A fact that holds of every key of the image and of every key the
+seeding can mint holds of every key of the seeded image.  The read-side
+counterpart of `Fs.fs_set_keys`, lifted over the fold.
+Rocq: `State.fs_seed_tmp_keys`. -/
+theorem fs_seed_tmp_keys (P : Fs.path → Prop) (t fs : Fs.Fs)
+    (hfs : ∀ pf ∈ fs, P pf.1) (hk : ∀ n, P (tmp_key n)) :
+    ∀ pf ∈ fs_seed_tmp fs t, P pf.1 := by
+  induction t generalizing fs with
+  | nil => exact hfs
+  | cons e t ih =>
+    obtain ⟨name, data⟩ := e
+    have hstep : fs_seed_tmp fs ((name, data) :: t)
+        = fs_seed_tmp (if tmp_nul_free name then Fs.fs_set fs (tmp_key name) data else fs) t :=
+      rfl
+    rw [hstep]
+    cases hn : tmp_nul_free name with
+    | false =>
+      simp only [hn, Bool.false_eq_true, ↓reduceIte]
+      exact ih fs hfs
+    | true =>
+      simp only [hn, ↓reduceIte]
+      exact ih _ (Fs.fs_set_keys P fs (tmp_key name) data hfs (hk name))
+
+/-- The seeded image is still a valid image: the fold inserts through
+`Fs.fs_set`, which keeps the canonical form, and it drops a name that
+carries a NUL.  Rocq: `State.fs_seed_tmp_valid`. -/
+theorem fs_seed_tmp_valid (t fs : Fs.Fs) (hv : Fs.valid_fs fs) :
+    Fs.valid_fs (fs_seed_tmp fs t) := by
+  induction t generalizing fs with
+  | nil => exact hv
+  | cons e t ih =>
+    obtain ⟨name, data⟩ := e
+    have hstep : fs_seed_tmp fs ((name, data) :: t)
+        = fs_seed_tmp (if tmp_nul_free name then Fs.fs_set fs (tmp_key name) data else fs) t :=
+      rfl
+    rw [hstep]
+    cases hn : tmp_nul_free name with
+    | false =>
+      simp only [hn, Bool.false_eq_true, ↓reduceIte]
+      exact ih fs hv
+    | true =>
+      simp only [hn, ↓reduceIte]
+      refine ih _ ⟨Fs.fs_set_sorted fs (tmp_key name) data hv.1, ?_⟩
+      exact Fs.fs_set_keys (fun q => (Z_to_bv 8 0) ∉ q) fs (tmp_key name) data hv.2
+        (tmp_key_nul_free name hn)
+
+/-- Every key of a seeded image is either cwd-relative, because it came
+from the image, or a key the seeding minted under "/tmp/".  This is the
+seeding half of the argument that the device arms' image guards are
+unreachable; the other half is `Run.absolute_divergent_not_seeded`.
+Rocq: `State.seeded_absolute_key_is_tmp`. -/
+theorem seeded_absolute_key_is_tmp (t fs : Fs.Fs) (hrel : Fs.fs_keys_relative fs) :
+    ∀ pf ∈ fs_seed_tmp fs t, Fs.key_is_relative pf.1 ∨ ∃ n, pf.1 = tmp_key n :=
+  fs_seed_tmp_keys (fun q => Fs.key_is_relative q ∨ ∃ n, q = tmp_key n) t fs
+    (fun pf hpf => Or.inl (hrel pf hpf)) (fun n => Or.inr ⟨n, rfl⟩)
+
 /-! ## Process input and the initial model -/
 
 structure ProcInput where
@@ -669,7 +744,8 @@ control: the record is per UTS namespace (`utsname()` is
 which reads `current->nsproxy->uts_ns`, kernel/utsname_sysctl.c:18-27,
 v6.18.46), changes what the next `uname` reads, and a task in another
 namespace cannot; the write-once claim assumes a quiescent namespace,
-recorded in bugs/uname-pin-rests-on-uts-namespace-quiescence.md.  Rocq:
+recorded in
+`linux-process-semantics@ff0313ba4f:bugs/uname-pin-rests-on-uts-namespace-quiescence.md`.  Rocq:
 `State.with_utsname`. -/
 def with_utsname (bs : List byte) (m : Model) : Model :=
   Model.mkModelOf m.m_fd m.m_vm m.m_io m.m_fsys
@@ -1200,5 +1276,13 @@ theorem m_sigabrt_pending_init_model (reserved : List (word × word)) (brk0 mbas
 theorem m_abort_terminal_init_model (reserved : List (word × word)) (brk0 mbase sp : word)
     (lim : Int) (inp : ProcInput) :
     m_abort_terminal (init_model reserved brk0 mbase sp lim inp) = inp.in_abort_terminal := rfl
+
+/-- The initial ledger declares no protected interval, so its protected
+entries are trivially nonempty — the base case the memory arms carry the
+invariant from.  Rocq: `State.init_model_noaccess_nonzero`. -/
+theorem init_model_noaccess_nonzero (reserved : List (word × word)) (brk0 mbase sp : word)
+    (lim : Int) (inp : ProcInput) :
+    vm_noaccess_entries_nonzero (m_vmmaps (init_model reserved brk0 mbase sp lim inp)) :=
+  entries_nonzero_nil
 
 end LinuxProcessSemantics.LinuxProcessSem.State

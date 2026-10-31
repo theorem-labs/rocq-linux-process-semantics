@@ -1,6 +1,7 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/State.v
 import LinuxProcessSemantics.LinuxProcessSem.State.Geometry
 
-/-! rocq-baseline: 7b4cf49586658ecbffbab14145ab0969272a0b23 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.State.Vm — the virtual-memory ledger
 
@@ -189,5 +190,126 @@ def noaccess_pages_owned (h : VmMaps) : Prop :=
       ∃ b s, (b, s) ∈ h.vm_maps ∧
         (bv_unsigned b < page_round_down_Z x + page_size ∧
          page_round_down_Z x < bv_unsigned b + bv_unsigned s)
+
+/-! ### The nonempty-entry facts the allocator proofs read
+
+`f1006fe8` adds these to `State.v` for the memory arms: `Mm.Mmap`,
+`Mm.Mprotect` and `Mm.Madvise` each need to know that a ledger they
+built has no empty entry.  Ported under the Rocq names. -/
+
+/-- A `region_free` that says `false` exhibits the entry that overlaps.
+Rocq: `State.region_free_false`. -/
+theorem region_free_false (maps : List (word × word)) (lo n : word)
+    (h : region_free maps lo n = false) :
+    ∃ a sz, (a, sz) ∈ maps ∧ iv_overlap lo n a sz = true := by
+  induction maps with
+  | nil => simp [region_free] at h
+  | cons p r ih =>
+    obtain ⟨b, s⟩ := p
+    cases hov : iv_overlap lo n b s with
+    | true => exact ⟨b, s, List.mem_cons_self .., hov⟩
+    | false =>
+      simp only [region_free, hov, Bool.not_false, Bool.true_and] at h
+      obtain ⟨a, sz, hin, h2⟩ := ih h
+      exact ⟨a, sz, List.mem_cons_of_mem _ hin, h2⟩
+
+/-- No entry of the ledger is empty.  Rocq: `State.entries_nonzero`. -/
+def entries_nonzero (maps : List (word × word)) : Prop :=
+  ∀ a n, (a, n) ∈ maps → 0 < bv_unsigned n
+
+/-- Rocq: `State.entries_nonzero_nil`. -/
+theorem entries_nonzero_nil : entries_nonzero [] := by
+  intro a n h
+  cases h
+
+/-- Rocq: `State.entries_nonzero_forallb`. -/
+theorem entries_nonzero_forallb (maps : List (word × word))
+    (h : maps.all (fun p => 0 < bv_unsigned p.2) = true) : entries_nonzero maps := by
+  intro a n hin
+  rw [List.all_eq_true] at h
+  simpa using h (a, n) hin
+
+/-- Rocq: `State.entries_nonzero_cons`. -/
+theorem entries_nonzero_cons (a n : word) (r : List (word × word))
+    (hn : 0 < bv_unsigned n) (hr : entries_nonzero r) :
+    entries_nonzero ((a, n) :: r) := by
+  intro b s hin
+  rcases List.mem_cons.1 hin with heq | hin'
+  · simp only [Prod.mk.injEq] at heq
+    obtain ⟨rfl, rfl⟩ := heq
+    exact hn
+  · exact hr b s hin'
+
+/-- Rocq: `State.bv_unsigned_range_u64`. -/
+theorem bv_unsigned_range_u64 (w : word) :
+    0 ≤ bv_unsigned w ∧ bv_unsigned w < two_pow_64 := by
+  unfold bv_unsigned two_pow_64
+  have := w.isLt
+  omega
+
+/-- Rocq: `State.bv_unsigned_Z_to_bv_u64`. -/
+theorem bv_unsigned_Z_to_bv_u64 (z : Int) (hz : 0 ≤ z ∧ z < two_pow_64) :
+    bv_unsigned (Z_to_bv 64 z) = z :=
+  bv_unsigned_Z_to_bv_small z hz.1 hz.2
+
+/-- Cutting a nonempty interval leaves nonempty pieces: each side is a
+strictly shorter prefix or suffix of it.  Rocq: `State.iv_subtract_nonzero`. -/
+theorem iv_subtract_nonzero (a sz : word) (loZ hiZ : Int)
+    (hsz : 0 < bv_unsigned sz) : entries_nonzero (iv_subtract a sz loZ hiZ) := by
+  intro b s hin
+  have ha := bv_unsigned_range_u64 a
+  have hs := bv_unsigned_range_u64 sz
+  unfold two_pow_64 at ha hs
+  simp only [iv_subtract] at hin
+  rcases List.mem_append.1 hin with hl | hr
+  · by_cases h1 : bv_unsigned a < loZ
+    · rw [ite_eq_left h1, List.mem_singleton] at hl
+      simp only [Prod.mk.injEq] at hl
+      obtain ⟨-, rfl⟩ := hl
+      rw [bv_unsigned_Z_to_bv_u64 _ (by unfold two_pow_64; omega)]
+      omega
+    · rw [ite_eq_right h1] at hl
+      cases hl
+  · by_cases h2 : hiZ < bv_unsigned a + bv_unsigned sz
+    · rw [ite_eq_left h2, List.mem_singleton] at hr
+      simp only [Prod.mk.injEq] at hr
+      obtain ⟨-, rfl⟩ := hr
+      rw [bv_unsigned_Z_to_bv_u64 _ (by unfold two_pow_64; omega)]
+      omega
+    · rw [ite_eq_right h2] at hr
+      cases hr
+
+/-- Rocq: `State.maps_subtract_nonzero`. -/
+theorem maps_subtract_nonzero (maps : List (word × word)) (loZ hiZ : Int)
+    (h : entries_nonzero maps) : entries_nonzero (maps_subtract maps loZ hiZ) := by
+  induction maps with
+  | nil => intro b s hin; cases hin
+  | cons p r ih =>
+    obtain ⟨a, sz⟩ := p
+    intro b s hin
+    simp only [maps_subtract] at hin
+    rcases List.mem_append.1 hin with hl | hr
+    · exact iv_subtract_nonzero a sz loZ hiZ (h a sz (List.mem_cons_self ..)) b s hl
+    · exact ih (fun x y hx => h x y (List.mem_cons_of_mem _ hx)) b s hr
+
+/-- Rocq: `State.maps_subtract_all_nonzero`. -/
+theorem maps_subtract_all_nonzero (cuts maps : List (word × word))
+    (h : entries_nonzero maps) : entries_nonzero (maps_subtract_all maps cuts) := by
+  induction cuts generalizing maps with
+  | nil => exact h
+  | cons p rest ih =>
+    obtain ⟨a, n⟩ := p
+    simp only [maps_subtract_all]
+    exact ih _ (maps_subtract_nonzero maps _ _ h)
+
+/-- The protected intervals of a ledger are all nonempty.
+Rocq: `State.vm_noaccess_entries_nonzero`. -/
+def vm_noaccess_entries_nonzero (h : VmMaps) : Prop :=
+  entries_nonzero h.vm_noaccess
+
+/-- The ledger invariant already says it.  Rocq:
+`State.noaccess_pages_owned_nonzero`. -/
+theorem noaccess_pages_owned_nonzero (h : VmMaps) (hp : noaccess_pages_owned h) :
+    vm_noaccess_entries_nonzero h := fun a n hin => (hp a n hin).1
 
 end LinuxProcessSemantics.LinuxProcessSem.State

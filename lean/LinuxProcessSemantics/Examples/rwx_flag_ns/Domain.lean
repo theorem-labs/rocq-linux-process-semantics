@@ -78,7 +78,7 @@ def input_witness : ProcInput :=
 
 theorem input_witness_valid : valid_input input_witness := by
   simp [valid_input, input_witness, ProcInput.mkProcInput, ProcInput.in_fs, fs_seed_tmp,
-    valid_argv, valid_envp, valid_fs, fs_sorted, fs_image_real, fs_keys_canonical, fs_no_dir_key,
+    valid_argv, valid_envp, valid_fs, fs_sorted, fs_keys_relative, key_is_relative,
     total_arg_bytes, valid_creds, valid_id,
     valid_nofile, valid_sigmask, valid_hwcap, default_nofile, bv_unsigned, Z_to_bv, bv_and,
     valid_urandom, default_urandom, stream_const, stream_infinite]
@@ -88,8 +88,8 @@ def vector_input_witness : ProcInput :=
 
 theorem vector_input_witness_valid : valid_input vector_input_witness := by
   simp [valid_input, vector_input_witness, input_witness, ProcInput.mkProcInput,
-    ProcInput.in_fs, fs_seed_tmp, valid_argv, valid_envp, valid_fs, fs_sorted, fs_image_real,
-    fs_keys_canonical, fs_no_dir_key,
+    ProcInput.in_fs, fs_seed_tmp, valid_argv, valid_envp, valid_fs, fs_sorted,
+    fs_keys_relative, key_is_relative,
     total_arg_bytes, valid_creds, valid_id, valid_nofile, valid_sigmask, valid_hwcap,
     default_nofile, bv_unsigned, Z_to_bv, bv_and,
     valid_urandom, default_urandom, stream_const, stream_infinite]

@@ -1098,6 +1098,12 @@ local macro "declared_launch" : tactic =>
              all_goals first
                | demo_launch_clause
                | rfl
+               | -- `Fs.fs_keys_relative` on the fixture's empty image, the
+                 -- clause f1006fe8 puts where `Fs.fs_image_real … = true`
+                 -- used to be.  It is a bounded ∀ over a `match`-defined
+                 -- Prop, so `decide` finds no instance and
+                 -- `demo_launch_clause` cannot close it.
+                 (unfold Fs.fs_keys_relative; exact fun pf hpf => nomatch hpf)
                | exact default_urandom_infinite
                | fail "declared_launch: a clause matched none of the shapes"))
 

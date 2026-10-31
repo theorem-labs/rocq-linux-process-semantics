@@ -24,13 +24,19 @@ namespace LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Sys.Uapi.Time
 open LinuxProcessSemantics.LinuxProcessSem.BvBase
 open LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 
-/-- The six clock ids (include/uapi/linux/time.h:49-58), and the two
-families that read them overlap without either containing the other:
-`timerfd_create` (fs/timerfd.c:394, Linux v6.18.46) refuses
-`CLOCK_PROCESS_CPUTIME_ID`, which `clock_gettime` answers, and takes
-`CLOCK_BOOTTIME`, which `clock_gettime`'s arm declines. -/
+/-- The nine clock ids (include/uapi/linux/time.h:49-58), and the two
+calls that read them cover different sets without either containing the
+other: `timerfd_create` (fs/timerfd.c:394, Linux v6.18.46) refuses
+`CLOCK_PROCESS_CPUTIME_ID`, which `clock_gettime` answers, and takes the
+two alarm clocks, which `clock_gettime` declines.  `CLOCK_BOOTTIME` is in
+both: at `f1006fe8` it is one of the five ids
+`Kernel.Time.PosixTimers.clockid_percall_b` admits, beside
+`CLOCK_MONOTONIC_RAW`, `CLOCK_REALTIME_COARSE` and
+`CLOCK_MONOTONIC_COARSE`.  Each call's set is in its own specification. -/
 theorem clock_ids :
     CLOCK_REALTIME = 0 ∧ CLOCK_MONOTONIC = 1 ∧ CLOCK_PROCESS_CPUTIME_ID = 2
+    ∧ CLOCK_MONOTONIC_RAW = 4 ∧ CLOCK_REALTIME_COARSE = 5
+    ∧ CLOCK_MONOTONIC_COARSE = 6
     ∧ CLOCK_BOOTTIME = 7 ∧ CLOCK_REALTIME_ALARM = 8 ∧ CLOCK_BOOTTIME_ALARM = 9
     ∧ CLOCK_PROCESS_CPUTIME_ID ∉ [CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_BOOTTIME,
                                    CLOCK_REALTIME_ALARM, CLOCK_BOOTTIME_ALARM]

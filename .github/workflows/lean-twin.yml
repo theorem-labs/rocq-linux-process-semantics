@@ -23,7 +23,11 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A new push to a pull request replaces its build; a build of `lean/twin`
+  # itself is not replaced, because it is the only build of that branch and
+  # a cancelled run is no evidence. Measured: the build of ddecca6c9 was
+  # cancelled by the next merge into the branch.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lean-twin-build:

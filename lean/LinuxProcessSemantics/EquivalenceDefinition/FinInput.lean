@@ -1,7 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/FinInput.v
 import LinuxProcessSemantics.LinuxProcessSem.Run
 import LinuxProcessSemantics.LinuxProcessSem.StreamLaws
 
-/-! rocq-baseline: 9f9a96b29a12dd26b54bff74b47ba1c4a6e01ad3
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
 divergence: bugs/fin-record-not-injective-on-the-random-field.md -- inherited -/
 
 /-! # EquivalenceDefinition.FinInput — finite process inputs
@@ -305,6 +306,10 @@ theorem valid_fin_input_inhabited : ∃ f, valid_fin_input f := by
         valid_nofile, valid_sigmask, valid_hwcap]
        set_option maxRecDepth 32768 in decide)
     | rfl
+    | -- `Fs.fs_keys_relative` on the empty image, the clause f1006fe8 puts
+      -- where `Fs.fs_image_real … = true` used to be.  It is a bounded ∀
+      -- over a `match`-defined Prop, so `decide` finds no instance for it.
+      (unfold Fs.fs_keys_relative; exact fun pf hpf => nomatch hpf)
     | exact default_urandom_infinite
     | fail "valid_fin_input: a clause matched none of the shapes"
 
