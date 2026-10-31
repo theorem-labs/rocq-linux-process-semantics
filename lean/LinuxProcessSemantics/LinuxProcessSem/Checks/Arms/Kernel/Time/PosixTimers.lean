@@ -1,7 +1,11 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Dispatch.v
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/VmMapsDisjoint.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Checks.InvariantRegistry
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Time.PosixTimers
 import LinuxProcessSemantics.LinuxProcessSem.Sys.SyscallTable
 import LinuxProcessSemantics.LinuxProcessSem.SysSimp
+
 
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
@@ -157,6 +161,7 @@ theorem m_fd_with_clock (t : word) (m : Model) : (with_clock t m).m_fd = m.m_fd 
 
 open LinuxProcessSemantics.LinuxProcessSem.BvBase
   LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
+  LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers
   LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Time.PosixTimers in
 /-- The descriptor subsystem `check_clock_gettime` hands back is the one it
 was handed. -/
@@ -164,7 +169,7 @@ theorem check_clock_gettime_fd_state_frame (i : SyscallInput) (clkid tp : word)
     (eff : SyscallEffect) (m m' : Model) (evs : List event)
     (h : check_clock_gettime i clkid tp eff m = CheckOk m' evs) : m'.m_fd = m.m_fd := by
   unfold check_clock_gettime at h
-  by_cases hrt : bv_unsigned clkid = CLOCK_REALTIME
+  by_cases hrt : clockid_percall_b clkid = true
   · simp only [hrt, ↓reduceIte] at h
     rcases hdst : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | w
     · simp only [hdst, reduceCtorEq] at h
@@ -177,7 +182,7 @@ theorem check_clock_gettime_fd_state_frame (i : SyscallInput) (clkid tp : word)
           rfl
         next => cases h
       next => cases h
-  · simp only [hrt, ↓reduceIte] at h
+  · simp only [Bool.eq_false_iff.mpr hrt, Bool.false_eq_true, ↓reduceIte] at h
     by_cases hcp : bv_unsigned clkid = CLOCK_PROCESS_CPUTIME_ID
     · simp only [hcp, ↓reduceIte] at h
       rcases hdst : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | w

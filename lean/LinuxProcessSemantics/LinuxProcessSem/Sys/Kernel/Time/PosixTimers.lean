@@ -1,6 +1,11 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Kernel/Time/PosixTimers.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 
+
+-- The `rocq-baseline` below is the upstream port's own; this file's source
+-- of truth is the `Ports` line at the top.
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
 /-! # LinuxProcessSem.Sys.Kernel.Time.PosixTimers — clock_gettime (113)
@@ -182,18 +187,74 @@ def cputime_ok_b (bs : List byte) : Bool :=
   && (- CLOCK_NS_ENVELOPE ≤ timespec_ns_signed bs)
   && (timespec_ns_signed bs < CLOCK_NS_ENVELOPE)
 
+/-- The clock ids answered PER CALL, against `realtime_ok_b` alone — no
+model field read, none written, each call's reading independently
+arbitrary.  `CLOCK_REALTIME` is here for `realtime_ok_b`'s reason: the
+kernel guarantees NOTHING across two wall-clock readings, so there is
+nothing to record.  The other four DO carry cross-call guarantees in the
+kernel, and the model deliberately states NONE of them — each is a strict
+over-approximation of the kind the CPU-time arm already takes: every
+reading a kernel can produce is admitted, so no conforming trace is
+rejected, and the price is that a program whose OUTPUT depends on the
+value it read cannot be proved equivalent to anything.  The argument in
+full is on the Rocq definition `PosixTimers.clockid_percall_b`
+(f1006fe8, `Sys/Kernel/Time/PosixTimers.v:233-296`); per id, what is
+deliberately not said:
+
+- `CLOCK_MONOTONIC_RAW` (4): `ktime_get_raw_ts64`
+  (kernel/time/timekeeping.c) — the monotonic clock WITHOUT NTP frequency
+  correction.  Monotone in the kernel, but a DIFFERENT quantity from what
+  `m_clock` records: NTP slews the adjusted clock both faster and slower
+  than the raw one, so no inequality between a raw reading and the
+  recorded `CLOCK_MONOTONIC` reading is a kernel fact in either
+  direction.
+- `CLOCK_REALTIME_COARSE` (5): `ktime_get_coarse_real_ts64` (same file) —
+  the wall clock as of the last tick.  Everything `realtime_ok_b` says
+  about the wall clock's absence of guarantees applies verbatim, with up
+  to a tick of staleness on top.
+- `CLOCK_MONOTONIC_COARSE` (6): `ktime_get_coarse_ts64` (same file) — the
+  monotonic clock as of the last tick.  Monotone in the kernel, but a
+  coarse reading may PRECEDE a fine-grained reading already recorded in
+  `m_clock`, so constraining it against that field would reject
+  conforming traces.
+- `CLOCK_BOOTTIME` (7): `ktime_get_boottime_ts64` (same file) — the
+  monotonic clock PLUS time spent suspended.  It never precedes the
+  monotonic clock, but the two are read at different instants and the
+  model has no suspend accounting, so the inequality it does carry
+  relates nothing the model can state.
+
+The per-reading conditions ARE `realtime_ok_b`'s, and that is a kernel
+fact five times over: every one of these paths writes a 16-byte
+`struct __kernel_timespec`, normalizes `tv_nsec` below 10^9
+(`timespec64_add_ns` on the fine paths; the coarse pair copies a
+timekeeper field that was stored normalized), and reports a
+`ktime_t`-representable non-negative time.
+
+THE SCOPE, as on the CPU-time arm: `CLOCK_BOOTTIME` is answered on both
+sides of the `CONFIG_POSIX_TIMERS` gate (kernel/time/posix-stubs.c serves
+REALTIME, MONOTONIC and BOOTTIME); the raw and coarse ids, like
+`CLOCK_PROCESS_CPUTIME_ID`, are answered only with the option on. -/
+def clockid_percall_b (clkid : word) : Bool :=
+  bv_unsigned clkid == CLOCK_REALTIME
+  || bv_unsigned clkid == CLOCK_MONOTONIC_RAW
+  || bv_unsigned clkid == CLOCK_REALTIME_COARSE
+  || bv_unsigned clkid == CLOCK_MONOTONIC_COARSE
+  || bv_unsigned clkid == CLOCK_BOOTTIME
+
 /-- `clock_gettime clkid tp` (113): read a clock into a
-`struct __kernel_timespec`.  Three ids are modeled and not folded
-together — `CLOCK_REALTIME` (0), `CLOCK_PROCESS_CPUTIME_ID` (2) and
-`CLOCK_MONOTONIC` (1) are different quantities carrying different
-guarantees, and each arm says only what its own quantity promises.  The
+`struct __kernel_timespec`.  SEVEN ids are modeled, in three arms that
+are not folded together — `CLOCK_MONOTONIC` (1),
+`CLOCK_PROCESS_CPUTIME_ID` (2) and the five per-call ids of
+`clockid_percall_b` (0, 4, 5, 6, 7) are different quantities carrying
+different guarantees, and each arm says only what its own quantity
+promises.  The
 argument in full — why the wall clock and the CPU count get no model
-field, why a coarse id is not answered by analogy (only the v6.18.46
-line that argument turns on is repeated below), what the model
+field, why the raw and coarse ids share the per-call arm and state no
+cross-call relation, what the model
 deliberately does not say about time passing at other syscalls
-(bugs/clock-advances-only-at-clock-gettime.md), the libc calls that arrive
+(linux-process-semantics@ff0313ba4f:bugs/clock-advances-only-at-clock-gettime.md), the libc calls that arrive
 here as ids 0 and 2, and the vDSO asymmetry recorded in
-bugs/clock-gettime-served-by-vdso.md — is on the Rocq definition
+linux-process-semantics@ff0313ba4f:bugs/clock-gettime-served-by-vdso.md — is on the Rocq definition
 `PosixTimers.clock_gettime_spec` and is not repeated here.  What follows
 is the kernel line each gate rests on, read at Linux v6.18.46 (commit
 1f99e9ab748f).
@@ -207,7 +268,7 @@ id beats a bad pointer, and the model's decline sits where the kernel's
 -EINVAL does.  `clockid_to_kclock` sends every NEGATIVE id to
 `clock_posix_dynamic` when `(id & CLOCKFD_MASK) == CLOCKFD` and to
 `clock_posix_cpu` otherwise (:1539-1542), and every id at or past
-`ARRAY_SIZE(posix_clocks)` to NULL (:1544-1545); ids 0..2 index
+`ARRAY_SIZE(posix_clocks)` to NULL (:1544-1545); ids 0..7 index
 `posix_clocks` (:1518-1533).  That array is 12 entries long, 24 under
 `CONFIG_POSIX_AUX_CLOCKS` (kernel/time/Kconfig:213, v6.18.46; `[CLOCK_AUX ...
 CLOCK_AUX_LAST] = &clock_aux`, :1530-1532), and it has NULL holes below
@@ -215,15 +276,20 @@ its size that answer -EINVAL through the same `if (!kc)`: `CLOCK_SGI_CYCLE`
 (10, include/uapi/linux/time.h:63, v6.18.46, "kept as a place holder") and, with
 aux clocks, 12..15; an aux id in range answers -ENODEV until its clock is
 enabled (`aux_get_timespec`, kernel/time/timekeeping.c:2907-2910, v6.18.46).  None
-of that reaches ids 0..2, and every id but those three declines below.
+of that reaches the seven modeled ids, and every other id declines below.
 
 EVERY OTHER ID IS `unmodeled`, fail closed — including the ones a real
-kernel answers.  The `_COARSE` ids in particular are not answered by
-analogy with the monotonic arm: the coarse getters are non-decreasing at
-the pinned tree only through `tk->coarse_nsec`
+kernel answers (`CLOCK_THREAD_CPUTIME_ID`, `CLOCK_TAI`, the alarm pair).
+The `_COARSE` ids are answered on the PER-CALL arm and are NOT answered
+by analogy with the monotonic arm: that arm's non-decreasing conjunct
+leans on the anti-step compensation in `timekeeping_apply_adjustment`,
+and the coarse getters never applied it, which is what let
+`CLOCK_MONOTONIC_COARSE` step backwards.  A coarse reading is
+non-decreasing at the pinned tree only through `tk->coarse_nsec`
 (include/linux/timekeeper_internal.h:154, v6.18.46, which `tk_update_coarse_nsecs`
 maintains from `__timekeeping_advance`, kernel/time/timekeeping.c:2308-2367, v6.18.46),
-a guarantee younger than the clock that needs its own argument.
+a guarantee younger than the clock.  Stating no cross-call relation for
+those ids, as `clockid_percall_b` does, needs no such guarantee.
 
 THE MONOTONIC ARM.  The reading is the environment's, constrained by
 `timespec_ok_b` to be NON-DECREASING and inside `CLOCK_NS_ENVELOPE`, and
@@ -241,7 +307,7 @@ shifted `xtime_nsec`, and `tk_set_xtime`, :234-239, drops the
 sub-nanosecond fraction `timekeeping_forward_now`, :765-785, had carried;
 a read straddling the publish can therefore land one nanosecond below the
 pre-set timekeeper's answer at the same cycle, a deviation from the
-documented non-decreasing guarantee that AGENTS.md's rule on
+documented non-decreasing guarantee that linux-process-semantics@ff0313ba4f:AGENTS.md's rule on
 implementation bugs keeps out of the admitted set), and
 `tk_set_wall_to_mono` (:249-265) touches neither `tkr_mono.mult` nor
 `cycle_last`; `accumulate_nsecs_to_secs` (:2221-2259) pairs the same way
@@ -272,7 +338,8 @@ holds it below the envelope — but Rocq's `Progress.receptive` quantifies over
 ARBITRARY model states, and the choice below would be empty there.
 Declining keeps the spec receptive without inventing a reading.
 
-THE WALL-CLOCK ARM (id 0) drops the relation to the previous reading and
+THE PER-CALL ARM (`clockid_percall_b`: ids 0, 4, 5, 6 and 7) drops the
+relation to the previous reading and
 is constrained per call by `realtime_ok_b` alone, leaving the model exactly
 as it found it: no `get_model`, no `set_clock`.  THE CPU-TIME ARM (id 2)
 has the same shape under `cputime_ok_b`; an accepted call leaves the
@@ -282,10 +349,11 @@ that admits every reading a kernel can produce.  Its scope, named rather
 than assumed: a kernel built with `CONFIG_POSIX_TIMERS`.  Without it
 `posix_cpu_clock_get` is not built and `do_clock_gettime`
 (kernel/time/posix-stubs.c:39-58, v6.18.46) answers -EINVAL for every id but
-REALTIME, MONOTONIC and BOOTTIME (:53-54).  The other two modeled ids are
-answered on both sides of that gate; this one is not.  A stubs kernel's
--EINVAL is therefore a reading this arm REFUSES rather than declines;
-bugs/clock-gettime-served-by-vdso.md's last paragraph records that
+REALTIME, MONOTONIC and BOOTTIME (:53-54).  Those three modeled ids are
+answered on both sides of that gate; id 2 and the raw and coarse ids are
+not.  A stubs kernel's
+-EINVAL is therefore a reading those arms REFUSE rather than decline;
+linux-process-semantics@ff0313ba4f:bugs/clock-gettime-served-by-vdso.md's last paragraph records that
 residual against the scope rule.
 
 TWO NAMES THE ROCQ ARGUMENT USES HAVE MOVED at v6.18.46, without moving
@@ -297,7 +365,7 @@ which answers only the ids in `VDSO_HRES | VDSO_COARSE | VDSO_RAW`, gained
 an `else if (msk & VDSO_AUX)` arm (:308) for the auxiliary clocks — still
 no CPU clock among them, so id 2 still reaches the kernel from hardware
 while ids 0 and 1 are absorbed before the syscall is made
-(bugs/clock-gettime-served-by-vdso.md).
+(linux-process-semantics@ff0313ba4f:bugs/clock-gettime-served-by-vdso.md).
 
 THE DESTINATION GATE declines rather than answering -EFAULT, on every arm.
 `put_timespec64` (kernel/time/time.c:903-912, v6.18.46) is one `copy_to_user`,
@@ -314,8 +382,8 @@ folded into the same decline for uniformity with `getrandom_spec`'s
 whole-buffer gate.  The cost is coverage on a shape the model could have
 answered. -/
 def clock_gettime_spec (clkid tp : word) : Sys SyscallEffect :=
-  if bv_unsigned clkid = CLOCK_REALTIME then
-    -- THE WALL CLOCK, WHICH THE MODEL DOES NOT REMEMBER.
+  if clockid_percall_b clkid then
+    -- THE PER-CALL IDS, WHICH THE MODEL DOES NOT REMEMBER.
     i <- input ;;
     (match read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with
      | none => unmodeled   -- destination not fully writable: fail closed

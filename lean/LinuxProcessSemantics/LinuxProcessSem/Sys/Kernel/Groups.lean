@@ -1,5 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Kernel/Groups.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
+
 
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
@@ -20,7 +23,7 @@ Rocq's own comment argues `getgroups` over the whole v4.9-to-v6.18
 interval without line numbers, and pins `setgroups` at v6.18.46 with the
 file byte-identical at every mainline release tag from v6.10 through
 v6.18 — an interval, not a point.  Every line number below was read at
-v6.18.46 in the checkout AGENTS.md names, and is labelled so.
+v6.18.46 in the checkout linux-process-semantics@ff0313ba4f:AGENTS.md names, and is labelled so.
 
 ONE SPELLING DIFFERS FROM ROCQ without changing a value: Rocq's
 `Z.of_nat (length ...)` is Lean's `(... .length : Int)`, and Rocq's
@@ -109,7 +112,7 @@ at zero groups; the size above `NGROUPS_MAX` is -EINVAL there, as the
 paragraph above says.  At those two shapes no answer lies in the
 intersection of the supported implementations, and the sound arm would
 decline.  This twin keeps Rocq's arm by the port's rules;
-`bugs/getgroups-empty-list-arm-admits-linux-alone.md` records the defect
+`linux-process-semantics@ff0313ba4f:bugs/getgroups-empty-list-arm-admits-linux-alone.md` records the defect
 and what closes it, and the twin moves when Rocq does.
 
 DECLINED: `gidsetsize >= ngroups > 0`, the path that WRITES.
@@ -199,7 +202,7 @@ only reaches
 implementation, so at those shapes the intersection is EMPTY and the
 sound arm would decline rather than answer -EPERM.  This twin keeps
 Rocq's arm by the port's rules;
-`bugs/setgroups-eperm-arm-admits-linux-alone.md` records the defect and
+`linux-process-semantics@ff0313ba4f:bugs/setgroups-eperm-arm-admits-linux-alone.md` records the defect and
 what closes it, and the twin moves when Rocq does.
 
 The successful half is DECLINED rather than faked.  It writes the

@@ -1,5 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Kernel/Time/Time.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
+
 
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
@@ -79,7 +82,7 @@ kernel each conjunct rests on, read at Linux v6.18.46 (commit
   years since the last time anything set its clock.  The model takes
   that as the envelope and declines above it, rather than admitting a
   value no kernel is built to produce.  One writer sits behind that
-  argument; see bugs/gettimeofday-tv-sec-ceiling-behind-one-writer.md. -/
+  argument; see linux-process-semantics@ff0313ba4f:bugs/gettimeofday-tv-sec-ceiling-behind-one-writer.md. -/
 def timeval_ok_b (bs : List byte) : Bool :=
   (bs.length = 16)
   && (tv_frac_of bs < 1000000)
@@ -168,8 +171,8 @@ kernel/time/time.c:155 (v6.18.46) and the effect is exactly one 16-byte write at
 NOT OBSERVABLE THROUGH MUSL, and not reaching the kernel on real
 hardware: musl's `gettimeofday` is a `clock_gettime(CLOCK_REALTIME, ...)`
 wrapper that never issues syscall 169, and the vDSO serves the call
-otherwise; bugs/gettimeofday-not-issued-by-musl.md and
-bugs/gettimeofday-served-by-vdso.md carry both.  This arm buys the
+otherwise; linux-process-semantics@ff0313ba4f:bugs/gettimeofday-not-issued-by-musl.md and
+linux-process-semantics@ff0313ba4f:bugs/gettimeofday-served-by-vdso.md carry both.  This arm buys the
 raw-syscall caller alone. -/
 def gettimeofday_spec (tv tz : word) : Sys SyscallEffect :=
   if !(w_is0 tz) then unmodeled        -- would report `sys_tz`: fail closed

@@ -1,5 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Kernel/Signal.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
+
 
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
@@ -582,7 +585,7 @@ not a mode masked away.  `SS_FLAG_BITS` is `SS_AUTODISARM`
 alone: qemu-user's `target_restore_altstack` switches on the whole flags
 word and answers -EINVAL when bit 31 is set (linux-user/signal.c:317-319,
 QEMU v11.1.1), so the mode a set bit 31 yields here lies outside the
-supported intersection; bugs/sigaltstack-autodisarm-mode-admits-linux-alone.md
+supported intersection; linux-process-semantics@ff0313ba4f:bugs/sigaltstack-autodisarm-mode-admits-linux-alone.md
 records the shape, and the pins that reach it say so. -/
 def ss_mode (fl : word) : Int :=
   bv_unsigned (bv_and fl (bv_not (Z_to_bv 64 SS_AUTODISARM)))
@@ -681,7 +684,7 @@ issues (TKILL to its own tid between two `rt_sigprocmask` calls, so the
 death is the restore's and not the send's), the modeled envelope, why
 SIGABRT's disposition is SIG_DFL by construction (`rt_sigaction_spec`
 declines every install for signal 6), and the LSM gap
-(bugs/tkill-lsm-denial-not-admitted.md) are on the Rocq header above
+(linux-process-semantics@ff0313ba4f:bugs/tkill-lsm-denial-not-admitted.md) are on the Rocq header above
 `Signal.pid_positive`.
 
 The kernel path, Linux v6.18.46, commit 1f99e9ab748f: `SYSCALL_DEFINE2(tkill)`

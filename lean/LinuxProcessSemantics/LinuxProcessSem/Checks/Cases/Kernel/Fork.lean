@@ -1,7 +1,10 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Kernel/Fork.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.State
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
+
 
 /-! # Checks.Cases.Kernel.Fork — what `set_tid_address`, `clone` and `clone3` answer, read off against Linux
 
@@ -1087,7 +1090,7 @@ kernel could not hand THIS caller pid 1: the namespace's reaper holds it,
 the namespace to new pids before that slot is freed, and killing the init
 namespace's reaper panics (kernel/exit.c:935-937, Linux v6.18.46).  The model
 does not say so; the widening is `clone_pid_ok_b`'s on both sides and is
-NOT among the ones bugs/clone-retires-no-pid.md records — a Rocq-side
+NOT among the ones linux-process-semantics@ff0313ba4f:bugs/clone-retires-no-pid.md records — a Rocq-side
 follow-up.
 probe: testing/syscall-check/tests/clone_spec.c#conform --mutate clone:arg0=17,ret=1 -- clone -/
 theorem clone_pid_one_admitted (i : SyscallInput) :
@@ -1202,7 +1205,7 @@ theorem clone_never_answers_the_recorded_tid (t : word) (i : SyscallInput) (m : 
 
 /-- Before the tid is observed EVERY pid in the envelope is admitted, the
 caller's own included: a widening (the model cannot name a tid it has not
-seen), recorded in bugs/clone-retires-no-pid.md.  Stated over the whole
+seen), recorded in linux-process-semantics@ff0313ba4f:bugs/clone-retires-no-pid.md.  Stated over the whole
 envelope so that it says something `clone_pid_admitted` does not; the
 probe shows the shape at 1234, the tid it then observes.
 probe: testing/syscall-check/tests/clone_spec.c#conform --mutate clone:arg0=17,ret=1234 --mutate set_tid_address:ret=1234 -- clonetid -/
@@ -1829,7 +1832,7 @@ falls to the dispatcher's `default:` (:14618-14620) and answers
 -TARGET_ENOSYS with nothing read.  At this shape the intersection of the
 supported implementations is empty and the refusal is a wrong modeled
 behavior there, not a decline; the omission is Rocq's `clone_errnos`'s as
-much as this twin's, and bugs/clone3-enosys-arm-admits-linux-alone.md
+much as this twin's, and linux-process-semantics@ff0313ba4f:bugs/clone3-enosys-arm-admits-linux-alone.md
 records it.  The pin holds the model's answer, not Linux's monopoly on it.
 probe: testing/syscall-check/tests/clone_spec.c#reject --mutate clone3:arg1=88,ret=-ENOSYS -- c3 -/
 theorem clone3_enosys_rejected (i : SyscallInput)

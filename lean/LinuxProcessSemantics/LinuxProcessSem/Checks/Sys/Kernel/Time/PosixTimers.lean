@@ -1,6 +1,13 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Time/PosixTimers.v
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Witness/Kernel/Time/PosixTimers.v
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/VmMapsDisjoint.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 
+
+-- The `rocq-baseline` below is the upstream port's own; this file's source
+-- of truth is the `Ports` line at the top.
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
 /-! # LinuxProcessSem.Checks.Sys.Kernel.Time.PosixTimers — the clock_gettime (113) checker and its witness
@@ -109,7 +116,7 @@ clock already sits at or past `CLOCK_NS_ENVELOPE`, before the destination
 is probed, in the order the spec has them. -/
 def check_clock_gettime (i : SyscallInput) (clkid tp : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
-  if bv_unsigned clkid = CLOCK_REALTIME then
+  if clockid_percall_b clkid then
     (match read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with
      | none => CheckUnmodeled
      | some _ =>
@@ -192,7 +199,7 @@ theorem check_clock_gettime_sound_ok (i : SyscallInput) (clkid tp : word)
     clock_gettime_spec clkid tp i m (Ok eff m' evs) := by
   unfold check_clock_gettime at h
   unfold clock_gettime_spec
-  by_cases hrt : bv_unsigned clkid = CLOCK_REALTIME
+  by_cases hrt : clockid_percall_b clkid = true
   · simp only [hrt, ↓reduceIte] at h ⊢
     refine bind_ok0 _ _ _ _ _ _ _ _ _ (input_ok i m) ?_
     rcases hdst : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | w
@@ -209,7 +216,7 @@ theorem check_clock_gettime_sound_ok (i : SyscallInput) (clkid tp : word)
           exact bind_ok0 _ _ _ _ _ _ _ _ _ (choose_ok _ bs i _ hts) (pure_ok _ i _)
         next => cases h
       next => cases h
-  · simp only [hrt, ↓reduceIte] at h ⊢
+  · simp only [Bool.eq_false_iff.mpr hrt, Bool.false_eq_true, ↓reduceIte] at h ⊢
     by_cases hcp : bv_unsigned clkid = CLOCK_PROCESS_CPUTIME_ID
     · simp only [hcp, ↓reduceIte] at h ⊢
       refine bind_ok0 _ _ _ _ _ _ _ _ _ (input_ok i m) ?_
@@ -262,7 +269,7 @@ theorem check_clock_gettime_sound_unmodeled (i : SyscallInput) (clkid tp : word)
     clock_gettime_spec clkid tp i m Unmodeled := by
   unfold check_clock_gettime at h
   unfold clock_gettime_spec
-  by_cases hrt : bv_unsigned clkid = CLOCK_REALTIME
+  by_cases hrt : clockid_percall_b clkid = true
   · simp only [hrt, ↓reduceIte] at h ⊢
     refine bind_unmodeled2 _ _ _ _ _ _ _ (input_ok i m) ?_
     rcases hdst : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | w
@@ -272,7 +279,7 @@ theorem check_clock_gettime_sound_unmodeled (i : SyscallInput) (clkid tp : word)
       split at h
       next => split at h <;> cases h
       next => cases h
-  · simp only [hrt, ↓reduceIte] at h ⊢
+  · simp only [Bool.eq_false_iff.mpr hrt, Bool.false_eq_true, ↓reduceIte] at h ⊢
     by_cases hcp : bv_unsigned clkid = CLOCK_PROCESS_CPUTIME_ID
     · simp only [hcp, ↓reduceIte] at h ⊢
       refine bind_unmodeled2 _ _ _ _ _ _ _ (input_ok i m) ?_
@@ -314,7 +321,7 @@ theorem check_clock_gettime_complete_ok (i : SyscallInput) (clkid tp : word)
     check_clock_gettime i clkid tp eff m = CheckOk m' evs := by
   unfold clock_gettime_spec at h
   unfold check_clock_gettime
-  by_cases hrt : bv_unsigned clkid = CLOCK_REALTIME
+  by_cases hrt : clockid_percall_b clkid = true
   · simp only [hrt, ↓reduceIte] at h ⊢
     have h1 := input_bind_ok_inv _ i m eff m' evs h
     rcases hdst : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | w
@@ -328,7 +335,7 @@ theorem check_clock_gettime_complete_ok (i : SyscallInput) (clkid tp : word)
         rw [bv_eqb_refl, bv_eqb_refl, hts]
         rfl
       simp only [hok, ↓reduceIte]
-  · simp only [hrt, ↓reduceIte] at h ⊢
+  · simp only [Bool.eq_false_iff.mpr hrt, Bool.false_eq_true, ↓reduceIte] at h ⊢
     by_cases hcp : bv_unsigned clkid = CLOCK_PROCESS_CPUTIME_ID
     · simp only [hcp, ↓reduceIte] at h ⊢
       have h1 := input_bind_ok_inv _ i m eff m' evs h
@@ -376,7 +383,7 @@ theorem check_clock_gettime_complete_unmodeled (i : SyscallInput) (clkid tp : wo
     check_clock_gettime i clkid tp eff m = CheckUnmodeled := by
   unfold clock_gettime_spec at h
   unfold check_clock_gettime
-  by_cases hrt : bv_unsigned clkid = CLOCK_REALTIME
+  by_cases hrt : clockid_percall_b clkid = true
   · simp only [hrt, ↓reduceIte] at h ⊢
     have h1 := input_bind_unmodeled_inv _ i m h
     rcases hdst : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | w
@@ -384,7 +391,7 @@ theorem check_clock_gettime_complete_unmodeled (i : SyscallInput) (clkid tp : wo
     · simp only [hdst, bind_choose_iff, pure_iff] at h1
       obtain ⟨_, _, hp⟩ := h1
       cases hp
-  · simp only [hrt, ↓reduceIte] at h ⊢
+  · simp only [Bool.eq_false_iff.mpr hrt, Bool.false_eq_true, ↓reduceIte] at h ⊢
     by_cases hcp : bv_unsigned clkid = CLOCK_PROCESS_CPUTIME_ID
     · simp only [hcp, ↓reduceIte] at h ⊢
       have h1 := input_bind_unmodeled_inv _ i m h
@@ -420,7 +427,7 @@ theorem check_clock_gettime_frame (i : SyscallInput) (clkid tp : word) (eff : Sy
     (m m' : Model) (evs : List event)
     (h : check_clock_gettime i clkid tp eff m = CheckOk m' evs) : m_vmmaps m' = m_vmmaps m := by
   unfold check_clock_gettime at h
-  by_cases hrt : bv_unsigned clkid = CLOCK_REALTIME
+  by_cases hrt : clockid_percall_b clkid = true
   · simp only [hrt, ↓reduceIte] at h
     rcases hdst : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | w
     · simp only [hdst, reduceCtorEq] at h
@@ -433,7 +440,7 @@ theorem check_clock_gettime_frame (i : SyscallInput) (clkid tp : word) (eff : Sy
           rfl
         next => cases h
       next => cases h
-  · simp only [hrt, ↓reduceIte] at h
+  · simp only [Bool.eq_false_iff.mpr hrt, Bool.false_eq_true, ↓reduceIte] at h
     by_cases hcp : bv_unsigned clkid = CLOCK_PROCESS_CPUTIME_ID
     · simp only [hcp, ↓reduceIte] at h
       rcases hdst : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | w
@@ -548,7 +555,7 @@ theorem clock_gettime_bytes_ns (t : Int) (ht : 0 ≤ t ∧ t < CLOCK_NS_ENVELOPE
     rw [List.length_append, hlen, length_Z_to_le_bytes]
 
 /-- Rocq: `PosixTimers.clock_gettime_witness`.  For each modeled arm, one
-outcome the spec admits.  The realtime and cputime arms answer a reading
+outcome the spec admits.  The per-call and cputime arms answer a reading
 of 0 — `realtime_ok_b` and `cputime_ok_b` accept it, since neither arm
 measures against the recorded clock — and the monotonic arm answers the
 recorded clock itself, encoded by `clock_gettime_bytes`, which
@@ -561,7 +568,7 @@ value.  Where the spec declines the witness is `Unmodeled`, so
 dispatcher arm. -/
 def clock_gettime_witness (clkid tp : word) (i : SyscallInput) (m : Model) :
     outcome SyscallEffect :=
-  if bv_unsigned clkid = CLOCK_REALTIME then
+  if clockid_percall_b clkid then
     (match read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with
      | none => Unmodeled
      | some _ => Ok (mkEffect (Z_to_bv 64 0) [(tp, clock_gettime_bytes 0)] []) m [])
@@ -587,7 +594,7 @@ the witness's envelope gate is the outcome itself once they are (the
 section header on the checker says why that matters). -/
 theorem clock_gettime_witness_ok (i : SyscallInput) (clkid tp : word) (m : Model) :
     clock_gettime_spec clkid tp i m (clock_gettime_witness clkid tp i m) := by
-  by_cases hrt : bv_unsigned clkid = CLOCK_REALTIME
+  by_cases hrt : clockid_percall_b clkid = true
   · unfold clock_gettime_spec clock_gettime_witness
     simp only [hrt, ↓reduceIte]
     rcases hdst : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | w
@@ -600,7 +607,7 @@ theorem clock_gettime_witness_ok (i : SyscallInput) (clkid tp : word) (m : Model
         (pure_ok _ i m)
   · by_cases hcp : bv_unsigned clkid = CLOCK_PROCESS_CPUTIME_ID
     · unfold clock_gettime_spec clock_gettime_witness
-      simp only [hrt, ↓reduceIte]
+      simp only [Bool.eq_false_iff.mpr hrt, Bool.false_eq_true, ↓reduceIte]
       simp only [hcp, ↓reduceIte]
       rcases hdst : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | w
       · refine bind_unmodeled2 _ _ _ _ _ _ _ (input_ok i m) ?_
@@ -613,7 +620,7 @@ theorem clock_gettime_witness_ok (i : SyscallInput) (clkid tp : word) (m : Model
     · by_cases hid : bv_unsigned clkid = CLOCK_MONOTONIC
       · by_cases henv : bv_unsigned (m_clock m) < CLOCK_NS_ENVELOPE
         · unfold clock_gettime_spec clock_gettime_witness
-          simp only [hrt, ↓reduceIte]
+          simp only [Bool.eq_false_iff.mpr hrt, Bool.false_eq_true, ↓reduceIte]
           simp only [hcp, ↓reduceIte]
           simp only [hid, ne_eq, not_true_eq_false, ↓reduceIte]
           simp only [henv, not_true_eq_false, ↓reduceIte]
@@ -646,14 +653,14 @@ theorem clock_gettime_witness_ok (i : SyscallInput) (clkid tp : word) (m : Model
               (choose_ok _ (clock_gettime_bytes (bv_unsigned (m_clock m))) i m hts)
               (bind_ok0 _ _ _ _ _ _ _ _ _ (modify_ok _ i m) (pure_ok _ i _))
         · unfold clock_gettime_spec clock_gettime_witness
-          simp only [hrt, ↓reduceIte]
+          simp only [Bool.eq_false_iff.mpr hrt, Bool.false_eq_true, ↓reduceIte]
           simp only [hcp, ↓reduceIte]
           simp only [hid, ne_eq, not_true_eq_false, ↓reduceIte]
           simp only [henv, not_false_eq_true, ↓reduceIte]
           rw [bind_get_model_ite_iff, ite_eq_left_of_eq_true _ _ (eq_true henv)]
           exact unmodeled_intro i m
       · unfold clock_gettime_spec clock_gettime_witness
-        simp only [hrt, ↓reduceIte]
+        simp only [Bool.eq_false_iff.mpr hrt, Bool.false_eq_true, ↓reduceIte]
         simp only [hcp, ↓reduceIte]
         simp only [hid, ne_eq, not_false_eq_true, ↓reduceIte]
         exact unmodeled_intro i m

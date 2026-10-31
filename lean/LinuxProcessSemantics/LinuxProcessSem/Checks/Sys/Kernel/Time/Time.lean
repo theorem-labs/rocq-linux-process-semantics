@@ -1,6 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Time/Time.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.Time
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Witness.Prelude
+
 
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
@@ -21,7 +24,7 @@ definitions are `Sys/Kernel/Time/Time.lean`'s, and every theorem here
 relates an executable to them.
 
 Every kernel line named below was read at Linux v6.18.46 (commit
-1f99e9ab748fc5c32120de9c4eca31abfe54a4d5), which is AGENTS.md's citation
+1f99e9ab748fc5c32120de9c4eca31abfe54a4d5), which is linux-process-semantics@ff0313ba4f:AGENTS.md's citation
 baseline.
 
 WHAT IS NOT HERE, AND WHOSE IT IS.  Rocq registers this checker in

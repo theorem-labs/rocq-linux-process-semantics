@@ -1,7 +1,11 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Kernel/Time/Time.v
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Time/Time.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Time.Time
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel.Time.Time
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
+
 
 /-! # Checks.Cases.Checks.Sys.Kernel.Time.Time — what the gettimeofday checker answers, read off against Linux
 
@@ -245,7 +249,7 @@ behind that argument rather than inside it: `__timekeeping_inject_sleeptime`
 (kernel/time/timekeeping.c) validates only its delta and adds it to
 `xtime_sec` unchecked, so the ceiling is a premise on uptime since the
 last set, not a kernel certainty, and a reading above it is the false
-rejection `bugs/gettimeofday-tv-sec-ceiling-behind-one-writer.md` records.
+rejection `linux-process-semantics@ff0313ba4f:bugs/gettimeofday-tv-sec-ceiling-behind-one-writer.md` records.
 The decision is Rocq's; this pin fixes that the checker makes it.
 kernel: kernel/time/time.c:gettimeofday; include/linux/time64.h:timespec64_valid_settod@v6.18.46 -/
 theorem reading_at_ceiling_rejected :

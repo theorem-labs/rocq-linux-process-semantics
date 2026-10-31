@@ -1,6 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Kernel/Time/PosixTimers.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Specs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Prelude
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Tactic
+
 
 /-! # Checks.Cases.Kernel.Time.PosixTimers — what `clock_gettime` admits, read off against Linux
 
@@ -60,9 +63,11 @@ attribute [sys_simp low] clock_gettime_spec.eq_1
 
 /-! ## The numbers these checks spell out -/
 
-/-- The three modeled ids, as the register value the program passes.
-kernel: include/uapi/linux/time.h:CLOCK_REALTIME,CLOCK_MONOTONIC,CLOCK_PROCESS_CPUTIME_ID@v6.18.46 -/
-example : CLOCK_REALTIME = 0 ∧ CLOCK_MONOTONIC = 1 ∧ CLOCK_PROCESS_CPUTIME_ID = 2 := by decide
+/-- The seven modeled ids, as the register value the program passes.
+kernel: include/uapi/linux/time.h:CLOCK_REALTIME,CLOCK_MONOTONIC,CLOCK_PROCESS_CPUTIME_ID,CLOCK_MONOTONIC_RAW,CLOCK_REALTIME_COARSE,CLOCK_MONOTONIC_COARSE,CLOCK_BOOTTIME@v6.18.46 -/
+example : CLOCK_REALTIME = 0 ∧ CLOCK_MONOTONIC = 1 ∧ CLOCK_PROCESS_CPUTIME_ID = 2
+    ∧ CLOCK_MONOTONIC_RAW = 4 ∧ CLOCK_REALTIME_COARSE = 5 ∧ CLOCK_MONOTONIC_COARSE = 6
+    ∧ CLOCK_BOOTTIME = 7 := by decide
 
 /-! ## The fixtures
 
@@ -201,19 +206,19 @@ attribute [local sys_simp]
 `SYSCALL_DEFINE2(clock_gettime, …)` (kernel/time/posix-timers.c:1136-1152,
 Linux v6.18.46) resolves `which_clock` through `clockid_to_kclock`
 (:1535-1548) and returns -EINVAL on a NULL `k_clock` (:1143-1144) before
-`tp` is touched.  Ids 0..2 index `posix_clocks` (:1518-1533); the other
+`tp` is touched.  Ids 0..7 index `posix_clocks` (:1518-1533); the other
 non-negative ids below the table's size are clocks the model does not
 cover or NULL holes (`CLOCK_SGI_CYCLE`, 10, and 12..15 under
 `CONFIG_POSIX_AUX_CLOCKS`), ids past it are NULL, and negative ids go to
 `clock_posix_dynamic` or `clock_posix_cpu` (:1539-1542) — a live clock
 family, several of whose members succeed.  The spec declines every id but
-the three, whatever the kernel answers there: a declared narrowing, not a
+the seven, whatever the kernel answers there: a declared narrowing, not a
 claim that those answers are -EINVAL. -/
 
-/-- Every id but the three modeled ones declines, whatever the
+/-- Every id but the seven modeled ones declines, whatever the
 destination, the effect or the model, so no future arm can quietly start
-answering for CLOCK_BOOTTIME, CLOCK_THREAD_CPUTIME_ID or the coarse and raw
-variants without this failing.  The id is tested before anything else,
+answering for CLOCK_THREAD_CPUTIME_ID, CLOCK_TAI or the alarm variants
+without this failing.  The id is tested before anything else,
 which is why no hypothesis about `tp` or `i` is needed.  The kernel
 answers several of these ids (the probe's `thrcputime` and `cpuclock`
 cases succeed on Linux); the decline is the model's, not an -EINVAL.
@@ -221,11 +226,19 @@ kernel: kernel/time/posix-timers.c:clock_gettime,clockid_to_kclock@v6.18.46
 rocq-twin: clock_gettime_only_the_modeled_clocks -/
 theorem clock_gettime_only_the_modeled_clocks (clkid tp : word)
     (hrt : bv_unsigned clkid ≠ CLOCK_REALTIME)
+    (hraw : bv_unsigned clkid ≠ CLOCK_MONOTONIC_RAW)
+    (hrtc : bv_unsigned clkid ≠ CLOCK_REALTIME_COARSE)
+    (hmc : bv_unsigned clkid ≠ CLOCK_MONOTONIC_COARSE)
+    (hbt : bv_unsigned clkid ≠ CLOCK_BOOTTIME)
     (hcp : bv_unsigned clkid ≠ CLOCK_PROCESS_CPUTIME_ID)
     (hmono : bv_unsigned clkid ≠ CLOCK_MONOTONIC)
     (i : SyscallInput) (m : Model) (o : outcome SyscallEffect) :
     clock_gettime_spec clkid tp i m o ↔ o = Unmodeled := by
-  simp only [clock_gettime_spec.eq_1, hrt, hcp, hmono, ne_eq, not_false_eq_true, ↓reduceIte]
+  have hpc : clockid_percall_b clkid = false := by
+    simp only [clockid_percall_b, Bool.or_eq_false_iff, beq_eq_false_iff_ne]
+    exact ⟨⟨⟨⟨hrt, hraw⟩, hrtc⟩, hmc⟩, hbt⟩
+  simp only [clock_gettime_spec.eq_1, hpc, Bool.false_eq_true, ↓reduceIte, hcp, hmono,
+    ne_eq, not_false_eq_true]
   sys_norm
 
 /-- `CLOCK_THREAD_CPUTIME_ID` (3): the modeled id's nearest neighbour, the
@@ -237,17 +250,43 @@ theorem thread_cputime_is_unmodeled (m : Model) (o : outcome SyscallEffect) :
     clock_gettime_spec 3 4096 (clock_input 3) m o ↔ o = Unmodeled := by
   sys_norm
 
-/-- `CLOCK_MONOTONIC_RAW` (4): unadjusted by NTP, a different clock.
-probe: testing/syscall-check/tests/clock_gettime_spec.c#fail-closed -- rawmono -/
-theorem monotonic_raw_is_unmodeled (m : Model) (o : outcome SyscallEffect) :
-    clock_gettime_spec 4 4096 (clock_input 4) m o ↔ o = Unmodeled := by
+/-- `CLOCK_MONOTONIC_RAW` (4) is answered on the PER-CALL arm, under
+`realtime_ok_b` alone: a denormalized `tv_nsec` is refused there as it is
+for the wall clock.
+kernel: kernel/time/timekeeping.c:ktime_get_raw_ts64@v6.18.46
+rocq-twin: monotonic_raw_denormalized_nsec_rejected -/
+theorem monotonic_raw_denormalized_nsec_rejected (m' : Model) (evs : List event) :
+    ¬ clock_gettime_spec 4 4096 (clock_input 4) (clock_model 0)
+        (Ok (mkEffect 0 [(4096, ts_denorm)] []) m' evs) := by
+  sys_refute
+
+/-- `CLOCK_REALTIME_COARSE` (5) is on the same arm, and its reading is
+bounded by `CLOCK_NS_ENVELOPE` like every other per-call reading.
+kernel: kernel/time/timekeeping.c:ktime_get_coarse_real_ts64@v6.18.46
+rocq-twin: realtime_coarse_reading_at_envelope_rejected -/
+theorem realtime_coarse_reading_at_envelope_rejected (m' : Model) (evs : List event) :
+    ¬ clock_gettime_spec 5 4096 (clock_input 5) (clock_model 0)
+        (Ok (mkEffect 0 [(4096, ts_over)] []) m' evs) := by
+  sys_refute
+
+/-- `CLOCK_MONOTONIC_COARSE` (6) states no cross-call relation at all, so
+it answers against a recorded clock the monotonic arm would decline, and
+records nothing.
+kernel: kernel/time/timekeeping.c:ktime_get_coarse_ts64@v6.18.46
+rocq-twin: monotonic_coarse_ignores_the_recorded_clock -/
+theorem monotonic_coarse_ignores_the_recorded_clock :
+    clock_gettime_spec 6 4096 (clock_input 6) (clock_model (2 ^ 63))
+      (Ok (mkEffect 0 [(4096, ts_1s)] []) (clock_model (2 ^ 63)) []) := by
   sys_norm
 
 /-- `CLOCK_BOOTTIME` (7): advances across suspend where MONOTONIC does not
 (`__timekeeping_inject_sleeptime`, kernel/time/timekeeping.c:1857-1870, v6.18.46).
-probe: testing/syscall-check/tests/clock_gettime_spec.c#fail-closed -- boottime -/
-theorem boottime_is_unmodeled (m : Model) (o : outcome SyscallEffect) :
-    clock_gettime_spec 7 4096 (clock_input 7) m o ↔ o = Unmodeled := by
+It is on the per-call arm, so a reading BEFORE the recorded monotonic one
+is admissible.
+rocq-twin: boottime_backwards_reading_is_admissible -/
+theorem boottime_backwards_reading_is_admissible :
+    clock_gettime_spec 7 4096 (clock_input 7) (clock_model 1000000000)
+      (Ok (mkEffect 0 [(4096, ts_1s_minus)] []) (clock_model 1000000000) []) := by
   sys_norm
 
 /-- `CLOCK_TAI` (11): realtime plus the leap-second offset.
@@ -260,10 +299,14 @@ theorem tai_is_unmodeled (m : Model) (o : outcome SyscallEffect) :
 an unwritable destination alike — the id is decoded first, so nothing
 about `tp` is consulted.  Both gates decline here, so the kernel's
 -EINVAL-before-EFAULT order is not observable on the outcome; what this
-pins is that the decline needs no destination at all.
-probe: testing/syscall-check/tests/clock_gettime_spec.c#fail-closed --mutate clock_gettime:arg0=7,drop-writes -- one -/
+pins is that the decline needs no destination at all.  The probe's own
+`--mutate clock_gettime:arg0=7,drop-writes` case cannot carry this pin
+any more: at `f1006fe8` id 7 is answered, so the case is stated on
+`CLOCK_THREAD_CPUTIME_ID` (3), which no recorded case pairs with a
+dropped write.
+kernel: kernel/time/posix-timers.c:clock_gettime,clockid_to_kclock@v6.18.46 -/
 theorem bad_id_with_unwritable_tp_is_unmodeled (m : Model) (o : outcome SyscallEffect) :
-    clock_gettime_spec 7 4096 (clock_input_unwritable 7) m o ↔ o = Unmodeled := by
+    clock_gettime_spec 3 4096 (clock_input_unwritable 3) m o ↔ o = Unmodeled := by
   sys_norm
 
 /-! ## The destination gate: `put_timespec64`, after the reading
@@ -626,19 +669,22 @@ theorem realtime_reading_iff (m : Model) (o : outcome SyscallEffect) :
         ∧ bs.length = 16 ∧ tv_frac_of bs < 1000000000 ∧ timespec_ns bs < 2 ^ 63 := by
   sys_norm
 
-/-- UNIVERSALLY QUANTIFIED, and the load-bearing one: an accepted
-CLOCK_REALTIME call leaves the model EXACTLY as it found it, for every
+/-- UNIVERSALLY QUANTIFIED, and the load-bearing one: an accepted call on
+ANY per-call id leaves the model EXACTLY as it found it, for every
 input, destination, effect and starting model.  This is what stops a
-future change quietly giving the wall clock an `m_clock`-style field — a
+future change quietly giving the wall clock or a coarse clock an
+`m_clock`-style field — a
 field written by the spec and read by nothing would look like a guarantee
 the kernel does not give: `do_settimeofday64` (kernel/time/timekeeping.c:1434-1465)
 refuses nothing that sets the clock EARLIER, and `__timekeeping_inject_offset`
 (:1480-1520) steps it by a signed value straight from userspace.
 kernel: kernel/time/timekeeping.c:do_settimeofday64,__timekeeping_inject_offset@v6.18.46
-rocq-twin: clock_gettime_realtime_leaves_the_model_alone -/
-theorem clock_gettime_realtime_leaves_the_model_alone (i : SyscallInput) (tp : word)
+rocq-twin: clock_gettime_percall_leaves_the_model_alone -/
+theorem clock_gettime_percall_leaves_the_model_alone (i : SyscallInput) (clkid tp : word)
     (eff : SyscallEffect) (m m' : Model) (evs : List event)
-    (h : clock_gettime_spec 0 tp i m (Ok eff m' evs)) : m' = m ∧ evs = [] := by
+    (hid : clockid_percall_b clkid = true)
+    (h : clock_gettime_spec clkid tp i m (Ok eff m' evs)) : m' = m ∧ evs = [] := by
+  rw [clock_gettime_spec.eq_1, if_pos hid] at h
   sys_simp_pass +decide at h
   rcases hr : read_bytes_map i.in_wmem tp (Z_to_bv 64 16) with _ | bs
   · rw [hr] at h
@@ -806,7 +852,7 @@ theorem cputime_reading_iff (m : Model) (o : outcome SyscallEffect) :
   sys_norm
 
 /-- UNIVERSALLY QUANTIFIED, and the load-bearing one, for the reason
-`clock_gettime_realtime_leaves_the_model_alone` gives and one more of its
+`clock_gettime_percall_leaves_the_model_alone` gives and one more of its
 own: an accepted CLOCK_PROCESS_CPUTIME_ID call leaves the model EXACTLY as
 it found it, for every input, destination, effect and starting model.
 This is what stops a future change relating CPU consumed to `m_clock`.
@@ -939,7 +985,7 @@ not built and `do_clock_gettime` (kernel/time/posix-stubs.c:39-58) answers
 answer is NOT admitted here — the Rocq definition names the scope and
 `docs/syscalls/clock_gettime.md` records it — so a stubs kernel's -EINVAL
 is a reading this arm refuses, and a run under such a kernel is outside
-what the arm describes; bugs/clock-gettime-served-by-vdso.md's last
+what the arm describes; linux-process-semantics@ff0313ba4f:bugs/clock-gettime-served-by-vdso.md's last
 paragraph records the residual.
 kernel: kernel/time/posix-stubs.c:do_clock_gettime@v6.18.46 -/
 theorem cputime_stubs_einval_rejected (m' : Model) (evs : List event) :

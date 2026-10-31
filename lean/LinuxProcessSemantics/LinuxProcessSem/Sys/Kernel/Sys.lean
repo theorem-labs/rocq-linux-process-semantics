@@ -1,6 +1,9 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Kernel/Sys.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Fork
+
 
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
@@ -167,7 +170,7 @@ writes nothing.  What success also does and why it does not show
 lock (kernel/sys.c:1290, Linux v6.18.46) and the connector and autogroup
 hooks it calls after the unlock (:1297-1298) — is argued on the Rocq
 definition and recorded in
-`bugs/setsid-clears-a-controlling-terminal-invisibly.md`. -/
+`linux-process-semantics@ff0313ba4f:bugs/setsid-clears-a-controlling-terminal-invisibly.md`. -/
 def setsid_spec : Sys SyscallEffect :=
   m <- get_model ;;
   if m_setsid_succeeded m then err_ret EPERM
@@ -311,7 +314,7 @@ that is not wholly mapped is declined, for `old_rlim` because the copy-out
 may be partial and for `new_rlim` because which bytes were read is not
 something the ledger can state.  The spec asks the WALK first and the
 range test only when the walk fails, the order
-bugs/read-bytes-map-wraps-while-access-ok-over-sums-in-z.md records
+linux-process-semantics@ff0313ba4f:bugs/read-bytes-map-wraps-while-access-ok-over-sums-in-z.md records
 against both arms; `uname_spec` below is written the other way round. -/
 def prlimit64_spec (pid resource new_rlim old_rlim : word) : Sys SyscallEffect :=
   if !(w_is0 pid) then unmodeled                -- (1) no other task exists
@@ -754,7 +757,7 @@ THE POINTER, in the three bands every buffer in this tree is judged in:
   `State.access_okb` subtracts in `Int`, so a `name` near 2^64 whose 390
   bytes wrap round onto mapped low addresses reads as "wholly writable"
   to the walk and is refused by Linux.  Asking the walk first is the
-  defect bugs/read-bytes-map-wraps-while-access-ok-over-sums-in-z.md
+  defect linux-process-semantics@ff0313ba4f:bugs/read-bytes-map-wraps-while-access-ok-over-sums-in-z.md
   records against both `prlimit64_spec` arms; this arm is written the
   repaired way, and `Checks/Cases/Kernel/Sys.lean`'s `uname_wrap_` group
   pins both directions.
@@ -856,7 +859,7 @@ testing/syscall-check/tests/prctl_spec.c pins both against the kernel.
 THE FIRST IS LINUX'S ANSWER ALONE: QEMU's user-mode emulation switches
 `do_prctl` on the whole 64-bit `abi_long` and answers -EINVAL to it, so
 at that shape the arm admits an answer outside the supported
-intersection — bugs/prctl-capbset-read-arm-admits-linux-alone.md.
+intersection — linux-process-semantics@ff0313ba4f:bugs/prctl-capbset-read-arm-admits-linux-alone.md.
 
 WHY 1 AND NOT A CHOICE.  `cap_raised` (include/linux/capability.h:75,
 Linux v6.18.46) reads one bit of the caller's bounding set, which this
@@ -879,7 +882,7 @@ direction is inside the supported set: the same header ends at
 CAP_AUDIT_READ, 37, at v4.17 and v5.7 and at CAP_BPF, 39, at v5.8, so a
 supported kernel before v5.9 answers -EINVAL to capabilities 38, 39 and
 40 where this spec proves 1.  The Rocq text names only the first
-direction; bugs/prctl-capbset-read-arm-admits-linux-alone.md records the
+direction; linux-process-semantics@ff0313ba4f:bugs/prctl-capbset-read-arm-admits-linux-alone.md records the
 second and what both cost.  See `Uapi.CAP_LAST_CAP`.
 
 EVERY OTHER OPTION IS DECLINED, and one is load-bearing:

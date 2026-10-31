@@ -1,7 +1,11 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Kernel/Time/Hrtimer.v
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Time/Hrtimer.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Time.Hrtimer
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel.Time.Hrtimer
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
+
 
 /-! # Checks.Cases.Checks.Sys.Kernel.Time.Hrtimer — what the nanosleep checker answers, read off against Linux
 
@@ -906,7 +910,7 @@ and a write at `rmtp` cannot both happen — within one `do_nanosleep`;
 across a transparent restart (`arch_do_signal_or_restart` rewinding to
 `restart_syscall`, `hrtimer_nanosleep_restart` then returning 0) the
 program does see 0 with `rmtp` written by the first pass, the shape
-`bugs/nanosleep-transparent-restart-rejected.md` records and one the
+`linux-process-semantics@ff0313ba4f:bugs/nanosleep-transparent-restart-rejected.md` records and one the
 harness's -EINTR-gated capture never hands the checker; admitting the
 pair would let a
 lying kernel move `m_clock` by the whole request while claiming a
@@ -1037,7 +1041,7 @@ NULL arm and beside a valid remainder alike.  The cases above offer other
 words on the NULL arm alone (1, -EFAULT, -EINVAL); these add the two words
 a restart shows, and offer them on the writable arm too, beside a
 remainder the checker would otherwise accept.  The transparent restart's rejection is the case
-`bugs/nanosleep-transparent-restart-rejected.md` records, and these are
+`linux-process-semantics@ff0313ba4f:bugs/nanosleep-transparent-restart-rejected.md` records, and these are
 the pins that flip when the arm it proposes lands.
 kernel: kernel/time/hrtimer.c:do_nanosleep,nanosleep_copyout; arch/riscv/kernel/signal.c:arch_do_signal_or_restart@v6.18.46 -/
 theorem nanosleep_only_eintr_is_the_interruption :

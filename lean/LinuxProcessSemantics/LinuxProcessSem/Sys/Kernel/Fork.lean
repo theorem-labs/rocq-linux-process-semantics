@@ -1,4 +1,7 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Sys/Kernel/Fork.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
+
 
 /-! rocq-baseline: a71fd38a08571d519b9cfc5f66308db5c26da570 -/
 
@@ -285,7 +288,7 @@ to make a real kernel answer something outside this list: a parent
 holding inheritable perf events (`perf_event_init_task`,
 kernel/events/core.c:14669, Linux v6.18.46), a BPF LSM program attached to `task_alloc`,
 and a BPF scheduler's task init through `sched_cgroup_fork` (:2299).
-Recorded in bugs/clone-errnos-omits-three-environment-failures.md; the
+Recorded in linux-process-semantics@ff0313ba4f:bugs/clone-errnos-omits-three-environment-failures.md; the
 argument is on the Rocq definition. -/
 def clone_errnos : List Int := [EAGAIN, ENOMEM, EMFILE, EACCES]
 
@@ -325,7 +328,7 @@ argues each kind; the verdicts:
   for the sharing to make wrong.
 - `FdChannel`: PASSES, and is the honest hole — a channel's position is
   the run's `InputStream`, not the descriptor's, so the gate cannot name
-  it; recorded in bugs/clone-child-io-on-inherited-channels.md.
+  it; recorded in linux-process-semantics@ff0313ba4f:bugs/clone-child-io-on-inherited-channels.md.
 - `FdSocket`: DECLINE — the entry inlines the connection's remaining
   receive script, so a copy would report a peer's reset once to each
   process where Linux reports it once for the connection.
@@ -371,7 +374,7 @@ observed, because `alloc_pid` hands out a FREE pid and the caller's own is
 in use.  THE LAST CONJUNCT IS VACUOUS UNTIL THE TID IS OBSERVED: `m_tid`
 starts `none`, so a clone made before any `getpid` or `set_tid_address`
 admits the caller's own pid — a widening, not an unsound acceptance,
-recorded in bugs/clone-retires-no-pid.md. -/
+recorded in linux-process-semantics@ff0313ba4f:bugs/clone-retires-no-pid.md. -/
 def clone_pid_ok_b (m : Model) (r : word) : Bool :=
   0 < bv_unsigned r && bv_unsigned r < PID_MAX_ENVELOPE &&
   (match m_tid m with | none => true | some t0 => !(bv_eqb r t0))
@@ -537,7 +540,7 @@ narrowed: a register of `88 + 2^32` is not 88 to the kernel either.
 The answers are LINUX's alone.  QEMU's user-mode emulation at v11.1.1 has
 no `clone3` handler and answers -ENOSYS to every 435 with nothing read
 (`linux-user/syscall.c`'s `default:` arm), an answer neither this arm nor
-Rocq's offers or declines; bugs/clone3-enosys-arm-admits-linux-alone.md
+Rocq's offers or declines; linux-process-semantics@ff0313ba4f:bugs/clone3-enosys-arm-admits-linux-alone.md
 records the gap and what closes it. -/
 def clone3_spec (uargs size : word) : Sys SyscallEffect :=
   if !(bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then unmodeled

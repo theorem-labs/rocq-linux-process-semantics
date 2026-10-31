@@ -1,7 +1,11 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Cases/Kernel/Groups.v
+-- Ports rocq-linux-process-semantics f1006fe8:theories/LinuxProcessSem/Checks/Sys/Kernel/Groups.v
+
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Kernel.Groups
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel.Groups
 import LinuxProcessSemantics.LinuxProcessSem.Checks.ExecutableSpecs
 import LinuxProcessSemantics.LinuxProcessSem.Checks.Progress
+
 
 /-! # Checks.Cases.Checks.Sys.Kernel.Groups — what the `getgroups` and `setgroups` CHECKERS accept and their WITNESSES name, read off against Linux
 
@@ -110,12 +114,12 @@ its `ret+1`, `ret=-EINVAL` and `getgroups#2:smuggle-write` rejects, and
 and `big70000` (`ret=-EINVAL`) rejects carry unnumbered selectors, so
 they land on occurrence 1, `getgroups(0, 0)`, and test the size-0 count
 rather than the empty list or the missing upper bound
-(`bugs/getgroups-empty-list-arm-admits-linux-alone.md`) — and
+(`linux-process-semantics@ff0313ba4f:bugs/getgroups-empty-list-arm-admits-linux-alone.md`) — and
 `creds_spec.c`'s five `setgroups-*` cases with their `ret=0`,
 `ret=-EINVAL` and `ret=-EFAULT` rejects, three of which — the
 `ret=-EINVAL` on `setgroups-neg` and on `setgroups-big`, and the
 `ret=-EFAULT` on `setgroups-fault` — refuse qemu-user's own answers at
-those shapes (`bugs/setgroups-eperm-arm-admits-linux-alone.md`).  Each
+those shapes (`linux-process-semantics@ff0313ba4f:bugs/setgroups-eperm-arm-admits-linux-alone.md`).  Each
 `kernel:` pin below cites kernel source and not the probe, because what
 it rests on is a claim about Linux, and a probe verdict, under `--model
 lean` as under the default, is one run of the pinned kernel, which
@@ -445,7 +449,7 @@ destination before a copy of nothing is not Linux: `groups_to_user`'s
 validation is the per-element `put_user` at :47, and the loop runs no
 iteration), and so is -EINVAL at 70000 (range-checking a size Linux's
 `getgroups` does not range-check).  Both are qemu-user's answers
-(`bugs/getgroups-empty-list-arm-admits-linux-alone.md`).
+(`linux-process-semantics@ff0313ba4f:bugs/getgroups-empty-list-arm-admits-linux-alone.md`).
 The arm admits Linux alone.  The fix that entry describes declines any
 size above `NGROUPS_MAX` at every destination, so the second conjunct
 flips to `CheckUnmodeled` the day it moves.  The first names no
@@ -623,7 +627,7 @@ theorem check_setgroups_unprivileged_accepts_eperm :
 are all refused on an unprivileged caller.  -EINVAL and -EFAULT are
 qemu-user's answers at three argument shapes — a negative size, a size
 above `NGROUPS_MAX`, a positive size whose list is unreadable
-(`bugs/setgroups-eperm-arm-admits-linux-alone.md`).  The arm admits
+(`linux-process-semantics@ff0313ba4f:bugs/setgroups-eperm-arm-admits-linux-alone.md`).  The arm admits
 Linux alone at those three shapes.  The fix that entry describes
 declines all three — the third at the low end of the entry-stack band
 only if it does not leave that band open, which the entry allows — and,
@@ -679,7 +683,7 @@ Linux alone: qemu-user answers -EINVAL to a size negative as an `int` or
 above `NGROUPS_MAX` whatever the credentials, before the host call in
 which `may_setgroups` runs
 (linux-user/syscall.c:12620-12621, QEMU v11.1.1;
-`bugs/setgroups-eperm-arm-admits-linux-alone.md`).
+`linux-process-semantics@ff0313ba4f:bugs/setgroups-eperm-arm-admits-linux-alone.md`).
 kernel: kernel/groups.c:setgroups,may_setgroups; kernel/capability.c:ns_capable_setid@v6.18.46 -/
 theorem check_setgroups_dropped_euid_rejects_the_lies :
     check_setgroups (mkEffect 0 [] []) dropped_euid_model = CheckReject
@@ -712,7 +716,7 @@ refused call has an empty copy-in ledger.  -ENOMEM is refused too:
 Both verdicts are right for Linux alone: at a size from 1 to
 `NGROUPS_MAX` qemu-user can answer -ENOMEM, and -EPERM beside the
 copy-in of the whole list, which at a size of 1 is the four bytes the
-first conjunct names (`bugs/setgroups-eperm-arm-admits-linux-alone.md`).
+first conjunct names (`linux-process-semantics@ff0313ba4f:bugs/setgroups-eperm-arm-admits-linux-alone.md`).
 kernel: kernel/groups.c:setgroups,may_setgroups,groups_from_user,groups_alloc@v6.18.46 -/
 theorem check_setgroups_unprivileged_rejects_a_copyin_and_enomem (grouplist : word) :
     check_setgroups (SyscallEffect.mkEffectU (errno_ret EPERM) [] [] [] [] [(grouplist, 4)])
@@ -967,7 +971,7 @@ count.  `setgroups` reads no register at all, and its example's first
 conjunct carries that against a size test: it puts `2^64 - 1` in `a0`,
 which an arm that tested the size before `may_setgroups` would refuse
 the -EPERM at.  That is Linux's answer, and
-qemu-user's is -EINVAL there (`bugs/setgroups-eperm-arm-admits-linux-alone.md`),
+qemu-user's is -EINVAL there (`linux-process-semantics@ff0313ba4f:bugs/setgroups-eperm-arm-admits-linux-alone.md`),
 so the arm admits Linux alone at that shape.
 
 WHY THE `getgroups` PINS ARE NOT `rfl`: the unifier walks into the
@@ -1077,7 +1081,7 @@ theorem getgroups_size_too_small_is_einval_not_efault_over_the_real_table :
 real table: with no groups, `groups_to_user` copies nothing, so a size of
 64 at an unmapped 0xdeadbeef answers 0 and an -EFAULT is refused.
 qemu-user answers that -EFAULT there (`lock_user` on the destination
-before the copy, `bugs/getgroups-empty-list-arm-admits-linux-alone.md`),
+before the copy, `linux-process-semantics@ff0313ba4f:bugs/getgroups-empty-list-arm-admits-linux-alone.md`),
 or -ENOMEM when the `g_try_new` ahead of it fails
 (linux-user/syscall.c:12592-12596, QEMU v11.1.1): the arm admits Linux
 alone here, and both conjuncts flip to `CheckUnmodeled` when the fix
@@ -1117,7 +1121,7 @@ a list at 4096 is a lie under every implementation.  The -EFAULT there is
 under Linux.  The first and third verdicts are right for Linux alone:
 qemu-user answers -EINVAL at a size of `2^64 - 1`, and -EFAULT or -ENOMEM
 at a size of 1 and a list at 4096
-(`bugs/setgroups-eperm-arm-admits-linux-alone.md`).
+(`linux-process-semantics@ff0313ba4f:bugs/setgroups-eperm-arm-admits-linux-alone.md`).
 All three conjuncts flip to `CheckUnmodeled` when the fix that entry
 describes lands: the first because that fix declines a size negative as
 an `int`, and the second and third because they share an input (a size
@@ -1151,7 +1155,7 @@ fails (`g_try_new`, linux-user/syscall.c:12592-12596, QEMU v11.1.1).
 Linux allocates nothing on the way to the too-small arm's -EINVAL or to
 the empty list's 0, so the arm answers both with Linux's answer alone
 and refuses that -ENOMEM on both
-(`bugs/getgroups-empty-list-arm-admits-linux-alone.md`).  The pin below
+(`linux-process-semantics@ff0313ba4f:bugs/getgroups-empty-list-arm-admits-linux-alone.md`).  The pin below
 states that refusal as it stands, a verdict right for Linux alone; each
 of its conjuncts flips when the fix that entry describes lands. -/
 
@@ -1184,7 +1188,7 @@ the -EPERM with nothing read (linux-user/syscall.c:12620-12639, QEMU v11.1.1);
 Linux answers -EPERM at kernel/groups.c:203-204 (Linux v6.18.46) having
 read nothing either.  So at that size an unprivileged caller's outcome is
 the same under every supported implementation
-(`bugs/setgroups-eperm-arm-admits-linux-alone.md`), and no fix that entry
+(`linux-process-semantics@ff0313ba4f:bugs/setgroups-eperm-arm-admits-linux-alone.md`), and no fix that entry
 describes flips the pin below. -/
 
 /-- `setgroups(0, NULL)` from an unprivileged caller: -EPERM accepted, and
@@ -1229,7 +1233,7 @@ theorem getgroups_count_witnessed_over_the_real_table :
 
 /-- Unprivileged `setgroups` at `2^64 - 1` and an unmapped list: the witness
 exhibits Linux's -EPERM, which qemu-user does not
-(`bugs/setgroups-eperm-arm-admits-linux-alone.md`), so this pin flips
+(`linux-process-semantics@ff0313ba4f:bugs/setgroups-eperm-arm-admits-linux-alone.md`), so this pin flips
 when the arm is fixed.
 kernel: kernel/groups.c:setgroups,may_setgroups@v6.18.46 -/
 theorem setgroups_eperm_witnessed_over_the_real_table :
