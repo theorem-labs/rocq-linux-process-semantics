@@ -43,12 +43,16 @@
     pins the reason it stops there, so a reader does not take the
     missing statement-level refutation for an oversight.
 
-    SIGPIPE.  This one has no declaration to hold it off.
+    SIGPIPE.  This one has no declaration that holds it off everywhere.
     [Fs.ReadWrite.write_spec] raises signal 13 from ordinary modeled
     state — a pipe whose read end the program closed, a socket with no
     connection, a channel [State.in_channel_reader] says is unread —
-    and [Run.valid_input] constrains none of the three.  So the kill
-    conjunct of [MustExit.must_exit_in_at] is a LIVE refutation of
+    and [Run.valid_input] constrains only the third of the three: it
+    pins the reader PRESENT, so the reader-less channel is reached by
+    name under [Run.valid_input_channel_closed], while the closed pipe
+    and the unconnected socket are ordinary states under the ordinary
+    predicate.  So the kill conjunct of [MustExit.must_exit_in_at] is a
+    LIVE refutation of
     [halts_allowed_T] over this very input class, and
     [halts_allowed_T_refuted_by_kill] below, which used to be
     unfireable at statement level, is a lemma with a reachable

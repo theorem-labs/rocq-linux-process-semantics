@@ -514,16 +514,17 @@ Record FinProcInput := mkFinProcInput {
   fin_channel_reader : bool
     (* whether the far end of descriptors 1 and 2 still has a reader,
        mirroring [State.in_channel_reader].  A FIELD RATHER THAN A PIN
-       for [fin_abort_terminal]'s reason, and here the reason has the
-       most bite of the four: [Run.valid_input] constrains this field
-       at neither value, so an equivalence statement covers both the
-       launch whose standard output is read and the writing end of
-       `prog | head -1`.  Pinning it to [true] here would put the
-       second out of reach of every classifier and measure shape while
-       leaving it in reach of the equivalence shapes -- the silent
-       divergence between the two quantifiers this record exists to
-       prevent -- and would make [finite_input_surjection] false, since
-       a launch with no reader is as finite as one with one *);
+       for [fin_abort_terminal]'s reason, and it reads the same way as
+       [fin_sigpipe_default] below: [Run.valid_input] pins this field
+       to [true], and the other world has a predicate of its own,
+       [Run.valid_input_channel_closed], so a finite input must be able
+       to denote the writing end of `prog | head -1`.  Pinning it to
+       [true] here would put that launch out of reach of every
+       classifier and measure shape while leaving it in reach of the
+       equivalence shapes -- the silent divergence between the two
+       quantifiers this record exists to prevent -- and would make
+       [finite_input_surjection] false, since a launch with no reader
+       is as finite as one with one *);
   fin_sigpipe_default : bool
     (* whether SIGPIPE is still at its default disposition when the
        program starts, mirroring [State.in_sigpipe_default].  A FIELD

@@ -265,20 +265,25 @@ earlier system call has more than one result, each result must lead to a
 crash.
 
 `State.in_channel_reader` says if the far end of standard output has a
-reader. `Run.valid_input` does not constrain it, so a proof must cover
-both values. `cat_omni_strong_equiv_te` takes `CatSim.cat_launch`, which
-is one of these:
+reader. `Run.valid_input` pins it present, and
+`Run.valid_input_channel_reader` reads that pin back out, so a proof
+under the ordinary predicate has the reader fact for free.
+`cat_omni_strong_equiv_te` takes `CatSim.cat_launch`, which is one of
+these:
 
 - `bufs = []`: the program writes nothing, so the reader does not matter.
   Give `left; left; reflexivity`.
-- `in_channel_reader inp = true`: give `left; right`.
+- `in_channel_reader inp = true`: give `left; right`, and under
+  `Run.valid_input` that fact is `Run.valid_input_channel_reader`.
 - No reader, and SIGPIPE is fatal (`CatSim.sigpipe_fatal`: the
   disposition is the default and `in_sigmask inp` does not block signal
   13). Each first write kills its process with SIGPIPE, so both runs end
   in the same `KillEv`. Give `right`, the `sigpipe_fatal` fact (under
   `Run.valid_input` the disposition is pinned to the default) and a
   `CatSim.wfirst_ok` fact for each binary: the first write passes
-  `access_ok`.
+  `access_ok`. This case is reachable only under
+  `Run.valid_input_channel_closed`, the launch whose reader has gone:
+  `Run.valid_input` rules it out.
 
 The lemma does not cover a program that writes when the reader is gone
 and signal 13 is blocked or ignored. There the first write returns -EPIPE

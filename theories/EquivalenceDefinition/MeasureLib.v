@@ -2155,12 +2155,11 @@ Qed.
       bounds.
     - [fin_channel_reader] is [true], the launch whose standard output
       is read.  It is the fourth declaration, and [Run.valid_input]
-      constrains it at neither value -- both name a real launch -- so
-      the choice here is arbitrary in the way the environment fields'
-      are rather than forced in the way [fin_abort_terminal]'s is.  A
-      measure statement is about a list of CORES, and the core forgets
-      this field like the others here, so picking either value changes
-      no sum.
+      pins it at that value, so it is forced in the way
+      [fin_abort_terminal] is: [false] would be valid only under
+      [Run.valid_input_channel_closed], which this library's callers
+      do not discharge.  A measure statement is about a list of CORES,
+      and the core forgets this field like the others here.
     - [fin_sigpipe_default] is [true], SIGPIPE at SIG_DFL.
       [Run.valid_input] fixes it, so it is forced in the way
       [fin_abort_terminal] is: [false] would be valid only under

@@ -334,18 +334,18 @@ not apply.
   disposition `execve` preserves (`begin_new_exec` calls
   `flush_signal_handlers` with `force_default = 0`, `fs/exec.c`) — under
   which the same write returns `-EPIPE` and the program runs on. **The
-  assumption that is left is not the disposition but the shape of the
-  reader**: `State.in_channel_reader` is a launch fact with one value for
-  the whole run. Whether `Run.valid_input` should pin it is an open
-  decision of the stream owner
-  (dispatch://OSSV-266/ask/77724e06); today it constrains neither value,
-  so the statements cover both the run whose standard output is read
-  throughout and the run that never had a reader, and
-  `Run.valid_input_channel_closed` and `Run.valid_input_channel_open`
-  name the two readings for whichever way it is answered. A reader that
-  goes away PART WAY through the output is a third thing the model has
-  no term for, and a program whose reader goes away mid-output is
-  outside the model.
+  shape of the reader is declared too, and pinned**:
+  `State.in_channel_reader` is a launch fact with one value for the
+  whole run, and `Run.valid_input` pins it present — the run whose
+  standard output is read throughout — so the ordinary statements are
+  about that launch and no other. The reader-gone launch has its own
+  name, `Run.valid_input_channel_closed`, in the shape
+  `Run.valid_input_abort` has for the abort declaration, and a
+  statement that means both readings asks for
+  `Run.valid_input_channel_either` (the stream owner's answer to
+  dispatch://OSSV-266/ask/77724e06). A reader that goes away PART WAY
+  through the output is a third thing the model has no term for, and a
+  program whose reader goes away mid-output is outside the model.
 - No write to a regular file fails. The model has no `ENOSPC`, `EDQUOT`
   or `EIO` out of the page cache (the write arm of
   `Sys/Fs/ReadWrite.v`). The one failure `write` injects is not a
@@ -540,14 +540,14 @@ equivalence) can be true of the model and false of Linux.
   reader, so a write to a stdout whose reader was gone got a count,
   where Linux raises `SIGPIPE` and kills the process. The model now has
   a death that is not an exit, and the launch says which case it is
-  (`State.ProcInput.in_channel_reader`). `Run.valid_input` constrains
-  that field at neither value, so every statement covers both the run
-  whose standard output is read and the writing end of
-  `prog | head -1`; whether it should instead pin the reader present,
-  with `Run.valid_input_channel_closed` naming the other world, is an
-  open decision of the stream owner
-  (dispatch://OSSV-266/ask/77724e06), and both predicates are written
-  so that either answer is one definition. What is left is NOT the
+  (`State.ProcInput.in_channel_reader`). `Run.valid_input` pins that
+  field present, so every ordinary statement is about the run whose
+  standard output is read; the writing end of `prog | head -1` is
+  `Run.valid_input_channel_closed`, named the way
+  `Run.valid_input_abort` names the aborting launch, and a statement
+  that means both readings asks for `Run.valid_input_channel_either`
+  (the stream owner's answer to dispatch://OSSV-266/ask/77724e06).
+  What is left is NOT the
   SIGPIPE disposition: that was an unstated premise and is now a
   declaration (`State.ProcInput.in_sigpipe_default`, pinned to
   `SIG_DFL` by `Run.valid_input`, with

@@ -53,6 +53,23 @@ Definition w1x_input (reader : bool) : ProcInput :=
     default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom []
     default_kernel default_execfn reader true.
 
+(** THE TWO LAUNCHES, EACH UNDER ITS OWN PREDICATE.  [Run.valid_input]
+    pins the reader PRESENT, so it is the reader launch that it admits
+    and the reader-gone launch asks for [Run.valid_input_channel_closed]
+    by name -- the shape [Run.valid_input_abort] has for the abort
+    declaration.  Every other clause is the same, which is why the
+    reader-gone half is [Checks.Examples.demo_input_valid]'s clauses
+    with the one that differs taken by computation. *)
+Lemma w1x_input_reader_valid : valid_input (w1x_input true).
+Proof. exact demo_input_valid. Qed.
+
+Lemma w1x_input_closed_valid : valid_input_channel_closed (w1x_input false).
+Proof.
+  pose proof demo_input_valid as H. red in H |- *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; try assumption; reflexivity.
+Qed.
+
 (* ========================================================================= *)
 (* The entry: [Checks.Examples.demo_entry_of] the launch, as a record.       *)
 (* ========================================================================= *)
@@ -81,9 +98,12 @@ Qed.
 (** The entry is a VALID one at every valid input, as
     [Checks.Examples.demo_entry_valid_exit0] is for its image: the break
     is the only conjunct that reads the image, and this image's only
-    segment sits in the first page. *)
+    segment sits in the first page.  The premise is
+    [Run.valid_input_channel_either], the predicate that pins neither
+    reader stance, because the entry computation does not read the
+    reader: one lemma then serves both launches below. *)
 Lemma w1x_entry_valid : forall inp,
-  valid_input inp -> valid_entry w1x_image (demo_entry_of inp) inp.
+  valid_input_channel_either inp -> valid_entry w1x_image (demo_entry_of inp) inp.
 Proof.
   intros inp Hvalid.
   red in Hvalid.
@@ -268,17 +288,21 @@ Qed.
     never dies by a signal.
 
     Both launches are VALID inputs at VALID entries -- [demo_entry_of]
-    each launch, by [w1x_entry_valid] -- which is what makes the first
-    half bite under the ordinary quantifier: [Run.valid_input] says
-    nothing of the reader, and it PINS [in_sigpipe_default] to [true]
-    ([Run.valid_input_sigpipe_default]), so the SIG_DFL half of the
-    [sigpipe_fatal] premise the kill path needs costs a caller nothing;
-    the other half is the launch mask, empty here.  Under
-    [Run.valid_input_sigpipe_ignored] the disposition is SIG_IGN instead,
-    and the reader-gone write would return -EPIPE and the program run on,
-    which this pair does not cover. *)
+    each launch, by [w1x_entry_valid] -- and each under ITS OWN
+    predicate, which is the whole point of the pair.  [Run.valid_input]
+    pins the reader PRESENT, so it is the half with a reader that it
+    quantifies over; the reader-gone half asks for
+    [Run.valid_input_channel_closed] by name, and THIS IS A PROOF THAT
+    ASKS FOR THAT WORLD AND PROVES A WHOLE RUN OF IT.  Both predicates
+    pin [in_sigpipe_default] to [true]
+    ([Run.valid_input_sigpipe_default] for the first), so the SIG_DFL
+    half of the [sigpipe_fatal] premise the kill path needs costs a
+    caller nothing; the other half is the launch mask, empty here.
+    Under [Run.valid_input_sigpipe_ignored] the disposition is SIG_IGN
+    instead, and the reader-gone write would return -EPIPE and the
+    program run on, which this pair does not cover. *)
 Example w1x_sigpipe_pair : forall lim,
-  valid_input (w1x_input false) /\ valid_input (w1x_input true)
+  valid_input_channel_closed (w1x_input false) /\ valid_input (w1x_input true)
   /\ valid_entry w1x_image (demo_entry_of (w1x_input false)) (w1x_input false)
   /\ valid_entry w1x_image (demo_entry_of (w1x_input true)) (w1x_input true)
   (* no reader: killed by signal 13 *)
@@ -296,10 +320,14 @@ Example w1x_sigpipe_pair : forall lim,
   /\ ~ dies_by_signal (run w1x_image lim (demo_entry_of (w1x_input true)) (w1x_input true)).
 Proof.
   intros lim.
-  split; [exact demo_input_valid |].
-  split; [exact demo_input_valid |].
-  split; [apply w1x_entry_valid; exact demo_input_valid |].
-  split; [apply w1x_entry_valid; exact demo_input_valid |].
+  split; [exact w1x_input_closed_valid |].
+  split; [exact w1x_input_reader_valid |].
+  split; [apply w1x_entry_valid;
+          exact (valid_input_channel_either_of_valid_input_channel_closed
+                   _ w1x_input_closed_valid) |].
+  split; [apply w1x_entry_valid;
+          exact (valid_input_channel_either_of_valid_input
+                   _ w1x_input_reader_valid) |].
   rewrite !w1x_entry_fields.
   pose proof (fun tr => cat_kill_obs_iff_te w1x_segments 0x100 demo_phdrs
                 w1x_sp w1x_brk w1x_mbase w1x_draw lim (w1x_input false)

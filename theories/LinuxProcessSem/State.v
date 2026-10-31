@@ -6280,17 +6280,15 @@ Record ProcInput := mkProcInput_full {
        finds a reader and the next does not with no close in between,
        which no launch produces.  One run has one answer.
 
-       WHETHER [Run.valid_input] CONSTRAINS IT IS AN OPEN DECISION of
-       the stream owner (dispatch://OSSV-266/ask/77724e06), and BOTH
-       READINGS ARE WRITTEN so that the answer is one definition and
-       not a day's work.  Today the ordinary predicate leaves it free,
-       so every statement quantified over [Run.valid_input] covers both
-       launches: the run whose standard output is read, and the run
-       that is the writing end of `prog | head -1` after `head` has had
-       its line.  [Run.valid_input_channel_closed] is the named other
-       world, in the shape [Run.valid_input_sigpipe_ignored] has, ready
-       for the reading in which the ordinary predicate pins the reader
-       PRESENT and the closed launch is asked for by name.
+       [Run.valid_input] PINS IT PRESENT, the stream owner's answer to
+       dispatch://OSSV-266/ask/77724e06: every statement quantified
+       over the ordinary predicate is about the run whose standard
+       output is read, and the run that is the writing end of
+       `prog | head -1` after `head` has had its line is asked for by
+       name, [Run.valid_input_channel_closed], in the shape
+       [Run.valid_input_abort] has for the abort declaration.
+       [Run.valid_input_channel_either] pins neither reading, for a
+       statement that means both.
 
        WHAT IS NOT OPEN: before this field the write arm ADMITTED a
        byte count for the reader-less launch and let the program run

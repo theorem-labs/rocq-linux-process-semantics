@@ -2792,7 +2792,9 @@ Proof. split; [check_eq | split; [check_eq | vm_compute; reflexivity]]. Qed.
 (** The launch of [demo_input] with THE READER GONE: the far end of
     descriptors 1 and 2 is a pipe or a socket nothing reads any more,
     which is `prog | head -1` once [head] has had its line.  Everything
-    else is [demo_input]'s. *)
+    else is [demo_input]'s.  [Run.valid_input] pins the reader present
+    and so does not admit this launch; [Run.valid_input_channel_closed]
+    is the predicate that names it. *)
 Definition noreader_input : ProcInput :=
   mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
@@ -2801,8 +2803,12 @@ Definition noreader_input : ProcInput :=
 
 (** The same launch again, with SIGPIPE at SIG_IGN: the launcher ran
     `signal(SIGPIPE, SIG_IGN)` before execve and execve kept it
-    ([State.in_sigpipe_default]).  [Run.valid_input] does not admit
-    this one; [Run.valid_input_sigpipe_ignored] does. *)
+    ([State.in_sigpipe_default]).  No named predicate admits this one:
+    [Run.valid_input] and [Run.valid_input_sigpipe_ignored] both pin
+    the reader PRESENT, and [Run.valid_input_channel_closed], which
+    admits the launch above, pins SIGPIPE at SIG_DFL.  The pair below
+    is about what one CALL answers on it, which the check layer judges
+    on a model rather than on a validity premise. *)
 Definition noreader_ignored_input : ProcInput :=
   mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
