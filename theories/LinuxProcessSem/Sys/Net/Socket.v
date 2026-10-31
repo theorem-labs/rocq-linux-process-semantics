@@ -279,6 +279,36 @@ Definition socket_spec (domain type protocol : word) : Sys SyscallEffect :=
                                             beside it is [sock_alloc]'s; see
                                             [socket_alloc_enfile_note] *)
 
+(** [move_addr_to_kernel]'s COPY STEP, zero length included
+    (net/socket.c, [move_addr_to_kernel]).  That function is
+    [if (ulen < 0 || ulen > sizeof(struct sockaddr_storage)) return -EINVAL;
+     if (ulen == 0) return 0;
+     if (copy_from_user(kaddr, uaddr, ulen)) return -EFAULT;],
+    so the ZERO LENGTH RETURNS BEFORE [copy_from_user] RUNS and the
+    pointer is never examined: [connect(fd, p, 0)] cannot be -EFAULT for
+    any [p] at all.
+
+    THE ZERO CASE CANNOT BE LEFT TO [State.copy_bytes_map], which is why
+    this definition exists rather than a bare call.  [State.access_okb a
+    0] is [(0 <=? TASK_SIZE) && (bv_unsigned a <=? TASK_SIZE - 0)],
+    FALSE for every [a] above [State.TASK_SIZE] — the kernel's
+    [__access_ok] says the same, and Linux agrees with it everywhere the
+    zero-length copy is actually attempted (the per-segment
+    [access_ok(iov_base, 0)] of [__import_iovec] is exactly that case).
+    Here it is not attempted, so routing the zero through the pair would
+    answer -EFAULT on a call Linux never faults.
+
+    [bind_spec] below answers its zero length from its own arm, above
+    the copy, because on that path the kernel's buffer stays untouched
+    and [inet_bind_sk]'s 16-byte minimum is the whole answer; it records
+    no ledger either.  [connect]'s zero length has no single answer —
+    -ENOTSOCK on a non-socket descriptor, -EINVAL on a socket — so it
+    passes through this definition and is decided by the arms below the
+    copy, with an empty byte list and an empty ledger. *)
+Definition move_addr_bytes (mp : word -> option byte) (a : word) (len : Z)
+    : option (list byte) :=
+  if Z.eqb len 0 then Some [] else copy_bytes_map mp a len.
+
 (** [bind fd addr addrlen].
 
     net/socket.c [__sys_bind] -> move_addr_to_kernel -> __sys_bind_socket
@@ -929,7 +959,10 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
       if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al) then err_ret EINVAL
       else
       (* THE RANGE TEST COMES FIRST — the same [State.copy_bytes_map]
-         pair [bind_spec] above uses, through the same kernel function.
+         pair [bind_spec] above uses, through the same kernel function,
+         reached through [move_addr_bytes] so that a ZERO length
+         returns the empty address WITHOUT asking the range question,
+         as [move_addr_to_kernel]'s [if (ulen == 0) return 0] does.
          This arm called [State.read_bytes_map] bare before, and that
          walk WRAPS at 2^64 in word arithmetic: an [addrp] in the last
          [al] bytes of the address space read the bytes below the wrap
@@ -942,7 +975,7 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
          Linux answers -EFAULT — and it answers it BEFORE -ENOTSOCK,
          which is why the refused range joins this -EFAULT arm and not
          a later one. *)
-      match copy_bytes_map (in_mem i) addrp al with
+      match move_addr_bytes (in_mem i) addrp al with
       | None => err_ret EFAULT                   (* copy_from_user failed, BEFORE -ENOTSOCK *)
       | Some bs =>
           record_copyins (if Z.eqb al 0 then [] else [(addrp, length bs)])

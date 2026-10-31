@@ -297,8 +297,10 @@ Variable mi_init_brk : word.
     section).  The untrusted search in
     theories/Common/PlacementSearch.v takes its floor as a bare argument
     rather than off a [VmMaps].  The ASan plan checker's placement gate
-    ([Common.AsanCeil.placement_ok]) reads it too, under that checker's
-    named [placement_policy] hypothesis.  The PREDICATE over the value
+    ([Common.AsanCeil.placement_ok]) reads it too; that gate is the
+    theorem [Common.AsanCeil.placement_policy_holds], proved from
+    [Mmap.linux_place], and no longer a hypothesis the checker names.
+    The PREDICATE over the value
     is what [valid_entry] carries — see [valid_mmap_base]. *)
 Variable mi_mmap_base : word.
 
