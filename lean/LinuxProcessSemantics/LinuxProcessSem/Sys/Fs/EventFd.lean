@@ -2,8 +2,7 @@
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall
 import LinuxProcessSemantics.LinuxProcessSem.Sys.Uapi
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
-divergence: bugs/eventfd2-enosys-beside-einval-admits-mixed-runs.md -- inherited -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # LinuxProcessSem.Sys.Fs.EventFd — eventfd2 (19)
 

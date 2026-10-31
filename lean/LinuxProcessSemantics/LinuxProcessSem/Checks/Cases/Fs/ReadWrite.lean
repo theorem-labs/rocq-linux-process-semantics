@@ -3896,16 +3896,14 @@ theorem write_count_bound_declines_on_the_append_kind (o : outcome SyscallEffect
   rw_norm
 
 /-- …and AT the bound none of the three declines: the read-write arm.
-rocq-twin: write_count_bound_declines_on_every_file_kind
-probe: testing/syscall-check/tests/rw_bytes_bound.c#conform -- w-at -/
+rocq-twin: write_count_bound_declines_on_every_file_kind -/
 theorem write_count_at_the_bound_is_judged_on_the_read_write_kind :
     ¬ syscall_spec (write_in 5 near_top (Z_to_bv 64 131072) (mem_z_at near_top)) write_kinds_model
         Unmodeled := by
   rw_refute
 
 /-- …and the append arm.
-rocq-twin: write_count_bound_declines_on_every_file_kind
-probe: testing/syscall-check/tests/rw_bytes_bound.c#conform -- w-at -/
+rocq-twin: write_count_bound_declines_on_every_file_kind -/
 theorem write_count_at_the_bound_is_judged_on_the_append_kind :
     ¬ syscall_spec (write_in 6 near_top (Z_to_bv 64 131072) (mem_z_at near_top)) write_kinds_model
         Unmodeled := by
@@ -6971,7 +6969,12 @@ only narrow what is judged.  The delivery is the channel's, so this is
 the iff on that fixture; the one byte gatherable makes every outcome the
 same one.
 rocq-twin: writev_over_rw_bytes_max_total_is_judged
-probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max -/
+probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max
+THE PROBE LINE ABOVE IS UPSTREAM'S AND IS KEPT BYTE FOR BYTE, and its case
+asks for a decline where this pin states an answer: the port to `f1006fe8`
+removed the `wide` guard, so the raw count 2^32 + 1 narrows to 1 and the call
+is judged.  The recording is a recording of the model that carried that guard,
+not of Linux; gaps-Z3 row Z3-8 holds the two answers. -/
 theorem writev_over_rw_bytes_max_total_is_judged (o : outcome SyscallEffect) :
     syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
                    (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model o ↔
@@ -6983,8 +6986,7 @@ theorem writev_over_rw_bytes_max_total_is_judged (o : outcome SyscallEffect) :
   rw_norm
 
 /-- …the one byte delivered, the ledger the descriptor read and the byte.
-rocq-twin: writev_over_rw_bytes_max_total_is_judged
-probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max -/
+rocq-twin: writev_over_rw_bytes_max_total_is_judged -/
 theorem writev_over_rw_bytes_max_delivers_one_byte :
     syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
                    (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model
@@ -6995,8 +6997,7 @@ theorem writev_over_rw_bytes_max_delivers_one_byte :
 /-- THE NEGATIVE HALF: qemu-user's raw-count -EINVAL is REJECTED here
 rather than declined, which is what an answered arm buys over a
 fail-closed one.
-rocq-twin: writev_over_rw_bytes_max_total_is_judged
-probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max -/
+rocq-twin: writev_over_rw_bytes_max_total_is_judged -/
 theorem writev_over_rw_bytes_max_einval_rejected (m' : Model) (evs : List event) :
     ¬ syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
                      (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model
@@ -7012,8 +7013,7 @@ theorem writev_over_rw_bytes_max_einval_rejected (m' : Model) (evs : List event)
 /-- …and the decline this twin used to make at that raw count is
 refused: the high bits do not change whether the model can describe the
 call.
-rocq-twin: writev_over_rw_bytes_max_total_is_judged
-probe: testing/syscall-check/tests/rw_bytes_bound.c#fail-closed --expect-unmodeled writev -- wv-over-max -/
+rocq-twin: writev_over_rw_bytes_max_total_is_judged -/
 theorem writev_over_rw_bytes_max_decline_refuted :
     ¬ syscall_spec (writev_in 1 8192 (Z_to_bv 64 (2 ^ 32 + 1))
                      (mem_iov_pair 4096 (Z_to_bv 64 (rw_bytes_max + 1)) 0 0)) read_model Unmodeled := by
