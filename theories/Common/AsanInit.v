@@ -103,7 +103,7 @@ Section Init.
       only by [atrandom_zero_ok] / [init_kn_zero_ok] / [init_cs_ok_zero] — see the Common README. *)
   Hypothesis Hzr : AsanCeil.zero_random_draw (ed_random rdraw).
   (* The table hypothesis the launch's extra reservations need is
-     declared beside [resx0] below, not here: a Section hypothesis
+     declared below, beside the layout lemmas that use it, not here: a Section hypothesis
      naming [A] that is declared before the layout lemmas is
      discharged into them too, and their callers then carry an
      argument they have no reason to. *)
@@ -144,8 +144,9 @@ Section Init.
   (** THE RUN'S ALLOCATION CEILING, the checker's grant/stack boundary.
       [APS.co_ceil] asks for [page_round_down_Z (alloc_top (m_vmmaps model0))];
       [init_model] copies the run's [sp] into [vm_init_sp], and
-      [State.alloc_top h = bv_unsigned (vm_init_sp h) - stack_max_size], so this
-      IS that number ([ceil_eq_model] below).  It is NOT
+      [State.alloc_top h = bv_unsigned (vm_init_sp h) - stack_max_size], so the
+      definition below IS that number, by conversion rather than by a lemma.
+      It is NOT
       [AsanCeil.alloc_ceiling = 0x7fff7f800000]: that constant is only its lower
       end, reached when [sp = State.sp_window_lo]. *)
   Definition CEIL : Z := page_round_down_Z (usp - stack_max_size).
