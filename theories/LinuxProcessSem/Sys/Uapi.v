@@ -252,6 +252,7 @@ Definition urandom_path : path :=
     generates only unistd_32.h and unistd_64.h — so every constant here
     is the asm-generic one (Linux v6.18.46, commit 1f99e9ab748f). *)
 Definition AF_UNSPEC : Z := 0%Z.
+Definition AF_UNIX   : Z := 1%Z.    (* = AF_LOCAL, include/linux/socket.h *)
 Definition AF_INET   : Z := 2%Z.
 Definition NPROTO    : Z := 46%Z.    (* = AF_MAX, include/linux/socket.h *)
 
@@ -331,6 +332,16 @@ Definition SOL_SOCKET : Z := 1%Z.
 Definition SHUT_RD    : Z := 0%Z.
 Definition SHUT_WR    : Z := 1%Z.
 Definition SHUT_RDWR  : Z := 2%Z.
+
+(** The two SOL_SOCKET options the stream pair answers, from
+    include/uapi/asm-generic/socket.h, which riscv64 uses unchanged. *)
+Definition SO_SNDBUF : Z := 7%Z.
+Definition SO_RCVBUF : Z := 8%Z.
+
+(** [MSG_DONTWAIT] (include/linux/socket.h): a per-call O_NONBLOCK.
+    [__sys_sendto] and [__sys_recvfrom] OR it in themselves when the
+    file has O_NONBLOCK, so the protocol sees one flag either way. *)
+Definition MSG_DONTWAIT : Z := 64%Z.
 
 Definition SEEK_SET : Z := 0%Z.
 Definition SEEK_CUR : Z := 1%Z.

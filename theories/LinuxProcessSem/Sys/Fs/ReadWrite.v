@@ -371,6 +371,92 @@ Definition read_urandom (buf count : word) (i : SyscallInput) (m : Model)
       end
   end.
 
+(** A READ OF A STREAM-PAIR END, shared by [read_spec],
+    [Net.Socket.recvfrom_spec] and, through [stream_read_empty], by
+    [readv_imported]'s stream arm.  [fd] holds the end [(id, side)],
+    whose state is [st]; [nonblock] is whether the call may not wait --
+    the file's O_NONBLOCK, or a recvfrom's own MSG_DONTWAIT, which
+    [__sys_recvfrom] and [sock_read_iter] turn into the same flag.  The
+    caller has already made the checks that come before the protocol:
+    [vfs_read]'s [access_ok] for read(2), [import_ubuf]'s for recvfrom,
+    and [sock_read_iter]'s zero count.
+
+    Everything below is [unix_stream_read_generic] (net/unix/af_unix.c,
+    Linux v6.18.46), in its order.
+
+    - BYTES QUEUED: the reader takes [min count queued] off the front,
+      DETERMINISTICALLY.  The do-while walks the receive queue skb by
+      skb, copying [min (unix_skb_len skb) size] from each and unlinking
+      each skb it empties, and leaves only when [size] reaches 0 or the
+      queue runs dry; it breaks between skbs only when credentials
+      differ ([unix_skb_scm_eq]), which needs SO_PASSCRED, or for an
+      SCM_RIGHTS message, which needs [sendmsg] -- neither of which any
+      modeled call can set up.  So a short read is the queue running
+      out, never a choice, and the count is [State.pipe_take]'s minimum.
+      A destination that cannot take the first byte is -EFAULT with the
+      queue untouched ([unix_stream_read_actor] fails before
+      [UNIXCB(skb).consumed] moves); a partially writable one declines,
+      as on every kind that copies (see [readv_imported]'s note).
+    - THE QUEUE EMPTY, in the order "POSIX 1003.1g mandates": a pending
+      [sk_err] first -- [sock_error] reports ECONNRESET and clears it --
+      then RCV_SHUTDOWN, which is end of file, 0; then, when the call may
+      not wait, -EAGAIN ([timeo] is 0, so [if (!timeo)] breaks with it).
+    - THE QUEUE EMPTY, THE PEER OPEN, AND A BLOCKING CALL: DECLINED,
+      DELIBERATELY.  Linux sleeps in [unix_stream_data_wait] until the
+      peer writes or shuts down, and the peer is this same process, which
+      has no second thread: the read never returns.  That is a run that
+      cannot progress, and the model declines it rather than represent
+      it, so a target that can reach this state is OUTSIDE what these
+      rules cover.  Two other answers were weighed and refused.  A choice
+      that includes "some bytes arrive" is UNSOUND: it replaces a real
+      deadlock with successors that all make progress, so a run that
+      hangs on Linux would have only terminating executions here, and a
+      termination statement would be provable for it.  A state with no
+      transition at all would be sound, but it
+      would make [Checks.Progress.receptive] false -- every state admits
+      an outcome -- and 37 of the 89 proof trees published on
+      oss-verify-proofs-internal's ossv/recipes use that theorem
+      directly (the LPSREV owner's decision, 2026-10-31 20:50Z, on
+      dispatch://OSSV-287).  Declining keeps the protection: the state
+      is unmodeled, so no termination statement can be proved through
+      it.  And it costs the cURL targets this was written for nothing,
+      because none of them makes a blocking call on a pair: the harness
+      sets its end non-blocking when it creates the pair (curl-fuzzer
+      de8de30, proto_fuzzer/mock_server.cc:73-74), and curl sets its own
+      end non-blocking in [cf_socket_open] before any I/O (curl
+      lib/cf-socket.c:1378).  If a later target does reach it, this
+      decline is what says so. *)
+Definition stream_read_empty (fd id : word) (side : bool) (st : StreamEnd)
+    (nonblock : bool) (m : Model) : Sys SyscallEffect :=
+  if se_err st then
+    set_fds (fd_insert (m_fds m) fd (FdStream id side (se_set_err st false))) ;;
+    err_ret ECONNRESET                  (* [sock_error]: reported once, then cleared *)
+  else if se_shut_rd st then ret_only (Z_to_bv 64 0)   (* RCV_SHUTDOWN: end of file *)
+  else if nonblock then err_ret EAGAIN                 (* [if (!timeo)] *)
+  else unmodeled.                       (* would sleep forever: see above *)
+
+Definition stream_read (fd id : word) (side : bool) (st : StreamEnd)
+    (nonblock : bool) (buf count : word) (i : SyscallInput) (m : Model)
+    : Sys SyscallEffect :=
+  match se_rx st with
+  | [] => stream_read_empty fd id side st nonblock m
+  | q =>
+      let del := pipe_take q (rw_count_clamp count) in
+      match read_bytes_map (in_wmem i) buf (len_word del) with
+      | None =>
+          match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+          | None => err_ret EFAULT      (* not even the first byte lands: queue untouched *)
+          | Some _ => unmodeled         (* partially writable destination: fail closed *)
+          end
+      | Some _ =>
+          set_fds (fd_insert (m_fds m) fd
+                     (FdStream id side (se_set_rx st (skipn (length del) q)))) ;;
+          pure (mkEffect (len_word del) (delivered_writes buf del) [])
+          (* no trace events: the bytes are internal to the process, as a
+             pipe's are *)
+      end
+  end.
+
 (** Neither this spec nor [write_spec] has an -EINTR outcome, so an
     interrupted transfer is REJECTED rather than declined. *)
 Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
@@ -753,6 +839,17 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
                  queue [word_to_nat count] would have left *)
           end
       end
+  | Some (FdStream id side st) =>
+      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+        (* [vfs_read]'s [access_ok] on the count the call NAMED, ahead of
+           [sock_read_iter], as on every kind; FMODE_READ is set on every
+           socket file ([sock_alloc_file] opens O_RDWR), so there is no
+           -EBADF to decide first *)
+      else if w_is0 count then ret_only (Z_to_bv 64 0)
+        (* [sock_read_iter]'s "Match SYS5 behaviour": a zero-length read
+           of a socket is 0 before the protocol is reached, whatever the
+           queue holds -- unlike recvfrom, which has no such test *)
+      else stream_read fd id side st (se_nonblock st) buf count i m
   end.
 
 (** [write fd buf count].
@@ -1040,6 +1137,101 @@ Definition raise_sigpipe (m : Model) : Model :=
 Definition sigpipe_write : Sys SyscallEffect :=
   modify raise_sigpipe ;;
   err_ret EPIPE.
+
+(** A SEND THROUGH A STREAM-PAIR END, shared by [write_spec],
+    [writev_spec] and [Net.Socket.sendto_spec].  The end is
+    [(id, side)], whose state is [st]; the bytes go to its PEER's queue.
+    [nonblock] is whether the call may not wait (the file's O_NONBLOCK,
+    or a sendto's own MSG_DONTWAIT); [nosignal] is a sendto's
+    MSG_NOSIGNAL, and is [false] for write(2) and writev(2), which cannot
+    set [IOCB_NOSIGNAL].  [n] is the length of the send, already clamped
+    at MAX_RW_COUNT as every entry point clamps it; [src c] is the
+    readable prefix of the first [c] source bytes, and [ledger k] the
+    user ranges a copy of the first [k] reads -- one buffer for write and
+    sendto ([stream_write]), the iovecs in order for writev.  The caller
+    has already made the checks before the protocol: [vfs_write]'s
+    [access_ok], [__import_iovec]'s, or [import_ubuf]'s.
+
+    Everything below is [unix_stream_sendmsg] (net/unix/af_unix.c, Linux
+    v6.18.46), in its order.
+
+    - SEND_SHUTDOWN FIRST, before the length is looked at: -EPIPE, and
+      SIGPIPE unless MSG_NOSIGNAL ([out_pipe]: [if (!sent && !(msg_flags
+      & MSG_NOSIGNAL)) send_sig(SIGPIPE, ...)]).  So a ZERO-length write
+      on a shut end is -EPIPE and a signal, not 0 -- the opposite of a
+      pipe, whose [anon_pipe_write] returns 0 before it looks at the
+      readers.  This one test also answers for a peer that has CLOSED or
+      shut its read side: [unix_release_sock] sets [SHUTDOWN_MASK] on the
+      survivor and [unix_shutdown] mirrors a SHUT_RD as SEND_SHUTDOWN
+      here, so in this one-thread model the loop's own
+      [SOCK_DEAD || RCV_SHUTDOWN] test on the peer is never the one that
+      fires.  A peer that is gone while this end's bit is clear is a
+      state no modeled call builds, and declines.
+    - A ZERO length past that returns 0: the [while (sent < len)] loop
+      never runs.
+    - THE QUEUE CERTAINLY FULL ([State.stream_send_full]): -EAGAIN when
+      the call may not wait, decided before any byte is copied, as
+      [sock_alloc_send_pskb] decides it; a blocking call sleeps for room
+      only the peer -- this same thread -- could make, and declines, as
+      the blocking read of an empty queue does (see [stream_read]).
+    - THE BYTES THIS SEND MAY MOVE MUST BE READABLE, or the arm declines,
+      as the pipe's does: a fault inside [skb_copy_datagram_from_iter]
+      frees that skb and returns what earlier skbs sent, a count that
+      turns on skb boundaries this model does not carry.  Only the bytes
+      [State.stream_send_ok] lets move are asked for; a fault past them
+      is one Linux never reaches.
+    - OTHERWISE, A CALL THAT MAY NOT WAIT moves any [k] that
+      [State.stream_send_ok] allows, appended to the peer's queue; and
+      when some data is already queued ([State.stream_send_may_refuse])
+      it may instead be -EAGAIN.  An empty queue is never refused.
+    - A BLOCKING CALL is answered only where it cannot sleep
+      ([State.stream_send_fits_one]): it moves all [n] bytes.  Anywhere
+      else it might sleep forever, and declines.
+
+    No trace events, as for a pipe.  The bytes that moved go in the
+    copy-in ledger: they are the ones [skb_copy_datagram_from_iter]
+    read. *)
+Definition stream_send (id : word) (side : bool) (st : StreamEnd)
+    (nonblock nosignal : bool) (n : Z) (src : Z -> list byte)
+    (ledger : nat -> list (word * nat)) (m : Model) : Sys SyscallEffect :=
+  if se_shut_wr st then (if nosignal then err_ret EPIPE else sigpipe_write)
+  else if Z.eqb n 0 then ret_only (Z_to_bv 64 0)
+  else
+  match stream_peer (m_fds m) id side with
+  | None => unmodeled          (* peer gone, this end's SEND_SHUTDOWN clear: not built *)
+  | Some (pfd, pst) =>
+      let q := se_rx_len pst in
+      let s := se_sndbuf st in
+      if stream_send_full q s then (if nonblock then err_ret EAGAIN else unmodeled)
+        (* [sock_alloc_send_pskb] refuses before a byte is copied *)
+      else
+      (* THE MOST THIS SEND CAN MOVE, by [State.stream_send_ok]'s bound.
+         Only those bytes are ever copied, so only they need to be
+         readable: a fault past them is one Linux never reaches *)
+      let bs := src (Z.min n (s + s / 2 - q)) in
+      if negb (Z.eqb (Z.of_nat (length bs)) (Z.min n (s + s / 2 - q))) then unmodeled
+        (* the bytes this send may move are not all readable: fail closed *)
+      else
+      let send (k : Z) : Sys SyscallEffect :=
+        set_fds (fd_insert (m_fds m) pfd
+                   (FdStream id (negb side)
+                      (se_set_rx pst (se_rx pst ++ firstn (Z.to_nat k) bs)))) ;;
+        record_copyins (ledger (Z.to_nat k)) (ret_only (Z_to_bv 64 k)) in
+      if nonblock then
+        let moved := (k <- choose (fun k => stream_send_ok q s n k) ;; send k) in
+        if stream_send_may_refuse q then alt (err_ret EAGAIN) moved else moved
+      else if stream_send_fits_one q s n then send n
+      else unmodeled               (* a blocking send that may sleep forever *)
+  end.
+
+(** [stream_send] for one flat buffer: write(2) and sendto. *)
+Definition stream_write (id : word) (side : bool) (st : StreamEnd)
+    (nonblock nosignal : bool) (buf count : word) (i : SyscallInput) (m : Model)
+    : Sys SyscallEffect :=
+  stream_send id side st nonblock nosignal (rw_count_clamp count)
+    (fun c => readable_bytes (in_mem i) buf (Z_to_bv 64 c))
+    (fun k => [(buf, k)]) m.
+
 (** The faulting-source post-state of a write whose bytes would have
     landed at [off] in [p]: the file extended to [off], the descriptor
     untouched, or [None] where the hole is one the model will not build.
@@ -1543,6 +1735,13 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            The whole source IS read, so the range goes in the copy-in
            ledger exactly as the channel and file arms record theirs *)
       end
+  | Some (FdStream id side st) =>
+      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+        (* [vfs_write]'s [access_ok] on the count the call NAMED, after
+           FMODE_WRITE (set: [sock_alloc_file] opens O_RDWR) and ahead of
+           [sock_write_iter] *)
+      else stream_write id side st (se_nonblock st) false buf count i m
+        (* write(2) cannot set [IOCB_NOSIGNAL], so SIGPIPE is raised *)
   end.
 
 (** * pread64 (67) and pwrite64 (68) — a transfer at a POSITION THE CALL NAMES
@@ -1671,6 +1870,8 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
                                                     it is -EBADF *)
   | Some (FdSocket _) => err_ret ESPIPE          (* [stream_open], from [sock_alloc_file] in
                                                     net/socket.c *)
+  | Some (FdStream _ _ _) => err_ret ESPIPE      (* a socket file too: the same [stream_open] in
+                                                    [sock_alloc_file] *)
   | Some (FdFileW _ _) => err_ret EBADF          (* a regular file keeps FMODE_PREAD, so this
                                                     reaches [vfs_read] and fails its FMODE_READ
                                                     test: fs/read_write.c *)
@@ -1828,6 +2029,9 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
                                                     net/socket.c.  The -EPIPE-and-SIGPIPE that
                                                     [write_spec]'s socket arm answers is
                                                     unreachable through pwrite *)
+  | Some (FdStream _ _ _) => err_ret ESPIPE      (* a socket file: [stream_open] in
+                                                    [sock_alloc_file]; so no -EPIPE and no
+                                                    SIGPIPE through pwrite either *)
   | Some (FdFile _ _) => err_ret EBADF           (* fd open read-only: [vfs_write]'s FMODE_WRITE
                                                     test, fs/read_write.c *)
   | Some FdUrandom => err_ret EBADF             (* FMODE_PWRITE is set on the device, so this
@@ -2280,6 +2484,27 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
                  argument that makes the scalar arm deterministic is
                  stated per transfer, not per vector.  Fail closed *)
         end)
+  | Some (FdStream id side st) =>
+      record_copyins
+        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+      (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
+      | ImpFault => err_ret EFAULT
+      | ImpInval => err_ret EINVAL
+      | ImpOk iovs0 =>
+          if Z.eqb (iovs_total (cap_iovecs iovs0)) 0 then ret_only (Z_to_bv 64 0)
+            (* zero aggregate: [vfs_writev] returns at [if (!tot_len) goto out]
+               before [sock_write_iter], so even a shut end answers 0 here,
+               where a zero-length write(2) reaches [unix_stream_sendmsg]
+               and its -EPIPE *)
+          else stream_send id side st (se_nonblock st) false
+                 (iovs_total (cap_iovecs iovs0))
+                 (fun c => firstn (Z.to_nat c) (writev_gathered (in_mem i) iovs0))
+                 (iov_prefix_accesses (cap_iovecs iovs0)) m
+            (* [unix_stream_sendmsg] sees an [iov_iter] and its count and
+               nothing else, so a writev is the send of the same total;
+               the ledger is the iovecs' prefix in order, as
+               [writev_ledger] records a channel's *)
+      end)
   end.
 
 
@@ -2364,10 +2589,13 @@ Inductive ReadableFd : Type :=
   | RdDevNull
   (** /dev/null opened for reading.  It carries nothing because the
       read arm consults nothing: [read_iter_null] returns 0. *)
-  | RdUrandom.
+  | RdUrandom
   (** /dev/urandom, which is only ever open for reading.  It carries
       nothing because the stream it would read is the model's
       ([State.m_urandom]), not the descriptor's. *)
+  | RdStream (id : word) (side : bool) (st : StreamEnd).
+  (** A stream-pair end ([State.FdStream]), which carries its own
+      receive queue, so the read arm needs the end itself. *)
 
 (** [FMODE_READ] (fs/read_write.c [vfs_readv]'s first test, v6.18.46):
     an fd not open for reading is [-EBADF], decided BEFORE the iovec
@@ -2420,6 +2648,10 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
   | FdUrandom => Some RdUrandom
     (* opened O_RDONLY by construction, so FMODE_READ is set on every
        descriptor of the kind *)
+  | FdStream id side st => Some (RdStream id side st)
+    (* a socket file: [sock_alloc_file] opens it O_RDWR, so FMODE_READ
+       is set, and turning it away here would be [RdSocket]'s false
+       -EBADF all over again *)
   end.
 
 (** Linux keeps eight iovecs on the syscall stack ([UIO_FASTIOV],
@@ -2612,6 +2844,30 @@ Definition readv_imported (fd : word) (r : ReadableFd)
           end
       | SkReset _ _ => ret_only (Z_to_bv 64 0)  (* error already delivered: reads as EOF *)
       | _ => err_ret ENOTCONN                 (* fresh, bound or listening *)
+      end
+  | RdStream id side st =>
+      (* [stream_read] over the scatter.  [unix_stream_read_generic]
+         sees an [iov_iter] and its total and nothing else, so a readv
+         takes exactly what a read of the same total takes, and the
+         empty-queue answers are [stream_read_empty]'s, the deliberate
+         decline included.  [sock_read_iter] is the entry, with
+         O_NONBLOCK as MSG_DONTWAIT; the zero aggregate above is
+         [vfs_readv]'s own early 0, ahead of it *)
+      match se_rx st with
+      | [] => stream_read_empty fd id side st (se_nonblock st) m
+      | q =>
+          let del := pipe_take q total in
+          match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
+          | None => err_ret EFAULT        (* first delivered byte unwritable: queue untouched *)
+          | Some _ =>
+              match scatter_iovecs (in_wmem i) iovs del with
+              | None => readv_buf_gap     (* writable prefix, unwritable tail: fail closed *)
+              | Some writes =>
+                  set_fds (fd_insert (m_fds m) fd
+                             (FdStream id side (se_set_rx st (skipn (length del) q)))) ;;
+                  pure (mkEffect (len_word del) writes [])
+              end
+          end
       end
   | RdPipe _ => readv_buf_gap
       (* VECTORED PIPE READS ARE UNMODELED, the mirror of [writev_spec]'s
@@ -2849,6 +3105,8 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                                                     [whence <= SEEK_MAX] BEFORE calling
                                                     vfs_llseek, so [lseek(sockfd, 0, 99)] is
                                                     -EINVAL, not -ESPIPE *)
+      | FdStream _ _ _ => err_ret ESPIPE        (* a socket file: the [FdSocket] argument
+                                                    above, word for word *)
       | FdPipe _ _ => err_ret ESPIPE             (* a real pipe, and the reason channels answer this.
                                                     The deciding test is [FMODE_LSEEK], not a null
                                                     [.llseek] read directly: [vfs_llseek]

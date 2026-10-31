@@ -237,6 +237,10 @@ Fixpoint fd_names_path (fds : list (word * FdEntry)) (p : path) : bool :=
        so no descriptor of this kind names a path [unlinkat] can reach *)
   | (_, FdUrandom) :: r => fd_names_path r p
     (* the same for /dev/urandom, for the same reason *)
+  | (_, FdStream _ _ _) :: r => fd_names_path r p
+    (* exact: a [socketpair] end is a sockfs inode made by
+       [sock_alloc_file]'s [alloc_file_pseudo], unbound, so it names no
+       path at all *)
   end.
 
 (** unlinkat's injectable failures: environment conditions the model does

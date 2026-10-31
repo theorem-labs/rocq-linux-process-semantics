@@ -191,6 +191,13 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
   | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _)
   | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
   | Some (FdSocket _)
+  (* A STREAM-PAIR END IS A SOCKET FILE TOO, and reaches the same
+     [sock_ioctl] default arm: [sock_do_ioctl] calls [unix_ioctl]
+     (net/unix/af_unix.c, v6.18.46), whose switch knows SIOCOUTQ,
+     SIOCINQ, SIOCUNIXFILE and SIOCATMARK -- none of them among the eight
+     of [tty_only_request] -- and answers the rest -ENOIOCTLCMD, which
+     [is_socket_ioctl_cmd] then turns into -ENOTTY exactly as for TCP *)
+  | Some (FdStream _ _ _)
   (* A PIPE END TAKES THE SAME ANSWER, and this is the one fd kind for
      which the header's argument was already written out: [pipe_ioctl]
      (fs/pipe.c:619) answers -ENOIOCTLCMD from its default arm (:653-654),

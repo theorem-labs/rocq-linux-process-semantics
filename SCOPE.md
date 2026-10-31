@@ -23,7 +23,12 @@ now. The model does not check claims about them.
 Each configuration choice that the model fixes is an assumption about the
 Linux system. "Assumptions that the model does not check" below lists
 them; `CONFIG_EVENTFD=y` is one, and `eventfd2` therefore answers
-`-EINVAL` for a refused flag word and never `-ENOSYS`.
+`-EINVAL` for a refused flag word and never `-ENOSYS`. `CONFIG_UNIX=y`
+is another: `socketpair(AF_UNIX, SOCK_STREAM, 0)` succeeds only on a
+kernel with AF_UNIX registered. The riscv64 defconfig gets it from
+`CONFIG_NET_9P_FD`, which has `imply UNIX` (`net/9p/Kconfig`); the
+generated `.config` has `CONFIG_UNIX=y` and `CONFIG_AF_UNIX_OOB=y`
+(dispatch://OSSV-287/artifact/skb-sizes-md).
 
 ## Where QEMU user mode differs
 
@@ -276,9 +281,13 @@ three rules are `randomize_stack_top` and `setup_arg_pages`
 The launch's own facts are therefore premises of each statement:
 whether the launch randomises, the `stack_guard_gap` boot parameter,
 `vm.mmap_rnd_bits`, `CONFIG_RSEQ`, the vector unit's `VLENB`, the
-machine's four cache leaves and which vDSO image the build carries.
-They are fields of `State.KernelBuild`, which is part of the input, so
-both binaries of a pair are launched on one machine by one launcher.
+machine's four cache leaves, which vDSO image the build carries, and
+the socket-buffer numbers: `sizeof(struct sk_buff)` and the
+`net.core.wmem_default`, `rmem_default`, `wmem_max` and `rmem_max`
+sysctls. They are fields of `State.KernelBuild`, which is part of the
+input, so both binaries of a pair are launched on one machine by one
+launcher. A build whose `struct sk_buff` is larger than 1 KiB is outside
+the model (`State.skb_head_bytes`).
 
 These cases stay outside the model:
 
@@ -331,6 +340,15 @@ not apply.
   `Sys/Kernel/Exit.v`). `execve` does not reap a child in Linux, so a
   launcher that forks a grandchild, or attaches a tracee, before it
   execs the image makes this assumption false.
+- An in-process stream pair (`socketpair(AF_UNIX, SOCK_STREAM, 0)`,
+  `State.FdStream`) is used by this one thread only. Both ends are in
+  this process and no modeled call shares one: `dup`, `dup3`, `F_DUPFD`
+  and a `clone` holding one are declined, and `sendmsg` on one is
+  declined, so no descriptor travels by `SCM_RIGHTS`. A blocking read of
+  an empty queue whose peer is open, and a blocking send that might
+  wait for room, are declined: on Linux such a call never returns,
+  because the only task that could act on the peer is the one that
+  waits. A program that reaches either is outside the model.
 - The launch left `SIGPIPE` at its default disposition, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises

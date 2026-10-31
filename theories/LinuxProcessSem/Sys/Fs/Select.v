@@ -405,9 +405,143 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                blocking [random_fops] is the table that does — so the
                answer is [DEFAULT_POLLMASK] and would be [true].  Not
                written; declined. *)
+            | Some (FdStream _ _ _) => false
+            (* NOT CONSTANT: [unix_poll] reads the end's queues and
+               shutdown bits.  It is answered, but per descriptor, by
+               [select_fd_bits] below rather than by this predicate *)
             end
        else true)
       && bits_all_pollable fds z k'
+  end.
+
+(** The [EPOLL*] bits (include/uapi/linux/eventpoll.h), which on riscv64
+    coincide with the [POLL*] bits of include/uapi/asm-generic/poll.h, so
+    [mangle_poll] and [demangle_poll] are the identity on every one of
+    them. *)
+Definition EPOLLIN : Z := 1.
+Definition EPOLLPRI : Z := 2.
+Definition EPOLLOUT : Z := 4.
+Definition EPOLLERR : Z := 8.
+Definition EPOLLHUP : Z := 16.
+Definition EPOLLRDNORM : Z := 64.
+Definition EPOLLRDBAND : Z := 128.
+Definition EPOLLWRNORM : Z := 256.
+Definition EPOLLWRBAND : Z := 512.
+Definition EPOLLRDHUP : Z := 8192.
+
+(** What [do_select] (fs/select.c, Linux v6.18.46) counts as readable,
+    writable and exceptional in a [vfs_poll] mask. *)
+Definition POLLIN_SET : Z :=
+  Z.lor EPOLLRDNORM (Z.lor EPOLLRDBAND (Z.lor EPOLLIN (Z.lor EPOLLHUP EPOLLERR))).
+Definition POLLOUT_SET : Z :=
+  Z.lor EPOLLWRBAND (Z.lor EPOLLWRNORM (Z.lor EPOLLOUT EPOLLERR)).
+Definition POLLEX_SET : Z := EPOLLPRI.
+
+(** [unix_poll] on the stream-pair end [(id, side)] whose state is [st]
+    (net/unix/af_unix.c, Linux v6.18.46), reached through [sock_poll],
+    which adds nothing: its [POLL_BUSY_LOOP] needs [sk_ll_usec], which is
+    0 unless SO_BUSY_POLL or the [net.core.busy_read] sysctl sets it.
+
+    Returned as a PAIR [(lo, hi)]: the mask with the three write bits
+    clear and with them set as [unix_writable] may decide.  Every other
+    bit is a function of the end's state and is the same in both:
+
+    - EPOLLERR for a pending [sk_err] ([se_err]);
+    - EPOLLHUP when both shutdown bits are set ([shutdown ==
+      SHUTDOWN_MASK]).  The other EPOLLHUP source, [sk_state ==
+      TCP_CLOSE], never fires on a live pair end: [unix_socketpair] sets
+      both TCP_ESTABLISHED and only the closing socket's own
+      [unix_release_sock] moves it;
+    - EPOLLRDHUP | EPOLLIN | EPOLLRDNORM for RCV_SHUTDOWN;
+    - EPOLLIN | EPOLLRDNORM for a non-empty receive queue.
+      [sk_is_readable] adds nothing: it is [prot->sock_is_readable],
+      which only a BPF sockmap installs.  EPOLLPRI needs a MSG_OOB skb,
+      and no modeled call sends one.
+
+    WRITABILITY is [unix_writable]: [(refcount_read(&sk_wmem_alloc) << 2)
+    <= sk_sndbuf], where the refcount is 1 plus the TRUESIZE of every skb
+    this end has queued on the peer.  With [q] bytes queued there and [s]
+    this end's [sk_sndbuf]: the truesize sum is 0 exactly when [q] is
+    ([State.stream_send_may_refuse]'s argument), so at [q = 0] the answer
+    is [4 <= s]; the sum is at least [q], so [s < 4 * (q + 1)] is
+    certainly not writable; and in between the answer turns on truesize,
+    which the model does not carry -- [lo] and [hi] then differ.  A peer
+    that has closed purged its queue and so freed this end's skbs: [q] is
+    0.  POLLOUT is set even after the peer shut down, as the kernel's own
+    comment says ("This prevents stuck sockets"). *)
+Definition stream_poll_mask (fds : list (word * FdEntry)) (id : word)
+    (side : bool) (st : StreamEnd) : Z * Z :=
+  let base :=
+    Z.lor (if se_err st then EPOLLERR else 0)
+   (Z.lor (if (se_shut_rd st && se_shut_wr st)%bool then EPOLLHUP else 0)
+   (Z.lor (if se_shut_rd st then Z.lor EPOLLRDHUP (Z.lor EPOLLIN EPOLLRDNORM) else 0)
+          (match se_rx st with [] => 0 | _ => Z.lor EPOLLIN EPOLLRDNORM end))) in
+  let w := Z.lor EPOLLOUT (Z.lor EPOLLWRNORM EPOLLWRBAND) in
+  let q := match stream_peer fds id side with
+           | None => 0%Z
+           | Some (_, pst) => se_rx_len pst
+           end in
+  let s := se_sndbuf st in
+  if Z.eqb q 0 then (if (4 <=? s)%Z then (Z.lor base w, Z.lor base w) else (base, base))
+  else if (s <? 4 * (q + 1))%Z then (base, base)
+  else (base, Z.lor base w).
+
+(** What [do_select] reports for one descriptor [fd] asked about in the
+    sets [i], [o] and [x]: the three result bits, or [None] where the
+    model declines.
+
+    A STREAM-PAIR END is answered from [stream_poll_mask], and declined
+    only when the undecided write bits would change a result bit the
+    call ASKED FOR -- so a pair end polled for reading alone is always
+    answered, and one polled for writing is declined only in the band
+    where [unix_writable] turns on truesize.  Every other kind is
+    answered exactly when [bits_all_pollable] calls its mask constant:
+    [DEFAULT_POLLMASK] meets [POLLIN_SET] and [POLLOUT_SET] and misses
+    [POLLEX_SET].  The [_] arm hands every other constructor to that
+    enumerated predicate, so a new kind is declined there, never
+    answered here. *)
+Definition select_fd_bits (fds : list (word * FdEntry)) (fd : word)
+    (i o x : bool) : option (bool * bool * bool) :=
+  match fd_lookup fds fd with
+  | Some (FdStream id side st) =>
+      let pick (mk : Z) : bool * bool * bool :=
+        ((i && negb (Z.eqb (Z.land mk POLLIN_SET) 0))%bool,
+         (o && negb (Z.eqb (Z.land mk POLLOUT_SET) 0))%bool,
+         (x && negb (Z.eqb (Z.land mk POLLEX_SET) 0))%bool) in
+      let '(lo, hi) := stream_poll_mask fds id side st in
+      let '(a, b, c) := pick lo in
+      let '(a', b', c') := pick hi in
+      if (Bool.eqb a a' && Bool.eqb b b' && Bool.eqb c c')%bool
+      then Some (a, b, c) else None
+  | _ =>
+      if bits_all_pollable fds (Z.shiftl 1 (bv_unsigned fd)) (S (Z.to_nat (bv_unsigned fd)))
+      then Some (i, o, false) else None
+  end.
+
+(** [do_select]'s one pass over descriptors [0 .. k-1], as the three
+    result words: each descriptor with a bit in [win], [wout] or [wex]
+    gets [select_fd_bits], and the pass declines if any descriptor does. *)
+Fixpoint select_scan (fds : list (word * FdEntry)) (win wout wex : Z) (k : nat)
+    : option (Z * Z * Z) :=
+  match k with
+  | O => Some (0, 0, 0)%Z
+  | S k' =>
+      match select_scan fds win wout wex k' with
+      | None => None
+      | Some (ri, ro, rx) =>
+          let b := Z.of_nat k' in
+          let i := Z.testbit win b in
+          let o := Z.testbit wout b in
+          let x := Z.testbit wex b in
+          if negb (i || o || x)%bool then Some (ri, ro, rx)
+          else match select_fd_bits fds (Z_to_bv 64 b) i o x with
+               | None => None
+               | Some (i', o', x') =>
+                   Some ((if i' then Z.setbit ri b else ri),
+                         (if o' then Z.setbit ro b else ro),
+                         (if x' then Z.setbit rx b else rx))
+               end
+      end
   end.
 
 (** A range the call will WRITE must be writable end to end, or the model
@@ -525,7 +659,15 @@ Inductive PselectCore :=
     [SELECT_STACK_ALLOC / 6] = 42 bytes, and the modeled band caps
     [FDS_BYTES(n)] at 8.  That is what lets this spec commit to an
     answer at all, rather than having to union an optional allocation
-    failure with every later verdict. *)
+    failure with every later verdict.
+
+    Then [do_select]'s pass, [select_scan]: each result bit is the
+    descriptor's [vfs_poll] mask met with the set it was asked in, and
+    the count is the number of result bits across the three sets -- two
+    for a descriptor reported both readable and writable.  For the
+    constant-mask kinds that gives back [readfds] and [writefds]
+    UNCHANGED and [exceptfds] empty; for a stream-pair end it is
+    [stream_poll_mask]'s answer. *)
 Definition pselect_core (i : SyscallInput) (m : Model)
     (n32 inp outp exp : word) : PselectCore :=
   let n := nfds_signed n32 in
@@ -543,17 +685,17 @@ Definition pselect_core (i : SyscallInput) (m : Model)
                           (bv_unsigned wex) in
         let k    := Z.to_nat n in
         if negb (bits_all_open (m_fds m) all k) then PsCoreErr EBADF
-        else if negb (bits_all_pollable (m_fds m) all k) then PsCoreGap
         else
-          (* Every polled descriptor carries [DEFAULT_POLLMASK], so the
-             read and write sets come back UNCHANGED, the exception set
-             comes back empty, and the count is the total number of bits
-             across the three -- two for a descriptor named in both
-             [readfds] and [writefds]. *)
-          PsCoreDone (popcount64 win + popcount64 wout)
-                     (fd_set_writeback inp n win
-                      ++ fd_set_writeback outp n wout
-                      ++ fd_set_writeback exp n (Z_to_bv 64 0))
+          match select_scan (m_fds m) (bv_unsigned win) (bv_unsigned wout)
+                  (bv_unsigned wex) k with
+          | None => PsCoreGap
+          | Some (ri, ro, rx) =>
+              PsCoreDone (popcount64 (Z_to_bv 64 ri) + popcount64 (Z_to_bv 64 ro)
+                          + popcount64 (Z_to_bv 64 rx))
+                         (fd_set_writeback inp n (Z_to_bv 64 ri)
+                          ++ fd_set_writeback outp n (Z_to_bv 64 ro)
+                          ++ fd_set_writeback exp n (Z_to_bv 64 rx))
+          end
     | _, _, _ => PsCoreErr EFAULT
     end.
 
@@ -608,21 +750,24 @@ Definition pselect_writes (i : SyscallInput) (ret : Z)
     [bits_all_pollable], it is not discharged by the model: a run must
     start with the personality [PER_LINUX] and no flag.
 
-    Because every polled descriptor in the modeled band is always ready
-    for reading and writing and NEVER exceptional, a real deadline is
-    reached exactly when no bit below [n] is set in [readfds] or in
-    [writefds]: an [n] of 0, NULL pointers for those two, or sets with no
-    bit below [n].  [exceptfds] is not part of that condition --
-    [DEFAULT_POLLMASK] misses [POLLEX_SET], so an [exceptfds] bit never
-    raises the count and the set always comes back zeroed.  So there are
-    two modeled shapes in which this syscall waits, not one: the
-    portable-sleep idiom [select(0, NULL, NULL, NULL, &tv)], and an
-    [exceptfds]-only request naming an open file or directory.  The model
-    says WHAT that wait returns and not how long it takes, which is the
-    same partial-correctness reading every other syscall here gets; a
-    [tv_sec] near [TIME64_MAX] -- where [timespec64_add_safe] saturates
-    the deadline rather than overflowing it -- still returns 0,
-    eventually.
+    A real deadline is reached exactly when the scan finds nothing ready,
+    and the zero count is then the answer, because NOTHING CAN BECOME
+    READY DURING THE WAIT.  The constant-mask kinds are always ready for
+    reading and writing and never exceptional, so for them that means no
+    bit below [n] in [readfds] or [writefds]: an [n] of 0, NULL pointers,
+    or an [exceptfds]-only request -- [DEFAULT_POLLMASK] misses
+    [POLLEX_SET].  A stream-pair end's mask changes only when its peer
+    reads, writes, shuts down or closes, and the peer is held by this
+    same single-threaded process, which is asleep here; signals are not
+    modeled, and no clone can hold a copy ([Kernel.Fork] declines one),
+    so no other task can act on it either.  The portable-sleep idiom
+    [select(0, NULL, NULL, NULL, &tv)] is one such shape; a pair end
+    asked for reading with an empty queue and an open peer is another.
+    The model says WHAT that wait returns and not how long it takes,
+    which is the same partial-correctness reading every other syscall
+    here gets; a [tv_sec] near [TIME64_MAX] -- where
+    [timespec64_add_safe] saturates the deadline rather than overflowing
+    it -- still returns 0, eventually.
 
     The NULL-timeout case has the opposite corner.
     [schedule_hrtimeout_range_clock] treats a NULL expiry as infinite --
@@ -657,13 +802,16 @@ Definition pselect_finish (i : SyscallInput) (tsp : word)
     admits, or [None] where the model declines (fail closed).
 
     Nothing here is nondeterministic.  Readiness, the one thing this
-    syscall exists to report, is a kernel CONSTANT for every descriptor
-    kind the model has: [vfs_poll] hands back [DEFAULT_POLLMASK] for any
-    file with no [->poll] method, and neither regular files nor
-    directories define one on any filesystem in the tree.  A descriptor
-    whose readiness is a schedule rather than a constant -- the piped
-    stdio channels -- is refused by [bits_all_pollable] instead of
-    guessed at.
+    syscall exists to report, is a function of the modeled state for
+    every descriptor kind it answers: a kernel CONSTANT for regular
+    files and directories -- [vfs_poll] hands back [DEFAULT_POLLMASK]
+    for any file with no [->poll] method, and neither defines one on any
+    filesystem in the tree -- and, for a stream-pair end, [unix_poll]
+    read off the end's queues and shutdown bits ([stream_poll_mask]),
+    declined only where it turns on skb truesize.  A descriptor whose
+    readiness is a schedule rather than a state -- the piped stdio
+    channels -- is refused by [select_fd_bits] instead of guessed at.
+    So the checker can recompute the one answer, as the contract needs.
 
     The arms below are in the kernel's own decision order, so reading
     them top to bottom is reading [SYSCALL_DEFINE6(pselect6, ...)],
@@ -951,6 +1099,16 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               [.poll], and it is not written yet *)
        | Some FdUrandom => None
            (* the same: [urandom_fops] has no [.poll] either *)
+       | Some (FdStream id side st) =>
+           (* [sock_poll] -> [unix_poll], masked by the entry's filter:
+              [demangle_poll(events) | EPOLLERR | EPOLLHUP] ([do_pollfd],
+              fs/select.c).  Answered when the undecided write bits of
+              [stream_poll_mask] fall outside the filter or agree, and
+              declined when they are asked for in the truesize band *)
+           let '(lo, hi) := stream_poll_mask fds id side st in
+           let filt := Z.lor events (Z.lor EPOLLERR EPOLLHUP) in
+           if Z.eqb (Z.land lo filt) (Z.land hi filt) then Some (Z.land lo filt)
+           else None
        end.
 
 Fixpoint ppoll_revents (fds : list (word * FdEntry)) (es : list (Z * Z))
@@ -971,8 +1129,10 @@ Fixpoint ppoll_revents (fds : list (word * FdEntry)) (es : list (Z * Z))
 (** [do_poll]'s return: the number of entries whose [do_pollfd]
     answered a non-zero mask.  Within the modeled band that is exactly
     the number of non-zero [revents], because every mask this spec
-    produces -- 0, [EPOLLNVAL], or a subset of [DEFAULT_POLLMASK] --
-    survives [mangle_poll] unchanged, so the mask is zero exactly when
+    produces -- 0, [EPOLLNVAL], a subset of [DEFAULT_POLLMASK], or a
+    subset of [stream_poll_mask]'s bits -- is built from [EPOLL*] bits
+    that [mangle_poll] maps to [POLL*] bits of the same value on riscv64,
+    so the mask is zero exactly when
     the stored [revents] is.  Unlike pselect6's, this count is a
     DESCRIPTOR count: one entry contributes at most 1 however many bits
     its [revents] carries. *)

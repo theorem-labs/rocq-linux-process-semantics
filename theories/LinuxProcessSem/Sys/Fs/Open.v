@@ -1472,7 +1472,7 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     [fd] arrives already truncated to 32 bits (see [Syscall.fd32]), so
     [close(2^32)] closes stdin.
 
-    THE ARM IS KIND-BLIND ON PURPOSE, AND FOR A PIPE THAT IS
+    THE ARM IS KIND-BLIND FOR EVERY KIND BUT ONE, AND FOR A PIPE THAT IS
     LOAD-BEARING.  Removing the fd is the whole of what [pipe_release]
     does that a program can observe (fs/pipe.c:725-746, v6.18.46): it
     decrements [pipe->readers] or [pipe->writers] by the file's [f_mode]
@@ -1485,11 +1485,21 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     pipe-specific code here.
     Buffered bytes are NOT dropped: the [m_pipes] entry stays (see
     [State.pipe_new_id]), and a reader whose end is still open still
-    sees them, as it does on Linux. *)
+    sees them, as it does on Linux.
+
+    A STREAM-PAIR END IS THE ONE KIND THE ARM LOOKS AT, because closing
+    one changes ANOTHER descriptor's state, which no fd-table reading
+    can recover afterwards.  [unix_release_sock] shuts the peer down and
+    may leave it a pending ECONNRESET, and whether it does depends on
+    the closing end's own queue, which the close discards; so the peer
+    is updated here, by [State.stream_release], while that queue is
+    still known. *)
 Definition close_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF
+  | Some (FdStream id side st) =>
+      set_fds (stream_release (m_fds m) fd id side st) ;; ret_only (Z_to_bv 64 0)
   | Some _ => set_fds (fd_remove (m_fds m) fd) ;; ret_only (Z_to_bv 64 0)
   end.
 
@@ -1711,6 +1721,8 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
                                                     inode is S_ISSOCK, so [do_ftruncate]'s
                                                     !S_ISREG test answers -EINVAL before FMODE_WRITE
                                                     is consulted *)
+  | Some (FdStream _ _ _) => err_ret EINVAL      (* a stream-pair end is a socket too: S_ISSOCK,
+                                                    the same [!S_ISREG] -EINVAL *)
   | Some (FdPipe _ _) => err_ret EINVAL          (* the same answer for the same reason, on an fd
                                                     the model KNOWS is a pipe — see the header *)
   | Some (FdDevNull _ _) => err_ret EINVAL       (* and on /dev/null: a character device is not

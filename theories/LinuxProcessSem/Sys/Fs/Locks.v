@@ -87,6 +87,7 @@ Fixpoint path_openers (fds : list (word * FdEntry)) (p : path) : nat :=
   | (_, FdPipe _ _)  :: r => path_openers r p
   | (_, FdDevNull _ _) :: r => path_openers r p   (* a device node is not a key of [Fs.Fs] *)
   | (_, FdUrandom) :: r => path_openers r p       (* nor is this one *)
+  | (_, FdStream _ _ _) :: r => path_openers r p  (* a socket inode, not a key of [Fs.Fs] *)
   end.
 
 (** Exactly one descriptor names [p].  Applied to a path just resolved
@@ -320,5 +321,7 @@ Definition flock_spec (fd cmd : word) : Sys SyscallEffect :=
           | FdUrandom => unmodeled
               (* FAIL-CLOSED, for the /dev/null reason: one inode, so
                  an [FdUrandom] count would be needed.  Not written. *)
+          | FdStream _ _ _ => unmodeled
+              (* the [FdSocket] case: a sockfs inode, no caller *)
           end
     end.

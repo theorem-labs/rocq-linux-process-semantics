@@ -220,6 +220,7 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
   | Some (FdChannel _) => err_ret EINVAL          (* no [.fsync] on a pipe, socket or terminal *)
   | Some (FdSocket _)  => err_ret EINVAL          (* nor on a socket: [socket_file_ops] carries no
                                                      [.fsync], so [vfs_fsync_range] is -EINVAL *)
+  | Some (FdStream _ _ _) => err_ret EINVAL       (* a stream-pair end has [socket_file_ops] too *)
   | Some (FdPipe _ _)  => err_ret EINVAL          (* no [.fsync] on a pipe — see the header *)
   | Some (FdDevNull _ _) => err_ret EINVAL        (* no [.fsync] on /dev/null either: [null_fops]
                                                      (drivers/char/mem.c, v6.18.46) lists [.llseek],

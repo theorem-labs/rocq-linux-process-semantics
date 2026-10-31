@@ -659,6 +659,14 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        is a consumption the declaration has to account for:
                        the stream is what the device hands THIS process. *)
                     | FdUrandom => true
+                    (* A STREAM-PAIR END JOINS THE GATE, fail-closed, for
+                       the pipe's reason: the child's copy names the same
+                       socket, so a child that reads drains the parent's
+                       queue and a child that closes its copy does not run
+                       [unix_release_sock], which happens at the last
+                       [fput] -- and [State.stream_peer] reads ends off
+                       the fd table, which a copied table would double. *)
+                    | FdStream _ _ _ => false
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which
