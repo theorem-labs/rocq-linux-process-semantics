@@ -3,10 +3,19 @@ import LinuxProcessSemantics.Common.PropExec
 
 /-! `lib/Lib/Mem.v`: the memory vocabulary the function contracts are stated in.
 
-Only the declarations the contracts of `lib/Prog/` name are here; the Rocq file
-is 594 lines, most of them reading lemmas that the Lean port's
-`LinuxProcessSemantics.Common.SeqExec`/`SymExec`/`PropExec` already provide
-under their own names (OSSV-265 gaps row T-8).
+Only the declarations the ported contracts of `lib/Prog/` are stated in are
+here: eleven of the Rocq file's 21 definitions, and none of its 64 lemmas. The
+Rocq file is 594 lines, most of them the reading and writing lemmas that join
+`mrd`, `bytes_at` and `wr_at` (`bytes_at_rdn` at `lib/Lib/Mem.v:89-103`,
+`bytes_at_read` at `:112-119`, `wr_at_store_ok` at `:125-135`, and so on).
+Those lemmas have NO Lean twin, and neither has the vocabulary they are about:
+a grep of the Lean port's `LinuxProcessSemantics/Common/` for `bytes_at`,
+`wr_at`, `mrd`, `ro_addr`, `mem_inv`, `ro_bytes` and `upd_bytes` returns
+nothing (OSSV-265 gaps row T-8: the symbols of our Rocq `proofs/lib/Lib/` have
+no Lean name at all). The model's own reader is `Common.PropExec.rdn`, whose
+lemmas are about the model's `wbytes` and overlay, not about these predicates.
+That is why each ported contract takes the read it needs as a HYPOTHESIS where
+the Rocq contract derives it from `rw_cells` (OSSV-265 gaps row T-11).
 
 Each declaration names the Rocq line it is translated from. First written for
 OSSV-265 slice T (`probe/ossv265-t/Probe/Defs.lean` of
@@ -24,7 +33,7 @@ open LinuxProcessSemantics.Common.PropExec
 /-- `lib/Lib/Mem.v:20`. -/
 def wa (a : Int) : word := Z_to_bv 64 a
 
-/-- `lib/Lib/Mem.v:52`: the overlay first, the image behind it. -/
+/-- `lib/Lib/Mem.v:52-53`: the overlay first, the image behind it. -/
 def mrd (segs : List Segment) (m : word → Option byte) (a : word) : Option byte :=
   match m a with
   | some b => some b
@@ -41,7 +50,7 @@ def le2 (v : word) : List byte := Z_to_le_bytes 2 (bv_unsigned v)
 /-- `lib/Lib/Mem.v:392`. -/
 def le1 (v : word) : List byte := Z_to_le_bytes 1 (bv_unsigned v)
 
-/-- `lib/Lib/Mem.v:74-78`: an address that lies in a loaded segment that is
+/-- `lib/Lib/Mem.v:75-79`: an address that lies in a loaded segment that is
 not writable. -/
 def ro_addr (segs : List Segment) (a : word) : Bool :=
   match find_segment segs (bv_unsigned a) 1 with
