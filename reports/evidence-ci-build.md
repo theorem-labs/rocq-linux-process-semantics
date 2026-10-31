@@ -1,14 +1,21 @@
-# The `tests` theory's undeclared dependency, and why the build is green anyway
+# The `tests` theory's undeclared dependency: reproduced, and a one-line fix
 
-**The build is green. This is not a blocker.** `tests/dune` does not name the
-theory that one of its files requires, and the build works because the
-required files happen to sit under the directory the main theory is rooted at.
-That is a dependency satisfied by directory layout rather than by declaration:
-it would break the day `theories/Common` moves, and nothing would warn anyone.
-**The recommendation is a one-line hardening, not a fix.**
+**`dune build` fails, reproducibly, after `dune build tests/StartState….vo`**
+— which is the command `reports/a4-start-state.md` tells a reader to run.
+`tests/dune` does not name the theory one of its files requires; the build
+normally works because the required files sit under the directory the main
+theory is rooted at, and dune, having no dependency edge, is free to schedule
+that file before they exist. From a cold tree it does not; from a tree whose
+`tests/` targets were built first, it does.
+
+**CI is green and stays green** — the gate builds from cold and never runs a
+`tests/` target first — so nothing published is blocked. **But the
+recommendation is now a fix, not a hardening**: add
+`LinuxProcessSemantics.Common` to `tests/dune`'s `(theories …)` list.
 
 This report exists because a run of mine disagreed with the gate, and the
-disagreement had to be settled before anyone edited a model file on it.
+disagreement had to be settled before anyone edited a model file on it. It
+is settled: both runs were right about what they ran.
 
 ## What the two files say
 
@@ -76,9 +83,9 @@ before running the same `dune build --display short`.
 without an installed copy of the library, at default parallelism and at
 `-j 16`.**
 
-### The one run that failed, and what is known about it
+### The failure, reproduced
 
-One run did fail: a clean export of `d4d2d93e` in the same image on VM
+One run failed first: a clean export of `d4d2d93e` in the same image on VM
 `ossv-lpsev-start`, where `dune build -j 16` exited 1 after 769.8 s with
 
 ```
@@ -92,34 +99,48 @@ Log: `~/claim3-build.log` on that VM, copied to
 
 **The one thing that run did differently** is that it had already built the
 twelve generated test files on their own, in the same build directory, before
-it ran the default target. That first build produces no `.vo` under
-`theories/Common/`. Since nothing declares that `Tests` depends on `Common`,
-dune is free to schedule `VdsoReservedWitness.v` before `Common`'s files
-exist, and in a tree where the rest is already built there is little else to
-schedule first.
+it ran the default target. Two further exports of `d4d2d93e` on
+`ossv-lpsrev-verify`, each in its own directory with its own `_build`, test
+exactly that (`~/ci-variant-e.sh`, logs `~/ci-check/ci-{E,F}.log`):
 
-**That is a hypothesis with one run behind it, not a settled cause.** The
-experiment that separates it is running on `ossv-lpsrev-verify` as this is
-written — two further exports of `d4d2d93e`, one building the twelve test
-files first and then the default target, one building the default target
-straight away:
+| variant | command | exit |
+| --- | --- | --- |
+| E | `dune build -j 16 tests/StartState*.vo` **then** `dune build --display short -j 16` | **0**, then **1** |
+| F | `dune build --display short -j 16` alone | **0** |
+
+**E reproduces it**, and dune's own log shows the race it is:
 
 ```
-bash ~/ci-variant-e.sh      # logs ~/ci-check/ci-{E,F}.log, driver ~/ci-variant-e.log
+        rocq theories/EquivalenceDefinition/FinInput.{glob,vo}
+        rocq theories/LinuxProcessSem/OmniRun.{glob,vo}
+        rocq theories/Common/ListFacts.{glob,vo}
+        rocq tests/VdsoReservedWitness.{glob,vo} (exit 1)
+File "./tests/VdsoReservedWitness.v", line 45, characters 49-59:
+Error: Unable to locate library
+AxSymExec3 with prefix LinuxProcessSemantics.Common (while searching for a .vos file).
+
+        rocq theories/Common/Footprint.{glob,vo}
+        rocq theories/Common/LiaFast.{glob,vo}
 ```
 
-If E fails and F passes, the cause is the undeclared edge and the build order,
-and the hardening below becomes a fix for a real intermittent failure rather
-than a precaution. If both pass, the failure is unexplained and should be
-recorded as such rather than attributed.
+`tests/VdsoReservedWitness.v` is compiled **while `theories/Common` is still
+being built**, because nothing declares that it must not be. Six variants in
+all: A, B, C, D and F build from a tree with no `tests/` target already made
+and all exit 0; E, the one that builds a `tests/` target first, exits 1.
+
+**So the failure is not intermittent and not unexplained: it is what the
+documented single-file command leaves behind.** `reports/a4-start-state.md`'s
+own "How to reproduce" tells a reader to run
+`dune build tests/StartStateNorandmapsSeed1Fixture.vo`, and a `dune build`
+after that in the same tree fails.
 
 ## What to do
 
 **Add `LinuxProcessSemantics.Common` to `tests/dune`'s `(theories …)` list.**
-One line. It costs nothing, it makes the dependency a declaration instead of a
-coincidence of layout, and it gives dune the edge it needs to order the two.
-Without it the build depends on `theories/Common/` staying inside the
-directory the main theory is rooted at — which is exactly the kind of
-condition this revision exists to turn into something checked.
+One line. It makes the dependency a declaration instead of a coincidence of
+layout, and it gives dune the edge it needs to order the two — which is what
+turns variant E green. Without it the build depends both on
+`theories/Common/` staying inside the directory the main theory is rooted at
+and on nobody having built a `tests/` target first.
 
 That file is outside `reports/`, so this report does not make the change.
