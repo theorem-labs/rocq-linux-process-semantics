@@ -1361,7 +1361,10 @@ Lemma strong_universal_T_sv39_refuted :
 Proof.
   intros en_s en_t inp Hs Ht Hv H.
   destruct (H en_s en_t inp Hs Ht Hv) as (H48 & _).
-  destruct Hv as (_ & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hv & _). rewrite Hv in H48. discriminate.
+  assert (Hva : in_va_size inp = Sv39)
+    by (unfold valid_input_sv39 in Hv;
+        repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end; assumption).
+  rewrite Hva in H48. discriminate.
 Qed.
 
 Lemma strong_universal_T_sv57_refuted :
@@ -1373,7 +1376,10 @@ Lemma strong_universal_T_sv57_refuted :
 Proof.
   intros en_s en_t inp Hs Ht Hv H.
   destruct (H en_s en_t inp Hs Ht Hv) as (H48 & _).
-  destruct Hv as (_ & _ & _ & _ & _ & _ & _ & _ & _ & _ & Hv & _). rewrite Hv in H48. discriminate.
+  assert (Hva : in_va_size inp = Sv57)
+    by (unfold valid_input_sv57 in Hv;
+        repeat match goal with Hc : _ /\ _ |- _ => destruct Hc end; assumption).
+  rewrite Hva in H48. discriminate.
 Qed.
 
 End SpecVa.
