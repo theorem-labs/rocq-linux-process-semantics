@@ -1245,13 +1245,15 @@ Proof.
   difn H Etask; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   dif H.
   - destruct ws, zs, cs, ci; try discriminate.
-    dif H; [|discriminate]. injection H as <- <-.
-    pose proof (word_range addr) as Har. pose proof (word_range len) as Hlr.
-    apply Z.ltb_ge in Etask. unfold TASK_SIZE in Etask.
-    pose proof (page_round_up_Z_ge (bv_unsigned len) ltac:(lia)) as HnZ.
-    unfold vm_wf. rewrite vmm_mmap_destroyed. cbn [vm_maps].
-    apply maps_wf_subtract; try (rewrite u64 by lia); try lia.
-    exact Hwf.
+    dif H.
+    + destruct us; [|discriminate]. injection H as <- <-. exact Hwf.
+    + dif H; [|discriminate]. injection H as <- <-.
+      pose proof (word_range addr) as Har. pose proof (word_range len) as Hlr.
+      apply Z.ltb_ge in Etask. unfold TASK_SIZE in Etask.
+      pose proof (page_round_up_Z_ge (bv_unsigned len) ltac:(lia)) as HnZ.
+      unfold vm_wf. rewrite vmm_mmap_destroyed. cbn [vm_maps].
+      apply maps_wf_subtract; try (rewrite u64 by lia); try lia.
+      exact Hwf.
   - dif H; [apply check_ret_only_model in H; subst m'; exact Hwf|].
     dif H; [|discriminate].
     destruct ws, zs, cs, ci; try discriminate.

@@ -2580,8 +2580,9 @@ Definition PipeBuf : Type := list byte * Z.
       -EBADF.
     - [FdFileW p off]: a file opened O_WRONLY|O_CREAT|O_TRUNC
       (write-only); read is -EBADF.
-    - [FdFileA p off]: a file opened O_WRONLY|O_CREAT|O_APPEND
-      (write-only, APPEND MODE); read is -EBADF.  A SEPARATE
+    - [FdFileA p off]: a file opened O_WRONLY|O_CREAT|O_APPEND, or
+      created by O_WRONLY|O_CREAT|O_EXCL|O_APPEND (write-only, APPEND
+      MODE); read is -EBADF.  A SEPARATE
       CONSTRUCTOR RATHER THAN A FLAG ON [FdFileW], and the reason is
       which arms have to notice.  The two kinds differ in where a write
       LANDS: [iocb_flags] (include/linux/fs.h) turns O_APPEND into
@@ -5720,45 +5721,28 @@ Definition init_reserved (reserved : list (word * word))
        (page_round_down_Z
           (Z.min (bv_unsigned mbase) (bv_unsigned sp - stack_max_size))).
 
-(** ONE CONSTRUCTOR, NOT A STACK OF SETTERS, and that is a performance
-    fact rather than a style one.
-
-    Each [with_*] rebuilds [mkModelOf] from SEVEN projections of its
-    argument, so a chain of seven of them is a term holding 7^7 copies
-    of the innermost model, which conversion does not share.  An
-    [Example] that writes [init_model ...] on both sides of an equation
-    and closes with [reflexivity] or [repeat constructor] then has to
-    convert it twice.  Measured in the checker image on
-    [Checks/Cases/Prelude.v]'s
-    [fd_truncation_high_low_halves_all_ebadf]: the setter chain did not
-    finish in 120 s; this form takes 0.095 s, and naming the model in a
-    [Definition] takes 0.012 s.  [Strategy] does not help — the cost is
-    the size of the term, not the order of unfolding.
-
-    SO: A FIELD ADDED TO THE MODEL GOES IN THIS CONSTRUCTOR, not in a
-    new [with_*] wrapped around the result.  Every [*_init_model] lemma
-    below is [reflexivity], which is what catches a field written in
-    the wrong place. *)
 Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     (lim : Z) (inp : ProcInput) : Model :=
-  mkModelOf
-    (mkFdState
+  with_abort_terminal (in_abort_terminal inp)
+  (with_sigmask (in_sigmask inp)
+  (with_nofile (in_nofile inp)
+   (with_net (in_net inp)
+   (with_urandom (in_urandom inp)
+   (with_kernel (in_kernel inp)
+   (with_creds
+    (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
+             (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
+    (mkModel
        [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
          (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
-         (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ] [])
-    (mkVmState
+         (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
        (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
           [] [] brk0 brk0 lim mbase sp)
-       [] [] (in_kernel inp))
-    (mkIoState (in_stdin inp) (in_urandom inp) (in_net inp) (Z_to_bv 64 0))
-    (mkFsState (in_fs inp))
-    (mkProcState None None
-       (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
-                (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
-       false (in_sigmask inp) false None false false false
-       (in_abort_terminal inp) [])
-    (mkLimState None (in_nofile inp))
-    (mkTimeState (Z_to_bv 64 0)).
+       (in_stdin inp)
+       (in_fs inp)
+       None
+       None
+       None))))))).
 
 Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
   m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.

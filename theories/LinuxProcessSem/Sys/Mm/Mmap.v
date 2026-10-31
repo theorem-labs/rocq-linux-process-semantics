@@ -2353,6 +2353,28 @@ Definition mmap_budget_refused_b (addr len prot flags fd off : word)
       Linux unmaps the pages, the break pointer is unchanged, and a
       later grow continues above the old break — the hole stays a
       hole.)
+      Linux can also answer -ENOMEM here, before any page goes.  The
+      call reaches [do_vmi_align_munmap] (mm/vma.c:1557), which detaches
+      the VMAs and then clears the range in the mapping tree with
+      [vma_iter_clear_gfp(vmi, start, end, GFP_KERNEL)]
+      (mm/vma.c:1573; the helper is at include/linux/mm.h:1050 and
+      answers -ENOMEM when the maple-tree store cannot get a node).
+      That store is BEFORE the "point of no return" comment at
+      mm/vma.c:1577, and its error path [clear_tree_failed:]
+      (mm/vma.c:1581) calls [reattach_vmas], so the mapping stays whole
+      and nothing is unmapped.  [vms_gather_munmap_vmas] has the same
+      failure one step earlier: its [mas_store_gfp] on the detach tree
+      (mm/vma.c:1428) goes to [munmap_gather_failed:] (:1501) and the
+      same [reattach_vmas] (:1504).  The path from the system call is
+      [SYSCALL_DEFINE2(munmap, ...)] (mm/mmap.c:1077) ->
+      [__vm_munmap] (mm/vma.c:3189) -> [do_vmi_munmap] (mm/vma.c:1604)
+      -> [do_vmi_align_munmap].  Neither failure reads anything the
+      model holds, so no state forces it: the arm answers it under an
+      [alt] beside the success, [Run.injected_table] already lists
+      munmap's [munmap_errnos] in the allocation family, and a
+      configuration that reads that family as forced-only removes it
+      (so the forced-only and alloc-forced-only readings keep today's
+      answer).
     - [addr, addr+n) disjoint from the image and every recorded
       mapping, and ending at or below this run's [State.alloc_top]: 0, a no-op
       — Linux does not fail when the range contains no mapped pages.
@@ -2422,7 +2444,8 @@ Definition munmap_cut_ok (h : VmMaps) (addr : word) (nZ : Z) : bool :=
   (region_free (vm_reserved h) addr (Z_to_bv 64 nZ)
    && (bv_unsigned addr + nZ <=? alloc_top h)%Z)%bool.
 
-(** The partial arm's runtime failure (see [munmap_spec]). *)
+(** The runtime failure of the exact and the partial arm (see
+    [munmap_spec]). *)
 Definition munmap_errnos : list Z := [ENOMEM].
 
 Definition munmap_spec (addr len : word) : Sys SyscallEffect :=
@@ -2442,10 +2465,12 @@ Definition munmap_spec (addr len : word) : Sys SyscallEffect :=
     else
     let n := Z_to_bv 64 nZ in
     if map_has (vm_maps h) addr n then
-      set_vmmaps (mmap_fixed_destroyed_next h addr n) ;;
-      forget_vm_range (bv_unsigned addr)
-                      (bv_unsigned addr + bv_unsigned n) ;;
-      pure (mkEffectU (Z_to_bv 64 0) [] [] [(addr, n)] [] [])
+      alt
+        (e <- errno_from munmap_errnos ;; err_ret e)
+        (set_vmmaps (mmap_fixed_destroyed_next h addr n) ;;
+         forget_vm_range (bv_unsigned addr)
+                         (bv_unsigned addr + bv_unsigned n) ;;
+         pure (mkEffectU (Z_to_bv 64 0) [] [] [(addr, n)] [] []))
     else if munmap_free_ok h addr nZ
     then ret_only (Z_to_bv 64 0)
     else if munmap_cut_ok h addr nZ
@@ -2459,10 +2484,11 @@ Definition munmap_spec (addr len : word) : Sys SyscallEffect :=
 
 (** [munmap]'s budget mark, for [Run.alloc_budget_refused_b]: [false]
     on every request.  No arm of [munmap_spec] reads the budget, and the
-    partial arm only gives charge back ([with_mmap_destroyed] forgets the
-    pages in the range), so no munmap is a grant the budget refuses.  Its
-    one injected refusal, the partial arm's -ENOMEM ([munmap_errnos]), is
-    the split's [map_count] test or a kernel allocation, not the budget.
+    exact and partial arms only give charge back ([with_mmap_destroyed]
+    forgets the pages in the range), so no munmap is a grant the budget
+    refuses.  Its injected refusal, the -ENOMEM of those two arms
+    ([munmap_errnos]), is a maple-tree store or a split's [map_count]
+    test, not the budget.
     The mark exists because every allocation-family arm of
     [Run.injected_table] names one. *)
 Definition munmap_budget_refused_b (addr len : word) (m : Model) : bool := false.
