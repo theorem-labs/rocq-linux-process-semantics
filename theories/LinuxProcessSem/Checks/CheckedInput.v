@@ -56,97 +56,63 @@
     them, so no choice of roots can hide them.  The guarantee this file
     carries is therefore about the SUPPORTED surface — the roots of
     [Checks/Extraction.v] — and that surface offers no way to reach a
-    verdict without this boundary. *)
+    verdict without this boundary.
+
+    EVERY EXTRACTED TYPE THAT CAN BE HANDED AN OUT-OF-TYPE VALUE, and
+    where its boundary is.  The list is here rather than in a report
+    because a list that lives in a report does not stop the third
+    instance of this defect.  It is found by compiling an Extraction.v
+    and reading the generated .ml for the comment extraction writes on
+    every type it reduced to one field — "singleton inductive, whose
+    constructor was ..." — which is where an erased [Prop] hides, and
+    then reading each root's signature in the generated .mli for the
+    types that sit in ARGUMENT position.
+
+    - [bv n], at every width this tree uses (64 for a machine quantity,
+      32 and 16 for a network peer's address and port, 8 for a memory
+      byte, and in the ISA model 32 and 16 for an encoding, 12 for a CSR
+      address, 5 for a register index).  The erased field is the [BvWf]
+      proof.  This is the whole of the problem.  Boundary: [bv_of_Z] in
+      [Riscv.CheckedBv], reached through [input_of_raw],
+      [effect_of_raw] and [proc_input_of_raw] here, and through
+      [core_of_raw], the decoders and [eff_feed_load] in
+      [Riscv.CheckedIsa].
+    - [N] and [positive], realized by zarith: a [positive] is at least
+      1 and an [N] is not negative, and neither invariant survives
+      extraction.  No root of either artifact takes one in argument
+      position — every width this surface names is fixed inside Rocq —
+      so there is nothing to check.  A root that took one would need a
+      boundary here.
+    - [nat], left as unary Peano by [ExtrOcamlZBigInt], has no
+      invariant.  A copy-in length is still refused when negative, in
+      [copyin_of_Z], because [Z.to_nat] would silently answer 0.
+    - [Z] has no invariant: [init_model]'s [lim] passes through
+      unchecked, and that is not an omission.
+    - [specArm] (the syscall dispatch table's rows) is a record whose
+      [Sys] field — a [Prop]-valued relation — is erased.  No root takes
+      one; it is reached only through the table.  [fsState] and
+      [timeState] are one-field records with nothing erased.
+
+    A NEW TYPE that the outside world can hand to either artifact comes
+    here, or to [Riscv.CheckedIsa], and its refusal must stay a third
+    answer. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
+From LinuxProcessSemantics.Riscv Require Export CheckedBv.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
 Import ListNotations.
 Open Scope bv_scope.
 
 (* =========================================================================
-   The primitive: an integer becomes a bitvector only if it is one
+   The values the outside world hands in
    ========================================================================= *)
 
-(** [Z_to_bv_checked] is stdpp's: [Some b] exactly when [z = bv_unsigned b]
-    ([Z_to_bv_checked_Some]), so it never wraps and never truncates.  It is
-    NOT [Z_to_bv], which wraps mod 2^n and would turn a value the kernel
-    cannot have produced into a different value the kernel might have. *)
-Definition word_of_Z (z : Z) : option word := Z_to_bv_checked 64 z.
-Definition byte_of_Z (z : Z) : option byte := Z_to_bv_checked 8 z.
-Definition bv32_of_Z (z : Z) : option (bv 32) := Z_to_bv_checked 32 z.
-Definition bv16_of_Z (z : Z) : option (bv 16) := Z_to_bv_checked 16 z.
-
-Lemma bv_of_Z_value : forall n z (b : bv n),
-  Z_to_bv_checked n z = Some b -> bv_unsigned b = z.
-Proof. intros n z b H. apply Z_to_bv_checked_Some in H. congruence. Qed.
-
-Lemma bv_of_Z_refused : forall n z,
-  Z_to_bv_checked n z = None <-> ~ (0 <= z < bv_modulus n)%Z.
-Proof.
-  intros n z. split.
-  - intros Hnone [Hlo Hhi].
-    assert (BvWf n z) as Hwf by (apply bv_wf_in_range; lia).
-    pose proof (Z_to_bv_checked_bv_unsigned n (@BV n z Hwf)) as H.
-    rewrite bv_unsigned_BV in H. rewrite H in Hnone. discriminate.
-  - intros Hout. destruct (Z_to_bv_checked n z) as [b|] eqn:E; [|reflexivity].
-    apply Z_to_bv_checked_Some in E. subst z.
-    exfalso. apply Hout. apply bv_unsigned_in_range.
-Qed.
-
-(** The two shapes the tests and the theorems below use by name. *)
-Lemma word_of_Z_refused : forall z,
-  word_of_Z z = None <-> ~ (0 <= z < 2 ^ 64)%Z.
-Proof. intros z. unfold word_of_Z. rewrite bv_of_Z_refused. reflexivity. Qed.
-
-Lemma byte_of_Z_refused : forall z,
-  byte_of_Z z = None <-> ~ (0 <= z < 2 ^ 8)%Z.
-Proof. intros z. unfold byte_of_Z. rewrite bv_of_Z_refused. reflexivity. Qed.
-
-(** Nothing a Rocq term could have said is refused: the boundary is a
-    filter on the EXTRACTED representation, not a narrowing of the model. *)
-Lemma word_of_Z_total : forall w : word, word_of_Z (bv_unsigned w) = Some w.
-Proof. intros w. apply Z_to_bv_checked_bv_unsigned. Qed.
-
-Lemma byte_of_Z_total : forall b : byte, byte_of_Z (bv_unsigned b) = Some b.
-Proof. intros b. apply Z_to_bv_checked_bv_unsigned. Qed.
-
-(* ------------------------------------------------------------------ lists *)
-
-Fixpoint mapM_opt {A B} (f : A -> option B) (l : list A) : option (list B) :=
-  match l with
-  | [] => Some []
-  | x :: r =>
-      match f x with
-      | None => None
-      | Some y => match mapM_opt f r with
-                  | None => None
-                  | Some ys => Some (y :: ys)
-                  end
-      end
-  end.
-
-Lemma mapM_opt_None_elem : forall {A B} (f : A -> option B) l,
-  mapM_opt f l = None -> exists x, In x l /\ f x = None.
-Proof.
-  intros A B f l. induction l as [|x r IH]; cbn; [discriminate|].
-  destruct (f x) as [y|] eqn:Hx.
-  - destruct (mapM_opt f r) as [ys|] eqn:Hr; [discriminate|].
-    intros _. destruct (IH eq_refl) as (z & Hin & Hz). eauto.
-  - intros _. exists x. auto.
-Qed.
-
-Lemma mapM_opt_elem_None : forall {A B} (f : A -> option B) l x,
-  In x l -> f x = None -> mapM_opt f l = None.
-Proof.
-  intros A B f l x. induction l as [|y r IH]; cbn; [contradiction|].
-  intros [->|Hin] Hx.
-  - rewrite Hx. reflexivity.
-  - rewrite (IH Hin Hx). destruct (f y); reflexivity.
-Qed.
-
-Definition words_of_Z : list Z -> option (list word) := mapM_opt word_of_Z.
-Definition bytes_of_Z : list Z -> option (list byte) := mapM_opt byte_of_Z.
+(** The checked constructor, the per-width names and the list traversal
+    are [Riscv.CheckedBv]'s: the extracted ISA model has the same
+    boundary to draw ([Riscv.CheckedIsa]), and one definition for both
+    is what keeps the next one from arriving with a third spelling.
+    [bytes_of_Z] there is at [bv 8], which is this file's [byte]. *)
 
 Definition pair_of_Z (p : Z * Z) : option (word * word) :=
   match word_of_Z (fst p), word_of_Z (snd p) with
@@ -490,26 +456,11 @@ Qed.
 (** Nothing the model can say is lost: an effect that EXISTS in Rocq is
     accepted by the boundary and comes back unchanged.  So a refusal is
     never a verdict the checker would have had. *)
-Lemma mapM_opt_map_total : forall {A B} (f : A -> option B) (g : B -> A) (l : list B),
-  (forall b, f (g b) = Some b) -> mapM_opt f (map g l) = Some l.
-Proof.
-  intros A B f g l Hf. induction l as [|x r IH]; cbn; [reflexivity|].
-  rewrite Hf, IH. reflexivity.
-Qed.
-
-Lemma bytes_of_Z_total_list : forall l : list byte,
-  bytes_of_Z (map bv_unsigned l) = Some l.
-Proof. intros l. apply (mapM_opt_map_total byte_of_Z bv_unsigned l byte_of_Z_total). Qed.
-
-Lemma words_of_Z_total_list : forall l : list word,
-  words_of_Z (map bv_unsigned l) = Some l.
-Proof. intros l. apply (mapM_opt_map_total word_of_Z bv_unsigned l word_of_Z_total). Qed.
-
 Lemma run_of_Z_total : forall w : word * list byte,
   run_of_Z (bv_unsigned (fst w), map bv_unsigned (snd w)) = Some w.
 Proof.
   intros [a bs]. unfold run_of_Z. cbn [fst snd].
-  rewrite word_of_Z_total, bytes_of_Z_total_list. reflexivity.
+  rewrite word_of_Z_total, bytes_of_Z_total. reflexivity.
 Qed.
 
 Lemma pair_of_Z_total : forall p : word * word,
