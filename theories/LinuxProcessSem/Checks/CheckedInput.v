@@ -85,7 +85,8 @@
       MODEL holds as an [N], the kernel build's eight numeric
       components ([State.KernelBuild] and the four [State.CacheLeaf]
       it carries), takes it as a [Z] and converts it here.  Boundary:
-      [n_of_Z] below, reached through [kernel_of_raw] in
+      [n_of_Z] in [Riscv.CheckedBv], beside [bv_of_Z] and for the
+      same reason, reached through [kernel_of_raw] in
       [proc_input_of_raw].  A root that took an [N] ITSELF would
       still need a boundary of its own.
     - [nat], left as unary Peano by [ExtrOcamlZBigInt], has no
@@ -105,6 +106,14 @@
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.Riscv Require Export CheckedBv.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Run.
+(* [Run] is here for ONE launch condition, [Run.valid_execfn], which
+   [execfn_of_Z] below decides the decidable part of and
+   [execfn_of_Z_valid] is proved against.  The dependency is in the
+   PROOF and not in the extracted term: [valid_execfn] is a [Prop],
+   which extraction erases, and no root of [Checks/Extraction.v]
+   reaches [Run], so syscall_model.ml does not grow by a line.  A root
+   that DID reach [Run] would make this import a real question
+   again. *)
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
 Import ListNotations.
 Open Scope bv_scope.
@@ -154,43 +163,6 @@ Definition copyin_of_Z (c : Z * Z) : option (word * nat) :=
   end.
 Definition copyins_of_Z : list (Z * Z) -> option (list (word * nat)) :=
   mapM_opt copyin_of_Z.
-
-(** A value the model holds as an [N] — a cache leaf's size, the vDSO
-    image's number, the stack guard gap in pages — keeps exactly one
-    well-formedness condition, that it is not negative, and that
-    condition does not survive extraction (the header's [N] entry).
-    So this is [word_of_Z]'s shape at [N]: the outside world's value
-    arrives as a [Z], and a negative one is REFUSED rather than
-    wrapped — [Z.to_N] would answer 0 for it, which is a different
-    machine's cache and a different kernel's gap. *)
-Definition n_of_Z (z : Z) : option N :=
-  if (0 <=? z)%Z then Some (Z.to_N z) else None.
-
-(** The two lemmas [bv_of_Z_value] and [bv_of_Z_refused] state for a
-    bitvector: a [Some] carries the caller's own integer, and a [None]
-    is exactly the out-of-range case, which at [N] is the negatives. *)
-Lemma n_of_Z_value : forall z n, n_of_Z z = Some n -> Z.of_N n = z.
-Proof.
-  intros z n H. unfold n_of_Z in H.
-  destruct (0 <=? z)%Z eqn:Hle; [|discriminate].
-  injection H as <-. apply Z2N.id. now apply Z.leb_le.
-Qed.
-
-Lemma n_of_Z_refused : forall z, n_of_Z z = None <-> ~ (0 <= z)%Z.
-Proof.
-  intros z. unfold n_of_Z. destruct (0 <=? z)%Z eqn:Hle.
-  - apply Z.leb_le in Hle.
-    split; [intros H; discriminate H | intros Hout; contradiction].
-  - apply Z.leb_gt in Hle.
-    split; [intros _; lia | intros _; reflexivity].
-Qed.
-
-Lemma n_of_Z_total : forall n : N, n_of_Z (Z.of_N n) = Some n.
-Proof.
-  intros n. unfold n_of_Z.
-  rewrite (proj2 (Z.leb_le 0 (Z.of_N n)) (N2Z.is_nonneg n)).
-  now rewrite N2Z.id.
-Qed.
 
 (** One refused element refuses the whole list, by name for each list the
     boundary builds. *)
@@ -771,10 +743,24 @@ Definition kernel_of_raw (k : RawKernelBuild) : option KernelBuild :=
     its declaration was not taken, so it can hand in the descriptor's
     own path instead.  Accepting a name no launch could present would
     instead seed [init_model] with an input that fails
-    [Run.valid_launch], and every theorem about a run is conditioned
-    on that validity — the checker would then answer about a launch
-    Linux never performs, which is the defect this file exists to
-    close. *)
+    [Run.valid_launch].  [init_model] does not REQUIRE that predicate
+    — it is a premise of the STATEMENTS about a run, quantified where
+    they are stated, not a precondition of building a model — and
+    that is exactly why the refusal is worth having here: the model
+    would be built and judged, and the theorems that cover the
+    judgement would not apply to it.
+
+    WHICH REFUSAL HAPPENED is a question a reader can ask, and must
+    be able to: a byte above 255 says the declaration is not a VALUE,
+    and the length or the NUL says it is not a LAUNCH Linux could
+    have performed, and the two are different news for the reader.
+    [execfn_shape_b] is the second test on its own, and is a root of
+    [Checks/Extraction.v] for that reason: a caller asks it first and
+    learns which of the two a [None] from [init_model_checked] would
+    have been.  It is NOT named [execfn_valid_b], because it is
+    strictly stronger than [Run.valid_execfn] by the paragraph above,
+    and a name claiming that equivalence would be the kind of claim
+    this file exists to stop. *)
 Definition execfn_shape_b (zs : list Z) : bool :=
   andb (andb (1 <=? Z.of_nat (length zs))%Z (Z.of_nat (length zs) <=? 4095)%Z)
        (negb (existsb (fun z => Z.eqb z 0) zs)).

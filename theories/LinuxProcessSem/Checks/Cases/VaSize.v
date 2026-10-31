@@ -221,20 +221,20 @@ Qed.
 
 Example sized_sv48_valid : valid_input (sized_input Sv48).
 Proof.
-  destruct (sized_input_va_any Sv48) as (a & b & c & k & d & e & f & g & h & u & l).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj eq_refl (conj u l))))))))))).
+  destruct (sized_input_va_any Sv48) as (a & b & c & k & r & d & e & f & g & h & u & l).
+  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj eq_refl (conj u l)))))))))))).
 Qed.
 
 Example sized_sv39_valid : valid_input_sv39 (sized_input Sv39).
 Proof.
-  destruct (sized_input_va_any Sv39) as (a & b & c & k & d & e & f & g & h & u & l).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj eq_refl (conj u l))))))))))).
+  destruct (sized_input_va_any Sv39) as (a & b & c & k & r & d & e & f & g & h & u & l).
+  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj eq_refl (conj u l)))))))))))).
 Qed.
 
 Example sized_sv57_valid : valid_input_sv57 (sized_input Sv57).
 Proof.
-  destruct (sized_input_va_any Sv57) as (a & b & c & k & d & e & f & g & h & u & l).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj eq_refl (conj u l))))))))))).
+  destruct (sized_input_va_any Sv57) as (a & b & c & k & r & d & e & f & g & h & u & l).
+  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj eq_refl (conj u l)))))))))))).
 Qed.
 
 Example each_instance_refuses_the_others :
@@ -242,7 +242,7 @@ Example each_instance_refuses_the_others :
   /\ ~ valid_input_sv39 (sized_input Sv48) /\ ~ valid_input_sv39 (sized_input Sv57)
   /\ ~ valid_input_sv57 (sized_input Sv48) /\ ~ valid_input_sv57 (sized_input Sv39).
 Proof.
-  repeat split; intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & H & _); discriminate H.
+  repeat split; intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & _ & H & _); discriminate H.
 Qed.
 
 Example va_any_splits_each_to_its_own :

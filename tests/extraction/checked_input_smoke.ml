@@ -207,6 +207,14 @@ let () =
     (seed_refused { seed with M.rpi_execfn = [z "47"; z "0"; z "97"] });
   check "an exec file name byte above 255 is refused"
     (seed_refused { seed with M.rpi_execfn = [z "47"; z "256"] });
+  (* the launch condition on its own, which a caller asks to tell a name
+     that is not a VALUE from one no launch could have presented *)
+  check "the exec name shape test rejects the empty name"
+    (not (M.execfn_shape_b []));
+  check "the exec name shape test rejects a NUL byte"
+    (not (M.execfn_shape_b [z "47"; z "0"; z "97"]));
+  check "the exec name shape test takes a name of two bytes"
+    (M.execfn_shape_b [z "47"; z "97"]);
   check "an in-range seed in every structured field is accepted"
     (not (seed_refused ~reserved:[(z "4096", z "4096")] ~brk0:"8192"
             ~mbase:"12288" ~sp:"16384"

@@ -57,7 +57,10 @@ Require Extraction.
    is assembled from, [mkRawKernelBuild], [mkRawCacheView] and
    [mkRawCacheLeaf]), the two scalar checkers a caller needs
    to validate a value it is about to put somewhere else ([word_of_Z],
-   [byte_of_Z]), [wmem_ranges], the writable-address predicate a reader
+   [byte_of_Z]), [execfn_shape_b], the exec file name's launch
+   condition on its own, so that a caller can tell a name that is not
+   a VALUE from one no launch could have presented before it seeds a
+   model, [wmem_ranges], the writable-address predicate a reader
    that holds ranges rather than a per-page test hands in, and
    [raw_of_effect], the way back for an effect the
    caller built with the model's own constructors below -- it is checked
@@ -100,6 +103,7 @@ Extraction "syscall_model.ml"
   mkRawCacheView
   mkRawCacheLeaf
   raw_of_effect
+  execfn_shape_b
   wmem_ranges
   word_of_Z
   byte_of_Z

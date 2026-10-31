@@ -5,7 +5,8 @@
     Machine words are [bv 64], bytes are [bv 8], and the segment/stack
     range arithmetic is in [Z] over unsigned values.  [machine_state]
     carries an LR/SC reservation field [ms_resv] (initialized [None];
-    preserved across syscalls).
+    cleared on each system call return, as Linux clears it — see
+    [advance_past_svc]).
 
     A binary's observable behavior is its set of finite trace prefixes
     plus TWO error facts: whether SOME execution can reach the explicit
@@ -187,12 +188,41 @@ Definition apply_effect (ms : machine_state) (eff : SyscallEffect)
                  (eff_writes eff);
      ms_rom := ms_rom ms' |}.
 
-(** Advance PC past the ecall instruction (+4) and clear svc_pending. *)
+(** Advance PC past the ecall instruction (+4), clear svc_pending, and
+    CLEAR THE LR/SC RESERVATION.
+
+    Linux breaks the reservation on every return to user mode.
+    [ret_from_exception] (arch/riscv/kernel/entry.S, Linux v6.18.46,
+    commit 1f99e9ab748f) ends with
+
+        REG_L  a2, PT_EPC(sp)
+        REG_SC x0, a2, PT_EPC(sp)
+
+    above the comment "so instead here we clear any existing reservation
+    -- it's always legal for implementations to clear load reservations
+    at any point".  An [ecall] from user mode enters [handle_exception],
+    which dispatches [do_trap_ecall_u] and then jumps to
+    [ret_from_exception], so that [REG_SC] runs on the syscall return
+    too.  The unprivileged specification (the A extension, LR/SC) makes
+    that enough: "An SC must fail if there is another SC (to any
+    address) between the LR and the SC in program order".  So after
+    [lr.w a0,(s0); ecall; sc.w a1,a2,(s0)] the [sc] fails on Linux,
+    whatever the memory holds.
+
+    QEMU user mode answers otherwise: its syscall path
+    ([RISCV_EXCP_U_ECALL] in [cpu_loop], linux-user/riscv/cpu_loop.c,
+    QEMU 10.0.11) never writes [env->load_res], and the only
+    [load_res = -1] outside CPU reset and [gen_sc] is in
+    [riscv_cpu_set_mode] (target/riscv/cpu_helper.c), which
+    [CONFIG_USER_ONLY] builds out.  So the [sc] of that sequence can
+    succeed under qemu-user.  LPS describes Linux v6.18.46, so it
+    answers Linux's; SCOPE.md's list "Where QEMU user mode differs"
+    carries the difference. *)
 Definition advance_past_svc (ms : machine_state) : machine_state :=
   {| ms_regs := ms_regs ms; ms_fregs := ms_fregs ms;
      ms_pc_val := ms_pc ms + Z_to_bv 64 4;
      ms_svc_pending := None;
-     ms_resv := ms_resv ms; ms_fcsr := ms_fcsr ms;
+     ms_resv := None; ms_fcsr := ms_fcsr ms;
      ms_mem := ms_mem ms;
      ms_rom := ms_rom ms |}.
 
@@ -1312,9 +1342,10 @@ Record InjectedArm := mkInjectedArm {
 (** Every arm of [Sys.SyscallTable.spec_table] that injects, SORTED BY
     SYSCALL NUMBER like that table and for the same reason (two changes
     that add two arms land at different lines).  [brk] refuses by value
-    and carries no list; see [brk_refusal_b].  [nanosleep]'s -EINTR and
-    [setsid]'s -EPERM are injected by a bare [alt] rather than through a
-    named list, so their lists are written here.  [faccessat2] draws from
+    and carries no list; see [brk_refusal_b].  [nanosleep]'s -EINTR,
+    [setsid]'s -EPERM and [write]'s -ENOMEM on a pipe's fresh page are
+    injected by a bare [alt] rather than through a named list, so their
+    lists are written here.  [faccessat2] draws from
     [faccessat]'s list because both answer through
     [Fs.Open.access_exists_spec]. *)
 Definition injected_table : list InjectedArm :=
@@ -3878,9 +3909,27 @@ Ltac valid_urandom_default :=
     seeded image is, or lives under, any of the three device paths, and
     the guards stay in the arms as the courtesy their comments say they
     are. *)
+
+(** THE IMAGE DESCRIBES A FILE SYSTEM: [Fs.fs_image_real] on
+    [State.in_image_fs], beside the clause above and on the same
+    pre-seed image, for the same seeding reason.  It says every key is
+    canonical (no empty, "." or ".." component, no "//" and no trailing
+    "/") and no key is also a directory another key lives in.  Ported
+    from main LPS (theorem-labs/linux-process-semantics) #1776, commit
+    9f9a96b29a; [Fs.fs_image_real] carries the argument.
+
+    WHAT IT BUYS.  Without it [valid_input] admits an image with the
+    keys "a" and "a/b".  No Linux file system holds that -- one name in
+    one directory is one inode -- and on it the model answers as if "a"
+    were a regular file and a directory at once, so a statement
+    quantified here covers a launch no kernel can produce.
+    [Checks.Cases.Fs.Open.fs_prefix_key_image_is_not_real] is that
+    image, refused; [valid_input_image_real] below is the projection a
+    proof uses. *)
 Definition valid_input (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
@@ -3916,6 +3965,7 @@ Definition valid_input (inp : ProcInput) : Prop :=
 Definition valid_input_abort (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = true
@@ -3931,6 +3981,7 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
 Definition valid_input_either (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_va_size inp = Sv48
@@ -3940,15 +3991,25 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & _ & v & u & L).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj v (conj u L)))))))))).
+  (* Written so an inserted conjunct does not break it: destruct the
+     hypothesis and split the goal to the same depth, both GUARDED.  A
+     bare [repeat split] would also apply the constructor of
+     [valid_urandom], which is coinductive. *)
+  intros inp H.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_either_of_valid_input_abort : forall inp,
   valid_input_abort inp -> valid_input_either inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & _ & v & u & L).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj v (conj u L)))))))))).
+  (* Written so an inserted conjunct does not break it: destruct the
+     hypothesis and split the goal to the same depth, both GUARDED.  A
+     bare [repeat split] would also apply the constructor of
+     [valid_urandom], which is coinductive. *)
+  intros inp H.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** The exhaustiveness the paragraph above claims, as a lemma rather
@@ -3957,12 +4018,12 @@ Qed.
 Lemma valid_input_either_splits : forall inp,
   valid_input_either inp -> valid_input inp \/ valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & v & u & L).
+  intros inp (a & b & c & k & r & d & e & f & g & v & u & L).
   destruct (in_abort_terminal inp) eqn:Hab.
   - right.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj Hab (conj v (conj u L))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj Hab (conj v (conj u L)))))))))))).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj Hab (conj v (conj u L))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj Hab (conj v (conj u L)))))))))))).
 Qed.
 
 (** * The address-space declaration: the same predicate per size
@@ -3986,6 +4047,7 @@ Qed.
 Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
@@ -3996,6 +4058,7 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
@@ -4006,11 +4069,20 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
   /\ valid_urandom inp
   /\ valid_launch inp.
+
+Lemma valid_input_image_real : forall inp,
+  valid_input inp -> fs_image_real (in_image_fs inp) = true.
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
 
 Lemma valid_input_va_size : forall inp, valid_input inp -> in_va_size inp = Sv48.
 Proof.
@@ -4085,22 +4157,37 @@ Qed.
 Lemma valid_input_va_any_of_valid_input : forall inp,
   valid_input inp -> valid_input_va_any inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & _ & u & L).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj u L)))))))))).
+  (* Written so an inserted conjunct does not break it: destruct the
+     hypothesis and split the goal to the same depth, both GUARDED.  A
+     bare [repeat split] would also apply the constructor of
+     [valid_urandom], which is coinductive. *)
+  intros inp H.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_va_any_of_valid_input_sv39 : forall inp,
   valid_input_sv39 inp -> valid_input_va_any inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & _ & u & L).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj u L)))))))))).
+  (* Written so an inserted conjunct does not break it: destruct the
+     hypothesis and split the goal to the same depth, both GUARDED.  A
+     bare [repeat split] would also apply the constructor of
+     [valid_urandom], which is coinductive. *)
+  intros inp H.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_va_any_of_valid_input_sv57 : forall inp,
   valid_input_sv57 inp -> valid_input_va_any inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & _ & u & L).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj u L)))))))))).
+  (* Written so an inserted conjunct does not break it: destruct the
+     hypothesis and split the goal to the same depth, both GUARDED.  A
+     bare [repeat split] would also apply the constructor of
+     [valid_urandom], which is coinductive. *)
+  intros inp H.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** Exhaustiveness as a lemma: an input the shared clauses accept
@@ -4110,14 +4197,14 @@ Lemma valid_input_va_any_splits : forall inp,
   valid_input_va_any inp ->
   valid_input inp \/ valid_input_sv39 inp \/ valid_input_sv57 inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & u & L).
+  intros inp (a & b & c & k & r & d & e & f & g & h & u & L).
   destruct (in_va_size inp) eqn:Hv.
   - right; left.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj Hv (conj u L))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj Hv (conj u L)))))))))))).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj Hv (conj u L))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj Hv (conj u L)))))))))))).
   - right; right.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj Hv (conj u L))))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj Hv (conj u L)))))))))))).
 Qed.
 
 (** * The hardware-capability declaration: the same predicate per word
@@ -4172,6 +4259,7 @@ Qed.
 Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = false
@@ -4182,6 +4270,7 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = false
@@ -4196,17 +4285,17 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
 Lemma valid_input_of_valid_input_hwcap_rv64gc : forall inp,
   valid_input_hwcap_rv64gc inp -> valid_input inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & v & u & L).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v (conj u L))))))))))).
+  intros inp (a & b & c & k & r & d & e & f & g & h & v & u & L).
+  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+    (conj (or_introl g) (conj h (conj v (conj u L)))))))))))).
 Qed.
 
 Lemma valid_input_of_valid_input_hwcap_rv64gcv : forall inp,
   valid_input_hwcap_rv64gcv inp -> valid_input inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & v & u & L).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v (conj u L))))))))))).
+  intros inp (a & b & c & k & r & d & e & f & g & h & v & u & L).
+  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+    (conj (or_intror g) (conj h (conj v (conj u L)))))))))))).
 Qed.
 
 (** …and the two are EXHAUSTIVE on the default, because [valid_hwcap] is
@@ -4219,11 +4308,11 @@ Lemma valid_input_hwcap_splits : forall inp,
   valid_input inp ->
   valid_input_hwcap_rv64gc inp \/ valid_input_hwcap_rv64gcv inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & [g | g] & h & v & u).
+  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & v & u).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj v u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj v u))))))))))).
   - right.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj v u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj v u))))))))))).
 Qed.
 
 (** The declared word, read back out of the predicate.  A statement's
@@ -4232,11 +4321,11 @@ Qed.
     and it is what [Checks.Cases.Hwcap] fires to say so. *)
 Lemma valid_input_hwcap_rv64gc_word : forall inp,
   valid_input_hwcap_rv64gc inp -> in_hwcap inp = hwcap_rv64gc.
-Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
+Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
 
 Lemma valid_input_hwcap_rv64gcv_word : forall inp,
   valid_input_hwcap_rv64gcv inp -> in_hwcap inp = hwcap_rv64gcv.
-Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
+Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
 
 (** ** The same declaration under the ABORT stance
 
@@ -4261,6 +4350,7 @@ Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
 Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = true
@@ -4271,6 +4361,7 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = true
@@ -4281,37 +4372,37 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gc : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & v & u & L).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v (conj u L))))))))))).
+  intros inp (a & b & c & k & r & d & e & f & g & h & v & u & L).
+  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+    (conj (or_introl g) (conj h (conj v (conj u L)))))))))))).
 Qed.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & g & h & v & u & L).
-  exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v (conj u L))))))))))).
+  intros inp (a & b & c & k & r & d & e & f & g & h & v & u & L).
+  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
+    (conj (or_intror g) (conj h (conj v (conj u L)))))))))))).
 Qed.
 
 Lemma valid_input_abort_hwcap_splits : forall inp,
   valid_input_abort inp ->
   valid_input_abort_hwcap_rv64gc inp \/ valid_input_abort_hwcap_rv64gcv inp.
 Proof.
-  intros inp (a & b & c & k & d & e & f & [g | g] & h & v & u).
+  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & v & u).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj v u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj v u))))))))))).
   - right.
-    exact (conj a (conj b (conj c (conj k (conj d (conj e (conj f (conj g (conj h (conj v u)))))))))).
+    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f (conj g (conj h (conj v u))))))))))).
 Qed.
 
 Lemma valid_input_abort_hwcap_rv64gc_word : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> in_hwcap inp = hwcap_rv64gc.
-Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
+Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
 
 Lemma valid_input_abort_hwcap_rv64gcv_word : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> in_hwcap inp = hwcap_rv64gcv.
-Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
+Proof. intros inp (_ & _ & _ & _ & _ & _ & _ & _ & H & _ & _). exact H. Qed.
 
 (* =========================================================================
    The image premise, consumed: the device arms' guards are unreachable
