@@ -638,16 +638,18 @@ Proof.
   difn H Etask; [apply check_ret_only_model in H; subst m'; exact Hna|].
   difn H Ehas.
   - destruct ws, zs, cs, ci; try discriminate.
-    dif H; [|discriminate]. injection H as <- <-.
-    apply orb_false_iff in Eargs as [Ealign Elen].
-    apply negb_false_iff, Z.eqb_eq in Ealign.
-    apply Z.ltb_ge in Etask. unfold TASK_SIZE in Etask.
-    pose proof (word_range addr) as Har. pose proof (word_range len) as Hlr.
-    pose proof (page_round_up_Z_ge (bv_unsigned len) ltac:(lia)) as HnZ.
-    unfold na_inv. rewrite vmm_mmap_destroyed. unfold mmap_fixed_destroyed_next.
-    cbn [vm_maps vm_noaccess vm_brk].
-    apply na_inv_cut_both; [exact Hfit | exact Ealign | | exact Hna].
-    rewrite u64 by lia. apply aligned_add; [exact Ealign | apply pu_aligned].
+    dif H.
+    + destruct us; [|discriminate]. injection H as <- <-. exact Hna.
+    + dif H; [|discriminate]. injection H as <- <-.
+      apply orb_false_iff in Eargs as [Ealign Elen].
+      apply negb_false_iff, Z.eqb_eq in Ealign.
+      apply Z.ltb_ge in Etask. unfold TASK_SIZE in Etask.
+      pose proof (word_range addr) as Har. pose proof (word_range len) as Hlr.
+      pose proof (page_round_up_Z_ge (bv_unsigned len) ltac:(lia)) as HnZ.
+      unfold na_inv. rewrite vmm_mmap_destroyed. unfold mmap_fixed_destroyed_next.
+      cbn [vm_maps vm_noaccess vm_brk].
+      apply na_inv_cut_both; [exact Hfit | exact Ealign | | exact Hna].
+      rewrite u64 by lia. apply aligned_add; [exact Ealign | apply pu_aligned].
   - dif H; [apply check_ret_only_model in H; subst m'; exact Hna|].
     dif H; [|discriminate].
     destruct ws, zs, cs, ci; try discriminate.

@@ -36,10 +36,10 @@ Variable LIMIT : Z.     (** the run's backing budget (vm_limit): target_alloc_li
 (* ######################################################################### *)
 
 (** one-child (deterministic) syscall nodes.
-    mmap and mprotect are NOT deterministic (every arm may be refused) and
-    have their own plan constructors [PMmap] / [PMmapIn] / [PMprotect]. *)
+    mmap, mprotect and munmap are NOT deterministic (every arm may be refused)
+    and have their own plan constructors [PMmap] / [PMmapIn] / [PMprotect] /
+    [PMunmap2]. *)
 Inductive snode : Type :=
-| YMunmap      (** munmap of a tracked entry *)
 | YBrk         (** brk query (a0 = 0) or a PROVABLY BLOCKED grow *)
 | YSetTid.     (** set_tid_address *)
 
@@ -78,6 +78,7 @@ Inductive plan : Type :=
 | PMmapIn (kkept kok kdestroyed : plan)      (** mmap FIXED inside one tracked entry: -ENOMEM (entry kept) / ok / -ENOMEM (range destroyed) *)
 | PMprotect (krefused kgranted : plan)       (** mprotect rw of a PROT_NONE slice: -ENOMEM child / grant child *)
 | PBrk2 (kblocked kgranted : plan)           (** brk grow with both outcomes *)
+| PMunmap2 (krefused kgranted : plan)        (** munmap of exactly one tracked entry: -ENOMEM child / cut child *)
 | PX (x : xnode) (args : list expr) (k : plan)   (** extension node *)
 | PExt (id : nat) (args : list expr) (k : plan)  (** HOOKED extension node: [XN id args] (node functions supplied to [check]
                                                  by other files: argument-string nodes, file IO ...) *)
@@ -117,7 +118,6 @@ Inductive plan : Type :=
 
 Definition node_sys (y : snode) (cs : acs) : option acs :=
   match y with
-  | YMunmap => node_munmap A cs
   | YBrk => node_brk1 A cs
   | YSetTid => node_settid nx0 cs
   end.
@@ -262,6 +262,20 @@ Fixpoint check (fuel : nat) (lc : option loopctx) (cs : acs) (p : plan) {struct 
   | PBrk2 ka kb =>
       if is_ecall_at segs cs then
         match node_brk2 A LIMIT cs with
+        | Some (csa, csb) =>
+            match check f csa ka with
+            | COk sa => match check f csb kb with
+                        | COk sb => COk (salt2 sa sb)
+                        | err => err
+                        end
+            | err => err
+            end
+        | None => CErr 3 p cs
+        end
+      else CErr 2 p cs
+  | PMunmap2 ka kb =>
+      if is_ecall_at segs cs then
+        match node_munmap2 A cs with
         | Some (csa, csb) =>
             match check f csa ka with
             | COk sa => match check f csb kb with
