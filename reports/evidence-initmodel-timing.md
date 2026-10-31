@@ -9,9 +9,13 @@ nothing that reads the model changed. The six corrections below are to the
 numbers and the reason given for the change, not to the change.
 
 Two of them are worth more than the arithmetic. **"Over 120 seconds" was a
-lower bound published as a measurement**, and the real figure is 441 s, so the
-fix is about four hundred times better than it claimed and the claim was still
-unsupported. And **the premise that the parent's CI passed is false** — it was
+lower bound published as a measurement.** The real before-time is 441.1 s,
+3.7 times that bound; and because the published pair compares a lower bound
+with an after-time from a different run, the speedup it implies — better than
+1,263× — understates the measured **9,935×** by a factor of about 7.9. (A
+measured before-time against a published after-time is not a ratio, which is
+the shape this report exists to correct; both numbers above are this lane's
+own runs.) And **the premise that the parent's CI passed is false** — it was
 cancelled on `ba8a152`; the passing run is on `6692dfb5`, a different commit
 that happens to carry the same file — so a later reader would have taken
 "CI passed on the parent" as evidence that this file compiled in under two
