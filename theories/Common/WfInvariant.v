@@ -47,7 +47,7 @@ From stdpp Require Import bitvector.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import VmMapsDisjoint.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require MapsFit NoaccessOwned.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require MapsFit NoaccessOwned Placement.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import
   Mm.Mmap Mm.Mremap Mm.Mprotect.
 Import ListNotations.
@@ -949,23 +949,26 @@ destruct (mmap_modeled_b prot flags off) eqn:Emod.
   dei H.
   { destruct zs; [|discriminate]. injection H as <- <-. exact (conj HL HM). }
   difn H E; [|discriminate]. injection H as <- <-.
+  (* LPS revision/place: the two FREELY PLACED arms no longer gate on a
+     chain of boolean tests.  [Placement.linux_place_is] is one predicate,
+     and [linux_place_is_admissible] returns the same four facts the chain
+     used to yield -- alignment, positivity, the [alloc_top] bound and
+     [region_free] -- so only the peeling changes, not the argument.  The
+     MAP_FIXED arms below are unchanged: they place at [addr], so no search
+     runs and no placement predicate appears. *)
   apply andb_true_iff in E as [E Hzs].
-  apply andb_true_iff in E as [E Hbud].
-  apply andb_true_iff in E as [E Hfree].
-  apply andb_true_iff in E as [E Hceil].
-  apply andb_true_iff in E as [Halign Hpos].
-  apply Z.leb_le in Hceil. apply Z.ltb_lt in Hpos.
+  apply andb_true_iff in E as [Hplace Hbud].
+  pose proof (Placement.linux_place_is_admissible _ _ _ _ _ HnZ HnM Hplace)
+    as (Halign & Hpos & Hceil & Hfree).
   apply ledger_mmap_add; [exact HW | reflexivity | rewrite u64 by lia; lia]. }
 destruct (mmap_noaccess_b prot flags off) eqn:Enoa.
 { destruct ws, zs, cs, ci; try discriminate.
   dei H.
   { destruct us; [|discriminate]. injection H as <- <-. exact (conj HL HM). }
   difn H E; [|discriminate]. injection H as <- <-.
-  apply andb_true_iff in E as [E Hus].
-  apply andb_true_iff in E as [E Hfree].
-  apply andb_true_iff in E as [E Hceil].
-  apply andb_true_iff in E as [Halign Hpos].
-  apply Z.leb_le in Hceil. apply Z.ltb_lt in Hpos.
+  apply andb_true_iff in E as [Hplace Hus].
+  pose proof (Placement.linux_place_is_admissible _ _ _ _ _ HnZ HnM Hplace)
+    as (Halign & Hpos & Hceil & Hfree).
   apply ledger_mmap_add; [exact HW | reflexivity | rewrite u64 by lia; lia]. }
 (* From here every arm is MAP_FIXED-shaped: the same four argument gates,
    so [addr] is page aligned and [addr + nZ] is below [alloc_top]. *)
@@ -1322,4 +1325,5 @@ split; [exact (check_mremap_preserves _ _ _ _ _ _ _ _ H Hwf)|].
 split; [exact (MapsFit.check_mremap_preserves_fit _ _ _ _ _ _ _ _ H Hfit)|].
 exact (NoaccessOwned.check_mremap_preserves_na _ _ _ _ _ _ _ _ H Hwf Hfit Hna).
 Qed.
+
 
