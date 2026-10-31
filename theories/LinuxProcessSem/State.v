@@ -2531,8 +2531,9 @@ Definition PipeBuf : Type := list byte * Z.
       -EBADF.
     - [FdFileW p off]: a file opened O_WRONLY|O_CREAT|O_TRUNC
       (write-only); read is -EBADF.
-    - [FdFileA p off]: a file opened O_WRONLY|O_CREAT|O_APPEND
-      (write-only, APPEND MODE); read is -EBADF.  A SEPARATE
+    - [FdFileA p off]: a file opened O_WRONLY|O_CREAT|O_APPEND, or
+      created by O_WRONLY|O_CREAT|O_EXCL|O_APPEND (write-only, APPEND
+      MODE); read is -EBADF.  A SEPARATE
       CONSTRUCTOR RATHER THAN A FLAG ON [FdFileW], and the reason is
       which arms have to notice.  The two kinds differ in where a write
       LANDS: [iocb_flags] (include/linux/fs.h) turns O_APPEND into
