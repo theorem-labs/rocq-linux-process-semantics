@@ -92,7 +92,8 @@ Definition exit1_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 12;
   seg_perms := "r-x"%string;
-  seg_bytes := ["9308d0051305100073000000"%pstring]
+  seg_bytes := ["9308d0051305100073000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition exit1_segments : list Segment := [exit1_segment].
 Definition exit1_image : Image := mkImage exit1_segments 0x100 demo_phdrs.

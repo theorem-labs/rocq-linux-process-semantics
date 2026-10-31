@@ -633,7 +633,7 @@ Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
           Some (mkProcInput_full argv envp image_fs (stream_of_bytes stdin)
                   uid gid groups net nofile sigmask hwcap
                   (rpi_abort_terminal r) (rpi_va_size r)
-                  (urandom_of_bytes urandom) tmp)
+                  (urandom_of_bytes urandom) tmp default_kernel)
       | _, _, _, _, _ => None
       end
   | _, _, _, _, _, _, _, _ => None

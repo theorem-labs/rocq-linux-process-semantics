@@ -1097,7 +1097,8 @@ Definition touch_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x"%string;
-  seg_bytes := ["23300500"%pstring]
+  seg_bytes := ["23300500"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition touch_segments : list Segment := [touch_segment].
 Definition touch_page : Z := 0x10000%Z.
@@ -1404,7 +1405,8 @@ Definition mm_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 24;
   seg_perms := "r-x"%string;
-  seg_bytes := ["9308e00db725000013063000930620021307f0ff73000000"%pstring]
+  seg_bytes := ["9308e00db725000013063000930620021307f0ff73000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition mm_segments : list Segment := [mm_segment].
 Definition mm_image : Image := mkImage mm_segments 0x100 demo_phdrs.

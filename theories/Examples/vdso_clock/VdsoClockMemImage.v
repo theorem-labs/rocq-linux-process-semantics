@@ -23,28 +23,32 @@ Definition VdsoClockMemImage_segment_000 : Segment := {|
   seg_base  := 0x10000%N;
   seg_size  := 0x1000%N;
   seg_perms := "r--";
-  seg_bytes := [VdsoClockMemImage_seg_bytes_000]
+  seg_bytes := [VdsoClockMemImage_seg_bytes_000];
+  seg_kind  := SegLoader
 |}.
 
 Definition VdsoClockMemImage_segment_001 : Segment := {|
   seg_base  := 0x11000%N;
   seg_size  := 0x2000%N;
   seg_perms := "r-x";
-  seg_bytes := [VdsoClockMemImage_seg_bytes_001]
+  seg_bytes := [VdsoClockMemImage_seg_bytes_001];
+  seg_kind  := SegLoader
 |}.
 
 Definition VdsoClockMemImage_segment_002 : Segment := {|
   seg_base  := 0x13000%N;
   seg_size  := 0x1000%N;
   seg_perms := "rw-";
-  seg_bytes := [VdsoClockMemImage_seg_bytes_002]
+  seg_bytes := [VdsoClockMemImage_seg_bytes_002];
+  seg_kind  := SegLoader
 |}.
 
 Definition VdsoClockMemImage_segment_003 : Segment := {|
   seg_base  := 0x14000%N;
   seg_size  := 0x1000%N;
   seg_perms := "rw-";
-  seg_bytes := [VdsoClockMemImage_seg_bytes_003]
+  seg_bytes := [VdsoClockMemImage_seg_bytes_003];
+  seg_kind  := SegLoader
 |}.
 
 Definition VdsoClockMemImage_loaded_segments : list Segment :=

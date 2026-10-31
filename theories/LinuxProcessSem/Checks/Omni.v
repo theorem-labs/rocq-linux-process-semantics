@@ -835,7 +835,8 @@ Definition ebreak_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x"%string;
-  seg_bytes := ["73001000"%pstring]
+  seg_bytes := ["73001000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition ebreak_segments : list Segment := [ebreak_segment].
 Definition ebreak_image : Image := mkImage ebreak_segments 0x100 demo_phdrs.
@@ -960,7 +961,8 @@ Definition loop_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x"%string;
-  seg_bytes := ["6f000000"%pstring]
+  seg_bytes := ["6f000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition loop_segments : list Segment := [loop_segment].
 Definition loop_image : Image := mkImage loop_segments 0x100 demo_phdrs.
@@ -969,7 +971,8 @@ Definition wloop_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 24;
   seg_perms := "r-x"%string;
-  seg_bytes := ["93080004130510009305001013061000730000006f000000"%pstring]
+  seg_bytes := ["93080004130510009305001013061000730000006f000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition wloop_segments : list Segment := [wloop_segment].
 Definition wloop_image : Image := mkImage wloop_segments 0x100 demo_phdrs.
@@ -978,27 +981,49 @@ Definition wloop_image : Image := mkImage wloop_segments 0x100 demo_phdrs.
 Definition wloop_byte : byte := Z_to_bv 8 0x93.
 Definition wloop_trace : list event := [WriteEv (Z_to_bv 64 1) wloop_byte].
 
+Definition loop_run_segments : list Segment :=
+  run_segments loop_segments demo_proc_input (Z_to_bv 64 0x7fff80000000)
+    (Z_to_bv 64 mmap_base_max).
+
 Definition loop_ms : machine_state :=
-  init_machine_state loop_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
+  init_machine_state loop_run_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
     demo_draw
     (in_argv demo_proc_input) (in_envp demo_proc_input) (in_uid demo_proc_input)
     (in_hwcap demo_proc_input).
 Definition loop_model (lim : Z) : Model :=
-  init_model (segments_reserved loop_segments) (Z_to_bv 64 0x1000)
-    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) lim demo_proc_input.
+  with_vdso (vdso_run_init (ed_vdso demo_draw))
+    (init_model (segments_reserved loop_run_segments) (Z_to_bv 64 0x1000)
+    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) lim demo_proc_input).
 Definition loop_c (lim : Z) : config := mkCfg loop_ms (loop_model lim).
 
 Lemma loop_config : forall lim,
-  init_config loop_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
+  init_config loop_run_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
     (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw lim demo_proc_input = loop_c lim.
 Proof. reflexivity. Qed.
 
 (** [jal x0, 0] maps the initial state to itself: the pc gains 0 and
     the write to x0 is dropped, so nothing changes.  With the memory
     abstracted, both sides normalise to the same term. *)
+(** ABSTRACT THE vDSO PAIR BEFORE COMPUTING.  [Run.run_segments]
+    appends the pair, whose text segment carries the whole measured
+    image, and a [vm_compute] over a state whose memory is a VARIABLE
+    cannot stop at a stuck test before it has normalised those bytes.
+    Every fixture of this file answers inside its own segment, which
+    comes first, so making the tail a local variable costs nothing and
+    keeps the computation to the size of the fixture.  Without it one
+    [Example] here ran for 59 minutes. *)
+Ltac abstract_vdso_tail :=
+  set (vdso_tail := vdso_segments (in_kernel demo_proc_input)
+                      (Z_to_bv 64 0x7fff80000000) (Z_to_bv 64 mmap_base_max))
+    in *;
+  clearbody vdso_tail.
+
 Lemma loop_fix : forall mem,
-  RiscvSemantics.step loop_segments (with_mem loop_ms mem) = MachineOk (with_mem loop_ms mem).
-Proof. intros. vm_compute. reflexivity. Qed.
+  RiscvSemantics.step loop_run_segments (with_mem loop_ms mem) = MachineOk (with_mem loop_ms mem).
+Proof.
+  intros. unfold loop_ms, loop_run_segments, run_segments in *.
+  abstract_vdso_tail. vm_compute. reflexivity.
+Qed.
 
 Lemma loop_only : forall lim evs st,
   sstep loop_segments (loop_c lim) evs st -> evs = [] /\ st = SNext (loop_c lim).
@@ -1031,13 +1056,17 @@ Fixpoint run_steps (n : nat) (segs : list Segment) (ms : machine_state)
             end
   end.
 
+Definition wloop_run_segments : list Segment :=
+  run_segments wloop_segments demo_proc_input (Z_to_bv 64 0x7fff80000000)
+    (Z_to_bv 64 mmap_base_max).
+
 Definition wloop_ms0 : machine_state :=
-  init_machine_state wloop_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
+  init_machine_state wloop_run_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
     demo_draw
     (in_argv demo_proc_input) (in_envp demo_proc_input) (in_uid demo_proc_input)
     (in_hwcap demo_proc_input).
 Definition wloop_msk (k : nat) : machine_state :=
-  match run_steps k wloop_segments wloop_ms0 with
+  match run_steps k wloop_run_segments wloop_ms0 with
   | Some ms => ms
   | None => wloop_ms0
   end.
@@ -1046,12 +1075,13 @@ Definition wloop_msk (k : nat) : machine_state :=
 Definition wloop_s (k : nat) : machine_state := with_mem (wloop_msk k) (ms_mem wloop_ms0).
 
 Definition wloop_model (lim : Z) : Model :=
-  init_model (segments_reserved wloop_segments) (Z_to_bv 64 0x1000)
-    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) lim demo_proc_input.
+  with_vdso (vdso_run_init (ed_vdso demo_draw))
+    (init_model (segments_reserved wloop_run_segments) (Z_to_bv 64 0x1000)
+    (Z_to_bv 64 mmap_base_max) (Z_to_bv 64 0x7fff80000000) lim demo_proc_input).
 Definition wloop_c (lim : Z) : config := mkCfg (wloop_s 0) (wloop_model lim).
 
 Lemma wloop_config : forall lim,
-  init_config wloop_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
+  init_config wloop_run_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
     (Z_to_bv 64 0x1000) (Z_to_bv 64 mmap_base_max) demo_draw lim demo_proc_input = wloop_c lim.
 Proof. intros lim. unfold init_config, wloop_c. f_equal; try exact (with_mem_eta wloop_ms0). Qed.
 
@@ -1065,10 +1095,12 @@ Definition wloop_eff : SyscallEffect :=
 Definition wloop_s6 : machine_state := advance_past_svc (apply_effect (wloop_s 5) wloop_eff).
 
 Lemma wloop_step : forall k, (k < 5)%nat -> forall mem,
-  RiscvSemantics.step wloop_segments (with_mem (wloop_msk k) mem)
+  RiscvSemantics.step wloop_run_segments (with_mem (wloop_msk k) mem)
   = MachineOk (with_mem (wloop_msk (S k)) mem).
 Proof.
   intros k Hk mem.
+  unfold wloop_msk, wloop_ms0, wloop_run_segments, run_segments in *.
+  abstract_vdso_tail.
   do 5 (destruct k as [| k]; [vm_compute; reflexivity |]). lia.
 Qed.
 
@@ -1076,8 +1108,12 @@ Lemma wloop_svc5 : ms_svc_pending (wloop_s 5) = Some (Z_to_bv 64 64).
 Proof. vm_compute. first [reflexivity | f_equal; apply bv_eq; reflexivity]. Qed.
 
 Lemma wloop_fix : forall mem,
-  RiscvSemantics.step wloop_segments (with_mem wloop_s6 mem) = MachineOk (with_mem wloop_s6 mem).
-Proof. intros. vm_compute. reflexivity. Qed.
+  RiscvSemantics.step wloop_run_segments (with_mem wloop_s6 mem) = MachineOk (with_mem wloop_s6 mem).
+Proof.
+  intros. unfold wloop_s6, wloop_s, wloop_msk, wloop_ms0,
+    wloop_run_segments, run_segments in *.
+  abstract_vdso_tail. vm_compute. reflexivity.
+Qed.
 
 (** The five instruction transitions, each the only one from its
     configuration. *)
@@ -1312,7 +1348,7 @@ Theorem loop_wloop_not_omni_trace_equiv :
                      wloop_image target_alloc_limit demo_entry demo_proc_input.
 Proof.
   unfold omni_trace_equiv. cbn [omni_cosafe loop_image wloop_image demo_entry].
-  rewrite loop_config, wloop_config. apply loop_wloop_cosafe_disagree.
+  fold loop_run_segments wloop_run_segments. rewrite loop_config, wloop_config. apply loop_wloop_cosafe_disagree.
 Qed.
 
 Theorem loop_wloop_not_omni_equiv :
@@ -1320,7 +1356,8 @@ Theorem loop_wloop_not_omni_equiv :
                wloop_image target_alloc_limit demo_entry demo_proc_input.
 Proof.
   intros [Hall | (Htr & _)].
-  - cbn [omni_run loop_image demo_entry] in Hall. rewrite loop_config in Hall.
+  - cbn [omni_run loop_image demo_entry] in Hall.
+    fold loop_run_segments in Hall. rewrite loop_config in Hall.
     exact (loop_no_exec _ _ Hall).
   - exact (loop_wloop_not_omni_trace_equiv Htr).
 Qed.
@@ -1339,7 +1376,7 @@ Example loop_wloop_never_errors : forall lim,
   /\ omni_corun wloop_image lim demo_entry demo_proc_input never_errors.
 Proof.
   intros lim. cbn [omni_corun loop_image wloop_image demo_entry].
-  rewrite loop_config, wloop_config.
+  fold loop_run_segments wloop_run_segments. rewrite loop_config, wloop_config.
   split; [apply loop_coexec_any | apply wloop_coexec_any].
 Qed.
 

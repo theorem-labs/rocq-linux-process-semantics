@@ -268,12 +268,28 @@ Definition vdso_segments (kb : KernelBuild) (sp mbase : word) : list Segment :=
     let tbase := (top - vdso_text_pages kb * page_size)%Z in
     [ {| seg_base  := Z.to_N base;
          seg_size  := Z.to_N (vdso_vvar_pages * page_size);
-         seg_perms := "r--D"%string;
-         seg_bytes := [] |}
+         seg_perms := "r--"%string;
+         seg_bytes := []; seg_kind := SegVdsoVvar |}
     ; {| seg_base  := Z.to_N tbase;
          seg_size  := Z.to_N (vdso_text_pages kb * page_size);
-         seg_perms := "r--V"%string;
-         seg_bytes := vi_bytes im |} ].
+         seg_perms := "r--"%string;
+         seg_bytes := vi_bytes im; seg_kind := SegVdsoText |} ].
+
+(** OPAQUE TO REDUCTION, and that is a performance decision with a
+    measured cause.  The text segment carries the whole measured image
+    — 5704 bytes in twelve chunks — so a [vm_compute] of any term that
+    mentions the run's segment list normalizes those bytes, even when
+    the address it is asking about lies in the binary's own segments
+    and [find_segment] answers before it reaches the pair.  One
+    [Example] of [Checks.Omni] ran for 59 minutes that way.
+
+    Opaque, the pair is one symbol: [find_segment] tests the binary's
+    segments, which come first, answers there, and never forces it.
+    Every fixture that is not ABOUT the vDSO therefore computes as it
+    did before the pair existed.  A proof that IS about the vDSO —
+    [Checks.Cases.Kernel.Vdso] — writes [Local Transparent
+    vdso_segments] and pays the cost once. *)
+Global Opaque vdso_segments.
 
 (** The segment list a RUN is read against: the binary's LOAD segments
     and the pair above.  [Run.run] and every variant beside it use

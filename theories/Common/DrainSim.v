@@ -1036,7 +1036,7 @@ Lemma drain_omni_cosafe : forall isegs pc ph sp brk0 mb rnd lim inp a0,
   omni_cosafe (mkImage isegs pc ph) lim (mkEntry sp brk0 mb rnd) inp
     (drain_from cnt f out ec a0 (in_fs inp) (in_stdin inp)).
 Proof.
-  intros isegs pc ph sp brk0 mb rnd lim inp a0 Hseg Hrd. cbn [omni_cosafe].
+  intros isegs pc ph sp brk0 mb rnd lim inp a0 Hseg Hrd. cbn [omni_cosafe]. unfold init_config. rewrite Hseg.
   apply cosafe_obs_iff.
   - (* prefix-closed, through the trace-set characterisation itself *)
     intros t t' Ht Hp.

@@ -13,11 +13,45 @@ From Stdlib Require PrimString.
 Import ListNotations.
 Local Open Scope string_scope.
 
+(** WHAT PUT A SEGMENT IN THE LIST.
+
+    [execve] maps two kinds of thing: the binary's own LOAD segments,
+    which the loader reads out of the ELF file, and the kernel's own
+    pages, which the binary never asked for — the vDSO text, whose base
+    the auxiliary vector publishes as [AT_SYSINFO_EHDR], and the vvar
+    data pages directly below it ([__setup_additional_pages],
+    arch/riscv/kernel/vdso.c, and [vdso_install_vvar_mapping],
+    lib/vdso/datastore.c, Linux v6.18.46, commit 1f99e9ab748f).
+
+    [Run.run] puts all of them into ONE list, because that is the list
+    every load, store and fetch is read against, and a second list
+    would be a second answer to the same question.  This field is what
+    tells them apart.
+
+    IT IS A FIELD AND NOT A LETTER IN [seg_perms].  A tag inside the
+    permission string would be safe only if no emitter could ever write
+    such a letter, and nothing holds that property: [elf_snapshot.py]'s
+    pattern check runs only over files that tool itself wrote, and
+    [theorem-labs/linux-process-semantics] has two more emitters,
+    [tools/gen_lean_image.py] and [tools/gen_lean_example_image.py],
+    that write the permission string verbatim.  A binary segment whose
+    permissions happened to carry the letter would be dropped from
+    [Run.segments_reserved], and the allocator could then grant over
+    the binary's own text while a universal statement still held,
+    having said nothing about either binary.  With a field, no string
+    can mean a kernel mapping and every emitter must say which kind it
+    is writing. *)
+Inductive SegKind :=
+| SegLoader    (** a LOAD segment of the binary *)
+| SegVdsoText  (** the vDSO text the kernel mapped *)
+| SegVdsoVvar  (** the vvar data pages below it *).
+
 Record Segment := {
   seg_base  : N;
   seg_size  : N;
   seg_perms : String.string;
-  seg_bytes : list PrimString.string  (* hex chunks, lowercase, no spaces *)
+  seg_bytes : list PrimString.string;  (* hex chunks, lowercase, no spaces *)
+  seg_kind  : SegKind
 }.
 
 (** ** [PhdrInfo] — where the binary's PROGRAM HEADER TABLE lands in memory
@@ -96,31 +130,12 @@ Definition seg_readable   (seg : Segment) : bool := string_has "r"%char (seg_per
 Definition seg_writable   (seg : Segment) : bool := string_has "w"%char (seg_perms seg).
 Definition seg_executable (seg : Segment) : bool := string_has "x"%char (seg_perms seg).
 
-(** ** The kernel's own mappings, in the same list
+(** ** The kernel's own mappings, told apart by [seg_kind]
 
-    [execve] installs two areas the binary never asked for: the vDSO
-    TEXT, whose base the auxv publishes as [AT_SYSINFO_EHDR], and the
-    four VVAR data pages directly below it (arch/riscv/kernel/vdso.c
-    [__setup_additional_pages] and lib/vdso/datastore.c
-    [vdso_install_vvar_mapping], Linux v6.18.46, commit 1f99e9ab748f).
-    [Run.run] puts both into the SAME segment list as the binary's LOAD
-    segments, because that is the list every load, store and fetch is
-    already read against, and a second list would be a second answer to
-    the same question.
+    WHAT EACH KIND MEANS for the machine, beyond telling the pair apart
+    from the binary:
 
-    A kernel mapping is told from a LOAD segment by a TAG LETTER in
-    [seg_perms]: 'V' for the vDSO text, 'D' for the vvar data pages.
-    The tag can never collide with a binary's own segment, because a
-    binary's [seg_perms] is written by [tools/elf_snapshot.py] from the
-    ELF program-header flags and uses only 'r', 'w', 'x' and '-' — the
-    shape [tools/test_elf_snapshot.py] holds it to, and the shape
-    [elf_snapshot.py]'s own re-reader ([r-][w-][x-]) accepts.  So no
-    generated image can carry a tag, and the two kinds stay apart
-    without a field that every generated literal would have to write.
-
-    WHAT EACH TAG BUYS, beyond telling the pair apart from the binary:
-
-    - [seg_vdso_text]: [RiscvSemantics.fetch_failure] answers
+    - [SegVdsoText]: [RiscvSemantics.fetch_failure] answers
       [MachineUnmodeled] for a pc inside it, and [Run.sstep]'s vDSO arm
       takes the one step a call to an exported entry is.  The segment
       is READABLE, so a libc's lookup reads the image's bytes with
@@ -131,7 +146,7 @@ Definition seg_executable (seg : Segment) : bool := string_has "x"%char (seg_per
       [MachineUnmodeled] arm is the only answer rather than one of
       two, and no lemma about a successful [fetch_word] has to exclude
       the vDSO.
-    - [seg_vdso_vvar]: a load from it is [MachineUnmodeled] rather than
+    - [SegVdsoVvar]: a load from it is [MachineUnmodeled] rather than
       the fault an unmapped address gives.  The pages exist and are
       readable on Linux; what the model has no term for is their
       CONTENTS, which the kernel rewrites while the process runs.  The
@@ -141,8 +156,10 @@ Definition seg_executable (seg : Segment) : bool := string_has "x"%char (seg_per
     Neither is writable, so a store into either is the SIGSEGV a real
     MMU delivers, through [RiscvSemantics.store_ok], with no arm of its
     own. *)
-Definition seg_vdso_text (seg : Segment) : bool := string_has "V"%char (seg_perms seg).
-Definition seg_vdso_vvar (seg : Segment) : bool := string_has "D"%char (seg_perms seg).
+Definition seg_vdso_text (seg : Segment) : bool :=
+  match seg_kind seg with SegVdsoText => true | _ => false end.
+Definition seg_vdso_vvar (seg : Segment) : bool :=
+  match seg_kind seg with SegVdsoVvar => true | _ => false end.
 
 (** A segment the KERNEL installed rather than the loader.  [Run.run]
     builds these; [Run.segments_reserved] leaves them out, because the
@@ -150,7 +167,7 @@ Definition seg_vdso_vvar (seg : Segment) : bool := string_has "D"%char (seg_perm
     twice would move [Run.valid_brk]'s [reserved_top] to the top of the
     address space. *)
 Definition seg_kernel_map (seg : Segment) : bool :=
-  (seg_vdso_text seg || seg_vdso_vvar seg)%bool.
+  match seg_kind seg with SegLoader => false | _ => true end.
 
 (** ** [MemImage] — the data a single compiled binary contributes to the model.
 

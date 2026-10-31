@@ -26,6 +26,11 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases.Kernel Require Import Vd
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys.Mm Require Import Mprotect.
 Import ListNotations.
 Open Scope bv_scope.
+
+(** This file IS about the vDSO pair, so it pays the cost of reducing
+    the measured image; [Run.vdso_segments] is opaque everywhere else
+    for the reason stated there. *)
+Local Transparent vdso_segments.
 Local Open Scope Z_scope.
 
 (* =========================================================================
@@ -55,9 +60,10 @@ Definition fx_text_base : Z := 0x7ffff7ffe000.
 Example fx_pair_is_the_pair :
   fx_pair =
   [ {| seg_base := Z.to_N fx_vvar_base; seg_size := 16384;
-       seg_perms := "r--D"%string; seg_bytes := [] |}
+       seg_perms := "r--"%string; seg_bytes := []; seg_kind := SegVdsoVvar |}
   ; {| seg_base := Z.to_N fx_text_base; seg_size := 8192;
-       seg_perms := "r--V"%string; seg_bytes := vi_bytes vdso_image_default |} ].
+       seg_perms := "r--"%string; seg_bytes := vi_bytes vdso_image_default;
+       seg_kind := SegVdsoText |} ].
 Proof. vm_compute. reflexivity. Qed.
 
 (** The text ends at the ledger's [vdso_top], and the pair is the five
@@ -79,7 +85,7 @@ Proof. vm_compute. repeat split. Qed.
 Definition fx_code : Segment :=
   {| seg_base := 0x10000; seg_size := 8;
      seg_perms := "r-x"%string;
-     seg_bytes := ["03b5050023b0a500"%pstring] |}.
+     seg_bytes := ["03b5050023b0a500"%pstring]; seg_kind := SegLoader |}.
 
 Definition fx_segs : list Segment := fx_code :: fx_pair.
 
@@ -347,7 +353,8 @@ Definition fx_other : word := Z_to_bv 64 0x80000000.
 Definition fx_model : Model :=
   with_vmmaps
     (mkVmMapsFull (vm_reserved (m_vmmaps fx_model0))
-       [(fx_other, Z_to_bv 64 4096)] [] 0 0 0x40000000 fx_mbase fx_sp)
+       [(fx_other, Z_to_bv 64 4096)] [(fx_other, Z_to_bv 64 4096)]
+       0 0 0x40000000 fx_mbase fx_sp)
     fx_model0.
 
 (** The pair is in this ledger's reservations, at the fixture's
@@ -355,7 +362,8 @@ Definition fx_model : Model :=
     reserved, not about a number written twice. *)
 Example fx_model_reserves_the_pair :
   vdso_reserved (m_kernel fx_model) (vdso_top (m_vmmaps fx_model))
-  = [(Z_to_bv 64 fx_vvar_base, Z_to_bv 64 (6 * 4096))].
+  = [(Z_to_bv 64 fx_vvar_base, Z_to_bv 64 (4 * 4096));
+     (Z_to_bv 64 fx_text_base, Z_to_bv 64 (2 * 4096))].
 Proof. vm_compute. reflexivity. Qed.
 
 (** REFUSES: a page of the vDSO text.  Linux would allow it — the

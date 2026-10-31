@@ -26,7 +26,8 @@ Definition cli_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 2;
   seg_perms := "r-x";
-  seg_bytes := ["1545"%pstring]
+  seg_bytes := ["1545"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition cli_segments : list Segment := [cli_segment].
 
@@ -38,7 +39,8 @@ Definition trunc32_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 2;
   seg_perms := "r-x";
-  seg_bytes := ["1300"%pstring]
+  seg_bytes := ["1300"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition trunc32_segments : list Segment := [trunc32_segment].
 
@@ -49,7 +51,8 @@ Definition cli_pad_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x";
-  seg_bytes := ["1545ffff"%pstring]
+  seg_bytes := ["1545ffff"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition cli_pad_segments : list Segment := [cli_pad_segment].
 
@@ -58,7 +61,8 @@ Definition addi_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x";
-  seg_bytes := ["13000000"%pstring]
+  seg_bytes := ["13000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition addi_segments : list Segment := [addi_segment].
 
@@ -185,7 +189,8 @@ Definition wx_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "rwx";
-  seg_bytes := ["13000000"%pstring]
+  seg_bytes := ["13000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition wx_segments : list Segment := [wx_segment].
 
@@ -238,7 +243,8 @@ Definition nx_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "rw-";
-  seg_bytes := ["13000000"%pstring]
+  seg_bytes := ["13000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition nx_segments : list Segment := [nx_segment].
 
@@ -256,7 +262,8 @@ Definition badhex_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x";
-  seg_bytes := ["1300A000"%pstring]
+  seg_bytes := ["1300A000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition badhex_segments : list Segment := [badhex_segment].
 
@@ -279,9 +286,9 @@ Proof. vm_compute. reflexivity. Qed.
     genuinely unmapped, which stays [MachineFault]. *)
 Definition split_wx_segments : list Segment :=
   [ {| seg_base := 0x100; seg_size := 2;
-       seg_perms := "r-x"; seg_bytes := ["1300"%pstring] |}
+       seg_perms := "r-x"; seg_bytes := ["1300"%pstring]; seg_kind := SegLoader |}
   ; {| seg_base := 0x102; seg_size := 2;
-       seg_perms := "rwx"; seg_bytes := ["0000"%pstring] |} ].
+       seg_perms := "rwx"; seg_bytes := ["0000"%pstring]; seg_kind := SegLoader |} ].
 
 Example split_wx_first_parcel_ok :
   fetch_half split_wx_segments (Z_to_bv 64 0x100) = Some (Z_to_bv 16 0x0013).

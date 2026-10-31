@@ -51,7 +51,8 @@ Definition zero_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x";
-  seg_bytes := ["00000000"%pstring]
+  seg_bytes := ["00000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition zero_segments : list Segment := [zero_segment].
 
@@ -84,7 +85,8 @@ Definition zero2_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 2;
   seg_perms := "r-x";
-  seg_bytes := ["0000"%pstring]
+  seg_bytes := ["0000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition zero2_segments : list Segment := [zero2_segment].
 
@@ -99,7 +101,8 @@ Definition zerolow_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x";
-  seg_bytes := ["00001300"%pstring]
+  seg_bytes := ["00001300"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition zerolow_segments : list Segment := [zerolow_segment].
 
@@ -116,7 +119,8 @@ Definition ones_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x";
-  seg_bytes := ["ffffffff"%pstring]
+  seg_bytes := ["ffffffff"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition ones_segments : list Segment := [ones_segment].
 
@@ -176,7 +180,8 @@ Definition word_segment (hex : PrimString.string) : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x";
-  seg_bytes := [hex]
+  seg_bytes := [hex];
+  seg_kind  := SegLoader
 |}.
 Definition word_segments (hex : PrimString.string) : list Segment :=
   [word_segment hex].
