@@ -342,9 +342,10 @@ probe's own ELF header — `{"base", "phoff", "phdr", "phentsize", "phnum",
 "entry"}`, with `phdr` = `base + phoff` — read out of its own mapped image
 (`read_elf_facts`), so that the four auxv entries the kernel copies out of
 that header are checked against the header instead of being fed back in. It
-is `null` when the first mapping carries no ELF magic. The ten logs in the
-tree were captured before this key existed; re-capture them with a rebuilt
-probe and the four entries become a check.
+is `null` when the first mapping carries no ELF magic. The key is written by
+the start-state run, so the ten start-state logs carry it and the four
+placement logs do not; all fourteen in the tree were re-captured from the
+probe that writes it, so the four auxv entries are a check and not an input.
 
 ### The check: a Rocq term, computed against the model
 
@@ -374,7 +375,7 @@ the sixteen AT_RANDOM bytes are the record's own, carried in the draw.
 
 `../../tests/dune` of the entry tree has one rule per log, so `dune build`
 compiles all ten and a start state LPS does not reproduce breaks the build.
-Each file costs 0.9 to 2.2 seconds of `rocq compile`, 15.1 seconds for the
+Each file costs 0.9 to 2.5 seconds of `rocq compile`, 15.7 seconds for the
 ten: a block of a few kilobytes is cheap for `vm_compute`.
 
 Ten passing equalities would also pass if `block_ok` had stopped computing
@@ -383,8 +384,8 @@ moves one byte of the kernel's block, states the DISAGREEMENT, and compiles
 only if the model refuses the moved block; each names its admitted
 neighbour in its own header, so the refusal and the case still admitted come
 as a pair. One is on the shortest record (byte 0, the low byte of `argc`),
-one on the longest (byte 7,000, in the string area). They cost 0.89 s and
-3.83 s, and bring the set to 19.9 seconds.
+one on the longest (byte 7,000, in the string area). They cost 1.00 s and
+4.08 s, and bring the set to 20.8 seconds.
 
 ### The evidence: the Python checker
 
@@ -397,7 +398,9 @@ python3 tools/placement_conformance/check_start_state.py LOG [LOG ...] \
 PYTHON TRANSCRIPTION of the model, between the markers
 `MODEL TRANSCRIPTION BEGINS` and `MODEL TRANSCRIPTION ENDS`: a second model
 of the entry block that nothing proves agrees with the first. Its run stands
-as the first evidence — 110 verdicts over 10 records, 0 failures — and it
+as evidence — 100 verdicts over 10 records, 0 failures on the re-captured
+logs, and 110 of 110 on the first capture, where the kernel's `vdso.so` was
+to hand for the ten extra verdicts — and it
 reads two things the Rocq files do not: the recorded vDSO image against the
 kernel build's own `vdso.so`, and the distance from the `[vvar]` mapping to
 AT_SYSINFO_EHDR. It exits 0 when every sub-check of every log passes. Both

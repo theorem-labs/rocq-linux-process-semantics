@@ -6,8 +6,9 @@ by start_state_to_rocq.py, which emits a Rocq file per log whose lemmas Rocq
 closes with vm_compute against the model's own source.  What this script
 compares the record with is the PYTHON TRANSCRIPTION below: a second model of
 the entry block that nothing proves agrees with the first.  Its run stands as
-the first evidence that the ten records agree with the model -- 110 verdicts
-over 10 records, 0 failures, reports/a4-start-state.md of the entry lane's
+the first evidence that the ten records agree with the model -- 100 verdicts
+over 10 records and 0 failures on the logs in the tree, 110 of 110 on the
+capture before them, reports/a4-start-state.md of the entry lane's
 clone -- and it reads two things the Rocq files do not: the vDSO image
 against the kernel build's own vdso.so, and the vvar mapping's distance below
 AT_SYSINFO_EHDR.  It is no longer in the trusted path.

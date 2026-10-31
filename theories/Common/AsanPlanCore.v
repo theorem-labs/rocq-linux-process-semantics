@@ -74,9 +74,14 @@ Import AX2. Import AX2B.
 (** * 0. Constants and the address table (one instance per image)            *)
 (* ######################################################################### *)
 
-(** [AsanCeil.alloc_ceiling]: every grant ends below it; the stack window and the
-    argument block lie above it. *)
-Definition CEIL : Z := 0x7fff7f800000.
+(** [CEIL] — the boundary between the grant region and the stack side — is a
+    PARAMETER of the checker (declared in [Section WithSegs] below), not a
+    constant.  Every grant the checker records ends at or below it; the stack
+    window and the argument block lie above it.  The run fixes it:
+    [AsanPlanSound.co_ceil] says [CEIL = page_round_down_Z (alloc_top (m_vmmaps model))].
+    It is NOT [AsanCeil.alloc_ceiling = 0x7fff7f800000]: that constant is a
+    LOWER bound for it (a true ledger bound only under [AsanCeil.init_sp_ok]),
+    and [Run.valid_mmap_base] admits a run whose grants land above it. *)
 (** [AsanPlacement.kHighMemBeg]: NULL-hint grants land strictly above it, every
     other ledger interval (image, shadows, brk heap) ends at or below it. *)
 Definition KHI : Z := 0x10007fff8000.
@@ -113,6 +118,16 @@ Variable IT : itab.
 Variable A : atable.
 Variable nx0 : nat.     (** variables below nx0 are the INITIAL ones (splits / shapes may only mention those) *)
 Variable LIMIT : Z.     (** the run's backing budget (vm_limit): target_alloc_limit *)
+Variable CEIL : Z.      (** the run's allocation ceiling: [page_round_down_Z (alloc_top (m_vmmaps model))] *)
+
+(** What a plan layer needs of the run's ceiling, wrapped in a definition so
+    that [lia] does not silently make every lemma of a Section depend on it.
+    The bounds: [AsanCeil.alloc_ceiling = 0x7fff7f800000] below (every
+    admissible run has [sp >= State.sp_window_lo], so
+    [alloc_top h = sp - stack_max_size >= alloc_ceiling]) and
+    [State.sp_window_hi - State.stack_max_size = 0x7fffff800000] above. *)
+Definition ceil_ok : Prop :=
+  CEIL mod 4096 = 0 /\ 0x7fff7f800000 <= CEIL <= 0x7fffff800000.
 
 (* ######################################################################### *)
 (** * 1. Shapes                                                               *)
@@ -3697,14 +3712,14 @@ Definition init_kn_zero (A : atable) : list kentry := init_kn_with atr_entry_zer
 
 Definition init_regs : list expr := sr_upd (repeat (ELit 0) 32) 2 e_sp0.
 (** visible application ranges at start: the image hull and the whole stack side *)
-Definition init_vis (A : atable) : list (expr * expr) :=
+Definition init_vis (A : atable) (CEIL : Z) : list (expr * expr) :=
   [(ELit (img_lo A), ELit (img_hi A - img_lo A)); (ELit CEIL, ELit (2^47 - CEIL))].
 
-Definition init_acs_of_with (kn0 : list kentry) (A : atable) : acs :=
-  ACS (mk_ss (a_entry A) init_regs kn0 NX0) [] (img_hi A - img_lo A) MBASE_MIN 0 (init_vis A) []
+Definition init_acs_of_with (kn0 : list kentry) (A : atable) (CEIL : Z) : acs :=
+  ACS (mk_ss (a_entry A) init_regs kn0 NX0) [] (img_hi A - img_lo A) MBASE_MIN 0 (init_vis A CEIL) []
       (vis_cost (img_hi A - img_lo A) + vis_cost (2^47 - CEIL)) (escale 4096 (EVar V_BRK)) FdStd false.
-Definition init_acs_of (A : atable) : acs := init_acs_of_with (init_kn A) A.        (** the default *)
-Definition init_acs_of_zero (A : atable) : acs := init_acs_of_with (init_kn_zero A) A.  (** zero draw *)
+Definition init_acs_of (A : atable) (CEIL : Z) : acs := init_acs_of_with (init_kn A) A CEIL.        (** the default *)
+Definition init_acs_of_zero (A : atable) (CEIL : Z) : acs := init_acs_of_with (init_kn_zero A) A CEIL.  (** zero draw *)
 
 (* ######################################################################### *)
 (** * 10. Address tables                                                      *)

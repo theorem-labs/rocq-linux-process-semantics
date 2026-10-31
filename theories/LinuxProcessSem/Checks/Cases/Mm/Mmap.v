@@ -12,7 +12,9 @@
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs Run StackLayout MemImageType RiscvSemantics.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
+  ExecutableSpecs Placement.
+
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 From LinuxProcessSemantics.Riscv Require Import Decode DecodeC.
 Import ListNotations.
@@ -2870,6 +2872,9 @@ Proof. check_eq. Qed.
     Linux v6.18.46, commit 1f99e9ab748f).  The pair is the first thing
     a top-down descent meets, so the first grant of a run lands one
     page under it. *)
+Definition placement_reserved : list (word * word) :=
+  vm_reserved (m_vmmaps placement_model).
+
 Definition placement_search_answer : Z :=
   (vdso_top (m_vmmaps placement_model) - vdso_len default_kernel - 4096)%Z.
 
@@ -2880,7 +2885,8 @@ Example mmap_null_hint_lands_under_the_vdso :
     placement_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 placement_search_answer, 4096)] []
+        (mkVmMapsFull placement_reserved
+          [(Z_to_bv 64 placement_search_answer, 4096)] []
           0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) demo_sp) placement_model) [].
 Proof. check_eq. Qed.
@@ -2903,7 +2909,8 @@ Example mmap_noaccess_null_hint_lands_under_the_vdso :
     placement_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 placement_search_answer, 4096)]
+        (mkVmMapsFull placement_reserved
+          [(Z_to_bv 64 placement_search_answer, 4096)]
           [(Z_to_bv 64 placement_search_answer, 4096)] 0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) demo_sp) placement_model) [].
 Proof. check_eq. Qed.
@@ -2924,7 +2931,8 @@ Example mmap_nonnull_hint_low_grant_admitted :
     placement_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 0x80000000, 4096)] [] 0 0 demo_limit
+        (mkVmMapsFull placement_reserved [(Z_to_bv 64 0x80000000, 4096)] []
+          0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) demo_sp) placement_model) [].
 Proof. check_eq. Qed.
 
@@ -3169,16 +3177,19 @@ Lemma first_null_grant_admissible :
          a (Z_to_bv 64 (page_round_up_Z (bv_unsigned len))) = true.
 Proof.
   intros mb sp inp len a m' evs Hlen H.
+  pose proof (w_is0_false_pos len Hlen) as Hlpos.
+  pose proof (page_round_up_Z_pos (bv_unsigned len) Hlpos) as Hge.
+  assert (HnPos : (0 < page_round_up_Z (bv_unsigned len))%Z)
+    by (unfold page_size in Hge; lia).
+  assert (HnAl : (page_round_up_Z (bv_unsigned len) mod page_size = 0)%Z)
+    by apply page_round_up_Z_aligned.
   unfold check_mmap in H. rewrite Hlen in H.
   cbn [mmap_modeled_b] in H. cbv zeta in H.
   destruct (errno_ret_in mmap_errnos a) eqn:He; [discriminate|].
-  destruct ((bv_unsigned a mod page_size =? 0)%Z && (0 <? bv_unsigned a)%Z
-            && (bv_unsigned a + page_round_up_Z (bv_unsigned len)
-                <=? alloc_top (m_vmmaps (init_model [] 0 mb sp demo_limit inp)))%Z
-            && region_free
-                 (vm_reserved (m_vmmaps (init_model [] 0 mb sp demo_limit inp))
-                  ++ vm_maps (m_vmmaps (init_model [] 0 mb sp demo_limit inp)))
-                 a (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+  destruct (linux_place_is
+              (m_vmmaps (init_model [] 0 mb sp demo_limit inp))
+              (kb_thp (m_kernel (init_model [] 0 mb sp demo_limit inp)))
+              0 (page_round_up_Z (bv_unsigned len)) a
             && mmap_noreserve_backed_ok 34 (init_model [] 0 mb sp demo_limit inp)
                  (page_round_up_Z (bv_unsigned len))
             && listNN_eqb
@@ -3186,13 +3197,8 @@ Proof.
                  [(a, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
     eqn:HC; [|discriminate].
   apply andb_true_iff in HC as [HC _].
-  apply andb_true_iff in HC as [HC _].
-  apply andb_true_iff in HC as [HC Hfree].
-  apply andb_true_iff in HC as [HC Hceil].
-  apply andb_true_iff in HC as [Halign Hpos].
-  apply Z.eqb_eq in Halign. apply Z.ltb_lt in Hpos.
-  apply Z.leb_le in Hceil.
-  repeat split; assumption.
+  apply andb_true_iff in HC as [Hpl _].
+  exact (linux_place_is_admissible _ _ _ _ _ HnPos HnAl Hpl).
 Qed.
 
 (** Reason 1, the negative half of the same [forall]: no resolution whose
@@ -3253,6 +3259,9 @@ Definition top_hi_model : Model :=
     search would answer the highest page under the vdso/vvar pair in
     either run — and the pair would no longer say anything about the
     ceiling. *)
+Definition top_hi_reserved : list (word * word) :=
+  vm_reserved (m_vmmaps top_hi_model).
+
 Example grant_at_demo_top_rejected_under_low_sp :
   check_syscall (mmap_at_in (Z_to_bv 64 demo_top) 4096)
     (mkEffect (Z_to_bv 64 demo_top) [] [(Z_to_bv 64 demo_top, 4096)])
@@ -3266,7 +3275,8 @@ Example grant_at_demo_top_admitted_under_high_sp :
     top_hi_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 demo_top, 4096)] [] 0 0 demo_limit
+        (mkVmMapsFull top_hi_reserved [(Z_to_bv 64 demo_top, 4096)] []
+          0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) hi_sp) top_hi_model) [].
 Proof. check_eq. Qed.
 
@@ -3284,7 +3294,7 @@ Example noaccess_grant_at_demo_top_admitted_under_high_sp :
     top_hi_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 demo_top, 4096)]
+        (mkVmMapsFull top_hi_reserved [(Z_to_bv 64 demo_top, 4096)]
           [(Z_to_bv 64 demo_top, 4096)] 0 0 demo_limit
           (Z_to_bv 64 mmap_base_max) hi_sp) top_hi_model) [].
 Proof. check_eq. Qed.
@@ -3313,7 +3323,8 @@ Example brk_grow_across_demo_top_admitted_under_high_sp :
     brk_top_hi_model
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull [] [(Z_to_bv 64 (demo_top - 4096), 8192)] []
+        (mkVmMapsFull (vm_reserved (m_vmmaps brk_top_hi_model))
+          [(Z_to_bv 64 (demo_top - 4096), 8192)] []
           (Z_to_bv 64 (demo_top - 4096)) (Z_to_bv 64 (demo_top + 4096))
           demo_limit (Z_to_bv 64 mmap_base_max) hi_sp) brk_top_hi_model) [].
 Proof. check_eq. Qed.
@@ -3929,7 +3940,10 @@ Definition budget_ledgers (m : Model)
 Definition budget_s0 : Model :=
   init_model brk_reserved 65536 0 demo_sp 8192 (demo_input [] IEof).
 
-Definition mmap_at_in (a n prot flags : word) : SyscallInput :=
+(** The budget trace's own call builder: four argument words rather
+    than the two [mmap_at_in] above fixes, because this section varies
+    [prot] and [flags] as well as the address. *)
+Definition mmap_flags_in (a n prot flags : word) : SyscallInput :=
   mkInput 222 [a; n; prot; flags; mmap_fd_none; 0] (fun _ => None) (fun _ => None).
 
 Definition munmap_in (a n : word) : SyscallInput :=
@@ -3939,11 +3953,15 @@ Definition munmap_in (a n : word) : SyscallInput :=
     PROT_NONE over [[P, P + 4096)]. *)
 Definition budget_prefix : list (SyscallInput * SyscallEffect) :=
   [ (brk_in 69732, mkEffect 69732 [] [(65536, 8192)]);
-    (mmap_at_in 69632 4096 0 50, mkEffectU 69632 [] [] [(69632, 4096)] [] []) ].
+    (mmap_flags_in 69632 4096 0 50, mkEffectU 69632 [] [] [(69632, 4096)] [] []) ].
 
-(** A fresh page that spends the rest of the budget. *)
+(** A fresh page that spends the rest of the budget.  0x20000 is a
+    HINT: this trace's ledger has [vm_mmap_base] 0, so its top-down
+    window is empty, and Linux returns a free page-aligned hint
+    unchanged (mm/mmap.c:753-761, [generic_get_unmapped_area_topdown],
+    Linux v6.18.46, commit 1f99e9ab748f). *)
 Definition budget_fill : SyscallInput * SyscallEffect :=
-  (mmap_at_in 0 4096 3 34, mkEffect 131072 [] [(131072, 4096)]).
+  (mmap_flags_in 131072 4096 3 34, mkEffect 131072 [] [(131072, 4096)]).
 
 (** BRK SHRINK.  brk(P) from P + 100: [newbrk = P] and [oldbrk = P +
     4096] differ, so [SYSCALL_DEFINE1(brk)] hands [[P, P + 4096)] to
