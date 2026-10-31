@@ -1,6 +1,7 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/Measure.v
 import LinuxProcessSemantics.EquivalenceDefinition.Classifier
 
-/-! rocq-baseline: 43f322ba3c8ed9cee0e632da3b7ed0b91210f84c -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # EquivalenceDefinition.Measure — weighted measure of the fire set
 

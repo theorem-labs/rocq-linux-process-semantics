@@ -1,7 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/Equivalence.v
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.Base
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.ErrorFree
 
-/-! rocq-baseline: 1807c1e25ce12708f5cc85213f2df4bf03d978da -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! Spurious-failure configurations are task parameters: a classifier may
 need a forced-refusal reading to reason about a successful input read.
@@ -237,5 +238,51 @@ theorem strong_universal_T_cfg_true (s t : Image) :
 theorem strong_universal_error_free_T_cfg_true (s t : Image) :
     strong_universal_error_free_T_cfg true s t ↔ strong_universal_error_free_T s t :=
   strong_universal_error_free_T_scfg_may_fail s t
+
+/-- The configuration a task is stated under, as a record, so that a
+generated checker names the value it proved at. The default a task gets
+by saying nothing is `Run.may_fail_cfg`, under which `SPEC_SCFG` states
+what `SPEC` states. -/
+structure SPURIOUS_CFG where
+  cfg : SpuriousCfg
+
+/-- The allocation-only switch as a record, the one-switch form of
+`SPURIOUS_CFG`. -/
+structure ALLOC_CFG where
+  alloc_may_fail : Bool
+
+/-- The sealed obligation under a named configuration. -/
+structure SPEC_SCFG (cfg : SpuriousCfg) (source target : Image) : Prop where
+  strong_universal : strong_universal_T_scfg cfg source target
+
+/-- The error-free obligation under a named configuration. -/
+structure SPEC_ERROR_FREE_SCFG (cfg : SpuriousCfg) (source target : Image) : Prop where
+  strong_universal_error_free : strong_universal_error_free_T_scfg cfg source target
+
+/-- Configuration and abort stance both declared. -/
+structure SPEC_SCFG_ABORT (cfg : SpuriousCfg) (source target : Image) : Prop where
+  strong_universal : strong_universal_T_scfg_abort cfg source target
+
+/-- A named configuration with the abort stance left open, so both
+readings are required. -/
+structure SPEC_SCFG_EITHER (cfg : SpuriousCfg) (source target : Image) : Prop where
+  strong_universal : strong_universal_T_scfg_either cfg source target
+
+/-- Configuration and abort stance declared, with the error-free body. -/
+structure SPEC_ERROR_FREE_SCFG_ABORT (cfg : SpuriousCfg) (source target : Image) : Prop where
+  strong_universal_error_free : strong_universal_error_free_T_scfg_abort cfg source target
+
+/-- A named configuration, no stance chosen, with the error-free body. -/
+structure SPEC_ERROR_FREE_SCFG_EITHER (cfg : SpuriousCfg) (source target : Image) : Prop where
+  strong_universal_error_free : strong_universal_error_free_T_scfg_either cfg source target
+
+/-- The sealed obligation under the allocation-only switch; at `true` it
+states what `SPEC` states. -/
+structure SPEC_CFG (alloc_may_fail : Bool) (source target : Image) : Prop where
+  strong_universal : strong_universal_T_cfg alloc_may_fail source target
+
+/-- The error-free obligation under the allocation-only switch. -/
+structure SPEC_ERROR_FREE_CFG (alloc_may_fail : Bool) (source target : Image) : Prop where
+  strong_universal_error_free : strong_universal_error_free_T_cfg alloc_may_fail source target
 
 end LinuxProcessSemantics.EquivalenceDefinition.Equivalence

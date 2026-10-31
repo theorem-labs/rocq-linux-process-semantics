@@ -1,52 +1,24 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/Equivalence.v
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.Base
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.ErrorFree
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.Scfg
 
-/-! rocq-baseline: 1807c1e25ce12708f5cc85213f2df4bf03d978da
-unported: lim_source -- ShippedBudgets and SanitizerBudgets define this member; no plan ticket ports these instance modules, which have no Lean surface.
-unported: lim_target -- ShippedBudgets and SanitizerBudgets define this member; no plan ticket ports these instance modules, which have no Lean surface.
-unported: headroom -- ShippedBudgets and SanitizerBudgets define this member; no plan ticket ports these instance modules, which have no Lean surface. -/
-
-/-! Rocq module surfaces excluded by the parity checker
-
-The scanner tracks term definitions, not these module declarations or the
-lemmas about their members. These exclusions remain documented here.
-unported: BUDGETS -- Budget instance modules and their sealing module types have no Lean surface.
-unported: ShippedBudgets -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SanitizerBudgets -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_BUDGETS -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_BUDGETS_ABORT -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_BUDGETS -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_BUDGETS_ABORT -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_BUDGETS_HWCAP_RV64GC -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_BUDGETS_HWCAP_RV64GCV -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_BUDGETS_HWCAP_RV64GC -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_BUDGETS_HWCAP_RV64GCV -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_BUDGETS_ABORT_HWCAP_RV64GC -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_BUDGETS_ABORT_HWCAP_RV64GCV -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_BUDGETS_ABORT_HWCAP_RV64GC -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_BUDGETS_ABORT_HWCAP_RV64GCV -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_SCFG_BUDGETS -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_SCFG_BUDGETS -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_SCFG_BUDGETS_HWCAP_RV64GC -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_SCFG_BUDGETS_HWCAP_RV64GCV -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_SCFG_BUDGETS_HWCAP_RV64GC -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_SCFG_BUDGETS_HWCAP_RV64GCV -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_SCFG_BUDGETS_ABORT -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_SCFG_BUDGETS_ABORT -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_SCFG_BUDGETS_ABORT_HWCAP_RV64GC -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_SCFG_BUDGETS_ABORT_HWCAP_RV64GCV -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_SCFG_BUDGETS_ABORT_HWCAP_RV64GC -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_SCFG_BUDGETS_ABORT_HWCAP_RV64GCV -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_BUDGETS_EITHER -- Budget instance modules and their sealing module types have no Lean surface.
-unported: SPEC_ERROR_FREE_BUDGETS_EITHER -- Budget instance modules and their sealing module types have no Lean surface.
-unported: sanitizer_budgets_target_is_shipped -- Budget instance modules and their sealing module types have no Lean surface.
-unported: sanitizer_source_budget_is_below_shipped -- Budget instance modules and their sealing module types have no Lean surface.
--/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+unported: lim_source -- Rocq declares it as a Definition inside the instance modules ShippedBudgets and SanitizerBudgets; Lean carries it as a field of structure BUDGETS, which those two instances set, so no top-level definition has that name.
+unported: lim_target -- the same field of structure BUDGETS, set by ShippedBudgets and by SanitizerBudgets.
+unported: headroom -- the same: Rocq proves it per instance module, Lean carries it as the proof field of structure BUDGETS. -/
 
 /-! The source budget premise restricts the input domain; it makes no target-budget
 claim. The 9/8 factor and 261 MiB charge are runtime measurements outside the
-model, not an allocation relation between the two programs. -/
+model, not an allocation relation between the two programs.
+
+The `BUDGETS` structure at the end of this file holds the two limits and the
+proof of `budget_headroom_ok lim_source lim_target = true` in one value. Before
+it, Lean passed the limits as two separate `Int` arguments with no check beside
+them, so a one-image statement that reads only `lim_source`, such as
+`SPEC_HALTS_ALLOWED_SCFG_BUDGETS`, was not held to the same checked pair as a
+two-image statement such as `SPEC_BUDGETS`. A value of `BUDGETS` keeps the two
+limits and the check together, which is what Rocq's module type `BUDGETS` does. -/
 
 namespace LinuxProcessSemantics.EquivalenceDefinition.Equivalence
 
@@ -652,5 +624,187 @@ theorem zero_source_budget_fails_headroom :
 
 theorem one_page_source_budget_passes_headroom :
     budget_headroom_ok page_size target_alloc_limit = true := by decide
+
+/-- The budget pair a task states its claim under, with the side condition as a
+field: no value of this structure exists for a pair that fails
+`budget_headroom_ok`. Rocq declares it as the module type `BUDGETS`, a functor
+argument of each sealing surface below; Lean passes the structure instead. -/
+structure BUDGETS where
+  /-- The limit the source run is seeded with. -/
+  lim_source : Int
+  /-- The limit the target run is seeded with. -/
+  lim_target : Int
+  /-- The side condition on the pair, closed by computation for concrete limits. -/
+  headroom : budget_headroom_ok lim_source lim_target = true
+
+/-- The shipped pair: the 16 GiB source limit and the 512 GiB target limit. -/
+def ShippedBudgets : BUDGETS where
+  lim_source := source_alloc_limit
+  lim_target := target_alloc_limit
+  headroom := shipped_budgets_headroom
+
+/-- The sanitizer pair: the 2 GiB source limit against the unchanged target
+limit. A claim proved at this pair is not implied by one proved at
+`ShippedBudgets`, because the smaller source limit removes more inputs from the
+premise. -/
+def SanitizerBudgets : BUDGETS where
+  lim_source := sanitizer_source_limit
+  lim_target := target_alloc_limit
+  headroom := sanitizer_budgets_headroom
+
+/-- The two instances carry the same target limit. -/
+theorem sanitizer_budgets_target_is_shipped :
+    SanitizerBudgets.lim_target = ShippedBudgets.lim_target := rfl
+
+/-- The sanitizer source limit is below the shipped source limit. -/
+theorem sanitizer_source_budget_is_below_shipped :
+    SanitizerBudgets.lim_source < ShippedBudgets.lim_source := by decide
+
+/-- The unconfigured budget surface: the baseline statement at the pair's two
+limits, abort stance off. -/
+structure SPEC_BUDGETS (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal : strong_universal_T_budgets b.lim_source b.lim_target source target
+
+/-- The unconfigured budget surface with the abort path declared. -/
+structure SPEC_BUDGETS_ABORT (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal : strong_universal_T_budgets_abort b.lim_source b.lim_target source target
+
+/-- The error-free unconfigured budget surface, abort stance off. -/
+structure SPEC_ERROR_FREE_BUDGETS (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_budgets b.lim_source b.lim_target source target
+
+/-- The error-free unconfigured budget surface with the abort path declared. -/
+structure SPEC_ERROR_FREE_BUDGETS_ABORT (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_budgets_abort b.lim_source b.lim_target source target
+
+/-- The unconfigured budget surface for inputs that declare the rv64gc
+capability word, abort stance off. -/
+structure SPEC_BUDGETS_HWCAP_RV64GC (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal :
+    strong_universal_T_budgets_hwcap_rv64gc b.lim_source b.lim_target source target
+
+/-- The unconfigured budget surface for inputs that declare the rv64gcv
+capability word, abort stance off. -/
+structure SPEC_BUDGETS_HWCAP_RV64GCV (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal :
+    strong_universal_T_budgets_hwcap_rv64gcv b.lim_source b.lim_target source target
+
+/-- The error-free unconfigured budget surface for inputs that declare the
+rv64gc capability word, abort stance off. -/
+structure SPEC_ERROR_FREE_BUDGETS_HWCAP_RV64GC (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_budgets_hwcap_rv64gc b.lim_source b.lim_target source target
+
+/-- The error-free unconfigured budget surface for inputs that declare the
+rv64gcv capability word, abort stance off. -/
+structure SPEC_ERROR_FREE_BUDGETS_HWCAP_RV64GCV (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_budgets_hwcap_rv64gcv b.lim_source b.lim_target source target
+
+/-- The unconfigured budget surface for inputs that declare the rv64gc
+capability word, with the abort path declared. -/
+structure SPEC_BUDGETS_ABORT_HWCAP_RV64GC (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal :
+    strong_universal_T_budgets_abort_hwcap_rv64gc b.lim_source b.lim_target source target
+
+/-- The unconfigured budget surface for inputs that declare the rv64gcv
+capability word, with the abort path declared. -/
+structure SPEC_BUDGETS_ABORT_HWCAP_RV64GCV (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal :
+    strong_universal_T_budgets_abort_hwcap_rv64gcv b.lim_source b.lim_target source target
+
+/-- The error-free unconfigured budget surface for inputs that declare the
+rv64gc capability word, with the abort path declared. -/
+structure SPEC_ERROR_FREE_BUDGETS_ABORT_HWCAP_RV64GC (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_budgets_abort_hwcap_rv64gc b.lim_source b.lim_target source target
+
+/-- The error-free unconfigured budget surface for inputs that declare the
+rv64gcv capability word, with the abort path declared. -/
+structure SPEC_ERROR_FREE_BUDGETS_ABORT_HWCAP_RV64GCV (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_budgets_abort_hwcap_rv64gcv b.lim_source b.lim_target source target
+
+/-- The configured budget surface: the baseline statement under a
+spurious-failure configuration at the pair's two limits, abort stance off. -/
+structure SPEC_SCFG_BUDGETS (cfg : SpuriousCfg) (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal :
+    strong_universal_T_scfg_budgets cfg b.lim_source b.lim_target source target
+
+/-- The error-free configured budget surface, abort stance off. -/
+structure SPEC_ERROR_FREE_SCFG_BUDGETS (cfg : SpuriousCfg) (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_scfg_budgets cfg b.lim_source b.lim_target source target
+
+/-- The configured budget surface for inputs that declare the rv64gc capability
+word, abort stance off. -/
+structure SPEC_SCFG_BUDGETS_HWCAP_RV64GC (cfg : SpuriousCfg) (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal :
+    strong_universal_T_scfg_budgets_hwcap_rv64gc cfg b.lim_source b.lim_target source target
+
+/-- The configured budget surface for inputs that declare the rv64gcv capability
+word, abort stance off. -/
+structure SPEC_SCFG_BUDGETS_HWCAP_RV64GCV (cfg : SpuriousCfg) (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal :
+    strong_universal_T_scfg_budgets_hwcap_rv64gcv cfg b.lim_source b.lim_target source target
+
+/-- The error-free configured budget surface for inputs that declare the rv64gc
+capability word, abort stance off. -/
+structure SPEC_ERROR_FREE_SCFG_BUDGETS_HWCAP_RV64GC (cfg : SpuriousCfg) (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_scfg_budgets_hwcap_rv64gc cfg b.lim_source b.lim_target source target
+
+/-- The error-free configured budget surface for inputs that declare the rv64gcv
+capability word, abort stance off. -/
+structure SPEC_ERROR_FREE_SCFG_BUDGETS_HWCAP_RV64GCV (cfg : SpuriousCfg) (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_scfg_budgets_hwcap_rv64gcv cfg b.lim_source b.lim_target source target
+
+/-- The configured budget surface with the abort path declared. -/
+structure SPEC_SCFG_BUDGETS_ABORT (cfg : SpuriousCfg) (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal :
+    strong_universal_T_scfg_budgets_abort cfg b.lim_source b.lim_target source target
+
+/-- The error-free configured budget surface with the abort path declared. -/
+structure SPEC_ERROR_FREE_SCFG_BUDGETS_ABORT (cfg : SpuriousCfg) (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_scfg_budgets_abort cfg b.lim_source b.lim_target source target
+
+/-- The configured budget surface for inputs that declare the rv64gc capability
+word, with the abort path declared. -/
+structure SPEC_SCFG_BUDGETS_ABORT_HWCAP_RV64GC (cfg : SpuriousCfg) (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal :
+    strong_universal_T_scfg_budgets_abort_hwcap_rv64gc cfg b.lim_source b.lim_target source target
+
+/-- The configured budget surface for inputs that declare the rv64gcv capability
+word, with the abort path declared. -/
+structure SPEC_SCFG_BUDGETS_ABORT_HWCAP_RV64GCV (cfg : SpuriousCfg) (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal :
+    strong_universal_T_scfg_budgets_abort_hwcap_rv64gcv cfg b.lim_source b.lim_target source target
+
+/-- The error-free configured budget surface for inputs that declare the rv64gc
+capability word, with the abort path declared. -/
+structure SPEC_ERROR_FREE_SCFG_BUDGETS_ABORT_HWCAP_RV64GC (cfg : SpuriousCfg) (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_scfg_budgets_abort_hwcap_rv64gc cfg b.lim_source b.lim_target source target
+
+/-- The error-free configured budget surface for inputs that declare the rv64gcv
+capability word, with the abort path declared. -/
+structure SPEC_ERROR_FREE_SCFG_BUDGETS_ABORT_HWCAP_RV64GCV (cfg : SpuriousCfg) (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_scfg_budgets_abort_hwcap_rv64gcv cfg b.lim_source b.lim_target source target
+
+/-- The unconfigured budget surface with neither stance pinned: both readings are
+obligations. -/
+structure SPEC_BUDGETS_EITHER (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal :
+    strong_universal_T_budgets_either b.lim_source b.lim_target source target
+
+/-- The error-free unconfigured budget surface with neither stance pinned. -/
+structure SPEC_ERROR_FREE_BUDGETS_EITHER (b : BUDGETS) (source target : Image) : Prop where
+  strong_universal_error_free :
+    strong_universal_error_free_T_budgets_either b.lim_source b.lim_target source target
 
 end LinuxProcessSemantics.EquivalenceDefinition.Equivalence

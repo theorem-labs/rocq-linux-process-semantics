@@ -1,6 +1,7 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/MustExit.v
 import LinuxProcessSemantics.LinuxProcessSem.Run
 
-/-! rocq-baseline: 1807c1e25ce12708f5cc85213f2df4bf03d978da -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # EquivalenceDefinition.MustExit — every maximal execution exits with one code
 

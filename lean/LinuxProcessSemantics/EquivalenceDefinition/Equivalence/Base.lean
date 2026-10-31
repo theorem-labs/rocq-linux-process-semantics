@@ -1,4 +1,7 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/Equivalence.v
 import LinuxProcessSemantics.LinuxProcessSem.Run
+
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # The baseline program-equivalence contract
 
@@ -54,6 +57,103 @@ def image_brk_witness (segs : List Segment) : Int :=
 
 def image_brk_satisfiable (segs : List Segment) : Bool :=
   decide (image_brk_witness segs < 2 ^ 64)
+
+/-- The entry check bites: nothing is fetchable in an image with no
+segments, at any entry point. The checkers assert
+`image_entry_fetchable = true`, so a predicate that held of every image
+would say nothing. -/
+theorem image_entry_fetchable_nil (pc : Nat) : image_entry_fetchable [] pc = false := by
+  have hfw : ∀ addr : word, fetch_word [] addr = none := by
+    intro addr
+    unfold fetch_word
+    split <;> rfl
+  have hfwx : ∀ addr : word, fetch_word_wx [] addr = none := by
+    intro addr
+    unfold fetch_word_wx
+    split <;> rfl
+  have hta : ∀ (m : word → Option byte) (addr : word), fetch_tail_any [] m addr = none := by
+    intro m addr
+    unfold fetch_tail_any
+    split <;> rfl
+  simp [image_entry_fetchable, hfw, hfwx, hta]
+
+/-- The header check bites on its read half: nothing is readable in an
+image with no loaded segment. -/
+theorem image_phdrs_readable_nil (ph : PhdrInfo) : image_phdrs_readable [] ph = false := by
+  have hmem : ∀ (addr : word) (n : Nat), memory_read [] addr n = none := fun _ _ => rfl
+  simp [image_phdrs_readable, hmem]
+
+/-- The header check bites on its count half: an image that claims no
+program header is rejected however its segments look. -/
+theorem image_phdrs_readable_zero_num (segs : List Segment) (ph : PhdrInfo)
+    (hnum : ph.ph_num = 0) : image_phdrs_readable segs ph = false := by
+  simp [image_phdrs_readable, hnum]
+
+/-- The top of the page-rounded reservations is never negative: the empty
+list gives zero, and each entry takes a maximum with the rest. -/
+theorem reserved_top_nonneg : ∀ maps : List (word × word), 0 ≤ reserved_top maps :=
+  List.rec (by decide) (fun _ _ ih => Int.le_trans ih (Int.le_max_right _ _))
+
+/-- The witness sits in the window: at or above `reserved_top`, less than
+a page above it, and page-aligned. -/
+theorem image_brk_witness_bounds (segs : List Segment) :
+    (reserved_top (segments_reserved segs) ≤ image_brk_witness segs ∧
+      image_brk_witness segs < reserved_top (segments_reserved segs) + page_size) ∧
+    image_brk_witness segs % page_size = 0 := by
+  simp only [image_brk_witness, page_size]
+  omega
+
+/-- What the checkers buy with the boolean: a `true` verdict yields a
+valid break. That is the image-only half; a valid `Run.ExecEntry` also
+needs the input, which `image_brk_satisfiable_entry` adds. -/
+theorem image_brk_satisfiable_sound (segs : List Segment)
+    (h : image_brk_satisfiable segs = true) : ∃ brk, valid_brk segs brk := by
+  have hsmall : image_brk_witness segs < 2 ^ 64 := of_decide_eq_true h
+  have htop := reserved_top_nonneg (segments_reserved segs)
+  have hnonneg : 0 ≤ image_brk_witness segs := by
+    simp only [image_brk_witness, page_size]
+    omega
+  have hround := bv_unsigned_Z_to_bv_small _ hnonneg hsmall
+  refine ⟨Z_to_bv 64 (image_brk_witness segs), ?_⟩
+  simp only [valid_brk, hround]
+  simp only [image_brk_witness, page_size, brk_aslr_max]
+  omega
+
+/-- The entry premises are satisfiable for a given valid input: the
+witness stack pointer is the bottom of the sp window, which leaves room
+below `State.sp_window_hi` for a block the argv and envp limits cap at
+`Run.entry_stack_span_max`. -/
+theorem image_brk_satisfiable_entry (img : Image) (inp : ProcInput)
+    (hv : valid_input inp) (h : image_brk_satisfiable img.img_segments = true) :
+    ∃ en, valid_entry img en inp := by
+  have hsize := valid_input_va_size inp hv
+  have hspan := entry_stack_span_bound _ _ (valid_input_argv inp hv) (valid_input_envp inp hv)
+  obtain ⟨brk, hbrk⟩ := image_brk_satisfiable_sound img.img_segments h
+  refine ⟨ExecEntry.mkEntry (Z_to_bv 64 sp_window_lo) brk (Z_to_bv 64 mmap_base_max)
+    (LinuxProcessSemantics.LinuxProcessSem.StackLayout.EntryDraw.mkDraw
+      (Z_to_bv 128 0) (fun _ => Z_to_bv 8 0)), ?_⟩
+  rw [valid_entry_sv48 _ _ _ hsize]
+  have hsp : valid_sp (Z_to_bv 64 sp_window_lo) := by
+    simp only [valid_sp]
+    decide
+  have hmmap : valid_mmap_base (Z_to_bv 64 mmap_base_max) := by
+    simp only [valid_mmap_base]
+    decide
+  have hroom : bv_unsigned (Z_to_bv 64 sp_window_lo) + entry_stack_span_max ≤ sp_window_hi := by
+    decide
+  have hfits : entry_stack_fits (Z_to_bv 64 sp_window_lo) inp.in_argv inp.in_envp := by
+    simp only [entry_stack_fits]
+    omega
+  exact ⟨hsp, hbrk, hmmap, hfits⟩
+
+/-- The break check bites: an image whose reservations reach the top of
+the address space fails it. -/
+theorem image_brk_satisfiable_bites (segs : List Segment)
+    (htop : 2 ^ 64 ≤ reserved_top (segments_reserved segs)) :
+    image_brk_satisfiable segs = false := by
+  have hwin := (image_brk_witness_bounds segs).1.1
+  simp only [image_brk_satisfiable, decide_eq_false_iff_not, Int.not_lt]
+  omega
 
 /-- The three obligations of the reference `IMAGE_WF` module type. -/
 structure IMAGE_WF (img : Image) : Prop where

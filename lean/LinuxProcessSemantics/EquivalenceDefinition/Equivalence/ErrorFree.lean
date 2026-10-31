@@ -1,6 +1,7 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/Equivalence.v
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.Base
 
-/-! rocq-baseline: 1807c1e25ce12708f5cc85213f2df4bf03d978da -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! Error-free and declared-input contracts. Rocq section parameters are
 explicit leading image arguments, as in `Base.lean`. -/

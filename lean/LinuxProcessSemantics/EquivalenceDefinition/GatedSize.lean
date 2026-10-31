@@ -1,6 +1,7 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/GatedSize.v
 import LinuxProcessSemantics.EquivalenceDefinition.Measure
 
-/-! rocq-baseline: 43f322ba3c8ed9cee0e632da3b7ed0b91210f84c -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
 
 /-! # EquivalenceDefinition.GatedSize — slicing the input space by gate verdicts
 

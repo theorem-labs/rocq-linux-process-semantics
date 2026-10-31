@@ -1,7 +1,8 @@
+-- Ports rocq-linux-process-semantics f1006fe8:theories/EquivalenceDefinition/HaltsAllowed.v
 import LinuxProcessSemantics.EquivalenceDefinition.MustExit
 import LinuxProcessSemantics.EquivalenceDefinition.Equivalence.Budgets
 
-/-! rocq-baseline: 1807c1e25ce12708f5cc85213f2df4bf03d978da
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
 unported: codes -- the one member of the ALLOWED_EXITS module type and of its AnyExit instance; the allowed set is the explicit `codes : List word` parameter of each SPEC_HALTS_ALLOWED structure below, and AnyExit's value is `byte_codes`. -/
 
 /-! Rocq module surfaces excluded by the parity checker
@@ -32,13 +33,15 @@ as module types over functor arguments (`ALLOWED_EXITS`, `SPURIOUS_CFG`,
 `SPEC_HALTS_ALLOWED*` here is a `Prop` structure over the same data
 passed explicitly, the way `Equivalence/Base.lean`'s `SPEC` takes its
 two images: the allowed set is a `List word`, the configuration a
-`Run.SpuriousCfg`, and the budget the `Int` Rocq reads off
-`BUDGETS.lim_source` (`Equivalence/Budgets.lean` registers `BUDGETS`
-unported).  That costs one property: Rocq takes the whole `BUDGETS`
-module so that a one-image statement is pinned to the same budget pair,
-headroom included, as the two-image statement beside it.  A bare `Int`
-accepts any limit, so nothing here ties it to the pair a two-image
-statement uses; that link returns when `BUDGETS` is ported.
+`Run.SpuriousCfg`, and the budget argument of
+`SPEC_HALTS_ALLOWED_SCFG_BUDGETS` a whole `Equivalence.BUDGETS`, the
+structure of `Equivalence/Budgets.lean`, off which it reads `lim_source`
+exactly as Rocq reads it off its `BUDGETS` functor argument.  Taking the
+structure rather than a bare `Int` is what pins this one-image statement
+to the same checked budget pair, headroom included, as the two-image
+statement a task states beside it.  The predicate
+`halts_allowed_T_scfg_budgets` below still takes a bare `Int`, as Rocq's
+predicate of that name does; only the sealing structure takes the pair.
 
 THE MASK IS THE KERNEL'S.  In Linux v6.18.46 (commit
 1f99e9ab748fc5c32120de9c4eca31abfe54a4d5), kernel/exit.c's
@@ -245,10 +248,12 @@ structure SPEC_HALTS_ALLOWED (codes : List word) (target : Image) : Prop where
 structure SPEC_HALTS_ALLOWED_SCFG (cfg : SpuriousCfg) (codes : List word) (target : Image) : Prop where
   halts_allowed : halts_allowed_T_scfg cfg codes target
 
-/-- The configured, budget-abstracted surface; `lim_source` is the
-member Rocq reads off its `BUDGETS` argument. -/
-structure SPEC_HALTS_ALLOWED_SCFG_BUDGETS (cfg : SpuriousCfg) (lim_source : Int)
+/-- The configured, budget-abstracted surface.  It takes a whole
+`Equivalence.BUDGETS` and reads `lim_source` off it, as Rocq's module
+type does, so that this one-image statement and the two-image statement
+beside it are pinned to the same checked pair. -/
+structure SPEC_HALTS_ALLOWED_SCFG_BUDGETS (cfg : SpuriousCfg) (b : BUDGETS)
     (codes : List word) (target : Image) : Prop where
-  halts_allowed : halts_allowed_T_scfg_budgets cfg lim_source codes target
+  halts_allowed : halts_allowed_T_scfg_budgets cfg b.lim_source codes target
 
 end LinuxProcessSemantics.EquivalenceDefinition.HaltsAllowed
