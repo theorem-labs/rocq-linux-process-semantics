@@ -2594,7 +2594,14 @@ Proof.
   all: cbv zeta in H.
   all: destruct (negb (w_is0 count)
                  && Nat.eqb (length (write_source (in_mem i) buf count)) 0);
-       [now destruct (Hro _ _ _ H)|].
+       [ (* the faulting source answers with an empty ledger too, over
+            the file it extends *)
+         unfold check_write_fault_extend in H;
+         destruct (fs_lookup (m_fs m) p) as [data|]; [|discriminate];
+         destruct (negb (modeled_zero_fill (bv_unsigned pos) data));
+           [discriminate|];
+         apply check_ret_only_copyins_ok_iff in H;
+         destruct H as (-> & _ & _); cbn in Hc; discriminate |].
   all: destruct (fs_lookup (m_fs m) p) as [data|]; [|discriminate].
   all: destruct (negb (modeled_file_gap data pos
                          (write_source (in_mem i) buf count)));
@@ -2648,15 +2655,15 @@ Proof. split; [vm_compute; reflexivity|check_eq]. Qed.
    PART 6 — what a write LEAVES BEHIND when its source faults
    ========================================================================= *)
 
-(** A file "hi" on fd 3, O_WRONLY, with [f_pos] two bytes PAST its end:
-    only an [lseek] can put it there, and it is the one shape in which
-    [shmem_write_end]'s size test is not a no-op. *)
-Definition write_past_eof_model : Model :=
-  mkModel [(3, FdFileW [102] 4)] (mkVmMaps [] [] 0 0 demo_limit) IEof
-    [([102], [104; 105])] None None None.
+(** [Cases.Prelude.wpast_model] is the fixture these three need: a file
+    "hi" on fd 3, O_WRONLY, with [f_pos] two bytes PAST its end.  Only
+    an [lseek] can put it there, and it is the one shape in which
+    [shmem_write_end]'s size test is not a no-op.
 
-(** The same file through an iovec array, with ONLY the array readable:
+    The same file through an iovec array, with ONLY the array readable:
     [import_iovec] succeeds, and the gathered prefix is then empty. *)
+
+
 Definition mem_iovecs_only : word -> option byte :=
   fun a => if bv_leu 8192 a && bv_ltu a 8224 then mem_writev_ab a else None.
 
@@ -2684,7 +2691,7 @@ Definition mem_iovecs_only : word -> option byte :=
 Example write_with_a_faulting_source_extends_the_file :
   match check_syscall (mkInput 64 [3; 4096; 2; 0; 0; 0]
                          (fun _ => None) (fun _ => None))
-          (mkEffect (errno_ret EFAULT) [] []) write_past_eof_model with
+          (mkEffect (errno_ret EFAULT) [] []) wpast_model with
   | CheckOk m [] =>
       fs_lookup (m_fs m) [102] = Some [104; 105; 0; 0]
       /\ fd_lookup (m_fds m) 3 = Some (FdFileW [102] 4)
@@ -2692,12 +2699,12 @@ Example write_with_a_faulting_source_extends_the_file :
   end
   /\ check_syscall (mkInput 64 [3; 4096; 2; 0; 0; 0]
                       (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret EFAULT) [] []) write_past_eof_model
-     <> CheckOk write_past_eof_model []
+       (mkEffect (errno_ret EFAULT) [] []) wpast_model
+     <> CheckOk wpast_model []
   /\ match check_syscall (mkInput 66 [3; 8192; 2; 0; 0; 0]
                             mem_iovecs_only (fun _ => None))
              (with_copyins (import_iovecs_accesses mem_iovecs_only 8192 2)
-                (mkEffect (errno_ret EFAULT) [] [])) write_past_eof_model with
+                (mkEffect (errno_ret EFAULT) [] [])) wpast_model with
      | CheckOk m [] => fs_lookup (m_fs m) [102] = Some [104; 105; 0; 0]
      | _ => False
      end
@@ -2706,9 +2713,9 @@ Example write_with_a_faulting_source_extends_the_file :
        (mkEffect (errno_ret EFAULT) [] []) apast_model
      = CheckOk apast_model [].
 Proof.
-  split; [vm_compute; split; reflexivity|].
+  split; [vm_compute; split; check_eq|].
   split; [vm_compute; discriminate|].
-  split; [vm_compute; reflexivity|check_eq].
+  split; [vm_compute; check_eq|check_eq].
 Qed.
 
 (** A pipe whose queue is EMPTY, on the descriptors [Pipe.pipe2_spec]

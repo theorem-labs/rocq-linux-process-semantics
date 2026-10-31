@@ -1042,7 +1042,15 @@ Proof. apply fs_refusals_kept_alloc_only. vm_compute. left. reflexivity. Qed.
     fs rather than alloc because [Run.injected_table]'s allocation
     family is the one whose forcing condition is the MODEL's own budget
     ([State.source_alloc_limit] and the marks beside it), and a pipe's
-    page is not drawn against that budget. *)
+    page is not drawn against that budget.
+
+    BEING KEPT UNDER THE ALLOC READING IS THE RIGHT CONSEQUENCE AND NOT
+    A COST TO AVOID, which is the question a reader asks here next.
+    [alloc_only_cfg false] says a MEMORY REQUEST fails only where the
+    state forces it; this refusal is not a memory request of the
+    program at all — the program asked to write bytes, and the page is
+    one the kernel takes for its own pipe buffer — so that reading has
+    nothing to say about it and leaves it where may-fail put it. *)
 Definition write_pipe_enomem_i : SyscallInput :=
   mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None).
 
