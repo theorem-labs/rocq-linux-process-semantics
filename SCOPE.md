@@ -102,8 +102,13 @@ not apply.
   execs the image makes this assumption false.
 - No write to a regular file fails. The model has no `ENOSPC`, `EDQUOT`
   or `EIO` out of the page cache (the write arm of
-  `Sys/Fs/ReadWrite.v`), and the table of injected failures
-  (`Run.injected_table`) has no arm for `write`.
+  `Sys/Fs/ReadWrite.v`). The one failure `write` injects is not a
+  regular file's: `Run.injected_table` carries syscall 64 under the
+  `fs` family with `ReadWrite.write_errnos` = `[ENOMEM]`, which is the
+  page a write into an EMPTY pipe must allocate (`anon_pipe_get_page`,
+  `fs/pipe.c`). A write that merges into a pipe's existing page, and
+  every write to a file, a channel or `/dev/null`, allocates nothing
+  and cannot reach it.
 - `mmap_min_addr` is 4096. The model declines only the address 0, because
   `cap_mmap_addr` rejects nothing else at that setting
   (`Sys/Mm/Mmap.v`, the `-EPERM` note). With a larger setting, Linux

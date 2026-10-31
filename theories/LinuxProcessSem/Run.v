@@ -1574,7 +1574,8 @@ Definition run (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
                                           munmap: never
      fs     openat, faccessat,            openat: no free descriptor;
             faccessat2, unlinkat,         the others: never
-            getcwd, getdents64
+            getcwd, getdents64, write     (write's is the page an empty
+                                          pipe's write must allocate)
      fd     dup, pipe2, socket,           no free descriptor (two for
             socketpair, accept, clone     pipe2 and socketpair; accept
                                           also when [Socket.conn_ix_exhausted]);
@@ -1717,6 +1718,7 @@ Definition injected_table : list InjectedArm :=
   (* openat     *) mkInjectedArm  56%Z FamFs    openat_errnos ::
   (* pipe2      *) mkInjectedArm  59%Z FamFd    pipe2_errnos ::
   (* getdents64 *) mkInjectedArm  61%Z FamFs    getdents64_errnos ::
+  (* write      *) mkInjectedArm  64%Z FamFs    write_errnos ::
   (* nanosleep  *) mkInjectedArm 101%Z FamIntr  [EINTR] ::
   (* setgid     *) mkInjectedArm 144%Z FamCred  (setid_errnos true) ::
   (* setuid     *) mkInjectedArm 146%Z FamCred  (setid_errnos true) ::
