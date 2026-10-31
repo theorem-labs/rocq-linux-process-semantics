@@ -147,6 +147,24 @@ Proof.
   - vm_compute. reflexivity.
 Qed.
 
+(* The readable view, beside it.  [mem_view] builds its map ONCE, outside
+   the lambda, so a lookup costs the width of the address and not the
+   captured bytes; this is what the lifted form must still ANSWER.  Two
+   runs overlap here on purpose: the EARLIER run wins at 4096, which is
+   the one thing a lift that re-ordered the build would get wrong, and
+   the abstract
+   [CheckedInput.mem_view_is_get_of_mem_of_runs] cannot see because it
+   compares the two forms rather than computing either. *)
+Example mem_view_answers_where_the_runs_say :
+  match runs_of_Z [(4096, [7; 8]); (4096, [9])] with
+  | Some runs =>
+      option_map bv_unsigned (mem_view runs (Z_to_bv 64%N 4096)) = Some 7
+      /\ option_map bv_unsigned (mem_view runs (Z_to_bv 64%N 4097)) = Some 8
+      /\ option_map bv_unsigned (mem_view runs (Z_to_bv 64%N 4098)) = None
+  | None => False
+  end.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 (* byte: a byte the kernel is said to have written *)
 Example write_byte_out_of_range_refused : forall m,
   check_syscall_for_run_checked witness_input
