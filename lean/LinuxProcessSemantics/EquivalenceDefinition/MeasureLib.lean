@@ -12,7 +12,12 @@ import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoFileHeaderAlpha
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.GeoFileVarying
 import LinuxProcessSemantics.EquivalenceDefinition.MeasureLib.FullSupport
 
-/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058 -/
+/-! rocq-baseline: f1006fe8178338a499b5e5c41be83006c4edd058
+unported: w -- a member of the Rocq modules Example_D and Worked_D, which ascribe against DISTRIBUTION; Lean carries each as a field of a term of Measure.Distribution (FiniteSupport.lean Example_D, ScaleMix.lean Worked_D), so no top-level definition has that name.
+unported: M -- the same member of the same two Rocq modules, carried as the second field of those two Lean terms.
+unported: w_nonneg -- the same: Rocq proves it inside each module, Lean gives it as the third field of each term.
+unported: M_nonneg -- the same: the fourth field of each term, and in Worked_D it is the composition of cd_mix2_mass_nonneg over two cd_scale_mass_nonneg that Rocq proves at MeasureLib.v:4834-4839.
+unported: w_core_blind -- the same: the fifth field of each term. -/
 
 /-! # EquivalenceDefinition.MeasureLib — the weight library a task writes against
 
@@ -42,8 +47,10 @@ The parts, with the Rocq lines each holds:
 | `FullSupport` | 13130-15335 | the full-support base family |
 
 WHO READS THIS. Nothing in `theories/` outside the demonstrations requires
-`MeasureLib.v`: thirteen `.v` files name it at `f1006fe8`, and eleven of them
-are demonstrations. Its consumers are submissions. On
+`MeasureLib.v`: thirteen `.v` files name it at `f1006fe8`, twelve of them
+demonstrations under `theories/Examples/`, and eleven of those twelve import
+it; the twelfth and the file itself name it in prose only.
+Its consumers are submissions. On
 `origin/ossv/recipes` of oss-verify-proofs-internal, 747 files reference it —
 739 of them a `projects/<project>/<harness>/Distribution.v`, one per harness
 over 298 projects — and they use 16 of its names, whose closure inside the file
