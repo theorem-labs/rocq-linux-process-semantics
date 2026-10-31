@@ -59,7 +59,7 @@ Definition w1x_input (reader : bool) : ProcInput :=
 
 Definition w1x_ms0 : machine_state :=
   init_machine_state w1x_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-    demo_draw [[]] [] demo_uid demo_hwcap.
+    demo_mbase demo_draw (w1x_input true).
 
 (** [n] instruction steps, refusing at a pending syscall: a [Some] answer
     is a run of [CatSim.msteps]. *)
@@ -154,14 +154,16 @@ Proof.
     [exact w1x_svc8 | left; vm_compute; reflexivity].
 Qed.
 
-(** The same derivation from either launch's initial state: the machine
-    state reads only [argv], [envp], [uid] and [hwcap], which the two
-    launches share. *)
+(** The same derivation from either launch's initial state.  The machine
+    state is built from the whole input, but it reads only the fields the
+    two launches share -- the arguments, the environment, the launching
+    user, AT_HWCAP, the kernel build and the exec file name -- and
+    [w1x_input] is a constructor application, so both spellings reduce to
+    the same term whatever [r] is. *)
 Lemma w1x_te : forall r,
   to_wexit w1x_segments
     (init_machine_state w1x_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-       demo_draw (in_argv (w1x_input r)) (in_envp (w1x_input r))
-       (in_uid (w1x_input r)) (in_hwcap (w1x_input r)))
+       demo_mbase demo_draw (w1x_input r))
     [[w1x_byte]] (Z_to_bv 64 0).
 Proof. intros r. exact w1x_te0. Qed.
 
@@ -169,8 +171,7 @@ Proof. intros r. exact w1x_te0. Qed.
 Lemma w1x_wfirst : forall r,
   wfirst_ok w1x_segments
     (init_machine_state w1x_segments 0x100 demo_phdrs (Z_to_bv 64 0x7fff80000000)
-       demo_draw (in_argv (w1x_input r)) (in_envp (w1x_input r))
-       (in_uid (w1x_input r)) (in_hwcap (w1x_input r))).
+       demo_mbase demo_draw (w1x_input r)).
 Proof.
   intros r. change (wfirst_ok w1x_segments w1x_ms0).
   apply (msteps_wfirst_ok w1x_segments _ w1x_s5);

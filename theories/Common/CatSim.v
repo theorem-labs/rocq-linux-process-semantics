@@ -1223,9 +1223,9 @@ Qed.
 (** A run that writes, launched with no reader on fd 1 and signal 13 open:
     killed at its first write, which [wfirst_ok] says passes [access_ok]. *)
 Lemma cat_kill_omni_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) bufs code ->
+  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
   bufs <> [] ->
-  wfirst_ok segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  wfirst_ok segs (init_machine_state segs pc ph sp mb rnd inp) ->
   in_channel_reader inp = false ->
   sigpipe_fatal inp ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
@@ -1239,9 +1239,9 @@ Proof.
 Qed.
 
 Lemma cat_kill_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) bufs code ->
+  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
   bufs <> [] ->
-  wfirst_ok segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  wfirst_ok segs (init_machine_state segs pc ph sp mb rnd inp) ->
   in_channel_reader inp = false ->
   sigpipe_fatal inp ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
@@ -1255,9 +1255,9 @@ Proof.
 Qed.
 
 Lemma cat_kill_no_error_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) bufs code ->
+  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
   bufs <> [] ->
-  wfirst_ok segs (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
+  wfirst_ok segs (init_machine_state segs pc ph sp mb rnd inp) ->
   in_channel_reader inp = false ->
   sigpipe_fatal inp ->
   ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
