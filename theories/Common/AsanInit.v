@@ -1057,7 +1057,10 @@ Section Init.
     - reflexivity.
     - reflexivity.
     - reflexivity.
-    - reflexivity.
+    - (* co_res: this launch reserves nothing besides the image *)
+      exists []. rewrite app_nil_r. split; [reflexivity|]. split; [constructor|].
+      split; [cbn [length]; lia|].
+      cbn [sum_sizes]. unfold resx_bytes. pose proof (Nat2Z.is_nonneg (p_resx A)). lia.
     - reflexivity.
     - reflexivity.
     - constructor.   (* no hole tokens *)
@@ -1069,8 +1072,10 @@ Section Init.
     - intros z Hz. exact Hz.
     - constructor.
     - constructor.
-    - rewrite app_nil_r, (if_sizes _ _ _ IMG). lia.
-    - exists (bv_unsigned mbase). destruct Hmb as (Y1 & Y2 & Y3). unfold mmap_base_min in Y1. unfold page_size in Y3. unfold MBASE_MIN.
+    - rewrite app_nil_r, (if_sizes _ _ _ IMG). unfold resx_bytes.
+      pose proof (Nat2Z.is_nonneg (p_resx A)). lia.
+    - exists (bv_unsigned mbase). destruct Hmb as (Y1 & Y2 & Y3). unfold mmap_base_min in Y1. unfold page_size in Y3.
+      unfold MBASE_MIN, resx_bytes. pose proof (Nat2Z.is_nonneg (p_resx A)).
       split; [lia|]. split; [exact Y3|]. split; [lia|].
       rewrite app_nil_r. intros b sz Hin.
       pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin) as [R1 R2]. cbn [fst snd] in R1, R2.
@@ -1084,6 +1089,7 @@ Section Init.
     - constructor; rewrite ?M8, ?M9, ?M13; [constructor | intros p [] | intros p [] | intros p [] | lia].
     - intros a _ Hm. exact (eq_sym Hm) || discriminate Hm.
     - split; [intros; reflexivity | intros; reflexivity].
+    - (* co_mres: no tracked mappings yet *) constructor.
   Qed.
 
   (** ZERO DRAW: the same configuration over [init_kn_zero], under the zero-draw hypothesis;
@@ -1103,7 +1109,10 @@ Section Init.
     - reflexivity.
     - reflexivity.
     - reflexivity.
-    - reflexivity.
+    - (* co_res: this launch reserves nothing besides the image *)
+      exists []. rewrite app_nil_r. split; [reflexivity|]. split; [constructor|].
+      split; [cbn [length]; lia|].
+      cbn [sum_sizes]. unfold resx_bytes. pose proof (Nat2Z.is_nonneg (p_resx A)). lia.
     - reflexivity.
     - reflexivity.
     - constructor.   (* no hole tokens *)
@@ -1115,8 +1124,10 @@ Section Init.
     - intros z Hz. exact Hz.
     - constructor.
     - constructor.
-    - rewrite app_nil_r, (if_sizes _ _ _ IMG). lia.
-    - exists (bv_unsigned mbase). destruct Hmb as (Y1 & Y2 & Y3). unfold mmap_base_min in Y1. unfold page_size in Y3. unfold MBASE_MIN.
+    - rewrite app_nil_r, (if_sizes _ _ _ IMG). unfold resx_bytes.
+      pose proof (Nat2Z.is_nonneg (p_resx A)). lia.
+    - exists (bv_unsigned mbase). destruct Hmb as (Y1 & Y2 & Y3). unfold mmap_base_min in Y1. unfold page_size in Y3.
+      unfold MBASE_MIN, resx_bytes. pose proof (Nat2Z.is_nonneg (p_resx A)).
       split; [lia|]. split; [exact Y3|]. split; [lia|].
       rewrite app_nil_r. intros b sz Hin.
       pose proof (proj1 (Forall_forall _ _) (if_res _ _ _ IMG) _ Hin) as [R1 R2]. cbn [fst snd] in R1, R2.
@@ -1130,6 +1141,7 @@ Section Init.
     - constructor; rewrite ?M8, ?M9, ?M13; [constructor | intros p [] | intros p [] | intros p [] | lia].
     - intros a _ Hm. exact (eq_sym Hm) || discriminate Hm.
     - split; [intros; reflexivity | intros; reflexivity].
+    - (* co_mres: no tracked mappings yet *) constructor.
   Qed.
 
   (** [Run.init_config] is the configuration [cs_ok] speaks about *)
