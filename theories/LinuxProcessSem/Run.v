@@ -3498,9 +3498,7 @@ Qed.
     choice of [StackLayout.ed_vdso] — a vDSO function that writes only
     its result is one Linux can run — and the one a proof that does not
     care about the leftovers names. *)
-Definition vdso_keeps_all
-    : nat -> list word -> list byte -> word -> (list word * list byte) :=
-  fun _ regs frame _ => (regs, frame).
+Definition vdso_keeps_all : VdsoDraw := Vdso.vdso_draw_keep.
 
 (** THE WITNESS ENTRY, and the lemma that makes repairing a consumer
     cheap.
@@ -3527,7 +3525,7 @@ Definition vdso_keeps_all
     ([Equivalence.image_brk_witness] does). *)
 Definition launch_entry_va (v : VaSize) (inp : ProcInput) (brk : word)
     (rnd : bv 128)
-    (vd : nat -> list word -> list byte -> word -> (list word * list byte))
+    (vd : VdsoDraw)
     : ExecEntry :=
   let top := Z_to_bv 64 (va_stack_top v) in
   mkEntry (Z_to_bv 64 (launch_sp_hi top inp))

@@ -964,9 +964,12 @@ Definition w8 (x : Z) : list Z :=
     the spec's "The block" and Design "The vDSO pages":
 
     - AT_SYSINFO_EHDR (33) is the vDSO text, directly below the mmap
-      base; the first image is one text page
-      ([State.vdso_text_pages] of [kb_vdso] = 0), so it is
-      0x7ffff8000000 - 4096.
+      base.  Its length is now MEASURED rather than a formula over a
+      free field: [State.vdso_text_pages] is the page count of the
+      image [kb_vdso] names in [Vdso.vdso_images], and the entry
+      [default_kernel] names is the riscv64 defconfig build of
+      v6.18.46 (commit 1f99e9ab748f), 5704 bytes and so TWO pages.
+      The base is 0x7ffff8000000 - 2 * 4096.
     - the eight cache words (40 to 47) are 0: no leaf is reported, so
       [get_cache_size] and [get_cache_geometry]
       (arch/riscv/kernel/cacheinfo.c) find nothing.
@@ -987,7 +990,7 @@ Definition w8 (x : Z) : list Z :=
       and AT_RSEQ_ALIGN (28) is 32 (include/uapi/linux/rseq.h).
     - AT_NULL (0) closes it. *)
 Definition a1_expected_auxv : list (Z * Z) :=
-  [ (33, 0x7ffff7fff000);
+  [ (33, 0x7ffff7ffe000);
     (40, 0); (41, 0); (42, 0); (43, 0); (44, 0); (45, 0); (46, 0); (47, 0);
     (51, 1088);
     (16, 0x112D); (6, 4096); (17, 100);
@@ -1102,7 +1105,10 @@ Proof.
   - exact a1_valid_argv.
   - exact a1_valid_envp.
   - exact (a1_valid_launch true).
-  - unfold valid_brk, segments_reserved. cbn [map reserved_top].
-    rewrite (bvu 0 ltac:(lia)). unfold brk_aslr_max, page_size.
+  - unfold valid_brk, segments_reserved.
+    (* [filter] is in the list because [Run.segments_reserved] now drops
+       the kernel's own mappings, which the ledger reserves instead. *)
+    cbn [filter map reserved_top].
+    unfold brk_aslr_max, page_size. rewrite (bvu 0 ltac:(lia)).
     repeat split; lia.
 Qed.

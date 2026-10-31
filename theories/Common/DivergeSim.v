@@ -86,7 +86,7 @@
 
 From Stdlib Require Import ZArith NArith List Lia Bool String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
+  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run.
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
 From LinuxProcessSemantics.Common Require Import PropExec.
 Import ListNotations.
@@ -773,13 +773,19 @@ Example j_dot_decodes :
   decode_any (Z_to_bv 32 0x6f) = Some (Jal 0 (Z_to_bv 21 0), 4%Z).
 Proof. div_vm_refl. Qed.
 
-Lemma spin_img_to_spin : forall sp brk0 mbase (rnd : EntryDraw) lim inp,
-  to_spin spin_segs
-    (init_machine_state spin_segs 0x10000 (mkPhdrInfo 0x10040 56 6) sp mbase rnd
-       inp)
-    (init_model (segments_reserved spin_segs) brk0 mbase sp lim inp).
+(** Over the RUN's segment list: this image's own segment and the vDSO
+    pair [Run.run_segments] appends, with the pair an abstract tail so
+    that no computation here normalises the measured image.  The
+    spinning instruction is in the image's own segment, which comes
+    first, so the pair changes nothing. *)
+Lemma spin_img_to_spin : forall vt sp brk0 mbase (rnd : EntryDraw) lim inp,
+  to_spin (spin_segs ++ vt)
+    (init_machine_state (spin_segs ++ vt) 0x10000 (mkPhdrInfo 0x10040 56 6)
+       sp mbase rnd inp)
+    (with_vdso (vdso_run_init (ed_vdso rnd))
+       (init_model (segments_reserved (spin_segs ++ vt)) brk0 mbase sp lim inp)).
 Proof.
-  intros sp brk0 mbase rnd lim inp.
+  intros vt sp brk0 mbase rnd lim inp.
   eapply ts_spin_of_step_j with (w := Z_to_bv 32 0x6f).
   - reflexivity.
   - div_vm_refl.

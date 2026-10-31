@@ -1291,6 +1291,8 @@ Proof.
   dif H; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   dif H; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   dif H; [discriminate|].
+  (* the vdso/vvar gate: a request that meets the pair is unmodeled *)
+  dif H; [discriminate|].
   dif H.
   - destruct ws, us, cs, ci; try discriminate.
     dif H.
