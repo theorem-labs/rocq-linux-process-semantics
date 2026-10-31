@@ -131,18 +131,18 @@ Section GenericInit.
   Qed.
 
   Theorem init_x_sound_envscan :
-    x_stmt segs A NX0 LIMIT SINV (argH0 ph sp rdraw argv envp uid hw) FS0 XEnvScan.
+    x_stmt segs A NX0 LIMIT CEIL SINV (argH0 ph sp rdraw argv envp uid hw) FS0 XEnvScan.
   Proof.
-    exact (x_sound_envscan segs A NX0 LIMIT SINV (argH0 ph sp rdraw argv envp uid hw) FS0
+    exact (x_sound_envscan segs A NX0 LIMIT CEIL SINV (argH0 ph sp rdraw argv envp uid hw) FS0
               SEGS_wx SEGS_in_hull HULL_ok SINV_frame
               we1 we2 we3 Xenv Fe1 Fe2 Fe3 Ee De1 De2 De3
               ph sp rdraw argv envp uid hw Hva Hve sp_lo sp_hi SINV0_vals SINV0_envp).
   Qed.
 
   Theorem init_x_sound_pnscan :
-    x_stmt segs A NX0 LIMIT SINV (argH0 ph sp rdraw argv envp uid hw) FS0 XPnScan.
+    x_stmt segs A NX0 LIMIT CEIL SINV (argH0 ph sp rdraw argv envp uid hw) FS0 XPnScan.
   Proof.
-    exact (x_sound_pnscan segs A NX0 LIMIT SINV (argH0 ph sp rdraw argv envp uid hw) FS0
+    exact (x_sound_pnscan segs A NX0 LIMIT CEIL SINV (argH0 ph sp rdraw argv envp uid hw) FS0
               SEGS_wx SEGS_in_hull HULL_ok
               (argH0_high ph sp rdraw argv envp uid hw Hsp Hva) (argH0_agree ph sp rdraw argv envp uid hw)
               SINV_frame SINV_agree
@@ -150,6 +150,6 @@ Section GenericInit.
               ph sp rdraw argv envp uid hw Hva Hve sp_lo sp_hi SINV0_vals SINV0_str0).
   Qed.
   Theorem init_x_sound_layout :
-    x_stmt segs A NX0 LIMIT SINV (argH0 ph sp rdraw argv envp uid hw) FS0 XLayout.
+    x_stmt segs A NX0 LIMIT CEIL SINV (argH0 ph sp rdraw argv envp uid hw) FS0 XLayout.
   Proof. apply x_sound_layout. Qed.
 End GenericInit.

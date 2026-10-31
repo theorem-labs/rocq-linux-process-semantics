@@ -14,6 +14,8 @@
 Section Nodes.
 Variable SEGS : list Segment.            Variable A : atable.
 Variable nx0 : nat.                      Variable LIMIT : Z.
+Variable CEIL : Z.      (** the run's allocation ceiling ([APS.co_ceil]) *)
+Hypothesis CEIL_ok : ceil_ok CEIL.
 Variable SINV : env -> (word -> option byte) -> Prop.
 Variable argH : env -> word -> bool.     Variable FS0 : Fs.Fs.
 Hypothesis SEGS_wx : wx_segs_nowrap SEGS.
@@ -49,7 +51,7 @@ Hypothesis SINV_agree : forall E E' M, env_agree nx0 E E' -> SINV E M -> SINV E'
          budget (arm P only) from [APC.budget_ok] + [co_eager] + [co_abytes] + [co_minv])
          or FIXED over a FREE range ([APC.mmap_fixed_free]; arms C (3,0x4032) / C0 (3,0x32) / D (0,0x4032) / D0 (0,0x32);
          spec: the [region_free (vm_reserved h ++ vm_maps h) addr n] sub-branches with [choose a. a = addr /\ …]).
-    M2 [node_mmapin_sound  : OBL_mmapin]    [AP.node_mmapin A LIMIT]
+    M2 [node_mmapin_sound  : OBL_mmapin]    [AP.node_mmapin A LIMIT CEIL]
          MAP_FIXED wholly inside ONE tracked entry (spec: [region_free (vm_reserved h) addr n && map_contains (vm_maps h) addr n]
          branches of [mmap_fixed_noaccess_b] / [mmap_fixed_rw_b]): child a = REFUSED-kept ([APC.refuse]);
          child b = OK ([APC.mmap_fixed_in] arm E (3,0x32) / F (3,0x4032) / G (0,0x32 or 0,0x4032); post-model
@@ -84,18 +86,20 @@ Variable SEGS : list Segment.
 Variable A : atable.
 Variable nx0 : nat.
 Variable LIMIT : Z.
+Variable CEIL : Z.      (** the run's allocation ceiling ([APS.co_ceil]) *)
+Hypothesis CEIL_ok : ceil_ok CEIL.
 Variable SINV : env -> (word -> option byte) -> Prop.
 Variable argH : env -> word -> bool.
 Variable FS0 : Fs.Fs.
 
 (** the statements, closed (these are what [APS.check_sound] consumes) *)
-Definition OBL_mmap2 : Prop := mm2_stmt SEGS A nx0 LIMIT SINV argH FS0 (node_mmap2 A nx0 LIMIT).
-Definition OBL_mmapin : Prop := forall hole : bool, mm3_stmt SEGS A nx0 LIMIT SINV argH FS0 (node_mmapin A LIMIT hole).   (* hole = PMmapInH *)
-Definition OBL_mprotect2 : Prop := mm2_stmt SEGS A nx0 LIMIT SINV argH FS0 (node_mprotect2 A LIMIT).
-Definition OBL_brk2 : Prop := brk2_stmt SEGS A nx0 LIMIT SINV argH FS0.
-Definition OBL_munmap2 : Prop := munmap2_stmt SEGS A nx0 LIMIT SINV argH FS0.
-Definition OBL_sys : Prop := forall y : snode, sys_stmt SEGS A nx0 LIMIT SINV argH FS0 y.
-Definition OBL_exit : Prop := exit_stmt SEGS A LIMIT SINV argH FS0.
+Definition OBL_mmap2 : Prop := mm2_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 (node_mmap2 A nx0 LIMIT CEIL).
+Definition OBL_mmapin : Prop := forall hole : bool, mm3_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 (node_mmapin A LIMIT CEIL hole).   (* hole = PMmapInH *)
+Definition OBL_mprotect2 : Prop := mm2_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 (node_mprotect2 A LIMIT CEIL).
+Definition OBL_brk2 : Prop := brk2_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0.
+Definition OBL_munmap2 : Prop := munmap2_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0.
+Definition OBL_sys : Prop := forall y : snode, sys_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 y.
+Definition OBL_exit : Prop := exit_stmt SEGS A LIMIT CEIL SINV argH FS0.
 
 (** all of them (what an integration file assumes about one image / invariant) *)
 Definition OBL_all : Prop := OBL_mmap2 /\ OBL_mmapin /\ OBL_mprotect2 /\ OBL_brk2 /\ OBL_munmap2 /\ OBL_sys /\ OBL_exit.
@@ -105,16 +109,16 @@ Definition OBL_all : Prop := OBL_mmap2 /\ OBL_mmapin /\ OBL_mprotect2 /\ OBL_brk
 Lemma OBL_mmap2_unfold :
   OBL_mmap2 <->
   forall cs csa csb E R FULL model TA TB,
-    cs_ok SEGS A LIMIT SINV argH FS0 E cs R FULL model ->
+    cs_ok SEGS A LIMIT CEIL SINV argH FS0 E cs R FULL model ->
     is_ecall_at SEGS cs = true ->
-    node_mmap2 A nx0 LIMIT cs = Some (csa, csb) ->
+    node_mmap2 A nx0 LIMIT CEIL cs = Some (csa, csb) ->
     (forall E' R' FULL' model',
         env_agree nx0 E E' /\ env_agree (nxt cs) E E' ->
-        cs_ok SEGS A LIMIT SINV argH FS0 E' csa R' FULL' model' -> m_fs model' = m_fs model ->
+        cs_ok SEGS A LIMIT CEIL SINV argH FS0 E' csa R' FULL' model' -> m_fs model' = m_fs model ->
         srealizes SEGS (cfg_of SEGS R' (pc csa) FULL' model') TA) ->
     (forall E' R' FULL' model',
         env_agree nx0 E E' /\ env_agree (nxt cs) E E' ->
-        cs_ok SEGS A LIMIT SINV argH FS0 E' csb R' FULL' model' -> m_fs model' = m_fs model ->
+        cs_ok SEGS A LIMIT CEIL SINV argH FS0 E' csb R' FULL' model' -> m_fs model' = m_fs model ->
         srealizes SEGS (cfg_of SEGS R' (pc csb) FULL' model') TB) ->
     srealizes SEGS (cfg_of SEGS R (pc cs) FULL model) (t_alt2 TA TB).
 Proof. unfold OBL_mmap2, mm2_stmt. tauto. Qed.
