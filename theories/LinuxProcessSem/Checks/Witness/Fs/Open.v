@@ -56,6 +56,7 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
                      ret_outcome (errno_ret witness_errno) m
                    else if rdwr_open_word fl then ret_outcome (errno_ret witness_errno) m
                    else if is_rdwr_excl_create fl then ret_outcome (errno_ret EEXIST) m
+                   else if is_excl_append_create fl then ret_outcome (errno_ret EEXIST) m
                    else Unmodeled
                end
              else if path_eqb p urandom_path then
@@ -69,6 +70,7 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
                    else if is_excl_create fl then ret_outcome (errno_ret EEXIST) m
                    else if Z.eqb fl O_DIRECTORY then ret_outcome (errno_ret ENOTDIR) m
                    else if is_rdwr_excl_create fl then ret_outcome (errno_ret EEXIST) m
+                   else if is_excl_append_create fl then ret_outcome (errno_ret EEXIST) m
                    else Unmodeled
                end
              else match tmp_name p with
@@ -149,6 +151,17 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
              | Some _ => ret_outcome (errno_ret EEXIST) m
              | None => ret_outcome (errno_ret witness_errno) m
              end
+           else if is_excl_append_create fl then
+             if path_is_dirref p then
+               ret_outcome (errno_ret EEXIST) m        (* "."/".." : deterministic -EEXIST *)
+             else if Nat.ltb NAME_MAX (length p) then Unmodeled
+             else if fs_under (m_fs m) p then
+               ret_outcome (errno_ret EEXIST) m        (* an implied directory : deterministic -EEXIST *)
+             else
+             match fs_lookup (m_fs m) p with
+             | Some _ => ret_outcome (errno_ret EEXIST) m
+             | None => ret_outcome (errno_ret witness_errno) m  (* env-failure branch *)
+             end
            else Unmodeled   (* unreachable: [modeled_open_flags flags] holds here *)
        end.
 
@@ -221,6 +234,9 @@ Proof.
           destruct (is_rdwr_excl_create
                       (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
           { apply pure_ok. }
+          destruct (is_excl_append_create
+                      (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
+          { apply pure_ok. }
           apply unmodeled_intro. }
       destruct (fs_lookup (m_fs m) devnull_path); [apply unmodeled_intro|].
       destruct (fs_under (m_fs m) devnull_path); [apply unmodeled_intro|].
@@ -244,6 +260,9 @@ Proof.
       { apply alt_l. eapply bind_step; [apply errno_head_witness|].
         apply pure_ok. }
       destruct (is_rdwr_excl_create
+                  (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
+      { apply pure_ok. }
+      destruct (is_excl_append_create
                   (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
       { apply pure_ok. }
       apply unmodeled_intro. }
@@ -284,7 +303,8 @@ Proof.
                 apply pure_ok.
            ++ destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                           append_create_flags) eqn:Hfa.
-              ** destruct (path_is_dirref p || fs_under (m_fs m) p) eqn:Hdot.
+              ** cbv iota.
+                 destruct (path_is_dirref p || fs_under (m_fs m) p) eqn:Hdot.
                  { apply pure_ok. }
                  apply alt_l. eapply bind_step; [apply errno_head_witness|].
                  apply pure_ok.
@@ -306,6 +326,19 @@ Proof.
                              (Z.ldiff (bv_unsigned flags) open_ignored_flags))
                      eqn:Hfrx.
                  { destruct (path_is_dirref p || fs_under (m_fs m) p) eqn:Hdot.
+                   { apply pure_ok. }
+                   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
+                   { apply pure_ok. }
+                   apply alt_l. eapply bind_step; [apply errno_head_witness|].
+                   apply pure_ok. }
+                 destruct (is_excl_append_create
+                             (Z.ldiff (bv_unsigned flags) open_ignored_flags))
+                     eqn:Hfxa.
+                 { cbv iota. destruct (path_is_dirref p) eqn:Hdot.
+                   { apply pure_ok. }
+                   destruct (Nat.ltb NAME_MAX (length p)) eqn:Hnm.
+                   { apply unmodeled_intro. }
+                   destruct (fs_under (m_fs m) p) eqn:Hun.
                    { apply pure_ok. }
                    destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
                    { apply pure_ok. }
