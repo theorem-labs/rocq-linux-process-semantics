@@ -1908,11 +1908,18 @@ Qed.
      git grep -l 'WfInvariant' b3d54516 -- '*.v'
 
    returns this file and [LinuxProcessSem/Sys/Mm/Mremap.v], and the
-   Mremap hit is a PROSE COMMENT, not a use;
-   [git grep -l 'Require.*WfInvariant' b3d54516 -- '*.v'] returns
-   nothing.  So the honest count of files that import [WF] is ZERO, and
-   the arms above do not change it.  A proved theorem nothing imports
-   has never been put under a real obligation, which is the one test
-   that exposes a statement too weak to use; treat every statement here
-   as untested in that sense until something requires this module. *)
+   Mremap hit is a PROSE COMMENT, not a use; the same grep narrowed to
+   the import lines -- pattern [Require.*WfInvari], the name broken so
+   that this paragraph does not match its own command -- returns
+   nothing.  So the count of files that import [WF] is ZERO, and the
+   arms above do not change it.
+
+   RE-MEASURING THIS AT A LATER COMMIT: both greps now find this file
+   itself, because this paragraph quotes the pattern.  Read the hit
+   list, not its length, and count only files other than this one.
+
+   A proved theorem nothing imports has never been put under a real
+   obligation, which is the one test that exposes a statement too weak
+   to use; treat every statement here as untested in that sense until
+   something requires this module. *)
 (* ==================================================================== *)
