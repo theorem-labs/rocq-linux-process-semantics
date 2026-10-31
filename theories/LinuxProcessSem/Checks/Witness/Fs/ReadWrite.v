@@ -1115,9 +1115,16 @@ Proof.
     cbv beta iota zeta; srw Hfd. apply pure_ok. }
   destruct (negb (w_is0 count)
             && Nat.eqb (length (write_source (in_mem i) buf count)) 0) eqn:Hg.
-  { eapply bind_step; [apply input_ok|]. cbv beta.
+  { (* the faulting source: -EFAULT over the file it still extends *)
+    unfold write_fault_extend_witness.
+    eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|].
-    cbv beta iota zeta; srw Hfd; srw Hg. apply pure_ok. }
+    cbv beta iota zeta; srw Hfd; srw Hg. unfold write_fault_extend.
+    destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
+      [ destruct (negb (modeled_zero_fill (bv_unsigned pos) data)) eqn:Hz;
+        [ apply unmodeled_intro
+        | eapply bind_step; [apply modify_ok|]; apply pure_ok ]
+      | apply unmodeled_intro ]. }
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
   2: { eapply bind_step; [apply input_ok|]. cbv beta.
        eapply bind_step; [apply get_model_ok|].
@@ -1145,9 +1152,16 @@ Proof.
     cbv beta iota zeta; srw Hfd. apply pure_ok. }
   destruct (negb (w_is0 count)
             && Nat.eqb (length (write_source (in_mem i) buf count)) 0) eqn:Hg.
-  { eapply bind_step; [apply input_ok|]. cbv beta.
+  { (* the faulting source: the branch above, on the O_RDWR kind *)
+    unfold write_fault_extend_witness.
+    eapply bind_step; [apply input_ok|]. cbv beta.
     eapply bind_step; [apply get_model_ok|].
-    cbv beta iota zeta; srw Hfd; srw Hg. apply pure_ok. }
+    cbv beta iota zeta; srw Hfd; srw Hg. unfold write_fault_extend.
+    destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
+      [ destruct (negb (modeled_zero_fill (bv_unsigned pos) data)) eqn:Hz;
+        [ apply unmodeled_intro
+        | eapply bind_step; [apply modify_ok|]; apply pure_ok ]
+      | apply unmodeled_intro ]. }
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
   2: { eapply bind_step; [apply input_ok|]. cbv beta.
        eapply bind_step; [apply get_model_ok|].
@@ -1380,8 +1394,17 @@ Proof.
     { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
-    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
-      eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    { (* the faulting source: -EFAULT over the file it still extends *)
+      unfold write_fault_extend_witness.
+      wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
+      unfold write_fault_extend.
+      destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
+        [ destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
+          [ left; apply unmodeled_intro
+          | eapply bind_step;
+            [ eapply bind_step; [apply modify_ok|]; apply pure_ok
+            | apply pure_ok ] ]
+        | left; apply unmodeled_intro ]. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
     2:{ wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs.
         left. unfold writev_buf_gap. apply unmodeled_intro. }
@@ -1437,8 +1460,17 @@ Proof.
     { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos.
       eapply bind_step; [apply pure_ok|apply pure_ok]. }
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
-    { wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
-      eapply bind_step; [apply pure_ok|apply pure_ok]. }
+    { (* the faulting source: the [FdFileW] bullet above *)
+      unfold write_fault_extend_witness.
+      wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
+      unfold write_fault_extend.
+      destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
+        [ destruct (negb (modeled_zero_fill (bv_unsigned off) data)) eqn:Hz;
+          [ left; apply unmodeled_intro
+          | eapply bind_step;
+            [ eapply bind_step; [apply modify_ok|]; apply pure_ok
+            | apply pure_ok ] ]
+        | left; apply unmodeled_intro ]. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
     2:{ wvw_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hfs.
         left. unfold writev_buf_gap. apply unmodeled_intro. }
