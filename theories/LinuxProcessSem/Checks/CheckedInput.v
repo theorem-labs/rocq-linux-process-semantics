@@ -217,8 +217,31 @@ Fixpoint mem_of_runs (runs : list (word * list byte)) : bvmap 64 byte :=
   | (base, bs) :: r => mem_insert_bytes base bs (mem_of_runs r)
   end.
 
+(** The map is built ONCE, outside the lambda.  Inside it, the body of
+    [mem_view runs] would be rebuilt at every address the checker reads:
+    [mem_of_runs runs] does not mention [a], but a closure body is not
+    evaluated until the closure is applied, so each of the k reads a
+    syscall makes pays the whole insertion of every captured byte.  That
+    is k * n work for n captured bytes, where one build and k radix
+    lookups is n + k * 64.  On the recorded corpus the checked path did
+    not finish in 50 minutes; built once, the same 19,070 records run in
+    65 s, with the same single refusal.  [let] here is zeta-reduction,
+    not a new definition, so the function is the SAME function: the
+    lemma below is the proof of that, by [reflexivity]. *)
 Definition mem_view (runs : list (word * list byte)) : word -> option byte :=
-  fun a => bvmap_get a (mem_of_runs runs).
+  let m := mem_of_runs runs in
+  fun a => bvmap_get a m.
+
+(** What is worth pinning is the MEANING, not the speed: a timing test
+    pins a machine, this pins the model.  [mem_view] still answers at
+    every address exactly what the unlifted body answered, and that holds
+    for an ABSTRACT [runs] and an ABSTRACT [a] — so it covers every input,
+    which no computed example does.  It is [reflexivity] because the lift
+    is a conversion; a lift that had changed the order of the runs, or
+    the map it looks in, would not close here. *)
+Lemma mem_view_is_get_of_mem_of_runs : forall runs a,
+  mem_view runs a = bvmap_get a (mem_of_runs runs).
+Proof. reflexivity. Qed.
 
 (** THE PROPERTY THAT MATTERS HERE: every byte the checker can read out of
     this view is one of the bytes the boundary checked.  (What the view
