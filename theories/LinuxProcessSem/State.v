@@ -2637,20 +2637,31 @@ Definition PipeBuf : Type := list byte * Z.
       [unix_shutdown] sets the caller's bits and the MIRRORED bits on the
       peer (a SHUT_WR here is RCV_SHUTDOWN there).
 
-    WHAT A CLOSE DOES TO THE SURVIVOR IS NOT STORED HERE, AND THAT IS A
-    CHOICE.  [unix_release_sock] ORs [SHUTDOWN_MASK] into the survivor and
-    sets its [sk_err = ECONNRESET] when the closing end still held unread
-    bytes.  The model keeps [Fs.Open.close_spec] KIND-BLIND instead — the
-    entry goes and nothing else moves — because a close that writes into
-    another descriptor's entry would make false every published lemma
-    that says a close only removes its entry (theories/Common/FileSim.v
-    [tfo_close], vendored by 78 of the 89 published proof trees).  So the
-    survivor reads "the peer has closed" off the table — [stream_peer] is
-    [None] — and every arm treats that as [SHUTDOWN_MASK]: a send is
-    -EPIPE, select reports readable and writable.  What the table cannot
-    say is whether the [sk_err] was set, so the two answers that turn on
-    it DECLINE: an empty read on the survivor (end of file, or one
-    -ECONNRESET first) and a [ppoll], whose filter always holds EPOLLERR.
+    WHAT A CLOSE DOES TO THE SURVIVOR IS NOT STORED HERE: A CHOSEN
+    BOUNDARY, NOT A GAP.  [unix_release_sock] ORs [SHUTDOWN_MASK] into the
+    survivor and sets its [sk_err = ECONNRESET] when the closing end still
+    held unread bytes.  The model keeps [Fs.Open.close_spec] KIND-BLIND
+    instead — the entry goes and nothing else moves — because a close
+    that writes into another descriptor's entry would make false every
+    published lemma that says a close only removes its entry
+    (theories/Common/FileSim.v [tfo_close] and [tfo_close_rec]), and
+    keeping those would need a premise on them.  78 of the 89 published
+    proof trees vendor them, and 34 of those 78 are trees that the new
+    [FdStream] constructor does not otherwise break (it breaks 48), so
+    the premise would reach trees this change never touches (counted on
+    oss-verify-proofs-internal ossv/recipes 87c4b944; the LPSREV owner's
+    decision, 2026-10-31, on dispatch://OSSV-287).
+
+    So the survivor reads "the peer has closed" off the table —
+    [stream_peer] is [None] — and every arm treats that as
+    [SHUTDOWN_MASK]: a send is -EPIPE, select reports readable and
+    writable.  WHAT IS NOT MODELED is the survivor's error state: whether
+    the close left [sk_err] set.  The two answers that turn on it DECLINE
+    rather than guess: an empty read on the survivor (end of file, or one
+    -ECONNRESET first) and a [ppoll] on it, whose filter always holds
+    EPOLLERR.  No call of curl_fuzzer_proto_http reaches either: curl's
+    end closes first, with its own queue empty, and the other end then
+    closes without reading.
 
     WHAT IS NOT HERE, and deliberately.  No ADDRESS: a [socketpair] end
     is unbound, [unix_getname] reports the unnamed address, and nothing
