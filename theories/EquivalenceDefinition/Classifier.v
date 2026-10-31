@@ -1535,11 +1535,11 @@ Proof.
       [ exact (decides_fo_hwcap_rv64gc_of_decides_fo C spec H)
       | exact (decides_fo_hwcap_rv64gcv_of_decides_fo C spec H) ].
   - intros (Hgc & Hgcv) f Hf en Hen.
-    destruct Hf as (a & b & c & k & d & e & g & [Hw | Hw] & ab & v).
+    destruct Hf as (a & b & c & k & r & d & e & g & [Hw | Hw] & ab & v).
     + apply Hgc; try assumption.
-      exact (conj a (conj b (conj c (conj k (conj d (conj e (conj g (conj (or_introl Hw) (conj ab v))))))))).
+      exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj g (conj (or_introl Hw) (conj ab v)))))))))).
     + apply Hgcv; try assumption.
-      exact (conj a (conj b (conj c (conj k (conj d (conj e (conj g (conj (or_intror Hw) (conj ab v))))))))).
+      exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj g (conj (or_intror Hw) (conj ab v)))))))))).
 Qed.
 
 (** The declared obligation still implies totality on the inputs it

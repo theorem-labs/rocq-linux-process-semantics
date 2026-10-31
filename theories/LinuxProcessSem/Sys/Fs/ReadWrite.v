@@ -1499,7 +1499,10 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
                succeeds and the loop is never entered.  Either way no
                earlier iteration exists to have moved bytes, and Linux's
                answer across the whole admitted band is a plain -EFAULT
-               with the pipe unchanged.  Declining is therefore CONSERVATIVE: it costs
+               — or, on the empty-queue path, the -ENOMEM of the page
+               allocation the arm below admits, which precedes the copy
+               and leaves the pipe unchanged.
+               Declining is therefore CONSERVATIVE: it costs
                priority 3 and nothing else.  It is kept rather than
                answered because that -EFAULT holds only while the capacity
                guard confines the write to one site, so a spec arm asserting
