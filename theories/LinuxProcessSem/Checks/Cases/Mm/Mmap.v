@@ -2070,15 +2070,16 @@ Proof. check_eq. Qed.
     there is no implication, and that conjunct is the whole reason a guard
     page cannot be installed over the loaded image.
 
-    That disjointness is NOT "[region_free] gates every grant", which is
-    false: a brk grow inside one page enters [vm_maps] with no
-    address-space test at all ([Sys/Mm/Mmap.brk_grow_ok]'s [else true],
-    and [Checks/VmMapsDisjoint] Part 1 for a checked execution reaching
-    it).  It holds for two separate reasons — [mmap] and [mremap] place
-    only where [region_free] accepts against [vm_reserved ++ vm_maps], and
-    brk grants cannot reach the image because [Run.valid_brk] puts the
+    That disjointness holds for two separate reasons — [mmap] and
+    [mremap] place only where [region_free] accepts against
+    [vm_reserved ++ vm_maps], and a brk grow records only the pages
+    [Sys/Mm/Mmap.brk_grow_ok] has tested free, which cannot reach the
+    image because [Run.valid_brk] puts the
     break base at or above the page-rounded image top and the break never
-    goes below [min_brk].  Remove it and the call below
+    goes below [min_brk].  (A grow inside one page runs no
+    address-space test, [brk_grow_ok]'s [else true] — and records
+    nothing, so there is nothing for a test to protect.)
+    Remove the conjunct and the call below
     becomes a modeled SUCCESS returning [addr] and declaring
     [eff_unmaps] across the image, erasing loaded code and data from the
     machine overlay.
@@ -2218,19 +2219,32 @@ Proof. check_eq. Qed.
     ([SYSCALL_DEFINE1(brk)], mm/mmap.c, Linux v6.18.46, commit
     1f99e9ab748f), so brk from 131072 down to 129024 (0x1f800,
     inside the same page) moves [mm->brk] and unmaps not one byte — the
-    written heap survives, and [eff_unmaps] is empty.  ([vm_maps] still
-    tracks the break itself, at byte granularity, so the ledger entry
-    shrinks; that only bounds where a later grant may be placed and is
-    not visible to the running program.) *)
+    written heap survives, [eff_unmaps] is empty, AND THE LEDGER IS
+    UNCHANGED.  The last clause is the fix: the ledger used to cut the
+    logical tail [[129024, 131072)] out of the entry, dropping 2048
+    granted, unfreed, still-mapped bytes and charging the run for fewer
+    than it holds.  The logical break is [vm_brk], which is where it
+    moves. *)
 
 Example brk_subpage_shrink_frees_nothing :
   check_syscall (brk_in 129024) (mkEffect 129024 [] []) m_grown
-  = CheckOk (with_vmmaps (mkVmMaps brk_reserved [(65536, 63488)] 65536 129024
+  = CheckOk (with_vmmaps (mkVmMaps brk_reserved [(65536, 65536)] 65536 129024
                             demo_limit) m_grown) [].
 Proof. check_eq. Qed.
 
+(** THE PARTNER, so this is not read as "a brk shrink frees nothing":
+    [brk_shrink_unmaps_freed_tail] above takes the same heap down to
+    65536, a PAGE-CROSSING shrink, and the whole 65536-byte entry goes.
+    Stated here as the two ledgers side by side. *)
+
+Example brk_shrink_frees_what_crosses_a_page :
+  vm_live_bytes (m_vmmaps m_grown) = 65536%Z
+  /\ live_bytes [(65536, 65536)] = 65536%Z.
+Proof. split; vm_compute; reflexivity. Qed.
+
 (** The mirror image on GROW: moving the logical break forward inside an
-    already mapped page installs no page and therefore zero-fills nothing.
+    already mapped page installs no page and therefore zero-fills
+    nothing, records nothing and charges nothing.
     In particular, a shrink-and-regrow within one page must not overwrite
     bytes above the temporary break. *)
 
@@ -2238,19 +2252,19 @@ Example brk_same_page_regrow_zeros_nothing :
   brk_zeros 69624 69624 69620 = [].
 Proof. check_eq. Qed.
 
-(** The no-access overlay follows the same physical boundary.  Start eight
-    bytes below the end of a guarded page, shrink four bytes, then regrow the
-    four: both transitions preserve the guard.  [vm_maps] still records the
-    two logical pieces and charges their exact byte count. *)
+(** The no-access overlay follows the same physical boundary.  The heap's
+    last page is guarded; the break sits eight bytes below its end.
+    Shrink four bytes, then regrow the four: both transitions preserve
+    the guard, and neither touches [vm_maps] — only [vm_brk] moves. *)
 
 Definition m_brk_same_page : Model :=
   with_vmmaps
-    (mkVmMapsFull brk_reserved [(65536, 4088)] [(65536, 4096)]
+    (mkVmMapsFull brk_reserved [(65536, 4096)] [(65536, 4096)]
       65536 69624 demo_limit 0 demo_sp) m_grown.
 
 Definition m_brk_same_page_shrunk : Model :=
   with_vmmaps
-    (mkVmMapsFull brk_reserved [(65536, 4084)] [(65536, 4096)]
+    (mkVmMapsFull brk_reserved [(65536, 4096)] [(65536, 4096)]
       65536 69620 demo_limit 0 demo_sp) m_brk_same_page.
 
 Example brk_same_page_shrink_preserves_noaccess :
@@ -2262,27 +2276,47 @@ Example brk_same_page_regrow_preserves_noaccess :
   check_syscall (brk_in 69624) (mkEffect 69624 [] []) m_brk_same_page_shrunk
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull brk_reserved [(69620, 4); (65536, 4084)]
+        (mkVmMapsFull brk_reserved [(65536, 4096)]
           [(65536, 4096)] 65536 69624 demo_limit 0 demo_sp)
         m_brk_same_page_shrunk) [].
 Proof. check_eq. Qed.
 
-(** That same-page shrink is the one documented case where a protected
-    range outlives the [vm_maps] entry that owned it: [m_brk_same_page_shrunk]
-    leaves [[69620, 69632)] in [vm_noaccess] and in no [vm_maps] entry.
-    [Mremap.mremap_fresh_b] never consults [vm_noaccess], so what keeps a
-    moved destination off that orphan is the residual entry
-    [(65536, 4084)] — the shrink truncates the brk entry, it does not
-    remove it, and a page-aligned destination low enough to touch the
-    orphan must cross the residual first.  The pair that pins this is on
-    the guard itself, in [Cases/Mm/Mremap.v]
-    ([mremap_fresh_above_brk_orphan_accepts]): its two destinations
+(** A PROTECTED RANGE NO LONGER OUTLIVES THE ENTRY THAT OWNS IT.  The
+    same-page brk shrink used to cut the logical tail out of [vm_maps]
+    while leaving the whole page in [vm_noaccess], so
+    [m_brk_same_page_shrunk] held [[69620, 69632)] protected and owned
+    by no entry.  It no longer cuts anything, so [vm_noaccess] is a
+    subrange of [vm_maps] on both states above and the orphan is
+    unreachable by this route.
+
+    The two hand-built states below KEEP that orphan shape anyway,
+    because what they are for is the mremap predicate rather than brk:
+    [Mremap.mremap_fresh_b] never consults [vm_noaccess], so what keeps
+    a moved destination off a protected range is the residual entry
+    [(65536, 4084)] — a shrink that TRUNCATES the owning entry rather
+    than removing it, so a page-aligned destination low enough to touch
+    the orphan must cross the residual first.  The pair differs only in
+    whether that residual is there; the source at 131072 is an
+    unrelated clean mapping to move.
+
+    NEITHER STATE IS REACHABLE, AND THEY ARE UNREACHABLE BY TWO
+    SEPARATE ROUTES — said here rather than left for a reader to infer
+    from their shape, because seeing one reason invites the conclusion
+    that the other state is reachable.
+    [m_brk_orphan_without_residual] was already unreachable before this
+    revision, by the [a <= page_floor r < r] argument
+    ([Mremap.mremap_fresh_b]'s note): a nonempty orphan forces the
+    truncated entry to survive.  [m_brk_orphan_with_source] joined it
+    when [Mmap.brk_maps_next] became page-granular.
+
+    WHERE THE BOUNDARY IS PINNED, and it is not where it reads: on the
+    GUARD, in [Cases/Mm/Mremap.v]
+    ([mremap_fresh_above_brk_orphan_accepts]), whose two destinations
     differ only in the page, one apart across the orphan's end (69632).
     The syscall cases on this state reach no moved destination at all —
     the grow has room above the source and expands in place — so they
     are both [CheckReject] for that reason and pin nothing about the
-    orphan.  The source at 131072 is an unrelated clean mapping to
-    move. *)
+    orphan. *)
 
 Definition m_brk_orphan_with_source : Model :=
   with_vmmaps
@@ -2314,18 +2348,20 @@ Definition m_brk_orphan_without_residual : Model :=
     [Mremap.mremap_fresh_avoids_noaccess] assumes.
     [State.noaccess_pages_owned] says every protected byte lies on a page
     some live [vm_maps] entry still touches — strictly weaker than
-    [vm_noaccess] being a subset of [vm_maps], which the same-page brk
-    shrink genuinely breaks.
+    [vm_noaccess] being a subset of [vm_maps].  The subset relation now
+    holds on every state a brk shrink produces, but the weaker form is
+    what the mremap predicate leans on and what is proved here, so the
+    pair is stated on the hand-built states where the two differ.
 
-    It HOLDS on the real shrunken state: the orphan [[69620, 69632)] is on
-    page [[65536, 69632)], and the truncated brk entry [(65536, 4084)]
+    It HOLDS with the residual: the orphan [[69620, 69632)] is on
+    page [[65536, 69632)], and the entry [(65536, 4084)]
     still reaches into that page.  Nothing about the orphan being
     unowned bytewise matters, which is the point. *)
 
 Example noaccess_pages_owned_brk_orphan :
-  noaccess_pages_owned (m_vmmaps m_brk_same_page_shrunk).
+  noaccess_pages_owned (m_vmmaps m_brk_orphan_with_source).
 Proof.
-  unfold noaccess_pages_owned, m_brk_same_page_shrunk, with_vmmaps.
+  unfold noaccess_pages_owned, m_brk_orphan_with_source, with_vmmaps.
   cbn [m_vmmaps vm_noaccess vm_maps]; autorewrite with model.
   intros a n Hin. destruct Hin as [Heq|[]]. inversion Heq; subst; clear Heq.
   assert (E65536 : bv_unsigned (65536 : word) = 65536%Z) by reflexivity.
@@ -2365,15 +2401,16 @@ Qed.
 
 (** Crossing that boundary is exact in both directions: an unaligned old
     break at 0x10ff8 grown sixteen bytes maps and zeroes precisely the next
-    page [0x11000,0x12000), while the logical ledger records only sixteen
-    newly requested bytes. *)
+    page [0x11000,0x12000), and the ledger records that page and nothing
+    else — the same range, so the charge is the page the kernel
+    installed and not the sixteen bytes the program asked for. *)
 
 Example brk_unaligned_cross_page_zeros_exact_new_page :
   check_syscall (brk_in 69640)
     (mkEffect 69640 [] [(69632, 4096)]) m_brk_same_page
   = CheckOk
       (with_vmmaps
-        (mkVmMapsFull brk_reserved [(69624, 16); (65536, 4088)]
+        (mkVmMapsFull brk_reserved [(69632, 4096); (65536, 4096)]
           [(65536, 4096)] 65536 69640 demo_limit 0 demo_sp)
         m_brk_same_page) [].
 Proof. check_eq. Qed.

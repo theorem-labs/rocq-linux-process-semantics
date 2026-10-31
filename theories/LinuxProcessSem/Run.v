@@ -1573,16 +1573,17 @@ Definition alloc_budget_refused_b (i : SyscallInput) (m : Model) : bool :=
     not (the charge is the growth above the current break). *)
 Inductive RefuseReason : Set := RefuseBudget | RefuseOversize.
 
-(** The charge of the pending request: the byte growth above the
-    current break for [brk], the page-rounded length or new size for
+(** The charge of the pending request: the PAGES a [brk] grow installs
+    above the current break ([Sys/Mm/Mmap.brk_grow_bytes], the same
+    range the ledger records and the gate charges), the page-rounded
+    length or new size for
     [mremap], [mmap] and [mprotect], and 0 for any other syscall —
     [munmap] included, whose mark never fires.  The argument indices are
     those of [alloc_budget_refused_b]; the per-arm lemmas below tie this
     charge to each arm's gate. *)
 Definition alloc_req_charge_bytes (i : SyscallInput) (m : Model) : Z :=
   let no := bv_unsigned (in_sysno i) in
-  if Z.eqb no 214 then
-    Z.max 0%Z (bv_unsigned (in_arg i 0) - bv_unsigned (vm_brk (m_vmmaps m)))%Z
+  if Z.eqb no 214 then brk_grow_bytes (m_vmmaps m) (in_arg i 0)
   else if Z.eqb no 216 then page_round_up_Z (bv_unsigned (in_arg i 2))
   else if Z.eqb no 222 then page_round_up_Z (bv_unsigned (in_arg i 1))
   else if Z.eqb no 226 then page_round_up_Z (bv_unsigned (in_arg i 1))
@@ -1623,7 +1624,7 @@ Qed.
 Lemma alloc_req_charge_brk : forall i m,
   bv_unsigned (in_sysno i) = 214%Z ->
   alloc_budget_refused_b i m = true ->
-  (0 < alloc_req_charge_bytes i m)%Z
+  (0 <= alloc_req_charge_bytes i m)%Z
   /\ brk_budget_ok m (in_arg i 0)
      = (vm_backing_used m + alloc_req_charge_bytes i m <=? vm_limit (m_vmmaps m))%Z
   /\ brk_budget_ok m (in_arg i 0) = false.
@@ -1633,20 +1634,13 @@ Proof.
   cbn [Z.eqb Pos.eqb] in Hb.
   unfold brk_budget_refused_b in Hb.
   apply andb_true_iff in Hb as [Hb Hok].
-  apply andb_true_iff in Hb as [Hb Hgt].
-  apply andb_true_iff in Hb as [_ Hpos].
-  apply Z.ltb_lt in Hgt. apply Z.ltb_lt in Hpos.
   apply negb_true_iff in Hok.
   assert (Hc : alloc_req_charge_bytes i m
-               = (bv_unsigned (in_arg i 0) - bv_unsigned (vm_brk (m_vmmaps m)))%Z).
-  { unfold alloc_req_charge_bytes. cbv zeta. rewrite Hno. cbn [Z.eqb Pos.eqb]. lia. }
-  assert (Hsz : bv_unsigned (in_arg i 0 - vm_brk (m_vmmaps m))%bv
-                = (bv_unsigned (in_arg i 0) - bv_unsigned (vm_brk (m_vmmaps m)))%Z).
-  { pose proof (bv_unsigned_in_range 64 (in_arg i 0)).
-    pose proof (bv_unsigned_in_range 64 (vm_brk (m_vmmaps m))).
-    rewrite bv_sub_unsigned. apply bv_wrap_small. lia. }
-  split; [lia |]. split; [| exact Hok].
-  unfold brk_budget_ok. cbv zeta. rewrite Hsz, Hc. reflexivity.
+               = brk_grow_bytes (m_vmmaps m) (in_arg i 0)).
+  { unfold alloc_req_charge_bytes. cbv zeta. rewrite Hno.
+    cbn [Z.eqb Pos.eqb]. reflexivity. }
+  split; [rewrite Hc; unfold brk_grow_bytes; lia |]. split; [| exact Hok].
+  unfold brk_budget_ok. cbv zeta. rewrite Hc. reflexivity.
 Qed.
 
 (** THE MREMAP MARK, READ BACK.  The grow has ONE non-errno

@@ -558,18 +558,20 @@ pose proof (pup_le_two64 _ Rb) as PRb.
 unfold brk_maps_next.
 destruct (Z.ltb 0 (bv_unsigned (vm_brk h))
           && Z.ltb (bv_unsigned r) (bv_unsigned (vm_brk h))) eqn:Eshrink.
-- assert (Hcut : NoaccessOwned.owned
-           (maps_subtract (vm_maps h) (bv_unsigned r) (bv_unsigned (vm_brk h))) y).
-  { apply NoaccessOwned.owned_subtract; [exact Hfit | exact Hown |].
-    apply (brk_floor_outside (bv_unsigned r) (bv_unsigned (vm_brk h)) y);
-      [lia | lia | exact H0 | exact Hal | exact Hout]. }
+- (* PROVISIONAL, LpsMmPrecision: this file belongs to
+     LpsImpact.RevFixLibdiginet.WfWriterArms and its text wins.  The brk
+     shrink no longer cuts [[r, b)] out of [vm_maps] — it takes only the
+     pages [Mmap.brk_unmaps] names — so the [owned_subtract] step over
+     the byte range has nothing to apply to and [Hown] carries straight
+     through the empty case.  [brk_floor_outside] still discharges the
+     page-rounded cut. *)
   unfold brk_unmap_cut. cbv zeta.
   destruct (Z.ltb (page_round_up_Z (bv_unsigned r))
                   (page_round_up_Z (bv_unsigned (vm_brk h)))) eqn:Ecut;
-    [|exact Hcut].
+    [|exact Hown].
   apply Z.ltb_lt in Ecut.
   apply NoaccessOwned.owned_subtract;
-    [ apply MapsFit.maps_subtract_fit; exact Hfit | exact Hcut |].
+    [ exact Hfit | exact Hown |].
   intros [H1 H2]. apply Hout. split; [exact H1 | lia].
 - apply NoaccessOwned.owned_app_r. exact Hown.
 Qed.
