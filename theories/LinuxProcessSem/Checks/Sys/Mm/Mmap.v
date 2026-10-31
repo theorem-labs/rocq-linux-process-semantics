@@ -17,6 +17,50 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Placement.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude Fs.ReadWrite.
 
+(** The two side conditions every use of [Placement.linux_place_is_iff]
+    in this file needs, from the one gate [mmap_spec] has already
+    passed when it reaches a fresh-grant arm: the length is not zero.
+    [page_round_up_Z] of a nonzero length is a whole number of pages,
+    and at least one. *)
+Lemma mmap_grant_len_ok : forall len,
+  w_is0 len = false ->
+  (0 < page_round_up_Z (bv_unsigned len))%Z
+  /\ (page_round_up_Z (bv_unsigned len) mod page_size = 0)%Z.
+Proof.
+  intros len H. apply w_is0_false_pos in H.
+  split; [| apply page_round_up_Z_aligned].
+  pose proof (page_round_up_Z_pos (bv_unsigned len) H).
+  unfold page_size in *. lia.
+Qed.
+
+(** The fresh-grant guard, discharged in one step: the checker's test
+    is true, so the address is the one [Sys/Mm/Mmap.linux_place]
+    gives. *)
+Ltac place_from_check H Hlen :=
+  apply (linux_place_is_iff _ _ _ _ _
+           (proj1 (mmap_grant_len_ok _ Hlen))
+           (proj2 (mmap_grant_len_ok _ Hlen))); exact H.
+
+(** The other direction, for the completeness proofs: the spec's guard
+    holds, so the checker's placement test is true and the returned
+    address is far enough below the top that it is no encoded errno. *)
+Ltac place_complete Hlen :=
+  lazymatch goal with
+  | Hp : linux_place _ _ _ _ (bv_unsigned ?a) |- _ =>
+      let Hal := fresh "Hal" in let Hpos := fresh "Hpos" in
+      let Hb := fresh "Hb" in let Hfree := fresh "Hfree" in
+      destruct (linux_place_admissible _ _ _ _ _
+                  (proj1 (mmap_grant_len_ok _ Hlen))
+                  (proj2 (mmap_grant_len_ok _ Hlen)) Hp)
+        as (Hal & Hpos & Hb & Hfree);
+      rewrite (errno_ret_in_below mmap_errnos a) by
+        first [ reflexivity
+              | alloc_top_bounds; unfold two_pow_64 in *; lia ];
+      rewrite (proj2 (linux_place_is_iff _ _ _ _ a
+                        (proj1 (mmap_grant_len_ok _ Hlen))
+                        (proj2 (mmap_grant_len_ok _ Hlen))) Hp)
+  end.
+
 Definition check_brk (req : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   match eff with
@@ -527,26 +571,21 @@ Proof.
       { apply (choose_ok _ e). exact HIn. }
       apply pure_ok.
     - cbv zeta in H.
-      destruct ((bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-                && (bv_unsigned r + page_round_up_Z (bv_unsigned len) <=? alloc_top (m_vmmaps m))%Z
-                && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                     r (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
-                 && mmap_noreserve_backed_ok flags m
+      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr
+                  (page_round_up_Z (bv_unsigned len)) r
+                && mmap_noreserve_backed_ok flags m
                      (page_round_up_Z (bv_unsigned len))
                 && listNN_eqb zs [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
         eqn:HC; [|discriminate].
       inversion H; clear H; subst.
       apply andb_true_iff in HC as [HC HZs].
-      apply andb_true_iff in HC as [HC HL].
-      apply andb_true_iff in HC as [HC HD].
-      apply andb_true_iff in HC as [HC HB].
-      apply andb_true_iff in HC as [HA HZ].
-      apply Z.eqb_eq in HA. apply Z.ltb_lt in HZ. apply Z.leb_le in HB.
+      apply andb_true_iff in HC as [HP HL].
       apply listNN_eqb_eq in HZs; subst zs.
       apply alt_r.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
       eapply bind_ok0.
-      { apply (choose_ok _ r). cbv beta. repeat split; assumption. }
+      { apply (choose_ok _ r). cbv beta. split;
+          [place_from_check HP Hl | exact HL]. }
       eapply bind_ok0; [apply modify_ok|].
       apply pure_ok. }
   destruct (mmap_noaccess_b prot flags off) eqn:Hnone.
@@ -561,24 +600,18 @@ Proof.
       { apply (choose_ok _ e). exact HIn. }
       apply pure_ok.
     - cbv zeta in H.
-      destruct ((bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-                && (bv_unsigned r + page_round_up_Z (bv_unsigned len) <=? alloc_top (m_vmmaps m))%Z
-                && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                     r (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr
+                  (page_round_up_Z (bv_unsigned len)) r
                 && listNN_eqb us
                      [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))])
         eqn:HC; [|discriminate].
       inversion H; clear H; subst.
-      apply andb_true_iff in HC as [HC HUs].
-      apply andb_true_iff in HC as [HC HD].
-      apply andb_true_iff in HC as [HC HB].
-      apply andb_true_iff in HC as [HA HZ].
-      apply Z.eqb_eq in HA. apply Z.ltb_lt in HZ. apply Z.leb_le in HB.
+      apply andb_true_iff in HC as [HP HUs].
       apply listNN_eqb_eq in HUs; subst us.
       apply alt_r.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
       eapply bind_ok0.
-      { apply (choose_ok _ r). cbv beta. repeat split; assumption. }
+      { apply (choose_ok _ r). cbv beta. place_from_check HP Hl. }
       eapply bind_ok0; [apply modify_ok|].
       apply pure_ok. }
   destruct (mmap_fixed_noaccess_b prot flags off) eqn:Hfixed.
@@ -951,11 +984,9 @@ Proof.
       [destruct us; [destruct cs; [destruct copyins|]|]|].
     + destruct (errno_ret_in mmap_errnos r); [destruct zs; discriminate|].
       cbv zeta in H.
-      destruct ((bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-                && (bv_unsigned r + page_round_up_Z (bv_unsigned len) <=? alloc_top (m_vmmaps m))%Z
-                && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                     r (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
-                 && mmap_noreserve_backed_ok flags m
+      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr
+                  (page_round_up_Z (bv_unsigned len)) r
+                && mmap_noreserve_backed_ok flags m
                      (page_round_up_Z (bv_unsigned len))
                 && listNN_eqb zs
                      [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))]);
@@ -971,10 +1002,8 @@ Proof.
     destruct (errno_ret_in mmap_errnos r).
     - destruct us; discriminate.
     - cbv zeta in H.
-      destruct ((bv_unsigned r mod page_size =? 0)%Z && (0 <? bv_unsigned r)%Z
-                && (bv_unsigned r + page_round_up_Z (bv_unsigned len) <=? alloc_top (m_vmmaps m))%Z
-                && region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m))
-                     r (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
+      destruct (linux_place_is (m_vmmaps m) (kb_thp (m_kernel m)) addr
+                  (page_round_up_Z (bv_unsigned len)) r
                 && listNN_eqb us
                      [(r, Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))]);
         discriminate. }
@@ -1214,13 +1243,7 @@ Proof.
     - cbv zeta.
       pose proof (word_unsigned_range len) as Hlen.
       pose proof (page_round_up_Z_nonneg (bv_unsigned len) ltac:(lia)) as Hn.
-      match goal with
-      | Hb : (bv_unsigned ?a + _ <= _)%Z |- context [errno_ret_in ?es ?a] =>
-          rewrite (errno_ret_in_below es a) by
-            first [ reflexivity
-                  | alloc_top_bounds;
-                      unfold two_pow_64 in *; lia ]
-      end.
+      place_complete Hl.
       bool_true. rewrite (proj2 (listNN_eqb_eq _ _) eq_refl).
       rewrite Bool.andb_true_r. reflexivity. }
   destruct (mmap_noaccess_b prot flags off) eqn:Hnone.
@@ -1234,13 +1257,7 @@ Proof.
     - cbv zeta.
       pose proof (word_unsigned_range len) as Hlen.
       pose proof (page_round_up_Z_nonneg (bv_unsigned len) ltac:(lia)) as Hn.
-      match goal with
-      | Hb : (bv_unsigned ?a + _ <= _)%Z |- context [errno_ret_in ?es ?a] =>
-          rewrite (errno_ret_in_below es a) by
-            first [ reflexivity
-                  | alloc_top_bounds;
-                      unfold two_pow_64 in *; lia ]
-      end.
+      place_complete Hl.
       bool_true. rewrite (proj2 (listNN_eqb_eq _ _) eq_refl).
       rewrite Bool.andb_true_r. reflexivity. }
   destruct (mmap_fixed_noaccess_b prot flags off) eqn:Hfixed.

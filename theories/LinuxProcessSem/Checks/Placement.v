@@ -959,7 +959,7 @@ Proof.
               split; [exact Hret|reflexivity].
            ++ intros [(ret' & Hret' & ->)|[Hno _]].
               ** f_equal. f_equal.
-                 exact (topdown_search_unique _ _ _ _ Hret' Hret).
+                 exact (topdown_search_unique _ _ _ _ Hret Hret').
               ** exfalso. exact (Hno ret Hret).
         -- split; [discriminate|]. intro H. exfalso.
            exact (H (thp_align ret)

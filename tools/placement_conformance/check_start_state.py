@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""check_start_state.py - read a real Linux launch against the LPS entry model.
+"""check_start_state.py - EVIDENCE, no longer the A4 check.
+
+THIS SCRIPT IS NOT THE CHECK ANY MORE.  A4 of dispatch://OSSV-257 is checked
+by start_state_to_rocq.py, which emits a Rocq file per log whose lemmas Rocq
+closes with vm_compute against the model's own source.  What this script
+compares the record with is the PYTHON TRANSCRIPTION below: a second model of
+the entry block that nothing proves agrees with the first.  Its run stands as
+the first evidence that the ten records agree with the model -- 110 verdicts
+over 10 records, 0 failures, reports/a4-start-state.md of the entry lane's
+clone -- and it reads two things the Rocq files do not: the vDSO image
+against the kernel build's own vdso.so, and the vvar mapping's distance below
+AT_SYSINFO_EHDR.  It is no longer in the trusted path.
+
+It reads a real Linux launch against a transcription of the LPS entry model.
 
     check_start_state.py LOG [LOG ...] [--vdso FILE] [--quiet]
 
@@ -28,9 +41,12 @@ of each definition on its own line.  A reviewer checks those names against
 the Rocq source, and the Rocq source against Linux v6.18.46, commit
 1f99e9ab748f.  Nothing outside the markers states what the model says.
 
-This check is Python and not Rocq on purpose: it compares the model with a
-recorded byte string from a booted kernel, and a Rocq reflexivity over a
-recorded byte string shows nothing a Python comparison does not.
+Why this file is no longer the check: the transcription is a SECOND model of
+the entry block.  A reviewer can read it against the Rocq source, but nothing
+proves the two agree, so a disagreement between them would show up as a
+passing Python check and a failing Rocq one -- or, worse, the reverse.
+start_state_to_rocq.py removes the second model: it emits the record as LPS
+terms and lets Rocq compute the block from StackLayout.v itself.
 """
 
 import argparse
