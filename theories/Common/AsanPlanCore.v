@@ -3141,14 +3141,88 @@ Definition V_G : nat := 9.      (** [StackLayout.block_items argv envp mod 2]: t
                                     over argc and envc can spell "mod 2", so the gap
                                     is its own variable. *)
 
-(** The auxv's size in bytes, [StackLayout.auxv_size] at the kernel build a
-    positional [State.mkProcInput] literal declares ([State.default_kernel],
-    CONFIG_RSEQ on): 29 entries of 16 bytes.  [AUXSZ_eq] is the tie to the model,
-    and the literal is written out so that the expressions below stay in the
-    executor's normal form. *)
+(** The auxv's size in bytes, as a literal so the expressions below stay in
+    the executor's normal form.  464 is [StackLayout.auxv_size] with
+    CONFIG_RSEQ ON: 29 entries of 16 bytes.  WITHOUT it the vector is 27
+    entries and 432 bytes, and every address above the auxv in a plan built
+    on this literal is 32 bytes out.
+
+    [AUXSZ_of] is the tie to the model and it reads THE RUN'S OWN kernel
+    build, under an explicit hypothesis.  That is the point of its shape: a
+    consumer that wants the literal must discharge
+    [kb_rseq (in_kernel inp) = true] for the input its plan is about, and a
+    fixture that declares the flag the other way gets a FAILED HYPOTHESIS
+    rather than a silently wrong address.
+
+    [AUXSZ_eq] below is the special case for [State.default_kernel], which is
+    what the thirteen-place [State.mkProcInput] fills in, and it is kept
+    because [AsanInit]'s own input is built that way.  It is NOT the general
+    tie: it says 464 is the size at the DEFAULT build, and it stays true
+    whatever a fixture declares — which is exactly why it cannot be the
+    guard.  [Run.valid_input] constrains the kernel build not at all, so
+    nothing but [AUXSZ_of]'s hypothesis stands between a
+    [State.mkProcInput_full] fixture with the flag off and a plan whose
+    addresses are wrong.
+
+    WHAT THE HYPOTHESIS DOES NOT COVER: the literal itself. [AUXSZ] is a
+    [Definition] and any file may unfold it without going through either
+    lemma.  The guard binds a consumer that RELATES the plan to a run — the
+    [e_atrandom], [e_str0] and [e_atr8] forms below, and every soundness
+    result that reads them against [Run.entry_stack_image] — because those
+    are the only places where being wrong about a run is possible.  A reader
+    who wants the number and nothing else is not making a claim about a
+    launch. *)
 Definition AUXSZ : Z := 464.
+
+Lemma AUXSZ_of : forall inp,
+  kb_rseq (in_kernel inp) = true ->
+  AUXSZ = Z.of_nat (StackLayout.auxv_size (kb_rseq (in_kernel inp))).
+Proof. intros inp H. rewrite H. vm_compute. reflexivity. Qed.
+
+(** The size at the build the positional constructor declares. *)
 Lemma AUXSZ_eq : AUXSZ = Z.of_nat (StackLayout.auxv_size (kb_rseq default_kernel)).
 Proof. vm_compute. reflexivity. Qed.
+
+(** The flag is the fact and the constructor is only the mechanism: an input
+    built by the thirteen-place [State.mkProcInput] carries
+    [State.default_kernel], whose flag is on, so such a fixture discharges
+    [AUXSZ_of]'s hypothesis by computation. *)
+Lemma kb_rseq_mkProcInput : forall argv envp fs stdin uid gid groups net
+    nofile sigmask hwcap abort va,
+  kb_rseq (in_kernel (mkProcInput argv envp fs stdin uid gid groups net
+                        nofile sigmask hwcap abort va)) = true.
+Proof. reflexivity. Qed.
+
+(** THE PAIR THAT BITES.  The admitted half: the default fixture discharges
+    the hypothesis and 464 is its auxv size.  The refused half: the same
+    fixture through [State.mkProcInput_full] with CONFIG_RSEQ declared OFF
+    has a 432-byte vector, so the hypothesis is false of it AND the literal
+    is wrong by 32 bytes for it.  Without the second half the first shows
+    only that the guard admits something, not that it refuses anything. *)
+Example auxsz_admits_the_default_build :
+  AUXSZ = Z.of_nat (StackLayout.auxv_size
+                      (kb_rseq (in_kernel
+                        (mkProcInput [[]] [] [] IEof (Z_to_bv 64 1000)
+                           (Z_to_bv 64 1000) [] net_silent default_nofile
+                           (Z_to_bv 64 0) StackLayout.hwcap_rv64gc false Sv48)))).
+Proof.
+  apply AUXSZ_of. apply kb_rseq_mkProcInput.
+Qed.
+
+Definition auxsz_rseq_off_input : ProcInput :=
+  mkProcInput_full [[]] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
+    net_silent default_nofile (Z_to_bv 64 0) StackLayout.hwcap_rv64gc false
+    Sv48 default_urandom []
+    (mkKernelBuild false 1%N true 256%N 0%N false 0%N cache_view_absent)
+    default_execfn.
+
+Example auxsz_refuses_a_build_without_rseq :
+  kb_rseq (in_kernel auxsz_rseq_off_input) = false
+  /\ Z.of_nat (StackLayout.auxv_size (kb_rseq (in_kernel auxsz_rseq_off_input)))
+     = 432%Z
+  /\ AUXSZ <> Z.of_nat (StackLayout.auxv_size
+                          (kb_rseq (in_kernel auxsz_rseq_off_input))).
+Proof. repeat split; vm_compute; discriminate. Qed.
 
 (** sp = 32768*s1 + 16*s2 (two variables so that the stack-shadow code's
     case split on sp mod 32 KiB is a PSplit on s2, F3) *)
