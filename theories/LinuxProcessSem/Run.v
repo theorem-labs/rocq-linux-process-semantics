@@ -3995,7 +3995,7 @@ Proof.
      hypothesis and split the goal to the same depth, both GUARDED.  A
      bare [repeat split] would also apply the constructor of
      [valid_urandom], which is coinductive. *)
-  intros inp H.
+  intros inp H. red in H |- *.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
@@ -4007,7 +4007,7 @@ Proof.
      hypothesis and split the goal to the same depth, both GUARDED.  A
      bare [repeat split] would also apply the constructor of
      [valid_urandom], which is coinductive. *)
-  intros inp H.
+  intros inp H. red in H |- *.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
@@ -4161,7 +4161,7 @@ Proof.
      hypothesis and split the goal to the same depth, both GUARDED.  A
      bare [repeat split] would also apply the constructor of
      [valid_urandom], which is coinductive. *)
-  intros inp H.
+  intros inp H. red in H |- *.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
@@ -4173,7 +4173,7 @@ Proof.
      hypothesis and split the goal to the same depth, both GUARDED.  A
      bare [repeat split] would also apply the constructor of
      [valid_urandom], which is coinductive. *)
-  intros inp H.
+  intros inp H. red in H |- *.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
@@ -4185,7 +4185,7 @@ Proof.
      hypothesis and split the goal to the same depth, both GUARDED.  A
      bare [repeat split] would also apply the constructor of
      [valid_urandom], which is coinductive. *)
-  intros inp H.
+  intros inp H. red in H |- *.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
