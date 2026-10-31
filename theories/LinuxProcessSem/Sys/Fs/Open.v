@@ -1472,7 +1472,7 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     [fd] arrives already truncated to 32 bits (see [Syscall.fd32]), so
     [close(2^32)] closes stdin.
 
-    THE ARM IS KIND-BLIND FOR EVERY KIND BUT ONE, AND FOR A PIPE THAT IS
+    THE ARM IS KIND-BLIND ON PURPOSE, AND FOR A PIPE THAT IS
     LOAD-BEARING.  Removing the fd is the whole of what [pipe_release]
     does that a program can observe (fs/pipe.c:725-746, v6.18.46): it
     decrements [pipe->readers] or [pipe->writers] by the file's [f_mode]
@@ -1487,19 +1487,19 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     [State.pipe_new_id]), and a reader whose end is still open still
     sees them, as it does on Linux.
 
-    A STREAM-PAIR END IS THE ONE KIND THE ARM LOOKS AT, because closing
-    one changes ANOTHER descriptor's state, which no fd-table reading
-    can recover afterwards.  [unix_release_sock] shuts the peer down and
-    may leave it a pending ECONNRESET, and whether it does depends on
-    the closing end's own queue, which the close discards; so the peer
-    is updated here, by [State.stream_release], while that queue is
-    still known. *)
+    A STREAM-PAIR END ([State.FdStream]) IS KIND-BLIND TOO, by choice and
+    at a price stated where it is paid.  [unix_release_sock] also writes
+    into the PEER — [SHUTDOWN_MASK], and [sk_err = ECONNRESET] when this
+    end held unread bytes — and the model does not copy that here, so
+    that this arm stays "the entry goes and nothing else moves", which
+    published proofs rely on (theories/Common/FileSim.v [tfo_close]).
+    The survivor reads its peer's close off the table instead
+    ([State.stream_peer] is [None]); [State.StreamEnd]'s note says which
+    answers that gives and which two decline. *)
 Definition close_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF
-  | Some (FdStream id side st) =>
-      set_fds (stream_release (m_fds m) fd id side st) ;; ret_only (Z_to_bv 64 0)
   | Some _ => set_fds (fd_remove (m_fds m) fd) ;; ret_only (Z_to_bv 64 0)
   end.
 

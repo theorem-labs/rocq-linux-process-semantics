@@ -442,11 +442,11 @@ Definition POLLEX_SET : Z := EPOLLPRI.
     which adds nothing: its [POLL_BUSY_LOOP] needs [sk_ll_usec], which is
     0 unless SO_BUSY_POLL or the [net.core.busy_read] sysctl sets it.
 
-    Returned as a PAIR [(lo, hi)]: the mask with the three write bits
-    clear and with them set as [unix_writable] may decide.  Every other
-    bit is a function of the end's state and is the same in both:
+    Returned as a PAIR [(lo, hi)] that differ exactly in the bits the
+    model cannot decide: [lo] has them clear, [hi] has them set.  The
+    callers answer only when the difference misses every bit the call
+    asked about.  The bits:
 
-    - EPOLLERR for a pending [sk_err] ([se_err]);
     - EPOLLHUP when both shutdown bits are set ([shutdown ==
       SHUTDOWN_MASK]).  The other EPOLLHUP source, [sk_state ==
       TCP_CLOSE], never fires on a live pair end: [unix_socketpair] sets
@@ -456,7 +456,15 @@ Definition POLLEX_SET : Z := EPOLLPRI.
     - EPOLLIN | EPOLLRDNORM for a non-empty receive queue.
       [sk_is_readable] adds nothing: it is [prot->sock_is_readable],
       which only a BPF sockmap installs.  EPOLLPRI needs a MSG_OOB skb,
-      and no modeled call sends one.
+      and no modeled call sends one;
+    - EPOLLERR for a pending [sk_err], which only the peer's close sets.
+
+    A PEER THAT HAS CLOSED ([State.stream_peer] is [None]) left
+    [SHUTDOWN_MASK] behind ([unix_release_sock]), so HUP, RDHUP, IN and
+    RDNORM are set; it purged its queue and so freed this end's skbs, so
+    the end is writable; and whether it also left [sk_err] the table does
+    not say (see [State.StreamEnd]), so EPOLLERR is the undecided bit.
+    With the peer open, EPOLLERR is clear.
 
     WRITABILITY is [unix_writable]: [(refcount_read(&sk_wmem_alloc) << 2)
     <= sk_sndbuf], where the refcount is 1 plus the TRUESIZE of every skb
@@ -465,36 +473,41 @@ Definition POLLEX_SET : Z := EPOLLPRI.
     ([State.stream_send_may_refuse]'s argument), so at [q = 0] the answer
     is [4 <= s]; the sum is at least [q], so [s < 4 * (q + 1)] is
     certainly not writable; and in between the answer turns on truesize,
-    which the model does not carry -- [lo] and [hi] then differ.  A peer
-    that has closed purged its queue and so freed this end's skbs: [q] is
-    0.  POLLOUT is set even after the peer shut down, as the kernel's own
-    comment says ("This prevents stuck sockets"). *)
+    which the model does not carry -- the three write bits are then the
+    undecided ones.  POLLOUT is set even after the peer shut down, as the
+    kernel's own comment says ("This prevents stuck sockets"). *)
 Definition stream_poll_mask (fds : list (word * FdEntry)) (id : word)
     (side : bool) (st : StreamEnd) : Z * Z :=
-  let base :=
-    Z.lor (if se_err st then EPOLLERR else 0)
-   (Z.lor (if (se_shut_rd st && se_shut_wr st)%bool then EPOLLHUP else 0)
-   (Z.lor (if se_shut_rd st then Z.lor EPOLLRDHUP (Z.lor EPOLLIN EPOLLRDNORM) else 0)
-          (match se_rx st with [] => 0 | _ => Z.lor EPOLLIN EPOLLRDNORM end))) in
   let w := Z.lor EPOLLOUT (Z.lor EPOLLWRNORM EPOLLWRBAND) in
-  let q := match stream_peer fds id side with
-           | None => 0%Z
-           | Some (_, pst) => se_rx_len pst
-           end in
+  let rx := match se_rx st with [] => 0%Z | _ => Z.lor EPOLLIN EPOLLRDNORM end in
   let s := se_sndbuf st in
-  if Z.eqb q 0 then (if (4 <=? s)%Z then (Z.lor base w, Z.lor base w) else (base, base))
-  else if (s <? 4 * (q + 1))%Z then (base, base)
-  else (base, Z.lor base w).
+  match stream_peer fds id side with
+  | None =>
+      let m0 := Z.lor rx (Z.lor EPOLLHUP (Z.lor EPOLLRDHUP (Z.lor EPOLLIN EPOLLRDNORM))) in
+      let m1 := if (4 <=? s)%Z then Z.lor m0 w else m0 in
+      (m1, Z.lor m1 EPOLLERR)
+  | Some (_, pst) =>
+      let base :=
+        Z.lor (if (se_shut_rd st && se_shut_wr st)%bool then EPOLLHUP else 0)
+       (Z.lor (if se_shut_rd st then Z.lor EPOLLRDHUP (Z.lor EPOLLIN EPOLLRDNORM) else 0) rx) in
+      let q := se_rx_len pst in
+      if Z.eqb q 0 then (if (4 <=? s)%Z then (Z.lor base w, Z.lor base w) else (base, base))
+      else if (s <? 4 * (q + 1))%Z then (base, base)
+      else (base, Z.lor base w)
+  end.
 
 (** What [do_select] reports for one descriptor [fd] asked about in the
     sets [i], [o] and [x]: the three result bits, or [None] where the
     model declines.
 
     A STREAM-PAIR END is answered from [stream_poll_mask], and declined
-    only when the undecided write bits would change a result bit the
-    call ASKED FOR -- so a pair end polled for reading alone is always
-    answered, and one polled for writing is declined only in the band
-    where [unix_writable] turns on truesize.  Every other kind is
+    only when its undecided bits would change a result bit the call
+    ASKED FOR.  So a pair end polled for reading alone is always
+    answered; one polled for writing is declined only in the band where
+    [unix_writable] turns on truesize; and a survivor whose peer closed
+    is answered too, because its undecided EPOLLERR adds nothing to
+    readable or writable that SHUTDOWN_MASK has not already set, and is
+    not in [POLLEX_SET].  Every other kind is
     answered exactly when [bits_all_pollable] calls its mask constant:
     [DEFAULT_POLLMASK] meets [POLLIN_SET] and [POLLOUT_SET] and misses
     [POLLEX_SET].  The [_] arm hands every other constructor to that
@@ -1102,9 +1115,10 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
        | Some (FdStream id side st) =>
            (* [sock_poll] -> [unix_poll], masked by the entry's filter:
               [demangle_poll(events) | EPOLLERR | EPOLLHUP] ([do_pollfd],
-              fs/select.c).  Answered when the undecided write bits of
-              [stream_poll_mask] fall outside the filter or agree, and
-              declined when they are asked for in the truesize band *)
+              fs/select.c).  Answered when the undecided bits of
+              [stream_poll_mask] fall outside the filter.  So a survivor
+              whose peer closed always declines here — EPOLLERR is in
+              every filter — as does a POLLOUT asked in the truesize band *)
            let '(lo, hi) := stream_poll_mask fds id side st in
            let filt := Z.lor events (Z.lor EPOLLERR EPOLLHUP) in
            if Z.eqb (Z.land lo filt) (Z.land hi filt) then Some (Z.land lo filt)

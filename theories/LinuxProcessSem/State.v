@@ -2633,15 +2633,24 @@ Definition PipeBuf : Type := list byte * Z.
       nor [unix_stream_read_generic] mentions it -- so it is a value
       reported back and nothing else.
     - [se_shut_rd] and [se_shut_wr] are the [RCV_SHUTDOWN] and
-      [SEND_SHUTDOWN] bits of [sk_shutdown].  [unix_shutdown] sets the
-      caller's bits and the MIRRORED bits on the peer (a SHUT_WR here is
-      RCV_SHUTDOWN there), and [unix_release_sock] sets both on the
-      survivor ([SHUTDOWN_MASK]).
-    - [se_err] is [sk_err = ECONNRESET], pending.  [unix_release_sock]
-      sets it on the survivor exactly when the closing end still had
-      unread bytes in its own queue; the next read of an empty queue
-      reports it once ([sock_error] clears it) before it reports end of
-      file.
+      [SEND_SHUTDOWN] bits of [sk_shutdown] as [shutdown] left them.
+      [unix_shutdown] sets the caller's bits and the MIRRORED bits on the
+      peer (a SHUT_WR here is RCV_SHUTDOWN there).
+
+    WHAT A CLOSE DOES TO THE SURVIVOR IS NOT STORED HERE, AND THAT IS A
+    CHOICE.  [unix_release_sock] ORs [SHUTDOWN_MASK] into the survivor and
+    sets its [sk_err = ECONNRESET] when the closing end still held unread
+    bytes.  The model keeps [Fs.Open.close_spec] KIND-BLIND instead — the
+    entry goes and nothing else moves — because a close that writes into
+    another descriptor's entry would make false every published lemma
+    that says a close only removes its entry (theories/Common/FileSim.v
+    [tfo_close], vendored by 78 of the 89 published proof trees).  So the
+    survivor reads "the peer has closed" off the table — [stream_peer] is
+    [None] — and every arm treats that as [SHUTDOWN_MASK]: a send is
+    -EPIPE, select reports readable and writable.  What the table cannot
+    say is whether the [sk_err] was set, so the two answers that turn on
+    it DECLINE: an empty read on the survivor (end of file, or one
+    -ECONNRESET first) and a [ppoll], whose filter always holds EPOLLERR.
 
     WHAT IS NOT HERE, and deliberately.  No ADDRESS: a [socketpair] end
     is unbound, [unix_getname] reports the unnamed address, and nothing
@@ -2658,8 +2667,7 @@ Record StreamEnd := mkStreamEnd {
   se_sndbuf   : Z;
   se_rcvbuf   : Z;
   se_shut_rd  : bool;
-  se_shut_wr  : bool;
-  se_err      : bool
+  se_shut_wr  : bool
 }.
 
 (** An open file descriptor, carrying its ACCESS MODE so the model can
@@ -5371,11 +5379,10 @@ Definition stream_id_live (fds : list (word * FdEntry)) (id : word) : bool :=
   end.
 
 (** A fresh end, as [unix_create1] leaves a socket and [unix_socketpair]
-    then connects it: an empty receive queue, no shutdown bit, no pending
-    error, and the two buffer sizes and the file's O_NONBLOCK as the
-    caller decides them. *)
+    then connects it: an empty receive queue, no shutdown bit, and the two
+    buffer sizes and the file's O_NONBLOCK as the caller decides them. *)
 Definition stream_fresh (nonblock : bool) (sndbuf rcvbuf : Z) : StreamEnd :=
-  mkStreamEnd [] nonblock sndbuf rcvbuf false false false.
+  mkStreamEnd [] nonblock sndbuf rcvbuf false false.
 
 (** The bytes this end has queued for it to read, in [Z]. *)
 Definition se_rx_len (st : StreamEnd) : Z := Z.of_nat (length (se_rx st)).
@@ -5384,57 +5391,23 @@ Definition se_rx_len (st : StreamEnd) : Z := Z.of_nat (length (se_rx st)).
     the record whole; they are the only places that do. *)
 Definition se_set_rx (st : StreamEnd) (q : list byte) : StreamEnd :=
   mkStreamEnd q (se_nonblock st) (se_sndbuf st) (se_rcvbuf st)
-              (se_shut_rd st) (se_shut_wr st) (se_err st).
+              (se_shut_rd st) (se_shut_wr st).
 Definition se_set_nonblock (st : StreamEnd) (b : bool) : StreamEnd :=
   mkStreamEnd (se_rx st) b (se_sndbuf st) (se_rcvbuf st)
-              (se_shut_rd st) (se_shut_wr st) (se_err st).
+              (se_shut_rd st) (se_shut_wr st).
 Definition se_set_sndbuf (st : StreamEnd) (v : Z) : StreamEnd :=
   mkStreamEnd (se_rx st) (se_nonblock st) v (se_rcvbuf st)
-              (se_shut_rd st) (se_shut_wr st) (se_err st).
+              (se_shut_rd st) (se_shut_wr st).
 Definition se_set_rcvbuf (st : StreamEnd) (v : Z) : StreamEnd :=
   mkStreamEnd (se_rx st) (se_nonblock st) (se_sndbuf st) v
-              (se_shut_rd st) (se_shut_wr st) (se_err st).
-Definition se_set_err (st : StreamEnd) (b : bool) : StreamEnd :=
-  mkStreamEnd (se_rx st) (se_nonblock st) (se_sndbuf st) (se_rcvbuf st)
-              (se_shut_rd st) (se_shut_wr st) b.
+              (se_shut_rd st) (se_shut_wr st).
 
 (** OR shutdown bits into an end: [rd] for RCV_SHUTDOWN, [wr] for
-    SEND_SHUTDOWN.  Bits are only ever added -- [unix_shutdown] and
-    [unix_release_sock] both write [sk_shutdown | mode] -- so this cannot
-    clear one. *)
+    SEND_SHUTDOWN.  Bits are only ever added -- [unix_shutdown] writes
+    [sk_shutdown | mode] -- so this cannot clear one. *)
 Definition se_add_shut (st : StreamEnd) (rd wr : bool) : StreamEnd :=
   mkStreamEnd (se_rx st) (se_nonblock st) (se_sndbuf st) (se_rcvbuf st)
-              (se_shut_rd st || rd) (se_shut_wr st || wr) (se_err st).
-
-(** THE FD TABLE AFTER END [(id, side)], HELD AT [fd] WITH STATE [st],
-    IS CLOSED: [unix_release_sock] (net/unix/af_unix.c, Linux v6.18.46),
-    as far as the model carries it.
-
-    - The entry goes, and its receive queue with it: the
-      [skb_dequeue] loop at the end purges [sk_receive_queue].
-    - A live PEER gets [SHUTDOWN_MASK] -- "No more writes" --
-      and, when the closing end still held unread bytes
-      ([skb_peek(&sk->sk_receive_queue)] non-NULL), [sk_err =
-      ECONNRESET].  An error already pending on the peer stays pending:
-      the store is [WRITE_ONCE(skpair->sk_err, ECONNRESET)], the same
-      value.
-    - The peer's own queue is untouched, so the bytes this end wrote
-      before it closed stay readable there.
-
-    When the peer has already closed, Linux still writes those bits into
-    the dead socket [unix_peer] points at, and nothing can observe them:
-    its descriptor and its queue are gone, so the table is left as is. *)
-Definition stream_release (fds : list (word * FdEntry)) (fd id : word)
-    (side : bool) (st : StreamEnd) : list (word * FdEntry) :=
-  let fds' := fd_remove fds fd in
-  match stream_peer fds' id side with
-  | None => fds'
-  | Some (pfd, pst) =>
-      fd_insert fds' pfd
-        (FdStream id (negb side)
-           (se_set_err (se_add_shut pst true true)
-              (se_err pst || negb (Nat.eqb (length (se_rx st)) 0))))
-  end.
+              (se_shut_rd st || rd) (se_shut_wr st || wr).
 
 (** HOW MANY BYTES A NON-BLOCKING SEND MAY MOVE, as a relation: [k] bytes
     of an [n]-byte send, onto a peer queue that already holds [q] bytes

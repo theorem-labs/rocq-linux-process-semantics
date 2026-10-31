@@ -348,7 +348,14 @@ not apply.
   an empty queue whose peer is open, and a blocking send that might
   wait for room, are declined: on Linux such a call never returns,
   because the only task that could act on the peer is the one that
-  waits. A program that reaches either is outside the model.
+  waits. A program that reaches either is outside the model. After one
+  end is closed, two calls on the other end are declined too: a read of
+  its empty queue (Linux gives end of file, or first one `-ECONNRESET`
+  when the closed end left bytes unread) and `ppoll` on it. The model's
+  `close` does not record which of the two the closed end left, because
+  a `close` that changed another descriptor's entry would make false
+  the published lemmas that say a `close` only removes its own entry
+  (`theories/Common/FileSim.v`, `tfo_close`).
 - The launch left `SIGPIPE` at its default disposition, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises

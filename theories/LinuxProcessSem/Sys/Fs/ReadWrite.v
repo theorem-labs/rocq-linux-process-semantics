@@ -397,9 +397,15 @@ Definition read_urandom (buf count : word) (i : SyscallInput) (m : Model)
       queue untouched ([unix_stream_read_actor] fails before
       [UNIXCB(skb).consumed] moves); a partially writable one declines,
       as on every kind that copies (see [readv_imported]'s note).
-    - THE QUEUE EMPTY, in the order "POSIX 1003.1g mandates": a pending
-      [sk_err] first -- [sock_error] reports ECONNRESET and clears it --
-      then RCV_SHUTDOWN, which is end of file, 0; then, when the call may
+    - THE QUEUE EMPTY AND THE PEER CLOSED: DECLINED.  Linux answers a
+      pending [sk_err] first -- one -ECONNRESET, set by the close when the
+      closing end still held unread bytes -- and then end of file.  The
+      model keeps [Fs.Open.close_spec] kind-blind (see [State.StreamEnd]),
+      so the table says the peer is gone and not whether that error was
+      set, and the arm declines rather than pick one.
+    - THE QUEUE EMPTY AND THE PEER OPEN, in the order "POSIX 1003.1g
+      mandates": no [sk_err] can be pending, since only the peer's close
+      sets one; RCV_SHUTDOWN is end of file, 0; then, when the call may
       not wait, -EAGAIN ([timeo] is 0, so [if (!timeo)] breaks with it).
     - THE QUEUE EMPTY, THE PEER OPEN, AND A BLOCKING CALL: DECLINED,
       DELIBERATELY.  Linux sleeps in [unix_stream_data_wait] until the
@@ -426,20 +432,21 @@ Definition read_urandom (buf count : word) (i : SyscallInput) (m : Model)
       end non-blocking in [cf_socket_open] before any I/O (curl
       lib/cf-socket.c:1378).  If a later target does reach it, this
       decline is what says so. *)
-Definition stream_read_empty (fd id : word) (side : bool) (st : StreamEnd)
+Definition stream_read_empty (id : word) (side : bool) (st : StreamEnd)
     (nonblock : bool) (m : Model) : Sys SyscallEffect :=
-  if se_err st then
-    set_fds (fd_insert (m_fds m) fd (FdStream id side (se_set_err st false))) ;;
-    err_ret ECONNRESET                  (* [sock_error]: reported once, then cleared *)
-  else if se_shut_rd st then ret_only (Z_to_bv 64 0)   (* RCV_SHUTDOWN: end of file *)
-  else if nonblock then err_ret EAGAIN                 (* [if (!timeo)] *)
-  else unmodeled.                       (* would sleep forever: see above *)
+  match stream_peer (m_fds m) id side with
+  | None => unmodeled                   (* the peer closed: EOF, or one ECONNRESET first *)
+  | Some _ =>
+      if se_shut_rd st then ret_only (Z_to_bv 64 0)   (* RCV_SHUTDOWN: end of file *)
+      else if nonblock then err_ret EAGAIN            (* [if (!timeo)] *)
+      else unmodeled                    (* would sleep forever: see above *)
+  end.
 
 Definition stream_read (fd id : word) (side : bool) (st : StreamEnd)
     (nonblock : bool) (buf count : word) (i : SyscallInput) (m : Model)
     : Sys SyscallEffect :=
   match se_rx st with
-  | [] => stream_read_empty fd id side st nonblock m
+  | [] => stream_read_empty id side st nonblock m
   | q =>
       let del := pipe_take q (rw_count_clamp count) in
       match read_bytes_map (in_wmem i) buf (len_word del) with
@@ -1160,13 +1167,13 @@ Definition sigpipe_write : Sys SyscallEffect :=
       & MSG_NOSIGNAL)) send_sig(SIGPIPE, ...)]).  So a ZERO-length write
       on a shut end is -EPIPE and a signal, not 0 -- the opposite of a
       pipe, whose [anon_pipe_write] returns 0 before it looks at the
-      readers.  This one test also answers for a peer that has CLOSED or
-      shut its read side: [unix_release_sock] sets [SHUTDOWN_MASK] on the
-      survivor and [unix_shutdown] mirrors a SHUT_RD as SEND_SHUTDOWN
-      here, so in this one-thread model the loop's own
-      [SOCK_DEAD || RCV_SHUTDOWN] test on the peer is never the one that
-      fires.  A peer that is gone while this end's bit is clear is a
-      state no modeled call builds, and declines.
+      readers.  This one test also answers for a peer that has shut its
+      read side ([unix_shutdown] mirrors a SHUT_RD as SEND_SHUTDOWN here)
+      and for a peer that has CLOSED: [unix_release_sock] sets
+      [SHUTDOWN_MASK] on the survivor, and the model reads that close off
+      the table ([State.stream_peer] is [None], see [State.StreamEnd]),
+      so the loop's own [SOCK_DEAD || RCV_SHUTDOWN] test on the peer is
+      never the one that fires in this one-thread model.
     - A ZERO length past that returns 0: the [while (sent < len)] loop
       never runs.
     - THE QUEUE CERTAINLY FULL ([State.stream_send_full]): -EAGAIN when
@@ -1194,12 +1201,13 @@ Definition sigpipe_write : Sys SyscallEffect :=
 Definition stream_send (id : word) (side : bool) (st : StreamEnd)
     (nonblock nosignal : bool) (n : Z) (src : Z -> list byte)
     (ledger : nat -> list (word * nat)) (m : Model) : Sys SyscallEffect :=
-  if se_shut_wr st then (if nosignal then err_ret EPIPE else sigpipe_write)
-  else if Z.eqb n 0 then ret_only (Z_to_bv 64 0)
-  else
+  let pipe_err := if nosignal then err_ret EPIPE else sigpipe_write in
   match stream_peer (m_fds m) id side with
-  | None => unmodeled          (* peer gone, this end's SEND_SHUTDOWN clear: not built *)
+  | None => pipe_err           (* the peer closed: SHUTDOWN_MASK, so SEND_SHUTDOWN *)
   | Some (pfd, pst) =>
+      if se_shut_wr st then pipe_err
+      else if Z.eqb n 0 then ret_only (Z_to_bv 64 0)
+      else
       let q := se_rx_len pst in
       let s := se_sndbuf st in
       if stream_send_full q s then (if nonblock then err_ret EAGAIN else unmodeled)
@@ -2854,7 +2862,7 @@ Definition readv_imported (fd : word) (r : ReadableFd)
          O_NONBLOCK as MSG_DONTWAIT; the zero aggregate above is
          [vfs_readv]'s own early 0, ahead of it *)
       match se_rx st with
-      | [] => stream_read_empty fd id side st (se_nonblock st) m
+      | [] => stream_read_empty id side st (se_nonblock st) m
       | q =>
           let del := pipe_take q total in
           match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with

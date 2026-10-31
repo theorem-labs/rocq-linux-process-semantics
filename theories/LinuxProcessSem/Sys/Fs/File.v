@@ -331,15 +331,6 @@ Definition dup3_spec (oldfd newfd flags : word) : Sys SyscallEffect :=
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
               then set_fds (fd_insert (m_fds m) newfd e) ;; ret_only newfd
               else unmodeled
-          | Some (FdStream _ _ _) => unmodeled
-              (* DISPLACING A STREAM-PAIR END IS DECLINED.  [do_dup2]'s
-                 [filp_close] of it would run [unix_release_sock], which
-                 shuts the PEER down and may leave it an ECONNRESET
-                 ([State.FdStream]'s survivor bits); dropping the entry
-                 the way this arm drops every other kind would leave the
-                 peer reading as connected to a socket that is gone.
-                 [Open.close_spec] runs that release; this arm does not
-                 copy it *)
           | Some _ => set_fds (fd_insert (m_fds m) newfd e) ;; ret_only newfd
           end
     end.
