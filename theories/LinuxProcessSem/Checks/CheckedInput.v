@@ -300,9 +300,10 @@ Definition wmem_ranges (rs : list (Z * Z)) : Z -> bool :=
    What a reader hands in
    ========================================================================= *)
 
-(** The syscall as the outside world has it: integers, byte runs and
-    ranges.  Field for field this is [State.SyscallInput], with the two
-    memory views as the data they are built from. *)
+(** The syscall as the outside world has it: integers, byte runs, and a
+    predicate on the address.  Field for field this is
+    [State.SyscallInput], with each memory view replaced by what it is
+    built from. *)
 Record RawInput := mkRawInput {
   rin_sysno : Z;                   (* a7 at ecall *)
   rin_args  : list Z;              (* a0..a5 at ecall *)
