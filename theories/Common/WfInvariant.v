@@ -1329,11 +1329,15 @@ Qed.
 (* ==================================================================== *)
 (* DISCHARGING THE BUDGET PREMISE'S LEDGER HYPOTHESES.
 
-   [Checks/BudgetPremise.mremap_move_budget_admits_fresh_lazyfree] assumes
-   [m_vm_lazy m = []] and [m_vm_materialized m = []].  Neither is a run
-   invariant -- [Checks/BudgetPremiseInv.v] says so in those words -- so
-   the lemma was unusable on a state a run actually reaches.  That is the
-   assumption this file exists to remove.
+   [Checks/BudgetPremise] used to carry a variant of
+   [mremap_move_budget_admits_fresh] assuming [m_vm_lazy m = []] and
+   [m_vm_materialized m = []], with a corollary file above it restating
+   that assumption.  Neither emptiness is a run invariant -- it fails from
+   a run's first successful MAP_NORESERVE reservation on -- so neither was
+   usable on a state a run actually reaches.  Removing that assumption is
+   what this file exists for, and the two dead lemmas and the corollary
+   file were deleted in the same commit that added the replacement below:
+   they had no consumer in the model and none in the proof forks either.
 
    What the two emptiness hypotheses are really standing in for is visible
    in [mremap_move_budget_admits_fresh]'s own statement: two SYNTACTIC list
@@ -1455,11 +1459,12 @@ apply IH. intros q Hin. exact (H q (or_intror Hin)).
 Qed.
 
 
-(* THE REPLACEMENT.  Same conclusion as
-   [BudgetPremise.mremap_move_budget_admits_fresh_lazyfree], with the two
-   emptiness hypotheses -- which are NOT run invariants -- and the two
-   hypotheses [WF] already carries replaced by [WF] itself.  This is the
-   lemma a caller on a reachable state can actually use. *)
+(* THE REPLACEMENT for the deleted emptiness variant.  Same conclusion as
+   [BudgetPremise.mremap_move_budget_admits_fresh], with the two
+   hypotheses [WF] already carries -- [noaccess_pages_owned] and the fit
+   of the live mappings -- supplied from [WF] itself, and the two
+   lazy-ledger identities proved rather than assumed.  So a caller on a
+   reachable state can use this one, which was the whole point. *)
 Lemma mremap_move_budget_admits_fresh_wf : forall m old old_n dst new_n,
 WF m -> LZ_NZ m ->
 (bv_unsigned dst mod page_size = 0)%Z ->
