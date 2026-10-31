@@ -675,18 +675,21 @@ Section Init.
   Qed.
 
   (** argv[0] is at the bottom of the string area, [string_base_addr] bytes
-      below the stack VMA's end — not [cat_struct_size] bytes above sp *)
-  Lemma cat_argv0_eq : bv_unsigned (cat_argv_ptr top argv envp execfn 0) = STR0.
+      below the stack VMA's end — not [cat_struct_size] bytes above sp.
+      Spelled with [in_argv inp] and [ed_top rdraw] rather than the section's
+      abbreviations, because that is the form [CatExec]'s lemmas rewrite to. *)
+  Lemma cat_argv0_eq :
+    bv_unsigned (cat_argv_ptr (ed_top rdraw) (in_argv inp) (in_envp inp) (in_execfn inp) 0) = STR0.
   Proof.
     pose proof usp_lo. pose proof usp_fit. pose proof len_av. pose proof len_ev.
     pose proof chead_eq. pose proof pad_range. pose proof gap_range. pose proof length_bsb_sum.
-    rewrite (cat_argv_ptr_offset top argv envp execfn 0 Hav0).
-    change (total_arg_bytes_nat (firstn 0 argv)) with 0%nat.
+    rewrite (cat_argv_ptr_offset (ed_top rdraw) (in_argv inp) (in_envp inp) (in_execfn inp) 0 Hav0).
+    change (total_arg_bytes_nat (firstn 0 (in_argv inp))) with 0%nat.
     rewrite (cat_string_base_offset Sv48 inp mbase sp brk0 rdraw Hlau).
-    rewrite inp_argv, inp_envp, inp_execfn, inp_rseq.
-    rewrite word_add_0, word_add_nat, u64_lit.
-    - unfold cat_string_off. fold CHEAD. unfold STR0, W, usp. lia.
-    - unfold cat_string_off. fold CHEAD. fold W. unfold usp in *. lia.
+    change (in_kernel inp) with default_kernel. change (in_execfn inp) with default_execfn.
+    change (in_argv inp) with argv. change (in_envp inp) with envp.
+    unfold STR0, CHEAD, W, usp, rseq, top, execfn, cat_string_off in *.
+    rewrite nat_to_word_add_merge, word_add_nat, u64_lit by lia. lia.
   Qed.
 
   Lemma argv0_word_ok : kentry_ok segs E0 Mr0 (KWord (SA e_sp0 8) 8 e_str0).
@@ -698,8 +701,8 @@ Section Init.
     - rewrite word_add_nat, u64_lit; unfold usp in *; lia.
     - intros x Hx. apply not_argH0. rewrite word_add_nat, u64_lit in Hx; unfold usp in *; lia.
     - pose proof (read_argv_ptr_k segs inp mbase ph entryw sp rdraw 0) as RW.
-      rewrite inp_argv, inp_envp, inp_execfn in RW.
-      assert (Hv : cat_argv_ptr top argv envp execfn 0 = edenot E0 e_str0).
+      assert (Hv : cat_argv_ptr (ed_top rdraw) (in_argv inp) (in_envp inp) (in_execfn inp) 0
+                   = edenot E0 e_str0).
       { apply bv_eq. rewrite cat_argv0_eq. pose proof u_e_str0 as U. unfold uE in U. rewrite U. reflexivity. }
       rewrite <- Hv. apply RW; [exact Hav0|]. fold bsb. pose proof bsb_nw. unfold usp in *. lia.
   Qed.
@@ -724,22 +727,21 @@ Section Init.
     - rewrite Hw1. destruct (1 <? argc) eqn:Hc.
       + apply Z.ltb_lt in Hc. assert (Hav1 : (1 < length argv)%nat) by (unfold argc in Hc; lia).
         pose proof (read_argv_ptr_k segs inp mbase ph entryw sp rdraw 1) as RW.
-        rewrite inp_argv, inp_envp, inp_execfn in RW.
-        assert (Hv : cat_argv_ptr top argv envp execfn 1 = edenot E0 e_str1).
+        assert (Hv : cat_argv_ptr (ed_top rdraw) (in_argv inp) (in_envp inp) (in_execfn inp) 1
+                     = edenot E0 e_str1).
         { apply bv_eq.
           pose proof chead_eq. pose proof pad_range. pose proof gap_range. pose proof length_bsb_sum.
-          rewrite (cat_argv_ptr_offset top argv envp execfn 1 Hav1).
-          rewrite (cat_string_base_offset Sv48 inp mbase sp brk0 rdraw Hlau).
-          rewrite inp_argv, inp_envp, inp_execfn, inp_rseq.
           assert (TF : forall l : list (list byte), (0 < length l)%nat ->
                         Z.of_nat (total_arg_bytes_nat (firstn 1 l)) = Z.of_nat (length (nth 0 l [])) + 1)
             by (intros [|x t] Hl; [cbn in Hl; lia|]; change (firstn 1 (x :: t)) with [x]; cbn -[Z.of_nat Z.add]; lia).
-          rewrite nat_to_word_add_merge, word_add_nat, u64_lit.
-          - pose proof u_e_str1 as U. unfold uE in U. rewrite U.
-            rewrite Nat2Z.inj_add, (TF argv Hav0). unfold cat_string_off. fold CHEAD. fold W.
-            unfold STR0, L0, usp. lia.
-          - pose proof (TF argv Hav0). rewrite Nat2Z.inj_add. unfold cat_string_off. fold CHEAD. fold W.
-            unfold usp, L0 in *. lia. }
+          pose proof (TF argv Hav0) as TF0.
+          pose proof u_e_str1 as U. unfold uE in U.
+          rewrite (cat_argv_ptr_offset (ed_top rdraw) (in_argv inp) (in_envp inp) (in_execfn inp) 1 Hav1).
+          rewrite (cat_string_base_offset Sv48 inp mbase sp brk0 rdraw Hlau).
+          change (in_kernel inp) with default_kernel. change (in_execfn inp) with default_execfn.
+          change (in_argv inp) with argv. change (in_envp inp) with envp.
+          rewrite U. unfold STR0, CHEAD, W, usp, L0, rseq, top, execfn, cat_string_off in *.
+          rewrite nat_to_word_add_merge, word_add_nat, u64_lit by lia. lia. }
         rewrite <- Hv. apply RW; [exact Hav1|]. fold bsb. pose proof bsb_nw. unfold usp in *. lia.
       + apply Z.ltb_ge in Hc. assert (Hav1 : length argv = 1%nat) by (unfold argc in Hc; pose proof Hav0; lia).
         pose proof (read_argv_null segs Sv48 inp mbase ph entryw sp brk0 rdraw Hlaunch Hlau Hhi') as RW.
@@ -960,6 +962,62 @@ Section Init.
     split; lia.
   Qed.
 
+  (** THE THREE OPEN GOALS OF [init_cs_ok], AND THEIR WITNESS.
+
+      [State.init_model] seeds [vm_reserved] with [State.init_reserved], which
+      appends the vDSO pair ([State.vdso_reserved]) to the image's own
+      reservations; [model0_facts] above states that and proves it by
+      [reflexivity].  [AsanPlanSound.cs_ok] still says the ledger is the
+      image's reservations alone, so [co_res], [co_totsz] and [co_split] do
+      not close on this branch.  The shape that closes them is
+      [LpsStartState.VdsoReservedLane]'s, on `revision/vdso-reserved-asan`:
+      [co_res] becomes [reserved_ok], an EXISTENTIAL list [rx] with
+      [Forall resx_entry_ok rx], [length rx <= n_resx A] and
+      [sum_sizes rx <= resx_bytes A], so [cs_ok]'s arity does not change and
+      this Section needs no new variable; [co_mres] is a new LAST field,
+      discharged here by [constructor] because [vm_maps model0 = []].
+
+      The witness is [RESX], and its four clauses are:
+
+      - [vm_reserved = segments_reserved segs ++ RESX] : [model0_facts], by
+        [reflexivity].
+      - [length RESX <= n_resx A] : the pair is two intervals, the vvar pages
+        and the text pages, so [length RESX <= 2]; [ASAN] and [BOTH] carry
+        [n_resx := 2].
+      - [sum_sizes RESX <= resx_bytes A] : [sum_sizes RESX = vdso_len
+        (in_kernel inp)] exactly (the two intervals abut), and
+        [State.vdso_len_bounds] caps that at twenty pages = 81920;
+        [ASAN] and [BOTH] carry [p_resx := 20].  NOT 24576: that is
+        [State.default_kernel]'s case ([kb_vdso = 1], two text pages), one
+        member of the family [vdso_text_pages] admits, not the family.
+      - [Forall resx_entry_ok RESX] : write [base] for
+        [vdso_top - vdso_len (in_kernel inp)].  The two lengths are
+        [vdso_vvar_pages * page_size] and [vdso_text_pages kb * page_size],
+        so positivity and the two alignment clauses are computations, and
+        [base] is page-aligned because [vdso_top] is [page_round_down_Z] of
+        something and [vdso_len] is a multiple of the page size.
+        [AsanPlacement.kHighMemBeg + 4096 <= base] because
+        [base >= MBASE_MIN - 81920] and [MBASE_MIN - 81920 - (KHI + 4096)] is
+        about [0x544d5546000]; [img_hi A <= base] follows from [hull_ok]'s
+        [img_hi A <= KHI]; and [base + len <= vdso_top <= mbase <=
+        State.mmap_base_max = 0x7ffff8000000 < 2 ^ 47].
+
+      [co_split]'s HIGH MARK IS THE PAIR'S BASE, NOT ITS TOP, and that is not
+      a free choice.  [AsanPlacement.ledger_split] asks of every ledger
+      interval [b + s <= kHighMemBeg \/ Y <= b].  With [Y] the pair's top the
+      pair satisfies NEITHER disjunct; with [Y = base] both its entries start
+      at or above [Y], and lowering [Y] only weakens the clause for the
+      tracked entries ([ledger_split_mono]).  The image's own reservations
+      take the left disjunct, since [img_hi A <= KHI = kHighMemBeg].
+
+      SO [a_ylo] COMES DOWN, to [MBASE_MIN - resx_bytes A], and that is
+      load-bearing rather than cosmetic: [a_ylo cs] is the floor the new
+      disjointness test in [AsanNodesMmLib.region_free_of_apart] compares a
+      candidate mmap region against, and [reserved_free_above] derives
+      [a_ylo cs <= base] from [co_split] together with [KHI + 4096 <= base].
+      Raising [a_ylo] back to the constant [MBASE_MIN] would make that
+      derivation unsound for a pair sitting below it, and the mmap node could
+      then certify a grant overlapping the vDSO.  Do not raise it. *)
   Theorem init_cs_ok : cs_ok segs A LIMIT SINV0 argH0 fs E0 cs0 R0 FULL0 model0.
   Proof.
     destruct model0_facts as (M1 & M2 & M3 & M4 & M5 & M6 & M7 & M8 & M9 & M10 & M11 & M12 & M13).

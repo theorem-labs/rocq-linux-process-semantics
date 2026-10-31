@@ -53,7 +53,9 @@ Require Extraction.
 
 (* Roots: the checked checker and the checked initial state, the raw
    record constructors a caller fills in ([mkRawInput], [mkRawEffect],
-   [mkRawProcInput], [mkRawPeer]), the two scalar checkers a caller needs
+   [mkRawProcInput], [mkRawPeer], and the three the seed's kernel build
+   is assembled from, [mkRawKernelBuild], [mkRawCacheView] and
+   [mkRawCacheLeaf]), the two scalar checkers a caller needs
    to validate a value it is about to put somewhere else ([word_of_Z],
    [byte_of_Z]), [wmem_ranges], the writable-address predicate a reader
    that holds ranges rather than a per-page test hands in, and
@@ -94,6 +96,9 @@ Extraction "syscall_model.ml"
   mkRawEffect
   mkRawProcInput
   mkRawPeer
+  mkRawKernelBuild
+  mkRawCacheView
+  mkRawCacheLeaf
   raw_of_effect
   wmem_ranges
   word_of_Z

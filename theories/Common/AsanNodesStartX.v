@@ -181,6 +181,9 @@ Section NodesD.
     - cbn [flatten_strings flat_map nth]. rewrite !length_app. cbn [length]. lia.
   Qed.
 
+  (** NAME CLASH: [AsanInit] exports a [str0_hi] too, and it is a different
+      statement with a different argument list.  A file importing both must
+      qualify; see [AsanNodesStartXInit.SINV0_str0]. *)
   Lemma str0_hi : STR0 + Z.of_nat (length s0) + 9 <= usp + Z.of_nat (length bsb).
   Proof.
     pose proof s0_le_strings. pose proof length_bsb_sum. unfold STR0, usp in *. lia.

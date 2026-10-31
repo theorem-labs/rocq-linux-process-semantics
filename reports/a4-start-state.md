@@ -10,24 +10,49 @@ Five kernels boot the probe twice each. The ten records are checked against
 the model in two forms. The CHECK is Rocq: `start_state_to_rocq.py` turns
 each record into a Rocq file whose three lemmas Rocq closes by computation
 against `StackLayout.v`, `State.v` and `Run.v` themselves — 30 lemmas, all
-`Qed`, 15.9 seconds for the ten. The EVIDENCE is Python:
-`check_start_state.py` reads each record against a transcription of the same
-three files and reports 110 verdicts over 10 records with 0 failures. The
-Python result is what the sections up to "Verdicts" below report; the two
-forms and their numbers are set side by side under "The two forms of the
-check". What the boots do NOT exercise is listed under "What this does not
-check".
+`Qed`, 15.7 seconds for the ten — beside two negatives that move one byte of
+a kernel's block and make the model refuse it, 20.8 seconds for all twelve.
+The EVIDENCE is Python: `check_start_state.py` reads each record against a
+transcription of the same three files and reports 100 verdicts over 10
+records with 0 failures and no disagreement. The Python result is what the
+sections up to "Verdicts" below report; the two forms and their numbers are
+set side by side under "The two forms of the check". What the boots do NOT
+exercise is listed under "What this does not check".
+
+**The ten records in the tree are the SECOND capture.** The probe gained one
+key, `"elf"` — its own ELF header, read out of its own mapped image — so
+that AT_PHDR, AT_PHENT, AT_PHNUM and AT_ENTRY stop being fed to the model
+and become something the model is checked against. Every boot was redone
+with the rebuilt binary, so every address below is the second capture's.
+The first capture's result — 110 verdicts over 10 records, 0 failures, the
+ten extra verdicts being the vDSO image against the kernel build's own
+`vdso.so`, which needs a `$PC_WORK` this machine does not have — stands as
+the first evidence and is not reproducible from the tree, because its logs
+were replaced.
+
+What the re-capture did NOT move: the vDSO. All ten new records map the
+same two pages, 8,192 bytes, sha256
+`732e4b22e3a3912a221d57b3ed4c22bbaccf372998fa05a1f72a138651d369dd`, which
+is the image the first capture recorded, and in all ten the `[vvar]`
+mapping still starts exactly four pages below AT_SYSINFO_EHDR. So every
+number of sub-check 3 below holds of the records in the tree; only the
+comparison against the build's own `vdso.so` file, which is not on this
+machine, is the first capture's alone.
 
 ## The boots
 
 Every boot: Linux v6.18.46, commit `1f99e9ab748fc5c32120de9c4eca31abfe54a4d5`,
 riscv64, built by `riscv64-linux-gnu-gcc (Debian 14.2.0-19) 14.2.0`, booted
 under `QEMU emulator version 10.0.11 (Debian 1:10.0.11+ds-0+deb13u1)` with
-`-M virt -cpu rv64,sv57=off -m 2G`.  The probe binary is one file in all five:
-sha256 `799ba847c935d381de8e34d4a5e9df22a1b4a36fc36168625401b21ce0fd0c0a`,
-built from `probe.c` sha256
-`88eb949aac9f18d10444578d5243a0a3c56bff1eea07624e78d9988d9e98a5d0` (clang
-20.1.8, musl 1.2.6, `-march=rv64g -mabi=lp64d -static -no-pie -nostartfiles`).
+`-M virt -cpu rv64,sv57=off -m 2G`.  The probe binary is one file in all
+five, and in the four placement logs beside them: sha256
+`2ff7ae2f22fdde04d6a9fdaf5896655ab8a33787785ee54bb1680ed6f5049935`, built
+from `probe.c` sha256
+`35073b49d1c842f5575a89ba56e91724f0427415ba3a6084035690beafa196c0` (clang
+20.1.8, musl 1.2.6, `-march=rv64g -mabi=lp64d -static -no-pie
+-nostartfiles`).  Its image base is `0x10000`, its program headers are
+eight 56-byte entries at `0x10040` and its entry point is `0x11834`, as the
+`"elf"` key of every record reports.
 
 | Boot | qemu | command line | devicetree |
 | --- | --- | --- | --- |
@@ -103,16 +128,16 @@ that this reading of the base is Linux's base.
 
 | Boot | run | `stack_end` | `sp_at_start` | mmap base | `argv[0] - sp` | auxv entries | AT_MINSIGSTKSZ |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| defconfig-seed1 | fixture | 0x7fffd31f6000 | 0x7fffd31f5290 | 0x7fffbcdad000 | 3428 | 29 | 1088 |
-| defconfig-seed1 | long | 0x7ffffd337000 | 0x7ffffd335990 | 0x7fff9ae94000 | 2268 | 29 | 1088 |
-| defconfig-seed2 | fixture | 0x7fffdf6b2000 | 0x7fffdf6b1c10 | 0x7fff899c8000 | 996 | 29 | 1088 |
-| defconfig-seed2 | long | 0x7ffff5f2c000 | 0x7ffff5f2a100 | 0x7fffa1e66000 | 4460 | 29 | 1088 |
-| defconfig-cache-seed1 | fixture | 0x7fffdc244000 | 0x7fffdc243cd0 | 0x7fffa96b7000 | 804 | 29 | 1088 |
-| defconfig-cache-seed1 | long | 0x7ffff5a30000 | 0x7ffff5a2e270 | 0x7fff9fff9000 | 4092 | 29 | 1088 |
-| thp-seed1 | fixture | 0x7fffcfe37000 | 0x7fffcfe368e0 | 0x7fffad8ef000 | 1812 | 29 | 1088 |
-| thp-seed1 | long | 0x7fffe75e3000 | 0x7fffe75e1810 | 0x7fff9102f000 | 2652 | 29 | 1088 |
 | norandmaps-seed1 | fixture | 0x800000000000 | 0x7ffffffffdf0 | 0x7ffff8000000 | 516 | 29 | 1088 |
 | norandmaps-seed1 | long | 0x800000000000 | 0x7fffffffeee0 | 0x7ffff8000000 | 908 | 29 | 1088 |
+| defconfig-seed1 | fixture | 0x7fffcaf9f000 | 0x7fffcaf9e400 | 0x7fffb7284000 | 3060 | 29 | 1088 |
+| defconfig-seed1 | long | 0x7fffeb5c8000 | 0x7fffeb5c6e10 | 0x7fffbe575000 | 1116 | 29 | 1088 |
+| defconfig-seed2 | fixture | 0x7fffc7ef6000 | 0x7fffc7ef5110 | 0x7fffbc645000 | 3812 | 29 | 1088 |
+| defconfig-seed2 | long | 0x7fffc42df000 | 0x7fffc42dcf60 | 0x7fffbd911000 | 4876 | 29 | 1088 |
+| defconfig-cache-seed1 | fixture | 0x7fffd90da000 | 0x7fffd90d9600 | 0x7fffa0af0000 | 2548 | 29 | 1088 |
+| defconfig-cache-seed1 | long | 0x7fffe8f58000 | 0x7fffe8f56450 | 0x7fffaef37000 | 3612 | 29 | 1088 |
+| thp-seed1 | fixture | 0x7fffd560b000 | 0x7fffd560a520 | 0x7fff9102d000 | 2772 | 29 | 1088 |
+| thp-seed1 | long | 0x7fffce106000 | 0x7fffce1049f0 | 0x7fff8d4fd000 | 2172 | 29 | 1088 |
 
 `mm->start_stack` (field 28 of `/proc/self/stat`) equals `sp_at_start` in all
 ten records, so the sp the kernel chose is the sp the process starts with.
@@ -124,17 +149,19 @@ ten records, with `v = Sv48` (`/proc/cpuinfo` reports `sv48`).
 
 - `valid_stack_top_va`: every `stack_end` is page-aligned, at or below
   `0x800000000000`, and at most `0x3ffff000 + 4096` below it with
-  randomization (the deepest draw seen is 47,135 pages, within the 262,144 +
-  1 the rule allows), and exactly `0x800000000000` without it.
+  randomization (the deepest draw of the ten is 245,025 pages, within the
+  262,144 + 1 the rule allows, and the shallowest is 84,536), and exactly
+  `0x800000000000` without it.
 - `valid_launch_sp`: every sp is 16-aligned and inside
   `[align_down16(top - 8 - L - 4095) - C, align_down16(top - 8 - L) - C]`.
-  The pads the ten records show are 4, 12, 484, 804 (as `argv[0] - sp - 512`),
-  1300, 1372, 1756, 2916, 3564 bytes — the whole 0..4095 width of
+  The pads the ten records show are 4, 12, 220, 1276, 2036, 2260, 2548,
+  2716, 3300 and 3980 bytes — the whole 0..4095 width of
   `arch_align_stack` is exercised, not one corner of it.
 - `valid_launch_base`: each base is `page_round_up(T0 - gap - 4096 r)` with
-  `gap = 0x408ff000` (8 MiB + 256 pages + `0x3ffff000`) and
-  `r < 2^18`: r = 154,632 and r = 3,330 and so on for the randomizing boots,
-  and r = 0 with `gap = 128 MiB` for `norandmaps`.
+  `gap = 0x408ff000` (8 MiB + 256 pages + `0x3ffff000`) and `r < 2^18`:
+  r = 4,492, 7,664, 12,476, 33,917, 67,530, 125,969, 190,164 and 205,316
+  for the eight randomizing records, and r = 0 with `gap = 128 MiB` for the
+  two `norandmaps` ones.
 
 The fixture of A1 and the witness of A2 (a) appear verbatim in
 `linux-6.18.46-norandmaps-seed1-fixture.log`: `ed_top = 0x800000000000`,
@@ -146,7 +173,7 @@ computes by hand; a real kernel gives them.
 
 `StackLayout.build_stack_bytes`, applied to the recorded facts and to the
 recorded sixteen AT_RANDOM bytes, equals the recorded bytes from
-`sp_at_start` to `stack_end` BYTE FOR BYTE in all ten records, 528 to 5,904
+`sp_at_start` to `stack_end` BYTE FOR BYTE in all ten records, 528 to 8,352
 bytes each.  The model's length is `stack_end - sp` in every record, so the
 block ends exactly at the stack VMA's `vm_end`, with the eight-byte slot
 `create_init_stack_vma` skips.
@@ -261,8 +288,8 @@ A4 is now checked twice, and only one of the two is the check.
 
 | Form | What it compares | Result | Trusted? |
 | --- | --- | --- | --- |
-| `tools/placement_conformance/check_start_state.py` | the record against a PYTHON TRANSCRIPTION of `StackLayout.v`, `State.v` and `Run.v` | 110 verdicts over 10 records, 0 failures | **no**, evidence only |
-| `tools/placement_conformance/start_state_to_rocq.py` → `tests/StartState*.v` | the record against the MODEL ITSELF, computed by Rocq | 30 lemmas over 10 records, all `Qed` | **yes** |
+| `tools/placement_conformance/check_start_state.py` | the record against a PYTHON TRANSCRIPTION of `StackLayout.v`, `State.v` and `Run.v` | 100 verdicts over 10 records, 0 failures, 0 disagreements (110 on the first capture, which had the kernel's `vdso.so` to hand) | **no**, evidence only |
+| `tools/placement_conformance/start_state_to_rocq.py` → `tests/StartState*.v` | the record against the MODEL ITSELF, computed by Rocq | 30 lemmas over 10 records, all `Qed`, plus 2 negatives the model must refuse | **yes** |
 
 Everything above this section is the Python run. It stands: it is the first
 evidence that the ten records agree with the model, and it reads two things
@@ -321,31 +348,34 @@ No generated file contains `Admitted`, `Axiom`, `admit` or `Parameter`;
 
 ### What is fed in rather than checked
 
-In the ten records below, AT_PHDR, AT_PHENT, AT_PHNUM and AT_ENTRY — four of
-the vector's 29 entries — are read out of the recorded vector and become
-`rec_phdr` and `rec_img_entry`, because the probe that captured them wrote
-no ELF header of its own. Those four entries of `auxv_ok` are therefore
-tautological. The other twenty-five, and every byte of `block_ok` outside
-the four eight-byte value slots they occupy, are the model's.
+**Nothing of the block and nothing of the vector.** `rec_phdr` and
+`rec_img_entry` are the probe's OWN ELF header, which every record carries
+under `"elf"`: `base`, `phoff`, `phdr` = `base + phoff`, `phentsize`,
+`phnum` and `entry`, read by `read_elf_facts` out of the probe's mapped
+image — the first `/proc/self/maps` line, whose start is the first PT_LOAD
+of this static `ET_EXEC` binary and therefore the ELF header, with the
+magic verified before any field is read. No file is opened, no libc is
+called, every buffer is static and the placement call sequence is
+untouched. So AT_PHDR, AT_PHENT, AT_PHNUM and AT_ENTRY are the kernel's
+copy of that header checked against the header, and the generator refuses a
+record whose `phdr` is not `base + phoff`.
 
-That gap is closed in the source and open in the data.
-`tools/placement_conformance/probe.c` now writes its own ELF header on the
-launch line, as `"elf": {"base", "phoff", "phdr", "phentsize", "phnum",
-"entry"}`, read out of its own mapped image (`read_elf_facts`; no file is
-opened, no libc is called, every buffer is static, the placement call
-sequence is untouched). `start_state_to_rocq.py` takes `rec_phdr` and
-`rec_img_entry` from that key when the record carries it, so the four
-entries become a comparison between the kernel's copy of the header and the
-header; a record without the key falls back to the vector and the generated
-file says in its own header that it did. The ten records in the tree were
-captured before the key existed, so they take the fallback. Closing it in
-the data needs the probe rebuilt and the five kernels booted again; that rig
-— the kernel source, the cross toolchain and the qemu image under `$PC_WORK`
-— lives with the harness owner and is not on this machine, and the probe
-rebuild and re-capture are the step the harness owner has taken on
-(`LpsPlacement.KernelHarness`, 2026-10-31), together with the four placement
-logs that the same probe binary produced. Until that re-capture lands, the
-four entries stay fed in, and every generated file says so on its own face.
+Until the second capture those four of the vector's 29 entries were read
+back out of the recorded vector and fed to the model, which made them
+tautological. `probe.c` gained the key, the harness owner rebuilt the probe
+— first riscv64 compile of `read_elf_facts` clean — and re-captured all ten
+start-state logs and the four placement logs from the one binary
+(`LpsPlacement.KernelHarness`, 2026-10-31); the five placement replays were
+rebuilt on the new logs and still answer three `true` of 88 steps and two
+`false`. Measured over the ten new records: every one carries `"elf"`,
+`phdr` = `base + phoff` in each, and in each the six values agree with
+AT_PHDR, AT_PHENT, AT_PHNUM and AT_ENTRY — which is now a verdict rather
+than an assumption.
+
+`start_state_to_rocq.py` still falls back to the recorded vector for a
+record with no `"elf"` key, and a file built that way says so in its own
+header. No record in the tree takes that path: all twelve generated files
+carry the sentence "the probe's own ELF header says it is".
 
 ### The records, the boots and the cost
 
@@ -358,34 +388,59 @@ Every record: Linux v6.18.46, commit
 - **C2** `console=ttyS0 no5lvl rdinit=/probe norandmaps pc_mode=startstate`
 
 `rocq compile` wall time, measured serially on the `lpsrev-entry` build VM
-(32 vCPU, the `rc2-checker:1b59b23d` image, Rocq 9.2 under opam switch 4.14),
-each file compiled from a cold `.vo`:
+(32 vCPU, the `rc2-checker:1b59b23d` image, Rocq 9.2 under opam switch
+4.14), each file compiled from a cold `.vo`, over the shared clone at
+`25e591a` with the second capture's records:
 
 | Rocq module (`tests/`) | record file (`tests/placement/`) | cmdline | block bytes | mmap draw r | `rocq compile` |
 | --- | --- | --- | --- | --- | --- |
-| `StartStateNorandmapsSeed1Fixture` | `linux-6.18.46-norandmaps-seed1-fixture.log` | C2 | 528 | 0 | 0.93 s |
-| `StartStateNorandmapsSeed1Long` | `linux-6.18.46-norandmaps-seed1-long.log` | C2 | 4,384 | 0 | 1.96 s |
-| `StartStateDefconfigSeed1Fixture` | `linux-6.18.46-defconfig-seed1-fixture.log` | C1 | 3,440 | 10,580 | 1.11 s |
-| `StartStateDefconfigSeed1Long` | `linux-6.18.46-defconfig-seed1-long.log` | C1 | 5,744 | 149,613 | 2.19 s |
-| `StartStateDefconfigSeed2Fixture` | `linux-6.18.46-defconfig-seed2-fixture.log` | C1 | 1,008 | 220,473 | 0.94 s |
-| `StartStateDefconfigSeed2Long` | `linux-6.18.46-defconfig-seed2-long.log` | C1 | 7,936 | 120,987 | 2.32 s |
-| `StartStateDefconfigCacheSeed1Fixture` | `linux-6.18.46-defconfig-cache-seed1-fixture.log` | C1 | 816 | 90,186 | 0.89 s |
-| `StartStateDefconfigCacheSeed1Long` | `linux-6.18.46-defconfig-cache-seed1-long.log` | C1 | 7,568 | 128,776 | 2.40 s |
-| `StartStateThpSeed1Fixture` | `linux-6.18.46-thp-seed1-fixture.log` | C1 | 1,824 | 73,234 | 1.00 s |
-| `StartStateThpSeed1Long` | `linux-6.18.46-thp-seed1-long.log` | C1 | 6,128 | 190,162 | 2.11 s |
+| `StartStateNorandmapsSeed1Fixture` | `linux-6.18.46-norandmaps-seed1-fixture.log` | C2 | 528 | 0 | 0.87 s |
+| `StartStateNorandmapsSeed1Long` | `linux-6.18.46-norandmaps-seed1-long.log` | C2 | 4,384 | 0 | 1.87 s |
+| `StartStateDefconfigSeed1Fixture` | `linux-6.18.46-defconfig-seed1-fixture.log` | C1 | 3,072 | 33,917 | 1.07 s |
+| `StartStateDefconfigSeed1Long` | `linux-6.18.46-defconfig-seed1-long.log` | C1 | 4,592 | 4,492 | 1.86 s |
+| `StartStateDefconfigSeed2Fixture` | `linux-6.18.46-defconfig-seed2-fixture.log` | C1 | 3,824 | 12,476 | 1.14 s |
+| `StartStateDefconfigSeed2Long` | `linux-6.18.46-defconfig-seed2-long.log` | C1 | 8,352 | 7,664 | 2.52 s |
+| `StartStateDefconfigCacheSeed1Fixture` | `linux-6.18.46-defconfig-cache-seed1-fixture.log` | C1 | 2,560 | 125,969 | 1.04 s |
+| `StartStateDefconfigCacheSeed1Long` | `linux-6.18.46-defconfig-cache-seed1-long.log` | C1 | 7,088 | 67,530 | 2.23 s |
+| `StartStateThpSeed1Fixture` | `linux-6.18.46-thp-seed1-fixture.log` | C1 | 2,784 | 190,164 | 1.06 s |
+| `StartStateThpSeed1Long` | `linux-6.18.46-thp-seed1-long.log` | C1 | 5,648 | 205,316 | 2.09 s |
+| `StartStateNorandmapsSeed1FixtureMoved` | the same, byte 0 moved | C2 | 528 | 0 | 1.00 s |
+| `StartStateDefconfigSeed2LongMoved` | the same, byte 7,000 moved | C1 | 8,352 | 7,664 | 4.08 s |
 
-**15.9 seconds for all ten, serially.** `vm_compute` over a few kilobytes of
-`list byte` is cheap, so all ten stay in the default build: no record is
-behind an alias, none is dropped, and no lemma is weakened to make it fast.
-The `cache` boots are the two that make the eight `AT_L*_CACHE*` words
-non-zero, so `State.cache_size_word` and `State.cache_geometry_word` are
-computed against a kernel's published words and not only against zeros.
+**15.7 seconds for the ten records, 20.8 seconds with the two negatives,
+serially.** `vm_compute` over a few kilobytes of `list byte` is cheap, so
+every one of them stays in the default build: no record is behind an alias,
+none is dropped, and no lemma is weakened to make it fast. The longest file
+is the negative on the longest record, at 4.08 s, because a disagreement is
+found by `discriminate` over the whole computed list rather than by one
+conversion. The `cache` boots are the two that make the eight
+`AT_L*_CACHE*` words non-zero, so `State.cache_size_word` and
+`State.cache_geometry_word` are computed against a kernel's published words
+and not only against zeros.
 
-The block lengths above supersede the "528 to 5,904 bytes" of sub-check 2:
-the longest block is 7,936 bytes, in
-`linux-6.18.46-defconfig-seed2-long.log`. The range is 528 to 7,936. Rocq
-computes each length as part of `block_ok`, so these ten numbers are checked,
-not measured.
+The block lengths above supersede the "528 to 5,904 bytes" the first
+capture's sub-check 2 reported: the longest block of the second capture is
+8,352 bytes, in `linux-6.18.46-defconfig-seed2-long.log`, and the range is
+528 to 8,352. Rocq computes each length as part of `block_ok`, so these ten
+numbers are checked, not measured.
+
+### The negatives: the model has to refuse a block that is not Linux's
+
+Ten passing equalities say nothing on their own: a `block_ok` whose two
+sides had collapsed into each other would be just as green. So the build
+carries two more files, each the same record with ONE byte of the kernel's
+block moved by one, and each stating the DISAGREEMENT:
+
+| Rocq module (`tests/`) | record | byte moved | admitted neighbour |
+| --- | --- | --- | --- |
+| `StartStateNorandmapsSeed1FixtureMoved` | the shortest, 528 bytes | 0, the low byte of `argc` | `StartStateNorandmapsSeed1Fixture` |
+| `StartStateDefconfigSeed2LongMoved` | the longest, 8,352 bytes | 7,000, in the string area | `StartStateDefconfigSeed2Long` |
+
+Each is `entry_stack_image … <> rec_stack_bytes`, closed by `vm_compute` and
+`discriminate`, and each names its admitted neighbour in its own header, so
+the refusal and the case still admitted come as a pair. A change to the
+model that keeps the negatives green and the positives red, or the reverse,
+breaks the build either way.
 
 ### Which target builds them
 

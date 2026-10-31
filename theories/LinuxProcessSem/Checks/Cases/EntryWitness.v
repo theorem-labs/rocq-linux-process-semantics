@@ -103,9 +103,9 @@ Definition witness_entry : ExecEntry :=
     [load_elf_phdrs] accepts, fs/binfmt_elf.c), four of them. *)
 Definition witness_phdrs : PhdrInfo := mkPhdrInfo 0x10040 56 4.
 
-(** The fixture's four measurements, as the model computes them, so
-    that the bounds below read as the kernel's arithmetic and not as
-    magic numbers. *)
+(** The fixture's measurements, as the model computes them, so that the
+    bounds below read as the kernel's arithmetic and not as magic
+    numbers. *)
 Local Lemma witness_va_size : in_va_size witness_input = Sv48.
 Proof. reflexivity. Qed.
 
@@ -124,10 +124,6 @@ Proof. reflexivity. Qed.
 
 Local Lemma bvu_sp : bv_unsigned witness_sp = 0x7ffffffffdf0%Z.
 Proof. reflexivity. Qed.
-Local Lemma bvu_top : bv_unsigned witness_top = 0x800000000000%Z.
-Proof. reflexivity. Qed.
-Local Lemma bvu_mbase : bv_unsigned witness_mbase = 0x7ffff8000000%Z.
-Proof. reflexivity. Qed.
 Local Lemma bvu_brk : bv_unsigned witness_brk = 0x1000%Z.
 Proof. reflexivity. Qed.
 
@@ -141,7 +137,7 @@ Proof. reflexivity. Qed.
     [randomize_va_space] once for the draw while [arch_align_stack]
     reads it again, so the pad survives a root write to the sysctl
     during the [execve] — and [create_elf_tables] puts sp between the
-    two ends of the pad, a block head below the lowest string. *)
+    two ends of that pad, a block head below the lowest string. *)
 Local Lemma admitted_bounds : forall img en,
   valid_entry img en witness_input ->
   (0x7ffffffff000 <= bv_unsigned (ed_top (en_draw en)) <= 0x800000000000)%Z
@@ -259,37 +255,36 @@ Proof.
 Qed.
 
 (* =========================================================================
-   Walking a straight-line image, with the stack memory abstracted
+   Stepping a straight-line image
    ========================================================================= *)
 
-(** The device [Checks.Omni] uses, for the same reason: the entry stack
-    image is a function of sp, so a [vm_compute] that had to look at it
-    could not run at a quantified entry.  None of the instructions
-    below touches memory until the faulting load, so the memory is a
-    variable everywhere except there. *)
+(** Two devices, and both are forced.
 
-Local Definition walk1 (segs : list Segment) (ms : machine_state)
-    : machine_state :=
-  match RiscvSemantics.step segs ms with
-  | MachineOk ms' => ms'
-  | _ => ms
-  end.
+    THE STACK MEMORY IS A VARIABLE.  The entry stack image is a
+    function of sp, so a [vm_compute] that had to look at it could not
+    run at a quantified entry.  None of the instructions below touches
+    memory until the faulting load, so the memory is a variable
+    everywhere except there.
 
-Local Fixpoint walk (n : nat) (segs : list Segment) (ms : machine_state)
-    : machine_state :=
-  match n with
-  | O => ms
-  | S k => walk1 segs (walk k segs ms)
-  end.
+    EACH INTERMEDIATE STATE IS WRITTEN FLAT.  [RiscvSemantics.set_reg]
+    rebuilds the machine state from eight projections of its argument,
+    so a term for the state after n instructions holds 8^n copies of
+    the state before them and the kernel does not share them: a
+    conversion check over the state after three instructions of this
+    image takes 98 seconds, and over the state after four it does not
+    finish.  So every state below is a record literal whose fields are
+    written out, and each step lemma relates two such literals. *)
 
-(** The one field a branch writes. *)
-Local Definition set_pc (ms : machine_state) (p : word) : machine_state :=
-  {| ms_regs := ms_regs ms; ms_fregs := ms_fregs ms; ms_pc_val := p;
-     ms_svc_pending := ms_svc_pending ms; ms_resv := ms_resv ms;
-     ms_fcsr := ms_fcsr ms; ms_mem := ms_mem ms; ms_rom := ms_rom ms |}.
+Local Definition img_rom (segs : list Segment) : word -> option byte :=
+  fun addr =>
+    match memory_read segs addr 1 with
+    | Some (b :: _) => Some b
+    | _ => None
+    end.
 
 (** [Run.init_machine_state] with the memory named: every other field
-    is a literal of that definition, so the bridge is a conversion. *)
+    is a literal of that definition, so the bridge below is a
+    conversion. *)
 Local Definition start_state (segs : list Segment) (pc : N) (sp : word)
     (mem : word -> option byte) : machine_state :=
   {| ms_regs := bvmap_set 2 sp (bvmap_set 10 (Z_to_bv 64 0) bvmap_empty);
@@ -299,17 +294,28 @@ Local Definition start_state (segs : list Segment) (pc : N) (sp : word)
      ms_resv := None;
      ms_fcsr := Z_to_bv 32 0;
      ms_mem := mem;
-     ms_rom := fun addr =>
-       match memory_read segs addr 1 with
-       | Some (b :: _) => Some b
-       | _ => None
-       end |}.
+     ms_rom := img_rom segs |}.
 
 Local Lemma start_state_init : forall segs pc ph sp mbase draw inp,
   init_machine_state segs pc ph sp mbase draw inp
   = start_state segs pc sp
       (ms_mem (init_machine_state segs pc ph sp mbase draw inp)).
 Proof. intros. reflexivity. Qed.
+
+(** The same state with t0 (x5) loaded and the program counter at [pc].
+    Every state of either image after its first instruction has this
+    shape. *)
+Local Definition probe_state (segs : list Segment) (sp t0 : word) (pc : Z)
+    (mem : word -> option byte) : machine_state :=
+  {| ms_regs := bvmap_set 5 t0
+                  (bvmap_set 2 sp (bvmap_set 10 (Z_to_bv 64 0) bvmap_empty));
+     ms_fregs := bvmap_empty;
+     ms_pc_val := Z_to_bv 64 pc;
+     ms_svc_pending := None;
+     ms_resv := None;
+     ms_fcsr := Z_to_bv 32 0;
+     ms_mem := mem;
+     ms_rom := img_rom segs |}.
 
 (** From a configuration whose instruction step is a function answer,
     the only transition is that step, silently; when the answer is a
@@ -369,7 +375,7 @@ Qed.
    (b) The extra start state: two images that watch the stack pointer
    ========================================================================= *)
 
-(** Both images have the same five-instruction shape: build a 47-bit
+(** Both images have the same six-instruction shape: build a 47-bit
     constant in t0, compare it with sp, and either spin on a
     self-branch or load from address 0, which no launch maps.
 
@@ -421,113 +427,95 @@ Definition high_image : Image := mkImage high_segments 0x100 witness_phdrs.
 
 (* ---- the image that faults on a LOW stack pointer ---------------------- *)
 
-Local Definition low_st (sp : word) (mem : word -> option byte) (k : nat)
-    : machine_state :=
-  walk k low_segments (start_state low_segments 0x100 sp mem).
+(** The five states of a run that does NOT fault: the entry, the three
+    states of the constant being built (0x800000, then 0x7fffbf, then
+    0x7fffbf000000), and the self-branch at 0x114. *)
+Local Definition low_s0 (sp : word) (mem : word -> option byte) : machine_state :=
+  start_state low_segments 0x100 sp mem.
+Local Definition low_s1 (sp : word) (mem : word -> option byte) : machine_state :=
+  probe_state low_segments sp (Z_to_bv 64 0x800000) 0x104 mem.
+Local Definition low_s2 (sp : word) (mem : word -> option byte) : machine_state :=
+  probe_state low_segments sp (Z_to_bv 64 0x7fffbf) 0x108 mem.
+Local Definition low_s3 (sp : word) (mem : word -> option byte) : machine_state :=
+  probe_state low_segments sp low_threshold 0x10c mem.
+Local Definition low_s4 (sp : word) (mem : word -> option byte) : machine_state :=
+  probe_state low_segments sp low_threshold 0x114 mem.
 
-Local Lemma low_svc : forall k, (k <= 4)%nat -> forall sp mem,
-  ms_svc_pending (low_st sp mem k) = None.
-Proof.
-  intros k Hk. do 5 (destruct k as [| k]; [intros; vm_compute; reflexivity |]).
-  lia.
-Qed.
+Local Lemma low_step0 : forall sp mem,
+  RiscvSemantics.step low_segments (low_s0 sp mem) = MachineOk (low_s1 sp mem).
+Proof. intros. vm_compute. reflexivity. Qed.
 
-(** The four steps up to and including the branch, each the machine's
-    own answer.  The branch's successor carries the comparison
-    unevaluated in its program counter, which is why the bound on sp is
-    needed for the fifth. *)
-Local Lemma low_step : forall k, (k < 4)%nat -> forall sp mem,
-  RiscvSemantics.step low_segments (low_st sp mem k)
-  = MachineOk (low_st sp mem (S k)).
-Proof.
-  intros k Hk. do 4 (destruct k as [| k]; [intros; vm_compute; reflexivity |]).
-  lia.
-Qed.
+Local Lemma low_step1 : forall sp mem,
+  RiscvSemantics.step low_segments (low_s1 sp mem) = MachineOk (low_s2 sp mem).
+Proof. intros. vm_compute. reflexivity. Qed.
 
-(** The branch changes the program counter and nothing else, so the
-    state after it is the state before it with the target written in.
-    Stated this way on purpose: the target carries the comparison with
-    sp unevaluated, and asking [vm_compute] to take a step FROM a state
-    whose program counter is unevaluated would make it unfold the whole
-    decoder under the binder. *)
-Local Lemma low_st4_eq : forall sp mem,
-  low_st sp mem 4 = set_pc (low_st sp mem 3) (ms_pc (low_st sp mem 4)).
-Proof. intros sp mem. vm_compute. reflexivity. Qed.
+Local Lemma low_step2 : forall sp mem,
+  RiscvSemantics.step low_segments (low_s2 sp mem) = MachineOk (low_s3 sp mem).
+Proof. intros. vm_compute. reflexivity. Qed.
 
-(** With sp at or above the constant the branch is taken ... *)
-Local Lemma low_pc4 : forall sp mem,
+(** THE BRANCH.  With sp at or above the constant it is taken, and the
+    load at 0x110 is never reached. *)
+Local Lemma low_step3 : forall sp mem,
   bv_ltu sp low_threshold = false ->
-  ms_pc (low_st sp mem 4) = Z_to_bv 64 0x114.
+  RiscvSemantics.step low_segments (low_s3 sp mem) = MachineOk (low_s4 sp mem).
 Proof.
   intros sp mem Hb. vm_compute in Hb |- *. rewrite Hb. reflexivity.
 Qed.
 
-(** ... the program counter is the self-branch, and the state is a
-    fixed point: [jal x0, 0] writes nothing and jumps to itself. *)
-Local Lemma low_step_loop : forall sp mem,
-  bv_ltu sp low_threshold = false ->
-  RiscvSemantics.step low_segments (low_st sp mem 4)
-  = MachineOk (low_st sp mem 4).
-Proof.
-  intros sp mem Hb.
-  rewrite (low_st4_eq sp mem), (low_pc4 sp mem Hb).
-  vm_compute. reflexivity.
-Qed.
+(** ... and the self-branch is a fixed point. *)
+Local Lemma low_step4 : forall sp mem,
+  RiscvSemantics.step low_segments (low_s4 sp mem) = MachineOk (low_s4 sp mem).
+Proof. intros. vm_compute. reflexivity. Qed.
 
 Local Definition low_inv (sp : word) (mem : word -> option byte)
     (model : Model) (c : config) : Prop :=
-  exists k, (k <= 4)%nat /\ c = mkCfg (low_st sp mem k) model.
+  c = mkCfg (low_s0 sp mem) model \/ c = mkCfg (low_s1 sp mem) model
+  \/ c = mkCfg (low_s2 sp mem) model \/ c = mkCfg (low_s3 sp mem) model
+  \/ c = mkCfg (low_s4 sp mem) model.
 
-Local Lemma low_inv_step : forall sp mem model,
+(** Every transition out of a reachable configuration goes to another
+    reachable one, and none of them is the error transition. *)
+Local Lemma low_inv_sstep : forall sp mem model,
   m_vm_lazy model = [] ->
   bv_ltu sp low_threshold = false ->
-  forall c evs c',
-    low_inv sp mem model c -> sstep low_segments c evs (SNext c') ->
-    low_inv sp mem model c'.
+  forall c evs st, low_inv sp mem model c -> sstep low_segments c evs st ->
+    exists c', st = SNext c' /\ low_inv sp mem model c'.
 Proof.
-  intros sp mem model Hlazy Hb c evs c' (k & Hk & ->) Hss.
-  destruct (Nat.eq_dec k 4) as [-> | Hne].
-  - destruct (istep_only low_segments _ model _ Hlazy
-                (low_svc 4%nat ltac:(lia) sp mem)
-                (low_step_loop sp mem Hb) _ _ Hss) as (_ & ->).
-    exists 4%nat. split; [lia | reflexivity].
-  - destruct (istep_only low_segments _ model _ Hlazy
-                (low_svc k ltac:(lia) sp mem)
-                (low_step k ltac:(lia) sp mem) _ _ Hss) as (_ & ->).
-    exists (S k). split; [lia | reflexivity].
-Qed.
-
-Local Lemma low_inv_no_error : forall sp mem model,
-  m_vm_lazy model = [] ->
-  bv_ltu sp low_threshold = false ->
-  forall c evs, low_inv sp mem model c -> ~ sstep low_segments c evs SError.
-Proof.
-  intros sp mem model Hlazy Hb c evs (k & Hk & ->) Hss.
-  destruct (Nat.eq_dec k 4) as [-> | Hne].
-  - destruct (istep_only low_segments _ model _ Hlazy
-                (low_svc 4%nat ltac:(lia) sp mem)
-                (low_step_loop sp mem Hb) _ _ Hss) as (_ & Habs).
-    discriminate Habs.
-  - destruct (istep_only low_segments _ model _ Hlazy
-                (low_svc k ltac:(lia) sp mem)
-                (low_step k ltac:(lia) sp mem) _ _ Hss) as (_ & Habs).
-    discriminate Habs.
+  intros sp mem model Hlazy Hb c evs st Hinv Hss.
+  destruct Hinv as [-> | [-> | [-> | [-> | ->]]]].
+  - destruct (istep_only low_segments _ model _ Hlazy eq_refl
+                (low_step0 sp mem) _ _ Hss) as (_ & ->).
+    eexists. split; [reflexivity | right; left; reflexivity].
+  - destruct (istep_only low_segments _ model _ Hlazy eq_refl
+                (low_step1 sp mem) _ _ Hss) as (_ & ->).
+    eexists. split; [reflexivity | right; right; left; reflexivity].
+  - destruct (istep_only low_segments _ model _ Hlazy eq_refl
+                (low_step2 sp mem) _ _ Hss) as (_ & ->).
+    eexists. split; [reflexivity | right; right; right; left; reflexivity].
+  - destruct (istep_only low_segments _ model _ Hlazy eq_refl
+                (low_step3 sp mem Hb) _ _ Hss) as (_ & ->).
+    eexists. split; [reflexivity | right; right; right; right; reflexivity].
+  - destruct (istep_only low_segments _ model _ Hlazy eq_refl
+                (low_step4 sp mem) _ _ Hss) as (_ & ->).
+    eexists. split; [reflexivity | right; right; right; right; reflexivity].
 Qed.
 
 Local Lemma low_no_error_mem : forall sp mem model,
   m_vm_lazy model = [] ->
   bv_ltu sp low_threshold = false ->
-  ~ reaches_error low_segments
-      (mkCfg (start_state low_segments 0x100 sp mem) model).
+  ~ reaches_error low_segments (mkCfg (low_s0 sp mem) model).
 Proof.
   intros sp mem model Hlazy Hb (tr & c & evs & Hstar & Herr).
-  pose proof (low_inv_step sp mem model Hlazy Hb) as Hpres.
-  assert (Hinit : low_inv sp mem model
-                    (mkCfg (start_state low_segments 0x100 sp mem) model))
-    by (exists 0%nat; split; [lia | reflexivity]).
+  assert (Hpres : forall c0 e c', low_inv sp mem model c0 ->
+                    sstep low_segments c0 e (SNext c') -> low_inv sp mem model c').
+  { intros c0 e c' Hi Hs.
+    destruct (low_inv_sstep sp mem model Hlazy Hb c0 e (SNext c') Hi Hs)
+      as (c'' & Heq & Hi'). injection Heq as ->. exact Hi'. }
   pose proof (star_invariant low_segments (low_inv sp mem model) Hpres
-                _ _ _ Hstar Hinit) as Hc.
-  exact (low_inv_no_error sp mem model Hlazy Hb c evs Hc Herr).
+                _ _ _ Hstar (or_introl eq_refl)) as Hc.
+  destruct (low_inv_sstep sp mem model Hlazy Hb c evs SError Hc Herr)
+    as (c' & Habs & _).
+  discriminate Habs.
 Qed.
 
 (** THE LOWER BOUND ON THE ADMITTED STACK POINTERS, the whole of what
@@ -570,33 +558,51 @@ Qed.
 
 (* ---- the image that faults on a HIGH stack pointer --------------------- *)
 
+Local Definition high_s0 (sp : word) (mem : word -> option byte) : machine_state :=
+  start_state high_segments 0x100 sp mem.
+Local Definition high_s1 (sp : word) (mem : word -> option byte) : machine_state :=
+  probe_state high_segments sp (Z_to_bv 64 0x2000000) 0x104 mem.
+Local Definition high_s2 (sp : word) (mem : word -> option byte) : machine_state :=
+  probe_state high_segments sp (Z_to_bv 64 0x1ffffff) 0x108 mem.
+Local Definition high_s3 (sp : word) (mem : word -> option byte) : machine_state :=
+  probe_state high_segments sp high_threshold 0x10c mem.
+
+(** The load at 0x110, which the branch falls through to when sp is
+    above the constant. *)
+Local Definition high_s4 (sp : word) (mem : word -> option byte) : machine_state :=
+  probe_state high_segments sp high_threshold 0x110 mem.
+
+Local Lemma high_step0 : forall sp mem,
+  RiscvSemantics.step high_segments (high_s0 sp mem) = MachineOk (high_s1 sp mem).
+Proof. intros. vm_compute. reflexivity. Qed.
+
+Local Lemma high_step1 : forall sp mem,
+  RiscvSemantics.step high_segments (high_s1 sp mem) = MachineOk (high_s2 sp mem).
+Proof. intros. vm_compute. reflexivity. Qed.
+
+Local Lemma high_step2 : forall sp mem,
+  RiscvSemantics.step high_segments (high_s2 sp mem) = MachineOk (high_s3 sp mem).
+Proof. intros. vm_compute. reflexivity. Qed.
+
+(** At the witness entry sp is 0x7ffffffffdf0, above the constant, so
+    the branch is NOT taken and the next instruction is the load. *)
+Local Lemma high_step3 : forall mem,
+  RiscvSemantics.step high_segments (high_s3 witness_sp mem)
+  = MachineOk (high_s4 witness_sp mem).
+Proof. intros. vm_compute. reflexivity. Qed.
+
+(** The memory of the witness launch: the 528-byte entry block at sp
+    and the zeroed stack window below it.  Address 0 is in neither, and
+    the image's one segment starts at 0x100, so the load faults. *)
 Local Definition high_mem : word -> option byte :=
   ms_mem (init_machine_state high_segments 0x100 witness_phdrs witness_sp
             witness_mbase witness_draw witness_input).
 
-Local Definition high_st (k : nat) : machine_state :=
-  walk k high_segments (start_state high_segments 0x100 witness_sp high_mem).
-
-Local Lemma high_svc : forall k, (k <= 4)%nat ->
-  ms_svc_pending (high_st k) = None.
-Proof.
-  intros k Hk. do 5 (destruct k as [| k]; [vm_compute; reflexivity |]). lia.
-Qed.
-
-(** At the witness entry sp is 0x7ffffffffdf0, above the constant, so
-    the branch is NOT taken and the fourth step lands on the load. *)
-Local Lemma high_step : forall k, (k < 4)%nat ->
-  RiscvSemantics.step high_segments (high_st k) = MachineOk (high_st (S k)).
-Proof.
-  intros k Hk. do 4 (destruct k as [| k]; [vm_compute; reflexivity |]). lia.
-Qed.
-
-(** The load from address 0.  The entry stack image starts at sp and
-    the stack window's floor is [max(ed_top - 8 MiB, base + guard gap)]
+(** The stack window's floor is [max(ed_top - 8 MiB, base + guard gap)]
     (mm/vma.c [acct_stack_growth] and [expand_downwards]), so nothing
     maps the first page and the model takes the fault transition. *)
 Local Lemma high_fault :
-  RiscvSemantics.step high_segments (high_st 4) = MachineFault.
+  RiscvSemantics.step high_segments (high_s4 witness_sp high_mem) = MachineFault.
 Proof. vm_compute. reflexivity. Qed.
 
 Local Definition high_model (lim : Z) : Model :=
@@ -605,32 +611,26 @@ Local Definition high_model (lim : Z) : Model :=
 
 Local Lemma high_reaches_error : forall lim,
   reaches_error high_segments
-    (mkCfg (start_state high_segments 0x100 witness_sp high_mem)
-           (high_model lim)).
+    (mkCfg (high_s0 witness_sp high_mem) (high_model lim)).
 Proof.
   intros lim.
-  exists [], (mkCfg (high_st 4) (high_model lim)), [].
-  change (start_state high_segments 0x100 witness_sp high_mem) with (high_st 0).
+  exists [], (mkCfg (high_s4 witness_sp high_mem) (high_model lim)), [].
   split.
   - eapply star_silent;
-      [ exact (istep high_segments (high_st 0) (high_model lim) (high_st 1)
-                 eq_refl eq_refl (high_svc 0%nat ltac:(lia))
-                 (high_step 0%nat ltac:(lia))) |].
+      [ exact (istep high_segments _ (high_model lim) _ eq_refl eq_refl eq_refl
+                 (high_step0 witness_sp high_mem)) |].
     eapply star_silent;
-      [ exact (istep high_segments (high_st 1) (high_model lim) (high_st 2)
-                 eq_refl eq_refl (high_svc 1%nat ltac:(lia))
-                 (high_step 1%nat ltac:(lia))) |].
+      [ exact (istep high_segments _ (high_model lim) _ eq_refl eq_refl eq_refl
+                 (high_step1 witness_sp high_mem)) |].
     eapply star_silent;
-      [ exact (istep high_segments (high_st 2) (high_model lim) (high_st 3)
-                 eq_refl eq_refl (high_svc 2%nat ltac:(lia))
-                 (high_step 2%nat ltac:(lia))) |].
+      [ exact (istep high_segments _ (high_model lim) _ eq_refl eq_refl eq_refl
+                 (high_step2 witness_sp high_mem)) |].
     eapply star_silent;
-      [ exact (istep high_segments (high_st 3) (high_model lim) (high_st 4)
-                 eq_refl eq_refl (high_svc 3%nat ltac:(lia))
-                 (high_step 3%nat ltac:(lia))) |].
+      [ exact (istep high_segments _ (high_model lim) _ eq_refl eq_refl eq_refl
+                 (high_step3 high_mem)) |].
     apply star_refl.
-  - exact (istep_fault high_segments (high_st 4) (high_model lim)
-             eq_refl eq_refl (high_svc 4%nat ltac:(lia)) high_fault).
+  - exact (istep_fault high_segments _ (high_model lim) eq_refl eq_refl eq_refl
+             high_fault).
 Qed.
 
 (** THE SECOND HALF: [high_image] faults at the witness entry, the

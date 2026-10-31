@@ -30,8 +30,9 @@
        the argv strings; [argv[0]] is the lowest string byte.
     3. [create_elf_tables] (fs/binfmt_elf.c) takes the sixteen
        [get_random_bytes] bytes off the bottom of the string area with
-       [STACK_ALLOC], applies [arch_align_stack] (a pad of 0 to 4095
-       bytes, then 16-byte alignment), lays [ei_index] auxv words below
+       [STACK_ALLOC], applies [arch_align_stack] (it subtracts 0 to
+       4095 bytes and then masks the low four bits, so the pad it
+       leaves is up to 4110), lays [ei_index] auxv words below
        that with [STACK_ADD], and rounds down with
        [STACK_ROUND(sp, items)], [items = (argc + 1) + (envc + 1) + 1].
     4. The vector itself is [ARCH_DLINFO]
@@ -432,7 +433,7 @@ Definition block_pad_len (rseq : bool) (sp top : word)
       the auxiliary vector                                     16*n_aux
       zero gap, so the random bytes land 16-aligned            0 or 8
       the sixteen AT_RANDOM bytes                              16
-      the pad [arch_align_stack] left                          0..4095
+      the pad [arch_align_stack] left                          0..4110
       the argv strings, the envp strings, the exec name + NUL  L
       the slot [create_init_stack_vma] skipped                 8
 
@@ -441,9 +442,19 @@ Definition block_pad_len (rseq : bool) (sp top : word)
 
     The pad's length is whatever is left, clamped at 0 by [Z.to_nat], so
     the definition is total for every [sp] and [top].  Under
-    [Run.entry_launch_ok_va] it is between 0 and 4095 and the image's
+    [Run.entry_launch_ok_va] it is between 0 and 4110 and the image's
     length is exactly [top - sp]
     ([Run.length_entry_stack_image_launch]).
+
+    WHY 4110 AND NOT 4095.  [arch_align_stack]
+    (arch/riscv/kernel/process.c, Linux v6.18.46, commit 1f99e9ab748f)
+    subtracts [r] in [0, 4095] AND THEN masks the low four bits, so the
+    distance from the lowest string byte down to the top of the
+    AT_RANDOM block is [r + ((top - 8 - L - r) mod 16)], at most
+    [4095 + 15].  The 4095 is the kernel's draw; the pad is the draw
+    plus the alignment remainder.  [Run.launch_sp_lo] and
+    [Run.launch_sp_hi] are stated with [align_down16] and so carry the
+    true range without naming either number.
 
     [rnd] is read by NOTHING but the sixteen-byte block
     ([build_stack_bytes_split_random]): every address here is a function
@@ -496,7 +507,7 @@ Qed.
     strings and the eight-byte slot, and the pad is whatever lies
     between.  Clamped at 0 by [Z.to_nat], so this holds for every [sp]
     and [top]; [Run.length_entry_stack_image_launch] reads it under the
-    launch conjunct, where the pad is between 0 and 4095 and the sum
+    launch conjunct, where the pad is between 0 and 4110 and the sum
     collapses to [top - sp]. *)
 Lemma length_build_stack_bytes :
   forall la ph entry sp top argv envp execfn uid gid hwcap draw,

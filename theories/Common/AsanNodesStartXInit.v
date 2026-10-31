@@ -14,6 +14,7 @@ From LinuxProcessSemantics.Common Require Import
   AsanAcct AsanAcctShape.
 From LinuxProcessSemantics.Common Require Import AxSymExec3 AxSymExec3Sound AxSymRun3 AsanPlanCore AsanPlan AsanPlanSound AsanInit.
 From LinuxProcessSemantics.Common Require Import AsanNodesAux AsanStartLoops AsanNodesStartX.
+From LinuxProcessSemantics.Common Require Import AsanCeil.  (* the zero-draw hypothesis AsanInit's Section carries *)
 Import ListNotations.
 Import AX2. Import AX2S. Import AP. Import APS.
 Open Scope Z_scope.
@@ -74,6 +75,13 @@ Section GenericInit.
   Hypothesis Hsp : valid_sp sp.
   Hypothesis Hva : valid_argv argv.
   Hypothesis Hve : valid_envp envp.
+  (** AsanInit's Section carries these too, and Rocq generalises each of its
+      lemmas over every hypothesis its proof term reads, so they must be here
+      for [eassumption] to discharge them. *)
+  Hypothesis IMG : img_facts segs A ph.
+  Hypothesis Hapc : Z.of_N apc = a_entry A.
+  Hypothesis Hbrk : valid_brk segs brk0.
+  Hypothesis Hzr : AsanCeil.zero_random_draw (ed_random rdraw).
   Hypothesis Hmb : valid_mmap_base mbase.
   Hypothesis Huid : valid_id uid.
   Hypothesis Hfit : entry_stack_fits sp argv envp.   (* from valid_entry *)
@@ -119,13 +127,13 @@ Section GenericInit.
   Proof.
     intros E M HS. apply SINV_SINV0 in HS. destruct HS as [Hev _].
     assert (U1 : uE (E0 sp rdraw brk0 argv envp uid) e_envp = usp + 8 * argc + 16)
-      by (unfold usp, argc; apply u_e_envp; assumption).
+      by (unfold usp, argc; exact (u_e_envp ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve Hlau)).
     assert (U3 : uE (E0 sp rdraw brk0 argv envp uid) e_str0
                  = usp + Z.of_nat (block_head_size rseq argv envp)
                    + Z.of_nat (block_pad_len rseq sp top argv envp execfn))
-      by (unfold usp, rseq, execfn, top; apply u_e_str0; assumption).
+      by (unfold usp, rseq, execfn, top; exact (u_e_str0 ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve Hlau)).
     assert (U2 : uE (E0 sp rdraw brk0 argv envp uid) (EVar V_ENVC) = envc)
-      by (unfold envc; apply uE0_envc; assumption).
+      by (unfold envc; exact (uE0_envc ph apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hsp Hva Hve Hlau)).
     assert (Hev7 : forall n, (n < NX0)%nat -> ev E n = ev (E0 sp rdraw brk0 argv envp uid) n)
       by (intros n Hn; apply Hev; exact Hn).
     unfold uE in *.
@@ -155,13 +163,28 @@ Section GenericInit.
     intros E M a HS Ha. apply SINV_SINV0 in HS. destruct HS as [_ HM]. apply HM. unfold argH0. apply orb_true_intro. right.
     assert (HS0 : Z.of_nat (length (nth 0 argv [])) + 1
                   <= Z.of_nat (launch_string_bytes argv envp execfn))
-      by (unfold execfn; apply s0_in_strings; assumption).
+      by (unfold execfn; apply (s0_in_strings apc sp rdraw argv envp Hva Hfit)).
     assert (HT : usp + Z.of_nat (block_head_size rseq argv envp)
                  + Z.of_nat (block_pad_len rseq sp top argv envp execfn)
                  + Z.of_nat (launch_string_bytes argv envp execfn) + 8 = bv_unsigned top)
-      by (unfold usp, rseq, execfn, top; apply str0_hi; assumption).
+      (** [AsanInit.str0_hi] is QUALIFIED because [AsanNodesStartX] exports a
+          lemma of the same name and is imported after [AsanInit], so the later
+          import wins and the bare reference resolved to the wrong one: the two
+          differ only in their first argument, so the mistake shows up as a type
+          error far from its cause.  Same shape as the two copies of
+          [AsanNodesMmLib.reserved_free_above] / [AsanNodesMmB.reserved_free_above]
+          — two things that must agree with nothing to say so. *)
+      by (unfold usp, rseq, execfn, top; apply (AsanInit.str0_hi apc sp rdraw brk0 mbase argv envp fs stdin uid gid hw groups net Hlau)).
     rewrite str0_split in Ha. unfold s0 in Ha.
-    apply andb_true_intro. split; [apply Z.leb_le | apply Z.ltb_lt]; rewrite str0_split; lia.
+    (** AsanInit's [argH0] carries the kernel build and the exec name INLINED
+        ([State.default_kernel], [State.default_execfn]), because they are
+        variable-free [Let]s of its Section; the hypotheses above carry them as
+        projections of [INP].  The two are convertible, so [change] lines them
+        up for [lia]. *)
+    unfold rseq, execfn, top, usp in Ha, HT, HS0.
+    change (in_kernel INP) with default_kernel in Ha, HT, HS0.
+    change (in_execfn INP) with default_execfn in Ha, HT, HS0.
+    apply andb_true_intro. split; [apply Z.leb_le | apply Z.ltb_lt]; lia.
   Qed.
 
   Theorem init_x_sound_envscan :
@@ -170,13 +193,9 @@ Section GenericInit.
     apply (x_sound_envscan segs A NX0 LIMIT SINV (argH0 sp rdraw argv envp) FS0
               SEGS_wx SEGS_in_hull HULL_ok SINV_frame
               we1 we2 we3 Xenv Fe1 Fe2 Fe3 Ee De1 De2 De3
-              ph INP mbase entryw sp brk0 rdraw); try assumption.
-    - rewrite inp_argv'. exact Hva.
-    - rewrite inp_envp'. exact Hve.
-    - exact sp_lo.
-    - exact sp_hi.
-    - exact SINV0_vals.
-    - exact SINV0_envp.
+              ph INP mbase entryw sp brk0 rdraw);
+      solve [ assumption | exact sp_lo | exact sp_hi
+            | exact SINV0_vals | exact SINV0_envp | exact SINV0_str0 ].
   Qed.
 
   Theorem init_x_sound_pnscan :
@@ -184,16 +203,12 @@ Section GenericInit.
   Proof.
     apply (x_sound_pnscan segs A NX0 LIMIT SINV (argH0 sp rdraw argv envp) FS0
               SEGS_wx SEGS_in_hull HULL_ok
-              (argH0_high sp rdraw argv envp Hsp Hva) (argH0_agree sp rdraw argv envp)
+              (argH0_high apc sp rdraw argv envp Hsp Hva) (argH0_agree sp rdraw argv envp)
               SINV_frame SINV_agree
               wp0 wp1 wp2 wp3 wp4 Xpn Fp0 Fp1 Fp2 Fp3 Fp4 Ep Dp0 Dp1 Dp2 Dp3 Dp4
-              ph INP mbase entryw sp brk0 rdraw); try assumption.
-    - rewrite inp_argv'. exact Hva.
-    - rewrite inp_envp'. exact Hve.
-    - exact sp_lo.
-    - exact sp_hi.
-    - exact SINV0_vals.
-    - exact SINV0_str0.
+              ph INP mbase entryw sp brk0 rdraw);
+      solve [ assumption | exact sp_lo | exact sp_hi
+            | exact SINV0_vals | exact SINV0_envp | exact SINV0_str0 ].
   Qed.
 
   Theorem init_x_sound_layout :
