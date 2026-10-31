@@ -38,3 +38,7 @@ theories/Examples/*/*_code.v
 # Python
 __pycache__/
 *.pyc
+
+# Lean twin build outputs (lean/README.md).  `.lake` holds both the build
+# tree and the generated sources the lakefile writes.
+lean/.lake/

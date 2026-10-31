@@ -1,0 +1,13 @@
+# The kernel re-checker the Lean trust gate (tools/lean_check_env.sh) runs.
+#
+# lean4checker (github.com/leanprover/lean4checker) is archived: since
+# Lean v4.28.0 it is part of the Lean repository as src/LeanChecker.lean
+# and ships in every toolchain as the `leanchecker` binary, so the
+# checker matching the pinned toolchain is the toolchain's own, and its
+# commit is the toolchain's.  The gate refuses to run when the `lean` that
+# `lake env` resolves does not report this commit, when lean/lean-toolchain
+# does not name this tag, or when `leanchecker` resolves outside that
+# toolchain's prefix.  Move the three lines together with lean-toolchain.
+lean4-tag v4.34.0
+lean4-commit 293d5d0c0c3f3dded4688b3ccd6a33939ac5102b
+source src/LeanChecker.lean

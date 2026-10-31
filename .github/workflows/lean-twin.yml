@@ -1,0 +1,45 @@
+name: Lean twin
+
+# The Lean twin of the Rocq model lives in `lean/` (see lean/README.md).
+# This workflow is separate from ci.yml on purpose: it is not a step of any
+# of the four lanes there, it runs only for a pull request that touches
+# `lean/`, and `continue-on-error` keeps it from failing the run. A red
+# Lean build must never stop a Rocq pull request from merging.
+
+on:
+  pull_request:
+    paths:
+      - 'lean/**'
+      - '.github/workflows/lean-twin.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lean-twin-build:
+    name: Lean twin (lake build, not required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            -o elan-init.sh
+          sha256sum elan-init.sh
+          sh elan-init.sh -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Tool versions
+        working-directory: lean
+        run: |
+          lean --version
+          lake --version
+
+      - name: lake build
+        working-directory: lean
+        run: lake build
