@@ -1984,8 +1984,8 @@ Proof. repeat split; check_eq. Qed.
     MAP_NORESERVE page that nothing has touched, so they read as zero,
     and its [iov_len] bytes, 69632..69639, are unmapped.  Linux returns -EFAULT having read
     nothing, so the ledger is empty on each path: readv at a count of 2
-    ([copy_iovecs_aux]) and of 1 ([__import_iovec_ubuf]), and
-    [copy_iovecs_accesses] as [Net.Socket.sendmsg_spec] calls it.  The
+    ([copy_iovecs_aux]) and of 1 ([__import_iovec_ubuf]), and the bare
+    [copy_iovecs_accesses] underneath both.  The
     empty ledger charges no backing; the whole-descriptor range
     [(69624, 16)] would charge the lazy page for a read Linux did not
     make.

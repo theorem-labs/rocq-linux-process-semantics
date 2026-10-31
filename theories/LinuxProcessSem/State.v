@@ -1599,8 +1599,9 @@ Definition cap_iovecs (iovs : list (word * word)) : list (word * word) :=
     ([ReadWrite.readv_imported], [ReadWrite.writev_spec]'s gather),
     after the per-entry [access_ok] the loop applies to the uncapped
     length has been decided.
-    ([Net.Socket.sendmsg_spec] imports with [copy_iovecs_aux] and
-    so lacks the per-segment [access_ok] this function adds.)
+    [Net.Socket.sendmsg_spec] imports through this function too, so the
+    array [access_ok] and the per-segment one hold for every vectored
+    call the model judges.
 
     - A count of exactly ONE takes a DIFFERENT function with the OPPOSITE
       cap/[access_ok] order: [__import_iovec_ubuf] copies the single
