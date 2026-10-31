@@ -108,6 +108,37 @@ the OCaml 5.3 link 50 s; a two-checker replay of all 4,291 traces 20–42 s.
 those are still red. That is why this ran early, and the cone build is less than
 half the cost of the package build.
 
+**The cone is `Common`-free as a LAYER, not by luck.** No file anywhere under
+`theories/LinuxProcessSem/` requires `LinuxProcessSemantics.Common` — not one.
+The dependency runs the other way only (`theories/Common/AsanInit.v`'s own
+`Require` header takes `LinuxProcessSem`, then `Riscv`, then other `Common`
+files). So the
+cheap replay path survives pull request #39, which moves `theories/Common` into
+`rocq-linux-process-semantics-core`: after it lands the whole-package build
+grows by whatever `Common` costs and the cone build does not move.
+
+### 3a. The head moved twice under this report; the result is unaffected
+
+`revision/entry` is now `deea495` — `7c429761` (`revision/vdso-reserved-asan`)
+merged, then a consumer round and an ASan turn on top. This replay measured
+`36811ec`.
+
+**[INFERENCE, not a measurement.]** Every file the extracted checker is built
+from is byte-identical between `36811ec` and `deea495` — same git blob for
+`BvBase.v`, `Fs.v`, `Monad.v`, `State.v`, `Specs.v`, `Run.v` and
+`Checks/ExecutableSpecs.v`, and `theories/LinuxProcessSem/Sys/` is untouched.
+The only cone changes are `Checks/Extraction.v`, which gains the two roots
+`image_shape_b` and `fs_of_raw` and nothing else, and `Checks/CheckedInput.v`,
+which is the checked boundary the harness never calls — it links
+`State.init_model`, the raw entry point. Adding an extraction root publishes a
+name; it changes no function. So no verdict and no post-state digest can move,
+and the five hold at `deea495`.
+
+That is an argument from the diff, not a run. Confirming it is one cone build,
+one link and one replay — about six minutes — and it is not worth contending
+with `LpsStartState`'s CI run for. It should be done once that run reports, and
+re-done if a later merge touches any file in the list above.
+
 ## 4. `revision/entry`, and what every difference IS
 
 Measured on `36811ec` against base `b1a36516`.
@@ -125,7 +156,8 @@ Read on its own this looks like a catastrophe, and it is not one. **2,743 of
 those traces differ only because the model's POST-STATE DIGEST moved.**
 `Trace.verdict_equal` compares the verdict word, the event count AND the digest
 of the whole model state, and `--replay` stops at the first record where any of
-the three moves (`main.ml:2485`). This branch changes what `init_model`
+the three moves (`main.ml`'s `replay`, the branch that prints
+`REPLAY: verdict %d of %d was not reproduced`). This branch changes what `init_model`
 reserves, so the digest of every post-state moves while every verdict word
 stays, and the replay stops at record 0 of almost every trace — testing no
 syscall rule at all. A further 186 traces are *blinded*: the branch stops at an
@@ -202,7 +234,10 @@ the edit that belongs with it.
 **`mremap_shapes/037,089` — `ok` becomes `reject`. The corpus is wrong about its
 own machine.**
 
-The case line is `tests/mremap_shapes.c:58`:
+The case is the one `conform` CASE in `tests/mremap_shapes.c` whose mode is
+`grow` and whose comment reads "canonical Linux in-place grow, the neighbour
+being free" (the file has a second `conform … -- grow`, the unmutated one,
+which is the twin quoted below):
 
 ```
 // CASE: conform --mutate mremap:ret-addr:a0,drop-zeros,drop-unmaps,drop-copies,smuggle-zeros:a0+4096:4096 -- grow   # canonical Linux in-place grow, the neighbour being free
@@ -224,10 +259,11 @@ model to admit an in-place grow that Linux refused. The base admits it, because
 its ledger is empty there. `revision/entry` refuses it.
 
 So the recorded `ok` is the base model's blindness, the branch's `reject` is the
-right answer, and the comment "the neighbour being free" on
-`tests/mremap_shapes.c:58` is false about the machine the corpus came from. That
-is a corpus defect worth fixing whatever happens to this branch; its `movegrow`
-twin at line 76 already says "an in-place grow needs the neighbour free".
+right answer, and the comment "canonical Linux in-place grow, the neighbour
+being free" on that CASE in `tests/mremap_shapes.c` is false about the machine
+the corpus came from. That is a corpus defect worth fixing whatever happens to
+this branch; the `movegrow` CASE in the same file whose comment reads "an
+in-place grow needs the neighbour free" already says so.
 
 **And the two are the whole of it.** The corpus holds 64 `mremap` growths that
 returned an address: **13 resolved in place and 51 moved**, and 14 of the 51
@@ -278,13 +314,14 @@ Three things, and two of them were found by reading the harness rather than by
 running it.
 
 **The process start state.** `main.ml` never calls `Run.init_machine_state`; it
-says so itself at `main.ml:3922-3925` — "This harness never builds one: it seeds
+says so itself, in the comment on the `hwcap` seed in its live-run setup —
+"This harness never builds one: it seeds
 `State.init_model` and folds the syscall specs over what the tracer observed".
 So no recorded run evaluates the entry block's bytes, the stack-pointer rule,
 the stack-top rule, the auxiliary vector or `Run.valid_launch`.
 
-It DOES build a `ProcInput`: `main.ml:2363` (the `--replay` seeding) and
-`main.ml:3934` (the live run's) both call
+It DOES build a `ProcInput`: the `--replay` seeding inside `main.ml`'s `replay`,
+and the live run's seeding beside that `hwcap`, both call
 `M.init_model reserved brk0 mbase sp lim inp` with `inp` an OCaml record literal
 naming all fifteen released fields. `init_model`'s arity is unchanged on this
 branch, so the call still type-checks; the literal does not, because OCaml
@@ -380,7 +417,7 @@ base trees were built through the patched script.
 literals. Without this the harness does not compile at all.
 
 **2. Pass the real mmap base.** `main.ml` gives `init_model` the `[vvar]` start
-(`vvar_start_of_image`, `main.ml:1242`), and `main.ml:1240` says why: a model
+(its `vvar_start_of_image`), and that function's own comment says why: a model
 that does not reserve the vDSO/vvar pair "needs no entry for the pair", so
 starting the ledger at the pair's bottom IS reserving it. A model that DOES
 reserve it then reserves the pair a second time, six pages below the real one,
@@ -454,6 +491,12 @@ dune build trees and four linked checkers), which goes when the VM does. No new
 checkout of theorem-labs/oss-verify-proofs-internal was made.
 
 ## 9. Where the artefacts are
+
+**`~/replay-D` is now three different directories on three machines** — this
+one on `lpsrev-entry` (988 MB), `LpsPlacement`'s on `lpsrev-place` (2.1 GB) and
+`LpsSigpipe2.Replay`'s on `ossv-lpsrev-sigpipe-replay` — all under one
+`ossv-keep-owner` (`LPSREV/01a18fe5-2088-7566-a8eb-ea299455799e`), so neither
+the metadata nor the name tells them apart. Cite the machine with the path.
 
 On `lpsrev-entry` under `~/replay-D`: `ref.json` (the reference run),
 `final-strict.json` and `final-tolerant.json` (base `b1a36516` against entry

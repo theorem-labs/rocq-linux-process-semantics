@@ -844,11 +844,22 @@ Proof. intros [H | H]; apply (f_equal bv_unsigned) in H; vm_compute in H;
     otherwise-RV64GC mask: a hart without atomics, which cannot run the
     [Riscv.Instr] AMOs this semantics interprets, so the model must not
     describe a process on one.  [0x40112D] adds bit 22 — the letter W,
-    which [riscv_fill_hwcap]'s [isa2hwcap] never assigns
-    (arch/riscv/kernel/cpufeature.c:1059-1065, Linux v6.18.46, commit
-    1f99e9ab748f, which seeds seven indices and leaves the other
-    nineteen zero), so no kernel publishes it and admitting it would put
-    the model outside what that kernel tree can produce. *)
+    which the [isa2hwcap] table never assigns
+    (arch/riscv/kernel/cpufeature.c, Linux v6.18.46, commit
+    1f99e9ab748f: the [unsigned long isa2hwcap[26]] that
+    [riscv_fill_hwcap] declares and seeds itself, seven indices set and
+    the other nineteen left zero), so no kernel publishes it and
+    admitting it would put the model outside what that kernel tree can
+    produce.
+
+    The citation names the FUNCTION and the declaration, not a line.  A
+    line number rots with the next patch and nothing in this tree
+    checks it.  The declaration is named because [riscv_fill_hwcap] is
+    not unique as a string in that file: it is also the prefix of
+    [riscv_fill_hwcap_from_isa_string] and
+    [riscv_fill_hwcap_from_ext_list], which take the table as a
+    parameter rather than seeding it, so a reader grepping the bare
+    name lands on three functions and the seeding is in only one. *)
 
 Example valid_hwcap_refuses_masks_no_kernel_publishes :
   ~ valid_hwcap (Z_to_bv 64 0x112C) /\ ~ valid_hwcap (Z_to_bv 64 0x40112D).
