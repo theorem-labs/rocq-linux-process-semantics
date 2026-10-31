@@ -222,7 +222,7 @@ Definition check_bind (i : SyscallInput) (fd addrp addrlen : word)
       then check_ret_only eff (errno_ret EINVAL) m []
       else if Z.eqb al 0 then check_ret_only eff (errno_ret EINVAL) m []
       else
-      match read_bytes_map (in_mem i) addrp (Z_to_bv 64 al) with
+      match copy_bytes_map (in_mem i) addrp al with
       | None => check_ret_only eff (errno_ret EFAULT) m []
       | Some bs =>
           (* PAST THE COPY, and that is where the ledger starts.
@@ -360,7 +360,7 @@ Definition check_connect (i : SyscallInput) (fd addrp addrlen : word)
       if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al)
       then check_ret_only eff (errno_ret EINVAL) m []
       else
-      match read_bytes_map (in_mem i) addrp (Z_to_bv 64 al) with
+      match copy_bytes_map (in_mem i) addrp al with
       | None => check_ret_only eff (errno_ret EFAULT) m []
       | Some bs =>
           let copied := if Z.eqb al 0 then [] else [(addrp, length bs)] in
@@ -724,7 +724,7 @@ Proof.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
   destruct (Z.eqb (sint32 addrlen) 0) eqn:E2; cbv beta iota zeta in H |- *.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
-  destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
     as [bs|] eqn:Hrb; cbv beta iota zeta in H |- *.
   2: { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
   destruct (Z.ltb (sint32 addrlen) SOCKADDR_IN_SIZE) eqn:E3;
@@ -776,7 +776,7 @@ Proof.
   { now apply check_ret_only_no_unmodeled in H. }
   destruct (Z.eqb (sint32 addrlen) 0) eqn:E2; cbv beta iota zeta in H |- *.
   { now apply check_ret_only_no_unmodeled in H. }
-  destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
     as [bs|] eqn:Hrb; cbv beta iota zeta in H |- *.
   2: { now apply check_ret_only_no_unmodeled in H. }
   destruct (Z.ltb (sint32 addrlen) SOCKADDR_IN_SIZE) eqn:E3;
@@ -821,7 +821,7 @@ Proof.
     hall E1; inv_ok; [cbn; try rewrite bv_eqb_refl; reflexivity|].
   destruct (Z.eqb (sint32 addrlen) 0) eqn:E2; hall E2; inv_ok;
     [cbn; try rewrite bv_eqb_refl; reflexivity|].
-  destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
     as [bs|] eqn:Hrb; hall Hrb; inv_ok;
     [|cbn; try rewrite bv_eqb_refl; reflexivity].
   destruct (Z.ltb (sint32 addrlen) SOCKADDR_IN_SIZE) eqn:E3; hall E3; inv_ok;
@@ -871,7 +871,7 @@ Proof.
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
     hall E1; inv_ok; try discriminate.
   destruct (Z.eqb (sint32 addrlen) 0) eqn:E2; hall E2; inv_ok; try discriminate.
-  destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
     as [bs|] eqn:Hrb; hall Hrb; inv_ok; try discriminate.
   destruct (Z.ltb (sint32 addrlen) SOCKADDR_IN_SIZE) eqn:E3; hall E3; inv_ok;
     try discriminate.
@@ -1141,7 +1141,7 @@ Proof.
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        cbv beta iota zeta in H |- *; [ connect_ret H | ].
-  all: destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; cbv beta iota zeta in H |- *; [ | connect_ret H ].
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez;
        cbv beta iota zeta in H |- *.
@@ -1176,7 +1176,7 @@ Proof.
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        cbv beta iota zeta in H |- *;
        [ now apply check_ret_only_no_unmodeled in H | ].
-  all: destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; cbv beta iota zeta in H |- *;
        [ | now apply check_ret_only_no_unmodeled in H ].
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez;
@@ -1213,7 +1213,7 @@ Proof.
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        hall E1; inv_ok; [ cbn; try rewrite bv_eqb_refl; reflexivity | ].
-  all: destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; hall Hrb; inv_ok;
        [ | cbn; try rewrite bv_eqb_refl; reflexivity ].
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez; hall Ez; inv_ok.
@@ -1242,7 +1242,7 @@ Proof.
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        hall E1; inv_ok; try discriminate.
-  all: destruct (read_bytes_map (in_mem i) addrp (Z_to_bv 64 (sint32 addrlen)))
+  all: destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
          as [bs|] eqn:Hrb; hall Hrb; inv_ok; try discriminate.
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez; hall Ez; inv_ok;
        try discriminate.
@@ -1726,7 +1726,7 @@ Definition check_sendmsg (i : SyscallInput) (fd msgp flags : word)
   | Some (FdPipe _ _) | Some (FdDevNull _ _) | Some FdUrandom =>
       check_ret_only eff (errno_ret ENOTSOCK) m []
   | Some (FdSocket sk) =>
-      match read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE) with
+      match copy_bytes_map (in_mem i) msgp MSGHDR_SIZE with
       | None => check_ret_only eff (errno_ret EFAULT) m []
       | Some _ =>
           match read_u64 (in_mem i) msgp,
@@ -1742,16 +1742,16 @@ Definition check_sendmsg (i : SyscallInput) (fd msgp flags : word)
                      (errno_ret EMSGSIZE) m []
               else if (UIO_FASTIOV <? bv_unsigned iovlen)%Z then CheckUnmodeled
               else
-              match copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen) with
+              match import_iovecs (in_mem i) iov iovlen with
               | ImpFault =>
                   check_ret_only_copyins
                     ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                     ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                     ++ import_iovecs_accesses (in_mem i) iov iovlen)
                     eff (errno_ret EFAULT) m []
               | ImpInval =>
                   check_ret_only_copyins
                     ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                     ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                     ++ import_iovecs_accesses (in_mem i) iov iovlen)
                     eff (errno_ret EINVAL) m []
               | ImpOk iovs0 =>
                   (* msg_controllen is decided HERE, where ____sys_sendmsg
@@ -1765,7 +1765,7 @@ Definition check_sendmsg (i : SyscallInput) (fd msgp flags : word)
                   else
                   check_send_on_socket
                     ([(msgp, Z.to_nat MSGHDR_SIZE)]
-                     ++ copy_iovecs_accesses (in_mem i) iov (word_to_nat iovlen))
+                     ++ import_iovecs_accesses (in_mem i) iov iovlen)
                     (fun n => iov_prefix_accesses (cap_iovecs iovs0) n)
                     fd sk
                     (Z_to_bv 64 (iovs_total (cap_iovecs iovs0)))
@@ -2012,7 +2012,8 @@ Qed.
 (** The header's six reads are destructed together: 63 of the 64 shapes
     are the total-match -EFAULT arm both sides agree on, and only the
     all-[Some] one carries the call.  Keep the goal selectors below --
-    a uniform [cbn] here delta-reduces [State.copy_iovecs_aux]'s fuel. *)
+    a uniform [cbn] here delta-reduces [State.copy_iovecs_aux]'s fuel,
+    which [State.import_iovecs] still reaches. *)
 Lemma check_sendmsg_sound_ok : forall i fd msgp flags eff m m' evs,
   check_sendmsg i fd msgp flags eff m = CheckOk m' evs ->
   sendmsg_spec fd msgp flags i m (Ok eff m' evs).
@@ -2026,7 +2027,7 @@ Proof.
     cbv beta iota zeta in H |- *;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          apply pure_ok).
-  destruct (read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE)) eqn:Hh;
+  destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
     cbv beta iota zeta in H |- *;
     [|apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
       apply pure_ok].
@@ -2044,7 +2045,7 @@ Proof.
     [apply check_ret_only_copyins_ok_iff in H; destruct H as (-> & -> & ->);
      apply record_copyins_ok_empty; [reflexivity|apply pure_ok]|].
   destruct ((UIO_FASTIOV <? bv_unsigned iovlen)%Z) eqn:Hfa; [discriminate|].
-  destruct (copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen)) as [iovs0| |]
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs0| |]
     eqn:Hci; cbv beta iota zeta in H |- *;
     [ | apply check_ret_only_copyins_ok_iff in H; destruct H as (-> & -> & ->);
         apply record_copyins_ok_empty; [reflexivity|apply pure_ok]
@@ -2068,7 +2069,7 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     try (now apply check_ret_only_no_unmodeled in H).
-  destruct (read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE)) eqn:Hh;
+  destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
     cbv beta iota zeta in H |- *;
     [|now apply check_ret_only_no_unmodeled in H].
   destruct (read_u64 (in_mem i) msgp) as [name|],
@@ -2084,7 +2085,7 @@ Proof.
     [now apply check_ret_only_copyins_no_unmodeled in H|].
   destruct ((UIO_FASTIOV <? bv_unsigned iovlen)%Z) eqn:Hfa;
     [apply unmodeled_intro|].
-  destruct (copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen)) as [iovs0| |]
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs0| |]
     eqn:Hci; cbv beta iota zeta in H |- *;
     [ | now apply check_ret_only_copyins_no_unmodeled in H
       | now apply check_ret_only_copyins_no_unmodeled in H ].
@@ -2106,7 +2107,7 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; try rewrite bv_eqb_refl; reflexivity).
-  destruct (read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE)) eqn:Hh;
+  destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
     hall Hh; inv_ok;
     [|cbn; try rewrite bv_eqb_refl; reflexivity].
   destruct (read_u64 (in_mem i) msgp) as [name|] eqn:R0,
@@ -2125,7 +2126,7 @@ Proof.
      rewrite app_nil_r, (proj2 (access_ranges_eqb_eq _ _) eq_refl);
      cbn; rewrite ?bv_eqb_refl; reflexivity|].
   destruct ((UIO_FASTIOV <? bv_unsigned iovlen)%Z) eqn:Hfa; hall Hfa; inv_ok.
-  destruct (copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen)) as [iovs0| |]
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs0| |]
     eqn:Hci; hall Hci; inv_ok;
     try (unfold check_ret_only_copyins, clear_copyins; cbn [with_copyins];
          rewrite app_nil_r, (proj2 (access_ranges_eqb_eq _ _) eq_refl);
@@ -2146,7 +2147,7 @@ Proof.
   sys_unfold. cbv iota zeta in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate.
-  destruct (read_bytes_map (in_mem i) msgp (Z_to_bv 64 MSGHDR_SIZE)) eqn:Hh;
+  destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE) eqn:Hh;
     hall Hh; inv_ok; try discriminate.
   destruct (read_u64 (in_mem i) msgp) as [name|] eqn:R0,
            (read_u64 (in_mem i) (msgp + Z_to_bv 64 8)) as [namelen|] eqn:R1,
@@ -2160,7 +2161,7 @@ Proof.
     try discriminate.
   destruct ((UIO_FASTIOV <? bv_unsigned iovlen)%Z) eqn:Hfa; hall Hfa; inv_ok;
     [reflexivity|].
-  destruct (copy_iovecs_aux (in_mem i) iov (word_to_nat iovlen)) as [iovs0| |]
+  destruct (import_iovecs (in_mem i) iov iovlen) as [iovs0| |]
     eqn:Hci; hall Hci; inv_ok; try discriminate.
   destruct (negb (w_is0 ctllen)) eqn:Hcl; hall Hcl; inv_ok; [reflexivity|].
   destruct (negb (iovs_total (cap_iovecs iovs0) <=? rw_bytes_max)%Z) eqn:Hmt;
