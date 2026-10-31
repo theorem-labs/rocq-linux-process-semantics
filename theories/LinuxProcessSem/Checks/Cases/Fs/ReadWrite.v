@@ -2783,3 +2783,145 @@ Example pipe_write_into_an_empty_pipe_may_be_enomem :
        (mkEffect (errno_ret ENOMEM) [] []) pipe_queued_model
      = CheckReject.
 Proof. split; [check_eq | split; [check_eq | vm_compute; reflexivity]]. Qed.
+
+(* =========================================================================
+   PART 7 — death by SIGPIPE: what each arm answers, and what it still
+   admits beside it (OSSV-266)
+   ========================================================================= *)
+
+(** The launch of [demo_input] with THE READER GONE: the far end of
+    descriptors 1 and 2 is a pipe or a socket nothing reads any more,
+    which is `prog | head -1` once [head] has had its line.  Everything
+    else is [demo_input]'s. *)
+Definition noreader_input : ProcInput :=
+  mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
+                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
+                   default_urandom [] false true.
+
+(** The same launch again, with SIGPIPE at SIG_IGN: the launcher ran
+    `signal(SIGPIPE, SIG_IGN)` before execve and execve kept it
+    ([State.in_sigpipe_default]).  [Run.valid_input] does not admit
+    this one; [Run.valid_input_sigpipe_ignored] does. *)
+Definition noreader_ignored_input : ProcInput :=
+  mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
+                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
+                   default_urandom [] false false.
+
+Definition noreader_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit noreader_input.
+Definition noreader_ignored_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit noreader_ignored_input.
+Definition reader_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+
+(** PAIR 1 — A WRITE TO STANDARD OUTPUT WHOSE READER HAS GONE KILLS THE
+    PROCESS, AND THE SAME WRITE WITH A READER STILL DELIVERS.
+
+    Linux raises SIGPIPE and sets -EPIPE, in that order and without a
+    flag write(2) can suppress: fs/pipe.c [anon_pipe_write] :460-465
+    when the far end is a pipe, net/core/stream.c [sk_stream_error]
+    :190-198 when it is a socket (Linux v6.18.46, commit 1f99e9ab748f).
+    Signal 13's default action is terminate, so the -EPIPE is never
+    returned and what the world sees is a death by signal 13.
+
+    The first conjunct is that answer: the post-state is
+    [State.with_killed 13], which [Run.sstep_killed] takes and
+    [Run.sstep_exit] declines, and the ledger is empty because no byte
+    of the source is read on this path.  THE SECOND CONJUNCT IS WHY
+    THIS IS NOT A CHECKER THAT HAS BECOME CONSTANTLY KILLING: the same
+    call on the launch whose reader is there still delivers both bytes,
+    with the two [State.WriteEv]s and the copy-in ledger it always
+    had.  The third says the two answers do not cross: the delivering
+    answer is REFUSED on the reader-less launch. *)
+Example write_channel_no_reader_dies_by_sigpipe :
+  check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+    (mkEffect (errno_ret EPIPE) [] []) noreader_model
+  = CheckOk (with_killed (Z_to_bv 64 13) noreader_model) []
+  /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (with_copyins [(4096, 2%nat)] (mkEffect 2 [] [])) reader_model
+     = CheckOk reader_model [WriteEv 1 97; WriteEv 1 98]
+  /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (with_copyins [(4096, 2%nat)] (mkEffect 2 [] [])) noreader_model
+     = CheckReject.
+Proof. split; [check_eq | split; check_eq]. Qed.
+
+(** PAIR 2 — THE SAME WRITE UNDER THE OTHER LAUNCH DECLARATION.
+
+    [State.in_sigpipe_default] is the task's declaration that signal 13
+    is still at SIG_DFL, and [Run.valid_input] pins it.  Under
+    [Run.valid_input_sigpipe_ignored] it is SIG_IGN, and then the
+    kernel never delivers the signal at all --
+    kernel/signal.c [prepare_signal]/[sig_ignored] drops it unblocked,
+    [get_signal]'s [if (ka->sa.sa_handler == SIG_IGN) continue] drops it
+    after an unblock -- so the call's whole answer is the -EPIPE and
+    THE PROCESS IS STILL RUNNING.
+
+    The first conjunct is that: the same -EPIPE over an UNCHANGED
+    model, no kill.  The second is the discrimination, and it is what
+    makes the field worth having: the killing answer of pair 1 is
+    REFUSED on this launch, and the surviving answer here is refused on
+    that one.  Without the field one of the two launches would get the
+    other's answer. *)
+Example write_channel_no_reader_survives_when_sigpipe_is_ignored :
+  check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+    (mkEffect (errno_ret EPIPE) [] []) noreader_ignored_model
+  = CheckOk noreader_ignored_model []
+  /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect (errno_ret EPIPE) [] []) noreader_ignored_model
+     <> CheckOk (with_killed (Z_to_bv 64 13) noreader_ignored_model) []
+  /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect (errno_ret EPIPE) [] []) noreader_model
+     <> CheckOk noreader_model [].
+Proof.
+  split; [check_eq|].
+  split; vm_compute; discriminate.
+Qed.
+
+(** A pipe whose READ END HAS BEEN CLOSED: fd 4 is the write end and no
+    descriptor of pipe 0 is open for reading, which is what
+    [State.pipe_end_live _ 0 false] asks. *)
+Definition pipe_reader_gone_model : Model :=
+  with_pipes [(0, (@nil byte, 0%Z))]
+    (mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+              (4, FdPipe 0 true)]
+       (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
+
+(** PAIR 3 — A WRITE TO A PIPE WITH NO READER IS ANSWERED, WHERE IT
+    USED TO BE REFUSED, AND THE PIPE'S OTHER ANSWERS ARE UNCHANGED.
+
+    This arm used to answer [unmodeled], on the argument that the model
+    had no signals and no death that is not [exit].  It has both now,
+    so the call is judged: signal 13 and -EPIPE, fs/pipe.c
+    [anon_pipe_write] :460-465, repeated at the top of each loop
+    iteration at :501-506.
+
+    The first conjunct is the new answer.  The second is the ordering
+    that makes it sound, and it is not a stylistic one: the no-reader
+    test is STRICTLY ABOVE the page allocation at :515 and its
+    [ret = -ENOMEM] at :517-519, so a reader-less pipe can never answer
+    -ENOMEM, and the model refuses that answer here while
+    [pipe_write_into_an_empty_pipe_may_be_enomem] above admits it on the
+    same empty pipe WITH a reader.  The third is the zero-count
+    exception, which is also ordering: :454-456 returns 0 before the
+    [mutex_lock] at :458 and so before the readers test, so a
+    zero-length write to a reader-less pipe is 0 and raises nothing.
+    The fourth is the neighbouring case still admitted: with the read
+    end open the write delivers. *)
+Example write_pipe_no_reader_is_answered :
+  check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+    (mkEffect (errno_ret EPIPE) [] []) pipe_reader_gone_model
+  = CheckOk (with_killed (Z_to_bv 64 13) pipe_reader_gone_model) []
+  /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] []) pipe_reader_gone_model
+     = CheckReject
+  /\ check_syscall (mkInput 64 [4; 4096; 0; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect 0 [] []) pipe_reader_gone_model
+     = CheckOk pipe_reader_gone_model []
+  /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (with_copyins [(4096, 2%nat)] (mkEffect 2 [] [])) pipe_empty_model
+     = CheckOk (with_pipes [(0, ([97; 98], 2%Z))] pipe_empty_model) [].
+Proof.
+  split; [check_eq|].
+  split; [vm_compute; reflexivity|].
+  split; check_eq.
+Qed.
