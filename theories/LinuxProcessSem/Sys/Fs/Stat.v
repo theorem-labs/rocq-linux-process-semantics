@@ -81,6 +81,82 @@ Definition modeled_statat_flags (flag : word) : bool :=
   let fl := bv_unsigned flag in
   Z.eqb fl 0 || Z.eqb fl AT_SYMLINK_NOFOLLOW.
 
+(** [newfstatat]'s procfs shape: a RELATIVE name and a [dirfd] that is an
+    O_PATH descriptor on a procfs name ([State.OProcPath]), which
+    [path_init] (fs/namei.c) starts the walk from ([CLASS(fd_raw, f)]
+    accepts an O_PATH file).  An absolute name ignores [dirfd] and is
+    left to the arms below, which decline it. *)
+Definition newfstatat_proc_dir (fds : list (word * FdEntry)) (dirfd : word)
+    (p : path) : bool :=
+  match p, fd_lookup fds dirfd with
+  | b :: _, Some (FdOpaque (OProcPath _)) => negb (bv_eqb b path_slash_byte)
+  | _, _ => false
+  end.
+
+(** What [cp_new_stat] (fs/stat.c, read at v6.18.44; identical at
+    v6.18.46) settles for EVERY object: 128 bytes, and [__pad1],
+    [__pad2] and [__unused4]/[__unused5] zero, because
+    [INIT_STRUCT_STAT_PADDING] is a [memset] of the whole struct and no
+    member assignment covers those bytes.
+
+    NOT [Uapi.stat_buf_wf], whose [st_mode] must name one of the seven
+    file types: a name under /proc can be a link to ANY open file
+    ("/proc/self/fd/N"), and an anonymous inode has no type bits at all
+    ([alloc_anon_inode], fs/libfs.c, read at v6.18.44: "Historically
+    anonymous inodes don't have a type at all"), so that test would
+    reject a real answer. *)
+Definition stat_proc_buf_ok (bs : list byte) : bool :=
+  (Nat.eqb (length bs) 128
+   && Z.eqb (stat_field_le ST_PAD1_OFF 8 bs) 0
+   && Z.eqb (stat_field_le ST_PAD2_OFF 4 bs) 0
+   && Z.eqb (stat_field_le ST_UNUSED45_OFF 8 bs) 0)%bool.
+
+(** [newfstatat(dirfd, name, statbuf, flag)] with [dirfd] an O_PATH
+    descriptor on a procfs name and [name] relative
+    ([newfstatat_proc_dir]), under the two flag words
+    [modeled_statat_flags] admits: bubblewrap's
+    [newfstatat(ns_fd, "net", &st, 0)] after
+    [openat(proc_fd, "<pid>/ns", O_PATH)].
+
+    KERNEL PATH, read at v6.18.44:
+      fs/stat.c [SYSCALL_DEFINE4(newfstatat)], [vfs_fstatat],
+        [vfs_statx], [cp_new_stat]: read at v6.18.44; identical at v6.18.46.
+      fs/namei.c [path_init], [filename_lookup]: read at v6.18.44; identical at v6.18.46.
+
+    The answer is an errno, or 0 with 128 bytes of the environment's
+    choice at [statbuf].  [vfs_fstatat] walks the name from [dirfd]
+    through procfs (the pid directories, [proc_ns_dir_lookup], the
+    namespace links and their [ptrace_may_access] test) and asks the
+    inode's [getattr] and the LSM's [inode_getattr] hook: an errno
+    list for that is not one this model can defend, so every errno is
+    admitted ([Syscall.errno_any]).  On success [cp_new_stat] fills the
+    struct; the model holds no metadata for procfs, so the bytes are
+    chosen, constrained only by what [cp_new_stat] settles for every
+    object ([stat_proc_buf_ok]), and not pinned from one call to the
+    next.  That is a PRECISION gap (SCOPE.md, "Known gaps in
+    precision"): two stats of one namespace may report different
+    inode numbers here.
+
+    THE DESTINATION, in [cp_new_stat]'s order: [copy_to_user]'s
+    [access_ok] refuses a range outside the user address space before a
+    byte moves, and then every answer is an errno (the -EFAULT among
+    them), so the arm admits [errno_any] there.  A range inside it but
+    not wholly writable can take a partial [copy_to_user] that writes a
+    prefix and answers -EFAULT, which this model has no form for, so
+    that shape is declined as [fstat_file_spec] declines it.  A wholly
+    writable range takes the errno or the delivery. *)
+Definition newfstatat_proc_spec (statbuf : word) : Sys SyscallEffect :=
+  i <- input ;;
+  if negb (access_okb statbuf STAT_SIZE) then (e <- errno_any ;; err_ret e)
+  else
+    match read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE) with
+    | None => unmodeled      (* a partial [copy_to_user] then -EFAULT *)
+    | Some _ =>
+        alt (e <- errno_any ;; err_ret e)
+            (bs <- choose (fun bs : list byte => stat_proc_buf_ok bs = true) ;;
+             pure (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] []))
+    end.
+
 (** [newfstatat dirfd path statbuf flag] — [stat]/[lstat] as modern libc
     issues them.  KERNEL SCOPE for everything below: Linux v6.10-v6.15,
     fs/stat.c, [SYSCALL_DEFINE4(newfstatat)] / [cp_new_stat], and
@@ -130,13 +206,14 @@ Definition modeled_statat_flags (flag : word) : bool :=
     WHAT IS MODELED is the failing side, which is exactly the part of
     the call that writes nothing: [SYSCALL_DEFINE4(newfstatat)] reaches
     [cp_new_stat] only once [vfs_fstatat] has returned 0, so on every
-    arm below the kernel leaves [statbuf] untouched.  That is why this
-    spec does not take the [statbuf] pointer at all — its arity is the
-    statement that no modeled arm can deliver a byte, and hence that
-    none can fault on the destination either.  (A bad [statbuf] with an
-    absent file really is -ENOENT on Linux: the -EFAULT of a bad
-    [statbuf] is [copy_to_user]'s, raised after the stat has already
-    succeeded, and it is the LAST thing that can go wrong.)
+    arm below except one the kernel leaves [statbuf] untouched.  The
+    exception is a name relative to an O_PATH descriptor on a procfs
+    name ([newfstatat_proc_spec]), which answers a success with 128
+    bytes of the environment's choice, and is the one reader of
+    [statbuf].  (A bad [statbuf] with an absent file really is -ENOENT
+    on Linux: the -EFAULT of a bad [statbuf] is [copy_to_user]'s, raised
+    after the stat has already succeeded, and it is the LAST thing that
+    can go wrong.)
 
     ORDER.  Chronologically the kernel copies the pathname in first
     ([vfs_fstatat] calls [getname_flags] before [vfs_statx]), but a
@@ -173,12 +250,13 @@ Definition modeled_statat_flags (flag : word) : bool :=
     entirely).  All three preempt the dirfd, so they are answered before it
     is looked at, exactly as [Open.openat_spec] does.
 
-    Then the dirfd: only AT_FDCWD is modeled, and any other is
-    [unmodeled] — asserting an errno for a directory the model cannot
-    name would reject a conforming trace.  [dirfd] arrives already
-    truncated to 32 bits (see [Syscall.fd32]), so
-    [newfstatat(2^32 - 100, ...)] names the working directory as Linux
-    does.
+    Then the dirfd: AT_FDCWD is modeled, and so is an O_PATH descriptor
+    on a procfs name ([State.OProcPath]) under a RELATIVE name, which is
+    [newfstatat_proc_spec]'s.  Any other is [unmodeled] — asserting an
+    errno for a directory the model cannot name would reject a
+    conforming trace.  [dirfd] arrives already truncated to 32 bits (see
+    [Syscall.fd32]), so [newfstatat(2^32 - 100, ...)] names the working
+    directory as Linux does.
 
     Then the path.  "." is a path the model resolves to a directory
     ([Uapi.dot_path]), and a directory's metadata is as absent from [Fs]
@@ -268,7 +346,13 @@ Definition newfstatat_core_spec (dirfd pathp flag : word) : Sys SyscallEffect :=
     | CstrFault => err_ret EFAULT                (* unmapped byte in the path string *)
     | CstrOk p =>
         if path_eqb p [] then err_ret ENOENT     (* empty pathname: AT_EMPTY_PATH is not modeled *)
-        else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled  (* unmodeled dirfd: fail closed *)
+        else if negb (bv_eqb dirfd AT_FDCWD32) then
+          (if newfstatat_proc_dir (m_fds m) dirfd p
+           then newfstatat_proc_spec (in_arg i 2)
+             (* relative to an O_PATH procfs descriptor; [statbuf] is a2,
+                read from the input as [Kernel.Sys.prctl_spec] reads its
+                extra arguments *)
+           else unmodeled)                       (* unmodeled dirfd: fail closed *)
         else if path_eqb p dot_path then unmodeled  (* the working directory: no metadata in [Fs] *)
         else
         match fs_lookup (m_fs m) p with
@@ -689,5 +773,10 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
                                      (* the random device: S_IFCHR, [st_rdev] 1:9
                                         ([Uapi.stat_urandom_ok]), the rest pinned once
                                         under [Uapi.urandom_path] *)
+  | Some (FdOpaque _) => unmodeled
+                                     (* DECLINED: [vfs_fstat]'s [CLASS(fd_raw, f)] accepts
+                                        an O_PATH file, so all three objects reach
+                                        [cp_new_stat], with metadata the model does not
+                                        hold (fs/stat.c, read at v6.18.44) *)
   end.
 

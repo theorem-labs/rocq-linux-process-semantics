@@ -2593,6 +2593,28 @@ Definition PIPE_BUF : Z := 4096%Z.
     need a second slot is declined rather than guessed at. *)
 Definition PipeBuf : Type := list byte * Z.
 
+(** The three kernel objects behind [FdOpaque].  The model holds NO
+    CONTENTS for any of them: what a read returns, what a stat reports
+    and what an eventfd counts are the environment's or are declined.
+
+    - [OProcPath p]: an O_PATH descriptor ([FMODE_PATH]) on the procfs
+      name [p] (an absolute path at or under "/proc";
+      [Fs.Open.proc_path_b]).  [do_dentry_open] (fs/open.c) gives such a
+      file [empty_fops] and returns before any [->open], and [fdget]
+      (fs/file.c) refuses it, so it does no I/O at all; it serves as a
+      directory for [openat] and [newfstatat] relative to it, and
+      [close] removes it.
+    - [OProcFile p]: an O_RDONLY descriptor on a name under
+      "/proc/sys/" ([Fs.Open.proc_sys_file_b]).  Its reads return bytes
+      of the environment's choice ([Fs.ReadWrite.read_proc_spec]).
+    - [OEventFd flags]: an eventfd ([Fs.EventFd.eventfd2_spec]),
+      carrying the flag word it was created with.  Its counter is not
+      modeled, so read and write on it decline. *)
+Inductive OpaqueFd :=
+  | OProcPath (p : path)
+  | OProcFile (p : path)
+  | OEventFd (flags : word).
+
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
 
@@ -2740,7 +2762,17 @@ Definition PipeBuf : Type := list byte * Z.
       from [urandom_fops] and the VFS path that reaches it; the rest
       fail closed.  THE ENVIRONMENT ASSUMPTION IT RESTS ON -- the
       environment's /dev/urandom is the random device -- is stated once, at
-      the openat arm, and pointed to from everywhere else. *)
+      the openat arm, and pointed to from everywhere else.
+    - [FdOpaque o]: a descriptor on a kernel object the model HOLDS NO
+      CONTENTS for; [OpaqueFd] below says which three objects.  The
+      descriptor is in the table so that its NUMBER is tracked (the
+      lowest-free-fd rule, [close], and a statement that reads "this fd
+      is held at the clone" all need it), and nothing else about the
+      object is: no position, no bytes, no counter.  Every arm that
+      reads one either derives its answer from the Linux source for
+      that kind of object or declines; none of them answers from what
+      an existing kind would answer, because none of the three is a
+      file, a device, a socket or a pipe end the existing arms know. *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
   | FdFile (p : path) (offset : word)
@@ -2751,7 +2783,27 @@ Inductive FdEntry :=
   | FdSocket (sk : SockState)
   | FdPipe (id : word) (writer : bool)
   | FdDevNull (rd wr : bool)
-  | FdUrandom.
+  | FdUrandom
+  | FdOpaque (o : OpaqueFd).
+
+(** Is [e] one of the three opaque objects?  The one classifier over
+    [FdEntry] with a wildcard that is correct by construction: it names
+    the kind it is about, and any constructor added later is, by
+    definition, not that kind.  The arms that decline [FdOpaque] ahead
+    of a kind-blind answer ([Fs.Locks.flock_spec]'s unlock,
+    [Fs.ReadWrite.readv_spec]'s FMODE_READ gate and [lseek_spec]'s
+    whence test, [Net.Socket]'s [accept4_spec] and [connect_spec]) test
+    it with an [if], which keeps the rest of each arm's match as it was.
+
+    AN ABBREVIATION, NOT A DEFINITION, so that the test is a bare
+    [match] in every term that uses it: once the entry is a constructor,
+    [cbv iota] alone decides it, which is the reduction every proof over
+    those arms already runs. *)
+Abbreviation fd_is_opaque e :=
+  (match e with
+   | FdOpaque _ => true
+   | _ => false
+   end).
 
 (** Virtual-memory bookkeeping: a ledger of allocator decisions the model
     has already committed to (the flat byte-map memory can't encode
@@ -4968,9 +5020,17 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     could alias an end and are absent would be
     falsified by anything added below it.  [openat] resolves against
     [m_fs] and yields an [FdFile]/[FdFileW]/[FdFileA]/[FdFileRW] — or,
-    for the device paths it answers, an [FdDevNull] or an [FdUrandom] — never
-    an [FdPipe], so a path
-    merely NAMED like a procfs one cannot hand out a second reference.
+    for the device paths it answers, an [FdDevNull] or an [FdUrandom],
+    and for a procfs name an [FdOpaque] — never an [FdPipe].  A procfs
+    name CAN reach a pipe: "/proc/self/fd/N" is a link to the inode of
+    whatever fd N holds.  Of the two shapes [Fs.Open.openat_proc_spec]
+    answers, O_PATH makes a file with [empty_fops] that never runs
+    [fifo_open] and is never released through [pipe_release]
+    ([do_dentry_open], fs/open.c, read at v6.18.44), so it is counted
+    in neither [pipe->readers] nor [pipe->writers]; and O_RDONLY is
+    answered only for a "/proc/sys/" name, which by the stated
+    assumption is never a link.  So no answered open hands out a
+    second reader or writer reference.
 
     A syscall that DUPLICATES a descriptor would keep the two
     constructions in step for a reason worth writing down, because a
@@ -5081,6 +5141,9 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
   | (_, FdSocket _) :: r => pipe_end_live r id writer
   | (_, FdDevNull _ _) :: r => pipe_end_live r id writer
   | (_, FdUrandom) :: r => pipe_end_live r id writer
+  | (_, FdOpaque _) :: r => pipe_end_live r id writer
+    (* not an end: the paragraph above says why an O_PATH file on a pipe
+       inode is not one of the pipe's readers or writers *)
   end.
 
 (** A 32-bit value as the four little-endian bytes the kernel's

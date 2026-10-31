@@ -76,6 +76,15 @@ Qed.
     its own small list below. *)
 Definition errno_from (es : list Z) : Sys Z := choose (fun e => In e es).
 
+(** EVERY errno from 1 to 4095.  The one exception to the per-syscall
+    rule above, for an arm whose kernel path runs through code whose
+    errnos cannot be enumerated with confidence (a namespace clone's
+    per-namespace init functions, a procfs lookup, a sysctl handler).
+    Each arm that draws from it says why a list would not be safe; a
+    missing errno makes the model reject a real behaviour, while this
+    set only admits more than Linux gives. *)
+Definition errno_any : Sys Z := choose (fun e => (1 <= e <= 4095)%Z).
+
 (** Word-against-zero test, used all over the dispatcher. *)
 Definition w_is0 (w : word) : bool := bv_eqb w (Z_to_bv 64 0).
 

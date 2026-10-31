@@ -441,17 +441,25 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
                      end-of-stream, which [SockState] cannot express. *)
               end)
       end
+  | Some (FdOpaque _) => unmodeled
+      (* FAIL-CLOSED, and the one open kind the wildcard below would
+         answer WRONGLY: [__sys_bind]'s [CLASS(fd, f)] is [fdget], which
+         refuses an O_PATH file ([State.OProcPath]) with -EBADF before
+         [sock_from_file] runs (net/socket.c and fs/file.c, read at
+         v6.18.44; identical at v6.18.46).  The other two opaque objects
+         would take the -ENOTSOCK; the split is not written. *)
   | Some _ => err_ret ENOTSOCK
-      (* AN OPEN FD THAT IS NOT A SOCKET, whatever kind it is.  This arm
-         is a wildcard on purpose and stays correct as [FdEntry] grows:
-         [sock_from_file] is one comparison against [socket_file_ops]
-         (step 1 above), so -ENOTSOCK is a property of the kernel's
-         DISPATCH rather than of any enumeration of file kinds.  It is
-         therefore the right answer for every non-socket kind this
-         model has — [FdChannel], [FdFile], [FdFileW], [FdFileA],
-         [FdFileRW], [FdDir], [FdPipe], [FdDevNull] and [FdUrandom] — and
-         for any kind a later change adds,
-         without this arm being touched.  [FdPipe] and [FdFileA] are the
+      (* AN OPEN FD THAT IS NOT A SOCKET, and that [fdget] accepts.  This
+         arm is a wildcard on purpose: [sock_from_file] is one comparison
+         against [socket_file_ops] (step 1 above), so -ENOTSOCK is a
+         property of the kernel's DISPATCH rather than of any enumeration
+         of file kinds.  It is therefore the right answer for every
+         non-socket kind [fdget] hands over — [FdChannel], [FdFile],
+         [FdFileW], [FdFileA], [FdFileRW], [FdDir], [FdPipe], [FdDevNull]
+         and [FdUrandom].  The claim that it holds for ANY kind a later
+         change adds was too wide: an O_PATH kind never reaches the
+         comparison, which is why [State.FdOpaque] is declined above
+         instead of arriving here.  [FdPipe] and [FdFileA] are the
          two kinds to have arrived since this claim was written, and
          both arrived without the arm needing an edit, which is the
          argument working rather than an exception to it: a pipe end's
@@ -459,8 +467,9 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
          v6.18.46) and an append fd's is its filesystem's, so
          [sock_from_file] returns NULL for each exactly as for the
          other four.
-         [listen_spec] and [accept4_spec] answer the same way for the
-         same reason. *)
+         [listen_spec], [accept4_spec], [connect_spec] and [sendto_spec]
+         answer the same way for the same reason, and decline
+         [State.FdOpaque] ahead of it as the arm above does. *)
   end.
 
 (** [listen fd backlog].
@@ -549,6 +558,7 @@ Definition listen_spec (fd backlog : word) : Sys SyscallEffect :=
               (set_fds (fd_insert (m_fds m) fd (FdSocket SkListening)) ;;
                ret_only (Z_to_bv 64 0))
       end
+  | Some (FdOpaque _) => unmodeled   (* an O_PATH file is [fdget]'s -EBADF: see [bind_spec] *)
   | Some _ => err_ret ENOTSOCK
   end.
 
@@ -637,6 +647,9 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* [fdget], before the flags check *)
   | Some e =>
+      if fd_is_opaque e then unmodeled           (* an O_PATH file is [fdget]'s -EBADF, before the
+                                                    flags check: see [bind_spec] *)
+      else
       let fl := bv_unsigned (abi_low32 flags) in
       if negb (Z.eqb (Z.ldiff fl (Z.lor SOCK_CLOEXEC SOCK_NONBLOCK)) 0)
       then err_ret EINVAL
@@ -925,6 +938,9 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* [fd_empty], before the address is touched *)
   | Some e =>
+      if fd_is_opaque e then unmodeled           (* an O_PATH file is [fdget]'s -EBADF, before the
+                                                    copy: see [bind_spec] *)
+      else
       let al := sint32 addrlen in
       if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al) then err_ret EINVAL
       else
@@ -1017,12 +1033,16 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
     checked over.
 
     ONE ROUTE PAST [sock_fd]'s DICHOTOMY EXISTS ON LINUX, and the model
-    is closed to it for a separate reason.  An O_PATH descriptor carries
-    [FMODE_PATH], which [fdget]'s mask rejects, so all five answer -EBADF
-    on it — even on [open("/proc/self/fd/N", O_PATH)] where N really is a
-    socket, an OPEN descriptor that is nonetheless -EBADF rather than
-    -ENOTSOCK.  No modeled program can hold one: [modeled_open_flags]
-    declines O_PATH before an fd is allocated.
+    answers it.  An O_PATH descriptor carries [FMODE_PATH], which
+    [fdget]'s mask rejects, so all five answer -EBADF on it — even on
+    [open("/proc/self/fd/N", O_PATH)] where N really is a socket, an
+    OPEN descriptor that is nonetheless -EBADF rather than -ENOTSOCK.
+    The model's O_PATH kind is [State.OProcPath]
+    ([Fs.Open.openat_proc_spec]); each of the five opens with
+    [CLASS(fd, f)] and its [fd_empty] -EBADF, then [sock_from_file]'s
+    -ENOTSOCK (net/socket.c [__sys_getsockname], [__sys_getpeername],
+    [__sys_setsockopt], [__sys_getsockopt], [__sys_shutdown], and
+    fs/file.c [fdget], read at v6.18.44; identical at v6.18.46).
 
     A NOTE ON THE LSM, once, for all five.  Each call runs a
     [security_socket_*] hook past the lookup, and every hook here can
@@ -1047,6 +1067,16 @@ Definition sock_fd (m : Model) (fd : word) : SockState + Z :=
                                             fails *)
   | Some FdUrandom => inr ENOTSOCK       (* nor /dev/urandom: [urandom_fops]
                                             (drivers/char/random.c) *)
+  | Some (FdOpaque (OProcPath _)) => inr EBADF
+                                       (* an O_PATH file: [fdget] refuses it, so the
+                                          five calls' [fd_empty] -EBADF (see above) *)
+  | Some (FdOpaque (OProcFile _)) => inr ENOTSOCK
+                                       (* a /proc/sys file: [proc_sys_file_operations]
+                                          (fs/proc/proc_sysctl.c, v6.18.44) is not
+                                          [socket_file_ops] *)
+  | Some (FdOpaque (OEventFd _)) => inr ENOTSOCK
+                                       (* an eventfd: [eventfd_fops] (fs/eventfd.c,
+                                          v6.18.44) is not [socket_file_ops] either *)
   | Some (FdSocket sk)  => inl sk
   end.
 
@@ -1903,6 +1933,8 @@ Definition sendto_spec (fd buf count flags addrp addrlen : word)
      | Some (FdSocket sk) =>
          send_on_socket [] (fun n => [(buf, n)]) fd sk count
            (readable_bytes (in_mem i) buf count) m
+     | Some (FdOpaque _) => unmodeled            (* an O_PATH file is [fdget]'s -EBADF: see
+                                                    [bind_spec] *)
      | Some _ => err_ret ENOTSOCK                (* not a socket: real -ENOTSOCK *)
      end).
 
@@ -2019,6 +2051,10 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
                                   against [socket_file_ops], and a pipe end and the
                                   two device kinds all fail it *)
       err_ret ENOTSOCK
+  | Some (FdOpaque _) => unmodeled
+      (* FAIL-CLOSED: [__sys_sendmsg]'s [CLASS(fd, f)] answers -EBADF for
+         an O_PATH file and the other two take -ENOTSOCK (net/socket.c,
+         read at v6.18.44); the split is not written *)
   | Some (FdSocket sk) =>
   (* THE RANGE TEST COMES FIRST, through [State.copy_bytes_map] — the
      [State.access_okb]-then-walk pair [socketpair_dest_writable] below
@@ -2193,6 +2229,10 @@ Definition sockfd_lookup_errno (fds : list (word * FdEntry)) (fd : word)
          same comparison fails and the same -ENOTSOCK is exact *)
   | Some FdUrandom => Some ENOTSOCK
       (* and /dev/urandom's is [urandom_fops] (drivers/char/random.c) *)
+  | Some (FdOpaque _) => None
+      (* FAIL-CLOSED: an O_PATH file is [fdget]'s -EBADF and the other two
+         opaque objects [sock_from_file]'s -ENOTSOCK (net/socket.c,
+         read at v6.18.44); the split is not written *)
   | Some (FdSocket _) => None
   end.
 

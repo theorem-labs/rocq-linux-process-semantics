@@ -87,10 +87,11 @@ Open Scope sys_scope.
     misattribute — so fsync on a descriptor opened O_RDONLY succeeds
     exactly as on one opened for writing, and [FdFile] and [FdFileW]
     agree.  (The one fd that defeats the shorthand is an O_PATH one,
-    which is -EINVAL rather than 0 — [do_dentry_open] gives it
-    [empty_fops], so it fails the [.fsync] test above rather than any
-    mode test.  [Open.openat_spec] models three flag words and O_PATH is not
-    among them, so no such fd exists here.)  This is
+    which is -EBADF rather than 0: [do_fsync]'s [CLASS(fd, f)] is
+    [fdget], which refuses an FMODE_PATH file before [vfs_fsync] runs
+    (fs/sync.c and fs/file.c, read at v6.18.44; identical at
+    v6.18.46).  The model's one O_PATH kind, [State.OProcPath], is
+    declined below with the other two opaque objects.)  This is
     the arm where copying [ReadWrite.write_spec]'s -EBADF-on-a-read-only-fd would
     be a confident wrong answer.
 
@@ -237,6 +238,12 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
                                                      [.splice_read] and [.splice_write] and no
                                                      [.fsync], so the same opening test in
                                                      [vfs_fsync_range] answers -EINVAL *)
+  | Some (FdOpaque _) => unmodeled                (* FAIL-CLOSED: an O_PATH file is [do_fsync]'s
+                                                     -EBADF ([fdget] refuses FMODE_PATH), an
+                                                     eventfd has no [.fsync] (-EINVAL), and a
+                                                     /proc/sys file has none either; the split is
+                                                     not written (fs/sync.c, fs/eventfd.c,
+                                                     fs/proc/proc_sysctl.c, read at v6.18.44) *)
   | Some (FdFile _ _)  => ret_only (Z_to_bv 64 0) (* O_RDONLY is not an error here: no [f_mode] check *)
   | Some (FdFileW _ _) => ret_only (Z_to_bv 64 0)
   | Some (FdFileA _ _) => ret_only (Z_to_bv 64 0) (* the same file, opened in append mode: [vfs_fsync_range]

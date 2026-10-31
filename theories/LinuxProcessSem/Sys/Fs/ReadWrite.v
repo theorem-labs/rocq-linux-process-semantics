@@ -371,6 +371,81 @@ Definition read_urandom (buf count : word) (i : SyscallInput) (m : Model)
       end
   end.
 
+(** [read] on a /proc/sys file opened O_RDONLY ([State.OProcFile]):
+    from 0 to [count] bytes of the ENVIRONMENT's choice, or any errno.
+
+    KERNEL PATH, read at v6.18.44:
+      fs/read_write.c [ksys_read], [vfs_read]: read at v6.18.44; identical at v6.18.46.
+      fs/proc/proc_sysctl.c [proc_sys_read], [proc_sys_call_handler],
+        [sysctl_perm], [test_perm], [grab_header]: read at v6.18.44; identical at v6.18.46.
+
+    [vfs_read] tests FMODE_READ (set: the open was O_RDONLY) and
+    FMODE_CAN_READ (set: [proc_sys_file_operations] has a [.read_iter],
+    and a /proc/sys DIRECTORY's table has [.read = generic_read_dir]),
+    then [access_ok(buf, count)], whose -EFAULT is the one answer this
+    arm decides by itself and decides FIRST, as every read arm here does.
+    Past [rw_verify_area] and the [MAX_RW_COUNT] clamp, [proc_sys_read]
+    is [proc_sys_call_handler(iocb, iter, 0)]: [grab_header]'s error for
+    an unregistered table, -EPERM from [sysctl_perm], -EINVAL for a
+    table without a handler, -ENOMEM, the BPF cgroup sysctl hook's
+    verdict, then [table->proc_handler] itself, which may fill at most
+    [count] bytes of a kernel buffer and set [count] to what it filled,
+    and finally ONE [copy_to_iter] of those bytes, which answers -EFAULT
+    when it copies short.  A directory under /proc/sys answers
+    [generic_read_dir]'s -EISDIR instead.
+
+    WHY EVERY ERRNO ([Syscall.errno_any]).  The handler is the sysctl
+    table's own function, one per entry under /proc/sys, and the BPF
+    hook runs whatever program is attached; neither has an errno set
+    this model can enumerate.
+
+    WHY THE BYTES ARE THE ENVIRONMENT'S.  The model holds no contents
+    for a sysctl ([State.OpaqueFd]), so any [bs] of length at most
+    [count] is admitted, and the next read is admitted afresh: nothing
+    pins the second read to the rest of the first's text.  That is a
+    PRECISION gap (SCOPE.md, "Known gaps in precision"), the shape
+    [Drivers.Char.Random.getrandom_spec]'s bytes have.  The delivery is
+    a file read's: no trace event, the copy-out ledger is
+    [Uaccess.delivered_writes].
+
+    THE COUNT GATE IS [Uaccess.modeled_rw_count], getrandom's, and for
+    getrandom's reason: the bytes are chosen rather than read out of a
+    list the model holds, so nothing else bounds the range the writable
+    test below walks.  At or below [Uaccess.rw_bytes_max] the
+    [MAX_RW_COUNT] clamp is the identity, so [count] is the clamped
+    count.  A larger count is declined.
+
+    THE DESTINATION.  A [copy_to_iter] that copies a prefix and then
+    faults has written bytes this model cannot place, and answers
+    -EFAULT; so the arm answers only where that cannot happen.  The
+    whole [count] range writable: every delivery lands.  Not one byte
+    writable: a nonempty delivery copies nothing and is -EFAULT (in
+    [errno_any]), and an empty one is 0.  Anything between is declined,
+    because whether the handler's output reaches the unwritable part is
+    the environment's. *)
+Definition read_proc_spec (buf count : word) : Sys SyscallEffect :=
+  if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+    (* [vfs_read]'s [access_ok], before the handler runs *)
+  else if negb (modeled_rw_count count) then unmodeled
+    (* see above: the count gate *)
+  else
+  i <- input ;;
+  match read_bytes_map (in_wmem i) buf count with
+  | Some _ =>
+      alt (e <- errno_any ;; err_ret e)
+          (bs <- choose (fun bs : list byte =>
+                           (Z.of_nat (length bs) <= bv_unsigned count)%Z) ;;
+           pure (mkEffect (len_word bs) (delivered_writes buf bs) []))
+  | None =>
+      match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+      | None => alt (e <- errno_any ;; err_ret e) (ret_only (Z_to_bv 64 0))
+          (* nothing can land: an empty delivery is 0, a nonempty one
+             [copy_to_iter]'s -EFAULT *)
+      | Some _ => unmodeled
+          (* a partially writable destination: see above *)
+      end
+  end.
+
 (** Neither this spec nor [write_spec] has an -EINTR outcome, so an
     interrupted transfer is REJECTED rather than declined. *)
 Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
@@ -753,6 +828,15 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
                  queue [word_to_nat count] would have left *)
           end
       end
+  | Some (FdOpaque (OProcFile _)) => read_proc_spec buf count
+      (* a /proc/sys file opened O_RDONLY: see [read_proc_spec] *)
+  | Some (FdOpaque (OProcPath _)) => unmodeled
+      (* FAIL-CLOSED: [ksys_read]'s [CLASS(fd_pos, f)] refuses an O_PATH
+         file (fs/read_write.c and fs/file.c, read at v6.18.44), which is
+         -EBADF; not written *)
+  | Some (FdOpaque (OEventFd _)) => unmodeled
+      (* FAIL-CLOSED: [eventfd_read] (fs/eventfd.c, read at v6.18.44)
+         answers from the counter, which the model does not hold *)
   end.
 
 (** [write fd buf count].
@@ -1543,6 +1627,12 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            The whole source IS read, so the range goes in the copy-in
            ledger exactly as the channel and file arms record theirs *)
       end
+  | Some (FdOpaque _) => unmodeled
+      (* FAIL-CLOSED: an O_PATH file is [ksys_write]'s [CLASS(fd_pos, f)]
+         -EBADF, a /proc/sys file opened O_RDONLY is [vfs_write]'s
+         FMODE_WRITE -EBADF, and an eventfd's write adds to a counter the
+         model does not hold (fs/read_write.c, fs/file.c, fs/eventfd.c,
+         read at v6.18.44).  None is written. *)
   end.
 
 (** * pread64 (67) and pwrite64 (68) — a transfer at a POSITION THE CALL NAMES
@@ -1747,6 +1837,11 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
                  contents are observed at exit only *)
           end
       end
+  | Some (FdOpaque _) => unmodeled
+      (* FAIL-CLOSED: an O_PATH file is [ksys_pread64]'s [CLASS(fd, f)]
+         -EBADF (fs/read_write.c and fs/file.c, read at v6.18.44); a
+         positional read of an eventfd or a /proc/sys file is not
+         written.  None of the three answers is. *)
   end.
 
 (** [pwrite64 fd buf count pos].
@@ -1943,6 +2038,9 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
                empty rather than a singleton zero-length range *)
           else record_copyins [(buf, length bs)] (ret_only (len_word bs))
       end
+  | Some (FdOpaque _) => unmodeled
+      (* FAIL-CLOSED, as [pread64_spec]'s arm: none of the three answers
+         is written *)
   end.
 
 (** [IOV_MAX] (= Linux UIO_MAXIOV) and [MAX_RW_COUNT] are in State.v,
@@ -2280,6 +2378,12 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
                  argument that makes the scalar arm deterministic is
                  stated per transfer, not per vector.  Fail closed *)
         end)
+  | Some (FdOpaque _) => unmodeled
+      (* FAIL-CLOSED: an O_PATH file is [do_writev]'s [CLASS(fd_pos, f)]
+         -EBADF, a /proc/sys file opened O_RDONLY is [vfs_writev]'s
+         FMODE_WRITE -EBADF, and an eventfd's write adds to a counter the
+         model does not hold (fs/read_write.c, fs/eventfd.c, read at
+         v6.18.44).  None is written. *)
   end.
 
 
@@ -2420,6 +2524,12 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
   | FdUrandom => Some RdUrandom
     (* opened O_RDONLY by construction, so FMODE_READ is set on every
        descriptor of the kind *)
+  | FdOpaque _ => None
+    (* NOT AN -EBADF: [readv_spec] declines [State.FdOpaque] in its
+       [None] branch, through [State.fd_is_opaque], because [None] here means
+       [vfs_readv]'s -EBADF and that is the kernel's answer only for the
+       O_PATH object ([do_readv]'s [CLASS(fd_pos, f)], fs/read_write.c,
+       v6.18.44); a /proc/sys file and an eventfd are open for reading *)
   end.
 
 (** Linux keeps eight iovecs on the syscall stack ([UIO_FASTIOV],
@@ -2754,8 +2864,10 @@ Definition readv_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
   | None => err_ret EBADF                (* fd not open: real -EBADF, not a modeling gap *)
   | Some e =>
       match readable_fd e with
-      | None => err_ret EBADF            (* FMODE_READ, ahead of the import *)
-          (* EVERY [None] HERE IS A REAL -EBADF, including the pipe end
+      | None =>
+          if fd_is_opaque e then unmodeled   (* see [readable_fd]'s [FdOpaque] arm *)
+          else err_ret EBADF                 (* FMODE_READ, ahead of the import *)
+          (* EVERY OTHER [None] IS A REAL -EBADF, including the pipe end
              that reaches it.  [readable_fd] hands the read end a
              [RdPipe] ([create_pipe_files] opens it O_RDONLY), so the
              only pipe end left in this arm is the WRITE end, which is
@@ -2832,7 +2944,13 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* fd not open: real -EBADF, not a modeling gap *)
   | Some e =>
-      if (SEEK_MAX <? bv_unsigned whence)%Z then err_ret EINVAL
+      if (SEEK_MAX <? bv_unsigned whence)%Z then
+        (if fd_is_opaque e then unmodeled else err_ret EINVAL)
+        (* FAIL-CLOSED ON THE OPAQUE KINDS, AHEAD OF THE -EINVAL:
+           [ksys_lseek] resolves [CLASS(fd_pos, f)] before it reads
+           [whence], so an O_PATH file is -EBADF for every whence; the
+           other two take the -EINVAL (fs/read_write.c, read at
+           v6.18.44), and the split is not written *)
         (* whence past SEEK_HOLE: real -EINVAL, and the kernel answers it
            BEFORE the fd's kind is consulted — so this precedes -ESPIPE *)
       else
@@ -2979,5 +3097,6 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                   end
               end
           end
+      | FdOpaque _ => unmodeled                      (* unreachable: [fd_is_opaque] above *)
       end
   end.

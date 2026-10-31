@@ -659,6 +659,30 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        is a consumption the declaration has to account for:
                        the stream is what the device hands THIS process. *)
                     | FdUrandom => true
+                    (* THE THREE OPAQUE OBJECTS PASS, each for its own
+                       reason, and the reason is in every case that no
+                       modeled arm reads the state the child's second
+                       reference shares ([copy_files] -> [dup_fd]'s
+                       [get_file], kernel/fork.c and fs/file.c, read at
+                       v6.18.44; identical at v6.18.46):
+                       - an O_PATH descriptor ([OProcPath]) has
+                         [empty_fops] ([do_dentry_open], fs/open.c) and
+                         does no I/O at all; the model reads only its
+                         path, as a directory for [openat] and
+                         [newfstatat], and neither process can change
+                         that path.  A close in either drops nothing the
+                         other can see: the file has no reader or writer
+                         count.
+                       - a /proc/sys file ([OProcFile]) shares an
+                         [f_pos] that a child's read moves, and the
+                         parent's next read is answered with bytes of
+                         the environment's choice whatever the offset
+                         ([ReadWrite.read_proc_spec]), so no answer the
+                         model gives depends on it.
+                       - an eventfd ([OEventFd]) shares one counter, and
+                         every arm that would read or move it (read,
+                         write, poll, epoll) declines on this kind. *)
+                    | FdOpaque _ => true
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which

@@ -152,6 +152,15 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      file]s on the random device draw from one generator.  Copying the
      entry loses nothing. *)
   | FdUrandom => true
+  (* THE THREE OPAQUE OBJECTS DECLINE.  [SYSCALL_DEFINE1(dup)]'s
+     [fget_raw] accepts an O_PATH file too (fs/file.c, read at
+     v6.18.44; identical at v6.18.46), so Linux duplicates all three.
+     Copying the entry would be exact for [OProcPath] (nothing modeled
+     reads its [f_pos] or [f_flags]) and for [OProcFile] (each read's
+     bytes are the environment's whatever the shared offset), and for an
+     eventfd it would be a second reference to one counter, which no
+     modeled arm reads.  None of that is needed, so it is not written. *)
+  | FdOpaque _ => false
   end.
 
 (** dup's injectable failures: fd-table exhaustion at RLIMIT_NOFILE
@@ -175,7 +184,8 @@ Definition dup_errnos : list Z := [ENOMEM; EMFILE].
     [get_unused_fd_flags(0)] take the lowest free slot ([lowest_fd],
     i.e. [State.alloc_fd]), which is where the two injectable failures
     live.  [fget_raw] (not [fget]) means an O_PATH fd is dup-able too;
-    the model has no O_PATH fds, so nothing turns on it.  The new
+    [dup_modeled_entry] declines the model's one O_PATH kind
+    ([State.OProcPath]), so nothing turns on it.  The new
     descriptor's close-on-exec bit is cleared, [flags] being 0.
 
     [oldfd] arrives already truncated to 32 bits (see

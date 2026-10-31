@@ -263,6 +263,13 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
          Answering anything but [false] here needs pipe2 to RECORD the
          creation flags rather than decline them, so that the argument
          rests on the entry instead of on the sole constructor. *)
+  | FdOpaque _ => false
+      (* FAIL-CLOSED.  On an O_PATH descriptor F_SETFL is not in
+         [check_fcntl_cmd]'s allow-list, so [SYSCALL_DEFINE3(fcntl)]
+         answers -EBADF before [setfl] runs (fs/fcntl.c, read at
+         v6.18.44; identical at v6.18.46); an eventfd's and a /proc/sys
+         file's [f_flags] word is not on the entry.  Neither answer is
+         written. *)
   end.
 
 (** The arithmetic half of the argument above, mechanized rather than
@@ -569,6 +576,13 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          rest on the entry rather than on the sole shape pipe2 currently
          admits, and this arm and [setfl_noop_on]'s should move
          together when it does. *)
+  | FdOpaque _ => None
+      (* DECLINED.  F_GETFL is in [check_fcntl_cmd]'s allow-list, so an
+         O_PATH descriptor answers its [f_flags] (O_PATH and the bits
+         [build_open_how] kept); an eventfd's word is [O_RDWR] plus the
+         EFD_ bits [do_eventfd] passes on; a /proc/sys file's is the
+         open word.  The entry records none of the three words exactly
+         (fs/fcntl.c, fs/open.c, fs/eventfd.c, read at v6.18.44). *)
   end.
 
 (** [fcntl fd cmd arg]: modeled for four commands, and fail-closed on
@@ -762,13 +776,13 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
     than a fail-closed gap.  That is deliberate and matches
     [Ioctl.ioctl_spec], which faces [security_file_ioctl] and takes the
     same position; the model describes a kernel with no LSM registering
-    these hooks.  Separately, an O_PATH fd answers -EBADF for any command
-    outside the allow-list of [check_fcntl_cmd] (Linux v6.10-v6.15,
-    fs/fcntl.c: the list gained [F_CREATED_QUERY] at v6.12 and is
-    otherwise identical across the range, and the [FMODE_PATH] test that
-    consults it sits ahead of [do_fcntl] at every tag) —
-    [Open.openat_spec] never creates an O_PATH fd, so that branch is dead
-    here. *)
+    these hooks.  Separately, an O_PATH fd ([State.OProcPath], minted
+    by [Open.openat_proc_spec]) answers -EBADF for any command outside
+    the allow-list of [check_fcntl_cmd] ([SYSCALL_DEFINE3(fcntl)],
+    fs/fcntl.c, read at v6.18.44; identical at v6.18.46): [F_SETFD] and
+    [F_GETFD] are on the list, so their kind-blind answers below hold
+    for it too, and [F_SETFL] (not on the list) and [F_GETFL] decline
+    on it through [setfl_noop_on] and [getfl_f_flags]. *)
 Definition fcntl_spec (fd cmd arg : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with

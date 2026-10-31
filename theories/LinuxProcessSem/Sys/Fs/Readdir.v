@@ -234,6 +234,12 @@ Definition getdents64_spec (fd count : word) : Sys SyscallEffect :=
                                               (fs/readdir.c) answers its opening -ENOTDIR *)
   | Some FdUrandom => err_ret ENOTDIR       (* and [urandom_fops] (drivers/char/random.c) has
                                               none either: the same -ENOTDIR *)
+  | Some (FdOpaque _) => unmodeled         (* FAIL-CLOSED: [CLASS(fd_pos, f)] refuses an O_PATH
+                                              file (-EBADF), an eventfd has no [.iterate_shared]
+                                              (-ENOTDIR), and a /proc/sys name opened O_RDONLY
+                                              may be a directory whose listing is not modeled
+                                              (fs/readdir.c, fs/file.c, fs/eventfd.c,
+                                              fs/proc/proc_sysctl.c, read at v6.18.44) *)
   | Some FdDir =>
       if getdents64_no_room count
       then alt (e <- errno_from getdents64_errnos ;; err_ret e)  (* the removed directory *)

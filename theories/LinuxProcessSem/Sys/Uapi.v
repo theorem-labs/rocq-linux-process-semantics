@@ -158,6 +158,15 @@ Definition O_NONBLOCK : Z := 2048%Z.
     steps being reached.  Linux v6.18.46. *)
 Definition O_DIRECTORY : Z := 65536%Z.
 
+(** O_NOFOLLOW: 00400000, and O_PATH: 010000000
+    (include/uapi/asm-generic/fcntl.h, read at v6.18.44; identical at
+    v6.18.46; riscv64 overrides neither).  Interpreted only together:
+    the O_PATH words [Open.open_path_word] admits are O_PATH beside
+    O_DIRECTORY and O_NOFOLLOW, the two bits [build_open_how] (fs/open.c)
+    keeps with O_PATH, and only [Open.openat_proc_spec] answers them. *)
+Definition O_NOFOLLOW : Z := 131072%Z.
+Definition O_PATH : Z := 2097152%Z.
+
 Definition AT_FDCWD  : word := Z_to_bv 64 (-100).   (* -100 in two's complement *)
 
 (** AT_FDCWD as it reaches openat's dirfd test, i.e. after the [int dfd]
