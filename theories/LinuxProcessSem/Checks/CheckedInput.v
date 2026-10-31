@@ -593,6 +593,12 @@ Record RawPeer := mkRawPeer {
   rpe_end   : RawNetEnd (* how its stream ends *)
 }.
 
+(** It is built with [State.mkProcInput_full], the record's own
+    constructor, and NOT with the thirteen-place [State.mkProcInput]: a
+    field added to the end of [ProcInput] must break this file, so that
+    whoever adds it gives it a raw counterpart here and a reader has to
+    declare it.  [mkProcInput] would default it instead, and a defaulted
+    environment field is a claim about the run that nobody made. *)
 Record RawProcInput := mkRawProcInput {
   rpi_argv  : list (list Z);
   rpi_envp  : list (list Z);
