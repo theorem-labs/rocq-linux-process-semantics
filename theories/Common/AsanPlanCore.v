@@ -89,7 +89,36 @@ Definition PID_MAX : Z := 4194304.
 
 Record atable : Type := AT {
   img_lo : Z; img_hi : Z;          (** the loaded image hull [img_lo, img_hi) (all segments inside, contiguous) *)
-  n_res : nat;                     (** number of reserved ledger intervals (= length (segments_reserved segs)) *)
+  n_res : nat;                     (** number of reserved ledger intervals contributed by the IMAGE (= length (segments_reserved segs)) *)
+  (** the LAUNCH's extra reserved intervals: what [State.init_model] seeds
+      [vm_reserved] with besides the image's own reservations.  At Linux
+      v6.18.46, commit 1f99e9ab748f, arch/riscv/kernel/vdso.c
+      [arch_setup_additional_pages] takes the vvar pages and the vDSO text as
+      one unhinted [get_unmapped_area] span (vdso.c:124), which a top-down
+      layout answers from the gap just below [mm->mmap_base], so that pair is
+      reserved ledger the checker must stay clear of.  Both fields are UPPER
+      bounds, so a table may over-state them; 0 means the launch reserves
+      nothing extra.  [p_resx] is counted in PAGES because the checker needs
+      the byte figure to be non-negative without a side condition.
+
+      THE TWO ARE NOT THE SAME KIND OF NUMBER, and a table that sets them
+      must know which is which.  [p_resx = 20] is FORCED: the model's own
+      [State.vdso_len_bounds] gives
+      [5 * page_size <= vdso_len kb <= 20 * page_size], and a build with a
+      sixteen-page vDSO text reaches the top of that.  [n_resx = 2] is only
+      the number of intervals [State.vdso_reserved] emits TODAY, the vvar
+      pages and the text.  A launch that reserves a third region makes it 3,
+      and nothing here will say so: read it off [length (vdso_reserved kb
+      top)] where that function is in scope rather than writing the literal.
+      (It is not in scope at this commit: the reserved ledger is still the
+      image's alone and both fields are 0.)  That length is 0 or 2 and never
+      1: [State.vdso_reserved] answers [[]] when the base would fall below
+      the first page, and otherwise both intervals
+      (origin/revision/place, theories/LinuxProcessSem/State.v:4769-4774).
+      The empty case is a shape the function is total on, not a launch the
+      model describes. *)
+  n_resx : nat;                    (** upper bound on the NUMBER of extra reserved intervals *)
+  p_resx : nat;                    (** upper bound on their total size, in pages *)
   shadow_off : Z;                  (** ASan shadow offset: shadow(a) = a/8 + shadow_off *)
   a_entry : Z;                     (** entry pc (_start) *)
   rw_lo : Z; rw_len : Z;           (** the writable window of the image [rw_lo, rw_lo+rw_len) (.data .. end of .bss, contiguous) *)
@@ -106,6 +135,12 @@ Record atable : Type := AT {
   x_envscan : Z; x_envscan_k : Z; x_pnscan : Z; x_pnscan_k : Z;
   stops_more : list Z              (** further resume stops *)
 }.
+
+(** the byte allowance of the launch's extra reserved intervals.  Counted
+    from [p_resx] so that it is non-negative by construction: the two places
+    that use it, the initial [a_totsz] and the initial [a_ylo], would each
+    need a side condition on a plain [Z] field. *)
+Definition resx_bytes (A : atable) : Z := Z.of_nat (p_resx A) * 4096.
 
 Section WithSegs.
 Variable segs : list Segment.
@@ -1777,7 +1812,9 @@ Proof. intros. bcfe. unfold kn_grant_filterB, kn_grant_filter. autorewrite with 
     [AsanPlacement.free_gap_of_totals]: floor + n + Σ_{L} size + |L|*(n + 4095) <= ceiling
     ==> a free aligned window at or above the floor exists (the GRANT child is inhabited) *)
 Definition gap_ok (cs : acs) (nhi : Z) : bool :=
-  let cnt := Z.of_nat (n_res A + length (a_maps cs))%nat in
+  (* [n_resx A] counts the launch's extra reserved intervals: they sit in the
+     same ledger [free_gap_of_totals] measures. *)
+  let cnt := Z.of_nat (n_res A + n_resx A + length (a_maps cs))%nat in
   Z.leb (FLOOR + nhi + a_totsz cs + cnt * (nhi + 4095)) CEIL.
 
 Definition budget_ok (cs : acs) (extra : Z) : bool :=
@@ -1875,10 +1912,46 @@ Definition mmap_fixed_grant (cs : acs) (ms0 : list amap) (b : expr) (off : Z) (n
   let cs1 := add_entry (with_maps0 cs ms0) (s_regs (a_ss cs)) k' (nxt cs) m nhi eager (a_ylo cs) in
   if visible then vis_add cs1 a ne (kmem ++ kn cs1) else Some cs1.
 
+(** THE DISJOINTNESS TEST AGAINST THE LAUNCH'S EXTRA RESERVATIONS.
+
+    A FIXED request over a FREE range is a grant at an address the plan names
+    over ground the checker believes nobody holds.  Being above the image
+    hull no longer shows that: [vm_reserved] also carries what the kernel
+    reserved for the process, the vDSO text and the vvar pages, and that pair
+    sits far above the hull.  What shows it is the ceiling below.
+
+    [a_ylo cs] is at or below every extra reserved base — it is at or below
+    [co_split]'s high mark, and an extra reservation clears [kHighMemBeg], so
+    [ledger_split] leaves it only the "at or above the mark" disjunct — and
+    [a_ylo] only ever descends.  [kHighMemBeg] is the placement invariant's
+    own bound on a new entry.  A range at or below both meets no reserved
+    interval at all.
+
+    THE UNDECIDED CASE REFUSES.  A range this test cannot place falls through
+    to the hole path, which admits it only when a hole token certifies the
+    range free; otherwise the node returns [None].  It is never admitted on
+    the strength of being above the image.  Admitting what the checker cannot
+    place would let a plan node certify a grant overlapping the vDSO, which
+    is a verdict nothing proves. *)
+
+(** WHICH HALF IS LOAD-BEARING, so that a later reader can simplify this
+    safely.  On THIS path the [a_ylo] half is belt and braces: every extra
+    reservation clears [kHighMemBeg] ([APS.resx_entry_ok]) and the [Z.min]
+    is at or below [kHighMemBeg], so no range this node would otherwise
+    admit can reach the pair.  The reachable unsound conclusion was the
+    SLICE path's, whose range is named up to [CEIL] inside a tracked entry
+    and which no numeric floor can decide; that one is discharged from
+    [cs_ok]'s [co_mres] instead.  The [a_ylo] half stays here because
+    [AsanNodesMmLib.reserved_free_above] is keyed to [a_ylo cs] — the floor
+    that tracks where the launch actually put its reservations — and a node
+    test keyed to the constant instead would go quiet the moment the ledger,
+    the placement invariant or the launch's layout moved. *)
+Definition resx_clear (cs : acs) : Z := Z.min KHI (a_ylo cs).
+
 Definition mmap_fixed_free (cs : acs) (kind : mkind) (eager visible : bool) : option acs :=
   let k := kn cs in
   let a := reg cs 10 in
-  match fixed_args cs KHI with
+  match fixed_args cs (resx_clear cs) with
   | Some (b, off, ne, nlo, nhi) =>
       if (no_fog (a_maps cs)
           && forallb (fun m => ranges_apart_x k b off ne (am_base m) 0 (am_len m)) (a_maps cs)
@@ -3700,8 +3773,27 @@ Definition init_regs : list expr := sr_upd (repeat (ELit 0) 32) 2 e_sp0.
 Definition init_vis (A : atable) : list (expr * expr) :=
   [(ELit (img_lo A), ELit (img_hi A - img_lo A)); (ELit CEIL, ELit (2^47 - CEIL))].
 
+(** [a_totsz] must cover the WHOLE reserved ledger, the launch's extra
+    intervals included; [a_ylo] must stay at or below every extra interval's
+    base, because [co_split]'s high mark does.
+
+    WHERE THE EXTRA INTERVALS SIT.  At Linux v6.18.46, commit 1f99e9ab748f,
+    arch/riscv/kernel/vdso.c [arch_setup_additional_pages] asks for the vvar
+    pages and the vDSO text in ONE span through
+    [get_unmapped_area(NULL, 0, vdso_mapping_len, 0, 0)] (vdso.c:124), with no
+    hint; under a top-down layout mm/mmap.c
+    [generic_get_unmapped_area_topdown] (mmap.c:737) answers from the highest
+    free gap below [mm->mmap_base].  So the span ends at the mmap top and its
+    base is [mmap_top - its length].  [mmap_top] is never below
+    [State.mmap_base_min] = [MBASE_MIN], which makes [MBASE_MIN -
+    resx_bytes A] a floor for it.
+
+    That floor is NOT a constant: [vdso_mapping_len] is the text plus
+    [VVAR_SIZE] (vdso.c:122) and the text is one to sixteen pages, so the base
+    moves with the build and a constant bound would refuse a legal grant. *)
 Definition init_acs_of_with (kn0 : list kentry) (A : atable) : acs :=
-  ACS (mk_ss (a_entry A) init_regs kn0 NX0) [] (img_hi A - img_lo A) MBASE_MIN 0 (init_vis A) []
+  ACS (mk_ss (a_entry A) init_regs kn0 NX0) []
+      (img_hi A - img_lo A + resx_bytes A) (MBASE_MIN - resx_bytes A) 0 (init_vis A) []
       (vis_cost (img_hi A - img_lo A) + vis_cost (2^47 - CEIL)) (escale 4096 (EVar V_BRK)) FdStd false.
 Definition init_acs_of (A : atable) : acs := init_acs_of_with (init_kn A) A.        (** the default *)
 Definition init_acs_of_zero (A : atable) : acs := init_acs_of_with (init_kn_zero A) A.  (** zero draw *)
@@ -3719,7 +3811,7 @@ Definition init_acs_of_zero (A : atable) : acs := init_acs_of_with (init_kn_zero
     (their address +4), musl memset 0x116934 / memcpy 0x116530 (their address -0xf18), __init_libc
     env-scan loop 0x10d5e4 (exit 0x10d5f0), progname scan 0x10d6a8 (exit 0x10d6b4). *)
 Definition ASAN : atable :=
-  {| img_lo := 0x10000; img_hi := 0x671000; n_res := 4; shadow_off := 0x7fff8000;
+  {| img_lo := 0x10000; img_hi := 0x671000; n_res := 4; n_resx := 0; p_resx := 0; shadow_off := 0x7fff8000;
      a_entry := 0x4ba64; rw_lo := 0x142000; rw_len := 0x52f000; ph_addr_z := 0x10040; ph_ent_z := 56; ph_num_z := 11;
      x_imemset := 0xe1ea4; x_imemcpy := 0xe1e28; x_memset := 0x116934; x_memcpy := 0x116530; x_memiszero := 0xe2508;
      x_istrncpy := 0xe23b8; x_sealed := 0x1205f; x_popfree := 0x52a70;
@@ -3736,7 +3828,7 @@ Definition asan_init : acs := init_acs_of ASAN.
     for everything below pni_sniff_header (0x1414dc); same segment layout
     (not confirmed; data delta assumed 0). *)
 Definition BOTH : atable :=
-  {| img_lo := 0x10000; img_hi := 0x671000; n_res := 4; shadow_off := 0x7fff8000;
+  {| img_lo := 0x10000; img_hi := 0x671000; n_res := 4; n_resx := 0; p_resx := 0; shadow_off := 0x7fff8000;
      a_entry := 0x4ba54; rw_lo := 0x142000; rw_len := 0x52f000; ph_addr_z := 0x10040; ph_ent_z := 56; ph_num_z := 11;
      x_imemset := 0xe1e94; x_imemcpy := 0xe1e18; x_memset := 0x116924; x_memcpy := 0x116520; x_memiszero := 0xe24f8;
      x_istrncpy := 0xe23a8; x_sealed := 0x1205f; x_popfree := 0x52a60;
