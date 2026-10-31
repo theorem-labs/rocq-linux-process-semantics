@@ -1784,7 +1784,7 @@ Lemma strong_universal_error_free_scfg_refuted_by_source_error :
 Proof.
   intros en_source en_target inp Hsrc Htgt Hinp Herr H.
   destruct (H en_source en_target inp Hsrc Htgt Hinp) as (Hsef & _ & _).
-  exact (Hsef Herr).
+  exact (error_free_unkilled_error_free _ Hsef Herr).
 Qed.
 
 End SpecScfg.
@@ -2299,7 +2299,7 @@ Lemma strong_universal_error_free_T_budgets_refuted_by_source_error :
 Proof.
   intros en_source en_target inp Hsrc Htgt Hinp Hb Herr H.
   destruct (H en_source en_target inp Hsrc Htgt Hinp Hb) as (Hsef & _ & _).
-  exact (Hsef Herr).
+  exact (error_free_unkilled_error_free _ Hsef Herr).
 Qed.
 
 (** ** The declared capability word, in the two UNCONFIGURED budget cells
@@ -2535,7 +2535,7 @@ Definition strong_universal_error_free_T_budgets_only : Prop :=
     valid_entry target_image en_target inp ->
     valid_input inp ->
     source_within_budget_only en_source inp ->
-    error_free (run source_image lim_source en_source inp)
+    error_free_unkilled (run source_image lim_source en_source inp)
     /\ (source_within_budget en_source inp ->
         strong_equiv_error_free_budgets en_source en_target inp).
 
@@ -2559,7 +2559,7 @@ Lemma strong_universal_error_free_T_budgets_only_refuted_by_source_error :
 Proof.
   intros en_source en_target inp Hsrc Htgt Hinp Hb Herr H.
   destruct (H en_source en_target inp Hsrc Htgt Hinp Hb) as (Hsef & _).
-  exact (Hsef Herr).
+  exact (error_free_unkilled_error_free _ Hsef Herr).
 Qed.
 
 (** The abort-declared twin.  The source part asks [error_free_unkilled],
@@ -2785,7 +2785,7 @@ Lemma strong_universal_error_free_T_scfg_budgets_refuted_by_source_error :
 Proof.
   intros en_source en_target inp Hsrc Htgt Hinp Hb Herr H.
   destruct (H en_source en_target inp Hsrc Htgt Hinp Hb) as (Hsef & _ & _).
-  exact (Hsef Herr).
+  exact (error_free_unkilled_error_free _ Hsef Herr).
 Qed.
 
 
@@ -3142,7 +3142,7 @@ Definition strong_universal_error_free_T_scfg_budgets_only : Prop :=
     valid_entry target_image en_target inp ->
     valid_input inp ->
     source_within_budget_scfg_only en_source inp ->
-    error_free (run_scfg cfg source_image lim_source en_source inp)
+    error_free_unkilled (run_scfg cfg source_image lim_source en_source inp)
     /\ (source_within_budget_scfg en_source inp ->
         strong_equiv_error_free_budgets_scfg en_source en_target inp).
 
@@ -3166,7 +3166,7 @@ Lemma strong_universal_error_free_T_scfg_budgets_only_refuted_by_source_error :
 Proof.
   intros en_source en_target inp Hsrc Htgt Hinp Hb Herr H.
   destruct (H en_source en_target inp Hsrc Htgt Hinp Hb) as (Hsef & _).
-  exact (Hsef Herr).
+  exact (error_free_unkilled_error_free _ Hsef Herr).
 Qed.
 
 Definition strong_universal_error_free_T_scfg_budgets_only_abort : Prop :=

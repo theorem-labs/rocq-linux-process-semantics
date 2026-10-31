@@ -1635,6 +1635,18 @@ Lemma check_efault_or_frame : forall fb eff m m' evs,
   check_efault_or fb eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros fb eff m m' evs H. unfold check_efault_or in H. vm_frame H. Qed.
 
+(** The -EPIPE of a write whose far end has no reader answers over
+    [ReadWrite.raise_sigpipe], which records the pending signal or the
+    kill in [ProcState] and carries the address space across either
+    way. *)
+Lemma check_sigpipe_write_frame : forall eff m m' evs,
+  check_sigpipe_write eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros eff m m' evs H. unfold check_sigpipe_write in H.
+  apply check_ret_only_model in H; subst.
+  unfold raise_sigpipe. destruct (sigpipe_blocked (m_sigmask m)); reflexivity.
+Qed.
+
 Lemma check_readv_gap_frame : forall m' evs,
   check_readv_gap = CheckOk m' evs -> False.
 Proof. intros m' evs H. unfold check_readv_gap in H. discriminate. Qed.
@@ -1651,6 +1663,7 @@ Qed.
 Ltac vm_done H :=
   first
   [ apply check_efault_or_frame in H; exact H
+  | apply check_sigpipe_write_frame in H; exact H
   | elim (check_readv_gap_frame _ _ H)
   | (eapply check_open_result_frame in H;
      [exact H | intros; reflexivity]) ].
