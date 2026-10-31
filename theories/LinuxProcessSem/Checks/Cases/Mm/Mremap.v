@@ -45,9 +45,17 @@ Example mremap_shrink_refunds_tail :
   = CheckOk mremap_shrunk_model [].
 Proof. check_eq. Qed.
 
+(** THE HINT IS WHY THE ADDRESS IS 0x20000.  This ledger's
+    [vm_mmap_base] is 0, so the top-down window is empty and a NULL
+    hint would fall to the bottom-up window at
+    [Mmap.task_unmapped_base]; the call therefore names 0x20000 as a
+    HINT, which Linux returns unchanged because the range is free
+    (mm/mmap.c, [generic_get_unmapped_area_topdown], the hint test,
+    Linux v6.18.46, commit 1f99e9ab748f).  The example is about the
+    budget the shrink refunded, not about where the regrant went. *)
 Example mremap_refund_is_regrantable :
   check_syscall
-    (mkInput 222 [0; 4096; 3; 34; mmap_fd_none; 0]
+    (mkInput 222 [131072; 4096; 3; 34; mmap_fd_none; 0]
       (fun _ => None) (fun _ => None))
     (mkEffect 131072 [] [(131072, 4096)]) mremap_shrunk_model
   = CheckOk

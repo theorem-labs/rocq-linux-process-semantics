@@ -360,9 +360,21 @@ Proof. repeat split; check_eq. Qed.
     its -ENOMEM can.  After MADV_DONTNEED over the two pages the same
     grant fits.  Without the arm the model has no way back from the
     first state, and a program that recycles its pages runs out of the
-    budget where Linux does not. *)
+    budget where Linux does not.
+
+    THE HINT IS WHY THE ADDRESS IS 0x20000.  The call passes 0x20000
+    rather than a NULL hint, because since the placement change a
+    fresh grant lands exactly where Linux's search puts it, and on
+    this ledger ([vm_mmap_base] is 0, so the top-down window is empty)
+    a NULL hint does not put it here.  A free page-aligned hint Linux
+    returns unchanged (mm/mmap.c,
+    [generic_get_unmapped_area_topdown], the hint test, Linux
+    v6.18.46, commit 1f99e9ab748f), so the address and both
+    post-states below are what they always were.  These examples are
+    about the budget the touched pages hold and give back, not about
+    where the mapping went. *)
 Definition madvise_scenario_grant : SyscallInput :=
-  mkInput 222 [0; 4096; 3; 34; mmap_fd_none; 0]
+  mkInput 222 [131072; 4096; 3; 34; mmap_fd_none; 0]
     (fun _ => None) (fun _ => None).
 
 Example madvise_scenario_grant_refused_while_charged :

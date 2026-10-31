@@ -50,7 +50,6 @@ Hypothesis argH_high : forall E (a : word), argH E a = true -> CEIL <= bv_unsign
 Hypothesis argH_agree : forall E E' (a : word), env_agree nx0 E E' -> argH E a = argH E' a.
 Hypothesis SINV_frame : forall E M M', (forall a, argH E a = true -> M' a = M a) -> SINV E M -> SINV E M'.
 Hypothesis SINV_agree : forall E E' M, env_agree nx0 E E' -> SINV E M -> SINV E' M.
-Hypothesis PLACEMENT : placement_policy.  (* the NULL-hint grant nodes of AsanNodesMmLib take it; see AsanCeil.v *)
 
 #[local] Notation CSOK := (APS.cs_ok SEGS A LIMIT SINV argH FS0).
 #[local] Notation HID := (APS.hid A argH).
@@ -213,7 +212,7 @@ Proof.
   change (Z_to_bv 5 11) with (Z_to_bv 5 (Z.of_nat 11)) in R11. rewrite <- bv5_11 in R11.
   set (len := bv_unsigned (edenot E (reg cs 11))) in *. set (nZ := page_round_up_Z len) in *.
   set (n := Z_to_bv 64 nZ).
-  destruct (gap_ok_sound E cs R FULL model nhi nZ HC Hgap ltac:(lia)) as [a0 Ha0]. rewrite <- R10 in Ha0.
+  destruct (gap_ok_sound E cs R FULL model nhi nZ HC Hgap ltac:(lia) HnZal) as [a0 Ha0]. rewrite <- R10 in Ha0.
   pose proof (co_halt _ _ _ _ _ _ _ _ _ _ _ HC) as Hhalt.
   pose proof (proj2 (proj2 (proj2 (co_wf _ _ _ _ _ _ _ _ _ _ _ HC)))) as Hisp.  (* init_sp_ok, for the spec's alloc_top gate *)
   (* the refused continuation *)
@@ -240,7 +239,8 @@ Proof.
       assert (Hrw : kind_none kd = false) by (destruct kd; cbn in Hvisible |- *; congruence).
       pose proof (u64_range a) as Ra.
       unfold grant_ok_na in Hg. apply andb_prop in Hg as [Hg _]. apply andb_prop in Hg as [Hg _].
-      apply andb_prop in Hg as [Hg Hceil]. apply Z.leb_le in Hceil. rewrite CEIL_eq in Hceil. unfold CEIL in Hceil.
+      apply andb_prop in Hg as [Hg Hceil]. apply Z.leb_le in Hceil.
+      pose proof (alloc_top_lt (m_vmmaps model)) as Hatb. unfold two_pow_64 in Hatb.
       eapply (grant_vis_add E' (null_cs1 cs kd eager ne nlo nhi) cs' _ ne _ FULL' model' a n nZ HC1 Hn).
       + unfold null_cs1, add_entry. cbn [kn a_ss mk_ss s_know]. apply kimg_in_hull_app; [|apply kimg_clip_in_hull'].
         apply kimg_in_hull_pure. apply Forall_cons; [exact I | apply (proj2 (Forall_app _ _ _)); split; [apply null_kend_pure | apply kdisj_new_pure]].
@@ -257,7 +257,7 @@ Proof.
   destruct kd; cbn [kind_none kind_lazy negb orb] in *; [| | | | discriminate Hkfog | discriminate Hkfog].
   - (* P: rw eager *)
     destruct eager; [|discriminate].
-    eapply (srz_mmap_rw2 SEGS PLACEMENT R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w len (Z_to_bv 64 34) TA TB Hf He Hhalt Hisp R17 R11 Hlen R12 R13 mmap_flags_core_22 R14 R15).
+    eapply (srz_mmap_rw2 SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w len (Z_to_bv 64 34) TA TB Hf He Hhalt Hisp R17 R11 Hlen R12 R13 mmap_flags_core_22 R14 R15).
     + exists a0. split; [exact Ha0|]. unfold mmap_noreserve_backed_ok. rewrite mmap_noreserve_b_22.
       apply Z.leb_le. cbn in Hbud. eapply Z.le_trans; [|eapply (budget_slack E cs R FULL model nhi HC Hbud)]. fold nZ. lia.
     + exact CONTA.
@@ -266,19 +266,21 @@ Proof.
       * split; [intros x Hx; apply zfill_out; exact Hx | intros x Hx; apply zfill_in; exact Hx].
   - (* A: rw lazy *)
     destruct eager; [discriminate|].
-    eapply (srz_mmap_rw2 SEGS PLACEMENT R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w len (Z_to_bv 64 16418) TA TB Hf He Hhalt Hisp R17 R11 Hlen R12 R13 mmap_flags_core_4022 R14 R15).
+    eapply (srz_mmap_rw2 SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w len (Z_to_bv 64 16418) TA TB Hf He Hhalt Hisp R17 R11 Hlen R12 R13 mmap_flags_core_4022 R14 R15).
     + exists a0. split; [exact Ha0|]. unfold mmap_noreserve_backed_ok. rewrite mmap_noreserve_b_4022. reflexivity.
     + exact CONTA.
     + intros a Hg _. rewrite (with_mmap_backing_lazy _ _ _ _ mmap_noreserve_b_4022). apply (CONT a); [exact Hg | | | reflexivity].
       * pose proof Hg as Hg'. unfold grant_ok_na in Hg'. apply andb_prop in Hg' as [Hg' _]. apply andb_prop in Hg' as [Hg' _].
-        apply andb_prop in Hg' as [Hg' Hceil]. apply andb_prop in Hg' as [Hal Hpos].
-        apply Z.eqb_eq in Hal. apply Z.leb_le in Hceil. rewrite CEIL_eq in Hceil. unfold CEIL in Hceil. unfold page_size in Hal.
+        apply andb_prop in Hg' as [Hg' Hceil]. apply andb_prop in Hg' as [Hg' Hpos].
+        apply andb_prop in Hg' as [_ Hal].
+        apply Z.eqb_eq in Hal. apply Z.leb_le in Hceil.
+        pose proof (alloc_top_lt (m_vmmaps model)) as Hatb. unfold two_pow_64 in Hatb. unfold page_size in Hal.
         constructor; try reflexivity.
         unfold vm_add_lazy. rewrite m_vm_lazy_with_vm_backing. rewrite lazy_interior_fresh; [reflexivity | exact Hal | | |]; subst n; rewrite u64_lit by lia; [exact HnZal | lia | lia].
       * split; [intros x Hx; apply zfill_out; exact Hx | intros x Hx; apply zfill_in; exact Hx].
   - (* B0: none eager *)
     destruct eager; [discriminate|].
-    eapply (srz_mmap_none2 SEGS PLACEMENT R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w len (Z_to_bv 64 34) TA TB Hf He Hhalt Hisp R17 R11 Hlen R12 R13 mmap_flags_core_22 R14 R15).
+    eapply (srz_mmap_none2 SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w len (Z_to_bv 64 34) TA TB Hf He Hhalt Hisp R17 R11 Hlen R12 R13 mmap_flags_core_22 R14 R15).
     + exists a0. exact Ha0.
     + exact CONTA.
     + intros a Hg. rewrite (with_mmap_backing_plain _ _ _ _ mmap_noreserve_b_22). apply (CONT a); [exact Hg | | | reflexivity].
@@ -286,13 +288,15 @@ Proof.
       * split; [intros x Hx; apply unfill_out; exact Hx | intros x Hx; apply unfill_in; exact Hx].
   - (* B: none lazy *)
     destruct eager; [discriminate|].
-    eapply (srz_mmap_none2 SEGS PLACEMENT R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w len (Z_to_bv 64 16418) TA TB Hf He Hhalt Hisp R17 R11 Hlen R12 R13 mmap_flags_core_4022 R14 R15).
+    eapply (srz_mmap_none2 SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w len (Z_to_bv 64 16418) TA TB Hf He Hhalt Hisp R17 R11 Hlen R12 R13 mmap_flags_core_4022 R14 R15).
     + exists a0. exact Ha0.
     + exact CONTA.
     + intros a Hg. rewrite (with_mmap_backing_lazy _ _ _ _ mmap_noreserve_b_4022). apply (CONT a); [exact Hg | | | reflexivity].
       * pose proof Hg as Hg'. unfold grant_ok_na in Hg'. apply andb_prop in Hg' as [Hg' _]. apply andb_prop in Hg' as [Hg' _].
-        apply andb_prop in Hg' as [Hg' Hceil]. apply andb_prop in Hg' as [Hal Hpos].
-        apply Z.eqb_eq in Hal. apply Z.leb_le in Hceil. rewrite CEIL_eq in Hceil. unfold CEIL in Hceil. unfold page_size in Hal.
+        apply andb_prop in Hg' as [Hg' Hceil]. apply andb_prop in Hg' as [Hg' Hpos].
+        apply andb_prop in Hg' as [_ Hal].
+        apply Z.eqb_eq in Hal. apply Z.leb_le in Hceil.
+        pose proof (alloc_top_lt (m_vmmaps model)) as Hatb. unfold two_pow_64 in Hatb. unfold page_size in Hal.
         constructor; try reflexivity.
         unfold vm_add_lazy. rewrite m_vm_lazy_with_vm_backing. rewrite lazy_interior_fresh; [reflexivity | exact Hal | | |]; subst n; rewrite u64_lit by lia; [exact HnZal | lia | lia].
       * split; [intros x Hx; apply unfill_out; exact Hx | intros x Hx; apply unfill_in; exact Hx].
@@ -919,7 +923,6 @@ Theorem node_mmap2_sound_OBL : forall SEGS A nx0 LIMIT SINV argH FS0,
   (forall E E' (a : word), env_agree nx0 E E' -> argH E a = argH E' a) ->
   (forall E M M', (forall a, argH E a = true -> M' a = M a) -> SINV E M -> SINV E M') ->
   (forall E E' M, env_agree nx0 E E' -> SINV E M -> SINV E' M) ->
-  placement_policy ->  (* the first-fit placement gate as a hypothesis; see AsanCeil.v *)
   OBL_mmap2 SEGS A nx0 LIMIT SINV argH FS0.
 Proof. intros. unfold OBL_mmap2. eapply node_mmap2_sound; eauto. Qed.
 
@@ -932,7 +935,6 @@ Theorem node_mprotect2_sound_OBL : forall SEGS A nx0 LIMIT SINV argH FS0,
   (forall E E' (a : word), env_agree nx0 E E' -> argH E a = argH E' a) ->
   (forall E M M', (forall a, argH E a = true -> M' a = M a) -> SINV E M -> SINV E M') ->
   (forall E E' M, env_agree nx0 E E' -> SINV E M -> SINV E' M) ->
-  placement_policy ->  (* the first-fit placement gate as a hypothesis; see AsanCeil.v *)
   OBL_mprotect2 SEGS A nx0 LIMIT SINV argH FS0.
 Proof. intros. unfold OBL_mprotect2. eapply node_mprotect2_sound; eauto. Qed.
 
@@ -945,6 +947,5 @@ Theorem node_mmapin_sound_OBL : forall SEGS A nx0 LIMIT SINV argH FS0,
   (forall E E' (a : word), env_agree nx0 E E' -> argH E a = argH E' a) ->
   (forall E M M', (forall a, argH E a = true -> M' a = M a) -> SINV E M -> SINV E M') ->
   (forall E E' M, env_agree nx0 E E' -> SINV E M -> SINV E' M) ->
-  placement_policy ->  (* the first-fit placement gate as a hypothesis; see AsanCeil.v *)
   OBL_mmapin SEGS A nx0 LIMIT SINV argH FS0.
 Proof. intros. unfold OBL_mmapin. eapply node_mmapin_sound; eauto. Qed.

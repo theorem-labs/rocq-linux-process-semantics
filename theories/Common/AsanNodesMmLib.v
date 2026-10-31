@@ -738,6 +738,7 @@ Proof.
                            ltac:(unfold ms; rewrite ms_gpr_epend5; exact H15)) as Hchk.
   cbv zeta in Hchk. rewrite Hl1 in Hchk. fold nZ n in Hchk.
   assert (H0 : ms_gpr ms 0 = getr regs 10) by (unfold ms; rewrite ms_gpr_epend0; reflexivity).
+  rewrite H0 in Hchk.
   rewrite Hb0 in Hchk.
   assert (Hn0 : (0 <= nZ)%Z) by (unfold nZ; apply page_round_up_Z_nonneg; lia).
   assert (HnZpos : (0 < nZ)%Z) by (unfold nZ; apply page_round_up_Z_pos'; lia).
@@ -764,7 +765,7 @@ Proof.
       * destruct zs; [|discriminate]. injection Hc as <- <-.
         destruct (proj1 (errno_ret_in_true _ _) Er) as (e & He & ->).
         rewrite (mmap_errnos_ENOMEM e He). exists (inl tt). repeat split; reflexivity.
-      * destruct (grant_ok_na_pin (ms_gpr ms 0) model r nZ) eqn:Hg; [|discriminate].
+      * destruct (grant_ok_na_pin (getr regs 10) model r nZ) eqn:Hg; [|discriminate].
         cbn [andb] in Hc.
         destruct (listNN_eqb zs [(r, n)]) eqn:Hl; [|discriminate].
         apply listNN_eqb_eq in Hl. subst zs. injection Hc as <- <-.
@@ -773,7 +774,7 @@ Proof.
       destruct ws; [|discriminate]. destruct us; [|discriminate].
       destruct cs; [|discriminate]. destruct ci; [|discriminate].
       destruct (errno_ret_in mmap_errnos r); [destruct zs; discriminate|].
-      destruct (grant_ok_na_pin (ms_gpr ms 0) model r nZ && true && listNN_eqb zs [(r, n)])%bool; discriminate.
+      destruct (grant_ok_na_pin (getr regs 10) model r nZ && true && listNN_eqb zs [(r, n)])%bool; discriminate.
     + intros [[] | [a Ha]]; cbn [ms']; [exact Hh | rewrite with_mmap_backing_halted; unfold mmap_model; rewrite with_vmmaps_halted; exact Hh].
     + intros [[] | [a Ha]]; reflexivity.
   - intros []. cbn [effs ms']. unfold ms. rewrite adv_ret_epend. exact HA.
@@ -838,6 +839,7 @@ Proof.
                            ltac:(unfold ms; rewrite ms_gpr_epend5; exact H15)) as Hchk.
   cbv zeta in Hchk. rewrite Hl1 in Hchk. fold nZ n in Hchk.
   assert (H0 : ms_gpr ms 0 = getr regs 10) by (unfold ms; rewrite ms_gpr_epend0; reflexivity).
+  rewrite H0 in Hchk.
   assert (Hn0 : (0 <= nZ)%Z) by (unfold nZ; apply page_round_up_Z_nonneg; lia).
   assert (HnZpos : (0 < nZ)%Z) by (unfold nZ; apply page_round_up_Z_pos'; lia).
   assert (HnZal : (nZ mod page_size = 0)%Z) by (unfold nZ; apply page_round_up_Z_aligned').
@@ -863,7 +865,7 @@ Proof.
       * destruct us; [|discriminate]. injection Hc as <- <-.
         destruct (proj1 (errno_ret_in_true _ _) Er) as (e & He & ->).
         rewrite (mmap_errnos_ENOMEM e He). exists (inl tt). repeat split; reflexivity.
-      * destruct (grant_ok_na_pin (ms_gpr ms 0) model r nZ) eqn:Hg; [|discriminate].
+      * destruct (grant_ok_na_pin (getr regs 10) model r nZ) eqn:Hg; [|discriminate].
         destruct (listNN_eqb us [(r, n)]) eqn:Hl; [|discriminate].
         apply listNN_eqb_eq in Hl. subst us. injection Hc as <- <-.
         exists (inr (exist _ r (grant_ok_na_of_pin _ _ _ _ HnZpos HnZal Hg))). repeat split; reflexivity.
@@ -871,7 +873,7 @@ Proof.
       destruct ws; [|discriminate]. destruct zs; [|discriminate].
       destruct cs; [|destruct us; discriminate]. destruct ci; [|destruct us; discriminate].
       destruct (errno_ret_in mmap_errnos r); [destruct us; discriminate|].
-      destruct (grant_ok_na_pin (ms_gpr ms 0) model r nZ && listNN_eqb us [(r, n)])%bool; discriminate.
+      destruct (grant_ok_na_pin (getr regs 10) model r nZ && listNN_eqb us [(r, n)])%bool; discriminate.
     + intros [[] | [a Ha]]; cbn [ms']; [exact Hh | rewrite with_mmap_backing_halted; unfold noaccess_model; rewrite with_vmmaps_halted; exact Hh].
     + intros [[] | [a Ha]]; reflexivity.
   - intros []. cbn [effs ms']. unfold ms. rewrite adv_ret_epend. exact HA.
@@ -2005,9 +2007,11 @@ Proof.
   pose proof (page_round_up_Z_bounds len ltac:(lia)) as PB. fold nZ in PB. unfold page_size in PB.
   pose proof Hg as Hg0.
   unfold grant_ok_na in Hg. apply andb_prop in Hg as [Hg Hpl]. apply andb_prop in Hg as [Hg Hrf].
-  apply andb_prop in Hg as [Hg Hceil]. apply andb_prop in Hg as [Hal Hpos].
+  apply andb_prop in Hg as [Hg Hceil]. apply andb_prop in Hg as [Hg Hpos].
+  apply andb_prop in Hg as [Hplace Hal].
   apply Z.eqb_eq in Hal. apply Z.ltb_lt in Hpos. apply Z.leb_le in Hceil. fold n in Hrf.
-  unfold page_size in Hal. rewrite CEIL_eq in Hceil. unfold CEIL in Hceil.
+  unfold page_size in Hal.
+  pose proof (alloc_top_lt (m_vmmaps model)) as Hatb. unfold two_pow_64 in Hatb.
   assert (Un : bv_unsigned n = nZ) by (subst n; apply u64_lit; lia).
   unfold hint_placement_ok_b in Hpl. change (w_is0 (Z_to_bv 64 0)) with true in Hpl. cbv iota in Hpl.
   pose proof (u64_range a) as Ra.
@@ -2154,21 +2158,27 @@ Qed.
 Lemma gap_weight_eq : forall nZ l, gap_weight nZ l = sum_sizes l + Z.of_nat (length l) * (nZ + 4095).
 Proof. induction l as [|[b sz] l IH]; cbn -[Z.of_nat Z.add Z.mul]; [lia|]. rewrite IH. rewrite Nat2Z.inj_succ. cbn [snd]. lia. Qed.
 
-(** The spec: the GRANT child of a NULL-hint request is inhabited — a free,
-    aligned window above the floor exists ([AsanPlacement.free_gap_of_totals]
-    from [gap_ok] + [co_totsz] + [RES_len]). *)
+(** The spec: the GRANT child of a NULL-hint request is inhabited.  The
+    plan's totals leave a free aligned window above the floor
+    ([AsanPlacement.free_gap_of_totals] from [gap_ok] + [co_totsz] +
+    [RES_len]), so Linux's search has an answer; the ADDRESS is Linux's
+    own, not the window's base. *)
 Lemma gap_ok_sound : forall E cs R FULL model nhi nZ,
-  CSOK E cs R FULL model -> gap_ok A cs nhi = true -> 0 <= nZ <= nhi ->
+  CSOK E cs R FULL model -> gap_ok A cs nhi = true ->
+  0 < nZ <= nhi -> nZ mod page_size = 0 ->
   exists a : word, grant_ok_na (Z_to_bv 64 0) model a nZ = true.
 Proof.
-  intros E cs R FULL model nhi nZ HC Hg HnZ. unfold gap_ok in Hg. apply Z.leb_le in Hg.
+  intros E cs R FULL model nhi nZ HC Hg HnZ HnZal. unfold gap_ok in Hg. apply Z.leb_le in Hg.
   pose proof (co_totsz _ _ _ _ _ _ _ _ _ _ _ HC) as T.
+  assert (Hisp : init_sp_ok (m_vmmaps model))
+    by exact (proj2 (proj2 (proj2 (co_wf _ _ _ _ _ _ _ _ _ _ _ HC)))).
   assert (L : (length (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) <= n_res A + length (a_maps cs))%nat).
   { rewrite length_app, (co_res _ _ _ _ _ _ _ _ _ _ _ HC), RES_len'. pose proof (maps_match_length E _ _ (co_maps _ _ _ _ _ _ _ _ _ _ _ HC)). lia. }
   assert (GW : gw_sizes (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model)) <= a_totsz cs).
   { pose proof (gap_weight_sizes nZ (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model))) as G1.
     rewrite gap_weight_eq in G1. lia. }
-  destruct (free_gap_of_totals (m_vmmaps model) nZ (a_totsz cs) ltac:(lia) GW) as (g & Hal & Hfl & Hc & Hfree & Hpl).
+  destruct (free_gap_of_totals (m_vmmaps model) (kb_thp (m_kernel model)) nZ (a_totsz cs)
+              ltac:(lia) HnZal (alloc_ceiling_le_alloc_top _ Hisp) GW) as (g & Hpl).
   { rewrite FLOOR_eq, CEIL_eq.
     assert (0 <= a_totsz cs).
     { assert (0 <= sum_sizes (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model))); [|lia].
@@ -2176,11 +2186,14 @@ Proof.
     set (len1 := length (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model))) in *.
     set (len2 := (n_res A + length (a_maps cs))%nat) in *.
     assert (Z.of_nat len1 * (nZ + 4095) <= Z.of_nat len2 * (nhi + 4095)) by nia. nia. }
-  pose proof bottomup_floor_val as Hfv. pose proof alloc_ceiling_val as Hcv.
-  assert (Hg64 : 0 <= g < 2 ^ 64) by lia.
-  exists (Z_to_bv 64 g). unfold grant_ok_na. rewrite u64_lit by lia.
-  rewrite Hfree, Hpl. unfold page_size in Hal |- *.
-  rewrite (proj2 (Z.eqb_eq _ _) Hal). rewrite (proj2 (Z.ltb_lt 0 g)) by lia. rewrite (proj2 (Z.leb_le _ _) Hc). reflexivity.
+  destruct (linux_place_admissible _ _ _ _ _ ltac:(lia) HnZal Hpl)
+    as (Hal & Hpos & Hhi & Hfree).
+  pose proof (alloc_top_lt (m_vmmaps model)) as Hat. unfold two_pow_64 in Hat.
+  exists (Z_to_bv 64 g).
+  apply (grant_ok_na_of_pin _ _ _ _ ltac:(lia) HnZal).
+  unfold grant_ok_na_pin.
+  apply (linux_place_is_iff _ _ _ _ _ ltac:(lia) HnZal).
+  rewrite u64_lit by lia. exact Hpl.
 Qed.
 
 Lemma budget_slack : forall E cs R FULL model extra,

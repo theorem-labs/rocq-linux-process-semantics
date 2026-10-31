@@ -374,8 +374,17 @@ the sixteen AT_RANDOM bytes are the record's own, carried in the draw.
 
 `../../tests/dune` of the entry tree has one rule per log, so `dune build`
 compiles all ten and a start state LPS does not reproduce breaks the build.
-Each file costs 0.9 to 2.4 seconds of `rocq compile`, 15.9 seconds for the
+Each file costs 0.9 to 2.2 seconds of `rocq compile`, 15.1 seconds for the
 ten: a block of a few kilobytes is cheap for `vm_compute`.
+
+Ten passing equalities would also pass if `block_ok` had stopped computing
+anything, so two more rules run the generator with `--perturb-byte K`. Each
+moves one byte of the kernel's block, states the DISAGREEMENT, and compiles
+only if the model refuses the moved block; each names its admitted
+neighbour in its own header, so the refusal and the case still admitted come
+as a pair. One is on the shortest record (byte 0, the low byte of `argc`),
+one on the longest (byte 7,000, in the string area). They cost 0.89 s and
+3.83 s, and bring the set to 19.9 seconds.
 
 ### The evidence: the Python checker
 

@@ -295,6 +295,31 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
   co_holes : Forall (hole_ok E (a_ylo cs) (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model))) (a_maps cs);
   co_seps  : seps (vm_maps (m_vmmaps model));
   co_wf    : model_ivs_wf model;
+  (* THE CONSTANT CEILING IS FALSE AT LINUX'S ADDRESS.  These two
+     conjuncts bound every ledger entry by the constant
+     [AsanPlanCore.CEIL = AsanCeil.alloc_ceiling = 0x7fff7f800000].
+     That bound does not hold for every admissible run, and it did not
+     hold before OSSV-231 either — the old [AsanCeil.placement_policy]
+     HYPOTHESIS asserted it, and a hypothesis that is assumed is never
+     checked.  Linux searches top-down below [mm->mmap_base]
+     (mm/mmap.c, [generic_get_unmapped_area_topdown], Linux v6.18.46,
+     commit 1f99e9ab748f), which LPS writes
+     [mmap_top h = Z.min (vm_mmap_base h) (page_round_down_Z (alloc_top h))],
+     and [Run.valid_mmap_base] admits a base up to
+     [State.mmap_base_max = 0x7ffff8000000], which is ABOVE
+     [alloc_ceiling = 0x7fff7f800000]; [alloc_top h] reaches
+     [sp_window_hi - stack_max_size = 0x7fffff800000].  A high base
+     draw therefore puts a grant up to about 1.9 GiB above the
+     constant.  This is residual R-a of the OSSV-231 plan.
+
+     THE CONSTANT CANNOT SIMPLY BECOME [alloc_top (m_vmmaps model)]
+     here: [AsanPlanCore] uses the same constant as the model-free
+     boundary between the grant region and the stack side
+     ([init_vis], [inside_maps], [fixed_args], [null_kend],
+     [node_unvis]), and [lazy_cover_cs] below CONSUMES [<= CEIL] to
+     contradict [vis]'s [CEIL <=? w] test.  Moving the boundary is 166
+     occurrences over 12 files of the plan layer, [AsanInit.v]
+     included.  OSSV-231 routes that repair; see the lane report. *)
   co_bounds : Forall (fun iv => 0 < bv_unsigned (snd iv)
                                 /\ bv_unsigned (fst iv) mod 4096 = 0 /\ bv_unsigned (snd iv) mod 4096 = 0
                                 /\ img_hi A <= bv_unsigned (fst iv)
