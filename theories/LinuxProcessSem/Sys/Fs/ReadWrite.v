@@ -1236,17 +1236,17 @@ Definition write_file_tail (mp : word -> option byte) (buf count : word)
     uncovers signal 13 kills there
     ([Kernel.Signal.sigmask_deliver_model]).
 
-    THE DISPOSITION IS A LAUNCH DECLARATION, and it is the FIRST test
-    here.  Nothing inside the modeled surface can change it --
-    [Kernel.Signal.rt_sigaction_spec] declines every install for signal
-    13 -- but the launcher can: `signal(SIGPIPE, SIG_IGN)` before
+    THE HANDLER IS THE FIRST TEST here, and it is SIGPIPE's stored action
+    ([State.m_sigpipe_default] reads [State.procst_sigpipe_action]).  It
+    starts as the launch declaration: `signal(SIGPIPE, SIG_IGN)` before
     execve survives it, because fs/exec.c [begin_new_exec] calls
     kernel/signal.c [flush_signal_handlers] with [force_default = 0],
     which resets handlers and leaves SIG_DFL and SIG_IGN alone (Linux
-    v6.18.46, commit 1f99e9ab748f).  [State.in_sigpipe_default] is that
-    declaration and [State.m_sigpipe_default] reads it.  WITH SIG_IGN
-    THE PROCESS NEVER DIES, by either of two kernel routes, and the
-    model collapses both into leaving the state alone.  UNBLOCKED:
+    v6.18.46, commit 1f99e9ab748f), and [State.in_sigpipe_default] is
+    that declaration.  Inside the run [Kernel.Signal.rt_sigaction_sigpipe]
+    can install SIG_DFL or SIG_IGN over it.  WITH SIG_IGN THE PROCESS
+    NEVER DIES HERE, by either of two kernel routes, and the model
+    collapses both into leaving the state alone.  UNBLOCKED:
     kernel/signal.c [prepare_signal] returns [!sig_ignored(p, sig,
     force)], [sig_ignored] falls through to [sig_task_ignored], and
     the signal is dropped before [__send_signal_locked] queues
@@ -1255,14 +1255,27 @@ Definition write_file_tail (mp : word -> option byte) (buf count : word)
     is unblocked"), so it IS queued -- but the [rt_sigprocmask] that
     later uncovers it reaches [get_signal]'s
     [if (ka->sa.sa_handler == SIG_IGN) continue], which discards it
-    there instead.  Either way no state this model carries differs
-    afterwards: the only thing that could tell the two apart is
-    [sigpending], which this model has no call for.  So the branch
-    answers -EPIPE over an UNCHANGED model, which is what every
-    program that ignores SIGPIPE is written to read, and nothing is
-    recorded as pending -- [Kernel.Signal.sigmask_deliver_model] stays
-    out of it.  [Run.valid_input] pins the declaration to SIG_DFL;
-    [Run.valid_input_sigpipe_ignored] is the other world.
+    there instead.  So the branch answers -EPIPE over an UNCHANGED
+    model, which is what every program that ignores SIGPIPE is written
+    to read, and nothing is recorded as pending --
+    [Kernel.Signal.sigmask_deliver_model] stays out of it.
+
+    THE BLOCKED ROUTE LEAVES A SIGPIPE THE MODEL DOES NOT HOLD, and the
+    collapse is right only while this invariant holds: A HIDDEN PENDING
+    SIGPIPE CAN EXIST ONLY WHILE THE HANDLER IS SIG_IGN AND THE SIGNAL IS
+    BLOCKED; AN UNBLOCK DISCARDS IT; A SIG_IGN INSTALL FLUSHES IT
+    ([do_sigaction]'s [flush_sigqueue_mask]); AND [Kernel.Signal]
+    DECLINES THE INSTALL OF SIG_DFL IN THAT STATE TO KEEP IT SO
+    ([Kernel.Signal.sigpipe_hidden_pending_possible], the third rule of
+    [Kernel.Signal.rt_sigaction_sigpipe]).  An install of SIG_DFL there
+    would keep the queued signal ([sig_handler_ignored] is false for
+    SIG_DFL on signal 13), and the unblock after it would kill on Linux
+    and not here.  This was read from kernel/signal.c ([sig_ignored],
+    [prepare_signal], [do_sigaction], Linux v6.18.46); no run in the
+    model shows it, since the model has no call ([rt_sigpending]) that
+    could see the hidden signal.  [Run.valid_input] pins the launch
+    declaration to SIG_DFL; [Run.valid_input_sigpipe_ignored] is the
+    other world.
 
     NO LEDGER AND NO EVENT.  Both kernel sites raise the signal before
     any byte is copied out of user memory, so the call reads nothing
@@ -1274,7 +1287,7 @@ Definition write_file_tail (mp : word -> option byte) (buf count : word)
     the -EPIPE is unobservable there, which is the point. *)
 Definition raise_sigpipe (m : Model) : Model :=
   if negb (m_sigpipe_default m)
-  then m                         (* SIG_IGN: discarded, never queued *)
+  then m                         (* SIG_IGN: nothing the model holds; see the invariant above *)
   else if sigpipe_blocked (m_sigmask m)
   then with_sigpipe_pending m
   else with_killed (Z_to_bv 64 SIGPIPE) m.

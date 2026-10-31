@@ -891,10 +891,11 @@ Definition reaches_error (c0 : config) : Prop :=
     so the inherited disposition decides the OUTCOME of those calls and
     not merely a returned number.
 
-    Nothing a modeled run does can move it:
-    [Kernel.Signal.rt_sigaction_spec] declines EVERY install for signal
-    13 ([Kernel.Signal.sigaction_accepted] admits 2 and 15, and
-    [Kernel.Signal.sigabrt_dfl_install] admits only signal 6).  What
+    A modeled run moves it only through
+    [Kernel.Signal.rt_sigaction_sigpipe], an install of SIG_DFL or
+    SIG_IGN over SIGPIPE's stored action; a run that installs nothing
+    keeps the launch's handler, and before that arm every install for
+    signal 13 was [unmodeled].  What
     the LAUNCH did is the live question, by the same
     [flush_signal_handlers] argument: SIG_IGN survives execve, and
     `signal(SIGPIPE, SIG_IGN)` before exec is COMMON -- commoner than
@@ -908,7 +909,8 @@ Definition reaches_error (c0 : config) : Prop :=
     world it is about rather than assuming one, and the other world has
     its own predicate, [valid_input_sigpipe_ignored], under which
     [Sys.Fs.ReadWrite.raise_sigpipe] discards the signal and no write
-    arm can end the run.  The alternative considered and rejected was
+    arm can end the run until the program itself installs SIG_DFL.  The
+    alternative considered and rejected was
     declining every write once the launch could have ignored the
     signal, which gives back exactly the coverage this revision bought.
     BLOCKING is a third, independent matter and was already modeled: a
@@ -1287,8 +1289,8 @@ Definition run (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
             getcwd, getdents64, write     (write's is the page an empty
                                           pipe's write must allocate)
      fd     dup, pipe2, socket,           no free descriptor (two for
-            socketpair, accept, clone     pipe2 and socketpair; accept
-                                          also when [Socket.conn_ix_exhausted]);
+            socketpair, accept, clone,    pipe2 and socketpair; accept
+            eventfd2                      also when [Socket.conn_ix_exhausted]);
                                           clone: never
      net    bind, listen                  never
      cred   setuid, setgid, setresuid,    never; setsid's -EPERM after a
@@ -1420,7 +1422,11 @@ Record InjectedArm := mkInjectedArm {
     injected by a bare [alt] rather than through a named list, so their
     lists are written here.  [faccessat2] draws from
     [faccessat]'s list because both answer through
-    [Fs.Open.access_exists_spec].
+    [Fs.Open.access_exists_spec].  [socket] draws from three lists
+    ([Net.Socket.socket_errnos], [socket_alloc_errnos] and
+    [socket_dgram_errnos]); the row names the widest,
+    [socket_dgram_errnos AF_INET6], which is [socket_errnos] plus
+    [inet6_create]'s -ENOBUFS and contains the other two.
 
     NANOSLEEP LISTS -EINTR AND NOT -EFAULT, AND THAT ASYMMETRY IS A
     DECISION rather than an oversight — it is written here because the
@@ -1445,6 +1451,7 @@ Record InjectedArm := mkInjectedArm {
     only outcome at that state, so it is kept under both readings. *)
 Definition injected_table : list InjectedArm :=
   (* getcwd     *) mkInjectedArm  17%Z FamFs    getcwd_errnos ::
+  (* eventfd2   *) mkInjectedArm  19%Z FamFd    eventfd2_errnos ::
   (* dup        *) mkInjectedArm  23%Z FamFd    dup_errnos ::
   (* unlinkat   *) mkInjectedArm  35%Z FamFs    unlinkat_errnos ::
   (* faccessat  *) mkInjectedArm  48%Z FamFs    faccessat_errnos ::
@@ -1458,7 +1465,7 @@ Definition injected_table : list InjectedArm :=
   (* setresuid  *) mkInjectedArm 147%Z FamCred  (setid_errnos true) ::
   (* setresgid  *) mkInjectedArm 149%Z FamCred  (setid_errnos true) ::
   (* setsid     *) mkInjectedArm 157%Z FamCred  [EPERM] ::
-  (* socket     *) mkInjectedArm 198%Z FamFd    socket_errnos ::
+  (* socket     *) mkInjectedArm 198%Z FamFd    (socket_dgram_errnos AF_INET6) ::
   (* socketpair *) mkInjectedArm 199%Z FamFd    (socketpair_reserve_errnos ++ socketpair_create_errnos) ::
   (* bind       *) mkInjectedArm 200%Z FamNet   bind_errnos ::
   (* listen     *) mkInjectedArm 201%Z FamNet   listen_errnos ::
@@ -4185,14 +4192,17 @@ Qed.
     ran `signal(SIGPIPE, SIG_IGN)` before execve and the disposition
     survived it, so [Sys.Fs.ReadWrite.raise_sigpipe] discards the signal
     and a write to a far end with no reader is -EPIPE with the process
-    STILL RUNNING.  Every other clause is [valid_input]'s, the abort
-    declaration included.
+    STILL RUNNING -- until the program itself installs SIG_DFL
+    ([Kernel.Signal.rt_sigaction_sigpipe]), which is the program's act
+    and not the launch's.  Every other clause is [valid_input]'s, the
+    abort declaration included.
 
     WHAT A STATEMENT QUANTIFIED OVER THIS ONE IS WORTH.  It is the
     reading a program that handles -EPIPE itself was written for -- a
     daemon, a filter under a service manager -- and under it no write
-    arm can end the run, so a halts statement is not refuted by a
-    reader-less channel.  It is NOT the safer predicate: it asserts
+    arm can end the run while the handler stays SIG_IGN, so a halts
+    statement is not refuted by a reader-less channel for a program that
+    keeps it so.  It is NOT the safer predicate: it asserts
     something about the launch that the ordinary one does not, and a
     proof made under it says nothing about the ordinary launch. *)
 Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=

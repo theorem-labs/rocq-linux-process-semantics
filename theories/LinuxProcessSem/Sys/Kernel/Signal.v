@@ -109,14 +109,15 @@ Open Scope sys_scope.
       - SIGPIPE (13) — a modeled [write], and the model RAISES it: the
         channel, pipe and socket arms of [ReadWrite.write_spec] send it
         through [ReadWrite.raise_sigpipe] when the far end has no
-        reader.  That is exactly why it must stay off this list.  The
-        model has one disposition for signal 13, SIG_DFL, and the
-        launch premise above [Run.unmodeled_at] is what supplies it;
-        an accepted [rt_sigaction] here would let a program install
-        SIG_IGN or a handler and then take a write this spec answers as
-        a death, which is a wrong MODELED answer.  It is out for
-        SIGABRT's reason rather than for an absence, and that is the
-        stronger of the two.
+        reader.  That is exactly why it must stay off this list: a
+        no-op install would let a program install SIG_IGN and then take
+        a write this model answers as a death.  SIGPIPE's installs are
+        answered instead by an arm WITH STATE,
+        [rt_sigaction_sigpipe]: the model keeps SIGPIPE's action
+        ([State.procst_sigpipe_action]) and [raise_sigpipe] reads the
+        handler an install stored.  An install of a handler ADDRESS
+        stays declined there, for this note's reason: a handler that
+        runs is a delivery the model does not have.
       - SIGXFSZ (25) — a modeled [write], and a modeled [ftruncate] as
         well: neither [ReadWrite.write_spec] nor [Open.ftruncate_spec]
         consults RLIMIT_FSIZE, where Linux raises SIGXFSZ alongside
@@ -365,9 +366,11 @@ Definition sa_flags_ok (fl : word) : bool :=
     of pending signals ([sig_handler_ignored] then [flush_sigqueue_mask])
     when the new disposition ignores them.  The model has neither a stored
     mask nor a pending queue for those signals, and [oact] — declined
-    below — is the only window onto either.  The handler word is read
-    once, by [sigaction_handler], and only for SIGABRT; see
-    [sigabrt_dfl_install]. *)
+    below for every signal but SIGPIPE — is the only window onto either.
+    The handler word is read once, by [sigaction_handler], and only for
+    SIGABRT; see [sigabrt_dfl_install].  SIGPIPE is the exception to all
+    of this paragraph: its action IS stored, and its arm reads the whole
+    struct ([sigaction_struct], [rt_sigaction_sigpipe]). *)
 Definition sigaction_flags (mp : word -> option byte) (act : word)
     : option word :=
   match copy_bytes_map mp act 24 with
@@ -434,6 +437,180 @@ Definition sigabrt_dfl_install (sig : word) (mp : word -> option byte) (act : wo
   | None => false
   end.
 
+(** THE 24 BYTES AT [act], or [None] when any of them is unreadable:
+    [SYSCALL_DEFINE4(rt_sigaction)]'s one [copy_from_user] of [struct
+    sigaction] (kernel/signal.c, Linux v6.18.46), all or nothing, under
+    [sigaction_flags]'s argument for why no [access_okb] is needed.
+    [sigaction_field bs off] reads the eight-byte little-endian field at
+    [off]: [sa_handler] at 0, [sa_flags] at 8, [sa_mask] at 16. *)
+Definition sigaction_struct (mp : word -> option byte) (act : word)
+    : option (list byte) :=
+  copy_bytes_map mp act 24.
+  (* [copy_from_user]'s [access_ok] first, as [sigaction_flags] has it
+     since the revision's user-access repair (26feb4a): a refused range is
+     -EFAULT however the memory map answers *)
+
+Definition sigaction_field (bs : list byte) (off : nat) : Z :=
+  bv_unsigned (le_bytes_to_word (firstn 8 (skipn off bs))).
+
+(** The 24 bytes [copy_to_user] writes to [oact] for SIGPIPE's action
+    [a]: the handler (SIG_DFL or SIG_IGN), the flags as [do_sigaction]
+    reports them ([oact->sa.sa_flags &= UAPI_SA_FLAGS], a no-op on a
+    word the install already masked, written out because it is the
+    kernel's statement), and the mask, each little-endian. *)
+Definition sigpipe_action_bytes (a : SigpipeAction) : list byte :=
+  Z_to_le_bytes 8 (if spa_default a then SIG_DFL else SIG_IGN)
+  ++ Z_to_le_bytes 8 (Z.land (spa_flags a) UAPI_SA_FLAGS)
+  ++ Z_to_le_bytes 8 (spa_mask a).
+
+(** The [oact] copy-out, the LAST step of [SYSCALL_DEFINE4(rt_sigaction)]:
+    [if (oact && copy_to_user(oact, &old_sa.sa, sizeof(old_sa.sa)))
+    return -EFAULT;], run after [do_sigaction] has already installed the
+    new action.  [old] is the action [do_sigaction] snapshotted with
+    [*oact = *k] BEFORE the install.
+
+    - [oact] NULL: 0, nothing written.
+    - [access_ok] refuses the 24 bytes, or the first byte is not
+      writable: -EFAULT with nothing written -- and with any install
+      ALREADY DONE, since the install came first and is not rolled back.
+    - all 24 writable: 0, and the 24 bytes of [old] land.
+    - some bytes writable and not all: DECLINED, for [write_oset]'s
+      reason: [copy_to_user] would leave a prefix behind. *)
+Definition sigpipe_oact_write (oact : word) (old : SigpipeAction)
+    (i : SyscallInput) : Sys SyscallEffect :=
+  if w_is0 oact then ret_only (Z_to_bv 64 0)
+  else if negb (access_okb oact 24) then err_ret EFAULT
+  else
+  match read_bytes_map (in_wmem i) oact (Z_to_bv 64 24) with
+  | Some _ => pure (mkEffect (Z_to_bv 64 0) [(oact, sigpipe_action_bytes old)] [])
+  | None =>
+      match read_bytes_map (in_wmem i) oact (Z_to_bv 64 1) with
+      | None => err_ret EFAULT                 (* takes no byte: nothing written *)
+      | Some _ => unmodeled                    (* takes some bytes and not all *)
+      end
+  end.
+
+(** A SIGPIPE THE MODEL DOES NOT HOLD MAY BE PENDING: the handler is
+    SIG_IGN and the mask blocks signal 13.  See [rt_sigaction_sigpipe]'s
+    third rule and the note above [ReadWrite.raise_sigpipe]. *)
+Definition sigpipe_hidden_pending_possible (m : Model) : bool :=
+  (negb (m_sigpipe_default m) && sigpipe_blocked (m_sigmask m))%bool.
+
+(** [rt_sigaction(SIGPIPE, act, oact, 8)]: the arm WITH STATE.  The
+    caller ([rt_sigaction_spec]) has already answered a [sigsetsize]
+    other than 8.  The rest is Linux v6.18.46's order, kernel/signal.c:
+
+    1. [act] non-NULL and not wholly readable: -EFAULT, nothing changed
+       and nothing recorded ([copy_from_user], before [do_sigaction]).
+       Otherwise the 24 bytes go in the copy-in ledger.
+    2. [do_sigaction]'s -EINVAL cannot fire: 13 is a valid signal and not
+       [sig_kernel_only], and [SA_IMMUTABLE] is never set on a live
+       process (see [rt_sigaction_spec]'s note).
+    3. [*oact = *k]: the CURRENT action is kept for the copy-out.
+    4. With [act] non-NULL, the install: [act->sa.sa_flags &=
+       UAPI_SA_FLAGS] ([Uapi.UAPI_SA_FLAGS]), [sigdelsetmask] of SIGKILL
+       and SIGSTOP from [sa_mask] ([Uapi.sig_kernel_only_mask]),
+       [*k = *act], and, when the new handler is SIG_IGN,
+       [flush_sigqueue_mask] of a pending SIGPIPE
+       ([State.with_sigpipe_install] does both).  [sigaction_compat_abi]
+       between them is the empty [__weak] default: arch/riscv/kernel/
+       signal.c and compat_signal.c define none.
+    5. The [oact] copy-out of the action from step 3:
+       [sigpipe_oact_write].
+
+    So the three shapes curl's census shows are all answered: [act] and
+    [oact] both non-NULL, [act] alone, and [oact] alone (a read of the
+    current action, which installs nothing).  Both NULL is 0, as before.
+
+    THE HANDLER RULE AND THE FLAGS RULE ARE ONE DECISION.  A handler
+    ADDRESS -- any word but SIG_DFL (0) and SIG_IGN (1) -- DECLINES.
+    That is a chosen boundary, not a gap: a handler that runs is a
+    signal DELIVERY, and the model has none ([rt_sigaction_spec]'s first
+    note says what admitting one would cost).  And because no handler
+    ever runs, EVERY FLAG WORD IS ACCEPTED for SIGPIPE: SA_SIGINFO,
+    SA_ONSTACK, SA_NODEFER, SA_RESETHAND, SA_RESTART and the rest say how
+    a handler is entered, what is masked while it runs, and whether an
+    interrupted call restarts after it -- with SIG_DFL or SIG_IGN none of
+    that happens, so no flag changes any answer the model gives, and the
+    flags are only stored, masked as Linux masks them, for an [oact] to
+    read back.  This is NOT [sa_flags_ok]'s rule for the other signals,
+    and it holds ONLY WHILE THE HANDLER RULE HOLDS: a change that admits
+    a handler address here must, in the same commit, decide every flag
+    again.
+
+    THE THIRD RULE: SIG_DFL DECLINES WHILE A HIDDEN PENDING SIGPIPE IS
+    POSSIBLE ([sigpipe_hidden_pending_possible]: the current handler is
+    SIG_IGN and the mask blocks signal 13).  Linux queues a SIGPIPE in
+    that state -- [sig_ignored] answers false for a blocked signal, so
+    [prepare_signal] lets it through -- where [ReadWrite.raise_sigpipe]
+    records nothing.  An install of SIG_DFL keeps a pending SIGPIPE
+    ([sig_handler_ignored] is false for SIG_DFL on signal 13), so after
+    it the unblock would KILL on Linux and not in the model.  Declining
+    the install there keeps this invariant, which [raise_sigpipe]'s
+    collapse rests on: a hidden pending SIGPIPE can exist only while the
+    handler is SIG_IGN and the signal is blocked; an unblock discards it
+    ([get_signal]'s SIG_IGN [continue]); a SIG_IGN install flushes it.
+    The cost is narrow: with signal 13 open in the mask, curl's
+    ignore-then-restore is answered whole.  (The LPS model owner chose
+    this over making [raise_sigpipe] queue the signal; decision relayed
+    on Envoy for OSSV-287, 2026-10-31.)
+
+    A RUN THAT INSTALLS NOTHING BEHAVES EXACTLY AS IT DID BEFORE THIS ARM.
+    The argument is a count of writers, and these commands check it:
+
+      git grep -n 'with_sigpipe_install' -- theories
+        the definition and its [m_kernel] row in State.v, and ONE call,
+        below in this definition;
+      git grep -n 'with_sigpipe_default' -- theories
+        the definition, its [m_kernel] row, and ONE call, in
+        [init_model_setter_chain], which [init_model] is proved equal to;
+      git grep -n 'mkProcState' -- theories
+        built only in State.v: [mkModel] and [init_model] put the seed
+        [sigpipe_action_at_exec] there, and every setter but those two
+        passes [(m_sigpipe_action m)] through unchanged;
+      git show de9f1630:theories/LinuxProcessSem/Sys/Kernel/Signal.v
+        the base: [rt_sigaction_spec] declines a non-NULL [oact], and
+        for a readable [act] answers only [sigaction_accepted] signals
+        (2, 15) and SIGABRT's SIG_DFL -- every SIGPIPE install is
+        [unmodeled].
+
+    So every run that is modeled at the base installs nothing; its
+    [State.procst_sigpipe_action] stays [State.sigpipe_action_at_exec] of
+    the launch declaration, [State.m_sigpipe_default] reads the
+    declaration exactly as the base's boolean did, and
+    [ReadWrite.raise_sigpipe] and [sigmask_deliver_model] answer as they
+    did.  The two SIGPIPE answers the base gave -- 0 with both pointers
+    NULL, -EFAULT for an unreadable [act] with [oact] NULL -- are given
+    unchanged and leave the model as it was:
+    [rt_sigaction_sigpipe_no_install_keeps_model] below.  And no halts
+    result proved at the base is about a run that installs: every halts
+    statement requires each run to be modeled
+    ([EquivalenceDefinition.MustExit.must_exit_in_modeled]), so its
+    binary never reached a SIGPIPE install. *)
+Definition rt_sigaction_sigpipe (act oact : word) : Sys SyscallEffect :=
+  i <- input ;;
+  m <- get_model ;;
+  let old := m_sigpipe_action m in
+  if w_is0 act then sigpipe_oact_write oact old i     (* nothing installed *)
+  else
+  match sigaction_struct (in_mem i) act with
+  | None => err_ret EFAULT        (* [copy_from_user] fails: nothing changes *)
+  | Some bs =>
+      record_copyins [(act, 24%nat)]
+        (let h := sigaction_field bs 0 in
+         if negb (Z.eqb h SIG_DFL || Z.eqb h SIG_IGN)%bool then unmodeled
+           (* a handler that runs: the chosen boundary above *)
+         else if (Z.eqb h SIG_DFL && sigpipe_hidden_pending_possible m)%bool
+         then unmodeled
+           (* SIG_DFL over a SIGPIPE Linux may hold pending: the third rule *)
+         else
+           modify (with_sigpipe_install
+                     (mkSigpipeAction (Z.eqb h SIG_DFL)
+                        (Z.land (sigaction_field bs 8) UAPI_SA_FLAGS)
+                        (Z.ldiff (sigaction_field bs 16) sig_kernel_only_mask))) ;;
+           sigpipe_oact_write oact old i)
+  end.
+
 (** [rt_sigaction sig act oact sigsetsize].  [sig] arrives already
     truncated (see [sig32]).  The arms follow the kernel's own order
     (Linux v6.10-v6.15, kernel/signal.c, [SYSCALL_DEFINE4(rt_sigaction)]
@@ -457,22 +634,31 @@ Definition sigabrt_dfl_install (sig : word) (mp : word -> option byte) (act : wo
          is looked at, and [sizeof(sigset_t)] is 8 on a 64-bit kernel
          ([_NSIG] 64 over a 64-bit [_NSIG_BPW], one word).  So a bad size
          beats a wild [act] pointer.
-      2. a non-NULL [oact] is UNMODELED.  The kernel writes the PREVIOUS
+      2. SIGPIPE (13) goes to [rt_sigaction_sigpipe], the one signal whose
+         action the model STORES, and every arm below is for the other
+         63.  Nothing above this line depends on the signal, and Linux
+         decides nothing about SIGPIPE before [copy_from_user] that would
+         differ from what that arm does, so splitting here moves no
+         answer.
+      3. a non-NULL [oact] is UNMODELED for every other signal.  The
+         kernel writes the PREVIOUS
          disposition there, and the model stores none — nor could it
          honestly answer from a fixed initial state, since [execve]'s
          [flush_signal_handlers] preserves an inherited SIG_IGN, making
          the initial disposition a choice of the launching environment
          rather than a constant.  [State.ProcInput] quantifies argv,
-         envp, the file system and stdin; it does not quantify that.
-         Declining is the only sound arm, and it also removes the
+         envp, the file system and stdin; it does not quantify that (it
+         does quantify SIGPIPE's, [State.in_sigpipe_default], which is
+         what lets arm 2 answer).  Declining is the only sound arm, and
+         it also removes the
          kernel's nastiest corner here: a [copy_to_user] fault on [oact]
          returns -EFAULT with the new disposition ALREADY installed and
          not rolled back.
-      3. with [act] NULL nothing is installed, so the call is a pure
+      4. with [act] NULL nothing is installed, so the call is a pure
          no-op for EVERY valid signal, fault signals included: 0, or
          -EINVAL outside 1..64.  This is also why SIGKILL and SIGSTOP are
-         only rejected in arm 4.
-      4. with [act] non-NULL: -EFAULT unless [access_ok] admits all 24
+         only rejected in arm 5.
+      5. with [act] non-NULL: -EFAULT unless [access_ok] admits all 24
          bytes and they are readable;
          then -EINVAL for an out-of-range signal and for SIGKILL/SIGSTOP;
          then fail closed on SA_RESTART and on any bit outside
@@ -487,7 +673,7 @@ Definition sigabrt_dfl_install (sig : word) (mp : word -> option byte) (act : wo
          a lazy anonymous page the read faults in.  The -EFAULT records
          nothing, the convention [rt_sigprocmask_spec] states.
 
-    Arm 4's last case is the one that matters: it is what keeps a
+    Arm 5's last case is the one that matters: it is what keeps a
     SIGSEGV, SIGILL, SIGBUS or SIGTRAP handler out of the modeled
     surface, and with it the [MachineFault] vacuity described above.
 
@@ -501,9 +687,11 @@ Definition sigabrt_dfl_install (sig : word) (mp : word -> option byte) (act : wo
     from [begin_new_exec], fs/exec.c) resets caught handlers to SIG_DFL
     but PRESERVES an inherited SIG_IGN, which is exactly why the [oact]
     arm above declines rather than answering from a fixed initial
-    state. *)
+    state -- for every signal but SIGPIPE, whose launch handler is an
+    input of the run. *)
 Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
   if negb (bv_eqb ss (Z_to_bv 64 8)) then err_ret EINVAL
+  else if Z.eqb (bv_unsigned sig) SIGPIPE then rt_sigaction_sigpipe act oact
   else if negb (w_is0 oact) then unmodeled
   else if w_is0 act
   then (if sig_valid sig then ret_only (Z_to_bv 64 0) else err_ret EINVAL)
@@ -521,6 +709,43 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
          else if sigabrt_dfl_install sig (in_mem i) act then ret_only (Z_to_bv 64 0)
          else unmodeled)         (* a signal a modeled operation can raise: fail closed *)
     end.
+
+(** THE TWO SIGPIPE ANSWERS THE BASE GAVE ARE GIVEN UNCHANGED, and they
+    install nothing: with [oact] NULL, an [act] that is NULL is 0 and an
+    [act] that is not wholly readable is -EFAULT, each with no write, no
+    event and the model as it was.  Every other SIGPIPE shape was
+    [unmodeled] at the base (the writer count at [rt_sigaction_sigpipe]
+    says why), so this lemma and that count are together the statement
+    that a run which installs nothing behaves exactly as before. *)
+Lemma rt_sigaction_sigpipe_no_install_keeps_model :
+  forall sig act oact ss i m eff m' evs,
+  bv_unsigned sig = SIGPIPE ->
+  w_is0 oact = true ->
+  (w_is0 act = true \/ sigaction_struct (in_mem i) act = None) ->
+  rt_sigaction_spec sig act oact ss i m (Ok eff m' evs) ->
+  m' = m /\ evs = []
+  /\ (bv_eqb ss (Z_to_bv 64 8) = true ->
+      eff = mkEffect (if w_is0 act then Z_to_bv 64 0 else errno_ret EFAULT) [] []).
+Proof.
+  intros sig act oact ss i m eff m' evs Hsig Ho Ha H.
+  unfold rt_sigaction_spec in H.
+  destruct (bv_eqb ss (Z_to_bv 64 8)) eqn:Hss; cbn [negb] in H.
+  2: { unfold err_ret, ret_only, pure in H.
+       injection H as _ -> ->. split; [reflexivity | split; [reflexivity | discriminate]]. }
+  apply Z.eqb_eq in Hsig. rewrite Hsig in H.
+  unfold rt_sigaction_sigpipe in H.
+  destruct H as (x0 & m1 & evs1 & evs2 & Hi & H & ->).
+  unfold input in Hi. injection Hi as -> -> ->.
+  apply (proj1 (bind_get_model _ _ _ _)) in H. cbv beta zeta in H.
+  revert H. destruct (w_is0 act) eqn:Hact; intros H.
+  - unfold sigpipe_oact_write in H. rewrite Ho in H.
+    unfold ret_only, pure in H. injection H as -> -> ->.
+    split; [reflexivity | split; [reflexivity | intros _; reflexivity]].
+  - destruct Ha as [Ha | Ha]; [discriminate |].
+    rewrite Ha in H.
+    unfold err_ret, ret_only, pure in H. injection H as -> -> ->.
+    split; [reflexivity | split; [reflexivity | intros _; reflexivity]].
+Qed.
 
 (* =========================================================================
    rt_sigprocmask (135) - a mask no modeled operation can observe
@@ -681,10 +906,15 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
         by [Checks.Cases.Kernel.Signal]'s
         [sigaltstack_leaves_the_mask_alone] rather than by absence.
         134's is [oact], the only way to read an [sa_mask] back, and
-        [rt_sigaction_spec] declines a non-NULL [oact] outright; the
-        [sa_mask] an accepted install carries is not stored either —
-        that spec answers [ret_only 0] and stores no disposition — so there is
-        no second window behind the first.  72's is [set_user_sigmask]
+        [rt_sigaction_spec] declines a non-NULL [oact] outright for every
+        signal but SIGPIPE; the [sa_mask] an accepted install of those
+        carries is not stored either — that spec answers [ret_only 0] and
+        stores no disposition.  SIGPIPE's [oact] is answered
+        ([rt_sigaction_sigpipe]), and what it reads back is SIGPIPE's own
+        stored [sa_mask] ([State.spa_mask]), not [->blocked]:
+        [do_sigaction] copies [*k], the action, and names [blocked]
+        nowhere.  So there is still no window onto the blocked mask
+        behind it.  72's is [set_user_sigmask]
         itself, and it is a real read-back: it saves [current->blocked]
         into [current->saved_sigmask] on the way in.  [Fs.Select]'s
         [pselect_sigpack] classifies a call that would install a mask as

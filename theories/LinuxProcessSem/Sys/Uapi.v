@@ -893,6 +893,24 @@ Definition sigpipe_mask : Z := 4096%Z.
 Definition sigpipe_blocked (mask : word) : bool :=
   negb (w_is0 (bv_and mask (Z_to_bv 64 sigpipe_mask))).
 
+(** The two handler values a [struct sigaction] can carry that run no
+    code: SIG_DFL and SIG_IGN, [((__force __sighandler_t)0)] and [1]
+    (include/uapi/asm-generic/signal-defs.h, Linux v6.18.46).  Any other
+    value is the address of a handler. *)
+Definition SIG_DFL : Z := 0%Z.
+Definition SIG_IGN : Z := 1%Z.
+
+(** [UAPI_SA_FLAGS] (include/linux/signal_types.h, Linux v6.18.46):
+    [SA_NOCLDSTOP | SA_NOCLDWAIT | SA_SIGINFO | SA_ONSTACK | SA_RESTART |
+    SA_NODEFER | SA_RESETHAND | SA_EXPOSE_TAGBITS | __ARCH_UAPI_SA_FLAGS],
+    = 0x1 | 0x2 | 0x4 | 0x08000000 | 0x10000000 | 0x40000000 | 0x80000000
+    | 0x800 (include/uapi/asm-generic/signal-defs.h), with
+    [__ARCH_UAPI_SA_FLAGS] 0 because riscv defines no SA_RESTORER.  So
+    0xD8000807.  [do_sigaction] ANDs every installed and every reported
+    flag word with it ([act->sa.sa_flags &= UAPI_SA_FLAGS], and the same
+    for [oact]). *)
+Definition UAPI_SA_FLAGS : Z := 0xD8000807%Z.
+
 (** [WNOHANG], the one wait4 option this model accepts
     (include/uapi/linux/wait.h, whose [W*] macro block is byte-identical
     in mainline from v3.10 — the oldest tag that still fetches — through
