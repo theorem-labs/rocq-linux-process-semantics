@@ -699,6 +699,133 @@ Proof.
       apply IH; assumption.
 Qed.
 
+(** ** What an [exits_c] program EMITS, not only where it ends
+
+    [exits_c_must_exit_at] says where the run ends; the two lemmas below
+    say what it emits on the way, which is what [Equivalence.dies_by_signal]
+    asks about.  At an [ecall] carrying the exit number there is exactly
+    one kind of successor transition, it emits exactly one event, and it
+    lands halted: [exit_dispatch_forced] (the exit spec admits one outcome
+    triple, whose event list is empty) against [exit_dispatch_halts]
+    (that outcome halts, which rules out the ordinary-syscall transition)
+    and [exit_dispatch_not_killed] (and it is not a killed one, which
+    rules out [Run.sstep_killed]); the error constructors of [Run.sstep]
+    cannot unify with [Run.SNext] and are discarded by inversion. *)
+Lemma exit_step_forced : forall segs ms model x8 evs c',
+  m_halted model = None ->
+  ms_svc_pending ms = Some x8 ->
+  exit_sysno (in_sysno (sys_input segs ms x8)) ->
+  sstep segs (mkCfg ms model) evs (SNext c') ->
+  evs = [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
+  /\ m_halted (cfg_model c') <> None.
+Proof.
+  intros segs ms model x8 evs c' Hh Hsvc Hno Hss.
+  assert (Harg : in_arg (sys_input segs ms x8) 0 = ms_gpr ms 0) by reflexivity.
+  inversion Hss; subst; try congruence; unify_svc x8.
+  - match goal with
+    | [ H : syscall_spec _ _ (Monad.Ok _ _ _) |- _ ] =>
+        pose proof (exit_dispatch_halts _ _ _ _ _ Hno H) as Hhalts
+    end.
+    congruence.
+  - match goal with
+    | [ H : syscall_spec _ _ (Monad.Ok _ _ _) |- _ ] =>
+        destruct (exit_dispatch_forced _ _ _ _ _ Hno H) as (_ & Hm' & Hevs)
+    end.
+    subst.
+    match goal with
+    | [ H : m_halted (with_halted ?v _) = Some ?c |- _ ] =>
+        assert (Hcode : c = v)
+          by (rewrite m_halted_with_halted in H; congruence)
+    end.
+    rewrite Harg in Hcode.
+    split.
+    + cbn [List.app]. rewrite m_fs_with_halted, Hcode. reflexivity.
+    + cbn [cfg_model]. rewrite m_halted_with_halted. discriminate.
+  - exfalso.
+    match goal with
+    | [ H : syscall_spec _ _ (Monad.Ok _ ?m' _), Hk : m_killed ?m' = Some _ |- _ ] =>
+        rewrite (exit_dispatch_not_killed _ _ _ _ _ Hno H) in Hk; discriminate
+    end.
+Qed.
+
+(** The engine: every [Run.star] of an [exits_c] program emits at most
+    the exit event.  Same induction as [exits_c_must_exit_at], against a
+    [Run.star]: at an instruction the first transition is forced to be
+    [Run.sstep_instr], which emits nothing and leaves the model fixed; at
+    the [ecall] it is [Run.sstep_exit] by [exit_step_forced], and the
+    configuration it lands in is halted, so [MustExit.star_from_halted]
+    ends the run there. *)
+Lemma exits_c_star_trace : forall segs code fuel ms model tr c',
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  exits_c segs code fuel ms = true ->
+  star segs (mkCfg ms model) tr c' ->
+  tr = [] \/ tr = [ExitEv code (m_fs model)].
+Proof.
+  intros segs code fuel. induction fuel as [|fuel IH];
+    intros ms model tr c' Hh Hlazy Hc Hstar; [discriminate|].
+  cbn [exits_c] in Hc.
+  destruct (ms_svc_pending ms) as [x8|] eqn:Hsvc.
+  - apply andb_true_iff in Hc as [Hx8 Hcode].
+    apply bv_eqb_eq in Hcode. subst code.
+    assert (Hno : exit_sysno (in_sysno (sys_input segs ms x8))).
+    { cbn [in_sysno sys_input].
+      apply orb_true_iff in Hx8. destruct Hx8 as [H|H]; apply Z.eqb_eq in H;
+        [left|right]; exact H. }
+    inversion Hstar as [c0 | c0 evs c1 tr1 c2 Hss Hstar1]; subst;
+      [left; reflexivity |].
+    destruct (exit_step_forced _ _ _ _ _ _ Hh Hsvc Hno Hss) as (Hevs & Hne).
+    destruct (star_from_halted _ _ _ _ Hstar1 Hne) as (Htr1 & _).
+    right. rewrite Hevs, Htr1, app_nil_r. reflexivity.
+  - destruct (RiscvSemantics.step segs ms) as [ms'| |] eqn:Hstep;
+      [|discriminate|discriminate].
+    assert (Hacc : mi_account_step segs ms model = MachineOk (ms', model)).
+    { rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hstep. reflexivity. }
+    inversion Hstar as [c0 | c0 evs c1 tr1 c2 Hss Hstar1]; subst;
+      [left; reflexivity |].
+    inversion Hss; subst; try congruence.
+    match goal with
+    | [ H : mi_account_step _ _ _ = MachineOk (?a, ?b) |- _ ] =>
+        rewrite Hacc in H; injection H as -> ->
+    end.
+    cbn [List.app]. exact (IH _ _ _ _ Hh Hlazy Hc Hstar1).
+Qed.
+
+(** ... so no observed prefix of such a run carries a [State.KillEv]:
+    its one non-empty maximal trace is the exit event. *)
+Lemma exits_c_obs_no_kill : forall segs code fuel ms model tr sig fs,
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  exits_c segs code fuel ms = true ->
+  obs_trace segs (mkCfg ms model) tr ->
+  ~ In (KillEv sig fs) tr.
+Proof.
+  intros segs code fuel ms model tr sig fs Hh Hlazy Hc (tr' & c & Hstar & Hp) Hin.
+  destruct (exits_c_star_trace _ _ _ _ _ _ _ Hh Hlazy Hc Hstar) as [-> | ->].
+  - destruct tr as [| a l]; cbn in Hp, Hin; [exact Hin | exact Hp].
+  - destruct tr as [| a [| b l]]; cbn in Hp, Hin.
+    + exact Hin.
+    + destruct Hp as [-> _]. destruct Hin as [Hk | []]. discriminate Hk.
+    + destruct Hp as [_ []].
+Qed.
+
+(** The run-level form [Equivalence.error_free_unkilled] asks for: a
+    program [exits_c] accepts from the run's initial state never dies by
+    a signal.  Proved from the image's own run, not from the absence of a
+    counterexample. *)
+Lemma exits_c_never_dies : forall segs pc ph code fuel lim sp brk0 mbase rnd inp,
+  exits_c segs code fuel
+    (init_machine_state segs pc ph sp rnd (in_argv inp) (in_envp inp)
+       (in_uid inp) (in_hwcap inp)) = true ->
+  ~ dies_by_signal (run (mkImage segs pc ph) lim (mkEntry sp brk0 mbase rnd) inp).
+Proof.
+  intros segs pc ph code fuel lim sp brk0 mbase rnd inp Hms (tr & sig & fs & Ht & Hin).
+  cbn [run bh_traces] in Ht. unfold init_config in Ht.
+  exact (exits_c_obs_no_kill segs code fuel _
+           (init_model (segments_reserved segs) brk0 mbase sp lim inp) tr sig fs
+           eq_refl eq_refl Hms Ht Hin).
+Qed.
+
 (** ** The image, and the entry a real [execve] could have chosen
 
     Three instructions at 0x100, written out as the hex the loader would

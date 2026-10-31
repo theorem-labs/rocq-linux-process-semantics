@@ -271,7 +271,7 @@ Lemma omni_strong_equiv_error_free_implies : forall en_source en_target inp,
   omni_strong_equiv_error_free en_source en_target inp ->
   omni_strong_equiv en_source en_target inp.
 Proof.
-  intros en_source en_target inp (Hsrc & Htgt & Htr).
+  intros en_source en_target inp ((Hsrc & _) & (Htgt & _) & Htr).
   split.
   - destruct source_image as [segs pc ph], en_source as [sp brk0 mbase rnd].
     cbn [omni_corun img_segments] in *.
@@ -297,7 +297,7 @@ Lemma omni_strong_equiv_error_free_no_all_errors_escape :
     omni_run source_image source_alloc_limit en_source inp errors ->
     ~ omni_strong_equiv_error_free en_source en_target inp.
 Proof.
-  intros en_source en_target inp Hall (Hsrc & _ & _).
+  intros en_source en_target inp Hall ((Hsrc & _) & _ & _).
   destruct source_image as [segs pc ph], en_source as [sp brk0 mbase rnd].
   cbn [omni_run omni_corun] in *.
   destruct (exec_realizes _ _ _ Hall) as (tr & o & Hm & Herr).
@@ -315,7 +315,7 @@ Lemma omni_strong_universal_error_free_refuted_by_source_error :
     ~ omni_strong_universal_error_free_T.
 Proof.
   intros en_source en_target inp Hs Ht Hi Hmay H.
-  destruct (H en_source en_target inp Hs Ht Hi) as (Hsrc & _ & _).
+  destruct (H en_source en_target inp Hs Ht Hi) as ((Hsrc & _) & _ & _).
   destruct source_image as [segs pc ph], en_source as [sp brk0 mbase rnd].
   cbn [omni_may omni_corun] in *.
   destruct Hmay as (tr & o & Hm & Herr).

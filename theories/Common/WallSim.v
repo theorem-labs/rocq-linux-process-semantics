@@ -849,7 +849,10 @@ Proof.
 Qed.
 
 (** The omni equivalence for two retry-loop exit-after-writes binaries
-    emitting the same buffers and exit code, at the two role budgets. *)
+    emitting the same buffers and exit code, at the two role budgets, on
+    a launch with a reader on the far end of fd 1: a reader-gone write
+    KILLS the process (see [CatSim.fd1chan]), which the retry loop's
+    derivation does not describe. *)
 Lemma wall_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bufs code inp,
   to_wallexit source_segs (Z_to_bv 64 1) bufs code
@@ -857,17 +860,18 @@ Lemma wall_omni_strong_equiv :
   to_wallexit target_segs (Z_to_bv 64 1) bufs code
     (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
   bufs_modeled bufs ->
+  in_channel_reader inp = true ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
 Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bufs code inp
-    Hsource Htarget Hbm.
+    Hsource Htarget Hbm Hr.
   assert (HfdS : fdchan (Z_to_bv 64 1) (Z_to_bv 64 1)
     (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp))
-    by (split; reflexivity).
+    by (apply fd1chan_fdchan, init_model_fd1chan; exact Hr).
   assert (HfdT : fdchan (Z_to_bv 64 1) (Z_to_bv 64 1)
     (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp))
-    by (split; reflexivity).
+    by (apply fd1chan_fdchan, init_model_fd1chan; exact Hr).
   split.
   { cbn [img_segments].
     eapply coexec_conseq;
@@ -890,7 +894,8 @@ Qed.
 
 (** The [Equivalence]-level equivalence for two retry-loop exit-after-writes
     binaries emitting the same buffers and exit code — the statement
-    [CatSim.cat_strong_equiv_te] had before short channel writes. *)
+    [CatSim.cat_strong_equiv_te] had before short channel writes — on a
+    launch with a reader. *)
 Lemma wall_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim bufs code inp,
   to_wallexit source_segs (Z_to_bv 64 1) bufs code
@@ -898,18 +903,19 @@ Lemma wall_strong_equiv :
   to_wallexit target_segs (Z_to_bv 64 1) bufs code
     (init_machine_state target_segs apc aph asp arnd (in_argv inp) (in_envp inp) (in_uid inp) (in_hwcap inp)) ->
   bufs_modeled bufs ->
+  in_channel_reader inp = true ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
                        (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).
 Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
-         bufs code inp Hsource Htarget Hbm.
+         bufs code inp Hsource Htarget Hbm Hr.
   assert (HfdS : fdchan (Z_to_bv 64 1) (Z_to_bv 64 1)
     (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp))
-    by (split; reflexivity).
+    by (apply fd1chan_fdchan, init_model_fd1chan; exact Hr).
   assert (HfdT : fdchan (Z_to_bv 64 1) (Z_to_bv 64 1)
     (init_model (segments_reserved target_segs) abrk amb asp alim inp))
-    by (split; reflexivity).
+    by (apply fd1chan_fdchan, init_model_fd1chan; exact Hr).
   split.
   { apply no_error_run_modeled.
     apply (wall_no_error_run (Z_to_bv 64 1) (Z_to_bv 64 1) fd32_1
