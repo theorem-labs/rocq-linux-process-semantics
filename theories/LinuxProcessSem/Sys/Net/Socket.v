@@ -182,8 +182,9 @@ Definition INADDR_ANY : Z := 0%Z.
     - [SOCK_NONBLOCK] in the flags sets O_NONBLOCK on the new file, and
       the model has no notion of a non-blocking fd.  ([SOCK_CLOEXEC] is
       accepted and ignored, as [openat_spec] does for O_CLOEXEC: it
-      touches only the descriptor's close-on-exec bit, and there is no
-      execve here.)
+      touches only the descriptor's close-on-exec bit, there is no
+      execve here, and [Fs.Fcntl.fcntl_spec]'s F_GETFD admits both
+      values of the bit.)
     - Every family but AF_INET.  Whether an in-range family is
       registered is a property of the kernel build, so neither success
       nor -EAFNOSUPPORT can be asserted.
@@ -1534,11 +1535,12 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
      never allocates one, so [kill_fasync_rcu] takes its
      [if (!fown) goto next] and [send_sigio] -- whose own guard is
      [if (!pid) goto out_unlock_fown] -- is never entered.
-     [Fs.Fcntl.fcntl_spec] models EXACTLY THREE COMMANDS -- [F_SETFD],
-     the provably empty [F_SETFL] above, and an [F_GETFL] restricted to
-     the fd kinds [Fs.Fcntl.getfl_f_flags] can derive a flag word for --
-     and answers [unmodeled] for every other one; none of those ioctls
-     is in [Fs.Ioctl.tty_only_request].
+     [Fs.Fcntl.fcntl_spec] models EXACTLY FOUR COMMANDS -- [F_SETFD],
+     [F_GETFD] (answered 0 or FD_CLOEXEC, since the model does not
+     record the bit), the provably empty [F_SETFL] above, and an
+     [F_GETFL] restricted to the fd kinds [Fs.Fcntl.getfl_f_flags] can
+     derive a flag word for -- and answers [unmodeled] for every other
+     one; none of those ioctls is in [Fs.Ioctl.tty_only_request].
    - NO HANDLER CAN BE INSTALLED FOR EITHER SIGNAL, which is a third gate
      and not a restatement of the two above:
      [Kernel.Signal.sigaction_accepted] admits SIGINT and SIGTERM and
@@ -1547,19 +1549,22 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
      not because the claim leans on it.
 
    THE CLAIM IS OVER TWO MODELED SETS, and that is the form to keep true:
-   {[F_SETFD], [F_SETFL], [F_GETFL]} for fcntl, and
+   {[F_SETFD], [F_GETFD], [F_SETFL], [F_GETFL]} for fcntl, and
    [Fs.Ioctl.tty_only_request] for ioctl.  ADDING A COMMAND TO EITHER
    BREAKS THIS SENTENCE -- an [F_SETOWN] arm, an [F_SETFL] that admitted
    FASYNC, or a FIOASYNC arm reopens the route directly.  [F_GETFL]
    clears both gates:
    fs/fcntl.c [do_fcntl]'s arm for it is [err = filp->f_flags; break;],
    whose whole body is that load, so it calls neither [sock_fasync] nor
-   [file_f_owner_allocate].  Reaching one of those two functions is the
-   test a new arm has to be put to; being a read is not the test, and
-   the check is per arm rather than per shape.
+   [file_f_owner_allocate].  [F_GETFD] clears them the same way: its arm
+   is [err = get_close_on_exec(fd) ? FD_CLOEXEC : 0; break;], a test of
+   one fd-table bit with no side effect, so it calls neither function
+   whichever answer it gives.  Reaching one of those two
+   functions is the test a new arm has to be put to; being a read is
+   not the test, and the check is per arm rather than per shape.
 
    Only the FASYNC step is mechanized.  The command-set step is prose
-   because a "[fcntl_spec] answers [unmodeled] outside these three
+   because a "[fcntl_spec] answers [unmodeled] outside these four
    commands" lemma has to invert the [Monad.Sys]
    relation, which needs [Checks.Sys.Prelude]'s [sys_unfold] and
    [inv_ok]; Checks sits ABOVE Sys, so that lemma's home is
