@@ -773,14 +773,16 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     whole readable prefix remains admissible.
 
     This OVER-APPROXIMATES, deliberately.  Linux does not fall short on
-    every channel.  A blocking pipe write of at most PIPE_BUF (4096;
-    include/uapi/linux/limits.h:14, v6.12) is atomic.  The optional
-    pre-loop merge either copies the whole write or errors
-    (fs/pipe.c:463-495).  If merging is unavailable, the ordinary loop
-    either returns EPIPE or an allocation error before copying, encounters
-    a copy fault without publishing the copied bytes, copies the whole
-    request into one new pipe page when a slot exists (:497-550), or
-    reaches the signal and wait checks before copying anything (:556-580).
+    every channel.  A blocking pipe write of at most PIPE_BUF (4096; the
+    [PIPE_BUF] definition in include/uapi/linux/limits.h) is atomic.  The
+    optional pre-loop merge either copies the whole write or errors: that
+    is the [chars && !was_empty] branch of [anon_pipe_write] in
+    fs/pipe.c.  If merging is unavailable, the ordinary loop of the same
+    function either returns EPIPE or an allocation error before copying,
+    encounters a copy fault without publishing the copied bytes, copies
+    the whole request into one new pipe page when a slot exists, or
+    reaches its signal and wait checks before copying anything.  Linux
+    v6.18.46, commit 1f99e9ab748f.
     None of these paths can produce a short POSITIVE return, signal
     interruption included.
 
@@ -1652,22 +1654,26 @@ Definition ppos_einvalb (pos : word) : bool := (bv_signed pos <? 0)%Z.
     establishes it cannot happen. *)
 Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
   if ppos_einvalb pos then err_ret EINVAL
-    (* [pos < 0] BEFORE the descriptor: fs/read_write.c:755-756 *)
+    (* [pos < 0] BEFORE the descriptor, in [ksys_pread64]: fs/read_write.c,
+       Linux v6.18.46, commit 1f99e9ab748f *)
   else
   i <- input ;;
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
-  | None => err_ret EBADF                        (* empty slot: fs/read_write.c:759-760 *)
+  | None => err_ret EBADF                        (* empty slot: the [CLASS(fd, f)(fd)] declaration
+                                                    in [ksys_pread64], fs/read_write.c *)
   | Some (FdChannel _) => err_ret ESPIPE         (* no FMODE_PREAD, BY THE PIPED-STDIO
                                                     ASSUMPTION — see the header *)
-  | Some (FdPipe _ _) => err_ret ESPIPE          (* [stream_open] on both ends, fs/pipe.c:966-967.
+  | Some (FdPipe _ _) => err_ret ESPIPE          (* [stream_open] on both ends, from
+                                                    [create_pipe_files] in fs/pipe.c.
                                                     Decided AHEAD of [vfs_read]'s [FMODE_READ], so
                                                     the WRITE end is -ESPIPE here where [read] on
                                                     it is -EBADF *)
-  | Some (FdSocket _) => err_ret ESPIPE          (* [stream_open], net/socket.c:494 *)
+  | Some (FdSocket _) => err_ret ESPIPE          (* [stream_open], from [sock_alloc_file] in
+                                                    net/socket.c *)
   | Some (FdFileW _ _) => err_ret EBADF          (* a regular file keeps FMODE_PREAD, so this
                                                     reaches [vfs_read] and fails its FMODE_READ
-                                                    test: fs/read_write.c:556-557 *)
+                                                    test: fs/read_write.c *)
   | Some (FdFileA _ _) => err_ret EBADF          (* and so does an append fd: O_APPEND rides on
                                                     O_WRONLY here, so FMODE_READ is clear and the
                                                     same test answers.  Where the write lands never
@@ -1801,24 +1807,29 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
     there, so pwrite reaches no offset a chain of writes could not. *)
 Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
   if ppos_einvalb pos then err_ret EINVAL
-    (* [pos < 0] BEFORE the descriptor: fs/read_write.c:785-786 *)
+    (* [pos < 0] BEFORE the descriptor, in [ksys_pwrite64]: fs/read_write.c,
+       Linux v6.18.46, commit 1f99e9ab748f *)
   else
   i <- input ;;
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
-  | None => err_ret EBADF                        (* empty slot: fs/read_write.c:789-790 *)
+  | None => err_ret EBADF                        (* empty slot: the [CLASS(fd, f)(fd)] declaration
+                                                    in [ksys_pwrite64], fs/read_write.c *)
   | Some (FdChannel _) => err_ret ESPIPE         (* no FMODE_PWRITE, BY THE PIPED-STDIO
                                                     ASSUMPTION — see the header.  This is where
                                                     the channel's short-write over-approximation
                                                     stops being reachable at all *)
-  | Some (FdPipe _ _) => err_ret ESPIPE          (* fs/pipe.c:966-967.  A pwrite to a pipe whose
+  | Some (FdPipe _ _) => err_ret ESPIPE          (* [stream_open] on both ends, from
+                                                    [create_pipe_files] in fs/pipe.c.
+                                                    A pwrite to a pipe whose
                                                     reader is gone is -ESPIPE and raises NO
                                                     SIGPIPE: [anon_pipe_write] is never reached *)
-  | Some (FdSocket _) => err_ret ESPIPE          (* net/socket.c:494.  The -EPIPE-and-SIGPIPE that
-                                                    makes [write_spec]'s socket arm permanently
-                                                    unmodeled is unreachable through pwrite *)
+  | Some (FdSocket _) => err_ret ESPIPE          (* [stream_open], from [sock_alloc_file] in
+                                                    net/socket.c.  The -EPIPE-and-SIGPIPE that
+                                                    [write_spec]'s socket arm answers is
+                                                    unreachable through pwrite *)
   | Some (FdFile _ _) => err_ret EBADF           (* fd open read-only: [vfs_write]'s FMODE_WRITE
-                                                    test, fs/read_write.c:670-671 *)
+                                                    test, fs/read_write.c *)
   | Some FdUrandom => err_ret EBADF             (* FMODE_PWRITE is set on the device, so this
                                                     reaches [vfs_write]'s FMODE_WRITE test, which a
                                                     read-only descriptor fails: -EBADF before the
@@ -2847,14 +2858,15 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                                                     v6.18.46) sets it only for a table that
                                                     supplies the method ([if (fop->llseek)],
                                                     :364-365).  An anonymous pipe misses it
-                                                    TWICE: [pipeanon_fops], the table
-                                                    [create_pipe_files] installs on both ends
-                                                    (fs/pipe.c:1257-1266, installed at :946 and
-                                                    :957), has no [.llseek] line at all, and
+                                                    TWICE.  First, the file-scope initializer
+                                                    [static const struct file_operations
+                                                    pipeanon_fops] in fs/pipe.c -- the table
+                                                    [create_pipe_files] installs on both ends --
+                                                    has no [.llseek] line at all.  Second,
                                                     [create_pipe_files] then runs [stream_open]
-                                                    (fs/open.c:1656-1660, v6.18.46) on both ends
-                                                    (fs/pipe.c:966-967), which CLEARS
-                                                    [FMODE_LSEEK] outright at fs/open.c:1658.
+                                                    (fs/open.c) on both ends, and [stream_open]
+                                                    CLEARS [FMODE_LSEEK] outright.  Linux
+                                                    v6.18.46, commit 1f99e9ab748f.
                                                     Spelling the bit out matters because the
                                                     table half is the one whose SPELLING has
                                                     moved: older kernels wrote
