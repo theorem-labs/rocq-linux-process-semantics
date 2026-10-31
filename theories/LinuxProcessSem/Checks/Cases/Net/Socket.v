@@ -2449,6 +2449,19 @@ Proof. split; check_eq. Qed.
     Every arm here is ABOVE the ledger or records nothing, so
     [connect_answering] is the right spelling throughout: a zero-length
     address reads no user byte. *)
+(** THE CAUSE, pinned so the repair cannot be undone by accident: the
+    range test REFUSES a zero-length range above the limit, and the
+    unguarded copy therefore answers [None] there, which is why
+    [Net.Socket.move_addr_bytes] has to decide the zero before the pair
+    is consulted.  The control beside it is the same test at the same
+    length one byte below [State.TASK_SIZE], where it passes — so this
+    is a statement about the LIMIT and not about zero lengths. *)
+Example zero_length_range_above_the_limit_is_refused :
+  access_okb connect_wrap_addrp 0 = false
+  /\ copy_bytes_map (fun _ => None) connect_wrap_addrp 0 = None
+  /\ access_okb (Z_to_bv 64 TASK_SIZE) 0 = true.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
 Example connect_zero_length_never_faults :
   connect_answering (fun _ => None) listening_socket_model
     3 connect_wrap_addrp 0 (errno_ret EINVAL) = CheckOk listening_socket_model []
