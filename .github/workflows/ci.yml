@@ -105,12 +105,23 @@ jobs:
             endGroup
             startGroup "Stack limit for deep proof terms"
               # A deep Qed overflows the 8 MiB default and the process dies on a
-              # signal, which reads like a proof fault and is not one. Raise the
-              # hard limit first, then the soft one, and print what we actually
-              # got: a request can succeed and still leave the old value.
-              ulimit -H -s 131072 || true
-              ulimit -S -s 131072 || true
-              echo "stack soft=$(ulimit -S -s) hard=$(ulimit -H -s)"
+              # signal, which reads like a proof fault and is not one.
+              #
+              # One command, not hard-then-soft: it sets both together and is
+              # legal whether the soft limit starts at 8 MiB or at unlimited.
+              # Lowering the hard limit below a soft limit of unlimited is
+              # EINVAL, so the two-step form can leave the process at unlimited,
+              # which some sandboxes serve as 8 MiB -- the very failure this
+              # guards against.
+              ulimit -s 131072
+              # Read both back and refuse. A setter can return success and
+              # change nothing; the printed value is the measurement and the
+              # request is only a request. Without this the build runs at the
+              # wrong limit and the result gets blamed on the proof.
+              soft=$(ulimit -Ss); hard=$(ulimit -Hs)
+              echo "stack soft=$soft hard=$hard"
+              [ "$soft $hard" = "131072 131072" ] || {
+                echo "stack limit is $soft/$hard, refusing"; exit 2; }
             endGroup
             startGroup "Build everything (dune build)"
               opam exec -- dune build --display short
