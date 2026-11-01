@@ -205,8 +205,9 @@ body why that is not written:
 > FMODE_CREATED), before the directory test. The EISDIR answer of v4.17 to
 > v5.6 is not written: the model describes v6.18.46 only.
 
-So the single exception is the decision the stream owner took, landing exactly
-where the decision says it should, and the trace it leaves unreproduced is a
+So the single exception is the one case the model's stated boundary excludes,
+landing exactly where that boundary says it should, and the trace it leaves
+unreproduced is a
 mutation of a kernel the model does not describe. Its twin `022.jsonl`
 (`conform -- dot`, the unmutated EEXIST case) moves to reproduced.
 

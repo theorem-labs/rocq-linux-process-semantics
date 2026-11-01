@@ -4103,9 +4103,9 @@ Definition valid_input (inp : ProcInput) : Prop :=
     `head` has had its line, where that same write raises signal 13 and
     ends the run -- is named rather than covered here, and a task that
     means it asks for it by name ([valid_input_channel_closed]); a task
-    that means both asks for [valid_input_channel_either].  The stance
-    is the stream owner's: pin the reader, and name the reader-gone
-    launch so a proof can ask for it. *)
+    that means both asks for [valid_input_channel_either].  The model
+    pins the reader, and names the reader-gone launch so a proof can
+    ask for it, the shape the abort declaration already has. *)
 Definition valid_input_abort (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4267,9 +4267,8 @@ Qed.
     descriptors 1 and 2.  [valid_input] above PINS IT TO [true]: the
     ordinary launch is the one whose standard output is read, and a
     statement quantified over [valid_input] speaks about that launch
-    and no other.  That is the stance the stream owner chose -- pin the
-    reader, and name the reader-gone launch so a proof can ask for it
-    -- and it is the shape
+    and no other.  The model pins the reader, and names the reader-gone
+    launch so a proof can ask for it -- and it is the shape
     the abort declaration already has: [valid_input] pins
     [State.in_abort_terminal] to [false] and [valid_input_abort] names
     the other world.

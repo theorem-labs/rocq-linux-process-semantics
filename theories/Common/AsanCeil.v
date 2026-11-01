@@ -18,7 +18,7 @@
     conjunct of [BackingAlgebra.model_ivs_wf]); [alloc_ceiling_le_alloc_top]
     turns a [<= alloc_ceiling] side condition into the spec's [<= alloc_top h].
     [hint_placement_ok_b] is the first-fit placement gate that the checker's
-    boolean grant tests use.  SINCE OSSV-231 THE SPEC HAS SUCH A GATE:
+    boolean grant tests use.  SINCE THE PLACEMENT WORK THE SPEC HAS SUCH A GATE:
     [Sys/Mm/Mmap.linux_place] names the ONE address Linux gives, so the
     gate is a THEOREM ([placement_policy_holds]) rather than a named
     hypothesis the node layer carries. *)
@@ -89,7 +89,7 @@ Proof. reflexivity. Qed.
         constant [alloc_ceiling = 0x7fff7f800000]; [alloc_top h] is as
         high as [sp_window_hi - stack_max_size = 0x7fffff800000].  A
         grant in [[alloc_ceiling, alloc_top h)] is Linux's and breaks
-        the bound.  (This is residual R-a of the OSSV-231 plan.)  The
+        the bound.  (This is residual R-a of the placement plan.)  The
         true bound at Linux's address is [aZ + nZ <= alloc_top h],
         which [Placement.linux_place_admissible] gives, so the grant
         predicates state that one and the gate states none. *)

@@ -394,8 +394,9 @@ not apply.
   name, `Run.valid_input_channel_closed`, in the shape
   `Run.valid_input_abort` has for the abort declaration, and a
   statement that means both readings asks for
-  `Run.valid_input_channel_either` (the stream owner's answer: pin the
-  reader, and name the reader-gone launch so a proof can ask for it).
+  `Run.valid_input_channel_either`. The model pins the reader, and
+  names the reader-gone launch so a proof can ask for it, the shape
+  the abort declaration already has.
   A reader that goes away PART WAY
   through the output is a third thing the model has no term for, and a
   program whose reader goes away mid-output is outside the model.
@@ -635,9 +636,9 @@ equivalence) can be true of the model and false of Linux.
   standard output is read; the writing end of `prog | head -1` is
   `Run.valid_input_channel_closed`, named the way
   `Run.valid_input_abort` names the aborting launch, and a statement
-  that means both readings asks for `Run.valid_input_channel_either`
-  (the stream owner's answer: pin the reader, and name the reader-gone
-  launch so a proof can ask for it).
+  that means both readings asks for `Run.valid_input_channel_either`:
+  the model pins the reader, and names the reader-gone launch so a
+  proof can ask for it.
   What is left is NOT the
   SIGPIPE disposition: that was an unstated premise and is now a
   declaration (`State.ProcInput.in_sigpipe_default`, pinned to

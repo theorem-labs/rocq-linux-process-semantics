@@ -37,7 +37,8 @@
  *   three mremap grows                     blocked by the vDSO, room, no room
  *   two brk grows                          1 page and 1 MiB
  *
- * THE START-STATE MODE (OSSV-257 A4).  With "pc_mode=startstate" on the boot
+ * THE START-STATE MODE (acceptance item A4 of the start-state
+ * specification).  With "pc_mode=startstate" on the boot
  * command line -- which the kernel hands to init in its environment (Linux
  * v6.18.46, commit 1f99e9ab748f, init/main.c, unknown_bootoption) -- the
  * probe makes no placement call at all.  As init it forks twice and execs
