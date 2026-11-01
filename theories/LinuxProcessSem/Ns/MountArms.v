@@ -703,4 +703,7 @@ Definition mount_injected : list NsInjected :=
 
 (** The four legacy mount-namespace calls supplied by this module. *)
 Definition mount_arms : list (Z * NsArm) :=
-  [(39, umount2_arm); (40, mount_arm); (41, pivot_root_arm); (442, mount_setattr_arm)].
+  [(39, with_injected mount_env_errno umount2_arm);
+   (40, with_injected mount_env_errno mount_arm);
+   (41, with_injected mount_env_errno pivot_root_arm);
+   (442, with_injected mount_env_errno mount_setattr_arm)].

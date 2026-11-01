@@ -1197,9 +1197,13 @@ Definition ioctl_arm : NsArm := fun i m ctx st o =>
       end
   end.
 
-(** The five arms by call number, for [Spec.ns_table]. *)
+(** The five arms by call number, for [Spec.ns_table].  Each number in
+    [net_injected] lifts a successful deterministic witness into the
+    post-check environment refusal, including [recvfrom]. *)
 Definition net_arms : list (Z * NsArm) :=
-  [(29, ioctl_arm); (198, socket_arm); (200, bind_arm); (206, sendto_arm); (207, recvfrom_arm)].
+  [(29, ioctl_arm); (198, with_injected net_env_errno socket_arm);
+   (200, with_injected net_env_errno bind_arm); (206, with_injected net_env_errno sendto_arm);
+   (207, with_injected net_env_errno recvfrom_arm)].
 
 (** The environment refusals the net arms offer.  Socket construction,
     netlink insertion, and rtnetlink allocation can fail with ENOMEM or

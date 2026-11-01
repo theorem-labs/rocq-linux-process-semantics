@@ -1581,8 +1581,15 @@ Definition file_injected : list NsInjected :=
      (fun e => (1 <=? e) && (e <=? 4095), FamCred)])
     [17; 25; 43; 44; 48; 49; 50; 56; 57; 61; 78; 79; 80; 437].
 
-(** The arms of this file by call number, for [Ns.Spec.ns_table]. *)
+(** The arms of this file by call number, for [Ns.Spec.ns_table].  Every
+    listed arm has the environment alternative after one successful
+    deterministic witness, so its ledger cannot list an unreachable
+    refusal. *)
 Definition file_arms : list (Z * NsArm) :=
-  [(17, getcwd_arm); (25, fcntl_arm); (43, statfs_arm); (44, fstatfs_arm); (48, faccessat_arm);
-   (49, chdir_arm); (50, fchdir_arm); (56, openat_arm); (57, close_arm); (61, getdents64_arm);
-   (78, readlinkat_arm); (79, newfstatat_arm); (80, fstat_arm); (437, openat2_arm)].
+  [(17, with_injected file_env_errno getcwd_arm); (25, with_injected file_env_errno fcntl_arm);
+   (43, with_injected file_env_errno statfs_arm); (44, with_injected file_env_errno fstatfs_arm);
+   (48, with_injected file_env_errno faccessat_arm); (49, with_injected file_env_errno chdir_arm);
+   (50, with_injected file_env_errno fchdir_arm); (56, with_injected file_env_errno openat_arm);
+   (57, with_injected file_env_errno close_arm); (61, with_injected file_env_errno getdents64_arm);
+   (78, with_injected file_env_errno readlinkat_arm); (79, with_injected file_env_errno newfstatat_arm);
+   (80, with_injected file_env_errno fstat_arm); (437, with_injected file_env_errno openat2_arm)].

@@ -171,3 +171,12 @@ Definition injected_after (P : Z -> bool) (r : ext_outcome)
   | EUnmodeled => False
   end.
 
+(** Lift an arm's successful answer into its environment refusal.  The
+    witness is the successful outcome reached after every earlier argument,
+    path, descriptor, and permission check; [injected_after] keeps exactly
+    that outcome's copy-ins. *)
+Definition with_injected (P : Z -> bool) (a : NsArm) : NsArm :=
+  fun i m ctx st o =>
+    a i m ctx st o
+    \/ exists ok, a i m ctx st ok /\ injected_after P ok m ctx st o.
+
