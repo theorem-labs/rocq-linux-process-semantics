@@ -26,8 +26,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Task
 Import ListNotations.
 
 (** The arms, by call number.  A number not listed fails closed. *)
-Definition ns_table : list (Z * NsArm) :=
-  [(166%Z, umask_arm); (172%Z, getpid_arm); (178%Z, getpid_arm)].
+Definition ns_table : list (Z * NsArm) := task_arms.
 
 Fixpoint lookup_ns_arm (t : list (Z * NsArm)) (n : Z) : option NsArm :=
   match t with
