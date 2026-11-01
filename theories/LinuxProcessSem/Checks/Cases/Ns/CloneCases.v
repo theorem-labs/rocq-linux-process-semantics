@@ -6,7 +6,7 @@
 
 From Stdlib Require Import ZArith List Bool PArith Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Mount Userns Walk Arm UserArms Net Clone.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Userns Walk Arm UserArms Net Clone.
 Import ListNotations.
 Open Scope Z_scope.
 
@@ -79,10 +79,16 @@ Definition no_admin_inside : NsCtx :=
   mkNsCtx 2 1 2 1 [(2%positive, 1); (1%positive, 136)] (1%positive, 1%positive) (1%positive, 1%positive) 18
           nocaps 0 [] (Some false) (Some 1).
 
-(** A flag the model does not hold (CLONE_VM) declines. *)
-Example clone_vm_declines : forall m,
-  clone_ns_exact (Z.lor CLONE_VM SIGCHLD) m caller host 138 = CnUnmodeled.
+(** A task in the released world that makes no namespace: the core's own
+    clone decides the flag word (CLONE_VM here), and the namespace model
+    gives the child the caller's context and keeps the state. *)
+Example clone_vm_from_host_is_released : forall m,
+  clone_ns_exact (Z.lor CLONE_VM SIGCHLD) m caller host 138 = CnOk caller host.
 Proof. intros m. vm_compute. reflexivity. Qed.
+
+Example plain_fork_from_host : forall m,
+  clone_ns SIGCHLD m caller host 138 (CnOk caller host).
+Proof. intros m. apply clone_ns_flat_fork_ok; reflexivity. Qed.
 
 (** From inside the new pid namespace (the shell, pid 1 there and 136 on
     the host), a plain fork with host pid 140 gives pid 2 there and 140 on
@@ -123,6 +129,12 @@ Example libc_fork_inside_pid_2 : forall m,
   option_map cx_pids
     (child_of (clone_ns_exact (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD) m shell inside 140))
   = Some [(2%positive, 2); (1%positive, 140)].
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** Outside the released world a flag the model does not hold (CLONE_VM)
+    declines. *)
+Example clone_vm_inside_declines : forall m,
+  clone_ns_exact (Z.lor CLONE_VM SIGCHLD) m shell inside 140 = CnUnmodeled.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** A fork that fails after [alloc_pid] leaves the cursor of the pid

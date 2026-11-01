@@ -21,9 +21,6 @@ Module ToyCore <: PROCS_CORE.
   Definition SError : step_to := None.
   Definition sstep_cfg (_ : StepCtx) (_ : config) (_ : list event) (_ : step_to) : Prop := False.
   Definition at_instruction (_ : config) : Prop := True.
-  Definition clone_success (_ _ : config) : bool := false.
-  Definition wait4_intercept (_ : config) : bool := false.
-  Definition child_pid (_ : config) (_ : positive) : Prop := False.
 
   Definition OfdId := positive.
   Definition ofd_eq_dec : forall a b : OfdId, {a = b} + {a <> b} := Pos.eq_dec.
@@ -41,10 +38,8 @@ Module ToyCore <: PROCS_CORE.
   Definition pcfg_shared (_ : pconfig) : shared := tt.
   Definition look (_ : pconfig) (p : positive) : option ProcessEntry :=
     if Pos.eqb p 1 then Some tt else None.
-  Definition pe_cfg (_ : shared) (_ : ProcessEntry) : config := tt.
   Definition one_pid : positive := 1%positive.
   Definition one_proc (_ : config) : pconfig := tt.
-  Definition multiproc_allowed (_ : pconfig) (_ : config) : bool := true.
 
   Definition pstep_to := option unit.
   Definition PNext (P : pconfig) : pstep_to := Some P.
@@ -53,7 +48,6 @@ Module ToyCore <: PROCS_CORE.
   Definition pstep_at (_ : StepCtx) (_ : positive) (_ : pconfig) (_ : list event) (_ : pstep_to) : Prop :=
     False.
   Definition lineage_pick (_ : pconfig) (p : positive) : Prop := p = 1%positive.
-  Definition clone_result (P : pconfig) (_ : ProcessEntry) (_ : config) (_ : positive) : pconfig := P.
   Definition child_projection (_ _ : pconfig) : option (ProcessEntry * shared) := None.
   Definition entry_a0_zero (_ : ProcessEntry) : Prop := True.
 
@@ -72,20 +66,6 @@ Module ToyCore <: PROCS_CORE.
     (pstep_cfg ctx (one_proc c) evs PError <-> sstep_cfg ctx c evs SError).
   Proof. intros ctx c evs _. cbv [pstep_cfg sstep_cfg]. split; intros H; exact H. Qed.
 
-  Lemma pstep_single_next : forall ctx c evs P',
-    (forall c', sstep_cfg ctx c evs (SNext c') -> clone_success c c' = false) ->
-    wait4_intercept c = false ->
-    (pstep_cfg ctx (one_proc c) evs (PNext P')
-     <-> exists c', P' = one_proc c' /\ sstep_cfg ctx c evs (SNext c')).
-  Proof.
-    intros ctx c evs P' _ _. cbv [pstep_cfg sstep_cfg].
-    split; [intros [] | intros (c' & _ & [])].
-  Qed.
-
-  Lemma pstep_single_err : forall ctx c evs, wait4_intercept c = false ->
-    (pstep_cfg ctx (one_proc c) evs PError <-> sstep_cfg ctx c evs SError).
-  Proof. intros ctx c evs _. cbv [pstep_cfg sstep_cfg]. split; intros H; exact H. Qed.
-
   Lemma pstep_at_sub : forall ctx p P evs r, pstep_at ctx p P evs r -> pstep_cfg ctx P evs r.
   Proof. intros ctx p P evs r H. destruct H. Qed.
 
@@ -99,16 +79,6 @@ Module ToyCore <: PROCS_CORE.
   Lemma pstep_at_one : forall ctx c evs r,
     pstep_at ctx one_pid (one_proc c) evs r <-> pstep_cfg ctx (one_proc c) evs r.
   Proof. intros ctx c evs r. cbv [pstep_at pstep_cfg]. split; intros H; exact H. Qed.
-
-  Lemma pstep_clone_law : forall ctx P e evs c' q,
-    look P (pe_pid e) = Some e ->
-    sstep_cfg ctx (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
-    clone_success (pe_cfg (pcfg_shared P) e) c' = true ->
-    child_pid c' q ->
-    look P q = None ->
-    multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
-    pstep_cfg ctx P evs (PNext (clone_result P e c' q)).
-  Proof. intros ctx P e evs c' q _ H. destruct H. Qed.
 
   Lemma child_projection_of_clone : forall ctx P evs P',
     pstep_cfg ctx P evs (PNext P') ->

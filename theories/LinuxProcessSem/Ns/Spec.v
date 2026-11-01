@@ -1,8 +1,9 @@
 (** * LinuxProcessSem.Ns.Spec — the namespace model's answers, as a step extension
 
     [ns_ext] is the namespace and mount model as an [Ns.Ext.ExtSpec]: a
-    core that takes it answers every system call but [clone] (220) and
-    [wait4] (260), which stay the core's own, through [ns_spec].
+    core that takes it answers every system call but [clone] (220),
+    [clone3] (435) and [wait4] (260), which stay the core's own, through
+    [ns_spec].
 
     [ns_spec] has two regimes.
     - For a task in the released world ([flat_view]: each of its
@@ -24,7 +25,7 @@
 
 From Stdlib Require Import ZArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Task.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Task Clone.
 Import ListNotations.
 
 (** The arms, by call number.  A number not listed fails closed. *)
@@ -38,9 +39,13 @@ Fixpoint lookup_ns_arm (t : list (Z * NsArm)) (n : Z) : option NsArm :=
 
 Definition ns_sysno (i : SyscallInput) : Z := bv_unsigned (in_sysno i).
 
-(** Every call but [clone] and [wait4], which the core answers. *)
+(** The calls the core answers itself: [clone] (220), [clone3] (435) and
+    [wait4] (260).  The core creates and reaps children; [ext_clone] says
+    what a clone does to the namespace model. *)
+Definition core_sysnos : list Z := [220; 260; 435]%Z.
+
 Definition ns_claims (i : SyscallInput) : bool :=
-  negb (Z.eqb (ns_sysno i) 220 || Z.eqb (ns_sysno i) 260).
+  negb (existsb (Z.eqb (ns_sysno i)) core_sysnos).
 
 Definition ns_spec : NsArm := fun i m ctx st o =>
   if flat_view ctx st then released i m ctx st o
@@ -50,18 +55,9 @@ Definition ns_spec : NsArm := fun i m ctx st o =>
        end.
 
 Lemma ns_coherent : forall i m ctx st,
-  flat_view ctx st = true -> ns_claims i = true -> ~ syscall_spec i m Unmodeled ->
-  forall o, ns_spec i m ctx st o <->
-            exists eff m' evs, o = EOk eff m' ctx st evs /\ syscall_spec i m (Ok eff m' evs).
-Proof.
-  intros i m ctx st Hflat _ Hans o. unfold ns_spec. rewrite Hflat.
-  destruct o as [eff m' ctx' st' evs|]; cbn [released]; split.
-  - intros (-> & -> & H). exists eff, m', evs. split; [reflexivity | exact H].
-  - intros (eff0 & m0 & evs0 & Heq & H). injection Heq as -> -> -> -> ->.
-    split; [reflexivity | split; [reflexivity | exact H]].
-  - intros H. contradiction.
-  - intros (eff0 & m0 & evs0 & Heq & _). discriminate Heq.
-Qed.
+  flat_view ctx st = true -> ns_claims i = true ->
+  forall o, ns_spec i m ctx st o <-> released i m ctx st o.
+Proof. intros i m ctx st Hflat _ o. unfold ns_spec. rewrite Hflat. reflexivity. Qed.
 
 (* =========================================================================
    Injected refusals
@@ -148,8 +144,39 @@ Proof.
   destruct (P (Z.opp (bv_signed ret))); cbn; [rewrite andb_true_r; reflexivity | reflexivity].
 Qed.
 
+(** The descriptor calls whose released answer reads or moves a
+    descriptor's private state (an offset, a pipe's or socket's buffer, a
+    directory position, status flags): fcntl, ioctl, close, getdents64,
+    lseek, read, write, readv, writev, pread64, pwrite64, sendto,
+    recvfrom, sendmsg, recvmsg. *)
+Definition private_fd_calls : list Z :=
+  [25; 29; 57; 61; 62; 63; 64; 65; 66; 67; 68; 206; 207; 211; 212]%Z.
+
+(** The call reaches the released answer on such a descriptor of the
+    released model: a file, a pipe, a socket or a directory. *)
+Definition released_private_fd (i : SyscallInput) (m : Model) : bool :=
+  existsb (Z.eqb (ns_sysno i)) private_fd_calls
+  && match fd_lookup (m_fds m) (in_arg i 0) with
+     | Some (FdFile _ _) | Some (FdFileW _ _) | Some (FdFileA _ _) | Some (FdFileRW _ _)
+     | Some (FdPipe _ _) | Some (FdSocket _) | Some FdDir => true
+     | _ => false
+     end.
+
+(** The claimed calls [ns_ext] answers soundly while other processes are
+    live: a task outside the released world, whose arms read the shared
+    namespace state, except a call that falls back to the released answer
+    on a descriptor whose state a multi-process core keeps per process.
+    A task in the released world gets the core's own guard. *)
+Definition ns_multiproc (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : bool :=
+  negb (flat_view ctx st) && negb (released_private_fd i m).
+
+Lemma ns_multiproc_coherent : forall i m ctx st,
+  flat_view ctx st = true -> ns_multiproc i m ctx st = false.
+Proof. intros i m ctx st H. unfold ns_multiproc. rewrite H. reflexivity. Qed.
+
 Definition ns_ext : ExtSpec :=
-  mkExtSpec ns_claims ns_spec ns_refusal ns_coherent ns_refusal_coherent.
+  mkExtSpec ns_claims ns_spec ns_refusal clone_ns ns_multiproc ns_coherent ns_refusal_coherent
+            clone_ns_coherent ns_multiproc_coherent.
 
 (** For a task in the released world [ns_ext] answers exactly as the
     released model does, Unmodeled included. *)

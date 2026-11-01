@@ -1,7 +1,7 @@
 (** * LinuxProcessSem.Ns.Pass — calls a namespace does not change
 
     For a task in a namespace the tables model, these calls answer as the
-    released model answers them ([Arm.released]): nothing they read or
+    released model answers them ([Ext.released]): nothing they read or
     write depends on a namespace.  Each number was checked against Linux
     6.18.44 and against the released arm:
 
@@ -30,7 +30,7 @@
     socket calls (network namespaces), and every call that walks a path. *)
 
 From Stdlib Require Import ZArith List.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Arm.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Ext Arm.
 Import ListNotations.
 
 Definition pass_numbers : list Z :=
