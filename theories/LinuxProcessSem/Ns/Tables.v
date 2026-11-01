@@ -161,14 +161,22 @@ Record Inode := mkInode {
 
 (** A name in a directory: dentry [d_id] of superblock [d_sb] names inode
     [d_inode] in directory dentry [d_parent], or is the superblock's root
-    when [d_parent] is [None]. *)
-Record Dentry := mkDentry {
-  d_id     : positive;
-  d_sb     : positive;
-  d_parent : option positive;
-  d_name   : list byte;
-  d_inode  : positive
+    when [d_parent] is [None].  [d_unlinked]: the name was removed
+    ([d_unlinked], include/linux/dcache.h) while something still holds the
+    dentry (an open file, or a mount whose root it is); its parent stays, as
+    the kernel's does, but no lookup or listing finds it. *)
+Record Dentry := mkDentryRec {
+  d_id       : positive;
+  d_sb       : positive;
+  d_parent   : option positive;
+  d_name     : list byte;
+  d_inode    : positive;
+  d_unlinked : bool
 }.
+
+(** A dentry that is linked in its directory. *)
+Definition mkDentry (i s : positive) (p : option positive) (name : list byte) (ino : positive) : Dentry :=
+  mkDentryRec i s p name ino false.
 
 (** Where a walk ends: a dentry seen through a mount, or an entry of a
     task's procfs directory ([/proc/<pid>/...] below the task's

@@ -81,8 +81,14 @@ Fixpoint sb_path_fuel (fuel : nat) (st : NsState) (d : positive) (acc : list byt
            end
   end.
 
+(** [dentry_path] (fs/d_path.c), which [show_mountinfo] prints the root
+    with: [dentry_path_raw]'s path, then "//deleted" for an unlinked dentry. *)
 Definition sb_path (st : NsState) (d : positive) : option (list byte) :=
-  sb_path_fuel (S (length (ns_dentries st))) st d [].
+  let deleted := match find_dentry st d with
+                 | Some x => if d_unlinked x then ascii [47; 47; 100; 101; 108; 101; 116; 101; 100] else []
+                 | None => []
+                 end in
+  option_map (fun p => p ++ deleted) (sb_path_fuel (S (length (ns_dentries st))) st d []).
 
 Definition flag_text (m : Mount) : list byte :=
   (if mf_ro (mnt_flags m) then ascii [32; 114; 111] else ascii [32; 114; 119])
