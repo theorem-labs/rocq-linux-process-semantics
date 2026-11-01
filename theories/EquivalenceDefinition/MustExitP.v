@@ -470,3 +470,88 @@ Proof.
         * pose proof (Hdec P evs P' HI Hss). lia. }
   intros P HI. exact (Hgen (mu P) P HI (Nat.le_refl _)).
 Qed.
+
+(* =========================================================================
+   Measure arithmetic over the process table
+   ========================================================================= *)
+
+(** [must_exit_in_p_at_by_measure] takes the measure as a parameter, and for
+    straight-line code the measure a caller wants is a SUM over the live
+    entries of a per-entry count -- the instructions that entry has left.
+    These three lemmas are the arithmetic of that sum under the three things
+    an arm does to the table, and they are what turn "this entry made
+    progress" into "the system's measure went down".
+
+    Each is stated WITHOUT SUBTRACTION, as [lhs + f e = rhs + f e'] rather
+    than [lhs = rhs - f e + f e'], because truncated subtraction on [nat]
+    turns a true statement about the sum into a false one as soon as the
+    caller's [f] is not monotone, and that is a trap worth not setting.
+
+    None needs key uniqueness, for the same reason the frame lemmas above do
+    not: [look_in], [replace_in] and [drop_in] all act on the FIRST entry at
+    a key, so they agree about which entry they mean whether or not the
+    table repeats a key. *)
+
+Definition msum (f : ProcessEntry -> nat) (ps : list (Pid * ProcessEntry))
+    : nat :=
+  List.fold_right (fun kv acc => (f (snd kv) + acc)%nat) 0%nat ps.
+
+(** One step of the sum, as an equation rather than by reduction.  Needed
+    because [cbn] unfolds [msum] in the GOAL while an induction hypothesis
+    still says [msum], and [lia] then sees two different atoms for the same
+    quantity and reports that it cannot find a witness. *)
+Lemma msum_cons : forall f kv ps,
+  msum f (kv :: ps) = (f (snd kv) + msum f ps)%nat.
+Proof. reflexivity. Qed.
+
+(** An ordinary step, and a clone's effect on the parent: one entry is
+    replaced by another at the same key. *)
+Lemma msum_replace : forall f ps p e e',
+  look_in ps p = Some e ->
+  (msum f (replace_in ps p e') + f e = msum f ps + f e')%nat.
+Proof.
+  induction ps as [|kv r IH]; intros p e e' Hl;
+    [cbn in Hl; discriminate|].
+  cbn [look_in replace_in] in *.
+  destruct (bv_eqb (fst kv) p) eqn:Hb.
+  - injection Hl as <-. rewrite !msum_cons. cbn [snd]. lia.
+  - rewrite !msum_cons. pose proof (IH p e e' Hl). lia.
+Qed.
+
+(** A reap: one entry leaves the table. *)
+Lemma msum_drop : forall f ps p e,
+  look_in ps p = Some e ->
+  (msum f (drop_in ps p) + f e = msum f ps)%nat.
+Proof.
+  induction ps as [|kv r IH]; intros p e Hl; [cbn in Hl; discriminate|].
+  cbn [look_in drop_in] in *.
+  destruct (bv_eqb (fst kv) p) eqn:Hb.
+  - injection Hl as <-. rewrite !msum_cons. lia.
+  - rewrite !msum_cons. pose proof (IH p e Hl). lia.
+Qed.
+
+(** A clone: the child is appended. *)
+Lemma msum_app : forall f ps ps',
+  (msum f (ps ++ ps') = msum f ps + msum f ps')%nat.
+Proof.
+  induction ps as [|kv r IH]; intros ps'; [reflexivity|].
+  cbn [app]. rewrite !msum_cons, IH. lia.
+Qed.
+
+(** The measure a caller builds from a per-entry count. *)
+Definition pmeasure (f : ProcessEntry -> nat) (P : pconfig) : nat :=
+  msum f (pcfg_procs P).
+
+(** An ordinary step decreases it exactly when the stepping entry's own
+    count decreases.  This is the whole of the two-entry argument: the
+    schedule cannot matter, because whichever entry steps, the sum falls by
+    that entry's own decrease and nothing else moves. *)
+Lemma pmeasure_absorb_lt : forall f P e c',
+  look P (pe_pid e) = Some e ->
+  (f (pe_absorb e c') < f e)%nat ->
+  (pmeasure f (absorb P e c') < pmeasure f P)%nat.
+Proof.
+  intros f P e c' Hl Hlt. unfold pmeasure, absorb. cbn [pcfg_procs].
+  pose proof (msum_replace f (pcfg_procs P) (pe_pid e) e (pe_absorb e c') Hl).
+  lia.
+Qed.
