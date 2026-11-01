@@ -1,0 +1,4 @@
+# The built binary is not in the repository: the snapshot is
+# (theories/Examples/README.md). Rebuild it with the command in
+# forkwait.S's header.
+forkwait

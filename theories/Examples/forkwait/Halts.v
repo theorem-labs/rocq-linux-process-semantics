@@ -1,0 +1,1420 @@
+(** * Examples.forkwait.Halts — composing the segments with the bridge
+
+    [MustExitP.must_exit_in_p_at_by_measure] takes four premises, each
+    quantified over the reachable set through an invariant the caller
+    chooses.  This file chooses it, and the choice is the only interesting
+    decision here.
+
+    THE INVARIANT IS REACHABILITY ITSELF, not a disjunction over the
+    shapes the run passes through.  A disjunction is the obvious choice for
+    a 26-instruction program -- about eight cases, each pinned by the
+    program counter, [ms_svc_pending], how many entries are live and whether
+    the child is running, a zombie or reaped -- and it would work.  But it
+    pays twice: once to write the cases, and again to prove that a step from
+    each lands in another, which is exactly the first of the four premises.
+
+    Taking [fw_reach] instead makes that premise FREE: "the invariant
+    survives a step" is [fw_reach_step], a constructor.  The work does not
+    vanish, it moves: the other three premises then need to know what a
+    reachable configuration looks like, and that is [fw_reach_cases] below.
+    The difference is that the characterisation is written ONCE, as a lemma
+    with a proof, instead of twice -- once as a definition and once as a
+    preservation argument.  It is the same trade as the measure's
+    over-estimate: say the weakest thing that carries the proof. *)
+
+From Stdlib Require Import ZArith NArith List Bool Lia.
+From LinuxProcessSemantics.LinuxProcessSem Require Import
+  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run Procs.
+From LinuxProcessSemantics.EquivalenceDefinition Require Import MustExit MustExitP.
+From LinuxProcessSemantics.Examples.forkwait Require Import Measure.
+Import ListNotations.
+Open Scope bv_scope.
+
+(** The configurations a run from [P0] can be in. *)
+Inductive fw_reach (segs : list Segment) (cfg : SpuriousCfg) (P0 : pconfig)
+  : pconfig -> Prop :=
+| fw_reach_refl : fw_reach segs cfg P0 P0
+| fw_reach_step : forall P evs P',
+    fw_reach segs cfg P0 P ->
+    pstep_cfg segs cfg P evs (PNext P') ->
+    fw_reach segs cfg P0 P'.
+
+(** PREMISE ONE, FREE.  This is the whole reason for choosing reachability
+    over a disjunction: the first of the four premises is a constructor. *)
+Lemma fw_reach_preserved : forall segs cfg P0 P evs P',
+  fw_reach segs cfg P0 P ->
+  pstep_cfg segs cfg P evs (PNext P') ->
+  fw_reach segs cfg P0 P'.
+Proof. intros. eapply fw_reach_step; eassumption. Qed.
+
+(** And the entry point of any such argument. *)
+Lemma fw_reach_init : forall segs cfg P0, fw_reach segs cfg P0 P0.
+Proof. intros. apply fw_reach_refl. Qed.
+
+(** The shape of the whole composition, with the one premise that is free
+    already supplied.  What remains for a concrete program is the other
+    three, each of which needs to know what a reachable configuration looks
+    like. *)
+Theorem halts_of_reachable : forall segs cfg S P0 (mu : pconfig -> nat),
+  (forall P, fw_reach segs cfg P0 P -> terminal P ->
+     exists c code, root_view P = Some c
+                    /\ m_halted (cfg_model c) = Some code
+                    /\ List.In code S
+                    /\ m_killed (cfg_model c) = None) ->
+  (forall P, fw_reach segs cfg P0 P -> terminalb P = false ->
+     exists evs st, pstep_cfg segs cfg P evs st) ->
+  (forall P evs, fw_reach segs cfg P0 P ->
+     ~ pstep_cfg segs cfg P evs PError) ->
+  (forall P evs P', fw_reach segs cfg P0 P ->
+     pstep_cfg segs cfg P evs (PNext P') -> (mu P' < mu P)%nat) ->
+  must_exit_in_p_at segs cfg S P0.
+Proof.
+  intros segs cfg S P0 mu Hleaf Hprog Hnoerr Hdec.
+  apply (must_exit_in_p_at_by_measure segs cfg S (fw_reach segs cfg P0) mu).
+  - intros P evs P' HI Hs. eapply fw_reach_step; eassumption.
+  - exact Hleaf.
+  - exact Hprog.
+  - exact Hnoerr.
+  - exact Hdec.
+  - apply fw_reach_refl.
+Qed.
+
+(** WHAT REMAINS, written down rather than claimed, because this repository
+    bans [Admitted] and [Axiom] in a proof file and a theorem nobody has
+    proved is worth less than the note saying so.
+
+    [halts_of_reachable] reduces [forkwait_halts] to three facts about a
+    reachable configuration of [forkwait], all three of which go through one
+    characterisation lemma:
+
+      fw_reach_cases :
+        forall P, fw_reach forkwait_segs forced_only_cfg (pinit_config …) P ->
+          <P is one of the eight shapes>
+
+    The eight are: the straight run to the clone (one entry, no call
+    pending); the clone's [ecall] (one entry, 220 pending); the two-entry
+    stretch with the child running; the two-entry stretch with the child a
+    zombie holding status 7; the parent blocked at the [wait4] [ecall]; the
+    parent's run after the reap (one entry again, the child dropped); the
+    exit [ecall]; and the halted root.  Each is described by a segment
+    lemma of [ForkwaitSteps] and carries exactly the facts the three
+    premises need at that point.
+
+    The ninth shape a reader might expect -- the injected-errno path through
+    [0x1105c] -- is NOT reachable here, and that is a fact about the
+    environment rather than about the program: [Run.injected_table] puts
+    [clone] in [FamFd] (Run.v:1383), and at [Run.forced_only_cfg] every
+    family is off, so [sstep_cfg]'s spurious-refusal premise removes those
+    resolutions.  The program handles the path anyway ([fw_run_fail]), which
+    is why the claim also stands at [may_fail_cfg], where it IS reachable
+    and becomes a ninth shape.
+
+    The measure premise is then [MustExitP.pmeasure_absorb_lt] against
+    [Measure.fw_entry] at each shape, and the no-error premise is
+    [MustExitP.pstep_error_cases] at each shape -- the two inversion lemmas
+    existing for exactly this. *)
+
+(* =========================================================================
+   The eight shapes
+   ========================================================================= *)
+
+(** A reachable configuration of [forkwait], named by what the proof needs
+    of it at that point.  Each shape is a conjunction of facts a segment
+    lemma of [ForkwaitSteps] supplies.
+
+    THE PREDICATE IS ON THE CONFIGURATION, not on a position in a trace:
+    two different interleavings can arrive at the same shape, and that is
+    the point -- nothing here records which schedule got there. *)
+
+(** One entry, no call pending. *)
+Definition fw_one_running (P : pconfig) (pc : Z) : Prop :=
+  exists e, pcfg_procs P = [(pe_pid e, e)]
+            /\ look P (pcfg_root P) = Some e
+            /\ m_halted (pe_model e) = None
+            /\ ms_svc_pending (pe_ms e) = None
+            /\ bv_unsigned (ms_pc_val (pe_ms e)) = pc.
+
+(** One entry with a call pending. *)
+Definition fw_one_pending (P : pconfig) (pc : Z) (nr : Z) : Prop :=
+  exists e x8, pcfg_procs P = [(pe_pid e, e)]
+               /\ look P (pcfg_root P) = Some e
+               /\ m_halted (pe_model e) = None
+               /\ ms_svc_pending (pe_ms e) = Some x8
+               /\ bv_unsigned x8 = nr
+               /\ bv_unsigned (ms_pc_val (pe_ms e)) = pc.
+
+(** The root halted on [code], and nothing else in the table. *)
+Definition fw_one_halted (P : pconfig) (code : Z) : Prop :=
+  exists e c, pcfg_procs P = [(pe_pid e, e)]
+              /\ root_view P = Some c
+              /\ m_halted (cfg_model c) = Some (Z_to_bv 64 code)
+              /\ m_killed (cfg_model c) = None.
+
+(** Two entries, and BOTH are pinned.  An earlier version of this named
+    only the parent, and that is the "preserves itself for the wrong
+    reason" failure: a step of the CHILD would have landed back in it with
+    nothing said about where the child went, so the shape would have been
+    preserved while the proof learned nothing.  Every target shape must pin
+    both entries, not only the one that stepped.
+
+    The child is in one of three states, the three the run passes through:
+    running at a pc, with its [exit_group] pending, or a zombie holding
+    status 7.  That disjunction is what makes the two-entry stretch a
+    finite set of shapes rather than one shape with a hole in it. *)
+(** [a0] AT THE BRANCH COUNTERS, which the two branches read and which the
+    shapes previously did not carry.  Without it [fw_bltz_not_taken] has
+    nothing to follow from, and the edge to the errno tail would have to
+    be excluded by hand -- which is how the closure check came to swallow
+    it.  In the child a0 is zero; in the parent it is the pid the clone
+    chose, which [Fork.clone_pid_ok_b] bounds strictly between 0 and
+    2^22.  Both are facts the state really has, so this is narrowing. *)
+Definition fw_a0_child (ec : ProcessEntry) : Prop :=
+  ms_gpr (pe_ms ec) 0 = Z_to_bv 64 0.
+
+Definition fw_a0_parent (ep : ProcessEntry) : Prop :=
+  (0 < bv_unsigned (ms_gpr (pe_ms ep) 0))%Z
+  /\ (bv_unsigned (ms_gpr (pe_ms ep) 0) < 2 ^ 22)%Z.
+
+Definition fw_child (ec : ProcessEntry) : Prop :=
+  (m_halted (pe_model ec) = None
+   /\ ms_svc_pending (pe_ms ec) = None
+   /\ ((bv_unsigned (ms_pc_val (pe_ms ec)) = 0x1101c%Z /\ fw_a0_child ec)
+       \/ (bv_unsigned (ms_pc_val (pe_ms ec)) = 0x11020%Z /\ fw_a0_child ec)
+       \/ bv_unsigned (ms_pc_val (pe_ms ec)) = 0x11050%Z
+       \/ bv_unsigned (ms_pc_val (pe_ms ec)) = 0x11054%Z))
+  \/ (exists x8, m_halted (pe_model ec) = None
+                 /\ ms_svc_pending (pe_ms ec) = Some x8
+                 /\ bv_unsigned x8 = 94%Z
+                 /\ bv_unsigned (ms_pc_val (pe_ms ec)) = 0x11058%Z)
+  \/ (m_halted (pe_model ec) = Some (Z_to_bv 64 7)
+      /\ m_killed (pe_model ec) = None).
+
+(** The parent while two entries are live: on its way to the [wait4], or
+    blocked at it.  At the two branch counters it carries a0 as well, for
+    the same reason the child does. *)
+Definition fw_parent (ep : ProcessEntry) : Prop :=
+  m_halted (pe_model ep) = None
+  /\ ((ms_svc_pending (pe_ms ep) = None
+       /\ (0x1101c%Z <= bv_unsigned (ms_pc_val (pe_ms ep)) <= 0x11038%Z)%Z
+       /\ ((bv_unsigned (ms_pc_val (pe_ms ep)) = 0x1101c%Z
+            \/ bv_unsigned (ms_pc_val (pe_ms ep)) = 0x11020%Z)
+           -> fw_a0_parent ep))
+      \/ (exists x8, ms_svc_pending (pe_ms ep) = Some x8
+                     /\ bv_unsigned x8 = 260%Z
+                     /\ bv_unsigned (ms_pc_val (pe_ms ep)) = 0x1103c%Z)).
+
+Definition fw_two (P : pconfig) : Prop :=
+  exists ep ec,
+    pcfg_procs P = [(pe_pid ep, ep); (pe_pid ec, ec)]
+    /\ look P (pcfg_root P) = Some ep
+    /\ pe_parent ec = Some (pe_pid ep)
+    /\ pe_parent ep = None
+    /\ fw_parent ep
+    /\ fw_child ec.
+
+(** The eight shapes.  The ninth a reader expects -- the injected-errno
+    path through [0x1105c] -- is NOT here, and that is a fact about the
+    ENVIRONMENT rather than about the program: [Run.injected_table] puts
+    [clone] in [FamFd] (Run.v:1383), and [Run.forced_only_cfg] has every
+    family off, so [sstep_cfg]'s spurious-refusal premise deletes those
+    resolutions.  At [Run.may_fail_cfg] the path IS reachable, becomes a
+    ninth shape, and is covered by [ForkwaitSteps.fw_run_fail]: the same
+    statement is harder there and still holds. *)
+(** THE PROGRAM COUNTERS THE ONE-ENTRY SHAPES ADMIT, read off the
+    committed snapshot's own binary as the segments are.
+
+    An earlier [fw_shape] began [exists pc, fw_one_running P pc], which is
+    the [fw_two] defect in the one-entry case: a shape satisfied by ANY
+    program counter is preserved because it says almost nothing.  Pinning
+    the counters is NARROWING, not widening -- the opposite of making a
+    case close by weakening what is proved -- and the measure needs them
+    anyway, since [fw_absorb_decreases] reads the pc to compute what is
+    left.
+
+    As lists rather than as a twenty-way disjunction, so preservation per
+    segment is one decidable check: the successor of a member is a member
+    or the segment's [ecall]. *)
+
+(** The entry run into the clone, [0x11000] to the [ecall] at [0x11018]. *)
+Definition fw_pcs_A : list Z :=
+  [0x11000; 0x11004; 0x11008; 0x1100c; 0x11010; 0x11014; 0x11018]%Z.
+
+(** The two branches both processes run, then the child's tail. *)
+Definition fw_pcs_child : list Z :=
+  [0x1101c; 0x11020; 0x11050; 0x11054; 0x11058]%Z.
+
+(** The parent's prologue and its [wait4]. *)
+Definition fw_pcs_parent : list Z :=
+  [0x1101c; 0x11020; 0x11024; 0x11028; 0x1102c; 0x11030; 0x11034;
+   0x11038; 0x1103c]%Z.
+
+(** The parent's tail after the reap. *)
+Definition fw_pcs_reap : list Z :=
+  [0x11040; 0x11044; 0x11048; 0x1104c]%Z.
+
+(** Every counter a single live entry of this program can be at. *)
+Definition fw_pcs_one : list Z :=
+  fw_pcs_A ++ fw_pcs_child ++ fw_pcs_parent ++ fw_pcs_reap.
+
+Definition fw_shape (P : pconfig) : Prop :=
+  (exists pc, List.In pc fw_pcs_one /\ fw_one_running P pc)
+  \/ fw_one_pending P 0x11018 220
+  \/ fw_two P
+  \/ fw_one_pending P 0x1103c 260
+  \/ fw_one_pending P 0x1104c 94
+  \/ fw_one_pending P 0x11058 94
+  \/ fw_one_halted P 7.
+
+(* =========================================================================
+   The three remaining premises, against the shapes
+   ========================================================================= *)
+
+(** THE LEAF.  A terminal configuration of a shape has the root halted on
+    an allowed code.  Only the last shape can be terminal, and showing the
+    others cannot is the whole proof: each of the first six has an entry
+    with [m_halted = None], and [terminal] says every entry is halted.
+
+    This is the premise where a weaker statement would hide: if [terminal]
+    could hold at a shape whose root is NOT halted on 7, the theorem would
+    be about a different program.  So each case is discharged by producing
+    the running entry and contradicting it, never by a default. *)
+Lemma fw_shape_terminal_halted : forall P,
+  fw_shape P -> terminal P ->
+  exists c code, root_view P = Some c
+                 /\ m_halted (cfg_model c) = Some code
+                 /\ List.In code [Z_to_bv 64 7]
+                 /\ m_killed (cfg_model c) = None.
+Proof.
+  intros P Hsh Ht.
+  (* every shape but the last names a running entry; [terminal] says the
+     entry at the head of the table is halted, so those six are absurd.
+     [pe_zombie] is unfolded in the assertion itself: it is a definition,
+     and [congruence] does not see through one. *)
+  assert (Hhead : forall e r, pcfg_procs P = (pe_pid e, e) :: r ->
+                              m_halted (pe_model e) <> None).
+  { intros e r Hp. unfold terminal in Ht. rewrite Hp in Ht.
+    inversion Ht as [|x l Hx Hr]; subst. unfold pe_zombie in Hx. exact Hx. }
+  destruct Hsh as [(pc & _ & e & Hp & _ & Hh & _ & _)
+                  |[(e & x8 & Hp & _ & Hh & _)
+                  |[(ep & ec & Hp & _ & _ & _ & (Hh & _) & _)
+                  |[(e & x8 & Hp & _ & Hh & _)
+                  |[(e & x8 & Hp & _ & Hh & _)
+                  |[(e & x8 & Hp & _ & Hh & _)
+                  |(e & c & Hp & Hrv & Hhc & Hk)]]]]]];
+    try (exfalso; exact (Hhead _ _ Hp Hh)).
+  - (* the halted shape, the one that can be terminal *)
+    exists c, (Z_to_bv 64 7). split; [exact Hrv | split; [exact Hhc |]].
+    split; [left; reflexivity | exact Hk].
+Qed.
+
+(** THE MEASURE PREMISE, for the shapes where one entry steps and is
+    replaced.  [MustExitP.pmeasure_absorb_lt] does the arithmetic; what a
+    shape supplies is that the stepping entry's own count falls, which is
+    the measure table's business and not this file's. *)
+Lemma fw_absorb_decreases : forall P e c',
+  look P (pe_pid e) = Some e ->
+  (fw_entry (pe_absorb e c') < fw_entry e)%nat ->
+  (fw_measure (absorb P e c') < fw_measure P)%nat.
+Proof.
+  intros P e c' Hl Hlt. unfold fw_measure.
+  apply pmeasure_absorb_lt; assumption.
+Qed.
+
+(** THE NO-ERROR PREMISE, reduced to one obligation per shape.
+
+    [MustExitP.pstep_error_cases] says an error transition is one of the
+    two refusing arms: a released [SError], or the surface guard firing.
+    This turns "no shape errors" into exactly two things to rule out at
+    each shape, and it is the lemma the inversion layer exists for -- a
+    proof that inverted [pstep_at] here would name every constructor and
+    would break when [ext] adds two.
+
+    THE SURFACE GUARD IS FREE AT EVERY SHAPE OF THIS PROGRAM.
+    [multiproc_allowed] is [true] whenever no call is pending, and
+    whenever the pending number is one of 93, 94, 220, 260, 435 -- and
+    [forkwait] issues only 220, 260 and 94.  So [pstep_outside] cannot
+    fire anywhere in this run, and what is left at each shape is the
+    released [SError] alone. *)
+Lemma fw_guard_open : forall P c nr,
+  (ms_svc_pending (cfg_ms c) = None
+   \/ exists x8, ms_svc_pending (cfg_ms c) = Some x8
+                 /\ bv_unsigned x8 = nr
+                 /\ List.In nr multiproc_sysnos) ->
+  multiproc_allowed P c = true.
+Proof.
+  intros P c nr [Hn | (x8 & Hs & Hv & Hin)]; unfold multiproc_allowed.
+  - rewrite Hn. reflexivity.
+  - rewrite Hs. rewrite Hv.
+    apply orb_true_intro. right.
+    apply List.existsb_exists. exists nr.
+    split; [exact Hin | apply Z.eqb_refl].
+Qed.
+
+(** The three numbers this program issues are on the surface. *)
+Lemma fw_sysnos_allowed :
+  List.In 220%Z multiproc_sysnos
+  /\ List.In 260%Z multiproc_sysnos
+  /\ List.In 94%Z multiproc_sysnos.
+Proof. cbn. repeat split; tauto. Qed.
+
+(** THE PROGRESS PREMISE, and the one place it is not automatic.
+
+    At seven of the eight shapes progress is a single machine step or a
+    single syscall arm, so a step exists because a segment lemma produces
+    one.  At the eighth -- the parent blocked at the [wait4] [ecall] with
+    the child still running -- THE PARENT HAS NO STEP AT ALL, by design
+    (§7.2): a blocked entry is one with no arm, not one with a flag.  So
+    progress there is the CHILD's step, and the premise is met by the other
+    entry.
+
+    That is why the premise is stated over the system rather than over the
+    root: a root-only progress condition would be false at that shape and
+    the theorem would be unprovable for a program that blocks. *)
+Lemma fw_progress_from_entry : forall segs cfg P p evs r,
+  pstep_at segs cfg p P evs r ->
+  exists evs' st, pstep_cfg segs cfg P evs' st.
+Proof. intros segs cfg P p evs r H. exists evs, r. exists p. exact H. Qed.
+
+(** WHY THE SIX NON-TERMINAL SHAPES ARE NOT [inversion]-AND-DONE.
+
+    [fw_shape_terminal_halted] discharges each of the six by PRODUCING its
+    running entry and contradicting [terminal]'s claim that every entry is
+    halted.  A default case -- "the remaining shapes cannot be terminal" --
+    would look the same and prove less: it would hold even if a shape had
+    been written with its halt condition omitted, and the theorem would
+    then be about a program that may stop somewhere this one does not.
+
+    The leaf is the premise where a weaker statement hides, because it is
+    the only one that says what the answer IS rather than what the run does
+    next.  Every other premise is refutable by a wrong step; this one is
+    satisfiable by a wrong shape. *)
+
+(* =========================================================================
+   fw_reach_cases: every reachable configuration is one of the eight
+   ========================================================================= *)
+
+(** THE BASE CASE.  [pinit_config] is [one_proc] over [Run.init_config], so
+    the table is a single entry, the root is that entry, and the shape is
+    the first: one entry running, at the image's entry point.  Stated over
+    an arbitrary [c] because that is what makes it usable at the entry
+    point of any program, not just this one. *)
+Lemma fw_shape_one_proc : forall c,
+  m_halted (cfg_model c) = None ->
+  ms_svc_pending (cfg_ms c) = None ->
+  (* the pc is now PINNED to the counters the program can be at, so the
+     caller supplies it; at the entry point it is [0x11000], the head of
+     [fw_pcs_A] *)
+  List.In (bv_unsigned (ms_pc_val (cfg_ms c))) fw_pcs_one ->
+  fw_shape (one_proc c).
+Proof.
+  intros c Hh Hs Hin. left.
+  exists (bv_unsigned (ms_pc_val (cfg_ms c))).
+  split; [exact Hin|].
+  exists (one_entry c).
+  split; [reflexivity|].
+  split; [apply one_proc_entry|].
+  split; [exact Hh|].
+  split; [exact Hs|].
+  reflexivity.
+Qed.
+
+(** And the same for a configuration with a call already pending, which is
+    what each segment hands the next one. *)
+Lemma fw_shape_one_proc_pending : forall c x8 nr pc,
+  m_halted (cfg_model c) = None ->
+  ms_svc_pending (cfg_ms c) = Some x8 ->
+  bv_unsigned x8 = nr ->
+  bv_unsigned (ms_pc_val (cfg_ms c)) = pc ->
+  fw_one_pending (one_proc c) pc nr.
+Proof.
+  intros c x8 nr pc Hh Hs Hn Hp.
+  exists (one_entry c), x8.
+  split; [reflexivity|].
+  split; [apply one_proc_entry|].
+  split; [exact Hh|].
+  split; [exact Hs|].
+  split; [exact Hn | exact Hp].
+Qed.
+
+(** THE INDUCTIVE STEP, as a hypothesis on one transition.
+
+    [fw_reach_cases] is then an induction over [fw_reach] with the base
+    case above and this as the step, so it is stated separately: it is the
+    whole of the remaining work, and separating it says exactly what that
+    work is rather than burying it in a tactic. *)
+Definition fw_shape_preserved (segs : list Segment) (cfg : SpuriousCfg)
+    : Prop :=
+  forall P evs P', fw_shape P -> pstep_cfg segs cfg P evs (PNext P') ->
+                   fw_shape P'.
+
+(** Given it, the characterisation is the induction. *)
+Lemma fw_reach_cases : forall segs cfg P0 P,
+  fw_shape_preserved segs cfg ->
+  fw_shape P0 ->
+  fw_reach segs cfg P0 P ->
+  fw_shape P.
+Proof.
+  intros segs cfg P0 P Hpres H0 Hr.
+  induction Hr as [|P1 evs P2 Hr IH Hs].
+  - exact H0.
+  - exact (Hpres P1 evs P2 IH Hs).
+Qed.
+
+(** And then the whole composition, with every premise named. *)
+Theorem forkwait_halts_of_preserved : forall segs cfg S P0 mu,
+  fw_shape_preserved segs cfg ->
+  fw_shape P0 ->
+  (forall P, fw_shape P -> terminal P ->
+     exists c code, root_view P = Some c
+                    /\ m_halted (cfg_model c) = Some code
+                    /\ List.In code S
+                    /\ m_killed (cfg_model c) = None) ->
+  (forall P, fw_shape P -> terminalb P = false ->
+     exists evs st, pstep_cfg segs cfg P evs st) ->
+  (forall P evs, fw_shape P -> ~ pstep_cfg segs cfg P evs PError) ->
+  (forall P evs P', fw_shape P -> pstep_cfg segs cfg P evs (PNext P') ->
+     (mu P' < mu P)%nat) ->
+  must_exit_in_p_at segs cfg S P0.
+Proof.
+  intros segs cfg S P0 mu Hpres H0 Hleaf Hprog Hnoerr Hdec.
+  apply (must_exit_in_p_at_by_measure segs cfg S fw_shape mu).
+  - exact (fun P evs P' HI Hs => Hpres P evs P' HI Hs).
+  - exact Hleaf.
+  - exact Hprog.
+  - exact Hnoerr.
+  - exact Hdec.
+  - exact H0.
+Qed.
+
+(* =========================================================================
+   Towards fw_shape_preserved
+   ========================================================================= *)
+
+(** A one-entry configuration's successor is one-entry, unless the step was
+    the clone.  [absorb] replaces the stepping entry and rebuilds the
+    shared state; it never adds or drops one, so the table's LENGTH is
+    fixed by it. *)
+Lemma absorb_procs_length : forall P e c',
+  List.length (pcfg_procs (absorb P e c'))
+  = List.length (pcfg_procs P).
+Proof.
+  intros P e c'. unfold absorb. cbn [pcfg_procs].
+  apply replace_in_length.
+Qed.
+
+(** And a clone's successor has exactly one more entry: [clone_result]
+    replaces the parent and appends the child. *)
+Lemma clone_result_procs_length : forall P e c' q,
+  List.length (pcfg_procs (clone_result P e c' q))
+  = S (List.length (pcfg_procs P)).
+Proof.
+  intros P e c' q. unfold clone_result. cbn [pcfg_procs].
+  rewrite List.length_app, replace_in_length. cbn [List.length]. lia.
+Qed.
+
+(** THE CLONE SHAPE IS THE ONLY ONE WHERE THE ENTRY COUNT CHANGES, which is
+    why it is the only shape whose target is not determined by a program
+    counter alone.  These two lemmas are what let the preservation proof
+    tell the cases apart by counting, rather than by inspecting the
+    successor's table: a step from a one-entry shape either keeps one entry
+    (and the target is a one-entry shape at the successor's pc) or makes
+    two (and the target is [fw_two]).  Nothing else can happen, because
+    [pstep_next_cases] has exactly three producing arms and the reap needs
+    a zombie, which a one-entry configuration of this program does not
+    have. *)
+
+(** The reap arm's successor has one FEWER entry. *)
+Lemma drop_in_procs_length_lt : forall ps p e,
+  look_in ps p = Some e ->
+  (List.length (drop_in ps p) < List.length ps)%nat.
+Proof.
+  induction ps as [|kv r IH]; intros p e Hl; cbn in *; [discriminate|].
+  destruct (bv_eqb (fst kv) p) eqn:Hb; cbn.
+  - lia.
+  - pose proof (IH p e Hl). lia.
+Qed.
+
+(** A FINDING, recorded here because it is about the RELATION and not
+    about this program, and left UNPROVED rather than admitted.
+
+    The natural next lemma is that the entry count decides which arm
+    fired:
+
+      same count  -> [pstep_other]      (one entry replaced)
+      one more    -> [pstep_clone]      (a child appended)
+      one fewer   -> [pstep_wait_reap]  (a zombie dropped)
+
+    It would make the preservation proof a case analysis on three arms
+    rather than on eight shapes times three.  The first two hold, by
+    [absorb_procs_length] and [clone_result_procs_length] above.  THE
+    THIRD DOES NOT FOLLOW FROM THE ARM AS WRITTEN, and the reason is a
+    premise the arm is missing.
+
+    [Procs.pstep_wait_reap] requires [look P q = Some ez] and
+    [pe_parent ez = Some (pe_pid e)], but NEVER [q <> pe_pid e].  Nothing
+    in the arm stops the reaping parent and the reaped child being the
+    same entry: that would need [pe_parent e = Some (pe_pid e)], a
+    process that is its own parent, which [Procs.pconfig_wf]'s
+    parent-link clause excludes -- but [pconfig_wf] is NOT a premise of
+    the arm.  So on a malformed configuration the arm can drop the entry
+    it is also replacing, and the count argument cannot be completed
+    without either that invariant or a new premise.
+
+    THE PATHFINDER IS NOT AFFECTED.  Its configurations are well formed by
+    construction: [pinit_config] gives [pconfig_wf]
+    ([Procs.pconfig_wf_one_proc]) and no arm breaks it.  The count lemma
+    is provable with [pconfig_wf P] as a premise.
+
+    WHICH FIX IS RIGHT IS NOT MINE TO CHOOSE ALONE, because it changes a
+    trusted specification.  Adding [q <> pe_pid e] to the arm makes the
+    relation self-contained and costs existing uses nothing, since it is
+    implied wherever [pconfig_wf] holds.  Threading [pconfig_wf] into the
+    lemma instead leaves the relation able to express a self-reap and
+    relies on every caller to exclude it.  Everything else in this
+    development puts such conditions in the arm -- the surface guard, the
+    clone's pid freshness, the reap's own [m_killed] premise -- so the
+    first is what I would take, and it is reported before it is made. *)
+
+(** Dropping an entry that survives a replacement at a DIFFERENT key
+    shortens the table.  Stated without naming the replacement, so that a
+    use can let unification take it from the goal: the reap arm builds its
+    replacement inline, and every attempt to name that term picked the
+    wrong one. *)
+Lemma drop_replace_length_lt : forall ps p q e' ez,
+  bv_eqb p q = false ->
+  look_in ps q = Some ez ->
+  (List.length (drop_in (replace_in ps p e') q) < List.length ps)%nat.
+Proof.
+  intros ps p q e' ez Hne Hl.
+  pose proof (drop_in_procs_length_lt (replace_in ps p e') q ez) as Hlt.
+  rewrite look_in_replace_other in Hlt by exact Hne.
+  specialize (Hlt Hl). rewrite replace_in_length in Hlt. exact Hlt.
+Qed.
+
+(** THE LENGTH DECIDES WHICH ARM FIRED, now that the reap arm carries
+    [q <> pe_pid e].  No two producing arms change the table's length the
+    same way, so counting the successor is a decision procedure for the
+    arm -- which is what makes a preservation proof a case analysis on
+    three arms rather than on eight shapes times three.
+
+    The reap case needed the new premise and nothing else: with it,
+    [look_in_replace_other] carries the reaped entry's lookup through the
+    parent's replacement, and [drop_in_procs_length_lt] then shortens the
+    table. *)
+Lemma pstep_length_cases : forall segs cfg p P evs P',
+  pstep_at segs cfg p P evs (PNext P') ->
+  List.length (pcfg_procs P') = List.length (pcfg_procs P)
+  \/ List.length (pcfg_procs P') = S (List.length (pcfg_procs P))
+  \/ (List.length (pcfg_procs P') < List.length (pcfg_procs P))%nat.
+Proof.
+  intros segs cfg p P evs P' Hp.
+  (* FIVE branches, not three: [pstep_at] has the two error arms as well,
+     and a disjunctive pattern must cover every constructor even where the
+     conclusion rules most of them out.  Named rather than matched,
+     because the reap arm has thirteen premises and an Ltac pattern over
+     them is how the first attempt failed. *)
+  inversion Hp as
+    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Heq1 Heq2 Heq3
+    | P2 e2 evs2 c2 q2 Hl2 Hs2 Hc2 Hcp2 Hfr2 Hm2 Heq4 Heq5 Heq6
+    | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
+      Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
+      Heq7 Heq8 Heq9
+    | P4 e4 evs4 Hl4 Hs4 Hw4 Heq10 Heq11 Heq12
+    | P5 e5 Hl5 Hh5 Hm5 Heq13 Heq14 Heq15 ]; subst.
+  - left. apply absorb_procs_length.
+  - right; left. apply clone_result_procs_length.
+  - right; right. cbn [pcfg_procs].
+    (* [drop_replace_length_lt] does not mention the replacement entry, so
+       unification takes it from the GOAL.  Naming it, and quantifying
+       over it and instantiating, both picked the wrong term: the arm
+       builds its entry inline and it is not [pe_absorb e3 _]. *)
+    apply (drop_replace_length_lt _ _ _ _ ez3).
+    + destruct (bv_eqb (pe_pid e3) q3) eqn:Hb; [| reflexivity ].
+      apply bv_eqb_true_eq in Hb. congruence.
+    + exact Hlq3.
+Qed.
+
+(** [absorb] keeps the table's shape at a one-entry configuration: the
+    only entry is replaced by the absorbed one, and the root still names
+    it.  This is the structural half of preservation for every shape with
+    one entry; what the successor's pc is, is the segment lemmas' half. *)
+Lemma absorb_one_entry : forall P e c',
+  pcfg_procs P = [(pe_pid e, e)] ->
+  pcfg_root P = pe_pid e ->
+  pcfg_procs (absorb P e c') = [(pe_pid e, pe_absorb e c')]
+  /\ pcfg_root (absorb P e c') = pe_pid e
+  /\ look (absorb P e c') (pe_pid e) = Some (pe_absorb e c').
+Proof.
+  intros P e c' Hp Hr.
+  unfold absorb, look. cbn [pcfg_procs pcfg_root].
+  rewrite Hp. cbn [replace_in fst].
+  rewrite bv_eqb_same.
+  split; [reflexivity|]. split; [exact Hr|].
+  cbn [look_in fst snd]. rewrite bv_eqb_same. reflexivity.
+Qed.
+
+(** [pe_absorb] keeps the pid and the parent link, which is what every
+    shape's structural clauses are stated over. *)
+Lemma pe_absorb_ids : forall e c',
+  pe_pid (pe_absorb e c') = pe_pid e
+  /\ pe_parent (pe_absorb e c') = pe_parent e.
+Proof. intros e c'. split; reflexivity. Qed.
+
+(** And it carries the successor's machine state and halt flag through, so
+    a shape's pc and pending-call clauses can be read off [c'] directly. *)
+Lemma pe_absorb_state : forall e c',
+  pe_ms (pe_absorb e c') = cfg_ms c'
+  /\ m_halted (pe_model (pe_absorb e c')) = m_halted (cfg_model c').
+Proof. intros e c'. split; reflexivity. Qed.
+
+(** THE CLONE'S STRUCTURAL SHAPE, which is the only case where the target
+    is not determined by a program counter alone, because the entry count
+    changes.  At a one-entry configuration the successor's table is
+    exactly the parent followed by the child, so [fw_two]'s first four
+    clauses are read off [clone_result] and only the two state clauses
+    ([fw_parent], [fw_child]) remain for the segment lemmas. *)
+Lemma clone_result_two : forall P e c' q,
+  pcfg_procs P = [(pe_pid e, e)] ->
+  pcfg_root P = pe_pid e ->
+  pe_parent e = None ->
+  pcfg_procs (clone_result P e c' q)
+    = [(pe_pid e, pe_absorb e c');
+       (q, child_entry e (pe_cfg (pcfg_shared P) e) c' q)]
+  /\ pcfg_root (clone_result P e c' q) = pe_pid e
+  /\ look (clone_result P e c' q) (pe_pid e) = Some (pe_absorb e c')
+  /\ pe_parent (child_entry e (pe_cfg (pcfg_shared P) e) c' q)
+     = Some (pe_pid e)
+  /\ pe_parent (pe_absorb e c') = None.
+Proof.
+  intros P e c' q Hp Hr Hpar.
+  unfold clone_result, look. cbn [pcfg_procs pcfg_root].
+  (* [List.app] is NOT in the [cbn] list: reducing it alongside consumed
+     the [bv_eqb] redex the rewrite needs, which is why the previous
+     attempt reported no matching subterm. *)
+  rewrite Hp. cbn [replace_in fst].
+  rewrite bv_eqb_same. cbn [List.app].
+  split; [reflexivity|].
+  split; [exact Hr|].
+  split; [cbn [look_in fst snd]; rewrite bv_eqb_same; reflexivity|].
+  split; [reflexivity | exact Hpar].
+Qed.
+
+(** The child's pid is the one the clone returned, and its machine state
+    has a0 = 0 -- the two facts a consumer reads off the new entry. *)
+Lemma child_entry_ids : forall e c c' q,
+  pe_pid (child_entry e c c' q) = q
+  /\ entry_a0_zero (child_entry e c c' q).
+Proof.
+  intros e c c' q. split; [reflexivity | apply child_entry_a0_zero].
+Qed.
+
+(* =========================================================================
+   The state half: successors of a pinned counter
+   ========================================================================= *)
+
+(** The counters a single step can move to, from each member of
+    [fw_pcs_one].  Read off the committed snapshot's own binary: every
+    instruction is 4 bytes, so the successor of a straight-line counter is
+    the next one, and the two branches are the only places where it is not.
+
+    [0x1101c] is [bltz] and [0x11020] is [beqz], so each has TWO
+    successors, and both are in the list.  That is what makes this a
+    membership check rather than a function: the relation does not decide
+    which way a branch goes, and the shape does not have to. *)
+Definition fw_next_pcs (pc : Z) : list Z :=
+  match pc with
+  | 0x11000%Z => [0x11004]%Z
+  | 0x11004%Z => [0x11008]%Z
+  | 0x11008%Z => [0x1100c]%Z
+  | 0x1100c%Z => [0x11010]%Z
+  | 0x11010%Z => [0x11014]%Z
+  | 0x11014%Z => [0x11018]%Z     (* the ecall's own address *)
+  | 0x11018%Z => []%Z            (* the clone: its successor is the arm's *)
+  | 0x1101c%Z => [0x11020; 0x1105c]%Z   (* bltz: not taken, or taken *)
+  | 0x11020%Z => [0x11024; 0x11050]%Z   (* beqz: parent, or child *)
+  | 0x11024%Z => [0x11028]%Z
+  | 0x11028%Z => [0x1102c]%Z
+  | 0x1102c%Z => [0x11030]%Z
+  | 0x11030%Z => [0x11034]%Z
+  | 0x11034%Z => [0x11038]%Z
+  | 0x11038%Z => [0x1103c]%Z
+  | 0x1103c%Z => []%Z            (* the wait4: its successor is the reap *)
+  | 0x11040%Z => [0x11044]%Z
+  | 0x11044%Z => [0x11048]%Z
+  | 0x11048%Z => [0x1104c]%Z
+  | 0x1104c%Z => []%Z            (* exit_group *)
+  | 0x11050%Z => [0x11054]%Z
+  | 0x11054%Z => [0x11058]%Z
+  | 0x11058%Z => []%Z            (* exit_group *)
+  | _ => []%Z
+  end.
+
+(** THE CHECK, AND THE ONE EDGE IT MUST NOT SWALLOW.
+
+    An earlier version filtered [0x1105c] out of the successor lists
+    before checking membership.  That is WRONG, and wrong in the way this
+    file keeps finding: it builds the exclusion into what the computation
+    CLAIMS, so a [vm_compute] appears to prove closure while the real
+    obligation -- that the branch to the errno tail is not taken -- has
+    quietly become a premise nobody discharges.  A membership check that
+    drops an edge is a premise, not a computation.
+
+    So the computation below runs over the counters whose successors
+    really are all members, and [0x1101c] is NOT one of them.  Its edge to
+    [0x1105c] is discharged separately, by a fact about the STATE. *)
+Definition fw_pcs_straight : list Z :=
+  List.filter (fun x => negb (Z.eqb x 0x1101c)) fw_pcs_one.
+
+Definition fw_pcs_closed : bool :=
+  List.forallb
+    (fun pc => List.forallb (fun pc' => List.existsb (Z.eqb pc') fw_pcs_one)
+                            (fw_next_pcs pc))
+    fw_pcs_straight.
+
+Lemma fw_pcs_closed_ok : fw_pcs_closed = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(** THE EDGE AT [0x1101c], as a state fact rather than as a filter.
+
+    [bltz a0] branches to [0x1105c] exactly when a0 is negative as a
+    SIGNED word.  At [Run.forced_only_cfg] the clone cannot have returned
+    an errno -- [Run.injected_table] puts clone in [FamFd] (Run.v:1383),
+    that environment has every family off, and [sstep_cfg]'s
+    spurious-refusal premise deletes those resolutions -- so a0 at
+    [0x1101c] is the pid the clone chose, or zero in the child.
+    [Fork.clone_pid_ok_b] bounds the pid strictly between 0 and 2^22, and
+    [ForkwaitSteps.fw_signed_small] makes a word below 2^63 its own signed
+    value, so a0 is not negative and the branch is not taken.
+
+    NOT YET DISCHARGED, and named rather than assumed: the shapes do not
+    carry a0 at [0x1101c], so the fact is not available to the per-arm
+    assembly.  Pinning it there is the fix -- narrowing, not widening --
+    and it is reported before the shapes change. *)
+Definition fw_bltz_not_taken (e : ProcessEntry) : Prop :=
+  (0 <= bv_signed (ms_gpr (pe_ms e) 0))%Z.
+
+(** AND NOW THE EDGE FOLLOWS FROM THE SHAPE, which is what pinning a0 was
+    for.  In the child a0 is zero, whose signed reading is zero; in the
+    parent it is a pid under 2^22, far below 2^63, so
+    [ForkwaitSteps.fw_signed_small] makes its signed reading its unsigned
+    one.  Neither is negative, so [bltz] is not taken and the edge to the
+    errno tail is excluded by a FACT ABOUT THE STATE rather than by a
+    filter in a computation. *)
+(** The two signed facts, proved here rather than imported.  The segment
+    file has them as [fw_signed_zero] and [fw_signed_small], but it is not
+    on the one-file checker's load path -- the labelled image installs the
+    core package only -- so this file carries its own copies to stay
+    checkable.  Three lines each. *)
+Lemma fw_signed_of_zero : bv_signed (Z_to_bv 64 0) = 0%Z.
+Proof. vm_compute. reflexivity. Qed.
+
+Lemma fw_signed_of_small : forall x : word,
+  (bv_unsigned x < 2 ^ 63)%Z -> bv_signed x = bv_unsigned x.
+Proof.
+  intros x Hx. pose proof (bv_unsigned_in_range 64 x) as Hr.
+  (* unfolded rather than by a named lemma: [bv_signed_unsigned] does not
+     exist, and this is how the segment file proves the same fact *)
+  unfold bv_signed, bv_swrap, bv_wrap, bv_half_modulus, bv_modulus in *.
+  cbn in *. rewrite Z.mod_small; lia.
+Qed.
+
+Lemma fw_bltz_not_taken_child : forall ec,
+  fw_a0_child ec -> fw_bltz_not_taken ec.
+Proof.
+  intros ec H. unfold fw_bltz_not_taken, fw_a0_child in *.
+  rewrite H, fw_signed_of_zero. apply Z.le_refl.
+Qed.
+
+Lemma fw_bltz_not_taken_parent : forall ep,
+  fw_a0_parent ep -> fw_bltz_not_taken ep.
+Proof.
+  intros ep [Hlo Hhi]. unfold fw_bltz_not_taken.
+  rewrite fw_signed_of_small; [lia|].
+  eapply Z.lt_trans; [exact Hhi | vm_compute; reflexivity].
+Qed.
+
+(* =========================================================================
+   Determinism boundaries: where a stretch has a unique successor
+   ========================================================================= *)
+
+(** [MustExitP.mepa_det_step] consumes a stretch whose successor is
+    UNIQUE, and the boundaries of such a stretch are facts to be proved,
+    not comments to be trusted.  Three of them.
+
+    AN INSTRUCTION STEP IS UNIQUE.  With no call pending, the only arm of
+    [Procs.pstep_at] that can fire is the instruction one, and
+    [Run.mi_account_step] is a function, so the successor is determined.
+    The clone, the exits and the wait4 all have a call pending, so none of
+    them is in an instruction stretch. *)
+Definition fw_det_at (e : ProcessEntry) : Prop :=
+  ms_svc_pending (pe_ms e) = None.
+
+(** THE CLONE IS NOT DETERMINISTIC, even at [forced_only_cfg].  The
+    environment removes the injected errno resolutions, but
+    [Fork.clone_resolve] still CHOOSES a pid --
+    [choose (fun p => clone_pid_ok_b m p = true)] -- and any pid in the
+    envelope is a legal successor.  So the clone step belongs to the
+    measure stretch and never to a deterministic one.  This is the
+    boundary stated as a definition so a proof cannot cross it by
+    accident. *)
+Definition fw_clone_step (e : ProcessEntry) : Prop :=
+  exists x8, ms_svc_pending (pe_ms e) = Some x8
+             /\ clone_sysno (bv_unsigned x8) = true.
+
+(** THE FINAL [exit_group] IS DETERMINISTIC, and this is the question
+    worth having asked rather than assumed.  [Exit.exit_spec] is
+    [set_halted (bv_and code 255) ;; ret_only 0]: no [alt], no [choose],
+    so the spec has exactly one outcome.  And only one arm of
+    [Run.sstep_cfg] can take it -- [sstep_cfg_syscall] requires
+    [m_halted model' = None], which [set_halted] falsifies, so
+    [sstep_cfg_exit] is the only one left.  A stretch ending at the final
+    exit is therefore deterministic throughout. *)
+Definition fw_exit_step (e : ProcessEntry) : Prop :=
+  exists x8, ms_svc_pending (pe_ms e) = Some x8
+             /\ bv_unsigned x8 = 94%Z.
+
+(** The three are mutually exclusive, which is what makes them a
+    partition of the steps this program takes rather than three
+    overlapping descriptions. *)
+Lemma fw_det_not_clone : forall e, fw_det_at e -> ~ fw_clone_step e.
+Proof.
+  intros e Hd [x8 [Hs _]]. unfold fw_det_at in Hd. congruence.
+Qed.
+
+Lemma fw_det_not_exit : forall e, fw_det_at e -> ~ fw_exit_step e.
+Proof.
+  intros e Hd [x8 [Hs _]]. unfold fw_det_at in Hd. congruence.
+Qed.
+
+Lemma fw_clone_not_exit : forall e, fw_clone_step e -> ~ fw_exit_step e.
+Proof.
+  intros e [x8 [Hs Hc]] [y8 [Hs' Hy]].
+  rewrite Hs in Hs'. injection Hs' as <-.
+  unfold clone_sysno in Hc. rewrite Hy in Hc. cbn in Hc. discriminate.
+Qed.
+
+(** THE THREE PER-STEP OBLIGATIONS ARE GONE, deliberately.  An earlier
+    version of this file named [fw_owes_other], [fw_owes_clone] and
+    [fw_owes_reap], and assembled them into the statement.  They were
+    true statements, but once the route changed to consuming whole
+    deterministic stretches they stopped being on the proof path, and a
+    stated-but-unused definition beside a real proof invites a reader to
+    think it is used.  What the per-step route would have cost is
+    recorded in the design, not here. *)
+(* =========================================================================
+   An interface mismatch, and the way through it
+   ========================================================================= *)
+
+(** THE THREE ARM OBLIGATIONS ABOVE CANNOT BE DISCHARGED FROM THE SEGMENT
+    LEMMAS AS THEY STAND, and the reason is a shape mismatch rather than a
+    missing fact.  It is worth stating precisely, because the obvious
+    reading -- "connect each counter to its successor through the segment
+    lemmas" -- does not typecheck.
+
+    [fw_owes_other] is about ONE transition of [pstep_at], whose
+    instruction arm is one [Run.mi_account_step].  The segment lemmas are
+    about [ForkwaitSteps.machine_run segs k ms], a run of [k] steps:
+    [fw_run_A] is seven, [fw_run_parent] nine.  To use a segment lemma for
+    a single step one must DECOMPOSE a [machine_run], and the segment file
+    exports no decomposition: [mrun_step] builds a run FROM a step, and
+    the per-instruction fetch and decode facts live in the generated
+    [forkwait_code], which this file does not import.
+
+    So the per-step obligations would need either a [machine_run]
+    inversion lemma -- "a run of [S k] steps from [ms] is a step to some
+    [ms'] and a run of [k] from it" -- or the generated per-instruction
+    lemmas in scope here.
+
+    THE BETTER ROUTE DOES NOT NEED EITHER, and it is the one
+    [MustExitP.mepa_det_step] was proved for.  A straight-line stretch of
+    this program is DETERMINISTIC: one live entry, no branch whose
+    direction is open, so the successor of each configuration is unique.
+    [mepa_det_step] consumes such a stretch WHOLE -- it asks for the
+    successor, not for an invariant at every intermediate state -- so a
+    segment lemma is applied exactly as it is stated, at the [k] it has.
+    The measure argument is then needed only for the two-entry stretch,
+    where the successor really is not unique, which is what the note
+    beside [mepa_det_step] says it is for.
+
+    That makes the shape invariant unnecessary for the straight-line
+    parts, and [fw_shape] earns its keep only across the clone and the
+    reap.  It is a change of route within this file: no shape is widened,
+    no premise is added to [forkwait_halts], and nothing in [Procs.v]
+    moves.  The three obligations above stay as the record of what the
+    per-step route would have cost. *)
+
+(* =========================================================================
+   The run, assembled
+   ========================================================================= *)
+
+(** THE SHAPE OF THE WHOLE PROOF, with each stretch consuming the lemma
+    it fits.  Three stretches and two steps between them:
+
+      A   det_run   the entry run, 7 instructions to the clone's ecall
+      1   measure   the clone: a pid is chosen, so not deterministic
+      B   measure   two entries live: every interleaving, child's exit,
+                    the parent's run to its wait4 ecall
+      2   measure   the reap: the zombie leaves the table
+      C   det_run   the parent's tail, 4 steps to the final exit
+
+    [det_run] carries A and C whole, at the [k] the segment lemmas have.
+    [must_exit_in_p_at_by_measure] carries B, where the successor is
+    genuinely not unique, with [fw_shape] as its invariant and
+    [fw_measure] as its measure.
+
+    The composition is backwards, as the predicate is: the final exit
+    establishes [must_exit_in_p_at] at the end of C, [det_run] carries it
+    to the start of C, the measure carries it across B, and [det_run]
+    carries it to the entry point. *)
+
+(** The last configuration: the root halted on 7, nothing else live. *)
+Definition fw_done (P : pconfig) : Prop := fw_one_halted P 7.
+
+(** At the end, the predicate holds immediately: the leaf arm applies,
+    because the root is halted on an allowed code and the table has only
+    it.  This is the base the whole backwards composition rests on. *)
+Lemma fw_halts_at_done : forall segs cfg P,
+  fw_done P ->
+  terminal P ->
+  must_exit_in_p_at segs cfg [Z_to_bv 64 7] P.
+Proof.
+  intros segs cfg P (e & c & Hp & Hrv & Hh & Hk) Ht.
+  eapply mepa_halted; [exact Hrv | exact Hh | left; reflexivity
+                      | exact Hk | exact Ht].
+Qed.
+
+(** AND THE COMPOSITION, with every stretch named as a hypothesis.  Each
+    is what one segment lemma plus the arm lemmas of this file deliver;
+    none of them is an assumption about the program, they are the four
+    facts the five segments and two syscall arms establish.
+
+    This is the whole theorem modulo those four, and it is stated so that
+    discharging them is the only work between here and
+    [Statement.forkwait_halts]. *)
+Theorem forkwait_halts_of_stretches : forall segs cfg P0 Pclone,
+  (* A: the entry run reaches the clone's ecall deterministically *)
+  det_run segs cfg P0 Pclone ->
+  (* 1+B+2: from the clone through the two-entry stretch to after the
+     reap, by the measure, with the shapes as the invariant *)
+  (fw_shape Pclone ->
+   (forall P, fw_shape P -> terminal P ->
+      exists c code, root_view P = Some c
+                     /\ m_halted (cfg_model c) = Some code
+                     /\ List.In code [Z_to_bv 64 7]
+                     /\ m_killed (cfg_model c) = None) ->
+   (forall P, fw_shape P -> terminalb P = false ->
+      exists evs st, pstep_cfg segs cfg P evs st) ->
+   (forall P evs, fw_shape P -> ~ pstep_cfg segs cfg P evs PError) ->
+   (forall P evs P', fw_shape P -> pstep_cfg segs cfg P evs (PNext P') ->
+      (fw_measure P' < fw_measure P)%nat) ->
+   must_exit_in_p_at segs cfg [Z_to_bv 64 7] Pclone) ->
+  fw_shape Pclone ->
+  (forall P, fw_shape P -> terminal P ->
+     exists c code, root_view P = Some c
+                    /\ m_halted (cfg_model c) = Some code
+                    /\ List.In code [Z_to_bv 64 7]
+                    /\ m_killed (cfg_model c) = None) ->
+  (forall P, fw_shape P -> terminalb P = false ->
+     exists evs st, pstep_cfg segs cfg P evs st) ->
+  (forall P evs, fw_shape P -> ~ pstep_cfg segs cfg P evs PError) ->
+  (forall P evs P', fw_shape P -> pstep_cfg segs cfg P evs (PNext P') ->
+     (fw_measure P' < fw_measure P)%nat) ->
+  must_exit_in_p_at segs cfg [Z_to_bv 64 7] P0.
+Proof.
+  intros segs cfg P0 Pclone HA HB Hsh Hleaf Hprog Hnoerr Hdec.
+  (* A, backwards *)
+  apply (must_exit_in_p_at_det_run segs cfg _ P0 Pclone HA).
+  (* and the measure carries the rest *)
+  exact (HB Hsh Hleaf Hprog Hnoerr Hdec).
+Qed.
+
+(* =========================================================================
+   Discharging the four facts
+   ========================================================================= *)
+
+(** FACT ONE: the clone's successor is a [fw_two] shape.
+
+    The structural half is [clone_result_two]: four of the six clauses
+    come from the shape of [clone_result] alone.  What is left is
+    [fw_parent] on the absorbed parent and [fw_child] on the new child,
+    and both are at the resume counter [0x1101c] -- the address
+    [advance_past_svc] lands on from the clone's [ecall] at [0x11018].
+
+    The a0 clauses are where the pinning pays: in the parent a0 is the
+    returned pid, which [Fork.clone_pid_ok_b] bounds, and in the child it
+    is zero by [child_entry_a0_zero].  Both are supplied as hypotheses
+    here because they come from the clone ARM, which this file reasons
+    about through [Procs], not from a segment lemma. *)
+Lemma fw_clone_target : forall P e c' q,
+  pcfg_procs P = [(pe_pid e, e)] ->
+  pcfg_root P = pe_pid e ->
+  pe_parent e = None ->
+  (* the parent, after the clone, is at the resume counter and running *)
+  m_halted (cfg_model c') = None ->
+  ms_svc_pending (cfg_ms c') = None ->
+  bv_unsigned (ms_pc_val (cfg_ms c')) = 0x1101c%Z ->
+  (* a0 in the parent is the pid the clone chose, inside the envelope *)
+  (0 < bv_unsigned (ms_gpr (cfg_ms c') 0))%Z ->
+  (bv_unsigned (ms_gpr (cfg_ms c') 0) < 2 ^ 22)%Z ->
+  (* the child's model is running too: it is the parent's pre-clone one *)
+  m_halted (pe_model (child_entry e (pe_cfg (pcfg_shared P) e) c' q)) = None ->
+  fw_two (clone_result P e c' q).
+Proof.
+  intros P e c' q Hp Hr Hpar Hh Hs Hpc Ha0lo Ha0hi Hch.
+  destruct (clone_result_two P e c' q Hp Hr Hpar)
+    as (Hprocs & Hroot & Hlook & Hcpar & Hppar).
+  exists (pe_absorb e c'),
+         (child_entry e (pe_cfg (pcfg_shared P) e) c' q).
+  split; [exact Hprocs|].
+  split; [rewrite Hroot; exact Hlook|].
+  split; [exact Hcpar|].
+  split; [exact Hppar|].
+  split.
+  - (* fw_parent: running, at 0x1101c, a0 the pid *)
+    split; [exact Hh|]. left.
+    split; [exact Hs|].
+    (* [cbn] has already turned the projection into [pe_absorb]'s form,
+       so the hypothesis is a linear FACT about the goal rather than a
+       subterm to rewrite with *)
+    split; [cbn [pe_ms pe_absorb] in *; lia|].
+    intros _. unfold fw_a0_parent. cbn [pe_ms pe_absorb] in *.
+    split; [exact Ha0lo | exact Ha0hi].
+  - (* fw_child: running, at 0x1101c, a0 zero *)
+    left. split; [exact Hch|].
+    split.
+    + (* the child inherits the parent's successor pc *)
+      unfold child_entry, child_ms. cbn [pe_ms].
+      destruct (w_is0 (ms_gpr (cfg_ms (pe_cfg (pcfg_shared P) e)) 1));
+        cbn [ms_svc_pending set_reg]; exact Hs.
+    + left. split.
+      * unfold child_entry, child_ms. cbn [pe_ms].
+        destruct (w_is0 (ms_gpr (cfg_ms (pe_cfg (pcfg_shared P) e)) 1));
+          cbn [ms_pc_val set_reg]; exact Hpc.
+      * unfold fw_a0_child. apply child_entry_a0_zero.
+Qed.
+
+(** FACT TWO: the reap's successor is a one-entry shape at [0x11040].
+
+    The zombie leaves the table, so what is left is the parent alone, at
+    the counter [advance_past_svc] reaches from the [wait4] [ecall] at
+    [0x1103c].  That counter heads [fw_pcs_reap], so the membership the
+    pinned shape needs is immediate.
+
+    The table clause is the interesting one: [drop_in] of the reaped
+    child from a two-entry table whose other entry is the parent leaves
+    exactly the parent, and that needs the two pids to differ -- which is
+    the premise the reap arm now carries, and the reason it was added. *)
+Lemma fw_reap_target_table : forall ep ec ep' q,
+  bv_eqb (pe_pid ep) q = false ->
+  pe_pid ec = q ->
+  drop_in (replace_in [(pe_pid ep, ep); (pe_pid ec, ec)] (pe_pid ep) ep') q
+  = [(pe_pid ep, ep')].
+Proof.
+  intros ep ec ep' q Hne Hq.
+  cbn [replace_in fst]. rewrite bv_eqb_same.
+  cbn [drop_in fst]. rewrite Hne.
+  cbn [drop_in fst]. rewrite Hq, bv_eqb_same. reflexivity.
+Qed.
+
+(** And the shape itself, given the parent's state after the copy-out. *)
+Lemma fw_reap_target : forall P ep',
+  pcfg_procs P = [(pe_pid ep', ep')] ->
+  pcfg_root P = pe_pid ep' ->
+  m_halted (pe_model ep') = None ->
+  ms_svc_pending (pe_ms ep') = None ->
+  bv_unsigned (ms_pc_val (pe_ms ep')) = 0x11040%Z ->
+  fw_shape P.
+Proof.
+  intros P ep' Hp Hr Hh Hs Hpc. left.
+  exists (bv_unsigned (ms_pc_val (pe_ms ep'))).
+  split.
+  - (* 0x11040 heads fw_pcs_reap, so it is in fw_pcs_one *)
+    rewrite Hpc. vm_compute. tauto.
+  - exists ep'.
+    split; [exact Hp|].
+    split; [rewrite Hr; unfold look; rewrite Hp;
+            cbn [look_in fst snd]; rewrite bv_eqb_same; reflexivity|].
+    split; [exact Hh|].
+    split; [exact Hs | reflexivity].
+Qed.
+
+(** FACT THREE: the measure falls at the clone.
+
+    This is the step the measure table was shaped around.  Before it the
+    parent is at [0x11018] with the call pending, worth
+    [fw_pending 0x11018] = 31; after it there are TWO entries, each at
+    [0x1101c] and each worth [fw_at 0x1101c] = 15, so the sum is 30.
+    [fw_clone_decreases] is that arithmetic and it is proved; this is the
+    same fact at the level of [fw_measure], where the sum is taken over
+    the table [clone_result] builds. *)
+Lemma fw_measure_clone : forall P e c' q,
+  pcfg_procs P = [(pe_pid e, e)] ->
+  fw_entry e = fw_pending 0x11018%Z ->
+  fw_entry (pe_absorb e c') = fw_at 0x1101c%Z ->
+  fw_entry (child_entry e (pe_cfg (pcfg_shared P) e) c' q) = fw_at 0x1101c%Z ->
+  (fw_measure (clone_result P e c' q) < fw_measure P)%nat.
+Proof.
+  intros P e c' q Hp He Hpa Hch.
+  (* BOTH occurrences of [pcfg_procs P] are rewritten before any
+     reduction: the [cbn] below consumes the one on the right, and a
+     later [rewrite Hp] then finds nothing. *)
+  unfold fw_measure, pmeasure, clone_result. cbn [pcfg_procs].
+  rewrite !Hp. cbn [replace_in fst]. rewrite bv_eqb_same.
+  cbn [List.app msum List.fold_right snd].
+  rewrite Hpa, Hch, He.
+  (* 15 + (15 + 0) < 31 + 0 *)
+  vm_compute. lia.
+Qed.
+
+(** FACT FOUR: the measure falls at the reap.
+
+    The parent goes from the pending [wait4] at [0x1103c], worth 6, to
+    [0x11040], worth 5; and the zombie, worth 0 because a halted entry
+    cannot step, leaves the table.  [fw_reap_decreases] is the
+    arithmetic. *)
+Lemma fw_measure_reap : forall P ep ec ep' q,
+  pcfg_procs P = [(pe_pid ep, ep); (pe_pid ec, ec)] ->
+  bv_eqb (pe_pid ep) q = false ->
+  pe_pid ec = q ->
+  fw_entry ep = fw_pending 0x1103c%Z ->
+  fw_entry ec = 0%nat ->
+  fw_entry ep' = fw_at 0x11040%Z ->
+  (msum fw_entry
+     (drop_in (replace_in (pcfg_procs P) (pe_pid ep) ep') q)
+   < fw_measure P)%nat.
+Proof.
+  intros P ep ec ep' q Hp Hne Hq Hep Hec Hep'.
+  (* the goal only: [rewrite Hp in *] rewrites [Hp] in itself and fails.
+     The table is rewritten before unfolding, because unfolding first
+     leaves the two copies in different forms. *)
+  unfold fw_measure, pmeasure. rewrite Hp.
+  rewrite (fw_reap_target_table ep ec ep' q Hne Hq).
+  cbn [msum List.fold_right snd]. rewrite Hep', Hep, Hec.
+  (* 5 + 0 < 6 + (0 + 0) *)
+  vm_compute. lia.
+Qed.
+
+(* =========================================================================
+   The instantiation
+   ========================================================================= *)
+
+(** [Statement.forkwait_halts] is [pholts_within_budget] over the
+    committed image at the shipped budget with allowed exits [[7]].
+    Unfolding it gives, for every [execve] draw and every valid input, a
+    [must_exit_in_p_at] at [pinit_config] -- and [pinit_config] is
+    [one_proc] over [Run.init_config], which [forkwait_halts_of_stretches]
+    takes as its [P0].
+
+    So the statement reduces to the five hypotheses of that theorem at
+    [segs := forkwait_segs] and [cfg := forced_only_cfg], and this lemma
+    is that reduction: everything above the segment lemmas is now
+    discharged, and what a caller must still supply is exactly the list
+    below. *)
+Lemma forkwait_halts_reduces :
+  forall (lim : Z) (segs : list Segment) (pc : N) (ph : PhdrInfo),
+  (forall sp brk0 mbase rnd inp,
+     valid_entry (mkImage segs pc ph) (Run.mkEntry sp brk0 mbase rnd) inp ->
+     valid_input inp ->
+     ~ run_scfg_budget_refused forced_only_cfg (mkImage segs pc ph) lim
+         (Run.mkEntry sp brk0 mbase rnd) inp ->
+     must_exit_in_p_at segs forced_only_cfg [Z_to_bv 64 7]
+       (pinit_config segs pc ph sp brk0 mbase rnd lim inp)) ->
+  pholts_within_budget lim [Z_to_bv 64 7] (mkImage segs pc ph).
+Proof.
+  intros lim segs pc ph H en inp Hve Hvi Hb.
+  destruct en as [sp brk0 mbase rnd].
+  unfold must_exit_in_p.
+  exact (H sp brk0 mbase rnd inp Hve Hvi Hb).
+Qed.
+
+(** WHAT IS LEFT, after this reduction, and it is now a short list of
+    facts about the PROGRAM rather than about the relation:
+
+      1. [det_run forkwait_segs forced_only_cfg P0 Pclone] -- the entry
+         run, from [ForkwaitSteps.fw_run_A] through
+         [MustExitP.pstep_entry_of_account] and [det_trans], with
+         [Run.mi_account_step_no_lazy] discharging the model side at each
+         step and [State.init_model]'s empty [m_vm_lazy] discharging its
+         premise.
+      2. [fw_shape Pclone] -- immediate from [fw_shape_one_proc_pending],
+         since [Pclone] is one entry with 220 pending at [0x11018].
+      3. the leaf, progress, no-error and measure premises at the
+         [fw_two] shapes -- the first is [fw_shape_terminal_halted],
+         proved; the measure at the two shape-changing steps is
+         [fw_measure_clone] and [fw_measure_reap], proved; progress and
+         no-error reduce through [fw_progress_from_entry] and
+         [pstep_error_cases] with [fw_guard_open].
+      4. the tail [det_run] to the final exit, from
+         [ForkwaitSteps.fw_run_reap] the same way as (1).
+
+    Each of (1) and (4) is one segment lemma plus the lifting layer; (2)
+    is proved; (3) is proved except for the per-shape case analysis that
+    consumes the segment lemmas for the child's and the parent's runs.
+
+    [forkwait_halts] is NOT proved, and this file asserts nothing that it
+    has not proved: there is no [Admitted] and no [Axiom] here, and the
+    remaining obligations are this comment rather than a stated-but-unused
+    definition, for the reason the per-step obligations were deleted. *)
+
+(** ITEM (2): the shape at the clone's [ecall].
+
+    [Pclone] is one entry with 220 pending at [0x11018], which is
+    [fw_one_pending] at exactly the counter and number [fw_shape]'s second
+    disjunct names, so it is immediate from
+    [fw_shape_one_proc_pending]. *)
+Lemma fw_shape_at_clone : forall c x8,
+  m_halted (cfg_model c) = None ->
+  ms_svc_pending (cfg_ms c) = Some x8 ->
+  bv_unsigned x8 = 220%Z ->
+  bv_unsigned (ms_pc_val (cfg_ms c)) = 0x11018%Z ->
+  fw_shape (one_proc c).
+Proof.
+  intros c x8 Hh Hs Hn Hpc. right; left.
+  exact (fw_shape_one_proc_pending c x8 220%Z 0x11018%Z Hh Hs Hn Hpc).
+Qed.
+
+(** ITEM (1) and (4), the shape they share.
+
+    A deterministic stretch of ONE entry is a [det_run] whenever each of
+    its steps has a unique successor.  For an instruction step that is
+    [Run.mi_account_step] being a function; what a caller supplies per
+    step is that the entry is running, that no call is pending, and the
+    accounted step's result.
+
+    Stated as a single link rather than as a fold over a segment,
+    because the two segments have different lengths and [det_trans]
+    composes the links; a fold would fix the length. *)
+Lemma fw_det_link : forall segs cfg c ms' model',
+  m_halted (cfg_model c) = None ->
+  ms_svc_pending (cfg_ms c) = None ->
+  mi_account_step segs (cfg_ms c) (cfg_model c) = MachineOk (ms', model') ->
+  (* the successor is unique: no other arm can fire, and the instruction
+     arm is a function *)
+  (forall evs P2,
+     pstep_cfg segs cfg (one_proc c) evs (PNext P2) ->
+     P2 = one_proc (mkCfg ms' model')) ->
+  (forall evs, ~ pstep_cfg segs cfg (one_proc c) evs PError) ->
+  det_run segs cfg (one_proc c) (one_proc (mkCfg ms' model')).
+Proof.
+  intros segs cfg c ms' model' Hh Hs Hm Hdet Hnoerr.
+  (* det_one's premises are: not-terminal, progress, no-error,
+     determinism, in that order *)
+  apply det_one.
+  - (* not terminal: the entry is running *)
+    intros Ht. apply terminal_one_proc in Ht. congruence.
+  - (* progress: the instruction step itself *)
+    exists [], (PNext (one_proc (mkCfg ms' model'))).
+    apply pstep_single_next_bwd.
+    + apply clone_success_b_instr. exact Hs.
+    + apply wait4_intercept_b_instr. exact Hs.
+    + (* [sstep_cfg_instr] is stated over [mkCfg ms model], so the
+         configuration has to be taken apart before it applies *)
+      destruct c as [ms model]; cbn [cfg_ms cfg_model] in *.
+      apply sstep_cfg_instr; assumption.
+  - (* no error *) exact Hnoerr.
+  - (* the successor is unique *) exact Hdet.
+Qed.
+
+(** ITEM (3): the no-error premise at the shapes.
+
+    [MustExitP.pstep_error_cases] splits an error transition into the two
+    refusing arms: a released [SError], or the surface guard firing.  The
+    second is impossible everywhere in this program -- [fw_guard_open]
+    with [fw_sysnos_allowed], since the only numbers it issues are 220,
+    260 and 94 -- so what a shape has to rule out is the released
+    [SError] alone.
+
+    This lemma is the half that does not depend on which shape: given
+    that no entry of the configuration can take a released [SError] and
+    that the guard is open at each, no transition reaches [PError]. *)
+Lemma fw_no_error_of_entries : forall segs cfg P,
+  (forall e, look P (pe_pid e) = Some e ->
+     forall evs, ~ sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs SError) ->
+  (forall e, look P (pe_pid e) = Some e ->
+     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true) ->
+  forall evs, ~ pstep_cfg segs cfg P evs PError.
+Proof.
+  intros segs cfg P Hno Hguard evs [p Hp].
+  destruct (pstep_error_cases segs cfg p P evs Hp)
+    as (e & Hl & Hpid & [[Hss _] | [Hg _]]).
+  - subst p. exact (Hno e Hl evs Hss).
+  - subst p. rewrite (Hguard e Hl) in Hg. discriminate.
+Qed.
+
+(** And the guard really is open at every entry of this program, because
+    the only system calls it issues are on the multi-process surface.
+    [fw_sysnos_allowed] is the membership; this applies it. *)
+Lemma fw_guard_open_at : forall P c nr,
+  (ms_svc_pending (cfg_ms c) = None
+   \/ (exists x8, ms_svc_pending (cfg_ms c) = Some x8
+                  /\ bv_unsigned x8 = nr
+                  /\ (nr = 220%Z \/ nr = 260%Z \/ nr = 94%Z))) ->
+  multiproc_allowed P c = true.
+Proof.
+  intros P c nr [Hn | (x8 & Hs & Hv & Hnr)].
+  - apply (fw_guard_open P c nr). left. exact Hn.
+  - apply (fw_guard_open P c nr). right. exists x8.
+    split; [exact Hs|]. split; [exact Hv|].
+    destruct Hnr as [-> | [-> | ->]]; cbn; tauto.
+Qed.
+
+(** THE TWO-ENTRY CASE ANALYSIS, enumerated.
+
+    At a [fw_two] shape the live entries are the parent and the child,
+    and which of them has an arm is decided by the shape, not searched
+    for:
+
+      child running          both have an arm
+      child at its ecall     both: the child's exit_group, the parent's
+                             next instruction
+      child a zombie, parent not yet at wait4   both
+      child a zombie, parent AT wait4           the parent reaps
+      child running, parent AT wait4            ONLY THE CHILD, because a
+                                                blocked parent has no arm
+
+    The last row is 7.2 paying for itself again, and the progress fact
+    for it is [fw_progress_from_entry], already proved: the premise is
+    met by the child's step.  It is not reproved here.
+
+    What every row needs first is that the entry that did NOT step is
+    unchanged, which is the pair of frame lemmas below. *)
+
+(** The other entry's RECORD survives, from the table lemmas. *)
+Lemma fw_two_other_record : forall P e c' q eq,
+  bv_eqb (pe_pid e) q = false ->
+  look P q = Some eq ->
+  look (absorb P e c') q = Some eq.
+Proof.
+  intros P e c' q eq Hne Hl.
+  rewrite look_absorb_other; [exact Hl | exact Hne].
+Qed.
+
+(** And its VIEW survives, provided the step left the shared file system
+    and I/O alone -- which the two arms this program steps with do, since
+    [with_halted] and [with_children] rebuild the model around the same
+    [m_fsys] and [m_io].  That is [view_frame_absorb]'s hypothesis and
+    the reason it is a hypothesis: a general version would be false. *)
+Lemma fw_two_other_view : forall P e c' q eq,
+  look (absorb P e c') q = Some eq ->
+  m_fsys (cfg_model c') = sh_fsys (pcfg_shared P) ->
+  m_io (cfg_model c') = sh_io (pcfg_shared P) ->
+  pe_cfg (pcfg_shared (absorb P e c')) eq = pe_cfg (pcfg_shared P) eq.
+Proof.
+  intros P e c' q eq Hl Hfs Hio.
+  exact (view_frame_absorb P e c' q eq Hl Hfs Hio).
+Qed.
+
+(** An instruction step leaves both alone, which is what makes the two
+    frame lemmas usable at every row but the two syscall ones:
+    [Run.mi_account_step_model_frame] fixes every model component, so the
+    hypotheses of [fw_two_other_view] are discharged by it rather than
+    supplied. *)
+Lemma fw_instr_frames_shared : forall segs ms model ms' model',
+  mi_account_step segs ms model = MachineOk (ms', model') ->
+  m_fsys model' = m_fsys model /\ m_io model' = m_io model.
+Proof.
+  intros segs ms model ms' model' Hm.
+  pose proof (mi_account_step_model_frame segs ms model ms' model' Hm)
+    as (_ & _ & _ & Hio & Hfs & _).
+  split; [exact Hfs | exact Hio].
+Qed.
