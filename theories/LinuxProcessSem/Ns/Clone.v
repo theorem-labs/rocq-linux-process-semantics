@@ -157,11 +157,18 @@ Definition clone_creds (m : Model) (ctx : NsCtx) (st : NsState) (f : Z) : NsResu
 Definition leaves_flat (f : Z) (ctx : NsCtx) (st : NsState) : bool :=
   flat_view ctx st && (any_new_ns f || has_flag f CLONE_NEWUSER).
 
-(** What [clone_ns] answers when the environment refuses nothing. *)
+(** What the parent's clone returns: the child's pid in the caller's own
+    pid namespace ([task_pid_vnr] of the child, seen from the parent). *)
+Definition clone_ret (ctx child : NsCtx) : option Z := pid_in (cx_pids child) (cx_pidns ctx).
+
+(** What [clone_ns] answers when the environment refuses nothing.  The
+    parent's return value is the core's pid for a caller in the released
+    world (its pid namespace is the host's, where the core's pid is the
+    child's), and [clone_ret] otherwise. *)
 Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) : CloneNs :=
   (* A task in the released world that makes no namespace: the core's own
      clone, whatever the rest of the flag word ([Ext.ext_clone_coherent]). *)
-  if flat_view ctx st && negb (has_ns_bits f) then CnOk ctx st
+  if flat_view ctx st && negb (has_ns_bits f) then CnOk ctx None st
   else if negb (Z.land f (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) =? 0) then CnUnmodeled
   else if leaves_flat f ctx st && negb (has_flag f CLONE_NEWUSER) then CnUnmodeled
   else
@@ -226,7 +233,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                                   (cx_umask ctx) (cc_caps cc) (cc_secure cc) (cx_cloexec ctx)
                                   (if leaves_flat f ctx st then None else cx_no_new_privs ctx)
                                   (if leaves_flat f ctx st then None else cx_dumpable ctx) in
-                        CnOk child
+                        CnOk child (if flat_view ctx st then None else clone_ret ctx child)
                              (mkNsState T' U (ns_mntns st ++ new_mntns) pidns' (ns_netns st ++ new_net)
                                         (ns_sbs st) (ns_dentries st) (ns_inodes st) (ns_files st)
                                         (ns_env st))
@@ -235,9 +242,6 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
           end
     end.
 
-(** What the parent's clone returns: the child's pid in the caller's own
-    pid namespace ([task_pid_vnr] of the child, seen from the parent). *)
-Definition clone_ret (ctx child : NsCtx) : option Z := pid_in (cx_pids child) (cx_pidns ctx).
 
 (** The pid namespaces the model made, from [active] outwards, each with
     its cursor one further: what an [alloc_pid] that a later failure undid
@@ -293,14 +297,14 @@ Qed.
     unchanged. *)
 Lemma clone_ns_exact_flat_fork : forall f m ctx st hq,
   flat_view ctx st = true -> has_ns_bits f = false ->
-  clone_ns_exact f m ctx st hq = CnOk ctx st.
+  clone_ns_exact f m ctx st hq = CnOk ctx None st.
 Proof.
   intros f m ctx st hq Hf Hb. unfold clone_ns_exact. rewrite Hf, Hb. reflexivity.
 Qed.
 
 Lemma clone_ns_flat_fork_ok : forall f m ctx st hq,
   flat_view ctx st = true -> has_ns_bits f = false ->
-  clone_ns f m ctx st hq (CnOk ctx st).
+  clone_ns f m ctx st hq (CnOk ctx None st).
 Proof.
   intros f m ctx st hq Hf Hb. left. symmetry. apply clone_ns_exact_flat_fork; assumption.
 Qed.

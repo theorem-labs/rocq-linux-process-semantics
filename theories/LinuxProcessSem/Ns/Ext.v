@@ -37,11 +37,13 @@
     namespace model, for a core whose own clone step creates the child:
     for the clone's flag word, the caller's spliced model, context and
     state, and the pid the core gives the child, a [CnOk] with the child's
-    context and the next state, or a [CnErr] with the errno and the state
-    after the failure, or [CnUnmodeled].  [ext_clone_coherent] makes it
-    the core's own clone in the released world for a word with no
-    namespace bit: the child gets the caller's context, the state does
-    not change, and a failure is any errno.
+    context, what the parent's call returns when that is not the core's pid
+    (the child's pid in the caller's own pid namespace), and the next
+    state; or a [CnErr] with the errno and the state after the failure; or
+    [CnUnmodeled].  [ext_clone_coherent] makes it the core's own clone in
+    the released world for a word with no namespace bit: the child gets the
+    caller's context, the parent gets the core's pid, the state does not
+    change, and a failure is any errno.
 
     Which clone failures a run admits is not the extension's to choose: a
     core takes it as an explicit argument, a [CloneEnv], which a statement
@@ -65,10 +67,12 @@ Inductive ext_outcome :=
   | EOk (eff : SyscallEffect) (m : Model) (ctx : NsCtx) (st : NsState) (evs : list event)
   | EUnmodeled.
 
-(** A clone's answer: the child's context and the new shared state; or the
+(** A clone's answer: the child's context, what the parent's call returns
+    when it is not the core's pid ([Some] the child's pid in the caller's
+    own pid namespace, [None] the core's), and the new shared state; or the
     errno and the shared state after the failure; or no answer. *)
 Inductive CloneNs :=
-  | CnOk (child : NsCtx) (st : NsState)
+  | CnOk (child : NsCtx) (ret : option Z) (st : NsState)
   | CnErr (e : Z) (st : NsState)
   | CnUnmodeled.
 
@@ -101,10 +105,10 @@ Lemma flat_view_empty : forall ctx, flat_view ctx empty_nsstate = true.
 Proof. reflexivity. Qed.
 
 (** The released clone's own answer, seen by the namespace model: the
-    child gets the caller's context, the state does not change, and a
-    failure is any errno. *)
+    child gets the caller's context, the parent the core's pid, the state
+    does not change, and a failure is any errno. *)
 Definition released_clone (ctx : NsCtx) (st : NsState) (o : CloneNs) : Prop :=
-  o = CnOk ctx st \/ exists e, (1 <= e <= 4095)%Z /\ o = CnErr e st.
+  o = CnOk ctx None st \/ exists e, (1 <= e <= 4095)%Z /\ o = CnErr e st.
 
 (** The released answer, with the namespace context and state unchanged. *)
 Definition released (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
