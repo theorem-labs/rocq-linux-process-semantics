@@ -65,7 +65,8 @@ Definition ioctl_witness (fd req : word) (i : SyscallInput) (m : Model)
   | None => ret_outcome (errno_ret EBADF) m
   | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _) | Some FdDir
   | Some (FdSocket _) | Some (FdStream _ _ _) | Some (FdEventfd _) | Some (FdPipe _ _)
-  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some (FdDevNull _ _) =>
+  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some (FdDevNull _ _)
+  | Some (FdAnon _ _) =>
       if tty_only_request req then ret_outcome (errno_ret ENOTTY) m
       else Unmodeled
   | Some FdUrandom => Unmodeled

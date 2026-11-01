@@ -921,6 +921,7 @@ Proof.
     | erewrite check_pwrite64_frame by eassumption; exact Hna
     | erewrite check_readv_frame by eassumption; exact Hna
     | erewrite check_writev_frame by eassumption; exact Hna
+    | erewrite check_pwritev2_frame by eassumption; exact Hna
     | erewrite check_openat_frame by eassumption; exact Hna
     | erewrite check_close_frame by eassumption; exact Hna
     | erewrite check_lseek_frame by eassumption; exact Hna

@@ -1845,7 +1845,8 @@ Lemma check_write_frame : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_write, check_write_fault_extend, check_access_ok_zero,
-    check_eventfd_write in H.
+    check_eventfd_write, check_anon_write_fault, check_anon_fault_extend,
+    anon_place_fds in H.
   cbv zeta in H. vm_frame3 H.
 Qed.
 
@@ -1866,7 +1867,8 @@ Lemma check_pwrite64_frame : forall i fd buf count pos eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count pos eff m m' evs H.
-  unfold check_pwrite64, check_write_fault_extend in H. vm_frame2 H.
+  unfold check_pwrite64, check_write_fault_extend, check_anon_fault_extend in H.
+  cbv zeta in H. vm_frame2 H.
 Qed.
 
 Lemma check_openat_frame : forall i dirfd pathp flags eff m m' evs,
@@ -1881,7 +1883,7 @@ Proof.
     Open.check_openat_sep, Open.check_openat_localtime,
     Open.check_openat_devnull, Open.check_open_devnull,
     Open.check_openat_urandom, Open.check_open_urandom,
-    Open.check_openat_tmp,
+    Open.check_openat_procfd, Open.check_openat_tmp,
     Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl,
     Open.check_openat_dir, Open.check_openat_append,
     Open.check_openat_rdwr, Open.check_openat_rdwr_excl,
@@ -1941,7 +1943,22 @@ Lemma check_writev_frame : forall i fd iov iovcnt eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd iov iovcnt eff m m' evs H.
-  unfold check_writev, check_write_fault_extend in H. vm_frame3 H.
+  unfold check_writev, check_write_fault_extend, check_anon_write_fault,
+    check_anon_fault_extend, anon_place_fds in H.
+  cbv zeta in H. vm_frame3 H.
+Qed.
+
+(** pwritev2 (287) writes the unnamed file's contents into every
+    descriptor of it and nothing else, so the mappings come across
+    untouched, as [check_pwrite64]'s do. *)
+Lemma check_pwritev2_frame :
+  forall i fd iov iovcnt pos_l pos_h flags eff m m' evs,
+  check_pwritev2 i fd iov iovcnt pos_l pos_h flags eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i fd iov iovcnt pos_l pos_h flags eff m m' evs H.
+  unfold check_pwritev2, check_anon_fault_extend in H.
+  cbv zeta in H. vm_frame3 H.
 Qed.
 
 Lemma check_readv_imported_frame : forall i fd r iovs0 eff m m' evs,
@@ -2218,7 +2235,8 @@ Lemma check_unlinkat_frame : forall i dirfd pathp flags eff m m' evs,
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
   unfold check_unlinkat, Namei.check_unlinkat_body, Namei.check_unlinkat_tmp,
-    Namei.check_unlink_found, check_unlink_result in H.
+    Namei.check_unlink_found, check_unlink_result,
+    Namei.check_unlink_open_tmp, check_unlink_open_result in H.
   vm_frame2 H.
 Qed.
 
@@ -2321,6 +2339,30 @@ Lemma check_fstat_urandom_frame : forall i statbuf eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof. intros. eapply check_fstat_chrdev_frame. exact H. Qed.
 
+(** The unnamed file's [fstat] records its pin in EVERY descriptor of the
+    file ([State.anon_update] under [State.with_fds]); that setter
+    rebuilds the fd table and carries [m_vmmaps] across untouched. *)
+Lemma check_fstat_anon_frame : forall i id af statbuf eff m m' evs,
+  check_fstat_anon i id af statbuf eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i id af statbuf eff m m' evs H.
+  unfold check_fstat_anon in H.
+  destruct (negb (access_okb statbuf STAT_SIZE)); [vm_frame2 H|].
+  destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|];
+    [|discriminate].
+  assert (Hdel : exists pin,
+             check_fstat_anon_deliver statbuf id (length (af_data af)) pin eff m
+             = CheckOk m' evs).
+  { destruct (af_pin af) as [b0|]; [|eauto].
+    destruct (negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool);
+      [discriminate|eauto]. }
+  destruct Hdel as (pin & Hd).
+  apply check_fstat_anon_deliver_ok in Hd
+    as (bs & _ & _ & _ & _ & _ & _ & [(b1 & _ & _ & ->)|(_ & ->)]);
+    reflexivity.
+Qed.
+
 Lemma check_fstat_frame : forall i fd statbuf eff m m' evs,
   check_fstat i fd statbuf eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
@@ -2329,7 +2371,8 @@ Proof.
   destruct e; try discriminate;
     first [eapply check_fstat_file_frame; exact H
           |eapply check_fstat_devnull_frame; exact H
-          |eapply check_fstat_urandom_frame; exact H].
+          |eapply check_fstat_urandom_frame; exact H
+          |eapply check_fstat_anon_frame; exact H].
 Qed.
 
 Lemma check_getid_frame : forall sel eff m m' evs,
@@ -2711,6 +2754,7 @@ Proof.
     | erewrite check_pwrite64_frame by eassumption; exact Hwf
     | erewrite check_readv_frame by eassumption; exact Hwf
     | erewrite check_writev_frame by eassumption; exact Hwf
+    | erewrite check_pwritev2_frame by eassumption; exact Hwf
     | erewrite check_openat_frame by eassumption; exact Hwf
     | erewrite check_close_frame by eassumption; exact Hwf
     | erewrite check_lseek_frame by eassumption; exact Hwf

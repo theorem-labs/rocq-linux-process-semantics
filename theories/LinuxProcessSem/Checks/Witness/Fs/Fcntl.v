@@ -101,9 +101,10 @@ Proof.
         -- (* one arm per fd kind: the stream-pair end's [stream_setfl],
               the eventfd's [eventfd_setfl], every other kind's
               [setfl_noop_on] *)
-           destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam];
+           destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af];
              (eapply bind_step; [apply get_model_ok|]); cbv beta iota; srw Hfd;
-             [ .. | apply stream_setfl_witness_ok | apply eventfd_setfl_witness_ok | idtac ];
+             [ .. | apply stream_setfl_witness_ok | apply eventfd_setfl_witness_ok
+                  | idtac | idtac ];
              match goal with
              | |- context [setfl_noop_on ?e arg] =>
                  destruct (setfl_noop_on e arg); cbv beta iota;

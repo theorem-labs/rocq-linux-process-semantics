@@ -32,6 +32,7 @@ Definition fsync_witness (fd : word) (m : Model) : outcome SyscallEffect :=
   | Some (FdFile _ _)  => ret_outcome (Z_to_bv 64 0) m
   | Some (FdFileW _ _) => ret_outcome (Z_to_bv 64 0) m
   | Some FdDir         => ret_outcome (Z_to_bv 64 0) m
+  | Some (FdAnon _ _)  => ret_outcome (Z_to_bv 64 0) m   (* the [FdFile] answer: [noop_fsync] *)
   end.
 
 Lemma fsync_witness_ok : forall fd i m, fsync_spec fd i m (fsync_witness fd m).

@@ -174,7 +174,8 @@ Proof.
 Qed.
 
 (** ioctl: -EBADF on a closed fd; the eight terminal requests answer
-    -ENOTTY on every open kind but /dev/urandom; SIOCGIFINDEX on a
+    -ENOTTY on every open kind but /dev/urandom (an unnamed file among
+    them, as the regular file it is); SIOCGIFINDEX on a
     datagram socket is [check_siocgifindex], which reads the third
     argument out of [i]; everything else is unmodeled. *)
 Definition check_ioctl (i : SyscallInput) (fd req : word) (eff : SyscallEffect)
@@ -183,7 +184,8 @@ Definition check_ioctl (i : SyscallInput) (fd req : word) (eff : SyscallEffect)
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _) | Some FdDir
   | Some (FdSocket _) | Some (FdStream _ _ _) | Some (FdEventfd _) | Some (FdPipe _ _)
-  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some (FdDevNull _ _) =>
+  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some (FdDevNull _ _)
+  | Some (FdAnon _ _) =>
       if tty_only_request req then check_ret_only eff (errno_ret ENOTTY) m []
       else CheckUnmodeled
   | Some FdUrandom => CheckUnmodeled

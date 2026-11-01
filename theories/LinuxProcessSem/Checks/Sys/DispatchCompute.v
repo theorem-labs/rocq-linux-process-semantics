@@ -688,6 +688,20 @@ Lemma syscall_witness_getrandom : forall i m,
   syscall_spec_witness i m = getrandom_witness (in_arg i 0) (in_arg i 1) (in_arg i 2) i m.
 Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
+Lemma check_syscall_pwritev2 : forall i eff m,
+  bv_unsigned (in_sysno i) = 287%Z ->
+  check_syscall i eff m
+  = check_pwritev2 i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3)
+      (in_arg i 4) (flag32 (in_arg i 5)) eff m.
+Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
+
+Lemma syscall_witness_pwritev2 : forall i m,
+  bv_unsigned (in_sysno i) = 287%Z ->
+  syscall_spec_witness i m
+  = pwritev2_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3)
+      (in_arg i 4) (flag32 (in_arg i 5)) i m.
+Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
+
 Lemma check_syscall_clone3 : forall i eff m,
   bv_unsigned (in_sysno i) = 435%Z ->
   check_syscall i eff m = check_clone3 i (in_arg i 0) (in_arg i 1) eff m.
@@ -777,5 +791,6 @@ Ltac arm_dispatch :=
         | erewrite check_syscall_wait4 by eassumption
         | erewrite check_syscall_prlimit64 by eassumption
         | erewrite check_syscall_getrandom by eassumption
+        | erewrite check_syscall_pwritev2 by eassumption
         | erewrite check_syscall_clone3 by eassumption
         | erewrite check_syscall_faccessat2 by eassumption ].

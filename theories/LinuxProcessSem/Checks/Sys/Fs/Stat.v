@@ -732,11 +732,218 @@ Proof.
     + exfalso. sys_unfold; inv_ok; hall Hfs; hall Ha; hall Hw; hall Hp; inv_ok.
 Qed.
 
+(** What an unnamed file's [struct stat] must carry beside
+    [Uapi.stat_buf_wf], in [Stat.fstat_anon_spec]'s [choose] order:
+    S_IFREG, [st_nlink] 0 and the contents' length [n]. *)
+Definition stat_anon_ok (n : nat) (bs : list byte) : bool :=
+  (stat_is_reg bs && stat_nlink_zero bs && stat_size_ok n bs)%bool.
+
+(** The delivering half of [Stat.fstat_anon_spec]: [check_fstat_deliver_by]'s
+    shape under [stat_anon_ok], with the pin installed in EVERY
+    descriptor of the file [id] ([State.anon_update]) on the branch that
+    had none, since the pin is the inode's. *)
+Definition check_fstat_anon_deliver (statbuf id : word) (n : nat)
+    (pin : option (list byte)) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  match eff with
+  | mkEffectU r [(a, bs)] [] [] [] [] =>
+      if negb (bv_eqb r (Z_to_bv 64 0) && bv_eqb a statbuf)%bool then CheckReject
+      else if negb (stat_buf_wf bs && stat_anon_ok n bs)%bool then CheckReject
+      else match pin with
+           | Some b0 => if stat_stable_eqb bs b0 then CheckOk m [] else CheckReject
+           | None =>
+               CheckOk (with_fds (anon_update (m_fds m) id (fun a => af_set_pin a bs)) m) []
+           end
+  | _ => CheckReject
+  end.
+
+(** The unnamed-file arm of [Stat.fstat_spec], branch for branch with
+    [Stat.fstat_anon_spec]: [access_ok]'s -EFAULT, the partial
+    [copy_to_user] decline, a pin no S_IFREG link-count-0 delivery can
+    repeat declined, and the delivery above. *)
+Definition check_fstat_anon (i : SyscallInput) (id : word) (af : AnonFile)
+    (statbuf : word) (eff : SyscallEffect) (m : Model) : check_result :=
+  if negb (access_okb statbuf STAT_SIZE)
+  then check_ret_only eff (errno_ret EFAULT) m []
+  else
+    match read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE) with
+    | None => CheckUnmodeled
+    | Some _ =>
+        match af_pin af with
+        | Some b0 =>
+            if negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool
+            then CheckUnmodeled
+            else check_fstat_anon_deliver statbuf id (length (af_data af)) (Some b0) eff m
+        | None => check_fstat_anon_deliver statbuf id (length (af_data af)) None eff m
+        end
+    end.
+
+Lemma check_fstat_anon_deliver_no_unmodeled : forall statbuf id n pin eff m,
+  check_fstat_anon_deliver statbuf id n pin eff m <> CheckUnmodeled.
+Proof.
+  intros statbuf id n pin [r ws zs us cs copyins] m.
+  unfold check_fstat_anon_deliver.
+  destruct ws as [|[a bs] [|? ?]]; destruct zs as [|? ?];
+    destruct us as [|? ?]; destruct cs as [|? ?];
+    destruct copyins as [|? ?]; try discriminate.
+  destruct (negb (bv_eqb r (Z_to_bv 64 0) && bv_eqb a statbuf)%bool);
+    [discriminate|].
+  destruct (negb (stat_buf_wf bs && stat_anon_ok n bs)%bool); [discriminate|].
+  destruct pin as [b0|]; [destruct (stat_stable_eqb bs b0)|]; discriminate.
+Qed.
+
+(** What a [CheckOk] out of the unnamed file's delivery tells you: one
+    128-byte write of a well-formed S_IFREG, link-count-0 [struct stat]
+    of the right size at [statbuf] returning 0, and either it repeated
+    the file's pin or it installed one in every descriptor of [id]. *)
+Lemma check_fstat_anon_deliver_ok : forall statbuf id n pin eff m m' evs,
+  check_fstat_anon_deliver statbuf id n pin eff m = CheckOk m' evs ->
+  exists bs, eff = mkEffect (Z_to_bv 64 0) [(statbuf, bs)] []
+             /\ evs = []
+             /\ stat_buf_wf bs = true
+             /\ stat_is_reg bs = true
+             /\ stat_nlink_zero bs = true
+             /\ stat_size_ok n bs = true
+             /\ ((exists b0, pin = Some b0 /\ stat_stable_eqb bs b0 = true /\ m' = m)
+                 \/ (pin = None
+                     /\ m' = with_fds (anon_update (m_fds m) id
+                                         (fun a => af_set_pin a bs)) m)).
+Proof.
+  intros statbuf id n pin [r ws zs us cs copyins] m m' evs H.
+  unfold check_fstat_anon_deliver in H.
+  destruct ws as [|[a bs] [|? ?]]; destruct zs as [|? ?];
+    destruct us as [|? ?]; destruct cs as [|? ?];
+    destruct copyins as [|? ?]; try discriminate.
+  destruct (negb (bv_eqb r (Z_to_bv 64 0) && bv_eqb a statbuf)%bool) eqn:HG;
+    [discriminate|].
+  apply Bool.negb_false_iff in HG. apply andb_true_iff in HG as [HR HA].
+  apply bv_eqb_eq in HR; subst r. apply bv_eqb_eq in HA; subst a.
+  destruct (negb (stat_buf_wf bs && stat_anon_ok n bs)%bool) eqn:HW;
+    [discriminate|].
+  apply Bool.negb_false_iff in HW. apply andb_true_iff in HW as [HWF HOK].
+  unfold stat_anon_ok in HOK.
+  apply andb_true_iff in HOK as [HRN HSZ].
+  apply andb_true_iff in HRN as [HREG HNL].
+  exists bs. destruct pin as [b0|].
+  - destruct (stat_stable_eqb bs b0) eqn:HS; [|discriminate].
+    inversion H; clear H; subst.
+    repeat (split; [first [reflexivity | assumption]|]).
+    left. exists b0. now repeat split.
+  - inversion H; clear H; subst.
+    repeat (split; [first [reflexivity | assumption]|]).
+    right. now split.
+Qed.
+
+Lemma check_fstat_anon_sound_ok : forall i id af statbuf eff m m' evs,
+  check_fstat_anon i id af statbuf eff m = CheckOk m' evs ->
+  fstat_anon_spec id af statbuf i m (Ok eff m' evs).
+Proof.
+  intros i id af statbuf eff m m' evs H.
+  unfold check_fstat_anon in H. unfold fstat_anon_spec.
+  eapply bind_ok0; [apply input_ok|]. cbv beta.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha.
+  - apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok.
+  - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
+      as [w|] eqn:Hw; [|discriminate].
+    cbv iota.
+    destruct (af_pin af) as [b0|] eqn:Hp.
+    + destruct (negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool)
+        eqn:Hb0; [discriminate|].
+      cbv iota.
+      apply check_fstat_anon_deliver_ok in H
+        as (bs & -> & -> & HWF & HREG & HNL & HSZ
+            & [(b1 & Hpin & HS & ->)|(Hpin & ->)]);
+        [|discriminate Hpin].
+      inversion Hpin; clear Hpin; subst b1.
+      eapply bind_ok0; [apply (choose_ok _ bs); repeat split; eassumption|].
+      apply pure_ok.
+    + apply check_fstat_anon_deliver_ok in H
+        as (bs & -> & -> & HWF & HREG & HNL & HSZ
+            & [(b1 & Hpin & _ & _)|(_ & ->)]);
+        [discriminate Hpin|].
+      eapply bind_ok0; [apply (choose_ok _ bs); repeat split; eassumption|].
+      eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+Lemma check_fstat_anon_sound_unmodeled : forall i id af statbuf eff m,
+  check_fstat_anon i id af statbuf eff m = CheckUnmodeled ->
+  fstat_anon_spec id af statbuf i m Unmodeled.
+Proof.
+  intros i id af statbuf eff m H.
+  unfold check_fstat_anon in H. unfold fstat_anon_spec.
+  eapply bind_unmodeled2; [apply input_ok|].
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha.
+  - now apply check_ret_only_no_unmodeled in H.
+  - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
+      as [w|] eqn:Hw; [cbv iota|cbv iota; apply unmodeled_intro].
+    destruct (af_pin af) as [b0|] eqn:Hp.
+    + destruct (negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool)
+        eqn:Hb0; [cbv iota; apply unmodeled_intro|].
+      now apply check_fstat_anon_deliver_no_unmodeled in H.
+    + now apply check_fstat_anon_deliver_no_unmodeled in H.
+Qed.
+
+Lemma check_fstat_anon_complete_ok : forall i id af statbuf eff m m' evs,
+  fstat_anon_spec id af statbuf i m (Ok eff m' evs) ->
+  check_fstat_anon i id af statbuf eff m = CheckOk m' evs.
+Proof.
+  intros i id af statbuf eff m m' evs H.
+  unfold fstat_anon_spec in H. unfold check_fstat_anon.
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha.
+  - sys_unfold; inv_ok; hall Ha; inv_ok.
+    apply check_ret_only_ok_iff. now repeat split.
+  - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
+      as [w|] eqn:Hw; [|sys_unfold; inv_ok; hall Ha; hall Hw; inv_ok].
+    destruct (af_pin af) as [b0|] eqn:Hp.
+    + destruct (negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool)
+        eqn:Hb0;
+        [sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; hall Hb0; inv_ok|].
+      sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; hall Hb0; inv_ok.
+      unfold check_fstat_anon_deliver, stat_anon_ok.
+      rewrite !bv_eqb_refl; cbn [andb negb].
+      match goal with
+      | H1 : stat_buf_wf ?b = true, H2 : stat_is_reg ?b = true,
+        H3 : stat_nlink_zero ?b = true, H4 : stat_size_ok _ ?b = true,
+        H5 : stat_stable_eqb ?b _ = true |- _ =>
+          rewrite H1, H2, H3, H4; cbn [andb negb]; rewrite H5
+      end.
+      reflexivity.
+    + sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; inv_ok.
+      unfold check_fstat_anon_deliver, stat_anon_ok.
+      rewrite !bv_eqb_refl; cbn [andb negb].
+      match goal with
+      | H1 : stat_buf_wf ?b = true, H2 : stat_is_reg ?b = true,
+        H3 : stat_nlink_zero ?b = true, H4 : stat_size_ok _ ?b = true |- _ =>
+          rewrite H1, H2, H3, H4
+      end.
+      cbn [andb negb]. reflexivity.
+Qed.
+
+Lemma check_fstat_anon_complete_unmodeled : forall i id af statbuf m eff,
+  fstat_anon_spec id af statbuf i m Unmodeled ->
+  check_fstat_anon i id af statbuf eff m = CheckUnmodeled.
+Proof.
+  intros i id af statbuf m eff H.
+  unfold fstat_anon_spec in H. unfold check_fstat_anon.
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha.
+  - exfalso. sys_unfold; inv_ok; hall Ha; inv_ok.
+  - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
+      as [w|] eqn:Hw; [|reflexivity].
+    destruct (af_pin af) as [b0|] eqn:Hp.
+    + destruct (negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool)
+        eqn:Hb0; [reflexivity|].
+      exfalso. sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; hall Hb0; inv_ok.
+    + exfalso. sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; inv_ok.
+Qed.
+
 (** fstat: total over [FdEntry], answering on the closed descriptor's
     -EBADF, the four file kinds, which share one inode and so one
-    answer, /dev/null and /dev/urandom.  The other seven decline as a body; see [Stat.fstat_spec] for which of [struct stat]'s twenty
-    members each would have to invent, and for why the match carries no
-    wildcard. *)
+    answer, /dev/null, /dev/urandom and the unnamed file.  The other
+    seven decline as a body; see [Stat.fstat_spec] for which of
+    [struct stat]'s twenty members each would have to invent, and for
+    why the match carries no wildcard. *)
 Definition check_fstat (i : SyscallInput) (fd statbuf : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match fd_lookup (m_fds m) fd with
@@ -754,6 +961,7 @@ Definition check_fstat (i : SyscallInput) (fd statbuf : word)
   | Some (FdPipe _ _)  => CheckUnmodeled
   | Some (FdDevNull _ _) => check_fstat_devnull i statbuf eff m
   | Some FdUrandom => check_fstat_urandom i statbuf eff m
+  | Some (FdAnon id af) => check_fstat_anon i id af statbuf eff m
   end.
 
 Lemma check_fstat_sound_ok : forall i fd statbuf eff m m' evs,
@@ -767,7 +975,8 @@ Proof.
     [destruct e; try discriminate;
      first [now apply check_fstat_file_sound_ok
            |now apply check_fstat_devnull_sound_ok
-           |now apply check_fstat_urandom_sound_ok]|].
+           |now apply check_fstat_urandom_sound_ok
+           |now apply check_fstat_anon_sound_ok]|].
   apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok.
 Qed.
 
@@ -783,7 +992,8 @@ Proof.
   destruct e; try apply unmodeled_intro;
     first [eapply check_fstat_file_sound_unmodeled; exact H
           |eapply check_fstat_devnull_sound_unmodeled; exact H
-          |eapply check_fstat_urandom_sound_unmodeled; exact H].
+          |eapply check_fstat_urandom_sound_unmodeled; exact H
+          |eapply check_fstat_anon_sound_unmodeled; exact H].
 Qed.
 
 Lemma check_fstat_complete_ok : forall i fd statbuf eff m m' evs,
@@ -797,6 +1007,7 @@ Proof.
     [destruct e; try (now apply check_fstat_file_complete_ok);
        try (now apply check_fstat_devnull_complete_ok);
        try (now apply check_fstat_urandom_complete_ok);
+       try (now apply check_fstat_anon_complete_ok);
        unfold unmodeled in H; discriminate|].
   unfold pure in H. inversion H; clear H; subst.
   apply check_ret_only_ok_iff. now repeat split.
@@ -813,6 +1024,7 @@ Proof.
     [destruct e; try reflexivity;
        first [eapply check_fstat_file_complete_unmodeled; exact H
              |eapply check_fstat_devnull_complete_unmodeled; exact H
-             |eapply check_fstat_urandom_complete_unmodeled; exact H]|].
+             |eapply check_fstat_urandom_complete_unmodeled; exact H
+             |eapply check_fstat_anon_complete_unmodeled; exact H]|].
   unfold pure in H. discriminate.
 Qed.

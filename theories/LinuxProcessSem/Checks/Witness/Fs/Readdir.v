@@ -36,6 +36,7 @@ Definition getdents64_witness (fd count : word) (m : Model)
   | Some (FdEventfd _) => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdDevNull _ _) => ret_outcome (errno_ret ENOTDIR) m
   | Some FdUrandom => ret_outcome (errno_ret ENOTDIR) m
+  | Some (FdAnon _ _)  => ret_outcome (errno_ret ENOTDIR) m
   | Some FdDir =>
       if getdents64_no_room count
       then ret_outcome (errno_ret EINVAL) m

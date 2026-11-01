@@ -1096,6 +1096,17 @@ Proof.
     eauto using check_getrandom_sound_ok, check_getrandom_sound_unmodeled, check_getrandom_complete_ok, check_getrandom_complete_unmodeled, getrandom_witness_ok.
 Defined.
 
+(** pwritev2 (287). *)
+Definition arm_pwritev2 : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 287%Z (fun i => pwritev2_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) i))
+                       (fun i eff m => check_pwritev2 i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) eff m)
+                       (fun i m => pwritev2_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_pwritev2_sound_ok, check_pwritev2_sound_unmodeled, check_pwritev2_complete_ok, check_pwritev2_complete_unmodeled, pwritev2_witness_ok.
+Defined.
+
 (** clone3 (435). *)
 Definition arm_clone3 : CheckedArm.
 Proof.
@@ -1209,6 +1220,7 @@ Definition checked_table : list CheckedArm :=
   arm_wait4 ::
   arm_prlimit64 ::
   arm_getrandom ::
+  arm_pwritev2 ::
   arm_clone3 ::
   arm_faccessat2 ::
   nil.
@@ -2133,6 +2145,16 @@ Lemma sa_spec_arm_getrandom : forall i m o,
   sa_spec (ca_arm arm_getrandom) i m o = getrandom_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) i m o.
 Proof. reflexivity. Qed.
 
+Lemma ca_check_arm_pwritev2 : forall i eff m,
+  ca_check arm_pwritev2 i eff m = check_pwritev2 i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_pwritev2 : forall i m,
+  ca_witness arm_pwritev2 i m = pwritev2_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_pwritev2 : forall i m o,
+  sa_spec (ca_arm arm_pwritev2) i m o = pwritev2_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) i m o.
+Proof. reflexivity. Qed.
+
 Lemma ca_check_arm_clone3 : forall i eff m,
   ca_check arm_clone3 i eff m = check_clone3 i (in_arg i 0) (in_arg i 1) eff m.
 Proof. reflexivity. Qed.
@@ -2243,6 +2265,7 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_check_arm_wait4 ca_witness_arm_wait4 sa_spec_arm_wait4 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_prlimit64 ca_witness_arm_prlimit64 sa_spec_arm_prlimit64 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_getrandom ca_witness_arm_getrandom sa_spec_arm_getrandom : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_pwritev2 ca_witness_arm_pwritev2 sa_spec_arm_pwritev2 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_clone3 ca_witness_arm_clone3 sa_spec_arm_clone3 : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_faccessat2 ca_witness_arm_faccessat2 sa_spec_arm_faccessat2 : arm_unfold.
 
@@ -2573,6 +2596,10 @@ Proof. reflexivity. Qed.
 Lemma ca_no_arm_getrandom : ca_no arm_getrandom = 278%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_getrandom : arm_unfold.
+
+Lemma ca_no_arm_pwritev2 : ca_no arm_pwritev2 = 287%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_pwritev2 : arm_unfold.
 
 Lemma ca_no_arm_clone3 : ca_no arm_clone3 = 435%Z.
 Proof. reflexivity. Qed.

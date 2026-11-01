@@ -46,6 +46,7 @@ Definition check_getdents64 (fd count : word) (eff : SyscallEffect) (m : Model)
   | Some (FdEventfd _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some FdUrandom => check_ret_only eff (errno_ret ENOTDIR) m []
+  | Some (FdAnon _ _)  => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some FdDir =>
       if getdents64_no_room count then
         match eff with
@@ -118,7 +119,7 @@ Proof.
   (* THE DIRECTORY ARM (sixth: [State.FdEntry]'s constructors are
      [FdChannel], [FdFile], [FdFileW], [FdFileA], [FdFileRW], [FdDir],
      [FdSocket], [FdPipe], [FdDevNull], [FdUrandom], [FdStream],
-     [FdEventfd], [FdDgram], then the closed fd).  THE INDEX MOVES WITH
+     [FdEventfd], [FdDgram], [FdAnon], then the closed fd).  THE INDEX MOVES WITH
      THE TYPE: every constructor added ahead of [FdDir] shifts it, and
      the goal this selects is silently a different arm if it is not
      moved with it.  [getdents64_errnos] IS UNFOLDED BEFORE
@@ -134,7 +135,7 @@ Proof.
   6: { destruct (getdents64_no_room count) eqn:Hroom; cbv iota in *;
        unfold getdents64_errnos in *; cbn [In] in *; inv_ok;
        try contradiction; vm_compute; reflexivity. }
-  (* the twelve plain returns.  Delta is restricted to the acceptor, for
+  (* the thirteen plain returns.  Delta is restricted to the acceptor, for
      the same reason: [getdents64_no_room count] is over a variable
      count, and a full-delta [cbn] descends into it. *)
   all: inv_ok; cbn [check_ret_only]; rewrite bv_eqb_refl; reflexivity.

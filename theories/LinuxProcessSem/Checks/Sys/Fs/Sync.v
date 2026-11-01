@@ -33,6 +33,7 @@ Definition check_fsync (fd : word) (eff : SyscallEffect) (m : Model)
   | Some (FdFile _ _)  => check_ret_only eff (Z_to_bv 64 0) m []
   | Some (FdFileW _ _) => check_ret_only eff (Z_to_bv 64 0) m []
   | Some FdDir         => check_ret_only eff (Z_to_bv 64 0) m []
+  | Some (FdAnon _ _)  => check_ret_only eff (Z_to_bv 64 0) m []
   end.
 
 Lemma check_fsync_sound_ok : forall fd eff m m' evs i,

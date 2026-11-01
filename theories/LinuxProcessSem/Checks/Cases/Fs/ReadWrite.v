@@ -281,7 +281,7 @@ Proof.
      write-only kinds ([FdFileW] and the append [FdFileA]) are the -EBADF
      pair. *)
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af]|] eqn:Hfd;
     cbv iota in Hspec;
     [ | | now destruct (Hro _ _ _ Hspec)
       | now destruct (Hro _ _ _ Hspec)
@@ -311,6 +311,7 @@ Proof.
                      _ _ _ _ _ _ _ _ _ _ _ Hspec Hws) ]
       | (* datagram socket: declined, never an [Ok] *)
         discriminate Hspec
+      |
       | now destruct (Hro _ _ _ Hspec) ].
   - (* channel *)
     destruct (negb (w_is0 ch)); cbv iota in Hspec;
@@ -479,6 +480,37 @@ Proof.
                     <= Z.max 0 (rw_count_clamp count))%Z).
     { rewrite <- Hdel. apply pipe_take_length. }
     pose proof (rw_count_clamp_range count). lia.
+  - (* unnamed file: the O_RDWR bullet above, on the entry's own
+       contents and offset, and the same [file_read] bound *)
+    destruct (negb (af_rd af)); cbv iota in Hspec;
+      [now destruct (Hro _ _ _ Hspec)|].
+    destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
+      [now destruct (Hro _ _ _ Hspec)|].
+    cbv zeta in Hspec.
+    destruct (file_read (af_data af) (af_off af) (Z_to_bv 64 (rw_count_clamp count)))
+      as [|b bsr] eqn:Hbs; cbv iota in Hspec.
+    + destruct (read_bytes_map (in_wmem i) buf (len_word ([] : list byte)));
+        cbv iota in Hspec.
+      * now destruct (Hro _ _ _ Hspec).
+      * destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1));
+          cbv iota in Hspec;
+          [discriminate|now destruct (Hro _ _ _ Hspec)].
+    + destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr)));
+        cbv iota in Hspec.
+      2: { destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1));
+             cbv iota in Hspec;
+             [discriminate|now destruct (Hro _ _ _ Hspec)]. }
+      destruct eff as [ret ws zs us cs copyins]. cbn in Hws. subst ws.
+      destruct zs; destruct us; destruct cs; destruct copyins;
+        cbv iota in Hspec; try discriminate Hspec.
+      destruct (bv_eqb a buf && listN_eqb bs (b :: bsr)
+                && bv_eqb ret (len_word (b :: bsr))) eqn:Hcond;
+        cbv iota in Hspec; [|discriminate Hspec].
+      apply andb_true_iff in Hcond as [Hcond _].
+      apply andb_true_iff in Hcond as [_ Hbs'].
+      apply listN_eqb_eq in Hbs'. subst bs.
+      pose proof (file_read_clamped_len (af_data af) (af_off af) count) as Hl.
+      rewrite Hbs in Hl. exact Hl.
 Qed.
 
 (** ...and the rejecting direction: the specific lie no kernel in scope
@@ -2638,7 +2670,7 @@ Proof.
     destruct Hx as (-> & _ & _). cbn in Hc. discriminate. }
   destruct (ppos_einvalb pos); [now destruct (Hro _ _ _ H)|].
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|];
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam|aid af]|];
     cbv iota in H; try (now destruct (Hro _ _ _ H)).
   (* three kinds survive that: the APPEND arm, whose checker is
      [CheckUnmodeled] and so never equals a [CheckOk], and the two
@@ -2655,6 +2687,35 @@ Proof.
          [now destruct (Hro _ _ _ H)|].
        destruct (rw_pos_einvalb pos (bv_unsigned count)); cbv iota in H;
          now destruct (Hro _ _ _ H). }
+  (* the unnamed file: the transferring arm on the descriptor's own
+     contents, whose ledger is the same [write_source] prefix *)
+  3: { destruct (negb (af_wr af)); cbv iota in H; [now destruct (Hro _ _ _ H)|].
+       destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in H;
+         [now destruct (Hro _ _ _ H)|].
+       destruct (rw_pos_einvalb pos (bv_unsigned count)); cbv iota in H;
+         [now destruct (Hro _ _ _ H)|].
+       cbv zeta in H.
+       destruct (negb (w_is0 count)
+                 && Nat.eqb (length (write_source (in_mem i) buf count)) 0);
+         cbv iota in H.
+       { destruct (af_append af); cbv iota in H.
+         - apply check_ret_only_copyins_ok_iff in H.
+           destruct H as (-> & _ & _). cbn in Hc. discriminate.
+         - unfold check_anon_fault_extend in H.
+           destruct (negb (modeled_zero_fill (bv_unsigned pos) (af_data af)));
+             cbv iota in H; [discriminate|].
+           apply check_ret_only_copyins_ok_iff in H.
+           destruct H as (-> & _ & _). cbn in Hc. discriminate. }
+       destruct (negb (modeled_file_gap (af_data af)
+                         (if af_append af then len_word (af_data af) else pos)
+                         (write_source (in_mem i) buf count)));
+         cbv iota in H; [discriminate|].
+       destruct (w_is0 count); cbv iota in H; [now destruct (Hro _ _ _ H)|].
+       apply check_ret_only_copyins_ok_iff in H.
+       destruct H as (-> & _ & _).
+       cbn in Hc. injection Hc as Ha Hn. subst n.
+       eapply Z.le_trans; [apply write_source_length_le|].
+       apply (proj2 (rw_count_clamp_range count)). }
   all: destruct (negb (access_okb buf (bv_unsigned count)));
        [now destruct (Hro _ _ _ H)|].
   all: destruct (rw_pos_einvalb pos (bv_unsigned count));
