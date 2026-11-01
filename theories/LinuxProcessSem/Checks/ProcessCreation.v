@@ -497,7 +497,7 @@ Proof.
 Qed.
 
 (** The same separation for the NAMESPACE word, whose resolution
-    [Kernel.Fork.clone_ns_resolve] admits every errno from 1 to 4095.
+    [Kernel.Fork.clone_ns_resolve] admits every errno from 1 to 4095 but -EINTR.
     There is no list to key on, so it is keyed on the error encoding
     itself: an error-encoded return made no child and left the model
     alone, and any other return recorded one.  The keying is total for
@@ -564,7 +564,7 @@ Qed.
     [uargs] range it refuses ([Fork.clone3_spec]), and that answer
     creates no child.  Either list was exact while 220 answered only the
     fork word.  It became FALSE when 220 learned the namespace word
-    ([Fork.clone_ns_flags_b]), which admits every errno 1..4095: an
+    ([Fork.clone_ns_flags_b]), which admits every errno 1..4095 but -EINTR: an
     -EPERM there is not in the list, made no child, and left
     [m_has_children] clear, so the second conjunct would have claimed a
     child that does not exist.  The statement is now keyed on
