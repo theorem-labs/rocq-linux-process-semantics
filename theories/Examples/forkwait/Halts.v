@@ -1255,3 +1255,62 @@ Qed.
     has not proved: there is no [Admitted] and no [Axiom] here, and the
     remaining obligations are this comment rather than a stated-but-unused
     definition, for the reason the per-step obligations were deleted. *)
+
+(** ITEM (2): the shape at the clone's [ecall].
+
+    [Pclone] is one entry with 220 pending at [0x11018], which is
+    [fw_one_pending] at exactly the counter and number [fw_shape]'s second
+    disjunct names, so it is immediate from
+    [fw_shape_one_proc_pending]. *)
+Lemma fw_shape_at_clone : forall c x8,
+  m_halted (cfg_model c) = None ->
+  ms_svc_pending (cfg_ms c) = Some x8 ->
+  bv_unsigned x8 = 220%Z ->
+  bv_unsigned (ms_pc_val (cfg_ms c)) = 0x11018%Z ->
+  fw_shape (one_proc c).
+Proof.
+  intros c x8 Hh Hs Hn Hpc. right; left.
+  exact (fw_shape_one_proc_pending c x8 220%Z 0x11018%Z Hh Hs Hn Hpc).
+Qed.
+
+(** ITEM (1) and (4), the shape they share.
+
+    A deterministic stretch of ONE entry is a [det_run] whenever each of
+    its steps has a unique successor.  For an instruction step that is
+    [Run.mi_account_step] being a function; what a caller supplies per
+    step is that the entry is running, that no call is pending, and the
+    accounted step's result.
+
+    Stated as a single link rather than as a fold over a segment,
+    because the two segments have different lengths and [det_trans]
+    composes the links; a fold would fix the length. *)
+Lemma fw_det_link : forall segs cfg c ms' model',
+  m_halted (cfg_model c) = None ->
+  ms_svc_pending (cfg_ms c) = None ->
+  mi_account_step segs (cfg_ms c) (cfg_model c) = MachineOk (ms', model') ->
+  (* the successor is unique: no other arm can fire, and the instruction
+     arm is a function *)
+  (forall evs P2,
+     pstep_cfg segs cfg (one_proc c) evs (PNext P2) ->
+     P2 = one_proc (mkCfg ms' model')) ->
+  (forall evs, ~ pstep_cfg segs cfg (one_proc c) evs PError) ->
+  det_run segs cfg (one_proc c) (one_proc (mkCfg ms' model')).
+Proof.
+  intros segs cfg c ms' model' Hh Hs Hm Hdet Hnoerr.
+  (* det_one's premises are: not-terminal, progress, no-error,
+     determinism, in that order *)
+  apply det_one.
+  - (* not terminal: the entry is running *)
+    intros Ht. apply terminal_one_proc in Ht. congruence.
+  - (* progress: the instruction step itself *)
+    exists [], (PNext (one_proc (mkCfg ms' model'))).
+    apply pstep_single_next_bwd.
+    + apply clone_success_b_instr. exact Hs.
+    + apply wait4_intercept_b_instr. exact Hs.
+    + (* [sstep_cfg_instr] is stated over [mkCfg ms model], so the
+         configuration has to be taken apart before it applies *)
+      destruct c as [ms model]; cbn [cfg_ms cfg_model] in *.
+      apply sstep_cfg_instr; assumption.
+  - (* no error *) exact Hnoerr.
+  - (* the successor is unique *) exact Hdet.
+Qed.
