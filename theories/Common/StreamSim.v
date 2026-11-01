@@ -1226,7 +1226,9 @@ Lemma stream_omni_corun : forall pc ph sp brk0 mb rnd lim inp,
   omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp never_errors.
 Proof.
   intros pc ph sp brk0 mb rnd lim inp Hrd Hrdr. cbn [omni_corun]. unfold init_config.
-  apply to_rd_coexec; [apply init_M_loop; exact Hrdr | exact Hrd].
+  apply to_rd_coexec;
+    [exact (init_M_loop (segments_reserved segs) brk0 mb sp lim inp Hrdr)
+    | exact Hrd].
 Qed.
 
 Lemma stream_omni_cosafe : forall pc ph sp brk0 mb rnd lim inp,

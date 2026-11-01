@@ -252,13 +252,7 @@ Example undecodable_step_unmodeled_run :
        (run_segments undecodable_segments demo_proc_input demo_sp demo_mbase)
        0x100 demo_phdrs demo_sp demo_mbase demo_draw demo_proc_input)
   = MachineUnmodeled.
-Proof.
-  rewrite (with_mem_eta (init_machine_state _ _ _ _ _ _ _)).
-  generalize (ms_mem (init_machine_state
-    (run_segments undecodable_segments demo_proc_input demo_sp demo_mbase)
-    0x100 demo_phdrs demo_sp demo_mbase demo_draw demo_proc_input)).
-  intros mem. unfold run_segments. vm_compute. reflexivity.
-Qed.
+Proof. unfold run_segments. vm_compute. reflexivity. Qed.
 
 (** …and therefore the run is NOT modeled.  Any [strong_universal_T]
     naming this image as its source is unprovable, however the target is

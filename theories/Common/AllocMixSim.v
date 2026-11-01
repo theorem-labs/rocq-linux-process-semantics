@@ -153,8 +153,8 @@ Lemma illegal_no_snext : forall ms model evs c',
   ~ sstep segs (mkCfg ms model) evs (SNext c').
 Proof.
   intros ms model evs c' Hlazy Hsvc Hill Hss.
-  inversion Hss; subst; try congruence.
-  match goal with H : mi_account_step segs ms model = MachineOk _ |- _ =>
+  inversion Hss; subst; try congruence;
+  match goal with H : mi_account_step segs ms model = _ |- _ =>
     rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill in H;
     discriminate
   end.
