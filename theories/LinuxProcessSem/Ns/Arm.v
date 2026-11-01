@@ -187,6 +187,22 @@ Definition set_cloexec (ctx : NsCtx) (fd : Z) (on : bool) : NsCtx :=
 Definition set_file (st : NsState) (h : N) (f : NsFile) : NsState :=
   with_files st (map (fun p => if N.eqb (fst p) h then (h, f) else p) (ns_files st)).
 
+(** THE ONE PLACE an open file of the model is freed: after a descriptor
+    naming handle [h] went, leaving the caller's table [fds'], the file
+    goes when no descriptor of [fds'] names it.  This sees only the
+    caller's table, so a file another process also names (inherited
+    across a fork) is freed early, and that process's later use fails
+    closed; a count across processes replaces this function and nothing
+    else.  No other path frees a file: an unmount and the end of a
+    namespace leave open files in place, as Linux keeps them alive. *)
+Definition release_handle (fds' : list (word * FdEntry)) (st : NsState) (h : N) : NsState :=
+  if existsb (fun p => match fd_entry_handle (snd p) with
+                       | Some h' => N.eqb h h'
+                       | None => false
+                       end) fds'
+  then st
+  else with_files st (List.filter (fun p => negb (N.eqb (fst p) h)) (ns_files st)).
+
 Definition find_mntns (st : NsState) (n : positive) : option MntNs :=
   find (fun x => Pos.eqb (mntns_id x) n) (ns_mntns st).
 

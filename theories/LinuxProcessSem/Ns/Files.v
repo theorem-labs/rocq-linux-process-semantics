@@ -860,14 +860,8 @@ Definition close_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
   match ns_file_of m st w with
   | Some (h, _) =>
       let fds' := fd_remove (m_fds m) w in
-      let named := existsb (fun p => match fd_entry_handle (snd p) with
-                                     | Some h' => N.eqb h h'
-                                     | None => false
-                                     end) fds' in
-      let st' := if named then st
-                 else with_files st (List.filter (fun p => negb (N.eqb (fst p) h)) (ns_files st)) in
       Some (EOk (mkEffect (Z_to_bv 64 0) [] []) (with_fds fds' m)
-                (with_cloexec ctx (drop_fd (cx_cloexec ctx) (bv_unsigned w))) st' [])
+                (with_cloexec ctx (drop_fd (cx_cloexec ctx) (bv_unsigned w))) (release_handle fds' st h) [])
   | None => None
   end.
 
