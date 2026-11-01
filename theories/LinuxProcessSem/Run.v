@@ -4466,6 +4466,99 @@ Proof.
   assumption.
 Qed.
 
+(** THE REMAINING CONJUNCTS OF [valid_input], AS ACCESSORS.
+
+    Six of the fifteen conjuncts already had one; these are the other
+    nine, so that NO consumer has to reach a conjunct by its position.
+
+    A positional peel of a right-nested conjunction is not merely
+    fragile, it fails QUIETLY in both directions.  A pattern SHORTER
+    than the conjunction still typechecks, because the last slot
+    absorbs the rest: if that slot is anonymous the consumer silently
+    loses a fact, and if it is NAMED the name is silently bound to a
+    conjunction — or, once a conjunct is inserted rather than appended,
+    to the wrong conjunct entirely.  Either way the error appears
+    wherever the name is USED, naming neither [valid_input] nor the
+    destruct that caused it.
+
+    Four consumer forks were measured against this file and every one
+    of them peeled positionally to reach [valid_launch], which was the
+    only conjunct with no accessor.  That is the reason these exist.
+
+    Two rules follow and both are kept here rather than in a note.  A
+    new conjunct is APPENDED, never inserted: appending leaves every
+    existing position correct, while inserting shifts every position
+    after it under consumers that cannot be recompiled here.  And a
+    consumer takes a conjunct BY NAME: an accessor costs one line and
+    no later conjunct can move it. *)
+
+Lemma valid_input_argv : forall inp, valid_input inp -> valid_argv (in_argv inp).
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_envp : forall inp, valid_input inp -> valid_envp (in_envp inp).
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_fs : forall inp, valid_input inp -> valid_fs (in_fs inp).
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_keys_relative :
+  forall inp, valid_input inp -> fs_keys_relative (in_image_fs inp).
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_creds : forall inp, valid_input inp -> valid_creds inp.
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_nofile : forall inp, valid_input inp -> valid_nofile (in_nofile inp).
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_sigmask : forall inp, valid_input inp -> valid_sigmask inp.
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_hwcap : forall inp, valid_input inp -> valid_hwcap (in_hwcap inp).
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** The LAST conjunct, and the one four forks peeled positionally to
+    reach.  A consumer that hands the start layer its launch facts
+    needs this and nothing more: no premise, no new hypothesis. *)
+Lemma valid_input_launch : forall inp, valid_input inp -> valid_launch inp.
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
 (** THE ABORT DECLARATION, as an accessor rather than as a position.
     [valid_input] pins [State.in_abort_terminal] to [false] — that is
     what makes [Kernel.Signal.tkill_spec] decline every call under it,
