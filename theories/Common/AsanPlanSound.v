@@ -420,7 +420,16 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
       ceiling, inside a tracked entry, which may sit above the extra
       reservations, so no numeric bound can place it below them. *)
   co_mres  : Forall (fun iv => Forall (iv_disjoint iv) (vm_reserved (m_vmmaps model)))
-                    (vm_maps (m_vmmaps model))
+                    (vm_maps (m_vmmaps model));
+  (** the vdso/vvar pair the launch installed is part of the reserved
+      ledger.  [State.init_reserved] appends exactly that pair
+      ([State.vm_reserved_init_model]) and no step changes the ledger, the
+      kernel build or the bounds [vdso_top] reads, so it holds of every
+      state.  The mprotect slice node needs it: [check_mprotect] answers
+      [CheckUnmodeled] for a range meeting the pair, and [co_mres] puts a
+      tracked entry apart from the pair only through this inclusion. *)
+  co_vdso  : incl (vdso_reserved (m_kernel model) (vdso_top (m_vmmaps model)))
+                  (vm_reserved (m_vmmaps model))
 }.
 
 (* ######################################################################### *)
@@ -559,8 +568,9 @@ Proof.
   pose proof (same_but_materialized_frame _ _ Hs) as Hfr.
   assert (Evm : m_vmmaps model' = m_vmmaps model) by apply Hfr.
   assert (Elz : m_vm_lazy model' = m_vm_lazy model) by apply Hfr.
+  assert (Ekn : m_kernel model' = m_kernel model) by (rewrite Hs; reflexivity).
   destruct HC. constructor; cbn [with_ss a_ss a_maps a_totsz a_ylo a_eager a_vis a_abytes a_brk a_fd a_tidset kn];
-    rewrite ?Evm, ?Elz; try assumption.
+    rewrite ?Evm, ?Elz, ?Ekn; try assumption.
   - unfold Mr. rewrite (hid_same _ _ _ _ Hs). exact HK.
   - replace (m_halted model') with (m_halted model) by (symmetry; apply Hfr). assumption.
   - unfold fds_ok in *. replace (m_fds model') with (m_fds model) by (symmetry; apply Hfr).

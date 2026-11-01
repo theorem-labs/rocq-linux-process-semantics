@@ -921,6 +921,10 @@ Proof.
   intros lim. apply sstep_fault_only; [reflexivity | reflexivity | exact ebreak_faults].
 Qed.
 
+Lemma ebreak_account : forall lim,
+  mi_account_step ebreak_rsegs ebreak_ms (ebreak_model lim) = MachineFault.
+Proof. intros lim. no_lazy. rewrite ebreak_faults. reflexivity. Qed.
+
 (** Every execution errors: the escape fires ... *)
 Example ebreak_omni_errors : forall lim,
   omni_run ebreak_image lim demo_entry demo_proc_input errors.
@@ -945,10 +949,10 @@ Proof.
   apply coexec_step; [reflexivity | |].
   - intros evs _ (_ & [(_ & Hun & _) | [(_ & Hun & _) | (x8 & Hsvc & _)]]);
       cbn [cfg_ms cfg_model] in *.
-    + no_lazy_in Hun. change (RiscvSemantics.step ebreak_rsegs ebreak_ms = MachineUnmodeled) in Hun.
-      rewrite ebreak_faults in Hun. discriminate Hun.
-    + no_lazy_in Hun. change (RiscvSemantics.step ebreak_rsegs ebreak_ms = MachineUnmodeled) in Hun.
-      rewrite ebreak_faults in Hun. discriminate Hun.
+    + change (mi_account_step ebreak_rsegs ebreak_ms (ebreak_model lim) = MachineUnmodeled) in Hun.
+      rewrite ebreak_account in Hun. discriminate Hun.
+    + change (mi_account_step ebreak_rsegs ebreak_ms (ebreak_model lim) = MachineUnmodeled) in Hun.
+      rewrite ebreak_account in Hun. discriminate Hun.
     + vm_compute in Hsvc. discriminate Hsvc.
   - intros evs c' Hss. destruct (ebreak_only _ _ _ Hss) as (_ & Habs). discriminate Habs.
 Qed.

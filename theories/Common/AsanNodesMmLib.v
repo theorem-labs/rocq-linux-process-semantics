@@ -1690,7 +1690,8 @@ Record grant_post (kd : mkind) (a n : word) (model model' : Model) : Prop := GP 
   gp_fds : m_fds model' = m_fds model;
   gp_fs : m_fs model' = m_fs model;
   gp_tid : m_tid model' = m_tid model;
-  gp_isp : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model) }.
+  gp_isp : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model);
+  gp_kernel : m_kernel model' = m_kernel model }.
 
 
 (** [co_ceil] across a model step that keeps [vm_init_sp]: every ledger
@@ -1698,6 +1699,14 @@ Record grant_post (kd : mkind) (a n : word) (model model' : Model) : Prop := GP 
 Lemma ceil_isp_eq : forall h h', vm_init_sp h' = vm_init_sp h ->
   page_round_down_Z (alloc_top h') = page_round_down_Z (alloc_top h).
 Proof. intros h h' E. unfold alloc_top. rewrite E. reflexivity. Qed.
+
+(** [co_vdso] across a model step that keeps the mmap base and [vm_init_sp]:
+    [vdso_top] reads nothing else ([gp_mbase]/[gp_isp], and the slice and
+    destroy twins). *)
+Lemma vdso_top_eq : forall h h',
+  vm_mmap_base h' = vm_mmap_base h -> vm_init_sp h' = vm_init_sp h ->
+  vdso_top h' = vdso_top h.
+Proof. intros h h' E1 E2. unfold vdso_top, mmap_top, alloc_top. rewrite E1, E2. reflexivity. Qed.
 
 Definition grant_mem (kd : mkind) (a n : word) (FULL FULL' : word -> option byte) : Prop :=
   (forall x : word, bv_unsigned x < bv_unsigned a \/ bv_unsigned a + bv_unsigned n <= bv_unsigned x -> FULL' x = FULL x)
@@ -1945,7 +1954,7 @@ Proof.
   split; [| split; [exact MROUT | exact MRSAME]].
   (* ---- cs_ok, field by field ---- *)
   pose proof (grant_wf kd a n model model' GPo Hwf ltac:(rewrite Un; lia)) as Hwf'.
-  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xceil Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xmres].
+  destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xceil Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xmres Xvdso].
   constructor.
   all: unfold cs1, add_entry; cbn [a_ss a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset kn s_regs s_log s_know s_next mk_ss].
   all: try change (ALLOW E (ACS ?s ?m ?t ?y ?e (a_vis cs) (a_ghost cs) ?ab ?br ?fd ?ti)) with (ALLOW E cs).
@@ -2039,6 +2048,10 @@ Proof.
     rewrite region_free_app in Hrf. apply andb_prop in Hrf as [Hrf1 _].
     apply Forall_forall. intros [b s] Hin. unfold iv_disjoint. cbn [fst snd]. rewrite Un.
     pose proof (RefNodes.region_free_In _ a n b s Hrf1 Hin). rewrite Un in *. lia.
+  - (* vdso: a grant keeps the ledger, the kernel build and the bounds [vdso_top] reads *)
+    rewrite (gp_res _ _ _ _ _ GPo), (gp_kernel _ _ _ _ _ GPo),
+      (vdso_top_eq _ _ (gp_mbase _ _ _ _ _ GPo) (gp_isp _ _ _ _ _ GPo)).
+    exact Xvdso.
 Qed.
 
 (* ######################################################################### *)
@@ -2873,7 +2886,8 @@ Record slice_post (s : slarm) (addr n : word) (model model' : Model) : Prop := S
   sp_fds : m_fds model' = m_fds model;
   sp_fs : m_fs model' = m_fs model;
   sp_tid : m_tid model' = m_tid model;
-  sp_isp : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model) }.
+  sp_isp : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model);
+  sp_kernel : m_kernel model' = m_kernel model }.
 
 Definition slice_mem (s : slarm) (addr n : word) (FULL FULL' : word -> option byte) : Prop :=
   (forall x : word, bv_unsigned x < bv_unsigned addr \/ bv_unsigned addr + bv_unsigned n <= bv_unsigned x -> FULL' x = FULL x)
@@ -3146,7 +3160,7 @@ Section Slice.
     assert (HIDOUT : forall x : word, bv_unsigned x < lo \/ hi <= bv_unsigned x -> HID E cs1 model' x = HID E cs model x).
     { intros x Hx. unfold hid. rewrite (sl_vis_out cs1 x eq_refl Hx). reflexivity. }
     assert (HALLOW : ALLOW E cs1 = ALLOW E cs) by reflexivity.
-    destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xceil Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xmres].
+    destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xceil Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xmres Xvdso].
     constructor; rewrite ?HALLOW; unfold cs1; cbn [a_ss a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset kn s_regs s_log s_know s_next mk_ss]; fold cs1.
     - exact Hregs.
     - reflexivity.
@@ -3228,6 +3242,10 @@ Section Slice.
     - (* sinv *) eapply SINV_frame; [|exact Xsinv]. intros x Hx. apply (proj1 SM). pose proof (argH_high _ _ Hx). unfold hi in *. rewrite Un. lia.
     - (* mres: a slice changes neither ledger *)
       rewrite (sp_maps _ _ _ _ _ SPo), (sp_res _ _ _ _ _ SPo). exact Xmres.
+    - (* vdso: a slice keeps the ledger, the kernel build and the bounds [vdso_top] reads *)
+      rewrite (sp_res _ _ _ _ _ SPo), (sp_kernel _ _ _ _ _ SPo),
+        (vdso_top_eq _ _ (sp_mbase _ _ _ _ _ SPo) (sp_isp _ _ _ _ _ SPo)).
+      exact Xvdso.
   Qed.
 
 End Slice.
@@ -3441,7 +3459,8 @@ Record dest_post (addr n : word) (model model' : Model) : Prop := DP_ {
   dp_fds : m_fds model' = m_fds model;
   dp_fs : m_fs model' = m_fs model;
   dp_tid : m_tid model' = m_tid model;
-  dp_isp : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model) }.
+  dp_isp : vm_init_sp (m_vmmaps model') = vm_init_sp (m_vmmaps model);
+  dp_kernel : m_kernel model' = m_kernel model }.
 
 Definition dest_mem (addr n : word) (FULL FULL' : word -> option byte) : Prop :=
   (forall x : word, bv_unsigned x < bv_unsigned addr \/ bv_unsigned addr + bv_unsigned n <= bv_unsigned x -> FULL' x = FULL x)
@@ -3648,7 +3667,7 @@ Section Destroyed.
     assert (HIDOUT : forall x : word, bv_unsigned x < lo \/ hi <= bv_unsigned x -> HID E cs1 model' x = HID E cs model x).
     { intros x Hx. unfold hid. rewrite (d_vis_out cs1 x eq_refl Hx). reflexivity. }
     assert (HALLOW : ALLOW E cs1 = ALLOW E cs) by reflexivity.
-    destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xceil Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xmres].
+    destruct HC as [Xregs Xlog Xknow Xhalt Xfds Xfs Xtid Xres Xlimit Xmaps Xholes Xseps Xwf Xceil Xbounds Xlazyb Xnasub Xnone Xkinds Xtotsz Xsplit Xbrk Xsbrk Xeager Xabytes Xminv Xzero Xsinv Xmres Xvdso].
     constructor; rewrite ?HALLOW; unfold cs1; cbn [a_ss a_maps a_totsz a_ylo a_eager a_vis a_ghost a_abytes a_brk a_fd a_tidset kn s_regs s_log s_know s_next mk_ss]; fold cs1.
     - exact Hregs.
     - reflexivity.
@@ -3766,6 +3785,10 @@ Section Destroyed.
       apply Forall_forall. intros rv Hrv.
       pose proof (proj1 (Forall_forall _ _) HD rv Hrv) as D.
       unfold iv_disjoint in *. lia.
+    - (* vdso: a destruction keeps the ledger, the kernel build and the bounds [vdso_top] reads *)
+      rewrite (dp_res _ _ _ _ DPo), (dp_kernel _ _ _ _ DPo),
+        (vdso_top_eq _ _ (dp_mbase _ _ _ _ DPo) (dp_isp _ _ _ _ DPo)).
+      exact Xvdso.
   Qed.
 End Destroyed.
 
