@@ -20,8 +20,7 @@
     that no call ever touched it instead.
 
     Every Linux claim is at v6.18.46, commit 1f99e9ab748f, and every
-    file and line cited is readable at /home/sami/src/linux-6.18.46 at
-    that commit. *)
+    file and line cited is readable in the kernel tree at that commit. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import

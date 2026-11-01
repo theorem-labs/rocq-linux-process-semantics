@@ -37,10 +37,8 @@
     [NoaccessOwned.check_*_preserves_na] for it and proves only the two
     ledger conjuncts.
 
-    Proved by LpsImpact.RevFixLibdiginet.WfWriterArms for OSSV-266, first
-    against LPS 6692dfb5 in the proof fork
-    (theorem-labs/oss-verify-proofs-internal, branch
-    lps-revision/libreac-wf), and lifted here. *)
+    Proved for OSSV-266, first against LPS 6692dfb5 in a proof fork, and
+    lifted here. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From stdpp Require Import bitvector.

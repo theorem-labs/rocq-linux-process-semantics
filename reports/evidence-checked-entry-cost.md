@@ -26,7 +26,7 @@ worth having, and the fix widens the evidence as well as the speed.**
 | --- | --- |
 | model | `d4d2d93e776c445bcbc44387bd3a0eaa04cee543`, `git archive` export, its own `_build` |
 | corpus | theorem-labs/linux-process-semantics at `ff0313ba4f2e9baffcf5b5f50bc9d31628ae8556`, 4,291 traces, working tree clean |
-| machine | GCE VM `ossv-lpsev-replay`, n2-highmem-32, us-central1-a, 16 replay workers |
+| machine | a GCE build machine, n2-highmem-32, us-central1-a, 16 replay workers |
 | images | `rc2-checker:1b59b23d` (`sha256:e9fa8b19d7cbab6127dfa522f9b9a02ad8c086febd809e58510ad96e78e24e14`) to build and extract; `ocaml/opam:debian-12-ocaml-5.3` to link |
 
 Three runs of the same corpus through the same linked harness, differing only
@@ -135,7 +135,7 @@ the raw call over 19,067 admitted records — against 17,918 before, because the
 bounded run could only re-check the records with small captures. **So the fix
 both makes the boundary runnable and widens the evidence for it.**
 
-Measured on `ossv-lpsev-replay`, from a copy of the `d4d2d93e` export with
+Measured on the build machine, from a copy of the `d4d2d93e` export with
 that one definition changed and nothing else, its own `_build`, extracted and
 linked through the same two images, 16 replay workers. Logs:
 `~/replay-E/memview-fix.txt`, `~/replay-E/headfix-build.log`,

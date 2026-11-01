@@ -1,6 +1,6 @@
 # A4: LPS's start state against a booted Linux v6.18.46 riscv64 kernel
 
-Acceptance check A4 of [OSSV-257](https://dispatch.tail12ec1c.ts.net/issues/OSSV-257).
+Acceptance check A4 of OSSV-257.
 The model is `rocq-linux-process-semantics` branch `revision/entry`
 (`theories/LinuxProcessSem/StackLayout.v`, `State.v`, `Run.v`).  The harness
 is `tools/placement_conformance/` of `rocq-linux-process-semantics` branch
