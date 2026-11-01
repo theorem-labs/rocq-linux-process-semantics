@@ -40,7 +40,12 @@ jobs:
       - name: No conflict markers
         run: |
           set -euo pipefail
-          if git grep -nE '^(<<<<<<<|=======|>>>>>>>)( |$)' -- . ':(exclude).github/workflows/ci.yml'; then
+          # Only the opening and closing arms. The middle arm of a conflict
+          # is seven '=' alone on a line, which is also how Markdown
+          # underlines a title -- a gate that fails on a heading is worse
+          # than no gate. Nothing loses by leaving it out: a conflict block
+          # always carries both of these.
+          if git grep -nE '^(<<<<<<<|>>>>>>>)( |$)' -- . ':(exclude).github/workflows/ci.yml'; then
             echo "::error::a merge conflict marker is committed in the lines above"
             exit 1
           fi
