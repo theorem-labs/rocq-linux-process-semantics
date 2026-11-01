@@ -319,7 +319,8 @@ End WithSegs.
     of every outcome trace). *)
 Lemma alloc_mix_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
   to_outcomes_mix segs (init_machine_state segs pc ph sp mb rnd inp)
-                  (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
+                  (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+                     (init_model (segments_reserved segs) brk0 mb sp lim inp)) U ->
   (exists o, U o) ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
     <-> exists o, U o /\ is_prefix tr (outcome_trace (in_fs inp) o).
@@ -327,12 +328,11 @@ Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto Hne tr.
   unfold init_config.
   set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
-  assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None)
-    by reflexivity.
-  assert (Hlazy : m_vm_lazy
-      (init_model (segments_reserved segs) brk0 mb sp lim inp) = []) by reflexivity.
-  assert (Hfs : m_fs (init_model (segments_reserved segs) brk0 mb sp lim inp) = in_fs inp)
-    by reflexivity.
+  set (m0 := with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+               (init_model (segments_reserved segs) brk0 mb sp lim inp)) in *.
+  assert (Hh : m_halted m0 = None) by reflexivity.
+  assert (Hlazy : m_vm_lazy m0 = []) by reflexivity.
+  assert (Hfs : m_fs m0 = in_fs inp) by reflexivity.
   split.
   - intros (tr' & c & Hstar & Hp).
     destruct (tom_star_only segs ms _ U Hto Hh Hlazy tr' c Hstar)
