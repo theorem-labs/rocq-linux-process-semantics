@@ -103,6 +103,15 @@ jobs:
               opam exec -- dune --version
               opam exec -- rocq --version
             endGroup
+            startGroup "Stack limit for deep proof terms"
+              # A deep Qed overflows the 8 MiB default and the process dies on a
+              # signal, which reads like a proof fault and is not one. Raise the
+              # hard limit first, then the soft one, and print what we actually
+              # got: a request can succeed and still leave the old value.
+              ulimit -H -s 131072 || true
+              ulimit -S -s 131072 || true
+              echo "stack soft=$(ulimit -S -s) hard=$(ulimit -H -s)"
+            endGroup
             startGroup "Build everything (dune build)"
               opam exec -- dune build --display short
             endGroup
