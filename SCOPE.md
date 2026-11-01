@@ -203,10 +203,19 @@ mode answers. QEMU citations are QEMU 10.0.11.
 
 The entries above are the ones the model and QEMU user mode are known to
 differ on. The list is maintained by hand; no tool checks that it is
-complete. A replay of 4,291 recorded traces (19,693 judged system calls)
+complete. A replay of 4,291 recorded traces (`reports/corpus-replay.md`)
 through extracted checkers found twelve system calls where the model
 answers and an older tree declines; each of the twelve was read against
 v6.18.46 and the model answers Linux's at every one.
+
+This sentence used to add "(19,693 judged system calls)". **That figure is
+withdrawn as unmeasured**: no report in `reports/` produces it, and no run
+behind it could be found. The judged-record counts that DO carry a run are
+in `reports/evidence-checked-entry.md`: the corpus holds 23,984 syscall
+records, of which 19,070 reach the boundary, because `--replay` stops a
+trace at its first unreproduced verdict and the records after one are never
+judged. The trace count, 4,291, is measured two ways in
+`reports/evidence-corpus-replay-features.md`.
 
 ## Where older Linux versions differ
 

@@ -220,6 +220,19 @@ in the corpus is outside the Rocq type, and on every record the boundary did
 admit and the checker was re-run over, the checked answer is the raw answer:
 **zero disagreements**.
 
+**Two records of the 17,921 are unaccounted for, and nothing here explains
+them.** The block above says 17,921 records went through
+`check_syscall_for_run_checked`, 17,918 answers agreed with the raw call and
+0 disagreed. 17,921 − 17,918 = 3. The one `CheckedRefused` record covers one
+of the three; the remaining **two** are neither agreeing, nor disagreeing,
+nor refused. `reports/evidence-checked-entry-cost.md`'s wider run has the
+same shape and the same gap: 19,070 through the checker, 19,067 agreeing, 0
+disagreeing, 1 refused — two again. The gap is therefore in the probe's
+counting, not in one run. **No run in this tree resolves it**, and the
+counters were not re-read against the probe's source for this note, so the
+three summary numbers above should be read as "at least 17,918 agreed, none
+disagreed" until someone re-runs the probe and accounts for the two.
+
 | | |
 | --- | --- |
 | model | `d4d2d93e776c445bcbc44387bd3a0eaa04cee543`, `git archive --prefix=head/`, sha256 `f6c9aea55090bb0032582aa681266f4bad2b38f8644ba2e03e3cfdd8c558ebd0`, its own `_build` |

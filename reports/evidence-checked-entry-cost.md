@@ -135,6 +135,16 @@ the raw call over 19,067 admitted records — against 17,918 before, because the
 bounded run could only re-check the records with small captures. **So the fix
 both makes the boundary runnable and widens the evidence for it.**
 
+**Two records are unaccounted for in both runs, and this note does not
+resolve them.** 19,070 records went through `check_syscall_for_run_checked`,
+19,067 agreed and 0 disagreed; 19,070 − 19,067 = 3, of which the one
+`CheckedRefused` record covers one. The bounded run in
+`reports/evidence-checked-entry.md` has the same two-record gap (17,921 /
+17,918 / 0 / 1). Because the gap is identical on both sides, the "widens the
+evidence" claim above (19,067 against 17,918) is unaffected by it, but the
+absolute counts are not exact until someone re-runs the probe and accounts
+for the two. **No run in this tree does.**
+
 Measured on the build machine, from a copy of the `d4d2d93e` export with
 that one definition changed and nothing else, its own `_build`, extracted and
 linked through the same two images, 16 replay workers. Logs:
