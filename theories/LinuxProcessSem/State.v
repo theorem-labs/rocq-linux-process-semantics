@@ -1382,8 +1382,8 @@ Qed.
     edit teaching [prctl] a second option fails that pin, and whoever
     makes it has to come back here.
     [clone] (220) and [clone3] (435) ARE in [Specs.modeled_sysnos], but
-    only for a flag word that shares no address space
-    ([Fork.clone_fork_flags_b],
+    only for flag words that share no address space
+    ([Fork.clone_fork_flags_b], [Fork.clone_ns_flags_b],
     [Checks.ProcessCreation.clone_sharing_flags_unmodeled]), so no
     process this model admits an outcome for can write another's
     [mm->context].  (riscv64 has no [fork] syscall of its own: [fork] IS
@@ -3606,7 +3606,9 @@ Record ProcState := mkProcState {
                                     number: [clone] (220) and [clone3]
                                     (435) are modeled, but
                                     [Fork.clone_fork_flags_b] admits
-                                    [SIGCHLD] alone and
+                                    [SIGCHLD] alone,
+                                    [Fork.clone_ns_flags_b] [SIGCHLD]
+                                    plus namespace bits only, and
                                     [Checks.ProcessCreation.clone_sharing_flags_unmodeled]
                                     (with
                                     [clone3_sharing_flags_unmodeled]
@@ -5029,7 +5031,8 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     - a second PROCESS is what the dup paragraph above does not cover:
       [Kernel.Fork.clone_no_shared_file_b] answers [false] for [FdPipe],
       so a clone with either end open is [unmodeled], and
-      [clone_fork_flags_b] admits only the bare SIGCHLD word, so
+      [clone_fork_flags_b] and [clone_ns_flags_b] admit SIGCHLD with at
+      most namespace bits, so
       CLONE_FILES and CLONE_THREAD never share a table and no second
       instruction stream exists to race a close;
     - [F_DUPFD] does NOT go through [Fs.File.dup_modeled_entry] the way

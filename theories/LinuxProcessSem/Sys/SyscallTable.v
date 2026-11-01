@@ -29,6 +29,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select Fs.Ioctl Fs.Fcntl Fs.Namei
   Fs.Readdir Fs.Locks Fs.Timerfd Fs.Pipe Fs.EventPoll Fs.EventFd
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise
+  Kernel.Capability
   Kernel.Exit Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups Kernel.Sched.Syscalls
   Kernel.Signal Kernel.Sys
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time
@@ -71,6 +72,8 @@ Definition spec_table : list SpecArm :=
   (* fsync           *) mkSpecArm  82%Z (fun i => fsync_spec (fd32 (in_arg i 0)) i) ::
   (* fdatasync       *) mkSpecArm  83%Z (fun i => fsync_spec (fd32 (in_arg i 0)) i) ::
   (* timerfd_create  *) mkSpecArm  85%Z (fun i => timerfd_create_spec (clockid32 (in_arg i 0)) (flag32 (in_arg i 1)) i) ::
+  (* capget          *) mkSpecArm  90%Z (fun i => capget_spec (in_arg i 0) (in_arg i 1) i) ::
+  (* capset          *) mkSpecArm  91%Z (fun i => capset_spec (in_arg i 0) (in_arg i 1) i) ::
   (* exit            *) mkSpecArm  93%Z (fun i => exit_spec (in_arg i 0) i) ::
   (* exit_group      *) mkSpecArm  94%Z (fun i => exit_spec (in_arg i 0) i) ::
   (* set_tid_address *) mkSpecArm  96%Z (fun i => set_tid_address_spec i) ::

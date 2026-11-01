@@ -49,6 +49,15 @@ Proof.
   now apply record_copyins_ok.
 Qed.
 
+(** [record_copyins_ok] with the recorded effect stated as an equation,
+    so that a nested ledger ([record_copyins] around a spec that records
+    its own) can be matched by conversion rather than by unification. *)
+Lemma record_copyins_ok_eq : forall reads spec i m eff m' evs effc,
+  effc = with_copyins (reads ++ eff_copyins eff) eff ->
+  spec i m (Ok eff m' evs) ->
+  record_copyins reads spec i m (Ok effc m' evs).
+Proof. intros reads spec i m eff m' evs effc -> H. now apply record_copyins_ok. Qed.
+
 Lemma record_copyins_unmodeled : forall reads spec i m,
   spec i m Unmodeled -> record_copyins reads spec i m Unmodeled.
 Proof. intros. unfold record_copyins. now left. Qed.
@@ -75,6 +84,15 @@ Qed.
     fail with -EBADF.  Each syscall with an injectable failure carries
     its own small list below. *)
 Definition errno_from (es : list Z) : Sys Z := choose (fun e => In e es).
+
+(** EVERY errno from 1 to 4095.  The one exception to the per-syscall
+    rule above, for an arm whose kernel path runs through code whose
+    errnos cannot be enumerated with confidence (a namespace clone's
+    per-namespace init functions, a procfs lookup, a sysctl handler).
+    Each arm that draws from it says why a list would not be safe; a
+    missing errno makes the model reject a real behaviour, while this
+    set only admits more than Linux gives. *)
+Definition errno_any : Sys Z := choose (fun e => (1 <= e <= 4095)%Z).
 
 (** Word-against-zero test, used all over the dispatcher. *)
 Definition w_is0 (w : word) : bool := bv_eqb w (Z_to_bv 64 0).

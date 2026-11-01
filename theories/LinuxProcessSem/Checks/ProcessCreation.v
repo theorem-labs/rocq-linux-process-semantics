@@ -164,7 +164,8 @@ Local Ltac declined_at Hno :=
 
 (** [clone] (220) and [clone3] (435) — MODELED, parent-side, and stated
     here in the negative.  The model does not cover all of clone: its
-    spec answers exactly one flag word, [SIGCHLD], and the
+    spec answers two flag-word shapes, [SIGCHLD] alone and [SIGCHLD]
+    plus namespace bits ([Fork.clone_ns_flags_b]), and the
     three statements below say what it still declines.
 
     [Fork.clone_spec]'s header has the reasoning.  In short: the model
@@ -246,9 +247,13 @@ Lemma clone_sharing_flags_unmodeled : forall flags i m,
   clone_spec flags i m Unmodeled.
 Proof.
   intros flags i m Hbit. unfold clone_spec.
-  destruct (clone_fork_flags_b flags) eqn:Hf; [|apply unmodeled_intro].
-  exfalso. unfold clone_fork_flags_b in Hf.
-  apply bv_eqb_eq in Hf. subst flags. apply Hbit. vm_compute. reflexivity.
+  destruct (clone_fork_flags_b flags) eqn:Hf; cbv iota.
+  { exfalso. unfold clone_fork_flags_b in Hf.
+    apply bv_eqb_eq in Hf. subst flags. apply Hbit. vm_compute. reflexivity. }
+  destruct (clone_ns_flags_b flags) eqn:Hns; cbv iota; [|apply unmodeled_intro].
+  exfalso. apply Hbit.
+  apply (clone_ns_flags_disjoint flags clone_sharing_bits Hns);
+    vm_compute; reflexivity.
 Qed.
 
 (** The same statement for [clone3], where the flag word is a field of a
@@ -279,8 +284,12 @@ Lemma clone_open_file_unmodeled : forall flags i m,
   clone_no_shared_file_b (m_fds m) = false -> clone_spec flags i m Unmodeled.
 Proof.
   intros flags i m Hfd. unfold clone_spec.
-  destruct (clone_fork_flags_b flags); [|apply unmodeled_intro].
-  unfold clone_resolve.
+  destruct (clone_fork_flags_b flags); cbv iota.
+  { unfold clone_resolve.
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+    rewrite Hfd. cbv iota. apply unmodeled_intro. }
+  destruct (clone_ns_flags_b flags); cbv iota; [|apply unmodeled_intro].
+  unfold clone_ns_resolve.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
   rewrite Hfd. cbv iota. apply unmodeled_intro.
 Qed.
@@ -304,23 +313,44 @@ Lemma clone_never_returns_zero : forall flags i m eff m' evs,
 Proof.
   intros flags i m eff m' evs H.
   unfold clone_spec in H.
-  destruct (clone_fork_flags_b flags); [|unfold unmodeled in H; discriminate].
-  unfold clone_resolve in H. sys_unfold. cbv iota in H. inv_ok.
-  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
-  all: cbn [eff_ret].
-  all: try (match goal with
-            | Hin : In ?e clone_errnos |- _ =>
-                exact (clone_errno_ret_nonzero e Hin)
-            end).
-  all: match goal with
-       | Hv : clone_pid_ok_b ?mm ?r = true |- _ =>
-           unfold clone_pid_ok_b in Hv;
-           apply andb_true_iff in Hv as [Hr _];
-           apply andb_true_iff in Hr as [Hlo _];
-           apply Z.ltb_lt in Hlo;
-           intro Hc; subst r;
-           change (bv_unsigned (Z_to_bv 64 0)) with 0%Z in Hlo; lia
-       end.
+  destruct (clone_fork_flags_b flags); cbv iota in H.
+  - unfold clone_resolve in H. sys_unfold. cbv iota in H. inv_ok.
+    destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+    all: cbn [eff_ret].
+    all: try (match goal with
+              | Hin : In ?e clone_errnos |- _ =>
+                  exact (clone_errno_ret_nonzero e Hin)
+              end).
+    all: match goal with
+         | Hv : clone_pid_ok_b ?mm ?r = true |- _ =>
+             unfold clone_pid_ok_b in Hv;
+             apply andb_true_iff in Hv as [Hr _];
+             apply andb_true_iff in Hr as [Hlo _];
+             apply Z.ltb_lt in Hlo;
+             intro Hc; subst r;
+             change (bv_unsigned (Z_to_bv 64 0)) with 0%Z in Hlo; lia
+         end.
+  - destruct (clone_ns_flags_b flags); cbv iota in H;
+      [|unfold unmodeled in H; discriminate].
+    unfold clone_ns_resolve, errno_any in H. sys_unfold. cbv iota in H. inv_ok.
+    destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+    all: cbn [eff_ret].
+    all: try (match goal with
+              | H1 : (1 <= ?e)%Z, H2 : (?e <= 4095)%Z |- _ =>
+                  intro Hc; apply (f_equal bv_unsigned) in Hc;
+                  rewrite (errno_ret_unsigned e H1 H2) in Hc;
+                  change (bv_unsigned (Z_to_bv 64 0)) with 0%Z in Hc;
+                  unfold two_pow_64 in Hc; lia
+              end).
+    all: match goal with
+         | Hv : clone_pid_ok_b ?mm ?r = true |- _ =>
+             unfold clone_pid_ok_b in Hv;
+             apply andb_true_iff in Hv as [Hr _];
+             apply andb_true_iff in Hr as [Hlo _];
+             apply Z.ltb_lt in Hlo;
+             intro Hc; subst r;
+             change (bv_unsigned (Z_to_bv 64 0)) with 0%Z in Hlo; lia
+         end.
 Qed.
 
 Lemma clone3_never_returns_zero : forall uargs size i m eff m' evs,
@@ -428,23 +458,97 @@ Proof.
     cbn [eff_ret]. split; intros He; [congruence | reflexivity].
 Qed.
 
+(** The same separation for the NAMESPACE word, whose resolution
+    [Kernel.Fork.clone_ns_resolve] admits every errno from 1 to 4095.
+    There is no list to key on, so it is keyed on the error encoding
+    itself: an error-encoded return made no child and left the model
+    alone, and any other return recorded one.  The keying is total for
+    the same reason as above — every admissible pid is below
+    [Fork.PID_MAX_ENVELOPE] and no error-encoded word is
+    ([Checks.Sys.Kernel.Fork.clone_pid_not_error]). *)
+Lemma clone_ns_resolve_declines_or_sets_children : forall i m eff m' evs,
+  clone_ns_resolve i m (Ok eff m' evs) ->
+  (addr_is_error_b (eff_ret eff) = true -> m' = m) /\
+  (addr_is_error_b (eff_ret eff) = false -> m_has_children m' = true).
+Proof.
+  intros i m eff m' evs H.
+  unfold clone_ns_resolve, errno_any in H. sys_unfold. cbv iota in H. inv_ok.
+  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+  (* one goal per alternative: an errno in 1..4095, and a pid *)
+  - match goal with
+    | H1 : (1 <= ?e)%Z, H2 : (?e <= 4095)%Z |- _ =>
+        assert (Hyes := errno_ret_error_b e H1 H2)
+    end.
+    cbn [eff_ret]. split; intros He; [reflexivity | congruence].
+  - match goal with
+    | Hv : clone_pid_ok_b ?mm ?r = true |- _ =>
+        assert (Hno := clone_pid_not_error mm r Hv)
+    end.
+    cbn [eff_ret]. split; intros He; [congruence | reflexivity].
+Qed.
+
+(** [clone_resolve_declines_or_sets_children] keyed the way the
+    dispatcher statement below needs it: on the error encoding rather
+    than on [Fork.clone_errnos], every member of which is
+    error-encoded. *)
+Local Lemma clone_resolve_error_or_children : forall i m eff m' evs,
+  clone_resolve i m (Ok eff m' evs) ->
+  (addr_is_error_b (eff_ret eff) = true -> m' = m) /\
+  (addr_is_error_b (eff_ret eff) = false -> m_has_children m' = true).
+Proof.
+  intros i m eff m' evs H.
+  unfold clone_resolve in H. sys_unfold. cbv iota in H. inv_ok.
+  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+  - match goal with
+    | Hin : In ?e clone_errnos |- _ =>
+        destruct (errnos_ok_range clone_errnos e eq_refl Hin) as [H1 H2];
+        assert (Hyes := errno_ret_error_b e H1 H2)
+    end.
+    cbn [eff_ret]. split; intros He; [reflexivity | congruence].
+  - match goal with
+    | Hv : clone_pid_ok_b ?mm ?r = true |- _ =>
+        assert (Hno := clone_pid_not_error mm r Hv)
+    end.
+    cbn [eff_ret]. split; intros He; [congruence | reflexivity].
+Qed.
+
 (** The same claim at the dispatcher, over both entry points at once.
     [clone3] adds a copy-in ledger and nothing else — [clone3_resolve_inv]
     strips it and hands back the very [clone_resolve] outcome, with the
     same post-model — so one lemma covers 220 and 435 and the two cannot
-    drift apart. *)
+    drift apart.
+
+    RESTATED, and the old form is worth recording.  Both conjuncts were
+    keyed on [errno_ret_in Fork.clone_errnos (eff_ret eff)].  That was
+    exact while 220 answered only the fork word, whose errnos are those
+    four.  It became FALSE when 220 learned the namespace word
+    ([Fork.clone_ns_flags_b]), which admits every errno 1..4095: an
+    -EPERM there is not in [clone_errnos], made no child, and left
+    [m_has_children] clear, so the second conjunct would have claimed a
+    child that does not exist.  The statement is now keyed on
+    [State.addr_is_error_b], which says the same thing on the fork word
+    (every member of [clone_errnos] is error-encoded and no admissible
+    pid is) and stays true on the namespace word.  No premise was added.
+    Only the old FIRST conjunct follows from this form directly; the old
+    second one, for the fork word and 435, still holds through
+    [clone_resolve_declines_or_sets_children] (with [clone3_resolve_inv]
+    for 435), which is unchanged.  No consumer in
+    oss-verify-proofs-internal or oss-verify-proofs names either form
+    (consumer census, 2026-11-01). *)
 Lemma clone_success_sets_children : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
   syscall_spec i m (Ok eff m' evs) ->
-  (errno_ret_in clone_errnos (eff_ret eff) = true -> m' = m) /\
-  (errno_ret_in clone_errnos (eff_ret eff) = false -> m_has_children m' = true).
+  (addr_is_error_b (eff_ret eff) = true -> m' = m) /\
+  (addr_is_error_b (eff_ret eff) = false -> m_has_children m' = true).
 Proof.
   intros i m eff m' evs [Hno|Hno] H.
   - apply (clone_is_clone_spec i m _ Hno) in H.
     unfold clone_spec in H.
-    destruct (clone_fork_flags_b (in_arg i 0));
+    destruct (clone_fork_flags_b (in_arg i 0)); cbv iota in H.
+    { exact (clone_resolve_error_or_children _ _ _ _ _ H). }
+    destruct (clone_ns_flags_b (in_arg i 0)); cbv iota in H;
       [|unfold unmodeled in H; discriminate].
-    exact (clone_resolve_declines_or_sets_children _ _ _ _ _ H).
+    exact (clone_ns_resolve_declines_or_sets_children _ _ _ _ _ H).
   - apply (clone3_is_clone3_spec i m _ Hno) in H.
     unfold clone3_spec in H.
     destruct (negb (bv_eqb (in_arg i 1) (Z_to_bv 64 CLONE_ARGS_SIZE)));
@@ -458,7 +562,7 @@ Proof.
     | Hr : clone3_resolve _ _ _ (Ok _ _ _) |- _ =>
         apply clone3_resolve_inv in Hr as (e0 & H0 & Hret); rewrite Hret
     end.
-    exact (clone_resolve_declines_or_sets_children _ _ _ _ _ H0).
+    exact (clone_resolve_error_or_children _ _ _ _ _ H0).
 Qed.
 
 (** And for the executable checker, which is the half a
@@ -467,12 +571,13 @@ Qed.
     clear either.  It is a corollary rather than a second proof —
     [ExecutableSpecs.check_syscall_sound_ok] says every [CheckOk] is an
     admissible outcome — so the two halves cannot disagree about what
-    "declines" means. *)
+    "declines" means.  Restated with [clone_success_sets_children], on
+    [State.addr_is_error_b]; see the note there. *)
 Corollary check_clone_success_sets_children : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
   check_syscall i eff m = CheckOk m' evs ->
-  (errno_ret_in clone_errnos (eff_ret eff) = true -> m' = m) /\
-  (errno_ret_in clone_errnos (eff_ret eff) = false -> m_has_children m' = true).
+  (addr_is_error_b (eff_ret eff) = true -> m' = m) /\
+  (addr_is_error_b (eff_ret eff) = false -> m_has_children m' = true).
 Proof.
   intros i m eff m' evs Hno H.
   apply clone_success_sets_children with (i := i) (eff := eff) (evs := evs);
@@ -558,12 +663,13 @@ Proof. intros i m Hno. declined_at Hno. Qed.
     is correct only for a caller whose children and tracees are both
     empty, and this file is HALF of what makes that decidable: 220 and
     435 create a child in-model, and what makes the composition sound
-    is that their success branch RECORDS it, which is
-    [clone_resolve_declines_or_sets_children] above.  A creating arm
-    that skipped [State.with_children] is the change that would make
-    [Exit.wait4_spec] WRONG rather than merely incomplete; for 220 and
-    435 that lemma is what breaks first, and a new child-creating
-    number owes an instance of its own.
+    is that their success branches RECORD it, which is
+    [clone_resolve_declines_or_sets_children] (the fork word, and 435)
+    and [clone_ns_resolve_declines_or_sets_children] (the namespace
+    word) above.  A creating arm that skipped [State.with_children] is
+    the change that would make [Exit.wait4_spec] WRONG rather than
+    merely incomplete; for 220 and 435 those lemmas are what break
+    first, and a new child-creating number owes an instance of its own.
 
     THE OTHER HALF IS NOT DISCHARGED IN THE MODEL, and saying so is
     the point of this paragraph.  The lists must also have STARTED empty,
@@ -589,12 +695,13 @@ Proof. intros i m Hno. declined_at Hno. Qed.
     touches the pointer — which is why the lemma below needs no
     hypothesis about it.
 
-    WHAT THIS OWES A SIBLING.  [Kernel.Fork.clone_resolve] has a
-    succeeding arm, so a child can exist, and
-    [Signal.sigaction_accepted] is {SIGINT, SIGTERM}: it excludes
-    SIGCHLD (17).  What [Exit.wait4_spec] rests on is not that no child can
-    exist, but that the model RECORDS whether one does.  That is
-    [clone_success_sets_children] above. *)
+    WHAT THIS OWES A SIBLING.  [Kernel.Fork.clone_resolve] and
+    [Kernel.Fork.clone_ns_resolve] have succeeding arms, so a child can
+    exist, and [Signal.sigaction_accepted] is {SIGINT, SIGTERM}: it
+    excludes SIGCHLD (17), whose one answered install puts back the
+    default action and installs no handler.  What [Exit.wait4_spec]
+    rests on is not that no child can exist, but that the model RECORDS
+    whether one does.  That is [clone_success_sets_children] above. *)
 Lemma wait4_not_unmodeled : forall i m,
   bv_unsigned (in_sysno i) = 260%Z ->
   bv_unsigned (pid32 (in_arg i 0)) = WAIT_ANY32 ->
