@@ -93,6 +93,18 @@ Definition cred0 : IdCred := mkIdCred 1 1000 1002 0.
 
 Definition W : NsState := state [root_user; child_user] [].
 
+(** A listed /proc/sys/user/max_user_namespaces file below the procfs root. *)
+Definition W_user_sys : NsState :=
+  mkNsState (ns_mounts W) (ns_userns W) (ns_mntns W) (ns_pidns W) (ns_netns W) (ns_sbs W)
+    (ns_dentries W ++
+     [dent 31 3 (Some 30%positive) (bytes [115; 121; 115]) 31;
+      dent 32 3 (Some 31%positive) (bytes [117; 115; 101; 114]) 32;
+      dent 33 3 (Some 32%positive)
+           (bytes [109; 97; 120; 95; 117; 115; 101; 114; 95; 110; 97; 109; 101; 115; 112; 97; 99; 101; 115])
+           33])
+    (ns_inodes W ++ [dir 31 365 0 0; dir 32 365 0 0; reg 33 420 0 0])
+    (ns_files W) (ns_env W).
+
 Definition base_model : Model :=
   init_model [] (Z_to_bv 64 0) (Z_to_bv 64 0) demo_sp demo_limit (demo_input [] IEof).
 
@@ -174,6 +186,11 @@ Definition s_self : list Z := [47; 112; 114; 111; 99; 47; 115; 101; 108; 102].
 Definition s_setgroups : list Z := s_self ++ [47; 115; 101; 116; 103; 114; 111; 117; 112; 115].
 Definition s_uid_map : list Z := s_self ++ [47; 117; 105; 100; 95; 109; 97; 112].
 Definition s_fd3 : list Z := s_self ++ [47; 102; 100; 47; 51].             (* /proc/self/fd/3 *)
+Definition s_mountinfo : list Z :=
+  s_self ++ [47; 109; 111; 117; 110; 116; 105; 110; 102; 111].
+Definition s_max_user_namespaces : list Z :=
+  [47; 112; 114; 111; 99; 47; 115; 121; 115; 47; 117; 115; 101; 114; 47;
+   109; 97; 120; 95; 117; 115; 101; 114; 95; 110; 97; 109; 101; 115; 112; 97; 99; 101; 115].
 
 (** AT_FDCWD as the register holds it. *)
 Definition CWD : Z := -100.
@@ -295,6 +312,31 @@ Proof. split; vm_compute; reflexivity. Qed.
 Example openat_uid_map :
   new_file (openat_fn (open_in s_uid_map 0 0) m3 c0 W)
   = Some (3, (3, 42, [[117; 105; 100; 95; 109; 97; 112]]), O_LARGEFILE).
+Proof. vm_compute. reflexivity. Qed.
+
+(** set_permissions in kernel/ucount.c makes a user namespace sysctl
+    read-only without CAP_SYS_RESOURCE. *)
+Example openat_user_sys_write_without_resource :
+  ret_of (openat_fn (open_in s_max_user_namespaces 1 0) m3 c0 W_user_sys) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+(** mounts_open_common binds the task's mount namespace and root at open. *)
+Definition mountinfo_binding (o : ext_outcome) : option (Z * Z * Z * Z * Z * Z) :=
+  match st_of o with
+  | Some s => match ns_files s with
+              | (_, f) :: _ =>
+                  match nf_kind f with
+                  | NfMountinfo (LProcTask m pid _) ns (rm, rd) off =>
+                      Some (Zpos m, pid, Zpos ns, Zpos rm, Zpos rd, off)
+                  | _ => None
+                  end
+              | [] => None
+              end
+  | None => None
+  end.
+
+Example openat_mountinfo_binds_namespace_root :
+  mountinfo_binding (openat_fn (open_in s_mountinfo 0 0) m3 c0 W) = Some (3, 42, 1, 1, 1, 0).
 Proof. vm_compute. reflexivity. Qed.
 
 (* ---- openat2 ----------------------------------------------------------- *)

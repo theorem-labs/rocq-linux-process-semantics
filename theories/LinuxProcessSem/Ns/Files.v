@@ -461,6 +461,65 @@ Definition is_userns_file (l : Loc) : bool :=
                          || bytes_eqb n proc_setgroups_name
   | _ => false
   end.
+(** A /proc/sys/user/max_* dentry is bound to the opener's user namespace.
+    The names are checked from the procfs root, so another file system's
+    like-named dentry is not accepted. *)
+Definition proc_sys_name : list byte := ascii [115; 121; 115].
+Definition proc_user_name : list byte := ascii [117; 115; 101; 114].
+Definition proc_max_prefix : list byte := ascii [109; 97; 120; 95].
+Definition CAP_SYS_RESOURCE : Z := 24.
+
+Fixpoint proc_name_prefixb (pre xs : list byte) : bool :=
+  match pre, xs with
+  | [], _ => true
+  | p :: ps, x :: xs' => Z.eqb (bv_unsigned p) (bv_unsigned x) && proc_name_prefixb ps xs'
+  | _ :: _, [] => false
+  end.
+
+Fixpoint dentry_names_from_root_fuel (fuel : nat) (st : NsState) (d : positive)
+    : option (list (list byte)) :=
+  match fuel with
+  | O => None
+  | S f =>
+      match find_dentry st d with
+      | Some x =>
+          match d_parent x with
+          | None => Some []
+          | Some p => option_map (fun ns => ns ++ [d_name x])
+                                  (dentry_names_from_root_fuel f st p)
+          end
+      | None => None
+      end
+  end.
+
+Definition is_user_sys_file (st : NsState) (l : Loc) : bool :=
+  match l with
+  | LDentry _ d =>
+      match loc_mnt_sb st l, dentry_names_from_root_fuel (S (length (ns_dentries st))) st d with
+      | Some (_, sb), Some [a; b; n] =>
+          match sb_kind sb with
+          | SbProc _ => bytes_eqb a proc_sys_name && bytes_eqb b proc_user_name
+                      && proc_name_prefixb proc_max_prefix n
+          | _ => false
+          end
+      | _, _ => false
+      end
+  | _ => false
+  end.
+
+Definition is_mountinfo_file (l : Loc) : bool :=
+  match l with LProcTask _ _ [n] => bytes_eqb n proc_mountinfo_name | _ => false end.
+
+(** [set_permissions] (kernel/ucount.c): CAP_SYS_RESOURCE over the opener's
+    user namespace gives all classes the 0644 owner bits; otherwise each
+    gets only the 0644 other read bit. *)
+Definition sysctl_permissions (m : Model) (ctx : NsCtx) (st : NsState) (l : Loc)
+    (a : ObjAttr) : ObjAttr :=
+  if is_user_sys_file st l
+  then mkObj (oa_kind a) (if own_capable m ctx st CAP_SYS_RESOURCE then 438 else 292)
+             (oa_uid a) (oa_gid a) (oa_ino a) (oa_dev a)
+  else a.
+
 
 (** [may_create_in_sticky] (fs/namei.c) on an O_CREAT open of an existing
     regular file or FIFO in a sticky directory that the caller and the
@@ -486,16 +545,19 @@ Definition open_existing (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCred
   match loc_mnt_sb st l, loc_attr m ctx st l with
   | Some (mt, sb), Some a =>
       let ro := mf_ro (mnt_flags mt) || sb_rdonly sb in
+      let opened := sysctl_permissions m ctx st l a in
       let perm_then_open :=
-        match inode_permission st ctx cr (task_eff ctx) l sb a (Z.lor MAY_OPEN acc) with
+        match inode_permission st ctx cr (task_eff ctx) l sb opened (Z.lor MAY_OPEN acc) with
         | Some e => ORErr e
         | None =>
-            if fmode_write flags && negb (special a) && ro then ORErr EROFS
+            if fmode_write flags && negb (special opened) && ro then ORErr EROFS
             else if is_setgroups l && fmode_write flags && negb (own_capable m ctx st CAP_SYS_ADMIN)
             then ORErr EACCES
-            else OROk st (if kind_is IDir a then NfDir l 0
-                          else if is_userns_file l then NfUserNsFile l (cx_user ctx) 0
-                          else NfFile l 0)
+            else OROk st (if kind_is IDir opened then NfDir l 0
+                          else if is_mountinfo_file l then NfMountinfo l (cx_mount ctx) (cx_root ctx) 0
+                          else if is_userns_file l || is_user_sys_file st l
+                               then NfUserNsFile l (cx_user ctx) 0
+                               else NfFile l 0)
         end in
       match creat_dir with
       | Some d =>
