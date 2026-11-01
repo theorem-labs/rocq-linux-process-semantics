@@ -379,11 +379,11 @@ Proof.
   - intro tr. cbn.
     rewrite (alloc_mix_obs_iff (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd rlim inp U
                Hsource Hne tr).
-    rewrite (alloc_obs_iff (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd alim inp U
+    rewrite (alloc_obs_iff target_segs apc aph asp abrk amb arnd alim inp U
                Htarget tr).
     reflexivity.
   - cbn.
-    apply (alloc_no_error_run (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd alim inp U
+    apply (alloc_no_error_run target_segs apc aph asp abrk amb arnd alim inp U
              Htarget).
 Qed.
 

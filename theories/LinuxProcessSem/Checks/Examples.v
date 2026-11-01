@@ -1241,7 +1241,7 @@ Proof.
   cbn [run bh_traces undecodable_image] in Htr.
   eapply no_next_obs_trace_nil; [|exact Htr].
   intros evs c'. unfold init_config.
-  apply unmodeled_no_next; [reflexivity|].
+  apply unmodeled_no_next; [reflexivity| |reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
