@@ -113,3 +113,120 @@ Qed.
     [Measure.fw_entry] at each shape, and the no-error premise is
     [MustExitP.pstep_error_cases] at each shape -- the two inversion lemmas
     existing for exactly this. *)
+
+(* =========================================================================
+   The eight shapes
+   ========================================================================= *)
+
+(** A reachable configuration of [forkwait], named by what the proof needs
+    of it at that point.  Each shape is a conjunction of facts a segment
+    lemma of [ForkwaitSteps] supplies.
+
+    THE PREDICATE IS ON THE CONFIGURATION, not on a position in a trace:
+    two different interleavings can arrive at the same shape, and that is
+    the point -- nothing here records which schedule got there. *)
+
+(** One entry, no call pending. *)
+Definition fw_one_running (P : pconfig) (pc : Z) : Prop :=
+  exists e, pcfg_procs P = [(pe_pid e, e)]
+            /\ look P (pcfg_root P) = Some e
+            /\ m_halted (pe_model e) = None
+            /\ ms_svc_pending (pe_ms e) = None
+            /\ bv_unsigned (ms_pc_val (pe_ms e)) = pc.
+
+(** One entry with a call pending. *)
+Definition fw_one_pending (P : pconfig) (pc : Z) (nr : Z) : Prop :=
+  exists e x8, pcfg_procs P = [(pe_pid e, e)]
+               /\ look P (pcfg_root P) = Some e
+               /\ m_halted (pe_model e) = None
+               /\ ms_svc_pending (pe_ms e) = Some x8
+               /\ bv_unsigned x8 = nr
+               /\ bv_unsigned (ms_pc_val (pe_ms e)) = pc.
+
+(** The root halted on [code], and nothing else in the table. *)
+Definition fw_one_halted (P : pconfig) (code : Z) : Prop :=
+  exists e c, pcfg_procs P = [(pe_pid e, e)]
+              /\ root_view P = Some c
+              /\ m_halted (cfg_model c) = Some (Z_to_bv 64 code)
+              /\ m_killed (cfg_model c) = None.
+
+(** Two entries: the parent, and a child running or a zombie. *)
+Definition fw_two (P : pconfig) : Prop :=
+  exists ep ec,
+    pcfg_procs P = [(pe_pid ep, ep); (pe_pid ec, ec)]
+    /\ look P (pcfg_root P) = Some ep
+    /\ pe_parent ec = Some (pe_pid ep)
+    /\ pe_parent ep = None
+    /\ m_halted (pe_model ep) = None.
+
+(** The eight shapes.  The ninth a reader expects -- the injected-errno
+    path through [0x1105c] -- is NOT here, and that is a fact about the
+    ENVIRONMENT rather than about the program: [Run.injected_table] puts
+    [clone] in [FamFd] (Run.v:1383), and [Run.forced_only_cfg] has every
+    family off, so [sstep_cfg]'s spurious-refusal premise deletes those
+    resolutions.  At [Run.may_fail_cfg] the path IS reachable, becomes a
+    ninth shape, and is covered by [ForkwaitSteps.fw_run_fail]: the same
+    statement is harder there and still holds. *)
+Definition fw_shape (P : pconfig) : Prop :=
+  (exists pc, fw_one_running P pc)
+  \/ fw_one_pending P 0x11018 220
+  \/ fw_two P
+  \/ fw_one_pending P 0x1103c 260
+  \/ fw_one_pending P 0x1104c 94
+  \/ fw_one_pending P 0x11058 94
+  \/ fw_one_halted P 7.
+
+(* =========================================================================
+   The three remaining premises, against the shapes
+   ========================================================================= *)
+
+(** THE LEAF.  A terminal configuration of a shape has the root halted on
+    an allowed code.  Only the last shape can be terminal, and showing the
+    others cannot is the whole proof: each of the first six has an entry
+    with [m_halted = None], and [terminal] says every entry is halted.
+
+    This is the premise where a weaker statement would hide: if [terminal]
+    could hold at a shape whose root is NOT halted on 7, the theorem would
+    be about a different program.  So each case is discharged by producing
+    the running entry and contradicting it, never by a default. *)
+Lemma fw_shape_terminal_halted : forall P,
+  fw_shape P -> terminal P ->
+  exists c code, root_view P = Some c
+                 /\ m_halted (cfg_model c) = Some code
+                 /\ List.In code [Z_to_bv 64 7]
+                 /\ m_killed (cfg_model c) = None.
+Proof.
+  intros P Hsh Ht.
+  (* every shape but the last names a running entry; [terminal] says the
+     entry at the head of the table is halted, so those six are absurd.
+     [pe_zombie] is unfolded in the assertion itself: it is a definition,
+     and [congruence] does not see through one. *)
+  assert (Hhead : forall e r, pcfg_procs P = (pe_pid e, e) :: r ->
+                              m_halted (pe_model e) <> None).
+  { intros e r Hp. unfold terminal in Ht. rewrite Hp in Ht.
+    inversion Ht as [|x l Hx Hr]; subst. unfold pe_zombie in Hx. exact Hx. }
+  destruct Hsh as [[pc (e & Hp & _ & Hh & _)]
+                  |[(e & x8 & Hp & _ & Hh & _)
+                  |[(ep & ec & Hp & _ & _ & _ & Hh)
+                  |[(e & x8 & Hp & _ & Hh & _)
+                  |[(e & x8 & Hp & _ & Hh & _)
+                  |[(e & x8 & Hp & _ & Hh & _)
+                  |(e & c & Hp & Hrv & Hhc & Hk)]]]]]];
+    try (exfalso; exact (Hhead _ _ Hp Hh)).
+  - (* the halted shape, the one that can be terminal *)
+    exists c, (Z_to_bv 64 7). split; [exact Hrv | split; [exact Hhc |]].
+    split; [left; reflexivity | exact Hk].
+Qed.
+
+(** THE MEASURE PREMISE, for the shapes where one entry steps and is
+    replaced.  [MustExitP.pmeasure_absorb_lt] does the arithmetic; what a
+    shape supplies is that the stepping entry's own count falls, which is
+    the measure table's business and not this file's. *)
+Lemma fw_absorb_decreases : forall P e c',
+  look P (pe_pid e) = Some e ->
+  (fw_entry (pe_absorb e c') < fw_entry e)%nat ->
+  (fw_measure (absorb P e c') < fw_measure P)%nat.
+Proof.
+  intros P e c' Hl Hlt. unfold fw_measure.
+  apply pmeasure_absorb_lt; assumption.
+Qed.
