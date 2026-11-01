@@ -1089,3 +1089,48 @@ Proof.
           cbn [ms_pc_val set_reg]; exact Hpc.
       * unfold fw_a0_child. apply child_entry_a0_zero.
 Qed.
+
+(** FACT TWO: the reap's successor is a one-entry shape at [0x11040].
+
+    The zombie leaves the table, so what is left is the parent alone, at
+    the counter [advance_past_svc] reaches from the [wait4] [ecall] at
+    [0x1103c].  That counter heads [fw_pcs_reap], so the membership the
+    pinned shape needs is immediate.
+
+    The table clause is the interesting one: [drop_in] of the reaped
+    child from a two-entry table whose other entry is the parent leaves
+    exactly the parent, and that needs the two pids to differ -- which is
+    the premise the reap arm now carries, and the reason it was added. *)
+Lemma fw_reap_target_table : forall ep ec ep' q,
+  bv_eqb (pe_pid ep) q = false ->
+  pe_pid ec = q ->
+  drop_in (replace_in [(pe_pid ep, ep); (pe_pid ec, ec)] (pe_pid ep) ep') q
+  = [(pe_pid ep, ep')].
+Proof.
+  intros ep ec ep' q Hne Hq.
+  cbn [replace_in fst]. rewrite bv_eqb_same.
+  cbn [drop_in fst]. rewrite Hne.
+  cbn [drop_in fst]. rewrite Hq, bv_eqb_same. reflexivity.
+Qed.
+
+(** And the shape itself, given the parent's state after the copy-out. *)
+Lemma fw_reap_target : forall P ep',
+  pcfg_procs P = [(pe_pid ep', ep')] ->
+  pcfg_root P = pe_pid ep' ->
+  m_halted (pe_model ep') = None ->
+  ms_svc_pending (pe_ms ep') = None ->
+  bv_unsigned (ms_pc_val (pe_ms ep')) = 0x11040%Z ->
+  fw_shape P.
+Proof.
+  intros P ep' Hp Hr Hh Hs Hpc. left.
+  exists (bv_unsigned (ms_pc_val (pe_ms ep'))).
+  split.
+  - (* 0x11040 heads fw_pcs_reap, so it is in fw_pcs_one *)
+    rewrite Hpc. vm_compute. tauto.
+  - exists ep'.
+    split; [exact Hp|].
+    split; [rewrite Hr; unfold look; rewrite Hp;
+            cbn [look_in fst snd]; rewrite bv_eqb_same; reflexivity|].
+    split; [exact Hh|].
+    split; [exact Hs | reflexivity].
+Qed.
