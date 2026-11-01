@@ -2978,7 +2978,22 @@ Qed.
     [Unmodeled] answers by the two spec facts above.  The one entry
     that could error is the parent parked at its [wait4], and the
     error arm is behind the negation of the intercept guard that
-    parks it -- which is 7.2 paying for itself a third time. *)
+    parks it -- which is 7.2 paying for itself a third time.
+
+    IT DOES NOT USE THE STATEMENT'S BUDGET PREMISE, and that is worth
+    recording rather than leaving to be noticed.
+    [Procs.pholts_within_budget] hands a caller
+    [~ run_scfg_budget_refused ...], and the obvious route to the two
+    fault arms is through it.  This proof takes another: with no lazy
+    mapping the accounted step IS [RiscvSemantics.step]
+    ([Run.mi_account_step_no_lazy]) and materialising IS the identity
+    ([State.materialize_model_accesses_no_lazy]), so both faults are
+    decided by the remainder and by [fw_model_ok], which are facts
+    about the STATE.  The budget premise is still in the statement,
+    where it belongs -- it is what the released shape carries -- but
+    nothing here spends it, and a reader comparing this file with a
+    single-process halting proof should not go looking for where it
+    was used. *)
 Theorem fw_no_error : forall cfg P evs,
   fw_shape P -> ~ pstep_cfg forkwait_segs cfg P evs PError.
 Proof.
