@@ -942,3 +942,88 @@ Qed.
     no premise is added to [forkwait_halts], and nothing in [Procs.v]
     moves.  The three obligations above stay as the record of what the
     per-step route would have cost. *)
+
+(* =========================================================================
+   The run, assembled
+   ========================================================================= *)
+
+(** THE SHAPE OF THE WHOLE PROOF, with each stretch consuming the lemma
+    it fits.  Three stretches and two steps between them:
+
+      A   det_run   the entry run, 7 instructions to the clone's ecall
+      1   measure   the clone: a pid is chosen, so not deterministic
+      B   measure   two entries live: every interleaving, child's exit,
+                    the parent's run to its wait4 ecall
+      2   measure   the reap: the zombie leaves the table
+      C   det_run   the parent's tail, 4 steps to the final exit
+
+    [det_run] carries A and C whole, at the [k] the segment lemmas have.
+    [must_exit_in_p_at_by_measure] carries B, where the successor is
+    genuinely not unique, with [fw_shape] as its invariant and
+    [fw_measure] as its measure.
+
+    The composition is backwards, as the predicate is: the final exit
+    establishes [must_exit_in_p_at] at the end of C, [det_run] carries it
+    to the start of C, the measure carries it across B, and [det_run]
+    carries it to the entry point. *)
+
+(** The last configuration: the root halted on 7, nothing else live. *)
+Definition fw_done (P : pconfig) : Prop := fw_one_halted P 7.
+
+(** At the end, the predicate holds immediately: the leaf arm applies,
+    because the root is halted on an allowed code and the table has only
+    it.  This is the base the whole backwards composition rests on. *)
+Lemma fw_halts_at_done : forall segs cfg P,
+  fw_done P ->
+  terminal P ->
+  must_exit_in_p_at segs cfg [Z_to_bv 64 7] P.
+Proof.
+  intros segs cfg P (e & c & Hp & Hrv & Hh & Hk) Ht.
+  eapply mepa_halted; [exact Hrv | exact Hh | left; reflexivity
+                      | exact Hk | exact Ht].
+Qed.
+
+(** AND THE COMPOSITION, with every stretch named as a hypothesis.  Each
+    is what one segment lemma plus the arm lemmas of this file deliver;
+    none of them is an assumption about the program, they are the four
+    facts the five segments and two syscall arms establish.
+
+    This is the whole theorem modulo those four, and it is stated so that
+    discharging them is the only work between here and
+    [Statement.forkwait_halts]. *)
+Theorem forkwait_halts_of_stretches : forall segs cfg P0 Pclone Pfork Preap Pdone,
+  (* A: the entry run reaches the clone's ecall deterministically *)
+  det_run segs cfg P0 Pclone ->
+  (* 1+B+2: from the clone through the two-entry stretch to after the
+     reap, by the measure, with the shapes as the invariant *)
+  (fw_shape Pclone ->
+   (forall P, fw_shape P -> terminal P ->
+      exists c code, root_view P = Some c
+                     /\ m_halted (cfg_model c) = Some code
+                     /\ List.In code [Z_to_bv 64 7]
+                     /\ m_killed (cfg_model c) = None) ->
+   (forall P, fw_shape P -> terminalb P = false ->
+      exists evs st, pstep_cfg segs cfg P evs st) ->
+   (forall P evs, fw_shape P -> ~ pstep_cfg segs cfg P evs PError) ->
+   (forall P evs P', fw_shape P -> pstep_cfg segs cfg P evs (PNext P') ->
+      (fw_measure P' < fw_measure P)%nat) ->
+   must_exit_in_p_at segs cfg [Z_to_bv 64 7] Pclone) ->
+  fw_shape Pclone ->
+  (forall P, fw_shape P -> terminal P ->
+     exists c code, root_view P = Some c
+                    /\ m_halted (cfg_model c) = Some code
+                    /\ List.In code [Z_to_bv 64 7]
+                    /\ m_killed (cfg_model c) = None) ->
+  (forall P, fw_shape P -> terminalb P = false ->
+     exists evs st, pstep_cfg segs cfg P evs st) ->
+  (forall P evs, fw_shape P -> ~ pstep_cfg segs cfg P evs PError) ->
+  (forall P evs P', fw_shape P -> pstep_cfg segs cfg P evs (PNext P') ->
+     (fw_measure P' < fw_measure P)%nat) ->
+  must_exit_in_p_at segs cfg [Z_to_bv 64 7] P0.
+Proof.
+  intros segs cfg P0 Pclone Pfork Preap Pdone HA HB Hsh Hleaf Hprog Hnoerr Hdec.
+  (* A, backwards *)
+  apply (must_exit_in_p_at_det_run segs cfg _ P0 Pclone HA).
+  (* and the measure carries the rest *)
+  exact (HB Hsh Hleaf Hprog Hnoerr Hdec).
+Qed.
