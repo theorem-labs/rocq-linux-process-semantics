@@ -274,6 +274,16 @@ Definition abrt_model (lim : Z) : Model :=
        lim abrt_input).
 Definition abrt_c (lim : Z) : config := mkCfg (abrt_s 0) (abrt_model lim).
 
+(** Every state and every syscall input below carries the run's segment
+    list inside a closure ([ms_rom], and [Specs.sys_input]'s readers), so
+    a [vm_compute] over one reads the measured vDSO image back under its
+    binder.  Opening the state's definitions and abstracting the pair
+    first keeps the computation to the image's own segment —
+    [Checks.Omni.abstract_vdso], the same tactic the loop fixtures there
+    use.  [try], because a few goals below name no state. *)
+Ltac abrt_open :=
+  unfold abrt_s, abrt_msk, abrt_ms0, run_segments; try abstract_vdso.
+
 Lemma abrt_config : forall lim,
   init_config abrt_rsegs 0x100 demo_phdrs abrt_sp abrt_brk abrt_mbase
     abrt_draw lim abrt_input
@@ -305,7 +315,9 @@ Qed.
     is an ordinary instruction step that leaves the number pending -- the
     first syscall is at the door and its number is 96. *)
 Lemma abrt_svc3 : ms_svc_pending (abrt_s 3) = Some (Z_to_bv 64 96).
-Proof. vm_compute. first [reflexivity | f_equal; apply bv_eq; reflexivity]. Qed.
+Proof.
+  abrt_open. vm_compute. first [reflexivity | f_equal; apply bv_eq; reflexivity].
+Qed.
 
 (** THE TID THE MODEL CHOOSES.  [Monad.choose] admits any value in the
     window, so this effect names one; [abrt_sc1] is the statement that
@@ -317,7 +329,7 @@ Lemma abrt_sc1 : forall lim,
   check_syscall (sys_input abrt_rsegs (abrt_s 3) (Z_to_bv 64 96)) abrt_eff1
     (abrt_model lim)
   = CheckOk (with_tid abort_tid (abrt_model lim)) [].
-Proof. intros lim. vm_compute. reflexivity. Qed.
+Proof. intros lim. abrt_open. vm_compute. reflexivity. Qed.
 
 (** The state the first syscall leaves: a0 holds the tid, and the pc has
     moved past the [ecall].  This is where the second leg starts. *)
@@ -373,9 +385,16 @@ Proof.
   - no_lazy. rewrite (abrt_step2 k Hk). reflexivity.
 Qed.
 
-(** Three more instructions, and the second [ecall] is pending at 130. *)
+(** Three more instructions, and the second [ecall] is pending at 130.
+    [abrt_open2] is [abrt_open] with the second leg's states opened too. *)
+Ltac abrt_open2 :=
+  unfold abrt_t, abrt_tk, abrt_t0, abrt_s, abrt_msk, abrt_ms0, run_segments;
+  try abstract_vdso.
+
 Lemma abrt_svc_tkill : ms_svc_pending (abrt_t 3) = Some (Z_to_bv 64 130).
-Proof. vm_compute. first [reflexivity | f_equal; apply bv_eq; reflexivity]. Qed.
+Proof.
+  abrt_open2. vm_compute. first [reflexivity | f_equal; apply bv_eq; reflexivity].
+Qed.
 
 (** The kill itself.  a0 carries the tid the first syscall returned, a1
     carries 6, and the post-model is [State.with_killed] — the same
@@ -389,7 +408,7 @@ Lemma abrt_sc2 : forall lim,
   check_syscall (sys_input abrt_rsegs (abrt_t 3) (Z_to_bv 64 130))
     (mkEffect (Z_to_bv 64 0) [] []) (with_tid abort_tid (abrt_model lim))
   = CheckOk (abrt_killed_model lim) [].
-Proof. intros lim. vm_compute. reflexivity. Qed.
+Proof. intros lim. abrt_open2. vm_compute. reflexivity. Qed.
 
 (** The trace the run ends on. *)
 Definition abrt_trace (lim : Z) : list event :=
@@ -489,7 +508,7 @@ Lemma abrt_tkill_declined_undeclared :
        (init_model (segments_reserved abrt_segments) abrt_brk abrt_mbase
           abrt_sp source_alloc_limit abrt_input_undeclared))
   = CheckUnmodeled.
-Proof. vm_compute. reflexivity. Qed.
+Proof. abrt_open2. vm_compute. reflexivity. Qed.
 
 (** THE DATA FLOW, PINNED.  Everything above rests on one claim about the
     program that a reader cannot check by looking at the trace: that
@@ -501,7 +520,7 @@ Proof. vm_compute. reflexivity. Qed.
     [Run.apply_effect]. *)
 Lemma abrt_tkill_pid_is_the_returned_tid :
   in_arg (sys_input abrt_rsegs (abrt_t 3) (Z_to_bv 64 130)) 0 = abort_tid.
-Proof. apply bv_eq; vm_compute; reflexivity. Qed.
+Proof. abrt_open2. apply bv_eq; vm_compute; reflexivity. Qed.
 
 (** Second, the value was a CHOICE and not a constant: the acceptor
     admits a different tid from the same state, so nothing in the model
@@ -512,7 +531,7 @@ Lemma abrt_sc1_admits_another_tid : forall lim,
   check_syscall (sys_input abrt_rsegs (abrt_s 3) (Z_to_bv 64 96))
     (mkEffect (Z_to_bv 64 1234) [] []) (abrt_model lim)
   = CheckOk (with_tid (Z_to_bv 64 1234) (abrt_model lim)) [].
-Proof. intros lim. vm_compute. reflexivity. Qed.
+Proof. intros lim. abrt_open. vm_compute. reflexivity. Qed.
 
 (** Third, the match is what the kill DEPENDED on.  The same call, the
     same registers, the same declaration -- and a model whose recorded
@@ -524,7 +543,7 @@ Lemma abrt_tkill_other_tid_declined : forall lim,
     (mkEffect (Z_to_bv 64 0) [] [])
     (with_tid (Z_to_bv 64 4243) (abrt_model lim))
   = CheckUnmodeled.
-Proof. intros lim. vm_compute. reflexivity. Qed.
+Proof. intros lim. abrt_open2. vm_compute. reflexivity. Qed.
 
 (* =========================================================================
    The same refutation, in the classifier statement shape
@@ -1065,12 +1084,23 @@ Proof.
   apply andb_true_iff. split; [apply Z.leb_le | apply Z.ltb_lt]; lia.
 Qed.
 
+(** Both tactics open the leg's states and abstract the vDSO pair before
+    they compute, for the reason [abrt_open] gives: a syscall input
+    carries the run's segment list inside its readers, and a
+    [vm_compute] over one reads the measured image back under the
+    binder.  The [unfold] list is [blk_open]'s; [try], because a few
+    goals name no leg. *)
+Ltac blk_abs :=
+  unfold blk_L1, blk_L2, blk_L3, blk_L4, blk_L5, blk_L6, blk_L7,
+    blk_leg, blk_legk, blk_L0, run_segments; try abstract_vdso.
+
 Ltac blk_check_eq :=
-  vm_compute;
+  blk_abs; vm_compute;
   repeat first [reflexivity | (apply bv_eq; reflexivity) | progress f_equal].
 
 Ltac blk_svc :=
-  vm_compute; first [reflexivity | f_equal; apply bv_eq; reflexivity].
+  blk_abs; vm_compute;
+  first [reflexivity | f_equal; apply bv_eq; reflexivity].
 
 (** ** The states and models along the path
 
