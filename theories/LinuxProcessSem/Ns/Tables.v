@@ -168,10 +168,15 @@ Record NetIf := mkNetIf {
   if_addrs : list (Z * Z)
 }.
 
+(** A network namespace: owner, interfaces, and whether the model holds
+    every socket in it ([netns_sealed]: true for a namespace a modelled
+    clone or unshare made, false for the host's, whose other processes the
+    model does not see). *)
 Record NetNs := mkNetNs {
-  netns_id    : positive;
-  netns_owner : positive;
-  netns_ifs   : list NetIf
+  netns_id     : positive;
+  netns_owner  : positive;
+  netns_ifs    : list NetIf;
+  netns_sealed : bool
 }.
 
 (** What an open file of the namespace model is: a path opened with O_PATH;
