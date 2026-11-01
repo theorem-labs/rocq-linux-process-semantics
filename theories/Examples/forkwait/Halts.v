@@ -150,14 +150,49 @@ Definition fw_one_halted (P : pconfig) (code : Z) : Prop :=
               /\ m_halted (cfg_model c) = Some (Z_to_bv 64 code)
               /\ m_killed (cfg_model c) = None.
 
-(** Two entries: the parent, and a child running or a zombie. *)
+(** Two entries, and BOTH are pinned.  An earlier version of this named
+    only the parent, and that is the "preserves itself for the wrong
+    reason" failure: a step of the CHILD would have landed back in it with
+    nothing said about where the child went, so the shape would have been
+    preserved while the proof learned nothing.  Every target shape must pin
+    both entries, not only the one that stepped.
+
+    The child is in one of three states, the three the run passes through:
+    running at a pc, with its [exit_group] pending, or a zombie holding
+    status 7.  That disjunction is what makes the two-entry stretch a
+    finite set of shapes rather than one shape with a hole in it. *)
+Definition fw_child (ec : ProcessEntry) : Prop :=
+  (m_halted (pe_model ec) = None
+   /\ ms_svc_pending (pe_ms ec) = None
+   /\ (bv_unsigned (ms_pc_val (pe_ms ec)) = 0x1101c%Z
+       \/ bv_unsigned (ms_pc_val (pe_ms ec)) = 0x11020%Z
+       \/ bv_unsigned (ms_pc_val (pe_ms ec)) = 0x11050%Z
+       \/ bv_unsigned (ms_pc_val (pe_ms ec)) = 0x11054%Z))
+  \/ (exists x8, m_halted (pe_model ec) = None
+                 /\ ms_svc_pending (pe_ms ec) = Some x8
+                 /\ bv_unsigned x8 = 94%Z
+                 /\ bv_unsigned (ms_pc_val (pe_ms ec)) = 0x11058%Z)
+  \/ (m_halted (pe_model ec) = Some (Z_to_bv 64 7)
+      /\ m_killed (pe_model ec) = None).
+
+(** The parent while two entries are live: on its way to the [wait4], or
+    blocked at it. *)
+Definition fw_parent (ep : ProcessEntry) : Prop :=
+  m_halted (pe_model ep) = None
+  /\ ((ms_svc_pending (pe_ms ep) = None
+       /\ (0x1101c%Z <= bv_unsigned (ms_pc_val (pe_ms ep)) <= 0x11038%Z)%Z)
+      \/ (exists x8, ms_svc_pending (pe_ms ep) = Some x8
+                     /\ bv_unsigned x8 = 260%Z
+                     /\ bv_unsigned (ms_pc_val (pe_ms ep)) = 0x1103c%Z)).
+
 Definition fw_two (P : pconfig) : Prop :=
   exists ep ec,
     pcfg_procs P = [(pe_pid ep, ep); (pe_pid ec, ec)]
     /\ look P (pcfg_root P) = Some ep
     /\ pe_parent ec = Some (pe_pid ep)
     /\ pe_parent ep = None
-    /\ m_halted (pe_model ep) = None.
+    /\ fw_parent ep
+    /\ fw_child ec.
 
 (** The eight shapes.  The ninth a reader expects -- the injected-errno
     path through [0x1105c] -- is NOT here, and that is a fact about the
@@ -207,7 +242,7 @@ Proof.
     inversion Ht as [|x l Hx Hr]; subst. unfold pe_zombie in Hx. exact Hx. }
   destruct Hsh as [[pc (e & Hp & _ & Hh & _)]
                   |[(e & x8 & Hp & _ & Hh & _)
-                  |[(ep & ec & Hp & _ & _ & _ & Hh)
+                  |[(ep & ec & Hp & _ & _ & _ & (Hh & _) & _)
                   |[(e & x8 & Hp & _ & Hh & _)
                   |[(e & x8 & Hp & _ & Hh & _)
                   |[(e & x8 & Hp & _ & Hh & _)
