@@ -299,3 +299,94 @@ Proof. intros segs cfg P p evs r H. exists evs, r. exists p. exact H. Qed.
     the only one that says what the answer IS rather than what the run does
     next.  Every other premise is refutable by a wrong step; this one is
     satisfiable by a wrong shape. *)
+
+(* =========================================================================
+   fw_reach_cases: every reachable configuration is one of the eight
+   ========================================================================= *)
+
+(** THE BASE CASE.  [pinit_config] is [one_proc] over [Run.init_config], so
+    the table is a single entry, the root is that entry, and the shape is
+    the first: one entry running, at the image's entry point.  Stated over
+    an arbitrary [c] because that is what makes it usable at the entry
+    point of any program, not just this one. *)
+Lemma fw_shape_one_proc : forall c,
+  m_halted (cfg_model c) = None ->
+  ms_svc_pending (cfg_ms c) = None ->
+  fw_shape (one_proc c).
+Proof.
+  intros c Hh Hs. left.
+  exists (bv_unsigned (ms_pc_val (cfg_ms c))), (one_entry c).
+  split; [reflexivity|].
+  split; [apply one_proc_entry|].
+  split; [exact Hh|].
+  split; [exact Hs|].
+  reflexivity.
+Qed.
+
+(** And the same for a configuration with a call already pending, which is
+    what each segment hands the next one. *)
+Lemma fw_shape_one_proc_pending : forall c x8 nr pc,
+  m_halted (cfg_model c) = None ->
+  ms_svc_pending (cfg_ms c) = Some x8 ->
+  bv_unsigned x8 = nr ->
+  bv_unsigned (ms_pc_val (cfg_ms c)) = pc ->
+  fw_one_pending (one_proc c) pc nr.
+Proof.
+  intros c x8 nr pc Hh Hs Hn Hp.
+  exists (one_entry c), x8.
+  split; [reflexivity|].
+  split; [apply one_proc_entry|].
+  split; [exact Hh|].
+  split; [exact Hs|].
+  split; [exact Hn | exact Hp].
+Qed.
+
+(** THE INDUCTIVE STEP, as a hypothesis on one transition.
+
+    [fw_reach_cases] is then an induction over [fw_reach] with the base
+    case above and this as the step, so it is stated separately: it is the
+    whole of the remaining work, and separating it says exactly what that
+    work is rather than burying it in a tactic. *)
+Definition fw_shape_preserved (segs : list Segment) (cfg : SpuriousCfg)
+    : Prop :=
+  forall P evs P', fw_shape P -> pstep_cfg segs cfg P evs (PNext P') ->
+                   fw_shape P'.
+
+(** Given it, the characterisation is the induction. *)
+Lemma fw_reach_cases : forall segs cfg P0 P,
+  fw_shape_preserved segs cfg ->
+  fw_shape P0 ->
+  fw_reach segs cfg P0 P ->
+  fw_shape P.
+Proof.
+  intros segs cfg P0 P Hpres H0 Hr.
+  induction Hr as [|P1 evs P2 Hr IH Hs].
+  - exact H0.
+  - exact (Hpres P1 evs P2 IH Hs).
+Qed.
+
+(** And then the whole composition, with every premise named. *)
+Theorem forkwait_halts_of_preserved : forall segs cfg S P0 mu,
+  fw_shape_preserved segs cfg ->
+  fw_shape P0 ->
+  (forall P, fw_shape P -> terminal P ->
+     exists c code, root_view P = Some c
+                    /\ m_halted (cfg_model c) = Some code
+                    /\ List.In code S
+                    /\ m_killed (cfg_model c) = None) ->
+  (forall P, fw_shape P -> terminalb P = false ->
+     exists evs st, pstep_cfg segs cfg P evs st) ->
+  (forall P evs, fw_shape P -> ~ pstep_cfg segs cfg P evs PError) ->
+  (forall P evs P', fw_shape P -> pstep_cfg segs cfg P evs (PNext P') ->
+     (mu P' < mu P)%nat) ->
+  must_exit_in_p_at segs cfg S P0.
+Proof.
+  intros segs cfg S P0 mu Hpres H0 Hleaf Hprog Hnoerr Hdec.
+  apply (must_exit_in_p_at_by_measure segs cfg S fw_shape mu).
+  - exact (fun P evs P' HI Hs => Hpres P evs P' HI Hs).
+  - exact Hleaf.
+  - exact Hprog.
+  - exact Hnoerr.
+  - exact Hdec.
+  - exact H0.
+Qed.
