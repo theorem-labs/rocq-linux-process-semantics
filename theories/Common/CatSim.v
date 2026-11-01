@@ -45,7 +45,7 @@
 
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence MustExit OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import Fs.ReadWrite.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim.
 
@@ -1160,7 +1160,7 @@ Qed.
 
 (** The run-level omni judgment of a write-then-exit binary. *)
 Lemma cat_omni_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
+  to_wexit (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) bufs code ->
   bufs_modeled bufs ->
   wexit_launch bufs inp ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
@@ -1168,47 +1168,49 @@ Lemma cat_omni_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bufs code Hte Hbm Hl.
   cbn [omni_run]. unfold init_config.
-  exact (to_wexit_exec segs _ bufs code Hte
-           (init_model (segments_reserved segs) brk0 mb sp lim inp)
-           eq_refl eq_refl (init_model_wexit_ready _ _ _ _ _ _ _ Hl) Hbm).
+  exact (to_wexit_exec (run_segments segs inp sp mb) _ bufs code Hte
+           (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
+           eq_refl eq_refl eq_refl Hbm).
 Qed.
 
 Lemma cat_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
+  to_wexit (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) bufs code ->
   bufs_modeled bufs ->
-  wexit_launch bufs inp ->
-  forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
+  forall tr, obs_trace (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
              <-> exists full, wpick (Z_to_bv 64 1) bufs full /\
                  is_prefix tr (full ++ [ExitEv code (in_fs inp)]).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bufs code Hte Hbm Hl tr.
   set (fs0 := in_fs inp) in *.
   unfold init_config in *.
-  set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
-  assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None) by reflexivity.
-  assert (Hlazy : m_vm_lazy (init_model (segments_reserved segs) brk0 mb sp lim inp) = []) by reflexivity.
-  assert (Hfd : wexit_ready bufs (init_model (segments_reserved segs) brk0 mb sp lim inp))
-    by (apply init_model_wexit_ready; exact Hl).
-  assert (Hfs : m_fs (init_model (segments_reserved segs) brk0 mb sp lim inp) = fs0) by reflexivity.
+  set (ms := init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) in *.
+  assert (Hh : m_halted (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = None) by reflexivity.
+  assert (Hlazy : m_vm_lazy (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = []) by reflexivity.
+  assert (Hfd : fd1chan (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))) by reflexivity.
+  assert (Hfs : m_fs (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = fs0) by reflexivity.
   split.
   - intros (tr' & c & Hstar & Hp).
-    destruct (to_wexit_star_only segs ms bufs code Hte _ Hh Hlazy Hfd Hbm tr' c Hstar)
+    destruct (to_wexit_star_only (run_segments segs inp sp mb) ms bufs code Hte _ Hh Hlazy Hfd Hbm tr' c Hstar)
       as (full & Hw & Hpref).
     rewrite Hfs in Hpref.
     exists full. split; [exact Hw|].
     eapply is_prefix_trans; eauto.
   - intros (full & Hw & Hp).
-    destruct (to_wexit_star_admits segs ms bufs code Hte _ full Hh Hlazy Hfd Hbm Hw)
+    destruct (to_wexit_star_admits (run_segments segs inp sp mb) ms bufs code Hte _ full Hh Hlazy Hfd Hbm Hw)
       as [c Hstar].
     rewrite Hfs in Hstar.
     exists (full ++ [ExitEv code fs0]), c. split; assumption.
 Qed.
 
 Lemma cat_no_error_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
+  to_wexit (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) bufs code ->
   bufs_modeled bufs ->
-  wexit_launch bufs inp ->
-  ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
+  ~ reaches_error (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bufs code Hte Hbm Hl. apply exec_no_error.
   eapply exec_conseq; [exact (cat_omni_run_te segs pc ph sp brk0 mb rnd lim inp bufs code Hte Hbm Hl) |].
@@ -1221,7 +1223,7 @@ Qed.
     by SIGPIPE or reads -EPIPE, and exits with nothing this lemma
     knows. *)
 Lemma cat_must_exit_with_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
+  to_wexit (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) bufs code ->
   bufs_modeled bufs ->
   wexit_launch bufs inp ->
   must_exit_with code (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp.
@@ -1232,7 +1234,7 @@ Proof.
 Qed.
 
 Lemma cat_omni_run_te_code_unique : forall segs pc ph sp brk0 mb rnd lim inp bufs code code',
-  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
+  to_wexit (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) bufs code ->
   bufs_modeled bufs ->
   wexit_launch bufs inp ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (exits_with code') ->

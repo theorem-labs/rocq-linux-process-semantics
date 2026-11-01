@@ -29,8 +29,8 @@
     source everywhere, so that its equivalence claim cannot be satisfied
     by a semantics too weak to follow the binary. *)
 
-From Stdlib Require Import ZArith NArith List.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs.
+From Stdlib Require Import ZArith NArith List String.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso.
 Import ListNotations.
 Open Scope bv_scope.
 Local Open Scope bool_scope.
@@ -243,8 +243,92 @@ Definition segment_reservation (s : Segment) : word * word :=
   let hi := page_round_up_Z (Z.of_N (seg_base s) + Z.of_N (seg_size s)) in
   (Z_to_bv 64 lo, Z_to_bv 64 (hi - lo)).
 
+(** The LOADER's reservations only.  [run] puts the kernel's own vDSO
+    text and vvar pages into the same segment list (see
+    [MemImageType.seg_kernel_map] and [vdso_segments] below), and they
+    are reserved by [State.init_reserved], from the ledger's own
+    [State.vdso_reserved].  Counting them here as well would put the
+    pair's top — which is just below [mm->mmap_base] — into
+    [valid_brk]'s [reserved_top], and no Linux break is up there. *)
 Definition segments_reserved (segs : list Segment) : list (word * word) :=
-  map segment_reservation segs.
+  map segment_reservation (filter (fun s => negb (seg_kernel_map s)) segs).
+
+(** ** The pair [execve] installs
+
+    Linux maps the vDSO text directly below [mm->mmap_base] and the
+    four vvar data pages directly below the text
+    ([__setup_additional_pages], arch/riscv/kernel/vdso.c, reached
+    through [ARCH_SETUP_ADDITIONAL_PAGES] in [load_elf_binary],
+    fs/binfmt_elf.c, Linux v6.18.46, commit 1f99e9ab748f).  The ledger
+    reserves exactly that range ([State.vdso_reserved] at
+    [State.vdso_top]); these are the same two ranges as SEGMENTS, so
+    that a load, a store and a fetch there are answered by the rules
+    every other address is answered by.
+
+    The TEXT carries the chosen image's bytes and is READABLE, so a
+    libc's lookup reads the ELF header, the program headers, the
+    dynamic section and the symbol, string and version tables with
+    ordinary machine loads.  It is marked WITHOUT 'x', although Linux
+    maps it PROT_READ|PROT_EXEC: the model's 'x' flag says "the model
+    fetches and executes these bytes", and of the vDSO's bytes it does
+    not — [Run.sstep]'s vDSO arm answers a call to an exported entry
+    with the system call's own specification, and
+    [RiscvSemantics.fetch_failure] answers every other address of the
+    text [MachineUnmodeled].  SCOPE.md names the difference.
+
+    The VVAR pages are readable and carry NO bytes, which is the
+    model's statement that it has the pages but not their contents.
+    Neither mapping is writable: the kernel maps both without
+    [VM_WRITE], so a store into either is the SIGSEGV
+    [RiscvSemantics.store_ok] delivers.
+
+    The pair is EMPTY when the ledger reserves nothing — a stack
+    pointer and a base so low that the pair would run off the bottom of
+    the address space, which [State.vdso_reserved] declines.  Such a
+    launch is not one Linux makes, and the entry premises exclude it;
+    the model simply has no pair there. *)
+Definition vdso_segments (kb : KernelBuild) (sp mbase : word) : list Segment :=
+  let top := page_round_down_Z
+               (Z.min (bv_unsigned mbase)
+                      (page_round_down_Z (bv_unsigned sp - stack_max_size))) in
+  let base := (top - vdso_len kb)%Z in
+  if (base <? page_size)%Z then []
+  else
+    let im := vdso_image_of kb in
+    let tbase := (top - vdso_text_pages kb * page_size)%Z in
+    [ {| seg_base  := Z.to_N base;
+         seg_size  := Z.to_N (vdso_vvar_pages * page_size);
+         seg_perms := "r--"%string;
+         seg_bytes := []; seg_kind := SegVdsoVvar |}
+    ; {| seg_base  := Z.to_N tbase;
+         seg_size  := Z.to_N (vdso_text_pages kb * page_size);
+         seg_perms := "r--"%string;
+         seg_bytes := vi_bytes im; seg_kind := SegVdsoText |} ].
+
+(** OPAQUE TO REDUCTION, and that is a performance decision with a
+    measured cause.  The text segment carries the whole measured image
+    — 5704 bytes in twelve chunks — so a [vm_compute] of any term that
+    mentions the run's segment list normalizes those bytes, even when
+    the address it is asking about lies in the binary's own segments
+    and [find_segment] answers before it reaches the pair.  One
+    [Example] of [Checks.Omni] ran for 59 minutes that way.
+
+    Opaque, the pair is one symbol: [find_segment] tests the binary's
+    segments, which come first, answers there, and never forces it.
+    Every fixture that is not ABOUT the vDSO therefore computes as it
+    did before the pair existed.  A proof that IS about the vDSO —
+    [Checks.Cases.Kernel.Vdso] — writes [Local Transparent
+    vdso_segments] and pays the cost once. *)
+Global Opaque vdso_segments.
+
+(** The segment list a RUN is read against: the binary's LOAD segments
+    and the pair above.  [Run.run] and every variant beside it use
+    this, and nothing else does, so the binary's own list stays what
+    [valid_brk] and [Equivalence.image_phdrs_readable] read. *)
+Definition run_segments (segs : list Segment) (inp : ProcInput)
+    (sp mbase : word) : list Segment :=
+  segs ++ vdso_segments (in_kernel inp) sp mbase.
+
 
 (** Where a step can go: on to another configuration, or the explicit
     error transition. *)
@@ -434,6 +518,129 @@ Definition sys_input (ms : machine_state) (x8 : word) : SyscallInput :=
   mkInput x8 (syscall_args ms) (ms_read_byte ms)
           (ms_writable_byte mi_loaded_segments ms).
 
+(* -------------------------------------------------------------------------
+   A vDSO call
+   ------------------------------------------------------------------------- *)
+
+(** Read the caller-saved registers, in [Vdso.vdso_caller_saved]'s
+    order, and write them back from a draw's answer.  A register the
+    draw's list is too short for keeps its value: a draw is a function
+    into [VdsoLeftovers] and nothing types its list's LENGTH, so the
+    model takes what the draw gives and no more. *)
+Definition vdso_read_regs (ms : machine_state) : list word :=
+  map (fun r => ms_reg ms (Z_to_bv 5 r)) vdso_caller_saved.
+
+Fixpoint vdso_write_regs (ms : machine_state) (rs : list Z) (vs : list word)
+    : machine_state :=
+  match rs, vs with
+  | r :: rs', v :: vs' =>
+      vdso_write_regs (set_reg ms (Z_to_bv 5 r) v) rs' vs'
+  | _, _ => ms
+  end.
+
+(** The frame's bytes before the call.  A byte the process has not
+    mapped reads 0 here rather than making the whole read fail: this is
+    an ARGUMENT to the draw, not an access the program made, and a draw
+    that is handed 0 for an unmapped byte still gives back a value the
+    write below declines to store.  Nothing the program can observe
+    turns on it. *)
+Fixpoint vdso_read_frame (m : word -> option byte) (a : word) (n : nat)
+    : list byte :=
+  match n with
+  | O => []
+  | S n' =>
+      (match m a with Some b => b | None => Z_to_bv 8 0 end)
+      :: vdso_read_frame m (a + 1) n'
+  end.
+
+(** Store the draw's frame bytes, skipping every address the process
+    has not mapped WRITABLE.  Skipping rather than faulting, and
+    skipping rather than creating a mapping, because the leftovers are
+    not a store the program made: on Linux the vDSO writes its own
+    frame inside the stack VMA, and a model that let them create
+    mappings below the stack window would answer a later load from an
+    address Linux faults on. *)
+Fixpoint vdso_write_frame (m : word -> option byte) (a : word)
+    (bs : list byte) : word -> option byte :=
+  match bs with
+  | [] => m
+  | b :: rest =>
+      let m' := match wview mi_loaded_segments m a with
+                | Some _ => fun x => if bv_eqb x a then Some b else m x
+                | None => m
+                end in
+      vdso_write_frame m' (a + 1) rest
+  end.
+
+Definition vdso_with_mem (ms : machine_state) (m : word -> option byte)
+    : machine_state :=
+  {| ms_regs := ms_regs ms; ms_fregs := ms_fregs ms;
+     ms_pc_val := ms_pc_val ms;
+     ms_svc_pending := ms_svc_pending ms;
+     ms_resv := ms_resv ms; ms_fcsr := ms_fcsr ms;
+     ms_mem := m; ms_rom := ms_rom ms |}.
+
+Definition vdso_set_pc (ms : machine_state) (pc : word) : machine_state :=
+  {| ms_regs := ms_regs ms; ms_fregs := ms_fregs ms;
+     ms_pc_val := pc;
+     ms_svc_pending := None;
+     ms_resv := ms_resv ms; ms_fcsr := ms_fcsr ms;
+     ms_mem := ms_mem ms; ms_rom := ms_rom ms |}.
+
+(** THE MACHINE STATE AFTER A vDSO CALL.
+
+    In the order the design states it: the draw's leftovers go into the
+    caller-saved registers and into [[sp - F, sp)]; then the system
+    call's own effect — its return value in a0 and the bytes it wrote
+    into the caller's buffers — goes on top, so the RESULT is the
+    specification's and not the draw's; then pc becomes ra.
+
+    sp, gp, tp and s0-s11 are untouched, because they are not in
+    [Vdso.vdso_caller_saved] and neither [apply_effect] nor this
+    function writes a register outside it and a0.  That is the psABI's
+    requirement on a compiled function, which the vDSO's functions are,
+    and [measure]'s step-5 report checks it against each image's
+    disassembly before the image joins the list. *)
+Definition vdso_post (ms : machine_state) (model : Model) (f : N)
+    (eff : SyscallEffect) : machine_state :=
+  let ra := ms_reg ms 1 in
+  let lo := ms_sp ms - Z_to_bv 64 (Z.of_N f) in
+  let left := vdr_draw (m_vdso model) (vdr_calls (m_vdso model))
+                       (vdso_read_regs ms)
+                       (vdso_read_frame (ms_read_byte ms) lo (N.to_nat f))
+                       (eff_ret eff) in
+  let ms1 := vdso_write_regs ms vdso_caller_saved (vl_regs left) in
+  let ms2 := vdso_with_mem ms1
+               (vdso_write_frame (ms_mem ms1) lo (vl_frame left)) in
+  vdso_set_pc (apply_effect ms2 eff) ra.
+
+(** WHERE THE MODEL DECLINES A CALL, with the reason each case is a
+    decline rather than an answer:
+
+    - no system call number ([__vdso_getrandom], [__vdso_rt_sigreturn]
+      — see [Vdso.vdso_fn_sysno]);
+    - the specification itself declines, which is every number this
+      development has no arm for, and every argument shape the arm it
+      does have declines;
+    - the outcome returns [-EFAULT].  The vDSO writes the result
+      ITSELF, with an ordinary store through the caller's pointer, so a
+      bad pointer kills the process there; only its FALLBACK to the
+      system call turns a bad pointer into [-EFAULT].  Which of the two
+      a given call takes depends on the clock source, which this model
+      does not carry, so it covers neither;
+    - the outcome halts the process.  No arm of a mapped number can,
+      and a model that let one halt through this arm would have to say
+      what the vDSO's own exit path is. *)
+Definition vdso_call_unmodeled (ms : machine_state) (model : Model)
+    (fn : VdsoFn) : Prop :=
+  vdso_fn_sysno fn = None
+  \/ (exists n, vdso_fn_sysno fn = Some n
+       /\ syscall_spec (sys_input ms (Z_to_bv 64 n)) model Unmodeled)
+  \/ (exists n eff model' evs,
+        vdso_fn_sysno fn = Some n
+        /\ syscall_spec (sys_input ms (Z_to_bv 64 n)) model (Ok eff model' evs)
+        /\ (eff_ret eff = errno_ret EFAULT \/ m_halted model' <> None)).
+
 (** One transition. *)
 Inductive sstep : config -> list event -> step_to -> Prop :=
 | sstep_instr : forall ms model ms' model',
@@ -446,10 +653,70 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
     ms_svc_pending ms = None ->
     mi_account_step ms model = MachineFault ->
     sstep (mkCfg ms model) [] SError
+(** The MODEL gave up on the instruction at pc.
+
+    The vDSO's text is not one of those places, which is what the last
+    premise says.  [RiscvSemantics.step_accesses] answers
+    [MachineUnmodeled] for EVERY pc in the text — the model does not
+    run the vDSO's instructions — and at the ENTRY of an exported
+    symbol the three arms below say what the step is instead.  Without
+    this premise both would fire, and every program that reads the
+    clock through its libc would reach the error transition. *)
 | sstep_instr_unmodeled : forall ms model,
     m_halted model = None ->
     ms_svc_pending ms = None ->
     mi_account_step ms model = MachineUnmodeled ->
+    vdso_entry_fn mi_loaded_segments (ms_pc ms) = None ->
+    sstep (mkCfg ms model) [] SError
+(** A CALL TO AN EXPORTED vDSO ENTRY: one step, with the system call's
+    own specification applied to a0-a5.
+
+    The vDSO answers from the same clocks the system call reads and
+    falls back to the system call for everything else
+    ([__cvdso_clock_gettime_common], lib/vdso/gettimeofday.c, Linux
+    v6.18.46, commit 1f99e9ab748f), so the return value, the bytes it
+    writes and the model it leaves are the system call's.  Handing
+    [Specs.syscall_spec] the number rather than copying the
+    specification is what makes the two routes agree by construction:
+    see [Checks.Cases.Kernel.Vdso]'s agreement lemma, which is then a
+    statement about [sys_input] alone. *)
+| sstep_vdso_call : forall ms model fn n eff model' model'' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step ms model = MachineUnmodeled ->
+    vdso_entry_fn mi_loaded_segments (ms_pc ms) = Some fn ->
+    vdso_fn_sysno fn = Some n ->
+    syscall_spec (sys_input ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+    eff_ret eff <> errno_ret EFAULT ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff)
+      = Some model'' ->
+    sstep (mkCfg ms model) evs
+          (SNext (mkCfg (vdso_post ms model (vdso_frame mi_loaded_segments) eff)
+                        (with_vdso_bump model'')))
+(** The backed-memory budget refuses what the call would touch, exactly
+    as it can refuse a system call's ([sstep_syscall_materialization_fault]). *)
+| sstep_vdso_materialization_fault : forall ms model fn n eff model' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step ms model = MachineUnmodeled ->
+    vdso_entry_fn mi_loaded_segments (ms_pc ms) = Some fn ->
+    vdso_fn_sysno fn = Some n ->
+    syscall_spec (sys_input ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+    eff_ret eff <> errno_ret EFAULT ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff) = None ->
+    sstep (mkCfg ms model) [] SError
+(** The model does not cover this call; [vdso_call_unmodeled] says
+    which case and why.  Together with the two arms above, every
+    resolution of [Specs.syscall_spec] at an exported entry has an arm,
+    so no such configuration is STUCK. *)
+| sstep_vdso_unmodeled : forall ms model fn,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step ms model = MachineUnmodeled ->
+    vdso_entry_fn mi_loaded_segments (ms_pc ms) = Some fn ->
+    vdso_call_unmodeled ms model fn ->
     sstep (mkCfg ms model) [] SError
 | sstep_syscall : forall ms model x8 eff model' model'' evs,
     m_halted model = None ->
@@ -692,6 +959,19 @@ Proof.
     cbn [cfg_model]. split; [| split; [| intros fs []]].
     + rewrite <- Hoff. apply m_abort_terminal_proc. exact Hp.
     + rewrite <- Hpend. apply m_sigabrt_pending_proc. exact Hp.
+  - (* a vDSO call: the syscall frame, then materialization, then the
+       call count — and none of the three touches [State.m_proc] *)
+    match goal with
+    | [ Hs : syscall_spec _ _ (Ok _ ?m1 _),
+        Hm : materialize_model_accesses ?m1 _ = Some ?m2 |- _ ] =>
+        destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (Hoff' & Hpend' & _ & Hev);
+        destruct (materialize_model_accesses_frame _ _ _ Hm) as (_&_&_&_&_&Hp&_)
+    end.
+    cbn [cfg_model]. split; [| split; [| exact Hev]].
+    + rewrite <- Hoff'. apply m_abort_terminal_proc.
+      rewrite m_proc_with_vdso_bump. exact Hp.
+    + rewrite <- Hpend'. apply m_sigabrt_pending_proc.
+      rewrite m_proc_with_vdso_bump. exact Hp.
   - (* a syscall that materializes: the frame, then materialization,
        which keeps [State.m_proc] fixed too *)
     match goal with
@@ -918,7 +1198,13 @@ Definition reaches_error (c0 : config) : Prop :=
 Definition unmodeled_at (c : config) : Prop :=
   m_halted (cfg_model c) = None /\
   ( (ms_svc_pending (cfg_ms c) = None /\
-       mi_account_step (cfg_ms c) (cfg_model c) = MachineUnmodeled)
+       mi_account_step (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+       vdso_entry_fn mi_loaded_segments (ms_pc (cfg_ms c)) = None)
+    \/ (ms_svc_pending (cfg_ms c) = None /\
+        mi_account_step (cfg_ms c) (cfg_model c) = MachineUnmodeled /\
+        (exists fn,
+           vdso_entry_fn mi_loaded_segments (ms_pc (cfg_ms c)) = Some fn /\
+           vdso_call_unmodeled (cfg_ms c) (cfg_model c) fn))
     \/ (exists x8, ms_svc_pending (cfg_ms c) = Some x8 /\
                    syscall_spec (sys_input (cfg_ms c) x8) (cfg_model c) Unmodeled) ).
 
@@ -934,8 +1220,11 @@ Definition reaches_unmodeled (c0 : config) : Prop :=
 Lemma unmodeled_at_sstep_error : forall c,
   unmodeled_at c -> exists evs, sstep c evs SError.
 Proof.
-  intros [ms model] (Hh & [(Hsvc & Hstep) | (x8 & Hsvc & Hspec)]); cbn in *.
+  intros [ms model]
+    (Hh & [(Hsvc & Hstep & Hv) | [(Hsvc & Hacc & fn & Hfn & Hu) | (x8 & Hsvc & Hspec)]]);
+    cbn in *.
   - exists []. apply sstep_instr_unmodeled; assumption.
+  - exists []. eapply sstep_vdso_unmodeled; eassumption.
   - exists []. eapply sstep_syscall_unmodeled; eassumption.
 Qed.
 
@@ -969,11 +1258,12 @@ Lemma reaches_unmodeled_intro : forall ms model,
   m_halted model = None ->
   ms_svc_pending ms = None ->
   mi_account_step ms model = MachineUnmodeled ->
+  vdso_entry_fn mi_loaded_segments (ms_pc ms) = None ->
   reaches_unmodeled (mkCfg ms model).
 Proof.
-  intros ms model Hh Hsvc Hstep.
+  intros ms model Hh Hsvc Hstep Hv.
   exists [], (mkCfg ms model). split; [apply star_refl|].
-  split; [exact Hh|]. left. split; assumption.
+  split; [exact Hh|]. left. split; [|split]; assumption.
 Qed.
 
 (** Every maximal execution from [c0] reaches the explicit error
@@ -1153,11 +1443,17 @@ Definition init_machine_state (inp : ProcInput) : machine_state :=
        end |}.
 
 (** The initial configuration for one run of THIS image on the
-    caller-supplied inputs [inp]. *)
+    caller-supplied inputs [inp].
+
+    [with_vdso] copies the launch's vDSO draw out of the entry's draw
+    and starts the call count at zero.  It is the ONE writer of that
+    field: the draw is a fact of the launch, and [Run.sstep]'s vDSO arm
+    only bumps the count. *)
 Definition init_config (inp : ProcInput) : config :=
   mkCfg (init_machine_state inp)
-        (init_model (segments_reserved mi_loaded_segments) mi_init_brk
-                    mi_mmap_base mi_init_sp mi_alloc_limit inp).
+        (with_vdso (vdso_run_init (ed_vdso mi_draw))
+           (init_model (segments_reserved mi_loaded_segments) mi_init_brk
+                       mi_mmap_base mi_init_sp mi_alloc_limit inp)).
 
 End WithMemImage.
 
@@ -1221,15 +1517,23 @@ Record ExecEntry := mkEntry {
     The [ProcInput] is passed whole and read by projections, which
     reduce, so [cbn [run …]] reaches [init_config] for a variable [inp]
     too. *)
+(** The same list, named from an [Image] and an [ExecEntry], for the
+    statements that quantify a predicate over the run's segments
+    ([OmniRun.covered] and its dual). *)
+Definition image_run_segments (img : Image) (en : ExecEntry) (inp : ProcInput)
+    : list Segment :=
+  run_segments (img_segments img) inp (en_sp en) (en_mmap_base en).
+
 Definition run (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput)
     : behavior :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-    let c0 := init_config segs pc ph sp brk0 mbase rnd lim inp in
-    {| bh_traces := obs_trace segs c0;
-       bh_errors := reaches_error segs c0;
-       bh_all_errors := all_traces_error segs c0;
-       bh_unmodeled := reaches_unmodeled segs c0 |}
+    let vsegs := run_segments segs inp sp mbase in
+    let c0 := init_config vsegs pc ph sp brk0 mbase rnd lim inp in
+    {| bh_traces := obs_trace vsegs c0;
+       bh_errors := reaches_error vsegs c0;
+       bh_all_errors := all_traces_error vsegs c0;
+       bh_unmodeled := reaches_unmodeled vsegs c0 |}
   end.
 
 (* =========================================================================
@@ -1921,6 +2225,45 @@ Inductive sstep_cfg (cfg : SpuriousCfg) : config -> list event -> step_to -> Pro
     m_halted model = None ->
     ms_svc_pending ms = None ->
     mi_account_step segs ms model = MachineUnmodeled ->
+    vdso_entry_fn segs (ms_pc ms) = None ->
+    sstep_cfg cfg (mkCfg ms model) [] SError
+(** The three vDSO arms, mirrored from [sstep] with NO filter premise.
+    The filter removes a syscall outcome that an INJECTED environment
+    failure produced ([spurious_refusal_cfg]); the vDSO's own numbers
+    carry no injected family, so at an exported entry the two relations
+    already coincide and a premise would only be one more thing to
+    discharge. *)
+| sstep_cfg_vdso_call : forall ms model fn n eff model' model'' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
+    vdso_entry_fn segs (ms_pc ms) = Some fn ->
+    vdso_fn_sysno fn = Some n ->
+    syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+    eff_ret eff <> errno_ret EFAULT ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff)
+      = Some model'' ->
+    sstep_cfg cfg (mkCfg ms model) evs
+          (SNext (mkCfg (vdso_post segs ms model (vdso_frame segs) eff)
+                        (with_vdso_bump model'')))
+| sstep_cfg_vdso_materialization_fault : forall ms model fn n eff model' evs,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
+    vdso_entry_fn segs (ms_pc ms) = Some fn ->
+    vdso_fn_sysno fn = Some n ->
+    syscall_spec (sys_input segs ms (Z_to_bv 64 n)) model (Ok eff model' evs) ->
+    eff_ret eff <> errno_ret EFAULT ->
+    m_halted model' = None ->
+    materialize_model_accesses model' (syscall_effect_accesses eff) = None ->
+    sstep_cfg cfg (mkCfg ms model) [] SError
+| sstep_cfg_vdso_unmodeled : forall ms model fn,
+    m_halted model = None ->
+    ms_svc_pending ms = None ->
+    mi_account_step segs ms model = MachineUnmodeled ->
+    vdso_entry_fn segs (ms_pc ms) = Some fn ->
+    vdso_call_unmodeled segs ms model fn ->
     sstep_cfg cfg (mkCfg ms model) [] SError
 | sstep_cfg_syscall : forall ms model x8 eff model' model'' evs,
     m_halted model = None ->
@@ -1967,6 +2310,8 @@ Lemma sstep_cfg_sub : forall cfg c evs r,
 Proof.
   intros cfg c evs r H; destruct H;
     [ eapply sstep_instr | eapply sstep_instr_fault | eapply sstep_instr_unmodeled
+    | eapply sstep_vdso_call | eapply sstep_vdso_materialization_fault
+    | eapply sstep_vdso_unmodeled
     | eapply sstep_syscall | eapply sstep_syscall_materialization_fault
     | eapply sstep_exit | eapply sstep_killed | eapply sstep_syscall_unmodeled ];
     eauto.
@@ -1980,6 +2325,8 @@ Proof.
   - destruct H;
       [ eapply sstep_cfg_instr | eapply sstep_cfg_instr_fault
       | eapply sstep_cfg_instr_unmodeled
+      | eapply sstep_cfg_vdso_call | eapply sstep_cfg_vdso_materialization_fault
+      | eapply sstep_cfg_vdso_unmodeled
       | eapply sstep_cfg_syscall | eapply sstep_cfg_syscall_materialization_fault
       | eapply sstep_cfg_exit | eapply sstep_cfg_killed
       | eapply sstep_cfg_syscall_unmodeled ];
@@ -1996,6 +2343,8 @@ Proof.
   intros cfg1 cfg2 c evs r Hle H; destruct H;
     [ eapply sstep_cfg_instr | eapply sstep_cfg_instr_fault
     | eapply sstep_cfg_instr_unmodeled
+    | eapply sstep_cfg_vdso_call | eapply sstep_cfg_vdso_materialization_fault
+    | eapply sstep_cfg_vdso_unmodeled
     | eapply sstep_cfg_syscall | eapply sstep_cfg_syscall_materialization_fault
     | eapply sstep_cfg_exit | eapply sstep_cfg_killed
     | eapply sstep_cfg_syscall_unmodeled ];
@@ -2020,6 +2369,9 @@ Proof.
   - eexists _, _. eapply sstep_cfg_instr; eassumption.
   - eexists _, _. eapply sstep_cfg_instr_fault; eassumption.
   - eexists _, _. eapply sstep_cfg_instr_unmodeled; eassumption.
+  - eexists _, _. eapply sstep_cfg_vdso_call; eassumption.
+  - eexists _, _. eapply sstep_cfg_vdso_materialization_fault; eassumption.
+  - eexists _, _. eapply sstep_cfg_vdso_unmodeled; eassumption.
   - (* a syscall outcome that materializes *)
     match goal with
     | [ Hsvc : ms_svc_pending ms = Some ?x8 |- _ ] =>
@@ -2173,10 +2525,13 @@ Qed.
 Lemma reaches_unmodeled_cfg_reaches_error_cfg : forall cfg c0,
   reaches_unmodeled_cfg cfg c0 -> reaches_error_cfg cfg c0.
 Proof.
-  intros cfg c0 (tr & [ms model] & Hstar & Hh & [(Hsvc & Hacc) | (x8 & Hsvc & Hspec)]);
+  intros cfg c0 (tr & [ms model] & Hstar & Hh &
+                 [(Hsvc & Hacc & Hv) | [(Hsvc & Hacc2 & fn & Hfn & Hu) | (x8 & Hsvc & Hspec)]]);
     cbn [cfg_ms cfg_model] in *.
   - exists tr, (mkCfg ms model), []. split; [exact Hstar |].
     apply sstep_cfg_instr_unmodeled; assumption.
+  - exists tr, (mkCfg ms model), []. split; [exact Hstar |].
+    apply (sstep_cfg_vdso_unmodeled cfg ms model fn); assumption.
   - exists tr, (mkCfg ms model), []. split; [exact Hstar |].
     apply (sstep_cfg_syscall_unmodeled cfg ms model x8); assumption.
 Qed.
@@ -2202,11 +2557,12 @@ Definition run_scfg (cfg : SpuriousCfg) (img : Image) (lim : Z) (en : ExecEntry)
     (inp : ProcInput) : behavior :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-    let c0 := init_config segs pc ph sp brk0 mbase rnd lim inp in
-    {| bh_traces := obs_trace_cfg segs cfg c0;
-       bh_errors := reaches_error_cfg segs cfg c0;
-       bh_all_errors := all_traces_error_cfg segs cfg c0;
-       bh_unmodeled := reaches_unmodeled_cfg segs cfg c0 |}
+    let vsegs := run_segments segs inp sp mbase in
+    let c0 := init_config vsegs pc ph sp brk0 mbase rnd lim inp in
+    {| bh_traces := obs_trace_cfg vsegs cfg c0;
+       bh_errors := reaches_error_cfg vsegs cfg c0;
+       bh_all_errors := all_traces_error_cfg vsegs cfg c0;
+       bh_unmodeled := reaches_unmodeled_cfg vsegs cfg c0 |}
   end.
 
 (** Two behaviors that agree observation by observation.  [behavior]
@@ -2542,7 +2898,8 @@ Definition run_budget_refused (img : Image) (lim : Z) (en : ExecEntry)
     (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-    reaches_budget_refused segs (init_config segs pc ph sp brk0 mbase rnd lim inp)
+    let vsegs := run_segments segs inp sp mbase in
+    reaches_budget_refused vsegs (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 (** The configured run's form, the [match] of [run_scfg]. *)
@@ -2550,21 +2907,22 @@ Definition run_scfg_budget_refused (cfg : SpuriousCfg) (img : Image) (lim : Z)
     (en : ExecEntry) (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-    reaches_budget_refused_cfg segs cfg (init_config segs pc ph sp brk0 mbase rnd lim inp)
+    let vsegs := run_segments segs inp sp mbase in
+    reaches_budget_refused_cfg vsegs cfg (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 Lemma run_scfg_budget_refused_sub : forall cfg img lim en inp,
   run_scfg_budget_refused cfg img lim en inp -> run_budget_refused img lim en inp.
 Proof.
   intros cfg [segs pc ph] lim [sp brk0 mbase rnd] inp H.
-  exact (reaches_budget_refused_cfg_sub segs cfg _ H).
+  exact (reaches_budget_refused_cfg_sub (run_segments segs inp sp mbase) cfg _ H).
 Qed.
 
 Lemma run_scfg_budget_refused_may_fail : forall img lim en inp,
   run_budget_refused img lim en inp <-> run_scfg_budget_refused may_fail_cfg img lim en inp.
 Proof.
   intros [segs pc ph] lim [sp brk0 mbase rnd] inp.
-  exact (reaches_budget_refused_cfg_may_fail segs _).
+  exact (reaches_budget_refused_cfg_may_fail (run_segments segs inp sp mbase) _).
 Qed.
 
 (* =========================================================================
@@ -3247,9 +3605,7 @@ Qed.
     choice of [StackLayout.ed_vdso] — a vDSO function that writes only
     its result is one Linux can run — and the one a proof that does not
     care about the leftovers names. *)
-Definition vdso_keeps_all
-    : nat -> list word -> list byte -> word -> (list word * list byte) :=
-  fun _ regs frame _ => (regs, frame).
+Definition vdso_keeps_all : VdsoDraw := Vdso.vdso_draw_keep.
 
 (** THE WITNESS ENTRY, and the lemma that makes repairing a consumer
     cheap.
@@ -3276,7 +3632,7 @@ Definition vdso_keeps_all
     ([Equivalence.image_brk_witness] does). *)
 Definition launch_entry_va (v : VaSize) (inp : ProcInput) (brk : word)
     (rnd : bv 128)
-    (vd : nat -> list word -> list byte -> word -> (list word * list byte))
+    (vd : VdsoDraw)
     : ExecEntry :=
   let top := Z_to_bv 64 (va_stack_top v) in
   mkEntry (Z_to_bv 64 (launch_sp_hi top inp))
@@ -5008,7 +5364,8 @@ Definition run_budget_only_refused (img : Image) (lim : Z) (en : ExecEntry)
     (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-    reaches_budget_only_refused segs (init_config segs pc ph sp brk0 mbase rnd lim inp)
+    let vsegs := run_segments segs inp sp mbase in
+    reaches_budget_only_refused vsegs (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 Lemma run_budget_only_refused_implies : forall img lim en inp,
@@ -5055,8 +5412,9 @@ Definition run_scfg_budget_only_refused (cfg : SpuriousCfg) (img : Image) (lim :
     (en : ExecEntry) (inp : ProcInput) : Prop :=
   match img, en with
   | mkImage segs pc ph, mkEntry sp brk0 mbase rnd =>
-    reaches_budget_only_refused_cfg segs cfg
-      (init_config segs pc ph sp brk0 mbase rnd lim inp)
+    let vsegs := run_segments segs inp sp mbase in
+    reaches_budget_only_refused_cfg vsegs cfg
+      (init_config vsegs pc ph sp brk0 mbase rnd lim inp)
   end.
 
 Lemma run_scfg_budget_only_refused_implies : forall cfg img lim en inp,
@@ -5064,7 +5422,7 @@ Lemma run_scfg_budget_only_refused_implies : forall cfg img lim en inp,
   run_scfg_budget_refused cfg img lim en inp.
 Proof.
   intros cfg [segs pc ph] lim [sp brk0 mbase rnd] inp H.
-  exact (reaches_budget_only_refused_cfg_implies segs cfg _ H).
+  exact (reaches_budget_only_refused_cfg_implies (run_segments segs inp sp mbase) cfg _ H).
 Qed.
 
 Lemma run_scfg_budget_only_refused_sub : forall cfg img lim en inp,
@@ -5072,7 +5430,7 @@ Lemma run_scfg_budget_only_refused_sub : forall cfg img lim en inp,
   run_budget_only_refused img lim en inp.
 Proof.
   intros cfg [segs pc ph] lim [sp brk0 mbase rnd] inp H.
-  exact (reaches_budget_only_refused_cfg_sub segs cfg _ H).
+  exact (reaches_budget_only_refused_cfg_sub (run_segments segs inp sp mbase) cfg _ H).
 Qed.
 
 Lemma run_scfg_budget_only_refused_may_fail : forall img lim en inp,
@@ -5080,5 +5438,5 @@ Lemma run_scfg_budget_only_refused_may_fail : forall img lim en inp,
   <-> run_scfg_budget_only_refused may_fail_cfg img lim en inp.
 Proof.
   intros [segs pc ph] lim [sp brk0 mbase rnd] inp.
-  exact (reaches_budget_only_refused_cfg_may_fail segs _).
+  exact (reaches_budget_only_refused_cfg_may_fail (run_segments segs inp sp mbase) _).
 Qed.

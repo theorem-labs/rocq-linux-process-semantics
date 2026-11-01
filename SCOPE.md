@@ -289,7 +289,11 @@ them. A proof says nothing about a program in such a case.
 | Network | The list of connections is never empty. Thus the model does not include an environment where no peer ever connects. |
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. The `*_budgets_only` statements have a finer premise for the source: it excludes a first-touch or a cumulative refusal, but not a single request that is larger than the whole budget (`Run.alloc_refuse_reason`). |
 | Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
+<<<<<<< HEAD
 | Shared memory | The model has no shared mapping. `mmap` with `MAP_SHARED` is `unmodeled`, anonymous requests included. Linux builds an anonymous shared mapping on a shmem file (`mm/vma.c`, `__mmap_new_vma` calls `shmem_zero_setup`), so `vma_is_anonymous` is false for it, its pages survive the zap that `MADV_DONTNEED` performs, and a `fork` shares them instead of copying them. `Sys/Mm/Mmap.v` gives the full reason and what an arm would take. |
+=======
+| The vDSO | The model maps the vDSO text and the four vvar pages that `execve` installs, and answers a call to an exported entry with the system call's own specification (`Run.sstep`'s vDSO arm). It does not run the vDSO's instructions. Four cases are `unmodeled`, and a proof says nothing about a program that reaches one: a load from the vvar pages; a fetch at any text address that is not an exported entry; a call to `__vdso_getrandom` or `__vdso_rt_sigreturn`; and an outcome of a call that returns `-EFAULT`. A store to the text or to vvar is a fault, as on Linux: the kernel maps neither with `VM_WRITE`. The text mapping carries no `x` flag in the model, although Linux maps it `PROT_READ\|PROT_EXEC`: the flag says "the model fetches and executes these bytes", and of the vDSO's bytes it does not. |
+>>>>>>> 1a1828e
 
 The entry premises also limit the launches that a statement covers, and
 they limit them to Linux's own. For one input and one kernel build
@@ -498,6 +502,23 @@ not apply.
   segments, not its file, so `State.in_fs` need not hold a file at that
   name and a program that opens its own `AT_EXECFN` gets the file
   system's answer.
+- The vDSO image of the kernel that launched the process is one of the
+  measured images in `Vdso.vdso_images`. The model holds the bytes of
+  one `vdso.so` per kernel build it describes, read out of a build this
+  project made; `measure/MEASUREMENT.md` records which build, with which
+  toolchain, and how the bytes and the symbol offsets were read. A
+  kernel whose image is not in the list has no `State.kb_vdso` value, so
+  no statement says anything about it. The entry of this list today is
+  the riscv64 `defconfig` build of v6.18.46 (two text pages, 5704
+  bytes, sha256 `0d85f358656558c9fc4a6a620d31bf9bfef7f6f4f3797e44ed39ca
+  b23958df36`); the same kernel with `CONFIG_TRANSPARENT_HUGEPAGE=y`
+  gives the same bytes.
+- A vDSO function keeps the callee-saved registers and `sp`, and writes
+  no memory but its own frame below `sp` and the buffers its arguments
+  point at. The psABI requires this of a compiled function, and
+  `measure/MEASUREMENT.md` records the check against the measured
+  image's disassembly. The model does not re-check it for an image
+  added later.
 
 ## Known gaps in precision
 
@@ -525,6 +546,7 @@ equivalence) can be true of the model and false of Linux.
   two, and the value of `hrtimer_resolution`, follow the kernel build and
   the boot (`CONFIG_HIGH_RES_TIMERS`, `CONFIG_HZ`). The model does not
   constrain later calls to use the same resolution.
+<<<<<<< HEAD
 - **R-a, an mmap base above `State.alloc_top`.** The model's stack window is
   `[sp - 8 MiB, sp)`. Linux measures its 8 MiB from the end of the stack
   VMA, which is above `sp` by the entry image. With an entry image of more
@@ -583,6 +605,31 @@ equivalence) can be true of the model and false of Linux.
   its stack can show the difference. It stays open because the model
   quantifies the two draws separately. One predicate that relates `sp`, the
   stack limit and the base closes it.
+=======
+- **What a vDSO call leaves behind.** After a call to an exported vDSO
+  entry, the caller-saved registers other than `a0`, and the bytes of
+  `[sp - F, sp)`, take the values of the launch's draw
+  (`StackLayout.ed_vdso`), not the values the vDSO's own code wrote.
+  `F` is the chosen image's largest measured frame (240 bytes for the
+  image in the list). So the model admits leftovers that no image
+  leaves. Because the draw reads the state before the call, one of its
+  choices is Linux's, and for a statement that must hold at every entry
+  the extra choices cost precision only: a program that reads a
+  leftover — an uninitialized local in the next call's frame, say — has
+  no proof that depends on the value. Every other byte below `sp` keeps
+  its value, and `sp`, `gp`, `tp` and `s0`-`s11` keep theirs.
+- **Which route a clock reading takes.** Linux's vDSO answers a
+  `CLOCK_MONOTONIC` reading from the vvar time data when the clock
+  source has a vDSO mode, and makes system call 113 otherwise
+  (`__cvdso_clock_gettime_common`, `lib/vdso/gettimeofday.c`). The
+  model has no term for the clock source, so it answers both routes
+  with `PosixTimers.clock_gettime_spec` and lets the environment choose
+  the time, as it does for the system call. A real run's two routes
+  give the same reading; the model lets them differ.
+- **mmap placement.** A mapping without an address hint can go to any free,
+  page-aligned address below `State.alloc_top`. This is wider than the
+  placement policy of each supported system.
+>>>>>>> 1a1828e
 - **`munmap` failures.** An `munmap` that unmaps pages can answer
   `ENOMEM` at every call, and under a reading that admits only the
   failures the state forces it can answer `ENOMEM` at no call. On Linux

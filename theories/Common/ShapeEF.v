@@ -24,7 +24,7 @@
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
+  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim CatSim ShapeAlg.
 
 Import ListNotations.
@@ -35,9 +35,9 @@ Theorem shape_strong_equiv_ef :
          target_segs apc aph asp abrk amb arnd (alim : Z)
          (T : TSet) (inp : ProcInput),
   realizes source_segs
-    (init_config source_segs rpc rph rsp rbrk rmb rrnd rlim inp) T ->
+    (init_config (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd rlim inp) T ->
   realizes target_segs
-    (init_config target_segs apc aph asp abrk amb arnd alim inp) T ->
+    (init_config (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd alim inp) T ->
   error_free (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ error_free (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp)
   /\ trace_equiv (bh_traces (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp))
@@ -61,9 +61,9 @@ Corollary shape_strong_equiv_ef_eq :
          target_segs apc aph asp abrk amb arnd (alim : Z)
          (T T' : TSet) (inp : ProcInput),
   realizes source_segs
-    (init_config source_segs rpc rph rsp rbrk rmb rrnd rlim inp) T ->
+    (init_config (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd rlim inp) T ->
   realizes target_segs
-    (init_config target_segs apc aph asp abrk amb arnd alim inp) T' ->
+    (init_config (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd alim inp) T' ->
   t_eq T T' ->
   error_free (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ error_free (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp)

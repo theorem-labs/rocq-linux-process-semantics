@@ -20,21 +20,24 @@ Definition TargetMemImage_segment_000 : Segment := {|
   seg_base  := 0x1000000%N;
   seg_size  := 0x1000%N;
   seg_perms := "r--";
-  seg_bytes := [TargetMemImage_seg_bytes_000]
+  seg_bytes := [TargetMemImage_seg_bytes_000];
+  seg_kind  := SegLoader
 |}.
 
 Definition TargetMemImage_segment_001 : Segment := {|
   seg_base  := 0x1001000%N;
   seg_size  := 0x1000%N;
   seg_perms := "r-x";
-  seg_bytes := [TargetMemImage_seg_bytes_001]
+  seg_bytes := [TargetMemImage_seg_bytes_001];
+  seg_kind  := SegLoader
 |}.
 
 Definition TargetMemImage_segment_002 : Segment := {|
   seg_base  := 0x1002000%N;
   seg_size  := 0x1000%N;
   seg_perms := "rw-";
-  seg_bytes := [TargetMemImage_seg_bytes_002]
+  seg_bytes := [TargetMemImage_seg_bytes_002];
+  seg_kind  := SegLoader
 |}.
 
 Definition TargetMemImage_loaded_segments : list Segment :=

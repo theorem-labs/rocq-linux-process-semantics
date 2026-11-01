@@ -83,7 +83,7 @@
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run OmniRun.
+  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim CatSim MmapSim AllocSim AllocSim2 WallSim.
 
 Import ListNotations.
@@ -914,14 +914,14 @@ End WithSegs.
 (** The omni ingredients of the master theorem, one per conjunct. *)
 Lemma shape_omni_corun :
   forall segs pc ph sp brk0 mb rnd (lim : Z) (T : TSet) (inp : ProcInput),
-  realizes segs (init_config segs pc ph sp brk0 mb rnd lim inp) T ->
+  realizes (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) T ->
   omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
     (fun tr o => T tr /\ ~ is_error o).
 Proof. intros. cbn [omni_corun]. apply realizes_coexec; assumption. Qed.
 
 Lemma shape_omni_cosafe :
   forall segs pc ph sp brk0 mb rnd (lim : Z) (T : TSet) (inp : ProcInput),
-  realizes segs (init_config segs pc ph sp brk0 mb rnd lim inp) T ->
+  realizes (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) T ->
   omni_cosafe (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp T.
 Proof. intros. cbn [omni_cosafe]. apply realizes_cosafe; assumption. Qed.
 
@@ -981,7 +981,7 @@ Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd T inp
     Hsource Htarget.
   split.
-  - cbn [img_segments].
+  - cbn [image_run_segments img_segments en_sp en_mmap_base].
     eapply coexec_conseq; [apply (shape_omni_corun _ _ _ _ _ _ _ _ _ _ Hsource) |].
     intros tr o (_ & Hno). exact (never_errors_covered _ _ _ Hno).
   - eapply shape_omni_equiv; eassumption.
@@ -1007,7 +1007,7 @@ Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
     T inp Hsource Htarget.
   split.
-  - apply modeled_iff. cbn [img_segments].
+  - apply modeled_iff. cbn [image_run_segments img_segments en_sp en_mmap_base].
     eapply coexec_conseq; [apply (shape_omni_corun _ _ _ _ _ _ _ _ _ _ Hsource) |].
     intros tr o (_ & Hno). exact (never_errors_covered _ _ _ Hno).
   - apply equiv_iff. eapply shape_omni_equiv; eassumption.

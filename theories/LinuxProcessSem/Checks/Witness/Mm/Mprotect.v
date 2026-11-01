@@ -28,7 +28,12 @@ Definition mprotect_witness (addr len prot : word) (m : Model)
   else if mprotect_modeled_b prot then
     let nZ := page_round_up_Z (bv_unsigned len) in
     let n := Z_to_bv 64 nZ in
-    if map_contains (vm_noaccess (m_vmmaps m)) addr n
+    (* The vdso/vvar pair: the spec declines a request that meets it,
+       so the witness has no outcome to exhibit there. *)
+    if negb (region_free (vdso_reserved (m_kernel m) (vdso_top (m_vmmaps m)))
+               addr n)
+    then Unmodeled
+    else if map_contains (vm_noaccess (m_vmmaps m)) addr n
        && map_contains (vm_maps (m_vmmaps m)) addr n
     then ret_outcome (errno_ret witness_errno) m
     else if map_contains (vm_maps (m_vmmaps m)) addr n
@@ -50,6 +55,9 @@ Proof.
     eqn:Hbig; [apply pure_ok|].
   destruct (mprotect_modeled_b prot) eqn:Hprot; [|apply unmodeled_intro].
   eapply bind_step; [apply get_model_ok|]. cbv beta zeta.
+  destruct (negb (region_free (vdso_reserved (m_kernel m) (vdso_top (m_vmmaps m)))
+                    addr (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))))
+    eqn:Hvd; [apply unmodeled_intro|].
   destruct (map_contains (vm_noaccess (m_vmmaps m)) addr
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned len)))
             && map_contains (vm_maps (m_vmmaps m)) addr

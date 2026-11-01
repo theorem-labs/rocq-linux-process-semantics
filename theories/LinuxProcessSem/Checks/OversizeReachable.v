@@ -297,7 +297,8 @@ Definition cm_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 28;
   seg_perms := "r-x"%string;
-  seg_bytes := ["9308e00db715000013063000930620021307f0ff7300000073000000"%pstring]
+  seg_bytes := ["9308e00db715000013063000930620021307f0ff7300000073000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition cm_segments : list Segment := [cm_segment].
 Definition cm_image : Image := mkImage cm_segments 0x100 demo_phdrs.

@@ -835,7 +835,8 @@ Definition ebreak_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x"%string;
-  seg_bytes := ["73001000"%pstring]
+  seg_bytes := ["73001000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition ebreak_segments : list Segment := [ebreak_segment].
 Definition ebreak_image : Image := mkImage ebreak_segments 0x100 demo_phdrs.
@@ -948,7 +949,8 @@ Definition loop_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x"%string;
-  seg_bytes := ["6f000000"%pstring]
+  seg_bytes := ["6f000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition loop_segments : list Segment := [loop_segment].
 Definition loop_image : Image := mkImage loop_segments 0x100 demo_phdrs.
@@ -957,7 +959,8 @@ Definition wloop_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 24;
   seg_perms := "r-x"%string;
-  seg_bytes := ["93080004130510009305001013061000730000006f000000"%pstring]
+  seg_bytes := ["93080004130510009305001013061000730000006f000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition wloop_segments : list Segment := [wloop_segment].
 Definition wloop_image : Image := mkImage wloop_segments 0x100 demo_phdrs.
