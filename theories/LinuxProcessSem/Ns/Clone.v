@@ -61,14 +61,6 @@ Definition any_new_ns (f : Z) : bool :=
   has_flag f (fold_left Z.lor [CLONE_NEWNS; CLONE_NEWUTS; CLONE_NEWIPC; CLONE_NEWPID;
                                CLONE_NEWNET] 0).
 
-(** A clone's answer: the child's context and the new shared state; or the
-    errno and the shared state after the failure (a failure after
-    [alloc_pid] leaves the pid cursors advanced); or no answer. *)
-Inductive CloneNs :=
-  | CnOk (child : NsCtx) (st : NsState)
-  | CnErr (e : Z) (st : NsState)
-  | CnUnmodeled.
-
 Definition find_pidns (st : NsState) (p : positive) : option PidNs :=
   find (fun x => Pos.eqb (pidns_id x) p) (ns_pidns st).
 
@@ -165,7 +157,10 @@ Definition leaves_flat (f : Z) (ctx : NsCtx) (st : NsState) : bool :=
 
 (** What [clone_ns] answers when the environment refuses nothing. *)
 Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) : CloneNs :=
-  if negb (Z.land f (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) =? 0) then CnUnmodeled
+  (* A task in the released world that makes no namespace: the core's own
+     clone, whatever the rest of the flag word ([Ext.ext_clone_coherent]). *)
+  if flat_view ctx st && negb (has_ns_bits f) then CnOk ctx st
+  else if negb (Z.land f (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) =? 0) then CnUnmodeled
   else if leaves_flat f ctx st && negb (has_flag f CLONE_NEWUSER) then CnUnmodeled
   else
     match clone_creds m ctx st f with
@@ -265,3 +260,60 @@ Definition clone_ns (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) (o
   \/ (clone_ns_exact f m ctx st hq <> CnUnmodeled
       /\ exists e st', 1 <= e <= 4095 /\ (st' = st \/ st' = pid_advanced st (cx_pidns ctx))
                        /\ o = CnErr e st').
+
+(** A task in the released world has no pid namespace the model made
+    above it, so an undone [alloc_pid] moves no cursor. *)
+Lemma pid_advanced_flat : forall ctx st,
+  flat_view ctx st = true -> pid_advanced st (cx_pidns ctx) = st.
+Proof.
+  intros ctx st H. unfold flat_view in H.
+  apply andb_true_iff in H as [H Hnet]. apply andb_true_iff in H as [H Hpid].
+  unfold pid_advanced.
+  assert (Hb : flat_map (fun x => match pidns_parent x with
+                                  | Some _ => [mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x)
+                                                       (pidns_level x) (pidns_last x + 1)]
+                                  | None => []
+                                  end)
+                        (pidns_chain (length (ns_pidns st)) st (cx_pidns ctx)) = []).
+  { destruct (length (ns_pidns st)) as [|n]; [reflexivity|].
+    cbn [pidns_chain]. unfold find_pidns.
+    destruct (find (fun p => Pos.eqb (pidns_id p) (cx_pidns ctx)) (ns_pidns st)) as [x|] eqn:Ef;
+      [|reflexivity].
+    try rewrite Ef in Hpid. cbv beta iota in Hpid |- *.
+    destruct (pidns_parent x) as [q|] eqn:Ep;
+      [try rewrite Ep in Hpid; discriminate Hpid|].
+    simpl. try rewrite Ep. reflexivity. }
+  cbv zeta. rewrite Hb. cbn [fold_left]. destruct st; reflexivity.
+Qed.
+
+(** A task in the released world that makes no namespace: the clone is
+    the core's own; the child gets the caller's context and the state is
+    unchanged. *)
+Lemma clone_ns_exact_flat_fork : forall f m ctx st hq,
+  flat_view ctx st = true -> has_ns_bits f = false ->
+  clone_ns_exact f m ctx st hq = CnOk ctx st.
+Proof.
+  intros f m ctx st hq Hf Hb. unfold clone_ns_exact. rewrite Hf, Hb. reflexivity.
+Qed.
+
+Lemma clone_ns_flat_fork_ok : forall f m ctx st hq,
+  flat_view ctx st = true -> has_ns_bits f = false ->
+  clone_ns f m ctx st hq (CnOk ctx st).
+Proof.
+  intros f m ctx st hq Hf Hb. left. symmetry. apply clone_ns_exact_flat_fork; assumption.
+Qed.
+
+(** [Ext.ext_clone_coherent] for [clone_ns]. *)
+Lemma clone_ns_coherent : forall f m ctx st hq o,
+  flat_view ctx st = true -> has_ns_bits f = false ->
+  (clone_ns f m ctx st hq o <-> released_clone ctx st o).
+Proof.
+  intros f m ctx st hq o Hf Hb. unfold clone_ns, released_clone.
+  rewrite (clone_ns_exact_flat_fork f m ctx st hq Hf Hb), (pid_advanced_flat ctx st Hf).
+  split.
+  - intros [Ho | (_ & e & st' & He & Hst & Ho)]; [left; exact Ho|].
+    right. exists e. split; [exact He|]. destruct Hst as [-> | ->]; exact Ho.
+  - intros [Ho | (e & He & Ho)]; [left; exact Ho|].
+    right. split; [intros Hc; discriminate Hc|].
+    exists e, st. split; [exact He | split; [left; reflexivity | exact Ho]].
+Qed.

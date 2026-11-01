@@ -1,9 +1,9 @@
 (** * LinuxProcessSem.Checks.Cases.Ns.SpecCases — which calls the namespace model answers
 
-    [Ns.Spec.ns_ext] claims every call but [clone] (220) and [wait4]
-    (260), which the core answers, and the extension that claims nothing
-    claims nothing.  In the released world a claimed call has exactly the
-    released answers ([ns_spec_flat]). *)
+    [Ns.Spec.ns_ext] claims every call but [clone] (220), [clone3] (435)
+    and [wait4] (260), which the core answers, and the extension that
+    claims nothing claims nothing.  In the released world a claimed call
+    has exactly the released answers ([ns_spec_flat]). *)
 
 From Stdlib Require Import ZArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
@@ -14,6 +14,7 @@ Open Scope bv_scope.
 Definition call (n : word) : SyscallInput := mkInput n [] (fun _ => None) (fun _ => None).
 
 Example ns_leaves_clone : ext_claims ns_ext (call 220) = false := eq_refl.
+Example ns_leaves_clone3 : ext_claims ns_ext (call 435) = false := eq_refl.
 Example ns_leaves_wait4 : ext_claims ns_ext (call 260) = false := eq_refl.
 Example ns_claims_openat : ext_claims ns_ext (call 56) = true := eq_refl.
 Example ns_claims_mount : ext_claims ns_ext (call 40) = true := eq_refl.
@@ -76,6 +77,27 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 Example getpid_flat_is_released : forall m ctx o,
   ns_spec (call 172) m ctx empty_nsstate o <-> released (call 172) m ctx empty_nsstate o.
 Proof. intros m ctx o. apply ns_spec_flat. reflexivity. Qed.
+
+(** While other processes are live: a task in the released world gets
+    the core's guard alone; outside it a call that reads only its own or
+    the shared namespace state is admitted ([getpid]), and a [read] on a
+    regular file the released model opened, whose offset a multi-process
+    core keeps per process, is not. *)
+Example multiproc_flat_core_guard : forall i m ctx,
+  ext_multiproc ns_ext i m ctx empty_nsstate = false.
+Proof. intros i m ctx. reflexivity. Qed.
+
+Example multiproc_getpid_inside : forall m,
+  ext_multiproc ns_ext (call 172) m (task 2 18) one_mount = true.
+Proof. intros m. reflexivity. Qed.
+
+Example multiproc_released_file_read_inside : forall m,
+  fd_lookup (m_fds m) (in_arg (call1 63 3) 0) = Some (FdFile [] (Z_to_bv 64 0)) ->
+  ext_multiproc ns_ext (call1 63 3) m (task 2 18) one_mount = false.
+Proof.
+  intros m H. change (ext_multiproc ns_ext) with ns_multiproc.
+  unfold ns_multiproc, released_private_fd. rewrite H. reflexivity.
+Qed.
 
 (** A descriptor the released model opened resolves in the host's mount
     namespace: "/" is the root of its root mount.  With no released mount

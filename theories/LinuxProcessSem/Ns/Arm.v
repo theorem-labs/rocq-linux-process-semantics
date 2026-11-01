@@ -1,9 +1,10 @@
 (** * LinuxProcessSem.Ns.Arm — what the namespace model's arms share
 
-    The arm type, the released answer, and the helpers every arm uses: an
-    answer that only sets the return register, the open file a descriptor
-    names, a fresh handle, the task's pid, the context setters, and what a
-    path walk needs from the process ([walk_creds], [fd_loc_of]). *)
+    The arm type and the helpers every arm uses: an answer that only sets
+    the return register, the open file a descriptor names, a fresh handle,
+    the task's pid, the context setters, and what a path walk needs from
+    the process ([walk_creds], [fd_loc_of]).  The released answer an arm
+    falls back to is [Ext.released]. *)
 
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
@@ -12,13 +13,6 @@ Import ListNotations.
 
 (** One call number's answer in a world with a mount tree. *)
 Definition NsArm : Type := SyscallInput -> Model -> NsCtx -> NsState -> ext_outcome -> Prop.
-
-(** The released answer, with the namespace context and state unchanged. *)
-Definition released : NsArm := fun i m ctx st o =>
-  match o with
-  | EOk eff m' ctx' st' evs => ctx' = ctx /\ st' = st /\ syscall_spec i m (Ok eff m' evs)
-  | EUnmodeled => syscall_spec i m Unmodeled
-  end.
 
 (* =========================================================================
    What arms share
