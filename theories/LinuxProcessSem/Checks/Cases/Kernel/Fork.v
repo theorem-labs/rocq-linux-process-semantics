@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Cases.Kernel.Fork — worked examples over set_tid_address (96) and clone3 (435)
+(** * LinuxProcessSem.Checks.Cases.Kernel.Fork — worked examples over set_tid_address (96), clone (220) and clone3 (435)
 
     Mirrors [Sys/Kernel/Fork.v], which answers to Linux [kernel/fork.c]:
     this file holds the worked examples for the syscalls defined there,
@@ -166,3 +166,69 @@ Example clone3_admitted_but_unbacked_declines :
     (mkEffect (errno_ret EFAULT) [] []) clone3_model
   = CheckUnmodeled.
 Proof. check_eq. Qed.
+
+(* -------------------------------------------------------------------------
+   clone (220) with namespace flags: the parent's view
+
+   PAIRED TEST.  Before [Kernel.Fork.clone_ns_flags_b], [clone_spec]
+   answered the single word SIGCHLD and declined every other, so the
+   namespace word below was [CheckUnmodeled].  The case is that word,
+   now answered with a pid (the child recorded) or any errno.  The
+   controls are words the old text and the new one treat alike: the
+   plain fork word answers in both, and a CLONE_VM word declines in
+   both.
+   ------------------------------------------------------------------------- *)
+
+Definition clone_in (flags : word) : SyscallInput :=
+  mkInput 220 [flags; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+(** No descriptor at all, so [Kernel.Fork.clone_no_shared_file_b] lets
+    every call through. *)
+Definition clone_case_model : Model :=
+  mkModel [] (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+
+(** bubblewrap 0.13.1's flag word: SIGCHLD | CLONE_NEWNS | CLONE_NEWUSER
+    | CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWIPC | CLONE_NEWUTS. *)
+Definition bwrap_clone_flags : word :=
+  Z_to_bv 64 (SIGCHLD + CLONE_NEWNS + CLONE_NEWUSER + CLONE_NEWPID
+              + CLONE_NEWNET + CLONE_NEWIPC + CLONE_NEWUTS).
+
+(** The case: a pid, recorded with [with_children]; -EPERM (which is not
+    in [Fork.clone_errnos]) and -ENOSPC, with the model unchanged; and
+    0, the child's own return, refused. *)
+Example clone_namespace_word_answers_a_pid :
+  check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
+    clone_case_model = CheckOk (with_children clone_case_model) []
+  /\ check_syscall (clone_in bwrap_clone_flags)
+       (mkEffect (errno_ret EPERM) [] []) clone_case_model
+       = CheckOk clone_case_model []
+  /\ check_syscall (clone_in bwrap_clone_flags)
+       (mkEffect (errno_ret 28) [] []) clone_case_model
+       = CheckOk clone_case_model []
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 0 [] [])
+       clone_case_model = CheckReject.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** The controls.  [clone(SIGCHLD)] answers a pid in both texts, and
+    keeps its four errnos (-EPERM is not one of them); [clone(CLONE_VM
+    | SIGCHLD)] declines in both, and so does the namespace word with
+    CLONE_VM added, and a namespace bit without SIGCHLD. *)
+Example clone_controls_fork_word_and_clone_vm :
+  check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
+    clone_case_model = CheckOk (with_children clone_case_model) []
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD))
+       (mkEffect (errno_ret EPERM) [] []) clone_case_model = CheckReject
+  /\ check_syscall (clone_in (Z_to_bv 64 (CLONE_VM + SIGCHLD)))
+       (mkEffect 4242 [] []) clone_case_model = CheckUnmodeled
+  /\ check_syscall (clone_in (bwrap_clone_flags + Z_to_bv 64 CLONE_VM))
+       (mkEffect 4242 [] []) clone_case_model = CheckUnmodeled
+  /\ check_syscall (clone_in (Z_to_bv 64 CLONE_NEWUSER))
+       (mkEffect 4242 [] []) clone_case_model = CheckUnmodeled.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** The descriptor gate is the fork word's: a regular file open declines
+    the namespace word too. *)
+Example clone_namespace_word_keeps_the_descriptor_gate :
+  check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
+    (with_fds [(3, FdFile [] 0)] clone_case_model) = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.

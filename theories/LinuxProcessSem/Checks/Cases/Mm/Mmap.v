@@ -1867,6 +1867,85 @@ Example mmap_anonymous_page_aligned_offset_is_unmodeled :
   = CheckUnmodeled.
 Proof. check_eq. Qed.
 
+(** ANONYMOUS MAP_SHARED, AND WHY IT IS NOT THE PRIVATE SHAPE WITH ONE
+    BIT FLIPPED.  Each pair below changes exactly one bit of the flags
+    word — 0x01, MAP_SHARED, in place of 0x02, MAP_PRIVATE — and the
+    model declines the shared half and answers the private half.
+    [Mm/Mmap.v]'s section "an anonymous MAP_SHARED mapping is not a
+    private one" carries the argument.  Its short form: Linux builds a
+    shmem file mapping for the shared request ([__mmap_new_vma]'s
+    [else if (map->vm_flags & VM_SHARED) shmem_zero_setup(vma)],
+    mm/vma.c, Linux v6.18.46, commit 1f99e9ab748f), so
+    [vma_is_anonymous] is false for it, its pages survive the zap that
+    MADV_DONTNEED performs, and a fork shares them rather than copying
+    them.  Answering the shared half like the private half would make
+    [Madvise.madvise_spec]'s [eff_zeros] a claim Linux contradicts on
+    a one-thread process with no second sharer.
+
+    The base ledger is empty with a budget of two pages, and 0x10000
+    is a free page-aligned hint, which Linux returns unchanged
+    (mm/mmap.c, the hint test in [generic_get_unmapped_area_topdown]):
+    the pairs are about the flags word and nothing else. *)
+
+Definition shared_pair_base : Model :=
+  with_vmmaps (mkVmMaps [] [] 0 0 8192) noaccess_base.
+
+Example mmap_anonymous_shared_rw_is_unmodeled :
+  check_syscall
+    (mkInput 222 [65536; 4096; 3; 33; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect 65536 [] [(65536, 4096)]) shared_pair_base
+  = CheckUnmodeled.
+Proof. check_eq. Qed.
+
+Example mmap_anonymous_private_rw_grants :
+  check_syscall
+    (mkInput 222 [65536; 4096; 3; 34; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect 65536 [] [(65536, 4096)]) shared_pair_base
+  = CheckOk
+      (with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 8192) noaccess_base) [].
+Proof. check_eq. Qed.
+
+(** MAP_NORESERVE does not rescue it.  [Mmap.mmap_flags_core] removes
+    0x4000 and only that bit before a shape is matched, so 0x4021 is
+    matched as 0x21 and still declines, while 0x4022 takes the lazy
+    path. *)
+
+Example mmap_anonymous_shared_noreserve_rw_is_unmodeled :
+  check_syscall
+    (mkInput 222 [65536; 4096; 3; 16417; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect 65536 [] [(65536, 4096)]) shared_pair_base
+  = CheckUnmodeled.
+Proof. check_eq. Qed.
+
+Example mmap_anonymous_private_noreserve_rw_grants_lazily :
+  check_syscall
+    (mkInput 222 [65536; 4096; 3; 16418; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect 65536 [] [(65536, 4096)]) shared_pair_base
+  = CheckOk
+      (vm_add_lazy 65536 4096
+        (with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 8192) noaccess_base)) [].
+Proof. check_eq. Qed.
+
+(** MAP_FIXED does not rescue it either, although it is the one case
+    where Linux's two placements provably agree
+    ([shmem_get_unmapped_area]'s [if (flags & MAP_FIXED) return addr],
+    mm/shmem.c): the address is not what makes the shared mapping
+    different.  The private twin of this call is
+    [mmap_fixed_rw_fresh_grants_and_charges] above, the same call on
+    the same ledger with 0x01 replaced by 0x02. *)
+
+Example mmap_anonymous_shared_fixed_rw_is_unmodeled :
+  check_syscall
+    (mkInput 222 [65536; 4096; 3; 49; mmap_fd_none; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect 65536 [] [(65536, 4096)]) shared_pair_base
+  = CheckUnmodeled.
+Proof. check_eq. Qed.
+
 (** A failed MAP_FIXED has TWO shapes.  Past [vms_clean_up_area]
     (mm/vma.c, called at the end of [__mmap_prepare], Linux
     v6.18.46, commit 1f99e9ab748f) the old range is already torn down, so

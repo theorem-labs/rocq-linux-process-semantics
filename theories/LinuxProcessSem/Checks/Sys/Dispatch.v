@@ -26,6 +26,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import
   Prelude Uaccess Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe
   Fs.EventPoll Fs.EventFd Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Exit
+  Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups
   Kernel.Sched.Syscalls
   Kernel.Signal Kernel.Sys Kernel.Time.Hrtimer Kernel.Time.PosixTimers
@@ -36,6 +37,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Import
   Prelude Uaccess Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe
   Fs.EventPoll Fs.EventFd Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Kernel.Exit
+  Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups
   Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time
@@ -452,6 +454,28 @@ Proof.
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_timerfd_create_sound_ok, check_timerfd_create_sound_unmodeled, check_timerfd_create_complete_ok, check_timerfd_create_complete_unmodeled, timerfd_create_witness_ok.
+Defined.
+
+(** capget (90). *)
+Definition arm_capget : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 90%Z (fun i => capget_spec (in_arg i 0) (in_arg i 1) i))
+                       (fun i eff m => check_capget i (in_arg i 0) (in_arg i 1) eff m)
+                       (fun i m => capget_witness (in_arg i 0) (in_arg i 1) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_capget_sound_ok, check_capget_sound_unmodeled, check_capget_complete_ok, check_capget_complete_unmodeled, capget_witness_ok.
+Defined.
+
+(** capset (91). *)
+Definition arm_capset : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 91%Z (fun i => capset_spec (in_arg i 0) (in_arg i 1) i))
+                       (fun i eff m => check_capset i (in_arg i 0) (in_arg i 1) eff m)
+                       (fun i m => capset_witness (in_arg i 0) (in_arg i 1) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_capset_sound_ok, check_capset_sound_unmodeled, check_capset_complete_ok, check_capset_complete_unmodeled, capset_witness_ok.
 Defined.
 
 (** exit (93). *)
@@ -1175,6 +1199,8 @@ Definition checked_table : list CheckedArm :=
   arm_fsync ::
   arm_fdatasync ::
   arm_timerfd_create ::
+  arm_capget ::
+  arm_capset ::
   arm_exit ::
   arm_exit_group ::
   arm_set_tid_address ::
@@ -1578,6 +1604,26 @@ Proof. reflexivity. Qed.
 Lemma sa_spec_arm_timerfd_create : forall i m o,
   sa_spec (ca_arm arm_timerfd_create) i m o
     = timerfd_create_spec (clockid32 (in_arg i 0)) (flag32 (in_arg i 1)) i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_capget : forall i eff m,
+  ca_check arm_capget i eff m = check_capget i (in_arg i 0) (in_arg i 1) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_capget : forall i m,
+  ca_witness arm_capget i m = capget_witness (in_arg i 0) (in_arg i 1) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_capget : forall i m o,
+  sa_spec (ca_arm arm_capget) i m o = capget_spec (in_arg i 0) (in_arg i 1) i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_capset : forall i eff m,
+  ca_check arm_capset i eff m = check_capset i (in_arg i 0) (in_arg i 1) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_capset : forall i m,
+  ca_witness arm_capset i m = capset_witness (in_arg i 0) (in_arg i 1) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_capset : forall i m o,
+  sa_spec (ca_arm arm_capset) i m o = capset_spec (in_arg i 0) (in_arg i 1) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_exit : forall i eff m,
@@ -2231,6 +2277,8 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_check_arm_fsync ca_witness_arm_fsync sa_spec_arm_fsync : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_fdatasync ca_witness_arm_fdatasync sa_spec_arm_fdatasync : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_timerfd_create ca_witness_arm_timerfd_create sa_spec_arm_timerfd_create : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_capget ca_witness_arm_capget sa_spec_arm_capget : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_capset ca_witness_arm_capset sa_spec_arm_capset : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_exit ca_witness_arm_exit sa_spec_arm_exit : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_exit_group ca_witness_arm_exit_group sa_spec_arm_exit_group : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_set_tid_address ca_witness_arm_set_tid_address sa_spec_arm_set_tid_address : arm_unfold.
@@ -2402,6 +2450,14 @@ Proof. reflexivity. Qed.
 Lemma ca_no_arm_timerfd_create : ca_no arm_timerfd_create = 85%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_timerfd_create : arm_unfold.
+
+Lemma ca_no_arm_capget : ca_no arm_capget = 90%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_capget : arm_unfold.
+
+Lemma ca_no_arm_capset : ca_no arm_capset = 91%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_capset : arm_unfold.
 
 Lemma ca_no_arm_exit : ca_no arm_exit = 93%Z.
 Proof. reflexivity. Qed.

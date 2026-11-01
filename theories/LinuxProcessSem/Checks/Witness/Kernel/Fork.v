@@ -58,15 +58,33 @@ Proof.
   apply pure_ok.
 Qed.
 
+(** The namespace word's resolution admits every errno, so the same
+    -EAGAIN outcome witnesses it. *)
+Lemma clone_ns_resolve_witness_ok : forall i m,
+  clone_ns_resolve i m (clone_resolve_witness m).
+Proof.
+  intros. unfold clone_ns_resolve, clone_resolve_witness.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (negb (clone_no_shared_file_b (m_fds m))); cbv iota;
+    [apply unmodeled_intro|].
+  apply alt_l. eapply bind_step.
+  { apply (choose_ok _ EAGAIN). cbv beta. unfold EAGAIN. lia. }
+  apply pure_ok.
+Qed.
+
 Definition clone_witness (flags : word) (m : Model) : outcome SyscallEffect :=
-  if clone_fork_flags_b flags then clone_resolve_witness m else Unmodeled.
+  if clone_fork_flags_b flags then clone_resolve_witness m
+  else if clone_ns_flags_b flags then clone_resolve_witness m
+  else Unmodeled.
 
 Lemma clone_witness_ok : forall flags i m,
   clone_spec flags i m (clone_witness flags m).
 Proof.
   intros. unfold clone_spec, clone_witness.
-  destruct (clone_fork_flags_b flags);
-    [apply clone_resolve_witness_ok | apply unmodeled_intro].
+  destruct (clone_fork_flags_b flags); cbv iota;
+    [apply clone_resolve_witness_ok|].
+  destruct (clone_ns_flags_b flags); cbv iota;
+    [apply clone_ns_resolve_witness_ok | apply unmodeled_intro].
 Qed.
 
 (** The same witness, carrying the copy-in ledger the [clone3] resolution
