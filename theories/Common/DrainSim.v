@@ -1021,22 +1021,29 @@ Proof.
   left; cbn. split; [exact HM | exists a; exact Hrd].
 Qed.
 
+(** Stated at the CONFIGURATION, for the reason
+    [StreamSim.stream_omni_corun] gives: [omni_corun] reads
+    [Run.run_segments] while this section has one segment list. *)
 Lemma drain_omni_corun : forall pc ph sp brk0 mb rnd lim inp a0,
   to_rd a0 (init_machine_state segs pc ph sp mb rnd inp) ->
   in_channel_reader inp = true ->
-  omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp never_errors.
+  OmniRun.coexec segs (init_config segs pc ph sp brk0 mb rnd lim inp) never_errors.
 Proof.
-  intros pc ph sp brk0 mb rnd lim inp a0 Hrd Hrdr. cbn [omni_corun]. unfold init_config.
-  apply (to_rd_coexec a0); [apply init_M_loop; exact Hrdr | exact Hrd].
+  intros pc ph sp brk0 mb rnd lim inp a0 Hrd Hrdr. unfold init_config.
+  set (model0 := with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+                   (init_model (segments_reserved segs) brk0 mb sp lim inp)) in *.
+  assert (HM0 : StreamSim.M_loop model0)
+    by exact (init_M_loop (segments_reserved segs) brk0 mb sp lim inp Hrdr).
+  apply (to_rd_coexec a0); [exact HM0 | exact Hrd].
 Qed.
 
 Lemma drain_omni_cosafe : forall pc ph sp brk0 mb rnd lim inp a0,
   to_rd a0 (init_machine_state segs pc ph sp mb rnd inp) ->
   in_channel_reader inp = true ->
-  omni_cosafe (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
+  OmniRun.cosafe segs (init_config segs pc ph sp brk0 mb rnd lim inp)
     (drain_from cnt f out ec a0 (in_fs inp) (in_stdin inp)).
 Proof.
-  intros pc ph sp brk0 mb rnd lim inp a0 Hrd Hrdr. cbn [omni_cosafe].
+  intros pc ph sp brk0 mb rnd lim inp a0 Hrd Hrdr.
   apply cosafe_obs_iff.
   - (* prefix-closed, through the trace-set characterisation itself *)
     intros t t' Ht Hp.
@@ -1064,12 +1071,12 @@ Lemma drain_omni_strong_equiv :
          source_segs rLH rpc rph rsp rbrk rmb rrnd target_segs aLH apc aph asp abrk amb arnd inp,
   (bv_unsigned ec < 256)%Z ->
   (0 < bv_unsigned cnt <= rw_bytes_max)%Z ->
-  (forall a ms, rLH a ms -> to_rd source_segs cnt f out ec rLH a ms) ->
-  (forall a ms, aLH a ms -> to_rd target_segs cnt f out ec aLH a ms) ->
-  to_rd source_segs cnt f out ec rLH a0
-    (init_machine_state source_segs rpc rph rsp rmb rrnd inp) ->
-  to_rd target_segs cnt f out ec aLH a0
-    (init_machine_state target_segs apc aph asp amb arnd inp) ->
+  (forall a ms, rLH a ms -> to_rd (run_segments source_segs inp rsp rmb) cnt f out ec rLH a ms) ->
+  (forall a ms, aLH a ms -> to_rd (run_segments target_segs inp asp amb) cnt f out ec aLH a ms) ->
+  to_rd (run_segments source_segs inp rsp rmb) cnt f out ec rLH a0
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp) ->
+  to_rd (run_segments target_segs inp asp amb) cnt f out ec aLH a0
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp) ->
   in_channel_reader inp = true ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
@@ -1079,16 +1086,16 @@ Proof.
   split.
   { cbn [img_segments].
     eapply coexec_conseq;
-      [exact (drain_omni_corun source_segs cnt Hcnt f out ec rLH HrLH
+      [exact (drain_omni_corun (run_segments source_segs inp rsp rmb) cnt Hcnt f out ec rLH HrLH
                 rpc rph rsp rbrk rmb rrnd source_alloc_limit inp a0 Hr Hrdr) | apply never_errors_covered]. }
   right. split.
   - apply trace_equiv_iff_omni. intro tr. cbn.
-    rewrite (drain_obs_iff source_segs cnt Hcnt f out ec Hec rLH HrLH
+    rewrite (drain_obs_iff (run_segments source_segs inp rsp rmb) cnt Hcnt f out ec Hec rLH HrLH
                rpc rph rsp rbrk rmb rrnd source_alloc_limit inp a0 Hr Hrdr tr).
-    rewrite (drain_obs_iff target_segs cnt Hcnt f out ec Hec aLH HaLH
+    rewrite (drain_obs_iff (run_segments target_segs inp asp amb) cnt Hcnt f out ec Hec aLH HaLH
                apc aph asp abrk amb arnd target_alloc_limit inp a0 Ha Hrdr tr).
     reflexivity.
-  - exact (drain_omni_corun target_segs cnt Hcnt f out ec aLH HaLH
+  - exact (drain_omni_corun (run_segments target_segs inp asp amb) cnt Hcnt f out ec aLH HaLH
              apc aph asp abrk amb arnd target_alloc_limit inp a0 Ha Hrdr).
 Qed.
 
@@ -1098,12 +1105,12 @@ Lemma drain_strong_equiv :
          source_segs rLH rpc rph rsp rbrk rmb rrnd rlim target_segs aLH apc aph asp abrk amb arnd alim inp,
   (bv_unsigned ec < 256)%Z ->
   (0 < bv_unsigned cnt <= rw_bytes_max)%Z ->
-  (forall a ms, rLH a ms -> to_rd source_segs cnt f out ec rLH a ms) ->
-  (forall a ms, aLH a ms -> to_rd target_segs cnt f out ec aLH a ms) ->
-  to_rd source_segs cnt f out ec rLH a0
-    (init_machine_state source_segs rpc rph rsp rmb rrnd inp) ->
-  to_rd target_segs cnt f out ec aLH a0
-    (init_machine_state target_segs apc aph asp amb arnd inp) ->
+  (forall a ms, rLH a ms -> to_rd (run_segments source_segs inp rsp rmb) cnt f out ec rLH a ms) ->
+  (forall a ms, aLH a ms -> to_rd (run_segments target_segs inp asp amb) cnt f out ec aLH a ms) ->
+  to_rd (run_segments source_segs inp rsp rmb) cnt f out ec rLH a0
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp) ->
+  to_rd (run_segments target_segs inp asp amb) cnt f out ec aLH a0
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp) ->
   in_channel_reader inp = true ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
@@ -1113,16 +1120,16 @@ Proof.
          inp Hec Hcnt HrLH HaLH Hr Ha Hrdr.
   split.
   { apply no_error_run_modeled.
-    apply (drain_no_error source_segs cnt Hcnt f out ec rLH HrLH
+    apply (drain_no_error (run_segments source_segs inp rsp rmb) cnt Hcnt f out ec rLH HrLH
              rpc rph rsp rbrk rmb rrnd rlim inp a0 Hr Hrdr). }
   right. split.
   - intro tr. cbn.
-    rewrite (drain_obs_iff source_segs cnt Hcnt f out ec Hec rLH HrLH
+    rewrite (drain_obs_iff (run_segments source_segs inp rsp rmb) cnt Hcnt f out ec Hec rLH HrLH
                rpc rph rsp rbrk rmb rrnd rlim inp a0 Hr Hrdr tr).
-    rewrite (drain_obs_iff target_segs cnt Hcnt f out ec Hec aLH HaLH
+    rewrite (drain_obs_iff (run_segments target_segs inp asp amb) cnt Hcnt f out ec Hec aLH HaLH
                apc aph asp abrk amb arnd alim inp a0 Ha Hrdr tr).
     reflexivity.
   - cbn.
-    apply (drain_no_error target_segs cnt Hcnt f out ec aLH HaLH
+    apply (drain_no_error (run_segments target_segs inp asp amb) cnt Hcnt f out ec aLH HaLH
              apc aph asp abrk amb arnd alim inp a0 Ha Hrdr).
 Qed.

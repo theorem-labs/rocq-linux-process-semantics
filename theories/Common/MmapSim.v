@@ -1766,7 +1766,8 @@ Proof.
                (init_model (segments_reserved segs) brk0 mb sp lim inp)) in *.
   assert (Hh : m_halted m0 = None) by reflexivity.
   assert (Hlazy : m_vm_lazy m0 = []) by reflexivity.
-  assert (Hfd : fd1chan m0) by (apply init_model_fd1chan; exact Hr).
+  assert (Hfd : fd1chan m0)
+    by exact (init_model_fd1chan (segments_reserved segs) brk0 mb sp lim inp Hr).
   assert (Hfs : m_fs m0 = in_fs inp) by reflexivity.
   split.
   - intros (tr' & c & Hstar & Hp).
