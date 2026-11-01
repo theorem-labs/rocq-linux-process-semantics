@@ -1480,4 +1480,88 @@ Proof.
   exact (fw_run_child regs mem rom Ha0).
 Qed.
 
+(** PAIR ONE: the child steps, at every counter of its run.
+
+    Inverting [fw_run_child] once gave the first step; inverting the
+    remainder repeatedly gives the rest.  Each is an ordinary
+    instruction, so each is one [fw_det_link] at the child's entry, with
+    the parent carried across unchanged by [fw_two_other_record] and
+    [fw_two_other_view] -- whose hypotheses [fw_instr_frames_shared]
+    discharges, because an accounted instruction step fixes every model
+    component.
+
+    Stated as the existence of the run's steps rather than as a fold,
+    for the reason [fw_det_link] is a link: the child's run and the
+    parent's have different lengths. *)
+Lemma fw_child_steps_exist : forall regs mem rom,
+  getr regs 10 = 0 ->
+  exists ms1 ms2 ms3 ms4,
+    RiscvSemantics.step forkwait_segs (mkst regs 0x1101c mem rom)
+      = MachineOk ms1
+    /\ RiscvSemantics.step forkwait_segs ms1 = MachineOk ms2
+    /\ RiscvSemantics.step forkwait_segs ms2 = MachineOk ms3
+    /\ RiscvSemantics.step forkwait_segs ms3 = MachineOk ms4
+    /\ machine_run forkwait_segs 1 ms4
+       = Some (ecall_st (fw_regs_exit7 regs) 0x11058 mem rom).
+Proof.
+  intros regs mem rom Ha0.
+  destruct (fw_child_first_step regs mem rom Ha0) as (ms1 & _ & Hs1 & Hr1).
+  destruct (machine_run_inv _ _ _ _ Hr1) as (ms2 & _ & Hs2 & Hr2).
+  destruct (machine_run_inv _ _ _ _ Hr2) as (ms3 & _ & Hs3 & Hr3).
+  destruct (machine_run_inv _ _ _ _ Hr3) as (ms4 & _ & Hs4 & Hr4).
+  exists ms1, ms2, ms3, ms4.
+  split; [exact Hs1|]. split; [exact Hs2|]. split; [exact Hs3|].
+  split; [exact Hs4 | exact Hr4].
+Qed.
+
+(** PAIR TWO: the parent steps, through its prologue to the [wait4].
+
+    Nine steps, decomposed the same way.  Its hypotheses are the ones
+    [ForkwaitSteps.fw_run_parent] asks for: a0 is the returned pid,
+    bounded strictly between 0 and 2^22 by [Fork.clone_pid_ok_b], and
+    the stack pointer is far enough above zero that the frame push does
+    not wrap.  Both are what the [fw_two] shape carries at this counter,
+    which is why pinning a0 was worth doing.
+
+    Only the first step is named here: the rest follow by inverting the
+    remainder, exactly as the child's did, and naming all nine would
+    state nothing the inversion does not give. *)
+Lemma fw_parent_first_step : forall regs mem rom (q sp : word),
+  getr regs 10 = q ->
+  getr regs 2 = sp ->
+  (0 < bv_unsigned q)%Z ->
+  (bv_unsigned q < 2 ^ 22)%Z ->
+  (16 <= bv_unsigned sp)%Z ->
+  exists ms',
+    ms_svc_pending (mkst regs 0x1101c mem rom) = None
+    /\ RiscvSemantics.step forkwait_segs (mkst regs 0x1101c mem rom)
+       = MachineOk ms'
+    /\ machine_run forkwait_segs 8 ms'
+       = Some (ecall_st (fw_regs_P regs sp) 0x1103c mem rom).
+Proof.
+  intros regs mem rom q sp Ha0 Hsp Hq0 Hq1 Hsp16.
+  apply machine_run_inv.
+  exact (fw_run_parent regs mem rom q sp Ha0 Hsp Hq0 Hq1 Hsp16).
+Qed.
+
+(** PAIR THREE: the parent's tail after the reap, four steps to the
+    final [exit_group].  This is the deterministic stretch C, and its
+    hypotheses are the reap's own output: the stack slot holds the
+    status word the reap wrote, which [ForkwaitSteps.fw_slot_read]
+    supplies from the write [Run.apply_effect] made. *)
+Lemma fw_reap_tail_first_step : forall regs mem rom (sp : word),
+  getr regs 2 = fw_slot sp ->
+  rdn forkwait_segs mem (fw_slot sp) 4 = Some (Z_to_le_bytes 4 1792) ->
+  exists ms',
+    ms_svc_pending (mkst regs 0x11040 mem rom) = None
+    /\ RiscvSemantics.step forkwait_segs (mkst regs 0x11040 mem rom)
+       = MachineOk ms'
+    /\ machine_run forkwait_segs 3 ms'
+       = Some (ecall_st (fw_regs_C regs) 0x1104c mem rom).
+Proof.
+  intros regs mem rom sp Hsp Hrd.
+  apply machine_run_inv.
+  exact (fw_run_reap regs mem rom sp Hsp Hrd).
+Qed.
+
 End ForkwaitConsumers.
