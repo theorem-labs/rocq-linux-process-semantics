@@ -1307,10 +1307,11 @@ Definition openat_sep_spec (p : path) (flags : word) (m : Model)
     fact about this file rather than an argument about Linux:
     [openat_core_spec] has ALREADY refused every flag word the model
     does not interpret, through [modeled_open_flags], before this
-    definition is reached.  So the [else unmodeled] below is
-    unreachable, both orders answer [unmodeled] on exactly the same
-    inputs, and hoisting changes no answer the model gives — only which
-    of two reasons it declines for.  The kernel's order agrees, which is
+    definition is reached, and [openat_body_spec] has refused every
+    O_PATH word ([open_path_word]) off procfs.  So the [else unmodeled]
+    below is unreachable, both orders answer [unmodeled] on exactly the
+    same inputs, and hoisting changes no answer the model gives — only
+    which of two reasons it declines for.  The kernel's order agrees, which is
     why the hoisted position is also the faithful one:  The walk that cannot be
     modeled precedes the flag-dependent decision in Linux too
     ([link_path_walk] runs before [may_open]'s -EISDIR), so the hoisted
@@ -1319,8 +1320,10 @@ Definition openat_sep_spec (p : path) (flags : word) (m : Model)
     THE ARMS ARE NOT ALL TOTAL.  All but one answer every
     pathname they are handed; [openat_dir_spec] does not, and its
     declines are on the path rather than on the flag word.  The FINAL
-    [else unmodeled] here is still unreachable — the branches
-    exhaust what [modeled_open_flags] admits — but this dispatcher does
+    [else unmodeled] here is still unreachable — the branches exhaust
+    what [modeled_open_flags] admits once [openat_body_spec] has taken
+    the O_PATH words away, which [modeled_open_flags] admits too — but
+    this dispatcher does
     not decline only above an arm: it also declines inside one, and the
     [Checks] mirror carries a matching decline inside
     [check_openat_dir]. *)
@@ -1694,7 +1697,10 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
 
 (** [close fd]: 0 on a live fd (which is removed), -EBADF otherwise.
     [fd] arrives already truncated to 32 bits (see [Syscall.fd32]), so
-    [close(2^32)] closes stdin.
+    [close(2^32)] closes stdin.  The answer is [filp_flush]'s result; an
+    [State.ONsFile] answers 0 on the condition its doc states (its
+    object's [f_op->flush] is absent or cannot fail).
+      fs/open.c [SYSCALL_DEFINE1(close)], [filp_flush]: read at v6.18.44; identical at v6.18.46.
 
     THE ARM IS KIND-BLIND ON PURPOSE, AND FOR A PIPE THAT IS
     LOAD-BEARING.  Removing the fd is the whole of what [pipe_release]
@@ -1946,10 +1952,12 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
   | Some (FdFile _ _) => err_ret EINVAL          (* fd open read-only: no FMODE_WRITE, real -EINVAL *)
   | Some FdDir => err_ret EINVAL                 (* a directory is not S_ISREG: real -EINVAL, not -EISDIR *)
   | Some (FdOpaque _) => unmodeled               (* FAIL-CLOSED: [do_sys_ftruncate]'s [CLASS(fd, f)]
-                                                    refuses an O_PATH file (-EBADF), and the other
-                                                    two objects take [do_ftruncate]'s -EINVAL; the
-                                                    split is not written (fs/open.c, read at
-                                                    v6.18.44) *)
+                                                    refuses an O_PATH file (-EBADF), the eventfd
+                                                    and /proc/sys objects take [do_ftruncate]'s
+                                                    -EINVAL, and an [ONsFile]'s object is of
+                                                    unknown type; the split is not written
+                                                    (fs/open.c, read at v6.18.44; identical at
+                                                    v6.18.46) *)
   | Some (FdFileA p _) =>
       (* AN APPEND FD IS A WRITABLE REGULAR FILE, so it takes the arm
          below rather than the -EINVAL the five kinds above get:

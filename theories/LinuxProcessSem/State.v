@@ -2733,6 +2733,8 @@ Definition PipeBuf : Type := list byte * Z.
       (fs/file.c) refuses it, so it does no I/O at all; it serves as a
       directory for [openat] and [newfstatat] relative to it, and
       [close] removes it.
+        fs/open.c [do_dentry_open]: read at v6.18.44; identical at v6.18.46.
+        fs/file.c [fdget]: read at v6.18.44; identical at v6.18.46.
     - [OProcFile p]: an O_RDONLY descriptor on a name under
       "/proc/sys/" ([Fs.Open.proc_sys_file_b]).  Its reads return bytes
       of the environment's choice ([Fs.ReadWrite.read_proc_spec]).
@@ -2749,7 +2751,13 @@ Definition PipeBuf : Type := list byte * Z.
       type ([close], [close_range], [fcntl]'s [F_SETFD] and [F_GETFD],
       and the clone gate); every other arm declines it.  That model
       never mints one on an end of a pipe this table's [FdPipe] entries
-      track, which is the condition [pipe_end_live] relies on. *)
+      track, which is the condition [pipe_end_live] relies on.  It also
+      mints one only on an object whose [f_op->flush] is absent or cannot
+      fail, which is the condition [Fs.Open.close_spec]'s 0 relies on:
+      [SYSCALL_DEFINE1(close)] returns [filp_flush]'s result, and FUSE,
+      NFS, CIFS, orangefs, ecryptfs and overlayfs have a [.flush] that
+      can fail.
+        fs/open.c [SYSCALL_DEFINE1(close)], [filp_flush]: read at v6.18.44; identical at v6.18.46. *)
 Inductive OpaqueFd :=
   | OProcPath (p : path)
   | OProcFile (p : path)
@@ -2912,7 +2920,7 @@ Inductive OpaqueFd :=
       object is: no position, no bytes, no counter.  Every arm that
       reads one either derives its answer from the Linux source for
       that kind of object or declines; none of them answers from what
-      an existing kind would answer, because none of the three is a
+      an existing kind would answer, because none of the four is a
       file, a device, a socket or a pipe end the existing arms know. *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
@@ -5182,7 +5190,7 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     whatever fd N holds.  Of the two shapes [Fs.Open.openat_proc_spec]
     answers, O_PATH makes a file with [empty_fops] that never runs
     [fifo_open] and is never released through [pipe_release]
-    ([do_dentry_open], fs/open.c, read at v6.18.44), so it is counted
+    ([do_dentry_open], fs/open.c, read at v6.18.44; identical at v6.18.46), so it is counted
     in neither [pipe->readers] nor [pipe->writers]; and O_RDONLY is
     answered only for a "/proc/sys/" name, which by the stated
     assumption is never a link.  So no answered open hands out a
