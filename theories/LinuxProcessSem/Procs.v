@@ -475,7 +475,14 @@ Definition child_proc (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
               (procst_setsid_succeeded ps) (procst_sigmask ps)
               false (procst_utsname ps) (procst_sigaltstack_installed ps)
-              (procst_killed ps) (procst_sigabrt_pending ps)
+              (* [procst_sigabrt_pending] is FALSE in the child, not
+                 copied: a new thread group starts with no pending signal
+                 (Linux [copy_process]).  Copying the parent's would give
+                 the child a signal it never received.  [forkwait] raises
+                 none, so no statement of this branch changes, but the
+                 child-entry lemmas read [child_proc] and must not read a
+                 wrong value.  (Found in review, 2026-11-01.) *)
+              (procst_killed ps) false
               (procst_abort_terminal ps) (procst_statpins ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=

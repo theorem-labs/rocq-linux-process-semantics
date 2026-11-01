@@ -202,8 +202,44 @@ Definition fw_two (P : pconfig) : Prop :=
     resolutions.  At [Run.may_fail_cfg] the path IS reachable, becomes a
     ninth shape, and is covered by [ForkwaitSteps.fw_run_fail]: the same
     statement is harder there and still holds. *)
+(** THE PROGRAM COUNTERS THE ONE-ENTRY SHAPES ADMIT, read off the
+    committed snapshot's own binary as the segments are.
+
+    An earlier [fw_shape] began [exists pc, fw_one_running P pc], which is
+    the [fw_two] defect in the one-entry case: a shape satisfied by ANY
+    program counter is preserved because it says almost nothing.  Pinning
+    the counters is NARROWING, not widening -- the opposite of making a
+    case close by weakening what is proved -- and the measure needs them
+    anyway, since [fw_absorb_decreases] reads the pc to compute what is
+    left.
+
+    As lists rather than as a twenty-way disjunction, so preservation per
+    segment is one decidable check: the successor of a member is a member
+    or the segment's [ecall]. *)
+
+(** The entry run into the clone, [0x11000] to the [ecall] at [0x11018]. *)
+Definition fw_pcs_A : list Z :=
+  [0x11000; 0x11004; 0x11008; 0x1100c; 0x11010; 0x11014; 0x11018]%Z.
+
+(** The two branches both processes run, then the child's tail. *)
+Definition fw_pcs_child : list Z :=
+  [0x1101c; 0x11020; 0x11050; 0x11054; 0x11058]%Z.
+
+(** The parent's prologue and its [wait4]. *)
+Definition fw_pcs_parent : list Z :=
+  [0x1101c; 0x11020; 0x11024; 0x11028; 0x1102c; 0x11030; 0x11034;
+   0x11038; 0x1103c]%Z.
+
+(** The parent's tail after the reap. *)
+Definition fw_pcs_reap : list Z :=
+  [0x11040; 0x11044; 0x11048; 0x1104c]%Z.
+
+(** Every counter a single live entry of this program can be at. *)
+Definition fw_pcs_one : list Z :=
+  fw_pcs_A ++ fw_pcs_child ++ fw_pcs_parent ++ fw_pcs_reap.
+
 Definition fw_shape (P : pconfig) : Prop :=
-  (exists pc, fw_one_running P pc)
+  (exists pc, List.In pc fw_pcs_one /\ fw_one_running P pc)
   \/ fw_one_pending P 0x11018 220
   \/ fw_two P
   \/ fw_one_pending P 0x1103c 260
@@ -240,7 +276,7 @@ Proof.
                               m_halted (pe_model e) <> None).
   { intros e r Hp. unfold terminal in Ht. rewrite Hp in Ht.
     inversion Ht as [|x l Hx Hr]; subst. unfold pe_zombie in Hx. exact Hx. }
-  destruct Hsh as [[pc (e & Hp & _ & Hh & _)]
+  destruct Hsh as [(pc & _ & e & Hp & _ & Hh & _ & _)
                   |[(e & x8 & Hp & _ & Hh & _)
                   |[(ep & ec & Hp & _ & _ & _ & (Hh & _) & _)
                   |[(e & x8 & Hp & _ & Hh & _)
@@ -347,10 +383,16 @@ Proof. intros segs cfg P p evs r H. exists evs, r. exists p. exact H. Qed.
 Lemma fw_shape_one_proc : forall c,
   m_halted (cfg_model c) = None ->
   ms_svc_pending (cfg_ms c) = None ->
+  (* the pc is now PINNED to the counters the program can be at, so the
+     caller supplies it; at the entry point it is [0x11000], the head of
+     [fw_pcs_A] *)
+  List.In (bv_unsigned (ms_pc_val (cfg_ms c))) fw_pcs_one ->
   fw_shape (one_proc c).
 Proof.
-  intros c Hh Hs. left.
-  exists (bv_unsigned (ms_pc_val (cfg_ms c))), (one_entry c).
+  intros c Hh Hs Hin. left.
+  exists (bv_unsigned (ms_pc_val (cfg_ms c))).
+  split; [exact Hin|].
+  exists (one_entry c).
   split; [reflexivity|].
   split; [apply one_proc_entry|].
   split; [exact Hh|].
