@@ -179,32 +179,52 @@ Local Abbreviation ev := (in_envp inp).
 Local Abbreviation fs0 := (in_fs inp).
 Hypothesis Hva : valid_argv av.
 Hypothesis Hve : valid_envp ev.
+Hypothesis Hvl : valid_launch inp.        (* the E2BIG cap on the launch *)
 
 Variable rsp : word.                    (* the stack pointer *)
-Variable rrnd : EntryDraw.              (* the AT_RANDOM bytes and the stack slack *)
-Hypothesis Hsp_lo : (sp_window_lo <= bv_unsigned rsp)%Z.
-Hypothesis Hsp_hi : (bv_unsigned rsp <= sp_window_hi)%Z.
 Variable rbrk : word.                   (* the initial program break *)
 Variable rmb : word.                    (* the mmap base *)
+Variable rrnd : EntryDraw.              (* the AT_RANDOM bytes, the stack
+                                           VMA's end, and the vDSO's
+                                           register and frame leftovers *)
+Hypothesis Hsp_lo : (sp_window_lo <= bv_unsigned rsp)%Z.
+Hypothesis Hsp_hi : (bv_unsigned rsp <= sp_window_hi)%Z.
+Hypothesis Hlau : entry_launch_ok_va Sv48 (mkEntry rsp rbrk rmb rrnd) inp.
 ```
 
 Follow these rules:
 
 - Quantify over the `ProcInput` record, not over its fields.
-  `Run.init_config` and `State.init_model` take the whole record. Separate
+  `Run.init_machine_state`, `Run.init_config` and `State.init_model` take
+  the whole record. Separate
   variables for `av` and `ev` would let a lemma mix values from two
   different inputs.
 - Use `Local Abbreviation`, not `Local Notation`. Rocq 9.2 gives an error
   for `Notation` without parameters.
 - Do not declare an abbreviation whose name is already a binder in the
   file.
-- Give the launch draw (`EntryDraw`: the `AT_RANDOM` bytes and the bytes
-  above the initial stack) a variable and no hypothesis. The kernel can
-  choose any value. In the target section, use a different variable (for
+- Give the launch draw (`EntryDraw`: the `AT_RANDOM` bytes, the stack
+  VMA's end `ed_top`, and the vDSO's leftover-naming function) a
+  variable. The kernel can
+  choose any value the launch conjunct admits. In the target section, use
+  a different variable (for
   example, `arnd`): the two launches are independent.
-- A section that does not have `inp` needs a variable for the user ID and
-  one for the `AT_HWCAP` value, because `init_machine_state` takes them.
-  If the section has `inp`, use `(in_uid inp)` and `(in_hwcap inp)`.
+- Take `entry_launch_ok_va` as a hypothesis if the proof reads the
+  initial stack or fetches through the overlay. It is the fifth conjunct
+  of `Run.valid_entry_va`, and it is what bounds the entry block
+  (`StepTac.bsb_bound`) and what puts `sp` at or below `ed_top`, hence
+  the zero-filled stack window at or above `sp - 8 MiB`
+  (`WxExec.mem_clear_wrap`). `valid_argv` and `valid_envp` no longer
+  bound the block: the strings sit at the top of it, and the exec file
+  name and `arch_align_stack`'s pad are in it too.
+- Take `valid_launch` as well for `StepTac.bsb_bound`: it is the E2BIG
+  cap `bprm_stack_limits` computes (fs/exec.c, Linux v6.18.46, commit
+  1f99e9ab748f).
+- A section that reads the auxv needs no variable for the user ID or for
+  the `AT_HWCAP` value: `init_machine_state` takes the input, so use
+  `(in_uid inp)` and `(in_hwcap inp)`.
+- `Common/ArgvEnv.v` proves this scaffolding once. Instantiate it rather
+  than writing `argcN`, `bsb_nw`, `envp_ptr` and the read-backs again.
 
 The section then builds the initial memory in layers: `wrap_mem` for the
 initial stack, then `wbytes` for each store of the start code.
@@ -232,7 +252,7 @@ In `Proof.v`, each input case uses exactly one library lemma:
 
 | Behavior in this case | Lemma | Each binary must give |
 | --- | --- | --- |
-| writes to standard output, then exit | `CatSim.cat_omni_strong_equiv_te` | `to_wexit ... bufs code`, with the same `(bufs, code)` |
+| writes to standard output, then exit | `CatSim.cat_omni_strong_equiv_te` | `to_wexit ... bufs code`, with the same `(bufs, code)`, and a `cat_launch` fact (see below) |
 | exit only | `ExitSim.exit_omni_strong_equiv` | `to_exit` with the same code |
 | `brk` allocation | `AllocSim.alloc_omni_strong_equiv` | `to_outcomes ... U`, with the same outcome set `U` |
 | one anonymous `mmap` | `MmapSim.mmap_omni_strong_equiv_te` | `tmw ...`, with the same failure and success results |
@@ -243,6 +263,32 @@ In `Proof.v`, each input case uses exactly one library lemma:
 Use the crash row only when every execution of the source crashes. If an
 earlier system call has more than one result, each result must lead to a
 crash.
+
+`State.in_channel_reader` says if the far end of standard output has a
+reader. `Run.valid_input` pins it present, and
+`Run.valid_input_channel_reader` reads that pin back out, so a proof
+under the ordinary predicate has the reader fact for free.
+`cat_omni_strong_equiv_te` takes `CatSim.cat_launch`, which is one of
+these:
+
+- `bufs = []`: the program writes nothing, so the reader does not matter.
+  Give `left; left; reflexivity`.
+- `in_channel_reader inp = true`: give `left; right`, and under
+  `Run.valid_input` that fact is `Run.valid_input_channel_reader`.
+- No reader, and SIGPIPE is fatal (`CatSim.sigpipe_fatal`: the
+  disposition is the default and `in_sigmask inp` does not block signal
+  13). Each first write kills its process with SIGPIPE, so both runs end
+  in the same `KillEv`. Give `right`, the `sigpipe_fatal` fact (under
+  `Run.valid_input` the disposition is pinned to the default) and a
+  `CatSim.wfirst_ok` fact for each binary: the first write passes
+  `access_ok`. This case is reachable only under
+  `Run.valid_input_channel_closed`, the launch whose reader has gone:
+  `Run.valid_input` rules it out.
+
+The lemma does not cover a program that writes when the reader is gone
+and signal 13 is blocked or ignored. There the first write returns -EPIPE
+and the program continues, and `to_wexit` has no node for that return
+value.
 
 A typical `Proof.v`:
 
@@ -256,18 +302,35 @@ Proof.
   pose proof (valid_input_va_size _ Hvalid) as Hsv48.
   rewrite (valid_entry_sv48 _ _ _ Hsv48) in Hens.
   rewrite (valid_entry_sv48 _ _ _ Hsv48) in Hent.
-  destruct Hens as (Hspr & _). destruct Hent as (Hspa & _).
-  destruct Hvalid as (Hva & Hve & _).
+  destruct Hens as (Hspr & _ & _ & _ & Hlau_source).
+  destruct Hent as (Hspa & _ & _ & _ & Hlau_target).
+  red in Hvalid.
+  repeat (lazymatch type of Hvalid with
+          | _ /\ _ => let Hc := fresh "Hc" in destruct Hvalid as [Hc Hvalid]
+          end).
   set (argv := in_argv inp) in *.
   rewrite source_init_pc_val, target_init_pc_val.
   destruct (le_lt_dec 2 (length argv)) as [Hge | Hlt].
-  - eapply cat_omni_strong_equiv_te; [apply source_wexit_ge2 | apply target_wexit_ge2 | ...].
+  - eapply cat_omni_strong_equiv_te;
+      [apply source_wexit_ge2 | apply target_wexit_ge2 | ... | (* cat_launch *) ...].
   - eapply cat_omni_strong_equiv_te; [apply source_wexit_lt2 | ...].
 Qed.
 ```
 
-`Run.valid_input` has eleven conjuncts. Most proofs use only the first
-two or three. The pattern `(Hva & Hve & _)` drops the others.
+`Run.valid_input` gains a conjunct whenever the input class learns to say
+something new — three of them this revision — so a positional pattern over
+it names a different clause after each insertion rather than failing. Do
+not count. Peel it as above: the guard stops the peel at
+`Run.valid_launch`, which stays folded, so that clause arrives whole and
+every other one sits in the context where `assumption` finds it. Where
+only one clause is wanted, take it from its accessor lemma —
+`Run.valid_input_va_size`, `Run.valid_input_abort_terminal`,
+`Run.valid_input_image_real`, `Run.valid_input_urandom`,
+`Run.valid_input_hwcap_rv64gc_word` — which no insertion can move.
+
+`Run.valid_entry` has five. Its fifth, `Run.entry_launch_ok_va`, is the
+one a per-binary section needs, so a positional pattern over it has five
+parts, not four.
 
 Do not `destruct inp`. `Run.run` reads the input through projections, so
 it reduces when `inp` is a variable.

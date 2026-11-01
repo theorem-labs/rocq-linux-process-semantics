@@ -1,6 +1,6 @@
 ; The core theory: everything under theories/ except Common/ and Examples/,
-; which are theories of their own (see their dune files) and belong to
-; other opam packages.
+; which are theories of their own (see their dune files).  Common/ is in
+; this same opam package; Examples/ is in one of its own.
 (include_subdirs qualified)
 
 ; Make the direct ReadFileString input present before rocq dep scans the

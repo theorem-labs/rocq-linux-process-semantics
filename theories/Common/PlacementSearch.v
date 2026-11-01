@@ -4,27 +4,29 @@
     [LinuxProcessSem/Sys/] depends on this file; it is proof-library
     machinery, and the trusted spec must not name it.
 
-    [Mmap.mmap_spec] says three things about a preference-free
+    [Mmap.mmap_spec] USED TO say three things about a preference-free
     placement — page-aligned, inside the user address space, disjoint
-    from every recorded mapping — and leaves the choice to the
-    nondeterminism monad (see that file's placement section for why).
-    A proof strategy that wants ONE concrete address instead of a
-    quantifier needs two things the spec deliberately does not provide:
-    an executable placement function, and a reason the admissible set is
-    nonempty.  THIS FILE HAS THE FIRST AND NOT THE SECOND, and the
-    asymmetry is not an omission — see [place_complete].
+    from every recorded mapping — and leave the choice to the
+    nondeterminism monad.  SINCE THE PLACEMENT WORK IT SAYS WHERE: the fresh-grant
+    arms choose with [Mmap.linux_place], which has at most one solution.
+    So the three conditions are still NECESSARY ([linux_place_admissible])
+    and no longer SUFFICIENT, and a proof that needs one concrete
+    address takes it from [Checks.Placement.linux_place_b], not from the
+    search here.
+
+    WHAT THIS FILE IS FOR NOW.  Linux's rule answers whenever a range of
+    the requested size is free in either of its two windows
+    ([Placement.linux_place_exists]).  That is a free-gap question, which
+    is exactly what this file decides.  [place_in_model_linux] searches
+    the window Linux falls back to, and
+    [place_in_model_linux_grants] turns its answer into "the spec has a
+    grant", without claiming the searched address is the granted one —
+    it is not, in general.
 
     Both reduce to the same question — does a free gap of [nZ] bytes
     exist in a given interval of the ledger? — and this file answers it
     decidably, with the completeness argument proved.  The trusted spec
     does not use it.
-
-    NOTHING IMPORTS IT, AND THAT IS DELIBERATE.  Its consumer is a
-    computational proof strategy that nobody has written; the file keeps
-    the completeness argument so that nobody has to re-derive it later.
-    A proved decision procedure waiting for its caller is an ordinary
-    thing to find in this tier, and it should not be tidied away as
-    residue.
 
     The candidate argument, which is what makes the question decidable
     at all: if ANY fitting free gap exists in an interval, then one
@@ -35,6 +37,8 @@
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State.
+From LinuxProcessSemantics.LinuxProcessSem.Sys.Mm Require Import Mmap.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Placement.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -495,6 +499,50 @@ Proof.
   apply (place_complete _ _ _ _ g); try assumption.
   - unfold page_size. lia.
   - unfold page_size. reflexivity.
+  - exact (alloc_top_lt h).
+Qed.
+
+(* ---- the bridge to Linux's rule ---- *)
+
+(** The same search over the window Linux FALLS BACK to
+    ([[TASK_UNMAPPED_BASE, alloc_top h)], mm/mmap.c,
+    [generic_get_unmapped_area_topdown], Linux v6.18.46 commit
+    1f99e9ab748f).  Its floor is the only difference from
+    [place_in_model], and the floor is what makes the answer a witness
+    Linux's rule accepts. *)
+Definition place_in_model_linux (h : VmMaps) (nZ : Z) : option Z :=
+  place (vm_reserved h ++ vm_maps h) task_unmapped_base (alloc_top h) nZ.
+
+(** THE WITNESS A BUILDER NEEDS.  A free gap in Linux's fallback window
+    means the rule has an answer — for every kernel build and every
+    hint.  The answer is [Placement.linux_place_b]'s, NOT [g]: the
+    search here only shows the admissible set is non-empty. *)
+Lemma place_in_model_linux_grants : forall h thp hint nZ g,
+  (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
+  place_in_model_linux h nZ = Some g ->
+  exists a, linux_place h thp hint nZ a.
+Proof.
+  intros h thp hint nZ g HnPos HnAl H. unfold place_in_model_linux in H.
+  destruct (place_sound _ _ _ _ _ H) as (Hal & Hlo & Hhi & Hfree).
+  apply (linux_place_exists h thp hint nZ HnPos HnAl).
+  exists g. right. unfold gap_fits. repeat split; assumption.
+Qed.
+
+(** …and the search finds one whenever a free aligned range sits in
+    that window, so the bridge is not vacuous. *)
+Lemma place_in_model_linux_complete : forall h nZ g,
+  (0 < nZ)%Z -> (nZ mod page_size = 0)%Z ->
+  (g mod page_size = 0)%Z -> (task_unmapped_base <= g)%Z ->
+  (g + nZ <= alloc_top h)%Z ->
+  region_free (vm_reserved h ++ vm_maps h)
+    (Z_to_bv 64 g) (Z_to_bv 64 nZ) = true ->
+  exists a, place_in_model_linux h nZ = Some a.
+Proof.
+  intros h nZ g Hn Hnal HgAl Hglo Hghi Hfree.
+  unfold place_in_model_linux.
+  apply (place_complete _ _ _ _ g); try assumption.
+  - unfold task_unmapped_base. lia.
+  - unfold task_unmapped_base, page_size. reflexivity.
   - exact (alloc_top_lt h).
 Qed.
 

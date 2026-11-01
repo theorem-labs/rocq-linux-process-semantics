@@ -26,7 +26,8 @@ Definition flock_witness (fd cmd : word) (m : Model) : outcome SyscallEffect :=
     match fd_lookup (m_fds m) fd with
     | None => ret_outcome (errno_ret EBADF) m
     | Some e =>
-        if flock_unlock_b cmd then ret_outcome (Z_to_bv 64 0) m
+        if fd_is_opaque e then Unmodeled   (* declined on every command *)
+        else if flock_unlock_b cmd then ret_outcome (Z_to_bv 64 0) m
         else
           match e with
           | FdFile p _ =>
@@ -48,6 +49,7 @@ Definition flock_witness (fd cmd : word) (m : Model) : outcome SyscallEffect :=
           | FdPipe _ _  => Unmodeled
           | FdDevNull _ _ => Unmodeled
           | FdUrandom => Unmodeled
+          | FdOpaque _ => Unmodeled   (* unreachable: declined above *)
           end
     end.
 
@@ -62,10 +64,13 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd;
     [| eapply bind_step; [apply get_model_ok|];
        cbv beta iota; srw Hfd; apply pure_ok ].
-  destruct (flock_unlock_b cmd) eqn:Hun.
-  { eapply bind_step; [apply get_model_ok|]. cbv beta iota.
-    srw Hfd. apply pure_ok. }
-  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| ].
+  destruct e as [c|p off|p off|p off|p off| |sk|id w|rd wr| |o].
+  11: { (* the opaque kinds, declined ahead of the unlock *)
+        eapply bind_step; [apply get_model_ok|]. cbv beta iota.
+        srw Hfd. apply unmodeled_intro. }
+  all: destruct (flock_unlock_b cmd) eqn:Hun;
+    [ eapply bind_step; [apply get_model_ok|]; cbv beta iota;
+      srw Hfd; apply pure_ok |].
   - eapply bind_step; [apply get_model_ok|]. cbv beta iota.
     srw Hfd. apply unmodeled_intro.
   - destruct (flock_sole_opener (m_fds m) p) eqn:Hsole;

@@ -28,17 +28,17 @@
     [summary_copy_sound] (the bytes exist: [wbytes_defined]).
 
     USAGE (assembly).  [APS.check_sound] has the hypothesis
-    [node_x_sound : forall x, APS.x_stmt SEGS A nx0 LIMIT SINV argH FS0 x].
+    [node_x_sound : forall x, APS.x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 x].
     Discharge it by [destruct x]; the five summary cases are the theorems of
     part 6 of this file,
 <<
-      APSX.node_x_sound_XIMemset   : ... -> APSX.fill_spec SEGS (x_imemset A) 256    -> APS.x_stmt SEGS A nx0 LIMIT SINV argH FS0 XIMemset
+      APSX.node_x_sound_XIMemset   : ... -> APSX.fill_spec SEGS (x_imemset A) 256    -> APS.x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XIMemset
       APSX.node_x_sound_XMemset    : ... -> APSX.fill_spec SEGS (x_memset A) two64   -> APS.x_stmt ... XMemset
       APSX.node_x_sound_XIMemcpy   : ... -> APSX.segs_wr_ok SEGS -> APSX.copy_spec SEGS (x_imemcpy A) -> APS.x_stmt ... XIMemcpy
       APSX.node_x_sound_XMemcpy    : ... -> APSX.segs_wr_ok SEGS -> APSX.copy_spec SEGS (x_memcpy A)  -> APS.x_stmt ... XMemcpy
       APSX.node_x_sound_XMemIsZero : ... -> APSX.miz_spec SEGS (x_memiszero A)       -> APS.x_stmt ... XMemIsZero
 >>
-    where [...] = SEGS A nx0 LIMIT, SEGS_wx, SEGS_in_hull, hull_ok (stated as
+    where [...] = SEGS A nx0 LIMIT CEIL, SEGS_wx, SEGS_in_hull, hull_ok (stated as
     [hull_okP A], convertible to [APS.hull_ok A] and to the bare conjunction),
     SINV argH, argH_high, argH_agree, SINV_frame, SINV_agree, FS0 — APS's own
     Section variables / hypotheses; so inside any context holding them,
@@ -696,6 +696,8 @@ Variable SEGS : list Segment.
 Variable A : atable.
 Variable nx0 : nat.
 Variable LIMIT : Z.
+Variable CEIL : Z.      (** the run's allocation ceiling ([APS.co_ceil]) *)
+Hypothesis CEIL_ok : ceil_ok CEIL.
 Hypothesis SEGS_wx : wx_segs_nowrap SEGS.
 Hypothesis SEGS_in_hull : forall a : word, in_hull A (bv_unsigned a) = false -> find_segment SEGS (bv_unsigned a) 1 = None.
 (** the two numeric image facts, wrapped (as in AsanPlanSound) so that [lia]
@@ -720,9 +722,9 @@ Definition segs_wr_ok : Prop := forall seg, In seg SEGS -> seg_writable seg = tr
 Hypothesis SEGS_wr : segs_wr_ok.
 
 #[local] Notation cfg := (cfg_of SEGS) (only parsing).
-#[local] Notation CSOK := (cs_ok SEGS A LIMIT SINV argH FS0) (only parsing).
-#[local] Notation HID := (hid A argH) (only parsing).
-#[local] Notation MR := (Mr A argH) (only parsing).
+#[local] Notation CSOK := (cs_ok SEGS A LIMIT CEIL SINV argH FS0) (only parsing).
+#[local] Notation HID := (hid A CEIL argH) (only parsing).
+#[local] Notation MR := (Mr A CEIL argH) (only parsing).
 
 (** ---- wrappers around the [APS] lemmas we use (their exact argument lists
     depend on which Section hypotheses the AsanPlanSound proofs happen to
@@ -860,7 +862,7 @@ Proof.
            (mkst R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS)) (mkst regs' (Z_to_bv 64 ret) MR' (seg_rom SEGS)) model T
            (w_lazy_cover_cs E cs R FULL model HC)
            (w_A_wf_allowA E cs)
-           (co_minv _ _ _ _ _ _ _ _ _ _ _ HC) (co_halt _ _ _ _ _ _ _ _ _ _ _ HC)).
+           (co_minv _ _ _ _ _ _ _ _ _ _ _ _ HC) (co_halt _ _ _ _ _ _ _ _ _ _ _ _ HC)).
   - rewrite restrict_mkst. exact Hms.
   - intros model' Hinv' Hsame Hclean.
     set (FULL' := munrestrict H FULL MR').
@@ -912,7 +914,7 @@ Proof.
   set (E' := ext_call E (nxt cs) regs').
   pose proof (ext_call_agree E (nxt cs) regs') as Hag. fold E' in Hag.
   eapply (call_core cs E E' R FULL model T ret _ k' _ regs' MR' HC Hfresh Hag Hms).
-  - apply (regs_after_call E _ R regs' (nxt cs) rv (co_regs _ _ _ _ _ _ _ _ _ _ _ HC) Fsr Hkept).
+  - apply (regs_after_call E _ R regs' (nxt cs) rv (co_regs _ _ _ _ _ _ _ _ _ _ _ _ HC) Fsr Hkept).
     destruct rv as [e|]; [split; [exact Hrvv | exact Hrv] | exact I].
   - eapply know_ok_agree'; [exact Hag | exact Hkv | exact HK'].
   - intros R' FULL' model' HC' Hfs. apply (Hk E' R' FULL' model'); [| exact HC' | exact Hfs].
@@ -967,7 +969,7 @@ Proof.
   assert (HR2 : regs_ok E' (match rv with Some e => sr_upd sr1 10 e | None => sr1 end) regs').
   { eapply (regs_ok_agree' (nxt cs + NCS)); [apply ext_call2_agree16 | |].
     - destruct rv as [e|]; [|exact Hsf]. apply sr_vars_lt_upd; [exact Hsf|]. eapply expr_vars_lt_mono; [exact Hrvv | unfold nxt, NCS; lia].
-    - subst sr1. apply (regs_after_call E _ R regs' (nxt cs) rv (co_regs _ _ _ _ _ _ _ _ _ _ _ HC) Fsr Hkept).
+    - subst sr1. apply (regs_after_call E _ R regs' (nxt cs) rv (co_regs _ _ _ _ _ _ _ _ _ _ _ _ HC) Fsr Hkept).
       destruct rv as [e|]; [split; [exact Hrvv | exact Hrv] | exact I]. }
   eapply (call_core cs E E' R FULL model T ret _ k' _ regs' MR' HC Hfresh Hag Hms HR2 HK').
   intros R' FULL' model' HC' Hfs. apply (Hk E' R' FULL' model'); [| exact HC' | exact Hfs].
@@ -1043,7 +1045,7 @@ Qed.
 (** ---- XIMemset / XMemset ------------------------------------------------- *)
 Lemma summary_fill_sound : forall entry cmax,
   fill_spec SEGS entry cmax ->
-  node1_stmt SEGS A nx0 LIMIT SINV argH FS0 always (fun cs => summary_fill A nx0 cs entry cmax).
+  node1_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 always (fun cs => summary_fill A nx0 cs entry cmax).
 Proof.
   intros entry cmax SUM cs cs' E R FULL model T HC _ Hn Hk.
   pose proof HC as HKN. apply co_know in HKN.
@@ -1147,7 +1149,7 @@ Qed.
 
 Lemma summary_miz_sound :
   miz_spec SEGS (x_memiszero A) ->
-  node1_stmt SEGS A nx0 LIMIT SINV argH FS0 always (fun cs => summary_miz A nx0 cs).
+  node1_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 always (fun cs => summary_miz A nx0 cs).
 Proof.
   intros SUM cs cs' E R FULL model T HC _ Hn Hk.
   pose proof HC as HKN. apply co_know in HKN.
@@ -1235,7 +1237,7 @@ Qed.
 
 Lemma summary_copy_sound : forall entry,
   copy_spec SEGS entry ->
-  node1_stmt SEGS A nx0 LIMIT SINV argH FS0 always (fun cs => summary_copy SEGS A nx0 cs entry).
+  node1_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 always (fun cs => summary_copy SEGS A nx0 cs entry).
 Proof.
   intros entry SUM cs cs' E R FULL model T HC _ Hn Hk.
   pose proof HC as HKN. apply co_know in HKN.
@@ -1503,7 +1505,7 @@ Qed.
 
 Lemma summary_istrncpy_sound :
   istrncpy_spec SEGS (x_istrncpy A) (x_sealed A) ->
-  node1_stmt SEGS A nx0 LIMIT SINV argH FS0 always (fun cs => summary_istrncpy A nx0 cs).
+  node1_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 always (fun cs => summary_istrncpy A nx0 cs).
 Proof.
   intros SUM cs cs' E R FULL model T HC _ Hn Hk.
   pose proof HC as HKN. apply co_know in HKN.
@@ -1615,7 +1617,7 @@ Qed.
 
 Lemma summary_popfree_sound :
   popfree_spec SEGS (x_popfree A) ->
-  forall args, node1_stmt SEGS A nx0 LIMIT SINV argH FS0 always (fun cs => summary_popfree A nx0 cs args).
+  forall args, node1_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 always (fun cs => summary_popfree A nx0 cs args).
 Proof.
   intros SUM args cs cs' E R FULL model T HC _ Hn Hk.
   pose proof HC as HKN. apply co_know in HKN.
@@ -1675,7 +1677,7 @@ Proof.
   - rewrite Hpc. exact Hms.
   - (* registers *)
     apply regs_ok_pointwise. intros r Hr0. rewrite !nth_sr_upd.
-    pose proof (co_regs _ _ _ _ _ _ _ _ _ _ _ HC r) as HR. unfold sr_get in HR.
+    pose proof (co_regs _ _ _ _ _ _ _ _ _ _ _ _ HC r) as HR. unfold sr_get in HR.
     assert (Hrz : bv_eqb r 0%bv = false).
     { unfold bv_eqb. apply Z.eqb_neq. intros Hc0. apply Hr0. apply bv_eq. exact Hc0. }
     rewrite Hrz in HR.
@@ -1703,31 +1705,31 @@ Proof.
 Qed.
 
 Theorem node_x_sound_XIMemset :
-  fill_spec SEGS (x_imemset A) 256 -> x_stmt SEGS A nx0 LIMIT SINV argH FS0 XIMemset.
+  fill_spec SEGS (x_imemset A) 256 -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XIMemset.
 Proof. intros SUM args. exact (summary_fill_sound _ _ SUM). Qed.
 
 Theorem node_x_sound_XMemset :
-  fill_spec SEGS (x_memset A) two64 -> x_stmt SEGS A nx0 LIMIT SINV argH FS0 XMemset.
+  fill_spec SEGS (x_memset A) two64 -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XMemset.
 Proof. intros SUM args. exact (summary_fill_sound _ _ SUM). Qed.
 
 Theorem node_x_sound_XIMemcpy :
-  copy_spec SEGS (x_imemcpy A) -> x_stmt SEGS A nx0 LIMIT SINV argH FS0 XIMemcpy.
+  copy_spec SEGS (x_imemcpy A) -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XIMemcpy.
 Proof. intros SUM args. exact (summary_copy_sound _ SUM). Qed.
 
 Theorem node_x_sound_XMemcpy :
-  copy_spec SEGS (x_memcpy A) -> x_stmt SEGS A nx0 LIMIT SINV argH FS0 XMemcpy.
+  copy_spec SEGS (x_memcpy A) -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XMemcpy.
 Proof. intros SUM args. exact (summary_copy_sound _ SUM). Qed.
 
 Theorem node_x_sound_XMemIsZero :
-  miz_spec SEGS (x_memiszero A) -> x_stmt SEGS A nx0 LIMIT SINV argH FS0 XMemIsZero.
+  miz_spec SEGS (x_memiszero A) -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XMemIsZero.
 Proof. intros SUM args. exact (summary_miz_sound SUM). Qed.
 
 Theorem node_x_sound_XIStrncpy :
-  istrncpy_spec SEGS (x_istrncpy A) (x_sealed A) -> x_stmt SEGS A nx0 LIMIT SINV argH FS0 XIStrncpy.
+  istrncpy_spec SEGS (x_istrncpy A) (x_sealed A) -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XIStrncpy.
 Proof. intros SUM args. exact (summary_istrncpy_sound SUM). Qed.
 
 Theorem node_x_sound_XPopFree :
-  popfree_spec SEGS (x_popfree A) -> x_stmt SEGS A nx0 LIMIT SINV argH FS0 XPopFree.
+  popfree_spec SEGS (x_popfree A) -> x_stmt SEGS A nx0 LIMIT CEIL SINV argH FS0 XPopFree.
 Proof. intros SUM args. exact (summary_popfree_sound SUM args). Qed.
 
 End Sound.
