@@ -351,6 +351,14 @@ not apply.
 
 - No other process, also not a child of the program, changes the modeled
   files or holds locks on them.
+- The modeled files and the standard descriptors' far ends sit on file
+  systems whose `close` cannot fail. `SYSCALL_DEFINE1(close)` returns
+  `filp_flush`'s result, and `filp_flush` runs the file's `f_op->flush`
+  (`fs/open.c`, v6.18.44; identical at v6.18.46). FUSE, NFS, CIFS,
+  orangefs and ecryptfs supply one that can return an error, and
+  overlayfs passes the call to the file below it. The model answers 0
+  for `close` on every descriptor kind, so a program whose files live
+  on such a file system can see an error the model does not give.
 - `/dev/null` is the null device (major 1, minor 3). `/dev/urandom` is the
   random device (major 1, minor 9).
 - procfs is mounted at `/proc` in the process's root, and nothing under
