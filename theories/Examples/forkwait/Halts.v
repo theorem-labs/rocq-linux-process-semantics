@@ -2762,6 +2762,297 @@ Proof.
     apply (Nat.le_trans _ _ _ Hb). unfold fw_const. cbn. lia.
 Qed.
 
+(* =========================================================================
+   No error: the refusing arms of the released step
+   ========================================================================= *)
+
+(** WITH NO CALL PENDING the two instruction refusals are decided by
+    the remainder.  [Run.mi_account_step_no_lazy] says that with no
+    lazy mapping the accounted step IS [RiscvSemantics.step], and the
+    segment lemma behind the remainder proves that step is
+    [MachineOk] -- so neither [MachineFault] nor [MachineUnmodeled] is
+    reachable, and the statement's budget premise is not needed for
+    this. *)
+Lemma fw_no_sstep_error_instr : forall cfg S e ms1,
+  m_vm_lazy (pe_model e) = [] ->
+  ms_svc_pending (pe_ms e) = None ->
+  RiscvSemantics.step forkwait_segs (pe_ms e) = MachineOk ms1 ->
+  forall evs, ~ sstep_cfg forkwait_segs cfg (pe_cfg S e) evs SError.
+Proof.
+  intros cfg S e ms1 Hlz Hsv Hstep evs H.
+  assert (Hacc : mi_account_step forkwait_segs (pe_ms e)
+                   (cfg_model (pe_cfg S e))
+                 = MachineOk (ms1, cfg_model (pe_cfg S e))).
+  { rewrite (mi_account_step_no_lazy forkwait_segs (pe_ms e)
+               (cfg_model (pe_cfg S e)) Hlz).
+    rewrite Hstep. reflexivity. }
+  cbn [pe_cfg cfg_model cfg_ms] in Hacc.
+  inversion H; subst; cbn [pe_cfg cfg_model cfg_ms] in *; try congruence.
+Qed.
+
+(** WITH A CALL PENDING the two instruction arms are out by the number,
+    the materialisation fault is out because materialising with no lazy
+    mapping is the identity, and what is left is the spec answering
+    [Unmodeled] -- which each of this program's two calls refuses for
+    its own reason. *)
+Lemma fw_no_sstep_error_call : forall cfg S e x8,
+  ms_svc_pending (pe_ms e) = Some x8 ->
+  (forall eff m' evs0,
+     syscall_spec (sys_input forkwait_segs (pe_ms e) x8)
+       (cfg_model (pe_cfg S e)) (Ok eff m' evs0) -> m_vm_lazy m' = []) ->
+  ~ syscall_spec (sys_input forkwait_segs (pe_ms e) x8)
+      (cfg_model (pe_cfg S e)) Unmodeled ->
+  forall evs, ~ sstep_cfg forkwait_segs cfg (pe_cfg S e) evs SError.
+Proof.
+  intros cfg S e x8 Hsv Hlz Hum evs H.
+  assert (Hx : forall y, ms_svc_pending (pe_ms e) = Some y -> y = x8)
+    by (intros y Hy; rewrite Hsv in Hy; injection Hy; auto).
+  inversion H; subst; try congruence.
+  - (* the materialisation fault: with no lazy mapping it is the
+       identity, so it cannot answer [None] *)
+    match goal with
+    | [ Hsv0 : ms_svc_pending (pe_ms e) = Some ?y,
+        Hsp : syscall_spec _ _ (Ok ?ef ?m1 ?ev),
+        Hmf : materialize_model_accesses ?m1 _ = None |- _ ] =>
+        let Hy := fresh "Hy" in
+        pose proof (Hx _ Hsv0) as Hy; subst y;
+        rewrite (materialize_model_accesses_no_lazy m1 _ (Hlz _ _ _ Hsp))
+          in Hmf; discriminate
+    end.
+  - (* the spec answering [Unmodeled] *)
+    match goal with
+    | [ Hsv0 : ms_svc_pending (pe_ms e) = Some ?y,
+        Hsp : syscall_spec _ _ Unmodeled |- _ ] =>
+        let Hy := fresh "Hy" in
+        pose proof (Hx _ Hsv0) as Hy; subst y; exact (Hum Hsp)
+    end.
+Qed.
+
+(** [Fork.clone_resolve] answers [Unmodeled] for ONE reason, its own
+    gate, and the shape carries the gate open. *)
+Lemma fw_clone_no_unmodeled : forall i m,
+  clone_no_shared_file_b (m_fds m) = true ->
+  ~ clone_resolve i m Unmodeled.
+Proof.
+  intros i m Hgate H.
+  unfold clone_resolve, bind in H. cbv beta iota in H.
+  destruct H as [Hg | (x & m1 & evs1 & Hg & Hk)].
+  - unfold get_model in Hg. discriminate.
+  - unfold get_model in Hg. injection Hg as Hx Hm1 He1. subst x m1.
+    rewrite Hgate in Hk. cbn [negb] in Hk.
+    destruct Hk as [Herr | Hpid].
+    + unfold bind in Herr. cbv beta iota in Herr.
+      destruct Herr as [He | (e0 & m2 & evsA & He & Her)].
+      * unfold errno_from, choose in He.
+        destruct He as (y & _ & Hy). discriminate.
+      * unfold err_ret, ret_only, pure in Her. discriminate.
+    + unfold bind in Hpid. cbv beta iota in Hpid.
+      destruct Hpid as [Hc | (p & m2 & evsA & Hc & Hrest)].
+      * unfold choose in Hc. destruct Hc as (y & _ & Hy). discriminate.
+      * unfold bind in Hrest. cbv beta iota in Hrest.
+        destruct Hrest as [Hmod | (u & m3 & evsC & Hmod & Hret)].
+        -- unfold modify in Hmod. discriminate.
+        -- unfold ret_only, pure in Hret. discriminate.
+Qed.
+
+Lemma fw_clone_spec_no_unmodeled : forall segs ms x8 model,
+  bv_unsigned x8 = 220%Z ->
+  ms_gpr ms 0 = 17 ->
+  clone_no_shared_file_b (m_fds model) = true ->
+  ~ syscall_spec (sys_input segs ms x8) model Unmodeled.
+Proof.
+  intros segs ms x8 model H220 Ha0 Hgate H.
+  assert (Hno : bv_unsigned (in_sysno (sys_input segs ms x8)) = 220%Z)
+    by (rewrite in_sysno_sys_input; exact H220).
+  apply (proj1 (clone_is_clone_spec _ _ _ Hno)) in H.
+  rewrite in_arg0_sys_input, Ha0 in H.
+  unfold clone_spec in H.
+  replace (clone_fork_flags_b 17) with true in H
+    by (vm_compute; reflexivity).
+  exact (fw_clone_no_unmodeled _ _ Hgate H).
+Qed.
+
+(** And [Exit.exit_spec] answers it never, which [Common.ExitSim]
+    already proves. *)
+Lemma fw_exit_spec_no_unmodeled : forall segs ms x8 model,
+  bv_unsigned x8 = 94%Z ->
+  ~ syscall_spec (sys_input segs ms x8) model Unmodeled.
+Proof.
+  intros segs ms x8 model H94.
+  apply exit_dispatch_no_unmodeled.
+  right. rewrite in_sysno_sys_input. exact H94.
+Qed.
+
+(** A remainder with steps left has a first step, which is what the
+    instruction refusals are excluded against. *)
+Lemma fw_rem_step_exists : forall ms Q,
+  fw_q_pending Q -> fw_rem ms Q -> ms_svc_pending ms = None ->
+  exists ms1, RiscvSemantics.step forkwait_segs ms = MachineOk ms1.
+Proof.
+  intros ms Q HQp (k & msf & Hk & Hrun & HQ) Hsv.
+  destruct k as [|k].
+  { cbn [machine_run] in Hrun. injection Hrun as <-.
+    exfalso. exact (HQp _ HQ Hsv). }
+  destruct (machine_run_inv _ _ _ _ Hrun) as (ms1 & _ & Hs1 & _).
+  exists ms1. exact Hs1.
+Qed.
+
+(** THE ENTRY HEADING FOR THE CLONE cannot take the error transition:
+    before the call the remainder's step excludes the two instruction
+    refusals, and at the call the gate excludes [Unmodeled] and the
+    empty lazy list excludes the materialisation fault. *)
+Lemma fw_no_error_clone_entry : forall cfg S e,
+  fw_model_ok (pe_model e) ->
+  fw_rem (pe_ms e) fw_q_clone ->
+  forall evs, ~ sstep_cfg forkwait_segs cfg (pe_cfg S e) evs SError.
+Proof.
+  intros cfg S e Hok Hrem evs.
+  destruct Hok as (Hh & Hlz & Hgate).
+  destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hsv.
+  - assert (Hq : fw_q_clone (pe_ms e))
+      by (apply (fw_rem_now _ _ Hrem); rewrite Hsv; discriminate).
+    destruct Hq as (Hsv220 & _ & Ha0 & _).
+    rewrite Hsv in Hsv220. injection Hsv220 as Hx8. subst x8.
+    apply (fw_no_sstep_error_call cfg S e 220 Hsv).
+    + intros eff m' evs0 Hsp.
+      destruct (fw_clone_post forkwait_segs (pe_ms e) 220 _ eff m' evs0
+                  fw_two_twenty Ha0 Hsp)
+        as (_ & _ & _ & _ & _ & _ & Hokm & _).
+      destruct (Hokm (conj Hh (conj Hlz Hgate))) as (_ & Hl' & _).
+      exact Hl'.
+    + apply (fw_clone_spec_no_unmodeled forkwait_segs (pe_ms e) 220);
+        [apply fw_two_twenty | exact Ha0 | exact Hgate].
+  - destruct (fw_rem_step_exists (pe_ms e) fw_q_clone fw_q_clone_pending
+                Hrem Hsv) as (ms1 & Hs1).
+    exact (fw_no_sstep_error_instr cfg S e ms1 Hlz Hsv Hs1 evs).
+Qed.
+
+(** AND THE ENTRY HEADING FOR ITS [exit_group], for the same two
+    reasons, with [Common.ExitSim] supplying the refusal. *)
+Lemma fw_no_error_exit7_entry : forall cfg S e,
+  fw_model_ok (pe_model e) ->
+  fw_rem (pe_ms e) fw_q_exit7 ->
+  forall evs, ~ sstep_cfg forkwait_segs cfg (pe_cfg S e) evs SError.
+Proof.
+  intros cfg S e Hok Hrem evs.
+  destruct Hok as (Hh & Hlz & Hgate).
+  destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hsv.
+  - assert (Hq : fw_q_exit7 (pe_ms e))
+      by (apply (fw_rem_now _ _ Hrem); rewrite Hsv; discriminate).
+    destruct Hq as (Hsv94 & _).
+    rewrite Hsv in Hsv94. injection Hsv94 as Hx8. subst x8.
+    apply (fw_no_sstep_error_call cfg S e 94 Hsv).
+    + intros eff m' evs0 Hsp.
+      rewrite (fw_exit_post forkwait_segs (pe_ms e) 94 _ eff m' evs0
+                 fw_ninety_four Hsp).
+      exact Hlz.
+    + apply (fw_exit_spec_no_unmodeled forkwait_segs (pe_ms e) 94).
+      apply fw_ninety_four.
+  - destruct (fw_rem_step_exists (pe_ms e) fw_q_exit7 fw_q_exit7_pending
+                Hrem Hsv) as (ms1 & Hs1).
+    exact (fw_no_sstep_error_instr cfg S e ms1 Hlz Hsv Hs1 evs).
+Qed.
+
+(** THE SURFACE GUARD IS OPEN at every entry of this program, because
+    the only numbers it issues are on the multi-process surface. *)
+Lemma fw_guard_of_rem : forall P S e Q nr,
+  (forall ms, Q ms -> exists x8, ms_svc_pending ms = Some x8
+                                 /\ bv_unsigned x8 = nr) ->
+  (nr = 220%Z \/ nr = 260%Z \/ nr = 94%Z) ->
+  fw_rem (pe_ms e) Q ->
+  multiproc_allowed P (pe_cfg S e) = true.
+Proof.
+  intros P S e Q nr Hnr Hin Hrem.
+  destruct (ms_svc_pending (pe_ms e)) eqn:Hsv.
+  - assert (HQ : Q (pe_ms e))
+      by (apply (fw_rem_now _ _ Hrem); rewrite Hsv; discriminate).
+    destruct (Hnr _ HQ) as (x8 & Hs & Hv).
+    apply (fw_guard_open_at P _ nr). right.
+    exists x8. split; [exact Hs|]. split; [exact Hv | exact Hin].
+  - apply (fw_guard_open_at P _ nr). left. exact Hsv.
+Qed.
+
+(** THE NO-ERROR PREMISE.  Every shape's live entries are heading for
+    one of the three calls; the guard is open at each, the two
+    instruction refusals are excluded by the remainder, and the
+    [Unmodeled] answers by the two spec facts above.  The one entry
+    that could error is the parent parked at its [wait4], and the
+    error arm is behind the negation of the intercept guard that
+    parks it -- which is 7.2 paying for itself a third time. *)
+Theorem fw_no_error : forall cfg P evs,
+  fw_shape P -> ~ pstep_cfg forkwait_segs cfg P evs PError.
+Proof.
+  intros cfg P evs Hsh (p & Hp).
+  destruct (pstep_at_not_halted _ _ _ _ _ _ Hp) as (eh & Hlh & Hhh).
+  destruct (pstep_error_cases _ _ _ _ _ Hp) as (e & Hl & Hpid & Hcase).
+  destruct Hsh as [Hone | [Htwo | [Hex | Hhalt]]].
+  - (* one entry heading for the clone *)
+    destruct Hone as (e0 & Hp0 & Hr & Hpar & Hok & Hrem).
+    destruct (fw_look_one P e0 p e Hp0 Hl) as (He & _). subst e.
+    destruct Hcase as [(Hss & _) | (Hg & _)].
+    + exact (fw_no_error_clone_entry cfg (pcfg_shared P) e0 Hok Hrem evs Hss).
+    + rewrite (fw_guard_of_rem P (pcfg_shared P) e0 fw_q_clone 220%Z
+                 fw_q_clone_nr (or_introl eq_refl) Hrem) in Hg.
+      discriminate.
+  - (* two entries *)
+    destruct Htwo as (ep & ec & Hp0 & Hr & Hne & Hcpar & Hppar & Hlp & Hch).
+    destruct Hlp as (Hokp & Hremp).
+    destruct (fw_look_two P ep ec p e Hp0 Hl) as [(He & _) | (He & _)];
+      subst e.
+    + (* the parent: at the wait4 the error arm is behind the guard *)
+      destruct (ms_svc_pending (pe_ms ep)) as [x8|] eqn:Hsv.
+      * assert (Hq : fw_q_wait4 (pe_ms ep))
+          by (apply (fw_rem_now _ _ Hremp); rewrite Hsv; discriminate).
+        destruct Hq as (Hsv260 & _ & Ha0 & _ & Ha2 & Ha3 & _).
+        pose proof (fw_wait4_args (pe_ms ep) Ha0 Ha2 Ha3) as Hwa.
+        assert (Hx : x8 = 260) by congruence.
+        subst x8.
+        destruct Hcase as [(_ & Hwi) | (Hg & _)].
+        -- rewrite (fw_wait4_intercept_true (pcfg_shared P) ep 260
+                      (ms_gpr (pe_ms ep) 1) Hsv fw_two_sixty Hwa) in Hwi.
+           discriminate.
+        -- rewrite (fw_guard_of_rem P (pcfg_shared P) ep fw_q_wait4 260%Z
+                      fw_q_wait4_nr (or_intror (or_introl eq_refl)) Hremp)
+             in Hg.
+           discriminate.
+      * destruct Hcase as [(Hss & _) | (Hg & _)].
+        -- destruct Hokp as (Hh & Hlz & Hgate).
+           destruct (fw_rem_step_exists (pe_ms ep) fw_q_wait4
+                       fw_q_wait4_pending Hremp Hsv) as (ms1 & Hs1).
+           exact (fw_no_sstep_error_instr cfg (pcfg_shared P) ep ms1
+                    Hlz Hsv Hs1 evs Hss).
+        -- rewrite (fw_guard_of_rem P (pcfg_shared P) ep fw_q_wait4 260%Z
+                      fw_q_wait4_nr (or_intror (or_introl eq_refl)) Hremp)
+             in Hg.
+           discriminate.
+    + (* the child: a zombie cannot step at all *)
+      destruct Hch as [(Hokc & Hremc) | (Hz & _)].
+      * destruct Hcase as [(Hss & _) | (Hg & _)].
+        -- exact (fw_no_error_exit7_entry cfg (pcfg_shared P) ec
+                    Hokc Hremc evs Hss).
+        -- rewrite (fw_guard_of_rem P (pcfg_shared P) ec fw_q_exit7 94%Z
+                      fw_q_exit7_nr (or_intror (or_intror eq_refl)) Hremc)
+             in Hg.
+           discriminate.
+      * rewrite Hl in Hlh. injection Hlh as Hlh. subst eh. congruence.
+  - (* one entry heading for its exit_group *)
+    destruct Hex as (e0 & Hp0 & Hr & Hpar & Hok & Hrem).
+    destruct (fw_look_one P e0 p e Hp0 Hl) as (He & _). subst e.
+    destruct Hcase as [(Hss & _) | (Hg & _)].
+    + exact (fw_no_error_exit7_entry cfg (pcfg_shared P) e0 Hok Hrem evs Hss).
+    + rewrite (fw_guard_of_rem P (pcfg_shared P) e0 fw_q_exit7 94%Z
+                 fw_q_exit7_nr (or_intror (or_intror eq_refl)) Hrem) in Hg.
+      discriminate.
+  - (* halted: the entry that stepped would have to be running *)
+    destruct Hhalt as (e0 & c & Hp0 & Hrv & Hhc & _).
+    destruct (fw_look_one P e0 p eh Hp0 Hlh) as (He & _). subst eh.
+    unfold root_view in Hrv.
+    destruct (look P (pcfg_root P)) as [er|] eqn:Hlr; [|discriminate Hrv].
+    destruct (fw_look_one P e0 (pcfg_root P) er Hp0 Hlr) as (Her & _).
+    subst er. injection Hrv as Hrv. subst c.
+    rewrite m_halted_pe_cfg in Hhc. rewrite Hhh in Hhc. discriminate.
+Qed.
+
 (** The segment lemmas live inside [ForkwaitSteps]' [Section Forkwait]
     with [Context {fx : FPState}], so each takes the instance as its
     first implicit argument.  A consumer must supply it, and the way to
@@ -3213,13 +3504,13 @@ Theorem forkwait_halts_of_progress : forall cfg P0,
   fw_shape P0 ->
   (forall P, fw_shape P -> terminalb P = false ->
      exists evs st, pstep_cfg forkwait_segs cfg P evs st) ->
-  (forall P evs, fw_shape P -> ~ pstep_cfg forkwait_segs cfg P evs PError) ->
   must_exit_in_p_at forkwait_segs cfg [Z_to_bv 64 7] P0.
 Proof.
-  intros cfg P0 H0 Hprog Hnoerr.
+  intros cfg P0 H0 Hprog.
   apply (forkwait_halts_of_lands forkwait_segs cfg P0 fw_mu);
     [ apply fw_lands | exact H0 | exact fw_shape_terminal_halted
-    | exact Hprog | exact Hnoerr
+    | exact Hprog
+    | intros P evs Hsh; exact (fw_no_error cfg P evs Hsh)
     | intros P evs P' Hsh Hs; exact (fw_mu_decreases cfg P evs P' Hsh Hs) ].
 Qed.
 
