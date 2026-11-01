@@ -1171,7 +1171,7 @@ Proof.
   exact (to_wexit_exec (run_segments segs inp sp mb) _ bufs code Hte
            (with_vdso (vdso_run_init (ed_vdso rnd))
               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
-           eq_refl eq_refl eq_refl Hbm).
+           eq_refl eq_refl (init_model_wexit_ready _ _ _ _ _ _ _ Hl) Hbm).
 Qed.
 
 Lemma cat_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,

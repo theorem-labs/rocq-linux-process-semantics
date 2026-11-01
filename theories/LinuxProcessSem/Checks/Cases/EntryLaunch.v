@@ -1109,6 +1109,6 @@ Proof.
     (* [filter] is in the list because [Run.segments_reserved] now drops
        the kernel's own mappings, which the ledger reserves instead. *)
     cbn [filter map reserved_top].
-    unfold brk_aslr_max, page_size. rewrite (bvu 0 ltac:(lia)).
+    rewrite (bvu 0 ltac:(lia)). unfold brk_aslr_max, page_size.
     repeat split; lia.
 Qed.
