@@ -1616,4 +1616,59 @@ Proof.
   - cbn [cfg_model]. rewrite Hio. reflexivity.
 Qed.
 
+(** THE PAIR THAT WAS BLOCKED: the child steps while the parent waits.
+
+    This is the row where only one entry has an arm, and the reason is
+    7.2: a parent parked at the [wait4] [ecall] with no eligible zombie
+    has no arm at all, not a blocked flag.  So the system's progress
+    here is the CHILD's step, and [fw_two_entry_step] supplies both
+    halves of it -- the transition, and the parent coming through
+    untouched.
+
+    Instantiated with [e] the child and [eo] the parent, which is the
+    other order from the rows where the parent runs; that the same
+    lemma serves both is what quantifying over the stepping entry
+    bought. *)
+Lemma fw_child_steps_parent_waits :
+  forall segs cfg P ec ep qp ms' model',
+  look P (pe_pid ec) = Some ec ->
+  look P qp = Some ep ->
+  bv_eqb (pe_pid ec) qp = false ->
+  (* the child is running, with no call pending *)
+  m_halted (pe_model ec) = None ->
+  ms_svc_pending (pe_ms ec) = None ->
+  mi_account_step segs (pe_ms ec) (cfg_model (pe_cfg (pcfg_shared P) ec))
+    = MachineOk (ms', model') ->
+  (* then the system steps, and the waiting parent is exactly as it was *)
+  pstep_cfg segs cfg P [] (PNext (absorb P ec (mkCfg ms' model')))
+  /\ look (absorb P ec (mkCfg ms' model')) qp = Some ep
+  /\ pe_cfg (pcfg_shared (absorb P ec (mkCfg ms' model'))) ep
+     = pe_cfg (pcfg_shared P) ep.
+Proof.
+  intros segs cfg P ec ep qp ms' model' Hlc Hlp Hne Hh Hs Hm.
+  destruct (fw_two_entry_step segs cfg P ec ep qp ms' model'
+              Hlc Hlp Hne Hh Hs Hm) as (Hstep & Hrec & Hview).
+  split; [exact (pstep_at_sub _ _ _ _ _ _ Hstep)|].
+  split; [exact Hrec | exact Hview].
+Qed.
+
+(** And its progress consequence, which is the premise
+    [must_exit_in_p_at_by_measure] asks for at this shape: the system
+    can step, supplied by the entry that is not blocked.  Proved through
+    [fw_progress_from_entry] rather than reproved. *)
+Lemma fw_progress_parent_waits :
+  forall segs cfg P ec ms' model',
+  look P (pe_pid ec) = Some ec ->
+  m_halted (pe_model ec) = None ->
+  ms_svc_pending (pe_ms ec) = None ->
+  mi_account_step segs (pe_ms ec) (cfg_model (pe_cfg (pcfg_shared P) ec))
+    = MachineOk (ms', model') ->
+  exists evs st, pstep_cfg segs cfg P evs st.
+Proof.
+  intros segs cfg P ec ms' model' Hl Hh Hs Hm.
+  exact (fw_progress_from_entry segs cfg P (pe_pid ec) []
+           (PNext (absorb P ec (mkCfg ms' model')))
+           (pstep_instr_entry segs cfg P ec ms' model' Hl Hh Hs Hm)).
+Qed.
+
 End ForkwaitConsumers.
