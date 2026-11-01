@@ -1105,10 +1105,13 @@ Proof.
   - exact a1_valid_argv.
   - exact a1_valid_envp.
   - exact (a1_valid_launch true).
-  - unfold valid_brk, segments_reserved.
-    (* [filter] is in the list because [Run.segments_reserved] now drops
-       the kernel's own mappings, which the ledger reserves instead. *)
-    cbn [filter map reserved_top].
+  - unfold valid_brk.
+    (* [segments_reserved] now filters the kernel's own mappings out, and
+       [cbn] with a delta list does not reduce through the filter here, so
+       the empty image's reservations are replaced by computation. *)
+    replace (segments_reserved ([] : list Segment)) with (@nil (word * word))
+      by reflexivity.
+    cbn [reserved_top].
     rewrite (bvu 0 ltac:(lia)). unfold brk_aslr_max, page_size.
     repeat split; lia.
 Qed.

@@ -1132,6 +1132,19 @@ Proof.
     [left; exact Hnil | right; apply init_model_fd1chan; exact Hr].
 Qed.
 
+(** The vDSO counter does not move the ready state: [State.with_vdso]
+    rebuilds the VM subsystem and keeps [m_fd] and the channel reader,
+    which is all [wexit_ready] reads.  Stated rather than left to
+    unification, because the goal at the use site names the wrapper and
+    [init_model_wexit_ready] names the model under it. *)
+Lemma wexit_ready_with_vdso : forall v m bufs,
+  wexit_ready bufs m -> wexit_ready bufs (with_vdso v m).
+Proof. intros v m bufs [Hnil | Hr]; [left; exact Hnil | right; exact Hr]. Qed.
+
+(** The same for the reader-gone launch's ready state. *)
+Lemma fd1dead_with_vdso : forall v m, fd1dead m -> fd1dead (with_vdso v m).
+Proof. intros v m H; exact H. Qed.
+
 (** SIGPIPE kills at this launch: its disposition is SIG_DFL
     ([State.in_sigpipe_default], which [Run.valid_input] pins) and the
     launch mask leaves signal 13 open. *)
@@ -1171,7 +1184,11 @@ Proof.
   exact (to_wexit_exec (run_segments segs inp sp mb) _ bufs code Hte
            (with_vdso (vdso_run_init (ed_vdso rnd))
               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
-           eq_refl eq_refl (init_model_wexit_ready _ _ _ _ _ _ _ Hl) Hbm).
+           eq_refl eq_refl
+           (wexit_ready_with_vdso _ _ _
+              (init_model_wexit_ready
+                 (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp
+                 lim inp bufs Hl)) Hbm).
 Qed.
 
 Lemma cat_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
@@ -1192,7 +1209,8 @@ Proof.
               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = []) by reflexivity.
   assert (Hfd : wexit_ready bufs (with_vdso (vdso_run_init (ed_vdso rnd))
               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)))
-    by (apply init_model_wexit_ready; exact Hl).
+    by (apply wexit_ready_with_vdso;
+        apply init_model_wexit_ready; exact Hl).
   assert (Hfs : m_fs (with_vdso (vdso_run_init (ed_vdso rnd))
               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = fs0) by reflexivity.
   split.
@@ -1259,9 +1277,12 @@ Qed.
 (** A run that writes, launched with no reader on fd 1 and signal 13 open:
     killed at its first write, which [wfirst_ok] says passes [access_ok]. *)
 Lemma cat_kill_omni_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
+  to_wexit (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
+    bufs code ->
   bufs <> [] ->
-  wfirst_ok segs (init_machine_state segs pc ph sp mb rnd inp) ->
+  wfirst_ok (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ->
   in_channel_reader inp = false ->
   sigpipe_fatal inp ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
@@ -1269,40 +1290,63 @@ Lemma cat_kill_omni_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bufs code Hte Hne Hfo Hr Hm.
   cbn [omni_run]. unfold init_config.
-  exact (to_wexit_kill_exec segs _ bufs code Hte Hne Hfo
-           (init_model (segments_reserved segs) brk0 mb sp lim inp)
-           eq_refl eq_refl (init_model_fd1dead _ _ _ _ _ _ Hr Hm)).
+  exact (to_wexit_kill_exec (run_segments segs inp sp mb) _ bufs code Hte Hne Hfo
+           (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
+           eq_refl eq_refl
+           (fd1dead_with_vdso _ _
+              (init_model_fd1dead
+                 (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp
+                 lim inp Hr Hm))).
 Qed.
 
 Lemma cat_kill_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
+  to_wexit (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
+    bufs code ->
   bufs <> [] ->
-  wfirst_ok segs (init_machine_state segs pc ph sp mb rnd inp) ->
+  wfirst_ok (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ->
   in_channel_reader inp = false ->
   sigpipe_fatal inp ->
-  forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
+  forall tr, obs_trace (run_segments segs inp sp mb)
+               (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
              <-> is_prefix tr [KillEv (Z_to_bv 64 SIGPIPE) (in_fs inp)].
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bufs code Hte Hne Hfo Hr Hm tr.
   unfold init_config.
-  exact (to_wexit_kill_obs_iff segs _ bufs code
-           (init_model (segments_reserved segs) brk0 mb sp lim inp)
-           Hte Hne Hfo eq_refl eq_refl (init_model_fd1dead _ _ _ _ _ _ Hr Hm) tr).
+  exact (to_wexit_kill_obs_iff (run_segments segs inp sp mb) _ bufs code
+           (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
+           Hte Hne Hfo eq_refl eq_refl
+           (fd1dead_with_vdso _ _
+              (init_model_fd1dead
+                 (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp
+                 lim inp Hr Hm)) tr).
 Qed.
 
 Lemma cat_kill_no_error_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
-  to_wexit segs (init_machine_state segs pc ph sp mb rnd inp) bufs code ->
+  to_wexit (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
+    bufs code ->
   bufs <> [] ->
-  wfirst_ok segs (init_machine_state segs pc ph sp mb rnd inp) ->
+  wfirst_ok (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ->
   in_channel_reader inp = false ->
   sigpipe_fatal inp ->
-  ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
+  ~ reaches_error (run_segments segs inp sp mb)
+      (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bufs code Hte Hne Hfo Hr Hm.
   unfold init_config.
-  exact (to_wexit_kill_no_error segs _ bufs code
-           (init_model (segments_reserved segs) brk0 mb sp lim inp)
-           Hte Hne Hfo eq_refl eq_refl (init_model_fd1dead _ _ _ _ _ _ Hr Hm)).
+  exact (to_wexit_kill_no_error (run_segments segs inp sp mb) _ bufs code
+           (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
+           Hte Hne Hfo eq_refl eq_refl
+           (fd1dead_with_vdso _ _
+              (init_model_fd1dead
+                 (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp
+                 lim inp Hr Hm))).
 Qed.
 
 (** THE LAUNCHES THE AGREEMENT LEMMAS COVER, for two runs that write the
