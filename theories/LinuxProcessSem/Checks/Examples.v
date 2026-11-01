@@ -839,14 +839,16 @@ Qed.
     a signal.  Proved from the image's own run, not from the absence of a
     counterexample. *)
 Lemma exits_c_never_dies : forall segs pc ph code fuel lim sp brk0 mbase rnd inp,
-  exits_c segs code fuel
-    (init_machine_state segs pc ph sp mbase rnd inp) = true ->
+  exits_c (run_segments segs inp sp mbase) code fuel
+    (init_machine_state (run_segments segs inp sp mbase) pc ph sp mbase rnd inp) = true ->
   ~ dies_by_signal (run (mkImage segs pc ph) lim (mkEntry sp brk0 mbase rnd) inp).
 Proof.
   intros segs pc ph code fuel lim sp brk0 mbase rnd inp Hms (tr & sig & fs & Ht & Hin).
   cbn [run bh_traces] in Ht. unfold init_config in Ht.
-  exact (exits_c_obs_no_kill segs code fuel _
-           (init_model (segments_reserved segs) brk0 mbase sp lim inp) tr sig fs
+  exact (exits_c_obs_no_kill (run_segments segs inp sp mbase) code fuel _
+           (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mbase)) brk0 mbase sp lim inp))
+           tr sig fs
            eq_refl eq_refl Hms Ht Hin).
 Qed.
 

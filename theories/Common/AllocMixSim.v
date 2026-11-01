@@ -291,7 +291,9 @@ Proof.
       [exact Hlazy | exact Hsvc | exact Hstep | apply IH; assumption].
   - intros (tr & c & Hstar & Hun).
     inversion Hstar as [| c1 evs c2 tr2 c3 Hss Hstar2]; subst.
-    + destruct Hun as (_ & [(Hsvc' & _) | (x8' & Hsvc' & Herr)]); cbn in *.
+    + destruct Hun
+        as (_ & [(Hsvc' & _) | [(Hsvc' & _) | (x8' & Hsvc' & Herr)]]); cbn in *.
+      * congruence.
       * congruence.
       * rewrite Hsvc in Hsvc'; inversion Hsvc'; subst x8'.
         exact (brk_no_unmodeled segs ms x8 model Hno Herr).
