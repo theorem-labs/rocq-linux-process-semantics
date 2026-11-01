@@ -559,7 +559,7 @@ Qed.
 
     RESTATED, and the old forms are worth recording.  On main both
     conjuncts were keyed on [errno_ret_in Fork.clone_errnos (eff_ret eff)];
-    the OSSV-266 revision keyed them on [EFAULT :: clone_errnos], because
+    the revision keyed them on [EFAULT :: clone_errnos], because
     [copy_struct_from_user]'s [access_ok] now answers -EFAULT for a
     [uargs] range it refuses ([Fork.clone3_spec]), and that answer
     creates no child.  Either list was exact while 220 answered only the
@@ -575,9 +575,7 @@ Qed.
     Only the old FIRST conjunct follows from this form directly; the old
     second one, for the fork word and 435, still holds through
     [clone_resolve_declines_or_sets_children] (with [clone3_resolve_inv]
-    for 435), which is unchanged.  No consumer in
-    oss-verify-proofs-internal or oss-verify-proofs names either form
-    (consumer census, 2026-11-01). *)
+    for 435), which is unchanged. *)
 Lemma clone_success_sets_children : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
   syscall_spec i m (Ok eff m' evs) ->
