@@ -157,6 +157,33 @@ Proof.
   unfold two_pow_64. lia.
 Qed.
 
+(** The acceptor side of [Syscall.errno_any]: an error-encoded return
+    other than -EINTR. *)
+Definition errno_any_b (r : word) : bool :=
+  addr_is_error_b r && negb (bv_eqb r (errno_ret EINTR)).
+
+Lemma errno_any_b_errno : forall r,
+  errno_any_b r = true ->
+  exists e, ((1 <= e <= 4095)%Z /\ e <> EINTR) /\ r = errno_ret e.
+Proof.
+  intros r H. unfold errno_any_b in H.
+  apply andb_true_iff in H as [He Hn].
+  apply addr_is_error_b_errno in He. destruct He as (e & H1 & H2 & ->).
+  exists e. split; [|reflexivity]. split; [lia|].
+  intros ->. rewrite bv_eqb_refl in Hn. discriminate.
+Qed.
+
+Lemma errno_any_b_ret : forall e,
+  (1 <= e <= 4095)%Z /\ e <> EINTR -> errno_any_b (errno_ret e) = true.
+Proof.
+  intros e [[H1 H2] Hn]. unfold errno_any_b.
+  rewrite errno_ret_error_b by lia. cbn [andb].
+  destruct (bv_eqb (errno_ret e) (errno_ret EINTR)) eqn:Hq; [|reflexivity].
+  apply bv_eqb_eq in Hq. apply (f_equal bv_unsigned) in Hq.
+  rewrite !errno_ret_unsigned in Hq by (unfold EINTR; lia).
+  exfalso. apply Hn. lia.
+Qed.
+
 (** Does [r] encode [-e] for some errno in the injectable set [es]? *)
 
 Definition errno_ret_in (es : list Z) (r : word) : bool :=
@@ -810,6 +837,7 @@ Ltac sys_unfold :=
     set_fds, set_pipes, set_vmmaps, add_vm_lazy, forget_vm_range,
     set_stdin, set_urandom, set_fs, set_halted, set_tid,
     set_rlimit_core, set_utsname, set_statpin, set_setsid_succeeded, set_clock, set_creds,
+    set_pdeath_signal,
     set_sigmask, set_sigaltstack_installed,
     set_sigmask_deliver, set_sigabrt_pending, set_killed,
     get_model, get_fds, get_vmmaps, modify, input, sysno, arg,

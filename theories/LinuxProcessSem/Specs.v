@@ -65,7 +65,7 @@
       Sys/Fs/Fcntl.v             fs/fcntl.c        fcntl
       Sys/Fs/Locks.v             fs/locks.c        flock
       Sys/Fs/Pipe.v              fs/pipe.c         pipe2
-      Sys/Fs/File.v              fs/file.c         dup dup3, and which descriptor an open gets
+      Sys/Fs/File.v              fs/file.c         dup dup3 close_range, and which descriptor an open gets
       Sys/Fs/Timerfd.v           fs/timerfd.c      timerfd_create
       Sys/Fs/EventPoll.v         fs/eventpoll.c    epoll_create1 epoll_ctl epoll_pwait
       Sys/Fs/EventFd.v           fs/eventfd.c      eventfd2
@@ -73,19 +73,21 @@
       Sys/Mm/Mremap.v            mm/mremap.c       mremap
       Sys/Mm/Mprotect.v          mm/mprotect.c     mprotect
       Sys/Mm/Madvise.v           mm/madvise.c      madvise
+      Sys/Kernel/Capability.v    kernel/capability.c  capget capset
       Sys/Kernel/Exit.v          kernel/exit.c     exit exit_group wait4
       Sys/Kernel/Fork.v          kernel/fork.c     set_tid_address clone clone3
-      Sys/Kernel/Futex/Syscalls.v  kernel/futex/syscalls.c  futex
+      Sys/Kernel/Futex/Syscalls.v  kernel/futex/syscalls.c  futex set_robust_list
       Sys/Kernel/Signal.v        kernel/signal.c   sigaltstack rt_sigaction
                                                    rt_sigprocmask
       Sys/Kernel/Groups.v        kernel/groups.c   getgroups setgroups
       Sys/Kernel/Sched/Syscalls.v  kernel/sched/syscalls.c  sched_getaffinity
                                                    sched_setscheduler
                                                    sched_yield
-      Sys/Kernel/Sys.v           kernel/sys.c      getpid gettid setsid uname
-                                                   prlimit64 getuid geteuid
+      Sys/Kernel/Sys.v           kernel/sys.c      getpid getppid gettid setsid getsid
+                                                   uname prlimit64 getuid geteuid
                                                    getgid getegid setuid setgid
-                                                   setresuid setresgid
+                                                   setresuid setresgid getresuid
+                                                   getresgid
                                                    prctl (whose PR_CAPBSET_READ
                                                    arm answers to
                                                    security/commoncap.c's
@@ -94,7 +96,7 @@
                                                    security_task_prctl)
       Sys/Kernel/Time/Hrtimer.v  kernel/time/hrtimer.c       nanosleep
       Sys/Kernel/Time/PosixTimers.v
-                                 kernel/time/posix-timers.c  clock_gettime
+                                 kernel/time/posix-timers.c  clock_gettime clock_getres
       Sys/Kernel/Time/Time.v     kernel/time/time.c          gettimeofday
       Sys/Net/Socket.v           net/socket.c      socket bind listen accept connect accept4
       Sys/Drivers/Char/Random.v  drivers/char/random.c  getrandom
@@ -116,6 +118,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select Fs.Ioctl Fs.Fcntl Fs.Namei
   Fs.Readdir Fs.Locks Fs.Timerfd Fs.Pipe Fs.EventPoll Fs.EventFd
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise
+  Kernel.Capability
   Kernel.Exit Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups Kernel.Sched.Syscalls
   Kernel.Signal Kernel.Sys
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time

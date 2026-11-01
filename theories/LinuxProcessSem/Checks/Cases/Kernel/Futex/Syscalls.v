@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Cases.Kernel.Futex.Syscalls — worked examples over futex (98)
+(** * LinuxProcessSem.Checks.Cases.Kernel.Futex.Syscalls — worked examples over futex (98) and set_robust_list (99)
 
     Mirrors [Sys/Kernel/Futex/Syscalls.v], which answers to Linux
     [kernel/futex/syscalls.c]: this file holds the worked examples for
@@ -17,6 +17,49 @@ Import ListNotations.
 Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
   Prelude.
+
+Definition robust_list_input (head len : word) : SyscallInput :=
+  mkInput 99 [head; len; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+Definition robust_list_model : Model :=
+  mkModel [] (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+
+(** Registration checks the full 64-bit length, but never dereferences
+    the head.  THE ANSWER IS LINUX'S ALONE: the -ENOSYS QEMU user mode
+    returns for every length (linux-user/syscall.c,
+    [TARGET_NR_set_robust_list], QEMU 10.0.11) is REJECTED, where an
+    earlier reading of this model admitted it beside Linux's answer and
+    so let a source and a target answer the same call differently. *)
+Example set_robust_list_lengths_and_head :
+  check_syscall (robust_list_input 0 24)
+    (mkEffect 0 [] []) robust_list_model = CheckOk robust_list_model []
+  /\ check_syscall (robust_list_input 3735928559 24)
+       (mkEffect 0 [] []) robust_list_model = CheckOk robust_list_model []
+  /\ check_syscall (robust_list_input 0 23)
+       (mkEffect (errno_ret EINVAL) [] []) robust_list_model
+       = CheckOk robust_list_model []
+  /\ check_syscall (robust_list_input 0 (Z_to_bv 64 (2 ^ 32 + 24)%Z))
+       (mkEffect (errno_ret EINVAL) [] []) robust_list_model
+       = CheckOk robust_list_model [].
+Proof. repeat split; check_eq. Qed.
+
+(** [set_robust_list_linux_answer_only]: QEMU user mode's -ENOSYS is not
+    an answer of this model, for an accepted length or a refused one. *)
+Example set_robust_list_linux_answer_only :
+  check_syscall (robust_list_input 0 24)
+       (mkEffect (errno_ret ENOSYS) [] []) robust_list_model = CheckReject
+  /\ check_syscall (robust_list_input 0 23)
+       (mkEffect (errno_ret ENOSYS) [] []) robust_list_model = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+Example set_robust_list_rejects_wrong_effects :
+  check_syscall (robust_list_input 0 23)
+    (mkEffect 0 [] []) robust_list_model = CheckReject
+  /\ check_syscall (robust_list_input 0 24)
+       (mkEffect (errno_ret EINVAL) [] []) robust_list_model = CheckReject
+  /\ check_syscall (robust_list_input 0 24)
+       (mkEffect 0 [(4096, [0])] []) robust_list_model = CheckReject.
+Proof. repeat split; check_eq. Qed.
 
 (** THREE ANSWERS AND NO FOURTH, for every address at once.
 
@@ -92,14 +135,14 @@ Qed.
     ADMISSION REASON: universally quantified, and about a syscall this
     file does not otherwise concern itself with.  [futex_wake_private_spec]
     answers 0 because no task shares the caller's mm, and the reason no
-    task does is that [Kernel.Fork]'s two gates admit one flag word each
-    and neither sets the bit.  That is an argument across two files, so
+    task does is that [Kernel.Fork]'s gates admit no word that sets the
+    bit.  That is an argument across two files, so
     it is exactly the kind that rots silently: a later change widening
-    [clone] to a flag MASK, or adding a second admitted word, would leave
+    [clone] to a flag MASK, or adding another admitted word, would leave
     every futex proof closing and the count wrong.
 
-    These two make the premise a compile-time fact instead.  Widening
-    either gate to admit [CLONE_VM] breaks the build HERE, next to the
+    These three make the premise a compile-time fact instead.  Widening
+    any gate to admit [CLONE_VM] breaks the build HERE, next to the
     prose that says why it matters, rather than nowhere. *)
 Lemma clone_fork_gate_grants_no_shared_mm : forall flags,
   clone_fork_flags_b flags = true ->
@@ -107,6 +150,16 @@ Lemma clone_fork_gate_grants_no_shared_mm : forall flags,
 Proof.
   intros flags H. unfold clone_fork_flags_b, bv_eqb in H.
   apply Z.eqb_eq in H. rewrite H. vm_compute. reflexivity.
+Qed.
+
+(** The namespace word: [SIGCHLD] plus [CLONE_NEW*] bits, none of which
+    is [CLONE_VM]. *)
+Lemma clone_ns_gate_grants_no_shared_mm : forall flags,
+  clone_ns_flags_b flags = true ->
+  Z.land (bv_unsigned flags) CLONE_VM = 0%Z.
+Proof.
+  intros flags H.
+  apply (clone_ns_flags_disjoint flags CLONE_VM H); vm_compute; reflexivity.
 Qed.
 
 Lemma clone3_fork_gate_grants_no_shared_mm : forall bs,

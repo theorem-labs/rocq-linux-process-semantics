@@ -85,7 +85,7 @@ Definition check_epoll_ctl (i : SyscallInput) (epfd op32 tfd event : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match epoll_ctl_outcome i m epfd op32 tfd event with
   | None => CheckUnmodeled
-  | Some r => check_ret_only eff r m []
+  | Some r => check_ret_only_copyins (epoll_ctl_reads i op32 event) eff r m []
   end.
 
 Lemma check_epoll_ctl_sound_ok : forall i epfd op32 tfd event eff m m' evs,
@@ -98,7 +98,7 @@ Proof.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta.
   destruct (epoll_ctl_outcome i m epfd op32 tfd event) as [r|] eqn:Ho;
     cbv iota; [|discriminate].
-  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+  apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
   apply pure_ok.
 Qed.
 
@@ -112,10 +112,7 @@ Proof.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
   destruct (epoll_ctl_outcome i m epfd op32 tfd event) as [r|] eqn:Ho;
     cbv iota; [|apply unmodeled_intro].
-  unfold check_ret_only in H.
-  destruct eff as [ret ws zs us cs ks];
-    destruct ws; destruct zs; destruct us; destruct cs; destruct ks;
-    try discriminate; destruct (bv_eqb ret r); discriminate.
+  now apply check_ret_only_copyins_no_unmodeled in H.
 Qed.
 
 Lemma check_epoll_ctl_complete_ok : forall i epfd op32 tfd event eff m m' evs,
@@ -127,7 +124,7 @@ Proof.
   cbv iota in H. inv_ok.
   destruct (epoll_ctl_outcome i m epfd op32 tfd event) as [r|] eqn:Ho;
     hall Ho; inv_ok.
-  apply check_ret_only_ok_iff. repeat split; reflexivity.
+  apply check_ret_only_copyins_ok_iff. repeat split; reflexivity.
 Qed.
 
 Lemma check_epoll_ctl_complete_unmodeled : forall i epfd op32 tfd event m eff,

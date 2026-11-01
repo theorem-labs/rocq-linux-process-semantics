@@ -420,7 +420,12 @@ Definition wait4_intercept_b (c : config) : bool :=
 
 (** The shared reading of a private entry, and the offset it was holding.
     [None] for the kinds with no mutable kernel-side offset, which stay in
-    [State.m_fd]; see [OfdWhat] for why [FdChannel] is among them. *)
+    [State.m_fd]; see [OfdWhat] for why [FdChannel] is among them.  An
+    opaque descriptor ([FdOpaque]) stays per-process too: a namespace
+    file's state is in [sh_ns] already, named by its handle, so both
+    processes see one object; the other opaque kinds are per-process
+    copies, whose arms answer a read of another process's state as the
+    environment's. *)
 Definition fd_shared_view (e : FdEntry) : option (OfdWhat * word) :=
   match e with
   | FdFile p off   => Some (OfdFile p FmR,  off)
@@ -429,7 +434,7 @@ Definition fd_shared_view (e : FdEntry) : option (OfdWhat * word) :=
   | FdFileRW p off => Some (OfdFile p FmRW, off)
   | FdPipe id w    => Some (OfdPipe id w,   Z_to_bv 64 0)
   | FdSocket sk    => Some (OfdSocket sk,   Z_to_bv 64 0)
-  | FdChannel _ | FdDir | FdDevNull _ _ | FdUrandom => None
+  | FdChannel _ | FdDir | FdDevNull _ _ | FdUrandom | FdOpaque _ => None
   end.
 
 (** PROMOTE one descriptor out of a private table into the shared one, with
@@ -463,14 +468,18 @@ Definition child_ms (c c' : config) : machine_state :=
   let base := set_reg (cfg_ms c') 10 (Z_to_bv 64 0) in
   if w_is0 newsp then base else set_reg base 2 newsp.
 
-(** The child's process record: the parent's, with the two fields that are
-    the CHILD's own cleared.
+(** The child's process record: the parent's, with the fields that are the
+    CHILD's own cleared.
 
     [procst_children] because the child has none -- and copying the parent's
     pre-clone record is not enough, because on a SECOND clone the parent's is
     already set.  [procst_tid] because the child's differs on Linux, and
     because clone admission itself reads it (Fork.v:679-681), so declining
-    [getpid] does not make an inherited one unobservable. *)
+    [getpid] does not make an inherited one unobservable.
+    [procst_sigpipe_pending] is false (a new thread group starts with no
+    pending signal), [procst_pdeath_signal] is 0 ([copy_process] clears
+    it, kernel/fork.c), and the two launch facts
+    ([procst_channel_reader], [procst_sigpipe_default]) are copied. *)
 Definition child_proc (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
               (procst_setsid_succeeded ps) (procst_sigmask ps)
@@ -483,7 +492,9 @@ Definition child_proc (ps : ProcState) : ProcState :=
                  child-entry lemmas read [child_proc] and must not read a
                  wrong value.  (Found in review, 2026-11-01.) *)
               (procst_killed ps) false
-              (procst_abort_terminal ps) (procst_statpins ps).
+              (procst_abort_terminal ps) (procst_statpins ps)
+              false (procst_channel_reader ps) (procst_sigpipe_default ps)
+              (Z_to_bv 64 0).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).

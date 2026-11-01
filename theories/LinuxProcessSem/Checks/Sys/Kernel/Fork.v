@@ -151,16 +151,45 @@ Definition check_clone3_resolve (uargs : word) (eff : SyscallEffect)
   | _ => CheckReject
   end.
 
+(** The namespace word's answer: an error-encoded return other than
+    -EINTR ([errno_any_b], the acceptor of [Syscall.errno_any], which
+    excludes -EINTR) leaves the model alone, and an admissible pid
+    records the child, mirroring [Kernel.Fork.clone_ns_resolve].  The
+    two are disjoint on the observed return ([clone_pid_not_error]), so
+    this too is a function of the return rather than a choice.  Keyed on
+    [addr_is_error_b] instead, the soundness proof below would fail: it
+    would accept a -EINTR the spec no longer admits. *)
+Definition check_clone_ns_answer (ret : word) (m : Model) : check_result :=
+  if errno_any_b ret then CheckOk m []
+  else if clone_pid_ok_b m ret then CheckOk (with_children m) []
+  else CheckReject.
+
+Definition check_clone_ns_resolve (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  if negb (clone_no_shared_file_b (m_fds m)) then CheckUnmodeled
+  else match eff with
+  | mkEffectU ret [] [] [] [] [] => check_clone_ns_answer ret m
+  | _ => CheckReject
+  end.
+
 Definition check_clone (flags : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   if clone_fork_flags_b flags then check_clone_resolve eff m
+  else if clone_ns_flags_b flags then check_clone_ns_resolve eff m
   else CheckUnmodeled.
 
+(** A [uargs] range [access_ok] refuses is -EFAULT with an EMPTY ledger,
+    asked through [State.copy_bytes_map] before the walk; one it admits
+    that the memory does not wholly back declines (see
+    [Fork.clone3_spec]). *)
 Definition check_clone3 (i : SyscallInput) (uargs size : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then CheckUnmodeled
-  else match read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE) with
-       | None => CheckUnmodeled
+  else match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
+       | None =>
+           if negb (access_okb uargs CLONE_ARGS_SIZE)
+           then check_ret_only eff (errno_ret EFAULT) m []
+           else CheckUnmodeled
        | Some bs =>
            if clone3_fork_args_b bs then check_clone3_resolve uargs eff m
            else CheckUnmodeled
@@ -183,6 +212,113 @@ Proof.
   apply errno_ret_in_below; [reflexivity|].
   change PID_MAX_ENVELOPE with 4194304%Z in Hhi.
   unfold two_pow_64. lia.
+Qed.
+
+(** No admissible pid is error-encoded, which is what keeps
+    [check_clone_ns_answer] a function of the observed return. *)
+Lemma clone_pid_not_error : forall m (r : word),
+  clone_pid_ok_b m r = true -> addr_is_error_b r = false.
+Proof.
+  intros m r Hok.
+  unfold clone_pid_ok_b in Hok.
+  apply andb_true_iff in Hok as [Hrange _].
+  apply andb_true_iff in Hrange as [_ Hhi]. apply Z.ltb_lt in Hhi.
+  unfold addr_is_error_b. apply Z.ltb_ge.
+  change PID_MAX_ENVELOPE with 4194304%Z in Hhi.
+  unfold two_pow_64. lia.
+Qed.
+
+(** Every word the namespace gate admits is [SIGCHLD] plus bits of
+    [clone_ns_mask], so it shares no bit with any [b] that is disjoint
+    from both.  The pins on what the gate keeps out
+    ([Checks.ProcessCreation.clone_sharing_flags_unmodeled],
+    [Checks.Cases.Kernel.Futex.Syscalls.clone_ns_gate_grants_no_shared_mm])
+    are instances. *)
+Lemma clone_ns_flags_disjoint : forall flags b,
+  clone_ns_flags_b flags = true ->
+  Z.land clone_ns_mask b = 0%Z -> Z.land SIGCHLD b = 0%Z ->
+  Z.land (bv_unsigned flags) b = 0%Z.
+Proof.
+  intros flags b H Hm Hs. unfold clone_ns_flags_b in H.
+  apply andb_true_iff in H as [H _]. apply Z.eqb_eq in H.
+  rewrite <- (Z.land_m1_r (bv_unsigned flags)),
+    <- (Z.lor_lnot_diag clone_ns_mask), Z.land_lor_distr_r, H,
+    Z.land_lor_distr_l, <- Z.land_assoc, Hm, Hs, Z.land_0_r.
+  reflexivity.
+Qed.
+
+Lemma check_clone_ns_resolve_sound_ok : forall eff m m' evs i,
+  check_clone_ns_resolve eff m = CheckOk m' evs ->
+  clone_ns_resolve i m (Ok eff m' evs).
+Proof.
+  intros [ret ws zs us cs copyins] m m' evs i H.
+  unfold check_clone_ns_resolve in H. unfold clone_ns_resolve.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg;
+    cbv iota; cbv iota in H; [discriminate|].
+  destruct ws as [|? ?];
+    [destruct zs as [|? ?];
+      [destruct us as [|? ?];
+        [destruct cs as [|? ?]; [destruct copyins as [|? ?]|]|]|]|];
+    try discriminate.
+  unfold check_clone_ns_answer in H.
+  destruct (errno_any_b ret) eqn:He.
+  { injection H as Hm Hevs; subst m' evs. apply alt_l.
+    apply errno_any_b_errno in He as (e & He & ->).
+    eapply bind_ok0; [apply (choose_ok _ e); exact He|].
+    apply pure_ok. }
+  destruct (clone_pid_ok_b m ret) eqn:Hv; [|discriminate].
+  injection H as Hm Hevs; subst m' evs.
+  apply alt_r.
+  eapply bind_ok0; [apply (choose_ok _ ret); exact Hv|].
+  eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+Lemma check_clone_ns_resolve_sound_unmodeled : forall eff m i,
+  check_clone_ns_resolve eff m = CheckUnmodeled ->
+  clone_ns_resolve i m Unmodeled.
+Proof.
+  intros [ret ws zs us cs copyins] m i H.
+  unfold check_clone_ns_resolve in H. unfold clone_ns_resolve.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg;
+    cbv iota; cbv iota in H; [apply unmodeled_intro|].
+  exfalso.
+  destruct ws as [|? ?];
+    [destruct zs as [|? ?];
+      [destruct us as [|? ?];
+        [destruct cs as [|? ?]; [destruct copyins as [|? ?]|]|]|]|];
+    try discriminate.
+  unfold check_clone_ns_answer in H.
+  destruct (errno_any_b ret); [discriminate|].
+  destruct (clone_pid_ok_b m ret); discriminate.
+Qed.
+
+Lemma check_clone_ns_resolve_complete_ok : forall eff m m' evs i,
+  clone_ns_resolve i m (Ok eff m' evs) ->
+  check_clone_ns_resolve eff m = CheckOk m' evs.
+Proof.
+  intros eff m m' evs i H.
+  unfold clone_ns_resolve, errno_any in H. unfold check_clone_ns_resolve.
+  sys_unfold. cbv iota in H. inv_ok.
+  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok.
+  (* one goal per alternative: an errno in 1..4095 but -EINTR, and a pid *)
+  all: cbv beta iota; unfold check_clone_ns_answer.
+  all: try (rewrite errno_any_b_ret by (intuition lia); reflexivity).
+  all: match goal with
+       | Hv : clone_pid_ok_b ?mm ?r = true |- _ =>
+           unfold errno_any_b; rewrite (clone_pid_not_error mm r Hv), Hv; reflexivity
+       end.
+Qed.
+
+Lemma check_clone_ns_resolve_complete_unmodeled : forall m i eff,
+  clone_ns_resolve i m Unmodeled -> check_clone_ns_resolve eff m = CheckUnmodeled.
+Proof.
+  intros m i eff H.
+  unfold clone_ns_resolve, errno_any in H. unfold check_clone_ns_resolve.
+  sys_unfold. cbv iota in H. inv_ok.
+  destruct (negb (clone_no_shared_file_b (m_fds m))) eqn:Hg; hall Hg; inv_ok;
+    reflexivity.
 Qed.
 
 Lemma check_clone_resolve_sound_ok : forall eff m m' evs i,
@@ -356,8 +492,10 @@ Lemma check_clone_sound_ok : forall flags eff m m' evs i,
 Proof.
   intros flags eff m m' evs i H.
   unfold check_clone in H. unfold clone_spec.
-  destruct (clone_fork_flags_b flags); [|discriminate].
-  now apply check_clone_resolve_sound_ok.
+  destruct (clone_fork_flags_b flags); cbv iota in H |- *;
+    [now apply check_clone_resolve_sound_ok|].
+  destruct (clone_ns_flags_b flags); cbv iota in H |- *; [|discriminate].
+  now apply check_clone_ns_resolve_sound_ok.
 Qed.
 
 Lemma check_clone_sound_unmodeled : forall flags eff m i,
@@ -365,8 +503,10 @@ Lemma check_clone_sound_unmodeled : forall flags eff m i,
 Proof.
   intros flags eff m i H.
   unfold check_clone in H. unfold clone_spec.
-  destruct (clone_fork_flags_b flags);
-    [now apply check_clone_resolve_sound_unmodeled with (eff := eff)
+  destruct (clone_fork_flags_b flags); cbv iota in H |- *;
+    [now apply check_clone_resolve_sound_unmodeled with (eff := eff)|].
+  destruct (clone_ns_flags_b flags); cbv iota in H |- *;
+    [now apply check_clone_ns_resolve_sound_unmodeled with (eff := eff)
     |apply unmodeled_intro].
 Qed.
 
@@ -375,8 +515,10 @@ Lemma check_clone_complete_ok : forall flags eff m m' evs i,
 Proof.
   intros flags eff m m' evs i H.
   unfold clone_spec in H. unfold check_clone.
-  destruct (clone_fork_flags_b flags);
-    [now apply check_clone_resolve_complete_ok with (i := i)
+  destruct (clone_fork_flags_b flags); cbv iota in H |- *;
+    [now apply check_clone_resolve_complete_ok with (i := i)|].
+  destruct (clone_ns_flags_b flags); cbv iota in H |- *;
+    [now apply check_clone_ns_resolve_complete_ok with (i := i)
     |unfold unmodeled in H; discriminate].
 Qed.
 
@@ -385,8 +527,11 @@ Lemma check_clone_complete_unmodeled : forall flags m i eff,
 Proof.
   intros flags m i eff H.
   unfold clone_spec in H. unfold check_clone.
-  destruct (clone_fork_flags_b flags);
-    [now apply check_clone_resolve_complete_unmodeled with (i := i)|reflexivity].
+  destruct (clone_fork_flags_b flags); cbv iota in H |- *;
+    [now apply check_clone_resolve_complete_unmodeled with (i := i)|].
+  destruct (clone_ns_flags_b flags); cbv iota in H |- *;
+    [now apply check_clone_ns_resolve_complete_unmodeled with (i := i)
+    |reflexivity].
 Qed.
 
 Lemma check_clone3_sound_ok : forall i uargs size eff m m' evs,
@@ -398,8 +543,13 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota; cbv iota in H; [discriminate|].
   eapply bind_ok0; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|] eqn:Hbs; cbv iota; cbv iota in H; [|discriminate].
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
+    as [bs|] eqn:Hbs; cbv iota; cbv iota in H.
+  2: { (* the walk declined: only a refused range answers, with -EFAULT *)
+       destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs;
+         cbv iota; cbv iota in H; [|discriminate].
+       apply check_ret_only_ok_iff in H as (-> & -> & ->).
+       unfold err_ret, ret_only. apply pure_ok. }
   destruct (clone3_fork_args_b bs) eqn:Ha;
     cbv iota; cbv iota in H; [|discriminate].
   now apply check_clone3_resolve_sound_ok.
@@ -414,8 +564,11 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota; cbv iota in H; [apply unmodeled_intro|].
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|] eqn:Hbs; cbv iota; cbv iota in H; [|apply unmodeled_intro].
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
+    as [bs|] eqn:Hbs; cbv iota; cbv iota in H.
+  2: { destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs;
+         cbv iota; cbv iota in H;
+         [now apply check_ret_only_no_unmodeled in H|apply unmodeled_intro]. }
   destruct (clone3_fork_args_b bs) eqn:Ha;
     cbv iota; cbv iota in H; [|apply unmodeled_intro].
   now apply check_clone3_resolve_sound_unmodeled with (eff := eff).
@@ -430,8 +583,11 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota in H; [unfold unmodeled in H; discriminate|].
   sys_unfold. cbv iota in H. inv_ok.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
     as [bs|] eqn:Hbs; hall Hbs; inv_ok.
+  2: { (* -EFAULT with nothing recorded, the only answer of a refused range *)
+       destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs; hall Hs; inv_ok.
+       apply check_ret_only_ok_iff. now repeat split. }
   destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok.
   now apply check_clone3_resolve_complete_ok with (i := i).
 Qed.
@@ -445,8 +601,10 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))) eqn:Hsz;
     cbv iota in H; [reflexivity|].
   sys_unfold. cbv iota in H. inv_ok.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|] eqn:Hbs; hall Hbs; inv_ok; [|reflexivity].
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE)
+    as [bs|] eqn:Hbs; hall Hbs; inv_ok.
+  2: { destruct (negb (access_okb uargs CLONE_ARGS_SIZE)) eqn:Hs; hall Hs;
+         inv_ok; reflexivity. }
   destruct (clone3_fork_args_b bs) eqn:Ha; hall Ha; inv_ok; [|reflexivity].
   now apply check_clone3_resolve_complete_unmodeled with (i := i).
 Qed.
