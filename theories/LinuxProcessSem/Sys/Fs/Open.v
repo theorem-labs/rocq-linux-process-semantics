@@ -1441,7 +1441,9 @@ Lemma proc_open_target_cwd_noslash : forall fds p,
 Proof.
   intros fds [|b p] H; [reflexivity|].
   cbn [proc_open_target]. cbn [path_has_slash existsb] in H.
-  apply orb_false_iff in H as [Hb _]. rewrite Hb, bv_eqb_refl. reflexivity.
+  apply Bool.orb_false_iff in H as [Hb _]. rewrite Hb.
+  replace (bv_eqb AT_FDCWD32 AT_FDCWD32) with true by (symmetry; apply bv_eqb_eq; reflexivity).
+  reflexivity.
 Qed.
 
 (** A fresh opaque descriptor at the lowest free fd, or any errno; see
