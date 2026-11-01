@@ -230,3 +230,72 @@ Proof.
   intros P e c' Hl Hlt. unfold fw_measure.
   apply pmeasure_absorb_lt; assumption.
 Qed.
+
+(** THE NO-ERROR PREMISE, reduced to one obligation per shape.
+
+    [MustExitP.pstep_error_cases] says an error transition is one of the
+    two refusing arms: a released [SError], or the surface guard firing.
+    This turns "no shape errors" into exactly two things to rule out at
+    each shape, and it is the lemma the inversion layer exists for -- a
+    proof that inverted [pstep_at] here would name every constructor and
+    would break when [ext] adds two.
+
+    THE SURFACE GUARD IS FREE AT EVERY SHAPE OF THIS PROGRAM.
+    [multiproc_allowed] is [true] whenever no call is pending, and
+    whenever the pending number is one of 93, 94, 220, 260, 435 -- and
+    [forkwait] issues only 220, 260 and 94.  So [pstep_outside] cannot
+    fire anywhere in this run, and what is left at each shape is the
+    released [SError] alone. *)
+Lemma fw_guard_open : forall P c nr,
+  (ms_svc_pending (cfg_ms c) = None
+   \/ exists x8, ms_svc_pending (cfg_ms c) = Some x8
+                 /\ bv_unsigned x8 = nr
+                 /\ List.In nr multiproc_sysnos) ->
+  multiproc_allowed P c = true.
+Proof.
+  intros P c nr [Hn | (x8 & Hs & Hv & Hin)]; unfold multiproc_allowed.
+  - rewrite Hn. reflexivity.
+  - rewrite Hs. rewrite Hv.
+    apply orb_true_intro. right.
+    apply List.existsb_exists. exists nr.
+    split; [exact Hin | apply Z.eqb_refl].
+Qed.
+
+(** The three numbers this program issues are on the surface. *)
+Lemma fw_sysnos_allowed :
+  List.In 220%Z multiproc_sysnos
+  /\ List.In 260%Z multiproc_sysnos
+  /\ List.In 94%Z multiproc_sysnos.
+Proof. cbn. repeat split; tauto. Qed.
+
+(** THE PROGRESS PREMISE, and the one place it is not automatic.
+
+    At seven of the eight shapes progress is a single machine step or a
+    single syscall arm, so a step exists because a segment lemma produces
+    one.  At the eighth -- the parent blocked at the [wait4] [ecall] with
+    the child still running -- THE PARENT HAS NO STEP AT ALL, by design
+    (§7.2): a blocked entry is one with no arm, not one with a flag.  So
+    progress there is the CHILD's step, and the premise is met by the other
+    entry.
+
+    That is why the premise is stated over the system rather than over the
+    root: a root-only progress condition would be false at that shape and
+    the theorem would be unprovable for a program that blocks. *)
+Lemma fw_progress_from_entry : forall segs cfg P p evs r,
+  pstep_at segs cfg p P evs r ->
+  exists evs' st, pstep_cfg segs cfg P evs' st.
+Proof. intros segs cfg P p evs r H. exists evs, r. exists p. exact H. Qed.
+
+(** WHY THE SIX NON-TERMINAL SHAPES ARE NOT [inversion]-AND-DONE.
+
+    [fw_shape_terminal_halted] discharges each of the six by PRODUCING its
+    running entry and contradicting [terminal]'s claim that every entry is
+    halted.  A default case -- "the remaining shapes cannot be terminal" --
+    would look the same and prove less: it would hold even if a shape had
+    been written with its halt condition omitted, and the theorem would
+    then be about a program that may stop somewhere this one does not.
+
+    The leaf is the premise where a weaker statement hides, because it is
+    the only one that says what the answer IS rather than what the run does
+    next.  Every other premise is refutable by a wrong step; this one is
+    satisfiable by a wrong shape. *)
