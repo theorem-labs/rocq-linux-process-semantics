@@ -3083,7 +3083,9 @@ Definition stack_rnd_max : Z := 0x3ffff000%Z.
     calls.  A root write to the sysctl during the [execve] therefore
     gives a launch with no stack draw, no base draw, and the
     [arch_align_stack] pad.  Admitting it costs nothing and needs no
-    SCOPE.md assumption (dispatch://OSSV-257/ask/a4606aae). *)
+    SCOPE.md assumption: [arch_align_stack] reads [randomize_va_space]
+    again, so an [execve] with randomization turned off part way gives
+    the pad with no draw. *)
 Definition valid_stack_top_va (v : VaSize) (aslr : bool) (top : word) : Prop :=
   (bv_unsigned top mod page_size = 0)%Z
   /\ (bv_unsigned top <= va_stack_top v)%Z
@@ -4101,8 +4103,9 @@ Definition valid_input (inp : ProcInput) : Prop :=
     `head` has had its line, where that same write raises signal 13 and
     ends the run -- is named rather than covered here, and a task that
     means it asks for it by name ([valid_input_channel_closed]); a task
-    that means both asks for [valid_input_channel_either].  The stance
-    is the stream owner's answer to dispatch://OSSV-266/ask/77724e06. *)
+    that means both asks for [valid_input_channel_either].  The model
+    pins the reader, and names the reader-gone launch so a proof can
+    ask for it, the shape the abort declaration already has. *)
 Definition valid_input_abort (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4264,9 +4267,8 @@ Qed.
     descriptors 1 and 2.  [valid_input] above PINS IT TO [true]: the
     ordinary launch is the one whose standard output is read, and a
     statement quantified over [valid_input] speaks about that launch
-    and no other.  That is the stance the stream owner chose for
-    dispatch://OSSV-266/ask/77724e06 -- pin the reader, and name the
-    reader-gone launch so a proof can ask for it -- and it is the shape
+    and no other.  The model pins the reader, and names the reader-gone
+    launch so a proof can ask for it -- and it is the shape
     the abort declaration already has: [valid_input] pins
     [State.in_abort_terminal] to [false] and [valid_input_abort] names
     the other world.

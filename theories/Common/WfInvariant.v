@@ -37,7 +37,8 @@
     [NoaccessOwned.check_*_preserves_na] for it and proves only the two
     ledger conjuncts.
 
-    Proved for OSSV-266, first against LPS 6692dfb5 in a proof fork, and
+    Proved for the SIGPIPE and reader work, first against LPS 6692dfb5 in a
+    proof fork, and
     lifted here. *)
 
 From Stdlib Require Import ZArith List Bool Lia.

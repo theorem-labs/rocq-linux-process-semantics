@@ -83,7 +83,8 @@
    placement/linux-6.18.46-defconfig.log
    --out PlacementReplayOffByOnePage.v --kb-thp 0 --expect reject
    --perturb 0 --perturb-pages -1)))
-; THE REAL-KERNEL START STATE (OSSV-257 A4, tools/placement_conformance).
+; THE REAL-KERNEL START STATE (acceptance item A4 of the start-state
+; specification, tools/placement_conformance).
 ; Each rule turns one start-state log of the probe into a Rocq file that
 ; states the recorded launch as LPS terms and closes three lemmas by
 ; computation: Run.entry_launch_ok_va of the recorded stack end, stack

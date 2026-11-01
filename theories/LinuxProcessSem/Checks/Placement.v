@@ -860,7 +860,7 @@ Qed.
     has to BUILD an execution needs, and it is why the model refuses
     only where the kernel refuses: a refusal is now exhaustion.
 
-    The OSSV-231 plan states this with [task_unmapped_base <= mmap_top h]
+    The placement plan states this with [task_unmapped_base <= mmap_top h]
     as a further premise.  It is not needed — the argument never
     compares the two windows — so it is not asked for here, and a
     caller that holds it simply does not have to pass it. *)

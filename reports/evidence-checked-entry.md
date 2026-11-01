@@ -147,8 +147,8 @@ which `d4d2d93e`'s `State.v` has and `ff0313ba`'s has not.
 
 ## 4. What the revision can say
 
-The stream owner decided all three of these on 2026-10-31, on this report's
-first finding:
+Three things follow from this report's first finding, and the reasons are
+stated with them:
 
 **The refusal is right and the boundary does not change.** No kernel produces
 that answer; the record is a deliberate mutation; a value outside the Rocq

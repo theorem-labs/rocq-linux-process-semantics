@@ -1036,7 +1036,7 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    AT_RANDOM draw — and the per-request -ENOMEM arm is still there for
    a may-fail reading.  What is gone is the free choice of an address
    inside the free space, which is what let the model refuse a request
-   the same Linux launch grants (the holes of OSSV-210: B2, B3 and N3).
+   the same Linux launch grants (the placement holes: B2, B3 and N3).
 
    ANTI-VACUITY is unchanged, and is still a behaviour rather than a
    side condition.  Each arm is [alt (errno_from mmap_errnos)

@@ -5474,7 +5474,7 @@ Qed.
     whose [top] is that low describes no launch, and an entry at a
     negative address is not a word.
 
-    They go in [vm_reserved] rather than [vm_maps] (the OSSV-231 plan,
+    They go in [vm_reserved] rather than [vm_maps] (the placement plan,
     decision D4): the placement search, an in-place [mremap] grow and
     MAP_FIXED_NOREPLACE all read [vm_reserved], while a whole [munmap]
     of a [vm_maps] entry would SUCCEED, and Linux's answer to an
@@ -6438,8 +6438,9 @@ Record ProcInput := mkProcInput_full {
        finds a reader and the next does not with no close in between,
        which no launch produces.  One run has one answer.
 
-       [Run.valid_input] PINS IT PRESENT, the stream owner's answer to
-       dispatch://OSSV-266/ask/77724e06: every statement quantified
+       [Run.valid_input] PINS IT PRESENT -- the model pins the reader,
+       and names the reader-gone launch so a proof can ask for it:
+       every statement quantified
        over the ordinary predicate is about the run whose standard
        output is read, and the run that is the writing end of
        `prog | head -1` after `head` has had its line is asked for by
