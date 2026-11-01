@@ -478,9 +478,10 @@ End NoUnmodeledWithSegs.
 (** The omni escape, per run: the source's judgment at any budget ... *)
 Lemma err_escape_omni_run :
   forall segs pc ph sp brk0 mb rnd lim inp ms',
-  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
+  msteps (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step segs ms' = MachineFault ->
+  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp errors.
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp ms' Hm Hsvc Hill.
@@ -491,10 +492,12 @@ Qed.
 (** ... its coverage ... *)
 Lemma err_escape_omni_covered :
   forall segs pc ph sp brk0 mb rnd lim inp ms',
-  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
+  msteps (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step segs ms' = MachineFault ->
-  omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (covered segs).
+  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
+  omni_corun (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
+    (covered (run_segments segs inp sp mb)).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp ms' Hm Hsvc Hill.
   cbn [omni_corun]. unfold init_config.
@@ -504,9 +507,10 @@ Qed.
 (** ... [OmniEquivalence.omni_equiv] against ANY target run ... *)
 Lemma err_escape_omni_equiv :
   forall segs pc ph sp brk0 mb rnd lim inp T limT et ms',
-  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
+  msteps (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step segs ms' = MachineFault ->
+  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
   omni_equiv (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) T limT et inp.
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp T limT et ms' Hm Hsvc Hill.
@@ -517,9 +521,10 @@ Qed.
     that deterministically faults, against any target image and entry. *)
 Lemma err_escape_omni_strong_equiv :
   forall segs pc ph sp brk0 mb rnd inp T et ms',
-  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
+  msteps (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step segs ms' = MachineFault ->
+  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
   omni_strong_equiv (mkImage segs pc ph) T (mkEntry sp brk0 mb rnd) et inp.
 Proof.
   intros segs pc ph sp brk0 mb rnd inp T et ms' Hm Hsvc Hill.
@@ -534,9 +539,10 @@ Qed.
     judgment through [OmniRun.bh_all_errors_iff]. *)
 Lemma err_escape_equiv :
   forall segs pc ph sp brk0 mb rnd lim inp (target : behavior) ms',
-  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
+  msteps (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step segs ms' = MachineFault ->
+  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
   Equivalence.equiv (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp) target.
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp target ms' Hm Hsvc Hill.
@@ -550,9 +556,10 @@ Qed.
     [OmniEquivalence.modeled_iff]. *)
 Lemma err_escape_modeled :
   forall segs pc ph sp brk0 mb rnd lim inp ms',
-  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
+  msteps (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step segs ms' = MachineFault ->
+  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
   Equivalence.modeled (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp ms' Hm Hsvc Hill.
@@ -563,9 +570,10 @@ Qed.
     source that deterministically faults, against ANY target. *)
 Lemma err_escape_strong_equiv :
   forall segs pc ph sp brk0 mb rnd lim inp (target : behavior) ms',
-  msteps segs (init_machine_state segs pc ph sp mb rnd inp) ms' ->
+  msteps (run_segments segs inp sp mb)
+    (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ms' ->
   ms_svc_pending ms' = None ->
-  RiscvSemantics.step segs ms' = MachineFault ->
+  RiscvSemantics.step (run_segments segs inp sp mb) ms' = MachineFault ->
   Equivalence.modeled (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp)
   /\ Equivalence.equiv (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp)
        target.
