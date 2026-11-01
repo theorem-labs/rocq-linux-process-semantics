@@ -388,7 +388,9 @@ Qed.
 
 (** fstat (80) — -EBADF on a descriptor the process does not hold, a
     delivered [struct stat] on the four file kinds, on the two device
-    kinds and on the unnamed file, and [Unmodeled] on the other seven. *)
+    kinds and on an unnamed file whose descriptors agree
+    ([State.anon_agree]), and [Unmodeled] on the other seven and on a
+    disagreeing unnamed file. *)
 Definition fstat_witness (fd statbuf : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
@@ -406,7 +408,9 @@ Definition fstat_witness (fd statbuf : word) (i : SyscallInput) (m : Model)
   | Some (FdPipe _ _)  => Unmodeled
   | Some (FdDevNull _ _) => fstat_devnull_witness statbuf i m
   | Some FdUrandom => fstat_urandom_witness statbuf i m
-  | Some (FdAnon id af) => fstat_anon_witness id af statbuf i m
+  | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then Unmodeled
+      else fstat_anon_witness id af statbuf i m
   end.
 
 Lemma fstat_witness_ok : forall fd statbuf i m,
@@ -415,12 +419,16 @@ Proof.
   intros. unfold fstat_spec, fstat_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota;
-    [destruct e; cbv iota;
-       first [apply unmodeled_intro | apply fstat_file_witness_ok
+    [|unfold ret_outcome; apply pure_ok].
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af];
+    cbv iota.
+  (* the unnamed file: the agreement test first *)
+  all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota;
+            [apply unmodeled_intro|]).
+  all: first [apply unmodeled_intro | apply fstat_file_witness_ok
              | apply fstat_devnull_witness_ok
              | apply fstat_urandom_witness_ok
-             | apply fstat_anon_witness_ok]
-    |unfold ret_outcome; apply pure_ok].
+             | apply fstat_anon_witness_ok].
 Qed.
 
 Lemma newfstatat_witness_ok : forall dirfd pathp flag i m,

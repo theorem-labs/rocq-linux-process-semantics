@@ -1332,7 +1332,12 @@ Definition proc_self_fd (p : path) : option word :=
     ([State.FdAnon]).  The harness of the cURL targets gives curl that
     path for a [tmpfile()], and curl opens it with three words
     (lib/file.c at f190aa8: [file_connect] and [file_upload]), so those
-    three are answered and every other word declines.
+    three are answered and every other word declines.  A FOURTH WORD IS
+    DECLINED, NEVER READ AS ONE OF THE THREE: the test below compares the
+    whole word, past [open_ignored_flags], with each of the three, and
+    anything else is [unmodeled].  O_RDWR, O_EXCL, O_DIRECTORY, O_PATH,
+    O_TMPFILE and O_NOFOLLOW are each a known hole of this arm, not an
+    answer.
 
     THE ENVIRONMENT ASSUMPTION IT RESTS ON, stated here and in
     SCOPE.md: procfs is mounted at /proc for the run's own pid
@@ -1392,6 +1397,9 @@ Definition openat_procfd_spec (n flags : word) (m : Model)
   match fd_lookup (m_fds m) n with
   | None => err_ret ENOENT
   | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then unmodeled
+        (* the replicas of this file disagree: [State.anon_agree] *)
+      else
       if Z.eqb fl 0 then
         open_result_spec m (fun fd => with_fds (fd_insert (m_fds m) fd
           (FdAnon id (mkAnonFile (af_data af) (Z_to_bv 64 0) true false false (af_pin af)))))
@@ -1954,6 +1962,9 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
             (* NO set_fds: the offset is untouched, see the header *)
       end
   | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then unmodeled
+        (* the replicas of this file disagree: [State.anon_agree] *)
+      else
       (* AN UNNAMED FILE IS A REGULAR FILE, so [do_ftruncate]'s
          [!S_ISREG(inode->i_mode) || !(file->f_mode & FMODE_WRITE)]
          (fs/open.c, Linux v6.18.46) turns on the access mode alone: a

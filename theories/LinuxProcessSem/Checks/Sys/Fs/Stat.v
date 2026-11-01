@@ -940,7 +940,8 @@ Qed.
 
 (** fstat: total over [FdEntry], answering on the closed descriptor's
     -EBADF, the four file kinds, which share one inode and so one
-    answer, /dev/null, /dev/urandom and the unnamed file.  The other
+    answer, /dev/null, /dev/urandom and the unnamed file, the last only
+    when its file's descriptors agree ([State.anon_agree]).  The other
     seven decline as a body; see [Stat.fstat_spec] for which of
     [struct stat]'s twenty members each would have to invent, and for
     why the match carries no wildcard. *)
@@ -961,7 +962,9 @@ Definition check_fstat (i : SyscallInput) (fd statbuf : word)
   | Some (FdPipe _ _)  => CheckUnmodeled
   | Some (FdDevNull _ _) => check_fstat_devnull i statbuf eff m
   | Some FdUrandom => check_fstat_urandom i statbuf eff m
-  | Some (FdAnon id af) => check_fstat_anon i id af statbuf eff m
+  | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then CheckUnmodeled
+      else check_fstat_anon i id af statbuf eff m
   end.
 
 Lemma check_fstat_sound_ok : forall i fd statbuf eff m m' evs,
@@ -971,13 +974,17 @@ Proof.
   intros i fd statbuf eff m m' evs H.
   unfold check_fstat in H. unfold fstat_spec.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta.
-  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota;
-    [destruct e; try discriminate;
-     first [now apply check_fstat_file_sound_ok
-           |now apply check_fstat_devnull_sound_ok
-           |now apply check_fstat_urandom_sound_ok
-           |now apply check_fstat_anon_sound_ok]|].
-  apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok.
+  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H |- *.
+  2: { apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok. }
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af];
+    cbv iota in H |- *; try discriminate.
+  (* the unnamed file: the agreement test first *)
+  all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H |- *;
+            [discriminate|]).
+  all: first [now apply check_fstat_file_sound_ok
+             |now apply check_fstat_devnull_sound_ok
+             |now apply check_fstat_urandom_sound_ok
+             |now apply check_fstat_anon_sound_ok].
 Qed.
 
 Lemma check_fstat_sound_unmodeled : forall i fd statbuf eff m,
@@ -987,13 +994,16 @@ Proof.
   intros i fd statbuf eff m H.
   unfold check_fstat in H. unfold fstat_spec.
   eapply bind_unmodeled2; [apply get_model_ok|].
-  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv beta iota;
+  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv beta iota in H |- *;
     [|now apply check_ret_only_no_unmodeled in H].
-  destruct e; try apply unmodeled_intro;
-    first [eapply check_fstat_file_sound_unmodeled; exact H
-          |eapply check_fstat_devnull_sound_unmodeled; exact H
-          |eapply check_fstat_urandom_sound_unmodeled; exact H
-          |eapply check_fstat_anon_sound_unmodeled; exact H].
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af];
+    cbv iota in H |- *; try apply unmodeled_intro.
+  all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H |- *;
+            [apply unmodeled_intro|]).
+  all: first [eapply check_fstat_file_sound_unmodeled; exact H
+             |eapply check_fstat_devnull_sound_unmodeled; exact H
+             |eapply check_fstat_urandom_sound_unmodeled; exact H
+             |eapply check_fstat_anon_sound_unmodeled; exact H].
 Qed.
 
 Lemma check_fstat_complete_ok : forall i fd statbuf eff m m' evs,
@@ -1003,14 +1013,18 @@ Proof.
   intros i fd statbuf eff m m' evs H.
   unfold fstat_spec in H. unfold check_fstat.
   apply bind_get_model_ok_inv in H. cbv beta in H.
-  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H;
-    [destruct e; try (now apply check_fstat_file_complete_ok);
-       try (now apply check_fstat_devnull_complete_ok);
-       try (now apply check_fstat_urandom_complete_ok);
-       try (now apply check_fstat_anon_complete_ok);
-       unfold unmodeled in H; discriminate|].
-  unfold pure in H. inversion H; clear H; subst.
-  apply check_ret_only_ok_iff. now repeat split.
+  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H |- *.
+  2: { unfold pure in H. inversion H; clear H; subst.
+       apply check_ret_only_ok_iff. now repeat split. }
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af];
+    cbv iota in H |- *.
+  all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H |- *;
+            [unfold unmodeled in H; discriminate|]).
+  all: first [now apply check_fstat_file_complete_ok
+             |now apply check_fstat_devnull_complete_ok
+             |now apply check_fstat_urandom_complete_ok
+             |now apply check_fstat_anon_complete_ok
+             |unfold unmodeled in H; discriminate].
 Qed.
 
 Lemma check_fstat_complete_unmodeled : forall i fd statbuf m eff,
@@ -1020,11 +1034,14 @@ Proof.
   intros i fd statbuf m eff H.
   unfold fstat_spec in H. unfold check_fstat.
   apply bind_get_model_unmodeled_inv in H. cbv beta in H.
-  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H;
-    [destruct e; try reflexivity;
-       first [eapply check_fstat_file_complete_unmodeled; exact H
+  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H |- *.
+  2: { unfold pure in H. discriminate. }
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af];
+    cbv iota in H |- *; try reflexivity.
+  all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H |- *;
+            [reflexivity|]).
+  all: first [eapply check_fstat_file_complete_unmodeled; exact H
              |eapply check_fstat_devnull_complete_unmodeled; exact H
              |eapply check_fstat_urandom_complete_unmodeled; exact H
-             |eapply check_fstat_anon_complete_unmodeled; exact H]|].
-  unfold pure in H. discriminate.
+             |eapply check_fstat_anon_complete_unmodeled; exact H].
 Qed.

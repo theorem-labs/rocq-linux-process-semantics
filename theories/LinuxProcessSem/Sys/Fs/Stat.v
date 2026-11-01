@@ -766,7 +766,10 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
                                      (* the random device: S_IFCHR, [st_rdev] 1:9
                                         ([Uapi.stat_urandom_ok]), the rest pinned once
                                         under [Uapi.urandom_path] *)
-  | Some (FdAnon id af) => fstat_anon_spec id af statbuf
+  | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then unmodeled
+        (* the replicas of this file disagree: [State.anon_agree] *)
+      else fstat_anon_spec id af statbuf
                                      (* an unnamed file: S_IFREG, [st_nlink] 0 and the
                                         contents' length asserted, the rest pinned once
                                         for the file in every descriptor's [af_pin] *)

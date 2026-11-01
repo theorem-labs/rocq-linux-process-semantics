@@ -414,10 +414,12 @@ Local Definition procfd_trunc_model (id : word) (af : AnonFile) (fd : word)
     (FdAnon id (mkAnonFile [] (Z_to_bv 64 0) false true false (af_pin af)))) m.
 
 (** Mirrors [Open.openat_procfd_spec], branch for branch: the three
-    words, then -ENOENT for a descriptor number nothing holds, then the
-    reopen of an [FdAnon] in one of three shapes, and the decline of
-    every other kind at N.  Each reopen is [check_open_result]'s shape,
-    whose errno alternatives are [openat_errnos]'. *)
+    words, then -ENOENT for a descriptor number nothing holds, then, on
+    an [FdAnon] whose file's descriptors agree ([State.anon_agree]; the
+    decline otherwise), the reopen in one of three shapes, and the
+    decline of every other kind at N.  Each reopen is
+    [check_open_result]'s shape, whose errno alternatives are
+    [openat_errnos]'. *)
 Local Definition check_openat_procfd (n flags : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
   let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
@@ -427,6 +429,8 @@ Local Definition check_openat_procfd (n flags : word) (eff : SyscallEffect)
   match fd_lookup (m_fds m) n with
   | None => check_ret_only eff (errno_ret ENOENT) m []
   | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then CheckUnmodeled
+      else
       if Z.eqb fl 0 then
         check_open_result eff m (fun fd => procfd_reopen_model id af true false false fd m)
       else if Z.eqb fl wr_create_flags then
@@ -787,7 +791,8 @@ Proof.
   destruct (fd_lookup (m_fds m) n)
     as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af]|];
     try discriminate.
-  - destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0).
+  - destruct (negb (anon_agree (m_fds m) id af)); [discriminate|].
+    destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0).
     { exact (check_open_result_sound_ok i eff m
         (fun fd => with_fds (fd_insert (m_fds m) fd
           (FdAnon id (mkAnonFile (af_data af) (Z_to_bv 64 0) true false false
@@ -1115,7 +1120,8 @@ Proof.
   destruct (fd_lookup (m_fds m) n)
     as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af]|];
     try apply unmodeled_intro.
-  - exfalso.
+  - destruct (negb (anon_agree (m_fds m) id af)); [apply unmodeled_intro|].
+    exfalso.
     destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0);
       [now apply check_open_result_no_unmodeled in H|].
     destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
@@ -1622,7 +1628,9 @@ Proof.
   destruct (fd_lookup (m_fds m) n)
     as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af]|];
     try (unfold unmodeled; intro Hu; discriminate Hu).
-  - destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0).
+  - destruct (negb (anon_agree (m_fds m) id af));
+      [unfold unmodeled; intro Hu; discriminate Hu|].
+    destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0).
     { exact (check_open_result_complete_ok i eff m
         (fun fd => with_fds (fd_insert (m_fds m) fd
           (FdAnon id (mkAnonFile (af_data af) (Z_to_bv 64 0) true false false
@@ -2020,7 +2028,8 @@ Proof.
   destruct (fd_lookup (m_fds m) n)
     as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|id af]|];
     try (intros _; reflexivity).
-  - intro H. exfalso.
+  - destruct (negb (anon_agree (m_fds m) id af)); [intros _; reflexivity|].
+    intro H. exfalso.
     destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0).
     { exact (open_result_spec_no_unmodeled m
         (fun fd => with_fds (fd_insert (m_fds m) fd
@@ -2250,9 +2259,11 @@ Definition check_ftruncate (fd len : word) (eff : SyscallEffect) (m : Model)
               (with_fs (fs_set (m_fs m) p (file_truncate data len)) m) []
       end
   | Some (FdAnon id af) =>
-      (* a regular file: -EINVAL on a read-only descriptor, otherwise the
-         new contents for EVERY descriptor of the file, offsets kept *)
-      if negb (af_wr af) then check_ret_only eff (errno_ret EINVAL) m []
+      (* declined unless the file's descriptors agree ([State.anon_agree]);
+         then a regular file: -EINVAL on a read-only descriptor, otherwise
+         the new contents for EVERY descriptor of the file, offsets kept *)
+      if negb (anon_agree (m_fds m) id af) then CheckUnmodeled
+      else if negb (af_wr af) then check_ret_only eff (errno_ret EINVAL) m []
       else if negb (modeled_truncate_gap (af_data af) len) then CheckUnmodeled
       else
         check_ret_only eff (Z_to_bv 64 0)
@@ -2272,17 +2283,18 @@ Proof.
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota; srw Hfd;
          apply pure_ok).
-  (* the unnamed file: the access-mode test, then the contents written
-     to every descriptor of the file *)
-  4: { destruct (negb (af_wr af)) eqn:Hwr.
+  (* the unnamed file: the agreement test, the access-mode test, then the
+     contents written to every descriptor of the file *)
+  4: { destruct (negb (anon_agree (m_fds m) aid af)) eqn:Hag; [discriminate|].
+       destruct (negb (af_wr af)) eqn:Hwr.
        { apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->).
          eapply bind_ok0; [apply get_model_ok|]; cbv beta iota; srw Hfd;
-           srw Hwr; apply pure_ok. }
+           srw Hag; srw Hwr; apply pure_ok. }
        destruct (negb (modeled_truncate_gap (af_data af) len)) eqn:Hgap;
          [discriminate|].
        apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->).
-       eapply bind_ok0; [apply get_model_ok|]; cbv beta iota; srw Hfd; srw Hwr;
-         srw Hgap; eapply bind_ok0; [apply modify_ok|]; apply pure_ok. }
+       eapply bind_ok0; [apply get_model_ok|]; cbv beta iota; srw Hfd; srw Hag;
+         srw Hwr; srw Hgap; eapply bind_ok0; [apply modify_ok|]; apply pure_ok. }
   (* the writable named-file arms *)
   all: destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; [|discriminate].
   all: destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; [discriminate|].
@@ -2301,11 +2313,14 @@ Proof.
   { now apply check_ret_only_no_unmodeled in H. }
   destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af]|] eqn:Hfd;
     try (now apply check_ret_only_no_unmodeled in H).
-  4: { destruct (negb (af_wr af)) eqn:Hwr;
+  4: { destruct (negb (anon_agree (m_fds m) aid af)) eqn:Hag.
+       { eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+           srw Hfd; srw Hag; apply unmodeled_intro. }
+       destruct (negb (af_wr af)) eqn:Hwr;
          [now apply check_ret_only_no_unmodeled in H|].
        destruct (negb (modeled_truncate_gap (af_data af) len)) eqn:Hgap;
          [ eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
-           srw Hfd; srw Hwr; srw Hgap; apply unmodeled_intro
+           srw Hfd; srw Hag; srw Hwr; srw Hgap; apply unmodeled_intro
          | now apply check_ret_only_no_unmodeled in H ]. }
   (* every destruct precedes the bind: the spec's [fs_lookup] sits under
      [get_model]'s binder, so it is only rewritable once [get_model_ok]
@@ -2332,6 +2347,7 @@ Proof.
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
     try (destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; hall Hgap;
          inv_ok);
+    try (destruct (negb (anon_agree (m_fds m) aid af)) eqn:Hag; hall Hag; inv_ok);
     try (destruct (negb (af_wr af)) eqn:Hwr; hall Hwr; inv_ok);
     try (destruct (negb (modeled_truncate_gap (af_data af) len)) eqn:Hagap;
          hall Hagap; inv_ok);
@@ -2351,6 +2367,7 @@ Proof.
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
     try (destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; hall Hgap;
          inv_ok);
+    try (destruct (negb (anon_agree (m_fds m) aid af)) eqn:Hag; hall Hag; inv_ok);
     try (destruct (negb (af_wr af)) eqn:Hwr; hall Hwr; inv_ok);
     try (destruct (negb (modeled_truncate_gap (af_data af) len)) eqn:Hagap;
          hall Hagap; inv_ok);

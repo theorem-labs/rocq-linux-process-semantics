@@ -482,6 +482,8 @@ Proof.
     pose proof (rw_count_clamp_range count). lia.
   - (* unnamed file: the O_RDWR bullet above, on the entry's own
        contents and offset, and the same [file_read] bound *)
+    destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in Hspec;
+      [discriminate Hspec|].
     destruct (negb (af_rd af)); cbv iota in Hspec;
       [now destruct (Hro _ _ _ Hspec)|].
     destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
@@ -2689,7 +2691,8 @@ Proof.
          now destruct (Hro _ _ _ H). }
   (* the unnamed file: the transferring arm on the descriptor's own
      contents, whose ledger is the same [write_source] prefix *)
-  3: { destruct (negb (af_wr af)); cbv iota in H; [now destruct (Hro _ _ _ H)|].
+  3: { destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H; [discriminate H|].
+       destruct (negb (af_wr af)); cbv iota in H; [now destruct (Hro _ _ _ H)|].
        destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in H;
          [now destruct (Hro _ _ _ H)|].
        destruct (rw_pos_einvalb pos (bv_unsigned count)); cbv iota in H;

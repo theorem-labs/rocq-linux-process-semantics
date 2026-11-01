@@ -413,18 +413,21 @@ not apply.
   `openat(AT_FDCWD, "/proc/self/fd/N", ...)` on that assumption
   (`Fs.Open.openat_procfd_spec`); with no procfs there, Linux answers
   `-ENOENT` where the model opens the file again.
-- The run's `/tmp` is private to it (`State.in_tmp`), and each file in
-  it is a regular file whose one name is its name in `/tmp`. So a file
-  whose `/tmp` name the run removes while descriptors hold it has link
-  count 0 afterwards, and its `fstat` reports `st_nlink` 0
-  (`Uapi.stat_pin_unlinked`, `Fs.Stat.fstat_anon_spec`). A hard link to
-  a declared `/tmp` file from outside `/tmp` makes this assumption
-  false.
+- A hard link to a `/tmp` file is outside the model, so a program that
+  makes one, or that runs where something outside it made one, has no
+  statement here. The model has no `link` or `linkat` arm, and it treats
+  the run's private `/tmp` (`State.in_tmp`) as holding regular files
+  whose one name is their name in `/tmp`. That is why a file whose
+  `/tmp` name the run removes while descriptors hold it has link count 0
+  afterwards, and its `fstat` reports `st_nlink` 0
+  (`Uapi.stat_pin_unlinked`, `Fs.Stat.fstat_anon_spec`).
 - An unnamed file (`State.FdAnon`) is used by this process only. `dup`,
   `dup3`, `F_DUPFD` and a `clone` holding one of its descriptors are
   declined, so no other process or descriptor table shares it. Its
   contents live in its descriptors' entries, so the exit event's file
-  system does not include it, as Linux's does not.
+  system does not include it, as Linux's does not. Its contents are
+  replicated, one copy per descriptor, and the model answers no call
+  that reads them unless every copy agrees (`State.anon_agree`).
 - The network namespace's loopback device is named `lo`. The model
   answers `ioctl(fd, SIOCGIFINDEX, &ifr)` on an `AF_UNIX` or `AF_INET6`
   datagram socket only for the name `lo`, and answers it with index 1

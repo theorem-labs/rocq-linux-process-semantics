@@ -2368,11 +2368,15 @@ Lemma check_fstat_frame : forall i fd statbuf eff m m' evs,
 Proof.
   intros i fd statbuf eff m m' evs H. unfold check_fstat in H.
   destruct (fd_lookup (m_fds m) fd) as [e|]; [|vm_frame2 H].
-  destruct e; try discriminate;
-    first [eapply check_fstat_file_frame; exact H
-          |eapply check_fstat_devnull_frame; exact H
-          |eapply check_fstat_urandom_frame; exact H
-          |eapply check_fstat_anon_frame; exact H].
+  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af];
+    cbv iota in H; try discriminate.
+  (* the unnamed file: past the agreement test *)
+  all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H;
+            [discriminate|]).
+  all: first [eapply check_fstat_file_frame; exact H
+             |eapply check_fstat_devnull_frame; exact H
+             |eapply check_fstat_urandom_frame; exact H
+             |eapply check_fstat_anon_frame; exact H].
 Qed.
 
 Lemma check_getid_frame : forall sel eff m m' evs,

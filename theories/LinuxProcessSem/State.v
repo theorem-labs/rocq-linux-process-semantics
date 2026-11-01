@@ -5826,6 +5826,54 @@ Definition anon_write_back (fds : list (word * FdEntry)) (fd id : word)
     (af : AnonFile) (d : list byte) (o : word) : list (word * FdEntry) :=
   fd_insert (anon_set_data fds id d) fd (FdAnon id (af_set_off (af_set_data af d) o)).
 
+
+(** Two pins are the same: both absent, or both the same bytes. *)
+Definition anon_pin_eqb (a b : option (list byte)) : bool :=
+  match a, b with
+  | None, None => true
+  | Some x, Some y => Fs.path_eqb x y
+  | None, Some _ | Some _, None => false
+  end.
+
+(** Entry [e] agrees with [af] as a descriptor of file [id]: a descriptor
+    of another file, or of no unnamed file, agrees trivially; a
+    descriptor of file [id] must carry the same contents and pin.
+    Enumerated, for [entry_anon_id]'s reason. *)
+Definition anon_entry_agrees (id : word) (af : AnonFile) (e : FdEntry) : bool :=
+  match e with
+  | FdAnon id' af' =>
+      implb (bv_eqb id' id)
+            (Fs.path_eqb (af_data af') (af_data af) && anon_pin_eqb (af_pin af') (af_pin af))
+  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
+  | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
+  | FdStream _ _ _ | FdEventfd _ | FdDgram _ => true
+  end.
+
+(** THE REPLICAS AGREE: every descriptor of file [id] in the table carries
+    the contents and the pin of [af], the entry the call names.
+
+    The contents of an unnamed file are REPLICATED, one copy per
+    descriptor ([FdAnon]), so nothing in the type stops two descriptors of
+    one file from disagreeing, and a state where they do describes no
+    Linux machine: one inode has one size and one set of bytes.  So the
+    model answers no call that reads an unnamed file's contents or pin in
+    such a state.  EVERY arm that reads them — [Fs.ReadWrite]'s read,
+    write, writev, pwrite64, pwritev2 and lseek, [Fs.Open]'s ftruncate and
+    /proc/self/fd/N reopen, [Fs.Stat]'s fstat — first requires
+    [anon_agree] and DECLINES otherwise.  A proof therefore cannot use a
+    disagreeing state to conclude anything about a run: the run is
+    unmodeled there.
+
+    The arms that answer also KEEP the replicas agreeing, which is what
+    makes the decline unreachable from a launch (no launch holds an
+    unnamed file): a change of the contents goes to every descriptor of
+    the file ([anon_update], [anon_write_back]), a reopen copies the
+    contents and pin of an agreeing descriptor, the removal of a /tmp name
+    gives every descriptor it converts the same contents and pin under one
+    fresh id, and a close only removes an entry.
+    [Checks.AnonAgree] states these as lemmas. *)
+Definition anon_agree (fds : list (word * FdEntry)) (id : word) (af : AnonFile) : bool :=
+  forallb (fun p => anon_entry_agrees id af (snd p)) fds.
 (* =========================================================================
    Stream-pair helpers — the [FdStream] ends [socketpair] makes
    ========================================================================= *)

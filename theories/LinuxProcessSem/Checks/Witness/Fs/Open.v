@@ -76,15 +76,17 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
              else match proc_self_fd p with
                   | Some n =>
                       (* "/proc/self/fd/N": a reopen of an unnamed file
-                         takes the env-failure branch, so the witness
-                         builds no new descriptor *)
+                         whose descriptors agree takes the env-failure
+                         branch, so the witness builds no new descriptor *)
                       let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
                       if negb (Z.eqb fl 0 || Z.eqb fl wr_create_flags
                                || Z.eqb fl append_create_flags)%bool then Unmodeled
                       else
                       match fd_lookup (m_fds m) n with
                       | None => ret_outcome (errno_ret ENOENT) m
-                      | Some (FdAnon _ _) => ret_outcome (errno_ret witness_errno) m
+                      | Some (FdAnon id af) =>
+                          if negb (anon_agree (m_fds m) id af) then Unmodeled
+                          else ret_outcome (errno_ret witness_errno) m
                       | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _)
                       | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
                       | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdDevNull _ _)
@@ -244,7 +246,8 @@ Proof.
                 destruct (fd_lookup (m_fds m) fdn)
                   as [[ch|q cur|q cur|q cur|q cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af]|];
                   try apply unmodeled_intro.
-                - destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0);
+                - destruct (negb (anon_agree (m_fds m) aid af)); [apply unmodeled_intro|].
+                  destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0);
                     [|destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                                   wr_create_flags)];
                     (apply alt_l; eapply bind_step;
@@ -469,8 +472,10 @@ Definition ftruncate_witness (fd len : word) (m : Model)
                  (with_fs (fs_set (m_fs m) p (file_truncate data len)) m)
       end
   | Some (FdAnon id af) =>
-      (* a regular file: see [Open.ftruncate_spec]'s unnamed-file arm *)
-      if negb (af_wr af) then ret_outcome (errno_ret EINVAL) m
+      (* declined unless the file's descriptors agree; then a regular
+         file: see [Open.ftruncate_spec]'s unnamed-file arm *)
+      if negb (anon_agree (m_fds m) id af) then Unmodeled
+      else if negb (af_wr af) then ret_outcome (errno_ret EINVAL) m
       else if negb (modeled_truncate_gap (af_data af) len) then Unmodeled
       else ret_outcome (Z_to_bv 64 0)
              (with_fds (anon_set_data (m_fds m) id (file_truncate (af_data af) len)) m)
@@ -486,6 +491,7 @@ Proof.
          cbv beta iota; srw Hfd; apply pure_ok).
   (* the unnamed file *)
   4: { eapply bind_step; [apply get_model_ok|]; cbv beta iota; srw Hfd.
+       destruct (negb (anon_agree (m_fds m) aid af)); [apply unmodeled_intro|].
        destruct (negb (af_wr af)); [apply pure_ok|].
        destruct (negb (modeled_truncate_gap (af_data af) len));
          [apply unmodeled_intro|].

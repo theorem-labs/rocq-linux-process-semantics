@@ -976,6 +976,9 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
          on the blocking file [State.FdDgram] always is, waits for a
          datagram nothing in this model can send *)
   | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then unmodeled
+        (* the replicas of this file disagree: [State.anon_agree] *)
+      else
       (* AN UNNAMED FILE READS AS THE [FdFileRW] ARM ABOVE DOES, on the
          descriptor's own copy of the contents ([af_data]) at its own
          [f_pos] ([af_off]).  [vfs_read] (fs/read_write.c, Linux
@@ -2080,6 +2083,9 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          past flag and length tests this model does not carry; no target
          writes one *)
   | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then unmodeled
+        (* the replicas of this file disagree: [State.anon_agree] *)
+      else
       (* THE [FdFileW]/[FdFileRW] ARM without O_APPEND and the [FdFileA]
          arm with it, through the same two helpers, on the descriptor's
          own contents; see [anon_write_place].  [vfs_write]
@@ -2527,6 +2533,9 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
           else record_copyins [(buf, length bs)] (ret_only (len_word bs))
       end
   | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then unmodeled
+        (* the replicas of this file disagree: [State.anon_agree] *)
+      else
       (* THE ARM ABOVE on the descriptor's own contents, with O_APPEND
          honoured.  [ksys_pwrite64] reaches [vfs_write] (a regular file
          keeps FMODE_PWRITE), whose FMODE_WRITE test is -EBADF on a
@@ -2944,6 +2953,9 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
   | Some (FdDgram _) => writev_buf_gap
       (* declined whole, as the scalar write is: see [write_spec] *)
   | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then unmodeled
+        (* the replicas of this file disagree: [State.anon_agree] *)
+      else
       (* THE FILE ARMS ABOVE, through the same [writev_file_arm], with
          [write_spec]'s two unnamed-file middles: at [f_pos] without
          O_APPEND, at the end of the file with it, the contents to every
@@ -3017,6 +3029,9 @@ Definition pwritev2_spec (fd iov iovcnt pos_l pos_h flags : word)
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* [do_pwritev]'s empty slot *)
   | Some (FdAnon id af) =>
+      if negb (anon_agree (m_fds m) id af) then unmodeled
+        (* the replicas of this file disagree: [State.anon_agree] *)
+      else
       if negb (af_wr af) then err_ret EBADF      (* [vfs_writev]'s FMODE_WRITE test,
                                                     fs/read_write.c:1037-1038 *)
       else
@@ -3831,6 +3846,9 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
               end
           end
       | FdAnon id af =>
+          if negb (anon_agree (m_fds m) id af) then unmodeled
+            (* the replicas of this file disagree: [State.anon_agree] *)
+          else
           (* AN UNNAMED FILE REPOSITIONS LIKE THE FILE KINDS ABOVE, on this
              descriptor's [f_pos] and the file's size, which is the length
              of the contents every descriptor of it carries.  The
