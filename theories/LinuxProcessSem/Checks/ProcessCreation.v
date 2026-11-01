@@ -899,8 +899,8 @@ Qed.
     the list holds [PR_SET_PDEATHSIG] (1), [PR_SET_DUMPABLE] (4) and
     [PR_SET_NO_NEW_PRIVS] (38), which write the parent-death signal, the
     mm's dumpable flag and the no-new-privs bit and nothing else
-    (kernel/sys.c, [SYSCALL_DEFINE5(prctl)], read at v6.18.44).  Neither
-    is a caller of [set_tagged_addr_ctrl], whose only callers at that
+    (kernel/sys.c, [SYSCALL_DEFINE5(prctl)], read at v6.18.44).  None of
+    them is a caller of [set_tagged_addr_ctrl], whose only callers at that
     tag are option 55's [SET_TAGGED_ADDR_CTRL] and riscv's ptrace
     regset, so [PMLEN] stays 0 and [State.access_okb] stays exact. *)
 
@@ -1271,8 +1271,8 @@ Proof. vm_compute. reflexivity. Qed.
 
 (** And the other side of the multiplexer, so the two examples above
     are not satisfied by an arm that declines everything:
-    [PR_CAPBSET_READ] on a valid capability is 1, and the model is left
-    alone. *)
+    [PR_CAPBSET_READ] on a valid capability is answered (1 is one of the
+    two answers capability 0 admits), and the model is left alone. *)
 Example prctl_checker_capbset_read :
   check_syscall (pc_prctl_input 23) (mkEffect (Z_to_bv 64 1) [] []) pc_model
   = CheckOk pc_model [].

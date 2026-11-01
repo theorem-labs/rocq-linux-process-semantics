@@ -1105,6 +1105,16 @@ Definition PR_SET_NO_NEW_PRIVS : Z := 38%Z.
     it -- so it is read by real code rather than merely available. *)
 Definition CAP_LAST_CAP : Z := 40%Z.
 
+(** [CAP_SETGID] (6) and [CAP_SETUID] (7) (include/uapi/linux/capability.h,
+    read at v6.18.44; identical at v6.18.46): the two capabilities the
+    model's privileged credential arms answer for.  [setgid],
+    [setresgid] and [setgroups] ask [ns_capable_setid(CAP_SETGID)],
+    [setuid] and [setresuid] ask [ns_capable_setid(CAP_SETUID)], and
+    [State.creds_privileged]'s note assumes the bounding set holds both.
+    [Kernel.Sys.prctl_spec]'s [PR_CAPBSET_READ] answers 1 for these two. *)
+Definition CAP_SETGID : Z := 6%Z.
+Definition CAP_SETUID : Z := 7%Z.
+
 (** [_LINUX_CAPABILITY_VERSION_3], the [version] word of a
     [struct __user_cap_header_struct] that [capget] (90) and [capset]
     (91) answer (include/uapi/linux/capability.h, read at v6.18.44;

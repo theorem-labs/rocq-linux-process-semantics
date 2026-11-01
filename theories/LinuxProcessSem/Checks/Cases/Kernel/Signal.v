@@ -162,11 +162,13 @@ Example rt_sigaction_sigabrt_dfl_accepted :
   = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
 Proof. vm_compute. reflexivity. Qed.
 
-(** SIGCHLD (17), THE SAME THREE SHAPES AS SIGABRT'S, and the tripwire
-    for the clone argument.  [Fork.clone_spec] argues that the SIGCHLD a
-    child's exit sends comes to nothing because its disposition discards
-    it; [Signal.sigchld_dfl_install] answers the one install that keeps
-    that true, SIG_DFL, and every other SIGCHLD install declines.
+(** SIGCHLD (17), THE SAME THREE SHAPES AS SIGABRT'S, a fourth for the
+    flag word, and the tripwire for the clone argument.
+    [Fork.clone_spec] argues that the SIGCHLD a child's exit sends comes
+    to nothing because its disposition discards it;
+    [Signal.sigchld_dfl_install] answers the one install that keeps that
+    true, SIG_DFL with SA_NOCLDWAIT clear, and every other SIGCHLD
+    install declines.
 
     [rt_sigaction_sigchld_unmodeled] is the TRIPWIRE, a HANDLER install.
     The model can have a child — a modeled [clone]/[clone3] parent side
@@ -207,6 +209,53 @@ Example rt_sigaction_sigchld_dfl_accepted :
                    (fun _ => None))
     (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
   = CheckReject.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** A SIG_DFL [struct sigaction] whose flag word is [fl]: the low byte
+    of [sa_flags], at offset 8, is [fl], and every other byte of the 24
+    is 0. *)
+Definition mem_sigaction_dfl_flags (fl : Z) : word -> option byte :=
+  fun a => if bv_leu 4096 a && bv_ltu a (4096 + 24)
+           then Some (if bv_eqb a 4104 then Z_to_bv 8 fl else 0)
+           else None.
+
+(** SIG_DFL WITH SA_NOCLDWAIT (2) IS DECLINED, alone and beside
+    SA_NOCLDSTOP (3), with the answer Linux gives: 0 after the 24-byte
+    copy.  Linux reaps an exiting child itself under that bit
+    ([do_notify_parent], kernel/signal.c), so the install changes what a
+    later [wait4] finds, and [Signal.sigchld_dfl_install] says why the
+    model does not answer it.  Both words are inside
+    [Signal.sa_flags_accepted], so the decline is the SIGCHLD arm's and
+    not [Signal.sa_flags_ok]'s.  The model before this narrowing
+    answered both. *)
+Example rt_sigaction_sigchld_dfl_nocldwait_unmodeled :
+  check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] (mem_sigaction_dfl_flags 2)
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
+    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+  = CheckUnmodeled /\
+  check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] (mem_sigaction_dfl_flags 3)
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
+    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+  = CheckUnmodeled.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** ...and its CONTROL, which the model before the narrowing passed
+    too: SIG_DFL with flag word 0 (bwrap's install) and with
+    SA_NOCLDSTOP (1) alone is still answered 0.  The arm declines one
+    bit, not every flag word other than 0. *)
+Example rt_sigaction_sigchld_dfl_flags_accepted :
+  check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] (mem_sigaction_dfl_flags 0)
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
+    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [] /\
+  check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] (mem_sigaction_dfl_flags 1)
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
+    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
 Proof. split; vm_compute; reflexivity. Qed.
 
 (** ...and the acceptance the declines above are AGAINST, so that a spec

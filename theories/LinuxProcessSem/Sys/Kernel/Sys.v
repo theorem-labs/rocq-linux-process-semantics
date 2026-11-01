@@ -1142,18 +1142,28 @@ Definition uname_spec (name : word) : Sys SyscallEffect :=
 Definition prctl_modeled_options : list Z :=
   [PR_CAPBSET_READ; PR_SET_PDEATHSIG; PR_SET_DUMPABLE; PR_SET_NO_NEW_PRIVS].
 
+(** The capabilities [State.creds_privileged]'s note assumes the
+    bounding set holds: CAP_SETUID and CAP_SETGID, the two the model's
+    privileged credential arms ask about.  [prctl_spec]'s
+    [PR_CAPBSET_READ] answers 1 for these and chooses for every other
+    valid capability. *)
+Definition capbset_assumed (cap : Z) : bool :=
+  (Z.eqb cap CAP_SETUID || Z.eqb cap CAP_SETGID)%bool.
+
 (** [prctl(option, arg2, arg3, arg4, arg5)] — syscall 167, answered for
     the four options of [prctl_modeled_options] and for nothing else.
     [PR_CAPBSET_READ] is answered by the capability LSM hook; the other
     three by kernel/sys.c's own [switch].  The paragraphs below take
     them in that order.
 
-    security/commoncap.c [cap_task_prctl], read at v6.18.44; identical at v6.18.46.
+    security/commoncap.c [cap_task_prctl], [handle_privileged_root], read at v6.18.44; identical at v6.18.46.
+    include/uapi/linux/capability.h [CAP_SETGID], [CAP_SETUID], [cap_valid], read at v6.18.44; identical at v6.18.46.
     security/security.c [security_task_prctl], read at v6.18.44; identical at v6.18.46.
     kernel/sys.c [SYSCALL_DEFINE5(prctl)], read at v6.18.44; identical at v6.18.46.
     include/linux/signal.h [valid_signal], read at v6.18.44; identical at v6.18.46.
     include/linux/sched/coredump.h [SUID_DUMP_DISABLE], [SUID_DUMP_USER], read at v6.18.44; identical at v6.18.46.
-    kernel/cred.c [commit_creds], read at v6.18.44; identical at v6.18.46.
+    kernel/cred.c [commit_creds], [cred_cap_issubset], read at v6.18.44; identical at v6.18.46.
+    include/linux/capability.h [cap_issubset], read at v6.18.44; identical at v6.18.46.
 
     PR_CAPBSET_READ: WHERE THE ANSWER COMES FROM, AND WHY IT IS NOT
     kernel/sys.c.
@@ -1164,8 +1174,7 @@ Definition prctl_modeled_options : list Z :=
                 return error;
 
     so the LSM hook runs BEFORE the syscall's own [switch] and can
-    answer outright (Linux v6.18.46, commit 1f99e9ab748f, kernel/sys.c,
-    [SYSCALL_DEFINE5(prctl)]).  [PR_CAPBSET_READ] is answered there:
+    answer outright.  [PR_CAPBSET_READ] is answered there:
     capability's hook is [cap_task_prctl] (security/commoncap.c), whose
     first arm is
 
@@ -1219,46 +1228,51 @@ Definition prctl_modeled_options : list Z :=
     [(__force t) a] (include/linux/syscalls.h).  [Sys.SyscallTable]
     applies [Syscall.int32] to it in the arm, exactly as it does for
     [setsockopt]'s [level].  The asymmetry is real:
-    [prctl(2^32 | PR_CAPBSET_READ, 0)] answers 1 while
-    [prctl(PR_CAPBSET_READ, 2^32)] answers -EINVAL.
+    [prctl(2^32 | PR_CAPBSET_READ, CAP_SETUID)] answers 1 while
+    [prctl(PR_CAPBSET_READ, 2^32 | CAP_SETUID)] answers -EINVAL.
 
-    WHY THE ANSWER IS 1 RATHER THAN A CHOICE.  [cap_raised(old->cap_bset,
-    arg2)] reads a bit of the caller's capability bounding set, which is
-    inherited across fork and exec and which this model does not carry.
-    It does not have to: this model already ASSUMES an UNNARROWED
-    bounding set.  The
-    assumption is [State.creds_privileged]'s — the note above that
-    definition lists "an UNNARROWED capability bounding set" among the
-    conditions under which answering [ns_capable_setid(CAP_SETUID)] with
-    the effective uid is EXACT, and says why that one is easy to miss:
-    [handle_privileged_root] grants legacy root
+    THE ANSWER IS 1 FOR CAP_SETUID AND CAP_SETGID AND A CHOICE FOR
+    EVERY OTHER CAPABILITY.  [cap_raised(old->cap_bset, arg2)] reads a
+    bit of the caller's capability bounding set, which is inherited
+    across fork and exec and which this model does not carry.
+
+    For CAP_SETUID and CAP_SETGID ([capbset_assumed]) the model ASSUMES
+    the bit is set.  The assumption is [State.creds_privileged]'s: the
+    note above that definition requires a bounding set holding both, and
+    says why: [handle_privileged_root] grants legacy root
     [cap_combine(old->cap_bset, old->cap_inheritable)]
     (security/commoncap.c), so an ancestor's
     [prctl(PR_CAPBSET_DROP, CAP_SETUID)] leaves a euid-0 process with no
     CAP_SETUID and breaks the biconditional [setuid] rests on.  Under
-    that standing assumption [cap_bset] is [CAP_FULL_SET], every valid
-    capability is raised in it, and 1 is not one admissible answer among
-    several — it is the answer.
-
-    A NONDETERMINISTIC BOUNDING SET WOULD CONTRADICT THE REST OF THE
-    MODEL, which is the argument for the constant rather than
-    convenience.  Had this arm chosen its answer — an [alt], or a
-    [choose] pinned at first observation the way [m_rlimit_core] is —
-    the model would admit a run in which
+    that assumption 1 is the answer, and it must be the only one: an arm
+    that admitted 0 for CAP_SETUID would admit a run in which
     [prctl(PR_CAPBSET_READ, CAP_SETUID)] answers 0 while [setuid_spec]
     is still deciding privilege by [creds_privileged], i.e. still
     asserting that a euid-0 caller HAS CAP_SETUID.  Two arms of one
-    model would then disagree about one kernel fact.  Answering 1 is
-    what keeps them consistent, and it does more than that: it makes the
-    assumption OBSERVABLE.  In a narrowed-bounds environment (a
-    container's default capability set, say)
+    model would then disagree about one kernel fact.  Answering 1 keeps
+    them consistent, and it makes the assumption OBSERVABLE: in an
+    environment whose bounding set lacks CAP_SETUID or CAP_SETGID,
     [Checks.ExecutableSpecs.check_syscall] REFUSES such a kernel's
     truthful 0, so the environment shows up as a rejection rather than
     as a silently wrong [setuid].
 
+    Every other valid capability is NOT assumed in the set.  A container
+    narrows it (Docker's default set holds 14 capabilities: moby,
+    daemon/pkg/oci/caps/defaults.go), and there Linux answers 0 for a
+    capability the set lacks.  The arm answers 0 or 1 ([alt]), chosen
+    afresh on each call.  That is a sound widening, and its cost is
+    precision: the bounding set does not change during a run this model
+    covers ([PR_CAPBSET_DROP] (24) is declined, and nothing else
+    modeled writes the set), so a real process reads the same bit each
+    time, which the model does not promise.  No modeled arm decides its
+    answer by one of those bits: [Kernel.Capability.capget_spec]
+    declines the one caller whose sets [cap_bset] reaches, a caller
+    with a uid 0.
+
     -EINVAL IS A VERSION CLAIM, and the only one here.  [CAP_LAST_CAP]
     is 40 at the cited commit and has been since v5.9; a kernel that
-    defines a 41st capability answers 1 where this spec answers -EINVAL.
+    defines a 41st capability answers 0 or 1 where this spec answers
+    -EINVAL.
     See [Uapi.CAP_LAST_CAP].  The boundary is worth pinning rather than
     declining because it is what programs READ: libcap's [cap_max_bits]
     binary-searches it from a constructor.
@@ -1331,10 +1345,15 @@ Definition prctl_modeled_options : list Z :=
     statement must take the LAST such call that follows the last
     credential change: [commit_creds] (kernel/cred.c) clears
     [pdeath_signal] and resets the dumpable flag to [suid_dumpable]
-    whenever a call moves the effective or filesystem ids or narrows
-    the capability sets, so a [setuid] after [prctl(PR_SET_DUMPABLE, 1)]
-    undoes it.  The no-new-privs bit has no such reset: nothing clears
-    it.
+    whenever a call moves the effective or filesystem ids, or when
+    [cred_cap_issubset(old, new)] fails.  In one user namespace that
+    test is [cap_issubset(new->cap_permitted, old->cap_permitted)], so
+    it fails when the call GAINS a permitted capability; narrowing the
+    capability sets alone does not fire the reset.  Across user
+    namespaces it fails unless the new namespace lies below a child of
+    the old one that the old euid owns.  So a [setuid] that moves the
+    effective uid after [prctl(PR_SET_DUMPABLE, 1)] undoes it.  The
+    no-new-privs bit has no such reset: nothing clears it.
 
     EVERY OTHER OPTION IS [unmodeled], and one of them is load-bearing.
     [PR_SET_TAGGED_ADDR_CTRL] (55) is one of the two callers of riscv's
@@ -1358,7 +1377,8 @@ Definition prctl_spec (option_ arg2 : word) : Sys SyscallEffect :=
   then unmodeled
   else if Z.eqb (bv_unsigned option_) PR_CAPBSET_READ then
     (if (CAP_LAST_CAP <? bv_unsigned arg2)%Z then err_ret EINVAL
-     else ret_only (Z_to_bv 64 1))
+     else if capbset_assumed (bv_unsigned arg2) then ret_only (Z_to_bv 64 1)
+     else alt (ret_only (Z_to_bv 64 0)) (ret_only (Z_to_bv 64 1)))
   else if Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG then
     (if (64 <? bv_unsigned arg2)%Z then err_ret EINVAL   (* !valid_signal *)
      else ret_only (Z_to_bv 64 0))

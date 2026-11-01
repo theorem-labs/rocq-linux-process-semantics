@@ -740,7 +740,7 @@ Definition arm_prctl : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 167%Z (fun i => prctl_spec (int32 (in_arg i 0)) (in_arg i 1) i))
                        (fun i eff m => check_prctl i (int32 (in_arg i 0)) (in_arg i 1) eff m)
-                       (fun i m => prctl_witness (int32 (in_arg i 0)) (in_arg i 1) i m)
+                       (fun i m => prctl_witness i (int32 (in_arg i 0)) (in_arg i 1) m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_prctl_sound_ok, check_prctl_sound_unmodeled, check_prctl_complete_ok, check_prctl_complete_unmodeled, prctl_witness_ok.
@@ -1869,7 +1869,7 @@ Lemma ca_check_arm_prctl : forall i eff m,
   ca_check arm_prctl i eff m = check_prctl i (int32 (in_arg i 0)) (in_arg i 1) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_prctl : forall i m,
-  ca_witness arm_prctl i m = prctl_witness (int32 (in_arg i 0)) (in_arg i 1) i m.
+  ca_witness arm_prctl i m = prctl_witness i (int32 (in_arg i 0)) (in_arg i 1) m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_prctl : forall i m o,
   sa_spec (ca_arm arm_prctl) i m o = prctl_spec (int32 (in_arg i 0)) (in_arg i 1) i m o.

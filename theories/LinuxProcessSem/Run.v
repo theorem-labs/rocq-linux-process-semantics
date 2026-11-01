@@ -254,16 +254,26 @@ Inductive step_to :=
 
 (** One system call that RETURNED, as a statement about call order reads
     it: the number latched from a7 at the [ecall], the argument registers
-    a0..a5 there ([syscall_args]), and a0 once the call has returned
-    ([apply_effect] writes the effect's return value there).  [star_calls]
-    below collects them along a run.  Nothing in the semantics reads this
-    record; it is vocabulary for statements, which is why it carries the
-    registers and not the [SyscallEffect]: a statement says what the
-    program asked and what it was told, in the program's own terms. *)
+    a0..a5 there ([syscall_args]), a0 once the call has returned
+    ([apply_effect] writes the effect's return value there), and what the
+    call STORED in user memory: the effect's copy-outs ([eff_writes]:
+    base and bytes, in the order [apply_effect] applies them) and its
+    zero-filled ranges ([eff_zeros]: base and length).  So a statement
+    can say "capget returned 0 and wrote six zero words" from the log
+    alone.  The effect's unmaps and copies ([eff_unmaps], [eff_copies])
+    are not logged: they are address-space changes of the memory calls,
+    which the model state at the end of the run already shows.
+    [star_calls] below collects the records along a run.  Nothing in the
+    semantics reads this record; it is vocabulary for statements, which
+    is why it carries the registers and the stored bytes and not the
+    [SyscallEffect]: a statement says what the program asked, what it
+    was told, and what it was given, in the program's own terms. *)
 Record SysCall := mkSysCall {
-  sc_no   : word;
-  sc_args : list word;
-  sc_ret  : word;
+  sc_no     : word;
+  sc_args   : list word;
+  sc_ret    : word;
+  sc_writes : list (word * list byte);
+  sc_zeros  : list (word * word);
 }.
 
 Section WithMemImage.
@@ -1116,7 +1126,8 @@ Inductive star_calls : config -> list event -> list SysCall -> config -> Prop :=
     star_calls (mkCfg (advance_past_svc (apply_effect ms eff)) model'')
                tr log c' ->
     star_calls (mkCfg ms model) (evs ++ tr)
-               (mkSysCall x8 (syscall_args ms) (eff_ret eff) :: log) c'
+               (mkSysCall x8 (syscall_args ms) (eff_ret eff) (eff_writes eff)
+                          (eff_zeros eff) :: log) c'
 | star_calls_other : forall c evs c2 tr log c',
     sstep c evs (SNext c2) ->
     (ms_svc_pending (cfg_ms c) = None \/ m_halted (cfg_model c2) <> None) ->
