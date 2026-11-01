@@ -38,6 +38,9 @@
 From Stdlib Require Import ZArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase MemImageType State Run Procs.
+(** [pholts_within_budget] lives beside [MustExit], not beside [Procs]:
+    see that file's header for why. *)
+From LinuxProcessSemantics.EquivalenceDefinition Require Import MustExitP.
 From LinuxProcessSemantics.Examples.forkwait Require Import ForkwaitMemImage.
 Import ListNotations.
 Open Scope bv_scope.
