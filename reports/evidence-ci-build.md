@@ -61,8 +61,8 @@ dune has no dependency edge from `Tests` to `Common` to order the two.
 Four clean `git archive --prefix=lps/` exports of
 `1b5b834917b7fbcf74542f06a7642f10c50dd440` (tarball sha256
 `31c98f4948605ed2bf82271df4e2cc9db3b8a8df11e1ab2d31e9adc8e3a6fcb5`), each in
-its own directory with its own `_build`, on GCE VM `ossv-lpsrev-verify`
-(n2d-highmem-32, northamerica-northeast1-a), in `rc2-checker:1b59b23d`
+its own directory with its own `_build`, on one build machine
+(n2d-highmem-32), in `rc2-checker:1b59b23d`
 (`sha256:e9fa8b19d7cbab6127dfa522f9b9a02ad8c086febd809e58510ad96e78e24e14`):
 
 | variant | command | exit |
@@ -86,7 +86,7 @@ without an installed copy of the library, at default parallelism and at
 ### The failure, reproduced
 
 One run failed first: a clean export of `d4d2d93e` in the same image on VM
-`ossv-lpsev-start`, where `dune build -j 16` exited 1 after 769.8 s with
+the build machine, where `dune build -j 16` exited 1 after 769.8 s with
 
 ```
 tests/VdsoReservedWitness.v:45:
@@ -94,13 +94,12 @@ Error: Unable to locate library AxSymExec3 with prefix LinuxProcessSemantics.Com
 ```
 
 All twelve `tests/StartState*.vo` built in that tree; only that file failed.
-Log: `~/claim3-build.log` on that VM, copied to
-`/mnt/durable/scratch/lpsev/claim3/`.
+Log: `~/claim3-build.log` on that build machine, copied to scratch.
 
 **The one thing that run did differently** is that it had already built the
 twelve generated test files on their own, in the same build directory, before
-it ran the default target. Two further exports of `d4d2d93e` on
-`ossv-lpsrev-verify`, each in its own directory with its own `_build`, test
+it ran the default target. Two further exports of `d4d2d93e` on the same build
+machine, each in its own directory with its own `_build`, test
 exactly that (`~/ci-variant-e.sh`, logs `~/ci-check/ci-{E,F}.log`):
 
 | variant | command | exit |

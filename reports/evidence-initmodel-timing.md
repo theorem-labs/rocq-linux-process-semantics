@@ -49,7 +49,7 @@ The speedup is real: the Example costs about **9,935×** less after 5cfae0c (441
 
 ## Machine, image, method
 
-- **Machine:** GCE VM `ossv-lpsev-time`, us-central1-a, n2-highmem-16 (16 vCPU, Intel Xeon @ 2.80 GHz, 125 GiB). Each run logs the 1/5/15-minute load average at its start (`load_before`). The 1-minute figure was 0.12 to 1.31 over the 30 measured runs; about 1.0 is the previous run's own compile. Each compile is single-threaded: user time equals wall time to within 0.5 s.
+- **Machine:** a GCE build machine, us-central1-a, n2-highmem-16 (16 vCPU, Intel Xeon @ 2.80 GHz, 125 GiB). Each run logs the 1/5/15-minute load average at its start (`load_before`). The 1-minute figure was 0.12 to 1.31 over the 30 measured runs; about 1.0 is the previous run's own compile. Each compile is single-threaded: user time equals wall time to within 0.5 s.
 - **Image:** `rc2-checker:1b59b23d`, `sha256:e9fa8b19d7cbab6127dfa522f9b9a02ad8c086febd809e58510ad96e78e24e14`. Rocq 9.2, OCaml 4.14.3, dune 3.23.0.
 - **Trees:** `git archive` exports, one directory and one `_build` each.
   - `initmodel-parent.tar` → `ba8a152746ad607b9d81c2ade59b432120737567`
@@ -161,7 +161,7 @@ So **one wrap is invisible in the build time.** The cost comes from nesting, and
 
 **Recommendation:** add guard C beside `init_model_is_the_setter_chain` in `State.v`, because it is deterministic, costs about a millisecond and no CI step, and it is the only measured guard that fails on the first wrapping setter, which the timing guard cannot see.
 
-## Files (on sami-rocqperf, under /mnt/durable/scratch/lpsev/claim2/)
+## Files (on the measuring machine's scratch)
 
 - `claim2-report.md`: this report. `report.md` is an earlier copy without the cross-check paragraph.
 - `stats.txt`: means, sd and paired differences computed from `summary.tsv`.
@@ -179,4 +179,4 @@ So **one wrap is invisible in the build time.** The cost comes from nesting, and
 - `from-vm/scripts/`, `from-vm/variants/`: every script and file variant used. Their sha256 sums are in the logs.
 - `from-vm/initmodel-head/_build/default/lpsev-termsize2/{one_*,chain1..4}.out`: Redirect outputs. On the VM only, too large to copy: `chain5.out` (20,003,169 bytes, sha256 `c940888c…f7`) and `chain6.out` (404,231,697 bytes, sha256 `a0973109…84`) under `~/claim2/initmodel-head/_build/default/lpsev-termsize2/`.
 
-The VM `ossv-lpsev-time` still holds `~/claim2` with the four warm trees for reruns. No repository file was changed, and no branch or pull request was opened.
+The timing machine still holds its working directory with the four warm trees for reruns. No repository file was changed, and no branch or pull request was opened.

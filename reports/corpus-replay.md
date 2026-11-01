@@ -23,10 +23,9 @@ branch was forked from (`75ad9d79` against `25e591a`) and the current pair
 
 ## 1. The commands, and where each runs
 
-From the Lean comparison lane's scripts at
-`/mnt/nvme/sami/oss-verifier/sdd/ossv-265/slice-D-data/` on sami-rocqperf. The
-lane did not answer in time, so these are read from the scripts themselves and
-then run; every number below is from a run, not from the lane's recorded output.
+From the Lean comparison lane's scripts. The lane did not answer in time, so
+these are read from the scripts themselves and then run; every number below is
+from a run, not from the lane's recorded output.
 
 Both traps the lane names are real and are respected here:
 
@@ -48,8 +47,8 @@ own `harness-<tree>` directory and its own extraction.
 | link | same VM | `docker run --rm --cpus 8 --memory 32g --user 0:0 -v $HOME/replay-D:/work -w /work ocaml/opam:debian-12-ocaml-5.3 bash /work/build-main2.sh harness-<tree>` |
 | replay | same VM, host python3 | `cd lps-ff03 && python3 rocqdiff.py --root . --out <json> -j 8 NAME=<main.exe> [NAME=...]` |
 
-`-j 8` throughout, never two Rocq builds at once, and nothing built on
-sami-rocqperf (load 252 on 64 cores when this started).
+`-j 8` throughout, never two Rocq builds at once, and nothing built on the
+shared machine (load 252 on 64 cores when this started).
 
 **The corpus.** theorem-labs/linux-process-semantics at `ff0313ba4f`,
 `testing/syscall-check/traces/**/*.jsonl`: **4,291 traces, 55 MB** of trace data
@@ -375,8 +374,7 @@ the call returned. `msync` and `mincore` were looked for and are absent.
 | `mmap` whose hint is 0 (the mmap base decides the address) | **696** | 796 |
 
 A narrower set gives a smaller number, and none of them is wrong — they answer
-different questions. Every union, measured
-(`/mnt/durable/scratch/lps-start-state-replay/reach-subsets.py`):
+different questions. Every union, measured by `reach-subsets.py` on scratch:
 
 | set | any return | excluding calls that returned an errno |
 | --- | --- | --- |
@@ -450,16 +448,14 @@ reported and carried past, instead of stopping the replay. Default behaviour is
 unchanged. This is what turns section 4a into section 4b: 2,743 unreadable
 "changes" and 186 blinded traces become five readable verdict moves.
 
-Sent to the Lean comparison lane (Envoy session
-`01a175f1-a3bf-71f2-a9b8-4f18af2e8f51`) as message
-**`de801a273c8a4523ab0c718e4274ba21`**, which supersedes the earlier
-`632c443a15ca5d7c1b7851a1349dae33` (that one's `pre` step appended the new roots
-after the `Extraction` command's terminating period, a syntax error). The diff
-is at `/mnt/durable/scratch/lps-start-state-replay/harness-patch.diff`.
+Sent to the Lean comparison lane, superseding an earlier version whose
+preparation step appended the new roots after the `Extraction` command's
+terminating period, a syntax error. The diff is kept on scratch as
+`harness-patch.diff`.
 
 **The lane has landed it.** `slice-D-data/vm-rocq2.sh` now calls
-`slice-D-data/harness-adapt.sh`, so
-`/mnt/nvme/sami/oss-verifier/sdd/ossv-265/slice-D-data/` is the patched harness
+`slice-D-data/harness-adapt.sh`, so the lane's own `slice-D-data` is the
+patched harness
 and is the copy to take. It carries two improvements over what I sent: every
 substitution asserts its match count and refuses on any other number — a
 `perl -0pi -e s///` that matches nothing exits 0, so an un-asserted rewrite
@@ -514,10 +510,9 @@ while it is expected to have type "option ProcInput".
 
 Nothing in the `-core` package compiled past it, so the checker could not be
 extracted. A shim passing `default_kernel` and `default_execfn` was applied to
-the scratch copy of the tree under
-`/mnt/durable/scratch/lps-start-state-replay/rocq-entry` — never to
-`/home/sami/src/lps-entry` — purely to let the extraction run, and it cannot
-move a verdict because `main.ml` calls the unchecked `init_model`.
+the scratch copy of the tree, never to the branch's own checkout — purely to
+let the extraction run, and it cannot move a verdict because `main.ml` calls
+the unchecked `init_model`.
 
 **The shim is not in the final measurement.** `36811ec` carries the real fix:
 `RawProcInput` now has `rpi_kernel : RawKernelBuild` and `rpi_execfn : list Z`,
@@ -525,29 +520,26 @@ and `rocq-entry2` was built with no shim at all.
 
 ## 8. Disk
 
-**0.45 GB** persistent, under `/mnt/durable/scratch/lps-start-state-replay/`
-(453 MB: the 363 MB corpus checkout, five exported trees, the scripts and the
-result JSON). **0 GB** added to `/mnt/nvme` — the Lean lane's scripts were read
-there and copied out, never written to. 1.2 GB transient on the GCE VM
-`lpsrev-entry`'s own 290 GB root disk (`lpsrev-entry:~/replay-D`, five dune
-build trees and five linked checkers), which goes when the VM does. No new
-checkout of theorem-labs/oss-verify-proofs-internal was made.
+**0.45 GB** persistent on scratch (453 MB: the 363 MB corpus checkout, five
+exported trees, the scripts and the result JSON). **0 GB** added to the shared
+fast disk — the Lean lane's scripts were read there and copied out, never
+written to. 1.2 GB transient on the build machine's own root disk (five dune
+build trees and five linked checkers), which goes when the machine does. No new
+checkout of the proof-tree repository was made.
 
 ## 9. Where the artefacts are
 
-**`~/replay-D` is now three different directories on three machines** — this
-one on `lpsrev-entry` (988 MB), `LpsPlacement`'s on `lpsrev-place` (2.1 GB) and
-`LpsSigpipe2.Replay`'s on `ossv-lpsrev-sigpipe-replay` — all under one
-`ossv-keep-owner` (`LPSREV/01a18fe5-2088-7566-a8eb-ea299455799e`), so neither
-the metadata nor the name tells them apart. Cite the machine with the path.
+**`~/replay-D` is now three different directories on three build machines** —
+this one at 988 MB, the placement lane's at 2.1 GB and the signal lane's — all
+held by one owner, so neither the metadata nor the name tells them apart. Cite
+the machine with the path.
 
-On `lpsrev-entry` under `~/replay-D`: `ref.json` (the reference run),
+On this machine under `~/replay-D`: `ref.json` (the reference run),
 `final-strict.json` and `final-tolerant.json` (base `b1a36516` against entry
 `36811ec`), `readstop.json`/`readstop2.json`/`readstop3.json` (the earlier pair),
 `build-*.log`, and the four `harness-*/` directories with their checkers.
 
-The readers are at `/mnt/durable/scratch/lps-start-state-replay/`:
-`readstop.py` (why each replay stopped: verdict word, event count, post-state
-digest, or the final file-system verdict), `verdicts.py` (the four kinds),
-`corpus-reach.py` (section 5's table), and `harness-adapt.sh` with
-`harness-patch.diff`.
+The readers are on scratch beside the corpus checkout: `readstop.py` (why each
+replay stopped: verdict word, event count, post-state digest, or the final
+file-system verdict), `verdicts.py` (the four kinds), `corpus-reach.py`
+(section 5's table), and `harness-adapt.sh` with `harness-patch.diff`.

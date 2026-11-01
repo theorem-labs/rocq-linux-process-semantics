@@ -1399,6 +1399,38 @@ Definition copy_bytes_map (mp : word -> option byte) (a : word) (len : Z)
     : option (list byte) :=
   if access_okb a len then read_bytes_map mp a (Z_to_bv 64 len) else None.
 
+(** AT LENGTH ZERO THIS MODELS [access_ok] AND NOT [copy_from_user], and
+    the two disagree.
+
+    [access_okb a 0] is [(0 <=? TASK_SIZE) && (bv_unsigned a <=? TASK_SIZE - 0)],
+    so it is [false] for every pointer above [TASK_SIZE], and
+    [copy_bytes_map mp a 0] is then [None].  That is faithful to
+    [__access_ok] itself (include/asm-generic/access_ok.h:31-41 at
+    v6.18.46: [(size <= limit) && (addr <= (limit - size))], which at
+    [size = 0] is just [addr <= limit]).
+
+    [copy_from_user] does NOT fault there.  In
+    [_inline_copy_from_user] (include/linux/uaccess.h:158-184 at
+    v6.18.46) [res] is initialised to [n]; with [n = 0] a failing
+    [access_ok] jumps to [fail:], which does [memset(to + (n - res), 0, res)]
+    — a zero-byte memset — and returns [res], i.e. 0.  A return of 0 is
+    the caller's success.  So a kernel path that copies nothing from a
+    wild pointer succeeds, while this definition refuses.
+
+    WHAT A CALLER WITH A VARIABLE LENGTH MUST DO.  If the length reaching
+    this definition can be 0 at run time, and the kernel path it models
+    is a [copy_from_user]/[copy_to_user] rather than a bare [access_ok]
+    check, the caller MUST answer the empty copy itself before calling
+    here — otherwise it publishes -EFAULT where Linux proceeds.
+    [Net.Socket.move_addr_bytes] ([Sys/Net/Socket.v], "if [Z.eqb len 0]
+    then [Some []] else [copy_bytes_map mp a len]") is that shape, and it
+    exists because [connect_spec] had exactly this defect; the length
+    there comes from the user, so no arm-local argument could retire it.
+    A caller whose length is a constant and nonzero owes nothing: the
+    case does not arise.  A caller that genuinely models a bare
+    [access_ok] — one that must fail at length 0 — should say so where it
+    calls, because the refusal is then the point and not an oversight. *)
+
 (** The half the walk alone cannot see: a range [access_okb] refuses is
     [None] here however the memory map answers.  This is the property
     every caller's decline rests on, so it is stated once rather than

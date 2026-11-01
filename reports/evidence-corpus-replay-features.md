@@ -26,10 +26,10 @@ whatever any branch does.
 | branch head | `83756dac794a54f4ae64e04220bfeb694854b85c` (`ba8a152^2`), export sha256 `25bae2d7a7c7f0a236190ae2ffb56d07997bd8b9af0ad5e54856d06f60ebf9d4` |
 | the branch | three commits: `dddd2d3` (fcntl F_GETFD), `ccd80f6` (openat `O_WRONLY|O_CREAT|O_EXCL|O_APPEND`), `83756da` (a comment) |
 | corpus | theorem-labs/linux-process-semantics at `ff0313ba4f2e9baffcf5b5f50bc9d31628ae8556`, working tree clean, `testing/syscall-check/traces/**/*.jsonl` |
-| machine | GCE VM `ossv-lpsev-replay`, n2-highmem-32, 32 vCPU, us-central1-a |
+| machine | a GCE build machine, n2-highmem-32, 32 vCPU, us-central1-a |
 | image, build and extract | `rc2-checker:1b59b23d`, `sha256:e9fa8b19d7cbab6127dfa522f9b9a02ad8c086febd809e58510ad96e78e24e14` |
 | image, link | `ocaml/opam:debian-12-ocaml-5.3` — the harness's `trace.ml` uses `Digest.BLAKE256`, which arrived in OCaml 5.2, and the checker image has 4.14.3 |
-| harness | the Lean comparison lane's, `/mnt/nvme/sami/oss-verifier/sdd/ossv-265/slice-D-data/`: `vm-rocq2.sh`, `build-main2.sh`, `harness-adapt.sh`, `rocqdiff.py`, taken unchanged |
+| harness | the Lean comparison lane's: `vm-rocq2.sh`, `build-main2.sh`, `harness-adapt.sh`, `rocqdiff.py`, taken unchanged |
 
 Both traps the lane names are respected. **The harness lives outside the tree**
 (`/work/harness-<tree>`), because this repository has no root dune workspace
