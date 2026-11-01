@@ -1275,10 +1275,10 @@ Inductive pstep_x_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
       (bv_unsigned q) (CnOk child st') ->
     pstep_x_at ext segs cfg (pe_pid e) P evs (PNext (clone_result_x P e c' q child st'))
 (** A FAILED clone is the released failure, with the state [ext_clone]
-    says the failure leaves.  Its errno comes from the released step, so
-    under a forced-only configuration a refusal the released filter
-    ([Run.spurious_refusal_cfg], Run.v:2019) drops is no step here either
-    ([pstep_x_clone_fail_released]). *)
+    says the failure leaves.  Its errno comes from the released step
+    ([sstep_cfg] above), so under a forced-only configuration a refusal the
+    released filter ([Run.spurious_refusal_cfg], Run.v:2019) drops is no
+    step here either. *)
 | px_clone_fail : forall P e evs c' en hq st',
     look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false ->
@@ -1849,30 +1849,4 @@ Proof.
   intros ext segs cfg c evs r. split.
   - intros H. exists one_pid. exact H.
   - intros [p Hp]. rewrite <- (pstep_x_at_one_pid _ _ _ _ _ _ _ Hp). exact Hp.
-Qed.
-
-(* ------------------------------------------------------- failed clones *)
-
-(** A failed clone under any extension is a released step of the core, up
-    to the namespace state: its errno, its events and its successor's
-    entries and file system are [pstep_other]'s.  So a filter that drops a
-    released refusal ([Run.spurious_refusal_cfg] at [forced_only_cfg])
-    drops it here too, and an extension adds no error outcome to a clone. *)
-Lemma pstep_x_clone_fail_released : forall ext segs cfg P e evs c' en hq st',
-  look P (pe_pid e) = Some e ->
-  claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false ->
-  sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
-  clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
-  clone_success_b (pe_cfg (pcfg_shared P) e) c' = false ->
-  ms_gpr (cfg_ms c') 0 = errno_ret en ->
-  multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
-  ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
-    (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq (CnErr en st') ->
-  pstep_at segs cfg (pe_pid e) P evs (PNext (absorb P e c'))
-  /\ absorb_x P e c' (pe_nsctx e) st'
-     = mkPCfg (pcfg_procs (absorb P e c')) (pcfg_root P) (with_sh_ns (pcfg_shared (absorb P e c')) st').
-Proof.
-  intros ext segs cfg P e evs c' en hq st' Hl Hcl Hs Hp Hcs Hret Hma Hec. split.
-  - apply pstep_other; try assumption. apply clone_pending_not_wait4. assumption.
-  - reflexivity.
 Qed.
