@@ -21,7 +21,7 @@ Definition base_state : NsState :=
     [mkDentry 1 1 None [] 1] [root_dir] [] (ns_env empty_nsstate).
 Definition base_ctx : NsCtx :=
   mkNsCtx 1 1 1 1 [(1%positive, 42%Z)] (1%positive, 1%positive) (1%positive, 1%positive)
-    18 (mkCaps 0 0 0 0 0) 0 [] false 0 1.
+    18 (mkCaps 0 0 0 0 0) 0 [] (Some false) (Some 1%Z).
 Definition base_model : Model :=
   init_model [] (Z_to_bv 64 0) (Z_to_bv 64 0) demo_sp demo_limit (demo_input [] IEof).
 Definition PATH : Z := 8192.
@@ -124,7 +124,7 @@ Definition map_state (users : list UserNs) : NsState :=
   mkNsState [] users [] [] [] [] [] [] [] (ns_env empty_nsstate).
 Definition map_caps : CapSets := mkCaps (2 ^ 7 + 2 ^ 21) (2 ^ 7 + 2 ^ 21) 0 0 0.
 Definition map_ctx : NsCtx :=
-  mkNsCtx 1 1 1 1 [] (1%positive, 1%positive) (1%positive, 1%positive) 18 map_caps 0 [] false 0 1.
+  mkNsCtx 1 1 1 1 [] (1%positive, 1%positive) (1%positive, 1%positive) 18 map_caps 0 [] (Some false) (Some 1%Z).
 Definition map_cred : IdCred := mkIdCred 1 1000 1002 (2 ^ 7 + 2 ^ 21).
 Definition uid_loc : Loc := LProcTask 1 42 [bytes [117; 105; 100; 95; 109; 97; 112]].
 Definition groups_loc : Loc := LProcTask 1 42 [bytes [115; 101; 116; 103; 114; 111; 117; 112; 115]].
@@ -181,7 +181,7 @@ Definition sys_state : NsState :=
     [] (ns_env empty_nsstate).
 Definition resource_caps : CapSets := mkCaps (2 ^ 24) (2 ^ 24) 0 0 0.
 Definition resource_ctx : NsCtx :=
-  mkNsCtx 1 2 1 1 [] (2%positive, 1%positive) (2%positive, 1%positive) 18 resource_caps 0 [] false 0 1.
+  mkNsCtx 1 2 1 1 [] (2%positive, 1%positive) (2%positive, 1%positive) 18 resource_caps 0 [] (Some false) (Some 1%Z).
 Definition sys_file : NsFile := mkNsFile (NfUserNsFile (LDentry 2 4) 2 0) 1 (mkIdCred 1 1000 1002 (2 ^ 24)).
 Definition limit_of (o : ext_outcome) : option Z :=
   match o with

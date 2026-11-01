@@ -32,11 +32,13 @@ Definition mem (version pid : Z) (data : list Z) : word -> option byte :=
 Definition call (n : Z) (args : list Z) (mm : word -> option byte) : SyscallInput :=
   mkInput (Z_to_bv 64 n) (map (Z_to_bv 64) args) mm mm.
 
-(** A task with pid 2 in namespace 1 and the given sets, signal, bit and
-    mode. *)
-Definition task (c : CapSets) (sig : Z) (nnp : bool) (dump : Z) : NsCtx :=
+(** A task with pid 2 in namespace 1, the given sets, and the given
+    no_new_privs bit and dumpable mode ([None]: not known); [t0] has the
+    launch values. *)
+Definition task (c : CapSets) (nnp : option bool) (dump : option Z) : NsCtx :=
   mkNsCtx 1 1 1 1 [(1%positive, 2)] (1%positive, 1%positive) (1%positive, 1%positive) 18 c 0 []
-          nnp sig dump.
+          nnp dump.
+Definition t0 (c : CapSets) : NsCtx := task c (Some false) (Some 1).
 
 Definition U : NsState :=
   with_userns empty_nsstate [mkUserNs 1 None 0 0 None None true true INT_MAX true].
@@ -63,7 +65,7 @@ Definition V3 : Z := LINUX_CAPABILITY_VERSION_3.
 
 (** [capget] of the caller: the three sets, low halves then high halves. *)
 Example capget_own_sets : forall m,
-  writes_of (capget_fn (call 90 [HDR; DATA] (mem V3 0 (repeat 0 24))) m (task caps0 0 false 1) U)
+  writes_of (capget_fn (call 90 [HDR; DATA] (mem V3 0 (repeat 0 24))) m (t0 caps0) U)
   = Some [(DATA, le32 (Z.lor sys_admin setpcap) ++ le32 (Z.lor sys_admin setpcap) ++ le32 0
                  ++ le32 0 ++ le32 0 ++ le32 0)].
 Proof. intros m. vm_compute. reflexivity. Qed.
@@ -71,119 +73,128 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 (** A version the kernel does not know: version 3 written back, EINVAL;
     with a NULL data pointer, 0. *)
 Example capget_bad_version : forall m,
-  ret_of (capget_fn (call 90 [HDR; DATA] (mem 1 0 (repeat 0 24))) m (task caps0 0 false 1) U)
+  ret_of (capget_fn (call 90 [HDR; DATA] (mem 1 0 (repeat 0 24))) m (t0 caps0) U)
   = Some (-22).
 Proof. intros m. vm_compute. reflexivity. Qed.
 Example capget_bad_version_null : forall m,
-  writes_of (capget_fn (call 90 [HDR; 0] (mem 1 0 [])) m (task caps0 0 false 1) U)
+  writes_of (capget_fn (call 90 [HDR; 0] (mem 1 0 [])) m (t0 caps0) U)
   = Some [(HDR, le32 V3)].
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** A negative pid is EINVAL; the caller's own pid is the caller. *)
 Example capget_negative_pid : forall m,
-  ret_of (capget_fn (call 90 [HDR; DATA] (mem V3 4294967295 (repeat 0 24))) m (task caps0 0 false 1) U)
+  ret_of (capget_fn (call 90 [HDR; DATA] (mem V3 4294967295 (repeat 0 24))) m (t0 caps0) U)
   = Some (-22).
 Proof. intros m. vm_compute. reflexivity. Qed.
 Example capget_own_pid : forall m,
-  ret_of (capget_fn (call 90 [HDR; DATA] (mem V3 2 (repeat 0 24))) m (task caps0 0 false 1) U)
+  ret_of (capget_fn (call 90 [HDR; DATA] (mem V3 2 (repeat 0 24))) m (t0 caps0) U)
   = Some 0.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** [capset] to empty sets: every set but the bounding set empties. *)
 Example capset_drop_all : forall m,
-  caps_of (capset_fn (call 91 [HDR; DATA] (mem V3 0 (repeat 0 24))) m (task caps0 0 false 1) U)
+  caps_of (capset_fn (call 91 [HDR; DATA] (mem V3 0 (repeat 0 24))) m (t0 caps0) U)
   = Some (mkCaps 0 0 0 full 0).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** Raising a permitted bit the task does not hold is EPERM. *)
 Example capset_raise_refused : forall m,
   ret_of (capset_fn (call 91 [HDR; DATA] (mem V3 0 (le32 0 ++ le32 1 ++ le32 0 ++ repeat 0 12)))
-                    m (task caps0 0 false 1) U)
+                    m (t0 caps0) U)
   = Some (-1).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** Another task's pid is EPERM. *)
 Example capset_other_pid : forall m,
-  ret_of (capset_fn (call 91 [HDR; DATA] (mem V3 3 (repeat 0 24))) m (task caps0 0 false 1) U)
+  ret_of (capset_fn (call 91 [HDR; DATA] (mem V3 3 (repeat 0 24))) m (t0 caps0) U)
   = Some (-1).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** PR_CAPBSET_DROP needs CAP_SETPCAP, then a valid number. *)
 Example bset_drop : forall m,
   option_map cap_bounding (caps_of (prctl_fn (call 167 [24; 21; 0; 0; 0] (fun _ => None)) m
-                                              (task caps0 0 false 1) U))
+                                              (t0 caps0) U))
   = Some (full - sys_admin).
 Proof. intros m. vm_compute. reflexivity. Qed.
 Example bset_drop_needs_setpcap : forall m,
   ret_of (prctl_fn (call 167 [24; 21; 0; 0; 0] (fun _ => None)) m
-                   (task (mkCaps 0 0 0 full 0) 0 false 1) U) = Some (-1).
+                   (t0 (mkCaps 0 0 0 full 0)) U) = Some (-1).
 Proof. intros m. vm_compute. reflexivity. Qed.
 Example bset_drop_invalid : forall m,
-  ret_of (prctl_fn (call 167 [24; 41; 0; 0; 0] (fun _ => None)) m (task caps0 0 false 1) U)
+  ret_of (prctl_fn (call 167 [24; 41; 0; 0; 0] (fun _ => None)) m (t0 caps0) U)
   = Some (-22).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 Example bset_read : forall m,
   ret_of (prctl_fn (call 167 [23; 21; 0; 0; 0] (fun _ => None)) m
-                   (task (mkCaps 0 0 0 (full - sys_admin) 0) 0 false 1) U) = Some 0.
+                   (t0 (mkCaps 0 0 0 (full - sys_admin) 0)) U) = Some 0.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
-(** The parent-death signal: set, then read into user memory. *)
-Example pdeathsig_set : forall m,
-  option_map cx_pdeathsig (ctx_of (prctl_fn (call 167 [1; 9; 0; 0; 0] (fun _ => None)) m
-                                            (task caps0 0 false 1) U)) = Some 9.
-Proof. intros m. vm_compute. reflexivity. Qed.
-Example pdeathsig_invalid : forall m,
-  ret_of (prctl_fn (call 167 [1; 65; 0; 0; 0] (fun _ => None)) m (task caps0 0 false 1) U)
-  = Some (-22).
-Proof. intros m. vm_compute. reflexivity. Qed.
-Example pdeathsig_get : forall m,
-  writes_of (prctl_fn (call 167 [2; DATA; 0; 0; 0] (at_ DATA (repeat 0 4))) m (task caps0 9 false 1) U)
-  = Some [(DATA, le32 9)].
-Proof. intros m. vm_compute. reflexivity. Qed.
+(** The parent-death signal is the released model's state: options 1
+    and 2 are its answers. *)
+Example pdeathsig_set_is_released : forall m o,
+  prctl_arm (call 167 [1; 9; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o
+  <-> released (call 167 [1; 9; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o.
+Proof. intros m o. unfold prctl_arm. reflexivity. Qed.
+Example pdeathsig_get_is_released : forall m o,
+  prctl_arm (call 167 [2; DATA; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o
+  <-> released (call 167 [2; DATA; 0; 0; 0] (fun _ => None)) m (t0 caps0) U o.
+Proof. intros m o. unfold prctl_arm. reflexivity. Qed.
 
 (** no_new_privs: set with exactly (1, 0, 0, 0), read with all zero. *)
 Example nnp_set : forall m,
   option_map cx_no_new_privs (ctx_of (prctl_fn (call 167 [38; 1; 0; 0; 0] (fun _ => None)) m
-                                               (task caps0 0 false 1) U)) = Some true.
+                                               (t0 caps0) U)) = Some (Some true).
 Proof. intros m. vm_compute. reflexivity. Qed.
 Example nnp_set_bad_args : forall m,
-  ret_of (prctl_fn (call 167 [38; 1; 1; 0; 0] (fun _ => None)) m (task caps0 0 false 1) U)
+  ret_of (prctl_fn (call 167 [38; 1; 1; 0; 0] (fun _ => None)) m (t0 caps0) U)
   = Some (-22).
 Proof. intros m. vm_compute. reflexivity. Qed.
 Example nnp_get : forall m,
-  ret_of (prctl_fn (call 167 [39; 0; 0; 0; 0] (fun _ => None)) m (task caps0 0 true 1) U) = Some 1.
+  ret_of (prctl_fn (call 167 [39; 0; 0; 0; 0] (fun _ => None)) m (task caps0 (Some true) (Some 1)) U)
+  = Some 1.
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** A bit or a mode the model does not know is not reported. *)
+Example nnp_get_unknown : forall m,
+  prctl_fn (call 167 [39; 0; 0; 0; 0] (fun _ => None)) m (task caps0 None (Some 1)) U = EUnmodeled.
+Proof. intros m. vm_compute. reflexivity. Qed.
+Example dumpable_get_unknown : forall m,
+  prctl_fn (call 167 [3; 0; 0; 0; 0] (fun _ => None)) m (task caps0 (Some false) None) U = EUnmodeled.
+Proof. intros m. vm_compute. reflexivity. Qed.
+Example dumpable_get_known : forall m,
+  ret_of (prctl_fn (call 167 [3; 0; 0; 0; 0] (fun _ => None)) m (t0 caps0) U) = Some 1.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** The dumpable mode: 0 or 1 only. *)
 Example dumpable_set : forall m,
   option_map cx_dumpable (ctx_of (prctl_fn (call 167 [4; 0; 0; 0; 0] (fun _ => None)) m
-                                           (task caps0 0 false 1) U)) = Some 0.
+                                           (t0 caps0) U)) = Some (Some 0).
 Proof. intros m. vm_compute. reflexivity. Qed.
 Example dumpable_invalid : forall m,
-  ret_of (prctl_fn (call 167 [4; 2; 0; 0; 0] (fun _ => None)) m (task caps0 0 false 1) U)
+  ret_of (prctl_fn (call 167 [4; 2; 0; 0; 0] (fun _ => None)) m (t0 caps0) U)
   = Some (-22).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** Any other option declines. *)
 Example prctl_other_declines : forall m,
-  prctl_fn (call 167 [15; 0; 0; 0; 0] (fun _ => None)) m (task caps0 0 false 1) U = EUnmodeled.
+  prctl_fn (call 167 [15; 0; 0; 0; 0] (fun _ => None)) m (t0 caps0) U = EUnmodeled.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** [prepare_creds] may fail where capset and PR_CAPBSET_DROP reach it:
     ENOMEM is an answer there, with capset's copy-ins; a capset refused
     earlier (another task's pid) and PR_CAPBSET_READ have no ENOMEM. *)
 Example capset_enomem_reached : forall m,
-  option_map ret_of (capset_enomem (call 91 [HDR; DATA] (mem V3 0 (repeat 0 24))) m (task caps0 0 false 1) U)
+  option_map ret_of (capset_enomem (call 91 [HDR; DATA] (mem V3 0 (repeat 0 24))) m (t0 caps0) U)
   = Some (Some (-12)).
 Proof. intros m. vm_compute. reflexivity. Qed.
 Example capset_enomem_not_after_eperm : forall m,
-  capset_enomem (call 91 [HDR; DATA] (mem V3 3 (repeat 0 24))) m (task caps0 0 false 1) U = None.
+  capset_enomem (call 91 [HDR; DATA] (mem V3 3 (repeat 0 24))) m (t0 caps0) U = None.
 Proof. intros m. vm_compute. reflexivity. Qed.
 Example bset_drop_enomem : forall m,
-  option_map ret_of (prctl_enomem (call 167 [24; 21; 0; 0; 0] (fun _ => None)) m (task caps0 0 false 1) U)
+  option_map ret_of (prctl_enomem (call 167 [24; 21; 0; 0; 0] (fun _ => None)) m (t0 caps0) U)
   = Some (Some (-12)).
 Proof. intros m. vm_compute. reflexivity. Qed.
 Example bset_read_no_enomem : forall m,
-  prctl_enomem (call 167 [23; 21; 0; 0; 0] (fun _ => None)) m (task caps0 0 false 1) U = None.
+  prctl_enomem (call 167 [23; 21; 0; 0; 0] (fun _ => None)) m (t0 caps0) U = None.
 Proof. intros m. vm_compute. reflexivity. Qed.

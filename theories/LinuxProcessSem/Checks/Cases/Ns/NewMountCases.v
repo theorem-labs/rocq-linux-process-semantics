@@ -69,7 +69,7 @@ Definition world (empty : bool) (proc_locked_ro : bool) : NsState :=
     holding every capability there. *)
 Definition ctx : NsCtx :=
   mkNsCtx 2 1 1 1 [(1%positive, 2)] (1%positive, 1%positive) (1%positive, 1%positive) 18
-          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [] false 0 1.
+          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [] (Some false) (Some 1).
 Definition cred : IdCred := mkIdCred 2 1000 1000 (2 ^ 41 - 1).
 Definition nocred : IdCred := mkIdCred 2 1000 1000 0.
 

@@ -77,7 +77,7 @@ Definition state (users : list UserNs) (files : list (N * NsFile)) : NsState :=
     files (ns_env empty_nsstate).
 
 Definition ctx_at (u : positive) (caps : CapSets) (root cwd : positive * positive) : NsCtx :=
-  mkNsCtx u 1 1 1 [(1%positive, 42%Z)] root cwd 18 caps 0 [] false 0 1.
+  mkNsCtx u 1 1 1 [(1%positive, 42%Z)] root cwd 18 caps 0 [] (Some false) (Some 1%Z).
 
 Definition root_user : UserNs := uns 1 None 0 None None.
 (** A child user namespace mapping its 0 to kernel uid 1000 and gid 1002. *)

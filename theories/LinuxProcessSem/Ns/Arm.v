@@ -99,7 +99,7 @@ Definition host_loc (st : NsState) (p : list byte) : option Loc :=
           let full := (2 ^ 41 - 1)%Z in
           let hctx := mkNsCtx (uns_id u) (mntns_id n) (cx_pidns init_nsctx) (cx_net init_nsctx) []
                               root root (cx_umask init_nsctx) (mkCaps full full 0 full 0) 0 []
-                              false 0 1 in
+                              (Some false) (Some 1%Z) in
           match walk st hctx (mkWalkCreds 0 0 []) (fun _ => None) (LDentry (fst root) (snd root)) p
                      (mkWalkFlags true false false false false) with
           | (WOk l, _) => Some l
@@ -170,13 +170,13 @@ Definition s32 (w : word) : Z :=
 Definition with_umask (ctx : NsCtx) (u : Z) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
           (cx_cwd ctx) u (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_pdeathsig ctx) (cx_dumpable ctx).
+          (cx_no_new_privs ctx) (cx_dumpable ctx).
 
 (** The descriptors marked close-on-exec replaced by [l]. *)
 Definition with_cloexec (ctx : NsCtx) (l : list Z) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
           (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) l
-          (cx_no_new_privs ctx) (cx_pdeathsig ctx) (cx_dumpable ctx).
+          (cx_no_new_privs ctx) (cx_dumpable ctx).
 
 (** Descriptor [fd] marked close-on-exec when [on], unmarked otherwise. *)
 Definition set_cloexec (ctx : NsCtx) (fd : Z) (on : bool) : NsCtx :=

@@ -43,7 +43,7 @@ Definition state (mounts : list Mount) (users : list UserNs) (mntns : list MntNs
   mkNsState mounts users mntns pidns [] sbs dentries inodes [] (ns_env empty_nsstate).
 
 Definition ctx_at (u : positive) (caps : CapSets) (root : positive * positive) : NsCtx :=
-  mkNsCtx u 1 1 1 [(1%positive, 42%Z)] root (1%positive, 2%positive) 18 caps 0 [] false 0 1.
+  mkNsCtx u 1 1 1 [(1%positive, 42%Z)] root (1%positive, 2%positive) 18 caps 0 [] (Some false) (Some 1%Z).
 
 Definition root_user : UserNs := uns 1 None 0 None None.
 

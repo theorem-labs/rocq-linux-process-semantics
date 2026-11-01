@@ -471,7 +471,7 @@ Definition move_pivot_refs (ctx : NsCtx) (old_root new_root : positive * positiv
              then new_root else cx_cwd ctx in
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) root cwd
           (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_pdeathsig ctx) (cx_dumpable ctx).
+          (cx_no_new_privs ctx) (cx_dumpable ctx).
 
 (** [pivot_root] uses the table's retained dentry as [d_unlinked = false]. *)
 Definition pivot_paths (st : NsState) (rt rd nr nd : positive) : option PivotPaths :=

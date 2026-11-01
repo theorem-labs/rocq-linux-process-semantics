@@ -31,7 +31,7 @@ Definition nocaps : CapSets := mkCaps 0 0 0 (2 ^ 41 - 1) 0.
 (** The caller: pid 136 of the host. *)
 Definition caller : NsCtx :=
   mkNsCtx 1 1 1 1 [(1%positive, 136)] (1%positive, 1%positive) (1%positive, 1%positive) 18 nocaps 0 []
-          false 9 1.
+          (Some false) (Some 1).
 
 Definition SIGCHLD : Z := 17.
 Definition ALL_NS : Z :=
@@ -42,13 +42,14 @@ Definition child_of (o : CloneNs) : option NsCtx := match o with CnOk c _ => Som
 Definition st_of (o : CloneNs) : option NsState := match o with CnOk _ s => Some s | _ => None end.
 
 (** The child is in a new user, mount, pid and network namespace (2 each),
-    pid 1 in its own and 138 in the host's, with every capability, no
-    parent-death signal, and its root on the copy of the root mount. *)
+    pid 1 in its own and 138 in the host's, with every capability, its
+    root on the copy of the root mount, and, having left the released
+    world, a no_new_privs bit and dumpable mode the model does not know. *)
 Example clone_all_child : forall m,
   child_of (clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller host 138)
   = Some (mkNsCtx 2 2 2 2 [(2%positive, 1); (1%positive, 138)] (2%positive, 1%positive)
                   (2%positive, 1%positive) 18 (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 []
-                  false 0 1).
+                  None None).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** The new user namespace: a child of 1 owned by kuid 65534 with no maps;
@@ -64,10 +65,19 @@ Example clone_all_tables : forall m,
           [1%positive; 2%positive]).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
-(** A namespace flag without CLONE_NEWUSER needs CAP_SYS_ADMIN: EPERM. *)
-Example clone_newns_needs_admin : forall m,
-  clone_ns_exact (Z.lor CLONE_NEWNS SIGCHLD) (with_creds (creds 65534) m) caller host 138 = CnErr 1 host.
+(** Leaving the released world without CLONE_NEWUSER declines: the
+    caller's capability sets, which decide CAP_SYS_ADMIN, are the released
+    model's to derive, not this one's. *)
+Example clone_newns_from_host_declines : forall m,
+  clone_ns_exact (Z.lor CLONE_NEWNS SIGCHLD) (with_creds (creds 65534) m) caller host 138 = CnUnmodeled.
 Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** Inside a user namespace the model made, a namespace flag without
+    CLONE_NEWUSER needs CAP_SYS_ADMIN there: a task without it gets
+    EPERM. *)
+Definition no_admin_inside : NsCtx :=
+  mkNsCtx 2 1 2 1 [(2%positive, 1); (1%positive, 136)] (1%positive, 1%positive) (1%positive, 1%positive) 18
+          nocaps 0 [] (Some false) (Some 1).
 
 (** A flag the model does not hold (CLONE_VM) declines. *)
 Example clone_vm_declines : forall m,
@@ -86,7 +96,12 @@ Definition inside : NsState :=
 
 Definition shell : NsCtx :=
   mkNsCtx 2 1 2 1 [(2%positive, 1); (1%positive, 136)] (1%positive, 1%positive) (1%positive, 1%positive) 18
-          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [] false 0 1.
+          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [] (Some false) (Some 1).
+
+Example clone_newns_inside_needs_admin : forall m,
+  clone_ns_exact (Z.lor CLONE_NEWNS SIGCHLD) (with_creds (creds 65534) m) no_admin_inside inside 140
+  = CnErr 1 inside.
+Proof. intros m. vm_compute. reflexivity. Qed.
 
 Example fork_inside_pid_2 : forall m,
   option_map cx_pids (child_of (clone_ns_exact SIGCHLD m shell inside 140))
@@ -139,7 +154,7 @@ Definition deep : NsState :=
 
 Definition admin_in_deep : NsCtx :=
   mkNsCtx 1 1 7 1 [(7%positive, 1)] (1%positive, 1%positive) (1%positive, 1%positive) 18
-          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [] false 0 1.
+          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [] (Some false) (Some 1).
 
 Example clone_pid_level_32 : forall m,
   clone_ns_exact (Z.lor CLONE_NEWPID SIGCHLD) m admin_in_deep deep 6 = CnErr 28 deep.

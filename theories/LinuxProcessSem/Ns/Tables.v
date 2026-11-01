@@ -292,8 +292,14 @@ Record CapSets := mkCaps {
     in, its pid in each pid namespace from its own outwards, its root and
     current directory as (mount, dentry), its umask, its capability sets
     (in its user namespace) and securebits, the descriptors marked
-    close-on-exec, the no_new_privs bit, the parent-death signal and the
-    dumpable mode. *)
+    close-on-exec, the no_new_privs bit and the dumpable mode.  The
+    parent-death signal is the released model's ([State.m_pdeath_signal]),
+    not this record's.
+
+    [cx_no_new_privs] and [cx_dumpable] are [None] where the model does
+    not know them: the released model stores neither, so a task that
+    leaves the host's namespaces may have set either there; an arm that
+    would report one declines while it is [None]. *)
 Record NsCtx := mkNsCtx {
   cx_user         : positive;
   cx_mount        : positive;
@@ -306,9 +312,8 @@ Record NsCtx := mkNsCtx {
   cx_caps         : CapSets;
   cx_securebits   : Z;
   cx_cloexec      : list Z;
-  cx_no_new_privs : bool;
-  cx_pdeathsig    : Z;
-  cx_dumpable     : Z
+  cx_no_new_privs : option bool;
+  cx_dumpable     : option Z
 }.
 
 (** The shared state of a system the namespace model knows nothing of: no
@@ -333,7 +338,9 @@ Definition with_files (st : NsState) (fs : list (N * NsFile)) : NsState :=
 (** The context of a task that has entered no namespace: the initial
     namespaces, root and cwd at the root mount's root dentry, the umask
     022, no capability, no securebits, no close-on-exec descriptor,
-    no_new_privs clear, no parent-death signal, dumpable. *)
+    no_new_privs clear, dumpable.  These are assumptions about the
+    launcher, as the released model's launch values are: it set the
+    umask to 022, set no_new_privs nowhere and left the task dumpable. *)
 Definition init_nsctx : NsCtx :=
   mkNsCtx 1%positive 1%positive 1%positive 1%positive [] (1%positive, 1%positive)
-          (1%positive, 1%positive) 18%Z (mkCaps 0 0 0 0 0) 0%Z [] false 0%Z 1%Z.
+          (1%positive, 1%positive) 18%Z (mkCaps 0 0 0 0 0) 0%Z [] (Some false) (Some 1%Z).

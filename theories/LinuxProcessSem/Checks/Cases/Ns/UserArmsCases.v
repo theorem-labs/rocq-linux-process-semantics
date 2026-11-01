@@ -32,7 +32,7 @@ Definition world (us : list UserNs) : NsState :=
             [mkMntNs 1 1 1 false] [] [] [] [] [] [] (ns_env empty_nsstate).
 
 Definition task (user : positive) (root : positive * positive) (caps : CapSets) : NsCtx :=
-  mkNsCtx user 1 1 1 [(1%positive, 2)] root root 18 caps 0 [] false 0 1.
+  mkNsCtx user 1 1 1 [(1%positive, 2)] root root 18 caps 0 [] (Some false) (Some 1).
 
 Definition nocaps : CapSets := mkCaps 0 0 0 (2 ^ 41 - 1) 0.
 

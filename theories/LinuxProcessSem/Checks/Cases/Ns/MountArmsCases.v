@@ -52,7 +52,7 @@ Definition state (unbindable locked : bool) (files : list (N * NsFile)) : NsStat
     files (ns_env empty_nsstate).
 
 Definition ctx (caps : CapSets) (root cwd : positive * positive) : NsCtx :=
-  mkNsCtx 1 1 1 1 [(1%positive, 1%Z)] root cwd 18 caps 0 [] false 0 1.
+  mkNsCtx 1 1 1 1 [(1%positive, 1%Z)] root cwd 18 caps 0 [] (Some false) (Some 1%Z).
 Definition c_admin : NsCtx := ctx caps_admin (1%positive, 1%positive) (1%positive, 1%positive).
 Definition c_none : NsCtx := ctx caps_none (1%positive, 1%positive) (1%positive, 1%positive).
 Definition c_pivot : NsCtx := ctx caps_admin (2%positive, 20%positive) (3%positive, 30%positive).

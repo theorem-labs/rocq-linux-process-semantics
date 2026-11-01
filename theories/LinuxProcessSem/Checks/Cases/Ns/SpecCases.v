@@ -28,7 +28,7 @@ Example empty_is_flat : forall ctx, flat_view ctx empty_nsstate = true := flat_v
     namespace [u] and umask [umask]. *)
 Definition task_in (u : positive) (pid : Z) (umask : Z) : NsCtx :=
   mkNsCtx u 1 1 1 [(1%positive, pid)] (1%positive, 1%positive) (1%positive, 1%positive) umask
-          (mkCaps 0 0 0 0 0) 0 [] false 0 1.
+          (mkCaps 0 0 0 0 0) 0 [] (Some false) (Some 1%Z).
 Definition task (pid : Z) (umask : Z) : NsCtx := task_in 1 pid umask.
 
 Definition nf : MountFlags := mkMountFlags false false false false.

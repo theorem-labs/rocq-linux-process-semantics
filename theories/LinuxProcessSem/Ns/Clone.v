@@ -4,7 +4,7 @@
     that takes the call itself: the child's namespace context and the new
     shared namespace state, or the errno, following Linux 6.18.44
     kernel/fork.c ([copy_process]: the flag checks, [copy_creds],
-    [copy_namespaces], [alloc_pid], [pdeath_signal]), kernel/cred.c
+    [copy_namespaces], [alloc_pid]), kernel/cred.c
     ([copy_creds]: CLONE_NEWUSER makes a user namespace with
     [create_user_ns]), kernel/nsproxy.c ([copy_namespaces],
     [create_new_namespaces]: CAP_SYS_ADMIN over the child's user namespace,
@@ -153,9 +153,20 @@ Definition clone_creds (m : Model) (ctx : NsCtx) (st : NsState) (f : Z) : NsResu
     | _, _ => NsErr 0
     end.
 
+(** A clone that takes a task out of the released world (a flat caller,
+    any namespace flag) meets state the released model does not keep: the
+    caller's capability sets (it derives them) and its no_new_privs bit
+    and dumpable mode (it stores neither).  With CLONE_NEWUSER the child's
+    sets are the new namespace's full sets whatever the caller's; without
+    it the clone declines.  The child's no_new_privs bit and dumpable mode
+    are then unknown. *)
+Definition leaves_flat (f : Z) (ctx : NsCtx) (st : NsState) : bool :=
+  flat_view ctx st && (any_new_ns f || has_flag f CLONE_NEWUSER).
+
 (** What [clone_ns] answers when the environment refuses nothing. *)
 Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) : CloneNs :=
   if negb (Z.land f (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) =? 0) then CnUnmodeled
+  else if leaves_flat f ctx st && negb (has_flag f CLONE_NEWUSER) then CnUnmodeled
   else
     match clone_creds m ctx st f with
     | NsErr 0 => CnUnmodeled
@@ -216,7 +227,8 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq :
                                   (where_ (fst (cx_root ctx)), snd (cx_root ctx))
                                   (where_ (fst (cx_cwd ctx)), snd (cx_cwd ctx))
                                   (cx_umask ctx) (cc_caps cc) (cc_secure cc) (cx_cloexec ctx)
-                                  (cx_no_new_privs ctx) 0 (cx_dumpable ctx) in
+                                  (if leaves_flat f ctx st then None else cx_no_new_privs ctx)
+                                  (if leaves_flat f ctx st then None else cx_dumpable ctx) in
                         CnOk child
                              (mkNsState T' U (ns_mntns st ++ new_mntns) pidns' (ns_netns st ++ new_net)
                                         (ns_sbs st) (ns_dentries st) (ns_inodes st) (ns_files st)

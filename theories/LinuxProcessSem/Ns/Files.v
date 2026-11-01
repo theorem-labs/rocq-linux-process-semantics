@@ -131,7 +131,7 @@ Definition has (x b : Z) : bool := negb (Z.eqb (Z.land x b) 0).
 Definition with_cwd (ctx : NsCtx) (c : positive * positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
           c (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_pdeathsig ctx) (cx_dumpable ctx).
+          (cx_no_new_privs ctx) (cx_dumpable ctx).
 
 Definition with_tree (st : NsState) (ds : list Dentry) (ins : list Inode) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
@@ -291,7 +291,7 @@ Definition loc_attr (m : Model) (ctx : NsCtx) (st : NsState) (l : Loc) : option 
             match rest with
             | [] => mk IDir 365
             | _ =>
-                if negb (Z.eqb (cx_dumpable ctx) 1) then None
+                if negb (match cx_dumpable ctx with Some d => Z.eqb d 1 | None => false end) then None
                 else match rest with
                      | [n] =>
                          if bytes_eqb n proc_fd_name then mk IDir 320

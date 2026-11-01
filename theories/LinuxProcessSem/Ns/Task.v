@@ -26,22 +26,17 @@ Local Open Scope Z_scope.
 Definition with_caps (ctx : NsCtx) (c : CapSets) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
           (cx_cwd ctx) (cx_umask ctx) c (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_pdeathsig ctx) (cx_dumpable ctx).
-
-Definition with_pdeathsig (ctx : NsCtx) (s : Z) : NsCtx :=
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) s (cx_dumpable ctx).
+          (cx_no_new_privs ctx) (cx_dumpable ctx).
 
 Definition with_dumpable (ctx : NsCtx) (d : Z) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
           (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          (cx_no_new_privs ctx) (cx_pdeathsig ctx) d.
+          (cx_no_new_privs ctx) (Some d).
 
 Definition with_no_new_privs (ctx : NsCtx) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
           (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
-          true (cx_pdeathsig ctx) (cx_dumpable ctx).
+          (Some true) (cx_dumpable ctx).
 
 (** The task's credential as the capability checks read it: its user
     namespace, euid and egid (the model's kernel ids) and effective set. *)
@@ -241,13 +236,15 @@ Definition capset_arm : NsArm := fun i m ctx st o =>
 (** [prctl] (167): [SYSCALL_DEFINE5(prctl)] (kernel/sys.c) after
     [cap_task_prctl] (security/commoncap.c), for the options
     PR_CAPBSET_READ (23), PR_CAPBSET_DROP (24, [cap_prctl_drop]: CAP_SETPCAP
-    in the task's namespace, then a valid number), PR_SET_PDEATHSIG (1,
-    [valid_signal]), PR_GET_PDEATHSIG (2, [put_user] of the int),
-    PR_GET_DUMPABLE (3), PR_SET_DUMPABLE (4, 0 or 1), PR_SET_NO_NEW_PRIVS
-    (38) and PR_GET_NO_NEW_PRIVS (39), each with its argument checks.  The
-    option is the low 32 bits of a0.  Any other option is DECLINED
-    ([EUnmodeled]), never read as one of these eight.  Kind: exact, with
-    [prepare_creds]'s ENOMEM for PR_CAPBSET_DROP, the environment's. *)
+    in the task's namespace, then a valid number), PR_GET_DUMPABLE (3),
+    PR_SET_DUMPABLE (4, 0 or 1), PR_SET_NO_NEW_PRIVS (38) and
+    PR_GET_NO_NEW_PRIVS (39), each with its argument checks; a GET of a
+    value the model does not know declines.  PR_SET_PDEATHSIG (1) and
+    PR_GET_PDEATHSIG (2) are the released model's answers: the signal is
+    its state ([State.m_pdeath_signal]).  The option is the low 32 bits of
+    a0.  Any other option is DECLINED ([EUnmodeled]), never read as one of
+    these eight.  Kind: exact, with [prepare_creds]'s ENOMEM for
+    PR_CAPBSET_DROP, the environment's. *)
 Definition prctl_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let opt := s32 (in_arg i 0) in
   let a2 := bv_unsigned (in_arg i 1) in
@@ -263,15 +260,11 @@ Definition prctl_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) 
             (with_caps ctx (mkCaps (cap_effective c) (cap_permitted c) (cap_inheritable c)
                                    (Z.land (cap_bounding c) (Z.lnot (2 ^ a2))) (cap_ambient c)))
             st)
-  else if opt =? 1 then
-    (if 64 <? a2 then ns_errno EINVAL m ctx st else ns_ret (Z_to_bv 64 0) m (with_pdeathsig ctx a2) st)
-  else if opt =? 2 then
-    (match put_ok i (in_arg i 1) 4 with
-     | PutFault => ns_errno EFAULT m ctx st
-     | PutPartial => EUnmodeled
-     | PutOk => EOk (mkEffect (Z_to_bv 64 0) [(in_arg i 1, u32_bytes (cx_pdeathsig ctx))] []) m ctx st []
+  else if opt =? 3 then
+    (match cx_dumpable ctx with
+     | Some d => ns_ret (Z_to_bv 64 d) m ctx st
+     | None => EUnmodeled
      end)
-  else if opt =? 3 then ns_ret (Z_to_bv 64 (cx_dumpable ctx)) m ctx st
   else if opt =? 4 then
     (if 1 <? a2 then ns_errno EINVAL m ctx st else ns_ret (Z_to_bv 64 0) m (with_dumpable ctx a2) st)
   else if opt =? 38 then
@@ -279,7 +272,10 @@ Definition prctl_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) 
      else ns_ret (Z_to_bv 64 0) m (with_no_new_privs ctx) st)
   else if opt =? 39 then
     (if negb ((a2 =? 0) && z3) then ns_errno EINVAL m ctx st
-     else ns_ret (Z_to_bv 64 (if cx_no_new_privs ctx then 1 else 0)) m ctx st)
+     else match cx_no_new_privs ctx with
+          | Some b => ns_ret (Z_to_bv 64 (if b then 1 else 0)) m ctx st
+          | None => EUnmodeled
+          end)
   else EUnmodeled.
 
 (** [cap_prctl_drop]'s [prepare_creds] ENOMEM, after its two checks. *)
@@ -290,7 +286,9 @@ Definition prctl_enomem (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSta
   then Some (ns_errno ENOMEM m ctx st) else None.
 
 Definition prctl_arm : NsArm := fun i m ctx st o =>
-  o = prctl_fn i m ctx st \/ prctl_enomem i m ctx st = Some o.
+  let opt := s32 (in_arg i 0) in
+  if (opt =? 1) || (opt =? 2) then released i m ctx st o
+  else o = prctl_fn i m ctx st \/ prctl_enomem i m ctx st = Some o.
 
 Definition task_arms : list (Z * NsArm) :=
   [(90, capget_arm); (91, capset_arm); (166, umask_arm); (167, prctl_arm);
