@@ -30,9 +30,9 @@ Definition mnt (i : positive) (parent : option positive) (point root sb : positi
 Definition sb (i root : positive) (k : SbKind) (magic : Z) : SuperBlock :=
   mkSb i k 1 root false magic false false false.
 
-Definition dir (i : positive) (perm uid gid : Z) : Inode := mkInode i IDir perm uid gid 0 [].
-Definition reg (i : positive) (perm uid gid : Z) : Inode := mkInode i IReg perm uid gid 0 [].
-Definition lnk (i : positive) (t : list byte) : Inode := mkInode i ILnk 511 1000 1002 0 t.
+Definition dir (i : positive) (perm uid gid : Z) : Inode := mkInode i IDir perm uid gid 0 [] false.
+Definition reg (i : positive) (perm uid gid : Z) : Inode := mkInode i IReg perm uid gid 0 [] false.
+Definition lnk (i : positive) (t : list byte) : Inode := mkInode i ILnk 511 1000 1002 0 t false.
 
 Definition dent (i s : positive) (parent : option positive) (name : list byte) (ino : positive)
     : Dentry := mkDentry i s parent name ino.

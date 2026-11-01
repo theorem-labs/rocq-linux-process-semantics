@@ -130,16 +130,19 @@ Inductive InodeKind := IDir | IReg | ILnk | IChr | IBlk | IFifo | ISock.
 
 (** An inode: its kind, the low twelve bits of [i_mode] (permissions,
     S_ISUID, S_ISGID, S_ISVTX), its owner kuid and kgid, its device
-    number, and the bytes of a regular file or the target of a symbolic
-    link. *)
+    number, the bytes of a regular file or the target of a symbolic link,
+    and whether it is a directory that stays empty ([is_empty_dir_inode]:
+    the mount points procfs and sysfs make, such as
+    /proc/sys/fs/binfmt_misc). *)
 Record Inode := mkInode {
-  ino_id    : positive;
-  ino_kind  : InodeKind;
-  ino_perm  : Z;
-  ino_uid   : Z;
-  ino_gid   : Z;
-  ino_rdev  : Z;
-  ino_bytes : list byte
+  ino_id        : positive;
+  ino_kind      : InodeKind;
+  ino_perm      : Z;
+  ino_uid       : Z;
+  ino_gid       : Z;
+  ino_rdev      : Z;
+  ino_bytes     : list byte;
+  ino_empty_dir : bool
 }.
 
 (** A name in a directory: dentry [d_id] of superblock [d_sb] names inode
@@ -219,11 +222,15 @@ Record NsFile := mkNsFile {
 }.
 
 (** A static entry of a procfs instance, outside the task directories:
-    its names from the procfs root, its kind and permission bits. *)
+    its names from the procfs root, its kind, permission bits and owner
+    kuid and kgid, and whether it is a directory that stays empty. *)
 Record ProcEntry := mkProcEntry {
-  px_path : list (list byte);
-  px_kind : InodeKind;
-  px_perm : Z
+  px_path  : list (list byte);
+  px_kind  : InodeKind;
+  px_perm  : Z;
+  px_uid   : Z;
+  px_gid   : Z;
+  px_empty : bool
 }.
 
 (** What the running kernel's build and boot configuration fix, which no

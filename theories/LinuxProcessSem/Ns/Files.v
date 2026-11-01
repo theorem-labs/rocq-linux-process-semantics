@@ -626,7 +626,7 @@ Definition create_file (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds)
                        let nd := Pos.succ (max_dentry_id st) in
                        let ni := Pos.succ (max_inode_id st) in
                        let st' := with_tree st (ns_dentries st ++ [mkDentry nd (d_sb dx) (Some d) name ni])
-                                            (ns_inodes st ++ [mkInode ni IReg perm (wc_fsuid cr) gid 0 []]) in
+                                            (ns_inodes st ++ [mkInode ni IReg perm (wc_fsuid cr) gid 0 [] false]) in
                        OROk st' (NfFile (LDentry mn nd) 0)
                    end
           | _ => OROver
