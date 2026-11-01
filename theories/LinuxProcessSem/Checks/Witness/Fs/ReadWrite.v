@@ -217,6 +217,7 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
   | Some (FdOpaque (OProcFile _)) => read_proc_witness buf count i m
   | Some (FdOpaque (OProcPath _)) => Unmodeled
   | Some (FdOpaque (OEventFd _)) => Unmodeled
+  | Some (FdOpaque (ONsFile _)) => Unmodeled
   | Some (FdPipe id w) =>
       if w then ret_outcome (errno_ret EBADF) m   (* write end: read is -EBADF *)
       else if negb (modeled_rw_range buf count) then Unmodeled
@@ -265,11 +266,12 @@ Proof.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd. destruct (negb (access_okb buf (bv_unsigned count)));
         cbv beta iota; [apply pure_ok | apply read_urandom_witness_ok]. }
-  9:{ (* the opaque kinds: a /proc/sys file reads, the other two decline *)
+  9:{ (* the opaque kinds: a /proc/sys file reads, the other three decline *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-      srw Hfd. destruct o as [q|q|fl]; cbv beta iota;
-        [apply unmodeled_intro | apply read_proc_witness_ok | apply unmodeled_intro]. }
+      srw Hfd. destruct o as [q|q|fl|h]; cbv beta iota;
+        [apply unmodeled_intro | apply read_proc_witness_ok
+        | apply unmodeled_intro | apply unmodeled_intro]. }
   - (* channel *)
     destruct (negb (w_is0 ch)) eqn:Hm.
     { eapply bind_step; [apply input_ok|]. cbv beta.

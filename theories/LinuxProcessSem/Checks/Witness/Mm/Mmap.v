@@ -321,8 +321,7 @@ Qed.
 (* =========================================================================
    getrandom (278) — witness: the full delivery of a small request,
    environment failure (EINTR) for every other, or [Unmodeled] on
-   unmodeled flags / an unwritable destination; readlinkat (78) —
-   deterministic -EINVAL under AT_FDCWD, [Unmodeled] on any other dirfd
+   unmodeled flags / an unwritable destination
    ========================================================================= *)
 
 (** getrandom's witness: [Unmodeled] on unmodeled flags (GRND_RANDOM or

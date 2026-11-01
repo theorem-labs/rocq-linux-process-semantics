@@ -210,12 +210,12 @@ Proof.
     { unfold openat_proc_spec, proc_open_result. cbv zeta.
       destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)).
       { apply alt_l. eapply bind_step.
-        { unfold errno_any. apply (choose_ok _ ENOMEM). unfold ENOMEM. lia. }
+        { unfold errno_any. apply (choose_ok _ ENOMEM). unfold ENOMEM, EINTR. lia. }
         apply pure_ok. }
       destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
                 && proc_sys_file_b c).
       { apply alt_l. eapply bind_step.
-        { unfold errno_any. apply (choose_ok _ ENOMEM). unfold ENOMEM. lia. }
+        { unfold errno_any. apply (choose_ok _ ENOMEM). unfold ENOMEM, EINTR. lia. }
         apply pure_ok. }
       apply unmodeled_intro. }
     destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd.

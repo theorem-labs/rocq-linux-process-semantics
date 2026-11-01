@@ -254,7 +254,7 @@ Definition check_read_proc_bare (eff : SyscallEffect) (m : Model)
     : check_result :=
   match eff with
   | mkEffectU ret [] [] [] [] [] =>
-      if addr_is_error_b ret || bv_eqb ret (Z_to_bv 64 0) then CheckOk m []
+      if errno_any_b ret || bv_eqb ret (Z_to_bv 64 0) then CheckOk m []
       else CheckReject
   | _ => CheckReject
   end.
@@ -285,10 +285,10 @@ Definition check_read_proc (i : SyscallInput) (buf count : word)
 Local Lemma check_read_proc_bare_sound_ok : forall i (buf count : word) eff m m' evs,
   (0 <= bv_unsigned count)%Z ->
   check_read_proc_bare eff m = CheckOk m' evs ->
-  alt (e <- errno_any ;; err_ret e)
-      (bs <- choose (fun bs : list byte =>
-                       (Z.of_nat (length bs) <= bv_unsigned count)%Z) ;;
-       pure (mkEffect (len_word bs) (delivered_writes buf bs) []))
+  alt (bind errno_any (fun e => err_ret e))
+      (bind (choose (fun bs : list byte =>
+                       (Z.of_nat (length bs) <= bv_unsigned count)%Z))
+            (fun bs => pure (mkEffect (len_word bs) (delivered_writes buf bs) [])))
     i m (Ok eff m' evs).
 Proof.
   intros i buf count eff m m' evs Hc H.
@@ -296,11 +296,11 @@ Proof.
   destruct eff as [ret ws zs us cs ci].
   destruct ws as [|? ?]; destruct zs as [|? ?]; destruct us as [|? ?];
     destruct cs as [|? ?]; destruct ci as [|? ?]; try discriminate.
-  destruct (addr_is_error_b ret) eqn:He; cbn [orb] in H.
+  destruct (errno_any_b ret) eqn:He; cbn [orb] in H.
   - inversion H; clear H; subst.
-    apply addr_is_error_b_errno in He. destruct He as (e & He1 & He2 & ->).
+    apply errno_any_b_errno in He. destruct He as (e & He & ->).
     apply alt_l. eapply bind_ok0.
-    { unfold errno_any. apply (choose_ok _ e). lia. }
+    { unfold errno_any. apply (choose_ok _ e). exact He. }
     apply pure_ok.
   - destruct (bv_eqb ret (Z_to_bv 64 0)) eqn:H0; [|discriminate].
     inversion H; clear H; subst. apply bv_eqb_eq in H0. subst ret.
@@ -342,11 +342,11 @@ Proof.
     destruct eff as [ret ws zs us cs ci].
     destruct ws as [|? ?]; destruct zs as [|? ?]; destruct us as [|? ?];
       destruct cs as [|? ?]; destruct ci as [|? ?]; try discriminate.
-    destruct (addr_is_error_b ret) eqn:He; cbn [orb] in H.
+    destruct (errno_any_b ret) eqn:He; cbn [orb] in H.
     + inversion H; clear H; subst.
-      apply addr_is_error_b_errno in He. destruct He as (e & He1 & He2 & ->).
+      apply errno_any_b_errno in He. destruct He as (e & He & ->).
       apply alt_l. eapply bind_ok0.
-      { unfold errno_any. apply (choose_ok _ e). lia. }
+      { unfold errno_any. apply (choose_ok _ e). exact He. }
       apply pure_ok.
     + destruct (bv_eqb ret (Z_to_bv 64 0)) eqn:H0; [|discriminate].
       inversion H; clear H; subst. apply bv_eqb_eq in H0. subst ret.
@@ -359,7 +359,7 @@ Proof.
   intros [ret ws zs us cs ci] m. unfold check_read_proc_bare.
   destruct ws as [|? ?]; destruct zs as [|? ?]; destruct us as [|? ?];
     destruct cs as [|? ?]; destruct ci as [|? ?]; try discriminate.
-  destruct (addr_is_error_b ret || bv_eqb ret (Z_to_bv 64 0)); discriminate.
+  destruct (errno_any_b ret || bv_eqb ret (Z_to_bv 64 0)); discriminate.
 Qed.
 
 Lemma check_read_proc_sound_unmodeled : forall i buf count eff m,
@@ -398,7 +398,7 @@ Proof.
   destruct (negb (modeled_rw_count count)) eqn:Hc; hall Hc; inv_ok.
   destruct (read_bytes_map (in_wmem i) buf count) as [w|] eqn:Hw; hall Hw; inv_ok.
   - (* the errno *)
-    unfold check_read_proc_bare. rewrite errno_ret_error_b by lia. reflexivity.
+    unfold check_read_proc_bare. rewrite errno_any_b_ret by (intuition lia). reflexivity.
   - (* a delivery of [x] bytes *)
     match goal with
     | Hx : (Z.of_nat (length ?x) <= bv_unsigned count)%Z |- _ =>
@@ -415,7 +415,7 @@ Proof.
   - destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1;
       hall Hw1; inv_ok;
       unfold check_read_proc_bare; cbv beta iota.
-    + rewrite errno_ret_error_b by lia. reflexivity.
+    + rewrite errno_any_b_ret by (intuition lia). reflexivity.
     + first [ reflexivity
             | rewrite Bool.orb_true_r; reflexivity
             | rewrite bv_eqb_refl, Bool.orb_true_r; reflexivity ].
@@ -435,6 +435,36 @@ Proof.
   destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1;
     hall Hw1; inv_ok.
   reflexivity.
+Qed.
+
+(** What a sysctl read delivers is under the clamp: the count gate keeps
+    [count] at or below [Uaccess.rw_bytes_max], and the delivery at or
+    below [count].  [Checks.Cases.Fs.ReadWrite.read_delivery_clamped]
+    reads it, beside [check_read_urandom_delivery_clamped]. *)
+Lemma check_read_proc_delivery_clamped : forall i buf count eff m m' evs a bs,
+  check_read_proc i buf count eff m = CheckOk m' evs ->
+  eff_writes eff = [(a, bs)] ->
+  (Z.of_nat (length bs) <= MAX_RW_COUNT)%Z.
+Proof.
+  intros i buf count eff m m' evs a bs H Hws.
+  unfold check_read_proc in H.
+  destruct (negb (access_okb buf (bv_unsigned count))).
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & _ & _). discriminate Hws. }
+  destruct (negb (modeled_rw_count count)) eqn:Hc; [discriminate|].
+  unfold modeled_rw_count in Hc. apply negb_false_iff, Z.leb_le in Hc.
+  destruct eff as [ret ws zs us cs ci]. cbn in Hws. subst ws.
+  destruct (read_bytes_map (in_wmem i) buf count).
+  2:{ destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)); [discriminate|].
+      unfold check_read_proc_bare in H. discriminate. }
+  destruct zs as [|? ?]; destruct us as [|? ?]; destruct cs as [|? ?];
+    destruct ci as [|? ?]; cbv beta iota in H;
+    try (unfold check_read_proc_bare in H; discriminate).
+  destruct (bv_eqb a buf && bv_eqb ret (len_word bs)
+            && negb (Nat.eqb (length bs) 0)
+            && (Z.of_nat (length bs) <=? bv_unsigned count)%Z) eqn:Hb;
+    [|discriminate].
+  apply andb_true_iff in Hb as [_ Hle]. apply Z.leb_le in Hle.
+  unfold rw_bytes_max, MAX_RW_COUNT in *. lia.
 Qed.
 
 Definition check_read (i : SyscallInput) (fd buf count : word)
@@ -623,6 +653,7 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
   | Some (FdOpaque (OProcFile _)) => check_read_proc i buf count eff m
   | Some (FdOpaque (OProcPath _)) => CheckUnmodeled
   | Some (FdOpaque (OEventFd _)) => CheckUnmodeled
+  | Some (FdOpaque (ONsFile _)) => CheckUnmodeled
   | Some (FdPipe id w) =>
       if w then check_ret_only eff (errno_ret EBADF) m []   (* write end: -EBADF *)
       else
@@ -913,7 +944,7 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd.
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque ?o) |- _ =>
-                destruct o as [q|q|fl]; cbv beta iota in H; try discriminate;
+                destruct o as [q|q|fl|h]; cbv beta iota in H; try discriminate;
                 eapply bind_ok0; [apply input_ok|]; cbv beta;
                 eapply bind_ok0; [apply get_model_ok|]; cbv beta iota;
                 srw Hfd; apply check_read_proc_sound_ok; exact H
@@ -1291,9 +1322,10 @@ Proof.
             | Hfd : fd_lookup _ _ = Some (FdOpaque ?o) |- _ =>
                 eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
                 eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
-                srw Hfd; destruct o as [q|q|fl]; cbv beta iota in H |- *;
+                srw Hfd; destruct o as [q|q|fl|h]; cbv beta iota in H |- *;
                 [ apply unmodeled_intro
                 | apply check_read_proc_sound_unmodeled with (eff := eff); exact H
+                | apply unmodeled_intro
                 | apply unmodeled_intro ]
             end).
   9:{ destruct rd; cbn [negb] in H; cbv beta iota in H;
@@ -1537,7 +1569,7 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd; hall Hfd; inv_ok.
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque ?o) |- _ =>
-                destruct o as [q|q|fl]; cbv beta iota in *; inv_ok;
+                destruct o as [q|q|fl|h]; cbv beta iota in *; inv_ok;
                 apply check_read_proc_complete_ok; assumption
             end).
   - destruct (negb (w_is0 ch)) eqn:Hm; hall Hm; inv_ok; [reflexivity|].
@@ -1696,9 +1728,10 @@ Proof.
     try discriminate.
   all: try (match goal with
             | Hfd : fd_lookup _ _ = Some (FdOpaque ?o) |- _ =>
-                destruct o as [q|q|fl]; cbv beta iota in *;
+                destruct o as [q|q|fl|h]; cbv beta iota in *;
                 [ reflexivity
                 | apply check_read_proc_complete_unmodeled; assumption
+                | reflexivity
                 | reflexivity ]
             end).
   - destruct (negb (w_is0 ch)) eqn:Hm; hall Hm; inv_ok; try discriminate.
@@ -5319,7 +5352,7 @@ Definition check_lseek (fd off whence : word) (eff : SyscallEffect) (m : Model)
       | FdPipe _ _ => check_ret_only eff (errno_ret ESPIPE) m []
       | FdDevNull _ _ => check_ret_only eff (Z_to_bv 64 0) m []   (* [null_lseek]: 0 *)
       | FdUrandom => check_ret_only eff (Z_to_bv 64 0) m []   (* [noop_llseek]: the pinned 0 *)
-      | FdOpaque _ => CheckUnmodeled   (* unreachable: [fd_is_opaque] above *)
+      | FdOpaque _ => CheckUnmodeled   (* declined: see [ReadWrite.lseek_spec] *)
       | FdDir => CheckUnmodeled   (* unmodeled: see [ReadWrite.lseek_spec] *)
       | FdFile p cur =>
           match fs_lookup (m_fs m) p with

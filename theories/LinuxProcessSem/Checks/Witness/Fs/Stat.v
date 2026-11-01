@@ -16,23 +16,54 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
   Prelude.
 
-Definition readlinkat_witness (dirfd : word) (m : Model)
+(** readlinkat: [Stat.readlinkat_spec] read straight off — every arm is
+    deterministic. *)
+Definition readlinkat_core_witness (dirfd pathp : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  match read_cstr (in_mem i) pathp with
+  | CstrTooLong => ret_outcome (errno_ret ENAMETOOLONG) m
+  | CstrFault => ret_outcome (errno_ret EFAULT) m
+  | CstrOk p =>
+      if negb (bv_eqb dirfd AT_FDCWD32) then Unmodeled
+      else if path_eqb p [] then ret_outcome (errno_ret ENOENT) m
+      else if proc_path_b p then Unmodeled
+      else ret_outcome (errno_ret EINVAL) m
+  end.
+
+Definition readlinkat_witness (dirfd : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
-  if negb (bv_eqb dirfd AT_FDCWD32) then Unmodeled
-  else ret_outcome (errno_ret EINVAL) m.
+  if (sint32 (in_arg i 3) <=? 0)%Z then ret_outcome (errno_ret EINVAL) m
+  else outcome_copyins
+         [(in_arg i 1, cstr_access_len_aux (in_mem i) (in_arg i 1) path_max)]
+         (readlinkat_core_witness dirfd (in_arg i 1) i m).
+
+Local Lemma readlinkat_core_witness_ok : forall dirfd pathp i m,
+  readlinkat_core_spec dirfd pathp i m (readlinkat_core_witness dirfd pathp i m).
+Proof.
+  intros. unfold readlinkat_core_spec, readlinkat_core_witness.
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  destruct (read_cstr (in_mem i) pathp) as [p| |]; cbv beta iota;
+    [|apply pure_ok|apply pure_ok].
+  destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv beta iota; [apply unmodeled_intro|].
+  destruct (path_eqb p []); cbv beta iota; [apply pure_ok|].
+  destruct (proc_path_b p); cbv beta iota; [apply unmodeled_intro|apply pure_ok].
+Qed.
 
 Lemma readlinkat_witness_ok : forall dirfd i m,
-  readlinkat_spec dirfd i m (readlinkat_witness dirfd m).
+  readlinkat_spec dirfd i m (readlinkat_witness dirfd i m).
 Proof.
   intros. unfold readlinkat_spec, readlinkat_witness.
-  destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; cbv beta iota.
-  - apply unmodeled_intro.
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  destruct ((sint32 (in_arg i 3) <=? 0)%Z); cbv beta iota.
   - unfold err_ret, ret_only, ret_outcome. apply pure_ok.
+  - apply record_copyins_outcome. apply readlinkat_core_witness_ok.
 Qed.
 
 (** newfstatat: a path errno (-ENAMETOOLONG / -EFAULT / -ENOENT) or
-    [Unmodeled].  Every arm is deterministic: the spec has no [alt],
-    because it never reaches an arm that could succeed. *)
+    [Unmodeled], and on a name relative to an O_PATH procfs descriptor
+    the errno alternative of [Stat.newfstatat_proc_spec] (its
+    [Syscall.errno_any] admits -ENOMEM) wherever that spec answers.
+    Every other arm is deterministic. *)
 Definition newfstatat_core_witness (dirfd pathp flag : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   if negb (modeled_statat_flags flag) then Unmodeled   (* unmodeled flag word *)
@@ -41,8 +72,18 @@ Definition newfstatat_core_witness (dirfd pathp flag : word) (i : SyscallInput)
        | CstrFault => ret_outcome (errno_ret EFAULT) m          (* unreadable path *)
        | CstrOk p =>
            if path_eqb p [] then ret_outcome (errno_ret ENOENT) m  (* empty pathname *)
-           else if negb (bv_eqb dirfd AT_FDCWD32) then Unmodeled   (* unmodeled dirfd *)
+           else if negb (bv_eqb dirfd AT_FDCWD32) then
+             (if newfstatat_proc_dir (m_fds m) dirfd p then
+                (if negb (access_okb (in_arg i 2) STAT_SIZE)
+                 then ret_outcome (errno_ret ENOMEM) m
+                 else match read_bytes_map (in_wmem i) (in_arg i 2)
+                              (Z_to_bv 64 STAT_SIZE) with
+                      | None => Unmodeled                     (* partly writable buffer *)
+                      | Some _ => ret_outcome (errno_ret ENOMEM) m
+                      end)
+              else Unmodeled)                                   (* unmodeled dirfd *)
            else if path_eqb p dot_path then Unmodeled              (* directory metadata *)
+           else if proc_path_b p then Unmodeled                    (* a procfs name *)
            else match fs_lookup (m_fs m) p with
                 | None => ret_outcome (errno_ret ENOENT) m         (* absent file *)
                 | Some _ => Unmodeled                              (* would succeed *)
@@ -80,20 +121,39 @@ Proof.
     destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hp; srw Hpe. apply unmodeled_intro. }
+      cbv beta iota zeta; srw Hp; srw Hpe.
+      destruct (newfstatat_proc_dir (m_fds m) dirfd p) eqn:Hpd; cbv beta iota;
+        [|apply unmodeled_intro].
+      unfold newfstatat_proc_spec.
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      destruct (negb (access_okb (in_arg i 2) STAT_SIZE)); cbv beta iota.
+      { eapply bind_step;
+          [unfold errno_any; apply (choose_ok _ ENOMEM); cbv beta; unfold ENOMEM, EINTR; lia|].
+        apply pure_ok. }
+      destruct (read_bytes_map (in_wmem i) (in_arg i 2) (Z_to_bv 64 STAT_SIZE));
+        cbv beta iota; [|apply unmodeled_intro].
+      apply alt_l.
+      eapply bind_step;
+        [unfold errno_any; apply (choose_ok _ ENOMEM); cbv beta; unfold ENOMEM, EINTR; lia|].
+      apply pure_ok. }
     destruct (path_eqb p dot_path) eqn:Hdot.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot.
       apply unmodeled_intro. }
+    destruct (proc_path_b p) eqn:Hpp.
+    { eapply bind_step; [apply input_ok|].
+      cbv beta. eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot; srw Hpp.
+      apply unmodeled_intro. }
     destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot; srw Hfs.
+      cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot; srw Hpp; srw Hfs.
       apply unmodeled_intro.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot; srw Hfs.
+      cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot; srw Hpp; srw Hfs.
       apply pure_ok.
 Qed.
 
@@ -296,7 +356,7 @@ Qed.
 
 (** fstat (80) — -EBADF on a descriptor the process does not hold, a
     delivered [struct stat] on the four file kinds and on the two device
-    kinds, and [Unmodeled] on the other four. *)
+    kinds, and [Unmodeled] on the other five. *)
 Definition fstat_witness (fd statbuf : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
@@ -311,6 +371,7 @@ Definition fstat_witness (fd statbuf : word) (i : SyscallInput) (m : Model)
   | Some (FdPipe _ _)  => Unmodeled
   | Some (FdDevNull _ _) => fstat_devnull_witness statbuf i m
   | Some FdUrandom => fstat_urandom_witness statbuf i m
+  | Some (FdOpaque _) => Unmodeled
   end.
 
 Lemma fstat_witness_ok : forall fd statbuf i m,

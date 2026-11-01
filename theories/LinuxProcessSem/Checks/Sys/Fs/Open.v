@@ -425,14 +425,14 @@ Local Definition check_openat_resolved (p : path) (flags : word)
   else if is_excl_append_create fl then check_openat_append true p eff m
   else CheckUnmodeled.
 
-(** Mirrors [Open.proc_open_result]: any error-encoded return (the
-    spec's [Syscall.errno_any]), or the lowest free fd bound to the
-    opaque entry, with nothing written. *)
+(** Mirrors [Open.proc_open_result]: any error-encoded return but
+    -EINTR (the spec's [Syscall.errno_any]; [errno_any_b]), or the
+    lowest free fd bound to the opaque entry, with nothing written. *)
 Local Definition check_proc_open_result (o : OpaqueFd) (eff : SyscallEffect)
     (m : Model) : check_result :=
   match eff with
   | mkEffectU ret [] [] [] [] [] =>
-      if addr_is_error_b ret then CheckOk m []
+      if errno_any_b ret then CheckOk m []
       else
         match fd_lookup (m_fds m) ret with
         | Some _ => CheckReject
@@ -814,11 +814,11 @@ Proof.
   destruct ws as [|w ws']; [destruct zs as [|z zs']|];
     destruct us as [|? ?]; destruct cs as [|? ?];
     destruct copyins as [|? ?]; try discriminate.
-  destruct (addr_is_error_b ret) eqn:He.
+  destruct (errno_any_b ret) eqn:He.
   - inversion H; clear H; subst.
-    apply addr_is_error_b_errno in He. destruct He as (e & He1 & He2 & ->).
+    apply errno_any_b_errno in He. destruct He as (e & He & ->).
     unfold proc_open_result. apply alt_l. eapply bind_ok0.
-    { unfold errno_any. apply (choose_ok _ e). lia. }
+    { unfold errno_any. apply (choose_ok _ e). exact He. }
     apply pure_ok.
   - destruct (fd_lookup (m_fds m) ret) eqn:Hfr; [discriminate|].
     destruct (bv_eqb ret (alloc_fd (m_fds m))) eqn:Heq; [|discriminate].
@@ -834,7 +834,7 @@ Proof.
   intros o [ret ws zs us cs copyins] m. unfold check_proc_open_result.
   destruct ws as [|? ?]; destruct zs as [|? ?]; destruct us as [|? ?];
     destruct cs as [|? ?]; destruct copyins as [|? ?]; try discriminate.
-  destruct (addr_is_error_b ret); [discriminate|].
+  destruct (errno_any_b ret); [discriminate|].
   destruct (fd_lookup (m_fds m) ret); [discriminate|].
   destruct (bv_eqb ret (alloc_fd (m_fds m))); discriminate.
 Qed.
@@ -1650,9 +1650,9 @@ Proof.
   unfold proc_open_result, errno_any in H. unfold check_proc_open_result.
   sys_unfold. cbv iota in H. inv_ok.
   - split; [|reflexivity].
-    rewrite errno_ret_error_b by lia. reflexivity.
+    rewrite errno_any_b_ret by (intuition lia). reflexivity.
   - split; [|reflexivity].
-    rewrite alloc_fd_not_error_b.
+    unfold errno_any_b. rewrite alloc_fd_not_error_b.
     match goal with H : fd_lookup _ _ = None |- _ => rewrite H end.
     rewrite bv_eqb_refl. reflexivity.
 Qed.

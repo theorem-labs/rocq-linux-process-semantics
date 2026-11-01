@@ -1783,7 +1783,7 @@ Lemma check_read_frame : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_read, check_read_urandom, check_socket_pending_error,
-    check_access_ok_zero in H.
+    check_access_ok_zero, check_read_proc, check_read_proc_bare in H.
   cbv zeta in H. vm_frame2 H.
 Qed.
 
@@ -1831,6 +1831,7 @@ Proof.
     Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl,
     Open.check_openat_dir, Open.check_openat_append,
     Open.check_openat_rdwr, Open.check_openat_rdwr_excl,
+    Open.check_openat_proc, Open.check_proc_open_result,
     check_create_wronly, check_open_append, check_open_rdwr in H.
   vm_frame2 H.
 Qed.
@@ -1870,10 +1871,11 @@ Proof.
   unfold check_getrandom, check_getrandom_zero in H. vm_frame2 H.
 Qed.
 
-Lemma check_readlinkat_frame : forall dirfd eff m m' evs,
-  check_readlinkat dirfd eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Lemma check_readlinkat_frame : forall i dirfd eff m m' evs,
+  check_readlinkat i dirfd eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros dirfd eff m m' evs H. unfold check_readlinkat in H. vm_frame2 H.
+  intros i dirfd eff m m' evs H. unfold check_readlinkat in H. cbv zeta in H.
+  vm_frame2 H.
 Qed.
 
 Lemma check_exit_frame : forall code eff m m' evs,
@@ -1989,18 +1991,17 @@ Proof.
   unfold check_timerfd_create in H. vm_frame2 H.
 Qed.
 
-(** [eventfd2] is [timerfd_create]'s twin here for the same reason: its
-    only answer is the -EINVAL it decides from the flag word alone, and
-    Linux decides it before the [kmalloc], so the arm touches no field
-    of the model, [m_vmmaps] included.  A [*_frame] rather than a
-    [*_preserves]: nothing is written for [vm_wf] to be re-established
-    over. *)
+(** [eventfd2] changes [m_fds] alone: its -EINVAL is decided from the
+    flag word, and its descriptor is [State.with_fds] over the table
+    ([Open.check_new_fd_result]), which carries the VM subsystem across
+    untouched.  A [*_frame] rather than a [*_preserves]: nothing is
+    written for [vm_wf] to be re-established over. *)
 Lemma check_eventfd2_frame : forall flags eff m m' evs,
   check_eventfd2 flags eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros flags eff m m' evs H.
-  unfold check_eventfd2 in H. vm_frame2 H.
+  unfold check_eventfd2, check_new_fd_result in H. vm_frame2 H.
 Qed.
 
 (** uname writes only the UTS-name pin, which lives in [ProcState]:
@@ -2220,7 +2221,8 @@ Lemma check_newfstatat_frame : forall i dirfd pathp flag eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i dirfd pathp flag eff m m' evs H.
-  unfold check_newfstatat in H. vm_frame2 H.
+  unfold check_newfstatat, check_newfstatat_proc, check_newfstatat_proc_errno in H.
+  vm_frame2 H.
 Qed.
 
 (** fstat's success arm changes the model
@@ -2488,7 +2490,7 @@ Lemma check_getsockname_frame : forall fd eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros fd eff m m' evs H.
-  unfold check_getsockname in H. vm_frame2 H.
+  unfold check_getsockname, check_getsockname_core in H. vm_frame2 H.
 Qed.
 
 Lemma check_getpeername_frame : forall fd eff m m' evs,
@@ -2496,7 +2498,7 @@ Lemma check_getpeername_frame : forall fd eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros fd eff m m' evs H.
-  unfold check_getpeername in H. vm_frame2 H.
+  unfold check_getpeername, check_getpeername_core in H. vm_frame2 H.
 Qed.
 
 Lemma check_setsockopt_frame : forall fd level optlen eff m m' evs,
@@ -2504,7 +2506,7 @@ Lemma check_setsockopt_frame : forall fd level optlen eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros fd level optlen eff m m' evs H.
-  unfold check_setsockopt in H. vm_frame2 H.
+  unfold check_setsockopt, check_setsockopt_core in H. vm_frame2 H.
 Qed.
 
 Lemma check_getsockopt_frame : forall i fd level optlenp eff m m' evs,
@@ -2512,7 +2514,7 @@ Lemma check_getsockopt_frame : forall i fd level optlenp eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd level optlenp eff m m' evs H.
-  unfold check_getsockopt in H. vm_frame2 H.
+  unfold check_getsockopt, check_getsockopt_core in H. vm_frame2 H.
 Qed.
 
 Lemma check_shutdown_frame : forall fd how eff m m' evs,
@@ -2520,7 +2522,7 @@ Lemma check_shutdown_frame : forall fd how eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros fd how eff m m' evs H.
-  unfold check_shutdown in H. vm_frame2 H.
+  unfold check_shutdown, check_shutdown_core in H. vm_frame2 H.
 Qed.
 
 (** The send path.  [check_send_on_socket] is the shared body

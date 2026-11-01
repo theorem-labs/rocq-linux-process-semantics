@@ -16,60 +16,296 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude.
 
-Definition check_readlinkat (dirfd : word) (eff : SyscallEffect) (m : Model)
-    : check_result :=
-  if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
-  else check_ret_only eff (errno_ret EINVAL) m [].
+(** [Stat.readlinkat_spec] as an acceptor: the [bufsiz] gate with an
+    empty ledger, then every answer past it carries the pathname range,
+    exactly as [check_newfstatat]'s do. *)
+Definition check_readlinkat (i : SyscallInput) (dirfd : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  let pathp := in_arg i 1 in
+  let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
+  if (sint32 (in_arg i 3) <=? 0)%Z then check_ret_only eff (errno_ret EINVAL) m []
+  else
+    match read_cstr (in_mem i) pathp with
+    | CstrTooLong => check_ret_only_copyins reads eff (errno_ret ENAMETOOLONG) m []
+    | CstrFault => check_ret_only_copyins reads eff (errno_ret EFAULT) m []
+    | CstrOk p =>
+        if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
+        else if path_eqb p [] then check_ret_only_copyins reads eff (errno_ret ENOENT) m []
+        else if proc_path_b p then CheckUnmodeled
+        else check_ret_only_copyins reads eff (errno_ret EINVAL) m []
+    end.
 
-Lemma check_readlinkat_sound_ok : forall dirfd eff m m' evs i,
-  check_readlinkat dirfd eff m = CheckOk m' evs ->
+Lemma check_readlinkat_sound_ok : forall i dirfd eff m m' evs,
+  check_readlinkat i dirfd eff m = CheckOk m' evs ->
   readlinkat_spec dirfd i m (Ok eff m' evs).
 Proof.
-  intros dirfd eff m m' evs i H.
-  unfold check_readlinkat in H. unfold readlinkat_spec.
+  intros i dirfd eff m m' evs H.
+  unfold check_readlinkat in H. cbv zeta in H. unfold readlinkat_spec.
+  eapply bind_ok0; [apply input_ok|]. cbv beta.
+  destruct ((sint32 (in_arg i 3) <=? 0)%Z) eqn:Hb.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (read_cstr (in_mem i) (in_arg i 1)) as [p| |] eqn:Hp.
+  2: { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+       apply record_copyins_ok_empty; [reflexivity|].
+       unfold readlinkat_core_spec.
+       eapply bind_ok0; [apply input_ok|]. cbv beta. srw Hp. apply pure_ok. }
+  2: { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+       apply record_copyins_ok_empty; [reflexivity|].
+       unfold readlinkat_core_spec.
+       eapply bind_ok0; [apply input_ok|]. cbv beta. srw Hp. apply pure_ok. }
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; [discriminate|].
-  cbv beta iota.
-  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+  destruct (path_eqb p []) eqn:Hpe.
+  { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|].
+    unfold readlinkat_core_spec.
+    eapply bind_ok0; [apply input_ok|]. cbv beta. srw Hp. srw Hd. srw Hpe.
+    apply pure_ok. }
+  destruct (proc_path_b p) eqn:Hpp; [discriminate|].
+  apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+  apply record_copyins_ok_empty; [reflexivity|].
+  unfold readlinkat_core_spec.
+  eapply bind_ok0; [apply input_ok|]. cbv beta. srw Hp. srw Hd. srw Hpe. srw Hpp.
   apply pure_ok.
 Qed.
 
-Lemma check_readlinkat_sound_unmodeled : forall dirfd eff m i,
-  check_readlinkat dirfd eff m = CheckUnmodeled -> readlinkat_spec dirfd i m Unmodeled.
+Lemma check_readlinkat_sound_unmodeled : forall i dirfd eff m,
+  check_readlinkat i dirfd eff m = CheckUnmodeled ->
+  readlinkat_spec dirfd i m Unmodeled.
 Proof.
-  intros dirfd eff m i H.
-  unfold check_readlinkat in H. unfold readlinkat_spec.
-  destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; cbv beta iota.
-  - apply unmodeled_intro.
-  - now apply check_ret_only_no_unmodeled in H.
+  intros i dirfd eff m H.
+  unfold check_readlinkat in H. cbv zeta in H. unfold readlinkat_spec.
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+  destruct ((sint32 (in_arg i 3) <=? 0)%Z) eqn:Hb;
+    [now apply check_ret_only_no_unmodeled in H|].
+  apply record_copyins_unmodeled.
+  destruct (read_cstr (in_mem i) (in_arg i 1)) as [p| |] eqn:Hp;
+    [| now apply check_ret_only_copyins_no_unmodeled in H
+     | now apply check_ret_only_copyins_no_unmodeled in H ].
+  unfold readlinkat_core_spec.
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta. srw Hp.
+  destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; [apply unmodeled_intro|].
+  destruct (path_eqb p []) eqn:Hpe;
+    [now apply check_ret_only_copyins_no_unmodeled in H|].
+  destruct (proc_path_b p) eqn:Hpp; [apply unmodeled_intro|].
+  now apply check_ret_only_copyins_no_unmodeled in H.
 Qed.
 
-Lemma check_readlinkat_complete_ok : forall dirfd eff m m' evs i,
+Lemma check_readlinkat_complete_ok : forall i dirfd eff m m' evs,
   readlinkat_spec dirfd i m (Ok eff m' evs) ->
-  check_readlinkat dirfd eff m = CheckOk m' evs.
+  check_readlinkat i dirfd eff m = CheckOk m' evs.
 Proof.
-  intros dirfd eff m m' evs i H.
-  unfold readlinkat_spec in H. unfold check_readlinkat.
-  destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; cbv beta iota in H |- *.
-  - unfold unmodeled in H. discriminate.
-  - sys_unfold. cbv iota in H. inv_ok.
-    cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
+  intros i dirfd eff m m' evs H.
+  unfold readlinkat_spec in H.
+  apply input_bind_ok_inv in H. cbv beta in H.
+  unfold check_readlinkat. cbv zeta.
+  destruct ((sint32 (in_arg i 3) <=? 0)%Z) eqn:Hb; cbv iota in H.
+  { sys_unfold. inv_ok.
+    cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
+  apply record_copyins_ok_inv in H. destruct H as (core & H & ->).
+  unfold readlinkat_core_spec in H.
+  sys_unfold. cbv iota in H. inv_ok.
+  destruct (read_cstr (in_mem i) (in_arg i 1)) as [p| |] eqn:Hp; hall Hp; inv_ok;
+    try (cbn [eff_copyins with_copyins app];
+         apply check_ret_only_copyins_refl).
+  destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; hall Hd; inv_ok.
+  destruct (path_eqb p []) eqn:Hpe; hall Hpe; inv_ok.
+  { cbn [eff_copyins with_copyins app]. apply check_ret_only_copyins_refl. }
+  destruct (proc_path_b p) eqn:Hpp; hall Hpp; inv_ok.
+  cbn [eff_copyins with_copyins app]. apply check_ret_only_copyins_refl.
 Qed.
 
-Lemma check_readlinkat_complete_unmodeled : forall dirfd m i eff,
-  readlinkat_spec dirfd i m Unmodeled -> check_readlinkat dirfd eff m = CheckUnmodeled.
+Lemma check_readlinkat_complete_unmodeled : forall i dirfd m eff,
+  readlinkat_spec dirfd i m Unmodeled ->
+  check_readlinkat i dirfd eff m = CheckUnmodeled.
 Proof.
-  intros dirfd m i eff H.
-  unfold readlinkat_spec in H. unfold check_readlinkat.
-  destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; cbv beta iota in H |- *;
-    [reflexivity|].
-  sys_unfold. cbv iota in H. inv_ok; discriminate.
+  intros i dirfd m eff H.
+  unfold readlinkat_spec in H.
+  apply input_bind_unmodeled_inv in H. cbv beta in H.
+  unfold check_readlinkat. cbv zeta.
+  destruct ((sint32 (in_arg i 3) <=? 0)%Z) eqn:Hb; cbv iota in H.
+  { exfalso. sys_unfold. inv_ok. }
+  apply record_copyins_unmodeled_inv in H.
+  unfold readlinkat_core_spec in H. sys_unfold. cbv iota in H. inv_ok.
+  destruct (read_cstr (in_mem i) (in_arg i 1)) as [p| |] eqn:Hp; hall Hp; inv_ok;
+    try discriminate.
+  destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; hall Hd; inv_ok;
+    try discriminate; [reflexivity|].
+  destruct (path_eqb p []) eqn:Hpe; hall Hpe; inv_ok; try discriminate.
+  destruct (proc_path_b p) eqn:Hpp; hall Hpp; inv_ok; try discriminate.
+  reflexivity.
 Qed.
 
-(** newfstatat: only the FAILING side is modeled, and it writes nothing —
+(** [Stat.newfstatat_proc_spec] as an acceptor, under the pathname
+    ledger [reads] that [newfstatat_spec] puts on every answer.  An
+    error-encoded return with nothing written is the spec's
+    [Syscall.errno_any] ([check_newfstatat_proc_errno]); over a wholly
+    writable [statbuf] a 0 with ONE write of 128 bytes at [statbuf] that
+    [stat_proc_buf_ok] passes is the delivery.  A [statbuf] inside the
+    address space but not wholly writable is declined, as the spec
+    declines it. *)
+Definition check_newfstatat_proc_errno (reads : list (word * nat))
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  match eff with
+  | mkEffectU ret [] [] [] [] ci =>
+      if errno_any_b ret && access_ranges_eqb ci reads
+      then CheckOk m [] else CheckReject
+  | _ => CheckReject
+  end.
+
+Definition check_newfstatat_proc (i : SyscallInput) (reads : list (word * nat))
+    (statbuf : word) (eff : SyscallEffect) (m : Model) : check_result :=
+  if negb (access_okb statbuf STAT_SIZE)
+  then check_newfstatat_proc_errno reads eff m
+  else
+    match read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE) with
+    | None => CheckUnmodeled
+    | Some _ =>
+        match eff with
+        | mkEffectU ret [(a, bs)] [] [] [] ci =>
+            if bv_eqb ret (Z_to_bv 64 0) && bv_eqb a statbuf
+               && stat_proc_buf_ok bs && access_ranges_eqb ci reads
+            then CheckOk m [] else CheckReject
+        | _ => check_newfstatat_proc_errno reads eff m
+        end
+    end.
+
+Lemma check_newfstatat_proc_errno_ok : forall reads eff m m' evs,
+  check_newfstatat_proc_errno reads eff m = CheckOk m' evs ->
+  eff_copyins eff = reads /\ m' = m /\ evs = [] /\
+  exists e, ((1 <= e <= 4095)%Z /\ e <> EINTR) /\
+            clear_copyins eff = mkEffect (errno_ret e) [] [].
+Proof.
+  intros reads [ret ws zs us cs ci] m m' evs H.
+  unfold check_newfstatat_proc_errno in H.
+  destruct ws as [|? ?]; destruct zs as [|? ?]; destruct us as [|? ?];
+    destruct cs as [|? ?]; cbv beta iota in H; try discriminate.
+  destruct (errno_any_b ret) eqn:He; cbn [andb] in H; [|discriminate].
+  destruct (access_ranges_eqb ci reads) eqn:Hci; [|discriminate].
+  inversion H; clear H; subst.
+  apply access_ranges_eqb_eq in Hci. subst ci.
+  apply errno_any_b_errno in He. destruct He as (e & He & ->).
+  split; [reflexivity|]. split; [reflexivity|]. split; [reflexivity|].
+  exists e. split; [exact He|reflexivity].
+Qed.
+
+Lemma check_newfstatat_proc_errno_no_unmodeled : forall reads eff m,
+  check_newfstatat_proc_errno reads eff m <> CheckUnmodeled.
+Proof.
+  intros reads [ret ws zs us cs ci] m. unfold check_newfstatat_proc_errno.
+  destruct ws as [|? ?]; destruct zs as [|? ?]; destruct us as [|? ?];
+    destruct cs as [|? ?]; cbv beta iota; try discriminate.
+  destruct (errno_any_b ret && access_ranges_eqb ci reads); discriminate.
+Qed.
+
+Lemma check_newfstatat_proc_sound_ok : forall i reads statbuf eff m m' evs,
+  check_newfstatat_proc i reads statbuf eff m = CheckOk m' evs ->
+  eff_copyins eff = reads /\
+  newfstatat_proc_spec statbuf i m (Ok (clear_copyins eff) m' evs).
+Proof.
+  intros i reads statbuf eff m m' evs H.
+  unfold check_newfstatat_proc in H. unfold newfstatat_proc_spec.
+  assert (Herr : check_newfstatat_proc_errno reads eff m = CheckOk m' evs ->
+                 eff_copyins eff = reads /\
+                 bind errno_any (fun e => err_ret e) i m
+                   (Ok (clear_copyins eff) m' evs)).
+  { intro He. apply check_newfstatat_proc_errno_ok in He.
+    destruct He as (Hci & -> & -> & e & He & Hc).
+    split; [exact Hci|]. rewrite Hc.
+    eapply bind_ok0; [unfold errno_any; apply (choose_ok _ e); exact He|].
+    apply pure_ok. }
+  destruct (negb (access_okb statbuf STAT_SIZE)).
+  { destruct (Herr H) as (Hci & Hs). split; [exact Hci|].
+    eapply bind_ok0; [apply input_ok|]. exact Hs. }
+  destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|] eqn:Hw;
+    [|discriminate].
+  destruct eff as [ret ws zs us cs ci].
+  destruct ws as [|[a bs] [|? ?]]; destruct zs as [|? ?]; destruct us as [|? ?];
+    destruct cs as [|? ?];
+    try (destruct (Herr H) as (Hci & Hs); split; [exact Hci|];
+         eapply bind_ok0; [apply input_ok|]; cbv beta; srw Hw;
+         apply alt_l; exact Hs).
+  cbv beta iota in H.
+  destruct (bv_eqb ret (Z_to_bv 64 0) && bv_eqb a statbuf
+            && stat_proc_buf_ok bs && access_ranges_eqb ci reads) eqn:Hb;
+    [|discriminate].
+  inversion H; clear H; subst.
+  apply andb_true_iff in Hb as [Hb Hci]. apply andb_true_iff in Hb as [Hb Hok].
+  apply andb_true_iff in Hb as [Hr Ha].
+  apply bv_eqb_eq in Hr. apply bv_eqb_eq in Ha. apply access_ranges_eqb_eq in Hci.
+  subst ret a ci. split; [reflexivity|].
+  eapply bind_ok0; [apply input_ok|]. cbv beta. srw Hw.
+  apply alt_r. eapply bind_ok0; [apply (choose_ok _ bs); exact Hok|].
+  apply pure_ok.
+Qed.
+
+Lemma check_newfstatat_proc_sound_unmodeled : forall i reads statbuf eff m,
+  check_newfstatat_proc i reads statbuf eff m = CheckUnmodeled ->
+  newfstatat_proc_spec statbuf i m Unmodeled.
+Proof.
+  intros i reads statbuf eff m H.
+  unfold check_newfstatat_proc in H. unfold newfstatat_proc_spec.
+  destruct (negb (access_okb statbuf STAT_SIZE)).
+  { exfalso. exact (check_newfstatat_proc_errno_no_unmodeled _ _ _ H). }
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+  destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|];
+    [|apply unmodeled_intro].
+  exfalso.
+  destruct eff as [ret ws zs us cs ci].
+  destruct ws as [|[a bs] [|? ?]]; destruct zs as [|? ?]; destruct us as [|? ?];
+    destruct cs as [|? ?]; cbv beta iota in H;
+    try exact (check_newfstatat_proc_errno_no_unmodeled _ _ _ H).
+  destruct (bv_eqb ret (Z_to_bv 64 0) && bv_eqb a statbuf
+            && stat_proc_buf_ok bs && access_ranges_eqb ci reads); discriminate.
+Qed.
+
+Lemma check_newfstatat_proc_complete_ok : forall i reads statbuf core m m' evs,
+  newfstatat_proc_spec statbuf i m (Ok core m' evs) ->
+  eff_copyins core = [] /\
+  check_newfstatat_proc i reads statbuf (with_copyins reads core) m = CheckOk m' evs.
+Proof.
+  intros i reads statbuf core m m' evs H.
+  unfold newfstatat_proc_spec, errno_any in H. unfold check_newfstatat_proc.
+  sys_unfold. cbv beta iota in H. inv_ok.
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha; hall Ha; inv_ok.
+  { split; [reflexivity|].
+    cbn [eff_copyins eff_ret eff_writes eff_zeros eff_unmaps eff_copies
+         check_newfstatat_proc_errno].
+    rewrite errno_any_b_ret by (intuition lia). rewrite access_ranges_eqb_refl.
+    reflexivity. }
+  destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|] eqn:Hw;
+    hall Hw; inv_ok.
+  - split; [reflexivity|].
+    cbn [eff_copyins eff_ret eff_writes eff_zeros eff_unmaps eff_copies
+         check_newfstatat_proc_errno].
+    rewrite errno_any_b_ret by (intuition lia). rewrite access_ranges_eqb_refl.
+    reflexivity.
+  - split; [reflexivity|].
+    cbn [eff_copyins eff_ret eff_writes eff_zeros eff_unmaps eff_copies].
+    rewrite !bv_eqb_refl, access_ranges_eqb_refl.
+    match goal with H : stat_proc_buf_ok _ = true |- _ => rewrite H end.
+    reflexivity.
+Qed.
+
+Lemma check_newfstatat_proc_complete_unmodeled : forall i reads statbuf eff m,
+  newfstatat_proc_spec statbuf i m Unmodeled ->
+  check_newfstatat_proc i reads statbuf eff m = CheckUnmodeled.
+Proof.
+  intros i reads statbuf eff m H.
+  unfold newfstatat_proc_spec, errno_any in H. unfold check_newfstatat_proc.
+  sys_unfold. cbv beta iota in H. inv_ok.
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha; hall Ha; inv_ok.
+  destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|] eqn:Hw;
+    hall Hw; inv_ok.
+  reflexivity.
+Qed.
+
+(** newfstatat: the FAILING side is modeled, and it writes nothing —
     a flag word outside {0, AT_SYMLINK_NOFOLLOW}, a dirfd other than
     AT_FDCWD, ".", and any path the file system holds all fail closed,
     because a successful call would have to deliver 128 bytes of
-    metadata [Fs] does not carry (see [Stat.newfstatat_spec]).  Writing
+    metadata [Fs] does not carry (see [Stat.newfstatat_spec]).  The one
+    arm that can deliver is a name relative to an O_PATH procfs
+    descriptor, [check_newfstatat_proc] above.  Writing
     nothing is not reading nothing: each accepting arm is
     [check_ret_only_copyins], which is [check_ret_only]'s empty-effect
     demand on everything BUT the copy-in list, plus an equality on that
@@ -88,8 +324,12 @@ Definition check_newfstatat (i : SyscallInput) (dirfd pathp flag : word)
     | CstrFault => check_ret_only_copyins reads eff (errno_ret EFAULT) m []
     | CstrOk p =>
         if path_eqb p [] then check_ret_only_copyins reads eff (errno_ret ENOENT) m []
-        else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
+        else if negb (bv_eqb dirfd AT_FDCWD32) then
+          (if newfstatat_proc_dir (m_fds m) dirfd p
+           then check_newfstatat_proc i reads (in_arg i 2) eff m
+           else CheckUnmodeled)
         else if path_eqb p dot_path then CheckUnmodeled
+        else if proc_path_b p then CheckUnmodeled
         else
         match fs_lookup (m_fs m) p with
         | None => check_ret_only_copyins reads eff (errno_ret ENOENT) m []
@@ -205,8 +445,18 @@ Proof.
     eapply bind_ok0; [apply input_ok|]. cbv beta.
     eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
     srw Hfl. srw Hp. srw Hpe. apply pure_ok. }
-  destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; [discriminate|].
+  destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd.
+  { (* relative to an O_PATH procfs descriptor: [check_newfstatat_proc] *)
+    destruct (newfstatat_proc_dir (m_fds m) dirfd p) eqn:Hpd; cbv beta iota in H;
+      [|discriminate].
+    apply check_newfstatat_proc_sound_ok in H. destruct H as (Hci & H).
+    apply record_copyins_clear_ok; [exact Hci|].
+    unfold newfstatat_core_spec.
+    eapply bind_ok0; [apply input_ok|]. cbv beta.
+    eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+    srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hpd. exact H. }
   destruct (path_eqb p dot_path) eqn:Hdot; [discriminate|].
+  destruct (proc_path_b p) eqn:Hpp; [discriminate|].
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; [discriminate|].
   (* the file is absent: -ENOENT *)
   apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
@@ -214,7 +464,7 @@ Proof.
   unfold newfstatat_core_spec.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-  srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. srw Hfs.
+  srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. srw Hpp. srw Hfs.
   apply pure_ok.
 Qed.
 
@@ -243,18 +493,26 @@ Proof.
   { unfold newfstatat_core_spec.
     eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-    srw Hfl. srw Hp. srw Hpe. srw Hd. apply unmodeled_intro. }
+    srw Hfl. srw Hp. srw Hpe. srw Hd.
+    destruct (newfstatat_proc_dir (m_fds m) dirfd p) eqn:Hpd; cbv beta iota in H |- *;
+      [|apply unmodeled_intro].
+    exact (check_newfstatat_proc_sound_unmodeled _ _ _ _ _ H). }
   destruct (path_eqb p dot_path) eqn:Hdot.
   { unfold newfstatat_core_spec.
     eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
     srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. apply unmodeled_intro. }
+  destruct (proc_path_b p) eqn:Hpp.
+  { unfold newfstatat_core_spec.
+    eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+    srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. srw Hpp. apply unmodeled_intro. }
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
     [|now apply check_ret_only_copyins_no_unmodeled in H].
   unfold newfstatat_core_spec.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-  srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. srw Hfs. apply unmodeled_intro.
+  srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. srw Hpp. srw Hfs. apply unmodeled_intro.
 Qed.
 
 Lemma check_newfstatat_complete_ok : forall i dirfd pathp flag eff m m' evs,
@@ -274,7 +532,17 @@ Proof.
   destruct (path_eqb p []) eqn:Hpe; hall Hpe; inv_ok.
   { cbn [eff_copyins with_copyins app]. apply check_ret_only_copyins_refl. }
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; hall Hd; inv_ok.
+  { (* relative to an O_PATH procfs descriptor *)
+    destruct (newfstatat_proc_dir (m_fds m) dirfd p) eqn:Hpd; hall Hpd; inv_ok.
+    match goal with
+    | Hs : newfstatat_proc_spec _ _ _ (Ok _ _ _) |- _ =>
+        destruct (check_newfstatat_proc_complete_ok i
+                    [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+                    _ _ _ _ _ Hs) as (Hci & Hc)
+    end.
+    rewrite Hci. exact Hc. }
   destruct (path_eqb p dot_path) eqn:Hdot; hall Hdot; inv_ok.
+  destruct (proc_path_b p) eqn:Hpp; hall Hpp; inv_ok.
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok.
   cbn [eff_copyins with_copyins app]. apply check_ret_only_copyins_refl.
 Qed.
@@ -295,8 +563,12 @@ Proof.
     try discriminate.
   destruct (path_eqb p []) eqn:Hpe; hall Hpe; inv_ok; try discriminate.
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; hall Hd; inv_ok;
-    try discriminate; [reflexivity|].
+    try discriminate.
+  { destruct (newfstatat_proc_dir (m_fds m) dirfd p) eqn:Hpd; hall Hpd;
+      [now apply check_newfstatat_proc_complete_unmodeled|reflexivity]. }
   destruct (path_eqb p dot_path) eqn:Hdot; hall Hdot; inv_ok;
+    try discriminate; [reflexivity|].
+  destruct (proc_path_b p) eqn:Hpp; hall Hpp; inv_ok;
     try discriminate; [reflexivity|].
   destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
     try discriminate; reflexivity.
@@ -734,7 +1006,8 @@ Qed.
 
 (** fstat: total over [FdEntry], answering on the closed descriptor's
     -EBADF, the four file kinds, which share one inode and so one
-    answer, /dev/null and /dev/urandom.  The other four decline as a body; see [Stat.fstat_spec] for which of [struct stat]'s twenty
+    answer, /dev/null and /dev/urandom.  The other five decline as a
+    body; see [Stat.fstat_spec] for which of [struct stat]'s twenty
     members each would have to invent, and for why the match carries no
     wildcard. *)
 Definition check_fstat (i : SyscallInput) (fd statbuf : word)
@@ -751,6 +1024,7 @@ Definition check_fstat (i : SyscallInput) (fd statbuf : word)
   | Some (FdPipe _ _)  => CheckUnmodeled
   | Some (FdDevNull _ _) => check_fstat_devnull i statbuf eff m
   | Some FdUrandom => check_fstat_urandom i statbuf eff m
+  | Some (FdOpaque _) => CheckUnmodeled
   end.
 
 Lemma check_fstat_sound_ok : forall i fd statbuf eff m m' evs,
