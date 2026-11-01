@@ -4690,7 +4690,9 @@ Lemma valid_input_of_valid_input_hwcap_rv64gc : forall inp,
 Proof.
   intros inp Hv. red in Hv. red.
   repeat match goal with H : _ /\ _ |- _ => destruct H end;
-    repeat match goal with |- _ /\ _ => split end; assumption.
+    repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | unfold valid_hwcap; (left; assumption) || (right; assumption) ].
 Qed.
 
 Lemma valid_input_of_valid_input_hwcap_rv64gcv : forall inp,
@@ -4698,7 +4700,9 @@ Lemma valid_input_of_valid_input_hwcap_rv64gcv : forall inp,
 Proof.
   intros inp Hv. red in Hv. red.
   repeat match goal with H : _ /\ _ |- _ => destruct H end;
-    repeat match goal with |- _ /\ _ => split end; assumption.
+    repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | unfold valid_hwcap; (left; assumption) || (right; assumption) ].
 Qed.
 
 (** …and the two are EXHAUSTIVE on the default, because [valid_hwcap] is
@@ -4711,7 +4715,7 @@ Lemma valid_input_hwcap_splits : forall inp,
   valid_input inp ->
   valid_input_hwcap_rv64gc inp \/ valid_input_hwcap_rv64gcv inp.
 Proof.
-  intros inp Hv. red in Hv.
+  intros inp Hv. red in Hv. unfold valid_hwcap in *.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   match goal with H : _ \/ _ |- _ => destruct H end;
     [left | right]; red;
@@ -4798,7 +4802,9 @@ Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gc : forall inp,
 Proof.
   intros inp Hv. red in Hv. red.
   repeat match goal with H : _ /\ _ |- _ => destruct H end;
-    repeat match goal with |- _ /\ _ => split end; assumption.
+    repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | unfold valid_hwcap; (left; assumption) || (right; assumption) ].
 Qed.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
@@ -4806,7 +4812,9 @@ Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
 Proof.
   intros inp Hv. red in Hv. red.
   repeat match goal with H : _ /\ _ |- _ => destruct H end;
-    repeat match goal with |- _ /\ _ => split end; assumption.
+    repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | unfold valid_hwcap; (left; assumption) || (right; assumption) ].
 Qed.
 
 (** The hwcap disjunction is found by shape too, rather than by sitting
@@ -4815,7 +4823,7 @@ Lemma valid_input_abort_hwcap_splits : forall inp,
   valid_input_abort inp ->
   valid_input_abort_hwcap_rv64gc inp \/ valid_input_abort_hwcap_rv64gcv inp.
 Proof.
-  intros inp Hv. red in Hv.
+  intros inp Hv. red in Hv. unfold valid_hwcap in *.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
   match goal with H : _ \/ _ |- _ => destruct H end;
     [left | right]; red;
