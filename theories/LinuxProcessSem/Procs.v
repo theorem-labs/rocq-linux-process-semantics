@@ -264,6 +264,17 @@ Fixpoint look_in (ps : list (Pid * ProcessEntry)) (p : Pid)
   | kv :: r => if bv_eqb (fst kv) p then Some (snd kv) else look_in r p
   end.
 
+(** [Riscv.Prelude] defines [bv_eqb] as [Z.eqb] on the unsigned readings and
+    states no lemma about it, so the two this file needs are proved here. *)
+Lemma bv_eqb_same : forall n (a : bv n), bv_eqb a a = true.
+Proof. intros n a. unfold bv_eqb. apply Z.eqb_refl. Qed.
+
+Lemma bv_eqb_true_eq : forall n (a b : bv n), bv_eqb a b = true -> a = b.
+Proof.
+  intros n a b H. unfold bv_eqb in H. apply Z.eqb_eq in H.
+  apply bv_eq. exact H.
+Qed.
+
 Definition look (P : pconfig) (p : Pid) : option ProcessEntry :=
   look_in (pcfg_procs P) p.
 
@@ -503,7 +514,7 @@ Lemma one_proc_entry : forall c,
   look (one_proc c) one_pid = Some (one_entry c).
 Proof.
   intros c. unfold look, one_proc, look_in. cbn.
-  rewrite bv_eqb_refl. reflexivity.
+  rewrite bv_eqb_same. reflexivity.
 Qed.
 
 (** Whatever pid a step picked, a one-process system has only this entry. *)
@@ -520,7 +531,7 @@ Lemma look_one_proc_pid : forall c p e,
 Proof.
   intros c p e H. unfold look, one_proc, look_in in H. cbn in H.
   destruct (bv_eqb one_pid p) eqn:Hb; [|discriminate].
-  symmetry. apply bv_eqb_eq. exact Hb.
+  symmetry. apply bv_eqb_true_eq. exact Hb.
 Qed.
 
 (** The splice round-trips at a one-process system: the released view of the
@@ -542,7 +553,7 @@ Lemma absorb_one_proc : forall c c',
   absorb (one_proc c) (one_entry c) c' = one_proc c'.
 Proof.
   intros c c'. unfold absorb, one_proc, one_entry, replace_in. cbn.
-  rewrite bv_eqb_refl.
+  rewrite bv_eqb_same.
   destruct c' as [ms' m']. destruct m'. reflexivity.
 Qed.
 
