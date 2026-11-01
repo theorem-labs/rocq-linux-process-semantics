@@ -175,8 +175,8 @@ Lemma ns_multiproc_coherent : forall i m ctx st,
 Proof. intros i m ctx st H. unfold ns_multiproc. rewrite H. reflexivity. Qed.
 
 Definition ns_ext : ExtSpec :=
-  mkExtSpec ns_claims ns_spec ns_refusal clone_ns clone_ns_refusal ns_multiproc ns_coherent
-            ns_refusal_coherent clone_ns_coherent clone_ns_refusal_coherent ns_multiproc_coherent.
+  mkExtSpec ns_claims ns_spec ns_refusal clone_ns ns_multiproc ns_coherent ns_refusal_coherent
+            clone_ns_coherent ns_multiproc_coherent.
 
 (** For a task in the released world [ns_ext] answers exactly as the
     released model does, Unmodeled included. *)

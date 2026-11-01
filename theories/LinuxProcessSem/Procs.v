@@ -1125,11 +1125,11 @@ Qed.
    A step extension: answers the released step does not give, inside the core
    ========================================================================= *)
 
-(** [pstep_x_at ext] is [pstep_at] with an extension ([Ns.Ext.ExtSpec]):
-    a pending call the extension CLAIMS is answered by [ext_spec] on the
-    SPLICED model ([pe_cfg], never [pe_model], whose file system and I/O
-    are blank), the entry's namespace context and the shared namespace
-    state, filtered by [ext_refusal] as the released step is by
+(** [pstep_x_at ext cenv] is [pstep_at] with an extension
+    ([Ns.Ext.ExtSpec]): a pending call the extension CLAIMS is answered by
+    [ext_spec] on the SPLICED model ([pe_cfg], never [pe_model], whose file
+    system and I/O are blank), the entry's namespace context and the shared
+    namespace state, filtered by [ext_refusal] as the released step is by
     [Run.spurious_refusal_cfg]; the context and state it returns are
     written into [pe_nsctx] and [sh_ns].  An unclaimed call is the released
     step, unchanged.  A clone is the released clone, and [ext_clone] says
@@ -1138,9 +1138,16 @@ Qed.
     other entries are live is admitted when the core's own guard or
     [ext_multiproc] admits it.
 
+    [cenv] ([Ns.Ext.CloneEnv]) names the clone failures a run admits.  It
+    is an explicit argument so that a statement shows it:
+    [Ns.Ext.any_clone_failure] admits every failure
+    ([pstep_x_at_any_clone_failure]: it is the largest), and a narrower one
+    is an environment premise of the statement that names it.
+
     [pstep_at] is untouched; [pstep_at_no_ext_iff] is the two relations'
-    equality at [no_ext], and [pstep_x_at_released_iff] at any extension
-    that leaves every entry of a configuration to the released step. *)
+    equality at [no_ext] and [any_clone_failure], and
+    [pstep_x_at_released_iff] at any extension that leaves every entry of a
+    configuration to the released step. *)
 
 Definition pending_input (segs : list Segment) (c : config) : option SyscallInput :=
   match ms_svc_pending (cfg_ms c) with
@@ -1252,7 +1259,7 @@ Definition multiproc_ok (ext : ExtSpec) (segs : list Segment) (P : pconfig)
 
 (** ONE TRANSITION OF THE SYSTEM UNDER AN EXTENSION, indexed by the pid
     that steps, as [pstep_at] is. *)
-Inductive pstep_x_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
+Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cfg : SpuriousCfg)
   : Pid -> pconfig -> list event -> pstep_to -> Prop :=
 | px_other : forall P e evs c' ctx' st',
     look P (pe_pid e) = Some e ->
@@ -1261,7 +1268,7 @@ Inductive pstep_x_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
     clone_pending_b (pe_cfg (pcfg_shared P) e) = false ->
     wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
     multiproc_ok ext segs P e = true ->
-    pstep_x_at ext segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' ctx' st'))
+    pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' ctx' st'))
 | px_clone : forall P e evs c' q child st',
     look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false ->
@@ -1273,13 +1280,13 @@ Inductive pstep_x_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
     ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       (bv_unsigned q) (CnOk child st') ->
-    pstep_x_at ext segs cfg (pe_pid e) P evs (PNext (clone_result_x P e c' q child st'))
+    pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (clone_result_x P e c' q child st'))
 (** A FAILED clone is the released failure, with the state [ext_clone]
     says the failure leaves.  Its errno comes from the released step
     ([sstep_cfg] above), so under a forced-only configuration a refusal the
     released filter ([Run.spurious_refusal_cfg], Run.v:2019) drops is no
-    step here either; and a failure the extension's environment chooses is
-    dropped when its filter ([ext_clone_refusal]) says so. *)
+    step here either; and the run's clone environment [cenv] must admit
+    the failure. *)
 | px_clone_fail : forall P e evs c' en hq st',
     look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false ->
@@ -1291,9 +1298,9 @@ Inductive pstep_x_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
     ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       hq (CnErr en st') ->
-    ~ ext_clone_refusal ext cfg (clone_flags_of (pe_cfg (pcfg_shared P) e))
-        (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st' ->
-    pstep_x_at ext segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' (pe_nsctx e) st'))
+    cenv (clone_flags_of (pe_cfg (pcfg_shared P) e))
+      (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st' ->
+    pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' (pe_nsctx e) st'))
 | px_clone_unmodeled : forall P e evs c' hq,
     look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false ->
@@ -1303,7 +1310,7 @@ Inductive pstep_x_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
     ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       hq CnUnmodeled ->
-    pstep_x_at ext segs cfg (pe_pid e) P [] PError
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError
 (** A clone the extension claims has no answer: the core creates children,
     an extension does not. *)
 | px_clone_claimed : forall P e,
@@ -1311,7 +1318,7 @@ Inductive pstep_x_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
     m_halted (pe_model e) = None ->
     clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = true ->
-    pstep_x_at ext segs cfg (pe_pid e) P [] PError
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError
 | px_wait_reap : forall P e q ez x8 stat_addr status eff model'' dumped,
     look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false ->
@@ -1329,7 +1336,7 @@ Inductive pstep_x_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
     eff = mkEffect q [(stat_addr, Z_to_le_bytes 4 (bv_unsigned status))] [] ->
     materialize_model_accesses (cfg_model (pe_cfg (pcfg_shared P) e))
       (syscall_effect_accesses eff) = Some model'' ->
-    pstep_x_at ext segs cfg (pe_pid e) P []
+    pstep_x_at ext cenv segs cfg (pe_pid e) P []
       (PNext (mkPCfg
                 (drop_in
                    (replace_in (pcfg_procs P) (pe_pid e)
@@ -1344,16 +1351,35 @@ Inductive pstep_x_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
     xsstep ext segs cfg (pe_nsctx e) (sh_ns (pcfg_shared P))
       (pe_cfg (pcfg_shared P) e) evs SError ctx' st' ->
     wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
-    pstep_x_at ext segs cfg (pe_pid e) P evs PError
+    pstep_x_at ext cenv segs cfg (pe_pid e) P evs PError
 | px_outside : forall P e,
     look P (pe_pid e) = Some e ->
     m_halted (pe_model e) = None ->
     multiproc_ok ext segs P e = false ->
-    pstep_x_at ext segs cfg (pe_pid e) P [] PError.
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError.
 
-Definition pstep_x_cfg (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
+Definition pstep_x_cfg (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cfg : SpuriousCfg)
     (P : pconfig) (evs : list event) (r : pstep_to) : Prop :=
-  exists p, pstep_x_at ext segs cfg p P evs r.
+  exists p, pstep_x_at ext cenv segs cfg p P evs r.
+
+(** A narrower clone environment admits fewer steps, and
+    [any_clone_failure] admits every step of every clone environment: with
+    it the relation is unrestricted. *)
+Lemma pstep_x_at_cenv_mono : forall ext (cenv1 cenv2 : CloneEnv) segs cfg p P evs r,
+  (forall f m ctx st hq e st', cenv1 f m ctx st hq e st' -> cenv2 f m ctx st hq e st') ->
+  pstep_x_at ext cenv1 segs cfg p P evs r -> pstep_x_at ext cenv2 segs cfg p P evs r.
+Proof.
+  intros ext cenv1 cenv2 segs cfg p P evs r Hsub H.
+  destruct H; [eapply px_other | eapply px_clone | eapply px_clone_fail | eapply px_clone_unmodeled
+              | eapply px_clone_claimed | eapply px_wait_reap | eapply px_error | eapply px_outside];
+    eauto.
+Qed.
+
+Lemma pstep_x_at_any_clone_failure : forall ext cenv segs cfg p P evs r,
+  pstep_x_at ext cenv segs cfg p P evs r -> pstep_x_at ext any_clone_failure segs cfg p P evs r.
+Proof.
+  intros ext cenv segs cfg p P evs r. apply pstep_x_at_cenv_mono. intros. exact I.
+Qed.
 
 (* -------------------------------------------------- facts the proofs use *)
 
@@ -1536,8 +1562,8 @@ Qed.
     and the shared state unchanged; a pending clone or intercepted wait is
     not claimed; the extension admits no call the core's guard refuses; a
     clone does to the namespace model what the core's own clone does; and
-    the extension's filter drops no clone failure. *)
-Definition ext_agrees (ext : ExtSpec) (segs : list Segment) (P : pconfig) : Prop :=
+    the clone environment admits every failure of a pending clone. *)
+Definition ext_agrees (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (P : pconfig) : Prop :=
   forall e, look P (pe_pid e) = Some e ->
     (forall cfg evs r ctx' st',
        xsstep ext segs cfg (pe_nsctx e) (sh_ns (pcfg_shared P))
@@ -1553,15 +1579,16 @@ Definition ext_agrees (ext : ExtSpec) (segs : list Segment) (P : pconfig) : Prop
           ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq o
           <-> released_clone (pe_nsctx e) (sh_ns (pcfg_shared P)) o)
-    /\ (forall cfg hq en st',
-          ~ ext_clone_refusal ext cfg (clone_flags_of (pe_cfg (pcfg_shared P) e))
-              (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
+    /\ (clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
+        forall hq en st',
+          cenv (clone_flags_of (pe_cfg (pcfg_shared P) e))
+            (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
 
-Theorem pstep_x_at_agree_iff : forall ext segs cfg p P evs r,
-  ext_agrees ext segs P ->
-  (pstep_x_at ext segs cfg p P evs r <-> pstep_at segs cfg p P evs r).
+Theorem pstep_x_at_agree_iff : forall ext cenv segs cfg p P evs r,
+  ext_agrees ext cenv segs P ->
+  (pstep_x_at ext cenv segs cfg p P evs r <-> pstep_at segs cfg p P evs r).
 Proof.
-  intros ext segs cfg p P evs r Hag. split.
+  intros ext cenv segs cfg p P evs r Hag. split.
   - intros H. revert Hag. destruct H as
       [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hmp
       | Q e ev c' q child st' Hl Hcl Hs Hsucc Hq Hfree Hma Hec
@@ -1616,7 +1643,7 @@ Proof.
         apply px_clone_fail with (en := en) (hq := 0%Z); try assumption.
         -- exact (Hclp eq_refl).
         -- apply (proj2 (Hcln _ _)). right. exists en. split; [exact Hen | reflexivity].
-        -- apply Hnrf.
+        -- exact (Hnrf eq_refl _ _ _).
       * rewrite <- absorb_x_same.
         apply px_other; try assumption.
         -- apply (proj2 (Hxs _ _ _ _ _)). split; [exact Hs | split; reflexivity].
@@ -1635,24 +1662,26 @@ Proof.
       apply px_outside; try assumption. rewrite Hmpe. exact Hma.
 Qed.
 
-(** An extension that claims no pending call of an entry of [P], whose
-    clone does what the core's own clone does to the namespace model, and
-    whose filter drops no clone failure. *)
-Definition ext_released_at (ext : ExtSpec) (segs : list Segment) (P : pconfig) : Prop :=
+(** An extension that claims no pending call of an entry of [P] and whose
+    clone does what the core's own clone does to the namespace model, in a
+    clone environment that admits every failure of a pending clone. *)
+Definition ext_released_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (P : pconfig)
+    : Prop :=
   forall e, look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false
     /\ (forall hq o,
           ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq o
           <-> released_clone (pe_nsctx e) (sh_ns (pcfg_shared P)) o)
-    /\ (forall cfg hq en st',
-          ~ ext_clone_refusal ext cfg (clone_flags_of (pe_cfg (pcfg_shared P) e))
-              (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
+    /\ (clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
+        forall hq en st',
+          cenv (clone_flags_of (pe_cfg (pcfg_shared P) e))
+            (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
 
-Lemma ext_released_agrees : forall ext segs P,
-  ext_released_at ext segs P -> ext_agrees ext segs P.
+Lemma ext_released_agrees : forall ext cenv segs P,
+  ext_released_at ext cenv segs P -> ext_agrees ext cenv segs P.
 Proof.
-  intros ext segs P H e Hl. destruct (H e Hl) as (Hcl & Hcln & Hnrf).
+  intros ext cenv segs P H e Hl. destruct (H e Hl) as (Hcl & Hcln & Hnrf).
   split; [|split; [|split; [|split; [|split]]]].
   - intros cfg evs r ctx' st'. apply xsstep_unclaimed. exact Hcl.
   - intros _. exact Hcl.
@@ -1662,66 +1691,73 @@ Proof.
   - exact Hnrf.
 Qed.
 
-Theorem pstep_x_at_released_iff : forall ext segs cfg p P evs r,
-  ext_released_at ext segs P ->
-  (pstep_x_at ext segs cfg p P evs r <-> pstep_at segs cfg p P evs r).
+Theorem pstep_x_at_released_iff : forall ext cenv segs cfg p P evs r,
+  ext_released_at ext cenv segs P ->
+  (pstep_x_at ext cenv segs cfg p P evs r <-> pstep_at segs cfg p P evs r).
 Proof.
-  intros ext segs cfg p P evs r H. apply pstep_x_at_agree_iff.
+  intros ext cenv segs cfg p P evs r H. apply pstep_x_at_agree_iff.
   apply ext_released_agrees. exact H.
 Qed.
 
 (** Every entry of [P] is in the released world, makes no namespace with
-    a pending clone, and has its pending clone or intercepted wait left to
-    the core. *)
-Definition ext_flat_at (ext : ExtSpec) (segs : list Segment) (P : pconfig) : Prop :=
+    a pending clone, has its pending clone or intercepted wait left to the
+    core, and the clone environment admits every failure of its pending
+    clone. *)
+Definition ext_flat_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (P : pconfig)
+    : Prop :=
   forall e, look P (pe_pid e) = Some e ->
     flat_view (pe_nsctx e) (sh_ns (pcfg_shared P)) = true
     /\ has_ns_bits (clone_flags_of (pe_cfg (pcfg_shared P) e)) = false
     /\ (clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
         claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false)
     /\ (wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true ->
-        claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false).
+        claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false)
+    /\ (clone_pending_b (pe_cfg (pcfg_shared P) e) = true ->
+        forall hq en st',
+          cenv (clone_flags_of (pe_cfg (pcfg_shared P) e))
+            (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
 
-Lemma ext_flat_agrees : forall ext segs P,
-  ext_flat_at ext segs P -> ext_agrees ext segs P.
+Lemma ext_flat_agrees : forall ext cenv segs P,
+  ext_flat_at ext cenv segs P -> ext_agrees ext cenv segs P.
 Proof.
-  intros ext segs P H e Hl. destruct (H e Hl) as (Hf & Hns & Hcp & Hwt).
+  intros ext cenv segs P H e Hl. destruct (H e Hl) as (Hf & Hns & Hcp & Hwt & Hce).
   split; [|split; [|split; [|split; [|split]]]].
   - intros cfg evs r ctx' st'. apply xsstep_flat. exact Hf.
   - exact Hcp.
   - exact Hwt.
   - apply multiproc_ok_flat. exact Hf.
   - intros hq o. apply (ext_clone_coherent ext); [exact Hf | exact Hns].
-  - intros cfg hq en st'. apply (ext_clone_refusal_coherent ext); [exact Hf | exact Hns].
+  - exact Hce.
 Qed.
 
 (** IN THE RELEASED WORLD THE EXTENDED RELATION IS THE CORE'S OWN, claimed
     calls included: an extension changes the system's steps only for a
     process in a namespace the released model does not describe, or at a
     clone that makes one. *)
-Theorem pstep_x_at_flat_iff : forall ext segs cfg p P evs r,
-  ext_flat_at ext segs P ->
-  (pstep_x_at ext segs cfg p P evs r <-> pstep_at segs cfg p P evs r).
+Theorem pstep_x_at_flat_iff : forall ext cenv segs cfg p P evs r,
+  ext_flat_at ext cenv segs P ->
+  (pstep_x_at ext cenv segs cfg p P evs r <-> pstep_at segs cfg p P evs r).
 Proof.
-  intros ext segs cfg p P evs r H. apply pstep_x_at_agree_iff.
+  intros ext cenv segs cfg p P evs r H. apply pstep_x_at_agree_iff.
   apply ext_flat_agrees. exact H.
 Qed.
 
-Lemma ext_released_at_no_ext : forall segs P, ext_released_at no_ext segs P.
+Lemma ext_released_at_no_ext : forall segs P, ext_released_at no_ext any_clone_failure segs P.
 Proof.
   intros segs P e _. split; [apply claimed_at_no_ext|]. split; [intros hq o; reflexivity|].
-  intros cfg hq en st' Hc. exact Hc.
+  intros _ hq en st'. exact I.
 Qed.
 
-(** AT [no_ext] THE EXTENDED RELATION IS THE CORE'S OWN. *)
+(** AT [no_ext], WITH EVERY CLONE FAILURE ADMITTED ([any_clone_failure]),
+    THE EXTENDED RELATION IS THE CORE'S OWN. *)
 Theorem pstep_at_no_ext_iff : forall segs cfg p P evs r,
-  pstep_x_at no_ext segs cfg p P evs r <-> pstep_at segs cfg p P evs r.
+  pstep_x_at no_ext any_clone_failure segs cfg p P evs r <-> pstep_at segs cfg p P evs r.
 Proof.
   intros segs cfg p P evs r. apply pstep_x_at_released_iff. apply ext_released_at_no_ext.
 Qed.
 
 Corollary pstep_x_cfg_no_ext_iff : forall segs cfg P evs r,
-  pstep_x_cfg no_ext segs cfg P evs r <-> pstep_cfg segs cfg P evs r.
+  pstep_x_cfg no_ext any_clone_failure segs cfg P evs r <-> pstep_cfg segs cfg P evs r.
 Proof.
   intros segs cfg P evs r. unfold pstep_x_cfg, pstep_cfg.
   split; intros [p Hp]; exists p; apply pstep_at_no_ext_iff; exact Hp.
@@ -1729,12 +1765,12 @@ Qed.
 
 (* ---------------------------------------- the single-process projections *)
 
-(** At [no_ext], the statements of [pstep_single_next] and
-    [pstep_single_err], unchanged. *)
+(** At [no_ext] and [any_clone_failure], the statements of
+    [pstep_single_next] and [pstep_single_err], unchanged. *)
 Theorem pstep_x_single_next_no_ext : forall segs cfg c evs P',
   (forall c', sstep_cfg segs cfg c evs (SNext c') -> clone_success_b c c' = false) ->
   wait4_intercept_b c = false ->
-  (pstep_x_cfg no_ext segs cfg (one_proc c) evs (PNext P')
+  (pstep_x_cfg no_ext any_clone_failure segs cfg (one_proc c) evs (PNext P')
    <-> exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c')).
 Proof.
   intros segs cfg c evs P' Hcl Hwt.
@@ -1745,7 +1781,7 @@ Qed.
 
 Theorem pstep_x_single_err_no_ext : forall segs cfg c evs,
   wait4_intercept_b c = false ->
-  (pstep_x_cfg no_ext segs cfg (one_proc c) evs PError
+  (pstep_x_cfg no_ext any_clone_failure segs cfg (one_proc c) evs PError
    <-> sstep_cfg segs cfg c evs SError).
 Proof.
   intros segs cfg c evs Hwt.
@@ -1756,54 +1792,62 @@ Qed.
 
 (** A one-process system is in the released world ([one_proc] uses
     [init_nsctx] and [empty_nsstate]). *)
-Lemma ext_flat_one : forall ext segs c,
+Lemma ext_flat_one : forall ext cenv segs c,
   has_ns_bits (clone_flags_of c) = false ->
   (clone_pending_b c = true -> claimed_at ext segs c = false) ->
   wait4_intercept_b c = false ->
-  ext_flat_at ext segs (one_proc c).
+  (clone_pending_b c = true ->
+   forall hq en st', cenv (clone_flags_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
+  ext_flat_at ext cenv segs (one_proc c).
 Proof.
-  intros ext segs c Hns Hcp Hwt e Hl.
+  intros ext cenv segs c Hns Hcp Hwt Hce e Hl.
   apply look_one_proc_inv in Hl. subst e. rewrite one_proc_view.
-  split; [reflexivity | split; [exact Hns | split; [exact Hcp |]]].
-  intros Hw. rewrite Hwt in Hw. discriminate Hw.
+  split; [reflexivity | split; [exact Hns | split; [exact Hcp | split]]].
+  - intros Hw. rewrite Hwt in Hw. discriminate Hw.
+  - exact Hce.
 Qed.
 
 (** For any extension: the projection, claimed calls included, when a
-    pending clone makes no namespace and is left to the core. *)
-Theorem pstep_x_single_next : forall ext segs cfg c evs P',
+    pending clone makes no namespace, is left to the core, and may fail as
+    the core's own clone does. *)
+Theorem pstep_x_single_next : forall ext cenv segs cfg c evs P',
   has_ns_bits (clone_flags_of c) = false ->
   (clone_pending_b c = true -> claimed_at ext segs c = false) ->
   (forall c', sstep_cfg segs cfg c evs (SNext c') -> clone_success_b c c' = false) ->
   wait4_intercept_b c = false ->
-  (pstep_x_cfg ext segs cfg (one_proc c) evs (PNext P')
+  (clone_pending_b c = true ->
+   forall hq en st', cenv (clone_flags_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
+  (pstep_x_cfg ext cenv segs cfg (one_proc c) evs (PNext P')
    <-> exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c')).
 Proof.
-  intros ext segs cfg c evs P' Hns Hcp Hcs Hwt.
-  pose proof (ext_flat_one ext segs c Hns Hcp Hwt) as Hflat.
+  intros ext cenv segs cfg c evs P' Hns Hcp Hcs Hwt Hce.
+  pose proof (ext_flat_one ext cenv segs c Hns Hcp Hwt Hce) as Hflat.
   apply iff_trans with (B := pstep_cfg segs cfg (one_proc c) evs (PNext P')).
   2: apply pstep_single_next; assumption.
   unfold pstep_x_cfg, pstep_cfg.
   split; intros [p Hp]; exists p;
-    [ apply (proj1 (pstep_x_at_flat_iff ext segs cfg p (one_proc c) evs (PNext P') Hflat))
-    | apply (proj2 (pstep_x_at_flat_iff ext segs cfg p (one_proc c) evs (PNext P') Hflat)) ];
+    [ apply (proj1 (pstep_x_at_flat_iff ext cenv segs cfg p (one_proc c) evs (PNext P') Hflat))
+    | apply (proj2 (pstep_x_at_flat_iff ext cenv segs cfg p (one_proc c) evs (PNext P') Hflat)) ];
     exact Hp.
 Qed.
 
-Theorem pstep_x_single_err : forall ext segs cfg c evs,
+Theorem pstep_x_single_err : forall ext cenv segs cfg c evs,
   has_ns_bits (clone_flags_of c) = false ->
   (clone_pending_b c = true -> claimed_at ext segs c = false) ->
   wait4_intercept_b c = false ->
-  (pstep_x_cfg ext segs cfg (one_proc c) evs PError
+  (clone_pending_b c = true ->
+   forall hq en st', cenv (clone_flags_of c) (cfg_model c) init_nsctx empty_nsstate hq en st') ->
+  (pstep_x_cfg ext cenv segs cfg (one_proc c) evs PError
    <-> sstep_cfg segs cfg c evs SError).
 Proof.
-  intros ext segs cfg c evs Hns Hcp Hwt.
-  pose proof (ext_flat_one ext segs c Hns Hcp Hwt) as Hflat.
+  intros ext cenv segs cfg c evs Hns Hcp Hwt Hce.
+  pose proof (ext_flat_one ext cenv segs c Hns Hcp Hwt Hce) as Hflat.
   apply iff_trans with (B := pstep_cfg segs cfg (one_proc c) evs PError).
   2: apply pstep_single_err; assumption.
   unfold pstep_x_cfg, pstep_cfg.
   split; intros [p Hp]; exists p;
-    [ apply (proj1 (pstep_x_at_flat_iff ext segs cfg p (one_proc c) evs PError Hflat))
-    | apply (proj2 (pstep_x_at_flat_iff ext segs cfg p (one_proc c) evs PError Hflat)) ];
+    [ apply (proj1 (pstep_x_at_flat_iff ext cenv segs cfg p (one_proc c) evs PError Hflat))
+    | apply (proj2 (pstep_x_at_flat_iff ext cenv segs cfg p (one_proc c) evs PError Hflat)) ];
     exact Hp.
 Qed.
 
@@ -1815,52 +1859,54 @@ Proof. intros c H. unfold at_instruction, clone_flags_of in *. rewrite H. reflex
 Lemma clone_pending_instr : forall c, at_instruction c -> clone_pending_b c = false.
 Proof. intros c H. unfold at_instruction, clone_pending_b in *. rewrite H. reflexivity. Qed.
 
-Theorem pstep_x_instr_single_next : forall ext segs cfg c evs P',
+Theorem pstep_x_instr_single_next : forall ext cenv segs cfg c evs P',
   at_instruction c ->
-  (pstep_x_cfg ext segs cfg (one_proc c) evs (PNext P')
+  (pstep_x_cfg ext cenv segs cfg (one_proc c) evs (PNext P')
    <-> exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c')).
 Proof.
-  intros ext segs cfg c evs P' H. apply pstep_x_single_next.
+  intros ext cenv segs cfg c evs P' H. apply pstep_x_single_next.
   - apply no_ns_bits_instr. exact H.
   - intros Hp. rewrite (clone_pending_instr c H) in Hp. discriminate Hp.
   - intros c' _. apply clone_success_b_instr. exact H.
   - apply wait4_intercept_b_instr. exact H.
+  - intros Hp. rewrite (clone_pending_instr c H) in Hp. discriminate Hp.
 Qed.
 
-Theorem pstep_x_instr_single_err : forall ext segs cfg c evs,
+Theorem pstep_x_instr_single_err : forall ext cenv segs cfg c evs,
   at_instruction c ->
-  (pstep_x_cfg ext segs cfg (one_proc c) evs PError <-> sstep_cfg segs cfg c evs SError).
+  (pstep_x_cfg ext cenv segs cfg (one_proc c) evs PError <-> sstep_cfg segs cfg c evs SError).
 Proof.
-  intros ext segs cfg c evs H. apply pstep_x_single_err.
+  intros ext cenv segs cfg c evs H. apply pstep_x_single_err.
   - apply no_ns_bits_instr. exact H.
   - intros Hp. rewrite (clone_pending_instr c H) in Hp. discriminate Hp.
   - apply wait4_intercept_b_instr. exact H.
+  - intros Hp. rewrite (clone_pending_instr c H) in Hp. discriminate Hp.
 Qed.
 
 (* ---------------------------------------------- who took the step *)
 
 (** The process a step is indexed by is present and took it. *)
-Lemma pstep_x_at_look : forall ext segs cfg p P evs r,
-  pstep_x_at ext segs cfg p P evs r -> exists e, look P p = Some e /\ pe_pid e = p.
+Lemma pstep_x_at_look : forall ext cenv segs cfg p P evs r,
+  pstep_x_at ext cenv segs cfg p P evs r -> exists e, look P p = Some e /\ pe_pid e = p.
 Proof.
-  intros ext segs cfg p P evs r H.
+  intros ext cenv segs cfg p P evs r H.
   destruct H; eexists; (split; [eassumption | reflexivity]).
 Qed.
 
-Lemma pstep_x_at_one_pid : forall ext segs cfg p c evs r,
-  pstep_x_at ext segs cfg p (one_proc c) evs r -> p = one_pid.
+Lemma pstep_x_at_one_pid : forall ext cenv segs cfg p c evs r,
+  pstep_x_at ext cenv segs cfg p (one_proc c) evs r -> p = one_pid.
 Proof.
-  intros ext segs cfg p c evs r H.
-  destruct (pstep_x_at_look _ _ _ _ _ _ _ H) as (e & Hl & <-).
+  intros ext cenv segs cfg p c evs r H.
+  destruct (pstep_x_at_look _ _ _ _ _ _ _ _ H) as (e & Hl & <-).
   apply look_one_proc_inv in Hl. subst e. reflexivity.
 Qed.
 
 (** In a one-process system, a step of [one_pid] is any step of the system. *)
-Lemma pstep_x_at_one : forall ext segs cfg c evs r,
-  pstep_x_at ext segs cfg one_pid (one_proc c) evs r
-  <-> pstep_x_cfg ext segs cfg (one_proc c) evs r.
+Lemma pstep_x_at_one : forall ext cenv segs cfg c evs r,
+  pstep_x_at ext cenv segs cfg one_pid (one_proc c) evs r
+  <-> pstep_x_cfg ext cenv segs cfg (one_proc c) evs r.
 Proof.
-  intros ext segs cfg c evs r. split.
+  intros ext cenv segs cfg c evs r. split.
   - intros H. exists one_pid. exact H.
-  - intros [p Hp]. rewrite <- (pstep_x_at_one_pid _ _ _ _ _ _ _ Hp). exact Hp.
+  - intros [p Hp]. rewrite <- (pstep_x_at_one_pid _ _ _ _ _ _ _ _ Hp). exact Hp.
 Qed.

@@ -2,8 +2,9 @@
 
     [ProcsCore] gives each name of [Ns.ProcsIface.PROCS_CORE] as the
     core's own, with the namespace model plugged in: its step is
-    [Procs.pstep_x_at] at [Ns.Spec.ns_ext].  The step context is the pair
-    the core's step takes: the loaded segments and the spurious-failure
+    [Procs.pstep_x_at] at [Ns.Spec.ns_ext], admitting every clone failure
+    ([Ns.Ext.any_clone_failure]).  The step context is the pair the core's
+    step takes: the loaded segments and the spurious-failure
     configuration.  L1-L5 and L7 are the core's lemmas ([Procs]), L6 is
     [MustExitP]'s lineage lemma, and L8 and L9 are proved here
     ([pstep_x_at_grows]: the one step that lengthens the table is a clone,
@@ -14,12 +15,15 @@
     [ns_flat_iff] is the namespace model's answer to the question a reader
     of the plug-in asks first: in a system whose processes are all in the
     released world, with no pending clone that makes a namespace, the
-    extended step IS the core's own step, claimed calls included. *)
+    extended step IS the core's own step, claimed calls included.
+
+    [pholts_x_within_budget] is PROCS's whole-system halting statement over
+    the extended step, with the clone environment as an explicit argument. *)
 
 From Stdlib Require Import ZArith NArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run Procs.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Spec ProcsIface Step.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Clone Spec ProcsIface Step.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import MustExitP.
 Import ListNotations.
 
@@ -48,20 +52,35 @@ Proof.
   unfold ns_claims, ns_sysno. cbn [sys_input in_sysno]. rewrite H. reflexivity.
 Qed.
 
+(** A clone environment that admits every failure of the released clone
+    (a task in the released world, a word with no namespace bit). *)
+Definition cenv_flat_ok (cenv : CloneEnv) : Prop :=
+  forall f m ctx st hq e st',
+    flat_view ctx st = true -> has_ns_bits f = false -> cenv f m ctx st hq e st'.
+
+Lemma any_clone_failure_flat_ok : cenv_flat_ok any_clone_failure.
+Proof. intros f m ctx st hq e st' _ _. exact I. Qed.
+
+Lemma clone_tables_failures_flat_ok : cenv_flat_ok clone_tables_failures.
+Proof. intros f m ctx st hq e st'. apply clone_tables_failures_flat. Qed.
+
 (** IN THE RELEASED WORLD THE NAMESPACE MODEL CHANGES NO STEP: every
     process in the released world, and no pending clone that makes a
-    namespace, and the extended step is the core's own. *)
-Theorem ns_flat_iff : forall segs cfg p P evs r,
+    namespace, and the extended step is the core's own, in any clone
+    environment that keeps the released clone's failures. *)
+Theorem ns_flat_iff : forall cenv segs cfg p P evs r,
+  cenv_flat_ok cenv ->
   (forall e, look P (pe_pid e) = Some e ->
      flat_view (pe_nsctx e) (sh_ns (pcfg_shared P)) = true
      /\ has_ns_bits (clone_flags_of (pe_cfg (pcfg_shared P) e)) = false) ->
-  (pstep_x_at ns_ext segs cfg p P evs r <-> pstep_at segs cfg p P evs r).
+  (pstep_x_at ns_ext cenv segs cfg p P evs r <-> pstep_at segs cfg p P evs r).
 Proof.
-  intros segs cfg p P evs r H. apply pstep_x_at_flat_iff.
+  intros cenv segs cfg p P evs r Hce H. apply pstep_x_at_flat_iff.
   intros e Hl. destruct (H e Hl) as [Hf Hns].
-  split; [exact Hf | split; [exact Hns | split]].
+  split; [exact Hf | split; [exact Hns | split; [|split]]].
   - apply ns_clone_unclaimed.
   - apply ns_wait_unclaimed.
+  - intros _ hq en st'. apply Hce; assumption.
 Qed.
 
 (* =========================================================================
@@ -75,12 +94,12 @@ Proof. intros A B f l x d. rewrite List.map_app. cbn [List.map]. apply List.last
 (** A step that lengthens the table is a successful clone: [px_other] and
     [px_clone_fail] replace an entry, the reap drops one, and the rest end
     in [PError]. *)
-Lemma pstep_x_at_grows : forall ext segs cfg p P evs P',
-  pstep_x_at ext segs cfg p P evs (PNext P') ->
+Lemma pstep_x_at_grows : forall ext cenv segs cfg p P evs P',
+  pstep_x_at ext cenv segs cfg p P evs (PNext P') ->
   (List.length (pcfg_procs P) < List.length (pcfg_procs P'))%nat ->
   exists e c' q child st', P' = clone_result_x P e c' q child st'.
 Proof.
-  intros ext segs cfg p P evs P' H Hlt.
+  intros ext cenv segs cfg p P evs P' H Hlt.
   inversion H; subst.
   - exfalso. unfold absorb_x in Hlt. simpl pcfg_procs in Hlt.
     rewrite replace_in_length in Hlt. lia.
@@ -119,14 +138,14 @@ Proof.
 Qed.
 
 (** L8 on the extended core. *)
-Theorem child_projection_of_clone_x : forall ext segs cfg P evs P',
-  pstep_x_cfg ext segs cfg P evs (PNext P') ->
+Theorem child_projection_of_clone_x : forall ext cenv segs cfg P evs P',
+  pstep_x_cfg ext cenv segs cfg P evs (PNext P') ->
   (List.length (pcfg_procs P) < List.length (pcfg_procs P'))%nat ->
   exists e sh, child_projection P P' = Some (e, sh) /\ entry_a0_zero e
                /\ sh = pcfg_shared P'.
 Proof.
-  intros ext segs cfg P evs P' [p Hp] Hlt.
-  destruct (pstep_x_at_grows ext segs cfg p P evs P' Hp Hlt) as (e & c' & q & child & st' & ->).
+  intros ext cenv segs cfg P evs P' [p Hp] Hlt.
+  destruct (pstep_x_at_grows ext cenv segs cfg p P evs P' Hp Hlt) as (e & c' & q & child & st' & ->).
   exists (with_nsctx (child_entry e (pe_cfg (pcfg_shared P) e) c' q) child),
          (pcfg_shared (clone_result_x P e c' q child st')).
   split; [apply child_projection_clone_result_x|].
@@ -134,14 +153,14 @@ Proof.
 Qed.
 
 (** L9 on the extended core. *)
-Theorem lineage_pick_clone_x : forall ext segs cfg P p evs P' e sh,
+Theorem lineage_pick_clone_x : forall ext cenv segs cfg P p evs P' e sh,
   lineage_pick P p ->
-  pstep_x_at ext segs cfg p P evs (PNext P') ->
+  pstep_x_at ext cenv segs cfg p P evs (PNext P') ->
   child_projection P P' = Some (e, sh) ->
   lineage_pick P' (pe_pid e).
 Proof.
-  intros ext segs cfg P p evs P' e sh _ Hp Hc.
-  destruct (pstep_x_at_grows ext segs cfg p P evs P' Hp (child_projection_grows P P' _ Hc))
+  intros ext cenv segs cfg P p evs P' e sh _ Hp Hc.
+  destruct (pstep_x_at_grows ext cenv segs cfg p P evs P' Hp (child_projection_grows P P' _ Hc))
     as (e0 & c' & q & child & st' & ->).
   rewrite child_projection_clone_result_x in Hc.
   injection Hc as He Hsh. subst e.
@@ -164,26 +183,26 @@ Proof. reflexivity. Qed.
 (** [MustExitP.must_exit_in_p_at] over the extended step: every maximal
     execution of the system halts, the root on a code in [S] and nothing
     still running, with no step to the model's error on the way. *)
-Inductive must_exit_in_px_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
-    (S : list word) : pconfig -> Prop :=
+Inductive must_exit_in_px_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment)
+    (cfg : SpuriousCfg) (S : list word) : pconfig -> Prop :=
 | mepxa_halted : forall P c code,
     root_view P = Some c ->
     m_halted (cfg_model c) = Some code ->
     List.In code S ->
     m_killed (cfg_model c) = None ->
     terminal P ->
-    must_exit_in_px_at ext segs cfg S P
+    must_exit_in_px_at ext cenv segs cfg S P
 | mepxa_running : forall P,
     ~ terminal P ->
-    (exists evs st, pstep_x_cfg ext segs cfg P evs st) ->
-    (forall evs, ~ pstep_x_cfg ext segs cfg P evs PError) ->
-    (forall evs P', pstep_x_cfg ext segs cfg P evs (PNext P') ->
-                    must_exit_in_px_at ext segs cfg S P') ->
-    must_exit_in_px_at ext segs cfg S P.
+    (exists evs st, pstep_x_cfg ext cenv segs cfg P evs st) ->
+    (forall evs, ~ pstep_x_cfg ext cenv segs cfg P evs PError) ->
+    (forall evs P', pstep_x_cfg ext cenv segs cfg P evs (PNext P') ->
+                    must_exit_in_px_at ext cenv segs cfg S P') ->
+    must_exit_in_px_at ext cenv segs cfg S P.
 
-(** At [no_ext] it is [MustExitP.must_exit_in_p_at]. *)
+(** At [no_ext] and [any_clone_failure] it is [MustExitP.must_exit_in_p_at]. *)
 Theorem must_exit_in_px_at_no_ext : forall segs cfg S P,
-  must_exit_in_px_at no_ext segs cfg S P <-> must_exit_in_p_at segs cfg S P.
+  must_exit_in_px_at no_ext any_clone_failure segs cfg S P <-> must_exit_in_p_at segs cfg S P.
 Proof.
   intros segs cfg S P. split.
   - intros H. induction H as [P c code Hr Hh Hin Hk Ht | P Ht Hex Hne Hall IH].
@@ -204,31 +223,47 @@ Qed.
 
 (** The same match on the image and the entry as [MustExitP.must_exit_in_p],
     from the host's namespaces [st]. *)
-Definition must_exit_in_px (ext : ExtSpec) (cfg : SpuriousCfg) (S : list word) (img : Image)
-    (lim : Z) (en : ExecEntry) (inp : ProcInput) (st : NsState) : Prop :=
+Definition must_exit_in_px (ext : ExtSpec) (cenv : CloneEnv) (cfg : SpuriousCfg) (S : list word)
+    (img : Image) (lim : Z) (en : ExecEntry) (inp : ProcInput) (st : NsState) : Prop :=
   match img, en with
   | mkImage segs pc ph, Run.mkEntry sp brk0 mbase rnd =>
-      must_exit_in_px_at ext segs cfg S
+      must_exit_in_px_at ext cenv segs cfg S
         (one_proc_in (init_config segs pc ph sp brk0 mbase rnd lim inp) st)
   end.
 
 (** [MustExitP.pholts_within_budget] over the extended step, on the inputs
     [pre] admits and from each host namespace state [host] admits.  Same
-    quantifier, same environment, same budget premise. *)
-Definition pholts_x_within_budget (ext : ExtSpec) (pre : ProcInput -> Prop) (host : NsState -> Prop)
-    (lim : Z) (allowed : list word) (img : Image) : Prop :=
+    quantifier, same environment, same budget premise.
+
+    The clone environment [cenv] is an explicit argument, so that the
+    statement shows which clone failures its runs admit.
+    [Ns.Ext.any_clone_failure] admits every failure the released clone and
+    the extension give ([pholts_x_within_budget_no_ext]: at [no_ext] the
+    statement is PROCS's own).  A narrower one, such as
+    [Ns.Clone.clone_tables_failures] (only the failures the namespace
+    tables give, for a clone that makes a namespace), is an ENVIRONMENT
+    PREMISE of the statement: a run in which the host refuses to make the
+    namespaces (an allocation, a namespace count, a cgroup controller,
+    RLIMIT_NPROC, a security module) is outside it, and the statement's
+    header must say so.  The released arm ([Fork.clone_ns_resolve]) cannot
+    make that cut itself: without the namespace tables it cannot tell a
+    forced EPERM from a security module's (the LPS owner's decision,
+    2026-11-01). *)
+Definition pholts_x_within_budget (ext : ExtSpec) (cenv : CloneEnv) (pre : ProcInput -> Prop)
+    (host : NsState -> Prop) (lim : Z) (allowed : list word) (img : Image) : Prop :=
   forall (en : ExecEntry) (inp : ProcInput) (st : NsState),
     valid_entry img en inp ->
     valid_input inp ->
     pre inp ->
     host st ->
     ~ run_scfg_budget_refused forced_only_cfg img lim en inp ->
-    must_exit_in_px ext forced_only_cfg allowed img lim en inp st.
+    must_exit_in_px ext cenv forced_only_cfg allowed img lim en inp st.
 
-(** At [no_ext], on every input and from the empty namespace state, it is
-    [MustExitP.pholts_within_budget]. *)
+(** At [no_ext] and [any_clone_failure], on every input and from the empty
+    namespace state, it is [MustExitP.pholts_within_budget]. *)
 Theorem pholts_x_within_budget_no_ext : forall lim allowed img,
-  pholts_x_within_budget no_ext (fun _ => True) (fun st => st = empty_nsstate) lim allowed img
+  pholts_x_within_budget no_ext any_clone_failure (fun _ => True) (fun st => st = empty_nsstate)
+    lim allowed img
   <-> pholts_within_budget lim allowed img.
 Proof.
   intros lim allowed img. unfold pholts_x_within_budget, pholts_within_budget.
@@ -290,9 +325,9 @@ Module ProcsCore <: PROCS_CORE.
   Definition PNext : pconfig -> pstep_to := Procs.PNext.
   Definition PError : pstep_to := Procs.PError.
   Definition pstep_cfg (ctx : StepCtx) : pconfig -> list event -> pstep_to -> Prop :=
-    Procs.pstep_x_cfg ns_ext (fst ctx) (snd ctx).
+    Procs.pstep_x_cfg ns_ext any_clone_failure (fst ctx) (snd ctx).
   Definition pstep_at (ctx : StepCtx) : Pid -> pconfig -> list event -> pstep_to -> Prop :=
-    Procs.pstep_x_at ns_ext (fst ctx) (snd ctx).
+    Procs.pstep_x_at ns_ext any_clone_failure (fst ctx) (snd ctx).
   Definition lineage_pick : pconfig -> Pid -> Prop := MustExitP.lineage_pick.
   Definition child_projection : pconfig -> pconfig -> option (ProcessEntry * shared) :=
     Procs.child_projection.
@@ -310,14 +345,15 @@ Module ProcsCore <: PROCS_CORE.
      <-> exists c', P' = one_proc c' /\ sstep_cfg ctx c evs (SNext c')).
   Proof.
     intros ctx c evs P'.
-    exact (Procs.pstep_x_instr_single_next ns_ext (fst ctx) (snd ctx) c evs P').
+    exact (Procs.pstep_x_instr_single_next ns_ext any_clone_failure (fst ctx) (snd ctx) c evs P').
   Qed.
 
   (** L3 *)
   Lemma pstep_instr_single_err : forall ctx c evs, at_instruction c ->
     (pstep_cfg ctx (one_proc c) evs PError <-> sstep_cfg ctx c evs SError).
   Proof.
-    intros ctx c evs. exact (Procs.pstep_x_instr_single_err ns_ext (fst ctx) (snd ctx) c evs).
+    intros ctx c evs.
+    exact (Procs.pstep_x_instr_single_err ns_ext any_clone_failure (fst ctx) (snd ctx) c evs).
   Qed.
 
   (** L4 *)
@@ -338,7 +374,7 @@ Module ProcsCore <: PROCS_CORE.
   Lemma pstep_at_one : forall ctx c evs r,
     pstep_at ctx one_pid (one_proc c) evs r <-> pstep_cfg ctx (one_proc c) evs r.
   Proof.
-    intros ctx c evs r. exact (Procs.pstep_x_at_one ns_ext (fst ctx) (snd ctx) c evs r).
+    intros ctx c evs r. exact (Procs.pstep_x_at_one ns_ext any_clone_failure (fst ctx) (snd ctx) c evs r).
   Qed.
 
   (** L8 *)
@@ -348,7 +384,8 @@ Module ProcsCore <: PROCS_CORE.
     exists e sh, child_projection P P' = Some (e, sh) /\ entry_a0_zero e
                  /\ sh = pcfg_shared P'.
   Proof.
-    intros ctx P evs P'. exact (child_projection_of_clone_x ns_ext (fst ctx) (snd ctx) P evs P').
+    intros ctx P evs P'.
+    exact (child_projection_of_clone_x ns_ext any_clone_failure (fst ctx) (snd ctx) P evs P').
   Qed.
 
   (** L9 *)
@@ -359,7 +396,7 @@ Module ProcsCore <: PROCS_CORE.
     lineage_pick P' (pe_pid e).
   Proof.
     intros ctx P p evs P' e sh.
-    exact (lineage_pick_clone_x ns_ext (fst ctx) (snd ctx) P p evs P' e sh).
+    exact (lineage_pick_clone_x ns_ext any_clone_failure (fst ctx) (snd ctx) P p evs P' e sh).
   Qed.
 
 End ProcsCore.

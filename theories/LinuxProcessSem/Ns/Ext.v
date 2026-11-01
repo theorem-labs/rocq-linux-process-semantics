@@ -43,15 +43,11 @@
     namespace bit: the child gets the caller's context, the state does
     not change, and a failure is any errno.
 
-    [ext_clone_refusal] is the forced-only filter for a clone's failure,
-    as [ext_refusal] is for a claimed call: a failure the extension's
-    environment chooses (an allocation failure, a host count, a security
-    module), which a core drops when its configuration says the
-    environment refuses nothing it is not forced to.  Without it, a
-    namespace clone could fail under every configuration, since the
-    released model admits any errno for one.  [ext_clone_refusal_coherent]
-    makes it drop nothing in the released world for a word with no
-    namespace bit, where the released filter is the one that applies.
+    Which clone failures a run admits is not the extension's to choose: a
+    core takes it as an explicit argument, a [CloneEnv], which a statement
+    names.  [any_clone_failure] admits every failure the core and the
+    extension give.  A narrower one is an environment premise of the
+    statement that names it (the LPS owner's decision, 2026-11-01).
 
     [ext_multiproc] names the claimed calls the extension answers soundly
     while other processes are live: those whose answer reads and writes
@@ -123,7 +119,6 @@ Record ExtSpec := mkExtSpec {
   ext_spec      : SyscallInput -> Model -> NsCtx -> NsState -> ext_outcome -> Prop;
   ext_refusal   : SpuriousCfg -> SyscallInput -> Model -> NsCtx -> NsState -> SyscallEffect -> Prop;
   ext_clone     : Z -> Model -> NsCtx -> NsState -> Z -> CloneNs -> Prop;
-  ext_clone_refusal : SpuriousCfg -> Z -> Model -> NsCtx -> NsState -> Z -> Z -> NsState -> Prop;
   ext_multiproc : SyscallInput -> Model -> NsCtx -> NsState -> bool;
   ext_coherent : forall i m ctx st,
     flat_view ctx st = true -> ext_claims i = true ->
@@ -134,9 +129,6 @@ Record ExtSpec := mkExtSpec {
   ext_clone_coherent : forall f m ctx st hq o,
     flat_view ctx st = true -> has_ns_bits f = false ->
     (ext_clone f m ctx st hq o <-> released_clone ctx st o);
-  ext_clone_refusal_coherent : forall cfg f m ctx st hq e st',
-    flat_view ctx st = true -> has_ns_bits f = false ->
-    ~ ext_clone_refusal cfg f m ctx st hq e st';
   ext_multiproc_coherent : forall i m ctx st,
     flat_view ctx st = true -> ext_multiproc i m ctx st = false
 }.
@@ -146,13 +138,11 @@ Record ExtSpec := mkExtSpec {
 Definition no_ext : ExtSpec.
 Proof.
   refine (mkExtSpec (fun _ => false) (fun _ _ _ _ _ => False) (fun _ _ _ _ _ _ => False)
-                    (fun _ _ ctx st _ o => released_clone ctx st o) (fun _ _ _ _ _ _ _ _ => False)
-                    (fun _ _ _ _ => false)
-                    _ _ _ _ _).
+                    (fun _ _ ctx st _ o => released_clone ctx st o) (fun _ _ _ _ => false)
+                    _ _ _ _).
   - intros i m ctx st _ Hc. discriminate Hc.
   - intros cfg i m ctx st eff _ Hc. discriminate Hc.
   - intros f m ctx st hq o _ _. reflexivity.
-  - intros cfg f m ctx st hq e st' _ _ H. exact H.
   - intros i m ctx st _. reflexivity.
 Defined.
 
@@ -164,3 +154,11 @@ Proof. reflexivity. Qed.
 
 Lemma no_ext_multiproc : forall i m ctx st, ext_multiproc no_ext i m ctx st = false.
 Proof. reflexivity. Qed.
+
+(** The clone failures a run admits: for the clone's flag word, the
+    caller's model, context and state, the pid the core gives the child,
+    the errno and the state after the failure. *)
+Definition CloneEnv : Type := Z -> Model -> NsCtx -> NsState -> Z -> Z -> NsState -> Prop.
+
+(** Every failure: the unrestricted relation. *)
+Definition any_clone_failure : CloneEnv := fun _ _ _ _ _ _ _ => True.
