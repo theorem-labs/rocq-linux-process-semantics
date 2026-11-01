@@ -505,6 +505,8 @@ Proof.
     | erewrite check_fsync_frame by eassumption; exact Hfit
     | erewrite check_getdents64_frame by eassumption; exact Hfit
     | erewrite check_flock_frame by eassumption; exact Hfit
+    | erewrite check_capget_frame by eassumption; exact Hfit
+    | erewrite check_capset_frame by eassumption; exact Hfit
     | erewrite check_exit_frame by eassumption; exact Hfit
     | erewrite check_set_tid_address_frame by eassumption; exact Hfit
     | erewrite check_getpid_frame by eassumption; exact Hfit

@@ -73,6 +73,7 @@
       Sys/Mm/Mremap.v            mm/mremap.c       mremap
       Sys/Mm/Mprotect.v          mm/mprotect.c     mprotect
       Sys/Mm/Madvise.v           mm/madvise.c      madvise
+      Sys/Kernel/Capability.v    kernel/capability.c  capget capset
       Sys/Kernel/Exit.v          kernel/exit.c     exit exit_group wait4
       Sys/Kernel/Fork.v          kernel/fork.c     set_tid_address clone clone3
       Sys/Kernel/Futex/Syscalls.v  kernel/futex/syscalls.c  futex set_robust_list
@@ -116,6 +117,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select Fs.Ioctl Fs.Fcntl Fs.Namei
   Fs.Readdir Fs.Locks Fs.Timerfd Fs.Pipe Fs.EventPoll Fs.EventFd
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise
+  Kernel.Capability
   Kernel.Exit Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups Kernel.Sched.Syscalls
   Kernel.Signal Kernel.Sys
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time

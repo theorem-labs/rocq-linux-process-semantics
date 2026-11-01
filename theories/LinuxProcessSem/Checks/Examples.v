@@ -49,6 +49,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe Fs.EventFd
   Fs.EventPoll
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Mm.PlacementHoles
+  Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls
   Kernel.Groups
   Kernel.Sched.Syscalls Kernel.Signal Kernel.Sys

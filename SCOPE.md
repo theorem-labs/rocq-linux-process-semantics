@@ -280,7 +280,8 @@ them. A proof says nothing about a program in such a case.
 
 | Area | Limit |
 | --- | --- |
-| Threads | The model has one thread. It has no scheduler and no shared-memory interleaving. For `fork`-like calls, the model describes the parent only. It does not run the child. |
+| Threads | The model has one thread. It has no scheduler and no shared-memory interleaving. For `fork`-like calls, the model describes the parent only. It does not run the child. `clone` answers two flag words: `SIGCHLD` alone, and `SIGCHLD` with one or more of `CLONE_NEWNS`, `CLONE_NEWUSER`, `CLONE_NEWPID`, `CLONE_NEWNET`, `CLONE_NEWIPC`, `CLONE_NEWUTS` and `CLONE_NEWCGROUP` and no other bit (`Kernel.Fork.clone_ns_flags_b`). For the second word too the model describes the parent only, by choice: the parent gets a child pid (and the model records that it has a child) or an errno. The child runs in the new namespaces, and this model says nothing about it. |
+| Capabilities | The model holds no capability sets. `capget` answers a version-3 header with pid 0, or with a NULL data pointer (0, and the pid is not read): the effective set is every capability when the effective uid is 0 and none otherwise, the permitted set is every capability when one of the real, effective and saved uids is 0 and none otherwise, and the inheritable set is the environment's choice within the valid bits. `capset` answers a version-3 header with pid 0 and six zero data words, from a caller whose three uids are all non-zero: 0 or `-ENOMEM`. For both calls a header, pid word or data range that `access_ok` refuses is `-EFAULT` (`kernel/capability.c`, v6.18.44). Every other shape of either call is `unmodeled`. |
 | Signals | The model does not run signal handlers. It has two signals and both are fatal: `SIGABRT`, raised by `tkill`/`tgkill` on the abort path, and `SIGPIPE`, raised by a write whose far end has no reader. Each ends the run with a death that is not an exit (`State.KillEv`), or, where the launch mask blocks it, returns the errno and leaves the signal pending until a `rt_sigprocmask` uncovers it. `rt_sigaction` declines every install that would change either disposition, so no modeled call moves one. For `SIGABRT` the model assumes the launch left the disposition at `SIG_DFL`. For `SIGPIPE` it no longer assumes: the launch declares it (`State.in_sigpipe_default`), `Run.valid_input` pins the declaration to `SIG_DFL`, and `Run.valid_input_sigpipe_ignored` is the launch that ran `signal(SIGPIPE, SIG_IGN)` before `execve` — a launch `execve` preserves (`fs/exec.c`, `begin_new_exec`'s `flush_signal_handlers` with `force_default = 0`, Linux v6.18.46), under which the same write returns `-EPIPE` and the program runs on. No other signal is modeled: `SIGSEGV` is reported as the error transition rather than as a death, `SIGCHLD`'s default action is to ignore it, `SIGXFSZ` needs an `RLIMIT_FSIZE` the model does not carry, and nothing outside the process can send one. For `SIGCHLD`, `rt_sigaction` answers one install, `SIG_DFL` (0, nothing stored: the disposition the `clone` argument already assumes, `Signal.sigchld_dfl_install`), and declines `SIG_IGN` and every handler. |
 | `prctl` | The model answers four options: `PR_CAPBSET_READ` (always 1, or `-EINVAL` past `CAP_LAST_CAP`), and `PR_SET_PDEATHSIG`, `PR_SET_DUMPABLE` and `PR_SET_NO_NEW_PRIVS` with Linux's 0 or `-EINVAL` (`SYSCALL_DEFINE5(prctl)`, `kernel/sys.c`, v6.18.44). It stores nothing for the last three: no modeled call reads the parent-death signal, the dumpable flag or the no-new-privs bit. A statement that needs one of them set reads the call from the call log, and must take the last such call after the last credential change, because `commit_creds` resets the first two. Every other option is `unmodeled`, the `PR_GET_*` readers of these three included. |
 | Parent process | `getppid` answers any pid below 2^22, 0 included (a parent outside the caller's pid namespace), chosen afresh at each call: the model does not know the parent, and the parent changes when it exits. A statement that needs a particular parent takes it as a premise. |
@@ -501,6 +502,19 @@ not apply.
   also cannot express such a launch: `State.ProcInput` has no effective
   id, so `State.init_model` derives the effective and saved ids from
   the real ones.
+- The process runs in the initial user namespace with default
+  securebits, a full capability bounding set, no ambient capabilities
+  and a binary without file capabilities, and the exec that started it
+  was not unsafe (`check_unsafe_exec`, `fs/exec.c`): no tracer, no
+  `no_new_privs`, and no `fs_struct` shared with another process. The only security
+  module that answers the credential and capability hooks is the
+  capability module. Under these, a process holds a capability in its
+  effective set exactly when its effective uid is 0, and in its permitted
+  set exactly when one of its uids is 0 (`security/commoncap.c`,
+  `cap_bprm_creds_from_file` and `cap_emulate_setxuid`). The model reads
+  privilege from the effective uid (`State.creds_privileged`), and
+  `capget` reports both sets from the uids (`Kernel.Capability`). SELinux
+  and AppArmor can refuse or narrow these answers.
 - The machine has one view of its caches. `get_cacheinfo`
   (`arch/riscv/kernel/cacheinfo.c`) reads the CPU that runs the
   `execve`, and `State.KernelBuild` holds one `State.CacheView`. The
@@ -534,6 +548,16 @@ equivalence) can be true of the model and false of Linux.
   its caches and its vDSO image are fields of `State.KernelBuild`, which
   the two binaries of a pair share, so there the model does carry a
   parameter for the machine and both binaries read the same one.
+- **Errors of a namespace `clone`.** For the namespace flag word
+  (`Kernel.Fork.clone_ns_flags_b`) the model admits every errno from 1 to
+  4095. The failures run through `create_user_ns`, `copy_namespaces` and
+  every per-namespace init function, including each network namespace's
+  pernet init, and they cannot be listed with confidence. Linux gives
+  only some of them.
+- **The inheritable capability set.** `capget` lets the environment
+  choose the inheritable set on each call, within the valid bits. Linux
+  gives the same set on each call until it changes, and 0 after an
+  answered `capset`.
 - **Clock resolution.** For supported non-CPU clock IDs, `clock_getres`
   accepts any positive nanosecond value below one second. Linux returns
   1 ns or a tick-based resolution (`posix_get_hrtimer_res` and

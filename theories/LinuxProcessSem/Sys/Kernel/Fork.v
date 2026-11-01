@@ -13,7 +13,7 @@
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
-  Syscall.
+  Syscall Uapi.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
@@ -173,15 +173,15 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
     - THE ADDRESS SPACE.  A child sharing the parent's [mm] could write
       the parent's memory between two of the parent's own instructions,
       and every claim about the parent's memory would be void.  Closed by
-      [clone_fork_flags_b] below: the one flag word this model answers
-      has neither [CLONE_VM] nor [CLONE_VFORK], so [copy_process] takes
-      [dup_mm] and the two address spaces are separate from the call
-      onwards.
+      [clone_fork_flags_b] and [clone_ns_flags_b] below: neither flag
+      word this model answers has [CLONE_VM] or [CLONE_VFORK], so
+      [copy_process] takes [dup_mm] and the two address spaces are
+      separate from the call onwards.
     - THE DESCRIPTOR TABLE AND THE FILE OFFSET.  [CLONE_FILES] shares the
       table itself and [CLONE_FS] shares [fs_struct] (so a child [chdir]
       moves the parent's [AT_FDCWD], the only dirfd [Open.openat_spec]
       accepts); [CLONE_PIDFD] installs a NEW descriptor in the PARENT's
-      table.  All three are outside the modeled flag word.  What survives
+      table.  All three are outside the modeled flag words.  What survives
       even a plain fork is the FILE OFFSET: [copy_files] duplicates the
       table while both tables point at the same [struct file], so a
       child's [read] advances the offset the parent will read from next.
@@ -194,7 +194,7 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
     - PARENT MEMORY WRITTEN BY THE CALL ITSELF.  [CLONE_PARENT_SETTID]
       writes the child tid through [parent_tidptr] and [CLONE_PIDFD]
       writes an int through the same pointer.  Both are outside the
-      modeled flag word, so the call writes no byte of user memory and
+      modeled flag words, so the call writes no byte of user memory and
       the effect below carries no write entry.
 
     FIVE CHANNELS ARE NOT CLOSED, and none of them is closeable by a
@@ -302,8 +302,10 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
     a property of how the process was started, the same shape as
     [State.access_okb]'s post-[execve] [pmlen = 0].
 
-    ALLOWLIST, NOT BLOCKLIST.  The gate admits exactly one flag word,
-    [SIGCHLD], and declines every other.  Naming the dangerous bits
+    ALLOWLIST, NOT BLOCKLIST.  The gates admit the one flag word
+    [SIGCHLD] ([clone_fork_flags_b]) and [SIGCHLD] plus namespace bits
+    and nothing else ([clone_ns_flags_b]), and decline every other.
+    Naming the dangerous bits
     instead would be a blocklist over a 32-bit space in which new bits
     keep being defined, and each of the bits above is a separate thing
     somebody had to think of first.
@@ -360,7 +362,10 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
 
     Widening this test is a change to the modeled surface and belongs in
     a change of its own; the refusals it currently implies are pinned by
-    name in [Checks.ProcessCreation].
+    name in [Checks.ProcessCreation].  The namespace word is such a
+    change, and it has its own gate and resolution
+    ([clone_ns_flags_b], [clone_ns_resolve]) rather than a wider test
+    here.
 
     THE ANSWER IS NEVER ZERO, AND THAT IS A DECISION.  Zero is the
     CHILD's return from [clone].  Admitting it would make the model
@@ -395,8 +400,9 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
     failure in these specs is. *)
 Definition SIGCHLD : Z := 17.
 
-(** The clone failures this model admits, for the ONE flag word it
-    answers.  Enumerated by walking every error return in [kernel_clone]
+(** The clone failures this model admits for the FORK word (the
+    namespace word admits every errno: see [clone_ns_resolve]).
+    Enumerated by walking every error return in [kernel_clone]
     and [copy_process] (kernel/fork.c) in source order and asking which
     survives [flags = SIGCHLD].  Mainline v6.6..v7.2 and stable
     linux-6.6.y / linux-6.12.y / linux-6.17.y.  [kernel_clone] changed
@@ -512,8 +518,9 @@ Definition SIGCHLD : Z := 17.
       [ops_sanitize_err], which passes any value in [-MAX_ERRNO, -1]. *)
 Definition clone_errnos : list Z := [EAGAIN; ENOMEM; EMFILE; EACCES].
 
-(** The one flag word this model answers: a child that shares nothing,
-    reporting [SIGCHLD] on exit.  This is what [fork] is.
+(** The fork word: a child that shares nothing, reporting [SIGCHLD] on
+    exit.  This is what [fork] is.  (The other word [clone_spec] answers,
+    [SIGCHLD] plus namespace bits, has its own gate, [clone_ns_flags_b].)
 
     THE TEST IS ON THE WHOLE 64-BIT REGISTER, which is STRICTER than the
     kernel's own reading and deliberately so.  [SYSCALL_DEFINE5(clone)]
@@ -561,7 +568,7 @@ Definition clone_errnos : list Z := [EAGAIN; ENOMEM; EMFILE; EACCES].
     uncovered, it is REJECTED — the model asserting that Linux could not
     have done what it did.  That is a false claim about Linux rather
     than an honest gap, and [Specs.v]'s own rule ("must fail closed
-    rather than admit an approximation") names the shape.  The gate
+    rather than admit an approximation") names the shape.  This gate
     therefore stays an
     allowlist of one word. *)
 Definition clone_fork_flags_b (flags : word) : bool :=
@@ -708,8 +715,125 @@ Definition clone_resolve : Sys SyscallEffect :=
          modify with_children ;;
          ret_only pid).
 
+(* =========================================================================
+   clone with namespace flags — the PARENT'S VIEW, and nothing else
+   ========================================================================= *)
+
+(** The seven namespace bits [clone_ns_flags_b] admits, as one mask.
+    [copy_namespaces] (kernel/nsproxy.c) tests six of them and
+    [CLONE_NEWTIME]; [copy_creds] (kernel/cred.c) tests the seventh,
+    [CLONE_NEWUSER].  [CLONE_NEWTIME] is not here because legacy [clone]
+    cannot carry it: see [Uapi.CLONE_NEWNS]. *)
+Definition clone_ns_mask : Z :=
+  Z.lor CLONE_NEWNS (Z.lor CLONE_NEWCGROUP (Z.lor CLONE_NEWUTS
+    (Z.lor CLONE_NEWIPC (Z.lor CLONE_NEWUSER (Z.lor CLONE_NEWPID
+      CLONE_NEWNET))))).
+
+(** THE NAMESPACE WORD: [SIGCHLD] together with a NON-EMPTY set of the
+    seven bits of [clone_ns_mask], and nothing else.  This is the call
+    bubblewrap 0.13.1's parent makes ([raw_clone], utils.c, called from
+    [main]) with the flag word
+    [SIGCHLD | CLONE_NEWNS | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET
+    | CLONE_NEWIPC | CLONE_NEWUTS] and a NULL stack.
+
+    THE TEST IS ON THE WHOLE 64-BIT REGISTER, strict in the same way
+    [clone_fork_flags_b] is and for the same reason:
+    [SYSCALL_DEFINE5(clone)] reads [lower_32_bits(clone_flags)] only, so
+    a register with a bit above 31 set is the same call to Linux and is
+    declined here.  Clearing the seven namespace bits must leave exactly
+    [SIGCHLD], so the exit signal is SIGCHLD and every other flag bit is
+    clear: each bit [Checks.ProcessCreation.clone_sharing_bits] names,
+    and [CLONE_PTRACE], [CLONE_PARENT], [CLONE_DETACHED],
+    [CLONE_UNTRACED] as well.  So every word this test admits passes
+    each argument check at the head of [copy_process] (none of them
+    reads a namespace bit without [CLONE_FS], [CLONE_THREAD] or
+    [CLONE_SYSVSEM] beside it), and the tid pointers, [tls] and [newsp]
+    are read by no code this word reaches in the PARENT, exactly as for
+    the fork word.
+
+    THE TWO TESTS ARE DISJOINT: the fork word holds no namespace bit and
+    this test requires one.  [clone_spec] asks [clone_fork_flags_b]
+    first, so the fork word keeps [clone_resolve] and its four errnos. *)
+Definition clone_ns_flags_b (flags : word) : bool :=
+  Z.eqb (Z.land (bv_unsigned flags) (Z.lnot clone_ns_mask)) SIGCHLD
+  && negb (Z.eqb (Z.land (bv_unsigned flags) clone_ns_mask) 0).
+
+(** The resolution of the namespace word.
+
+    THE PARENT'S VIEW OF THIS CALL DELIBERATELY MODELS NO CHILD.  The
+    child runs in the new namespaces, and what it does there is the
+    subject of BET-467's child model (lane L11), not of this file.  The
+    boundary is chosen, not a gap found later: this arm says what the
+    CALLING process receives — a child pid or an errno — and that the
+    process now has a child, and nothing about the child.  Everything
+    [clone_spec]'s header says about the plain fork applies unchanged:
+    no second configuration exists, the five channels named there stay
+    open (the file system among them: a new mount namespace is a copy of
+    the parent's mounts over the same superblocks, so a child can still
+    write what the parent later reads), and the SIGCHLD the child's
+    exit sends comes to nothing by the argument given there.
+
+    WHAT THE PARENT SEES, from the kernel (each function read at
+    v6.18.44):
+    kernel/fork.c [SYSCALL_DEFINE5(clone)] read at v6.18.44; identical at v6.18.46.
+    kernel/fork.c [kernel_clone] read at v6.18.44; identical at v6.18.46.
+    kernel/fork.c [copy_process] read at v6.18.44; identical at v6.18.46.
+    kernel/cred.c [copy_creds] read at v6.18.44; identical at v6.18.46.
+    kernel/user_namespace.c [create_user_ns] read at v6.18.44; identical at v6.18.46.
+    kernel/nsproxy.c [copy_namespaces] read at v6.18.44; identical at v6.18.46.
+    kernel/nsproxy.c [create_new_namespaces] read at v6.18.44; identical at v6.18.46.
+
+    - SUCCESS.  [kernel_clone] returns [pid_vnr(pid)], the child's pid in
+      the CALLER's pid namespace — with [CLONE_NEWPID] the child is pid 1
+      in its own namespace, and the caller still sees an ordinary pid of
+      its own namespace.  So the admitted pids are exactly
+      [clone_resolve]'s: [clone_pid_ok_b], never 0.  And the caller now
+      has a child, so the success branch records it with
+      [State.with_children], which [Kernel.Exit.wait4_spec]'s -ECHILD
+      reads ([Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]).
+      No byte of the caller's memory moves: [CLONE_PARENT_SETTID] and
+      [CLONE_PIDFD] are clear.  The caller's own credentials, namespaces,
+      descriptors and [fs_struct] are not touched: [copy_creds],
+      [copy_namespaces] and [copy_fs] act on the new task [p].
+    - FAILURE: EVERY ERRNO FROM 1 TO 4095 ([Syscall.errno_any]).  The
+      failures of this word run through everything a plain fork's do
+      ([clone_errnos]) and then through [create_user_ns] (-ENOSPC past 32
+      levels or past [max_user_namespaces], -EPERM in a chroot or for an
+      unmapped creator, whatever [security_create_user_ns] answers),
+      [copy_namespaces]'s [ns_capable(CAP_SYS_ADMIN)] (-EPERM), and each
+      of [copy_mnt_ns], [copy_utsname], [copy_ipcs], [copy_pid_ns],
+      [copy_cgroup_ns] and [copy_net_ns] — the last runs every
+      registered pernet init function, each of which can return its own
+      errno.  That set cannot be enumerated with confidence, so the arm
+      admits every errno rather than a list a missing member of which
+      would make the model reject a real kernel's answer.  The cost is
+      the usual one of a wide set: the model also admits errnos no
+      kernel returns here.  [Run.injected_table] keeps [clone_errnos]
+      for 220, so under a forced-only [Run.SpuriousCfg] the four
+      resource errnos (-EAGAIN, -ENOMEM, -EMFILE, -EACCES) are filtered
+      where a pid is admissible and every other errno stays admitted —
+      -ENOSPC from [max_user_namespaces], a resource limit too, among
+      them.  A statement that reads "forced-only" as "no resource
+      failure" for the namespace word must exclude those itself.
+
+    The [clone_no_shared_file_b] gate is the one [clone_resolve] has, for
+    the same reason: a child given a copy of the descriptor table shares
+    every [struct file] with the caller whatever namespaces it runs in. *)
+Definition clone_ns_resolve : Sys SyscallEffect :=
+  m <- get_model ;;
+  if negb (clone_no_shared_file_b (m_fds m)) then unmodeled
+  else
+    alt (e <- errno_any ;; err_ret e)
+        (pid <- choose (fun p => clone_pid_ok_b m p = true) ;;
+         modify with_children ;;
+         ret_only pid).
+
+(** The fork word goes to [clone_resolve], the namespace word to
+    [clone_ns_resolve], and every other flag word declines. *)
 Definition clone_spec (flags : word) : Sys SyscallEffect :=
-  if clone_fork_flags_b flags then clone_resolve else unmodeled.
+  if clone_fork_flags_b flags then clone_resolve
+  else if clone_ns_flags_b flags then clone_ns_resolve
+  else unmodeled.
 
 (** [clone3] reaches the same [kernel_clone] through a struct in user
     memory rather than through registers.  [struct clone_args]
