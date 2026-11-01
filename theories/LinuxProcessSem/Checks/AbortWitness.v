@@ -1084,24 +1084,6 @@ Proof.
   apply andb_true_iff. split; [apply Z.leb_le | apply Z.ltb_lt]; lia.
 Qed.
 
-(** Both tactics open the leg's states and abstract the vDSO pair before
-    they compute, for the reason [abrt_open] gives: a syscall input
-    carries the run's segment list inside its readers, and a
-    [vm_compute] over one reads the measured image back under the
-    binder.  The [unfold] list is [blk_open]'s; [try], because a few
-    goals name no leg. *)
-Ltac blk_abs :=
-  unfold blk_L1, blk_L2, blk_L3, blk_L4, blk_L5, blk_L6, blk_L7,
-    blk_leg, blk_legk, blk_L0, run_segments; try abstract_vdso.
-
-Ltac blk_check_eq :=
-  blk_abs; vm_compute;
-  repeat first [reflexivity | (apply bv_eq; reflexivity) | progress f_equal].
-
-Ltac blk_svc :=
-  blk_abs; vm_compute;
-  first [reflexivity | f_equal; apply bv_eq; reflexivity].
-
 (** ** The states and models along the path
 
     [blk_L1 t] .. [blk_L7 t] are the first states of the legs after the
@@ -1162,6 +1144,24 @@ Definition blk_L6 (t : word) : machine_state :=
   advance_past_svc (apply_effect (blk_leg (blk_L5 t) 4) blk_e6).
 Definition blk_L7 (t : word) : machine_state :=
   advance_past_svc (apply_effect (blk_leg (blk_L6 t) 4) blk_e0).
+
+(** Both tactics open the leg's states and abstract the vDSO pair before
+    they compute, for the reason [abrt_open] gives: a syscall input
+    carries the run's segment list inside its readers, and a
+    [vm_compute] over one reads the measured image back under the
+    binder.  The [unfold] list is [blk_open]'s; [try], because a few
+    goals name no leg. *)
+Ltac blk_abs :=
+  unfold blk_L1, blk_L2, blk_L3, blk_L4, blk_L5, blk_L6, blk_L7,
+    blk_leg, blk_legk, blk_L0, run_segments; try abstract_vdso.
+
+Ltac blk_check_eq :=
+  blk_abs; vm_compute;
+  repeat first [reflexivity | (apply bv_eq; reflexivity) | progress f_equal].
+
+Ltac blk_svc :=
+  blk_abs; vm_compute;
+  first [reflexivity | f_equal; apply bv_eq; reflexivity].
 
 Definition blk_m1 (t : word) (lim : Z) : Model := with_tid t (blk_m0 lim).
 (** SIG_BLOCK app_mask over the launch mask 1 << 5. *)
