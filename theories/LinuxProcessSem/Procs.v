@@ -412,6 +412,139 @@ Definition wait4_intercept_b (c : config) : bool :=
   end.
 
 (* =========================================================================
+   Promotion: a private descriptor becomes a shared description at a clone
+   ========================================================================= *)
+
+(** The shared reading of a private entry, and the offset it was holding.
+    [None] for the kinds with no mutable kernel-side offset, which stay in
+    [State.m_fd]; see [OfdWhat] for why [FdChannel] is among them. *)
+Definition fd_shared_view (e : FdEntry) : option (OfdWhat * word) :=
+  match e with
+  | FdFile p off   => Some (OfdFile p FmR,  off)
+  | FdFileW p off  => Some (OfdFile p FmW,  off)
+  | FdFileA p off  => Some (OfdFile p FmA,  off)
+  | FdFileRW p off => Some (OfdFile p FmRW, off)
+  | FdPipe id w    => Some (OfdPipe id w,   Z_to_bv 64 0)
+  | FdSocket sk    => Some (OfdSocket sk,   Z_to_bv 64 0)
+  | FdChannel _ | FdDir | FdDevNull _ _ | FdUrandom => None
+  end.
+
+(** PROMOTE one descriptor out of a private table into the shared one, with
+    [ofd_refs] counting BOTH tables.  Two is right and not one: after the
+    clone the parent and the child each name it. *)
+Definition promote_one (S : shared) (i : OfdId) (fd : word) (e : FdEntry)
+    : option (shared * (word * OfdId)) :=
+  match fd_shared_view e with
+  | None => None
+  | Some (what, off) =>
+      Some (mkShared (sh_fsys S) (sh_io S)
+                     ((i, mkOfd what off (Z_to_bv 64 0) (Z_to_bv 64 2))
+                        :: sh_ofd S)
+                     (sh_pipes S) (sh_ns S),
+            (fd, i))
+  end.
+
+(* =========================================================================
+   The child a successful clone creates
+   ========================================================================= *)
+
+(** The child's machine state: the parent's successor with a0 = 0, and the
+    stack pointer the call asked for.  [set_reg] takes a PHYSICAL register
+    number; a0 is x10 and sp is x2.
+
+    [newsp] is honoured when it is non-zero.  Legacy [clone] accepts an
+    arbitrary one and it changes the CHILD's stack pointer (Fork.v:753-764);
+    zero means the child keeps the parent's, which is what [fork] does. *)
+Definition child_ms (c c' : config) : machine_state :=
+  let newsp := ms_gpr (cfg_ms c) 1 in
+  let base := set_reg (cfg_ms c') 10 (Z_to_bv 64 0) in
+  if w_is0 newsp then base else set_reg base 2 newsp.
+
+(** The child's process record: the parent's, with the two fields that are
+    the CHILD's own cleared.
+
+    [procst_children] because the child has none -- and copying the parent's
+    pre-clone record is not enough, because on a SECOND clone the parent's is
+    already set.  [procst_tid] because the child's differs on Linux, and
+    because clone admission itself reads it (Fork.v:679-681), so declining
+    [getpid] does not make an inherited one unobservable. *)
+Definition child_proc (ps : ProcState) : ProcState :=
+  mkProcState (procst_halted ps) None (procst_creds ps)
+              (procst_setsid_succeeded ps) (procst_sigmask ps)
+              false (procst_utsname ps) (procst_sigaltstack_installed ps)
+              (procst_killed ps) (procst_sigabrt_pending ps)
+              (procst_abort_terminal ps) (procst_statpins ps).
+
+Definition with_proc (ps : ProcState) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).
+
+Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
+    : ProcessEntry :=
+  mkEntry q (Some (pe_pid e)) (child_ms c c')
+          (clear_shared (with_proc (child_proc (m_proc (pe_model e)))
+                                   (pe_model e)))
+          (pe_ofd e) (pe_nsctx e).
+
+(** The configuration a successful clone steps to. *)
+Definition clone_result (P : pconfig) (e : ProcessEntry) (c' : config)
+    (q : Pid) : pconfig :=
+  mkPCfg (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c')
+            ++ [(q, child_entry e (pe_cfg (pcfg_shared P) e) c' q)])
+         (pcfg_root P)
+         (shared_absorb (pcfg_shared P) c').
+
+(** The entry a step added, if it added one.  [clone_result] appends, so the
+    added entry is the last one, and the length test is what says a step
+    added anything at all. *)
+Definition child_projection (P P' : pconfig) : option (ProcessEntry * shared) :=
+  if Nat.ltb (List.length (pcfg_procs P)) (List.length (pcfg_procs P'))
+  then match List.last (List.map (fun kv => Some (snd kv)) (pcfg_procs P'))
+               None with
+       | Some e => Some (e, pcfg_shared P')
+       | None => None
+       end
+  else None.
+
+(* =========================================================================
+   The wait status an entry reports once it is over
+   ========================================================================= *)
+
+(** A FUNCTION, and it must stay one: every reap proof and the projection
+    theorem read it, and turning it into a relation later costs a re-walk of
+    both.
+
+    A normal exit reports the masked code shifted left 8.  [Exit.exit_spec]
+    already applied the mask before [set_halted], and the shift is what
+    [exit_group] does to its argument:
+
+      kernel/exit.c:1131, Linux v6.18.46 (commit 1f99e9ab748f)
+        do_group_exit((error_code & 0xff) << 8);
+
+    A death by signal reports the signal in the low seven bits.  [dumped] is
+    the WCOREDUMP bit, 0x80, which [coredump_finish] ORs in when the dump was
+    written and no further fatal signal is pending:
+
+      fs/coredump.c:557-558, same version
+        if (core_dumped && !__fatal_signal_pending(current))
+                current->signal->group_exit_code |= 0x80;
+
+    Whether it was written depends on RLIMIT_CORE, the task's dumpable flag
+    and core_pattern, none of which this model carries, so the bit is a
+    PARAMETER here rather than a derived value.  [State.limst_core] already
+    pins RLIMIT_CORE at its first read, so a later refinement constrains the
+    choice instead of replacing it. *)
+Definition pe_status (dumped : bool) (e : ProcessEntry) : option word :=
+  match m_halted (pe_model e), m_killed (pe_model e) with
+  | Some code, None =>
+      Some (bv_mul (bv_and code (Z_to_bv 64 255)) (Z_to_bv 64 256))
+  | Some sig, Some _ =>
+      Some (bv_or (bv_and sig (Z_to_bv 64 127))
+                  (if dumped then Z_to_bv 64 128 else Z_to_bv 64 0))
+  | None, _ => None
+  end.
+
+
+(* =========================================================================
    The relation
    ========================================================================= *)
 
@@ -812,139 +945,6 @@ Proof.
   intros c. rewrite one_proc_view.
   split; [reflexivity | split; reflexivity].
 Qed.
-
-(* =========================================================================
-   Promotion: a private descriptor becomes a shared description at a clone
-   ========================================================================= *)
-
-(** The shared reading of a private entry, and the offset it was holding.
-    [None] for the kinds with no mutable kernel-side offset, which stay in
-    [State.m_fd]; see [OfdWhat] for why [FdChannel] is among them. *)
-Definition fd_shared_view (e : FdEntry) : option (OfdWhat * word) :=
-  match e with
-  | FdFile p off   => Some (OfdFile p FmR,  off)
-  | FdFileW p off  => Some (OfdFile p FmW,  off)
-  | FdFileA p off  => Some (OfdFile p FmA,  off)
-  | FdFileRW p off => Some (OfdFile p FmRW, off)
-  | FdPipe id w    => Some (OfdPipe id w,   Z_to_bv 64 0)
-  | FdSocket sk    => Some (OfdSocket sk,   Z_to_bv 64 0)
-  | FdChannel _ | FdDir | FdDevNull _ _ | FdUrandom => None
-  end.
-
-(** PROMOTE one descriptor out of a private table into the shared one, with
-    [ofd_refs] counting BOTH tables.  Two is right and not one: after the
-    clone the parent and the child each name it. *)
-Definition promote_one (S : shared) (i : OfdId) (fd : word) (e : FdEntry)
-    : option (shared * (word * OfdId)) :=
-  match fd_shared_view e with
-  | None => None
-  | Some (what, off) =>
-      Some (mkShared (sh_fsys S) (sh_io S)
-                     ((i, mkOfd what off (Z_to_bv 64 0) (Z_to_bv 64 2))
-                        :: sh_ofd S)
-                     (sh_pipes S) (sh_ns S),
-            (fd, i))
-  end.
-
-(* =========================================================================
-   The child a successful clone creates
-   ========================================================================= *)
-
-(** The child's machine state: the parent's successor with a0 = 0, and the
-    stack pointer the call asked for.  [set_reg] takes a PHYSICAL register
-    number; a0 is x10 and sp is x2.
-
-    [newsp] is honoured when it is non-zero.  Legacy [clone] accepts an
-    arbitrary one and it changes the CHILD's stack pointer (Fork.v:753-764);
-    zero means the child keeps the parent's, which is what [fork] does. *)
-Definition child_ms (c c' : config) : machine_state :=
-  let newsp := ms_gpr (cfg_ms c) 1 in
-  let base := set_reg (cfg_ms c') 10 (Z_to_bv 64 0) in
-  if w_is0 newsp then base else set_reg base 2 newsp.
-
-(** The child's process record: the parent's, with the two fields that are
-    the CHILD's own cleared.
-
-    [procst_children] because the child has none -- and copying the parent's
-    pre-clone record is not enough, because on a SECOND clone the parent's is
-    already set.  [procst_tid] because the child's differs on Linux, and
-    because clone admission itself reads it (Fork.v:679-681), so declining
-    [getpid] does not make an inherited one unobservable. *)
-Definition child_proc (ps : ProcState) : ProcState :=
-  mkProcState (procst_halted ps) None (procst_creds ps)
-              (procst_setsid_succeeded ps) (procst_sigmask ps)
-              false (procst_utsname ps) (procst_sigaltstack_installed ps)
-              (procst_killed ps) (procst_sigabrt_pending ps)
-              (procst_abort_terminal ps) (procst_statpins ps).
-
-Definition with_proc (ps : ProcState) (m : Model) : Model :=
-  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).
-
-Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
-    : ProcessEntry :=
-  mkEntry q (Some (pe_pid e)) (child_ms c c')
-          (clear_shared (with_proc (child_proc (m_proc (pe_model e)))
-                                   (pe_model e)))
-          (pe_ofd e) (pe_nsctx e).
-
-(** The configuration a successful clone steps to. *)
-Definition clone_result (P : pconfig) (e : ProcessEntry) (c' : config)
-    (q : Pid) : pconfig :=
-  mkPCfg (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c')
-            ++ [(q, child_entry e (pe_cfg (pcfg_shared P) e) c' q)])
-         (pcfg_root P)
-         (shared_absorb (pcfg_shared P) c').
-
-(** The entry a step added, if it added one. *)
-Definition child_projection (P P' : pconfig) : option (ProcessEntry * shared) :=
-  match List.last (List.map snd (pcfg_procs P')) None with
-  | _ =>
-      if Nat.ltb (List.length (pcfg_procs P)) (List.length (pcfg_procs P'))
-      then match List.last (List.map (fun kv => Some (snd kv)) (pcfg_procs P'))
-                   None with
-           | Some e => Some (e, pcfg_shared P')
-           | None => None
-           end
-      else None
-  end.
-
-(* =========================================================================
-   The wait status an entry reports once it is over
-   ========================================================================= *)
-
-(** A FUNCTION, and it must stay one: every reap proof and the projection
-    theorem read it, and turning it into a relation later costs a re-walk of
-    both.
-
-    A normal exit reports the masked code shifted left 8.  [Exit.exit_spec]
-    already applied the mask before [set_halted], and the shift is what
-    [exit_group] does to its argument:
-
-      kernel/exit.c:1131, Linux v6.18.46 (commit 1f99e9ab748f)
-        do_group_exit((error_code & 0xff) << 8);
-
-    A death by signal reports the signal in the low seven bits.  [dumped] is
-    the WCOREDUMP bit, 0x80, which [coredump_finish] ORs in when the dump was
-    written and no further fatal signal is pending:
-
-      fs/coredump.c:557-558, same version
-        if (core_dumped && !__fatal_signal_pending(current))
-                current->signal->group_exit_code |= 0x80;
-
-    Whether it was written depends on RLIMIT_CORE, the task's dumpable flag
-    and core_pattern, none of which this model carries, so the bit is a
-    PARAMETER here rather than a derived value.  [State.limst_core] already
-    pins RLIMIT_CORE at its first read, so a later refinement constrains the
-    choice instead of replacing it. *)
-Definition pe_status (dumped : bool) (e : ProcessEntry) : option word :=
-  match m_halted (pe_model e), m_killed (pe_model e) with
-  | Some code, None =>
-      Some (bv_mul (bv_and code (Z_to_bv 64 255)) (Z_to_bv 64 256))
-  | Some sig, Some _ =>
-      Some (bv_or (bv_and sig (Z_to_bv 64 127))
-                  (if dumped then Z_to_bv 64 128 else Z_to_bv 64 0))
-  | None, _ => None
-  end.
 
 (* =========================================================================
    Well-formedness
