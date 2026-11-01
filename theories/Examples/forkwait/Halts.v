@@ -731,25 +731,46 @@ Definition fw_next_pcs (pc : Z) : list Z :=
   | _ => []%Z
   end.
 
-(** THE DECIDABLE CHECK, and the reason the pc lists were worth taking as
-    lists.  Every successor of a member of [fw_pcs_one] is itself a member,
-    EXCEPT the three [ecall] addresses, whose successors belong to the
-    syscall arms rather than to an instruction step.  One [vm_compute] over
-    concrete addresses settles the whole of the straight-line case, where
-    twenty hand-written cases would otherwise be.
+(** THE CHECK, AND THE ONE EDGE IT MUST NOT SWALLOW.
 
-    [0x1105c] is in the list of successors of [0x1101c] and NOT in
-    [fw_pcs_one]: it is the injected-errno path, unreachable at
-    [Run.forced_only_cfg] for the environment reason recorded at
-    [fw_shape], so the check is stated over the counters the program
-    reaches in THAT environment.  At [Run.may_fail_cfg] the list grows by
-    the three addresses of that tail. *)
+    An earlier version filtered [0x1105c] out of the successor lists
+    before checking membership.  That is WRONG, and wrong in the way this
+    file keeps finding: it builds the exclusion into what the computation
+    CLAIMS, so a [vm_compute] appears to prove closure while the real
+    obligation -- that the branch to the errno tail is not taken -- has
+    quietly become a premise nobody discharges.  A membership check that
+    drops an edge is a premise, not a computation.
+
+    So the computation below runs over the counters whose successors
+    really are all members, and [0x1101c] is NOT one of them.  Its edge to
+    [0x1105c] is discharged separately, by a fact about the STATE. *)
+Definition fw_pcs_straight : list Z :=
+  List.filter (fun x => negb (Z.eqb x 0x1101c)) fw_pcs_one.
+
 Definition fw_pcs_closed : bool :=
   List.forallb
     (fun pc => List.forallb (fun pc' => List.existsb (Z.eqb pc') fw_pcs_one)
-                            (List.filter (fun x => negb (Z.eqb x 0x1105c))
-                                         (fw_next_pcs pc)))
-    fw_pcs_one.
+                            (fw_next_pcs pc))
+    fw_pcs_straight.
 
 Lemma fw_pcs_closed_ok : fw_pcs_closed = true.
 Proof. vm_compute. reflexivity. Qed.
+
+(** THE EDGE AT [0x1101c], as a state fact rather than as a filter.
+
+    [bltz a0] branches to [0x1105c] exactly when a0 is negative as a
+    SIGNED word.  At [Run.forced_only_cfg] the clone cannot have returned
+    an errno -- [Run.injected_table] puts clone in [FamFd] (Run.v:1383),
+    that environment has every family off, and [sstep_cfg]'s
+    spurious-refusal premise deletes those resolutions -- so a0 at
+    [0x1101c] is the pid the clone chose, or zero in the child.
+    [Fork.clone_pid_ok_b] bounds the pid strictly between 0 and 2^22, and
+    [ForkwaitSteps.fw_signed_small] makes a word below 2^63 its own signed
+    value, so a0 is not negative and the branch is not taken.
+
+    NOT YET DISCHARGED, and named rather than assumed: the shapes do not
+    carry a0 at [0x1101c], so the fact is not available to the per-arm
+    assembly.  Pinning it there is the fix -- narrowing, not widening --
+    and it is reported before the shapes change. *)
+Definition fw_bltz_not_taken (e : ProcessEntry) : Prop :=
+  (0 <= bv_signed (ms_gpr (pe_ms e) 0))%Z.
