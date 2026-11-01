@@ -627,6 +627,17 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true ->
     wait4_blocking_args (pe_ms e) = Some stat_addr ->
     look P q = Some ez ->
+    (* THE REAPED CHILD IS NOT THE REAPING PARENT.  Without this the arm
+       can, on a malformed configuration, drop the entry it is also
+       replacing: that needs [pe_parent e = Some (pe_pid e)], a process
+       that is its own parent, which [pconfig_wf] excludes -- but
+       [pconfig_wf] is not a premise here, and every other condition of
+       this relation is in the arm rather than in an invariant.  It
+       reaches no statement: [pinit_config] gives [pconfig_wf] and no arm
+       breaks it, so the excluded case is unreachable from any start state
+       a statement quantifies over.  (Found by trying to prove that the
+       entry count decides which arm fired, 2026-11-01.) *)
+    q <> pe_pid e ->
     pe_parent ez = Some (pe_pid e) ->
     m_killed (pe_model ez) = None ->
     pe_status dumped ez = Some status ->

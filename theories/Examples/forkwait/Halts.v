@@ -514,3 +514,62 @@ Qed.
     development puts such conditions in the arm -- the surface guard, the
     clone's pid freshness, the reap's own [m_killed] premise -- so the
     first is what I would take, and it is reported before it is made. *)
+
+(** Dropping an entry that survives a replacement at a DIFFERENT key
+    shortens the table.  Stated without naming the replacement, so that a
+    use can let unification take it from the goal: the reap arm builds its
+    replacement inline, and every attempt to name that term picked the
+    wrong one. *)
+Lemma drop_replace_length_lt : forall ps p q e' ez,
+  bv_eqb p q = false ->
+  look_in ps q = Some ez ->
+  (List.length (drop_in (replace_in ps p e') q) < List.length ps)%nat.
+Proof.
+  intros ps p q e' ez Hne Hl.
+  pose proof (drop_in_procs_length_lt (replace_in ps p e') q ez) as Hlt.
+  rewrite look_in_replace_other in Hlt by exact Hne.
+  specialize (Hlt Hl). rewrite replace_in_length in Hlt. exact Hlt.
+Qed.
+
+(** THE LENGTH DECIDES WHICH ARM FIRED, now that the reap arm carries
+    [q <> pe_pid e].  No two producing arms change the table's length the
+    same way, so counting the successor is a decision procedure for the
+    arm -- which is what makes a preservation proof a case analysis on
+    three arms rather than on eight shapes times three.
+
+    The reap case needed the new premise and nothing else: with it,
+    [look_in_replace_other] carries the reaped entry's lookup through the
+    parent's replacement, and [drop_in_procs_length_lt] then shortens the
+    table. *)
+Lemma pstep_length_cases : forall segs cfg p P evs P',
+  pstep_at segs cfg p P evs (PNext P') ->
+  List.length (pcfg_procs P') = List.length (pcfg_procs P)
+  \/ List.length (pcfg_procs P') = S (List.length (pcfg_procs P))
+  \/ (List.length (pcfg_procs P') < List.length (pcfg_procs P))%nat.
+Proof.
+  intros segs cfg p P evs P' Hp.
+  (* FIVE branches, not three: [pstep_at] has the two error arms as well,
+     and a disjunctive pattern must cover every constructor even where the
+     conclusion rules most of them out.  Named rather than matched,
+     because the reap arm has thirteen premises and an Ltac pattern over
+     them is how the first attempt failed. *)
+  inversion Hp as
+    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Heq1 Heq2 Heq3
+    | P2 e2 evs2 c2 q2 Hl2 Hs2 Hc2 Hcp2 Hfr2 Hm2 Heq4 Heq5 Heq6
+    | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
+      Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
+      Heq7 Heq8 Heq9
+    | P4 e4 evs4 Hl4 Hs4 Hw4 Heq10 Heq11 Heq12
+    | P5 e5 Hl5 Hh5 Hm5 Heq13 Heq14 Heq15 ]; subst.
+  - left. apply absorb_procs_length.
+  - right; left. apply clone_result_procs_length.
+  - right; right. cbn [pcfg_procs].
+    (* [drop_replace_length_lt] does not mention the replacement entry, so
+       unification takes it from the GOAL.  Naming it, and quantifying
+       over it and instantiating, both picked the wrong term: the arm
+       builds its entry inline and it is not [pe_absorb e3 _]. *)
+    apply (drop_replace_length_lt _ _ _ _ ez3).
+    + destruct (bv_eqb (pe_pid e3) q3) eqn:Hb; [| reflexivity ].
+      apply bv_eqb_true_eq in Hb. congruence.
+    + exact Hlq3.
+Qed.
