@@ -21,6 +21,7 @@
     decide), or declines. *)
 
 From Stdlib Require Import ZArith List Bool.
+From Stdlib Require Import NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext.
 Import ListNotations.
@@ -35,8 +36,73 @@ Definition released : NsArm := fun i m ctx st o =>
   | EUnmodeled => syscall_spec i m Unmodeled
   end.
 
+(* =========================================================================
+   What arms share
+   ========================================================================= *)
+
+(** An answer that sets the return register and changes nothing else. *)
+Definition ns_ret (r : word) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
+  EOk (mkEffect r [] []) m ctx st [].
+
+Definition ns_errno (e : Z) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
+  ns_ret (errno_ret e) m ctx st.
+
+Fixpoint lookup_file (fs : list (N * NsFile)) (h : N) : option NsFile :=
+  match fs with
+  | [] => None
+  | (k, f) :: r => if N.eqb k h then Some f else lookup_file r h
+  end.
+
+(** The open file of the namespace model that descriptor [fd] names, with
+    its handle; [None] for a descriptor of another kind or no descriptor. *)
+Definition ns_file_of (m : Model) (st : NsState) (fd : word) : option (N * NsFile) :=
+  match fd_lookup (m_fds m) fd with
+  | Some (FdOpaque (ONsFile h)) => option_map (fun f => (h, f)) (lookup_file (ns_files st) h)
+  | _ => None
+  end.
+
+(** A handle no open file has. *)
+Definition fresh_handle (st : NsState) : N :=
+  N.succ (fold_left N.max (map fst (ns_files st)) 0%N).
+
+(** The task's pid in a pid namespace, and in its own. *)
+Fixpoint pid_in (ps : list (positive * Z)) (n : positive) : option Z :=
+  match ps with
+  | [] => None
+  | (k, p) :: r => if Pos.eqb k n then Some p else pid_in r n
+  end.
+
+Definition task_pid (ctx : NsCtx) : option Z := pid_in (cx_pids ctx) (cx_pidns ctx).
+
+Definition with_umask (ctx : NsCtx) (u : Z) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
+          (cx_cwd ctx) u (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
+          (cx_no_new_privs ctx) (cx_pdeathsig ctx) (cx_dumpable ctx).
+
+(* =========================================================================
+   Arms on the task's own state
+   ========================================================================= *)
+
+(** [umask] (166): [SYSCALL_DEFINE1(umask)], kernel/sys.c: the mask's
+    permission bits are stored and the old mask returned.  Kind: exact. *)
+Definition umask_arm : NsArm := fun i m ctx st o =>
+  o = ns_ret (Z_to_bv 64 (cx_umask ctx)) m
+             (with_umask ctx (Z.land (bv_unsigned (in_arg i 0)) 511)) st.
+
+(** [getpid] (172) and [gettid] (178): [task_tgid_vnr] and
+    [task_pid_vnr] (kernel/sys.c), the pid in the task's active pid
+    namespace; one thread per process, so both are the same.  Kind: exact;
+    a task with no pid in its own namespace is not one the model holds,
+    and declines. *)
+Definition getpid_arm : NsArm := fun i m ctx st o =>
+  match task_pid ctx with
+  | Some p => o = ns_ret (Z_to_bv 64 p) m ctx st
+  | None => o = EUnmodeled
+  end.
+
 (** The arms, by call number.  A number not listed fails closed. *)
-Definition ns_table : list (Z * NsArm) := [].
+Definition ns_table : list (Z * NsArm) :=
+  [(166%Z, umask_arm); (172%Z, getpid_arm); (178%Z, getpid_arm)].
 
 Fixpoint lookup_ns_arm (t : list (Z * NsArm)) (n : Z) : option NsArm :=
   match t with

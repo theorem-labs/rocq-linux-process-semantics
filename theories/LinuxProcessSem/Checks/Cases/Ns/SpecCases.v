@@ -35,4 +35,29 @@ Example mounted_not_flat : flat_view one_mount = false := eq_refl.
 
 Example unlisted_fails_closed : forall m ctx o,
   ns_spec (call 9999) m ctx one_mount o <-> o = EUnmodeled.
-Proof. intros m ctx o. unfold ns_spec. cbn. reflexivity. Qed.
+Proof. intros m ctx o. vm_compute. tauto. Qed.
+
+(** A task with pid 2 in its pid namespace 1 and umask 022. *)
+Definition task (pid : Z) (umask : Z) : NsCtx :=
+  mkNsCtx 1 1 1 1 [(1%positive, pid)] (1%positive, 1%positive) (1%positive, 1%positive) umask
+          (mkCaps 0 0 0 0 0) 0 [] false 0 1.
+
+Example getpid_own_pid : forall m,
+  ns_spec (call 172) m (task 2 18) one_mount (ns_ret (Z_to_bv 64 2) m (task 2 18) one_mount).
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+Example gettid_own_pid : forall m,
+  ns_spec (call 178) m (task 2 18) one_mount (ns_ret (Z_to_bv 64 2) m (task 2 18) one_mount).
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** [umask (0777 | 01000)]: the old mask back, the permission bits kept. *)
+Definition call1 (n a : word) : SyscallInput := mkInput n [a] (fun _ => None) (fun _ => None).
+
+Example umask_swaps : forall m,
+  ns_spec (call1 166 1023) m (task 2 18) one_mount (ns_ret (Z_to_bv 64 18) m (task 2 511) one_mount).
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** In the released world the same calls are the released model's. *)
+Example getpid_flat_is_released : forall m ctx o,
+  ns_spec (call 172) m ctx empty_nsstate o <-> released (call 172) m ctx empty_nsstate o.
+Proof. intros m ctx o. apply ns_spec_flat. reflexivity. Qed.
