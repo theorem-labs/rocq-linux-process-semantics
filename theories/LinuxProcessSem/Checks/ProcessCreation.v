@@ -903,7 +903,8 @@ Qed.
     read the parent-death signal, write the mm's dumpable flag and write
     the no-new-privs bit, and nothing else; [PR_GET_PDEATHSIG]'s one store
     is a [put_user] of an [int] through riscv's ordinary [access_ok]
-    (kernel/sys.c, [SYSCALL_DEFINE5(prctl)], read at v6.18.44).  None of
+    (kernel/sys.c, [SYSCALL_DEFINE5(prctl)], read at v6.18.44, identical
+    at v6.18.46).  None of
     them is a caller of [set_tagged_addr_ctrl], whose only callers at that
     tag are option 55's [SET_TAGGED_ADDR_CTRL] and riscv's ptrace
     regset, so [PMLEN] stays 0 and [State.access_okb] stays exact. *)
