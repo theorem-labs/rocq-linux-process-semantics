@@ -1141,6 +1141,7 @@ Lemma srz_mprotect2 : forall regs (pc : word) mem rom model w (addr : word) (len
   (bv_unsigned addr + page_round_up_Z len < two_pow_64)%Z ->
   getr regs 12 = Z_to_bv 64 3 ->
   let n := Z_to_bv 64 (page_round_up_Z len) in
+  region_free (vdso_reserved (m_kernel model) (vdso_top (m_vmmaps model))) addr n = true ->
   map_contains (vm_noaccess (m_vmmaps model)) addr n = true ->
   map_contains (vm_maps (m_vmmaps model)) addr n = true ->
   mprotect_budget_ok model addr n = true ->
@@ -1149,14 +1150,15 @@ Lemma srz_mprotect2 : forall regs (pc : word) mem rom model w (addr : word) (len
                        (mprotect_model addr n model)) KB ->
   srealizes segs (mkCfg (mkst regs pc mem rom) model) (t_alt2 KA KB).
 Proof.
-  intros regs pc mem rom model w addr len KA KB HF HE Hh H17 H10 Hal H11 Hlen Hnw H12 n Hna Hma Hbud HA HB.
+  intros regs pc mem rom model w addr len KA KB HF HE Hh H17 H10 Hal H11 Hlen Hnw H12 n Hvd Hna Hma
+    Hbud HA HB.
   eapply srz_sys_lazy; [exact Hh | exact HF | exact HE |].
   set (ms := epend regs pc mem rom (getr regs 17)).
   assert (Hno : bv_unsigned (getr regs 17) = 226%Z) by (rewrite H17; apply u64_lit; lia).
   pose proof (fun eff => mprotect_check segs ms (getr regs 17) model eff addr len Hno
                            ltac:(unfold ms; rewrite ms_gpr_epend0; exact H10) Hal
                            ltac:(unfold ms; rewrite ms_gpr_epend1; exact H11) Hlen Hnw
-                           ltac:(unfold ms; rewrite ms_gpr_epend2; exact H12) Hna Hma) as Hchk.
+                           ltac:(unfold ms; rewrite ms_gpr_epend2; exact H12) Hvd Hna Hma) as Hchk.
   cbv zeta in Hchk. fold n in Hchk. rewrite Hbud in Hchk.
   pose (effs := fun i : unit + unit => match i with
                            | inl _ => mkEffectU (errno_ret ENOMEM) [] [] [] [] []

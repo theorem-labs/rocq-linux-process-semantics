@@ -506,6 +506,10 @@ Lemma check_syscall_226 : forall ms x8 eff m,
   = check_mprotect (ms_gpr ms 0) (ms_gpr ms 1) (ms_gpr ms 2) eff m.
 Proof. intros ms x8 eff m Hno. unfold check_syscall. rewrite in_sysno_si, Hno. reflexivity. Qed.
 
+(** The range must be apart from the vdso/vvar pair: a request that
+    meets it is answered [CheckUnmodeled] whatever the effect, because
+    the vDSO text carries [VM_MAYWRITE] and the model has no term for a
+    vDSO whose bytes changed ([Checks.Sys.Mm.Mprotect.check_mprotect]). *)
 Lemma mprotect_check : forall ms x8 model eff (addr : word) (len : Z),
   bv_unsigned x8 = 226%Z ->
   ms_gpr ms 0 = addr -> (bv_unsigned addr mod page_size = 0)%Z ->
@@ -513,6 +517,7 @@ Lemma mprotect_check : forall ms x8 model eff (addr : word) (len : Z),
   (bv_unsigned addr + page_round_up_Z len < two_pow_64)%Z ->
   ms_gpr ms 2 = Z_to_bv 64 3 ->
   let n := Z_to_bv 64 (page_round_up_Z len) in
+  region_free (vdso_reserved (m_kernel model) (vdso_top (m_vmmaps model))) addr n = true ->
   map_contains (vm_noaccess (m_vmmaps model)) addr n = true ->
   map_contains (vm_maps (m_vmmaps model)) addr n = true ->
   check_syscall (sys_input segs ms x8) eff model
@@ -526,7 +531,7 @@ Lemma mprotect_check : forall ms x8 model eff (addr : word) (len : Z),
     | _ => CheckReject
     end.
 Proof.
-  intros ms x8 model eff addr len Hno H0 Hal H1 Hlen Hnw H2 n Hna Hma.
+  intros ms x8 model eff addr len Hno H0 Hal H1 Hlen Hnw H2 n Hvd Hna Hma.
   assert (Hlen' : (len < two_pow_64)%Z).
   { pose proof (page_round_up_Z_bounds len ltac:(lia)). pose proof (u64_range addr). lia. }
   assert (Hu1 : bv_unsigned (ms_gpr ms 1) = len) by (rewrite H1; apply u64_lit; unfold two_pow_64 in Hlen'; lia).
@@ -538,7 +543,7 @@ Proof.
   assert (E1 : w_is0 (ms_gpr ms 1) = false).
   { unfold w_is0, bv_eqb. rewrite Hu1. change (bv_unsigned (Z_to_bv 64 0)) with 0%Z. apply Z.eqb_neq. lia. }
   rewrite E1. rewrite (proj2 (Z.leb_gt _ _)) by lia.
-  cbv beta iota zeta. fold n. rewrite Hna, Hma. cbn [andb].
+  cbv beta iota zeta. fold n. rewrite Hvd. cbn [negb]. rewrite Hna, Hma. cbn [andb].
   destruct eff as [r ws zs us cs ci]. destruct ws; [|reflexivity].
   destruct us; [| destruct (errno_ret_in mprotect_errnos r); reflexivity].
   destruct cs; [| destruct (errno_ret_in mprotect_errnos r); reflexivity].

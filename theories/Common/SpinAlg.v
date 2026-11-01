@@ -703,10 +703,10 @@ Theorem spin_shape_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb (rrnd : EntryDraw) (rlim : Z)
          target_segs apc aph asp abrk amb (arnd : EntryDraw) (alim : Z)
          (T : TSet) (inp : ProcInput),
-  srealizes source_segs
-    (init_config source_segs rpc rph rsp rbrk rmb rrnd rlim inp) T ->
-  srealizes target_segs
-    (init_config target_segs apc aph asp abrk amb arnd alim inp) T ->
+  srealizes (run_segments source_segs inp rsp rmb)
+    (init_config (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd rlim inp) T ->
+  srealizes (run_segments target_segs inp asp amb)
+    (init_config (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd alim inp) T ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
                        (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).
@@ -718,8 +718,8 @@ Proof.
     eapply srealizes_no_error; exact Hsource. }
   right. split.
   - intro tr. cbn.
-    rewrite (srealizes_obs_iff source_segs _ T Hsource tr).
-    rewrite (srealizes_obs_iff target_segs _ T Htarget tr).
+    rewrite (srealizes_obs_iff (run_segments source_segs inp rsp rmb) _ T Hsource tr).
+    rewrite (srealizes_obs_iff (run_segments target_segs inp asp amb) _ T Htarget tr).
     reflexivity.
   - cbn. eapply srealizes_no_error; exact Htarget.
 Qed.

@@ -164,8 +164,10 @@ Lemma fault_not_unmodeled : forall c,
   RiscvSemantics.step segs (cfg_ms c) = MachineFault ->
   ~ unmodeled_at segs c.
 Proof.
-  intros [ms model] Hsvc Hlazy Hf (_ & [(_ & Hum) | (x8 & Hsvc' & _)]); cbn in *;
-    [rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hf in Hum|];
+  intros [ms model] Hsvc Hlazy Hf
+    (_ & [(_ & Hum & _) | [(_ & Hum & _) | (x8 & Hsvc' & _)]]); cbn in *;
+    [ rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hf in Hum
+    | rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hf in Hum |];
     congruence.
 Qed.
 

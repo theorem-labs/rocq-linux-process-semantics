@@ -945,8 +945,10 @@ Proof.
   apply coexec_step; [reflexivity | |].
   - intros evs _ (_ & [(_ & Hun & _) | [(_ & Hun & _) | (x8 & Hsvc & _)]]);
       cbn [cfg_ms cfg_model] in *.
-    + no_lazy_in Hun. rewrite ebreak_faults in Hun. discriminate Hun.
-    + no_lazy_in Hun. rewrite ebreak_faults in Hun. discriminate Hun.
+    + no_lazy_in Hun. change (RiscvSemantics.step ebreak_rsegs ebreak_ms = MachineUnmodeled) in Hun.
+      rewrite ebreak_faults in Hun. discriminate Hun.
+    + no_lazy_in Hun. change (RiscvSemantics.step ebreak_rsegs ebreak_ms = MachineUnmodeled) in Hun.
+      rewrite ebreak_faults in Hun. discriminate Hun.
     + vm_compute in Hsvc. discriminate Hsvc.
   - intros evs c' Hss. destruct (ebreak_only _ _ _ Hss) as (_ & Habs). discriminate Habs.
 Qed.
