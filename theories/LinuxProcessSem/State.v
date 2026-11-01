@@ -6943,37 +6943,6 @@ Lemma m_kernel_with_clock : forall v m, m_kernel (with_clock v m) = m_kernel m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_clock : model.
 
-(** THE CHAIN THIS REPLACED, kept only so that the claim above — that
-    the flattening changes the term's shape and not its meaning — is a
-    THEOREM rather than a sentence.  Nothing else reads it.  A field
-    added to one form and not the other fails the build here, which is
-    the point of keeping it.
-
-    [with_kernel] is the seventh link, and it is why the chain's cost
-    is worth recording: the six-link form was already at the edge. *)
-Definition init_model_setter_chain (reserved : list (word * word))
-    (brk0 mbase sp : word) (lim : Z) (inp : ProcInput) : Model :=
-  with_abort_terminal (in_abort_terminal inp)
-  (with_sigmask (in_sigmask inp)
-  (with_nofile (in_nofile inp)
-   (with_net (in_net inp)
-   (with_urandom (in_urandom inp)
-   (with_kernel (in_kernel inp)
-   (with_creds
-    (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
-             (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
-    (mkModel
-       [ (Z_to_bv 64 0, FdChannel (Z_to_bv 64 0));
-         (Z_to_bv 64 1, FdChannel (Z_to_bv 64 1));
-         (Z_to_bv 64 2, FdChannel (Z_to_bv 64 2)) ]
-       (mkVmMapsFull (init_reserved reserved mbase sp (in_kernel inp))
-          [] [] brk0 brk0 lim mbase sp)
-       (in_stdin inp)
-       (in_fs inp)
-       None
-       None
-       None))))))).
-
 Lemma init_model_is_the_setter_chain :
   forall reserved brk0 mbase sp lim inp,
     init_model reserved brk0 mbase sp lim inp
