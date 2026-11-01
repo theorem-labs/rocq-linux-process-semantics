@@ -161,11 +161,25 @@ Definition fw_one_halted (P : pconfig) (code : Z) : Prop :=
     running at a pc, with its [exit_group] pending, or a zombie holding
     status 7.  That disjunction is what makes the two-entry stretch a
     finite set of shapes rather than one shape with a hole in it. *)
+(** [a0] AT THE BRANCH COUNTERS, which the two branches read and which the
+    shapes previously did not carry.  Without it [fw_bltz_not_taken] has
+    nothing to follow from, and the edge to the errno tail would have to
+    be excluded by hand -- which is how the closure check came to swallow
+    it.  In the child a0 is zero; in the parent it is the pid the clone
+    chose, which [Fork.clone_pid_ok_b] bounds strictly between 0 and
+    2^22.  Both are facts the state really has, so this is narrowing. *)
+Definition fw_a0_child (ec : ProcessEntry) : Prop :=
+  ms_gpr (pe_ms ec) 0 = Z_to_bv 64 0.
+
+Definition fw_a0_parent (ep : ProcessEntry) : Prop :=
+  (0 < bv_unsigned (ms_gpr (pe_ms ep) 0))%Z
+  /\ (bv_unsigned (ms_gpr (pe_ms ep) 0) < 2 ^ 22)%Z.
+
 Definition fw_child (ec : ProcessEntry) : Prop :=
   (m_halted (pe_model ec) = None
    /\ ms_svc_pending (pe_ms ec) = None
-   /\ (bv_unsigned (ms_pc_val (pe_ms ec)) = 0x1101c%Z
-       \/ bv_unsigned (ms_pc_val (pe_ms ec)) = 0x11020%Z
+   /\ ((bv_unsigned (ms_pc_val (pe_ms ec)) = 0x1101c%Z /\ fw_a0_child ec)
+       \/ (bv_unsigned (ms_pc_val (pe_ms ec)) = 0x11020%Z /\ fw_a0_child ec)
        \/ bv_unsigned (ms_pc_val (pe_ms ec)) = 0x11050%Z
        \/ bv_unsigned (ms_pc_val (pe_ms ec)) = 0x11054%Z))
   \/ (exists x8, m_halted (pe_model ec) = None
@@ -176,11 +190,15 @@ Definition fw_child (ec : ProcessEntry) : Prop :=
       /\ m_killed (pe_model ec) = None).
 
 (** The parent while two entries are live: on its way to the [wait4], or
-    blocked at it. *)
+    blocked at it.  At the two branch counters it carries a0 as well, for
+    the same reason the child does. *)
 Definition fw_parent (ep : ProcessEntry) : Prop :=
   m_halted (pe_model ep) = None
   /\ ((ms_svc_pending (pe_ms ep) = None
-       /\ (0x1101c%Z <= bv_unsigned (ms_pc_val (pe_ms ep)) <= 0x11038%Z)%Z)
+       /\ (0x1101c%Z <= bv_unsigned (ms_pc_val (pe_ms ep)) <= 0x11038%Z)%Z
+       /\ ((bv_unsigned (ms_pc_val (pe_ms ep)) = 0x1101c%Z
+            \/ bv_unsigned (ms_pc_val (pe_ms ep)) = 0x11020%Z)
+           -> fw_a0_parent ep))
       \/ (exists x8, ms_svc_pending (pe_ms ep) = Some x8
                      /\ bv_unsigned x8 = 260%Z
                      /\ bv_unsigned (ms_pc_val (pe_ms ep)) = 0x1103c%Z)).
@@ -774,3 +792,43 @@ Proof. vm_compute. reflexivity. Qed.
     and it is reported before the shapes change. *)
 Definition fw_bltz_not_taken (e : ProcessEntry) : Prop :=
   (0 <= bv_signed (ms_gpr (pe_ms e) 0))%Z.
+
+(** AND NOW THE EDGE FOLLOWS FROM THE SHAPE, which is what pinning a0 was
+    for.  In the child a0 is zero, whose signed reading is zero; in the
+    parent it is a pid under 2^22, far below 2^63, so
+    [ForkwaitSteps.fw_signed_small] makes its signed reading its unsigned
+    one.  Neither is negative, so [bltz] is not taken and the edge to the
+    errno tail is excluded by a FACT ABOUT THE STATE rather than by a
+    filter in a computation. *)
+(** The two signed facts, proved here rather than imported.  The segment
+    file has them as [fw_signed_zero] and [fw_signed_small], but it is not
+    on the one-file checker's load path -- the labelled image installs the
+    core package only -- so this file carries its own copies to stay
+    checkable.  Three lines each. *)
+Lemma fw_signed_of_zero : bv_signed (Z_to_bv 64 0) = 0%Z.
+Proof. vm_compute. reflexivity. Qed.
+
+Lemma fw_signed_of_small : forall x : word,
+  (bv_unsigned x < 2 ^ 63)%Z -> bv_signed x = bv_unsigned x.
+Proof.
+  intros x Hx. pose proof (bv_unsigned_in_range 64 x) as Hr.
+  (* unfolded rather than by a named lemma: [bv_signed_unsigned] does not
+     exist, and this is how the segment file proves the same fact *)
+  unfold bv_signed, bv_swrap, bv_wrap, bv_half_modulus, bv_modulus in *.
+  cbn in *. rewrite Z.mod_small; lia.
+Qed.
+
+Lemma fw_bltz_not_taken_child : forall ec,
+  fw_a0_child ec -> fw_bltz_not_taken ec.
+Proof.
+  intros ec H. unfold fw_bltz_not_taken, fw_a0_child in *.
+  rewrite H, fw_signed_of_zero. apply Z.le_refl.
+Qed.
+
+Lemma fw_bltz_not_taken_parent : forall ep,
+  fw_a0_parent ep -> fw_bltz_not_taken ep.
+Proof.
+  intros ep [Hlo Hhi]. unfold fw_bltz_not_taken.
+  rewrite fw_signed_of_small; [lia|].
+  eapply Z.lt_trans; [exact Hhi | vm_compute; reflexivity].
+Qed.
