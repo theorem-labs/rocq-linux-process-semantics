@@ -272,3 +272,62 @@ Qed.
     [Procs.pstep_single_next] and [Procs.pstep_single_err] under a
     reachability hypothesis this file does not yet define.  Written down
     unproved and clearly marked, rather than claimed. *)
+
+(* =========================================================================
+   Non-interference: what one entry's step leaves alone
+   ========================================================================= *)
+
+(** THE FOUNDATION OF THE TWO-ENTRY ARGUMENT.  After the clone there are two
+    live entries, and the reason their interleaving does not explode is that
+    a step of one leaves the other's entry untouched.  Everything else in
+    that argument -- the measure, the commutation -- rests on these three
+    lemmas, which are about the table alone and need no invariant: replacing
+    or dropping the entry at one key leaves every other key's lookup exactly
+    as it was.
+
+    Note what is NOT needed: key uniqueness.  [drop_in] removes the first
+    entry at its key, and a lookup at a different key cannot be affected by
+    that whether or not the table repeats a key.  Uniqueness is in
+    [Procs.pconfig_wf] for other reasons, and this argument does not spend
+    it. *)
+
+Lemma look_in_replace_other : forall ps p q e',
+  bv_eqb p q = false ->
+  look_in (replace_in ps p e') q = look_in ps q.
+Proof.
+  induction ps as [|kv r IH]; intros p q e' Hne; cbn; [reflexivity|].
+  destruct (bv_eqb (fst kv) p) eqn:H1; cbn.
+  - apply bv_eqb_true_eq in H1. subst p. rewrite Hne. reflexivity.
+  - destruct (bv_eqb (fst kv) q); [reflexivity | apply IH; exact Hne].
+Qed.
+
+Lemma look_in_drop_other : forall ps p q,
+  bv_eqb p q = false ->
+  look_in (drop_in ps p) q = look_in ps q.
+Proof.
+  induction ps as [|kv r IH]; intros p q Hne; cbn; [reflexivity|].
+  destruct (bv_eqb (fst kv) p) eqn:H1; cbn.
+  - apply bv_eqb_true_eq in H1. subst p. rewrite Hne. reflexivity.
+  - destruct (bv_eqb (fst kv) q); [reflexivity | apply IH; exact Hne].
+Qed.
+
+(** An ordinary step of one entry leaves every other entry's lookup alone.
+    [absorb] replaces exactly the stepping entry and rebuilds the shared
+    state; the table is untouched at every other key. *)
+Lemma look_absorb_other : forall P e c' q,
+  bv_eqb (pe_pid e) q = false ->
+  look (absorb P e c') q = look P q.
+Proof.
+  intros P e c' q Hne. unfold look, absorb. cbn.
+  apply look_in_replace_other. exact Hne.
+Qed.
+
+(** A clone leaves every entry but the parent and the new child alone: it
+    replaces the parent and appends, and an append is invisible to a lookup
+    that already succeeds. *)
+Lemma look_in_app_hit : forall ps ps' q e,
+  look_in ps q = Some e -> look_in (ps ++ ps') q = Some e.
+Proof.
+  induction ps as [|kv r IH]; intros ps' q e H; cbn in *; [discriminate|].
+  destruct (bv_eqb (fst kv) q); [exact H | apply IH; exact H].
+Qed.
