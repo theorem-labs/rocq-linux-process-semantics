@@ -25,27 +25,29 @@
     L4  [pstep_single_next]         at any step that is not a successful clone
     L5  [pstep_single_err]          and not an intercepted wait, the same.
     L6  [pstep_at_sub]              a step of one process is a core step.
-    L7  [pstep_at_stepped_by]       a step of process p is stepped by p: the
-                                    core does not let [pstep_at p] stand for
-                                    a step some other process took.
-    L8  [pstep_cfg_has_actor]       every core step is a step of some process.
-    L9  [lineage_pick_one]          a one-process system's lineage is its one
+    L7  [pstep_cfg_has_actor]       every core step is a step of some process.
+    L8  [lineage_pick_one]          a one-process system's lineage is its one
                                     process, [one_pid].
-    L10 [pstep_at_one]              in a one-process system, a step of
+    L9  [pstep_at_one]              in a one-process system, a step of
                                     [one_pid] is any core step.
-    L11 [pstep_clone]               a successful clone with a free child pid
-                                    is a core step to [clone_result].
-    L12 [child_projection_of_clone] a step that adds an entry yields that
+    L10 [pstep_clone_law]           a successful clone with a free child pid,
+                                    where the core allows the call, is a core
+                                    step to [clone_result].
+    L11 [child_projection_of_clone] a step that adds an entry yields that
                                     entry, with a0 = 0, and the successor's
                                     shared state.
-    L13 [lineage_pick_clone]        when the lineage process clones, the new
+    L12 [lineage_pick_clone]        when the lineage process clones, the new
                                     child becomes the lineage.
-    L14 [pni_unfold]                [parents_noninterfering] is its own
-                                    unfolding: the cut is reached, or every
-                                    step keeps the focused process's view (up
-                                    to the exchange objects) whenever a
-                                    process outside the focus's subtree took
-                                    it, and the predicate holds again after. *)
+
+    [pstep_at] is indexed by the process that steps, so a step of [p] is a
+    step [p] took; the layer reads "who stepped" from that index alone.
+
+    Numbering before 2026-11-01 (old -> now): L1-L6 unchanged; L7
+    [pstep_at_stepped_by] removed, the index says who stepped; L8 -> L7;
+    L9 -> L8; L10 -> L9; L11 [pstep_clone] -> L10 [pstep_clone_law], with
+    the [multiproc_allowed] premise; L12 -> L11; L13 -> L12; L14
+    [pni_unfold] -> a lemma of [Ns.Step], which now defines
+    [descendant_or_self] and [parents_noninterfering]. *)
 
 From Stdlib Require Import List PArith.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables.
@@ -92,23 +94,20 @@ Module Type PROCS_CORE.
   Parameter pe_cfg : shared -> ProcessEntry -> config.
   Parameter one_pid : Pid.
   Parameter one_proc : config -> pconfig.
+  (** The core takes the call in a system of several processes; a clone it
+      does not take there is no step of [pstep_clone_law]'s kind. *)
+  Parameter multiproc_allowed : pconfig -> config -> bool.
 
   Parameter pstep_to : Type.
   Parameter PNext : pconfig -> pstep_to.
   Parameter PError : pstep_to.
   Parameter pstep_cfg : StepCtx -> pconfig -> list event -> pstep_to -> Prop.
   Parameter pstep_at : StepCtx -> Pid -> pconfig -> list event -> pstep_to -> Prop.
-  Parameter stepped_by : pconfig -> list event -> pstep_to -> Pid -> Prop.
   Parameter lineage_pick : pconfig -> Pid -> Prop.
   Parameter clone_result : pconfig -> ProcessEntry -> config -> Pid -> pconfig.
   Parameter child_projection : pconfig -> pconfig -> option (ProcessEntry * shared).
   (** The entry's a0 register is zero: how a clone's child sees the call. *)
   Parameter entry_a0_zero : ProcessEntry -> Prop.
-  Parameter descendant_or_self : pconfig -> Pid -> Pid -> Prop.
-  Parameter cut_reached : Pid -> pconfig -> Prop.
-  Parameter parents_noninterfering :
-    forall (RV : Type), (pconfig -> Pid -> RV) -> (list OfdId -> RV -> RV -> Prop) ->
-      (pconfig -> Pid -> list OfdId) -> StepCtx -> Pid -> pconfig -> Prop.
 
   (* ---- The laws ---- *)
 
@@ -140,49 +139,37 @@ Module Type PROCS_CORE.
     pstep_at ctx p P evs r -> pstep_cfg ctx P evs r.
 
   (** L7 *)
-  Parameter pstep_at_stepped_by : forall ctx p P evs r,
-    pstep_at ctx p P evs r -> stepped_by P evs r p.
-
-  (** L8 *)
   Parameter pstep_cfg_has_actor : forall ctx P evs r,
     pstep_cfg ctx P evs r -> exists p, pstep_at ctx p P evs r.
 
-  (** L9 *)
+  (** L8 *)
   Parameter lineage_pick_one : forall c p, lineage_pick (one_proc c) p <-> p = one_pid.
 
-  (** L10 *)
+  (** L9 *)
   Parameter pstep_at_one : forall ctx c evs r,
     pstep_at ctx one_pid (one_proc c) evs r <-> pstep_cfg ctx (one_proc c) evs r.
 
-  (** L11 *)
-  Parameter pstep_clone : forall ctx P e evs c' q,
+  (** L10 *)
+  Parameter pstep_clone_law : forall ctx P e evs c' q,
     look P (pe_pid e) = Some e ->
     sstep_cfg ctx (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
     clone_success (pe_cfg (pcfg_shared P) e) c' = true ->
     child_pid c' q ->
     look P q = None ->
+    multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
     pstep_cfg ctx P evs (PNext (clone_result P e c' q)).
 
-  (** L12 *)
+  (** L11 *)
   Parameter child_projection_of_clone : forall ctx P evs P',
     pstep_cfg ctx P evs (PNext P') ->
     length (pcfg_procs P') > length (pcfg_procs P) ->
     exists e sh, child_projection P P' = Some (e, sh) /\ entry_a0_zero e /\ sh = pcfg_shared P'.
 
-  (** L13 *)
+  (** L12 *)
   Parameter lineage_pick_clone : forall ctx P p evs P' e sh,
     lineage_pick P p ->
     pstep_at ctx p P evs (PNext P') ->
     child_projection P P' = Some (e, sh) ->
     lineage_pick P' (pe_pid e).
-
-  (** L14 *)
-  Parameter pni_unfold : forall RV rp eqm xs ctx f P,
-    parents_noninterfering RV rp eqm xs ctx f P
-    <-> cut_reached f P
-        \/ (forall evs P', pstep_cfg ctx P evs (PNext P') ->
-              (forall p, stepped_by P evs (PNext P') p -> ~ descendant_or_self P f p ->
-                         eqm (xs P f) (rp P' f) (rp P f))
-              /\ parents_noninterfering RV rp eqm xs ctx f P').
 
 End PROCS_CORE.

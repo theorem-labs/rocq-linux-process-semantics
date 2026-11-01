@@ -45,6 +45,7 @@ Module ToyCore <: PROCS_CORE.
   Definition pe_cfg (_ : shared) (_ : ProcessEntry) : config := tt.
   Definition one_pid : positive := 1%positive.
   Definition one_proc (_ : config) : pconfig := tt.
+  Definition multiproc_allowed (_ : pconfig) (_ : config) : bool := true.
 
   Definition pstep_to := option unit.
   Definition PNext (P : pconfig) : pstep_to := Some P.
@@ -52,16 +53,10 @@ Module ToyCore <: PROCS_CORE.
   Definition pstep_cfg (_ : StepCtx) (_ : pconfig) (_ : list event) (_ : pstep_to) : Prop := False.
   Definition pstep_at (_ : StepCtx) (_ : positive) (_ : pconfig) (_ : list event) (_ : pstep_to) : Prop :=
     False.
-  Definition stepped_by (_ : pconfig) (_ : list event) (_ : pstep_to) (_ : positive) : Prop := False.
   Definition lineage_pick (_ : pconfig) (p : positive) : Prop := p = 1%positive.
   Definition clone_result (P : pconfig) (_ : ProcessEntry) (_ : config) (_ : positive) : pconfig := P.
   Definition child_projection (_ _ : pconfig) : option (ProcessEntry * shared) := None.
   Definition entry_a0_zero (_ : ProcessEntry) : Prop := True.
-  Definition descendant_or_self (_ : pconfig) (_ _ : positive) : Prop := False.
-  Definition cut_reached (_ : positive) (_ : pconfig) : Prop := True.
-  Definition parents_noninterfering (RV : Type) (_ : pconfig -> positive -> RV)
-      (_ : list OfdId -> RV -> RV -> Prop) (_ : pconfig -> positive -> list OfdId)
-      (_ : StepCtx) (_ : positive) (_ : pconfig) : Prop := True.
 
   Lemma pstep_to_cases : forall r, (exists P, r = PNext P) \/ r = PError.
   Proof. intros [[]|]; [left; exists tt; reflexivity | right; reflexivity]. Qed.
@@ -95,9 +90,6 @@ Module ToyCore <: PROCS_CORE.
   Lemma pstep_at_sub : forall ctx p P evs r, pstep_at ctx p P evs r -> pstep_cfg ctx P evs r.
   Proof. intros ctx p P evs r H. destruct H. Qed.
 
-  Lemma pstep_at_stepped_by : forall ctx p P evs r, pstep_at ctx p P evs r -> stepped_by P evs r p.
-  Proof. intros ctx p P evs r H. destruct H. Qed.
-
   Lemma pstep_cfg_has_actor : forall ctx P evs r,
     pstep_cfg ctx P evs r -> exists p, pstep_at ctx p P evs r.
   Proof. intros ctx P evs r H. destruct H. Qed.
@@ -109,12 +101,13 @@ Module ToyCore <: PROCS_CORE.
     pstep_at ctx one_pid (one_proc c) evs r <-> pstep_cfg ctx (one_proc c) evs r.
   Proof. intros ctx c evs r. cbv [pstep_at pstep_cfg]. split; intros H; exact H. Qed.
 
-  Lemma pstep_clone : forall ctx P e evs c' q,
+  Lemma pstep_clone_law : forall ctx P e evs c' q,
     look P (pe_pid e) = Some e ->
     sstep_cfg ctx (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
     clone_success (pe_cfg (pcfg_shared P) e) c' = true ->
     child_pid c' q ->
     look P q = None ->
+    multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
     pstep_cfg ctx P evs (PNext (clone_result P e c' q)).
   Proof. intros ctx P e evs c' q _ H. destruct H. Qed.
 
@@ -130,18 +123,6 @@ Module ToyCore <: PROCS_CORE.
     child_projection P P' = Some (e, sh) ->
     lineage_pick P' (pe_pid e).
   Proof. intros ctx P p evs P' e sh _ H. destruct H. Qed.
-
-  Lemma pni_unfold : forall RV rp eqm xs ctx f P,
-    parents_noninterfering RV rp eqm xs ctx f P
-    <-> cut_reached f P
-        \/ (forall evs P', pstep_cfg ctx P evs (PNext P') ->
-              (forall p, stepped_by P evs (PNext P') p -> ~ descendant_or_self P f p ->
-                         eqm (xs P f) (rp P' f) (rp P f))
-              /\ parents_noninterfering RV rp eqm xs ctx f P').
-  Proof.
-    intros RV rp eqm xs ctx f P. cbv [parents_noninterfering cut_reached].
-    split; [intros _; left; exact I | intros _; exact I].
-  Qed.
 End ToyCore.
 
 Module ToyStep := NsStep ToyCore.
@@ -151,3 +132,4 @@ Check ToyStep.nstep_instr_iff_next.
 Check ToyStep.nstep_instr_iff_err.
 Check ToyStep.nstep_clone_moves_lineage.
 Check ToyStep.pni_parent_step_preserves_view.
+Check ToyStep.pni_after_step.

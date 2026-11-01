@@ -12,7 +12,11 @@
       ([nstep_clone_moves_lineage]);
     - while the parents are non-interfering, a step a process outside the
       focus's subtree takes leaves the focus's namespace view unchanged
-      ([pni_parent_step_preserves_view]). *)
+      ([pni_parent_step_preserves_view]), and the predicate holds again
+      after any step ([pni_after_step]).
+
+    [parents_noninterfering] and [descendant_or_self] are the layer's own,
+    defined from the core's step, process table and parent links. *)
 
 From Stdlib Require Import List PArith.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables ProcsIface.
@@ -68,6 +72,53 @@ Module NsStep (Import C : PROCS_CORE).
     exact (lineage_pick_clone ctx P p evs P' e sh Hl Ha Hc).
   Qed.
 
+  (** [q] is [f] or a descendant of [f]: parent links of [P] lead from [q]
+      to [f]. *)
+  Inductive descendant_or_self (P : pconfig) (f : Pid) : Pid -> Prop :=
+  | dos_self : descendant_or_self P f f
+  | dos_child : forall p q e,
+      descendant_or_self P f p -> look P q = Some e -> pe_parent e = Some p ->
+      descendant_or_self P f q.
+
+  (** The processes outside the subtree of the focus [f] do not change what
+      [f] reads, until [cut_at f] holds: after every step of the system, a
+      step taken by a process outside that subtree keeps the read projection
+      [rp] of [f] the same up to [eqm], which may ignore the exchange objects
+      [xs] names, and the predicate holds again.  Coinductive: a run that
+      never reaches the cut is held to it forever. *)
+  CoInductive parents_noninterfering (RV : Type) (rp : pconfig -> Pid -> RV)
+      (eqm : list OfdId -> RV -> RV -> Prop) (xs : pconfig -> Pid -> list OfdId)
+      (cut_at : Pid -> pconfig -> Prop) (ctx : StepCtx) (f : Pid) : pconfig -> Prop :=
+  | pni_cut : forall P, cut_at f P -> parents_noninterfering RV rp eqm xs cut_at ctx f P
+  | pni_steps : forall P,
+      (forall evs P' p, pstep_at ctx p P evs (PNext P') ->
+         (~ descendant_or_self P f p -> eqm (xs P f) (rp P' f) (rp P f))
+         /\ parents_noninterfering RV rp eqm xs cut_at ctx f P') ->
+      parents_noninterfering RV rp eqm xs cut_at ctx f P.
+
+  Lemma pni_unfold : forall RV rp eqm xs cut_at ctx f P,
+    parents_noninterfering RV rp eqm xs cut_at ctx f P
+    <-> cut_at f P
+        \/ (forall evs P' p, pstep_at ctx p P evs (PNext P') ->
+              (~ descendant_or_self P f p -> eqm (xs P f) (rp P' f) (rp P f))
+              /\ parents_noninterfering RV rp eqm xs cut_at ctx f P').
+  Proof.
+    intros RV rp eqm xs cut_at ctx f P. split.
+    - intros H. destruct H as [P0 Hc | P0 Hs]; [left; exact Hc | right; exact Hs].
+    - intros [Hc | Hs]; [apply pni_cut; exact Hc | apply pni_steps; exact Hs].
+  Qed.
+
+  Lemma pni_after_step : forall RV rp eqm xs cut_at ctx f P evs P' p,
+    parents_noninterfering RV rp eqm xs cut_at ctx f P -> ~ cut_at f P ->
+    pstep_at ctx p P evs (PNext P') ->
+    parents_noninterfering RV rp eqm xs cut_at ctx f P'.
+  Proof.
+    intros RV rp eqm xs cut_at ctx f P evs P' p Hpni Hcut Hs.
+    apply (proj1 (pni_unfold RV rp eqm xs cut_at ctx f P)) in Hpni.
+    destruct Hpni as [Hc | Hall]; [contradiction|].
+    exact (proj2 (Hall evs P' p Hs)).
+  Qed.
+
   (** The generic view of a focused process: its namespace context and the
       shared namespace state.  A consumer that needs a narrower view (only
       the objects the process can reach, less the exchange objects) passes
@@ -81,19 +132,17 @@ Module NsStep (Import C : PROCS_CORE).
 
   Definition ns_view_eq (_ : list OfdId) (a b : option (NsCtx * NsState)) : Prop := a = b.
 
-  Theorem pni_parent_step_preserves_view : forall xs ctx f P evs P' p,
-    parents_noninterfering (option (NsCtx * NsState)) ns_view ns_view_eq xs ctx f P ->
-    ~ cut_reached f P ->
-    pstep_cfg ctx P evs (PNext P') ->
-    stepped_by P evs (PNext P') p ->
+  Theorem pni_parent_step_preserves_view : forall xs cut_at ctx f P evs P' p,
+    parents_noninterfering (option (NsCtx * NsState)) ns_view ns_view_eq xs cut_at ctx f P ->
+    ~ cut_at f P ->
+    pstep_at ctx p P evs (PNext P') ->
     ~ descendant_or_self P f p ->
     ns_view P' f = ns_view P f.
   Proof.
-    intros xs ctx f P evs P' p Hpni Hcut Hs Hb Hd.
-    apply (proj1 (pni_unfold _ ns_view ns_view_eq xs ctx f P)) in Hpni.
+    intros xs cut_at ctx f P evs P' p Hpni Hcut Hs Hd.
+    apply (proj1 (pni_unfold _ ns_view ns_view_eq xs cut_at ctx f P)) in Hpni.
     destruct Hpni as [Hc | Hall]; [contradiction|].
-    destruct (Hall evs P' Hs) as [Hpres _].
-    exact (Hpres p Hb Hd).
+    exact (proj1 (Hall evs P' p Hs) Hd).
   Qed.
 
 End NsStep.
