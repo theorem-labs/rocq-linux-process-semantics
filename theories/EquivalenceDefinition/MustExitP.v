@@ -555,3 +555,57 @@ Proof.
   pose proof (msum_replace f (pcfg_procs P) (pe_pid e) e (pe_absorb e c') Hl).
   lia.
 Qed.
+
+(* =========================================================================
+   Glue: a machine step of one entry, and a deterministic chain
+   ========================================================================= *)
+
+(** CHAINING A DETERMINISTIC STEP.  Before the clone and after the reap
+    exactly one entry is live and its step is unique, so the whole of
+    [mepa_running]'s successor premise is "the successor is this one".
+    [must_exit_in_p_at_by_measure] is for the two-entry stretch, where the
+    successor is NOT unique; this is for the two ends, where it is, and it
+    keeps those stretches from paying for machinery they do not need. *)
+Lemma mepa_det_step : forall segs cfg S P P',
+  ~ terminal P ->
+  (exists evs st, pstep_cfg segs cfg P evs st) ->
+  (forall evs, ~ pstep_cfg segs cfg P evs PError) ->
+  (forall evs P2, pstep_cfg segs cfg P evs (PNext P2) -> P2 = P') ->
+  must_exit_in_p_at segs cfg S P' ->
+  must_exit_in_p_at segs cfg S P.
+Proof.
+  intros segs cfg S P P' Hterm Hprog Hnoerr Hdet Hnext.
+  apply mepa_running; try assumption.
+  intros evs P2 Hs. rewrite (Hdet evs P2 Hs). exact Hnext.
+Qed.
+
+(** AN ORDINARY INSTRUCTION STEP OF ONE ENTRY, built from the accounted
+    machine step.  This is the junction between the symbolic execution's
+    [machine_run] and this relation: each of its [k] steps is one of these,
+    and the three guards are all discharged by the same fact -- that no
+    system call is pending, so none of the three tests can fire. *)
+Lemma pstep_instr_entry : forall segs cfg P e ms' model',
+  look P (pe_pid e) = Some e ->
+  m_halted (pe_model e) = None ->
+  ms_svc_pending (pe_ms e) = None ->
+  mi_account_step segs (pe_ms e) (cfg_model (pe_cfg (pcfg_shared P) e))
+    = MachineOk (ms', model') ->
+  pstep_at segs cfg (pe_pid e) P [] (PNext (absorb P e (mkCfg ms' model'))).
+Proof.
+  intros segs cfg P e ms' model' Hl Hh Hs Hm.
+  apply pstep_other with (c' := mkCfg ms' model').
+  - exact Hl.
+  - apply sstep_cfg_instr; [exact Hh | exact Hs | exact Hm].
+  - unfold clone_success_b. cbn [cfg_ms pe_cfg]. rewrite Hs. reflexivity.
+  - unfold wait4_intercept_b. cbn [cfg_ms pe_cfg]. rewrite Hs. reflexivity.
+  - unfold multiproc_allowed. cbn [cfg_ms pe_cfg]. rewrite Hs. reflexivity.
+Qed.
+
+(** THE NO-LAZY FORM IS NOT STATED HERE, and the reason is a scope fact
+    worth recording.  [Run.mi_account_step_no_lazy] (Run.v:375-380) says
+    that with no lazy mapping the accounted step IS the machine step and
+    the model does not move, which is the form [machine_run] hands over.
+    But it says that through [mi_step], which is not in scope in this file,
+    so the bridge cannot be stated here at all.  It is one [rewrite] at the
+    call site, against [pstep_instr_entry] above, which takes the accounted
+    step directly. *)
