@@ -383,13 +383,14 @@ not apply.
   wait for room, are declined: on Linux such a call never returns,
   because the only task that could act on the peer is the one that
   waits. A program that reaches either is outside the model. After one
-  end is closed, two calls on the other end are declined too: a read of
-  its empty queue (Linux gives end of file, or first one `-ECONNRESET`
-  when the closed end left bytes unread) and `ppoll` on it. The model's
-  `close` does not record which of the two the closed end left, because
-  a `close` that changed another descriptor's entry would make false
-  the published lemmas that say a `close` only removes its own entry
-  (`theories/Common/FileSim.v`, `tfo_close`).
+  end is closed, a read of the other end's empty queue is declined too
+  (Linux gives end of file, or first one `-ECONNRESET` when the closed
+  end left bytes unread). The model's `close` does not record which of
+  the two the closed end left, because a `close` that changed another
+  descriptor's entry would make false the published lemmas that say a
+  `close` only removes its own entry (`theories/Common/FileSim.v`,
+  `tfo_close`). For the same reason `ppoll` on that end answers with
+  `POLLERR` set or clear (see "Known gaps in precision").
 - The `net.core` sysctls `wmem_default`, `rmem_default`, `wmem_max` and
   `rmem_max` do not change while the program runs. The model reads them
   from `State.KernelBuild`, which a launch states once; statements
@@ -615,7 +616,24 @@ equivalence) can be true of the model and false of Linux.
   them; and a send onto a non-empty queue may answer `-EAGAIN` where
   Linux would admit one more skb. Readiness has the same cause: in the
   band where `unix_writable` turns on truesize, `ppoll` and `pselect6`
-  decline a request for POLLOUT rather than answer it.
+  admit both answers to a request for POLLOUT, writable and not
+  writable, and Linux gives the one that truesize decides. The choice is
+  made once for each end in a call, so two `ppoll` entries for one end
+  get the same answer, as in Linux.
+- **`POLLERR` after the peer of a stream pair closed.** `ppoll` on the
+  open end admits the answer with `POLLERR` and the answer without it.
+  Linux sets `sk_err` on the open end when the closing end left bytes
+  unread (`unix_release_sock`, `net/unix/af_unix.c`), and a later call
+  that returns the error clears it. The model does not record either
+  (see the stream-pair bullet in "Assumptions that the model does not
+  check").
+- **The remaining time of `pselect6` and `ppoll`.** When a call with a
+  real timeout returns before the timeout runs out, Linux writes the
+  time left to `*tsp` (`poll_select_finish`, `fs/select.c`). The model
+  admits every normalized time from 0 to the timeout. It does not tie
+  that time to the clock: `State.m_clock` does not move, so a later
+  `clock_gettime` is not bounded by the time that the call took, as it
+  is on Linux.
 - **R-a, an mmap base above `State.alloc_top`.** The model's stack window is
   `[sp - 8 MiB, sp)`. Linux measures its 8 MiB from the end of the stack
   VMA, which is above `sp` by the entry image. With an entry image of more

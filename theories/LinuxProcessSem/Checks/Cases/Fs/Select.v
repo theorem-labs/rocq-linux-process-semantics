@@ -197,24 +197,45 @@ Example pselect_null_mask_ignores_the_size :
 Proof. check_eq. Qed.
 
 (** A real deadline plus a bit requested below [n] in [readfds] or
-    [writefds] is declined; drop the deadline and the same call answers.
-    Every return passes through [poll_select_finish], which writes
-    [end_time - ktime_get_ts64()] back to [*tsp] — a live clock reading,
-    sampled after the work is done.  With [tsp] NULL that write does not
-    happen, so the answer is forced. *)
-Example pselect_a_deadline_with_a_request_is_declined :
+    [writefds] returns early, and the return passes through
+    [poll_select_finish], which writes [end_time - ktime_get_ts64()] back
+    to [*tsp] -- a live clock reading, sampled after the work is done.
+    The model chooses it from [0, timeout] and reads it back from the
+    write: 2 s left of the 5 s is accepted; the same return with no
+    write is refused, and so is 6 s left.  With [tsp] NULL that write
+    does not happen, so the answer is forced. *)
+Example pselect_a_deadline_with_a_request_writes_the_remaining_time :
   check_syscall
     (mkInput 72 [4; ps_inp; 0; 0; ps_tsp; 0]
        (mem_join (bytes_at ps_inp (word_le8 8))
                 (bytes_at ps_tsp (word_le8 5 ++ word_le8 0))) ps_wmem)
-    (mkEffect 1 [(ps_inp, word_le8 8)] []) pselect_model
-  = CheckUnmodeled
+    (with_copyins [(ps_tsp, 16%nat); (ps_inp, 8%nat)]
+       (mkEffect 1 [(ps_inp, word_le8 8); (ps_tsp, word_le8 2 ++ word_le8 0)] []))
+    pselect_model
+  = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 72 [4; ps_inp; 0; 0; ps_tsp; 0]
+          (mem_join (bytes_at ps_inp (word_le8 8))
+                   (bytes_at ps_tsp (word_le8 5 ++ word_le8 0))) ps_wmem)
+       (mkEffect 1 [(ps_inp, word_le8 8)] []) pselect_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 72 [4; ps_inp; 0; 0; ps_tsp; 0]
+          (mem_join (bytes_at ps_inp (word_le8 8))
+                   (bytes_at ps_tsp (word_le8 5 ++ word_le8 0))) ps_wmem)
+       (with_copyins [(ps_tsp, 16%nat); (ps_inp, 8%nat)]
+          (mkEffect 1 [(ps_inp, word_le8 8); (ps_tsp, word_le8 6 ++ word_le8 0)] []))
+       pselect_model
+     = CheckReject
   /\ check_syscall
        (mkInput 72 [4; ps_inp; 0; 0; 0; 0]
           (bytes_at ps_inp (word_le8 8)) ps_wmem)
        (with_copyins [(ps_inp, 8%nat)] (mkEffect 1 [(ps_inp, word_le8 8)] [])) pselect_model
      = CheckOk pselect_model [].
-Proof. split; [vm_compute; reflexivity | check_eq]. Qed.
+Proof.
+  split; [check_eq | split; [vm_compute; reflexivity
+                             | split; [vm_compute; reflexivity | check_eq]]].
+Qed.
 
 (** A real deadline with an EMPTY request runs to expiry and writes 16
     ZERO bytes.  [end_time] is in the past by then, so
@@ -264,20 +285,21 @@ Example pselect_a_null_timeout_with_nothing_requested_is_declined :
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Where an errno comes FROM decides whether it survives the timeout
-    write-back, and this trio is the whole distinction.
+(** Where an errno comes FROM decides whether it carries the timeout
+    write-back, and these four are the whole distinction.
 
     [n = -1] (the register holds 0xFFFFFFFF; [SYSCALL_DEFINE6] casts it to
     [int]) is -EINVAL out of [core_sys_select].  With no deadline that is
-    the answer.  With a real deadline it is DECLINED — the error still
-    passes through [poll_select_finish], which writes a live clock reading
-    to [*tsp] on its way out.
+    the answer.  With a real deadline the error still passes through
+    [poll_select_finish], which writes the remaining time to [*tsp] on
+    its way out: the -EINVAL with 5 s left written is accepted, and the
+    bare -EINVAL is refused.
 
-    The third case separates the two mechanisms rather than the two
+    The last case separates the two mechanisms rather than the two
     errnos: a wrong [sigsetsize] is also -EINVAL, but it comes out of
     [set_user_sigmask], which returns from [do_pselect] directly and never
-    reaches the write-back — so it is answered even with the deadline in
-    place, and even though [n] is also invalid. *)
+    reaches the write-back — so it is answered with no write even with
+    the deadline in place, and even though [n] is also invalid. *)
 Example pselect_where_an_errno_comes_from_decides_the_writeback :
   check_syscall
     (mkInput 72 [Z_to_bv 64 (2 ^ 32 - 1); ps_inp; 0; 0; 0; 0]
@@ -288,8 +310,16 @@ Example pselect_where_an_errno_comes_from_decides_the_writeback :
        (mkInput 72 [Z_to_bv 64 (2 ^ 32 - 1); ps_inp; 0; 0; ps_tsp; 0]
           (mem_join (bytes_at ps_inp (word_le8 8))
                    (bytes_at ps_tsp (word_le8 5 ++ word_le8 0))) ps_wmem)
+       (with_copyins [(ps_tsp, 16%nat)]
+          (mkEffect (errno_ret EINVAL) [(ps_tsp, word_le8 5 ++ word_le8 0)] []))
+       pselect_model
+     = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 72 [Z_to_bv 64 (2 ^ 32 - 1); ps_inp; 0; 0; ps_tsp; 0]
+          (mem_join (bytes_at ps_inp (word_le8 8))
+                   (bytes_at ps_tsp (word_le8 5 ++ word_le8 0))) ps_wmem)
        (mkEffect (errno_ret EINVAL) [] []) pselect_model
-     = CheckUnmodeled
+     = CheckReject
   /\ check_syscall
        (mkInput 72 [Z_to_bv 64 (2 ^ 32 - 1); ps_inp; 0; 0; ps_tsp; ps_sig]
           (mem_join (bytes_at ps_inp (word_le8 8))
@@ -299,7 +329,7 @@ Example pselect_where_an_errno_comes_from_decides_the_writeback :
           (mkEffect (errno_ret EINVAL) [] [])) pselect_model
      = CheckOk pselect_model [].
 Proof.
-  split; [check_eq | split; [vm_compute; reflexivity | check_eq]].
+  split; [check_eq | split; [check_eq | split; [vm_compute; reflexivity | check_eq]]].
 Qed.
 
 (** The WRITE-BACK gate.  The set is readable, so the import succeeds and
@@ -802,9 +832,10 @@ Qed.
     writes 16 ZERO bytes over [*tsp], because [end_time] is in the past
     by then and the [rts.tv_sec < 0] clamp fires.  Put something ready
     in the array instead and the return comes back EARLY, so the
-    remaining time is a live clock reading: UNMODELED, not an
-    invented 0. *)
-Example ppoll_a_deadline_expires_to_zeros_but_an_early_return_is_declined :
+    remaining time is a live clock reading: the model chooses it from
+    [0, timeout] and reads it back from the write.  Half the millisecond
+    left is accepted; the same return with no write is refused. *)
+Example ppoll_a_deadline_expires_to_zeros_and_an_early_return_writes_the_remaining_time :
   check_syscall
     (mkInput 73 [0; 0; pp_tsp; 0; 0; 0]
        (bytes_at pp_tsp (pp_ts 0 1000000)) pp_wmem)
@@ -815,9 +846,17 @@ Example ppoll_a_deadline_expires_to_zeros_but_an_early_return_is_declined :
        (mkInput 73 [pp_ufds; 1; pp_tsp; 0; 0; 0]
           (mem_join (bytes_at pp_ufds (pp_entry 3 1))
                     (bytes_at pp_tsp (pp_ts 0 1000000))) pp_wmem)
+       (with_copyins [(pp_tsp, 16%nat); (pp_ufds, 8%nat)]
+          (mkEffect 1 [(pp_ufds + 6, word_le2 1); (pp_tsp, pp_ts 0 500000)] []))
+       pselect_model
+     = CheckOk pselect_model []
+  /\ check_syscall
+       (mkInput 73 [pp_ufds; 1; pp_tsp; 0; 0; 0]
+          (mem_join (bytes_at pp_ufds (pp_entry 3 1))
+                    (bytes_at pp_tsp (pp_ts 0 1000000))) pp_wmem)
        (mkEffect 1 [(pp_ufds + 6, word_le2 1)] []) pselect_model
-     = CheckUnmodeled.
-Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
+     = CheckReject.
+Proof. split; [check_eq | split; [check_eq | vm_compute; reflexivity]]. Qed.
 
 (** A NULL TIMEOUT WITH NOTHING READY IS DECLINED, and not answered 0.
     [schedule_hrtimeout_range_clock] treats a NULL expiry as infinite,

@@ -375,7 +375,15 @@ Example pselect_core_gaps_on_a_pipe_end_only :
               (fun _ => Some (Z_to_bv 8 0)) in
   pselect_core i pipe_model 4 4096 0 0 = PsCoreGap
   /\ pselect_core i5 pipe_model 6 4096 0 0 <> PsCoreGap.
-Proof. cbv zeta; split; [check_eq | vm_compute; discriminate]. Qed.
+Proof.
+  (* The answer is [PsCoreDone] with a function of the choice in it, so
+     the second conjunct is decided on its constructor alone: a full
+     [vm_compute] would normalize that function under its binder. *)
+  cbv zeta; split; [check_eq|].
+  intro H.
+  apply (f_equal (fun c => match c with PsCoreGap => true | _ => false end)) in H.
+  vm_compute in H. discriminate H.
+Qed.
 
 (** ...and the same shape over the CHANNEL at fd 0 also declines, which
     is what says the pipe end joined an existing decline rather than
