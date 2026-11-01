@@ -97,6 +97,9 @@ Definition mount_mresult (reads : list (word * nat)) (r : MResult) (m : Model)
   | MErr e => err reads e m ctx st
   end.
 
+Definition mount_env_errno (e : Z) : bool :=
+  (e =? ENOMEM) || ((1 <=? e) && (e <=? 4095)).
+
 (** [path_mounted] (fs/namespace.c): a dentry is the root of its mount. *)
 Definition path_mounted (st : NsState) (mt d : positive) : option bool :=
   match find_mount (ns_mounts st) mt with
@@ -122,9 +125,9 @@ Definition copy_mount_string (i : SyscallInput) (p : word) : MountString :=
        | POk s => MSOk reads (Some s)
        end.
 
-(** [copy_mount_options] (fs/namespace.c:3908-3941).  New mount instances
-    parse the copied option text; the first inaccessible byte is EFAULT and
-    an inaccessible later byte is outside this model. *)
+(** [copy_mount_options] (fs/namespace.c:3908-3941).  A fault before the
+    first byte is EFAULT; once a byte has been copied, the partial option
+    string can affect parsing and is outside this model. *)
 Inductive MountOptions :=
   | MOOk (reads : list (word * nat)) (data : option (list byte))
   | MOErr (reads : list (word * nat)) (e : Z)
@@ -134,7 +137,11 @@ Definition copy_mount_options (i : SyscallInput) (p : word) : MountOptions :=
   if w_is0 p then MOOk [] None
   else let reads := path_reads i p in
        match path_arg i p with
-       | PFault => MOErr reads EFAULT
+       | PFault =>
+           match reads with
+           | [(_, 1%nat)] => MOErr reads EFAULT
+           | _ => MOOver
+           end
        | PTooLong => MOOver
        | POk data => MOOk reads (Some data)
        end.
@@ -394,7 +401,9 @@ Definition mount_new_success (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : 
   end.
 
 Definition mount_arm : NsArm := fun i m ctx st o =>
-  o = mount_fn i m ctx st \/ mount_new_success i m ctx st o.
+  o = mount_fn i m ctx st
+  \/ mount_new_success i m ctx st o
+  \/ injected_after mount_env_errno (mount_fn i m ctx st) m ctx st o.
 
 (** [mount_arm] keeps every successful [NMOk] lock choice, while [mount_fn]
     supplies the deterministic legacy outcomes and one new-mount witness. *)
@@ -410,7 +419,7 @@ Definition umount_valid (flags : Z) : bool :=
     MNT_DETACH tree operation itself is [Mount.umount_detach]. *)
 Definition umount2_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let pathp := in_arg i 0 in
-  let flags := bv_unsigned (in_arg i 1) in
+  let flags := Z.land (bv_unsigned (in_arg i 1)) 4294967295 in
   let reads := path_reads i pathp in
   if negb (umount_valid flags) then err [] EINVAL m ctx st
   else if negb (Z.eqb flags MNT_DETACH) then EUnmodeled
@@ -423,29 +432,38 @@ Definition umount2_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState
            | WErr e => err reads e m ctx st
            | WOver | WOk (LProcTask _ _ _) => EUnmodeled
            | WOk (LDentry mt d) =>
-               match find_mount (ns_mounts st) mt, path_mounted st mt d with
-               | Some mount, Some true =>
-                   if negb (Pos.eqb (mnt_ns mount) (cx_mount ctx)) then err reads EINVAL m ctx st
-                   else if mnt_locked mount then err reads EINVAL m ctx st
-                   else match mount_may_mount m ctx st with
-                        | None => EUnmodeled
-                        | Some false => err reads EPERM m ctx st
-                        | Some true => mount_mresult reads (umount_detach (ns_mounts st) mt) m ctx st
-                        end
-               | Some _, Some false => err reads EINVAL m ctx st
-               | _, _ => EUnmodeled
+               match follow_mounts st (LDentry mt d) with
+               | WErr e => err reads e m ctx st
+               | WOver | WOk (LProcTask _ _ _) => EUnmodeled
+               | WOk (LDentry top td) =>
+                   match mount_may_mount m ctx st with
+                   | None => EUnmodeled
+                   | Some false => err reads EPERM m ctx st
+                   | Some true =>
+                       match find_mount (ns_mounts st) top, path_mounted st top td with
+                       | Some mount, Some true =>
+                           if negb (Pos.eqb (mnt_ns mount) (cx_mount ctx)) then err reads EINVAL m ctx st
+                           else if mnt_locked mount then err reads EINVAL m ctx st
+                           else if umount_propagates (ns_mounts st) mount then EUnmodeled
+                           else mount_mresult reads (umount_detach (ns_mounts st) top) m ctx st
+                       | Some _, Some false => err reads EINVAL m ctx st
+                       | _, _ => EUnmodeled
+                       end
+                   end
                end
            end
        end.
 
-Definition umount2_arm : NsArm := fun i m ctx st o => o = umount2_fn i m ctx st.
+Definition umount2_arm : NsArm := fun i m ctx st o =>
+  o = umount2_fn i m ctx st
+  \/ injected_after mount_env_errno (umount2_fn i m ctx st) m ctx st o.
 
 (* =========================================================================
    pivot_root(2)
    ========================================================================= *)
 
-(** [chroot_fs_refs] (fs/fs_struct.c:55-78) updates this caller's root and
-    cwd.  References held by other tasks belong to the multi-process core. *)
+(** [chroot_fs_refs] (fs/fs_struct.c:55-78) is process-wide; this
+    single-task arm is therefore over on other tasks' references. *)
 Definition move_pivot_refs (ctx : NsCtx) (old_root new_root : positive * positive) : NsCtx :=
   let root := if Pos.eqb (fst (cx_root ctx)) (fst old_root) && Pos.eqb (snd (cx_root ctx)) (snd old_root)
               then new_root else cx_root ctx in
@@ -510,7 +528,9 @@ Definition pivot_root_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSt
       end
   end.
 
-Definition pivot_root_arm : NsArm := fun i m ctx st o => o = pivot_root_fn i m ctx st.
+Definition pivot_root_arm : NsArm := fun i m ctx st o =>
+  o = pivot_root_fn i m ctx st
+  \/ injected_after mount_env_errno (pivot_root_fn i m ctx st) m ctx st o.
 
 (* =========================================================================
    mount_setattr(2)
@@ -633,19 +653,19 @@ Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
     : ext_outcome :=
   let dfd := in_arg i 0 in
   let pathp := in_arg i 1 in
-  let flags := bv_unsigned (in_arg i 2) in
+  let flags := Z.land (bv_unsigned (in_arg i 2)) 4294967295 in
   let attrp := in_arg i 3 in
   let usize := bv_unsigned (in_arg i 4) in
   if negb (mount_setattr_flags_valid flags) then ns_errno EINVAL m ctx st
   else if negb (mount_setattr_handled_flags flags) then EUnmodeled
-  else match copy_mount_attr i attrp usize with
-       | ACerr reads e => err reads e m ctx st
-       | ACover => EUnmodeled
-       | ACok attr_reads attr =>
-           match mount_may_mount m ctx st with
-           | None => EUnmodeled
-           | Some false => err attr_reads EPERM m ctx st
-           | Some true =>
+  else match mount_may_mount m ctx st with
+       | None => EUnmodeled
+       | Some false => ns_errno EPERM m ctx st
+       | Some true =>
+           match copy_mount_attr i attrp usize with
+           | ACerr reads e => err reads e m ctx st
+           | ACover => EUnmodeled
+           | ACok attr_reads attr =>
                match build_mount_attr attr with
                | ABerr e => err attr_reads e m ctx st
                | ABover => EUnmodeled
@@ -670,7 +690,16 @@ Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
            end
        end.
 
-Definition mount_setattr_arm : NsArm := fun i m ctx st o => o = mount_setattr_fn i m ctx st.
+Definition mount_setattr_arm : NsArm := fun i m ctx st o =>
+  o = mount_setattr_fn i m ctx st
+  \/ injected_after mount_env_errno (mount_setattr_fn i m ctx st) m ctx st o.
+
+(** The environment refusals of mount namespace operations. *)
+Definition mount_injected : list NsInjected :=
+  map (fun n => mkNsInjected n
+    [(fun e => e =? ENOMEM, FamAlloc);
+     (fun e => (1 <=? e) && (e <=? 4095), FamCred)])
+    [39; 40; 41; 442].
 
 (** The four legacy mount-namespace calls supplied by this module. *)
 Definition mount_arms : list (Z * NsArm) :=

@@ -249,5 +249,44 @@ Example setattr_writer_busy :
                            (state false false [(8%N, writer_file)])) = Some (-EBUSY).
 Proof. vm_compute. reflexivity. Qed.
 
+(** can_umount checks may_mount before the path's mount-root check. *)
+Example umount_needs_admin_first :
+  ret_of (umount2_fn (umount_input s_src MNT_DETACH) base_model c_none
+                     (state false false [])) = Some (-EPERM).
+Proof. vm_compute. reflexivity. Qed.
+
+(** umount2's int flags discard the high half before selecting MNT_DETACH. *)
+Example umount_flags_are_u32 :
+  option_map (map mnt_id) (mounts_of
+    (umount2_fn (umount_input s_tmp (4294967296 + MNT_DETACH)) base_model c_admin
+                (state false false []))) = Some [1%positive].
+Proof. vm_compute. reflexivity. Qed.
+
+(** mount_setattr's unsigned-int flags discard the high half too. *)
+Example setattr_flags_are_u32 :
+  ret_of (mount_setattr_fn (setattr_input (-100) s_tmp (4294967296 + AT_RECURSIVE) 0)
+                          base_model c_admin (state false false [])) = Some 0.
+Proof. vm_compute. reflexivity. Qed.
+
+(** may_mount precedes copy_struct_from_user, so an unprivileged caller
+    gets EPERM without a user-memory fault. *)
+Example setattr_permission_precedes_copy :
+  ret_of (mount_setattr_fn
+    (call 442 [-100; PATH; 0; 9223372036854775808; 32] (cstr PATH s_tmp))
+    base_model c_none (state false false [])) = Some (-EPERM).
+Proof. vm_compute. reflexivity. Qed.
+
+(** copy_mount_options distinguishes its first unreadable byte from a
+    later partial copy. *)
+Example mount_options_first_fault :
+  copy_mount_options (call 40 [0; 0; 0; 0; DATA] (fun _ => None)) (Z_to_bv 64 DATA)
+  = MOErr [(Z_to_bv 64 DATA, 1%nat)] EFAULT.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Every mount arm exports its allocation and security environment
+    refusals. *)
+Example mount_injected_numbers : map ni_no mount_injected = [39; 40; 41; 442].
+Proof. vm_compute. reflexivity. Qed.
+
 Example mount_arm_numbers : map fst mount_arms = [39; 40; 41; 442].
 Proof. vm_compute. reflexivity. Qed.

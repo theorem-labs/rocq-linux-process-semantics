@@ -205,6 +205,17 @@ Example umount_locked_refused :
   umount_detach [mnt 1 None false; mkMount 2 1 (Some 1) 10 20 30 no_flags no_flags true false None None] 2
   = MErr 22%Z := eq_refl.
 
+(** The namespace root cannot be detached. *)
+Example umount_root_refused : umount_detach tree 1 = MErr 22%Z := eq_refl.
+
+(** A shared or slave parent requires UMOUNT_PROPAGATE, which this local
+    tree operation declines. *)
+Definition tree_with_shared_parent : list Mount :=
+  [mkMount 1 1 None 10 20 30 no_flags no_flags false false (Some 8) None;
+   mnt 2 (Some 1) false].
+Example umount_shared_parent_declines :
+  umount_propagates tree_with_shared_parent (mnt 2 (Some 1) false) = true := eq_refl.
+
 (** Propagation changes reach the subtree with the recursive flag.  A shared
     mount made a slave leaves its peer group; it becomes a slave of that
     group when the group has another member (mount 4 is a peer of mount 2),

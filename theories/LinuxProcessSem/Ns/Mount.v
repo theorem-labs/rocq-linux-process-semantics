@@ -366,8 +366,29 @@ Definition umount_detach (T : list Mount) (i : positive) : MResult :=
   match find_mount T i with
   | None => MErr EINVAL
   | Some m =>
-      if mnt_locked m then MErr EINVAL
-      else MOk (List.filter (fun x => negb (mem (mnt_id x) (subtree T i))) T)
+      match mnt_parent m with
+      | None => MErr EINVAL
+      | Some _ =>
+          if mnt_locked m then MErr EINVAL
+          else MOk (List.filter (fun x => negb (mem (mnt_id x) (subtree T i))) T)
+      end
+  end.
+
+(** [umount_tree(..., UMOUNT_PROPAGATE)] reaches peers and slaves of a
+    parent.  The tree update models only the local subtree, so its caller
+    declines such a parent rather than silently omit the propagated copies. *)
+Definition umount_propagates (T : list Mount) (m : Mount) : bool :=
+  match mnt_parent m with
+  | None => false
+  | Some p =>
+      match find_mount T p with
+      | Some parent =>
+          match mnt_peer parent, mnt_master parent with
+          | None, None => false
+          | _, _ => true
+          end
+      | None => true
+      end
   end.
 
 (** After a detaching unmount no mount of the subtree is in the table. *)
@@ -376,6 +397,7 @@ Theorem umount_detach_removes : forall T i T',
 Proof.
   intros T i T'. unfold umount_detach.
   destruct (find_mount T i) as [m0|]; [|intros Hc; discriminate Hc].
+  destruct (mnt_parent m0) as [parent|]; [|intros Hc; discriminate Hc].
   destruct (mnt_locked m0); [intros Hc; discriminate Hc|].
   intros H. injection H as HT. subst T'.
   intros m Hm. apply filter_In in Hm. destruct Hm as [_ Hneg].
