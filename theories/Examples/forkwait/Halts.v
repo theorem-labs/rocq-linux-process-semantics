@@ -1564,4 +1564,56 @@ Proof.
   exact (fw_run_reap regs mem rom sp Hsp Hrd).
 Qed.
 
+(** THE TWO-ENTRY STEP, stated once for either entry.
+
+    The first genuinely two-entry step lemma in this file.  Every other
+    step lemma here is over [one_proc c], a singleton table, and none of
+    them applies when two entries are live -- [pstep_single_next_bwd] is
+    actually FALSE there, since with two entries the successor is not
+    unique, which is why that stretch uses the measure rather than
+    determinism.
+
+    It is quantified over WHICH entry steps, so the child's case and the
+    parent's case are instances rather than two copies.  [e] is the one
+    that steps and [eo] the one that does not; nothing here says which
+    is the parent.
+
+    The frame half is the point: [eo]'s record survives by
+    [fw_two_other_record] and its view by [fw_two_other_view], whose
+    hypotheses [fw_instr_frames_shared] discharges out of
+    [Run.mi_account_step_model_frame].  An instruction step of one entry
+    is invisible to the other, which is what makes the interleaving
+    finite to reason about. *)
+Lemma fw_two_entry_step : forall segs cfg P e eo qo ms' model',
+  look P (pe_pid e) = Some e ->
+  look P qo = Some eo ->
+  bv_eqb (pe_pid e) qo = false ->
+  m_halted (pe_model e) = None ->
+  ms_svc_pending (pe_ms e) = None ->
+  mi_account_step segs (pe_ms e) (cfg_model (pe_cfg (pcfg_shared P) e))
+    = MachineOk (ms', model') ->
+  (* the step happens, at the entry that stepped *)
+  pstep_at segs cfg (pe_pid e) P []
+    (PNext (absorb P e (mkCfg ms' model')))
+  (* and the other entry is untouched, in both senses *)
+  /\ look (absorb P e (mkCfg ms' model')) qo = Some eo
+  /\ pe_cfg (pcfg_shared (absorb P e (mkCfg ms' model'))) eo
+     = pe_cfg (pcfg_shared P) eo.
+Proof.
+  intros segs cfg P e eo qo ms' model' Hl Hlo Hne Hh Hs Hm.
+  split; [exact (pstep_instr_entry segs cfg P e ms' model' Hl Hh Hs Hm)|].
+  assert (Hlo' : look (absorb P e (mkCfg ms' model')) qo = Some eo)
+    by exact (fw_two_other_record P e (mkCfg ms' model') qo eo Hne Hlo).
+  split; [exact Hlo'|].
+  (* the view: an accounted instruction step fixes every model
+     component, so the shared file system and I/O are unchanged and
+     [view_frame_absorb]'s hypotheses hold *)
+  destruct (fw_instr_frames_shared segs (pe_ms e)
+              (cfg_model (pe_cfg (pcfg_shared P) e)) ms' model' Hm)
+    as (Hfs & Hio).
+  apply (fw_two_other_view P e (mkCfg ms' model') qo eo Hlo').
+  - cbn [cfg_model]. rewrite Hfs. reflexivity.
+  - cbn [cfg_model]. rewrite Hio. reflexivity.
+Qed.
+
 End ForkwaitConsumers.
