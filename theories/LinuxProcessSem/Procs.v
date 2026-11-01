@@ -691,11 +691,14 @@ Proof. intros [P|]; [left; exists P; reflexivity | right; reflexivity]. Qed.
 (** The pid of the one process a released configuration becomes. *)
 Definition one_pid : Pid := Z_to_bv 64 1.
 
-(** The namespace context of a process that has entered none: the initial
-    user and mount namespace, with root and cwd at the root mount's root
-    dentry.  [Ns.Tables] numbers both from 1. *)
-Definition init_nsctx : NsCtx :=
-  mkNsCtx 1%positive 1%positive (1%positive, 1%positive) (1%positive, 1%positive).
+(** The namespace context and state of a system that has entered no
+    namespace come from [Ns.Tables] as [init_nsctx] and [empty_nsstate],
+    NEVER from [mkNsCtx] or [mkNsState].  Those records grow -- within one
+    hour of the first version, [NsState] went from two fields to seven and
+    [NsCtx] from four to eight -- and a constructor application breaks on
+    every new field, while a builder costs nothing.  [flat_view
+    empty_nsstate = true], so [one_proc] is in the released world, which is
+    what the single-process theorems rest on. *)
 
 Definition one_entry (c : config) : ProcessEntry :=
   mkEntry one_pid None (cfg_ms c) (clear_shared (cfg_model c)) [] init_nsctx.
@@ -703,7 +706,7 @@ Definition one_entry (c : config) : ProcessEntry :=
 Definition one_proc (c : config) : pconfig :=
   mkPCfg [(one_pid, one_entry c)] one_pid
          (mkShared (m_fsys (cfg_model c)) (m_io (cfg_model c)) [] []
-                   (mkNsState [] [])).
+                   empty_nsstate).
 
 Lemma one_proc_entry : forall c,
   look (one_proc c) one_pid = Some (one_entry c).
@@ -1163,3 +1166,111 @@ Definition pholts_within_budget (lim : Z) (allowed : list word) (img : Image)
     valid_input inp ->
     ~ run_scfg_budget_refused forced_only_cfg img lim en inp ->
     must_exit_in_p forced_only_cfg allowed img lim en inp.
+
+(* =========================================================================
+   One inversion lemma per arm
+   ========================================================================= *)
+
+(** WHY THESE EXIST, and it is a fact about extending this relation rather
+    than a convenience for one proof.
+
+    A proof about a concrete program inverts a step at every configuration it
+    walks through -- forty sites for a program of this size.  Each [inversion]
+    names every constructor, so ADDING A CONSTRUCTOR BREAKS EVERY SITE.  The
+    planned [ext] parameter adds two constructors and a premise to three
+    others, which would be forty rewrites of proof script.
+
+    Routed through the lemmas below instead, the cost of that change is
+    re-proving these three and nothing else: a program proof sees only
+    [pstep_next_cases] and [pstep_error_cases], whose STATEMENTS do not
+    mention the constructor set.  At [no_ext] the two new constructors die by
+    [discriminate] on [ext_claims i = true], once, inside each lemma.
+
+    Keep that property when adding an arm: give the arm a disjunct here, and
+    do not let a program proof invert [pstep_at] directly. *)
+
+(** A step to a successor is one of the three producing arms. *)
+Lemma pstep_next_cases : forall segs cfg p P evs P',
+  pstep_at segs cfg p P evs (PNext P') ->
+  exists e,
+    look P p = Some e /\ pe_pid e = p /\
+    ( (exists c',
+         sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c')
+         /\ clone_success_b (pe_cfg (pcfg_shared P) e) c' = false
+         /\ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false
+         /\ P' = absorb P e c')
+      \/ (exists c' q,
+            sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c')
+            /\ clone_success_b (pe_cfg (pcfg_shared P) e) c' = true
+            /\ child_pid_core c' q
+            /\ look P q = None
+            /\ P' = clone_result P e c' q)
+      \/ (wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true /\ evs = []) ).
+Proof.
+  intros segs cfg p P evs P' Hp.
+  inversion Hp; subst.
+  - (* pstep_other *)
+    eexists. split; [eassumption | split; [reflexivity|]].
+    left. eexists.
+    split; [eassumption|]. split; [eassumption|]. split; [eassumption|].
+    reflexivity.
+  - (* pstep_clone.  The splits are explicit rather than [repeat split]:
+       [child_pid_core] unfolds to a conjunction, so [repeat split] would
+       take it apart and leave goals no hypothesis matches. *)
+    eexists. split; [eassumption | split; [reflexivity|]].
+    right; left. do 2 eexists.
+    split; [eassumption|]. split; [eassumption|]. split; [eassumption|].
+    split; [eassumption|]. reflexivity.
+  - (* pstep_wait_reap *)
+    eexists. split; [eassumption | split; [reflexivity|]].
+    right; right. split; [assumption | reflexivity].
+Qed.
+
+(** A step to the error transition is one of the two refusing arms. *)
+Lemma pstep_error_cases : forall segs cfg p P evs,
+  pstep_at segs cfg p P evs PError ->
+  exists e,
+    look P p = Some e /\ pe_pid e = p /\
+    ( (sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs SError
+       /\ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false)
+      \/ (multiproc_allowed P (pe_cfg (pcfg_shared P) e) = false /\ evs = []) ).
+Proof.
+  intros segs cfg p P evs Hp.
+  inversion Hp; subst.
+  - eexists. split; [eassumption | split; [reflexivity|]].
+    left. split; assumption.
+  - eexists. split; [eassumption | split; [reflexivity|]].
+    right. split; [assumption | reflexivity].
+Qed.
+
+(** The splice does not disturb the halt flag: [set_fsys] and [set_io]
+    rebuild the model around the same [State.ProcState]. *)
+Lemma m_halted_pe_cfg : forall S e,
+  m_halted (cfg_model (pe_cfg S e)) = m_halted (pe_model e).
+Proof. intros S e. reflexivity. Qed.
+
+(** A released step requires its configuration to be running.  Proved here
+    rather than imported: the same fact is [MustExit.sstep_cfg_not_halted],
+    but [EquivalenceDefinition] depends on this directory and not the other
+    way round, so this file cannot reach it.  Every [Run.sstep_cfg]
+    constructor carries the premise (Run.v:1785 and its siblings). *)
+Lemma sstep_cfg_halted_none : forall segs cfg c evs st,
+  sstep_cfg segs cfg c evs st -> m_halted (cfg_model c) = None.
+Proof. intros segs cfg c evs st H. inversion H; subst; assumption. Qed.
+
+(** The entry that steps is present and is running.  Stated as an existential
+    rather than against a supplied entry, so each arm supplies its own and no
+    branch has to reconcile two lookups of the same pid. *)
+Lemma pstep_at_not_halted : forall segs cfg p P evs r,
+  pstep_at segs cfg p P evs r ->
+  exists e, look P p = Some e /\ m_halted (pe_model e) = None.
+Proof.
+  intros segs cfg p P evs r Hp.
+  inversion Hp; subst; eexists; split; try eassumption;
+    match goal with
+    | [ Hss : sstep_cfg _ _ _ _ _ |- _ ] =>
+        let Hh := fresh "Hh" in
+        pose proof (sstep_cfg_halted_none _ _ _ _ _ Hss) as Hh;
+        rewrite m_halted_pe_cfg in Hh; exact Hh
+    end.
+Qed.
