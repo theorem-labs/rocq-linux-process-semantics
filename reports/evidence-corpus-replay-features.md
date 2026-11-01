@@ -203,8 +203,7 @@ body why that is not written:
 > The directory reference answers EEXIST alone. Linux v6.18.46 fs/namei.c
 > do_open returns -EEXIST at (open_flag & O_EXCL) && !(file->f_mode &
 > FMODE_CREATED), before the directory test. The EISDIR answer of v4.17 to
-> v5.6 is not written: the model describes v6.18.46 only
-> (dispatch://OSSV-266/ask/9128d2b8).
+> v5.6 is not written: the model describes v6.18.46 only.
 
 So the single exception is the decision the stream owner took, landing exactly
 where the decision says it should, and the trace it leaves unreproduced is a

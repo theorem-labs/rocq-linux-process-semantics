@@ -394,8 +394,9 @@ not apply.
   name, `Run.valid_input_channel_closed`, in the shape
   `Run.valid_input_abort` has for the abort declaration, and a
   statement that means both readings asks for
-  `Run.valid_input_channel_either` (the stream owner's answer to
-  dispatch://OSSV-266/ask/77724e06). A reader that goes away PART WAY
+  `Run.valid_input_channel_either` (the stream owner's answer: pin the
+  reader, and name the reader-gone launch so a proof can ask for it).
+  A reader that goes away PART WAY
   through the output is a third thing the model has no term for, and a
   program whose reader goes away mid-output is outside the model.
 - No write to a regular file fails. The model has no `ENOSPC`, `EDQUOT`
@@ -635,7 +636,8 @@ equivalence) can be true of the model and false of Linux.
   `Run.valid_input_channel_closed`, named the way
   `Run.valid_input_abort` names the aborting launch, and a statement
   that means both readings asks for `Run.valid_input_channel_either`
-  (the stream owner's answer to dispatch://OSSV-266/ask/77724e06).
+  (the stream owner's answer: pin the reader, and name the reader-gone
+  launch so a proof can ask for it).
   What is left is NOT the
   SIGPIPE disposition: that was an unstated premise and is now a
   declaration (`State.ProcInput.in_sigpipe_default`, pinned to
