@@ -291,7 +291,7 @@ Qed.
     answers by a test on its arguments alone ([i] supplies a2..a4 for
     [PR_SET_NO_NEW_PRIVS]) -- so the witness is the spec with the monad
     erased. *)
-Definition prctl_witness (option_ arg2 : word) (i : SyscallInput) (m : Model)
+Definition prctl_witness (i : SyscallInput) (option_ arg2 : word) (m : Model)
     : outcome SyscallEffect :=
   if negb (existsb (Z.eqb (bv_unsigned option_)) prctl_modeled_options)
   then Unmodeled
@@ -314,10 +314,10 @@ Definition prctl_witness (option_ arg2 : word) (i : SyscallInput) (m : Model)
      else ret_outcome (errno_ret EINVAL) m)
   else Unmodeled.
 
-Lemma prctl_witness_ok : forall option_ arg2 i m,
-  prctl_spec option_ arg2 i m (prctl_witness option_ arg2 i m).
+Lemma prctl_witness_ok : forall i option_ arg2 m,
+  prctl_spec option_ arg2 i m (prctl_witness i option_ arg2 m).
 Proof.
-  intros option_ arg2 i m. unfold prctl_spec, prctl_witness.
+  intros i option_ arg2 m. unfold prctl_spec, prctl_witness.
   destruct (negb (existsb (Z.eqb (bv_unsigned option_)) prctl_modeled_options));
     [apply unmodeled_intro|].
   destruct (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ).
