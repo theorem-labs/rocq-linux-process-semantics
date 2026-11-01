@@ -4261,8 +4261,12 @@ Proof.
      their bool, so only the branch's own [Hsp] matches. *)
   intros inp (a & b & c & k & r & d & e & f & g & h & n & v & u & L).
   destruct (in_sigpipe_default inp) eqn:Hsp.
-  - left.  unfold valid_input.                 repeat split; assumption.
-  - right. unfold valid_input_sigpipe_ignored. repeat split; assumption.
+  - left.  unfold valid_input.
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
+  - right. unfold valid_input_sigpipe_ignored.
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** * THE READER DECLARATION: PINNED PRESENT, AND THE OTHER WORLD NAMED
