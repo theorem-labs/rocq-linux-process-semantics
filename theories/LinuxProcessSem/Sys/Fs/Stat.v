@@ -20,14 +20,33 @@ Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
 
+(** The flat [Fs] key an AT_FDCWD pathname names, for stat and readlink,
+    or [None] where the flat map cannot decide it.  A [..] component makes
+    the kernel climb, and a separator makes it walk a directory tree the
+    model does not hold, EXCEPT for a canonical "/tmp/<name>" key
+    ([tmp_name]), whose private directory [Open.openat_tmp_spec] already
+    assumes; the key of that shape is the whole path.  A name some key
+    lives under is an implied directory ([fs_under]), which the map does
+    not hold either.  The caller handles "." and ".." first: they are
+    directories, not flat-file keys. *)
+Definition statat_cwd_path (m : Model) (p : path) : option path :=
+  if path_has_dotdot p then None
+  else if fs_under (m_fs m) p then None
+  else if path_has_slash p then
+    match tmp_name p with
+    | Some _ => Some p
+    | None => None
+    end
+  else Some p.
+
 (** [readlinkat dirfd path buf bufsiz]: the modeled file system has NO
     symlinks (Fs.v: paths are uninterpreted names, no symlink objects),
     so no name a program can give it resolves to one — and readlink(2)
     on anything that is not a symlink is -EINVAL.  procfs is the
     exception the model knows of: it is mounted at /proc (SCOPE.md,
     "Assumptions that the model does not check"), and its names include
-    links ("/proc/self/exe", "/proc/self/fd/N"), so a procfs name is
-    declined.
+    links ("/proc/self/exe", "/proc/self/fd/N"), so every name that can
+    reach it ([statat_cwd_path] refuses it) is declined.
 
     KERNEL PATH, read at v6.18.44:
       fs/stat.c [SYSCALL_DEFINE4(readlinkat)], [do_readlinkat]: read at v6.18.44; identical at v6.18.46.
@@ -47,30 +66,39 @@ Open Scope sys_scope.
     [readlinkat(2^32 - 100, ...)] names the working directory as Linux
     does.  Then the name: the empty name is the working directory itself
     (LOOKUP_EMPTY), not a link, and [do_readlinkat] answers -ENOENT for
-    an empty name that is not one; a procfs name is declined; any other
-    is the -EINVAL.
+    an empty name that is not one; "." and ".." name directories and
+    answer -EINVAL; a path [statat_cwd_path] cannot safely represent,
+    including a non-/tmp separator name, is declined; a missing flat or
+    /tmp key is -ENOENT; an existing regular-file key is -EINVAL.
+
+    [getname_flags] can also fail allocation with -ENOMEM.  Like
+    [newfstatat_core_spec]'s APPROXIMATION 1, this model narrows that
+    environment failure rather than asserting an errno it cannot pin.
 
     THE COPY-IN LEDGER is [newfstatat_spec]'s: the range
     [cstr_access_len_aux] reports, on every answer past the [bufsiz]
     gate.  The buffer is never written: no answer here is a link's
-    target.
-
-    APPROXIMATION (deliberate, and the one this arm had before it read
-    the pathname).  A name the file system does not hold is -ENOENT on
-    Linux and -EINVAL here: the arm does not consult [Fs], so a missing
-    name is coarsened to the -EINVAL.  That is a FALSE REJECTION of a
-    conforming trace, not a fail-closed gap; no modeled binary consumes
-    readlinkat's result. *)
+    target. *)
 Definition readlinkat_core_spec (dirfd pathp : word) : Sys SyscallEffect :=
   i <- input ;;
+  m <- get_model ;;
   match read_cstr (in_mem i) pathp with
   | CstrTooLong => err_ret ENAMETOOLONG          (* no NUL within PATH_MAX *)
   | CstrFault => err_ret EFAULT                  (* unmapped byte in the path string *)
   | CstrOk p =>
       if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled   (* unmodeled dirfd: fail closed *)
       else if path_eqb p [] then err_ret ENOENT  (* the working directory: not a link *)
-      else if proc_path_b p then unmodeled       (* a procfs name: may be a link *)
-      else err_ret EINVAL                        (* no symlinks in [Fs] *)
+      else if path_eqb p dot_path || path_eqb p dotdot_path
+      then err_ret EINVAL                         (* a directory: not a link *)
+      else
+        match statat_cwd_path m p with
+        | None => unmodeled                       (* a path walk the flat model cannot decide *)
+        | Some q =>
+            match fs_lookup (m_fs m) q with
+            | None => err_ret ENOENT              (* filename_lookup's missing key *)
+            | Some _ => err_ret EINVAL            (* modeled regular file: not a link *)
+            end
+        end
   end.
 
 (** The [bufsiz] gate, then the pathname fetch, recorded.  [pathp] is a1
@@ -133,9 +161,9 @@ Definition newfstatat_proc_dir (fds : list (word * FdEntry)) (dirfd : word)
     NOT [Uapi.stat_buf_wf], whose [st_mode] must name one of the seven
     file types: a name under /proc can be a link to ANY open file
     ("/proc/self/fd/N"), and an anonymous inode has no type bits at all
-    ([alloc_anon_inode], fs/libfs.c, read at v6.18.44: "Historically
-    anonymous inodes don't have a type at all"), so that test would
-    reject a real answer. *)
+    ([alloc_anon_inode], fs/libfs.c, read at v6.18.44; identical at
+    v6.18.46: "Historically anonymous inodes don't have a type at
+    all"), so that test would reject a real answer. *)
 Definition stat_proc_buf_ok (bs : list byte) : bool :=
   (Nat.eqb (length bs) 128
    && Z.eqb (stat_field_le ST_PAD1_OFF 8 bs) 0
@@ -291,19 +319,23 @@ Definition newfstatat_proc_spec (statbuf : word) : Sys SyscallEffect :=
 
     Then the path.  "." is a path the model resolves to a directory
     ([Uapi.dot_path]), and a directory's metadata is as absent from [Fs]
-    as a file's, so it is declined too.  ".." is NOT declined here, and
-    that is a divergence rather than a choice: this spec lets it fall
-    through to [fs_lookup] and so answers a deterministic -ENOENT, an
-    errno Linux never gives for "..", while [Open.openat_spec] and
-    [Open.faccessat_spec] both resolve it ([Open.path_is_dirref]).  The
-    same model therefore says two things about "..", one function call
-    apart.  A procfs name ([Open.proc_path_b]: "/proc" or a name under
-    it with no ".." component) is declined too: procfs is mounted at
-    /proc (SCOPE.md, "Assumptions that the model does not check"), so
-    such a name resolves on Linux whatever [Fs] holds, and the flat
-    map's -ENOENT would be a wrong answer for it.  Any other path the
-    file system does not hold is the real -ENOENT; any path it does hold
-    would succeed on Linux, and is declined.
+    as a file's, so it is declined too.  ".." has a component the kernel
+    climbs on, so [statat_cwd_path] refuses it with every other path
+    holding a ".." component, and it is declined: the flat map cannot
+    say where the climb lands ([Open.openat_spec] and
+    [Open.faccessat_spec] resolve a bare ".." through
+    [Open.path_is_dirref]; this arm has no metadata for it either way).
+    A name with a separator is declined unless it is a canonical
+    "/tmp/<name>" key, as [Open.openat_spec], [Open.faccessat_spec] and
+    [Fs.Namei.unlinkat_spec] decline one: it walks directories the flat
+    map does not hold, and under the procfs assumption (SCOPE.md,
+    "Assumptions that the model does not check") any spelling that
+    reaches /proc — "//proc/self/exe", "/proc/../proc/self/exe",
+    "/tmp/../proc" — resolves whatever [Fs] holds.  A name some key
+    lives under is an implied directory ([fs_under]) and is declined
+    too.  Any other path the file system does not hold is the real
+    -ENOENT; any path it does hold would succeed on Linux, and is
+    declined.
 
     APPROXIMATION 1 (deliberate, and the same shape as
     [Open.openat_spec]'s path-resolution arms).  The -ENOENT is asserted
@@ -313,15 +345,9 @@ Definition newfstatat_proc_spec (statbuf : word) : Sys SyscallEffect :=
     target which diverge only under allocation failure are not
     distinguished.
 
-    APPROXIMATION 2 (deliberate, inherited from [Fs]'s flat namespace,
-    not introduced here).  Paths are uninterpreted byte strings with no
-    directory structure, so "f/x" where "f" is a regular file is simply
-    a key the map does not hold, and answers -ENOENT where Linux answers
-    -ENOTDIR.  [Open.openat_spec] does not have this property on the
-    same paths: it declines a pathname with a separator instead of
-    answering off the map.  This spec answers, so the divergence is
-    this spec's alone.
-    It is a fact about [Fs], and fixing it means giving [Fs] directories.
+    APPROXIMATION 2, which this arm USED to have ("f/x" answered -ENOENT
+    off the flat map where Linux answers -ENOTDIR), is gone with the
+    separator decline above.
 
     THE COPY-IN LEDGER.  The pathname fetch is a real
     [strncpy_from_user] of user memory, so it is recorded as one, with
@@ -393,12 +419,17 @@ Definition newfstatat_core_spec (dirfd pathp flag : word) : Sys SyscallEffect :=
                 extra arguments *)
            else unmodeled)                       (* unmodeled dirfd: fail closed *)
         else if path_eqb p dot_path then unmodeled  (* the working directory: no metadata in [Fs] *)
-        else if proc_path_b p then unmodeled     (* a procfs name: resolves whatever [Fs] holds *)
         else
-        match fs_lookup (m_fs m) p with
-        | None => err_ret ENOENT                 (* file absent: real -ENOENT, not a modeling gap *)
-        | Some _ => unmodeled                    (* resolves: 128 bytes [Fs] cannot supply *)
-        end
+          match statat_cwd_path m p with
+          | None => unmodeled
+              (* a ".." component, a non-/tmp separator path or an implied
+                 directory: may reach procfs or a directory [Fs] lacks *)
+          | Some q =>
+              match fs_lookup (m_fs m) q with
+              | None => err_ret ENOENT           (* file absent: real -ENOENT *)
+              | Some _ => unmodeled              (* resolves: 128 bytes [Fs] cannot supply *)
+              end
+          end
     end.
 
 (** The pathname fetch, recorded.  In Linux v6.18.46 [vfs_fstatat]
@@ -815,8 +846,8 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
                                         under [Uapi.urandom_path] *)
   | Some (FdOpaque _) => unmodeled
                                      (* DECLINED: [vfs_fstat]'s [CLASS(fd_raw, f)] accepts
-                                        an O_PATH file, so all three objects reach
+                                        an O_PATH file, so all four objects reach
                                         [cp_new_stat], with metadata the model does not
-                                        hold (fs/stat.c, read at v6.18.44) *)
+                                        hold (fs/stat.c, read at v6.18.44; identical at v6.18.46) *)
   end.
 

@@ -26,8 +26,17 @@ Definition readlinkat_core_witness (dirfd pathp : word) (i : SyscallInput)
   | CstrOk p =>
       if negb (bv_eqb dirfd AT_FDCWD32) then Unmodeled
       else if path_eqb p [] then ret_outcome (errno_ret ENOENT) m
-      else if proc_path_b p then Unmodeled
-      else ret_outcome (errno_ret EINVAL) m
+      else if path_eqb p dot_path || path_eqb p dotdot_path
+      then ret_outcome (errno_ret EINVAL) m
+      else
+        match statat_cwd_path m p with
+        | None => Unmodeled
+        | Some q =>
+            match fs_lookup (m_fs m) q with
+            | None => ret_outcome (errno_ret ENOENT) m
+            | Some _ => ret_outcome (errno_ret EINVAL) m
+            end
+        end
   end.
 
 Definition readlinkat_witness (dirfd : word) (i : SyscallInput) (m : Model)
@@ -42,11 +51,14 @@ Local Lemma readlinkat_core_witness_ok : forall dirfd pathp i m,
 Proof.
   intros. unfold readlinkat_core_spec, readlinkat_core_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
   destruct (read_cstr (in_mem i) pathp) as [p| |]; cbv beta iota;
     [|apply pure_ok|apply pure_ok].
   destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv beta iota; [apply unmodeled_intro|].
   destruct (path_eqb p []); cbv beta iota; [apply pure_ok|].
-  destruct (proc_path_b p); cbv beta iota; [apply unmodeled_intro|apply pure_ok].
+  destruct (path_eqb p dot_path || path_eqb p dotdot_path); cbv beta iota; [apply pure_ok|].
+  destruct (statat_cwd_path m p) as [q|]; cbv beta iota; [|apply unmodeled_intro].
+  destruct (fs_lookup (m_fs m) q); cbv beta iota; apply pure_ok.
 Qed.
 
 Lemma readlinkat_witness_ok : forall dirfd i m,
@@ -83,11 +95,15 @@ Definition newfstatat_core_witness (dirfd pathp flag : word) (i : SyscallInput)
                       end)
               else Unmodeled)                                   (* unmodeled dirfd *)
            else if path_eqb p dot_path then Unmodeled              (* directory metadata *)
-           else if proc_path_b p then Unmodeled                    (* a procfs name *)
-           else match fs_lookup (m_fs m) p with
-                | None => ret_outcome (errno_ret ENOENT) m         (* absent file *)
-                | Some _ => Unmodeled                              (* would succeed *)
-                end
+           else
+             match statat_cwd_path m p with
+             | None => Unmodeled
+             | Some q =>
+                 match fs_lookup (m_fs m) q with
+                 | None => ret_outcome (errno_ret ENOENT) m
+                 | Some _ => Unmodeled
+                 end
+             end
        end.
 
 (** The pathname bytes [newfstatat_spec] records ride along on every
@@ -141,19 +157,19 @@ Proof.
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot.
       apply unmodeled_intro. }
-    destruct (proc_path_b p) eqn:Hpp.
-    { eapply bind_step; [apply input_ok|].
+    destruct (statat_cwd_path m p) as [q|] eqn:Hcp.
+    2: { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot; srw Hpp.
+      cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot; srw Hcp.
       apply unmodeled_intro. }
-    destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs.
+    destruct (fs_lookup (m_fs m) q) as [data|] eqn:Hfs.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot; srw Hpp; srw Hfs.
+      cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot; srw Hcp; srw Hfs.
       apply unmodeled_intro.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
-      cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot; srw Hpp; srw Hfs.
+      cbv beta iota zeta; srw Hp; srw Hpe; srw Hdot; srw Hcp; srw Hfs.
       apply pure_ok.
 Qed.
 

@@ -31,8 +31,17 @@ Definition check_readlinkat (i : SyscallInput) (dirfd : word)
     | CstrOk p =>
         if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
         else if path_eqb p [] then check_ret_only_copyins reads eff (errno_ret ENOENT) m []
-        else if proc_path_b p then CheckUnmodeled
-        else check_ret_only_copyins reads eff (errno_ret EINVAL) m []
+        else if path_eqb p dot_path || path_eqb p dotdot_path
+        then check_ret_only_copyins reads eff (errno_ret EINVAL) m []
+        else
+          match statat_cwd_path m p with
+          | None => CheckUnmodeled
+          | Some q =>
+              match fs_lookup (m_fs m) q with
+              | None => check_ret_only_copyins reads eff (errno_ret ENOENT) m []
+              | Some _ => check_ret_only_copyins reads eff (errno_ret EINVAL) m []
+              end
+          end
     end.
 
 Lemma check_readlinkat_sound_ok : forall i dirfd eff m m' evs,
@@ -48,24 +57,42 @@ Proof.
   2: { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
        apply record_copyins_ok_empty; [reflexivity|].
        unfold readlinkat_core_spec.
-       eapply bind_ok0; [apply input_ok|]. cbv beta. srw Hp. apply pure_ok. }
+       eapply bind_ok0; [apply input_ok|]. cbv beta.
+       eapply bind_ok0; [apply get_model_ok|]. cbv beta. srw Hp. apply pure_ok. }
   2: { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
        apply record_copyins_ok_empty; [reflexivity|].
        unfold readlinkat_core_spec.
-       eapply bind_ok0; [apply input_ok|]. cbv beta. srw Hp. apply pure_ok. }
+       eapply bind_ok0; [apply input_ok|]. cbv beta.
+       eapply bind_ok0; [apply get_model_ok|]. cbv beta. srw Hp. apply pure_ok. }
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; [discriminate|].
   destruct (path_eqb p []) eqn:Hpe.
   { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
     apply record_copyins_ok_empty; [reflexivity|].
     unfold readlinkat_core_spec.
-    eapply bind_ok0; [apply input_ok|]. cbv beta. srw Hp. srw Hd. srw Hpe.
+    eapply bind_ok0; [apply input_ok|]. cbv beta.
+    eapply bind_ok0; [apply get_model_ok|]. cbv beta. srw Hp. srw Hd. srw Hpe.
     apply pure_ok. }
-  destruct (proc_path_b p) eqn:Hpp; [discriminate|].
-  apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
-  apply record_copyins_ok_empty; [reflexivity|].
-  unfold readlinkat_core_spec.
-  eapply bind_ok0; [apply input_ok|]. cbv beta. srw Hp. srw Hd. srw Hpe. srw Hpp.
-  apply pure_ok.
+  destruct (path_eqb p dot_path || path_eqb p dotdot_path) eqn:Hdir.
+  { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|].
+    unfold readlinkat_core_spec.
+    eapply bind_ok0; [apply input_ok|]. cbv beta.
+    eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+    srw Hp. srw Hd. srw Hpe. srw Hdir. apply pure_ok. }
+  destruct (statat_cwd_path m p) as [q|] eqn:Hcp; [|discriminate].
+  destruct (fs_lookup (m_fs m) q) as [data|] eqn:Hfs.
+  - apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|].
+    unfold readlinkat_core_spec.
+    eapply bind_ok0; [apply input_ok|]. cbv beta.
+    eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+    srw Hp. srw Hd. srw Hpe. srw Hdir. srw Hcp. srw Hfs. apply pure_ok.
+  - apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|].
+    unfold readlinkat_core_spec.
+    eapply bind_ok0; [apply input_ok|]. cbv beta.
+    eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+    srw Hp. srw Hd. srw Hpe. srw Hdir. srw Hcp. srw Hfs. apply pure_ok.
 Qed.
 
 Lemma check_readlinkat_sound_unmodeled : forall i dirfd eff m,
@@ -82,12 +109,16 @@ Proof.
     [| now apply check_ret_only_copyins_no_unmodeled in H
      | now apply check_ret_only_copyins_no_unmodeled in H ].
   unfold readlinkat_core_spec.
-  eapply bind_unmodeled2; [apply input_ok|]. cbv beta. srw Hp.
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta. srw Hp.
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; [apply unmodeled_intro|].
   destruct (path_eqb p []) eqn:Hpe;
     [now apply check_ret_only_copyins_no_unmodeled in H|].
-  destruct (proc_path_b p) eqn:Hpp; [apply unmodeled_intro|].
-  now apply check_ret_only_copyins_no_unmodeled in H.
+  destruct (path_eqb p dot_path || path_eqb p dotdot_path) eqn:Hdir;
+    [now apply check_ret_only_copyins_no_unmodeled in H|].
+  destruct (statat_cwd_path m p) as [q|] eqn:Hcp; [|apply unmodeled_intro].
+  destruct (fs_lookup (m_fs m) q) as [data|] eqn:Hfs;
+    now apply check_ret_only_copyins_no_unmodeled in H.
 Qed.
 
 Lemma check_readlinkat_complete_ok : forall i dirfd eff m m' evs,
@@ -110,8 +141,11 @@ Proof.
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; hall Hd; inv_ok.
   destruct (path_eqb p []) eqn:Hpe; hall Hpe; inv_ok.
   { cbn [eff_copyins with_copyins app]. apply check_ret_only_copyins_refl. }
-  destruct (proc_path_b p) eqn:Hpp; hall Hpp; inv_ok.
-  cbn [eff_copyins with_copyins app]. apply check_ret_only_copyins_refl.
+  destruct (path_eqb p dot_path || path_eqb p dotdot_path) eqn:Hdir; hall Hdir; inv_ok.
+  { cbn [eff_copyins with_copyins app]. apply check_ret_only_copyins_refl. }
+  destruct (statat_cwd_path m p) as [q|] eqn:Hcp; hall Hcp; inv_ok.
+  destruct (fs_lookup (m_fs m) q) as [data|] eqn:Hfs; hall Hfs; inv_ok;
+    cbn [eff_copyins with_copyins app]; apply check_ret_only_copyins_refl.
 Qed.
 
 Lemma check_readlinkat_complete_unmodeled : forall i dirfd m eff,
@@ -131,8 +165,12 @@ Proof.
   destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; hall Hd; inv_ok;
     try discriminate; [reflexivity|].
   destruct (path_eqb p []) eqn:Hpe; hall Hpe; inv_ok; try discriminate.
-  destruct (proc_path_b p) eqn:Hpp; hall Hpp; inv_ok; try discriminate.
-  reflexivity.
+  destruct (path_eqb p dot_path || path_eqb p dotdot_path) eqn:Hdir; hall Hdir; inv_ok;
+    try discriminate.
+  destruct (statat_cwd_path m p) as [q|] eqn:Hcp; hall Hcp; inv_ok;
+    try discriminate; [|reflexivity].
+  destruct (fs_lookup (m_fs m) q) as [data|] eqn:Hfs; hall Hfs; inv_ok;
+    try discriminate; reflexivity.
 Qed.
 
 (** [Stat.newfstatat_proc_spec] as an acceptor, under the pathname
@@ -329,12 +367,15 @@ Definition check_newfstatat (i : SyscallInput) (dirfd pathp flag : word)
            then check_newfstatat_proc i reads (in_arg i 2) eff m
            else CheckUnmodeled)
         else if path_eqb p dot_path then CheckUnmodeled
-        else if proc_path_b p then CheckUnmodeled
         else
-        match fs_lookup (m_fs m) p with
-        | None => check_ret_only_copyins reads eff (errno_ret ENOENT) m []
-        | Some _ => CheckUnmodeled
-        end
+          match statat_cwd_path m p with
+          | None => CheckUnmodeled
+          | Some q =>
+              match fs_lookup (m_fs m) q with
+              | None => check_ret_only_copyins reads eff (errno_ret ENOENT) m []
+              | Some _ => CheckUnmodeled
+              end
+          end
     end.
 
 (** The four inversions the completeness lemmas need, to strip
@@ -456,15 +497,15 @@ Proof.
     eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
     srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hpd. exact H. }
   destruct (path_eqb p dot_path) eqn:Hdot; [discriminate|].
-  destruct (proc_path_b p) eqn:Hpp; [discriminate|].
-  destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; [discriminate|].
+  destruct (statat_cwd_path m p) as [q|] eqn:Hcp; [|discriminate].
+  destruct (fs_lookup (m_fs m) q) as [data|] eqn:Hfs; [discriminate|].
   (* the file is absent: -ENOENT *)
   apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
   apply record_copyins_ok_empty; [reflexivity|].
   unfold newfstatat_core_spec.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-  srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. srw Hpp. srw Hfs.
+  srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. srw Hcp. srw Hfs.
   apply pure_ok.
 Qed.
 
@@ -502,17 +543,17 @@ Proof.
     eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
     srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. apply unmodeled_intro. }
-  destruct (proc_path_b p) eqn:Hpp.
-  { unfold newfstatat_core_spec.
+  destruct (statat_cwd_path m p) as [q|] eqn:Hcp.
+  2: { unfold newfstatat_core_spec.
     eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-    srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. srw Hpp. apply unmodeled_intro. }
-  destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;
+    srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. srw Hcp. apply unmodeled_intro. }
+  destruct (fs_lookup (m_fs m) q) as [data|] eqn:Hfs;
     [|now apply check_ret_only_copyins_no_unmodeled in H].
   unfold newfstatat_core_spec.
   eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-  srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. srw Hpp. srw Hfs. apply unmodeled_intro.
+  srw Hfl. srw Hp. srw Hpe. srw Hd. srw Hdot. srw Hcp. srw Hfs. apply unmodeled_intro.
 Qed.
 
 Lemma check_newfstatat_complete_ok : forall i dirfd pathp flag eff m m' evs,
@@ -542,8 +583,8 @@ Proof.
     end.
     rewrite Hci. exact Hc. }
   destruct (path_eqb p dot_path) eqn:Hdot; hall Hdot; inv_ok.
-  destruct (proc_path_b p) eqn:Hpp; hall Hpp; inv_ok.
-  destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok.
+  destruct (statat_cwd_path m p) as [q|] eqn:Hcp; hall Hcp; inv_ok.
+  destruct (fs_lookup (m_fs m) q) as [data|] eqn:Hfs; hall Hfs; inv_ok.
   cbn [eff_copyins with_copyins app]. apply check_ret_only_copyins_refl.
 Qed.
 
@@ -568,9 +609,9 @@ Proof.
       [now apply check_newfstatat_proc_complete_unmodeled|reflexivity]. }
   destruct (path_eqb p dot_path) eqn:Hdot; hall Hdot; inv_ok;
     try discriminate; [reflexivity|].
-  destruct (proc_path_b p) eqn:Hpp; hall Hpp; inv_ok;
-    try discriminate; [reflexivity|].
-  destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok;
+  destruct (statat_cwd_path m p) as [q|] eqn:Hcp; hall Hcp; inv_ok;
+    try discriminate; [|reflexivity].
+  destruct (fs_lookup (m_fs m) q) as [data|] eqn:Hfs; hall Hfs; inv_ok;
     try discriminate; reflexivity.
 Qed.
 
