@@ -656,3 +656,60 @@ Proof.
   - intros Hs. injection Hs as <-. rewrite bv_eqb_same. reflexivity.
   - intros Hs. rewrite Hb. apply IH. exact Hs.
 Qed.
+
+(* =========================================================================
+   Chaining a deterministic stretch
+   ========================================================================= *)
+
+(** [mepa_det_step] consumes ONE deterministic transition.  A segment is
+    [k] of them, so this is the chain: a reflexive-transitive closure of
+    "the successor is unique and it is this one", which carries
+    [must_exit_in_p_at] backwards along the whole stretch.
+
+    This is the shape a multi-step segment lemma fits, and it is why the
+    per-step route was abandoned: the segment never has to be taken
+    apart. *)
+Inductive det_run (segs : list Segment) (cfg : SpuriousCfg)
+  : pconfig -> pconfig -> Prop :=
+| det_refl : forall P, det_run segs cfg P P
+| det_step : forall P P' P'',
+    ~ terminal P ->
+    (exists evs st, pstep_cfg segs cfg P evs st) ->
+    (forall evs, ~ pstep_cfg segs cfg P evs PError) ->
+    (forall evs P2, pstep_cfg segs cfg P evs (PNext P2) -> P2 = P') ->
+    det_run segs cfg P' P'' ->
+    det_run segs cfg P P''.
+
+(** THE CHAIN.  If a deterministic stretch ends somewhere that halts
+    well, then it halts well from the start.  Every intermediate
+    configuration is visited by the induction, and none of them needs to
+    satisfy an invariant: determinism is doing the work the invariant
+    would otherwise do. *)
+Theorem must_exit_in_p_at_det_run : forall segs cfg S P P',
+  det_run segs cfg P P' ->
+  must_exit_in_p_at segs cfg S P' ->
+  must_exit_in_p_at segs cfg S P.
+Proof.
+  intros segs cfg S P P' Hr. induction Hr as [|P1 P2 P3 Ht Hp Hne Hd Hr IH].
+  - intros H. exact H.
+  - intros H. apply (mepa_det_step segs cfg S P1 P2); auto.
+Qed.
+
+(** One link, which is what a caller builds a [det_run] out of. *)
+Lemma det_one : forall segs cfg P P',
+  ~ terminal P ->
+  (exists evs st, pstep_cfg segs cfg P evs st) ->
+  (forall evs, ~ pstep_cfg segs cfg P evs PError) ->
+  (forall evs P2, pstep_cfg segs cfg P evs (PNext P2) -> P2 = P') ->
+  det_run segs cfg P P'.
+Proof.
+  intros segs cfg P P' H1 H2 H3 H4.
+  eapply det_step; try eassumption. apply det_refl.
+Qed.
+
+Lemma det_trans : forall segs cfg P P' P'',
+  det_run segs cfg P P' -> det_run segs cfg P' P'' -> det_run segs cfg P P''.
+Proof.
+  intros segs cfg P P' P'' H; induction H as [|A B C Ht Hp Hne Hd Hr IH];
+    [auto|]. intros H2. eapply det_step; try eassumption. apply IH. exact H2.
+Qed.
