@@ -68,6 +68,9 @@
 From Stdlib Require Import ZArith NArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
+(** [reg_get], which [RiscvSemantics.ms_gpr] is defined through and which
+    the a0 lemmas below unfold. *)
+From LinuxProcessSemantics.Riscv Require Import Sem.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Syscall Uapi.
 From LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel Require Import Exit Fork.
 (** [NsState] and [NsCtx].  This file DEPENDS ON [Ns/Tables.v] and does not
@@ -787,10 +790,13 @@ Lemma pstep_single_next_fwd : forall segs cfg c evs P',
 Proof.
   intros segs cfg c evs P' Hcl Hwt Hp. destruct Hp as [p Hp].
   inversion Hp; subst;
-    match goal with
-    | [ Hlook : look (one_proc c) _ = Some _ |- _ ] =>
-        rewrite (look_one_proc_inv _ _ _ Hlook) in *
-    end;
+    (* EVERY lookup hypothesis, not the first that matches: the reap arm has
+       two of them, and normalising only one leaves its stepping entry
+       abstract, so [one_proc_view] then has nothing to rewrite. *)
+    repeat match goal with
+           | [ H : look (one_proc c) _ = Some ?x |- _ ] =>
+               rewrite (look_one_proc_inv _ _ _ H) in *
+           end;
     rewrite one_proc_view in *.
   - (* pstep_other: the step this lemma is about *)
     match goal with
@@ -1077,10 +1083,48 @@ Qed.
 (** The child a clone appends has a0 = 0: that is what [child_ms] writes,
     with [set_reg]'s PHYSICAL register 10, which is a0, read back at
     [ms_gpr]'s ARGUMENT index 0, which is the same register. *)
+(** Reading argument index 0 after writing physical register 10 gives the
+    value written: the two numberings meet at a0, and [cbn] does not see it
+    because the register file is a trie over an abstract map. *)
+(** [ms_gpr]'s key is [Z_to_bv 5 (10 + Z.of_nat i)] and [set_reg]'s is the
+    literal, and the two are convertible but not syntactically equal, so
+    [rewrite] cannot match [bvmap_get_set_same] against them.  These two
+    variants take the key equality as a side goal, which [reflexivity]
+    discharges by conversion. *)
+Lemma bvmap_get_set_same' {n A} (k k' : bv n) (x : A) m :
+  k = k' -> bvmap_get k' (bvmap_set k x m) = Some x.
+Proof. intros ->. apply bvmap_get_set_same. Qed.
+
+Lemma bvmap_get_set_other' {n A} (k k' : bv n) (x : A) m :
+  k <> k' -> bvmap_get k' (bvmap_set k x m) = bvmap_get k' m.
+Proof. intros Hne. apply bvmap_get_set_other. exact Hne. Qed.
+
+Lemma ms_gpr_set_reg_a0 : forall ms v, ms_gpr (set_reg ms 10 v) 0 = v.
+Proof.
+  intros ms v. unfold ms_gpr, set_reg, reg_get. simpl.
+  (* the two key spellings are equal but NOT convertible: a [bv] numeral is
+     not [Z_to_bv], so the equality goes through [bv_eq], which is equality
+     of the unsigned readings. *)
+  erewrite bvmap_get_set_same' by (apply bv_eq; reflexivity). reflexivity.
+Qed.
+
+(** And writing the stack pointer afterwards does not disturb it: x2 is not
+    x10. *)
+Lemma ms_gpr_set_reg_sp_a0 : forall ms v w,
+  ms_gpr (set_reg (set_reg ms 10 v) 2 w) 0 = v.
+Proof.
+  intros ms v w. unfold ms_gpr, set_reg, reg_get. simpl.
+  erewrite bvmap_get_set_other'
+    by (intros Hk; apply (f_equal bv_unsigned) in Hk; discriminate).
+  erewrite bvmap_get_set_same' by (apply bv_eq; reflexivity). reflexivity.
+Qed.
+
 Lemma child_entry_a0_zero : forall e c c' q,
   entry_a0_zero (child_entry e c c' q).
 Proof.
   intros e c c' q.
-  unfold entry_a0_zero, child_entry, child_ms. cbn.
-  destruct (w_is0 (ms_gpr (cfg_ms c) 1)); reflexivity.
+  unfold entry_a0_zero, child_entry, child_ms. cbn [pe_ms].
+  destruct (w_is0 (ms_gpr (cfg_ms c) 1)).
+  - apply ms_gpr_set_reg_a0.
+  - apply ms_gpr_set_reg_sp_a0.
 Qed.
