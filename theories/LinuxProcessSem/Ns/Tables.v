@@ -68,13 +68,14 @@ Record IdExtent := mkExtent {
 }.
 
 Record UserNs := mkUserNs {
-  uns_id                : positive;
-  uns_parent            : option positive;
-  uns_level             : nat;
-  uns_owner             : Z;
-  uns_uid_map           : option (list IdExtent);   (** None until written *)
-  uns_gid_map           : option (list IdExtent);
-  uns_setgroups_allowed : bool
+  uns_id                   : positive;
+  uns_parent               : option positive;
+  uns_level                : nat;
+  uns_owner                : Z;                        (** kuid of the creator's euid *)
+  uns_uid_map              : option (list IdExtent);   (** None until written; lower ids are kernel ids *)
+  uns_gid_map              : option (list IdExtent);
+  uns_setgroups_allowed    : bool;
+  uns_parent_could_setfcap : bool                      (** the creator held CAP_SETFCAP *)
 }.
 
 (** A mount namespace: its owner, and the mount fixed as its root when it
