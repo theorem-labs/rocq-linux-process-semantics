@@ -219,13 +219,6 @@ Definition name_to_int (s : list byte) : option Z :=
       end
   end.
 
-(** The pid of the task in pid namespace [pidns] ([task_tgid_nr_ns]). *)
-Fixpoint pid_in (ps : list (positive * Z)) (pidns : positive) : option Z :=
-  match ps with
-  | [] => None
-  | (ns, p) :: rest => if Pos.eqb ns pidns then Some p else pid_in rest pidns
-  end.
-
 Fixpoint name_lists_eqb (a b : list (list byte)) : bool :=
   match a, b with
   | [], [] => true

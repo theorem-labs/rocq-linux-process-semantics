@@ -320,18 +320,42 @@ Proof.
     exists e, st. split; [exact He | split; [left; reflexivity | exact Ho]].
 Qed.
 
-(** The clone failures of a run in which THE HOST CAN MAKE THE NAMESPACES:
-    an ENVIRONMENT PREMISE of every statement that names this
-    [Ext.CloneEnv].  A clone that makes a namespace, or one by a task
-    outside the released world, fails only as the tables say
-    ([clone_ns_exact]: EPERM, EINVAL, ENOSPC from the model's own
-    namespaces); a run in which the host refuses on an allocation, a
-    namespace count, a cgroup controller, RLIMIT_NPROC, a pending fatal
-    signal or a security module is outside such a statement.  The released
-    clone (a task in the released world, a word with no namespace bit)
-    keeps every failure the core admits. *)
+(** Where [clone_creds]'s count check is not decided by the tables
+    ([ucount_check] gives [ChargeEither]: a level's count is at its limit,
+    but the namespaces the tables hold for the caller are under it), Linux
+    answers ENOSPC or goes on, depending on whether namespaces made earlier
+    are still alive, which the tables do not hold; [unshare_exact] admits
+    both there too. *)
+Definition clone_count_undecided (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) : bool :=
+  has_flag f CLONE_NEWUSER
+  && match find_userns (ns_userns st) (cx_user ctx) with
+     | Some p =>
+         negb (Nat.ltb 32 (uns_level p))
+         && match ucount_check (ns_userns st) (cx_user ctx) p (bv_unsigned (cr_euid (m_creds m))) with
+            | ChargeEither => true
+            | _ => false
+            end
+     | None => false
+     end.
+
+(** The clone failures of a run in which THE HOST CAN MAKE THE NAMESPACES
+    AND THE PROCESSES: an ENVIRONMENT PREMISE of every statement that names
+    this [Ext.CloneEnv].  A clone that makes a namespace, or one by a task
+    outside the released world (a fork inside the namespaces included),
+    fails only as the tables say: [clone_ns_exact]'s answer (EPERM, EINVAL,
+    ENOSPC from the model's own namespaces), or ENOSPC where the tables do
+    not decide the namespace count ([clone_count_undecided]).  A run in
+    which the host refuses on an allocation, a namespace count of its own,
+    a cgroup controller, RLIMIT_NPROC, a pending fatal signal or a security
+    module, or in which a pid namespace's init has exited (ENOMEM from
+    [alloc_pid]: which processes live is the core's table, not the
+    namespace state), is outside such a statement.  The released clone (a
+    task in the released world, a word with no namespace bit) keeps every
+    failure the core admits. *)
 Definition clone_tables_failures : CloneEnv := fun f m ctx st hq e st' =>
-  (flat_view ctx st && negb (has_ns_bits f)) = true \/ CnErr e st' = clone_ns_exact f m ctx st hq.
+  (flat_view ctx st && negb (has_ns_bits f)) = true
+  \/ CnErr e st' = clone_ns_exact f m ctx st hq
+  \/ (e = ENOSPC /\ st' = st /\ clone_count_undecided f m ctx st = true).
 
 (** In the released world, for a word with no namespace bit, it admits
     every failure. *)

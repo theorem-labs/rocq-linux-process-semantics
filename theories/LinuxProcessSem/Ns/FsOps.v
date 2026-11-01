@@ -536,6 +536,33 @@ Definition write_arm : NsArm := fun i m ctx st o =>
   | None => released i m ctx st o
   end.
 
+(** A descriptor the released model owns: neither one of the namespace
+    model's open files ([ns_file_of]) nor an eventfd, whose counter other
+    processes share and which [read_arm] answers with every value Linux
+    can return ([eventfd_read_arm]).  A number that is not open is one too:
+    the released model answers EBADF. *)
+Definition released_owned (m : Model) (st : NsState) (fd : word) : Prop :=
+  ns_file_of m st fd = None /\ eventfd_flags_of m fd = None.
+
+(** A READ ON A DESCRIPTOR THE RELEASED MODEL OWNS HAS EXACTLY THE RELEASED
+    ANSWERS, for every input and in every world: the released world, or one
+    with a mount tree where released descriptors and the namespace model's
+    files coexist ([Ext.ext_coherent] gives it only in the released
+    world). *)
+Theorem read_arm_released : forall i m ctx st o,
+  released_owned m st (fd_word (in_arg i 0)) ->
+  (read_arm i m ctx st o <-> released i m ctx st o).
+Proof.
+  intros i m ctx st o [Hns Hev]. unfold read_arm. cbv zeta. rewrite Hev, Hns. reflexivity.
+Qed.
+
+(** The same for write, which answers an eventfd as the released model
+    does: only the namespace model's own files are not released. *)
+Theorem write_arm_released : forall i m ctx st o,
+  ns_file_of m st (fd_word (in_arg i 0)) = None ->
+  (write_arm i m ctx st o <-> released i m ctx st o).
+Proof. intros i m ctx st o Hns. unfold write_arm. rewrite Hns. reflexivity. Qed.
+
 (* =========================================================================
    fchmod and unlinkat
    ========================================================================= *)
@@ -605,9 +632,29 @@ Definition fchmod_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
   | _ => EUnmodeled
   end.
 
+(** [security_path_chmod] runs after [mnt_want_write] (fs/open.c:638-645):
+    the answers before it (EBADF, EROFS, a file the arm declines) have no
+    security-module alternative. *)
+Definition fchmod_hook_reached (m : Model) (ctx : NsCtx) (st : NsState) (f : NsFile) : bool :=
+  match nf_kind f with
+  | NfFile l _ | NfDir l _ =>
+      match l, loc_mnt_sb st l with
+      | LDentry _ d, Some (mt, sb) =>
+          match sb_kind sb, dentry_inode st d, loc_attr m ctx st l with
+          | SbTmpfs, Some _, Some _ => negb (mf_ro (mnt_flags mt) || sb_rdonly sb)
+          | _, _, _ => false
+          end
+      | _, _ => false
+      end
+  | _ => false
+  end.
+
 Definition fchmod_arm : NsArm := fun i m ctx st o =>
   match ns_file_of m st (fd_word (in_arg i 0)) with
-  | Some (_, f) => with_injected lsm_errno (fun i' m' ctx' st' o' => o' = fchmod_fn i' m' ctx' st' f) i m ctx st o
+  | Some (_, f) =>
+      o = fchmod_fn i m ctx st f
+      \/ (fchmod_hook_reached m ctx st f = true
+          /\ injected_after lsm_errno (fchmod_fn i m ctx st f) m ctx st o)
   | None => released i m ctx st o
   end.
 
@@ -724,8 +771,43 @@ Definition unlinkat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsStat
         end
     end.
 
-Definition unlinkat_arm : NsArm :=
-  with_injected lsm_errno (fun i m ctx st o => o = unlinkat_fn i m ctx st).
+(** [security_path_unlink] runs after the lookup found the name and the
+    trailing-slash check passed (fs/namei.c:4729-4738): the answers before
+    it have no security-module alternative. *)
+Definition unlinkat_hook_reached (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : bool :=
+  let flags := s32 (in_arg i 2) in
+  if negb (Z.eqb (Z.land flags (Z.lnot AT_REMOVEDIR)) 0) || has flags AT_REMOVEDIR then false
+  else
+    match path_arg i (in_arg i 1) with
+    | POk ((_ :: _) as p) =>
+        match walk_parent_from m ctx st (walk_creds m) (in_arg i 0) p
+                               (mkWalkFlags false false false false false) with
+        | ((WOk ((LDentry mn d) as parent), name, LastNorm), _) =>
+            match loc_mnt_sb st parent, loc_attr m ctx st parent with
+            | Some (mt, sb), Some _ =>
+                match sb_kind sb with
+                | SbTmpfs =>
+                    negb (mf_ro (mnt_flags mt) || sb_rdonly sb) && negb (Nat.ltb NAME_MAX (length name))
+                    && match child_dentry st d name with
+                       | Some x => match loc_attr m ctx st (LDentry mn (d_id x)) with
+                                   | Some _ => negb (path_trailing_slash p)
+                                   | None => false
+                                   end
+                       | None => false
+                       end
+                | _ => false
+                end
+            | _, _ => false
+            end
+        | _ => false
+        end
+    | _ => false
+    end.
+
+Definition unlinkat_arm : NsArm := fun i m ctx st o =>
+  o = unlinkat_fn i m ctx st
+  \/ (unlinkat_hook_reached i m ctx st = true
+      /\ injected_after lsm_errno (unlinkat_fn i m ctx st) m ctx st o).
 
 (* =========================================================================
    Exports

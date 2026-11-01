@@ -179,12 +179,12 @@ Proof. intros m. vm_compute. reflexivity. Qed.
     every failure of the released clone (a plain fork from the host). *)
 Example clone_env_failure_outside : forall m,
   ~ clone_tables_failures ALL_NS (with_creds (creds 65534) m) caller host 138 12 host.
-Proof. intros m [H | H]; vm_compute in H; discriminate H. Qed.
+Proof. intros m [H | [H | (H & _)]]; vm_compute in H; discriminate H. Qed.
 
 Example clone_tables_failure_inside : forall m,
   clone_tables_failures (Z.lor CLONE_NEWNS SIGCHLD) (with_creds (creds 65534) m)
     no_admin_inside inside 140 1 inside.
-Proof. intros m. right. vm_compute. reflexivity. Qed.
+Proof. intros m. right. left. vm_compute. reflexivity. Qed.
 
 Example released_fork_failure_inside : forall m,
   clone_tables_failures SIGCHLD m caller host 138 12 host.

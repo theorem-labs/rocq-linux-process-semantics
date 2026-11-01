@@ -324,6 +324,14 @@ Record NsCtx := mkNsCtx {
   cx_dumpable     : option Z
 }.
 
+(** The pid of the task in pid namespace [pidns] ([task_tgid_nr_ns]), from
+    its pids [cx_pids], innermost first. *)
+Fixpoint pid_in (ps : list (positive * Z)) (pidns : positive) : option Z :=
+  match ps with
+  | [] => None
+  | (ns, p) :: rest => if Pos.eqb ns pidns then Some p else pid_in rest pidns
+  end.
+
 (** The shared state of a system the namespace model knows nothing of: no
     mount tree and no namespace, Linux's default mount limit (100000) and
     no procfs entry.  A core builds its released world from this, never
