@@ -309,7 +309,7 @@ mutated effect claims. Under `revision/entry` the vDSO/vvar pair is in the
 ledger, `mremap_inplace_grow_b` is false, only the move arm remains, and an
 effect with `ret = a0` and no unmaps or copies is not a move. The branch does
 not need a new claim about when Linux moves — it needs only the neighbour to be
-in the ledger, which is what OSSV-257 puts there.
+in the ledger, which is what the start-state work puts there.
 
 ### 4d. Traces that newly reproduce
 

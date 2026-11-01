@@ -79,8 +79,9 @@ Definition append_create_flags : Z := (O_WRONLY + O_CREAT + O_APPEND)%Z.
     this port differs from main LPS 4d80c33d83: that model admits
     -EISDIR beside it, the answer kernels v4.17 through v5.6 give in the
     function [do_open] replaced.  This model describes Linux v6.18.46
-    alone (dispatch://OSSV-266/ask/9128d2b8), so the arm answers
-    v6.18.46's -EEXIST and offers no alternative.  An absent name is
+    alone, so the arm answers
+    v6.18.46's -EEXIST and offers no alternative across kernel
+    versions.  An absent name is
     created, and then
     [do_open] clears O_TRUNC under [FMODE_CREATED] (which is why the
     O_TRUNC spelling is the same behaviour, as it is for
@@ -561,8 +562,7 @@ Definition open_append (p : path) (m : Model) : Sys SyscallEffect :=
 
     A DIRECTORY REFERENCE IS -EEXIST, with no second answer.  Main LPS
     4d80c33d83 admits -EISDIR beside it, for kernels v4.17 through v5.6.
-    This model describes Linux v6.18.46 alone
-    (dispatch://OSSV-266/ask/9128d2b8), and an [alt] over two kernel
+    This model describes Linux v6.18.46 alone, and an [alt] over two kernel
     versions is the same defect as an [alt] over two systems.  At
     v6.18.46 [do_open] (fs/namei.c) returns -EEXIST at
     [(open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED)], the test

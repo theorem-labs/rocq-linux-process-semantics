@@ -6,7 +6,7 @@
 
     THE ADDRESS IS LINUX'S.  [Sys/Mm/Mmap.linux_place] says where a
     fresh anonymous mapping goes, and [Checks/Placement.linux_place_b]
-    computes it.  The cases below are the five the OSSV-231 plan's
+    computes it.  The cases below are the five the placement plan's
     "Review Focus" names: a hint of 1 to 4095, a hint that is not page
     aligned, the hint 2^64-1, a transparent-huge-page kernel, and the
     same kernel without it.  Each one is a place where a reader's
@@ -99,7 +99,7 @@ Proof. vm_compute. reflexivity. Qed.
 
     Before this change the model admitted any free page-aligned address
     below [alloc_top], which is what let it refuse a mapping the same
-    Linux launch grants — the holes of OSSV-210. *)
+    Linux launch grants — the placement holes. *)
 Example place_first_grant_is_under_the_vdso :
   linux_place_b (m_vmmaps place_model) false (Z_to_bv 64 0) 4096
   = Some 23387528560640%Z.

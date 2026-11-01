@@ -8,7 +8,7 @@
     proves the conjunct EQUAL to the set of start states a Linux
     v6.18.46 (commit 1f99e9ab748f) launch gives.
 
-    THE FIXTURE, the spec's (dispatch://OSSV-257, acceptance A1): argv
+    THE FIXTURE, acceptance item A1 of the start-state specification: argv
     ["a"], no envp, exec file name "a", uid = gid = 1000, AT_HWCAP
     without V, CONFIG_RSEQ on, a guard gap of 256 pages,
     [vm.mmap_rnd_bits] 18, no vector unit, no cache leaf reported and
@@ -133,8 +133,7 @@ Definition linux_mmap_base (v : VaSize) (kb : KernelBuild) (q : Z) : Z :=
     while [r] and [r'] are NOT: [load_elf_binary] reads
     [randomize_va_space] once for PF_RANDOMIZE, and [arch_align_stack]
     reads the global again at each call, so a root write to the sysctl
-    during the [execve] gives the pad with no draw
-    (dispatch://OSSV-257/ask/a4606aae). *)
+    during the [execve] gives the pad with no draw. *)
 Definition linux_launch_state (v : VaSize) (inp : ProcInput)
     (k r' r q : Z) (top sp mbase : Z) : Prop :=
   let kb := in_kernel inp in
@@ -803,8 +802,7 @@ Qed.
 
 (** THE BOTTOM OF THE RACED RANGE.  Without randomization the stack
     pointer can still be two pages below the unraced launch's, because
-    [arch_align_stack] reads [randomize_va_space] again
-    (dispatch://OSSV-257/ask/a4606aae); the lowest it reaches is
+    [arch_align_stack] reads [randomize_va_space] again; the lowest it reaches is
     0x7fffffffddf0.  Sixteen bytes below that is no launch, for every
     stack top and every value of the launch facts with randomization
     off. *)

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """check_start_state.py - EVIDENCE, no longer the A4 check.
 
-THIS SCRIPT IS NOT THE CHECK ANY MORE.  A4 of dispatch://OSSV-257 is checked
+THIS SCRIPT IS NOT THE CHECK ANY MORE.  Acceptance item A4 of the start-state
+specification is checked
 by start_state_to_rocq.py, which emits a Rocq file per log whose lemmas Rocq
 closes with vm_compute against the model's own source.  What this script
 compares the record with is the PYTHON TRANSCRIPTION below: a second model of
@@ -20,8 +21,8 @@ It reads a real Linux launch against a transcription of the LPS entry model.
 Each LOG is a start-state log that run-kernel.sh wrote (one launch object,
 the "run" key "fixture" or "long").  The script rebuilds, from the launch
 facts the log records, what LPS says the start state must be, and compares it
-with what the kernel did.  It prints a verdict for each of A4's three
-sub-checks (dispatch://OSSV-257, acceptance A4):
+with what the kernel did.  It prints a verdict for each of the three
+sub-checks of acceptance item A4 of the start-state specification:
 
   1. Run.entry_launch_ok_va holds of the recorded stack end, stack pointer
      and mmap base, under the recorded launch facts.

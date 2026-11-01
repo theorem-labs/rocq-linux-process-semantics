@@ -37,7 +37,8 @@
     [NoaccessOwned.check_*_preserves_na] for it and proves only the two
     ledger conjuncts.
 
-    Proved for OSSV-266, first against LPS 6692dfb5 in a proof fork, and
+    Proved for the SIGPIPE and reader work, first against LPS 6692dfb5 in a
+    proof fork, and
     lifted here. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
@@ -1729,8 +1730,20 @@ Qed.
    [BudgetPremise.mremap_move_budget_admits_fresh], with the two
    hypotheses [WF] already carries -- [noaccess_pages_owned] and the fit
    of the live mappings -- supplied from [WF] itself, and the two
-   lazy-ledger identities proved rather than assumed.  So a caller on a
-   reachable state can use this one, which was the whole point. *)
+   lazy-ledger identities proved rather than assumed.
+
+   A CALLER ON A REACHABLE STATE STILL CANNOT USE THIS ONE, and the
+   sentence that stood here saying it could ("so a caller on a reachable
+   state can use this one, which was the whole point") was wrong.  Both
+   premises are unavailable there: [WF] has no composition to a run (see
+   this file's closing note -- no [check_syscall_preserves_WF], no
+   [sstep]/[star]/[star_cfg] lemma), and [LZ_NZ] is weaker still, with its
+   six writer arms unproved.  What this lemma does buy is that the two
+   hypotheses a caller must now carry are the two whole-state invariants
+   rather than the unreachable emptiness conditions the deleted variant
+   assumed -- those were satisfied by NO reachable state, while these are
+   simply not yet composed.  That is a real improvement and not the claim
+   the old sentence made. *)
 Lemma mremap_move_budget_admits_fresh_wf : forall m old old_n dst new_n,
 WF m -> LZ_NZ m ->
 (bv_unsigned dst mod page_size = 0)%Z ->
@@ -1856,7 +1869,7 @@ destruct Hin.
 Qed.
 
 (* An arm that leaves [m_vm] alone preserves it, as [WF_of_vm_eq] does for
-   [WF] -- the ~78 non-writer arms of [checked_table] close with this. *)
+   [WF] -- the 86 non-writer arms of [checked_table] close with this. *)
 Lemma LZ_NZ_of_vm_eq : forall m m', m_vm m' = m_vm m -> LZ_NZ m -> LZ_NZ m'.
 Proof.
 intros m m' E H. unfold LZ_NZ, m_vm_lazy in *. rewrite E. exact H.
@@ -1889,8 +1902,23 @@ Qed.
    [sstep_preserves_sys_inv], [star_cfg_preserves_sys_inv]).
 
    THE ONE THING THAT COMPOSITION NEEDS AND DOES NOT HAVE.  Of the
-   roughly 78 arms that are not writers, each must supply
-   [m_vm m' = m_vm m] for [WF_of_vm_eq].  The published
+   86 arms that are not writers, each must supply
+   [m_vm m' = m_vm m] for [WF_of_vm_eq].  That 86 is measured, not
+   estimated -- the earlier text here said "roughly 78", which was wrong.
+   [Checks/Sys/Dispatch.v]'s [checked_table] lists 92 arms, one per line
+   between the [Definition] and the closing [nil]:
+
+     awk 'NR>=1122 && NR<=1213 && /^  arm_[a-z0-9_]+ ::$/' \
+       theories/LinuxProcessSem/Checks/Sys/Dispatch.v | wc -l
+
+   returns 92; narrowing the same stream with
+   [grep -cE 'arm_(mmap|munmap|mremap|mprotect|brk|madvise) ::'] returns
+   6, which is the live control that the line pattern matches the arms it
+   is counting (an invented name in the same stream returns 0).
+   92 - 6 = 86.  The line numbers are those of [checked_table] at this
+   commit; re-derive them before re-running.
+
+   The published
    [VmMapsDisjoint.check_*_frame] family gives only
    [m_vmmaps m' = m_vmmaps m], which is NOT that: [State.VmState] has
    four fields and [m_vmmaps] projects one, so the mapping equation says
