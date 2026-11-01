@@ -797,8 +797,8 @@ Qed.
     the list holds [PR_SET_PDEATHSIG] (1), [PR_SET_DUMPABLE] (4) and
     [PR_SET_NO_NEW_PRIVS] (38), which write the parent-death signal, the
     mm's dumpable flag and the no-new-privs bit and nothing else
-    (kernel/sys.c, [SYSCALL_DEFINE5(prctl)], read at v6.18.44).  Neither
-    is a caller of [set_tagged_addr_ctrl], whose only callers at that
+    (kernel/sys.c, [SYSCALL_DEFINE5(prctl)], read at v6.18.44).  None of
+    them is a caller of [set_tagged_addr_ctrl], whose only callers at that
     tag are option 55's [SET_TAGGED_ADDR_CTRL] and riscv's ptrace
     regset, so [PMLEN] stays 0 and [State.access_okb] stays exact. *)
 
