@@ -112,27 +112,81 @@ Example umount_locked_refused :
   umount_detach [mnt 1 None false; mkMount 2 1 (Some 1) 10 20 30 no_flags no_flags true false None None] 2
   = MErr 22%Z := eq_refl.
 
-(** Propagation changes reach the subtree with the recursive flag: a shared
-    mount made a slave leaves its peer group and has it as its master; a
-    mount made private has neither. *)
+(** Propagation changes reach the subtree with the recursive flag.  A shared
+    mount made a slave leaves its peer group; it becomes a slave of that
+    group when the group has another member (mount 4 is a peer of mount 2),
+    and otherwise keeps its old master, here none (mount 3 is alone in group
+    9).  A mount made private has neither. *)
 Definition tree_prop : list Mount :=
   [mnt 1 None false;
    mkMount 2 1 (Some 1) 10 20 30 no_flags no_flags false false (Some 8) None;
-   mkMount 3 1 (Some 2) 10 20 30 no_flags no_flags false false (Some 9) None].
+   mkMount 3 1 (Some 2) 10 20 30 no_flags no_flags false false (Some 9) None;
+   mkMount 4 1 (Some 1) 10 20 30 no_flags no_flags false false (Some 8) None].
 
 Definition peers_masters (r : MResult) : list (option positive * option positive) :=
   match r with MOk t => map (fun m => (mnt_peer m, mnt_master m)) t | MErr _ => [] end.
 
 Example make_slave_recursive :
   peers_masters (change_propagation tree_prop 2 true PropSlave)
-  = [(None, None); (None, Some 8); (None, Some 9)] := eq_refl.
+  = [(None, None); (None, Some 8); (None, None); (Some 8, None)] := eq_refl.
 
 Example make_private_single :
   peers_masters (change_propagation tree_prop 2 false PropPrivate)
-  = [(None, None); (None, None); (Some 9, None)] := eq_refl.
+  = [(None, None); (None, None); (Some 9, None); (Some 8, None)] := eq_refl.
+
+(** A mount that leaves a peer group it was the only member of ends the
+    group, and the group's slaves pass to that mount's old master
+    ([transfer_propagation]): mount 3, alone in group 9, is a slave of group
+    7, and mount 5 is a slave of group 9. *)
+Definition tree_transfer : list Mount :=
+  [mnt 1 None false;
+   mkMount 3 1 (Some 1) 10 20 30 no_flags no_flags false false (Some 9) (Some 7);
+   mkMount 5 1 (Some 1) 10 20 30 no_flags no_flags false false None (Some 9)].
+
+Example private_transfers_slaves :
+  peers_masters (change_propagation tree_transfer 3 false PropPrivate)
+  = [(None, None); (None, None); (None, Some 7)] := eq_refl.
+
+Example slave_alone_keeps_old_master :
+  peers_masters (change_propagation tree_transfer 3 false PropSlave)
+  = [(None, None); (None, Some 7); (None, Some 7)] := eq_refl.
+
+(** While the group has another member its slaves stay with it.  Made
+    slaves one after another, the last member ends the group and every
+    slave of it, the earlier members too, is left with no master. *)
+Definition tree_group : list Mount :=
+  [mnt 1 None false;
+   mkMount 2 1 (Some 1) 10 20 30 no_flags no_flags false false (Some 8) None;
+   mkMount 4 1 (Some 1) 10 20 30 no_flags no_flags false false (Some 8) None;
+   mkMount 5 1 (Some 1) 10 20 30 no_flags no_flags false false None (Some 8)].
+
+Example private_member_leaves_slaves :
+  peers_masters (change_propagation tree_group 2 false PropPrivate)
+  = [(None, None); (None, None); (Some 8, None); (None, Some 8)] := eq_refl.
+
+Example slave_whole_group_ends_propagation :
+  peers_masters (change_propagation tree_group 1 true PropSlave)
+  = [(None, None); (None, None); (None, None); (None, None)] := eq_refl.
+
+(** A change to private clears the unbindable mark; a change to slave keeps
+    it. *)
+Definition unbindable_bits (r : MResult) : list bool :=
+  match r with MOk t => map mnt_unbindable t | MErr _ => [] end.
+
+Example private_clears_unbindable :
+  unbindable_bits (change_propagation tree 4 false PropPrivate)
+  = [false; false; false; false] := eq_refl.
+
+Example slave_keeps_unbindable :
+  unbindable_bits (change_propagation tree 4 false PropSlave)
+  = [false; false; false; true] := eq_refl.
 
 (** [pivot_root]: mount 3 sits on the task's root mount 2 and becomes the
-    new root; the old root goes on put_old, dentry 40 of mount 3. *)
+    new root; the old root goes on put_old, dentry 40 of mount 3.  [plain]
+    says what the path walk found: the new root's dentry is linked, and the
+    task's root and the new root are each the root of their mount. *)
+Definition plain : PivotPaths := mkPivotPaths false true true.
+
 Definition parents (r : MResult) : list (option positive) :=
   match r with MOk t => map mnt_parent t | MErr _ => [] end.
 
@@ -140,26 +194,27 @@ Definition mountpoints (r : MResult) : list positive :=
   match r with MOk t => map mnt_mountpoint t | MErr _ => [] end.
 
 Example pivot_moves_new_root_up :
-  parents (pivot_root tree 1 2 3 3 40) = [None; Some 3; Some 1; Some 2] := eq_refl.
+  parents (pivot_root tree 1 2 3 3 40 plain) = [None; Some 3; Some 1; Some 2] := eq_refl.
 
 Example pivot_sets_mountpoints :
-  mountpoints (pivot_root tree 1 2 3 3 40) = [10; 40; 10; 10] := eq_refl.
+  mountpoints (pivot_root tree 1 2 3 3 40 plain) = [10; 40; 10; 10] := eq_refl.
 
 (** The new root being the old root is refused with EBUSY. *)
-Example pivot_same_mount_busy : pivot_root tree 1 2 2 2 40 = MErr 16%Z := eq_refl.
+Example pivot_same_mount_busy : pivot_root tree 1 2 2 2 40 plain = MErr 16%Z := eq_refl.
 
 (** put_old outside the new root is refused with EINVAL. *)
-Example pivot_put_old_outside : pivot_root tree 1 2 3 4 40 = MErr 22%Z := eq_refl.
+Example pivot_put_old_outside : pivot_root tree 1 2 3 4 40 plain = MErr 22%Z := eq_refl.
 
 (** The absolute root, which has no parent, cannot be pivoted away. *)
-Example pivot_absolute_root : pivot_root tree 1 1 2 2 40 = MErr 22%Z := eq_refl.
+Example pivot_absolute_root : pivot_root tree 1 1 2 2 40 plain = MErr 22%Z := eq_refl.
 
 (** A locked new root is refused with EINVAL. *)
 Definition tree_locked_new : list Mount :=
   [mnt 1 None false; mnt 2 (Some 1) false;
    mkMount 3 1 (Some 2) 10 20 30 no_flags no_flags true false None None].
 
-Example pivot_locked_new_root : pivot_root tree_locked_new 1 2 3 3 40 = MErr 22%Z := eq_refl.
+Example pivot_locked_new_root :
+  pivot_root tree_locked_new 1 2 3 3 40 plain = MErr 22%Z := eq_refl.
 
 (** A locked old root passes its lock to the new root. *)
 Definition tree_locked_root : list Mount :=
@@ -168,14 +223,43 @@ Definition tree_locked_root : list Mount :=
    mnt 3 (Some 2) false].
 
 Example pivot_moves_lock :
-  match pivot_root tree_locked_root 1 2 3 3 40 with
+  match pivot_root tree_locked_root 1 2 3 3 40 plain with
   | MOk t => map mnt_locked t
   | MErr _ => []
   end = [false; false; true] := eq_refl.
 
-(** A shared mount where the pivot attaches or detaches is refused. *)
+(** A shared mount where the pivot attaches or detaches is refused: here the
+    parent of the task's root. *)
+Definition tree_shared_parent : list Mount :=
+  [mkMount 1 1 None 10 20 30 no_flags no_flags false false (Some 8) None;
+   mnt 2 (Some 1) false; mnt 3 (Some 2) false].
+
 Example pivot_shared_parent_refused :
-  pivot_root tree_prop 1 2 3 3 40 = MErr 22%Z := eq_refl.
+  pivot_root tree_shared_parent 1 2 3 3 40 plain = MErr 22%Z := eq_refl.
+
+(** A root with no parent counts as its own parent: when it is shared, the
+    shared check refuses the call before the EBUSY check. *)
+Example pivot_shared_absolute_root :
+  pivot_root tree_shared_parent 1 1 1 2 40 plain = MErr 22%Z := eq_refl.
 
 (** A mount of another namespace is refused with EINVAL. *)
-Example pivot_other_namespace : pivot_root tree 5 2 3 3 40 = MErr 22%Z := eq_refl.
+Example pivot_other_namespace : pivot_root tree 5 2 3 3 40 plain = MErr 22%Z := eq_refl.
+
+(** The checks on the paths run between the kernel's checks on the mounts:
+    an unlinked new root gives ENOENT after the lock check and before the
+    EBUSY check; a task root or new root that is not the root of its mount
+    gives EINVAL after the EBUSY check. *)
+Example pivot_unlinked_before_busy :
+  pivot_root tree 1 2 2 2 40 (mkPivotPaths true true true) = MErr 2%Z := eq_refl.
+
+Example pivot_locked_before_unlinked :
+  pivot_root tree_locked_new 1 2 3 3 40 (mkPivotPaths true true true) = MErr 22%Z := eq_refl.
+
+Example pivot_root_not_mount_root :
+  pivot_root tree 1 2 3 3 40 (mkPivotPaths false false true) = MErr 22%Z := eq_refl.
+
+Example pivot_busy_before_not_mount_root :
+  pivot_root tree 1 2 2 2 40 (mkPivotPaths false false false) = MErr 16%Z := eq_refl.
+
+Example pivot_new_not_mount_root :
+  pivot_root tree 1 2 3 3 40 (mkPivotPaths false true false) = MErr 22%Z := eq_refl.
