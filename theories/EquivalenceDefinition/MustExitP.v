@@ -609,3 +609,50 @@ Qed.
     so the bridge cannot be stated here at all.  It is one [rewrite] at the
     call site, against [pstep_instr_entry] above, which takes the accounted
     step directly. *)
+
+(* =========================================================================
+   Lifting a chain of machine steps to the process relation
+   ========================================================================= *)
+
+(** The segment lemmas deliver a run of ORDINARY instruction steps, each
+    [RiscvSemantics.step].  [Procs.pstep_at]'s instruction arm goes
+    through [Run.mi_account_step].  [Run.mi_account_step_no_lazy]
+    (Run.v:375-380) is the junction -- with no lazy mapping the accounted
+    step IS the machine step and the model does not move -- and this is
+    that junction applied to one entry.
+
+    It takes the accounted step rather than [mi_step] because [mi_step] is
+    not in scope in this file (§18.2 of the design); the caller rewrites
+    with [mi_account_step_no_lazy] where it is. *)
+Lemma pstep_entry_of_account : forall segs cfg P e ms' model',
+  look P (pe_pid e) = Some e ->
+  m_halted (pe_model e) = None ->
+  ms_svc_pending (pe_ms e) = None ->
+  mi_account_step segs (pe_ms e) (cfg_model (pe_cfg (pcfg_shared P) e))
+    = MachineOk (ms', model') ->
+  pstep_cfg segs cfg P []
+    (PNext (absorb P e (mkCfg ms' model'))).
+Proof.
+  intros segs cfg P e ms' model' Hl Hh Hs Hm.
+  apply pstep_at_sub with (p := pe_pid e).
+  apply pstep_instr_entry; assumption.
+Qed.
+
+(** AND THE REASON A CHAIN IS NOT SIMPLY AN INDUCTION over the segment's
+    [k].  Each step of the chain changes the entry, so the NEXT step's
+    premises are about a different configuration: [look] has to find the
+    absorbed entry, and the shared state has been rebuilt by [absorb].
+    [look_absorb_other] and [view_frame_absorb] are what carry those
+    across, and they are stated for the OTHER entry -- the stepping
+    entry's own lookup after its own step is this lemma. *)
+Lemma look_absorb_self : forall P e c',
+  look P (pe_pid e) = Some e ->
+  look (absorb P e c') (pe_pid e) = Some (pe_absorb e c').
+Proof.
+  intros P e c' Hl. unfold look, absorb. cbn [pcfg_procs].
+  revert Hl. unfold look. generalize (pcfg_procs P) as ps. clear P.
+  induction ps as [|kv r IH]; cbn; [discriminate|].
+  destruct (bv_eqb (fst kv) (pe_pid e)) eqn:Hb; cbn.
+  - intros Hs. injection Hs as <-. rewrite bv_eqb_same. reflexivity.
+  - intros Hs. rewrite Hb. apply IH. exact Hs.
+Qed.
