@@ -51,6 +51,10 @@ Import ListNotations.
 
 Module Type PROCS_CORE.
 
+  (** A process id.  Abstract: the core fixes it (a machine word); the layer
+      only compares them through [look] and the core's relations. *)
+  Parameter Pid : Type.
+
   (* ---- The released single-process step, abstract ---- *)
   Parameter StepCtx : Type.
   Parameter config : Type.
@@ -61,43 +65,43 @@ Module Type PROCS_CORE.
   Parameter sstep_cfg : StepCtx -> config -> list event -> step_to -> Prop.
   (** No system call is pending: the next step is an instruction. *)
   Parameter at_instruction : config -> Prop.
-  Parameter clone_success : config -> config -> Prop.
-  Parameter wait4_intercept : config -> Prop.
-  Parameter child_pid : config -> positive -> Prop.
+  Parameter clone_success : config -> config -> bool.
+  Parameter wait4_intercept : config -> bool.
+  Parameter child_pid : config -> Pid -> Prop.
 
   (* ---- The multi-process core ---- *)
   Parameter OfdId : Type.
   Parameter ProcessEntry : Type.
   Parameter shared : Type.
   Parameter pconfig : Type.
-  Parameter pe_pid : ProcessEntry -> positive.
-  Parameter pe_parent : ProcessEntry -> option positive.
+  Parameter pe_pid : ProcessEntry -> Pid.
+  Parameter pe_parent : ProcessEntry -> option Pid.
   Parameter pe_nsctx : ProcessEntry -> NsCtx.
   Parameter sh_nsstate : shared -> NsState.
-  Parameter pcfg_procs : pconfig -> list ProcessEntry.
-  Parameter pcfg_root : pconfig -> positive.
+  Parameter pcfg_procs : pconfig -> list (Pid * ProcessEntry).
+  Parameter pcfg_root : pconfig -> Pid.
   Parameter pcfg_shared : pconfig -> shared.
-  Parameter look : pconfig -> positive -> option ProcessEntry.
+  Parameter look : pconfig -> Pid -> option ProcessEntry.
   Parameter pe_cfg : shared -> ProcessEntry -> config.
-  Parameter one_pid : positive.
+  Parameter one_pid : Pid.
   Parameter one_proc : config -> pconfig.
 
   Parameter pstep_to : Type.
   Parameter PNext : pconfig -> pstep_to.
   Parameter PError : pstep_to.
   Parameter pstep_cfg : StepCtx -> pconfig -> list event -> pstep_to -> Prop.
-  Parameter pstep_at : StepCtx -> positive -> pconfig -> list event -> pstep_to -> Prop.
-  Parameter stepped_by : pconfig -> list event -> pstep_to -> positive -> Prop.
-  Parameter lineage_pick : pconfig -> positive -> Prop.
-  Parameter clone_result : pconfig -> ProcessEntry -> config -> positive -> pconfig.
+  Parameter pstep_at : StepCtx -> Pid -> pconfig -> list event -> pstep_to -> Prop.
+  Parameter stepped_by : pconfig -> list event -> pstep_to -> Pid -> Prop.
+  Parameter lineage_pick : pconfig -> Pid -> Prop.
+  Parameter clone_result : pconfig -> ProcessEntry -> config -> Pid -> pconfig.
   Parameter child_projection : pconfig -> pconfig -> option (ProcessEntry * shared).
   (** The entry's a0 register is zero: how a clone's child sees the call. *)
   Parameter entry_a0_zero : ProcessEntry -> Prop.
-  Parameter descendant_or_self : pconfig -> positive -> positive -> Prop.
-  Parameter cut_reached : positive -> pconfig -> Prop.
+  Parameter descendant_or_self : pconfig -> Pid -> Pid -> Prop.
+  Parameter cut_reached : Pid -> pconfig -> Prop.
   Parameter parents_noninterfering :
-    forall (RV : Type), (pconfig -> positive -> RV) -> (list OfdId -> RV -> RV -> Prop) ->
-      (pconfig -> positive -> list OfdId) -> StepCtx -> positive -> pconfig -> Prop.
+    forall (RV : Type), (pconfig -> Pid -> RV) -> (list OfdId -> RV -> RV -> Prop) ->
+      (pconfig -> Pid -> list OfdId) -> StepCtx -> Pid -> pconfig -> Prop.
 
   (* ---- The laws ---- *)
 
@@ -115,13 +119,13 @@ Module Type PROCS_CORE.
 
   (** L4 *)
   Parameter pstep_single_next : forall ctx c evs P',
-    (forall c', sstep_cfg ctx c evs (SNext c') -> ~ clone_success c c') ->
-    ~ wait4_intercept c ->
+    (forall c', sstep_cfg ctx c evs (SNext c') -> clone_success c c' = false) ->
+    wait4_intercept c = false ->
     (pstep_cfg ctx (one_proc c) evs (PNext P')
      <-> exists c', P' = one_proc c' /\ sstep_cfg ctx c evs (SNext c')).
 
   (** L5 *)
-  Parameter pstep_single_err : forall ctx c evs, ~ wait4_intercept c ->
+  Parameter pstep_single_err : forall ctx c evs, wait4_intercept c = false ->
     (pstep_cfg ctx (one_proc c) evs PError <-> sstep_cfg ctx c evs SError).
 
   (** L6 *)
@@ -147,7 +151,7 @@ Module Type PROCS_CORE.
   Parameter pstep_clone : forall ctx P e evs c' q,
     look P (pe_pid e) = Some e ->
     sstep_cfg ctx (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
-    clone_success (pe_cfg (pcfg_shared P) e) c' ->
+    clone_success (pe_cfg (pcfg_shared P) e) c' = true ->
     child_pid c' q ->
     look P q = None ->
     pstep_cfg ctx P evs (PNext (clone_result P e c' q)).

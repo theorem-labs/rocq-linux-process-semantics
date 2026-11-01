@@ -73,7 +73,7 @@ Module NsStep (Import C : PROCS_CORE).
       the objects the process can reach, less the exchange objects) passes
       its own to [parents_noninterfering]; this one is the coarsest that
       still names everything the layer reads. *)
-  Definition ns_view (P : pconfig) (f : positive) : option (NsCtx * NsState) :=
+  Definition ns_view (P : pconfig) (f : Pid) : option (NsCtx * NsState) :=
     match look P f with
     | Some e => Some (pe_nsctx e, sh_nsstate (pcfg_shared P))
     | None => None
