@@ -1314,3 +1314,46 @@ Proof.
   - (* no error *) exact Hnoerr.
   - (* the successor is unique *) exact Hdet.
 Qed.
+
+(** ITEM (3): the no-error premise at the shapes.
+
+    [MustExitP.pstep_error_cases] splits an error transition into the two
+    refusing arms: a released [SError], or the surface guard firing.  The
+    second is impossible everywhere in this program -- [fw_guard_open]
+    with [fw_sysnos_allowed], since the only numbers it issues are 220,
+    260 and 94 -- so what a shape has to rule out is the released
+    [SError] alone.
+
+    This lemma is the half that does not depend on which shape: given
+    that no entry of the configuration can take a released [SError] and
+    that the guard is open at each, no transition reaches [PError]. *)
+Lemma fw_no_error_of_entries : forall segs cfg P,
+  (forall e, look P (pe_pid e) = Some e ->
+     forall evs, ~ sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs SError) ->
+  (forall e, look P (pe_pid e) = Some e ->
+     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true) ->
+  forall evs, ~ pstep_cfg segs cfg P evs PError.
+Proof.
+  intros segs cfg P Hno Hguard evs [p Hp].
+  destruct (pstep_error_cases segs cfg p P evs Hp)
+    as (e & Hl & Hpid & [[Hss _] | [Hg _]]).
+  - subst p. exact (Hno e Hl evs Hss).
+  - subst p. rewrite (Hguard e Hl) in Hg. discriminate.
+Qed.
+
+(** And the guard really is open at every entry of this program, because
+    the only system calls it issues are on the multi-process surface.
+    [fw_sysnos_allowed] is the membership; this applies it. *)
+Lemma fw_guard_open_at : forall P c nr,
+  (ms_svc_pending (cfg_ms c) = None
+   \/ (exists x8, ms_svc_pending (cfg_ms c) = Some x8
+                  /\ bv_unsigned x8 = nr
+                  /\ (nr = 220%Z \/ nr = 260%Z \/ nr = 94%Z))) ->
+  multiproc_allowed P c = true.
+Proof.
+  intros P c nr [Hn | (x8 & Hs & Hv & Hnr)].
+  - apply (fw_guard_open P c nr). left. exact Hn.
+  - apply (fw_guard_open P c nr). right. exists x8.
+    split; [exact Hs|]. split; [exact Hv|].
+    destruct Hnr as [-> | [-> | ->]]; cbn; tauto.
+Qed.
