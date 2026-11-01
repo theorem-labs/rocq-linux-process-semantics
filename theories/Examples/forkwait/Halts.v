@@ -40,12 +40,12 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Dispatch.
 From LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel Require Import Exit Fork.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ProcessCreation.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import MustExit MustExitP.
-(** [Measure] for the measure table; [ForkwaitSteps] for [machine_run]
-    and the five segment lemmas this file now consumes;
-    [ForkwaitMemImage] for the committed image's entry point, which the
-    start shape is read off. *)
+(** [ForkwaitSteps] for [machine_run] and the segment lemmas this file
+    consumes; [ForkwaitMemImage] for the committed image's entry point,
+    which the start shape is read off.  There is no measure table any
+    more: the measure is the remainder's own length, below. *)
 From LinuxProcessSemantics.Examples.forkwait Require Import
-  ForkwaitMemImage Measure ForkwaitSteps.
+  ForkwaitMemImage ForkwaitSteps.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -324,20 +324,6 @@ Proof.
     exists c, (Z_to_bv 64 7). split; [exact Hrv | split; [exact Hhc |]].
     split; [left; reflexivity | exact Hk].
 Qed.
-
-(** THE MEASURE PREMISE, for the shapes where one entry steps and is
-    replaced.  [MustExitP.pmeasure_absorb_lt] does the arithmetic; what a
-    shape supplies is that the stepping entry's own count falls, which is
-    the measure table's business and not this file's. *)
-Lemma fw_absorb_decreases : forall P e c',
-  look P (pe_pid e) = Some e ->
-  (fw_entry (pe_absorb e c') < fw_entry e)%nat ->
-  (fw_measure (absorb P e c') < fw_measure P)%nat.
-Proof.
-  intros P e c' Hl Hlt. unfold fw_measure.
-  apply pmeasure_absorb_lt; assumption.
-Qed.
-
 (** THE NO-ERROR PREMISE, reduced to one obligation per shape.
 
     [MustExitP.pstep_error_cases] says an error transition is one of the
@@ -781,86 +767,19 @@ Qed.
    The run, assembled
    ========================================================================= *)
 
-(** THE SHAPE OF THE WHOLE PROOF, with each stretch consuming the lemma
-    it fits.  Three stretches and two steps between them:
+(** THE DETERMINISTIC-STRETCH ROUTE IS GONE.  An earlier version of this
+    file carried the run as three stretches and two steps -- the entry
+    run and the parent's tail whole, through [MustExitP.det_run], with
+    the measure only across the two-entry stretch -- and named
+    [fw_done], [fw_halts_at_done], [fw_det_link] and
+    [forkwait_halts_of_stretches] for it.
 
-      A   det_run   the entry run, 7 instructions to the clone's ecall
-      1   measure   the clone: a pid is chosen, so not deterministic
-      B   measure   two entries live: every interleaving, child's exit,
-                    the parent's run to its wait4 ecall
-      2   measure   the reap: the zombie leaves the table
-      C   det_run   the parent's tail, 4 steps to the final exit
-
-    [det_run] carries A and C whole, at the [k] the segment lemmas have.
-    [must_exit_in_p_at_by_measure] carries B, where the successor is
-    genuinely not unique, with [fw_shape] as its invariant and
-    [fw_measure] as its measure.
-
-    The composition is backwards, as the predicate is: the final exit
-    establishes [must_exit_in_p_at] at the end of C, [det_run] carries it
-    to the start of C, the measure carries it across B, and [det_run]
-    carries it to the entry point. *)
-
-(** The last configuration: the root halted on 7, nothing else live. *)
-Definition fw_done (P : pconfig) : Prop := fw_one_halted P 7.
-
-(** At the end, the predicate holds immediately: the leaf arm applies,
-    because the root is halted on an allowed code and the table has only
-    it.  This is the base the whole backwards composition rests on. *)
-Lemma fw_halts_at_done : forall segs cfg P,
-  fw_done P ->
-  terminal P ->
-  must_exit_in_p_at segs cfg [Z_to_bv 64 7] P.
-Proof.
-  intros segs cfg P (e & c & Hp & Hrv & Hh & Hk) Ht.
-  eapply mepa_halted; [exact Hrv | exact Hh | left; reflexivity
-                      | exact Hk | exact Ht].
-Qed.
-
-(** AND THE COMPOSITION, with every stretch named as a hypothesis.  Each
-    is what one segment lemma plus the arm lemmas of this file deliver;
-    none of them is an assumption about the program, they are the four
-    facts the five segments and two syscall arms establish.
-
-    This is the whole theorem modulo those four, and it is stated so that
-    discharging them is the only work between here and
-    [Statement.forkwait_halts]. *)
-Theorem forkwait_halts_of_stretches : forall segs cfg P0 Pclone,
-  (* A: the entry run reaches the clone's ecall deterministically *)
-  det_run segs cfg P0 Pclone ->
-  (* 1+B+2: from the clone through the two-entry stretch to after the
-     reap, by the measure, with the shapes as the invariant *)
-  (fw_shape Pclone ->
-   (forall P, fw_shape P -> terminal P ->
-      exists c code, root_view P = Some c
-                     /\ m_halted (cfg_model c) = Some code
-                     /\ List.In code [Z_to_bv 64 7]
-                     /\ m_killed (cfg_model c) = None) ->
-   (forall P, fw_shape P -> terminalb P = false ->
-      exists evs st, pstep_cfg segs cfg P evs st) ->
-   (forall P evs, fw_shape P -> ~ pstep_cfg segs cfg P evs PError) ->
-   (forall P evs P', fw_shape P -> pstep_cfg segs cfg P evs (PNext P') ->
-      (fw_measure P' < fw_measure P)%nat) ->
-   must_exit_in_p_at segs cfg [Z_to_bv 64 7] Pclone) ->
-  fw_shape Pclone ->
-  (forall P, fw_shape P -> terminal P ->
-     exists c code, root_view P = Some c
-                    /\ m_halted (cfg_model c) = Some code
-                    /\ List.In code [Z_to_bv 64 7]
-                    /\ m_killed (cfg_model c) = None) ->
-  (forall P, fw_shape P -> terminalb P = false ->
-     exists evs st, pstep_cfg segs cfg P evs st) ->
-  (forall P evs, fw_shape P -> ~ pstep_cfg segs cfg P evs PError) ->
-  (forall P evs P', fw_shape P -> pstep_cfg segs cfg P evs (PNext P') ->
-     (fw_measure P' < fw_measure P)%nat) ->
-  must_exit_in_p_at segs cfg [Z_to_bv 64 7] P0.
-Proof.
-  intros segs cfg P0 Pclone HA HB Hsh Hleaf Hprog Hnoerr Hdec.
-  (* A, backwards *)
-  apply (must_exit_in_p_at_det_run segs cfg _ P0 Pclone HA).
-  (* and the measure carries the rest *)
-  exact (HB Hsh Hleaf Hprog Hnoerr Hdec).
-Qed.
+    The remainder shapes made the split unnecessary: the measure now
+    falls at EVERY step, the straight-line parts included, so
+    [MustExitP.must_exit_in_p_at_by_measure] carries the whole run and
+    a second route beside it would be stated and unused.  What the
+    stretch route would have cost is recorded in the design, not
+    here. *)
 
 (* =========================================================================
    Discharging the four facts
@@ -954,62 +873,6 @@ Proof.
   split; [exact Hh | exact Hrem].
 Qed.
 
-(** FACT THREE: the measure falls at the clone.
-
-    This is the step the measure table was shaped around.  Before it the
-    parent is at [0x11018] with the call pending, worth
-    [fw_pending 0x11018] = 31; after it there are TWO entries, each at
-    [0x1101c] and each worth [fw_at 0x1101c] = 15, so the sum is 30.
-    [fw_clone_decreases] is that arithmetic and it is proved; this is the
-    same fact at the level of [fw_measure], where the sum is taken over
-    the table [clone_result] builds. *)
-Lemma fw_measure_clone : forall P e c' q,
-  pcfg_procs P = [(pe_pid e, e)] ->
-  fw_entry e = fw_pending 0x11018%Z ->
-  fw_entry (pe_absorb e c') = fw_at 0x1101c%Z ->
-  fw_entry (child_entry e (pe_cfg (pcfg_shared P) e) c' q) = fw_at 0x1101c%Z ->
-  (fw_measure (clone_result P e c' q) < fw_measure P)%nat.
-Proof.
-  intros P e c' q Hp He Hpa Hch.
-  (* BOTH occurrences of [pcfg_procs P] are rewritten before any
-     reduction: the [cbn] below consumes the one on the right, and a
-     later [rewrite Hp] then finds nothing. *)
-  unfold fw_measure, pmeasure, clone_result. cbn [pcfg_procs].
-  rewrite !Hp. cbn [replace_in fst]. rewrite bv_eqb_same.
-  cbn [List.app msum List.fold_right snd].
-  rewrite Hpa, Hch, He.
-  (* 15 + (15 + 0) < 31 + 0 *)
-  vm_compute. lia.
-Qed.
-
-(** FACT FOUR: the measure falls at the reap.
-
-    The parent goes from the pending [wait4] at [0x1103c], worth 6, to
-    [0x11040], worth 5; and the zombie, worth 0 because a halted entry
-    cannot step, leaves the table.  [fw_reap_decreases] is the
-    arithmetic. *)
-Lemma fw_measure_reap : forall P ep ec ep' q,
-  pcfg_procs P = [(pe_pid ep, ep); (pe_pid ec, ec)] ->
-  bv_eqb (pe_pid ep) q = false ->
-  pe_pid ec = q ->
-  fw_entry ep = fw_pending 0x1103c%Z ->
-  fw_entry ec = 0%nat ->
-  fw_entry ep' = fw_at 0x11040%Z ->
-  (msum fw_entry
-     (drop_in (replace_in (pcfg_procs P) (pe_pid ep) ep') q)
-   < fw_measure P)%nat.
-Proof.
-  intros P ep ec ep' q Hp Hne Hq Hep Hec Hep'.
-  (* the goal only: [rewrite Hp in *] rewrites [Hp] in itself and fails.
-     The table is rewritten before unfolding, because unfolding first
-     leaves the two copies in different forms. *)
-  unfold fw_measure, pmeasure. rewrite Hp.
-  rewrite (fw_reap_target_table ep ec ep' q Hne Hq).
-  cbn [msum List.fold_right snd]. rewrite Hep', Hep, Hec.
-  (* 5 + 0 < 6 + (0 + 0) *)
-  vm_compute. lia.
-Qed.
-
 (* =========================================================================
    The instantiation
    ========================================================================= *)
@@ -1087,47 +950,6 @@ Proof.
   split; [lia|]. split; [reflexivity | exact Hq].
 Qed.
 
-(** ITEM (1) and (4), the shape they share.
-
-    A deterministic stretch of ONE entry is a [det_run] whenever each of
-    its steps has a unique successor.  For an instruction step that is
-    [Run.mi_account_step] being a function; what a caller supplies per
-    step is that the entry is running, that no call is pending, and the
-    accounted step's result.
-
-    Stated as a single link rather than as a fold over a segment,
-    because the two segments have different lengths and [det_trans]
-    composes the links; a fold would fix the length. *)
-Lemma fw_det_link : forall segs cfg c ms' model',
-  m_halted (cfg_model c) = None ->
-  ms_svc_pending (cfg_ms c) = None ->
-  mi_account_step segs (cfg_ms c) (cfg_model c) = MachineOk (ms', model') ->
-  (* the successor is unique: no other arm can fire, and the instruction
-     arm is a function *)
-  (forall evs P2,
-     pstep_cfg segs cfg (one_proc c) evs (PNext P2) ->
-     P2 = one_proc (mkCfg ms' model')) ->
-  (forall evs, ~ pstep_cfg segs cfg (one_proc c) evs PError) ->
-  det_run segs cfg (one_proc c) (one_proc (mkCfg ms' model')).
-Proof.
-  intros segs cfg c ms' model' Hh Hs Hm Hdet Hnoerr.
-  (* det_one's premises are: not-terminal, progress, no-error,
-     determinism, in that order *)
-  apply det_one.
-  - (* not terminal: the entry is running *)
-    intros Ht. apply terminal_one_proc in Ht. congruence.
-  - (* progress: the instruction step itself *)
-    exists [], (PNext (one_proc (mkCfg ms' model'))).
-    apply pstep_single_next_bwd.
-    + apply clone_success_b_instr. exact Hs.
-    + apply wait4_intercept_b_instr. exact Hs.
-    + (* [sstep_cfg_instr] is stated over [mkCfg ms model], so the
-         configuration has to be taken apart before it applies *)
-      destruct c as [ms model]; cbn [cfg_ms cfg_model] in *.
-      apply sstep_cfg_instr; assumption.
-  - (* no error *) exact Hnoerr.
-  - (* the successor is unique *) exact Hdet.
-Qed.
 
 (** ITEM (3): the no-error premise at the shapes.
 
