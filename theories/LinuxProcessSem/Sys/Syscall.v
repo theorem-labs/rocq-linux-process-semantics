@@ -112,11 +112,17 @@ Definition errno_from (es : list Z) : Sys Z := choose (fun e => In e es).
       include/linux/sched/signal.h [signal_pending]: read at v6.18.44; identical at v6.18.46.
       kernel/freezer.c [freeze_task]: read at v6.18.44; identical at v6.18.46.
 
-    THE WARRANT, AND WHEN IT LAPSES.  -EINTR is left out because no
-    modeled run can see it TODAY: the model runs no signal handlers
-    ([rt_sigaction] declines every handler install), and SCOPE.md
-    assumes no signal arrives from outside the process.  Whoever adds
-    the first interruptible call, or a way for a signal to arrive (lane
+    THE WARRANT, AND WHEN IT LAPSES.  -EINTR is left out because Linux
+    cannot give it to any call of a modeled run TODAY: the model runs no
+    signal handlers ([rt_sigaction] declines every handler install), and
+    SCOPE.md assumes no signal arrives from outside the process.  The
+    model still ADMITS -EINTR in one older place,
+    [Kernel.Time.Hrtimer.nanosleep_spec]'s interrupted sleep: a widening
+    (it admits more than Linux gives, so it is sound), which
+    [Run.injected_table]'s note keeps on purpose for the forced-only
+    filter.  It is not a reason to admit -EINTR here, where admitting it
+    would let a retry loop run forever.  Whoever adds the first call
+    that can REALLY be interrupted, or a way for a signal to arrive (lane
     L11 plans a wait call and signal readiness), invalidates this
     exclusion and must put -EINTR back, or prove that call cannot see
     it.  [Checks.Sys.Prelude.errno_any_b] is the acceptor side and must
