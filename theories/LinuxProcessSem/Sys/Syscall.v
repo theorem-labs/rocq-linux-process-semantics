@@ -101,7 +101,17 @@ Definition errno_from (es : list Z) : Sys Z := choose (fun e => In e es).
       arch/riscv/kernel/signal.c [arch_do_signal_or_restart], [handle_signal]: read at v6.18.44; identical at v6.18.46.
       include/linux/errno.h [ERESTARTSYS], [ERESTARTNOHAND], [ERESTART_RESTARTBLOCK]: read at v6.18.44; identical at v6.18.46.
       include/linux/sched/signal.h [signal_pending]: read at v6.18.44; identical at v6.18.46.
-      kernel/freezer.c [freeze_task]: read at v6.18.44; identical at v6.18.46. *)
+      kernel/freezer.c [freeze_task]: read at v6.18.44; identical at v6.18.46.
+
+    THE WARRANT, AND WHEN IT LAPSES.  -EINTR is left out because no
+    modeled run can see it TODAY: the model runs no signal handlers
+    ([rt_sigaction] declines every handler install), and SCOPE.md
+    assumes no signal arrives from outside the process.  Whoever adds
+    the first interruptible call, or a way for a signal to arrive (lane
+    L11 plans a wait call and signal readiness), invalidates this
+    exclusion and must put -EINTR back, or prove that call cannot see
+    it.  [Checks.Sys.Prelude.errno_any_b] is the acceptor side and must
+    move with this definition. *)
 Definition errno_any : Sys Z := choose (fun e => (1 <= e <= 4095)%Z /\ e <> EINTR).
 
 (** Word-against-zero test, used all over the dispatcher. *)
