@@ -371,3 +371,21 @@ Example fchmod_refusals :
   /\ ret_of (fchmod_fn (fchmod_call 420) base_model base_ctx file_state
                (mkNsFile (NfPath (LDentry 1 2)) 2097152 (mkIdCred 1 1000 1002 0))) = Some (-9).
 Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** A security module's refusal comes only after its hook: for fchmod
+    after EROFS (a writable tmpfs file: yes; a read-only mount or an O_PATH
+    file: no); for unlinkat after the lookup (an existing name: yes; a bad
+    flag, a missing name or a trailing slash after a file: no). *)
+Example fchmod_hook_places :
+  fchmod_hook_reached base_model base_ctx file_state chmod_file = true
+  /\ fchmod_hook_reached base_model base_ctx existing_ro_state chmod_file = false
+  /\ fchmod_hook_reached base_model base_ctx file_state
+       (mkNsFile (NfPath (LDentry 1 2)) 2097152 (mkIdCred 1 1000 1002 0)) = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Example unlinkat_hook_places :
+  unlinkat_hook_reached (unlink_call s_f 0) base_model base_ctx file_state = true
+  /\ unlinkat_hook_reached (unlink_call s_f 1) base_model base_ctx file_state = false
+  /\ unlinkat_hook_reached (unlink_call s_new 0) base_model base_ctx file_state = false
+  /\ unlinkat_hook_reached (unlink_call s_f_slash 0) base_model base_ctx file_state = false.
+Proof. vm_compute. repeat split; reflexivity. Qed.

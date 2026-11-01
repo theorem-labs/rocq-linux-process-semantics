@@ -2,10 +2,10 @@
 
     [ProcsCore] gives each name of [Ns.ProcsIface.PROCS_CORE] as the
     core's own, with the namespace model plugged in: its step is
-    [Procs.pstep_x_at] at [Ns.Spec.ns_ext], admitting every clone failure
-    ([Ns.Ext.any_clone_failure]).  The step context is the pair the core's
-    step takes: the loaded segments and the spurious-failure
-    configuration.  L1-L5 and L7 are the core's lemmas ([Procs]), L6 is
+    [Procs.pstep_x_at] at [Ns.Spec.ns_ext].  The step context is what the
+    core's step takes: the run's clone environment ([Ns.Ext.CloneEnv]),
+    the loaded segments and the spurious-failure configuration.
+    L1-L5 and L7 are the core's lemmas ([Procs]), L6 is
     [MustExitP]'s lineage lemma, and L8 and L9 are proved here
     ([pstep_x_at_grows]: the one step that lengthens the table is a clone,
     and it appends the child).  [NsProcs] is the namespace layer on this
@@ -18,7 +18,10 @@
     extended step IS the core's own step, claimed calls included.
 
     [pholts_x_within_budget] is PROCS's whole-system halting statement over
-    the extended step, with the clone environment as an explicit argument. *)
+    the extended step, with the clone environment as an explicit argument;
+    [lholts_ns_within_budget] is the halting statement of the lineage (the
+    newest process), which a program whose parent makes calls while a
+    child lives needs on this core. *)
 
 From Stdlib Require Import ZArith NArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -248,7 +251,15 @@ Definition must_exit_in_px (ext : ExtSpec) (cenv : CloneEnv) (cfg : SpuriousCfg)
     header must say so.  The released arm ([Fork.clone_ns_resolve]) cannot
     make that cut itself: without the namespace tables it cannot tell a
     forced EPERM from a security module's (the LPS owner's decision,
-    2026-11-01). *)
+    2026-11-01).
+
+    ON THIS CORE the whole-system form holds only for programs whose
+    processes in the released world make no call but exit, exit_group,
+    clone, clone3 and wait4 while another process lives
+    ([Procs.multiproc_allowed]; a process outside the released world also
+    gets the calls [Ext.ext_multiproc] admits): any other call in that state
+    is the model's error.  A program whose parent goes on making calls after
+    a clone needs [lholts_ns_within_budget], below. *)
 Definition pholts_x_within_budget (ext : ExtSpec) (cenv : CloneEnv) (pre : ProcInput -> Prop)
     (host : NsState -> Prop) (lim : Z) (allowed : list word) (img : Image) : Prop :=
   forall (en : ExecEntry) (inp : ProcInput) (st : NsState),
@@ -287,14 +298,19 @@ Module ProcsCore <: PROCS_CORE.
   Definition Pid : Type := Procs.Pid.
 
   (* ---- The released single-process step ---- *)
-  Definition StepCtx : Type := (list Segment * SpuriousCfg)%type.
+  (** The step context: the run's clone environment, the loaded segments
+      and the spurious-failure configuration. *)
+  Definition StepCtx : Type := (CloneEnv * (list Segment * SpuriousCfg))%type.
+  Definition ctx_cenv (ctx : StepCtx) : CloneEnv := fst ctx.
+  Definition ctx_segs (ctx : StepCtx) : list Segment := fst (snd ctx).
+  Definition ctx_cfg (ctx : StepCtx) : SpuriousCfg := snd (snd ctx).
   Definition config : Type := Run.config.
   Definition event : Type := State.event.
   Definition step_to : Type := Run.step_to.
   Definition SNext : config -> step_to := Run.SNext.
   Definition SError : step_to := Run.SError.
   Definition sstep_cfg (ctx : StepCtx) (c : config) (evs : list event) (r : step_to) : Prop :=
-    Run.sstep_cfg (fst ctx) (snd ctx) c evs r.
+    Run.sstep_cfg (ctx_segs ctx) (ctx_cfg ctx) c evs r.
   Definition at_instruction : config -> Prop := Procs.at_instruction.
 
   (* ---- The multi-process core, with the namespace model ---- *)
@@ -325,9 +341,9 @@ Module ProcsCore <: PROCS_CORE.
   Definition PNext : pconfig -> pstep_to := Procs.PNext.
   Definition PError : pstep_to := Procs.PError.
   Definition pstep_cfg (ctx : StepCtx) : pconfig -> list event -> pstep_to -> Prop :=
-    Procs.pstep_x_cfg ns_ext any_clone_failure (fst ctx) (snd ctx).
+    Procs.pstep_x_cfg ns_ext (ctx_cenv ctx) (ctx_segs ctx) (ctx_cfg ctx).
   Definition pstep_at (ctx : StepCtx) : Pid -> pconfig -> list event -> pstep_to -> Prop :=
-    Procs.pstep_x_at ns_ext any_clone_failure (fst ctx) (snd ctx).
+    Procs.pstep_x_at ns_ext (ctx_cenv ctx) (ctx_segs ctx) (ctx_cfg ctx).
   Definition lineage_pick : pconfig -> Pid -> Prop := MustExitP.lineage_pick.
   Definition child_projection : pconfig -> pconfig -> option (ProcessEntry * shared) :=
     Procs.child_projection.
@@ -345,7 +361,7 @@ Module ProcsCore <: PROCS_CORE.
      <-> exists c', P' = one_proc c' /\ sstep_cfg ctx c evs (SNext c')).
   Proof.
     intros ctx c evs P'.
-    exact (Procs.pstep_x_instr_single_next ns_ext any_clone_failure (fst ctx) (snd ctx) c evs P').
+    exact (Procs.pstep_x_instr_single_next ns_ext (ctx_cenv ctx) (ctx_segs ctx) (ctx_cfg ctx) c evs P').
   Qed.
 
   (** L3 *)
@@ -353,7 +369,7 @@ Module ProcsCore <: PROCS_CORE.
     (pstep_cfg ctx (one_proc c) evs PError <-> sstep_cfg ctx c evs SError).
   Proof.
     intros ctx c evs.
-    exact (Procs.pstep_x_instr_single_err ns_ext any_clone_failure (fst ctx) (snd ctx) c evs).
+    exact (Procs.pstep_x_instr_single_err ns_ext (ctx_cenv ctx) (ctx_segs ctx) (ctx_cfg ctx) c evs).
   Qed.
 
   (** L4 *)
@@ -374,7 +390,8 @@ Module ProcsCore <: PROCS_CORE.
   Lemma pstep_at_one : forall ctx c evs r,
     pstep_at ctx one_pid (one_proc c) evs r <-> pstep_cfg ctx (one_proc c) evs r.
   Proof.
-    intros ctx c evs r. exact (Procs.pstep_x_at_one ns_ext any_clone_failure (fst ctx) (snd ctx) c evs r).
+    intros ctx c evs r.
+    exact (Procs.pstep_x_at_one ns_ext (ctx_cenv ctx) (ctx_segs ctx) (ctx_cfg ctx) c evs r).
   Qed.
 
   (** L8 *)
@@ -385,7 +402,7 @@ Module ProcsCore <: PROCS_CORE.
                  /\ sh = pcfg_shared P'.
   Proof.
     intros ctx P evs P'.
-    exact (child_projection_of_clone_x ns_ext any_clone_failure (fst ctx) (snd ctx) P evs P').
+    exact (child_projection_of_clone_x ns_ext (ctx_cenv ctx) (ctx_segs ctx) (ctx_cfg ctx) P evs P').
   Qed.
 
   (** L9 *)
@@ -396,7 +413,7 @@ Module ProcsCore <: PROCS_CORE.
     lineage_pick P' (pe_pid e).
   Proof.
     intros ctx P p evs P' e sh.
-    exact (lineage_pick_clone_x ns_ext any_clone_failure (fst ctx) (snd ctx) P p evs P' e sh).
+    exact (lineage_pick_clone_x ns_ext (ctx_cenv ctx) (ctx_segs ctx) (ctx_cfg ctx) P p evs P' e sh).
   Qed.
 
 End ProcsCore.
@@ -469,3 +486,80 @@ Qed.
 Definition focus_noninterfering (xs : pconfig -> Pid -> list OfdId)
     (cut_at : Pid -> pconfig -> Prop) (ctx : ProcsCore.StepCtx) (f : Pid) (P : pconfig) : Prop :=
   NsProcs.parents_noninterfering FocusView focus_view focus_eq xs cut_at ctx f P.
+
+(* =========================================================================
+   Halting of the lineage
+   ========================================================================= *)
+
+(** The lineage's entry: the newest process ([MustExitP.lineage_pick]). *)
+Definition lineage_entry (P : pconfig) : option ProcessEntry :=
+  look P (List.last (List.map fst (pcfg_procs P)) (pcfg_root P)).
+
+(** Every maximal run OF THE LINEAGE ([NsProcs.nstep]: the steps of the
+    newest process, which after a clone is the child) halts with that
+    process exited on a code in [S], not killed, and with no step of it to
+    the model's error.  The other processes do not step here; what they do
+    to the lineage is the premise a statement names
+    ([lholts_ns_within_budget]).  So the code read is the lineage's own:
+    after a clone, the child's. *)
+Inductive must_exit_lineage_at (ctx : ProcsCore.StepCtx) (S : list word) : pconfig -> Prop :=
+| mela_halted : forall P e code,
+    lineage_entry P = Some e ->
+    m_halted (cfg_model (pe_cfg (pcfg_shared P) e)) = Some code ->
+    List.In code S ->
+    m_killed (cfg_model (pe_cfg (pcfg_shared P) e)) = None ->
+    must_exit_lineage_at ctx S P
+| mela_running : forall P e,
+    lineage_entry P = Some e ->
+    m_halted (cfg_model (pe_cfg (pcfg_shared P) e)) = None ->
+    (exists evs r, NsProcs.nstep ctx P evs r) ->
+    (forall evs, ~ NsProcs.nstep ctx P evs PError) ->
+    (forall evs P', NsProcs.nstep ctx P evs (PNext P') -> must_exit_lineage_at ctx S P') ->
+    must_exit_lineage_at ctx S P.
+
+(** THE LINEAGE HALTING STATEMENT over the namespace model: as
+    [pholts_x_within_budget], for the lineage's run instead of the whole
+    system's, from each host namespace state [host] admits, on the inputs
+    [pre] admits, with two premises the statement names:
+    - [cenv], the clone failures the run admits: an ENVIRONMENT PREMISE
+      when narrower than [any_clone_failure] (for example
+      [Ns.Clone.clone_tables_failures]: the host can make the namespaces
+      and the processes);
+    - [quiet segs P0], what the statement assumes of the other processes
+      from the start system [P0].  A statement about a child instantiates
+      it with [focus_noninterfering]: until the cut, the other processes do
+      not change what the lineage reads, except through the exchange
+      descriptions.  It must be proved of the real program, or shown
+      satisfiable by a recorded run: a [quiet] that no start system meets
+      makes the statement vacuous.
+    The budget premise is [MustExitP.pholts_within_budget]'s: the released
+    one-process run of the image.  It says nothing about the memory a child
+    asks for; a statement whose child may be refused memory must exclude
+    that itself. *)
+Definition lholts_ns_within_budget (cenv : CloneEnv) (pre : ProcInput -> Prop)
+    (host : NsState -> Prop) (quiet : list Segment -> pconfig -> Prop)
+    (lim : Z) (allowed : list word) (img : Image) : Prop :=
+  forall (en : ExecEntry) (inp : ProcInput) (st : NsState),
+    valid_entry img en inp ->
+    valid_input inp ->
+    pre inp ->
+    host st ->
+    ~ run_scfg_budget_refused forced_only_cfg img lim en inp ->
+    match img, en with
+    | mkImage segs pc ph, Run.mkEntry sp brk0 mbase rnd =>
+        quiet segs (one_proc_in (init_config segs pc ph sp brk0 mbase rnd lim inp) st) ->
+        must_exit_lineage_at (cenv, (segs, forced_only_cfg)) allowed
+          (one_proc_in (init_config segs pc ph sp brk0 mbase rnd lim inp) st)
+    end.
+
+(** Before any clone the lineage is the one process: in a one-process
+    system the lineage's steps are all the system's steps. *)
+Lemma nstep_one_proc_iff : forall ctx c evs r,
+  NsProcs.nstep ctx (one_proc c) evs r <-> ProcsCore.pstep_cfg ctx (one_proc c) evs r.
+Proof.
+  intros ctx c evs r. split.
+  - apply NsProcs.nstep_sub.
+  - intros H. exists ProcsCore.one_pid. split.
+    + apply ProcsCore.lineage_pick_one. reflexivity.
+    + apply ProcsCore.pstep_at_one. exact H.
+Qed.
