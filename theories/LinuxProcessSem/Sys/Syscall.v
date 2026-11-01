@@ -102,15 +102,25 @@ Definition errno_from (es : list Z) : Sys Z := choose (fun e => In e es).
     (include/linux/sched/signal.h: a pending unblocked signal, or
     TIF_NOTIFY_SIGNAL).  In a modeled run neither happens: the model
     installs no handler ([rt_sigaction] declines every handler install),
-    and no signal arrives from outside the process (SCOPE.md,
-    "Assumptions that the model does not check"), which covers the
-    freezer's fake signal ([freeze_task], kernel/freezer.c) as well.
-    Admitting -EINTR here would let the environment interrupt a call
-    that bwrap retries without bound ([TEMP_FAILURE_RETRY]) forever.
+    and SCOPE.md's assumption "Nothing outside the process makes a
+    signal pending for it, or wakes it as if one were" ("Assumptions
+    that the model does not check") rules out the three outside agents
+    that set one without a handler: another process's signal, freezing
+    ([freeze_task] for suspend and the cgroup v1 freezer;
+    [cgroup_freeze_task] for the cgroup v2 freezer, kept pending by
+    [recalc_sigpending_tsk]), and a livepatch transition's
+    [set_notify_signal].  The process's own child's SIGCHLD is no such
+    agent: at SIG_DFL [sig_ignored] discards it, and while blocked it
+    does not make [signal_pending] true.  Admitting -EINTR here would
+    let the environment interrupt a call that bwrap retries without
+    bound ([TEMP_FAILURE_RETRY]) forever.
       arch/riscv/kernel/signal.c [arch_do_signal_or_restart], [handle_signal]: read at v6.18.44; identical at v6.18.46.
       include/linux/errno.h [ERESTARTSYS], [ERESTARTNOHAND], [ERESTART_RESTARTBLOCK]: read at v6.18.44; identical at v6.18.46.
       include/linux/sched/signal.h [signal_pending]: read at v6.18.44; identical at v6.18.46.
       kernel/freezer.c [freeze_task]: read at v6.18.44; identical at v6.18.46.
+      kernel/cgroup/freezer.c [cgroup_freeze_task]: read at v6.18.44; identical at v6.18.46.
+      kernel/livepatch/transition.c [klp_send_signals]: read at v6.18.44; identical at v6.18.46.
+      kernel/signal.c [sig_ignored], [recalc_sigpending_tsk]: read at v6.18.44; identical at v6.18.46.
 
     THE WARRANT, AND WHEN IT LAPSES.  -EINTR is left out because Linux
     cannot give it to any call of a modeled run TODAY: the model runs no
