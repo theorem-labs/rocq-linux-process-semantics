@@ -41,7 +41,7 @@ Definition dent (i s : positive) (parent : option positive) (name : list byte) (
     state, a task context. *)
 Definition uns (i : positive) (parent : option positive) (level : nat)
     (umap gmap : option (list IdExtent)) : UserNs :=
-  mkUserNs i parent level 0 umap gmap true false.
+  mkUserNs i parent level 0 umap gmap true false INT_MAX true.
 
 Definition state (users : list UserNs) (files : list (N * NsFile)) : NsState :=
   mkNsState

@@ -65,15 +65,7 @@ Qed.
    Injected refusals
    ========================================================================= *)
 
-(** The environment's refusals of one call number: a list of pairs, each an
-    errno predicate and the family that injects it.  One errno can be in
-    two pairs (an allocation failure and any errno of a security module). *)
-Record NsInjected := mkNsInjected {
-  ni_no    : Z;
-  ni_pairs : list ((Z -> bool) * SpuriousFamily)
-}.
-
-(** No arm of [ns_table] injects a refusal yet. *)
+(** The arms' injected refusals; the table holds only arms it lists. *)
 Definition ns_injected_table : list NsInjected := [].
 
 Fixpoint lookup_ns_injected (t : list NsInjected) (n : Z) : option NsInjected :=

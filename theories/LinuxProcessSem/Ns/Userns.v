@@ -41,6 +41,7 @@ Arguments NsOk {A} x.
 Arguments NsErr {A} e.
 
 Definition U32 : Z := 4294967296.
+Definition INT_MAX : Z := 2147483647.
 
 (** The id [x] maps to, through the first extent that holds it. *)
 Fixpoint map_id (exts : list IdExtent) (x : Z) : option Z :=
@@ -217,7 +218,7 @@ Definition set_map (k : MapKind) (u : UserNs) (m : list IdExtent) : UserNs :=
   mkUserNs (uns_id u) (uns_parent u) (uns_level u) (uns_owner u)
            (match k with UidMap => Some m | GidMap => uns_uid_map u end)
            (match k with GidMap => Some m | UidMap => uns_gid_map u end)
-           (uns_setgroups_allowed u) (uns_parent_could_setfcap u).
+           (uns_setgroups_allowed u) (uns_parent_could_setfcap u) (uns_max_userns u) (uns_sealed u).
 
 Definition written (o : option (list IdExtent)) : bool :=
   match o with Some (_ :: _) => true | _ => false end.
@@ -348,7 +349,7 @@ Qed.
 
 Definition set_setgroups (u : UserNs) (b : bool) : UserNs :=
   mkUserNs (uns_id u) (uns_parent u) (uns_level u) (uns_owner u) (uns_uid_map u) (uns_gid_map u)
-           b (uns_parent_could_setfcap u).
+           b (uns_parent_could_setfcap u) (uns_max_userns u) (uns_sealed u).
 
 Definition starts_with (pre l : list Z) : option (list Z) :=
   if Nat.leb (length pre) (length l) && forallb (fun p => fst p =? snd p) (combine pre l)
@@ -403,7 +404,7 @@ Definition create_user_ns (U : list UserNs) (parent : positive) (owner : Z) (cou
       else NsOk (Pos.succ (max_userns_id U),
                  mkUserNs (Pos.succ (max_userns_id U)) (Some parent)
                           (Datatypes.S (uns_level p)) owner None None
-                          (uns_setgroups_allowed p) could_setfcap :: U)
+                          (uns_setgroups_allowed p) could_setfcap INT_MAX true :: U)
   end.
 
 (** A created namespace is a child of the parent, one level below it, owned
@@ -413,7 +414,7 @@ Theorem create_user_ns_child : forall U parent owner fc i U',
   exists p, find_userns U parent = Some p
     /\ find_userns U' i
        = Some (mkUserNs i (Some parent) (Datatypes.S (uns_level p)) owner None None
-                        (uns_setgroups_allowed p) fc).
+                        (uns_setgroups_allowed p) fc INT_MAX true).
 Proof.
   intros U parent owner fc i U'. unfold create_user_ns.
   destruct (find_userns U parent) as [p|]; [|intros Hc; discriminate Hc].
@@ -431,3 +432,69 @@ Proof.
   intros U parent owner fc p Hf Hl. unfold create_user_ns. rewrite Hf. cbv iota.
   apply Nat.ltb_lt in Hl. rewrite Hl. reflexivity.
 Qed.
+
+(* =========================================================================
+   The count of user namespaces ([inc_ucount], kernel/ucount.c)
+   ========================================================================= *)
+
+(** [x] and its ancestors, [x] first. *)
+Fixpoint ancestry_fuel (fuel : nat) (U : list UserNs) (x : UserNs) : list UserNs :=
+  match fuel with
+  | O => []
+  | Datatypes.S f =>
+      x :: match uns_parent x with
+           | Some p => match find_userns U p with Some px => ancestry_fuel f U px | None => [] end
+           | None => []
+           end
+  end.
+
+Definition ancestry (U : list UserNs) (x : UserNs) : list UserNs :=
+  ancestry_fuel (Datatypes.S (length U)) U x.
+
+(** The (namespace, kuid) pairs [inc_ucount] charges for a new namespace
+    under [parent] owned by [owner]: (parent, owner), then for each
+    ancestor-or-self [a] of [parent] that has a parent, (that parent, the
+    owner of [a]). *)
+Definition charge_chain (U : list UserNs) (parent : UserNs) (owner : Z) : list (UserNs * Z) :=
+  (parent, owner)
+  :: flat_map (fun a => match uns_parent a with
+                        | Some p => match find_userns U p with Some pa => [(pa, uns_owner a)] | None => [] end
+                        | None => []
+                        end) (ancestry U parent).
+
+(** The user namespaces of the table charged to ([t], [uid]): those with an
+    ancestor-or-self whose parent is [t] and whose owner is [uid].  The
+    model drops no namespace, so every one counts. *)
+Definition charged_count (U : list UserNs) (t : positive) (uid : Z) : Z :=
+  Z.of_nat (length (List.filter
+    (fun x => existsb (fun a => match uns_parent a with
+                                | Some p => Pos.eqb p t && (uns_owner a =? uid)
+                                | None => false
+                                end) (ancestry U x)) U)).
+
+(** [inc_ucount]'s answer for a new namespace: every charge fits
+    ([atomic_long_inc_below]: the count below the namespace's limit); one
+    at a sealed namespace does not (ENOSPC); or one is at a namespace that
+    is not sealed, whose count the model does not hold (either). *)
+Inductive Charge := ChargeOk | ChargeFull | ChargeEither.
+
+Definition ucount_check (U : list UserNs) (parent : UserNs) (owner : Z) : Charge :=
+  let chain := charge_chain U parent owner in
+  if existsb (fun p => uns_sealed (fst p)
+                       && negb (charged_count U (uns_id (fst p)) (snd p) <? uns_max_userns (fst p)))
+             chain
+  then ChargeFull
+  else if existsb (fun p => negb (uns_sealed (fst p))) chain then ChargeEither
+  else ChargeOk.
+
+(** [kuid_has_mapping] / [kgid_has_mapping]: some extent's lower range
+    holds the kernel id; an unwritten map holds none. *)
+Definition kid_has_mapping (o : option (list IdExtent)) (x : Z) : bool :=
+  match o with
+  | Some exts => existsb (fun e => (ext_lower e <=? x) && (x <? ext_lower e + ext_count e)) exts
+  | None => false
+  end.
+
+Definition set_max_userns (u : UserNs) (v : Z) : UserNs :=
+  mkUserNs (uns_id u) (uns_parent u) (uns_level u) (uns_owner u) (uns_uid_map u) (uns_gid_map u)
+           (uns_setgroups_allowed u) (uns_parent_could_setfcap u) v (uns_sealed u).

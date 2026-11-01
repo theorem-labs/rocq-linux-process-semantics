@@ -6,7 +6,7 @@
     path walk needs from the process ([walk_creds], [fd_loc_of]). *)
 
 From Stdlib Require Import ZArith List Bool NArith.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Walk.
 Import ListNotations.
 
@@ -117,4 +117,12 @@ Definition with_umask (ctx : NsCtx) (u : Z) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
           (cx_cwd ctx) u (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
           (cx_no_new_privs ctx) (cx_pdeathsig ctx) (cx_dumpable ctx).
+
+(** The environment's refusals of one call number: a list of pairs, each an
+    errno predicate and the family that injects it.  One errno can be in
+    two pairs (an allocation failure and any errno of a security module). *)
+Record NsInjected := mkNsInjected {
+  ni_no    : Z;
+  ni_pairs : list ((Z -> bool) * SpuriousFamily)
+}.
 

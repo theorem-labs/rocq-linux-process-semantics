@@ -35,7 +35,7 @@ Definition dent (i sb : positive) (parent : option positive) (name : list byte) 
     state, a task context. *)
 Definition uns (i : positive) (parent : option positive) (level : nat)
     (umap gmap : option (list IdExtent)) : UserNs :=
-  mkUserNs i parent level 0 umap gmap true false.
+  mkUserNs i parent level 0 umap gmap true false INT_MAX true.
 
 Definition state (mounts : list Mount) (users : list UserNs) (mntns : list MntNs)
     (pidns : list PidNs) (sbs : list SuperBlock) (dentries : list Dentry) (inodes : list Inode)

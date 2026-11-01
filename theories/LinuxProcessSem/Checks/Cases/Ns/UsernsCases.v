@@ -74,13 +74,14 @@ Proof. vm_compute. reflexivity. Qed.
 Definition full : list IdExtent := [mkExtent 0 0 4294967295].
 Definition all : Z := 2 ^ 41 - 1.
 
-Definition root_ns : UserNs := mkUserNs 1%positive None 0%nat 0 (Some full) (Some full) true true.
+Definition root_ns : UserNs :=
+  mkUserNs 1%positive None 0%nat 0 (Some full) (Some full) true true INT_MAX true.
 Definition ns2 (setgroups : bool) : UserNs :=
-  mkUserNs 2%positive (Some 1%positive) 1%nat 1000 None None setgroups false.
+  mkUserNs 2%positive (Some 1%positive) 1%nat 1000 None None setgroups false INT_MAX true.
 Definition ns2_mapped : UserNs :=
-  mkUserNs 2%positive (Some 1%positive) 1%nat 1000 (Some one) (Some one) false false.
+  mkUserNs 2%positive (Some 1%positive) 1%nat 1000 (Some one) (Some one) false false INT_MAX true.
 Definition ns3 (could_setfcap : bool) : UserNs :=
-  mkUserNs 3%positive (Some 2%positive) 2%nat 1000 None None false could_setfcap.
+  mkUserNs 3%positive (Some 2%positive) 2%nat 1000 None None false could_setfcap INT_MAX true.
 
 (** A task inside namespace [n] with euid and egid 1000 and the given
     effective set there. *)
@@ -203,18 +204,18 @@ Example create_records_setfcap :
   end = Some false := eq_refl.
 
 (** A parent at level 33 can have no child: ENOSPC. *)
-Definition deep : UserNs := mkUserNs 1%positive None 33%nat 0 None None true true.
+Definition deep : UserNs := mkUserNs 1%positive None 33%nat 0 None None true true INT_MAX true.
 Example create_too_deep : create_user_ns [deep] 1%positive 1000 true = NsErr 28 := eq_refl.
 
 (** A parent at level 32 still can. *)
-Definition level32 : UserNs := mkUserNs 1%positive None 32%nat 0 None None true true.
+Definition level32 : UserNs := mkUserNs 1%positive None 32%nat 0 None None true true INT_MAX true.
 Example create_at_level_32 :
   level_of (create_user_ns [level32] 1%positive 1000 true) = Some 33%nat := eq_refl.
 
 Example create_missing_parent : create_user_ns [root_ns] 2%positive 1000 true = NsErr 22 := eq_refl.
 
 (** A child copies the parent's setgroups state. *)
-Definition denied : UserNs := mkUserNs 1%positive None 0%nat 0 None None false true.
+Definition denied : UserNs := mkUserNs 1%positive None 0%nat 0 None None false true INT_MAX true.
 Example create_inherits_setgroups_deny :
   match create_user_ns [denied] 1%positive 1000 true with
   | NsOk (i, u) => option_map uns_setgroups_allowed (find_userns u i)

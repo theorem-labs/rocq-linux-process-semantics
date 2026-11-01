@@ -67,6 +67,12 @@ Record IdExtent := mkExtent {
   ext_count : Z
 }.
 
+(** A user namespace.  [uns_max_userns] is its limit on user namespaces
+    charged to it ([ucount_max[UCOUNT_USER_NAMESPACES]], written through
+    /proc/sys/user/max_user_namespaces); [uns_sealed] says the table holds
+    every user namespace charged to it (true for a namespace a modelled
+    call made, false for the host's, whose other processes the model does
+    not see). *)
 Record UserNs := mkUserNs {
   uns_id                   : positive;
   uns_parent               : option positive;
@@ -75,7 +81,9 @@ Record UserNs := mkUserNs {
   uns_uid_map              : option (list IdExtent);   (** None until written; lower ids are kernel ids *)
   uns_gid_map              : option (list IdExtent);
   uns_setgroups_allowed    : bool;
-  uns_parent_could_setfcap : bool                      (** the creator held CAP_SETFCAP *)
+  uns_parent_could_setfcap : bool;                     (** the creator held CAP_SETFCAP *)
+  uns_max_userns           : Z;
+  uns_sealed               : bool
 }.
 
 (** A mount namespace: its owner, and the mount fixed as its root when it

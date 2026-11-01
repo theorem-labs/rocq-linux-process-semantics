@@ -39,7 +39,7 @@ Definition task (c : CapSets) (sig : Z) (nnp : bool) (dump : Z) : NsCtx :=
           nnp sig dump.
 
 Definition U : NsState :=
-  with_userns empty_nsstate [mkUserNs 1 None 0 0 None None true true].
+  with_userns empty_nsstate [mkUserNs 1 None 0 0 None None true true INT_MAX true].
 
 Definition sys_admin : Z := 2 ^ 21.
 Definition setpcap : Z := 2 ^ 8.
