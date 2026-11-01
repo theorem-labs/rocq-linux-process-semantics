@@ -6,13 +6,13 @@
     1f99e9ab748f).  The examples are the acceptance cases A1 to A3 of
     dispatch://OSSV-287.
 
-    PART 1 (A1 to A3) and PART 3 (A5's pair calls) name no constructor
-    this change adds: every Example there is stated through
+    PART 1 (A1 to A3) and PART 3 (A5's pair calls, A6's bind) name no
+    constructor this change adds: every Example there is stated through
     [check_syscall] and [syscall_spec_witness] alone, so the same text
     also compiles against the model before this change, where each of
     them is FALSE — socketpair(AF_UNIX) declined there, so every run below
-    stops at its first call.  That is the fail-before half of each pair;
-    this file is the pass-after half.
+    stops at its first call, and bind on a pair end declined.  That is the
+    fail-before half of each pair; this file is the pass-after half.
 
     PART 2 pins the exact model states the calls produce, so a change to
     what an end carries is caught here and not only in a run.
@@ -589,3 +589,35 @@ Example a5_sequence_with_a_false_eof_is_refused :
   run_accepted sp_m0
     (firstn 10 a5_sequence_3 ++ [recvfrom_got 4 1024 []]) = None.
 Proof. check_eq. Qed.
+
+(** bind(fd, sa_addr, len) where [sa_addr] holds the [struct sockaddr_in]
+    curl binds, {AF_INET, port 12345, 0.0.0.0}: [sin_family] 2
+    little-endian, [sin_port] 12345 = 0x3039 big-endian, [sin_addr] and
+    [sin_zero] zero.  The rest of memory is [sp_rmem]'s. *)
+Definition sa_addr : word := Z_to_bv 64 36864.
+Definition sin_any_12345 : list byte :=
+  [Z_to_bv 8 2; Z_to_bv 8 0; Z_to_bv 8 48; Z_to_bv 8 57] ++ repeat (Z_to_bv 8 0) 12.
+Definition bind_in (fd len : Z) : SyscallInput :=
+  mkInput (Z_to_bv 64 200) [Z_to_bv 64 fd; sa_addr; Z_to_bv 64 len; 0; 0; 0]
+    (fun a => if in_range a 36864 16
+              then Some (nth (Z.to_nat (bv_unsigned a - 36864)%Z) sin_any_12345 (Z_to_bv 8 0))
+              else sp_rmem 0 4 4 1 a)
+    sp_wmem.
+
+(** A6, the census's kind D6 (dispatch://OSSV-286/artifact/census-wave3-md):
+    curl binds that 16-byte AF_INET address on its end, sv[1] = 4.  Linux
+    copies the 16 bytes in ([move_addr_to_kernel]) and [unix_bind] answers
+    -EINVAL, because [unix_validate_addr] finds a family other than
+    AF_UNIX; nothing moves.  The success curl asks for is refused, and so
+    is the -EINVAL without the copy-in. *)
+Example a6_bind_af_inet_on_a_pair_end_is_einval :
+  match run_accepted sp_m0 pair with
+  | Some m =>
+      check_syscall (bind_in 4 16) (with_copyins [(sa_addr, 16%nat)] (errno_eff EINVAL)) m
+        = CheckOk m []
+      /\ check_syscall (bind_in 4 16) (with_copyins [(sa_addr, 16%nat)] (mkEffect 0 [] [])) m
+           = CheckReject
+      /\ check_syscall (bind_in 4 16) (errno_eff EINVAL) m = CheckReject
+  | None => False
+  end.
+Proof. vm_compute. split; [|split]; reflexivity. Qed.

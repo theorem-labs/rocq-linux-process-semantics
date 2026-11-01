@@ -150,7 +150,26 @@ Definition bind_witness (fd addrp addrlen : word) (i : SyscallInput) (m : Model)
               | SkReset _ _ => Unmodeled
               end)
       end
-  | Some (FdStream _ _ _) => Unmodeled          (* [unix_bind]: a name the model lacks *)
+  | Some (FdStream _ _ _) =>
+      (* [unix_bind]: every errno is fixed by the input; the autobind and
+         an AF_UNIX name are the spec's own [Unmodeled] *)
+      let al := sint32 addrlen in
+      if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al)
+      then ret_outcome (errno_ret EINVAL) m
+      else if Z.eqb al 0 then ret_outcome (errno_ret EINVAL) m
+      else
+      match copy_bytes_map (in_mem i) addrp al with
+      | None => ret_outcome (errno_ret EFAULT) m
+      | Some bs =>
+          outcome_copyins [(addrp, Z.to_nat al)]
+          (if andb (Z.eqb al SA_FAMILY_SIZE) (Z.eqb (sa_family_of bs) AF_UNIX)
+           then Unmodeled
+           else if orb (Z.leb al SA_FAMILY_SIZE) (Z.ltb SOCKADDR_UN_SIZE al)
+           then ret_outcome (errno_ret EINVAL) m
+           else if negb (Z.eqb (sa_family_of bs) AF_UNIX)
+           then ret_outcome (errno_ret EINVAL) m
+           else Unmodeled)
+      end
   | Some (FdDgram _) => Unmodeled               (* a socket: an address it lacks *)
   | Some _ => ret_outcome (errno_ret ENOTSOCK) m
   end.
@@ -163,6 +182,19 @@ Proof.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af]|];
     cbv beta iota zeta; try apply pure_ok; try apply unmodeled_intro.
+  2: { (* the stream-pair end *)
+    destruct (orb (Z.ltb (sint32 addrlen) 0)
+                  (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))); [apply pure_ok|].
+    destruct (Z.eqb (sint32 addrlen) 0); [apply pure_ok|].
+    destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen)) as [bs|];
+      [|apply pure_ok].
+    apply record_copyins_outcome.
+    destruct (andb (Z.eqb (sint32 addrlen) SA_FAMILY_SIZE)
+                   (Z.eqb (sa_family_of bs) AF_UNIX)); [apply unmodeled_intro|].
+    destruct (orb (Z.leb (sint32 addrlen) SA_FAMILY_SIZE)
+                  (Z.ltb SOCKADDR_UN_SIZE (sint32 addrlen))); [apply pure_ok|].
+    destruct (negb (Z.eqb (sa_family_of bs) AF_UNIX));
+      [apply pure_ok|apply unmodeled_intro]. }
   (* socket *)
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))); [apply pure_ok|].

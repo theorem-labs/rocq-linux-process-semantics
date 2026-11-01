@@ -291,9 +291,31 @@ Definition check_bind (i : SyscallInput) (fd addrp addrlen : word)
                      autobinds: see [Net.Socket.bind_spec] *)
               end
       end
-  | Some (FdStream _ _ _) => CheckUnmodeled
-      (* a stream-pair end is a socket: [unix_bind] parses a
-         [sockaddr_un], which the model does not carry *)
+  | Some (FdStream _ _ _) =>
+      (* A stream-pair end is a socket: [move_addr_to_kernel]'s three
+         answers as in the arm above, then [unix_bind].  An autobind and an
+         AF_UNIX name are declined (the model carries no AF_UNIX name);
+         [unix_validate_addr]'s length and family tests are -EINVAL past
+         the copy, so they carry the ledger.  Mirrors
+         [Net.Socket.bind_spec]. *)
+      let al := sint32 addrlen in
+      if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al)
+      then check_ret_only eff (errno_ret EINVAL) m []
+      else if Z.eqb al 0 then check_ret_only eff (errno_ret EINVAL) m []
+      else
+      match copy_bytes_map (in_mem i) addrp al with
+      | None => check_ret_only eff (errno_ret EFAULT) m []
+      | Some bs =>
+          if andb (Z.eqb al SA_FAMILY_SIZE) (Z.eqb (sa_family_of bs) AF_UNIX)
+          then CheckUnmodeled                      (* autobind *)
+          else if orb (Z.leb al SA_FAMILY_SIZE) (Z.ltb SOCKADDR_UN_SIZE al)
+          then check_ret_only_copyins [(addrp, Z.to_nat al)] eff
+                 (errno_ret EINVAL) m []
+          else if negb (Z.eqb (sa_family_of bs) AF_UNIX)
+          then check_ret_only_copyins [(addrp, Z.to_nat al)] eff
+                 (errno_ret EINVAL) m []
+          else CheckUnmodeled                      (* an AF_UNIX name *)
+      end
   | Some (FdDgram _) => CheckUnmodeled
       (* a datagram socket is a socket too: [unix_bind] / [inet6_bind]
          claim an address [State.FdDgram] does not carry *)
@@ -797,6 +819,28 @@ Proof.
     cbv beta iota zeta in H |- *; try discriminate;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          apply pure_ok).
+  2: { (* the stream-pair end: [move_addr_to_kernel], then [unix_bind] *)
+    destruct (orb (Z.ltb (sint32 addrlen) 0)
+                  (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
+      cbv beta iota zeta in H |- *.
+    { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+    destruct (Z.eqb (sint32 addrlen) 0) eqn:E2; cbv beta iota zeta in H |- *.
+    { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+    destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
+      as [bs|] eqn:Hrb; cbv beta iota zeta in H |- *.
+    2: { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+    destruct (andb (Z.eqb (sint32 addrlen) SA_FAMILY_SIZE)
+                   (Z.eqb (sa_family_of bs) AF_UNIX)) eqn:E3;
+      cbv beta iota zeta in H |- *; [discriminate|].
+    destruct (orb (Z.leb (sint32 addrlen) SA_FAMILY_SIZE)
+                  (Z.ltb SOCKADDR_UN_SIZE (sint32 addrlen))) eqn:E4;
+      cbv beta iota zeta in H |- *.
+    { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+      apply record_copyins_ok. apply pure_ok. }
+    destruct (negb (Z.eqb (sa_family_of bs) AF_UNIX)) eqn:E5;
+      cbv beta iota zeta in H |- *; [|discriminate].
+    apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok. apply pure_ok. }
   (* the socket arm *)
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
@@ -850,6 +894,27 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     try (now apply check_ret_only_no_unmodeled in H); try apply unmodeled_intro.
+  2: { (* the stream-pair end: the autobind and an AF_UNIX name *)
+    destruct (orb (Z.ltb (sint32 addrlen) 0)
+                  (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
+      cbv beta iota zeta in H |- *.
+    { now apply check_ret_only_no_unmodeled in H. }
+    destruct (Z.eqb (sint32 addrlen) 0) eqn:E2; cbv beta iota zeta in H |- *.
+    { now apply check_ret_only_no_unmodeled in H. }
+    destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
+      as [bs|] eqn:Hrb; cbv beta iota zeta in H |- *.
+    2: { now apply check_ret_only_no_unmodeled in H. }
+    apply record_copyins_unmodeled.
+    destruct (andb (Z.eqb (sint32 addrlen) SA_FAMILY_SIZE)
+                   (Z.eqb (sa_family_of bs) AF_UNIX)) eqn:E3;
+      cbv beta iota zeta in H |- *; [apply unmodeled_intro|].
+    destruct (orb (Z.leb (sint32 addrlen) SA_FAMILY_SIZE)
+                  (Z.ltb SOCKADDR_UN_SIZE (sint32 addrlen))) eqn:E4;
+      cbv beta iota zeta in H |- *.
+    { now apply check_ret_only_copyins_no_unmodeled in H. }
+    destruct (negb (Z.eqb (sa_family_of bs) AF_UNIX)) eqn:E5;
+      cbv beta iota zeta in H |- *;
+      [now apply check_ret_only_copyins_no_unmodeled in H | apply unmodeled_intro]. }
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
     cbv beta iota zeta in H |- *.
@@ -896,6 +961,22 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; try rewrite bv_eqb_refl; reflexivity).
+  2: { (* the stream-pair end: each errno is fixed by the input *)
+    destruct (orb (Z.ltb (sint32 addrlen) 0)
+                  (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
+      hall E1; inv_ok; [cbn; try rewrite bv_eqb_refl; reflexivity|].
+    destruct (Z.eqb (sint32 addrlen) 0) eqn:E2; hall E2; inv_ok;
+      [cbn; try rewrite bv_eqb_refl; reflexivity|].
+    destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
+      as [bs|] eqn:Hrb; hall Hrb; inv_ok;
+      [|cbn; try rewrite bv_eqb_refl; reflexivity].
+    destruct (andb (Z.eqb (sint32 addrlen) SA_FAMILY_SIZE)
+                   (Z.eqb (sa_family_of bs) AF_UNIX)) eqn:E3; hall E3; inv_ok.
+    destruct (orb (Z.leb (sint32 addrlen) SA_FAMILY_SIZE)
+                  (Z.ltb SOCKADDR_UN_SIZE (sint32 addrlen))) eqn:E4; hall E4; inv_ok;
+      [apply check_ret_only_copyins_ok_iff; now repeat split|].
+    destruct (negb (Z.eqb (sa_family_of bs) AF_UNIX)) eqn:E5; hall E5; inv_ok;
+      apply check_ret_only_copyins_ok_iff; now repeat split. }
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
     hall E1; inv_ok; [cbn; try rewrite bv_eqb_refl; reflexivity|].
@@ -947,6 +1028,21 @@ Proof.
   cbv iota zeta in H. cbv zeta. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam|aid af]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate; try unm_refl.
+  2: { (* the stream-pair end: only the autobind and an AF_UNIX name *)
+    destruct (orb (Z.ltb (sint32 addrlen) 0)
+                  (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
+      hall E1; inv_ok; try discriminate.
+    destruct (Z.eqb (sint32 addrlen) 0) eqn:E2; hall E2; inv_ok; try discriminate.
+    destruct (copy_bytes_map (in_mem i) addrp (sint32 addrlen))
+      as [bs|] eqn:Hrb; hall Hrb; inv_ok; try discriminate.
+    destruct (andb (Z.eqb (sint32 addrlen) SA_FAMILY_SIZE)
+                   (Z.eqb (sa_family_of bs) AF_UNIX)) eqn:E3; hall E3; inv_ok;
+      try unm_refl.
+    destruct (orb (Z.leb (sint32 addrlen) SA_FAMILY_SIZE)
+                  (Z.ltb SOCKADDR_UN_SIZE (sint32 addrlen))) eqn:E4; hall E4; inv_ok;
+      try discriminate.
+    destruct (negb (Z.eqb (sa_family_of bs) AF_UNIX)) eqn:E5; hall E5; inv_ok;
+      try discriminate; unm_refl. }
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
     hall E1; inv_ok; try discriminate.

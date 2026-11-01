@@ -310,6 +310,9 @@ Definition IPPROTO_MAX   : Z := 263%Z.
 Definition SOCKADDR_STORAGE_SIZE : Z := 128%Z.
 Definition SA_FAMILY_SIZE        : Z := 2%Z.
 Definition SOCKADDR_IN_SIZE      : Z := 16%Z.
+(** [sizeof(struct sockaddr_un)]: a 2-byte [sun_family] and a 108-byte
+    [sun_path] (include/uapi/linux/un.h, UNIX_PATH_MAX 108). *)
+Definition SOCKADDR_UN_SIZE      : Z := 110%Z.
 
 (** The three option LEVELS an AF_INET/SOCK_STREAM socket has a handler
     for, and [shutdown]'s three directions.

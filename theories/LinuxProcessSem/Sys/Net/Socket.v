@@ -542,13 +542,47 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
                      end-of-stream, which [SockState] cannot express. *)
               end)
       end
-  | Some (FdStream _ _ _) => unmodeled
+  | Some (FdStream _ _ _) =>
       (* A STREAM-PAIR END IS A SOCKET, so the wildcard below must not
          reach it: its [f_op] is [socket_file_ops] and [sock_from_file]
-         hands back the socket.  [unix_bind] (net/unix/af_unix.c,
-         v6.18.46) then parses a [sockaddr_un] -- an autobind for a
-         bare family, a filesystem or abstract name otherwise -- none of
-         which this model carries.  Declined *)
+         hands back the socket.  [__sys_bind] runs the same
+         [move_addr_to_kernel] as for the AF_INET arm above (its -EINVAL
+         for a length outside [0, 128] and its -EFAULT), and then
+         [unix_bind] (net/unix/af_unix.c, Linux v6.18.46), in this
+         order:
+         - [addr_len == offsetof(struct sockaddr_un, sun_path)] (2) and
+           [sun_family == AF_UNIX] is an AUTOBIND: declined, because it
+           gives the end an abstract name, which this model carries
+           nowhere;
+         - [unix_validate_addr]: [addr_len <= 2] or [addr_len >
+           sizeof(struct sockaddr_un)] (110) is -EINVAL, and so is any
+           [sun_family] other than AF_UNIX.  This is the answer to curl's
+           [bind] of an AF_INET address on its end (curl-fuzzer
+           [api_url_guess_local_port]; dispatch://OSSV-286/artifact/
+           census-wave3-md, kind D6), and no state moves;
+         - an AF_UNIX filesystem or abstract name: declined, for the
+           autobind's reason.
+         A length of 0 copies nothing and reaches [unix_validate_addr]
+         with [addr_len] 0, so it is -EINVAL, before any read.  The LSM
+         hook [security_socket_bind] runs between the copy and
+         [unix_bind]; the model has none, as the AF_INET arm says. *)
+      let al := sint32 addrlen in
+      if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al) then err_ret EINVAL
+      else if Z.eqb al 0 then err_ret EINVAL
+      else
+      match copy_bytes_map (in_mem i) addrp al with
+      | None => err_ret EFAULT                   (* copy_from_user failed: nothing moved *)
+      | Some bs =>
+          record_copyins [(addrp, Z.to_nat al)]
+          (let fam := sa_family_of bs in
+           if andb (Z.eqb al SA_FAMILY_SIZE) (Z.eqb fam AF_UNIX) then unmodeled
+             (* autobind *)
+           else if orb (Z.leb al SA_FAMILY_SIZE) (Z.ltb SOCKADDR_UN_SIZE al)
+           then err_ret EINVAL
+           else if negb (Z.eqb fam AF_UNIX) then err_ret EINVAL
+           else unmodeled)
+             (* a filesystem or abstract AF_UNIX name *)
+      end
   | Some (FdDgram _) => unmodeled
       (* A DATAGRAM SOCKET IS A SOCKET TOO, so not the wildcard below:
          [sock_alloc_file] gave it [socket_file_ops].  [unix_bind] and

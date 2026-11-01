@@ -2791,19 +2791,26 @@ Definition PipeBuf : Type := list byte * Z.
     the close left [sk_err] set.  The two answers that turn on it DECLINE
     rather than guess: an empty read on the survivor (end of file, or one
     -ECONNRESET first) and a [ppoll] on it, whose filter always holds
-    EPOLLERR.  No call of curl_fuzzer_proto_http reaches either: curl's
-    end closes first, with its own queue empty, and the other end then
-    closes without reading.
+    EPOLLERR.  No call of curl_fuzzer_proto_http reaches either, but
+    other cURL protocol targets do: in the census of the 19 wave-3
+    targets, a read on a survivor is the first declined call of 401 runs
+    in 11 targets (dispatch://OSSV-286/artifact/census-wave3-md, kind
+    D2).  The repair keeps [close_spec] kind-blind: the survivor's first
+    call that shows the error chooses whether it was set, and the
+    survivor keeps to that choice.  It is a separate change
+    (dispatch://OSSV-287/artifact/d2-design-md).
 
     WHAT IS NOT HERE, and deliberately.  No ADDRESS: a [socketpair] end
     is unbound, [unix_getname] reports the unnamed address, and nothing
-    in this model binds or connects one.  No DEADLINE: no timeout option
-    is modeled, so a call either answers now or is declined.  No SECOND
-    THREAD: both ends are held by this one process, so a call that would
-    wait for the peer to act waits forever, and the arms decline that
-    case rather than represent a run that cannot progress (see
-    [Fs.ReadWrite.stream_read]).  Each of the three is a chosen boundary,
-    not a gap a later reader should fill by guessing. *)
+    in this model binds or connects one ([Net.Socket.bind_spec] answers
+    only the errors [unix_bind] gives before a name is looked at).  No
+    DEADLINE: no timeout option is modeled, so a call either answers now
+    or is declined.  No SECOND THREAD: both ends are held by this one
+    process, so a call that would wait for the peer to act waits
+    forever, and the arms decline that case rather than represent a run
+    that cannot progress (see [Fs.ReadWrite.stream_read]).  Each of the
+    three is a chosen boundary, not a gap a later reader should fill by
+    guessing. *)
 Record StreamEnd := mkStreamEnd {
   se_rx       : list byte;
   se_nonblock : bool;
