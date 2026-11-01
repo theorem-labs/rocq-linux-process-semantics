@@ -249,6 +249,7 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
       (* FAIL-CLOSED, on every request.  [SYSCALL_DEFINE3(ioctl)]'s
          [CLASS(fd, f)] refuses an O_PATH file (-EBADF), and an eventfd
          or a /proc/sys file reach [vfs_ioctl] through tables this model
-         has not read for the eight requests (fs/ioctl.c and fs/file.c,
-         read at v6.18.44; identical at v6.18.46). *)
+         has not read for the eight requests, and an [ONsFile]'s object
+         is of unknown type (fs/ioctl.c and fs/file.c, read at v6.18.44;
+         identical at v6.18.46). *)
   end.

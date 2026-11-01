@@ -880,10 +880,10 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
       (* a /proc/sys file opened O_RDONLY: see [read_proc_spec] *)
   | Some (FdOpaque (OProcPath _)) => unmodeled
       (* FAIL-CLOSED: [ksys_read]'s [CLASS(fd_pos, f)] refuses an O_PATH
-         file (fs/read_write.c and fs/file.c, read at v6.18.44), which is
+         file (fs/read_write.c and fs/file.c, read at v6.18.44; identical at v6.18.46), which is
          -EBADF; not written *)
   | Some (FdOpaque (OEventFd _)) => unmodeled
-      (* FAIL-CLOSED: [eventfd_read] (fs/eventfd.c, read at v6.18.44)
+      (* FAIL-CLOSED: [eventfd_read] (fs/eventfd.c, read at v6.18.44; identical at v6.18.46)
          answers from the counter, which the model does not hold *)
   | Some (FdOpaque (ONsFile _)) => unmodeled
       (* FAIL-CLOSED: the object behind the handle may be of any type,
@@ -1749,7 +1749,7 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          -EBADF, a /proc/sys file opened O_RDONLY is [vfs_write]'s
          FMODE_WRITE -EBADF, and an eventfd's write adds to a counter the
          model does not hold (fs/read_write.c, fs/file.c, fs/eventfd.c,
-         read at v6.18.44).  None is written. *)
+         read at v6.18.44; identical at v6.18.46).  None is written. *)
   end.
 
 (** * pread64 (67) and pwrite64 (68) — a transfer at a POSITION THE CALL NAMES
@@ -1956,9 +1956,10 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
       end
   | Some (FdOpaque _) => unmodeled
       (* FAIL-CLOSED: an O_PATH file is [ksys_pread64]'s [CLASS(fd, f)]
-         -EBADF (fs/read_write.c and fs/file.c, read at v6.18.44); a
+         -EBADF (fs/read_write.c and fs/file.c, read at v6.18.44; identical at v6.18.46); a
          positional read of an eventfd or a /proc/sys file is not
-         written.  None of the three answers is. *)
+         written, and an [ONsFile]'s object is of unknown type.  None of
+         the four answers is. *)
   end.
 
 (** [pwrite64 fd buf count pos].
@@ -2156,7 +2157,7 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
           else record_copyins [(buf, length bs)] (ret_only (len_word bs))
       end
   | Some (FdOpaque _) => unmodeled
-      (* FAIL-CLOSED, as [pread64_spec]'s arm: none of the three answers
+      (* FAIL-CLOSED, as [pread64_spec]'s arm: none of the four answers
          is written *)
   end.
 
@@ -2500,7 +2501,7 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
          -EBADF, a /proc/sys file opened O_RDONLY is [vfs_writev]'s
          FMODE_WRITE -EBADF, and an eventfd's write adds to a counter the
          model does not hold (fs/read_write.c, fs/eventfd.c, read at
-         v6.18.44).  None is written. *)
+         v6.18.44; identical at v6.18.46).  None is written. *)
   end.
 
 
@@ -2646,7 +2647,7 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
        [None] branch, through [State.fd_is_opaque], because [None] here means
        [vfs_readv]'s -EBADF and that is the kernel's answer only for the
        O_PATH object ([do_readv]'s [CLASS(fd_pos, f)], fs/read_write.c,
-       v6.18.44); a /proc/sys file and an eventfd are open for reading *)
+       v6.18.44; identical at v6.18.46); a /proc/sys file and an eventfd are open for reading *)
   end.
 
 (** Linux keeps eight iovecs on the syscall stack ([UIO_FASTIOV],
@@ -3066,8 +3067,10 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
         (* FAIL-CLOSED ON THE OPAQUE KINDS, AHEAD OF THE -EINVAL:
            [ksys_lseek] resolves [CLASS(fd_pos, f)] before it reads
            [whence], so an O_PATH file is -EBADF for every whence; the
-           other two take the -EINVAL (fs/read_write.c, read at
-           v6.18.44), and the split is not written *)
+           eventfd and /proc/sys objects take the -EINVAL, and an
+           [ONsFile]'s answer depends on its object of unknown type
+           (fs/read_write.c, read at v6.18.44; identical at v6.18.46);
+           the split is not written *)
         (* whence past SEEK_HOLE: real -EINVAL, and the kernel answers it
            BEFORE the fd's kind is consulted — so this precedes -ESPIPE *)
       else
@@ -3221,7 +3224,7 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
              [.llseek = default_llseek] over a size the model does not hold
              (fs/read_write.c [ksys_lseek], fs/eventfd.c [eventfd_fops],
              fs/proc/proc_sysctl.c [proc_sys_file_operations]: read at
-             v6.18.44; identical at v6.18.46).  None of the three answers
-             is written. *)
+             v6.18.44; identical at v6.18.46); an [ONsFile]'s object is of
+             unknown type.  None of the four answers is written. *)
       end
   end.

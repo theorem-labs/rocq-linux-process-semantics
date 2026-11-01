@@ -476,8 +476,9 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
          answer WRONGLY: [__sys_bind]'s [CLASS(fd, f)] is [fdget], which
          refuses an O_PATH file ([State.OProcPath]) with -EBADF before
          [sock_from_file] runs (net/socket.c and fs/file.c, read at
-         v6.18.44; identical at v6.18.46).  The other two opaque objects
-         would take the -ENOTSOCK; the split is not written. *)
+         v6.18.44; identical at v6.18.46).  The eventfd and /proc/sys
+         objects would take the -ENOTSOCK, and an [ONsFile] may be a
+         socket; the split is not written. *)
   | Some _ => err_ret ENOTSOCK
       (* AN OPEN FD THAT IS NOT A SOCKET, and that [fdget] accepts.  This
          arm is a wildcard on purpose: [sock_from_file] is one comparison
@@ -1105,11 +1106,11 @@ Definition sock_fd (m : Model) (fd : word) : SockState + Z :=
                                           five calls' [fd_empty] -EBADF (see above) *)
   | Some (FdOpaque (OProcFile _)) => inr ENOTSOCK
                                        (* a /proc/sys file: [proc_sys_file_operations]
-                                          (fs/proc/proc_sysctl.c, v6.18.44) is not
+                                          (fs/proc/proc_sysctl.c, v6.18.44; identical at v6.18.46) is not
                                           [socket_file_ops] *)
   | Some (FdOpaque (OEventFd _)) => inr ENOTSOCK
                                        (* an eventfd: [eventfd_fops] (fs/eventfd.c,
-                                          v6.18.44) is not [socket_file_ops] either *)
+                                          v6.18.44; identical at v6.18.46) is not [socket_file_ops] either *)
   | Some (FdOpaque (ONsFile _)) => inr ENOTSOCK
                                        (* never consulted: each of the five calls
                                           declines this kind first ([fd_is_ns_file]) *)
@@ -2124,8 +2125,9 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
       err_ret ENOTSOCK
   | Some (FdOpaque _) => unmodeled
       (* FAIL-CLOSED: [__sys_sendmsg]'s [CLASS(fd, f)] answers -EBADF for
-         an O_PATH file and the other two take -ENOTSOCK (net/socket.c,
-         read at v6.18.44); the split is not written *)
+         an O_PATH file, the eventfd and /proc/sys objects take -ENOTSOCK,
+         and an [ONsFile] may be a socket (net/socket.c, read at
+         v6.18.44; identical at v6.18.46); the split is not written *)
   | Some (FdSocket sk) =>
   (* THE RANGE TEST COMES FIRST, through [State.copy_bytes_map] — the
      [State.access_okb]-then-walk pair [socketpair_dest_writable] below
@@ -2301,9 +2303,10 @@ Definition sockfd_lookup_errno (fds : list (word * FdEntry)) (fd : word)
   | Some FdUrandom => Some ENOTSOCK
       (* and /dev/urandom's is [urandom_fops] (drivers/char/random.c) *)
   | Some (FdOpaque _) => None
-      (* FAIL-CLOSED: an O_PATH file is [fdget]'s -EBADF and the other two
-         opaque objects [sock_from_file]'s -ENOTSOCK (net/socket.c,
-         read at v6.18.44); the split is not written *)
+      (* FAIL-CLOSED: an O_PATH file is [fdget]'s -EBADF, the eventfd and
+         /proc/sys objects [sock_from_file]'s -ENOTSOCK, and an [ONsFile]
+         may be a socket (net/socket.c, read at v6.18.44; identical at
+         v6.18.46); the split is not written *)
   | Some (FdSocket _) => None
   end.
 

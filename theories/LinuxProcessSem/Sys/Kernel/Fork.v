@@ -401,7 +401,7 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
 Definition SIGCHLD : Z := 17.
 
 (** The clone failures this model admits for the FORK word (the
-    namespace word admits every errno: see [clone_ns_resolve]).
+    namespace word admits every errno but -EINTR: see [clone_ns_resolve]).
     Enumerated by walking every error return in [kernel_clone]
     and [copy_process] (kernel/fork.c) in source order and asking which
     survives [flags = SIGCHLD].  Mainline v6.6..v7.2 and stable
@@ -824,7 +824,7 @@ Definition clone_ns_flags_b (flags : word) : bool :=
       [CLONE_PIDFD] are clear.  The caller's own credentials, namespaces,
       descriptors and [fs_struct] are not touched: [copy_creds],
       [copy_namespaces] and [copy_fs] act on the new task [p].
-    - FAILURE: EVERY ERRNO FROM 1 TO 4095 ([Syscall.errno_any]).  The
+    - FAILURE: EVERY ERRNO FROM 1 TO 4095 BUT -EINTR ([Syscall.errno_any]).  The
       failures of this word run through everything a plain fork's do
       ([clone_errnos]) and then through [create_user_ns] (-ENOSPC past 32
       levels or past [max_user_namespaces], -EPERM in a chroot or for an
@@ -834,8 +834,14 @@ Definition clone_ns_flags_b (flags : word) : bool :=
       [copy_cgroup_ns] and [copy_net_ns] — the last runs every
       registered pernet init function, each of which can return its own
       errno.  That set cannot be enumerated with confidence, so the arm
-      admits every errno rather than a list a missing member of which
-      would make the model reject a real kernel's answer.  The cost is
+      admits every errno but -EINTR rather than a list a missing member
+      of which would make the model reject a real kernel's answer.
+      -EINTR is left out for the reason argued at [clone_errnos] above:
+      [copy_process]'s own -EINTR (kernel/fork.c, [fatal_signal_pending])
+      reaches userspace only after SIGKILL has ended the task; and the
+      namespace inits' interruptible waits can answer -EINTR only with a
+      signal pending, which SCOPE.md's "Nothing outside the process makes
+      a signal pending for it" assumption excludes.  The cost is
       the usual one of a wide set: the model also admits errnos no
       kernel returns here.  [Run.injected_table] keeps [clone_errnos]
       for 220, so under a forced-only [Run.SpuriousCfg] the four
