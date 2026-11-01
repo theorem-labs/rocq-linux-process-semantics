@@ -176,8 +176,9 @@ Definition init_caps : CapSets :=
             (Z_to_bv 64 0) (Z_to_bv 64 0).
 
 Definition init_ns_ctx : ns_ctx :=
-  mkNsCtx 1 1 1 1 1 1 (1, 1) (1, 1) (Z_to_bv 64 18) init_caps
-          (Z_to_bv 64 0) false None [].
+  mkNsCtx 1%positive 1%positive 1%positive 1%positive 1%positive 1%positive
+          (1%positive, 1%positive) (1%positive, 1%positive)
+          (Z_to_bv 64 18) init_caps (Z_to_bv 64 0) false None [].
 
 (* =========================================================================
    The entries, the shared state, and the configuration
@@ -320,7 +321,7 @@ Definition multiproc_allowed (P : pconfig) (c : config) : bool :=
   match ms_svc_pending (cfg_ms c) with
   | None => true
   | Some x8 =>
-      Nat.leb (length (pcfg_procs P)) 1
+      Nat.leb (length (pcfg_procs P)) 1%nat
       || existsb (Z.eqb (bv_unsigned x8)) multiproc_sysnos
   end.
 
@@ -430,20 +431,35 @@ Definition pstep_at (segs : list Segment) (cfg : SpuriousCfg) (p : positive)
 
 (** A system of one process, built from a released configuration. *)
 Definition one_proc (c : config) : pconfig :=
-  mkPCfg [mkEntry 1 None (cfg_ms c) (clear_shared (cfg_model c)) [] init_ns_ctx]
-         1
+  mkPCfg [mkEntry 1%positive None (cfg_ms c) (clear_shared (cfg_model c))
+                  [] init_ns_ctx]
+         1%positive
          (mkShared (m_fsys (cfg_model c)) (m_io (cfg_model c)) [] [] init_ns_tables).
 
+(** The one entry of a one-process system, named once so the lemmas below and
+    the proof of [pstep_single] agree on it. *)
+Definition one_entry (c : config) : ProcessEntry :=
+  mkEntry 1%positive None (cfg_ms c) (clear_shared (cfg_model c))
+          [] init_ns_ctx.
+
 Lemma one_proc_entry : forall c,
-  look (one_proc c) 1 = Some (mkEntry 1 None (cfg_ms c)
-                                (clear_shared (cfg_model c)) [] init_ns_ctx).
+  look (one_proc c) 1%positive = Some (one_entry c).
+Proof. intros c. reflexivity. Qed.
+
+(** Whatever pid a step picked, a one-process system has only this entry. *)
+Lemma look_one_proc_inv : forall c p e,
+  look (one_proc c) p = Some e -> e = one_entry c.
+Proof.
+  intros c p e H. unfold look, one_proc, one_entry in H. cbn in H.
+  destruct p; cbn in H; congruence.
+Qed.
 Proof. intros c. reflexivity. Qed.
 
 (** The splice round-trips at a one-process system: the released view of the
     only entry is the configuration it was built from. *)
 Lemma one_proc_view : forall c,
   pe_cfg (pcfg_shared (one_proc c))
-         (mkEntry 1 None (cfg_ms c) (clear_shared (cfg_model c)) [] init_ns_ctx)
+         (one_entry c)
   = c.
 Proof.
   intros c. destruct c as [ms m]. destruct m. reflexivity.
@@ -460,7 +476,7 @@ Qed.
 
 Lemma absorb_one_proc : forall c c',
   absorb (one_proc c)
-         (mkEntry 1 None (cfg_ms c) (clear_shared (cfg_model c)) [] init_ns_ctx)
+         (one_entry c)
          c'
   = one_proc c'.
 Proof.
@@ -494,21 +510,12 @@ Proof.
                                |P e evs0 Hlook Hss Hwt Heq1 Heq2 Heq3
                                |P e Hlook Hrun Hall Heq1 Heq2 Heq3]; subst.
     + (* pstep_other *)
-      rewrite one_proc_entry in Hlook.
-      (* the only entry is the one [one_proc] built *)
-      assert (He : e = mkEntry 1 None (cfg_ms c) (clear_shared (cfg_model c))
-                        [] init_ns_ctx).
-      { cbn in Hlook. destruct (Pos.eqb (pe_pid e) (pe_pid e)) eqn:Hb.
-        - congruence.
-        - rewrite Pos.eqb_refl in Hb. discriminate. }
+      (* a one-process system has only the entry [one_proc] built *)
+      assert (He : e = one_entry c) by exact (look_one_proc_inv _ _ _ Hlook).
       subst e. rewrite one_proc_view in Hss.
       exists c'. split; [apply absorb_one_proc | exact Hss].
     + (* pstep_error *)
-      assert (He : e = mkEntry 1 None (cfg_ms c) (clear_shared (cfg_model c))
-                        [] init_ns_ctx).
-      { cbn in Hlook. destruct (Pos.eqb (pe_pid e) (pe_pid e)) eqn:Hb.
-        - congruence.
-        - rewrite Pos.eqb_refl in Hb. discriminate. }
+      assert (He : e = one_entry c) by exact (look_one_proc_inv _ _ _ Hlook).
       subst e. rewrite one_proc_view in Hss. exact Hss.
     + (* pstep_outside: impossible at one entry *)
       exfalso. rewrite multiproc_allowed_one in Hall. discriminate.
@@ -569,15 +576,12 @@ Qed.
     the whole table comes back because the whole configuration does. *)
 Lemma one_proc_offsets : forall c,
   m_fds (cfg_model (pe_cfg (pcfg_shared (one_proc c))
-           (mkEntry 1 None (cfg_ms c) (clear_shared (cfg_model c))
-                    [] init_ns_ctx)))
+           (one_entry c)))
     = m_fds (cfg_model c)
   /\ m_pipes (cfg_model (pe_cfg (pcfg_shared (one_proc c))
-           (mkEntry 1 None (cfg_ms c) (clear_shared (cfg_model c))
-                    [] init_ns_ctx)))
+           (one_entry c)))
     = m_pipes (cfg_model c)
-  /\ pe_ofd (mkEntry 1 None (cfg_ms c) (clear_shared (cfg_model c))
-                     [] init_ns_ctx) = [].
+  /\ pe_ofd (one_entry c) = [].
 Proof.
   intros c. rewrite one_proc_view.
   split; [reflexivity | split; reflexivity].
