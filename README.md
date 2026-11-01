@@ -114,6 +114,85 @@ To run the tests of the ELF snapshot tool:
 python3 tools/test_elf_snapshot.py
 ```
 
+### Check one new file in a second
+
+A full build takes about 45 CPU-minutes, so a typo in a new file is an
+expensive thing to find. If the file is new — it is not yet part of any
+installed package — you can type-check it on its own against the model
+that opam installed, which takes about a second:
+
+```sh
+python3 tools/check_one.py theories/LinuxProcessSem/Procs.v
+```
+
+It compiles each file you name with `rocq compile`, with the warning flags
+from the top-level `dune`, and prints the compiler's message. It writes
+nothing beside your source, and it exits nonzero if any file failed.
+
+Which model answers is the whole answer. The installed library is one
+revision of the model; if it is not the revision your file will be read
+against, you do not get an error, you get a wrong answer. So the script
+has no default image: `--image IMAGE` (or `CHECK_ONE_IMAGE`) runs the
+check inside a container, and before it compiles anything it works out
+which revision that image carries — from the image's
+`org.theorem.lps.commit` label, and failing that by hashing the model
+sources the image installed and matching them against this repository,
+which no missing label can defeat. It prints that commit and says
+whether it is an ancestor of your HEAD, ahead of it, or on a different
+line of development altogether. An image whose model it cannot identify
+is refused; `--model-commit SHA` asserts a commit you established some
+other way, and the output records that you asserted it.
+
+The difference between two models is not always a missing lemma that
+fails loudly: `State.mkProcState` takes twelve fields on `main` and
+fifteen on the revision line. An arity error on a constructor such as
+`mkProcState` usually means the image's model is not the line you wrote
+against, not that your file is wrong. Read the printed model commit
+against the commit your file is based on before you read the error.
+
+Beside a failure it adds a hint for a mistake this repository produces
+again and again: a numeral read in `bv_scope` where `Z`, `positive` or
+`nat` was wanted, which is the most repeated of all and is fixed by
+writing the scope (`0x1101c%Z`); a name that is stdpp's rather than
+Stdlib's, `filter` above all; a `bv_eqb` lemma that does not exist; a
+`Proof.` with no goal; and an inversion pattern short of branches, where
+the fact wanted is that every constructor needs one, including the arms
+the conclusion rules out. A hint is keyed to what the compiler said, not
+to what the source looks like — `0x1101c` as a bit-vector literal and
+`0x1101c` where a `Z` was wanted are the same characters — so a correct
+file never gets one.
+
+If a script calls it, test the last line, not the exit status:
+
+```sh
+python3 tools/check_one.py FILE.v | tee /dev/stderr | \
+    grep -qx 'CHECK-ONE-RESULT: pass'
+```
+
+The exit status cannot tell you that the program ran. A truncated or
+empty copy of it — a redirect that created the file before the command
+that was to fill it failed — is a valid Python program that does nothing
+and exits 0. `CHECK-ONE-RESULT: pass` or `CHECK-ONE-RESULT: fail` is
+printed on every path out, including a refusal and a crash, so the
+absence of that line means the check did not run.
+
+This is a spell checker, not the build. It reaches what the compiler
+decides by reading the file: a tactic that names a constant defined sixty
+lines below it, a numeral in the wrong scope, a shadowed name, a lemma
+that does not exist. It does not reach a file that runs for seven minutes
+and then dies on a signal, or exhausts memory. It checks your file against
+the **installed** library, so it cannot see a change you made to a file
+that the library already contains — on a revision whose changes are mostly
+such edits, its audience is the new self-contained witness files under
+`theories/LinuxProcessSem/Checks/Cases/`. A switch or image can also
+carry one package and not the others — the checker images carry
+`rocq-linux-process-semantics-core` alone, so a file importing
+`LinuxProcessSemantics.Common` or `.Examples` is reported `NOT CHECKED`
+and counted as a failure rather than compiled. It does not check one new
+file against another new file of the same branch, and it does not compile
+anything that depends on your file. `dune build` still decides whether the
+repository is sound. `python3 tools/check_one.py --help` lists the limits.
+
 ## What a proof shows
 
 ### The main statement
