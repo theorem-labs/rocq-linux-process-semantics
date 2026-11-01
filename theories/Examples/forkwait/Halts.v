@@ -247,10 +247,11 @@ Definition fw_q_wait4 (ms : machine_state) : Prop :=
 Definition fw_model_ok (m : Model) : Prop :=
   m_halted m = None
   /\ m_vm_lazy m = []
-  /\ clone_no_shared_file_b (m_fds m) = true.
+  /\ clone_no_shared_file_b (m_fds m) = true
+  /\ m_tid m = None.
 
 Lemma fw_model_ok_halted : forall m, fw_model_ok m -> m_halted m = None.
-Proof. intros m (H & _ & _). exact H. Qed.
+Proof. intros m (H & _ & _ & _). exact H. Qed.
 
 (** The three components it reads are the three an instruction step, a
     [clear_shared] and a materialisation all leave alone. *)
@@ -260,10 +261,11 @@ Lemma fw_model_ok_frame : forall m m',
   m_fd m' = m_fd m ->
   fw_model_ok m -> fw_model_ok m'.
 Proof.
-  intros m m' Hp Hv Hf (Hh & Hl & Hc).
+  intros m m' Hp Hv Hf (Hh & Hl & Hc & Ht).
   split; [unfold m_halted; rewrite Hp; exact Hh|].
   split; [rewrite Hv; exact Hl|].
-  unfold m_fds in *. rewrite Hf. exact Hc.
+  split; [unfold m_fds in *; rewrite Hf; exact Hc|].
+  unfold m_tid. rewrite Hp. exact Ht.
 Qed.
 
 Lemma fw_model_ok_clear_shared : forall m,
@@ -856,8 +858,9 @@ Lemma fw_model_ok_child : forall e c c' q,
   fw_model_ok (pe_model e) ->
   fw_model_ok (pe_model (child_entry e c c' q)).
 Proof.
-  intros e c c' q (Hh & Hl & Hc).
-  split; [exact Hh|]. split; [exact Hl | exact Hc].
+  intros e c c' q (Hh & Hl & Hc & Ht).
+  split; [exact Hh|]. split; [exact Hl|].
+  split; [exact Hc | reflexivity].
 Qed.
 
 Lemma fw_clone_target : forall P e c' q,
@@ -1386,8 +1389,9 @@ Proof.
       split; [reflexivity|]. split; [reflexivity|].
       split; [reflexivity|]. split; [reflexivity|].
       split; [reflexivity|].
-      split; [intros (Hh & Hl & Hc);
-              split; [exact Hh|]; split; [exact Hl | exact Hc]|].
+      split; [intros (Hh & Hl & Hc & Ht);
+              split; [exact Hh|]; split; [exact Hl|];
+              split; [exact Hc | exact Ht]|].
       unfold clone_pid_ok_b in Hok.
       apply andb_true_iff in Hok as [Hok _].
       apply andb_true_iff in Hok as [Hlo Hhi].
@@ -2907,7 +2911,7 @@ Lemma fw_no_error_clone_entry : forall cfg S e,
   forall evs, ~ sstep_cfg forkwait_segs cfg (pe_cfg S e) evs SError.
 Proof.
   intros cfg S e Hok Hrem evs.
-  destruct Hok as (Hh & Hlz & Hgate).
+  destruct Hok as (Hh & Hlz & Hgate & Htid).
   destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hsv.
   - assert (Hq : fw_q_clone (pe_ms e))
       by (apply (fw_rem_now _ _ Hrem); rewrite Hsv; discriminate).
@@ -2918,7 +2922,8 @@ Proof.
       destruct (fw_clone_post forkwait_segs (pe_ms e) 220 _ eff m' evs0
                   fw_two_twenty Ha0 Hsp)
         as (_ & _ & _ & _ & _ & _ & Hokm & _).
-      destruct (Hokm (conj Hh (conj Hlz Hgate))) as (_ & Hl' & _).
+      destruct (Hokm (conj Hh (conj Hlz (conj Hgate Htid))))
+        as (_ & Hl' & _).
       exact Hl'.
     + apply (fw_clone_spec_no_unmodeled forkwait_segs (pe_ms e) 220);
         [apply fw_two_twenty | exact Ha0 | exact Hgate].
@@ -2935,7 +2940,7 @@ Lemma fw_no_error_exit7_entry : forall cfg S e,
   forall evs, ~ sstep_cfg forkwait_segs cfg (pe_cfg S e) evs SError.
 Proof.
   intros cfg S e Hok Hrem evs.
-  destruct Hok as (Hh & Hlz & Hgate).
+  destruct Hok as (Hh & Hlz & Hgate & Htid).
   destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hsv.
   - assert (Hq : fw_q_exit7 (pe_ms e))
       by (apply (fw_rem_now _ _ Hrem); rewrite Hsv; discriminate).
@@ -3031,7 +3036,7 @@ Proof.
              in Hg.
            discriminate.
       * destruct Hcase as [(Hss & _) | (Hg & _)].
-        -- destruct Hokp as (Hh & Hlz & Hgate).
+        -- destruct Hokp as (Hh & Hlz & Hgate & Htid).
            destruct (fw_rem_step_exists (pe_ms ep) fw_q_wait4
                        fw_q_wait4_pending Hremp Hsv) as (ms1 & Hs1).
            exact (fw_no_sstep_error_instr cfg (pcfg_shared P) ep ms1
@@ -3439,7 +3444,8 @@ Proof.
   destruct Hve as (Hsp & _ & _ & _).
   unfold pinit_config. left.
   apply fw_shape_one_proc;
-    [split; [reflexivity|]; split; [reflexivity | reflexivity]|].
+    [split; [reflexivity|]; split; [reflexivity|];
+     split; [reflexivity | reflexivity]|].
   apply fw_start_rem.
   - reflexivity.
   - reflexivity.
@@ -3527,6 +3533,229 @@ Proof.
     | exact Hprog
     | intros P evs Hsh; exact (fw_no_error cfg P evs Hsh)
     | intros P evs P' Hsh Hs; exact (fw_mu_decreases cfg P evs P' Hsh Hs) ].
+Qed.
+
+(* =========================================================================
+   Progress: the step each state admits, BUILT rather than inverted
+   ========================================================================= *)
+
+(** WITH NO CALL PENDING the instruction arm fires, and the remainder
+    supplies its result. *)
+Lemma fw_progress_instr : forall cfg P e ms1,
+  look P (pe_pid e) = Some e ->
+  m_halted (pe_model e) = None ->
+  m_vm_lazy (pe_model e) = [] ->
+  ms_svc_pending (pe_ms e) = None ->
+  RiscvSemantics.step forkwait_segs (pe_ms e) = MachineOk ms1 ->
+  exists evs st, pstep_cfg forkwait_segs cfg P evs st.
+Proof.
+  intros cfg P e ms1 Hl Hh Hlz Hsv Hstep.
+  assert (Hacc : mi_account_step forkwait_segs (pe_ms e)
+                   (cfg_model (pe_cfg (pcfg_shared P) e))
+                 = MachineOk (ms1, cfg_model (pe_cfg (pcfg_shared P) e))).
+  { rewrite (mi_account_step_no_lazy forkwait_segs (pe_ms e)
+               (cfg_model (pe_cfg (pcfg_shared P) e)) Hlz).
+    rewrite Hstep. reflexivity. }
+  exact (fw_progress_from_entry forkwait_segs cfg P (pe_pid e) []
+           (PNext (absorb P e (mkCfg ms1
+                     (cfg_model (pe_cfg (pcfg_shared P) e)))))
+           (pstep_instr_entry forkwait_segs cfg P e ms1 _ Hl Hh Hsv Hacc)).
+Qed.
+
+(** AT AN [exit_group] the terminal arm fires, and the outcome is the
+    one [Common.ExitSim] names: [exit_spec] has no other. *)
+Lemma fw_progress_exit : forall cfg P e,
+  look P (pe_pid e) = Some e ->
+  m_halted (pe_model e) = None ->
+  ms_svc_pending (pe_ms e) = Some 94 ->
+  multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
+  exists evs st, pstep_cfg forkwait_segs cfg P evs st.
+Proof.
+  intros cfg P e Hl Hh Hsv Hma.
+  set (m := cfg_model (pe_cfg (pcfg_shared P) e)).
+  set (code := bv_and (ms_gpr (pe_ms e) 0) (Z_to_bv 64 255)).
+  assert (Hspec : syscall_spec (sys_input forkwait_segs (pe_ms e) 94) m
+                    (Ok (mkEffect (Z_to_bv 64 0) [] [])
+                        (with_halted code m) [])).
+  { apply exit_dispatch_ok.
+    right. rewrite in_sysno_sys_input. apply fw_ninety_four. }
+  assert (Hss : sstep_cfg forkwait_segs cfg (pe_cfg (pcfg_shared P) e)
+                  ([] ++ [ExitEv code (m_fs (with_halted code m))])
+                  (SNext (mkCfg (pe_ms e) (with_halted code m)))).
+  { apply (sstep_cfg_exit forkwait_segs cfg (pe_ms e) m 94
+             (mkEffect (Z_to_bv 64 0) [] []) (with_halted code m) [] code);
+      [exact Hh | exact Hsv | exact Hspec
+       | apply fw_m_halted_with_halted | apply fw_m_killed_with_halted]. }
+  exists ([] ++ [ExitEv code (m_fs (with_halted code m))]),
+         (PNext (absorb P e (mkCfg (pe_ms e) (with_halted code m)))).
+  exists (pe_pid e).
+  apply (pstep_other forkwait_segs cfg P e _
+           (mkCfg (pe_ms e) (with_halted code m)));
+    [exact Hl | exact Hss | | | exact Hma].
+  - unfold clone_success_b. cbn [cfg_ms pe_cfg]. rewrite Hsv.
+    rewrite fw_ninety_four. reflexivity.
+  - unfold wait4_intercept_b. cbn [cfg_ms pe_cfg]. rewrite Hsv.
+    rewrite fw_ninety_four. reflexivity.
+Qed.
+
+(** A FRESH PID EXISTS, and it is chosen rather than searched for: the
+    table a clone fires at has ONE entry, and [m_tid] is [None] by the
+    shape, so the envelope's first two values cannot both be taken. *)
+Lemma fw_neq_of_eqb : forall x y : word, bv_eqb x y = false -> x <> y.
+Proof.
+  intros x y H E. subst y. rewrite bv_eqb_same in H. discriminate.
+Qed.
+
+Lemma fw_fresh_pid : forall a : word,
+  exists p : word,
+    (0 < bv_unsigned p)%Z /\ (bv_unsigned p < PID_MAX_ENVELOPE)%Z /\ p <> a.
+Proof.
+  intros a. destruct (bv_eqb (1 : word) a) eqn:E.
+  - apply bv_eqb_true_eq in E. exists 2.
+    split; [vm_compute; reflexivity|].
+    split; [vm_compute; reflexivity|].
+    rewrite <- E. apply fw_neq_of_eqb. vm_compute. reflexivity.
+  - exists 1.
+    split; [vm_compute; reflexivity|].
+    split; [vm_compute; reflexivity|].
+    apply fw_neq_of_eqb. exact E.
+Qed.
+
+(** A PID IS NOT AN ERRNO.  Every member of [Fork.clone_errnos] encodes
+    just under 2^64 and the envelope stops at 2^22, so the two readings
+    [Procs.clone_success_b] compares can never collide. *)
+Lemma fw_pid_not_errno : forall r : word,
+  (bv_unsigned r < PID_MAX_ENVELOPE)%Z ->
+  ret_in_errnos clone_errnos r = false.
+Proof.
+  intros r Hr.
+  destruct (ret_in_errnos clone_errnos r) eqn:E; [|reflexivity].
+  exfalso. unfold ret_in_errnos in E.
+  apply List.existsb_exists in E. destruct E as (e & He & Hb).
+  apply bv_eqb_true_eq in Hb. subst r.
+  unfold clone_errnos in He. cbn [List.In] in He.
+  destruct He as [<-|[<-|[<-|[<-|[]]]]]; vm_compute in Hr; discriminate.
+Qed.
+
+(** The pid gate, with the tid clause the shape carries. *)
+Lemma fw_clone_pid_ok : forall m (p : word),
+  m_tid m = None ->
+  (0 < bv_unsigned p)%Z -> (bv_unsigned p < PID_MAX_ENVELOPE)%Z ->
+  clone_pid_ok_b m p = true.
+Proof.
+  intros m p Ht Hlo Hhi. unfold clone_pid_ok_b. rewrite Ht.
+  rewrite Bool.andb_true_r. apply andb_true_iff.
+  split; [apply Z.ltb_lt; exact Hlo | apply Z.ltb_lt; exact Hhi].
+Qed.
+
+(** THE OUTCOME THE CLONE ADMITS, built out of the monad rather than
+    inverted out of it: [Fork.clone_resolve]'s admitting alternative,
+    at a pid the gate accepts. *)
+Lemma fw_clone_resolve_ok : forall i m (p : word),
+  clone_no_shared_file_b (m_fds m) = true ->
+  clone_pid_ok_b m p = true ->
+  clone_resolve i m (Ok (mkEffect p [] []) (with_children m) []).
+Proof.
+  intros i m p Hgate Hok.
+  unfold clone_resolve, bind. cbv beta iota.
+  exists m, m, [], []. split; [reflexivity|]. split; [|reflexivity].
+  rewrite Hgate. cbn [negb]. right.
+  unfold bind. cbv beta iota.
+  exists p, m, [], [].
+  split; [exists p; split; [exact Hok | reflexivity]|].
+  split; [|reflexivity].
+  unfold bind. cbv beta iota.
+  exists tt, (with_children m), [], [].
+  split; [reflexivity|]. split; [reflexivity | reflexivity].
+Qed.
+
+Lemma fw_clone_spec_ok : forall segs ms x8 model (p : word),
+  bv_unsigned x8 = 220%Z ->
+  ms_gpr ms 0 = 17 ->
+  clone_no_shared_file_b (m_fds model) = true ->
+  clone_pid_ok_b model p = true ->
+  syscall_spec (sys_input segs ms x8) model
+    (Ok (mkEffect p [] []) (with_children model) []).
+Proof.
+  intros segs ms x8 model p H220 Ha0 Hgate Hok.
+  assert (Hno : bv_unsigned (in_sysno (sys_input segs ms x8)) = 220%Z)
+    by (rewrite in_sysno_sys_input; exact H220).
+  apply (proj2 (clone_is_clone_spec _ _ _ Hno)).
+  rewrite in_arg0_sys_input, Ha0. unfold clone_spec.
+  replace (clone_fork_flags_b 17) with true by (vm_compute; reflexivity).
+  apply fw_clone_resolve_ok; assumption.
+Qed.
+
+(** AND THE OUTCOME IS NOT A SPURIOUS REFUSAL, which is what
+    [Run.sstep_cfg_syscall] asks at [Run.forced_only_cfg].  A pid is
+    not one of [Fork.clone_errnos], so [Run.refusal_b] -- the same
+    reading [Procs.clone_success_b] uses -- answers [false], and
+    [Run.spurious_refusal_not_refusal] closes it whatever the
+    environment says about the family. *)
+Lemma fw_refusal_b_pid : forall i m (r : word),
+  bv_unsigned (in_sysno i) = 220%Z ->
+  (bv_unsigned r < PID_MAX_ENVELOPE)%Z ->
+  refusal_b i m r = false.
+Proof.
+  intros i m r Hno Hr. unfold refusal_b. cbv zeta. rewrite Hno.
+  change (Z.eqb 220 214) with false. cbv iota.
+  destruct (injected_arm 220%Z) as [a|] eqn:Ea; [|reflexivity].
+  vm_compute in Ea. injection Ea as Ea. subst a. cbn [ia_errnos].
+  apply fw_pid_not_errno. exact Hr.
+Qed.
+
+(** AT THE CLONE the admitting alternative fires: a fresh pid inside
+    the envelope, an outcome the environment does not refuse, and a
+    materialisation that is the identity. *)
+Lemma fw_progress_clone : forall cfg P e,
+  pcfg_procs P = [(pe_pid e, e)] ->
+  look P (pe_pid e) = Some e ->
+  fw_model_ok (pe_model e) ->
+  ms_svc_pending (pe_ms e) = Some 220 ->
+  ms_gpr (pe_ms e) 0 = 17 ->
+  multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
+  exists evs st, pstep_cfg forkwait_segs cfg P evs st.
+Proof.
+  intros cfg P e Hp Hl Hok Hsv Ha0 Hma.
+  destruct Hok as (Hh & Hlz & Hgate & Htid).
+  destruct (fw_fresh_pid (pe_pid e)) as (q & Hlo & Hhi & Hne).
+  set (m := cfg_model (pe_cfg (pcfg_shared P) e)).
+  assert (Hpid : clone_pid_ok_b m q = true)
+    by (apply fw_clone_pid_ok; [exact Htid | exact Hlo | exact Hhi]).
+  assert (Hspec : syscall_spec (sys_input forkwait_segs (pe_ms e) 220) m
+                    (Ok (mkEffect q [] []) (with_children m) []))
+    by (apply fw_clone_spec_ok;
+        [apply fw_two_twenty | exact Ha0 | exact Hgate | exact Hpid]).
+  assert (Hnr : ~ spurious_refusal_cfg cfg
+                   (sys_input forkwait_segs (pe_ms e) 220) m
+                   (mkEffect q [] [])).
+  { apply spurious_refusal_not_refusal. cbn [eff_ret].
+    apply fw_refusal_b_pid;
+      [rewrite in_sysno_sys_input; apply fw_two_twenty | exact Hhi]. }
+  assert (Hmat : materialize_model_accesses (with_children m)
+                   (syscall_effect_accesses (mkEffect q [] []))
+                 = Some (with_children m))
+    by (apply materialize_model_accesses_no_lazy; exact Hlz).
+  assert (Hss : sstep_cfg forkwait_segs cfg (pe_cfg (pcfg_shared P) e) []
+                  (SNext (mkCfg (advance_past_svc
+                                   (apply_effect (pe_ms e) (mkEffect q [] [])))
+                                (with_children m)))).
+  { apply (sstep_cfg_syscall forkwait_segs cfg (pe_ms e) m 220
+             (mkEffect q [] []) (with_children m) (with_children m) []);
+      [exact Hh | exact Hsv | exact Hspec | exact Hnr | exact Hh | exact Hmat]. }
+  set (c' := mkCfg (advance_past_svc
+                      (apply_effect (pe_ms e) (mkEffect q [] [])))
+                   (with_children m)).
+  assert (Ha0' : ms_gpr (cfg_ms c') 0 = q)
+    by (unfold c'; apply fw_a0_after_effect).
+  exists [], (PNext (clone_result P e c' q)). exists (pe_pid e).
+  apply (pstep_clone forkwait_segs cfg P e [] c' q);
+    [exact Hl | exact Hss | | split; [exact Ha0' | exact I] | | exact Hma].
+  - unfold clone_success_b. cbn [cfg_ms pe_cfg]. rewrite Hsv, fw_two_twenty.
+    cbn [clone_sysno]. rewrite Ha0', (fw_pid_not_errno q Hhi). reflexivity.
+  - unfold look. rewrite Hp. cbn [look_in fst snd].
+    destruct (bv_eqb (pe_pid e) q) eqn:Eb; [|reflexivity].
+    exfalso. apply Hne. symmetry. exact (bv_eqb_true_eq _ _ _ Eb).
 Qed.
 
 End ForkwaitConsumers.
