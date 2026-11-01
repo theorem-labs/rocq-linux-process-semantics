@@ -573,3 +573,77 @@ Proof.
       apply bv_eqb_true_eq in Hb. congruence.
     + exact Hlq3.
 Qed.
+
+(** [absorb] keeps the table's shape at a one-entry configuration: the
+    only entry is replaced by the absorbed one, and the root still names
+    it.  This is the structural half of preservation for every shape with
+    one entry; what the successor's pc is, is the segment lemmas' half. *)
+Lemma absorb_one_entry : forall P e c',
+  pcfg_procs P = [(pe_pid e, e)] ->
+  pcfg_root P = pe_pid e ->
+  pcfg_procs (absorb P e c') = [(pe_pid e, pe_absorb e c')]
+  /\ pcfg_root (absorb P e c') = pe_pid e
+  /\ look (absorb P e c') (pe_pid e) = Some (pe_absorb e c').
+Proof.
+  intros P e c' Hp Hr.
+  unfold absorb, look. cbn [pcfg_procs pcfg_root].
+  rewrite Hp. cbn [replace_in fst].
+  rewrite bv_eqb_same.
+  split; [reflexivity|]. split; [exact Hr|].
+  cbn [look_in fst snd]. rewrite bv_eqb_same. reflexivity.
+Qed.
+
+(** [pe_absorb] keeps the pid and the parent link, which is what every
+    shape's structural clauses are stated over. *)
+Lemma pe_absorb_ids : forall e c',
+  pe_pid (pe_absorb e c') = pe_pid e
+  /\ pe_parent (pe_absorb e c') = pe_parent e.
+Proof. intros e c'. split; reflexivity. Qed.
+
+(** And it carries the successor's machine state and halt flag through, so
+    a shape's pc and pending-call clauses can be read off [c'] directly. *)
+Lemma pe_absorb_state : forall e c',
+  pe_ms (pe_absorb e c') = cfg_ms c'
+  /\ m_halted (pe_model (pe_absorb e c')) = m_halted (cfg_model c').
+Proof. intros e c'. split; reflexivity. Qed.
+
+(** THE CLONE'S STRUCTURAL SHAPE, which is the only case where the target
+    is not determined by a program counter alone, because the entry count
+    changes.  At a one-entry configuration the successor's table is
+    exactly the parent followed by the child, so [fw_two]'s first four
+    clauses are read off [clone_result] and only the two state clauses
+    ([fw_parent], [fw_child]) remain for the segment lemmas. *)
+Lemma clone_result_two : forall P e c' q,
+  pcfg_procs P = [(pe_pid e, e)] ->
+  pcfg_root P = pe_pid e ->
+  pe_parent e = None ->
+  pcfg_procs (clone_result P e c' q)
+    = [(pe_pid e, pe_absorb e c');
+       (q, child_entry e (pe_cfg (pcfg_shared P) e) c' q)]
+  /\ pcfg_root (clone_result P e c' q) = pe_pid e
+  /\ look (clone_result P e c' q) (pe_pid e) = Some (pe_absorb e c')
+  /\ pe_parent (child_entry e (pe_cfg (pcfg_shared P) e) c' q)
+     = Some (pe_pid e)
+  /\ pe_parent (pe_absorb e c') = None.
+Proof.
+  intros P e c' q Hp Hr Hpar.
+  unfold clone_result, look. cbn [pcfg_procs pcfg_root].
+  (* [List.app] is NOT in the [cbn] list: reducing it alongside consumed
+     the [bv_eqb] redex the rewrite needs, which is why the previous
+     attempt reported no matching subterm. *)
+  rewrite Hp. cbn [replace_in fst].
+  rewrite bv_eqb_same. cbn [List.app].
+  split; [reflexivity|].
+  split; [exact Hr|].
+  split; [cbn [look_in fst snd]; rewrite bv_eqb_same; reflexivity|].
+  split; [reflexivity | exact Hpar].
+Qed.
+
+(** The child's pid is the one the clone returned, and its machine state
+    has a0 = 0 -- the two facts a consumer reads off the new entry. *)
+Lemma child_entry_ids : forall e c c' q,
+  pe_pid (child_entry e c c' q) = q
+  /\ entry_a0_zero (child_entry e c c' q).
+Proof.
+  intros e c c' q. split; [reflexivity | apply child_entry_a0_zero].
+Qed.
