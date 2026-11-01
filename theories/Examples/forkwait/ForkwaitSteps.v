@@ -481,13 +481,19 @@ Qed.
 
     1792 = 7 << 8 is positive, so the SIGNED [lw] sign-extends nothing and
     [srli] by 8 recovers 7.  This is the only arithmetic in the program. *)
-Lemma fw_run_reap : forall regs mem rom (sp : word),
-  getr regs 2 = fw_slot sp ->
-  rdn forkwait_segs mem (fw_slot sp) 4 = Some (Z_to_le_bytes 4 1792) ->
+(** Stated over the slot ADDRESS rather than over [fw_slot sp]: the reap
+    arm hands its consumer the address it wrote, which is the parent's own
+    [a1], and recovering an [sp] with [fw_slot sp = a] would need a
+    no-wrap argument the arm does not carry.  Nothing in the proof reads
+    the address, so the general form costs nothing; [fw_run_reap] below is
+    the [fw_slot] instance. *)
+Lemma fw_run_reap_at : forall regs mem rom (a : word),
+  getr regs 2 = a ->
+  rdn forkwait_segs mem a 4 = Some (Z_to_le_bytes 4 1792) ->
   machine_run forkwait_segs 4 (mkst regs 0x11040 mem rom)
   = Some (ecall_st (fw_regs_C regs) 0x1104c mem rom).
 Proof.
-  intros regs mem rom sp Hsp Hmem. unfold fw_regs_C.
+  intros regs mem rom a Hsp Hmem. unfold fw_regs_C.
   (* 0x11040 lw a0, 0(sp) — the status word *)
   eapply mrun_step;
     [ reflexivity
@@ -517,6 +523,13 @@ Proof.
     | ].
   reflexivity.
 Qed.
+
+Lemma fw_run_reap : forall regs mem rom (sp : word),
+  getr regs 2 = fw_slot sp ->
+  rdn forkwait_segs mem (fw_slot sp) 4 = Some (Z_to_le_bytes 4 1792) ->
+  machine_run forkwait_segs 4 (mkst regs 0x11040 mem rom)
+  = Some (ecall_st (fw_regs_C regs) 0x1104c mem rom).
+Proof. intros regs mem rom sp. apply fw_run_reap_at. Qed.
 
 (* ===================================================================== *)
 (* What each segment's final state says: the call, and the registers it   *)
