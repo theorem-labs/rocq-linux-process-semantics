@@ -231,13 +231,13 @@ Proof.
     | |- reaches_unmodeled_cfg _ _ ?c => exists [], c
     end.
     split; [apply star_cfg_refl |].
-    split; [reflexivity |]. left. split; [reflexivity |].
+    split; [reflexivity |]. left. split; [reflexivity |]. split; [| reflexivity].
     cbn [cfg_ms cfg_model].
     match goal with
     | |- mi_account_step ?segs ?ms ?model = _ =>
         rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
     end.
-    rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+    rewrite undecodable_step_unmodeled_at_demo_entry_run. reflexivity.
   - apply H; [exact (demo_entry_valid_undecodable demo_proc_input
                        demo_input_valid)
             | exact demo_input_valid].

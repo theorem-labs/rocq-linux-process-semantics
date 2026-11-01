@@ -576,7 +576,7 @@ Proof.
   | |- reaches_unmodeled_cfg _ _ ?c => exists [], c
   end.
   split; [apply star_cfg_refl |].
-  split; [reflexivity |]. left. split; [reflexivity |].
+  split; [reflexivity |]. left. split; [reflexivity |]. split; [| reflexivity].
   cbn [cfg_ms cfg_model].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
@@ -584,8 +584,8 @@ Proof.
   end.
   (* No [cbn] over [mkProcInput]'s projections: [init_machine_state]
      takes the input WHOLE now, and unfolding the constructor here
-     would stop [undecodable_step_unmodeled] matching. *)
-  rewrite undecodable_step_unmodeled. reflexivity.
+     would stop [undecodable_step_unmodeled_run] matching. *)
+  rewrite undecodable_step_unmodeled_run. reflexivity.
 Qed.
 
 (* =========================================================================
