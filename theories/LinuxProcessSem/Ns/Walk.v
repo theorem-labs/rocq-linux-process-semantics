@@ -546,11 +546,9 @@ Definition proc_root_pidns (st : NsState) (d : positive) : option (option positi
       end
   end.
 
-(** [walk_component] (fs/namei.c) for a name other than "." and "..":
-    [lookup_fast] / [lookup_slow] on the listed dentries; at a procfs root,
-    [proc_root_lookup]; a missing name is ENOENT, or ENAMETOOLONG when it
-    is longer than NAME_MAX ([simple_lookup], fs/libfs.c, and the lookup of
-    each disk file system refuse it before they search). *)
+(** [walk_component] (fs/namei.c) on listed dentries.  Missing tmpfs and
+    devpts names have the simple-lookup NAME_MAX limit, a host lookup is
+    outside this table, and procfs subdirectories enumerate ENOENT. *)
 Definition lookup_child (st : NsState) (ctx : NsCtx) (fd_loc : Z -> option (option Loc))
     (current : Loc) (name : list byte) : LookupItem :=
   match current with
@@ -563,8 +561,20 @@ Definition lookup_child (st : NsState) (ctx : NsCtx) (fd_loc : Z -> option (opti
           | None => LIOver
           | Some (Some pidns) => lookup_proc_root ctx m pidns name
           | Some None =>
-              if Nat.ltb NAME_MAX (length name) then LIError ENAMETOOLONG
-              else LIError ENOENT
+              match find_dentry st d with
+              | Some dx =>
+                  match find_sb st (d_sb dx) with
+                  | Some sb =>
+                      match sb_kind sb with
+                      | SbTmpfs | SbDevpts =>
+                          if Nat.ltb NAME_MAX (length name) then LIError ENAMETOOLONG else LIError ENOENT
+                      | SbProc _ => LIError ENOENT
+                      | SbHost => LIOver
+                      end
+                  | None => LIOver
+                  end
+              | None => LIOver
+              end
           end
       end
   end.
@@ -679,7 +689,9 @@ Fixpoint walk_loop (fuel links : nat) (st : NsState) (ctx : NsCtx) (cr : WalkCre
                                     else if is_last rest && protected_link_undecided st cr current ino
                                     then (WOver, scoped)
                                     else match ino_bytes ino with
-                                         | [] => (WErr ENOENT, scoped)
+                                         | [] =>
+                                             walk_loop f (S links) st ctx cr fd_loc root current rest
+                                               trailing parent_mode scoped fl
                                          | target =>
                                              let base := if path_absolute target then root else current in
                                              let tail := match rest with
@@ -776,8 +788,17 @@ Definition walk_parent (st : NsState) (ctx : NsCtx) (cr : WalkCreds)
   | _ :: _ =>
       if Nat.leb PATH_MAX (length p)
       then ((WErr ENAMETOOLONG, last_name components, last_type components), false)
-      else let root := walk_root ctx start fl in
-           let r := walk_loop (walk_fuel p) 0 st ctx cr fd_loc root (walk_initial start root p fl)
-                      components false true false fl in
-           ((fst r, last_name components, last_type components), snd r)
+      else match components with
+           | [] =>
+               match loc_dir st start with
+               | Some true => ((WOk start, [], LastRoot), false)
+               | Some false => ((WErr ENOTDIR, [], LastRoot), false)
+               | None => ((WOver, [], LastRoot), false)
+               end
+           | _ :: _ =>
+               let root := walk_root ctx start fl in
+               let r := walk_loop (walk_fuel p) 0 st ctx cr fd_loc root (walk_initial start root p fl)
+                          components false true false fl in
+               ((fst r, last_name components, last_type components), snd r)
+           end
   end.

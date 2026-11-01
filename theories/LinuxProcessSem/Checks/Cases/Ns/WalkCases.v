@@ -182,11 +182,11 @@ Example walk_nondirectory :
   = (WErr ENOTDIR, false).
 Proof. vm_compute. reflexivity. Qed.
 
-(** A name the directory does not hold is ENOENT. *)
+(** A host directory's missing-name lookup is outside the table. *)
 Example walk_missing :
   walk world (ctx 1 no_caps) creds no_fd (LDentry 1 1)
        (bytes [47; 109; 105; 115; 115; 105; 110; 103]) f_follow
-  = (WErr ENOENT, false).
+  = (WOver, false).
 Proof. vm_compute. reflexivity. Qed.
 
 Definition p_secret_x : list byte := bytes [47; 115; 101; 99; 114; 101; 116; 47; 120].
@@ -205,13 +205,13 @@ Definition cap_world (lower : Z) : NsState :=
     (ns_mntns world) (ns_pidns world) (ns_sbs world) (ns_dentries world) (ns_inodes world).
 
 (** CAP_DAC_READ_SEARCH in namespace 2 searches the directory of kernel uid
-    and gid 2000 only when the maps hold 2000 in their lower range: mapped,
-    the walk reaches the missing name (ENOENT); unmapped, EACCES. *)
+    and gid 2000 only when the maps hold 2000 in their lower range:
+    unmapped, EACCES; mapped, the host lookup is outside the table. *)
 Example walk_capability_requires_mapping :
   walk (cap_world 1000) (ctx 2 search_caps) creds no_fd (LDentry 1 1) p_secret_x f_follow
   = (WErr EACCES, false)
   /\ walk (cap_world 2000) (ctx 2 search_caps) creds no_fd (LDentry 1 1) p_secret_x f_follow
-  = (WErr ENOENT, false).
+  = (WOver, false).
 Proof. split; vm_compute; reflexivity. Qed.
 
 (** Under LOOKUP_IN_ROOT, ".." at the start stays there, and the walk
@@ -306,13 +306,14 @@ Example walk_empty_directory_on_file :
   walk world (ctx 1 no_caps) creds no_fd (LDentry 1 4) [] f_empty_dir = (WErr ENOTDIR, false).
 Proof. vm_compute. reflexivity. Qed.
 
-(** A missing name of 255 bytes is ENOENT; one of 256 is ENAMETOOLONG. *)
+(** A host lookup's name limit is not held by the table, while tmpfs uses
+    simple_lookup's 255-byte NAME_MAX. *)
 Example walk_name_too_long :
   walk world (ctx 1 no_caps) creds no_fd (LDentry 1 1)
-       (Z_to_bv 8 47 :: repeat (Z_to_bv 8 97) 255) f_follow
-  = (WErr ENOENT, false)
-  /\ walk world (ctx 1 no_caps) creds no_fd (LDentry 1 1)
        (Z_to_bv 8 47 :: repeat (Z_to_bv 8 97) 256) f_follow
+  = (WOver, false)
+  /\ walk world (ctx 1 no_caps) creds no_fd (LDentry 2 20)
+       (repeat (Z_to_bv 8 97) 256) f_follow
   = (WErr ENAMETOOLONG, false).
 Proof. split; vm_compute; reflexivity. Qed.
 
@@ -327,4 +328,21 @@ Proof. vm_compute. reflexivity. Qed.
 Example walk_parent_search_denied :
   walk_parent world (ctx 1 no_caps) creds no_fd (LDentry 1 1) p_secret_x f_follow
   = ((WErr EACCES, bytes [120], LastNorm), false).
+Proof. vm_compute. reflexivity. Qed.
+
+(** A slash-only parent walk under IN_ROOT validates its starting object. *)
+Example walk_parent_in_root_slash_nondirectory :
+  walk_parent world (ctx 1 no_caps) creds no_fd (LDentry 1 4) (bytes [47]) f_in_root
+  = ((WErr ENOTDIR, [], LastRoot), false).
+Proof. vm_compute. reflexivity. Qed.
+
+(** An empty symlink body is a pure jump: the walk continues in its
+    containing directory rather than reporting ENOENT. *)
+Definition empty_link_world : NsState :=
+  state (ns_mounts world) (ns_userns world) (ns_mntns world) (ns_pidns world) (ns_sbs world)
+    (ns_dentries world ++ [dent 70 1 (Some 1%positive) (bytes [101]) 71])
+    (ns_inodes world ++ [lnk 71 []]).
+Example walk_empty_link_is_pure_jump :
+  walk empty_link_world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [101]) f_follow
+  = (WOk (LDentry 1 1), false).
 Proof. vm_compute. reflexivity. Qed.
