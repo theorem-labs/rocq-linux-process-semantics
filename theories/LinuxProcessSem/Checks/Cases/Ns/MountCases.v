@@ -356,3 +356,52 @@ Example pivot_busy_before_not_mount_root :
 
 Example pivot_new_not_mount_root :
   pivot_root tree 1 2 3 3 40 (mkPivotPaths false true false) = MErr 22%Z := eq_refl.
+
+(** [copy_mnt_ns]: a new mount namespace copies every mount of the old
+    one, in pre-order, unbindable ones included and none of the copies
+    unbindable.  Mount 2 is read-only, mount 3 unbindable, mount 4 shared
+    in group 8. *)
+Definition tree_ns_copy : list Mount :=
+  [mnt 1 None false;
+   mkMount 2 1 (Some 1) 10 20 30 ro_only no_flags false false None None;
+   mnt 3 (Some 2) true;
+   mkMount 4 1 (Some 1) 11 20 30 no_flags no_flags false false (Some 8) None].
+
+Definition copied_part (r : list Mount * (positive -> positive)) : list Mount := skipn 4 (fst r).
+
+Example ns_copy_ids : map mnt_id (copied_part (copy_mnt_ns tree_ns_copy 1 2 true)) = [5; 6; 7; 8]
+  := eq_refl.
+Example ns_copy_parents :
+  map mnt_parent (copied_part (copy_mnt_ns tree_ns_copy 1 2 true)) = [None; Some 5; Some 6; Some 5]
+  := eq_refl.
+Example ns_copy_namespace :
+  map mnt_ns (copied_part (copy_mnt_ns tree_ns_copy 1 2 true)) = [2; 2; 2; 2] := eq_refl.
+Example ns_copy_not_unbindable :
+  map mnt_unbindable (copied_part (copy_mnt_ns tree_ns_copy 1 2 true)) = [false; false; false; false]
+  := eq_refl.
+
+(** Into another user namespace: the copies are slaves of the originals'
+    peer groups, every copy but the root is MNT_LOCKED, and each flag a
+    copy carries is locked ([lock_mnt_tree]). *)
+Example ns_copy_slave :
+  map (fun m => (mnt_peer m, mnt_master m)) (copied_part (copy_mnt_ns tree_ns_copy 1 2 true))
+  = [(None, None); (None, None); (None, None); (None, Some 8)] := eq_refl.
+Example ns_copy_locked :
+  map mnt_locked (copied_part (copy_mnt_ns tree_ns_copy 1 2 true)) = [false; true; true; true]
+  := eq_refl.
+Example ns_copy_locks_flags :
+  map (fun m => mf_ro (mnt_lock_flags m)) (copied_part (copy_mnt_ns tree_ns_copy 1 2 true))
+  = [false; true; false; false] := eq_refl.
+
+(** In the same user namespace: the copies join the originals' peer
+    groups and nothing is locked. *)
+Example ns_copy_peers :
+  map (fun m => (mnt_peer m, mnt_master m)) (copied_part (copy_mnt_ns tree_ns_copy 1 2 false))
+  = [(None, None); (None, None); (None, None); (Some 8, None)] := eq_refl.
+Example ns_copy_unlocked :
+  map mnt_locked (copied_part (copy_mnt_ns tree_ns_copy 1 2 false)) = [false; false; false; false]
+  := eq_refl.
+
+(** A task's root and cwd move to the copies of their mounts. *)
+Example ns_copy_maps_mounts :
+  map (snd (copy_mnt_ns tree_ns_copy 1 2 true)) [1; 2; 3; 4; 9] = [5; 6; 7; 8; 9] := eq_refl.

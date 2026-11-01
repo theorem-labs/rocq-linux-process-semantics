@@ -743,3 +743,78 @@ Proof.
   apply Pos.eqb_neq in Hne.
   rewrite Hid, Hne, Pos.eqb_refl. reflexivity.
 Qed.
+
+(* =========================================================================
+   A new mount namespace
+   ========================================================================= *)
+
+(** The mounts of the subtree of [r], in pre-order. *)
+Definition subtree_mounts (T : list Mount) (r : positive) : list Mount :=
+  flat_map (fun i => match find_mount T i with Some m => [m] | None => [] end) (subtree T r).
+
+(** The copy of [m] in a new mount namespace [newns]
+    ([copy_tree (old, old->mnt.mnt_root, CL_COPY_UNBINDABLE | CL_EXPIRE)],
+    with CL_SLAVE and then [lock_mnt_tree] when [other_userns]): it keeps
+    its flags, locks, superblock, root and mount point, and is not
+    unbindable; the copy of the root has no parent and is not MNT_LOCKED;
+    any other copy sits on the copy of its parent.  Into another user
+    namespace a copy is a slave of the original's peer group (or keeps the
+    original's master), is in no peer group, every copy but the root is
+    MNT_LOCKED, and each flag it carries is locked; into the same user
+    namespace it joins the original's peer group and keeps its master and
+    MNT_LOCKED. *)
+Definition ns_copy_of (base : positive) (srcs : list Mount) (root newns : positive)
+    (other_userns : bool) (k : nat) (m : Mount) : Mount :=
+  let is_root := Pos.eqb (mnt_id m) root in
+  mkMount (base + Pos.of_succ_nat k)%positive newns
+          (if is_root then None
+           else match mnt_parent m with
+                | Some p => match index_of p srcs with
+                            | Some j => Some (base + Pos.of_succ_nat j)%positive
+                            | None => None
+                            end
+                | None => None
+                end)
+          (mnt_mountpoint m) (mnt_root m) (mnt_sb m) (mnt_flags m)
+          (if other_userns then flags_or (mnt_lock_flags m) (mnt_flags m) else mnt_lock_flags m)
+          (if is_root then false else mnt_locked m || other_userns)
+          false
+          (if other_userns then None else mnt_peer m)
+          (if other_userns
+           then match mnt_peer m with Some g => Some g | None => mnt_master m end
+           else mnt_master m).
+
+(** [copy_mnt_ns] of the namespace whose root mount is [root] into a new
+    namespace [newns]: the table with the copies added, and where each old
+    mount went (a mount outside the copied tree maps to itself), which is
+    how the task's root and cwd move. *)
+Definition copy_mnt_ns (T : list Mount) (root newns : positive) (other_userns : bool)
+    : list Mount * (positive -> positive) :=
+  let srcs := subtree_mounts T root in
+  let base := max_mount_id T in
+  (T ++ map (fun p => ns_copy_of base srcs root newns other_userns (fst p) (snd p))
+            (combine (seq 0 (length srcs)) srcs),
+   fun i => match index_of i srcs with
+            | Some j => (base + Pos.of_succ_nat j)%positive
+            | None => i
+            end).
+
+(** No copy is unbindable, and the copy of the root is not MNT_LOCKED. *)
+Theorem ns_copy_of_unbindable : forall base srcs root newns o k m,
+  mnt_unbindable (ns_copy_of base srcs root newns o k m) = false.
+Proof. reflexivity. Qed.
+
+Theorem ns_copy_of_root_unlocked : forall base srcs root newns o k m,
+  mnt_id m = root -> mnt_locked (ns_copy_of base srcs root newns o k m) = false.
+Proof.
+  intros base srcs root newns o k m H. unfold ns_copy_of. cbn [mnt_locked].
+  rewrite H, Pos.eqb_refl. reflexivity.
+Qed.
+
+(** Into another user namespace, every flag of a copy is locked. *)
+Theorem ns_copy_of_locks_flags : forall base srcs root newns k m,
+  flags_implies (mnt_flags m) (mnt_lock_flags (ns_copy_of base srcs root newns true k m)) = true.
+Proof.
+  intros base srcs root newns k m. cbn [ns_copy_of mnt_lock_flags].
+  apply flags_or_implies.
+Qed.
