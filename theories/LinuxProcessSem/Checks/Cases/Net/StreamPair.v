@@ -287,15 +287,22 @@ Example a2_ppoll_rdhup_after_peer_shutdown :
   = Some (Z_to_bv 64 1, [(pfd_addr + Z_to_bv 64 6, [1; 32])]).
 Proof. check_eq. Qed.
 
-(** After the peer CLOSES, ppoll on the survivor declines: EPOLLERR is in
-    every filter, and whether the close left [sk_err] is not recorded. *)
-Example a2_ppoll_after_peer_close_declines :
-  ppoll_answer (pair ++ [close_ok 3]) 4 1 = None
-  /\ match run_accepted sp_m0 (pair ++ [close_ok 3]) with
-     | Some m => syscall_spec_witness (ppoll_in 4 1) m = Unmodeled
-     | None => False
-     end.
-Proof. split; check_eq. Qed.
+(** After the peer CLOSES, ppoll on the survivor answers with EPOLLERR
+    set or clear: EPOLLERR is in every filter, and whether the close left
+    [sk_err] is not recorded, so the model admits both.  POLLIN (1) and
+    POLLHUP (16) are set either way.  The witness gives the answer
+    without EPOLLERR (17), the one with it (25) is accepted too, and
+    POLLHUP alone is refused. *)
+Example a2_ppoll_after_peer_close_answers_with_epollerr_set_or_clear :
+  ppoll_answer (pair ++ [close_ok 3]) 4 1
+  = Some (Z_to_bv 64 1, [(pfd_addr + Z_to_bv 64 6, [17; 0])])
+  /\ is_ok (after (pair ++ [close_ok 3]) (ppoll_in 4 1)
+              (with_copyins [(ts_addr, 16%nat); (pfd_addr, 8%nat)]
+                 (mkEffect 1 [(pfd_addr + Z_to_bv 64 6, [25; 0])] []))) = true
+  /\ after (pair ++ [close_ok 3]) (ppoll_in 4 1)
+       (with_copyins [(ts_addr, 16%nat); (pfd_addr, 8%nat)]
+          (mkEffect 1 [(pfd_addr + Z_to_bv 64 6, [16; 0])] [])) = Some CheckReject.
+Proof. split; [|split]; check_eq. Qed.
 
 (** A pipe end still declines ppoll, beside a pair end that answers, in
     the same model: pipe2 makes 3 and 4, socketpair makes 5 and 6. *)
