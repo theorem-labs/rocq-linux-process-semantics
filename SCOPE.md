@@ -293,6 +293,9 @@ them. A proof says nothing about a program in such a case.
 | Network | The list of connections is never empty. Thus the model does not include an environment where no peer ever connects. |
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. The `*_budgets_only` statements have a finer premise for the source: it excludes a first-touch or a cumulative refusal, but not a single request that is larger than the whole budget (`Run.alloc_refuse_reason`). |
 | Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
+| Paths under `/proc` | `openat` answers two shapes on a procfs name: "/proc", or a name that starts with "/proc/" and has no `..` component (`Open.proc_path_b`), given absolutely or relative to an O_PATH descriptor on one. O_PATH (alone, or with `O_DIRECTORY` and `O_NOFOLLOW`; `O_CLOEXEC`, `O_LARGEFILE` and `O_NONBLOCK` are ignored) gives an O_PATH descriptor (`State.OProcPath`), and `O_RDONLY` on a name under "/proc/sys/" gives a `State.OProcFile` descriptor; either may instead be any errno but `-EINTR` (`Syscall.errno_any`; `fs/namei.c` and `fs/open.c`, v6.18.44). Every other flag word on a procfs name, and O_PATH on any other name, is `unmodeled`. `read` on an `OProcFile` answers 0 to `count` bytes of the environment's choice, or any errno but `-EINTR`, for a `count` of at most 128 KiB; a destination that is only partly writable is `unmodeled`. `newfstatat` with a relative name and an `OProcPath` directory descriptor answers any errno but `-EINTR`, or 0 with 128 bytes whose padding is zero. `close`, `close_range` and `dup3` (onto it) remove such a descriptor and `clone` passes it; every other call on one is `unmodeled`. `newfstatat` and `readlinkat` from `AT_FDCWD` decline a procfs name, because procfs names resolve whatever the file model holds and some are links. No modeled run can give `-EINTR`: Linux answers it only when a signal handler runs or a signal interrupts the call, the model installs no handler, and no signal arrives from outside the process. |
+| `eventfd2` descriptors | `eventfd2` with an accepted flag word gives the lowest free descriptor, holding an eventfd with that flag word (`State.OEventFd`), or `-ENOMEM`, `-EMFILE` or `-ENFILE` (`do_eventfd`, `fs/eventfd.c`, v6.18.44). The counter is not modeled, so `read`, `write`, `select`, `poll` and `epoll` on an eventfd are `unmodeled`. |
+| Lane L11 files | A descriptor may hold `State.ONsFile h`, an open file that lane L11's namespace-and-mount model holds under handle `h`. No arm makes one, so a run from `init_config` holds none. Its object may be a directory, a regular file, a procfs file, an eventfd or a socket, so the model answers only what Linux answers for every open file: `close` and `close_range` remove it, `fcntl`'s `F_SETFD` and `F_GETFD` answer, `dup3` onto it replaces it, and `clone` passes it. Every other call on it is `unmodeled`, and while one is open `flock` on any file and `unlinkat` are `unmodeled` too, because its object may be that file. |
 
 The entry premises also limit the launches that a statement covers, and
 they limit them to Linux's own. For one input and one kernel build
@@ -347,6 +350,17 @@ not apply.
   files or holds locks on them.
 - `/dev/null` is the null device (major 1, minor 3). `/dev/urandom` is the
   random device (major 1, minor 9).
+- procfs is mounted at `/proc` in the process's root, and nothing under
+  `/proc/sys` is a symbolic link. `Open.proc_path_b` and
+  `Open.proc_sys_file_b` read the name, not the file system: a name
+  that starts with "/proc/" is taken to be a procfs name, and an
+  `O_RDONLY` open is answered only under "/proc/sys/", where with no
+  link the name stays in the sysctl tree.
+- No BPF LSM program is attached to `file_alloc_security`.
+  `EventFd.eventfd2_errnos` is the list of errnos an accepted `eventfd2`
+  can meet without one (`do_eventfd`, `fs/eventfd.c`, and
+  `alloc_empty_file`, `fs/file_table.c`, v6.18.44); such a program could
+  return any errno.
 - No tracer (`ptrace`) or other outside agent changes the process.
 - The binary is a static executable (`ET_EXEC`). `tools/elf_snapshot.py`
   refuses an image whose `e_type` is not `ET_EXEC`, so a snapshot cannot
@@ -697,6 +711,19 @@ equivalence) can be true of the model and false of Linux.
   (`RiscvSemantics.memory_read`). Linux on riscv maps every writable
   page readable (`arch/riscv/mm/fault.c`, `access_error`: "Write
   implies read"), so there both the load and the failing `sc` succeed.
+- **Contents under /proc, chosen afresh.** The bytes a `read` of a
+  `/proc/sys` file delivers and the 128 bytes a `newfstatat` relative to
+  an O_PATH procfs descriptor delivers are the environment's choice at
+  each call, as `getrandom`'s are: nothing pins a second read to the
+  rest of the first one's text, or two stats of one namespace to one
+  inode number. The source and the target choose them independently.
+- **Every procfs name opens.** An O_PATH open is admitted for every
+  procfs name, including a pid that does not exist and a name that is a
+  link out of procfs ("/proc/self/root/etc"), and the procfs arms admit
+  every errno from 1 to 4095 but `-EINTR` (`Syscall.errno_any`), because their errnos
+  run through procfs's own lookups and the LSM hooks and cannot be
+  listed with confidence. Nothing the model does with an `OProcPath`
+  descriptor reads the object it names, so this costs precision only.
 
 ## What the proofs do not check
 
