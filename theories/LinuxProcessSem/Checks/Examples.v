@@ -239,6 +239,27 @@ Example undecodable_step_unmodeled :
   = MachineUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
+(** The same first fetch at the segment list a RUN carries: the
+    binary's own segments with the vDSO pair appended
+    ([Run.run_segments]).  [find_segment] walks the list head first and
+    this image's segment covers 0x100, so the pair is never consulted
+    and the answer is the one above.  [Run.vdso_segments] stays
+    [Opaque] here, so no measured image byte is normalised. *)
+Example undecodable_step_unmodeled_run :
+  RiscvSemantics.step
+    (run_segments undecodable_segments demo_proc_input demo_sp demo_mbase)
+    (init_machine_state
+       (run_segments undecodable_segments demo_proc_input demo_sp demo_mbase)
+       0x100 demo_phdrs demo_sp demo_mbase demo_draw demo_proc_input)
+  = MachineUnmodeled.
+Proof.
+  rewrite (with_mem_eta (init_machine_state _ _ _ _ _ _ _)).
+  generalize (ms_mem (init_machine_state
+    (run_segments undecodable_segments demo_proc_input demo_sp demo_mbase)
+    0x100 demo_phdrs demo_sp demo_mbase demo_draw demo_proc_input)).
+  intros mem. unfold run_segments. vm_compute. reflexivity.
+Qed.
+
 (** …and therefore the run is NOT modeled.  Any [strong_universal_T]
     naming this image as its source is unprovable, however the target is
     chosen — which is exactly the vacuity the clause exists to block. *)
@@ -257,7 +278,7 @@ Proof.
   end.
   (* [Run.init_machine_state] takes the input WHOLE now, so no
      projection is left to reduce before the step lemma applies. *)
-  rewrite undecodable_step_unmodeled. reflexivity.
+  rewrite undecodable_step_unmodeled_run. reflexivity.
 Qed.
 
 Example run_of_undecodable_image_refutes_modeled :
