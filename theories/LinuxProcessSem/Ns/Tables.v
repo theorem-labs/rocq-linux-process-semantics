@@ -97,12 +97,16 @@ Record MntNs := mkMntNs {
   mntns_released : bool
 }.
 
-(** A pid namespace: its parent, owner and level. *)
+(** A pid namespace: its parent, owner and level, and the last pid
+    allocated in it ([pid_ns->idr], which [alloc_pid] walks cyclically
+    from the last one).  A namespace with no parent is the host's, whose
+    pids the environment chooses. *)
 Record PidNs := mkPidNs {
   pidns_id     : positive;
   pidns_parent : option positive;
   pidns_owner  : positive;
-  pidns_level  : nat
+  pidns_level  : nat;
+  pidns_last   : Z
 }.
 
 (** What file system a superblock is.  The contents of a host file system
@@ -234,13 +238,16 @@ Record ProcEntry := mkProcEntry {
 }.
 
 (** What the running kernel's build and boot configuration fix, which no
-    call changes: the mount limit (sysctl fs.mount-max) and the static
+    call changes: the mount limit (sysctl fs.mount-max), the static
     entries every procfs instance shows (the entries a kernel build
     creates in the procfs root and below it, outside the task
-    directories). *)
+    directories), and the devices a new network namespace gets besides
+    lo (the fallback devices of the loaded modules, such as sit0 or
+    ip6tnl0, each down and with no address). *)
 Record NsEnv := mkNsEnv {
   env_mount_max     : Z;
-  env_proc_entries  : list ProcEntry
+  env_proc_entries  : list ProcEntry;
+  env_net_fallback  : list NetIf
 }.
 
 (** The shared namespace state of a whole system.  [ns_files] holds the
@@ -296,7 +303,7 @@ Record NsCtx := mkNsCtx {
     no procfs entry.  A core builds its released world from this, never
     from the constructor, so a new field changes no caller. *)
 Definition empty_nsstate : NsState :=
-  mkNsState [] [] [] [] [] [] [] [] [] (mkNsEnv 100000%Z []).
+  mkNsState [] [] [] [] [] [] [] [] [] (mkNsEnv 100000%Z [] []).
 
 Definition with_mounts (st : NsState) (ms : list Mount) : NsState :=
   mkNsState ms (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)

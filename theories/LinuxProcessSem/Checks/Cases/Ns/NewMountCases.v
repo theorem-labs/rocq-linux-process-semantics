@@ -48,7 +48,7 @@ Definition world (empty : bool) (proc_locked_ro : bool) : NsState :=
     [mkUserNs 1 None 0 0 None None true true 100 false;
      mkUserNs 2 (Some 1%positive) 1 1000 None None true true 100 true]
     [mkMntNs 1 2 1 false]
-    [mkPidNs 1 None 2 0]
+    [mkPidNs 1 None 2 0 0]
     []
     [mkSb 1 SbTmpfs 2 1 false TMPFS_MAGIC false false true;
      mkSb 3 (SbProc 1) 2 30 false PROC_SUPER_MAGIC true true true;
@@ -62,7 +62,7 @@ Definition world (empty : bool) (proc_locked_ro : bool) : NsState :=
      mkInode 30 IDir 365 0 0 0 [] false; mkInode 31 IDir 365 0 0 0 [] empty;
      mkInode 40 IDir 493 0 0 0 [] false]
     []
-    (mkNsEnv 100 [mkProcEntry [b [115;121;115]] IDir 365 0 0 false])
+    (mkNsEnv 100 [mkProcEntry [b [115;121;115]] IDir 365 0 0 false] [])
 .
 
 (** A task in user namespace 2, mount namespace 1 and pid namespace 1,
@@ -131,6 +131,6 @@ Example devpts_ptmx :
 Definition at_limit : NsState :=
   let w := world true false in
   mkNsState (ns_mounts w) (ns_userns w) (ns_mntns w) (ns_pidns w) (ns_netns w) (ns_sbs w)
-            (ns_dentries w) (ns_inodes w) (ns_files w) (mkNsEnv 3 []).
+            (ns_dentries w) (ns_inodes w) (ns_files w) (mkNsEnv 3 [] []).
 Example limit_refuses :
   err (new_mount at_limit ctx cred 1000 1000 (NewTmpfs 493) nf 2 1 3) = Some 28 := eq_refl.
