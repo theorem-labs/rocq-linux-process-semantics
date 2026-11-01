@@ -295,9 +295,9 @@ them. A proof says nothing about a program in such a case.
 | Network | The list of connections is never empty. Thus the model does not include an environment where no peer ever connects. |
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. The `*_budgets_only` statements have a finer premise for the source: it excludes a first-touch or a cumulative refusal, but not a single request that is larger than the whole budget (`Run.alloc_refuse_reason`). |
 | Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
-| Paths under `/proc` | `openat` answers two shapes on a procfs name: "/proc", or a name that starts with "/proc/" and has no `..` component (`Open.proc_path_b`), given absolutely or relative to an O_PATH descriptor on one. O_PATH (alone, or with `O_DIRECTORY` and `O_NOFOLLOW`; `O_CLOEXEC`, `O_LARGEFILE` and `O_NONBLOCK` are ignored) gives an O_PATH descriptor (`State.OProcPath`), and `O_RDONLY` on a name under "/proc/sys/" gives a `State.OProcFile` descriptor; either may instead be any errno but `-EINTR` (`Syscall.errno_any`; `fs/namei.c` and `fs/open.c`, v6.18.44). Every other flag word on a procfs name, and O_PATH on any other name, is `unmodeled`. `read` on an `OProcFile` answers 0 to `count` bytes of the environment's choice, or any errno but `-EINTR`, for a `count` of at most 128 KiB; a destination that is only partly writable is `unmodeled`. `newfstatat` with a relative name and an `OProcPath` directory descriptor answers any errno but `-EINTR`, or 0 with 128 bytes whose padding is zero. `close`, `close_range` and `dup3` (onto it) remove such a descriptor and `clone` passes it; every other call on one is `unmodeled`. `newfstatat` and `readlinkat` from `AT_FDCWD` decline a procfs name, because procfs names resolve whatever the file model holds and some are links. No modeled run can give `-EINTR`: Linux answers it only when a signal handler runs or a signal interrupts the call, the model installs no handler, and no signal arrives from outside the process. |
-| `eventfd2` descriptors | `eventfd2` with an accepted flag word gives the lowest free descriptor, holding an eventfd with that flag word (`State.OEventFd`), or `-ENOMEM`, `-EMFILE` or `-ENFILE` (`do_eventfd`, `fs/eventfd.c`, v6.18.44). The counter is not modeled, so `read`, `write`, `select`, `poll` and `epoll` on an eventfd are `unmodeled`. |
-| Namespace and mount model descriptors | A descriptor may hold `State.ONsFile h`, an open file that the namespace and mount model holds under handle `h`. No arm of `spec_table` makes one, so a run from `init_config` never holds one. Its object may be a directory, a regular file, a procfs file, an eventfd or a socket, so the model answers only what Linux answers for every open file: `close` and `close_range` remove it, `fcntl`'s `F_SETFD` and `F_GETFD` answer, `dup3` onto it replaces it, and `clone` passes it. Every other call on it is `unmodeled`, and while one is open `flock` on any file and `unlinkat` are `unmodeled` too, because its object may be that file. |
+| Paths under `/proc` | `openat` answers two shapes on a procfs name: "/proc", or a name that starts with "/proc/" and has no `..` component (`Open.proc_path_b`), given absolutely or relative to an O_PATH descriptor on one. O_PATH (alone, or with `O_DIRECTORY` and `O_NOFOLLOW`; `O_CLOEXEC`, `O_LARGEFILE` and `O_NONBLOCK` are ignored) gives an O_PATH descriptor (`State.OProcPath`), and `O_RDONLY` on a name under "/proc/sys/" gives a `State.OProcFile` descriptor; either may instead be any errno but `-EINTR` (`Syscall.errno_any`; `fs/namei.c` and `fs/open.c`, v6.18.44). Every other flag word on a procfs name, and O_PATH on any other name, is `unmodeled`. `read` on an `OProcFile` answers 0 to `count` bytes of the environment's choice, or any errno but `-EINTR`, for a `count` of at most 128 KiB; a destination that is only partly writable is `unmodeled`. `newfstatat` relative to an `OProcPath` descriptor answers only for flags 0 and `AT_SYMLINK_NOFOLLOW`: any errno but `-EINTR`, or 0 with 128 bytes whose padding is zero; a partly writable statbuf is `unmodeled`. `close`, `close_range` and `dup3` (onto it) remove these descriptors and `clone` passes them; fcntl's F_SETFD answers 0 and F_GETFD answers 0 or FD_CLOEXEC. getsockname, getpeername, setsockopt, getsockopt and shutdown answer -EBADF on `OProcPath`, and -ENOTSOCK on `OProcFile` or `OEventFd`; every other call on one is `unmodeled`. `newfstatat` and `readlinkat` from `AT_FDCWD` decline a path walk the flat file model cannot represent, including a `..` component or a separator path other than a canonical `/tmp/<name>`, because it may reach procfs or an unmodeled directory. No modeled run can give `-EINTR`: Linux answers it only when a signal handler runs or a signal/notification interrupts the call, and the assumptions below exclude both. |
+| `eventfd2` descriptors | `eventfd2` with an accepted flag word gives the lowest free descriptor, holding an eventfd with that flag word (`State.OEventFd`), or `-ENOMEM`, `-EMFILE` or `-ENFILE` (`do_eventfd`, `fs/eventfd.c`, v6.18.44). The counter is not modeled, so `read`, `write`, `select`, `poll` and `epoll` on an eventfd are `unmodeled`; fcntl's F_SETFD/F_GETFD and the five socket calls answer as the Paths under `/proc` row says. |
+| Namespace and mount model descriptors | A descriptor may hold `State.ONsFile h`, an open file that the namespace and mount model holds under handle `h`. No arm of `spec_table` makes one, so a run from `init_config` never holds one. Its object may be a directory, a regular file, a procfs file, an eventfd or a socket, so the model answers only what Linux answers for every open file: `close` and `close_range` remove it, `fcntl`'s `F_SETFD` and `F_GETFD` answer, `dup3` onto it replaces it, and `clone` passes it. `close` answers 0 on the condition that the namespace and mount model mints an `ONsFile` only on an object whose `f_op->flush` is absent or cannot fail: `SYSCALL_DEFINE1(close)` returns `filp_flush`'s result (`fs/open.c`, v6.18.44), and FUSE, NFS, CIFS, orangefs, ecryptfs and overlayfs have a `.flush` that can fail. Every other call on it is `unmodeled`, and while one is open `flock` on any file and `unlinkat` are `unmodeled` too, because its object may be that file. |
 | Shared memory | The model has no shared mapping. `mmap` with `MAP_SHARED` is `unmodeled`, anonymous requests included. Linux builds an anonymous shared mapping on a shmem file (`mm/vma.c`, `__mmap_new_vma` calls `shmem_zero_setup`), so `vma_is_anonymous` is false for it, its pages survive the zap that `MADV_DONTNEED` performs, and a `fork` shares them instead of copying them. `Sys/Mm/Mmap.v` gives the full reason and what an arm would take. |
 
 The entry premises also limit the launches that a statement covers, and
@@ -364,6 +364,10 @@ not apply.
   can meet without one (`do_eventfd`, `fs/eventfd.c`, and
   `alloc_empty_file`, `fs/file_table.c`, v6.18.44); such a program could
   return any errno.
+- The working directory is not `/`. The flat file model has no directory
+  tree or symlinks, so this makes a slash-free relative `proc` name
+  unable to reach the procfs mount; a relative path with a separator or
+  a `..` component is declined by `Stat.statat_cwd_path` regardless.
 - No tracer (`ptrace`) or other outside agent changes the process.
 - The binary is a static executable (`ET_EXEC`). `tools/elf_snapshot.py`
   refuses an image whose `e_type` is not `ET_EXEC`, so a snapshot cannot
@@ -380,9 +384,17 @@ not apply.
   `Sys/Kernel/Exit.v`). `execve` does not reap a child in Linux, so a
   launcher that forks a grandchild, or attaches a tracee, before it
   execs the image makes this assumption false.
-- No signal arrives from outside the process. In particular the parent
-  does not exit while a parent-death signal is set
-  (`prctl(PR_SET_PDEATHSIG)`): Linux then sends that signal
+- Nothing outside the process makes a signal pending for it, or wakes it
+  as if one were: no other process sends it a signal; it is not frozen
+  (`freeze_task`, `kernel/freezer.c`, for suspend and the cgroup v1
+  freezer; `cgroup_freeze_task`, `kernel/cgroup/freezer.c`, for the
+  cgroup v2 freezer); and no livepatch transition signals it
+  (`klp_send_signals`, `kernel/livepatch/transition.c`). A SIGCHLD from
+  its own child is allowed: at SIG_DFL it is discarded (`sig_ignored`,
+  `kernel/signal.c`), and while it is blocked it does not make
+  `signal_pending` true (`recalc_sigpending_tsk`, `kernel/signal.c`).
+  In particular the parent does not exit while a parent-death signal is
+  set (`prctl(PR_SET_PDEATHSIG)`): Linux then sends that signal
   (`forget_original_parent`, `kernel/exit.c`, v6.18.44), and the model
   has no transition for it. A statement about a program that sets one
   holds for the runs in which the parent outlives it.
@@ -571,10 +583,13 @@ equivalence) can be true of the model and false of Linux.
   parameter for the machine and both binaries read the same one.
 - **Errors of a namespace `clone`.** For the namespace flag word
   (`Kernel.Fork.clone_ns_flags_b`) the model admits every errno from 1 to
-  4095. The failures run through `create_user_ns`, `copy_namespaces` and
-  every per-namespace init function, including each network namespace's
-  pernet init, and they cannot be listed with confidence. Linux gives
-  only some of them.
+  4095 but `-EINTR`. The failures run through `create_user_ns`,
+  `copy_namespaces` and every per-namespace init function, including
+  each network namespace's pernet init, and they cannot be listed with
+  confidence. Linux gives only some of them. `kernel/fork.c`'s
+  `fatal_signal_pending(current)` `-EINTR` path ends the task before it
+  returns; the signal-pending assumption above excludes the other
+  interrupt paths.
 - **The inheritable capability set.** `capget` lets the environment
   choose the inheritable set on each call, within the valid bits. Linux
   gives the same set on each call until it changes, and 0 after an
