@@ -2788,16 +2788,18 @@ Definition PipeBuf : Type := list byte * Z.
     [stream_peer] is [None] — and every arm treats that as
     [SHUTDOWN_MASK]: a send is -EPIPE, select reports readable and
     writable.  WHAT IS NOT MODELED is the survivor's error state: whether
-    the close left [sk_err] set.  The two answers that turn on it DECLINE
-    rather than guess: an empty read on the survivor (end of file, or one
-    -ECONNRESET first) and a [ppoll] on it, whose filter always holds
-    EPOLLERR.  No call of curl_fuzzer_proto_http reaches either, but
-    other cURL protocol targets do: in the census of the 19 wave-3
-    targets, a read on a survivor is the first declined call of 401 runs
-    in 11 targets (dispatch://OSSV-286/artifact/census-wave3-md, kind
-    D2).  The repair keeps [close_spec] kind-blind: the survivor's first
-    call that shows the error chooses whether it was set, and the
-    survivor keeps to that choice.  It is a separate change
+    the close left [sk_err] set.  An empty read on the survivor turns on
+    it (end of file, or one -ECONNRESET first), and it DECLINES rather
+    than guess.  A [ppoll] on the survivor, whose filter always holds
+    EPOLLERR, answers with EPOLLERR set or clear, as a choice shown in
+    its [revents] ([Fs.Select.ppoll_revents_of]).  No call of
+    curl_fuzzer_proto_http reaches the read, but other cURL protocol
+    targets do: in the census of the 19 wave-3 targets, a read on a
+    survivor is the first declined call of 401 runs in 11 targets
+    (dispatch://OSSV-286/artifact/census-wave3-md, kind D2).  The repair
+    keeps [close_spec] kind-blind: the survivor's first call that shows
+    the error chooses whether it was set, and the survivor keeps to that
+    choice.  It is a separate change
     (dispatch://OSSV-287/artifact/d2-design-md).
 
     WHAT IS NOT HERE, and deliberately.  No ADDRESS: a [socketpair] end

@@ -2263,7 +2263,10 @@ Lemma check_pselect6_frame : forall i n32 inp outp exp tsp sig eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i n32 inp outp exp tsp sig eff m m' evs H.
-  unfold check_pselect6 in H. vm_frame2 H.
+  unfold check_pselect6 in H.
+  destruct (pselect6_outcome i m n32 inp outp exp tsp sig) as [pa|];
+    cbv beta iota in H; [|discriminate H].
+  apply check_pselect_answer_model in H. subst m'. reflexivity.
 Qed.
 
 Lemma check_ppoll_frame : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
@@ -2271,7 +2274,10 @@ Lemma check_ppoll_frame : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i ufds nfds tsp sig sigsetsize eff m m' evs H.
-  unfold check_ppoll in H. vm_frame2 H.
+  unfold check_ppoll in H.
+  destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [pa|];
+    cbv beta iota in H; [|discriminate H].
+  apply check_pselect_answer_model in H. subst m'. reflexivity.
 Qed.
 
 Lemma check_newfstatat_frame : forall i dirfd pathp flag eff m m' evs,
