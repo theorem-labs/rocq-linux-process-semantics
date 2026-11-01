@@ -147,7 +147,7 @@ Definition with_cwd (ctx : NsCtx) (c : positive * positive) : NsCtx :=
 
 Definition with_tree (st : NsState) (ds : list Dentry) (ins : list Inode) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
-            ds ins (ns_files st).
+            ds ins (ns_files st) (ns_env st).
 
 (** The open file [h] replaced by [f]. *)
 Definition set_file (st : NsState) (h : N) (f : NsFile) : NsState :=
@@ -475,6 +475,16 @@ Definition fmode_write (flags : Z) : bool :=
 Definition is_setgroups (l : Loc) : bool :=
   match l with LProcTask _ _ [n] => bytes_eqb n proc_setgroups_name | _ => false end.
 
+(** A task's uid_map, gid_map or setgroups: the open binds the task's user
+    namespace ([proc_id_map_open], [proc_setgroups_open]); the task is the
+    caller, the only one whose procfs files the walk resolves. *)
+Definition is_userns_file (l : Loc) : bool :=
+  match l with
+  | LProcTask _ _ [n] => bytes_eqb n proc_uid_map_name || bytes_eqb n proc_gid_map_name
+                         || bytes_eqb n proc_setgroups_name
+  | _ => false
+  end.
+
 (** [may_create_in_sticky] (fs/namei.c) on an O_CREAT open of an existing
     regular file or FIFO in a sticky directory that the caller and the
     directory's owner do not own: its answer is the protected_regular or
@@ -506,7 +516,9 @@ Definition open_existing (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCred
             if fmode_write flags && negb (special a) && ro then ORErr EROFS
             else if is_setgroups l && fmode_write flags && negb (own_capable m ctx st CAP_SYS_ADMIN)
             then ORErr EACCES
-            else OROk st (if kind_is IDir a then NfDir l 0 else NfFile l 0)
+            else OROk st (if kind_is IDir a then NfDir l 0
+                          else if is_userns_file l then NfUserNsFile l (cx_user ctx) 0
+                          else NfFile l 0)
         end in
       match creat_dir with
       | Some d =>

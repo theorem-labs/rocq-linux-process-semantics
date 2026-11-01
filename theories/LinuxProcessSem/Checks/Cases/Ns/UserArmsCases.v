@@ -29,7 +29,7 @@ Definition init_uns (max : Z) (sealed : bool) : UserNs :=
 
 Definition world (us : list UserNs) : NsState :=
   mkNsState [mkMount 1 1 None 1 1 1 no_flags no_flags false false None None] us
-            [mkMntNs 1 1 1] [] [] [] [] [] [].
+            [mkMntNs 1 1 1 false] [] [] [] [] [] [] (ns_env empty_nsstate).
 
 Definition task (user : positive) (root : positive * positive) (caps : CapSets) : NsCtx :=
   mkNsCtx user 1 1 1 [(1%positive, 2)] root root 18 caps 0 [] false 0 1.

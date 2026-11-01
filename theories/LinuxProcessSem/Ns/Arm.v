@@ -57,7 +57,7 @@ Definition task_pid (ctx : NsCtx) : option Z := pid_in (cx_pids ctx) (cx_pidns c
     or a signalfd. *)
 Definition nsfile_loc (f : NsFile) : option Loc :=
   match nf_kind f with
-  | NfPath l | NfDir l _ | NfFile l _ => Some l
+  | NfPath l | NfDir l _ | NfFile l _ | NfUserNsFile l _ _ => Some l
   | _ => None
   end.
 

@@ -40,7 +40,7 @@ Definition uns (i : positive) (parent : option positive) (level : nat)
 Definition state (mounts : list Mount) (users : list UserNs) (mntns : list MntNs)
     (pidns : list PidNs) (sbs : list SuperBlock) (dentries : list Dentry) (inodes : list Inode)
     : NsState :=
-  mkNsState mounts users mntns pidns [] sbs dentries inodes [].
+  mkNsState mounts users mntns pidns [] sbs dentries inodes [] (ns_env empty_nsstate).
 
 Definition ctx_at (u : positive) (caps : CapSets) (root : positive * positive) : NsCtx :=
   mkNsCtx u 1 1 1 [(1%positive, 42%Z)] root (1%positive, 2%positive) 18 caps 0 [] false 0 1.
@@ -55,7 +55,7 @@ Definition world : NsState :=
   state
     [mnt 1 None 1 1 1; mnt 2 (Some 1%positive) 3 20 2; mnt 3 (Some 1%positive) 9 30 3]
     [root_user]
-    [mkMntNs 1 1 1]
+    [mkMntNs 1 1 1 false]
     [mkPidNs 1 None 1 0]
     [sb 1 1 SbHost; sb 2 20 SbTmpfs; sb 3 30 (SbProc 1)]
     [dent 1 1 None [] 1;

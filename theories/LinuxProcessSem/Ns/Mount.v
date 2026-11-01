@@ -287,7 +287,7 @@ Definition copies (base : positive) (srcs : list Mount) (src src_dentry tgt tgt_
     decide: a source outside [ns] ([may_copy_tree] also accepts an nsfs or
     pidfs dentry and a mount of an anonymous namespace), and a shared target
     (the new mounts propagate). *)
-Definition bind_mount (T : list Mount) (ns : positive) (mount_max : nat) (src : positive)
+Definition bind_mount (T : list Mount) (ns : positive) (mount_max : Z) (src : positive)
     (bp : BindPaths) (recursive : bool) (tgt tgt_dentry : positive) : option MResult :=
   match find_mount T src, find_mount T tgt with
   | Some s, Some t =>
@@ -302,7 +302,7 @@ Definition bind_mount (T : list Mount) (ns : positive) (mount_max : nat) (src : 
            | Some l =>
                if bp_nouser bp then Some (MErr EINVAL)
                else if bp_dir_mismatch bp then Some (MErr ENOTDIR)
-               else if Nat.ltb mount_max (ns_mount_count T ns + length l)
+               else if (mount_max <? Z.of_nat (ns_mount_count T ns + length l))%Z
                then Some (MErr ENOSPC)
                else if is_shared T tgt then None
                else Some (MOk (T ++ copies (max_mount_id T) l src (bp_src_dentry bp)
@@ -353,7 +353,7 @@ Proof.
   destruct (bind_sources T s (bp_below bp) rec) as [l|]; [|intros Hc; discriminate Hc].
   destruct (bp_nouser bp); [intros Hc; discriminate Hc|].
   destruct (bp_dir_mismatch bp); [intros Hc; discriminate Hc|].
-  destruct (Nat.ltb mx (ns_mount_count T ns + length l)); [intros Hc; discriminate Hc|].
+  destruct ((mx <? Z.of_nat (ns_mount_count T ns + length l))%Z); [intros Hc; discriminate Hc|].
   destruct (is_shared T tgt); [intros Hc; discriminate Hc|].
   intros H. injection H as HT. subst T'. exists l. reflexivity.
 Qed.

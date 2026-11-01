@@ -86,12 +86,15 @@ Record UserNs := mkUserNs {
   uns_sealed               : bool
 }.
 
-(** A mount namespace: its owner, and the mount fixed as its root when it
-    was made ([ns->root]; [pivot_root] does not change it). *)
+(** A mount namespace: its owner, the mount fixed as its root when it was
+    made ([ns->root]; [pivot_root] does not change it), and whether it is
+    the host's, whose paths the released model's file system answers
+    ([mntns_released]). *)
 Record MntNs := mkMntNs {
-  mntns_id    : positive;
-  mntns_owner : positive;
-  mntns_root  : positive
+  mntns_id       : positive;
+  mntns_owner    : positive;
+  mntns_root     : positive;
+  mntns_released : bool
 }.
 
 (** A pid namespace: its parent, owner and level. *)
@@ -192,7 +195,11 @@ Record NetNs := mkNetNs {
     or writing (a regular file or a task's procfs file) and its offset; a
     NETLINK_ROUTE socket of a network namespace, its port id and the
     datagrams queued for it; an AF_UNIX datagram socket; an eventfd; a
-    signalfd and its mask. *)
+    signalfd and its mask; a procfs file bound to a user namespace when it
+    was opened, and its offset: a task's uid_map, gid_map or setgroups
+    (the task's namespace, [proc_id_map_open], [proc_setgroups_open]) or a
+    file of /proc/sys/user (the opener's, [set_lookup] in
+    kernel/ucount.c). *)
 Inductive NsFileKind :=
   | NfPath (l : Loc)
   | NfDir (l : Loc) (pos : Z)
@@ -200,7 +207,8 @@ Inductive NsFileKind :=
   | NfNetlink (netns : positive) (port : Z) (rxq : list (list byte))
   | NfUnixDgram (netns : positive)
   | NfEventfd
-  | NfSignalfd (mask : Z).
+  | NfSignalfd (mask : Z)
+  | NfUserNsFile (l : Loc) (userns : positive) (off : Z).
 
 (** An open file description: its kind, its [f_flags] (access mode and
     status flags) and [f_cred], the opener's credential. *)
@@ -208,6 +216,24 @@ Record NsFile := mkNsFile {
   nf_kind  : NsFileKind;
   nf_flags : Z;
   nf_cred  : IdCred
+}.
+
+(** A static entry of a procfs instance, outside the task directories:
+    its names from the procfs root, its kind and permission bits. *)
+Record ProcEntry := mkProcEntry {
+  px_path : list (list byte);
+  px_kind : InodeKind;
+  px_perm : Z
+}.
+
+(** What the running kernel's build and boot configuration fix, which no
+    call changes: the mount limit (sysctl fs.mount-max) and the static
+    entries every procfs instance shows (the entries a kernel build
+    creates in the procfs root and below it, outside the task
+    directories). *)
+Record NsEnv := mkNsEnv {
+  env_mount_max     : Z;
+  env_proc_entries  : list ProcEntry
 }.
 
 (** The shared namespace state of a whole system.  [ns_files] holds the
@@ -222,7 +248,8 @@ Record NsState := mkNsState {
   ns_sbs      : list SuperBlock;
   ns_dentries : list Dentry;
   ns_inodes   : list Inode;
-  ns_files    : list (N * NsFile)
+  ns_files    : list (N * NsFile);
+  ns_env      : NsEnv
 }.
 
 (** The five capability sets of a task, as 64-bit masks. *)
@@ -258,21 +285,23 @@ Record NsCtx := mkNsCtx {
 }.
 
 (** The shared state of a system the namespace model knows nothing of: no
-    mount tree and no namespace.  A core builds its released world from
-    this, never from the constructor, so a new field changes no caller. *)
-Definition empty_nsstate : NsState := mkNsState [] [] [] [] [] [] [] [] [].
+    mount tree and no namespace, Linux's default mount limit (100000) and
+    no procfs entry.  A core builds its released world from this, never
+    from the constructor, so a new field changes no caller. *)
+Definition empty_nsstate : NsState :=
+  mkNsState [] [] [] [] [] [] [] [] [] (mkNsEnv 100000%Z []).
 
 Definition with_mounts (st : NsState) (ms : list Mount) : NsState :=
   mkNsState ms (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
-            (ns_dentries st) (ns_inodes st) (ns_files st).
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
 
 Definition with_userns (st : NsState) (us : list UserNs) : NsState :=
   mkNsState (ns_mounts st) us (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
-            (ns_dentries st) (ns_inodes st) (ns_files st).
+            (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
 
 Definition with_files (st : NsState) (fs : list (N * NsFile)) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
-            (ns_dentries st) (ns_inodes st) fs.
+            (ns_dentries st) (ns_inodes st) fs (ns_env st).
 
 (** The context of a task that has entered no namespace: the initial
     namespaces, root and cwd at the root mount's root dentry, the umask

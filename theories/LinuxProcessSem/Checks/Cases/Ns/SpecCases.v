@@ -21,26 +21,38 @@ Example ns_claims_exit_group : ext_claims ns_ext (call 94) = true := eq_refl.
 
 Example no_ext_leaves_openat : ext_claims no_ext (call 56) = false := eq_refl.
 
-(** The released world is the one a core builds from [empty_nsstate]. *)
-Example empty_is_flat : flat_view empty_nsstate = true := eq_refl.
+(** Every task of [empty_nsstate] is in the released world. *)
+Example empty_is_flat : forall ctx, flat_view ctx empty_nsstate = true := flat_view_empty.
 
-(** A world with a mount tree is not the released world, and there a
-    number with no arm fails closed. *)
-Definition one_mount : NsState :=
-  with_mounts empty_nsstate
-    [mkMount 1 1 None 1 1 1 (mkMountFlags false false false false)
-             (mkMountFlags false false false false) false false None None].
-
-Example mounted_not_flat : flat_view one_mount = false := eq_refl.
-
-Example unlisted_fails_closed : forall m ctx o,
-  ns_spec (call 9999) m ctx one_mount o <-> o = EUnmodeled.
-Proof. intros m ctx o. vm_compute. tauto. Qed.
-
-(** A task with pid 2 in its pid namespace 1 and umask 022. *)
-Definition task (pid : Z) (umask : Z) : NsCtx :=
-  mkNsCtx 1 1 1 1 [(1%positive, pid)] (1%positive, 1%positive) (1%positive, 1%positive) umask
+(** A task with pid 2 in pid namespace 1, mount namespace 1, user
+    namespace [u] and umask [umask]. *)
+Definition task_in (u : positive) (pid : Z) (umask : Z) : NsCtx :=
+  mkNsCtx u 1 1 1 [(1%positive, pid)] (1%positive, 1%positive) (1%positive, 1%positive) umask
           (mkCaps 0 0 0 0 0) 0 [] false 0 1.
+Definition task (pid : Z) (umask : Z) : NsCtx := task_in 1 pid umask.
+
+Definition nf : MountFlags := mkMountFlags false false false false.
+
+(** One mount in mount namespace 1, which is the host's when [host]; user
+    namespace 1 is the initial one, 2 a child of it. *)
+Definition world (host : bool) : NsState :=
+  mkNsState [mkMount 1 1 None 1 1 1 nf nf false false None None]
+            [mkUserNs 1 None 0 0 None None true true 100 false;
+             mkUserNs 2 (Some 1%positive) 1 0 None None true true 100 true]
+            [mkMntNs 1 1 1 host] [] [] [] [] [] [] (ns_env empty_nsstate).
+Definition one_mount : NsState := world false.
+
+(** A task in a mount namespace the tables model is not in the released
+    world; in the host's mount namespace and the initial user namespace it
+    is; in a user namespace below the initial one it is not. *)
+Example mounted_not_flat : flat_view (task 2 18) one_mount = false := eq_refl.
+Example host_task_flat : flat_view (task 2 18) (world true) = true := eq_refl.
+Example child_userns_not_flat : flat_view (task_in 2 2 18) (world true) = false := eq_refl.
+
+(** Outside the released world a number with no arm fails closed. *)
+Example unlisted_fails_closed : forall m o,
+  ns_spec (call 9999) m (task 2 18) one_mount o <-> o = EUnmodeled.
+Proof. intros m o. vm_compute. tauto. Qed.
 
 Example getpid_own_pid : forall m,
   ns_spec (call 172) m (task 2 18) one_mount (ns_ret (Z_to_bv 64 2) m (task 2 18) one_mount).

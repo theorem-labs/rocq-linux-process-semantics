@@ -48,7 +48,7 @@ Definition state (users : list UserNs) (files : list (N * NsFile)) : NsState :=
     [mnt 1 None 1 1 1 no_flags; mnt 2 (Some 1%positive) 3 20 2 no_flags;
      mnt 3 (Some 1%positive) 9 30 3 no_flags; mnt 4 (Some 1%positive) 5 40 4 ro_nosuid_nodev;
      mnt 5 (Some 1%positive) 10 50 5 noexec_flags]
-    users [mkMntNs 1 1 1] [mkPidNs 1 None 1 0] []
+    users [mkMntNs 1 1 1 false] [mkPidNs 1 None 1 0] []
     [sb 1 1 SbHost 61267; sb 2 20 SbTmpfs 16914836; sb 3 30 (SbProc 1) 40864;
      sb 4 40 SbTmpfs 16914836; sb 5 50 SbTmpfs 16914836]
     [dent 1 1 None [] 1;
@@ -74,7 +74,7 @@ Definition state (users : list UserNs) (files : list (N * NsFile)) : NsState :=
      reg 8 420 5000 5000; dir 9 493 1000 1002; dir 10 493 1000 1002;
      dir 20 511 0 0; reg 21 420 1000 1002; dir 22 493 0 0; dir 30 365 0 0;
      dir 40 511 0 0; reg 41 438 1000 1002; dir 50 511 0 0; reg 51 493 1000 1002]
-    files.
+    files (ns_env empty_nsstate).
 
 Definition ctx_at (u : positive) (caps : CapSets) (root cwd : positive * positive) : NsCtx :=
   mkNsCtx u 1 1 1 [(1%positive, 42%Z)] root cwd 18 caps 0 [] false 0 1.
@@ -141,7 +141,8 @@ Definition loc_view (l : Loc) : Z * Z * list (list Z) :=
   end.
 
 (** The newest open file of an answer: 0 for O_PATH, 1 for a directory, 2
-    for a file; its location; its [f_flags]. *)
+    for a file, 3 for a procfs file bound to a user namespace; its
+    location; its [f_flags]. *)
 Definition new_file (o : ext_outcome) : option (Z * (Z * Z * list (list Z)) * Z) :=
   match st_of o with
   | Some s => match ns_files s with
@@ -149,6 +150,7 @@ Definition new_file (o : ext_outcome) : option (Z * (Z * Z * list (list Z)) * Z)
                                | NfPath l => Some (0, loc_view l, nf_flags f)
                                | NfDir l _ => Some (1, loc_view l, nf_flags f)
                                | NfFile l _ => Some (2, loc_view l, nf_flags f)
+                               | NfUserNsFile l _ _ => Some (3, loc_view l, nf_flags f)
                                | _ => None
                                end
               | [] => None
@@ -288,10 +290,11 @@ Example openat_setgroups_write :
      = Some 3.
 Proof. split; vm_compute; reflexivity. Qed.
 
-(** The task's uid_map opens as a file at its procfs location. *)
+(** The task's uid_map opens at its procfs location, bound to the task's
+    user namespace. *)
 Example openat_uid_map :
   new_file (openat_fn (open_in s_uid_map 0 0) m3 c0 W)
-  = Some (2, (3, 42, [[117; 105; 100; 95; 109; 97; 112]]), O_LARGEFILE).
+  = Some (3, (3, 42, [[117; 105; 100; 95; 109; 97; 112]]), O_LARGEFILE).
 Proof. vm_compute. reflexivity. Qed.
 
 (* ---- openat2 ----------------------------------------------------------- *)

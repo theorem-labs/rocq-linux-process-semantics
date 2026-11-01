@@ -5,15 +5,17 @@
     [wait4] (260), which stay the core's own, through [ns_spec].
 
     [ns_spec] has two regimes.
-    - In the released world ([flat_view]: no mount tree is known) it is the
-      released [Specs.syscall_spec], with the namespace context and state
-      unchanged ([released]).  That is [ns_coherent], the obligation
-      [ExtSpec] carries, and it holds by construction.
-    - In a world with a mount tree, the call's arm in [ns_table] answers;
-      a number with no arm is [EUnmodeled]: the model fails closed, it
-      never falls back to the released arm, whose path walks read the flat
-      file system.  An arm that answers some shapes as the released arm
-      does says so in its header and calls [released] for them.
+    - For a task in the released world ([flat_view]: each of its
+      namespaces is the host's) it is the released [Specs.syscall_spec],
+      with the namespace context and state unchanged ([released]).  That is
+      [ns_coherent], the obligation [ExtSpec] carries, and it holds by
+      construction.
+    - For a task in a namespace the tables model, the call's arm in
+      [ns_table] answers; a number with no arm is [EUnmodeled]: the model
+      fails closed, it never falls back to the released arm, whose path
+      walks read the host's file system.  An arm that answers some shapes
+      as the released arm does says so in its header and calls [released]
+      for them.
 
     Every arm's header names the Linux 6.18.44 functions it follows and
     its kind: exact (every Linux outcome for the accepted shape, and no
@@ -41,14 +43,14 @@ Definition ns_claims (i : SyscallInput) : bool :=
   negb (Z.eqb (ns_sysno i) 220 || Z.eqb (ns_sysno i) 260).
 
 Definition ns_spec : NsArm := fun i m ctx st o =>
-  if flat_view st then released i m ctx st o
+  if flat_view ctx st then released i m ctx st o
   else match lookup_ns_arm ns_table (ns_sysno i) with
        | Some a => a i m ctx st o
        | None => o = EUnmodeled
        end.
 
 Lemma ns_coherent : forall i m ctx st,
-  flat_view st = true -> ns_claims i = true -> ~ syscall_spec i m Unmodeled ->
+  flat_view ctx st = true -> ns_claims i = true -> ~ syscall_spec i m Unmodeled ->
   forall o, ns_spec i m ctx st o <->
             exists eff m' evs, o = EOk eff m' ctx st evs /\ syscall_spec i m (Ok eff m' evs).
 Proof.
@@ -91,19 +93,19 @@ Definition ns_refusal_off_b (cfg : SpuriousCfg) (i : SyscallInput) (ret : word) 
   | ps => forallb (fun p => negb (family_may_fail cfg (snd p))) ps
   end.
 
-(** The forced-only filter of [ns_ext]: the released filter in the released
-    world; elsewhere, a refusal of switched-off families where the model
+(** The forced-only filter of [ns_ext]: the released filter for a task in
+    the released world; elsewhere, a refusal of switched-off families where the model
     also admits an answer that is no refusal at all (the state did not
     force the refusal). *)
 Definition ns_refusal (cfg : SpuriousCfg) (i : SyscallInput) (m : Model) (ctx : NsCtx)
     (st : NsState) (eff : SyscallEffect) : Prop :=
-  if flat_view st then spurious_refusal_cfg cfg i m eff
+  if flat_view ctx st then spurious_refusal_cfg cfg i m eff
   else ns_refusal_off_b cfg i (eff_ret eff) = true
        /\ exists eff' m' ctx' st' evs',
             ns_spec i m ctx st (EOk eff' m' ctx' st' evs') /\ ns_matching i (eff_ret eff') = [].
 
 Lemma ns_refusal_coherent : forall cfg i m ctx st eff,
-  flat_view st = true -> ns_claims i = true ->
+  flat_view ctx st = true -> ns_claims i = true ->
   (ns_refusal cfg i m ctx st eff <-> spurious_refusal_cfg cfg i m eff).
 Proof. intros cfg i m ctx st eff H _. unfold ns_refusal. rewrite H. reflexivity. Qed.
 
@@ -124,7 +126,7 @@ Lemma ns_spurious_refusal_cfg_mono : forall cfg1 cfg2 i m ctx st eff,
   cfg_le cfg1 cfg2 -> ns_refusal cfg2 i m ctx st eff -> ns_refusal cfg1 i m ctx st eff.
 Proof.
   intros cfg1 cfg2 i m ctx st eff Hle. unfold ns_refusal.
-  destruct (flat_view st).
+  destruct (flat_view ctx st).
   - unfold spurious_refusal_cfg, injected_family_off.
     destruct (injected_arm (bv_unsigned (in_sysno i))) as [a|]; [|intros [Hc _]; discriminate Hc].
     intros [Hoff Hrest]. split; [|exact Hrest].
@@ -148,8 +150,8 @@ Qed.
 Definition ns_ext : ExtSpec :=
   mkExtSpec ns_claims ns_spec ns_refusal ns_coherent ns_refusal_coherent.
 
-(** In the released world [ns_ext] answers exactly as the released model
-    does, Unmodeled included. *)
+(** For a task in the released world [ns_ext] answers exactly as the
+    released model does, Unmodeled included. *)
 Lemma ns_spec_flat : forall i m ctx st o,
-  flat_view st = true -> ns_spec i m ctx st o <-> released i m ctx st o.
+  flat_view ctx st = true -> ns_spec i m ctx st o <-> released i m ctx st o.
 Proof. intros i m ctx st o H. unfold ns_spec. rewrite H. reflexivity. Qed.
