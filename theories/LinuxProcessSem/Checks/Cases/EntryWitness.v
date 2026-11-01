@@ -77,7 +77,7 @@ Definition witness_argv : list (list byte) := [[Z_to_bv 8 97]].
 Definition witness_input : ProcInput :=
   mkProcInput_full witness_argv [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000)
     [] net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48
-    default_urandom [] witness_kernel default_execfn.
+    default_urandom [] witness_kernel default_execfn true true.
 
 (** The launch: the stack VMA ends at STACK_TOP (no draw), sp at the
     top of rule 2 (no [arch_align_stack] pad) and the mmap base of rule
