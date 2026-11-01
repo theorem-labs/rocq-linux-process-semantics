@@ -4170,11 +4170,9 @@ Proof.
   intros inp (a & b & c & k & r & d & e & f & g & s & n & v & u & L).
   destruct (in_abort_terminal inp) eqn:Hab.
   - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj Hab (conj s (conj n (conj v (conj u L)))))))))))))).
+    try red; repeat split; assumption.
   - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj Hab (conj s (conj n (conj v (conj u L)))))))))))))).
+    try red; repeat split; assumption.
 Qed.
 
 (** * The SIGPIPE declaration: the same predicate with signal 13 ignored
@@ -4248,14 +4246,19 @@ Lemma valid_input_sigpipe_either_splits : forall inp,
   valid_input_sigpipe_either inp ->
   valid_input inp \/ valid_input_sigpipe_ignored inp.
 Proof.
+  (* The hypotheses are taken apart and the goal is rebuilt BY SPLITTING,
+     not by naming a position.  An explicit [conj] chain hard-codes the
+     order of the conjunction it builds, so moving a conjunct silently
+     puts a proof of one fact where another is expected — which is what
+     this very lemma did when the two signal-death pins moved to the end,
+     and it is the proof-side twin of the consumer peels this reorder
+     exists to protect.  [repeat split] does not care about the order,
+     and [assumption] cannot pick a wrong one: the two pins differ in
+     their bool, so only the branch's own [Hsp] matches. *)
   intros inp (a & b & c & k & r & d & e & f & g & h & n & v & u & L).
   destruct (in_sigpipe_default inp) eqn:Hsp.
-  - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj Hsp (conj n (conj v (conj u L)))))))))))))).
-  - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj Hsp (conj n (conj v (conj u L)))))))))))))).
+  - left.  unfold valid_input.                 repeat split; assumption.
+  - right. unfold valid_input_sigpipe_ignored. repeat split; assumption.
 Qed.
 
 (** * THE READER DECLARATION: PINNED PRESENT, AND THE OTHER WORLD NAMED
@@ -4579,14 +4582,11 @@ Proof.
   intros inp (a & b & c & k & r & d & e & f & g & h & s & n & u & L).
   destruct (in_va_size inp) eqn:Hv.
   - right; left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj Hv (conj u L)))))))))))))).
+    try red; repeat split; assumption.
   - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj Hv (conj u L)))))))))))))).
+    try red; repeat split; assumption.
   - right; right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj Hv (conj u L)))))))))))))).
+    try red; repeat split; assumption.
 Qed.
 
 (** * The hardware-capability declaration: the same predicate per word
@@ -4672,16 +4672,14 @@ Lemma valid_input_of_valid_input_hwcap_rv64gc : forall inp,
   valid_input_hwcap_rv64gc inp -> valid_input inp.
 Proof.
   intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v (conj n (conj u L))))))))))))).
+  try red; repeat split; assumption.
 Qed.
 
 Lemma valid_input_of_valid_input_hwcap_rv64gcv : forall inp,
   valid_input_hwcap_rv64gcv inp -> valid_input inp.
 Proof.
   intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v (conj n (conj u L))))))))))))).
+  try red; repeat split; assumption.
 Qed.
 
 (** …and the two are EXHAUSTIVE on the default, because [valid_hwcap] is
@@ -4696,11 +4694,9 @@ Lemma valid_input_hwcap_splits : forall inp,
 Proof.
   intros inp (a & b & c & k & r & d & e & f & [g | g] & h & s & n & v & u).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
+    try red; repeat split; assumption.
   - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
+    try red; repeat split; assumption.
 Qed.
 
 (** The declared word, read back out of the predicate.  A statement's
@@ -4773,16 +4769,14 @@ Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gc : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> valid_input_abort inp.
 Proof.
   intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v (conj n (conj u L))))))))))))).
+  try red; repeat split; assumption.
 Qed.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> valid_input_abort inp.
 Proof.
   intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v (conj n (conj u L))))))))))))).
+  try red; repeat split; assumption.
 Qed.
 
 Lemma valid_input_abort_hwcap_splits : forall inp,
@@ -4791,11 +4785,9 @@ Lemma valid_input_abort_hwcap_splits : forall inp,
 Proof.
   intros inp (a & b & c & k & r & d & e & f & [g | g] & h & s & n & v & u).
   - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
+    try red; repeat split; assumption.
   - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
+    try red; repeat split; assumption.
 Qed.
 
 Lemma valid_input_abort_hwcap_rv64gc_word : forall inp,
