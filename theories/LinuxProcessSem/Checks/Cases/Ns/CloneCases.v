@@ -38,8 +38,9 @@ Definition ALL_NS : Z :=
   fold_left Z.lor [CLONE_NEWNS; CLONE_NEWUTS; CLONE_NEWIPC; CLONE_NEWUSER; CLONE_NEWPID; CLONE_NEWNET;
                    SIGCHLD] 0.
 
-Definition child_of (o : CloneNs) : option NsCtx := match o with CnOk c _ => Some c | _ => None end.
-Definition st_of (o : CloneNs) : option NsState := match o with CnOk _ s => Some s | _ => None end.
+Definition child_of (o : CloneNs) : option NsCtx := match o with CnOk c _ _ => Some c | _ => None end.
+Definition st_of (o : CloneNs) : option NsState := match o with CnOk _ _ s => Some s | _ => None end.
+Definition ret_of (o : CloneNs) : option (option Z) := match o with CnOk _ r _ => Some r | _ => None end.
 
 (** The child is in a new user, mount, pid and network namespace (2 each),
     pid 1 in its own and 138 in the host's, with every capability, its
@@ -83,11 +84,11 @@ Definition no_admin_inside : NsCtx :=
     clone decides the flag word (CLONE_VM here), and the namespace model
     gives the child the caller's context and keeps the state. *)
 Example clone_vm_from_host_is_released : forall m,
-  clone_ns_exact (Z.lor CLONE_VM SIGCHLD) m caller host 138 = CnOk caller host.
+  clone_ns_exact (Z.lor CLONE_VM SIGCHLD) m caller host 138 = CnOk caller None host.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 Example plain_fork_from_host : forall m,
-  clone_ns SIGCHLD m caller host 138 (CnOk caller host).
+  clone_ns SIGCHLD m caller host 138 (CnOk caller None host).
 Proof. intros m. apply clone_ns_flat_fork_ok; reflexivity. Qed.
 
 (** From inside the new pid namespace (the shell, pid 1 there and 136 on
@@ -117,6 +118,14 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 Example fork_inside_returns_2 : forall m,
   option_map (clone_ret shell) (child_of (clone_ns_exact SIGCHLD m shell inside 140)) = Some (Some 2).
 Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** The answer carries that return value, so a core gives the shell 2,
+    not the host's pid 140; a caller in the host's namespaces gets the
+    core's pid ([None]). *)
+Example fork_inside_parent_gets_2 : forall m,
+  ret_of (clone_ns_exact SIGCHLD m shell inside 140) = Some (Some 2)
+  /\ ret_of (clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller host 138) = Some None.
+Proof. intros m. split; vm_compute; reflexivity. Qed.
 
 Example fork_inside_advances_last : forall m,
   option_map (fun s => map pidns_last (ns_pidns s)) (st_of (clone_ns_exact SIGCHLD m shell inside 140))
@@ -200,5 +209,5 @@ Proof. intros m. apply clone_tables_failures_flat; reflexivity. Qed.
     only. *)
 Example clone_tables_run_succeeds : forall m,
   ALL_NS = 2080505873 /\
-  exists child st', clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller host 138 = CnOk child st'.
-Proof. intros m. split; [reflexivity|]. vm_compute. eexists. eexists. reflexivity. Qed.
+  exists child r st', clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller host 138 = CnOk child r st'.
+Proof. intros m. split; [reflexivity|]. vm_compute. do 3 eexists. reflexivity. Qed.

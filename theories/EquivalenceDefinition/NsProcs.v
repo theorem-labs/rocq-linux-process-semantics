@@ -525,7 +525,8 @@ Inductive must_exit_lineage_at (ctx : ProcsCore.StepCtx) (S : list word) : pconf
     another process lives ([Procs.multiproc_allowed]: only exit,
     exit_group, clone, clone3 and wait4).  WHEN THAT GUARD IS WIDENED, the
     whole-system form becomes available and the statements of this shape
-    are to be revisited.
+    are to be revisited, AND each statement's witness for [lineage_quiet]
+    must be established again (see below).
 
     WHAT IT IS ABOUT.  A statement of this shape is about the lineage
     process (after a clone, the child) and ITS exit status: every maximal
@@ -545,12 +546,17 @@ Inductive must_exit_lineage_at (ctx : ProcsCore.StepCtx) (S : list word) : pconf
       start, with the lineage of that state as the focus: until the cut
       [cut_at], the processes outside the lineage's subtree do not change
       what it reads, except the contents of the exchange descriptions
-      [xs].  It is not an assumption about the environment: it is about
-      the program's other processes, the same binary, and is to be proved
-      of them (by the parent-side proofs) or shown satisfiable by a
-      recorded run.  The child's own proof cannot discharge it.  The
-      statement's header must say which of the parent's calls after the
-      clone it covers.
+      [xs].  It is a program fact about the program's own other processes
+      (the same binary), not an assumption about the environment, and the
+      child's own proof cannot discharge it.  A statement's header must
+      give its witness, LEADING WITH A RECORDED RUN: the parent's real
+      calls after the clone, each with why it does not change what the
+      child reads outside [xs] (a call on the parent's own descriptors or
+      credentials, a write to an exchange description, a wait after the
+      cut).  That half survives a change of the core.  A half that rests on
+      this core making the parent's calls model errors
+      ([Procs.multiproc_allowed]) EXPIRES when the guard is widened, and
+      the witness must then be proved again over the wider core.
     The budget premise is [MustExitP.pholts_within_budget]'s: the released
     one-process run of the image.  It says nothing about the memory a child
     asks for; a statement whose child may be refused memory must exclude

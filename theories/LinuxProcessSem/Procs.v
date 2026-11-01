@@ -1233,6 +1233,16 @@ Definition clone_result_x (P : pconfig) (e : ProcessEntry) (c' : config) (q : Pi
          (pcfg_root P)
          (with_sh_ns (shared_absorb (pcfg_shared P) c') st').
 
+(** The parent's configuration after a clone, when the extension gives
+    its call a return value of its own ([CnOk]'s [ret]: the child's pid in
+    the caller's pid namespace): a0 holds that value instead of the core's
+    pid. *)
+Definition with_ret (c : config) (ret : option Z) : config :=
+  match ret with
+  | None => c
+  | Some v => mkCfg (set_reg (cfg_ms c) 10 (Z_to_bv 64 v)) (cfg_model c)
+  end.
+
 Definition clone_pending_b (c : config) : bool :=
   match ms_svc_pending (cfg_ms c) with
   | Some x8 => clone_sysno (bv_unsigned x8)
@@ -1269,7 +1279,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
     multiproc_ok ext segs P e = true ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' ctx' st'))
-| px_clone : forall P e evs c' q child st',
+| px_clone : forall P e evs c' q child ret st',
     look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false ->
     sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
@@ -1279,8 +1289,9 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
     ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
-      (bv_unsigned q) (CnOk child st') ->
-    pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (clone_result_x P e c' q child st'))
+      (bv_unsigned q) (CnOk child ret st') ->
+    pstep_x_at ext cenv segs cfg (pe_pid e) P evs
+      (PNext (clone_result_x P e (with_ret c' ret) q child st'))
 (** A FAILED clone is the released failure, with the state [ext_clone]
     says the failure leaves.  Its errno comes from the released step
     ([sstep_cfg] above), so under a forced-only configuration a refusal the
@@ -1591,7 +1602,7 @@ Proof.
   intros ext cenv segs cfg p P evs r Hag. split.
   - intros H. revert Hag. destruct H as
       [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hmp
-      | Q e ev c' q child st' Hl Hcl Hs Hsucc Hq Hfree Hma Hec
+      | Q e ev c' q child ret st' Hl Hcl Hs Hsucc Hq Hfree Hma Hec
       | Q e ev c' en hq st' Hl Hcl Hs Hcp Hsucc Hret Hma Hec Hnr
       | Q e ev c' hq Hl Hcl Hs Hcp Hma Hec
       | Q e Hl Hh Hcp Hcl
@@ -1608,7 +1619,7 @@ Proof.
     + (* px_clone *)
       apply (proj1 (Hcln _ _)) in Hec.
       destruct Hec as [Heq | (en & _ & Heq)]; [|discriminate Heq].
-      injection Heq as -> ->. rewrite clone_result_x_same.
+      injection Heq as -> -> ->. cbn [with_ret]. rewrite clone_result_x_same.
       apply pstep_clone; assumption.
     + (* px_clone_fail *)
       apply (proj1 (Hcln _ _)) in Hec.
@@ -1650,6 +1661,9 @@ Proof.
         -- rewrite Hmpe. exact Hma.
     + (* pstep_clone *)
       rewrite <- clone_result_x_same.
+      replace (clone_result_x Q e c' q (pe_nsctx e) (sh_ns (pcfg_shared Q)))
+        with (clone_result_x Q e (with_ret c' None) q (pe_nsctx e) (sh_ns (pcfg_shared Q)))
+        by reflexivity.
       apply px_clone; try assumption.
       * exact (Hclp (clone_success_pending _ _ Hsucc)).
       * apply (proj2 (Hcln _ _)). left. reflexivity.
