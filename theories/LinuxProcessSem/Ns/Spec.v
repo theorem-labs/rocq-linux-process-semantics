@@ -25,11 +25,16 @@
 
 From Stdlib Require Import ZArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Task Clone.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Task Clone Files UserArms MountArms Net FsOps Pass.
 Import ListNotations.
 
-(** The arms, by call number.  A number not listed fails closed. *)
-Definition ns_table : list (Z * NsArm) := task_arms.
+(** The arms, by call number: the task's own state ([Ns.Task]), files and
+    paths ([Ns.Files], [Ns.FsOps]), user namespaces ([Ns.UserArms]), mounts
+    ([Ns.MountArms]), NETLINK_ROUTE and SIOCGIFINDEX ([Ns.Net]), and the
+    calls a namespace does not change ([Ns.Pass]).  A number not listed
+    fails closed; no number is listed twice ([ns_table_nodup]). *)
+Definition ns_table : list (Z * NsArm) :=
+  task_arms ++ file_arms ++ fsops_arms ++ user_arms ++ mount_arms ++ net_arms ++ pass_arms.
 
 Fixpoint lookup_ns_arm (t : list (Z * NsArm)) (n : Z) : option NsArm :=
   match t with
@@ -64,8 +69,12 @@ Proof. intros i m ctx st Hflat _ o. unfold ns_spec. rewrite Hflat. reflexivity. 
    ========================================================================= *)
 
 (** The injected refusals of the arms [ns_table] holds.  An answer of an
-    arm whose refusals are not listed is never filtered. *)
-Definition ns_injected_table : list NsInjected := task_injected.
+    arm whose refusals are not listed is never filtered; the pass-through
+    calls list none, so none of their answers is filtered outside the
+    released world. *)
+Definition ns_injected_table : list NsInjected :=
+  task_injected ++ file_injected ++ fsops_injected ++ user_injected ++ mount_injected
+  ++ net_injected.
 
 Fixpoint lookup_ns_injected (t : list NsInjected) (n : Z) : option NsInjected :=
   match t with
@@ -183,3 +192,70 @@ Definition ns_ext : ExtSpec :=
 Lemma ns_spec_flat : forall i m ctx st o,
   flat_view ctx st = true -> ns_spec i m ctx st o <-> released i m ctx st o.
 Proof. intros i m ctx st o H. unfold ns_spec. rewrite H. reflexivity. Qed.
+
+(** No call number has two arms, and none has two injected-refusal
+    entries, so the first match is the only one. *)
+Lemma ns_table_nodup : List.NoDup (map fst ns_table).
+Proof.
+  vm_compute.
+  repeat (apply List.NoDup_cons; [intros Hin; vm_compute in Hin; intuition discriminate|]).
+  apply List.NoDup_nil.
+Qed.
+
+Lemma ns_injected_nodup : List.NoDup (map ni_no ns_injected_table).
+Proof.
+  vm_compute.
+  repeat (apply List.NoDup_cons; [intros Hin; vm_compute in Hin; intuition discriminate|]).
+  apply List.NoDup_nil.
+Qed.
+
+(** The calls the core answers ([core_sysnos]: clone, wait4, clone3) are
+    not claimed, so no arm is listed for them. *)
+Lemma ns_table_not_core : forall n, In n core_sysnos -> ~ In n (map fst ns_table).
+Proof.
+  intros n Hn. cbn [core_sysnos In] in Hn.
+  destruct Hn as [<-|[<-|[<-|[]]]]; vm_compute; intuition discriminate.
+Qed.
+
+(* =========================================================================
+   Where the namespace model answers as the released model does
+   ========================================================================= *)
+
+Lemma lookup_read : lookup_ns_arm ns_table 63%Z = Some read_arm.
+Proof. reflexivity. Qed.
+
+Lemma lookup_write : lookup_ns_arm ns_table 64%Z = Some write_arm.
+Proof. reflexivity. Qed.
+
+(** A READ ON A DESCRIPTOR THE RELEASED MODEL OWNS HAS EXACTLY THE RELEASED
+    ANSWERS in every world: in the released world by [ns_spec_flat], in a
+    world with a mount tree by [FsOps.read_arm_released]. *)
+Theorem ns_spec_read_released : forall i m ctx st o,
+  ns_sysno i = 63%Z -> released_owned m st (fd_word (in_arg i 0)) ->
+  (ns_spec i m ctx st o <-> released i m ctx st o).
+Proof.
+  intros i m ctx st o Hn Hr. unfold ns_spec. destruct (flat_view ctx st); [reflexivity|].
+  rewrite Hn, lookup_read. apply read_arm_released. exact Hr.
+Qed.
+
+(** The same for write, on every descriptor that is not one of the
+    namespace model's own files. *)
+Theorem ns_spec_write_released : forall i m ctx st o,
+  ns_sysno i = 64%Z -> ns_file_of m st (fd_word (in_arg i 0)) = None ->
+  (ns_spec i m ctx st o <-> released i m ctx st o).
+Proof.
+  intros i m ctx st o Hn Hr. unfold ns_spec. destruct (flat_view ctx st); [reflexivity|].
+  rewrite Hn, lookup_write. apply write_arm_released. exact Hr.
+Qed.
+
+(** Each pass-through number ([Ns.Pass]) has exactly the released answers
+    in every world. *)
+Theorem ns_spec_pass_released : forall i m ctx st o,
+  In (ns_sysno i) pass_numbers -> (ns_spec i m ctx st o <-> released i m ctx st o).
+Proof.
+  intros i m ctx st o Hn. unfold ns_spec. destruct (flat_view ctx st); [reflexivity|].
+  assert (H : lookup_ns_arm ns_table (ns_sysno i) = Some released).
+  { remember (ns_sysno i) as n eqn:En. clear En. cbn [pass_numbers In] in Hn.
+    repeat (destruct Hn as [<- | Hn]; [reflexivity |]). destruct Hn. }
+  rewrite H. reflexivity.
+Qed.

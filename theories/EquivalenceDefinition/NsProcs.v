@@ -517,27 +517,43 @@ Inductive must_exit_lineage_at (ctx : ProcsCore.StepCtx) (S : list word) : pconf
     (forall evs P', NsProcs.nstep ctx P evs (PNext P') -> must_exit_lineage_at ctx S P') ->
     must_exit_lineage_at ctx S P.
 
-(** THE LINEAGE HALTING STATEMENT over the namespace model: as
-    [pholts_x_within_budget], for the lineage's run instead of the whole
-    system's, from each host namespace state [host] admits, on the inputs
-    [pre] admits, with two premises the statement names:
+(** THE LINEAGE HALTING STATEMENT over the namespace model.
+
+    WHY THE LINEAGE.  The whole-system form ([pholts_x_within_budget]) is
+    unavailable for a program whose parent goes on making calls after a
+    clone, because this core restricts a released-world process while
+    another process lives ([Procs.multiproc_allowed]: only exit,
+    exit_group, clone, clone3 and wait4).  WHEN THAT GUARD IS WIDENED, the
+    whole-system form becomes available and the statements of this shape
+    are to be revisited.
+
+    WHAT IT IS ABOUT.  A statement of this shape is about the lineage
+    process (after a clone, the child) and ITS exit status: every maximal
+    run of the lineage ends with it exited on a code in [allowed].  The
+    parent's exit is out of scope here.
+
+    It is [pholts_x_within_budget] for the lineage's run instead of the
+    whole system's, from each host namespace state [host] admits, on the
+    inputs [pre] admits, with two named hypotheses:
     - [cenv], the clone failures the run admits: an ENVIRONMENT PREMISE
       when narrower than [any_clone_failure] (for example
       [Ns.Clone.clone_tables_failures]: the host can make the namespaces
       and the processes);
-    - [quiet segs P0], what the statement assumes of the other processes
-      from the start system [P0].  A statement about a child instantiates
-      it with [focus_noninterfering]: until the cut, the other processes do
+    - [parents_quiet segs P0], A HYPOTHESIS ON THE PARENTS' BEHAVIOUR from the
+      start system [P0]: the statement holds only while the other
+      processes stay quiet.  A statement about a child instantiates it
+      with [focus_noninterfering]: until the cut, the other processes do
       not change what the lineage reads, except through the exchange
       descriptions.  It must be proved of the real program, or shown
-      satisfiable by a recorded run: a [quiet] that no start system meets
-      makes the statement vacuous.
+      satisfiable by a recorded run, and the statement's header must say
+      which of the parent's calls after the clone it covers: a [quiet] that
+      no start system meets makes the statement vacuous.
     The budget premise is [MustExitP.pholts_within_budget]'s: the released
     one-process run of the image.  It says nothing about the memory a child
     asks for; a statement whose child may be refused memory must exclude
     that itself. *)
 Definition lholts_ns_within_budget (cenv : CloneEnv) (pre : ProcInput -> Prop)
-    (host : NsState -> Prop) (quiet : list Segment -> pconfig -> Prop)
+    (host : NsState -> Prop) (parents_quiet : list Segment -> pconfig -> Prop)
     (lim : Z) (allowed : list word) (img : Image) : Prop :=
   forall (en : ExecEntry) (inp : ProcInput) (st : NsState),
     valid_entry img en inp ->
@@ -547,7 +563,7 @@ Definition lholts_ns_within_budget (cenv : CloneEnv) (pre : ProcInput -> Prop)
     ~ run_scfg_budget_refused forced_only_cfg img lim en inp ->
     match img, en with
     | mkImage segs pc ph, Run.mkEntry sp brk0 mbase rnd =>
-        quiet segs (one_proc_in (init_config segs pc ph sp brk0 mbase rnd lim inp) st) ->
+        parents_quiet segs (one_proc_in (init_config segs pc ph sp brk0 mbase rnd lim inp) st) ->
         must_exit_lineage_at (cenv, (segs, forced_only_cfg)) allowed
           (one_proc_in (init_config segs pc ph sp brk0 mbase rnd lim inp) st)
     end.
