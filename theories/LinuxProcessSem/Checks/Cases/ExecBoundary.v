@@ -11,7 +11,8 @@
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs Run RiscvSemantics.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Examples.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs Examples.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import DispatchCompute.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
 Import ListNotations.
 Open Scope bv_scope.
@@ -224,4 +225,291 @@ Proof.
         destruct (execve_boundary_stops segs _ _ _ _ xb_at_boundary _ _ Hs) as [_ Hc];
         discriminate Hc
     end.
+Qed.
+
+(* =========================================================================
+   The call log records each call that returned
+   ========================================================================= *)
+
+(** [xb_ms] with a3..a5 set as well, so that a0..a5 at the [ecall] are
+    six distinct words, none of them the uid getuid answers. *)
+Definition xb_call_ms (n : Z) : machine_state :=
+  set_reg (set_reg (set_reg (xb_ms n) (Z_to_bv 5 13) (Z_to_bv 64 0x4000))
+                   (Z_to_bv 5 14) (Z_to_bv 64 0x5000))
+          (Z_to_bv 5 15) (Z_to_bv 64 0x6000).
+
+Definition xb_call_cfg (n : Z) : config := mkCfg (xb_call_ms n) xb_model.
+
+(** a0..a5 at the [ecall]. *)
+Definition xb_call_args : list word :=
+  [Z_to_bv 64 0x1000; Z_to_bv 64 0x2000; Z_to_bv 64 0x3000;
+   Z_to_bv 64 0x4000; Z_to_bv 64 0x5000; Z_to_bv 64 0x6000].
+
+Lemma xb_call_args_at : syscall_args (xb_call_ms 174) = xb_call_args.
+Proof. check_eq. Qed.
+
+(** getuid's one answer on [xb_model], whose uid is [demo_uid] (1000). *)
+Definition xb_getuid_eff : SyscallEffect := mkEffect demo_uid [] [].
+
+(** The configuration after the getuid returns: a0 holds the uid, the
+    pc is past the [ecall], and the model is unchanged. *)
+Definition xb_getuid_after : config :=
+  mkCfg (advance_past_svc (apply_effect (xb_call_ms 174) xb_getuid_eff)) xb_model.
+
+(** The record the log must hold for that call: the number from a7,
+    a0..a5 at the [ecall], and a0 after the call. *)
+Definition xb_getuid_call : SysCall :=
+  mkSysCall (Z_to_bv 64 174) xb_call_args demo_uid.
+
+Lemma xb_getuid_spec_ok : forall segs,
+  syscall_spec (sys_input segs (xb_call_ms 174) (Z_to_bv 64 174)) xb_model
+    (Ok xb_getuid_eff xb_model []).
+Proof.
+  intros segs. apply check_syscall_sound_ok.
+  rewrite check_syscall_getuid by (vm_compute; reflexivity).
+  check_eq.
+Qed.
+
+Lemma xb_getuid_spec_det : forall segs eff m' evs,
+  syscall_spec (sys_input segs (xb_call_ms 174) (Z_to_bv 64 174)) xb_model
+    (Ok eff m' evs) ->
+  eff = xb_getuid_eff /\ m' = xb_model /\ evs = [].
+Proof.
+  intros segs eff m' evs H.
+  apply check_syscall_complete_ok in H.
+  rewrite check_syscall_getuid in H by (vm_compute; reflexivity).
+  unfold check_getid in H. apply check_ret_only_ok_iff in H.
+  destruct H as (-> & -> & ->). split; [|split; reflexivity].
+  check_eq.
+Qed.
+
+(** THE CASE: a getuid at [xb_call_cfg 174] returns, and its one-step
+    run carries exactly [xb_getuid_call] in its log. *)
+Example xb_getuid_logged : forall segs,
+  star_calls segs (xb_call_cfg 174) [] [xb_getuid_call] xb_getuid_after.
+Proof.
+  intros segs. unfold xb_getuid_call, xb_call_cfg, xb_getuid_after.
+  rewrite <- xb_call_args_at.
+  change demo_uid with (eff_ret xb_getuid_eff).
+  change (@nil event) with (@nil event ++ @nil event).
+  eapply star_calls_ret.
+  - vm_compute. reflexivity.
+  - reflexivity.
+  - apply xb_getuid_spec_ok.
+  - vm_compute. reflexivity.
+  - apply materialize_model_accesses_no_lazy. vm_compute. reflexivity.
+  - apply star_calls_refl.
+Qed.
+
+(** The call is the only step from [xb_call_cfg 174], whatever the
+    image: no instruction runs while a call is pending, getuid has one
+    answer, and it neither faults, declines nor ends the process. *)
+Lemma xb_getuid_only_step : forall segs evs s,
+  sstep segs (xb_call_cfg 174) evs s -> evs = [] /\ s = SNext xb_getuid_after.
+Proof.
+  intros segs evs s Hs. unfold xb_call_cfg in Hs.
+  assert (Hsvc : ms_svc_pending (xb_call_ms 174) = Some (Z_to_bv 64 174))
+    by reflexivity.
+  assert (Hlazy : m_vm_lazy xb_model = []) by (vm_compute; reflexivity).
+  assert (Hnh : m_halted xb_model = None) by (vm_compute; reflexivity).
+  assert (Hnk : m_killed xb_model = None) by (vm_compute; reflexivity).
+  inversion Hs; subst; try congruence.
+  all: match goal with
+       | H : ms_svc_pending _ = Some ?y |- _ =>
+           is_var y; rewrite Hsvc in H; injection H as <-
+       end.
+  all: first
+    [ match goal with
+      | Hsp : syscall_spec _ _ Unmodeled |- _ =>
+          pose proof (check_syscall_complete_unmodeled _ _ xb_getuid_eff Hsp) as Hc;
+          rewrite (check_syscall_complete_ok _ _ _ _ _ (xb_getuid_spec_ok segs)) in Hc;
+          discriminate Hc
+      end
+    | match goal with
+      | Hsp : syscall_spec _ _ (Ok _ _ _) |- _ =>
+          destruct (xb_getuid_spec_det _ _ _ _ Hsp) as (-> & -> & ->)
+      end;
+      first
+        [ match goal with
+          | Hm : materialize_model_accesses _ _ = Some _ |- _ =>
+              rewrite (materialize_model_accesses_no_lazy _ _ Hlazy) in Hm;
+              injection Hm as <-; split; reflexivity
+          end
+        | match goal with
+          | Hm : materialize_model_accesses _ _ = None |- _ =>
+              rewrite (materialize_model_accesses_no_lazy _ _ Hlazy) in Hm;
+              discriminate Hm
+          end
+        | exfalso; congruence ] ].
+Qed.
+
+(** THE LOG IS DETERMINED BY THE RUN: every logged run from
+    [xb_call_cfg 174] is the empty one, or its log starts with exactly
+    [xb_getuid_call].  So no other [sc_ret], and not the registers after
+    the call, can stand in the record of that call. *)
+Example xb_getuid_log_head : forall segs tr log c',
+  star_calls segs (xb_call_cfg 174) tr log c' ->
+  (tr = [] /\ log = [] /\ c' = xb_call_cfg 174) \/
+  exists rest, log = xb_getuid_call :: rest.
+Proof.
+  intros segs tr log c' H.
+  assert (Hsvc : ms_svc_pending (xb_call_ms 174) = Some (Z_to_bv 64 174))
+    by reflexivity.
+  unfold xb_call_cfg in H. inversion H; subst.
+  - left. repeat split.
+  - right.
+    match goal with
+    | Hp : ms_svc_pending _ = Some ?y |- _ =>
+        is_var y; rewrite Hsvc in Hp; injection Hp as <-
+    end.
+    match goal with
+    | Hsp : syscall_spec _ _ (Ok _ _ _) |- _ =>
+        destruct (xb_getuid_spec_det _ _ _ _ Hsp) as (-> & _ & _)
+    end.
+    match goal with |- exists _, _ :: ?l = _ => exists l end.
+    rewrite xb_call_args_at. reflexivity.
+  - exfalso.
+    match goal with
+    | Hs : sstep _ _ _ (SNext ?c2), Hor : _ \/ _ |- _ =>
+        destruct (xb_getuid_only_step _ _ _ Hs) as [_ Hc2];
+        injection Hc2 as ->;
+        destruct Hor as [Hn | Hh];
+        [ cbn [cfg_ms] in Hn; rewrite Hsvc in Hn; discriminate Hn
+        | apply Hh; vm_compute; reflexivity ]
+    end.
+Qed.
+
+(** Two logs that differ from [xb_getuid_call] in one field: the uid
+    answered with 0, and the record read off the registers after the
+    call, whose a0 is the uid.  Neither is the log of any run from
+    [xb_call_cfg 174]. *)
+Example xb_getuid_other_logs_refused : forall segs tr rest c',
+  ~ star_calls segs (xb_call_cfg 174) tr
+      (mkSysCall (Z_to_bv 64 174) xb_call_args (Z_to_bv 64 0) :: rest) c' /\
+  ~ star_calls segs (xb_call_cfg 174) tr
+      (mkSysCall (Z_to_bv 64 174) (syscall_args (cfg_ms xb_getuid_after)) demo_uid
+       :: rest) c'.
+Proof.
+  intros segs tr rest c'. split; intros H;
+    destruct (xb_getuid_log_head _ _ _ _ H) as [(_ & Hl & _) | (r & Hl)];
+    [ discriminate Hl
+    | apply (f_equal (fun l => bv_unsigned (sc_ret (hd xb_getuid_call l)))) in Hl;
+      vm_compute in Hl; discriminate Hl
+    | discriminate Hl
+    | apply (f_equal (fun l =>
+               bv_unsigned (hd (Z_to_bv 64 0) (sc_args (hd xb_getuid_call l)))))
+        in Hl;
+      vm_compute in Hl; discriminate Hl ].
+Qed.
+
+(** THE CONTROL: the same run is a [star] run, which the vocabulary
+    before [star_calls] already states. *)
+Example xb_getuid_star : forall segs,
+  star segs (xb_call_cfg 174) [] xb_getuid_after.
+Proof. intros segs. exact (star_calls_star _ _ _ _ _ (xb_getuid_logged segs)). Qed.
+
+(* =========================================================================
+   A call that ends the process is in the trace, not in the log
+   ========================================================================= *)
+
+(** exit_group(3) at the same registers: the model after it is halted
+    with status 3. *)
+Definition xb_exit_model : Model := with_halted (Z_to_bv 64 3) xb_model.
+
+Definition xb_exit_ms : machine_state :=
+  set_reg (xb_call_ms 94) (Z_to_bv 5 10) (Z_to_bv 64 3).
+
+Definition xb_exit_cfg : config := mkCfg xb_exit_ms xb_model.
+
+Lemma xb_exit_spec_det : forall segs eff m' evs,
+  syscall_spec (sys_input segs xb_exit_ms (Z_to_bv 64 94)) xb_model
+    (Ok eff m' evs) ->
+  eff = mkEffect (Z_to_bv 64 0) [] [] /\ m' = xb_exit_model /\ evs = [].
+Proof.
+  intros segs eff m' evs H.
+  apply check_syscall_complete_ok in H.
+  rewrite check_syscall_exit_group in H by (vm_compute; reflexivity).
+  unfold check_exit in H. apply check_ret_only_ok_iff in H.
+  destruct H as (-> & -> & ->). split; [reflexivity|split; [|reflexivity]].
+  unfold xb_exit_model. f_equal. check_eq.
+Qed.
+
+(** No step leaves a halted configuration, so its only logged run is
+    the empty one. *)
+Lemma xb_star_calls_halted : forall segs c tr log c',
+  m_halted (cfg_model c) <> None ->
+  star_calls segs c tr log c' -> log = [].
+Proof.
+  intros segs c tr log c' Hh H.
+  inversion H; subst.
+  - reflexivity.
+  - exfalso. cbn [cfg_model] in Hh. contradiction.
+  - exfalso.
+    match goal with Hs : sstep _ _ _ _ |- _ => inversion Hs; subst end;
+      cbn [cfg_model] in Hh; contradiction.
+Qed.
+
+(** THE CASE: the run through exit_group carries the exit in its trace
+    and an empty log ... *)
+Example xb_exit_logged : forall segs,
+  star_calls segs xb_exit_cfg
+    [ExitEv (Z_to_bv 64 3) (m_fs xb_exit_model)] [] (mkCfg xb_exit_ms xb_exit_model).
+Proof.
+  intros segs.
+  change [ExitEv (Z_to_bv 64 3) (m_fs xb_exit_model)]
+    with (([] ++ [ExitEv (Z_to_bv 64 3) (m_fs xb_exit_model)]) ++ []).
+  eapply star_calls_other; [| |apply star_calls_refl].
+  - unfold xb_exit_cfg.
+    eapply (sstep_exit segs xb_exit_ms xb_model (Z_to_bv 64 94)
+              (mkEffect (Z_to_bv 64 0) [] []) xb_exit_model [] (Z_to_bv 64 3)).
+    + vm_compute. reflexivity.
+    + reflexivity.
+    + apply check_syscall_sound_ok.
+      rewrite check_syscall_exit_group by (vm_compute; reflexivity).
+      check_eq.
+    + reflexivity.
+    + vm_compute. reflexivity.
+  - right. cbn [cfg_model]. intros Hc. vm_compute in Hc. discriminate Hc.
+Qed.
+
+(** ... and every logged run from [xb_exit_cfg] has an empty log: the
+    call returns to nobody, so it is never recorded. *)
+Example xb_exit_log_empty : forall segs tr log c',
+  star_calls segs xb_exit_cfg tr log c' -> log = [].
+Proof.
+  intros segs tr log c' H.
+  assert (Hsvc : ms_svc_pending xb_exit_ms = Some (Z_to_bv 64 94)) by reflexivity.
+  unfold xb_exit_cfg in H. inversion H; subst.
+  - reflexivity.
+  - exfalso.
+    match goal with
+    | Hp : ms_svc_pending _ = Some ?y |- _ =>
+        is_var y; rewrite Hsvc in Hp; injection Hp as <-
+    end.
+    match goal with
+    | Hsp : syscall_spec _ _ (Ok _ _ _) |- _ =>
+        destruct (xb_exit_spec_det _ _ _ _ Hsp) as (_ & -> & _)
+    end.
+    match goal with
+    | Hz : m_halted xb_exit_model = None |- _ => vm_compute in Hz; discriminate Hz
+    end.
+  - match goal with
+    | Hs : sstep _ _ _ (SNext ?c2), Hr : star_calls _ ?c2 _ _ _ |- _ =>
+        eapply (xb_star_calls_halted segs c2 _ _ _); [|exact Hr];
+        inversion Hs; subst; try congruence
+    end.
+    all: match goal with
+         | Hp : ms_svc_pending _ = Some ?y |- _ =>
+             is_var y; rewrite Hsvc in Hp; injection Hp as <-
+         end.
+    all: match goal with
+         | Hsp : syscall_spec _ _ (Ok _ _ _) |- _ =>
+             destruct (xb_exit_spec_det _ _ _ _ Hsp) as (_ & -> & _)
+         end.
+    all: first
+      [ match goal with
+        | Hz : m_halted xb_exit_model = None |- _ =>
+            exfalso; vm_compute in Hz; discriminate Hz
+        end
+      | cbn [cfg_model]; intros Hc; vm_compute in Hc; discriminate Hc ].
 Qed.
