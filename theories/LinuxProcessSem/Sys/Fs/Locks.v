@@ -87,8 +87,13 @@ Fixpoint path_openers (fds : list (word * FdEntry)) (p : path) : nat :=
   | (_, FdPipe _ _)  :: r => path_openers r p
   | (_, FdDevNull _ _) :: r => path_openers r p   (* a device node is not a key of [Fs.Fs] *)
   | (_, FdUrandom) :: r => path_openers r p       (* nor is this one *)
+  | (_, FdOpaque (ONsFile _)) :: r => S (path_openers r p)
+    (* COUNTED FOR EVERY PATH: the object behind the handle may be any
+       open file ([State.ONsFile]), the one being locked included, and a
+       lock it holds would conflict, so [flock_sole_opener] fails and
+       [flock_spec] declines while one is open *)
   | (_, FdOpaque _) :: r => path_openers r p
-    (* nor is any of the three opaque objects: a procfs name or an
+    (* nor is any of the other three opaque objects: a procfs name or an
        anonymous inode, and [Open.openat_spec] mints a file kind only for
        a slash-free name or a "/tmp/" key, never for a "/proc" one *)
   end.

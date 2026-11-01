@@ -141,6 +141,7 @@ Definition bind_witness (fd addrp addrlen : word) (i : SyscallInput) (m : Model)
               | SkReset _ _ => Unmodeled
               end)
       end
+  | Some (FdOpaque _) => Unmodeled   (* declined: see [Net.Socket.bind_spec] *)
   | Some _ => ret_outcome (errno_ret ENOTSOCK) m
   end.
 
@@ -150,8 +151,8 @@ Proof.
   intros. unfold bind_spec, bind_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|];
-    cbv beta iota zeta; try apply pure_ok.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|];
+    cbv beta iota zeta; try solve [apply pure_ok | apply unmodeled_intro].
   (* socket *)
   destruct (orb (Z.ltb (sint32 addrlen) 0)
                 (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))); [apply pure_ok|].
@@ -195,6 +196,7 @@ Definition listen_witness (fd : word) (m : Model) : outcome SyscallEffect :=
             (with_fds (fd_insert (m_fds m) fd (FdSocket SkListening)) m)
       | SkFresh => ret_outcome (errno_ret EADDRINUSE) m   (* the autobind's failure *)
       end
+  | Some (FdOpaque _) => Unmodeled   (* declined, as [bind_witness]'s *)
   | Some _ => ret_outcome (errno_ret ENOTSOCK) m
   end.
 
@@ -203,8 +205,8 @@ Lemma listen_witness_ok : forall fd backlog i m,
 Proof.
   intros. unfold listen_spec, listen_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|];
-    cbv beta iota zeta; try apply pure_ok.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|];
+    cbv beta iota zeta; try solve [apply pure_ok | apply unmodeled_intro].
   destruct sk as [| | |peer ch rx|peer ch]; try apply pure_ok.
   - (* fresh: the autobind's -EADDRINUSE *)
     apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok.
@@ -226,6 +228,8 @@ Definition accept4_witness (fd addrp flags : word) (m : Model)
   match fd_lookup (m_fds m) fd with
   | None => ret_outcome (errno_ret EBADF) m
   | Some e =>
+      if fd_is_opaque e then Unmodeled   (* declined, ahead of the flags *)
+      else
       let fl := bv_unsigned (abi_low32 flags) in
       if negb (Z.eqb (Z.ldiff fl (Z.lor SOCK_CLOEXEC SOCK_NONBLOCK)) 0)
       then ret_outcome (errno_ret EINVAL) m
@@ -252,11 +256,12 @@ Proof.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
   destruct (fd_lookup (m_fds m) fd) as [e|]; [|apply pure_ok].
   cbv beta iota zeta.
+  destruct (fd_is_opaque e) eqn:Eop; cbv beta iota zeta; [apply unmodeled_intro|].
   destruct (negb (Z.eqb (Z.ldiff (bv_unsigned (abi_low32 flags))
                            (Z.lor SOCK_CLOEXEC SOCK_NONBLOCK)) 0)); [apply pure_ok|].
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags)) SOCK_NONBLOCK) 0));
     [apply unmodeled_intro|].
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ];
+  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o];
     try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT));
          [apply unmodeled_intro | apply alt_l; apply pure_ok]).
   destruct (negb (w_is0 addrp)); [apply unmodeled_intro|].
@@ -278,6 +283,8 @@ Definition connect_witness (fd addrp addrlen : word) (i : SyscallInput)
   match fd_lookup (m_fds m) fd with
   | None => ret_outcome (errno_ret EBADF) m
   | Some e =>
+      if fd_is_opaque e then Unmodeled   (* declined, ahead of the copy *)
+      else
       let al := sint32 addrlen in
       if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al)
       then ret_outcome (errno_ret EINVAL) m
@@ -317,8 +324,8 @@ Proof.
   intros. unfold connect_spec, connect_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|];
-    cbv beta iota zeta; [ | | | | | | | | | | apply pure_ok ].
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|];
+    cbv beta iota zeta; [ | | | | | | | | | | apply unmodeled_intro | apply pure_ok ].
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen)));
        cbv beta iota zeta; [ apply pure_ok | ].
@@ -351,23 +358,23 @@ Qed.
     all five; what differs is the socket arm, which is the whole point of
     there being five.  See [Net.Socket.getsockname_spec] and its four
     neighbours. *)
-Definition getsockname_witness (fd : word) (m : Model) : outcome SyscallEffect :=
+Definition getsockname_core_witness (fd : word) (m : Model) : outcome SyscallEffect :=
   match sock_fd m fd with
   | inr e => ret_outcome (errno_ret e) m
   | inl _ => Unmodeled
   end.
 
-Lemma getsockname_witness_ok : forall fd i m,
-  getsockname_spec fd i m (getsockname_witness fd m).
+Lemma getsockname_core_witness_ok : forall fd i m,
+  getsockname_core_spec fd i m (getsockname_core_witness fd m).
 Proof.
-  intros. unfold getsockname_spec, getsockname_witness.
+  intros. unfold getsockname_core_spec, getsockname_core_witness.
   destruct (sock_fd m fd) as [sk|e] eqn:Hsf;
     (eapply bind_step; [apply get_model_ok|]);
     cbv beta iota zeta; srw Hsf;
     [apply unmodeled_intro | apply pure_ok].
 Qed.
 
-Definition getpeername_witness (fd : word) (m : Model) : outcome SyscallEffect :=
+Definition getpeername_core_witness (fd : word) (m : Model) : outcome SyscallEffect :=
   match sock_fd m fd with
   | inr e => ret_outcome (errno_ret e) m
   | inl sk =>
@@ -380,10 +387,10 @@ Definition getpeername_witness (fd : word) (m : Model) : outcome SyscallEffect :
       end
   end.
 
-Lemma getpeername_witness_ok : forall fd i m,
-  getpeername_spec fd i m (getpeername_witness fd m).
+Lemma getpeername_core_witness_ok : forall fd i m,
+  getpeername_core_spec fd i m (getpeername_core_witness fd m).
 Proof.
-  intros. unfold getpeername_spec, getpeername_witness.
+  intros. unfold getpeername_core_spec, getpeername_core_witness.
   destruct (sock_fd m fd) as [sk|e] eqn:Hsf;
     (eapply bind_step; [apply get_model_ok|]);
     cbv beta iota zeta; srw Hsf; [|apply pure_ok].
@@ -391,7 +398,7 @@ Proof.
     solve [apply pure_ok | apply unmodeled_intro].
 Qed.
 
-Definition setsockopt_witness (fd level optlen : word) (m : Model)
+Definition setsockopt_core_witness (fd level optlen : word) (m : Model)
     : outcome SyscallEffect :=
   match sock_fd m fd with
   | inr e => ret_outcome (errno_ret e) m
@@ -401,10 +408,10 @@ Definition setsockopt_witness (fd level optlen : word) (m : Model)
       else Unmodeled
   end.
 
-Lemma setsockopt_witness_ok : forall fd level optlen i m,
-  setsockopt_spec fd level optlen i m (setsockopt_witness fd level optlen m).
+Lemma setsockopt_core_witness_ok : forall fd level optlen i m,
+  setsockopt_core_spec fd level optlen i m (setsockopt_core_witness fd level optlen m).
 Proof.
-  intros. unfold setsockopt_spec, setsockopt_witness.
+  intros. unfold setsockopt_core_spec, setsockopt_core_witness.
   destruct (sock_fd m fd) as [sk|e] eqn:Hsf;
     (eapply bind_step; [apply get_model_ok|]);
     cbv beta iota zeta; srw Hsf; [|apply pure_ok].
@@ -417,7 +424,7 @@ Qed.
     [Unmodeled] alone, which is what [record_copyins] does on the spec
     side.  It sits OUTSIDE the level test for the same reason it does
     there: the read precedes the dispatch. *)
-Definition getsockopt_witness (fd level optlenp : word) (i : SyscallInput)
+Definition getsockopt_core_witness (fd level optlenp : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   match sock_fd m fd with
   | inr e => ret_outcome (errno_ret e) m
@@ -428,10 +435,10 @@ Definition getsockopt_witness (fd level optlenp : word) (i : SyscallInput)
          else Unmodeled)
   end.
 
-Lemma getsockopt_witness_ok : forall fd level optlenp i m,
-  getsockopt_spec fd level optlenp i m (getsockopt_witness fd level optlenp i m).
+Lemma getsockopt_core_witness_ok : forall fd level optlenp i m,
+  getsockopt_core_spec fd level optlenp i m (getsockopt_core_witness fd level optlenp i m).
 Proof.
-  intros. unfold getsockopt_spec, getsockopt_witness.
+  intros. unfold getsockopt_core_spec, getsockopt_core_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
   destruct (sock_fd m fd) as [sk|e] eqn:Hsf; cbv beta iota zeta;
@@ -441,7 +448,7 @@ Proof.
     [apply pure_ok | apply unmodeled_intro].
 Qed.
 
-Definition shutdown_witness (fd how : word) (m : Model)
+Definition shutdown_core_witness (fd how : word) (m : Model)
     : outcome SyscallEffect :=
   match sock_fd m fd with
   | inr e => ret_outcome (errno_ret e) m
@@ -457,10 +464,10 @@ Definition shutdown_witness (fd how : word) (m : Model)
         end
   end.
 
-Lemma shutdown_witness_ok : forall fd how i m,
-  shutdown_spec fd how i m (shutdown_witness fd how m).
+Lemma shutdown_core_witness_ok : forall fd how i m,
+  shutdown_core_spec fd how i m (shutdown_core_witness fd how m).
 Proof.
-  intros. unfold shutdown_spec, shutdown_witness.
+  intros. unfold shutdown_core_spec, shutdown_core_witness.
   destruct (sock_fd m fd) as [sk|e] eqn:Hsf;
     (eapply bind_step; [apply get_model_ok|]);
     cbv beta iota zeta; srw Hsf; [|apply pure_ok].
@@ -469,6 +476,67 @@ Proof.
     try apply unmodeled_intro.
   destruct (bv_unsigned how =? SHUT_WR)%Z; cbv beta iota zeta;
     [apply pure_ok | apply unmodeled_intro].
+Qed.
+
+(** The five as the dispatcher sees them: [Unmodeled] on an
+    [State.ONsFile] descriptor, the [_core] witness otherwise. *)
+Lemma ns_guard_witness_ok : forall fd (core : Sys SyscallEffect) w i m,
+  core i m w ->
+  bind get_model (fun m0 => if fd_is_ns_file (m_fds m0) fd then unmodeled else core)
+    i m (if fd_is_ns_file (m_fds m) fd then Unmodeled else w).
+Proof.
+  intros fd core w i m Hw.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (fd_is_ns_file (m_fds m) fd); [apply unmodeled_intro|exact Hw].
+Qed.
+
+Definition getsockname_witness (fd : word) (m : Model) : outcome SyscallEffect :=
+  if fd_is_ns_file (m_fds m) fd then Unmodeled else getsockname_core_witness fd m.
+Lemma getsockname_witness_ok : forall fd i m,
+  getsockname_spec fd i m (getsockname_witness fd m).
+Proof.
+  intros. unfold getsockname_spec, getsockname_witness.
+  apply ns_guard_witness_ok. apply getsockname_core_witness_ok.
+Qed.
+
+Definition getpeername_witness (fd : word) (m : Model) : outcome SyscallEffect :=
+  if fd_is_ns_file (m_fds m) fd then Unmodeled else getpeername_core_witness fd m.
+Lemma getpeername_witness_ok : forall fd i m,
+  getpeername_spec fd i m (getpeername_witness fd m).
+Proof.
+  intros. unfold getpeername_spec, getpeername_witness.
+  apply ns_guard_witness_ok. apply getpeername_core_witness_ok.
+Qed.
+
+Definition setsockopt_witness (fd level optlen : word) (m : Model)
+    : outcome SyscallEffect :=
+  if fd_is_ns_file (m_fds m) fd then Unmodeled
+  else setsockopt_core_witness fd level optlen m.
+Lemma setsockopt_witness_ok : forall fd level optlen i m,
+  setsockopt_spec fd level optlen i m (setsockopt_witness fd level optlen m).
+Proof.
+  intros. unfold setsockopt_spec, setsockopt_witness.
+  apply ns_guard_witness_ok. apply setsockopt_core_witness_ok.
+Qed.
+
+Definition getsockopt_witness (fd level optlenp : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  if fd_is_ns_file (m_fds m) fd then Unmodeled
+  else getsockopt_core_witness fd level optlenp i m.
+Lemma getsockopt_witness_ok : forall fd level optlenp i m,
+  getsockopt_spec fd level optlenp i m (getsockopt_witness fd level optlenp i m).
+Proof.
+  intros. unfold getsockopt_spec, getsockopt_witness.
+  apply ns_guard_witness_ok. apply getsockopt_core_witness_ok.
+Qed.
+
+Definition shutdown_witness (fd how : word) (m : Model) : outcome SyscallEffect :=
+  if fd_is_ns_file (m_fds m) fd then Unmodeled else shutdown_core_witness fd how m.
+Lemma shutdown_witness_ok : forall fd how i m,
+  shutdown_spec fd how i m (shutdown_witness fd how m).
+Proof.
+  intros. unfold shutdown_spec, shutdown_witness.
+  apply ns_guard_witness_ok. apply shutdown_core_witness_ok.
 Qed.
 
 (* =========================================================================
@@ -565,6 +633,7 @@ Definition sendto_witness (fd buf count flags addrp : word)
        | Some (FdSocket sk) =>
            send_on_socket_witness [] (fun n => [(buf, n)]) fd sk count
              (readable_bytes (in_mem i) buf count) m
+       | Some (FdOpaque _) => Unmodeled   (* declined, as [bind_witness]'s *)
        | Some _ => ret_outcome (errno_ret ENOTSOCK) m
        end).
 
@@ -580,8 +649,8 @@ Proof.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
   unfold access_ok_zero, access_ok_zero_witness.
   destruct (access_okb buf (bv_unsigned count)); [|apply pure_ok].
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|];
-    cbv beta iota zeta; try apply pure_ok.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|];
+    cbv beta iota zeta; try solve [apply pure_ok | apply unmodeled_intro].
   apply send_on_socket_witness_ok.
 Qed.
 
@@ -599,6 +668,7 @@ Definition sendmsg_witness (fd msgp flags : word)
   | Some (FdFileA _ _) | Some (FdFileRW _ _)
   | Some (FdPipe _ _) | Some (FdDevNull _ _) | Some FdUrandom =>
       ret_outcome (errno_ret ENOTSOCK) m
+  | Some (FdOpaque _) => Unmodeled   (* declined: see [Net.Socket.sendmsg_spec] *)
   | Some (FdSocket sk) =>
       match copy_bytes_map (in_mem i) msgp MSGHDR_SIZE with
       | None => ret_outcome (errno_ret EFAULT) m
@@ -655,8 +725,8 @@ Proof.
   destruct (negb (send_flags_modeled flags)); [apply unmodeled_intro|].
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| ]|];
-    cbv beta iota zeta; try apply pure_ok.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |o]|];
+    cbv beta iota zeta; try solve [apply pure_ok | apply unmodeled_intro].
   destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE);
     cbv beta iota zeta; [|apply pure_ok].
   (* Six independent reads, so 64 shapes; 63 of them are the total-match

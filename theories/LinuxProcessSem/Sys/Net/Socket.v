@@ -1110,7 +1110,19 @@ Definition sock_fd (m : Model) (fd : word) : SockState + Z :=
   | Some (FdOpaque (OEventFd _)) => inr ENOTSOCK
                                        (* an eventfd: [eventfd_fops] (fs/eventfd.c,
                                           v6.18.44) is not [socket_file_ops] either *)
+  | Some (FdOpaque (ONsFile _)) => inr ENOTSOCK
+                                       (* never consulted: each of the five calls
+                                          declines this kind first ([fd_is_ns_file]) *)
   | Some (FdSocket sk)  => inl sk
+  end.
+
+(** An [State.ONsFile] descriptor: its object may be a socket or not
+    ([State.ONsFile]), so the five calls below decline it before they
+    consult [sock_fd]. *)
+Definition fd_is_ns_file (fds : list (word * FdEntry)) (fd : word) : bool :=
+  match fd_lookup fds fd with
+  | Some (FdOpaque (ONsFile _)) => true
+  | _ => false
   end.
 
 (** A level with a handler on an AF_INET/SOCK_STREAM socket.  Anything
@@ -1168,7 +1180,7 @@ Definition int32_neg (w : word) : bool := (sint32 w <? 0)%Z.
     [inet_getname] returns a local [sin_addr_len] that a
     CGROUP_INET4_GETSOCKNAME BPF program may rewrite, where up to v6.6 it
     was a literal [return sizeof] of the [sockaddr_in].) *)
-Definition getsockname_spec (fd : word) : Sys SyscallEffect :=
+Definition getsockname_core_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match sock_fd m fd with
   | inr e => err_ret e
@@ -1221,7 +1233,7 @@ Definition getsockname_spec (fd : word) : Sys SyscallEffect :=
     socket may be -ENOTCONN before any read consumes the reset.  Failing
     closed there is right; answering would have been a guess about when
     the segment arrived.) *)
-Definition getpeername_spec (fd : word) : Sys SyscallEffect :=
+Definition getpeername_core_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match sock_fd m fd with
   | inr e => err_ret e
@@ -1273,7 +1285,7 @@ Definition getpeername_spec (fd : word) : Sys SyscallEffect :=
     TCP_THIN_DUPACK (net/ipv4/tcp.c [do_tcp_setsockopt] validates
     [val] in {0,1} and stores it nowhere); and several options really do
     change later behaviour, so accepting them silently is not free. *)
-Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
+Definition setsockopt_core_spec (fd level optlen : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match sock_fd m fd with
   | inr e => err_ret e
@@ -1421,7 +1433,7 @@ Definition getsockopt_optlen_read (i : SyscallInput) (optlenp : word)
   | None => []
   end.
 
-Definition getsockopt_spec (fd level optlenp : word) : Sys SyscallEffect :=
+Definition getsockopt_core_spec (fd level optlenp : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
   match sock_fd m fd with
@@ -1508,7 +1520,7 @@ Definition getsockopt_spec (fd level optlenp : word) : Sys SyscallEffect :=
     Closing any of that means giving [State.SockState] the two shutdown
     bits and teaching [read_spec] to consult them.  That is a real
     extension, not a guess, and it is deliberately not made here. *)
-Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
+Definition shutdown_core_spec (fd how : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match sock_fd m fd with
   | inr e => err_ret e
@@ -1532,6 +1544,32 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
         | SkReset _ _       => unmodeled              (* tcp_done: TCP_CLOSE again *)
         end
   end.
+
+(** The five calls as the dispatcher sees them: each declines an
+    [State.ONsFile] descriptor ([fd_is_ns_file]), whose object may be a
+    socket or may not, ahead of [sock_fd], and is the [*_core_spec]
+    above for every other descriptor. *)
+Definition getsockname_spec (fd : word) : Sys SyscallEffect :=
+  m <- get_model ;;
+  if fd_is_ns_file (m_fds m) fd then unmodeled else getsockname_core_spec fd.
+
+Definition getpeername_spec (fd : word) : Sys SyscallEffect :=
+  m <- get_model ;;
+  if fd_is_ns_file (m_fds m) fd then unmodeled else getpeername_core_spec fd.
+
+Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
+  m <- get_model ;;
+  if fd_is_ns_file (m_fds m) fd then unmodeled
+  else setsockopt_core_spec fd level optlen.
+
+Definition getsockopt_spec (fd level optlenp : word) : Sys SyscallEffect :=
+  m <- get_model ;;
+  if fd_is_ns_file (m_fds m) fd then unmodeled
+  else getsockopt_core_spec fd level optlenp.
+
+Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
+  m <- get_model ;;
+  if fd_is_ns_file (m_fds m) fd then unmodeled else shutdown_core_spec fd how.
 
 (* =========================================================================
    The socket write path: sendto (206), sendmsg (211)

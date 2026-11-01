@@ -662,7 +662,7 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        is a consumption the declaration has to account for:
                        the stream is what the device hands THIS process. *)
                     | FdUrandom => true
-                    (* THE THREE OPAQUE OBJECTS PASS, each for its own
+                    (* THE FOUR OPAQUE OBJECTS PASS, each for its own
                        reason, and the reason is in every case that no
                        modeled arm reads the state the child's second
                        reference shares ([copy_files] -> [dup_fd]'s
@@ -684,7 +684,12 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          model gives depends on it.
                        - an eventfd ([OEventFd]) shares one counter, and
                          every arm that would read or move it (read,
-                         write, poll, epoll) declines on this kind. *)
+                         write, select, poll, epoll) declines on this
+                         kind.
+                       - a lane-L11 file ([ONsFile]) shares an [f_pos]
+                         and [f_flags], and nothing modeled reads either:
+                         every arm but close, close_range and fcntl's
+                         F_SETFD/F_GETFD declines on this kind. *)
                     | FdOpaque _ => true
                     end) fds.
 

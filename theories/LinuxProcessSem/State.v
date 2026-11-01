@@ -2722,7 +2722,7 @@ Definition PIPE_BUF : Z := 4096%Z.
     need a second slot is declined rather than guessed at. *)
 Definition PipeBuf : Type := list byte * Z.
 
-(** The three kernel objects behind [FdOpaque].  The model holds NO
+(** The four kernel objects behind [FdOpaque].  The model holds NO
     CONTENTS for any of them: what a read returns, what a stat reports
     and what an eventfd counts are the environment's or are declined.
 
@@ -2738,11 +2738,23 @@ Definition PipeBuf : Type := list byte * Z.
       of the environment's choice ([Fs.ReadWrite.read_proc_spec]).
     - [OEventFd flags]: an eventfd ([Fs.EventFd.eventfd2_spec]),
       carrying the flag word it was created with.  Its counter is not
-      modeled, so read and write on it decline. *)
+      modeled, so read and write on it decline.
+    - [ONsFile h]: a descriptor on an open file that the
+      namespace-and-mount model of lane L11 (BET-467) holds under handle
+      [h].  No arm of [spec_table] mints it: only that model's child
+      start relation and its own arms do, so a run from [init_config]
+      never holds one.  The object may be a directory, a regular file, a
+      procfs file, an eventfd or a socket, so an arm answers on it only
+      where Linux's answer is the same for every open file whatever its
+      type ([close], [close_range], [fcntl]'s [F_SETFD] and [F_GETFD],
+      and the clone gate); every other arm declines it.  That model
+      never mints one on an end of a pipe this table's [FdPipe] entries
+      track, which is the condition [pipe_end_live] relies on. *)
 Inductive OpaqueFd :=
   | OProcPath (p : path)
   | OProcFile (p : path)
-  | OEventFd (flags : word).
+  | OEventFd (flags : word)
+  | ONsFile (h : N).
 
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
@@ -2893,7 +2905,7 @@ Inductive OpaqueFd :=
       environment's /dev/urandom is the random device -- is stated once, at
       the openat arm, and pointed to from everywhere else.
     - [FdOpaque o]: a descriptor on a kernel object the model HOLDS NO
-      CONTENTS for; [OpaqueFd] below says which three objects.  The
+      CONTENTS for; [OpaqueFd] above says which four objects.  The
       descriptor is in the table so that its NUMBER is tracked (the
       lowest-free-fd rule, [close], and a statement that reads "this fd
       is held at the clone" all need it), and nothing else about the
@@ -2915,7 +2927,7 @@ Inductive FdEntry :=
   | FdUrandom
   | FdOpaque (o : OpaqueFd).
 
-(** Is [e] one of the three opaque objects?  The one classifier over
+(** Is [e] one of the four opaque objects?  The one classifier over
     [FdEntry] with a wildcard that is correct by construction: it names
     the kind it is about, and any constructor added later is, by
     definition, not that kind.  The arms that decline [FdOpaque] ahead
@@ -5272,7 +5284,10 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
   | (_, FdUrandom) :: r => pipe_end_live r id writer
   | (_, FdOpaque _) :: r => pipe_end_live r id writer
     (* not an end: the paragraph above says why an O_PATH file on a pipe
-       inode is not one of the pipe's readers or writers *)
+       inode is not one of the pipe's readers or writers; an [ONsFile] is
+       skipped on the condition its own doc states, that lane L11's model
+       never mints one on an end of a pipe this table's [FdPipe] entries
+       track *)
   end.
 
 (** A 32-bit value as the four little-endian bytes the kernel's

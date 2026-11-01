@@ -885,6 +885,9 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
   | Some (FdOpaque (OEventFd _)) => unmodeled
       (* FAIL-CLOSED: [eventfd_read] (fs/eventfd.c, read at v6.18.44)
          answers from the counter, which the model does not hold *)
+  | Some (FdOpaque (ONsFile _)) => unmodeled
+      (* FAIL-CLOSED: the object behind the handle may be of any type,
+         and a read's answer depends on it ([State.ONsFile]) *)
   end.
 
 (** [write fd buf count].
@@ -3211,6 +3214,14 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                   end
               end
           end
-      | FdOpaque _ => unmodeled                      (* unreachable: [fd_is_opaque] above *)
+      | FdOpaque _ => unmodeled
+          (* FAIL-CLOSED: an O_PATH file is [ksys_lseek]'s -EBADF for every
+             whence; an eventfd's [eventfd_fops] has [.llseek = noop_llseek]
+             and a /proc/sys file's [proc_sys_file_operations] has
+             [.llseek = default_llseek] over a size the model does not hold
+             (fs/read_write.c [ksys_lseek], fs/eventfd.c [eventfd_fops],
+             fs/proc/proc_sysctl.c [proc_sys_file_operations]: read at
+             v6.18.44; identical at v6.18.46).  None of the three answers
+             is written. *)
       end
   end.
