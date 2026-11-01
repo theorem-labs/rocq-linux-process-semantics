@@ -3081,7 +3081,19 @@ Definition ef_set_nonblock (ctx : EventfdCtx) (b : bool) : EventfdCtx :=
       ONE ENTRY PER SOCKET is not needed by anything here, since no arm
       reads one [FdDgram] to answer for another; [dup] and [clone] still
       treat it as they treat [FdSocket] ([Fs.File.dup_modeled_entry]
-      and [Kernel.Fork.clone_no_shared_file_b] decline both). *)
+      and [Kernel.Fork.clone_no_shared_file_b] decline both).
+
+      -ENOBUFS, PER SOCKET KIND, because the reading differs.  On a
+      STREAM-PAIR END the errno is left out of every send: an in-process
+      AF_UNIX stream with a bounded queue answers a send that does not fit
+      with -EAGAIN or a partial count ([Fs.ReadWrite.stream_send]), and
+      the -ENOBUFS of a failed skb allocation under memory pressure is
+      stated as an assumption in SCOPE.md.  On this kind the errno IS
+      reachable in Linux, on the datagram send path, and the model gives
+      it no answer to be wrong about: every send and receive on an
+      [FdDgram] declines.  Its creation is the one answered path where
+      Linux can refuse with -ENOBUFS ([inet6_create]'s [sk_alloc] for
+      AF_INET6), and [Net.Socket.socket_dgram_errnos] admits it there. *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
   | FdFile (p : path) (offset : word)

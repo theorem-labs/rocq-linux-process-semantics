@@ -546,8 +546,12 @@ Definition eventfd_poll_mask (ctx : EventfdCtx) : Z :=
     [unix_writable] turns on truesize; and a survivor whose peer closed
     is answered too, because its undecided EPOLLERR adds nothing to
     readable or writable that SHUTDOWN_MASK has not already set, and is
-    not in [POLLEX_SET].  An EVENTFD is answered from
-    [eventfd_poll_mask], always.  Every other kind is
+    not in [POLLEX_SET].  A DECLINE HERE DECLINES THE WHOLE CALL:
+    [select_scan] returns [None] at the first such descriptor, and the
+    model never answers the other descriptors with this one's undecided
+    bit dropped.  Answering a result word with an asked bit left out
+    would be the model answering where it cannot.  An EVENTFD is
+    answered from [eventfd_poll_mask], always.  Every other kind is
     answered exactly when [bits_all_pollable] calls its mask constant:
     [DEFAULT_POLLMASK] meets [POLLIN_SET] and [POLLOUT_SET] and misses
     [POLLEX_SET].  The [_] arm hands every other constructor to that
@@ -1220,7 +1224,9 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               fs/select.c).  Answered when the undecided bits of
               [stream_poll_mask] fall outside the filter.  So a survivor
               whose peer closed always declines here — EPOLLERR is in
-              every filter — as does a POLLOUT asked in the truesize band *)
+              every filter — as does a POLLOUT asked in the truesize band.
+              The [None] declines the WHOLE call, as for a pipe entry: no
+              [revents] word is ever written with an asked bit dropped *)
            let '(lo, hi) := stream_poll_mask fds id side st in
            let filt := Z.lor events (Z.lor EPOLLERR EPOLLHUP) in
            if Z.eqb (Z.land lo filt) (Z.land hi filt) then Some (Z.land lo filt)

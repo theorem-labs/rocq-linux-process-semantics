@@ -394,6 +394,12 @@ not apply.
   from `State.KernelBuild`, which a launch states once; statements
   quantify over every value. Another process that writes
   `/proc/sys/net/core/*` during the run makes this assumption false.
+- A send on a stream-pair end never fails with `-ENOBUFS`. Linux's
+  `sock_alloc_send_pskb` returns it when the kernel cannot allocate an
+  skb, under memory pressure; the model leaves that answer out of
+  `Fs.ReadWrite.stream_send`. On the datagram socket kind
+  (`State.FdDgram`) no send is answered at all, and its creation admits
+  `-ENOBUFS` for `AF_INET6`.
 - An eventfd (`eventfd2`, `State.FdEventfd`) is used by this one thread
   only, and no kernel subsystem signals it. `dup`, `dup3`, `F_DUPFD` and
   a `clone` holding one are declined. A blocking read of a zero counter,
