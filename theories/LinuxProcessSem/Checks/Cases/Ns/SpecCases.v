@@ -7,7 +7,7 @@
 
 From Stdlib Require Import ZArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Spec.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Spec.
 Import ListNotations.
 Open Scope bv_scope.
 
