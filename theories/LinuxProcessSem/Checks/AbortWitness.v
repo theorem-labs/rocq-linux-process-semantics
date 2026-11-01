@@ -248,15 +248,20 @@ Proof.
   reflexivity.
 Qed.
 
+(** The segment list the run at [abrt_entry] reads: the image's own
+    segment, then the vDSO pair ([Run.run_segments]).  No step reaches
+    the pair. *)
+Abbreviation abrt_rsegs := (run_segments abrt_segments abrt_input abrt_sp abrt_mbase).
+
 (** The states along the first leg, named by their step count, with the
     memory abstracted exactly as [Checks.Omni]'s [wloop_msk] family
     abstracts it: no instruction of this image writes memory, so every
     state on the way carries the initial one's. *)
 Definition abrt_ms0 : machine_state :=
-  init_machine_state abrt_segments 0x100 demo_phdrs abrt_sp abrt_mbase
+  init_machine_state abrt_rsegs 0x100 demo_phdrs abrt_sp abrt_mbase
     abrt_draw abrt_input.
 Definition abrt_msk (k : nat) : machine_state :=
-  match run_steps k abrt_segments abrt_ms0 with
+  match run_steps k abrt_rsegs abrt_ms0 with
   | Some ms => ms
   | None => abrt_ms0
   end.
@@ -264,12 +269,13 @@ Definition abrt_s (k : nat) : machine_state :=
   with_mem (abrt_msk k) (ms_mem abrt_ms0).
 
 Definition abrt_model (lim : Z) : Model :=
-  init_model (segments_reserved abrt_segments) abrt_brk abrt_mbase abrt_sp
-    lim abrt_input.
+  with_vdso (Vdso.vdso_run_init (ed_vdso abrt_draw))
+    (init_model (segments_reserved abrt_rsegs) abrt_brk abrt_mbase abrt_sp
+       lim abrt_input).
 Definition abrt_c (lim : Z) : config := mkCfg (abrt_s 0) (abrt_model lim).
 
 Lemma abrt_config : forall lim,
-  init_config abrt_segments 0x100 demo_phdrs abrt_sp abrt_brk abrt_mbase
+  init_config abrt_rsegs 0x100 demo_phdrs abrt_sp abrt_brk abrt_mbase
     abrt_draw lim abrt_input
   = abrt_c lim.
 Proof.
@@ -278,15 +284,15 @@ Proof.
 Qed.
 
 Lemma abrt_step : forall k, (k < 3)%nat -> forall mem,
-  RiscvSemantics.step abrt_segments (with_mem (abrt_msk k) mem)
+  RiscvSemantics.step abrt_rsegs (with_mem (abrt_msk k) mem)
   = MachineOk (with_mem (abrt_msk (S k)) mem).
 Proof.
-  intros k Hk mem.
+  intros k Hk mem. unfold abrt_msk, abrt_ms0, run_segments. abstract_vdso.
   do 3 (destruct k as [| k]; [vm_compute; reflexivity |]). lia.
 Qed.
 
 Lemma abrt_instr_sstep : forall lim k, (k < 3)%nat ->
-  sstep abrt_segments (mkCfg (abrt_s k) (abrt_model lim)) []
+  sstep abrt_rsegs (mkCfg (abrt_s k) (abrt_model lim)) []
     (SNext (mkCfg (abrt_s (S k)) (abrt_model lim))).
 Proof.
   intros lim k Hk. unfold abrt_s.
@@ -308,7 +314,7 @@ Proof. vm_compute. first [reflexivity | f_equal; apply bv_eq; reflexivity]. Qed.
 Definition abrt_eff1 : SyscallEffect := mkEffect abort_tid [] [].
 
 Lemma abrt_sc1 : forall lim,
-  check_syscall (sys_input abrt_segments (abrt_s 3) (Z_to_bv 64 96)) abrt_eff1
+  check_syscall (sys_input abrt_rsegs (abrt_s 3) (Z_to_bv 64 96)) abrt_eff1
     (abrt_model lim)
   = CheckOk (with_tid abort_tid (abrt_model lim)) [].
 Proof. intros lim. vm_compute. reflexivity. Qed.
@@ -318,7 +324,7 @@ Proof. intros lim. vm_compute. reflexivity. Qed.
 Definition abrt_t0 : machine_state :=
   advance_past_svc (apply_effect (abrt_s 3) abrt_eff1).
 Definition abrt_tk (k : nat) : machine_state :=
-  match run_steps k abrt_segments abrt_t0 with
+  match run_steps k abrt_rsegs abrt_t0 with
   | Some ms => ms
   | None => abrt_t0
   end.
@@ -332,7 +338,7 @@ Definition abrt_t (k : nat) : machine_state :=
   with_mem (abrt_tk k) (ms_mem abrt_t0).
 
 Lemma abrt_syscall1_sstep : forall lim,
-  sstep abrt_segments (mkCfg (abrt_s 3) (abrt_model lim)) []
+  sstep abrt_rsegs (mkCfg (abrt_s 3) (abrt_model lim)) []
     (SNext (mkCfg (abrt_t 0) (with_tid abort_tid (abrt_model lim)))).
 Proof.
   intros lim.
@@ -348,15 +354,16 @@ Proof.
 Qed.
 
 Lemma abrt_step2 : forall k, (k < 3)%nat -> forall mem,
-  RiscvSemantics.step abrt_segments (with_mem (abrt_tk k) mem)
+  RiscvSemantics.step abrt_rsegs (with_mem (abrt_tk k) mem)
   = MachineOk (with_mem (abrt_tk (S k)) mem).
 Proof.
-  intros k Hk mem.
+  intros k Hk mem. unfold abrt_tk, abrt_t0, abrt_s, abrt_msk, abrt_ms0, run_segments.
+  abstract_vdso.
   do 3 (destruct k as [| k]; [vm_compute; reflexivity |]). lia.
 Qed.
 
 Lemma abrt_instr2_sstep : forall lim k, (k < 3)%nat ->
-  sstep abrt_segments
+  sstep abrt_rsegs
     (mkCfg (abrt_t k) (with_tid abort_tid (abrt_model lim))) []
     (SNext (mkCfg (abrt_t (S k)) (with_tid abort_tid (abrt_model lim)))).
 Proof.
@@ -379,7 +386,7 @@ Definition abrt_killed_model (lim : Z) : Model :=
   with_killed (Z_to_bv 64 6) (with_tid abort_tid (abrt_model lim)).
 
 Lemma abrt_sc2 : forall lim,
-  check_syscall (sys_input abrt_segments (abrt_t 3) (Z_to_bv 64 130))
+  check_syscall (sys_input abrt_rsegs (abrt_t 3) (Z_to_bv 64 130))
     (mkEffect (Z_to_bv 64 0) [] []) (with_tid abort_tid (abrt_model lim))
   = CheckOk (abrt_killed_model lim) [].
 Proof. intros lim. vm_compute. reflexivity. Qed.
@@ -389,7 +396,7 @@ Definition abrt_trace (lim : Z) : list event :=
   [KillEv (Z_to_bv 64 6) (m_fs (abrt_killed_model lim))].
 
 Lemma abrt_kill_sstep : forall lim,
-  sstep abrt_segments
+  sstep abrt_rsegs
     (mkCfg (abrt_t 3) (with_tid abort_tid (abrt_model lim)))
     (abrt_trace lim)
     (SNext (mkCfg (abrt_t 3) (abrt_killed_model lim))).
@@ -407,7 +414,7 @@ Qed.
 (** The whole execution: two instructions, [set_tid_address], two more
     instructions, [tkill], and the process is dead. *)
 Lemma abrt_star : forall lim,
-  star abrt_segments (abrt_c lim) (abrt_trace lim)
+  star abrt_rsegs (abrt_c lim) (abrt_trace lim)
     (mkCfg (abrt_t 3) (abrt_killed_model lim)).
 Proof.
   intros lim.
@@ -476,7 +483,7 @@ Definition abrt_input_undeclared : ProcInput :=
     default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48.
 
 Lemma abrt_tkill_declined_undeclared :
-  check_syscall (sys_input abrt_segments (abrt_t 3) (Z_to_bv 64 130))
+  check_syscall (sys_input abrt_rsegs (abrt_t 3) (Z_to_bv 64 130))
     (mkEffect (Z_to_bv 64 0) [] [])
     (with_tid abort_tid
        (init_model (segments_reserved abrt_segments) abrt_brk abrt_mbase
@@ -493,7 +500,7 @@ Proof. vm_compute. reflexivity. Qed.
     The image contains no 4242: a0 was last written by
     [Run.apply_effect]. *)
 Lemma abrt_tkill_pid_is_the_returned_tid :
-  in_arg (sys_input abrt_segments (abrt_t 3) (Z_to_bv 64 130)) 0 = abort_tid.
+  in_arg (sys_input abrt_rsegs (abrt_t 3) (Z_to_bv 64 130)) 0 = abort_tid.
 Proof. apply bv_eq; vm_compute; reflexivity. Qed.
 
 (** Second, the value was a CHOICE and not a constant: the acceptor
@@ -502,7 +509,7 @@ Proof. apply bv_eq; vm_compute; reflexivity. Qed.
     fixed value, this would stop holding and the paragraph above would
     stop being true. *)
 Lemma abrt_sc1_admits_another_tid : forall lim,
-  check_syscall (sys_input abrt_segments (abrt_s 3) (Z_to_bv 64 96))
+  check_syscall (sys_input abrt_rsegs (abrt_s 3) (Z_to_bv 64 96))
     (mkEffect (Z_to_bv 64 1234) [] []) (abrt_model lim)
   = CheckOk (with_tid (Z_to_bv 64 1234) (abrt_model lim)) [].
 Proof. intros lim. vm_compute. reflexivity. Qed.
@@ -513,7 +520,7 @@ Proof. intros lim. vm_compute. reflexivity. Qed.
     above is not the arm firing at any declared state; it is the arm
     firing because the program sent the signal to ITSELF. *)
 Lemma abrt_tkill_other_tid_declined : forall lim,
-  check_syscall (sys_input abrt_segments (abrt_t 3) (Z_to_bv 64 130))
+  check_syscall (sys_input abrt_rsegs (abrt_t 3) (Z_to_bv 64 130))
     (mkEffect (Z_to_bv 64 0) [] [])
     (with_tid (Z_to_bv 64 4243) (abrt_model lim))
   = CheckUnmodeled.
@@ -757,8 +764,14 @@ Qed.
     leg's first state's, because no instruction of this image loads or
     stores; [blk_leg ms k] is the state [k] instructions into the leg
     that starts at [ms]. *)
+(** The segment list the run at [blk_entry] reads: the image's own
+    segment, then the vDSO pair ([Run.run_segments]).  No step reaches
+    the pair. *)
+Abbreviation blk_rsegs :=
+  (run_segments abrt_blocked_segments abrt_blocked_input blk_sp blk_mbase).
+
 Definition blk_legk (ms : machine_state) (k : nat) : machine_state :=
-  match run_steps k abrt_blocked_segments ms with
+  match run_steps k blk_rsegs ms with
   | Some ms' => ms'
   | None => ms
   end.
@@ -773,14 +786,14 @@ Proof. intros ms. exact (eq_sym (with_mem_eta ms)). Qed.
     and it steps to the next state. *)
 Definition leg_ok (ms : machine_state) (k : nat) : Prop :=
   ms_svc_pending (blk_legk ms k) = None
-  /\ forall mem, RiscvSemantics.step abrt_blocked_segments (with_mem (blk_legk ms k) mem)
+  /\ forall mem, RiscvSemantics.step blk_rsegs (with_mem (blk_legk ms k) mem)
                  = MachineOk (with_mem (blk_legk ms (S k)) mem).
 
 Lemma leg_instr : forall ms model k,
   m_halted model = None -> m_vm_lazy model = [] -> leg_ok ms k ->
-  sstep abrt_blocked_segments (mkCfg (blk_leg ms k) model) []
+  sstep blk_rsegs (mkCfg (blk_leg ms k) model) []
     (SNext (mkCfg (blk_leg ms (S k)) model))
-  /\ (forall evs st, sstep abrt_blocked_segments (mkCfg (blk_leg ms k) model) evs st ->
+  /\ (forall evs st, sstep blk_rsegs (mkCfg (blk_leg ms k) model) evs st ->
         evs = [] /\ st = SNext (mkCfg (blk_leg ms (S k)) model)).
 Proof.
   intros ms model k Hh Hlazy [Hsvc Hstep]. unfold blk_leg. split.
@@ -792,12 +805,12 @@ Qed.
 Lemma exec_leg : forall ms model n (Q : post),
   m_halted model = None -> m_vm_lazy model = [] ->
   (forall k, (k < n)%nat -> leg_ok ms k) ->
-  exec abrt_blocked_segments (mkCfg (blk_leg ms n) model) Q ->
-  exec abrt_blocked_segments (mkCfg (blk_leg ms 0) model) Q.
+  exec blk_rsegs (mkCfg (blk_leg ms n) model) Q ->
+  exec blk_rsegs (mkCfg (blk_leg ms 0) model) Q.
 Proof.
   intros ms model n Q Hh Hlazy Hok Hend.
   assert (H : forall d k, (k + d = n)%nat ->
-                exec abrt_blocked_segments (mkCfg (blk_leg ms k) model) Q).
+                exec blk_rsegs (mkCfg (blk_leg ms k) model) Q).
   { induction d as [|d IH]; intros k Hk.
     - replace k with n by lia. exact Hend.
     - destruct (leg_instr ms model k Hh Hlazy (Hok k ltac:(lia))) as [Hs Ho].
@@ -953,14 +966,14 @@ Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
     the checker's acceptance. *)
 Lemma syscall_step : forall ms model x8 eff0 m0,
   m_halted model = None -> ms_svc_pending ms = Some x8 ->
-  check_syscall (sys_input abrt_blocked_segments ms x8) eff0 model = CheckOk m0 [] ->
+  check_syscall (sys_input blk_rsegs ms x8) eff0 model = CheckOk m0 [] ->
   (forall eff m' evs,
-     check_syscall (sys_input abrt_blocked_segments ms x8) eff model = CheckOk m' evs ->
+     check_syscall (sys_input blk_rsegs ms x8) eff model = CheckOk m' evs ->
      eff = eff0 /\ m' = m0 /\ evs = []) ->
   m_halted m0 = None -> m_killed m0 = None -> m_vm_lazy m0 = [] ->
-  sstep abrt_blocked_segments (mkCfg ms model) []
+  sstep blk_rsegs (mkCfg ms model) []
     (SNext (mkCfg (blk_leg (advance_past_svc (apply_effect ms eff0)) 0) m0))
-  /\ (forall evs st, sstep abrt_blocked_segments (mkCfg ms model) evs st ->
+  /\ (forall evs st, sstep blk_rsegs (mkCfg ms model) evs st ->
         evs = [] /\
         st = SNext (mkCfg (blk_leg (advance_past_svc (apply_effect ms eff0)) 0) m0)).
 Proof.
@@ -1001,13 +1014,13 @@ Qed.
 (** ... and the one whose accepted effect kills the process. *)
 Lemma syscall_kill_step : forall ms model x8 eff0 m0 sig,
   m_halted model = None -> ms_svc_pending ms = Some x8 ->
-  check_syscall (sys_input abrt_blocked_segments ms x8) eff0 model = CheckOk m0 [] ->
+  check_syscall (sys_input blk_rsegs ms x8) eff0 model = CheckOk m0 [] ->
   (forall eff m' evs,
-     check_syscall (sys_input abrt_blocked_segments ms x8) eff model = CheckOk m' evs ->
+     check_syscall (sys_input blk_rsegs ms x8) eff model = CheckOk m' evs ->
      eff = eff0 /\ m' = m0 /\ evs = []) ->
   m_killed m0 = Some sig -> m_halted m0 <> None ->
-  sstep abrt_blocked_segments (mkCfg ms model) [KillEv sig (m_fs m0)] (SNext (mkCfg ms m0))
-  /\ (forall evs st, sstep abrt_blocked_segments (mkCfg ms model) evs st ->
+  sstep blk_rsegs (mkCfg ms model) [KillEv sig (m_fs m0)] (SNext (mkCfg ms m0))
+  /\ (forall evs st, sstep blk_rsegs (mkCfg ms model) evs st ->
         evs = [KillEv sig (m_fs m0)] /\ st = SNext (mkCfg ms m0)).
 Proof.
   intros ms model x8 eff0 m0 sig Hh Hsvc Hchk Hdet Hk0 Hh0. split.
@@ -1069,16 +1082,17 @@ Ltac blk_svc :=
     [sigmask_apply] give: [app_mask] and [all_mask] lose SIGKILL's and
     SIGSTOP's bits (1 << 8, 1 << 18). *)
 Definition blk_L0 : machine_state :=
-  init_machine_state abrt_blocked_segments 0x100 demo_phdrs blk_sp blk_mbase
+  init_machine_state blk_rsegs 0x100 demo_phdrs blk_sp blk_mbase
     blk_draw abrt_blocked_input.
 
 Definition blk_m0 (lim : Z) : Model :=
-  init_model (segments_reserved abrt_blocked_segments) blk_brk blk_mbase
-    blk_sp lim abrt_blocked_input.
+  with_vdso (Vdso.vdso_run_init (ed_vdso blk_draw))
+    (init_model (segments_reserved blk_rsegs) blk_brk blk_mbase
+       blk_sp lim abrt_blocked_input).
 Definition blk_c (lim : Z) : config := mkCfg (blk_leg blk_L0 0) (blk_m0 lim).
 
 Lemma blk_config : forall lim,
-  init_config abrt_blocked_segments 0x100 demo_phdrs blk_sp blk_brk
+  init_config blk_rsegs 0x100 demo_phdrs blk_sp blk_brk
     blk_mbase blk_draw lim abrt_blocked_input
   = blk_c lim.
 Proof. intros lim. unfold blk_c. rewrite blk_leg_0. reflexivity. Qed.
@@ -1138,58 +1152,67 @@ Definition blk_m8 (t : word) (lim : Z) : Model :=
   with_killed (Z_to_bv 64 SIGABRT)
     (with_sigmask (Z_to_bv 64 0xfffffffffffbfedf) (blk_m7 t lim)).
 
+(** Every state of a leg carries the read-only backing, a closure over
+    the run's segment list; [vm_compute] would read the vDSO pair back
+    under its binder.  Opening the leg's definitions and abstracting the
+    pair first keeps the computation to the image's own segment. *)
+Ltac blk_open :=
+  unfold leg_ok, blk_L1, blk_L2, blk_L3, blk_L4, blk_L5, blk_L6, blk_L7,
+    blk_leg, blk_legk, blk_L0, run_segments;
+  abstract_vdso.
+
 Lemma blk_leg0_ok : forall k, (k < 3)%nat -> leg_ok blk_L0 k.
 Proof.
-  intros k Hk.
+  intros k Hk. blk_open.
   do 3 (destruct k as [| k];
         [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
   lia.
 Qed.
 Lemma blk_leg1_ok : forall t k, (k < 7)%nat -> leg_ok (blk_L1 t) k.
 Proof.
-  intros t k Hk.
+  intros t k Hk. blk_open.
   do 7 (destruct k as [| k];
         [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
   lia.
 Qed.
 Lemma blk_leg2_ok : forall t k, (k < 4)%nat -> leg_ok (blk_L2 t) k.
 Proof.
-  intros t k Hk.
+  intros t k Hk. blk_open.
   do 4 (destruct k as [| k];
         [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
   lia.
 Qed.
 Lemma blk_leg3_ok : forall t k, (k < 5)%nat -> leg_ok (blk_L3 t) k.
 Proof.
-  intros t k Hk.
+  intros t k Hk. blk_open.
   do 5 (destruct k as [| k];
         [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
   lia.
 Qed.
 Lemma blk_leg4_ok : forall t k, (k < 3)%nat -> leg_ok (blk_L4 t) k.
 Proof.
-  intros t k Hk.
+  intros t k Hk. blk_open.
   do 3 (destruct k as [| k];
         [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
   lia.
 Qed.
 Lemma blk_leg5_ok : forall t k, (k < 4)%nat -> leg_ok (blk_L5 t) k.
 Proof.
-  intros t k Hk.
+  intros t k Hk. blk_open.
   do 4 (destruct k as [| k];
         [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
   lia.
 Qed.
 Lemma blk_leg6_ok : forall t k, (k < 4)%nat -> leg_ok (blk_L6 t) k.
 Proof.
-  intros t k Hk.
+  intros t k Hk. blk_open.
   do 4 (destruct k as [| k];
         [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
   lia.
 Qed.
 Lemma blk_leg7_ok : forall t k, (k < 4)%nat -> leg_ok (blk_L7 t) k.
 Proof.
-  intros t k Hk.
+  intros t k Hk. blk_open.
   do 4 (destruct k as [| k];
         [split; [vm_compute; reflexivity | intros mem; vm_compute; reflexivity] |]).
   lia.
@@ -1198,17 +1221,17 @@ Qed.
 (** set_tid_address: the one branching step.  Every tid in the window is
     an outcome, and nothing else is. *)
 Lemma blk_sc1 : forall lim,
-  sstep abrt_blocked_segments (mkCfg (blk_leg blk_L0 3) (blk_m0 lim)) []
+  sstep blk_rsegs (mkCfg (blk_leg blk_L0 3) (blk_m0 lim)) []
     (SNext (mkCfg (blk_leg (blk_L1 abort_tid) 0) (blk_m1 abort_tid lim)))
   /\ (forall evs st,
-        sstep abrt_blocked_segments (mkCfg (blk_leg blk_L0 3) (blk_m0 lim)) evs st ->
+        sstep blk_rsegs (mkCfg (blk_leg blk_L0 3) (blk_m0 lim)) evs st ->
         evs = [] /\ exists t, (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z
                              /\ st = SNext (mkCfg (blk_leg (blk_L1 t) 0) (blk_m1 t lim))).
 Proof.
   intros lim.
   assert (Hsvc : ms_svc_pending (blk_leg blk_L0 3) = Some (Z_to_bv 64 96)) by blk_svc.
   assert (Hchk : forall t, (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z ->
-            check_syscall (sys_input abrt_blocked_segments (blk_leg blk_L0 3) (Z_to_bv 64 96))
+            check_syscall (sys_input blk_rsegs (blk_leg blk_L0 3) (Z_to_bv 64 96))
               (mkEffect t [] []) (blk_m0 lim) = CheckOk (blk_m1 t lim) []).
   { intros t [H1 H2]. rewrite check_syscall_set_tid_address by reflexivity.
     unfold check_set_tid_address. change (m_tid (blk_m0 lim)) with (@None word).
@@ -1217,7 +1240,7 @@ Proof.
   assert (Habort : (0 < bv_unsigned abort_tid < PID_MAX_ENVELOPE)%Z)
     by (vm_compute; split; reflexivity).
   assert (Hforced : forall eff m' evs,
-            check_syscall (sys_input abrt_blocked_segments (blk_leg blk_L0 3) (Z_to_bv 64 96))
+            check_syscall (sys_input blk_rsegs (blk_leg blk_L0 3) (Z_to_bv 64 96))
               eff (blk_m0 lim) = CheckOk m' evs ->
             exists t, (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z
                       /\ eff = mkEffect t [] [] /\ m' = blk_m1 t lim /\ evs = []).
@@ -1279,16 +1302,16 @@ Qed.
 (** rt_sigprocmask(SIG_BLOCK, app_mask, &set, 8): the mask grows, and the
     launch mask is written to [set]. *)
 Lemma blk_sc2 : forall lim t,
-  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L1 t) 7) (blk_m1 t lim)) []
+  sstep blk_rsegs (mkCfg (blk_leg (blk_L1 t) 7) (blk_m1 t lim)) []
     (SNext (mkCfg (blk_leg (blk_L2 t) 0) (blk_m2 t lim)))
   /\ (forall evs st,
-        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L1 t) 7) (blk_m1 t lim)) evs st ->
+        sstep blk_rsegs (mkCfg (blk_leg (blk_L1 t) 7) (blk_m1 t lim)) evs st ->
         evs = [] /\ st = SNext (mkCfg (blk_leg (blk_L2 t) 0) (blk_m2 t lim))).
 Proof.
   intros lim t.
   assert (Hsvc : ms_svc_pending (blk_leg (blk_L1 t) 7) = Some (Z_to_bv 64 135)) by blk_svc.
   assert (Hchk : check_syscall
-            (sys_input abrt_blocked_segments (blk_leg (blk_L1 t) 7) (Z_to_bv 64 135))
+            (sys_input blk_rsegs (blk_leg (blk_L1 t) 7) (Z_to_bv 64 135))
             blk_e2 (blk_m1 t lim) = CheckOk (blk_m2 t lim) []) by blk_check_eq.
   eapply syscall_step;
     [ reflexivity | exact Hsvc | exact Hchk | | reflexivity | reflexivity | reflexivity ].
@@ -1300,19 +1323,19 @@ Qed.
 (** tkill(tid, SIGABRT) with SIGABRT blocked: pending, and the run goes
     on. *)
 Lemma blk_sc3 : forall lim t, (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z ->
-  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L2 t) 4) (blk_m2 t lim)) []
+  sstep blk_rsegs (mkCfg (blk_leg (blk_L2 t) 4) (blk_m2 t lim)) []
     (SNext (mkCfg (blk_leg (blk_L3 t) 0) (blk_m3 t lim)))
   /\ (forall evs st,
-        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L2 t) 4) (blk_m2 t lim)) evs st ->
+        sstep blk_rsegs (mkCfg (blk_leg (blk_L2 t) 4) (blk_m2 t lim)) evs st ->
         evs = [] /\ st = SNext (mkCfg (blk_leg (blk_L3 t) 0) (blk_m3 t lim))).
 Proof.
   intros lim t Ht.
   assert (Hsvc : ms_svc_pending (blk_leg (blk_L2 t) 4) = Some (Z_to_bv 64 130)) by blk_svc.
   assert (Hchk : check_syscall
-            (sys_input abrt_blocked_segments (blk_leg (blk_L2 t) 4) (Z_to_bv 64 130))
+            (sys_input blk_rsegs (blk_leg (blk_L2 t) 4) (Z_to_bv 64 130))
             blk_e0 (blk_m2 t lim) = CheckOk (blk_m3 t lim) []).
   { rewrite check_syscall_tkill_at by reflexivity.
-    assert (Ha0 : in_arg (sys_input abrt_blocked_segments (blk_leg (blk_L2 t) 4)
+    assert (Ha0 : in_arg (sys_input blk_rsegs (blk_leg (blk_L2 t) 4)
                             (Z_to_bv 64 130)) 0 = t) by (vm_compute; reflexivity).
     rewrite Ha0, (blk_tid_pid32 t Ht).
     unfold check_tkill, check_tkill_self. rewrite (blk_tid_positive t Ht).
@@ -1329,16 +1352,16 @@ Qed.
     read back from [set].  SIGABRT stays blocked, so nothing is
     delivered and [raise] returns. *)
 Lemma blk_sc4 : forall lim t,
-  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L3 t) 5) (blk_m3 t lim)) []
+  sstep blk_rsegs (mkCfg (blk_leg (blk_L3 t) 5) (blk_m3 t lim)) []
     (SNext (mkCfg (blk_leg (blk_L4 t) 0) (blk_m4 t lim)))
   /\ (forall evs st,
-        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L3 t) 5) (blk_m3 t lim)) evs st ->
+        sstep blk_rsegs (mkCfg (blk_leg (blk_L3 t) 5) (blk_m3 t lim)) evs st ->
         evs = [] /\ st = SNext (mkCfg (blk_leg (blk_L4 t) 0) (blk_m4 t lim))).
 Proof.
   intros lim t.
   assert (Hsvc : ms_svc_pending (blk_leg (blk_L3 t) 5) = Some (Z_to_bv 64 135)) by blk_svc.
   assert (Hchk : check_syscall
-            (sys_input abrt_blocked_segments (blk_leg (blk_L3 t) 5) (Z_to_bv 64 135))
+            (sys_input blk_rsegs (blk_leg (blk_L3 t) 5) (Z_to_bv 64 135))
             blk_e4 (blk_m3 t lim) = CheckOk (blk_m4 t lim) []) by blk_check_eq.
   eapply syscall_step;
     [ reflexivity | exact Hsvc | exact Hchk | | reflexivity | reflexivity | reflexivity ].
@@ -1350,16 +1373,16 @@ Qed.
 (** rt_sigprocmask(SIG_BLOCK, all_mask, NULL, 8): abort's second path
     begins. *)
 Lemma blk_sc5 : forall lim t,
-  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L4 t) 3) (blk_m4 t lim)) []
+  sstep blk_rsegs (mkCfg (blk_leg (blk_L4 t) 3) (blk_m4 t lim)) []
     (SNext (mkCfg (blk_leg (blk_L5 t) 0) (blk_m5 t lim)))
   /\ (forall evs st,
-        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L4 t) 3) (blk_m4 t lim)) evs st ->
+        sstep blk_rsegs (mkCfg (blk_leg (blk_L4 t) 3) (blk_m4 t lim)) evs st ->
         evs = [] /\ st = SNext (mkCfg (blk_leg (blk_L5 t) 0) (blk_m5 t lim))).
 Proof.
   intros lim t.
   assert (Hsvc : ms_svc_pending (blk_leg (blk_L4 t) 3) = Some (Z_to_bv 64 135)) by blk_svc.
   assert (Hchk : check_syscall
-            (sys_input abrt_blocked_segments (blk_leg (blk_L4 t) 3) (Z_to_bv 64 135))
+            (sys_input blk_rsegs (blk_leg (blk_L4 t) 3) (Z_to_bv 64 135))
             blk_e5 (blk_m4 t lim) = CheckOk (blk_m5 t lim) []) by blk_check_eq.
   eapply syscall_step;
     [ reflexivity | exact Hsvc | exact Hchk | | reflexivity | reflexivity | reflexivity ].
@@ -1373,16 +1396,16 @@ Qed.
     records the 24 bytes it read at 0x1a8, and changes nothing else
     ([Kernel.Signal.sigabrt_dfl_install]). *)
 Lemma blk_sc6 : forall lim t,
-  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L5 t) 4) (blk_m5 t lim)) []
+  sstep blk_rsegs (mkCfg (blk_leg (blk_L5 t) 4) (blk_m5 t lim)) []
     (SNext (mkCfg (blk_leg (blk_L6 t) 0) (blk_m5 t lim)))
   /\ (forall evs st,
-        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L5 t) 4) (blk_m5 t lim)) evs st ->
+        sstep blk_rsegs (mkCfg (blk_leg (blk_L5 t) 4) (blk_m5 t lim)) evs st ->
         evs = [] /\ st = SNext (mkCfg (blk_leg (blk_L6 t) 0) (blk_m5 t lim))).
 Proof.
   intros lim t.
   assert (Hsvc : ms_svc_pending (blk_leg (blk_L5 t) 4) = Some (Z_to_bv 64 134)) by blk_svc.
   assert (Hchk : check_syscall
-            (sys_input abrt_blocked_segments (blk_leg (blk_L5 t) 4) (Z_to_bv 64 134))
+            (sys_input blk_rsegs (blk_leg (blk_L5 t) 4) (Z_to_bv 64 134))
             blk_e6 (blk_m5 t lim) = CheckOk (blk_m5 t lim) []) by blk_check_eq.
   eapply syscall_step;
     [ reflexivity | exact Hsvc | exact Hchk | | reflexivity | reflexivity | reflexivity ].
@@ -1393,19 +1416,19 @@ Qed.
 
 (** tkill(tid, SIGABRT) again: still blocked, still pending. *)
 Lemma blk_sc7 : forall lim t, (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z ->
-  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L6 t) 4) (blk_m5 t lim)) []
+  sstep blk_rsegs (mkCfg (blk_leg (blk_L6 t) 4) (blk_m5 t lim)) []
     (SNext (mkCfg (blk_leg (blk_L7 t) 0) (blk_m7 t lim)))
   /\ (forall evs st,
-        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L6 t) 4) (blk_m5 t lim)) evs st ->
+        sstep blk_rsegs (mkCfg (blk_leg (blk_L6 t) 4) (blk_m5 t lim)) evs st ->
         evs = [] /\ st = SNext (mkCfg (blk_leg (blk_L7 t) 0) (blk_m7 t lim))).
 Proof.
   intros lim t Ht.
   assert (Hsvc : ms_svc_pending (blk_leg (blk_L6 t) 4) = Some (Z_to_bv 64 130)) by blk_svc.
   assert (Hchk : check_syscall
-            (sys_input abrt_blocked_segments (blk_leg (blk_L6 t) 4) (Z_to_bv 64 130))
+            (sys_input blk_rsegs (blk_leg (blk_L6 t) 4) (Z_to_bv 64 130))
             blk_e0 (blk_m5 t lim) = CheckOk (blk_m7 t lim) []).
   { rewrite check_syscall_tkill_at by reflexivity.
-    assert (Ha0 : in_arg (sys_input abrt_blocked_segments (blk_leg (blk_L6 t) 4)
+    assert (Ha0 : in_arg (sys_input blk_rsegs (blk_leg (blk_L6 t) 4)
                             (Z_to_bv 64 130)) 0 = t) by (vm_compute; reflexivity).
     rewrite Ha0, (blk_tid_pid32 t Ht).
     unfold check_tkill, check_tkill_self. rewrite (blk_tid_positive t Ht).
@@ -1421,18 +1444,18 @@ Qed.
 (** rt_sigprocmask(SIG_UNBLOCK, {SIGABRT}, NULL, 8): the pending SIGABRT
     is delivered, at SIG_DFL, and the process dies. *)
 Lemma blk_sc8 : forall lim t,
-  sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L7 t) 4) (blk_m7 t lim))
+  sstep blk_rsegs (mkCfg (blk_leg (blk_L7 t) 4) (blk_m7 t lim))
     [KillEv (Z_to_bv 64 SIGABRT) (m_fs (blk_m8 t lim))]
     (SNext (mkCfg (blk_leg (blk_L7 t) 4) (blk_m8 t lim)))
   /\ (forall evs st,
-        sstep abrt_blocked_segments (mkCfg (blk_leg (blk_L7 t) 4) (blk_m7 t lim)) evs st ->
+        sstep blk_rsegs (mkCfg (blk_leg (blk_L7 t) 4) (blk_m7 t lim)) evs st ->
         evs = [KillEv (Z_to_bv 64 SIGABRT) (m_fs (blk_m8 t lim))]
         /\ st = SNext (mkCfg (blk_leg (blk_L7 t) 4) (blk_m8 t lim))).
 Proof.
   intros lim t.
   assert (Hsvc : ms_svc_pending (blk_leg (blk_L7 t) 4) = Some (Z_to_bv 64 135)) by blk_svc.
   assert (Hchk : check_syscall
-            (sys_input abrt_blocked_segments (blk_leg (blk_L7 t) 4) (Z_to_bv 64 135))
+            (sys_input blk_rsegs (blk_leg (blk_L7 t) 4) (Z_to_bv 64 135))
             blk_e8 (blk_m7 t lim) = CheckOk (blk_m8 t lim) []) by blk_check_eq.
   eapply syscall_kill_step;
     [ reflexivity | exact Hsvc | exact Hchk | | reflexivity
@@ -1451,7 +1474,7 @@ Definition blk_post : post :=
   fun tr o => ~ is_error o /\ exists sig fs, In (KillEv sig fs) tr.
 
 Lemma blk_exec_after_tid : forall lim t, (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z ->
-  exec abrt_blocked_segments (mkCfg (blk_leg (blk_L1 t) 0) (blk_m1 t lim)) blk_post.
+  exec blk_rsegs (mkCfg (blk_leg (blk_L1 t) 0) (blk_m1 t lim)) blk_post.
 Proof.
   intros lim t Ht.
   eapply exec_leg; [reflexivity | reflexivity | exact (blk_leg1_ok t) |].
@@ -1474,7 +1497,7 @@ Proof.
   cbn [app In]. left. reflexivity.
 Qed.
 
-Lemma blk_exec : forall lim, exec abrt_blocked_segments (blk_c lim) blk_post.
+Lemma blk_exec : forall lim, exec blk_rsegs (blk_c lim) blk_post.
 Proof.
   intros lim. unfold blk_c.
   eapply exec_leg; [reflexivity | reflexivity | exact blk_leg0_ok |].
