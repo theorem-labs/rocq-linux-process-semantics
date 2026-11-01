@@ -36,12 +36,12 @@
     module) are admitted for every clone the model answers; one that
     comes after [alloc_pid] leaves the pid cursors advanced
     ([pid_advanced]).  A core takes a failed clone's shared state from
-    [CnErr] too.  When every family of environment failure is off, a
-    core drops those refusals ([clone_ns_refusal]), so a forced-only run
-    clones exactly as the tables say. *)
+    [CnErr] too.  A statement that names [clone_tables_failures] admits
+    only the tables' failures for a clone that makes a namespace: that the
+    host can make the namespaces is its environment premise. *)
 
 From Stdlib Require Import ZArith List Bool PArith.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Userns Walk Arm UserArms Net.
 Import ListNotations.
 Local Open Scope Z_scope.
@@ -320,28 +320,21 @@ Proof.
     exists e, st. split; [exact He | split; [left; reflexivity | exact Ho]].
 Qed.
 
-(** Every family of environment failure is off: the configuration says the
-    environment refuses nothing it is not forced to. *)
-Definition all_families_off (cfg : SpuriousCfg) : bool :=
-  negb (sc_alloc cfg || sc_fs cfg || sc_fd cfg || sc_net cfg || sc_cred cfg || sc_intr cfg).
+(** The clone failures of a run in which THE HOST CAN MAKE THE NAMESPACES:
+    an ENVIRONMENT PREMISE of every statement that names this
+    [Ext.CloneEnv].  A clone that makes a namespace, or one by a task
+    outside the released world, fails only as the tables say
+    ([clone_ns_exact]: EPERM, EINVAL, ENOSPC from the model's own
+    namespaces); a run in which the host refuses on an allocation, a
+    namespace count, a cgroup controller, RLIMIT_NPROC, a pending fatal
+    signal or a security module is outside such a statement.  The released
+    clone (a task in the released world, a word with no namespace bit)
+    keeps every failure the core admits. *)
+Definition clone_tables_failures : CloneEnv := fun f m ctx st hq e st' =>
+  (flat_view ctx st && negb (has_ns_bits f)) = true \/ CnErr e st' = clone_ns_exact f m ctx st hq.
 
-(** The forced-only filter of [clone_ns] ([Ext.ext_clone_refusal]): when
-    every family is off, a failure that is not the tables' answer is the
-    environment's ([clone_ns]'s second disjunct: an allocation failure, a
-    host count, RLIMIT_NPROC, a cgroup, a fatal signal, a security module)
-    and is dropped.  The released clone of a task in the released world
-    with no namespace bit is never filtered here: the released filter
-    applies to it. *)
-Definition clone_ns_refusal (cfg : SpuriousCfg) (f : Z) (m : Model) (ctx : NsCtx) (st : NsState)
-    (hq e : Z) (st' : NsState) : Prop :=
-  all_families_off cfg = true
-  /\ negb (flat_view ctx st && negb (has_ns_bits f)) = true
-  /\ CnErr e st' <> clone_ns_exact f m ctx st hq.
-
-(** [Ext.ext_clone_refusal_coherent] for [clone_ns_refusal]. *)
-Lemma clone_ns_refusal_coherent : forall cfg f m ctx st hq e st',
-  flat_view ctx st = true -> has_ns_bits f = false ->
-  ~ clone_ns_refusal cfg f m ctx st hq e st'.
-Proof.
-  intros cfg f m ctx st hq e st' Hf Hb (_ & H & _). rewrite Hf, Hb in H. discriminate H.
-Qed.
+(** In the released world, for a word with no namespace bit, it admits
+    every failure. *)
+Lemma clone_tables_failures_flat : forall f m ctx st hq e st',
+  flat_view ctx st = true -> has_ns_bits f = false -> clone_tables_failures f m ctx st hq e st'.
+Proof. intros f m ctx st hq e st' Hf Hb. left. rewrite Hf, Hb. reflexivity. Qed.

@@ -172,22 +172,33 @@ Example clone_pid_level_32 : forall m,
   clone_ns_exact (Z.lor CLONE_NEWPID SIGCHLD) m admin_in_deep deep 6 = CnErr 28 deep.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
-(** The forced-only filter ([clone_ns_refusal]): when every family is off,
-    an environment failure of a namespace clone (here ENOMEM, where the
-    tables give the child) is dropped; with the families on it is not; and
-    the tables' own failure (EPERM without CAP_SYS_ADMIN) is never dropped. *)
-Example clone_env_failure_dropped_forced_only : forall m,
-  clone_ns_refusal forced_only_cfg ALL_NS (with_creds (creds 65534) m) caller host 138 12 host.
-Proof.
-  intros m. split; [reflexivity | split; [reflexivity |]].
-  intros H. vm_compute in H. discriminate H.
-Qed.
+(** [clone_tables_failures], the clone environment of a run in which the
+    host can make the namespaces: an environment failure of a namespace
+    clone (here ENOMEM, where the tables give the child) is outside it; the
+    tables' own failure (EPERM without CAP_SYS_ADMIN) is in it; and so is
+    every failure of the released clone (a plain fork from the host). *)
+Example clone_env_failure_outside : forall m,
+  ~ clone_tables_failures ALL_NS (with_creds (creds 65534) m) caller host 138 12 host.
+Proof. intros m [H | H]; vm_compute in H; discriminate H. Qed.
 
-Example clone_env_failure_kept_may_fail : forall m,
-  ~ clone_ns_refusal may_fail_cfg ALL_NS (with_creds (creds 65534) m) caller host 138 12 host.
-Proof. intros m (H & _). discriminate H. Qed.
+Example clone_tables_failure_inside : forall m,
+  clone_tables_failures (Z.lor CLONE_NEWNS SIGCHLD) (with_creds (creds 65534) m)
+    no_admin_inside inside 140 1 inside.
+Proof. intros m. right. vm_compute. reflexivity. Qed.
 
-Example clone_tables_failure_kept : forall m,
-  ~ clone_ns_refusal forced_only_cfg (Z.lor CLONE_NEWNS SIGCHLD) (with_creds (creds 65534) m)
-      no_admin_inside inside 140 1 inside.
-Proof. intros m (_ & _ & H). apply H. vm_compute. reflexivity. Qed.
+Example released_fork_failure_inside : forall m,
+  clone_tables_failures SIGCHLD m caller host 138 12 host.
+Proof. intros m. apply clone_tables_failures_flat; reflexivity. Qed.
+
+(** A RUN THE ENVIRONMENT PREMISE ADMITS (the satisfiability witness): a
+    caller with pid 136 in the host's pid namespace, uid 65534, no
+    capabilities, clones with the word 0x7c020011 (a new mount, UTS, IPC,
+    user, pid and network namespace, exit signal SIGCHLD) and the host
+    gives the child pid 138, as a recorded run on Linux 6.18.44 did.  The
+    tables' answer is the child ([clone_all_child]), so the clone succeeds
+    and no failure is needed: [clone_tables_failures] restricts failures
+    only. *)
+Example clone_tables_run_succeeds : forall m,
+  ALL_NS = 2080505873 /\
+  exists child st', clone_ns_exact ALL_NS (with_creds (creds 65534) m) caller host 138 = CnOk child st'.
+Proof. intros m. split; [reflexivity|]. vm_compute. eexists. eexists. reflexivity. Qed.
