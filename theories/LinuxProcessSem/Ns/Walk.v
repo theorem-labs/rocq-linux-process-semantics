@@ -119,9 +119,11 @@ Fixpoint bytes_eqb (a b : list byte) : bool :=
   | _, _ => false
   end.
 
+(** [d] is a linked child of directory dentry [p]: an unlinked dentry keeps
+    its parent but is no longer in the directory ([d_unlinked]). *)
 Definition has_parent (p : positive) (d : Dentry) : bool :=
   match d_parent d with
-  | Some q => Pos.eqb q p
+  | Some q => Pos.eqb q p && negb (d_unlinked d)
   | None => false
   end.
 

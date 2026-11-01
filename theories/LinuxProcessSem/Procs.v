@@ -1278,7 +1278,8 @@ Inductive pstep_x_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
     says the failure leaves.  Its errno comes from the released step
     ([sstep_cfg] above), so under a forced-only configuration a refusal the
     released filter ([Run.spurious_refusal_cfg], Run.v:2019) drops is no
-    step here either. *)
+    step here either; and a failure the extension's environment chooses is
+    dropped when its filter ([ext_clone_refusal]) says so. *)
 | px_clone_fail : forall P e evs c' en hq st',
     look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false ->
@@ -1290,6 +1291,8 @@ Inductive pstep_x_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
     ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
       (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P))
       hq (CnErr en st') ->
+    ~ ext_clone_refusal ext cfg (clone_flags_of (pe_cfg (pcfg_shared P) e))
+        (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st' ->
     pstep_x_at ext segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' (pe_nsctx e) st'))
 | px_clone_unmodeled : forall P e evs c' hq,
     look P (pe_pid e) = Some e ->
@@ -1531,8 +1534,9 @@ Qed.
 (** The extension changes nothing at the entries of [P]: an entry's step
     under the extension is its released step, with its namespace context
     and the shared state unchanged; a pending clone or intercepted wait is
-    not claimed; the extension admits no call the core's guard refuses; and
-    a clone does to the namespace model what the core's own clone does. *)
+    not claimed; the extension admits no call the core's guard refuses; a
+    clone does to the namespace model what the core's own clone does; and
+    the extension's filter drops no clone failure. *)
 Definition ext_agrees (ext : ExtSpec) (segs : list Segment) (P : pconfig) : Prop :=
   forall e, look P (pe_pid e) = Some e ->
     (forall cfg evs r ctx' st',
@@ -1548,7 +1552,10 @@ Definition ext_agrees (ext : ExtSpec) (segs : list Segment) (P : pconfig) : Prop
     /\ (forall hq o,
           ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
             (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq o
-          <-> released_clone (pe_nsctx e) (sh_ns (pcfg_shared P)) o).
+          <-> released_clone (pe_nsctx e) (sh_ns (pcfg_shared P)) o)
+    /\ (forall cfg hq en st',
+          ~ ext_clone_refusal ext cfg (clone_flags_of (pe_cfg (pcfg_shared P) e))
+              (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
 
 Theorem pstep_x_at_agree_iff : forall ext segs cfg p P evs r,
   ext_agrees ext segs P ->
@@ -1558,14 +1565,14 @@ Proof.
   - intros H. revert Hag. destruct H as
       [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hmp
       | Q e ev c' q child st' Hl Hcl Hs Hsucc Hq Hfree Hma Hec
-      | Q e ev c' en hq st' Hl Hcl Hs Hcp Hsucc Hret Hma Hec
+      | Q e ev c' en hq st' Hl Hcl Hs Hcp Hsucc Hret Hma Hec Hnr
       | Q e ev c' hq Hl Hcl Hs Hcp Hma Hec
       | Q e Hl Hh Hcp Hcl
       | Q e q ez x8 stat_addr status eff model'' dumped
           Hl Hcl Hh Hx8 Hwt Hargs Hq Hne Hpar Hk Hst Hrd Heff Hmat
       | Q e ev ctx' st' Hl Hx Hwt
       | Q e Hl Hh Hmp ]; intros Hag;
-      destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln).
+      destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* px_other *)
       apply (proj1 (Hxs _ _ _ _ _)) in Hx. destruct Hx as (Hs & -> & ->).
       rewrite absorb_x_same. apply pstep_other; try assumption.
@@ -1601,7 +1608,7 @@ Proof.
           Hl Hh Hx8 Hwt Hargs Hq Hne Hpar Hk Hst Hrd Heff Hmat
       | Q e ev Hl Hs Hwt
       | Q e Hl Hh Hma ]; intros Hag;
-      destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln).
+      destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* pstep_other *)
       destruct (clone_pending_b (pe_cfg (pcfg_shared Q) e)) eqn:Hp.
       * destruct (clone_fail_errno _ _ Hp Hsucc) as (en & Hen & Hret).
@@ -1609,6 +1616,7 @@ Proof.
         apply px_clone_fail with (en := en) (hq := 0%Z); try assumption.
         -- exact (Hclp eq_refl).
         -- apply (proj2 (Hcln _ _)). right. exists en. split; [exact Hen | reflexivity].
+        -- apply Hnrf.
       * rewrite <- absorb_x_same.
         apply px_other; try assumption.
         -- apply (proj2 (Hxs _ _ _ _ _)). split; [exact Hs | split; reflexivity].
@@ -1627,27 +1635,31 @@ Proof.
       apply px_outside; try assumption. rewrite Hmpe. exact Hma.
 Qed.
 
-(** An extension that claims no pending call of an entry of [P], and
-    whose clone does what the core's own clone does to the namespace
-    model. *)
+(** An extension that claims no pending call of an entry of [P], whose
+    clone does what the core's own clone does to the namespace model, and
+    whose filter drops no clone failure. *)
 Definition ext_released_at (ext : ExtSpec) (segs : list Segment) (P : pconfig) : Prop :=
   forall e, look P (pe_pid e) = Some e ->
     claimed_at ext segs (pe_cfg (pcfg_shared P) e) = false
-    /\ forall hq o,
-         ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
-           (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq o
-         <-> released_clone (pe_nsctx e) (sh_ns (pcfg_shared P)) o.
+    /\ (forall hq o,
+          ext_clone ext (clone_flags_of (pe_cfg (pcfg_shared P) e))
+            (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq o
+          <-> released_clone (pe_nsctx e) (sh_ns (pcfg_shared P)) o)
+    /\ (forall cfg hq en st',
+          ~ ext_clone_refusal ext cfg (clone_flags_of (pe_cfg (pcfg_shared P) e))
+              (cfg_model (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) (sh_ns (pcfg_shared P)) hq en st').
 
 Lemma ext_released_agrees : forall ext segs P,
   ext_released_at ext segs P -> ext_agrees ext segs P.
 Proof.
-  intros ext segs P H e Hl. destruct (H e Hl) as [Hcl Hcln].
-  split; [|split; [|split; [|split]]].
+  intros ext segs P H e Hl. destruct (H e Hl) as (Hcl & Hcln & Hnrf).
+  split; [|split; [|split; [|split; [|split]]]].
   - intros cfg evs r ctx' st'. apply xsstep_unclaimed. exact Hcl.
   - intros _. exact Hcl.
   - intros _. exact Hcl.
   - apply multiproc_ok_unclaimed. exact Hcl.
   - exact Hcln.
+  - exact Hnrf.
 Qed.
 
 Theorem pstep_x_at_released_iff : forall ext segs cfg p P evs r,
@@ -1674,12 +1686,13 @@ Lemma ext_flat_agrees : forall ext segs P,
   ext_flat_at ext segs P -> ext_agrees ext segs P.
 Proof.
   intros ext segs P H e Hl. destruct (H e Hl) as (Hf & Hns & Hcp & Hwt).
-  split; [|split; [|split; [|split]]].
+  split; [|split; [|split; [|split; [|split]]]].
   - intros cfg evs r ctx' st'. apply xsstep_flat. exact Hf.
   - exact Hcp.
   - exact Hwt.
   - apply multiproc_ok_flat. exact Hf.
   - intros hq o. apply (ext_clone_coherent ext); [exact Hf | exact Hns].
+  - intros cfg hq en st'. apply (ext_clone_refusal_coherent ext); [exact Hf | exact Hns].
 Qed.
 
 (** IN THE RELEASED WORLD THE EXTENDED RELATION IS THE CORE'S OWN, claimed
@@ -1696,7 +1709,8 @@ Qed.
 
 Lemma ext_released_at_no_ext : forall segs P, ext_released_at no_ext segs P.
 Proof.
-  intros segs P e _. split; [apply claimed_at_no_ext|]. intros hq o. reflexivity.
+  intros segs P e _. split; [apply claimed_at_no_ext|]. split; [intros hq o; reflexivity|].
+  intros cfg hq en st' Hc. exact Hc.
 Qed.
 
 (** AT [no_ext] THE EXTENDED RELATION IS THE CORE'S OWN. *)

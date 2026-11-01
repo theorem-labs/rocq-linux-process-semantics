@@ -1,8 +1,9 @@
 (** * LinuxProcessSem.Ns.FsOps — namespace creation and file I/O
 
-    Linux 6.18.44 operations for mkdirat (34), symlinkat (36), write (64)
-    and read (63).  The arms work only on the namespace model's own open
-    files, except that read also describes a shared eventfd counter. *)
+    Linux 6.18.44 operations for mkdirat (34), unlinkat (35), symlinkat
+    (36), fchmod (52), write (64) and read (63).  The arms work only on the
+    namespace model's own open files and tmpfs directories, except that
+    read also describes a shared eventfd counter. *)
 
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs Run.
@@ -13,6 +14,8 @@ Local Open Scope Z_scope.
 Definition S_IFDIR : Z := 16384.
 Definition S_IFLNK : Z := 40960.
 Definition PAGE_SIZE : nat := 4096%nat.
+Definition CAP_FOWNER : Z := 3.
+Definition AT_REMOVEDIR : Z := 512.
 
 
 (* =========================================================================
@@ -534,14 +537,209 @@ Definition write_arm : NsArm := fun i m ctx st o =>
   end.
 
 (* =========================================================================
+   fchmod and unlinkat
+   ========================================================================= *)
+
+(** A security module's refusal ([security_path_chmod],
+    [security_inode_setattr], [security_path_unlink],
+    [security_inode_unlink]): any errno. *)
+Definition lsm_errno (e : Z) : bool := (1 <=? e) && (e <=? 4095).
+
+(** INVALID_UID and INVALID_GID ((uid_t) -1, include/linux/uidgid.h): the
+    id no namespace maps, which [vfsuid_valid] refuses. *)
+Definition kid_invalid (k : Z) : bool := Z.eqb k 4294967295.
+
+(** [inode_owner_or_capable] (fs/inode.c): the fsuid owns the inode, or the
+    task has CAP_FOWNER over it ([capable_wrt_inode_uidgid]). *)
+Definition owner_or_capable (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (a : ObjAttr) : bool :=
+  Z.eqb (wc_fsuid cr) (oa_uid a) || capable_over st ctx (task_eff ctx) a CAP_FOWNER.
+
+(** [in_group_or_capable] (fs/inode.c): the fsgid or a supplementary group
+    is the inode's group, or the task has CAP_FSETID over it. *)
+Definition group_or_capable (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (a : ObjAttr) : bool :=
+  in_group cr (oa_gid a) || capable_over st ctx (task_eff ctx) a CAP_FSETID.
+
+Definition set_inode_perm (st : NsState) (i : positive) (perm : Z) : NsState :=
+  with_inodes st (map (fun ino => if Pos.eqb (ino_id ino) i
+                              then mkInode (ino_id ino) (ino_kind ino) perm
+                                           (ino_uid ino) (ino_gid ino) (ino_rdev ino) (ino_bytes ino)
+                                           (ino_empty_dir ino)
+                              else ino) (ns_inodes st)).
+
+(** [fchmod] (52): [SYSCALL_DEFINE2(fchmod)], [vfs_fchmod], [chmod_common]
+    (fs/open.c:631-678); [notify_change], [may_setattr], [setattr_prepare],
+    [setattr_copy] (fs/attr.c); [shmem_setattr] (mm/shmem.c:1298);
+    [inode_owner_or_capable], [in_group_or_capable] (fs/inode.c).  In
+    kernel order: an O_PATH file, EBADF ([fdget] skips FMODE_PATH); a
+    read-only mount or superblock, EROFS ([mnt_want_write]); an inode with
+    an invalid owner or group, EOVERFLOW ([notify_change]); a fsuid that
+    does not own the inode, with no CAP_FOWNER over it, EPERM
+    ([setattr_prepare]); else the new mode [mode & 07777], less S_ISGID
+    when the inode's group is not the fsgid or a supplementary group and
+    the task has no CAP_FSETID over it.  For a tmpfs file or directory
+    only: the tables hold no immutable or append-only inode, no seal, no
+    ACL and no lease.  A procfs, devpts, host or anonymous file declines.
+    The security module's refusals come after EROFS ([fsops_injected]).
+    Kind: exact. *)
+Definition fchmod_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) (f : NsFile)
+    : ext_outcome :=
+  let mode := Z.land (bv_unsigned (in_arg i 1)) S_IALLUGO in
+  match nf_kind f with
+  | NfPath _ => ns_errno EBADF m ctx st
+  | NfFile l _ | NfDir l _ =>
+      match l, loc_mnt_sb st l with
+      | LDentry _ d, Some (mt, sb) =>
+          match sb_kind sb, dentry_inode st d, loc_attr m ctx st l with
+          | SbTmpfs, Some ino, Some a =>
+              let cr := walk_creds m in
+              if mf_ro (mnt_flags mt) || sb_rdonly sb then ns_errno EROFS m ctx st
+              else if kid_invalid (ino_uid ino) || kid_invalid (ino_gid ino) then ns_errno EOVERFLOW m ctx st
+              else if negb (owner_or_capable st ctx cr a) then ns_errno EPERM m ctx st
+              else
+                let mode' := if group_or_capable st ctx cr a then mode else Z.land mode (Z.lnot S_ISGID) in
+                ns_ret (Z_to_bv 64 0) m ctx (set_inode_perm st (ino_id ino) mode')
+          | _, _, _ => EUnmodeled
+          end
+      | _, _ => EUnmodeled
+      end
+  | _ => EUnmodeled
+  end.
+
+Definition fchmod_arm : NsArm := fun i m ctx st o =>
+  match ns_file_of m st (fd_word (in_arg i 0)) with
+  | Some (_, f) => with_injected lsm_errno (fun i' m' ctx' st' o' => o' = fchmod_fn i' m' ctx' st' f) i m ctx st o
+  | None => released i m ctx st o
+  end.
+
+(** [d_mountpoint] (include/linux/dcache.h): some mount, in any mount
+    namespace, is mounted on dentry [d]. *)
+Definition d_mountpoint (st : NsState) (d : positive) : bool :=
+  existsb (fun mt => match mnt_parent mt with
+                     | Some _ => Pos.eqb (mnt_mountpoint mt) d
+                     | None => false
+                     end) (ns_mounts st).
+
+(** [is_local_mountpoint] (fs/mount.h:176; [__is_local_mountpoint],
+    fs/namespace.c:844): a mount point, and some mount of the caller's
+    mount namespace has [d] as its mount point (a namespace's root mount
+    has its own root there). *)
+Definition local_mountpoint (st : NsState) (ctx : NsCtx) (d : positive) : bool :=
+  d_mountpoint st d
+  && existsb (fun mt => Pos.eqb (mnt_ns mt) (cx_mount ctx)
+                        && Pos.eqb (match mnt_parent mt with
+                                    | Some _ => mnt_mountpoint mt
+                                    | None => mnt_root mt
+                                    end) d)
+             (ns_mounts st).
+
+(** The name of dentry [d] removed ([d_delete], fs/dcache.c): the dentry
+    stays, unlinked, for whatever still holds it. *)
+Definition set_unlinked (st : NsState) (d : positive) : NsState :=
+  with_tree st (map (fun x => if Pos.eqb (d_id x) d
+                              then mkDentryRec (d_id x) (d_sb x) (d_parent x) (d_name x) (d_inode x) true
+                              else x) (ns_dentries st))
+            (ns_inodes st).
+
+(** [do_unlinkat] (fs/namei.c:4705) after the parent walk, for a normal last
+    component [name] in directory [parent]; [slash]: the path ends with a
+    slash.  In kernel order: a read-only mount or superblock, EROFS
+    ([mnt_want_write]); [lookup_one_qstr_excl] (fs/namei.c:1685): a name
+    longer than NAME_MAX, ENAMETOOLONG ([simple_lookup], fs/libfs.c); no
+    such name, ENOENT; a trailing slash, EISDIR for a directory and
+    ENOTDIR otherwise; [may_delete] (fs/namei.c:3255): an invalid owner or
+    group, EOVERFLOW; write and search permission on the directory
+    ([inode_permission]); a sticky directory, EPERM unless the fsuid owns
+    the file or the directory or the task has CAP_FOWNER over the file
+    ([__check_sticky], fs/namei.c:3222); a directory, EISDIR; then
+    [vfs_unlink] (fs/namei.c:4654): a mount point in the caller's mount
+    namespace, EBUSY; [shmem_unlink] (mm/shmem.c:4006), which does not
+    fail; [d_delete].  A tmpfs directory only: a procfs, devpts or host
+    directory declines, and so does a dentry that only another mount
+    namespace mounts on ([detach_mounts] would detach those mounts). *)
+Definition unlink_at_parent (m : Model) (ctx : NsCtx) (st : NsState) (reads : list (word * nat))
+    (parent : Loc) (name : list byte) (slash : bool) : ext_outcome :=
+  match parent, loc_mnt_sb st parent, loc_attr m ctx st parent with
+  | LDentry mn d, Some (mt, sb), Some dattr =>
+      match sb_kind sb with
+      | SbTmpfs =>
+          if mf_ro (mnt_flags mt) || sb_rdonly sb then err reads EROFS m ctx st
+          else if Nat.ltb NAME_MAX (length name) then err reads ENAMETOOLONG m ctx st
+          else match child_dentry st d name with
+               | None => err reads ENOENT m ctx st
+               | Some x =>
+                   match loc_attr m ctx st (LDentry mn (d_id x)) with
+                   | None => EUnmodeled
+                   | Some va =>
+                       let cr := walk_creds m in
+                       let isdir := kind_is IDir va in
+                       if slash then err reads (if isdir then EISDIR else ENOTDIR) m ctx st
+                       else if kid_invalid (oa_uid va) || kid_invalid (oa_gid va)
+                       then err reads EOVERFLOW m ctx st
+                       else match inode_permission st ctx cr (task_eff ctx) parent sb dattr
+                                                   (MAY_WRITE + MAY_EXEC) with
+                            | Some e => err reads e m ctx st
+                            | None =>
+                                if has (oa_perm dattr) S_ISVTX
+                                   && negb (Z.eqb (wc_fsuid cr) (oa_uid va) || Z.eqb (wc_fsuid cr) (oa_uid dattr)
+                                            || capable_over st ctx (task_eff ctx) va CAP_FOWNER)
+                                then err reads EPERM m ctx st
+                                else if isdir then err reads EISDIR m ctx st
+                                else if local_mountpoint st ctx (d_id x) then err reads EBUSY m ctx st
+                                else if d_mountpoint st (d_id x) then EUnmodeled
+                                else ans reads (Z_to_bv 64 0) [] m ctx (set_unlinked st (d_id x))
+                            end
+                   end
+               end
+      | _ => EUnmodeled
+      end
+  | _, _, _ => EUnmodeled
+  end.
+
+(** [unlinkat] (35): [SYSCALL_DEFINE3(unlinkat)] (fs/namei.c:4775): a flag
+    other than AT_REMOVEDIR, EINVAL; AT_REMOVEDIR ([do_rmdir]) declines;
+    then [do_unlinkat]: the path ([getname]: EFAULT, ENAMETOOLONG, ENOENT
+    for an empty one), the parent walk ([filename_parentat]) and its
+    errors, a last component that is "." or ".." or the root, EISDIR, and
+    [unlink_at_parent].  The security module's refusals come after the
+    lookup ([fsops_injected]).  Kind: exact on tmpfs. *)
+Definition unlinkat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
+  let pathp := in_arg i 1 in
+  let flags := s32 (in_arg i 2) in
+  if negb (Z.eqb (Z.land flags (Z.lnot AT_REMOVEDIR)) 0) then ns_errno EINVAL m ctx st
+  else if has flags AT_REMOVEDIR then EUnmodeled
+  else
+    let reads := path_reads i pathp in
+    match path_arg i pathp with
+    | PFault => err reads EFAULT m ctx st
+    | PTooLong => err reads ENAMETOOLONG m ctx st
+    | POk [] => err reads ENOENT m ctx st
+    | POk p =>
+        match walk_parent_from m ctx st (walk_creds m) (in_arg i 0) p
+                               (mkWalkFlags false false false false false) with
+        | ((WErr e, _, _), _) => err reads e m ctx st
+        | ((WOver, _, _), _) => EUnmodeled
+        | ((WOk parent, name, LastNorm), _) =>
+            unlink_at_parent m ctx st reads parent name (path_trailing_slash p)
+        | ((WOk _, _, _), _) => err reads EISDIR m ctx st
+        end
+    end.
+
+Definition unlinkat_arm : NsArm :=
+  with_injected lsm_errno (fun i m ctx st o => o = unlinkat_fn i m ctx st).
+
+(* =========================================================================
    Exports
    ========================================================================= *)
 
 Definition fsops_arms : list (Z * NsArm) :=
-  [(34, mkdirat_arm); (36, symlinkat_arm); (63, read_arm); (64, write_arm)].
+  [(34, mkdirat_arm); (35, unlinkat_arm); (36, symlinkat_arm); (52, fchmod_arm); (63, read_arm);
+   (64, write_arm)].
 
 (** ENOSPC and ENOMEM are allocation and filesystem-space outcomes after a
-    tmpfs create reaches its file-system operation. *)
+    tmpfs create reaches its file-system operation; unlinkat and fchmod
+    admit a security module's errno. *)
 Definition fsops_injected : list NsInjected :=
   [mkNsInjected 34 [(fun e => e =? ENOSPC, FamFs); (fun e => e =? ENOMEM, FamAlloc)];
-   mkNsInjected 36 [(fun e => e =? ENOSPC, FamFs); (fun e => e =? ENOMEM, FamAlloc)]].
+   mkNsInjected 35 [(lsm_errno, FamCred)];
+   mkNsInjected 36 [(fun e => e =? ENOSPC, FamFs); (fun e => e =? ENOMEM, FamAlloc)];
+   mkNsInjected 52 [(lsm_errno, FamCred)]].

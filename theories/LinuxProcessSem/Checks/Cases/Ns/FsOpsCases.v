@@ -6,7 +6,7 @@
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Walk Task Files FsOps.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Walk Task Files Mountinfo FsOps.
 Import ListNotations.
 Open Scope Z_scope.
 
@@ -255,3 +255,119 @@ Proof.
     by (vm_compute; reflexivity).
   exact I.
 Qed.
+
+(* ---- unlinkat (35) and fchmod (52) ---- *)
+
+Definition st_of (o : ext_outcome) : option NsState :=
+  match o with EOk _ _ _ s _ => Some s | EUnmodeled => None end.
+Definition unlinked_of (o : ext_outcome) (d : positive) : option bool :=
+  match st_of o with Some s => option_map d_unlinked (find_dentry s d) | None => None end.
+Definition perm_of (o : ext_outcome) (n : positive) : option Z :=
+  match st_of o with Some s => option_map ino_perm (find_inode s n) | None => None end.
+Definition unlink_call (p : list Z) (flags : Z) : SyscallInput :=
+  call 35 [-100; PATH; flags] (path_mem p) (fun _ => None).
+Definition fchmod_call (mode : Z) : SyscallInput := call 52 [3; mode] (fun _ => None) (fun _ => None).
+Definition s_f : list Z := [47; 102].
+Definition s_f_slash : list Z := [47; 102; 47].
+
+(** A tmpfs root owned by uid 0, mode [dir_perm], with the file "f" (owner
+    [fuid]:[fgid], mode 0644) and the mounts [extra] besides the root. *)
+Definition unlink_state (dir_perm fuid fgid : Z) (extra : list Mount) : NsState :=
+  mkNsState (mkMount 1 1 None 1 1 1 no_flags no_flags false false None None :: extra)
+    [root_user] [mkMntNs 1 1 1 false; mkMntNs 2 1 1 false] [mkPidNs 1 None 1 0 0] []
+    [mkSb 1 SbTmpfs 1 1 false 16914836 false false false]
+    [mkDentry 1 1 None [] 1; mkDentry 2 1 (Some 1%positive) (bytes [102]) 2]
+    [mkInode 1 IDir dir_perm 0 0 0 [] false; mkInode 2 IReg 420 fuid fgid 0 (bytes [107]) false]
+    [] (ns_env empty_nsstate).
+
+(** do_unlinkat removes the name: the call returns 0, no lookup finds "f",
+    and the dentry stays, unlinked, for what holds it. *)
+Example unlinkat_removes_name :
+  let o := unlinkat_fn (unlink_call s_f 0) base_model base_ctx file_state in
+  ret_of o = Some 0 /\ unlinked_of o 2 = Some true
+  /\ option_map (fun s => child_dentry s 1 (bytes [102])) (st_of o) = Some None.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** An unlinked file's path in /proc/<pid>/fd ([d_path]) ends with
+    " (deleted)", and a mount whose root it is shows "//deleted" in
+    mountinfo ([dentry_path]). *)
+Example unlinked_paths :
+  let o := unlinkat_fn (unlink_call s_f 0) base_model base_ctx file_state in
+  option_map (fun s => option_map (map bv_unsigned) (d_path s base_ctx (LDentry 1 2))) (st_of o)
+    = Some (Some [47; 102; 32; 40; 100; 101; 108; 101; 116; 101; 100; 41])
+  /\ option_map (fun s => option_map (map bv_unsigned) (Mountinfo.sb_path s 2)) (st_of o)
+    = Some (Some [47; 102; 47; 47; 100; 101; 108; 101; 116; 101; 100]).
+Proof. vm_compute. split; reflexivity. Qed.
+
+(** A flag other than AT_REMOVEDIR is EINVAL; AT_REMOVEDIR declines. *)
+Example unlinkat_bad_flag :
+  ret_of (unlinkat_fn (unlink_call s_f 1) base_model base_ctx file_state) = Some (-22)
+  /\ unlinkat_fn (unlink_call s_f 512) base_model base_ctx file_state = EUnmodeled.
+Proof. vm_compute. split; reflexivity. Qed.
+
+(** No such name, ENOENT; a trailing slash after a regular file, ENOTDIR. *)
+Example unlinkat_missing_and_slash :
+  ret_of (unlinkat_fn (unlink_call s_new 0) base_model base_ctx file_state) = Some (-2)
+  /\ ret_of (unlinkat_fn (unlink_call s_f_slash 0) base_model base_ctx file_state) = Some (-20).
+Proof. vm_compute. split; reflexivity. Qed.
+
+(** A read-only mount, EROFS. *)
+Example unlinkat_readonly :
+  ret_of (unlinkat_fn (unlink_call s_exists 0) base_model base_ctx existing_ro_state) = Some (-30).
+Proof. vm_compute. reflexivity. Qed.
+
+(** A directory, EISDIR. *)
+Example unlinkat_directory :
+  let o := mkdirat_fn (call 34 [-100; PATH; 511] (path_mem s_new) (fun _ => None)) base_model base_ctx
+                      base_state in
+  option_map (fun s => ret_of (unlinkat_fn (unlink_call s_new 0) base_model base_ctx s)) (st_of o)
+    = Some (Some (-21)).
+Proof. vm_compute. reflexivity. Qed.
+
+(** In a sticky directory (01777, owner 0) a file of another user is EPERM;
+    without the sticky bit (0777) the unlink succeeds. *)
+Example unlinkat_sticky :
+  ret_of (unlinkat_fn (unlink_call s_f 0) base_model base_ctx (unlink_state 1023 0 0 [])) = Some (-1)
+  /\ ret_of (unlinkat_fn (unlink_call s_f 0) base_model base_ctx (unlink_state 511 0 0 [])) = Some 0.
+Proof. vm_compute. split; reflexivity. Qed.
+
+(** No write permission on the directory (0755, owner 0), EACCES. *)
+Example unlinkat_no_write :
+  ret_of (unlinkat_fn (unlink_call s_f 0) base_model base_ctx (unlink_state 493 1000 1002 [])) = Some (-13).
+Proof. vm_compute. reflexivity. Qed.
+
+(** A mount on "f" in the caller's mount namespace, EBUSY; a mount on it
+    only in another namespace declines (the kernel would detach it). *)
+Example unlinkat_mountpoint :
+  ret_of (unlinkat_fn (unlink_call s_f 0) base_model base_ctx
+            (unlink_state 511 1000 1002 [mkMount 2 1 (Some 1%positive) 2 2 1 no_flags no_flags false false None None]))
+    = Some (-16)
+  /\ unlinkat_fn (unlink_call s_f 0) base_model base_ctx
+       (unlink_state 511 1000 1002 [mkMount 2 2 (Some 1%positive) 2 2 1 no_flags no_flags false false None None])
+     = EUnmodeled.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Definition chmod_file : NsFile := mkNsFile (NfFile (LDentry 1 2) 0) 2 (mkIdCred 1 1000 1002 0).
+
+(** fchmod sets mode & 07777 on the owner's file and keeps S_ISGID when the
+    file's group is the fsgid (02755 = 1517). *)
+Example fchmod_sets_mode :
+  let o := fchmod_fn (fchmod_call 1517) base_model base_ctx file_state chmod_file in
+  ret_of o = Some 0 /\ perm_of o 2 = Some 1517.
+Proof. vm_compute. split; reflexivity. Qed.
+
+(** S_ISGID is dropped when the file's group is not one of the task's
+    groups and the task has no CAP_FSETID (02755 -> 0755 = 493). *)
+Example fchmod_drops_sgid :
+  perm_of (fchmod_fn (fchmod_call 1517) base_model base_ctx (unlink_state 511 1000 7 []) chmod_file) 2
+    = Some 493.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Another user's file, EPERM; a read-only mount, EROFS; an O_PATH file,
+    EBADF. *)
+Example fchmod_refusals :
+  ret_of (fchmod_fn (fchmod_call 420) base_model base_ctx (unlink_state 511 0 0 []) chmod_file) = Some (-1)
+  /\ ret_of (fchmod_fn (fchmod_call 420) base_model base_ctx existing_ro_state chmod_file) = Some (-30)
+  /\ ret_of (fchmod_fn (fchmod_call 420) base_model base_ctx file_state
+               (mkNsFile (NfPath (LDentry 1 2)) 2097152 (mkIdCred 1 1000 1002 0))) = Some (-9).
+Proof. vm_compute. repeat split; reflexivity. Qed.

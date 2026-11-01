@@ -1248,12 +1248,17 @@ Definition prepend_path (st : NsState) (root : Loc) (m d : positive) : option (Z
   end.
 
 (** [d_path] (fs/d_path.c) from the task's root, no marker for a path not
-    under it; an entry of a task's procfs directory is the procfs root's
-    path, the pid and the names below it.  No dentry of the tables is
-    unlinked, so " (deleted)" never shows. *)
+    under it, and " (deleted)" after the path of an unlinked dentry; an
+    entry of a task's procfs directory is the procfs root's path, the pid
+    and the names below it. *)
 Definition d_path (st : NsState) (ctx : NsCtx) (l : Loc) : option (list byte) :=
   match l with
-  | LDentry m d => option_map snd (prepend_path st (ctx_root_loc ctx) m d)
+  | LDentry m d =>
+      let deleted := match find_dentry st d with
+                     | Some x => if d_unlinked x then ascii [32; 40; 100; 101; 108; 101; 116; 101; 100; 41] else []
+                     | None => []
+                     end in
+      option_map (fun p => snd p ++ deleted) (prepend_path st (ctx_root_loc ctx) m d)
   | LProcTask m pid rest =>
       match find_mount (ns_mounts st) m with
       | None => None
@@ -1363,7 +1368,8 @@ Definition unreachable_prefix : list byte :=
     from the root by [prepend_path], "(unreachable)" before it when the cwd
     is not under the root, and its NUL; ENAMETOOLONG past PATH_MAX, ERANGE
     when it does not fit, EFAULT; the length with the NUL.  No cwd of the
-    tables is unlinked (ENOENT).  Kind: exact. *)
+    tables is unlinked (ENOENT): the model unlinks only non-directories
+    ([FsOps.unlinkat_fn]).  Kind: exact. *)
 Definition getcwd_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let buf := in_arg i 0 in
   let size := bv_unsigned (in_arg i 1) in

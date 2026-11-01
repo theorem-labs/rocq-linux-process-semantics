@@ -149,6 +149,104 @@ Proof.
   rewrite last_map_app_single. reflexivity.
 Qed.
 
+(* =========================================================================
+   Halting of the system with an extension
+   ========================================================================= *)
+
+(** The one-process system of [c] in the host's namespaces [st]: the
+    process has [init_nsctx], and [st] is the shared namespace state. *)
+Definition one_proc_in (c : config) (st : NsState) : pconfig :=
+  mkPCfg (pcfg_procs (one_proc c)) (pcfg_root (one_proc c)) (with_sh_ns (pcfg_shared (one_proc c)) st).
+
+Lemma one_proc_in_empty : forall c, one_proc_in c empty_nsstate = one_proc c.
+Proof. reflexivity. Qed.
+
+(** [MustExitP.must_exit_in_p_at] over the extended step: every maximal
+    execution of the system halts, the root on a code in [S] and nothing
+    still running, with no step to the model's error on the way. *)
+Inductive must_exit_in_px_at (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
+    (S : list word) : pconfig -> Prop :=
+| mepxa_halted : forall P c code,
+    root_view P = Some c ->
+    m_halted (cfg_model c) = Some code ->
+    List.In code S ->
+    m_killed (cfg_model c) = None ->
+    terminal P ->
+    must_exit_in_px_at ext segs cfg S P
+| mepxa_running : forall P,
+    ~ terminal P ->
+    (exists evs st, pstep_x_cfg ext segs cfg P evs st) ->
+    (forall evs, ~ pstep_x_cfg ext segs cfg P evs PError) ->
+    (forall evs P', pstep_x_cfg ext segs cfg P evs (PNext P') ->
+                    must_exit_in_px_at ext segs cfg S P') ->
+    must_exit_in_px_at ext segs cfg S P.
+
+(** At [no_ext] it is [MustExitP.must_exit_in_p_at]. *)
+Theorem must_exit_in_px_at_no_ext : forall segs cfg S P,
+  must_exit_in_px_at no_ext segs cfg S P <-> must_exit_in_p_at segs cfg S P.
+Proof.
+  intros segs cfg S P. split.
+  - intros H. induction H as [P c code Hr Hh Hin Hk Ht | P Ht Hex Hne Hall IH].
+    + eapply mepa_halted; eassumption.
+    + apply mepa_running.
+      * exact Ht.
+      * destruct Hex as (evs & st & Hs). exists evs, st. apply pstep_x_cfg_no_ext_iff. exact Hs.
+      * intros evs Hs. apply (Hne evs). apply pstep_x_cfg_no_ext_iff. exact Hs.
+      * intros evs P' Hs. apply (IH evs P'). apply pstep_x_cfg_no_ext_iff. exact Hs.
+  - intros H. induction H as [P c code Hr Hh Hin Hk Ht | P Ht Hex Hne Hall IH].
+    + eapply mepxa_halted; eassumption.
+    + apply mepxa_running.
+      * exact Ht.
+      * destruct Hex as (evs & st & Hs). exists evs, st. apply pstep_x_cfg_no_ext_iff. exact Hs.
+      * intros evs Hs. apply (Hne evs). apply pstep_x_cfg_no_ext_iff. exact Hs.
+      * intros evs P' Hs. apply (IH evs P'). apply pstep_x_cfg_no_ext_iff. exact Hs.
+Qed.
+
+(** The same match on the image and the entry as [MustExitP.must_exit_in_p],
+    from the host's namespaces [st]. *)
+Definition must_exit_in_px (ext : ExtSpec) (cfg : SpuriousCfg) (S : list word) (img : Image)
+    (lim : Z) (en : ExecEntry) (inp : ProcInput) (st : NsState) : Prop :=
+  match img, en with
+  | mkImage segs pc ph, Run.mkEntry sp brk0 mbase rnd =>
+      must_exit_in_px_at ext segs cfg S
+        (one_proc_in (init_config segs pc ph sp brk0 mbase rnd lim inp) st)
+  end.
+
+(** [MustExitP.pholts_within_budget] over the extended step, on the inputs
+    [pre] admits and from each host namespace state [host] admits.  Same
+    quantifier, same environment, same budget premise. *)
+Definition pholts_x_within_budget (ext : ExtSpec) (pre : ProcInput -> Prop) (host : NsState -> Prop)
+    (lim : Z) (allowed : list word) (img : Image) : Prop :=
+  forall (en : ExecEntry) (inp : ProcInput) (st : NsState),
+    valid_entry img en inp ->
+    valid_input inp ->
+    pre inp ->
+    host st ->
+    ~ run_scfg_budget_refused forced_only_cfg img lim en inp ->
+    must_exit_in_px ext forced_only_cfg allowed img lim en inp st.
+
+(** At [no_ext], on every input and from the empty namespace state, it is
+    [MustExitP.pholts_within_budget]. *)
+Theorem pholts_x_within_budget_no_ext : forall lim allowed img,
+  pholts_x_within_budget no_ext (fun _ => True) (fun st => st = empty_nsstate) lim allowed img
+  <-> pholts_within_budget lim allowed img.
+Proof.
+  intros lim allowed img. unfold pholts_x_within_budget, pholts_within_budget.
+  split.
+  - intros H en inp Hv Hi Hb. specialize (H en inp empty_nsstate Hv Hi I eq_refl Hb).
+    destruct img as [segs pc ph], en as [sp brk0 mbase rnd].
+    unfold must_exit_in_px in H. unfold must_exit_in_p, pinit_config.
+    cbv beta iota in H |- *.
+    rewrite one_proc_in_empty in H.
+    apply must_exit_in_px_at_no_ext. exact H.
+  - intros H en inp st Hv Hi _ Hst Hb. subst st. specialize (H en inp Hv Hi Hb).
+    destruct img as [segs pc ph], en as [sp brk0 mbase rnd].
+    unfold must_exit_in_p, pinit_config in H. unfold must_exit_in_px.
+    cbv beta iota in H |- *.
+    rewrite one_proc_in_empty.
+    apply must_exit_in_px_at_no_ext. exact H.
+Qed.
+
 Module ProcsCore <: PROCS_CORE.
 
   Definition Pid : Type := Procs.Pid.

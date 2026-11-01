@@ -300,10 +300,17 @@ Definition mount_new_instance (reads : list (word * nat)) (fstype : option (list
            end
        end.
 
+(** The dentry was unlinked: [lock_mount] refuses to mount on it
+    ([cant_mount], ENOENT).  A walk by name never reaches it, but a
+    /proc/<pid>/fd link can. *)
+Definition dentry_unlinked (st : NsState) (d : positive) : bool :=
+  match find_dentry st d with Some x => d_unlinked x | None => false end.
+
 (** [mount] (fs/namespace.c:4216-4244): type, source and options are copied
     before [do_mount] walks the target; then [path_mount] dispatches by the
     stripped flags.  Kind: exact for the listed bind, propagation and new
-    tmpfs, procfs and devpts forms; other legacy forms decline. *)
+    tmpfs, procfs and devpts forms; other legacy forms, and a bind or new
+    mount on an unlinked target ([dentry_unlinked]), decline. *)
 Definition mount_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let devp := in_arg i 0 in
   let dirp := in_arg i 1 in
@@ -336,10 +343,13 @@ Definition mount_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) 
                            | Some false => err reads EPERM m ctx st
                            | Some true =>
                                if has flags MS_REMOUNT then EUnmodeled
-                               else if has flags MS_BIND then mount_bind reads source i m ctx st target td flags
+                               else if has flags MS_BIND
+                               then (if dentry_unlinked st td then EUnmodeled
+                                     else mount_bind reads source i m ctx st target td flags)
                                else if has flags (MS_SHARED + MS_PRIVATE + MS_SLAVE + MS_UNBINDABLE)
                                then mount_change_type reads i m ctx st target td flags
                                else if has flags MS_MOVE then EUnmodeled
+                               else if dentry_unlinked st td then EUnmodeled
                                else mount_new_instance reads fstype data m ctx st target td flags
                            end
                   end
@@ -473,12 +483,14 @@ Definition move_pivot_refs (ctx : NsCtx) (old_root new_root : positive * positiv
           (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
           (cx_no_new_privs ctx) (cx_dumpable ctx).
 
-(** [pivot_root] uses the table's retained dentry as [d_unlinked = false]. *)
+(** [pivot_root]'s facts on the paths: the new root's dentry is unlinked
+    ([d_unlinked]), and each of the root and the new root is the root of its
+    mount ([path_mounted]). *)
 Definition pivot_paths (st : NsState) (rt rd nr nd : positive) : option PivotPaths :=
   match find_mount (ns_mounts st) rt, find_mount (ns_mounts st) nr,
         find_dentry st nd with
-  | Some root, Some new, Some _ =>
-      Some (mkPivotPaths false (Pos.eqb rd (mnt_root root)) (Pos.eqb nd (mnt_root new)))
+  | Some root, Some new, Some x =>
+      Some (mkPivotPaths (d_unlinked x) (Pos.eqb rd (mnt_root root)) (Pos.eqb nd (mnt_root new)))
   | _, _, _ => None
   end.
 

@@ -36,10 +36,12 @@
     module) are admitted for every clone the model answers; one that
     comes after [alloc_pid] leaves the pid cursors advanced
     ([pid_advanced]).  A core takes a failed clone's shared state from
-    [CnErr] too. *)
+    [CnErr] too.  When every family of environment failure is off, a
+    core drops those refusals ([clone_ns_refusal]), so a forced-only run
+    clones exactly as the tables say. *)
 
 From Stdlib Require Import ZArith List Bool PArith.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Userns Walk Arm UserArms Net.
 Import ListNotations.
 Local Open Scope Z_scope.
@@ -316,4 +318,30 @@ Proof.
   - intros [Ho | (e & He & Ho)]; [left; exact Ho|].
     right. split; [intros Hc; discriminate Hc|].
     exists e, st. split; [exact He | split; [left; reflexivity | exact Ho]].
+Qed.
+
+(** Every family of environment failure is off: the configuration says the
+    environment refuses nothing it is not forced to. *)
+Definition all_families_off (cfg : SpuriousCfg) : bool :=
+  negb (sc_alloc cfg || sc_fs cfg || sc_fd cfg || sc_net cfg || sc_cred cfg || sc_intr cfg).
+
+(** The forced-only filter of [clone_ns] ([Ext.ext_clone_refusal]): when
+    every family is off, a failure that is not the tables' answer is the
+    environment's ([clone_ns]'s second disjunct: an allocation failure, a
+    host count, RLIMIT_NPROC, a cgroup, a fatal signal, a security module)
+    and is dropped.  The released clone of a task in the released world
+    with no namespace bit is never filtered here: the released filter
+    applies to it. *)
+Definition clone_ns_refusal (cfg : SpuriousCfg) (f : Z) (m : Model) (ctx : NsCtx) (st : NsState)
+    (hq e : Z) (st' : NsState) : Prop :=
+  all_families_off cfg = true
+  /\ negb (flat_view ctx st && negb (has_ns_bits f)) = true
+  /\ CnErr e st' <> clone_ns_exact f m ctx st hq.
+
+(** [Ext.ext_clone_refusal_coherent] for [clone_ns_refusal]. *)
+Lemma clone_ns_refusal_coherent : forall cfg f m ctx st hq e st',
+  flat_view ctx st = true -> has_ns_bits f = false ->
+  ~ clone_ns_refusal cfg f m ctx st hq e st'.
+Proof.
+  intros cfg f m ctx st hq e st' Hf Hb (_ & H & _). rewrite Hf, Hb in H. discriminate H.
 Qed.
