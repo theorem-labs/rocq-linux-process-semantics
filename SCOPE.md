@@ -203,10 +203,19 @@ mode answers. QEMU citations are QEMU 10.0.11.
 
 The entries above are the ones the model and QEMU user mode are known to
 differ on. The list is maintained by hand; no tool checks that it is
-complete. A replay of 4,291 recorded traces (19,693 judged system calls)
+complete. A replay of 4,291 recorded traces (`reports/corpus-replay.md`)
 through extracted checkers found twelve system calls where the model
 answers and an older tree declines; each of the twelve was read against
 v6.18.46 and the model answers Linux's at every one.
+
+This sentence used to add "(19,693 judged system calls)". **That figure is
+withdrawn as unmeasured**: no report in `reports/` produces it, and no run
+behind it could be found. The judged-record counts that DO carry a run are
+in `reports/evidence-checked-entry.md`: the corpus holds 23,984 syscall
+records, of which 19,070 reach the boundary, because `--replay` stops a
+trace at its first unreproduced verdict and the records after one are never
+judged. The trace count, 4,291, is measured two ways in
+`reports/evidence-corpus-replay-features.md`.
 
 ## Where older Linux versions differ
 
@@ -446,8 +455,10 @@ not apply.
   name, `Run.valid_input_channel_closed`, in the shape
   `Run.valid_input_abort` has for the abort declaration, and a
   statement that means both readings asks for
-  `Run.valid_input_channel_either` (the stream owner's answer to
-  dispatch://OSSV-266/ask/77724e06). A reader that goes away PART WAY
+  `Run.valid_input_channel_either`. The model pins the reader, and
+  names the reader-gone launch so a proof can ask for it, the shape
+  the abort declaration already has.
+  A reader that goes away PART WAY
   through the output is a third thing the model has no term for, and a
   program whose reader goes away mid-output is outside the model.
 - No write to a regular file fails. The model has no `ENOSPC`, `EDQUOT`
@@ -724,8 +735,9 @@ equivalence) can be true of the model and false of Linux.
   standard output is read; the writing end of `prog | head -1` is
   `Run.valid_input_channel_closed`, named the way
   `Run.valid_input_abort` names the aborting launch, and a statement
-  that means both readings asks for `Run.valid_input_channel_either`
-  (the stream owner's answer to dispatch://OSSV-266/ask/77724e06).
+  that means both readings asks for `Run.valid_input_channel_either`:
+  the model pins the reader, and names the reader-gone launch so a
+  proof can ask for it.
   What is left is NOT the
   SIGPIPE disposition: that was an unstated premise and is now a
   declaration (`State.ProcInput.in_sigpipe_default`, pinned to

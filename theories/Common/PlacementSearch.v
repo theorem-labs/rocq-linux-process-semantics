@@ -7,7 +7,7 @@
     [Mmap.mmap_spec] USED TO say three things about a preference-free
     placement — page-aligned, inside the user address space, disjoint
     from every recorded mapping — and leave the choice to the
-    nondeterminism monad.  SINCE OSSV-231 IT SAYS WHERE: the fresh-grant
+    nondeterminism monad.  SINCE THE PLACEMENT WORK IT SAYS WHERE: the fresh-grant
     arms choose with [Mmap.linux_place], which has at most one solution.
     So the three conditions are still NECESSARY ([linux_place_admissible])
     and no longer SUFFICIENT, and a proof that needs one concrete

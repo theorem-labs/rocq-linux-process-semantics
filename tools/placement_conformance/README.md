@@ -17,7 +17,7 @@ it.
 | `probe.c` | The program that makes the calls and writes the log. |
 | `run-kernel.sh` | Builds the kernel, the probe and the initramfs; boots the kernel; writes the log. |
 | `log_to_rocq.py` | Makes a Rocq replay from a placement log. |
-| `start_state_to_rocq.py` | Makes the Rocq A4 check from a start-state log (OSSV-257 A4). |
+| `start_state_to_rocq.py` | Makes the Rocq A4 check from a start-state log (acceptance item A4 of the start-state specification). |
 | `merge_launch.py` | Puts the `.config` lines, the devicetree cache properties and the command line into the launch object. |
 | `patch_dtb.py` | Writes a devicetree in which the boot CPU has caches, which qemu's has not. |
 | `check_start_state.py` | EVIDENCE, not the check: reads a start-state log against a Python transcription of the entry model. |
@@ -301,7 +301,7 @@ declining to answer, which is a scope question, not a wrong answer.
 - The replay reads placement. It does not read the entry stack, the auxiliary
   vector or any file-backed mapping.
 
-## The start state (OSSV-257 A4)
+## The start state (acceptance item A4 of the start-state specification)
 
 The same probe also records the start state Linux gave it: the entry block,
 the auxiliary vector, the stack end, the vvar start and the vDSO bytes. That

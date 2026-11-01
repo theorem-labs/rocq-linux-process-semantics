@@ -2290,7 +2290,7 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
 
 (** PAIR 4 — A WRITE TO A SOCKET WITH NO CONNECTION IS ANSWERED, WHERE
     IT USED TO BE REFUSED PERMANENTLY, AND A CONNECTED SOCKET IS STILL
-    REFUSED (OSSV-266).
+    REFUSED.
 
     [Sys.Fs.ReadWrite.write_spec]'s socket arm used to answer
     [unmodeled] for every socket, and its comment said the refusal was

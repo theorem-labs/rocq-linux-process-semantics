@@ -913,7 +913,7 @@ Example mremap_new_len_over_task_size_is_einval :
 Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (* =========================================================================
-   THE BUDGET AFTER AN mremap SHRINK (dispatch OSSV-236), the twin of the
+   THE BUDGET AFTER AN mremap SHRINK, the twin of the
    brk and munmap traces at the end of [Cases/Mm/Mmap.v], on the same
    state ([budget_s0]: limit 8192, break base S = 65536, P = 69632).  A
    MAP_FIXED|MAP_NORESERVE rw mapping replaces the heap's two pages, a

@@ -19,9 +19,9 @@ the pull request's owner the hour it was measured.
 | --- | --- |
 | commit under test | `d4d2d93e776c445bcbc44387bd3a0eaa04cee543`, a fresh `git archive --prefix=head/` export, sha256 `f6c9aea55090bb0032582aa681266f4bad2b38f8644ba2e03e3cfdd8c558ebd0`, with its own `_build` |
 | the Python checker | not in that tree: taken from `revision/place` at `88f88a1083c7a47f4525cf0d3eb727bf849df6e9`, export sha256 `cf436dce6ce5b85b6a346f543cddcff6487596f8914efc3496e77ed2f5bced84` |
-| machine | GCE VM `ossv-lpsev-start`, n2-highmem-16, 16 vCPU, 125 GiB, idle during the timing runs |
+| machine | a GCE build machine, n2-highmem-16, 16 vCPU, 125 GiB, idle during the timing runs |
 | image | `rc2-checker:1b59b23d`, `sha256:e9fa8b19d7cbab6127dfa522f9b9a02ad8c086febd809e58510ad96e78e24e14` (Rocq 9.2, OCaml 4.14.3, dune 3.23.0, Python 3.12.3) |
-| raw logs | `/mnt/durable/scratch/lpsev/claim3/` on sami-rocqperf |
+| raw logs | kept on scratch beside the run |
 
 ## 1. The Python evidence run, and why 110 is not reproducible
 
@@ -75,8 +75,8 @@ commit does not.
 ## 2. The ten block lengths, and the published range
 
 `stack_end − sp_at_start` equals the length of the recorded `stack_bytes` in
-every record. Measured twice, once on the VM and once on sami-rocqperf from the
-git objects of `d4d2d93e`:
+every record. Measured twice, once on the build machine and once from the git
+objects of `d4d2d93e`:
 
 | record | bytes |
 | --- | --- |
