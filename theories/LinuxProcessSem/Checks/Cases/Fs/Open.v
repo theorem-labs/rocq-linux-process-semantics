@@ -2277,3 +2277,165 @@ Example openat_crossing_path_is_efault :
        open_a_model
      = CheckReject.
 Proof. split; [|split; [|split; [|split]]]; check_eq. Qed.
+
+(* =========================================================================
+   Paths under /proc ([Fs.Open.openat_proc_spec]), in the words
+   bubblewrap 0.13.1's parent and monitor issue on Linux 6.18.44 (their
+   QEMU trace): [openat(-100, "/proc", 0x208000)],
+   [openat(-100, "/proc/sys/kernel/overflowuid", 0x88000)] and
+   [openat(3, "<pid>/ns", 0x208000)].  0x208000 is O_PATH|O_LARGEFILE and
+   0x88000 is O_RDONLY|O_LARGEFILE|O_CLOEXEC.
+
+   Before [State.FdOpaque] the model declined every one of them: the
+   flag gate refused O_PATH, and the separator guard refused the sysctl
+   name.  Each example pairs the new answer with a CONTROL the old text
+   answers the same way.
+   ========================================================================= *)
+
+(** A path image: [bs] and its NUL at 8192, nothing else mapped. *)
+Definition proc_path_mem (bs : list byte) : word -> option byte :=
+  bytes_at 8192 (bs ++ [0]).
+
+Definition s_proc : list byte := [47; 112; 114; 111; 99].
+Definition s_overflowuid : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 121; 115; 47; 107; 101; 114; 110; 101;
+   108; 47; 111; 118; 101; 114; 102; 108; 111; 119; 117; 105; 100].
+Definition s_overflowgid : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 121; 115; 47; 107; 101; 114; 110; 101;
+   108; 47; 111; 118; 101; 114; 102; 108; 111; 119; 103; 105; 100].
+Definition s_pid_ns : list byte := [49; 50; 51; 47; 110; 115].              (* "123/ns" *)
+Definition s_proc_pid_ns : list byte :=
+  [47; 112; 114; 111; 99; 47; 49; 50; 51; 47; 110; 115].                   (* "/proc/123/ns" *)
+Definition s_etc_x : list byte := [47; 101; 116; 99; 47; 120].              (* "/etc/x" *)
+Definition s_proc_dotdot_etc : list byte :=
+  [47; 112; 114; 111; 99; 47; 46; 46; 47; 101; 116; 99].                   (* "/proc/../etc" *)
+Definition s_proc_self_maps : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 109; 97; 112; 115]. (* "/proc/self/maps" *)
+
+Definition proc_open_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+
+Definition proc_open_in (dirfd : word) (bs : list byte) (fl : Z) : SyscallInput :=
+  mkInput 56 [dirfd; 8192; Z_to_bv 64 fl; 0; 0; 0] (proc_path_mem bs) (fun _ => None).
+
+(** [m] with the opaque object [o] at [fd], which is what an answered
+    open leaves. *)
+Definition proc_opened (m : Model) (fd : word) (o : OpaqueFd) : Model :=
+  with_fds (fd_insert (m_fds m) fd (FdOpaque o)) m.
+
+(** [openat(-100, "/proc", O_PATH|O_LARGEFILE)]: the lowest free
+    descriptor holding [OProcPath "/proc"], or any errno, and the six
+    pathname bytes on the copy-in ledger either way.  The O_PATH words
+    beside it (with O_DIRECTORY, O_NOFOLLOW, O_CLOEXEC) answer alike.
+
+    THE CONTROLS decline in the old text and the new: O_PATH on a name
+    outside procfs, a ".." that would climb out of /proc, and O_PATH
+    beside an access mode. *)
+Example openat_proc_root_o_path :
+  check_syscall (proc_open_in AT_FDCWD s_proc 0x208000)
+    (with_copyins [(8192, 6%nat)] (mkEffect 3 [] [])) proc_open_model
+  = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc)) []
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc 0x208000)
+       (with_copyins [(8192, 6%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       proc_open_model
+     = CheckOk proc_open_model []
+  (* not any descriptor: the lowest free one *)
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc 0x208000)
+       (with_copyins [(8192, 6%nat)] (mkEffect 4 [] [])) proc_open_model
+     = CheckReject
+  (* and the pathname fetch is on the ledger *)
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc 0x208000)
+       (mkEffect 3 [] []) proc_open_model
+     = CheckReject
+  (* O_PATH|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC *)
+  /\ check_syscall
+       (proc_open_in AT_FDCWD s_proc (O_PATH + O_DIRECTORY + O_NOFOLLOW + O_CLOEXEC))
+       (with_copyins [(8192, 6%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc)) []
+  (* the controls *)
+  /\ check_syscall (proc_open_in AT_FDCWD s_etc_x 0x208000)
+       (with_copyins [(8192, 7%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckUnmodeled
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc_dotdot_etc 0x208000)
+       (with_copyins [(8192, 13%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckUnmodeled
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc (O_PATH + O_RDWR))
+       (with_copyins [(8192, 6%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** [openat(-100, "/proc/sys/kernel/overflowuid",
+    O_RDONLY|O_LARGEFILE|O_CLOEXEC)] and its [overflowgid] twin: an
+    [OProcFile] descriptor at the lowest free fd, or any errno.
+
+    THE CONTROLS decline in the old text and the new: O_RDONLY on a
+    procfs name outside /proc/sys, and a write open of the sysctl. *)
+Example openat_proc_sys_read_only :
+  check_syscall (proc_open_in AT_FDCWD s_overflowuid 0x88000)
+    (with_copyins [(8192, 29%nat)] (mkEffect 3 [] [])) proc_open_model
+  = CheckOk (proc_opened proc_open_model 3 (OProcFile s_overflowuid)) []
+  /\ check_syscall (proc_open_in AT_FDCWD s_overflowgid 0x88000)
+       (with_copyins [(8192, 29%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckOk (proc_opened proc_open_model 3 (OProcFile s_overflowgid)) []
+  /\ check_syscall (proc_open_in AT_FDCWD s_overflowuid 0x88000)
+       (with_copyins [(8192, 29%nat)] (mkEffect (errno_ret EACCES) [] []))
+       proc_open_model
+     = CheckOk proc_open_model []
+  (* the controls *)
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc_self_maps 0x88000)
+       (with_copyins [(8192, 16%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckUnmodeled
+  /\ check_syscall (proc_open_in AT_FDCWD s_overflowuid O_WRONLY)
+       (with_copyins [(8192, 29%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** [openat(3, "<pid>/ns", O_PATH|O_LARGEFILE)] relative to the O_PATH
+    descriptor on "/proc": the name is "/proc/<pid>/ns", and the new
+    descriptor is the lowest free one, 4.
+
+    THE CONTROL declines in the old text and the new: the same relative
+    name from a descriptor that is not an O_PATH one on procfs (fd 1, a
+    channel). *)
+Definition proc_fd_model : Model :=
+  proc_opened proc_open_model 3 (OProcPath s_proc).
+
+Example openat_relative_to_proc_fd :
+  check_syscall (proc_open_in 3 s_pid_ns 0x208000)
+    (with_copyins [(8192, 7%nat)] (mkEffect 4 [] [])) proc_fd_model
+  = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns)) []
+  /\ check_syscall (proc_open_in 3 s_pid_ns 0x208000)
+       (with_copyins [(8192, 7%nat)] (mkEffect (errno_ret ESRCH) [] []))
+       proc_fd_model
+     = CheckOk proc_fd_model []
+  (* the control *)
+  /\ check_syscall (proc_open_in 1 s_pid_ns 0x208000)
+       (with_copyins [(8192, 7%nat)] (mkEffect 4 [] [])) proc_fd_model
+     = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** NO -EINTR ([Syscall.errno_any]).  bubblewrap retries the /proc
+    O_PATH open and the /proc/sys open on -EINTR without bound
+    ([TEMP_FAILURE_RETRY]); Linux answers -EINTR only when a handler runs
+    or a signal interrupts the call, and neither happens in a modeled
+    run, so the procfs arms admit every errno BUT -EINTR.  Before that
+    exclusion both opens accepted it.  THE CONTROL, accepted before and
+    after: -EACCES. *)
+Example openat_proc_admits_no_eintr :
+  check_syscall (proc_open_in AT_FDCWD s_proc 0x208000)
+    (with_copyins [(8192, 6%nat)] (mkEffect (errno_ret EINTR) [] [])) proc_open_model
+  = CheckReject
+  /\ check_syscall (proc_open_in AT_FDCWD s_overflowuid 0x88000)
+       (with_copyins [(8192, 29%nat)] (mkEffect (errno_ret EINTR) [] []))
+       proc_open_model
+     = CheckReject
+  (* the control *)
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc 0x208000)
+       (with_copyins [(8192, 6%nat)] (mkEffect (errno_ret EACCES) [] []))
+       proc_open_model
+     = CheckOk proc_open_model []
+  /\ check_syscall (proc_open_in AT_FDCWD s_overflowuid 0x88000)
+       (with_copyins [(8192, 29%nat)] (mkEffect (errno_ret EACCES) [] []))
+       proc_open_model
+     = CheckOk proc_open_model [].
+Proof. repeat split; check_eq. Qed.

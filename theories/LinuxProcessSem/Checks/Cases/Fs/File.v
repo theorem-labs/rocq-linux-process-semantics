@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Cases.Fs.File — worked examples over dup (23), dup3 (24), close_range (436)
+(** * LinuxProcessSem.Checks.Cases.Fs.File — worked examples over dup (23), dup3 (24), close_range (436), and the [State.ONsFile] kind
 
     Mirrors [Sys/Fs/File.v], which answers to Linux [fs/file.c]: this
     file holds the worked examples for the syscalls defined there, and
@@ -280,3 +280,86 @@ Lemma close_range_declines_known_flags : forall eff,
   /\ check_syscall (close_range_in 3 4294967295 2) eff dup_model = CheckUnmodeled
   /\ check_syscall (close_range_in 3 4294967295 6) eff dup_model = CheckUnmodeled.
 Proof. intro eff. repeat split; vm_compute; reflexivity. Qed.
+
+(* =========================================================================
+   [State.ONsFile]: a descriptor on an open file that the
+   namespace-and-mount model of lane L11 holds under a handle.  These
+   examples span the descriptor-level calls, not only fs/file.c's,
+   because what they pin is the KIND's rule: the object behind the handle
+   may be a directory, a regular file, a procfs file, an eventfd or a
+   socket, so only the answers Linux gives every open file alike are
+   given (close, and fcntl's F_SETFD and F_GETFD), and every other call
+   on it declines.  No arm mints one, so a run from [init_config] never
+   meets these; the model before this kind had no way to hold one.
+   ========================================================================= *)
+
+(** fd 3 holds a lane-L11 file under handle 7, fd 4 the read-only file
+    "f" = "hi", fd 5 the directory.  The lowest free fd is 6. *)
+Definition ns_model : Model :=
+  mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+           (3, FdOpaque (ONsFile 7)); (4, FdFile [102] 1); (5, FdDir)]
+    (mkVmMaps [] [] 0 0 demo_limit) IEof [([102], [104; 105])] None None
+    None.
+
+Definition fd_call (no a0 a1 a2 : word) : SyscallInput :=
+  mkInput no [a0; a1; a2; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+(** DECLINED on fd 3: read, write, fstat, fcntl(F_GETFL), dup,
+    ioctl(TIOCGWINSZ) and lseek, whatever errno the kernel claims. *)
+Example ns_file_declines_every_kind_dependent_call :
+  check_syscall (fd_call 63 3 0x10000 16) (mkEffect (errno_ret EBADF) [] []) ns_model
+  = CheckUnmodeled
+  /\ check_syscall (fd_call 64 3 0x10000 16) (mkEffect (errno_ret EBADF) [] []) ns_model
+     = CheckUnmodeled
+  /\ check_syscall (fd_call 80 3 0x10000 0) (mkEffect (errno_ret EBADF) [] []) ns_model
+     = CheckUnmodeled
+  /\ check_syscall (fd_call 25 3 F_GETFL 0) (mkEffect 0 [] []) ns_model
+     = CheckUnmodeled
+  /\ check_syscall (fd_call 23 3 0 0) (mkEffect 6 [] []) ns_model
+     = CheckUnmodeled
+  /\ check_syscall (fd_call 29 3 TIOCGWINSZ 0x10000) (mkEffect (errno_ret ENOTTY) [] [])
+       ns_model
+     = CheckUnmodeled
+  /\ check_syscall (fd_call 62 3 0 0) (mkEffect 0 [] []) ns_model
+     = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** ANSWERED on fd 3: fcntl(F_SETFD) is 0, fcntl(F_GETFD) is 0 or
+    FD_CLOEXEC, and close is 0 and removes the entry.  THE CONTROLS,
+    which the model before this kind answered the same way: the same
+    calls on fd 4, a closed fd's -EBADF for the declined ones, and dup of
+    the directory at fd 5. *)
+Example ns_file_answers_the_kind_blind_calls :
+  check_syscall (fd_call 25 3 F_SETFD FD_CLOEXEC) (mkEffect 0 [] []) ns_model
+  = CheckOk ns_model []
+  /\ check_syscall (fd_call 25 3 F_GETFD 0) (mkEffect 0 [] []) ns_model
+     = CheckOk ns_model []
+  /\ check_syscall (fd_call 25 3 F_GETFD 0) (mkEffect FD_CLOEXEC [] []) ns_model
+     = CheckOk ns_model []
+  /\ check_syscall (fd_call 57 3 0 0) (mkEffect 0 [] []) ns_model
+     = CheckOk (with_fds (fd_remove (m_fds ns_model) 3) ns_model) []
+  (* the controls *)
+  /\ check_syscall (fd_call 25 4 F_SETFD FD_CLOEXEC) (mkEffect 0 [] []) ns_model
+     = CheckOk ns_model []
+  /\ check_syscall (fd_call 57 4 0 0) (mkEffect 0 [] []) ns_model
+     = CheckOk (with_fds (fd_remove (m_fds ns_model) 4) ns_model) []
+  /\ check_syscall (fd_call 63 9 0x10000 16) (mkEffect (errno_ret EBADF) [] []) ns_model
+     = CheckOk ns_model []
+  /\ check_syscall (fd_call 80 9 0x10000 0) (mkEffect (errno_ret EBADF) [] []) ns_model
+     = CheckOk ns_model []
+  /\ check_syscall (fd_call 23 5 0 0) (mkEffect 6 [] []) ns_model
+     = CheckOk (with_fds (fd_insert (m_fds ns_model) 6 FdDir) ns_model) [].
+Proof. repeat split; check_eq. Qed.
+
+(** A LOCK IT MAY HOLD.  The file behind handle 7 may be "f" itself, so
+    while fd 3 is open flock on fd 4 declines ([Locks.path_openers]
+    counts the handle for every path).  THE CONTROL is the old answer:
+    with no such descriptor ([dup_model], where fd 3 is the only opener
+    of "f"), the same shared lock is 0. *)
+Example ns_file_blocks_the_sole_opener_flock :
+  (* 1 is LOCK_SH *)
+  check_syscall (fd_call 32 4 1 0) (mkEffect 0 [] []) ns_model
+  = CheckUnmodeled
+  /\ check_syscall (fd_call 32 3 1 0) (mkEffect 0 [] []) dup_model
+     = CheckOk dup_model [].
+Proof. split; check_eq. Qed.
