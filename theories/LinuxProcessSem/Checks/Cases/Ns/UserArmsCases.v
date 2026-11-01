@@ -107,20 +107,38 @@ Qed.
 Definition only_or_env (o expect : ext_outcome) (m : Model) (ctx : NsCtx) (st : NsState) : Prop :=
   o = expect \/ exists e, (1 <= e <= 4095) /\ o = ns_errno e m ctx st.
 
-(** The limit of a sealed namespace reached (one namespace charged, limit
-    1): ENOSPC, and no success. *)
+(** The limit of a sealed namespace reached by a namespace the caller is
+    in: namespace 2 (limit 1) has one child, namespace 3, owned by kuid
+    1000, and the caller is in 3, so 3 is held; a new namespace from 3 is
+    also charged to (2, 1000): ENOSPC, and no success. *)
+Definition ns2lim : UserNs := mkUserNs 2 (Some 1%positive) 1 1000 None None true false 1 true.
+Definition ns3 : UserNs := mkUserNs 3 (Some 2%positive) 2 1000 None None true false INT_MAX true.
+
 Example unshare_limit_sealed : forall m o,
-  unshare_arm (call CLONE_NEWUSER) (with_creds (creds 1000) m) (task 1 (1%positive, 1%positive) nocaps)
-              (world [ns2; init_uns 1 true]) o
-  -> only_or_env o (ns_errno ENOSPC (with_creds (creds 1000) m) (task 1 (1%positive, 1%positive) nocaps)
-                             (world [ns2; init_uns 1 true]))
-                 (with_creds (creds 1000) m) (task 1 (1%positive, 1%positive) nocaps)
-                 (world [ns2; init_uns 1 true]).
+  unshare_arm (call CLONE_NEWUSER) (with_creds (creds 1000) m) (task 3 (1%positive, 1%positive) nocaps)
+              (world [ns3; ns2lim; init_uns 100 true]) o
+  -> only_or_env o (ns_errno ENOSPC (with_creds (creds 1000) m) (task 3 (1%positive, 1%positive) nocaps)
+                             (world [ns3; ns2lim; init_uns 100 true]))
+                 (with_creds (creds 1000) m) (task 3 (1%positive, 1%positive) nocaps)
+                 (world [ns3; ns2lim; init_uns 100 true]).
 Proof.
   intros m o H. unfold only_or_env.
-  rewrite (unshare_arm_newuser _ _ _ _ _ (init_uns 1 true) false) in H;
+  rewrite (unshare_arm_newuser _ _ _ _ _ ns3 false) in H;
     [| reflexivity | reflexivity | reflexivity].
   destruct H as [H|H]; [left; vm_compute in H; exact H | right; exact H].
+Qed.
+
+(** The same count reached by a namespace the caller is not in: Linux may
+    have freed it, so the new namespace may fit: ENOSPC and the success
+    are both answers. *)
+Example unshare_limit_unheld_enospc : forall m,
+  unshare_arm (call CLONE_NEWUSER) (with_creds (creds 1000) m) (task 1 (1%positive, 1%positive) nocaps)
+              (world [ns2; init_uns 1 true])
+              (ns_errno ENOSPC (with_creds (creds 1000) m) (task 1 (1%positive, 1%positive) nocaps)
+                        (world [ns2; init_uns 1 true])).
+Proof.
+  intros m. rewrite (unshare_arm_newuser _ _ _ _ _ (init_uns 1 true) false);
+    [left; vm_compute; left; reflexivity | reflexivity | reflexivity | reflexivity].
 Qed.
 
 (** Under a namespace that is not sealed, ENOSPC is one answer among

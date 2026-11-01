@@ -122,6 +122,11 @@ Definition cap_data (tocopy : Z) (c : CapSets) : list byte :=
   ++ (if tocopy =? 2 then h (cap_effective c) ++ h (cap_permitted c) ++ h (cap_inheritable c)
       else []).
 
+(** An errno answer after the user reads [reads]. *)
+Definition errno_after (reads : list (word * nat)) (e : Z) (m : Model) (ctx : NsCtx) (st : NsState)
+    : ext_outcome :=
+  EOk (with_copyins reads (mkEffect (errno_ret e) [] [])) m ctx st [].
+
 (** [capget] (90): [SYSCALL_DEFINE2(capget)], [cap_validate_magic],
     [cap_get_target_pid], [cap_capget] (kernel/capability.c,
     security/commoncap.c).  A NULL data pointer answers 0 for a bad
@@ -131,25 +136,27 @@ Definition cap_data (tocopy : Z) (c : CapSets) : list byte :=
 Definition capget_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let header := in_arg i 0 in
   let dataptr := in_arg i 1 in
+  let r1 := [(header, 4%nat)] in
+  let r2 := [(header, 4%nat); ((header + Z_to_bv 64 4)%bv, 4%nat)] in
   match validate_magic i header with
   | MagicFault => ns_errno EFAULT m ctx st
   | MagicUnmapped => EUnmodeled
   | MagicBad => bad_magic i m ctx st header (if w_is0 dataptr then 0 else - EINVAL)
   | MagicOk tocopy =>
       if w_is0 dataptr then
-        EOk (with_copyins [(header, 4%nat)] (mkEffect (Z_to_bv 64 0) [] [])) m ctx st []
+        EOk (with_copyins r1 (mkEffect (Z_to_bv 64 0) [] [])) m ctx st []
       else match get_u32 i (header + Z_to_bv 64 4)%bv with
-           | GetFault => ns_errno EFAULT m ctx st
+           | GetFault => errno_after r1 EFAULT m ctx st
            | GetUnmapped => EUnmodeled
            | GetVal pv =>
                let pid := (if pv <? 2147483648 then pv else pv - 4294967296) in
-               if pid <? 0 then ns_errno EINVAL m ctx st
+               if pid <? 0 then errno_after r2 EINVAL m ctx st
                else if negb ((pid =? 0) || (match task_pid ctx with Some p => pid =? p | None => false end))
                then EUnmodeled
                else match put_ok i dataptr (12 * tocopy) with
-                    | PutFault => ns_errno EFAULT m ctx st
+                    | PutFault => errno_after r2 EFAULT m ctx st
                     | PutPartial => EUnmodeled
-                    | PutOk => EOk (with_copyins [(header, 4%nat); ((header + Z_to_bv 64 4)%bv, 4%nat)]
+                    | PutOk => EOk (with_copyins r2
                                    (mkEffect (Z_to_bv 64 0) [(dataptr, cap_data tocopy (cx_caps ctx))] []))
                                  m ctx st []
                     end
@@ -186,13 +193,14 @@ Definition capset_stage (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSta
   | MagicBad => inl (bad_magic i m ctx st header (- EINVAL))
   | MagicOk tocopy =>
       match get_u32 i (header + Z_to_bv 64 4)%bv with
-      | GetFault => inl (ns_errno EFAULT m ctx st)
+      | GetFault => inl (errno_after [(header, 4%nat)] EFAULT m ctx st)
       | GetUnmapped => inl EUnmodeled
       | GetVal pv =>
           let pid := (if pv <? 2147483648 then pv else pv - 4294967296) in
           if negb ((pid =? 0) || (match task_pid ctx with Some p => pid =? p | None => false end))
-          then inl (ns_errno EPERM m ctx st)
-          else if negb (access_okb data (12 * tocopy)) then inl (ns_errno EFAULT m ctx st)
+          then inl (errno_after [(header, 4%nat); ((header + Z_to_bv 64 4)%bv, 4%nat)] EPERM m ctx st)
+          else if negb (access_okb data (12 * tocopy))
+          then inl (errno_after [(header, 4%nat); ((header + Z_to_bv 64 4)%bv, 4%nat)] EFAULT m ctx st)
           else match read_bytes_map (in_mem i) data (Z_to_bv 64 (12 * tocopy)) with
                | None => inl EUnmodeled
                | Some bs =>

@@ -462,30 +462,48 @@ Definition charge_chain (U : list UserNs) (parent : UserNs) (owner : Z) : list (
                         | None => []
                         end) (ancestry U parent).
 
-(** The user namespaces of the table charged to ([t], [uid]): those with an
-    ancestor-or-self whose parent is [t] and whose owner is [uid].  The
-    model drops no namespace, so every one counts. *)
-Definition charged_count (U : list UserNs) (t : positive) (uid : Z) : Z :=
+(** The user namespaces of [xs] charged to ([t], [uid]): those with an
+    ancestor-or-self whose parent is [t] and whose owner is [uid]. *)
+Definition charged_among (U xs : list UserNs) (t : positive) (uid : Z) : Z :=
   Z.of_nat (length (List.filter
     (fun x => existsb (fun a => match uns_parent a with
                                 | Some p => Pos.eqb p t && (uns_owner a =? uid)
                                 | None => false
-                                end) (ancestry U x)) U)).
+                                end) (ancestry U x)) xs)).
 
-(** [inc_ucount]'s answer for a new namespace: every charge fits
-    ([atomic_long_inc_below]: the count below the namespace's limit); one
-    at a sealed namespace does not (ENOSPC); or one is at a namespace that
-    is not sealed, whose count the model does not hold (either). *)
+(** The count [inc_ucount] meets at ([t], [uid]) lies between two bounds.
+    The model keeps every namespace it made, but Linux frees a namespace
+    when nothing holds it, so the table's count is an upper bound
+    ([charged_count]).  The caller's own namespace and its ancestors are
+    held (the caller is in the first, each holds its parent), so those of
+    them that are charged are a lower bound ([charged_alive]). *)
+Definition charged_count (U : list UserNs) (t : positive) (uid : Z) : Z := charged_among U U t uid.
+
+Definition charged_alive (U : list UserNs) (caller : positive) (t : positive) (uid : Z) : Z :=
+  match find_userns U caller with
+  | Some c => charged_among U (ancestry U c) t uid
+  | None => 0
+  end.
+
+(** [inc_ucount]'s answer for a new namespace made by a task in user
+    namespace [caller]: every charge fits ([atomic_long_inc_below]: the
+    count below the limit) when each level is sealed and even the table's
+    count is below its limit; ENOSPC when at some sealed level the held
+    namespaces alone reach the limit; else either, the count of a level
+    not being known. *)
 Inductive Charge := ChargeOk | ChargeFull | ChargeEither.
 
-Definition ucount_check (U : list UserNs) (parent : UserNs) (owner : Z) : Charge :=
+Definition ucount_check (U : list UserNs) (caller : positive) (parent : UserNs) (owner : Z) : Charge :=
   let chain := charge_chain U parent owner in
   if existsb (fun p => uns_sealed (fst p)
-                       && negb (charged_count U (uns_id (fst p)) (snd p) <? uns_max_userns (fst p)))
+                       && negb (charged_alive U caller (uns_id (fst p)) (snd p) <? uns_max_userns (fst p)))
              chain
   then ChargeFull
-  else if existsb (fun p => negb (uns_sealed (fst p))) chain then ChargeEither
-  else ChargeOk.
+  else if forallb (fun p => uns_sealed (fst p)
+                            && (charged_count U (uns_id (fst p)) (snd p) <? uns_max_userns (fst p)))
+                  chain
+  then ChargeOk
+  else ChargeEither.
 
 (** [kuid_has_mapping] / [kgid_has_mapping]: some extent's lower range
     holds the kernel id; an unwritten map holds none. *)

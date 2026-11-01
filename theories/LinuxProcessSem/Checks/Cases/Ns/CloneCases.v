@@ -4,7 +4,7 @@
     namespaces, or from a task in a pid namespace the model made, and
     states the child's context or the errno. *)
 
-From Stdlib Require Import ZArith List Bool PArith.
+From Stdlib Require Import ZArith List Bool PArith Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Mount Userns Walk Arm UserArms Net Clone.
 Import ListNotations.
@@ -66,7 +66,7 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** A namespace flag without CLONE_NEWUSER needs CAP_SYS_ADMIN: EPERM. *)
 Example clone_newns_needs_admin : forall m,
-  clone_ns_exact (Z.lor CLONE_NEWNS SIGCHLD) (with_creds (creds 65534) m) caller host 138 = CnErr 1.
+  clone_ns_exact (Z.lor CLONE_NEWNS SIGCHLD) (with_creds (creds 65534) m) caller host 138 = CnErr 1 host.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** A flag the model does not hold (CLONE_VM) declines. *)
@@ -99,4 +99,39 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 Example fork_inside_advances_last : forall m,
   option_map (fun s => map pidns_last (ns_pidns s)) (st_of (clone_ns_exact SIGCHLD m shell inside 2))
   = Some [0; 2].
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** A fork that fails after [alloc_pid] leaves the cursor of the pid
+    namespace the model made one further, so the next fork there gives
+    pid 3; a failure before it leaves the state as it was.  Both are
+    answers. *)
+Example fork_failure_advances_cursor :
+  map pidns_last (ns_pidns (pid_advanced inside 2)) = [0; 1 + 1] := eq_refl.
+
+Example fork_failure_after_alloc_is_answer : forall m,
+  clone_ns SIGCHLD m shell inside 2 (CnErr 12 (pid_advanced inside 2)).
+Proof.
+  intros m. right. split.
+  - vm_compute. intros H. discriminate H.
+  - exists 12, (pid_advanced inside 2). split; [lia | split; [right; reflexivity | reflexivity]].
+Qed.
+
+Example fork_after_failure_pid_3 : forall m,
+  option_map cx_pids (child_of (clone_ns_exact SIGCHLD m shell (pid_advanced inside 2) 3))
+  = Some [(2%positive, 3)].
+Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** A pid namespace at level 32 can have no child: ENOSPC. *)
+Definition deep : NsState :=
+  mkNsState [mkMount 1 1 None 1 1 1 nf nf false false None None]
+            [mkUserNs 1 None 0 0 (Some full) (Some full) true true 100 false]
+            [mkMntNs 1 1 1 true] [mkPidNs 1 None 1 0 0; mkPidNs 7 (Some 1%positive) 1 32 5]
+            [mkNetNs 1 1 [] false] [] [] [] [] (ns_env empty_nsstate).
+
+Definition admin_in_deep : NsCtx :=
+  mkNsCtx 1 1 7 1 [(7%positive, 1)] (1%positive, 1%positive) (1%positive, 1%positive) 18
+          (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [] false 0 1.
+
+Example clone_pid_level_32 : forall m,
+  clone_ns_exact (Z.lor CLONE_NEWPID SIGCHLD) m admin_in_deep deep 6 = CnErr 28 deep.
 Proof. intros m. vm_compute. reflexivity. Qed.

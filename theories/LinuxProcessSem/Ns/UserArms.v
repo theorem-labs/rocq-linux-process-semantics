@@ -118,7 +118,7 @@ Definition unshare_exact (p : UserNs) (chrooted : bool) (m : Model) (ctx : NsCtx
          | NsErr e => o = ns_errno e m ctx st
          end in
   if Nat.ltb 32 (uns_level p) then o = ns_errno ENOSPC m ctx st
-  else match ucount_check (ns_userns st) p euid with
+  else match ucount_check (ns_userns st) (cx_user ctx) p euid with
        | ChargeFull => o = ns_errno ENOSPC m ctx st
        | ChargeEither => o = ns_errno ENOSPC m ctx st \/ after
        | ChargeOk => after

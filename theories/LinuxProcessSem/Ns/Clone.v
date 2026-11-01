@@ -27,8 +27,12 @@
     made, [q] must be the pid the model allocates there.
 
     The environment's refusals (ENOMEM from the allocations, ENOSPC from
-    the namespace counts of the host's user namespace, EAGAIN, any errno
-    of a security module) are admitted whenever a namespace is made. *)
+    the namespace counts of the host's user namespace, EAGAIN from
+    RLIMIT_NPROC or a cgroup controller, EINTR, any errno of a security
+    module) are admitted for every clone the model answers; one that
+    comes after [alloc_pid] leaves the pid cursors advanced
+    ([pid_advanced]).  A core takes a failed clone's shared state from
+    [CnErr] too. *)
 
 From Stdlib Require Import ZArith List Bool PArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
@@ -50,9 +54,12 @@ Definition any_new_ns (f : Z) : bool :=
   has_flag f (fold_left Z.lor [CLONE_NEWNS; CLONE_NEWUTS; CLONE_NEWIPC; CLONE_NEWPID;
                                CLONE_NEWNET] 0).
 
+(** A clone's answer: the child's context and the new shared state; or the
+    errno and the shared state after the failure (a failure after
+    [alloc_pid] leaves the pid cursors advanced); or no answer. *)
 Inductive CloneNs :=
   | CnOk (child : NsCtx) (st : NsState)
-  | CnErr (e : Z)
+  | CnErr (e : Z) (st : NsState)
   | CnUnmodeled.
 
 Definition find_pidns (st : NsState) (p : positive) : option PidNs :=
@@ -124,7 +131,7 @@ Definition clone_creds (m : Model) (ctx : NsCtx) (st : NsState) (f : Z) : NsResu
     match find_userns (ns_userns st) (cx_user ctx), current_chrooted st ctx with
     | Some p, Some chrooted =>
         if Nat.ltb 32 (uns_level p) then NsErr ENOSPC
-        else match ucount_check (ns_userns st) p euid with
+        else match ucount_check (ns_userns st) (cx_user ctx) p euid with
              | ChargeFull => NsErr ENOSPC
              | _ =>
                  if chrooted then NsErr EPERM
@@ -146,12 +153,12 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (q : 
   else
     match clone_creds m ctx st f with
     | NsErr 0 => CnUnmodeled
-    | NsErr e => CnErr e
+    | NsErr e => CnErr e st
     | NsOk cc =>
         let U := cc_users cc in
         let cred := mkIdCred (cc_user cc) (bv_unsigned (cr_euid (m_creds m)))
                              (bv_unsigned (cr_egid (m_creds m))) (cap_effective (cc_caps cc)) in
-        if any_new_ns f && negb (cap_capable U cred (cc_user cc) CAP_SYS_ADMIN) then CnErr EPERM
+        if any_new_ns f && negb (cap_capable U cred (cc_user cc) CAP_SYS_ADMIN) then CnErr EPERM st
         else
           (* the mount namespace *)
           let mnt_part :=
@@ -175,7 +182,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (q : 
                   match find_pidns st active with
                   | Some par =>
                       if negb (in_userns U (pidns_owner par) (cc_user cc)) then inl EINVAL
-                      else if Nat.ltb 32 (pidns_level par) then inl ENOSPC
+                      else if Nat.leb 32 (pidns_level par) then inl ENOSPC
                       else let nid := Pos.succ (max_pidns_id st) in
                            inr (nid, [mkPidNs nid (Some active) (cc_user cc) (S (pidns_level par)) 0])
                   | None => inl 0
@@ -183,7 +190,7 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (q : 
                 else inr (active, []) in
               match pid_part with
               | inl 0 => CnUnmodeled
-              | inl e => CnErr e
+              | inl e => CnErr e st
               | inr (child_ns, new_pidns) =>
                   let st_p := ns_pidns st ++ new_pidns in
                   let chain := pidns_chain (length st_p)
@@ -225,10 +232,26 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (q : 
           end
     end.
 
-(** The answers: the tables' answer or, when a user or another namespace
-    is made, one of the environment's refusals. *)
+(** The pid namespaces the model made, from [active] outwards, each with
+    its cursor one further: what an [alloc_pid] that a later failure undid
+    ([free_pid] does not move the cursor) leaves. *)
+Definition pid_advanced (st : NsState) (active : positive) : NsState :=
+  let chain := pidns_chain (length (ns_pidns st)) st active in
+  let bumped := flat_map (fun x => match pidns_parent x with
+                                   | Some _ => [mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x)
+                                                        (pidns_level x) (pidns_last x + 1)]
+                                   | None => []
+                                   end) chain in
+  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (fold_left replace_pidns bumped (ns_pidns st))
+            (ns_netns st) (ns_sbs st) (ns_dentries st) (ns_inodes st) (ns_files st) (ns_env st).
+
+(** The answers: the tables' answer, or one of the environment's refusals
+    (an allocation failure, a namespace count of the host's user
+    namespace, RLIMIT_NPROC, a cgroup controller, a pending fatal signal,
+    a security module), which leaves the shared state as it was or, when
+    it came after [alloc_pid], with the pid cursors advanced. *)
 Definition clone_ns (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (q : Z) (o : CloneNs) : Prop :=
   o = clone_ns_exact f m ctx st q
-  \/ ((has_flag f CLONE_NEWUSER || any_new_ns f) = true
-      /\ clone_ns_exact f m ctx st q <> CnUnmodeled
-      /\ exists e, 1 <= e <= 4095 /\ o = CnErr e).
+  \/ (clone_ns_exact f m ctx st q <> CnUnmodeled
+      /\ exists e st', 1 <= e <= 4095 /\ (st' = st \/ st' = pid_advanced st (cx_pidns ctx))
+                       /\ o = CnErr e st').
