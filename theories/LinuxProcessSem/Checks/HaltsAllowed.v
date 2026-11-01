@@ -82,8 +82,9 @@ Open Scope bv_scope.
     memory access beyond its own fetches, so the stack the entry
     describes is never looked at. *)
 Lemma exit0_must_exit_at_anywhere : forall sp brk0 mbase rnd lim inp,
-  must_exit_at exit0_segments verdict_accept
-    (init_config exit0_segments 0x100 demo_phdrs sp brk0 mbase rnd lim inp).
+  must_exit_at (run_segments exit0_segments inp sp mbase) verdict_accept
+    (init_config (run_segments exit0_segments inp sp mbase) 0x100 demo_phdrs sp brk0 mbase
+       rnd lim inp).
 Proof.
   intros. unfold init_config.
   apply (exits_c_must_exit_at _ _ 8); [reflexivity | reflexivity | apply exit0_exits_c].

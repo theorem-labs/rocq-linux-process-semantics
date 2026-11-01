@@ -1502,7 +1502,7 @@ Lemma mm_step : forall k, (k < 6)%nat -> forall mem,
   RiscvSemantics.step mm_rsegs (with_mem (mm_msk k) mem)
   = MachineOk (with_mem (mm_msk (S k)) mem).
 Proof.
-  intros k Hk mem.
+  intros k Hk mem. unfold mm_msk, mm_ms0, run_segments. abstract_vdso.
   do 6 (destruct k as [| k]; [vm_compute; reflexivity |]). lia.
 Qed.
 

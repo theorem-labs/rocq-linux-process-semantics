@@ -1061,10 +1061,22 @@ Proof. reflexivity. Qed.
 
 (** [jal x0, 0] maps the initial state to itself: the pc gains 0 and
     the write to x0 is dropped, so nothing changes.  With the memory
-    abstracted, both sides normalise to the same term. *)
+    abstracted, both sides normalise to the same term.
+
+    THE vDSO PAIR IS ABSTRACTED TOO, before [vm_compute] runs.  Both
+    sides carry the read-only backing, a closure over the run's segment
+    list; normalising it under its binder reads the pair back in full,
+    and with the pair concrete that ran out of 48 GB.  Abstract, the
+    pair is one variable the fetch never forces ([find_segment] answers
+    in the image's own segment first). *)
+Ltac abstract_vdso :=
+  match goal with |- context [vdso_segments ?k ?s ?m] =>
+    let vt := fresh "vt" in generalize (vdso_segments k s m) as vt; intros vt
+  end.
+
 Lemma loop_fix : forall mem,
   RiscvSemantics.step loop_rsegs (with_mem loop_ms mem) = MachineOk (with_mem loop_ms mem).
-Proof. intros. unfold loop_ms, run_segments. vm_compute. reflexivity. Qed.
+Proof. intros. unfold loop_ms, run_segments. abstract_vdso. vm_compute. reflexivity. Qed.
 
 Lemma loop_only : forall lim evs st,
   sstep loop_rsegs (loop_c lim) evs st -> evs = [] /\ st = SNext (loop_c lim).
@@ -1135,7 +1147,7 @@ Lemma wloop_step : forall k, (k < 5)%nat -> forall mem,
   RiscvSemantics.step wloop_rsegs (with_mem (wloop_msk k) mem)
   = MachineOk (with_mem (wloop_msk (S k)) mem).
 Proof.
-  intros k Hk mem.
+  intros k Hk mem. unfold wloop_msk, wloop_ms0, run_segments. abstract_vdso.
   do 5 (destruct k as [| k]; [vm_compute; reflexivity |]). lia.
 Qed.
 
@@ -1144,7 +1156,10 @@ Proof. vm_compute. first [reflexivity | f_equal; apply bv_eq; reflexivity]. Qed.
 
 Lemma wloop_fix : forall mem,
   RiscvSemantics.step wloop_rsegs (with_mem wloop_s6 mem) = MachineOk (with_mem wloop_s6 mem).
-Proof. intros. vm_compute. reflexivity. Qed.
+Proof.
+  intros. unfold wloop_s6, wloop_s, wloop_msk, wloop_ms0, run_segments. abstract_vdso.
+  vm_compute. reflexivity.
+Qed.
 
 (** The five instruction transitions, each the only one from its
     configuration. *)

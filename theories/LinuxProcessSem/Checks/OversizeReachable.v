@@ -24,7 +24,7 @@ Open Scope sys_scope.
    ========================================================================= *)
 
 (** The request pending at [BudgetPremise.mm_s 6]. *)
-Definition mm_i : SyscallInput := sys_input mm_segments (mm_s 6) (Z_to_bv 64 222).
+Definition mm_i : SyscallInput := sys_input mm_rsegs (mm_s 6) (Z_to_bv 64 222).
 
 Lemma mm_i_budget_refused : alloc_budget_refused_b mm_i mm_model = true.
 Proof. vm_compute. reflexivity. Qed.
@@ -103,20 +103,20 @@ Proof. reflexivity. Qed.
 
 (** After the refusal the program runs off the end of its 24-byte
     segment: the next fetch faults. *)
-Lemma mm_ms7_faults : RiscvSemantics.step mm_segments mm_ms7 = MachineFault.
+Lemma mm_ms7_faults : RiscvSemantics.step mm_rsegs mm_ms7 = MachineFault.
 Proof. vm_compute. reflexivity. Qed.
 
 Lemma mm_ms7_accesses_fault :
-  forall report, RiscvSemantics.step_accesses mm_segments mm_ms7 <> MachineOk report.
+  forall report, RiscvSemantics.step_accesses mm_rsegs mm_ms7 <> MachineOk report.
 Proof. intros report. vm_compute. discriminate. Qed.
 
 (** "Never budget-only refused from here", closed under [star]. *)
 Definition mm_never_bor (c : config) : Prop :=
-  forall tr c', star mm_segments c tr c' -> ~ budget_only_refused_at mm_segments c'.
+  forall tr c', star mm_rsegs c tr c' -> ~ budget_only_refused_at mm_rsegs c'.
 
 Lemma mm_never_bor_intro : forall c,
-  ~ budget_only_refused_at mm_segments c ->
-  (forall evs c2, sstep mm_segments c evs (SNext c2) -> mm_never_bor c2) ->
+  ~ budget_only_refused_at mm_rsegs c ->
+  (forall evs c2, sstep mm_rsegs c evs (SNext c2) -> mm_never_bor c2) ->
   mm_never_bor c.
 Proof.
   intros c Hn Hs tr c' Hstar.
@@ -132,7 +132,7 @@ Proof.
     + exact (mm_ms7_accesses_fault report Hacc).
     + rewrite mm_ms7_svc in Hx8. discriminate Hx8.
   - intros evs c2 Hss.
-    destruct (sstep_fault_only mm_segments mm_ms7 mm_model eq_refl mm_ms7_svc
+    destruct (sstep_fault_only mm_rsegs mm_ms7 mm_model eq_refl mm_ms7_svc
                 mm_ms7_faults _ _ Hss) as [_ Habs].
     discriminate Habs.
 Qed.
@@ -144,7 +144,7 @@ Proof.
       cbn [cfg_ms cfg_model] in *.
     + rewrite mm_svc6 in Hnone. discriminate Hnone.
     + rewrite mm_svc6 in Hx8. injection Hx8 as <-.
-      change (sys_input mm_segments (mm_s 6) (Z_to_bv 64 222)) with mm_i in Hb.
+      change (sys_input mm_rsegs (mm_s 6) (Z_to_bv 64 222)) with mm_i in Hb.
       rewrite mm_i_classifies_oversize in Hb. discriminate Hb.
     + rewrite mm_svc6 in Hx8. injection Hx8 as <-.
       apply mm_ecall_only in Hspec. injection Hspec as -> -> ->.
@@ -181,14 +181,14 @@ Proof.
   - assert (Hlt : (k < 6)%nat) by lia.
     assert (Hsvc : ms_svc_pending (mm_s k) = None).
     { do 6 (destruct k as [| k]; [vm_compute; reflexivity |]). lia. }
-    assert (Hstep : RiscvSemantics.step mm_segments (mm_s k) = MachineOk (mm_s (S k))).
+    assert (Hstep : RiscvSemantics.step mm_rsegs (mm_s k) = MachineOk (mm_s (S k))).
     { unfold mm_s. apply mm_step. exact Hlt. }
     apply mm_never_bor_intro.
     + intro Hb.
-      apply (budget_refused_at_no_lazy_instr mm_segments (mm_s k) mm_model eq_refl Hsvc).
+      apply (budget_refused_at_no_lazy_instr mm_rsegs (mm_s k) mm_model eq_refl Hsvc).
       apply budget_only_refused_at_implies. exact Hb.
     + intros evs c2 Hss.
-      destruct (sstep_instr_only mm_segments (mm_s k) mm_model (mm_s (S k)) eq_refl Hsvc
+      destruct (sstep_instr_only mm_rsegs (mm_s k) mm_model (mm_s (S k)) eq_refl Hsvc
                   Hstep _ _ Hss) as [_ Hc2].
       injection Hc2 as ->. apply (IH (S k)); lia.
 Qed.
@@ -197,8 +197,8 @@ Qed.
 Theorem mm_within_budget_only :
   source_within_budget_only mm_budget mm_image demo_entry demo_proc_input.
 Proof.
-  change (~ reaches_budget_only_refused mm_segments
-            (init_config mm_segments 0x100 demo_phdrs (en_sp demo_entry)
+  change (~ reaches_budget_only_refused mm_rsegs
+            (init_config mm_rsegs 0x100 demo_phdrs (en_sp demo_entry)
                (en_brk demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry)
                mm_budget demo_proc_input)).
   rewrite mm_config.
@@ -216,7 +216,7 @@ Proof.
   exists ([] ++ []), (mkCfg mm_ms7 mm_model), []. split.
   - eapply star_trans; [exact mm_star |].
     apply star_one.
-    apply (sstep_syscall mm_segments (mm_s 6) mm_model (Z_to_bv 64 222) mm_eff
+    apply (sstep_syscall mm_rsegs (mm_s 6) mm_model (Z_to_bv 64 222) mm_eff
              mm_model mm_model []).
     + vm_compute. reflexivity.
     + exact mm_svc6.
@@ -305,38 +305,44 @@ Definition cm_image : Image := mkImage cm_segments 0x100 demo_phdrs.
 
 Definition cm_budget : Z := page_size.
 
+(** The segment list the run at [demo_entry] reads: the image's own
+    segment, then the vDSO pair ([Run.run_segments]). *)
+Abbreviation cm_rsegs :=
+  (run_segments cm_segments demo_proc_input (en_sp demo_entry) (en_mmap_base demo_entry)).
+
 Definition cm_ms0 : machine_state :=
-  init_machine_state cm_segments 0x100 demo_phdrs (en_sp demo_entry)
+  init_machine_state cm_rsegs 0x100 demo_phdrs (en_sp demo_entry)
     (en_mmap_base demo_entry) (en_draw demo_entry) demo_proc_input.
 Definition cm_msk (k : nat) : machine_state :=
-  match run_steps k cm_segments cm_ms0 with
+  match run_steps k cm_rsegs cm_ms0 with
   | Some ms => ms
   | None => cm_ms0
   end.
 Definition cm_s (k : nat) : machine_state := with_mem (cm_msk k) (ms_mem cm_ms0).
 
 Definition cm_model : Model :=
-  init_model (segments_reserved cm_segments) (en_brk demo_entry)
-    (en_mmap_base demo_entry) (en_sp demo_entry) cm_budget demo_proc_input.
+  with_vdso (Vdso.vdso_run_init (ed_vdso (en_draw demo_entry)))
+    (init_model (segments_reserved cm_rsegs) (en_brk demo_entry)
+       (en_mmap_base demo_entry) (en_sp demo_entry) cm_budget demo_proc_input).
 Definition cm_c : config := mkCfg (cm_s 0) cm_model.
 
 Lemma cm_config :
-  init_config cm_segments 0x100 demo_phdrs (en_sp demo_entry)
+  init_config cm_rsegs 0x100 demo_phdrs (en_sp demo_entry)
     (en_brk demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry)
     cm_budget demo_proc_input
   = cm_c.
 Proof. unfold init_config, cm_c. f_equal; try exact (with_mem_eta cm_ms0). Qed.
 
 Lemma cm_step : forall k, (k < 6)%nat -> forall mem,
-  RiscvSemantics.step cm_segments (with_mem (cm_msk k) mem)
+  RiscvSemantics.step cm_rsegs (with_mem (cm_msk k) mem)
   = MachineOk (with_mem (cm_msk (S k)) mem).
 Proof.
-  intros k Hk mem.
+  intros k Hk mem. unfold cm_msk, cm_ms0, run_segments. abstract_vdso.
   do 6 (destruct k as [| k]; [vm_compute; reflexivity |]). lia.
 Qed.
 
 Lemma cm_instr_sstep : forall k, (k < 6)%nat ->
-  sstep cm_segments (mkCfg (cm_s k) cm_model) []
+  sstep cm_rsegs (mkCfg (cm_s k) cm_model) []
     (SNext (mkCfg (cm_s (S k)) cm_model)).
 Proof.
   intros k Hk. unfold cm_s.
@@ -348,7 +354,7 @@ Qed.
 Lemma cm_svc6 : ms_svc_pending (cm_s 6) = Some (Z_to_bv 64 222).
 Proof. vm_compute. first [reflexivity | f_equal; apply bv_eq; reflexivity]. Qed.
 
-Lemma cm_star6 : star cm_segments cm_c [] (mkCfg (cm_s 6) cm_model).
+Lemma cm_star6 : star cm_rsegs cm_c [] (mkCfg (cm_s 6) cm_model).
 Proof.
   change (@nil event) with
     ((@nil event) ++ ((@nil event) ++ ((@nil event) ++ ((@nil event) ++
@@ -364,7 +370,7 @@ Proof.
 Qed.
 
 (** The first request, before any grant: within budget, so not refused. *)
-Definition cm_i1 : SyscallInput := sys_input cm_segments (cm_s 6) (Z_to_bv 64 222).
+Definition cm_i1 : SyscallInput := sys_input cm_rsegs (cm_s 6) (Z_to_bv 64 222).
 
 Lemma cm_ecall1_not_refused : alloc_refuse_reason cm_i1 cm_model = None.
 Proof. vm_compute. reflexivity. Qed.
@@ -406,7 +412,7 @@ Proof. exact (proj1 (check_syscall_ok_iff cm_i1 cm_eff1 cm_model cm_model1 []) c
     zeroed, and the pc is at the second [ecall]. *)
 Definition cm_t0 : machine_state := advance_past_svc (apply_effect (cm_s 6) cm_eff1).
 Definition cm_tk (k : nat) : machine_state :=
-  match run_steps k cm_segments cm_t0 with
+  match run_steps k cm_rsegs cm_t0 with
   | Some ms => ms
   | None => cm_t0
   end.
@@ -416,11 +422,11 @@ Lemma cm_t0_eq : cm_t 0 = cm_t0.
 Proof. unfold cm_t, cm_tk. cbn [run_steps]. symmetry. apply with_mem_eta. Qed.
 
 Lemma cm_syscall1_sstep :
-  sstep cm_segments (mkCfg (cm_s 6) cm_model) []
+  sstep cm_rsegs (mkCfg (cm_s 6) cm_model) []
     (SNext (mkCfg (cm_t 0) cm_model1)).
 Proof.
   rewrite cm_t0_eq. unfold cm_t0.
-  apply (sstep_syscall cm_segments (cm_s 6) cm_model (Z_to_bv 64 222) cm_eff1
+  apply (sstep_syscall cm_rsegs (cm_s 6) cm_model (Z_to_bv 64 222) cm_eff1
            cm_model1 cm_model1 []).
   - reflexivity.
   - exact cm_svc6.
@@ -430,12 +436,15 @@ Proof.
 Qed.
 
 Lemma cm_step2 : forall mem,
-  RiscvSemantics.step cm_segments (with_mem (cm_tk 0) mem)
+  RiscvSemantics.step cm_rsegs (with_mem (cm_tk 0) mem)
   = MachineOk (with_mem (cm_tk 1) mem).
-Proof. intros mem. vm_compute. reflexivity. Qed.
+Proof.
+  intros mem. unfold cm_tk, cm_t0, cm_s, cm_msk, cm_ms0, run_segments. abstract_vdso.
+  vm_compute. reflexivity.
+Qed.
 
 Lemma cm_instr2_sstep :
-  sstep cm_segments (mkCfg (cm_t 0) cm_model1) [] (SNext (mkCfg (cm_t 1) cm_model1)).
+  sstep cm_rsegs (mkCfg (cm_t 0) cm_model1) [] (SNext (mkCfg (cm_t 1) cm_model1)).
 Proof.
   unfold cm_t.
   apply sstep_instr; [vm_compute; reflexivity | vm_compute; reflexivity |].
@@ -448,7 +457,7 @@ Proof. vm_compute. first [reflexivity | f_equal; apply bv_eq; reflexivity]. Qed.
 (** The second request: budget-refused, with a charge of one page, equal
     to the budget and not above it, so the classifier gives
     [RefuseBudget]. *)
-Definition cm_i2 : SyscallInput := sys_input cm_segments (cm_t 1) (Z_to_bv 64 222).
+Definition cm_i2 : SyscallInput := sys_input cm_rsegs (cm_t 1) (Z_to_bv 64 222).
 
 Lemma cm_ecall2_charge :
   alloc_req_charge_bytes cm_i2 cm_model1 = cm_budget
@@ -460,7 +469,7 @@ Lemma cm_ecall2_classifies_budget :
 Proof. vm_compute. reflexivity. Qed.
 
 Lemma cm_ecall2_is_budget_only_refused :
-  budget_only_refused_at cm_segments (mkCfg (cm_t 1) cm_model1).
+  budget_only_refused_at cm_rsegs (mkCfg (cm_t 1) cm_model1).
 Proof.
   split; [vm_compute; reflexivity |]. right.
   exists (Z_to_bv 64 222). split; [exact cm_svc_t1 |]. left.
@@ -470,8 +479,8 @@ Qed.
 Theorem cm_run_budget_only_refused :
   run_budget_only_refused cm_image cm_budget demo_entry demo_proc_input.
 Proof.
-  change (reaches_budget_only_refused cm_segments
-            (init_config cm_segments 0x100 demo_phdrs (en_sp demo_entry)
+  change (reaches_budget_only_refused cm_rsegs
+            (init_config cm_rsegs 0x100 demo_phdrs (en_sp demo_entry)
                (en_brk demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry)
                cm_budget demo_proc_input)).
   rewrite cm_config.
