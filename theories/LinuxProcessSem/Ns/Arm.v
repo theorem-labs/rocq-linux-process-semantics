@@ -2,11 +2,12 @@
 
     The arm type, the released answer, and the helpers every arm uses: an
     answer that only sets the return register, the open file a descriptor
-    names, a fresh handle, the task's pid, and the context setters. *)
+    names, a fresh handle, the task's pid, the context setters, and what a
+    path walk needs from the process ([walk_creds], [fd_loc_of]). *)
 
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Walk.
 Import ListNotations.
 
 (** One call number's answer in a world with a mount tree. *)
@@ -48,14 +49,69 @@ Definition ns_file_of (m : Model) (st : NsState) (fd : word) : option (N * NsFil
 Definition fresh_handle (st : NsState) : N :=
   N.succ (fold_left N.max (map fst (ns_files st)) 0%N).
 
-(** The task's pid in a pid namespace, and in its own. *)
-Fixpoint pid_in (ps : list (positive * Z)) (n : positive) : option Z :=
-  match ps with
-  | [] => None
-  | (k, p) :: r => if Pos.eqb k n then Some p else pid_in r n
+(** The task's pid in its own pid namespace ([Walk.pid_in]). *)
+Definition task_pid (ctx : NsCtx) : option Z := pid_in (cx_pids ctx) (cx_pidns ctx).
+
+(** Where an open file of the namespace model is, for a walk: the path of
+    an O_PATH file, a directory or a file; [None] for a socket, an eventfd
+    or a signalfd. *)
+Definition nsfile_loc (f : NsFile) : option Loc :=
+  match nf_kind f with
+  | NfPath l | NfDir l _ | NfFile l _ => Some l
+  | _ => None
   end.
 
-Definition task_pid (ctx : NsCtx) : option Z := pid_in (cx_pids ctx) (cx_pidns ctx).
+(** The walk's descriptor resolver ([Walk.walk]'s [fd_loc]): [None] for a
+    number that is not open, [Some None] for an open descriptor the model
+    holds no path for (a released kind, a socket), [Some (Some l)] for one
+    at [l]. *)
+Definition fd_loc_of (m : Model) (st : NsState) (fd : Z) : option (option Loc) :=
+  match fd_lookup (m_fds m) (Z_to_bv 64 fd) with
+  | None => None
+  | Some (FdOpaque (ONsFile h)) =>
+      Some (match lookup_file (ns_files st) h with Some f => nsfile_loc f | None => None end)
+  | Some _ => Some None
+  end.
+
+(** The credential a walk checks permissions with: the fsuid and fsgid,
+    which the model keeps equal to the euid and egid (it has no setfsuid),
+    and the supplementary groups, as kernel ids. *)
+Definition walk_creds (m : Model) : WalkCreds :=
+  mkWalkCreds (bv_unsigned (cr_euid (m_creds m))) (bv_unsigned (cr_egid (m_creds m)))
+              (map bv_unsigned (cr_groups (m_creds m))).
+
+(* =========================================================================
+   Reading and writing user memory
+   ========================================================================= *)
+
+(** [get_user] of a 32-bit value: EFAULT outside [access_ok]; an unmapped
+    byte inside it declines, as the released arms do. *)
+Inductive UserRead := GetFault | GetUnmapped | GetVal (v : Z).
+
+Definition get_u32 (i : SyscallInput) (a : word) : UserRead :=
+  if negb (access_okb a 4) then GetFault
+  else match read_bytes_map (in_mem i) a (Z_to_bv 64 4) with
+       | Some bs => GetVal (bytes_le_to_Z bs)
+       | None => GetUnmapped
+       end.
+
+(** [copy_to_user] of [n] bytes: EFAULT outside [access_ok]; a range not
+    wholly writable after it declines (a partial copy). *)
+Inductive UserWrite := PutFault | PutPartial | PutOk.
+
+Definition put_ok (i : SyscallInput) (a : word) (n : Z) : UserWrite :=
+  if negb (access_okb a n) then PutFault
+  else match read_bytes_map (in_wmem i) a (Z_to_bv 64 n) with
+       | Some _ => PutOk
+       | None => PutPartial
+       end.
+
+Definition u32_bytes (v : Z) : list byte := Z_to_le_bytes 4 v.
+
+(** A signed 32-bit reading of a word's low half. *)
+Definition s32 (w : word) : Z :=
+  let v := Z.land (bv_unsigned w) 4294967295 in
+  if (v <? 2147483648)%Z then v else (v - 4294967296)%Z.
 
 Definition with_umask (ctx : NsCtx) (u : Z) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)

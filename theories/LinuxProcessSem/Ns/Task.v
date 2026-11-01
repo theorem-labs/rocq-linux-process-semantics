@@ -20,39 +20,6 @@ Import ListNotations.
 Local Open Scope Z_scope.
 
 (* =========================================================================
-   Reading and writing user memory
-   ========================================================================= *)
-
-(** [get_user] of a 32-bit value: EFAULT outside [access_ok], [None] (the
-    arm declines) on an unmapped byte. *)
-Inductive UserRead := RFault | RUnmapped | RVal (v : Z).
-
-Definition get_u32 (i : SyscallInput) (a : word) : UserRead :=
-  if negb (access_okb a 4) then RFault
-  else match read_bytes_map (in_mem i) a (Z_to_bv 64 4) with
-       | Some bs => RVal (bytes_le_to_Z bs)
-       | None => RUnmapped
-       end.
-
-(** [copy_to_user] of [n] bytes: EFAULT outside [access_ok], or every byte
-    writable. *)
-Inductive UserWrite := WFault | WPartial | WOk.
-
-Definition put_ok (i : SyscallInput) (a : word) (n : Z) : UserWrite :=
-  if negb (access_okb a n) then WFault
-  else match read_bytes_map (in_wmem i) a (Z_to_bv 64 n) with
-       | Some _ => WOk
-       | None => WPartial
-       end.
-
-Definition u32_bytes (v : Z) : list byte := Z_to_le_bytes 4 v.
-
-(** A signed 32-bit reading of a word's low half. *)
-Definition s32 (w : word) : Z :=
-  let v := Z.land (bv_unsigned w) 4294967295 in
-  if v <? 2147483648 then v else v - 4294967296.
-
-(* =========================================================================
    Setters on the task context
    ========================================================================= *)
 
@@ -126,9 +93,9 @@ Inductive Magic := MagicFault | MagicUnmapped | MagicBad | MagicOk (tocopy : Z).
 
 Definition validate_magic (i : SyscallInput) (header : word) : Magic :=
   match get_u32 i header with
-  | RFault => MagicFault
-  | RUnmapped => MagicUnmapped
-  | RVal v =>
+  | GetFault => MagicFault
+  | GetUnmapped => MagicUnmapped
+  | GetVal v =>
       if v =? LINUX_CAPABILITY_VERSION_1 then MagicOk 1
       else if (v =? LINUX_CAPABILITY_VERSION_2) || (v =? LINUX_CAPABILITY_VERSION_3) then MagicOk 2
       else MagicBad
@@ -139,9 +106,9 @@ Definition validate_magic (i : SyscallInput) (header : word) : Magic :=
 Definition bad_magic (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) (header : word)
     (final : Z) : ext_outcome :=
   match put_ok i header 4 with
-  | WFault => ns_errno EFAULT m ctx st
-  | WPartial => EUnmodeled
-  | WOk => EOk (with_copyins [(header, 4%nat)]
+  | PutFault => ns_errno EFAULT m ctx st
+  | PutPartial => EUnmodeled
+  | PutOk => EOk (with_copyins [(header, 4%nat)]
                  (mkEffect (Z_to_bv 64 final) [(header, u32_bytes LINUX_CAPABILITY_VERSION_3)] []))
                m ctx st []
   end.
@@ -172,17 +139,17 @@ Definition capget_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
       if w_is0 dataptr then
         EOk (with_copyins [(header, 4%nat)] (mkEffect (Z_to_bv 64 0) [] [])) m ctx st []
       else match get_u32 i (header + Z_to_bv 64 4)%bv with
-           | RFault => ns_errno EFAULT m ctx st
-           | RUnmapped => EUnmodeled
-           | RVal pv =>
+           | GetFault => ns_errno EFAULT m ctx st
+           | GetUnmapped => EUnmodeled
+           | GetVal pv =>
                let pid := (if pv <? 2147483648 then pv else pv - 4294967296) in
                if pid <? 0 then ns_errno EINVAL m ctx st
                else if negb ((pid =? 0) || (match task_pid ctx with Some p => pid =? p | None => false end))
                then EUnmodeled
                else match put_ok i dataptr (12 * tocopy) with
-                    | WFault => ns_errno EFAULT m ctx st
-                    | WPartial => EUnmodeled
-                    | WOk => EOk (with_copyins [(header, 4%nat); ((header + Z_to_bv 64 4)%bv, 4%nat)]
+                    | PutFault => ns_errno EFAULT m ctx st
+                    | PutPartial => EUnmodeled
+                    | PutOk => EOk (with_copyins [(header, 4%nat); ((header + Z_to_bv 64 4)%bv, 4%nat)]
                                    (mkEffect (Z_to_bv 64 0) [(dataptr, cap_data tocopy (cx_caps ctx))] []))
                                  m ctx st []
                     end
@@ -215,9 +182,9 @@ Definition capset_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
   | MagicBad => bad_magic i m ctx st header (- EINVAL)
   | MagicOk tocopy =>
       match get_u32 i (header + Z_to_bv 64 4)%bv with
-      | RFault => ns_errno EFAULT m ctx st
-      | RUnmapped => EUnmodeled
-      | RVal pv =>
+      | GetFault => ns_errno EFAULT m ctx st
+      | GetUnmapped => EUnmodeled
+      | GetVal pv =>
           let pid := (if pv <? 2147483648 then pv else pv - 4294967296) in
           if negb ((pid =? 0) || (match task_pid ctx with Some p => pid =? p | None => false end))
           then ns_errno EPERM m ctx st
@@ -273,9 +240,9 @@ Definition prctl_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) 
     (if 64 <? a2 then ns_errno EINVAL m ctx st else ns_ret (Z_to_bv 64 0) m (with_pdeathsig ctx a2) st)
   else if opt =? 2 then
     (match put_ok i (in_arg i 1) 4 with
-     | WFault => ns_errno EFAULT m ctx st
-     | WPartial => EUnmodeled
-     | WOk => EOk (mkEffect (Z_to_bv 64 0) [(in_arg i 1, u32_bytes (cx_pdeathsig ctx))] []) m ctx st []
+     | PutFault => ns_errno EFAULT m ctx st
+     | PutPartial => EUnmodeled
+     | PutOk => EOk (mkEffect (Z_to_bv 64 0) [(in_arg i 1, u32_bytes (cx_pdeathsig ctx))] []) m ctx st []
      end)
   else if opt =? 3 then ns_ret (Z_to_bv 64 (cx_dumpable ctx)) m ctx st
   else if opt =? 4 then
