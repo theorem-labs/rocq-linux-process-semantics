@@ -27,8 +27,9 @@ Example empty_is_flat : flat_view empty_nsstate = true := eq_refl.
 (** A world with a mount tree is not the released world, and there a
     number with no arm fails closed. *)
 Definition one_mount : NsState :=
-  mkNsState [mkMount 1 1 None 1 1 1 (mkMountFlags false false false false)
-                     (mkMountFlags false false false false) false false None None] [].
+  with_mounts empty_nsstate
+    [mkMount 1 1 None 1 1 1 (mkMountFlags false false false false)
+             (mkMountFlags false false false false) false false None None].
 
 Example mounted_not_flat : flat_view one_mount = false := eq_refl.
 
