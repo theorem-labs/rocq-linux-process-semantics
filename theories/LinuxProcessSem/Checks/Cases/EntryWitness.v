@@ -628,11 +628,34 @@ Proof.
 Qed.
 
 (* ---- the image that faults on a HIGH stack pointer --------------------- *)
-(** [vt] is the vDSO pair [Run.run_segments] appends to this image's
-    own segments; abstract, so that no computation below normalises the
-    measured image. *)
+(** [vt] is the vDSO pair [Run.run_segments] appends to this image's own
+    segments, and HERE IT IS THE CONCRETE PAIR, not an abstract tail.
+
+    The low block above can keep its tail abstract because every lookup
+    it makes answers in its own segment: [find_segment] walks the list
+    head first and this image's segment covers every fetch.  The high
+    block cannot.  Its last instruction is [ld t1, 0(zero)], a load
+    from address 0, and that load MISSES the stack image and misses
+    [high_segment], so it falls through to the tail — once in
+    [memory_read] and eight more times in [range_meets_vvar]'s
+    per-byte [vvar_byte_at].  Over an abstract tail those nine
+    [find_segment] queries are stuck matches, and every reduction
+    strategy normalises BOTH branches of each: that is the shape that
+    took one worker to 164 GB without finishing, and no memory cap
+    repairs it because it is not a size problem.  Over the concrete
+    pair each query fails on the bases — the vvar part at
+    [witness_mbase - 6 * 4096] and the text above it, both far above
+    address 0 — so no byte of the measured image is ever decoded and
+    the step reduces to the constant [MachineFault].
+
+    [Run.vdso_segments] is [Global Opaque] so that a [vm_compute]
+    elsewhere cannot force the image; this file needs it forced, and
+    says so the way [Checks.Cases.Kernel.Vdso] does.  Nothing else here
+    names it. *)
+Local Transparent vdso_segments.
 Section WithVdsoTail.
-Variable vt : list Segment.
+Local Definition vt : list Segment :=
+  vdso_segments (in_kernel witness_input) witness_sp witness_mbase.
 
 
 
