@@ -250,7 +250,7 @@ Example run_of_undecodable_image_is_unmodeled :
                   demo_proc_input).
 Proof.
   cbn [run bh_unmodeled]. unfold init_config.
-  apply reaches_unmodeled_intro; [reflexivity | reflexivity |].
+  apply reaches_unmodeled_intro; [reflexivity | reflexivity | | reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
