@@ -834,151 +834,73 @@ Proof.
 Qed.
 
 (* =========================================================================
-   The per-arm assembly
+   Determinism boundaries: where a stretch has a unique successor
    ========================================================================= *)
 
-(** WHAT EACH ARM OWES, as three named obligations rather than as one
-    tactic.  [pstep_length_cases] says the entry count decides the arm, so
-    preservation is these three and nothing else.  Naming them says what
-    is proved and what is not, which a single [fw_shape_preserved] proof
-    would hide.
+(** [MustExitP.mepa_det_step] consumes a stretch whose successor is
+    UNIQUE, and the boundaries of such a stretch are facts to be proved,
+    not comments to be trusted.  Three of them.
 
-    Each is stated over the SHAPES, not over a transition, so a reader can
-    see which facts a case consumes without reading its proof. *)
+    AN INSTRUCTION STEP IS UNIQUE.  With no call pending, the only arm of
+    [Procs.pstep_at] that can fire is the instruction one, and
+    [Run.mi_account_step] is a function, so the successor is determined.
+    The clone, the exits and the wait4 all have a call pending, so none of
+    them is in an instruction stretch. *)
+Definition fw_det_at (e : ProcessEntry) : Prop :=
+  ms_svc_pending (pe_ms e) = None.
 
-(** ARM ONE: an ordinary step of the only entry.  The structural half is
-    [absorb_one_entry]; the state half is the counter moving to one its
-    successor list admits, which [fw_pcs_closed_ok] settles for every
-    counter but [0x1101c], and [fw_bltz_not_taken_*] settles there. *)
-Definition fw_owes_other (segs : list Segment) (cfg : SpuriousCfg) : Prop :=
-  forall P evs P' e c',
-    fw_shape P ->
-    look P (pe_pid e) = Some e ->
-    sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
-    P' = absorb P e c' ->
-    fw_shape P'.
+(** THE CLONE IS NOT DETERMINISTIC, even at [forced_only_cfg].  The
+    environment removes the injected errno resolutions, but
+    [Fork.clone_resolve] still CHOOSES a pid --
+    [choose (fun p => clone_pid_ok_b m p = true)] -- and any pid in the
+    envelope is a legal successor.  So the clone step belongs to the
+    measure stretch and never to a deterministic one.  This is the
+    boundary stated as a definition so a proof cannot cross it by
+    accident. *)
+Definition fw_clone_step (e : ProcessEntry) : Prop :=
+  exists x8, ms_svc_pending (pe_ms e) = Some x8
+             /\ clone_sysno (bv_unsigned x8) = true.
 
-(** ARM TWO: the clone.  The structural half is [clone_result_two], which
-    gives four of [fw_two]'s six clauses; the state half is [fw_parent]
-    and [fw_child] at the resume counter [0x1101c], with a0 the returned
-    pid in the parent and zero in the child -- the pinning this file
-    added, and the reason the branch edge is now discharged. *)
-Definition fw_owes_clone (segs : list Segment) (cfg : SpuriousCfg) : Prop :=
-  forall P evs P' e c' q,
-    fw_shape P ->
-    look P (pe_pid e) = Some e ->
-    sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
-    clone_success_b (pe_cfg (pcfg_shared P) e) c' = true ->
-    child_pid_core c' q ->
-    P' = clone_result P e c' q ->
-    fw_shape P'.
+(** THE FINAL [exit_group] IS DETERMINISTIC, and this is the question
+    worth having asked rather than assumed.  [Exit.exit_spec] is
+    [set_halted (bv_and code 255) ;; ret_only 0]: no [alt], no [choose],
+    so the spec has exactly one outcome.  And only one arm of
+    [Run.sstep_cfg] can take it -- [sstep_cfg_syscall] requires
+    [m_halted model' = None], which [set_halted] falsifies, so
+    [sstep_cfg_exit] is the only one left.  A stretch ending at the final
+    exit is therefore deterministic throughout. *)
+Definition fw_exit_step (e : ProcessEntry) : Prop :=
+  exists x8, ms_svc_pending (pe_ms e) = Some x8
+             /\ bv_unsigned x8 = 94%Z.
 
-(** ARM THREE: the reap.  The successor has one entry again -- the zombie
-    leaves -- so the target is a one-entry shape at [0x11040], the counter
-    [advance_past_svc] lands on from the [wait4] [ecall]. *)
-Definition fw_owes_reap (segs : list Segment) (cfg : SpuriousCfg) : Prop :=
-  forall P evs P',
-    fw_shape P ->
-    pstep_cfg segs cfg P evs (PNext P') ->
-    (List.length (pcfg_procs P') < List.length (pcfg_procs P))%nat ->
-    fw_shape P'.
-
-(** AND THE ASSEMBLY.  Given the three, preservation follows by counting:
-    [pstep_length_cases] splits a transition three ways and each way is
-    one of the obligations.  This is the lemma the whole file was built
-    to make short. *)
-Theorem fw_shape_preserved_of_arms : forall segs cfg,
-  fw_owes_other segs cfg ->
-  fw_owes_clone segs cfg ->
-  fw_owes_reap segs cfg ->
-  fw_shape_preserved segs cfg.
+(** The three are mutually exclusive, which is what makes them a
+    partition of the steps this program takes rather than three
+    overlapping descriptions. *)
+Lemma fw_det_not_clone : forall e, fw_det_at e -> ~ fw_clone_step e.
 Proof.
-  intros segs cfg Hother Hclone Hreap P evs P' Hsh Hs.
-  destruct Hs as [p Hp].
-  inversion Hp as
-    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Heq1 Heq2 Heq3
-    | P2 e2 evs2 c2 q2 Hl2 Hs2 Hc2 Hcp2 Hfr2 Hm2 Heq4 Heq5 Heq6
-    | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
-      Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
-      Heq7 Heq8 Heq9
-    | P4 e4 evs4 Hl4 Hs4 Hw4 Heq10 Heq11 Heq12
-    | P5 e5 Hl5 Hh5 Hm5 Heq13 Heq14 Heq15 ]; subst.
-  - exact (Hother _ _ _ e1 c1 Hsh Hl1 Hs1 eq_refl).
-  - exact (Hclone _ _ _ e2 c2 q2 Hsh Hl2 Hs2 Hc2 Hcp2 eq_refl).
-  - apply (Hreap P [] _ Hsh).
-    + exists (pe_pid e3). exact Hp.
-    + (* the count the reap arm always makes, derived here as in
-         [pstep_length_cases] rather than by a lemma that does not exist *)
-      cbn [pcfg_procs].
-      apply (drop_replace_length_lt _ _ _ _ ez3); [| exact Hlq3].
-      destruct (bv_eqb (pe_pid e3) q3) eqn:Hb; [| reflexivity].
-      apply bv_eqb_true_eq in Hb. congruence.
+  intros e Hd [x8 [Hs _]]. unfold fw_det_at in Hd. congruence.
 Qed.
 
-(* =========================================================================
-   forkwait_halts
-   ========================================================================= *)
-
-(** THE WHOLE CHAIN, with every link named.  Given the three arm
-    obligations and the three premises proved against the shapes, the
-    statement follows.
-
-    Nothing here is new: it is [forkwait_halts_of_preserved] with
-    [fw_shape_preserved_of_arms] supplying its first argument, and it
-    exists so the dependency is one theorem rather than a chain a reader
-    has to assemble. *)
-Theorem forkwait_halts_of_arms : forall segs cfg S P0 mu,
-  fw_owes_other segs cfg ->
-  fw_owes_clone segs cfg ->
-  fw_owes_reap segs cfg ->
-  fw_shape P0 ->
-  (forall P, fw_shape P -> terminal P ->
-     exists c code, root_view P = Some c
-                    /\ m_halted (cfg_model c) = Some code
-                    /\ List.In code S
-                    /\ m_killed (cfg_model c) = None) ->
-  (forall P, fw_shape P -> terminalb P = false ->
-     exists evs st, pstep_cfg segs cfg P evs st) ->
-  (forall P evs, fw_shape P -> ~ pstep_cfg segs cfg P evs PError) ->
-  (forall P evs P', fw_shape P -> pstep_cfg segs cfg P evs (PNext P') ->
-     (mu P' < mu P)%nat) ->
-  must_exit_in_p_at segs cfg S P0.
+Lemma fw_det_not_exit : forall e, fw_det_at e -> ~ fw_exit_step e.
 Proof.
-  intros segs cfg S P0 mu Ho Hc Hr H0 Hleaf Hprog Hnoerr Hdec.
-  apply (forkwait_halts_of_preserved segs cfg S P0 mu);
-    [ apply fw_shape_preserved_of_arms; assumption
-    | exact H0 | exact Hleaf | exact Hprog | exact Hnoerr | exact Hdec ].
+  intros e Hd [x8 [Hs _]]. unfold fw_det_at in Hd. congruence.
 Qed.
 
-(** WHAT IS LEFT, stated once and exactly.
+Lemma fw_clone_not_exit : forall e, fw_clone_step e -> ~ fw_exit_step e.
+Proof.
+  intros e [x8 [Hs Hc]] [y8 [Hs' Hy]].
+  rewrite Hs in Hs'. injection Hs' as <-.
+  unfold clone_sysno in Hc. rewrite Hy in Hc. cbn in Hc. discriminate.
+Qed.
 
-    [forkwait_halts] -- [Statement.v]'s [pholts_within_budget] over the
-    committed image with allowed exits [[7]] -- follows from
-    [forkwait_halts_of_arms] by supplying, at
-    [segs := forkwait_segs] and [cfg := forced_only_cfg]:
-
-      - the three arm obligations, [fw_owes_other], [fw_owes_clone] and
-        [fw_owes_reap].  Each is a case analysis over the eight shapes
-        whose structural half is proved ([absorb_one_entry],
-        [clone_result_two]), whose straight-line state half is proved
-        ([fw_pcs_closed_ok]), and whose branch edge is proved
-        ([fw_bltz_not_taken_child], [fw_bltz_not_taken_parent]).  What
-        remains in them is connecting each shape's counter to its
-        successor's through the five segment lemmas of [ForkwaitSteps].
-      - the base case, [fw_shape_one_proc], proved, applied to
-        [pinit_config]'s configuration.
-      - the leaf, [fw_shape_terminal_halted], proved.
-      - progress and no-error, whose shape-independent halves are proved
-        ([fw_progress_from_entry], [fw_guard_open], [fw_sysnos_allowed]).
-      - the measure, [Measure.fw_measure], with
-        [fw_absorb_decreases] and the clone and reap arithmetic proved
-        ([fw_clone_decreases], [fw_reap_decreases]).
-
-    It is NOT proved, and nothing in this file claims it is.  There is no
-    [Admitted] and no [Axiom] here: an unproved theorem is written down as
-    this comment instead, because a theorem nobody has proved is worth
-    less than the note saying so. *)
-
+(** THE THREE PER-STEP OBLIGATIONS ARE GONE, deliberately.  An earlier
+    version of this file named [fw_owes_other], [fw_owes_clone] and
+    [fw_owes_reap], and assembled them into the statement.  They were
+    true statements, but once the route changed to consuming whole
+    deterministic stretches they stopped being on the proof path, and a
+    stated-but-unused definition beside a real proof invites a reader to
+    think it is used.  What the per-step route would have cost is
+    recorded in the design, not here. *)
 (* =========================================================================
    An interface mismatch, and the way through it
    ========================================================================= *)
