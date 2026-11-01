@@ -2078,13 +2078,26 @@ Lemma check_setsid_frame : forall eff m m' evs,
   check_setsid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros eff m m' evs H. unfold check_setsid in H. vm_frame2 H. Qed.
 
-(** [prctl] answers its four options out of their arguments and
-    declines every other option, so no arm of it touches the model at
-    all: every accepting branch hands back [m] itself. *)
+(** [getsid] hands back [m] itself on every accepting branch: the tid
+    after a successful setsid is read, not written, and the fresh choice
+    before one is [check_getppid]'s, which pins nothing. *)
+Lemma check_getsid_frame : forall pid eff m m' evs,
+  check_getsid pid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros pid eff m m' evs H. unfold check_getsid, check_getppid in H.
+  vm_frame2 H.
+Qed.
+
+(** [prctl] answers its five options and declines every other one.  Only
+    [PR_SET_PDEATHSIG] changes the model, through
+    [State.with_pdeath_signal], which rebuilds [ProcState] alone and
+    carries [vm_maps] across BY CONVERSION; every other accepting branch
+    hands back [m] itself. *)
 Lemma check_prctl_frame : forall i option_ arg2 eff m m' evs,
   check_prctl i option_ arg2 eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros i option_ arg2 eff m m' evs H. unfold check_prctl in H. vm_frame2 H.
+  intros i option_ arg2 eff m m' evs H.
+  unfold check_prctl, check_ret_writes in H. vm_frame2 H.
 Qed.
 
 (** The four clock arms.  [gettimeofday], [clock_gettime], and [clock_getres] hand back
@@ -2315,6 +2328,16 @@ Qed.
 Lemma check_getid_frame : forall sel eff m m' evs,
   check_getid sel eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros sel eff m m' evs H. unfold check_getid in H. vm_frame2 H. Qed.
+
+(** [getresuid]/[getresgid] write user memory and nothing of the model:
+    the one accepting branch hands back [m] itself. *)
+Lemma check_getresid_frame : forall i get rp ep sp eff m m' evs,
+  check_getresid i get rp ep sp eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i get rp ep sp eff m m' evs H.
+  unfold check_getresid, check_ret_writes in H. vm_frame2 H.
+Qed.
 
 Lemma check_setid_frame : forall get put user v eff m m' evs,
   check_setid get put user v eff m = CheckOk m' evs ->
@@ -2693,6 +2716,7 @@ Proof.
     | erewrite check_getppid_frame by eassumption; exact Hwf
     | erewrite check_gettid_frame by eassumption; exact Hwf
     | erewrite check_setsid_frame by eassumption; exact Hwf
+    | erewrite check_getsid_frame by eassumption; exact Hwf
     | erewrite check_uname_frame by eassumption; exact Hwf
     | erewrite check_prctl_frame by eassumption; exact Hwf
     | erewrite check_prlimit64_frame by eassumption; exact Hwf
@@ -2711,6 +2735,7 @@ Proof.
     | erewrite check_newfstatat_frame by eassumption; exact Hwf
     | erewrite check_fstat_frame by eassumption; exact Hwf
     | erewrite check_getid_frame by eassumption; exact Hwf
+    | erewrite check_getresid_frame by eassumption; exact Hwf
     | erewrite check_setid_frame by eassumption; exact Hwf
     | erewrite check_setresid_frame by eassumption; exact Hwf
     | erewrite check_getgroups_frame by eassumption; exact Hwf

@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Witness.Kernel.Sys — the getpid (172), getppid (173), gettid (178), setsid (157), uname (160), prctl (167), prlimit64 (261) witnesses, and their proofs
+(** * LinuxProcessSem.Checks.Witness.Kernel.Sys — the getpid (172), getppid (173), gettid (178), setsid (157), getsid (156), uname (160), prctl (167), prlimit64 (261) witnesses, and their proofs
 
     Mirrors [Sys/Kernel/Sys.v], which answers to Linux [kernel/sys.c]:
     this file holds the witnesses for the syscalls defined there, and no
@@ -62,6 +62,29 @@ Proof.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
   destruct (m_setsid_succeeded m); cbv iota;
     [apply pure_ok | apply alt_l; apply pure_ok].
+Qed.
+
+(** getsid witness: the spec's own answer where it has one -- the tid
+    after a successful setsid -- and otherwise [getppid_witness]'s 0,
+    which is inside [Kernel.Sys.getsid_spec]'s fresh range (a session led
+    from an ancestor pid namespace).  It declines where the spec does. *)
+Definition getsid_witness (pid : word) (m : Model) : outcome SyscallEffect :=
+  if negb (getsid_pid_ok pid (m_tid m)) then Unmodeled
+  else if m_setsid_succeeded m then
+    match m_tid m with
+    | Some t => ret_outcome t m
+    | None => Unmodeled
+    end
+  else getppid_witness m.
+
+Lemma getsid_witness_ok : forall pid i m, getsid_spec pid i m (getsid_witness pid m).
+Proof.
+  intros. unfold getsid_spec, getsid_witness.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (negb (getsid_pid_ok pid (m_tid m))); [apply unmodeled_intro|].
+  destruct (m_setsid_succeeded m).
+  - destruct (m_tid m) as [t|]; [apply pure_ok|apply unmodeled_intro].
+  - exact (getppid_witness_ok i m).
 Qed.
 
 (** ioctl witness: -EBADF on a closed fd, -ENOTTY on a terminal-only
@@ -224,6 +247,25 @@ Proof.
   eapply bind_step; [apply get_model_ok|]. apply pure_ok.
 Qed.
 
+(** [getresuid]/[getresgid]: the spec makes no choice, so the witness is
+    its one outcome, computed by the same [put_user_ids]. *)
+Definition getresid_witness (get : Creds -> IdTriple) (rp ep sp : word)
+    (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
+  match put_user_ids (in_wmem i) (getresid_puts (get (m_creds m)) rp ep sp) with
+  | None => Unmodeled
+  | Some (r, ws) => Ok (mkEffect r ws []) m []
+  end.
+
+Lemma getresid_witness_ok : forall get rp ep sp i m,
+  getresid_spec get rp ep sp i m (getresid_witness get rp ep sp i m).
+Proof.
+  intros. unfold getresid_spec, getresid_witness.
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (put_user_ids (in_wmem i) (getresid_puts (get (m_creds m)) rp ep sp))
+    as [[r ws]|]; [apply pure_ok|apply unmodeled_intro].
+Qed.
+
 (** [setuid]/[setgid]: -EINVAL for [(uid_t)-1], and otherwise the
     -ENOMEM every other branch admits — [prepare_creds] can fail on all
     three of them, so one witness covers the whole spec without deciding
@@ -289,10 +331,12 @@ Qed.
     [choose] and one [alt], [PR_CAPBSET_READ]'s 0 or 1 for a capability
     outside [capbset_assumed]; the witness takes its 1, the answer the
     arm gives every valid capability.  An option outside
-    [prctl_modeled_options] declines, and each of the four answers by a
+    [prctl_modeled_options] declines, and each of the five answers by a
     test on its arguments alone ([i] supplies a2..a4 for
-    [PR_SET_NO_NEW_PRIVS]), so otherwise the witness is the spec with
-    the monad erased. *)
+    [PR_SET_NO_NEW_PRIVS]), on the stored parent-death signal and on
+    [i]'s writable memory ([PR_GET_PDEATHSIG]), so otherwise the witness
+    is the spec with the monad erased: [PR_SET_PDEATHSIG] stores its
+    argument, and [PR_GET_PDEATHSIG]'s store is [put_user_ids]'s. *)
 Definition prctl_witness (i : SyscallInput) (option_ arg2 : word) (m : Model)
     : outcome SyscallEffect :=
   if negb (existsb (Z.eqb (bv_unsigned option_)) prctl_modeled_options)
@@ -304,7 +348,12 @@ Definition prctl_witness (i : SyscallInput) (option_ arg2 : word) (m : Model)
   else if Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG then
     (if (64 <? bv_unsigned arg2)%Z
      then ret_outcome (errno_ret EINVAL) m
-     else ret_outcome (Z_to_bv 64 0) m)
+     else ret_outcome (Z_to_bv 64 0) (with_pdeath_signal arg2 m))
+  else if Z.eqb (bv_unsigned option_) PR_GET_PDEATHSIG then
+    (match put_user_ids (in_wmem i) [(arg2, m_pdeath_signal m)] with
+     | None => Unmodeled
+     | Some (r, ws) => Ok (mkEffect r ws []) m []
+     end)
   else if Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE then
     (if (1 <? bv_unsigned arg2)%Z
      then ret_outcome (errno_ret EINVAL) m
@@ -327,7 +376,13 @@ Proof.
     destruct (capbset_assumed (bv_unsigned arg2));
       [apply pure_ok | apply alt_r; apply pure_ok]. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
-  { destruct ((64 <? bv_unsigned arg2)%Z); apply pure_ok. }
+  { destruct ((64 <? bv_unsigned arg2)%Z); [apply pure_ok|].
+    eapply bind_step; [apply modify_ok|]. apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_PDEATHSIG).
+  { eapply bind_step; [apply input_ok|]. cbv beta.
+    eapply bind_step; [apply get_model_ok|]. cbv beta.
+    destruct (put_user_ids (in_wmem i) [(arg2, m_pdeath_signal m)])
+      as [[r ws]|]; [apply pure_ok|apply unmodeled_intro]. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
   { destruct ((1 <? bv_unsigned arg2)%Z); apply pure_ok. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS);

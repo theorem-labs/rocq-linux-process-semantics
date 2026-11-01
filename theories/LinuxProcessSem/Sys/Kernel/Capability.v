@@ -267,6 +267,14 @@ Definition capget_spec (header dataptr : word) : Sys SyscallEffect :=
     euid-0 caller has no CAP_SETUID, which the model's privilege test
     cannot follow, so that call is declined.
 
+    THE PARENT-DEATH SIGNAL STAYS.  [commit_creds] (kernel/cred.c) resets
+    [pdeath_signal] when the effective or filesystem ids move or when
+    [cred_cap_issubset(old, new)] fails, that is, when the call gains a
+    permitted capability.  capset never clears it, because that arm
+    answers only where no capability is gained: the answered call moves
+    no id and leaves the permitted set empty, as it was.  So the arm
+    leaves [State.m_pdeath_signal] alone, with the rest of the model.
+
     EVERY OTHER SHAPE IS DECLINED: another version (or an unknown one,
     whose header write-back the model does not carry), a non-zero pid
     (-EPERM for another task, but the model may not know its own pid),

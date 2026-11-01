@@ -885,7 +885,7 @@ Qed.
     [match] — [Kernel.Sys.prctl_spec]'s first test is membership in it —
     and [prctl_modeled_options_are] pins it EXACTLY — not that
     55 is absent from it, which a widening could preserve, but that the
-    list is these four options and nothing else.  So the tripwire keeps
+    list is these five options and nothing else.  So the tripwire keeps
     its shape: an edit that teaches [prctl] another
     option fails a named proof in this file, and whoever makes that edit
     has to come back here and say what it does to the tagging argument.
@@ -898,9 +898,11 @@ Qed.
     it could not be modeled by masking registers on entry either.
 
     WHAT THE CURRENT LIST DOES TO IT: nothing.  Besides [PR_CAPBSET_READ]
-    the list holds [PR_SET_PDEATHSIG] (1), [PR_SET_DUMPABLE] (4) and
-    [PR_SET_NO_NEW_PRIVS] (38), which write the parent-death signal, the
-    mm's dumpable flag and the no-new-privs bit and nothing else
+    the list holds [PR_SET_PDEATHSIG] (1), [PR_GET_PDEATHSIG] (2),
+    [PR_SET_DUMPABLE] (4) and [PR_SET_NO_NEW_PRIVS] (38), which write or
+    read the parent-death signal, write the mm's dumpable flag and write
+    the no-new-privs bit, and nothing else; [PR_GET_PDEATHSIG]'s one store
+    is a [put_user] of an [int] through riscv's ordinary [access_ok]
     (kernel/sys.c, [SYSCALL_DEFINE5(prctl)], read at v6.18.44).  None of
     them is a caller of [set_tagged_addr_ctrl], whose only callers at that
     tag are option 55's [SET_TAGGED_ADDR_CTRL] and riscv's ptrace
@@ -908,7 +910,8 @@ Qed.
 
 Example prctl_modeled_options_are :
   prctl_modeled_options =
-    [PR_CAPBSET_READ; PR_SET_PDEATHSIG; PR_SET_DUMPABLE; PR_SET_NO_NEW_PRIVS].
+    [PR_CAPBSET_READ; PR_SET_PDEATHSIG; PR_GET_PDEATHSIG; PR_SET_DUMPABLE;
+     PR_SET_NO_NEW_PRIVS].
 Proof. reflexivity. Qed.
 
 (** Every option outside that list falls through [prctl_spec]'s first

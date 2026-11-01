@@ -205,7 +205,11 @@ Definition set_cred_groups (gs : list word) (c : Creds) : Creds :=
     both allocation sites giving the same errno.  The ids, the permitted
     set and the user namespace do not move ([prepare_creds] copies them,
     and [set_groups] touches only the group list), so [commit_creds]'s
-    dumpable and parent-death-signal reset does not fire either.  This
+    dumpable and parent-death-signal reset does not fire either: the arm
+    commits through [set_creds], which carries [State.m_pdeath_signal]
+    across, where the id setters commit through
+    [Kernel.Sys.commit_id_creds].  capset never clears it, because that
+    arm answers only where no capability is gained.  This
     is the shape a privilege drop issues first
     ([setgroups(0, NULL)] before [setgid]/[setuid]), and the shape
     a sandbox launcher's privilege drop uses.

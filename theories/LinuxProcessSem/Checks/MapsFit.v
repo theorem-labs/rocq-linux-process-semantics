@@ -513,6 +513,7 @@ Proof.
     | erewrite check_getppid_frame by eassumption; exact Hfit
     | erewrite check_gettid_frame by eassumption; exact Hfit
     | erewrite check_setsid_frame by eassumption; exact Hfit
+    | erewrite check_getsid_frame by eassumption; exact Hfit
     | erewrite check_uname_frame by eassumption; exact Hfit
     | erewrite check_prctl_frame by eassumption; exact Hfit
     | erewrite check_prlimit64_frame by eassumption; exact Hfit
@@ -531,6 +532,7 @@ Proof.
     | erewrite check_newfstatat_frame by eassumption; exact Hfit
     | erewrite check_fstat_frame by eassumption; exact Hfit
     | erewrite check_getid_frame by eassumption; exact Hfit
+    | erewrite check_getresid_frame by eassumption; exact Hfit
     | erewrite check_setid_frame by eassumption; exact Hfit
     | erewrite check_setresid_frame by eassumption; exact Hfit
     | erewrite check_getgroups_frame by eassumption; exact Hfit

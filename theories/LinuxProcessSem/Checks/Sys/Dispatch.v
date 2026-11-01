@@ -691,6 +691,17 @@ Proof.
     eauto using check_setresid_sound_ok, check_setresid_sound_unmodeled, check_setresid_complete_ok, check_setresid_complete_unmodeled, setresid_witness_ok.
 Defined.
 
+(** getresuid (148). *)
+Definition arm_getresuid : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 148%Z (fun i => getresid_spec cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) i))
+                       (fun i eff m => check_getresid i cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) eff m)
+                       (fun i m => getresid_witness cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_getresid_sound_ok, check_getresid_sound_unmodeled, check_getresid_complete_ok, check_getresid_complete_unmodeled, getresid_witness_ok.
+Defined.
+
 (** setresgid (149). *)
 Definition arm_setresgid : CheckedArm.
 Proof.
@@ -700,6 +711,28 @@ Proof.
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_setresid_sound_ok, check_setresid_sound_unmodeled, check_setresid_complete_ok, check_setresid_complete_unmodeled, setresid_witness_ok.
+Defined.
+
+(** getresgid (150). *)
+Definition arm_getresgid : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 150%Z (fun i => getresid_spec cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) i))
+                       (fun i eff m => check_getresid i cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) eff m)
+                       (fun i m => getresid_witness cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_getresid_sound_ok, check_getresid_sound_unmodeled, check_getresid_complete_ok, check_getresid_complete_unmodeled, getresid_witness_ok.
+Defined.
+
+(** getsid (156). *)
+Definition arm_getsid : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 156%Z (fun i => getsid_spec (pid32 (in_arg i 0)) i))
+                       (fun i eff m => check_getsid (pid32 (in_arg i 0)) eff m)
+                       (fun i m => getsid_witness (pid32 (in_arg i 0)) m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_getsid_sound_ok, check_getsid_sound_unmodeled, check_getsid_complete_ok, check_getsid_complete_unmodeled, getsid_witness_ok.
 Defined.
 
 (** setsid (157). *)
@@ -1220,7 +1253,10 @@ Definition checked_table : list CheckedArm :=
   arm_setgid ::
   arm_setuid ::
   arm_setresuid ::
+  arm_getresuid ::
   arm_setresgid ::
+  arm_getresgid ::
+  arm_getsid ::
   arm_setsid ::
   arm_getgroups ::
   arm_setgroups ::
@@ -1815,6 +1851,16 @@ Lemma sa_spec_arm_setresuid : forall i m o,
   sa_spec (ca_arm arm_setresuid) i m o = setresid_spec cred_uids set_cred_uids true (uid32 (in_arg i 0)) (uid32 (in_arg i 1)) (uid32 (in_arg i 2)) i m o.
 Proof. reflexivity. Qed.
 
+Lemma ca_check_arm_getresuid : forall i eff m,
+  ca_check arm_getresuid i eff m = check_getresid i cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_getresuid : forall i m,
+  ca_witness arm_getresuid i m = getresid_witness cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_getresuid : forall i m o,
+  sa_spec (ca_arm arm_getresuid) i m o = getresid_spec cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m o.
+Proof. reflexivity. Qed.
+
 Lemma ca_check_arm_setresgid : forall i eff m,
   ca_check arm_setresgid i eff m = check_setresid cred_gids set_cred_gids false (uid32 (in_arg i 0)) (uid32 (in_arg i 1)) (uid32 (in_arg i 2)) eff m.
 Proof. reflexivity. Qed.
@@ -1823,6 +1869,26 @@ Lemma ca_witness_arm_setresgid : forall i m,
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_setresgid : forall i m o,
   sa_spec (ca_arm arm_setresgid) i m o = setresid_spec cred_gids set_cred_gids false (uid32 (in_arg i 0)) (uid32 (in_arg i 1)) (uid32 (in_arg i 2)) i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_getresgid : forall i eff m,
+  ca_check arm_getresgid i eff m = check_getresid i cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_getresgid : forall i m,
+  ca_witness arm_getresgid i m = getresid_witness cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_getresgid : forall i m o,
+  sa_spec (ca_arm arm_getresgid) i m o = getresid_spec cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_getsid : forall i eff m,
+  ca_check arm_getsid i eff m = check_getsid (pid32 (in_arg i 0)) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_getsid : forall i m,
+  ca_witness arm_getsid i m = getsid_witness (pid32 (in_arg i 0)) m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_getsid : forall i m o,
+  sa_spec (ca_arm arm_getsid) i m o = getsid_spec (pid32 (in_arg i 0)) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_setsid : forall i eff m,
@@ -2299,7 +2365,10 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_check_arm_setgid ca_witness_arm_setgid sa_spec_arm_setgid : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_setuid ca_witness_arm_setuid sa_spec_arm_setuid : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_setresuid ca_witness_arm_setresuid sa_spec_arm_setresuid : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_getresuid ca_witness_arm_getresuid sa_spec_arm_getresuid : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_setresgid ca_witness_arm_setresgid sa_spec_arm_setresgid : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_getresgid ca_witness_arm_getresgid sa_spec_arm_getresgid : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_getsid ca_witness_arm_getsid sa_spec_arm_getsid : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_getgroups ca_witness_arm_getgroups sa_spec_arm_getgroups : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_setgroups ca_witness_arm_setgroups sa_spec_arm_setgroups : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_uname ca_witness_arm_uname sa_spec_arm_uname : arm_unfold.
@@ -2527,9 +2596,21 @@ Lemma ca_no_arm_setresuid : ca_no arm_setresuid = 147%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_setresuid : arm_unfold.
 
+Lemma ca_no_arm_getresuid : ca_no arm_getresuid = 148%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_getresuid : arm_unfold.
+
 Lemma ca_no_arm_setresgid : ca_no arm_setresgid = 149%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_setresgid : arm_unfold.
+
+Lemma ca_no_arm_getresgid : ca_no arm_getresgid = 150%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_getresgid : arm_unfold.
+
+Lemma ca_no_arm_getsid : ca_no arm_getsid = 156%Z.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite ca_no_arm_getsid : arm_unfold.
 
 Lemma ca_no_arm_setsid : ca_no arm_setsid = 157%Z.
 Proof. reflexivity. Qed.

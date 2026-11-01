@@ -1307,9 +1307,10 @@ Qed.
     and is outside [Specs.modeled_sysnos] — as is [execve] — so it falls
     through the dispatcher to [Monad.unmodeled], fail closed, before any
     tagged pointer can reach this predicate.  [prctl] is 167 and IS in
-    [Specs.modeled_sysnos]: it answers the four options of
+    [Specs.modeled_sysnos]: it answers the five options of
     [Kernel.Sys.prctl_modeled_options] — [PR_CAPBSET_READ],
-    [PR_SET_PDEATHSIG], [PR_SET_DUMPABLE], [PR_SET_NO_NEW_PRIVS], none of
+    [PR_SET_PDEATHSIG], [PR_GET_PDEATHSIG], [PR_SET_DUMPABLE],
+    [PR_SET_NO_NEW_PRIVS], none of
     which reaches [set_tagged_addr_ctrl] — and nothing else, so what is
     declined is the OPTION rather than the number, and
     [PR_SET_TAGGED_ADDR_CTRL] (55) is declined inside
@@ -4228,6 +4229,44 @@ Record ProcState := mkProcState {
                                     ignores SIGPIPE would hand the model a
                                     process it kills where Linux returns -EPIPE
                                     and runs on. *)
+;
+  procst_pdeath_signal : word    (* THE PARENT-DEATH SIGNAL, the kernel's
+                                    [task->pdeath_signal]: the signal the
+                                    kernel sends this process when its parent
+                                    exits, 0 for none.  An [int] in the kernel,
+                                    and only 0 to 64 ever reach it
+                                    ([valid_signal] gates its one writer).
+
+                                    READ IT THROUGH THE ACCESSOR
+                                    [m_pdeath_signal], and do not take
+                                    [ProcState] apart by position.  A consumer
+                                    that does breaks at every revision that adds
+                                    a field: the launch record went from 15 to
+                                    19 fields in one day, and four forks took it
+                                    apart by position.  The accessor is the name
+                                    that stays.
+
+                                    0 AT LAUNCH ([init_model]).  [copy_process]
+                                    (kernel/fork.c) starts every task at 0, and
+                                    an [execve] keeps the value: fs/exec.c
+                                    [begin_new_exec] clears it only for a secure
+                                    exec.  So the 0 is an ASSUMPTION about the
+                                    launcher -- it set no parent-death signal
+                                    before its [execve] -- and SCOPE.md lists
+                                    it.  Written by [prctl(PR_SET_PDEATHSIG)]
+                                    and read by [prctl(PR_GET_PDEATHSIG)]
+                                    ([Kernel.Sys.prctl_spec]); reset to 0 by
+                                    [commit_creds] (kernel/cred.c) when a call
+                                    moves the effective or filesystem ids, which
+                                    [Kernel.Sys.commit_id_creds] carries for the
+                                    id setters.  Each credential arm says
+                                    whether it resets it.  The model delivers no
+                                    signal from outside the process, so no
+                                    transition reads it on a parent's exit.
+                                    Kernel citations, read at v6.18.44 and
+                                    identical at v6.18.46: kernel/fork.c
+                                    [copy_process], fs/exec.c [begin_new_exec],
+                                    kernel/cred.c [commit_creds]. *)
 }.
 
 (** The resource limits the process has been observed to have. *)
@@ -4380,6 +4419,10 @@ Definition m_channel_reader (m : Model) : bool :=
     [Run.valid_input_sigpipe_ignored].  See [procst_sigpipe_default]. *)
 Definition m_sigpipe_default (m : Model) : bool :=
   procst_sigpipe_default (m_proc m).
+(** The parent-death signal, 0 for none.  Read it here and not by
+    position; see [procst_pdeath_signal]. *)
+Definition m_pdeath_signal (m : Model) : word :=
+  procst_pdeath_signal (m_proc m).
 Definition m_utsname (m : Model) : option (list byte) :=
   procst_utsname (m_proc m).
 Definition m_statpins (m : Model) : list (Fs.path * list byte) :=
@@ -4432,7 +4475,7 @@ Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
                (mkCreds overflow_id overflow_id overflow_id
                         overflow_id overflow_id overflow_id [])
                false (Z_to_bv 64 0) false None false false false false []
-               false true true)
+               false true true (Z_to_bv 64 0))
             (mkLimState rlim default_nofile)
             (mkTimeState (Z_to_bv 64 0)).
 
@@ -4515,7 +4558,7 @@ Definition with_fs (fs : Fs.Fs) (m : Model) : Model :=
                          (m_abort_terminal m)
                          (statpins_restrict fs (m_statpins m))
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 (** Halt the process by an EXIT, which is the other half of what the
     kill flag distinguishes: this clears it, so a model this produced has
@@ -4533,7 +4576,7 @@ Definition with_halted (code : word) (m : Model) : Model :=
                          false (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 Definition with_tid (tid : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -4544,7 +4587,7 @@ Definition with_tid (tid : word) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
@@ -4568,7 +4611,7 @@ Definition with_utsname (bs : list byte) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 (** Look a file's stat pin up by path.  [None] means no [fstat] has
     delivered a [struct stat] for that file yet, which is the branch
@@ -4606,7 +4649,7 @@ Definition with_statpin (p : Fs.path) (bs : list byte) (m : Model) : Model :=
                          (m_abort_terminal m)
                          ((p, bs) :: m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 
 (** Seed the soft descriptor limit.  Its only caller is [init_model], for
@@ -4634,7 +4677,7 @@ Definition with_abort_terminal (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m) b
                          (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 
 Definition with_nofile (n : word) (m : Model) : Model :=
@@ -4649,7 +4692,7 @@ Definition with_creds (c : Creds) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 Definition with_setsid_succeeded (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -4659,7 +4702,7 @@ Definition with_setsid_succeeded (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 
 (** Record that the process now has something to reap.
@@ -4687,7 +4730,7 @@ Definition with_children (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 (** Install a new blocked mask.  [Kernel.Signal.rt_sigprocmask_spec] is
     the only caller, and the only kernel path that reaches
@@ -4709,7 +4752,7 @@ Definition with_sigmask (s : word) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 
 (** Record that a [sigaltstack] has installed an alternate stack.
@@ -4738,7 +4781,7 @@ Definition with_sigaltstack_installed (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 
 (** Record that SIGABRT has been sent and is BLOCKED, so it waits in
@@ -4766,7 +4809,7 @@ Definition with_sigabrt_pending (m : Model) : Model :=
                          (procst_killed (m_proc m)) true (m_abort_terminal m)
                          (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 
 (** Record that SIGPIPE has been sent and is BLOCKED, the same shape as
@@ -4789,7 +4832,7 @@ Definition with_sigpipe_pending (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          true (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 
 (** Seed the environment's channel-reader fact.  Its only caller is
@@ -4809,7 +4852,7 @@ Definition with_channel_reader (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) b
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 
 (** Seed the task's SIGPIPE disposition.  Its only caller is
@@ -4829,7 +4872,24 @@ Definition with_sigpipe_default (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         b)
+                         b (m_pdeath_signal m))
+            (m_lim m) (m_time m).
+
+(** Install a parent-death signal.  Two kinds of caller, both in
+    [Kernel.Sys]: [prctl_spec]'s [PR_SET_PDEATHSIG] arm, which stores its
+    argument, and [commit_id_creds], which stores 0 when an id setter
+    moves the effective id, as [commit_creds] does.  Nothing else writes
+    the field after [init_model]. *)
+Definition with_pdeath_signal (s : word) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m) s)
             (m_lim m) (m_time m).
 
 (** End the process by a fatal signal.  It writes the signal number into
@@ -4881,7 +4941,7 @@ Definition with_killed (sig : word) (m : Model) : Model :=
                          true (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m))
+                         (m_sigpipe_default m) (m_pdeath_signal m))
             (m_lim m) (m_time m).
 
 (** The invariant the two fields are written under, stated where the
@@ -6760,7 +6820,7 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
                 (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
        false (in_sigmask inp) false None false false false
        (in_abort_terminal inp) [] false (in_channel_reader inp)
-       (in_sigpipe_default inp))
+       (in_sigpipe_default inp) (Z_to_bv 64 0))
     (mkLimState None (in_nofile inp))
     (mkTimeState (Z_to_bv 64 0)).
 
@@ -6952,6 +7012,31 @@ Proof. reflexivity. Qed.
 Lemma m_kernel_with_clock : forall v m, m_kernel (with_clock v m) = m_kernel m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_clock : model.
+
+Lemma m_kernel_with_pdeath_signal : forall v m,
+  m_kernel (with_pdeath_signal v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_pdeath_signal : model.
+
+Lemma m_pdeath_signal_with_pdeath_signal : forall (v : word) (m : Model),
+  m_pdeath_signal (with_pdeath_signal v m) = v.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_pdeath_signal_with_pdeath_signal : model.
+
+Lemma m_pdeath_signal_with_creds : forall (v : Creds) (m : Model),
+  m_pdeath_signal (with_creds v m) = m_pdeath_signal m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_pdeath_signal_with_creds : model.
+
+Lemma m_creds_with_pdeath_signal : forall (v : word) (m : Model),
+  m_creds (with_pdeath_signal v m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_creds_with_pdeath_signal : model.
+
+Lemma m_vmmaps_with_pdeath_signal : forall (v : word) (m : Model),
+  m_vmmaps (with_pdeath_signal v m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vmmaps_with_pdeath_signal : model.
 
 Lemma init_model_is_the_setter_chain :
   forall reserved brk0 mbase sp lim inp,
@@ -8988,6 +9073,9 @@ Arguments with_sigmask : simpl never.
 Arguments m_utsname : simpl never.
 Arguments with_utsname : simpl never.
 
+Arguments m_pdeath_signal : simpl never.
+Arguments with_pdeath_signal : simpl never.
+
 (** And of the model a run starts from.  [init_model] builds one with
     [mkModel], so these are [reflexivity] too -- but a proof cannot see that
     through an opaque accessor, and [cbn] with a delta list will not unfold
@@ -9780,6 +9868,12 @@ Proof. reflexivity. Qed.
 Lemma m_setsid_succeeded_init_model : forall reserved brk0 mbase sp lim inp,
   m_setsid_succeeded (init_model reserved brk0 mbase sp lim inp) =
   false.
+Proof. reflexivity. Qed.
+
+(** No parent-death signal at launch: the assumption
+    [procst_pdeath_signal] names. *)
+Lemma m_pdeath_signal_init_model : forall reserved brk0 mbase sp lim inp,
+  m_pdeath_signal (init_model reserved brk0 mbase sp lim inp) = Z_to_bv 64 0.
 Proof. reflexivity. Qed.
 
 Lemma m_killed_init_model : forall reserved brk0 mbase sp lim inp,
