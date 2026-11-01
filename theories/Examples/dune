@@ -21,13 +21,15 @@
  (action (with-stdout-to HexDeps.v (echo "(* Generated: see the dune file. *)\n"))))
 
 ; ---------------------------------------------------------------------------
-; Generated members of the theory, two per example.  dune makes them in
+; Generated members of the theory: up to two per example.  dune makes them in
 ; _build; they are not in the repository.  Both generators read only files
 ; that are in the repository, and both write only VM-checked or type-checked
 ; content.  Thus a generator bug cannot make a proof pass: it makes the build
 ; fail.
 ;
-;   <name>/<name>_code.v  fetch/decode lemmas, from the two memory images
+;   <name>/<name>_code.v  fetch/decode lemmas, from the example's memory
+;                         image or images — a pair for an equivalence
+;                         example, one under --single
 ;                         (gen-fd-lemmas).  The generator runs `rocq` on
 ;                         the decoder in Riscv/.  In a full build, the rule
 ;                         depends on the Riscv/*.vo files of the core theory
@@ -41,11 +43,17 @@
 ;                         make a cycle.
 ;
 ;   <name>/Checker.v      the top-level check (tools/gen_checker.py), a
-;                         fixed template with the example name in it.
+;                         fixed template with the example name in it.  An
+;                         EQUIVALENCE example only: the template ascribes
+;                         Proof.strong_universal to Equivalence.SPEC, so an
+;                         example with no Proof.v has no Checker.v rule and
+;                         tools/gen_checker.py --check requires that the two
+;                         sets agree.
 ;
-; To add an example, copy the pair of stanzas of an example below and change
-; the name.  If you forget, the build fails with "<name>_code.v not found".
-; See README.md.
+; To add an equivalence example, copy the pair of stanzas of one below and
+; change the name; a one-binary example takes the code stanza alone, as
+; forkwait does.  If you forget the code stanza, the build fails with
+; "<name>_code.v not found".  See README.md.
 
 (rocq.theory
  (name LinuxProcessSemantics.Examples)
@@ -75,3 +83,20 @@
   (deps %{project_root}/tools/gen_checker.py)
   (action
    (run python3 %{project_root}/tools/gen_checker.py rwx_flag_ns --out %{target}))))
+
+(subdir forkwait
+ (rule
+  (target forkwait_code.v)
+  (deps
+   %{project_root}/tools/gen_fd_lemmas.py
+   (glob_files *MemImage.v)
+   (glob_files *MemImage_seg_*.hex)
+   (glob_files %{project_root}/theories/Riscv/*.vo))
+  ; forkwait is ONE binary making a halting claim, not an equivalence pair,
+  ; so --single, and its image module is named for the example rather than
+  ; for a side.  Its .text needs no explicit range: the executable LOAD is
+  ; r-x with p_filesz 0x68, which is the 26 instructions and nothing else.
+  (action
+   (run python3 %{project_root}/tools/gen_fd_lemmas.py forkwait
+    --single --source-image ForkwaitMemImage
+    --examples-dir .. --loadpath %{project_root}/theories --out %{target}))))

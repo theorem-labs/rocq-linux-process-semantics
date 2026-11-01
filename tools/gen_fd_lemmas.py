@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """gen_fd_lemmas.py — generate an example's Rocq fetch/decode lemma file.
 
-For every instruction word in an example's two memory images, emit
+For every instruction word in an example's memory images — a source/target
+pair for an equivalence example, one image under --single — emit
 
     Lemma <P>F_<pc> : fetch_word <segs> 0x<pc> = Some <word>.
     Lemma <P>D_<pc> : decode_any (Z_to_bv 32 <word>) = Some (<AST>, <isz>%Z).
@@ -15,8 +16,9 @@ WHERE THE WORDS COME FROM.  Not from the ELF binaries: those are build
 products of the zig/musl toolchains and are .gitignore'd, so a clean
 checkout has no disassembly to read.  What IS checked in — and what the
 lemmas are actually about — are the memory images
-(theories/Examples/<name>/{Source,Target}MemImage.v plus their .hex segment
-bytes), so this script reads the instruction words straight out of those.
+(theories/Examples/<name>/{Source,Target}MemImage.v, or the one image
+--source-image names, plus their .hex segment bytes), so this script reads
+the instruction words straight out of those.
 So the build needs no objdump: python3 and rocq are enough.
 
 The .text of a snapshot is located as THE MAXIMAL RUN OF NONZERO BYTES
@@ -54,7 +56,7 @@ sync.)
 
 Usage:
   gen_fd_lemmas.py <name> [--examples-dir DIR] [--loadpath DIR] [--out FILE]
-                   [--steptac-module MOD]
+                   [--steptac-module MOD] [--single]
                    [--source-image NAME] [--target-image NAME]
       Emit theories/Examples/<name>/<name>_code.v to stdout (or FILE).
 
@@ -63,6 +65,8 @@ Usage:
   --source-image/--target-image name the memory-image modules to read,
   without the .v extension (defaults: SourceMemImage, TargetMemImage);
   the segment .hex files named by each image are found next to it.
+  --single says the example is ONE binary, not an equivalence pair: only
+  the source image is read and only its lemmas are emitted.
 
 Needs `rocq` on PATH, with the LinuxProcessSemantics library visible:
 either installed (opam install .), or located by --loadpath, or discovered
@@ -97,10 +101,13 @@ PHDRS_RE = re.compile(
     r"\s*ph_ent\s*:=\s*(?P<ent>\d+)%N;"
     r"\s*ph_num\s*:=\s*(?P<num>\d+)%N")
 
-# Every example has BOTH images: an equivalence task is a pair of binaries,
+# An EQUIVALENCE example has BOTH images: the task is a pair of binaries,
 # and theories/Examples/README.md's bring-up path reaches a compiling
 # Proof.v (admit-first) rather than stopping at a lone reference program.
-# A missing image is therefore an error, not an intermediate state.
+# A missing image is therefore an error there, not an intermediate state.
+# An example that is about ONE binary — a halting claim rather than an
+# equivalence — says so with --single, and then only the source image is
+# read; a missing image is still an error for the images in play.
 # Each entry is (module, side, lemma prefix); the module (overridable with
 # --source-image/--target-image) is both the .v file's basename and the
 # prefix of its definitions (<module>_loaded_segments, <module>_phdrs,
@@ -448,6 +455,9 @@ def main():
                          "where the nonzero-run locator does not apply)")
     ap.add_argument("--target-text", default=None, metavar="0xLO:0xHI",
                     help="explicit .text address range of the target image")
+    ap.add_argument("--single", action="store_true",
+                    help="the example is ONE binary, not an equivalence "
+                         "pair: read the source image only")
     args = ap.parse_args()
 
     def parse_range(flag, value):
@@ -467,12 +477,15 @@ def main():
 
     images = [(args.source_image,) + DEFAULT_IMAGES[0][1:],
               (args.target_image,) + DEFAULT_IMAGES[1][1:]]
+    if args.single:
+        images, text_ranges = images[:1], text_ranges[:1]
     # Reproduced in the generated header so a by-hand regeneration matches.
     regen_flags = [
-        "%s %s" % (flag, value)
+        "%s %s" % (flag, value) if value is not True else flag
         for flag, value, default in
         [("--steptac-module", args.steptac_module,
           ap.get_default("steptac_module")),
+         ("--single", args.single, False),
          ("--source-image", args.source_image, DEFAULT_IMAGES[0][0]),
          ("--target-image", args.target_image, DEFAULT_IMAGES[1][0]),
          ("--source-text", args.source_text, None),
