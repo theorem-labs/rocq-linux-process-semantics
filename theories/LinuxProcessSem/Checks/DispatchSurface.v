@@ -274,6 +274,11 @@ Definition probe_mem : word -> option byte :=
       follow — an arm that resolves an fd first answers -EBADF before the
       gated argument matters, and an arm that gates on an ARGUMENT VALUE
       declines and needs an entry.
+    - getsid (156) declines the default PID.  [a0] is a [pid_t], and
+      AT_FDCWD narrowed to 32 bits is -100, which names no task the model
+      knows: [Kernel.Sys.getsid_spec] answers only pid 0 and the caller's
+      own pinned tid.  With pid 0 and [probe_model]'s clear setsid bit it
+      reaches its fresh session id.
 
     THE RULE HAS AN EXCEPTION, and it is worth naming so that the next
     arm-that-reads-a0-as-a-value is not given an entry it does not need.
@@ -293,6 +298,9 @@ Definition probe_mem : word -> option byte :=
     is the header POINTER, and AT_FDCWD read as an address lies above
     [State.TASK_SIZE], so [access_ok] refuses the 4-byte version read
     and both arms answer -EFAULT before any version or pid gate.
+    getresuid (148) and getresgid (150) need none either: [a0] is the
+    first destination POINTER, [access_ok] refuses AT_FDCWD's range for
+    its 4-byte store, and both arms answer -EFAULT with nothing stored.
 
     Add an entry when a newly listed syscall needs something else;
     leaving it out makes [modeled_sysnos_probes_answer] below fail to
@@ -307,6 +315,12 @@ Definition probe_args (n : Z) : list word :=
        the arm reaches the -EINVAL that is its only answer.  a0 stays 0
        because no [count] changes the verdict. *)
     [z; Z_to_bv 64 O_LARGEFILE; z; z; z; z]
+  else if Z.eqb n 156 then
+    (* getsid answers pid 0 -- the caller -- and the caller's own pinned
+       tid, and declines every other pid; the default [AT_FDCWD] in a0 is
+       the [pid_t] -100.  pid 0 on [probe_model], whose setsid bit is
+       clear, reaches the fresh session id. *)
+    [z; z; z; z; z; z]
   else if Z.eqb n 222 then
     (* mmap answers -EINVAL on a zero length only for an anonymous mapping *)
     [AT_FDCWD; z; z; Z_to_bv 64 (MAP_PRIVATE + MAP_ANONYMOUS); z; z]
@@ -367,7 +381,7 @@ Definition probe_args (n : Z) : list word :=
   else if Z.eqb n 167 then
     (* prctl dispatches on an OPTION, not an fd: [AT_FDCWD] narrowed to 32
        bits is 0xffffff9c, which is no prctl option, so the arm declines
-       before it reaches an answer.  [PR_CAPBSET_READ] is one of the four
+       before it reaches an answer.  [PR_CAPBSET_READ] is one of the five
        options [Kernel.Sys.prctl_modeled_options] carries, and a1 is the
        capability number -- 0 is a capability at or below [CAP_LAST_CAP]
        and outside [Kernel.Sys.capbset_assumed], so the arm answers 0 or

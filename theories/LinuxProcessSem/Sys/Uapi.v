@@ -1077,7 +1077,7 @@ Definition NEW_UTS_LEN : Z := 64%Z.
     [machine], [domainname], at offsets 0, 65, 130, 195, 260 and 325. *)
 Definition NEW_UTSNAME_SIZE : Z := 390%Z.
 
-(** [PR_CAPBSET_READ], the first of the four [prctl] options this model answers
+(** [PR_CAPBSET_READ], the first of the five [prctl] options this model answers
     (include/uapi/linux/prctl.h, Linux v6.18.46, commit 1f99e9ab748f).
     It is NOT handled in kernel/sys.c's own [switch]: the LSM hook
     [security_task_prctl] runs first, and capability's implementation of
@@ -1097,6 +1097,13 @@ Definition PR_CAPBSET_READ : Z := 23%Z.
 Definition PR_SET_PDEATHSIG : Z := 1%Z.
 Definition PR_SET_DUMPABLE : Z := 4%Z.
 Definition PR_SET_NO_NEW_PRIVS : Z := 38%Z.
+
+(** [PR_GET_PDEATHSIG], the reader of what [PR_SET_PDEATHSIG] stores
+    (include/uapi/linux/prctl.h, [#define PR_GET_PDEATHSIG 2]; read at
+    v6.18.44, identical at v6.18.46).  It reaches kernel/sys.c's own
+    [switch] for the reason the three above do, and
+    [Kernel.Sys.prctl_spec] answers it from [State.m_pdeath_signal]. *)
+Definition PR_GET_PDEATHSIG : Z := 2%Z.
 
 (** [CAP_LAST_CAP], the highest capability number the kernel recognises:
     [CAP_CHECKPOINT_RESTORE], 40 (include/uapi/linux/capability.h, Linux

@@ -443,8 +443,9 @@ Local Definition check_proc_open_result (o : OpaqueFd) (eff : SyscallEffect)
   | _ => CheckReject
   end.
 
-(** Mirrors [Open.openat_proc_spec], word for word; that definition
-    carries the kernel path, the assumptions and the precision cost. *)
+(** Mirrors [Open.openat_proc_spec], including its two regular sysctl
+    leaves; that definition carries the kernel path, assumptions and
+    precision cost. *)
 Local Definition check_openat_proc (c : path) (flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in

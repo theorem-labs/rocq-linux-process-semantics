@@ -500,66 +500,148 @@ Example newfstatat_relative_to_proc_ns_fd :
      = CheckUnmodeled.
 Proof. repeat split; check_eq. Qed.
 
+(** A [statbuf] that [access_ok] refuses: [cp_new_stat]'s [copy_to_user]
+    fails before a byte moves, so every answer is an errno (-EFAULT among
+    them) and nothing is written; a claimed delivery is REJECTED.  THE
+    CONTROL is the same call under AT_FDCWD's absent name, -ENOENT before
+    and after. *)
+Definition ns_stat_far_in (dirfd : word) : SyscallInput :=
+  mkInput 79 [dirfd; 0x2000; Z_to_bv 64 (2 ^ 64 - 64); 0; 0; 0] ns_net_mem (fun _ => None).
+
+Example newfstatat_proc_refused_statbuf :
+  check_syscall (ns_stat_far_in 6)
+    (with_copyins [(0x2000, 4%nat)] (mkEffect (errno_ret EFAULT) [] [])) ns_model
+  = CheckOk ns_model []
+  /\ check_syscall (ns_stat_far_in 6)
+       (with_copyins [(0x2000, 4%nat)] (mkEffect (errno_ret ENOMEM) [] [])) ns_model
+     = CheckOk ns_model []
+  /\ check_syscall (ns_stat_far_in 6)
+       (with_copyins [(0x2000, 4%nat)]
+          (mkEffect 0 [(Z_to_bv 64 (2 ^ 64 - 64), repeat (Z_to_bv 8 0) 128)] []))
+       ns_model
+     = CheckReject
+  (* the control *)
+  /\ check_syscall (ns_stat_far_in AT_FDCWD)
+       (with_copyins [(0x2000, 4%nat)] (mkEffect (errno_ret ENOENT) [] [])) ns_model
+     = CheckOk ns_model [].
+Proof. repeat split; check_eq. Qed.
+
 (* =========================================================================
-   procfs names under AT_FDCWD.  procfs is mounted at /proc (SCOPE.md,
-   "Assumptions that the model does not check"), so such a name resolves
-   whatever [Fs] holds, and some are links.  [Fs.Stat.newfstatat_spec]
-   and [Fs.Stat.readlinkat_spec] decline one; the old text answered
-   -ENOENT (newfstatat, off the flat map) and -EINVAL (readlinkat, without
-   reading the name), both wrong for Linux on "/proc/self/exe".
+   Path walks under AT_FDCWD that the flat file model cannot decide.
+   procfs is mounted at /proc (SCOPE.md, "Assumptions that the model
+   does not check"), and any spelling that reaches it resolves whatever
+   [Fs] holds, links included.  [Fs.Stat.newfstatat_spec] and
+   [Fs.Stat.readlinkat_spec] decline every name [Fs.Stat.statat_cwd_path]
+   refuses: a ".." component, or a separator outside a canonical
+   "/tmp/<name>" key.
    ========================================================================= *)
 
 (** A pathname and its NUL at 0x2000. *)
 Definition cwd_path_mem (bs : list byte) : word -> option byte :=
   bytes_at 0x2000 (bs ++ [Z_to_bv 8 0]).
 
-(** "/proc/self/exe", a link to the running image on Linux. *)
+(** "/proc/self/exe", a link to the running image on Linux, and two
+    other spellings of it: "//proc/self/exe" and
+    "/proc/../proc/self/exe". *)
 Definition s_proc_self_exe : list byte :=
   [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 101; 120; 101].
+Definition s_dslash_proc_self_exe : list byte := 47 :: s_proc_self_exe.
+Definition s_dotdot_proc_self_exe : list byte :=
+  [47; 112; 114; 111; 99; 47; 46; 46] ++ s_proc_self_exe.
+(** "/etc/passwd", outside procfs but behind a directory [Fs] lacks. *)
+Definition s_etc_passwd : list byte := [47; 101; 116; 99; 47; 112; 97; 115; 115; 119; 100].
+(** "/tmp/f", a canonical key of the run's private /tmp. *)
+Definition s_tmp_f : list byte := [47; 116; 109; 112; 47; 102].
+
+(** The file system holds "f" and "/tmp/f". *)
+Definition rl_file_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input [([102], [104]); (s_tmp_f, [104])] IEof).
+
+Definition stat_cwd_in (bs : list byte) : SyscallInput :=
+  mkInput 79 [AT_FDCWD; 0x2000; 0x3000; 0; 0; 0] (cwd_path_mem bs) ns_buf_wmem.
 
 Definition rl_in (bs : list byte) (bufsiz : word) : SyscallInput :=
   mkInput 78 [AT_FDCWD; 0x2000; 0x3000; bufsiz; 0; 0] (cwd_path_mem bs) (fun _ => None).
 
-(** newfstatat(AT_FDCWD, "/proc/self/exe", buf, 0) is declined.  THE
-    CONTROL, answered alike by the old text and the new: "f", absent
-    from [Fs], is -ENOENT with the pathname on the ledger. *)
-Example newfstatat_cwd_proc_name_declines :
-  check_syscall
-    (mkInput 79 [AT_FDCWD; 0x2000; 0x3000; 0; 0; 0]
-       (cwd_path_mem s_proc_self_exe) ns_buf_wmem)
+(** newfstatat declines every procfs spelling, and "/etc/passwd", which
+    the text before this one answered -ENOENT off the flat map.  THE
+    CONTROLS, answered alike before and after: "f" and "/tmp/f", absent
+    from [Fs], are -ENOENT with the pathname on the ledger. *)
+Example newfstatat_cwd_path_walks_decline :
+  check_syscall (stat_cwd_in s_proc_self_exe)
     (with_copyins [(0x2000, 15%nat)] (mkEffect (errno_ret ENOENT) [] []))
     statat_absent_model
   = CheckUnmodeled
-  /\ check_syscall
-       (mkInput 79 [AT_FDCWD; 0x2000; 0x3000; 0; 0; 0]
-          (cwd_path_mem [102]) ns_buf_wmem)
+  /\ check_syscall (stat_cwd_in s_dslash_proc_self_exe)
+       (with_copyins [(0x2000, 16%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       statat_absent_model
+     = CheckUnmodeled
+  /\ check_syscall (stat_cwd_in s_dotdot_proc_self_exe)
+       (with_copyins [(0x2000, 23%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       statat_absent_model
+     = CheckUnmodeled
+  /\ check_syscall (stat_cwd_in s_etc_passwd)
+       (with_copyins [(0x2000, 12%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       statat_absent_model
+     = CheckUnmodeled
+  (* the controls *)
+  /\ check_syscall (stat_cwd_in [102])
        (with_copyins [(0x2000, 2%nat)] (mkEffect (errno_ret ENOENT) [] []))
        statat_absent_model
+     = CheckOk statat_absent_model []
+  /\ check_syscall (stat_cwd_in s_tmp_f)
+       (with_copyins [(0x2000, 7%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       statat_absent_model
      = CheckOk statat_absent_model [].
-Proof. split; check_eq. Qed.
+Proof. repeat split; check_eq. Qed.
 
-(** readlinkat(AT_FDCWD, "/proc/self/exe", buf, 64) is declined.  THE
-    CONTROL keeps the old -EINVAL for a name outside procfs, now with the
-    pathname fetch on the copy-in ledger ([do_readlinkat] fetches it
-    before it answers), and the ledger is not optional.  The [bufsiz]
-    gate comes BEFORE the fetch, so its -EINVAL carries no ledger.  The
-    empty name is the working directory (LOOKUP_EMPTY), not a link:
-    -ENOENT.  An unreadable pathname is -EFAULT with the faulting byte
-    charged, as [newfstatat]'s is. *)
+(** readlinkat reads its pathname and declines every spelling that can
+    reach procfs.  A name [Fs] does not hold is now -ENOENT, which is
+    [do_readlinkat]'s [filename_lookup] error (fs/stat.c); the text
+    before this one answered -EINVAL for it, and that -EINVAL is now
+    REJECTED.  THE CONTROLS, answered alike before and after: a name
+    [Fs] holds is not a link, so -EINVAL with the ledger; and the
+    [bufsiz] gate comes BEFORE the fetch, so its -EINVAL carries no
+    ledger.  "." is a directory (-EINVAL), the empty name the working
+    directory (-ENOENT), and an unreadable pathname -EFAULT with the
+    faulting byte charged. *)
 Example readlinkat_reads_its_pathname :
   check_syscall (rl_in s_proc_self_exe 64)
     (with_copyins [(0x2000, 15%nat)] (mkEffect (errno_ret EINVAL) [] []))
     statat_absent_model
   = CheckUnmodeled
-  (* the control *)
+  /\ check_syscall (rl_in s_dslash_proc_self_exe 64)
+       (with_copyins [(0x2000, 16%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       statat_absent_model
+     = CheckUnmodeled
+  /\ check_syscall (rl_in s_dotdot_proc_self_exe 64)
+       (with_copyins [(0x2000, 23%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       statat_absent_model
+     = CheckUnmodeled
+  (* a missing name: -ENOENT, not -EINVAL *)
+  /\ check_syscall (rl_in [102] 64)
+       (with_copyins [(0x2000, 2%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       statat_absent_model
+     = CheckOk statat_absent_model []
   /\ check_syscall (rl_in [102] 64)
        (with_copyins [(0x2000, 2%nat)] (mkEffect (errno_ret EINVAL) [] []))
        statat_absent_model
-     = CheckOk statat_absent_model []
-  /\ check_syscall (rl_in [102] 64) (mkEffect (errno_ret EINVAL) [] [])
-       statat_absent_model
      = CheckReject
-  (* bufsiz 0: no fetch, so no ledger *)
+  /\ check_syscall (rl_in s_tmp_f 64)
+       (with_copyins [(0x2000, 7%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       statat_absent_model
+     = CheckOk statat_absent_model []
+  (* the controls: a regular file is not a link *)
+  /\ check_syscall (rl_in [102] 64)
+       (with_copyins [(0x2000, 2%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       rl_file_model
+     = CheckOk rl_file_model []
+  /\ check_syscall (rl_in s_tmp_f 64)
+       (with_copyins [(0x2000, 7%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       rl_file_model
+     = CheckOk rl_file_model []
+  (* ...and bufsiz 0: no fetch, so no ledger *)
   /\ check_syscall (rl_in [102] 0) (mkEffect (errno_ret EINVAL) [] [])
        statat_absent_model
      = CheckOk statat_absent_model []
@@ -567,7 +649,15 @@ Example readlinkat_reads_its_pathname :
        (with_copyins [(0x2000, 2%nat)] (mkEffect (errno_ret EINVAL) [] []))
        statat_absent_model
      = CheckReject
-  (* the empty name *)
+  (* the ledger is not optional past the gate *)
+  /\ check_syscall (rl_in [102] 64) (mkEffect (errno_ret ENOENT) [] [])
+       statat_absent_model
+     = CheckReject
+  (* "." and the empty name *)
+  /\ check_syscall (rl_in [46] 64)
+       (with_copyins [(0x2000, 2%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       statat_absent_model
+     = CheckOk statat_absent_model []
   /\ check_syscall (rl_in [] 64)
        (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret ENOENT) [] []))
        statat_absent_model

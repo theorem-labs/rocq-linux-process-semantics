@@ -581,8 +581,10 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          O_PATH descriptor answers its [f_flags] (O_PATH and the bits
          [build_open_how] kept); an eventfd's word is [O_RDWR] plus the
          EFD_ bits [do_eventfd] passes on; a /proc/sys file's is the
-         open word.  The entry records none of the three words exactly
-         (fs/fcntl.c, fs/open.c, fs/eventfd.c, read at v6.18.44). *)
+         open word; an [ONsFile]'s depends on its unknown object.  The
+         entry records none of the four words exactly (fs/fcntl.c,
+         fs/open.c, fs/eventfd.c, read at v6.18.44; identical at
+         v6.18.46). *)
   end.
 
 (** [fcntl fd cmd arg]: modeled for four commands, and fail-closed on

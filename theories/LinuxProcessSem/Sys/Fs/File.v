@@ -152,14 +152,15 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      file]s on the random device draw from one generator.  Copying the
      entry loses nothing. *)
   | FdUrandom => true
-  (* THE THREE OPAQUE OBJECTS DECLINE.  [SYSCALL_DEFINE1(dup)]'s
+  (* THE FOUR OPAQUE OBJECTS DECLINE.  [SYSCALL_DEFINE1(dup)]'s
      [fget_raw] accepts an O_PATH file too (fs/file.c, read at
-     v6.18.44; identical at v6.18.46), so Linux duplicates all three.
+     v6.18.44; identical at v6.18.46), so Linux duplicates all four.
      Copying the entry would be exact for [OProcPath] (nothing modeled
      reads its [f_pos] or [f_flags]) and for [OProcFile] (each read's
      bytes are the environment's whatever the shared offset), and for an
      eventfd it would be a second reference to one counter, which no
-     modeled arm reads.  None of that is needed, so it is not written. *)
+     modeled arm reads.  An [ONsFile] is declined so that no arm of this
+     model mints one.  None of that is needed, so it is not written. *)
   | FdOpaque _ => false
   end.
 

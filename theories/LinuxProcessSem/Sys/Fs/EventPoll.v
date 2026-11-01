@@ -304,7 +304,9 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
          -EBADF and not a poll question at all; an eventfd has
          [.poll = eventfd_poll] (fs/eventfd.c) and a /proc/sys file
          [.poll = proc_sys_poll] (fs/proc/proc_sysctl.c), both read at
-         v6.18.44.  None of the three answers is written. *)
+         v6.18.44; identical at v6.18.46.  An [ONsFile]'s answer depends
+         on an object of unknown type.  None of the four answers is
+         written. *)
   end.
 
 (** The complement claim, as a check rather than a sentence.
@@ -517,9 +519,10 @@ Definition epoll_ctl_outcome (i : SyscallInput) (m : Model)
         (* FAIL-CLOSED on the EPOLL descriptor.  [do_epoll_ctl]'s
            [CLASS(fd, f)(epfd)] refuses an O_PATH descriptor with
            -EBADF ([fdget] skips FMODE_PATH, fs/file.c and
-           fs/eventpoll.c, v6.18.44), where an eventfd or a /proc/sys
+           fs/eventpoll.c, v6.18.44; identical at v6.18.46), where an eventfd or a /proc/sys
            file goes on to the target as any non-epoll file does.  The
-           split is not written, so all three decline. *)
+           split is not written, and an [ONsFile]'s object is of unknown
+           type, so all four decline. *)
     | Some _ =>
         match fd_lookup (m_fds m) tfd with
         | None => Some (errno_ret EBADF)
@@ -651,8 +654,9 @@ Definition epoll_pwait_outcome (i : SyscallInput) (m : Model)
       | Some (FdOpaque _) => None
           (* FAIL-CLOSED, as at [epoll_ctl_outcome]: [do_epoll_wait]'s
              [CLASS(fd, f)(epfd)] answers -EBADF for an O_PATH
-             descriptor (fs/eventpoll.c, v6.18.44), and the split from
-             the other two objects is not written *)
+             descriptor (fs/eventpoll.c, v6.18.44; identical at v6.18.46), and the split from
+             the other two objects and an [ONsFile]'s unknown object is
+             not written *)
       | Some _ =>
           let n := sint32 maxevents32 in
           if (n <=? 0)%Z then Some (errno_ret EINVAL)

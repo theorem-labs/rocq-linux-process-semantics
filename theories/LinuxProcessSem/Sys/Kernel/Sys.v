@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Sys.Kernel.Sys — getpid (172), getppid (173), gettid (178), setsid (157), uname (160), prctl (167), prlimit64 (261)
+(** * LinuxProcessSem.Sys.Kernel.Sys — getpid (172), getppid (173), gettid (178), setsid (157), getsid (156), uname (160), prctl (167), prlimit64 (261)
 
     This file answers to Linux [kernel/sys.c]: it holds what the kernel
     defines there, and nothing else.  Which file a spec belongs in is
@@ -285,6 +285,126 @@ Definition setsid_spec : Sys SyscallEffect :=
          set_tid tid ;;
          set_setsid_succeeded ;;
          ret_only tid).
+
+(** The [pid]s [getsid_spec] answers: 0, which names the caller, and the
+    caller's own tid once [tid] (the model's [State.m_tid]) holds it.  The
+    argument is at [getsid_spec]. *)
+Definition getsid_pid_ok (pid : word) (tid : option word) : bool :=
+  (w_is0 pid || match tid with
+                | Some t => bv_eqb pid t
+                | None => false
+                end)%bool.
+
+(** [getsid pid] (156): the session id of the caller, or of the task
+    [pid] names, as the caller's own pid namespace numbers it.
+
+    kernel/sys.c [SYSCALL_DEFINE1(getsid)], [set_special_pids], [ksys_setsid], read at v6.18.44; identical at v6.18.46.
+    include/linux/sched/signal.h [task_session], read at v6.18.44; identical at v6.18.46.
+    kernel/pid.c [find_task_by_vpid], [find_task_by_pid_ns], [find_pid_ns], [pid_vnr], [pid_nr_ns], read at v6.18.44; identical at v6.18.46.
+    security/security.c [security_task_getsid], read at v6.18.44; identical at v6.18.46.
+    include/linux/lsm_hook_defs.h [task_getsid], read at v6.18.44; identical at v6.18.46.
+    kernel/fork.c [copy_process], read at v6.18.44; identical at v6.18.46.
+
+    THE WHOLE KERNEL FUNCTION:
+
+        rcu_read_lock();
+        if (!pid)
+                sid = task_session(current);
+        else {
+                retval = -ESRCH;
+                p = find_task_by_vpid(pid);
+                if (!p)
+                        goto out;
+                sid = task_session(p);
+                if (!sid)
+                        goto out;
+                retval = security_task_getsid(p);
+                if (retval)
+                        goto out;
+        }
+        retval = pid_vnr(sid);
+    out:
+        rcu_read_unlock();
+        return retval;
+
+    [pid] is a [pid_t], an [int], so the dispatcher hands this spec
+    [Syscall.pid32] of a0: the high half of the register is discarded
+    before the test against 0 and the lookup.
+
+    WHICH [pid] IS ANSWERED.  0, which names the caller; and the caller's
+    own tid once [State.m_tid] holds it.  For that number the [else]
+    branch computes what the [if] branch does: [find_task_by_vpid] looks
+    it up in the caller's own namespace and finds the caller (the tid and
+    the tgid are one number in this model, [getpid_spec]'s note);
+    [task_session] of the caller is the [struct pid] the 0 branch reads,
+    and it is never NULL for a live task, because [copy_process] gives
+    every task its parent's session, down from [init_task]'s; and
+    [security_task_getsid] is 0, because the hook's default is 0
+    ([LSM_HOOK(int, 0, task_getsid, ...)]) and commoncap defines no
+    [task_getsid] -- the capability-only LSM the credentials section
+    below assumes.  Every other pid is [unmodeled]: it names another task
+    or none, and this model steps one process and knows no other pid, the
+    reason [prlimit64_spec]'s (1) gives.  That takes in every negative
+    [pid], and the tid itself before [State.m_tid] has pinned it, since
+    until then the model cannot tell that number from any other.
+
+    THE ANSWER.  [pid_vnr(sid)] is [pid_nr_ns(sid,
+    task_active_pid_ns(current))]: the session leader's number in the
+    caller's namespace, or 0 when the leader's [struct pid] has no number
+    at that level -- a session made in an ancestor namespace, which is
+    what the first process of a [clone(CLONE_NEWPID)] sees until it calls
+    [setsid] itself.  So the range is [[0, Fork.PID_MAX_ENVELOPE)], as for
+    [getppid_spec], and a nonzero answer is below [pid_max] for the reason
+    given at that envelope.
+
+    - AFTER A SUCCESSFUL [setsid] ([State.m_setsid_succeeded]) the answer
+      is the caller's tid and nothing else.  [ksys_setsid] passes
+      [task_pid(group_leader)] to [set_special_pids], whose
+      [change_pid(..., PIDTYPE_SID, ...)] makes it the session, so
+      [pid_vnr] answers the caller's own number in its own namespace: the
+      tgid, which [setsid_spec] records in [State.m_tid] on the branch
+      that sets the bit.  No other code moves a live task's session:
+      [set_special_pids] is static and [ksys_setsid] is its only caller,
+      and the other [PIDTYPE_SID] sites are [copy_process], which sets a
+      new task's, [__unhash_process], which detaches an exiting one's, and
+      [de_thread], which hands the leader's to the surviving thread of the
+      same group.  A [Model] with the bit set and no tid is one no run
+      reaches, since [setsid_spec] sets both on one branch; the spec
+      declines it rather than answer for it.
+    - BEFORE ONE, the session is inherited, and the model does not know
+      it: the launching environment decides whether this process leads a
+      session, shares its parent's, or sits in one whose leader is in
+      another namespace.  The answer is the environment's choice in the
+      range above, made afresh on each call.
+
+    A FRESH CHOICE, THOUGH A PIN WOULD BE SOUND.  Until the caller's own
+    [setsid] its session [struct pid] does not change, and neither does
+    the number: the caller stays attached to it as [PIDTYPE_SID], so the
+    pid is not freed, and [pid_nr_ns] reads a fixed field of it.  Two calls
+    therefore answer one number on a real kernel, and a pin recorded at
+    the first answer, the way [uname_spec] pins the utsname, would be
+    exact.  It would also be a new field of [State.Model].  The fresh
+    choice needs none and admits every answer Linux gives; it costs
+    precision only, because the model also admits a run in which two calls
+    disagree.  The same holds between a [getsid] and a later [setsid]: an
+    answer equal to the tid says the caller already leads a session, after
+    which Linux's [setsid] answers -EPERM, and the model still admits its
+    success.
+
+    No register but a0 is read, no memory is touched and no model state
+    is written. *)
+Definition getsid_spec (pid : word) : Sys SyscallEffect :=
+  m <- get_model ;;
+  if negb (getsid_pid_ok pid (m_tid m))
+  then unmodeled                 (* another task, or a tid not yet pinned *)
+  else if m_setsid_succeeded m then
+    match m_tid m with
+    | Some t => ret_only t
+    | None => unmodeled          (* no run sets the bit without the tid *)
+    end
+  else
+    sid <- choose (fun s : word => (bv_unsigned s < PID_MAX_ENVELOPE)%Z) ;;
+    ret_only sid.
 
 (** [getppid] (173): the thread-group id of the caller's PARENT, as the
     caller's own pid namespace numbers it.  No argument and no failure
@@ -765,6 +885,48 @@ Definition set_cred_gids (t : IdTriple) (c : Creds) : Creds :=
   mkCreds (cr_uid c) (cr_euid c) (cr_suid c) (id_real t) (id_eff t)
           (id_saved t) (cr_groups c).
 
+(** [commit_creds] for the four id setters below: the new credentials,
+    and the parent-death signal reset to 0 when the call moves the
+    effective id.
+
+    kernel/cred.c [commit_creds], [cred_cap_issubset], read at v6.18.44; identical at v6.18.46.
+    include/linux/capability.h [cap_issubset], read at v6.18.44; identical at v6.18.46.
+    security/commoncap.c [cap_task_fix_setuid], [cap_emulate_setxuid], read at v6.18.44; identical at v6.18.46.
+    kernel/sys.c [__sys_setuid], [__sys_setgid], [__sys_setresuid], [__sys_setresgid], read at v6.18.44; identical at v6.18.46.
+
+    [commit_creds] resets the signal under one test:
+
+        if (!uid_eq(old->euid, new->euid) ||
+            !gid_eq(old->egid, new->egid) ||
+            !uid_eq(old->fsuid, new->fsuid) ||
+            !gid_eq(old->fsgid, new->fsgid) ||
+            !cred_cap_issubset(old, new)) {
+                ...
+                task->pdeath_signal = 0;
+
+    For these setters that test is "the effective id of the triple moves",
+    [old_eff] against [new_eff], for three reasons.
+    - A setter writes one triple, so the other triple's effective id stays.
+    - The filesystem id follows the effective id.  [__sys_setuid] and
+      [__sys_setresuid] assign [new->fsuid = new->euid], [__sys_setgid]
+      and [__sys_setresgid] [new->fsgid = new->egid], and before the call
+      the model's [fsuid] equals its [euid] ([setid_spec]'s note), so the
+      filesystem id moves exactly when the effective id does.
+    - [cred_cap_issubset(old, new)] holds.  [prepare_creds] keeps the user
+      namespace, and in one namespace the test is
+      [cap_issubset(new->cap_permitted, old->cap_permitted)].  None of the
+      four GAINS a permitted capability: [cap_emulate_setxuid] only clears
+      the permitted set, and the group setters do not touch capabilities.
+
+    The record is rebuilt with the signal either way, carrying the old
+    value when the effective id stays, so every other field, the address
+    space included, is carried across by conversion. *)
+Definition commit_id_creds (old_eff new_eff : word) (c : Creds) (m : Model)
+    : Model :=
+  with_pdeath_signal
+    (if bv_eqb new_eff old_eff then m_pdeath_signal m else Z_to_bv 64 0)
+    (with_creds c m).
+
 (** [getuid] (174), [geteuid] (175), [getgid] (176), [getegid] (177):
     return one id.  TOTAL — no argument is read, no allocation happens,
     no check can fail, and the value is a value even when it is large:
@@ -795,6 +957,116 @@ Definition set_cred_gids (t : IdTriple) (c : Creds) : Creds :=
 Definition getid_spec (sel : Creds -> word) : Sys SyscallEffect :=
   m <- get_model ;;
   ret_only (sel (m_creds m)).
+
+(** A run of [put_user]s of 32-bit ids, made in order and stopped at the
+    first that fails, as [getresuid]'s and [getresgid]'s bodies make
+    them (the argument is at [getresid_spec] below).  Each element is a
+    destination and the id stored there.  [Some (r, ws)] is the call's
+    answer: [r] is 0 when every store landed and -EFAULT when the range of
+    one is refused by [access_ok], and [ws] is the stores that landed
+    before it, as 4-byte little-endian writes in order.  [None] is a store
+    whose range [access_ok] admits but [mp] does not wholly back, which the
+    model declines.  The range test comes before the walk at each store,
+    for the reason [uname_spec] gives. *)
+Fixpoint put_user_ids (mp : word -> option byte) (ps : list (word * word))
+    : option (word * list (word * list byte)) :=
+  match ps with
+  | [] => Some (Z_to_bv 64 0, [])
+  | (p, v) :: rest =>
+      if negb (access_okb p 4) then Some (errno_ret EFAULT, [])
+      else match read_bytes_map mp p (Z_to_bv 64 4) with
+           | None => None
+           | Some _ =>
+               match put_user_ids mp rest with
+               | None => None
+               | Some (r, ws) => Some (r, (p, word_le4 v) :: ws)
+               end
+           end
+  end.
+
+(** The three stores of [getresuid]/[getresgid], in the kernel's order:
+    the real id to the first pointer, the effective id to the second, the
+    saved id to the third. *)
+Definition getresid_puts (t : IdTriple) (rp ep sp : word) : list (word * word) :=
+  [(rp, id_real t); (ep, id_eff t); (sp, id_saved t)].
+
+(** [getresuid ruidp euidp suidp] (148) and [getresgid rgidp egidp sgidp]
+    (150): the three ids of one triple, stored through three user
+    pointers.  One spec over [IdTriple], as for the setters below; [get]
+    says which triple.
+
+    kernel/sys.c [SYSCALL_DEFINE3(getresuid)], [SYSCALL_DEFINE3(getresgid)], read at v6.18.44; identical at v6.18.46.
+    kernel/user_namespace.c [from_kuid_munged], [from_kgid_munged], read at v6.18.44; identical at v6.18.46.
+    arch/riscv/include/asm/uaccess.h [put_user], [__put_user], read at v6.18.44; identical at v6.18.46.
+    include/asm-generic/access_ok.h [__access_ok], read at v6.18.44; identical at v6.18.46.
+
+    THE WHOLE KERNEL FUNCTION, [getresuid]'s; [getresgid] is the same
+    over the group ids, and assigns its last [put_user] to [retval] where
+    this one returns it, which answers the same value:
+
+        ruid = from_kuid_munged(cred->user_ns, cred->uid);
+        euid = from_kuid_munged(cred->user_ns, cred->euid);
+        suid = from_kuid_munged(cred->user_ns, cred->suid);
+        retval = put_user(ruid, ruidp);
+        if (!retval) {
+                retval = put_user(euid, euidp);
+                if (!retval)
+                        return put_user(suid, suidp);
+        }
+        return retval;
+
+    THE VALUES.  [from_kuid_munged] maps the id into the caller's user
+    namespace and answers [overflowuid] where [from_kuid] gives
+    [(uid_t)-1], never an errno.  In the init user namespace, the first
+    standing assumption above, [from_kuid] is the identity, and
+    [(uid_t)-1] is an id no process holds: [Run.valid_id] refuses it at
+    launch and no setter installs it.  So the three values are [id_real],
+    [id_eff] and [id_saved] of the triple, the ids [getuid] and [geteuid]
+    read and the setters write.  Each is a 32-bit [uid_t]/[gid_t], and
+    [BvBase.word_le4] is the four bytes a 4-byte [put_user] stores.
+
+    THE STORES: ONE [put_user] EACH, IN ORDER, AND NO ROLLBACK.  riscv64's
+    [put_user] is [access_ok(p, 4) ? __put_user(x, p) : -EFAULT], so each
+    store falls in one of the three bands every buffer in this file falls
+    in, and the call stops at the first store that fails
+    ([put_user_ids]):
+
+    - [access_ok] REFUSES the store's 4 bytes: that store writes nothing,
+      and the call answers -EFAULT with the stores before it already made.
+      The kernel stores the real id before it tries the effective one and
+      does not undo it, so [getresuid(good, bad, good)] answers -EFAULT
+      with the real uid at [ruidp] and nothing at [suidp].  That outcome
+      is answered EXACTLY, not declined: each store that landed is a whole
+      4-byte store to a range the model knows is writable, and the refused
+      store issued no access.  The effect carries those writes beside the
+      -EFAULT, as [Net.Socket.socketpair_spec]'s carries its two stores
+      beside -EOPNOTSUPP.
+    - [access_ok] admits the range and it is WHOLLY WRITABLE: the store
+      lands and the call goes on to the next one.
+    - [access_ok] admits it and it is NOT wholly writable: [unmodeled].
+      [__put_user] faults there, and a store whose 4 bytes straddle into
+      an unmapped page can leave part of itself behind (a misaligned
+      store is split or emulated), so which bytes landed is unknown: the
+      shape [uname_spec] and [prlimit64_spec] decline, here at the width
+      of one id.  A NULL pointer usually lands here too: address 0 passes
+      [access_ok], so a NULL destination is decided by the walk like any
+      other admitted address, and a process whose page 0 is unmapped is
+      declined there rather than answered -EFAULT.
+
+    The three pointers are full 64-bit addresses and are tested one by
+    one, as the kernel tests them.  They may alias; the later store then
+    wins, as [State.eff_writes] applies writes in order.
+
+    Nothing but the credentials is read and nothing is written to the
+    model. *)
+Definition getresid_spec (get : Creds -> IdTriple) (rp ep sp : word)
+    : Sys SyscallEffect :=
+  i <- input ;;
+  m <- get_model ;;
+  match put_user_ids (in_wmem i) (getresid_puts (get (m_creds m)) rp ep sp) with
+  | None => unmodeled          (* a store [access_ok] admits but memory does not back *)
+  | Some (r, ws) => pure (mkEffect r ws [])
+  end.
 
 (** The environment failures the id setters can suffer, as opposed to
     the answers their arguments and credentials determine.
@@ -855,7 +1127,17 @@ Definition setid_errnos (real_uid_changes : bool) : list Z :=
     The state change is ATOMIC, as the kernel's is: it builds a whole new
     [struct cred] and either commits it or aborts it, so no failing call
     leaves half its effect behind.  Here every failing branch returns
-    without reaching [set_creds]. *)
+    without reaching [commit_id_creds].
+
+    THE PARENT-DEATH SIGNAL.  A success commits through
+    [commit_id_creds], which resets [State.m_pdeath_signal] to 0 when the
+    effective id moves -- [commit_creds]'s test on the effective and
+    filesystem ids, the filesystem id following the effective one -- and
+    keeps it otherwise.  So the privileged branch resets it unless [v] is
+    already the effective id, and the unprivileged branch resets it
+    unless [v] is the effective id it replaces.  The errno branches abort
+    the new credentials and keep it.  capset never clears it, because
+    that arm answers only where no capability is gained. *)
 Definition setid_spec (get : Creds -> IdTriple) (put : IdTriple -> Creds -> Creds)
     (user : bool) (v : word) : Sys SyscallEffect :=
   m <- get_model ;;
@@ -864,10 +1146,12 @@ Definition setid_spec (get : Creds -> IdTriple) (put : IdTriple -> Creds -> Cred
   if bv_eqb v ID_MINUS_ONE then err_ret EINVAL
   else if creds_privileged c then
     alt (e <- errno_from (setid_errnos (andb user (negb (bv_eqb v (id_real t))))) ;; err_ret e)
-        (set_creds (put (mkIdTriple v v v) c) ;; ret_only (Z_to_bv 64 0))
+        (modify (commit_id_creds (id_eff t) v (put (mkIdTriple v v v) c)) ;;
+         ret_only (Z_to_bv 64 0))
   else if orb (bv_eqb v (id_real t)) (bv_eqb v (id_saved t)) then
     alt (e <- errno_from (setid_errnos false) ;; err_ret e)
-        (set_creds (put (mkIdTriple (id_real t) v (id_saved t)) c) ;; ret_only (Z_to_bv 64 0))
+        (modify (commit_id_creds (id_eff t) v (put (mkIdTriple (id_real t) v (id_saved t)) c)) ;;
+         ret_only (Z_to_bv 64 0))
   else
     alt (e <- errno_from (setid_errnos false) ;; err_ret e) (err_ret EPERM).
 
@@ -913,7 +1197,18 @@ Definition setid_spec (get : Creds -> IdTriple) (put : IdTriple -> Creds -> Cred
     - [seteuid]/[setegid] are not syscalls: musl compiles them to
       [setresuid(-1, e, -1)] and [setresgid(-1, e, -1)]
       (musl 1.2.5, src/unistd/seteuid.c, src/unistd/setegid.c), so they
-      are modeled here and nowhere else. *)
+      are modeled here and nowhere else.
+
+    THE PARENT-DEATH SIGNAL.  A success commits through
+    [commit_id_creds], which resets [State.m_pdeath_signal] to 0 when the
+    new effective id [ne] differs from the old one -- [commit_creds]'s
+    test on the effective and filesystem ids, the filesystem id following
+    the effective one -- and keeps it otherwise.  So [setresuid(r, -1, s)]
+    keeps it whatever it does to the real and saved ids, and a call that
+    moves the effective id resets it.  The no-op fast path returns before
+    [prepare_creds] and never reaches [commit_creds]; the -EPERM and errno
+    branches keep it.  capset never clears it, because that arm answers
+    only where no capability is gained. *)
 Definition setresid_spec (get : Creds -> IdTriple) (put : IdTriple -> Creds -> Creds)
     (user : bool) (r e s : word) : Sys SyscallEffect :=
   m <- get_model ;;
@@ -935,7 +1230,8 @@ Definition setresid_spec (get : Creds -> IdTriple) (put : IdTriple -> Creds -> C
       err_ret EPERM                            (* before [prepare_creds] since 659c0ce1cb9e: no -ENOMEM here *)
     else
       alt (en <- errno_from (setid_errnos (andb user (negb (bv_eqb nr (id_real t))))) ;; err_ret en)
-          (set_creds (put (mkIdTriple nr ne ns) c) ;; ret_only (Z_to_bv 64 0)).
+          (modify (commit_id_creds (id_eff t) ne (put (mkIdTriple nr ne ns) c)) ;;
+           ret_only (Z_to_bv 64 0)).
 
 (* ---- uname (160) -------------------------------------------------------- *)
 
@@ -1140,7 +1436,8 @@ Definition uname_spec (name : word) : Sys SyscallEffect :=
     rather than one a reader has to notice.  The obligation that pin
     carries is named there and is not restated here. *)
 Definition prctl_modeled_options : list Z :=
-  [PR_CAPBSET_READ; PR_SET_PDEATHSIG; PR_SET_DUMPABLE; PR_SET_NO_NEW_PRIVS].
+  [PR_CAPBSET_READ; PR_SET_PDEATHSIG; PR_GET_PDEATHSIG; PR_SET_DUMPABLE;
+   PR_SET_NO_NEW_PRIVS].
 
 (** The capabilities [State.creds_privileged]'s note assumes the
     bounding set holds: CAP_SETUID and CAP_SETGID, the two the model's
@@ -1151,9 +1448,9 @@ Definition capbset_assumed (cap : Z) : bool :=
   (Z.eqb cap CAP_SETUID || Z.eqb cap CAP_SETGID)%bool.
 
 (** [prctl(option, arg2, arg3, arg4, arg5)] — syscall 167, answered for
-    the four options of [prctl_modeled_options] and for nothing else.
+    the five options of [prctl_modeled_options] and for nothing else.
     [PR_CAPBSET_READ] is answered by the capability LSM hook; the other
-    three by kernel/sys.c's own [switch].  The paragraphs below take
+    four by kernel/sys.c's own [switch].  The paragraphs below take
     them in that order.
 
     security/commoncap.c [cap_task_prctl], [handle_privileged_root], read at v6.18.44; identical at v6.18.46.
@@ -1164,6 +1461,9 @@ Definition capbset_assumed (cap : Z) : bool :=
     include/linux/sched/coredump.h [SUID_DUMP_DISABLE], [SUID_DUMP_USER], read at v6.18.44; identical at v6.18.46.
     kernel/cred.c [commit_creds], [cred_cap_issubset], read at v6.18.44; identical at v6.18.46.
     include/linux/capability.h [cap_issubset], read at v6.18.44; identical at v6.18.46.
+    arch/riscv/include/asm/uaccess.h [put_user], read at v6.18.44; identical at v6.18.46.
+    kernel/fork.c [copy_process], read at v6.18.44; identical at v6.18.46.
+    fs/exec.c [begin_new_exec], read at v6.18.44; identical at v6.18.46.
 
     PR_CAPBSET_READ: WHERE THE ANSWER COMES FROM, AND WHY IT IS NOT
     kernel/sys.c.
@@ -1277,19 +1577,22 @@ Definition capbset_assumed (cap : Z) : bool :=
     declining because it is what programs READ: libcap's [cap_max_bits]
     binary-searches it from a constructor.
 
-    THE THREE OPTIONS kernel/sys.c ANSWERS: [PR_SET_PDEATHSIG],
-    [PR_SET_DUMPABLE], [PR_SET_NO_NEW_PRIVS].  [cap_task_prctl] has no
-    case for any of them and returns -ENOSYS from its [default:], which
-    is [LSM_RET_DEFAULT(task_prctl)], so [security_task_prctl] keeps
-    -ENOSYS and [SYSCALL_DEFINE5(prctl)] goes on to its own [switch].
-    That is the capability-only LSM the credentials section above names
-    as a standing assumption; a second LSM that claims one of these
-    options is outside the model, as for [PR_CAPBSET_READ] above.  The
-    three cases, quoted:
+    THE FOUR OPTIONS kernel/sys.c ANSWERS: [PR_SET_PDEATHSIG],
+    [PR_GET_PDEATHSIG], [PR_SET_DUMPABLE], [PR_SET_NO_NEW_PRIVS].
+    [cap_task_prctl] has no case for any of them and returns -ENOSYS from
+    its [default:], which is [LSM_RET_DEFAULT(task_prctl)], so
+    [security_task_prctl] keeps -ENOSYS and [SYSCALL_DEFINE5(prctl)] goes
+    on to its own [switch].  That is the capability-only LSM the
+    credentials section above names as a standing assumption; a second
+    LSM that claims one of these options is outside the model, as for
+    [PR_CAPBSET_READ] above.  The four cases, quoted:
 
         case PR_SET_PDEATHSIG:
                 if (!valid_signal(arg2)) { error = -EINVAL; break; }
                 ... me->pdeath_signal = arg2; ...
+                break;
+        case PR_GET_PDEATHSIG:
+                error = put_user(me->pdeath_signal, (int __user * ) arg2);
                 break;
         case PR_SET_DUMPABLE:
                 if (arg2 != SUID_DUMP_DISABLE && arg2 != SUID_DUMP_USER) {
@@ -1303,14 +1606,24 @@ Definition capbset_assumed (cap : Z) : bool :=
                 break;
 
     and the function ends [return error;] with [error = 0] set before
-    the [switch].  So each answers 0 or -EINVAL, decided by its arguments
-    alone, and has no other failure: none allocates, and none can be
-    refused by privilege.
+    the [switch].  So the three setters each answer 0 or -EINVAL, decided
+    by their arguments alone, and have no other failure: none allocates,
+    and none can be refused by privilege.  The reader is a [put_user],
+    and answers as one does.
 
     - [valid_signal(arg2)] is [arg2 <= _NSIG] on an [unsigned long],
       [_NSIG] being 64 on riscv64: 0 to 64 is 0 (0 clears the parent-death
       signal), anything above, including every value with a high bit
-      set, is -EINVAL.  The full register, as for [cap_valid].
+      set, is -EINVAL.  The full register, as for [cap_valid].  A valid
+      [arg2] is STORED: [State.m_pdeath_signal] becomes [arg2], which
+      is at most 64 and so is the [int] the kernel holds.
+    - [PR_GET_PDEATHSIG] stores [State.m_pdeath_signal] as a 4-byte
+      [int] at [arg2], read as a full 64-bit pointer, through
+      [put_user_ids], in the three bands [getresid_spec] names: 0 with the
+      store when [access_ok] admits the 4 bytes and memory wholly backs
+      them; -EFAULT with nothing stored when [access_ok] refuses them;
+      [unmodeled] when [access_ok] admits them and memory does not wholly
+      back them, since the store may then land in part.
     - [SUID_DUMP_DISABLE] is 0 and [SUID_DUMP_USER] is 1, so the
       dumpable flag answers 0 for [arg2] in {0, 1} and -EINVAL for any
       other value, again over the full register.  2
@@ -1322,18 +1635,37 @@ Definition capbset_assumed (cap : Z) : bool :=
       on that branch; its signature still takes [arg2] alone, as the
       dispatcher has always passed it.
 
-    THE MODEL STORES NOTHING FOR THEM, and that is sound because no
-    modeled call reads the bit, the signal or the flag.
+    THE PARENT-DEATH SIGNAL IS STORED, AND RESET WHERE [commit_creds]
+    RESETS IT.  [PR_SET_PDEATHSIG] writes [State.m_pdeath_signal] and
+    [PR_GET_PDEATHSIG] reads it.  It is 0 at launch: [copy_process]
+    (kernel/fork.c) starts every task at 0, and an [execve] keeps the
+    value ([begin_new_exec], fs/exec.c, clears it only for a secure
+    exec), so the launch value is an assumption about the launcher, which
+    SCOPE.md states.  [commit_creds] (kernel/cred.c) clears it whenever a
+    call moves the effective or filesystem ids, or when
+    [cred_cap_issubset(old, new)] fails.  In one user namespace that test
+    is [cap_issubset(new->cap_permitted, old->cap_permitted)], so it fails
+    when the call GAINS a permitted capability; narrowing the capability
+    sets alone does not fire the reset.  Across user namespaces it fails
+    unless the new namespace lies below a child of the old one that the
+    old euid owns.  In this model the reset is [commit_id_creds], on the
+    success branches of [setid_spec] and [setresid_spec] that move the
+    effective id (the filesystem id follows it).  [Groups.setgroups_spec]
+    changes no id and does not reset it.  capset never clears it, because
+    that arm answers only where no capability is gained.  The signal is
+    also SENT by [forget_original_parent] when the parent exits.  That is
+    a signal from outside the process, which the environment this model
+    quantifies over does not deliver (the premise
+    [Signal.rt_sigaction_spec]'s header states; SCOPE.md lists it among
+    the assumptions the model does not check), so no transition reads the
+    field on a parent's exit.
+
+    THE MODEL STORES NOTHING FOR THE OTHER TWO SETTERS, and that is sound
+    because no modeled call reads the bit or the flag.
     - The no-new-privs bit is read by [PR_GET_NO_NEW_PRIVS] (39), by
       seccomp ([PR_SET_SECCOMP] (22) and [seccomp] (277)) and by
       [execve] (fs/exec.c): 39 and 22 are outside
       [prctl_modeled_options], and 277 and 221 have no arm.
-    - The parent-death signal is read by [PR_GET_PDEATHSIG] (2), which
-      is declined, and is SENT by [forget_original_parent] when the
-      parent exits.  That is a signal from outside the process, which
-      the environment this model quantifies over does not deliver (the
-      premise [Signal.rt_sigaction_spec]'s header states; SCOPE.md
-      lists it among the assumptions the model does not check).
     - The dumpable flag is read by [PR_GET_DUMPABLE] (3), declined; by
       core dumps, which this model has none of ([prlimit64_spec]'s
       RLIMIT_CORE note); by ptrace access checks, and the model admits
@@ -1343,15 +1675,8 @@ Definition capbset_assumed (cap : Z) : bool :=
     ([Run.star_calls]: [sc_no = 167], [sc_args], [sc_ret = 0]); what the
     kernel then does with it is a kernel-side obligation.  Such a
     statement must take the LAST such call that follows the last
-    credential change: [commit_creds] (kernel/cred.c) clears
-    [pdeath_signal] and resets the dumpable flag to [suid_dumpable]
-    whenever a call moves the effective or filesystem ids, or when
-    [cred_cap_issubset(old, new)] fails.  In one user namespace that
-    test is [cap_issubset(new->cap_permitted, old->cap_permitted)], so
-    it fails when the call GAINS a permitted capability; narrowing the
-    capability sets alone does not fire the reset.  Across user
-    namespaces it fails unless the new namespace lies below a child of
-    the old one that the old euid owns.  So a [setuid] that moves the
+    credential change: [commit_creds] also resets the dumpable flag to
+    [suid_dumpable] under the test above, so a [setuid] that moves the
     effective uid after [prctl(PR_SET_DUMPABLE, 1)] undoes it.  The
     no-new-privs bit has no such reset: nothing clears it.
 
@@ -1359,7 +1684,7 @@ Definition capbset_assumed (cap : Z) : bool :=
     [PR_SET_TAGGED_ADDR_CTRL] (55) is one of the two callers of riscv's
     [set_tagged_addr_ctrl] (arch/riscv/kernel/process.c), and declining
     it is half of why [State.access_okb] is exact — the other half being
-    [ptrace] (117), which has no arm at all.  None of the four answered
+    [ptrace] (117), which has no arm at all.  None of the five answered
     options reaches [set_tagged_addr_ctrl]: its only callers are that
     option's [SET_TAGGED_ADDR_CTRL] and riscv's ptrace regset (read at
     v6.18.44).  That argument rests
@@ -1381,7 +1706,14 @@ Definition prctl_spec (option_ arg2 : word) : Sys SyscallEffect :=
      else alt (ret_only (Z_to_bv 64 0)) (ret_only (Z_to_bv 64 1)))
   else if Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG then
     (if (64 <? bv_unsigned arg2)%Z then err_ret EINVAL   (* !valid_signal *)
-     else ret_only (Z_to_bv 64 0))
+     else set_pdeath_signal arg2 ;; ret_only (Z_to_bv 64 0))
+  else if Z.eqb (bv_unsigned option_) PR_GET_PDEATHSIG then
+    i <- input ;;
+    m <- get_model ;;
+    (match put_user_ids (in_wmem i) [(arg2, m_pdeath_signal m)] with
+     | None => unmodeled      (* a store [access_ok] admits but memory does not back *)
+     | Some (r, ws) => pure (mkEffect r ws [])
+     end)
   else if Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE then
     (if (1 <? bv_unsigned arg2)%Z then err_ret EINVAL    (* not 0 or 1 *)
      else ret_only (Z_to_bv 64 0))
@@ -1390,4 +1722,4 @@ Definition prctl_spec (option_ arg2 : word) : Sys SyscallEffect :=
     (if (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
          && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool
      then ret_only (Z_to_bv 64 0) else err_ret EINVAL)
-  else unmodeled.     (* unreachable: the list has no fifth member *)
+  else unmodeled.     (* unreachable: the list has no sixth member *)

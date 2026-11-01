@@ -93,9 +93,13 @@ Fixpoint path_openers (fds : list (word * FdEntry)) (p : path) : nat :=
        lock it holds would conflict, so [flock_sole_opener] fails and
        [flock_spec] declines while one is open *)
   | (_, FdOpaque _) :: r => path_openers r p
-    (* nor is any of the other three opaque objects: a procfs name or an
-       anonymous inode, and [Open.openat_spec] mints a file kind only for
-       a slash-free name or a "/tmp/" key, never for a "/proc" one *)
+    (* nor does any of the other three opaque objects hold a flock lock
+       that conflicts with one on [p]: an O_PATH file cannot take one
+       ([SYSCALL_DEFINE2(flock)]'s [CLASS(fd, f)] refuses it, fs/locks.c,
+       read at v6.18.44; identical at v6.18.46), even when the procfs
+       name it was opened on is a link to [p] ("/proc/self/fd/4"), and
+       every flock on an eventfd or a /proc/sys file declines in this
+       model, so none of them can hold a lock the model let it take *)
   end.
 
 (** Exactly one descriptor names [p].  Applied to a path just resolved
@@ -254,12 +258,14 @@ Definition flock_sole_opener (fds : list (word * FdEntry)) (p : path) : bool :=
       test and can fail the call under an enforcing module.  Same
       position again, and for the same reason: the model describes a
       kernel with no LSM registering these hooks.
-    - the -EBADF an O_PATH descriptor gets: [SYSCALL_DEFINE2(flock)]'s
-      [CLASS(fd, f)] is [fdget], which refuses an FMODE_PATH file before
-      the command is read (fs/locks.c and fs/file.c, read at v6.18.44;
-      identical at v6.18.46), and that is -EBADF for LOCK_UN too.  The
+    - the -EBADF an O_PATH descriptor gets: [SYSCALL_DEFINE2(flock)]
+      tests LOCK_MAND and translates the command ([flock_translate_cmd])
+      first, and then its [CLASS(fd, f)] is [fdget], which refuses an
+      FMODE_PATH file (fs/locks.c and fs/file.c, read at v6.18.44;
+      identical at v6.18.46); that is -EBADF for LOCK_UN too.  The
       model's O_PATH kind ([State.OProcPath]) is declined, with the
-      other two opaque objects, ahead of the unlock arm.
+      other three opaque objects, ahead of the unlock arm and after the
+      LOCK_MAND and command tests, which is the kernel's order.
     - blocking.  A LOCK_SH or LOCK_EX without LOCK_NB that conflicts
       sleeps in [wait_event_interruptible] (fs/locks.c,
       [flock_lock_inode_wait]) until the holder releases or a signal

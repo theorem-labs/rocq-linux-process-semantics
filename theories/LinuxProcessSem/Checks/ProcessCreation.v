@@ -497,7 +497,7 @@ Proof.
 Qed.
 
 (** The same separation for the NAMESPACE word, whose resolution
-    [Kernel.Fork.clone_ns_resolve] admits every errno from 1 to 4095.
+    [Kernel.Fork.clone_ns_resolve] admits every errno from 1 to 4095 but -EINTR.
     There is no list to key on, so it is keyed on the error encoding
     itself: an error-encoded return made no child and left the model
     alone, and any other return recorded one.  The keying is total for
@@ -559,12 +559,12 @@ Qed.
 
     RESTATED, and the old forms are worth recording.  On main both
     conjuncts were keyed on [errno_ret_in Fork.clone_errnos (eff_ret eff)];
-    the OSSV-266 revision keyed them on [EFAULT :: clone_errnos], because
+    the revision keyed them on [EFAULT :: clone_errnos], because
     [copy_struct_from_user]'s [access_ok] now answers -EFAULT for a
     [uargs] range it refuses ([Fork.clone3_spec]), and that answer
     creates no child.  Either list was exact while 220 answered only the
     fork word.  It became FALSE when 220 learned the namespace word
-    ([Fork.clone_ns_flags_b]), which admits every errno 1..4095: an
+    ([Fork.clone_ns_flags_b]), which admits every errno 1..4095 but -EINTR: an
     -EPERM there is not in the list, made no child, and left
     [m_has_children] clear, so the second conjunct would have claimed a
     child that does not exist.  The statement is now keyed on
@@ -575,9 +575,7 @@ Qed.
     Only the old FIRST conjunct follows from this form directly; the old
     second one, for the fork word and 435, still holds through
     [clone_resolve_declines_or_sets_children] (with [clone3_resolve_inv]
-    for 435), which is unchanged.  No consumer in
-    oss-verify-proofs-internal or oss-verify-proofs names either form
-    (consumer census, 2026-11-01). *)
+    for 435), which is unchanged. *)
 Lemma clone_success_sets_children : forall i m eff m' evs,
   bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z ->
   syscall_spec i m (Ok eff m' evs) ->
@@ -885,7 +883,7 @@ Qed.
     [match] — [Kernel.Sys.prctl_spec]'s first test is membership in it —
     and [prctl_modeled_options_are] pins it EXACTLY — not that
     55 is absent from it, which a widening could preserve, but that the
-    list is these four options and nothing else.  So the tripwire keeps
+    list is these five options and nothing else.  So the tripwire keeps
     its shape: an edit that teaches [prctl] another
     option fails a named proof in this file, and whoever makes that edit
     has to come back here and say what it does to the tagging argument.
@@ -898,17 +896,21 @@ Qed.
     it could not be modeled by masking registers on entry either.
 
     WHAT THE CURRENT LIST DOES TO IT: nothing.  Besides [PR_CAPBSET_READ]
-    the list holds [PR_SET_PDEATHSIG] (1), [PR_SET_DUMPABLE] (4) and
-    [PR_SET_NO_NEW_PRIVS] (38), which write the parent-death signal, the
-    mm's dumpable flag and the no-new-privs bit and nothing else
-    (kernel/sys.c, [SYSCALL_DEFINE5(prctl)], read at v6.18.44).  None of
+    the list holds [PR_SET_PDEATHSIG] (1), [PR_GET_PDEATHSIG] (2),
+    [PR_SET_DUMPABLE] (4) and [PR_SET_NO_NEW_PRIVS] (38), which write or
+    read the parent-death signal, write the mm's dumpable flag and write
+    the no-new-privs bit, and nothing else; [PR_GET_PDEATHSIG]'s one store
+    is a [put_user] of an [int] through riscv's ordinary [access_ok]
+    (kernel/sys.c, [SYSCALL_DEFINE5(prctl)], read at v6.18.44, identical
+    at v6.18.46).  None of
     them is a caller of [set_tagged_addr_ctrl], whose only callers at that
     tag are option 55's [SET_TAGGED_ADDR_CTRL] and riscv's ptrace
     regset, so [PMLEN] stays 0 and [State.access_okb] stays exact. *)
 
 Example prctl_modeled_options_are :
   prctl_modeled_options =
-    [PR_CAPBSET_READ; PR_SET_PDEATHSIG; PR_SET_DUMPABLE; PR_SET_NO_NEW_PRIVS].
+    [PR_CAPBSET_READ; PR_SET_PDEATHSIG; PR_GET_PDEATHSIG; PR_SET_DUMPABLE;
+     PR_SET_NO_NEW_PRIVS].
 Proof. reflexivity. Qed.
 
 (** Every option outside that list falls through [prctl_spec]'s first

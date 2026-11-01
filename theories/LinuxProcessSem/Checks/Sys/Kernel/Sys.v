@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Sys.Kernel.Sys — the getpid (172), getppid (173), gettid (178), setsid (157), uname (160), prctl (167), prlimit64 (261) checkers, and their proofs
+(** * LinuxProcessSem.Checks.Sys.Kernel.Sys — the getpid (172), getppid (173), gettid (178), setsid (157), getsid (156), uname (160), prctl (167), prlimit64 (261) checkers, and their proofs
 
     Mirrors [Sys/Kernel/Sys.v], which answers to Linux [kernel/sys.c]:
     this file holds the checkers for the syscalls defined there, and no
@@ -163,19 +163,71 @@ Definition check_uname (i : SyscallInput) (name : word)
     | Some _ => check_uname_copy name (m_utsname m) eff m
     end.
 
+(** An effect that is exactly the return [r] and the writes [ws], in
+    order, and nothing else: the shape [check_ret_only] has for an
+    effect with no writes.  [getresuid]/[getresgid] produce it, where
+    [ws] is the stores that landed before the answer, so [r] may be an
+    errno with writes beside it. *)
+Definition check_ret_writes (eff : SyscallEffect) (r : word)
+    (ws : list (word * list byte)) (m' : Model) : check_result :=
+  match eff with
+  | mkEffectU ret ws' [] [] [] [] =>
+      if bv_eqb ret r && writes_eqb ws' ws then CheckOk m' [] else CheckReject
+  | _ => CheckReject
+  end.
+
+Lemma check_ret_writes_ok_iff : forall eff r ws m1 m' evs,
+  check_ret_writes eff r ws m1 = CheckOk m' evs <->
+  (eff = mkEffect r ws [] /\ m' = m1 /\ evs = []).
+Proof.
+  intros [ret ws' zs us cs cin] r ws m1 m' evs; cbn.
+  destruct zs as [|z zs];
+    [destruct us as [|u us];
+      [destruct cs as [|c cs]; [destruct cin as [|d cin]|]|]|];
+    try (split; [discriminate|intros (H1 & _ & _); discriminate H1]).
+  destruct (bv_eqb ret r) eqn:E; cbn.
+  - apply bv_eqb_eq in E; subst.
+    destruct (writes_eqb ws' ws) eqn:W.
+    + apply writes_eqb_eq in W; subst.
+      split; [intro H; inversion H; auto|intros (_ & -> & ->); reflexivity].
+    + split; [discriminate|]. intros (H1 & _ & _). inversion H1; subst.
+      now rewrite (proj2 (writes_eqb_eq _ _) eq_refl) in W.
+  - split; [discriminate|]. intros (H1 & _ & _). inversion H1; subst.
+    now rewrite bv_eqb_refl in E.
+Qed.
+
+Lemma check_ret_writes_no_unmodeled : forall eff r ws m1,
+  check_ret_writes eff r ws m1 <> CheckUnmodeled.
+Proof.
+  intros [ret ws' zs us cs cin] r ws m1. unfold check_ret_writes.
+  destruct zs;
+    [destruct us;
+      [destruct cs;
+        [destruct cin;
+          [destruct (bv_eqb ret r && writes_eqb ws' ws)|]|]|]|];
+    discriminate.
+Qed.
+
+Lemma check_ret_writes_refl : forall r ws m1,
+  check_ret_writes (mkEffect r ws []) r ws m1 = CheckOk m1 [].
+Proof. intros. apply check_ret_writes_ok_iff. now repeat split. Qed.
+
 (** prctl: [Kernel.Sys.prctl_spec] carries the whole argument -- which
-    four options, why [PR_CAPBSET_READ] answers 1 for CAP_SETUID and
-    CAP_SETGID and 0 or 1 for every other valid capability, why the
-    other three answer 0 or -EINVAL and store nothing, and why every
-    other option declines.  This mirrors its branches one for one; the
-    observed return tells the two answers of the [alt] apart.
-    TOTAL ON ITS OWN OPTIONS: once the option is in
-    [prctl_modeled_options] this answers [CheckOk] or [CheckReject] and
-    never [CheckUnmodeled], so the decline is a fact about the OPTION
-    and about nothing else -- which is what makes
-    [Checks.ProcessCreation]'s pin on [prctl_modeled_options] the whole
-    story about what 167 declines.  [i] is read on the
-    [PR_SET_NO_NEW_PRIVS] branch alone, for a2..a4. *)
+    five options, why [PR_CAPBSET_READ] answers 1 for CAP_SETUID and
+    CAP_SETGID and 0 or 1 for every other valid capability, why
+    [PR_SET_PDEATHSIG] stores its argument and the other two setters
+    store nothing, how [PR_GET_PDEATHSIG] stores the signal through its
+    pointer, and why every other option declines.  This mirrors its
+    branches one for one; the observed return tells the two answers of
+    the [alt] apart.  THE DECLINES ARE THE OPTION TEST AND ONE MEMORY
+    BAND: once the option is in [prctl_modeled_options] this answers
+    [CheckOk] or [CheckReject], except [PR_GET_PDEATHSIG] with a 4-byte
+    range [access_ok] admits that memory does not wholly back, the band
+    every copy-out declines.  So the option list is the whole story about
+    which OPTIONS 167 declines, which is what [Checks.ProcessCreation]'s
+    pin on [prctl_modeled_options] states.  [i] is read on the
+    [PR_SET_NO_NEW_PRIVS] branch, for a2..a4, and on the
+    [PR_GET_PDEATHSIG] branch, for its writable memory. *)
 
 Definition check_prctl (i : SyscallInput) (option_ arg2 : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
@@ -192,7 +244,12 @@ Definition check_prctl (i : SyscallInput) (option_ arg2 : word)
   else if Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG then
     (if (64 <? bv_unsigned arg2)%Z
      then check_ret_only eff (errno_ret EINVAL) m []
-     else check_ret_only eff (Z_to_bv 64 0) m [])
+     else check_ret_only eff (Z_to_bv 64 0) (with_pdeath_signal arg2 m) [])
+  else if Z.eqb (bv_unsigned option_) PR_GET_PDEATHSIG then
+    (match put_user_ids (in_wmem i) [(arg2, m_pdeath_signal m)] with
+     | None => CheckUnmodeled
+     | Some (r, ws) => check_ret_writes eff r ws m
+     end)
   else if Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE then
     (if (1 <? bv_unsigned arg2)%Z
      then check_ret_only eff (errno_ret EINVAL) m []
@@ -225,7 +282,14 @@ Proof.
   destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
   { destruct ((64 <? bv_unsigned arg2)%Z);
       apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-      apply pure_ok. }
+      [apply pure_ok|].
+    eapply bind_ok0; [apply modify_ok|]. apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_PDEATHSIG).
+  { eapply bind_ok0; [apply input_ok|]. cbv beta.
+    eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+    destruct (put_user_ids (in_wmem i) [(arg2, m_pdeath_signal m)])
+      as [[r ws]|]; [|discriminate].
+    apply check_ret_writes_ok_iff in H as (-> & -> & ->). apply pure_ok. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
   { destruct ((1 <? bv_unsigned arg2)%Z);
       apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
@@ -238,8 +302,9 @@ Proof.
     apply pure_ok.
 Qed.
 
-(** The option tests are the ONLY things that decline, so a
-    [CheckUnmodeled] forces the same branch in the spec. *)
+(** The option tests and [PR_GET_PDEATHSIG]'s memory band are the ONLY
+    things that decline, so a [CheckUnmodeled] forces the same branch in
+    the spec. *)
 Lemma check_prctl_sound_unmodeled : forall i option_ arg2 eff m,
   check_prctl i option_ arg2 eff m = CheckUnmodeled ->
   prctl_spec option_ arg2 i m Unmodeled.
@@ -258,6 +323,12 @@ Proof.
   destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
   { destruct ((64 <? bv_unsigned arg2)%Z);
       now apply check_ret_only_no_unmodeled in H. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_PDEATHSIG).
+  { eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+    destruct (put_user_ids (in_wmem i) [(arg2, m_pdeath_signal m)])
+      as [[r ws]|]; [|apply unmodeled_intro].
+    now apply check_ret_writes_no_unmodeled in H. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
   { destruct ((1 <? bv_unsigned arg2)%Z);
       now apply check_ret_only_no_unmodeled in H. }
@@ -287,9 +358,16 @@ Proof.
     destruct H as [H|H]; inversion H; subst; clear H;
       vm_compute; reflexivity. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
-  { destruct ((64 <? bv_unsigned arg2)%Z);
-      unfold err_ret, ret_only, pure in H; inversion H; subst;
-      cbn; rewrite bv_eqb_refl; reflexivity. }
+  { destruct ((64 <? bv_unsigned arg2)%Z).
+    - unfold err_ret, ret_only, pure in H; inversion H; subst;
+        cbn; rewrite bv_eqb_refl; reflexivity.
+    - sys_unfold. cbv beta iota zeta in H. inv_ok.
+      apply check_ret_only_ok_iff. now repeat split. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_PDEATHSIG).
+  { apply bind_input_model_inv in H. cbv beta in H.
+    destruct (put_user_ids (in_wmem i) [(arg2, m_pdeath_signal m)])
+      as [[r ws]|]; [|now inversion H].
+    unfold pure in H. inversion H; subst. apply check_ret_writes_refl. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
   { destruct ((1 <? bv_unsigned arg2)%Z);
       unfold err_ret, ret_only, pure in H; inversion H; subst;
@@ -318,7 +396,13 @@ Proof.
     unfold alt, ret_only, pure in H. destruct H as [H|H]; discriminate H. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
   { destruct ((64 <? bv_unsigned arg2)%Z);
-      unfold err_ret, ret_only, pure in H; discriminate H. }
+      [unfold err_ret, ret_only, pure in H; discriminate H|].
+    exfalso. sys_unfold. cbv beta iota zeta in H. inv_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_GET_PDEATHSIG).
+  { apply bind_input_model_inv in H. cbv beta in H.
+    destruct (put_user_ids (in_wmem i) [(arg2, m_pdeath_signal m)])
+      as [[r ws]|]; [|reflexivity].
+    unfold pure in H. discriminate H. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
   { destruct ((1 <? bv_unsigned arg2)%Z);
       unfold err_ret, ret_only, pure in H; discriminate H. }
@@ -567,6 +651,77 @@ Proof.
   unfold setsid_spec in H.
   destruct (m_setsid_succeeded m) eqn:Hs; sys_unfold; inv_ok;
     hall Hs; inv_ok.
+Qed.
+
+(* ------------------------------------------------------------- getsid *)
+
+(** getsid: [Kernel.Sys.getsid_spec] carries the argument -- which pids
+    are answered, why the answer after a successful setsid is the tid,
+    and why the answer before one is a fresh choice.  This mirrors its
+    branches one for one, and the fresh choice is [check_getppid]: the
+    same bare return in [[0, PID_MAX_ENVELOPE)] with the model handed
+    back unchanged. *)
+Definition check_getsid (pid : word) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  if negb (getsid_pid_ok pid (m_tid m)) then CheckUnmodeled
+  else if m_setsid_succeeded m then
+    match m_tid m with
+    | Some t => check_ret_only eff t m []
+    | None => CheckUnmodeled
+    end
+  else check_getppid eff m.
+
+Lemma check_getsid_sound_ok : forall pid eff m m' evs i,
+  check_getsid pid eff m = CheckOk m' evs -> getsid_spec pid i m (Ok eff m' evs).
+Proof.
+  intros pid eff m m' evs i H.
+  unfold check_getsid in H. unfold getsid_spec.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (negb (getsid_pid_ok pid (m_tid m))); [discriminate|].
+  destruct (m_setsid_succeeded m).
+  - destruct (m_tid m) as [t|]; [|discriminate].
+    apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok.
+  - exact (check_getppid_sound_ok _ _ _ _ i H).
+Qed.
+
+Lemma check_getsid_sound_unmodeled : forall pid eff m i,
+  check_getsid pid eff m = CheckUnmodeled -> getsid_spec pid i m Unmodeled.
+Proof.
+  intros pid eff m i H.
+  unfold check_getsid in H. unfold getsid_spec.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  destruct (negb (getsid_pid_ok pid (m_tid m))); [apply unmodeled_intro|].
+  destruct (m_setsid_succeeded m).
+  - destruct (m_tid m) as [t|];
+      [now apply check_ret_only_no_unmodeled in H | apply unmodeled_intro].
+  - exfalso. eapply check_getppid_no_unmodeled. exact H.
+Qed.
+
+Lemma check_getsid_complete_ok : forall pid eff m m' evs i,
+  getsid_spec pid i m (Ok eff m' evs) -> check_getsid pid eff m = CheckOk m' evs.
+Proof.
+  intros pid eff m m' evs i H.
+  unfold getsid_spec in H.
+  apply bind_model_inv in H. cbv beta in H. unfold check_getsid.
+  destruct (negb (getsid_pid_ok pid (m_tid m))); [now inversion H|].
+  destruct (m_setsid_succeeded m).
+  - destruct (m_tid m) as [t|]; [|now inversion H].
+    unfold ret_only, pure in H. inversion H; subst.
+    apply check_ret_only_ok_iff. now repeat split.
+  - exact (check_getppid_complete_ok _ _ _ _ i H).
+Qed.
+
+Lemma check_getsid_complete_unmodeled : forall pid m i eff,
+  getsid_spec pid i m Unmodeled -> check_getsid pid eff m = CheckUnmodeled.
+Proof.
+  intros pid m i eff H.
+  unfold getsid_spec in H.
+  apply bind_model_inv in H. cbv beta in H. unfold check_getsid.
+  destruct (negb (getsid_pid_ok pid (m_tid m))); [reflexivity|].
+  destruct (m_setsid_succeeded m).
+  - destruct (m_tid m) as [t|]; [|reflexivity].
+    unfold ret_only, pure in H. discriminate H.
+  - exact (check_getppid_complete_unmodeled m i eff H).
 Qed.
 
 (* ----------------------------------------------------------------- ioctl *)
@@ -951,7 +1106,9 @@ Definition check_setid_result (errs : list Z) (r : word) (mR : Model)
     allocated, then the privileged transition that moves all three ids,
     then the unprivileged one that moves only the effective id and
     answers -EPERM for any other target.  TOTAL — every branch answers,
-    so this acceptor never declines. *)
+    so this acceptor never declines.  A success steps the model by
+    [Kernel.Sys.commit_id_creds], which also resets the parent-death
+    signal when the effective id moves. *)
 Definition check_setid (get : Creds -> IdTriple) (put : IdTriple -> Creds -> Creds)
     (user : bool) (v : word) (eff : SyscallEffect) (m : Model) : check_result :=
   let c := m_creds m in
@@ -959,10 +1116,10 @@ Definition check_setid (get : Creds -> IdTriple) (put : IdTriple -> Creds -> Cre
   if bv_eqb v ID_MINUS_ONE then check_ret_only eff (errno_ret EINVAL) m []
   else if creds_privileged c then
     check_setid_result (setid_errnos (andb user (negb (bv_eqb v (id_real t)))))
-      (Z_to_bv 64 0) (with_creds (put (mkIdTriple v v v) c) m) eff m
+      (Z_to_bv 64 0) (commit_id_creds (id_eff t) v (put (mkIdTriple v v v) c) m) eff m
   else if orb (bv_eqb v (id_real t)) (bv_eqb v (id_saved t)) then
     check_setid_result (setid_errnos false) (Z_to_bv 64 0)
-      (with_creds (put (mkIdTriple (id_real t) v (id_saved t)) c) m) eff m
+      (commit_id_creds (id_eff t) v (put (mkIdTriple (id_real t) v (id_saved t)) c) m) eff m
   else
     check_setid_result (setid_errnos false) (errno_ret EPERM) m eff m.
 
@@ -996,7 +1153,7 @@ Definition check_setresid (get : Creds -> IdTriple) (put : IdTriple -> Creds -> 
       check_ret_only eff (errno_ret EPERM) m []
     else
       check_setid_result (setid_errnos (andb user (negb (bv_eqb nr (id_real t)))))
-        (Z_to_bv 64 0) (with_creds (put (mkIdTriple nr ne ns) c) m) eff m.
+        (Z_to_bv 64 0) (commit_id_creds (id_eff t) ne (put (mkIdTriple nr ne ns) c) m) eff m.
 
 (** The [alt] every fallible credential-setter branch ends in: an
     injectable errno, or the branch's own deterministic arm [c2].  All
@@ -1121,6 +1278,71 @@ Lemma check_getid_complete_unmodeled : forall sel m i eff,
 Proof.
   intros sel m i eff H. unfold getid_spec in H. sys_unfold.
   cbv iota in H. inv_ok.
+Qed.
+
+(* ------------------------------------------------- getresuid / getresgid *)
+
+(** [getresuid] (148) and [getresgid] (150): [Kernel.Sys.getresid_spec]
+    carries the argument.  The spec makes no choice, so the acceptor
+    computes its one outcome with the same [put_user_ids] over the same
+    stores, and compares: the return and the stores that landed, and the
+    model handed back unchanged.  It declines exactly where the spec
+    does, at a store [access_ok] admits and memory does not back. *)
+Definition check_getresid (i : SyscallInput) (get : Creds -> IdTriple)
+    (rp ep sp : word) (eff : SyscallEffect) (m : Model) : check_result :=
+  match put_user_ids (in_wmem i) (getresid_puts (get (m_creds m)) rp ep sp) with
+  | None => CheckUnmodeled
+  | Some (r, ws) => check_ret_writes eff r ws m
+  end.
+
+Lemma check_getresid_sound_ok : forall i get rp ep sp eff m m' evs,
+  check_getresid i get rp ep sp eff m = CheckOk m' evs ->
+  getresid_spec get rp ep sp i m (Ok eff m' evs).
+Proof.
+  intros i get rp ep sp eff m m' evs H.
+  unfold check_getresid in H. unfold getresid_spec.
+  eapply bind_ok0; [apply input_ok|]. cbv beta.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (put_user_ids (in_wmem i) (getresid_puts (get (m_creds m)) rp ep sp))
+    as [[r ws]|]; [|discriminate].
+  apply check_ret_writes_ok_iff in H as (-> & -> & ->). apply pure_ok.
+Qed.
+
+Lemma check_getresid_sound_unmodeled : forall i get rp ep sp eff m,
+  check_getresid i get rp ep sp eff m = CheckUnmodeled ->
+  getresid_spec get rp ep sp i m Unmodeled.
+Proof.
+  intros i get rp ep sp eff m H.
+  unfold check_getresid in H. unfold getresid_spec.
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  destruct (put_user_ids (in_wmem i) (getresid_puts (get (m_creds m)) rp ep sp))
+    as [[r ws]|]; [|apply unmodeled_intro].
+  now apply check_ret_writes_no_unmodeled in H.
+Qed.
+
+Lemma check_getresid_complete_ok : forall i get rp ep sp eff m m' evs,
+  getresid_spec get rp ep sp i m (Ok eff m' evs) ->
+  check_getresid i get rp ep sp eff m = CheckOk m' evs.
+Proof.
+  intros i get rp ep sp eff m m' evs H.
+  unfold getresid_spec in H.
+  apply bind_input_model_inv in H. cbv beta in H. unfold check_getresid.
+  destruct (put_user_ids (in_wmem i) (getresid_puts (get (m_creds m)) rp ep sp))
+    as [[r ws]|]; [|now inversion H].
+  unfold pure in H. inversion H; subst. apply check_ret_writes_refl.
+Qed.
+
+Lemma check_getresid_complete_unmodeled : forall i get rp ep sp m eff,
+  getresid_spec get rp ep sp i m Unmodeled ->
+  check_getresid i get rp ep sp eff m = CheckUnmodeled.
+Proof.
+  intros i get rp ep sp m eff H.
+  unfold getresid_spec in H.
+  apply bind_input_model_inv in H. cbv beta in H. unfold check_getresid.
+  destruct (put_user_ids (in_wmem i) (getresid_puts (get (m_creds m)) rp ep sp))
+    as [[r ws]|]; [|reflexivity].
+  unfold pure in H. discriminate H.
 Qed.
 
 (* ------------------------------------------------------- setuid / setgid *)

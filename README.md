@@ -137,7 +137,10 @@ It is about two binaries, the *source* and the *target*. It says:
   variables, the initial files, standard input, the user and group IDs, and
   the network peers. [`State.ProcInput`](theories/LinuxProcessSem/State.v)
   defines it. [`Run.valid_input`](theories/LinuxProcessSem/Run.v) gives its
-  restrictions. The two binaries get the same input.
+  restrictions. The two binaries get the same input. `Run.valid_input` keeps
+  `/` and `..` out of the arguments after `argv[0]`; a statement whose
+  program takes path arguments uses `Run.valid_input_paths` instead
+  ([SCOPE.md](SCOPE.md), the Arguments row).
 - **Launch.** The launch contains the stack address, the initial program
   break, the mmap base and the `AT_RANDOM` bytes. The statement quantifies
   the two launches independently. Thus a proof cannot use the same

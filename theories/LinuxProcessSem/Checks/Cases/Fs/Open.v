@@ -2303,6 +2303,11 @@ Definition s_overflowuid : list byte :=
 Definition s_overflowgid : list byte :=
   [47; 112; 114; 111; 99; 47; 115; 121; 115; 47; 107; 101; 114; 110; 101;
    108; 47; 111; 118; 101; 114; 102; 108; 111; 119; 103; 105; 100].
+Definition s_proc_sys_dir : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 121; 115; 47].
+Definition s_proc_sys_kernel : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 121; 115; 47; 107; 101; 114; 110; 101;
+   108].
 Definition s_pid_ns : list byte := [49; 50; 51; 47; 110; 115].              (* "123/ns" *)
 Definition s_proc_pid_ns : list byte :=
   [47; 112; 114; 111; 99; 47; 49; 50; 51; 47; 110; 115].                   (* "/proc/123/ns" *)
@@ -2389,6 +2394,19 @@ Example openat_proc_sys_read_only :
        (with_copyins [(8192, 29%nat)] (mkEffect 3 [] [])) proc_open_model
      = CheckUnmodeled.
 Proof. repeat split; check_eq. Qed.
+(** O_RDONLY does not mint a readable procfs-file descriptor for sysctl
+    directories, while O_PATH keeps its directory reference. *)
+Example openat_proc_sys_directories_decline_read_only :
+  check_syscall (proc_open_in AT_FDCWD s_proc_sys_dir 0x88000)
+    (with_copyins [(8192, 11%nat)] (mkEffect 3 [] [])) proc_open_model
+  = CheckUnmodeled
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc_sys_kernel 0x88000)
+       (with_copyins [(8192, 17%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckUnmodeled
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc_sys_kernel 0x208000)
+       (with_copyins [(8192, 17%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc_sys_kernel)) [].
+Proof. repeat split; check_eq. Qed.
 
 (** [openat(3, "<pid>/ns", O_PATH|O_LARGEFILE)] relative to the O_PATH
     descriptor on "/proc": the name is "/proc/<pid>/ns", and the new
@@ -2438,4 +2456,24 @@ Example openat_proc_admits_no_eintr :
        (with_copyins [(8192, 29%nat)] (mkEffect (errno_ret EACCES) [] []))
        proc_open_model
      = CheckOk proc_open_model [].
+Proof. repeat split; check_eq. Qed.
+
+(** A ".." RELATIVE TO THE O_PATH DESCRIPTOR is declined: "../etc" from
+    fd 3 names "/proc/../etc", which climbs out of procfs, so
+    [Open.proc_path_b] refuses the joined name and no other arm answers
+    a descriptor that is not AT_FDCWD.  THE CONTROL is
+    [openat_relative_to_proc_fd]'s "123/ns", answered. *)
+Definition s_dotdot_etc : list byte := [46; 46; 47; 101; 116; 99].  (* "../etc" *)
+
+Example openat_relative_dotdot_from_proc_fd_declines :
+  check_syscall (proc_open_in 3 s_dotdot_etc 0x208000)
+    (with_copyins [(8192, 7%nat)] (mkEffect 4 [] [])) proc_fd_model
+  = CheckUnmodeled
+  /\ check_syscall (proc_open_in 3 s_dotdot_etc 0x208000)
+       (with_copyins [(8192, 7%nat)] (mkEffect (errno_ret ENOENT) [] [])) proc_fd_model
+     = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall (proc_open_in 3 s_pid_ns 0x208000)
+       (with_copyins [(8192, 7%nat)] (mkEffect 4 [] [])) proc_fd_model
+     = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns)) [].
 Proof. repeat split; check_eq. Qed.

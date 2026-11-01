@@ -388,6 +388,36 @@ Lemma syscall_witness_setresgid : forall i m,
   syscall_spec_witness i m = setresid_witness cred_gids (uid32 (in_arg i 0)) (uid32 (in_arg i 1)) (uid32 (in_arg i 2)) m.
 Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
+Lemma check_syscall_getresuid : forall i eff m,
+  bv_unsigned (in_sysno i) = 148%Z ->
+  check_syscall i eff m = check_getresid i cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) eff m.
+Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
+
+Lemma syscall_witness_getresuid : forall i m,
+  bv_unsigned (in_sysno i) = 148%Z ->
+  syscall_spec_witness i m = getresid_witness cred_uids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m.
+Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
+
+Lemma check_syscall_getresgid : forall i eff m,
+  bv_unsigned (in_sysno i) = 150%Z ->
+  check_syscall i eff m = check_getresid i cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) eff m.
+Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
+
+Lemma syscall_witness_getresgid : forall i m,
+  bv_unsigned (in_sysno i) = 150%Z ->
+  syscall_spec_witness i m = getresid_witness cred_gids (in_arg i 0) (in_arg i 1) (in_arg i 2) i m.
+Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
+
+Lemma check_syscall_getsid : forall i eff m,
+  bv_unsigned (in_sysno i) = 156%Z ->
+  check_syscall i eff m = check_getsid (pid32 (in_arg i 0)) eff m.
+Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
+
+Lemma syscall_witness_getsid : forall i m,
+  bv_unsigned (in_sysno i) = 156%Z ->
+  syscall_spec_witness i m = getsid_witness (pid32 (in_arg i 0)) m.
+Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
+
 Lemma check_syscall_setsid : forall i eff m,
   bv_unsigned (in_sysno i) = 157%Z ->
   check_syscall i eff m = check_setsid eff m.
@@ -771,6 +801,9 @@ Ltac arm_dispatch :=
         | erewrite check_syscall_setuid by eassumption
         | erewrite check_syscall_setresuid by eassumption
         | erewrite check_syscall_setresgid by eassumption
+        | erewrite check_syscall_getresuid by eassumption
+        | erewrite check_syscall_getresgid by eassumption
+        | erewrite check_syscall_getsid by eassumption
         | erewrite check_syscall_setgroups by eassumption
         | erewrite check_syscall_uname by eassumption
         | erewrite check_syscall_prctl by eassumption

@@ -242,9 +242,14 @@ Fixpoint fd_names_path (fds : list (word * FdEntry)) (p : path) : bool :=
        be any open file ([State.ONsFile]), so [unlinkat_spec] declines
        while one is open *)
   | (_, FdOpaque _) :: r => fd_names_path r p
-    (* exact for the other three: an opaque descriptor is on a procfs
-       name or an anonymous inode, and the names [unlinkat_spec] answers
-       for are a slash-free name or a "/tmp/" key, never a "/proc" one *)
+    (* exact for the other three, and the reason is about the model, not
+       the name: Linux's unlink does not depend on which files are open,
+       and [unlinkat_spec] declines on a naming descriptor only because a
+       file kind reads its bytes through the path key the unlink would
+       remove.  An opaque descriptor reads nothing through a key, even
+       when its procfs name is a link to a modeled file
+       ("/proc/self/cwd/f"), so removing the key changes no answer it
+       gives *)
   end.
 
 (** unlinkat's injectable failures: environment conditions the model does

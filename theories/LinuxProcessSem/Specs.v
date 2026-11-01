@@ -83,10 +83,11 @@
       Sys/Kernel/Sched/Syscalls.v  kernel/sched/syscalls.c  sched_getaffinity
                                                    sched_setscheduler
                                                    sched_yield
-      Sys/Kernel/Sys.v           kernel/sys.c      getpid getppid gettid setsid uname
-                                                   prlimit64 getuid geteuid
+      Sys/Kernel/Sys.v           kernel/sys.c      getpid getppid gettid setsid getsid
+                                                   uname prlimit64 getuid geteuid
                                                    getgid getegid setuid setgid
-                                                   setresuid setresgid
+                                                   setresuid setresgid getresuid
+                                                   getresgid
                                                    prctl (whose PR_CAPBSET_READ
                                                    arm answers to
                                                    security/commoncap.c's
