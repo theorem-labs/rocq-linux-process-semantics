@@ -16,7 +16,8 @@ import re
 
 FILES = ['theories/LinuxProcessSem/Ns/Tables.v',
          'theories/LinuxProcessSem/Procs.v',
-         'theories/EquivalenceDefinition/MustExitP.v']
+         'theories/EquivalenceDefinition/MustExitP.v',
+         'theories/Examples/forkwait/Measure.v']
 
 HEAD = '''From Stdlib Require Import ZArith NArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
