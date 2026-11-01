@@ -990,10 +990,25 @@ Definition MAX_RT_PRIO : Z := 100%Z.
     [Kernel.Futex.Syscalls]'s empty-waiter-set argument depends on
     nobody ever granting, and
     [Checks.Cases.Kernel.Futex.Syscalls] turns that dependency into a
-    compile-time fact over both clone gates.  [Kernel.Fork] names the
-    flag in prose throughout and needs no constant, because its gates
-    are equalities on whole words rather than mask tests. *)
+    compile-time fact over every clone gate.  [Kernel.Fork] names the
+    flag in prose throughout and needs no constant: the fork gate is an
+    equality on the whole word, and the namespace gate below admits only
+    [SIGCHLD] and the [CLONE_NEW*] bits. *)
 Definition CLONE_VM : Z := 256%Z.
+
+(** The seven namespace bits of [clone]'s flag word that
+    [Kernel.Fork.clone_ns_flags_b] admits beside [SIGCHLD]
+    (include/uapi/linux/sched.h, read at v6.18.44; identical at
+    v6.18.46).  [CLONE_NEWTIME] (0x80) is not among them: it lies inside
+    [CSIGNAL], so legacy [clone] reads it as part of the exit signal and
+    only [clone3] and [unshare] can ask for it. *)
+Definition CLONE_NEWNS     : Z := 0x00020000%Z.
+Definition CLONE_NEWCGROUP : Z := 0x02000000%Z.
+Definition CLONE_NEWUTS    : Z := 0x04000000%Z.
+Definition CLONE_NEWIPC    : Z := 0x08000000%Z.
+Definition CLONE_NEWUSER   : Z := 0x10000000%Z.
+Definition CLONE_NEWPID    : Z := 0x20000000%Z.
+Definition CLONE_NEWNET    : Z := 0x40000000%Z.
 
 (** The [futex] operation words this model answers, and the two bits
     that decorate them (include/uapi/linux/futex.h, Linux v6.18.46,
@@ -1098,6 +1113,25 @@ Definition PR_SET_NO_NEW_PRIVS : Z := 38%Z.
     what programs SEARCH FOR -- libcap's [cap_max_bits] binary-searches
     it -- so it is read by real code rather than merely available. *)
 Definition CAP_LAST_CAP : Z := 40%Z.
+
+(** [CAP_SETGID] (6) and [CAP_SETUID] (7) (include/uapi/linux/capability.h,
+    read at v6.18.44; identical at v6.18.46): the two capabilities the
+    model's privileged credential arms answer for.  [setgid],
+    [setresgid] and [setgroups] ask [ns_capable_setid(CAP_SETGID)],
+    [setuid] and [setresuid] ask [ns_capable_setid(CAP_SETUID)], and
+    [State.creds_privileged]'s note assumes the bounding set holds both.
+    [Kernel.Sys.prctl_spec]'s [PR_CAPBSET_READ] answers 1 for these two. *)
+Definition CAP_SETGID : Z := 6%Z.
+Definition CAP_SETUID : Z := 7%Z.
+
+(** [_LINUX_CAPABILITY_VERSION_3], the [version] word of a
+    [struct __user_cap_header_struct] that [capget] (90) and [capset]
+    (91) answer (include/uapi/linux/capability.h, read at v6.18.44;
+    identical at v6.18.46).  With it each call moves
+    [_LINUX_CAPABILITY_U32S_3] = 2 [struct __user_cap_data_struct]s.
+    Versions 1 (0x19980330) and 2 (0x20071026) are real kernel answers
+    too, and [Kernel.Capability] declines them; see that file. *)
+Definition LINUX_CAPABILITY_VERSION_3 : Z := 0x20080522%Z.
 
 (* =========================================================================
    struct stat, as fstat (80) and newfstatat (79) copy it out

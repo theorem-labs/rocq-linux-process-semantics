@@ -69,17 +69,20 @@ Definition set_robust_list_spec (len : word) : Sys SyscallEffect :=
     its mm.  The only entry points to [copy_process] (kernel/fork.c) are
     [clone] (220) and [clone3] (435), and neither ever grants [CLONE_VM]:
     [Kernel.Fork.clone_fork_flags_b] admits the single flag word
-    [SIGCHLD] and [Kernel.Fork.clone3_fork_args_b] the same word in a
-    struct, and every other word declines or fails.  A forked child gets
+    [SIGCHLD], [Kernel.Fork.clone_ns_flags_b] [SIGCHLD] plus namespace
+    bits and nothing else, [Kernel.Fork.clone3_fork_args_b] the first
+    word in a struct, and every other word declines or fails.  A forked
+    child gets
     a COPY of the mm
     ([copy_mm] calls [dup_mm] when [CLONE_VM] is clear), so its private
     keys are different keys — and it is not a configuration this
     development can be in anyway.
 
     THAT PREMISE IS CHECKED RATHER THAN ASSERTED.
-    [Checks.Cases.Kernel.Futex.Syscalls.clone_fork_gate_grants_no_shared_mm]
-    and its [clone3] twin prove that neither gate admits a word with
-    [CLONE_VM] set, so widening either one breaks the build beside the
+    [Checks.Cases.Kernel.Futex.Syscalls.clone_fork_gate_grants_no_shared_mm],
+    [clone_ns_gate_grants_no_shared_mm] and the [clone3] twin prove that
+    no gate admits a word with [CLONE_VM] set, so widening any one breaks
+    the build beside the
     prose saying why it matters.  An argument that spans two files is
     the kind that rots quietly, and this one is load-bearing for every
     answer below.

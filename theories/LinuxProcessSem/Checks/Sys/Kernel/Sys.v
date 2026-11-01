@@ -164,9 +164,11 @@ Definition check_uname (i : SyscallInput) (name : word)
     end.
 
 (** prctl: [Kernel.Sys.prctl_spec] carries the whole argument -- which
-    four options, why [PR_CAPBSET_READ]'s answer is the constant 1, why
-    the other three answer 0 or -EINVAL and store nothing, and why
-    every other option declines.  This mirrors its branches one for one.
+    four options, why [PR_CAPBSET_READ] answers 1 for CAP_SETUID and
+    CAP_SETGID and 0 or 1 for every other valid capability, why the
+    other three answer 0 or -EINVAL and store nothing, and why every
+    other option declines.  This mirrors its branches one for one; the
+    observed return tells the two answers of the [alt] apart.
     TOTAL ON ITS OWN OPTIONS: once the option is in
     [prctl_modeled_options] this answers [CheckOk] or [CheckReject] and
     never [CheckUnmodeled], so the decline is a fact about the OPTION
@@ -182,6 +184,10 @@ Definition check_prctl (i : SyscallInput) (option_ arg2 : word)
   else if Z.eqb (bv_unsigned option_) PR_CAPBSET_READ then
     (if (CAP_LAST_CAP <? bv_unsigned arg2)%Z
      then check_ret_only eff (errno_ret EINVAL) m []
+     else if capbset_assumed (bv_unsigned arg2)
+     then check_ret_only eff (Z_to_bv 64 1) m []
+     else if bv_eqb (eff_ret eff) (Z_to_bv 64 0)
+     then check_ret_only eff (Z_to_bv 64 0) m []
      else check_ret_only eff (Z_to_bv 64 1) m [])
   else if Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG then
     (if (64 <? bv_unsigned arg2)%Z
@@ -208,8 +214,14 @@ Proof.
     [discriminate|].
   destruct (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ).
   { destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z);
+      [apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+       apply pure_ok|].
+    destruct (capbset_assumed (bv_unsigned arg2));
+      [apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+       apply pure_ok|].
+    destruct (bv_eqb (eff_ret eff) (Z_to_bv 64 0));
       apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-      apply pure_ok. }
+      [apply alt_l | apply alt_r]; apply pure_ok. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
   { destruct ((64 <? bv_unsigned arg2)%Z);
       apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
@@ -238,6 +250,10 @@ Proof.
     [apply unmodeled_intro|].
   destruct (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ).
   { destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z);
+      [now apply check_ret_only_no_unmodeled in H|].
+    destruct (capbset_assumed (bv_unsigned arg2));
+      [now apply check_ret_only_no_unmodeled in H|].
+    destruct (bv_eqb (eff_ret eff) (Z_to_bv 64 0));
       now apply check_ret_only_no_unmodeled in H. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
   { destruct ((64 <? bv_unsigned arg2)%Z);
@@ -262,8 +278,14 @@ Proof.
     [now inversion H|].
   destruct (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ).
   { destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z);
-      unfold err_ret, ret_only, pure in H; inversion H; subst;
-      cbn; rewrite bv_eqb_refl; reflexivity. }
+      [unfold err_ret, ret_only, pure in H; inversion H; subst;
+       cbn; rewrite bv_eqb_refl; reflexivity|].
+    destruct (capbset_assumed (bv_unsigned arg2));
+      [unfold ret_only, pure in H; inversion H; subst;
+       cbn; rewrite bv_eqb_refl; reflexivity|].
+    unfold alt, ret_only, pure in H.
+    destruct H as [H|H]; inversion H; subst; clear H;
+      vm_compute; reflexivity. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
   { destruct ((64 <? bv_unsigned arg2)%Z);
       unfold err_ret, ret_only, pure in H; inversion H; subst;
@@ -290,7 +312,10 @@ Proof.
     [reflexivity|].
   destruct (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ).
   { destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z);
-      unfold err_ret, ret_only, pure in H; discriminate H. }
+      [unfold err_ret, ret_only, pure in H; discriminate H|].
+    destruct (capbset_assumed (bv_unsigned arg2));
+      [unfold ret_only, pure in H; discriminate H|].
+    unfold alt, ret_only, pure in H. destruct H as [H|H]; discriminate H. }
   destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
   { destruct ((64 <? bv_unsigned arg2)%Z);
       unfold err_ret, ret_only, pure in H; discriminate H. }

@@ -2024,6 +2024,25 @@ Proof.
   unfold check_prlimit64, check_rlim64_read in H. vm_frame2 H.
 Qed.
 
+(** capget and capset return the model they were given on every
+    [CheckOk]: neither carries a capability set in the model, and the
+    one answered [capset] shape changes nothing the model holds. *)
+Lemma check_capget_frame : forall i header dataptr eff m m' evs,
+  check_capget i header dataptr eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i header dataptr eff m m' evs H.
+  unfold check_capget, check_capget_copy in H. vm_frame2 H.
+Qed.
+
+Lemma check_capset_frame : forall i header data eff m m' evs,
+  check_capset i header data eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i header data eff m m' evs H.
+  unfold check_capset in H. vm_frame2 H.
+Qed.
+
 Lemma check_ftruncate_frame : forall fd len eff m m' evs,
   check_ftruncate fd len eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
@@ -2431,7 +2450,8 @@ Lemma check_clone_frame : forall flags eff m m' evs,
   check_clone flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros flags eff m m' evs H.
-  unfold check_clone, check_clone_resolve, check_clone_answer in H.
+  unfold check_clone, check_clone_resolve, check_clone_answer,
+    check_clone_ns_resolve, check_clone_ns_answer in H.
   vm_frame2 H.
 Qed.
 
@@ -2665,6 +2685,8 @@ Proof.
     | erewrite check_fsync_frame by eassumption; exact Hwf
     | erewrite check_getdents64_frame by eassumption; exact Hwf
     | erewrite check_flock_frame by eassumption; exact Hwf
+    | erewrite check_capget_frame by eassumption; exact Hwf
+    | erewrite check_capset_frame by eassumption; exact Hwf
     | erewrite check_exit_frame by eassumption; exact Hwf
     | erewrite check_set_tid_address_frame by eassumption; exact Hwf
     | erewrite check_getpid_frame by eassumption; exact Hwf

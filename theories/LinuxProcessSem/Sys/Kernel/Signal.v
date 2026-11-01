@@ -157,8 +157,10 @@ Open Scope sys_scope.
       raises SIGCHLD, and [Fork.clone_spec]'s argument that nothing
       comes of it is an argument about SIG_DFL, under which the signal
       is discarded when it is generated.  After the install that is the
-      disposition.  Every other SIGCHLD install -- SIG_IGN, a handler --
-      fails closed.
+      disposition.  The install must leave SA_NOCLDWAIT clear, because
+      that bit makes Linux reap an exiting child itself.  Every other
+      SIGCHLD install -- SIG_IGN, a handler, SIG_DFL with SA_NOCLDWAIT
+      -- fails closed.
 
     SIGCHLD (17) IS NOT ACCEPTED, AND THAT IS THE INVARIANT BELOW
     BEING DISCHARGED.  That invariant says the
@@ -452,16 +454,23 @@ Definition sigabrt_dfl_install (sig : word) (mp : word -> option byte) (act : wo
   | None => false
   end.
 
+(** The [sa_flags] bit that asks Linux to reap an exiting child itself
+    rather than leave it a zombie for [wait4]
+    (include/uapi/asm-generic/signal-defs.h).  [sigchld_dfl_install]
+    declines an install that sets it. *)
+Definition SA_NOCLDWAIT : Z := 0x00000002%Z.
+
 (** The second install outside [sigaction_accepted] that the spec
     answers: SIG_DFL for SIGCHLD, under a flag word [sa_flags_ok]
-    admits.  bwrap 0.13.1 makes it first thing in [main]
-    ([struct sigaction sa = {}; sa.sa_handler = SIG_DFL;
+    admits and with SA_NOCLDWAIT clear.  bwrap 0.13.1 makes it first
+    thing in [main] ([struct sigaction sa = {}; sa.sa_handler = SIG_DFL;
     sigaction(SIGCHLD, &sa, NULL)], to undo a SIG_IGN its launcher may
     have left); musl passes that as [rt_sigaction(SIGCHLD, act, NULL,
     8)] with a zero flag word.
 
     kernel/signal.c [SYSCALL_DEFINE4(rt_sigaction)], [do_sigaction], [sig_handler_ignored], [do_notify_parent], read at v6.18.44; identical at v6.18.46.
     include/linux/signal.h [SIG_KERNEL_IGNORE_MASK], [sig_kernel_ignore], read at v6.18.44; identical at v6.18.46.
+    include/uapi/asm-generic/signal-defs.h [SA_NOCLDSTOP], [SA_NOCLDWAIT], read at v6.18.44; identical at v6.18.46.
 
     WHY 0.  SIGCHLD (17) is in 1..64 and is not SIGKILL or SIGSTOP, and
     no live process carries SA_IMMUTABLE (the note at
@@ -486,33 +495,45 @@ Definition sigabrt_dfl_install (sig : word) (mp : word -> option byte) (act : wo
       SIG_DFL and [sig_kernel_ignore]), so nothing observable moves.
       [posixtimer_sig_unignore] is not reached: it runs only when the
       new handler is NOT ignored.
-    - Of the flags [sa_flags_ok] admits, two are read for SIGCHLD.
+    - Of the flags this arm admits, one is read for SIGCHLD:
       SA_NOCLDSTOP stops a child's STOP from raising SIGCHLD, which
-      SIG_DFL discards anyway.  SA_NOCLDWAIT makes [do_notify_parent]
-      autoreap an exiting child, which changes what a later [wait4]
-      finds -- but [Exit.wait4_spec] answers only while
-      [State.m_has_children] is false, when there is no child to reap,
-      and declines once a modeled [clone] has recorded one.  The rest
-      ([sa_mask], SA_SIGINFO, SA_ONSTACK, SA_NODEFER, SA_RESETHAND,
-      SA_EXPOSE_TAGBITS) describe how a handler runs, and SIG_DFL runs
-      none.
+      SIG_DFL discards anyway.  The rest ([sa_mask], SA_SIGINFO,
+      SA_ONSTACK, SA_NODEFER, SA_RESETHAND, SA_EXPOSE_TAGBITS) describe
+      how a handler runs, and SIG_DFL runs none.  So the arm answers
+      every flag word [sa_flags_ok] admits with SA_NOCLDWAIT clear, not
+      only bwrap's 0: each of those bits changes nothing under SIG_DFL.
 
-    WHAT STAYS DECLINED: SIGCHLD with SIG_IGN or a handler address.  A
-    handler is unsound outright: it would run on each child's exit, and
-    could interrupt a modeled call with an -EINTR or a restart this
-    model does not have.  SIG_IGN discards as SIG_DFL does, but it also
-    autoreaps every child and is the one disposition [execve] passes on
-    ([flush_signal_handlers] keeps it), so admitting it would have to be
-    argued against every child-facing arm; nothing in scope needs it,
-    and declining it keeps the disposition after any answered SIGCHLD
-    install exactly the SIG_DFL named above.  The tripwire is
-    [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled]. *)
+    WHAT STAYS DECLINED: SIGCHLD with SIG_IGN or a handler address, and
+    SIG_DFL with SA_NOCLDWAIT set.  A handler is unsound outright: it
+    would run on each child's exit, and could interrupt a modeled call
+    with an -EINTR or a restart this model does not have.  SIG_IGN
+    discards as SIG_DFL does, but it also autoreaps every child and is
+    the one disposition [execve] passes on ([flush_signal_handlers]
+    keeps it), so admitting it would have to be argued against every
+    child-facing arm; nothing in scope needs it, and declining it keeps
+    the disposition after any answered SIGCHLD install exactly the
+    SIG_DFL named above.  SIG_DFL with SA_NOCLDWAIT is declined because
+    [do_notify_parent] reads the bit: [psig->action[SIGCHLD-1].sa.sa_flags
+    & SA_NOCLDWAIT] sets [autoreap], so a child that exits under it is
+    reaped at once instead of being left a zombie, and a later [wait4]
+    finds a different state.  Admitting it would be sound today only
+    because [Exit.wait4_spec] declines once [State.m_has_children] is
+    set: this arm's soundness would rest on a fact about another arm,
+    and a later [wait4] arm for a live child would make it unsound with
+    no failing proof.  Nothing in scope needs it: bwrap 0.13.1 and musl
+    pass a flag word without it.  The tripwires are
+    [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_unmodeled] (a
+    handler) and
+    [Checks.Cases.Kernel.Signal.rt_sigaction_sigchld_dfl_nocldwait_unmodeled]
+    (SIG_DFL with SA_NOCLDWAIT).  [mp] and [act] give the handler word
+    and the flag word under the same 24-byte readability
+    ([sigaction_handler], [sigaction_flags]). *)
 Definition sigchld_dfl_install (sig : word) (mp : word -> option byte) (act : word)
     : bool :=
   Z.eqb (bv_unsigned sig) SIGCHLD &&
-  match sigaction_handler mp act with
-  | Some h => w_is0 h
-  | None => false
+  match sigaction_handler mp act, sigaction_flags mp act with
+  | Some h, Some fl => w_is0 h && Z.eqb (Z.land (bv_unsigned fl) SA_NOCLDWAIT) 0
+  | _, _ => false
   end.
 
 (** [rt_sigaction sig act oact sigsetsize].  [sig] arrives already
@@ -560,9 +581,10 @@ Definition sigchld_dfl_install (sig : word) (mp : word -> option byte) (act : wo
          [sa_flags_accepted]; then 0 for a signal in
          [sigaction_accepted], storing no disposition; then 0 for SIGABRT
          with the handler SIG_DFL ([sigabrt_dfl_install]), storing no
-         disposition; then 0 for SIGCHLD with the handler SIG_DFL
-         ([sigchld_dfl_install]), storing no disposition; and UNMODELED
-         for every other signal and handler.
+         disposition; then 0 for SIGCHLD with the handler SIG_DFL and
+         SA_NOCLDWAIT clear ([sigchld_dfl_install]), storing no
+         disposition; and UNMODELED for every other signal, handler and
+         SIGCHLD flag word.
          Every answer after the copy records the 24
          bytes in [State.eff_copyins]: [SYSCALL_DEFINE4(rt_sigaction)]
          (kernel/signal.c:4650, v6.18.46) has already read them with

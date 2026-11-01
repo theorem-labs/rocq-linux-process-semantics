@@ -425,7 +425,7 @@ Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
 
 Lemma syscall_witness_prctl : forall i m,
   bv_unsigned (in_sysno i) = 167%Z ->
-  syscall_spec_witness i m = prctl_witness (int32 (in_arg i 0)) (in_arg i 1) i m.
+  syscall_spec_witness i m = prctl_witness i (int32 (in_arg i 0)) (in_arg i 1) m.
 Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
 Lemma check_syscall_gettimeofday : forall i eff m,

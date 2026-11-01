@@ -49,6 +49,15 @@ Proof.
   now apply record_copyins_ok.
 Qed.
 
+(** [record_copyins_ok] with the recorded effect stated as an equation,
+    so that a nested ledger ([record_copyins] around a spec that records
+    its own) can be matched by conversion rather than by unification. *)
+Lemma record_copyins_ok_eq : forall reads spec i m eff m' evs effc,
+  effc = with_copyins (reads ++ eff_copyins eff) eff ->
+  spec i m (Ok eff m' evs) ->
+  record_copyins reads spec i m (Ok effc m' evs).
+Proof. intros reads spec i m eff m' evs effc -> H. now apply record_copyins_ok. Qed.
+
 Lemma record_copyins_unmodeled : forall reads spec i m,
   spec i m Unmodeled -> record_copyins reads spec i m Unmodeled.
 Proof. intros. unfold record_copyins. now left. Qed.

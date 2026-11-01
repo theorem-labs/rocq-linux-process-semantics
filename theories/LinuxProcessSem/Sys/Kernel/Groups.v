@@ -202,9 +202,11 @@ Definition set_cred_groups (gs : list word) (c : Creds) : Creds :=
       task_fix_setgroups, ...)]) under the capability-only LSM the
       credentials section assumes; [commit_creds] returns 0.
     So the answers are exactly 0 (list cleared) and -ENOMEM (list kept),
-    both allocation sites giving the same errno.  The ids do not move,
-    so [commit_creds]'s dumpable and parent-death-signal reset does not
-    fire either.  This is the shape a privilege drop issues first
+    both allocation sites giving the same errno.  The ids, the permitted
+    set and the user namespace do not move ([prepare_creds] copies them,
+    and [set_groups] touches only the group list), so [commit_creds]'s
+    dumpable and parent-death-signal reset does not fire either.  This
+    is the shape a privilege drop issues first
     ([setgroups(0, NULL)] before [setgid]/[setuid]), and the shape
     BET-467's launcher uses.
 
