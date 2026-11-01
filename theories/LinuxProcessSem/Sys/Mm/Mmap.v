@@ -42,8 +42,8 @@ Open Scope sys_scope.
    then the ledger could hold entries overlapping byte for byte; see
    [brk_grants] for why that range is gone and [State.live_bytes] for
    what it cost the budget.
-   Placement stays non-deterministic (covering ASLR); only occupied
-   space is excluded:
+   Placement is a function of the ledger (see PLACEMENT below), and
+   every address it gives avoids occupied space:
    - below this run's [State.alloc_top], hence disjoint from the dynamic
      stack and the argv/envp block of the stack pointer the run was
      started with;
@@ -63,11 +63,12 @@ Open Scope sys_scope.
    [__get_unmapped_area] gives for the same ledger, the same
    [mm->mmap_base] and the same kernel build (Linux v6.18.46, commit
    1f99e9ab748f, mm/mmap.c).  The randomization stays quantified --
-   the base, the stack pointer and the program break are still drawn
-   -- but GIVEN the draw and the earlier calls, the address is a
-   function, not a choice.  See the PLACEMENT section below for the
-   rule, for what Linux does, and for the four residuals in which the
-   model's address can still differ from the kernel's.
+   the base, the stack top ([StackLayout.ed_top]), the stack pointer
+   and the program break are still drawn -- but GIVEN the draw and the
+   earlier calls, the address is a function, not a choice.  See the
+   PLACEMENT section below for the rule, for what Linux does, and for
+   the three residuals in which the model's address can still differ
+   from the kernel's.
 
    BUDGET: every accessible grant is additionally metered against the
    run's backed-memory budget ([State.vm_limit], seeded per role by
@@ -1031,9 +1032,11 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
 
    SO THE RULE IS A FUNCTION.  [linux_place] has at most one solution
    ([Checks.Placement.linux_place_unique]); the base, the kernel build
-   and the earlier calls decide it.  The randomization is still
-   quantified — the base, the stack pointer, the program break and the
-   AT_RANDOM draw — and the per-request -ENOMEM arm is still there for
+   and the earlier calls decide it.  The launch is still quantified —
+   the base, the stack top ([StackLayout.ed_top]), the stack pointer,
+   the program break and the AT_RANDOM draw, and also the vDSO call's
+   effect ([StackLayout.ed_vdso]), which Linux fixes by the build — and
+   the per-request -ENOMEM arm is still there for
    a may-fail reading.  What is gone is the free choice of an address
    inside the free space, which is what let the model refuse a request
    the same Linux launch grants (the placement holes: B2, B3 and N3).
@@ -1051,7 +1054,7 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    refuses only where that launch refuses, or where the address space
    really is exhausted.
 
-   THE FOUR RESIDUALS, each named in SCOPE.md.  Refusals differ only at
+   THE THREE RESIDUALS, each named in SCOPE.md.  Refusals differ only at
    exhaustion; an address can differ earlier in these cases, and that
    reaches a statement only through output that depends on where a
    mapping or the stack sits.
@@ -1073,9 +1076,12 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
      allows a mapping there when the base or a hint reaches
      [alloc_top].  R-b and R-c close together, by tracking the stack
      VMA in the ledger.
-   - R-d, the entry.  [Run.valid_entry_va] draws the stack pointer and
-     the base independently, while Linux's base gap pads the stack
-     draw, so some pairs this model admits are no single Linux launch.
+   - R-d, the entry, is CLOSED.  [Run.valid_entry_va] once drew the
+     stack pointer and the base independently; its conjunct
+     [Run.entry_launch_ok_va] now admits exactly the (stack top, sp,
+     base) triples of a Linux launch, and
+     [Checks.Cases.EntryLaunch.a1_kind1_pair_refused] refutes the pair
+     SCOPE.md once gave as its example.
 
    QEMU USER MODE IS OUT.  [mmap_find_vma] (linux-user/mmap.c, QEMU
    10.0.11) searches the HOST process's free space, which is not a
@@ -1318,11 +1324,11 @@ Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
 (** The ordinary rw mmap shape: PRIVATE ANONYMOUS READ+WRITE at offset
     0, with any [fd].  Fresh PROT_NONE and the two bounded contained
     MAP_FIXED shapes are recognized separately below.  A NON-NULL [addr]
-    is not constrained: without MAP_FIXED it is only a hint the kernel
-    may honor or ignore, and the model's nondeterministic placement
-    covers both.  A NULL [addr] leaves the kernel to place, and the
-    address the model may then choose is bounded by the [choose] guard's
-    admissibility conditions — see the placement section above.
+    is not constrained: without MAP_FIXED it is only a hint, and
+    [linux_place] decides it as the kernel does — the hint itself when
+    the range is free below [State.alloc_top], else the top-down search.
+    A NULL [addr] leaves the kernel to place, and [linux_place] gives
+    the one address — see the placement section above.
     Everything else — file-backed mappings, executable permissions,
     and unknown flag bits other than MAP_NORESERVE
     ([mmap_flags_core]) — is unmodeled and
