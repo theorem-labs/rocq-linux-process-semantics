@@ -15,6 +15,11 @@
 From Stdlib Require Import ZArith NArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run Procs.
+(** [reg_get], which [ms_gpr] is defined through and which the a0 lemmas
+    unfold.  Missing until the whole chain was compiled as real files: an
+    inlined scratch copy inherited it from the file it was concatenated
+    after, which is exactly the kind of error concatenation hides. *)
+From LinuxProcessSemantics.Riscv Require Import Sem.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import MustExit.
 Import ListNotations.
 Open Scope bv_scope.

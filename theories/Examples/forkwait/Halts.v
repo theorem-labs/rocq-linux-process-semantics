@@ -25,8 +25,15 @@
 From Stdlib Require Import ZArith NArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run Procs.
+(** [getr], [regupd] and [mkst] are [Common.PropExec]'s; [ecall_st] is
+    [Common.ShapeNodes]'s.  The segment lemmas' statements are over all
+    four. *)
+From LinuxProcessSemantics.Common Require Import PropExec ShapeNodes.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import MustExit MustExitP.
-From LinuxProcessSemantics.Examples.forkwait Require Import Measure.
+(** [Measure] for the measure table; [ForkwaitSteps] for [machine_run]
+    and the five segment lemmas this file now consumes. *)
+From LinuxProcessSemantics.Examples.forkwait Require Import
+  Measure ForkwaitSteps.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -1418,3 +1425,59 @@ Proof.
     as (_ & _ & _ & Hio & Hfs & _).
   split; [exact Hfs | exact Hio].
 Qed.
+
+(** THE INVERSION, which is what was missing all along.
+
+    [machine_run] is a [Fixpoint] on [k], so a run of [S k] steps is a
+    step and a run of [k], and the proof is [simpl] plus destructing the
+    step.  It is the converse of [ForkwaitSteps.mrun_step] and it is
+    three lines.
+
+    It belongs here rather than beside [mrun_step] only because that is
+    where it was needed; moving it is a follow-up, not a prerequisite. *)
+Lemma machine_run_inv : forall segs k ms ms'',
+  machine_run segs (S k) ms = Some ms'' ->
+  exists ms', ms_svc_pending ms = None
+              /\ RiscvSemantics.step segs ms = MachineOk ms'
+              /\ machine_run segs k ms' = Some ms''.
+Proof.
+  intros segs k ms ms'' H. simpl in H.
+  destruct (ms_svc_pending ms) eqn:Hsvc; [discriminate|].
+  destruct (RiscvSemantics.step segs ms) as [ms'| |] eqn:Hstep;
+    try discriminate.
+  exists ms'. split; [reflexivity | split; [reflexivity | exact H]].
+Qed.
+
+(** The segment lemmas live inside [ForkwaitSteps]' [Section Forkwait]
+    with [Context {fx : FPState}], so each takes the instance as its
+    first implicit argument.  A consumer must supply it, and the way to
+    supply it is the same section.  Without it the elaborator reports
+    unresolved [?fx : FPState] holes and names neither the section nor
+    the instance. *)
+Section ForkwaitConsumers.
+Context {fx : FPState}.
+
+(** And the first fact in this file that CONSUMES a segment lemma.
+
+    [ForkwaitSteps.fw_run_child] is a five-step run from [0x1101c] to the
+    child's [exit_group] [ecall] at [0x11058].  Inverted once, it gives
+    the child's FIRST step -- the [bltz] at [0x1101c], not taken because
+    a0 is zero -- and a four-step run from wherever that lands.
+
+    That is the shape the two-entry case analysis needs: one step for
+    [fw_det_link], and the remainder to carry forward. *)
+Lemma fw_child_first_step : forall regs mem rom,
+  getr regs 10 = 0 ->
+  exists ms',
+    ms_svc_pending (mkst regs 0x1101c mem rom) = None
+    /\ RiscvSemantics.step forkwait_segs (mkst regs 0x1101c mem rom)
+       = MachineOk ms'
+    /\ machine_run forkwait_segs 4 ms'
+       = Some (ecall_st (fw_regs_exit7 regs) 0x11058 mem rom).
+Proof.
+  intros regs mem rom Ha0.
+  apply machine_run_inv.
+  exact (fw_run_child regs mem rom Ha0).
+Qed.
+
+End ForkwaitConsumers.
