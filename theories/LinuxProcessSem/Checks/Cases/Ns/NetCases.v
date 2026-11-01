@@ -223,3 +223,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 (** The five syscall arms are exported by their Linux RISC-V numbers. *)
 Example net_arm_numbers : map fst net_arms = [29; 198; 200; 206; 207] := eq_refl.
+
+(** Net arms publish every allocation and security-hook refusal family. *)
+Example net_injected_numbers : map ni_no net_injected = [198; 200; 206; 207].
+Proof. vm_compute. reflexivity. Qed.

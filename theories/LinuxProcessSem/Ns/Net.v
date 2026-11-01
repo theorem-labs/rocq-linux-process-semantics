@@ -88,14 +88,11 @@
     [recvfrom_arm] exact; [ioctl_arm] exact.  Each header lists what it
     declines.
 
-    INJECTED FAILURES.  The allocation failures the arms offer beside their
-    answer, for the namespace model's table of injected families:
-    [socket_create_errnos], [nl_insert_errnos] and [nl_alloc_errnos].
-    Allocation failures inside the rtnetlink handlers, the acknowledgement
-    and the dump ([kmalloc] in [rtnl_newlink], [inet_alloc_ifa],
-    [nlmsg_new] in [netlink_ack], [alloc_skb] in [netlink_dump]) are not
-    offered: each would need the socket's pending error ([sk_err]), which
-    the open file does not hold.
+    INJECTED FAILURES.  The allocation and security-module failures the
+    arms offer beside their answer are listed in [net_injected].  A netlink
+    socket's pending error is not modelled, so allocation failures reported
+    asynchronously by an acknowledgement or dump are admitted as the
+    environment's refusal rather than a stored [sk_err].
 
     THE DESCRIPTOR TABLE.  [ns_fd_entry] and [Arm.ns_file_of] are the only
     places that name the descriptor kind of an open file of the namespace
@@ -127,6 +124,9 @@ Definition MSG_DONTWAIT : Z := 64.
 Definition SIOCGIFINDEX : Z := 35123.        (* 0x8933 *)
 Definition IFREQ_SIZE : Z := 40.             (* sizeof(struct ifreq), LP64 *)
 Definition SOCKADDR_NL_SIZE : Z := 12.       (* sizeof(struct sockaddr_nl) *)
+
+(** Allocation and LSM errors returned by a socket operation. *)
+Definition net_env_errno (e : Z) : bool := (1 <=? e) && (e <=? 4095).
 
 Definition IFF_UP : Z := 1.
 Definition IFF_BROADCAST : Z := 2.
@@ -823,7 +823,7 @@ Definition socket_arm : NsArm := fun i m ctx st o =>
                       (with_files st (ns_files st ++ [(h, mkNsFile k O_RDWR (caller_cred m ctx))]))
                       []
          else o = ns_errno EMFILE m ctx st)
-        \/ (exists e, In e socket_create_errnos /\ o = ns_errno e m ctx st)
+        \/ (exists e, net_env_errno e = true /\ o = ns_errno e m ctx st)
     end.
 
 (* =========================================================================
@@ -894,13 +894,13 @@ Definition bind_arm : NsArm := fun i m ctx st o =>
                           then o = ns_fail EADDRINUSE rd m ctx st
                           else o = bound pid
                                \/ (netns_sealed x = false /\ o = ns_fail EADDRINUSE rd m ctx st)
-                               \/ (exists e, In e nl_insert_errnos /\ o = ns_fail e rd m ctx st)
+                               \/ (exists e, net_env_errno e = true /\ o = ns_fail e rd m ctx st)
                         else
                           match task_pid ctx with
                           | None => o = EUnmodeled
                           | Some _ =>
                               (exists p, bound_port st x ctx 0 p /\ o = bound p)
-                              \/ (exists e, In e nl_insert_errnos /\ o = ns_fail e rd m ctx st)
+                              \/ (exists e, net_env_errno e = true /\ o = ns_fail e rd m ctx st)
                           end
                     end
             end
@@ -973,10 +973,10 @@ Definition netlink_sendto (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
                    end
                 then o = EUnmodeled
                 else
-                  ((port =? 0) = true /\ exists e, In e nl_insert_errnos /\ o = ns_fail e rd0 m ctx st)
+                  ((port =? 0) = true /\ exists e, net_env_errno e = true /\ o = ns_fail e rd0 m ctx st)
                   \/ exists p, bound_port st x ctx port p /\
                      let st1 := set_file st h (netlink_file f n p q) in
-                     ((exists e, In e nl_alloc_errnos /\ o = ns_fail e rd0 m ctx st1)
+                     ((exists e, net_env_errno e = true /\ o = ns_fail e rd0 m ctx st1)
                       \/ match dgo with
                          | None => o = ns_fail EFAULT rd0 m ctx st1
                          | Some dg =>
@@ -1099,7 +1099,9 @@ Definition recvfrom_arm : NsArm := fun i m ctx st o =>
                                   if l =? 0 then
                                     o = ns_out ret [data; (alenp, u32_bytes SOCKADDR_NL_SIZE)] rd m ctx st'
                                   else match put_ok i addrp l with
-                                       | PutFault => o = ns_out (errno_ret EFAULT) [data] rd m ctx st'
+                                       | PutFault =>
+                                           o = ns_out (errno_ret EFAULT)
+                                                 [data; (alenp, u32_bytes SOCKADDR_NL_SIZE)] rd m ctx st'
                                        | PutPartial => o = EUnmodeled
                                        | PutOk =>
                                            o = ns_out ret
@@ -1199,15 +1201,18 @@ Definition ioctl_arm : NsArm := fun i m ctx st o =>
 Definition net_arms : list (Z * NsArm) :=
   [(29, ioctl_arm); (198, socket_arm); (200, bind_arm); (206, sendto_arm); (207, recvfrom_arm)].
 
-(** The environment refusals the net arms offer.  Socket construction's
-    ENOMEM and ENFILE are allocation failures; [netlink_insert]'s ENOMEM
-    and EOVERFLOW, and [netlink_alloc_large_skb]'s ENOBUFS, are network
-    failures.  EMFILE is decided by the model's RLIMIT_NOFILE and is not
-    listed. *)
+(** The environment refusals the net arms offer.  Socket construction,
+    netlink insertion, and rtnetlink allocation can fail with ENOMEM or
+    ENFILE/ENOBUFS; each socket operation also reaches its security hook,
+    which may return any errno. *)
 Definition net_injected : list NsInjected :=
-  [mkNsInjected 198 [(fun e => (e =? ENOMEM) || (e =? ENFILE), FamAlloc)];
-   mkNsInjected 200 [(fun e => (e =? ENOMEM) || (e =? EOVERFLOW), FamNet)];
-   mkNsInjected 206 [(fun e => e =? ENOBUFS, FamNet)]].
+  [mkNsInjected 198 [(fun e => (e =? ENOMEM) || (e =? ENFILE), FamAlloc);
+                     (fun e => (1 <=? e) && (e <=? 4095), FamCred)];
+   mkNsInjected 200 [(fun e => (e =? ENOMEM) || (e =? EOVERFLOW), FamNet);
+                     (fun e => (1 <=? e) && (e <=? 4095), FamCred)];
+   mkNsInjected 206 [(fun e => (e =? ENOMEM) || (e =? ENOBUFS), FamAlloc);
+                     (fun e => (1 <=? e) && (e <=? 4095), FamCred)];
+   mkNsInjected 207 [(fun e => (1 <=? e) && (e <=? 4095), FamCred)]].
 
 (* =========================================================================
    Deterministic functional cores for checks
