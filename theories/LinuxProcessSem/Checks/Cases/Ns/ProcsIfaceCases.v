@@ -34,9 +34,8 @@ Module ToyCore <: PROCS_CORE.
   Definition pe_pid (_ : ProcessEntry) : positive := 1%positive.
   Definition pe_parent (_ : ProcessEntry) : option positive := None.
   Definition pe_ofd (_ : ProcessEntry) : list (Fd * OfdId) := [].
-  Definition pe_nsctx (_ : ProcessEntry) : NsCtx :=
-    mkNsCtx 1%positive 1%positive (1%positive, 1%positive) (1%positive, 1%positive).
-  Definition sh_nsstate (_ : shared) : NsState := mkNsState [] [].
+  Definition pe_nsctx (_ : ProcessEntry) : NsCtx := init_nsctx.
+  Definition sh_nsstate (_ : shared) : NsState := empty_nsstate.
   Definition pcfg_procs (_ : pconfig) : list (Pid * ProcessEntry) := [(1%positive, tt)].
   Definition pcfg_root (_ : pconfig) : positive := 1%positive.
   Definition pcfg_shared (_ : pconfig) : shared := tt.

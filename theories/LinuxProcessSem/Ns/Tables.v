@@ -81,3 +81,15 @@ Record NsCtx := mkNsCtx {
   cx_root  : positive * positive;
   cx_cwd   : positive * positive
 }.
+
+(** The shared state of a system the namespace model knows nothing of: no
+    mount tree and no user namespace.  A core builds its released world
+    from this, never from the constructor, so a new field changes no
+    caller. *)
+Definition empty_nsstate : NsState := mkNsState [] [].
+
+(** The context of a task that has entered no namespace: the initial user
+    and mount namespace, with root and cwd at the root mount's root
+    dentry. *)
+Definition init_nsctx : NsCtx :=
+  mkNsCtx 1%positive 1%positive (1%positive, 1%positive) (1%positive, 1%positive).
