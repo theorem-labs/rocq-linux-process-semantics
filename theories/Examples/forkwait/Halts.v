@@ -689,3 +689,67 @@ Lemma child_entry_ids : forall e c c' q,
 Proof.
   intros e c c' q. split; [reflexivity | apply child_entry_a0_zero].
 Qed.
+
+(* =========================================================================
+   The state half: successors of a pinned counter
+   ========================================================================= *)
+
+(** The counters a single step can move to, from each member of
+    [fw_pcs_one].  Read off the committed snapshot's own binary: every
+    instruction is 4 bytes, so the successor of a straight-line counter is
+    the next one, and the two branches are the only places where it is not.
+
+    [0x1101c] is [bltz] and [0x11020] is [beqz], so each has TWO
+    successors, and both are in the list.  That is what makes this a
+    membership check rather than a function: the relation does not decide
+    which way a branch goes, and the shape does not have to. *)
+Definition fw_next_pcs (pc : Z) : list Z :=
+  match pc with
+  | 0x11000%Z => [0x11004]%Z
+  | 0x11004%Z => [0x11008]%Z
+  | 0x11008%Z => [0x1100c]%Z
+  | 0x1100c%Z => [0x11010]%Z
+  | 0x11010%Z => [0x11014]%Z
+  | 0x11014%Z => [0x11018]%Z     (* the ecall's own address *)
+  | 0x11018%Z => []%Z            (* the clone: its successor is the arm's *)
+  | 0x1101c%Z => [0x11020; 0x1105c]%Z   (* bltz: not taken, or taken *)
+  | 0x11020%Z => [0x11024; 0x11050]%Z   (* beqz: parent, or child *)
+  | 0x11024%Z => [0x11028]%Z
+  | 0x11028%Z => [0x1102c]%Z
+  | 0x1102c%Z => [0x11030]%Z
+  | 0x11030%Z => [0x11034]%Z
+  | 0x11034%Z => [0x11038]%Z
+  | 0x11038%Z => [0x1103c]%Z
+  | 0x1103c%Z => []%Z            (* the wait4: its successor is the reap *)
+  | 0x11040%Z => [0x11044]%Z
+  | 0x11044%Z => [0x11048]%Z
+  | 0x11048%Z => [0x1104c]%Z
+  | 0x1104c%Z => []%Z            (* exit_group *)
+  | 0x11050%Z => [0x11054]%Z
+  | 0x11054%Z => [0x11058]%Z
+  | 0x11058%Z => []%Z            (* exit_group *)
+  | _ => []%Z
+  end.
+
+(** THE DECIDABLE CHECK, and the reason the pc lists were worth taking as
+    lists.  Every successor of a member of [fw_pcs_one] is itself a member,
+    EXCEPT the three [ecall] addresses, whose successors belong to the
+    syscall arms rather than to an instruction step.  One [vm_compute] over
+    concrete addresses settles the whole of the straight-line case, where
+    twenty hand-written cases would otherwise be.
+
+    [0x1105c] is in the list of successors of [0x1101c] and NOT in
+    [fw_pcs_one]: it is the injected-errno path, unreachable at
+    [Run.forced_only_cfg] for the environment reason recorded at
+    [fw_shape], so the check is stated over the counters the program
+    reaches in THAT environment.  At [Run.may_fail_cfg] the list grows by
+    the three addresses of that tail. *)
+Definition fw_pcs_closed : bool :=
+  List.forallb
+    (fun pc => List.forallb (fun pc' => List.existsb (Z.eqb pc') fw_pcs_one)
+                            (List.filter (fun x => negb (Z.eqb x 0x1105c))
+                                         (fw_next_pcs pc)))
+    fw_pcs_one.
+
+Lemma fw_pcs_closed_ok : fw_pcs_closed = true.
+Proof. vm_compute. reflexivity. Qed.
