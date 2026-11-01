@@ -182,9 +182,9 @@ Fixpoint proc_entries (s root : positive) (d0 i0 : positive) (made : list (list 
                     | None => root
                     end in
       let name := last (px_path e) [] in
-      let (ds, is) := proc_entries s root (Pos.succ d0) (Pos.succ i0) ((px_path e, d0) :: made) r in
+      let (ds, ins) := proc_entries s root (Pos.succ d0) (Pos.succ i0) ((px_path e, d0) :: made) r in
       (mkDentry d0 s (Some parent) name i0 :: ds,
-       mkInode i0 (px_kind e) (px_perm e) (px_uid e) (px_gid e) 0 [] (px_empty e) :: is)
+       mkInode i0 (px_kind e) (px_perm e) (px_uid e) (px_gid e) 0 [] (px_empty e) :: ins)
   end.
 
 (** The new superblock, its dentries and inodes: [get_tree] of each file
@@ -203,10 +203,10 @@ Definition new_tree (st : NsState) (owner pidns : positive) (fs : NewFs) (rdonly
        [mkDentry rd s None [] ri],
        [mkInode ri IDir mode fsuid fsgid 0 [] false])
   | NewProc =>
-      let (ds, is) := proc_entries s rd (Pos.succ rd) (Pos.succ ri) [] (env_proc_entries (ns_env st)) in
+      let (ds, ins) := proc_entries s rd (Pos.succ rd) (Pos.succ ri) [] (env_proc_entries (ns_env st)) in
       (mkSb s (SbProc pidns) owner rd rdonly PROC_SUPER_MAGIC true true true,
        mkDentry rd s None [] ri :: ds,
-       mkInode ri IDir 365 0 0 0 [] false :: is)
+       mkInode ri IDir 365 0 0 0 [] false :: ins)
   | NewDevpts ptmxmode =>
       (mkSb s SbDevpts owner rd rdonly DEVPTS_SUPER_MAGIC false false false,
        [mkDentry rd s None [] ri;
@@ -307,7 +307,7 @@ Definition new_mount (st : NsState) (ctx : NsCtx) (cred : IdCred) (fsuid fsgid :
                      then NMErr ENOSPC
                      else if is_shared (ns_mounts st) tgt then NMOver
                      else
-                       let '(s, ds, is) := new_tree st owner (cx_pidns ctx) fs (mf_ro mf) fsuid fsgid in
+                       let '(s, ds, ins) := new_tree st owner (cx_pidns ctx) fs (mf_ro mf) fsuid fsgid in
                        let mid := Pos.succ (max_mount_id (ns_mounts st)) in
                        NMOk locks (fun lk =>
                          mkNsState
@@ -315,7 +315,7 @@ Definition new_mount (st : NsState) (ctx : NsCtx) (cred : IdCred) (fsuid fsgid :
                               [mkMount mid (cx_mount ctx) (Some tgt) tgt_dentry (sb_root s) (sb_id s) mf
                                        (mkMountFlags lk false false false) false false None None])
                            (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st)
-                           (ns_sbs st ++ [s]) (ns_dentries st ++ ds) (ns_inodes st ++ is)
+                           (ns_sbs st ++ [s]) (ns_dentries st ++ ds) (ns_inodes st ++ ins)
                            (ns_files st) (ns_env st))
                  end
         end
@@ -342,7 +342,7 @@ Proof.
   destruct (env_mount_max (ns_env st) <? Z.of_nat (ns_mount_count (ns_mounts st) (cx_mount ctx) + 1));
     [intros Hc; discriminate Hc|].
   destruct (is_shared (ns_mounts st) tgt); [intros Hc; discriminate Hc|].
-  destruct (new_tree st owner (cx_pidns ctx) fs (mf_ro mf) fsuid fsgid) as [[s ds] is].
+  destruct (new_tree st owner (cx_pidns ctx) fs (mf_ro mf) fsuid fsgid) as [[s ds] ins].
   intros H. injection H as Hl Hmk. subst mk.
   eexists; exists s. cbn [ns_mounts ns_sbs].
   split; [reflexivity|]. split; [apply in_or_app; right; left; reflexivity|].

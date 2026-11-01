@@ -101,6 +101,14 @@ Example fork_inside_advances_last : forall m,
   = Some [0; 2].
 Proof. intros m. vm_compute. reflexivity. Qed.
 
+(** A C library's [fork] (CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID |
+    SIGCHLD) inside the new pid namespace gives the same child. *)
+Example libc_fork_inside_pid_2 : forall m,
+  option_map cx_pids
+    (child_of (clone_ns_exact (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD) m shell inside 2))
+  = Some [(2%positive, 2)].
+Proof. intros m. vm_compute. reflexivity. Qed.
+
 (** A fork that fails after [alloc_pid] leaves the cursor of the pid
     namespace the model made one further, so the next fork there gives
     pid 3; a failure before it leaves the state as it was.  Both are

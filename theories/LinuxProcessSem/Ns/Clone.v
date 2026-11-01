@@ -15,8 +15,12 @@
 
     The model answers clone flags made of an exit signal and CLONE_NEWNS,
     CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER, CLONE_NEWPID and
-    CLONE_NEWNET; any other flag declines.  The UTS and IPC namespaces
-    are not in the tables: no modelled call reads them.
+    CLONE_NEWNET, with or without CLONE_CHILD_SETTID and
+    CLONE_CHILD_CLEARTID (the form a C library's [fork] uses), whose
+    effects on the child's memory are the core's ([copy_process] stores
+    the child's pid in its own pid namespace, [CnOk]'s first pid); any
+    other flag declines.  The UTS and IPC namespaces are not in the
+    tables: no modelled call reads them.
 
     The child's pid in each pid namespace from its own outwards: in a
     namespace a modelled call made, the next after the namespace's last
@@ -42,11 +46,14 @@ Local Open Scope Z_scope.
 
 Definition CSIGNAL : Z := 255.
 Definition PID_MAX : Z := 4194304.
+Definition CLONE_CHILD_CLEARTID : Z := 2097152.   (* 0x00200000 *)
+Definition CLONE_CHILD_SETTID : Z := 16777216.    (* 0x01000000 *)
 
-(** The flags the model answers: an exit signal and these six. *)
+(** The flags the model answers: an exit signal, these six, and the two
+    child-tid flags. *)
 Definition clone_ns_flags : Z :=
   fold_left Z.lor [CLONE_NEWNS; CLONE_NEWUTS; CLONE_NEWIPC; CLONE_NEWUSER; CLONE_NEWPID;
-                   CLONE_NEWNET] 0.
+                   CLONE_NEWNET; CLONE_CHILD_CLEARTID; CLONE_CHILD_SETTID] 0.
 
 Definition has_flag (f k : Z) : bool := negb (Z.land f k =? 0).
 
