@@ -41,8 +41,8 @@ Open Scope sys_scope.
 
 (** [CAP_VALID_MASK] (include/linux/capability.h, read at v6.18.44;
     identical at v6.18.46): [BIT_ULL(CAP_LAST_CAP+1)-1], every
-    capability the kernel defines, 0 to 40.  It is also the value of
-    [CAP_FULL_SET], which is what an UNNARROWED bounding set holds. *)
+    capability the kernel defines, 0 to 40.  The kernel masks every set
+    it stores with it. *)
 Definition CAP_VALID_MASK : Z := Z.ones (CAP_LAST_CAP + 1).
 
 (** The bytes a version-3 call moves between the kernel and [dataptr]:
@@ -57,39 +57,35 @@ Definition CAP_V3_DATA_SIZE : Z := 24%Z.
 Definition cap_data_word (bs : list byte) (k : nat) : Z :=
   bytes_le_to_Z (firstn 4 (skipn (4 * k) bs)).
 
-(** Whether the PERMITTED set is full: one of the real, effective and
-    saved user ids is 0.  The EFFECTIVE set is full exactly when
-    [State.creds_privileged] holds (the effective uid is 0).  Why both
-    are exact, under the assumptions [State.creds_privileged] states, is
-    the note on [capget_spec]. *)
-Definition cap_permitted_full_b (c : Creds) : bool :=
+(** Whether the PERMITTED set is non-empty: one of the real, effective
+    and saved user ids is 0.  Under the assumptions
+    [State.creds_privileged] states, a caller whose three uids are all
+    non-zero holds empty effective and permitted sets, and a caller with
+    a uid 0 holds [cap_bset | cap_inheritable] in its permitted set,
+    which contains CAP_SETUID and CAP_SETGID but whose other bits the
+    model does not know.  The note on [capget_spec] says why. *)
+Definition cap_permitted_nonempty_b (c : Creds) : bool :=
   bv_eqb (cr_uid c) (Z_to_bv 64 0)
   || bv_eqb (cr_euid c) (Z_to_bv 64 0)
   || bv_eqb (cr_suid c) (Z_to_bv 64 0).
 
-(** The data images [capget] may write, given whether the effective
-    ([eff]) and the permitted ([perm]) sets are full: 24 bytes, the
-    effective and permitted halves fixed, the inheritable low half any
-    [__u32] and the inheritable high half any value within the valid
-    capability bits (caps 32 to 40, so at most 0x1ff).  Written over
-    the two booleans so that the witness can be checked by computation
-    for each of the four cases. *)
-Definition capget_data_ok_for (eff perm : bool) (bs : list byte) : bool :=
-  let e := if eff then CAP_VALID_MASK else 0%Z in
-  let p := if perm then CAP_VALID_MASK else 0%Z in
+(** The data images [capget] may write for a caller whose three uids
+    are all non-zero: 24 bytes, the effective and permitted halves 0,
+    the inheritable low half any [__u32] and the inheritable high half
+    any value within the valid capability bits (caps 32 to 40, so at
+    most 0x1ff). *)
+Definition capget_data_ok (bs : list byte) : bool :=
   Nat.eqb (length bs) (Z.to_nat CAP_V3_DATA_SIZE)
-  && Z.eqb (cap_data_word bs 0) (Z.land e (Z.ones 32))   (* kdata[0].effective *)
-  && Z.eqb (cap_data_word bs 1) (Z.land p (Z.ones 32))   (* kdata[0].permitted *)
+  && Z.eqb (cap_data_word bs 0) 0         (* kdata[0].effective *)
+  && Z.eqb (cap_data_word bs 1) 0         (* kdata[0].permitted *)
                                           (* kdata[0].inheritable: any __u32 *)
-  && Z.eqb (cap_data_word bs 3) (Z.shiftr e 32)          (* kdata[1].effective *)
-  && Z.eqb (cap_data_word bs 4) (Z.shiftr p 32)          (* kdata[1].permitted *)
+  && Z.eqb (cap_data_word bs 3) 0         (* kdata[1].effective *)
+  && Z.eqb (cap_data_word bs 4) 0         (* kdata[1].permitted *)
   && Z.leb (cap_data_word bs 5) (Z.shiftr CAP_VALID_MASK 32). (* kdata[1].inheritable *)
 
-Definition capget_data_ok (c : Creds) (bs : list byte) : bool :=
-  capget_data_ok_for (creds_privileged c) (cap_permitted_full_b c) bs.
-
 (** [capget(header, dataptr)] — syscall 90, answered for a version-3
-    header naming pid 0, and for nothing else.
+    header naming pid 0, and for nothing else; the sets themselves are
+    reported only to a caller whose three uids are all non-zero.
 
     THE KERNEL FUNCTION, in its own order ([SYSCALL_DEFINE2(capget)]):
 
@@ -109,7 +105,9 @@ Definition capget_data_ok (c : Creds) (bs : list byte) : bool :=
 
     THE ANSWERED SHAPE.  Version 3 and pid 0.  With [dataptr] NULL the
     call returns 0 after reading only the version (the pid is never
-    read).  Otherwise it reads the pid and writes 24 bytes.  Every other
+    read).  Otherwise it reads the pid and writes 24 bytes, for a caller
+    with no uid 0; for one with a uid 0 the copy-out is declined (THE
+    ANSWER, below).  Every other
     version and every non-zero pid is DECLINED: version 1 copies 12
     bytes and version 2 is the deprecated twin of 3, an unknown version
     writes the header back, a negative pid is -EINVAL and a positive one
@@ -135,48 +133,59 @@ Definition capget_data_ok (c : Creds) (bs : list byte) : bool :=
 
     THE ANSWER: [cap_capget] copies the caller's own [cap_effective],
     [cap_permitted] and [cap_inheritable].  The model carries no
-    capability sets ([State.Creds]'s note), so the effective and
-    permitted sets are DERIVED from the uids, and the derivation is
-    exact under the assumptions [State.creds_privileged] states: the init
-    user namespace, no file capabilities on the executed binary, no
-    ambient capabilities, default securebits, an unnarrowed bounding set
-    — and an ordinary exec at launch: the exec that started the process
-    was not unsafe ([check_unsafe_exec], fs/exec.c: no tracer, no
-    no_new_privs, and no [fs_struct] shared with another process), so
-    [cap_bprm_creds_from_file] did not cut the permitted set back to the
-    parent's.  That is the world [State.init_model] pins.  Under them:
+    capability sets ([State.Creds]'s note), so it answers only where the
+    uids decide the effective and permitted sets, and declines where
+    they do not.  The derivation is exact under the assumptions
+    [State.creds_privileged] states: the init user namespace, no file
+    capabilities on the executed binary, no ambient capabilities,
+    default securebits, a bounding set that holds CAP_SETUID and
+    CAP_SETGID — and an ordinary exec at launch: the exec that started
+    the process was not unsafe ([check_unsafe_exec], fs/exec.c: no
+    tracer, no no_new_privs, and no [fs_struct] shared with another
+    process), so [cap_bprm_creds_from_file] did not cut the permitted
+    set back to the parent's.  That is the world [State.init_model]
+    pins.  Under them:
 
     - AT EXEC ([cap_bprm_creds_from_file]): [get_file_caps] clears the
       permitted set; [handle_privileged_root] sets it to
-      [cap_bset | cap_inheritable] = every valid capability when the
-      real or the effective uid is 0, and raises the effective bit when
-      the effective uid is 0; the effective set is the permitted set
-      when that bit is up, else the (empty) ambient set.  The saved uid
-      equals the effective uid after exec.  So at launch the permitted
-      set is full exactly when some uid is 0 and the effective set is
-      full exactly when the effective uid is 0.
+      [cap_bset | cap_inheritable] when the real or the effective uid is
+      0, and raises the effective bit when the effective uid is 0; the
+      effective set is the permitted set when that bit is up, else the
+      (empty) ambient set.  The saved uid equals the effective uid after
+      exec.  So at launch the permitted set is empty exactly when no uid
+      is 0, and the effective set is empty when the effective uid is not
+      0.
     - ON EVERY MODELED UID CHANGE ([setuid], [setresuid] reach
       [cap_task_fix_setuid] with [LSM_SETID_ID] / [LSM_SETID_RES], so
       [cap_emulate_setxuid] runs; [setgid] and [setresgid] touch no
       capability): leaving euid 0 clears the effective set; reaching
       euid 0 sets effective = permitted; and the permitted set is cleared
       once ALL of uid, euid and suid have left 0, which is absorbing
-      ([State.creds_privileged]'s note says why).  So both
-      biconditionals survive every modeled transition.
+      ([State.creds_privileged]'s note says why).  So a caller whose
+      three uids are all non-zero holds empty effective and permitted
+      sets, through every modeled transition.
     - NOTHING ELSE MODELED MOVES THEM: [capset] below is answered only
       where it changes neither set, [prctl]'s answered options read
-      or set no capability, and [PR_SET_KEEPCAPS], [PR_SET_SECUREBITS]
-      and [PR_CAP_AMBIENT] are declined.
+      or set no capability set of the caller, and [PR_SET_KEEPCAPS],
+      [PR_SET_SECUREBITS] and [PR_CAP_AMBIENT] are declined.
 
-    The effective set is therefore every capability 0 to 40 when the
-    effective uid is 0 and none otherwise; the permitted set is every
-    capability when any of the three uids is 0 and none otherwise.  The
-    INHERITABLE set is inherited across exec unchanged and the model does
-    not carry it, so it is the environment's choice, constrained only to
-    the valid capability bits (the kernel masks every set it stores with
-    [CAP_VALID_MASK]).  It is chosen afresh on each call and not pinned —
-    a widening: a real process reads the same set twice, and after an
-    answered [capset] it reads 0.
+    A CALLER WITH A UID 0 IS DECLINED.  Its permitted set, and its
+    effective set when the effective uid is 0, are [cap_bset |
+    cap_inheritable].  The model assumes only that the bounding set holds
+    CAP_SETUID and CAP_SETGID, and a container narrows the rest, so the
+    other 39 bits of the answer are not known.  The
+    decline comes where the sets are read, after the gates whose answers
+    do not depend on them: the -EFAULTs, and the NULL-[dataptr] 0 that
+    copies nothing out.
+
+    For a caller with no uid 0 the effective and permitted sets are
+    therefore empty.  The INHERITABLE set is inherited across exec
+    unchanged and the model does not carry it, so it is the
+    environment's choice, constrained only to the valid capability bits
+    (the kernel masks every set it stores with [CAP_VALID_MASK]).  It is
+    chosen afresh on each call and not pinned — a widening: a real
+    process reads the same set twice, and after an answered [capset] it
+    reads 0.
 
     The LSM: [security_capget] calls every registered [capget] hook, and
     this arm assumes the capability module's alone ([cap_capget],
@@ -210,9 +219,12 @@ Definition capget_spec (header dataptr : word) : Sys SyscallEffect :=
                           (Z_to_bv 64 CAP_V3_DATA_SIZE) with
                   | None => unmodeled  (* a partial copy_to_user, then -EFAULT *)
                   | Some _ =>
-                      bs <- choose (fun bs : list byte =>
-                                      capget_data_ok (m_creds m) bs = true) ;;
-                      pure (mkEffect (Z_to_bv 64 0) [(dataptr, bs)] [])
+                      if cap_permitted_nonempty_b (m_creds m)
+                      then unmodeled   (* the sets read [cap_bset] *)
+                      else
+                        (bs <- choose (fun bs : list byte =>
+                                         capget_data_ok bs = true) ;;
+                         pure (mkEffect (Z_to_bv 64 0) [(dataptr, bs)] []))
                   end)
            end)
     end.
@@ -250,9 +262,10 @@ Definition capget_spec (header dataptr : word) : Sys SyscallEffect :=
     ([State.creds_privileged]) and [capget_spec]'s derivation both stay
     exact.  It does set the inheritable set to 0, which the model does
     not carry; [capget_spec] keeps choosing it, a widening.  A caller
-    with any uid 0 holds the full permitted set, and all-zero sets would
-    DROP it: afterwards a euid-0 caller has no CAP_SETUID, which the
-    model's privilege test cannot follow, so that call is declined.
+    with any uid 0 holds a non-empty permitted set (CAP_SETUID and
+    CAP_SETGID at least), and all-zero sets would DROP it: afterwards a
+    euid-0 caller has no CAP_SETUID, which the model's privilege test
+    cannot follow, so that call is declined.
 
     EVERY OTHER SHAPE IS DECLINED: another version (or an unknown one,
     whose header write-back the model does not carry), a non-zero pid
@@ -286,7 +299,7 @@ Definition capset_spec (header data : word) : Sys SyscallEffect :=
                   | Some db =>
                       record_copyins [(data, Z.to_nat CAP_V3_DATA_SIZE)]
                       (if negb (Z.eqb (bytes_le_to_Z db) 0) then unmodeled
-                       else if cap_permitted_full_b (m_creds m) then unmodeled
+                       else if cap_permitted_nonempty_b (m_creds m) then unmodeled
                        else alt (err_ret ENOMEM) (ret_only (Z_to_bv 64 0)))
                   end)
            end)

@@ -281,9 +281,9 @@ them. A proof says nothing about a program in such a case.
 | Area | Limit |
 | --- | --- |
 | Threads | The model has one thread. It has no scheduler and no shared-memory interleaving. For `fork`-like calls, the model describes the parent only. It does not run the child. `clone` answers two flag words: `SIGCHLD` alone, and `SIGCHLD` with one or more of `CLONE_NEWNS`, `CLONE_NEWUSER`, `CLONE_NEWPID`, `CLONE_NEWNET`, `CLONE_NEWIPC`, `CLONE_NEWUTS` and `CLONE_NEWCGROUP` and no other bit (`Kernel.Fork.clone_ns_flags_b`). For the second word too the model describes the parent only, by choice: the parent gets a child pid (and the model records that it has a child) or an errno. The child runs in the new namespaces, and this model says nothing about it. |
-| Capabilities | The model holds no capability sets. `capget` answers a version-3 header with pid 0, or with a NULL data pointer (0, and the pid is not read): the effective set is every capability when the effective uid is 0 and none otherwise, the permitted set is every capability when one of the real, effective and saved uids is 0 and none otherwise, and the inheritable set is the environment's choice within the valid bits. `capset` answers a version-3 header with pid 0 and six zero data words, from a caller whose three uids are all non-zero: 0 or `-ENOMEM`. For both calls a header, pid word or data range that `access_ok` refuses is `-EFAULT` (`kernel/capability.c`, v6.18.44). Every other shape of either call is `unmodeled`. |
+| Capabilities | The model holds no capability sets. `capget` answers a version-3 header with pid 0, or with a NULL data pointer (0, and the pid is not read). For a caller whose real, effective and saved uids are all non-zero it reports empty effective and permitted sets, and the inheritable set is the environment's choice within the valid bits. For a caller with a uid 0 the copy-out is `unmodeled`: its sets are the bounding set combined with the inheritable set, and the model does not know the bounding set beyond `CAP_SETUID` and `CAP_SETGID`. `capset` answers a version-3 header with pid 0 and six zero data words, from a caller whose three uids are all non-zero: 0 or `-ENOMEM`. For both calls a header, pid word or data range that `access_ok` refuses is `-EFAULT` (`kernel/capability.c`, v6.18.44). Every other shape of either call is `unmodeled`. |
 | Signals | The model does not run signal handlers. It has two signals and both are fatal: `SIGABRT`, raised by `tkill`/`tgkill` on the abort path, and `SIGPIPE`, raised by a write whose far end has no reader. Each ends the run with a death that is not an exit (`State.KillEv`), or, where the launch mask blocks it, returns the errno and leaves the signal pending until a `rt_sigprocmask` uncovers it. `rt_sigaction` declines every install that would change either disposition, so no modeled call moves one. For `SIGABRT` the model assumes the launch left the disposition at `SIG_DFL`. For `SIGPIPE` it no longer assumes: the launch declares it (`State.in_sigpipe_default`), `Run.valid_input` pins the declaration to `SIG_DFL`, and `Run.valid_input_sigpipe_ignored` is the launch that ran `signal(SIGPIPE, SIG_IGN)` before `execve` — a launch `execve` preserves (`fs/exec.c`, `begin_new_exec`'s `flush_signal_handlers` with `force_default = 0`, Linux v6.18.46), under which the same write returns `-EPIPE` and the program runs on. No other signal is modeled: `SIGSEGV` is reported as the error transition rather than as a death, `SIGCHLD`'s default action is to ignore it, `SIGXFSZ` needs an `RLIMIT_FSIZE` the model does not carry, and nothing outside the process can send one. For `SIGCHLD`, `rt_sigaction` answers one install, `SIG_DFL` with `SA_NOCLDWAIT` clear (0, nothing stored: the disposition the `clone` argument already assumes, `Signal.sigchld_dfl_install`). It declines `SIG_IGN`, every handler, and `SIG_DFL` with `SA_NOCLDWAIT` set, under which Linux reaps an exiting child itself (`do_notify_parent`, `kernel/signal.c`, v6.18.44). |
-| `prctl` | The model answers four options: `PR_CAPBSET_READ` (always 1, or `-EINVAL` past `CAP_LAST_CAP`), and `PR_SET_PDEATHSIG`, `PR_SET_DUMPABLE` and `PR_SET_NO_NEW_PRIVS` with Linux's 0 or `-EINVAL` (`SYSCALL_DEFINE5(prctl)`, `kernel/sys.c`, v6.18.44). It stores nothing for the last three: no modeled call reads the parent-death signal, the dumpable flag or the no-new-privs bit. A statement that needs one of them set reads the call from the call log, and must take the last such call after the last credential change, because `commit_creds` resets the first two. Every other option is `unmodeled`, the `PR_GET_*` readers of these three included. |
+| `prctl` | The model answers four options: `PR_CAPBSET_READ` (1 for `CAP_SETUID` and `CAP_SETGID`, 0 or 1 chosen at each call for every other capability, or `-EINVAL` past `CAP_LAST_CAP`; `security/commoncap.c`, `cap_task_prctl`, v6.18.44), and `PR_SET_PDEATHSIG`, `PR_SET_DUMPABLE` and `PR_SET_NO_NEW_PRIVS` with Linux's 0 or `-EINVAL` (`SYSCALL_DEFINE5(prctl)`, `kernel/sys.c`, v6.18.44). It stores nothing for the last three: no modeled call reads the parent-death signal, the dumpable flag or the no-new-privs bit. A statement that needs one of them set reads the call from the call log, and must take the last such call after the last credential change, because `commit_creds` resets the first two. Every other option is `unmodeled`, the `PR_GET_*` readers of these three included. |
 | Parent process | `getppid` answers any pid below 2^22, 0 included (a parent outside the caller's pid namespace), chosen afresh at each call: the model does not know the parent, and the parent changes when it exits. A statement that needs a particular parent takes it as a premise. |
 | Supplementary groups | `setgroups` answers a privileged caller only for the empty list: 0 with the list cleared, or `-ENOMEM` (`SYSCALL_DEFINE2(setgroups)` and `set_current_groups`, `kernel/groups.c`, v6.18.44). A non-empty list, and a size Linux refuses with `-EINVAL`, are `unmodeled`. An unprivileged caller gets `-EPERM` for every argument. |
 | `close_range` | With flags 0 the model closes every descriptor in the range, of any kind, and answers 0; an unknown flag bit or `fd > max_fd` is `-EINVAL` (`SYSCALL_DEFINE3(close_range)`, `fs/file.c`, v6.18.44). `CLOSE_RANGE_CLOEXEC` and `CLOSE_RANGE_UNSHARE` are `unmodeled`: the model records no close-on-exec bit. |
@@ -504,18 +504,24 @@ not apply.
   id, so `State.init_model` derives the effective and saved ids from
   the real ones.
 - The process runs in the initial user namespace with default
-  securebits, a full capability bounding set, no ambient capabilities
-  and a binary without file capabilities, and the exec that started it
-  was not unsafe (`check_unsafe_exec`, `fs/exec.c`): no tracer, no
-  `no_new_privs`, and no `fs_struct` shared with another process. The only security
+  securebits, a capability bounding set that holds `CAP_SETUID` and
+  `CAP_SETGID`, no ambient capabilities and a binary without file
+  capabilities, and the exec that started it was not unsafe
+  (`check_unsafe_exec`, `fs/exec.c`): no tracer, no `no_new_privs`, and
+  no `fs_struct` shared with another process. The rest of the bounding
+  set may be narrowed, as a container narrows it (Docker's default set
+  holds 14 capabilities, these two among them). The only security
   module that answers the credential and capability hooks is the
-  capability module. Under these, a process holds a capability in its
-  effective set exactly when its effective uid is 0, and in its permitted
-  set exactly when one of its uids is 0 (`security/commoncap.c`,
-  `cap_bprm_creds_from_file` and `cap_emulate_setxuid`). The model reads
-  privilege from the effective uid (`State.creds_privileged`), and
-  `capget` reports both sets from the uids (`Kernel.Capability`). SELinux
-  and AppArmor can refuse or narrow these answers.
+  capability module. Under these, a process holds `CAP_SETUID` and
+  `CAP_SETGID` in its effective set exactly when its effective uid is
+  0, and its permitted set is empty exactly when none of its uids is 0
+  (`security/commoncap.c`, `cap_bprm_creds_from_file` and
+  `cap_emulate_setxuid`). The model reads privilege from the effective
+  uid (`State.creds_privileged`). `capget` reports the empty sets of a
+  caller with no uid 0 and is `unmodeled` for a caller with one, and
+  `prctl(PR_CAPBSET_READ)` answers 1 for these two capabilities and 0
+  or 1 for the others (`Kernel.Capability`, `Kernel.Sys.prctl_spec`).
+  SELinux and AppArmor can refuse or narrow these answers.
 - The machine has one view of its caches. `get_cacheinfo`
   (`arch/riscv/kernel/cacheinfo.c`) reads the CPU that runs the
   `execve`, and `State.KernelBuild` holds one `State.CacheView`. The
@@ -559,6 +565,12 @@ equivalence) can be true of the model and false of Linux.
   choose the inheritable set on each call, within the valid bits. Linux
   gives the same set on each call until it changes, and 0 after an
   answered `capset`.
+- **The capability bounding set.** `prctl(PR_CAPBSET_READ)` chooses 0
+  or 1 again on each call for every valid capability other than
+  `CAP_SETUID` and `CAP_SETGID`. Linux gives the same bit on each call:
+  no modeled call changes the bounding set (`PR_CAPBSET_DROP` is
+  `unmodeled`). Also, the model admits 1 for a capability a container's
+  set lacks, and 0 for one a full set holds.
 - **Clock resolution.** For supported non-CPU clock IDs, `clock_getres`
   accepts any positive nanosecond value below one second. Linux returns
   1 ns or a tick-based resolution (`posix_get_hrtimer_res` and

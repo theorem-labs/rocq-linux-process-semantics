@@ -3662,17 +3662,29 @@ Record Creds := mkCreds {
     That is exact, not a guess, PROVIDED: the init user namespace; the
     executed binary carries no file capabilities; no ambient
     capabilities; default securebits — none of SECURE_NOROOT,
-    SECURE_KEEP_CAPS, SECURE_NO_SETUID_FIXUP; and an UNNARROWED
-    capability bounding set.  The last is easy to miss and is not
-    implied by the others: [handle_privileged_root] grants legacy root
+    SECURE_KEEP_CAPS, SECURE_NO_SETUID_FIXUP; and a capability bounding
+    set that holds CAP_SETUID and CAP_SETGID ([Uapi.CAP_SETUID],
+    [Uapi.CAP_SETGID]), the two capabilities these arms ask about.  The
+    last is easy to miss and is not implied by the others:
+    [handle_privileged_root] grants legacy root
     [new->cap_permitted = cap_combine(old->cap_bset, old->cap_inheritable)]
-    (security/commoncap.c), so an ancestor that ran
-    [prctl(PR_CAPBSET_DROP, CAP_SETUID)] leaves every later exec with
-    euid 0 and no CAP_SETUID at all.  Under those,
+    (security/commoncap.c, read at v6.18.44; identical at v6.18.46), so
+    an ancestor that ran [prctl(PR_CAPBSET_DROP, CAP_SETUID)] leaves
+    every later exec with euid 0 and no CAP_SETUID at all.  The rest of
+    the bounding set is NOT assumed: a container's narrowed set is
+    inside the model (Docker's default set holds CAP_SETGID and
+    CAP_SETUID among 14 capabilities: moby, daemon/pkg/oci/caps/
+    defaults.go, [DefaultCapabilities]).  The two modeled calls whose
+    answer would read the other bits do not rest on them:
+    [Kernel.Sys.prctl_spec]'s [PR_CAPBSET_READ] chooses its answer for
+    every other capability, and [Kernel.Capability.capget_spec]
+    declines for a caller with any uid 0, whose permitted set is
+    [cap_bset | cap_inheritable].  Under those,
     [cap_emulate_setxuid] (security/commoncap.c, byte-identical at all
-    six tags in the window) runs on every [set*uid] and maintains
+    six tags in the window) runs on every [set*uid] and maintains, for
+    each of CAP_SETUID and CAP_SETGID,
 
-      CAP_SETUID in cap_effective  <->  euid = 0
+      the capability in cap_effective  <->  euid = 0
 
     in both directions: it clears [cap_effective] on every euid 0 ->
     non-0 transition, restores [cap_effective = cap_permitted] on
@@ -3688,9 +3700,10 @@ Record Creds := mkCreds {
     direction, which is why they are assumptions and not slack: file
     capabilities, ambient capabilities and a non-init user namespace give
     a non-root process the capability (the model would then refuse a call
-    the kernel allows); SECURE_NOROOT and a narrowed bounding set
-    withhold it from root (the model would allow a call the kernel
-    refuses).  A run in any of those environments is outside this model.
+    the kernel allows); SECURE_NOROOT and a bounding set without
+    CAP_SETUID or CAP_SETGID withhold it from root (the model would allow
+    a call the kernel refuses).  A run in any of those environments is
+    outside this model.
 
     [init_model] pins the process's starting point to an ordinary exec —
     it derives the effective and saved ids from the real ones rather than

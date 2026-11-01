@@ -16,18 +16,13 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
   Prelude.
 
-(** One data image [capget_data_ok_for] admits: the derived effective
-    and permitted sets, and an empty inheritable set. *)
-Definition capget_witness_bytes (eff perm : bool) : list byte :=
-  let e := if eff then CAP_VALID_MASK else 0%Z in
-  let p := if perm then CAP_VALID_MASK else 0%Z in
-  Z_to_le_bytes 4 (Z.land e (Z.ones 32)) ++ Z_to_le_bytes 4 (Z.land p (Z.ones 32))
-  ++ Z_to_le_bytes 4 0 ++ Z_to_le_bytes 4 (Z.shiftr e 32)
-  ++ Z_to_le_bytes 4 (Z.shiftr p 32) ++ Z_to_le_bytes 4 0.
+(** One data image [capget_data_ok] admits: all 24 bytes 0, the empty
+    effective and permitted sets of a caller with no uid 0 and an empty
+    inheritable set. *)
+Definition capget_witness_bytes : list byte := repeat (Z_to_bv 8 0) 24.
 
-Lemma capget_witness_bytes_ok : forall eff perm,
-  capget_data_ok_for eff perm (capget_witness_bytes eff perm) = true.
-Proof. intros [|] [|]; vm_compute; reflexivity. Qed.
+Lemma capget_witness_bytes_ok : capget_data_ok capget_witness_bytes = true.
+Proof. vm_compute. reflexivity. Qed.
 
 Definition capget_witness (header dataptr : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
@@ -57,13 +52,12 @@ Definition capget_witness (header dataptr : word) (i : SyscallInput)
                         (Z_to_bv 64 CAP_V3_DATA_SIZE) with
                 | None => Unmodeled
                 | Some _ =>
-                    Ok (with_copyins
-                          [(header, 4%nat); (header + Z_to_bv 64 4, 4%nat)]
-                          (mkEffect (Z_to_bv 64 0)
-                             [(dataptr,
-                               capget_witness_bytes
-                                 (creds_privileged (m_creds m))
-                                 (cap_permitted_full_b (m_creds m)))] [])) m []
+                    if cap_permitted_nonempty_b (m_creds m) then Unmodeled
+                    else
+                      Ok (with_copyins
+                            [(header, 4%nat); (header + Z_to_bv 64 4, 4%nat)]
+                            (mkEffect (Z_to_bv 64 0)
+                               [(dataptr, capget_witness_bytes)] [])) m []
                 end
           end
     end.
@@ -100,16 +94,15 @@ Proof.
   destruct (read_bytes_map (in_wmem i) dataptr (Z_to_bv 64 CAP_V3_DATA_SIZE))
     as [wb|] eqn:Hw; cbv iota.
   2: { apply record_copyins_unmodeled, record_copyins_unmodeled, unmodeled_intro. }
+  destruct (cap_permitted_nonempty_b (m_creds m)) eqn:Hroot; cbv iota.
+  { apply record_copyins_unmodeled, record_copyins_unmodeled, unmodeled_intro. }
   apply (record_copyins_ok_eq _ _ i m
            (with_copyins [(header + Z_to_bv 64 4, 4%nat)]
               (mkEffect (Z_to_bv 64 0)
-                 [(dataptr,
-                   capget_witness_bytes (creds_privileged (m_creds m))
-                     (cap_permitted_full_b (m_creds m)))] []))); [reflexivity|].
+                 [(dataptr, capget_witness_bytes)] []))); [reflexivity|].
   apply record_copyins_ok_empty; [reflexivity|].
   eapply bind_step.
-  { apply choose_ok. cbv beta. unfold capget_data_ok.
-    apply capget_witness_bytes_ok. }
+  { apply choose_ok. cbv beta. apply capget_witness_bytes_ok. }
   apply pure_ok.
 Qed.
 
@@ -140,7 +133,7 @@ Definition capset_witness (header data : word) (i : SyscallInput)
                 | None => Unmodeled
                 | Some db =>
                     if negb (Z.eqb (bytes_le_to_Z db) 0) then Unmodeled
-                    else if cap_permitted_full_b (m_creds m) then Unmodeled
+                    else if cap_permitted_nonempty_b (m_creds m) then Unmodeled
                     else Ok (with_copyins
                                [(header, 4%nat); (header + Z_to_bv 64 4, 4%nat);
                                 (data, Z.to_nat CAP_V3_DATA_SIZE)]
@@ -182,7 +175,7 @@ Proof.
   destruct (negb (Z.eqb (bytes_le_to_Z db) 0)) eqn:Hz2; cbv iota.
   { apply record_copyins_unmodeled, record_copyins_unmodeled,
       record_copyins_unmodeled, unmodeled_intro. }
-  destruct (cap_permitted_full_b (m_creds m)) eqn:Hc; cbv iota.
+  destruct (cap_permitted_nonempty_b (m_creds m)) eqn:Hc; cbv iota.
   { apply record_copyins_unmodeled, record_copyins_unmodeled,
       record_copyins_unmodeled, unmodeled_intro. }
   apply (record_copyins_ok_eq _ _ i m

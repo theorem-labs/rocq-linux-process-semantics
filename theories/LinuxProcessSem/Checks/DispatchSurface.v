@@ -369,10 +369,10 @@ Definition probe_args (n : Z) : list word :=
        bits is 0xffffff9c, which is no prctl option, so the arm declines
        before it reaches an answer.  [PR_CAPBSET_READ] is one of the four
        options [Kernel.Sys.prctl_modeled_options] carries, and a1 is the
-       capability number -- 0 is a capability at or below [CAP_LAST_CAP],
-       so the arm answers 1 rather than -EINVAL.  Which of the two answers
-       this probe reaches does not matter to the check, only that it
-       reaches one. *)
+       capability number -- 0 is a capability at or below [CAP_LAST_CAP]
+       and outside [Kernel.Sys.capbset_assumed], so the arm answers 0 or
+       1 rather than -EINVAL.  Which answer this probe reaches does not
+       matter to the check, only that it reaches one. *)
     [Z_to_bv 64 PR_CAPBSET_READ; z; z; z; z; z]
   else if Z.eqb n 220 then
     (* clone declines the default FLAG WORD: [clone_fork_flags_b] admits

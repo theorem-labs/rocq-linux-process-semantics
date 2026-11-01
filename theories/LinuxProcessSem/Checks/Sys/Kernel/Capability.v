@@ -26,28 +26,28 @@ Definition cap_header_reads (header : word) : list (word * nat) :=
 (** The copy-out, once every gate has passed: one write of a data image
     [capget_data_ok] admits at [dataptr], return 0, the two header reads
     on the ledger, and the model untouched. *)
-Definition check_capget_copy (c : Creds) (dataptr : word)
+Definition check_capget_copy (dataptr : word)
     (reads : list (word * nat)) (eff : SyscallEffect) (m : Model)
     : check_result :=
   match eff with
   | mkEffectU r [(a, bs)] [] [] [] cis =>
       if bv_eqb r (Z_to_bv 64 0) && bv_eqb a dataptr
-         && capget_data_ok c bs && access_ranges_eqb cis reads
+         && capget_data_ok bs && access_ranges_eqb cis reads
       then CheckOk m [] else CheckReject
   | _ => CheckReject
   end.
 
-Lemma check_capget_copy_no_unmodeled : forall c dataptr reads eff m,
-  check_capget_copy c dataptr reads eff m <> CheckUnmodeled.
+Lemma check_capget_copy_no_unmodeled : forall dataptr reads eff m,
+  check_capget_copy dataptr reads eff m <> CheckUnmodeled.
 Proof.
-  intros c dataptr reads [r ws zs us cs cis] m H.
+  intros dataptr reads [r ws zs us cs cis] m H.
   unfold check_capget_copy in H.
   destruct ws as [|[a bs] [|? ?]]; try discriminate.
   destruct zs as [|? ?]; [|discriminate].
   destruct us as [|? ?]; [|discriminate].
   destruct cs as [|? ?]; [|discriminate].
   destruct (bv_eqb r (Z_to_bv 64 0) && bv_eqb a dataptr
-            && capget_data_ok c bs && access_ranges_eqb cis reads);
+            && capget_data_ok bs && access_ranges_eqb cis reads);
     discriminate.
 Qed.
 
@@ -79,8 +79,8 @@ Definition check_capget (i : SyscallInput) (header dataptr : word)
                         (Z_to_bv 64 CAP_V3_DATA_SIZE) with
                 | None => CheckUnmodeled
                 | Some _ =>
-                    check_capget_copy (m_creds m) dataptr
-                      (cap_header_reads header) eff m
+                    if cap_permitted_nonempty_b (m_creds m) then CheckUnmodeled
+                    else check_capget_copy dataptr (cap_header_reads header) eff m
                 end
           end
     end.
@@ -123,6 +123,8 @@ Proof.
     unfold err_ret, ret_only. apply pure_ok. }
   destruct (read_bytes_map (in_wmem i) dataptr (Z_to_bv 64 CAP_V3_DATA_SIZE))
     as [wb|] eqn:Hw; cbv iota in H |- *; [|discriminate].
+  destruct (cap_permitted_nonempty_b (m_creds m)) eqn:Hroot;
+    cbv iota in H |- *; [discriminate|].
   unfold check_capget_copy in H.
   destruct eff as [r ws zs us cs cis].
   destruct ws as [|[a bs] [|? ?]]; try discriminate.
@@ -130,7 +132,7 @@ Proof.
   destruct us as [|? ?]; [|discriminate].
   destruct cs as [|? ?]; [|discriminate].
   destruct (bv_eqb r (Z_to_bv 64 0) && bv_eqb a dataptr
-            && capget_data_ok (m_creds m) bs
+            && capget_data_ok bs
             && access_ranges_eqb cis (cap_header_reads header)) eqn:Hok;
     [|discriminate].
   cbv iota in H. injection H as Hm Hevs. subst m' evs.
@@ -177,6 +179,8 @@ Proof.
   { now apply check_ret_only_copyins_no_unmodeled in H. }
   destruct (read_bytes_map (in_wmem i) dataptr (Z_to_bv 64 CAP_V3_DATA_SIZE))
     as [wb|] eqn:Hw; cbv iota in H |- *; [|apply unmodeled_intro].
+  destruct (cap_permitted_nonempty_b (m_creds m)) eqn:Hroot;
+    cbv iota in H |- *; [apply unmodeled_intro|].
   exfalso. now apply check_capget_copy_no_unmodeled in H.
 Qed.
 
@@ -214,6 +218,8 @@ Proof.
     apply check_ret_only_copyins_ok_iff. now repeat split. }
   destruct (read_bytes_map (in_wmem i) dataptr (Z_to_bv 64 CAP_V3_DATA_SIZE))
     as [wb|] eqn:Hw; cbv iota in H |- *; [|unfold unmodeled in H; discriminate].
+  destruct (cap_permitted_nonempty_b (m_creds m)) eqn:Hroot;
+    cbv iota in H |- *; [unfold unmodeled in H; discriminate|].
   unfold bind in H. cbv beta iota in H.
   destruct H as (bs & m1 & e1 & e2 & Hch & Hpure & Hevs).
   unfold choose in Hch. destruct Hch as (x & Hx & Hch). cbv beta in Hx.
@@ -254,6 +260,8 @@ Proof.
   { unfold err_ret, ret_only, pure in H. discriminate. }
   destruct (read_bytes_map (in_wmem i) dataptr (Z_to_bv 64 CAP_V3_DATA_SIZE))
     as [wb|] eqn:Hw; cbv iota in H |- *; [|reflexivity].
+  destruct (cap_permitted_nonempty_b (m_creds m)) eqn:Hroot;
+    cbv iota in H |- *; [reflexivity|].
   exfalso. unfold bind, choose, pure in H. cbv beta iota in H.
   destruct H as [(x & _ & Hc)|(x & m1 & e1 & _ & Hk)]; discriminate.
 Qed.
@@ -291,7 +299,7 @@ Definition check_capset (i : SyscallInput) (header data : word)
                 | None => CheckUnmodeled
                 | Some db =>
                     if negb (Z.eqb (bytes_le_to_Z db) 0) then CheckUnmodeled
-                    else if cap_permitted_full_b (m_creds m) then CheckUnmodeled
+                    else if cap_permitted_nonempty_b (m_creds m) then CheckUnmodeled
                     else if bv_eqb (eff_ret eff) (errno_ret ENOMEM)
                     then check_ret_only_copyins (capset_reads header data)
                            eff (errno_ret ENOMEM) m []
@@ -337,7 +345,7 @@ Proof.
     as [db|] eqn:Hdb; cbv iota in H |- *; [|discriminate].
   destruct (negb (Z.eqb (bytes_le_to_Z db) 0)) eqn:Hz2;
     cbv iota in H |- *; [discriminate|].
-  destruct (cap_permitted_full_b (m_creds m)) eqn:Hc;
+  destruct (cap_permitted_nonempty_b (m_creds m)) eqn:Hc;
     cbv iota in H |- *; [discriminate|].
   destruct (bv_eqb (eff_ret eff) (errno_ret ENOMEM)) eqn:Hr; cbv iota in H;
     apply check_ret_only_copyins_ok_iff in H as (-> & -> & ->).
@@ -392,7 +400,7 @@ Proof.
   apply record_copyins_unmodeled.
   destruct (negb (Z.eqb (bytes_le_to_Z db) 0)) eqn:Hz2;
     cbv iota in H |- *; [apply unmodeled_intro|].
-  destruct (cap_permitted_full_b (m_creds m)) eqn:Hc;
+  destruct (cap_permitted_nonempty_b (m_creds m)) eqn:Hc;
     cbv iota in H |- *; [apply unmodeled_intro|].
   exfalso.
   destruct (bv_eqb (eff_ret eff) (errno_ret ENOMEM)); cbv iota in H;
@@ -433,7 +441,7 @@ Proof.
   apply record_copyins_ok_inv in H as (c3 & H & ->).
   destruct (negb (Z.eqb (bytes_le_to_Z db) 0)) eqn:Hz2;
     cbv iota in H |- *; [unfold unmodeled in H; discriminate|].
-  destruct (cap_permitted_full_b (m_creds m)) eqn:Hc;
+  destruct (cap_permitted_nonempty_b (m_creds m)) eqn:Hc;
     cbv iota in H |- *; [unfold unmodeled in H; discriminate|].
   unfold alt, err_ret, ret_only, pure in H.
   destruct H as [H|H]; inversion H; subst; clear H.
@@ -476,7 +484,7 @@ Proof.
   apply record_copyins_unmodeled_inv in H.
   destruct (negb (Z.eqb (bytes_le_to_Z db) 0)) eqn:Hz2;
     cbv iota in H |- *; [reflexivity|].
-  destruct (cap_permitted_full_b (m_creds m)) eqn:Hc;
+  destruct (cap_permitted_nonempty_b (m_creds m)) eqn:Hc;
     cbv iota in H |- *; [reflexivity|].
   exfalso. unfold alt, err_ret, ret_only, pure in H.
   destruct H as [H|H]; discriminate.

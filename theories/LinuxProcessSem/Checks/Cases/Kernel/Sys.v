@@ -724,7 +724,7 @@ Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
     The readers of what they set -- [PR_GET_NO_NEW_PRIVS] (39),
     [PR_GET_PDEATHSIG] (2), [PR_GET_DUMPABLE] (3) -- still decline, as
     does the tagging option 55 the [State.access_okb] argument rests on,
-    and [PR_CAPBSET_READ] still answers 1. *)
+    and [PR_CAPBSET_READ] still admits 1 for capability 0. *)
 Example prctl_options_still_declined :
   check_syscall (prctl_in 39 0 0 0 0) (mkEffect 0 [] []) demo_model
     = CheckUnmodeled
@@ -736,6 +736,45 @@ Example prctl_options_still_declined :
        = CheckUnmodeled
   /\ check_syscall (prctl_in 23 0 0 0 0) (mkEffect 1 [] []) demo_model
        = CheckOk demo_model [].
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** [PR_CAPBSET_READ] FOR A CAPABILITY THE MODEL DOES NOT ASSUME: 0 or 1.
+    [prctl(PR_CAPBSET_READ, 32)] reads bit 32 ([CAP_MAC_OVERRIDE]) of the
+    bounding set, which a container's set lacks (Docker's default does
+    not hold it), and there Linux answers 0.  The model before
+    [Kernel.Sys.capbset_assumed] answered 1 alone and REFUSED that 0;
+    now both are admitted, the model is left unchanged, and an errno
+    is still refused. *)
+Example prctl_capbset_read_unassumed_cap_is_a_choice :
+  check_syscall (prctl_in 23 32 0 0 0) (mkEffect 0 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall (prctl_in 23 32 0 0 0) (mkEffect 1 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall (prctl_in 23 32 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckReject.
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE CONTROLS, which the model before the narrowing passed too.
+    [CAP_SETUID] (7) and [CAP_SETGID] (6) are the bits
+    [State.creds_privileged] assumes, so 1 is their only answer and the
+    kernel's 0 is REFUSED: a kernel whose bounding set lacks them shows
+    up as a rejection.  41, past [CAP_LAST_CAP], is -EINVAL and nothing
+    else. *)
+Example prctl_capbset_read_assumed_caps_and_bound :
+  check_syscall (prctl_in 23 7 0 0 0) (mkEffect 1 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall (prctl_in 23 7 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject
+  /\ check_syscall (prctl_in 23 6 0 0 0) (mkEffect 1 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall (prctl_in 23 6 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject
+  /\ check_syscall (prctl_in 23 41 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 23 41 0 0 0) (mkEffect 1 [] []) demo_model
+       = CheckReject
+  /\ check_syscall (prctl_in 23 41 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject.
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (* =========================================================================

@@ -66,8 +66,8 @@ Definition cap_root_model : Model :=
   with_creds (mkCreds 0 0 0 0 0 0 []) cap_base.
 
 (** A process that dropped only its effective uid ([setresuid(-1, 1000,
-    -1)] from root): the permitted set stays full, the effective set is
-    empty. *)
+    -1)] from root): the permitted set stays non-empty, the effective set
+    is empty. *)
 Definition cap_dropped_model : Model :=
   with_creds (mkCreds 0 1000 0 0 0 0 []) cap_base.
 
@@ -106,21 +106,35 @@ Example capget_v1_declined :
     cap_user_model = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** The derivation, for root and for a caller that dropped only its
-    effective uid: every capability 0..40 is 0xffffffff in the low word
-    and 0x1ff in the high word. *)
-Example capget_sets_follow_the_uids :
+(** PAIRED TEST, capget from a caller with a uid 0, the case.  Root,
+    and a caller that dropped only its effective uid, are DECLINED at
+    the copy-out: their permitted set is [cap_bset | cap_inheritable],
+    and the model assumes of the bounding set only that it holds
+    CAP_SETUID and CAP_SETGID ([State.creds_privileged]).  The arm before
+    that narrowing accepted the first and third images below (every
+    capability 0..40 in the derived sets), which a container's bounding
+    set makes false; no image is accepted now. *)
+Example capget_with_a_uid_0_declined :
   cap_get cap_root_model (cap_image 0xffffffff 0xffffffff 0 0x1ff 0x1ff 0)
-    = CheckOk cap_root_model []
-  /\ cap_get cap_root_model (cap_image 0 0 0 0 0 0) = CheckReject
+    = CheckUnmodeled
+  /\ cap_get cap_root_model (cap_image 0 0 0 0 0 0) = CheckUnmodeled
   /\ cap_get cap_dropped_model (cap_image 0 0xffffffff 0 0 0x1ff 0)
-       = CheckOk cap_dropped_model []
-  /\ cap_get cap_dropped_model (cap_image 0xffffffff 0xffffffff 0 0x1ff 0x1ff 0)
-       = CheckReject.
-Proof.
-  split; [check_eq|]. split; [vm_compute; reflexivity|].
-  split; [check_eq|vm_compute; reflexivity].
-Qed.
+       = CheckUnmodeled.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** ...and its CONTROLS, which the arm before the narrowing passed too.
+    The gates before the copy-out do not read the sets, so root still
+    gets the NULL-[dataptr] 0 and the -EFAULT of a [dataptr] that
+    [access_ok] refuses; and a caller with no uid 0 still gets its empty
+    sets ([capget_v3_pid0_as_uid_1000_reports_no_capability]). *)
+Example capget_with_a_uid_0_gates_still_answered :
+  check_syscall (capget_input LINUX_CAPABILITY_VERSION_3 0)
+    (mkEffectU 0 [] [] [] [] [(cap_header, 4%nat)]) cap_root_model
+    = CheckOk cap_root_model []
+  /\ check_syscall (capget_input LINUX_CAPABILITY_VERSION_3 (Z_to_bv 64 (2 ^ 64 - 8)))
+       (mkEffectU (errno_ret EFAULT) [] [] [] [] cap_ledger2) cap_root_model
+       = CheckOk cap_root_model [].
+Proof. split; check_eq. Qed.
 
 (** The inheritable set is the environment's, within the valid bits:
     any low word, a high word up to 0x1ff, and nothing above. *)
@@ -169,10 +183,10 @@ Example capset_all_zero_as_uid_1000 :
 Proof. split; [check_eq|split; [check_eq|vm_compute; reflexivity]]. Qed.
 
 (** PAIRED TEST, capset, the control.  The same call from root would
-    DROP the full permitted set, which the model's euid-based privilege
-    cannot follow: declined, as the old model declined every 91.  So is
-    the same call from a caller that keeps uid 0 as its real and saved
-    ids, and any non-zero data word from anyone. *)
+    DROP its non-empty permitted set, which the model's euid-based
+    privilege cannot follow: declined, as the old model declined every
+    91.  So is the same call from a caller that keeps uid 0 as its real
+    and saved ids, and any non-zero data word from anyone. *)
 Example capset_from_root_declined :
   check_syscall (capset_input (Z_to_le_bytes 24 0))
     (mkEffectU 0 [] [] [] [] cap_ledger3) cap_root_model = CheckUnmodeled

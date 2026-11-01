@@ -1271,8 +1271,8 @@ Proof. vm_compute. reflexivity. Qed.
 
 (** And the other side of the multiplexer, so the two examples above
     are not satisfied by an arm that declines everything:
-    [PR_CAPBSET_READ] on a valid capability is 1, and the model is left
-    alone. *)
+    [PR_CAPBSET_READ] on a valid capability is answered (1 is one of the
+    two answers capability 0 admits), and the model is left alone. *)
 Example prctl_checker_capbset_read :
   check_syscall (pc_prctl_input 23) (mkEffect (Z_to_bv 64 1) [] []) pc_model
   = CheckOk pc_model [].
