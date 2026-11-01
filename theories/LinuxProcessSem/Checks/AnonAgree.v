@@ -69,6 +69,22 @@
     [anon_agree_fd_insert] covers an inserted entry of any kind that
     agrees, which every entry that is not a descriptor of the file does.
 
+    NOT PROVED: that no OTHER arm writes an [FdAnon] entry.  It holds by
+    reading the arms: [dup], [dup3], [F_DUPFD] and a [clone] that holds
+    one decline ([Fs.File.dup_modeled_entry],
+    [Kernel.Fork.clone_no_shared_file_b]), and no other arm makes one.
+    The obligation is one named predicate, [State.anon_agree], which all
+    nine answering arms call, so a reader of a new arm sees the others
+    calling it.
+
+    THE TRIGGER for moving it into a global well-formedness predicate,
+    decided by the LPS revision owner (2026-11-01, on
+    dispatch://OSSV-287): the FIRST arm found, in review or by a failing
+    proof, that reads or writes an [FdAnon] entry WITHOUT calling
+    [State.anon_agree].  One such arm, and the predicate moves into
+    well-formedness, with its preservation proved for every arm.  Until
+    then the per-arm form stands.
+
     A leaf: nothing in the model or the checker depends on this file. *)
 
 From Stdlib Require Import ZArith List Bool.
