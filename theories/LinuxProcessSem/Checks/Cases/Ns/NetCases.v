@@ -9,6 +9,7 @@
 
 From Stdlib Require Import ZArith List Bool NArith PArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Import Prelude.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Userns Ext Arm Net.
 Import ListNotations.
 Local Open Scope Z_scope.
@@ -227,3 +228,51 @@ Example net_arm_numbers : map fst net_arms = [29; 198; 200; 206; 207] := eq_refl
 (** Net arms publish every allocation and security-hook refusal family. *)
 Example net_injected_numbers : map ni_no net_injected = [198; 200; 206; 207].
 Proof. vm_compute. reflexivity. Qed.
+
+(* =========================================================================
+   The full recvfrom arm
+   ========================================================================= *)
+
+(** Descriptor 3 names open file 7, a NETLINK_ROUTE socket of network
+    namespace 2 with port 5 and one queued acknowledgement. *)
+Definition rcv_model : Model :=
+  let base := init_model [] (Z_to_bv 64 0) (Z_to_bv 64 0) demo_sp demo_limit (demo_input [] IEof) in
+  with_fds (fd_insert (m_fds base) (Z_to_bv 64 3) (ns_fd_entry 7)) base.
+
+Definition rcv_state : NsState :=
+  with_files empty_nsstate [(7%N, mkNsFile (NfNetlink 2 5 [newaddr_ack]) 2 (mkIdCred 1 0 0 0))].
+
+(** 164 writable bytes at 65536 (the buffer is the first 64); the address
+    length 12 at 131072. *)
+Definition rcv_mem : word -> option byte :=
+  fun a => let v := bv_unsigned a in
+           if (65536 <=? v) && (v <? 65700) then Some (Z_to_bv 8 0)
+           else if (131072 <=? v) && (v <? 131076) then Some (Z_to_bv 8 (if v =? 131072 then 12 else 0))
+           else None.
+
+Definition rcv_call (addr : Z) : SyscallInput :=
+  mkInput (Z_to_bv 64 207) (map (Z_to_bv 64) [3; 65536; 64; 0; addr; 131072]) rcv_mem rcv_mem.
+
+Definition out_of (o : ext_outcome) : option (Z * list (Z * list Z)) :=
+  match o with
+  | EOk eff _ _ _ _ =>
+      Some (bv_signed (eff_ret eff),
+            map (fun p => (bv_unsigned (fst p), map bv_unsigned (snd p))) (eff_writes eff))
+  | EUnmodeled => None
+  end.
+
+(** An address the task cannot write (above the user address range): the
+    datagram is copied and the address length 12 written back before the
+    address copy faults, so the call answers -EFAULT with both writes
+    ([__sys_recvfrom], [move_addr_to_user]). *)
+Example recvfrom_address_fault : forall o,
+  recvfrom_arm (rcv_call (2 ^ 63)) rcv_model init_nsctx rcv_state o ->
+  out_of o = Some (-14, [(65536, map bv_unsigned newaddr_ack); (131072, [12; 0; 0; 0])]).
+Proof. intros o H. unfold recvfrom_arm in H. vm_compute in H. subst o. vm_compute. reflexivity. Qed.
+
+(** With a writable address the same call returns the 36 bytes and
+    writes the kernel's address. *)
+Example recvfrom_address_ok : forall o,
+  recvfrom_arm (rcv_call 65620) rcv_model init_nsctx rcv_state o ->
+  option_map fst (out_of o) = Some 36.
+Proof. intros o H. unfold recvfrom_arm in H. vm_compute in H. subst o. vm_compute. reflexivity. Qed.
