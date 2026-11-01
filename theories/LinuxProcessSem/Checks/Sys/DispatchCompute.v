@@ -48,12 +48,12 @@ Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
 Lemma check_syscall_ioctl : forall i eff m,
   bv_unsigned (in_sysno i) = 29%Z ->
-  check_syscall i eff m = check_ioctl (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) eff m.
+  check_syscall i eff m = check_ioctl i (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) eff m.
 Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
 
 Lemma syscall_witness_ioctl : forall i m,
   bv_unsigned (in_sysno i) = 29%Z ->
-  syscall_spec_witness i m = ioctl_witness (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) m.
+  syscall_spec_witness i m = ioctl_witness (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) i m.
 Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
 Lemma check_syscall_flock : forall i eff m,

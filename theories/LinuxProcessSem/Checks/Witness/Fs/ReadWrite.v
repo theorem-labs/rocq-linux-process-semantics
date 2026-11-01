@@ -206,6 +206,79 @@ Proof.
   apply witness_stream_send_ok. pose proof (rw_count_clamp_range count). lia.
 Qed.
 
+(* ------------------------------------------------------------ eventfds *)
+
+(** [ReadWrite.eventfd_read]'s one outcome per branch: the read is
+    deterministic, so the witness IS the transfer -- or its -EFAULT over
+    the counter it has already decremented. *)
+Definition witness_eventfd_read (fd : word) (ctx : EventfdCtx) (buf count : word)
+    (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
+  if (rw_count_clamp count <? 8)%Z then ret_outcome (errno_ret EINVAL) m
+  else if Z.eqb (ef_count ctx) 0 then
+    (if ef_nonblock ctx then ret_outcome (errno_ret EAGAIN) m else Unmodeled)
+  else
+  let ucnt := if ef_semaphore ctx then 1%Z else ef_count ctx in
+  let m' := with_fds (fd_insert (m_fds m) fd
+                        (FdEventfd (ef_set_count ctx (ef_count ctx - ucnt)))) m in
+  match read_bytes_map (in_wmem i) buf (Z_to_bv 64 8) with
+  | Some _ => Ok (mkEffect (Z_to_bv 64 8) [(buf, word_le8 (Z_to_bv 64 ucnt))] []) m' []
+  | None =>
+      match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+      | None => ret_outcome (errno_ret EFAULT) m'
+      | Some _ => Unmodeled                  (* partially writable destination *)
+      end
+  end.
+
+Lemma witness_eventfd_read_ok : forall fd ctx buf count i m,
+  eventfd_read fd ctx buf count i m i m (witness_eventfd_read fd ctx buf count i m).
+Proof.
+  intros. unfold eventfd_read, witness_eventfd_read. cbv zeta.
+  destruct (rw_count_clamp count <? 8)%Z; cbv beta iota; [apply pure_ok|].
+  destruct (Z.eqb (ef_count ctx) 0); cbv beta iota.
+  { destruct (ef_nonblock ctx); cbv beta iota; [apply pure_ok|apply unmodeled_intro]. }
+  destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 8)); cbv beta iota.
+  - eapply bind_step; [apply modify_ok|]. apply pure_ok.
+  - destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)); cbv beta iota;
+      [apply unmodeled_intro|].
+    eapply bind_step; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+(** [ReadWrite.eventfd_write]'s one outcome per branch, the eight-byte
+    copy in the ledger of every answer past it. *)
+Definition witness_eventfd_write (fd : word) (ctx : EventfdCtx) (buf count : word)
+    (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
+  if negb (Z.eqb (rw_count_clamp count) 8) then ret_outcome (errno_ret EINVAL) m
+  else
+  match copy_bytes_map (in_mem i) buf 8%Z with
+  | None => ret_outcome (errno_ret EFAULT) m
+  | Some bs =>
+      outcome_copyins [(buf, 8%nat)]
+        (let ucnt := bv_unsigned (le_bytes_to_word bs) in
+         if Z.eqb ucnt U64_MAX then ret_outcome (errno_ret EINVAL) m
+         else if (ucnt <? U64_MAX - ef_count ctx)%Z
+         then ret_outcome (Z_to_bv 64 8)
+                (with_fds (fd_insert (m_fds m) fd
+                             (FdEventfd (ef_set_count ctx (ef_count ctx + ucnt)))) m)
+         else if ef_nonblock ctx then ret_outcome (errno_ret EAGAIN) m
+         else Unmodeled)
+  end.
+
+Lemma witness_eventfd_write_ok : forall fd ctx buf count i m,
+  eventfd_write fd ctx buf count i m i m (witness_eventfd_write fd ctx buf count i m).
+Proof.
+  intros. unfold eventfd_write, witness_eventfd_write.
+  destruct (negb (Z.eqb (rw_count_clamp count) 8)); cbv beta iota; [apply pure_ok|].
+  destruct (copy_bytes_map (in_mem i) buf 8%Z) as [bs|]; cbv beta iota;
+    [|apply pure_ok].
+  apply record_copyins_outcome. cbv zeta.
+  destruct (Z.eqb (bv_unsigned (le_bytes_to_word bs)) U64_MAX); cbv beta iota;
+    [apply pure_ok|].
+  destruct (bv_unsigned (le_bytes_to_word bs) <? U64_MAX - ef_count ctx)%Z;
+    cbv beta iota.
+  { eapply bind_step; [apply modify_ok|]. apply pure_ok. }
+  destruct (ef_nonblock ctx); cbv beta iota; [apply pure_ok|apply unmodeled_intro].
+Qed.
+
 Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
@@ -342,6 +415,11 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       then ret_outcome (errno_ret EFAULT) m      (* [vfs_read]'s access_ok *)
       else if w_is0 count then ret_outcome (Z_to_bv 64 0) m
       else witness_stream_read fd id side st (se_nonblock st) buf count i m
+  | Some (FdEventfd ctx) =>
+      if negb (access_okb buf (bv_unsigned count))
+      then ret_outcome (errno_ret EFAULT) m      (* [vfs_read]'s access_ok *)
+      else witness_eventfd_read fd ctx buf count i m
+  | Some (FdDgram _) => Unmodeled              (* the read waits: [ReadWrite.read_spec] *)
   | Some (FdPipe id w) =>
       if w then ret_outcome (errno_ret EBADF) m   (* write end: read is -EBADF *)
       else if negb (modeled_rw_range buf count) then Unmodeled
@@ -379,7 +457,7 @@ Lemma read_witness_ok : forall fd buf count i m,
 Proof.
   intros. unfold read_spec, read_witness.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
   9:{ (* /dev/null *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
@@ -399,6 +477,16 @@ Proof.
         cbv beta iota; [apply pure_ok|].
       destruct (w_is0 count); cbv beta iota; [apply pure_ok|].
       apply witness_stream_read_ok. }
+  9:{ (* eventfd: the range verdict, then [eventfd_read] *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd. destruct (negb (access_okb buf (bv_unsigned count)));
+        cbv beta iota; [apply pure_ok|].
+      apply witness_eventfd_read_ok. }
+  9:{ (* datagram socket: declined *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd. apply unmodeled_intro. }
   - (* channel *)
     destruct (negb (w_is0 ch)) eqn:Hm.
     { eapply bind_step; [apply input_ok|]. cbv beta.
@@ -815,6 +903,11 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
       if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m      (* [vfs_write]'s access_ok *)
       else witness_stream_write id side st (se_nonblock st) false buf count i m
+  | Some (FdEventfd ctx) =>
+      if negb (access_okb buf (bv_unsigned count))
+      then ret_outcome (errno_ret EFAULT) m      (* [vfs_write]'s access_ok *)
+      else witness_eventfd_write fd ctx buf count i m
+  | Some (FdDgram _) => Unmodeled              (* see [ReadWrite.write_spec] *)
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
@@ -854,7 +947,7 @@ Proof.
   intros. unfold write_spec, write_range_gate, write_file_tail,
     write_fault_keep, write_ledger, write_witness.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
   9:{ (* /dev/null *)
       destruct wr; cbn [negb]; cbv beta iota.
       2:{ eapply bind_step; [apply input_ok|]. cbv beta.
@@ -882,6 +975,16 @@ Proof.
       srw Hfd. destruct (negb (access_okb buf (bv_unsigned count)));
         cbv beta iota; [apply pure_ok|].
       apply witness_stream_write_ok. }
+  9:{ (* eventfd: the range verdict, then [eventfd_write] *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd. destruct (negb (access_okb buf (bv_unsigned count)));
+        cbv beta iota; [apply pure_ok|].
+      apply witness_eventfd_write_ok. }
+  9:{ (* datagram socket: declined *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd. apply unmodeled_intro. }
   - destruct (w_is0 ch) eqn:Hm.
     { eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
@@ -1154,6 +1257,8 @@ Definition pread64_witness (fd buf count pos : word) (i : SyscallInput)
   | Some (FdPipe _ _) => ret_outcome (errno_ret ESPIPE) m
   | Some (FdSocket _) => ret_outcome (errno_ret ESPIPE) m
   | Some (FdStream _ _ _) => ret_outcome (errno_ret ESPIPE) m   (* a socket file *)
+  | Some (FdDgram _) => ret_outcome (errno_ret ESPIPE) m      (* a socket file *)
+  | Some (FdEventfd _) => ret_outcome (errno_ret ESPIPE) m    (* no FMODE_PREAD *)
   | Some (FdFileW _ _) => ret_outcome (errno_ret EBADF) m
   | Some (FdFileA _ _) => ret_outcome (errno_ret EBADF) m
   | Some (FdDevNull rd _) =>
@@ -1204,7 +1309,7 @@ Proof.
   intros. unfold pread64_spec, pread64_witness.
   destruct (ppos_einvalb pos) eqn:Hpos; [apply pure_ok|].
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
   9:{ (* /dev/null *)
     destruct rd; cbn [negb]; cbv beta iota;
       [ destruct (access_okb buf (bv_unsigned count)) eqn:Hok; cbn [negb];
@@ -1224,6 +1329,14 @@ Proof.
         [apply pure_ok|].
       apply read_urandom_witness_ok. }
   9:{ (* stream-pair end: a socket file, -ESPIPE *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd. apply pure_ok. }
+  9:{ (* eventfd: no FMODE_PREAD, -ESPIPE *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
+      eapply bind_step; [apply get_model_ok|].
+      cbv beta iota zeta; srw Hfd. apply pure_ok. }
+  9:{ (* datagram socket: a socket file, -ESPIPE *)
       eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd. apply pure_ok. }
@@ -1328,6 +1441,8 @@ Definition pwrite64_witness (fd buf count pos : word) (i : SyscallInput)
   | Some FdDir => ret_outcome (errno_ret EBADF) m
   | Some (FdFileA _ _) => Unmodeled        (* see [ReadWrite.pwrite64_spec] *)
   | Some (FdStream _ _ _) => ret_outcome (errno_ret ESPIPE) m   (* a socket file *)
+  | Some (FdDgram _) => ret_outcome (errno_ret ESPIPE) m      (* a socket file *)
+  | Some (FdEventfd _) => ret_outcome (errno_ret ESPIPE) m    (* no FMODE_PWRITE *)
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
@@ -1366,7 +1481,7 @@ Proof.
   intros. unfold pwrite64_spec, pwrite64_witness.
   destruct (ppos_einvalb pos) eqn:Hpos; [apply pure_ok|].
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     try (eapply bind_step; [apply input_ok|]; cbv beta;
          (eapply bind_step; [apply get_model_ok|]);
          cbv beta iota zeta; srw Hfd; apply pure_ok).
@@ -1520,6 +1635,18 @@ Definition writev_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                       (fun c => firstn (Z.to_nat c) (writev_gathered (in_mem i) iovs0))
                       (iov_prefix_accesses (cap_iovecs iovs0)) m
          end)
+  | Some (FdEventfd _) =>
+      outcome_copyins
+        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+        (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
+           | ImpFault => ret_outcome (errno_ret EFAULT) m
+           | ImpInval => ret_outcome (errno_ret EINVAL) m
+           | ImpOk iovs0 =>
+               if Z.eqb (iovs_total (cap_iovecs iovs0)) 0
+               then ret_outcome (Z_to_bv 64 0) m   (* zero aggregate *)
+               else Unmodeled                      (* the per-segment loop declines *)
+         end)
+  | Some (FdDgram _) => Unmodeled                (* declined whole *)
   | Some FdUrandom => ret_outcome (errno_ret EBADF) m   (* read-only *)
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m
@@ -1632,7 +1759,7 @@ Proof.
   intros. unfold writev_witness, writev_spec, writev_file_arm,
     write_fault_keep, writev_ledger.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
   9:{ (* /dev/null *)
       destruct wr.
       2:{ wvw_open Hfd. apply pure_ok. }
@@ -1647,6 +1774,15 @@ Proof.
       destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0); cbv beta iota;
         [apply pure_ok|].
       apply witness_stream_send_ok. apply iovs_total_nonneg. }
+  9:{ (* eventfd: the import's answers and the zero aggregate *)
+      wvw_open Hfd. apply record_copyins_outcome.
+      destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |];
+        cbv beta iota; [|apply pure_ok|apply pure_ok].
+      destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0); cbv beta iota;
+        [apply pure_ok|].
+      unfold writev_buf_gap. apply unmodeled_intro. }
+  9:{ (* datagram socket: declined *)
+      wvw_open Hfd. unfold writev_buf_gap. apply unmodeled_intro. }
   - destruct (w_is0 ch) eqn:Hm.
     { wvw_open Hfd. srw Hm. apply pure_ok. }
     destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv.
@@ -1887,6 +2023,8 @@ Definition readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
               | RdPipe _ => Unmodeled   (* vectored pipe reads *)
               | RdDevNull => ret_outcome (Z_to_bv 64 0) m
               | RdUrandom => Unmodeled   (* vectored device reads decline *)
+              | RdEventfd => Unmodeled   (* the vectored eventfd read declines *)
+              | RdDgram => Unmodeled     (* the datagram socket's read waits *)
               | RdDir => ret_outcome (errno_ret EISDIR) m
               | RdSocket sk =>
                   match sk with
@@ -2004,7 +2142,17 @@ Proof.
     eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
     srw Hfd; srw Hr; srw Himp; srw Htotal.
     eapply bind_step; [apply pure_ok|apply pure_ok]. }
-  destruct r as [ch|p off|p off| |sk|id| | |sid side st].
+  destruct r as [ch|p off|p off| |sk|id| | |sid side st| |].
+  10:{ (* eventfd: the vectored read declines *)
+      eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd; srw Hr; srw Himp; srw Htotal.
+      unfold readv_buf_gap. left. apply unmodeled_intro. }
+  10:{ (* datagram socket: declined *)
+      eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota zeta.
+      srw Hfd; srw Hr; srw Himp; srw Htotal.
+      unfold readv_buf_gap. left. apply unmodeled_intro. }
   7:{ eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
       srw Hfd; srw Hr; srw Himp; srw Htotal.
@@ -2253,6 +2401,8 @@ Definition lseek_witness (fd off whence : word) (m : Model)
       | FdChannel _ => ret_outcome (errno_ret ESPIPE) m
       | FdSocket _ => ret_outcome (errno_ret ESPIPE) m  (* a socket has no offset *)
       | FdStream _ _ _ => ret_outcome (errno_ret ESPIPE) m   (* a socket file *)
+      | FdDgram _ => ret_outcome (errno_ret ESPIPE) m       (* a socket file *)
+      | FdEventfd _ => ret_outcome (Z_to_bv 64 0) m        (* [noop_llseek]'s 0 *)
       | FdPipe _ _ => ret_outcome (errno_ret ESPIPE) m
       | FdDevNull _ _ => ret_outcome (Z_to_bv 64 0) m
       | FdUrandom => ret_outcome (Z_to_bv 64 0) m
@@ -2325,7 +2475,7 @@ Lemma lseek_witness_ok : forall fd off whence i m,
 Proof.
   intros. unfold lseek_spec, lseek_witness.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     try (destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw;
          [ eapply bind_step; [apply get_model_ok|];
            cbv beta iota; srw Hfd; apply pure_ok |]).
@@ -2406,6 +2556,12 @@ Proof.
     eapply bind_step; [apply get_model_ok|].
     cbv beta iota; srw Hfd. apply pure_ok.
   - (* stream-pair end: -ESPIPE, as for any socket *)
+    eapply bind_step; [apply get_model_ok|].
+    cbv beta iota; srw Hfd. apply pure_ok.
+  - (* eventfd: [noop_llseek]'s 0 *)
+    eapply bind_step; [apply get_model_ok|].
+    cbv beta iota; srw Hfd. apply pure_ok.
+  - (* datagram socket: -ESPIPE, as for any socket *)
     eapply bind_step; [apply get_model_ok|].
     cbv beta iota; srw Hfd. apply pure_ok.
   - eapply bind_step; [apply get_model_ok|].

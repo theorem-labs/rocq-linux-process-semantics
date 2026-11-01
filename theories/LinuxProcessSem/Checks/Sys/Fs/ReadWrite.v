@@ -959,6 +959,304 @@ Proof.
     rewrite app_nil_r, access_ranges_eqb_refl; reflexivity.
 Qed.
 
+(* ------------------------------------------------------------ eventfds *)
+
+(** [ReadWrite.eventfd_read] as an acceptor, branch for branch: the
+    short count's -EINVAL, the zero counter's -EAGAIN (or the decline of
+    a blocking read), then the one transfer -- the eight little-endian
+    bytes of [ucnt] at [buf], 8 returned, the counter already down by
+    [ucnt] -- or the destination's -EFAULT, OVER THE DECREMENTED COUNTER
+    as [eventfd_ctx_do_read] leaves it, and the partial-write decline.
+    Nothing is chosen, so every accepted effect is computed. *)
+Definition check_eventfd_read (fd : word) (ctx : EventfdCtx) (buf count : word)
+    (i : SyscallInput) (eff : SyscallEffect) (m : Model) : check_result :=
+  if (rw_count_clamp count <? 8)%Z then check_ret_only eff (errno_ret EINVAL) m []
+  else if Z.eqb (ef_count ctx) 0 then
+    (if ef_nonblock ctx then check_ret_only eff (errno_ret EAGAIN) m []
+     else CheckUnmodeled)                     (* a blocking read would sleep forever *)
+  else
+  let ucnt := if ef_semaphore ctx then 1%Z else ef_count ctx in
+  let m' := with_fds (fd_insert (m_fds m) fd
+                        (FdEventfd (ef_set_count ctx (ef_count ctx - ucnt)))) m in
+  match read_bytes_map (in_wmem i) buf (Z_to_bv 64 8) with
+  | Some _ =>
+      match eff with
+      | mkEffectU ret [(a, bs)] [] [] [] [] =>
+          if bv_eqb ret (Z_to_bv 64 8) && bv_eqb a buf
+             && listN_eqb bs (word_le8 (Z_to_bv 64 ucnt))
+          then CheckOk m' []
+          else CheckReject
+      | _ => CheckReject
+      end
+  | None =>
+      match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+      | None => check_ret_only eff (errno_ret EFAULT) m' []
+          (* nothing lands, and the counter stays decremented *)
+      | Some _ => CheckUnmodeled              (* partially writable destination *)
+      end
+  end.
+
+Lemma check_eventfd_read_sound_ok : forall fd ctx buf count i eff m m' evs,
+  check_eventfd_read fd ctx buf count i eff m = CheckOk m' evs ->
+  eventfd_read fd ctx buf count i m i m (Ok eff m' evs).
+Proof.
+  intros fd ctx buf count i eff m m' evs H.
+  unfold check_eventfd_read in H. unfold eventfd_read. cbv beta zeta in H |- *.
+  destruct (rw_count_clamp count <? 8)%Z; cbv beta iota in H |- *.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (Z.eqb (ef_count ctx) 0); cbv beta iota in H |- *.
+  { destruct (ef_nonblock ctx); cbv beta iota in H |- *; [|discriminate].
+    apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 8)) as [w|];
+    cbv beta iota in H |- *.
+  - destruct eff as [ret ws zs us cs ci]; destruct ws as [|[a bs] [|]];
+      destruct zs as [|? ?]; destruct us as [|? ?]; destruct cs as [|? ?];
+      destruct ci as [|? ?]; cbv beta iota in H; try discriminate.
+    match type of H with
+    | (if ?b then _ else _) = _ => destruct b eqn:Hb; [|discriminate]
+    end.
+    inversion H; clear H; subst m' evs.
+    apply andb_true_iff in Hb as [Hb Hbs]. apply andb_true_iff in Hb as [Hr Ha].
+    apply bv_eqb_eq in Hr. apply bv_eqb_eq in Ha. apply listN_eqb_eq in Hbs.
+    subst ret a bs.
+    eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+  - destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|];
+      cbv beta iota in H |- *; [discriminate|].
+    apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+Lemma check_eventfd_read_sound_unmodeled : forall fd ctx buf count i eff m,
+  check_eventfd_read fd ctx buf count i eff m = CheckUnmodeled ->
+  eventfd_read fd ctx buf count i m i m Unmodeled.
+Proof.
+  intros fd ctx buf count i eff m H.
+  unfold check_eventfd_read in H. unfold eventfd_read. cbv beta zeta in H |- *.
+  destruct (rw_count_clamp count <? 8)%Z; cbv beta iota in H |- *.
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (Z.eqb (ef_count ctx) 0); cbv beta iota in H |- *.
+  { destruct (ef_nonblock ctx); cbv beta iota in H |- *;
+      [now apply check_ret_only_no_unmodeled in H|apply unmodeled_intro]. }
+  destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 8)) as [w|];
+    cbv beta iota in H |- *.
+  - exfalso.
+    destruct eff as [ret ws zs us cs ci]; destruct ws as [|[a bs] [|]];
+      destruct zs as [|? ?]; destruct us as [|? ?]; destruct cs as [|? ?];
+      destruct ci as [|? ?]; cbv beta iota in H; try discriminate.
+    match type of H with
+    | (if ?b then _ else _) = _ => destruct b; discriminate
+    end.
+  - destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|];
+      cbv beta iota in H |- *; [apply unmodeled_intro|].
+    now apply check_ret_only_no_unmodeled in H.
+Qed.
+
+Lemma check_eventfd_read_complete_ok : forall fd ctx buf count i eff m m' evs,
+  eventfd_read fd ctx buf count i m i m (Ok eff m' evs) ->
+  check_eventfd_read fd ctx buf count i eff m = CheckOk m' evs.
+Proof.
+  intros fd ctx buf count i eff m m' evs H.
+  unfold eventfd_read in H. unfold check_eventfd_read. cbv beta zeta in H |- *.
+  destruct (rw_count_clamp count <? 8)%Z; cbv beta iota in H |- *.
+  { unfold err_ret in H. apply ret_only_ok_inv in H. destruct H as (-> & -> & ->).
+    apply check_ret_only_ok_iff. repeat split; reflexivity. }
+  destruct (Z.eqb (ef_count ctx) 0); cbv beta iota in H |- *.
+  { destruct (ef_nonblock ctx); cbv beta iota in H |- *;
+      [|exfalso; exact (unmodeled_no_ok _ _ _ _ _ H)].
+    unfold err_ret in H. apply ret_only_ok_inv in H. destruct H as (-> & -> & ->).
+    apply check_ret_only_ok_iff. repeat split; reflexivity. }
+  destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 8)) as [w|];
+    cbv beta iota in H |- *.
+  - destruct H as (u & m1 & evs1 & evs2 & Hset & Hret & ->).
+    unfold set_fds, modify in Hset. inversion Hset; subst; clear Hset.
+    cbv beta in Hret. unfold pure in Hret. inversion Hret; subst; clear Hret.
+    cbv beta iota.
+    rewrite !bv_eqb_refl, (proj2 (listN_eqb_eq _ _) eq_refl). reflexivity.
+  - destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|];
+      cbv beta iota in H |- *.
+    + exfalso. exact (unmodeled_no_ok _ _ _ _ _ H).
+    + destruct H as (u & m1 & evs1 & evs2 & Hset & Hret & ->).
+      unfold set_fds, modify in Hset. inversion Hset; subst; clear Hset.
+      cbv beta in Hret. unfold err_ret in Hret. apply ret_only_ok_inv in Hret.
+      destruct Hret as (-> & -> & ->).
+      apply check_ret_only_ok_iff. repeat split; reflexivity.
+Qed.
+
+Lemma check_eventfd_read_complete_unmodeled : forall fd ctx buf count i eff m,
+  eventfd_read fd ctx buf count i m i m Unmodeled ->
+  check_eventfd_read fd ctx buf count i eff m = CheckUnmodeled.
+Proof.
+  intros fd ctx buf count i eff m H.
+  unfold eventfd_read in H. unfold check_eventfd_read. cbv beta zeta in H |- *.
+  destruct (rw_count_clamp count <? 8)%Z; cbv beta iota in H |- *.
+  { exfalso. unfold err_ret in H. exact (ret_only_no_unmodeled _ _ _ H). }
+  destruct (Z.eqb (ef_count ctx) 0); cbv beta iota in H |- *.
+  { destruct (ef_nonblock ctx); cbv beta iota in H |- *; [|reflexivity].
+    exfalso. unfold err_ret in H. exact (ret_only_no_unmodeled _ _ _ H). }
+  destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 8)) as [w|];
+    cbv beta iota in H |- *.
+  - exfalso. destruct H as [H|(u & m1 & evs1 & Hset & Hret)].
+    + unfold set_fds, modify in H. discriminate H.
+    + cbv beta in Hret. unfold pure in Hret. discriminate Hret.
+  - destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|];
+      cbv beta iota in H |- *; [reflexivity|].
+    exfalso. destruct H as [H|(u & m1 & evs1 & Hset & Hret)].
+    + unfold set_fds, modify in H. discriminate H.
+    + cbv beta in Hret. unfold err_ret in Hret. exact (ret_only_no_unmodeled _ _ _ Hret).
+Qed.
+
+(** What an eventfd read delivers: the eight bytes of the count, never
+    more than the clamp.  [Checks.Cases.Fs.ReadWrite.read_delivery_clamped]
+    reads it. *)
+Lemma check_eventfd_read_delivery_clamped :
+  forall fd ctx buf count i eff m m' evs a bs,
+  check_eventfd_read fd ctx buf count i eff m = CheckOk m' evs ->
+  eff_writes eff = [(a, bs)] ->
+  (Z.of_nat (length bs) <= MAX_RW_COUNT)%Z.
+Proof.
+  intros fd ctx buf count i eff m m' evs a bs H Hws.
+  unfold check_eventfd_read in H. cbv beta zeta in H.
+  destruct (rw_count_clamp count <? 8)%Z; cbv beta iota in H.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & _ & _). discriminate Hws. }
+  destruct (Z.eqb (ef_count ctx) 0); cbv beta iota in H.
+  { destruct (ef_nonblock ctx); cbv beta iota in H; [|discriminate].
+    apply check_ret_only_ok_iff in H. destruct H as (-> & _ & _). discriminate Hws. }
+  destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 8)); cbv beta iota in H.
+  2:{ destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)); cbv beta iota in H;
+        [discriminate|].
+      apply check_ret_only_ok_iff in H. destruct H as (-> & _ & _). discriminate Hws. }
+  destruct eff as [ret ws zs us cs ci]. cbn in Hws. subst ws.
+  destruct zs; destruct us; destruct cs; destruct ci; cbv beta iota in H;
+    try discriminate H.
+  match type of H with
+  | (if ?b then _ else _) = _ => destruct b eqn:Hb; [|discriminate H]
+  end.
+  apply andb_true_iff in Hb as [_ Hbs]. apply listN_eqb_eq in Hbs. subst bs.
+  unfold word_le8. cbn [length]. unfold MAX_RW_COUNT. lia.
+Qed.
+
+(** [ReadWrite.eventfd_write] as an acceptor, branch for branch: a count
+    other than 8 is -EINVAL, an unreadable source -EFAULT with an empty
+    ledger, and past the eight-byte copy (which every later answer
+    carries in its ledger) the [ULLONG_MAX] -EINVAL, the add, and the
+    full counter's -EAGAIN or the decline of a blocking write.  Nothing
+    is chosen, so every accepted effect is computed. *)
+Definition check_eventfd_write (fd : word) (ctx : EventfdCtx) (buf count : word)
+    (i : SyscallInput) (eff : SyscallEffect) (m : Model) : check_result :=
+  if negb (Z.eqb (rw_count_clamp count) 8) then check_ret_only eff (errno_ret EINVAL) m []
+  else
+  match copy_bytes_map (in_mem i) buf 8%Z with
+  | None => check_ret_only eff (errno_ret EFAULT) m []   (* nothing changes *)
+  | Some bs =>
+      let ucnt := bv_unsigned (le_bytes_to_word bs) in
+      if Z.eqb ucnt U64_MAX
+      then check_ret_only_copyins [(buf, 8%nat)] eff (errno_ret EINVAL) m []
+      else if (ucnt <? U64_MAX - ef_count ctx)%Z
+      then check_ret_only_copyins [(buf, 8%nat)] eff (Z_to_bv 64 8)
+             (with_fds (fd_insert (m_fds m) fd
+                          (FdEventfd (ef_set_count ctx (ef_count ctx + ucnt)))) m) []
+      else if ef_nonblock ctx
+      then check_ret_only_copyins [(buf, 8%nat)] eff (errno_ret EAGAIN) m []
+      else CheckUnmodeled                     (* a blocking write would sleep forever *)
+  end.
+
+Lemma check_eventfd_write_sound_ok : forall fd ctx buf count i eff m m' evs,
+  check_eventfd_write fd ctx buf count i eff m = CheckOk m' evs ->
+  eventfd_write fd ctx buf count i m i m (Ok eff m' evs).
+Proof.
+  intros fd ctx buf count i eff m m' evs H.
+  unfold check_eventfd_write in H. unfold eventfd_write. cbv beta zeta in H |- *.
+  destruct (negb (Z.eqb (rw_count_clamp count) 8)); cbv beta iota in H |- *.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (copy_bytes_map (in_mem i) buf 8%Z) as [bs|]; cbv beta iota in H |- *.
+  2:{ apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned (le_bytes_to_word bs)) U64_MAX);
+    cbv beta iota in H |- *.
+  { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
+  destruct (bv_unsigned (le_bytes_to_word bs) <? U64_MAX - ef_count ctx)%Z;
+    cbv beta iota in H |- *.
+  { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|].
+    eapply bind_ok0; [apply modify_ok|]. apply pure_ok. }
+  destruct (ef_nonblock ctx); cbv beta iota in H |- *; [|discriminate].
+  apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+  apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
+Qed.
+
+Lemma check_eventfd_write_sound_unmodeled : forall fd ctx buf count i eff m,
+  check_eventfd_write fd ctx buf count i eff m = CheckUnmodeled ->
+  eventfd_write fd ctx buf count i m i m Unmodeled.
+Proof.
+  intros fd ctx buf count i eff m H.
+  unfold check_eventfd_write in H. unfold eventfd_write. cbv beta zeta in H |- *.
+  destruct (negb (Z.eqb (rw_count_clamp count) 8)); cbv beta iota in H |- *.
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (copy_bytes_map (in_mem i) buf 8%Z) as [bs|]; cbv beta iota in H |- *.
+  2:{ now apply check_ret_only_no_unmodeled in H. }
+  apply record_copyins_unmodeled.
+  destruct (Z.eqb (bv_unsigned (le_bytes_to_word bs)) U64_MAX);
+    cbv beta iota in H |- *.
+  { now apply check_ret_only_copyins_no_unmodeled in H. }
+  destruct (bv_unsigned (le_bytes_to_word bs) <? U64_MAX - ef_count ctx)%Z;
+    cbv beta iota in H |- *.
+  { now apply check_ret_only_copyins_no_unmodeled in H. }
+  destruct (ef_nonblock ctx); cbv beta iota in H |- *;
+    [now apply check_ret_only_copyins_no_unmodeled in H|apply unmodeled_intro].
+Qed.
+
+Lemma check_eventfd_write_complete_ok : forall fd ctx buf count i eff m m' evs,
+  eventfd_write fd ctx buf count i m i m (Ok eff m' evs) ->
+  check_eventfd_write fd ctx buf count i eff m = CheckOk m' evs.
+Proof.
+  intros fd ctx buf count i eff m m' evs H.
+  unfold eventfd_write in H. unfold check_eventfd_write. cbv beta zeta in H |- *.
+  destruct (negb (Z.eqb (rw_count_clamp count) 8)); cbv beta iota in H |- *.
+  { unfold err_ret in H. apply ret_only_ok_inv in H. destruct H as (-> & -> & ->).
+    apply check_ret_only_ok_iff. repeat split; reflexivity. }
+  destruct (copy_bytes_map (in_mem i) buf 8%Z) as [bs|]; cbv beta iota in H |- *.
+  2:{ unfold err_ret in H. apply ret_only_ok_inv in H. destruct H as (-> & -> & ->).
+      apply check_ret_only_ok_iff. repeat split; reflexivity. }
+  apply record_copyins_ok_inv in H. destruct H as (core & H & ->).
+  destruct (Z.eqb (bv_unsigned (le_bytes_to_word bs)) U64_MAX);
+    cbv beta iota in H |- *.
+  { unfold err_ret in H. apply ret_only_ok_inv in H. destruct H as (-> & -> & ->).
+    cbn [eff_copyins app]. apply check_ret_only_copyins_refl. }
+  destruct (bv_unsigned (le_bytes_to_word bs) <? U64_MAX - ef_count ctx)%Z;
+    cbv beta iota in H |- *.
+  { destruct H as (u & m1 & evs1 & evs2 & Hset & Hret & ->).
+    unfold set_fds, modify in Hset. inversion Hset; subst; clear Hset.
+    cbv beta in Hret. apply ret_only_ok_inv in Hret. destruct Hret as (-> & -> & ->).
+    cbn [eff_copyins app]. apply check_ret_only_copyins_refl. }
+  destruct (ef_nonblock ctx); cbv beta iota in H |- *;
+    [|exfalso; exact (unmodeled_no_ok _ _ _ _ _ H)].
+  unfold err_ret in H. apply ret_only_ok_inv in H. destruct H as (-> & -> & ->).
+  cbn [eff_copyins app]. apply check_ret_only_copyins_refl.
+Qed.
+
+Lemma check_eventfd_write_complete_unmodeled : forall fd ctx buf count i eff m,
+  eventfd_write fd ctx buf count i m i m Unmodeled ->
+  check_eventfd_write fd ctx buf count i eff m = CheckUnmodeled.
+Proof.
+  intros fd ctx buf count i eff m H.
+  unfold eventfd_write in H. unfold check_eventfd_write. cbv beta zeta in H |- *.
+  destruct (negb (Z.eqb (rw_count_clamp count) 8)); cbv beta iota in H |- *.
+  { exfalso. unfold err_ret in H. exact (ret_only_no_unmodeled _ _ _ H). }
+  destruct (copy_bytes_map (in_mem i) buf 8%Z) as [bs|]; cbv beta iota in H |- *.
+  2:{ exfalso. unfold err_ret in H. exact (ret_only_no_unmodeled _ _ _ H). }
+  apply record_copyins_unmodeled_inv in H.
+  destruct (Z.eqb (bv_unsigned (le_bytes_to_word bs)) U64_MAX);
+    cbv beta iota in H |- *.
+  { exfalso. unfold err_ret in H. exact (ret_only_no_unmodeled _ _ _ H). }
+  destruct (bv_unsigned (le_bytes_to_word bs) <? U64_MAX - ef_count ctx)%Z;
+    cbv beta iota in H |- *.
+  { exfalso. destruct H as [H|(u & m1 & evs1 & Hset & Hret)].
+    + unfold set_fds, modify in H. discriminate H.
+    + cbv beta in Hret. exact (ret_only_no_unmodeled _ _ _ Hret). }
+  destruct (ef_nonblock ctx); cbv beta iota in H |- *; [|reflexivity].
+  exfalso. unfold err_ret in H. exact (ret_only_no_unmodeled _ _ _ H).
+Qed.
+
 Definition check_read (i : SyscallInput) (fd buf count : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match fd_lookup (m_fds m) fd with
@@ -1190,6 +1488,12 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
       else if w_is0 count then check_ret_only eff (Z_to_bv 64 0) m []
         (* [sock_read_iter]'s zero count, before the protocol *)
       else check_stream_read fd id side st (se_nonblock st) buf count i eff m
+  | Some (FdEventfd ctx) =>
+      if negb (access_okb buf (bv_unsigned count))
+      then check_ret_only eff (errno_ret EFAULT) m []   (* [vfs_read]'s [access_ok] *)
+      else check_eventfd_read fd ctx buf count i eff m
+  | Some (FdDgram _) => CheckUnmodeled
+      (* an unconnected datagram socket's read waits: [ReadWrite.read_spec] *)
   end.
 
 (** [ReadWrite.write_fault_extend] as an acceptor: the -EFAULT a
@@ -1420,6 +1724,13 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
       then check_ret_only eff (errno_ret EFAULT) m []   (* [vfs_write]'s [access_ok] *)
       else check_stream_write id side st (se_nonblock st) false buf count i eff m
         (* write(2) cannot set MSG_NOSIGNAL: the signal goes with -EPIPE *)
+  | Some (FdEventfd ctx) =>
+      if negb (access_okb buf (bv_unsigned count))
+      then check_ret_only eff (errno_ret EFAULT) m []   (* [vfs_write]'s [access_ok] *)
+      else check_eventfd_write fd ctx buf count i eff m
+  | Some (FdDgram _) => CheckUnmodeled
+      (* a send with no address on an unconnected datagram socket:
+         [ReadWrite.write_spec] *)
   end.
 
 Lemma check_read_sound_ok : forall i fd buf count eff m m' evs,
@@ -1429,7 +1740,7 @@ Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_read in H. unfold read_spec.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
   9:{ (* /dev/null: -EBADF without FMODE_READ, else the range verdict and 0 *)
       destruct rd; cbn [negb] in H; cbv beta iota in H;
         [ unfold check_access_ok_zero in H;
@@ -1463,6 +1774,16 @@ Proof.
       eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
       srw Hfd. apply check_stream_read_sound_ok. exact H. }
+  9:{ (* eventfd: the range verdict, then [eventfd_read] *)
+      destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hok.
+      { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+        eapply bind_ok0; [apply input_ok|]. cbv beta.
+        eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+        srw Hfd. apply pure_ok. }
+      eapply bind_ok0; [apply input_ok|]. cbv beta.
+      eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+      srw Hfd. apply check_eventfd_read_sound_ok. exact H. }
+  9:{ (* datagram socket: declined *) cbv beta iota in H. discriminate H. }
   - (* channel *)
     destruct (negb (w_is0 ch)) eqn:Hm.
     { (* write-only channel: -EBADF *)
@@ -1814,7 +2135,7 @@ Proof.
   intros i fd buf count eff m H.
   unfold check_read in H. unfold read_spec.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
   9:{ destruct rd; cbn [negb] in H; cbv beta iota in H;
         [ unfold check_access_ok_zero in H;
           destruct (access_okb buf (bv_unsigned count)) | ];
@@ -1835,6 +2156,17 @@ Proof.
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
       srw Hfd.
       apply check_stream_read_sound_unmodeled with (eff := eff). exact H. }
+  9:{ (* eventfd *)
+      destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hok;
+        [now apply check_ret_only_no_unmodeled in H|].
+      eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+      srw Hfd.
+      apply check_eventfd_read_sound_unmodeled with (eff := eff). exact H. }
+  9:{ (* datagram socket: declined on both sides *)
+      eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+      srw Hfd. apply unmodeled_intro. }
   - (* channel: no fail-closed error remains *)
     destruct (negb (w_is0 ch)) eqn:Hm.
     { now apply check_ret_only_no_unmodeled in H. }
@@ -2063,7 +2395,7 @@ Proof.
   unfold read_spec in H. unfold check_read. sys_unfold.
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok.
   - destruct (negb (w_is0 ch)) eqn:Hm; hall Hm; inv_ok; [reflexivity|].
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok.
@@ -2213,6 +2545,10 @@ Proof.
     destruct (w_is0 count) eqn:Hc; hall Hc; inv_ok.
     { cbn; try rewrite bv_eqb_refl; reflexivity. }
     cbn [app]. apply check_stream_read_complete_ok. eassumption.
+  - (* eventfd; a datagram socket's decline never reaches here *)
+    destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok.
+    { cbn; try rewrite bv_eqb_refl; reflexivity. }
+    cbn [app]. apply check_eventfd_read_complete_ok. eassumption.
   - reflexivity.
 Qed.
 
@@ -2224,7 +2560,7 @@ Proof.
   unfold read_spec in H. unfold check_read. sys_unfold.
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try discriminate.
   - destruct (negb (w_is0 ch)) eqn:Hm; hall Hm; inv_ok; try discriminate.
@@ -2332,6 +2668,12 @@ Proof.
       try discriminate.
     destruct (w_is0 count) eqn:Hc; hall Hc; inv_ok; try discriminate.
     apply check_stream_read_complete_unmodeled. eassumption.
+  - (* eventfd *)
+    destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok;
+      try discriminate.
+    apply check_eventfd_read_complete_unmodeled. eassumption.
+  - (* datagram socket: declined on both sides *)
+    reflexivity.
 Qed.
 
 (* ----------------------------------------------------------------- write *)
@@ -2345,7 +2687,7 @@ Proof.
   unfold write_spec, write_range_gate, write_file_tail, write_fault_keep,
     write_ledger.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
   9:{ (* /dev/null: -EBADF without FMODE_WRITE, the range gate, the range
          verdict, then the clamped count *)
       destruct wr; cbn [negb] in H; cbv beta iota in H;
@@ -2374,6 +2716,16 @@ Proof.
       eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
       srw Hfd. apply check_stream_write_sound_ok. exact H. }
+  9:{ (* eventfd: the range verdict, then [eventfd_write] *)
+      destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hok.
+      { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+        eapply bind_ok0; [apply input_ok|]. cbv beta.
+        eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+        srw Hfd. apply pure_ok. }
+      eapply bind_ok0; [apply input_ok|]. cbv beta.
+      eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+      srw Hfd. apply check_eventfd_write_sound_ok. exact H. }
+  9:{ (* datagram socket: declined *) cbv beta iota in H. discriminate H. }
   - (* channel *)
     destruct (w_is0 ch) eqn:Hm.
     { (* stdin is read-only: -EBADF *)
@@ -2708,7 +3060,7 @@ Proof.
   unfold check_write in H. unfold write_spec, write_range_gate,
     write_file_tail, write_fault_keep, write_ledger.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
   9:{ destruct wr; cbn [negb] in H; cbv beta iota in H;
         [ destruct (modeled_rw_range buf count) eqn:Hg; cbn [negb] in H;
           cbv beta iota in H;
@@ -2728,6 +3080,17 @@ Proof.
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
       srw Hfd.
       apply check_stream_write_sound_unmodeled with (eff := eff). exact H. }
+  9:{ (* eventfd *)
+      destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hok;
+        [now apply check_ret_only_no_unmodeled in H|].
+      eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+      srw Hfd.
+      apply check_eventfd_write_sound_unmodeled with (eff := eff). exact H. }
+  9:{ (* datagram socket: declined on both sides *)
+      eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+      srw Hfd. apply unmodeled_intro. }
   - destruct (w_is0 ch) eqn:Hm.
     { now apply check_ret_only_no_unmodeled in H. }
     destruct (negb (modeled_rw_range buf count)) eqn:Hn.
@@ -2938,7 +3301,7 @@ Proof.
   unfold check_write. sys_unfold.
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok.
   - destruct (w_is0 ch) eqn:Hm; hall Hm; inv_ok;
       [cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity|].
@@ -3091,6 +3454,10 @@ Proof.
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok.
     { cbn; try rewrite bv_eqb_refl; reflexivity. }
     cbn [app]. apply check_stream_write_complete_ok. eassumption.
+  - (* eventfd; a datagram socket's decline never reaches here *)
+    destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok.
+    { cbn; try rewrite bv_eqb_refl; reflexivity. }
+    cbn [app]. apply check_eventfd_write_complete_ok. eassumption.
   - cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
 Qed.
 
@@ -3104,7 +3471,7 @@ Proof.
   unfold check_write. sys_unfold.
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try discriminate.
   - destruct (w_is0 ch) eqn:Hm; hall Hm; inv_ok; try discriminate.
@@ -3224,6 +3591,12 @@ Proof.
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok;
       try discriminate.
     apply check_stream_write_complete_unmodeled. eassumption.
+  - (* eventfd *)
+    destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok;
+      try discriminate.
+    apply check_eventfd_write_complete_unmodeled. eassumption.
+  - (* datagram socket: declined on both sides *)
+    reflexivity.
 Qed.
 
 (* ---------------------------------------------------------------- writev *)
@@ -3245,6 +3618,10 @@ Definition check_pread64 (i : SyscallInput) (fd buf count pos : word)
   | Some (FdSocket _) => check_ret_only eff (errno_ret ESPIPE) m []
   | Some (FdStream _ _ _) => check_ret_only eff (errno_ret ESPIPE) m []
       (* a socket file too: [stream_open] in [sock_alloc_file] *)
+  | Some (FdDgram _) => check_ret_only eff (errno_ret ESPIPE) m []
+      (* a socket file: [stream_open] in [sock_alloc_file] *)
+  | Some (FdEventfd _) => check_ret_only eff (errno_ret ESPIPE) m []
+      (* an anonymous-inode file never gets FMODE_PREAD *)
   | Some (FdFileW _ _) => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdFileA _ _) => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdDevNull rd _) =>
@@ -3308,6 +3685,10 @@ Definition check_pwrite64 (i : SyscallInput) (fd buf count pos : word)
   | Some (FdSocket _) => check_ret_only eff (errno_ret ESPIPE) m []
   | Some (FdStream _ _ _) => check_ret_only eff (errno_ret ESPIPE) m []
       (* a socket file: no -EPIPE and no SIGPIPE through pwrite *)
+  | Some (FdDgram _) => check_ret_only eff (errno_ret ESPIPE) m []
+      (* a socket file: [stream_open] in [sock_alloc_file] *)
+  | Some (FdEventfd _) => check_ret_only eff (errno_ret ESPIPE) m []
+      (* no FMODE_PWRITE, for the pread64 arm's reason *)
   | Some (FdFile _ _) => check_ret_only eff (errno_ret EBADF) m []
   | Some FdDir => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdFileA _ _) => CheckUnmodeled   (* see [ReadWrite.pwrite64_spec] *)
@@ -3352,7 +3733,7 @@ Proof.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
   - (* channel: no FMODE_PREAD *)
     apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     eapply bind_ok0; [apply input_ok|]. cbv beta.
@@ -3495,6 +3876,14 @@ Proof.
     apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     eapply bind_ok0; [apply input_ok|]. cbv beta.
     eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. apply pure_ok.
+  - (* eventfd: no FMODE_PREAD, -ESPIPE *)
+    apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    eapply bind_ok0; [apply input_ok|]. cbv beta.
+    eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. apply pure_ok.
+  - (* datagram socket: a socket file, -ESPIPE *)
+    apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    eapply bind_ok0; [apply input_ok|]. cbv beta.
+    eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. apply pure_ok.
   - (* no such descriptor *)
     apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     eapply bind_ok0; [apply input_ok|]. cbv beta.
@@ -3510,7 +3899,7 @@ Proof.
   destruct (ppos_einvalb pos) eqn:Hpos.
   { now apply check_ret_only_no_unmodeled in H. }
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     try (now apply check_ret_only_no_unmodeled in H).
   - (* readable file: the two declines *)
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn.
@@ -3603,7 +3992,7 @@ Proof.
   { cbv iota in H. inv_ok. cbn; rewrite bv_eqb_refl; reflexivity. }
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; rewrite bv_eqb_refl; reflexivity).
   - (* readable file *)
@@ -3671,7 +4060,7 @@ Proof.
   destruct (ppos_einvalb pos) eqn:Hpos; [cbv iota in H; inv_ok|].
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate.
   - destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok;
       try discriminate.
@@ -3732,7 +4121,7 @@ Proof.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          eapply bind_ok0; [apply input_ok|]; cbv beta;
          (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota; srw Hfd;
@@ -3839,7 +4228,7 @@ Proof.
   destruct (ppos_einvalb pos) eqn:Hpos.
   { now apply check_ret_only_no_unmodeled in H. }
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     try (now apply check_ret_only_no_unmodeled in H).
   (* the APPEND arm declines on both sides, for the reason
      [ReadWrite.pwrite64_spec] gives: the position pwrite64 named is
@@ -3928,7 +4317,7 @@ Proof.
   { cbv iota in H. inv_ok. cbn; rewrite bv_eqb_refl; reflexivity. }
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (cbn; rewrite bv_eqb_refl; reflexivity).
   (* Two goals survive: the write-only file arm and the O_RDWR one.
@@ -3999,7 +4388,7 @@ Proof.
   destruct (ppos_einvalb pos) eqn:Hpos; [cbv iota in H; inv_ok|].
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate.
   (* three goals survive: the write-only file arm, the APPEND arm where
      both sides decline outright, and the O_RDWR arm, which is the
@@ -4307,6 +4696,25 @@ Definition check_writev (i : SyscallInput) (fd iov iovcnt : word)
                   (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt)) eff) m)
             (* the send of the capped total, the import's ledger in front *)
       end
+  | Some (FdEventfd _) =>
+      match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
+      | ImpFault => check_ret_only_copyins
+          (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+          eff (errno_ret EFAULT) m []
+      | ImpInval => check_ret_only_copyins
+          (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+          eff (errno_ret EINVAL) m []
+      | ImpOk iovs0 =>
+          if Z.eqb (iovs_total (cap_iovecs iovs0)) 0
+          then check_ret_only_copyins
+            (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+            eff (Z_to_bv 64 0) m []
+            (* [vfs_writev]'s own zero, before the file is reached *)
+          else CheckUnmodeled
+            (* the per-segment [eventfd_write] loop is declined:
+               [ReadWrite.writev_spec] *)
+      end
+  | Some (FdDgram _) => CheckUnmodeled   (* declined whole, as the scalar write is *)
   end.
 
 (* The proofs below open every spec bind with the same two steps and
@@ -4328,7 +4736,7 @@ Proof.
     write_fault_keep, writev_ledger.
   unfold writev_gathered in H |- *.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
   9:{ (* /dev/null: -EBADF without FMODE_WRITE, else the import's answer *)
       destruct wr.
       2:{ apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
@@ -4355,6 +4763,18 @@ Proof.
       apply check_stream_send_sound_ok with (i := i) in H.
       wv_open Hfd. srw Hiv. srw Htot.
       rewrite Heff. apply record_copyins_ok. exact H. }
+  9:{ (* eventfd: the import's answers and the zero aggregate *)
+      destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv.
+      2:{ wv_errno H. wv_open Hfd. srw Hiv. cbn [with_copyins].
+          apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
+      2:{ wv_errno H. wv_open Hfd. srw Hiv. cbn [with_copyins].
+          apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
+      cbv beta iota in H.
+      destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot; cbv beta iota in H;
+        [|discriminate].
+      wv_errno H. wv_open Hfd. srw Hiv. srw Htot.
+      apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
+  9:{ (* datagram socket: declined *) cbv beta iota in H. discriminate H. }
   - (* channel *)
     destruct (w_is0 ch) eqn:Hm.
     { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
@@ -4572,7 +4992,7 @@ Proof.
     write_fault_keep, writev_ledger.
   unfold writev_gathered in H |- *.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
   9:{ destruct wr.
       2:{ now apply check_ret_only_no_unmodeled in H. }
       cbn [negb] in H. cbv iota in H.
@@ -4590,6 +5010,17 @@ Proof.
       wv_open_unmodeled Hfd. srw Hiv. srw Htot.
       apply record_copyins_unmodeled.
       eapply check_stream_send_sound_unmodeled. exact H. }
+  9:{ (* eventfd: only the transfer past a nonzero aggregate declines *)
+      destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv;
+        [| now apply check_ret_only_copyins_no_unmodeled in H
+         | now apply check_ret_only_copyins_no_unmodeled in H ].
+      cbv beta iota in H.
+      destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot; cbv beta iota in H.
+      { now apply check_ret_only_copyins_no_unmodeled in H. }
+      wv_open_unmodeled Hfd. srw Hiv. srw Htot.
+      apply record_copyins_unmodeled. unfold writev_buf_gap. apply unmodeled_intro. }
+  9:{ (* datagram socket: declined on both sides *)
+      wv_open_unmodeled Hfd. unfold writev_buf_gap. apply unmodeled_intro. }
   - destruct (w_is0 ch) eqn:Hm.
     { now apply check_ret_only_no_unmodeled in H. }
     destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv;
@@ -4739,7 +5170,7 @@ Proof.
   unfold writev_gathered in H |- *.
   unfold writev_buf_gap in H. sys_unfold. cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok.
   - destruct (w_is0 ch) eqn:Hm; hall Hm; inv_ok.
     { cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
@@ -4882,6 +5313,15 @@ Proof.
     rewrite strip_copyin_prefix_app, Hb.
     rewrite check_copyin_prefix_app by discriminate.
     cbn [app]. now rewrite ?app_nil_r.
+  - (* eventfd: the import's answers and the zero aggregate; the transfer
+       past it is a decline, which [inv_ok] closes against an [Ok]
+       hypothesis, as it does a datagram socket's *)
+    destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv;
+      hall Hiv; inv_ok.
+    2:{ wv_errno_complete. }
+    2:{ wv_errno_complete. }
+    destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot; hall Htot; inv_ok.
+    wv_errno_complete.
   - cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
 Qed.
 
@@ -4896,7 +5336,7 @@ Proof.
   unfold writev_gathered in H |- *.
   unfold writev_buf_gap in H. sys_unfold. cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try discriminate.
   - destruct (w_is0 ch) eqn:Hm; hall Hm; inv_ok; try discriminate.
@@ -5008,6 +5448,13 @@ Proof.
                       (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt)) eff)
                    _ _ Hs)
     end.
+    reflexivity.
+  - (* eventfd: only the transfer past a nonzero aggregate declines *)
+    destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv;
+      hall Hiv; inv_ok; try discriminate.
+    destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Htot; hall Htot; inv_ok;
+      try discriminate; reflexivity.
+  - (* datagram socket: declined on both sides *)
     reflexivity.
 Qed.
 
@@ -5150,6 +5597,8 @@ Definition check_readv_imported (i : SyscallInput) (fd : word)
   | RdPipe _ => check_readv_gap   (* vectored pipe reads are unmodeled *)
   | RdDevNull => check_ret_only eff (Z_to_bv 64 0) m []   (* [read_iter_null]: 0 *)
   | RdUrandom => check_readv_gap   (* vectored device reads decline: [ReadWrite.readv_imported] *)
+  | RdEventfd => check_readv_gap   (* the scatter of [eventfd_read]: declined, [ReadWrite.readv_imported] *)
+  | RdDgram => check_readv_gap     (* an empty queue the file would wait on *)
   | RdDir => check_ret_only eff (errno_ret EISDIR) m []
   | RdFile p off =>
       match fs_lookup (m_fs m) p with
@@ -5271,7 +5720,9 @@ Proof.
   unfold check_readv_imported in H. unfold readv_imported. cbv zeta in *.
   destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Hz.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
-  destruct e as [ch|p off|p off| |sk|pid| | |sid side st].
+  destruct e as [ch|p off|p off| |sk|pid| | |sid side st| |].
+  10:{ (* eventfd: the transfer declines *) unfold check_readv_gap in H. discriminate. }
+  10:{ (* datagram socket: declined *) unfold check_readv_gap in H. discriminate. }
   7:{ apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
   7:{ unfold check_readv_gap in H. discriminate. }
   7:{ (* stream-pair end *)
@@ -5459,7 +5910,9 @@ Proof.
   unfold check_readv_imported in H. unfold readv_imported. cbv zeta in *.
   destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Hz.
   { now apply check_ret_only_no_unmodeled in H. }
-  destruct e as [ch|p off|p off| |sk|pid| | |sid side st].
+  destruct e as [ch|p off|p off| |sk|pid| | |sid side st| |].
+  10:{ (* eventfd *) unfold readv_buf_gap. apply unmodeled_intro. }
+  10:{ (* datagram socket *) unfold readv_buf_gap. apply unmodeled_intro. }
   7:{ now apply check_ret_only_no_unmodeled in H. }
   7:{ unfold readv_buf_gap. apply unmodeled_intro. }
   7:{ (* stream-pair end *)
@@ -5591,7 +6044,9 @@ Proof.
     pure, choose, emit, unmodeled in H.
   destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Hz; hall Hz; inv_ok.
   { inv_ok. cbn; rewrite bv_eqb_refl. reflexivity. }
-  destruct e as [ch|p off|p off| |sk|pid| | |sid side st].
+  destruct e as [ch|p off|p off| |sk|pid| | |sid side st| |].
+  10:{ (* eventfd: the spec declines *) discriminate. }
+  10:{ (* datagram socket: the spec declines *) discriminate. }
   7:{ inv_ok. cbn; try rewrite bv_eqb_refl; reflexivity. }
   7:{ discriminate. }
   7:{ (* stream-pair end *)
@@ -5718,7 +6173,9 @@ Proof.
     pure, choose, emit, unmodeled in H.
   destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Hz; hall Hz; inv_ok;
     try discriminate.
-  destruct e as [ch|p off|p off| |sk|pid| | |sid side st].
+  destruct e as [ch|p off|p off| |sk|pid| | |sid side st| |].
+  10:{ (* eventfd *) reflexivity. }
+  10:{ (* datagram socket *) reflexivity. }
   7:{ inv_ok. }
   7:{ reflexivity. }
   7:{ (* stream-pair end *)
@@ -6015,6 +6472,10 @@ Definition check_lseek (fd off whence : word) (eff : SyscallEffect) (m : Model)
              [ksys_lseek] decides first *)
       | FdStream _ _ _ => check_ret_only eff (errno_ret ESPIPE) m []
           (* a socket file: the [FdSocket] arm's -ESPIPE *)
+      | FdDgram _ => check_ret_only eff (errno_ret ESPIPE) m []
+          (* a socket file: [stream_open] clears FMODE_LSEEK *)
+      | FdEventfd _ => check_ret_only eff (Z_to_bv 64 0) m []
+          (* [noop_llseek] over an [f_pos] that stays 0 *)
       | FdPipe _ _ => check_ret_only eff (errno_ret ESPIPE) m []
       | FdDevNull _ _ => check_ret_only eff (Z_to_bv 64 0) m []   (* [null_lseek]: 0 *)
       | FdUrandom => check_ret_only eff (Z_to_bv 64 0) m []   (* [noop_llseek]: the pinned 0 *)
@@ -6094,7 +6555,7 @@ Proof.
   (* the whence gate precedes the fd's KIND on both sides, but follows
      the fd lookup: [ksys_lseek]'s order *)
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
   9:{ (* /dev/null: -EINVAL past SEEK_MAX, else [null_lseek]'s 0 *)
       destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw;
         apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
@@ -6106,6 +6567,16 @@ Proof.
         (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota;
         srw Hfd; try rewrite Hw; cbv beta iota; apply pure_ok. }
   9:{ (* stream-pair end: -EINVAL past SEEK_MAX, -ESPIPE otherwise *)
+      destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw;
+        apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+        (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota;
+        srw Hfd; try rewrite Hw; cbv beta iota; apply pure_ok. }
+  9:{ (* eventfd: -EINVAL past SEEK_MAX, else [noop_llseek]'s 0 *)
+      destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw;
+        apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+        (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota;
+        srw Hfd; try rewrite Hw; cbv beta iota; apply pure_ok. }
+  9:{ (* datagram socket: -EINVAL past SEEK_MAX, -ESPIPE otherwise *)
       destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw;
         apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
         (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota;
@@ -6207,7 +6678,11 @@ Proof.
   intros fd off whence eff m i H.
   unfold check_lseek in H. unfold lseek_spec.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st]|] eqn:Hfd.
+    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd.
+  9:{ destruct ((SEEK_MAX <? bv_unsigned whence)%Z);
+        now apply check_ret_only_no_unmodeled in H. }
+  9:{ destruct ((SEEK_MAX <? bv_unsigned whence)%Z);
+        now apply check_ret_only_no_unmodeled in H. }
   9:{ destruct ((SEEK_MAX <? bv_unsigned whence)%Z);
         now apply check_ret_only_no_unmodeled in H. }
   9:{ destruct ((SEEK_MAX <? bv_unsigned whence)%Z);
@@ -6287,7 +6762,7 @@ Proof.
   unfold lseek_spec in H. unfold check_lseek. sys_unfold.
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw; hall Hw; inv_ok);
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
@@ -6305,7 +6780,7 @@ Proof.
   unfold lseek_spec in H. unfold check_lseek. sys_unfold.
   cbv iota in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p cur|p cur|p cur|p cur| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok;
     try (destruct ((SEEK_MAX <? bv_unsigned whence)%Z) eqn:Hw; hall Hw; inv_ok);
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);

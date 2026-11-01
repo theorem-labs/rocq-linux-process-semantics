@@ -1836,7 +1836,7 @@ Lemma check_read_frame : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_read, check_read_urandom, check_socket_pending_error,
-    check_access_ok_zero in H.
+    check_access_ok_zero, check_eventfd_read in H.
   cbv zeta in H. vm_frame3 H.
 Qed.
 
@@ -1844,8 +1844,9 @@ Lemma check_write_frame : forall i fd buf count eff m m' evs,
   check_write i fd buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
-  vm_frame3 H.
+  unfold check_write, check_write_fault_extend, check_access_ok_zero,
+    check_eventfd_write in H.
+  cbv zeta in H. vm_frame3 H.
 Qed.
 
 (** A positional transfer touches no mapping.  [check_pread64] returns
@@ -1928,9 +1929,12 @@ Proof.
   intros eff m m' evs H. unfold check_set_tid_address in H. vm_frame2 H.
 Qed.
 
-Lemma check_ioctl_frame : forall fd req eff m m' evs,
-  check_ioctl fd req eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
-Proof. intros fd req eff m m' evs H. unfold check_ioctl in H. vm_frame2 H. Qed.
+Lemma check_ioctl_frame : forall i fd req eff m m' evs,
+  check_ioctl i fd req eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i fd req eff m m' evs H.
+  unfold check_ioctl, check_siocgifindex, check_ifreq_writeback in H. vm_frame2 H.
+Qed.
 
 Lemma check_writev_frame : forall i fd iov iovcnt eff m m' evs,
   check_writev i fd iov iovcnt eff m = CheckOk m' evs ->
@@ -2031,18 +2035,19 @@ Proof.
   unfold check_timerfd_create in H. vm_frame2 H.
 Qed.
 
-(** [eventfd2] is [timerfd_create]'s twin here for the same reason: its
-    only answer is the -EINVAL it decides from the flag word alone, and
-    Linux decides it before the [kmalloc], so the arm touches no field
-    of the model, [m_vmmaps] included.  A [*_frame] rather than a
+(** [eventfd2] leaves the address space alone on every answer: the
+    -EINVAL it decides from the flag word alone, before the [kmalloc],
+    touches no field of the model, and past the gate the injected errno
+    keeps the model while the new descriptor writes the fd table alone
+    ([State.with_fds]), [m_vmmaps] included.  A [*_frame] rather than a
     [*_preserves]: nothing is written for [vm_wf] to be re-established
     over. *)
-Lemma check_eventfd2_frame : forall flags eff m m' evs,
-  check_eventfd2 flags eff m = CheckOk m' evs ->
+Lemma check_eventfd2_frame : forall i flags eff m m' evs,
+  check_eventfd2 i flags eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros flags eff m m' evs H.
-  unfold check_eventfd2 in H. vm_frame2 H.
+  intros i flags eff m m' evs H.
+  unfold check_eventfd2, check_new_fd_result in H. vm_frame2 H.
 Qed.
 
 (** uname writes only the UTS-name pin, which lives in [ProcState]:
@@ -2451,12 +2456,21 @@ Proof.
   unfold check_sigaltstack in H. vm_frame2 H.
 Qed.
 
+(** The SIGPIPE arm installs an action ([State.with_sigpipe_install],
+    a [ProcState] record alone); its frame is
+    [Checks.Sys.Kernel.Signal.check_rt_sigaction_sigpipe_frame], stated
+    there for the reason [check_rt_sigprocmask_frame] is.  Every other
+    signal answers at the model it was given. *)
 Lemma check_rt_sigaction_frame : forall i sig act oact ss eff m m' evs,
   check_rt_sigaction i sig act oact ss eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i sig act oact ss eff m m' evs H.
-  unfold check_rt_sigaction in H. vm_frame2 H.
+  unfold check_rt_sigaction in H.
+  destruct (negb (bv_eqb ss (Z_to_bv 64 8))); cbv beta iota in H; [vm_frame2 H|].
+  destruct (Z.eqb (bv_unsigned sig) SIGPIPE); cbv beta iota in H.
+  { eapply check_rt_sigaction_sigpipe_frame; exact H. }
+  vm_frame2 H.
 Qed.
 
 Lemma check_clone_frame : forall flags eff m m' evs,

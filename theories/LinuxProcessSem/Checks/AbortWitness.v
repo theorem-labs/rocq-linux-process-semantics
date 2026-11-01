@@ -906,7 +906,8 @@ Ltac det_leaf :=
         | eapply check_ret_only_copyins_det; eassumption
         | eapply check_write_oset_det; eassumption
         | eapply check_write_oset_copyins_det; eassumption
-        | eapply check_send_sigabrt_det; eassumption ].
+        | eapply check_send_sigabrt_det; eassumption
+        | eapply check_rt_sigaction_sigpipe_det; eassumption ].
 
 Lemma check_rt_sigprocmask_det : forall i how nset oset ss e1 e2 m m1 v1 m2 v2,
   check_rt_sigprocmask i how nset oset ss e1 m = CheckOk m1 v1 ->

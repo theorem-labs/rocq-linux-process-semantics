@@ -281,7 +281,7 @@ Proof.
      write-only kinds ([FdFileW] and the append [FdFileA]) are the -EBADF
      pair. *)
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|] eqn:Hfd;
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     cbv iota in Hspec;
     [ | | now destruct (Hro _ _ _ Hspec)
       | now destruct (Hro _ _ _ Hspec)
@@ -304,6 +304,13 @@ Proof.
           [ now destruct (Hro _ _ _ Hspec)
           | exact (check_stream_read_delivery_clamped
                      _ _ _ _ _ _ _ _ _ _ _ _ _ _ Hspec Hws) ]
+      | (* eventfd: the range verdict, then the eight bytes of the count *)
+        destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
+          [ now destruct (Hro _ _ _ Hspec)
+          | exact (check_eventfd_read_delivery_clamped
+                     _ _ _ _ _ _ _ _ _ _ _ Hspec Hws) ]
+      | (* datagram socket: declined, never an [Ok] *)
+        discriminate Hspec
       | now destruct (Hro _ _ _ Hspec) ].
   - (* channel *)
     destruct (negb (w_is0 ch)); cbv iota in Hspec;
@@ -2631,7 +2638,7 @@ Proof.
     destruct Hx as (-> & _ & _). cbn in Hc. discriminate. }
   destruct (ppos_einvalb pos); [now destruct (Hro _ _ _ H)|].
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st]|];
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|];
     cbv iota in H; try (now destruct (Hro _ _ _ H)).
   (* three kinds survive that: the APPEND arm, whose checker is
      [CheckUnmodeled] and so never equals a [CheckOk], and the two

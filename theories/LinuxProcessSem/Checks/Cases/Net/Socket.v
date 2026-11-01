@@ -616,6 +616,60 @@ Example socket_still_answers_its_pure_argument_errors :
     = CheckOk listening_socket_model [].
 Proof. split; [|split]; check_eq. Qed.
 
+(** THE DATAGRAM SHAPES ARE ANSWERED WITH A DESCRIPTOR.
+    [Net.Socket.socket_dgram_b]: AF_INET6 (10) or AF_UNIX (1), type
+    SOCK_DGRAM (2), protocol 0, mint a [State.FdDgram] of that family at
+    the lowest free fd ([sock_map_fd]), or fail with the family's own
+    injected errnos ([Net.Socket.socket_dgram_errnos]).  The model has
+    three channels, so the descriptor is 3.
+    ADMISSION REASON: model-internal -- a run shows the descriptor
+    number, not which family the model recorded, nor that -ENOBUFS is
+    admitted for AF_INET6 alone. *)
+Definition dgram_socket_model : Model :=
+  with_creds demo_creds
+    (mkModel
+       [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2) ]
+       (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
+
+Definition dgram_socket (dom ty pro r : word) : check_result :=
+  check_syscall (mkInput 198 [dom; ty; pro; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect r [] []) dgram_socket_model.
+
+Definition dgram_after (fam : Z) : Model :=
+  with_fds (fd_insert (m_fds dgram_socket_model) 3 (FdDgram fam))
+    dgram_socket_model.
+
+Example socket_dgram_answers_with_a_descriptor :
+  dgram_socket 10 2 0 3 = CheckOk (dgram_after AF_INET6) []
+  /\ dgram_socket 1 2 0 3 = CheckOk (dgram_after AF_UNIX) []
+  (* SOCK_CLOEXEC is admitted and ignored *)
+  /\ dgram_socket 10 (2 + 524288) 0 3 = CheckOk (dgram_after AF_INET6) []
+  (* the lowest free fd and no other *)
+  /\ dgram_socket 1 2 0 4 = CheckReject
+  (* [inet6_create]'s -ENOBUFS, for AF_INET6 and not for AF_UNIX *)
+  /\ dgram_socket 10 2 0 (errno_ret ENOBUFS) = CheckOk dgram_socket_model []
+  /\ dgram_socket 1 2 0 (errno_ret ENOBUFS) = CheckReject
+  /\ dgram_socket 1 2 0 (errno_ret EMFILE) = CheckOk dgram_socket_model []
+  /\ dgram_socket 10 2 0 (errno_ret ENFILE) = CheckOk dgram_socket_model [].
+Proof. repeat split; check_eq. Qed.
+
+(** ...AND EVERY OTHER SHAPE OF THOSE FAMILIES STAYS DECLINED, with the
+    gates above them still answering: an explicit protocol (17,
+    IPPROTO_UDP), a connection type (SOCK_STREAM, SOCK_SEQPACKET),
+    SOCK_NONBLOCK, and SOCK_DGRAM under AF_INET; and the flag -EINVAL
+    and the type range still decided first. *)
+Example socket_dgram_neighbours :
+  dgram_socket 10 2 17 3 = CheckUnmodeled
+  /\ dgram_socket 10 1 0 3 = CheckUnmodeled
+  /\ dgram_socket 1 5 0 3 = CheckUnmodeled
+  /\ dgram_socket 10 (2 + 2048) 0 3 = CheckUnmodeled
+  /\ dgram_socket 2 2 0 3 = CheckUnmodeled
+  /\ dgram_socket 10 (2 + 1048576) 0 (errno_ret EINVAL)
+     = CheckOk dgram_socket_model []
+  /\ dgram_socket 10 11 0 (errno_ret EINVAL) = CheckOk dgram_socket_model [].
+Proof. repeat split; check_eq. Qed.
+
 (** A model whose fd 3 is a socket the peer has RESET and whose error
     has already been delivered, and its unreset twin.  Everything else
     matches [listening_socket_model].
@@ -1402,6 +1456,52 @@ Example socket_calls_null_pointers_never_beat_the_fd :
          (mkEffect (errno_ret EFAULT) [] []) socket_call_model
        = CheckReject)
     [204; 205; 209].
+Proof. repeat constructor; check_eq. Qed.
+
+(** THE TWO WAVE-2 KINDS ON EVERY SOCKET CALL.  A datagram socket
+    ([State.FdDgram]: fd 3 is AF_INET6, fd 4 AF_UNIX) IS a socket --
+    [sock_alloc_file] gave it [socket_file_ops] -- so no call answers it
+    -ENOTSOCK, and every one declines it: [Net.Socket.SoInert] in the
+    five option and address calls, [Net.Socket.sockfd_lookup_errno]'s
+    [None] in the two receives, and an explicit arm in bind, listen,
+    accept/accept4, connect, sendto and sendmsg.  An eventfd
+    ([State.FdEventfd], fd 5) is NOT a socket -- its [f_op] is
+    [eventfd_fops] -- and every call answers it -ENOTSOCK, with an
+    -EBADF refused.
+    ADMISSION REASON: model-internal -- a decline is not observable in a
+    run, and which fd kinds the wildcards reach is the model's own
+    bookkeeping.
+
+    The arguments carry a 1-byte buffer at 4096 and flag words of 0,
+    except connect, which takes a 0-byte address (the copy succeeds and
+    the descriptor decides), and sendmsg, which takes MSG_NOSIGNAL
+    (16384), the one flag word it answers. *)
+Definition wave2_kinds_model : Model :=
+  with_creds demo_creds
+    (mkModel
+       [ (0, FdChannel 0); (3, FdDgram AF_INET6); (4, FdDgram AF_UNIX);
+         (5, FdEventfd (mkEventfdCtx 0 false false)) ]
+       (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
+
+Definition wave2_call (no fd : word) (args : list word) (r : word)
+    : check_result :=
+  check_syscall (mkInput no (fd :: args) (fun _ => None) (fun _ => None))
+    (mkEffect r [] []) wave2_kinds_model.
+
+Example datagram_declines_and_eventfd_is_not_a_socket :
+  Forall (fun c =>
+    wave2_call (fst c) 3 (snd c) (errno_ret ENOTSOCK) = CheckUnmodeled
+    /\ wave2_call (fst c) 4 (snd c) (errno_ret ENOTSOCK) = CheckUnmodeled
+    /\ wave2_call (fst c) 5 (snd c) (errno_ret ENOTSOCK)
+       = CheckOk wave2_kinds_model []
+    /\ wave2_call (fst c) 5 (snd c) (errno_ret EBADF) = CheckReject)
+  [ (200, [4096; 16; 0; 0; 0]); (201, [1; 0; 0; 0; 0]);
+    (202, [0; 0; 0; 0; 0]); (203, [4096; 0; 0; 0; 0]);
+    (204, [4096; 4100; 0; 0; 0]); (205, [4096; 4100; 0; 0; 0]);
+    (206, [4096; 1; 0; 0; 0]); (207, [4096; 1; 0; 0; 0]);
+    (208, [1; 2; 4096; 4; 0]); (209, [1; 2; 4096; 4100; 0]);
+    (210, [2; 0; 0; 0; 0]); (211, [4096; 16384; 0; 0; 0]);
+    (212, [4096; 0; 0; 0; 0]); (242, [0; 0; 0; 0; 0]) ].
 Proof. repeat constructor; check_eq. Qed.
 
 (* ..........................................................................

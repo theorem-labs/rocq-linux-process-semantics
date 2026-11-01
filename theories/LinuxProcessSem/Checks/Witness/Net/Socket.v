@@ -26,7 +26,8 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
    ========================================================================= *)
 
 (** As [openat_witness] does, this takes the ERRNO side of the [alt] on
-    every arm that can succeed: [socket_errnos] is headed by ENOMEM, so
+    every arm that can succeed: [socket_errnos] is headed by ENOMEM, and
+    so is [socket_dgram_errnos] for either family, so
     [errno_head_witness] supplies the outcome and the success branch's
     [lowest_fd] never has to be shown inhabited. *)
 Definition socket_witness (domain type protocol : word) (m : Model)
@@ -44,6 +45,8 @@ Definition socket_witness (domain type protocol : word) (m : Model)
     if orb (Z.ltb fam 0) (Z.leb NPROTO fam)
     then ret_outcome (errno_ret EAFNOSUPPORT) m
     else if Z.leb SOCK_MAX ty then ret_outcome (errno_ret EINVAL) m
+    else if socket_dgram_b fam ty pro
+    then ret_outcome (errno_ret witness_errno) m   (* env-failure branch *)
     else if negb (Z.eqb fam AF_INET) then Unmodeled  (* registration the model cannot know *)
     else if Z.eqb ty SOCK_PACKET then Unmodeled      (* rewritten to PF_PACKET above the
                                                         protocol range — see [socket_spec] *)
@@ -76,6 +79,12 @@ Proof.
   { apply pure_ok. }
   destruct (Z.leb SOCK_MAX (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK)).
   { apply pure_ok. }
+  destruct (socket_dgram_b (sint32 domain)
+              (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK)
+              (sint32 protocol)).
+  { apply alt_l. eapply bind_step; [|apply pure_ok].
+    unfold socket_dgram_errnos, socket_errnos.
+    destruct (Z.eqb (sint32 domain) AF_INET6); apply errno_head_witness. }
   destruct (negb (Z.eqb (sint32 domain) AF_INET)). { apply unmodeled_intro. }
   destruct (Z.eqb (Z.land (bv_unsigned (abi_low32 type)) SOCK_TYPE_MASK) SOCK_PACKET).
   { apply unmodeled_intro. }
@@ -142,6 +151,7 @@ Definition bind_witness (fd addrp addrlen : word) (i : SyscallInput) (m : Model)
               end)
       end
   | Some (FdStream _ _ _) => Unmodeled          (* [unix_bind]: a name the model lacks *)
+  | Some (FdDgram _) => Unmodeled               (* a socket: an address it lacks *)
   | Some _ => ret_outcome (errno_ret ENOTSOCK) m
   end.
 
@@ -151,7 +161,7 @@ Proof.
   intros. unfold bind_spec, bind_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st]|];
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam]|];
     cbv beta iota zeta; try apply pure_ok; try apply unmodeled_intro.
   (* socket *)
   destruct (orb (Z.ltb (sint32 addrlen) 0)
@@ -197,6 +207,7 @@ Definition listen_witness (fd : word) (m : Model) : outcome SyscallEffect :=
       | SkFresh => ret_outcome (errno_ret EADDRINUSE) m   (* the autobind's failure *)
       end
   | Some (FdStream _ _ _) => ret_outcome (errno_ret EINVAL) m   (* unbound pair end *)
+  | Some (FdDgram _) => Unmodeled                              (* a socket: declined *)
   | Some _ => ret_outcome (errno_ret ENOTSOCK) m
   end.
 
@@ -205,8 +216,8 @@ Lemma listen_witness_ok : forall fd backlog i m,
 Proof.
   intros. unfold listen_spec, listen_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st]|];
-    cbv beta iota zeta; try apply pure_ok.
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam]|];
+    cbv beta iota zeta; try apply pure_ok; try apply unmodeled_intro.
   destruct sk as [| | |peer ch rx|peer ch]; try apply pure_ok.
   - (* fresh: the autobind's -EADDRINUSE *)
     apply alt_l. eapply bind_step; [apply errno_head_witness|]. apply pure_ok.
@@ -242,6 +253,7 @@ Definition accept4_witness (fd addrp flags : word) (m : Model)
           | _ => ret_outcome (errno_ret EINVAL) m
           end
       | FdStream _ _ _ => Unmodeled              (* a socket: see [accept4_spec] *)
+      | FdDgram _ => Unmodeled                   (* a socket: see [accept4_spec] *)
       | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
              then Unmodeled
              else ret_outcome (errno_ret ENOTSOCK) m
@@ -259,7 +271,7 @@ Proof.
                            (Z.lor SOCK_CLOEXEC SOCK_NONBLOCK)) 0)); [apply pure_ok|].
   destruct (negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags)) SOCK_NONBLOCK) 0));
     [apply unmodeled_intro|].
-  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st];
+  destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam];
     try apply unmodeled_intro;
     try (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT));
          [apply unmodeled_intro | apply alt_l; apply pure_ok]).
@@ -311,6 +323,7 @@ Definition connect_witness (fd addrp addrlen : word) (i : SyscallInput)
                      else Unmodeled
                  end
            | FdStream _ _ _ => Unmodeled        (* [unix_stream_connect]: a name lookup *)
+           | FdDgram _ => Unmodeled             (* a peer [State.FdDgram] lacks *)
            | _ => ret_outcome (errno_ret ENOTSOCK) m
            end)
       end
@@ -322,16 +335,16 @@ Proof.
   intros. unfold connect_spec, connect_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st]|];
-    cbv beta iota zeta; [ | | | | | | | | | | | apply pure_ok ].
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam]|];
+    cbv beta iota zeta; [ | | | | | | | | | | | | | apply pure_ok ].
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen)));
        cbv beta iota zeta; [ apply pure_ok | ].
   all: destruct (move_addr_bytes (in_mem i) addrp (sint32 addrlen))
          as [bs|]; cbv beta iota zeta; [ | apply pure_ok ].
   all: apply record_copyins_outcome; cbv beta iota zeta.
-  (* seven non-socket entries answer -ENOTSOCK below the copy, and the
-     stream-pair end declines there *)
+  (* eight non-socket entries answer -ENOTSOCK below the copy, and the
+     stream-pair end and the datagram socket decline there *)
   all: try apply pure_ok.
   all: try apply unmodeled_intro.
   (* the socket arm *)
@@ -509,6 +522,7 @@ Definition getsockname_witness (fd : word) (i : SyscallInput) (m : Model)
   | SoErr e => ret_outcome (errno_ret e) m
   | SoInet _ => Unmodeled
   | SoPair _ _ _ => stream_getname_witness (in_arg i 1) (in_arg i 2) i m
+  | SoInert _ => Unmodeled                 (* [State.FdDgram]: declined *)
   end.
 
 Lemma getsockname_witness_ok : forall fd i m,
@@ -516,10 +530,11 @@ Lemma getsockname_witness_ok : forall fd i m,
 Proof.
   intros. unfold getsockname_spec, getsockname_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (sock_fd m fd) as [sk|id side st|e]; cbv beta iota zeta.
+  destruct (sock_fd m fd) as [sk|id side st|fam|e]; cbv beta iota zeta.
   - apply unmodeled_intro.
   - eapply bind_step; [apply input_ok|]. cbv beta.
     apply stream_getname_witness_ok.
+  - apply unmodeled_intro.
   - apply pure_ok.
 Qed.
 
@@ -536,6 +551,7 @@ Definition getpeername_witness (fd : word) (i : SyscallInput) (m : Model)
       | SkConnected _ _ _ => Unmodeled
       end
   | SoPair _ _ _ => stream_getname_witness (in_arg i 1) (in_arg i 2) i m
+  | SoInert _ => Unmodeled
   end.
 
 Lemma getpeername_witness_ok : forall fd i m,
@@ -543,11 +559,12 @@ Lemma getpeername_witness_ok : forall fd i m,
 Proof.
   intros. unfold getpeername_spec, getpeername_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (sock_fd m fd) as [sk|id side st|e]; cbv beta iota zeta.
+  destruct (sock_fd m fd) as [sk|id side st|fam|e]; cbv beta iota zeta.
   - destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta;
       solve [apply pure_ok | apply unmodeled_intro].
   - eapply bind_step; [apply input_ok|]. cbv beta.
     apply stream_getname_witness_ok.
+  - apply unmodeled_intro.
   - apply pure_ok.
 Qed.
 
@@ -564,6 +581,7 @@ Definition setsockopt_witness (fd level optlen : word) (i : SyscallInput)
       else if negb (Z.eqb (bv_unsigned level) SOL_SOCKET)
       then ret_outcome (errno_ret EOPNOTSUPP) m
       else stream_setsockopt_witness fd id side st (in_arg i 2) (in_arg i 3) optlen i m
+  | SoInert _ => Unmodeled
   end.
 
 Lemma setsockopt_witness_ok : forall fd level optlen i m,
@@ -571,7 +589,7 @@ Lemma setsockopt_witness_ok : forall fd level optlen i m,
 Proof.
   intros. unfold setsockopt_spec, setsockopt_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (sock_fd m fd) as [sk|id side st|e]; cbv beta iota zeta.
+  destruct (sock_fd m fd) as [sk|id side st|fam|e]; cbv beta iota zeta.
   - destruct (int32_neg optlen); cbv beta iota zeta; [apply pure_ok|].
     destruct (negb (sock_level_known level)); cbv beta iota zeta;
       [apply pure_ok | apply unmodeled_intro].
@@ -580,6 +598,7 @@ Proof.
       [apply pure_ok|].
     eapply bind_step; [apply input_ok|]. cbv beta.
     apply stream_setsockopt_witness_ok.
+  - apply unmodeled_intro.
   - apply pure_ok.
 Qed.
 
@@ -601,6 +620,7 @@ Definition getsockopt_witness (fd level optlenp : word) (i : SyscallInput)
         (if negb (Z.eqb (bv_unsigned level) SOL_SOCKET)
          then ret_outcome (errno_ret EOPNOTSUPP) m
          else stream_getsockopt_witness st (in_arg i 2) (in_arg i 3) optlenp i m)
+  | SoInert _ => Unmodeled
   end.
 
 Lemma getsockopt_witness_ok : forall fd level optlenp i m,
@@ -609,7 +629,7 @@ Proof.
   intros. unfold getsockopt_spec, getsockopt_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (sock_fd m fd) as [sk|id side st|e]; cbv beta iota zeta.
+  destruct (sock_fd m fd) as [sk|id side st|fam|e]; cbv beta iota zeta.
   - apply record_copyins_outcome.
     destruct (negb (sock_level_known level)); cbv beta iota zeta;
       [apply pure_ok | apply unmodeled_intro].
@@ -617,6 +637,7 @@ Proof.
     destruct (negb (Z.eqb (bv_unsigned level) SOL_SOCKET)); cbv beta iota zeta;
       [apply pure_ok|].
     apply stream_getsockopt_witness_ok.
+  - apply unmodeled_intro.
   - apply pure_ok.
 Qed.
 
@@ -637,6 +658,7 @@ Definition shutdown_witness (fd how : word) (m : Model)
   | SoPair id side st =>
       if negb (shut_how_ok how) then ret_outcome (errno_ret EINVAL) m
       else stream_shutdown_witness fd id side st how m
+  | SoInert _ => Unmodeled
   end.
 
 Lemma shutdown_witness_ok : forall fd how i m,
@@ -644,7 +666,7 @@ Lemma shutdown_witness_ok : forall fd how i m,
 Proof.
   intros. unfold shutdown_spec, shutdown_witness.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (sock_fd m fd) as [sk|id side st|e]; cbv beta iota zeta.
+  destruct (sock_fd m fd) as [sk|id side st|fam|e]; cbv beta iota zeta.
   - destruct (negb (shut_how_ok how)); cbv beta iota zeta; [apply pure_ok|].
     destruct sk as [| | |peer ch rx|peer ch]; cbv beta iota zeta;
       try apply unmodeled_intro.
@@ -652,6 +674,7 @@ Proof.
       [apply pure_ok | apply unmodeled_intro].
   - destruct (negb (shut_how_ok how)); cbv beta iota zeta; [apply pure_ok|].
     apply stream_shutdown_witness_ok.
+  - apply unmodeled_intro.
   - apply pure_ok.
 Qed.
 
@@ -757,6 +780,7 @@ Definition sendto_witness (fd buf count flags addrp : word)
            else witness_stream_write id side st
                   (se_nonblock st || send_flag flags MSG_DONTWAIT)%bool
                   (send_flag flags MSG_NOSIGNAL) buf count i m
+       | Some (FdDgram _) => Unmodeled        (* a socket with no peer: declined *)
        | Some _ => ret_outcome (errno_ret ENOTSOCK) m
        end).
 
@@ -773,12 +797,13 @@ Proof.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
   unfold access_ok_zero, access_ok_zero_witness.
   destruct (access_okb buf (bv_unsigned count)); [|apply pure_ok].
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st]|];
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam]|];
     cbv beta iota zeta; try apply pure_ok.
   - destruct (negb (send_flags_modeled flags)); [apply unmodeled_intro|].
     apply send_on_socket_witness_ok.
   - destruct (negb (stream_send_flags_ok flags)); [apply unmodeled_intro|].
     apply witness_stream_write_ok.
+  - apply unmodeled_intro.                   (* the datagram socket *)
 Qed.
 
 (** [sendmsg]'s fd comes FIRST and the header second — the opposite
@@ -793,9 +818,11 @@ Definition sendmsg_witness (fd msgp flags : word)
   | Some (FdChannel _) | Some (FdFile _ _)
   | Some (FdFileW _ _) | Some FdDir
   | Some (FdFileA _ _) | Some (FdFileRW _ _)
-  | Some (FdPipe _ _) | Some (FdDevNull _ _) | Some FdUrandom =>
+  | Some (FdPipe _ _) | Some (FdDevNull _ _) | Some FdUrandom
+  | Some (FdEventfd _) =>
       ret_outcome (errno_ret ENOTSOCK) m
   | Some (FdStream _ _ _) => Unmodeled          (* SCM_RIGHTS: see [sendmsg_spec] *)
+  | Some (FdDgram _) => Unmodeled               (* see [sendmsg_spec] *)
   | Some (FdSocket sk) =>
       match copy_bytes_map (in_mem i) msgp MSGHDR_SIZE with
       | None => ret_outcome (errno_ret EFAULT) m
@@ -852,7 +879,7 @@ Proof.
   destruct (negb (send_flags_modeled flags)); [apply unmodeled_intro|].
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st]|];
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam]|];
     cbv beta iota zeta; try apply pure_ok; try apply unmodeled_intro.
   destruct (copy_bytes_map (in_mem i) msgp MSGHDR_SIZE);
     cbv beta iota zeta; [|apply pure_ok].
@@ -984,7 +1011,7 @@ Proof.
   unfold access_ok_zero.
   destruct (access_okb buf (bv_unsigned size)) eqn:Hok; cbv beta iota.
   { destruct (fd_lookup (m_fds m) fd)
-      as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st]|] eqn:Hfd;
+      as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam]|] eqn:Hfd;
       cbv beta iota zeta;
       (* every kind but the stream-pair end: its errno, or a socket's
          decline *)

@@ -734,7 +734,7 @@ Qed.
 
 (** fstat: total over [FdEntry], answering on the closed descriptor's
     -EBADF, the four file kinds, which share one inode and so one
-    answer, /dev/null and /dev/urandom.  The other five decline as a body; see [Stat.fstat_spec] for which of [struct stat]'s twenty
+    answer, /dev/null and /dev/urandom.  The other seven decline as a body; see [Stat.fstat_spec] for which of [struct stat]'s twenty
     members each would have to invent, and for why the match carries no
     wildcard. *)
 Definition check_fstat (i : SyscallInput) (fd statbuf : word)
@@ -749,6 +749,8 @@ Definition check_fstat (i : SyscallInput) (fd statbuf : word)
   | Some FdDir         => CheckUnmodeled
   | Some (FdSocket _)  => CheckUnmodeled
   | Some (FdStream _ _ _) => CheckUnmodeled
+  | Some (FdDgram _)   => CheckUnmodeled
+  | Some (FdEventfd _) => CheckUnmodeled
   | Some (FdPipe _ _)  => CheckUnmodeled
   | Some (FdDevNull _ _) => check_fstat_devnull i statbuf eff m
   | Some FdUrandom => check_fstat_urandom i statbuf eff m

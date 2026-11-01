@@ -113,7 +113,7 @@ Defined.
 Definition arm_eventfd2 : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 19%Z (fun i => eventfd2_spec (flag32 (in_arg i 1)) i))
-                       (fun i eff m => check_eventfd2 (flag32 (in_arg i 1)) eff m)
+                       (fun i eff m => check_eventfd2 i (flag32 (in_arg i 1)) eff m)
                        (fun i m => eventfd2_witness (flag32 (in_arg i 1)) m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
@@ -190,8 +190,8 @@ Defined.
 Definition arm_ioctl : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 29%Z (fun i => ioctl_spec (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) i))
-                       (fun i eff m => check_ioctl (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) eff m)
-                       (fun i m => ioctl_witness (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) m)
+                       (fun i eff m => check_ioctl i (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) eff m)
+                       (fun i m => ioctl_witness (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_ioctl_sound_ok, check_ioctl_sound_unmodeled, check_ioctl_complete_ok, check_ioctl_complete_unmodeled, ioctl_witness_ok.
@@ -1239,7 +1239,7 @@ Lemma sa_spec_arm_getcwd : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_eventfd2 : forall i eff m,
-  ca_check arm_eventfd2 i eff m = check_eventfd2 (flag32 (in_arg i 1)) eff m.
+  ca_check arm_eventfd2 i eff m = check_eventfd2 i (flag32 (in_arg i 1)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_eventfd2 : forall i m,
   ca_witness arm_eventfd2 i m = eventfd2_witness (flag32 (in_arg i 1)) m.
@@ -1309,10 +1309,10 @@ Lemma sa_spec_arm_fcntl : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_ioctl : forall i eff m,
-  ca_check arm_ioctl i eff m = check_ioctl (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) eff m.
+  ca_check arm_ioctl i eff m = check_ioctl i (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_ioctl : forall i m,
-  ca_witness arm_ioctl i m = ioctl_witness (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) m.
+  ca_witness arm_ioctl i m = ioctl_witness (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_ioctl : forall i m o,
   sa_spec (ca_arm arm_ioctl) i m o = ioctl_spec (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) i m o.

@@ -390,6 +390,8 @@ Definition ftruncate_witness (fd len : word) (m : Model)
   | Some (FdChannel _) => ret_outcome (errno_ret EINVAL) m
   | Some (FdSocket _) => ret_outcome (errno_ret EINVAL) m  (* S_ISSOCK, not S_ISREG *)
   | Some (FdStream _ _ _) => ret_outcome (errno_ret EINVAL) m  (* S_ISSOCK too *)
+  | Some (FdDgram _) => ret_outcome (errno_ret EINVAL) m  (* and a datagram socket *)
+  | Some (FdEventfd _) => ret_outcome (errno_ret EINVAL) m  (* no type bits: not S_ISREG *)
   | Some (FdPipe _ _) => ret_outcome (errno_ret EINVAL) m  (* S_IFIFO, not S_ISREG *)
   | Some (FdDevNull _ _) => ret_outcome (errno_ret EINVAL) m  (* S_IFCHR, not S_ISREG *)
   | Some FdUrandom => ret_outcome (errno_ret EINVAL) m  (* S_IFCHR again *)
@@ -419,7 +421,7 @@ Lemma ftruncate_witness_ok : forall fd len i m,
 Proof.
   intros. unfold ftruncate_spec, ftruncate_witness.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg; [apply pure_ok|].
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |id side st|ctx|fam]|] eqn:Hfd;
     try (eapply bind_step; [apply get_model_ok|];
          cbv beta iota; srw Hfd; apply pure_ok).
   all: destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs;

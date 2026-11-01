@@ -68,9 +68,87 @@ Proof.
   unfold ret_only. apply pure_ok.
 Qed.
 
+(** [Kernel.Signal.sigpipe_oact_write] read as a function: it has no
+    [choose] and no [alt], so its arm structure is the witness. *)
+Definition sigpipe_oact_witness (oact : word) (old : SigpipeAction)
+    (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
+  if w_is0 oact then ret_outcome (Z_to_bv 64 0) m
+  else if negb (access_okb oact 24) then ret_outcome (errno_ret EFAULT) m
+  else
+    match read_bytes_map (in_wmem i) oact (Z_to_bv 64 24) with
+    | Some _ => Ok (mkEffect (Z_to_bv 64 0) [(oact, sigpipe_action_bytes old)] []) m []
+    | None =>
+        match read_bytes_map (in_wmem i) oact (Z_to_bv 64 1) with
+        | None => ret_outcome (errno_ret EFAULT) m
+        | Some _ => Unmodeled
+        end
+    end.
+
+Lemma sigpipe_oact_witness_ok : forall oact old i i0 m,
+  sigpipe_oact_write oact old i i0 m (sigpipe_oact_witness oact old i m).
+Proof.
+  intros. unfold sigpipe_oact_write, sigpipe_oact_witness.
+  destruct (w_is0 oact); cbv beta iota.
+  { unfold ret_only, ret_outcome. apply pure_ok. }
+  destruct (negb (access_okb oact 24)); cbv beta iota.
+  { unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 24)); cbv beta iota.
+  { apply pure_ok. }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 1)); cbv beta iota.
+  - apply unmodeled_intro.
+  - unfold err_ret, ret_only, ret_outcome. apply pure_ok.
+Qed.
+
+(** [Kernel.Signal.rt_sigaction_sigpipe]: deterministic too, so again
+    its arm structure, with the install's model handed to the
+    copy-out. *)
+Definition rt_sigaction_sigpipe_witness (act oact : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  let old := m_sigpipe_action m in
+  if w_is0 act then sigpipe_oact_witness oact old i m
+  else
+    match sigaction_struct (in_mem i) act with
+    | None => ret_outcome (errno_ret EFAULT) m
+    | Some bs =>
+        outcome_copyins [(act, 24%nat)]
+        (let h := sigaction_field bs 0 in
+         if negb (Z.eqb h SIG_DFL || Z.eqb h SIG_IGN)%bool then Unmodeled
+         else if (Z.eqb h SIG_DFL && sigpipe_hidden_pending_possible m)%bool
+         then Unmodeled
+         else
+           sigpipe_oact_witness oact old i
+             (with_sigpipe_install
+                (mkSigpipeAction (Z.eqb h SIG_DFL)
+                   (Z.land (sigaction_field bs 8) UAPI_SA_FLAGS)
+                   (Z.ldiff (sigaction_field bs 16) sig_kernel_only_mask))
+                m))
+    end.
+
+Lemma rt_sigaction_sigpipe_witness_ok : forall act oact i m,
+  rt_sigaction_sigpipe act oact i m (rt_sigaction_sigpipe_witness act oact i m).
+Proof.
+  intros. unfold rt_sigaction_sigpipe, rt_sigaction_sigpipe_witness.
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  eapply bind_step; [apply get_model_ok|]. cbv beta zeta.
+  destruct (w_is0 act); cbv beta iota.
+  { apply sigpipe_oact_witness_ok. }
+  destruct (sigaction_struct (in_mem i) act) as [bs|]; cbv beta iota.
+  2:{ unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
+  apply record_copyins_outcome.
+  destruct (negb (Z.eqb (sigaction_field bs 0) SIG_DFL
+                  || Z.eqb (sigaction_field bs 0) SIG_IGN)%bool); cbv beta iota.
+  { apply unmodeled_intro. }
+  destruct (Z.eqb (sigaction_field bs 0) SIG_DFL
+            && sigpipe_hidden_pending_possible m)%bool; cbv beta iota.
+  { apply unmodeled_intro. }
+  eapply bind_step; [apply modify_ok|]. cbv beta.
+  apply sigpipe_oact_witness_ok.
+Qed.
+
 Definition rt_sigaction_witness (sig act oact ss : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   if negb (bv_eqb ss (Z_to_bv 64 8)) then ret_outcome (errno_ret EINVAL) m
+  else if Z.eqb (bv_unsigned sig) SIGPIPE then rt_sigaction_sigpipe_witness act oact i m
   else if negb (w_is0 oact) then Unmodeled
   else if w_is0 act
   then (if sig_valid sig then ret_outcome (Z_to_bv 64 0) m
@@ -95,6 +173,8 @@ Proof.
   intros. unfold rt_sigaction_spec, rt_sigaction_witness.
   destruct (negb (bv_eqb ss (Z_to_bv 64 8))) eqn:Hss; cbv beta iota.
   { unfold err_ret, ret_only, ret_outcome. apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned sig) SIGPIPE) eqn:Hpipe; cbv beta iota.
+  { apply rt_sigaction_sigpipe_witness_ok. }
   destruct (negb (w_is0 oact)) eqn:Hoact; cbv beta iota.
   { apply unmodeled_intro. }
   destruct (w_is0 act) eqn:Hact; cbv beta iota.
