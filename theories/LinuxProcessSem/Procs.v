@@ -30,55 +30,97 @@
     A NEW RELATION, not a configuration of the released one: [Run.config] is
     unchanged, no [Run.sstep_cfg] rule produces a second of either, and
     [wait4_spec] keeps answering the single-process question with the answer
-    it always gave.  The two never apply to the same configuration —
-    [wait4_spec] is [unmodeled] unless the option word is WNOHANG, unless the
+    it always gave.  The two never apply to the same configuration -- the
+    released arm is [unmodeled] unless the option word is WNOHANG, unless the
     pid is the any-child value, unless the usage pointer is null, and then
     [unmodeled] AGAIN if the model has children (Exit.v:244-252), while the
     reap arm of this file requires the option word to be 0 and requires an own
     halted child.  There is no configuration at which both say anything.
-    (Checked line by line against those two files, 2026-11-01.)
 
-    WHY THE CLONE ARM CONSUMES THE RELEASED STEP.  [pstep_clone] fires only
-    under [clone_success], which reads the value [Run.apply_effect] put in a0
-    against [Fork.clone_errnos] through [Run.ret_in_errnos] — the same
+    WHY THE CLONE ARM CONSUMES THE RELEASED STEP.  It fires only under
+    [clone_success_b], which reads the value [Run.apply_effect] put in a0
+    against [Fork.clone_errnos] through [Run.ret_in_errnos] -- the same
     predicate [Run.refusal_b] uses.  So a FAILING clone keeps the released
     behaviour exactly, and the new arm cannot drift from the released errno
     list even if that list changes.
 
+    TWO THINGS A PORTER OF THIS FILE MUST NOT GUESS.
+
+    [ms_gpr st i] is the i-th syscall ARGUMENT register, x(10+i)
+    (RiscvSemantics.v:115-118), so a0 is index 0.  Index 10 is x20.
+    [Run.apply_effect] writes the return value with [set_reg ms 10], which
+    takes a PHYSICAL register number, and physical x10 is a0: the two
+    numberings meet at a0 and nowhere else.  A port that reads index 10 here
+    builds, never fires the clone arm, and looks like a model disagreement.
+
+    [set_fsys] below is NOT [State.with_fs].  [State.with_fs] additionally
+    applies [statpins_restrict], dropping the stat pin of every path the new
+    image does not have -- which is right for a syscall that replaces the
+    image and WRONG for a splice, where the image is the one the entry
+    already had and the pins must survive untouched.  The splice therefore
+    uses the plain record rebuild below.  A port that reuses the model's
+    image-installing setter silently loses stat pins at every step.
+
     BUILD ORDER.  [pstep_single] and [pstep_instr_single] below are proved
-    before any arm but [pstep_other], because every consumer's own step
-    relation is derived from them, and
-    because every one-process statement in the released set depends on them
-    holding. *)
+    before any arm but [pstep_other], because every derived step relation
+    rests on them and because every one-process statement does. *)
 
 From Stdlib Require Import ZArith NArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Syscall Uapi.
 From LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel Require Import Exit Fork.
+(** [NsState] and [NsCtx].  This file DEPENDS ON [Ns/Tables.v] and does not
+    vendor it: two representations of one thing are what diverge. *)
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables.
 Import ListNotations.
 Open Scope bv_scope.
 Local Open Scope bool_scope.
 
 (* =========================================================================
+   Identifiers
+   ========================================================================= *)
+
+(** A pid and an open-description id are both [word].
+
+    NOT [positive], and the reason is portability rather than taste: the
+    mirror of this development has no [positive], every boundary would be a
+    conversion, and the obvious rendering [Nat] silently re-admits pid 0 and
+    so undoes [Checks.ProcessCreation.clone_never_returns_zero].  With [word]
+    the lookup and insert below are the model's own fd-table operations on
+    the same key type, and nothing is lost on this side: freshness is still
+    [look P q = None], and 0 is still excluded by [Fork.clone_pid_ok_b]. *)
+Definition Pid   : Type := word.
+Definition OfdId : Type := word.
+
+(* =========================================================================
    Shared kernel objects that leave the per-process model
    ========================================================================= *)
 
-(** An open file description's identity.  A [positive] rather than a [nat] so
-    that freshness is cheap to decide and 0 is not a legal id. *)
-Definition OfdId : Type := positive.
+(** The access mode of a shared regular file, which is what the four
+    [State.FdFile*] constructors differ by. *)
+Inductive FileMode : Type := FmR | FmW | FmA | FmRW.
 
-(** What a shared description is OF.  The kinds are exactly the [State.FdEntry]
-    constructors whose kernel object Linux SHARES across a fork: a regular
-    file (whose offset moves), a pipe end, a socket, and the inherited
-    standard channels.  [FdDir], [FdDevNull] and [FdUrandom] carry no mutable
-    kernel-side offset and stay private in [State.m_fd]. *)
+(** What a shared description is OF.  The payloads MIRROR [State.FdEntry]'s
+    exactly, so promoting a private descriptor loses nothing and a later
+    demotion is total.
+
+    The kinds here are the [State.FdEntry] constructors that carry a mutable
+    kernel-side OFFSET inside the entry: the four regular-file forms, a pipe
+    end and a socket.  [FdDir], [FdDevNull] and [FdUrandom] carry none and
+    stay private in [State.m_fd].
+
+    [FdChannel] is NOT here, and that is the interesting case.  A channel's
+    position is not in the descriptor at all: it is [State.iost_stdin] inside
+    [m_io] (State.v:2964-2965, 3504).  [m_io] is already a field of [shared],
+    so an inherited standard descriptor is shared ACROSS A CLONE BY
+    CONSTRUCTION and needs no promotion.  That is why no clone gate excludes
+    one: a parent that keeps its standard descriptors open across a clone is
+    handled, not declined. *)
 Inductive OfdWhat : Type :=
-  | OfdFile   (p : Fs.path) (mode : word)
-  | OfdPipeR  (buf : positive)
-  | OfdPipeW  (buf : positive)
-  | OfdSocket (ix : word)
-  | OfdChannel (ch : word).
+  | OfdFile   (p : Fs.path) (mode : FileMode)
+  | OfdPipe   (id : word) (writer : bool)
+  | OfdSocket (sk : SockState).
 
 (** A shared open file description: Linux's [struct file].  THE OFFSET LIVES
     HERE, once, however many descriptors in however many processes name it.
@@ -88,9 +130,9 @@ Inductive OfdWhat : Type :=
     duplicates the table while both tables point at the same [struct file],
     and an offset inside [FdEntry] cannot express that.
 
-    MEASURED ALTERNATIVE, so the choice is on the record: moving the offset out
-    of [State.FdEntry] itself costs 1357 constructor-pattern sites across 69
-    files in this repository, each in a [Checks/Sys], [Checks/Witness] or
+    MEASURED ALTERNATIVE, so the choice is on the record: moving the offset
+    out of [State.FdEntry] itself costs 1357 constructor-pattern sites across
+    69 files in this repository, each in a [Checks/Sys], [Checks/Witness] or
     [Checks/Cases] mirror with its own four soundness proofs, and a larger
     number again in the developments built on this one.  This overlay costs
     none of them.
@@ -102,83 +144,30 @@ Record Ofd := mkOfd {
   ofd_what  : OfdWhat;
   ofd_off   : word;
   ofd_flags : word;
-  ofd_refs  : positive
+  ofd_refs  : word
 }.
 
-(* =========================================================================
-   The task-private namespace context
-   ========================================================================= *)
+(** THE NAMESPACE STATE IS NOT DEFINED HERE, AND MUST NOT BE.
 
-Definition MountId  : Type := positive.
-Definition DentryId : Type := positive.
-Definition NsId     : Type := positive.
+    It is [LinuxProcessSem.Ns.Tables], imported above: [NsState], the mounts
+    with their flags and locks and the user namespaces with their maps, and
+    [NsCtx], the task-private user and mount ids with root and cwd as a
+    mount-and-dentry pair.  This file takes those types and carries no second
+    copy of them, because two representations of one thing are what diverge.
 
-(** The five capability sets of [struct cred], as the one 64-bit word each
-    that riscv64's [__user_cap_data_struct] pair amounts to. *)
-Record CapSets := mkCapSets {
-  cap_permitted   : word;
-  cap_effective   : word;
-  cap_inheritable : word;
-  cap_bounding    : word;
-  cap_ambient     : word
-}.
+    WHY A TASK-PRIVATE CONTEXT AT ALL, rather than a projection over the run:
+    a path walk, a capability check and [getpid] each read a private
+    reference AND a shared object in the SAME step.  A pure projection can
+    decide none of /proc/self, a mount root, a uid mapping or a capability
+    set, because [Fs.Fs] is [list (path * list byte)] (Fs.v:86) with no
+    mount, no inode identity and no owner.
 
-(** THE TASK-PRIVATE NAMESPACE CONTEXT, and it is task-private rather than a
-    projection over the run for a measured reason: a path walk, a capability
-    check and [getpid] each read a private reference AND a shared object in
-    the SAME step.  A pure projection can decide none of /proc/self, a mount
-    root, a uid mapping or a capability set, because [Fs.Fs] is
-    [list (path * list byte)] (Fs.v:86) with no mount, no inode identity and
-    no owner.
-
-    [nsx_mount] is an INDIRECTION into [sh_ns], not a copy of the mount tree.
-    Two reasons, and neither is the lemma count (51 new [reflexivity] lemmas
-    against 50 lemmas that stop being [reflexivity] is no difference): a tree
-    copied per namespace can DIVERGE between copies, which is a correctness
-    hazard rather than a proof cost; and conditional lemmas are paid by every
-    future proof that passes through them while [reflexivity] lemmas are paid
-    once.  It is also Linux's shape, [struct mnt_namespace]. *)
-Record ns_ctx := mkNsCtx {
-  nsx_user  : NsId;
-  nsx_mount : NsId;
-  nsx_pid   : NsId;
-  nsx_net   : NsId;
-  nsx_ipc   : NsId;
-  nsx_uts   : NsId;
-  nsx_root  : MountId * DentryId;
-  nsx_cwd   : MountId * DentryId;
-  nsx_umask : word;
-  nsx_caps  : CapSets;
-  nsx_securebits   : word;
-  nsx_no_new_privs : bool;
-  nsx_pdeathsig    : option word;
-  nsx_cloexec      : list (word * bool)
-}.
-
-(** The shared namespace side: the tables, the mount tree, superblocks,
-    inodes, the uid and gid maps, the pid allocation table and the network
-    interfaces.  Empty in the pathfinder and pinned empty by
-    [Checks.ProcsScope]; a namespace development fills it. *)
-Record NsTables := mkNsTables {
-  nst_mounts  : list (NsId * list (MountId * DentryId));
-  nst_supers  : list (positive * positive);
-  nst_inodes  : list (positive * Fs.path);
-  nst_uidmaps : list (NsId * list (word * word * word));
-  nst_gidmaps : list (NsId * list (word * word * word));
-  nst_pidtab  : list (NsId * list (positive * positive));
-  nst_netif   : list (NsId * list word)
-}.
-
-Definition init_ns_tables : NsTables := mkNsTables [] [] [] [] [] [] [].
-
-Definition init_caps : CapSets :=
-  mkCapSets (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0)
-            (Z_to_bv 64 0) (Z_to_bv 64 0).
-
-Definition init_ns_ctx : ns_ctx :=
-  mkNsCtx 1%positive 1%positive 1%positive 1%positive 1%positive 1%positive
-          (1%positive, 1%positive) (1%positive, 1%positive)
-          (Z_to_bv 64 18) init_caps (Z_to_bv 64 0) false None [].
+    [pconfig] is deliberately NOT parametric in the namespace state.  A
+    parameter for one field would reach every definition and every theorem
+    here, and the cost would land on the projection theorem, which is the one
+    thing every consumer and the released corpus both depend on.  The PID
+    type is parametric in the consumer's module type, which is where a
+    parameter belongs; here it is [word]. *)
 
 (* =========================================================================
    The entries, the shared state, and the configuration
@@ -190,16 +179,14 @@ Definition init_ns_ctx : ns_ctx :=
     [m_vm], [m_proc], [m_lim], [m_time].  Its [m_fsys] and [m_io] slots are
     canonically empty and are never read: [pe_cfg] splices the SHARED ones in
     before every step and [pe_absorb] reads them back out after, so the shared
-    copy is the only live one.  [fs_only_in_shared] below is the statement of
-    that, and it is what makes "the file system is global" true rather than
-    decorative. *)
+    copy is the only live one. *)
 Record ProcessEntry := mkEntry {
-  pe_pid    : positive;
-  pe_parent : option positive;
+  pe_pid    : Pid;
+  pe_parent : option Pid;
   pe_ms     : machine_state;
   pe_model  : Model;
   pe_ofd    : list (word * OfdId);
-  pe_ns     : ns_ctx
+  pe_nsctx  : NsCtx
 }.
 
 (** Shared Run state: one of each, for the whole system. *)
@@ -208,16 +195,19 @@ Record shared := mkShared {
   sh_io    : IoState;
   sh_ofd   : list (OfdId * Ofd);
   (** THE PIPE BUFFERS, a NAMED field beside [sh_ofd] rather than a slot
-      inside it or inside [sh_ns]: the projections below are what a consumer
-      reads, and a buffer hidden in another field's slot cannot be named by
-      one. *)
-  sh_pipes : list (positive * PipeBuf);
-  sh_ns    : NsTables
+      inside it or inside the namespace state: the projections below are what
+      a consumer reads, and a buffer hidden in another field's slot cannot be
+      named by one. *)
+  sh_pipes : list (word * PipeBuf);
+  sh_ns    : NsState
 }.
 
+(** The process table is keyed exactly as [State.m_fds] is, so the lookup and
+    the insert below are the model's own on the same key type.  The key and
+    [pe_pid] are the same pid; [pconfig_wf] is where that is said once. *)
 Record pconfig := mkPCfg {
-  pcfg_procs  : list ProcessEntry;
-  pcfg_root   : positive;
+  pcfg_procs  : list (Pid * ProcessEntry);
+  pcfg_root   : Pid;
   pcfg_shared : shared
 }.
 
@@ -227,6 +217,8 @@ Inductive pstep_to := PNext (P : pconfig) | PError.
    The splice: how the shared state reaches a released step
    ========================================================================= *)
 
+(** A plain record rebuild.  NOT [State.with_fs]: see this file's header for
+    why a splice must not apply [statpins_restrict]. *)
 Definition set_fsys (f : FsState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) f (m_proc m) (m_lim m) (m_time m).
 
@@ -247,47 +239,58 @@ Definition clear_shared (m : Model) : Model :=
 Definition pe_cfg (S : shared) (e : ProcessEntry) : config :=
   mkCfg (pe_ms e) (set_fsys (sh_fsys S) (set_io (sh_io S) (pe_model e))).
 
-(** Read one entry's successor back out, splitting it again. *)
 Definition pe_absorb (e : ProcessEntry) (c : config) : ProcessEntry :=
   mkEntry (pe_pid e) (pe_parent e) (cfg_ms c) (clear_shared (cfg_model c))
-          (pe_ofd e) (pe_ns e).
+          (pe_ofd e) (pe_nsctx e).
 
 Definition shared_absorb (S : shared) (c : config) : shared :=
   mkShared (m_fsys (cfg_model c)) (m_io (cfg_model c))
            (sh_ofd S) (sh_pipes S) (sh_ns S).
 
 (** The splice and the absorb are inverse, which is the whole reason the
-    per-entry [m_fsys] slot may be blank. *)
+    per-entry [m_fsys] and [m_io] slots may be blank. *)
 Lemma pe_cfg_absorb : forall S e c,
   pe_cfg (shared_absorb S c) (pe_absorb e c) = c.
-Proof.
-  intros S e c. destruct c as [ms m]. destruct m. reflexivity.
-Qed.
+Proof. intros S e c. destruct c as [ms m]. destruct m. reflexivity. Qed.
+
+(* =========================================================================
+   The process table: lookup and replace, on the fd table's key type
+   ========================================================================= *)
+
+Fixpoint look_in (ps : list (Pid * ProcessEntry)) (p : Pid)
+    : option ProcessEntry :=
+  match ps with
+  | [] => None
+  | kv :: r => if bv_eqb (fst kv) p then Some (snd kv) else look_in r p
+  end.
+
+Definition look (P : pconfig) (p : Pid) : option ProcessEntry :=
+  look_in (pcfg_procs P) p.
+
+Fixpoint replace_in (ps : list (Pid * ProcessEntry)) (p : Pid)
+    (e' : ProcessEntry) : list (Pid * ProcessEntry) :=
+  match ps with
+  | [] => []
+  | kv :: r =>
+      if bv_eqb (fst kv) p then (p, e') :: r
+      else kv :: replace_in r p e'
+  end.
+
+Fixpoint drop_in (ps : list (Pid * ProcessEntry)) (p : Pid)
+    : list (Pid * ProcessEntry) :=
+  match ps with
+  | [] => []
+  | kv :: r => if bv_eqb (fst kv) p then r else kv :: drop_in r p
+  end.
 
 (* =========================================================================
    Projections
    ========================================================================= *)
 
-Fixpoint look_in (ps : list ProcessEntry) (p : positive) : option ProcessEntry :=
-  match ps with
-  | [] => None
-  | e :: r => if Pos.eqb (pe_pid e) p then Some e else look_in r p
-  end.
-
-Definition look (P : pconfig) (p : positive) : option ProcessEntry :=
-  look_in (pcfg_procs P) p.
-
-Fixpoint replace_in (ps : list ProcessEntry) (p : positive) (e' : ProcessEntry)
-    : list ProcessEntry :=
-  match ps with
-  | [] => []
-  | e :: r => if Pos.eqb (pe_pid e) p then e' :: r else e :: replace_in r p e'
-  end.
-
 Definition pe_running (e : ProcessEntry) : Prop := m_halted (pe_model e) = None.
 
-(** A zombie is an entry whose model is halted.  There is no zombie LIST and no
-    zombie flag: every [Run.sstep_cfg] arm requires [m_halted model = None]
+(** A zombie is an entry whose model is halted.  There is no zombie LIST and
+    no zombie flag: every [Run.sstep_cfg] arm requires [m_halted model = None]
     (Run.v:1785, 1790, 1795, 1800, 1810, 1818, 1826, 1833), so a halted entry
     is already stuck in the released relation.  "Dead" is absence from
     [pcfg_procs]. *)
@@ -299,13 +302,18 @@ Definition root_view (P : pconfig) : option config :=
   | None => None
   end.
 
-Definition children_of (P : pconfig) (p : positive) : list ProcessEntry :=
+Definition children_of (P : pconfig) (p : Pid) : list ProcessEntry :=
   (* [List.filter], NOT the bare name: this development imports stdpp, whose
      [filter] takes a [Decision] instance rather than a boolean. *)
-  List.filter (fun e => match pe_parent e with
-                        | Some q => Pos.eqb q p
-                        | None => false
-                        end) (pcfg_procs P).
+  List.map snd
+    (List.filter (fun kv => match pe_parent (snd kv) with
+                            | Some q => bv_eqb q p
+                            | None => false
+                            end) (pcfg_procs P)).
+
+(** The entry's a0 is zero: how a clone's child sees the call. *)
+Definition entry_a0_zero (e : ProcessEntry) : Prop :=
+  ms_gpr (pe_ms e) 0 = Z_to_bv 64 0.
 
 (* =========================================================================
    The multi-process surface
@@ -328,42 +336,43 @@ Definition multiproc_allowed (P : pconfig) (c : config) : bool :=
   end.
 
 (* =========================================================================
-   Discriminating the two intercepted steps
+   The two intercepted steps, as decidable tests
    ========================================================================= *)
 
 Definition clone_sysno (n : Z) : bool := (n =? 220)%Z || (n =? 435)%Z.
 
-(** The step [c -> c'] was a clone that really created a child.
+(** The step [c -> c'] was a clone that really created a child.  A BOOLEAN,
+    so a port needs no decidability instance and the arms below are guarded
+    by equations rather than by negated existentials.
+
     [Run.apply_effect] sets a0 from [eff_ret] (Run.v:177), so the delivered
-    value is read off the successor, and [Run.ret_in_errnos] (Run.v:1403-1404)
-    is the SAME predicate [Run.refusal_b] uses, so the two readings cannot
-    drift.  [Checks.ProcessCreation.clone_resolve_declines_or_sets_children]
+    value is read off the successor, at ARGUMENT INDEX 0 (see the header).
+    [Run.ret_in_errnos] (Run.v:1403-1404) is the SAME predicate
+    [Run.refusal_b] uses, so the two readings cannot drift.
+    [Checks.ProcessCreation.clone_resolve_declines_or_sets_children]
     (ProcessCreation.v:410) is what makes this exact: an answer in
     [Fork.clone_errnos] leaves the model untouched, any other answer sets
     [State.m_has_children]. *)
-Definition clone_success (c c' : config) : Prop :=
-  exists x8, ms_svc_pending (cfg_ms c) = Some x8
-             /\ clone_sysno (bv_unsigned x8) = true
-             (* [ms_gpr st i] is the i-th SYSCALL ARGUMENT register, x(10+i)
-                (RiscvSemantics.v:115-118), so a0 is index 0 and NOT index 10.
-                Index 10 would be x20.  [Run.apply_effect] writes the return
-                value with [set_reg ms 10], which takes a PHYSICAL register
-                number, and physical x10 is a0 -- the two numberings meet at
-                a0 and nowhere else. *)
-             /\ ret_in_errnos clone_errnos (ms_gpr (cfg_ms c') 0) = false.
+Definition clone_success_b (c c' : config) : bool :=
+  match ms_svc_pending (cfg_ms c) with
+  | None => false
+  | Some x8 =>
+      clone_sysno (bv_unsigned x8)
+      && negb (ret_in_errnos clone_errnos (ms_gpr (cfg_ms c') 0))
+  end.
 
 (** THE CHILD PID PREDICATE: a DEFINITION with an explicit extension
     parameter, NOT an inductive, and the difference is a soundness one.  An
     inductive is strengthened by adding a CONSTRUCTOR, and a consumer who adds
-    one WIDENS the predicate — a wider child predicate lets a proof create a
-    child where Linux creates none.  A definition conjoined with [ext] can only
-    narrow.  A pid namespace, which gives the child two numbers, passes an
-    [ext] relating them; it does not add an alternative. *)
-Definition child_pid (ext : config -> positive -> Prop)
-    (c' : config) (q : positive) : Prop :=
-  bv_unsigned (ms_gpr (cfg_ms c') 0) = Zpos q /\ ext c' q.
+    one WIDENS the predicate -- a wider child predicate lets a proof create a
+    child where Linux creates none.  A definition conjoined with [ext] can
+    only narrow.  A pid namespace, which gives the child two numbers, passes
+    an [ext] relating them; it does not add an alternative. *)
+Definition child_pid (ext : config -> Pid -> Prop) (c' : config) (q : Pid)
+    : Prop :=
+  ms_gpr (cfg_ms c') 0 = q /\ ext c' q.
 
-Definition child_pid_core : config -> positive -> Prop :=
+Definition child_pid_core : config -> Pid -> Prop :=
   child_pid (fun _ _ => True).
 
 (** The argument shape the reap arm answers: wait4(-1, stat_addr, 0, NULL).
@@ -375,10 +384,21 @@ Definition wait4_blocking_args (ms : machine_state) : option word :=
   else if negb (w_is0 (ms_gpr ms 3)) then None
   else Some (ms_gpr ms 1).
 
-Definition wait4_intercept (c : config) : Prop :=
-  exists x8, ms_svc_pending (cfg_ms c) = Some x8
-             /\ bv_unsigned x8 = 260%Z
-             /\ wait4_blocking_args (cfg_ms c) <> None.
+(** A boolean, for the reason [clone_success_b] is one.  It REQUIRES a
+    pending 260: reading the argument registers alone would let the arm fire
+    at an ordinary instruction whose registers happen to match, and
+    [Run.advance_past_svc] adds 4 to the pc unconditionally (Run.v:191-197),
+    so that would skip an instruction and then make a different call. *)
+Definition wait4_intercept_b (c : config) : bool :=
+  match ms_svc_pending (cfg_ms c) with
+  | None => false
+  | Some x8 =>
+      Z.eqb (bv_unsigned x8) 260%Z
+      && match wait4_blocking_args (cfg_ms c) with
+         | Some _ => true
+         | None => false
+         end
+  end.
 
 (* =========================================================================
    The relation
@@ -389,18 +409,28 @@ Definition absorb (P : pconfig) (e : ProcessEntry) (c' : config) : pconfig :=
          (pcfg_root P)
          (shared_absorb (pcfg_shared P) c').
 
-(** One transition of the system.  The scheduler choice is the [look] premise:
-    two choices of entry give two successors, and that is the whole of the
-    interleaving nondeterminism. *)
-Inductive pstep_cfg (segs : list Segment) (cfg : SpuriousCfg)
-  : pconfig -> list event -> pstep_to -> Prop :=
+(** ONE TRANSITION OF THE SYSTEM, WITH THE STEPPING PID AS AN INDEX.
+
+    The index is not decoration.  An earlier draft defined the per-process
+    relation on top of an unindexed one as
+      [exists e, look P p = Some e /\ pe_pid e = p /\ pstep_cfg ... ]
+    and that is WRONG: the last conjunct says only that SOME entry stepped, so
+    a step by any entry satisfies it for every [p] in the table, and a
+    consumer's lineage-restricted relation built on it would not restrict to
+    the lineage at all.  Indexing the inductive is what makes
+    [pstep_at_stepped_by] below true rather than merely plausible.
+
+    The scheduler choice is the index: two choices of entry give two
+    successors, and that is the whole of the interleaving nondeterminism. *)
+Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
+  : Pid -> pconfig -> list event -> pstep_to -> Prop :=
 | pstep_other : forall P e evs c',
     look P (pe_pid e) = Some e ->
     sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
-    ~ clone_success (pe_cfg (pcfg_shared P) e) c' ->
-    ~ wait4_intercept (pe_cfg (pcfg_shared P) e) ->
+    clone_success_b (pe_cfg (pcfg_shared P) e) c' = false ->
+    wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
-    pstep_cfg segs cfg P evs (PNext (absorb P e c'))
+    pstep_at segs cfg (pe_pid e) P evs (PNext (absorb P e c'))
 (** THE ERROR TRANSITION, and it must EXCLUDE the intercepted wait.
     A blocking [wait4(-1, _, 0, NULL)] is [unmodeled] in the released spec
     (Exit.v:247) and [Run.sstep_cfg_syscall_unmodeled] (Run.v:1832-1836) turns
@@ -412,63 +442,95 @@ Inductive pstep_cfg (segs : list Segment) (cfg : SpuriousCfg)
 | pstep_error : forall P e evs,
     look P (pe_pid e) = Some e ->
     sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs SError ->
-    ~ wait4_intercept (pe_cfg (pcfg_shared P) e) ->
-    pstep_cfg segs cfg P evs PError
+    wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
+    pstep_at segs cfg (pe_pid e) P evs PError
 | pstep_outside : forall P e,
     look P (pe_pid e) = Some e ->
     m_halted (pe_model e) = None ->
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = false ->
-    pstep_cfg segs cfg P [] PError.
+    pstep_at segs cfg (pe_pid e) P [] PError.
 
-(** The relation with the stepping entry exposed, which is what a consumer's
-    scheduling restriction quantifies over. *)
-Definition pstep_at (segs : list Segment) (cfg : SpuriousCfg) (p : positive)
+(** The system steps when SOME entry does. *)
+Definition pstep_cfg (segs : list Segment) (cfg : SpuriousCfg)
     (P : pconfig) (evs : list event) (r : pstep_to) : Prop :=
-  exists e, look P p = Some e /\ pe_pid e = p
-            /\ pstep_cfg segs cfg P evs r.
+  exists p, pstep_at segs cfg p P evs r.
+
+(** [p] is the entry that took this transition. *)
+Definition stepped_by (segs : list Segment) (cfg : SpuriousCfg)
+    (P : pconfig) (evs : list event) (r : pstep_to) (p : Pid) : Prop :=
+  pstep_at segs cfg p P evs r.
+
+Lemma pstep_at_sub : forall segs cfg p P evs r,
+  pstep_at segs cfg p P evs r -> pstep_cfg segs cfg P evs r.
+Proof. intros segs cfg p P evs r H. exists p. exact H. Qed.
+
+Lemma pstep_at_stepped_by : forall segs cfg p P evs r,
+  pstep_at segs cfg p P evs r -> stepped_by segs cfg P evs r p.
+Proof. intros segs cfg p P evs r H. exact H. Qed.
+
+(** Every transition has an actor.  Immediate now, and false for the draft
+    the note above describes. *)
+Lemma pstep_cfg_has_actor : forall segs cfg P evs r,
+  pstep_cfg segs cfg P evs r -> exists p, pstep_at segs cfg p P evs r.
+Proof. intros segs cfg P evs r H. exact H. Qed.
+
+Lemma pstep_to_cases : forall r : pstep_to,
+  (exists P, r = PNext P) \/ r = PError.
+Proof. intros [P|]; [left; exists P; reflexivity | right; reflexivity]. Qed.
 
 (* =========================================================================
    The single-process projection theorem
    ========================================================================= *)
 
-(** A system of one process, built from a released configuration. *)
-Definition one_proc (c : config) : pconfig :=
-  mkPCfg [mkEntry 1%positive None (cfg_ms c) (clear_shared (cfg_model c))
-                  [] init_ns_ctx]
-         1%positive
-         (mkShared (m_fsys (cfg_model c)) (m_io (cfg_model c)) [] [] init_ns_tables).
+(** The pid of the one process a released configuration becomes. *)
+Definition one_pid : Pid := Z_to_bv 64 1.
 
-(** The one entry of a one-process system, named once so the lemmas below and
-    the proof of [pstep_single] agree on it. *)
+(** The namespace context of a process that has entered none: the initial
+    user and mount namespace, with root and cwd at the root mount's root
+    dentry.  [Ns.Tables] numbers both from 1. *)
+Definition init_nsctx : NsCtx :=
+  mkNsCtx 1%positive 1%positive (1%positive, 1%positive) (1%positive, 1%positive).
+
 Definition one_entry (c : config) : ProcessEntry :=
-  mkEntry 1%positive None (cfg_ms c) (clear_shared (cfg_model c))
-          [] init_ns_ctx.
+  mkEntry one_pid None (cfg_ms c) (clear_shared (cfg_model c)) [] init_nsctx.
+
+Definition one_proc (c : config) : pconfig :=
+  mkPCfg [(one_pid, one_entry c)] one_pid
+         (mkShared (m_fsys (cfg_model c)) (m_io (cfg_model c)) [] []
+                   (mkNsState [] [])).
 
 Lemma one_proc_entry : forall c,
-  look (one_proc c) 1%positive = Some (one_entry c).
-Proof. intros c. reflexivity. Qed.
+  look (one_proc c) one_pid = Some (one_entry c).
+Proof.
+  intros c. unfold look, one_proc, look_in. cbn.
+  rewrite bv_eqb_refl. reflexivity.
+Qed.
 
 (** Whatever pid a step picked, a one-process system has only this entry. *)
 Lemma look_one_proc_inv : forall c p e,
   look (one_proc c) p = Some e -> e = one_entry c.
 Proof.
-  intros c p e H. unfold look, one_proc, one_entry in H. cbn in H.
-  destruct p; cbn in H; congruence.
+  intros c p e H. unfold look, one_proc, look_in in H. cbn in H.
+  destruct (bv_eqb one_pid p); congruence.
 Qed.
-Proof. intros c. reflexivity. Qed.
+
+(** And it picked [one_pid]. *)
+Lemma look_one_proc_pid : forall c p e,
+  look (one_proc c) p = Some e -> p = one_pid.
+Proof.
+  intros c p e H. unfold look, one_proc, look_in in H. cbn in H.
+  destruct (bv_eqb one_pid p) eqn:Hb; [|discriminate].
+  symmetry. apply bv_eqb_eq. exact Hb.
+Qed.
 
 (** The splice round-trips at a one-process system: the released view of the
     only entry is the configuration it was built from. *)
 Lemma one_proc_view : forall c,
-  pe_cfg (pcfg_shared (one_proc c))
-         (one_entry c)
-  = c.
-Proof.
-  intros c. destruct c as [ms m]. destruct m. reflexivity.
-Qed.
+  pe_cfg (pcfg_shared (one_proc c)) (one_entry c) = c.
+Proof. intros c. destruct c as [ms m]. destruct m. reflexivity. Qed.
 
 (** At one entry the surface guard is unconditionally open, by its own first
-    disjunct.  This is why [pstep_instr_single] needs no side condition. *)
+    disjunct.  This is why the instruction case needs no side condition. *)
 Lemma multiproc_allowed_one : forall c c',
   multiproc_allowed (one_proc c) c' = true.
 Proof.
@@ -477,37 +539,51 @@ Proof.
 Qed.
 
 Lemma absorb_one_proc : forall c c',
-  absorb (one_proc c)
-         (one_entry c)
-         c'
-  = one_proc c'.
+  absorb (one_proc c) (one_entry c) c' = one_proc c'.
 Proof.
-  intros c c'. destruct c' as [ms' m']. destruct m'. reflexivity.
+  intros c c'. unfold absorb, one_proc, one_entry, replace_in. cbn.
+  rewrite bv_eqb_refl.
+  destruct c' as [ms' m']. destruct m'. reflexivity.
 Qed.
 
-(** THE SINGLE-PROCESS PROJECTION THEOREM, in four directions and then the
-    [iff].  Split that way on purpose: each half inverts a [pstep_cfg] whose
-    outcome is already [PNext] or [PError], so two of the three arms are ruled
-    out by their own conclusion and never have to be discharged by hand.
+(** No system call is pending: the next step is an instruction. *)
+Definition at_instruction (c : config) : Prop :=
+  ms_svc_pending (cfg_ms c) = None.
 
-    A one-process system steps exactly as [Run.sstep_cfg] does, with the two
-    exceptions in the hypotheses: a successful clone, which is the one step at
-    which this relation and the released one are MEANT to differ (the released
-    one lets the parent continue with a child that does not exist), and an
-    intercepted blocking [wait4], which the released relation answers
-    [unmodeled].
+Lemma pstep_at_one_pid : forall segs cfg p c evs r,
+  pstep_at segs cfg p (one_proc c) evs r -> p = one_pid.
+Proof.
+  intros segs cfg p c evs r Hp.
+  inversion Hp; subst;
+    match goal with
+    | [ Hlook : look (one_proc c) _ = Some _ |- _ ] =>
+        exact (look_one_proc_pid _ _ _ Hlook)
+    end.
+Qed.
 
-    Proved before any arm but [pstep_other], because every derived step
-    relation rests on it. *)
+(** In a one-process system, a step of [one_pid] is any step of the system. *)
+Lemma pstep_at_one : forall segs cfg c evs r,
+  pstep_at segs cfg one_pid (one_proc c) evs r
+  <-> pstep_cfg segs cfg (one_proc c) evs r.
+Proof.
+  intros segs cfg c evs r. split.
+  - apply pstep_at_sub.
+  - intros [p Hp]. rewrite <- (pstep_at_one_pid _ _ _ _ _ _ Hp). exact Hp.
+Qed.
+
+(** THE PROJECTION, in four directions and then the two [iff]s.  Split that
+    way on purpose: each half inverts a [pstep_at] whose outcome is already
+    [PNext] or [PError], so two of the three arms are ruled out by their own
+    conclusion and never have to be discharged by hand. *)
 
 Lemma pstep_single_next_fwd : forall segs cfg c evs P',
   pstep_cfg segs cfg (one_proc c) evs (PNext P') ->
   exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c').
 Proof.
-  intros segs cfg c evs P' Hp.
+  intros segs cfg c evs P' Hp. destruct Hp as [p Hp].
   inversion Hp; subst.
   match goal with
-  | [ Hlook : look (one_proc c) _ = Some ?e0 |- _ ] =>
+  | [ Hlook : look (one_proc c) _ = Some _ |- _ ] =>
       rewrite (look_one_proc_inv _ _ _ Hlook) in *
   end.
   rewrite one_proc_view in *.
@@ -518,13 +594,14 @@ Proof.
 Qed.
 
 Lemma pstep_single_next_bwd : forall segs cfg c evs c',
-  ~ clone_success c c' ->
-  ~ wait4_intercept c ->
+  clone_success_b c c' = false ->
+  wait4_intercept_b c = false ->
   sstep_cfg segs cfg c evs (SNext c') ->
   pstep_cfg segs cfg (one_proc c) evs (PNext (one_proc c')).
 Proof.
   intros segs cfg c evs c' Hcl Hwt Hss.
   rewrite <- (absorb_one_proc c c').
+  apply pstep_at_sub with (p := one_pid).
   apply pstep_other with (e := one_entry c).
   - apply one_proc_entry.
   - rewrite one_proc_view. exact Hss.
@@ -537,16 +614,14 @@ Lemma pstep_single_err_fwd : forall segs cfg c evs,
   pstep_cfg segs cfg (one_proc c) evs PError ->
   sstep_cfg segs cfg c evs SError.
 Proof.
-  intros segs cfg c evs Hp.
+  intros segs cfg c evs Hp. destruct Hp as [p Hp].
   inversion Hp; subst.
-  - (* pstep_error *)
-    match goal with
-    | [ Hlook : look (one_proc c) _ = Some ?e0 |- _ ] =>
+  - match goal with
+    | [ Hlook : look (one_proc c) _ = Some _ |- _ ] =>
         rewrite (look_one_proc_inv _ _ _ Hlook) in *
     end.
     rewrite one_proc_view in *. assumption.
-  - (* pstep_outside cannot fire at one entry *)
-    exfalso.
+  - exfalso.
     match goal with
     | [ Hall : multiproc_allowed (one_proc c) _ = false |- _ ] =>
         rewrite multiproc_allowed_one in Hall; discriminate
@@ -554,67 +629,85 @@ Proof.
 Qed.
 
 Lemma pstep_single_err_bwd : forall segs cfg c evs,
-  ~ wait4_intercept c ->
+  wait4_intercept_b c = false ->
   sstep_cfg segs cfg c evs SError ->
   pstep_cfg segs cfg (one_proc c) evs PError.
 Proof.
   intros segs cfg c evs Hwt Hss.
+  apply pstep_at_sub with (p := one_pid).
   apply pstep_error with (e := one_entry c).
   - apply one_proc_entry.
   - rewrite one_proc_view. exact Hss.
   - rewrite one_proc_view. exact Hwt.
 Qed.
 
-Theorem pstep_single : forall segs cfg c evs r,
-  (forall c', sstep_cfg segs cfg c evs (SNext c') -> ~ clone_success c c') ->
-  ~ wait4_intercept c ->
-  (pstep_cfg segs cfg (one_proc c) evs r
-   <-> match r with
-       | PNext P' => exists c', P' = one_proc c'
-                                /\ sstep_cfg segs cfg c evs (SNext c')
-       | PError => sstep_cfg segs cfg c evs SError
-       end).
+(** A one-process system steps exactly as [Run.sstep_cfg] does, outside the
+    two places this relation and the released one are MEANT to differ: a
+    successful clone (the released one lets the parent continue with a child
+    that does not exist) and an intercepted blocking [wait4] (which the
+    released one answers [unmodeled]). *)
+Theorem pstep_single_next : forall segs cfg c evs P',
+  (forall c', sstep_cfg segs cfg c evs (SNext c') -> clone_success_b c c' = false) ->
+  wait4_intercept_b c = false ->
+  (pstep_cfg segs cfg (one_proc c) evs (PNext P')
+   <-> exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c')).
 Proof.
-  intros segs cfg c evs r Hnoclone Hnowait.
-  destruct r as [P'|]; split.
+  intros segs cfg c evs P' Hcl Hwt. split.
   - apply pstep_single_next_fwd.
   - intros (c' & -> & Hss).
-    apply pstep_single_next_bwd; [exact (Hnoclone _ Hss) | exact Hnowait | exact Hss].
-  - apply pstep_single_err_fwd.
-  - apply (pstep_single_err_bwd _ _ _ _ Hnowait).
+    apply pstep_single_next_bwd; [exact (Hcl _ Hss) | exact Hwt | exact Hss].
 Qed.
 
-(** THE INSTRUCTION CASE, which is unconditional.
-
-    At an entry with no pending syscall the step is [Run.mi_account_step] and
-    nothing else, and [Run.mi_account_step_model_frame] (Run.v:352-371) proves
-    such a step leaves [m_fd], [m_vmmaps], [m_vm_lazy], [m_io], [m_fsys],
-    [m_proc] and [m_lim] fixed — so the shared state is literally unchanged
-    and neither hypothesis of [pstep_single] is needed.  It is the
-    instruction case that a derived step relation needs, and it is provable
-    the day [pstep_other] exists, which is why the build order puts it here. *)
-Theorem pstep_instr_single : forall segs cfg c evs r,
-  ms_svc_pending (cfg_ms c) = None ->
-  (pstep_cfg segs cfg (one_proc c) evs r
-   <-> match r with
-       | PNext P' => exists c', P' = one_proc c'
-                                /\ sstep_cfg segs cfg c evs (SNext c')
-       | PError => sstep_cfg segs cfg c evs SError
-       end).
+Theorem pstep_single_err : forall segs cfg c evs,
+  wait4_intercept_b c = false ->
+  (pstep_cfg segs cfg (one_proc c) evs PError
+   <-> sstep_cfg segs cfg c evs SError).
 Proof.
-  intros segs cfg c evs r Hsvc. apply pstep_single.
-  - intros c' _ (x8 & Hx8 & _). rewrite Hsvc in Hx8. discriminate.
-  - intros (x8 & Hx8 & _). rewrite Hsvc in Hx8. discriminate.
+  intros segs cfg c evs Hwt. split.
+  - apply pstep_single_err_fwd.
+  - apply (pstep_single_err_bwd _ _ _ _ Hwt).
+Qed.
+
+(** At an instruction both hypotheses are discharged, because each test
+    begins by matching on [ms_svc_pending]. *)
+Lemma clone_success_b_instr : forall c c',
+  at_instruction c -> clone_success_b c c' = false.
+Proof.
+  intros c c' H. unfold clone_success_b, at_instruction in *.
+  rewrite H. reflexivity.
+Qed.
+
+Lemma wait4_intercept_b_instr : forall c,
+  at_instruction c -> wait4_intercept_b c = false.
+Proof.
+  intros c H. unfold wait4_intercept_b, at_instruction in *.
+  rewrite H. reflexivity.
+Qed.
+
+Theorem pstep_instr_single_next : forall segs cfg c evs P',
+  at_instruction c ->
+  (pstep_cfg segs cfg (one_proc c) evs (PNext P')
+   <-> exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c')).
+Proof.
+  intros segs cfg c evs P' H. apply pstep_single_next.
+  - intros c' _. apply clone_success_b_instr. exact H.
+  - apply wait4_intercept_b_instr. exact H.
+Qed.
+
+Theorem pstep_instr_single_err : forall segs cfg c evs,
+  at_instruction c ->
+  (pstep_cfg segs cfg (one_proc c) evs PError
+   <-> sstep_cfg segs cfg c evs SError).
+Proof.
+  intros segs cfg c evs H. apply pstep_single_err.
+  apply wait4_intercept_b_instr. exact H.
 Qed.
 
 (** THE FILE SYSTEM IS GLOBAL, and this says so: the per-entry copy is blank
-    at every entry a one-process system has, so nothing can read it. *)
+    at the one entry a one-process system has, so nothing can read it. *)
 Lemma fs_only_in_shared_one : forall c,
-  Forall (fun e => m_fsys (pe_model e) = empty_fsys)
-         (pcfg_procs (one_proc c)).
-Proof.
-  intros c. constructor; [reflexivity | constructor].
-Qed.
+  m_fsys (pe_model (one_entry c)) = empty_fsys.
+Proof. intros c. reflexivity. Qed.
 
 (** THE OFFSETS ROUND-TRIP TOO, and this says so rather than leaving a
     consumer to notice.  A parent that keeps its standard descriptors open
@@ -624,14 +717,221 @@ Qed.
     offset is inside its [State.FdEntry] in [m_fd], and [pe_ofd] is empty;
     the whole table comes back because the whole configuration does. *)
 Lemma one_proc_offsets : forall c,
-  m_fds (cfg_model (pe_cfg (pcfg_shared (one_proc c))
-           (one_entry c)))
+  m_fds (cfg_model (pe_cfg (pcfg_shared (one_proc c)) (one_entry c)))
     = m_fds (cfg_model c)
-  /\ m_pipes (cfg_model (pe_cfg (pcfg_shared (one_proc c))
-           (one_entry c)))
+  /\ m_pipes (cfg_model (pe_cfg (pcfg_shared (one_proc c)) (one_entry c)))
     = m_pipes (cfg_model c)
   /\ pe_ofd (one_entry c) = [].
 Proof.
   intros c. rewrite one_proc_view.
   split; [reflexivity | split; reflexivity].
+Qed.
+
+(* =========================================================================
+   Promotion: a private descriptor becomes a shared description at a clone
+   ========================================================================= *)
+
+(** The shared reading of a private entry, and the offset it was holding.
+    [None] for the kinds with no mutable kernel-side offset, which stay in
+    [State.m_fd]; see [OfdWhat] for why [FdChannel] is among them. *)
+Definition fd_shared_view (e : FdEntry) : option (OfdWhat * word) :=
+  match e with
+  | FdFile p off   => Some (OfdFile p FmR,  off)
+  | FdFileW p off  => Some (OfdFile p FmW,  off)
+  | FdFileA p off  => Some (OfdFile p FmA,  off)
+  | FdFileRW p off => Some (OfdFile p FmRW, off)
+  | FdPipe id w    => Some (OfdPipe id w,   Z_to_bv 64 0)
+  | FdSocket sk    => Some (OfdSocket sk,   Z_to_bv 64 0)
+  | FdChannel _ | FdDir | FdDevNull _ _ | FdUrandom => None
+  end.
+
+(** PROMOTE one descriptor out of a private table into the shared one, with
+    [ofd_refs] counting BOTH tables.  Two is right and not one: after the
+    clone the parent and the child each name it. *)
+Definition promote_one (S : shared) (i : OfdId) (fd : word) (e : FdEntry)
+    : option (shared * (word * OfdId)) :=
+  match fd_shared_view e with
+  | None => None
+  | Some (what, off) =>
+      Some (mkShared (sh_fsys S) (sh_io S)
+                     ((i, mkOfd what off (Z_to_bv 64 0) (Z_to_bv 64 2))
+                        :: sh_ofd S)
+                     (sh_pipes S) (sh_ns S),
+            (fd, i))
+  end.
+
+(* =========================================================================
+   The child a successful clone creates
+   ========================================================================= *)
+
+(** The child's machine state: the parent's successor with a0 = 0, and the
+    stack pointer the call asked for.  [set_reg] takes a PHYSICAL register
+    number; a0 is x10 and sp is x2.
+
+    [newsp] is honoured when it is non-zero.  Legacy [clone] accepts an
+    arbitrary one and it changes the CHILD's stack pointer (Fork.v:753-764);
+    zero means the child keeps the parent's, which is what [fork] does. *)
+Definition child_ms (c c' : config) : machine_state :=
+  let newsp := ms_gpr (cfg_ms c) 1 in
+  let base := set_reg (cfg_ms c') 10 (Z_to_bv 64 0) in
+  if w_is0 newsp then base else set_reg base 2 newsp.
+
+(** The child's process record: the parent's, with the two fields that are
+    the CHILD's own cleared.
+
+    [procst_children] because the child has none -- and copying the parent's
+    pre-clone record is not enough, because on a SECOND clone the parent's is
+    already set.  [procst_tid] because the child's differs on Linux, and
+    because clone admission itself reads it (Fork.v:679-681), so declining
+    [getpid] does not make an inherited one unobservable. *)
+Definition child_proc (ps : ProcState) : ProcState :=
+  mkProcState (procst_halted ps) None (procst_creds ps)
+              (procst_setsid_succeeded ps) (procst_sigmask ps)
+              false (procst_utsname ps) (procst_sigaltstack_installed ps)
+              (procst_killed ps) (procst_sigabrt_pending ps)
+              (procst_abort_terminal ps) (procst_statpins ps).
+
+Definition with_proc (ps : ProcState) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).
+
+Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
+    : ProcessEntry :=
+  mkEntry q (Some (pe_pid e)) (child_ms c c')
+          (clear_shared (with_proc (child_proc (m_proc (pe_model e)))
+                                   (pe_model e)))
+          (pe_ofd e) (pe_nsctx e).
+
+(** The configuration a successful clone steps to. *)
+Definition clone_result (P : pconfig) (e : ProcessEntry) (c' : config)
+    (q : Pid) : pconfig :=
+  mkPCfg (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c')
+            ++ [(q, child_entry e (pe_cfg (pcfg_shared P) e) c' q)])
+         (pcfg_root P)
+         (shared_absorb (pcfg_shared P) c').
+
+(** The entry a step added, if it added one. *)
+Definition child_projection (P P' : pconfig) : option (ProcessEntry * shared) :=
+  match List.last (List.map snd (pcfg_procs P')) None with
+  | _ =>
+      if Nat.ltb (List.length (pcfg_procs P)) (List.length (pcfg_procs P'))
+      then match List.last (List.map (fun kv => Some (snd kv)) (pcfg_procs P'))
+                   None with
+           | Some e => Some (e, pcfg_shared P')
+           | None => None
+           end
+      else None
+  end.
+
+(* =========================================================================
+   The wait status an entry reports once it is over
+   ========================================================================= *)
+
+(** A FUNCTION, and it must stay one: every reap proof and the projection
+    theorem read it, and turning it into a relation later costs a re-walk of
+    both.
+
+    A normal exit reports the masked code shifted left 8.  [Exit.exit_spec]
+    already applied the mask before [set_halted], and the shift is what
+    [exit_group] does to its argument:
+
+      kernel/exit.c:1131, Linux v6.18.46 (commit 1f99e9ab748f)
+        do_group_exit((error_code & 0xff) << 8);
+
+    A death by signal reports the signal in the low seven bits.  [dumped] is
+    the WCOREDUMP bit, 0x80, which [coredump_finish] ORs in when the dump was
+    written and no further fatal signal is pending:
+
+      fs/coredump.c:557-558, same version
+        if (core_dumped && !__fatal_signal_pending(current))
+                current->signal->group_exit_code |= 0x80;
+
+    Whether it was written depends on RLIMIT_CORE, the task's dumpable flag
+    and core_pattern, none of which this model carries, so the bit is a
+    PARAMETER here rather than a derived value.  [State.limst_core] already
+    pins RLIMIT_CORE at its first read, so a later refinement constrains the
+    choice instead of replacing it. *)
+Definition pe_status (dumped : bool) (e : ProcessEntry) : option word :=
+  match m_halted (pe_model e), m_killed (pe_model e) with
+  | Some code, None =>
+      Some (bv_mul (bv_and code (Z_to_bv 64 255)) (Z_to_bv 64 256))
+  | Some sig, Some _ =>
+      Some (bv_or (bv_and sig (Z_to_bv 64 127))
+                  (if dumped then Z_to_bv 64 128 else Z_to_bv 64 0))
+  | None, _ => None
+  end.
+
+(* =========================================================================
+   Well-formedness
+   ========================================================================= *)
+
+(** The structural invariant every arm must preserve.  Stated once, because
+    several results silently assume parts of it: the key of the table is the
+    entry's own pid, the root is present and parentless, and every parent
+    link resolves. *)
+Definition pconfig_wf (P : pconfig) : Prop :=
+  (forall kv, List.In kv (pcfg_procs P) -> fst kv = pe_pid (snd kv))
+  /\ (exists e, look P (pcfg_root P) = Some e /\ pe_parent e = None)
+  /\ (forall kv, List.In kv (pcfg_procs P) ->
+        match pe_parent (snd kv) with
+        | None => pe_pid (snd kv) = pcfg_root P
+        | Some q => exists f, look P q = Some f
+        end).
+
+Lemma pconfig_wf_one_proc : forall c, pconfig_wf (one_proc c).
+Proof.
+  intros c. unfold pconfig_wf. split; [|split].
+  - intros kv Hkv. cbn in Hkv. destruct Hkv as [<-|[]]. reflexivity.
+  - exists (one_entry c). split; [apply one_proc_entry | reflexivity].
+  - intros kv Hkv. cbn in Hkv. destruct Hkv as [<-|[]]. reflexivity.
+Qed.
+
+(* =========================================================================
+   Termination of the whole system
+   ========================================================================= *)
+
+(** The system is over: every entry still in the table is halted.  A reaped
+    entry is not in the table at all. *)
+Definition terminal (P : pconfig) : Prop :=
+  List.Forall (fun kv => pe_zombie (snd kv) <> None) (pcfg_procs P).
+
+(** Every maximal execution halts, after finitely many steps, with the ROOT
+    halted on a code in [S] and nothing still running.
+
+    The recursive arm fires whenever the system is NOT TERMINAL -- not merely
+    while the root runs.  Requiring the root to run there would reject a
+    family that terminates cleanly: if the root exits normally while a child
+    still has an instruction and an exit to go, the leaf's condition is not
+    yet met and the root is no longer running, so neither arm could fire.
+
+    The scheduler is not a new quantifier.  It is the entry each step picks,
+    and the fourth premise ranges over every pick, so EVERY INTERLEAVING is
+    covered and no fairness is assumed.  What carries the induction is this
+    predicate's own well-founded derivation tree, exactly as for
+    [MustExit.must_exit_in_at].  A program whose child loops forever gives an
+    infinite chain and is refuted rather than excused; that is the right
+    answer for a program with no way to stop the child, and a kill arm is
+    what a program that does have one will need. *)
+Inductive must_exit_in_p_at (segs : list Segment) (cfg : SpuriousCfg)
+    (S : list word) : pconfig -> Prop :=
+| mepa_halted : forall P c code,
+    root_view P = Some c ->
+    m_halted (cfg_model c) = Some code ->
+    List.In code S ->
+    m_killed (cfg_model c) = None ->
+    terminal P ->
+    must_exit_in_p_at segs cfg S P
+| mepa_running : forall P,
+    ~ terminal P ->
+    (exists evs st, pstep_cfg segs cfg P evs st) ->
+    (forall evs, ~ pstep_cfg segs cfg P evs PError) ->
+    (forall evs P', pstep_cfg segs cfg P evs (PNext P') ->
+                    must_exit_in_p_at segs cfg S P') ->
+    must_exit_in_p_at segs cfg S P.
+
+Lemma terminal_one_proc : forall c,
+  terminal (one_proc c) <-> m_halted (cfg_model c) <> None.
+Proof.
+  intros c. unfold terminal, one_proc, one_entry, pe_zombie. cbn. split.
+  - intros H. inversion H as [|x l Hx Hr]; subst. exact Hx.
+  - intros H. constructor; [exact H | constructor].
 Qed.
