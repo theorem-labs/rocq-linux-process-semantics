@@ -25,10 +25,10 @@
     The child's pid in each pid namespace from its own outwards: in a
     namespace a modelled call made, the next after the namespace's last
     ([alloc_pid] walks the idr cyclically; a pid at [pid_max] or above
-    declines); in the host's, the pid the core gives ([q], what the
-    parent's call returns) when that is the caller's own pid namespace,
-    else not recorded.  When the caller's pid namespace is one the model
-    made, [q] must be the pid the model allocates there.
+    declines); in the host's (the outermost), [hq], the pid the core
+    chooses, by which the core keys its process table.  What the parent's
+    call returns is the child's pid in the caller's own pid namespace
+    ([clone_ret]).
 
     The environment's refusals (ENOMEM from the allocations, ENOSPC from
     the namespace counts of the host's user namespace, EAGAIN from
@@ -94,9 +94,9 @@ Fixpoint pidns_chain (fuel : nat) (st : NsState) (p : positive) : list PidNs :=
 
 (** The child's pids from its own pid namespace outwards, and the pid
     namespaces with their new last pid: each namespace the model made
-    gives the next pid; the host's gives [q] when it is [caller_ns],
-    else nothing.  [None] when a namespace has run out of pids. *)
-Definition alloc_pids (chain : list PidNs) (caller_ns : positive) (q : Z)
+    gives the next pid; the host's gives [hq].  [None] when a namespace
+    has run out of pids. *)
+Definition alloc_pids (chain : list PidNs) (hq : Z)
     : option (list (positive * Z) * list PidNs) :=
   fold_right (fun x acc =>
     match acc with
@@ -108,8 +108,7 @@ Definition alloc_pids (chain : list PidNs) (caller_ns : positive) (q : Z)
             if PID_MAX <=? p then None
             else Some ((pidns_id x, p) :: ps,
                        mkPidNs (pidns_id x) (pidns_parent x) (pidns_owner x) (pidns_level x) p :: ns)
-        | None => if Pos.eqb (pidns_id x) caller_ns then Some ((pidns_id x, q) :: ps, ns)
-                  else Some (ps, ns)
+        | None => Some ((pidns_id x, hq) :: ps, ns)
         end
     end) (Some ([], [])) chain.
 
@@ -155,7 +154,7 @@ Definition clone_creds (m : Model) (ctx : NsCtx) (st : NsState) (f : Z) : NsResu
     end.
 
 (** What [clone_ns] answers when the environment refuses nothing. *)
-Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (q : Z) : CloneNs :=
+Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) : CloneNs :=
   if negb (Z.land f (Z.lnot (Z.lor CSIGNAL clone_ns_flags)) =? 0) then CnUnmodeled
   else
     match clone_creds m ctx st f with
@@ -202,21 +201,9 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (q : 
                   let st_p := ns_pidns st ++ new_pidns in
                   let chain := pidns_chain (length st_p)
                                  (mkNsState [] [] [] st_p [] [] [] [] [] (ns_env st)) child_ns in
-                  match alloc_pids chain active q with
+                  match alloc_pids chain hq with
                   | None => CnUnmodeled
                   | Some (pids, updated) =>
-                      let q_ok := match find_pidns st active with
-                                  | Some a => match pidns_parent a with
-                                              | Some _ => match find (fun pq => Pos.eqb (fst pq) active) pids with
-                                                          | Some (_, p) => p =? q
-                                                          | None => false
-                                                          end
-                                              | None => true
-                                              end
-                                  | None => true
-                                  end in
-                      if negb q_ok then CnUnmodeled
-                      else
                         let pidns' := fold_left replace_pidns updated st_p in
                         (* the network namespace *)
                         let '(net, new_net) :=
@@ -239,6 +226,10 @@ Definition clone_ns_exact (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (q : 
           end
     end.
 
+(** What the parent's clone returns: the child's pid in the caller's own
+    pid namespace ([task_pid_vnr] of the child, seen from the parent). *)
+Definition clone_ret (ctx child : NsCtx) : option Z := pid_in (cx_pids child) (cx_pidns ctx).
+
 (** The pid namespaces the model made, from [active] outwards, each with
     its cursor one further: what an [alloc_pid] that a later failure undid
     ([free_pid] does not move the cursor) leaves. *)
@@ -257,8 +248,8 @@ Definition pid_advanced (st : NsState) (active : positive) : NsState :=
     namespace, RLIMIT_NPROC, a cgroup controller, a pending fatal signal,
     a security module), which leaves the shared state as it was or, when
     it came after [alloc_pid], with the pid cursors advanced. *)
-Definition clone_ns (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (q : Z) (o : CloneNs) : Prop :=
-  o = clone_ns_exact f m ctx st q
-  \/ (clone_ns_exact f m ctx st q <> CnUnmodeled
+Definition clone_ns (f : Z) (m : Model) (ctx : NsCtx) (st : NsState) (hq : Z) (o : CloneNs) : Prop :=
+  o = clone_ns_exact f m ctx st hq
+  \/ (clone_ns_exact f m ctx st hq <> CnUnmodeled
       /\ exists e st', 1 <= e <= 4095 /\ (st' = st \/ st' = pid_advanced st (cx_pidns ctx))
                        /\ o = CnErr e st').

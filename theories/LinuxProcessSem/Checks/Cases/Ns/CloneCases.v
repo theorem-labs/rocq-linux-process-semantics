@@ -74,8 +74,9 @@ Example clone_vm_declines : forall m,
   clone_ns_exact (Z.lor CLONE_VM SIGCHLD) m caller host 138 = CnUnmodeled.
 Proof. intros m. vm_compute. reflexivity. Qed.
 
-(** From inside the new pid namespace, a plain fork gives pid 2 there and
-    no host pid; the pid the parent sees must be 2. *)
+(** From inside the new pid namespace (the shell, pid 1 there and 136 on
+    the host), a plain fork with host pid 140 gives pid 2 there and 140 on
+    the host, and the shell's call returns 2. *)
 Definition inside : NsState :=
   mkNsState [mkMount 1 1 None 1 1 1 nf nf false false None None]
             [mkUserNs 2 (Some 1%positive) 1 65534 None None true false 2147483647 true;
@@ -84,20 +85,20 @@ Definition inside : NsState :=
             [mkNetNs 1 1 [] false] [] [] [] [] (ns_env empty_nsstate).
 
 Definition shell : NsCtx :=
-  mkNsCtx 2 1 2 1 [(2%positive, 1)] (1%positive, 1%positive) (1%positive, 1%positive) 18
+  mkNsCtx 2 1 2 1 [(2%positive, 1); (1%positive, 136)] (1%positive, 1%positive) (1%positive, 1%positive) 18
           (mkCaps (2 ^ 41 - 1) (2 ^ 41 - 1) 0 (2 ^ 41 - 1) 0) 0 [] false 0 1.
 
 Example fork_inside_pid_2 : forall m,
-  option_map cx_pids (child_of (clone_ns_exact SIGCHLD m shell inside 2))
-  = Some [(2%positive, 2)].
+  option_map cx_pids (child_of (clone_ns_exact SIGCHLD m shell inside 140))
+  = Some [(2%positive, 2); (1%positive, 140)].
 Proof. intros m. vm_compute. reflexivity. Qed.
 
-Example fork_inside_wrong_pid : forall m,
-  clone_ns_exact SIGCHLD m shell inside 3 = CnUnmodeled.
+Example fork_inside_returns_2 : forall m,
+  option_map (clone_ret shell) (child_of (clone_ns_exact SIGCHLD m shell inside 140)) = Some (Some 2).
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 Example fork_inside_advances_last : forall m,
-  option_map (fun s => map pidns_last (ns_pidns s)) (st_of (clone_ns_exact SIGCHLD m shell inside 2))
+  option_map (fun s => map pidns_last (ns_pidns s)) (st_of (clone_ns_exact SIGCHLD m shell inside 140))
   = Some [0; 2].
 Proof. intros m. vm_compute. reflexivity. Qed.
 
@@ -105,8 +106,8 @@ Proof. intros m. vm_compute. reflexivity. Qed.
     SIGCHLD) inside the new pid namespace gives the same child. *)
 Example libc_fork_inside_pid_2 : forall m,
   option_map cx_pids
-    (child_of (clone_ns_exact (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD) m shell inside 2))
-  = Some [(2%positive, 2)].
+    (child_of (clone_ns_exact (Z.lor (Z.lor CLONE_CHILD_SETTID CLONE_CHILD_CLEARTID) SIGCHLD) m shell inside 140))
+  = Some [(2%positive, 2); (1%positive, 140)].
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** A fork that fails after [alloc_pid] leaves the cursor of the pid
@@ -117,7 +118,7 @@ Example fork_failure_advances_cursor :
   map pidns_last (ns_pidns (pid_advanced inside 2)) = [0; 1 + 1] := eq_refl.
 
 Example fork_failure_after_alloc_is_answer : forall m,
-  clone_ns SIGCHLD m shell inside 2 (CnErr 12 (pid_advanced inside 2)).
+  clone_ns SIGCHLD m shell inside 140 (CnErr 12 (pid_advanced inside 2)).
 Proof.
   intros m. right. split.
   - vm_compute. intros H. discriminate H.
@@ -125,8 +126,8 @@ Proof.
 Qed.
 
 Example fork_after_failure_pid_3 : forall m,
-  option_map cx_pids (child_of (clone_ns_exact SIGCHLD m shell (pid_advanced inside 2) 3))
-  = Some [(2%positive, 3)].
+  option_map cx_pids (child_of (clone_ns_exact SIGCHLD m shell (pid_advanced inside 2) 141))
+  = Some [(2%positive, 3); (1%positive, 141)].
 Proof. intros m. vm_compute. reflexivity. Qed.
 
 (** A pid namespace at level 32 can have no child: ENOSPC. *)
