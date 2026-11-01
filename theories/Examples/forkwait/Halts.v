@@ -991,7 +991,7 @@ Qed.
     This is the whole theorem modulo those four, and it is stated so that
     discharging them is the only work between here and
     [Statement.forkwait_halts]. *)
-Theorem forkwait_halts_of_stretches : forall segs cfg P0 Pclone Pfork Preap Pdone,
+Theorem forkwait_halts_of_stretches : forall segs cfg P0 Pclone,
   (* A: the entry run reaches the clone's ecall deterministically *)
   det_run segs cfg P0 Pclone ->
   (* 1+B+2: from the clone through the two-entry stretch to after the
@@ -1021,7 +1021,7 @@ Theorem forkwait_halts_of_stretches : forall segs cfg P0 Pclone Pfork Preap Pdon
      (fw_measure P' < fw_measure P)%nat) ->
   must_exit_in_p_at segs cfg [Z_to_bv 64 7] P0.
 Proof.
-  intros segs cfg P0 Pclone Pfork Preap Pdone HA HB Hsh Hleaf Hprog Hnoerr Hdec.
+  intros segs cfg P0 Pclone HA HB Hsh Hleaf Hprog Hnoerr Hdec.
   (* A, backwards *)
   apply (must_exit_in_p_at_det_run segs cfg _ P0 Pclone HA).
   (* and the measure carries the rest *)
@@ -1073,8 +1073,11 @@ Proof.
   - (* fw_parent: running, at 0x1101c, a0 the pid *)
     split; [exact Hh|]. left.
     split; [exact Hs|].
-    split; [rewrite Hpc; lia|].
-    intros _. unfold fw_a0_parent. cbn [pe_ms pe_absorb].
+    (* [cbn] has already turned the projection into [pe_absorb]'s form,
+       so the hypothesis is a linear FACT about the goal rather than a
+       subterm to rewrite with *)
+    split; [cbn [pe_ms pe_absorb] in *; lia|].
+    intros _. unfold fw_a0_parent. cbn [pe_ms pe_absorb] in *.
     split; [exact Ha0lo | exact Ha0hi].
   - (* fw_child: running, at 0x1101c, a0 zero *)
     left. split; [exact Hch|].
@@ -1152,10 +1155,13 @@ Lemma fw_measure_clone : forall P e c' q,
   (fw_measure (clone_result P e c' q) < fw_measure P)%nat.
 Proof.
   intros P e c' q Hp He Hpa Hch.
+  (* BOTH occurrences of [pcfg_procs P] are rewritten before any
+     reduction: the [cbn] below consumes the one on the right, and a
+     later [rewrite Hp] then finds nothing. *)
   unfold fw_measure, pmeasure, clone_result. cbn [pcfg_procs].
-  rewrite Hp. cbn [replace_in fst]. rewrite bv_eqb_same.
+  rewrite !Hp. cbn [replace_in fst]. rewrite bv_eqb_same.
   cbn [List.app msum List.fold_right snd].
-  rewrite Hpa, Hch, Hp. cbn [msum List.fold_right snd]. rewrite He.
+  rewrite Hpa, Hch, He.
   (* 15 + (15 + 0) < 31 + 0 *)
   vm_compute. lia.
 Qed.
@@ -1178,6 +1184,9 @@ Lemma fw_measure_reap : forall P ep ec ep' q,
    < fw_measure P)%nat.
 Proof.
   intros P ep ec ep' q Hp Hne Hq Hep Hec Hep'.
+  (* the goal only: [rewrite Hp in *] rewrites [Hp] in itself and fails.
+     The table is rewritten before unfolding, because unfolding first
+     leaves the two copies in different forms. *)
   unfold fw_measure, pmeasure. rewrite Hp.
   rewrite (fw_reap_target_table ep ec ep' q Hne Hq).
   cbn [msum List.fold_right snd]. rewrite Hep', Hep, Hec.
