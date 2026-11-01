@@ -1134,3 +1134,53 @@ Proof.
     split; [exact Hh|].
     split; [exact Hs | reflexivity].
 Qed.
+
+(** FACT THREE: the measure falls at the clone.
+
+    This is the step the measure table was shaped around.  Before it the
+    parent is at [0x11018] with the call pending, worth
+    [fw_pending 0x11018] = 31; after it there are TWO entries, each at
+    [0x1101c] and each worth [fw_at 0x1101c] = 15, so the sum is 30.
+    [fw_clone_decreases] is that arithmetic and it is proved; this is the
+    same fact at the level of [fw_measure], where the sum is taken over
+    the table [clone_result] builds. *)
+Lemma fw_measure_clone : forall P e c' q,
+  pcfg_procs P = [(pe_pid e, e)] ->
+  fw_entry e = fw_pending 0x11018%Z ->
+  fw_entry (pe_absorb e c') = fw_at 0x1101c%Z ->
+  fw_entry (child_entry e (pe_cfg (pcfg_shared P) e) c' q) = fw_at 0x1101c%Z ->
+  (fw_measure (clone_result P e c' q) < fw_measure P)%nat.
+Proof.
+  intros P e c' q Hp He Hpa Hch.
+  unfold fw_measure, pmeasure, clone_result. cbn [pcfg_procs].
+  rewrite Hp. cbn [replace_in fst]. rewrite bv_eqb_same.
+  cbn [List.app msum List.fold_right snd].
+  rewrite Hpa, Hch, Hp. cbn [msum List.fold_right snd]. rewrite He.
+  (* 15 + (15 + 0) < 31 + 0 *)
+  vm_compute. lia.
+Qed.
+
+(** FACT FOUR: the measure falls at the reap.
+
+    The parent goes from the pending [wait4] at [0x1103c], worth 6, to
+    [0x11040], worth 5; and the zombie, worth 0 because a halted entry
+    cannot step, leaves the table.  [fw_reap_decreases] is the
+    arithmetic. *)
+Lemma fw_measure_reap : forall P ep ec ep' q,
+  pcfg_procs P = [(pe_pid ep, ep); (pe_pid ec, ec)] ->
+  bv_eqb (pe_pid ep) q = false ->
+  pe_pid ec = q ->
+  fw_entry ep = fw_pending 0x1103c%Z ->
+  fw_entry ec = 0%nat ->
+  fw_entry ep' = fw_at 0x11040%Z ->
+  (msum fw_entry
+     (drop_in (replace_in (pcfg_procs P) (pe_pid ep) ep') q)
+   < fw_measure P)%nat.
+Proof.
+  intros P ep ec ep' q Hp Hne Hq Hep Hec Hep'.
+  unfold fw_measure, pmeasure. rewrite Hp.
+  rewrite (fw_reap_target_table ep ec ep' q Hne Hq).
+  cbn [msum List.fold_right snd]. rewrite Hep', Hep, Hec.
+  (* 5 + 0 < 6 + (0 + 0) *)
+  vm_compute. lia.
+Qed.
