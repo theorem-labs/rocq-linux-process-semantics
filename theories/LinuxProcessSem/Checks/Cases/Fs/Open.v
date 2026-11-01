@@ -2303,6 +2303,11 @@ Definition s_overflowuid : list byte :=
 Definition s_overflowgid : list byte :=
   [47; 112; 114; 111; 99; 47; 115; 121; 115; 47; 107; 101; 114; 110; 101;
    108; 47; 111; 118; 101; 114; 102; 108; 111; 119; 103; 105; 100].
+Definition s_proc_sys_dir : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 121; 115; 47].
+Definition s_proc_sys_kernel : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 121; 115; 47; 107; 101; 114; 110; 101;
+   108].
 Definition s_pid_ns : list byte := [49; 50; 51; 47; 110; 115].              (* "123/ns" *)
 Definition s_proc_pid_ns : list byte :=
   [47; 112; 114; 111; 99; 47; 49; 50; 51; 47; 110; 115].                   (* "/proc/123/ns" *)
@@ -2388,6 +2393,19 @@ Example openat_proc_sys_read_only :
   /\ check_syscall (proc_open_in AT_FDCWD s_overflowuid O_WRONLY)
        (with_copyins [(8192, 29%nat)] (mkEffect 3 [] [])) proc_open_model
      = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+(** O_RDONLY does not mint a readable procfs-file descriptor for sysctl
+    directories, while O_PATH keeps its directory reference. *)
+Example openat_proc_sys_directories_decline_read_only :
+  check_syscall (proc_open_in AT_FDCWD s_proc_sys_dir 0x88000)
+    (with_copyins [(8192, 11%nat)] (mkEffect 3 [] [])) proc_open_model
+  = CheckUnmodeled
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc_sys_kernel 0x88000)
+       (with_copyins [(8192, 17%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckUnmodeled
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc_sys_kernel 0x208000)
+       (with_copyins [(8192, 17%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckOk (proc_opened proc_open_model 3 (OProcPath s_proc_sys_kernel)) [].
 Proof. repeat split; check_eq. Qed.
 
 (** [openat(3, "<pid>/ns", O_PATH|O_LARGEFILE)] relative to the O_PATH

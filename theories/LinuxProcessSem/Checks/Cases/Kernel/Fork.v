@@ -236,11 +236,12 @@ Proof. vm_compute. reflexivity. Qed.
 (** THE GATE PASSES EVERY OPAQUE KIND, for both words, end to end.
     [clone_opaque_model] is the table bubblewrap's parent holds at its
     clone (channels 0-2, the O_PATH descriptor on "/proc" at fd 3, its
-    two eventfds at 4 and 5), and [clone_all_opaque_model] adds a
-    /proc/sys file and a namespace and mount model descriptor.  Before
-    [State.FdOpaque] the model held none of these, so it could not reach
-    this clone at all.  THE CONTROL is [clone_namespace_word_keeps_the_descriptor_gate]
-    above: a regular file still declines both words. *)
+    two eventfds at 4 and 5), and [clone_all_opaque_model] adds the
+    modeled [overflowuid] sysctl file and a namespace and mount model
+    descriptor.  Before [State.FdOpaque] the model held none of these,
+    so it could not reach this clone at all.  THE CONTROL is
+    [clone_namespace_word_keeps_the_descriptor_gate] above: a regular
+    file still declines both words. *)
 Definition clone_opaque_model : Model :=
   with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
             (3, FdOpaque (OProcPath proc_root_path));
@@ -249,7 +250,7 @@ Definition clone_opaque_model : Model :=
 
 Definition clone_all_opaque_model : Model :=
   with_fds (fd_insert (fd_insert (m_fds clone_opaque_model) 6
-                         (FdOpaque (OProcFile (proc_sys_prefix ++ [107]))))
+                         (FdOpaque (OProcFile proc_sys_overflowuid_path)))
                       7 (FdOpaque (ONsFile 7))) clone_opaque_model.
 
 Example clone_passes_the_opaque_kinds :

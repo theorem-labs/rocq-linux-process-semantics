@@ -371,8 +371,9 @@ Definition read_urandom (buf count : word) (i : SyscallInput) (m : Model)
       end
   end.
 
-(** [read] on a /proc/sys file opened O_RDONLY ([State.OProcFile]):
-    from 0 to [count] bytes of the ENVIRONMENT's choice, or any errno.
+(** [read] on one of the two regular /proc/sys leaves opened O_RDONLY
+    ([State.OProcFile]): from 0 to [count] bytes of the ENVIRONMENT's
+    choice, or any errno.
 
     KERNEL PATH, read at v6.18.44:
       fs/read_write.c [ksys_read], [vfs_read]: read at v6.18.44; identical at v6.18.46.
