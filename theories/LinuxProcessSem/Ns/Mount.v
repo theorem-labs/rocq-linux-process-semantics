@@ -12,13 +12,19 @@
     - [mount_setattr] with and without AT_RECURSIVE: [do_mount_setattr],
       [mount_setattr_prepare], [can_change_locked_flags], fs/namespace.c;
       the whole subtree changes or none of it;
-    - a bind: [__do_loopback] refuses an unbindable source with EINVAL
-      (fs/namespace.c:2954-2971); [copy_tree] skips an unbindable submount
-      with its subtree, or fails with EPERM when that submount is also
-      MNT_LOCKED (fs/namespace.c:2157-2230, skip at 2181-2190); a copy keeps
-      the source's flags and locks ([clone_mnt]) and is not unbindable, since
-      [clone_mnt] does not copy [mnt_t_flags]; with neither CL_SLAVE nor
-      CL_PRIVATE a copy joins the source's peer group and keeps its master;
+    - a bind ([do_loopback], [__do_loopback], [copy_tree], [clone_mnt],
+      [graft_tree], [attach_recursive_mnt], [count_mounts],
+      fs/namespace.c): the refusals in kernel order (a namespace loop, a
+      target outside the caller's namespace, an unbindable source, a
+      non-recursive bind over a locked child, the EPERM of an unbindable
+      and locked submount, SB_NOUSER, ENOTDIR, the mount limit); a
+      recursive bind copies the child mounts whose mount point is under the
+      source path, each with its whole subtree less the unbindable
+      subtrees; a copy keeps the source's flags and locks, and its peer
+      group and master (clone flags 0); the copy of the source has the
+      source path as its root and no MNT_LOCKED, the copy of a locked
+      submount has it; no copy is unbindable.  A source outside the
+      caller's namespace and a shared target are left undecided;
     - a detaching unmount: [can_umount] refuses a mount that is MNT_LOCKED
       with EINVAL; [umount_tree] removes the subtree;
     - a propagation change with or without MS_REC: [do_change_type] over the
@@ -50,6 +56,12 @@ Definition is_child_of (p : positive) (m : Mount) : bool :=
   end.
 
 Definition mem (i : positive) (l : list positive) : bool := existsb (Pos.eqb i) l.
+
+Definition is_shared (T : list Mount) (i : positive) : bool :=
+  match find_mount T i with
+  | Some m => match mnt_peer m with Some _ => true | None => false end
+  | None => false
+  end.
 
 (** The ids of the subtree rooted at [r]: [r], then each child's subtree in
     table order.  The fuel is the table's length, which bounds the depth of
@@ -179,29 +191,62 @@ Qed.
 Definition max_mount_id (T : list Mount) : positive :=
   fold_left (fun acc m => Pos.max acc (mnt_id m)) T 1%positive.
 
-(** The mounts a recursive bind copies, in order: the source, then each
-    child's copies, skipping an unbindable child with its subtree.  [None]
-    when an unbindable child is also locked: the bind fails with EPERM. *)
-Fixpoint copyable_fuel (fuel : nat) (T : list Mount) (m : Mount) {struct fuel}
+(** What the path walks found, for a bind: the source path's dentry, which
+    dentries of the source mount lie under it ([is_subdir]), and the facts
+    [do_loopback] and [graft_tree] test on the source dentry, the source
+    superblock and the target dentry. *)
+Record BindPaths := mkBindPaths {
+  bp_src_dentry   : positive;
+  bp_below        : positive -> bool;
+  bp_ns_loop      : bool;      (** [mnt_ns_loop] of the source dentry *)
+  bp_nouser       : bool;      (** SB_NOUSER on the source superblock *)
+  bp_dir_mismatch : bool       (** one of target and source root is a directory *)
+}.
+
+(** The copies a recursive bind makes below a mount whose children it
+    reaches are [kids], in pre-order: each child, then the copies below it,
+    skipping an unbindable child with its subtree.  [None] when an
+    unbindable child is also locked: the bind fails with EPERM. *)
+Fixpoint copies_below (fuel : nat) (T : list Mount) (kids : list Mount) {struct fuel}
     : option (list Mount) :=
   match fuel with
-  | O => Some [m]
+  | O => Some []
   | Datatypes.S f =>
-      option_map (fun rest => m :: rest)
-        (fold_right
-           (fun k acc =>
-              match acc with
-              | None => None
-              | Some rest =>
-                  if mnt_unbindable k
-                  then (if mnt_locked k then None else Some rest)
-                  else match copyable_fuel f T k with
-                       | None => None
-                       | Some sub => Some (sub ++ rest)
-                       end
-              end)
-           (Some []) (List.filter (is_child_of (mnt_id m)) T))
+      fold_right
+        (fun k acc =>
+           match acc with
+           | None => None
+           | Some rest =>
+               if mnt_unbindable k
+               then (if mnt_locked k then None else Some rest)
+               else match copies_below f T (List.filter (is_child_of (mnt_id k)) T) with
+                    | None => None
+                    | Some sub => Some (k :: sub ++ rest)
+                    end
+           end)
+        (Some []) kids
   end.
+
+(** The mounts a bind copies: the source, then, for a recursive bind, the
+    copies below the source's children whose mount point is under the
+    source path. *)
+Definition bind_sources (T : list Mount) (s : Mount) (below : positive -> bool)
+    (recursive : bool) : option (list Mount) :=
+  if recursive
+  then option_map (fun rest => s :: rest)
+         (copies_below (length T) T
+            (List.filter (fun c => is_child_of (mnt_id s) c && below (mnt_mountpoint c)) T))
+  else Some [s].
+
+(** [__has_locked_children]: a child of the source under the source path is
+    MNT_LOCKED. *)
+Definition has_locked_child_below (T : list Mount) (src : positive) (below : positive -> bool)
+    : bool :=
+  existsb (fun c => is_child_of src c && below (mnt_mountpoint c) && mnt_locked c) T.
+
+(** [ns->nr_mounts]. *)
+Definition ns_mount_count (T : list Mount) (ns : positive) : nat :=
+  length (List.filter (fun m => Pos.eqb (mnt_ns m) ns) T).
 
 Fixpoint index_of (i : positive) (l : list Mount) : option nat :=
   match l with
@@ -210,9 +255,10 @@ Fixpoint index_of (i : positive) (l : list Mount) : option nat :=
   end.
 
 (** The [k]-th copy.  The copy of the source sits on the target mount at the
-    target dentry; any other copy sits on the copy of its parent, at its own
-    mount point. *)
-Definition copy_of (base : positive) (srcs : list Mount) (src tgt tgt_dentry ns : positive)
+    target dentry, has the source path [src_dentry] as its root and is not
+    MNT_LOCKED; any other copy sits on the copy of its parent, at its own
+    mount point, with its own root and MNT_LOCKED. *)
+Definition copy_of (base : positive) (srcs : list Mount) (src src_dentry tgt tgt_dentry ns : positive)
     (k : nat) (m : Mount) : Mount :=
   mkMount (base + Pos.of_succ_nat k)%positive ns
           (if Pos.eqb (mnt_id m) src then Some tgt
@@ -224,59 +270,92 @@ Definition copy_of (base : positive) (srcs : list Mount) (src tgt tgt_dentry ns 
                 | None => Some tgt
                 end)
           (if Pos.eqb (mnt_id m) src then tgt_dentry else mnt_mountpoint m)
-          (mnt_root m) (mnt_sb m) (mnt_flags m) (mnt_lock_flags m) (mnt_locked m) false
+          (if Pos.eqb (mnt_id m) src then src_dentry else mnt_root m)
+          (mnt_sb m) (mnt_flags m) (mnt_lock_flags m)
+          (if Pos.eqb (mnt_id m) src then false else mnt_locked m) false
           (mnt_peer m) (mnt_master m).
 
-Definition copies (base : positive) (srcs : list Mount) (src tgt tgt_dentry ns : positive)
+Definition copies (base : positive) (srcs : list Mount) (src src_dentry tgt tgt_dentry ns : positive)
     : list Mount :=
-  map (fun p => copy_of base srcs src tgt tgt_dentry ns (fst p) (snd p))
+  map (fun p => copy_of base srcs src src_dentry tgt tgt_dentry ns (fst p) (snd p))
       (combine (seq 0 (length srcs)) srcs).
 
-Definition bind_mount (T : list Mount) (src : positive) (recursive : bool)
-    (tgt tgt_dentry : positive) : MResult :=
+(** A bind in the caller's mount namespace [ns], under the limit
+    [mount_max] (sysctl fs.mount-max), of the source path on mount [src]
+    onto dentry [tgt_dentry] of mount [tgt] (the top of the mount stack
+    there, as [LOCK_MOUNT] finds it).  [None] where the mount tree does not
+    decide: a source outside [ns] ([may_copy_tree] also accepts an nsfs or
+    pidfs dentry and a mount of an anonymous namespace), and a shared target
+    (the new mounts propagate). *)
+Definition bind_mount (T : list Mount) (ns : positive) (mount_max : nat) (src : positive)
+    (bp : BindPaths) (recursive : bool) (tgt tgt_dentry : positive) : option MResult :=
   match find_mount T src, find_mount T tgt with
   | Some s, Some t =>
-      if mnt_unbindable s then MErr EINVAL
-      else match (if recursive then copyable_fuel (length T) T s else Some [s]) with
-           | None => MErr EPERM
-           | Some l => MOk (T ++ copies (max_mount_id T) l src tgt tgt_dentry (mnt_ns t))
+      if bp_ns_loop bp then Some (MErr EINVAL)
+      else if negb (Pos.eqb (mnt_ns t) ns) then Some (MErr EINVAL)
+      else if mnt_unbindable s then Some (MErr EINVAL)
+      else if negb (Pos.eqb (mnt_ns s) ns) then None
+      else if negb recursive && has_locked_child_below T src (bp_below bp)
+      then Some (MErr EINVAL)
+      else match bind_sources T s (bp_below bp) recursive with
+           | None => Some (MErr EPERM)
+           | Some l =>
+               if bp_nouser bp then Some (MErr EINVAL)
+               else if bp_dir_mismatch bp then Some (MErr ENOTDIR)
+               else if Nat.ltb mount_max (ns_mount_count T ns + length l)
+               then Some (MErr ENOSPC)
+               else if is_shared T tgt then None
+               else Some (MOk (T ++ copies (max_mount_id T) l src (bp_src_dentry bp)
+                                           tgt tgt_dentry ns))
            end
-  | _, _ => MErr EINVAL
+  | _, _ => Some (MErr EINVAL)
   end.
 
 (** No copy a bind makes is unbindable. *)
-Theorem copies_not_unbindable : forall base l src tgt d ns c,
-  In c (copies base l src tgt d ns) -> mnt_unbindable c = false.
+Theorem copies_not_unbindable : forall base l src sd tgt d ns c,
+  In c (copies base l src sd tgt d ns) -> mnt_unbindable c = false.
 Proof.
-  intros base l src tgt d ns c Hin. unfold copies in Hin.
+  intros base l src sd tgt d ns c Hin. unfold copies in Hin.
   apply in_map_iff in Hin. destruct Hin as [[k m] [Heq _]]. subst c. reflexivity.
 Qed.
 
-(** Every copy carries the flags, the locks and MNT_LOCKED of a mount it
-    was copied from. *)
-Theorem copies_keep_flags : forall base l src tgt d ns c,
-  In c (copies base l src tgt d ns) ->
+(** Every copy carries the flags and the locks of a mount it was copied
+    from, and is MNT_LOCKED only if that mount is. *)
+Theorem copies_keep_flags : forall base l src sd tgt d ns c,
+  In c (copies base l src sd tgt d ns) ->
   exists m, In m l /\ mnt_flags c = mnt_flags m /\ mnt_lock_flags c = mnt_lock_flags m
-            /\ mnt_locked c = mnt_locked m.
+            /\ (mnt_locked c = true -> mnt_locked m = true).
 Proof.
-  intros base l src tgt d ns c Hin. unfold copies in Hin.
+  intros base l src sd tgt d ns c Hin. unfold copies in Hin.
   apply in_map_iff in Hin. destruct Hin as [[k m] [Heq Hk]]. subst c.
   exists m. split; [eapply in_combine_r; exact Hk|].
-  split; [reflexivity|]. split; reflexivity.
+  split; [reflexivity|]. split; [reflexivity|].
+  intros H. unfold copy_of in H. simpl in H.
+  destruct (Pos.eqb (mnt_id m) src); [discriminate H | exact H].
 Qed.
 
-(** A successful bind keeps every mount the table had, and adds copies. *)
-Theorem bind_mount_extends : forall T src rec tgt d T',
-  bind_mount T src rec tgt d = MOk T' ->
-  exists l ns, T' = T ++ copies (max_mount_id T) l src tgt d ns.
+(** A bind the tree decides and allows keeps every mount the table had, and
+    adds copies into the caller's namespace. *)
+Theorem bind_mount_extends : forall T ns mx src bp rec tgt d T',
+  bind_mount T ns mx src bp rec tgt d = Some (MOk T') ->
+  exists l, T' = T ++ copies (max_mount_id T) l src (bp_src_dentry bp) tgt d ns.
 Proof.
-  intros T src rec tgt d T'. unfold bind_mount.
+  intros T ns mx src bp rec tgt d T'. unfold bind_mount.
   destruct (find_mount T src) as [s|]; [|intros Hc; discriminate Hc].
   destruct (find_mount T tgt) as [t|]; [|intros Hc; discriminate Hc].
+  cbv beta iota.
+  destruct (bp_ns_loop bp); [intros Hc; discriminate Hc|].
+  destruct (negb (Pos.eqb (mnt_ns t) ns)); [intros Hc; discriminate Hc|].
   destruct (mnt_unbindable s); [intros Hc; discriminate Hc|].
-  destruct (if rec then copyable_fuel (length T) T s else Some [s]) as [l|];
-    [|intros Hc; discriminate Hc].
-  intros H. injection H as HT. subst T'. exists l, (mnt_ns t). reflexivity.
+  destruct (negb (Pos.eqb (mnt_ns s) ns)); [intros Hc; discriminate Hc|].
+  destruct (negb rec && has_locked_child_below T src (bp_below bp));
+    [intros Hc; discriminate Hc|].
+  destruct (bind_sources T s (bp_below bp) rec) as [l|]; [|intros Hc; discriminate Hc].
+  destruct (bp_nouser bp); [intros Hc; discriminate Hc|].
+  destruct (bp_dir_mismatch bp); [intros Hc; discriminate Hc|].
+  destruct (Nat.ltb mx (ns_mount_count T ns + length l)); [intros Hc; discriminate Hc|].
+  destruct (is_shared T tgt); [intros Hc; discriminate Hc|].
+  intros H. injection H as HT. subst T'. exists l. reflexivity.
 Qed.
 
 (* =========================================================================
@@ -534,12 +613,6 @@ Record PivotPaths := mkPivotPaths {
     is in the kernel. *)
 Definition parent_or_self (m : Mount) : positive :=
   match mnt_parent m with Some p => p | None => mnt_id m end.
-
-Definition is_shared (T : list Mount) (i : positive) : bool :=
-  match find_mount T i with
-  | Some m => match mnt_peer m with Some _ => true | None => false end
-  | None => false
-  end.
 
 (** The move: the new root [nr] takes the old root's parent and mount point
     ([rp], [rmp]); the old root [rt] goes on put_old, dentry [d] of mount

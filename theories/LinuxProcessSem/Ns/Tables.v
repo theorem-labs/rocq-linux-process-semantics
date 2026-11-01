@@ -23,6 +23,7 @@ Import ListNotations.
 Definition EPERM : Z := 1%Z.
 Definition ENOENT : Z := 2%Z.
 Definition EBUSY : Z := 16%Z.
+Definition ENOTDIR : Z := 20%Z.
 Definition EINVAL : Z := 22%Z.
 Definition ENOSPC : Z := 28%Z.
 
