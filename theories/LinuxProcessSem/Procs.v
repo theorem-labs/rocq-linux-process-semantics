@@ -450,6 +450,65 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     So the intercepted shape is excluded here, and it is the SECOND place --
     beside a successful clone -- where this relation and the released one
     differ.  [pstep_single]'s second hypothesis is exactly that exclusion. *)
+(** THE CLONE ARM.  The parent's half is the RELEASED step, unedited: flag
+    word, errno list, pid envelope, [State.with_children] and the
+    [Fork.clone_no_shared_file_b] gate are all [Sys.Kernel.Fork]'s.  This arm
+    only adds the child, and it fires only when the released step really
+    created one -- so a FAILING clone is [pstep_other]'s business and keeps
+    the released behaviour exactly. *)
+| pstep_clone : forall P e evs c' q,
+    look P (pe_pid e) = Some e ->
+    sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
+    clone_success_b (pe_cfg (pcfg_shared P) e) c' = true ->
+    child_pid_core c' q ->
+    look P q = None ->
+    multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
+    pstep_at segs cfg (pe_pid e) P evs (PNext (clone_result P e c' q))
+(** THE REAP ARM, the one operation with no single-process counterpart.
+
+    It REQUIRES a pending 260 through [wait4_intercept_b]: reading the
+    argument registers alone would let it fire at an ordinary instruction
+    whose registers happened to match, and [Run.advance_past_svc] adds 4 to
+    the pc unconditionally.
+
+    The copy-out is checked BEFORE the reap, under the same writability test
+    the spec layer uses.  Linux is lossy the other way -- [kernel_wait4]
+    reaps and drops the pid reference before [put_user], so a failed copy
+    destroys the status (Exit.v:240-243) -- and that path is declined here
+    rather than approximated.  [materialize_model_accesses] is applied
+    exactly as [Run.sstep_cfg_syscall] applies it (Run.v:1805-1806), so a
+    copy-out into a lazy anonymous mapping is charged against the budget.
+
+    A killed child is declined: its status is the WIFSIGNALED encoding, and
+    [pe_status]'s second arm is written but not reachable until the premise
+    below comes off.  No event is emitted: a reap is none of [State.ReadEv],
+    [WriteEv], [ExitEv] or [KillEv], and the child's own [ExitEv] already
+    recorded the status. *)
+| pstep_wait_reap : forall P e q ez x8 stat_addr status eff model'' dumped,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    ms_svc_pending (pe_ms e) = Some x8 ->
+    wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true ->
+    wait4_blocking_args (pe_ms e) = Some stat_addr ->
+    look P q = Some ez ->
+    pe_parent ez = Some (pe_pid e) ->
+    m_killed (pe_model ez) = None ->
+    pe_status dumped ez = Some status ->
+    read_bytes_map (in_wmem (sys_input segs (pe_ms e) x8)) stat_addr
+      (Z_to_bv 64 4) <> None ->
+    eff = mkEffect q [(stat_addr, Z_to_le_bytes 4 (bv_unsigned status))] [] ->
+    materialize_model_accesses (cfg_model (pe_cfg (pcfg_shared P) e))
+      (syscall_effect_accesses eff) = Some model'' ->
+    pstep_at segs cfg (pe_pid e) P []
+      (PNext (mkPCfg
+                (drop_in
+                   (replace_in (pcfg_procs P) (pe_pid e)
+                      (mkEntry (pe_pid e) (pe_parent e)
+                         (advance_past_svc (apply_effect (pe_ms e) eff))
+                         (clear_shared model'') (pe_ofd e) (pe_nsctx e)))
+                   q)
+                (pcfg_root P)
+                (shared_absorb (pcfg_shared P) (mkCfg (pe_ms e) model''))))
 | pstep_error : forall P e evs,
     look P (pe_pid e) = Some e ->
     sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs SError ->
@@ -588,20 +647,36 @@ Qed.
     conclusion and never have to be discharged by hand. *)
 
 Lemma pstep_single_next_fwd : forall segs cfg c evs P',
+  (forall c', sstep_cfg segs cfg c evs (SNext c') -> clone_success_b c c' = false) ->
+  wait4_intercept_b c = false ->
   pstep_cfg segs cfg (one_proc c) evs (PNext P') ->
   exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c').
 Proof.
-  intros segs cfg c evs P' Hp. destruct Hp as [p Hp].
-  inversion Hp; subst.
-  match goal with
-  | [ Hlook : look (one_proc c) _ = Some _ |- _ ] =>
-      rewrite (look_one_proc_inv _ _ _ Hlook) in *
-  end.
-  rewrite one_proc_view in *.
-  match goal with
-  | [ Hss : sstep_cfg _ _ _ _ (SNext ?c1) |- _ ] =>
-      exists c1; split; [apply absorb_one_proc | exact Hss]
-  end.
+  intros segs cfg c evs P' Hcl Hwt Hp. destruct Hp as [p Hp].
+  inversion Hp; subst;
+    match goal with
+    | [ Hlook : look (one_proc c) _ = Some _ |- _ ] =>
+        rewrite (look_one_proc_inv _ _ _ Hlook) in *
+    end;
+    rewrite one_proc_view in *.
+  - (* pstep_other: the step this lemma is about *)
+    match goal with
+    | [ Hss : sstep_cfg _ _ _ _ (SNext ?c1) |- _ ] =>
+        exists c1; split; [apply absorb_one_proc | exact Hss]
+    end.
+  - (* pstep_clone is excluded by the first hypothesis *)
+    exfalso.
+    match goal with
+    | [ Hss : sstep_cfg _ _ _ _ (SNext ?c1),
+        Hcs : clone_success_b _ ?c1 = true |- _ ] =>
+        rewrite (Hcl _ Hss) in Hcs; discriminate
+    end.
+  - (* pstep_wait_reap is excluded by the second *)
+    exfalso.
+    match goal with
+    | [ Hwi : wait4_intercept_b _ = true |- _ ] =>
+        rewrite Hwt in Hwi; discriminate
+    end.
 Qed.
 
 Lemma pstep_single_next_bwd : forall segs cfg c evs c',
@@ -664,7 +739,7 @@ Theorem pstep_single_next : forall segs cfg c evs P',
    <-> exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c')).
 Proof.
   intros segs cfg c evs P' Hcl Hwt. split.
-  - apply pstep_single_next_fwd.
+  - apply pstep_single_next_fwd; [exact Hcl | exact Hwt].
   - intros (c' & -> & Hss).
     apply pstep_single_next_bwd; [exact (Hcl _ Hss) | exact Hwt | exact Hss].
 Qed.
@@ -945,4 +1020,67 @@ Proof.
   intros c. unfold terminal, one_proc, one_entry, pe_zombie. cbn. split.
   - intros H. inversion H as [|x l Hx Hr]; subst. exact Hx.
   - intros H. constructor; [exact H | constructor].
+Qed.
+
+(* =========================================================================
+   What a consumer's lineage restriction needs
+   ========================================================================= *)
+
+(** Two facts about the table operations, proved here because nothing else
+    states them: replacing keeps the length, dropping does not raise it. *)
+Lemma replace_in_length : forall ps p e,
+  List.length (replace_in ps p e) = List.length ps.
+Proof.
+  induction ps as [|kv r IH]; intros p e; cbn; [reflexivity|].
+  destruct (bv_eqb (fst kv) p); cbn; [reflexivity | f_equal; apply IH].
+Qed.
+
+Lemma drop_in_length_le : forall ps p,
+  (List.length (drop_in ps p) <= List.length ps)%nat.
+Proof.
+  induction ps as [|kv r IH]; intros p; cbn; [apply Nat.le_refl|].
+  destruct (bv_eqb (fst kv) p); cbn.
+  - apply Nat.le_succ_diag_r.
+  - apply le_n_S. apply IH.
+Qed.
+
+(** The lineage this core offers a consumer: the LAST entry of the table.
+    [clone_result] appends the child, so "the lineage" is "the most recently
+    created process", which is what a child-lineage walk follows.  A
+    one-process system has only its one entry, [one_pid]. *)
+Definition lineage_pick (P : pconfig) (p : Pid) : Prop :=
+  p = List.last (List.map fst (pcfg_procs P)) (pcfg_root P).
+
+(** L9. *)
+Lemma lineage_pick_one : forall c p,
+  lineage_pick (one_proc c) p <-> p = one_pid.
+Proof.
+  intros c p. unfold lineage_pick, one_proc. cbn.
+  split; intros H; exact H.
+Qed.
+
+(** L11: a successful clone with a free child pid is a step of the system. *)
+Theorem pstep_clone_law : forall segs cfg P e evs c' q,
+  look P (pe_pid e) = Some e ->
+  sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
+  clone_success_b (pe_cfg (pcfg_shared P) e) c' = true ->
+  child_pid_core c' q ->
+  look P q = None ->
+  multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
+  pstep_cfg segs cfg P evs (PNext (clone_result P e c' q)).
+Proof.
+  intros segs cfg P e evs c' q H1 H2 H3 H4 H5 H6.
+  apply pstep_at_sub with (p := pe_pid e).
+  apply pstep_clone; assumption.
+Qed.
+
+(** The child a clone appends has a0 = 0: that is what [child_ms] writes,
+    with [set_reg]'s PHYSICAL register 10, which is a0, read back at
+    [ms_gpr]'s ARGUMENT index 0, which is the same register. *)
+Lemma child_entry_a0_zero : forall e c c' q,
+  entry_a0_zero (child_entry e c c' q).
+Proof.
+  intros e c c' q.
+  unfold entry_a0_zero, child_entry, child_ms. cbn.
+  destruct (w_is0 (ms_gpr (cfg_ms c) 1)); reflexivity.
 Qed.
