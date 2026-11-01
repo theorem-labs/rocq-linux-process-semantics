@@ -1177,6 +1177,7 @@ Qed.
 Lemma cat_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
   to_wexit (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) bufs code ->
   bufs_modeled bufs ->
+  wexit_launch bufs inp ->
   forall tr, obs_trace (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
              <-> exists full, wpick (Z_to_bv 64 1) bufs full /\
                  is_prefix tr (full ++ [ExitEv code (in_fs inp)]).
@@ -1189,8 +1190,9 @@ Proof.
               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = None) by reflexivity.
   assert (Hlazy : m_vm_lazy (with_vdso (vdso_run_init (ed_vdso rnd))
               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = []) by reflexivity.
-  assert (Hfd : fd1chan (with_vdso (vdso_run_init (ed_vdso rnd))
-              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))) by reflexivity.
+  assert (Hfd : wexit_ready bufs (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)))
+    by (apply init_model_wexit_ready; exact Hl).
   assert (Hfs : m_fs (with_vdso (vdso_run_init (ed_vdso rnd))
               (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp)) = fs0) by reflexivity.
   split.
@@ -1210,6 +1212,7 @@ Qed.
 Lemma cat_no_error_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
   to_wexit (run_segments segs inp sp mb) (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) bufs code ->
   bufs_modeled bufs ->
+  wexit_launch bufs inp ->
   ~ reaches_error (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bufs code Hte Hbm Hl. apply exec_no_error.
