@@ -4048,11 +4048,11 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 (** The SAME predicate with the abort-path declaration turned on, and it
     is a separate definition rather than a parameter for the reason the
@@ -4110,11 +4110,11 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = true
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 (** Neither ABORT stance pinned: the clauses both share, and nothing
     about that declaration.  A statement quantified over this one is the
@@ -4131,11 +4131,11 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
   /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
@@ -4202,11 +4202,11 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = false
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = false
+  /\ in_channel_reader inp = true.
 
 (** Neither SIGPIPE stance pinned: the clauses both share, and nothing
     about the disposition.  A statement quantified over this one is the
@@ -4221,10 +4221,10 @@ Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_channel_reader inp = true.
 
 Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_sigpipe_either inp.
@@ -4299,11 +4299,11 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = false
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = false.
 
 (** Neither reader stance pinned: the clauses both share, and nothing
     about that declaration. *)
@@ -4314,10 +4314,10 @@ Definition valid_input_channel_either (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true.
 
 Lemma valid_input_channel_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_channel_either inp.
@@ -4420,11 +4420,11 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv39
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -4433,11 +4433,11 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv57
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -4446,10 +4446,10 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Lemma valid_input_image_real : forall inp,
   valid_input inp -> fs_image_real (in_image_fs inp) = true.
@@ -4645,11 +4645,11 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -4658,11 +4658,11 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 (** Each declaration is a NARROWING of the default, so a statement
     quantified over [valid_input] is about every input either predicate
@@ -4750,11 +4750,11 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = true
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -4763,11 +4763,11 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = true
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gc : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> valid_input_abort inp.
