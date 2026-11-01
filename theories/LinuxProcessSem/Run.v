@@ -4167,7 +4167,8 @@ Qed.
 Lemma valid_input_either_splits : forall inp,
   valid_input_either inp -> valid_input inp \/ valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & s & n & v & u & L).
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   destruct (in_abort_terminal inp) eqn:Hab.
   - right.
     try red;
@@ -4259,7 +4260,8 @@ Proof.
      exists to protect.  [repeat split] does not care about the order,
      and [assumption] cannot pick a wrong one: the two pins differ in
      their bool, so only the branch's own [Hsp] matches. *)
-  intros inp (a & b & c & k & r & d & e & f & g & h & n & v & u & L).
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   destruct (in_sigpipe_default inp) eqn:Hsp.
   - left.  unfold valid_input.
     repeat match goal with H : _ /\ _ |- _ => destruct H end;
@@ -4587,7 +4589,8 @@ Lemma valid_input_va_any_splits : forall inp,
   valid_input_va_any inp ->
   valid_input inp \/ valid_input_sv39 inp \/ valid_input_sv57 inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & s & n & u & L).
+  intros inp Hin. red in Hin.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   destruct (in_va_size inp) eqn:Hv.
   - right; left.
     try red;
@@ -4685,18 +4688,16 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
 Lemma valid_input_of_valid_input_hwcap_rv64gc : forall inp,
   valid_input_hwcap_rv64gc inp -> valid_input inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  try red;
-    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+  intros inp Hv. red in Hv. red.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
     repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_of_valid_input_hwcap_rv64gcv : forall inp,
   valid_input_hwcap_rv64gcv inp -> valid_input inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  try red;
-    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+  intros inp Hv. red in Hv. red.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
     repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
@@ -4710,14 +4711,10 @@ Lemma valid_input_hwcap_splits : forall inp,
   valid_input inp ->
   valid_input_hwcap_rv64gc inp \/ valid_input_hwcap_rv64gcv inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & s & n & v & u).
-  - left.
-    try red;
-    repeat match goal with H : _ /\ _ |- _ => destruct H end;
-    repeat match goal with |- _ /\ _ => split end; assumption.
-  - right.
-    try red;
-    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  match goal with H : _ \/ _ |- _ => destruct H end;
+    [left | right]; red;
     repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
@@ -4787,36 +4784,41 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ in_sigpipe_default inp = true
   /\ in_channel_reader inp = true.
 
+(** The three proofs below take the conjuncts BY SHAPE, never by
+    position.  A positional pattern ([intros inp (a & b & ... & L)])
+    names each conjunct by where it sits, so appending or reordering
+    one silently rebinds every name after it, and the proof fails with
+    "No such assumption" at a line that has nothing wrong with it.
+    That is what these three did before: fourteen binders against
+    fifteen conjuncts.  [red] then [repeat destruct] takes whatever is
+    there, in whatever order, and [repeat split; assumption] puts it
+    back, so a later conjunct costs these proofs nothing. *)
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gc : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  try red;
-    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+  intros inp Hv. red in Hv. red.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
     repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  try red;
-    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+  intros inp Hv. red in Hv. red.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
     repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
+(** The hwcap disjunction is found by shape too, rather than by sitting
+    ninth in the pattern. *)
 Lemma valid_input_abort_hwcap_splits : forall inp,
   valid_input_abort inp ->
   valid_input_abort_hwcap_rv64gc inp \/ valid_input_abort_hwcap_rv64gcv inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & s & n & v & u).
-  - left.
-    try red;
-    repeat match goal with H : _ /\ _ |- _ => destruct H end;
-    repeat match goal with |- _ /\ _ => split end; assumption.
-  - right.
-    try red;
-    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  match goal with H : _ \/ _ |- _ => destruct H end;
+    [left | right]; red;
     repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
