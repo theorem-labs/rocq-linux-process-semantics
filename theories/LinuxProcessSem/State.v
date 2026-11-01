@@ -2736,9 +2736,10 @@ Definition PipeBuf : Type := list byte * Z.
       [close] removes it.
         fs/open.c [do_dentry_open]: read at v6.18.44; identical at v6.18.46.
         fs/file.c [fdget]: read at v6.18.44; identical at v6.18.46.
-    - [OProcFile p]: an O_RDONLY descriptor on a name under
-      "/proc/sys/" ([Fs.Open.proc_sys_file_b]).  Its reads return bytes
-      of the environment's choice ([Fs.ReadWrite.read_proc_spec]).
+    - [OProcFile p]: an O_RDONLY descriptor on
+      "/proc/sys/kernel/overflowuid" or "/proc/sys/kernel/overflowgid"
+      ([Fs.Open.proc_sys_file_b]).  Its reads return bytes of the
+      environment's choice ([Fs.ReadWrite.read_proc_spec]).
     - [OEventFd flags]: an eventfd ([Fs.EventFd.eventfd2_spec]),
       carrying the flag word it was created with.  Its counter is not
       modeled, so read and write on it decline.
@@ -5252,9 +5253,10 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     [fifo_open] and is never released through [pipe_release]
     ([do_dentry_open], fs/open.c, read at v6.18.44; identical at v6.18.46), so it is counted
     in neither [pipe->readers] nor [pipe->writers]; and O_RDONLY is
-    answered only for a "/proc/sys/" name, which by the stated
-    assumption is never a link.  So no answered open hands out a
-    second reader or writer reference.
+    answered only for "/proc/sys/kernel/overflowuid" and
+    "/proc/sys/kernel/overflowgid", which by the stated assumption are
+    never links.  So no answered open hands out a second reader or
+    writer reference.
 
     A syscall that DUPLICATES a descriptor would keep the two
     constructions in step for a reason worth writing down, because a

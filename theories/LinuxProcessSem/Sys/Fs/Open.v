@@ -1392,16 +1392,31 @@ Definition proc_path_b (p : path) : bool :=
          | None => false
          end).
 
-(** [p] names a file under /proc/sys: it starts with "/proc/sys/" and no
-    component is "..".  With the assumption above (no symbolic link
-    under /proc/sys) such a path resolves inside the sysctl tree, or to
-    nothing. *)
+(** The two regular sysctl leaves this model knows.  In kernel/sys.c's
+    [overflow_sysctl_table], [overflowuid] at line 186 and [overflowgid]
+    at line 195 use [proc_dointvec_minmax] (read at v6.18.44; identical
+    at v6.18.46). *)
+Definition proc_sys_kernel_prefix : path :=
+  proc_sys_prefix ++
+    [Z_to_bv 8 107; Z_to_bv 8 101; Z_to_bv 8 114; Z_to_bv 8 110;
+     Z_to_bv 8 101; Z_to_bv 8 108; slash_byte].
+
+Definition proc_sys_overflowuid_path : path :=
+  proc_sys_kernel_prefix ++
+    [Z_to_bv 8 111; Z_to_bv 8 118; Z_to_bv 8 101; Z_to_bv 8 114;
+     Z_to_bv 8 102; Z_to_bv 8 108; Z_to_bv 8 111; Z_to_bv 8 119;
+     Z_to_bv 8 117; Z_to_bv 8 105; Z_to_bv 8 100].
+
+Definition proc_sys_overflowgid_path : path :=
+  proc_sys_kernel_prefix ++
+    [Z_to_bv 8 111; Z_to_bv 8 118; Z_to_bv 8 101; Z_to_bv 8 114;
+     Z_to_bv 8 102; Z_to_bv 8 108; Z_to_bv 8 111; Z_to_bv 8 119;
+     Z_to_bv 8 103; Z_to_bv 8 105; Z_to_bv 8 100].
+
+(** [p] names a regular sysctl file the model reads.  Every other sysctl
+    name is declined, so a directory cannot become an [OProcFile]. *)
 Definition proc_sys_file_b (p : path) : bool :=
-  negb (path_has_dotdot p)
-  && match path_strip_prefix proc_sys_prefix p with
-     | Some _ => true
-     | None => false
-     end.
+  path_eqb p proc_sys_overflowuid_path || path_eqb p proc_sys_overflowgid_path.
 
 (** The procfs name an [openat] reaches, or [None] where this section
     does not apply.
@@ -1465,9 +1480,10 @@ Definition proc_open_result (m : Model) (o : OpaqueFd) : Sys SyscallEffect :=
     TWO SHAPES ARE ANSWERED:
     - an O_PATH word ([open_path_word]) on any procfs name: an
       [OProcPath c] descriptor, or an errno;
-    - O_RDONLY (with [open_ignored_flags]) on a [proc_sys_file_b] name:
-      an [OProcFile c] descriptor, or an errno.
-    Every other word is declined, as it was before this arm.
+    - O_RDONLY (with [open_ignored_flags]) on either
+      [proc_sys_overflowuid_path] or [proc_sys_overflowgid_path]: an
+      [OProcFile c] descriptor, or an errno.
+    Every other word and sysctl name is declined, as it was before this arm.
 
     KERNEL PATH, read at v6.18.44:
       fs/open.c [SYSCALL_DEFINE4(openat)], [do_sys_openat2],
@@ -1505,8 +1521,9 @@ Definition proc_open_result (m : Model) (o : OpaqueFd) : Sys SyscallEffect :=
     That is still sound, because nothing the model does with an
     [OProcPath] reads the object: an [openat] or a [newfstatat] relative
     to it answers any errno or an opaque result, and every other arm
-    declines the kind.  An O_RDONLY open is answered only under
-    "/proc/sys/", where the assumption above rules the links out.
+    declines the kind.  An O_RDONLY open is answered only for
+    [proc_sys_overflowuid_path] and [proc_sys_overflowgid_path], where
+    the assumption above rules the links out.
 
     A PIPE CANNOT GAIN A READER OR A WRITER HERE, although
     "/proc/self/fd/N" can name one: see [State.pipe_end_live]. *)
@@ -1613,8 +1630,9 @@ Definition openat_proc_spec (c : path) (flags : word) (m : Model)
     absolute name under "/proc", from any dirfd, or a name relative to
     an O_PATH descriptor on one ([State.OProcPath]), is
     [openat_proc_spec]'s, which answers the O_PATH words and O_RDONLY
-    of a "/proc/sys/" name and declines the rest ([proc_open_target]).
-    An O_PATH word on any other name is declined.
+    only for [proc_sys_overflowuid_path] and [proc_sys_overflowgid_path],
+    and declines the rest ([proc_open_target]).  An O_PATH word on any
+    other name is declined.
 
     Anything else — a dirfd other than AT_FDCWD, other flag
     combinations — is unmodeled: [unmodeled].  An open on an arm that can
