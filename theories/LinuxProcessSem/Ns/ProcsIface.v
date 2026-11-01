@@ -11,8 +11,10 @@
     released single-process configuration, nor on whether the core's step
     takes the segment list: [StepCtx] stands for whatever the core's step is
     parameterised by.  The layer's own records reach the core through two
-    accessors only: [pe_nsctx], what a process's namespace context is, and
-    [sh_nsstate], what the shared namespace state is.
+    accessors: [pe_nsctx], what a process's namespace context is, and
+    [sh_nsstate], what the shared namespace state is.  A third, [pe_ofd],
+    reads a process's descriptor table (descriptor number to the open file
+    description it names), so a consumer can name descriptions.
 
     THE LAWS, each one a statement about the core that the core proves when
     it instantiates this module type:
@@ -71,11 +73,16 @@ Module Type PROCS_CORE.
 
   (* ---- The multi-process core ---- *)
   Parameter OfdId : Type.
+  (** Two processes share an open file description when their tables name
+      the same id, so the ids compare. *)
+  Parameter ofd_eq_dec : forall a b : OfdId, {a = b} + {a <> b}.
+  Parameter Fd : Type.
   Parameter ProcessEntry : Type.
   Parameter shared : Type.
   Parameter pconfig : Type.
   Parameter pe_pid : ProcessEntry -> Pid.
   Parameter pe_parent : ProcessEntry -> option Pid.
+  Parameter pe_ofd : ProcessEntry -> list (Fd * OfdId).
   Parameter pe_nsctx : ProcessEntry -> NsCtx.
   Parameter sh_nsstate : shared -> NsState.
   Parameter pcfg_procs : pconfig -> list (Pid * ProcessEntry).

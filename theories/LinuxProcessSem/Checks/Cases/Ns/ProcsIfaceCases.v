@@ -26,11 +26,14 @@ Module ToyCore <: PROCS_CORE.
   Definition child_pid (_ : config) (_ : positive) : Prop := False.
 
   Definition OfdId := positive.
+  Definition ofd_eq_dec : forall a b : OfdId, {a = b} + {a <> b} := Pos.eq_dec.
+  Definition Fd := positive.
   Definition ProcessEntry := unit.
   Definition shared := unit.
   Definition pconfig := unit.
   Definition pe_pid (_ : ProcessEntry) : positive := 1%positive.
   Definition pe_parent (_ : ProcessEntry) : option positive := None.
+  Definition pe_ofd (_ : ProcessEntry) : list (Fd * OfdId) := [].
   Definition pe_nsctx (_ : ProcessEntry) : NsCtx :=
     mkNsCtx 1%positive 1%positive (1%positive, 1%positive) (1%positive, 1%positive).
   Definition sh_nsstate (_ : shared) : NsState := mkNsState [] [].
