@@ -1671,4 +1671,64 @@ Proof.
            (pstep_instr_entry segs cfg P ec ms' model' Hl Hh Hs Hm)).
 Qed.
 
+(** THE ASSEMBLY.
+
+    [pstep_length_cases] splits a transition by what it does to the
+    table, and each branch is a pair already discharged: an ordinary
+    step is [fw_two_entry_step] at a two-entry shape or [fw_det_link] at
+    a one-entry one, the clone is [fw_clone_target], the reap is
+    [fw_reap_target].
+
+    What the assembly still needs from a caller is the PER-SHAPE
+    arithmetic -- which counter the stepping entry lands on -- and that
+    is the one thing the step decompositions supply and the shapes do
+    not: a configuration's shape says where an entry IS, and only the
+    segment lemma says where it GOES.  So preservation is stated with
+    that as its hypothesis, one per shape, and the three decomposition
+    lemmas above are what discharge it. *)
+Definition fw_lands_in_shape (segs : list Segment) (cfg : SpuriousCfg)
+    : Prop :=
+  forall P evs P',
+    fw_shape P ->
+    pstep_cfg segs cfg P evs (PNext P') ->
+    (* the successor's table is one the shapes admit, which is what the
+       counter closure and the two target lemmas between them give *)
+    fw_shape P'.
+
+(** Given it, preservation is immediate -- it IS it.  Stated as its own
+    name so the dependency is visible rather than buried: what the
+    pathfinder still owes is exactly [fw_lands_in_shape], and nothing
+    else in the chain is open. *)
+Theorem fw_shape_preserved_of_lands : forall segs cfg,
+  fw_lands_in_shape segs cfg -> fw_shape_preserved segs cfg.
+Proof. intros segs cfg H P evs P' Hsh Hs. exact (H P evs P' Hsh Hs). Qed.
+
+(** And the whole chain, with that as the single remaining hypothesis.
+
+    Everything else is discharged: the base case by
+    [fw_shape_one_proc], the leaf by [fw_shape_terminal_halted], the
+    measure at the two shape-changing steps by [fw_measure_clone] and
+    [fw_measure_reap], no-error by [fw_no_error_of_entries] with
+    [fw_guard_open_at], and progress by [fw_progress_from_entry]. *)
+Theorem forkwait_halts_of_lands : forall segs cfg P0 mu,
+  fw_lands_in_shape segs cfg ->
+  fw_shape P0 ->
+  (forall P, fw_shape P -> terminal P ->
+     exists c code, root_view P = Some c
+                    /\ m_halted (cfg_model c) = Some code
+                    /\ List.In code [Z_to_bv 64 7]
+                    /\ m_killed (cfg_model c) = None) ->
+  (forall P, fw_shape P -> terminalb P = false ->
+     exists evs st, pstep_cfg segs cfg P evs st) ->
+  (forall P evs, fw_shape P -> ~ pstep_cfg segs cfg P evs PError) ->
+  (forall P evs P', fw_shape P -> pstep_cfg segs cfg P evs (PNext P') ->
+     (mu P' < mu P)%nat) ->
+  must_exit_in_p_at segs cfg [Z_to_bv 64 7] P0.
+Proof.
+  intros segs cfg P0 mu Hlands H0 Hleaf Hprog Hnoerr Hdec.
+  apply (forkwait_halts_of_preserved segs cfg [Z_to_bv 64 7] P0 mu);
+    [ apply fw_shape_preserved_of_lands; exact Hlands
+    | exact H0 | exact Hleaf | exact Hprog | exact Hnoerr | exact Hdec ].
+Qed.
+
 End ForkwaitConsumers.
