@@ -98,7 +98,7 @@ Definition check_prlimit64 (i : SyscallInput)
   else if (w_is0 new_rlim && w_is0 old_rlim)%bool then CheckUnmodeled
   else if (negb (w_is0 new_rlim) && negb (w_is0 old_rlim))%bool then CheckUnmodeled
   else if w_is0 new_rlim then
-    match read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16) with
+    match copy_bytes_map (in_wmem i) old_rlim 16 with
     | None =>
         if negb (access_okb old_rlim 16)
         then check_ret_only eff (errno_ret EFAULT) m []
@@ -109,7 +109,7 @@ Definition check_prlimit64 (i : SyscallInput)
     match m_rlimit_core m with
     | None => CheckUnmodeled
     | Some bs0 =>
-        match read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16) with
+        match copy_bytes_map (in_mem i) new_rlim 16 with
         | None =>
             if negb (access_okb new_rlim 16)
             then check_ret_only eff (errno_ret EFAULT) m []
@@ -238,8 +238,9 @@ Qed.
 (** ftruncate: the negative length decided BEFORE the fd lookup, one
     -EINVAL for every fd kind that is not a writable regular file, and on
     a WRITABLE one — [FdFileW], [FdFileA] and [FdFileRW], which share a
-    single arm because [do_ftruncate] reads only S_ISREG and FMODE_WRITE
-    — a bare 0 with the file resized and THE OFFSET LEFT
+    single arm because [do_ftruncate] reads only S_ISREG and FMODE_WRITE,
+    and a writable [FdAnon], whose new contents reach every descriptor of
+    its file — a bare 0 with the file resized and THE OFFSET LEFT
     ALONE (see [Open.ftruncate_spec]).  The size guard is consulted only
     on that arm, as in the spec: a huge length on a channel or a
     directory is still the kernel's -EINVAL, not a decline. *)
@@ -581,7 +582,7 @@ Proof.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta.
   destruct (w_is0 new_rlim) eqn:Hn.
-  - destruct (read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16)) as [bs1|]
+  - destruct (copy_bytes_map (in_wmem i) old_rlim 16) as [bs1|]
       eqn:Hw.
     + apply check_rlim64_read_ok in H as (bs & -> & -> & [[Hm ->]|(Hm & HW & ->)]);
         rewrite Hm.
@@ -592,7 +593,7 @@ Proof.
         [|discriminate].
       apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok.
   - destruct (m_rlimit_core m) as [bs0|] eqn:Hm; [|discriminate].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|]
+    destruct (copy_bytes_map (in_mem i) new_rlim 16) as [nb|]
       eqn:Hw.
     + destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z) eqn:Hi.
@@ -630,14 +631,14 @@ Proof.
   eapply bind_unmodeled2; [apply input_ok|].
   eapply bind_unmodeled2; [apply get_model_ok|].
   destruct (w_is0 new_rlim) eqn:Hn.
-  - destruct (read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16)) as [bs1|]
+  - destruct (copy_bytes_map (in_wmem i) old_rlim 16) as [bs1|]
       eqn:Hw.
     + now apply check_rlim64_read_no_unmodeled in H.
     + destruct (negb (access_okb old_rlim 16)) eqn:Ho.
       * now apply check_ret_only_no_unmodeled in H.
       * apply unmodeled_intro.
   - destruct (m_rlimit_core m) as [bs0|] eqn:Hm; [|apply unmodeled_intro].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|]
+    destruct (copy_bytes_map (in_mem i) new_rlim 16) as [nb|]
       eqn:Hw.
     + destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z) eqn:Hi.
@@ -665,7 +666,7 @@ Proof.
   destruct (negb (w_is0 new_rlim) && negb (w_is0 old_rlim))%bool eqn:Hb2;
     [sys_unfold; inv_ok|]. cbv iota in H |- *.
   destruct (w_is0 new_rlim) eqn:Hn.
-  - destruct (read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16)) as [bs1|]
+  - destruct (copy_bytes_map (in_wmem i) old_rlim 16) as [bs1|]
       eqn:Hw.
     + destruct (m_rlimit_core m) as [bs0|] eqn:Hm;
         sys_unfold; inv_ok; hall Hn; hall Hw; hall Hm; inv_ok;
@@ -679,7 +680,7 @@ Proof.
       apply check_ret_only_ok_iff. now repeat split.
   - destruct (m_rlimit_core m) as [bs0|] eqn:Hm;
       [|sys_unfold; inv_ok; hall Hn; hall Hm; inv_ok].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|]
+    destruct (copy_bytes_map (in_mem i) new_rlim 16) as [nb|]
       eqn:Hw.
     + destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z) eqn:Hi;
@@ -710,7 +711,7 @@ Proof.
   destruct (negb (w_is0 new_rlim) && negb (w_is0 old_rlim))%bool eqn:Hb2;
     [reflexivity|]. cbv iota in H |- *.
   destruct (w_is0 new_rlim) eqn:Hn.
-  - destruct (read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16)) as [bs1|]
+  - destruct (copy_bytes_map (in_wmem i) old_rlim 16) as [bs1|]
       eqn:Hw.
     + exfalso. destruct (m_rlimit_core m) as [bs0|] eqn:Hm;
         sys_unfold; inv_ok; hall Hn; hall Hw; hall Hm; inv_ok.
@@ -718,7 +719,7 @@ Proof.
         [exfalso|reflexivity];
         sys_unfold; inv_ok; hall Hn; hall Hw; hall Ho; inv_ok.
   - destruct (m_rlimit_core m) as [bs0|] eqn:Hm; [|reflexivity].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|]
+    destruct (copy_bytes_map (in_mem i) new_rlim 16) as [nb|]
       eqn:Hw.
     + destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z) eqn:Hi;

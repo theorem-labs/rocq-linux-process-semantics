@@ -118,7 +118,7 @@ Definition prlimit64_witness (pid resource new_rlim old_rlim : word)
   else if (w_is0 new_rlim && w_is0 old_rlim)%bool then Unmodeled
   else if (negb (w_is0 new_rlim) && negb (w_is0 old_rlim))%bool then Unmodeled
   else if w_is0 new_rlim then
-    match read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16) with
+    match copy_bytes_map (in_wmem i) old_rlim 16 with
     | None =>
         if negb (access_okb old_rlim 16)
         then ret_outcome (errno_ret EFAULT) m else Unmodeled
@@ -134,7 +134,7 @@ Definition prlimit64_witness (pid resource new_rlim old_rlim : word)
     match m_rlimit_core m with
     | None => Unmodeled
     | Some bs0 =>
-        match read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16) with
+        match copy_bytes_map (in_mem i) new_rlim 16 with
         | None =>
             if negb (access_okb new_rlim 16)
             then ret_outcome (errno_ret EFAULT) m else Unmodeled
@@ -164,14 +164,14 @@ Proof.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
   destruct (w_is0 new_rlim).
-  - destruct (read_bytes_map (in_wmem i) old_rlim (Z_to_bv 64 16)) as [bs1|].
+  - destruct (copy_bytes_map (in_wmem i) old_rlim 16) as [bs1|].
     + destruct (m_rlimit_core m) as [bs|]; [apply pure_ok|].
       eapply bind_step; [apply (choose_ok _ rlim64_zero); exact rlim64_zero_wf|].
       eapply bind_step; [apply modify_ok|]. apply pure_ok.
     + destruct (negb (access_okb old_rlim 16));
         [apply pure_ok|apply unmodeled_intro].
   - destruct (m_rlimit_core m) as [bs0|]; [|apply unmodeled_intro].
-    destruct (read_bytes_map (in_mem i) new_rlim (Z_to_bv 64 16)) as [nb|].
+    destruct (copy_bytes_map (in_mem i) new_rlim 16) as [nb|].
     + apply record_copyins_outcome.
       destruct ((bv_unsigned (rlim64_hard nb)
                  <? bv_unsigned (rlim64_soft nb))%Z); [apply pure_ok|].

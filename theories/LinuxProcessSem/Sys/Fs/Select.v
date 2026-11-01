@@ -212,11 +212,24 @@ Definition pselect_touches_sets (n : Z) : bool := negb (Z.eqb n 0).
     word at [p], or all-zero when [p] is NULL ([get_fd_set] memsets its
     kernel copy instead of reading) or when [n] is 0 (a zero-length
     [copy_from_user] always succeeds).  [None] is the unreadable
-    pointer that [get_fd_set] answers -EFAULT for. *)
+    pointer that [get_fd_set] answers -EFAULT for.
+
+    THE RANGE TEST COMES FIRST.  [get_fd_set] (fs/select.c,
+    [get_fd_set]) imports the [FDS_BYTES(n)] = 8 bytes with
+    [copy_from_user], which is [access_ok] and then the copy -- the pair
+    [State.copy_bytes_map] names -- while [State.read_u64] is the walk
+    alone, so [State.access_okb] goes in front of it.  Without it a [p]
+    in the last eight bytes of the address space imported a word made of
+    the bytes below the wrap and the bytes from 0 on, and pselect6 was
+    answered on it where Linux answers -EFAULT before a byte moves; the
+    argument is [State.copy_bytes_map]'s note.  The same test is what
+    bounds [set_fd_set]'s write-back of the same word: see
+    [range_writable]. *)
 Definition read_fd_set (mp : word -> option byte) (p : word) (n : Z)
     : option word :=
   if negb (pselect_touches_sets n) then Some (Z_to_bv 64 0)
   else if w_is0 p then Some (Z_to_bv 64 0)
+  else if negb (access_okb p 8) then None
   else read_u64 mp p.
 
 (** The bits of a requested set that [do_select] actually scans.
@@ -372,6 +385,12 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                inode has, and a regular file still has none -- so
                [vfs_poll] hands back [DEFAULT_POLLMASK] here exactly as
                it does for the three kinds above *)
+            | Some (FdAnon _ _) => true
+            (* an unnamed file is a regular file too: its name is gone,
+               not its [->poll], and the regular-file table of tmpfs has
+               none ([shmem_file_operations], mm/shmem.c, v6.18.46), so
+               [vfs_poll] hands back [DEFAULT_POLLMASK] as for the file
+               kinds above *)
             | Some (FdChannel _) | Some (FdSocket _) | None => false
             (* A PIPE END IS THE [FdChannel] CASE WITH THE PEER INSIDE
                THE MODEL, and it declines for the same reason.
@@ -405,9 +424,195 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                blocking [random_fops] is the table that does — so the
                answer is [DEFAULT_POLLMASK] and would be [true].  Not
                written; declined. *)
+            | Some (FdStream _ _ _) => false
+            (* NOT CONSTANT: [unix_poll] reads the end's queues and
+               shutdown bits.  It is answered, but per descriptor, by
+               [select_fd_bits] below rather than by this predicate *)
+            | Some (FdEventfd _) => false
+            (* NOT CONSTANT either: [eventfd_poll] reads the counter.
+               Answered per descriptor by [select_fd_bits] below *)
+            | Some (FdDgram _) => false
+            (* FAIL-CLOSED: [sock_poll] reaches [unix_dgram_poll] or
+               [udp_poll], each a function of socket state
+               [State.FdDgram] does not carry *)
             end
        else true)
       && bits_all_pollable fds z k'
+  end.
+
+(** The [EPOLL*] bits (include/uapi/linux/eventpoll.h), which on riscv64
+    coincide with the [POLL*] bits of include/uapi/asm-generic/poll.h, so
+    [mangle_poll] and [demangle_poll] are the identity on every one of
+    them. *)
+Definition EPOLLIN : Z := 1.
+Definition EPOLLPRI : Z := 2.
+Definition EPOLLOUT : Z := 4.
+Definition EPOLLERR : Z := 8.
+Definition EPOLLHUP : Z := 16.
+Definition EPOLLRDNORM : Z := 64.
+Definition EPOLLRDBAND : Z := 128.
+Definition EPOLLWRNORM : Z := 256.
+Definition EPOLLWRBAND : Z := 512.
+Definition EPOLLRDHUP : Z := 8192.
+
+(** What [do_select] (fs/select.c, Linux v6.18.46) counts as readable,
+    writable and exceptional in a [vfs_poll] mask. *)
+Definition POLLIN_SET : Z :=
+  Z.lor EPOLLRDNORM (Z.lor EPOLLRDBAND (Z.lor EPOLLIN (Z.lor EPOLLHUP EPOLLERR))).
+Definition POLLOUT_SET : Z :=
+  Z.lor EPOLLWRBAND (Z.lor EPOLLWRNORM (Z.lor EPOLLOUT EPOLLERR)).
+Definition POLLEX_SET : Z := EPOLLPRI.
+
+(** [unix_poll] on the stream-pair end [(id, side)] whose state is [st]
+    (net/unix/af_unix.c, Linux v6.18.46), reached through [sock_poll],
+    which adds nothing: its [POLL_BUSY_LOOP] needs [sk_ll_usec], which is
+    0 unless SO_BUSY_POLL or the [net.core.busy_read] sysctl sets it.
+
+    Returned as a PAIR [(lo, hi)] that differ exactly in the bits the
+    model cannot decide: [lo] has them clear, [hi] has them set.  The
+    callers answer only when the difference misses every bit the call
+    asked about.  The bits:
+
+    - EPOLLHUP when both shutdown bits are set ([shutdown ==
+      SHUTDOWN_MASK]).  The other EPOLLHUP source, [sk_state ==
+      TCP_CLOSE], never fires on a live pair end: [unix_socketpair] sets
+      both TCP_ESTABLISHED and only the closing socket's own
+      [unix_release_sock] moves it;
+    - EPOLLRDHUP | EPOLLIN | EPOLLRDNORM for RCV_SHUTDOWN;
+    - EPOLLIN | EPOLLRDNORM for a non-empty receive queue.
+      [sk_is_readable] adds nothing: it is [prot->sock_is_readable],
+      which only a BPF sockmap installs.  EPOLLPRI needs a MSG_OOB skb,
+      and no modeled call sends one;
+    - EPOLLERR for a pending [sk_err], which only the peer's close sets.
+
+    A PEER THAT HAS CLOSED ([State.stream_peer] is [None]) left
+    [SHUTDOWN_MASK] behind ([unix_release_sock]), so HUP, RDHUP, IN and
+    RDNORM are set; it purged its queue and so freed this end's skbs, so
+    the end is writable; and whether it also left [sk_err] the table does
+    not say (see [State.StreamEnd]), so EPOLLERR is the undecided bit.
+    With the peer open, EPOLLERR is clear.
+
+    WRITABILITY is [unix_writable]: [(refcount_read(&sk_wmem_alloc) << 2)
+    <= sk_sndbuf], where the refcount is 1 plus the TRUESIZE of every skb
+    this end has queued on the peer.  With [q] bytes queued there and [s]
+    this end's [sk_sndbuf]: the truesize sum is 0 exactly when [q] is
+    ([State.stream_send_may_refuse]'s argument), so at [q = 0] the answer
+    is [4 <= s]; the sum is at least [q], so [s < 4 * (q + 1)] is
+    certainly not writable; and in between the answer turns on truesize,
+    which the model does not carry -- the three write bits are then the
+    undecided ones.  POLLOUT is set even after the peer shut down, as the
+    kernel's own comment says ("This prevents stuck sockets"). *)
+Definition stream_poll_mask (fds : list (word * FdEntry)) (id : word)
+    (side : bool) (st : StreamEnd) : Z * Z :=
+  let w := Z.lor EPOLLOUT (Z.lor EPOLLWRNORM EPOLLWRBAND) in
+  let rx := match se_rx st with [] => 0%Z | _ => Z.lor EPOLLIN EPOLLRDNORM end in
+  let s := se_sndbuf st in
+  match stream_peer fds id side with
+  | None =>
+      let m0 := Z.lor rx (Z.lor EPOLLHUP (Z.lor EPOLLRDHUP (Z.lor EPOLLIN EPOLLRDNORM))) in
+      let m1 := if (4 <=? s)%Z then Z.lor m0 w else m0 in
+      (m1, Z.lor m1 EPOLLERR)
+  | Some (_, pst) =>
+      let base :=
+        Z.lor (if (se_shut_rd st && se_shut_wr st)%bool then EPOLLHUP else 0)
+       (Z.lor (if se_shut_rd st then Z.lor EPOLLRDHUP (Z.lor EPOLLIN EPOLLRDNORM) else 0) rx) in
+      let q := se_rx_len pst in
+      if Z.eqb q 0 then (if (4 <=? s)%Z then (Z.lor base w, Z.lor base w) else (base, base))
+      else if (s <? 4 * (q + 1))%Z then (base, base)
+      else (base, Z.lor base w)
+  end.
+
+(** [eventfd_poll] on an eventfd whose context is [ctx] (fs/eventfd.c,
+    Linux v6.18.46), reached through [vfs_poll] because [eventfd_fops]
+    has [.poll].  It reads the counter once and reports:
+
+    - EPOLLIN when [count > 0];
+    - EPOLLERR when [count == ULLONG_MAX];
+    - EPOLLOUT when [ULLONG_MAX - 1 > count].
+
+    Nothing else: no RDNORM, WRNORM or HUP bit, whatever the counter.
+    So the mask is a FUNCTION OF THE ENTRY, with nothing undecided, and
+    both callers answer from it on every request.  ([count] never reaches
+    [ULLONG_MAX] through a modeled call -- see [State.EventfdCtx] -- so
+    EPOLLERR is clear in every modeled run; it is computed rather than
+    assumed.) *)
+Definition eventfd_poll_mask (ctx : EventfdCtx) : Z :=
+  Z.lor (if (0 <? ef_count ctx)%Z then EPOLLIN else 0)
+ (Z.lor (if Z.eqb (ef_count ctx) U64_MAX then EPOLLERR else 0)
+        (if (ef_count ctx <? U64_MAX - 1)%Z then EPOLLOUT else 0)).
+
+(** What [do_select] reports for one descriptor [fd] asked about in the
+    sets [i], [o] and [x]: the three result bits, or [None] where the
+    model declines.
+
+    A STREAM-PAIR END is answered from [stream_poll_mask], and declined
+    only when its undecided bits would change a result bit the call
+    ASKED FOR.  So a pair end polled for reading alone is always
+    answered; one polled for writing is declined only in the band where
+    [unix_writable] turns on truesize; and a survivor whose peer closed
+    is answered too, because its undecided EPOLLERR adds nothing to
+    readable or writable that SHUTDOWN_MASK has not already set, and is
+    not in [POLLEX_SET].  A DECLINE HERE DECLINES THE WHOLE CALL:
+    [select_scan] returns [None] at the first such descriptor, and the
+    model never answers the other descriptors with this one's undecided
+    bit dropped.  Answering a result word with an asked bit left out
+    would be the model answering where it cannot.  An EVENTFD is
+    answered from [eventfd_poll_mask], always.  Every other kind is
+    answered exactly when [bits_all_pollable] calls its mask constant:
+    [DEFAULT_POLLMASK] meets [POLLIN_SET] and [POLLOUT_SET] and misses
+    [POLLEX_SET].  The [_] arm hands every other constructor to that
+    enumerated predicate, so a new kind is declined there, never
+    answered here. *)
+Definition select_fd_bits (fds : list (word * FdEntry)) (fd : word)
+    (i o x : bool) : option (bool * bool * bool) :=
+  match fd_lookup fds fd with
+  | Some (FdStream id side st) =>
+      let pick (mk : Z) : bool * bool * bool :=
+        ((i && negb (Z.eqb (Z.land mk POLLIN_SET) 0))%bool,
+         (o && negb (Z.eqb (Z.land mk POLLOUT_SET) 0))%bool,
+         (x && negb (Z.eqb (Z.land mk POLLEX_SET) 0))%bool) in
+      let '(lo, hi) := stream_poll_mask fds id side st in
+      let '(a, b, c) := pick lo in
+      let '(a', b', c') := pick hi in
+      if (Bool.eqb a a' && Bool.eqb b b' && Bool.eqb c c')%bool
+      then Some (a, b, c) else None
+  | Some (FdEventfd ctx) =>
+      let mk := eventfd_poll_mask ctx in
+      Some ((i && negb (Z.eqb (Z.land mk POLLIN_SET) 0))%bool,
+            (o && negb (Z.eqb (Z.land mk POLLOUT_SET) 0))%bool,
+            (x && negb (Z.eqb (Z.land mk POLLEX_SET) 0))%bool)
+        (* [do_select]'s three tests on the one mask: readable at a
+           non-zero counter, writable below [ULLONG_MAX - 1], never
+           exceptional (EPOLLPRI is not among [eventfd_poll]'s bits) *)
+  | _ =>
+      if bits_all_pollable fds (Z.shiftl 1 (bv_unsigned fd)) (S (Z.to_nat (bv_unsigned fd)))
+      then Some (i, o, false) else None
+  end.
+
+(** [do_select]'s one pass over descriptors [0 .. k-1], as the three
+    result words: each descriptor with a bit in [win], [wout] or [wex]
+    gets [select_fd_bits], and the pass declines if any descriptor does. *)
+Fixpoint select_scan (fds : list (word * FdEntry)) (win wout wex : Z) (k : nat)
+    : option (Z * Z * Z) :=
+  match k with
+  | O => Some (0, 0, 0)%Z
+  | S k' =>
+      match select_scan fds win wout wex k' with
+      | None => None
+      | Some (ri, ro, rx) =>
+          let b := Z.of_nat k' in
+          let i := Z.testbit win b in
+          let o := Z.testbit wout b in
+          let x := Z.testbit wex b in
+          if negb (i || o || x)%bool then Some (ri, ro, rx)
+          else match select_fd_bits fds (Z_to_bv 64 b) i o x with
+               | None => None
+               | Some (i', o', x') =>
+                   Some ((if i' then Z.setbit ri b else ri),
+                         (if o' then Z.setbit ro b else ro),
+                         (if x' then Z.setbit rx b else rx))
+               end
+      end
   end.
 
 (** A range the call will WRITE must be writable end to end, or the model
@@ -422,9 +627,30 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
     rather than assert a byte count it cannot derive.  The band is
     narrow: an unreadable set already answered -EFAULT at import, so
     what is left is a set that is readable but not writable, i.e. one
-    living in .rodata. *)
+    living in .rodata.
+
+    THE RANGE QUESTION IS ASKED HERE TOO, through [State.copy_bytes_map]
+    rather than the bare walk.  The bare walk wraps at 2^64, and before
+    the imports asked [State.access_okb] a descriptor-set or
+    timespec destination in the last bytes of the address space read
+    back as writable and the call was answered on it.  A refused range
+    cannot reach this test now: every write handed to it lands on a
+    range an import has already accepted.  [set_fd_set] rewrites the
+    word [read_fd_set] imported at the same [p], [put_timespec64] the
+    sixteen bytes [pselect_timeout] imported at the same [tsp], and the
+    [revents] write-back lies inside the array [ppoll_core] imported,
+    whose [access_okb] holds for every [nfds] that writes at all.  If a
+    refused range ever does reach it, the answer is the decline, and
+    that is deliberate, because what Linux does with a refused write
+    differs by writer: [set_fd_set] is [__copy_to_user] and tests no
+    range itself (fs/select.c, [set_fd_set]); [poll_select_finish]
+    discards a failed [put_timespec64] and returns [ret] unchanged
+    (fs/select.c, [poll_select_finish]); [do_sys_poll]'s
+    [user_write_access_begin] is -EFAULT, which [ppoll_writeback_access]
+    already answers.  The mapped-but-not-writable case keeps the decline
+    the paragraph above gives it. *)
 Definition range_writable (i : SyscallInput) (a : word) (len : Z) : bool :=
-  match read_bytes_map (in_wmem i) a (Z_to_bv 64 len) with
+  match copy_bytes_map (in_wmem i) a len with
   | Some _ => true
   | None => false
   end.
@@ -443,13 +669,26 @@ Definition writes_all_writable (i : SyscallInput)
     and modeling only the NULL sixth argument would leave [select]
     itself outside the modeled surface. *)
 Inductive PselectSig :=
-  | PsSigFault      (* the pair itself is unreadable: -EFAULT *)
+  | PsSigFault      (* the pair is unreadable, or [access_ok] refuses it: -EFAULT *)
   | PsSigNone       (* no mask: the sixth argument is NULL, or its first word is *)
   | PsSigBadSize    (* a mask with the wrong [sigsetsize]: -EINVAL *)
   | PsSigReal.      (* a mask that would be installed: unmodeled *)
 
 Definition pselect_sigpack (mp : word -> option byte) (sig : word) : PselectSig :=
   if w_is0 sig then PsSigNone
+  else if negb (access_okb sig 16) then PsSigFault
+    (* [get_sigset_argpack] (fs/select.c, [get_sigset_argpack]) opens
+       with [user_read_access_begin] over [sizeof] of the pack, which on
+       riscv64 is [access_ok] over all sixteen bytes
+       (arch/riscv/include/asm/uaccess.h, [user_access_begin]; riscv64
+       takes no masked branch, as [EventPoll.copy_from_user_ok]'s note
+       records), and only then reads the two fields.  The two
+       [State.read_u64]s below are the walk alone and [sig + 8] is word
+       arithmetic, so without this test a [sig] in the last sixteen bytes
+       of the address space read a pack made of the bytes below the wrap
+       and the bytes from 0 on, and the call went on to be answered; the
+       argument is [State.copy_bytes_map]'s note.  With it the two reads
+       sit at offsets 0 and 8 of a range accepted whole. *)
   else match read_u64 mp sig, read_u64 mp (sig + Z_to_bv 64 8) with
        | Some sp, Some ss =>
            if w_is0 sp then PsSigNone
@@ -486,7 +725,7 @@ Definition pselect_sigpack (mp : word -> option byte) (sig : word) : PselectSig 
     TIMEOUT WRITE-BACK, which is the whole difficulty of this syscall --
     see [pselect_finish]. *)
 Inductive PselectTimeout :=
-  | PsToFault       (* [tsp] unreadable: -EFAULT *)
+  | PsToFault       (* [tsp] unreadable, or [access_ok] refuses it: -EFAULT *)
   | PsToInval       (* [timespec64_valid] rejects it: -EINVAL *)
   | PsToNone        (* [tsp] NULL: no deadline at all *)
   | PsToZero        (* exactly {0,0}: poll once and return *)
@@ -495,6 +734,18 @@ Inductive PselectTimeout :=
 Definition pselect_timeout (mp : word -> option byte) (tsp : word)
     : PselectTimeout :=
   if w_is0 tsp then PsToNone
+  else if negb (access_okb tsp 16) then PsToFault
+    (* [get_timespec64] (kernel/time/time.c, [get_timespec64]) copies the
+       16-byte [struct __kernel_timespec] with [copy_from_user], whose
+       [access_ok] refuses a range passing the top of the address space
+       before a byte moves.  The two [State.read_u64]s below are the walk
+       alone and [tsp + 8] is word arithmetic, so without this test a
+       [tsp] in the last sixteen bytes read a timespec made of the bytes
+       below the wrap and the bytes from 0 on, and pselect6 and ppoll,
+       which share this definition, were both answered on it.  The
+       argument is [State.copy_bytes_map]'s note.  The same test bounds
+       [put_timespec64]'s write-back of the same sixteen bytes: see
+       [range_writable]. *)
   else match read_u64 mp tsp, read_u64 mp (tsp + Z_to_bv 64 8) with
        | Some sec, Some nsec =>
            if (bv_signed sec <? 0)%Z then PsToInval
@@ -525,7 +776,15 @@ Inductive PselectCore :=
     [SELECT_STACK_ALLOC / 6] = 42 bytes, and the modeled band caps
     [FDS_BYTES(n)] at 8.  That is what lets this spec commit to an
     answer at all, rather than having to union an optional allocation
-    failure with every later verdict. *)
+    failure with every later verdict.
+
+    Then [do_select]'s pass, [select_scan]: each result bit is the
+    descriptor's [vfs_poll] mask met with the set it was asked in, and
+    the count is the number of result bits across the three sets -- two
+    for a descriptor reported both readable and writable.  For the
+    constant-mask kinds that gives back [readfds] and [writefds]
+    UNCHANGED and [exceptfds] empty; for a stream-pair end it is
+    [stream_poll_mask]'s answer. *)
 Definition pselect_core (i : SyscallInput) (m : Model)
     (n32 inp outp exp : word) : PselectCore :=
   let n := nfds_signed n32 in
@@ -543,17 +802,17 @@ Definition pselect_core (i : SyscallInput) (m : Model)
                           (bv_unsigned wex) in
         let k    := Z.to_nat n in
         if negb (bits_all_open (m_fds m) all k) then PsCoreErr EBADF
-        else if negb (bits_all_pollable (m_fds m) all k) then PsCoreGap
         else
-          (* Every polled descriptor carries [DEFAULT_POLLMASK], so the
-             read and write sets come back UNCHANGED, the exception set
-             comes back empty, and the count is the total number of bits
-             across the three -- two for a descriptor named in both
-             [readfds] and [writefds]. *)
-          PsCoreDone (popcount64 win + popcount64 wout)
-                     (fd_set_writeback inp n win
-                      ++ fd_set_writeback outp n wout
-                      ++ fd_set_writeback exp n (Z_to_bv 64 0))
+          match select_scan (m_fds m) (bv_unsigned win) (bv_unsigned wout)
+                  (bv_unsigned wex) k with
+          | None => PsCoreGap
+          | Some (ri, ro, rx) =>
+              PsCoreDone (popcount64 (Z_to_bv 64 ri) + popcount64 (Z_to_bv 64 ro)
+                          + popcount64 (Z_to_bv 64 rx))
+                         (fd_set_writeback inp n (Z_to_bv 64 ri)
+                          ++ fd_set_writeback outp n (Z_to_bv 64 ro)
+                          ++ fd_set_writeback exp n (Z_to_bv 64 rx))
+          end
     | _, _, _ => PsCoreErr EFAULT
     end.
 
@@ -608,21 +867,30 @@ Definition pselect_writes (i : SyscallInput) (ret : Z)
     [bits_all_pollable], it is not discharged by the model: a run must
     start with the personality [PER_LINUX] and no flag.
 
-    Because every polled descriptor in the modeled band is always ready
-    for reading and writing and NEVER exceptional, a real deadline is
-    reached exactly when no bit below [n] is set in [readfds] or in
-    [writefds]: an [n] of 0, NULL pointers for those two, or sets with no
-    bit below [n].  [exceptfds] is not part of that condition --
-    [DEFAULT_POLLMASK] misses [POLLEX_SET], so an [exceptfds] bit never
-    raises the count and the set always comes back zeroed.  So there are
-    two modeled shapes in which this syscall waits, not one: the
-    portable-sleep idiom [select(0, NULL, NULL, NULL, &tv)], and an
-    [exceptfds]-only request naming an open file or directory.  The model
-    says WHAT that wait returns and not how long it takes, which is the
-    same partial-correctness reading every other syscall here gets; a
-    [tv_sec] near [TIME64_MAX] -- where [timespec64_add_safe] saturates
-    the deadline rather than overflowing it -- still returns 0,
-    eventually.
+    A real deadline is reached exactly when the scan finds nothing ready,
+    and the zero count is then the answer, because NOTHING CAN BECOME
+    READY DURING THE WAIT.  The constant-mask kinds are always ready for
+    reading and writing and never exceptional, so for them that means no
+    bit below [n] in [readfds] or [writefds]: an [n] of 0, NULL pointers,
+    or an [exceptfds]-only request -- [DEFAULT_POLLMASK] misses
+    [POLLEX_SET].  A stream-pair end's mask changes only when its peer
+    reads, writes, shuts down or closes, and the peer is held by this
+    same single-threaded process, which is asleep here; signals are not
+    modeled, and no clone can hold a copy ([Kernel.Fork] declines one),
+    so no other task can act on it either.  An eventfd's mask changes
+    only when its counter does, and only this process's [read] and
+    [write] move it: the kernel's own [eventfd_signal] callers (AIO,
+    io_uring, KVM, vfio) need an eventfd registered with them, which no
+    modeled call does, and one descriptor per eventfd means no other
+    task holds it.  The portable-sleep idiom
+    [select(0, NULL, NULL, NULL, &tv)] is one such shape; a pair end
+    asked for reading with an empty queue and an open peer is another,
+    and an eventfd asked for reading at a zero counter a third.
+    The model says WHAT that wait returns and not how long it takes,
+    which is the same partial-correctness reading every other syscall
+    here gets; a [tv_sec] near [TIME64_MAX] -- where
+    [timespec64_add_safe] saturates the deadline rather than overflowing
+    it -- still returns 0, eventually.
 
     The NULL-timeout case has the opposite corner.
     [schedule_hrtimeout_range_clock] treats a NULL expiry as infinite --
@@ -657,13 +925,18 @@ Definition pselect_finish (i : SyscallInput) (tsp : word)
     admits, or [None] where the model declines (fail closed).
 
     Nothing here is nondeterministic.  Readiness, the one thing this
-    syscall exists to report, is a kernel CONSTANT for every descriptor
-    kind the model has: [vfs_poll] hands back [DEFAULT_POLLMASK] for any
-    file with no [->poll] method, and neither regular files nor
-    directories define one on any filesystem in the tree.  A descriptor
-    whose readiness is a schedule rather than a constant -- the piped
-    stdio channels -- is refused by [bits_all_pollable] instead of
-    guessed at.
+    syscall exists to report, is a function of the modeled state for
+    every descriptor kind it answers: a kernel CONSTANT for regular
+    files and directories -- [vfs_poll] hands back [DEFAULT_POLLMASK]
+    for any file with no [->poll] method, and neither defines one on any
+    filesystem in the tree -- for a stream-pair end, [unix_poll]
+    read off the end's queues and shutdown bits ([stream_poll_mask]),
+    declined only where it turns on skb truesize, and for an eventfd,
+    [eventfd_poll] read off its counter ([eventfd_poll_mask]).  A
+    descriptor whose
+    readiness is a schedule rather than a state -- the piped stdio
+    channels -- is refused by [select_fd_bits] instead of guessed at.
+    So the checker can recompute the one answer, as the contract needs.
 
     The arms below are in the kernel's own decision order, so reading
     them top to bottom is reading [SYSCALL_DEFINE6(pselect6, ...)],
@@ -687,13 +960,71 @@ Definition pselect6_outcome (i : SyscallInput) (m : Model)
   | PsSigNone, PsToDeadline => pselect_finish i tsp PsToDeadline core
   end.
 
+(** The ranges [pselect6_outcome]'s answer has already read from user
+    memory, in the kernel's order, for [State.eff_copyins]:
+    [get_sigset_argpack] reads the 16-byte {pointer, size} pack at [sig]
+    from the syscall entry; [do_pselect] reads the 16-byte timespec at
+    [tsp] with [get_timespec64]; [core_sys_select] then copies [inp],
+    [outp] and [exp] in that order with [get_fd_set], one word each in
+    the modeled band.  [State.materialize_model_accesses] charges a first
+    touch of a lazy anonymous page by any of these reads.
+
+    A copy that FAILS records nothing and stops the walk, the convention
+    [Kernel.Signal.rt_sigprocmask_spec] states; a NULL pointer, and a set
+    pointer at [n = 0], is never dereferenced.  An -EINVAL from the
+    timespec or from the pack's size stops the walk after the reads that
+    preceded it.  The mask the pack points at is read only on the
+    [PsSigReal] arm, which the model declines, so no answered arm reads
+    through a pointer it found in memory.
+
+    This walk restates the decision order of [pselect6_outcome] and
+    [pselect_core]; a change to either must change it too, since spec,
+    checker and witness all read the ledger from here and agree with
+    each other whatever it says.  [Checks.Cases.Fs.Select] pins it
+    against fixed inputs. *)
+Fixpoint fd_set_reads (mp : word -> option byte) (n : Z) (ps : list word)
+    : list (word * nat) :=
+  match ps with
+  | [] => []
+  | p :: ps' =>
+      match read_fd_set mp p n with
+      | None => []
+      | Some _ =>
+          (if negb (pselect_touches_sets n) || w_is0 p then [] else [(p, 8%nat)])
+          ++ fd_set_reads mp n ps'
+      end
+  end.
+
+Definition pselect6_reads (i : SyscallInput) (n32 inp outp exp tsp sig : word)
+    : list (word * nat) :=
+  let mp := in_mem i in
+  match pselect_sigpack mp sig with
+  | PsSigFault => []
+  | sk =>
+      (if w_is0 sig then [] else [(sig, 16%nat)]) ++
+      match pselect_timeout mp tsp with
+      | PsToFault => []
+      | tmo =>
+          (if w_is0 tsp then [] else [(tsp, 16%nat)]) ++
+          match tmo, sk with
+          | PsToInval, _ => []
+          | _, PsSigNone =>
+              let n := nfds_signed n32 in
+              if (n <? 0)%Z then [] else fd_set_reads mp n [inp; outp; exp]
+          | _, _ => []
+          end
+      end
+  end.
+
 Definition pselect6_spec (n32 inp outp exp tsp sig : word)
     : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
   match pselect6_outcome i m n32 inp outp exp tsp sig with
   | None => unmodeled
-  | Some (r, ws) => pure (mkEffect r ws [])
+  | Some (r, ws) =>
+      pure (with_copyins (pselect6_reads i n32 inp outp exp tsp sig)
+              (mkEffect r ws []))
   end.
 
 (** ** ppoll (73)
@@ -876,6 +1207,10 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               [DEFAULT_POLLMASK] here exactly as it does for the three
               kinds beside it *)
            Some (Z.land default_pollmask events)
+       | Some (FdAnon _ _) =>
+           (* an unnamed file: the regular-file answer, for the reason
+              [bits_all_pollable] gives *)
+           Some (Z.land default_pollmask events)
        (* ENUMERATED ON PURPOSE, exactly as [bits_all_pollable] is and
           for the same reason: a [Some _ => true] catch-all would be
           extensionally identical today and would silently absorb the
@@ -893,6 +1228,30 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               [.poll], and it is not written yet *)
        | Some FdUrandom => None
            (* the same: [urandom_fops] has no [.poll] either *)
+       | Some (FdStream id side st) =>
+           (* [sock_poll] -> [unix_poll], masked by the entry's filter:
+              [demangle_poll(events) | EPOLLERR | EPOLLHUP] ([do_pollfd],
+              fs/select.c).  Answered when the undecided bits of
+              [stream_poll_mask] fall outside the filter.  So a survivor
+              whose peer closed always declines here — EPOLLERR is in
+              every filter — as does a POLLOUT asked in the truesize band.
+              The [None] declines the WHOLE call, as for a pipe entry: no
+              [revents] word is ever written with an asked bit dropped *)
+           let '(lo, hi) := stream_poll_mask fds id side st in
+           let filt := Z.lor events (Z.lor EPOLLERR EPOLLHUP) in
+           if Z.eqb (Z.land lo filt) (Z.land hi filt) then Some (Z.land lo filt)
+           else None
+       | Some (FdEventfd ctx) =>
+           (* [eventfd_poll], masked by the same filter: nothing in
+              [eventfd_poll_mask] is undecided, so this is always
+              answered.  Every bit it can hold -- EPOLLIN, EPOLLOUT,
+              EPOLLERR -- is one [mangle_poll] maps to the [POLL*] bit of
+              the same value on riscv64 *)
+           Some (Z.land (eventfd_poll_mask ctx) (Z.lor events (Z.lor EPOLLERR EPOLLHUP)))
+       | Some (FdDgram _) => None
+           (* FAIL-CLOSED, for [bits_all_pollable]'s reason: a datagram
+              socket's [->poll] reads state [State.FdDgram] does not
+              carry *)
        end.
 
 Fixpoint ppoll_revents (fds : list (word * FdEntry)) (es : list (Z * Z))
@@ -913,8 +1272,11 @@ Fixpoint ppoll_revents (fds : list (word * FdEntry)) (es : list (Z * Z))
 (** [do_poll]'s return: the number of entries whose [do_pollfd]
     answered a non-zero mask.  Within the modeled band that is exactly
     the number of non-zero [revents], because every mask this spec
-    produces -- 0, [EPOLLNVAL], or a subset of [DEFAULT_POLLMASK] --
-    survives [mangle_poll] unchanged, so the mask is zero exactly when
+    produces -- 0, [EPOLLNVAL], a subset of [DEFAULT_POLLMASK], a
+    subset of [stream_poll_mask]'s bits, or a subset of
+    [eventfd_poll_mask]'s -- is built from [EPOLL*] bits
+    that [mangle_poll] maps to [POLL*] bits of the same value on riscv64,
+    so the mask is zero exactly when
     the stored [revents] is.  Unlike pselect6's, this count is a
     DESCRIPTOR count: one entry contributes at most 1 however many bits
     its [revents] carries. *)
@@ -949,14 +1311,35 @@ Fixpoint ppoll_writeback (p : word) (rs : list Z) : list (word * list byte) :=
     30 and above the limit gets the kernel's -EINVAL rather than a
     decline.
 
-    [nfds = 0] touches [ufds] not at all: [copy_from_user] of zero bytes
-    reads nothing, [do_poll] walks no entries and the write-back loop
-    writes none, however wild the pointer is. *)
+    [nfds = 0] COPIES NOTHING AND STILL ANSWERS FOR [ufds].  The copy
+    loop breaks at [if (!len) break] before [copy_from_user], [do_poll]
+    walks no entry and the write-back loop writes none -- but
+    [do_sys_poll] guards that loop with
+    [if (!user_write_access_begin(ufds, nfds * sizeof pollfd)) goto
+    out_fds] (fs/select.c), which it runs UNCONDITIONALLY, and
+    [out_fds] returns the [err = -EFAULT] the function opened with.
+    riscv64's [user_write_access_begin] is [access_ok] on the untagged
+    address (arch/riscv/include/asm/uaccess.h), and the generic
+    [__access_ok] ends [return (size <= limit) && (addr <= (limit -
+    size));] (include/asm-generic/access_ok.h), which at [size = 0]
+    still refuses an [addr] above [TASK_SIZE_MAX].  So a wild [ufds] is
+    -EFAULT at [nfds = 0] and not a success.  That test is
+    [ppoll_writeback_access] below, where its ORDER against [do_poll]
+    can be stated; what belongs here is the other half of the same
+    range test, [copy_from_user]'s own [access_ok], which runs BEFORE
+    [do_poll] and only for the bytes it copies -- so it is conditioned
+    on [n] being nonzero, and above [n = 0] it makes the later test
+    redundant.  Linux v6.18.46 throughout. *)
 Definition ppoll_core (i : SyscallInput) (m : Model) (ufds nfds : word)
     : PselectCore :=
   let n := bv_unsigned nfds in
   if (bv_unsigned (m_nofile m) <? n)%Z then PsCoreErr EINVAL
   else if (ppoll_nfds_max <? n)%Z then PsCoreGap
+  else if (negb (Z.eqb n 0) && negb (access_okb ufds (pollfd_bytes * n)))%bool
+  then PsCoreErr EFAULT
+    (* [copy_from_user]'s [access_ok] over the one chunk the modeled
+       band copies ([n <= ppoll_nfds_max <= N_STACK_PPS]), ahead of
+       [do_poll] and so ahead of any wait *)
   else
     match read_bytes_map (in_mem i) ufds
             (Z_to_bv 64 (pollfd_bytes * n)) with
@@ -967,6 +1350,40 @@ Definition ppoll_core (i : SyscallInput) (m : Model) (ufds nfds : word)
         | Some rs => PsCoreDone (ppoll_count rs) (ppoll_writeback ufds rs)
         end
     end.
+
+(** [user_write_access_begin(ufds, nfds * sizeof pollfd)] (fs/select.c),
+    the range test [do_sys_poll] makes on the write-back band.
+
+    IT RUNS AFTER [do_poll], which is the whole reason it is a second
+    definition rather than a line in [ppoll_core].  A call that would
+    not return cannot answer -EFAULT either: with a NULL [tsp] and no
+    ready descriptor, [do_poll]'s [timed_out] flag is never set and the
+    loop never exits (the argument is [pselect_finish]'s, which answers
+    [None] for exactly that shape), so this test is never reached and
+    the model declines.  Every other shape -- a zero timeout, a real
+    deadline, or a nonzero count -- has [do_poll] returning, and the
+    failed range test then discards that return for the [-EFAULT] the
+    function opened with.  [PsCoreErr] carries it to [pselect_finish],
+    which answers the deadline case [None] for the live clock reading
+    the errno would come with, exactly as it does for every other errno
+    out of [do_sys_poll].
+
+    Above [nfds = 0] this is dead: [ppoll_core]'s own [access_ok] on
+    the same range has already answered.  It is written over the whole
+    band anyway, because the kernel's call is unconditional and
+    conditioning it on [n] would make the model's agreement with
+    fs/select.c rest on an argument rather than on the code. *)
+Definition ppoll_writeback_access (ufds nfds : word) (tmo : PselectTimeout)
+    (c : PselectCore) : PselectCore :=
+  match c with
+  | PsCoreDone ret _ =>
+      if access_okb ufds (pollfd_bytes * bv_unsigned nfds) then c
+      else match tmo with
+           | PsToNone => if Z.eqb ret 0 then PsCoreGap else PsCoreErr EFAULT
+           | _ => PsCoreErr EFAULT
+           end
+  | _ => c
+  end.
 
 (** [set_user_sigmask] (kernel/signal.c), reached with the mask pointer
     and the size as separate arguments.
@@ -983,7 +1400,7 @@ Definition ppoll_core (i : SyscallInput) (m : Model) (ufds nfds : word)
 Inductive PpollSig :=
   | PpSigNone       (* no mask: the pointer is NULL *)
   | PpSigBadSize    (* the wrong [sigsetsize]: -EINVAL *)
-  | PpSigFault      (* the mask itself is unreadable: -EFAULT *)
+  | PpSigFault      (* the mask is unreadable, or [access_ok] refuses it: -EFAULT *)
   | PpSigReal.      (* a mask that would be installed: unmodeled *)
 
 Definition ppoll_sigmask (mp : word -> option byte) (sig sigsetsize : word)
@@ -991,7 +1408,15 @@ Definition ppoll_sigmask (mp : word -> option byte) (sig sigsetsize : word)
   if w_is0 sig then PpSigNone
   else if negb (Z.eqb (bv_unsigned sigsetsize) kernel_sigset_bytes)
   then PpSigBadSize
-  else match read_bytes_map mp sig (Z_to_bv 64 kernel_sigset_bytes) with
+  else match copy_bytes_map mp sig kernel_sigset_bytes with
+       (* [set_user_sigmask] (kernel/signal.c, [set_user_sigmask])
+          copies the mask with [copy_from_user], so the range test comes
+          first, through [State.copy_bytes_map].  The bare walk this
+          replaces wrapped at 2^64: a [sig] in the last eight bytes of
+          the address space read a mask made of the bytes below the wrap
+          and the bytes from 0 on and took the [PpSigReal] decline, where
+          Linux answers -EFAULT.  A decline and not a wrong answer, but
+          not the kernel's answer either. *)
        | Some _ => PpSigReal
        | None => PpSigFault
        end.
@@ -1005,7 +1430,11 @@ Definition ppoll_sigmask (mp : word -> option byte) (sig sigsetsize : word)
     Note where [poll_select_finish] is and is not: the two
     [set_user_sigmask] errnos below return from the entry directly and
     write no timeout back, while everything [ppoll_core] answers --
-    errnos included -- passes through it. *)
+    errnos included -- passes through it.  [do_sys_poll] is TWO
+    definitions here, [ppoll_core] and [ppoll_writeback_access], and
+    the second is the range test that follows [do_poll]; it needs the
+    timeout because a call that never returns cannot answer -EFAULT
+    either. *)
 Definition ppoll_outcome (i : SyscallInput) (m : Model)
     (ufds nfds tsp sig sigsetsize : word)
     : option (word * list (word * list byte)) :=
@@ -1020,8 +1449,43 @@ Definition ppoll_outcome (i : SyscallInput) (m : Model)
       | PpSigFault => pselect_err EFAULT
       | PpSigReal => None
       | PpSigNone =>
-          (* [do_sys_poll], then [poll_select_finish] *)
-          pselect_finish i tsp tmo (ppoll_core i m ufds nfds)
+          (* [do_sys_poll] -- the copy and [do_poll], then the
+             write-back's own range test -- and then
+             [poll_select_finish] *)
+          pselect_finish i tsp tmo
+            (ppoll_writeback_access ufds nfds tmo (ppoll_core i m ufds nfds))
+      end
+  end.
+
+(** The ranges [ppoll_outcome]'s answer has already read from user
+    memory, in the kernel's order, for [State.eff_copyins]: the 16-byte
+    timespec at [tsp] ([get_timespec64]), then -- past
+    [set_user_sigmask], whose only successful read is on the declined
+    [PpSigReal] arm -- the [8 * nfds] bytes of the [pollfd] array, one
+    [copy_from_user] in [do_sys_poll] for every [nfds] the modeled band
+    admits.  The same conventions as [pselect6_reads]: a failed copy
+    records nothing -- including the copy its own [access_ok] refuses --
+    and [nfds = 0] or an [nfds] over the RLIMIT_NOFILE soft limit reads
+    no array.  It restates the decision order of [ppoll_outcome] and
+    [ppoll_core], and must change with them. *)
+Definition ppoll_reads (i : SyscallInput) (m : Model)
+    (ufds nfds tsp sig sigsetsize : word) : list (word * nat) :=
+  let mp := in_mem i in
+  let n := bv_unsigned nfds in
+  match pselect_timeout mp tsp with
+  | PsToFault => []
+  | tmo =>
+      (if w_is0 tsp then [] else [(tsp, 16%nat)]) ++
+      match tmo, ppoll_sigmask mp sig sigsetsize with
+      | PsToInval, _ => []
+      | _, PpSigNone =>
+          if ((bv_unsigned (m_nofile m) <? n)%Z || (n =? 0)%Z
+              || negb (access_okb ufds (pollfd_bytes * n)))%bool then []
+          else match read_bytes_map mp ufds (Z_to_bv 64 (pollfd_bytes * n)) with
+               | Some _ => [(ufds, Z.to_nat (pollfd_bytes * n))]
+               | None => []
+               end
+      | _, _ => []
       end
   end.
 
@@ -1031,5 +1495,7 @@ Definition ppoll_spec (ufds nfds tsp sig sigsetsize : word)
   m <- get_model ;;
   match ppoll_outcome i m ufds nfds tsp sig sigsetsize with
   | None => unmodeled
-  | Some (r, ws) => pure (mkEffect r ws [])
+  | Some (r, ws) =>
+      pure (with_copyins (ppoll_reads i m ufds nfds tsp sig sigsetsize)
+              (mkEffect r ws []))
   end.

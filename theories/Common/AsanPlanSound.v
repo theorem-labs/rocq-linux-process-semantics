@@ -115,6 +115,15 @@ Hypothesis IT_ok : itab_sound SEGS IT.
 Variable A : atable.
 Variable nx0 : nat.
 Variable LIMIT : Z.
+(** the run's allocation ceiling (the checker's grant/stack boundary); the
+    state invariant [cs_ok] pins it to the run ([co_ceil] below) *)
+Variable CEIL : Z.
+Hypothesis CEIL_ok : ceil_ok CEIL.
+(** the numbers behind [ceil_ok], for the arithmetic side conditions that used
+    to read the ceiling's numeral; [ceilnum] puts them in the context *)
+Lemma ceil_facts : CEIL mod 4096 = 0 /\ 0x7fff7f800000 <= CEIL <= 0x7fffff800000.
+Proof. exact CEIL_ok. Qed.
+#[local] Ltac ceilnum := let H := fresh "CEILF" in pose proof ceil_facts as H.
 Variable HS : nat -> option acs.
 (** hooked extension nodes ([PExt id args]) and emitting nodes ([PEmit id args]) *)
 Variable XN : nat -> list expr -> acs -> option acs.
@@ -153,7 +162,48 @@ Variable FS0 : Fs.Fs.
 (** register cap of the extension-mode executor (0 = off) *)
 Variable KC : nat.
 
-#[local] Notation CHECK := (AP.check SEGS IT A nx0 LIMIT XN XE XB HS KC).
+(** THE LAUNCH'S EXTRA RESERVED INTERVALS.  [State.init_model] seeds
+    [vm_reserved] with the image's reservations AND with what the kernel maps
+    for the process besides the image: the vvar pages and the vDSO text,
+    taken as one unhinted [get_unmapped_area] span (Linux v6.18.46, commit
+    1f99e9ab748f, arch/riscv/kernel/vdso.c:124
+    [arch_setup_additional_pages]), which a top-down layout answers from the
+    gap just below [mm->mmap_base].
+
+    [co_res] used to read [vm_reserved … = segments_reserved SEGS], which
+    ASSERTED that there is nothing else in the ledger.  A consumer could then
+    conclude that a region ABOVE the image hull meets no reserved interval,
+    and the pair sits exactly there, so a plan node could certify a grant
+    overlapping the vDSO.  [reserved_ok] below says the same thing without
+    that assertion: the image's reservations, then a list [rx] the launch
+    adds, of which the consumers need the geometry, the count and the total
+    size.  [rx] is existential because it is determined by the model, and
+    because a Section variable would add a parameter to [cs_ok] and so to
+    every one of its 145 projection sites and every downstream consumer.
+
+    The two checker-side numbers are [n_resx A] and [resx_bytes A]: UPPER
+    bounds, 0 for a launch that reserves nothing extra. *)
+Definition resx_entry_ok (iv : word * word) : Prop :=
+  0 < bv_unsigned (snd iv)
+  /\ bv_unsigned (fst iv) mod 4096 = 0
+  /\ bv_unsigned (snd iv) mod 4096 = 0
+  /\ img_hi A <= bv_unsigned (fst iv)
+  (** a PAGE clear of [KHI]: [ledger_split]'s low disjunct is then impossible
+      for it, which is what makes [co_split]'s high mark — and so [a_ylo] — a
+      floor the nodes can test against; and the brk node's guard page still
+      fits between the heap top and the base *)
+  /\ KHI + 4096 <= bv_unsigned (fst iv)
+  (** NOT [<= CEIL].  The pair hangs off [mm->mmap_base], and
+      [Run.valid_mmap_base] admits a base up to [State.mmap_base_max] =
+      0x7ffff8000000, above [AsanCeil.alloc_ceiling]. *)
+  /\ bv_unsigned (fst iv) + bv_unsigned (snd iv) <= 2 ^ 47.
+
+(** [co_res] spells the existential out INLINE rather than through a named
+    definition here: the frame lemmas rewrite [m_vmmaps model'] to
+    [m_vmmaps model] across every field of [cs_ok], and [rewrite] cannot see
+    under an unexpanded definition. *)
+
+#[local] Notation CHECK := (AP.check SEGS IT A nx0 LIMIT CEIL XN XE XB HS KC).
 
 #[local] Notation cfg := (cfg_of SEGS).
 
@@ -288,13 +338,51 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
   co_fds   : fds_ok E (a_fd cs) model;
   co_fs    : m_fs model = FS0;
   co_tid   : a_tidset cs = false -> m_tid model = None;
-  co_res   : vm_reserved (m_vmmaps model) = segments_reserved SEGS;
+  co_res   : exists rx : list (word * word),
+               vm_reserved (m_vmmaps model) = segments_reserved SEGS ++ rx
+               /\ Forall resx_entry_ok rx
+               /\ (length rx <= n_resx A)%nat
+               /\ sum_sizes rx <= resx_bytes A;
   co_limit : vm_limit (m_vmmaps model) = LIMIT;
   (* model: the ledger *)
   co_maps  : maps_match E (a_maps cs) (vm_maps (m_vmmaps model));
   co_holes : Forall (hole_ok E (a_ylo cs) (vm_reserved (m_vmmaps model) ++ vm_maps (m_vmmaps model))) (a_maps cs);
   co_seps  : seps (vm_maps (m_vmmaps model));
   co_wf    : model_ivs_wf model;
+  (* THE PLAN'S CEILING IS THE RUN'S.  [co_ceil] pins the checker's
+     grant/stack boundary [CEIL] to the run, and [co_bounds] /
+     [co_lazyb] bound every ledger entry by it.
+
+     WHY [CEIL] IS NOT THE CONSTANT [AsanCeil.alloc_ceiling =
+     0x7fff7f800000] any more.  That constant was FALSE at Linux's
+     address, and it was false before OSSV-231 too — the old
+     [AsanCeil.placement_policy] HYPOTHESIS asserted the bound, and a
+     hypothesis that is assumed is never checked; Task 10 turned the
+     gate into the theorem [AsanCeil.placement_policy_holds] and left
+     these two conjuncts standing on their own.  Linux searches
+     top-down below [mm->mmap_base] (mm/mmap.c,
+     [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
+     1f99e9ab748f), which LPS writes
+     [mmap_top h = Z.min (vm_mmap_base h) (page_round_down_Z (alloc_top h))],
+     and [Run.valid_mmap_base] admits a base up to
+     [State.mmap_base_max = 0x7ffff8000000], which is ABOVE
+     [alloc_ceiling = 0x7fff7f800000]; [alloc_top h] reaches
+     [sp_window_hi - stack_max_size = 0x7fffff800000].  A high base
+     draw therefore puts a grant up to about 1.9 GiB above the
+     constant, where the invariant said none could be.  This is
+     residual R-a of the OSSV-231 plan, and SCOPE.md names it.
+
+     WHY NOT A PREMISE INSTEAD.  The two repairs that keep a constant
+     — bounding the mmap base inside [cs_ok], or having the grant node
+     decline above the ceiling — each pay for the bound with the
+     launches the published statements cover: a statement proved
+     through an ASan plan node quantifies over the base through
+     [Run.valid_mmap_base], so an extra premise either cuts about
+     1.9 GiB out of that band or is taken as a Section hypothesis, in
+     which case the exclusion is invisible again, which is the defect
+     being repaired.  A checker that silently covers less than its
+     statement is the same failure as one that covers more. *)
+  co_ceil  : CEIL = page_round_down_Z (alloc_top (m_vmmaps model));
   co_bounds : Forall (fun iv => 0 < bv_unsigned (snd iv)
                                 /\ bv_unsigned (fst iv) mod 4096 = 0 /\ bv_unsigned (snd iv) mod 4096 = 0
                                 /\ img_hi A <= bv_unsigned (fst iv)
@@ -324,7 +412,15 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
                page_in_ranges (page_base a) (m_vm_lazy model) = true ->
                in_ghost E cs (bv_unsigned a) = false ->
                FULL a = Some (Z_to_bv 8 0);
-  co_sinv  : SINV E FULL
+  co_sinv  : SINV E FULL;
+  (** every tracked mapping is apart from the WHOLE reserved ledger.  A grant
+      proves it of its own range ([region_free] over reserved ++ maps) and
+      nothing ever widens a mapping, so it holds of the ledger throughout.
+      The slice nodes need it: their range is named up to the allocation
+      ceiling, inside a tracked entry, which may sit above the extra
+      reservations, so no numeric bound can place it below them. *)
+  co_mres  : Forall (fun iv => Forall (iv_disjoint iv) (vm_reserved (m_vmmaps model)))
+                    (vm_maps (m_vmmaps model))
 }.
 
 (* ######################################################################### *)
@@ -380,12 +476,12 @@ Proof.
   - apply orb_prop in Hv as [Hv|Hv].
     + unfold in_hull in Hv. apply andb_prop in Hv as [_ Hv]. apply Z.ltb_lt in Hv.
       (* the page of w lies in a lazy interval starting >= img_hi: w >= img_hi *) lia.
-    + apply Z.leb_le in Hv. unfold CEIL in *.
+    + apply Z.leb_le in Hv.
       (* lazy intervals end <= CEIL and w's whole page is inside one *)
       unfold page_in_ranges in Hlz. apply existsb_exists in Hlz as [iv [Hin Hb]].
       apply andb_prop in Hb as [Hb1 Hb2]. apply Z.leb_le in Hb1. apply Z.leb_le in Hb2.
       pose proof (proj1 (Forall_forall _ _) (co_lazyb _ _ _ _ _ HC) iv Hin) as [L1 L2].
-      pose proof (page_base_le w) as (P1 & P2 & P3). unfold page_size, CEIL in *. lia.
+      pose proof (page_base_le w) as (P1 & P2 & P3). unfold page_size in *. lia.
   - apply andb_prop in Hv as [_ Hv]. rewrite Hlz in Hv. cbn [negb orb] in Hv.
     (* w lies in an unrounded interval: its page lies in the rounded one *)
     pose proof (page_base_le w) as (P1 & P2 & P3).
@@ -409,7 +505,7 @@ Lemma H_off_segments_cs : forall E cs model, H_off_segments SEGS (hid E cs model
 Proof.
   intros E cs model a Hh. unfold hid in Hh. apply orb_prop in Hh as [Ha|Hv].
   - apply SEGS_in_hull. unfold in_hull. pose proof (argH_high _ _ Ha). pose proof HULL_ok as HU; unfold hull_ok in HU; destruct HU as (?&?&?&?).
-    unfold CEIL, KHI in *. apply andb_false_iff. right. apply Z.ltb_ge. lia.
+    unfold KHI in *. ceilnum. apply andb_false_iff. right. apply Z.ltb_ge. lia.
   - apply negb_true_iff in Hv. unfold vis in Hv. apply orb_false_iff in Hv as [Hv _]. apply orb_false_iff in Hv as [Hv _].
     apply SEGS_in_hull. exact Hv.
 Qed.
@@ -912,7 +1008,7 @@ Proof.
   intros E cs model a Hh. unfold hid, vis. rewrite Hh. cbn [orb].
   destruct (argH E a) eqn:Ha; [|reflexivity]. exfalso.
   pose proof (argH_high _ _ Ha). unfold in_hull in Hh. apply andb_prop in Hh as [_ Hh]. apply Z.ltb_lt in Hh.
-  pose proof HULL_ok as HU; unfold hull_ok in HU; destruct HU as (?&?&?&?). unfold CEIL, KHI in *. lia.
+  pose proof HULL_ok as HU; unfold hull_ok in HU; destruct HU as (?&?&?&?). unfold KHI in *. ceilnum. lia.
 Qed.
 
 (** a read that succeeds on [mrestrict H FULL] only touches visible bytes *)
@@ -1308,9 +1404,9 @@ Proof.
       rewrite u_srl64 in D.
       unfold S0, estart in *. cbn [a_base a_off] in *.
       Ltac Zify.zify_convert_to_euclidean_division_equations_flag ::= constr:(true).
-      rewrite !u64_lit in D by (unfold CEIL in *; lia).
+      rewrite !u64_lit in D by (ceilnum; lia).
       change (2 ^ (3 mod 64)) with 8 in D.
-      rewrite (Z.mod_small (bv_unsigned (edenot E b) / 8 + shadow_off A)) in D by (unfold CEIL, KHI in *; lia).
+      rewrite (Z.mod_small (bv_unsigned (edenot E b) / 8 + shadow_off A)) in D by (unfold KHI in *; ceilnum; lia).
       lia.
       Ltac Zify.zify_convert_to_euclidean_division_equations_flag ::= constr:(false). }
     (* every byte of the shadow interval: mapped by m, rw-lazy, visible now, hidden before, zero *)
@@ -1319,7 +1415,7 @@ Proof.
     { intros i Hi. rewrite Usn in Hi.
       set (z := S0 + i).
       assert (Hz : 0 <= z < 2 ^ 64).
-      { unfold z. rewrite ES0. unfold CEIL in B5. pose proof Usn as U2. unfold elenZ in U2. clear - Hi I1 I2 B5 Rsn Rmb Rb U2.
+      { unfold z. rewrite ES0. pose proof ceil_facts as CF. pose proof Usn as U2. unfold elenZ in U2. clear - Hi I1 I2 B5 CF Rsn Rmb Rb U2.
         Ltac Zify.zify_convert_to_euclidean_division_equations_flag ::= constr:(true).
         lia.
         Ltac Zify.zify_convert_to_euclidean_division_equations_flag ::= constr:(false). }
@@ -1335,7 +1431,7 @@ Proof.
       { eapply in_ivs_maps_match; [exact (co_maps _ _ _ _ _ HC) | exact Hmin | exact Hnf |]. rewrite Ua. exact Z1. }
       destruct (proj1 (Forall_forall _ _) (co_kinds _ _ _ _ _ HC) m Hmin Hkind a ltac:(rewrite Ua; exact Z1)) as [Hna Hlz].
       assert (Hargh : argH E a = false).
-      { destruct (argH E a) eqn:Ha; [|reflexivity]. pose proof (argH_high _ _ Ha). unfold CEIL in *. lia. }
+      { destruct (argH E a) eqn:Ha; [|reflexivity]. pose proof (argH_high _ _ Ha). ceilnum. lia. }
       assert (Hvis2 : hid E cs2 model a = false).
       { unfold hid. rewrite Hargh. cbn [orb]. apply negb_false_iff. unfold vis.
         rewrite Hm1, Hna, Hlz. cbn [negb andb].
@@ -1393,7 +1489,7 @@ Proof.
       unfold Mr, mrestrict. rewrite Hvis2.
       apply (co_zero _ _ _ _ _ HC a Hhid1 Hm1 Hna Hlz Hgh). }
     assert (Hfl : flat E (SA sb sk) (elenZ E (mkSrl (kn cs) n 3))).
-    { unfold flat. fold S0. rewrite Usn. unfold CEIL in *.
+    { unfold flat. fold S0. rewrite Usn. ceilnum.
       Ltac Zify.zify_convert_to_euclidean_division_equations_flag ::= constr:(true). lia.
       Ltac Zify.zify_convert_to_euclidean_division_equations_flag ::= constr:(false). }
     constructor; [|constructor; [|constructor]].
@@ -1539,7 +1635,22 @@ Definition join_stmt : Prop := forall b off n, node1_stmt always (fun cs => node
 (** brk grow with both outcomes *)
 Definition brk2_stmt : Prop :=
   forall cs csa csb E R FULL model TA TB,
-    cs_ok E cs R FULL model -> is_ecall_at SEGS cs = true -> node_brk2 A LIMIT cs = Some (csa, csb) ->
+    cs_ok E cs R FULL model -> is_ecall_at SEGS cs = true -> node_brk2 A LIMIT CEIL cs = Some (csa, csb) ->
+    (forall E' R' FULL' model',
+        env_agree nx0 E E' /\ env_agree (nxt cs) E E' -> cs_ok E' csa R' FULL' model' -> m_fs model' = m_fs model ->
+        srealizes SEGS (cfg R' (pc csa) FULL' model') TA) ->
+    (forall E' R' FULL' model',
+        env_agree nx0 E E' /\ env_agree (nxt cs) E E' -> cs_ok E' csb R' FULL' model' -> m_fs model' = m_fs model ->
+        srealizes SEGS (cfg R' (pc csb) FULL' model') TB) ->
+    srealizes SEGS (cfg R (pc cs) FULL model) (t_alt2 TA TB).
+
+(** munmap of exactly one tracked entry, with both outcomes: the kernel
+    clears the range in the mapping tree before the point of no return and
+    reattaches it when that fails ([do_vmi_align_munmap], mm/vma.c:1557 at
+    Linux v6.18.46), so the refusal keeps every page *)
+Definition munmap2_stmt : Prop :=
+  forall cs csa csb E R FULL model TA TB,
+    cs_ok E cs R FULL model -> is_ecall_at SEGS cs = true -> node_munmap2 A cs = Some (csa, csb) ->
     (forall E' R' FULL' model',
         env_agree nx0 E E' /\ env_agree (nxt cs) E E' -> cs_ok E' csa R' FULL' model' -> m_fs model' = m_fs model ->
         srealizes SEGS (cfg R' (pc csa) FULL' model') TA) ->
@@ -1615,9 +1726,10 @@ Definition holes_stmt : Prop :=
 (* ---- OBLIGATIONS (work packages) ---- *)
 Hypothesis node_sys_sound : forall y, sys_stmt y.
 Hypothesis node_brk2_sound : brk2_stmt.
-Hypothesis node_mmap2_sound : mm2_stmt (node_mmap2 A nx0 LIMIT).
-Hypothesis node_mmapin_sound : forall hole : bool, mm3_stmt (node_mmapin A LIMIT hole).   (* [hole] = PMmapInH *)
-Hypothesis node_mprotect2_sound : mm2_stmt (node_mprotect2 A LIMIT).
+Hypothesis node_munmap2_sound : munmap2_stmt.
+Hypothesis node_mmap2_sound : mm2_stmt (node_mmap2 A nx0 LIMIT CEIL).
+Hypothesis node_mmapin_sound : forall hole : bool, mm3_stmt (node_mmapin A LIMIT CEIL hole).   (* [hole] = PMmapInH *)
+Hypothesis node_mprotect2_sound : mm2_stmt (node_mprotect2 A LIMIT CEIL).
 Hypothesis node_exit_sound : exit_stmt.
 Hypothesis node_x_sound : forall x, x_stmt x.
 Hypothesis node_join_sound : join_stmt.
@@ -3102,7 +3214,7 @@ Proof. reflexivity. Qed.
 (** shapes only mention the initial variables *)
 (** [AP.check_all]: every state of the (non-empty) list checks with the returned shape *)
 Lemma check_all_ok : forall (chk : acs -> plan -> cres) k css s,
-  check_all A chk k css = COk s ->
+  check_all A CEIL chk k css = COk s ->
   (exists cs1, In cs1 css /\ chk cs1 k = COk s /\ True) /\ (forall cs, In cs css -> chk cs k = COk s).
 Proof.
   intros chk k css s H. unfold check_all in H. destruct css as [|cs0 rest]; [discriminate|].
@@ -3129,7 +3241,7 @@ Proof.
   intros bfuel fuel. induction fuel as [|fuel IH]; intros lc p cs s Hc; [discriminate|].
   cbn [AP.check] in Hc.
   match type of Hc with (if ?g then _ else _) = _ => destruct g; [discriminate|] end.
-  destruct p as [stops k|e mid k1 k2|ce cmid ck1 ck2|db1 db2 dk1 dk2|sb1 sn1 sb2 sn2 k| |K k|jb joff jn k|ixs k|db dn k|gws k|bm k|hrs k|hbK k|r logc fb k|y k|ma mb|ia ib ic|qa qb|ka kb|x args k|xid xargs k|eid eargs k|bid bargs kb1 kb2|lJ lN linv lbody lk| |h| | |fi fsz fk|gi gsz gk|gb gn gk2|ub un uk|hlo hhi hk|ilo ihi ik|djp drs dk|rnm rnk|cpk|vj vjs vlo vka vk|mj|ab an ak|hws hwk|rsr rse rsk|iha ihb ihc].
+  destruct p as [stops k|e mid k1 k2|ce cmid ck1 ck2|db1 db2 dk1 dk2|sb1 sn1 sb2 sn2 k| |K k|jb joff jn k|ixs k|db dn k|gws k|bm k|hrs k|hbK k|r logc fb k|y k|ma mb|ia ib ic|qa qb|ka kb|ua ub2|x args k|xid xargs k|eid eargs k|bid bargs kb1 kb2|lJ lN linv lbody lk| |h| | |fi fsz fk|gi gsz gk|gb gn gk2|ub un uk|hlo hhi hk|ilo ihi ik|djp drs dk|rnm rnk|cpk|vj vjs vlo vka vk|mj|ab an ak|hws hwk|rsr rse rsk|iha ihb ihc].
   - destruct (run_block_gc SEGS IT _ KC bfuel (stops ++ STOPS A) cs) as [cs1|]; [|discriminate]. exact (IH _ k cs1 s Hc).
   - destruct (AP.expr_vars_lt nx0 e) eqn:Hv; [|discriminate].
     destruct (erange (kn cs) e) as [[lo hi]|]; [|discriminate].
@@ -3163,25 +3275,29 @@ Proof.
   - destruct (node_havocbig nx0 cs hbK) as [cs1|]; [|discriminate]. exact (IH _ k cs1 s Hc).
   - destruct (node_fresh nx0 cs r logc fb) as [cs1|]; [|discriminate]. exact (IH _ k cs1 s Hc).
   - destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_sys A nx0 y cs) as [cs1|]; [|discriminate]. exact (IH _ k cs1 s Hc).
-  - destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_mmap2 A nx0 LIMIT cs) as [[csa csb]|]; [|discriminate].
+  - destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_mmap2 A nx0 LIMIT CEIL cs) as [[csa csb]|]; [|discriminate].
     destruct (CHECK bfuel fuel lc csa ma) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb mb) as [sb|] eqn:H2; [|discriminate].
     injection Hc as <-. apply salt2_vars; [exact (IH _ ma _ sa H1) | exact (IH _ mb _ sb H2)].
-  - destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_mmapin A LIMIT false cs) as [[[csa csb] cscs]|]; [|discriminate].
+  - destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_mmapin A LIMIT CEIL false cs) as [[[csa csb] cscs]|]; [|discriminate].
     destruct (CHECK bfuel fuel lc csa ia) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb ib) as [sb|] eqn:H2; [|discriminate].
-    destruct (check_all A (CHECK bfuel fuel lc) ic cscs) as [sc|] eqn:H3; [|discriminate].
+    destruct (check_all A CEIL (CHECK bfuel fuel lc) ic cscs) as [sc|] eqn:H3; [|discriminate].
     injection Hc as <-.
     destruct (check_all_ok _ _ _ _ H3) as [(cs1 & Hin1 & Hc1 & _) _].
     apply salt2_vars; [exact (IH _ ia _ sa H1) | apply salt2_vars; [exact (IH _ ib _ sb H2) | exact (IH _ ic _ sc Hc1)]].
-  - destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_mprotect2 A LIMIT cs) as [[csa csb]|]; [|discriminate].
+  - destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_mprotect2 A LIMIT CEIL cs) as [[csa csb]|]; [|discriminate].
     destruct (CHECK bfuel fuel lc csa qa) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb qb) as [sb|] eqn:H2; [|discriminate].
     injection Hc as <-. apply salt2_vars; [exact (IH _ qa _ sa H1) | exact (IH _ qb _ sb H2)].
-  - destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_brk2 A LIMIT cs) as [[csa csb]|]; [|discriminate].
+  - destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_brk2 A LIMIT CEIL cs) as [[csa csb]|]; [|discriminate].
     destruct (CHECK bfuel fuel lc csa ka) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb kb) as [sb|] eqn:H2; [|discriminate].
     injection Hc as <-. apply salt2_vars; [exact (IH _ ka _ sa H1) | exact (IH _ kb _ sb H2)].
+  - destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_munmap2 A cs) as [[csa csb]|]; [|discriminate].
+    destruct (CHECK bfuel fuel lc csa ua) as [sa|] eqn:H1; [|discriminate].
+    destruct (CHECK bfuel fuel lc csb ub2) as [sb|] eqn:H2; [|discriminate].
+    injection Hc as <-. apply salt2_vars; [exact (IH _ ua _ sa H1) | exact (IH _ ub2 _ sb H2)].
   - destruct (node_x SEGS A nx0 x args cs) as [cs1|]; [|discriminate]. exact (IH _ k cs1 s Hc).
   - destruct (XN xid xargs cs) as [cs1|]; [|discriminate]. exact (IH _ k cs1 s Hc).
   - destruct (XE eid eargs cs) as [[[fd ps] cs1]|]; [|discriminate].
@@ -3203,7 +3319,7 @@ Proof.
   - destruct (node_fog cs fi fsz) as [cs1|]; [|discriminate]. exact (IH _ fk cs1 s Hc).
   - destruct (node_fognew cs gi gsz) as [cs1|]; [|discriminate]. exact (IH _ gk cs1 s Hc).
   - destruct (node_ghost LIMIT cs gb gn) as [cs1|]; [|discriminate]. exact (IH _ gk2 cs1 s Hc).
-  - destruct (node_unvis A cs ub un) as [cs1|]; [|discriminate]. exact (IH _ uk cs1 s Hc).
+  - destruct (node_unvis A CEIL cs ub un) as [cs1|]; [|discriminate]. exact (IH _ uk cs1 s Hc).
   - destruct (node_havocbrk nx0 cs hlo hhi) as [cs1|]; [|discriminate]. exact (IH _ hk cs1 s Hc).
   - destruct (node_intro nx0 cs ilo ihi) as [cs1|]; [|discriminate]. exact (IH _ ik cs1 s Hc).
   - destruct (branch_probe IT cs) as [e|]; [|discriminate].
@@ -3226,10 +3342,10 @@ Proof.
   - destruct (node_havocwords nx0 cs hws) as [cs1|]; [|discriminate]. exact (IH _ hwk cs1 s Hc).
   - destruct (node_respell cs rsr rse) as [cs1|]; [|discriminate]. exact (IH _ rsk cs1 s Hc).
   - (* PMmapInH *)
-    destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_mmapin A LIMIT true cs) as [[[csa csb] cscs]|]; [|discriminate].
+    destruct (is_ecall_at SEGS cs); [|discriminate]. destruct (node_mmapin A LIMIT CEIL true cs) as [[[csa csb] cscs]|]; [|discriminate].
     destruct (CHECK bfuel fuel lc csa iha) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb ihb) as [sb|] eqn:H2; [|discriminate].
-    destruct (check_all A (CHECK bfuel fuel lc) ihc cscs) as [sc|] eqn:H3; [|discriminate].
+    destruct (check_all A CEIL (CHECK bfuel fuel lc) ihc cscs) as [sc|] eqn:H3; [|discriminate].
     injection Hc as <-.
     destruct (check_all_ok _ _ _ _ H3) as [(cs1 & Hin1 & Hc1 & _) _].
     apply salt2_vars; [exact (IH _ iha _ sa H1) | apply salt2_vars; [exact (IH _ ihb _ sb H2) | exact (IH _ ihc _ sc Hc1)]].
@@ -3445,7 +3561,7 @@ Proof.
 Qed.
 
 Lemma unvis_sound : forall E cs R FULL model b n cs',
-  cs_ok E cs R FULL model -> node_unvis A cs b n = Some cs' -> cs_ok E cs' R FULL model /\ pc cs' = pc cs.
+  cs_ok E cs R FULL model -> node_unvis A CEIL cs b n = Some cs' -> cs_ok E cs' R FULL model /\ pc cs' = pc cs.
 Proof.
   intros E cs R FULL model b n cs' HC H. rewrite node_unvis_eq in H. (* PERF *) unfold node_unvis_ref in H.
   destruct (split_lit b) as [bb bk] eqn:Hsp.
@@ -3476,7 +3592,7 @@ Proof.
   pose proof (shadow_of_val E M (kn cs) b n sb sk sn HK Hsh Hfls) as [HS0 HSn]. fold ub in HS0. fold un in HSn.
   pose proof SHADOW_ok as So; unfold shadow_ok in So. pose proof (u64_range (edenot E b)) as Rb. fold ub in Rb.
   assert (HSS : estart E (SA sb sk) = shadow_off A + ub / 8).
-  { rewrite HS0. rewrite Z.mod_small; [lia|]. unfold CEIL in Hceil.
+  { rewrite HS0. rewrite Z.mod_small; [lia|]. ceilnum.
     Ltac Zify.zify_convert_to_euclidean_division_equations_flag ::= constr:(true). lia.
     Ltac Zify.zify_convert_to_euclidean_division_equations_flag ::= constr:(false). }
   set (S := shadow_off A + ub / 8) in *.
@@ -4147,7 +4263,7 @@ Proof.
   assert (SAME : forall k cs' s', CHECK bfuel fuel lc cs' k = COk s' -> cs_ok E cs' R FULL model ->
             srealizes SEGS (cfg R (pc cs') FULL model) (sd D E (m_fs model) s')).
   { intros k cs' s' Hk HC'. refine (CONT k cs' s' Hk E R FULL model (conj (env_agree_refl _ _) (env_agree_refl _ _)) HC' eq_refl). }
-  destruct p as [stops k|e mid k1 k2|ce cmid ck1 ck2|db1 db2 dk1 dk2|sb1 sn1 sb2 sn2 k| |K k|jb joff jn k|ixs k|db dn k|gws k|bm k|hrs k|hbK k|r logc fb k|y k|ma mb|ia ib ic|qa qb|ka kb|x args k|xid xargs k|eid eargs k|bid bargs kb1 kb2|lJ lN linv lbody lk| |h| | |fi fsz fk|gi gsz gk|gb gn gk2|ub un uk|hlo hhi hk|ilo ihi ik|djp drs dk|rnm rnk|cpk|vj vjs vlo vka vk|mj|ab an ak|hws hwk|rsr rse rsk|iha ihb ihc].
+  destruct p as [stops k|e mid k1 k2|ce cmid ck1 ck2|db1 db2 dk1 dk2|sb1 sn1 sb2 sn2 k| |K k|jb joff jn k|ixs k|db dn k|gws k|bm k|hrs k|hbK k|r logc fb k|y k|ma mb|ia ib ic|qa qb|ka kb|ua ub2|x args k|xid xargs k|eid eargs k|bid bargs kb1 kb2|lJ lN linv lbody lk| |h| | |fi fsz fk|gi gsz gk|gb gn gk2|ub un uk|hlo hhi hk|ilo ihi ik|djp drs dk|rnm rnk|cpk|vj vjs vlo vka vk|mj|ab an ak|hws hwk|rsr rse rsk|iha ihb ihc].
   - (* run *)
     destruct (run_block_gc SEGS IT _ KC bfuel (stops ++ STOPS A) cs) as [cs1|] eqn:Hrb; [|discriminate].
     pose proof (LCOK_bnd lc D E (m_fs model) HL) as Hgb.
@@ -4237,7 +4353,7 @@ Proof.
     eapply (node_sys_sound y cs cs1 E R FULL model); [exact HC | exact Hec | exact Hn |]. exact (CONT k cs1 s Hc).
   - (* mmap2: refused / granted *)
     destruct (is_ecall_at SEGS cs) eqn:Hec; [|discriminate].
-    destruct (node_mmap2 A nx0 LIMIT cs) as [[csa csb]|] eqn:Hn; [|discriminate].
+    destruct (node_mmap2 A nx0 LIMIT CEIL cs) as [[csa csb]|] eqn:Hn; [|discriminate].
     destruct (CHECK bfuel fuel lc csa ma) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb mb) as [sb|] eqn:H2; [|discriminate].
     injection Hc as <-.
@@ -4245,10 +4361,10 @@ Proof.
     eapply (node_mmap2_sound cs csa csb E R FULL model); [exact HC | exact Hec | exact Hn | exact (CONT ma csa sa H1) | exact (CONT mb csb sb H2)].
   - (* mmapin: kept / ok / destroyed (list of case states) *)
     destruct (is_ecall_at SEGS cs) eqn:Hec; [|discriminate].
-    destruct (node_mmapin A LIMIT false cs) as [[[csa csb] cscs]|] eqn:Hn; [|discriminate].
+    destruct (node_mmapin A LIMIT CEIL false cs) as [[[csa csb] cscs]|] eqn:Hn; [|discriminate].
     destruct (CHECK bfuel fuel lc csa ia) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb ib) as [sb|] eqn:H2; [|discriminate].
-    destruct (check_all A (CHECK bfuel fuel lc) ic cscs) as [sc|] eqn:H3; [|discriminate].
+    destruct (check_all A CEIL (CHECK bfuel fuel lc) ic cscs) as [sc|] eqn:H3; [|discriminate].
     injection Hc as <-.
     pose proof (proj2 (check_all_ok _ _ _ _ H3)) as Hall.
     eapply srz_conseq; [| eapply t_eq_trans; [| apply sd_salt2; exact HD]; apply t_eq_alt2; [apply t_eq_refl' | apply sd_salt2; exact HD]].
@@ -4257,7 +4373,7 @@ Proof.
     intros csc E' R' FULL' model' Hin. exact (CONT ic csc sc (Hall csc Hin) E' R' FULL' model').
   - (* mprotect2: refused / granted *)
     destruct (is_ecall_at SEGS cs) eqn:Hec; [|discriminate].
-    destruct (node_mprotect2 A LIMIT cs) as [[csa csb]|] eqn:Hn; [|discriminate].
+    destruct (node_mprotect2 A LIMIT CEIL cs) as [[csa csb]|] eqn:Hn; [|discriminate].
     destruct (CHECK bfuel fuel lc csa qa) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb qb) as [sb|] eqn:H2; [|discriminate].
     injection Hc as <-.
@@ -4265,12 +4381,20 @@ Proof.
     eapply (node_mprotect2_sound cs csa csb E R FULL model); [exact HC | exact Hec | exact Hn | exact (CONT qa csa sa H1) | exact (CONT qb csb sb H2)].
   - (* brk2 *)
     destruct (is_ecall_at SEGS cs) eqn:Hec; [|discriminate].
-    destruct (node_brk2 A LIMIT cs) as [[csa csb]|] eqn:Hn; [|discriminate].
+    destruct (node_brk2 A LIMIT CEIL cs) as [[csa csb]|] eqn:Hn; [|discriminate].
     destruct (CHECK bfuel fuel lc csa ka) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb kb) as [sb|] eqn:H2; [|discriminate].
     injection Hc as <-.
     eapply srz_conseq; [| apply sd_salt2; exact HD].
     eapply (node_brk2_sound cs csa csb E R FULL model); [exact HC | exact Hec | exact Hn | exact (CONT ka csa sa H1) | exact (CONT kb csb sb H2)].
+  - (* munmap2: refused / cut *)
+    destruct (is_ecall_at SEGS cs) eqn:Hec; [|discriminate].
+    destruct (node_munmap2 A cs) as [[csa csb]|] eqn:Hn; [|discriminate].
+    destruct (CHECK bfuel fuel lc csa ua) as [sa|] eqn:H1; [|discriminate].
+    destruct (CHECK bfuel fuel lc csb ub2) as [sb|] eqn:H2; [|discriminate].
+    injection Hc as <-.
+    eapply srz_conseq; [| apply sd_salt2; exact HD].
+    eapply (node_munmap2_sound cs csa csb E R FULL model); [exact HC | exact Hec | exact Hn | exact (CONT ua csa sa H1) | exact (CONT ub2 csb sb H2)].
   - (* extension nodes *)
     destruct (node_x SEGS A nx0 x args cs) as [cs1|] eqn:Hn; [|discriminate].
     eapply (node_x_sound x args cs cs1 E R FULL model); [exact HC | reflexivity | exact Hn |]. exact (CONT k cs1 s Hc).
@@ -4380,7 +4504,7 @@ Proof.
     destruct (node_ghost LIMIT cs gb gn) as [cs1|] eqn:Hn; [|discriminate].
     destruct (ghost_sound E cs R FULL model gb gn cs1 HC Hn) as [HC1 Hpc]. rewrite <- Hpc. exact (SAME gk2 _ s Hc HC1).
   - (* unvis *)
-    destruct (node_unvis A cs ub un) as [cs1|] eqn:Hn; [|discriminate].
+    destruct (node_unvis A CEIL cs ub un) as [cs1|] eqn:Hn; [|discriminate].
     destruct (unvis_sound E cs R FULL model ub un cs1 HC Hn) as [HC1 Hpc]. rewrite <- Hpc. exact (SAME uk _ s Hc HC1).
   - (* havocbrk *)
     destruct (node_havocbrk nx0 cs hlo hhi) as [cs1|] eqn:Hn; [|discriminate].
@@ -4470,10 +4594,10 @@ Proof.
     destruct (respell_sound E cs R FULL model rsr rse cs1 HC Hn) as [HC1 Hpc]. rewrite <- Hpc. exact (SAME rsk _ s Hc HC1).
   - (* PMmapInH — as mmapin with the hole flag *)
     destruct (is_ecall_at SEGS cs) eqn:Hec; [|discriminate].
-    destruct (node_mmapin A LIMIT true cs) as [[[csa csb] cscs]|] eqn:Hn; [|discriminate].
+    destruct (node_mmapin A LIMIT CEIL true cs) as [[[csa csb] cscs]|] eqn:Hn; [|discriminate].
     destruct (CHECK bfuel fuel lc csa iha) as [sa|] eqn:H1; [|discriminate].
     destruct (CHECK bfuel fuel lc csb ihb) as [sb|] eqn:H2; [|discriminate].
-    destruct (check_all A (CHECK bfuel fuel lc) ihc cscs) as [sc|] eqn:H3; [|discriminate].
+    destruct (check_all A CEIL (CHECK bfuel fuel lc) ihc cscs) as [sc|] eqn:H3; [|discriminate].
     injection Hc as <-.
     pose proof (proj2 (check_all_ok _ _ _ _ H3)) as Hall.
     eapply srz_conseq; [| eapply t_eq_trans; [| apply sd_salt2; exact HD]; apply t_eq_alt2; [apply t_eq_refl' | apply sd_salt2; exact HD]].

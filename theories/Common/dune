@@ -1,5 +1,7 @@
 ; The proof library, installed by the opam package
-; rocq-linux-process-semantics-common.
+; rocq-linux-process-semantics-core, the same package that installs the
+; model: a proof requires this library from the pin that names the model's
+; commit, instead of vendoring a copy of it.
 (include_subdirs qualified)
 
 ; Some files of this library use `Notation ident := term`, which Rocq 9.2
@@ -12,7 +14,7 @@
 
 (rocq.theory
  (name LinuxProcessSemantics.Common)
- (package rocq-linux-process-semantics-common)
+ (package rocq-linux-process-semantics-core)
  ; Ltac2: CertRefl.v and LiaFast.v are Ltac2 files.
  ; Flocq: LinuxProcessSemantics requires it.
  (theories Stdlib stdpp ReadFile Ltac2 Flocq LinuxProcessSemantics))

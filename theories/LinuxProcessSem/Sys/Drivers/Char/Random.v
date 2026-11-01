@@ -20,9 +20,12 @@ Open Scope sys_scope.
 
 (** getrandom: only EINTR (the pool-not-ready wait, see the bound's
     comment below), kept admissible for a request above
-    [getrandom_small_max] bytes.  The urandom pool is treated as always
-    initialized (see the flags note at [getrandom_spec]), EFAULT is the
-    fail-closed [unmodeled], and bad flags are unmodeled. *)
+    [getrandom_small_max] bytes and beside every answer that moves no
+    byte.  The urandom pool is treated as always initialized (see the
+    flags note at [getrandom_spec]), EFAULT is answered where
+    [access_ok] refuses the destination and the fail-closed [unmodeled]
+    where it admits a range the memory does not wholly back, and bad
+    flags are unmodeled. *)
 Definition getrandom_errnos : list Z := [EINTR].
 
 (** THE SMALL-REQUEST BOUND.  getrandom(2) documents that once the
@@ -78,25 +81,53 @@ Definition getrandom_small_max : Z := 256.
 
     [buflen] IS BOUNDED BY [Uaccess.rw_bytes_max], for the same reason and by
     the same mechanism as [read]'s and [write]'s [count].  The
-    destination check below is [read_bytes_map (in_wmem i) buf buflen],
-    which is [read_bytes_aux] over [word_to_nat buflen], so this is a
+    destination check below is [State.copy_bytes_map] over [buflen],
+    whose walk is [read_bytes_aux] over [word_to_nat buflen], so this is a
     fifth site that builds the unary numeral described there — and it
     does so before it looks at a single byte of memory, so an
     unbounded [buflen] takes the extracted checker down exactly as an
     unbounded [write] did.  The bound costs nothing real: Linux clamps
     a getrandom request at INT_MAX, and no program has a reason to ask
     for 128 KiB of entropy in one call.  Decided after the flag check,
-    which Linux also makes first. *)
+    which Linux also makes first.  It also keeps the range test below
+    exact: [import_ubuf] caps the length at [MAX_RW_COUNT] BEFORE its
+    [access_ok], and every modeled [buflen] is already under that cap.
+
+    THE RANGE TEST COMES BEFORE THE WALK, through [State.copy_bytes_map],
+    whose note says why that order is the guard.  [SYSCALL_DEFINE3(getrandom,
+    ...)] (drivers/char/random.c, Linux v6.18.46) imports the destination
+    with [import_ubuf] (lib/iov_iter.c), which asks [access_ok] over the
+    whole range before a byte moves, so a [buf] whose range wraps past
+    2^64 and is backed at both ends is -EFAULT — the bare walk answered
+    [Some] there and the arm delivered bytes and returned a count.  A
+    range [access_ok] ADMITS that the memory does not wholly back stays
+    [unmodeled]: Linux answers a partial copy or -EFAULT there, and which
+    bytes landed first is not something this effect can state.  The
+    zero-byte request is the same test at length 0, so it needs no arm
+    of its own for the refusal.
+
+    -EINTR SURVIVES INTO THE -EFAULT ANSWER, at every length.  The only
+    -EINTR is [wait_for_random_bytes], and [SYSCALL_DEFINE3(getrandom,
+    ...)] runs it BEFORE [import_ubuf], so an interrupted wait answers
+    whatever the range verdict would have been.  The small-request
+    narrowing above is a claim about a request that is DELIVERED; a
+    refused range delivers nothing and keeps the alternative, exactly as
+    the zero-byte success does.  [Checks.Cases.Drivers.Char.Random]'s
+    [getrandom_wrap_] group pins both lengths, beside neighbours at the
+    top of what [access_ok] accepts. *)
 Definition getrandom_spec (buf buflen flags : word) : Sys SyscallEffect :=
   if negb (Z.eqb (bv_unsigned flags) 0 || Z.eqb (bv_unsigned flags) GRND_NONBLOCK) then unmodeled
   else
   if negb (modeled_rw_count buflen) then unmodeled   (* see [Uaccess.rw_bytes_max] *)
   else
   i <- input ;;
-  match read_bytes_map (in_wmem i) buf buflen with
-  | None => unmodeled   (* unwritable destination buffer: program bug, fail closed *)
+  let interrupted := (e <- errno_from getrandom_errnos ;; err_ret e) in
+  match copy_bytes_map (in_wmem i) buf (bv_unsigned buflen) with
+  | None =>
+      if negb (access_okb buf (bv_unsigned buflen))
+      then alt interrupted (err_ret EFAULT)   (* [import_ubuf]'s [access_ok] *)
+      else unmodeled   (* admitted, not wholly writable: a partial copy, fail closed *)
   | Some _ =>
-      let interrupted := (e <- errno_from getrandom_errnos ;; err_ret e) in
       if negb (w_is0 buflen)
       then
         if (bv_unsigned buflen <=? getrandom_small_max)%Z
@@ -114,15 +145,7 @@ Definition getrandom_spec (buf buflen flags : word) : Sys SyscallEffect :=
                              /\ (Z.of_nat (length bs) <= bv_unsigned buflen)%Z) ;;
              pure (mkEffect (len_word bs) [(buf, bs)] []))
       else
-        (* A ZERO-BYTE REQUEST moves nothing, so [import_ubuf]'s (lib/iov_iter.c at v6.18.46)
-           [access_ok] on the range is the whole of what is left to
-           decide — the same test [read] and [write] face, spelled out
-           here rather than through [Uaccess.access_ok_zero] because the
-           interrupted alternative has to survive into the -EFAULT arm.
-           (Linux can be interrupted in [wait_for_random_bytes] BEFORE
-           it imports the buffer, so -EINTR is admissible whatever the
-           range verdict.) *)
-        if access_okb buf (bv_unsigned buflen)
-        then alt interrupted (ret_only (Z_to_bv 64 0))
-        else alt interrupted (err_ret EFAULT)
+        (* A ZERO-BYTE REQUEST the range test admitted moves nothing:
+           0, beside the interrupted alternative. *)
+        alt interrupted (ret_only (Z_to_bv 64 0))
   end.

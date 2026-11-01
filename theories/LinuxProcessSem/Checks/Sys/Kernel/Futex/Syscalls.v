@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Sys.Kernel.Futex.Syscalls — the futex (98) checker, and its proofs
+(** * LinuxProcessSem.Checks.Sys.Kernel.Futex.Syscalls — the futex (98) and set_robust_list (99) checkers
 
     Mirrors [Sys/Kernel/Futex/Syscalls.v], which answers to Linux
     [kernel/futex/syscalls.c]: this file holds the checkers for the
@@ -15,6 +15,57 @@ Import ListNotations.
 Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude.
+
+(** Linux checks only [len]; the -ENOSYS of QEMU user mode is not an
+    answer of this model (see [set_robust_list_spec]). *)
+Definition check_set_robust_list (len : word) (eff : SyscallEffect)
+    (m : Model) : check_result :=
+  if Z.eqb (bv_unsigned len) 24 then
+    check_ret_only eff (Z_to_bv 64 0) m []
+  else check_ret_only eff (errno_ret EINVAL) m [].
+
+Lemma check_set_robust_list_sound_ok : forall len eff m m' evs i,
+  check_set_robust_list len eff m = CheckOk m' evs ->
+  set_robust_list_spec len i m (Ok eff m' evs).
+Proof.
+  intros len eff m m' evs i H.
+  unfold check_set_robust_list in H.
+  unfold set_robust_list_spec.
+  destruct (Z.eqb (bv_unsigned len) 24);
+    apply check_ret_only_ok_iff in H as (-> & -> & ->);
+    unfold err_ret, ret_only; apply pure_ok.
+Qed.
+
+Lemma check_set_robust_list_sound_unmodeled : forall len eff m i,
+  check_set_robust_list len eff m = CheckUnmodeled ->
+  set_robust_list_spec len i m Unmodeled.
+Proof.
+  intros len eff m i H. unfold check_set_robust_list in H.
+  destruct (Z.eqb (bv_unsigned len) 24);
+    now apply check_ret_only_no_unmodeled in H.
+Qed.
+
+Lemma check_set_robust_list_complete_ok : forall len eff m m' evs i,
+  set_robust_list_spec len i m (Ok eff m' evs) ->
+  check_set_robust_list len eff m = CheckOk m' evs.
+Proof.
+  intros len eff m m' evs i H.
+  unfold set_robust_list_spec in H.
+  unfold check_set_robust_list.
+  destruct (Z.eqb (bv_unsigned len) 24);
+    unfold err_ret, ret_only, pure in H; inversion H; subst;
+    now apply check_ret_only_ok_iff.
+Qed.
+
+Lemma check_set_robust_list_complete_unmodeled : forall len m i eff,
+  set_robust_list_spec len i m Unmodeled ->
+  check_set_robust_list len eff m = CheckUnmodeled.
+Proof.
+  intros len m i eff H.
+  unfold set_robust_list_spec in H.
+  destruct (Z.eqb (bv_unsigned len) 24);
+    unfold err_ret, ret_only, pure in H; discriminate.
+Qed.
 
 (** The two [get_futex_key] gates are WRITTEN OUT rather than taken from
     [Sys.Kernel.Futex.Syscalls.futex_aligned_b], and the four lemmas

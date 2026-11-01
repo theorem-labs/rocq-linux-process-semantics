@@ -311,6 +311,165 @@ Example prlimit64_read_after_set_rejects_the_old_pair :
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
+(* -------------------------------------------------------------------------
+   prlimit64 (261): THE TWO STRUCT COPIES THAT WALKED OFF THE TOP
+
+   Both arms read their 16-byte [struct rlimit64] through
+   [State.copy_bytes_map], which asks [State.access_okb] before the
+   walk; [Kernel.Sys.prlimit64_spec]'s note says why, and
+   [State.copy_bytes_map]'s note carries the wrap argument.  Each group
+   has the shape of [Checks.Cases.Net.Socket]'s wrapping-read groups:
+   the wrapping call refused, a NEIGHBOURING ordinary call at the top of
+   what [State.access_okb] accepts still answered — so the guard is not
+   a blanket refusal of high addresses — and the control that the bare
+   walk really would have passed, without which the refusal would also
+   hold if the memory quietly stopped short.
+
+   THE MEMORIES MAP EXACTLY THEIR OWN RANGE: [wmem_open] answers [Some]
+   everywhere and could not tell a wrapping pointer from any other.
+   ------------------------------------------------------------------------- *)
+
+(* ---- the read's [old_rlim] --------------------------------------------- *)
+
+(** Eight writable bytes below the top and eight from 0: the 16-byte
+    copy-out covers both halves, so the bare walk answered [Some] and
+    the first read was answered 0, with the pair stored across the wrap
+    and pinned as the record. *)
+Definition prlimit64_wrap_old_rlim : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition prlimit64_wrap_old_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 8)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example prlimit64_wrap_old_would_pass_the_bare_walk :
+  read_bytes_map prlimit64_wrap_old_mem prlimit64_wrap_old_rlim (Z_to_bv 64 16)
+    <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example prlimit64_wrap_old_is_not_copyable :
+  copy_bytes_map prlimit64_wrap_old_mem prlimit64_wrap_old_rlim 16 = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(** -EFAULT, nothing stored and nothing pinned: the model it answers in
+    is the one the call started in.  The [copy_to_user] of [old_rlim] in
+    [SYSCALL_DEFINE4(prlimit64)] (kernel/sys.c) refuses this range in
+    [access_ok] before it stores a byte.  The first read the bare walk
+    admitted is refused, and so is an -EFAULT claiming a copy-in. *)
+Example prlimit64_wrapping_old_rlim_is_efault :
+  check_syscall (mkInput 261 [0; 4; 0; prlimit64_wrap_old_rlim; 0; 0]
+                   (fun _ => None) prlimit64_wrap_old_mem)
+    (mkEffect (errno_ret EFAULT) [] []) rlim_model
+  = CheckOk rlim_model []
+  /\ check_syscall (mkInput 261 [0; 4; 0; prlimit64_wrap_old_rlim; 0; 0]
+                     (fun _ => None) prlimit64_wrap_old_mem)
+       (mkEffect 0 [(prlimit64_wrap_old_rlim, rlim_bytes 3 7)] []) rlim_model
+     = CheckReject
+  /\ check_syscall (mkInput 261 [0; 4; 0; prlimit64_wrap_old_rlim; 0; 0]
+                     (fun _ => None) prlimit64_wrap_old_mem)
+       (with_copyins [(prlimit64_wrap_old_rlim, 16%nat)]
+          (mkEffect (errno_ret EFAULT) [] [])) rlim_model
+     = CheckReject.
+Proof. split; [|split]; check_eq. Qed.
+
+(** THE NEIGHBOUR: the last sixteen bytes [State.access_okb] accepts,
+    writable end to end.  The same first read is still answered there —
+    0, the pair stored at the top, the record pinned — and -EFAULT is
+    refused. *)
+Definition prlimit64_top_old_rlim : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition prlimit64_top_old_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 16 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example prlimit64_old_rlim_at_the_top_still_answers :
+  check_syscall (mkInput 261 [0; 4; 0; prlimit64_top_old_rlim; 0; 0]
+                   (fun _ => None) prlimit64_top_old_mem)
+    (mkEffect 0 [(prlimit64_top_old_rlim, rlim_bytes 3 7)] []) rlim_model
+  = CheckOk (with_rlimit_core (rlim_bytes 3 7) rlim_model) []
+  /\ check_syscall (mkInput 261 [0; 4; 0; prlimit64_top_old_rlim; 0; 0]
+                     (fun _ => None) prlimit64_top_old_mem)
+       (mkEffect (errno_ret EFAULT) [] []) rlim_model
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ---- the set's [new_rlim] ---------------------------------------------- *)
+
+(** Eight readable bytes below the top and eight from 0, holding
+    dropbear's own set: soft 0 in the eight bytes below the top, hard 7
+    in the byte at 0.  The bare walk reads exactly that pair across the
+    wrap, and against [rlim_pinned]'s hard limit of 7 it is the set
+    [Kernel.Sys.prlimit64_spec] answers 0 to and records. *)
+Definition prlimit64_wrap_new_rlim : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition prlimit64_wrap_new_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 8)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (if (bv_unsigned a =? 0)%Z then Z_to_bv 8 7 else Z_to_bv 8 0)
+           else None.
+
+Example prlimit64_wrap_new_would_pass_the_bare_walk :
+  read_bytes_map prlimit64_wrap_new_mem prlimit64_wrap_new_rlim (Z_to_bv 64 16)
+    <> None.
+Proof. vm_compute. discriminate. Qed.
+
+(** ...and what it reads is the pair the set arm would have installed. *)
+Example prlimit64_wrap_new_bare_walk_reads_a_settable_pair :
+  read_bytes_map prlimit64_wrap_new_mem prlimit64_wrap_new_rlim (Z_to_bv 64 16)
+    = Some (rlim_bytes 0 7).
+Proof. check_eq. Qed.
+
+Example prlimit64_wrap_new_is_not_copyable :
+  copy_bytes_map prlimit64_wrap_new_mem prlimit64_wrap_new_rlim 16 = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(** -EFAULT with an empty copy-in ledger and the record unchanged.  The
+    [copy_from_user] of [new_rlim] in [SYSCALL_DEFINE4(prlimit64)]
+    (kernel/sys.c) refuses this range in [access_ok] before it loads a
+    byte, and before the pid lookup.  The set the bare walk admitted —
+    0, the 16 bytes in the ledger, the record moved to [(0, 7)] — is
+    refused, and so is an -EFAULT claiming the copy-in. *)
+Example prlimit64_wrapping_new_rlim_is_efault :
+  check_syscall (mkInput 261 [0; 4; prlimit64_wrap_new_rlim; 0; 0; 0]
+                   prlimit64_wrap_new_mem (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) rlim_pinned
+  = CheckOk rlim_pinned []
+  /\ check_syscall (mkInput 261 [0; 4; prlimit64_wrap_new_rlim; 0; 0; 0]
+                     prlimit64_wrap_new_mem (fun _ => None))
+       (with_copyins [(prlimit64_wrap_new_rlim, 16%nat)] (mkEffect 0 [] []))
+       rlim_pinned
+     = CheckReject
+  /\ check_syscall (mkInput 261 [0; 4; prlimit64_wrap_new_rlim; 0; 0; 0]
+                     prlimit64_wrap_new_mem (fun _ => None))
+       (with_copyins [(prlimit64_wrap_new_rlim, 16%nat)]
+          (mkEffect (errno_ret EFAULT) [] [])) rlim_pinned
+     = CheckReject.
+Proof. split; [|split]; check_eq. Qed.
+
+(** THE NEIGHBOUR: the same pair in the last sixteen bytes
+    [State.access_okb] accepts, readable end to end.  The set is still
+    answered — 0, the copy-in recorded, the record moved — and -EFAULT
+    is refused. *)
+Definition prlimit64_top_new_rlim : word := Z_to_bv 64 (TASK_SIZE - 16).
+
+Definition prlimit64_top_new_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 16 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (if (bv_unsigned a =? TASK_SIZE - 8)%Z
+                      then Z_to_bv 8 7 else Z_to_bv 8 0)
+           else None.
+
+Example prlimit64_new_rlim_at_the_top_still_sets :
+  check_syscall (mkInput 261 [0; 4; prlimit64_top_new_rlim; 0; 0; 0]
+                   prlimit64_top_new_mem (fun _ => None))
+    (with_copyins [(prlimit64_top_new_rlim, 16%nat)] (mkEffect 0 [] []))
+    rlim_pinned
+  = CheckOk (with_rlimit_core (rlim_bytes 0 7) rlim_pinned) []
+  /\ check_syscall (mkInput 261 [0; 4; prlimit64_top_new_rlim; 0; 0; 0]
+                     prlimit64_top_new_mem (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) rlim_pinned
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
 (* =========================================================================
    PART 5 — process inputs (argv and the auxv)
 

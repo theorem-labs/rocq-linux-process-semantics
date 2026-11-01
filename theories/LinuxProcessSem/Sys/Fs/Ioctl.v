@@ -129,12 +129,109 @@ Definition tty_only_request (req : word) : bool :=
   bv_eqb req TIOCGWINSZ || bv_eqb req TIOCSWINSZ || bv_eqb req TIOCNOTTY ||
   bv_eqb req TIOCGPTN   || bv_eqb req TIOCSPTLCK.
 
+(** THE INTERFACE NAME [dev_ioctl] LOOKS UP IS "lo", read off the 40
+    bytes [ifr] that [get_user_ifreq] copied in.  [dev_ioctl]
+    (net/core/dev_ioctl.c, Linux v6.18.46) first forces
+    [ifr_name[IFNAMSIZ-1] = 0], then cuts the name at its first ':'
+    ([strchr], then [*colon = 0]) -- the alias syntax "lo:1" -- and
+    [dev_get_by_name_rcu] compares the resulting NUL-terminated string.
+    So the name looked up is "lo" exactly when byte 0 is 'l' (0x6c),
+    byte 1 is 'o' (0x6f), and byte 2 ends the string: a NUL, or the ':'
+    the cut turns into one.  Nothing past byte 2 is read; byte 15 is
+    the only one [dev_ioctl] could have changed, and index 2 is not it. *)
+Definition ifreq_names_lo (ifr : list byte) : bool :=
+  match ifr with
+  | b0 :: b1 :: b2 :: _ =>
+      (Z.eqb (bv_unsigned b0) 108 && Z.eqb (bv_unsigned b1) 111
+       && (Z.eqb (bv_unsigned b2) 0 || Z.eqb (bv_unsigned b2) 58))%bool
+  | _ => false
+  end.
+
+(** The 40 bytes [put_user_ifreq] copies back after a SIOCGIFINDEX that
+    found its device: the caller's own bytes but two edits [dev_ioctl]
+    leaves in the kernel copy.  Byte 15 is 0 ([ifr_name[IFNAMSIZ-1] =
+    0] is never undone; a ':' cut IS undone, by [*colon = ':'] before
+    the return).  Bytes 16 to 19 are [ifr_ifindex], the [int] at the
+    start of the [ifr_ifru] union, set by [dev_ifsioc_locked] to the
+    device's index: [idx], little-endian.  Bytes 20 to 39, the rest of
+    the union, go back as they came in. *)
+Definition ifreq_with_index (ifr : list byte) (idx : Z) : list byte :=
+  firstn 15 ifr ++ [Z_to_bv 8 0] ++ word_le4 (Z_to_bv 64 idx) ++ skipn 20 ifr.
+
+(** [ioctl(fd, SIOCGIFINDEX, argp)] on an unconnected datagram socket
+    ([State.FdDgram]).  The path, Linux v6.18.46:
+
+    - [sock_ioctl] (net/socket.c) matches none of its own cases on
+      0x8933 (it is outside the SIOCDEVPRIVATE and wireless ranges and
+      none of the switch's labels) and takes [sock_do_ioctl], which
+      asks the protocol first.  AF_UNIX's [unix_ioctl]
+      (net/unix/af_unix.c) knows SIOCOUTQ, SIOCINQ, SIOCUNIXFILE and
+      SIOCATMARK and answers the rest -ENOIOCTLCMD.  AF_INET6's
+      [inet6_ioctl] (net/ipv6/af_inet6.c) knows the routing and address
+      requests, and its default hands the rest to [sk_ioctl]
+      (net/core/sock.c), whose [sock_ioctl_out] asks [udp_ioctl]
+      (net/ipv4/udp.c, [udpv6_prot]'s [.ioctl]), which knows SIOCOUTQ
+      and SIOCINQ and answers -ENOIOCTLCMD.  So both families fall to
+      [is_socket_ioctl_cmd] (include/linux/netdevice.h), which admits
+      0x8933 ([_IOC_TYPE] 0x89 = SOCK_IOC_TYPE).
+    - [get_user_ifreq] (net/socket.c) is one [copy_from_user] of the
+      whole 40-byte [struct ifreq]: if any byte cannot be read, -EFAULT,
+      with nothing changed and nothing written.  ([in_compat_syscall()]
+      is false for a native riscv64 call.)
+    - [dev_ioctl] (net/core/dev_ioctl.c) cuts the name as
+      [ifreq_names_lo] says, calls [dev_load] -- which loads nothing for
+      a device that exists -- and [dev_ifsioc_locked], which looks the
+      name up in the caller's network namespace: -ENODEV for no such
+      device, else [ifr_ifindex = dev->ifindex] and 0.
+    - On 0, [put_user_ifreq] copies the 40 bytes back
+      ([ifreq_with_index]); a destination that takes none of them is
+      -EFAULT with nothing written, and the call is otherwise 0.  A
+      destination that takes some and not all declines: [copy_to_user]
+      would leave a prefix behind, as everywhere a copy can stop part
+      way.
+
+    THE NAME "lo" IS THE ONLY ONE ANSWERED, and only through an
+    ENVIRONMENT ASSUMPTION: THE NETWORK NAMESPACE'S LOOPBACK DEVICE IS
+    NAMED "lo".  Given it, "lo" names the loopback -- interface names
+    are unique within a namespace, alternative names included -- and the
+    loopback's index is [LOOPBACK_IFINDEX], 1: [loopback_net_init]
+    (drivers/net/loopback.c) creates it under that name in every
+    namespace and stops the kernel ([BUG_ON], :222) if the index is not
+    1 (include/net/flow.h:25).  The assumption is needed because the
+    device can be RENAMED after creation, and another device can then
+    take the name; SCOPE.md lists it among the assumptions the model
+    does not check.  Every other name declines: which interfaces exist
+    is the environment's, so neither an index nor -ENODEV can be
+    asserted for it. *)
+Definition siocgifindex_spec (argp : word) (i : SyscallInput) : Sys SyscallEffect :=
+  match copy_bytes_map (in_mem i) argp IFREQ_SIZE with
+  | None => err_ret EFAULT                     (* [get_user_ifreq]: nothing read, nothing changed *)
+  | Some ifr =>
+      record_copyins [(argp, Z.to_nat IFREQ_SIZE)]
+        (if negb (ifreq_names_lo ifr) then unmodeled
+           (* any other name: the interface table is the environment's *)
+         else
+         match read_bytes_map (in_wmem i) argp (Z_to_bv 64 IFREQ_SIZE) with
+         | Some _ =>
+             pure (mkEffect (Z_to_bv 64 0)
+                     [(argp, ifreq_with_index ifr LOOPBACK_IFINDEX)] [])
+         | None =>
+             match read_bytes_map (in_wmem i) argp (Z_to_bv 64 1) with
+             | None => err_ret EFAULT          (* [put_user_ifreq]: nothing lands *)
+             | Some _ => unmodeled             (* lands a prefix: fail closed *)
+             end
+         end)
+  end.
+
 (** [ioctl fd req ...]: modeled for the terminal-only requests of
     [tty_only_request], every one of them answered with -ENOTTY — the
     model's channels and files are never terminals.  The answer is a
     constant because the kernel's is: a request no file implements is
-    refused the same way whatever the file is.  Any other request on an
-    open fd is unmodeled: [unmodeled] (fail closed).
+    refused the same way whatever the file is.  One more request is
+    modeled on one kind: SIOCGIFINDEX on an unconnected datagram socket
+    ([State.FdDgram]), for the name "lo" only ([siocgifindex_spec]).
+    Any other request on an open fd is unmodeled: [unmodeled] (fail
+    closed).
 
     The open-fd arms are ENUMERATED rather than matched with a wildcard,
     and that is load-bearing.  "-ENOTTY on every open fd" is exact only
@@ -152,10 +249,12 @@ Definition tty_only_request (req : word) : bool :=
       - FIONBIO succeeds and CHANGES the file's O_NONBLOCK state, and
         FIOCLEX/FIONCLEX succeed and change the descriptor's
         close-on-exec flag; this model carries neither piece of state;
-      - every request that writes its result through the third argument.
-        [ioctl_spec] does not take that argument, so the modeled ones
-        are exactly those whose whole observable effect is the return
-        value.  -ENOTTY writes nothing, which is why they qualify.
+      - every request that writes its result through the third argument,
+        but SIOCGIFINDEX on a datagram socket.  The terminal requests
+        qualify because -ENOTTY writes nothing; SIOCGIFINDEX qualifies
+        because its write-back is the caller's own 40 bytes with one
+        known index in them, which [siocgifindex_spec] reads off the
+        third argument ([in_arg i 2], the full [unsigned long]).
 
     The fd is resolved FIRST, exactly as the kernel does:
     [SYSCALL_DEFINE3(ioctl, ...)] opens with the fd fetch and returns
@@ -190,7 +289,30 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
   | None => err_ret EBADF                        (* fd not open: real -EBADF, before the request is examined *)
   | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _)
   | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
+  (* AN UNNAMED FILE IS A REGULAR FILE, and takes the file kinds' answer
+     by their route: [do_vfs_ioctl] (fs/ioctl.c, Linux v6.18.46) claims
+     none of the eight, hands an [S_ISREG] inode to [file_ioctl], whose
+     default is -ENOIOCTLCMD, and [vfs_ioctl] then finds no
+     [.unlocked_ioctl] in the regular-file table of tmpfs
+     ([shmem_file_operations], mm/shmem.c) and answers -ENOTTY.  musl's
+     [tmpfile()] reaches this through [__fdopen]'s TIOCGWINSZ *)
+  | Some (FdAnon _ _)
   | Some (FdSocket _)
+  (* A STREAM-PAIR END IS A SOCKET FILE TOO, and reaches the same
+     [sock_ioctl] default arm: [sock_do_ioctl] calls [unix_ioctl]
+     (net/unix/af_unix.c, v6.18.46), whose switch knows SIOCOUTQ,
+     SIOCINQ, SIOCUNIXFILE and SIOCATMARK -- none of them among the eight
+     of [tty_only_request] -- and answers the rest -ENOIOCTLCMD, which
+     [is_socket_ioctl_cmd] then turns into -ENOTTY exactly as for TCP *)
+  | Some (FdStream _ _ _)
+  (* AN EVENTFD TAKES THE SAME ANSWER by [vfs_ioctl]'s first branch, as
+     /dev/null does below: [eventfd_fops] (fs/eventfd.c, v6.18.46) has no
+     [.unlocked_ioctl], so [error = -ENOTTY] stands.  [do_vfs_ioctl]
+     (fs/ioctl.c) claims none of the eight, and its default arm hands a
+     request to [file_ioctl] only for [S_ISREG] inodes that are not
+     [IS_ANON_FILE] -- and [alloc_anon_inode] (fs/libfs.c) gives the
+     shared anonymous inode no type bits at all *)
+  | Some (FdEventfd _)
   (* A PIPE END TAKES THE SAME ANSWER, and this is the one fd kind for
      which the header's argument was already written out: [pipe_ioctl]
      (fs/pipe.c:619) answers -ENOIOCTLCMD from its default arm (:653-654),
@@ -245,4 +367,13 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
          driver, which answers -EINVAL for them.  A real answer would
          be derived from that switch over a request word and a
          capability set; neither is written, so declined. *)
+  | Some (FdDgram _) =>
+      if tty_only_request req then err_ret ENOTTY
+        (* the socket answer above, reached through [unix_ioctl] (AF_UNIX)
+           or [inet6_ioctl] -> [sk_ioctl] -> [udp_ioctl] (AF_INET6), each
+           -ENOIOCTLCMD for the eight, which [is_socket_ioctl_cmd] turns
+           into -ENOTTY: see [siocgifindex_spec] for the path *)
+      else if bv_eqb req SIOCGIFINDEX then
+        (i <- input ;; siocgifindex_spec (in_arg i 2) i)
+      else unmodeled
   end.

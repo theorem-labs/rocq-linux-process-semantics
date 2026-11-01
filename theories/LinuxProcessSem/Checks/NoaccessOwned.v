@@ -8,26 +8,34 @@
     ** Why the invariant is not proved on its own
 
     [noaccess_pages_owned] is not inductive.  A state can satisfy it with
-    the only witness of a protected page being a byte-granular brk grant
-    that starts in the middle of that page; a later brk shrink to below
-    that grant's base cuts the grant out of [vm_maps] while
-    [Mmap.brk_unmaps] (page-rounded, empty for a same-page shrink) leaves
-    the protection whole.  Such a state is not reachable, and what makes
-    it unreachable is a stronger statement, [na_inv] below:
+    the only witness of a protected page being a mapping that starts in
+    the middle of that page, and a later cut can take that mapping away
+    while the protection stays whole.  Such a state is not reachable, and
+    what makes it unreachable is a stronger statement, [na_inv] below:
 
     - every protected entry is page aligned, a whole number of pages,
       nonempty, and ends inside the address space ([na_shape]); and
-    - every protected byte is OWNED, byte for byte, by a live mapping —
-      except the bytes of the brk orphan, the slice
-      [[vm_brk, PAGE_ALIGN vm_brk)] that a shrink to a break which is
-      not page aligned leaves protected, and for those the first byte
-      of the break's page is owned ([na_cover]).
+    - every protected byte is OWNED, byte for byte, by a live mapping
+      ([na_cover]).
+
+    THE SECOND CONJUNCT HAD AN EXCEPTION UNTIL THIS REVISION, and losing
+    it is a consequence of the brk ledger becoming page-granular.  While
+    [Mmap.brk_maps_next] cut the LOGICAL tail [[r, b)] out of [vm_maps]
+    on a shrink, and [Mmap.brk_unmaps] (page-rounded, empty for a
+    same-page shrink) removed nothing from [vm_noaccess], a shrink to a
+    break that is not page aligned left the slice
+    [[vm_brk, PAGE_ALIGN vm_brk)] protected and owned by nothing — so
+    [na_cover] had to allow it, asking only that the first byte of the
+    break's page be owned.  [Mmap.brk_maps_next] no longer makes that
+    cut: it takes out exactly the pages [Mmap.brk_unmaps] names.  The two
+    lists lose the same interval, no step strands a protected byte, and
+    the exception is gone — which is also why this file no longer needs
+    the break at all except to keep [na_inv']'s shape.
 
     [na_inv_noaccess_pages_owned] derives [noaccess_pages_owned] from it.
-    [na_inv] is preserved together with [VmMapsDisjoint.vm_wf] (the base
-    of a [map_has] hit names one entry, so [munmap] and [mremap] remove
-    exactly the entry they matched) and [MapsFit.vm_fit] (a cut leaves
-    remnants that re-enter [word] losslessly); [sys_inv] is the three
+    [na_inv] is preserved together with [VmMapsDisjoint.vm_wf] and
+    [MapsFit.vm_fit] (a cut leaves remnants that re-enter [word]
+    losslessly, so a byte outside the cut keeps an owner); [sys_inv] is the three
     together, [init_model_sys_inv] the base case,
     [check_syscall_preserves_sys_inv] / [syscall_spec_preserves_sys_inv]
     the system-call step, and [sstep_preserves_sys_inv] /
@@ -57,12 +65,13 @@ Definition na_shape (na : list (word * word)) : Prop :=
     (bv_unsigned a mod page_size = 0 /\ bv_unsigned n mod page_size = 0
      /\ 0 < bv_unsigned n /\ bv_unsigned a + bv_unsigned n <= two_pow_64)%Z.
 
+(** [brk] is kept as a parameter, unread: it is what [na_inv'] and every
+    lemma below are indexed by, and the exception that needed it is gone
+    (see the header). *)
 Definition na_cover (maps na : list (word * word)) (brk : Z) : Prop :=
   forall a n x, In (a, n) na ->
     (bv_unsigned a <= x < bv_unsigned a + bv_unsigned n)%Z ->
-    owned maps x
-    \/ ((brk <= x < page_round_up_Z brk)%Z
-        /\ owned maps (page_round_down_Z brk)).
+    owned maps x.
 
 Definition na_inv' (maps na : list (word * word)) (brk : Z) : Prop :=
   na_shape na /\ na_cover maps na brk.
@@ -187,36 +196,6 @@ Proof.
     intros c u Hcu. apply Hf. right. exact Hcu.
 Qed.
 
-(** Removing the entries based at [addr] keeps every byte some OTHER
-    entry owns; when the base names one entry, that is every byte
-    outside it. *)
-Lemma owned_map_remove : forall maps addr n x,
-  (forall s, In (addr, s) maps -> s = n) ->
-  owned maps x ->
-  ~ (bv_unsigned addr <= x < bv_unsigned addr + bv_unsigned n)%Z ->
-  owned (map_remove maps addr) x.
-Proof.
-  intros maps addr n x Hu (b & s & Hin & Hx) Hc.
-  destruct (bv_eqb b addr) eqn:E.
-  - apply bv_eqb_eq in E. subst b. rewrite (Hu s Hin) in Hx. contradiction.
-  - exists b, s. split; [|exact Hx].
-    unfold map_remove. apply List.filter_In. split; [exact Hin|].
-    cbn [fst]. rewrite E. reflexivity.
-Qed.
-
-Lemma map_has_unique : forall maps addr n,
-  maps_wf maps -> (bv_unsigned addr mod page_size = 0)%Z ->
-  map_has maps addr n = true ->
-  forall s, In (addr, s) maps -> s = n.
-Proof.
-  intros maps addr n Hwf Ha Hhas s Hin.
-  pose proof (base_entry_unique maps addr n Hwf Ha Hhas) as Hu.
-  assert (Hf : In (addr, s) (List.filter (fun q => bv_eqb (fst q) addr) maps)).
-  { apply List.filter_In. split; [exact Hin|]. cbn [fst].
-    apply (proj2 (bv_eqb_eq addr addr)). reflexivity. }
-  rewrite Hu in Hf. destruct Hf as [Heq|[]]. inversion Heq; subst; reflexivity.
-Qed.
-
 Lemma map_contains_owned : forall maps lo n x,
   map_contains maps lo n = true ->
   (bv_unsigned lo <= x < bv_unsigned lo + bv_unsigned n)%Z ->
@@ -326,7 +305,7 @@ Lemma na_inv_mono : forall maps maps' na brk,
 Proof.
   intros maps maps' na brk Hm [Hsh Hcov]. split; [exact Hsh|].
   intros a n x Hin Hx.
-  destruct (Hcov a n x Hin Hx) as [Ho|[Hz Ho]]; [left; auto | right; auto].
+  exact (Hm x (Hcov a n x Hin Hx)).
 Qed.
 
 Lemma na_inv_cons_maps : forall maps na brk e,
@@ -359,11 +338,7 @@ Proof.
   - intros a' n' x Hin Hx.
     destruct (maps_subtract_bytes na lo hi a' n' x (na_shape_fit _ Hsh) Hin Hx)
       as (a & n & Hin0 & Hx0 & Hcut).
-    destruct (Hcov a n x Hin0 Hx0) as [Ho|[Hz Ho]].
-    + left. apply owned_subtract; assumption.
-    + right. split; [exact Hz|].
-      apply owned_subtract; [exact Hmf | exact Ho |].
-      intro HP. apply Hcut. exact (zone_same_page lo hi brk x Hlo Hhi Hz HP).
+    apply owned_subtract; [exact Hmf | exact (Hcov a n x Hin0 Hx0) | exact Hcut].
 Qed.
 
 (** A request newly owned and newly protected: the PROT_NONE grants. *)
@@ -379,7 +354,7 @@ Proof.
     + injection Heq as <- <-. repeat split; assumption.
     + exact (Hsh b s Hin).
   - intros b s x [Heq|Hin] Hx.
-    + injection Heq as <- <-. left. exists a, n. split; [left; reflexivity | exact Hx].
+    + injection Heq as <- <-. exists a, n. split; [left; reflexivity | exact Hx].
     + exact (Hcov b s x Hin Hx).
 Qed.
 
@@ -396,43 +371,21 @@ Proof.
     + injection Heq as <- <-. repeat split; assumption.
     + exact (Hsh b s Hin).
   - intros b s x [Heq|Hin] Hx.
-    + injection Heq as <- <-. left. exact (Hown x Hx).
+    + injection Heq as <- <-. exact (Hown x Hx).
     + exact (Hcov b s x Hin Hx).
 Qed.
 
-(** [munmap] of the whole mapping a page-aligned base names. *)
-Lemma na_inv_munmap : forall maps na brk addr n,
-  maps_wf maps -> map_has maps addr n = true ->
-  (bv_unsigned addr mod page_size = 0)%Z -> (bv_unsigned n mod page_size = 0)%Z ->
-  na_inv' maps na brk ->
-  na_inv' (map_remove maps addr)
-    (maps_subtract na (bv_unsigned addr) (bv_unsigned addr + bv_unsigned n)) brk.
-Proof.
-  intros maps na brk addr n Hwf Hhas Ha Hn [Hsh Hcov].
-  pose proof (map_has_unique maps addr n Hwf Ha Hhas) as Hu.
-  assert (Hhi : ((bv_unsigned addr + bv_unsigned n) mod page_size = 0)%Z)
-    by (apply aligned_add; assumption).
-  split.
-  - apply maps_subtract_shape; assumption.
-  - intros a' n' x Hin Hx.
-    destruct (maps_subtract_bytes na _ _ a' n' x (na_shape_fit _ Hsh) Hin Hx)
-      as (a & n0 & Hin0 & Hx0 & Hcut).
-    destruct (Hcov a n0 x Hin0 Hx0) as [Ho|[Hz Ho]].
-    + left. exact (owned_map_remove maps addr n x Hu Ho Hcut).
-    + right. split; [exact Hz|].
-      apply (owned_map_remove maps addr n _ Hu Ho).
-      intro HP. apply Hcut. exact (zone_same_page _ _ brk x Ha Hhi Hz HP).
-Qed.
-
-(** [mremap] re-records its source, which no protected byte meets. *)
+(** [mremap] cuts its source range out of the ledger and records one
+    entry; no protected byte meets the source. *)
 Lemma na_inv_mremap : forall maps na brk old old_n d k,
-  maps_wf maps -> map_has maps old old_n = true ->
+  maps_fit maps ->
   (bv_unsigned old mod page_size = 0)%Z -> (bv_unsigned old_n mod page_size = 0)%Z ->
   region_free na old old_n = true ->
-  na_inv' maps na brk -> na_inv' ((d, k) :: map_remove maps old) na brk.
+  na_inv' maps na brk ->
+  na_inv' ((d, k) :: maps_subtract maps (bv_unsigned old)
+                       (bv_unsigned old + bv_unsigned old_n)) na brk.
 Proof.
-  intros maps na brk old old_n d k Hwf Hhas Ha Hn Hfree [Hsh Hcov].
-  pose proof (map_has_unique maps old old_n Hwf Ha Hhas) as Hu.
+  intros maps na brk old old_n d k Hmf Ha Hn Hfree [Hsh Hcov].
   assert (Hhi : ((bv_unsigned old + bv_unsigned old_n) mod page_size = 0)%Z)
     by (apply aligned_add; assumption).
   split; [exact Hsh|].
@@ -441,11 +394,8 @@ Proof.
   { intro Hxs. pose proof (region_free_In _ _ _ a n Hfree Hin) as Hno.
     unfold iv_overlap in Hno.
     apply andb_false_iff in Hno as [Hc|Hc]; apply Z.ltb_ge in Hc; lia. }
-  destruct (Hcov a n x Hin Hx) as [Ho|[Hz Ho]].
-  - left. apply owned_cons. exact (owned_map_remove maps old old_n x Hu Ho Hxs).
-  - right. split; [exact Hz|]. apply owned_cons.
-    apply (owned_map_remove maps old old_n _ Hu Ho).
-    intro HP. apply Hxs. exact (zone_same_page _ _ brk x Ha Hhi Hz HP).
+  apply owned_cons.
+  exact (owned_subtract maps _ _ x Hmf (Hcov a n x Hin Hx) Hxs).
 Qed.
 
 (* -------------------------------------------------------------------------
@@ -470,49 +420,22 @@ Proof.
         [right; split; assumption | left; exact H].
 Qed.
 
-(** The shrink, one protected byte at a time.  [x] survived the cut of
-    the protected list, which is [[PAGE_ALIGN r, PAGE_ALIGN b)] (empty
-    for a same-page shrink); [vm_maps] lost [[r, b)]. *)
-Lemma brk_shrink_cover : forall maps na b r a n x,
-  maps_fit maps -> na_shape na -> na_cover maps na b ->
-  (r < b)%Z ->
+(** The shrink, one protected byte at a time, and it is now one lemma
+    rather than three.  The shrink's ONLY cut of [vm_maps] is the range
+    [Mmap.brk_unmap_cut] takes, inside [[PAGE_ALIGN r, PAGE_ALIGN b)];
+    the protected list loses exactly that range too, so a protected byte
+    that survives is outside it and keeps the owner it had.  A same-page
+    shrink is the degenerate case: both ranges are empty and nothing is
+    cut at all. *)
+Lemma brk_shrink_cover_cut : forall maps na b r a n x lo hi,
+  maps_fit maps -> na_cover maps na b ->
   In (a, n) na -> (bv_unsigned a <= x < bv_unsigned a + bv_unsigned n)%Z ->
   ~ (page_round_up_Z r <= x < page_round_up_Z b)%Z ->
-  owned (maps_subtract maps r b) x
-  \/ ((r <= x < page_round_up_Z r)%Z
-      /\ owned (maps_subtract maps r b) (page_round_down_Z r)).
+  (page_round_up_Z r <= lo)%Z -> (hi <= page_round_up_Z b)%Z ->
+  owned (maps_subtract maps lo hi) x.
 Proof.
-  intros maps na b r a n x Hmf Hsh Hcov Hrb Hin Hx Hcut.
-  pose proof (pu_ge b) as Hpub. pose proof (pd_le x) as Hpdx.
-  destruct (Z_lt_le_dec x r) as [Hxr|Hxr].
-  - (* below the new break: owned before, untouched by the cut *)
-    destruct (Hcov a n x Hin Hx) as [Ho|[Hz _]]; [|lia].
-    left. apply owned_subtract; [exact Hmf | exact Ho | lia].
-  - destruct (Z_lt_le_dec x b) as [Hxb|Hxb].
-    + (* inside the dropped tail: the new orphan slice *)
-      assert (Hz : (r <= x < page_round_up_Z r)%Z) by lia.
-      right. split; [exact Hz|].
-      destruct (zone_floor r x Hz) as [Hfx Hfr].
-      destruct (Hsh a n Hin) as (Ha & Hn & _ & _).
-      assert (Hhi : ((bv_unsigned a + bv_unsigned n) mod page_size = 0)%Z)
-        by (apply aligned_add; assumption).
-      destruct (page_round_down_Z_within _ _ x Ha Hhi Hx) as [Hw1 Hw2].
-      assert (Hpx : (bv_unsigned a <= page_round_down_Z x
-                     < bv_unsigned a + bv_unsigned n)%Z)
-        by (unfold page_size in Hw2; lia).
-      destruct (Hcov a n _ Hin Hpx) as [Ho|[Hz' _]]; [|lia].
-      rewrite Hfx in Ho.
-      apply owned_subtract; [exact Hmf | exact Ho | lia].
-    + (* at or above the old break *)
-      destruct (Hcov a n x Hin Hx) as [Ho|[Hz Ho]].
-      * left. apply owned_subtract; [exact Hmf | exact Ho | lia].
-      * assert (Hz' : (r <= x < page_round_up_Z r)%Z) by lia.
-        right. split; [exact Hz'|].
-        destruct (zone_floor r x Hz') as [Hfr Hfr'].
-        destruct (zone_floor b x Hz) as [Hfb _].
-        rewrite <- Hfr, Hfb.
-        apply owned_subtract; [exact Hmf | exact Ho |].
-        rewrite <- Hfb, Hfr. lia.
+  intros maps na b r a n x lo hi Hmf Hcov Hin Hx Hcut Hlo Hhi.
+  apply owned_subtract; [exact Hmf | exact (Hcov a n x Hin Hx) | lia].
 Qed.
 
 Lemma brk_model_next_na_inv : forall m req r,
@@ -524,7 +447,8 @@ Proof.
   pose proof (brk_r_ok_cases m req r Hok) as Hr.
   set (h := m_vmmaps m) in *.
   destruct Hna as [Hsh Hcov].
-  unfold na_inv, brk_model_next, brk_maps_next, brk_unmaps, brk_grants, brk_is_grow.
+  unfold na_inv, brk_model_next, brk_maps_next, brk_unmap_cut, brk_unmaps,
+    brk_grants, brk_is_grow.
   cbv zeta. cbn [vm_maps vm_noaccess vm_brk].
   pose proof (word_range r) as Hrr. pose proof (word_range (vm_brk h)) as Hbr.
   set (b := vm_brk h) in *.
@@ -554,12 +478,13 @@ Proof.
       * intros a' n' x Hin Hx.
         destruct (maps_subtract_bytes _ _ _ a' n' x (na_shape_fit _ Hsh) Hin Hx)
           as (a & n & Hin0 & Hx0 & Hc).
-        exact (brk_shrink_cover _ _ _ _ a n x Hfit Hsh Hcov Hlt Hin0 Hx0 Hc).
+        apply (brk_shrink_cover_cut _ _ _ _ a n x _ _ Hfit Hcov Hin0 Hx0 Hc);
+          lia.
     + apply Z.ltb_ge in Ecut.
       unfold maps_subtract_ranges. cbn [fold_left].
       split; [exact Hsh|].
       intros a n x Hin Hx.
-      apply (brk_shrink_cover _ _ _ _ a n x Hfit Hsh Hcov Hlt Hin Hx). lia.
+      exact (Hcov a n x Hin Hx).
   - (* UNCHANGED *)
     assert (Erb : r = b) by (apply bv_eq; exact Heq). subst r.
     rewrite Z.ltb_irrefl, !andb_false_r. cbn [app].
@@ -586,31 +511,16 @@ Proof.
       rewrite (proj2 (Z.ltb_ge _ _) Hpu). reflexivity. }
     rewrite Hna'.
     destruct (0 <? bv_unsigned b)%Z eqn:Eb.
-    + apply Z.ltb_lt in Eb. cbn [app].
-      assert (Hsz : bv_unsigned (req - b)%bv
-                    = (bv_unsigned req - bv_unsigned b)%Z).
-      { rewrite bv_sub_unsigned. apply bv_wrap_small.
-        change (bv_modulus 64) with (2 ^ 64)%Z. lia. }
+    + apply Z.ltb_lt in Eb.
       split; [exact Hsh|].
       intros a n x Hin Hx.
-      destruct (Hcov a n x Hin Hx) as [Ho|[Hz Ho]].
-      * left. apply owned_cons. exact Ho.
-      * destruct (Z_lt_le_dec x (bv_unsigned req)) as [Hxr|Hxr].
-        -- left. exists b, (req - b)%bv. split; [left; reflexivity|].
-           rewrite Hsz. lia.
-        -- assert (Hz' : (bv_unsigned req <= x < page_round_up_Z (bv_unsigned req))%Z)
-             by lia.
-           right. split; [exact Hz'|].
-           destruct (zone_floor _ x Hz') as [Hfr _].
-           destruct (zone_floor _ x Hz) as [Hfb _].
-           rewrite <- Hfr, Hfb. apply owned_cons. exact Ho.
+      unfold brk_page_range.
+      destruct (Z.ltb (page_round_up_Z (bv_unsigned b))
+                      (page_round_up_Z (bv_unsigned req)));
+        cbn [app]; [apply owned_cons | idtac]; exact (Hcov a n x Hin Hx).
     + apply Z.ltb_ge in Eb. cbn [app].
       split; [exact Hsh|].
-      intros a n x Hin Hx.
-      destruct (Hcov a n x Hin Hx) as [Ho|[Hz Ho]]; [left; exact Ho|].
-      exfalso. assert (Hb0 : bv_unsigned b = 0%Z) by lia.
-      rewrite Hb0 in Hz. unfold page_round_up_Z, page_size in Hz.
-      rewrite Z.div_small in Hz by lia. lia.
+      intros a n x Hin Hx. exact (Hcov a n x Hin Hx).
 Qed.
 
 (** The invariant gives the page-ownership statement. *)
@@ -621,12 +531,9 @@ Proof.
   destruct (Hsh a n Hin) as (_ & _ & Hpos & _).
   split; [exact Hpos|].
   intros x Hx.
-  destruct (Hcov a n x Hin Hx) as [(b & s & Hb & Hbx)|[Hz (b & s & Hb & Hbx)]].
-  - exists b, s. split; [exact Hb|].
-    unfold page_round_down_Z, page_size. pgf x. lia.
-  - exists b, s. split; [exact Hb|].
-    destruct (zone_floor _ x Hz) as [Hf _]. rewrite Hf.
-    unfold page_size. lia.
+  destruct (Hcov a n x Hin Hx) as (b & s & Hb & Hbx).
+  exists b, s. split; [exact Hb|].
+  unfold page_round_down_Z, page_size. pgf x. lia.
 Qed.
 
 (* -------------------------------------------------------------------------
@@ -664,17 +571,18 @@ Proof.
   difn H Etask; [apply check_ret_only_model in H; subst m'; exact Hna|].
   difn H Ehas.
   - destruct ws, zs, cs, ci; try discriminate.
-    dif H; [|discriminate]. injection H as <- <-.
-    apply orb_false_iff in Eargs as [Ealign Elen].
-    apply negb_false_iff, Z.eqb_eq in Ealign.
-    apply Z.ltb_ge in Etask. unfold TASK_SIZE in Etask.
-    pose proof (word_range addr) as Har. pose proof (word_range len) as Hlr.
-    pose proof (w_is0_false len Elen) as Hlen0.
-    assert (HnZ : (0 < page_round_up_Z (bv_unsigned len))%Z)
-      by (apply page_round_up_pos; lia).
-    unfold na_inv. rewrite vmm_mmap_destroyed. cbn [vm_maps vm_noaccess vm_brk].
-    apply na_inv_munmap; [exact Hwf | exact Ehas | exact Ealign | | exact Hna].
-    rewrite u64 by lia. apply pu_aligned.
+    dif H.
+    + destruct us; [|discriminate]. injection H as <- <-. exact Hna.
+    + dif H; [|discriminate]. injection H as <- <-.
+      apply orb_false_iff in Eargs as [Ealign Elen].
+      apply negb_false_iff, Z.eqb_eq in Ealign.
+      apply Z.ltb_ge in Etask. unfold TASK_SIZE in Etask.
+      pose proof (word_range addr) as Har. pose proof (word_range len) as Hlr.
+      pose proof (page_round_up_Z_ge (bv_unsigned len) ltac:(lia)) as HnZ.
+      unfold na_inv. rewrite vmm_mmap_destroyed. unfold mmap_fixed_destroyed_next.
+      cbn [vm_maps vm_noaccess vm_brk].
+      apply na_inv_cut_both; [exact Hfit | exact Ealign | | exact Hna].
+      rewrite u64 by lia. apply aligned_add; [exact Ealign | apply pu_aligned].
   - dif H; [apply check_ret_only_model in H; subst m'; exact Hna|].
     dif H; [|discriminate].
     destruct ws, zs, cs, ci; try discriminate.
@@ -735,9 +643,10 @@ Proof.
   pose proof (word_range addr) as Haddrr.
   pose proof (word_range ret) as Hretr.
   destruct (negb (mmap_off_aligned_b off)) eqn:Eoff.
-  { destruct (mmap_pglen_ok_b len); [|discriminate].
+  { apply check_ret_only_model in H; subst m'; exact Hna. }
+  destruct (negb (mmap_anon_b flags)) eqn:Eanon.
+  { destruct (fd_lookup (m_fds m) (fd32 fd)); [discriminate|].
     apply check_ret_only_model in H; subst m'; exact Hna. }
-  destruct (negb (mmap_anon_b flags)) eqn:Eanon; [discriminate|].
   destruct (w_is0 len) eqn:Elen.
   { destruct (mmap_plain_anon_b flags); [|discriminate].
     apply check_ret_only_model in H; subst m'; exact Hna. }
@@ -760,11 +669,9 @@ Proof.
     difn H E; [|discriminate]. injection H as <- <-.
     unfold na_inv. rewrite vmm_mmap_backing, vmm_vmmaps.
     cbn [vm_maps vm_noaccess vm_brk].
-    apply andb_true_iff in E as [E Hus].
-    apply andb_true_iff in E as [E Hfree].
-    apply andb_true_iff in E as [E Hceil].
-    apply andb_true_iff in E as [Halign Hpos].
-    apply Z.leb_le in Hceil. apply Z.eqb_eq in Halign.
+    apply andb_true_iff in E as [Hplace Hus].
+    destruct (Placement.linux_place_is_admissible _ _ _ _ _ HnZ Hnal Hplace)
+      as (Halign & Hpos & Hceil & Hfree).
     apply na_inv_cons_both;
       [exact Halign | rewrite u64 by lia; exact Hnal | rewrite u64 by lia; exact HnZ
       | rewrite u64 by lia; unfold two_pow_64; lia | exact Hna]. }
@@ -952,16 +859,16 @@ Proof.
     + difn H Eok; [|discriminate]. injection H as <- <-.
       unfold na_inv. rewrite vmm_mremap_next.
       unfold mremap_maps_next. cbn [vm_maps vm_noaccess vm_brk].
-      exact (na_inv_mremap _ _ _ _ _ _ _ Hwf Hhas Ealign Hoal Hsna Hna).
+      exact (na_inv_mremap _ _ _ _ _ _ _ Hfit Ealign Hoal Hsna Hna).
     + difn H Egrow; [|discriminate].
       difn H Eok; [|discriminate]. injection H as <- <-.
       unfold na_inv. rewrite vmm_mremap_next.
       unfold mremap_maps_next. cbn [vm_maps vm_noaccess vm_brk].
-      exact (na_inv_mremap _ _ _ _ _ _ _ Hwf Hhas Ealign Hoal Hsna Hna).
+      exact (na_inv_mremap _ _ _ _ _ _ _ Hfit Ealign Hoal Hsna Hna).
   - difn H Emove; [|discriminate]. injection H as <- <-.
     unfold na_inv. rewrite vmm_mremap_next.
     unfold mremap_maps_next. cbn [vm_maps vm_noaccess vm_brk].
-    exact (na_inv_mremap _ _ _ _ _ _ _ Hwf Hhas Ealign Hoal Hsna Hna).
+    exact (na_inv_mremap _ _ _ _ _ _ _ Hfit Ealign Hoal Hsna Hna).
 Qed.
 
 (* -------------------------------------------------------------------------
@@ -1014,6 +921,7 @@ Proof.
     | erewrite check_pwrite64_frame by eassumption; exact Hna
     | erewrite check_readv_frame by eassumption; exact Hna
     | erewrite check_writev_frame by eassumption; exact Hna
+    | erewrite check_pwritev2_frame by eassumption; exact Hna
     | erewrite check_openat_frame by eassumption; exact Hna
     | erewrite check_close_frame by eassumption; exact Hna
     | erewrite check_lseek_frame by eassumption; exact Hna
@@ -1035,6 +943,7 @@ Proof.
     | erewrite check_getrandom_frame by eassumption; exact Hna
     | erewrite check_gettimeofday_frame by eassumption; exact Hna
     | erewrite check_clock_gettime_frame by eassumption; exact Hna
+    | erewrite check_clock_getres_frame by eassumption; exact Hna
     | erewrite check_nanosleep_frame by eassumption; exact Hna
     | erewrite check_dup_frame by eassumption; exact Hna
     | erewrite check_dup3_frame by eassumption; exact Hna
@@ -1064,6 +973,7 @@ Proof.
     | erewrite check_tgkill_frame by eassumption; exact Hna
     | erewrite check_rt_sigprocmask_frame by eassumption; exact Hna
     | erewrite check_futex_frame by eassumption; exact Hna
+    | erewrite check_set_robust_list_frame by eassumption; exact Hna
     | erewrite check_clone_frame by eassumption; exact Hna
     | erewrite check_clone3_frame by eassumption; exact Hna
     | erewrite check_getsockname_frame by eassumption; exact Hna

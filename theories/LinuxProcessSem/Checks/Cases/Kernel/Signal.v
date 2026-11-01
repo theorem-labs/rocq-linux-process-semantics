@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Cases.Kernel.Signal — worked examples over rt_sigaction (134) and rt_sigprocmask (135)
+(** * LinuxProcessSem.Checks.Cases.Kernel.Signal — worked examples over rt_sigaction (134), rt_sigprocmask (135) and sigaltstack (132)
 
     Mirrors [Sys/Kernel/Signal.v], which answers to Linux
     [kernel/signal.c]: this file holds the worked examples for the
@@ -65,14 +65,15 @@ Proof. vm_compute. reflexivity. Qed.
     [Run.SError] on every execution, and [Equivalence.equiv]'s
     [bh_all_errors] escape would admit an ARBITRARY target.
 
-    The four examples below are the shape of that claim: the SAME call,
-    at the SAME fully readable 24-byte [struct sigaction], differing only
-    in the signal number.  SIGINT is accepted and answers 0 recording
-    nothing; SIGSEGV, SIGPIPE and SIGCHLD fail closed — the first because
-    every [MachineFault] site raises it, the second because a modeled
-    [ReadWrite.write_spec] on a channel whose reader has gone raises it
-    on a real kernel, and the third because a child's exit raises it and
-    the model has a parent side that admits a child can exist.
+    The examples below are the shape of that claim: the SAME call, at
+    the SAME fully readable 24-byte [struct sigaction], differing only
+    in the signal number.  SIGINT is accepted and answers 0, storing no
+    disposition; SIGSEGV and SIGCHLD fail closed -- the first because
+    every [MachineFault] site raises it, the second because a child's
+    exit raises it and the model has a parent side that admits a child
+    can exist.  SIGPIPE is the exception, answered WITH STATE: its action
+    is the one the model stores ([Signal.rt_sigaction_sigpipe]), and a
+    SIG_DFL or SIG_IGN install is answered and recorded.
     What these add is the decline against the
     acceptance in the SAME file, so that a widened
     [Signal.sigaction_accepted] cannot pass the Rocq build. *)
@@ -86,12 +87,27 @@ Example rt_sigaction_sigsegv_unmodeled :
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-Example rt_sigaction_sigpipe_unmodeled :
+(** SIGPIPE's SIG_DFL install IS ANSWERED: 0, the 24 bytes of [act] in
+    the ledger, and the action stored ([State.with_sigpipe_install] of
+    SIG_DFL, flags 0, mask 0).  This is the pass-after half of a pair.
+    The fail-before half was [rt_sigaction_sigpipe_unmodeled], the same
+    call on the same model judged [CheckUnmodeled], which held while the
+    model stored no SIGPIPE action and declined every SIGPIPE install;
+    it is false by design now, and this statement replaces it.  As for
+    [rt_sigaction_sigint_accepted] below, the same answer with an empty
+    ledger is rejected rather than declined. *)
+Example rt_sigaction_sigpipe_dfl_answered :
+  check_syscall (mkInput 134 [13; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
+    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+  = CheckOk (with_sigpipe_install (mkSigpipeAction true 0 0)
+               (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))) [] /\
   check_syscall (mkInput 134 [13; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
     (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckUnmodeled.
-Proof. vm_compute. reflexivity. Qed.
+  = CheckReject.
+Proof. split; vm_compute; reflexivity. Qed.
 
 (** SIGCHLD (17) declines because the model has a modeled
     [clone]/[clone3] parent side and a modeled [wait4], so a child can
@@ -107,40 +123,152 @@ Example rt_sigaction_sigchld_unmodeled :
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** SIGABRT (6), AND THIS ONE IS LOAD-BEARING FOR ANOTHER ARM.
+(** SIGABRT (6), AND THESE THREE ARE LOAD-BEARING FOR ANOTHER ARM.
     [Kernel.Signal.tkill_self] delivers SIGABRT with the DEFAULT
     disposition and never asks whether a handler is installed, and what
-    makes that sound is this decline rather than a test: an install for
-    signal 6 with a non-NULL [act] is [unmodeled], so no run this model
-    covers can reach the abort path with a handler in place.  The
-    argument is at [Kernel.Signal.tkill_self]; this is the check that
-    fails if [Signal.sigaction_accepted] ever grows a 6.
+    makes that sound is the two declines below rather than a test: an
+    install for signal 6 whose handler word is an address or SIG_IGN is
+    [unmodeled], so no run this model covers can reach the abort path
+    with a handler, or with SIGABRT ignored.  The argument is at
+    [Kernel.Signal.tkill_self]; these are the checks that fail if
+    [Signal.sigaction_accepted] ever grows a 6, or if
+    [Signal.sigabrt_dfl_install] ever admits a handler word other than
+    SIG_DFL.
 
-    IT IS THE SAME STRUCT AND THE SAME SHAPE as
-    [rt_sigaction_sigint_accepted] below, differing in the signal number
-    alone, which is what makes the pair say that the NUMBER is the
-    reason.  Two OTHER gates sit in front of that one — a non-NULL
-    [oact], and a flag word outside [Signal.sa_flags_accepted] — and both
-    would decline a handler install for reasons that have nothing to do
-    with SIGABRT: musl's [signal(3)] trips both, since it returns the old
-    handler and passes SA_RESTART.  That is why this example passes a
-    NULL [oact] and a zero flag word: written the other way it would
-    keep passing if this decline were removed. *)
-Example rt_sigaction_sigabrt_unmodeled :
-  check_syscall (mkInput 134 [6; 4096; 0; 8; 0; 0] mem_sigaction_zero
+    The one install for signal 6 that IS answered is SIG_DFL, musl's own
+    on abort's second path: it sets the disposition [tkill_self] already
+    assumes ([Signal.sigabrt_dfl_install] says why that is sound).  The
+    SIG_DFL case for SIGSEGV and SIGCHLD above is still declined:
+    [mem_sigaction_zero] is a SIG_DFL install, so those two say that the
+    acceptance is for SIGABRT and not for SIG_DFL as such.  (SIGPIPE's
+    SIG_DFL is answered by its own arm, which stores the action.)
+
+    THE THREE DIFFER FROM EACH OTHER IN THE HANDLER WORD ONLY, which is
+    what makes them say that the HANDLER is the reason.  And
+    [rt_sigaction_sigabrt_dfl_accepted] differs from
+    [rt_sigaction_sigint_accepted] below in the signal number only.  Two
+    OTHER gates sit in front of the handler test — a non-NULL [oact],
+    and a flag word outside
+    [Signal.sa_flags_accepted] — and both would decline a handler install
+    for reasons that have nothing to do with SIGABRT: musl's [signal(3)]
+    trips both, since it returns the old handler and passes SA_RESTART.
+    That is why these examples pass a NULL [oact] and a zero flag word:
+    written the other way they would keep passing if the declines were
+    removed. *)
+Definition mem_sigaction_handler : word -> option byte :=
+  fun a => if bv_leu 4096 a && bv_ltu a (4096 + 24)
+           then Some (if bv_eqb a 4097 then 16 else 0)
+           else None.
+
+Definition mem_sigaction_ign : word -> option byte :=
+  fun a => if bv_leu 4096 a && bv_ltu a (4096 + 24)
+           then Some (if bv_eqb a 4096 then 1 else 0)
+           else None.
+
+(** A handler at 0x1000: declined. *)
+Example rt_sigaction_sigabrt_handler_unmodeled :
+  check_syscall (mkInput 134 [6; 4096; 0; 8; 0; 0] mem_sigaction_handler
                    (fun _ => None))
     (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** ...and the acceptance the four above are a decline AGAINST, so that
-    a spec that declined everything would not pass this file either. *)
+(** SIG_IGN (1): declined. *)
+Example rt_sigaction_sigabrt_ign_unmodeled :
+  check_syscall (mkInput 134 [6; 4096; 0; 8; 0; 0] mem_sigaction_ign
+                   (fun _ => None))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+  = CheckUnmodeled.
+Proof. vm_compute. reflexivity. Qed.
+
+(** SIG_DFL (0): answered 0, and the model is left as it was.  Like the
+    SIGINT acceptance below, it carries the 24 bytes of [act] the syscall
+    copied before it answered. *)
+Example rt_sigaction_sigabrt_dfl_accepted :
+  check_syscall (mkInput 134 [6; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
+    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+Proof. vm_compute. reflexivity. Qed.
+
+(** ...and the acceptance the declines above are AGAINST, so that a spec
+    that declined everything would not pass this file either.  It
+    carries the 24 bytes of [act] the syscall copied before it answered,
+    and the same answer with an empty ledger is rejected: an effect that
+    claims the call read nothing would leave a lazy page uncharged that
+    Linux faults in. *)
 Example rt_sigaction_sigint_accepted :
   check_syscall (mkInput 134 [2; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
+    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [] /\
+  check_syscall (mkInput 134 [2; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                   (fun _ => None))
     (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
-Proof. vm_compute. reflexivity. Qed.
+  = CheckReject.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** SIGPIPE'S ACTION IS STORED AND READ BACK.  [rt_sigaction_sigpipe]
+    is the one rt_sigaction arm with state, so its cases are about the
+    VALUE kept, in three parts the [rt_sigaction_sigpipe_dfl_answered]
+    case above cannot show, since its install of SIG_DFL over a launch
+    at SIG_DFL leaves the record as it was.
+
+    [wmem_oact] is 24 writable bytes at 8192 and nothing else writable;
+    [sigpipe_model mask] is the launch at SIG_DFL with the given blocked
+    mask.  4096 is [sigmask(SIGPIPE)], 1 << 12. *)
+Definition wmem_oact : word -> option byte :=
+  fun a => if bv_leu 8192 a && bv_ltu a (8192 + 24) then Some 0 else None.
+
+Definition sigpipe_model (mask : word) : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (mkProcInput [] [] [] IEof demo_uid demo_gid demo_groups net_silent
+       default_nofile mask demo_hwcap false Sv48).
+
+(** FIRST: SIG_IGN installed with [oact] set.  The 24 bytes written to
+    [oact] are the action BEFORE the install (SIG_DFL, flags 0, mask 0:
+    all zero), and the model keeps SIG_IGN.  SECOND: a read with [act]
+    NULL then writes the action the model KEPT, whose handler word is
+    SIG_IGN (1), and installs nothing.  A spec that wrote the new action
+    to [oact], or that stored nothing, fails one of the two. *)
+Example rt_sigaction_sigpipe_ign_stored_and_read_back :
+  check_syscall (mkInput 134 [13; 4096; 8192; 8; 0; 0] mem_sigaction_ign wmem_oact)
+    (with_copyins [(4096, 24%nat)]
+       (mkEffect 0 [(8192, sigpipe_action_bytes (mkSigpipeAction true 0 0))] []))
+    (sigpipe_model 0)
+  = CheckOk (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 0)) [] /\
+  check_syscall (mkInput 134 [13; 0; 8192; 8; 0; 0] (fun _ => None) wmem_oact)
+    (mkEffect 0 [(8192, sigpipe_action_bytes (mkSigpipeAction false 0 0))] [])
+    (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 0))
+  = CheckOk (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 0)) [] /\
+  check_syscall (mkInput 134 [13; 0; 8192; 8; 0; 0] (fun _ => None) wmem_oact)
+    (mkEffect 0 [(8192, sigpipe_action_bytes (mkSigpipeAction true 0 0))] [])
+    (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 0))
+  = CheckReject.
+Proof. split; [|split]; vm_compute; reflexivity. Qed.
+
+(** THIRD: SIG_DFL over SIG_IGN DECLINES WHILE SIGPIPE IS BLOCKED -- the
+    spec's hidden-pending rule ([Signal.sigpipe_hidden_pending_possible]):
+    Linux may hold a SIGPIPE pending there that the model does not, and
+    an install of SIG_DFL keeps it, so the unblock would kill on Linux
+    and not in the model.  The same install with SIGPIPE open in the
+    mask is answered, so the decline is the mask's and not the
+    handler's. *)
+Example rt_sigaction_sigpipe_dfl_over_hidden_pending :
+  check_syscall (mkInput 134 [13; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
+    (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 4096))
+  = CheckUnmodeled /\
+  check_syscall (mkInput 134 [13; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
+    (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 0))
+  = CheckOk (with_sigpipe_install (mkSigpipeAction true 0 0)
+               (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 0))) [].
+Proof. split; vm_compute; reflexivity. Qed.
 
 (** Eight readable bytes at 4096 holding [sigmask(SIGSEGV)] = 1 << 10,
     little-endian, with NOTHING readable on either side.  The extent is
@@ -533,6 +661,36 @@ Example rt_sigprocmask_efault_records_no_copyin :
      = CheckReject.
 Proof. split; vm_compute; reflexivity. Qed.
 
+(** THE LEDGER SEPARATES THE TWO -EINVALs for an out-of-range signal.
+    With [act] NULL nothing is copied and arm 3 answers -EINVAL; with
+    [act] readable, [SYSCALL_DEFINE4(rt_sigaction)] copies the 24 bytes
+    first and [do_sigaction] answers the same -EINVAL after it.  Same
+    return, same model, different ledgers, and neither ledger is
+    admissible in the other's place.  An unreadable [act] is -EFAULT and
+    records nothing, because the copy failed. *)
+Example rt_sigaction_copyins_separate_the_two_einvals :
+  check_syscall (mkInput 134 [65; 0; 0; 8; 0; 0] mem_sigaction_zero (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) sig_model
+  = CheckOk sig_model []
+  /\ check_syscall (mkInput 134 [65; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                     (fun _ => None))
+       (with_copyins [(4096, 24%nat)] (mkEffect (errno_ret EINVAL) [] [])) sig_model
+     = CheckOk sig_model []
+  /\ check_syscall (mkInput 134 [65; 0; 0; 8; 0; 0] mem_sigaction_zero (fun _ => None))
+       (with_copyins [(4096, 24%nat)] (mkEffect (errno_ret EINVAL) [] [])) sig_model
+     = CheckReject
+  /\ check_syscall (mkInput 134 [65; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                     (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) sig_model
+     = CheckReject
+  /\ check_syscall (mkInput 134 [2; 8192; 0; 8; 0; 0] mem_sigaction_zero (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) sig_model
+     = CheckOk sig_model []
+  /\ check_syscall (mkInput 134 [2; 8192; 0; 8; 0; 0] mem_sigaction_zero (fun _ => None))
+       (with_copyins [(8192, 24%nat)] (mkEffect (errno_ret EFAULT) [] [])) sig_model
+     = CheckReject.
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
 (** WRITING NOTHING IS AN OBLIGATION, NOT AN ABSENCE.  This arm changes
     model state — it installs a mask — and touches no user memory, and an
     arm that touches no user memory could be satisfied by any effect at
@@ -591,7 +749,7 @@ Proof. vm_compute. reflexivity. Qed.
       - 134's window is [oact], the only way to read an [sa_mask] back,
         and [Signal.rt_sigaction_spec] declines a non-NULL [oact].  The
         [sa_mask] an accepted install carries is not stored either —
-        that spec answers [ret_only 0] and records nothing — so there is
+        that spec answers [ret_only 0] and stores no disposition — so there is
         no second window behind the first.
       - 72's window is the real thing: [set_user_sigmask] saves
         [current->blocked] into [current->saved_sigmask] and installs
@@ -886,6 +1044,11 @@ Definition mem_sigaltstack_ok : word -> option byte :=
                       else 0)
            else None.
 
+(** The copy-from-user ledger every sigaltstack arm PAST the copy must
+    carry: the 24 bytes of [stack_t] at [uss] = 4096, which
+    [SYSCALL_DEFINE2(sigaltstack)] reads before [do_sigaltstack] runs. *)
+Definition sas_copyin : list (word * nat) := [(4096, 24%nat)].
+
 (** WHAT STANDS IN FOR 132 IN [sig_mask_windows].  132 has an arm, so
     the claim that [rt_sigprocmask]'s [oset] answer cannot go stale has
     to be made, for this number, about what the arm DOES: the
@@ -907,7 +1070,7 @@ Definition mem_sigaltstack_ok : word -> option byte :=
 Example sigaltstack_leaves_the_mask_alone :
   check_syscall (mkInput 132 [4096; 0; 0; 0; 0; 0] mem_sigaltstack_ok
                    (fun _ => None))
-    (mkEffect 0 [] []) sig_model_blocked
+    (with_copyins sas_copyin (mkEffect 0 [] [])) sig_model_blocked
   = CheckOk (with_sigaltstack_installed sig_model_blocked) []
   /\ m_sigmask (with_sigaltstack_installed sig_model_blocked) = sig_entry_mask.
 Proof. split; vm_compute; reflexivity. Qed.
@@ -952,7 +1115,7 @@ Definition mem_sigaltstack_small : word -> option byte :=
 Example sigaltstack_enomem_keeps_the_record :
   check_syscall (mkInput 132 [4096; 0; 0; 0; 0; 0] mem_sigaltstack_small
                    (fun _ => None))
-    (mkEffect (errno_ret ENOMEM) [] []) sig_model_blocked
+    (with_copyins sas_copyin (mkEffect (errno_ret ENOMEM) [] [])) sig_model_blocked
   = CheckOk sig_model_blocked [].
 Proof. vm_compute. reflexivity. Qed.
 
@@ -967,7 +1130,7 @@ Proof. vm_compute. reflexivity. Qed.
 Example sigaltstack_success_admits_no_write :
   check_syscall (mkInput 132 [4096; 0; 0; 0; 0; 0] mem_sigaltstack_ok
                    (fun _ => None))
-    (mkEffect 0 [(4096, [0])] []) sig_model_blocked
+    (with_copyins sas_copyin (mkEffect 0 [(4096, [0])] [])) sig_model_blocked
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -1016,11 +1179,11 @@ Definition mem_sigaltstack_disable : word -> option byte :=
 Example sigaltstack_disable_leaves_the_record_answerable :
   check_syscall (mkInput 132 [4096; 0; 0; 0; 0; 0] mem_sigaltstack_disable
                    (fun _ => None))
-    (mkEffect 0 [] []) sig_model_blocked
+    (with_copyins sas_copyin (mkEffect 0 [] [])) sig_model_blocked
   = CheckOk sig_model_blocked []
   /\ check_syscall (mkInput 132 [4096; 0; 0; 0; 0; 0] mem_sigaltstack_small
                      (fun _ => None))
-       (mkEffect (errno_ret ENOMEM) [] []) sig_model_blocked
+       (with_copyins sas_copyin (mkEffect (errno_ret ENOMEM) [] [])) sig_model_blocked
      = CheckOk sig_model_blocked []
   /\ check_syscall (mkInput 132 [4096; 0; 0; 0; 0; 0] mem_sigaltstack_small
                      (fun _ => None))
@@ -1041,11 +1204,11 @@ Proof. split; [|split]; vm_compute; reflexivity. Qed.
 Example sigaltstack_install_still_sets_the_bit :
   check_syscall (mkInput 132 [4096; 0; 0; 0; 0; 0] mem_sigaltstack_ok
                    (fun _ => None))
-    (mkEffect 0 [] []) sig_model_blocked
+    (with_copyins sas_copyin (mkEffect 0 [] [])) sig_model_blocked
   = CheckOk (with_sigaltstack_installed sig_model_blocked) []
   /\ check_syscall (mkInput 132 [4096; 0; 0; 0; 0; 0] mem_sigaltstack_disable
                      (fun _ => None))
-       (mkEffect 0 [] []) sig_model_blocked
+       (with_copyins sas_copyin (mkEffect 0 [] [])) sig_model_blocked
      <> CheckOk (with_sigaltstack_installed sig_model_blocked) [].
 Proof. split; vm_compute; [reflexivity|discriminate]. Qed.
 
@@ -1061,13 +1224,43 @@ Proof. split; vm_compute; [reflexivity|discriminate]. Qed.
 Example sigaltstack_after_a_disable_rejects_a_false_success :
   check_syscall (mkInput 132 [4096; 0; 0; 0; 0; 0] mem_sigaltstack_small
                    (fun _ => None))
-    (mkEffect 0 [] []) sig_model_blocked
+    (with_copyins sas_copyin (mkEffect 0 [] [])) sig_model_blocked
   = CheckReject
   /\ check_syscall (mkInput 132 [4096; 0; 0; 0; 0; 0] mem_sigaltstack_disable
                      (fun _ => None))
-       (mkEffect 0 [(4096, [0])] []) sig_model_blocked
+       (with_copyins sas_copyin (mkEffect 0 [(4096, [0])] [])) sig_model_blocked
      = CheckReject.
 Proof. split; vm_compute; reflexivity. Qed.
+
+(** THE LEDGER ON THE ERRNO ARMS.  A mode outside {0, SS_ONSTACK,
+    SS_DISABLE} is -EINVAL from [do_sigaltstack], after the 24 bytes at
+    [uss] were copied, so it carries them, and the same -EINVAL claiming
+    no read is rejected.  An unreadable [uss] is -EFAULT from the copy
+    itself and records nothing; claiming the read is rejected. *)
+Definition mem_sigaltstack_badmode : word -> option byte :=
+  fun a => if bv_leu 4096 a && bv_ltu a (4096 + 24)
+           then Some (if bv_eqb a 4104 then 3 else 0)
+           else None.
+
+Example sigaltstack_errnos_and_their_ledgers :
+  check_syscall (mkInput 132 [4096; 0; 0; 0; 0; 0] mem_sigaltstack_badmode
+                   (fun _ => None))
+    (with_copyins sas_copyin (mkEffect (errno_ret EINVAL) [] [])) sig_model_blocked
+  = CheckOk sig_model_blocked []
+  /\ check_syscall (mkInput 132 [4096; 0; 0; 0; 0; 0] mem_sigaltstack_badmode
+                     (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) sig_model_blocked
+     = CheckReject
+  /\ check_syscall (mkInput 132 [8192; 0; 0; 0; 0; 0] mem_sigaltstack_badmode
+                     (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) sig_model_blocked
+     = CheckOk sig_model_blocked []
+  /\ check_syscall (mkInput 132 [8192; 0; 0; 0; 0; 0] mem_sigaltstack_badmode
+                     (fun _ => None))
+       (with_copyins [(8192, 24%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       sig_model_blocked
+     = CheckReject.
+Proof. repeat split; vm_compute; reflexivity. Qed.
 
 (* =========================================================================
    tkill (130), tgkill (131) and the abort path
@@ -1374,3 +1567,228 @@ Example decl_off_frame_hypotheses_inhabited :
        (with_copyins sig_copyin (mkEffect 0 [] [])) abort_model_undeclared
      = CheckOk (with_sigmask (Z_to_bv 64 0) abort_model_undeclared) [].
 Proof. split; [reflexivity | split; [reflexivity | check_eq]]. Qed.
+
+(* =========================================================================
+   THE THREE USER READS THAT WERE ARGUED OUT OF A RANGE TEST
+
+   [Kernel.Signal.sigset_at] (rt_sigprocmask's [nset]),
+   [Kernel.Signal.sigaltstack_at] (sigaltstack's [uss]) and
+   [Kernel.Signal.sigaction_flags] with [sigaction_handler]
+   (rt_sigaction's [act]) read user memory with the bare walk, on the
+   argument that a wholly readable range must sit below
+   [State.TASK_SIZE].  That argument was false -- the IMAGE_WF
+   hypothesis bounds an image below 2^64 and not below 2^47, and
+   [check_syscall] takes an arbitrary input -- and the walk wraps at
+   2^64 besides, so a pointer in the last bytes of the address space
+   read the bytes below the wrap and then the bytes from 0 on and the
+   call was answered on them.  Each now goes through
+   [State.copy_bytes_map], [State.access_okb] and then the walk.
+
+   EACH GROUP IS A TRIPLE, in the shape [Checks.Cases.Net.Socket] and
+   [Checks.Cases.Fs.Select] take: the wrapping call refused, a
+   neighbouring ordinary call at the top of what [State.access_okb]
+   accepts still answered, and the control that the bare walk really
+   would have passed -- without it the refusal would also hold if the
+   memory quietly stopped mapping the range.
+
+   THE MEMORIES MAP EXACTLY THEIR OWN RANGE and nothing else, for that
+   reason.
+   ========================================================================= *)
+
+(* ---- rt_sigprocmask (135): the new set ---------------------------------- *)
+
+(** Four bytes below the top and four from 0: the 8-byte [sigset_t]
+    covers both halves.  The byte at [nset + 1] is 4, so the set is
+    [sigmask(SIGSEGV)] = 1 << 10, the set
+    [rt_sigprocmask_block_sigsegv_accepted] installs.  Before the guard
+    this call installed it and returned 0.
+    [SYSCALL_DEFINE4(rt_sigprocmask)] (kernel/signal.c) copies with
+    [copy_from_user] before [sigprocmask] runs, and its [access_ok]
+    refuses the range, so the answer is -EFAULT with nothing installed
+    and nothing recorded. *)
+Definition sig_wrap_nset : word := Z_to_bv 64 (2 ^ 64 - 4).
+
+Definition sig_wrap_nset_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 4)%Z || (2 ^ 64 - 4 <=? bv_unsigned a)%Z)%bool
+           then Some (if bv_eqb a (Z_to_bv 64 (2 ^ 64 - 3)) then Z_to_bv 8 4
+                      else Z_to_bv 8 0)
+           else None.
+
+Example sigprocmask_wrap_would_pass_the_bare_walk :
+  read_bytes_map sig_wrap_nset_mem sig_wrap_nset (Z_to_bv 64 8) <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example sigprocmask_wrap_set_is_not_copied :
+  sigset_at sig_wrap_nset_mem sig_wrap_nset = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example sigprocmask_wrapping_set_is_efault :
+  check_syscall (mkInput 135 [0; sig_wrap_nset; 0; 8; 0; 0] sig_wrap_nset_mem
+                   (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) sig_model
+  = CheckOk sig_model []
+  /\ check_syscall (mkInput 135 [0; sig_wrap_nset; 0; 8; 0; 0] sig_wrap_nset_mem
+                     (fun _ => None))
+       (with_copyins [(sig_wrap_nset, 8%nat)] (mkEffect 0 [] [])) sig_model
+     = CheckReject.
+Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
+
+(** THE NEIGHBOUR: the last eight bytes [State.access_okb] accepts,
+    readable end to end, holding the same set.  The set is still
+    copied and installed -- [with_sigmask 1024], with the eight bytes on
+    the ledger -- and -EFAULT is refused there. *)
+Definition sig_top_nset : word := Z_to_bv 64 (TASK_SIZE - 8).
+
+Definition sig_top_nset_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 8 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (if bv_eqb a (Z_to_bv 64 (TASK_SIZE - 7)) then Z_to_bv 8 4
+                      else Z_to_bv 8 0)
+           else None.
+
+Example sigprocmask_set_at_the_top_still_installs :
+  check_syscall (mkInput 135 [0; sig_top_nset; 0; 8; 0; 0] sig_top_nset_mem
+                   (fun _ => None))
+    (with_copyins [(sig_top_nset, 8%nat)] (mkEffect 0 [] [])) sig_model
+  = CheckOk (with_sigmask (Z_to_bv 64 1024) sig_model) []
+  /\ check_syscall (mkInput 135 [0; sig_top_nset; 0; 8; 0; 0] sig_top_nset_mem
+                     (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) sig_model
+     = CheckReject.
+Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
+
+(* ---- sigaltstack (132): the [stack_t] ----------------------------------- *)
+
+(** Eight bytes below the top and sixteen from 0: [ss_sp] sits at the
+    top, [ss_flags] and [ss_size] wrap to address 0.  The bytes are
+    [mem_sigaltstack_ok]'s -- [ss_sp] = 0x2000, [ss_flags] = 0,
+    [ss_size] = 0x4000 -- so before the guard this call installed a
+    stack, set the bit and returned 0.  [SYSCALL_DEFINE2(sigaltstack)]
+    (kernel/signal.c) copies with [copy_from_user] before
+    [do_sigaltstack] runs, and its [access_ok] refuses the range. *)
+Definition sig_wrap_uss : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition sig_wrap_uss_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 16)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (if bv_eqb a (Z_to_bv 64 (2 ^ 64 - 7)) then Z_to_bv 8 32
+                      else if bv_eqb a (Z_to_bv 64 9) then Z_to_bv 8 64
+                      else Z_to_bv 8 0)
+           else None.
+
+Example sigaltstack_wrap_would_pass_the_bare_walk :
+  read_bytes_map sig_wrap_uss_mem sig_wrap_uss (Z_to_bv 64 24) <> None.
+Proof. vm_compute. discriminate. Qed.
+
+Example sigaltstack_wrap_struct_is_not_copied :
+  sigaltstack_at sig_wrap_uss_mem sig_wrap_uss = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example sigaltstack_wrapping_struct_is_efault :
+  check_syscall (mkInput 132 [sig_wrap_uss; 0; 0; 0; 0; 0] sig_wrap_uss_mem
+                   (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) sig_model_blocked
+  = CheckOk sig_model_blocked []
+  /\ check_syscall (mkInput 132 [sig_wrap_uss; 0; 0; 0; 0; 0] sig_wrap_uss_mem
+                     (fun _ => None))
+       (with_copyins [(sig_wrap_uss, 24%nat)] (mkEffect 0 [] []))
+       sig_model_blocked
+     = CheckReject.
+Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
+
+(** THE NEIGHBOUR: the last twenty-four bytes [State.access_okb]
+    accepts, readable end to end, holding the same [stack_t].  The
+    install still succeeds and sets the bit, with the twenty-four bytes
+    on the ledger, and -EFAULT is refused there. *)
+Definition sig_top_uss : word := Z_to_bv 64 (TASK_SIZE - 24).
+
+Definition sig_top_uss_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 24 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (if bv_eqb a (Z_to_bv 64 (TASK_SIZE - 23)) then Z_to_bv 8 32
+                      else if bv_eqb a (Z_to_bv 64 (TASK_SIZE - 7)) then Z_to_bv 8 64
+                      else Z_to_bv 8 0)
+           else None.
+
+Example sigaltstack_struct_at_the_top_still_installs :
+  check_syscall (mkInput 132 [sig_top_uss; 0; 0; 0; 0; 0] sig_top_uss_mem
+                   (fun _ => None))
+    (with_copyins [(sig_top_uss, 24%nat)] (mkEffect 0 [] [])) sig_model_blocked
+  = CheckOk (with_sigaltstack_installed sig_model_blocked) []
+  /\ check_syscall (mkInput 132 [sig_top_uss; 0; 0; 0; 0; 0] sig_top_uss_mem
+                     (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) sig_model_blocked
+     = CheckReject.
+Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
+
+(* ---- rt_sigaction (134): the [struct sigaction] ------------------------- *)
+
+(** Eight bytes below the top and sixteen from 0, all zero: [sa_handler]
+    is SIG_DFL at the top and [sa_flags] and [sa_mask] wrap to address
+    0.  Before the guard SIGINT's install was answered 0 with the 24
+    bytes on the ledger.  [SYSCALL_DEFINE4(rt_sigaction)]
+    (kernel/signal.c) copies with [copy_from_user] before
+    [do_sigaction] runs, and its [access_ok] refuses the range.  SIGABRT
+    with the same struct -- the install [sigabrt_dfl_install] answers,
+    which reads the handler word through [sigaction_handler] -- is
+    refused the same way.  The control states both the walk the guard
+    now sits in front of and the [readable_bytes] test the old
+    definition used. *)
+Definition sig_wrap_act : word := Z_to_bv 64 (2 ^ 64 - 8).
+
+Definition sig_wrap_act_mem : word -> option byte :=
+  fun a => if ((bv_unsigned a <? 16)%Z || (2 ^ 64 - 8 <=? bv_unsigned a)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example sigaction_wrap_would_pass_the_bare_walk :
+  read_bytes_map sig_wrap_act_mem sig_wrap_act (Z_to_bv 64 24) <> None
+  /\ Nat.eqb (length (readable_bytes sig_wrap_act_mem sig_wrap_act
+                        (Z_to_bv 64 24))) 24
+     = true.
+Proof. split; [vm_compute; discriminate | vm_compute; reflexivity]. Qed.
+
+Example sigaction_wrap_struct_is_not_copied :
+  sigaction_flags sig_wrap_act_mem sig_wrap_act = None
+  /\ sigaction_handler sig_wrap_act_mem sig_wrap_act = None.
+Proof. split; vm_compute; reflexivity. Qed.
+
+Example sigaction_wrapping_struct_is_efault :
+  check_syscall (mkInput 134 [2; sig_wrap_act; 0; 8; 0; 0] sig_wrap_act_mem
+                   (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) sig_model
+  = CheckOk sig_model []
+  /\ check_syscall (mkInput 134 [2; sig_wrap_act; 0; 8; 0; 0] sig_wrap_act_mem
+                     (fun _ => None))
+       (with_copyins [(sig_wrap_act, 24%nat)] (mkEffect 0 [] [])) sig_model
+     = CheckReject
+  /\ check_syscall (mkInput 134 [6; sig_wrap_act; 0; 8; 0; 0] sig_wrap_act_mem
+                     (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) sig_model
+     = CheckOk sig_model [].
+Proof. split; [check_eq | split; [vm_compute; reflexivity | check_eq]]. Qed.
+
+(** THE NEIGHBOUR: the last twenty-four bytes [State.access_okb]
+    accepts, readable end to end, all zero.  SIGINT's install is still
+    answered 0 with the twenty-four bytes on the ledger, -EFAULT is
+    refused there, and SIGABRT's SIG_DFL install -- the one that goes on
+    to [sigaction_handler] -- is still answered 0 too. *)
+Definition sig_top_act : word := Z_to_bv 64 (TASK_SIZE - 24).
+
+Definition sig_top_act_mem : word -> option byte :=
+  fun a => if ((TASK_SIZE - 24 <=? bv_unsigned a)%Z
+               && (bv_unsigned a <? TASK_SIZE)%Z)%bool
+           then Some (Z_to_bv 8 0) else None.
+
+Example sigaction_struct_at_the_top_still_answers :
+  check_syscall (mkInput 134 [2; sig_top_act; 0; 8; 0; 0] sig_top_act_mem
+                   (fun _ => None))
+    (with_copyins [(sig_top_act, 24%nat)] (mkEffect 0 [] [])) sig_model
+  = CheckOk sig_model []
+  /\ check_syscall (mkInput 134 [2; sig_top_act; 0; 8; 0; 0] sig_top_act_mem
+                     (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) sig_model
+     = CheckReject
+  /\ check_syscall (mkInput 134 [6; sig_top_act; 0; 8; 0; 0] sig_top_act_mem
+                     (fun _ => None))
+       (with_copyins [(sig_top_act, 24%nat)] (mkEffect 0 [] [])) sig_model
+     = CheckOk sig_model [].
+Proof. split; [check_eq | split; [vm_compute; reflexivity | check_eq]]. Qed.

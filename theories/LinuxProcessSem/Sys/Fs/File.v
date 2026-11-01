@@ -152,6 +152,35 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      file]s on the random device draw from one generator.  Copying the
      entry loses nothing. *)
   | FdUrandom => true
+  (* A STREAM-PAIR END DECLINES, for the pipe's reason and one of its
+     own.  [State.stream_peer] finds an end's peer by scanning the fd
+     table, and [unix_release_sock] runs at the LAST [fput] of a socket
+     file, not at each close, so a second fd naming one end would make
+     a close of either look like the peer going away.  And the end
+     carries its file's O_NONBLOCK ([State.se_nonblock]), which two
+     copies would let drift apart where Linux's two fds share one
+     [f_flags].  [State.FdStream]'s own note relies on this decline:
+     it is what keeps [socketpair] the only thing that makes an end. *)
+  | FdStream _ _ _ => false
+  (* AN EVENTFD DECLINES, for the stream-pair end's reasons: its counter
+     lives in the entry ([State.EventfdCtx]), so two copies would count
+     apart where Linux's two fds share one [eventfd_ctx], and so would
+     the O_NONBLOCK it carries for its one [struct file].
+     [State.FdEventfd]'s note relies on this decline. *)
+  | FdEventfd _ => false
+  (* A DATAGRAM SOCKET TAKES THE [FdSocket] ANSWER.  Nothing it carries
+     drifts -- only its family -- but every call that would read the
+     shared socket declines anyway, so copying it would buy nothing,
+     and a decline keeps one rule for every socket kind *)
+  | FdDgram _ => false
+  (* AN UNNAMED FILE DECLINES, for the [FdFile] reason: the entry
+     carries the descriptor's [f_pos] ([State.af_off]), which read, write
+     and lseek rewrite in place, so a copied entry would split the one
+     offset two Linux descriptors on one [struct file] share.  It carries
+     the file's contents too, which [State.anon_update] keeps in step
+     across entries; it is the offset that has no such keeper.
+     [State.FdAnon]'s note relies on this decline. *)
+  | FdAnon _ _ => false
   end.
 
 (** dup's injectable failures: fd-table exhaustion at RLIMIT_NOFILE
@@ -218,8 +247,10 @@ Definition dup3_flags_ok (flags : word) : bool :=
        validity test, which is where dup3 differs from dup2 (dup2
        returns [newfd] unchanged for an open fd, and musl's riscv64
        dup2 answers that case itself with an [fcntl(F_GETFD)] probe
-       rather than issuing dup3).  The comparison is on the truncated
-       fds, so [dup3(2^32, 0, 0)] is -EINVAL too.
+       rather than issuing dup3; it reads only the probe's sign, and
+       both answers [Fcntl.fcntl_spec] admits there are nonnegative).
+       The comparison is on the truncated fds, so [dup3(2^32, 0, 0)] is
+       -EINVAL too.
     3. [newfd >= rlimit(RLIMIT_NOFILE)] is -EBADF.
     4. [expand_files] is CALLED next, but its result is not read yet.
     5. [oldfd] not open is -EBADF — tested BEFORE step 4's result, so a
@@ -291,13 +322,14 @@ Definition dup3_flags_ok (flags : word) : bool :=
     O_CLOEXEC is accepted and IGNORED, as [Open.openat_spec] accepts and
     ignores it: close-on-exec is observable only through execve (221)
     and fcntl (25).  execve is outside [Specs.modeled_sysnos].  fcntl is
-    IN it, but the bit's only reader there is [F_GETFD], which
-    [Fcntl.fcntl_spec] declines; the one fcntl command it does answer
-    for the bit, [F_SETFD], writes it and reports nothing.  So no
-    modeled execution can tell the bit's value, and the decision to
+    IN it, and its [F_GETFD] reads the bit — but [Fcntl.fcntl_spec]
+    answers that read with BOTH values, 0 and FD_CLOEXEC, and the one
+    fcntl command that writes the bit, [F_SETFD], reports nothing.  So
+    the bit's VALUE stays unobservable — whatever it is, the model admits
+    the same two answers — and the decision to
     ignore O_CLOEXEC here stands or falls with [Fcntl.fcntl_spec]'s
-    decision to decline [F_GETFD].  The displaced entry is dropped
-    exactly as [Open.close_spec] drops one. *)
+    decision to admit both answers to [F_GETFD].  The displaced entry is
+    dropped exactly as [Open.close_spec] drops one. *)
 Definition dup3_newfd_under_limit (newfd : word) (m : Model) : bool :=
   Z.ltb (bv_unsigned newfd) (bv_unsigned (m_nofile m)).
 

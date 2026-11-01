@@ -32,7 +32,7 @@ Open Scope sys_scope.
     [rmtp].
 
     No length conjunct: the only caller applies this to exactly the
-    bytes [read_bytes_map] returned for a 16-byte read. *)
+    bytes [copy_bytes_map] returned for a 16-byte read. *)
 Definition timespec_valid_b (bs : list byte) : bool :=
   (tv_sec_of bs <? 2 ^ 63)%Z
   && (tv_frac_of bs <? 1000000000)%Z.
@@ -228,8 +228,11 @@ Definition nanosleep_clock (prev : word) (req rem : list byte) : word :=
     request is read first ([get_timespec64], -EFAULT), validated
     second ([timespec64_valid], -EINVAL), and only then slept on.
     [rmtp] is NEVER validated up front — a completed sleep with an
-    unwritable [rmtp] answers 0 without touching it — which the model
-    gives up by gating on [rmtp] before the [alt].  The cost is
+    unwritable [rmtp] answers 0 without touching it.  The model keeps
+    that for an [rmtp] that [access_ok] refuses, which is answered with
+    both outcomes at the remainder's [None] arm below.  It gives the
+    rest up by gating on [rmtp] before the [alt] where [access_ok]
+    admits the range but it is not wholly mapped.  The cost is
     coverage on a shape the model could have answered; the reason is
     the straddle below.
 
@@ -408,18 +411,34 @@ Definition nanosleep_clock (prev : word) (req rem : list byte) : word :=
     16 because that struct is two 8-byte fields — [__kernel_time64_t
     tv_sec] and [long long tv_nsec] (include/uapi/linux/time_types.h).
     So every outcome reached through a successful read has already
-    consumed those bytes — the -EINVAL, the one decline that is left
-    past it, the completed sleep and the interruption alike — and
-    [record_copyins] therefore wraps the whole [Some req] arm rather
-    than any one branch of it.  The [None] arm carries no ledger
-    because nothing was copied: a request that is not wholly readable
-    is the -EFAULT [get_timespec64] reports with the kernel buffer
-    untouched, and the model declines that shape rather than describing
-    it. *)
+    consumed those bytes — the -EINVAL, the decline that is left past
+    it, the completed sleep, the interruption and the copy-out's
+    -EFAULT alike — and [record_copyins] therefore wraps the whole
+    [Some req] arm rather than any one branch of it.
+
+    THE RANGE TEST COMES FIRST, through [State.copy_bytes_map], whose
+    note says why the bare walk could not stand alone.  Before it, a
+    [rqtp] in the last sixteen bytes of the address space read the
+    request back through the wrap and the arm SLEPT on it, where
+    [get_timespec64]'s [copy_from_user] refuses the range before a byte
+    moves.  The [None] arm carries no ledger, because no outcome on it
+    has read the request, and it splits by the rule
+    [Kernel.Sys.prlimit64_spec]'s note states:
+
+    - [access_ok] REFUSES the range: -EFAULT with nothing copied, which
+      [SYSCALL_DEFINE2(nanosleep)] (kernel/time/hrtimer.c at v6.18.46)
+      returns before it validates or sleeps.  The arm commits to it.
+    - [access_ok] ADMITS the range and it is not wholly mapped: still
+      -EFAULT with the kernel buffer untouched, but the raw copy reads
+      forward up to the fault, and the model declines it for the reason
+      [Kernel.Sys.prlimit64_spec] gives for its [new_rlim]: which bytes
+      the kernel read is not something the ledger can state. *)
 Definition nanosleep_spec (rqtp rmtp : word) : Sys SyscallEffect :=
   i <- input ;;
-  match read_bytes_map (in_mem i) rqtp (Z_to_bv 64 16) with
-  | None => unmodeled   (* request not wholly readable: fail closed *)
+  match copy_bytes_map (in_mem i) rqtp 16 with
+  | None =>
+      if negb (access_okb rqtp 16) then err_ret EFAULT
+      else unmodeled   (* admitted but not wholly readable: fail closed *)
   | Some req =>
       record_copyins [(rqtp, 16%nat)]
       (
@@ -432,15 +451,37 @@ Definition nanosleep_spec (rqtp rmtp : word) : Sys SyscallEffect :=
       if w_is0 rmtp
       then alt slept (err_ret EINTR)   (* nothing to report the remainder in *)
       else
-        match read_bytes_map (in_wmem i) rmtp (Z_to_bv 64 16) with
-        | None => unmodeled
-            (* remainder destination not wholly writable.  Linux answers
-               -EFAULT here HAVING CONSUMED THE SLEEP and, on a 16-byte
-               [rmtp] straddling into an unwritable page, having torn
-               the struct: [put_timespec64]'s [copy_to_user] reaches
-               riscv64's [__asm_copy_to_user] (arch/riscv/lib/uaccess.S),
-               which copies forward and leaves the bytes it managed
-               written.  Fail closed. *)
+        match copy_bytes_map (in_wmem i) rmtp 16 with
+        | None =>
+            (* The remainder destination, through the same
+               [State.copy_bytes_map] as the request.  Before it an
+               [rmtp] in the last sixteen bytes of the address space
+               read back as writable through the wrap, and an
+               interruption wrote its remainder there.
+               [put_timespec64] (kernel/time/time.c at v6.18.46) is one
+               [copy_to_user] of the whole struct, so the [None] splits
+               by the same rule as the request's:
+
+               - [access_ok] REFUSES the range, and nothing is ever
+                 written.  A completed sleep never reaches the copy and
+                 returns 0.  An interruption with a positive remainder
+                 gets -EFAULT from [nanosleep_copyout], which
+                 [do_nanosleep] and [hrtimer_nanosleep] return as it is
+                 rather than as a restart (kernel/time/hrtimer.c,
+                 [nanosleep_copyout] and [hrtimer_nanosleep]).  Both are
+                 admitted.  The -EFAULT holds the clock, as the NULL
+                 [rmtp] interruption does: the remainder was computed
+                 and not reported, so how much elapsed is unknowable.
+               - [access_ok] ADMITS the range and it is not wholly
+                 mapped: declined.  Linux answers -EFAULT here HAVING
+                 CONSUMED THE SLEEP and, on a 16-byte [rmtp] straddling
+                 into an unwritable page, having torn the struct:
+                 [put_timespec64]'s [copy_to_user] reaches riscv64's
+                 [__asm_copy_to_user] (arch/riscv/lib/uaccess.S), which
+                 copies forward and leaves the bytes it managed
+                 written.  Fail closed. *)
+            if negb (access_okb rmtp 16) then alt slept (err_ret EFAULT)
+            else unmodeled
         | Some _ =>
             alt slept
               (rem <- choose (fun rem : list byte =>

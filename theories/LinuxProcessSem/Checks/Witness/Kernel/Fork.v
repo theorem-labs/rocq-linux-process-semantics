@@ -94,8 +94,11 @@ Qed.
 Definition clone3_witness (i : SyscallInput) (uargs size : word) (m : Model)
     : outcome SyscallEffect :=
   if negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE)) then Unmodeled
-  else match read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE) with
-       | None => Unmodeled                     (* unreadable clone_args *)
+  else match copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE with
+       | None =>
+           if negb (access_okb uargs CLONE_ARGS_SIZE)
+           then ret_outcome (errno_ret EFAULT) m   (* [access_ok] refuses: nothing read *)
+           else Unmodeled                         (* admitted, not wholly readable *)
        | Some bs =>
            if clone3_fork_args_b bs then clone3_resolve_witness uargs m
            else Unmodeled
@@ -108,8 +111,10 @@ Proof.
   destruct (negb (bv_eqb size (Z_to_bv 64 CLONE_ARGS_SIZE))); cbv iota;
     [apply unmodeled_intro|].
   eapply bind_step; [apply input_ok|]. cbv beta.
-  destruct (read_bytes_map (in_mem i) uargs (Z_to_bv 64 CLONE_ARGS_SIZE))
-    as [bs|]; [|apply unmodeled_intro].
+  destruct (copy_bytes_map (in_mem i) uargs CLONE_ARGS_SIZE) as [bs|].
+  2: { cbv iota. destruct (negb (access_okb uargs CLONE_ARGS_SIZE)); cbv iota;
+         [unfold err_ret, ret_only, ret_outcome; apply pure_ok
+         |apply unmodeled_intro]. }
   destruct (clone3_fork_args_b bs);
     [apply clone3_resolve_witness_ok | apply unmodeled_intro].
 Qed.
