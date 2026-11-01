@@ -2439,3 +2439,23 @@ Example openat_proc_admits_no_eintr :
        proc_open_model
      = CheckOk proc_open_model [].
 Proof. repeat split; check_eq. Qed.
+
+(** A ".." RELATIVE TO THE O_PATH DESCRIPTOR is declined: "../etc" from
+    fd 3 names "/proc/../etc", which climbs out of procfs, so
+    [Open.proc_path_b] refuses the joined name and no other arm answers
+    a descriptor that is not AT_FDCWD.  THE CONTROL is
+    [openat_relative_to_proc_fd]'s "123/ns", answered. *)
+Definition s_dotdot_etc : list byte := [46; 46; 47; 101; 116; 99].  (* "../etc" *)
+
+Example openat_relative_dotdot_from_proc_fd_declines :
+  check_syscall (proc_open_in 3 s_dotdot_etc 0x208000)
+    (with_copyins [(8192, 7%nat)] (mkEffect 4 [] [])) proc_fd_model
+  = CheckUnmodeled
+  /\ check_syscall (proc_open_in 3 s_dotdot_etc 0x208000)
+       (with_copyins [(8192, 7%nat)] (mkEffect (errno_ret ENOENT) [] [])) proc_fd_model
+     = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall (proc_open_in 3 s_pid_ns 0x208000)
+       (with_copyins [(8192, 7%nat)] (mkEffect 4 [] [])) proc_fd_model
+     = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns)) [].
+Proof. repeat split; check_eq. Qed.

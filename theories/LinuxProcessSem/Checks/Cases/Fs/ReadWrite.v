@@ -3385,3 +3385,21 @@ Example read_proc_sys_admits_no_eintr :
        sysctl_read_model
      = CheckOk sysctl_read_model [].
 Proof. split; check_eq. Qed.
+
+(** A DESTINATION ONLY PARTLY WRITABLE is declined: 8192 bytes at
+    0x10000, of which only the first 4079 are writable, so whether the
+    handler's output reaches the unwritable part is the environment's.
+    THE CONTROL is the wholly writable range of the same call shape,
+    answered (see [read_proc_sys_file]). *)
+Example read_proc_sys_partly_writable_declines :
+  check_syscall (sysctl_read_in 3 8192) (mkEffect (errno_ret EFAULT) [] [])
+    sysctl_read_model
+  = CheckUnmodeled
+  /\ check_syscall (sysctl_read_in 3 8192)
+       (mkEffect 6 [(0x10000, [54; 53; 53; 51; 52; 10])] []) sysctl_read_model
+     = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall (sysctl_read_in 3 4079) (mkEffect (errno_ret EFAULT) [] [])
+       sysctl_read_model
+     = CheckOk sysctl_read_model [].
+Proof. repeat split; check_eq. Qed.

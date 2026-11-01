@@ -363,3 +363,45 @@ Example ns_file_blocks_the_sole_opener_flock :
   /\ check_syscall (fd_call 32 3 1 0) (mkEffect 0 [] []) dup_model
      = CheckOk dup_model [].
 Proof. split; check_eq. Qed.
+
+(** THE REST OF THE KIND-BLIND CALLS on an [ONsFile].  [close_range]
+    over fd 3 removes it and answers 0 ([__range_close] discards the
+    per-file close result), and [dup3] onto fd 3 replaces it.  THE
+    CONTROLS, answered alike before this kind: the same two calls over
+    the directory at fd 5. *)
+Example ns_file_close_range_and_dup3_onto_it :
+  check_syscall (close_range_in 3 3 0) (mkEffect 0 [] []) ns_model
+  = CheckOk (with_fds (fd_remove (m_fds ns_model) 3) ns_model) []
+  /\ check_syscall (fd_call 24 0 3 0) (mkEffect 3 [] []) ns_model
+     = CheckOk (with_fds (fd_insert (m_fds ns_model) 3 (FdChannel 0)) ns_model) []
+  (* the controls *)
+  /\ check_syscall (close_range_in 5 5 0) (mkEffect 0 [] []) ns_model
+     = CheckOk (with_fds (fd_remove (m_fds ns_model) 5) ns_model) []
+  /\ check_syscall (fd_call 24 0 5 0) (mkEffect 5 [] []) ns_model
+     = CheckOk (with_fds (fd_insert (m_fds ns_model) 5 (FdChannel 0)) ns_model) [].
+Proof. repeat split; check_eq. Qed.
+
+(** AN UNLINK IT MAY WATCH.  The file behind handle 7 may be the one
+    unlinked, so while fd 3 is open [unlinkat] of a held name declines
+    ([Namei.fd_names_path] is true on the handle).  THE CONTROL is the
+    old answer: with no such descriptor the same unlink answers 0 and
+    removes the key. *)
+Definition ns_unlink_model : Model :=
+  mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+           (3, FdOpaque (ONsFile 7))]
+    (mkVmMaps [] [] 0 0 demo_limit) IEof [([103], [104])] None None None.
+
+Definition unlink_g_in : SyscallInput :=
+  mkInput 35 [AT_FDCWD; 0x2000; 0; 0; 0; 0] (bytes_at 0x2000 [103; 0]) (fun _ => None).
+
+Example ns_file_blocks_unlinkat :
+  check_syscall unlink_g_in (with_copyins [(0x2000, 2%nat)] (mkEffect 0 [] []))
+    ns_unlink_model
+  = CheckUnmodeled
+  /\ match check_syscall unlink_g_in
+             (with_copyins [(0x2000, 2%nat)] (mkEffect 0 [] []))
+             (with_fds (fd_remove (m_fds ns_unlink_model) 3) ns_unlink_model) with
+     | CheckOk m [] => m_fs m = []
+     | _ => False
+     end.
+Proof. split; vm_compute; reflexivity. Qed.
