@@ -1820,15 +1820,22 @@ Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bf cf bs cs Hte Hbf Hbs Hr.
   cbn [omni_run]. unfold init_config.
   exact (tmw_exec (run_segments segs inp sp mb) _ _ bf cf bs cs Hte Hbf Hbs eq_refl eq_refl
-           (init_model_fd1chan _ _ _ _ _ _ Hr)).
+           (init_model_fd1chan (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp
+              Hr)).
 Qed.
 
 Lemma mmap_omni_strong_equiv_te :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd bf cf bs cs inp,
-  tmw source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-      (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp) bf cf bs cs ->
-  tmw target_segs (init_machine_state target_segs apc aph asp amb arnd inp)
-      (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) bf cf bs cs ->
+  tmw (run_segments source_segs inp rsp rmb)
+      (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
+      (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
+         (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+            source_alloc_limit inp)) bf cf bs cs ->
+  tmw (run_segments target_segs inp asp amb)
+      (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
+      (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
+         (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+            target_alloc_limit inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
@@ -1846,22 +1853,31 @@ Proof.
       exact (never_errors_covered _ _ _ (exits_with_never_errors _ _ _ Hx)). }
   right. split.
   - apply trace_equiv_iff_omni. intro tr. cbn.
-    rewrite (mmap_obs_iff_te source_segs rpc rph rsp rbrk rmb rrnd source_alloc_limit inp bf cf bs cs
+    rewrite (mmap_obs_iff_te (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd
+               source_alloc_limit inp bf cf bs cs
                Hsource Hbf Hbs Hr tr).
-    rewrite (mmap_obs_iff_te target_segs apc aph asp abrk amb arnd target_alloc_limit inp bf cf bs cs
+    rewrite (mmap_obs_iff_te (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd
+               target_alloc_limit inp bf cf bs cs
                Htarget Hbf Hbs Hr tr).
     reflexivity.
   - apply bh_errors_iff. cbn.
-    apply (mmap_no_error_run_te target_segs apc aph asp abrk amb arnd target_alloc_limit inp bf cf bs cs
+    apply (mmap_no_error_run_te (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd
+             target_alloc_limit inp bf cf bs cs
              Htarget Hbf Hbs Hr).
 Qed.
 
 Lemma mmap_strong_equiv_te :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim bf cf bs cs inp,
-  tmw source_segs (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-      (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) bf cf bs cs ->
-  tmw target_segs (init_machine_state target_segs apc aph asp amb arnd inp)
-      (init_model (segments_reserved target_segs) abrk amb asp alim inp) bf cf bs cs ->
+  tmw (run_segments source_segs inp rsp rmb)
+      (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
+      (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
+         (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+            rlim inp)) bf cf bs cs ->
+  tmw (run_segments target_segs inp asp amb)
+      (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
+      (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
+         (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+            alim inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
@@ -1872,16 +1888,20 @@ Proof.
     Hsource Htarget Hbf Hbs Hr.
   split.
   { apply no_error_run_modeled.
-    apply (mmap_no_error_run_te source_segs rpc rph rsp rbrk rmb rrnd rlim inp bf cf bs cs
+    apply (mmap_no_error_run_te (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd
+             rlim inp bf cf bs cs
              Hsource Hbf Hbs Hr). }
   right. split.
   - intro tr. cbn.
-    rewrite (mmap_obs_iff_te source_segs rpc rph rsp rbrk rmb rrnd rlim inp bf cf bs cs
+    rewrite (mmap_obs_iff_te (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd
+               rlim inp bf cf bs cs
                Hsource Hbf Hbs Hr tr).
-    rewrite (mmap_obs_iff_te target_segs apc aph asp abrk amb arnd alim inp bf cf bs cs
+    rewrite (mmap_obs_iff_te (run_segments target_segs inp asp amb) apc aph asp abrk amb arnd
+               alim inp bf cf bs cs
                Htarget Hbf Hbs Hr tr).
     reflexivity.
-  - cbn. apply (mmap_no_error_run_te target_segs apc aph asp abrk amb arnd alim inp bf cf bs cs
+  - cbn. apply (mmap_no_error_run_te (run_segments target_segs inp asp amb) apc aph asp abrk amb
+                  arnd alim inp bf cf bs cs
                   Htarget Hbf Hbs Hr).
 Qed.
 End WithFP1.

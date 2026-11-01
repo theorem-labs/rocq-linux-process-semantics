@@ -1190,6 +1190,24 @@ Example undecodable_step_unmodeled_at_demo_entry :
   = MachineUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
+(** The same fetch at the segment list the run at [demo_entry] carries
+    ([Run.run_segments]), exactly as [undecodable_step_unmodeled_run]
+    is to [undecodable_step_unmodeled]: the image's own segment covers
+    the entry, so the vDSO pair is never consulted. *)
+Example undecodable_step_unmodeled_at_demo_entry_run :
+  RiscvSemantics.step
+    (run_segments undecodable_segments demo_proc_input
+       (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x7fffbf701000))
+    (init_machine_state
+       (run_segments undecodable_segments demo_proc_input
+          (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x7fffbf701000))
+       0x100 demo_phdrs
+       (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x7fffbf701000)
+       (mkDraw demo_random (Z_to_bv 64 0x800000000000) vdso_keeps_all)
+       demo_proc_input)
+  = MachineUnmodeled.
+Proof. unfold run_segments. vm_compute. reflexivity. Qed.
+
 (** A configuration the model declines to interpret has no successor at
     all: [Run.sstep_instr] needs [Run.mi_account_step] to have answered
     [MachineOk], and every syscall constructor needs a pending syscall
@@ -1248,7 +1266,7 @@ Proof.
   end.
   (* [Run.init_machine_state] takes the input WHOLE now, so no
      projection is left to reduce before the step lemma applies. *)
-  rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+  rewrite undecodable_step_unmodeled_at_demo_entry_run. reflexivity.
 Qed.
 
 (** The exit-0 image and the undecodable image do not agree on this
@@ -1296,14 +1314,14 @@ Example run_of_undecodable_image_is_unmodeled_at_demo_entry :
 Proof.
   rewrite demo_entry_fields.
   cbn [run bh_unmodeled undecodable_image]. unfold init_config.
-  apply reaches_unmodeled_intro; [reflexivity | reflexivity |].
+  apply reaches_unmodeled_intro; [reflexivity | reflexivity | | reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
   (* [Run.init_machine_state] takes the input WHOLE now, so no
      projection is left to reduce before the step lemma applies. *)
-  rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+  rewrite undecodable_step_unmodeled_at_demo_entry_run. reflexivity.
 Qed.
 
 (** The abort-declared twin of this one is

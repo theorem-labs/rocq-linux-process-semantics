@@ -396,12 +396,16 @@ Qed.
     crashing source — is visible. *)
 Lemma alloc_mix_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd U inp,
-  to_outcomes_mix source_segs
-    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp) U ->
-  to_outcomes target_segs
-    (init_machine_state target_segs apc aph asp amb arnd inp)
-    (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) U ->
+  to_outcomes_mix (run_segments source_segs inp rsp rmb)
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+          source_alloc_limit inp)) U ->
+  to_outcomes (run_segments target_segs inp asp amb)
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+          target_alloc_limit inp)) U ->
   (exists o, U o) ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
@@ -413,7 +417,8 @@ Proof.
     eapply tom_no_unmodeled; [exact Hsource | reflexivity | reflexivity]. }
   right. split.
   - apply trace_equiv_iff_omni. intro tr. cbn.
-    rewrite (alloc_mix_obs_iff source_segs rpc rph rsp rbrk rmb rrnd source_alloc_limit inp U
+    rewrite (alloc_mix_obs_iff (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd
+               source_alloc_limit inp U
                Hsource Hne tr).
     rewrite (alloc_obs_iff target_segs apc aph asp abrk amb arnd target_alloc_limit inp U
                Htarget tr).
