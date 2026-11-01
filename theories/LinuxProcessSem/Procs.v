@@ -300,10 +300,12 @@ Definition root_view (P : pconfig) : option config :=
   end.
 
 Definition children_of (P : pconfig) (p : positive) : list ProcessEntry :=
-  filter (fun e => match pe_parent e with
-                   | Some q => Pos.eqb q p
-                   | None => false
-                   end) (pcfg_procs P).
+  (* [List.filter], NOT the bare name: this development imports stdpp, whose
+     [filter] takes a [Decision] instance rather than a boolean. *)
+  List.filter (fun e => match pe_parent e with
+                        | Some q => Pos.eqb q p
+                        | None => false
+                        end) (pcfg_procs P).
 
 (* =========================================================================
    The multi-process surface
@@ -321,8 +323,8 @@ Definition multiproc_allowed (P : pconfig) (c : config) : bool :=
   match ms_svc_pending (cfg_ms c) with
   | None => true
   | Some x8 =>
-      Nat.leb (length (pcfg_procs P)) 1%nat
-      || existsb (Z.eqb (bv_unsigned x8)) multiproc_sysnos
+      Nat.leb (List.length (pcfg_procs P)) 1%nat
+      || List.existsb (Z.eqb (bv_unsigned x8)) multiproc_sysnos
   end.
 
 (* =========================================================================
@@ -483,17 +485,86 @@ Proof.
   intros c c'. destruct c' as [ms' m']. destruct m'. reflexivity.
 Qed.
 
-(** THE SINGLE-PROCESS PROJECTION THEOREM.
+(** THE SINGLE-PROCESS PROJECTION THEOREM, in four directions and then the
+    [iff].  Split that way on purpose: each half inverts a [pstep_cfg] whose
+    outcome is already [PNext] or [PError], so two of the three arms are ruled
+    out by their own conclusion and never have to be discharged by hand.
 
     A one-process system steps exactly as [Run.sstep_cfg] does, with the two
-    exceptions named in the hypotheses: a successful clone, which is the one
-    step at which the core and the released relation are MEANT to differ (the
-    released one lets the parent continue with a child that does not exist),
-    and an intercepted blocking [wait4], which the released relation answers
+    exceptions in the hypotheses: a successful clone, which is the one step at
+    which this relation and the released one are MEANT to differ (the released
+    one lets the parent continue with a child that does not exist), and an
+    intercepted blocking [wait4], which the released relation answers
     [unmodeled].
 
-    Proved before any arm but [pstep_other], because every consumer's own step
-    relation is derived from it. *)
+    Proved before any arm but [pstep_other], because every derived step
+    relation rests on it. *)
+
+Lemma pstep_single_next_fwd : forall segs cfg c evs P',
+  pstep_cfg segs cfg (one_proc c) evs (PNext P') ->
+  exists c', P' = one_proc c' /\ sstep_cfg segs cfg c evs (SNext c').
+Proof.
+  intros segs cfg c evs P' Hp.
+  inversion Hp; subst.
+  match goal with
+  | [ Hlook : look (one_proc c) _ = Some ?e0 |- _ ] =>
+      rewrite (look_one_proc_inv _ _ _ Hlook) in *
+  end.
+  rewrite one_proc_view in *.
+  match goal with
+  | [ Hss : sstep_cfg _ _ _ _ (SNext ?c1) |- _ ] =>
+      exists c1; split; [apply absorb_one_proc | exact Hss]
+  end.
+Qed.
+
+Lemma pstep_single_next_bwd : forall segs cfg c evs c',
+  ~ clone_success c c' ->
+  ~ wait4_intercept c ->
+  sstep_cfg segs cfg c evs (SNext c') ->
+  pstep_cfg segs cfg (one_proc c) evs (PNext (one_proc c')).
+Proof.
+  intros segs cfg c evs c' Hcl Hwt Hss.
+  rewrite <- (absorb_one_proc c c').
+  apply pstep_other with (e := one_entry c).
+  - apply one_proc_entry.
+  - rewrite one_proc_view. exact Hss.
+  - rewrite one_proc_view. exact Hcl.
+  - rewrite one_proc_view. exact Hwt.
+  - apply multiproc_allowed_one.
+Qed.
+
+Lemma pstep_single_err_fwd : forall segs cfg c evs,
+  pstep_cfg segs cfg (one_proc c) evs PError ->
+  sstep_cfg segs cfg c evs SError.
+Proof.
+  intros segs cfg c evs Hp.
+  inversion Hp; subst.
+  - (* pstep_error *)
+    match goal with
+    | [ Hlook : look (one_proc c) _ = Some ?e0 |- _ ] =>
+        rewrite (look_one_proc_inv _ _ _ Hlook) in *
+    end.
+    rewrite one_proc_view in *. assumption.
+  - (* pstep_outside cannot fire at one entry *)
+    exfalso.
+    match goal with
+    | [ Hall : multiproc_allowed (one_proc c) _ = false |- _ ] =>
+        rewrite multiproc_allowed_one in Hall; discriminate
+    end.
+Qed.
+
+Lemma pstep_single_err_bwd : forall segs cfg c evs,
+  ~ wait4_intercept c ->
+  sstep_cfg segs cfg c evs SError ->
+  pstep_cfg segs cfg (one_proc c) evs PError.
+Proof.
+  intros segs cfg c evs Hwt Hss.
+  apply pstep_error with (e := one_entry c).
+  - apply one_proc_entry.
+  - rewrite one_proc_view. exact Hss.
+  - rewrite one_proc_view. exact Hwt.
+Qed.
+
 Theorem pstep_single : forall segs cfg c evs r,
   (forall c', sstep_cfg segs cfg c evs (SNext c') -> ~ clone_success c c') ->
   ~ wait4_intercept c ->
@@ -504,35 +575,13 @@ Theorem pstep_single : forall segs cfg c evs r,
        | PError => sstep_cfg segs cfg c evs SError
        end).
 Proof.
-  intros segs cfg c evs r Hnoclone Hnowait. split.
-  - (* the core steps, so the released relation does *)
-    intros Hp. inversion Hp as [P e evs0 c' Hlook Hss Hcl Hwt Hall Heq1 Heq2 Heq3
-                               |P e evs0 Hlook Hss Hwt Heq1 Heq2 Heq3
-                               |P e Hlook Hrun Hall Heq1 Heq2 Heq3]; subst.
-    + (* pstep_other *)
-      (* a one-process system has only the entry [one_proc] built *)
-      assert (He : e = one_entry c) by exact (look_one_proc_inv _ _ _ Hlook).
-      subst e. rewrite one_proc_view in Hss.
-      exists c'. split; [apply absorb_one_proc | exact Hss].
-    + (* pstep_error *)
-      assert (He : e = one_entry c) by exact (look_one_proc_inv _ _ _ Hlook).
-      subst e. rewrite one_proc_view in Hss. exact Hss.
-    + (* pstep_outside: impossible at one entry *)
-      exfalso. rewrite multiproc_allowed_one in Hall. discriminate.
-  - (* the released relation steps, so the core does *)
-    destruct r as [P'|].
-    + intros (c' & -> & Hss).
-      rewrite <- absorb_one_proc.
-      eapply pstep_other.
-      * apply one_proc_entry.
-      * rewrite one_proc_view. exact Hss.
-      * rewrite one_proc_view. exact (Hnoclone _ Hss).
-      * rewrite one_proc_view. exact Hnowait.
-      * apply multiproc_allowed_one.
-    + intros Hss. eapply pstep_error.
-      * apply one_proc_entry.
-      * rewrite one_proc_view. exact Hss.
-      * rewrite one_proc_view. exact Hnowait.
+  intros segs cfg c evs r Hnoclone Hnowait.
+  destruct r as [P'|]; split.
+  - apply pstep_single_next_fwd.
+  - intros (c' & -> & Hss).
+    apply pstep_single_next_bwd; [exact (Hnoclone _ Hss) | exact Hnowait | exact Hss].
+  - apply pstep_single_err_fwd.
+  - apply (pstep_single_err_bwd _ _ _ _ Hnowait).
 Qed.
 
 (** THE INSTRUCTION CASE, which is unconditional.
