@@ -1193,3 +1193,65 @@ Proof.
   (* 5 + 0 < 6 + (0 + 0) *)
   vm_compute. lia.
 Qed.
+
+(* =========================================================================
+   The instantiation
+   ========================================================================= *)
+
+(** [Statement.forkwait_halts] is [pholts_within_budget] over the
+    committed image at the shipped budget with allowed exits [[7]].
+    Unfolding it gives, for every [execve] draw and every valid input, a
+    [must_exit_in_p_at] at [pinit_config] -- and [pinit_config] is
+    [one_proc] over [Run.init_config], which [forkwait_halts_of_stretches]
+    takes as its [P0].
+
+    So the statement reduces to the five hypotheses of that theorem at
+    [segs := forkwait_segs] and [cfg := forced_only_cfg], and this lemma
+    is that reduction: everything above the segment lemmas is now
+    discharged, and what a caller must still supply is exactly the list
+    below. *)
+Lemma forkwait_halts_reduces :
+  forall (lim : Z) (segs : list Segment) (pc : N) (ph : PhdrInfo),
+  (forall sp brk0 mbase rnd inp,
+     valid_entry (mkImage segs pc ph) (Run.mkEntry sp brk0 mbase rnd) inp ->
+     valid_input inp ->
+     ~ run_scfg_budget_refused forced_only_cfg (mkImage segs pc ph) lim
+         (Run.mkEntry sp brk0 mbase rnd) inp ->
+     must_exit_in_p_at segs forced_only_cfg [Z_to_bv 64 7]
+       (pinit_config segs pc ph sp brk0 mbase rnd lim inp)) ->
+  pholts_within_budget lim [Z_to_bv 64 7] (mkImage segs pc ph).
+Proof.
+  intros lim segs pc ph H en inp Hve Hvi Hb.
+  destruct en as [sp brk0 mbase rnd].
+  unfold must_exit_in_p.
+  exact (H sp brk0 mbase rnd inp Hve Hvi Hb).
+Qed.
+
+(** WHAT IS LEFT, after this reduction, and it is now a short list of
+    facts about the PROGRAM rather than about the relation:
+
+      1. [det_run forkwait_segs forced_only_cfg P0 Pclone] -- the entry
+         run, from [ForkwaitSteps.fw_run_A] through
+         [MustExitP.pstep_entry_of_account] and [det_trans], with
+         [Run.mi_account_step_no_lazy] discharging the model side at each
+         step and [State.init_model]'s empty [m_vm_lazy] discharging its
+         premise.
+      2. [fw_shape Pclone] -- immediate from [fw_shape_one_proc_pending],
+         since [Pclone] is one entry with 220 pending at [0x11018].
+      3. the leaf, progress, no-error and measure premises at the
+         [fw_two] shapes -- the first is [fw_shape_terminal_halted],
+         proved; the measure at the two shape-changing steps is
+         [fw_measure_clone] and [fw_measure_reap], proved; progress and
+         no-error reduce through [fw_progress_from_entry] and
+         [pstep_error_cases] with [fw_guard_open].
+      4. the tail [det_run] to the final exit, from
+         [ForkwaitSteps.fw_run_reap] the same way as (1).
+
+    Each of (1) and (4) is one segment lemma plus the lifting layer; (2)
+    is proved; (3) is proved except for the per-shape case analysis that
+    consumes the segment lemmas for the child's and the parent's runs.
+
+    [forkwait_halts] is NOT proved, and this file asserts nothing that it
+    has not proved: there is no [Admitted] and no [Axiom] here, and the
+    remaining obligations are this comment rather than a stated-but-unused
+    definition, for the reason the per-step obligations were deleted. *)
