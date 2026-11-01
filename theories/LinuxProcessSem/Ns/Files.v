@@ -26,15 +26,22 @@
       capability one;
     - a write to user memory goes through [Arm.put_ok]: EFAULT outside
       [access_ok], and a range that is not wholly writable declines;
-    - the refusals the environment injects (ENOMEM, ENFILE, ENOSPC, a
-      security module's errno, a file system's I/O error) are not answers
-      of these arms. *)
+    - allocation, security-module, and filesystem I/O refusals are admitted
+      after the deterministic operation reaches them, and listed below in
+      [file_injected]. *)
 
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Mount Userns Walk Task.
 Import ListNotations.
 Local Open Scope Z_scope.
+
+Definition EIO : Z := 5.
+
+(** The environment failures this file represents after the path and
+    descriptor checks have passed. *)
+Definition file_env_errno (e : Z) : bool :=
+  (e =? ENOMEM) || (e =? ENFILE) || (e =? EIO) || ((1 <=? e) && (e <=? 4095)).
 
 (* =========================================================================
    Constants (include/uapi/asm-generic/fcntl.h, include/uapi/linux/fcntl.h,
@@ -798,7 +805,9 @@ Definition openat_how (i : SyscallInput) : OpenHow :=
 Definition openat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   fst (fst (open_common i m ctx st [] (in_arg i 0) (in_arg i 1) (openat_how i))).
 
-Definition openat_arm : NsArm := fun i m ctx st o => o = openat_fn i m ctx st.
+Definition openat_arm : NsArm := fun i m ctx st o =>
+  o = openat_fn i m ctx st
+  \/ injected_after file_env_errno (openat_fn i m ctx st) m ctx st o.
 
 (** [SYSCALL_DEFINE4(openat2)] (fs/open.c): a size below
     OPEN_HOW_SIZE_VER0 (24) is EINVAL, above a page E2BIG;
@@ -832,7 +841,8 @@ Definition openat2_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState
 Definition openat2_arm : NsArm := fun i m ctx st o =>
   let r := openat2_fn i m ctx st in
   o = fst (fst r)
-  \/ (snd r = true /\ o = err (snd (fst r)) EAGAIN m ctx st).
+  \/ (snd r = true /\ o = err (snd (fst r)) EAGAIN m ctx st)
+  \/ injected_after file_env_errno (fst (fst r)) m ctx st o.
 
 (* =========================================================================
    close, fcntl
@@ -953,11 +963,9 @@ Definition munged (st : NsState) (ctx : NsCtx) (gid : bool) (k : Z) : Z :=
     are), [st_mode] the type and mode bits, [st_uid] and [st_gid] mapped
     into the caller's namespace. *)
 Definition stat_fields (st : NsState) (ctx : NsCtx) (a : ObjAttr) : list (nat * list byte) :=
-  [(0%nat, Z_to_le_bytes 8 (oa_dev a))]
-  ++ match oa_ino a with Some n => [(8%nat, Z_to_le_bytes 8 n)] | None => [] end
-  ++ [(16%nat, Z_to_le_bytes 4 (Z.lor (ifmt (oa_kind a)) (oa_perm a)));
-      (24%nat, Z_to_le_bytes 4 (munged st ctx false (oa_uid a)));
-      (28%nat, Z_to_le_bytes 4 (munged st ctx true (oa_gid a)))].
+  [(16%nat, Z_to_le_bytes 4 (Z.lor (ifmt (oa_kind a)) (oa_perm a)));
+   (24%nat, Z_to_le_bytes 4 (munged st ctx false (oa_uid a)));
+   (28%nat, Z_to_le_bytes 4 (munged st ctx true (oa_gid a)))].
 
 Definition fields_match (n : nat) (fs : list (nat * list byte)) (bs : list byte) : bool :=
   Nat.eqb (length bs) n
@@ -1128,7 +1136,9 @@ Definition faccessat_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSta
         end
     end.
 
-Definition faccessat_arm : NsArm := fun i m ctx st o => o = faccessat_fn i m ctx st.
+Definition faccessat_arm : NsArm := fun i m ctx st o =>
+  o = faccessat_fn i m ctx st
+  \/ injected_after file_env_errno (faccessat_fn i m ctx st) m ctx st o.
 
 (* =========================================================================
    statfs, fstatfs
@@ -1519,13 +1529,18 @@ Definition getdents64_out (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsS
   let st' := set_file st h (mkNsFile (NfDir l newpos) (nf_flags f) (nf_cred f)) in
   match es with
   | [] => EOk (mkEffect (Z_to_bv 64 0) [] []) m ctx st' []
-  | (_, name0, _) :: _ =>
+  | (p0, name0, _) :: _ =>
       if Z.eqb used 0 then EOk (mkEffect (errno_ret EINVAL) [] []) m ctx st' []
       else match put_ok i buf used with
            | PutOk => EOk (mkEffect (Z_to_bv 64 used) ws []) m ctx st' []
-           | PutFault => if negb (access_okb buf (reclen (length name0))) then ns_errno EFAULT m ctx st
-                         else EUnmodeled
-           | PutPartial => EUnmodeled
+           | PutFault =>
+               if negb (access_okb buf (reclen (length name0)))
+               then EOk (mkEffect (errno_ret EFAULT) [] []) m ctx
+                         (set_file st h (mkNsFile (NfDir l p0) (nf_flags f) (nf_cred f))) []
+               else EUnmodeled
+           | PutPartial =>
+               EOk (mkEffect (errno_ret EFAULT) [] []) m ctx
+                 (set_file st h (mkNsFile (NfDir l p0) (nf_flags f) (nf_cred f))) []
            end
   end.
 
@@ -1555,6 +1570,16 @@ Definition getdents64_arm : NsArm := fun i m ctx st o =>
 (* =========================================================================
    The arms
    ========================================================================= *)
+
+(** The environment refusals of the path and descriptor arms.  ENOMEM and
+    ENFILE are allocation failures, EIO is filesystem I/O, and the final
+    predicate is a security module's errno. *)
+Definition file_injected : list NsInjected :=
+  map (fun n => mkNsInjected n
+    [(fun e => (e =? ENOMEM) || (e =? ENFILE), FamAlloc);
+     (fun e => e =? EIO, FamFs);
+     (fun e => (1 <=? e) && (e <=? 4095), FamCred)])
+    [17; 25; 43; 44; 48; 49; 50; 56; 57; 61; 78; 79; 80; 437].
 
 (** The arms of this file by call number, for [Ns.Spec.ns_table]. *)
 Definition file_arms : list (Z * NsArm) :=

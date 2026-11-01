@@ -376,7 +376,7 @@ Example openat2_in_root_eagain :
   openat2_arm (open2 3 up_exists 0 RESOLVE_IN_ROOT 24) m_dir3 c0 W_dir3
               (err (snd (fst (openat2_fn (open2 3 up_exists 0 RESOLVE_IN_ROOT 24) m_dir3 c0 W_dir3)))
                    EAGAIN m_dir3 c0 W_dir3).
-Proof. right. split; [vm_compute; reflexivity | reflexivity]. Qed.
+Proof. right. left. split; [vm_compute; reflexivity | reflexivity]. Qed.
 
 (* ---- close, fcntl ------------------------------------------------------ *)
 
@@ -430,14 +430,13 @@ Proof. vm_compute. reflexivity. Qed.
 (* ---- fstat, newfstatat ------------------------------------------------- *)
 
 (** In user namespace 2 (0 -> 1000), "other" (owner 5000) shows the
-    overflow ids 65534; st_dev is superblock 1, st_ino inode 8. *)
+    overflow ids 65534.  st_dev and st_ino are environment bytes. *)
 Definition c_child : NsCtx := ctx_at 2 no_caps (1%positive, 1%positive) (1%positive, 2%positive).
 
 Example fstat_fields_unmapped_owner :
   option_map (fun a => map (fun p => (Z.of_nat (fst p), map bv_unsigned (snd p))) (stat_fields W c_child a))
              (loc_attr m3 c_child W (LDentry 1 8))
-  = Some [(0, [1; 0; 0; 0; 0; 0; 0; 0]); (8, [8; 0; 0; 0; 0; 0; 0; 0]); (16, [164; 129; 0; 0]);
-          (24, [254; 255; 0; 0]); (28, [254; 255; 0; 0])].
+  = Some [(16, [164; 129; 0; 0]); (24, [254; 255; 0; 0]); (28, [254; 255; 0; 0])].
 Proof. vm_compute. reflexivity. Qed.
 
 Definition stat_bytes : list byte :=
@@ -637,4 +636,28 @@ Proof. vm_compute. exists no_choice, 100. split; [reflexivity | vm_compute; refl
 Example getdents64_small_count :
   ret_of (getdents64_out (dents_in 10) m_fd5 c0 W_fd5 1%N fd_dir_file
                          (LProcTask 3 42 [bytes [102; 100]]) 0 no_choice 100) = Some (-22).
+Proof. vm_compute. reflexivity. Qed.
+
+(** A first fd entry fault advances the directory position before filldir64
+    reports EFAULT. *)
+Definition fd_dir_at_two : NsFile :=
+  mkNsFile (NfDir (LProcTask 3 42 [bytes [102; 100]]) 2) (O_LARGEFILE + O_DIRECTORY) cred0.
+Definition dents_fault : SyscallInput :=
+  call 61 [5; 18446744073709551615; 256] (fun _ => None) (fun _ => None).
+Example getdents64_fault_advances_position :
+  match st_of (getdents64_out dents_fault m_fd5 c0 W_fd5 1%N fd_dir_at_two
+                              (LProcTask 3 42 [bytes [102; 100]]) 2 no_choice 100) with
+  | Some s =>
+      match lookup_file (ns_files s) 1%N with
+      | Some f => match nf_kind f with NfDir _ p => p =? 2 | _ => false end
+      | None => false
+      end
+  | None => false
+  end = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Every Files arm records its allocation, filesystem-I/O and security
+    environment refusals in the exported table. *)
+Example file_injected_numbers :
+  map ni_no file_injected = [17; 25; 43; 44; 48; 49; 50; 56; 57; 61; 78; 79; 80; 437].
 Proof. vm_compute. reflexivity. Qed.

@@ -159,3 +159,15 @@ Record NsInjected := mkNsInjected {
   ni_pairs : list ((Z -> bool) * SpuriousFamily)
 }.
 
+(** A failure chosen by the environment after a deterministic arm has
+    reached its operation.  It keeps the copy-ins already made, writes
+    nothing, and leaves the namespace state unchanged. *)
+Definition injected_after (P : Z -> bool) (r : ext_outcome)
+    (m : Model) (ctx : NsCtx) (st : NsState) (o : ext_outcome) : Prop :=
+  match r with
+  | EOk eff _ _ _ _ =>
+      exists e, P e = true /\
+        o = EOk (with_copyins (eff_copyins eff) (mkEffect (errno_ret e) [] [])) m ctx st []
+  | EUnmodeled => False
+  end.
+
