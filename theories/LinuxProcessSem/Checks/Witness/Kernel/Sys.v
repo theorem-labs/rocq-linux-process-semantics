@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Checks.Witness.Kernel.Sys — the getpid (172), gettid (178), setsid (157), uname (160), prlimit64 (261) witnesses, and their proofs
+(** * LinuxProcessSem.Checks.Witness.Kernel.Sys — the getpid (172), getppid (173), gettid (178), setsid (157), uname (160), prctl (167), prlimit64 (261) witnesses, and their proofs
 
     Mirrors [Sys/Kernel/Sys.v], which answers to Linux [kernel/sys.c]:
     this file holds the witnesses for the syscalls defined there, and no
@@ -33,6 +33,20 @@ Definition gettid_witness : Model -> outcome SyscallEffect :=
 
 Lemma gettid_witness_ok : forall i m, gettid_spec i m (gettid_witness m).
 Proof. exact set_tid_address_witness_ok. Qed.
+
+(** getppid witness: 0, the answer for a parent outside the caller's pid
+    namespace, which is inside [Kernel.Sys.getppid_spec]'s range and
+    leaves the model alone. *)
+Definition getppid_witness (m : Model) : outcome SyscallEffect :=
+  ret_outcome (Z_to_bv 64 0) m.
+
+Lemma getppid_witness_ok : forall i m, getppid_spec i m (getppid_witness m).
+Proof.
+  intros. unfold getppid_spec, getppid_witness.
+  eapply bind_step;
+    [apply (choose_ok _ (Z_to_bv 64 0)); vm_compute; reflexivity|].
+  apply pure_ok.
+Qed.
 
 (** setsid witness: -EPERM, which is admissible whatever the model
     believes — it is the only answer once a setsid has succeeded, and
@@ -271,23 +285,55 @@ Proof.
             | apply pure_ok ]) ].
 Qed.
 
-(** prctl witness: the arm's own answer, which is deterministic.
-    [Kernel.Sys.prctl_spec] has no [alt] and no [choose] -- an option
-    outside [prctl_modeled_options] declines, and [PR_CAPBSET_READ]
-    answers -EINVAL or 1 by a test on [arg2] alone -- so the witness is
-    the spec with the monad erased. *)
-Definition prctl_witness (option_ arg2 : word) (m : Model)
+(** prctl witness: the arm's own answer.  [Kernel.Sys.prctl_spec] has no
+    [choose] and one [alt], [PR_CAPBSET_READ]'s 0 or 1 for a capability
+    outside [capbset_assumed]; the witness takes its 1, the answer the
+    arm gives every valid capability.  An option outside
+    [prctl_modeled_options] declines, and each of the four answers by a
+    test on its arguments alone ([i] supplies a2..a4 for
+    [PR_SET_NO_NEW_PRIVS]), so otherwise the witness is the spec with
+    the monad erased. *)
+Definition prctl_witness (i : SyscallInput) (option_ arg2 : word) (m : Model)
     : outcome SyscallEffect :=
-  if negb (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ) then Unmodeled
-  else if (CAP_LAST_CAP <? bv_unsigned arg2)%Z
-  then ret_outcome (errno_ret EINVAL) m
-  else ret_outcome (Z_to_bv 64 1) m.
+  if negb (existsb (Z.eqb (bv_unsigned option_)) prctl_modeled_options)
+  then Unmodeled
+  else if Z.eqb (bv_unsigned option_) PR_CAPBSET_READ then
+    (if (CAP_LAST_CAP <? bv_unsigned arg2)%Z
+     then ret_outcome (errno_ret EINVAL) m
+     else ret_outcome (Z_to_bv 64 1) m)
+  else if Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG then
+    (if (64 <? bv_unsigned arg2)%Z
+     then ret_outcome (errno_ret EINVAL) m
+     else ret_outcome (Z_to_bv 64 0) m)
+  else if Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE then
+    (if (1 <? bv_unsigned arg2)%Z
+     then ret_outcome (errno_ret EINVAL) m
+     else ret_outcome (Z_to_bv 64 0) m)
+  else if Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS then
+    (if (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+         && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool
+     then ret_outcome (Z_to_bv 64 0) m
+     else ret_outcome (errno_ret EINVAL) m)
+  else Unmodeled.
 
-Lemma prctl_witness_ok : forall option_ arg2 i m,
-  prctl_spec option_ arg2 i m (prctl_witness option_ arg2 m).
+Lemma prctl_witness_ok : forall i option_ arg2 m,
+  prctl_spec option_ arg2 i m (prctl_witness i option_ arg2 m).
 Proof.
-  intros option_ arg2 i m. unfold prctl_spec, prctl_witness.
-  destruct (negb (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ));
+  intros i option_ arg2 m. unfold prctl_spec, prctl_witness.
+  destruct (negb (existsb (Z.eqb (bv_unsigned option_)) prctl_modeled_options));
     [apply unmodeled_intro|].
-  destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z); apply pure_ok.
+  destruct (Z.eqb (bv_unsigned option_) PR_CAPBSET_READ).
+  { destruct ((CAP_LAST_CAP <? bv_unsigned arg2)%Z); [apply pure_ok|].
+    destruct (capbset_assumed (bv_unsigned arg2));
+      [apply pure_ok | apply alt_r; apply pure_ok]. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_PDEATHSIG).
+  { destruct ((64 <? bv_unsigned arg2)%Z); apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_DUMPABLE).
+  { destruct ((1 <? bv_unsigned arg2)%Z); apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned option_) PR_SET_NO_NEW_PRIVS);
+    [|apply unmodeled_intro].
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  destruct (bv_eqb arg2 (Z_to_bv 64 1) && w_is0 (in_arg i 2)
+            && w_is0 (in_arg i 3) && w_is0 (in_arg i 4))%bool;
+    apply pure_ok.
 Qed.

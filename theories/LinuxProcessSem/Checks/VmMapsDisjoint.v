@@ -1783,7 +1783,7 @@ Lemma check_read_frame : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_read, check_read_urandom, check_socket_pending_error,
-    check_access_ok_zero in H.
+    check_access_ok_zero, check_read_proc, check_read_proc_bare in H.
   cbv zeta in H. vm_frame2 H.
 Qed.
 
@@ -1831,6 +1831,7 @@ Proof.
     Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl,
     Open.check_openat_dir, Open.check_openat_append,
     Open.check_openat_rdwr, Open.check_openat_rdwr_excl,
+    Open.check_openat_proc, Open.check_proc_open_result,
     check_create_wronly, check_open_append, check_open_rdwr in H.
   vm_frame2 H.
 Qed.
@@ -1838,6 +1839,17 @@ Qed.
 Lemma check_close_frame : forall fd eff m m' evs,
   check_close fd eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros fd eff m m' evs H. unfold check_close in H. vm_frame2 H. Qed.
+
+(** [close_range] removes descriptors and nothing else: its one
+    model-changing arm is [with_fds] over [File.close_range_fds], which
+    carries the VM subsystem across untouched. *)
+Lemma check_close_range_frame : forall fd max_fd flags eff m m' evs,
+  check_close_range fd max_fd flags eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros fd max_fd flags eff m m' evs H. unfold check_close_range in H.
+  vm_frame2 H.
+Qed.
 
 Lemma check_lseek_frame : forall fd off whence eff m m' evs,
   check_lseek fd off whence eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
@@ -1859,10 +1871,11 @@ Proof.
   unfold check_getrandom, check_getrandom_zero in H. vm_frame2 H.
 Qed.
 
-Lemma check_readlinkat_frame : forall dirfd eff m m' evs,
-  check_readlinkat dirfd eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Lemma check_readlinkat_frame : forall i dirfd eff m m' evs,
+  check_readlinkat i dirfd eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros dirfd eff m m' evs H. unfold check_readlinkat in H. vm_frame2 H.
+  intros i dirfd eff m m' evs H. unfold check_readlinkat in H. cbv zeta in H.
+  vm_frame2 H.
 Qed.
 
 Lemma check_exit_frame : forall code eff m m' evs,
@@ -1978,18 +1991,17 @@ Proof.
   unfold check_timerfd_create in H. vm_frame2 H.
 Qed.
 
-(** [eventfd2] is [timerfd_create]'s twin here for the same reason: its
-    only answer is the -EINVAL it decides from the flag word alone, and
-    Linux decides it before the [kmalloc], so the arm touches no field
-    of the model, [m_vmmaps] included.  A [*_frame] rather than a
-    [*_preserves]: nothing is written for [vm_wf] to be re-established
-    over. *)
+(** [eventfd2] changes [m_fds] alone: its -EINVAL is decided from the
+    flag word, and its descriptor is [State.with_fds] over the table
+    ([Open.check_new_fd_result]), which carries the VM subsystem across
+    untouched.  A [*_frame] rather than a [*_preserves]: nothing is
+    written for [vm_wf] to be re-established over. *)
 Lemma check_eventfd2_frame : forall flags eff m m' evs,
   check_eventfd2 flags eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros flags eff m m' evs H.
-  unfold check_eventfd2 in H. vm_frame2 H.
+  unfold check_eventfd2, check_new_fd_result in H. vm_frame2 H.
 Qed.
 
 (** uname writes only the UTS-name pin, which lives in [ProcState]:
@@ -2010,6 +2022,25 @@ Lemma check_prlimit64_frame :
 Proof.
   intros i pid resource new_rlim old_rlim eff m m' evs H.
   unfold check_prlimit64, check_rlim64_read in H. vm_frame2 H.
+Qed.
+
+(** capget and capset return the model they were given on every
+    [CheckOk]: neither carries a capability set in the model, and the
+    one answered [capset] shape changes nothing the model holds. *)
+Lemma check_capget_frame : forall i header dataptr eff m m' evs,
+  check_capget i header dataptr eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i header dataptr eff m m' evs H.
+  unfold check_capget, check_capget_copy in H. vm_frame2 H.
+Qed.
+
+Lemma check_capset_frame : forall i header data eff m m' evs,
+  check_capset i header data eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i header data eff m m' evs H.
+  unfold check_capset in H. vm_frame2 H.
 Qed.
 
 Lemma check_ftruncate_frame : forall fd len eff m m' evs,
@@ -2033,6 +2064,12 @@ Lemma check_gettid_frame : forall eff m m' evs,
   check_gettid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. exact check_set_tid_address_frame. Qed.
 
+(** [getppid] hands back [m] itself: its answer is a fresh choice and
+    nothing is pinned. *)
+Lemma check_getppid_frame : forall eff m m' evs,
+  check_getppid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof. intros eff m m' evs H. unfold check_getppid in H. vm_frame2 H. Qed.
+
 (** [setsid] takes no arguments and writes no memory, so neither arm can
     touch [vm_maps]: the -EPERM arm hands back [m] itself, and the
     success arm hands back [with_setsid_succeeded (with_tid ret m)],
@@ -2041,13 +2078,13 @@ Lemma check_setsid_frame : forall eff m m' evs,
   check_setsid eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof. intros eff m m' evs H. unfold check_setsid in H. vm_frame2 H. Qed.
 
-(** [prctl] answers [PR_CAPBSET_READ] out of a constant and declines
-    every other option, so no arm of it touches the model at all: both
-    accepting branches hand back [m] itself. *)
-Lemma check_prctl_frame : forall option_ arg2 eff m m' evs,
-  check_prctl option_ arg2 eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+(** [prctl] answers its four options out of their arguments and
+    declines every other option, so no arm of it touches the model at
+    all: every accepting branch hands back [m] itself. *)
+Lemma check_prctl_frame : forall i option_ arg2 eff m m' evs,
+  check_prctl i option_ arg2 eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros option_ arg2 eff m m' evs H. unfold check_prctl in H. vm_frame2 H.
+  intros i option_ arg2 eff m m' evs H. unfold check_prctl in H. vm_frame2 H.
 Qed.
 
 (** The four clock arms.  [gettimeofday], [clock_gettime], and [clock_getres] hand back
@@ -2203,7 +2240,8 @@ Lemma check_newfstatat_frame : forall i dirfd pathp flag eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i dirfd pathp flag eff m m' evs H.
-  unfold check_newfstatat in H. vm_frame2 H.
+  unfold check_newfstatat, check_newfstatat_proc, check_newfstatat_proc_errno in H.
+  vm_frame2 H.
 Qed.
 
 (** fstat's success arm changes the model
@@ -2300,10 +2338,12 @@ Proof.
   intros gidsetsize eff m m' evs H. unfold check_getgroups in H. vm_frame2 H.
 Qed.
 
-Lemma check_setgroups_frame : forall eff m m' evs,
-  check_setgroups eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+(** [setgroups]'s one model-changing arm is [with_creds], which rebuilds
+    only [ProcState]. *)
+Lemma check_setgroups_frame : forall i eff m m' evs,
+  check_setgroups i eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros eff m m' evs H. unfold check_setgroups in H. vm_frame2 H.
+  intros i eff m m' evs H. unfold check_setgroups in H. vm_frame2 H.
 Qed.
 
 Lemma check_socket_frame : forall domain type protocol eff m m' evs,
@@ -2410,7 +2450,8 @@ Lemma check_clone_frame : forall flags eff m m' evs,
   check_clone flags eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros flags eff m m' evs H.
-  unfold check_clone, check_clone_resolve, check_clone_answer in H.
+  unfold check_clone, check_clone_resolve, check_clone_answer,
+    check_clone_ns_resolve, check_clone_ns_answer in H.
   vm_frame2 H.
 Qed.
 
@@ -2469,7 +2510,7 @@ Lemma check_getsockname_frame : forall fd eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros fd eff m m' evs H.
-  unfold check_getsockname in H. vm_frame2 H.
+  unfold check_getsockname, check_getsockname_core in H. vm_frame2 H.
 Qed.
 
 Lemma check_getpeername_frame : forall fd eff m m' evs,
@@ -2477,7 +2518,7 @@ Lemma check_getpeername_frame : forall fd eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros fd eff m m' evs H.
-  unfold check_getpeername in H. vm_frame2 H.
+  unfold check_getpeername, check_getpeername_core in H. vm_frame2 H.
 Qed.
 
 Lemma check_setsockopt_frame : forall fd level optlen eff m m' evs,
@@ -2485,7 +2526,7 @@ Lemma check_setsockopt_frame : forall fd level optlen eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros fd level optlen eff m m' evs H.
-  unfold check_setsockopt in H. vm_frame2 H.
+  unfold check_setsockopt, check_setsockopt_core in H. vm_frame2 H.
 Qed.
 
 Lemma check_getsockopt_frame : forall i fd level optlenp eff m m' evs,
@@ -2493,7 +2534,7 @@ Lemma check_getsockopt_frame : forall i fd level optlenp eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd level optlenp eff m m' evs H.
-  unfold check_getsockopt in H. vm_frame2 H.
+  unfold check_getsockopt, check_getsockopt_core in H. vm_frame2 H.
 Qed.
 
 Lemma check_shutdown_frame : forall fd how eff m m' evs,
@@ -2501,7 +2542,7 @@ Lemma check_shutdown_frame : forall fd how eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros fd how eff m m' evs H.
-  unfold check_shutdown in H. vm_frame2 H.
+  unfold check_shutdown, check_shutdown_core in H. vm_frame2 H.
 Qed.
 
 (** The send path.  [check_send_on_socket] is the shared body
@@ -2644,9 +2685,12 @@ Proof.
     | erewrite check_fsync_frame by eassumption; exact Hwf
     | erewrite check_getdents64_frame by eassumption; exact Hwf
     | erewrite check_flock_frame by eassumption; exact Hwf
+    | erewrite check_capget_frame by eassumption; exact Hwf
+    | erewrite check_capset_frame by eassumption; exact Hwf
     | erewrite check_exit_frame by eassumption; exact Hwf
     | erewrite check_set_tid_address_frame by eassumption; exact Hwf
     | erewrite check_getpid_frame by eassumption; exact Hwf
+    | erewrite check_getppid_frame by eassumption; exact Hwf
     | erewrite check_gettid_frame by eassumption; exact Hwf
     | erewrite check_setsid_frame by eassumption; exact Hwf
     | erewrite check_uname_frame by eassumption; exact Hwf
@@ -2688,6 +2732,7 @@ Proof.
     | erewrite check_set_robust_list_frame by eassumption; exact Hwf
     | erewrite check_clone_frame by eassumption; exact Hwf
     | erewrite check_clone3_frame by eassumption; exact Hwf
+    | erewrite check_close_range_frame by eassumption; exact Hwf
     | erewrite check_getsockname_frame by eassumption; exact Hwf
     | erewrite check_getpeername_frame by eassumption; exact Hwf
     | erewrite check_setsockopt_frame by eassumption; exact Hwf

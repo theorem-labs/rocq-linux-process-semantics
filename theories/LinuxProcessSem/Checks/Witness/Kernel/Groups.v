@@ -52,18 +52,22 @@ Proof.
   apply unmodeled_intro.
 Qed.
 
-(** [Unmodeled] is itself the admissible outcome on the privileged half:
-    progress asks for an outcome the spec admits, and failing closed is
-    one. *)
-Definition setgroups_witness (m : Model) : outcome SyscallEffect :=
-  if creds_privileged (m_creds m) then Unmodeled
-  else ret_outcome (errno_ret EPERM) m.
+(** [setgroups] (159): -EPERM for an unprivileged caller; on the
+    privileged empty list the -ENOMEM both of its allocation sites
+    admit, which leaves the model alone and needs no case on what the
+    list was; and [Unmodeled], itself an admissible outcome, on every
+    other privileged size. *)
+Definition setgroups_witness (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
+  if negb (creds_privileged (m_creds m)) then ret_outcome (errno_ret EPERM) m
+  else if negb (Z.eqb (sint32 (in_arg i 0)) 0) then Unmodeled
+  else ret_outcome (errno_ret ENOMEM) m.
 
-Lemma setgroups_witness_ok : forall i m, setgroups_spec i m (setgroups_witness m).
+Lemma setgroups_witness_ok : forall i m, setgroups_spec i m (setgroups_witness i m).
 Proof.
   intros. unfold setgroups_spec, setgroups_witness.
-  eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
-  destruct (creds_privileged (m_creds m)) eqn:Hp; cbv beta iota zeta.
-  - apply unmodeled_intro.
-  - apply pure_ok.
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (negb (creds_privileged (m_creds m))); [apply pure_ok|].
+  destruct (negb (Z.eqb (sint32 (in_arg i 0)) 0)); [apply unmodeled_intro|].
+  apply alt_l. apply pure_ok.
 Qed.

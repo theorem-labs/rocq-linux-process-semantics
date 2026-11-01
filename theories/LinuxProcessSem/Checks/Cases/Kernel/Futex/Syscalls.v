@@ -135,14 +135,14 @@ Qed.
     ADMISSION REASON: universally quantified, and about a syscall this
     file does not otherwise concern itself with.  [futex_wake_private_spec]
     answers 0 because no task shares the caller's mm, and the reason no
-    task does is that [Kernel.Fork]'s two gates admit one flag word each
-    and neither sets the bit.  That is an argument across two files, so
+    task does is that [Kernel.Fork]'s gates admit no word that sets the
+    bit.  That is an argument across two files, so
     it is exactly the kind that rots silently: a later change widening
-    [clone] to a flag MASK, or adding a second admitted word, would leave
+    [clone] to a flag MASK, or adding another admitted word, would leave
     every futex proof closing and the count wrong.
 
-    These two make the premise a compile-time fact instead.  Widening
-    either gate to admit [CLONE_VM] breaks the build HERE, next to the
+    These three make the premise a compile-time fact instead.  Widening
+    any gate to admit [CLONE_VM] breaks the build HERE, next to the
     prose that says why it matters, rather than nowhere. *)
 Lemma clone_fork_gate_grants_no_shared_mm : forall flags,
   clone_fork_flags_b flags = true ->
@@ -150,6 +150,16 @@ Lemma clone_fork_gate_grants_no_shared_mm : forall flags,
 Proof.
   intros flags H. unfold clone_fork_flags_b, bv_eqb in H.
   apply Z.eqb_eq in H. rewrite H. vm_compute. reflexivity.
+Qed.
+
+(** The namespace word: [SIGCHLD] plus [CLONE_NEW*] bits, none of which
+    is [CLONE_VM]. *)
+Lemma clone_ns_gate_grants_no_shared_mm : forall flags,
+  clone_ns_flags_b flags = true ->
+  Z.land (bv_unsigned flags) CLONE_VM = 0%Z.
+Proof.
+  intros flags H.
+  apply (clone_ns_flags_disjoint flags CLONE_VM H); vm_compute; reflexivity.
 Qed.
 
 Lemma clone3_fork_gate_grants_no_shared_mm : forall bs,

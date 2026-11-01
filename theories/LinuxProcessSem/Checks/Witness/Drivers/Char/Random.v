@@ -68,9 +68,6 @@ Proof.
       * apply unmodeled_intro.
 Qed.
 
-(** readlinkat witness: [Unmodeled] on an unmodeled dirfd (fail closed, but
-    never stuck), otherwise the deterministic -EINVAL return. *)
-
 (* =========================================================================
    exit (93) / exit_group (94) — deterministic
    ========================================================================= *)

@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Sys.Fs.File — the fd table, dup (23), dup3 (24)
+(** * LinuxProcessSem.Sys.Fs.File — the fd table, dup (23), dup3 (24), close_range (436)
 
     This file answers to Linux [fs/file.c]: it holds what the kernel
     defines there, and nothing else.  Which file a spec belongs in is
@@ -152,6 +152,15 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      file]s on the random device draw from one generator.  Copying the
      entry loses nothing. *)
   | FdUrandom => true
+  (* THE THREE OPAQUE OBJECTS DECLINE.  [SYSCALL_DEFINE1(dup)]'s
+     [fget_raw] accepts an O_PATH file too (fs/file.c, read at
+     v6.18.44; identical at v6.18.46), so Linux duplicates all three.
+     Copying the entry would be exact for [OProcPath] (nothing modeled
+     reads its [f_pos] or [f_flags]) and for [OProcFile] (each read's
+     bytes are the environment's whatever the shared offset), and for an
+     eventfd it would be a second reference to one counter, which no
+     modeled arm reads.  None of that is needed, so it is not written. *)
+  | FdOpaque _ => false
   end.
 
 (** dup's injectable failures: fd-table exhaustion at RLIMIT_NOFILE
@@ -175,7 +184,8 @@ Definition dup_errnos : list Z := [ENOMEM; EMFILE].
     [get_unused_fd_flags(0)] take the lowest free slot ([lowest_fd],
     i.e. [State.alloc_fd]), which is where the two injectable failures
     live.  [fget_raw] (not [fget]) means an O_PATH fd is dup-able too;
-    the model has no O_PATH fds, so nothing turns on it.  The new
+    [dup_modeled_entry] declines the model's one O_PATH kind
+    ([State.OProcPath]), so nothing turns on it.  The new
     descriptor's close-on-exec bit is cleared, [flags] being 0.
 
     [oldfd] arrives already truncated to 32 bits (see
@@ -335,3 +345,84 @@ Definition dup3_spec (oldfd newfd flags : word) : Sys SyscallEffect :=
     inputs, while the extracted checker is handed a model directly and
     never sees it, so a caller may still reach this spec with any
     [unsigned long] in [State.m_nofile]. *)
+
+(* =========================================================================
+   close_range (436)
+   ========================================================================= *)
+
+(** The descriptor table with every fd in [[lo, hi]] removed and every
+    other entry kept in its order: what [__range_close]'s loop leaves.
+    The bounds are compared unsigned, as the kernel's [unsigned int]s
+    are.  A model fd at or above 2^32 cannot exist (every fd the model
+    hands out is below 2^31, see [Syscall.fd32]); were one present it
+    would lie above any [hi] and stay. *)
+Definition close_range_fds (lo hi : word) (fds : list (word * FdEntry))
+    : list (word * FdEntry) :=
+  List.filter (fun p => negb ((bv_unsigned lo <=? bv_unsigned (fst p))
+                              && (bv_unsigned (fst p) <=? bv_unsigned hi))%Z)
+              fds.
+
+(** [close_range fd max_fd flags]: with [flags] 0, close every open
+    descriptor from [fd] to [max_fd] inclusive and answer 0.
+
+    fs/file.c [SYSCALL_DEFINE3(close_range)], [__range_close], [last_fd], [file_close_fd_locked], read at v6.18.44; identical at v6.18.46.
+    include/uapi/linux/close_range.h [CLOSE_RANGE_UNSHARE], [CLOSE_RANGE_CLOEXEC], read at v6.18.44; identical at v6.18.46.
+
+    THE KERNEL'S ORDER, all three arguments [unsigned int] (so the
+    dispatcher hands this spec [fd32] of a0 and a1 and [flag32] of a2,
+    and the register's high half is gone before any test):
+
+      if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC))
+                                                   return -EINVAL;
+      if (fd > max_fd)                             return -EINVAL;
+      if ((flags & CLOSE_RANGE_UNSHARE) && <table shared>)
+                                                   dup_fd ... (-ENOMEM, -EMFILE)
+      if (flags & CLOSE_RANGE_CLOEXEC)  __range_cloexec(cur_fds, fd, max_fd);
+      else                              __range_close(cur_fds, fd, max_fd);
+      ...
+      return 0;
+
+    So an unknown flag bit is -EINVAL whatever the range, and [fd >
+    max_fd] is -EINVAL whatever the two known flags say: both are
+    answered, in that order, before this spec looks at a known flag.
+
+    FLAGS 0 IS ANSWERED, deterministically.  [__range_close] clamps
+    [max_fd] to [last_fd] = [max_fds - 1], the table's own end, and then
+    for each [fd <= max_fd] takes the file out of its slot
+    ([file_close_fd_locked]) and, if there was one, [filp_close]s it,
+    DISCARDING the result.  No step can fail, so the answer is 0 for
+    every range that passes the two tests, open descriptors or not; the
+    clamp removes nothing the model holds, since every open fd is below
+    [max_fds].  What changes is the table: every fd in [[fd, max_fd]]
+    is gone ([close_range_fds]).  That is [Open.close_spec] applied to
+    each open fd of the range in ascending order with its 0 discarded,
+    and it is KIND-BLIND for the same reason that spec is: what a
+    program can observe of a close is the descriptor leaving the table.
+    In particular [Open.close_spec]'s pipe argument carries over
+    unchanged -- [State.pipe_end_live] reads a pipe end's liveness off
+    the fd table, so closing the last write end by range is what turns
+    a later read of the drained pipe into end-of-file, exactly as one
+    [close] does, and buffered bytes stay in [m_pipes].
+
+    DECLINED: [CLOSE_RANGE_UNSHARE] or [CLOSE_RANGE_CLOEXEC] set, once
+    the two -EINVAL tests have passed.  CLOEXEC sets the close-on-exec
+    bit of each descriptor in the range instead of closing it, and the
+    model records no close-on-exec bit (see [dup3_spec]'s O_CLOEXEC
+    note), so it could neither store the effect nor answer a later
+    [fcntl(F_GETFD)] from it.  UNSHARE copies a SHARED table first; the
+    model's table is never shared (no [CLONE_FILES] clone is admitted),
+    so it would act as flags 0 here, but nothing in scope issues it and
+    the decline keeps the arm to the one shape argued above.
+
+    The answer is 0 in a full register and the -EINVALs are [errno_ret];
+    nothing is read from memory and nothing is written there. *)
+Definition close_range_spec (fd max_fd flags : word) : Sys SyscallEffect :=
+  if negb (Z.eqb (Z.ldiff (bv_unsigned flags)
+                          (Z.lor CLOSE_RANGE_UNSHARE CLOSE_RANGE_CLOEXEC)) 0)
+  then err_ret EINVAL                     (* an unknown flag bit *)
+  else if (bv_unsigned max_fd <? bv_unsigned fd)%Z then err_ret EINVAL
+  else if negb (Z.eqb (bv_unsigned flags) 0) then unmodeled
+  else
+    m <- get_model ;;
+    set_fds (close_range_fds fd max_fd (m_fds m)) ;;
+    ret_only (Z_to_bv 64 0).

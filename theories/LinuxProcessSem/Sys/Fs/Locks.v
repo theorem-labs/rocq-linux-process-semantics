@@ -87,6 +87,15 @@ Fixpoint path_openers (fds : list (word * FdEntry)) (p : path) : nat :=
   | (_, FdPipe _ _)  :: r => path_openers r p
   | (_, FdDevNull _ _) :: r => path_openers r p   (* a device node is not a key of [Fs.Fs] *)
   | (_, FdUrandom) :: r => path_openers r p       (* nor is this one *)
+  | (_, FdOpaque (ONsFile _)) :: r => S (path_openers r p)
+    (* COUNTED FOR EVERY PATH: the object behind the handle may be any
+       open file ([State.ONsFile]), the one being locked included, and a
+       lock it holds would conflict, so [flock_sole_opener] fails and
+       [flock_spec] declines while one is open *)
+  | (_, FdOpaque _) :: r => path_openers r p
+    (* nor is any of the other three opaque objects: a procfs name or an
+       anonymous inode, and [Open.openat_spec] mints a file kind only for
+       a slash-free name or a "/tmp/" key, never for a "/proc" one *)
   end.
 
 (** Exactly one descriptor names [p].  Applied to a path just resolved
@@ -245,12 +254,12 @@ Definition flock_sole_opener (fds : list (word * FdEntry)) (p : path) : bool :=
       test and can fail the call under an enforcing module.  Same
       position again, and for the same reason: the model describes a
       kernel with no LSM registering these hooks.
-    - the -EBADF an O_PATH descriptor gets from
-      [type != F_UNLCK && !(f_mode & (FMODE_READ|FMODE_WRITE))].
-      [Open.openat_spec] models three flag words and O_PATH is not
-      among them, so no such descriptor exists here.  Note the arm is
-      -EBADF, not -EINVAL: an fd that IS open can still be refused by
-      it, which is why it is named rather than folded into the lookup.
+    - the -EBADF an O_PATH descriptor gets: [SYSCALL_DEFINE2(flock)]'s
+      [CLASS(fd, f)] is [fdget], which refuses an FMODE_PATH file before
+      the command is read (fs/locks.c and fs/file.c, read at v6.18.44;
+      identical at v6.18.46), and that is -EBADF for LOCK_UN too.  The
+      model's O_PATH kind ([State.OProcPath]) is declined, with the
+      other two opaque objects, ahead of the unlock arm.
     - blocking.  A LOCK_SH or LOCK_EX without LOCK_NB that conflicts
       sleeps in [wait_event_interruptible] (fs/locks.c,
       [flock_lock_inode_wait]) until the holder releases or a signal
@@ -268,7 +277,12 @@ Definition flock_spec (fd cmd : word) : Sys SyscallEffect :=
     match fd_lookup (m_fds m) fd with
     | None => err_ret EBADF                        (* fd not open *)
     | Some e =>
-        if flock_unlock_b cmd then ret_only (Z_to_bv 64 0)
+        if fd_is_opaque e then unmodeled
+          (* FAIL-CLOSED, ahead of the kind-blind unlock below: an O_PATH
+             file is -EBADF on every command (see above), and an eventfd
+             or a /proc/sys file is a [struct file] on an inode whose
+             other openers this model does not count *)
+        else if flock_unlock_b cmd then ret_only (Z_to_bv 64 0)
           (* an unlock reads no other file's locks: unconditionally 0 *)
         else
           match e with
@@ -320,5 +334,7 @@ Definition flock_spec (fd cmd : word) : Sys SyscallEffect :=
           | FdUrandom => unmodeled
               (* FAIL-CLOSED, for the /dev/null reason: one inode, so
                  an [FdUrandom] count would be needed.  Not written. *)
+          | FdOpaque _ => unmodeled
+              (* unreachable: [fd_is_opaque] declined this kind above *)
           end
     end.

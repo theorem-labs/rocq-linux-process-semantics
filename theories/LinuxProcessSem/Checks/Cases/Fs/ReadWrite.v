@@ -276,10 +276,11 @@ Proof.
     destruct (access_okb buf (bv_unsigned count)); cbv iota in Hz;
       exact (Hro _ _ _ Hz). }
   (* Every [State.FdEntry] constructor, not only the files: [FdSocket] delivers
-     too, and so does a pipe READ end and an O_RDWR file, so each gets a
-     bullet rather than a one-line dismissal.  The two write-only kinds
-     ([FdFileW] and the append [FdFileA]) are the -EBADF pair. *)
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|] eqn:Hfd;
+     too, and so does a pipe READ end, an O_RDWR file and a /proc/sys file
+     ([State.OProcFile]), so each gets a bullet rather than a one-line
+     dismissal.  The two write-only kinds ([FdFileW] and the append
+     [FdFileA]) are the -EBADF pair. *)
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|] eqn:Hfd;
     cbv iota in Hspec;
     [ | | now destruct (Hro _ _ _ Hspec)
       | now destruct (Hro _ _ _ Hspec)
@@ -294,6 +295,13 @@ Proof.
         destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
         [ now destruct (Hro _ _ _ Hspec)
         | exact (check_read_urandom_delivery_clamped _ _ _ _ _ _ _ _ _ Hspec Hws) ]
+      | (* the opaque kinds: only a /proc/sys file delivers, at most
+           [count] bytes under the count gate *)
+        destruct o; cbv iota in Hspec;
+        [ discriminate Hspec
+        | exact (check_read_proc_delivery_clamped _ _ _ _ _ _ _ _ _ Hspec Hws)
+        | discriminate Hspec
+        | discriminate Hspec ]
       | now destruct (Hro _ _ _ Hspec) ].
   - (* channel *)
     destruct (negb (w_is0 ch)); cbv iota in Hspec;
@@ -2621,8 +2629,10 @@ Proof.
     destruct Hx as (-> & _ & _). cbn in Hc. discriminate. }
   destruct (ppos_einvalb pos); [now destruct (Hro _ _ _ H)|].
   destruct (fd_lookup (m_fds m) fd)
-    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| ]|];
+    as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |o]|];
     cbv iota in H; try (now destruct (Hro _ _ _ H)).
+  (* the opaque kinds, fifth of the survivors: [CheckUnmodeled] *)
+  5: discriminate.
   (* three kinds survive that: the APPEND arm, whose checker is
      [CheckUnmodeled] and so never equals a [CheckOk], and the two
      TRANSFERRING kinds -- the O_WRONLY and O_RDWR descriptions, which
@@ -3301,4 +3311,77 @@ Example write_socket_is_declined_at_both_addresses :
        (with_copyins [(task_top_buf, 16%nat)] (mkEffect 16 [] []))
        (rw_sock_model NFin)
      = CheckUnmodeled.
+Proof. split; check_eq. Qed.
+
+(* ---- read (63) on a /proc/sys file ([ReadWrite.read_proc_spec]) ---------- *)
+
+(** bubblewrap 0.13.1's parent reads "/proc/sys/kernel/overflowuid"
+    through the descriptor its [openat(-100, ..., 0x88000)] returned, and
+    its QEMU trace on Linux 6.18.44 reads [read(3, buf, 4079) = 6], then
+    [read = 0].  Before [State.OProcFile] the model had no such
+    descriptor; now the read answers 0 to [count] bytes of the
+    environment's choice, or any errno, and changes nothing else.
+
+    Rejected: a return that is not the delivery's length, and a delivery
+    anywhere but [buf].  Declined: the O_PATH kind, which [fdget] refuses
+    with an -EBADF the model does not write.  THE CONTROL is answered
+    alike by the old text and the new: a closed descriptor is -EBADF. *)
+Definition sysctl_read_model : Model :=
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  with_fds (fd_insert (fd_insert (m_fds m) 3
+                         (FdOpaque (OProcFile
+                            [47; 112; 114; 111; 99; 47; 115; 121; 115; 47; 107;
+                             101; 114; 110; 101; 108; 47; 111; 118; 101; 114;
+                             102; 108; 111; 119; 117; 105; 100])))
+                      4 (FdOpaque (OProcPath [47; 112; 114; 111; 99]))) m.
+
+(** 4079 writable bytes at 0x10000, up to 0x10fef. *)
+Definition sysctl_buf_wmem : word -> option byte :=
+  fun a => if bv_leu 0x10000 a && bv_ltu a 0x10fef then Some 0 else None.
+
+Definition sysctl_read_in (fd count : word) : SyscallInput :=
+  mkInput 63 [fd; 0x10000; count; 0; 0; 0] (fun _ => None) sysctl_buf_wmem.
+
+Example read_proc_sys_file :
+  (* "65534\n" *)
+  check_syscall (sysctl_read_in 3 4079)
+    (mkEffect 6 [(0x10000, [54; 53; 53; 51; 52; 10])] []) sysctl_read_model
+  = CheckOk sysctl_read_model []
+  /\ check_syscall (sysctl_read_in 3 4079) (mkEffect 0 [] []) sysctl_read_model
+     = CheckOk sysctl_read_model []
+  /\ check_syscall (sysctl_read_in 3 4079) (mkEffect (errno_ret EACCES) [] [])
+       sysctl_read_model
+     = CheckOk sysctl_read_model []
+  (* rejected *)
+  /\ check_syscall (sysctl_read_in 3 4079)
+       (mkEffect 7 [(0x10000, [54; 53; 53; 51; 52; 10])] []) sysctl_read_model
+     = CheckReject
+  /\ check_syscall (sysctl_read_in 3 4079)
+       (mkEffect 6 [(0x10001, [54; 53; 53; 51; 52; 10])] []) sysctl_read_model
+     = CheckReject
+  /\ check_syscall (sysctl_read_in 3 4)
+       (mkEffect 6 [(0x10000, [54; 53; 53; 51; 52; 10])] []) sysctl_read_model
+     = CheckReject
+  (* declined: the O_PATH descriptor *)
+  /\ check_syscall (sysctl_read_in 4 4079) (mkEffect (errno_ret EBADF) [] [])
+       sysctl_read_model
+     = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall (sysctl_read_in 9 4079) (mkEffect (errno_ret EBADF) [] [])
+       sysctl_read_model
+     = CheckOk sysctl_read_model [].
+Proof. repeat split; check_eq. Qed.
+
+(** NO -EINTR on the sysctl read ([Syscall.errno_any]): bubblewrap's
+    [load_file_data] loop retries -EINTR without bound, and no modeled
+    run can produce it (no handler runs, no outside signal arrives).
+    Before the exclusion the read accepted it.  THE CONTROL, accepted
+    before and after: -EACCES. *)
+Example read_proc_sys_admits_no_eintr :
+  check_syscall (sysctl_read_in 3 4079) (mkEffect (errno_ret EINTR) [] [])
+    sysctl_read_model
+  = CheckReject
+  /\ check_syscall (sysctl_read_in 3 4079) (mkEffect (errno_ret EACCES) [] [])
+       sysctl_read_model
+     = CheckOk sysctl_read_model [].
 Proof. split; check_eq. Qed.

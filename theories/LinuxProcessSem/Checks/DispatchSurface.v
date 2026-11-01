@@ -243,7 +243,8 @@ Definition probe_mem : word -> option byte :=
       non-NULL in this probe because [probe_mem] makes address zero
       writable, and QEMU could copy the result there.
     - clone (220) declines the default FLAG WORD: [clone_fork_flags_b]
-      admits the single word SIGCHLD and nothing else.
+      admits the single word SIGCHLD and [clone_ns_flags_b] SIGCHLD plus
+      namespace bits, and AT_FDCWD is neither.
     - clone3 (435) declines the default SIZE and the default STRUCT: it
       resolves only [CLONE_ARGS_SIZE] bytes at a readable address holding
       the fork-shaped [struct clone_args], which is why [probe_mem] above
@@ -282,7 +283,16 @@ Definition probe_mem : word -> option byte :=
     default probe therefore reaches its -EINVAL rather than declining.
     What decides the question is not whether [a0] is an fd but whether
     the arm has an ERROR GATE the default value trips, which is the same
-    thing mprotect's paragraph above says about alignment.
+    thing mprotect's paragraph above says about alignment.  close_range
+    (436) is the same case: a0's AT_FDCWD narrows to 0xffffff9c, above
+    the default a1 of 0, so [Fs.File.close_range_spec] answers its
+    [fd > max_fd] -EINVAL.  getppid (173) reads no argument at all, and
+    setgroups (159) answers -EPERM on [probe_model]'s uid 1000 before it
+    reads one.
+    capget (90) and capset (91) need no entry for the same reason: [a0]
+    is the header POINTER, and AT_FDCWD read as an address lies above
+    [State.TASK_SIZE], so [access_ok] refuses the 4-byte version read
+    and both arms answer -EFAULT before any version or pid gate.
 
     Add an entry when a newly listed syscall needs something else;
     leaving it out makes [modeled_sysnos_probes_answer] below fail to
@@ -357,16 +367,18 @@ Definition probe_args (n : Z) : list word :=
   else if Z.eqb n 167 then
     (* prctl dispatches on an OPTION, not an fd: [AT_FDCWD] narrowed to 32
        bits is 0xffffff9c, which is no prctl option, so the arm declines
-       before it reaches an answer.  [PR_CAPBSET_READ] is the one option
-       [Kernel.Sys.prctl_modeled_options] carries, and a1 is the capability
-       number -- 0 is a capability at or below [CAP_LAST_CAP], so the arm
-       answers 1 rather than -EINVAL.  Which of the two answers this probe
-       reaches does not matter to the check, only that it reaches one. *)
+       before it reaches an answer.  [PR_CAPBSET_READ] is one of the four
+       options [Kernel.Sys.prctl_modeled_options] carries, and a1 is the
+       capability number -- 0 is a capability at or below [CAP_LAST_CAP]
+       and outside [Kernel.Sys.capbset_assumed], so the arm answers 0 or
+       1 rather than -EINVAL.  Which answer this probe reaches does not
+       matter to the check, only that it reaches one. *)
     [Z_to_bv 64 PR_CAPBSET_READ; z; z; z; z; z]
   else if Z.eqb n 220 then
     (* clone declines the default FLAG WORD: [clone_fork_flags_b] admits
-       the single word SIGCHLD and nothing else, so [AT_FDCWD] there is
-       [unmodeled] rather than an answer. *)
+       the single word SIGCHLD and [clone_ns_flags_b] SIGCHLD plus
+       namespace bits, so [AT_FDCWD] there is [unmodeled] rather than an
+       answer.  The fork word is the one probed. *)
     [Z_to_bv 64 SIGCHLD; z; z; z; z; z]
   else if Z.eqb n 435 then
     (* clone3 reaches [kernel_clone] through a struct in user memory

@@ -280,15 +280,24 @@ them. A proof says nothing about a program in such a case.
 
 | Area | Limit |
 | --- | --- |
-| Threads | The model has one thread. It has no scheduler and no shared-memory interleaving. For `fork`-like calls, the model describes the parent only. It does not run the child. |
-| Signals | The model does not run signal handlers. It has two signals and both are fatal: `SIGABRT`, raised by `tkill`/`tgkill` on the abort path, and `SIGPIPE`, raised by a write whose far end has no reader. Each ends the run with a death that is not an exit (`State.KillEv`), or, where the launch mask blocks it, returns the errno and leaves the signal pending until a `rt_sigprocmask` uncovers it. `rt_sigaction` declines every install that would change either disposition, so no modeled call moves one. For `SIGABRT` the model assumes the launch left the disposition at `SIG_DFL`. For `SIGPIPE` it no longer assumes: the launch declares it (`State.in_sigpipe_default`), `Run.valid_input` pins the declaration to `SIG_DFL`, and `Run.valid_input_sigpipe_ignored` is the launch that ran `signal(SIGPIPE, SIG_IGN)` before `execve` — a launch `execve` preserves (`fs/exec.c`, `begin_new_exec`'s `flush_signal_handlers` with `force_default = 0`, Linux v6.18.46), under which the same write returns `-EPIPE` and the program runs on. No other signal is modeled: `SIGSEGV` is reported as the error transition rather than as a death, `SIGCHLD`'s default action is to ignore it, `SIGXFSZ` needs an `RLIMIT_FSIZE` the model does not carry, and nothing outside the process can send one. |
+| Threads | The model has one thread. It has no scheduler and no shared-memory interleaving. For `fork`-like calls, the model describes the parent only. It does not run the child. `clone` answers two flag words: `SIGCHLD` alone, and `SIGCHLD` with one or more of `CLONE_NEWNS`, `CLONE_NEWUSER`, `CLONE_NEWPID`, `CLONE_NEWNET`, `CLONE_NEWIPC`, `CLONE_NEWUTS` and `CLONE_NEWCGROUP` and no other bit (`Kernel.Fork.clone_ns_flags_b`). For the second word too the model describes the parent only, by choice: the parent gets a child pid (and the model records that it has a child) or an errno. The child runs in the new namespaces, and this model says nothing about it. |
+| Capabilities | The model holds no capability sets. `capget` answers a version-3 header with pid 0, or with a NULL data pointer (0, and the pid is not read). For a caller whose real, effective and saved uids are all non-zero it reports empty effective and permitted sets, and the inheritable set is the environment's choice within the valid bits. For a caller with a uid 0 the copy-out is `unmodeled`: its sets are the bounding set combined with the inheritable set, and the model does not know the bounding set beyond `CAP_SETUID` and `CAP_SETGID`. `capset` answers a version-3 header with pid 0 and six zero data words, from a caller whose three uids are all non-zero: 0 or `-ENOMEM`. For both calls a header, pid word or data range that `access_ok` refuses is `-EFAULT` (`kernel/capability.c`, v6.18.44). Every other shape of either call is `unmodeled`. |
+| Signals | The model does not run signal handlers. It has two signals and both are fatal: `SIGABRT`, raised by `tkill`/`tgkill` on the abort path, and `SIGPIPE`, raised by a write whose far end has no reader. Each ends the run with a death that is not an exit (`State.KillEv`), or, where the launch mask blocks it, returns the errno and leaves the signal pending until a `rt_sigprocmask` uncovers it. `rt_sigaction` declines every install that would change either disposition, so no modeled call moves one. For `SIGABRT` the model assumes the launch left the disposition at `SIG_DFL`. For `SIGPIPE` it no longer assumes: the launch declares it (`State.in_sigpipe_default`), `Run.valid_input` pins the declaration to `SIG_DFL`, and `Run.valid_input_sigpipe_ignored` is the launch that ran `signal(SIGPIPE, SIG_IGN)` before `execve` — a launch `execve` preserves (`fs/exec.c`, `begin_new_exec`'s `flush_signal_handlers` with `force_default = 0`, Linux v6.18.46), under which the same write returns `-EPIPE` and the program runs on. No other signal is modeled: `SIGSEGV` is reported as the error transition rather than as a death, `SIGCHLD`'s default action is to ignore it, `SIGXFSZ` needs an `RLIMIT_FSIZE` the model does not carry, and nothing outside the process can send one. For `SIGCHLD`, `rt_sigaction` answers one install, `SIG_DFL` with `SA_NOCLDWAIT` clear (0, nothing stored: the disposition the `clone` argument already assumes, `Signal.sigchld_dfl_install`). It declines `SIG_IGN`, every handler, and `SIG_DFL` with `SA_NOCLDWAIT` set, under which Linux reaps an exiting child itself (`do_notify_parent`, `kernel/signal.c`, v6.18.44). |
+| `prctl` | The model answers four options: `PR_CAPBSET_READ` (1 for `CAP_SETUID` and `CAP_SETGID`, 0 or 1 chosen at each call for every other capability, or `-EINVAL` past `CAP_LAST_CAP`; `security/commoncap.c`, `cap_task_prctl`, v6.18.44), and `PR_SET_PDEATHSIG`, `PR_SET_DUMPABLE` and `PR_SET_NO_NEW_PRIVS` with Linux's 0 or `-EINVAL` (`SYSCALL_DEFINE5(prctl)`, `kernel/sys.c`, v6.18.44). It stores nothing for the last three: no modeled call reads the parent-death signal, the dumpable flag or the no-new-privs bit. A statement that needs one of them set reads the call from the call log, and must take the last such call after the last credential change, because `commit_creds` resets the first two. Every other option is `unmodeled`, the `PR_GET_*` readers of these three included. |
+| Parent process | `getppid` answers any pid below 2^22, 0 included (a parent outside the caller's pid namespace), chosen afresh at each call: the model does not know the parent, and the parent changes when it exits. A statement that needs a particular parent takes it as a premise. |
+| Supplementary groups | `setgroups` answers a privileged caller only for the empty list: 0 with the list cleared, or `-ENOMEM` (`SYSCALL_DEFINE2(setgroups)` and `set_current_groups`, `kernel/groups.c`, v6.18.44). A non-empty list, and a size Linux refuses with `-EINVAL`, are `unmodeled`. An unprivileged caller gets `-EPERM` for every argument. |
+| `close_range` | With flags 0 the model closes every descriptor in the range, of any kind, and answers 0; an unknown flag bit or `fd > max_fd` is `-EINVAL` (`SYSCALL_DEFINE3(close_range)`, `fs/file.c`, v6.18.44). `CLOSE_RANGE_CLOEXEC` and `CLOSE_RANGE_UNSHARE` are `unmodeled`: the model records no close-on-exec bit. |
 | Address-space size | The system call specifications use Sv48. Thus you cannot prove the Sv39 and Sv57 statements for an image that can run. |
 | Stack limit | The stack limit is 8 MiB. A larger or unlimited `RLIMIT_STACK`, which selects the legacy mmap layout, is outside the model. The model counts the whole entry block against this limit, from the stack VMA's end `StackLayout.ed_top` down, as Linux counts it. |
-| Arguments | `Run.valid_input` requires that the arguments after `argv[0]` do not contain `/` and are not `..`. Thus a proof about `cp src dst` does not apply to `cp /tmp/src dst`. It also bounds the lists (`Run.valid_argv`, `Run.valid_envp`): 1 to 1024 arguments and at most 2 MiB of argument bytes, at most 256 environment variables and at most 128 KiB of environment bytes, and at most 131071 bytes in each string. Each count of bytes includes the terminating NUL of each string. These are the model's own per-list bounds. Linux's own bound is joint, and `Run.valid_launch` carries it: the exec file name, the envp strings and the argv strings with their NULs, plus 8 bytes for each argv and envp pointer, are at most 2 MiB together at the 8 MiB stack limit (`bprm_stack_limits`, `fs/exec.c`). Linux answers `E2BIG` for a larger launch. `Run.valid_launch` also says which exec file names `execve` can present (`State.in_execfn`): a path of 1 to 4095 bytes without a NUL, or `/dev/fd/N`, or `/dev/fd/N/` and such a path that does not start with `/` (`getname_flags` in `fs/namei.c`, `alloc_bprm` in `fs/exec.c`). Both binaries of a pair run under the same exec file name, as they run on the same input. A launch outside these bounds is outside the model. |
+| Arguments | `Run.valid_input` requires that the arguments after `argv[0]` do not contain `/` and are not `..`. Thus a proof about `cp src dst` does not apply to `cp /tmp/src dst`. A statement that must cover path arguments uses the second launch predicate `Run.valid_input_paths`, named the way `Run.valid_input_abort` names the aborting launch: it is `Run.valid_input` with `Run.valid_argv_paths` in place of `Run.valid_argv`, which drops only that clause, and `Run.valid_input_paths_of_valid_input` shows it admits every ordinary launch. Both predicates also bound the lists (`Run.valid_argv` and `Run.valid_argv_paths`, `Run.valid_envp`): 1 to 1024 arguments and at most 2 MiB of argument bytes, at most 256 environment variables and at most 128 KiB of environment bytes, and at most 131071 bytes in each string. Each count of bytes includes the terminating NUL of each string. These are the model's own per-list bounds. Linux's own bound is joint, and `Run.valid_launch` carries it: the exec file name, the envp strings and the argv strings with their NULs, plus 8 bytes for each argv and envp pointer, are at most 2 MiB together at the 8 MiB stack limit (`bprm_stack_limits`, `fs/exec.c`). Linux answers `E2BIG` for a larger launch. `Run.valid_launch` also says which exec file names `execve` can present (`State.in_execfn`): a path of 1 to 4095 bytes without a NUL, or `/dev/fd/N`, or `/dev/fd/N/` and such a path that does not start with `/` (`getname_flags` in `fs/namei.c`, `alloc_bprm` in `fs/exec.c`). Both binaries of a pair run under the same exec file name, as they run on the same input. A launch outside these bounds is outside the model. |
+| `execve` from the program | The model has no `execve` (221) or `execveat` (281) arm: a run stops at the call (`Run.syscall_spec_execve_unmodeled`, `Run.execve_boundary_stops`), and what the new image does is outside the model. A statement about a program that ends in an exec names the state at the call: `Run.execve_boundary` reads the path, argv and envp from the program's memory (`Run.cstr_at`, `Run.strv_at`), and the model at the call gives the credentials and the descriptor table. `Run.star_calls` is `Run.star` with a log of the system calls that returned on the way, in order (`Run.SysCall`: number, a0 to a5, return value, and the bytes it stored: its copy-outs and its zero-filled ranges), so a statement can say which calls came before the exec, what each answered and what each stored. A call that ends the process is not in the log; its event is in the trace. Three limits. First, a statement over the runs that reach the boundary says nothing about a program whose runs all stop earlier, at a declined call or a fault. Since the boundary is itself uncovered (`Run.unmodeled_at` holds there), `~ Run.reaches_unmodeled` cannot rule that out; such a statement must also show that every configuration a run reaches where the next step is the error transition (an uncovered call, a fault) is the boundary, or show that the boundary is reached. Second, the descriptor table at the call is not the new image's: the model records no close-on-exec bit, so a descriptor present at the call may be closed by the exec (`do_close_on_exec` in `begin_new_exec`, `fs/exec.c`); a claim that a descriptor is absent carries over to the new image, a claim that one is present does not. The exec can also change the credentials (a set-user-ID or set-group-ID file, file capabilities). Third, Linux returns from a failed exec and the program goes on; the model has no continuation, so nothing is said about that path. `execveat` has no boundary predicate. |
 | Standard input and output | The fds 0, 1 and 2 are external channels, and their direction is fixed: 0 is read-only, 1 and 2 are write-only (`State.FdChannel`). The model answers `-EBADF` for the other direction. Thus a proof says nothing about a program that is handed a connected socket on fd 0, as an inetd-style server is. |
 | Network | The list of connections is never empty. Thus the model does not include an environment where no peer ever connects. |
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. The `*_budgets_only` statements have a finer premise for the source: it excludes a first-touch or a cumulative refusal, but not a single request that is larger than the whole budget (`Run.alloc_refuse_reason`). |
 | Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
+| Paths under `/proc` | `openat` answers two shapes on a procfs name: "/proc", or a name that starts with "/proc/" and has no `..` component (`Open.proc_path_b`), given absolutely or relative to an O_PATH descriptor on one. O_PATH (alone, or with `O_DIRECTORY` and `O_NOFOLLOW`; `O_CLOEXEC`, `O_LARGEFILE` and `O_NONBLOCK` are ignored) gives an O_PATH descriptor (`State.OProcPath`), and `O_RDONLY` on a name under "/proc/sys/" gives a `State.OProcFile` descriptor; either may instead be any errno but `-EINTR` (`Syscall.errno_any`; `fs/namei.c` and `fs/open.c`, v6.18.44). Every other flag word on a procfs name, and O_PATH on any other name, is `unmodeled`. `read` on an `OProcFile` answers 0 to `count` bytes of the environment's choice, or any errno but `-EINTR`, for a `count` of at most 128 KiB; a destination that is only partly writable is `unmodeled`. `newfstatat` with a relative name and an `OProcPath` directory descriptor answers any errno but `-EINTR`, or 0 with 128 bytes whose padding is zero. `close`, `close_range` and `dup3` (onto it) remove such a descriptor and `clone` passes it; every other call on one is `unmodeled`. `newfstatat` and `readlinkat` from `AT_FDCWD` decline a procfs name, because procfs names resolve whatever the file model holds and some are links. No modeled run can give `-EINTR`: Linux answers it only when a signal handler runs or a signal interrupts the call, the model installs no handler, and no signal arrives from outside the process. |
+| `eventfd2` descriptors | `eventfd2` with an accepted flag word gives the lowest free descriptor, holding an eventfd with that flag word (`State.OEventFd`), or `-ENOMEM`, `-EMFILE` or `-ENFILE` (`do_eventfd`, `fs/eventfd.c`, v6.18.44). The counter is not modeled, so `read`, `write`, `select`, `poll` and `epoll` on an eventfd are `unmodeled`. |
+| Namespace and mount model descriptors | A descriptor may hold `State.ONsFile h`, an open file that the namespace and mount model holds under handle `h`. No arm of `spec_table` makes one, so a run from `init_config` never holds one. Its object may be a directory, a regular file, a procfs file, an eventfd or a socket, so the model answers only what Linux answers for every open file: `close` and `close_range` remove it, `fcntl`'s `F_SETFD` and `F_GETFD` answer, `dup3` onto it replaces it, and `clone` passes it. Every other call on it is `unmodeled`, and while one is open `flock` on any file and `unlinkat` are `unmodeled` too, because its object may be that file. |
 | Shared memory | The model has no shared mapping. `mmap` with `MAP_SHARED` is `unmodeled`, anonymous requests included. Linux builds an anonymous shared mapping on a shmem file (`mm/vma.c`, `__mmap_new_vma` calls `shmem_zero_setup`), so `vma_is_anonymous` is false for it, its pages survive the zap that `MADV_DONTNEED` performs, and a `fork` shares them instead of copying them. `Sys/Mm/Mmap.v` gives the full reason and what an arm would take. |
 
 The entry premises also limit the launches that a statement covers, and
@@ -344,6 +353,17 @@ not apply.
   files or holds locks on them.
 - `/dev/null` is the null device (major 1, minor 3). `/dev/urandom` is the
   random device (major 1, minor 9).
+- procfs is mounted at `/proc` in the process's root, and nothing under
+  `/proc/sys` is a symbolic link. `Open.proc_path_b` and
+  `Open.proc_sys_file_b` read the name, not the file system: a name
+  that starts with "/proc/" is taken to be a procfs name, and an
+  `O_RDONLY` open is answered only under "/proc/sys/", where with no
+  link the name stays in the sysctl tree.
+- No BPF LSM program is attached to `file_alloc_security`.
+  `EventFd.eventfd2_errnos` is the list of errnos an accepted `eventfd2`
+  can meet without one (`do_eventfd`, `fs/eventfd.c`, and
+  `alloc_empty_file`, `fs/file_table.c`, v6.18.44); such a program could
+  return any errno.
 - No tracer (`ptrace`) or other outside agent changes the process.
 - The binary is a static executable (`ET_EXEC`). `tools/elf_snapshot.py`
   refuses an image whose `e_type` is not `ET_EXEC`, so a snapshot cannot
@@ -360,6 +380,18 @@ not apply.
   `Sys/Kernel/Exit.v`). `execve` does not reap a child in Linux, so a
   launcher that forks a grandchild, or attaches a tracee, before it
   execs the image makes this assumption false.
+- No signal arrives from outside the process. In particular the parent
+  does not exit while a parent-death signal is set
+  (`prctl(PR_SET_PDEATHSIG)`): Linux then sends that signal
+  (`forget_original_parent`, `kernel/exit.c`, v6.18.44), and the model
+  has no transition for it. A statement about a program that sets one
+  holds for the runs in which the parent outlives it.
+- The process runs in the init user namespace, under the capability
+  LSM alone, with the capability state `State.creds_privileged`
+  describes. The credential calls, `prctl` and `setgroups` answer for
+  that kernel (the credentials section of `Sys/Kernel/Sys.v`): a second
+  LSM (SELinux, AppArmor, a BPF program on `task_prctl` or
+  `task_fix_setgroups`) can refuse where the model answers 0.
 - The launch left `SIGPIPE` at its default disposition, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises
@@ -485,6 +517,25 @@ not apply.
   also cannot express such a launch: `State.ProcInput` has no effective
   id, so `State.init_model` derives the effective and saved ids from
   the real ones.
+- The process runs in the initial user namespace with default
+  securebits, a capability bounding set that holds `CAP_SETUID` and
+  `CAP_SETGID`, no ambient capabilities and a binary without file
+  capabilities, and the exec that started it was not unsafe
+  (`check_unsafe_exec`, `fs/exec.c`): no tracer, no `no_new_privs`, and
+  no `fs_struct` shared with another process. The rest of the bounding
+  set may be narrowed, as a container narrows it (Docker's default set
+  holds 14 capabilities, these two among them). The only security
+  module that answers the credential and capability hooks is the
+  capability module. Under these, a process holds `CAP_SETUID` and
+  `CAP_SETGID` in its effective set exactly when its effective uid is
+  0, and its permitted set is empty exactly when none of its uids is 0
+  (`security/commoncap.c`, `cap_bprm_creds_from_file` and
+  `cap_emulate_setxuid`). The model reads privilege from the effective
+  uid (`State.creds_privileged`). `capget` reports the empty sets of a
+  caller with no uid 0 and is `unmodeled` for a caller with one, and
+  `prctl(PR_CAPBSET_READ)` answers 1 for these two capabilities and 0
+  or 1 for the others (`Kernel.Capability`, `Kernel.Sys.prctl_spec`).
+  SELinux and AppArmor can refuse or narrow these answers.
 - The machine has one view of its caches. `get_cacheinfo`
   (`arch/riscv/kernel/cacheinfo.c`) reads the CPU that runs the
   `execve`, and `State.KernelBuild` holds one `State.CacheView`. The
@@ -518,6 +569,22 @@ equivalence) can be true of the model and false of Linux.
   its caches and its vDSO image are fields of `State.KernelBuild`, which
   the two binaries of a pair share, so there the model does carry a
   parameter for the machine and both binaries read the same one.
+- **Errors of a namespace `clone`.** For the namespace flag word
+  (`Kernel.Fork.clone_ns_flags_b`) the model admits every errno from 1 to
+  4095. The failures run through `create_user_ns`, `copy_namespaces` and
+  every per-namespace init function, including each network namespace's
+  pernet init, and they cannot be listed with confidence. Linux gives
+  only some of them.
+- **The inheritable capability set.** `capget` lets the environment
+  choose the inheritable set on each call, within the valid bits. Linux
+  gives the same set on each call until it changes, and 0 after an
+  answered `capset`.
+- **The capability bounding set.** `prctl(PR_CAPBSET_READ)` chooses 0
+  or 1 again on each call for every valid capability other than
+  `CAP_SETUID` and `CAP_SETGID`. Linux gives the same bit on each call:
+  no modeled call changes the bounding set (`PR_CAPBSET_DROP` is
+  `unmodeled`). Also, the model admits 1 for a capability a container's
+  set lacks, and 0 for one a full set holds.
 - **Clock resolution.** For supported non-CPU clock IDs, `clock_getres`
   accepts any positive nanosecond value below one second. Linux returns
   1 ns or a tick-based resolution (`posix_get_hrtimer_res` and
@@ -682,6 +749,19 @@ equivalence) can be true of the model and false of Linux.
   (`RiscvSemantics.memory_read`). Linux on riscv maps every writable
   page readable (`arch/riscv/mm/fault.c`, `access_error`: "Write
   implies read"), so there both the load and the failing `sc` succeed.
+- **Contents under /proc, chosen afresh.** The bytes a `read` of a
+  `/proc/sys` file delivers and the 128 bytes a `newfstatat` relative to
+  an O_PATH procfs descriptor delivers are the environment's choice at
+  each call, as `getrandom`'s are: nothing pins a second read to the
+  rest of the first one's text, or two stats of one namespace to one
+  inode number. The source and the target choose them independently.
+- **Every procfs name opens.** An O_PATH open is admitted for every
+  procfs name, including a pid that does not exist and a name that is a
+  link out of procfs ("/proc/self/root/etc"), and the procfs arms admit
+  every errno from 1 to 4095 but `-EINTR` (`Syscall.errno_any`), because their errnos
+  run through procfs's own lookups and the LSM hooks and cannot be
+  listed with confidence. Nothing the model does with an `OProcPath`
+  descriptor reads the object it names, so this costs precision only.
 
 ## What the proofs do not check
 

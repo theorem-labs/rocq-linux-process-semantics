@@ -425,6 +425,34 @@ Local Definition check_openat_resolved (p : path) (flags : word)
   else if is_excl_append_create fl then check_openat_append true p eff m
   else CheckUnmodeled.
 
+(** Mirrors [Open.proc_open_result]: any error-encoded return but
+    -EINTR (the spec's [Syscall.errno_any]; [errno_any_b]), or the
+    lowest free fd bound to the opaque entry, with nothing written. *)
+Local Definition check_proc_open_result (o : OpaqueFd) (eff : SyscallEffect)
+    (m : Model) : check_result :=
+  match eff with
+  | mkEffectU ret [] [] [] [] [] =>
+      if errno_any_b ret then CheckOk m []
+      else
+        match fd_lookup (m_fds m) ret with
+        | Some _ => CheckReject
+        | None => if bv_eqb ret (alloc_fd (m_fds m))
+                  then CheckOk (with_fds (fd_insert (m_fds m) ret (FdOpaque o)) m) []
+                  else CheckReject
+        end
+  | _ => CheckReject
+  end.
+
+(** Mirrors [Open.openat_proc_spec], word for word; that definition
+    carries the kernel path, the assumptions and the precision cost. *)
+Local Definition check_openat_proc (c : path) (flags : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
+  if open_path_word fl then check_proc_open_result (OProcPath c) eff m
+  else if Z.eqb fl 0 && proc_sys_file_b c
+  then check_proc_open_result (OProcFile c) eff m
+  else CheckUnmodeled.
+
 Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match read_cstr (in_mem i) pathp with
@@ -432,8 +460,15 @@ Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
     | CstrFault => check_ret_only eff (errno_ret EFAULT) m []
     | CstrOk p =>
         if path_eqb p [] then check_ret_only eff (errno_ret ENOENT) m []
-        else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
+        else
+        match proc_open_target (m_fds m) dirfd p with
+        | Some c => check_openat_proc c flags eff m
+        | None =>
+        if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
+        else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+        then CheckUnmodeled
         else check_openat_resolved p flags eff m
+        end
   end.
 
 
@@ -770,6 +805,67 @@ Proof.
                      +++ discriminate.
 Qed.
 
+Local Lemma check_proc_open_result_sound_ok : forall i o eff m m' evs,
+  check_proc_open_result o eff m = CheckOk m' evs ->
+  proc_open_result m o i m (Ok eff m' evs).
+Proof.
+  intros i o [ret ws zs us cs copyins] m m' evs H.
+  unfold check_proc_open_result in H.
+  destruct ws as [|w ws']; [destruct zs as [|z zs']|];
+    destruct us as [|? ?]; destruct cs as [|? ?];
+    destruct copyins as [|? ?]; try discriminate.
+  destruct (errno_any_b ret) eqn:He.
+  - inversion H; clear H; subst.
+    apply errno_any_b_errno in He. destruct He as (e & He & ->).
+    unfold proc_open_result. apply alt_l. eapply bind_ok0.
+    { unfold errno_any. apply (choose_ok _ e). exact He. }
+    apply pure_ok.
+  - destruct (fd_lookup (m_fds m) ret) eqn:Hfr; [discriminate|].
+    destruct (bv_eqb ret (alloc_fd (m_fds m))) eqn:Heq; [|discriminate].
+    inversion H; clear H; subst. apply bv_eqb_eq in Heq.
+    unfold proc_open_result. apply alt_r. eapply bind_ok0.
+    { apply (choose_ok _ ret). split; assumption. }
+    cbv beta. eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+Local Lemma check_proc_open_result_no_unmodeled : forall o eff m,
+  check_proc_open_result o eff m <> CheckUnmodeled.
+Proof.
+  intros o [ret ws zs us cs copyins] m. unfold check_proc_open_result.
+  destruct ws as [|? ?]; destruct zs as [|? ?]; destruct us as [|? ?];
+    destruct cs as [|? ?]; destruct copyins as [|? ?]; try discriminate.
+  destruct (errno_any_b ret); [discriminate|].
+  destruct (fd_lookup (m_fds m) ret); [discriminate|].
+  destruct (bv_eqb ret (alloc_fd (m_fds m))); discriminate.
+Qed.
+
+Local Lemma check_openat_proc_sound_ok : forall i c flags eff m m' evs,
+  check_openat_proc c flags eff m = CheckOk m' evs ->
+  openat_proc_spec c flags m i m (Ok eff m' evs).
+Proof.
+  intros i c flags eff m m' evs H.
+  unfold check_openat_proc, openat_proc_spec in *. cbv zeta in *.
+  destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [now apply check_proc_open_result_sound_ok|].
+  destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
+            && proc_sys_file_b c);
+    [now apply check_proc_open_result_sound_ok|discriminate].
+Qed.
+
+Local Lemma check_openat_proc_sound_unmodeled : forall i c flags eff m,
+  check_openat_proc c flags eff m = CheckUnmodeled ->
+  openat_proc_spec c flags m i m Unmodeled.
+Proof.
+  intros i c flags eff m H.
+  unfold check_openat_proc, openat_proc_spec in *. cbv zeta in *.
+  destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)|].
+  destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
+            && proc_sys_file_b c);
+    [exfalso; exact (check_proc_open_result_no_unmodeled _ _ _ H)
+    |apply unmodeled_intro].
+Qed.
+
 Local Lemma check_openat_body_spec_sound_ok :
   forall i dirfd pathp flags eff m m' evs,
   check_openat_body i dirfd pathp flags (clear_copyins eff) m = CheckOk m' evs ->
@@ -781,8 +877,12 @@ Proof.
   destruct (read_cstr (in_mem i) pathp) as [p| |].
   - destruct (path_eqb p []).
     + now apply check_ret_only_sound_ok.
-    + destruct (negb (bv_eqb dirfd AT_FDCWD32)); [discriminate|].
-      now apply check_openat_resolved_sound_ok.
+    + destruct (proc_open_target (m_fds m) dirfd p) as [c|].
+      * now apply check_openat_proc_sound_ok.
+      * destruct (negb (bv_eqb dirfd AT_FDCWD32)); [discriminate|].
+        destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+          [discriminate|].
+        now apply check_openat_resolved_sound_ok.
   - now apply check_ret_only_sound_ok.
   - now apply check_ret_only_sound_ok.
 Qed.
@@ -1074,9 +1174,12 @@ Proof.
   destruct (read_cstr (in_mem i) pathp) as [p| |].
   - destruct (path_eqb p []).
     + exfalso. now apply check_ret_only_no_unmodeled in H.
-    + destruct (negb (bv_eqb dirfd AT_FDCWD32)).
-      * apply unmodeled_intro.
-      * exact (check_openat_resolved_sound_unmodeled i p flags eff m H).
+    + destruct (proc_open_target (m_fds m) dirfd p) as [c|].
+      * exact (check_openat_proc_sound_unmodeled i c flags eff m H).
+      * destruct (negb (bv_eqb dirfd AT_FDCWD32)); [apply unmodeled_intro|].
+        destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+          [apply unmodeled_intro|].
+        exact (check_openat_resolved_sound_unmodeled i p flags eff m H).
   - exfalso. now apply check_ret_only_no_unmodeled in H.
   - exfalso. now apply check_ret_only_no_unmodeled in H.
 Qed.
@@ -1539,6 +1642,35 @@ Proof.
   unfold unmodeled. intros H. discriminate H.
 Qed.
 
+Local Lemma check_proc_open_result_complete_ok : forall i o eff m m' evs,
+  proc_open_result m o i m (Ok eff m' evs) ->
+  check_proc_open_result o eff m = CheckOk m' evs /\ eff_copyins eff = [].
+Proof.
+  intros i o eff m m' evs H.
+  unfold proc_open_result, errno_any in H. unfold check_proc_open_result.
+  sys_unfold. cbv iota in H. inv_ok.
+  - split; [|reflexivity].
+    rewrite errno_any_b_ret by (intuition lia). reflexivity.
+  - split; [|reflexivity].
+    unfold errno_any_b. rewrite alloc_fd_not_error_b.
+    match goal with H : fd_lookup _ _ = None |- _ => rewrite H end.
+    rewrite bv_eqb_refl. reflexivity.
+Qed.
+
+Local Lemma check_openat_proc_complete_ok : forall i c flags eff m m' evs,
+  openat_proc_spec c flags m i m (Ok eff m' evs) ->
+  check_openat_proc c flags eff m = CheckOk m' evs /\ eff_copyins eff = [].
+Proof.
+  intros i c flags eff m m' evs.
+  unfold openat_proc_spec, check_openat_proc. cbv zeta.
+  destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [apply check_proc_open_result_complete_ok|].
+  destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
+            && proc_sys_file_b c);
+    [apply check_proc_open_result_complete_ok
+    |unfold unmodeled; intro Hu; discriminate Hu].
+Qed.
+
 Local Lemma check_openat_body_complete_ok : forall i dirfd pathp flags eff m m' evs,
   openat_body_spec i m dirfd pathp flags i m (Ok eff m' evs) ->
   check_openat_body i dirfd pathp flags eff m = CheckOk m' evs /\
@@ -1551,16 +1683,28 @@ Proof.
       (match r with
        | CstrOk p =>
            if path_eqb p [] then err_ret ENOENT
-           else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
-           else openat_resolved_spec p flags m
+           else match proc_open_target (m_fds m) dirfd p with
+                | Some c => openat_proc_spec c flags m
+                | None =>
+                    if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
+                    else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                    then unmodeled
+                    else openat_resolved_spec p flags m
+                end
        | CstrTooLong => err_ret ENAMETOOLONG
        | CstrFault => err_ret EFAULT
        end)
       (match r with
        | CstrOk p =>
            if path_eqb p [] then check_ret_only eff (errno_ret ENOENT) m []
-           else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
-           else check_openat_resolved p flags eff m
+           else match proc_open_target (m_fds m) dirfd p with
+                | Some c => check_openat_proc c flags eff m
+                | None =>
+                    if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
+                    else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                    then CheckUnmodeled
+                    else check_openat_resolved p flags eff m
+                end
        | CstrTooLong => check_ret_only eff (errno_ret ENAMETOOLONG) m []
        | CstrFault => check_ret_only eff (errno_ret EFAULT) m []
        end)) _ _ _).
@@ -1568,19 +1712,63 @@ Proof.
     refine (refine_if (path_eqb p [])
       (fun b => completes_ok i m eff m' evs
         (if b then err_ret ENOENT
-         else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
-         else openat_resolved_spec p flags m)
+         else match proc_open_target (m_fds m) dirfd p with
+              | Some c => openat_proc_spec c flags m
+              | None =>
+                  if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
+                  else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                  then unmodeled
+                  else openat_resolved_spec p flags m
+              end)
         (if b then check_ret_only eff (errno_ret ENOENT) m []
-         else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
-         else check_openat_resolved p flags eff m)) _ _).
+         else match proc_open_target (m_fds m) dirfd p with
+              | Some c => check_openat_proc c flags eff m
+              | None =>
+                  if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
+                  else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                  then CheckUnmodeled
+                  else check_openat_resolved p flags eff m
+              end)) _ _).
     + unfold completes_ok. apply check_ret_only_complete_ok.
-    + refine (refine_if (negb (bv_eqb dirfd AT_FDCWD32))
-        (fun b => completes_ok i m eff m' evs
-          (if b then unmodeled else openat_resolved_spec p flags m)
-          (if b then CheckUnmodeled else check_openat_resolved p flags eff m))
-        _ _).
-      * unfold completes_ok, unmodeled. intros H. discriminate H.
-      * unfold completes_ok. apply check_openat_resolved_complete_ok.
+    + refine (refine_option (proc_open_target (m_fds m) dirfd p)
+        (fun o => completes_ok i m eff m' evs
+          (match o with
+           | Some c => openat_proc_spec c flags m
+           | None =>
+               if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
+               else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+               then unmodeled
+               else openat_resolved_spec p flags m
+           end)
+          (match o with
+           | Some c => check_openat_proc c flags eff m
+           | None =>
+               if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
+               else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+               then CheckUnmodeled
+               else check_openat_resolved p flags eff m
+           end)) _ _).
+      * intro c. unfold completes_ok. apply check_openat_proc_complete_ok.
+      * refine (refine_if (negb (bv_eqb dirfd AT_FDCWD32))
+          (fun b => completes_ok i m eff m' evs
+            (if b then unmodeled
+             else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+             then unmodeled
+             else openat_resolved_spec p flags m)
+            (if b then CheckUnmodeled
+             else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+             then CheckUnmodeled
+             else check_openat_resolved p flags eff m))
+          _ _).
+        -- unfold completes_ok, unmodeled. intros H. discriminate H.
+        -- refine (refine_if
+             (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags))
+             (fun b => completes_ok i m eff m' evs
+               (if b then unmodeled else openat_resolved_spec p flags m)
+               (if b then CheckUnmodeled else check_openat_resolved p flags eff m))
+             _ _).
+           ++ unfold completes_ok, unmodeled. intros H. discriminate H.
+           ++ unfold completes_ok. apply check_openat_resolved_complete_ok.
   - unfold completes_ok. apply check_ret_only_complete_ok.
   - unfold completes_ok. apply check_ret_only_complete_ok.
 Qed.
@@ -1899,6 +2087,27 @@ Proof.
   unfold unmodeled. intros _. reflexivity.
 Qed.
 
+Local Lemma proc_open_result_no_unmodeled : forall m o i,
+  ~ proc_open_result m o i m Unmodeled.
+Proof.
+  intros m o i H. unfold proc_open_result, errno_any in H. sys_unfold.
+  cbv iota in H. inv_ok.
+Qed.
+
+Local Lemma check_openat_proc_complete_unmodeled : forall i c flags eff m,
+  openat_proc_spec c flags m i m Unmodeled ->
+  check_openat_proc c flags eff m = CheckUnmodeled.
+Proof.
+  intros i c flags eff m.
+  unfold openat_proc_spec, check_openat_proc. cbv zeta.
+  destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags));
+    [intro H; exfalso; exact (proc_open_result_no_unmodeled m _ i H)|].
+  destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
+            && proc_sys_file_b c);
+    [intro H; exfalso; exact (proc_open_result_no_unmodeled m _ i H)
+    |unfold unmodeled; intros _; reflexivity].
+Qed.
+
 Local Lemma check_openat_body_spec_complete_unmodeled :
     forall i dirfd pathp flags eff m,
   openat_body_spec i m dirfd pathp flags i m Unmodeled ->
@@ -1911,16 +2120,28 @@ Proof.
       (match r with
        | CstrOk p =>
            if path_eqb p [] then err_ret ENOENT
-           else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
-           else openat_resolved_spec p flags m
+           else match proc_open_target (m_fds m) dirfd p with
+                | Some c => openat_proc_spec c flags m
+                | None =>
+                    if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
+                    else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                    then unmodeled
+                    else openat_resolved_spec p flags m
+                end
        | CstrTooLong => err_ret ENAMETOOLONG
        | CstrFault => err_ret EFAULT
        end)
       (match r with
        | CstrOk p =>
            if path_eqb p [] then check_ret_only eff (errno_ret ENOENT) m []
-           else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
-           else check_openat_resolved p flags eff m
+           else match proc_open_target (m_fds m) dirfd p with
+                | Some c => check_openat_proc c flags eff m
+                | None =>
+                    if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
+                    else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                    then CheckUnmodeled
+                    else check_openat_resolved p flags eff m
+                end
        | CstrTooLong => check_ret_only eff (errno_ret ENAMETOOLONG) m []
        | CstrFault => check_ret_only eff (errno_ret EFAULT) m []
        end)) _ _ _).
@@ -1928,21 +2149,66 @@ Proof.
     refine (refine_if (path_eqb p [])
       (fun b => completes_unmodeled i m
         (if b then err_ret ENOENT
-         else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
-         else openat_resolved_spec p flags m)
+         else match proc_open_target (m_fds m) dirfd p with
+              | Some c => openat_proc_spec c flags m
+              | None =>
+                  if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
+                  else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                  then unmodeled
+                  else openat_resolved_spec p flags m
+              end)
         (if b then check_ret_only eff (errno_ret ENOENT) m []
-         else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
-         else check_openat_resolved p flags eff m)) _ _).
+         else match proc_open_target (m_fds m) dirfd p with
+              | Some c => check_openat_proc c flags eff m
+              | None =>
+                  if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
+                  else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                  then CheckUnmodeled
+                  else check_openat_resolved p flags eff m
+              end)) _ _).
     + unfold completes_unmodeled. intro H.
       exfalso. exact (ret_only_no_unmodeled (errno_ret ENOENT) i m H).
-    + refine (refine_if (negb (bv_eqb dirfd AT_FDCWD32))
-        (fun b => completes_unmodeled i m
-          (if b then unmodeled else openat_resolved_spec p flags m)
-          (if b then CheckUnmodeled else check_openat_resolved p flags eff m))
-        _ _).
-      * unfold completes_unmodeled, unmodeled. intros _. reflexivity.
-      * unfold completes_unmodeled.
-        apply check_openat_resolved_complete_unmodeled.
+    + refine (refine_option (proc_open_target (m_fds m) dirfd p)
+        (fun o => completes_unmodeled i m
+          (match o with
+           | Some c => openat_proc_spec c flags m
+           | None =>
+               if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
+               else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+               then unmodeled
+               else openat_resolved_spec p flags m
+           end)
+          (match o with
+           | Some c => check_openat_proc c flags eff m
+           | None =>
+               if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
+               else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+               then CheckUnmodeled
+               else check_openat_resolved p flags eff m
+           end)) _ _).
+      * intro c. unfold completes_unmodeled.
+        apply check_openat_proc_complete_unmodeled.
+      * refine (refine_if (negb (bv_eqb dirfd AT_FDCWD32))
+          (fun b => completes_unmodeled i m
+            (if b then unmodeled
+             else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+             then unmodeled
+             else openat_resolved_spec p flags m)
+            (if b then CheckUnmodeled
+             else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+             then CheckUnmodeled
+             else check_openat_resolved p flags eff m))
+          _ _).
+        -- unfold completes_unmodeled, unmodeled. intros _. reflexivity.
+        -- refine (refine_if
+             (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags))
+             (fun b => completes_unmodeled i m
+               (if b then unmodeled else openat_resolved_spec p flags m)
+               (if b then CheckUnmodeled else check_openat_resolved p flags eff m))
+             _ _).
+           ++ unfold completes_unmodeled, unmodeled. intros _. reflexivity.
+           ++ unfold completes_unmodeled.
+              apply check_openat_resolved_complete_unmodeled.
   - unfold completes_unmodeled. intro H.
     exfalso. exact (ret_only_no_unmodeled (errno_ret ENAMETOOLONG) i m H).
   - unfold completes_unmodeled. intro H.
@@ -2038,6 +2304,7 @@ Definition check_ftruncate (fd len : word) (eff : SyscallEffect) (m : Model)
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFCHR, not S_ISREG *)
   | Some FdUrandom => check_ret_only eff (errno_ret EINVAL) m []  (* S_IFCHR again *)
   | Some (FdFile _ _) => check_ret_only eff (errno_ret EINVAL) m []
+  | Some (FdOpaque _) => CheckUnmodeled
   | Some FdDir => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdFileW p _) | Some (FdFileRW p _) =>
       match fs_lookup (m_fs m) p with
@@ -2068,10 +2335,11 @@ Proof.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| ]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
     try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
          (eapply bind_ok0; [apply get_model_ok|]); cbv beta iota; srw Hfd;
          apply pure_ok).
+  all: try discriminate.
   (* the two writable-file arms are the only ones that change the model *)
   all: destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; [|discriminate].
   all: destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; [discriminate|].
@@ -2088,8 +2356,11 @@ Proof.
   unfold check_ftruncate in H. unfold ftruncate_spec.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg.
   { now apply check_ret_only_no_unmodeled in H. }
-  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| ]|] eqn:Hfd;
+  destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
     try (now apply check_ret_only_no_unmodeled in H).
+  (* the opaque kinds: the spec declines outright *)
+  all: try (eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+            srw Hfd; apply unmodeled_intro).
   (* every destruct precedes the bind: the spec's [fs_lookup] sits under
      [get_model]'s binder, so it is only rewritable once [get_model_ok]
      has instantiated it *)
@@ -2110,7 +2381,7 @@ Proof.
   unfold ftruncate_spec in H. unfold check_ftruncate. sys_unfold.
   cbv iota in H. inv_ok.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg; hall Hneg; inv_ok;
-    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| ]|] eqn:Hfd;
+    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
          hall Hfd; inv_ok);
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
     try (destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; hall Hgap;
@@ -2126,7 +2397,7 @@ Proof.
   unfold ftruncate_spec in H. unfold check_ftruncate. sys_unfold.
   cbv iota in H. inv_ok.
   destruct ((bv_signed len <? 0)%Z) eqn:Hneg; hall Hneg; inv_ok;
-    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| ]|] eqn:Hfd;
+    try (destruct (fd_lookup (m_fds m) fd) as [[ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |o]|] eqn:Hfd;
          hall Hfd; inv_ok);
     try (destruct (fs_lookup (m_fs m) p) as [data|] eqn:Hfs; hall Hfs; inv_ok);
     try (destruct (negb (modeled_truncate_gap data len)) eqn:Hgap; hall Hgap;

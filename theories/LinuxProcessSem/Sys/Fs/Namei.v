@@ -237,6 +237,14 @@ Fixpoint fd_names_path (fds : list (word * FdEntry)) (p : path) : bool :=
        so no descriptor of this kind names a path [unlinkat] can reach *)
   | (_, FdUrandom) :: r => fd_names_path r p
     (* the same for /dev/urandom, for the same reason *)
+  | (_, FdOpaque (ONsFile _)) :: r => true
+    (* NAMES EVERY PATH, conservatively: the object behind the handle may
+       be any open file ([State.ONsFile]), so [unlinkat_spec] declines
+       while one is open *)
+  | (_, FdOpaque _) :: r => fd_names_path r p
+    (* exact for the other three: an opaque descriptor is on a procfs
+       name or an anonymous inode, and the names [unlinkat_spec] answers
+       for are a slash-free name or a "/tmp/" key, never a "/proc" one *)
   end.
 
 (** unlinkat's injectable failures: environment conditions the model does

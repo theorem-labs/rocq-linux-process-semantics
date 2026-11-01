@@ -781,8 +781,9 @@ Proof.
   | context [match ?x with Some _ => _ | None => _ end] => destruct x as [e |] eqn:Hfd
   end;
   cbv iota in H |- *; [| refute_ret H Hr].
-  (* every descriptor but a directory: -ENOTDIR *)
-  destruct e; cbv iota in H |- *; try (refute_ret H Hr).
+  (* every descriptor but a directory: -ENOTDIR, or a decline (the
+     opaque kinds) that admits no [Ok] *)
+  destruct e; cbv iota in H |- *; try (refute_ret H Hr); try (refute_unmodeled H).
   (* the directory: no room for an entry, or a decline *)
   case_if H; [apply alt_r; apply pure_ok | refute_unmodeled H].
 Qed.

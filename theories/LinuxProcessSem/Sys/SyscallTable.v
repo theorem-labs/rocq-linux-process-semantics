@@ -29,6 +29,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select Fs.Ioctl Fs.Fcntl Fs.Namei
   Fs.Readdir Fs.Locks Fs.Timerfd Fs.Pipe Fs.EventPoll Fs.EventFd
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise
+  Kernel.Capability
   Kernel.Exit Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups Kernel.Sched.Syscalls
   Kernel.Signal Kernel.Sys
   Kernel.Time.Hrtimer Kernel.Time.PosixTimers Kernel.Time.Time
@@ -71,6 +72,8 @@ Definition spec_table : list SpecArm :=
   (* fsync           *) mkSpecArm  82%Z (fun i => fsync_spec (fd32 (in_arg i 0)) i) ::
   (* fdatasync       *) mkSpecArm  83%Z (fun i => fsync_spec (fd32 (in_arg i 0)) i) ::
   (* timerfd_create  *) mkSpecArm  85%Z (fun i => timerfd_create_spec (clockid32 (in_arg i 0)) (flag32 (in_arg i 1)) i) ::
+  (* capget          *) mkSpecArm  90%Z (fun i => capget_spec (in_arg i 0) (in_arg i 1) i) ::
+  (* capset          *) mkSpecArm  91%Z (fun i => capset_spec (in_arg i 0) (in_arg i 1) i) ::
   (* exit            *) mkSpecArm  93%Z (fun i => exit_spec (in_arg i 0) i) ::
   (* exit_group      *) mkSpecArm  94%Z (fun i => exit_spec (in_arg i 0) i) ::
   (* set_tid_address *) mkSpecArm  96%Z (fun i => set_tid_address_spec i) ::
@@ -98,6 +101,7 @@ Definition spec_table : list SpecArm :=
   (* prctl           *) mkSpecArm 167%Z (fun i => prctl_spec (int32 (in_arg i 0)) (in_arg i 1) i) ::
   (* gettimeofday    *) mkSpecArm 169%Z (fun i => gettimeofday_spec (in_arg i 0) (in_arg i 1) i) ::
   (* getpid          *) mkSpecArm 172%Z (fun i => getpid_spec i) ::
+  (* getppid         *) mkSpecArm 173%Z (fun i => getppid_spec i) ::
   (* getuid          *) mkSpecArm 174%Z (fun i => getid_spec cr_uid i) ::
   (* geteuid         *) mkSpecArm 175%Z (fun i => getid_spec cr_euid i) ::
   (* getgid          *) mkSpecArm 176%Z (fun i => getid_spec cr_gid i) ::
@@ -130,5 +134,6 @@ Definition spec_table : list SpecArm :=
   (* prlimit64       *) mkSpecArm 261%Z (fun i => prlimit64_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) (in_arg i 3) i) ::
   (* getrandom       *) mkSpecArm 278%Z (fun i => getrandom_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) i) ::
   (* clone3          *) mkSpecArm 435%Z (fun i => clone3_spec (in_arg i 0) (in_arg i 1) i) ::
+  (* close_range     *) mkSpecArm 436%Z (fun i => close_range_spec (fd32 (in_arg i 0)) (fd32 (in_arg i 1)) (flag32 (in_arg i 2)) i) ::
   (* faccessat2      *) mkSpecArm 439%Z (fun i => faccessat2_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i) ::
   nil.

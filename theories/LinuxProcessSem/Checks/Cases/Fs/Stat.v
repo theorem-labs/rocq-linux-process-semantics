@@ -420,3 +420,162 @@ Example fstat_recreated_file_takes_a_new_inode :
                   (with_fs [] (with_statpin fstat_path stat_truthful
                                  fstat_model)))) [].
 Proof. check_eq. Qed.
+
+(* =========================================================================
+   newfstatat relative to an O_PATH descriptor on a procfs name
+   ([Fs.Stat.newfstatat_proc_spec]), in the word bubblewrap 0.13.1's
+   monitor issues on Linux 6.18.44 (its QEMU trace):
+   [newfstatat(6, "net", &st, 0)] with fd 6 the O_PATH descriptor its
+   [openat(3, "<pid>/ns", O_PATH|O_LARGEFILE)] returned.  Before
+   [State.FdOpaque] there was no such descriptor and every dirfd but
+   AT_FDCWD was declined; now the call answers an errno, or 0 with 128
+   bytes of the environment's choice whose padding [cp_new_stat] zeroes.
+   ========================================================================= *)
+
+(** fd 6 holds an O_PATH descriptor on "/proc/123/ns". *)
+Definition ns_model : Model :=
+  with_fds (fd_insert (m_fds statat_absent_model) 6
+              (FdOpaque (OProcPath
+                 [47; 112; 114; 111; 99; 47; 49; 50; 51; 47; 110; 115])))
+    statat_absent_model.
+
+(** "net" and its NUL at 0x2000, and 128 writable bytes at 0x3000. *)
+Definition ns_net_mem : word -> option byte :=
+  bytes_at 0x2000 [110; 101; 116; 0].
+Definition ns_buf_wmem : word -> option byte :=
+  fun a => if bv_leu 0x3000 a && bv_ltu a 0x3080 then Some 0 else None.
+
+Definition ns_stat_in (dirfd : word) (wmem : word -> option byte) : SyscallInput :=
+  mkInput 79 [dirfd; 0x2000; 0x3000; 0; 0; 0] ns_net_mem wmem.
+
+(** THE ANSWERS: the 128 bytes, any member values (an nsfs inode and a
+    zero struct alike), or an errno, each with the four pathname bytes
+    on the ledger and the model unchanged.  Rejected: a 127-byte
+    delivery, a delivery with the [__pad1] word set, and the empty
+    ledger.  Declined: a buffer inside the address space but not
+    writable, where a partial copy-out has no form here.
+
+    THE CONTROL is declined by the old text and the new alike: the same
+    name relative to fd 1, a channel. *)
+Example newfstatat_relative_to_proc_ns_fd :
+  check_syscall (ns_stat_in 6 ns_buf_wmem)
+    (with_copyins [(0x2000, 4%nat)]
+       (mkEffect 0 [(0x3000, stat_of 4026531992 32768 0 0 0)] []))
+    ns_model
+  = CheckOk ns_model []
+  /\ check_syscall (ns_stat_in 6 ns_buf_wmem)
+       (with_copyins [(0x2000, 4%nat)]
+          (mkEffect 0 [(0x3000, repeat (Z_to_bv 8 0) 128)] []))
+       ns_model
+     = CheckOk ns_model []
+  /\ check_syscall (ns_stat_in 6 ns_buf_wmem)
+       (with_copyins [(0x2000, 4%nat)] (mkEffect (errno_ret EACCES) [] []))
+       ns_model
+     = CheckOk ns_model []
+  (* rejected *)
+  /\ check_syscall (ns_stat_in 6 ns_buf_wmem)
+       (with_copyins [(0x2000, 4%nat)]
+          (mkEffect 0 [(0x3000, repeat (Z_to_bv 8 0) 127)] []))
+       ns_model
+     = CheckReject
+  /\ check_syscall (ns_stat_in 6 ns_buf_wmem)
+       (with_copyins [(0x2000, 4%nat)]
+          (mkEffect 0 [(0x3000, repeat (Z_to_bv 8 0) 40 ++ [Z_to_bv 8 1]
+                                 ++ repeat (Z_to_bv 8 0) 87)] []))
+       ns_model
+     = CheckReject
+  /\ check_syscall (ns_stat_in 6 ns_buf_wmem)
+       (mkEffect (errno_ret EACCES) [] []) ns_model
+     = CheckReject
+  (* declined: the destination is inside the address space but not
+     writable *)
+  /\ check_syscall (ns_stat_in 6 (fun _ => None))
+       (with_copyins [(0x2000, 4%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       ns_model
+     = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall (ns_stat_in 1 ns_buf_wmem)
+       (with_copyins [(0x2000, 4%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       ns_model
+     = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(* =========================================================================
+   procfs names under AT_FDCWD.  procfs is mounted at /proc (SCOPE.md,
+   "Assumptions that the model does not check"), so such a name resolves
+   whatever [Fs] holds, and some are links.  [Fs.Stat.newfstatat_spec]
+   and [Fs.Stat.readlinkat_spec] decline one; the old text answered
+   -ENOENT (newfstatat, off the flat map) and -EINVAL (readlinkat, without
+   reading the name), both wrong for Linux on "/proc/self/exe".
+   ========================================================================= *)
+
+(** A pathname and its NUL at 0x2000. *)
+Definition cwd_path_mem (bs : list byte) : word -> option byte :=
+  bytes_at 0x2000 (bs ++ [Z_to_bv 8 0]).
+
+(** "/proc/self/exe", a link to the running image on Linux. *)
+Definition s_proc_self_exe : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 101; 120; 101].
+
+Definition rl_in (bs : list byte) (bufsiz : word) : SyscallInput :=
+  mkInput 78 [AT_FDCWD; 0x2000; 0x3000; bufsiz; 0; 0] (cwd_path_mem bs) (fun _ => None).
+
+(** newfstatat(AT_FDCWD, "/proc/self/exe", buf, 0) is declined.  THE
+    CONTROL, answered alike by the old text and the new: "f", absent
+    from [Fs], is -ENOENT with the pathname on the ledger. *)
+Example newfstatat_cwd_proc_name_declines :
+  check_syscall
+    (mkInput 79 [AT_FDCWD; 0x2000; 0x3000; 0; 0; 0]
+       (cwd_path_mem s_proc_self_exe) ns_buf_wmem)
+    (with_copyins [(0x2000, 15%nat)] (mkEffect (errno_ret ENOENT) [] []))
+    statat_absent_model
+  = CheckUnmodeled
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; 0x3000; 0; 0; 0]
+          (cwd_path_mem [102]) ns_buf_wmem)
+       (with_copyins [(0x2000, 2%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       statat_absent_model
+     = CheckOk statat_absent_model [].
+Proof. split; check_eq. Qed.
+
+(** readlinkat(AT_FDCWD, "/proc/self/exe", buf, 64) is declined.  THE
+    CONTROL keeps the old -EINVAL for a name outside procfs, now with the
+    pathname fetch on the copy-in ledger ([do_readlinkat] fetches it
+    before it answers), and the ledger is not optional.  The [bufsiz]
+    gate comes BEFORE the fetch, so its -EINVAL carries no ledger.  The
+    empty name is the working directory (LOOKUP_EMPTY), not a link:
+    -ENOENT.  An unreadable pathname is -EFAULT with the faulting byte
+    charged, as [newfstatat]'s is. *)
+Example readlinkat_reads_its_pathname :
+  check_syscall (rl_in s_proc_self_exe 64)
+    (with_copyins [(0x2000, 15%nat)] (mkEffect (errno_ret EINVAL) [] []))
+    statat_absent_model
+  = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall (rl_in [102] 64)
+       (with_copyins [(0x2000, 2%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       statat_absent_model
+     = CheckOk statat_absent_model []
+  /\ check_syscall (rl_in [102] 64) (mkEffect (errno_ret EINVAL) [] [])
+       statat_absent_model
+     = CheckReject
+  (* bufsiz 0: no fetch, so no ledger *)
+  /\ check_syscall (rl_in [102] 0) (mkEffect (errno_ret EINVAL) [] [])
+       statat_absent_model
+     = CheckOk statat_absent_model []
+  /\ check_syscall (rl_in [102] 0)
+       (with_copyins [(0x2000, 2%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       statat_absent_model
+     = CheckReject
+  (* the empty name *)
+  /\ check_syscall (rl_in [] 64)
+       (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       statat_absent_model
+     = CheckOk statat_absent_model []
+  (* an unreadable pathname *)
+  /\ check_syscall
+       (mkInput 78 [AT_FDCWD; 0x9000; 0x3000; 64; 0; 0] (fun _ => None) (fun _ => None))
+       (with_copyins [(0x9000, 1%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       statat_absent_model
+     = CheckOk statat_absent_model [].
+Proof. repeat split; check_eq. Qed.

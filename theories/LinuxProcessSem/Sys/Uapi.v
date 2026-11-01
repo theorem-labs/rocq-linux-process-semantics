@@ -158,6 +158,15 @@ Definition O_NONBLOCK : Z := 2048%Z.
     steps being reached.  Linux v6.18.46. *)
 Definition O_DIRECTORY : Z := 65536%Z.
 
+(** O_NOFOLLOW: 00400000, and O_PATH: 010000000
+    (include/uapi/asm-generic/fcntl.h, read at v6.18.44; identical at
+    v6.18.46; riscv64 overrides neither).  Interpreted only together:
+    the O_PATH words [Open.open_path_word] admits are O_PATH beside
+    O_DIRECTORY and O_NOFOLLOW, the two bits [build_open_how] (fs/open.c)
+    keeps with O_PATH, and only [Open.openat_proc_spec] answers them. *)
+Definition O_NOFOLLOW : Z := 131072%Z.
+Definition O_PATH : Z := 2097152%Z.
+
 Definition AT_FDCWD  : word := Z_to_bv 64 (-100).   (* -100 in two's complement *)
 
 (** AT_FDCWD as it reaches openat's dirfd test, i.e. after the [int dfd]
@@ -437,6 +446,15 @@ Definition F_SETFL  : word := Z_to_bv 64 4.
     reports and [F_SETFD] reads ([#define FD_CLOEXEC 1],
     include/uapi/asm-generic/fcntl.h, Linux v6.18.46). *)
 Definition FD_CLOEXEC : word := Z_to_bv 64 1.
+
+(** [close_range]'s two flag bits (include/uapi/linux/close_range.h,
+    [#define CLOSE_RANGE_UNSHARE (1U << 1)] and
+    [#define CLOSE_RANGE_CLOEXEC (1U << 2)]; read at v6.18.44, identical
+    at v6.18.46).  [SYSCALL_DEFINE3(close_range)] (fs/file.c) refuses
+    every other bit with -EINVAL before it looks at the range, and
+    [Fs.File.close_range_spec] declines both of these; see there. *)
+Definition CLOSE_RANGE_UNSHARE : Z := 2%Z.
+Definition CLOSE_RANGE_CLOEXEC : Z := 4%Z.
 
 (** The [flock] operations, from that same header
     ([include/uapi/asm-generic/fcntl.h], Linux v6.18.46, commit
@@ -972,10 +990,25 @@ Definition MAX_RT_PRIO : Z := 100%Z.
     [Kernel.Futex.Syscalls]'s empty-waiter-set argument depends on
     nobody ever granting, and
     [Checks.Cases.Kernel.Futex.Syscalls] turns that dependency into a
-    compile-time fact over both clone gates.  [Kernel.Fork] names the
-    flag in prose throughout and needs no constant, because its gates
-    are equalities on whole words rather than mask tests. *)
+    compile-time fact over every clone gate.  [Kernel.Fork] names the
+    flag in prose throughout and needs no constant: the fork gate is an
+    equality on the whole word, and the namespace gate below admits only
+    [SIGCHLD] and the [CLONE_NEW*] bits. *)
 Definition CLONE_VM : Z := 256%Z.
+
+(** The seven namespace bits of [clone]'s flag word that
+    [Kernel.Fork.clone_ns_flags_b] admits beside [SIGCHLD]
+    (include/uapi/linux/sched.h, read at v6.18.44; identical at
+    v6.18.46).  [CLONE_NEWTIME] (0x80) is not among them: it lies inside
+    [CSIGNAL], so legacy [clone] reads it as part of the exit signal and
+    only [clone3] and [unshare] can ask for it. *)
+Definition CLONE_NEWNS     : Z := 0x00020000%Z.
+Definition CLONE_NEWCGROUP : Z := 0x02000000%Z.
+Definition CLONE_NEWUTS    : Z := 0x04000000%Z.
+Definition CLONE_NEWIPC    : Z := 0x08000000%Z.
+Definition CLONE_NEWUSER   : Z := 0x10000000%Z.
+Definition CLONE_NEWPID    : Z := 0x20000000%Z.
+Definition CLONE_NEWNET    : Z := 0x40000000%Z.
 
 (** The [futex] operation words this model answers, and the two bits
     that decorate them (include/uapi/linux/futex.h, Linux v6.18.46,
@@ -1044,7 +1077,7 @@ Definition NEW_UTS_LEN : Z := 64%Z.
     [machine], [domainname], at offsets 0, 65, 130, 195, 260 and 325. *)
 Definition NEW_UTSNAME_SIZE : Z := 390%Z.
 
-(** [PR_CAPBSET_READ], the one [prctl] option this model answers
+(** [PR_CAPBSET_READ], the first of the four [prctl] options this model answers
     (include/uapi/linux/prctl.h, Linux v6.18.46, commit 1f99e9ab748f).
     It is NOT handled in kernel/sys.c's own [switch]: the LSM hook
     [security_task_prctl] runs first, and capability's implementation of
@@ -1052,6 +1085,18 @@ Definition NEW_UTSNAME_SIZE : Z := 390%Z.
     and returns before the syscall body's [switch] is reached.  See
     [Kernel.Sys.prctl_spec], which is where the whole argument lives. *)
 Definition PR_CAPBSET_READ : Z := 23%Z.
+
+(** The three [prctl] options [Kernel.Sys.prctl_spec] answers beside
+    [PR_CAPBSET_READ] (include/uapi/linux/prctl.h: [#define
+    PR_SET_PDEATHSIG 1], [#define PR_SET_DUMPABLE 4], [#define
+    PR_SET_NO_NEW_PRIVS 38]; read at v6.18.44, identical at v6.18.46).
+    Unlike [PR_CAPBSET_READ], all three reach kernel/sys.c's own
+    [switch]: capability's [cap_task_prctl] has no case for them and
+    answers -ENOSYS, which [SYSCALL_DEFINE5(prctl)] reads as "not mine".
+    [Kernel.Sys.prctl_spec] carries the argument. *)
+Definition PR_SET_PDEATHSIG : Z := 1%Z.
+Definition PR_SET_DUMPABLE : Z := 4%Z.
+Definition PR_SET_NO_NEW_PRIVS : Z := 38%Z.
 
 (** [CAP_LAST_CAP], the highest capability number the kernel recognises:
     [CAP_CHECKPOINT_RESTORE], 40 (include/uapi/linux/capability.h, Linux
@@ -1068,6 +1113,25 @@ Definition PR_CAPBSET_READ : Z := 23%Z.
     what programs SEARCH FOR -- libcap's [cap_max_bits] binary-searches
     it -- so it is read by real code rather than merely available. *)
 Definition CAP_LAST_CAP : Z := 40%Z.
+
+(** [CAP_SETGID] (6) and [CAP_SETUID] (7) (include/uapi/linux/capability.h,
+    read at v6.18.44; identical at v6.18.46): the two capabilities the
+    model's privileged credential arms answer for.  [setgid],
+    [setresgid] and [setgroups] ask [ns_capable_setid(CAP_SETGID)],
+    [setuid] and [setresuid] ask [ns_capable_setid(CAP_SETUID)], and
+    [State.creds_privileged]'s note assumes the bounding set holds both.
+    [Kernel.Sys.prctl_spec]'s [PR_CAPBSET_READ] answers 1 for these two. *)
+Definition CAP_SETGID : Z := 6%Z.
+Definition CAP_SETUID : Z := 7%Z.
+
+(** [_LINUX_CAPABILITY_VERSION_3], the [version] word of a
+    [struct __user_cap_header_struct] that [capget] (90) and [capset]
+    (91) answer (include/uapi/linux/capability.h, read at v6.18.44;
+    identical at v6.18.46).  With it each call moves
+    [_LINUX_CAPABILITY_U32S_3] = 2 [struct __user_cap_data_struct]s.
+    Versions 1 (0x19980330) and 2 (0x20071026) are real kernel answers
+    too, and [Kernel.Capability] declines them; see that file. *)
+Definition LINUX_CAPABILITY_VERSION_3 : Z := 0x20080522%Z.
 
 (* =========================================================================
    struct stat, as fstat (80) and newfstatat (79) copy it out

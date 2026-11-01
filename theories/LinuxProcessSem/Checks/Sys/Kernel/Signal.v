@@ -188,6 +188,8 @@ Definition check_rt_sigaction (i : SyscallInput) (sig act oact ss : word)
         then check_ret_only_copyins [(act, 24%nat)] eff (Z_to_bv 64 0) m []
         else if sigabrt_dfl_install sig (in_mem i) act
         then check_ret_only_copyins [(act, 24%nat)] eff (Z_to_bv 64 0) m []
+        else if sigchld_dfl_install sig (in_mem i) act
+        then check_ret_only_copyins [(act, 24%nat)] eff (Z_to_bv 64 0) m []
         else CheckUnmodeled
     end.
 
@@ -219,7 +221,10 @@ Proof.
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota.
   { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
     apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
-  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota; [|discriminate].
+  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota.
+  { apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
+  destruct (sigchld_dfl_install sig (in_mem i) act) eqn:Hc; cbv beta iota; [|discriminate].
   apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
   apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
 Qed.
@@ -250,6 +255,8 @@ Proof.
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota.
   { now apply check_ret_only_copyins_no_unmodeled in H. }
   destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota.
+  { now apply check_ret_only_copyins_no_unmodeled in H. }
+  destruct (sigchld_dfl_install sig (in_mem i) act) eqn:Hc; cbv beta iota.
   - now apply check_ret_only_copyins_no_unmodeled in H.
   - apply unmodeled_intro.
 Qed.
@@ -277,7 +284,9 @@ Proof.
   destruct (negb (sa_flags_ok fl)) eqn:Hfo; cbv beta iota in *; [inv_ok|].
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *.
   { inv_ok. apply check_ret_only_copyins_ok_iff. now repeat split. }
-  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota in *; inv_ok.
+  destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota in *.
+  { inv_ok. apply check_ret_only_copyins_ok_iff. now repeat split. }
+  destruct (sigchld_dfl_install sig (in_mem i) act) eqn:Hc; cbv beta iota in *; inv_ok.
   apply check_ret_only_copyins_ok_iff. now repeat split.
 Qed.
 
@@ -301,6 +310,8 @@ Proof.
     [reflexivity|].
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *; [inv_ok|].
   destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota in *;
+    [inv_ok|].
+  destruct (sigchld_dfl_install sig (in_mem i) act) eqn:Hc; cbv beta iota in *;
     [inv_ok|reflexivity].
 Qed.
 

@@ -298,6 +298,13 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
          ([random_fops] has one; the urandom table does not), so
          [file_can_poll] is false and [epoll_ctl] ADD is the same
          -EPERM.  Declined until written. *)
+  | FdOpaque _ => None
+      (* FAIL-CLOSED.  An O_PATH target is refused by [do_epoll_ctl]'s
+         [CLASS(fd, tf)] ([fdget] skips FMODE_PATH, fs/file.c), which is
+         -EBADF and not a poll question at all; an eventfd has
+         [.poll = eventfd_poll] (fs/eventfd.c) and a /proc/sys file
+         [.poll = proc_sys_poll] (fs/proc/proc_sysctl.c), both read at
+         v6.18.44.  None of the three answers is written. *)
   end.
 
 (** The complement claim, as a check rather than a sentence.
@@ -325,7 +332,7 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
 Example fd_can_poll_is_select_pollable :
   forall e, bits_all_pollable [(Z_to_bv 64 0, e)] 1%Z 1%nat = true
             <-> fd_can_poll e = Some false.
-Proof. intros [| | | | | | | | |]; vm_compute; split; congruence. Qed.
+Proof. intros [| | | | | | | | | |]; vm_compute; split; congruence. Qed.
 
 (** ------------------------------------------------------------------
     epoll_create1 (20)
@@ -506,6 +513,13 @@ Definition epoll_ctl_outcome (i : SyscallInput) (m : Model)
   let after_copy :=
     match fd_lookup (m_fds m) epfd with
     | None => Some (errno_ret EBADF)
+    | Some (FdOpaque _) => None
+        (* FAIL-CLOSED on the EPOLL descriptor.  [do_epoll_ctl]'s
+           [CLASS(fd, f)(epfd)] refuses an O_PATH descriptor with
+           -EBADF ([fdget] skips FMODE_PATH, fs/file.c and
+           fs/eventpoll.c, v6.18.44), where an eventfd or a /proc/sys
+           file goes on to the target as any non-epoll file does.  The
+           split is not written, so all three decline. *)
     | Some _ =>
         match fd_lookup (m_fds m) tfd with
         | None => Some (errno_ret EBADF)
@@ -634,6 +648,11 @@ Definition epoll_pwait_outcome (i : SyscallInput) (m : Model)
   | EpSigNone =>
       match fd_lookup (m_fds m) epfd with
       | None => Some (errno_ret EBADF)
+      | Some (FdOpaque _) => None
+          (* FAIL-CLOSED, as at [epoll_ctl_outcome]: [do_epoll_wait]'s
+             [CLASS(fd, f)(epfd)] answers -EBADF for an O_PATH
+             descriptor (fs/eventpoll.c, v6.18.44), and the split from
+             the other two objects is not written *)
       | Some _ =>
           let n := sint32 maxevents32 in
           if (n <=? 0)%Z then Some (errno_ret EINVAL)

@@ -519,7 +519,8 @@ Definition sched_setscheduler_spec (pid policy param : word)
     another task may run in between, so a [sched_yield] can separate two
     of this process's observations.  That costs nothing here because
     this model has one process — [Fork.clone_fork_flags_b] admits
-    [SIGCHLD] alone and every sharing flag forces [Unmodeled], so there
+    [SIGCHLD] alone, [Fork.clone_ns_flags_b] adds only namespace bits,
+    and every sharing flag forces [Unmodeled], so there
     is no second thread whose interleaving a yield could expose.  The
     day a shared-memory clone is modeled, this comment is what has to be
     re-read.

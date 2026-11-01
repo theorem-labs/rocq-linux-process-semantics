@@ -1307,8 +1307,11 @@ Qed.
     and is outside [Specs.modeled_sysnos] — as is [execve] — so it falls
     through the dispatcher to [Monad.unmodeled], fail closed, before any
     tagged pointer can reach this predicate.  [prctl] is 167 and IS in
-    [Specs.modeled_sysnos]: it answers [PR_CAPBSET_READ] and nothing
-    else, so what is declined is the OPTION rather than the number, and
+    [Specs.modeled_sysnos]: it answers the four options of
+    [Kernel.Sys.prctl_modeled_options] — [PR_CAPBSET_READ],
+    [PR_SET_PDEATHSIG], [PR_SET_DUMPABLE], [PR_SET_NO_NEW_PRIVS], none of
+    which reaches [set_tagged_addr_ctrl] — and nothing else, so what is
+    declined is the OPTION rather than the number, and
     [PR_SET_TAGGED_ADDR_CTRL] (55) is declined inside
     [Kernel.Sys.prctl_spec] instead of at the dispatcher.  Neither step
     is left to this comment:
@@ -1320,11 +1323,11 @@ Qed.
     because the answered options are a closed list of their own,
     [Kernel.Sys.prctl_modeled_options], which
     [Checks.ProcessCreation.prctl_modeled_options_are] pins EXACTLY: an
-    edit teaching [prctl] a second option fails that pin, and whoever
+    edit teaching [prctl] another option fails that pin, and whoever
     makes it has to come back here.
     [clone] (220) and [clone3] (435) ARE in [Specs.modeled_sysnos], but
-    only for a flag word that shares no address space
-    ([Fork.clone_fork_flags_b],
+    only for flag words that share no address space
+    ([Fork.clone_fork_flags_b], [Fork.clone_ns_flags_b],
     [Checks.ProcessCreation.clone_sharing_flags_unmodeled]), so no
     process this model admits an outcome for can write another's
     [mm->context].  (riscv64 has no [fork] syscall of its own: [fork] IS
@@ -2719,6 +2722,40 @@ Definition PIPE_BUF : Z := 4096%Z.
     need a second slot is declined rather than guessed at. *)
 Definition PipeBuf : Type := list byte * Z.
 
+(** The four kernel objects behind [FdOpaque].  The model holds NO
+    CONTENTS for any of them: what a read returns, what a stat reports
+    and what an eventfd counts are the environment's or are declined.
+
+    - [OProcPath p]: an O_PATH descriptor ([FMODE_PATH]) on the procfs
+      name [p] (an absolute path at or under "/proc";
+      [Fs.Open.proc_path_b]).  [do_dentry_open] (fs/open.c) gives such a
+      file [empty_fops] and returns before any [->open], and [fdget]
+      (fs/file.c) refuses it, so it does no I/O at all; it serves as a
+      directory for [openat] and [newfstatat] relative to it, and
+      [close] removes it.
+    - [OProcFile p]: an O_RDONLY descriptor on a name under
+      "/proc/sys/" ([Fs.Open.proc_sys_file_b]).  Its reads return bytes
+      of the environment's choice ([Fs.ReadWrite.read_proc_spec]).
+    - [OEventFd flags]: an eventfd ([Fs.EventFd.eventfd2_spec]),
+      carrying the flag word it was created with.  Its counter is not
+      modeled, so read and write on it decline.
+    - [ONsFile h]: a descriptor on an open file that the namespace and
+      mount model holds under handle
+      [h].  No arm of [spec_table] mints it: only that model's child
+      start relation and its own arms do, so a run from [init_config]
+      never holds one.  The object may be a directory, a regular file, a
+      procfs file, an eventfd or a socket, so an arm answers on it only
+      where Linux's answer is the same for every open file whatever its
+      type ([close], [close_range], [fcntl]'s [F_SETFD] and [F_GETFD],
+      and the clone gate); every other arm declines it.  That model
+      never mints one on an end of a pipe this table's [FdPipe] entries
+      track, which is the condition [pipe_end_live] relies on. *)
+Inductive OpaqueFd :=
+  | OProcPath (p : path)
+  | OProcFile (p : path)
+  | OEventFd (flags : word)
+  | ONsFile (h : N).
+
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
 
@@ -2866,7 +2903,17 @@ Definition PipeBuf : Type := list byte * Z.
       from [urandom_fops] and the VFS path that reaches it; the rest
       fail closed.  THE ENVIRONMENT ASSUMPTION IT RESTS ON -- the
       environment's /dev/urandom is the random device -- is stated once, at
-      the openat arm, and pointed to from everywhere else. *)
+      the openat arm, and pointed to from everywhere else.
+    - [FdOpaque o]: a descriptor on a kernel object the model HOLDS NO
+      CONTENTS for; [OpaqueFd] above says which four objects.  The
+      descriptor is in the table so that its NUMBER is tracked (the
+      lowest-free-fd rule, [close], and a statement that reads "this fd
+      is held at the clone" all need it), and nothing else about the
+      object is: no position, no bytes, no counter.  Every arm that
+      reads one either derives its answer from the Linux source for
+      that kind of object or declines; none of them answers from what
+      an existing kind would answer, because none of the three is a
+      file, a device, a socket or a pipe end the existing arms know. *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
   | FdFile (p : path) (offset : word)
@@ -2877,7 +2924,27 @@ Inductive FdEntry :=
   | FdSocket (sk : SockState)
   | FdPipe (id : word) (writer : bool)
   | FdDevNull (rd wr : bool)
-  | FdUrandom.
+  | FdUrandom
+  | FdOpaque (o : OpaqueFd).
+
+(** Is [e] one of the four opaque objects?  The one classifier over
+    [FdEntry] with a wildcard that is correct by construction: it names
+    the kind it is about, and any constructor added later is, by
+    definition, not that kind.  The arms that decline [FdOpaque] ahead
+    of a kind-blind answer ([Fs.Locks.flock_spec]'s unlock,
+    [Fs.ReadWrite.readv_spec]'s FMODE_READ gate and [lseek_spec]'s
+    whence test, [Net.Socket]'s [accept4_spec] and [connect_spec]) test
+    it with an [if], which keeps the rest of each arm's match as it was.
+
+    AN ABBREVIATION, NOT A DEFINITION, so that the test is a bare
+    [match] in every term that uses it: once the entry is a constructor,
+    [cbv iota] alone decides it, which is the reduction every proof over
+    those arms already runs. *)
+Abbreviation fd_is_opaque e :=
+  (match e with
+   | FdOpaque _ => true
+   | _ => false
+   end).
 
 (** Virtual-memory bookkeeping: a ledger of allocator decisions the model
     has already committed to (the flat byte-map memory can't encode
@@ -3620,10 +3687,12 @@ Record FsState := mkFsState { fsst_image : Fs.Fs }.
     least obvious of the three (fs/proc/array.c, [task_state], the
     [Groups:] line).  Carrying the ELEMENTS as well as the length is
     deliberate: they are what [getgroups]'s array-writing form would
-    copy out, and what [Kernel.Groups.setgroups_spec]'s successful half
-    would write, so both of those declines are declines of the WRITE and
-    not of the state.  A [Creds] that held only a count would have to
-    change shape before either could be finished. *)
+    copy out, and what [Kernel.Groups.setgroups_spec]'s non-empty
+    successful half would write, so both of those declines are declines
+    of the WRITE and not of the state.  (The empty list is answered:
+    [setgroups(0, NULL)] by a privileged caller sets [cr_groups] to [[]].)
+    A [Creds] that held only a count would have to change shape before
+    either decline could be finished. *)
 Record Creds := mkCreds {
   cr_uid  : word;   (* real user id *)
   cr_euid : word;   (* effective user id *)
@@ -3657,17 +3726,29 @@ Record Creds := mkCreds {
     That is exact, not a guess, PROVIDED: the init user namespace; the
     executed binary carries no file capabilities; no ambient
     capabilities; default securebits — none of SECURE_NOROOT,
-    SECURE_KEEP_CAPS, SECURE_NO_SETUID_FIXUP; and an UNNARROWED
-    capability bounding set.  The last is easy to miss and is not
-    implied by the others: [handle_privileged_root] grants legacy root
+    SECURE_KEEP_CAPS, SECURE_NO_SETUID_FIXUP; and a capability bounding
+    set that holds CAP_SETUID and CAP_SETGID ([Uapi.CAP_SETUID],
+    [Uapi.CAP_SETGID]), the two capabilities these arms ask about.  The
+    last is easy to miss and is not implied by the others:
+    [handle_privileged_root] grants legacy root
     [new->cap_permitted = cap_combine(old->cap_bset, old->cap_inheritable)]
-    (security/commoncap.c), so an ancestor that ran
-    [prctl(PR_CAPBSET_DROP, CAP_SETUID)] leaves every later exec with
-    euid 0 and no CAP_SETUID at all.  Under those,
+    (security/commoncap.c, read at v6.18.44; identical at v6.18.46), so
+    an ancestor that ran [prctl(PR_CAPBSET_DROP, CAP_SETUID)] leaves
+    every later exec with euid 0 and no CAP_SETUID at all.  The rest of
+    the bounding set is NOT assumed: a container's narrowed set is
+    inside the model (Docker's default set holds CAP_SETGID and
+    CAP_SETUID among 14 capabilities: moby, daemon/pkg/oci/caps/
+    defaults.go, [DefaultCapabilities]).  The two modeled calls whose
+    answer would read the other bits do not rest on them:
+    [Kernel.Sys.prctl_spec]'s [PR_CAPBSET_READ] chooses its answer for
+    every other capability, and [Kernel.Capability.capget_spec]
+    declines for a caller with any uid 0, whose permitted set is
+    [cap_bset | cap_inheritable].  Under those,
     [cap_emulate_setxuid] (security/commoncap.c, byte-identical at all
-    six tags in the window) runs on every [set*uid] and maintains
+    six tags in the window) runs on every [set*uid] and maintains, for
+    each of CAP_SETUID and CAP_SETGID,
 
-      CAP_SETUID in cap_effective  <->  euid = 0
+      the capability in cap_effective  <->  euid = 0
 
     in both directions: it clears [cap_effective] on every euid 0 ->
     non-0 transition, restores [cap_effective = cap_permitted] on
@@ -3683,9 +3764,10 @@ Record Creds := mkCreds {
     direction, which is why they are assumptions and not slack: file
     capabilities, ambient capabilities and a non-init user namespace give
     a non-root process the capability (the model would then refuse a call
-    the kernel allows); SECURE_NOROOT and a narrowed bounding set
-    withhold it from root (the model would allow a call the kernel
-    refuses).  A run in any of those environments is outside this model.
+    the kernel allows); SECURE_NOROOT and a bounding set without
+    CAP_SETUID or CAP_SETGID withhold it from root (the model would allow
+    a call the kernel refuses).  A run in any of those environments is
+    outside this model.
 
     [init_model] pins the process's starting point to an ordinary exec —
     it derives the effective and saved ids from the real ones rather than
@@ -3730,7 +3812,9 @@ Record ProcState := mkProcState {
                                     number: [clone] (220) and [clone3]
                                     (435) are modeled, but
                                     [Fork.clone_fork_flags_b] admits
-                                    [SIGCHLD] alone and
+                                    [SIGCHLD] alone,
+                                    [Fork.clone_ns_flags_b] [SIGCHLD]
+                                    plus namespace bits only, and
                                     [Checks.ProcessCreation.clone_sharing_flags_unmodeled]
                                     (with
                                     [clone3_sharing_flags_unmodeled]
@@ -5092,9 +5176,17 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     could alias an end and are absent would be
     falsified by anything added below it.  [openat] resolves against
     [m_fs] and yields an [FdFile]/[FdFileW]/[FdFileA]/[FdFileRW] — or,
-    for the device paths it answers, an [FdDevNull] or an [FdUrandom] — never
-    an [FdPipe], so a path
-    merely NAMED like a procfs one cannot hand out a second reference.
+    for the device paths it answers, an [FdDevNull] or an [FdUrandom],
+    and for a procfs name an [FdOpaque] — never an [FdPipe].  A procfs
+    name CAN reach a pipe: "/proc/self/fd/N" is a link to the inode of
+    whatever fd N holds.  Of the two shapes [Fs.Open.openat_proc_spec]
+    answers, O_PATH makes a file with [empty_fops] that never runs
+    [fifo_open] and is never released through [pipe_release]
+    ([do_dentry_open], fs/open.c, read at v6.18.44), so it is counted
+    in neither [pipe->readers] nor [pipe->writers]; and O_RDONLY is
+    answered only for a "/proc/sys/" name, which by the stated
+    assumption is never a link.  So no answered open hands out a
+    second reader or writer reference.
 
     A syscall that DUPLICATES a descriptor would keep the two
     constructions in step for a reason worth writing down, because a
@@ -5153,7 +5245,8 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     - a second PROCESS is what the dup paragraph above does not cover:
       [Kernel.Fork.clone_no_shared_file_b] answers [false] for [FdPipe],
       so a clone with either end open is [unmodeled], and
-      [clone_fork_flags_b] admits only the bare SIGCHLD word, so
+      [clone_fork_flags_b] and [clone_ns_flags_b] admit SIGCHLD with at
+      most namespace bits, so
       CLONE_FILES and CLONE_THREAD never share a table and no second
       instruction stream exists to race a close;
     - [F_DUPFD] does NOT go through [Fs.File.dup_modeled_entry] the way
@@ -5205,6 +5298,12 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
   | (_, FdSocket _) :: r => pipe_end_live r id writer
   | (_, FdDevNull _ _) :: r => pipe_end_live r id writer
   | (_, FdUrandom) :: r => pipe_end_live r id writer
+  | (_, FdOpaque _) :: r => pipe_end_live r id writer
+    (* not an end: the paragraph above says why an O_PATH file on a pipe
+       inode is not one of the pipe's readers or writers; an [ONsFile] is
+       skipped on the condition its own doc states, that the namespace and mount model
+       never mints one on an end of a pipe this table's [FdPipe] entries
+       track *)
   end.
 
 (** A 32-bit value as the four little-endian bytes the kernel's

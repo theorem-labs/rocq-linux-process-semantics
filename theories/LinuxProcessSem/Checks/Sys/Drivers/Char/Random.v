@@ -73,10 +73,6 @@ Definition check_getrandom (i : SyscallInput) (buf cap flags : word)
       else check_getrandom_zero (Z_to_bv 64 0) eff m
   end.
 
-(** readlinkat: an unmodeled dirfd fails closed (Linux resolves it and
-    can answer -EBADF); under AT_FDCWD it is the deterministic -EINVAL
-    (the modeled fs has no symlinks; see [Stat.readlinkat_spec]). *)
-
 Lemma check_getrandom_zero_sound : forall r0 eff m m' evs,
   check_getrandom_zero r0 eff m = CheckOk m' evs ->
   m' = m /\ evs = [] /\
@@ -267,7 +263,5 @@ Proof.
         destruct (negb (access_okb buf (bv_unsigned cap))) eqn:Hs; hall Hs;
           inv_ok; try discriminate; reflexivity.
 Qed.
-
-(* ------------------------------------------------------------ readlinkat *)
 
 (* ------------------------------------------------------------------ exit *)
