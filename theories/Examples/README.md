@@ -16,12 +16,18 @@ Read [`../Common/README.md`](../Common/README.md) for the proof library.
 | --- | --- | --- |
 | `rwx_flag_ns` | Store a byte and exit with it. The source has one segment that is writable and executable. | `CatSim.cat_omni_strong_equiv_te` |
 
-Two directories are not equivalence proofs:
+Three directories are not equivalence proofs:
 
 - [`patchclassify_demo/`](patchclassify_demo/README.md) is an instance of
   the patch-classifier statement.
 - [`measure_lib_demo/`](measure_lib_demo/README.md) is an instance of each
   part of `MeasureLib.v`.
+- `forkwait/` is a halting claim about ONE binary — a static riscv64
+  program that clones a child and reaps it. It has one memory image
+  rather than a pair, named for the example (`ForkwaitMemImage.v`), so its
+  `dune` rule passes `gen-fd-lemmas --single --source-image`; it has no
+  `Proof.v` and therefore no `Checker.v`, which is an equivalence proof's
+  top-level check. Its symbolic execution is in `ForkwaitSteps.v`.
 
 ## Files of an example
 
