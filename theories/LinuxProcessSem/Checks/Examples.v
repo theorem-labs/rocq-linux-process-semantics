@@ -1193,13 +1193,21 @@ Proof. vm_compute. reflexivity. Qed.
 (** A configuration the model declines to interpret has no successor at
     all: [Run.sstep_instr] needs [Run.mi_account_step] to have answered
     [MachineOk], and every syscall constructor needs a pending syscall
-    number. *)
+    number.
+
+    THE vDSO PREMISE.  [Run.sstep]'s vDSO arms fire at
+    [MachineUnmodeled] too — that is the point of them, a pc in the
+    vDSO text is unmodeled to the decoder and answered by the call arm
+    instead — so this lemma asks that the pc is not an exported entry.
+    Every caller is at an image's own instruction, where it is
+    [reflexivity]. *)
 Lemma unmodeled_no_next : forall segs ms model evs c',
   ms_svc_pending ms = None ->
   mi_account_step segs ms model = MachineUnmodeled ->
+  vdso_entry_fn segs (ms_pc ms) = None ->
   ~ sstep segs (mkCfg ms model) evs (SNext c').
 Proof.
-  intros segs ms model evs c' Hsvc Hacc Hss.
+  intros segs ms model evs c' Hsvc Hacc Hvd Hss.
   inversion Hss; subst; congruence.
 Qed.
 

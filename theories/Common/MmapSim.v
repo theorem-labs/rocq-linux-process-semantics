@@ -1788,15 +1788,19 @@ Qed.
 
 Lemma mmap_no_error_run_te : forall segs pc ph sp brk0 mb rnd lim inp bf cf bs cs,
   tmw segs (init_machine_state segs pc ph sp mb rnd inp)
-      (init_model (segments_reserved segs) brk0 mb sp lim inp) bf cf bs cs ->
+      (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+         (init_model (segments_reserved segs) brk0 mb sp lim inp)) bf cf bs cs ->
   bufs_modeled bf -> bufs_modeled bs ->
   in_channel_reader inp = true ->
   ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bf cf bs cs Hte Hbf Hbs Hr.
   unfold init_config.
-  apply (tmw_no_error segs _ (init_model (segments_reserved segs) brk0 mb sp lim inp) bf cf bs cs);
-    [reflexivity | reflexivity | apply init_model_fd1chan; exact Hr
+  apply (tmw_no_error segs _
+           (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved segs) brk0 mb sp lim inp)) bf cf bs cs);
+    [reflexivity | reflexivity
+    | exact (init_model_fd1chan (segments_reserved segs) brk0 mb sp lim inp Hr)
     | exact Hte | exact Hbf | exact Hbs].
 Qed.
 
