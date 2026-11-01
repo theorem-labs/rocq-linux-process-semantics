@@ -41,9 +41,11 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel Require Import Exit Fork.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ProcessCreation.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import MustExit MustExitP.
 (** [Measure] for the measure table; [ForkwaitSteps] for [machine_run]
-    and the five segment lemmas this file now consumes. *)
+    and the five segment lemmas this file now consumes;
+    [ForkwaitMemImage] for the committed image's entry point, which the
+    start shape is read off. *)
 From LinuxProcessSemantics.Examples.forkwait Require Import
-  Measure ForkwaitSteps.
+  ForkwaitMemImage Measure ForkwaitSteps.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -170,8 +172,13 @@ Qed.
     with registers the program never has there, which are exactly the
     states the old shapes could not carry forward. *)
 
+(** The bound is what lets a MEASURE read the remainder back off a
+    state: [fw_probe] below searches for the pending call with a fixed
+    fuel, and without a bound a shape could not say the search
+    terminates.  Sixteen, against a largest real remainder of nine. *)
 Definition fw_rem (ms : machine_state) (Q : machine_state -> Prop) : Prop :=
-  exists k msf, machine_run forkwait_segs k ms = Some msf /\ Q msf.
+  exists k msf, (k <= 16)%nat
+                /\ machine_run forkwait_segs k ms = Some msf /\ Q msf.
 
 (** The three calls this program makes, each described by the registers
     the arm that answers it reads, and by nothing else.
@@ -1076,7 +1083,8 @@ Lemma fw_shape_at_clone : forall c,
   fw_shape (one_proc c).
 Proof.
   intros c Hh Hq. left. apply fw_shape_one_proc; [exact Hh|].
-  exists 0%nat, (cfg_ms c). split; [reflexivity | exact Hq].
+  exists 0%nat, (cfg_ms c).
+  split; [lia|]. split; [reflexivity | exact Hq].
 Qed.
 
 (** ITEM (1) and (4), the shape they share.
@@ -1271,7 +1279,7 @@ Proof. intros ms (H & _). rewrite H. discriminate. Qed.
 Lemma fw_rem_now : forall ms Q,
   fw_rem ms Q -> ms_svc_pending ms <> None -> Q ms.
 Proof.
-  intros ms Q (k & msf & Hrun & HQ) Hs.
+  intros ms Q (k & msf & Hk & Hrun & HQ) Hs.
   destruct k as [|k]; cbn [machine_run] in Hrun.
   - injection Hrun as <-. exact HQ.
   - destruct (ms_svc_pending ms) as [x|] eqn:E;
@@ -1291,13 +1299,13 @@ Lemma fw_rem_step : forall ms Q ms1,
   RiscvSemantics.step forkwait_segs ms = MachineOk ms1 ->
   fw_rem ms1 Q.
 Proof.
-  intros ms Q ms1 HQp (k & msf & Hrun & HQ) Hs Hstep.
+  intros ms Q ms1 HQp (k & msf & Hk & Hrun & HQ) Hs Hstep.
   destruct k as [|k].
   - cbn [machine_run] in Hrun. injection Hrun as <-.
     exfalso. exact (HQp _ HQ Hs).
   - destruct (machine_run_inv _ _ _ _ Hrun) as (ms' & _ & Hs' & Hr').
     rewrite Hstep in Hs'. injection Hs' as <-.
-    exists k, msf. split; [exact Hr' | exact HQ].
+    exists k, msf. split; [lia|]. split; [exact Hr' | exact HQ].
 Qed.
 
 (* =========================================================================
@@ -1917,7 +1925,7 @@ Proof.
   subst svc resv pc.
   exists 7%nat,
     (@ecall_st (mkFP fregs fcsr) (fw_regs_A regs) 0x11018 mem rom).
-  split.
+  split; [lia|]. split.
   - exact (@fw_run_A (mkFP fregs fcsr) regs mem rom).
   - unfold fw_q_clone.
     split; [apply fw_A_svc|].
@@ -1954,7 +1962,7 @@ Proof.
   exists 9%nat,
     (@ecall_st (mkFP fregs fcsr) (fw_regs_P regs (getr regs 2))
        0x1103c mem rom).
-  split.
+  split; [lia|]. split.
   - exact (@fw_run_parent (mkFP fregs fcsr) regs mem rom q (getr regs 2)
              Ha0' eq_refl Hq0 Hq1 Hsp).
   - unfold fw_q_wait4.
@@ -1994,7 +2002,7 @@ Proof.
   subst svc resv pc.
   exists 5%nat,
     (@ecall_st (mkFP fregs fcsr) (fw_regs_exit7 regs) 0x11058 mem rom).
-  split.
+  split; [lia|]. split.
   - exact (@fw_run_child (mkFP fregs fcsr) regs mem rom Ha0').
   - split; [apply fw_exit7_svc | apply fw_exit7_a0].
 Qed.
@@ -2023,7 +2031,7 @@ Proof.
   subst svc resv pc.
   exists 4%nat,
     (@ecall_st (mkFP fregs fcsr) (fw_regs_exit7 regs) 0x11064 mem rom).
-  split.
+  split; [lia|]. split.
   - exact (@fw_run_fail (mkFP fregs fcsr) regs mem rom Ha0').
   - split; [apply fw_exit7_svc | apply fw_exit7_a0].
 Qed.
@@ -2047,7 +2055,7 @@ Proof.
   subst svc resv pc.
   exists 4%nat,
     (@ecall_st (mkFP fregs fcsr) (fw_regs_C regs) 0x1104c mem rom).
-  split.
+  split; [lia|]. split.
   - exact (@fw_run_reap_at (mkFP fregs fcsr) regs mem rom a Hsp Hrd).
   - split; [apply fw_C_svc | apply fw_C_a0].
 Qed.
@@ -2056,6 +2064,227 @@ Qed.
     does not touch [State.ProcState]. *)
 Lemma fw_halted_clear_shared : forall m, m_halted (clear_shared m) = m_halted m.
 Proof. reflexivity. Qed.
+
+(* =========================================================================
+   The measure, read off the remainder
+   ========================================================================= *)
+
+(** [Measure.fw_entry] counted PROGRAM COUNTERS, which the shapes no
+    longer name, so it is gone and this is what takes its place: the
+    remainder's own length, plus a constant for the call it ends at and
+    for everything that call still leads to.
+
+    THE CONSTANTS ARE DELIBERATELY SLACK.  An exact count would have to
+    name the length of each segment -- seven, nine, five, four -- at
+    every arithmetic step.  The bound [fw_rem] carries (sixteen) is
+    enough instead: whatever an entry's remainder is, its weight is at
+    most sixteen above its constant, so each constant only has to
+    exceed what the call it names leads to.  [exit_group] leads to
+    nothing, so 1; [wait4] reaps and leaves a tail worth at most
+    16 + 1, so 18; [clone] leaves a parent worth at most 16 + 18 and a
+    child worth at most 16 + 1, so 52.  Each of the three inequalities
+    below is then [lia] over those numbers. *)
+Fixpoint fw_probe (f : nat) (ms : machine_state) : option (nat * word) :=
+  match f with
+  | O => match ms_svc_pending ms with
+         | Some x8 => Some (0%nat, x8)
+         | None => None
+         end
+  | S f' =>
+      match ms_svc_pending ms with
+      | Some x8 => Some (0%nat, x8)
+      | None =>
+          match RiscvSemantics.step forkwait_segs ms with
+          | MachineOk ms' =>
+              match fw_probe f' ms' with
+              | Some (k, x8) => Some (S k, x8)
+              | None => None
+              end
+          | _ => None
+          end
+      end
+  end.
+
+(** The search finds exactly the remainder the shape names: the run has
+    no pending call at any intermediate state, so the search cannot
+    stop early, and it has one at the end, so it cannot run past. *)
+Lemma fw_probe_exact : forall k f ms msf x8,
+  (k <= f)%nat ->
+  machine_run forkwait_segs k ms = Some msf ->
+  ms_svc_pending msf = Some x8 ->
+  fw_probe f ms = Some (k, x8).
+Proof.
+  induction k as [|k IH]; intros f ms msf x8 Hk Hrun Hsv.
+  - cbn [machine_run] in Hrun. injection Hrun as <-.
+    destruct f; cbn [fw_probe]; rewrite Hsv; reflexivity.
+  - destruct f as [|f]; [exfalso; lia|].
+    destruct (machine_run_inv _ _ _ _ Hrun) as (ms' & Hp & Hs & Hr).
+    cbn [fw_probe]. rewrite Hp, Hs.
+    rewrite (IH f ms' msf x8 ltac:(lia) Hr Hsv). reflexivity.
+Qed.
+
+Definition fw_const (nr : Z) : nat :=
+  if Z.eqb nr 220 then 52%nat
+  else if Z.eqb nr 260 then 18%nat
+  else 1%nat.
+
+Definition fw_ms_left (ms : machine_state) : nat :=
+  match fw_probe 16 ms with
+  | Some (k, x8) => (k + fw_const (bv_unsigned x8))%nat
+  | None => 0%nat
+  end.
+
+(** A halted entry is worth nothing: it cannot step, and the reap drops
+    it, so charging it would make the reap fail to decrease. *)
+Definition fw_entry_left (e : ProcessEntry) : nat :=
+  match m_halted (pe_model e) with
+  | Some _ => 0%nat
+  | None => fw_ms_left (pe_ms e)
+  end.
+
+Definition fw_mu (P : pconfig) : nat := pmeasure fw_entry_left P.
+
+Lemma fw_ms_left_of : forall ms k msf x8,
+  (k <= 16)%nat ->
+  machine_run forkwait_segs k ms = Some msf ->
+  ms_svc_pending msf = Some x8 ->
+  fw_ms_left ms = (k + fw_const (bv_unsigned x8))%nat.
+Proof.
+  intros ms k msf x8 Hk Hrun Hsv. unfold fw_ms_left.
+  rewrite (fw_probe_exact k 16 ms msf x8 Hk Hrun Hsv). reflexivity.
+Qed.
+
+Lemma fw_entry_left_halted : forall e,
+  m_halted (pe_model e) <> None -> fw_entry_left e = 0%nat.
+Proof.
+  intros e H. unfold fw_entry_left.
+  destruct (m_halted (pe_model e)); [reflexivity | congruence].
+Qed.
+
+(** At a pending call the remainder is empty, so the weight is the
+    call's own constant -- which is the exact value the two
+    shape-changing steps need on their larger side. *)
+Lemma fw_entry_left_pending : forall e x8,
+  m_halted (pe_model e) = None ->
+  ms_svc_pending (pe_ms e) = Some x8 ->
+  fw_entry_left e = fw_const (bv_unsigned x8).
+Proof.
+  intros e x8 Hh Hsv. unfold fw_entry_left. rewrite Hh.
+  rewrite (fw_ms_left_of (pe_ms e) 0%nat (pe_ms e) x8
+             (Nat.le_0_l 16) eq_refl Hsv).
+  reflexivity.
+Qed.
+
+(** And anywhere in a remainder it is at most sixteen above it, which
+    is the smaller side. *)
+Lemma fw_entry_left_bound : forall e Q nr,
+  (forall ms, Q ms -> exists x8, ms_svc_pending ms = Some x8
+                                 /\ bv_unsigned x8 = nr) ->
+  fw_rem (pe_ms e) Q ->
+  (fw_entry_left e <= 16 + fw_const nr)%nat.
+Proof.
+  intros e Q nr Hnr (k & msf & Hk & Hrun & HQ).
+  unfold fw_entry_left. destruct (m_halted (pe_model e)); [lia|].
+  destruct (Hnr _ HQ) as (x8 & Hsv & Hx).
+  rewrite (fw_ms_left_of (pe_ms e) k msf x8 Hk Hrun Hsv), Hx. lia.
+Qed.
+
+(** The three shapes' calls, as the number each pins. *)
+Lemma fw_q_clone_nr : forall ms, fw_q_clone ms ->
+  exists x8, ms_svc_pending ms = Some x8 /\ bv_unsigned x8 = 220%Z.
+Proof.
+  intros ms (H & _). exists 220.
+  split; [exact H | vm_compute; reflexivity].
+Qed.
+
+Lemma fw_q_wait4_nr : forall ms, fw_q_wait4 ms ->
+  exists x8, ms_svc_pending ms = Some x8 /\ bv_unsigned x8 = 260%Z.
+Proof.
+  intros ms (H & _). exists 260.
+  split; [exact H | vm_compute; reflexivity].
+Qed.
+
+Lemma fw_q_exit7_nr : forall ms, fw_q_exit7 ms ->
+  exists x8, ms_svc_pending ms = Some x8 /\ bv_unsigned x8 = 94%Z.
+Proof.
+  intros ms (H & _). exists 94.
+  split; [exact H | vm_compute; reflexivity].
+Qed.
+
+(** AN ORDINARY STEP TAKES ONE OFF, whichever call the remainder ends
+    at: the constant is the same before and after and the length falls
+    by one.  This is the measure half of [fw_rem_step]. *)
+Lemma fw_entry_left_lt_step : forall e Q ms' model',
+  fw_q_pending Q ->
+  m_halted (pe_model e) = None ->
+  ms_svc_pending (pe_ms e) = None ->
+  fw_rem (pe_ms e) Q ->
+  RiscvSemantics.step forkwait_segs (pe_ms e) = MachineOk ms' ->
+  m_halted model' = m_halted (pe_model e) ->
+  (fw_entry_left (pe_absorb e (mkCfg ms' model')) < fw_entry_left e)%nat.
+Proof.
+  intros e Q ms' model' HQp Hh Hsv (k & msf & Hk & Hrun & HQ) Hstep Hhal.
+  destruct k as [|k].
+  { cbn [machine_run] in Hrun. injection Hrun as <-.
+    exfalso. exact (HQp _ HQ Hsv). }
+  destruct (machine_run_inv _ _ _ _ Hrun) as (ms1 & _ & Hs1 & Hr1).
+  rewrite Hstep in Hs1. injection Hs1 as <-.
+  destruct (ms_svc_pending msf) as [x8|] eqn:Ex;
+    [|exfalso; exact (HQp _ HQ Ex)].
+  unfold fw_entry_left.
+  cbn [pe_model pe_absorb cfg_model pe_ms cfg_ms].
+  rewrite fw_halted_clear_shared, Hhal, Hh.
+  rewrite (fw_ms_left_of (pe_ms e) (S k) msf x8 Hk Hrun Ex).
+  rewrite (fw_ms_left_of ms' k msf x8 ltac:(lia) Hr1 Ex).
+  lia.
+Qed.
+
+(** A one-entry replacement: the only entry's weight is the sum. *)
+Lemma fw_mu_absorb_one_lt : forall P e c' n,
+  pcfg_procs P = [(pe_pid e, e)] ->
+  (fw_entry_left (pe_absorb e c') <= n)%nat ->
+  (n < fw_entry_left e)%nat ->
+  (fw_mu (absorb P e c') < fw_mu P)%nat.
+Proof.
+  intros P e c' n Hp Ha Hn. unfold fw_mu. apply pmeasure_absorb_lt.
+  - unfold look. rewrite Hp. cbn [look_in fst snd].
+    rewrite bv_eqb_same. reflexivity.
+  - lia.
+Qed.
+
+(** THE CLONE'S ARITHMETIC, the step the constants were chosen for: one
+    entry worth 52 becomes two, worth at most 34 and at most 17. *)
+Lemma fw_mu_clone_lt : forall P e c' q,
+  pcfg_procs P = [(pe_pid e, e)] ->
+  fw_entry_left e = 52%nat ->
+  (fw_entry_left (pe_absorb e c') <= 34)%nat ->
+  (fw_entry_left (child_entry e (pe_cfg (pcfg_shared P) e) c' q) <= 17)%nat ->
+  (fw_mu (clone_result P e c' q) < fw_mu P)%nat.
+Proof.
+  intros P e c' q Hp He Ha Hb.
+  unfold fw_mu, pmeasure, clone_result. cbn [pcfg_procs].
+  rewrite !Hp. cbn [replace_in fst]. rewrite bv_eqb_same.
+  cbn [List.app msum List.fold_right snd].
+  rewrite He. lia.
+Qed.
+
+(** AND THE REAP'S: the parent falls from 18 to at most 17 and the
+    zombie, worth nothing, leaves the table. *)
+Lemma fw_mu_reap_lt : forall P ep ec ep' q,
+  pcfg_procs P = [(pe_pid ep, ep); (pe_pid ec, ec)] ->
+  bv_eqb (pe_pid ep) q = false ->
+  pe_pid ec = q ->
+  fw_entry_left ep = 18%nat ->
+  fw_entry_left ec = 0%nat ->
+  (fw_entry_left ep' <= 17)%nat ->
+  (msum fw_entry_left
+     (drop_in (replace_in (pcfg_procs P) (pe_pid ep) ep') q) < fw_mu P)%nat.
+Proof.
+  intros P ep ec ep' q Hp Hne Hq Hep Hec Hep'.
+  unfold fw_mu, pmeasure. rewrite Hp.
+  rewrite (fw_reap_target_table ep ec ep' q Hne Hq).
+  cbn [msum List.fold_right snd]. rewrite Hep, Hec. lia.
+Qed.
 
 (* =========================================================================
    Preservation, one (shape, arm, stepping entry) at a time
@@ -2091,7 +2320,7 @@ Lemma fw_one_rem_step : forall cfg P evs P' Q e,
   fw_rem (pe_ms e) Q ->
   ms_svc_pending (pe_ms e) = None ->
   pstep_cfg forkwait_segs cfg P evs (PNext P') ->
-  fw_one P' Q.
+  fw_one P' Q /\ (fw_mu P' < fw_mu P)%nat.
 Proof.
   intros cfg P evs P' Q e HQp Hp Hr Hpar Hh Hrem Hsv Hstep.
   destruct Hstep as (p & Hstep).
@@ -2102,6 +2331,14 @@ Proof.
   destruct (absorb_one_entry P e (mkCfg ms' model') Hp Hr)
     as (Hp' & Hr' & _).
   subst P'.
+  assert (Hlook : look P (pe_pid e) = Some e)
+    by (unfold look; rewrite Hp; cbn [look_in fst snd];
+        rewrite bv_eqb_same; reflexivity).
+  split;
+    [| unfold fw_mu; apply pmeasure_absorb_lt;
+       [ exact Hlook
+       | exact (fw_entry_left_lt_step e Q ms' model' HQp Hh Hsv Hrem
+                  Hmstep Hhal) ] ].
   exists (pe_absorb e (mkCfg ms' model')).
   split; [exact Hp'|].
   split; [exact Hr'|].
@@ -2128,13 +2365,18 @@ Lemma fw_two_parent_step : forall cfg P evs P' ep ec,
   ms_svc_pending (pe_ms ep) = None ->
   fw_child_st ec ->
   pstep_at forkwait_segs cfg (pe_pid ep) P evs (PNext P') ->
-  fw_two P'.
+  fw_two P' /\ (fw_mu P' < fw_mu P)%nat.
 Proof.
   intros cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar Hh Hrem Hsv Hch Hstep.
   pose proof (fw_look_two_parent P ep ec Hp) as Hl.
   destruct (fw_entry_instr_step forkwait_segs cfg (pe_pid ep) P evs P' ep
               Hl Hsv Hstep) as (ms' & model' & Hmstep & Hhal & HP').
   subst P'.
+  split;
+    [| unfold fw_mu; apply pmeasure_absorb_lt;
+       [ exact Hl
+       | exact (fw_entry_left_lt_step ep fw_q_wait4 ms' model'
+                  fw_q_wait4_pending Hh Hsv Hrem Hmstep Hhal) ] ].
   exists (pe_absorb ep (mkCfg ms' model')), ec.
   unfold absorb. cbn [pcfg_procs pcfg_root].
   rewrite Hp, fw_two_replace_parent.
@@ -2166,13 +2408,18 @@ Lemma fw_two_child_step : forall cfg P evs P' ep ec,
   fw_rem (pe_ms ec) fw_q_exit7 ->
   ms_svc_pending (pe_ms ec) = None ->
   pstep_at forkwait_segs cfg (pe_pid ec) P evs (PNext P') ->
-  fw_two P'.
+  fw_two P' /\ (fw_mu P' < fw_mu P)%nat.
 Proof.
   intros cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar Hpar Hh Hrem Hsv Hstep.
   pose proof (fw_look_two_child P ep ec Hp Hne) as Hl.
   destruct (fw_entry_instr_step forkwait_segs cfg (pe_pid ec) P evs P' ec
               Hl Hsv Hstep) as (ms' & model' & Hmstep & Hhal & HP').
   subst P'.
+  split;
+    [| unfold fw_mu; apply pmeasure_absorb_lt;
+       [ exact Hl
+       | exact (fw_entry_left_lt_step ec fw_q_exit7 ms' model'
+                  fw_q_exit7_pending Hh Hsv Hrem Hmstep Hhal) ] ].
   exists ep, (pe_absorb ec (mkCfg ms' model')).
   unfold absorb. cbn [pcfg_procs pcfg_root].
   rewrite Hp, (fw_two_replace_child ep ec _ Hne).
@@ -2222,7 +2469,7 @@ Lemma fw_one_exit_step : forall cfg P evs P' e,
   ms_svc_pending (pe_ms e) = Some 94 ->
   ms_gpr (pe_ms e) 0 = 7 ->
   pstep_cfg forkwait_segs cfg P evs (PNext P') ->
-  fw_one_halted P' 7.
+  fw_one_halted P' 7 /\ (fw_mu P' < fw_mu P)%nat.
 Proof.
   intros cfg P evs P' e Hp Hr Hh Hsv Ha0 Hstep.
   destruct Hstep as (p & Hstep).
@@ -2235,6 +2482,19 @@ Proof.
                 (with_halted (Z_to_bv 64 7)
                    (cfg_model (pe_cfg (pcfg_shared P) e)))).
   destruct (absorb_one_entry P e cex Hp Hr) as (Hp' & Hr' & Hl').
+  assert (Hlook : look P (pe_pid e) = Some e)
+    by (unfold look; rewrite Hp; cbn [look_in fst snd];
+        rewrite bv_eqb_same; reflexivity).
+  split;
+    [| unfold fw_mu; apply pmeasure_absorb_lt;
+       [ exact Hlook
+       | rewrite (fw_entry_left_halted (pe_absorb e cex))
+           by (cbn [pe_model pe_absorb cfg_model];
+               unfold cex; cbn [cfg_model];
+               rewrite fw_halted_clear_shared, fw_m_halted_with_halted;
+               discriminate);
+         rewrite (fw_entry_left_pending e 94 Hh Hsv);
+         unfold fw_const; rewrite fw_ninety_four; cbn; lia ] ].
   exists (pe_absorb e cex),
          (pe_cfg (pcfg_shared (absorb P e cex)) (pe_absorb e cex)).
   split; [exact Hp'|].
@@ -2256,16 +2516,29 @@ Lemma fw_two_child_exit : forall cfg P evs P' ep ec,
   pe_parent ec = Some (pe_pid ep) ->
   pe_parent ep = None ->
   fw_live ep fw_q_wait4 ->
+  m_halted (pe_model ec) = None ->
   ms_svc_pending (pe_ms ec) = Some 94 ->
   ms_gpr (pe_ms ec) 0 = 7 ->
   pstep_at forkwait_segs cfg (pe_pid ec) P evs (PNext P') ->
-  fw_two P'.
+  fw_two P' /\ (fw_mu P' < fw_mu P)%nat.
 Proof.
-  intros cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar Hpar Hsv Ha0 Hstep.
+  intros cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar Hpar Hhc Hsv Ha0 Hstep.
   pose proof (fw_look_two_child P ep ec Hp Hne) as Hl.
   rewrite (fw_entry_exit_step forkwait_segs cfg (pe_pid ec) P evs P' ec 94
              Hl Hsv fw_ninety_four Hstep).
   rewrite Ha0, fw_and_seven.
+  split;
+    [| unfold fw_mu; apply pmeasure_absorb_lt;
+       [ exact Hl
+       | rewrite (fw_entry_left_halted
+                    (pe_absorb ec (mkCfg (pe_ms ec)
+                       (with_halted (Z_to_bv 64 7)
+                          (cfg_model (pe_cfg (pcfg_shared P) ec))))))
+           by (cbn [pe_model pe_absorb cfg_model];
+               rewrite fw_halted_clear_shared, fw_m_halted_with_halted;
+               discriminate);
+         rewrite (fw_entry_left_pending ec 94 Hhc Hsv);
+         unfold fw_const; rewrite fw_ninety_four; cbn; lia ] ].
   exists ep,
     (pe_absorb ec
        (mkCfg (pe_ms ec)
@@ -2405,7 +2678,7 @@ Lemma fw_one_clone_step : forall cfg P evs P' e,
   m_halted (pe_model e) = None ->
   fw_q_clone (pe_ms e) ->
   pstep_cfg forkwait_segs cfg P evs (PNext P') ->
-  fw_shape P'.
+  fw_shape P' /\ (fw_mu P' < fw_mu P)%nat.
 Proof.
   intros cfg P evs P' e Hp Hr Hpar Hh Hq Hstep.
   destruct Hq as (Hsv & Hpc & Ha0 & Ha1 & Hrv & Hsp).
@@ -2430,36 +2703,59 @@ Proof.
     by (unfold cc; cbn [cfg_ms]; rewrite fw_sp_after_effect; exact Hsp).
   assert (Ha0' : ms_gpr (cfg_ms cc) 0 = eff_ret eff)
     by (unfold cc; apply fw_a0_after_effect).
+  assert (Hold : fw_entry_left e = 52%nat).
+  { rewrite (fw_entry_left_pending e 220 Hh Hsv).
+    unfold fw_const. rewrite fw_two_twenty. reflexivity. }
   destruct Hdisj as [(Herr & HP') | (Hlo & Hhi & Hfree & HP')]; subst P'.
   - (* declined: the one entry runs the errno tail to exit_group(7) *)
-    right; right; left.
-    destruct (absorb_one_entry P e cc Hp Hr) as (Hp' & Hr' & _).
-    exists (pe_absorb e cc).
-    split; [exact Hp'|]. split; [exact Hr'|]. split; [exact Hpar|].
-    split.
-    + cbn [pe_model pe_absorb cfg_model].
-      rewrite fw_halted_clear_shared. exact Hh''.
-    + cbn [pe_ms pe_absorb].
+    assert (Hrem7 : fw_rem (pe_ms (pe_absorb e cc)) fw_q_exit7).
+    { cbn [pe_ms pe_absorb].
       apply fw_fail_rem; [exact Hsv' | exact Hrv' | exact Hpc' |].
-      rewrite Ha0'. apply fw_errno_negative. exact Herr.
+      rewrite Ha0'. apply fw_errno_negative. exact Herr. }
+    destruct (absorb_one_entry P e cc Hp Hr) as (Hp' & Hr' & _).
+    split.
+    + right; right; left.
+      exists (pe_absorb e cc).
+      split; [exact Hp'|]. split; [exact Hr'|]. split; [exact Hpar|].
+      split; [|exact Hrem7].
+      cbn [pe_model pe_absorb cfg_model].
+      rewrite fw_halted_clear_shared. exact Hh''.
+    + apply (fw_mu_absorb_one_lt P e cc 17);
+        [exact Hp | | rewrite Hold; lia].
+      pose proof (fw_entry_left_bound (pe_absorb e cc) fw_q_exit7 94%Z
+                    fw_q_exit7_nr Hrem7) as Hb.
+      unfold fw_const in Hb. cbn in Hb. lia.
   - (* created: the two-entry shape, with both remainders *)
-    right; left.
-    apply (fw_clone_target P e cc (eff_ret eff));
-      [exact Hp | exact Hr | exact Hpar | exact Hfree
-       | exact Hh'' | | exact Hh |].
-    + apply (fw_parent_rem (cfg_ms cc) (eff_ret eff));
+    assert (Hremw : fw_rem (cfg_ms cc) fw_q_wait4).
+    { apply (fw_parent_rem (cfg_ms cc) (eff_ret eff));
         [exact Hsv' | exact Hrv' | exact Hpc' | exact Ha0'
-         | exact Hlo | exact Hhi |].
-      exact Hsp'.
-    + unfold child_entry. cbn [pe_ms].
+         | exact Hlo | exact Hhi | exact Hsp']. }
+    assert (Hremc : fw_rem (pe_ms (child_entry e (pe_cfg (pcfg_shared P) e)
+                                     cc (eff_ret eff))) fw_q_exit7).
+    { unfold child_entry. cbn [pe_ms].
       rewrite (fw_child_ms_eq (pe_cfg (pcfg_shared P) e) cc Ha1).
       destruct (fw_set_reg10_frame (cfg_ms cc) (Z_to_bv 64 0))
         as (Hf1 & Hf2 & Hf3 & _ & _).
       apply fw_child_rem.
-      * rewrite Hf1. exact Hsv'.
-      * rewrite Hf2. exact Hrv'.
-      * rewrite Hf3. exact Hpc'.
-      * rewrite ms_gpr_set_reg_a0. apply fw_zero_word.
+      - rewrite Hf1. exact Hsv'.
+      - rewrite Hf2. exact Hrv'.
+      - rewrite Hf3. exact Hpc'.
+      - rewrite ms_gpr_set_reg_a0. apply fw_zero_word. }
+    split.
+    + right; left.
+      apply (fw_clone_target P e cc (eff_ret eff));
+        [exact Hp | exact Hr | exact Hpar | exact Hfree
+         | exact Hh'' | exact Hremw | exact Hh | exact Hremc].
+    + apply (fw_mu_clone_lt P e cc (eff_ret eff));
+        [exact Hp | exact Hold | |].
+      * pose proof (fw_entry_left_bound (pe_absorb e cc) fw_q_wait4 260%Z
+                      fw_q_wait4_nr Hremw) as Hb.
+        unfold fw_const in Hb. cbn in Hb. lia.
+      * pose proof (fw_entry_left_bound
+                      (child_entry e (pe_cfg (pcfg_shared P) e) cc
+                         (eff_ret eff))
+                      fw_q_exit7 94%Z fw_q_exit7_nr Hremc) as Hb.
+        unfold fw_const in Hb. cbn in Hb. lia.
 Qed.
 
 (** THE REAP.  The zombie leaves the table and the parent is alone
@@ -2482,7 +2778,7 @@ Lemma fw_two_reap : forall cfg P evs P' ep ec,
   fw_q_wait4 (pe_ms ep) ->
   fw_child_st ec ->
   pstep_at forkwait_segs cfg (pe_pid ep) P evs (PNext P') ->
-  fw_shape P'.
+  fw_shape P' /\ (fw_mu P' < fw_mu P)%nat.
 Proof.
   intros cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar Hh Hq Hch Hstep.
   destruct Hq as (Hsv & Hpc & Ha0 & Ha1 & Ha2 & Ha3 & Hrv & Hnw).
@@ -2504,7 +2800,29 @@ Proof.
   { unfold pe_status in Hst. rewrite Hz, Hkz in Hst.
     injection Hst as Hst. rewrite <- Hst. vm_compute. reflexivity. }
   subst P'.
-  apply (fw_reap_target _
+  assert (Hrem7 : fw_rem
+     (pe_ms (mkEntry (pe_pid ep) (pe_parent ep)
+               (advance_past_svc
+                  (apply_effect (pe_ms ep)
+                     (mkEffect (pe_pid ec)
+                        [(ms_gpr (pe_ms ep) 1,
+                          Z_to_le_bytes 4 (bv_unsigned status))] [])))
+               (clear_shared model'') (pe_ofd ep) (pe_nsctx ep)))
+     fw_q_exit7).
+  { cbn [pe_ms].
+    apply (fw_reap_rem _ (ms_gpr (pe_ms ep) 1)).
+    - apply fw_svc_after_effect.
+    - rewrite fw_resv_after_effect. exact Hrv.
+    - rewrite fw_pc_after_effect.
+      assert (Hpcw : ms_pc_val (pe_ms ep) = 0x1103c)
+        by (apply bv_eq; rewrite Hpc; vm_compute; reflexivity).
+      rewrite Hpcw. vm_compute. reflexivity.
+    - rewrite fw_sp_after_effect. symmetry. exact Ha1.
+    - rewrite fw_mem_after_write.
+      apply fw_slot_read; [| rewrite Hstv; reflexivity].
+      exact Hnw. }
+  split.
+  { apply (fw_reap_target _
            (mkEntry (pe_pid ep) (pe_parent ep)
               (advance_past_svc
                  (apply_effect (pe_ms ep)
@@ -2512,24 +2830,21 @@ Proof.
                        [(ms_gpr (pe_ms ep) 1,
                          Z_to_le_bytes 4 (bv_unsigned status))] [])))
               (clear_shared model'') (pe_ofd ep) (pe_nsctx ep))).
-  - cbn [pcfg_procs]. rewrite Hp.
-    exact (fw_reap_target_table ep ec _ (pe_pid ec) Hne eq_refl).
-  - cbn [pcfg_root]. exact Hr.
-  - cbn [pe_parent]. exact Hppar.
-  - cbn [pe_model]. rewrite fw_halted_clear_shared.
-    rewrite (fw_halted_materialize _ _ _ Hmat). exact Hh.
-  - cbn [pe_ms].
-    apply (fw_reap_rem _ (ms_gpr (pe_ms ep) 1)).
-    + apply fw_svc_after_effect.
-    + rewrite fw_resv_after_effect. exact Hrv.
-    + rewrite fw_pc_after_effect.
-      assert (Hpcw : ms_pc_val (pe_ms ep) = 0x1103c)
-        by (apply bv_eq; rewrite Hpc; vm_compute; reflexivity).
-      rewrite Hpcw. vm_compute. reflexivity.
-    + rewrite fw_sp_after_effect. symmetry. exact Ha1.
-    + rewrite fw_mem_after_write.
-      apply fw_slot_read; [| rewrite Hstv; reflexivity].
-      exact Hnw.
+    - cbn [pcfg_procs]. rewrite Hp.
+      exact (fw_reap_target_table ep ec _ (pe_pid ec) Hne eq_refl).
+    - cbn [pcfg_root]. exact Hr.
+    - cbn [pe_parent]. exact Hppar.
+    - cbn [pe_model]. rewrite fw_halted_clear_shared.
+      rewrite (fw_halted_materialize _ _ _ Hmat). exact Hh.
+    - exact Hrem7. }
+  unfold fw_mu at 1. unfold pmeasure. cbn [pcfg_procs].
+  apply (fw_mu_reap_lt P ep ec _ (pe_pid ec) Hp Hne eq_refl).
+  - rewrite (fw_entry_left_pending ep 260 Hh Hsv).
+    unfold fw_const. rewrite fw_two_sixty. reflexivity.
+  - apply fw_entry_left_halted. rewrite Hz. discriminate.
+  - pose proof (fw_entry_left_bound _ fw_q_exit7 94%Z fw_q_exit7_nr Hrem7)
+      as Hb.
+    apply (Nat.le_trans _ _ _ Hb). unfold fw_const. cbn. lia.
 Qed.
 
 (** The segment lemmas live inside [ForkwaitSteps]' [Section Forkwait]
@@ -2775,7 +3090,12 @@ Definition fw_lands_in_shape (segs : list Segment) (cfg : SpuriousCfg)
     pstep_cfg segs cfg P evs (PNext P') ->
     fw_shape P'.
 
-Theorem fw_lands : forall cfg, fw_lands_in_shape forkwait_segs cfg.
+(** The two premises travel together because they are decided by the
+    same nine cases: one case analysis, two conclusions. *)
+Theorem fw_lands_and_mu : forall cfg P evs P',
+  fw_shape P ->
+  pstep_cfg forkwait_segs cfg P evs (PNext P') ->
+  fw_shape P' /\ (fw_mu P' < fw_mu P)%nat.
 Proof.
   intros cfg P evs P' Hsh Hstep.
   destruct Hsh as [Hone | [Htwo | [Hex | Hhalt]]].
@@ -2785,9 +3105,10 @@ Proof.
     + assert (Hq : fw_q_clone (pe_ms e))
         by (apply (fw_rem_now _ _ Hrem); rewrite Hsv; discriminate).
       exact (fw_one_clone_step cfg P evs P' e Hp Hr Hpar Hh Hq Hstep).
-    + left.
-      exact (fw_one_rem_step cfg P evs P' fw_q_clone e
-               fw_q_clone_pending Hp Hr Hpar Hh Hrem Hsv Hstep).
+    + destruct (fw_one_rem_step cfg P evs P' fw_q_clone e
+                  fw_q_clone_pending Hp Hr Hpar Hh Hrem Hsv Hstep)
+        as (Hs & Hm).
+      split; [left; exact Hs | exact Hm].
   - (* two entries *)
     destruct Htwo as (ep & ec & Hp & Hr & Hne & Hcpar & Hppar & Hlp & Hch).
     destruct Hstep as (p & Hstep).
@@ -2801,9 +3122,9 @@ Proof.
           by (apply (fw_rem_now _ _ Hremp); rewrite Hsv; discriminate).
         exact (fw_two_reap cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar
                  Hhp Hq4 Hch Hstep).
-      * right; left.
-        exact (fw_two_parent_step cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar
-                 Hhp Hremp Hsv Hch Hstep).
+      * destruct (fw_two_parent_step cfg P evs P' ep ec Hp Hr Hne Hcpar
+                    Hppar Hhp Hremp Hsv Hch Hstep) as (Hs & Hm).
+        split; [right; left; exact Hs | exact Hm].
     + (* the child stepped; the zombie half cannot, by 7.2 *)
       destruct Hch as [Hlive | (Hz & _)];
         [| exfalso; rewrite Hz in Hh0; discriminate].
@@ -2812,23 +3133,25 @@ Proof.
       * assert (Hq7 : fw_q_exit7 (pe_ms ec))
           by (apply (fw_rem_now _ _ Hremc); rewrite Hsv; discriminate).
         destruct Hq7 as (Hsv7 & Ha07).
-        right; left.
-        exact (fw_two_child_exit cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar
-                 Hlp Hsv7 Ha07 Hstep).
-      * right; left.
-        exact (fw_two_child_step cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar
-                 Hlp Hhc Hremc Hsv Hstep).
+        destruct (fw_two_child_exit cfg P evs P' ep ec Hp Hr Hne Hcpar
+                    Hppar Hlp Hhc Hsv7 Ha07 Hstep) as (Hs & Hm).
+        split; [right; left; exact Hs | exact Hm].
+      * destruct (fw_two_child_step cfg P evs P' ep ec Hp Hr Hne Hcpar
+                    Hppar Hlp Hhc Hremc Hsv Hstep) as (Hs & Hm).
+        split; [right; left; exact Hs | exact Hm].
   - (* one entry, its own [exit_group] ahead of it *)
     destruct Hex as (e & Hp & Hr & Hpar & Hh & Hrem).
     destruct (ms_svc_pending (pe_ms e)) eqn:Hsv.
     + assert (Hq : fw_q_exit7 (pe_ms e))
         by (apply (fw_rem_now _ _ Hrem); rewrite Hsv; discriminate).
       destruct Hq as (Hsv7 & Ha07).
-      right; right; right.
-      exact (fw_one_exit_step cfg P evs P' e Hp Hr Hh Hsv7 Ha07 Hstep).
-    + right; right; left.
-      exact (fw_one_rem_step cfg P evs P' fw_q_exit7 e
-               fw_q_exit7_pending Hp Hr Hpar Hh Hrem Hsv Hstep).
+      destruct (fw_one_exit_step cfg P evs P' e Hp Hr Hh Hsv7 Ha07 Hstep)
+        as (Hs & Hm).
+      split; [right; right; right; exact Hs | exact Hm].
+    + destruct (fw_one_rem_step cfg P evs P' fw_q_exit7 e
+                  fw_q_exit7_pending Hp Hr Hpar Hh Hrem Hsv Hstep)
+        as (Hs & Hm).
+      split; [right; right; left; exact Hs | exact Hm].
   - (* halted: every arm needs a running entry *)
     exfalso.
     destruct Hhalt as (e & c & Hp & Hrv & Hhc & _).
@@ -2840,6 +3163,68 @@ Proof.
     destruct (fw_look_one P e (pcfg_root P) er Hp Hlr) as (Her & _).
     subst er. injection Hrv as Hrv. subst c.
     rewrite m_halted_pe_cfg in Hhc. rewrite Hh0 in Hhc. discriminate.
+Qed.
+
+Theorem fw_lands : forall cfg, fw_lands_in_shape forkwait_segs cfg.
+Proof.
+  intros cfg P evs P' Hsh Hstep.
+  exact (proj1 (fw_lands_and_mu cfg P evs P' Hsh Hstep)).
+Qed.
+
+Theorem fw_mu_decreases : forall cfg P evs P',
+  fw_shape P ->
+  pstep_cfg forkwait_segs cfg P evs (PNext P') ->
+  (fw_mu P' < fw_mu P)%nat.
+Proof.
+  intros cfg P evs P' Hsh Hstep.
+  exact (proj2 (fw_lands_and_mu cfg P evs P' Hsh Hstep)).
+Qed.
+(* =========================================================================
+   The start state
+   ========================================================================= *)
+
+(** THE STACK POINTER IS FAR ABOVE SIXTEEN, under every address-space
+    declaration the model admits: the window's floor is
+    [State.va_sp_window_lo], two gigabytes below the stack top, and the
+    smallest of the three tops is Sv39's.  So the no-wrap side
+    condition [ForkwaitSteps.fw_run_parent] needs for the frame push is
+    a fact about the ENTRY WINDOW rather than about the program. *)
+Lemma fw_va_window_lo_16 : forall v, (16 <= va_sp_window_lo v)%Z.
+Proof. intros v. destruct v; vm_compute; discriminate. Qed.
+
+Lemma fw_sp_at_least_16 : forall v sp,
+  valid_sp_va v sp -> (16 <= bv_unsigned sp)%Z.
+Proof.
+  intros v sp (Hlo & _ & _). pose proof (fw_va_window_lo_16 v). lia.
+Qed.
+
+(** AND THE SHAPE AT [execve].  [MustExitP.pinit_config] is [one_proc]
+    over [Run.init_config], so the table is a single entry; the entry
+    point is the image's own [0x11000], no call is pending, the
+    reservation is clear because [Run.init_machine_state] sets it so,
+    and what is left is the seven steps of [ForkwaitSteps.fw_run_A]. *)
+Lemma fw_shape_at_pinit : forall sp brk0 mbase rnd lim inp,
+  valid_entry (mkImage ForkwaitMemImage_loaded_segments
+                       ForkwaitMemImage_init_pc ForkwaitMemImage_phdrs)
+              (Run.mkEntry sp brk0 mbase rnd) inp ->
+  fw_shape (pinit_config ForkwaitMemImage_loaded_segments
+              ForkwaitMemImage_init_pc ForkwaitMemImage_phdrs
+              sp brk0 mbase rnd lim inp).
+Proof.
+  intros sp brk0 mbase rnd lim inp Hve.
+  unfold valid_entry, valid_entry_va in Hve.
+  destruct Hve as (Hsp & _ & _ & _).
+  unfold pinit_config. left.
+  apply fw_shape_one_proc; [reflexivity|].
+  apply fw_start_rem.
+  - reflexivity.
+  - reflexivity.
+  - vm_compute. reflexivity.
+  - cbn [cfg_ms init_config init_machine_state ms_regs].
+    change (bvmap_set 2 sp (bvmap_set 10 (Z_to_bv 64 0) bvmap_empty))
+      with (regupd (regupd bvmap_empty 10 (Z_to_bv 64 0)) 2 sp).
+    getr_resolve.
+    exact (fw_sp_at_least_16 _ sp Hsp).
 Qed.
 
 (** Given it, preservation is immediate -- it IS it.  Stated as its own
@@ -2906,19 +3291,18 @@ Qed.
     the per-step obligations were deleted: a stated-but-unused
     definition beside a real proof invites a reader to think it is
     used. *)
-Theorem forkwait_halts_of_progress : forall cfg P0 mu,
+Theorem forkwait_halts_of_progress : forall cfg P0,
   fw_shape P0 ->
   (forall P, fw_shape P -> terminalb P = false ->
      exists evs st, pstep_cfg forkwait_segs cfg P evs st) ->
   (forall P evs, fw_shape P -> ~ pstep_cfg forkwait_segs cfg P evs PError) ->
-  (forall P evs P', fw_shape P ->
-     pstep_cfg forkwait_segs cfg P evs (PNext P') -> (mu P' < mu P)%nat) ->
   must_exit_in_p_at forkwait_segs cfg [Z_to_bv 64 7] P0.
 Proof.
-  intros cfg P0 mu H0 Hprog Hnoerr Hdec.
-  apply (forkwait_halts_of_lands forkwait_segs cfg P0 mu);
+  intros cfg P0 H0 Hprog Hnoerr.
+  apply (forkwait_halts_of_lands forkwait_segs cfg P0 fw_mu);
     [ apply fw_lands | exact H0 | exact fw_shape_terminal_halted
-    | exact Hprog | exact Hnoerr | exact Hdec ].
+    | exact Hprog | exact Hnoerr
+    | intros P evs P' Hsh Hs; exact (fw_mu_decreases cfg P evs P' Hsh Hs) ].
 Qed.
 
 End ForkwaitConsumers.
