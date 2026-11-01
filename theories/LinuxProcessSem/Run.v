@@ -1196,6 +1196,18 @@ Definition reaches_error (c0 : config) : Prop :=
     launch whose [in_sigmask] blocks signal 13 is a valid input, the
     write answers -EPIPE, and [State.procst_sigpipe_pending] carries
     the signal to the [rt_sigprocmask] that uncovers it. *)
+(** THE vDSO SPLITS THIS PREDICATE'S FIRST SHAPE IN TWO, and the split
+    is the whole point of the arm that answers a call.
+    [RiscvSemantics.step_accesses] answers [MachineUnmodeled] for every
+    pc in the vDSO text, so without the extra premise here every call a
+    program makes would be reported as a place the model gave up — when
+    it is a place the model has an answer for.  So the first shape asks
+    that pc is NOT an exported entry, and the second says what makes a
+    call at one uncovered after all ([vdso_call_unmodeled]).
+
+    (Restored from revision/vdso; the merge that brought the vDSO
+    segments here resolved this comment's hunk to the head and dropped
+    it, leaving the code it describes unchanged.) *)
 Definition unmodeled_at (c : config) : Prop :=
   m_halted (cfg_model c) = None /\
   ( (ms_svc_pending (cfg_ms c) = None /\
