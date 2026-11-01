@@ -14,43 +14,74 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Syscall Uapi.
+From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import
+  Fs.Open.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
 
 (** [readlinkat dirfd path buf bufsiz]: the modeled file system has NO
     symlinks (Fs.v: paths are uninterpreted names, no symlink objects),
-    so no path a program can name resolves to one — and readlink(2) on
-    anything that is not a symlink is -EINVAL.
+    so no name a program can give it resolves to one — and readlink(2)
+    on anything that is not a symlink is -EINVAL.  procfs is the
+    exception the model knows of: it is mounted at /proc (SCOPE.md,
+    "Assumptions that the model does not check"), and its names include
+    links ("/proc/self/exe", "/proc/self/fd/N"), so a procfs name is
+    declined.
 
-    The DIRFD is the one argument that is checked, and only AT_FDCWD is
-    modeled: [do_readlinkat] resolves the dirfd through [fdget_raw]
-    inside path resolution, so [readlinkat(999, "f", buf, 64)] is -EBADF
-    on Linux — asserting -EINVAL there would
-    REJECT a conforming trace, which is worse than declining.  Any other
-    dirfd therefore is [unmodeled], fail closed, exactly as openat's does.
-    [dirfd] arrives already truncated to 32 bits (see [Syscall.fd32]), so
+    KERNEL PATH, read at v6.18.44:
+      fs/stat.c [SYSCALL_DEFINE4(readlinkat)], [do_readlinkat]: read at v6.18.44; identical at v6.18.46.
+      fs/namei.c [getname_flags], [filename_lookup], [path_init]: read at v6.18.44; identical at v6.18.46.
+
+    ORDER, which is [do_readlinkat]'s.  First [bufsiz <= 0] (an [int])
+    is -EINVAL, before the pathname is fetched, so that answer copies
+    nothing in.  Then [getname_flags] fetches the pathname, with
+    LOOKUP_EMPTY: its -ENAMETOOLONG (no NUL within PATH_MAX) and -EFAULT
+    (an unreadable byte) are the answers, and [filename_lookup] returns
+    the stashed error before it looks at the dirfd, so both preempt the
+    dirfd, as in [newfstatat_core_spec].  Then the dirfd: only AT_FDCWD
+    is modeled ([path_init] resolves any other through [fdget_raw] and
+    can answer -EBADF, so asserting an errno there would reject a
+    conforming trace); any other is [unmodeled].  [dirfd] arrives
+    already truncated to 32 bits (see [Syscall.fd32]), so
     [readlinkat(2^32 - 100, ...)] names the working directory as Linux
-    does.
+    does.  Then the name: the empty name is the working directory itself
+    (LOOKUP_EMPTY), not a link, and [do_readlinkat] answers -ENOENT for
+    an empty name that is not one; a procfs name is declined; any other
+    is the -EINVAL.
 
-    Everything under AT_FDCWD is the deterministic -EINVAL.  No other
-    argument is validated.  ORDERING CHOICE: the kernel resolves the
-    path BEFORE touching the output buffer, so the path-based -EINVAL
-    wins over any buffer problem — the buffer is deliberately NOT
-    checked against [in_wmem] (a successful readlinkat never happens, so
-    no byte is ever delivered).
+    THE COPY-IN LEDGER is [newfstatat_spec]'s: the range
+    [cstr_access_len_aux] reports, on every answer past the [bufsiz]
+    gate.  The buffer is never written: no answer here is a link's
+    target.
 
-    APPROXIMATION (deliberate).  Under AT_FDCWD the path itself
-    is still not interpreted, so a missing path (-ENOENT on Linux) and a bad
-    path pointer (-EFAULT) are both coarsened to -EINVAL, and the [int bufsiz]
-    gate Linux applies BEFORE path resolution ([bufsiz <= 0] is -EINVAL) is
-    subsumed rather than modeled.  Those are FALSE REJECTIONS of conforming
-    traces, not fail-closed gaps: no modeled binary consumes readlinkat's
-    result, and interpreting the path here would duplicate openat's path-errno
-    machinery. *)
+    APPROXIMATION (deliberate, and the one this arm had before it read
+    the pathname).  A name the file system does not hold is -ENOENT on
+    Linux and -EINVAL here: the arm does not consult [Fs], so a missing
+    name is coarsened to the -EINVAL.  That is a FALSE REJECTION of a
+    conforming trace, not a fail-closed gap; no modeled binary consumes
+    readlinkat's result. *)
+Definition readlinkat_core_spec (dirfd pathp : word) : Sys SyscallEffect :=
+  i <- input ;;
+  match read_cstr (in_mem i) pathp with
+  | CstrTooLong => err_ret ENAMETOOLONG          (* no NUL within PATH_MAX *)
+  | CstrFault => err_ret EFAULT                  (* unmapped byte in the path string *)
+  | CstrOk p =>
+      if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled   (* unmodeled dirfd: fail closed *)
+      else if path_eqb p [] then err_ret ENOENT  (* the working directory: not a link *)
+      else if proc_path_b p then unmodeled       (* a procfs name: may be a link *)
+      else err_ret EINVAL                        (* no symlinks in [Fs] *)
+  end.
+
+(** The [bufsiz] gate, then the pathname fetch, recorded.  [pathp] is a1
+    and [bufsiz] a3, read from the input as [Kernel.Sys.prctl_spec] reads
+    its extra arguments. *)
 Definition readlinkat_spec (dirfd : word) : Sys SyscallEffect :=
-  if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled   (* unmodeled dirfd: fail closed *)
-  else err_ret EINVAL.
+  i <- input ;;
+  if (sint32 (in_arg i 3) <=? 0)%Z then err_ret EINVAL   (* [bufsiz <= 0], before the fetch *)
+  else
+    record_copyins [(in_arg i 1, cstr_access_len_aux (in_mem i) (in_arg i 1) path_max)]
+      (readlinkat_core_spec dirfd (in_arg i 1)).
 
 (** The flag WORDS [newfstatat_spec] interprets: 0 (plain [stat]) and
     AT_SYMLINK_NOFOLLOW ([lstat]).  Those are the only two riscv64 musl
@@ -266,7 +297,11 @@ Definition newfstatat_proc_spec (statbuf : word) : Sys SyscallEffect :=
     errno Linux never gives for "..", while [Open.openat_spec] and
     [Open.faccessat_spec] both resolve it ([Open.path_is_dirref]).  The
     same model therefore says two things about "..", one function call
-    apart.  Any other path the
+    apart.  A procfs name ([Open.proc_path_b]: "/proc" or a name under
+    it with no ".." component) is declined too: procfs is mounted at
+    /proc (SCOPE.md, "Assumptions that the model does not check"), so
+    such a name resolves on Linux whatever [Fs] holds, and the flat
+    map's -ENOENT would be a wrong answer for it.  Any other path the
     file system does not hold is the real -ENOENT; any path it does hold
     would succeed on Linux, and is declined.
 
@@ -333,10 +368,10 @@ Definition newfstatat_proc_spec (statbuf : word) : Sys SyscallEffect :=
     is what keeps those four lemmas short.  The price is that
     APPROXIMATION 1, and any later correction to this precedence or to
     the recorded range, must be made in both places.  [readlinkat_spec]
-    above is the third call site waiting to happen — it asserts -EINVAL
-    without interpreting its pathname at all, and fixing it means
-    reusing this machinery — so that is the point at which
-    extracting a shared helper pays for itself. *)
+    above is now a third copy of the fetch and its ledger (with its own
+    order: the [bufsiz] gate first, and the dirfd after the fetch), so
+    the same correction is owed there too; extracting a shared helper
+    pays for itself at the next one. *)
 Definition newfstatat_core_spec (dirfd pathp flag : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
@@ -358,6 +393,7 @@ Definition newfstatat_core_spec (dirfd pathp flag : word) : Sys SyscallEffect :=
                 extra arguments *)
            else unmodeled)                       (* unmodeled dirfd: fail closed *)
         else if path_eqb p dot_path then unmodeled  (* the working directory: no metadata in [Fs] *)
+        else if proc_path_b p then unmodeled     (* a procfs name: resolves whatever [Fs] holds *)
         else
         match fs_lookup (m_fs m) p with
         | None => err_ret ENOENT                 (* file absent: real -ENOENT, not a modeling gap *)

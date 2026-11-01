@@ -200,12 +200,12 @@ Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
 Lemma check_syscall_readlinkat : forall i eff m,
   bv_unsigned (in_sysno i) = 78%Z ->
-  check_syscall i eff m = check_readlinkat (fd32 (in_arg i 0)) eff m.
+  check_syscall i eff m = check_readlinkat i (fd32 (in_arg i 0)) eff m.
 Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
 
 Lemma syscall_witness_readlinkat : forall i m,
   bv_unsigned (in_sysno i) = 78%Z ->
-  syscall_spec_witness i m = readlinkat_witness (fd32 (in_arg i 0)) m.
+  syscall_spec_witness i m = readlinkat_witness (fd32 (in_arg i 0)) i m.
 Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
 Lemma check_syscall_newfstatat : forall i eff m,

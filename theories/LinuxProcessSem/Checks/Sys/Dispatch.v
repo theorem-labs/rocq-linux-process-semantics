@@ -388,8 +388,8 @@ Defined.
 Definition arm_readlinkat : CheckedArm.
 Proof.
   refine (mkCheckedArm (mkSpecArm 78%Z (fun i => readlinkat_spec (fd32 (in_arg i 0)) i))
-                       (fun i eff m => check_readlinkat (fd32 (in_arg i 0)) eff m)
-                       (fun i m => readlinkat_witness (fd32 (in_arg i 0)) m)
+                       (fun i eff m => check_readlinkat i (fd32 (in_arg i 0)) eff m)
+                       (fun i m => readlinkat_witness (fd32 (in_arg i 0)) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_readlinkat_sound_ok, check_readlinkat_sound_unmodeled, check_readlinkat_complete_ok, check_readlinkat_complete_unmodeled, readlinkat_witness_ok.
@@ -1518,10 +1518,10 @@ Lemma sa_spec_arm_ppoll : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_readlinkat : forall i eff m,
-  ca_check arm_readlinkat i eff m = check_readlinkat (fd32 (in_arg i 0)) eff m.
+  ca_check arm_readlinkat i eff m = check_readlinkat i (fd32 (in_arg i 0)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_readlinkat : forall i m,
-  ca_witness arm_readlinkat i m = readlinkat_witness (fd32 (in_arg i 0)) m.
+  ca_witness arm_readlinkat i m = readlinkat_witness (fd32 (in_arg i 0)) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_readlinkat : forall i m o,
   sa_spec (ca_arm arm_readlinkat) i m o = readlinkat_spec (fd32 (in_arg i 0)) i m o.

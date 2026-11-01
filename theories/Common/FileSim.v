@@ -1298,6 +1298,7 @@ Proof.
   rewrite in_mem_si, Hpath. cbv beta iota zeta.
   rewrite Hpe. cbv beta iota.
   rewrite Hdirfd; norm_fd32; rewrite bv_eqb_refl. cbn [negb]. cbv beta iota.
+  rewrite (proc_open_target_cwd_noslash _ _ Hunw). cbv beta iota.
   unfold Open.check_openat_resolved.
   rewrite Hunw. cbv beta iota.
   rewrite Hfl, Z.eqb_refl. cbv beta iota.
@@ -1343,6 +1344,7 @@ Proof.
   rewrite in_mem_si, Hpath. cbv beta iota zeta.
   rewrite Hpe. cbv beta iota.
   rewrite Hdirfd; norm_fd32; rewrite bv_eqb_refl. cbn [negb]. cbv beta iota.
+  rewrite (proc_open_target_cwd_noslash _ _ Hunw). cbv beta iota.
   unfold Open.check_openat_resolved.
   rewrite Hunw. cbv beta iota.
   rewrite Hfl.
@@ -1390,6 +1392,7 @@ Proof.
   rewrite in_mem_si, Hpath. cbv beta iota zeta.
   rewrite Hpe. cbv beta iota.
   rewrite Hdirfd; norm_fd32; rewrite bv_eqb_refl. cbn [negb]. cbv beta iota.
+  rewrite (proc_open_target_cwd_noslash _ _ Hunw). cbv beta iota.
   unfold Open.check_openat_resolved.
   rewrite Hunw. cbv beta iota.
   rewrite Hfl.
@@ -1617,6 +1620,7 @@ Proof.
     destruct (path_eqb p []) eqn:Hpe; cbv beta iota.
     - apply check_copyins_after_ret_only.
     - rewrite Hdirfd; norm_fd32; rewrite bv_eqb_refl. cbn [negb]. cbv beta iota.
+      rewrite (proc_open_target_cwd_noslash _ _ Hunw). cbv beta iota.
       unfold Open.check_openat_resolved.
       rewrite Hunw. cbv beta iota.
       rewrite Hfl, Z.eqb_refl. cbv beta iota.

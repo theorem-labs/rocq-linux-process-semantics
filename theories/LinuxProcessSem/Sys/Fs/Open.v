@@ -1411,7 +1411,10 @@ Definition proc_sys_file_b (p : path) : bool :=
       descriptor is an [OProcPath q] the name is [q], a separator, and
       the path.
     - Anything else ([AT_FDCWD] with a relative path, or any other
-      dirfd) is [None], and the existing arms decide it.
+      dirfd) is [None], and the existing arms decide it.  [AT_FDCWD] is
+      tested before the table is read: it is not a descriptor, and the
+      test keeps the answer for a relative name from depending on what
+      the table holds at the number [AT_FDCWD32].
 
     fs/namei.c [path_init]: read at v6.18.44; identical at v6.18.46. *)
 Definition proc_open_target (fds : list (word * FdEntry)) (dirfd : word)
@@ -1420,6 +1423,7 @@ Definition proc_open_target (fds : list (word * FdEntry)) (dirfd : word)
   | b :: _ =>
       if bv_eqb b slash_byte then
         (if proc_path_b p then Some p else None)
+      else if bv_eqb dirfd AT_FDCWD32 then None
       else
         match fd_lookup fds dirfd with
         | Some (FdOpaque (OProcPath q)) =>
@@ -1429,6 +1433,16 @@ Definition proc_open_target (fds : list (word * FdEntry)) (dirfd : word)
         end
   | [] => None
   end.
+
+(** A name with no separator, from [AT_FDCWD], is never a procfs
+    target: the existing arms decide it whatever the table holds. *)
+Lemma proc_open_target_cwd_noslash : forall fds p,
+  path_has_slash p = false -> proc_open_target fds AT_FDCWD32 p = None.
+Proof.
+  intros fds [|b p] H; [reflexivity|].
+  cbn [proc_open_target]. cbn [path_has_slash existsb] in H.
+  apply orb_false_iff in H as [Hb _]. rewrite Hb, bv_eqb_refl. reflexivity.
+Qed.
 
 (** A fresh opaque descriptor at the lowest free fd, or any errno; see
     [openat_proc_spec] for why every errno. *)
