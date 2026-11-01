@@ -1,4 +1,4 @@
-# Backing the vDSO pages: what is done, what is left, and the five shapes
+# Backing the vDSO pages: what is done, what is left, and the nine shapes
 
 This branch, `revision/vdso-back-the-pages`, gives the model the Linux vDSO's
 two areas as ordinary segments carrying **measured bytes**, so that the
@@ -237,3 +237,75 @@ to.
 `cat_kill_*` lemmas landed on the head after the donor branched, so the donor
 never saw them and they were still stated over the image's own segments. No
 conflict marked them.
+
+## Four more shapes, found after the first five were written
+
+The first five came from the first dozen files. Four more recurred through the
+rest of the ripple, and the second is the one that will cost you a machine if
+you meet it without knowing it.
+
+### Shape 6 — a concrete fixture moves onto the run's segment list
+
+A fixture in `Checks/` or `Examples/` that names its image's own segments has
+to name `run_segments …` wherever a `run` reaches it, because that is the list
+the step relation reads. Finished: `Checks/Omni.v` (the exit-0, undecodable,
+ebreak, loop and wloop fixtures), `Checks/Examples.v`
+(`undecodable_step_unmodeled_at_demo_entry_run` — the old image-only facts are
+kept beside it, both true, because a reader comparing the two wants both),
+`Common/CatSimSigpipe.v`, `Examples/rwx_flag_ns/*`.
+
+### Shape 7 — abstract the vDSO pair BEFORE `vm_compute`
+
+This is the reduction trap of the section above, and there is now a tactic for
+it in the tree: **`Checks/Omni.v`'s `abstract_vdso`**, which generalises
+`vdso_segments k s m` to a variable. The idiom is
+`unfold …, run_segments; abstract_vdso; vm_compute`.
+
+Use it on every `vm_compute` whose RESULT holds a machine state, because the
+read-back then carries the run's concrete vDSO segments. In `Omni.v` the
+culprit was `loop_fix`, found with `-time`. Finished: `Omni.v` (`loop_fix`,
+`wloop_*`), `BudgetPremise.v` (`mm_step`), `OversizeReachable.v` (`cm_step`,
+`cm_step2`), `AbortWitness.v` (`abrt_step`, `abrt_step2`, `blk_leg*_ok`).
+
+**`AbortWitness.v` is the open frontier and it is this shape.** It was
+OOM-killed under a 48 GB cap with no Rocq error line at all. The remaining
+suspects, in order: the `check_syscall` `vm_compute` lemmas — `abrt_sc1`,
+`abrt_sc2`, `abrt_tkill_*`, the `blk_check_eq` sites — and `blk_svc`. Find the
+next one with `-time` rather than by reading.
+
+### Shape 8 — `cbn beta iota` needs `zeta`
+
+`Run.run` now contains a `let`, so a `cbn beta iota` that used to expose the
+configuration no longer does. Add `zeta`. Finished: `Checks/BudgetPremise.v`.
+
+### Shape 9 — the `co_vdso` field
+
+The approved design step, described in its own section above.
+
+## The unbuilt tail, named so nobody mistakes it for checked work
+
+At tip `e6abe50` these four files are edited and pushed but **no build has read
+them to completion**: `Checks/AbortWitness.v` (read, then killed),
+`Checks/BudgetPremise.v`, `Checks/OversizeReachable.v`,
+`Checks/HaltsAllowed.v` — the last three sit behind `AbortWitness.v` and have
+no `.vo`. Everything else listed as repaired has a built object. **A claim a
+build has not read is prose.**
+
+## Statements reworded, and the only new premises
+
+No published statement gained a premise or lost strength on this branch. Three
+were REWORDED to name the run's own segment list, which is the form
+`OmniRun.bh_unmodeled_iff` and `omni_strong_equiv` already use: in
+`Checks/Omni.v`, `undecodable_omni_not_covered`, `undecodable_omni_may_uncovered`
+and `ebreak_omni_covered` over `covered`/`uncovered (image_run_segments …)`,
+and the `loop_wloop_*` theorems with the `loop_*`/`wloop_*` examples over
+`run_segments … demo_entry`; and `FileMixSim.file_mix_unmodeled_leaf_not_covered`
+concludes `covered (run_segments …)`.
+
+The new premises are all on INTERNAL library lemmas and each is the vDSO's own
+rule: `ErrEscape.step_lbu_fault` and `step_ld_fault` (`range_meets_vvar`),
+`Checks/Examples.unmodeled_no_next` (`vdso_entry_fn … = None`),
+`RefNodes.mprotect_check` and `AsanNodesMmLib.srz_mprotect2` (the range is
+`region_free` of the pair), and
+`patchclassify_demo/Verdicts.must_exit_everywhere_of_exits_c`, whose premise now
+holds for any segment list after the image's own.
