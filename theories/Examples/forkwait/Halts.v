@@ -425,3 +425,92 @@ Proof.
   - exact Hdec.
   - exact H0.
 Qed.
+
+(* =========================================================================
+   Towards fw_shape_preserved
+   ========================================================================= *)
+
+(** A one-entry configuration's successor is one-entry, unless the step was
+    the clone.  [absorb] replaces the stepping entry and rebuilds the
+    shared state; it never adds or drops one, so the table's LENGTH is
+    fixed by it. *)
+Lemma absorb_procs_length : forall P e c',
+  List.length (pcfg_procs (absorb P e c'))
+  = List.length (pcfg_procs P).
+Proof.
+  intros P e c'. unfold absorb. cbn [pcfg_procs].
+  apply replace_in_length.
+Qed.
+
+(** And a clone's successor has exactly one more entry: [clone_result]
+    replaces the parent and appends the child. *)
+Lemma clone_result_procs_length : forall P e c' q,
+  List.length (pcfg_procs (clone_result P e c' q))
+  = S (List.length (pcfg_procs P)).
+Proof.
+  intros P e c' q. unfold clone_result. cbn [pcfg_procs].
+  rewrite List.length_app, replace_in_length. cbn [List.length]. lia.
+Qed.
+
+(** THE CLONE SHAPE IS THE ONLY ONE WHERE THE ENTRY COUNT CHANGES, which is
+    why it is the only shape whose target is not determined by a program
+    counter alone.  These two lemmas are what let the preservation proof
+    tell the cases apart by counting, rather than by inspecting the
+    successor's table: a step from a one-entry shape either keeps one entry
+    (and the target is a one-entry shape at the successor's pc) or makes
+    two (and the target is [fw_two]).  Nothing else can happen, because
+    [pstep_next_cases] has exactly three producing arms and the reap needs
+    a zombie, which a one-entry configuration of this program does not
+    have. *)
+
+(** The reap arm's successor has one FEWER entry. *)
+Lemma drop_in_procs_length_lt : forall ps p e,
+  look_in ps p = Some e ->
+  (List.length (drop_in ps p) < List.length ps)%nat.
+Proof.
+  induction ps as [|kv r IH]; intros p e Hl; cbn in *; [discriminate|].
+  destruct (bv_eqb (fst kv) p) eqn:Hb; cbn.
+  - lia.
+  - pose proof (IH p e Hl). lia.
+Qed.
+
+(** A FINDING, recorded here because it is about the RELATION and not
+    about this program, and left UNPROVED rather than admitted.
+
+    The natural next lemma is that the entry count decides which arm
+    fired:
+
+      same count  -> [pstep_other]      (one entry replaced)
+      one more    -> [pstep_clone]      (a child appended)
+      one fewer   -> [pstep_wait_reap]  (a zombie dropped)
+
+    It would make the preservation proof a case analysis on three arms
+    rather than on eight shapes times three.  The first two hold, by
+    [absorb_procs_length] and [clone_result_procs_length] above.  THE
+    THIRD DOES NOT FOLLOW FROM THE ARM AS WRITTEN, and the reason is a
+    premise the arm is missing.
+
+    [Procs.pstep_wait_reap] requires [look P q = Some ez] and
+    [pe_parent ez = Some (pe_pid e)], but NEVER [q <> pe_pid e].  Nothing
+    in the arm stops the reaping parent and the reaped child being the
+    same entry: that would need [pe_parent e = Some (pe_pid e)], a
+    process that is its own parent, which [Procs.pconfig_wf]'s
+    parent-link clause excludes -- but [pconfig_wf] is NOT a premise of
+    the arm.  So on a malformed configuration the arm can drop the entry
+    it is also replacing, and the count argument cannot be completed
+    without either that invariant or a new premise.
+
+    THE PATHFINDER IS NOT AFFECTED.  Its configurations are well formed by
+    construction: [pinit_config] gives [pconfig_wf]
+    ([Procs.pconfig_wf_one_proc]) and no arm breaks it.  The count lemma
+    is provable with [pconfig_wf P] as a premise.
+
+    WHICH FIX IS RIGHT IS NOT MINE TO CHOOSE ALONE, because it changes a
+    trusted specification.  Adding [q <> pe_pid e] to the arm makes the
+    relation self-contained and costs existing uses nothing, since it is
+    implied wherever [pconfig_wf] holds.  Threading [pconfig_wf] into the
+    lemma instead leaves the relation able to express a self-reap and
+    relies on every caller to exclude it.  Everything else in this
+    development puts such conditions in the arm -- the surface guard, the
+    clone's pid freshness, the reap's own [m_killed] premise -- so the
+    first is what I would take, and it is reported before it is made. *)
