@@ -5,7 +5,7 @@
     states the child's context or the errno. *)
 
 From Stdlib Require Import ZArith List Bool PArith Lia.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Userns Walk Arm UserArms Net Clone.
 Import ListNotations.
 Open Scope Z_scope.
@@ -171,3 +171,23 @@ Definition admin_in_deep : NsCtx :=
 Example clone_pid_level_32 : forall m,
   clone_ns_exact (Z.lor CLONE_NEWPID SIGCHLD) m admin_in_deep deep 6 = CnErr 28 deep.
 Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** The forced-only filter ([clone_ns_refusal]): when every family is off,
+    an environment failure of a namespace clone (here ENOMEM, where the
+    tables give the child) is dropped; with the families on it is not; and
+    the tables' own failure (EPERM without CAP_SYS_ADMIN) is never dropped. *)
+Example clone_env_failure_dropped_forced_only : forall m,
+  clone_ns_refusal forced_only_cfg ALL_NS (with_creds (creds 65534) m) caller host 138 12 host.
+Proof.
+  intros m. split; [reflexivity | split; [reflexivity |]].
+  intros H. vm_compute in H. discriminate H.
+Qed.
+
+Example clone_env_failure_kept_may_fail : forall m,
+  ~ clone_ns_refusal may_fail_cfg ALL_NS (with_creds (creds 65534) m) caller host 138 12 host.
+Proof. intros m (H & _). discriminate H. Qed.
+
+Example clone_tables_failure_kept : forall m,
+  ~ clone_ns_refusal forced_only_cfg (Z.lor CLONE_NEWNS SIGCHLD) (with_creds (creds 65534) m)
+      no_admin_inside inside 140 1 inside.
+Proof. intros m (_ & _ & H). apply H. vm_compute. reflexivity. Qed.
