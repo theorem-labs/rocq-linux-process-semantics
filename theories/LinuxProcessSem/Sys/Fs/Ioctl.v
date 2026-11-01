@@ -289,6 +289,14 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
   | None => err_ret EBADF                        (* fd not open: real -EBADF, before the request is examined *)
   | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _)
   | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
+  (* AN UNNAMED FILE IS A REGULAR FILE, and takes the file kinds' answer
+     by their route: [do_vfs_ioctl] (fs/ioctl.c, Linux v6.18.46) claims
+     none of the eight, hands an [S_ISREG] inode to [file_ioctl], whose
+     default is -ENOIOCTLCMD, and [vfs_ioctl] then finds no
+     [.unlocked_ioctl] in the regular-file table of tmpfs
+     ([shmem_file_operations], mm/shmem.c) and answers -ENOTTY.  musl's
+     [tmpfile()] reaches this through [__fdopen]'s TIOCGWINSZ *)
+  | Some (FdAnon _ _)
   | Some (FdSocket _)
   (* A STREAM-PAIR END IS A SOCKET FILE TOO, and reaches the same
      [sock_ioctl] default arm: [sock_do_ioctl] calls [unix_ioctl]

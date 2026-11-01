@@ -129,6 +129,7 @@ Definition spec_table : list SpecArm :=
   (* wait4           *) mkSpecArm 260%Z (fun i => wait4_spec (pid32 (in_arg i 0)) (in_arg i 1) (waitopts32 (in_arg i 2)) (in_arg i 3) i) ::
   (* prlimit64       *) mkSpecArm 261%Z (fun i => prlimit64_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) (in_arg i 3) i) ::
   (* getrandom       *) mkSpecArm 278%Z (fun i => getrandom_spec (in_arg i 0) (in_arg i 1) (in_arg i 2) i) ::
+  (* pwritev2        *) mkSpecArm 287%Z (fun i => pwritev2_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (flag32 (in_arg i 5)) i) ::
   (* clone3          *) mkSpecArm 435%Z (fun i => clone3_spec (in_arg i 0) (in_arg i 1) i) ::
   (* faccessat2      *) mkSpecArm 439%Z (fun i => faccessat2_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i) ::
   nil.

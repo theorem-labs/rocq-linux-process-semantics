@@ -385,6 +385,12 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                inode has, and a regular file still has none -- so
                [vfs_poll] hands back [DEFAULT_POLLMASK] here exactly as
                it does for the three kinds above *)
+            | Some (FdAnon _ _) => true
+            (* an unnamed file is a regular file too: its name is gone,
+               not its [->poll], and the regular-file table of tmpfs has
+               none ([shmem_file_operations], mm/shmem.c, v6.18.46), so
+               [vfs_poll] hands back [DEFAULT_POLLMASK] as for the file
+               kinds above *)
             | Some (FdChannel _) | Some (FdSocket _) | None => false
             (* A PIPE END IS THE [FdChannel] CASE WITH THE PEER INSIDE
                THE MODEL, and it declines for the same reason.
@@ -1200,6 +1206,10 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               file still has none, so [vfs_poll] hands back
               [DEFAULT_POLLMASK] here exactly as it does for the three
               kinds beside it *)
+           Some (Z.land default_pollmask events)
+       | Some (FdAnon _ _) =>
+           (* an unnamed file: the regular-file answer, for the reason
+              [bits_all_pollable] gives *)
            Some (Z.land default_pollmask events)
        (* ENUMERATED ON PURPOSE, exactly as [bits_all_pollable] is and
           for the same reason: a [Some _ => true] catch-all would be

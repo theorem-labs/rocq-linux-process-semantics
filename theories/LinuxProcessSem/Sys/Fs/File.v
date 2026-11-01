@@ -173,6 +173,14 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      shared socket declines anyway, so copying it would buy nothing,
      and a decline keeps one rule for every socket kind *)
   | FdDgram _ => false
+  (* AN UNNAMED FILE DECLINES, for the [FdFile] reason: the entry
+     carries the descriptor's [f_pos] ([State.af_off]), which read, write
+     and lseek rewrite in place, so a copied entry would split the one
+     offset two Linux descriptors on one [struct file] share.  It carries
+     the file's contents too, which [State.anon_update] keeps in step
+     across entries; it is the offset that has no such keeper.
+     [State.FdAnon]'s note relies on this decline. *)
+  | FdAnon _ _ => false
   end.
 
 (** dup's injectable failures: fd-table exhaustion at RLIMIT_NOFILE

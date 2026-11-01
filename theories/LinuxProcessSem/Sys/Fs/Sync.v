@@ -250,5 +250,11 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
   | Some (FdFileRW _ _) => ret_only (Z_to_bv 64 0) (* and opened O_RDWR: it reads no access mode
                                                       either, which is why the read-only arm
                                                       above is not an error *)
+  | Some (FdAnon _ _) => ret_only (Z_to_bv 64 0)   (* the [FdFile] answer carries over unchanged:
+                                                      [vfs_fsync_range] (fs/sync.c) reads
+                                                      [f_op->fsync], which an unnamed file keeps
+                                                      from its regular-file table, and nothing
+                                                      about a name; on a tmpfs /tmp that is
+                                                      [noop_fsync] (mm/shmem.c, v6.18.46) *)
   | Some FdDir         => ret_only (Z_to_bv 64 0) (* directory fsync succeeds; the key-publish path needs it *)
   end.

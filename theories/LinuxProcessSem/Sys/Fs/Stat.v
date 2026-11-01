@@ -482,12 +482,13 @@ Definition newfstatat_spec (dirfd pathp flag : word) : Sys SyscallEffect :=
     load-bearing rather than cosmetic, for the wrapping reason
     [Kernel.Sys.uname_spec] states.
 
-    A PATH [Fs] NO LONGER HOLDS IS DECLINED.  [unlinkat] (35) removes a
-    key while a descriptor on it stays open, and Linux answers such an
-    [fstat] with the inode's surviving metadata and [st_nlink] 0.  The
-    model has no contents to size and no link count to drop, so it
-    declines — which is also what keeps [st_nlink] among the members the
-    pin holds fixed. *)
+    A PATH [Fs] NO LONGER HOLDS IS DECLINED, and no run reaches that
+    branch.  [unlinkat] (35) never removes a key a file descriptor
+    still names: the working-directory arm declines that removal, and
+    the /tmp arm turns every such descriptor into a [State.FdAnon]
+    first ([Fs.Namei.unlink_open_tmp_spec]), whose [fstat] is
+    [fstat_anon_spec] below.  The decline stays for a [Model] no run
+    builds. *)
 Definition fstat_file_spec (p : path) (statbuf : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
@@ -517,6 +518,71 @@ Definition fstat_file_spec (p : path) (statbuf : word) : Sys SyscallEffect :=
             end
         end
   end.
+
+(** THE SUCCESS ARM FOR AN UNNAMED FILE ([State.FdAnon id af]):
+    [fstat_file_spec]'s shape over the descriptor's own copy of the
+    file -- [af_data] for the size, [af_pin] for the pin -- with two
+    members the model KNOWS here and the file arm cannot.
+
+    - THE TYPE IS S_IFREG.  An unnamed file is one the run's /tmp held
+      under a name, and every file there is a regular file: the ones
+      this run made with an O_CREAT open ([build_open_flags] sets
+      [op->mode = how->mode | S_IFREG], fs/open.c) and the declared
+      ones ([State.in_tmp]'s premise).  So
+      [st_size] is the contents' length outright, where the file arm
+      can only imply it.
+    - [st_nlink] IS 0: the removal of the one name took [i_nlink] from 1
+      to 0 ([drop_nlink]), and [generic_fillattr] (fs/stat.c, Linux
+      v6.18.46) reports [i_nlink] ([Uapi.stat_nlink_zero]).
+
+    THE PIN IS THE FILE'S, not the name's: every descriptor of the file
+    carries it ([State.FdAnon]'s invariant).  A pin the name had moved
+    here at the removal with [st_nlink] set to 0
+    ([Uapi.stat_pin_unlinked]); without one, the first [fstat] chooses
+    the stable members and writes them to EVERY descriptor of the file
+    ([State.anon_update]), as [set_statpin] does for a named file.  A
+    pin that is not well formed, not S_IFREG, or not at [st_nlink] 0
+    would leave the [choose] with nothing to choose, so it is declined
+    first, as [fstat_chrdev_spec] declines a pin that fails its
+    device's test.  The one that fails it in a reachable run is a pin
+    an [fstat] of the NAMED file took with a type other than S_IFREG,
+    which [fstat_file_spec] admits because it cannot know the type;
+    Linux never gives such a pin to a /tmp file.
+
+    The rest -- -EBADF before anything, [access_ok]'s -EFAULT, the
+    partial [copy_to_user] decline -- is [fstat_file_spec]'s argument
+    unchanged. *)
+Definition fstat_anon_spec (id : word) (af : AnonFile) (statbuf : word)
+    : Sys SyscallEffect :=
+  i <- input ;;
+  m <- get_model ;;
+  if negb (access_okb statbuf STAT_SIZE) then err_ret EFAULT
+  else
+    match read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE) with
+    | None => unmodeled      (* a partial [copy_to_user] then -EFAULT *)
+    | Some _ =>
+        match af_pin af with
+        | Some b0 =>
+            if negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool
+            then unmodeled   (* a pin no S_IFREG, link-count-0 delivery can repeat *)
+            else
+              bs <- choose (fun bs : list byte =>
+                              stat_buf_wf bs = true
+                              /\ stat_is_reg bs = true
+                              /\ stat_nlink_zero bs = true
+                              /\ stat_size_ok (length (af_data af)) bs = true
+                              /\ stat_stable_eqb bs b0 = true) ;;
+              pure (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] [])
+        | None =>
+            bs <- choose (fun bs : list byte =>
+                            stat_buf_wf bs = true
+                            /\ stat_is_reg bs = true
+                            /\ stat_nlink_zero bs = true
+                            /\ stat_size_ok (length (af_data af)) bs = true) ;;
+            set_fds (anon_update (m_fds m) id (fun a => af_set_pin a bs)) ;;
+            pure (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] [])
+        end
+    end.
 
 (** THE SUCCESS ARM FOR A CHARACTER DEVICE THE MODEL KNOWS, in two
     instances: /dev/null ([fstat_devnull_spec], under [Uapi.devnull_path]
@@ -700,5 +766,9 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
                                      (* the random device: S_IFCHR, [st_rdev] 1:9
                                         ([Uapi.stat_urandom_ok]), the rest pinned once
                                         under [Uapi.urandom_path] *)
+  | Some (FdAnon id af) => fstat_anon_spec id af statbuf
+                                     (* an unnamed file: S_IFREG, [st_nlink] 0 and the
+                                        contents' length asserted, the rest pinned once
+                                        for the file in every descriptor's [af_pin] *)
   end.
 

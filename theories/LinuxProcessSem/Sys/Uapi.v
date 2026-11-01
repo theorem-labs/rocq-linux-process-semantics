@@ -77,8 +77,8 @@ Definition O_LARGEFILE : Z := 32768%Z.
       are [State.FdSocket], [State.FdStream], [State.FdEventfd] and
       [State.FdDgram] ([Fcntl.getfl_f_flags]).  [Open.openat_spec] never
       mints one: the fd this bullet is about is an [FdFile], [FdFileW],
-      [FdFileA], [FdFileRW], [FdDir], [FdDevNull] or [FdUrandom], and F_GETFL
-      declines on every one of them FOR THE
+      [FdFileA], [FdFileRW], [FdDir], [FdDevNull], [FdUrandom] or
+      [FdAnon], and F_GETFL declines on every one of them FOR THE
       REASON THIS BULLET IS ABOUT — the ignored bit is part of the answer, so the
       read fails closed inside the spec rather than at the dispatch.
       The two facts moved together on purpose: [Fcntl.getfl_f_flags]
@@ -354,6 +354,14 @@ Definition SEEK_END : Z := 2%Z.
     BEFORE [vfs_llseek], so the -EINVAL for a whence past it precedes
     every per-file-kind answer — including a pipe's -ESPIPE. *)
 Definition SEEK_MAX : Z := 4%Z.
+
+(** [RWF_NOAPPEND] (include/uapi/linux/fs.h:425, Linux v6.18.46): the
+    per-call negation of O_APPEND that [pwritev2]'s [rwf_t] flags may
+    carry.  [kiocb_set_rw_flags] (include/linux/fs.h:3890-3894) clears
+    IOCB_APPEND from the request when it is set, so the bytes land at
+    the position the call names.  The one [rwf_t] bit the model reads;
+    see [Fs.ReadWrite.pwritev2_spec]. *)
+Definition RWF_NOAPPEND : Z := 32%Z.
 
 (** mmap prot/flags ABI constants (asm-generic, as on riscv64:
     include/uapi/asm-generic/mman-common.h, Linux v6.18.46, commit
@@ -1166,6 +1174,7 @@ Definition STAT_SIZE : Z := 128%Z.
     written inline because three of them are read twice, and because a
     layout error is the one mistake a reader cannot see in a numeral. *)
 Definition ST_MODE_OFF : nat := 16%nat.
+Definition ST_NLINK_OFF : nat := 20%nat.
 Definition ST_RDEV_OFF : nat := 32%nat.
 Definition ST_PAD1_OFF : nat := 40%nat.
 Definition ST_SIZE_OFF : nat := 48%nat.
@@ -1354,9 +1363,17 @@ Proof. intro l. apply stat_bytes_eqb_eq. reflexivity. Qed.
     arm for the permission bits, no [chown] arm for the ids, no
     [link]/[linkat] arm for the link count, and a type, an inode number,
     a device and a block size do not change at all while the inode
-    lives.  [unlinkat] (35) IS modeled and DOES drop [st_nlink], but it
-    also removes the key, and [Fs.Stat.fstat_spec] declines a descriptor
-    whose path [Fs] no longer holds, so no [fstat] observes the drop.
+    lives.  [unlinkat] (35) IS modeled and DOES drop [st_nlink]
+    ([vfs_unlink] -> the filesystem's [->unlink], [shmem_unlink]'s
+    [drop_nlink] on tmpfs; fs/namei.c, mm/shmem.c, Linux v6.18.46).  The
+    working-directory arm removes only a name no descriptor holds, so no
+    [fstat] observes that drop.  The /tmp arm also removes a name open
+    descriptors hold, and there the drop is observable: it moves the pin
+    off the name and into the unnamed file with [st_nlink] set to 0
+    ([stat_pin_unlinked], [Fs.Namei.unlink_open_tmp_spec]), so the pin
+    later [fstat]s are compared against already carries the dropped
+    count.  That is the one place a pinned member moves, and it moves
+    once, with the name.
 
     WHAT IS DELIBERATELY LEFT FREE: [st_size] (which [write] and
     [ftruncate] move, and which [stat_size_ok] constrains instead),
@@ -1378,6 +1395,25 @@ Lemma stat_stable_eqb_refl : forall b, stat_stable_eqb b b = true.
 Proof.
   intro b. unfold stat_stable_eqb. now rewrite !stat_bytes_eqb_refl.
 Qed.
+
+(** [st_nlink] of a delivered [struct stat] is 0: the answer Linux
+    gives for a file whose last name is gone, since [drop_nlink] took
+    [i_nlink] from 1 to 0 and [generic_fillattr] (fs/stat.c, Linux
+    v6.18.46) copies [i_nlink] into [nlink]. *)
+Definition stat_nlink_zero (bs : list byte) : bool :=
+  Z.eqb (stat_field_le ST_NLINK_OFF 4 bs) 0.
+
+(** A file's stat pin once its name is gone: the same bytes with
+    [st_nlink] (four bytes at [ST_NLINK_OFF]) set to 0.  A pin taken
+    while the file had its name records the link count the environment
+    chose then; after the removal Linux reports 0, because every file
+    [Fs.Namei.unlink_open_tmp_spec] turns into an unnamed one has
+    exactly one name -- in the run's private /tmp, and no [link] or
+    [linkat] arm exists in [Sys.SyscallTable.spec_table] to give it a
+    second -- and [drop_nlink] takes that one away.  Every other member
+    is the inode's and stays. *)
+Definition stat_pin_unlinked (bs : list byte) : list byte :=
+  firstn ST_NLINK_OFF bs ++ Z_to_le_bytes 4 0 ++ skipn (ST_NLINK_OFF + 4) bs.
 
 (** TWO SLICES OF A DELIVERED [struct stat] READ THE SAME out of two
     buffers that agree on the region they fall in: wholly inside the

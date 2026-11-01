@@ -280,6 +280,19 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
          premise is [Net.Socket.socket_spec]'s datagram arm, which
          declines SOCK_NONBLOCK and mints this kind with [O_RDWR]
          alone *)
+  | FdAnon _ af => if af_append af then false
+                   else Z.eqb (Z.land (bv_unsigned arg) setfl_acted_on) 0
+      (* AN UNNAMED FILE TAKES THE ANSWER OF THE FILE KIND ITS OPEN WAS.
+         Every [State.FdAnon] descends from an open this model admits --
+         an [FdFile], [FdFileW], [FdFileRW] or [FdFileA] whose name was
+         removed ([Namei.unlink_open_tmp_spec]), or a "/proc/self/fd/N"
+         open under O_RDONLY, [Open.wr_create_flags] or
+         [Open.append_create_flags] ([Open.openat_procfd_spec]) -- and
+         [vfs_unlink] leaves [f_flags] alone.  So without O_APPEND its
+         [f_flags] is one of the residues
+         [modeled_open_flags_clear_of_setfl] covers, and the [FdFileRW]
+         rule holds; with O_APPEND it is the [FdFileA] case, whose
+         decline and reason are above *)
   end.
 
 (** The arithmetic half of the argument above, mechanized rather than
@@ -617,6 +630,10 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
       (* the same reason as the four above, and no new one: the answer
          would have to name the O_LARGEFILE and O_CLOEXEC bits the open
          accepted and did not record *)
+  | FdAnon _ _ => None
+      (* the [FdFileRW] reason: every unnamed file descends from an open
+         that accepted O_NONBLOCK, O_LARGEFILE and O_CLOEXEC and recorded
+         none of them, so the word is not a function of the entry *)
   | FdFileA _ _ => None
       (* declined for the [FdFile] reason and one more.  The ignored
          O_NONBLOCK is discarded here exactly as it is for the three

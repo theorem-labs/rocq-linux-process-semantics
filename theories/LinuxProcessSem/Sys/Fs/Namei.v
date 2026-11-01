@@ -196,8 +196,10 @@ Proof.
 Qed.
 
 (** Is [p] the path of an open file fd?  A file fd records the PATH it
-    was opened on ([FdFile]/[FdFileW]), not an inode, so the model cannot
-    represent Linux's unlinked-but-still-open file — see [unlinkat_spec].
+    was opened on ([FdFile]/[FdFileW]), not an inode, so the removal of
+    a name such an fd holds has to change the fd: [unlink_open_tmp_spec]
+    turns it into a [State.FdAnon] on the /tmp arm, and the
+    working-directory arm declines (see [unlinkat_spec]).
 
     THE NON-FILE ENTRIES ARE ENUMERATED rather than swept up by a
     [| _ :: r =>] catch-all, and the difference is invisible until an
@@ -247,6 +249,10 @@ Fixpoint fd_names_path (fds : list (word * FdEntry)) (p : path) : bool :=
   | (_, FdEventfd _) :: r => fd_names_path r p
     (* exact: [alloc_file_pseudo] on the anonymous-inode mount
        (fs/anon_inodes.c), which no path in [Fs.Fs] reaches *)
+  | (_, FdAnon _ _) :: r => fd_names_path r p
+    (* exact: an unnamed file's last name is gone -- that is what made
+       it one -- and a file created later under that name is another
+       inode, so it names no path [unlinkat] can reach *)
   end.
 
 (** unlinkat's injectable failures: environment conditions the model does
@@ -296,6 +302,92 @@ Definition unlink_found_spec (p c : path) (flags : word) (m : Model)
   else
     alt (e <- errno_from unlinkat_errnos ;; err_ret e)  (* untracked env failure *)
         (set_fs (fs_remove (m_fs m) c) ;; ret_only (Z_to_bv 64 0)).
+
+(** The entry a descriptor holding the name [c] becomes once the name is
+    gone: a descriptor of the unnamed file [id], with the file's contents
+    [data] and pin [pin], and with what the descriptor's own
+    [struct file] carries kept as it was -- its [f_pos], its access mode
+    (FMODE_READ and FMODE_WRITE from the open) and its O_APPEND.
+    [vfs_unlink] (fs/namei.c, Linux v6.18.46) touches no [struct file]:
+    it drops the inode's link count and the dentry, and every open file
+    keeps its [f_path] on the now unhashed dentry and its own
+    [f_pos], [f_mode] and [f_flags].
+
+    ENUMERATED, for [fd_names_path]'s reason: a later file kind holding
+    a path must decide here what its descriptors become. *)
+Definition unlink_open_entry (c : path) (id : word) (data : list byte)
+    (pin : option (list byte)) (e : FdEntry) : FdEntry :=
+  match e with
+  | FdFile q off =>
+      if path_eqb c q then FdAnon id (mkAnonFile data off true false false pin) else e
+  | FdFileW q off =>
+      if path_eqb c q then FdAnon id (mkAnonFile data off false true false pin) else e
+  | FdFileRW q off =>
+      if path_eqb c q then FdAnon id (mkAnonFile data off true true false pin) else e
+  | FdFileA q off =>
+      if path_eqb c q then FdAnon id (mkAnonFile data off false true true pin) else e
+  | FdChannel _ | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
+  | FdStream _ _ _ | FdEventfd _ | FdDgram _ | FdAnon _ _ => e
+      (* none of these holds a name, as [fd_names_path] argues kind by
+         kind *)
+  end.
+
+(** THE REMOVAL OF A /tmp NAME OPEN DESCRIPTORS HOLD (R14 of
+    dispatch://OSSV-287/spec): the name goes, and the file stays for
+    the descriptors, as an UNNAMED FILE ([State.FdAnon]).  musl's
+    [tmpfile()] (src/stdio/tmpfile.c) does exactly this to the file it
+    has just created with O_RDWR|O_CREAT|O_EXCL.  [p] is the pathname as
+    the program spelled it, [c] the key, [data] the file's contents.
+
+    LINUX, v6.18.46: [do_unlinkat] (fs/namei.c) finds the dentry and
+    calls [vfs_unlink], which runs [may_delete] and the filesystem's
+    [->unlink] ([shmem_unlink] on tmpfs, mm/shmem.c: [drop_nlink], then
+    [dput]), and [d_delete] then only unhashes the dentry, since the open
+    files still hold references to it.  The inode lives until the last
+    [fput]; every [struct file] on it keeps its contents, its offset,
+    its access mode and its O_APPEND ([unlink_open_entry]).
+
+    THE ANSWERS, in order:
+
+    - a trailing separator is -ENOTDIR, [do_unlinkat]'s [slashes:]
+      label, as [unlink_found_spec] answers it (AT_REMOVEDIR is
+      declined before this arm is reached);
+    - the id a new unnamed file would take is one a live descriptor
+      already carries: declined.  [State.anon_new_id] wraps to 0 only
+      past a live id of 2^64 - 1, and no run makes 2^64 files;
+    - otherwise the [unlinkat_errnos] alternatives, each leaving the
+      name and the file as they were, or the removal: every descriptor
+      holding [c] becomes a descriptor of the new file, the key leaves
+      [m_fs], and the file is not in the file system the exit event
+      carries, as on Linux.
+
+    THE PIN MOVES WITH THE INODE.  The name's stat pin, if an [fstat]
+    made one, becomes the pin of every descriptor of the unnamed file,
+    with [st_nlink] set to 0 ([Uapi.stat_pin_unlinked]); [State.with_fs]
+    then drops it from the name, so a file created later under the same
+    name, which is another inode, starts without one.
+
+    ONLY THE /tmp ARM ANSWERS THIS (dispatch://OSSV-287/spec, decision
+    "Only the /tmp arm answers the removal of an open file"): the run's
+    /tmp is private to it ([State.in_tmp]), and only those files are
+    needed.  The working-directory arm keeps [unlink_found_spec]'s
+    decline. *)
+Definition unlink_open_tmp_spec (p c : path) (data : list byte) (m : Model)
+    : Sys SyscallEffect :=
+  if path_trailing_slash p then err_ret ENOTDIR  (* do_unlinkat's [slashes:] *)
+  else
+  let id := anon_new_id (m_fds m) in
+  if anon_id_live (m_fds m) id then unmodeled   (* the id wrapped: see above *)
+  else
+  let pin := match statpin_lookup (m_statpins m) c with
+             | Some b => Some (stat_pin_unlinked b)
+             | None => None
+             end in
+  alt (e <- errno_from unlinkat_errnos ;; err_ret e)  (* untracked env failure *)
+      (set_fds (map (fun q => (fst q, unlink_open_entry c id data pin (snd q)))
+                    (m_fds m)) ;;
+       set_fs (fs_remove (m_fs m) c) ;;
+       ret_only (Z_to_bv 64 0)).
 
 (** THE /tmp ARM: removing a file the run HOLDS in its own private
     temporary directory ([tmp_name], [State.in_tmp]).  It sits inside
@@ -398,6 +490,11 @@ Definition unlink_found_spec (p c : path) (flags : word) (m : Model)
     the only distinction left for this arm to make is the one
     [unlink_rmdir] makes.
 
+    A NAME OPEN DESCRIPTORS HOLD IS REMOVED, and the file stays for them
+    as an unnamed file: [unlink_open_tmp_spec].  A name no descriptor
+    holds takes [unlink_found_spec], the working-directory arm's
+    removal.
+
     [dirfd] is not tested here, and does not have to be: the caller
     below has already required AT_FDCWD.  Linux would ignore any dirfd
     for a path of this shape — [filename_parentat] hands an absolute
@@ -412,7 +509,9 @@ Definition unlinkat_tmp_spec (n p c : path) (flags : word) (m : Model)
   else
     match fs_lookup (m_fs m) c with
     | None => err_ret ENOENT     (* absent from the run's own /tmp: real -ENOENT *)
-    | Some _ => unlink_found_spec p c flags m
+    | Some data =>
+        if fd_names_path (m_fds m) c then unlink_open_tmp_spec p c data m
+        else unlink_found_spec p c flags m
     end.
 
 (** [unlinkat dirfd path flags]: remove a directory entry.  This is the
@@ -657,10 +756,14 @@ Definition unlinkat_tmp_spec (n p c : path) (flags : word) (m : Model)
     file fds record a PATH ([FdFile]/[FdFileW]), not an inode, so after a
     removal they would name nothing — and the read, write, readv and
     writev specs all rest on "an [FdFile] always points into the fs".
-    Rather than weaken that invariant in four places, unlinking a path
-    some fd still names is [unmodeled] here.  Closing the fd first, which
-    is what a program that publishes a file atomically does, stays inside
-    the model.
+    Rather than weaken that invariant in four places, unlinking a
+    working-directory path some fd still names is [unmodeled] here.
+    Closing the fd first, which is what a program that publishes a file
+    atomically does, stays inside the model.  A /tmp name some fd still
+    names is ANSWERED instead, by turning each such fd into a
+    [State.FdAnon] that carries the contents itself
+    ([unlink_open_tmp_spec]), so no [FdFile] is left pointing at a
+    removed key on that arm either.
 
     APPROXIMATION, the same one [openat_spec] carries, in two forms.
 

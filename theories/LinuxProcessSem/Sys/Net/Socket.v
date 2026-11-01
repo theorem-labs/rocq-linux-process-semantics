@@ -562,13 +562,13 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
          enumeration of file kinds.  It is therefore the right answer for
          every NON-SOCKET kind this model has — [FdChannel], [FdFile],
          [FdFileW], [FdFileA], [FdFileRW], [FdDir], [FdPipe], [FdDevNull],
-         [FdUrandom] and [FdEventfd] — and for any non-socket kind a
-         later change adds.  [FdPipe], [FdFileA] and [FdEventfd] arrived
-         that way without an edit: a pipe end's [f_op] is
-         [pipeanon_fops] (fs/pipe.c [create_pipe_files], v6.18.46), an
-         append fd's is its filesystem's, and an eventfd's is
-         [eventfd_fops] (fs/eventfd.c), so [sock_from_file] returns NULL
-         for each exactly as for the other four.
+         [FdUrandom], [FdEventfd] and [FdAnon] — and for any non-socket
+         kind a later change adds.  [FdPipe], [FdFileA], [FdEventfd] and
+         [FdAnon] arrived that way without an edit: a pipe end's [f_op]
+         is [pipeanon_fops] (fs/pipe.c [create_pipe_files], v6.18.46), an
+         append fd's and an unnamed file's are their filesystem's, and an
+         eventfd's is [eventfd_fops] (fs/eventfd.c), so [sock_from_file]
+         returns NULL for each exactly as for the other four.
          WHAT THE WILDCARD CANNOT SEE IS A NEW SOCKET KIND, which would
          fall into it and answer a FALSE -ENOTSOCK.  [FdStream] and
          [FdDgram] are the first two, and take their own arms above; the
@@ -1216,6 +1216,8 @@ Definition sock_fd (m : Model) (fd : word) : SockOf :=
                                               (drivers/char/random.c) *)
   | Some (FdEventfd _) => SoErr ENOTSOCK   (* nor an eventfd: [eventfd_fops]
                                               (fs/eventfd.c), on an anonymous inode *)
+  | Some (FdAnon _ _) => SoErr ENOTSOCK    (* nor an unnamed file: its [f_op] is its
+                                              filesystem's regular-file table *)
   | Some (FdSocket sk)  => SoInet sk
   | Some (FdStream id side st) => SoPair id side st
                                            (* a socket file: [sock_alloc_file] gives it
@@ -2057,7 +2059,10 @@ Remark setfl_noop_declines_fasync : forall (e : FdEntry) (arg : word),
   Z.land (bv_unsigned arg) FASYNC = 0%Z.
 Proof.
   intros e arg H. unfold setfl_noop_on in H.
-  destruct e; try discriminate;
+  destruct e; cbv beta iota in H; try discriminate;
+    try match type of H with
+        | (if ?b then _ else _) = true => destruct b; [discriminate|]
+        end;
     apply Z.eqb_eq in H;
     replace FASYNC with (Z.land setfl_acted_on FASYNC)
       by (vm_compute; reflexivity);
@@ -2448,9 +2453,11 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
   | Some (FdPipe _ _)
   | Some (FdDevNull _ _)
   | Some FdUrandom
-  | Some (FdEventfd _) =>      (* not a socket: [sock_from_file] is one comparison
+  | Some (FdEventfd _)
+  | Some (FdAnon _ _) =>       (* not a socket: [sock_from_file] is one comparison
                                   against [socket_file_ops], and a pipe end, the
-                                  two device kinds and an eventfd all fail it *)
+                                  two device kinds, an eventfd and an unnamed file
+                                  all fail it *)
       err_ret ENOTSOCK
   | Some (FdStream _ _ _) => unmodeled
       (* A STREAM-PAIR END DECLINES, WHOLE, and this decline is
@@ -2645,6 +2652,8 @@ Definition sockfd_lookup_errno (fds : list (word * FdEntry)) (fd : word)
       (* and /dev/urandom's is [urandom_fops] (drivers/char/random.c) *)
   | Some (FdEventfd _) => Some ENOTSOCK
       (* and an eventfd's is [eventfd_fops] (fs/eventfd.c) *)
+  | Some (FdAnon _ _) => Some ENOTSOCK
+      (* and an unnamed file's is its filesystem's regular-file table *)
   | Some (FdSocket _) => None
   | Some (FdStream _ _ _) => None
       (* a socket too: [recvfrom_spec] answers a stream-pair end before it

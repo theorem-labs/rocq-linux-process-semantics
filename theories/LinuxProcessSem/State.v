@@ -2862,6 +2862,52 @@ Definition ef_set_count (ctx : EventfdCtx) (c : Z) : EventfdCtx :=
 Definition ef_set_nonblock (ctx : EventfdCtx) (b : bool) : EventfdCtx :=
   mkEventfdCtx (ef_count ctx) (ef_semaphore ctx) b.
 
+(** ONE DESCRIPTOR'S VIEW OF AN UNNAMED FILE ([FdAnon]): a regular file
+    whose last name was removed while descriptors still held it.  Every
+    claim in this block is Linux v6.18.46 (commit 1f99e9ab748f).
+
+    - [af_data] is the file's contents, its page cache up to [i_size].
+      It belongs to the INODE, not to the descriptor, so EVERY entry of
+      one file carries the same bytes, and an arm that changes them
+      writes the change to every entry of the file ([anon_update]).
+    - [af_off] is this descriptor's [f_pos]: it belongs to the
+      [struct file], so it is the one field the entries of one file do
+      not share.
+    - [af_rd] and [af_wr] are FMODE_READ and FMODE_WRITE, which
+      [do_dentry_open] (fs/open.c) set from the access mode of the open
+      that made the [struct file].
+    - [af_append] is O_APPEND in [f_flags]: [iocb_flags]
+      (include/linux/fs.h) turns it into IOCB_APPEND and
+      [generic_write_checks_count] (fs/read_write.c) then puts every
+      write at [i_size_read(inode)], whatever [f_pos] says.
+    - [af_pin] is the file's stat pin ([procst_statpins]'s bytes for a
+      named file): the [struct stat] its first [fstat] delivered, or
+      [None] before one.  It too belongs to the inode, so every entry of
+      one file carries the same pin.
+
+    WHAT IS NOT HERE: no name (the file has none, which is the point),
+    no link count (it is 0 for every unnamed file the model makes, see
+    [Fs.Namei.unlink_open_tmp_spec]), and no O_NONBLOCK or O_CLOEXEC,
+    which no modeled call on a regular file reads. *)
+Record AnonFile := mkAnonFile {
+  af_data   : list byte;
+  af_off    : word;
+  af_rd     : bool;
+  af_wr     : bool;
+  af_append : bool;
+  af_pin    : option (list byte)
+}.
+
+(** One-field updates, for [ef_set_count]'s reason: Rocq has no record
+    update syntax.  The contents and the pin are what an arm writes to
+    every entry of a file; the offset is what it writes to its own. *)
+Definition af_set_data (af : AnonFile) (d : list byte) : AnonFile :=
+  mkAnonFile d (af_off af) (af_rd af) (af_wr af) (af_append af) (af_pin af).
+Definition af_set_off (af : AnonFile) (o : word) : AnonFile :=
+  mkAnonFile (af_data af) o (af_rd af) (af_wr af) (af_append af) (af_pin af).
+Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
+  mkAnonFile (af_data af) (af_off af) (af_rd af) (af_wr af) (af_append af) (Some b).
+
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
 
@@ -3093,7 +3139,47 @@ Definition ef_set_nonblock (ctx : EventfdCtx) (b : bool) : EventfdCtx :=
       it no answer to be wrong about: every send and receive on an
       [FdDgram] declines.  Its creation is the one answered path where
       Linux can refuse with -ENOBUFS ([inet6_create]'s [sk_alloc] for
-      AF_INET6), and [Net.Socket.socket_dgram_errnos] admits it there. *)
+      AF_INET6), and [Net.Socket.socket_dgram_errnos] admits it there.
+    - [FdAnon id af]: a descriptor of an UNNAMED FILE, a regular file in
+      the run's /tmp whose name [unlinkat] removed while descriptors
+      still held it ([Fs.Namei.unlink_open_tmp_spec]), or a descriptor
+      that [openat] of "/proc/self/fd/N" opened again on such a file
+      ([Fs.Open.openat_procfd_spec]).  Linux keeps the inode alive while
+      a [struct file] holds it: [vfs_unlink] (fs/namei.c) drops the
+      link count, and the inode is freed at the last [fput] (Linux
+      v6.18.46).  [id] names the FILE -- every descriptor of one file
+      carries the same id -- and [af] is this descriptor's view of it
+      ([AnonFile]).
+
+      THE CONTENTS LIVE IN THE ENTRIES, and not in the file system or
+      a new field of [Model] (dispatch://OSSV-287/spec, decision "An
+      unnamed file lives in its descriptors").  The file system is
+      observable at exit ([ExitEv] carries [m_fs]), and Linux's file
+      system at exit holds no unnamed file, so a hidden key there would
+      make the model observe what Linux does not; and a new field of
+      the model would break every published tree that builds a model
+      record.  The cost is the invariant the arms keep: ALL ENTRIES
+      WITH ONE [id] CARRY THE SAME [af_data] AND THE SAME [af_pin].
+      Every arm reads the entry the call names, and every arm that
+      changes the contents or the pin writes the change to every entry
+      of the id ([anon_update]); only [af_off] is written to the
+      entry alone, since [f_pos] belongs to the [struct file].
+
+      THE FILE GOES AWAY WITH ITS LAST DESCRIPTOR, as Linux frees the
+      inode at the last [fput], and nothing has to happen for that:
+      [Fs.Open.close_spec] stays kind-blind and removes one entry, and
+      once no entry carries the id nothing names the file.  A new id is
+      one above the largest live one ([anon_new_id]), so a dead file's
+      id is never reused while another entry still carries it.
+
+      A NEW KIND, NOT A [FdFile] WITH NO PATH, for the reason the type
+      enumerates: every [FdFile] arm reads its bytes from [m_fs] under
+      the path, and an unnamed file has none.  [dup], [dup3] and
+      [F_DUPFD] decline it ([Fs.File.dup_modeled_entry]): a copied
+      entry would split the one [f_pos] two Linux descriptors share.  A
+      [clone] holding one declines too
+      ([Kernel.Fork.clone_no_shared_file_b]), so the file is this
+      process's alone, an assumption SCOPE.md states. *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
   | FdFile (p : path) (offset : word)
@@ -3107,7 +3193,8 @@ Inductive FdEntry :=
   | FdUrandom
   | FdStream (id : word) (side : bool) (st : StreamEnd)
   | FdEventfd (ctx : EventfdCtx)
-  | FdDgram (family : Z).
+  | FdDgram (family : Z)
+  | FdAnon (id : word) (af : AnonFile).
 
 (** Virtual-memory bookkeeping: a ledger of allocator decisions the model
     has already committed to (the flat byte-map memory can't encode
@@ -4782,6 +4869,14 @@ Definition with_net (q : NetQueue) (m : Model) : Model :=
     through this one setter equivalent to putting it in [unlinkat] and
     cheaper than remembering to.
 
+    THE REMOVAL OF A NAME AN OPEN DESCRIPTOR HOLDS drops the pin here
+    too, and that is still right: the inode outlives the name, so its
+    pin must outlive it as well, and [Fs.Namei.unlink_open_tmp_spec]
+    first copies it into every [FdAnon] entry it makes ([af_pin]),
+    with [st_nlink] at 0, before this filter takes it off the name.
+    The next file created under the name then starts with no pin, as
+    Linux gives it a new inode.
+
     A CREATE OVER AN EXISTING FILE KEEPS THE PIN, and should: O_TRUNC
     resizes an inode rather than replacing it, and [st_size] is not a
     member the pin holds fixed anyway. *)
@@ -5503,8 +5598,10 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     falsified by anything added below it.  [openat] resolves against
     [m_fs] and yields an [FdFile]/[FdFileW]/[FdFileA]/[FdFileRW] — or,
     for the device paths it answers, an [FdDevNull] or an [FdUrandom] — never
-    an [FdPipe], so a path
-    merely NAMED like a procfs one cannot hand out a second reference.
+    an [FdPipe].  The one procfs path it answers, "/proc/self/fd/N"
+    ([Fs.Open.openat_procfd_spec]), opens again only an [FdAnon] and
+    declines every other kind at N, a pipe end included, so a procfs
+    path cannot hand out a second reference to a pipe either.
 
     A syscall that DUPLICATES a descriptor would keep the two
     constructions in step for a reason worth writing down, because a
@@ -5626,6 +5723,9 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
   | (_, FdStream _ _ _) :: r => pipe_end_live r id writer
   | (_, FdEventfd _) :: r => pipe_end_live r id writer
   | (_, FdDgram _) :: r => pipe_end_live r id writer
+  | (_, FdAnon _ _) :: r => pipe_end_live r id writer
+    (* an unnamed file is a regular file's inode, not a pipe's: its
+       [id] numbers files, a space of its own *)
   end.
 
 (** A 32-bit value as the four little-endian bytes the kernel's
@@ -5643,6 +5743,88 @@ Definition le32_bytes (v : word) : list byte :=
     [fd[0] = fdr] and [fd[1] = fdw] set at :1005-1006, v6.18.46). *)
 Definition pipe_fd_bytes (fdr fdw : word) : list byte :=
   le32_bytes fdr ++ le32_bytes fdw.
+
+(* =========================================================================
+   Unnamed-file helpers — the [FdAnon] entries an unlink of an open /tmp
+   file and a "/proc/self/fd/N" open make
+   ========================================================================= *)
+
+(** The unnamed file an entry is a descriptor of, or [None].
+
+    ENUMERATED, for [pipe_end_live]'s reason: a later [FdEntry]
+    constructor that could hold an unnamed file must stop the build
+    here.  A missed descriptor would keep a stale copy of the contents
+    when another descriptor writes ([anon_update]) and would let
+    [anon_new_id] hand its id to a second file. *)
+Definition entry_anon_id (e : FdEntry) : option word :=
+  match e with
+  | FdAnon id _ => Some id
+  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
+  | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
+  | FdStream _ _ _ | FdEventfd _ | FdDgram _ => None
+  end.
+
+(** The largest file id a live [FdAnon] entry carries, or -1 when none
+    does. *)
+Fixpoint anon_max_id (fds : list (word * FdEntry)) : Z :=
+  match fds with
+  | [] => (-1)%Z
+  | (_, e) :: r =>
+      match entry_anon_id e with
+      | Some id => Z.max (bv_unsigned id) (anon_max_id r)
+      | None => anon_max_id r
+      end
+  end.
+
+(** The id a new unnamed file gets: one above every live one's, for
+    [stream_new_id]'s reason.  A dead file needs no avoiding -- its
+    contents left with its last entry -- and a live one does, since a
+    reused id would join two files.  [Fs.Namei.unlink_open_tmp_spec]
+    checks that no live entry carries it, so the one way to fail, a
+    live id of 2^64 - 1 whose successor wraps to 0, declines rather
+    than aliases. *)
+Definition anon_new_id (fds : list (word * FdEntry)) : word :=
+  Z_to_bv 64 (anon_max_id fds + 1).
+
+(** Does some live entry carry file id [id]? *)
+Definition anon_id_live (fds : list (word * FdEntry)) (id : word) : bool :=
+  existsb (fun p => match entry_anon_id (snd p) with
+                    | Some id' => bv_eqb id' id
+                    | None => false
+                    end) fds.
+
+(** [f] applied to one entry if it is a descriptor of file [id], and
+    the entry unchanged otherwise.  Enumerated, for [entry_anon_id]'s
+    reason. *)
+Definition anon_entry_update (id : word) (f : AnonFile -> AnonFile)
+    (e : FdEntry) : FdEntry :=
+  match e with
+  | FdAnon id' af => if bv_eqb id' id then FdAnon id' (f af) else e
+  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
+  | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
+  | FdStream _ _ _ | FdEventfd _ | FdDgram _ => e
+  end.
+
+(** [f] applied to EVERY descriptor of file [id], each in its place in
+    the table.  This is how an arm keeps [FdAnon]'s invariant: a change
+    of the contents or of the pin is the inode's, so every [struct file]
+    on the inode sees it. *)
+Definition anon_update (fds : list (word * FdEntry)) (id : word)
+    (f : AnonFile -> AnonFile) : list (word * FdEntry) :=
+  map (fun p => (fst p, anon_entry_update id f (snd p))) fds.
+
+(** The contents [d] written to every descriptor of file [id]. *)
+Definition anon_set_data (fds : list (word * FdEntry)) (id : word)
+    (d : list byte) : list (word * FdEntry) :=
+  anon_update fds id (fun af => af_set_data af d).
+
+(** A transfer through descriptor [fd], whose entry was [FdAnon id af],
+    that leaves the file holding [d] and this descriptor's [f_pos] at
+    [o]: the contents go to every descriptor of the file, the offset to
+    this one alone. *)
+Definition anon_write_back (fds : list (word * FdEntry)) (fd id : word)
+    (af : AnonFile) (d : list byte) (o : word) : list (word * FdEntry) :=
+  fd_insert (anon_set_data fds id d) fd (FdAnon id (af_set_off (af_set_data af d) o)).
 
 (* =========================================================================
    Stream-pair helpers — the [FdStream] ends [socketpair] makes
@@ -5680,6 +5862,8 @@ Fixpoint stream_end (fds : list (word * FdEntry)) (id : word) (side : bool)
   | (_, FdDgram _) :: r => stream_end r id side
     (* neither names a stream end: an eventfd is an anonymous inode and
        an [FdDgram] is a socket no [socketpair] joined to anything *)
+  | (_, FdAnon _ _) :: r => stream_end r id side
+    (* a regular file's inode; its [id] numbers files, not pairs *)
   end.
 
 (** The PEER of end [(id, side)]: [unix_peer] of that socket, while the
@@ -5706,6 +5890,7 @@ Fixpoint stream_max_id (fds : list (word * FdEntry)) : Z :=
   | (_, FdUrandom) :: r => stream_max_id r
   | (_, FdEventfd _) :: r => stream_max_id r
   | (_, FdDgram _) :: r => stream_max_id r
+  | (_, FdAnon _ _) :: r => stream_max_id r
   end.
 
 (** The id a new pair gets: one above every LIVE pair's.  Unlike
@@ -6945,7 +7130,10 @@ Record ProcInput := mkProcInput_full {
        the whole truth about it: what the run holds there is this
        declaration, plus what [Fs.Open.create_wronly] created, minus
        what [Fs.Namei.unlinkat_spec] removed, and nothing else can put
-       a file there or take one away.
+       a file there or take one away.  PRIVATE INCLUDES THE FILES'
+       LINKS: each declared file is a regular file whose one name is
+       its name here, so the removal of that name leaves it with link
+       count 0 ([Uapi.stat_pin_unlinked]).
 
        [Run.valid_input] has NO clause naming it: [fs_seed_tmp] seeds
        any list into the canonical form, so every value is one a launch

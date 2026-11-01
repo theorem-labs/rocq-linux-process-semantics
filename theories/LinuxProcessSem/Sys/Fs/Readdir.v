@@ -227,6 +227,9 @@ Definition getdents64_spec (fd count : word) : Sys SyscallEffect :=
                                               [.iterate_shared] *)
   | Some (FdFileRW _ _) => err_ret ENOTDIR (* and neither does the access mode: the
                                               same regular file, opened O_RDWR *)
+  | Some (FdAnon _ _) => err_ret ENOTDIR   (* nor the loss of the name: an unnamed
+                                              file is still a regular file, whose
+                                              table has no [.iterate_shared] *)
   | Some (FdPipe _ _)  => err_ret ENOTDIR
   | Some (FdSocket _)  => err_ret ENOTDIR
   | Some (FdStream _ _ _) => err_ret ENOTDIR (* [socket_file_ops] has no [.iterate_shared] *)

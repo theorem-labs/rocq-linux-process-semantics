@@ -299,6 +299,7 @@ them. A proof says nothing about a program in such a case.
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. The `*_budgets_only` statements have a finer premise for the source: it excludes a first-touch or a cumulative refusal, but not a single request that is larger than the whole budget (`Run.alloc_refuse_reason`). |
 | Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
 | Datagram sockets and eventfds | `socket(AF_INET6 or AF_UNIX, SOCK_DGRAM, 0)` gives a socket (`State.FdDgram`) on which the model answers `close`, `F_GETFL`, an empty `F_SETFL`, the terminal ioctls, `SIOCGIFINDEX` for `lo`, and the errnos of calls that stop before the socket (`-ESPIPE` from `pread64`, `pwrite64` and `lseek`, `-EINVAL` from `fsync` and `ftruncate`, `-ENOTDIR` from `getdents64`); every call that would read or change socket state, and every other protocol or flag of these two families, is `unmodeled`. An eventfd answers `read`, `write`, `select`/`poll`, `fcntl`, the terminal ioctls, `lseek` and `close`; a nonempty `readv` or `writev` on it is `unmodeled`. |
+| Unnamed files | A `/tmp` file whose name `unlinkat` removes while descriptors hold it becomes an unnamed file (`State.FdAnon`), and `openat("/proc/self/fd/N")` opens it again under `O_RDONLY`, `O_WRONLY\|O_CREAT\|O_TRUNC` and `O_WRONLY\|O_CREAT\|O_APPEND`. On it the model answers `read`, `write`, `writev`, `pwrite64`, `pwritev2` (with flags 0 or `RWF_NOAPPEND`, as musl's `pwrite` sends), `lseek`, `ftruncate`, `fstat`, the terminal ioctls, `select`/`poll`, `fsync`, `getdents64`'s `-ENOTDIR`, an empty `F_SETFL` and `close`; `pread64`, `readv`, `F_GETFL`, `flock`, `dup`, `dup3`, `F_DUPFD` and a `clone` that holds one are `unmodeled`. The removal of a name a descriptor holds in the working directory is `unmodeled`. |
 
 The entry premises also limit the launches that a statement covers, and
 they limit them to Linux's own. For one input and one kernel build
@@ -407,6 +408,23 @@ not apply.
   declined: on Linux such a call never returns, because the only task
   that could change the counter is the one that waits. A program that
   reaches either is outside the model.
+- procfs is mounted at `/proc` for the process's own pid namespace, so
+  `/proc/self` names this process. The model answers
+  `openat(AT_FDCWD, "/proc/self/fd/N", ...)` on that assumption
+  (`Fs.Open.openat_procfd_spec`); with no procfs there, Linux answers
+  `-ENOENT` where the model opens the file again.
+- The run's `/tmp` is private to it (`State.in_tmp`), and each file in
+  it is a regular file whose one name is its name in `/tmp`. So a file
+  whose `/tmp` name the run removes while descriptors hold it has link
+  count 0 afterwards, and its `fstat` reports `st_nlink` 0
+  (`Uapi.stat_pin_unlinked`, `Fs.Stat.fstat_anon_spec`). A hard link to
+  a declared `/tmp` file from outside `/tmp` makes this assumption
+  false.
+- An unnamed file (`State.FdAnon`) is used by this process only. `dup`,
+  `dup3`, `F_DUPFD` and a `clone` holding one of its descriptors are
+  declined, so no other process or descriptor table shares it. Its
+  contents live in its descriptors' entries, so the exit event's file
+  system does not include it, as Linux's does not.
 - The network namespace's loopback device is named `lo`. The model
   answers `ioctl(fd, SIOCGIFINDEX, &ifr)` on an `AF_UNIX` or `AF_INET6`
   datagram socket only for the name `lo`, and answers it with index 1

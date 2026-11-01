@@ -677,6 +677,13 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        [Fs.File.dup_modeled_entry]'s reason: one rule for
                        every socket kind. *)
                     | FdDgram _ => false
+                    (* AN UNNAMED FILE JOINS THE GATE: the child's copy
+                       would share the one [struct file] -- its [f_pos]
+                       -- and the inode, so a child's write would move
+                       contents that [State.FdAnon] keeps in this
+                       process's entries alone.  SCOPE.md states that an
+                       unnamed file is this process's only. *)
+                    | FdAnon _ _ => false
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which

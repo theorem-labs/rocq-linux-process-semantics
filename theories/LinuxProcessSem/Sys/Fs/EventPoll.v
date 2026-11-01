@@ -283,6 +283,11 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
   match e with
   | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
   | FdDir => Some false
+  | FdAnon _ _ => Some false
+      (* an unnamed file is a regular file on the run's /tmp, under the
+         same obligation as the file kinds: its table carries no
+         [.poll] ([shmem_file_operations], mm/shmem.c, v6.18.46, on a
+         tmpfs /tmp) *)
   | FdSocket _ | FdPipe _ _ => Some true
   | FdStream _ _ _ => Some true
       (* a socket file like [FdSocket]'s: [sock_alloc_file] gives every
@@ -335,7 +340,7 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
 Example fd_can_poll_is_select_pollable :
   forall e, bits_all_pollable [(Z_to_bv 64 0, e)] 1%Z 1%nat = true
             <-> fd_can_poll e = Some false.
-Proof. intros [| | | | | | | | | | | |]; vm_compute; split; congruence. Qed.
+Proof. intros [| | | | | | | | | | | | |]; vm_compute; split; congruence. Qed.
 
 (** ------------------------------------------------------------------
     epoll_create1 (20)
