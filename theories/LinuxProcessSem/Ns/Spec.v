@@ -67,8 +67,9 @@ Qed.
    Injected refusals
    ========================================================================= *)
 
-(** The arms' injected refusals; the table holds only arms it lists. *)
-Definition ns_injected_table : list NsInjected := [].
+(** The injected refusals of the arms [ns_table] holds.  An answer of an
+    arm whose refusals are not listed is never filtered. *)
+Definition ns_injected_table : list NsInjected := task_injected.
 
 Fixpoint lookup_ns_injected (t : list NsInjected) (n : Z) : option NsInjected :=
   match t with
