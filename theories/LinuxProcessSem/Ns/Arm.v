@@ -45,6 +45,13 @@ Definition ns_file_of (m : Model) (st : NsState) (fd : word) : option (N * NsFil
   | _ => None
   end.
 
+(** The descriptor entry of the namespace model's open file [h], and the
+    handle an entry names ([None] for another kind of entry). *)
+Definition ns_fd_entry (h : N) : FdEntry := FdOpaque (ONsFile h).
+
+Definition fd_entry_handle (e : FdEntry) : option N :=
+  match e with FdOpaque (ONsFile h) => Some h | _ => None end.
+
 (** A handle no open file has. *)
 Definition fresh_handle (st : NsState) : N :=
   N.succ (fold_left N.max (map fst (ns_files st)) 0%N).
@@ -57,7 +64,7 @@ Definition task_pid (ctx : NsCtx) : option Z := pid_in (cx_pids ctx) (cx_pidns c
     or a signalfd. *)
 Definition nsfile_loc (f : NsFile) : option Loc :=
   match nf_kind f with
-  | NfPath l | NfDir l _ | NfFile l _ | NfUserNsFile l _ _ => Some l
+  | NfPath l | NfDir l _ | NfFile l _ | NfUserNsFile l _ _ | NfMountinfo l _ _ _ => Some l
   | _ => None
   end.
 
@@ -117,6 +124,24 @@ Definition with_umask (ctx : NsCtx) (u : Z) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
           (cx_cwd ctx) u (cx_caps ctx) (cx_securebits ctx) (cx_cloexec ctx)
           (cx_no_new_privs ctx) (cx_pdeathsig ctx) (cx_dumpable ctx).
+
+(** The descriptors marked close-on-exec replaced by [l]. *)
+Definition with_cloexec (ctx : NsCtx) (l : list Z) : NsCtx :=
+  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
+          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) l
+          (cx_no_new_privs ctx) (cx_pdeathsig ctx) (cx_dumpable ctx).
+
+(** Descriptor [fd] marked close-on-exec when [on], unmarked otherwise. *)
+Definition set_cloexec (ctx : NsCtx) (fd : Z) (on : bool) : NsCtx :=
+  let l := List.filter (fun x => negb (Z.eqb x fd)) (cx_cloexec ctx) in
+  with_cloexec ctx (if on then fd :: l else l).
+
+(** The open file [h] replaced by [f]. *)
+Definition set_file (st : NsState) (h : N) (f : NsFile) : NsState :=
+  with_files st (map (fun p => if N.eqb (fst p) h then (h, f) else p) (ns_files st)).
+
+Definition find_mntns (st : NsState) (n : positive) : option MntNs :=
+  find (fun x => Pos.eqb (mntns_id x) n) (ns_mntns st).
 
 (** The environment's refusals of one call number: a list of pairs, each an
     errno predicate and the family that injects it.  One errno can be in

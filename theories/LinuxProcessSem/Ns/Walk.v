@@ -66,12 +66,6 @@ Inductive WalkResult :=
 (** [nd->last_type] after [link_path_walk] (fs/namei.c). *)
 Inductive LastType := LastNorm | LastDot | LastDotDot | LastRoot.
 
-(** The errnos of the walk that [Ns.Tables] does not name. *)
-Definition EACCES : Z := 13.
-Definition EXDEV : Z := 18.
-Definition ENAMETOOLONG : Z := 36.
-Definition ELOOP : Z := 40.
-
 (** NAME_MAX and PATH_MAX (include/uapi/linux/limits.h), and MAXSYMLINKS
     (include/linux/namei.h), the bound [reserve_stack] (fs/namei.c) puts on
     the links of one walk. *)

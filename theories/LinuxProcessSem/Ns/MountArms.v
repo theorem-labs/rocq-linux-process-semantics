@@ -72,10 +72,6 @@ Definition MOUNT_ATTR_NOSYMFOLLOW : Z := 2097152.
 Definition MOUNT_ATTR_SIZE_VER0 : Z := 32.
 Definition O_RDWR : Z := 2.
 
-(** [find_mnt_ns], as the namespace call arms resolve [mnt_namespace]. *)
-Definition find_mntns (st : NsState) (i : positive) : option MntNs :=
-  find (fun n => Pos.eqb (mntns_id n) i) (ns_mntns st).
-
 (** [may_mount] (fs/namespace.c:2002-2005): CAP_SYS_ADMIN over the user
     namespace that owns the caller's mount namespace. *)
 Definition mount_may_mount (m : Model) (ctx : NsCtx) (st : NsState) : option bool :=

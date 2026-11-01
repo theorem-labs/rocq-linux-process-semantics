@@ -119,11 +119,6 @@ Definition NETLINK_ROUTE : Z := 0.
 Definition CAP_NET_ADMIN : Z := 12.
 Definition CAP_SYS_MODULE : Z := 16.
 
-Definition ENODEV : Z := 19.
-Definition ENODATA : Z := 61.
-Definition EOVERFLOW : Z := 75.
-Definition ENOBUFS : Z := 105.
-
 Definition MSG_OOB : Z := 1.
 Definition MSG_PEEK : Z := 2.
 Definition MSG_TRUNC : Z := 32.
@@ -733,9 +728,6 @@ Definition netns_dump_running (st : NsState) (n : positive) : bool :=
                     | _ => false
                     end) (ns_files st).
 
-Definition set_file (st : NsState) (h : N) (f : NsFile) : NsState :=
-  with_files st (map (fun p => if N.eqb (fst p) h then (h, f) else p) (ns_files st)).
-
 Definition netlink_file (f : NsFile) (n : positive) (port : Z) (q : list (list byte)) : NsFile :=
   mkNsFile (NfNetlink n port q) (nf_flags f) (nf_cred f).
 
@@ -745,13 +737,6 @@ Definition caller_cred (m : Model) (ctx : NsCtx) : IdCred :=
   mkIdCred (cx_user ctx) (bv_unsigned (cr_euid (m_creds m))) (bv_unsigned (cr_egid (m_creds m)))
            (cap_effective (cx_caps ctx)).
 
-(** The close-on-exec mark of descriptor [fd], set or cleared. *)
-Definition with_cloexec (ctx : NsCtx) (fd : Z) (on : bool) : NsCtx :=
-  let l := List.filter (fun x => negb (x =? fd)) (cx_cloexec ctx) in
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx)
-          (if on then fd :: l else l) (cx_no_new_privs ctx) (cx_pdeathsig ctx) (cx_dumpable ctx).
-
 (** An answer with writes and a copy-in ledger. *)
 Definition ns_out (r : word) (ws : list (word * list byte)) (reads : list (word * nat))
     (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
@@ -760,13 +745,6 @@ Definition ns_out (r : word) (ws : list (word * list byte)) (reads : list (word 
 Definition ns_fail (e : Z) (reads : list (word * nat)) (m : Model) (ctx : NsCtx) (st : NsState)
     : ext_outcome :=
   ns_out (errno_ret e) [] reads m ctx st.
-
-(* =========================================================================
-   The descriptor
-   ========================================================================= *)
-
-(** The descriptor entry of a new open file of the namespace model. *)
-Definition ns_fd_entry (h : N) : FdEntry := FdOpaque (ONsFile h).
 
 Inductive SockRes :=
   | SkFile (h : N) (f : NsFile)
@@ -784,7 +762,8 @@ Definition sock_of (m : Model) (st : NsState) (fd : word) : SockRes :=
       match nf_kind f with
       | NfPath _ => SkErr EBADF
       | NfNetlink _ _ _ | NfUnixDgram _ => SkFile h f
-      | NfDir _ _ | NfFile _ _ | NfEventfd | NfSignalfd _ | NfUserNsFile _ _ _ => SkErr ENOTSOCK
+      | NfDir _ _ | NfFile _ _ | NfEventfd | NfSignalfd _ | NfUserNsFile _ _ _ | NfMountinfo _ _ _ _ =>
+          SkErr ENOTSOCK
       end
   | None =>
       match sockfd_lookup_errno (m_fds m) fd with
@@ -840,7 +819,7 @@ Definition socket_arm : NsArm := fun i m ctx st o =>
         (if bv_unsigned fd <? bv_unsigned (m_nofile m)
          then o = EOk (mkEffect fd [] [])
                       (with_fds (fd_insert (m_fds m) fd (ns_fd_entry h)) m)
-                      (with_cloexec ctx (bv_unsigned fd) (negb (Z.land fl SOCK_CLOEXEC =? 0)))
+                      (set_cloexec ctx (bv_unsigned fd) (negb (Z.land fl SOCK_CLOEXEC =? 0)))
                       (with_files st (ns_files st ++ [(h, mkNsFile k O_RDWR (caller_cred m ctx))]))
                       []
          else o = ns_errno EMFILE m ctx st)
@@ -1206,7 +1185,8 @@ Definition ioctl_arm : NsArm := fun i m ctx st o =>
       | NfPath _ => o = ns_errno EBADF m ctx st
       | NfUnixDgram n | NfNetlink n _ _ =>
           if cmd =? SIOCGIFINDEX then siocgifindex i m ctx st n arg o else o = EUnmodeled
-      | NfDir _ _ | NfFile _ _ | NfEventfd | NfSignalfd _ | NfUserNsFile _ _ _ => o = EUnmodeled
+      | NfDir _ _ | NfFile _ _ | NfEventfd | NfSignalfd _ | NfUserNsFile _ _ _ | NfMountinfo _ _ _ _ =>
+          o = EUnmodeled
       end
   | None =>
       match fd_lookup (m_fds m) fd with

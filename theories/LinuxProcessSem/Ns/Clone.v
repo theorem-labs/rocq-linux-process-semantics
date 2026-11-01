@@ -58,9 +58,6 @@ Inductive CloneNs :=
 Definition find_pidns (st : NsState) (p : positive) : option PidNs :=
   find (fun x => Pos.eqb (pidns_id x) p) (ns_pidns st).
 
-Definition find_mntns (st : NsState) (n : positive) : option MntNs :=
-  find (fun x => Pos.eqb (mntns_id x) n) (ns_mntns st).
-
 (** [in_userns a b]: [b] is [a] or below it. *)
 Definition in_userns (U : list UserNs) (a b : positive) : bool :=
   match find_userns U b with

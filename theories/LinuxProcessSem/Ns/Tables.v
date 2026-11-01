@@ -29,13 +29,23 @@ From Stdlib Require Import List PArith ZArith NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase.
 Import ListNotations.
 
-(** The errnos the operations return. *)
+(** The errnos the namespace model returns (include/uapi/asm-generic/
+    errno-base.h and errno.h), named once for every file of the model. *)
 Definition EPERM : Z := 1%Z.
 Definition ENOENT : Z := 2%Z.
+Definition E2BIG : Z := 7%Z.
+Definition EACCES : Z := 13%Z.
 Definition EBUSY : Z := 16%Z.
+Definition EXDEV : Z := 18%Z.
+Definition ENODEV : Z := 19%Z.
 Definition ENOTDIR : Z := 20%Z.
 Definition EINVAL : Z := 22%Z.
 Definition ENOSPC : Z := 28%Z.
+Definition ENAMETOOLONG : Z := 36%Z.
+Definition ELOOP : Z := 40%Z.
+Definition ENODATA : Z := 61%Z.
+Definition EOVERFLOW : Z := 75%Z.
+Definition ENOBUFS : Z := 105%Z.
 
 Record MountFlags := mkMountFlags {
   mf_ro      : bool;
@@ -206,7 +216,9 @@ Record NetNs := mkNetNs {
     was opened, and its offset: a task's uid_map, gid_map or setgroups
     (the task's namespace, [proc_id_map_open], [proc_setgroups_open]) or a
     file of /proc/sys/user (the opener's, [set_lookup] in
-    kernel/ucount.c). *)
+    kernel/ucount.c); a task's mountinfo, bound when it was opened to the
+    task's mount namespace and root ([mounts_open_common],
+    fs/proc_namespace.c), and its offset. *)
 Inductive NsFileKind :=
   | NfPath (l : Loc)
   | NfDir (l : Loc) (pos : Z)
@@ -215,7 +227,8 @@ Inductive NsFileKind :=
   | NfUnixDgram (netns : positive)
   | NfEventfd
   | NfSignalfd (mask : Z)
-  | NfUserNsFile (l : Loc) (userns : positive) (off : Z).
+  | NfUserNsFile (l : Loc) (userns : positive) (off : Z)
+  | NfMountinfo (l : Loc) (mntns : positive) (root : positive * positive) (off : Z).
 
 (** An open file description: its kind, its [f_flags] (access mode and
     status flags) and [f_cred], the opener's credential. *)

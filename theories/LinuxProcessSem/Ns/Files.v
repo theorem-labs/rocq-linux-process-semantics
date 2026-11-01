@@ -42,9 +42,6 @@ Local Open Scope Z_scope.
    include/linux/statfs.h, include/linux/fs.h)
    ========================================================================= *)
 
-Definition E2BIG : Z := 7.
-Definition EOVERFLOW : Z := 75.
-
 Definition AT_FDCWD : Z := -100.
 Definition AT_SYMLINK_NOFOLLOW : Z := 256.
 Definition AT_NO_AUTOMOUNT : Z := 2048.
@@ -121,24 +118,8 @@ Definition ST_UNHELD : Z := 16 + 64 + 1024 + 2048 + 4096 + 8192.
 Definition has (x b : Z) : bool := negb (Z.eqb (Z.land x b) 0).
 
 (* =========================================================================
-   The descriptor kind of the namespace model
-   ========================================================================= *)
-
-(** The descriptor entry of the namespace model's open file [h], and the
-    handle an entry names ([None] for another kind of entry). *)
-Definition ns_fd_entry (h : N) : FdEntry := FdOpaque (ONsFile h).
-
-Definition fd_entry_handle (e : FdEntry) : option N :=
-  match e with FdOpaque (ONsFile h) => Some h | _ => None end.
-
-(* =========================================================================
    Setters
    ========================================================================= *)
-
-Definition with_cloexec (ctx : NsCtx) (l : list Z) : NsCtx :=
-  mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
-          (cx_cwd ctx) (cx_umask ctx) (cx_caps ctx) (cx_securebits ctx) l
-          (cx_no_new_privs ctx) (cx_pdeathsig ctx) (cx_dumpable ctx).
 
 Definition with_cwd (ctx : NsCtx) (c : positive * positive) : NsCtx :=
   mkNsCtx (cx_user ctx) (cx_mount ctx) (cx_pidns ctx) (cx_net ctx) (cx_pids ctx) (cx_root ctx)
@@ -148,10 +129,6 @@ Definition with_cwd (ctx : NsCtx) (c : positive * positive) : NsCtx :=
 Definition with_tree (st : NsState) (ds : list Dentry) (ins : list Inode) : NsState :=
   mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
             ds ins (ns_files st) (ns_env st).
-
-(** The open file [h] replaced by [f]. *)
-Definition set_file (st : NsState) (h : N) (f : NsFile) : NsState :=
-  with_files st (map (fun p => if N.eqb (fst p) h then (h, f) else p) (ns_files st)).
 
 Definition drop_fd (l : list Z) (fd : Z) : list Z := List.filter (fun x => negb (Z.eqb x fd)) l.
 
