@@ -1357,3 +1357,64 @@ Proof.
     split; [exact Hs|]. split; [exact Hv|].
     destruct Hnr as [-> | [-> | ->]]; cbn; tauto.
 Qed.
+
+(** THE TWO-ENTRY CASE ANALYSIS, enumerated.
+
+    At a [fw_two] shape the live entries are the parent and the child,
+    and which of them has an arm is decided by the shape, not searched
+    for:
+
+      child running          both have an arm
+      child at its ecall     both: the child's exit_group, the parent's
+                             next instruction
+      child a zombie, parent not yet at wait4   both
+      child a zombie, parent AT wait4           the parent reaps
+      child running, parent AT wait4            ONLY THE CHILD, because a
+                                                blocked parent has no arm
+
+    The last row is 7.2 paying for itself again, and the progress fact
+    for it is [fw_progress_from_entry], already proved: the premise is
+    met by the child's step.  It is not reproved here.
+
+    What every row needs first is that the entry that did NOT step is
+    unchanged, which is the pair of frame lemmas below. *)
+
+(** The other entry's RECORD survives, from the table lemmas. *)
+Lemma fw_two_other_record : forall P e c' q eq,
+  bv_eqb (pe_pid e) q = false ->
+  look P q = Some eq ->
+  look (absorb P e c') q = Some eq.
+Proof.
+  intros P e c' q eq Hne Hl.
+  rewrite look_absorb_other; [exact Hl | exact Hne].
+Qed.
+
+(** And its VIEW survives, provided the step left the shared file system
+    and I/O alone -- which the two arms this program steps with do, since
+    [with_halted] and [with_children] rebuild the model around the same
+    [m_fsys] and [m_io].  That is [view_frame_absorb]'s hypothesis and
+    the reason it is a hypothesis: a general version would be false. *)
+Lemma fw_two_other_view : forall P e c' q eq,
+  look (absorb P e c') q = Some eq ->
+  m_fsys (cfg_model c') = sh_fsys (pcfg_shared P) ->
+  m_io (cfg_model c') = sh_io (pcfg_shared P) ->
+  pe_cfg (pcfg_shared (absorb P e c')) eq = pe_cfg (pcfg_shared P) eq.
+Proof.
+  intros P e c' q eq Hl Hfs Hio.
+  exact (view_frame_absorb P e c' q eq Hl Hfs Hio).
+Qed.
+
+(** An instruction step leaves both alone, which is what makes the two
+    frame lemmas usable at every row but the two syscall ones:
+    [Run.mi_account_step_model_frame] fixes every model component, so the
+    hypotheses of [fw_two_other_view] are discharged by it rather than
+    supplied. *)
+Lemma fw_instr_frames_shared : forall segs ms model ms' model',
+  mi_account_step segs ms model = MachineOk (ms', model') ->
+  m_fsys model' = m_fsys model /\ m_io model' = m_io model.
+Proof.
+  intros segs ms model ms' model' Hm.
+  pose proof (mi_account_step_model_frame segs ms model ms' model' Hm)
+    as (_ & _ & _ & Hio & Hfs & _).
+  split; [exact Hfs | exact Hio].
+Qed.
