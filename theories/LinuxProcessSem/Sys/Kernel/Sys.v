@@ -1153,7 +1153,8 @@ Definition prctl_modeled_options : list Z :=
     kernel/sys.c [SYSCALL_DEFINE5(prctl)], read at v6.18.44; identical at v6.18.46.
     include/linux/signal.h [valid_signal], read at v6.18.44; identical at v6.18.46.
     include/linux/sched/coredump.h [SUID_DUMP_DISABLE], [SUID_DUMP_USER], read at v6.18.44; identical at v6.18.46.
-    kernel/cred.c [commit_creds], read at v6.18.44; identical at v6.18.46.
+    kernel/cred.c [commit_creds], [cred_cap_issubset], read at v6.18.44; identical at v6.18.46.
+    include/linux/capability.h [cap_issubset], read at v6.18.44; identical at v6.18.46.
 
     PR_CAPBSET_READ: WHERE THE ANSWER COMES FROM, AND WHY IT IS NOT
     kernel/sys.c.
@@ -1164,8 +1165,7 @@ Definition prctl_modeled_options : list Z :=
                 return error;
 
     so the LSM hook runs BEFORE the syscall's own [switch] and can
-    answer outright (Linux v6.18.46, commit 1f99e9ab748f, kernel/sys.c,
-    [SYSCALL_DEFINE5(prctl)]).  [PR_CAPBSET_READ] is answered there:
+    answer outright.  [PR_CAPBSET_READ] is answered there:
     capability's hook is [cap_task_prctl] (security/commoncap.c), whose
     first arm is
 
@@ -1331,10 +1331,15 @@ Definition prctl_modeled_options : list Z :=
     statement must take the LAST such call that follows the last
     credential change: [commit_creds] (kernel/cred.c) clears
     [pdeath_signal] and resets the dumpable flag to [suid_dumpable]
-    whenever a call moves the effective or filesystem ids or narrows
-    the capability sets, so a [setuid] after [prctl(PR_SET_DUMPABLE, 1)]
-    undoes it.  The no-new-privs bit has no such reset: nothing clears
-    it.
+    whenever a call moves the effective or filesystem ids, or when
+    [cred_cap_issubset(old, new)] fails.  In one user namespace that
+    test is [cap_issubset(new->cap_permitted, old->cap_permitted)], so
+    it fails when the call GAINS a permitted capability; narrowing the
+    capability sets alone does not fire the reset.  Across user
+    namespaces it fails unless the new namespace lies below a child of
+    the old one that the old euid owns.  So a [setuid] that moves the
+    effective uid after [prctl(PR_SET_DUMPABLE, 1)] undoes it.  The
+    no-new-privs bit has no such reset: nothing clears it.
 
     EVERY OTHER OPTION IS [unmodeled], and one of them is load-bearing.
     [PR_SET_TAGGED_ADDR_CTRL] (55) is one of the two callers of riscv's
