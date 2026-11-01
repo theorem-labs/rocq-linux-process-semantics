@@ -1712,6 +1712,30 @@ Proof.
   apply (fw_model_ok_frame m); assumption.
 Qed.
 
+(** The two readings of a clone's answer agree on the answers this
+    program's clone can give ([fw_clone_post]): each of
+    [Fork.clone_errnos] is error-encoded, and a pid inside the envelope is
+    not. *)
+Lemma fw_errno_error_encoded : forall r : word,
+  ret_in_errnos clone_errnos r = true -> addr_is_error_b r = true.
+Proof.
+  intros r H. unfold ret_in_errnos, clone_errnos in H.
+  cbn [List.existsb] in H.
+  repeat (apply orb_true_iff in H; destruct H as [H|H]);
+    try discriminate;
+    apply bv_eqb_true_eq in H; subst r; vm_compute; reflexivity.
+Qed.
+
+Lemma fw_envelope_not_error : forall r : word,
+  (0 < bv_unsigned r)%Z -> (bv_unsigned r < PID_MAX_ENVELOPE)%Z ->
+  addr_is_error_b r = false.
+Proof.
+  intros r _ Hhi. unfold addr_is_error_b, two_pow_64.
+  unfold PID_MAX_ENVELOPE in Hhi.
+  apply Z.ltb_ge. change (2 ^ 22)%Z with 4194304%Z in Hhi.
+  change (2 ^ 64 - 4096)%Z with 18446744073709547520%Z. lia.
+Qed.
+
 Lemma fw_entry_clone_step : forall segs cfg p P evs P' e x8,
   look P p = Some e ->
   ms_svc_pending (pe_ms e) = Some x8 ->
@@ -1763,19 +1787,23 @@ Proof.
                 (cfg_model (pe_cfg (pcfg_shared P) e)) evs c1 x8 Hs Hrun Hss1)
       as (eff & model' & model'' & evs0 & Hsp & Hh' & Hmat & Hc0).
     destruct (fw_clone_post segs (pe_ms e) x8 _ eff model' evs0 H220 Ha0 Hsp)
-      as (_ & Hw & Hz & Hu & Hcp & _ & Hokm & _).
+      as (_ & Hw & Hz & Hu & Hcp & _ & Hokm & Hdisj1).
     exists eff, model''.
     split; [exact (fw_model_ok_materialize _ _ _ Hmat
                      (Hokm (fw_model_ok_pe_cfg _ e Hh)))|].
     split; [exact Hw|]. split; [exact Hz|].
     split; [exact Hu|]. split; [exact Hcp|].
     left. split.
-    + unfold clone_success_b in Hcs1. cbn [cfg_ms pe_cfg] in Hcs1.
+    + (* the two readings agree on this program's answers: an envelope pid
+         is not error-encoded, so a declined clone answered an errno *)
+      destruct Hdisj1 as [Herr | (Hlo & Hhi)]; [exact Herr|].
+      exfalso.
+      unfold clone_success_b in Hcs1. cbn [cfg_ms pe_cfg] in Hcs1.
       rewrite Hs, H220 in Hcs1. cbn [clone_sysno] in Hcs1.
       rewrite Hc0 in Hcs1. cbn [cfg_ms] in Hcs1.
       rewrite fw_a0_after_effect in Hcs1.
-      destruct (ret_in_errnos clone_errnos (eff_ret eff));
-        [reflexivity | cbn in Hcs1; discriminate].
+      rewrite (fw_envelope_not_error _ Hlo Hhi) in Hcs1.
+      cbn in Hcs1; discriminate.
     + rewrite Hc0. reflexivity.
   - (* pstep_clone: the pid branch, inside the envelope *)
     assert (He2 : e2 = e)
@@ -1791,8 +1819,9 @@ Proof.
       rewrite Hs, H220 in Hcs2. cbn [clone_sysno] in Hcs2.
       rewrite Hc0 in Hcs2. cbn [cfg_ms] in Hcs2.
       rewrite fw_a0_after_effect in Hcs2.
-      destruct (ret_in_errnos clone_errnos (eff_ret eff));
-        [cbn in Hcs2; discriminate | reflexivity]. }
+      destruct (ret_in_errnos clone_errnos (eff_ret eff)) eqn:Hre; [|reflexivity].
+      rewrite (fw_errno_error_encoded _ Hre) in Hcs2.
+      cbn in Hcs2; discriminate. }
     (* the child's pid IS the return, which is what [child_pid_core] says *)
     destruct Hcp2 as (Hqa & _).
     rewrite Hc0 in Hqa. cbn [cfg_ms] in Hqa.
@@ -3650,7 +3679,9 @@ Qed.
 
 (** A PID IS NOT AN ERRNO.  Every member of [Fork.clone_errnos] encodes
     just under 2^64 and the envelope stops at 2^22, so the two readings
-    [Procs.clone_success_b] compares can never collide. *)
+    can never collide ([Run.refusal_b] reads this one;
+    [Procs.clone_success_b] reads the error encoding,
+    [fw_envelope_not_error]). *)
 Lemma fw_pid_not_errno : forall r : word,
   (bv_unsigned r < PID_MAX_ENVELOPE)%Z ->
   ret_in_errnos clone_errnos r = false.
@@ -3715,9 +3746,8 @@ Qed.
 
 (** AND THE OUTCOME IS NOT A SPURIOUS REFUSAL, which is what
     [Run.sstep_cfg_syscall] asks at [Run.forced_only_cfg].  A pid is
-    not one of [Fork.clone_errnos], so [Run.refusal_b] -- the same
-    reading [Procs.clone_success_b] uses -- answers [false], and
-    [Run.spurious_refusal_not_refusal] closes it whatever the
+    not one of [Fork.clone_errnos], so [Run.refusal_b] answers [false],
+    and [Run.spurious_refusal_not_refusal] closes it whatever the
     environment says about the family. *)
 Lemma fw_refusal_b_pid : forall i m (r : word),
   bv_unsigned (in_sysno i) = 220%Z ->
@@ -3779,7 +3809,7 @@ Proof.
   apply (pstep_clone forkwait_segs cfg P e [] c' q);
     [exact Hl | exact Hss | | split; [exact Ha0' | exact I] | | exact Hma].
   - unfold clone_success_b. cbn [cfg_ms pe_cfg]. rewrite Hsv, fw_two_twenty.
-    cbn [clone_sysno]. rewrite Ha0', (fw_pid_not_errno q Hhi). reflexivity.
+    cbn [clone_sysno]. rewrite Ha0', (fw_envelope_not_error q Hlo Hhi). reflexivity.
   - unfold look. rewrite Hp. cbn [look_in fst snd].
     destruct (bv_eqb (pe_pid e) q) eqn:Eb; [|reflexivity].
     exfalso. apply Hne. symmetry. exact (bv_eqb_true_eq _ _ _ Eb).

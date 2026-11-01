@@ -361,18 +361,22 @@ Definition clone_sysno (n : Z) : bool := (n =? 220)%Z || (n =? 435)%Z.
 
     [Run.apply_effect] sets a0 from [eff_ret] (Run.v:177), so the delivered
     value is read off the successor, at ARGUMENT INDEX 0 (see the header).
-    [Run.ret_in_errnos] (Run.v:1403-1404) is the SAME predicate
-    [Run.refusal_b] uses, so the two readings cannot drift.
-    [Checks.ProcessCreation.clone_resolve_declines_or_sets_children]
-    (ProcessCreation.v:410) is what makes this exact: an answer in
-    [Fork.clone_errnos] leaves the model untouched, any other answer sets
-    [State.m_has_children]. *)
+    A clone created a child exactly when it did not return an errno:
+    [State.addr_is_error_b], the [-4095, -1] range.
+    [Checks.ProcessCreation.clone_success_sets_children] is what makes
+    this exact, keyed on the same test: an error-encoded answer leaves the
+    model untouched, any other answer sets [State.m_has_children].  The
+    test this replaces, membership in [Fork.clone_errnos], was exact only
+    while 220 answered the fork word alone: clone3's -EFAULT is not in the
+    list, and the namespace word ([Fork.clone_ns_resolve]) fails with any
+    errno but -EINTR, so its -EPERM would read as a child with pid
+    2^64-1. *)
 Definition clone_success_b (c c' : config) : bool :=
   match ms_svc_pending (cfg_ms c) with
   | None => false
   | Some x8 =>
       clone_sysno (bv_unsigned x8)
-      && negb (ret_in_errnos clone_errnos (ms_gpr (cfg_ms c') 0))
+      && negb (addr_is_error_b (ms_gpr (cfg_ms c') 0))
   end.
 
 (** THE CHILD PID PREDICATE: a DEFINITION with an explicit extension
