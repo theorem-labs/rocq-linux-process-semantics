@@ -1128,3 +1128,38 @@ Proof.
   - apply ms_gpr_set_reg_a0.
   - apply ms_gpr_set_reg_sp_a0.
 Qed.
+
+(* =========================================================================
+   The run-level statement
+   ========================================================================= *)
+
+(** The system a released [execve] starts: one process, pid [one_pid]. *)
+Definition pinit_config (segs : list Segment) (pc : N) (ph : PhdrInfo)
+    (sp brk0 mbase : word) (rnd : EntryDraw) (lim : Z) (inp : ProcInput)
+    : pconfig :=
+  one_proc (init_config segs pc ph sp brk0 mbase rnd lim inp).
+
+(** The same MATCH on the image and the entry that [MustExit.must_exit_in]
+    and [Run.run] use, so that all three always speak about the same run.
+    [Run.mkEntry] is qualified because this file's own [mkEntry] builds a
+    [ProcessEntry]. *)
+Definition must_exit_in_p (cfg : SpuriousCfg) (S : list word) (img : Image)
+    (lim : Z) (en : ExecEntry) (inp : ProcInput) : Prop :=
+  match img, en with
+  | mkImage segs pc ph, Run.mkEntry sp brk0 mbase rnd =>
+      must_exit_in_p_at segs cfg S
+        (pinit_config segs pc ph sp brk0 mbase rnd lim inp)
+  end.
+
+(** The multi-process reading of the shape the released halting statements
+    use -- [HaltsAllowed.halts_allowed_T_scfg_budgets] at
+    [Run.forced_only_cfg] -- with the whole-system predicate in place of the
+    one-process one.  Same quantifier, same environment, same budget
+    premise; only the predicate moves. *)
+Definition pholts_within_budget (lim : Z) (allowed : list word) (img : Image)
+    : Prop :=
+  forall (en : ExecEntry) (inp : ProcInput),
+    valid_entry img en inp ->
+    valid_input inp ->
+    ~ run_scfg_budget_refused forced_only_cfg img lim en inp ->
+    must_exit_in_p forced_only_cfg allowed img lim en inp.
