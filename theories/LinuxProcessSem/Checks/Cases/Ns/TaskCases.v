@@ -169,3 +169,21 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 Example prctl_other_declines : forall m,
   prctl_fn (call 167 [15; 0; 0; 0; 0] (fun _ => None)) m (task caps0 0 false 1) U = EUnmodeled.
 Proof. intros m. vm_compute. reflexivity. Qed.
+
+(** [prepare_creds] may fail where capset and PR_CAPBSET_DROP reach it:
+    ENOMEM is an answer there, with capset's copy-ins; a capset refused
+    earlier (another task's pid) and PR_CAPBSET_READ have no ENOMEM. *)
+Example capset_enomem_reached : forall m,
+  option_map ret_of (capset_enomem (call 91 [HDR; DATA] (mem V3 0 (repeat 0 24))) m (task caps0 0 false 1) U)
+  = Some (Some (-12)).
+Proof. intros m. vm_compute. reflexivity. Qed.
+Example capset_enomem_not_after_eperm : forall m,
+  capset_enomem (call 91 [HDR; DATA] (mem V3 3 (repeat 0 24))) m (task caps0 0 false 1) U = None.
+Proof. intros m. vm_compute. reflexivity. Qed.
+Example bset_drop_enomem : forall m,
+  option_map ret_of (prctl_enomem (call 167 [24; 21; 0; 0; 0] (fun _ => None)) m (task caps0 0 false 1) U)
+  = Some (Some (-12)).
+Proof. intros m. vm_compute. reflexivity. Qed.
+Example bset_read_no_enomem : forall m,
+  prctl_enomem (call 167 [23; 21; 0; 0; 0] (fun _ => None)) m (task caps0 0 false 1) U = None.
+Proof. intros m. vm_compute. reflexivity. Qed.

@@ -169,43 +169,62 @@ Definition cap_capset (own_setpcap : bool) (old : CapSets) (e p ih : Z) : option
 
 (** [capset] (91): [SYSCALL_DEFINE2(capset)], [cap_capset].  The pid must
     be 0 or the caller's (else EPERM); the sets are masked to
-    CAP_VALID_MASK; a refused set is EPERM.  The permitted set can only
+    CAP_VALID_MASK; [prepare_creds] may fail (ENOMEM, the environment's:
+    [task_injected]); a refused set is EPERM.  The permitted set can only
     shrink, so [commit_creds] resets neither the parent-death signal nor
-    the dumpable mode.  Kind: exact (prepare_creds's ENOMEM is the
-    environment's). *)
-Definition capset_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
+    the dumpable mode.  Kind: exact, with the environment's ENOMEM.
+
+    [capset_stage] is the call up to [prepare_creds]: an answer, or the
+    copy-ins and the three sets read. *)
+Definition capset_stage (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
+    : ext_outcome + (list (word * nat) * Z * Z * Z) :=
   let header := in_arg i 0 in
   let data := in_arg i 1 in
   match validate_magic i header with
-  | MagicFault => ns_errno EFAULT m ctx st
-  | MagicUnmapped => EUnmodeled
-  | MagicBad => bad_magic i m ctx st header (- EINVAL)
+  | MagicFault => inl (ns_errno EFAULT m ctx st)
+  | MagicUnmapped => inl EUnmodeled
+  | MagicBad => inl (bad_magic i m ctx st header (- EINVAL))
   | MagicOk tocopy =>
       match get_u32 i (header + Z_to_bv 64 4)%bv with
-      | GetFault => ns_errno EFAULT m ctx st
-      | GetUnmapped => EUnmodeled
+      | GetFault => inl (ns_errno EFAULT m ctx st)
+      | GetUnmapped => inl EUnmodeled
       | GetVal pv =>
           let pid := (if pv <? 2147483648 then pv else pv - 4294967296) in
           if negb ((pid =? 0) || (match task_pid ctx with Some p => pid =? p | None => false end))
-          then ns_errno EPERM m ctx st
-          else if negb (access_okb data (12 * tocopy)) then ns_errno EFAULT m ctx st
+          then inl (ns_errno EPERM m ctx st)
+          else if negb (access_okb data (12 * tocopy)) then inl (ns_errno EFAULT m ctx st)
           else match read_bytes_map (in_mem i) data (Z_to_bv 64 (12 * tocopy)) with
-               | None => EUnmodeled
+               | None => inl EUnmodeled
                | Some bs =>
                    let word_at (k : nat) := bytes_le_to_Z (firstn 4 (skipn (4 * k) bs)) in
                    let hi (k : nat) := if tocopy =? 2 then word_at (3 + k)%nat else 0 in
                    let mk (k : nat) := Z.land (Z.lor (word_at k) (Z.shiftl (hi k) 32)) CAP_VALID_MASK in
-                   let reads := [(header, 4%nat); ((header + Z_to_bv 64 4)%bv, 4%nat);
-                                 (data, Z.to_nat (12 * tocopy))] in
-                   match cap_capset (own_capable m ctx st CAP_SETPCAP) (cx_caps ctx) (mk 0%nat) (mk 1%nat) (mk 2%nat) with
-                   | None => EOk (with_copyins reads (mkEffect (errno_ret EPERM) [] [])) m ctx st []
-                   | Some c => EOk (with_copyins reads (mkEffect (Z_to_bv 64 0) [] [])) m (with_caps ctx c) st []
-                   end
+                   inr ([(header, 4%nat); ((header + Z_to_bv 64 4)%bv, 4%nat);
+                         (data, Z.to_nat (12 * tocopy))], mk 0%nat, mk 1%nat, mk 2%nat)
                end
       end
   end.
 
-Definition capset_arm : NsArm := fun i m ctx st o => o = capset_fn i m ctx st.
+Definition capset_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
+  match capset_stage i m ctx st with
+  | inl o => o
+  | inr (reads, e, p, ih) =>
+      match cap_capset (own_capable m ctx st CAP_SETPCAP) (cx_caps ctx) e p ih with
+      | None => EOk (with_copyins reads (mkEffect (errno_ret EPERM) [] [])) m ctx st []
+      | Some c => EOk (with_copyins reads (mkEffect (Z_to_bv 64 0) [] [])) m (with_caps ctx c) st []
+      end
+  end.
+
+(** [prepare_creds]'s ENOMEM, where the call gets that far. *)
+Definition capset_enomem (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
+    : option ext_outcome :=
+  match capset_stage i m ctx st with
+  | inl _ => None
+  | inr (reads, _, _, _) => Some (EOk (with_copyins reads (mkEffect (errno_ret ENOMEM) [] [])) m ctx st [])
+  end.
+
+Definition capset_arm : NsArm := fun i m ctx st o =>
+  o = capset_fn i m ctx st \/ capset_enomem i m ctx st = Some o.
 
 (* =========================================================================
    prctl
@@ -219,8 +238,8 @@ Definition capset_arm : NsArm := fun i m ctx st o => o = capset_fn i m ctx st.
     PR_GET_DUMPABLE (3), PR_SET_DUMPABLE (4, 0 or 1), PR_SET_NO_NEW_PRIVS
     (38) and PR_GET_NO_NEW_PRIVS (39), each with its argument checks.  The
     option is the low 32 bits of a0.  Any other option is DECLINED
-    ([EUnmodeled]), never read as one of these eight.  Kind: exact
-    (prepare_creds's ENOMEM for PR_CAPBSET_DROP is the environment's). *)
+    ([EUnmodeled]), never read as one of these eight.  Kind: exact, with
+    [prepare_creds]'s ENOMEM for PR_CAPBSET_DROP, the environment's. *)
 Definition prctl_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let opt := s32 (in_arg i 0) in
   let a2 := bv_unsigned (in_arg i 1) in
@@ -255,8 +274,22 @@ Definition prctl_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) 
      else ns_ret (Z_to_bv 64 (if cx_no_new_privs ctx then 1 else 0)) m ctx st)
   else EUnmodeled.
 
-Definition prctl_arm : NsArm := fun i m ctx st o => o = prctl_fn i m ctx st.
+(** [cap_prctl_drop]'s [prepare_creds] ENOMEM, after its two checks. *)
+Definition prctl_enomem (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState)
+    : option ext_outcome :=
+  if (s32 (in_arg i 0) =? 24) && own_capable m ctx st CAP_SETPCAP
+     && (bv_unsigned (in_arg i 1) <=? 40)
+  then Some (ns_errno ENOMEM m ctx st) else None.
+
+Definition prctl_arm : NsArm := fun i m ctx st o =>
+  o = prctl_fn i m ctx st \/ prctl_enomem i m ctx st = Some o.
 
 Definition task_arms : list (Z * NsArm) :=
   [(90, capget_arm); (91, capset_arm); (166, umask_arm); (167, prctl_arm);
    (172, getpid_arm); (178, getpid_arm)].
+
+(** The environment's refusals of these arms, for the forced-only filter:
+    [prepare_creds]'s ENOMEM. *)
+Definition task_injected : list NsInjected :=
+  [mkNsInjected 91 [(fun e => e =? ENOMEM, FamAlloc)];
+   mkNsInjected 167 [(fun e => e =? ENOMEM, FamAlloc)]].
