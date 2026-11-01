@@ -60,28 +60,77 @@ Example setattr_missing_mount : mount_setattr tree 9 false set_ro = MErr 22%Z :=
 Definition ids (r : MResult) : list positive :=
   match r with MOk t => map mnt_id t | MErr _ => [] end.
 
-Definition copied (r : MResult) : list Mount :=
-  match r with MOk t => skipn 4 t | MErr _ => [] end.
+(** The decided answer of a bind; [MErr 0] stands for "not decided" and no
+    example below expects it. *)
+Definition bound (r : option MResult) : MResult :=
+  match r with Some x => x | None => MErr 0%Z end.
+
+Definition copied (n : nat) (r : option MResult) : list Mount :=
+  match bound r with MOk t => skipn n t | MErr _ => [] end.
+
+(** A bind of a whole mount: the source path is the mount's root (dentry
+    20), so every child is under it, and no path check fails. *)
+Definition whole : BindPaths := mkBindPaths 20 (fun _ => true) false false false.
+
+(** Binds run in mount namespace 1 with room for 100 mounts. *)
+Definition bind (T : list Mount) (src : positive) (bp : BindPaths) (rec : bool)
+    (tgt d : positive) : option MResult :=
+  bind_mount T 1 100 src bp rec tgt d.
 
 (** A recursive bind of mount 2 onto mount 1 at dentry 7 copies mounts 2 and
     3 as new mounts 5 and 6, and skips the unbindable mount 4. *)
 Example bind_skips_unbindable :
-  ids (bind_mount tree 2 true 1 7) = [1; 2; 3; 4; 5; 6] := eq_refl.
+  ids (bound (bind tree 2 whole true 1 7)) = [1; 2; 3; 4; 5; 6] := eq_refl.
 
 (** The copy of the bound mount sits on the target at the target dentry; the
     copy of its child sits on that copy, at the child's own mount point. *)
 Example bind_relinks_parents :
-  map mnt_parent (copied (bind_mount tree 2 true 1 7)) = [Some 1; Some 5] := eq_refl.
+  map mnt_parent (copied 4 (bind tree 2 whole true 1 7)) = [Some 1; Some 5] := eq_refl.
 
 Example bind_sets_mountpoints :
-  map mnt_mountpoint (copied (bind_mount tree 2 true 1 7)) = [7; 10] := eq_refl.
+  map mnt_mountpoint (copied 4 (bind tree 2 whole true 1 7)) = [7; 10] := eq_refl.
 
 Example bind_copies_are_bindable :
-  map mnt_unbindable (copied (bind_mount tree 2 true 1 7)) = [false; false] := eq_refl.
+  map mnt_unbindable (copied 4 (bind tree 2 whole true 1 7)) = [false; false] := eq_refl.
 
 (** A bind that is not recursive copies the one mount. *)
 Example bind_nonrecursive_one_copy :
-  ids (bind_mount tree 2 false 1 7) = [1; 2; 3; 4; 5] := eq_refl.
+  ids (bound (bind tree 2 whole false 1 7)) = [1; 2; 3; 4; 5] := eq_refl.
+
+(** A bind of a directory inside a mount copies only the child mounts whose
+    mount point is under that directory: mount 5 sits at dentry 11, which is
+    under the source dentry 50, and mount 3 at dentry 10, which is not.  The
+    copy of the source has the source dentry as its root. *)
+Definition tree_sub : list Mount :=
+  [mnt 1 None false; mnt 2 (Some 1) false; mnt 3 (Some 2) false;
+   mkMount 5 1 (Some 2) 11 20 30 no_flags no_flags false false None None].
+
+Definition sub : BindPaths := mkBindPaths 50 (fun d => Pos.eqb d 11) false false false.
+
+Example bind_subdir_copies_below :
+  ids (bound (bind tree_sub 2 sub true 1 7)) = [1; 2; 3; 5; 6; 7] := eq_refl.
+
+Example bind_subdir_root :
+  map mnt_root (copied 4 (bind tree_sub 2 sub true 1 7)) = [50; 20] := eq_refl.
+
+(** The copy of the source is not MNT_LOCKED ([clone_mnt] clears it); a copy
+    of a locked child is ([copy_tree] sets it again). *)
+Definition tree_lk : list Mount :=
+  [mnt 1 None false;
+   mkMount 2 1 (Some 1) 10 20 30 no_flags no_flags true false None None;
+   mkMount 3 1 (Some 2) 10 20 30 no_flags no_flags true false None None].
+
+Example bind_locks_children_only :
+  map mnt_locked (copied 3 (bind tree_lk 2 whole true 1 7)) = [false; true] := eq_refl.
+
+(** A bind that is not recursive is refused with EINVAL when a locked child
+    sits under the source path, and allowed when none does. *)
+Example bind_nonrecursive_locked_child :
+  bind tree_lk 2 whole false 1 7 = Some (MErr 22%Z) := eq_refl.
+
+Example bind_nonrecursive_locked_child_elsewhere :
+  ids (bound (bind tree_lk 2 (mkBindPaths 50 (fun _ => false) false false false) false 1 7))
+  = [1; 2; 3; 4] := eq_refl.
 
 (** A recursive bind that meets an unbindable mount that is also locked is
     refused with EPERM. *)
@@ -90,20 +139,64 @@ Definition tree_lub : list Mount :=
    mkMount 3 1 (Some 2) 10 20 30 no_flags no_flags true true None None].
 
 Example bind_locked_unbindable_refused :
-  bind_mount tree_lub 2 true 1 7 = MErr 1%Z := eq_refl.
+  bind tree_lub 2 whole true 1 7 = Some (MErr 1%Z) := eq_refl.
 
 (** An unbindable source is refused with EINVAL. *)
 Example bind_unbindable_source_refused :
-  bind_mount tree 4 true 1 7 = MErr 22%Z := eq_refl.
+  bind tree 4 whole true 1 7 = Some (MErr 22%Z) := eq_refl.
 
 (** A copy of a shared mount joins its peer group. *)
 Definition tree_shared : list Mount :=
   [mnt 1 None false; mkMount 2 1 (Some 1) 10 20 30 no_flags no_flags false false (Some 8) None].
 
 Example bind_copy_joins_peer_group :
-  map mnt_peer (copied (bind_mount (tree_shared ++ [mnt 3 (Some 1) false; mnt 4 (Some 1) false])
-                                   2 false 1 7))
-  = [Some 8] := eq_refl.
+  map mnt_peer (copied 2 (bind tree_shared 2 whole false 1 7)) = [Some 8] := eq_refl.
+
+(** Mount 9 is in another mount namespace.  A target there is refused with
+    EINVAL ([do_loopback]'s [check_mnt]); a source there is not decided by
+    the tree ([may_copy_tree] also accepts an nsfs or pidfs dentry and a
+    mount of an anonymous namespace), unless an earlier check refuses it:
+    a source dentry that would make a namespace loop. *)
+Definition tree_ns : list Mount :=
+  tree ++ [mkMount 9 2 None 10 20 30 no_flags no_flags false false None None].
+
+Example bind_target_other_ns : bind tree_ns 2 whole true 9 7 = Some (MErr 22%Z) := eq_refl.
+
+Example bind_source_other_ns_undecided : bind tree_ns 9 whole true 1 7 = None := eq_refl.
+
+Example bind_ns_loop_first :
+  bind tree_ns 9 (mkBindPaths 20 (fun _ => true) true false false) true 1 7
+  = Some (MErr 22%Z) := eq_refl.
+
+(** At the graft: a source on a superblock with SB_NOUSER is refused with
+    EINVAL, a directory onto a non-directory or back with ENOTDIR, and both
+    come after the copy, so a copy that fails with EPERM fails first. *)
+Example bind_nouser : bind tree 2 (mkBindPaths 20 (fun _ => true) false true false) true 1 7
+  = Some (MErr 22%Z) := eq_refl.
+
+Example bind_dir_mismatch : bind tree 2 (mkBindPaths 20 (fun _ => true) false false true) true 1 7
+  = Some (MErr 20%Z) := eq_refl.
+
+Example bind_eperm_before_nouser :
+  bind tree_lub 2 (mkBindPaths 20 (fun _ => true) false true false) true 1 7
+  = Some (MErr 1%Z) := eq_refl.
+
+(** [count_mounts]: the namespace holds 4 mounts and a recursive bind of
+    mount 2 adds 2, so a limit of 5 refuses it with ENOSPC and a limit of 6
+    allows it. *)
+Example bind_mount_max_refused : bind_mount tree 1 5 2 whole true 1 7 = Some (MErr 28%Z)
+  := eq_refl.
+
+Example bind_mount_max_allowed :
+  ids (bound (bind_mount tree 1 6 2 whole true 1 7)) = [1; 2; 3; 4; 5; 6] := eq_refl.
+
+(** A shared target propagates the new mounts to its peers and slaves
+    ([attach_recursive_mnt]), which the tree does not decide; the limit is
+    checked first. *)
+Example bind_shared_target_undecided : bind tree_shared 1 whole false 2 7 = None := eq_refl.
+
+Example bind_shared_target_limit_first :
+  bind_mount tree_shared 1 2 1 whole false 2 7 = Some (MErr 28%Z) := eq_refl.
 
 (** A detaching unmount removes the whole subtree. *)
 Example umount_detaches_subtree : ids (umount_detach tree 2) = [1] := eq_refl.
