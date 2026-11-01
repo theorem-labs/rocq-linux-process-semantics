@@ -1027,3 +1027,65 @@ Proof.
   (* and the measure carries the rest *)
   exact (HB Hsh Hleaf Hprog Hnoerr Hdec).
 Qed.
+
+(* =========================================================================
+   Discharging the four facts
+   ========================================================================= *)
+
+(** FACT ONE: the clone's successor is a [fw_two] shape.
+
+    The structural half is [clone_result_two]: four of the six clauses
+    come from the shape of [clone_result] alone.  What is left is
+    [fw_parent] on the absorbed parent and [fw_child] on the new child,
+    and both are at the resume counter [0x1101c] -- the address
+    [advance_past_svc] lands on from the clone's [ecall] at [0x11018].
+
+    The a0 clauses are where the pinning pays: in the parent a0 is the
+    returned pid, which [Fork.clone_pid_ok_b] bounds, and in the child it
+    is zero by [child_entry_a0_zero].  Both are supplied as hypotheses
+    here because they come from the clone ARM, which this file reasons
+    about through [Procs], not from a segment lemma. *)
+Lemma fw_clone_target : forall P e c' q,
+  pcfg_procs P = [(pe_pid e, e)] ->
+  pcfg_root P = pe_pid e ->
+  pe_parent e = None ->
+  (* the parent, after the clone, is at the resume counter and running *)
+  m_halted (cfg_model c') = None ->
+  ms_svc_pending (cfg_ms c') = None ->
+  bv_unsigned (ms_pc_val (cfg_ms c')) = 0x1101c%Z ->
+  (* a0 in the parent is the pid the clone chose, inside the envelope *)
+  (0 < bv_unsigned (ms_gpr (cfg_ms c') 0))%Z ->
+  (bv_unsigned (ms_gpr (cfg_ms c') 0) < 2 ^ 22)%Z ->
+  (* the child's model is running too: it is the parent's pre-clone one *)
+  m_halted (pe_model (child_entry e (pe_cfg (pcfg_shared P) e) c' q)) = None ->
+  fw_two (clone_result P e c' q).
+Proof.
+  intros P e c' q Hp Hr Hpar Hh Hs Hpc Ha0lo Ha0hi Hch.
+  destruct (clone_result_two P e c' q Hp Hr Hpar)
+    as (Hprocs & Hroot & Hlook & Hcpar & Hppar).
+  exists (pe_absorb e c'),
+         (child_entry e (pe_cfg (pcfg_shared P) e) c' q).
+  split; [exact Hprocs|].
+  split; [rewrite Hroot; exact Hlook|].
+  split; [exact Hcpar|].
+  split; [exact Hppar|].
+  split.
+  - (* fw_parent: running, at 0x1101c, a0 the pid *)
+    split; [exact Hh|]. left.
+    split; [exact Hs|].
+    split; [rewrite Hpc; lia|].
+    intros _. unfold fw_a0_parent. cbn [pe_ms pe_absorb].
+    split; [exact Ha0lo | exact Ha0hi].
+  - (* fw_child: running, at 0x1101c, a0 zero *)
+    left. split; [exact Hch|].
+    split.
+    + (* the child inherits the parent's successor pc *)
+      unfold child_entry, child_ms. cbn [pe_ms].
+      destruct (w_is0 (ms_gpr (cfg_ms (pe_cfg (pcfg_shared P) e)) 1));
+        cbn [ms_svc_pending set_reg]; exact Hs.
+    + left. split.
+      * unfold child_entry, child_ms. cbn [pe_ms].
+        destruct (w_is0 (ms_gpr (cfg_ms (pe_cfg (pcfg_shared P) e)) 1));
+          cbn [ms_pc_val set_reg]; exact Hpc.
+      * unfold fw_a0_child. apply child_entry_a0_zero.
+Qed.
