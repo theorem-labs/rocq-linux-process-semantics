@@ -664,7 +664,7 @@ Proof. check_eq. Qed.
 (** The same call with NO hint is REFUSED at the same address.  Before
     the placement change it was admitted, and that freedom is what let
     the model refuse a mapping the same Linux launch grants
-    (OSSV-210's B2, B3 and N3). *)
+    (the placement holes B2, B3 and N3). *)
 Example mmap_fresh_noaccess_null_hint_here_refused :
   check_syscall
     (mkInput 222 [0; 4096; 0; 34; mmap_fd_none; 0]
@@ -3036,7 +3036,7 @@ Proof. check_eq. Qed.
    the refusals they now are, each beside the address the search does
    give, so a reader can see what changed.  The freedom they had is
    what let the model refuse a mapping the same Linux launch grants
-   (OSSV-210's B2, B3 and N3); what paid for it was a ledger that
+   (the placement holes B2, B3 and N3); what paid for it was a ledger that
    now carries the kernel's own vdso/vvar VMAs ([State.init_reserved]),
    so a real top-down descent no longer looks impossible to the model.
 
@@ -3060,7 +3060,7 @@ Definition placement_model : Model :=
     1f99e9ab748f), which on this ledger is far above 0x80000000.
 
     The freedom this removes is the one that let the model refuse a
-    mapping the same Linux launch grants (OSSV-210's B2, B3 and N3),
+    mapping the same Linux launch grants (the placement holes B2, B3 and N3),
     so the case is kept as the refusal it now is rather than deleted:
     a reader needs to see what the model used to admit. *)
 Example mmap_null_hint_low_grant_rejected :
@@ -4121,7 +4121,7 @@ Proof.
 Qed.
 
 (* =========================================================================
-   THE BUDGET AFTER AN UNMAP (dispatch OSSV-236).  An unmap must take out
+   THE BUDGET AFTER AN UNMAP.  An unmap must take out
    of [vm_maps] every byte Linux unmaps, or the stale remnant stays
    charged in [vm_backing_used] and a run can sit above [vm_limit] where
    the kernel has freed the page.  Each trace below is run through the

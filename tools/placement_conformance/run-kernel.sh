@@ -15,7 +15,8 @@
 #   ./run-kernel.sh boot CONFIG        boot the kernel, write the log
 #   ./run-kernel.sh startstate CONFIG SEED
 #                                      boot with qemu's -seed SEED and run the
-#                                      two start-state probes of OSSV-257 A4,
+#                                      two start-state probes of acceptance
+#                                      item A4,
 #                                      writing one log per run
 #   ./run-kernel.sh qemu-user          run the probe under qemu-riscv64 (user mode)
 #   ./run-kernel.sh all CONFIG         image, source, probe, kernel, boot
@@ -208,7 +209,7 @@ cmd_vdso() {
 # cmd_boot CONFIG [MODE] [SEED]
 #
 # MODE is "place" (the placement sequence, one log) or "startstate" (the two
-# start-state runs of OSSV-257 A4, one log each).  SEED, when given, is
+# start-state runs of acceptance item A4, one log each).  SEED, when given, is
 # qemu's -seed: it fixes the devicetree's rng-seed, and so the kernel's
 # randomization draws, so two boots of one configuration give two draws that
 # the log names.  The log's tag is CONFIG, or CONFIG-seedSEED with a seed.
@@ -317,7 +318,7 @@ case $cmd in
   kernel)    cmd_kernel "${2:?CONFIG}" ;;
   vdso)      cmd_vdso "${2:?CONFIG}" ;;
   boot)      cmd_boot "${2:?CONFIG}" "${3:-place}" "${4:-}" "${5:-}" ;;
-  # The boots of OSSV-257 A4: three randomized draws, one norandmaps, and
+  # The boots of acceptance item A4: three randomized draws, one norandmaps, and
   # one whose devicetree carries a cache hierarchy.
   startstate) cmd_boot "${2:?CONFIG}" startstate "${3:?SEED}" "${4:-}" ;;
   qemu-user) cmd_qemu_user ;;

@@ -6,7 +6,7 @@
 
     THE ADDRESS IS LINUX'S.  [Sys/Mm/Mmap.linux_place] says where a
     fresh anonymous mapping goes, and [Checks/Placement.linux_place_b]
-    computes it.  The cases below are the five the OSSV-231 plan's
+    computes it.  The cases below are the five the placement plan's
     "Review Focus" names: a hint of 1 to 4095, a hint that is not page
     aligned, the hint 2^64-1, a transparent-huge-page kernel, and the
     same kernel without it.  Each one is a place where a reader's
@@ -20,8 +20,7 @@
     that no call ever touched it instead.
 
     Every Linux claim is at v6.18.46, commit 1f99e9ab748f, and every
-    file and line cited is readable at /home/sami/src/linux-6.18.46 at
-    that commit. *)
+    file and line cited is readable in the kernel tree at that commit. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -100,7 +99,7 @@ Proof. vm_compute. reflexivity. Qed.
 
     Before this change the model admitted any free page-aligned address
     below [alloc_top], which is what let it refuse a mapping the same
-    Linux launch grants — the holes of OSSV-210. *)
+    Linux launch grants — the placement holes. *)
 Example place_first_grant_is_under_the_vdso :
   linux_place_b (m_vmmaps place_model) false (Z_to_bv 64 0) 4096
   = Some 23387528560640%Z.

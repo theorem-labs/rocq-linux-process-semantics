@@ -494,10 +494,13 @@ Qed.
     [State.sp_window_lo] with a top near STACK_TOP would make every
     [vm_compute] below walk two gigabytes of pad.
 
-    WHAT WIDENING THIS FIXTURE COSTS, measured, because the next
-    person to widen it needs the number: a 4096-byte block did not
-    finish one [vm_compute] below in thirty minutes, and these 528
-    bytes finish in seconds.  Part of that was [State.init_model]
+    WHAT WIDENING THIS FIXTURE COSTS.  UNRUN: the sentence that stood
+    here -- "a 4096-byte block did not finish one [vm_compute] below in
+    thirty minutes, and these 528 bytes finish in seconds" -- carries no
+    run anyone can point at, so it is withdrawn as a measurement and left
+    here only as the expectation it was.  The next person to widen this
+    fixture must time it rather than cite that.  What IS measured is the
+    term size below.  Part of the cost was [State.init_model]
     being a chain of [with_*] setters — each rebuilds the record from
     its argument's fields, so the chain denotes a term holding the
     PRODUCT of the setters' own copy counts, NOT a power of seven:

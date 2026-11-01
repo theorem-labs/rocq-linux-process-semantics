@@ -2820,7 +2820,7 @@ Proof. split; [check_eq | split; [check_eq | vm_compute; reflexivity]]. Qed.
 
 (* =========================================================================
    PART 7 — death by SIGPIPE: what each arm answers, and what it still
-   admits beside it (OSSV-266)
+   admits beside it
    ========================================================================= *)
 
 (** The launch of [demo_input] with THE READER GONE: the far end of

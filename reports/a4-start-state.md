@@ -1,10 +1,10 @@
 # A4: LPS's start state against a booted Linux v6.18.46 riscv64 kernel
 
-Acceptance check A4 of [OSSV-257](https://dispatch.tail12ec1c.ts.net/issues/OSSV-257).
+Acceptance check A4 of the start-state specification.
 The model is `rocq-linux-process-semantics` branch `revision/entry`
 (`theories/LinuxProcessSem/StackLayout.v`, `State.v`, `Run.v`).  The harness
 is `tools/placement_conformance/` of `rocq-linux-process-semantics` branch
-`revision/place`, which OSSV-231 built and this check extends.
+`revision/place`, which the placement work built and this check extends.
 
 Five kernels boot the probe twice each. The ten records are checked against
 the model in two forms. The CHECK is Rocq: `start_state_to_rocq.py` turns
@@ -121,7 +121,7 @@ Two of these are worth naming:
 
 `base` is the top of the `[vdso]` mapping, which is where
 `__setup_additional_pages` puts the first mapping below `mmap_base`
-(OSSV-231's `log_to_rocq.py` reads the base the same way).  Under
+(the placement harness's `log_to_rocq.py` reads the base the same way).  Under
 `norandmaps` it is exactly `0x7ffff8000000`, the value
 `Run.mmap_base_of Sv48 kb 0` gives, which is the independent confirmation
 that this reading of the base is Linux's base.

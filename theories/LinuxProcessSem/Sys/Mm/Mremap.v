@@ -885,16 +885,25 @@ Definition mremap_spec (old old_size new_size flags : word)
     [LZ_OWNED] and [MAT_OWNED], on the PAGE FLOOR rather than on bytes,
     establishes it at [Run.init_config] ([init_config_WF]) and preserves it
     across every writer of the ledgers ([check_brk_WF], [check_mmap_WF],
-    [check_munmap_WF], [check_mprotect_WF], [check_mremap_WF]).  The floor
+    [check_munmap_WF], [check_mprotect_WF], [check_mremap_WF],
+    [check_madvise_WF] -- all SIX writer arms).  The floor
     is not a convenience: byte ownership is NOT inductive under a same-page
     [brk] shrink, because [Mmap.brk_maps_next] cuts byte by byte while
     [Mmap.brk_unmaps] forgets page-rounded; see that file's header and
     [brk_floor_outside].
 
-    A CALLER THAT STILL TAKES IT AS A HYPOTHESIS is no longer obliged to:
-    it can discharge it from [Common/WfInvariant.WF] of the state it is
-    reasoning about, which every run carries from its initial
-    configuration.  Those call sites are not rewritten here. *)
+    A CALLER THAT STILL TAKES IT AS A HYPOTHESIS IS STILL OBLIGED TO, and
+    the earlier sentence here -- that such a caller "can discharge it from
+    [Common/WfInvariant.WF] of the state it is reasoning about, which every
+    run carries from its initial configuration" -- was WRONG and is
+    withdrawn.  No run carries [WF]: [Common/WfInvariant.v]'s own closing
+    note says there is no [check_syscall_preserves_WF], no
+    [syscall_spec_preserves_WF] and no [sstep]/[star]/[star_cfg] lemma, so
+    [WF] is NOT available at an arbitrary reachable state.  What is proved
+    is the initial state and the per-arm steps; composing them needs a
+    second per-arm frame family stated over [State.m_vm], which does not
+    exist.  Until it does, a caller on a reachable state must take [WF] as
+    a hypothesis, exactly as before.  Those call sites are unchanged. *)
 Definition mremap_move_charge (m : Model) (old old_n new_n : word) : Z :=
   let h := m_vmmaps m in
   let old_lo := bv_unsigned old in

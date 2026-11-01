@@ -785,10 +785,16 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
     1. [move_addr_to_kernel]: [ulen < 0 || ulen > sizeof(struct
        sockaddr_storage)] (128) is -EINVAL; [ulen == 0] copies NOTHING
        and returns 0; otherwise a failed [copy_from_user] is -EFAULT.
-       A zero length needs no special case for the READ — [read_bytes_map]
-       at length 0 is [Some []] whatever the pointer, which is exactly
-       "copies nothing, cannot fault" — and the empty address then fails
-       step 3's 2-byte minimum.  It does need one for the LEDGER: a
+       A zero length DOES need a special case for the READ, and
+       [move_addr_bytes] above is it: this arm no longer calls
+       [State.read_bytes_map], it calls [State.copy_bytes_map], whose
+       [State.access_okb a 0] is FALSE for every [a] above
+       [State.TASK_SIZE] -- so routing the zero through it would answer
+       -EFAULT on a call Linux never faults.  [move_addr_bytes] answers
+       [Some []] at length 0 before reaching the pair; see its own note
+       above ("THE ZERO CASE CANNOT BE LEFT TO [State.copy_bytes_map]").
+       The empty address then fails step 3's 2-byte minimum.  It needs a
+       special case for the LEDGER too: a
        zero-length address reads no user byte, so it records an empty
        ledger rather than a singleton zero-length range, as
        [ReadWrite.write_spec] does for a zero-length write.

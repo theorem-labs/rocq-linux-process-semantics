@@ -344,7 +344,7 @@ Definition noaccess_model (a n : word) (m : Model) : Model :=
     [MmapSim.grant_ok] WITHOUT the budget conjunct: a PROT_NONE mapping
     consumes no backed memory ([Mmap.mmap_spec], noaccess branch).
 
-    TWO CHANGES SINCE OSSV-231.  The first conjunct is the spec's own
+    TWO CHANGES SINCE THE PLACEMENT WORK.  The first conjunct is the spec's own
     placement rule ([Mmap.linux_place], decided by
     [Placement.linux_place_is]) — the address is Linux's, not merely a
     free one.  And the third conjunct bounds the grant by the run's
