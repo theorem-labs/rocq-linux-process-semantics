@@ -978,3 +978,45 @@ Qed.
     [Admitted] and no [Axiom] here: an unproved theorem is written down as
     this comment instead, because a theorem nobody has proved is worth
     less than the note saying so. *)
+
+(* =========================================================================
+   An interface mismatch, and the way through it
+   ========================================================================= *)
+
+(** THE THREE ARM OBLIGATIONS ABOVE CANNOT BE DISCHARGED FROM THE SEGMENT
+    LEMMAS AS THEY STAND, and the reason is a shape mismatch rather than a
+    missing fact.  It is worth stating precisely, because the obvious
+    reading -- "connect each counter to its successor through the segment
+    lemmas" -- does not typecheck.
+
+    [fw_owes_other] is about ONE transition of [pstep_at], whose
+    instruction arm is one [Run.mi_account_step].  The segment lemmas are
+    about [ForkwaitSteps.machine_run segs k ms], a run of [k] steps:
+    [fw_run_A] is seven, [fw_run_parent] nine.  To use a segment lemma for
+    a single step one must DECOMPOSE a [machine_run], and the segment file
+    exports no decomposition: [mrun_step] builds a run FROM a step, and
+    the per-instruction fetch and decode facts live in the generated
+    [forkwait_code], which this file does not import.
+
+    So the per-step obligations would need either a [machine_run]
+    inversion lemma -- "a run of [S k] steps from [ms] is a step to some
+    [ms'] and a run of [k] from it" -- or the generated per-instruction
+    lemmas in scope here.
+
+    THE BETTER ROUTE DOES NOT NEED EITHER, and it is the one
+    [MustExitP.mepa_det_step] was proved for.  A straight-line stretch of
+    this program is DETERMINISTIC: one live entry, no branch whose
+    direction is open, so the successor of each configuration is unique.
+    [mepa_det_step] consumes such a stretch WHOLE -- it asks for the
+    successor, not for an invariant at every intermediate state -- so a
+    segment lemma is applied exactly as it is stated, at the [k] it has.
+    The measure argument is then needed only for the two-entry stretch,
+    where the successor really is not unique, which is what the note
+    beside [mepa_det_step] says it is for.
+
+    That makes the shape invariant unnecessary for the straight-line
+    parts, and [fw_shape] earns its keep only across the clone and the
+    reap.  It is a change of route within this file: no shape is widened,
+    no premise is added to [forkwait_halts], and nothing in [Procs.v]
+    moves.  The three obligations above stay as the record of what the
+    per-step route would have cost. *)
