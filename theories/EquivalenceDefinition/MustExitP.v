@@ -12,7 +12,7 @@
     the directory that can see both, and that is this one.  Nothing else
     moved with it. *)
 
-From Stdlib Require Import ZArith NArith List Bool.
+From Stdlib Require Import ZArith NArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run Procs.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import MustExit.
@@ -330,4 +330,143 @@ Lemma look_in_app_hit : forall ps ps' q e,
 Proof.
   induction ps as [|kv r IH]; intros ps' q e H; cbn in *; [discriminate|].
   destruct (bv_eqb (fst kv) q); [exact H | apply IH; exact H].
+Qed.
+
+(* =========================================================================
+   The shared-state half of non-interference
+   ========================================================================= *)
+
+(** The table lemmas above say the OTHER entry's record survives a step.
+    They do not yet say its VIEW survives, and those are different claims:
+    [absorb] rebuilds [sh_fsys] and [sh_io] from the stepping entry's
+    successor, and every other entry reads exactly those through [pe_cfg].
+
+    SO THE LEMMA IS ABOUT THE ARM, NOT ABOUT [absorb].  An arm that leaves
+    the file system and the I/O state alone leaves every other entry's view
+    alone; an arm that does not, does not, and no amount of reasoning about
+    the table will rescue it.  The non-touching is a HYPOTHESIS here and the
+    instances below discharge it by computation.
+
+    A general "every step preserves every other view" is a different theorem
+    and a false one, which is the point: a shared file system is shared.
+    When the pipe syscalls arrive this is the lemma they will have to fail. *)
+Lemma view_frame_absorb : forall P e c' q eq,
+  look (absorb P e c') q = Some eq ->
+  m_fsys (cfg_model c') = sh_fsys (pcfg_shared P) ->
+  m_io (cfg_model c') = sh_io (pcfg_shared P) ->
+  pe_cfg (pcfg_shared (absorb P e c')) eq = pe_cfg (pcfg_shared P) eq.
+Proof.
+  intros P e c' q eq _ Hfs Hio.
+  unfold pe_cfg, absorb, shared_absorb. cbn [pcfg_shared sh_fsys sh_io].
+  rewrite Hfs, Hio. reflexivity.
+Qed.
+
+(** The two arms [forkwait] steps with, and why each satisfies it.  Both
+    model setters rebuild [State.Model] around the same [m_fsys] and
+    [m_io], so each is a [reflexivity]. *)
+Lemma m_fsys_with_halted : forall v m, m_fsys (with_halted v m) = m_fsys m.
+Proof. reflexivity. Qed.
+
+Lemma m_io_with_halted : forall v m, m_io (with_halted v m) = m_io m.
+Proof. reflexivity. Qed.
+
+Lemma m_fsys_with_children : forall m, m_fsys (with_children m) = m_fsys m.
+Proof. reflexivity. Qed.
+
+Lemma m_io_with_children : forall m, m_io (with_children m) = m_io m.
+Proof. reflexivity. Qed.
+
+(** And the splice puts the shared pair into the view, so a step that starts
+    from [pe_cfg S e] starts from a model whose [m_fsys] IS [sh_fsys S].
+    That is what turns the two lemmas above into the hypothesis
+    [view_frame_absorb] wants. *)
+Lemma m_fsys_pe_cfg : forall S e, m_fsys (cfg_model (pe_cfg S e)) = sh_fsys S.
+Proof. reflexivity. Qed.
+
+Lemma m_io_pe_cfg : forall S e, m_io (cfg_model (pe_cfg S e)) = sh_io S.
+Proof. reflexivity. Qed.
+
+(* =========================================================================
+   The keystone: halting from a measure
+   ========================================================================= *)
+
+(** THE MULTI-PROCESS ANALOGUE OF [Checks.Examples.exits_c_must_exit_at],
+    and the reason the schedule space does not have to be enumerated.
+
+    [must_exit_in_p_at]'s successor premise ranges over EVERY interleaving,
+    and for a program with two live entries the number of paths is
+    exponential in their lengths.  None of them has to be walked.  What has
+    to be true is only that every step, whichever entry takes it, makes a
+    measure go down -- and for straight-line code that measure is the total
+    instructions remaining, which every step reduces by one because every
+    step belongs to exactly one entry.
+
+    So the schedule disappears from the proof obligation, and what is left
+    is four facts about ONE step, each quantified over the reachable set
+    through an invariant [I] the caller chooses.  A blocked [wait4] needs no
+    case of its own: it is an entry with no arm (Procs, [pstep_at]), so it
+    contributes no successor and nothing to discharge.
+
+    No axiom is used.  Terminality is decided by [terminalb] rather than by
+    excluded middle, which is why that boolean exists. *)
+
+Definition terminalb (P : pconfig) : bool :=
+  List.forallb (fun kv => match pe_zombie (snd kv) with
+                          | Some _ => true
+                          | None => false
+                          end)
+               (pcfg_procs P).
+
+Lemma terminalb_spec : forall P, terminalb P = true <-> terminal P.
+Proof.
+  intros P. unfold terminalb, terminal. rewrite List.forallb_forall. split.
+  - intros H. apply List.Forall_forall. intros kv Hin.
+    specialize (H kv Hin). destruct (pe_zombie (snd kv)); discriminate.
+  - intros H kv Hin. rewrite List.Forall_forall in H. specialize (H kv Hin).
+    destruct (pe_zombie (snd kv)); [reflexivity | congruence].
+Qed.
+
+Theorem must_exit_in_p_at_by_measure :
+  forall segs cfg S (I : pconfig -> Prop) (mu : pconfig -> nat),
+  (* [I] survives a step *)
+  (forall P evs P', I P -> pstep_cfg segs cfg P evs (PNext P') -> I P') ->
+  (* a terminal [I]-configuration has the root halted on an allowed code *)
+  (forall P, I P -> terminal P ->
+     exists c code, root_view P = Some c
+                    /\ m_halted (cfg_model c) = Some code
+                    /\ List.In code S
+                    /\ m_killed (cfg_model c) = None) ->
+  (* progress, below terminal *)
+  (forall P, I P -> terminalb P = false ->
+     exists evs st, pstep_cfg segs cfg P evs st) ->
+  (* no execution errors *)
+  (forall P evs, I P -> ~ pstep_cfg segs cfg P evs PError) ->
+  (* and every step, by whichever entry, makes the measure go down *)
+  (forall P evs P', I P -> pstep_cfg segs cfg P evs (PNext P') ->
+     (mu P' < mu P)%nat) ->
+  forall P, I P -> must_exit_in_p_at segs cfg S P.
+Proof.
+  intros segs cfg S I mu Hpres Hleaf Hprog Hnoerr Hdec.
+  assert (Hgen : forall n P, I P -> (mu P <= n)%nat ->
+                             must_exit_in_p_at segs cfg S P).
+  { induction n as [|n IHn]; intros P HI Hle; destruct (terminalb P) eqn:Ht.
+    - apply terminalb_spec in Ht.
+      destruct (Hleaf P HI Ht) as (c & code & H1 & H2 & H3 & H4).
+      eapply mepa_halted; eassumption.
+    - (* measure 0 and not terminal is impossible: a step would go below it *)
+      exfalso. destruct (Hprog P HI Ht) as (evs & st & Hss).
+      destruct st as [P'|].
+      + pose proof (Hdec P evs P' HI Hss). lia.
+      + exact (Hnoerr P evs HI Hss).
+    - apply terminalb_spec in Ht.
+      destruct (Hleaf P HI Ht) as (c & code & H1 & H2 & H3 & H4).
+      eapply mepa_halted; eassumption.
+    - apply mepa_running.
+      + intros Hterm. apply terminalb_spec in Hterm. congruence.
+      + exact (Hprog P HI Ht).
+      + intros evs. exact (Hnoerr P evs HI).
+      + intros evs P' Hss. apply IHn.
+        * exact (Hpres P evs P' HI Hss).
+        * pose proof (Hdec P evs P' HI Hss). lia. }
+  intros P HI. exact (Hgen (mu P) P HI (Nat.le_refl _)).
 Qed.
