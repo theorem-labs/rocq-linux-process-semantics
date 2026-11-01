@@ -737,9 +737,13 @@ Theorem high_image_errors_at_witness : forall lim,
 Proof.
   intros lim.
   unfold high_image, witness_entry. cbn [run bh_errors]. unfold init_config.
-  rewrite (start_state_init (high_segments vt) 0x100 witness_phdrs witness_sp
-             witness_mbase witness_draw witness_input).
-  exact (high_reaches_error lim).
+  rewrite (start_state_init
+             (run_segments (high_segments []) witness_input witness_sp
+                witness_mbase)
+             0x100 witness_phdrs witness_sp witness_mbase witness_draw
+             witness_input).
+  unfold run_segments.
+  apply high_reaches_error.
 Qed.
 
 (* ---- the witness entry is admitted ------------------------------------- *)
