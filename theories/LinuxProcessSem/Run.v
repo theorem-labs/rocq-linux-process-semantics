@@ -967,7 +967,8 @@ Proof.
         destruct (Hframe _ _ _ _ _ Hs Hoff Hpend) as (Hoff' & Hpend' & _ & Hev);
         destruct (materialize_model_accesses_frame _ _ _ Hm) as (_&_&_&_&_&Hp&_)
     end.
-    cbn [cfg_model]. split; [| split; [| exact Hev]].
+    cbn [cfg_model].
+    split; [| split; [| intros fs Hin; exact (Hev _ _ Hin)]].
     + rewrite <- Hoff'. apply m_abort_terminal_proc.
       rewrite m_proc_with_vdso_bump. exact Hp.
     + rewrite <- Hpend'. apply m_sigabrt_pending_proc.
