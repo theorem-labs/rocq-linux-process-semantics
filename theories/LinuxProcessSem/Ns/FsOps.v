@@ -412,16 +412,16 @@ Definition mountinfo_read_arm (i : SyscallInput) (m : Model) (ctx : NsCtx) (st :
 
 Definition read_arm : NsArm := fun i m ctx st o =>
   let fd := fd_word (in_arg i 0) in
-  match fd_lookup (m_fds m) fd with
-  | Some (FdOpaque (OEventFd flags)) => eventfd_read_arm i m ctx st flags o
-  | _ => match ns_file_of m st fd with
-         | Some (h, f) =>
-             match nf_kind f with
-             | NfMountinfo l ns root off => mountinfo_read_arm i m ctx st h f l ns root off o
-             | _ => o = read_fn i m ctx st h f
-             end
-         | None => released i m ctx st o
-         end
+  match eventfd_flags_of m fd with
+  | Some flags => eventfd_read_arm i m ctx st flags o
+  | None => match ns_file_of m st fd with
+            | Some (h, f) =>
+                match nf_kind f with
+                | NfMountinfo l ns root off => mountinfo_read_arm i m ctx st h f l ns root off o
+                | _ => o = read_fn i m ctx st h f
+                end
+            | None => released i m ctx st o
+            end
   end.
 
 (* =========================================================================

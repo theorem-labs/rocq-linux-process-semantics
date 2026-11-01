@@ -52,6 +52,14 @@ Definition ns_fd_entry (h : N) : FdEntry := FdOpaque (ONsFile h).
 Definition fd_entry_handle (e : FdEntry) : option N :=
   match e with FdOpaque (ONsFile h) => Some h | _ => None end.
 
+(** The creation flags of the released model's eventfd at descriptor
+    [fd], if that is what the descriptor is. *)
+Definition eventfd_flags_of (m : Model) (fd : word) : option word :=
+  match fd_lookup (m_fds m) fd with
+  | Some (FdOpaque (OEventFd fl)) => Some fl
+  | _ => None
+  end.
+
 (** A handle no open file has. *)
 Definition fresh_handle (st : NsState) : N :=
   N.succ (fold_left N.max (map fst (ns_files st)) 0%N).
