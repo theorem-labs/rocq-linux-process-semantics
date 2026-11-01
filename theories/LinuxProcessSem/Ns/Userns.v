@@ -72,16 +72,6 @@ Definition find_userns (U : list UserNs) (i : positive) : option UserNs :=
    Capabilities over a namespace
    ========================================================================= *)
 
-(** A credential as the capability checks and the map writes read it: its
-    user namespace, euid and egid (kernel ids), and its effective set, which
-    is in its own namespace. *)
-Record IdCred := mkIdCred {
-  ic_ns        : positive;
-  ic_euid      : Z;
-  ic_egid      : Z;
-  ic_effective : Z
-}.
-
 Definition CAP_SETGID : Z := 6.
 Definition CAP_SETUID : Z := 7.
 Definition CAP_SYS_ADMIN : Z := 21.

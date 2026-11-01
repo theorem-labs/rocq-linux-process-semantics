@@ -25,7 +25,7 @@
     ids.  The entries of procfs below a task's directory are not listed:
     a walk that reaches one ends at a [Loc] of kind [LProcTask]. *)
 
-From Stdlib Require Import List PArith ZArith.
+From Stdlib Require Import List PArith ZArith NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase.
 Import ListNotations.
 
@@ -149,15 +149,67 @@ Inductive Loc :=
   | LDentry (mnt d : positive)
   | LProcTask (mnt : positive) (pid : Z) (rest : list (list byte)).
 
-(** The shared namespace state of a whole system. *)
+(** A credential as capability checks and map writes read it: its user
+    namespace, euid and egid (kernel ids), and its effective set, which is
+    in its own namespace. *)
+Record IdCred := mkIdCred {
+  ic_ns        : positive;
+  ic_euid      : Z;
+  ic_egid      : Z;
+  ic_effective : Z
+}.
+
+(** A network interface: index, name, flags ([IFF_UP], ...) and its IPv4
+    addresses with their prefix lengths. *)
+Record NetIf := mkNetIf {
+  if_index : Z;
+  if_name  : list byte;
+  if_flags : Z;
+  if_addrs : list (Z * Z)
+}.
+
+Record NetNs := mkNetNs {
+  netns_id    : positive;
+  netns_owner : positive;
+  netns_ifs   : list NetIf
+}.
+
+(** What an open file of the namespace model is: a path opened with O_PATH;
+    a directory open for reading and its position; a file open for reading
+    or writing (a regular file or a task's procfs file) and its offset; a
+    NETLINK_ROUTE socket of a network namespace, its port id and the
+    datagrams queued for it; an AF_UNIX datagram socket; an eventfd; a
+    signalfd and its mask. *)
+Inductive NsFileKind :=
+  | NfPath (l : Loc)
+  | NfDir (l : Loc) (pos : Z)
+  | NfFile (l : Loc) (off : Z)
+  | NfNetlink (netns : positive) (port : Z) (rxq : list (list byte))
+  | NfUnixDgram (netns : positive)
+  | NfEventfd
+  | NfSignalfd (mask : Z).
+
+(** An open file description: its kind, its [f_flags] (access mode and
+    status flags) and [f_cred], the opener's credential. *)
+Record NsFile := mkNsFile {
+  nf_kind  : NsFileKind;
+  nf_flags : Z;
+  nf_cred  : IdCred
+}.
+
+(** The shared namespace state of a whole system.  [ns_files] holds the
+    open files a process's descriptor table names by handle
+    ([State.ONsFile]). *)
 Record NsState := mkNsState {
   ns_mounts   : list Mount;
   ns_userns   : list UserNs;
   ns_mntns    : list MntNs;
   ns_pidns    : list PidNs;
+  ns_netns    : list NetNs;
   ns_sbs      : list SuperBlock;
   ns_dentries : list Dentry;
-  ns_inodes   : list Inode
+  ns_inodes   : list Inode;
+  ns_files    : list (N * NsFile)
 }.
 
 (** The five capability sets of a task, as 64-bit masks. *)
@@ -169,33 +221,50 @@ Record CapSets := mkCaps {
   cap_ambient     : Z
 }.
 
-(** What one task holds: which user, mount and pid namespace it is in, its
-    pid in each pid namespace from its own outwards, its root and current
-    directory as (mount, dentry), its umask and its capability sets, which
-    are in its user namespace. *)
+(** What one task holds: which user, mount, pid and network namespace it is
+    in, its pid in each pid namespace from its own outwards, its root and
+    current directory as (mount, dentry), its umask, its capability sets
+    (in its user namespace) and securebits, the descriptors marked
+    close-on-exec, the no_new_privs bit, the parent-death signal and the
+    dumpable mode. *)
 Record NsCtx := mkNsCtx {
-  cx_user  : positive;
-  cx_mount : positive;
-  cx_pidns : positive;
-  cx_pids  : list (positive * Z);
-  cx_root  : positive * positive;
-  cx_cwd   : positive * positive;
-  cx_umask : Z;
-  cx_caps  : CapSets
+  cx_user         : positive;
+  cx_mount        : positive;
+  cx_pidns        : positive;
+  cx_net          : positive;
+  cx_pids         : list (positive * Z);
+  cx_root         : positive * positive;
+  cx_cwd          : positive * positive;
+  cx_umask        : Z;
+  cx_caps         : CapSets;
+  cx_securebits   : Z;
+  cx_cloexec      : list Z;
+  cx_no_new_privs : bool;
+  cx_pdeathsig    : Z;
+  cx_dumpable     : Z
 }.
 
 (** The shared state of a system the namespace model knows nothing of: no
     mount tree and no namespace.  A core builds its released world from
     this, never from the constructor, so a new field changes no caller. *)
-Definition empty_nsstate : NsState := mkNsState [] [] [] [] [] [] [].
+Definition empty_nsstate : NsState := mkNsState [] [] [] [] [] [] [] [] [].
 
 Definition with_mounts (st : NsState) (ms : list Mount) : NsState :=
-  mkNsState ms (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_sbs st) (ns_dentries st)
-            (ns_inodes st).
+  mkNsState ms (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
+            (ns_dentries st) (ns_inodes st) (ns_files st).
 
-(** The context of a task that has entered no namespace: the initial user,
-    mount and pid namespace, with root and cwd at the root mount's root
-    dentry, the umask 022, and no capability. *)
+Definition with_userns (st : NsState) (us : list UserNs) : NsState :=
+  mkNsState (ns_mounts st) us (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
+            (ns_dentries st) (ns_inodes st) (ns_files st).
+
+Definition with_files (st : NsState) (fs : list (N * NsFile)) : NsState :=
+  mkNsState (ns_mounts st) (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
+            (ns_dentries st) (ns_inodes st) fs.
+
+(** The context of a task that has entered no namespace: the initial
+    namespaces, root and cwd at the root mount's root dentry, the umask
+    022, no capability, no securebits, no close-on-exec descriptor,
+    no_new_privs clear, no parent-death signal, dumpable. *)
 Definition init_nsctx : NsCtx :=
-  mkNsCtx 1%positive 1%positive 1%positive [] (1%positive, 1%positive) (1%positive, 1%positive)
-          18%Z (mkCaps 0 0 0 0 0).
+  mkNsCtx 1%positive 1%positive 1%positive 1%positive [] (1%positive, 1%positive)
+          (1%positive, 1%positive) 18%Z (mkCaps 0 0 0 0 0) 0%Z [] false 0%Z 1%Z.
