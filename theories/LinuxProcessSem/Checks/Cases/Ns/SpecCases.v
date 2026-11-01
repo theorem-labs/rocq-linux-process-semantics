@@ -33,13 +33,16 @@ Definition task (pid : Z) (umask : Z) : NsCtx := task_in 1 pid umask.
 
 Definition nf : MountFlags := mkMountFlags false false false false.
 
-(** One mount in mount namespace 1, which is the host's when [host]; user
-    namespace 1 is the initial one, 2 a child of it. *)
+(** One mount in mount namespace 1, which is the host's when [host], on
+    a host superblock whose root directory is dentry 1; user namespace 1
+    is the initial one, 2 a child of it. *)
 Definition world (host : bool) : NsState :=
   mkNsState [mkMount 1 1 None 1 1 1 nf nf false false None None]
             [mkUserNs 1 None 0 0 None None true true 100 false;
              mkUserNs 2 (Some 1%positive) 1 0 None None true true 100 true]
-            [mkMntNs 1 1 1 host] [] [] [] [] [] [] (ns_env empty_nsstate).
+            [mkMntNs 1 1 1 host] [] []
+            [mkSb 1 SbHost 1 1 false 0 false false false] [mkDentry 1 1 None [] 1]
+            [mkInode 1 IDir 493 0 0 0 [] false] [] (ns_env empty_nsstate).
 Definition one_mount : NsState := world false.
 
 (** A task in a mount namespace the tables model is not in the released
@@ -73,3 +76,12 @@ Proof. intros m. vm_compute. reflexivity. Qed.
 Example getpid_flat_is_released : forall m ctx o,
   ns_spec (call 172) m ctx empty_nsstate o <-> released (call 172) m ctx empty_nsstate o.
 Proof. intros m ctx o. apply ns_spec_flat. reflexivity. Qed.
+
+(** A descriptor the released model opened resolves in the host's mount
+    namespace: "/" is the root of its root mount.  With no released mount
+    namespace, or for a relative path, it does not resolve. *)
+Definition slash : list byte := [Z_to_bv 8 47].
+
+Example host_loc_root : host_loc (world true) slash = Some (LDentry 1 1) := eq_refl.
+Example host_loc_needs_host_ns : host_loc (world false) slash = None := eq_refl.
+Example host_loc_relative : host_loc (world true) [Z_to_bv 8 112] = None := eq_refl.

@@ -7,7 +7,7 @@
 
 From Stdlib Require Import ZArith List Bool NArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Walk.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Mount Walk.
 Import ListNotations.
 
 (** One call number's answer in a world with a mount tree. *)
@@ -76,15 +76,54 @@ Definition nsfile_loc (f : NsFile) : option Loc :=
   | _ => None
   end.
 
+(** Where a descriptor the released model opened is.  A task in the
+    released world opened it (a namespace arm would have minted an
+    [ONsFile]), so its path is a path of the host's mount namespace,
+    resolved from that namespace's root as the released arm resolved it
+    when it checked the open.  No task of the model changes the host's
+    mount namespace (a task in it is in the released world, whose mount
+    arm declines), so the walk now is the walk then.  The walk runs with
+    every capability of the initial user namespace, since the released
+    arm already checked the opener's permission, and with no pid, so a
+    path through procfs [self] does not resolve; a relative path, and any
+    walk that does not end at a location, give [None]. *)
+Definition host_loc (st : NsState) (p : list byte) : option Loc :=
+  let absolute := match p with c :: _ => (bv_unsigned c =? 47)%Z | [] => false end in
+  match absolute,
+        find (fun n => mntns_released n) (ns_mntns st),
+        find (fun u => match uns_parent u with None => true | Some _ => false end) (ns_userns st) with
+  | true, Some n, Some u =>
+      match find_mount (ns_mounts st) (mntns_root n) with
+      | Some r =>
+          let root := (mnt_id r, mnt_root r) in
+          let full := (2 ^ 41 - 1)%Z in
+          let hctx := mkNsCtx (uns_id u) (mntns_id n) (cx_pidns init_nsctx) (cx_net init_nsctx) []
+                              root root (cx_umask init_nsctx) (mkCaps full full 0 full 0) 0 []
+                              false 0 1 in
+          match walk st hctx (mkWalkCreds 0 0 []) (fun _ => None) (LDentry (fst root) (snd root)) p
+                     (mkWalkFlags true false false false false) with
+          | (WOk l, _) => Some l
+          | _ => None
+          end
+      | None => None
+      end
+  | _, _, _ => None
+  end.
+
 (** The walk's descriptor resolver ([Walk.walk]'s [fd_loc]): [None] for a
     number that is not open, [Some None] for an open descriptor the model
-    holds no path for (a released kind, a socket), [Some (Some l)] for one
-    at [l]. *)
+    holds no path for (a socket, a pipe, a released directory, which
+    carries no path), [Some (Some l)] for one at [l]: an open file of the
+    namespace model, or a released O_PATH or regular-file descriptor whose
+    path [host_loc] resolves. *)
 Definition fd_loc_of (m : Model) (st : NsState) (fd : Z) : option (option Loc) :=
   match fd_lookup (m_fds m) (Z_to_bv 64 fd) with
   | None => None
   | Some (FdOpaque (ONsFile h)) =>
       Some (match lookup_file (ns_files st) h with Some f => nsfile_loc f | None => None end)
+  | Some (FdOpaque (OProcPath p)) => Some (host_loc st p)
+  | Some (FdFile p _) | Some (FdFileW p _) | Some (FdFileA p _) | Some (FdFileRW p _) =>
+      Some (host_loc st p)
   | Some _ => Some None
   end.
 
