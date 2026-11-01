@@ -21,7 +21,7 @@
     decide), or declines. *)
 
 From Stdlib Require Import ZArith List Bool.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Task.
 Import ListNotations.
 
@@ -61,7 +61,100 @@ Proof.
   - intros (eff0 & m0 & evs0 & Heq & _). discriminate Heq.
 Qed.
 
-Definition ns_ext : ExtSpec := mkExtSpec ns_claims ns_spec ns_coherent.
+(* =========================================================================
+   Injected refusals
+   ========================================================================= *)
+
+(** The environment's refusals of one call number: a list of pairs, each an
+    errno predicate and the family that injects it.  One errno can be in
+    two pairs (an allocation failure and any errno of a security module). *)
+Record NsInjected := mkNsInjected {
+  ni_no    : Z;
+  ni_pairs : list ((Z -> bool) * SpuriousFamily)
+}.
+
+(** No arm of [ns_table] injects a refusal yet. *)
+Definition ns_injected_table : list NsInjected := [].
+
+Fixpoint lookup_ns_injected (t : list NsInjected) (n : Z) : option NsInjected :=
+  match t with
+  | [] => None
+  | r :: t' => if Z.eqb (ni_no r) n then Some r else lookup_ns_injected t' n
+  end.
+
+(** The pairs whose predicate holds of the errno the answer [ret] returns. *)
+Definition ns_matching (i : SyscallInput) (ret : word) : list ((Z -> bool) * SpuriousFamily) :=
+  match lookup_ns_injected ns_injected_table (ns_sysno i) with
+  | Some r => List.filter (fun p : (Z -> bool) * SpuriousFamily => fst p (Z.opp (bv_signed ret)))
+                          (ni_pairs r)
+  | None => []
+  end.
+
+(** [ret] is an injected refusal every family of which [cfg] switches off:
+    it matches some pair, and every pair it matches is of a family that may
+    not fail.  A refusal one enabled family can produce is never filtered. *)
+Definition ns_refusal_off_b (cfg : SpuriousCfg) (i : SyscallInput) (ret : word) : bool :=
+  match ns_matching i ret with
+  | [] => false
+  | ps => forallb (fun p => negb (family_may_fail cfg (snd p))) ps
+  end.
+
+(** The forced-only filter of [ns_ext]: the released filter in the released
+    world; elsewhere, a refusal of switched-off families where the model
+    also admits an answer that is no refusal at all (the state did not
+    force the refusal). *)
+Definition ns_refusal (cfg : SpuriousCfg) (i : SyscallInput) (m : Model) (ctx : NsCtx)
+    (st : NsState) (eff : SyscallEffect) : Prop :=
+  if flat_view st then spurious_refusal_cfg cfg i m eff
+  else ns_refusal_off_b cfg i (eff_ret eff) = true
+       /\ exists eff' m' ctx' st' evs',
+            ns_spec i m ctx st (EOk eff' m' ctx' st' evs') /\ ns_matching i (eff_ret eff') = [].
+
+Lemma ns_refusal_coherent : forall cfg i m ctx st eff,
+  flat_view st = true -> ns_claims i = true ->
+  (ns_refusal cfg i m ctx st eff <-> spurious_refusal_cfg cfg i m eff).
+Proof. intros cfg i m ctx st eff H _. unfold ns_refusal. rewrite H. reflexivity. Qed.
+
+(** More families allowed to fail filter fewer answers. *)
+Lemma ns_refusal_off_b_mono : forall cfg1 cfg2 i ret,
+  cfg_le cfg1 cfg2 -> ns_refusal_off_b cfg2 i ret = true -> ns_refusal_off_b cfg1 i ret = true.
+Proof.
+  intros cfg1 cfg2 i ret Hle. unfold ns_refusal_off_b.
+  destruct (ns_matching i ret) as [|p ps]; [intros Hc; discriminate Hc|].
+  intros H. apply forallb_forall. intros q Hq.
+  pose proof (proj1 (forallb_forall _ _) H q Hq) as Hq2. cbv beta in Hq2 |- *.
+  apply negb_true_iff in Hq2. apply negb_true_iff.
+  destruct (family_may_fail cfg1 (snd q)) eqn:E1; [|reflexivity].
+  rewrite (Hle _ E1) in Hq2. discriminate Hq2.
+Qed.
+
+Lemma ns_spurious_refusal_cfg_mono : forall cfg1 cfg2 i m ctx st eff,
+  cfg_le cfg1 cfg2 -> ns_refusal cfg2 i m ctx st eff -> ns_refusal cfg1 i m ctx st eff.
+Proof.
+  intros cfg1 cfg2 i m ctx st eff Hle. unfold ns_refusal.
+  destruct (flat_view st).
+  - unfold spurious_refusal_cfg, injected_family_off.
+    destruct (injected_arm (bv_unsigned (in_sysno i))) as [a|]; [|intros [Hc _]; discriminate Hc].
+    intros [Hoff Hrest]. split; [|exact Hrest].
+    apply negb_true_iff in Hoff. apply negb_true_iff.
+    destruct (family_may_fail cfg1 (ia_family a)) eqn:E1; [|reflexivity].
+    rewrite (Hle _ E1) in Hoff. discriminate Hoff.
+  - intros [Hoff Hrest]. split; [exact (ns_refusal_off_b_mono cfg1 cfg2 i (eff_ret eff) Hle Hoff)
+                                | exact Hrest].
+Qed.
+
+(** With one pair for a number, the filter is the released single-family
+    one: the errno is in the pair and its family is off. *)
+Lemma ns_refusal_off_b_single : forall cfg i ret (P : Z -> bool) F,
+  ns_matching i ret = (if P (Z.opp (bv_signed ret)) then [(P, F)] else []) ->
+  ns_refusal_off_b cfg i ret = P (Z.opp (bv_signed ret)) && negb (family_may_fail cfg F).
+Proof.
+  intros cfg i ret P F H. unfold ns_refusal_off_b. rewrite H.
+  destruct (P (Z.opp (bv_signed ret))); cbn; [rewrite andb_true_r; reflexivity | reflexivity].
+Qed.
+
+Definition ns_ext : ExtSpec :=
+  mkExtSpec ns_claims ns_spec ns_refusal ns_coherent ns_refusal_coherent.
 
 (** In the released world [ns_ext] answers exactly as the released model
     does, Unmodeled included. *)

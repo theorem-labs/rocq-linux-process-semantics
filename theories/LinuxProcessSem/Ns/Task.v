@@ -251,9 +251,9 @@ Definition capset_arm : NsArm := fun i m ctx st o => o = capset_fn i m ctx st.
     [valid_signal]), PR_GET_PDEATHSIG (2, [put_user] of the int),
     PR_GET_DUMPABLE (3), PR_SET_DUMPABLE (4, 0 or 1), PR_SET_NO_NEW_PRIVS
     (38) and PR_GET_NO_NEW_PRIVS (39), each with its argument checks.  The
-    option is the low 32 bits of a0.  Any other option declines.  Kind:
-    exact (prepare_creds's ENOMEM for PR_CAPBSET_DROP is the
-    environment's). *)
+    option is the low 32 bits of a0.  Any other option is DECLINED
+    ([EUnmodeled]), never read as one of these eight.  Kind: exact
+    (prepare_creds's ENOMEM for PR_CAPBSET_DROP is the environment's). *)
 Definition prctl_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : ext_outcome :=
   let opt := s32 (in_arg i 0) in
   let a2 := bv_unsigned (in_arg i 1) in
