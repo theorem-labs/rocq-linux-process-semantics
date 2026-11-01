@@ -153,7 +153,7 @@ Theorem mount_setattr_locked : forall T r rec ch m,
   mount_setattr T r rec ch = MErr EPERM.
 Proof.
   intros T r rec ch m Hf Hm Ht Hl. unfold mount_setattr.
-  destruct (find_mount T r) as [m0|] eqn:Ef; [|exfalso; exact (Hf Ef)].
+  destruct (find_mount T r) as [m0|]; [|exfalso; exact (Hf eq_refl)].
   replace (existsb (fun m1 => mem (mnt_id m1) (setattr_targets T r rec) && clears_locked ch m1) T)
     with true; [reflexivity|].
   symmetry. apply existsb_exists. exists m. split; [exact Hm|].
