@@ -4170,9 +4170,13 @@ Proof.
   intros inp (a & b & c & k & r & d & e & f & g & s & n & v & u & L).
   destruct (in_abort_terminal inp) eqn:Hab.
   - right.
-    try red; repeat split; assumption.
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
   - left.
-    try red; repeat split; assumption.
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** * The SIGPIPE declaration: the same predicate with signal 13 ignored
@@ -4582,11 +4586,17 @@ Proof.
   intros inp (a & b & c & k & r & d & e & f & g & h & s & n & u & L).
   destruct (in_va_size inp) eqn:Hv.
   - right; left.
-    try red; repeat split; assumption.
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
   - left.
-    try red; repeat split; assumption.
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
   - right; right.
-    try red; repeat split; assumption.
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** * The hardware-capability declaration: the same predicate per word
@@ -4672,14 +4682,18 @@ Lemma valid_input_of_valid_input_hwcap_rv64gc : forall inp,
   valid_input_hwcap_rv64gc inp -> valid_input inp.
 Proof.
   intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  try red; repeat split; assumption.
+  try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_of_valid_input_hwcap_rv64gcv : forall inp,
   valid_input_hwcap_rv64gcv inp -> valid_input inp.
 Proof.
   intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  try red; repeat split; assumption.
+  try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** …and the two are EXHAUSTIVE on the default, because [valid_hwcap] is
@@ -4694,9 +4708,13 @@ Lemma valid_input_hwcap_splits : forall inp,
 Proof.
   intros inp (a & b & c & k & r & d & e & f & [g | g] & h & s & n & v & u).
   - left.
-    try red; repeat split; assumption.
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
   - right.
-    try red; repeat split; assumption.
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** The declared word, read back out of the predicate.  A statement's
@@ -4769,14 +4787,18 @@ Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gc : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> valid_input_abort inp.
 Proof.
   intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  try red; repeat split; assumption.
+  try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> valid_input_abort inp.
 Proof.
   intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  try red; repeat split; assumption.
+  try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_abort_hwcap_splits : forall inp,
@@ -4785,9 +4807,13 @@ Lemma valid_input_abort_hwcap_splits : forall inp,
 Proof.
   intros inp (a & b & c & k & r & d & e & f & [g | g] & h & s & n & v & u).
   - left.
-    try red; repeat split; assumption.
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
   - right.
-    try red; repeat split; assumption.
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_abort_hwcap_rv64gc_word : forall inp,
