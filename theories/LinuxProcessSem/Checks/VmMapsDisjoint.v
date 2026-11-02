@@ -1785,12 +1785,12 @@ Ltac vm_frame2 H :=
     moves a mapping.  read(2), write(2), readv(2), writev(2), sendto and
     recvfrom all reach these acceptors, so their frames are proved once
     here and [vm_stream] hands them to each caller. *)
-Lemma check_stream_read_empty_frame : forall id side st nonblock eff m m' evs,
-  check_stream_read_empty id side st nonblock eff m = CheckOk m' evs ->
+Lemma check_stream_read_empty_frame : forall fd id side st nonblock eff m m' evs,
+  check_stream_read_empty fd id side st nonblock eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros id side st nonblock eff m m' evs H.
-  unfold check_stream_read_empty in H. vm_frame2 H.
+  intros fd id side st nonblock eff m m' evs H.
+  unfold check_stream_read_empty, check_stream_read_reset in H. vm_frame2 H.
 Qed.
 
 Lemma check_stream_read_frame :
@@ -1799,7 +1799,7 @@ Lemma check_stream_read_frame :
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros fd id side st nonblock buf count i eff m m' evs H.
-  unfold check_stream_read, check_stream_read_empty in H.
+  unfold check_stream_read, check_stream_read_empty, check_stream_read_reset in H.
   cbv beta zeta in H. vm_frame2 H.
 Qed.
 

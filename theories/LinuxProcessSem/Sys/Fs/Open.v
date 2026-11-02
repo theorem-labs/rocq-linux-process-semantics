@@ -1669,8 +1669,10 @@ Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     that this arm stays "the entry goes and nothing else moves", which
     published proofs rely on (theories/Common/FileSim.v [tfo_close]).
     The survivor reads its peer's close off the table instead
-    ([State.stream_peer] is [None]); [State.StreamEnd]'s note says which
-    answers that gives and which two decline. *)
+    ([State.stream_peer] is [None]), and the error the close may have
+    left is chosen by the survivor's first call that shows it and kept
+    in the survivor's own entry ([State.se_reset]); [State.StreamEnd]'s
+    note says how. *)
 Definition close_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with

@@ -383,7 +383,7 @@ Proof. vm_compute. reflexivity. Qed.
     nothing.  Both ends block and neither is shut down; the buffer sizes
     are [State.default_kernel]'s, and nothing below reads them. *)
 Definition close_pair_end (rx : list byte) : StreamEnd :=
-  mkStreamEnd rx false 212992%Z 212992%Z false false.
+  mkStreamEnd rx false 212992%Z 212992%Z false false RsUnknown.
 
 Definition close_pair_model : Model :=
   mkModel [(0, FdChannel 0); (1, FdChannel 1);

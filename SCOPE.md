@@ -383,14 +383,18 @@ not apply.
   wait for room, are declined: on Linux such a call never returns,
   because the only task that could act on the peer is the one that
   waits. A program that reaches either is outside the model. After one
-  end is closed, a read of the other end's empty queue is declined too
-  (Linux gives end of file, or first one `-ECONNRESET` when the closed
-  end left bytes unread). The model's `close` does not record which of
-  the two the closed end left, because a `close` that changed another
-  descriptor's entry would make false the published lemmas that say a
-  `close` only removes its own entry (`theories/Common/FileSim.v`,
-  `tfo_close`). For the same reason `ppoll` on that end answers with
-  `POLLERR` set or clear (see "Known gaps in precision").
+  end is closed, Linux answers the other end's empty read with end of
+  file, or first with one `-ECONNRESET` when the closed end left bytes
+  unread, and `ppoll` on that end shows `POLLERR` while that error is
+  pending. The model's `close` does not record which of the two the
+  closed end left, because a `close` that changed another descriptor's
+  entry would make false the published lemmas that say a `close` only
+  removes its own entry (`theories/Common/FileSim.v`, `tfo_close`). The
+  open end's first call that shows the error chooses instead, and the
+  end keeps to that choice (`State.se_reset`; see "Known gaps in
+  precision"). The empty read is the only call that consumes the error
+  in the model, because `getsockopt(SO_ERROR)`, which also consumes it
+  in Linux, is declined on a pair end.
 - The `net.core` sysctls `wmem_default`, `rmem_default`, `wmem_max` and
   `rmem_max` do not change while the program runs. The model reads them
   from `State.KernelBuild`, which a launch states once; statements
@@ -620,13 +624,20 @@ equivalence) can be true of the model and false of Linux.
   writable, and Linux gives the one that truesize decides. The choice is
   made once for each end in a call, so two `ppoll` entries for one end
   get the same answer, as in Linux.
-- **`POLLERR` after the peer of a stream pair closed.** `ppoll` on the
-  open end admits the answer with `POLLERR` and the answer without it.
-  Linux sets `sk_err` on the open end when the closing end left bytes
-  unread (`unix_release_sock`, `net/unix/af_unix.c`), and a later call
-  that returns the error clears it. The model does not record either
-  (see the stream-pair bullet in "Assumptions that the model does not
-  check").
+- **The open end's error after the peer of a stream pair closed.** Linux
+  sets `sk_err` to `ECONNRESET` on the open end when the closing end
+  left bytes unread (`unix_release_sock`, `net/unix/af_unix.c`). The
+  first empty read returns it and clears it, and `ppoll` shows `POLLERR`
+  while it is set. The model does not say which answer Linux gives,
+  only that it gives one and keeps to it: the open end's first call
+  that shows the error (an empty `read`, `readv` or `recvfrom`, or a
+  `ppoll` that names the end) admits both answers, and records the
+  answer that it gave in the end (`State.se_reset`). After that, every
+  call on the end answers from the record: one `-ECONNRESET` at most,
+  then end of file, and `POLLERR` set only until that `-ECONNRESET`.
+  `pselect6` has one answer on that end and records nothing. A proof
+  about such a run must cover both branches
+  (`theories/LinuxProcessSem/Checks/StreamReset.v`).
 - **The remaining time of `pselect6` and `ppoll`.** When a call with a
   real timeout returns before the timeout runs out, Linux writes the
   time left to `*tsp` (`poll_select_finish`, `fs/select.c`). The model
