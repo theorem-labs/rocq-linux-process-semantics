@@ -94,7 +94,7 @@
 
 From Stdlib Require Import ZArith NArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase MemImageType RiscvSemantics Fs State Run.
+  BvBase MemImageType RiscvSemantics Fs State StackLayout Run.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Examples.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import
   Equivalence MustExit Classifier.

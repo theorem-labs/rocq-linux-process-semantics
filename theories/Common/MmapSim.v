@@ -1820,7 +1820,7 @@ Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bf cf bs cs Hte Hbf Hbs Hr.
   cbn [omni_run]. unfold init_config.
   exact (tmw_exec (run_segments segs inp sp mb) _ _ bf cf bs cs Hte Hbf Hbs eq_refl eq_refl
-           (init_model_fd1chan (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp _ lim inp
+           (init_model_fd1chan (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp (ed_top rnd) lim inp
               Hr)).
 Qed.
 
