@@ -28,18 +28,21 @@ Local Definition openat_core_witness (dirfd pathp flags : word)
            else match proc_open_target (m_fds m) dirfd p with
            | Some c =>
                (* a procfs name: the errno alternative ([Syscall.errno_any]
-                  admits ENOMEM) on the two shapes [Open.openat_proc_spec]
+                  admits ENOMEM) on the three shapes [Open.openat_proc_spec]
                   answers, the decline on the rest *)
                if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                then ret_outcome (errno_ret ENOMEM) m
                else if Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
                        && proc_sys_file_b c
                then ret_outcome (errno_ret ENOMEM) m
+               else if procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                       && path_eqb c proc_self_fd_path
+               then ret_outcome (errno_ret ENOMEM) m
                else Unmodeled
            | None =>
            if negb (bv_eqb dirfd AT_FDCWD32) then Unmodeled         (* unmodeled dirfd *)
-           (* an O_PATH word off procfs: declined *)
-           else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+           (* an O_PATH or O_NOCTTY word off procfs: declined *)
+           else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
            then Unmodeled
            (* a pathname with a separator, declined before any flag is
               looked at — see [Open.openat_resolved_spec]'s guard —
@@ -217,10 +220,15 @@ Proof.
       { apply alt_l. eapply bind_step.
         { unfold errno_any. apply (choose_ok _ ENOMEM). unfold ENOMEM, EINTR. lia. }
         apply pure_ok. }
+      destruct (procfd_dir_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+                && path_eqb c proc_self_fd_path).
+      { apply alt_l. eapply bind_step.
+        { unfold errno_any. apply (choose_ok _ ENOMEM). unfold ENOMEM, EINTR. lia. }
+        apply pure_ok. }
       apply unmodeled_intro. }
     destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd.
     { apply unmodeled_intro. }
-    destruct (open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)) eqn:Hop.
+    destruct (open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)) eqn:Hop.
     { apply unmodeled_intro. }
     unfold openat_resolved_spec.
     destruct (path_has_slash p) eqn:Huw.

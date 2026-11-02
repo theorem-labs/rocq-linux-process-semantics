@@ -47,7 +47,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
   Prelude Uaccess VaSize MmapBase Hwcap Brk LinuxOnly EntryLaunch EntryWitness
   Fs.File Fs.ReadWrite Fs.Open Fs.Stat Fs.Sync Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe Fs.EventFd
-  Fs.EventPoll
+  Fs.EventPoll Fs.Signalfd
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Mm.PlacementHoles
   Kernel.Capability
   Kernel.Fork Kernel.Futex.Syscalls
@@ -1117,7 +1117,7 @@ Example the_random_clause_is_what_the_fixture_carries :
         (mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups
                           net_silent default_nofile (Z_to_bv 64 0) demo_hwcap
                           false Sv48 IEof [] default_kernel default_execfn
-                          true true false (Z_to_bv 64 0) (Z_to_bv 64 0)).
+                          true true false).
 Proof.
   split.
   - valid_urandom_default.
