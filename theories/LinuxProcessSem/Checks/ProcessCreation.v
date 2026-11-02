@@ -890,7 +890,7 @@ Lemma unmodeled_at_syscall : forall ms model x8,
   unmodeled_at segs (mkCfg ms model).
 Proof.
   intros ms model x8 Hh Hsvc Hspec.
-  split; [exact Hh|]. right. exists x8. split; assumption.
+  split; [exact Hh|]. right; right. exists x8. split; assumption.
 Qed.
 
 (** …and what that costs a source binary: reaching such a configuration

@@ -36,7 +36,7 @@
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From Stdlib Require Import FunctionalExtensionality.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence MustExit OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
 From LinuxProcessSemantics.Common Require Import SimInv.
 
 Import ListNotations.
@@ -242,6 +242,18 @@ Proof.
       rewrite (mi_account_step_no_lazy segs ms model Hlazy) in H;
       rewrite Hstep in H; discriminate end.
   - (* sstep_instr_unmodeled *)
+    match goal with H : mi_account_step segs ms model = MachineUnmodeled |- _ =>
+      rewrite (mi_account_step_no_lazy segs ms model Hlazy) in H;
+      rewrite Hstep in H; discriminate end.
+  - (* sstep_vdso_call: its first premise is the same [MachineUnmodeled] *)
+    match goal with H : mi_account_step segs ms model = MachineUnmodeled |- _ =>
+      rewrite (mi_account_step_no_lazy segs ms model Hlazy) in H;
+      rewrite Hstep in H; discriminate end.
+  - (* sstep_vdso_materialization_fault *)
+    match goal with H : mi_account_step segs ms model = MachineUnmodeled |- _ =>
+      rewrite (mi_account_step_no_lazy segs ms model Hlazy) in H;
+      rewrite Hstep in H; discriminate end.
+  - (* sstep_vdso_unmodeled *)
     match goal with H : mi_account_step segs ms model = MachineUnmodeled |- _ =>
       rewrite (mi_account_step_no_lazy segs ms model Hlazy) in H;
       rewrite Hstep in H; discriminate end.
@@ -680,21 +692,22 @@ Qed.
 
 (** The run-level omni judgment of an exit-only binary. *)
 Lemma exit_omni_run : forall segs pc ph sp brk0 mb rnd lim code inp F,
-  sim_c segs code F (init_machine_state segs pc ph sp mb rnd inp) = true ->
+  sim_c (run_segments segs inp sp mb) code F (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) = true ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
     (exit_post code (in_fs inp)).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim code inp F Hsim.
   cbn [omni_run]. unfold init_config.
-  exact (to_exit_exec segs code
-           (init_machine_state segs pc ph sp mb rnd inp)
-           (init_model (segments_reserved segs) brk0 mb sp lim inp)
-           eq_refl eq_refl (sim_c_to_exit segs code F _ Hsim)).
+  exact (to_exit_exec (run_segments segs inp sp mb) code
+           (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp)
+           (with_vdso (vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mb)) brk0 mb sp lim inp))
+           eq_refl eq_refl (sim_c_to_exit (run_segments segs inp sp mb) code F _ Hsim)).
 Qed.
 
 Lemma exit_obs_iff : forall segs pc ph sp brk0 mb rnd lim code inp F,
-  sim_c segs code F (init_machine_state segs pc ph sp mb rnd inp) = true ->
-  forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
+  sim_c (run_segments segs inp sp mb) code F (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) = true ->
+  forall tr, obs_trace (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
              <-> is_prefix tr [ExitEv (bv_and code (Z_to_bv 64 255)) (in_fs inp)].
 Proof.
   intros segs pc ph sp brk0 mb rnd lim code inp F Hsim tr.
@@ -704,8 +717,8 @@ Proof.
 Qed.
 
 Lemma exit_no_error_run : forall segs pc ph sp brk0 mb rnd lim code inp F,
-  sim_c segs code F (init_machine_state segs pc ph sp mb rnd inp) = true ->
-  ~ reaches_error segs (init_config segs pc ph sp brk0 mb rnd lim inp).
+  sim_c (run_segments segs inp sp mb) code F (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) = true ->
+  ~ reaches_error (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim code inp F Hsim. apply exec_no_error.
   eapply exec_conseq; [exact (exit_omni_run segs pc ph sp brk0 mb rnd lim code inp F Hsim) |].
@@ -715,7 +728,7 @@ Qed.
 (** The code half of [exit_post], consumed and pinned: the run satisfies
     [MustExit.must_exit_with] at the masked code, and at no other. *)
 Lemma exit_must_exit_with : forall segs pc ph sp brk0 mb rnd lim code inp F,
-  sim_c segs code F (init_machine_state segs pc ph sp mb rnd inp) = true ->
+  sim_c (run_segments segs inp sp mb) code F (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) = true ->
   must_exit_with (bv_and code (Z_to_bv 64 255)) (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp.
 Proof.
   intros segs pc ph sp brk0 mb rnd lim code inp F Hsim. apply must_exit_with_iff.
@@ -724,7 +737,7 @@ Proof.
 Qed.
 
 Lemma exit_omni_run_code_unique : forall segs pc ph sp brk0 mb rnd lim code inp F code',
-  sim_c segs code F (init_machine_state segs pc ph sp mb rnd inp) = true ->
+  sim_c (run_segments segs inp sp mb) code F (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) = true ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp (exits_with code') ->
   code' = bv_and code (Z_to_bv 64 255).
 Proof.
@@ -744,17 +757,17 @@ Qed.
     target's error-freedom are [exit_omni_run] weakened. *)
 Lemma exit_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd code inp FR FA,
-  sim_c source_segs code FR
-    (init_machine_state source_segs rpc rph rsp rmb rrnd inp) = true ->
-  sim_c target_segs code FA
-    (init_machine_state target_segs apc aph asp amb arnd inp) = true ->
+  sim_c (run_segments source_segs inp rsp rmb) code FR
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp) = true ->
+  sim_c (run_segments target_segs inp asp amb) code FA
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp) = true ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
 Proof.
   intros source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd code inp FR FA
     Hsource Htarget.
   split.
-  { cbn [img_segments].
+  { cbn [image_run_segments img_segments en_sp en_mmap_base].
     eapply coexec_conseq;
       [apply exec_coexec;
        exact (exit_omni_run source_segs rpc rph rsp rbrk rmb rrnd source_alloc_limit code inp FR Hsource) |].
@@ -773,10 +786,10 @@ Qed.
     the same exit code. *)
 Lemma exit_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim code inp FR FA,
-  sim_c source_segs code FR
-    (init_machine_state source_segs rpc rph rsp rmb rrnd inp) = true ->
-  sim_c target_segs code FA
-    (init_machine_state target_segs apc aph asp amb arnd inp) = true ->
+  sim_c (run_segments source_segs inp rsp rmb) code FR
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp) = true ->
+  sim_c (run_segments target_segs inp asp amb) code FA
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp) = true ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
                        (run (mkImage target_segs apc aph) alim (mkEntry asp abrk amb arnd) inp).

@@ -27,7 +27,7 @@
 
 From Stdlib Require Import NArith ZArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
+From LinuxProcessSemantics.LinuxProcessSem Require Import RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run.
 From LinuxProcessSemantics.Common Require Import ExitSim PropExec CatSim ErrEscape FileSim.
 Import ListNotations.
 Open Scope bv_scope.
@@ -89,7 +89,7 @@ End WithSegs.
 (** Equivalence-level escape: every source execution must error. *)
 Lemma err_escape_run :
   forall segs pc ph sp brk0 mb rnd lim inp (target : behavior),
-  all_traces_error segs (init_config segs pc ph sp brk0 mb rnd lim inp) ->
+  all_traces_error (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) ->
   Equivalence.equiv (run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp) target.
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp target Hall.

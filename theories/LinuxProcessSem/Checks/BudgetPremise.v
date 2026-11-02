@@ -1122,6 +1122,12 @@ Proof.
   | [ H : ?f i m (Ok eff m' ?e) |- _ ] => revert H
   end.
   revert Hmark.
+  (* The vDSO pair's gate comes first and answers [unmodeled], so the
+     mark is [false] there. *)
+  destruct (negb (region_free (vdso_reserved (m_kernel m) (vdso_top (m_vmmaps m)))
+                    (in_arg i 0)
+                    (Z_to_bv 64 (page_round_up_Z (bv_unsigned (in_arg i 1))))));
+    [intros Hmark _; discriminate Hmark |].
   destruct (map_contains (vm_noaccess (m_vmmaps m)) (in_arg i 0)
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned (in_arg i 1))))
             && map_contains (vm_maps (m_vmmaps m)) (in_arg i 0)
@@ -1150,7 +1156,8 @@ Definition touch_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x"%string;
-  seg_bytes := ["23300500"%pstring]
+  seg_bytes := ["23300500"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition touch_segments : list Segment := [touch_segment].
 Definition touch_page : Z := 0x10000%Z.
@@ -1232,10 +1239,10 @@ Qed.
     and takes the same [SError] transition, and the mark is false on it
     at every budget. *)
 Example ebreak_fault_is_not_budget_refused : forall lim,
-  ~ budget_refused_at ebreak_segments (mkCfg ebreak_ms (ebreak_model lim)).
+  ~ budget_refused_at ebreak_rsegs (mkCfg ebreak_ms (ebreak_model lim)).
 Proof.
   intros lim (_ & [(_ & r & E & _) | (x8 & Hx8 & _)]); cbn [cfg_ms cfg_model] in *.
-  - pose proof (drop_step_accesses ebreak_segments ebreak_ms) as Hd.
+  - pose proof (drop_step_accesses ebreak_rsegs ebreak_ms) as Hd.
     rewrite E, ebreak_faults in Hd. discriminate Hd.
   - assert (Hnone : ms_svc_pending ebreak_ms = None) by reflexivity.
     congruence.
@@ -1457,7 +1464,8 @@ Definition mm_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 24;
   seg_perms := "r-x"%string;
-  seg_bytes := ["9308e00db725000013063000930620021307f0ff73000000"%pstring]
+  seg_bytes := ["9308e00db725000013063000930620021307f0ff73000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition mm_segments : list Segment := [mm_segment].
 Definition mm_image : Image := mkImage mm_segments 0x100 demo_phdrs.
@@ -1467,39 +1475,45 @@ Definition mm_budget : Z := page_size.
 (** The placement is [Checks.Examples.demo_entry]'s own, read off its
     fields rather than written out: the entry is now
     [Run.launch_entry_va] at this input, so its stack pointer, break,
-    mmap base and draw are the fixture's to move. *)
+    mmap base and draw are the fixture's to move.  The run reads the
+    image's segment followed by the vDSO pair ([Run.run_segments]); no
+    step here reaches the pair. *)
+Abbreviation mm_rsegs :=
+  (run_segments mm_segments demo_proc_input (en_sp demo_entry) (en_mmap_base demo_entry)).
+
 Definition mm_ms0 : machine_state :=
-  init_machine_state mm_segments 0x100 demo_phdrs (en_sp demo_entry)
+  init_machine_state mm_rsegs 0x100 demo_phdrs (en_sp demo_entry)
     (en_mmap_base demo_entry) (en_draw demo_entry) demo_proc_input.
 Definition mm_msk (k : nat) : machine_state :=
-  match run_steps k mm_segments mm_ms0 with
+  match run_steps k mm_rsegs mm_ms0 with
   | Some ms => ms
   | None => mm_ms0
   end.
 Definition mm_s (k : nat) : machine_state := with_mem (mm_msk k) (ms_mem mm_ms0).
 
 Definition mm_model : Model :=
-  init_model (segments_reserved mm_segments) (en_brk demo_entry)
-    (en_mmap_base demo_entry) (en_sp demo_entry) mm_budget demo_proc_input.
+  with_vdso (Vdso.vdso_run_init (ed_vdso (en_draw demo_entry)))
+    (init_model (segments_reserved mm_rsegs) (en_brk demo_entry)
+       (en_mmap_base demo_entry) (en_sp demo_entry) mm_budget demo_proc_input).
 Definition mm_c : config := mkCfg (mm_s 0) mm_model.
 
 Lemma mm_config :
-  init_config mm_segments 0x100 demo_phdrs (en_sp demo_entry)
+  init_config mm_rsegs 0x100 demo_phdrs (en_sp demo_entry)
     (en_brk demo_entry) (en_mmap_base demo_entry) (en_draw demo_entry)
     mm_budget demo_proc_input
   = mm_c.
 Proof. unfold init_config, mm_c. f_equal; try exact (with_mem_eta mm_ms0). Qed.
 
 Lemma mm_step : forall k, (k < 6)%nat -> forall mem,
-  RiscvSemantics.step mm_segments (with_mem (mm_msk k) mem)
+  RiscvSemantics.step mm_rsegs (with_mem (mm_msk k) mem)
   = MachineOk (with_mem (mm_msk (S k)) mem).
 Proof.
-  intros k Hk mem.
+  intros k Hk mem. unfold mm_msk, mm_ms0, run_segments. abstract_vdso.
   do 6 (destruct k as [| k]; [vm_compute; reflexivity |]). lia.
 Qed.
 
 Lemma mm_instr_sstep : forall k, (k < 6)%nat ->
-  sstep mm_segments (mkCfg (mm_s k) mm_model) []
+  sstep mm_rsegs (mkCfg (mm_s k) mm_model) []
     (SNext (mkCfg (mm_s (S k)) mm_model)).
 Proof.
   intros k Hk. unfold mm_s.
@@ -1511,7 +1525,7 @@ Qed.
 Lemma mm_svc6 : ms_svc_pending (mm_s 6) = Some (Z_to_bv 64 222).
 Proof. vm_compute. first [reflexivity | f_equal; apply bv_eq; reflexivity]. Qed.
 
-Lemma mm_star : star mm_segments mm_c [] (mkCfg (mm_s 6) mm_model).
+Lemma mm_star : star mm_rsegs mm_c [] (mkCfg (mm_s 6) mm_model).
 Proof.
   change (@nil event) with ((@nil event) ++ ((@nil event) ++ ((@nil event) ++ ((@nil event) ++ ((@nil event) ++ ((@nil event) ++ (@nil event))))))).
   unfold mm_c.
@@ -1526,7 +1540,7 @@ Qed.
 
 (** At the ecall the mark fires: the grant clause, by computation. *)
 Lemma mm_ecall_is_budget_refused :
-  budget_refused_at mm_segments (mkCfg (mm_s 6) mm_model).
+  budget_refused_at mm_rsegs (mkCfg (mm_s 6) mm_model).
 Proof.
   split; [reflexivity |]. right.
   exists (Z_to_bv 64 222). split; [exact mm_svc6 |]. left.
@@ -1537,7 +1551,7 @@ Theorem mm_run_budget_refused :
   run_budget_refused mm_image mm_budget demo_entry demo_proc_input.
 Proof.
   unfold run_budget_refused, mm_image.
-  rewrite (entry_eta demo_entry). cbn beta iota.
+  rewrite (entry_eta demo_entry). cbn beta iota zeta.
   rewrite mm_config.
   eapply reaches_budget_refused_star; [exact mm_star |].
   apply reaches_budget_refused_intro. exact mm_ecall_is_budget_refused.
@@ -1635,37 +1649,43 @@ Proof. apply strong_universal_error_free_T_budgets_of_pinned. Qed.
     realises the exit through [Checks.SpuriousCfg.exits_c_must_exit_at_cfg]
     and [MustExit.must_exit_at_cfg_realizes]. *)
 Lemma exit0_must_exit_at_cfg : forall cfg sp brk0 mbase rnd lim inp,
-  must_exit_at_cfg cfg exit0_segments verdict_accept
-    (init_config exit0_segments 0x100 demo_phdrs sp brk0 mbase rnd lim inp).
+  must_exit_at_cfg cfg (run_segments exit0_segments inp sp mbase) verdict_accept
+    (init_config (run_segments exit0_segments inp sp mbase) 0x100 demo_phdrs sp brk0 mbase
+       rnd lim inp).
 Proof.
   intros. unfold init_config.
   apply (exits_c_must_exit_at_cfg _ _ _ 8); [reflexivity | reflexivity | apply exit0_exits_c].
 Qed.
 
 Lemma exit0_obs_cfg : forall cfg sp brk0 mbase rnd lim inp tr,
-  obs_trace_cfg exit0_segments cfg
-    (init_config exit0_segments 0x100 demo_phdrs sp brk0 mbase rnd lim inp) tr
+  obs_trace_cfg (run_segments exit0_segments inp sp mbase) cfg
+    (init_config (run_segments exit0_segments inp sp mbase) 0x100 demo_phdrs sp brk0 mbase
+       rnd lim inp) tr
   <-> is_prefix tr [ExitEv verdict_accept (in_fs inp)].
 Proof.
   intros cfg sp brk0 mbase rnd lim inp tr. split.
   - intros H.
-    exact (proj1 (exit0_obs _ _ _ _ _ _ _) (obs_trace_cfg_sub exit0_segments cfg _ _ H)).
+    exact (proj1 (exit0_obs _ _ _ _ _ _ _)
+             (obs_trace_cfg_sub (run_segments exit0_segments inp sp mbase) cfg _ _ H)).
   - intros Hp.
     destruct (must_exit_at_cfg_realizes _ _ _ _
                 (exit0_must_exit_at_cfg cfg sp brk0 mbase rnd lim inp) eq_refl)
       as (tr0 & fs & c' & Hstar & _).
-    assert (Hfull : obs_trace_cfg exit0_segments cfg
-                      (init_config exit0_segments 0x100 demo_phdrs sp brk0 mbase rnd lim inp)
+    assert (Hfull : obs_trace_cfg (run_segments exit0_segments inp sp mbase) cfg
+                      (init_config (run_segments exit0_segments inp sp mbase) 0x100 demo_phdrs
+                         sp brk0 mbase rnd lim inp)
                       (tr0 ++ [ExitEv verdict_accept fs])).
     { exists (tr0 ++ [ExitEv verdict_accept fs]), c'.
       split; [exact Hstar | apply is_prefix_refl]. }
     pose proof (proj1 (exit0_obs _ _ _ _ _ _ _)
-                  (obs_trace_cfg_sub exit0_segments cfg _ _ Hfull)) as Hpre.
+                  (obs_trace_cfg_sub (run_segments exit0_segments inp sp mbase) cfg _ _ Hfull))
+      as Hpre.
     clear Hfull. rename Hpre into Hfull.
     destruct tr0 as [| e tr0'].
     + cbn in Hfull. destruct Hfull as [Heq _]. injection Heq as Hfs. subst fs.
       destruct tr as [| e tr'].
-      * exists [], (init_config exit0_segments 0x100 demo_phdrs sp brk0 mbase rnd lim inp).
+      * exists [], (init_config (run_segments exit0_segments inp sp mbase) 0x100 demo_phdrs
+                      sp brk0 mbase rnd lim inp).
         split; [apply star_cfg_refl | exact I].
       * destruct Hp as [-> Hp']. destruct tr' as [| e' tr'']; [| destruct Hp'].
         exists [ExitEv verdict_accept (in_fs inp)], c'.
@@ -1840,7 +1860,7 @@ Lemma ebreak_source_within_budget : forall lim,
   source_within_budget lim ebreak_image demo_entry demo_proc_input.
 Proof.
   intros lim. unfold source_within_budget, run_budget_refused, ebreak_image.
-  rewrite (entry_eta demo_entry). cbn beta iota. rewrite ebreak_config.
+  rewrite (entry_eta demo_entry). cbn beta iota zeta. rewrite ebreak_config.
   intros (tr & c & Hstar & Hb).
   inversion Hstar as [c0 Heq | c1 evs c2 tr' c3 Hss Hstar']; subst.
   - exact (ebreak_fault_is_not_budget_refused lim Hb).
@@ -1851,7 +1871,7 @@ Lemma ebreak_errors : forall lim,
   bh_errors (run ebreak_image lim demo_entry demo_proc_input).
 Proof.
   intros lim. unfold run, ebreak_image.
-  rewrite (entry_eta demo_entry). cbn beta iota delta [bh_errors].
+  rewrite (entry_eta demo_entry). cbn beta iota zeta delta [bh_errors].
   rewrite ebreak_config.
   exists [], (mkCfg ebreak_ms (ebreak_model lim)), []. split; [apply star_refl |].
   apply sstep_instr_fault; [reflexivity | reflexivity |].
@@ -1862,7 +1882,7 @@ Lemma ebreak_errors_cfg : forall cfg lim,
   bh_errors (run_scfg cfg ebreak_image lim demo_entry demo_proc_input).
 Proof.
   intros cfg lim. unfold run_scfg, ebreak_image.
-  rewrite (entry_eta demo_entry). cbn beta iota delta [bh_errors].
+  rewrite (entry_eta demo_entry). cbn beta iota zeta delta [bh_errors].
   rewrite ebreak_config.
   exists [], (mkCfg ebreak_ms (ebreak_model lim)), []. split; [apply star_cfg_refl |].
   apply sstep_cfg_instr_fault; [reflexivity | reflexivity |].
@@ -1981,27 +2001,31 @@ End Exit0ScfgBudgetsAbortBaselineChecked.
     flag. *)
 Definition abrt_entry : ExecEntry := demo_entry_of abrt_input.
 
+Abbreviation ebreak_rsegs_abort :=
+  (run_segments ebreak_segments abrt_input (en_sp abrt_entry) (en_mmap_base abrt_entry)).
+
 Definition ebreak_ms_abort : machine_state :=
-  init_machine_state ebreak_segments 0x100 demo_phdrs (en_sp abrt_entry)
+  init_machine_state ebreak_rsegs_abort 0x100 demo_phdrs (en_sp abrt_entry)
     (en_mmap_base abrt_entry) (en_draw abrt_entry) abrt_input.
 
 Lemma ebreak_faults_abort :
-  RiscvSemantics.step ebreak_segments ebreak_ms_abort = MachineFault.
-Proof. vm_compute. reflexivity. Qed.
+  RiscvSemantics.step ebreak_rsegs_abort ebreak_ms_abort = MachineFault.
+Proof. unfold ebreak_ms_abort, run_segments. vm_compute. reflexivity. Qed.
 
 Definition ebreak_model_abort (lim : Z) : Model :=
-  init_model (segments_reserved ebreak_segments) (en_brk abrt_entry)
-    (en_mmap_base abrt_entry) (en_sp abrt_entry) lim abrt_input.
+  with_vdso (Vdso.vdso_run_init (ed_vdso (en_draw abrt_entry)))
+    (init_model (segments_reserved ebreak_rsegs_abort) (en_brk abrt_entry)
+       (en_mmap_base abrt_entry) (en_sp abrt_entry) lim abrt_input).
 
 Lemma ebreak_config_abort : forall lim,
-  init_config ebreak_segments 0x100 demo_phdrs (en_sp abrt_entry)
+  init_config ebreak_rsegs_abort 0x100 demo_phdrs (en_sp abrt_entry)
     (en_brk abrt_entry) (en_mmap_base abrt_entry) (en_draw abrt_entry)
     lim abrt_input
   = mkCfg ebreak_ms_abort (ebreak_model_abort lim).
 Proof. reflexivity. Qed.
 
 Lemma ebreak_only_abort : forall lim evs st,
-  sstep ebreak_segments (mkCfg ebreak_ms_abort (ebreak_model_abort lim)) evs st ->
+  sstep ebreak_rsegs_abort (mkCfg ebreak_ms_abort (ebreak_model_abort lim)) evs st ->
   evs = [] /\ st = SError.
 Proof.
   intros lim. apply sstep_fault_only;
@@ -2013,10 +2037,10 @@ Qed.
 (** The fault is not a budget refusal whatever the model beside it:
     [ebreak_fault_is_not_budget_refused] generalised. *)
 Lemma ebreak_fault_is_not_budget_refused_any : forall model,
-  ~ budget_refused_at ebreak_segments (mkCfg ebreak_ms_abort model).
+  ~ budget_refused_at ebreak_rsegs_abort (mkCfg ebreak_ms_abort model).
 Proof.
   intros model (_ & [(_ & r & E & _) | (x8 & Hx8 & _)]); cbn [cfg_ms cfg_model] in *.
-  - pose proof (drop_step_accesses ebreak_segments ebreak_ms_abort) as Hd.
+  - pose proof (drop_step_accesses ebreak_rsegs_abort ebreak_ms_abort) as Hd.
     rewrite E, ebreak_faults_abort in Hd. discriminate Hd.
   - assert (Hnone : ms_svc_pending ebreak_ms_abort = None)
       by (vm_compute; reflexivity).
@@ -2035,7 +2059,7 @@ Lemma ebreak_source_within_budget_abort : forall lim,
   source_within_budget lim ebreak_image abrt_entry abrt_input.
 Proof.
   intros lim. unfold source_within_budget, run_budget_refused, ebreak_image.
-  rewrite (entry_eta abrt_entry). cbn beta iota. rewrite ebreak_config_abort.
+  rewrite (entry_eta abrt_entry). cbn beta iota zeta. rewrite ebreak_config_abort.
   intros (tr & c & Hstar & Hb).
   inversion Hstar as [c0 Heq | c1 evs c2 tr' c3 Hss Hstar']; subst.
   - exact (ebreak_fault_is_not_budget_refused_any _ Hb).
@@ -2046,7 +2070,7 @@ Lemma ebreak_errors_cfg_abort : forall cfg lim,
   bh_errors (run_scfg cfg ebreak_image lim abrt_entry abrt_input).
 Proof.
   intros cfg lim. unfold run_scfg, ebreak_image.
-  rewrite (entry_eta abrt_entry). cbn beta iota delta [bh_errors].
+  rewrite (entry_eta abrt_entry). cbn beta iota zeta delta [bh_errors].
   rewrite ebreak_config_abort.
   exists [], (mkCfg ebreak_ms_abort (ebreak_model_abort lim)), [].
   split; [apply star_cfg_refl |].

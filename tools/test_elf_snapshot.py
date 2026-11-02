@@ -418,7 +418,15 @@ def main():
         assert "As MemImage_seg_bytes_000." in v_text
         assert "MemImage_seg_dep_000_000" not in v_text
         assert "MemImage_seg_bytes_000_000" not in v_text
-        assert "seg_bytes := [MemImage_seg_bytes_000]" in v_text
+        assert "seg_bytes := [MemImage_seg_bytes_000];" in v_text
+        # Every emitted segment is the LOADER's.  The kernel's own vDSO
+        # and vvar mappings are built by Run.vdso_segments and are never
+        # snapshotted, so a snapshot that claimed another kind would be
+        # a defect (MemImageType.SegKind).
+        kinds = re.findall(r"seg_kind  := (\w+)", v_text)
+        assert kinds == ["SegLoader"] * len(want_perms_list), (
+            "emitted seg_kind %r != all SegLoader" % (kinds,)
+        )
         # Each perms string must sit inside its own segment Definition,
         # matched to the right base address.
         for i, (_fl, want_perms, vaddr, _c, _m) in enumerate(SEG_SPECS):
@@ -725,7 +733,7 @@ def main():
             big_v = f.read()
         assert big_v.count("Definition BigImage_segment_000 : Segment") == 1
         assert "seg_bytes := [BigImage_seg_bytes_000_000; " \
-               "BigImage_seg_bytes_000_001]" in big_v
+               "BigImage_seg_bytes_000_001];" in big_v
         text_base, words, writable = read_text_words(
             big_out, "BigImage", text_range=(0x10000, 0x10008)
         )

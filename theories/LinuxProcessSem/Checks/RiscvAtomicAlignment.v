@@ -33,7 +33,8 @@ Definition atomic_code_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 24;
   seg_perms := "r-x";
-  seg_bytes := ["2fa505102fb505102fa5c5182fb5c5182fa5c5002fb5c500"%pstring]
+  seg_bytes := ["2fa505102fb505102fa5c5182fb5c5182fa5c5002fb5c500"%pstring];
+  seg_kind  := SegLoader
 |}.
 
 Definition atomic_segments : list Segment := [atomic_code_segment].
