@@ -118,13 +118,55 @@ Proof.
     apply alt_l. unfold err_ret, ret_only, ret_outcome. apply pure_ok.
 Qed.
 
+(** [ReadWrite.read_signalfd_spec]: the -EFAULT, the -EINVAL, the two
+    declines, and the -EAGAIN, which the spec admits wherever nothing can
+    be pending and beside the records on a wholly writable destination;
+    the count gate and a destination not wholly writable are the
+    decline. *)
+Definition read_signalfd_witness (mask flags buf count : word) (i : SyscallInput)
+    (m : Model) : outcome SyscallEffect :=
+  if negb (access_okb buf (bv_unsigned count)) then ret_outcome (errno_ret EFAULT) m
+  else if Z.eqb (signalfd_read_max count) 0 then ret_outcome (errno_ret EINVAL) m
+  else if negb (sfd_nonblock_b flags) then Unmodeled
+  else if signalfd_other_may_pend mask m then Unmodeled
+  else if negb (signalfd_sigchld_may_pend mask m) then ret_outcome (errno_ret EAGAIN) m
+  else if negb (modeled_rw_count count) then Unmodeled
+  else match read_bytes_map (in_wmem i) buf
+               (Z_to_bv 64 (SIGNALFD_SIGINFO_BYTES * signalfd_read_max count)) with
+       | Some _ => ret_outcome (errno_ret EAGAIN) m
+       | None => Unmodeled
+       end.
+
+Lemma read_signalfd_witness_ok : forall mask flags buf count i m,
+  read_signalfd_spec mask flags buf count i m
+    (read_signalfd_witness mask flags buf count i m).
+Proof.
+  intros. unfold read_signalfd_spec, read_signalfd_witness.
+  destruct (negb (access_okb buf (bv_unsigned count))); cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  destruct (Z.eqb (signalfd_read_max count) 0); cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  destruct (negb (sfd_nonblock_b flags)); cbv beta iota; [apply unmodeled_intro|].
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (signalfd_other_may_pend mask m); cbv beta iota; [apply unmodeled_intro|].
+  destruct (negb (signalfd_sigchld_may_pend mask m)); cbv beta iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  destruct (negb (modeled_rw_count count)); cbv beta iota; [apply unmodeled_intro|].
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  destruct (read_bytes_map (in_wmem i) buf
+              (Z_to_bv 64 (SIGNALFD_SIGINFO_BYTES * signalfd_read_max count)))
+    as [w|]; cbv beta iota; [|apply unmodeled_intro].
+  apply alt_l. unfold err_ret, ret_only, ret_outcome. apply pure_ok.
+Qed.
+
 (** [ReadWrite.read_opaque_spec]: one witness per object. *)
 Definition read_opaque_witness (o : OpaqueFd) (buf count : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   match o with
   | OProcFile _ => read_proc_witness buf count i m
   | OEventFd fl => read_eventfd_witness fl buf count i m
-  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => Unmodeled
+  | OSignalFd mk fl => read_signalfd_witness mk fl buf count i m
+  | OProcPath _ | ONsFile _ | OProcFdDir _ _ => Unmodeled
   end.
 
 Lemma read_opaque_witness_ok : forall o buf count i m,
@@ -133,7 +175,7 @@ Proof.
   intros. unfold read_opaque_spec, read_opaque_witness.
   destruct o; cbv beta iota;
     [ apply unmodeled_intro | apply read_proc_witness_ok | apply read_eventfd_witness_ok
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+    | apply unmodeled_intro | apply unmodeled_intro | apply read_signalfd_witness_ok ].
 Qed.
 
 (** [ReadWrite.write_eventfd_spec]: the -EFAULT, the -EINVAL, the failed

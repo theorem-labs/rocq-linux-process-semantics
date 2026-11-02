@@ -1784,7 +1784,8 @@ Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_read, check_read_urandom, check_socket_pending_error,
     check_access_ok_zero, check_read_opaque, check_read_proc,
-    check_read_proc_bare, check_read_eventfd, check_eventfd_deliver in H.
+    check_read_proc_bare, check_read_eventfd, check_eventfd_deliver,
+    check_read_signalfd, check_signalfd_deliver in H.
   cbv zeta in H. vm_frame2 H.
 Qed.
 

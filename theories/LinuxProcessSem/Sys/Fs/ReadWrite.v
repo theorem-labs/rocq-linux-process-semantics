@@ -14,6 +14,9 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Syscall Uapi Uaccess.
+(* [Fs.Signalfd]'s pending-signal questions and record shape, which the
+   signalfd read arm below answers from. *)
+From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Fs.Signalfd.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
@@ -605,6 +608,104 @@ Definition write_eventfd_spec (flags buf count : word) : Sys SyscallEffect :=
          else ret_only (Z_to_bv 64 8))
   end.
 
+(* =========================================================================
+   read (63) on a signalfd ([State.OSignalFd])
+   ========================================================================= *)
+
+(** Is the signalfd's file non-blocking?  [do_signalfd4] (fs/signalfd.c,
+    read at v6.18.44; identical at v6.18.46) makes the file with
+    [O_RDWR | (flags & O_NONBLOCK)], and [signalfd_read_iter] tests
+    [file->f_flags & O_NONBLOCK].  The word the descriptor holds is exact
+    for that bit: [Fcntl.fcntl_spec] declines F_SETFL on an opaque
+    descriptor, [Ioctl.ioctl_spec] declines FIONBIO, and [clone] and the
+    duplicating calls decline while a signalfd is open, so no other
+    holder of the open file exists to change it. *)
+Definition sfd_nonblock_b (flags : word) : bool :=
+  negb (Z.eqb (Z.land (bv_unsigned flags) SFD_NONBLOCK) 0).
+
+(** The records a successful read stores: between 1 and [kmax]
+    [struct signalfd_siginfo]s for SIGCHLD ([Signalfd.signalfd_records_b])
+    as one copy-out at [buf], and their length returned. *)
+Definition signalfd_deliver (buf : word) (kmax : Z) : Sys SyscallEffect :=
+  bs <- choose (fun bs : list byte => signalfd_records_b (Z.to_nat kmax) bs = true) ;;
+  pure (mkEffect (len_word bs) [(buf, bs)] []).
+
+(** [read fd buf count] on a signalfd made with [mask] and [flags].
+
+    KERNEL PATH, read at v6.18.44:
+      fs/read_write.c [ksys_read], [vfs_read], [rw_verify_area],
+        [new_sync_read]: read at v6.18.44; identical at v6.18.46.
+      fs/signalfd.c [signalfd_read_iter], [signalfd_dequeue],
+        [signalfd_copyinfo], [signalfd_fops]: read at v6.18.44; identical at v6.18.46.
+      include/linux/uio.h [copy_to_iter_full]: read at v6.18.44; identical at v6.18.46.
+
+    THE ORDER.  [vfs_read] tests FMODE_READ and FMODE_CAN_READ (both set:
+    the file is O_RDWR and [signalfd_fops] has [.read_iter]), then
+    [access_ok(buf, count)], whose -EFAULT is first here as in every read
+    arm; [rw_verify_area] passes ([f_pos] stays 0) and the count is
+    clamped to [MAX_RW_COUNT].  Then [signalfd_read_iter] divides the
+    count by the 128-byte record ([Signalfd.signalfd_read_max]) and
+    answers -EINVAL when no whole record fits; then it dequeues and
+    copies one record at a time, waiting for the first on a BLOCKING file
+    and answering -EAGAIN for it on a non-blocking one
+    ([signalfd_dequeue]), and returning what it copied.
+
+    A BLOCKING READ DECLINES, after the -EFAULT and -EINVAL that precede
+    any wait, for [read_eventfd_spec]'s reason: answering there would
+    claim the wait ends.  bubblewrap's monitor process makes its
+    signalfd with SFD_NONBLOCK.
+
+    WHAT CAN BE PENDING.  A signal the descriptor's mask selects, other
+    than SIGCHLD, that the process may hold pending
+    ([Signalfd.signalfd_other_may_pend]) DECLINES: the read would hand
+    it back, and the model does not say which record that is.  Then a
+    SIGCHLD can be pending only when [Signalfd.signalfd_sigchld_may_pend]
+    holds; where it does not, nothing is pending and the answer is
+    -EAGAIN alone.  Where it does, the read answers -EAGAIN or between 1
+    and [signalfd_read_max count] records whose [ssi_signo] is 17
+    ([Signalfd.signalfd_records_b]): whether the child has changed state
+    yet, and how often, is the environment's.  The read REMOVES what it
+    hands back, and the model holds no pending set to remove it from, so
+    a later read is admitted afresh; SCOPE.md lists that among the known
+    gaps in precision.
+
+    THE COUNT GATE IS [Uaccess.modeled_rw_count], as in
+    [read_proc_spec] and for its reason: the records are chosen rather
+    than read out of a list the model holds, so nothing else bounds the
+    range the writable test below walks.  At or below it the
+    [MAX_RW_COUNT] clamp is the identity.  A larger count declines where
+    a record could be returned.
+
+    THE DESTINATION.  [signalfd_copyinfo] copies each record with
+    [copy_to_iter_full], which leaves the bytes of a record it copied
+    short in place and answers -EFAULT after the signal was dequeued.
+    The arm answers only where that cannot happen: every byte the most
+    records the call can return would occupy writable.  Anything less is
+    declined; -EAGAIN stores nothing either way, so it needs no test. *)
+Definition read_signalfd_spec (mask flags buf count : word) : Sys SyscallEffect :=
+  if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+    (* [vfs_read]'s [access_ok] *)
+  else if Z.eqb (signalfd_read_max count) 0 then err_ret EINVAL
+    (* [signalfd_read_iter]'s [count /= sizeof(...); if (!count)] *)
+  else if negb (sfd_nonblock_b flags) then unmodeled
+    (* a blocking read may wait: see above *)
+  else
+  m <- get_model ;;
+  if signalfd_other_may_pend mask m then unmodeled
+    (* another signal may be pending: see above *)
+  else if negb (signalfd_sigchld_may_pend mask m) then err_ret EAGAIN
+    (* nothing the mask selects can be pending *)
+  else if negb (modeled_rw_count count) then unmodeled
+    (* see above: the count gate *)
+  else
+  i <- input ;;
+  match read_bytes_map (in_wmem i) buf
+          (Z_to_bv 64 (SIGNALFD_SIGINFO_BYTES * signalfd_read_max count)) with
+  | Some _ => alt (err_ret EAGAIN) (signalfd_deliver buf (signalfd_read_max count))
+  | None => unmodeled
+      (* a destination not wholly writable: see above *)
+  end.
+
 (** [read] on an opaque descriptor ([State.OpaqueFd]), one arm per
     object. *)
 Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffect :=
@@ -625,10 +726,8 @@ Definition read_opaque_spec (o : OpaqueFd) (buf count : word) : Sys SyscallEffec
          [generic_read_dir], -EISDIR after [vfs_read]'s -EFAULT
          (fs/proc/fd.c, fs/libfs.c, read at v6.18.44; identical at
          v6.18.46); no program in reach reads it, so it is not written *)
-  | OSignalFd _ _ => unmodeled
-      (* FAIL-CLOSED: [signalfd_read_iter] (fs/signalfd.c, read at
-         v6.18.44; identical at v6.18.46) answers from the pending
-         signals and their [siginfo], which this arm does not model *)
+  | OSignalFd mk fl => read_signalfd_spec mk fl buf count
+      (* a signalfd: see [read_signalfd_spec] *)
   end.
 
 (** [write] on an opaque descriptor ([State.OpaqueFd]): only the eventfd
@@ -1359,9 +1458,12 @@ Definition write_file_tail (mp : word -> option byte) (buf count : word)
     is unblocked"), so it IS queued -- but the [rt_sigprocmask] that
     later uncovers it reaches [get_signal]'s
     [if (ka->sa.sa_handler == SIG_IGN) continue], which discards it
-    there instead.  Either way no state this model carries differs
-    afterwards: the only thing that could tell the two apart is
-    [sigpending], which this model has no call for.  So the branch
+    there instead.  No state this model carries differs afterwards
+    either way.  Two things could tell them apart: [sigpending], which
+    this model has no call for, and a signalfd whose mask holds SIGPIPE,
+    which is why [Signalfd.signalfd_other_may_pend] makes the signalfd
+    read and poll arms decline while SIGPIPE is blocked and ignored.
+    So the branch
     answers -EPIPE over an UNCHANGED model, which is what every
     program that ignores SIGPIPE is written to read, and nothing is
     recorded as pending -- [Kernel.Signal.sigmask_deliver_model] stays
@@ -1378,7 +1480,8 @@ Definition write_file_tail (mp : word -> option byte) (buf count : word)
     the -EPIPE is unobservable there, which is the point. *)
 Definition raise_sigpipe (m : Model) : Model :=
   if negb (m_sigpipe_default m)
-  then m                         (* SIG_IGN: discarded, never queued *)
+  then m                         (* SIG_IGN: discarded, or queued while blocked
+                                    and discarded at delivery; see above *)
   else if sigpipe_blocked (m_sigmask m)
   then with_sigpipe_pending m
   else with_killed (Z_to_bv 64 SIGPIPE) m.

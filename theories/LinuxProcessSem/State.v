@@ -2818,9 +2818,11 @@ Definition PipeBuf : Type := list byte * Z.
     - [OSignalFd mask flags]: a signalfd ([Fs.Signalfd.signalfd4_spec]),
       carrying the signal mask it reads ([mask], the caller's mask with
       SIGKILL and SIGSTOP removed, as [do_signalfd4] stores it before
-      [signotset]) and the [SFD_] flag word it was created with.  Only
-      [close], [close_range], [F_SETFD] and [F_GETFD] answer on it; read,
-      poll and every other arm decline it.
+      [signotset]) and the [SFD_] flag word it was created with.  A
+      [read] of a non-blocking one answers from what the model knows
+      can be pending ([Fs.ReadWrite.read_signalfd_spec]); [close],
+      [close_range], [F_SETFD] and [F_GETFD] answer on it; a blocking
+      read, poll and every other arm decline it.
         fs/signalfd.c [do_signalfd4], [signalfd_fops]: read at v6.18.44; identical at v6.18.46. *)
 Inductive OpaqueFd :=
   | OProcPath (p : path)

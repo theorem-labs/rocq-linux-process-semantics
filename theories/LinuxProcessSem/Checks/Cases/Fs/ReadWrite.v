@@ -297,7 +297,8 @@ Proof.
         [ now destruct (Hro _ _ _ Hspec)
         | exact (check_read_urandom_delivery_clamped _ _ _ _ _ _ _ _ _ Hspec Hws) ]
       | (* the opaque kinds: a /proc/sys file delivers at most [count]
-           bytes under the count gate, an eventfd 8 *)
+           bytes under the count gate, an eventfd 8, a signalfd whole
+           records under the count gate *)
         exact (check_read_opaque_delivery_clamped _ _ _ _ _ _ _ _ _ _ Hspec Hws)
       | now destruct (Hro _ _ _ Hspec) ].
   - (* channel *)

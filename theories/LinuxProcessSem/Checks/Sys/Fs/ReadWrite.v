@@ -874,13 +874,312 @@ Proof.
   - unfold ret_only, pure in H. discriminate H.
 Qed.
 
+(* -------------------------------------------------------------------------
+   read (63) on a signalfd ([ReadWrite.read_signalfd_spec])
+   ------------------------------------------------------------------------- *)
+
+(** What [Signalfd.signalfd_records_b] admits is at most [n] whole
+    records. *)
+Local Lemma signalfd_records_b_length : forall n bs,
+  signalfd_records_b n bs = true -> (length bs <= 128 * n)%nat.
+Proof.
+  induction n as [|n IH]; intros bs H; [discriminate H|].
+  cbn [signalfd_records_b] in H.
+  change (Z.to_nat SIGNALFD_SIGINFO_BYTES) with 128%nat in H.
+  apply andb_true_iff in H as [Hr Hk].
+  unfold signalfd_record_ok in Hr.
+  change (Z.to_nat SIGNALFD_SIGINFO_BYTES) with 128%nat in Hr.
+  apply andb_true_iff in Hr as [Hl _].
+  apply Nat.eqb_eq in Hl. rewrite length_firstn in Hl.
+  revert Hk.
+  destruct (skipn 128 bs) as [|b rest] eqn:E; intros Hk.
+  - pose proof (f_equal (@length _) E) as HE.
+    rewrite length_skipn in HE. cbn [length] in HE. lia.
+  - pose proof (f_equal (@length _) E) as HE.
+    rewrite length_skipn in HE.
+    specialize (IH _ Hk). lia.
+Qed.
+
+(** [ReadWrite.signalfd_deliver] as an acceptor: the length returned,
+    ONE write at [buf] that [Signalfd.signalfd_records_b] admits, nothing
+    else. *)
+Definition check_signalfd_deliver (buf : word) (kmax : Z) (eff : SyscallEffect)
+    (m : Model) : check_result :=
+  match eff with
+  | mkEffectU r [(a, bs)] [] [] [] [] =>
+      if bv_eqb r (len_word bs) && bv_eqb a buf
+         && signalfd_records_b (Z.to_nat kmax) bs
+      then CheckOk m [] else CheckReject
+  | _ => CheckReject
+  end.
+
+Local Lemma check_signalfd_deliver_ok : forall buf kmax i eff m m' evs,
+  check_signalfd_deliver buf kmax eff m = CheckOk m' evs ->
+  signalfd_deliver buf kmax i m (Ok eff m' evs).
+Proof.
+  intros buf kmax i eff m m' evs H.
+  unfold check_signalfd_deliver in H. unfold signalfd_deliver.
+  destruct eff as [r ws zs us cs ci].
+  destruct ws as [|[a bs] [|? ?]]; destruct zs as [|? ?]; destruct us as [|? ?];
+    destruct cs as [|? ?]; destruct ci as [|? ?]; try discriminate.
+  cbv beta iota in H.
+  destruct (bv_eqb r (len_word bs) && bv_eqb a buf
+            && signalfd_records_b (Z.to_nat kmax) bs) eqn:Hb; [|discriminate].
+  inversion H; clear H; subst.
+  apply andb_true_iff in Hb as [Hb Hv]. apply andb_true_iff in Hb as [Hr Ha].
+  apply bv_eqb_eq in Hr. apply bv_eqb_eq in Ha. subst r a.
+  eapply bind_ok0; [apply (choose_ok _ bs); exact Hv|]. apply pure_ok.
+Qed.
+
+Local Lemma check_signalfd_deliver_no_unmodeled : forall buf kmax eff m,
+  check_signalfd_deliver buf kmax eff m <> CheckUnmodeled.
+Proof.
+  intros buf kmax [r ws zs us cs ci] m. unfold check_signalfd_deliver.
+  destruct ws as [|[a bs] [|? ?]]; destruct zs as [|? ?]; destruct us as [|? ?];
+    destruct cs as [|? ?]; destruct ci as [|? ?]; try discriminate.
+  cbv beta iota.
+  destruct (bv_eqb r (len_word bs) && bv_eqb a buf
+            && signalfd_records_b (Z.to_nat kmax) bs); discriminate.
+Qed.
+
+Local Lemma check_signalfd_deliver_refl : forall buf kmax bs m,
+  signalfd_records_b (Z.to_nat kmax) bs = true ->
+  check_signalfd_deliver buf kmax (mkEffect (len_word bs) [(buf, bs)] []) m
+  = CheckOk m [].
+Proof.
+  intros buf kmax bs m Hv. unfold check_signalfd_deliver. cbv beta iota.
+  rewrite !bv_eqb_refl, Hv. reflexivity.
+Qed.
+
+Local Lemma check_signalfd_deliver_len : forall buf kmax eff m m' evs a bs,
+  check_signalfd_deliver buf kmax eff m = CheckOk m' evs ->
+  eff_writes eff = [(a, bs)] -> (length bs <= 128 * Z.to_nat kmax)%nat.
+Proof.
+  intros buf kmax [r ws zs us cs ci] m m' evs a bs H Hws.
+  cbn in Hws. subst ws. unfold check_signalfd_deliver in H.
+  destruct zs as [|? ?]; destruct us as [|? ?]; destruct cs as [|? ?];
+    destruct ci as [|? ?]; try discriminate.
+  cbv beta iota in H.
+  destruct (bv_eqb r (len_word bs) && bv_eqb a buf
+            && signalfd_records_b (Z.to_nat kmax) bs) eqn:Hb; [|discriminate].
+  apply andb_true_iff in Hb as [_ Hv].
+  exact (signalfd_records_b_length _ _ Hv).
+Qed.
+
+Local Lemma signalfd_deliver_inv : forall buf kmax i m eff m' evs,
+  signalfd_deliver buf kmax i m (Ok eff m' evs) ->
+  exists bs, eff = mkEffect (len_word bs) [(buf, bs)] []
+             /\ m' = m /\ evs = [] /\ signalfd_records_b (Z.to_nat kmax) bs = true.
+Proof.
+  intros buf kmax i m eff m' evs H.
+  unfold signalfd_deliver in H. sys_unfold. inv_ok.
+  eexists. split; [reflexivity|]. split; [reflexivity|].
+  split; [reflexivity|]. eassumption.
+Qed.
+
+Local Lemma signalfd_deliver_no_unmodeled : forall buf kmax i m,
+  ~ signalfd_deliver buf kmax i m Unmodeled.
+Proof.
+  intros buf kmax i m H. unfold signalfd_deliver in H. sys_unfold. inv_ok.
+Qed.
+
+(** [ReadWrite.read_signalfd_spec] as an acceptor, branch for branch:
+    [access_ok]'s -EFAULT, the no-record -EINVAL, the decline of a
+    blocking signalfd and of a mask selecting a signal the process may
+    hold pending, the -EAGAIN alone where no SIGCHLD can be pending, the
+    count gate, then the destination: an -EAGAIN beside the records, or
+    the decline of a destination not wholly writable. *)
+Definition check_read_signalfd (i : SyscallInput) (mask flags buf count : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  if negb (access_okb buf (bv_unsigned count))
+  then check_ret_only eff (errno_ret EFAULT) m []
+  else if Z.eqb (signalfd_read_max count) 0
+  then check_ret_only eff (errno_ret EINVAL) m []
+  else if negb (sfd_nonblock_b flags) then CheckUnmodeled
+  else if signalfd_other_may_pend mask m then CheckUnmodeled
+  else if negb (signalfd_sigchld_may_pend mask m)
+  then check_ret_only eff (errno_ret EAGAIN) m []
+  else if negb (modeled_rw_count count) then CheckUnmodeled
+  else
+  match read_bytes_map (in_wmem i) buf
+          (Z_to_bv 64 (SIGNALFD_SIGINFO_BYTES * signalfd_read_max count)) with
+  | Some _ =>
+      if eff_is_errno EAGAIN eff then CheckOk m []
+      else check_signalfd_deliver buf (signalfd_read_max count) eff m
+  | None => CheckUnmodeled
+  end.
+
+Lemma check_read_signalfd_sound_ok : forall i mask flags buf count eff m m' evs,
+  check_read_signalfd i mask flags buf count eff m = CheckOk m' evs ->
+  read_signalfd_spec mask flags buf count i m (Ok eff m' evs).
+Proof.
+  intros i mask flags buf count eff m m' evs H.
+  unfold check_read_signalfd in H. unfold read_signalfd_spec.
+  destruct (negb (access_okb buf (bv_unsigned count))) eqn:Ha;
+    cbv beta iota in H |- *.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (Z.eqb (signalfd_read_max count) 0) eqn:Hc; cbv beta iota in H |- *.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (negb (sfd_nonblock_b flags)) eqn:Hn; cbv beta iota in H |- *;
+    [discriminate H|].
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (signalfd_other_may_pend mask m) eqn:Hp; cbv beta iota in H |- *;
+    [discriminate H|].
+  destruct (negb (signalfd_sigchld_may_pend mask m)) eqn:Hq; cbv beta iota in H |- *.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (negb (modeled_rw_count count)) eqn:Hg; cbv beta iota in H |- *;
+    [discriminate H|].
+  eapply bind_ok0; [apply input_ok|]. cbv beta.
+  destruct (read_bytes_map (in_wmem i) buf
+              (Z_to_bv 64 (SIGNALFD_SIGINFO_BYTES * signalfd_read_max count)))
+    as [w|] eqn:Hw; cbv beta iota in H |- *; [|discriminate H].
+  destruct (eff_is_errno EAGAIN eff) eqn:He; cbv beta iota in H.
+  - apply eff_is_errno_true in He. subst eff. inversion H; clear H; subst.
+    apply alt_l. apply pure_ok.
+  - apply alt_r. now apply check_signalfd_deliver_ok.
+Qed.
+
+Lemma check_read_signalfd_sound_unmodeled : forall i mask flags buf count eff m,
+  check_read_signalfd i mask flags buf count eff m = CheckUnmodeled ->
+  read_signalfd_spec mask flags buf count i m Unmodeled.
+Proof.
+  intros i mask flags buf count eff m H.
+  unfold check_read_signalfd in H. unfold read_signalfd_spec.
+  destruct (negb (access_okb buf (bv_unsigned count))) eqn:Ha;
+    cbv beta iota in H |- *.
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (Z.eqb (signalfd_read_max count) 0) eqn:Hc; cbv beta iota in H |- *.
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (negb (sfd_nonblock_b flags)) eqn:Hn; cbv beta iota in H |- *;
+    [apply unmodeled_intro|].
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  destruct (signalfd_other_may_pend mask m) eqn:Hp; cbv beta iota in H |- *;
+    [apply unmodeled_intro|].
+  destruct (negb (signalfd_sigchld_may_pend mask m)) eqn:Hq; cbv beta iota in H |- *.
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (negb (modeled_rw_count count)) eqn:Hg; cbv beta iota in H |- *;
+    [apply unmodeled_intro|].
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+  destruct (read_bytes_map (in_wmem i) buf
+              (Z_to_bv 64 (SIGNALFD_SIGINFO_BYTES * signalfd_read_max count)))
+    as [w|] eqn:Hw; cbv beta iota in H |- *; [|apply unmodeled_intro].
+  exfalso.
+  destruct (eff_is_errno EAGAIN eff) eqn:He; cbv beta iota in H; [discriminate H|].
+  exact (check_signalfd_deliver_no_unmodeled _ _ _ _ H).
+Qed.
+
+Lemma check_read_signalfd_complete_ok : forall i mask flags buf count eff m m' evs,
+  read_signalfd_spec mask flags buf count i m (Ok eff m' evs) ->
+  check_read_signalfd i mask flags buf count eff m = CheckOk m' evs.
+Proof.
+  intros i mask flags buf count eff m m' evs H.
+  unfold read_signalfd_spec in H. unfold check_read_signalfd.
+  destruct (negb (access_okb buf (bv_unsigned count))) eqn:Ha;
+    cbv beta iota in H |- *.
+  { unfold err_ret, ret_only, pure in H. inversion H; clear H; subst.
+    apply check_ret_only_ok_iff. now repeat split. }
+  destruct (Z.eqb (signalfd_read_max count) 0) eqn:Hc; cbv beta iota in H |- *.
+  { unfold err_ret, ret_only, pure in H. inversion H; clear H; subst.
+    apply check_ret_only_ok_iff. now repeat split. }
+  destruct (negb (sfd_nonblock_b flags)) eqn:Hn; cbv beta iota in H |- *;
+    [unfold unmodeled in H; discriminate H|].
+  apply get_model_bind_ok_inv in H. cbv beta in H.
+  destruct (signalfd_other_may_pend mask m) eqn:Hp; cbv beta iota in H |- *;
+    [unfold unmodeled in H; discriminate H|].
+  destruct (negb (signalfd_sigchld_may_pend mask m)) eqn:Hq; cbv beta iota in H |- *.
+  { unfold err_ret, ret_only, pure in H. inversion H; clear H; subst.
+    apply check_ret_only_ok_iff. now repeat split. }
+  destruct (negb (modeled_rw_count count)) eqn:Hg; cbv beta iota in H |- *;
+    [unfold unmodeled in H; discriminate H|].
+  apply input_bind_ok_inv in H. cbv beta in H.
+  destruct (read_bytes_map (in_wmem i) buf
+              (Z_to_bv 64 (SIGNALFD_SIGINFO_BYTES * signalfd_read_max count)))
+    as [w|] eqn:Hw; cbv beta iota in H |- *;
+    [|unfold unmodeled in H; discriminate H].
+  unfold alt in H. destruct H as [H|H].
+  - unfold err_ret, ret_only, pure in H. inversion H; clear H; subst.
+    rewrite eff_is_errno_mkEffect, bv_eqb_refl. reflexivity.
+  - apply signalfd_deliver_inv in H. destruct H as (bs & -> & -> & -> & Hv).
+    replace (eff_is_errno EAGAIN (mkEffect (len_word bs) [(buf, bs)] []))
+      with false by reflexivity.
+    cbv beta iota. now apply check_signalfd_deliver_refl.
+Qed.
+
+Lemma check_read_signalfd_complete_unmodeled : forall i mask flags buf count m eff,
+  read_signalfd_spec mask flags buf count i m Unmodeled ->
+  check_read_signalfd i mask flags buf count eff m = CheckUnmodeled.
+Proof.
+  intros i mask flags buf count m eff H.
+  unfold read_signalfd_spec in H. unfold check_read_signalfd.
+  destruct (negb (access_okb buf (bv_unsigned count))) eqn:Ha;
+    cbv beta iota in H |- *.
+  { unfold err_ret, ret_only, pure in H. discriminate H. }
+  destruct (Z.eqb (signalfd_read_max count) 0) eqn:Hc; cbv beta iota in H |- *.
+  { unfold err_ret, ret_only, pure in H. discriminate H. }
+  destruct (negb (sfd_nonblock_b flags)) eqn:Hn; cbv beta iota in H |- *;
+    [reflexivity|].
+  apply get_model_bind_unmodeled_inv in H. cbv beta in H.
+  destruct (signalfd_other_may_pend mask m) eqn:Hp; cbv beta iota in H |- *;
+    [reflexivity|].
+  destruct (negb (signalfd_sigchld_may_pend mask m)) eqn:Hq; cbv beta iota in H |- *.
+  { unfold err_ret, ret_only, pure in H. discriminate H. }
+  destruct (negb (modeled_rw_count count)) eqn:Hg; cbv beta iota in H |- *;
+    [reflexivity|].
+  apply input_bind_unmodeled_inv in H. cbv beta in H.
+  destruct (read_bytes_map (in_wmem i) buf
+              (Z_to_bv 64 (SIGNALFD_SIGINFO_BYTES * signalfd_read_max count)))
+    as [w|] eqn:Hw; cbv beta iota in H |- *; [|reflexivity].
+  exfalso. unfold alt in H. destruct H as [H|H].
+  - unfold err_ret, ret_only, pure in H. discriminate H.
+  - exact (signalfd_deliver_no_unmodeled _ _ _ _ H).
+Qed.
+
+(** What a signalfd read delivers is whole records under the count
+    gate, so under the clamp. *)
+Lemma check_read_signalfd_delivery_clamped :
+  forall i mask flags buf count eff m m' evs a bs,
+  check_read_signalfd i mask flags buf count eff m = CheckOk m' evs ->
+  eff_writes eff = [(a, bs)] ->
+  (Z.of_nat (length bs) <= MAX_RW_COUNT)%Z.
+Proof.
+  intros i mask flags buf count eff m m' evs a bs H Hws.
+  assert (Hro : forall v mk evs', check_ret_only eff v mk evs' = CheckOk m' evs -> False).
+  { intros v mk evs' Hc. apply check_ret_only_ok_iff in Hc.
+    destruct Hc as (-> & _ & _). discriminate Hws. }
+  unfold check_read_signalfd in H.
+  destruct (negb (access_okb buf (bv_unsigned count))); cbv beta iota in H;
+    [destruct (Hro _ _ _ H)|].
+  destruct (Z.eqb (signalfd_read_max count) 0); cbv beta iota in H;
+    [destruct (Hro _ _ _ H)|].
+  destruct (negb (sfd_nonblock_b flags)); cbv beta iota in H; [discriminate H|].
+  destruct (signalfd_other_may_pend mask m); cbv beta iota in H; [discriminate H|].
+  destruct (negb (signalfd_sigchld_may_pend mask m)); cbv beta iota in H;
+    [destruct (Hro _ _ _ H)|].
+  destruct (negb (modeled_rw_count count)) eqn:Hg; cbv beta iota in H;
+    [discriminate H|].
+  destruct (read_bytes_map (in_wmem i) buf
+              (Z_to_bv 64 (SIGNALFD_SIGINFO_BYTES * signalfd_read_max count)));
+    cbv beta iota in H; [|discriminate H].
+  destruct (eff_is_errno EAGAIN eff) eqn:He; cbv beta iota in H.
+  - apply eff_is_errno_true in He. subst eff. discriminate Hws.
+  - pose proof (check_signalfd_deliver_len _ _ _ _ _ _ _ _ H Hws) as Hl.
+    apply negb_false_iff in Hg. unfold modeled_rw_count, rw_bytes_max in Hg.
+    apply Z.leb_le in Hg.
+    assert (Hk : (0 <= signalfd_read_max count <= 1024)%Z).
+    { pose proof (word_unsigned_range count) as Hc.
+      unfold signalfd_read_max, rw_count_clamp, SIGNALFD_SIGINFO_BYTES, MAX_RW_COUNT.
+      split; [apply Z.div_pos; lia | apply Z.div_le_upper_bound; lia]. }
+    unfold MAX_RW_COUNT. lia.
+Qed.
+
 (** [ReadWrite.read_opaque_spec] as an acceptor, one arm per object. *)
 Definition check_read_opaque (i : SyscallInput) (o : OpaqueFd) (buf count : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match o with
   | OProcFile _ => check_read_proc i buf count eff m
   | OEventFd fl => check_read_eventfd i fl buf count eff m
-  | OProcPath _ | ONsFile _ | OProcFdDir _ _ | OSignalFd _ _ => CheckUnmodeled
+  | OSignalFd mk fl => check_read_signalfd i mk fl buf count eff m
+  | OProcPath _ | ONsFile _ | OProcFdDir _ _ => CheckUnmodeled
   end.
 
 Lemma check_read_opaque_sound_ok : forall i o buf count eff m m' evs,
@@ -892,6 +1191,7 @@ Proof.
   destruct o; cbv beta iota in H |- *; try discriminate H.
   - now apply check_read_proc_sound_ok.
   - now apply check_read_eventfd_sound_ok.
+  - now apply check_read_signalfd_sound_ok.
 Qed.
 
 Lemma check_read_opaque_sound_unmodeled : forall i o buf count eff m,
@@ -904,7 +1204,8 @@ Proof.
     [ apply unmodeled_intro
     | eapply check_read_proc_sound_unmodeled; exact H
     | eapply check_read_eventfd_sound_unmodeled; exact H
-    | apply unmodeled_intro | apply unmodeled_intro | apply unmodeled_intro ].
+    | apply unmodeled_intro | apply unmodeled_intro
+    | eapply check_read_signalfd_sound_unmodeled; exact H ].
 Qed.
 
 Lemma check_read_opaque_complete_ok : forall i o buf count eff m m' evs,
@@ -919,7 +1220,7 @@ Proof.
     | now apply check_read_eventfd_complete_ok
     | unfold unmodeled in H; discriminate H
     | unfold unmodeled in H; discriminate H
-    | unfold unmodeled in H; discriminate H ].
+    | now apply check_read_signalfd_complete_ok ].
 Qed.
 
 Lemma check_read_opaque_complete_unmodeled : forall i o buf count m eff,
@@ -932,11 +1233,13 @@ Proof.
     [ reflexivity
     | now apply check_read_proc_complete_unmodeled
     | now apply check_read_eventfd_complete_unmodeled
-    | reflexivity | reflexivity | reflexivity ].
+    | reflexivity | reflexivity
+    | now apply check_read_signalfd_complete_unmodeled ].
 Qed.
 
 (** What an opaque descriptor's read delivers is under the clamp: a
-    /proc/sys file's at most [count], an eventfd's 8 bytes. *)
+    /proc/sys file's at most [count], an eventfd's 8 bytes, a signalfd's
+    whole records under the count gate. *)
 Lemma check_read_opaque_delivery_clamped : forall i o buf count eff m m' evs a bs,
   check_read_opaque i o buf count eff m = CheckOk m' evs ->
   eff_writes eff = [(a, bs)] ->
@@ -947,6 +1250,7 @@ Proof.
   destruct o; cbv beta iota in H; try discriminate H.
   - exact (check_read_proc_delivery_clamped _ _ _ _ _ _ _ _ _ H Hws).
   - exact (check_read_eventfd_delivery_clamped _ _ _ _ _ _ _ _ _ _ H Hws).
+  - exact (check_read_signalfd_delivery_clamped _ _ _ _ _ _ _ _ _ _ _ H Hws).
 Qed.
 
 (** [ReadWrite.write_opaque_spec] as an acceptor: the eventfd's arm, and

@@ -92,3 +92,100 @@ Example signalfd4_gates :
        sfd_model
      = CheckReject.
 Proof. repeat split; check_eq. Qed.
+
+(* =========================================================================
+   read (63) on a signalfd ([ReadWrite.read_signalfd_spec])
+
+   Before this arm the model declined every read of a signalfd.
+   bubblewrap's monitor process, after its [clone], blocks SIGCHLD and
+   reads 128 bytes from the signalfd it made for SIGCHLD with
+   SFD_CLOEXEC|SFD_NONBLOCK.
+   ========================================================================= *)
+
+(** That state: fd 3 the signalfd for SIGCHLD with SFD_CLOEXEC|SFD_NONBLOCK,
+    SIGCHLD blocked, and a child recorded. *)
+Definition sfd_ready_model : Model :=
+  with_children (with_sigmask (Z_to_bv 64 0x10000) (sfd_minted 0x10000 0x80800)).
+
+(** The same with SIGCHLD NOT blocked. *)
+Definition sfd_unblocked_model : Model :=
+  with_children (sfd_minted 0x10000 0x80800).
+
+(** The ready state on a BLOCKING signalfd (SFD_CLOEXEC alone). *)
+Definition sfd_blocking_model : Model :=
+  with_children (with_sigmask (Z_to_bv 64 0x10000) (sfd_minted 0x10000 0x80000)).
+
+(** [read(fd, 0x10000, count)] into the 256 writable bytes at 0x10000. *)
+Definition sfd_read_in (fd count : Z) : SyscallInput :=
+  mkInput 63 [Z_to_bv 64 fd; 0x10000; Z_to_bv 64 count; 0; 0; 0] (fun _ => None)
+    (bytes_at 0x10000 (repeat (Z_to_bv 8 0) 256)).
+
+(** One [struct signalfd_siginfo] whose [ssi_signo] is [signo], the other
+    124 bytes 0. *)
+Definition sfd_record (signo : Z) : list byte :=
+  word_le4 (Z_to_bv 64 signo) ++ repeat (Z_to_bv 8 0) 124.
+
+(** bubblewrap's [read(signal_fd, &fdsi, 128)] with SIGCHLD blocked and a
+    child recorded: -EAGAIN (no child has changed state yet), or 128 with
+    one record whose [ssi_signo] is 17.  A record for signal 2 is
+    rejected: SIGCHLD is the only signal that can be pending.  A second
+    record does not fit in 128 bytes, and 64 bytes hold no record, which
+    is -EINVAL.
+
+    THE CONTROL, answered alike by the old text and the new: the same
+    read on a BLOCKING signalfd is declined, because it may wait. *)
+Example read_signalfd_bwrap_monitor :
+  check_syscall (sfd_read_in 3 128) (mkEffect (errno_ret EAGAIN) [] []) sfd_ready_model
+  = CheckOk sfd_ready_model []
+  /\ check_syscall (sfd_read_in 3 128) (mkEffect 128 [(0x10000, sfd_record 17)] [])
+       sfd_ready_model
+     = CheckOk sfd_ready_model []
+  /\ check_syscall (sfd_read_in 3 128) (mkEffect 128 [(0x10000, sfd_record 2)] [])
+       sfd_ready_model
+     = CheckReject
+  /\ check_syscall (sfd_read_in 3 128)
+       (mkEffect 256 [(0x10000, sfd_record 17 ++ sfd_record 17)] []) sfd_ready_model
+     = CheckReject
+  /\ check_syscall (sfd_read_in 3 64) (mkEffect (errno_ret EINVAL) [] []) sfd_ready_model
+     = CheckOk sfd_ready_model []
+  (* the control *)
+  /\ check_syscall (sfd_read_in 3 128) (mkEffect (errno_ret EAGAIN) [] [])
+       sfd_blocking_model
+     = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** WITH SIGCHLD NOT BLOCKED nothing can be pending: at SIG_DFL an
+    unblocked SIGCHLD is discarded when the child's exit generates it.
+    So the record is rejected and -EAGAIN is the one answer.  A read of
+    256 bytes may return two records where both fit.
+
+    THE CONTROL, answered alike by the old text and the new: a read of
+    the same blocking signalfd, declined. *)
+Example read_signalfd_sigchld_unblocked :
+  check_syscall (sfd_read_in 3 128) (mkEffect 128 [(0x10000, sfd_record 17)] [])
+    sfd_unblocked_model
+  = CheckReject
+  /\ check_syscall (sfd_read_in 3 128) (mkEffect (errno_ret EAGAIN) [] [])
+       sfd_unblocked_model
+     = CheckOk sfd_unblocked_model []
+  /\ check_syscall (sfd_read_in 3 256)
+       (mkEffect 256 [(0x10000, sfd_record 17 ++ sfd_record 17)] []) sfd_ready_model
+     = CheckOk sfd_ready_model []
+  (* the control *)
+  /\ check_syscall (sfd_read_in 3 256) (mkEffect (errno_ret EAGAIN) [] [])
+       sfd_blocking_model
+     = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** A SIGPIPE THE PROCESS HOLDS PENDING, selected by the descriptor's
+    mask, makes the read decline: [dequeue_signal] would hand back that
+    record, which the model does not describe.  The same mask with
+    nothing pending answers. *)
+Example read_signalfd_pending_sigpipe_declined :
+  let mk := with_sigmask (Z_to_bv 64 0x11000) (sfd_minted 0x11000 0x80800) in
+  check_syscall (sfd_read_in 3 128) (mkEffect (errno_ret EAGAIN) [] [])
+    (with_sigpipe_pending mk)
+  = CheckUnmodeled
+  /\ check_syscall (sfd_read_in 3 128) (mkEffect (errno_ret EAGAIN) [] []) mk
+     = CheckOk mk [].
+Proof. cbv zeta. split; check_eq. Qed.
