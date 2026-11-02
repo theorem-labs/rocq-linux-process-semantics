@@ -26,11 +26,13 @@
       ([Checks.ProcsWellFormed.pstep_at_preserves_wf]).
     - [pstep_x_at_private_frame]: the same for [Procs.pstep_x_at] wherever
       [Procs.ext_agrees] holds, through [Procs.pstep_x_at_agree_iff].
-    - [peer_call_outside]: the pin.  A class-(B) or class-(C) call of an
-      entry whose table has another entry takes [pstep_outside], and no
-      step of that entry has a successor.
+    - [peer_call_outside]: the pin.  A class-(C) call of an entry whose
+      table has another entry takes [pstep_outside], and no step of that
+      entry has a successor.
     - [multiproc_partition]: the core, class-(A), class-(B) and class-(C)
-      lists together are exactly [Specs.modeled_sysnos]. *)
+      lists together are exactly [Specs.modeled_sysnos].
+
+    Class (B) is [Checks.ProcsSharedFrame]'s. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -951,16 +953,12 @@ Qed.
    The pin: what is not admitted still fails closed
    ========================================================================= *)
 
-(** Class (B): shared, written back, not admitted yet. *)
-Definition multiproc_shared_sysnos : list Z :=
-  [46; 48; 56; 62; 63; 64; 65; 66; 67; 68; 78; 79; 202; 242; 439]%Z.
-
 (** Class (C): the answer needs the peer, and the core does not give it. *)
 Definition multiproc_peer_sysnos : list Z :=
   [32; 35; 80; 96; 101; 113; 156; 157; 160; 167; 172; 173; 178; 261]%Z.
 
 Lemma not_admitted_sysno : forall n,
-  List.existsb (Z.eqb n) (multiproc_shared_sysnos ++ multiproc_peer_sysnos) = true ->
+  List.existsb (Z.eqb n) multiproc_peer_sysnos = true ->
   List.existsb (Z.eqb n) multiproc_sysnos = false.
 Proof.
   intros n H. apply List.existsb_exists in H as (k & Hin & Hk).
@@ -995,16 +993,15 @@ Proof.
     (eexists; split; [eassumption|]); auto.
 Qed.
 
-(** THE PIN.  An entry whose table holds another entry, with a class-(B)
-    or class-(C) call pending, takes [pstep_outside], and no step of it has
-    a successor: the released spec never answers it.  getpid (172), whose
+(** THE PIN.  An entry whose table holds another entry, with a class-(C)
+    call pending, takes [pstep_outside], and no step of it has a
+    successor: the released spec never answers it.  getpid (172), whose
     released answer would pin a tid that can be the peer's pid, is one. *)
 Theorem peer_call_outside : forall segs cfg P e x8,
   look P (pe_pid e) = Some e ->
   m_halted (pe_model e) = None ->
   ms_svc_pending (pe_ms e) = Some x8 ->
-  List.existsb (Z.eqb (bv_unsigned x8))
-    (multiproc_shared_sysnos ++ multiproc_peer_sysnos) = true ->
+  List.existsb (Z.eqb (bv_unsigned x8)) multiproc_peer_sysnos = true ->
   (1 < List.length (pcfg_procs P))%nat ->
   pstep_at segs cfg (pe_pid e) P [] PError
   /\ (forall evs P', ~ pstep_at segs cfg (pe_pid e) P evs (PNext P')).
@@ -1028,13 +1025,14 @@ Proof.
     exact (not_admitted_not_260 _ Hna Hy260).
 Qed.
 
-(** The four lists are the modeled surface, each number once in all. *)
+(** The admitted lists and the class-(C) list are the modeled surface, each
+    number once in all. *)
 Lemma multiproc_partition :
   List.forallb (fun n => List.existsb (Z.eqb n)
-                  (multiproc_sysnos ++ multiproc_shared_sysnos ++ multiproc_peer_sysnos))
+                  (multiproc_sysnos ++ multiproc_peer_sysnos))
     modeled_sysnos = true
   /\ List.forallb (fun n => List.existsb (Z.eqb n) modeled_sysnos)
-       (multiproc_sysnos ++ multiproc_shared_sysnos ++ multiproc_peer_sysnos) = true
-  /\ List.length (multiproc_sysnos ++ multiproc_shared_sysnos ++ multiproc_peer_sysnos)
+       (multiproc_sysnos ++ multiproc_peer_sysnos) = true
+  /\ List.length (multiproc_sysnos ++ multiproc_peer_sysnos)
      = List.length modeled_sysnos.
 Proof. split; [|split]; vm_compute; reflexivity. Qed.

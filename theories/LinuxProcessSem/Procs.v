@@ -336,7 +336,7 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
 (** The syscalls this core answers while more than one entry is live.
     Everything else fails closed, because a syscall touching a kernel object
     Linux SHARES, that this model has not yet moved into [shared], would
-    otherwise be answered against a private copy.  The list is two lists.
+    otherwise be answered against a private copy.  The list is three lists.
 
     CORE-ANSWERED ([multiproc_core_sysnos]): exit, exit_group, clone, wait4
     and clone3.  Each acts on another process (the orphaning [absorb] does,
@@ -358,18 +358,35 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     descriptor was made after the last clone, so pipes and sockets are
     private here.
 
+    SHARED, WRITTEN BACK, CLASS (B) ([multiproc_shared_sysnos]): 46 48 56
+    62 63 64 65 66 67 68 78 79 202 242 439.  They read or write [m_fsys] or
+    [m_io], which [pe_cfg] splices and [shared_absorb] writes back.  The
+    write-back is half the argument; the other half is that every OTHER
+    entry's private state stays consistent with the new shared state.  What
+    a peer holds that names [m_fsys] is a file descriptor ([FdFile p off]
+    and its three siblings: a path and an offset of its own, opened after
+    the last clone, so its own open file description as in Linux) and a
+    stat pin (fstat's, which holds no size or time).  Both stay valid
+    because no (B) call removes a path from [m_fsys]: the writers insert or
+    replace ([Fs.fs_set]), and removal is unlinkat's, which is (C).  A
+    truncation (openat's O_TRUNC, ftruncate) under a peer's offset past the
+    new end is end of file for the peer's read: [Fs.file_read] delivers no
+    byte at or past the end and the arm returns 0, as Linux does.  A peer
+    holds nothing that names [m_io]: stdin, the random stream and the
+    connection queue live there alone, so one consumption is seen by all,
+    as one shared open file description is in Linux.  AN EXISTING
+    APPROXIMATION, not a multi-process one: accept and accept4 answer from
+    one global connection queue whichever listening socket the caller
+    holds, as they already do for one process holding two listeners; the
+    frame lemmas prove the queue is consumed once, not that a connection
+    is routed to the listener it was meant for.  An eventfd made
+    before a clone IS a per-process copy ([FdOpaque (OEventFd _)], one
+    counter per table where Linux has one), and every (B) arm declines it,
+    so none answers from the copy; [Checks.ProcsSharedFrame] proves all of
+    this, the decline included, so an arm that one day answers an eventfd
+    counter fails that Check until the counter is moved into [shared].
+
     NOT HERE, AND WHY.
-    - Class (B), shared but written back: 46 48 56 62 63 64 65 66 67 68 78
-      79 202 242 439.  They read or write [m_fsys] or [m_io], which
-      [pe_cfg] splices and [shared_absorb] writes back, but that write-back
-      is not the whole argument: every OTHER entry's private state must stay
-      consistent with the new shared state.  An example of what that rules
-      out: an eventfd made before a clone is an [FdOpaque] copy in each
-      table, one counter per process where Linux has one.  Every read,
-      write and poll arm declines [OEventFd] today (Fork.v, the
-      [FdOpaque] note of [clone_no_shared_file_b]), so admitting 63 and 64
-      would not answer from the copy; an arm that answers an eventfd
-      counter must first move the counter into [shared].
     - Class (C), the answer needs the peer: 32 flock and 35 unlinkat (each
       checks only the caller's own table for a conflicting or naming
       descriptor), 80 fstat, 160 uname and 261 prlimit64 (a per-entry lazy
@@ -388,8 +405,11 @@ Definition multiproc_private_sysnos : list Z :=
    177; 198; 199; 200; 201; 203; 204; 205; 206; 207; 208; 209; 210; 211;
    212; 214; 215; 216; 222; 226; 233; 278; 436]%Z.
 
+Definition multiproc_shared_sysnos : list Z :=
+  [46; 48; 56; 62; 63; 64; 65; 66; 67; 68; 78; 79; 202; 242; 439]%Z.
+
 Definition multiproc_sysnos : list Z :=
-  multiproc_core_sysnos ++ multiproc_private_sysnos.
+  multiproc_core_sysnos ++ multiproc_private_sysnos ++ multiproc_shared_sysnos.
 
 Definition multiproc_allowed (P : pconfig) (c : config) : bool :=
   match ms_svc_pending (cfg_ms c) with
@@ -399,8 +419,8 @@ Definition multiproc_allowed (P : pconfig) (c : config) : bool :=
       || List.existsb (Z.eqb (bv_unsigned x8)) multiproc_sysnos
   end.
 
-(** The guard without the class-(A) numbers: no call pending, one entry,
-    or a core-answered number. *)
+(** The guard without the class-(A) and class-(B) numbers: no call
+    pending, one entry, or a core-answered number. *)
 Definition multiproc_base (P : pconfig) (c : config) : bool :=
   match ms_svc_pending (cfg_ms c) with
   | None => true
@@ -416,12 +436,25 @@ Definition multiproc_private (c : config) : bool :=
   | Some x8 => List.existsb (Z.eqb (bv_unsigned x8)) multiproc_private_sysnos
   end.
 
+(** A class-(B) number is pending. *)
+Definition multiproc_shared (c : config) : bool :=
+  match ms_svc_pending (cfg_ms c) with
+  | None => false
+  | Some x8 => List.existsb (Z.eqb (bv_unsigned x8)) multiproc_shared_sysnos
+  end.
+
+(** A number the classes admit beyond the core's own is pending. *)
+Definition multiproc_classed (c : config) : bool :=
+  multiproc_private c || multiproc_shared c.
+
 Lemma multiproc_allowed_split : forall P c,
-  multiproc_allowed P c = multiproc_base P c || multiproc_private c.
+  multiproc_allowed P c = multiproc_base P c || multiproc_classed c.
 Proof.
-  intros P c. unfold multiproc_allowed, multiproc_base, multiproc_private, multiproc_sysnos.
+  intros P c.
+  unfold multiproc_allowed, multiproc_base, multiproc_classed, multiproc_private,
+    multiproc_shared, multiproc_sysnos.
   destruct (ms_svc_pending (cfg_ms c)); [|reflexivity].
-  rewrite List.existsb_app. apply orb_assoc.
+  rewrite !List.existsb_app. apply orb_assoc.
 Qed.
 
 (* =========================================================================
@@ -1650,7 +1683,7 @@ Proof.
   destruct (Nat.leb _ _); reflexivity.
 Qed.
 
-(** ... and it is open without the class-(A) numbers: 260 is core-answered. *)
+(** ... and it is open without the class numbers: 260 is core-answered. *)
 Lemma wait4_owned_base : forall P e,
   wait4_owned_b P e = true -> multiproc_base P (pe_cfg (pcfg_shared P) e) = true.
 Proof.
@@ -1699,8 +1732,9 @@ Qed.
     what it does to the namespace model: the child's context and the next
     state, the state after a failure, or no answer.  A claimed call while
     other entries are live is admitted when the core's guard WITHOUT the
-    class-(A) numbers ([multiproc_base]) admits it, or [ext_multiproc]
-    does, or it is a class-(A) number at a flat view; see [multiproc_ok].
+    class-(A) and class-(B) numbers ([multiproc_base]) admits it, or
+    [ext_multiproc] does, or it is a class number at a flat view; see
+    [multiproc_ok].
 
     [cenv] ([Ns.Ext.CloneEnv]) names the clone failures a run admits.  It
     is an explicit argument so that a statement shows it:
@@ -1826,13 +1860,13 @@ Definition clone_flags_of (c : config) : Z :=
 
 (** THE GUARD UNDER AN EXTENSION.  An unclaimed call is the released step,
     so the core's guard ([multiproc_allowed]) decides it.  A claimed call is
-    answered by [ext_spec], not by the released spec, and class (A) is a
-    property of the released spec; so the class-(A) numbers admit a claimed
-    call only at a FLAT view.  That case is derived, not assumed:
+    answered by [ext_spec], not by the released spec, and classes (A) and
+    (B) are properties of the released spec; so their numbers admit a
+    claimed call only at a FLAT view.  That case is derived, not assumed:
     [Ns.Ext.ext_coherent] makes a claimed flat call's outcome the
     [Ns.Ext.released] one, an [EOk] whose context and namespace state are
     the ones it was given and whose effect and model are the released
-    spec's, so the extension writes nothing to [sh_ns] and the class-(A)
+    spec's, so the extension writes nothing to [sh_ns] and the class
     argument applies as it stands.  Elsewhere a claimed call with a live
     peer needs [multiproc_base] or [ext_multiproc]. *)
 Definition multiproc_ok (ext : ExtSpec) (segs : list Segment) (P : pconfig)
@@ -1842,13 +1876,13 @@ Definition multiproc_ok (ext : ExtSpec) (segs : list Segment) (P : pconfig)
   | Some i =>
       if ext_claims ext i
       then multiproc_base P c
-           || (flat_view (pe_nsctx e) (sh_ns (pcfg_shared P)) && multiproc_private c)
+           || (flat_view (pe_nsctx e) (sh_ns (pcfg_shared P)) && multiproc_classed c)
            || ext_multiproc ext i (cfg_model c) (pe_nsctx e) (sh_ns (pcfg_shared P))
       else multiproc_allowed P c
   | None => multiproc_allowed P c
   end.
 
-(** Where the core's guard without the class-(A) numbers is open, so is the
+(** Where the core's guard without the class numbers is open, so is the
     guard under any extension. *)
 Lemma multiproc_ok_base : forall ext segs P e,
   multiproc_base P (pe_cfg (pcfg_shared P) e) = true ->
