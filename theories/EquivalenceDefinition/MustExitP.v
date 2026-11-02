@@ -661,6 +661,7 @@ Proof.
   - unfold wait4_intercept_b. cbn [cfg_ms pe_cfg]. rewrite Hs. reflexivity.
   - unfold multiproc_allowed. cbn [cfg_ms pe_cfg]. rewrite Hs. reflexivity.
   - apply wait4_owned_instr. exact Hs.
+  - unfold ns_refused_b. rewrite Hs. reflexivity.
 Qed.
 
 (** THE NO-LAZY FORM IS NOT STATED HERE, and the reason is a scope fact

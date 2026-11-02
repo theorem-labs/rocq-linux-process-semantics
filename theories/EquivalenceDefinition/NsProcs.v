@@ -250,13 +250,14 @@ Definition must_exit_in_px (ext : ExtSpec) (cenv : CloneEnv) (cfg : SpuriousCfg)
     forced EPERM from a security module's (the LPS owner's decision,
     2026-11-01).
 
-    ON THIS CORE the whole-system form holds only for programs whose
-    processes in the released world make no call but exit, exit_group,
-    clone, clone3 and wait4 while another process lives
-    ([Procs.multiproc_allowed]; a process outside the released world also
-    gets the calls [Ext.ext_multiproc] admits): any other call in that state
-    is the model's error.  A program whose parent goes on making calls after
-    a clone needs [lholts_ns_within_budget], below. *)
+    ON THIS CORE the whole-system form holds for programs whose processes
+    in the released world make, while another process lives, only the
+    calls [Procs.multiproc_ok] admits: exit, exit_group, clone, clone3 and
+    wait4, and since the core's widening the private calls of class (A)
+    and the file and I/O calls of class (B) (a process outside the released
+    world gets the calls [Ext.ext_multiproc] admits); any other call in that
+    state is the model's error.  A program whose parent makes another call
+    after a clone needs [lholts_ns_within_budget], below. *)
 Definition pholts_x_within_budget (ext : ExtSpec) (cenv : CloneEnv) (pre : ProcInput -> Prop)
     (host : NsState -> Prop) (lim : Z) (allowed : list word) (img : Image) : Prop :=
   forall (en : ExecEntry) (inp : ProcInput) (st : NsState),
@@ -425,16 +426,20 @@ Module NsProcs := NsStep ProcsCore.
     descriptor table, namespace context); each open file description its
     descriptors name, with its content (what, offset, flags and the count
     of references, whose fall to zero a reader of a pipe sees as end of
-    file); the file system and I/O state; the pipe buffers; and the
-    namespace state.  A per-process descriptor that is not a shared
-    description (an eventfd, a signalfd) is part of [f]'s own model. *)
+    file); the file system and I/O state; the pipe buffers; the
+    namespace state; and the core's record of [f] ([Procs.sh_meta] at
+    [f]: whether [f]'s namespace bits are ones the core does not model,
+    which [Procs.ns_refused_b] reads before every step of [f]).  A
+    per-process descriptor that is not a shared description (an eventfd,
+    a signalfd) is part of [f]'s own model. *)
 Record FocusView := mkFocusView {
   fv_entry : option ProcessEntry;
   fv_ofds  : list (OfdId * option Ofd);
   fv_fsys  : FsState;
   fv_io    : IoState;
   fv_pipes : list (word * PipeBuf);
-  fv_ns    : NsState
+  fv_ns    : NsState;
+  fv_meta  : ProcMeta
 }.
 
 Fixpoint ofd_get (l : list (OfdId * Ofd)) (o : OfdId) : option Ofd :=
@@ -451,7 +456,7 @@ Definition focus_view (P : pconfig) (f : Pid) : FocusView :=
      | Some x => map (fun fo => (snd fo, ofd_get (sh_ofd S) (snd fo))) (pe_ofd x)
      | None => []
      end)
-    (sh_fsys S) (sh_io S) (sh_pipes S) (sh_ns S).
+    (sh_fsys S) (sh_io S) (sh_pipes S) (sh_ns S) (meta_look (sh_meta S) f).
 
 Fixpoint view_get (l : list (OfdId * option Ofd)) (o : OfdId) : option (option Ofd) :=
   match l with
@@ -463,7 +468,7 @@ Fixpoint view_get (l : list (OfdId * option Ofd)) (o : OfdId) : option (option O
     every part equal, except the content of a description in [xs]. *)
 Definition focus_eq (xs : list OfdId) (a b : FocusView) : Prop :=
   fv_entry a = fv_entry b /\ fv_fsys a = fv_fsys b /\ fv_io a = fv_io b
-  /\ fv_pipes a = fv_pipes b /\ fv_ns a = fv_ns b
+  /\ fv_pipes a = fv_pipes b /\ fv_ns a = fv_ns b /\ fv_meta a = fv_meta b
   /\ map fst (fv_ofds a) = map fst (fv_ofds b)
   /\ forall o, ~ In o xs -> view_get (fv_ofds a) o = view_get (fv_ofds b) o.
 
@@ -517,13 +522,14 @@ Inductive must_exit_lineage_at (ctx : ProcsCore.StepCtx) (S : list word) : pconf
 (** THE LINEAGE HALTING STATEMENT over the namespace model.
 
     WHY THE LINEAGE.  The whole-system form ([pholts_x_within_budget]) is
-    unavailable for a program whose parent goes on making calls after a
-    clone, because this core restricts a released-world process while
-    another process lives ([Procs.multiproc_allowed]: only exit,
-    exit_group, clone, clone3 and wait4).  WHEN THAT GUARD IS WIDENED, the
-    whole-system form becomes available and the statements of this shape
-    are to be revisited, AND each statement's witness for [lineage_quiet]
-    must be established again (see below).
+    unavailable for a program whose parent makes, after a clone, a call
+    this core does not admit while another process lives
+    ([Procs.multiproc_ok]).  The core's guard was WIDENED (the private
+    calls of class (A) and the file and I/O calls of class (B), for a
+    process in the released world): a statement of this shape is to be
+    revisited for whether the whole-system form now holds, AND each
+    statement's witness for [lineage_quiet] must be established again over
+    the wider core (see below).
 
     WHAT IT IS ABOUT.  A statement of this shape is about the lineage
     process (after a clone, the child) and ITS exit status: every maximal
@@ -552,8 +558,9 @@ Inductive must_exit_lineage_at (ctx : ProcsCore.StepCtx) (S : list word) : pconf
       credentials, a write to an exchange description, a wait after the
       cut).  That half survives a change of the core.  A half that rests on
       this core making the parent's calls model errors
-      ([Procs.multiproc_allowed]) EXPIRES when the guard is widened, and
-      the witness must then be proved again over the wider core.
+      ([Procs.multiproc_ok]) EXPIRED with the widening of the guard: the
+      parent's calls of class (A) and (B) now step while the child lives,
+      and the witness must be proved again over the wider core.
     The budget premise is [MustExitP.pholts_within_budget]'s: the released
     one-process run of the image.  It says nothing about the memory a child
     asks for; a statement whose child may be refused memory must exclude
