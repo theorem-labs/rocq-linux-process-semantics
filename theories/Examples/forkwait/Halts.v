@@ -655,7 +655,7 @@ Proof.
      because the reap arms have thirteen premises and more, and an Ltac
      pattern over them is how the first attempt failed. *)
   inversion Hp as
-    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1 Hns1 Hsy1 Heq1 Heq2 Heq3
+    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1 Hns1 Hsy1 Hst1 Heq1 Heq2 Heq3
     | P2 e2 evs2 c2 q2 Hl2 Hs2 Hc2 Hcp2 Hfr2 Hm2 Heq4 Heq5 Heq6
     | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
       Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
@@ -667,7 +667,8 @@ Proof.
     | P7 e7 x87 sa7 ru7 Hl7 Hh7 Hsv7 Hwo7 Hna7 Hru7 Hz7
     | P8 e8 Hl8 Hh8 Hrf8
     | P9 e9 Hl9 Hh9 Hns9
-    | P10 e10 Hl10 Hh10 Hsy10 ]; subst.
+    | P10 e10 Hl10 Hh10 Hsy10
+    | P11 e11 evs11 c11 Hl11 Hs11 Hc11 Hw11 Hm11 Hwo11 Hns11 Hsy11 Hst11 ]; subst.
   - left. apply absorb_procs_length.
   - right; left. apply clone_result_procs_length.
   - right; right. cbn [pcfg_procs].
@@ -1846,7 +1847,7 @@ Proof.
      more, and an Ltac pattern over them is how the first attempt failed
      -- [pstep_length_cases] above records the same lesson. *)
   inversion Hp as
-    [ P1 e1 evs1 c1 Hl1 Hss1 Hcs1 Hwi1 Hma1 Hwo1 Hns1 Hsy1 Heq1 Heq2 Heq3
+    [ P1 e1 evs1 c1 Hl1 Hss1 Hcs1 Hwi1 Hma1 Hwo1 Hns1 Hsy1 Hst1 Heq1 Heq2 Heq3
     | P2 e2 evs2 c2 q2 Hl2 Hss2 Hcs2 Hcp2 Hfr2 Hma2 Heq4 Heq5 Heq6
     | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
       Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
@@ -1858,7 +1859,8 @@ Proof.
     | P7 e7 x87 sa7 ru7 Hl7 Hh7 Hsv7 Hwo7 Hna7 Hru7 Hz7
     | P8 e8 Hl8 Hh8 Hrf8
     | P9 e9 Hl9 Hh9 Hns9
-    | P10 e10 Hl10 Hh10 Hsy10 ]; subst.
+    | P10 e10 Hl10 Hh10 Hsy10
+    | P11 e11 evs11 c11 Hl11 Hs11 Hc11 Hw11 Hm11 Hwo11 Hns11 Hsy11 Hst11 ]; subst.
   - (* pstep_other: the clone declined, so a0 is in the errno list *)
     assert (He1 : e1 = e)
       by (rewrite Hl1 in Hl; injection Hl as Hl; exact Hl).
@@ -3241,6 +3243,101 @@ Proof.
     rewrite m_halted_pe_cfg in Hhc. rewrite Hhh in Hhc. discriminate.
 Qed.
 
+(** THE STEP GATE IS CLOSED at every running entry of every shape, for
+    every released step the error arm could read.  Its unlinkat part is
+    closed by the number: each entry is at an instruction or heading for
+    220, 260 or 94.  Its parent-death part by the table: an entry alone in
+    the table, or the child of the two-entry table, has no child there; and
+    the parent of the two-entry table either steps an instruction, which
+    does not halt it, or is at its [wait4], whose step the error arm does
+    not read (it asks [wait4_intercept_b = false]). *)
+Lemma fw_not35_of_rem : forall e Q nr,
+  (forall ms, Q ms -> exists x8, ms_svc_pending ms = Some x8
+                                 /\ bv_unsigned x8 = nr) ->
+  (nr = 220%Z \/ nr = 260%Z \/ nr = 94%Z) ->
+  fw_rem (pe_ms e) Q ->
+  forall x8, ms_svc_pending (pe_ms e) = Some x8 -> bv_unsigned x8 <> 35%Z.
+Proof.
+  intros e Q nr Hnr Hin Hrem x8 Hs.
+  assert (HQ : Q (pe_ms e))
+    by (apply (fw_rem_now _ _ Hrem); rewrite Hs; discriminate).
+  destruct (Hnr _ HQ) as (y & Hy & Hv). rewrite Hs in Hy. injection Hy as <-.
+  rewrite Hv. destruct Hin as [-> | [-> | ->]]; discriminate.
+Qed.
+
+Lemma fw_one_no_child : forall P e0,
+  pcfg_procs P = [(pe_pid e0, e0)] -> pe_parent e0 = None ->
+  pdeath_child_b P e0 = false.
+Proof.
+  intros P e0 Hp0 Hpar. apply pdeath_child_none.
+  intros kv Hin. rewrite Hp0 in Hin. destruct Hin as [<- | []].
+  cbn [snd]. rewrite Hpar. discriminate.
+Qed.
+
+Lemma fw_shape_not_step : forall cfg P p e evs c',
+  fw_shape P -> look P p = Some e -> m_halted (pe_model e) = None ->
+  sstep_cfg forkwait_segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
+  wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
+  step_refused_b P e c' = false.
+Proof.
+  intros cfg P p e evs c' Hsh Hl Hhh Hss Hwi.
+  destruct Hsh as [Hone | [Htwo | [Hex | Hhalt]]].
+  - destruct Hone as (e0 & Hp0 & Hr & Hpar & Hok & Hrem).
+    destruct (fw_look_one P e0 p e Hp0 Hl) as (He & _). subst e.
+    apply step_refused_of;
+      [ exact (fw_not35_of_rem e0 fw_q_clone 220%Z fw_q_clone_nr
+                 (or_introl eq_refl) Hrem)
+      | right; exact (fw_one_no_child P e0 Hp0 Hpar) ].
+  - destruct Htwo as (ep & ec & Hp0 & Hr & Hne & Hcpar & Hppar & Hlp & Hch).
+    destruct Hlp as (Hokp & Hremp).
+    destruct (fw_look_two P ep ec p e Hp0 Hl) as [(He & _) | (He & _)];
+      subst e.
+    + (* the parent: an instruction does not halt it; its wait4 is not read *)
+      apply step_refused_of;
+        [ exact (fw_not35_of_rem ep fw_q_wait4 260%Z fw_q_wait4_nr
+                   (or_intror (or_introl eq_refl)) Hremp) | left ].
+      destruct (ms_svc_pending (pe_ms ep)) as [x8|] eqn:Hsv.
+      * exfalso.
+        assert (Hq : fw_q_wait4 (pe_ms ep))
+          by (apply (fw_rem_now _ _ Hremp); rewrite Hsv; discriminate).
+        destruct Hq as (Hsv260 & _ & Ha0 & _ & Ha2 & Ha3 & _).
+        pose proof (fw_wait4_args (pe_ms ep) Ha0 Ha2 Ha3) as Hwa.
+        assert (Hx : x8 = 260) by congruence.
+        subst x8.
+        rewrite (fw_wait4_intercept_true (pcfg_shared P) ep 260
+                   (ms_gpr (pe_ms ep) 1) Hsv fw_two_sixty Hwa) in Hwi.
+        discriminate Hwi.
+      * destruct (fw_sstep_instr_inv forkwait_segs cfg (pe_ms ep)
+                    (cfg_model (pe_cfg (pcfg_shared P) ep)) evs c' Hsv Hss)
+          as (ms' & model' & Hacc & ->).
+        destruct (mi_account_step_model_frame _ _ _ _ _ Hacc)
+          as (_ & _ & _ & _ & _ & Hproc & _).
+        cbn [cfg_model]. unfold m_halted. rewrite Hproc. exact Hhh.
+    + (* the child: it has no child in the table *)
+      destruct Hch as [(Hokc & Hremc) | (Hz & _)]; [|exfalso; congruence].
+      apply step_refused_of;
+        [ exact (fw_not35_of_rem ec fw_q_exit7 94%Z fw_q_exit7_nr
+                   (or_intror (or_intror eq_refl)) Hremc) | right ].
+      apply pdeath_child_none. intros kv Hin. rewrite Hp0 in Hin.
+      destruct Hin as [<- | [<- | []]]; cbn [snd].
+      * rewrite Hppar. discriminate.
+      * rewrite Hcpar. intros E. injection E as E.
+        rewrite E, bv_eqb_same in Hne. discriminate Hne.
+  - destruct Hex as (e0 & Hp0 & Hr & Hpar & Hok & Hrem).
+    destruct (fw_look_one P e0 p e Hp0 Hl) as (He & _). subst e.
+    apply step_refused_of;
+      [ exact (fw_not35_of_rem e0 fw_q_exit7 94%Z fw_q_exit7_nr
+                 (or_intror (or_intror eq_refl)) Hrem)
+      | right; exact (fw_one_no_child P e0 Hp0 Hpar) ].
+  - destruct Hhalt as (e0 & c & Hp0 & Hrv & Hhc & _).
+    destruct (fw_look_one P e0 p e Hp0 Hl) as (He & _). subst e.
+    exfalso. unfold root_view in Hrv.
+    destruct (look P (pcfg_root P)) as [er|] eqn:Hlr; [|discriminate Hrv].
+    destruct (fw_look_one P e0 (pcfg_root P) er Hp0 Hlr) as (Her & _).
+    subst er. injection Hrv as Hrv. subst c.
+    rewrite m_halted_pe_cfg in Hhc. rewrite Hhh in Hhc. discriminate.
+Qed.
+
 (** THE NO-ERROR PREMISE.  Every shape's live entries are heading for
     one of the three calls; the guard is open at each, the two
     instruction refusals are excluded by the remainder, and the
@@ -3271,17 +3368,21 @@ Proof.
   intros cfg P evs Hsh (p & Hp).
   destruct (pstep_at_not_halted _ _ _ _ _ _ Hp) as (eh & Hlh & Hhh).
   destruct (pstep_error_cases _ _ _ _ _ Hp) as (e & Hl & Hpid & Hcase).
-  (* THE NAMESPACE GATE'S REFUSAL is the fourth case, and it is closed at
-     every live entry of every shape: [fw_shape_not_ns]. *)
+  (* THE NAMESPACE GATE'S REFUSAL is the fourth case and THE STEP GATE'S the
+     fifth, and both are closed at every live entry of every shape:
+     [fw_shape_not_ns], [fw_shape_not_step]. *)
   assert (Hcase3 :
     (sstep_cfg forkwait_segs cfg (pe_cfg (pcfg_shared P) e) evs SError
        /\ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false)
     \/ (multiproc_allowed P (pe_cfg (pcfg_shared P) e) = false /\ evs = [])
     \/ (wait4_refused_b forkwait_segs P e = true /\ evs = [])).
-  { destruct Hcase as [H | [H | [H | (Hns & _)]]];
-      [left; exact H | right; left; exact H | right; right; exact H |].
-    exfalso. assert (Heh : eh = e) by congruence. subst eh.
-    rewrite (fw_shape_not_ns P p e Hsh Hl Hhh) in Hns. discriminate Hns. }
+  { destruct Hcase as [H | [H | [H | [(Hns & _) | ((evs0 & c' & Hss & Hwi & Hst) & _)]]]];
+      [left; exact H | right; left; exact H | right; right; exact H | |].
+    - exfalso. assert (Heh : eh = e) by congruence. subst eh.
+      rewrite (fw_shape_not_ns P p e Hsh Hl Hhh) in Hns. discriminate Hns.
+    - exfalso. assert (Heh : eh = e) by congruence. subst eh.
+      rewrite (fw_shape_not_step cfg P p e evs0 c' Hsh Hl Hhh Hss Hwi) in Hst.
+      discriminate Hst. }
   clear Hcase. rename Hcase3 into Hcase.
   destruct Hsh as [Hone | [Htwo | [Hex | Hhalt]]].
   - (* one entry heading for the clone *)
@@ -3888,19 +3989,31 @@ Proof.
              (mkEffect (Z_to_bv 64 0) [] []) (with_halted code m) [] code);
       [exact Hh | exact Hsv | exact Hspec
        | apply fw_m_halted_with_halted | apply fw_m_killed_with_halted]. }
-  exists ([] ++ [ExitEv code (m_fs (with_halted code m))]),
-         (PNext (absorb P e (mkCfg (pe_ms e) (with_halted code m)))).
-  exists (pe_pid e).
-  apply (pstep_other forkwait_segs cfg P e _
-           (mkCfg (pe_ms e) (with_halted code m)));
-    [exact Hl | exact Hss | | | exact Hma | | | ].
-  - unfold clone_success_b. cbn [cfg_ms pe_cfg]. rewrite Hsv.
-    rewrite fw_ninety_four. reflexivity.
-  - unfold wait4_intercept_b. cbn [cfg_ms pe_cfg]. rewrite Hsv.
-    rewrite fw_ninety_four. reflexivity.
-  - apply (wait4_owned_not_260 P e 94 Hsv). rewrite fw_ninety_four. discriminate.
-  - apply (peer_refused_of_sysno P e 94 Hsv). rewrite fw_ninety_four. reflexivity.
-  - apply (sync_of_sysno P e 94 Hsv). rewrite fw_ninety_four. reflexivity.
+  assert (Hcs : clone_success_b (pe_cfg (pcfg_shared P) e)
+                  (mkCfg (pe_ms e) (with_halted code m)) = false).
+  { unfold clone_success_b. cbn [cfg_ms pe_cfg]. rewrite Hsv.
+    rewrite fw_ninety_four. reflexivity. }
+  assert (Hwi : wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false).
+  { unfold wait4_intercept_b. cbn [cfg_ms pe_cfg]. rewrite Hsv.
+    rewrite fw_ninety_four. reflexivity. }
+  assert (Hwo : wait4_owned_b P e = false).
+  { apply (wait4_owned_not_260 P e 94 Hsv). rewrite fw_ninety_four. discriminate. }
+  assert (Hpr : peer_refused_b P e = false).
+  { apply (peer_refused_of_sysno P e 94 Hsv). rewrite fw_ninety_four. reflexivity. }
+  assert (Hsy : sync_pending_b P e = false).
+  { apply (sync_of_sysno P e 94 Hsv). rewrite fw_ninety_four. reflexivity. }
+  (* THE STEP GATE either way: closed, the exit; open, its refusal. *)
+  destruct (step_refused_b P e (mkCfg (pe_ms e) (with_halted code m))) eqn:Hst.
+  - exists [], PError, (pe_pid e).
+    exact (pstep_step_refuse forkwait_segs cfg P e _
+             (mkCfg (pe_ms e) (with_halted code m))
+             Hl Hss Hcs Hwi Hma Hwo Hpr Hsy Hst).
+  - exists ([] ++ [ExitEv code (m_fs (with_halted code m))]),
+           (PNext (absorb P e (mkCfg (pe_ms e) (with_halted code m)))).
+    exists (pe_pid e).
+    exact (pstep_other forkwait_segs cfg P e _
+             (mkCfg (pe_ms e) (with_halted code m))
+             Hl Hss Hcs Hwi Hma Hwo Hpr Hsy Hst).
 Qed.
 
 (** A FRESH PID EXISTS, and it is chosen rather than searched for: the

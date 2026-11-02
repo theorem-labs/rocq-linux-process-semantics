@@ -663,6 +663,11 @@ Proof.
   - apply wait4_owned_instr. exact Hs.
   - unfold peer_refused_b. rewrite Hs. reflexivity.
   - apply sync_instr. exact Hs.
+  - apply step_refused_of.
+    + intros x8 Hx. rewrite Hs in Hx. discriminate Hx.
+    + left. destruct (mi_account_step_model_frame _ _ _ _ _ Hm)
+        as (_ & _ & _ & _ & _ & Hproc & _).
+      cbn [cfg_model]. unfold m_halted. rewrite Hproc. exact Hh.
 Qed.
 
 (** THE NO-LAZY FORM IS NOT STATED HERE, and the reason is a scope fact

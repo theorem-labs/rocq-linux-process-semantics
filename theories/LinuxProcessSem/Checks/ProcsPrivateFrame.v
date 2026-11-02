@@ -106,6 +106,19 @@ Ltac sh_done H :=
 Ltac sh_frame2 H :=
   repeat (vm_step H || sh_done H); try reflexivity.
 
+Lemma check_flock_sh : forall fd cmd eff m m' evs,
+  check_flock fd cmd eff m = CheckOk m' evs -> sh_of m' = sh_of m.
+Proof.
+  intros fd cmd eff m m' evs H. unfold check_flock in H. sh_frame2 H.
+Qed.
+
+Lemma check_prctl_sh : forall i option_ arg2 eff m m' evs,
+  check_prctl i option_ arg2 eff m = CheckOk m' evs -> sh_of m' = sh_of m.
+Proof.
+  intros i option_ arg2 eff m m' evs H.
+  unfold check_prctl, check_ret_writes in H. sh_frame2 H.
+Qed.
+
 Lemma check_getcwd_sh : forall size eff m m' evs,
   check_getcwd size eff m = CheckOk m' evs -> sh_of m' = sh_of m.
 Proof.
@@ -687,6 +700,8 @@ Proof.
       | eapply check_fcntl_sh; eassumption
       | eapply check_ioctl_sh; eassumption
       | eapply check_close_sh; eassumption
+      | eapply check_flock_sh; eassumption
+      | eapply check_prctl_sh; eassumption
       | eapply check_pipe2_sh; eassumption
       | eapply check_getdents64_sh; eassumption
       | eapply check_pselect6_sh; eassumption
@@ -967,7 +982,7 @@ Qed.
 
 (** Class (C): the answer needs the peer, and the core does not give it. *)
 Definition multiproc_peer_sysnos : list Z :=
-  [32; 35; 96; 156; 157; 167; 172; 173; 178]%Z.
+  [96; 156; 157; 172; 173; 178]%Z.
 
 Lemma not_admitted_sysno : forall n,
   List.existsb (Z.eqb n) multiproc_peer_sysnos = true ->

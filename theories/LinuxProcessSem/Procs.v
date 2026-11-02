@@ -379,7 +379,15 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     [Fork.clone_no_shared_file_b] lets through a clone because no modeled
     arm reads state the copy shares, and every file, socket or pipe
     descriptor was made after the last clone, so pipes and sockets are
-    private here.
+    private here.  Two class-(A) calls are admitted with a gate as well.
+    flock (32) grants a lock when no descriptor of the CALLER names the
+    file, and no lock state exists, so it is refused while another entry
+    has a descriptor on the same path ([peer_refused_b]).  prctl (167)
+    with PR_SET_PDEATHSIG asks Linux to signal the caller when its parent
+    exits, and the exit arm does not send that signal; so a step that
+    would halt an entry while one of its running children holds a nonzero
+    parent-death signal is refused ([step_refused_b]), and the signal is
+    never lost.
 
     SHARED, WRITTEN BACK, CLASS (B) ([multiproc_shared_sysnos]): 46 48 56
     62 63 64 65 66 67 68 78 79 202 242 439.  They read or write [m_fsys] or
@@ -427,7 +435,13 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     which is the monotonicity Linux gives across processes, and a UTS name
     or a stat pin is the one the first reader in any process saw.
 
-    GATED ([multiproc_gated_sysnos]): 261 prlimit64.  RLIMIT_CORE is
+    GATED ([multiproc_gated_sysnos]): 35 unlinkat and 261 prlimit64.
+    unlinkat checks only the CALLER's descriptors for one naming the path
+    it removes; a step at 35 that removes a path another entry's file
+    descriptor or stat pin names is refused ([step_refused_b], read off
+    the step's result as [clone_success_b] is).  Otherwise that entry's
+    descriptor would name a removed file, or a re-created one Linux keeps
+    apart by inode.  RLIMIT_CORE is
     inherited at fork and independent after it, so a process's pin may not
     be taken from a peer's; an entry whose pin is still absent cannot know
     the inherited value, so its call is refused ([peer_refused_b], an
@@ -437,19 +451,16 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     prlimit64 from both sides of a clone.
 
     NOT HERE, AND WHY.
-    - Class (C), the answer needs the peer: 32 flock and 35 unlinkat (each
-      checks only the caller's own table for a conflicting or naming
-      descriptor), 96 172 178 157 (pin the tid by a free choice that can
-      be a live peer's pid), 156 getsid and 173 getppid (a fresh choice
-      where the answer is the parent's), 167 prctl (PR_SET_PDEATHSIG asks
-      for a signal at parent death that the exit arm does not send). *)
+    - Class (C), the answer needs the peer: 96 172 178 157 (pin the tid by
+      a free choice that can be a live peer's pid), 156 getsid and 173
+      getppid (a fresh choice where the answer is the parent's). *)
 Definition multiproc_core_sysnos : list Z := [93; 94; 220; 260; 435]%Z.
 
 Definition multiproc_clock_sysnos : list Z := [101; 113]%Z.
 
 Definition multiproc_synced_sysnos : list Z := [80; 101; 113; 160]%Z.
 
-Definition multiproc_gated_sysnos : list Z := [261]%Z.
+Definition multiproc_gated_sysnos : list Z := [35; 261]%Z.
 
 (** The numbers the core answers through arms of its own beyond the core
     list: the synced and the gated ones. *)
@@ -457,11 +468,11 @@ Definition multiproc_owned_sysnos : list Z :=
   multiproc_synced_sysnos ++ multiproc_gated_sysnos.
 
 Definition multiproc_private_sysnos : list Z :=
-  [ 17;  19;  20;  21;  22;  23;  24;  25;  29;  57;  59;  61;  72;  73;
-    82;  83;  85;  90;  91;  98;  99; 114; 119; 123; 124; 130; 131; 132;
-   134; 135; 144; 146; 147; 148; 149; 150; 158; 159; 169; 174; 175; 176;
-   177; 198; 199; 200; 201; 203; 204; 205; 206; 207; 208; 209; 210; 211;
-   212; 214; 215; 216; 222; 226; 233; 278; 436]%Z.
+  [ 17;  19;  20;  21;  22;  23;  24;  25;  29;  32;  57;  59;  61;  72;
+    73;  82;  83;  85;  90;  91;  98;  99; 114; 119; 123; 124; 130; 131;
+   132; 134; 135; 144; 146; 147; 148; 149; 150; 158; 159; 167; 169; 174;
+   175; 176; 177; 198; 199; 200; 201; 203; 204; 205; 206; 207; 208; 209;
+   210; 211; 212; 214; 215; 216; 222; 226; 233; 278; 436]%Z.
 
 Definition multiproc_shared_sysnos : list Z :=
   [46; 48; 56; 62; 63; 64; 65; 66; 67; 68; 78; 79; 202; 242; 439]%Z.
@@ -1082,9 +1093,41 @@ Definition ns_userns_sysnos : list Z :=
 Definition ns_netns_sysnos : list Z :=
   [198; 199; 200; 201; 202; 203; 204; 205; 206; 207; 208; 209; 210; 211; 212; 242]%Z.
 
-(** THE REFUSAL GATE: the namespace gate above, and the prlimit64 gate
-    (261 while a peer lives and the caller's RLIMIT_CORE is unpinned; see
-    the GATED note above the guard). *)
+(** The path a descriptor names in the file image: the four file kinds. *)
+Definition fd_named_path (ent : FdEntry) : option Fs.path :=
+  match ent with
+  | FdFile p _ | FdFileW p _ | FdFileA p _ | FdFileRW p _ => Some p
+  | _ => None
+  end.
+
+(** Some descriptor of [f] names [p]. *)
+Definition entry_fd_names (f : ProcessEntry) (p : Fs.path) : bool :=
+  List.existsb (fun kv => match fd_named_path (snd kv) with
+                          | Some q => Fs.path_eqb q p
+                          | None => false
+                          end) (m_fds (pe_model f)).
+
+(** [ok] holds of some entry of the table other than [e]. *)
+Definition other_entry_b (P : pconfig) (e : ProcessEntry)
+    (ok : ProcessEntry -> bool) : bool :=
+  List.existsb (fun kv => negb (bv_eqb (fst kv) (pe_pid e)) && ok (snd kv))
+    (pcfg_procs P).
+
+(** flock's descriptor (argument 0) names a file another entry has open. *)
+Definition flock_conflict_b (P : pconfig) (e : ProcessEntry) : bool :=
+  match fd_lookup (m_fds (pe_model e)) (fd32 (ms_gpr (pe_ms e) 0)) with
+  | Some ent =>
+      match fd_named_path ent with
+      | Some p => other_entry_b P e (fun f => entry_fd_names f p)
+      | None => false
+      end
+  | None => false
+  end.
+
+(** THE REFUSAL GATE: the namespace gate above; the prlimit64 gate (261
+    while a peer lives and the caller's RLIMIT_CORE is unpinned); the flock
+    gate (32 while another entry has a descriptor on the same file).  See
+    the class-(A) and GATED notes above the guard. *)
 Definition peer_refused_b (P : pconfig) (e : ProcessEntry) : bool :=
   let stale := pm_ns_stale (meta_look (sh_meta (pcfg_shared P)) (pe_pid e)) in
   match ms_svc_pending (pe_ms e) with
@@ -1096,8 +1139,63 @@ Definition peer_refused_b (P : pconfig) (e : ProcessEntry) : bool :=
           && List.existsb (Z.eqb (bv_unsigned x8)) ns_netns_sysnos)
       || (Nat.ltb 1 (List.length (pcfg_procs P))
           && match m_rlimit_core (pe_model e) with None => true | Some _ => false end
-          && List.existsb (Z.eqb (bv_unsigned x8)) multiproc_gated_sysnos)
+          && Z.eqb (bv_unsigned x8) 261)
+      || (Nat.ltb 1 (List.length (pcfg_procs P))
+          && Z.eqb (bv_unsigned x8) 32 && flock_conflict_b P e)
   end.
+
+(** [p] was a path of [old] and is not one of [new]. *)
+Definition removed_b (old new : Fs.Fs) (p : Fs.path) : bool :=
+  match fs_lookup old p, fs_lookup new p with
+  | Some _, None => true
+  | _, _ => false
+  end.
+
+(** A descriptor or a stat pin of [f] names a path the step removed. *)
+Definition entry_names_removed (old new : Fs.Fs) (f : ProcessEntry) : bool :=
+  List.existsb (fun kv => match fd_named_path (snd kv) with
+                          | Some p => removed_b old new p
+                          | None => false
+                          end) (m_fds (pe_model f))
+  || List.existsb (fun kv => removed_b old new (fst kv)) (m_statpins (pe_model f)).
+
+(** A running child of [e] holds a nonzero parent-death signal. *)
+Definition pdeath_child_b (P : pconfig) (e : ProcessEntry) : bool :=
+  List.existsb (fun kv =>
+      match pe_parent (snd kv) with Some q => bv_eqb q (pe_pid e) | None => false end
+      && match m_halted (pe_model (snd kv)) with None => true | Some _ => false end
+      && negb (Z.eqb (bv_unsigned (m_pdeath_signal (pe_model (snd kv)))) 0))
+    (pcfg_procs P).
+
+(** THE STEP GATE, read off the released step's result [c'] (as
+    [clone_success_b] is), and open only while a peer lives.
+    - A step that halts [e] while a running child of it holds a nonzero
+      parent-death signal: Linux would signal the child, and the exit arm
+      does not.  Refused, so the signal is never silently lost.  A clone
+      (220, 435) is not read: its step is the clone arms', and a clone
+      does not end its caller.
+    - A step at unlinkat (35) that removes a path another entry's file
+      descriptor or stat pin names.
+    See the class-(A) and GATED notes above the guard. *)
+Definition step_refused_b (P : pconfig) (e : ProcessEntry) (c' : config) : bool :=
+  Nat.ltb 1 (List.length (pcfg_procs P))
+  && match ms_svc_pending (pe_ms e) with
+     | Some x8 =>
+         (negb (clone_sysno (bv_unsigned x8))
+          && match m_halted (cfg_model c') with
+             | Some _ => pdeath_child_b P e
+             | None => false
+             end)
+         || (Z.eqb (bv_unsigned x8) 35
+             && other_entry_b P e
+                  (entry_names_removed (fsst_image (sh_fsys (pcfg_shared P)))
+                                       (m_fs (cfg_model c'))))
+     | None =>
+         match m_halted (cfg_model c') with
+         | Some _ => pdeath_child_b P e
+         | None => false
+         end
+     end.
 
 (** THE SYNC.  The largest CLOCK_MONOTONIC copy in the table, as an
     unsigned count of nanoseconds; every copy is a word, so it is one. *)
@@ -1258,6 +1356,9 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     (* THE SYNC GATE: a synced call never reads a clock copy that is behind
        another entry's; [pstep_sync] raises it first. *)
     sync_pending_b P e = false ->
+    (* THE STEP GATE: never a halt that would lose a child's parent-death
+       signal, never an unlinkat that removes a path a peer names. *)
+    step_refused_b P e c' = false ->
     pstep_at segs cfg (pe_pid e) P evs (PNext (absorb P e c'))
 (** THE ERROR TRANSITION, and it must EXCLUDE the intercepted wait.
     A blocking [wait4(-1, _, 0, NULL)] is [unmodeled] in the released spec
@@ -1413,7 +1514,20 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     look P (pe_pid e) = Some e ->
     m_halted (pe_model e) = None ->
     sync_pending_b P e = true ->
-    pstep_at segs cfg (pe_pid e) P [] (PNext (sync_result P e)).
+    pstep_at segs cfg (pe_pid e) P [] (PNext (sync_result P e))
+(** A STEP THE STEP GATE REFUSES: everything [pstep_other] asks but the
+    step gate, which is open.  An error, fail-closed. *)
+| pstep_step_refuse : forall P e evs c',
+    look P (pe_pid e) = Some e ->
+    sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs (SNext c') ->
+    clone_success_b (pe_cfg (pcfg_shared P) e) c' = false ->
+    wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
+    multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
+    wait4_owned_b P e = false ->
+    peer_refused_b P e = false ->
+    sync_pending_b P e = false ->
+    step_refused_b P e c' = true ->
+    pstep_at segs cfg (pe_pid e) P [] PError.
 
 (** The system steps when SOME entry does. *)
 Definition pstep_cfg (segs : list Segment) (cfg : SpuriousCfg)
@@ -1551,6 +1665,10 @@ Proof.
     rewrite ?andb_false_r; reflexivity.
 Qed.
 
+(** At one entry the step gate is closed: it needs a peer. *)
+Lemma step_refused_one : forall c e c', step_refused_b (one_proc c) e c' = false.
+Proof. intros c e c'. reflexivity. Qed.
+
 Lemma absorb_one_proc : forall c c',
   absorb (one_proc c) (one_entry c) c' = one_proc c'.
 Proof.
@@ -1666,6 +1784,7 @@ Proof.
   - apply wait4_owned_one.
   - apply peer_refused_one.
   - apply sync_pending_one.
+  - apply step_refused_one.
 Qed.
 
 Lemma pstep_single_err_fwd : forall segs cfg c evs,
@@ -1693,6 +1812,11 @@ Proof.
     match goal with
     | [ Hrf : peer_refused_b (one_proc c) _ = true |- _ ] =>
         rewrite peer_refused_one in Hrf; discriminate
+    end.
+  - exfalso.
+    match goal with
+    | [ Hrf : step_refused_b (one_proc c) _ _ = true |- _ ] =>
+        rewrite step_refused_one in Hrf; discriminate
     end.
 Qed.
 
@@ -1911,8 +2035,8 @@ Proof.
 Qed.
 
 (** A step to the error transition is one of the four refusing arms: a
-    released [SError], the surface guard, the [wait4] gate's refusal, or the
-    namespace gate's. *)
+    released [SError], the surface guard, the [wait4] gate's refusal, the
+    namespace gate's, or the step gate's. *)
 Lemma pstep_error_cases : forall segs cfg p P evs,
   pstep_at segs cfg p P evs PError ->
   exists e,
@@ -1921,7 +2045,11 @@ Lemma pstep_error_cases : forall segs cfg p P evs,
        /\ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false)
       \/ (multiproc_allowed P (pe_cfg (pcfg_shared P) e) = false /\ evs = [])
       \/ (wait4_refused_b segs P e = true /\ evs = [])
-      \/ (peer_refused_b P e = true /\ evs = []) ).
+      \/ (peer_refused_b P e = true /\ evs = [])
+      \/ ((exists evs0 c', sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs0 (SNext c')
+                         /\ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false
+                         /\ step_refused_b P e c' = true)
+          /\ evs = []) ).
 Proof.
   intros segs cfg p P evs Hp.
   inversion Hp; subst.
@@ -1932,7 +2060,10 @@ Proof.
   - eexists. split; [eassumption | split; [reflexivity|]].
     right; right; left. split; [assumption | reflexivity].
   - eexists. split; [eassumption | split; [reflexivity|]].
-    right; right; right. split; [assumption | reflexivity].
+    right; right; right; left. split; [assumption | reflexivity].
+  - eexists. split; [eassumption | split; [reflexivity|]].
+    right; right; right; right. split; [|reflexivity].
+    do 2 eexists. split; [eassumption | split; assumption].
 Qed.
 
 (** The splice does not disturb the halt flag: [set_fsys] and [set_io]
@@ -2003,8 +2134,8 @@ Proof.
   destruct (Nat.leb _ _); reflexivity.
 Qed.
 
-(** The namespace gate is closed at an instruction, and at any number
-    outside its two lists. *)
+(** The refusal gate is closed at an instruction, and at any number
+    outside its lists. *)
 Lemma peer_refused_instr : forall P e,
   ms_svc_pending (pe_ms e) = None -> peer_refused_b P e = false.
 Proof. intros P e Hs. unfold peer_refused_b. rewrite Hs. reflexivity. Qed.
@@ -2012,13 +2143,48 @@ Proof. intros P e Hs. unfold peer_refused_b. rewrite Hs. reflexivity. Qed.
 Lemma peer_refused_of_sysno : forall P e x8,
   ms_svc_pending (pe_ms e) = Some x8 ->
   List.existsb (Z.eqb (bv_unsigned x8))
-    (ns_userns_sysnos ++ ns_netns_sysnos ++ multiproc_gated_sysnos) = false ->
+    (ns_userns_sysnos ++ ns_netns_sysnos ++ [32; 261]%Z) = false ->
   peer_refused_b P e = false.
 Proof.
   intros P e x8 Hs H. unfold peer_refused_b. rewrite Hs.
   rewrite !List.existsb_app in H. apply orb_false_iff in H as [Hu H].
   apply orb_false_iff in H as [Hn Hg].
-  rewrite Hu, Hn, Hg, !andb_false_r. reflexivity.
+  cbn [List.existsb] in Hg. apply orb_false_iff in Hg as [H32 Hg].
+  apply orb_false_iff in Hg as [H261 _].
+  rewrite Hu, Hn, H32, H261, !andb_false_r. reflexivity.
+Qed.
+
+(** No entry of the table is a child of [e]: the parent-death part of the
+    step gate is closed. *)
+Lemma pdeath_child_none : forall P e,
+  (forall kv, List.In kv (pcfg_procs P) -> pe_parent (snd kv) <> Some (pe_pid e)) ->
+  pdeath_child_b P e = false.
+Proof.
+  intros P e H. unfold pdeath_child_b.
+  apply Bool.not_true_iff_false. intros Hx.
+  apply List.existsb_exists in Hx as (kv & Hin & Hkv).
+  apply andb_true_iff in Hkv as [Hkv _]. apply andb_true_iff in Hkv as [Hkv _].
+  destruct (pe_parent (snd kv)) as [q|] eqn:Hp; [|discriminate Hkv].
+  apply bv_eqb_true_eq in Hkv. subst q. exact (H kv Hin Hp).
+Qed.
+
+(** The step gate is closed at a number other than unlinkat whose step
+    does not halt [e], or halts it with no running child holding a
+    parent-death signal. *)
+Lemma step_refused_of : forall P e c',
+  (forall x8, ms_svc_pending (pe_ms e) = Some x8 -> bv_unsigned x8 <> 35%Z) ->
+  (m_halted (cfg_model c') = None \/ pdeath_child_b P e = false) ->
+  step_refused_b P e c' = false.
+Proof.
+  intros P e c' H35 Hd. unfold step_refused_b.
+  destruct (Nat.ltb 1 _); [cbn [andb]|reflexivity].
+  assert (Hpd : match m_halted (cfg_model c') with
+                | Some _ => pdeath_child_b P e | None => false end = false)
+    by (destruct Hd as [Hn | Hn]; [rewrite Hn; reflexivity
+                                   | destruct (m_halted _); [exact Hn | reflexivity]]).
+  destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hs; [|exact Hpd].
+  rewrite Hpd, andb_false_r. cbn [orb].
+  specialize (H35 x8 eq_refl). apply Z.eqb_neq in H35. rewrite H35. reflexivity.
 Qed.
 
 (** The sync gate is closed at an instruction, and at any number outside
@@ -2301,6 +2467,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     wait4_owned_b P e = false ->
     peer_refused_b P e = false ->
     sync_pending_b P e = false ->
+    step_refused_b P e c' = false ->
     multiproc_ok ext segs P e = true ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' ctx' st'))
 | px_clone : forall P e evs c' q child ret st',
@@ -2436,7 +2603,19 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     look P (pe_pid e) = Some e ->
     m_halted (pe_model e) = None ->
     sync_pending_b P e = true ->
-    pstep_x_at ext cenv segs cfg (pe_pid e) P [] (PNext (sync_result P e)).
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] (PNext (sync_result P e))
+| px_step_refuse : forall P e evs c' ctx' st',
+    look P (pe_pid e) = Some e ->
+    xsstep ext segs cfg (pe_nsctx e) (sh_ns (pcfg_shared P))
+      (pe_cfg (pcfg_shared P) e) evs (SNext c') ctx' st' ->
+    clone_pending_b (pe_cfg (pcfg_shared P) e) = false ->
+    wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
+    wait4_owned_b P e = false ->
+    peer_refused_b P e = false ->
+    sync_pending_b P e = false ->
+    multiproc_ok ext segs P e = true ->
+    step_refused_b P e c' = true ->
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError.
 
 Definition pstep_x_cfg (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cfg : SpuriousCfg)
     (P : pconfig) (evs : list event) (r : pstep_to) : Prop :=
@@ -2453,7 +2632,7 @@ Proof.
   destruct H; [eapply px_other | eapply px_clone | eapply px_clone_fail | eapply px_clone_unmodeled
               | eapply px_clone_claimed | eapply px_wait_reap | eapply px_error | eapply px_outside
               | eapply px_wait_nohang_reap | eapply px_wait_nohang_zero | eapply px_wait_refuse
-              | eapply px_peer_refuse | eapply px_sync];
+              | eapply px_peer_refuse | eapply px_sync | eapply px_step_refuse];
     eauto.
 Qed.
 
@@ -2543,6 +2722,19 @@ Proof.
   destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hs; [|discriminate H].
   apply (peer_refused_of_sysno P e x8 Hs). unfold clone_sysno in H.
   apply orb_true_iff in H as [H|H]; apply Z.eqb_eq in H; rewrite H; reflexivity.
+Qed.
+
+(** ... nor read by the step gate. *)
+Lemma clone_pending_not_step : forall P e c',
+  clone_pending_b (pe_cfg (pcfg_shared P) e) = true -> step_refused_b P e c' = false.
+Proof.
+  intros P e c' H. unfold clone_pending_b in H. cbn [cfg_ms pe_cfg] in H.
+  unfold step_refused_b.
+  destruct (ms_svc_pending (pe_ms e)) as [x8|]; [|discriminate H].
+  rewrite H. cbn [negb andb orb].
+  unfold clone_sysno in H.
+  apply orb_true_iff in H as [H|H]; apply Z.eqb_eq in H; rewrite H;
+    rewrite andb_false_r; reflexivity.
 Qed.
 
 (** ... nor synced. *)
@@ -2705,7 +2897,7 @@ Theorem pstep_x_at_agree_iff : forall ext cenv segs cfg p P evs r,
 Proof.
   intros ext cenv segs cfg p P evs r Hag. split.
   - intros H. revert Hag. destruct H as
-      [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hns Hsy Hmp
+      [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hns Hsy Hst Hmp
       | Q e ev c' q child ret st' Hl Hcl Hs Hsucc Hq Hfree Hma Hec
       | Q e ev c' en hq st' Hl Hcl Hs Hcp Hsucc Hret Hma Hec Hnr
       | Q e ev c' hq Hl Hcl Hs Hcp Hma Hec
@@ -2719,7 +2911,8 @@ Proof.
       | Q e x8 stat_addr ru Hl Hh Hx8 Hwo Hna Hru Hz
       | Q e Hl Hh Hrf
       | Q e Hl Hh Hns
-      | Q e Hl Hh Hsy ]; intros Hag;
+      | Q e Hl Hh Hsy
+      | Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hns Hsy Hmp Hst ]; intros Hag;
       destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* px_other *)
       apply (proj1 (Hxs _ _ _ _ _)) in Hx. destruct Hx as (Hs & -> & ->).
@@ -2740,6 +2933,7 @@ Proof.
       * apply clone_pending_not_owned. exact Hcp.
       * apply clone_pending_not_ns. exact Hcp.
       * apply clone_pending_not_sync. exact Hcp.
+      * apply clone_pending_not_step. exact Hcp.
     + (* px_clone_unmodeled *)
       apply (proj1 (Hcln _ _)) in Hec.
       destruct Hec as [Heq | (en & _ & Heq)]; discriminate Heq.
@@ -2762,8 +2956,13 @@ Proof.
       apply pstep_peer_refuse; assumption.
     + (* px_sync: the gate's own arm, on both sides *)
       apply pstep_sync; assumption.
+    + (* px_step_refuse: the gate's own arm, on both sides *)
+      apply (proj1 (Hxs _ _ _ _ _)) in Hx. destruct Hx as (Hs & -> & ->).
+      apply pstep_step_refuse with (evs := ev) (c' := c'); try assumption.
+      * apply clone_pending_success. exact Hcp.
+      * rewrite <- Hmpe. exact Hmp.
   - intros H. revert Hag. destruct H as
-      [ Q e ev c' Hl Hs Hsucc Hwt Hma Hwo Hns Hsy
+      [ Q e ev c' Hl Hs Hsucc Hwt Hma Hwo Hns Hsy Hst
       | Q e ev c' q Hl Hs Hsucc Hq Hfree Hma
       | Q e q ez x8 stat_addr status eff model'' dumped
           Hl Hh Hx8 Hwt Hargs Hq Hne Hpar Hk Hst Hrd Heff Hmat
@@ -2774,7 +2973,8 @@ Proof.
       | Q e x8 stat_addr ru Hl Hh Hx8 Hwo Hna Hru Hz
       | Q e Hl Hh Hrf
       | Q e Hl Hh Hns
-      | Q e Hl Hh Hsy ]; intros Hag;
+      | Q e Hl Hh Hsy
+      | Q e ev c' Hl Hs Hsucc Hwt Hma Hwo Hns Hsy Hst ]; intros Hag;
       destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* pstep_other *)
       destruct (clone_pending_b (pe_cfg (pcfg_shared Q) e)) eqn:Hp.
@@ -2813,6 +3013,13 @@ Proof.
       apply px_peer_refuse; assumption.
     + (* pstep_sync *)
       apply px_sync; assumption.
+    + (* pstep_step_refuse *)
+      destruct (clone_pending_b (pe_cfg (pcfg_shared Q) e)) eqn:Hp.
+      * rewrite (clone_pending_not_step _ _ c' Hp) in Hst. discriminate Hst.
+      * apply px_step_refuse with (evs := ev) (c' := c')
+          (ctx' := pe_nsctx e) (st' := sh_ns (pcfg_shared Q)); try assumption.
+        -- apply (proj2 (Hxs _ _ _ _ _)). split; [exact Hs | split; reflexivity].
+        -- rewrite Hmpe. exact Hma.
 Qed.
 
 (** An extension that claims no pending call of an entry of [P] and whose
