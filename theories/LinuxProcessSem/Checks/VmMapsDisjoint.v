@@ -2273,7 +2273,7 @@ Lemma check_ppoll_frame : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i ufds nfds tsp sig sigsetsize eff m m' evs H.
-  unfold check_ppoll in H. vm_frame2 H.
+  apply check_ppoll_model in H. destruct H as [-> _]. reflexivity.
 Qed.
 
 Lemma check_newfstatat_frame : forall i dirfd pathp flag eff m m' evs,

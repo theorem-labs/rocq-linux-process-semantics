@@ -2785,7 +2785,9 @@ Definition PipeBuf : Type := list byte * Z.
       environment's: a read of a non-blocking eventfd answers from any
       counter value, a blocking read declines, and a write answers under
       the counter exclusion SCOPE.md states
-      ([Fs.ReadWrite.read_eventfd_spec], [Fs.ReadWrite.write_eventfd_spec]).
+      ([Fs.ReadWrite.read_eventfd_spec], [Fs.ReadWrite.write_eventfd_spec]);
+      a [ppoll] entry on it for POLLIN admits a choice of readiness
+      ([Fs.Select.ppoll_opaque_revents]).
     - [ONsFile h]: a descriptor on an open file that the namespace and
       mount model holds under handle
       [h].  No arm of [spec_table] mints it: only that model's child
@@ -2821,8 +2823,10 @@ Definition PipeBuf : Type := list byte * Z.
       [signotset]) and the [SFD_] flag word it was created with.  A
       [read] of a non-blocking one answers from what the model knows
       can be pending ([Fs.ReadWrite.read_signalfd_spec]); [close],
-      [close_range], [F_SETFD] and [F_GETFD] answer on it; a blocking
-      read, poll and every other arm decline it.
+      [close_range], [F_SETFD] and [F_GETFD] answer on it; a [ppoll]
+      entry on it for POLLIN admits a choice of readiness
+      ([Fs.Select.ppoll_opaque_revents]); a blocking read and every
+      other arm decline it.
         fs/signalfd.c [do_signalfd4], [signalfd_fops]: read at v6.18.44; identical at v6.18.46. *)
 Inductive OpaqueFd :=
   | OProcPath (p : path)

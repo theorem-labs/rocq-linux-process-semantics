@@ -1463,7 +1463,7 @@ Definition write_file_tail (mp : word -> option byte) (buf count : word)
     either way.  Two things could tell them apart: [sigpending], which
     this model has no call for, and a signalfd whose mask holds SIGPIPE,
     which is why [Signalfd.signalfd_other_may_pend] makes the signalfd
-    read decline while SIGPIPE is blocked and ignored.
+    read and poll arms decline while SIGPIPE is blocked and ignored.
     So the branch
     answers -EPIPE over an UNCHANGED model, which is what every
     program that ignores SIGPIPE is written to read, and nothing is

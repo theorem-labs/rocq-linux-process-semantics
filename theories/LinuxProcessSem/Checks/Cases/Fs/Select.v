@@ -546,9 +546,10 @@ Proof. split; [check_eq | split; vm_compute; reflexivity]. Qed.
     [ppoll_revents_of] enumerates the descriptor kinds, which makes a
     MISSING arm a build error — the same shape, and the same reason, as
     [Locks.path_openers].  What it does not make is a WRONG arm visible:
-    [check_ppoll] calls [Select.ppoll_outcome] directly rather than
-    mirroring it, so the spec arm IS the checker arm and no agreement
-    proof can disagree with it.  Masking the read-write arm's answer to 0
+    [check_ppoll] calls [Select.ppoll_plan], [Select.ppoll_all_answered]
+    and [Select.ppoll_finish] directly rather than mirroring them, so the
+    spec arm IS the checker arm and no agreement proof can disagree with
+    it.  Masking the read-write arm's answer to 0
     therefore compiles green across every file that can see [Select.v],
     and [ppoll] on an O_RDWR descriptor then reports [revents] 0 and does
     not count the entry — a wrong modeled answer, not a decline.
@@ -904,6 +905,118 @@ Example ppoll_an_unreadable_mask_is_efault :
     (with_copyins [(pp_tsp, 16%nat)] (mkEffect (errno_ret EFAULT) [] [])) pselect_model
   = CheckOk pselect_model [].
 Proof. check_eq. Qed.
+
+(* ---- ppoll (73) on an eventfd and a signalfd ----------------------------- *)
+
+(** bubblewrap's monitor process polls two descriptors for POLLIN: the
+    signalfd it made for SIGCHLD (fd 3) and the eventfd its child writes
+    (fd 4), both made non-blocking, with SIGCHLD blocked and a child
+    recorded.  Before [Select.ppoll_opaque_revents] the model declined
+    every [ppoll] naming either. *)
+Definition pp_bwrap_model : Model :=
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  with_children (with_sigmask (Z_to_bv 64 0x10000)
+    (with_fds (fd_insert (fd_insert (m_fds m)
+                 3 (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80800))))
+                 4 (FdOpaque (OEventFd (Z_to_bv 64 0x80800)))) m)).
+
+(** The same with SIGCHLD NOT blocked. *)
+Definition pp_bwrap_unblocked_model : Model :=
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  with_children
+    (with_fds (fd_insert (fd_insert (m_fds m)
+                 3 (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80800))))
+                 4 (FdOpaque (OEventFd (Z_to_bv 64 0x80800)))) m).
+
+(** [ppoll({{3, POLLIN}, {4, ev4}}, 2, tsp, NULL, 8)] with the timespec
+    bytes [ts] at [pp_tsp]. *)
+Definition pp_bwrap_in (tsp : word) (ts : list byte) (ev4 : Z) : SyscallInput :=
+  mkInput 73 [pp_ufds; 2; tsp; 0; 8; 0]
+    (mem_join (bytes_at pp_ufds (pp_entry 3 1 ++ pp_entry 4 ev4))
+              (bytes_at pp_tsp ts)) pp_wmem.
+
+(** [n] returned, the signalfd's [revents] [sfd] and the eventfd's [efd]
+    written back, the timespec (where [reads_tsp]) and the 16-byte array
+    on the ledger. *)
+Definition pp_bwrap_eff (reads_tsp : bool) (n sfd efd : Z) : SyscallEffect :=
+  with_copyins
+    ((if reads_tsp then [(pp_tsp, 16%nat)] else []) ++ [(pp_ufds, 16%nat)])
+    (mkEffect (Z_to_bv 64 n)
+       [(pp_ufds + 6, word_le2 (Z_to_bv 64 sfd));
+        (pp_ufds + 14, word_le2 (Z_to_bv 64 efd))] []).
+
+(** WITH A ZERO TIMEOUT every choice is answered: neither ready (0),
+    either one (1), or both (2), the eventfd's [revents] being POLLIN, or
+    POLLIN|POLLERR (9) at a counter of 2^64 - 1.  POLLOUT (4) on the
+    eventfd is rejected: [eventfd_poll] reports it, but the POLLIN filter
+    masks it away.  A count that disagrees with the [revents] is
+    rejected.
+
+    THE CONTROL, answered alike by the old text and the new: [ppoll] on a
+    regular file entry, whose readiness is the constant
+    [DEFAULT_POLLMASK]. *)
+Example ppoll_bwrap_monitor_zero_timeout :
+  check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 0 0 0) pp_bwrap_model
+  = CheckOk pp_bwrap_model []
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 1 0)
+       pp_bwrap_model
+     = CheckOk pp_bwrap_model []
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 1)
+       pp_bwrap_model
+     = CheckOk pp_bwrap_model []
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 2 1 1)
+       pp_bwrap_model
+     = CheckOk pp_bwrap_model []
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 2 1 9)
+       pp_bwrap_model
+     = CheckOk pp_bwrap_model []
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 4)
+       pp_bwrap_model
+     = CheckReject
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 2 1 0)
+       pp_bwrap_model
+     = CheckReject
+  (* the control *)
+  /\ check_syscall
+       (mkInput 73 [pp_ufds; 1; 0; 0; 0; 0] (bytes_at pp_ufds (pp_entry 3 5)) pp_wmem)
+       (with_copyins [(pp_ufds, 8%nat)] (mkEffect 1 [(pp_ufds + 6, word_le2 5)] []))
+       pselect_model
+     = CheckOk pselect_model [].
+Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** WHERE A CHOICE WOULD BE DECLINED, THE WHOLE CALL IS.  With SIGCHLD
+    NOT blocked nothing can be pending for the signalfd, so its POLLIN is
+    rejected while the eventfd's is answered.  With a NULL timeout the
+    all-not-ready choice never returns, so the call declines whatever the
+    effect claims; with a real deadline a choice that counts would return
+    the remaining time, so it declines too.  An [events] word other than
+    POLLIN on the eventfd declines.
+
+    THE CONTROL, answered alike by the old text and the new: [ppoll] with
+    a NULL timeout on a regular file entry, answered. *)
+Example ppoll_bwrap_monitor_declines :
+  check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 1 0)
+    pp_bwrap_unblocked_model
+  = CheckReject
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 1)
+       pp_bwrap_unblocked_model
+     = CheckOk pp_bwrap_unblocked_model []
+  /\ check_syscall (pp_bwrap_in 0 (pp_ts 0 0) 1) (pp_bwrap_eff false 1 1 0)
+       pp_bwrap_model
+     = CheckUnmodeled
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 1000000) 1) (pp_bwrap_eff true 1 1 0)
+       pp_bwrap_model
+     = CheckUnmodeled
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 5) (pp_bwrap_eff true 0 0 0)
+       pp_bwrap_model
+     = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall
+       (mkInput 73 [pp_ufds; 1; 0; 0; 0; 0] (bytes_at pp_ufds (pp_entry 3 1)) pp_wmem)
+       (with_copyins [(pp_ufds, 8%nat)] (mkEffect 1 [(pp_ufds + 6, word_le2 1)] []))
+       pselect_model
+     = CheckOk pselect_model [].
+Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (* =========================================================================
    THE USER RANGES THAT WALKED OFF THE TOP OF THE ADDRESS SPACE

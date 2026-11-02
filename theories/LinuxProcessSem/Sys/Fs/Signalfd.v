@@ -83,8 +83,8 @@ Definition signalfd4_spec (ufd mask sizemask flags : word) : Sys SyscallEffect :
     reports EPOLLIN when one in that mask is pending ([signalfd_poll],
     which asks [next_signal] of [current->pending] and of
     [signal->shared_pending]).  The model holds no pending set, so the
-    arm that answers on a signalfd ([ReadWrite.read_signalfd_spec])
-    asks the two questions below instead,
+    arms that answer on a signalfd ([ReadWrite.read_signalfd_spec],
+    [Select.ppoll_opaque_revents]) ask the two questions below instead,
     both about state the model does hold exactly.
       fs/signalfd.c [signalfd_poll], [signalfd_dequeue],
         [signalfd_read_iter], [signalfd_copyinfo]: read at v6.18.44; identical at v6.18.46.

@@ -37,15 +37,26 @@ Proof.
     cbv iota; [apply pure_ok | apply unmodeled_intro].
 Qed.
 
-(** ppoll witness: the single outcome [Select.ppoll_outcome] names, or
-    [Unmodeled] where it declines (fail closed, but never stuck). *)
+(** ppoll witness: the decided outcome where [Select.ppoll_plan] decides
+    one, and at [do_poll] the LEAST ready choice where every choice is
+    answered; [Unmodeled] where the spec declines (fail closed, but never
+    stuck). *)
 Definition ppoll_witness (i : SyscallInput) (m : Model)
     (ufds nfds tsp sig sigsetsize : word) : outcome SyscallEffect :=
-  match ppoll_outcome i m ufds nfds tsp sig sigsetsize with
-  | None => Unmodeled
-  | Some (r, ws) =>
+  match ppoll_plan i m ufds nfds tsp sig sigsetsize with
+  | PpDecided None => Unmodeled
+  | PpDecided (Some (r, ws)) =>
       Ok (with_copyins (ppoll_reads i m ufds nfds tsp sig sigsetsize)
             (mkEffect r ws [])) m []
+  | PpPoll tmo sets =>
+      if negb (ppoll_all_answered i ufds nfds tsp tmo sets) then Unmodeled
+      else
+        match ppoll_finish i ufds nfds tsp tmo (ppoll_least sets) with
+        | Some (r, ws) =>
+            Ok (with_copyins (ppoll_reads i m ufds nfds tsp sig sigsetsize)
+                  (mkEffect r ws [])) m []
+        | None => Unmodeled
+        end
   end.
 
 Lemma ppoll_witness_ok : forall ufds nfds tsp sig sigsetsize i m,
@@ -55,6 +66,20 @@ Proof.
   intros. unfold ppoll_spec, ppoll_witness.
   eapply bind_step; [apply input_ok|]. cbv beta.
   eapply bind_step; [apply get_model_ok|]. cbv beta.
-  destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [[r ws]|];
-    cbv iota; [apply pure_ok | apply unmodeled_intro].
+  destruct (ppoll_plan i m ufds nfds tsp sig sigsetsize) as [[[r ws]|]|tmo sets];
+    cbv iota.
+  - apply pure_ok.
+  - apply unmodeled_intro.
+  - destruct (negb (ppoll_all_answered i ufds nfds tsp tmo sets)) eqn:Ha;
+      cbv beta iota; [apply unmodeled_intro|].
+    apply negb_false_iff in Ha.
+    unfold ppoll_all_answered in Ha.
+    apply andb_true_iff in Ha as [Ha _]. apply andb_true_iff in Ha as [Ha Hlo].
+    apply andb_true_iff in Ha as [Hclo _].
+    destruct (ppoll_finish i ufds nfds tsp tmo (ppoll_least sets)) as [[r ws]|]
+      eqn:Hf; [|discriminate Hlo].
+    eapply bind_step.
+    + apply (choose_ok _ (r, ws)). exists (ppoll_least sets).
+      split; [exact Hclo | exact Hf].
+    + cbv beta. cbn [fst snd]. apply pure_ok.
 Qed.

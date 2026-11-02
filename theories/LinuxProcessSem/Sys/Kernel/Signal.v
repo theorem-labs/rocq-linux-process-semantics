@@ -783,8 +783,9 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
         process raises itself, the pending bits beside the mask
         ([Signalfd.signalfd_other_may_pend], on which it declines).  It
         dequeues pending signals, which the model does not hold, and it
-        writes no mask.  ppoll, pselect6 and epoll decline the
-        descriptor.
+        writes no mask.  [ppoll]'s readiness on the descriptor
+        ([Select.ppoll_opaque_revents]) asks the same two questions and
+        writes nothing either; pselect6 and epoll decline it.
         132 is the easy one, and is called out separately so the others
         are not read as the pattern: it has NO window to shut.
         [do_sigaltstack] (kernel/signal.c) reads and writes
@@ -819,7 +820,7 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
         time, reached from [SYSCALL_DEFINE5(ppoll, ...)] with the mask
         pointer and its size as two arguments rather than through an
         argpack; [Fs.Select]'s [ppoll_sigmask] classifies an install as
-        [PpSigReal] and [ppoll_outcome] answers [None] for it, and the
+        [PpSigReal] and [ppoll_plan] decides a decline for it, and the
         only errnos admitted ahead of that are the timeout's, which the
         kernel raises before [set_user_sigmask] runs.  Every number on
         this bullet is checked rather than asserted, by
@@ -845,9 +846,9 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
         does not depend on them.
 
     So this spec is the sole writer of the mask it keeps, and every
-    reader -- this spec's [oset], the SIGPIPE and SIGABRT arms, and the
-    signalfd read -- reads that one field, which is what makes a single
-    field enough.
+    reader -- this spec's [oset], the SIGPIPE and SIGABRT arms, the
+    signalfd read and [ppoll]'s readiness on a signalfd -- reads that one
+    field, which is what makes a single field enough.
 
     WHY THERE IS NO ACCEPTED-SIGNAL LIST.  This is the question to ask
     of a spec that answers every mask, because the obvious worry is a
@@ -909,10 +910,10 @@ Definition rt_sigaction_spec (sig act oact ss : word) : Sys SyscallEffect :=
     [sigmask_deliver_model] above is the writer that pairs with it:
     the install that uncovers signal 13 kills there, in the same way
     the SIGABRT branch does, so [oset]'s value stays the value of a
-    mask the next reader will agree with.  The signalfd read is a
-    reader of the same kind: it reads [procst_sigmask] itself (whether
-    SIGCHLD is blocked) and writes nothing, so it needs no second
-    field. *)
+    mask the next reader will agree with.  The signalfd read and
+    [ppoll]'s readiness on a signalfd are readers of the same kind: they
+    read [procst_sigmask] itself (whether SIGCHLD is blocked) and write
+    nothing, so they need no second field. *)
 
 (** [how] is [int] ([SYSCALL_DEFINE4(rt_sigprocmask, int, how, ...)]),
     so the kernel sees only the low half of the register and

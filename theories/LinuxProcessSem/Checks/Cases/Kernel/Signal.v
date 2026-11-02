@@ -797,7 +797,7 @@ Proof. vm_compute. reflexivity. Qed.
         [SYSCALL_DEFINE5(ppoll, ...)] with the mask pointer and the size
         as separate arguments rather than through an argpack.
         [Fs.Select]'s [ppoll_sigmask] classifies a call that would
-        install a mask as [PpSigReal] and [ppoll_outcome] answers [None]
+        install a mask as [PpSigReal] and [ppoll_plan] decides a decline
         for it.  The two error arms ahead of it are the timeout's, which
         the kernel raises before [set_user_sigmask] runs, so neither
         installs a mask either — pselect6's argument exactly, one
