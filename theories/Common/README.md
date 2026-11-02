@@ -220,6 +220,7 @@ function and one section hypothesis in `AsanPlanSound`.
 | `ShapeLaws` | Equalities of shapes (`t_eq`). |
 | `TargetCover` | Prove a range of lengths from proofs for intervals that cover it. |
 | `PlacementSearch` | A search for a free gap in the mapping ledger, proved sound and complete. |
+| `AsanWindow` | Where a NULL-hint `mmap` of a mapping family (for example, the ASan secondary chunks) can land: a window below `mmap_top` whose depth depends only on the family's mapped bytes, its smallest entry, the largest request and a cover of the other maps. `AsanWindowCases` checks it on concrete ledgers. |
 | `ListFacts` | General list lemmas. |
 
 ## Import the system call checker with care
