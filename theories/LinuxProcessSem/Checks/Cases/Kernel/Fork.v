@@ -151,7 +151,7 @@ Example clone3_at_the_top_still_resolves :
        (mkEffectU (Z_to_bv 64 4242) [] [] [] []
                   [(clone3_top_uargs, CLONE_ARGS_SIZE_nat)])
        clone3_model
-     = CheckOk (with_children clone3_model) []
+     = CheckOk (with_child (Z_to_bv 64 4242) clone3_model) []
   /\ check_syscall clone3_top_call (mkEffect (errno_ret EFAULT) [] []) clone3_model
      = CheckReject.
 Proof. repeat split; check_eq. Qed.
@@ -193,12 +193,12 @@ Definition bwrap_clone_flags : word :=
   Z_to_bv 64 (SIGCHLD + CLONE_NEWNS + CLONE_NEWUSER + CLONE_NEWPID
               + CLONE_NEWNET + CLONE_NEWIPC + CLONE_NEWUTS).
 
-(** The case: a pid, recorded with [with_children]; -EPERM (which is not
+(** The case: a pid, recorded with [with_child]; -EPERM (which is not
     in [Fork.clone_errnos]) and -ENOSPC, with the model unchanged; and
     0, the child's own return, refused. *)
 Example clone_namespace_word_answers_a_pid :
   check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
-    clone_case_model = CheckOk (with_children clone_case_model) []
+    clone_case_model = CheckOk (with_child (Z_to_bv 64 4242) clone_case_model) []
   /\ check_syscall (clone_in bwrap_clone_flags)
        (mkEffect (errno_ret EPERM) [] []) clone_case_model
        = CheckOk clone_case_model []
@@ -209,13 +209,32 @@ Example clone_namespace_word_answers_a_pid :
        clone_case_model = CheckReject.
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
 
+(** THE PID IS RECORDED, in order.  Each successful clone appends the
+    pid it returned to [State.procst_child_pids], so two clones leave
+    the two pids oldest first ([copy_process]'s [list_add_tail],
+    kernel/fork.c, read at v6.18.44; identical at v6.18.46), and an
+    errno answer leaves the list alone.  Before this the success branch
+    set only the child bit and the list stayed [].  THE CONTROL is the
+    errno answer, which leaves the model unchanged in both texts. *)
+Example clone_records_the_pid :
+  let m1 := with_child (Z_to_bv 64 4242) clone_case_model in
+  m_child_pids m1 = [Z_to_bv 64 4242]
+  /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4243 [] []) m1
+     = CheckOk (with_child (Z_to_bv 64 4243) m1) []
+  /\ m_child_pids (with_child (Z_to_bv 64 4243) m1)
+     = [Z_to_bv 64 4242; Z_to_bv 64 4243]
+  (* the control *)
+  /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EPERM) [] [])
+       m1 = CheckOk m1 [].
+Proof. cbv zeta. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
 (** The controls.  [clone(SIGCHLD)] answers a pid in both texts, and
     keeps its four errnos (-EPERM is not one of them); [clone(CLONE_VM
     | SIGCHLD)] declines in both, and so does the namespace word with
     CLONE_VM added, and a namespace bit without SIGCHLD. *)
 Example clone_controls_fork_word_and_clone_vm :
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
-    clone_case_model = CheckOk (with_children clone_case_model) []
+    clone_case_model = CheckOk (with_child (Z_to_bv 64 4242) clone_case_model) []
   /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD))
        (mkEffect (errno_ret EPERM) [] []) clone_case_model = CheckReject
   /\ check_syscall (clone_in (Z_to_bv 64 (CLONE_VM + SIGCHLD)))
@@ -257,13 +276,13 @@ Definition clone_all_opaque_model : Model :=
 
 Example clone_passes_the_opaque_kinds :
   check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
-    clone_opaque_model = CheckOk (with_children clone_opaque_model) []
+    clone_opaque_model = CheckOk (with_child (Z_to_bv 64 4242) clone_opaque_model) []
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
-       clone_opaque_model = CheckOk (with_children clone_opaque_model) []
+       clone_opaque_model = CheckOk (with_child (Z_to_bv 64 4242) clone_opaque_model) []
   /\ check_syscall (clone_in (Z_to_bv 64 SIGCHLD)) (mkEffect 4242 [] [])
-       clone_all_opaque_model = CheckOk (with_children clone_all_opaque_model) []
+       clone_all_opaque_model = CheckOk (with_child (Z_to_bv 64 4242) clone_all_opaque_model) []
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect 4242 [] [])
-       clone_all_opaque_model = CheckOk (with_children clone_all_opaque_model) []
+       clone_all_opaque_model = CheckOk (with_child (Z_to_bv 64 4242) clone_all_opaque_model) []
   (* the namespace word's errno: any but -EINTR *)
   /\ check_syscall (clone_in bwrap_clone_flags) (mkEffect (errno_ret EPERM) [] [])
        clone_opaque_model = CheckOk clone_opaque_model []

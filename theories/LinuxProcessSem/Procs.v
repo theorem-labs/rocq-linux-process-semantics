@@ -1282,7 +1282,7 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     [SError].  At one entry the gate is closed ([wait4_owned_one]), so the
     single-process theorems need no new hypothesis. *)
 (** THE CLONE ARM.  The parent's half is the RELEASED step, unedited: flag
-    word, errno list, pid envelope, [State.with_children] and the
+    word, errno list, pid envelope, [State.with_child] and the
     [Fork.clone_no_shared_file_b] gate are all [Sys.Kernel.Fork]'s.  This arm
     only adds the child, and it fires only when the released step really
     created one -- so a FAILING clone is [pstep_other]'s business and keeps

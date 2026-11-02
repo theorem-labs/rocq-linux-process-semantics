@@ -4466,11 +4466,12 @@ Record ProcState := mkProcState {
                                     [] AT LAUNCH ([init_model]) and [] in a new
                                     child ([Procs.child_proc]): [copy_process]
                                     (kernel/fork.c) starts [p->children] empty.
-                                    The multi-process core writes it -- a
-                                    successful clone appends the pid it returns,
-                                    a reap removes it -- through
-                                    [with_child_pids]; this record only holds
-                                    it.  Kernel citations, read at v6.18.44 and
+                                    A successful clone appends the pid it
+                                    returns: the released clone arms call
+                                    [with_child], and the multi-process core's
+                                    clone step runs that same released step.
+                                    A reap removes it through
+                                    [with_child_pids].  Kernel citations, read at v6.18.44 and
                                     identical at v6.18.46: kernel/fork.c
                                     [copy_process], kernel/exit.c [do_wait]. *)
 ;
@@ -5039,10 +5040,9 @@ Definition with_setsid_succeeded (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 
-(** Record that the process now has something to reap.
-    [Kernel.Fork.clone_resolve] calls this on its success branch, and only
-    there — the errno alternative creates nothing and the shared-file
-    decline never reaches a resolution.
+(** Record that the process now has something to reap.  The released
+    clone arms do not call this directly: their success branch calls
+    [with_child], which sets this same bit and also records the pid.
 
     MONOTONE ONCE SET, and that is load-bearing rather than incidental:
     [Kernel.Exit.wait4_spec]'s -ECHILD gate reads this field at a LATER
@@ -5251,8 +5251,9 @@ Definition with_pdeath_signal (s : word) (m : Model) : Model :=
                          (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
 
-(** Install the list of unreaped children.  Its writers are the
-    multi-process core's clone and reap steps; see [procst_child_pids]. *)
+(** Install the list of unreaped children.  Its writers are the reap
+    steps, which remove a pid; a clone appends through [with_child].  See
+    [procst_child_pids]. *)
 Definition with_child_pids (l : list word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
@@ -5265,6 +5266,24 @@ Definition with_child_pids (l : list word) (m : Model) : Model :=
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
                          l (m_no_new_privs m) (m_dumpable m))
             (m_lim m) (m_time m).
+
+(** Record a child a successful clone created: [with_children]'s bit,
+    and the returned [pid] appended to [procst_child_pids].  [copy_process]
+    (kernel/fork.c) links the new task at the TAIL of its parent's
+    [children] list ([list_add_tail(&p->sibling, &p->real_parent->children)]),
+    so the list stays oldest first.  The success branch of each released
+    clone arm ([Kernel.Fork.clone_resolve], [Kernel.Fork.clone_ns_resolve])
+    is its one caller; the multi-process core's clone step runs that same
+    released step, so it records the pid through this setter too.  Kernel
+    citation: kernel/fork.c [copy_process], read at v6.18.44; identical at
+    v6.18.46. *)
+Definition with_child (pid : word) (m : Model) : Model :=
+  with_child_pids (m_child_pids m ++ [pid]) (with_children m).
+
+(** [with_child] is [with_children], then the pid appended. *)
+Lemma with_child_as_children : forall pid m,
+  with_child pid m = with_child_pids (m_child_pids m ++ [pid]) (with_children m).
+Proof. reflexivity. Qed.
 
 (** Set the no-new-privs bit.  Its one writer is [Kernel.Sys.prctl_spec]'s
     [PR_SET_NO_NEW_PRIVS] arm, which passes [true]; nothing clears it. *)
@@ -10243,6 +10262,49 @@ Lemma m_abort_terminal_with_children : forall (m : Model),
   m_abort_terminal (with_children m) = m_abort_terminal m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_abort_terminal_with_children : model.
+
+(** What [with_child] changes: the child bit and the pid list, nothing
+    else. *)
+Lemma m_child_pids_with_child : forall pid (m : Model),
+  m_child_pids (with_child pid m) = m_child_pids m ++ [pid].
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_child_pids_with_child : model.
+Lemma m_has_children_with_child : forall pid (m : Model),
+  m_has_children (with_child pid m) = true.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_has_children_with_child : model.
+Lemma m_kernel_with_child : forall pid (m : Model),
+  m_kernel (with_child pid m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_child : model.
+Lemma m_sigmask_with_child : forall pid (m : Model),
+  m_sigmask (with_child pid m) = m_sigmask m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigmask_with_child : model.
+Lemma m_sigaltstack_installed_with_child : forall pid (m : Model),
+  m_sigaltstack_installed (with_child pid m) = m_sigaltstack_installed m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigaltstack_installed_with_child : model.
+Lemma m_utsname_with_child : forall pid (m : Model),
+  m_utsname (with_child pid m) = m_utsname m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_utsname_with_child : model.
+Lemma m_statpins_with_child : forall pid (m : Model),
+  m_statpins (with_child pid m) = m_statpins m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_statpins_with_child : model.
+Lemma m_killed_with_child : forall pid (m : Model),
+  m_killed (with_child pid m) = m_killed m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_killed_with_child : model.
+Lemma m_sigabrt_pending_with_child : forall pid (m : Model),
+  m_sigabrt_pending (with_child pid m) = m_sigabrt_pending m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigabrt_pending_with_child : model.
+Lemma m_abort_terminal_with_child : forall pid (m : Model),
+  m_abort_terminal (with_child pid m) = m_abort_terminal m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_abort_terminal_with_child : model.
 
 Lemma m_abort_terminal_with_sigmask : forall (v : word) (m : Model),
   m_abort_terminal (with_sigmask v m) = m_abort_terminal m.

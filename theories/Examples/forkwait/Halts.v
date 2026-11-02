@@ -1117,7 +1117,7 @@ Qed.
 
 (** And its VIEW survives, provided the step left the shared file system
     and I/O alone -- which the two arms this program steps with do, since
-    [with_halted] and [with_children] rebuild the model around the same
+    [with_halted] and [with_child] rebuild the model around the same
     [m_fsys] and [m_io].  That is [view_frame_absorb]'s hypothesis and
     the reason it is a hypothesis: a general version would be false. *)
 Lemma fw_two_other_view : forall P e c' q eq,
@@ -1372,7 +1372,7 @@ Qed.
     -- so the alternative is taken apart here.
 
     Neither outcome writes memory and neither halts: the clone's effect
-    is a return value and, on the pid side, [State.with_children]. *)
+    is a return value and, on the pid side, [State.with_child]. *)
 Lemma fw_clone_resolve_inv : forall i m eff m' evs,
   clone_resolve i m (Ok eff m' evs) ->
   evs = []
@@ -3961,7 +3961,7 @@ Qed.
 Lemma fw_clone_resolve_ok : forall i m (p : word),
   clone_no_shared_file_b (m_fds m) = true ->
   clone_pid_ok_b m p = true ->
-  clone_resolve i m (Ok (mkEffect p [] []) (with_children m) []).
+  clone_resolve i m (Ok (mkEffect p [] []) (with_child p m) []).
 Proof.
   intros i m p Hgate Hok.
   unfold clone_resolve, bind. cbv beta iota.
@@ -3972,7 +3972,7 @@ Proof.
   split; [exists p; split; [exact Hok | reflexivity]|].
   split; [|reflexivity].
   unfold bind. cbv beta iota.
-  exists tt, (with_children m), [], [].
+  exists tt, (with_child p m), [], [].
   split; [reflexivity|]. split; [reflexivity | reflexivity].
 Qed.
 
@@ -3982,7 +3982,7 @@ Lemma fw_clone_spec_ok : forall segs ms x8 model (p : word),
   clone_no_shared_file_b (m_fds model) = true ->
   clone_pid_ok_b model p = true ->
   syscall_spec (sys_input segs ms x8) model
-    (Ok (mkEffect p [] []) (with_children model) []).
+    (Ok (mkEffect p [] []) (with_child p model) []).
 Proof.
   intros segs ms x8 model p H220 Ha0 Hgate Hok.
   assert (Hno : bv_unsigned (in_sysno (sys_input segs ms x8)) = 220%Z)
@@ -4029,7 +4029,7 @@ Proof.
   assert (Hpid : clone_pid_ok_b m q = true)
     by (apply fw_clone_pid_ok; [exact Htid | exact Hlo | exact Hhi]).
   assert (Hspec : syscall_spec (sys_input forkwait_segs (pe_ms e) 220) m
-                    (Ok (mkEffect q [] []) (with_children m) []))
+                    (Ok (mkEffect q [] []) (with_child q m) []))
     by (apply fw_clone_spec_ok;
         [apply fw_two_twenty | exact Ha0 | exact Hgate | exact Hpid]).
   assert (Hnr : ~ spurious_refusal_cfg cfg
@@ -4038,20 +4038,20 @@ Proof.
   { apply spurious_refusal_not_refusal. cbn [eff_ret].
     apply fw_refusal_b_pid;
       [rewrite in_sysno_sys_input; apply fw_two_twenty | exact Hhi]. }
-  assert (Hmat : materialize_model_accesses (with_children m)
+  assert (Hmat : materialize_model_accesses (with_child q m)
                    (syscall_effect_accesses (mkEffect q [] []))
-                 = Some (with_children m))
+                 = Some (with_child q m))
     by (apply materialize_model_accesses_no_lazy; exact Hlz).
   assert (Hss : sstep_cfg forkwait_segs cfg (pe_cfg (pcfg_shared P) e) []
                   (SNext (mkCfg (advance_past_svc
                                    (apply_effect (pe_ms e) (mkEffect q [] [])))
-                                (with_children m)))).
+                                (with_child q m)))).
   { apply (sstep_cfg_syscall forkwait_segs cfg (pe_ms e) m 220
-             (mkEffect q [] []) (with_children m) (with_children m) []);
+             (mkEffect q [] []) (with_child q m) (with_child q m) []);
       [exact Hh | exact Hsv | exact Hspec | exact Hnr | exact Hh | exact Hmat]. }
   set (c' := mkCfg (advance_past_svc
                       (apply_effect (pe_ms e) (mkEffect q [] [])))
-                   (with_children m)).
+                   (with_child q m)).
   assert (Ha0' : ms_gpr (cfg_ms c') 0 = q)
     by (unfold c'; apply fw_a0_after_effect).
   exists [], (PNext (clone_result P e c' q)). exists (pe_pid e).
