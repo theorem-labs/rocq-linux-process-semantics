@@ -178,12 +178,15 @@ Record Dentry := mkDentryRec {
 Definition mkDentry (i s : positive) (p : option positive) (name : list byte) (ino : positive) : Dentry :=
   mkDentryRec i s p name ino false.
 
-(** Where a walk ends: a dentry seen through a mount, or an entry of a
+(** Where a walk ends: a dentry seen through a mount, an entry of a
     task's procfs directory ([/proc/<pid>/...] below the task's
-    directory, [rest] the names after it). *)
+    directory, [rest] the names after it), or procfs's "self" link itself
+    when the walk does not follow it ([own]: the caller's tgid in that
+    procfs's pid namespace, [None] when it has none there). *)
 Inductive Loc :=
   | LDentry (mnt d : positive)
-  | LProcTask (mnt : positive) (pid : Z) (rest : list (list byte)).
+  | LProcTask (mnt : positive) (pid : Z) (rest : list (list byte))
+  | LProcSelf (mnt : positive) (own : option Z).
 
 (** A credential as capability checks and map writes read it: its user
     namespace, euid and egid (kernel ids), and its effective set, which is

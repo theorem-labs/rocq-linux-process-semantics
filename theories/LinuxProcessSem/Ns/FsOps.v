@@ -133,7 +133,7 @@ Definition create_tmpfs (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds
       | SbHost => OROver
       | SbTmpfs =>
           match p with
-          | LProcTask _ _ _ => OROver
+          | LProcTask _ _ _ | LProcSelf _ _ => OROver
           | LDentry mn d =>
               match find_dentry st d, dentry_inode st d with
               | Some dx, Some parent =>
