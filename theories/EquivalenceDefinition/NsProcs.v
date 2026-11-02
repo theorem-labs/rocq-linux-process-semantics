@@ -104,7 +104,7 @@ Lemma pstep_x_at_grows : forall ext cenv segs cfg p P evs P',
 Proof.
   intros ext cenv segs cfg p P evs P' H Hlt.
   inversion H; subst; try (do 5 eexists; reflexivity); exfalso;
-    unfold absorb_x, absorb, wait4_zero_result, wait4_reap_result in Hlt;
+    unfold absorb_x, absorb, wait4_zero_result, wait4_reap_result, sync_result in Hlt;
     simpl pcfg_procs in Hlt; try rewrite orphan_at_exit_length in Hlt;
     first
       [ rewrite replace_in_length in Hlt; lia
@@ -422,16 +422,24 @@ Module NsProcs := NsStep ProcsCore.
    What a focused process reads, on this core
    ========================================================================= *)
 
-(** Everything process [f] can read: its own entry (registers, model,
-    descriptor table, namespace context); each open file description its
-    descriptors name, with its content (what, offset, flags and the count
-    of references, whose fall to zero a reader of a pipe sees as end of
-    file); the file system and I/O state; the pipe buffers; the
-    namespace state; and the core's record of [f] ([Procs.sh_meta] at
-    [f]: whether [f]'s namespace bits are ones the core does not model,
-    which [Procs.ns_refused_b] reads before every step of [f]).  A
-    per-process descriptor that is not a shared description (an eventfd,
-    a signalfd) is part of [f]'s own model. *)
+(** What process [f] reads from its own state and the shared state: its
+    own entry (registers, model, descriptor table, namespace context);
+    each open file description its descriptors name, with its content
+    (what, offset, flags and the count of references, whose fall to zero
+    a reader of a pipe sees as end of file); the file system and I/O
+    state; the pipe buffers; the namespace state; and the core's record of
+    [f] ([Procs.sh_meta] at [f]: whether [f]'s namespace bits are ones the
+    core does not model, which [Procs.peer_refused_b] reads before every
+    step of [f]).  A per-process descriptor that is not a shared
+    description (an eventfd, a signalfd) is part of [f]'s own model.
+
+    NOT IN THE VIEW: what the core's sync arm ([Procs.px_sync]) copies
+    into [f]'s model from the OTHER processes before [f]'s clock reads,
+    [uname] and [fstat] of a pinned path -- the largest clock, a peer's
+    uts name, a peer's stat pin.  Those follow the other processes' own
+    progress, so a view that held them would make [focus_noninterfering]
+    false whenever another process runs.  A lineage that makes those calls
+    needs facts about them besides [lineage_quiet]. *)
 Record FocusView := mkFocusView {
   fv_entry : option ProcessEntry;
   fv_ofds  : list (OfdId * option Ofd);

@@ -379,6 +379,17 @@ Proof.
   unfold multiproc_shared. cbn [cfg_ms pe_cfg]. rewrite Hs, H260. reflexivity.
 Qed.
 
+Lemma shared_not_sync : forall P e,
+  sync_pending_b P e = true -> multiproc_shared (pe_cfg (pcfg_shared P) e) = false.
+Proof.
+  intros P e H. destruct (sync_pending_sysno _ _ H) as (x8 & Hs & Hin).
+  unfold multiproc_shared. cbn [cfg_ms pe_cfg]. rewrite Hs.
+  cbn [multiproc_synced_sysnos List.existsb] in Hin.
+  repeat (apply orb_true_iff in Hin as [E|Hin];
+          [apply Z.eqb_eq in E; rewrite E; reflexivity|]).
+  discriminate Hin.
+Qed.
+
 (** THE FRAME.  A step of [p] at a class-(B) call keeps the root and the
     three shared tables it does not splice, lets the file system only grow,
     and keeps every other entry but for the orphaning of [p]'s children
@@ -405,7 +416,7 @@ Proof.
   destruct Hcases as
     [ (c' & Hs & _ & _ & ->)
     | [ (c' & q & _ & Hsucc & _)
-      | [ (Hwt & _) | (Hwo & _) ] ] ].
+      | [ (Hwt & _) | [ (Hwo & _) | (Hsy & _ & _) ] ] ] ].
   - pose proof (sstep_shared_grows _ _ _ _ _ Hp Hs) as Hg.
     split; [reflexivity|]. split; [reflexivity|]. split; [reflexivity|].
     split; [reflexivity|]. split.
@@ -417,6 +428,7 @@ Proof.
   - rewrite (shared_not_clone _ (clone_success_pending _ _ Hsucc)) in Hp. discriminate Hp.
   - rewrite (shared_not_intercept _ Hwt) in Hp. discriminate Hp.
   - rewrite (shared_not_owned _ _ Hwo) in Hp. discriminate Hp.
+  - rewrite (shared_not_sync _ _ Hsy) in Hp. discriminate Hp.
 Qed.
 
 (** The path a file descriptor names, for the four kinds that name one. *)
