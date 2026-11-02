@@ -566,8 +566,7 @@ Proof. repeat split; vm_compute; reflexivity. Qed.
 
 (** A caller with no pid in the procfs's pid namespace: ENOENT. *)
 Definition c_nopid : NsCtx :=
-  mkNsCtx 1 1 1 1 [] (1%positive, 1%positive) (1%positive, 2%positive) 18 no_caps 0 []
-          (Some false) (Some 1%Z).
+  mkNsCtx 1 1 1 1 [] (1%positive, 1%positive) (1%positive, 2%positive) 18 no_caps 0 [].
 Example readlinkat_proc_self_no_pid :
   ret_of (readlinkat_fn (readlink_in CWD s_self 64) m3 c_nopid W) = Some (-2).
 Proof. vm_compute. reflexivity. Qed.
