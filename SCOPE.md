@@ -447,8 +447,8 @@ not apply.
   `signal_pending` true (`recalc_sigpending_tsk`, `kernel/signal.c`).
   The assumption covers a signal left pending by the launcher: `execve`
   keeps the pending set (`begin_new_exec`, `fs/exec.c`, flushes the
-  handlers and the itimer signals only, v6.18.44), and a `read` of a
-  signalfd would hand it back.
+  handlers and the itimer signals only; read at v6.18.44; identical at
+  v6.18.46), and a `read` of a signalfd would hand it back.
   In particular the parent does not exit while a parent-death signal is
   set (`prctl(PR_SET_PDEATHSIG)`): Linux then sends that signal
   (`forget_original_parent`, `kernel/exit.c`, v6.18.44), and the model

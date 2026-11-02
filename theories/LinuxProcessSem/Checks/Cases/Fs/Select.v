@@ -1018,6 +1018,35 @@ Example ppoll_bwrap_monitor_declines :
      = CheckOk pselect_model [].
 Proof. repeat split; first [ check_eq | vm_compute; reflexivity ]. Qed.
 
+(** Replacing the signalfd's mask leaves the monitor's other fields and the
+    eventfd unchanged. *)
+Definition pp_bwrap_with_sfd_mask (mask : Z) : Model :=
+  with_fds
+    (fd_insert (m_fds pp_bwrap_model) 3
+      (FdOpaque (OSignalFd (Z_to_bv 64 mask) (Z_to_bv 64 0x80800))))
+    pp_bwrap_model.
+
+(** A pending selected signal makes [signalfd_poll] decline, so a zero-timeout
+    poll cannot choose an otherwise-ready eventfd outcome.  The control has
+    the same descriptor mask without the pending signal. *)
+Example ppoll_bwrap_pending_sigabrt_declines :
+  check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 1)
+    (with_sigabrt_pending (pp_bwrap_with_sfd_mask sigabrt_mask))
+  = CheckUnmodeled
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 1)
+       (pp_bwrap_with_sfd_mask sigabrt_mask)
+     = CheckOk (pp_bwrap_with_sfd_mask sigabrt_mask) [].
+Proof. split; check_eq. Qed.
+
+Example ppoll_bwrap_pending_sigpipe_declines :
+  check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 1)
+    (with_sigpipe_pending (pp_bwrap_with_sfd_mask sigpipe_mask))
+  = CheckUnmodeled
+  /\ check_syscall (pp_bwrap_in pp_tsp (pp_ts 0 0) 1) (pp_bwrap_eff true 1 0 1)
+       (pp_bwrap_with_sfd_mask sigpipe_mask)
+     = CheckOk (pp_bwrap_with_sfd_mask sigpipe_mask) [].
+Proof. split; check_eq. Qed.
+
 (* ---- ppoll (73) with a NULL timeout, at the step: [Run.waits_end] ------- *)
 
 (** A machine state at a [ppoll] ecall with [nfds] entries [ent] at

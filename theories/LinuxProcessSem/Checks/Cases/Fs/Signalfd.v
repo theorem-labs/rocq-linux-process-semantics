@@ -189,3 +189,43 @@ Example read_signalfd_pending_sigpipe_declined :
   /\ check_syscall (sfd_read_in 3 128) (mkEffect (errno_ret EAGAIN) [] []) mk
      = CheckOk mk [].
 Proof. cbv zeta. split; check_eq. Qed.
+
+(** [vfs_read]'s range check answers -EFAULT before inspecting a signalfd,
+    just as it does for channel 0. *)
+Definition sfd_read_access_fault_in : SyscallInput :=
+  mkInput 63 [3; Z_to_bv 64 TASK_SIZE; 128; 0; 0; 0] (fun _ => None) (fun _ => None).
+
+Example read_signalfd_access_ok_fault :
+  check_syscall sfd_read_access_fault_in (mkEffect (errno_ret EFAULT) [] []) sfd_ready_model
+  = CheckOk sfd_ready_model []
+  /\ check_syscall
+       (mkInput 63 [0; Z_to_bv 64 TASK_SIZE; 128; 0; 0; 0]
+          (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) sfd_model
+     = CheckOk sfd_model [].
+Proof. split; check_eq. Qed.
+
+(** A record destination that is in range but one byte short declines; a
+    wholly writable destination gives the already-modeled -EAGAIN control. *)
+Definition sfd_read_partial_in : SyscallInput :=
+  mkInput 63 [3; 0x10000; 128; 0; 0; 0] (fun _ => None)
+    (bytes_at 0x10000 (repeat (Z_to_bv 8 0) 127)).
+
+Example read_signalfd_partial_destination_declines :
+  check_syscall sfd_read_partial_in (mkEffect (errno_ret EAGAIN) [] []) sfd_ready_model
+  = CheckUnmodeled
+  /\ check_syscall (sfd_read_in 3 128) (mkEffect (errno_ret EAGAIN) [] []) sfd_ready_model
+     = CheckOk sfd_ready_model [].
+Proof. split; check_eq. Qed.
+
+(** A descriptor that selects pending SIGABRT declines, while the same
+    descriptor with no pending signal has the existing -EAGAIN answer. *)
+Example read_signalfd_pending_sigabrt_declined :
+  let mk := with_sigmask (Z_to_bv 64 sigabrt_mask)
+              (sfd_minted sigabrt_mask 0x80800) in
+  check_syscall (sfd_read_in 3 128) (mkEffect (errno_ret EAGAIN) [] [])
+    (with_sigabrt_pending mk)
+  = CheckUnmodeled
+  /\ check_syscall (sfd_read_in 3 128) (mkEffect (errno_ret EAGAIN) [] []) mk
+     = CheckOk mk [].
+Proof. cbv zeta. split; check_eq. Qed.
