@@ -452,16 +452,39 @@ Definition promote_one (S : shared) (i : OfdId) (fd : word) (e : FdEntry)
    ========================================================================= *)
 
 (** The child's machine state: the parent's successor with a0 = 0, and the
-    stack pointer the call asked for.  [set_reg] takes a PHYSICAL register
-    number; a0 is x10 and sp is x2.
+    stack pointer the call gives the child.  [set_reg] takes a PHYSICAL
+    register number; a0 is x10 and sp is x2.
 
-    [newsp] is honoured when it is non-zero.  Legacy [clone] accepts an
-    arbitrary one and it changes the CHILD's stack pointer (Fork.v:753-764);
-    zero means the child keeps the parent's, which is what [fork] does. *)
+    WHICH CALL MOVES THE CHILD'S STACK, and the reason the argument is not
+    read blindly.  Linux's [copy_thread] (arch/riscv/kernel/process.c)
+    seats [usp] in the child's sp only when it is non-zero; otherwise the
+    child keeps the parent's.
+    - [clone] (220): [usp] is argument 1, [newsp].  Legacy [clone] accepts
+      an arbitrary one and it changes the CHILD's stack pointer
+      (Fork.v:753-764); zero, which musl's [fork] passes, keeps the
+      parent's.
+    - [clone3] (435): argument 1 is the SIZE of [struct clone_args], 88
+      at the one modeled size, not a stack.  [usp] is the struct's
+      [stack] field, which the released spec requires to be zero
+      (Fork.v:795), so the child keeps the parent's.
+    Reading argument 1 for both gave every [clone3] child sp = 88.
+    [clone_child_sp] is the stack a successful call seats, [None] for the
+    parent's. *)
+Definition clone_child_sp (c : config) : option word :=
+  match ms_svc_pending (cfg_ms c) with
+  | Some x8 =>
+      if Z.eqb (bv_unsigned x8) 220%Z then
+        if w_is0 (ms_gpr (cfg_ms c) 1) then None else Some (ms_gpr (cfg_ms c) 1)
+      else None
+  | None => None
+  end.
+
 Definition child_ms (c c' : config) : machine_state :=
-  let newsp := ms_gpr (cfg_ms c) 1 in
   let base := set_reg (cfg_ms c') 10 (Z_to_bv 64 0) in
-  if w_is0 newsp then base else set_reg base 2 newsp.
+  match clone_child_sp c with
+  | None => base
+  | Some sp => set_reg base 2 sp
+  end.
 
 (** The child's process record: the parent's, with the two fields that are
     the CHILD's own cleared.

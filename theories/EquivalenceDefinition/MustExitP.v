@@ -172,9 +172,9 @@ Lemma child_entry_a0_zero : forall e c c' q,
 Proof.
   intros e c c' q.
   unfold entry_a0_zero, child_entry, child_ms. cbn [pe_ms].
-  destruct (w_is0 (ms_gpr (cfg_ms c) 1)).
-  - apply ms_gpr_set_reg_a0.
+  destruct (clone_child_sp c).
   - apply ms_gpr_set_reg_sp_a0.
+  - apply ms_gpr_set_reg_a0.
 Qed.
 
 (* =========================================================================

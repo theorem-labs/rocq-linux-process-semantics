@@ -2603,13 +2603,17 @@ Lemma fw_w_is0_zero : w_is0 (0 : word) = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (** With [newsp] zero -- which is what this program passes -- the child
-    inherits the parent's stack and differs from it only in a0. *)
+    inherits the parent's stack and differs from it only in a0
+    ([Procs.clone_child_sp] moves it only for a [clone] with a non-zero
+    [newsp]). *)
 Lemma fw_child_ms_eq : forall c c',
   ms_gpr (cfg_ms c) 1 = 0 ->
   child_ms c c' = set_reg (cfg_ms c') 10 (Z_to_bv 64 0).
 Proof.
-  intros c c' H1. unfold child_ms. cbv zeta. rewrite H1, fw_w_is0_zero.
-  reflexivity.
+  intros c c' H1. unfold child_ms, clone_child_sp. cbv zeta.
+  destruct (ms_svc_pending (cfg_ms c)) as [x8|]; [|reflexivity].
+  destruct (Z.eqb (bv_unsigned x8) 220%Z); [|reflexivity].
+  rewrite H1, fw_w_is0_zero. reflexivity.
 Qed.
 
 (** An errno return is negative as a signed word, which is what sends
