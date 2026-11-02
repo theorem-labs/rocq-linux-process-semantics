@@ -307,31 +307,32 @@ Open Scope bv_scope.
     is {kb_vdso_text}).  [kb_aslr] is the boot's own: false under
     `norandmaps`, true otherwise.
 
-    The remaining five are [State.default_kernel]'s, and the replay
+    The remaining six are [State.default_kernel]'s, and the replay
     does not depend on them: [Sys/Mm/Mmap.linux_place] reads [kb_thp],
     and [State.vdso_reserved] reads [kb_vdso], and nothing in a
     placement reads the guard gap, the randomisation width, rseq, the
-    vector length or the cache words.  A start-state replay does read
-    them, and that is what tools/placement_conformance's start-state
-    rules are for. *)
+    vector length, the cache words or fs.suid_dumpable.  A start-state
+    replay does read the first five of them, and that is what
+    tools/placement_conformance's start-state rules are for. *)
 Definition replay_kernel : KernelBuild :=
   mkKernelBuild {thp} {kb_vdso_text}%N {kb_aslr}
     (kb_guard default_kernel) (kb_rnd_bits default_kernel)
     (kb_rseq default_kernel) (kb_vlenb default_kernel)
-    (kb_cache default_kernel).
+    (kb_cache default_kernel) (kb_suid_dumpable default_kernel).
 
 (** The launch.  Nothing below reads the argument vector, the environment,
     the file system or the credentials, so they are empty or ordinary; the
     three fields that decide a placement — the reserved ledger, the mmap
-    base and the stack pointer — are the log's.  The two trailing
+    base and the stack pointer — are the log's.  The three trailing
     declarations are [in_channel_reader] and [in_sigpipe_default], both
-    [true]: an ordinary launch whose standard output is read and whose
-    SIGPIPE still kills, which is what [Run.valid_input] pins and what a
-    placement replay has no opinion about. *)
+    [true], and [in_sigpipe_terminal], [false]: an ordinary launch whose
+    standard output is read, whose SIGPIPE is at SIG_DFL and whose
+    SIGPIPE death is declined, which is what [Run.valid_input] pins and
+    what a placement replay has no opinion about. *)
 Definition replay_input : ProcInput :=
   mkProcInput_full [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
     net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48
-    default_urandom [] replay_kernel default_execfn true true.
+    default_urandom [] replay_kernel default_execfn true true false.
 
 (** The probe's own image, as /proc/self/maps reported it.  The vDSO pair is
     not here: [init_model] appends it from [replay_kernel]. *)

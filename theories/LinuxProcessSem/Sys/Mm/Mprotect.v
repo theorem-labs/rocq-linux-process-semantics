@@ -276,6 +276,23 @@ Definition mprotect_spec (addr len prot : word) : Sys SyscallEffect :=
     let h := m_vmmaps m in
     let nZ := page_round_up_Z (bv_unsigned len) in
     let n := Z_to_bv 64 nZ in
+    (* THE vDSO/vvar PAIR, before anything that reads [prot].
+       [__setup_additional_pages] (arch/riscv/kernel/vdso.c, Linux
+       v6.18.46, commit 1f99e9ab748f) maps the text with [VM_MAYWRITE],
+       so Linux lets a process make it writable, and from there the
+       process can rewrite the code its own libc calls.  The model has
+       no term for a vDSO whose bytes changed: [Run.sstep]'s vDSO arm
+       reads the entries off the MEASURED image, and after such an
+       [mprotect] the bytes are no longer that image's.  So a request
+       that meets either mapping is [unmodeled] rather than answered —
+       the same stance [Sys.Mm.Mmap]'s [munmap], [MAP_FIXED] and
+       [mremap] arms take over the pair, and for the same reason.
+       [State.vdso_reserved] is the pair's one range; the rest of
+       [vm_reserved] is the binary's own LOAD segments, which this gate
+       does not speak about. *)
+    if negb (region_free (vdso_reserved (m_kernel m) (vdso_top h)) addr n)
+    then unmodeled
+    else
     (* The [vm_maps] conjunct is what makes this branch sound on its own,
        including during the documented same-page brk-shrink state where a
        physical [vm_noaccess] tail may extend past byte-granular [vm_maps]
@@ -337,7 +354,11 @@ Definition mprotect_budget_refused_b (addr len prot : word) (m : Model) : bool :
     let h := m_vmmaps m in
     let nZ := page_round_up_Z (bv_unsigned len) in
     let n := Z_to_bv 64 nZ in
-    if map_contains (vm_noaccess h) addr n && map_contains (vm_maps h) addr n
+    (* The pair's gate answers [unmodeled], which is not a refusal, so
+       the mark must not fire there either. *)
+    if negb (region_free (vdso_reserved (m_kernel m) (vdso_top h)) addr n)
+    then false
+    else if map_contains (vm_noaccess h) addr n && map_contains (vm_maps h) addr n
     then negb (mprotect_budget_ok m addr n)
     else false
   else false.

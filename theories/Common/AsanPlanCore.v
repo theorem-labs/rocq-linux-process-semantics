@@ -3235,8 +3235,8 @@ Definition auxsz_rseq_off_input : ProcInput :=
   mkProcInput_full [[]] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
     net_silent default_nofile (Z_to_bv 64 0) StackLayout.hwcap_rv64gc false
     Sv48 default_urandom []
-    (mkKernelBuild false 1%N true 256%N 0%N false 0%N cache_view_absent)
-    default_execfn true true.
+    (mkKernelBuild false 1%N true 256%N 0%N false 0%N cache_view_absent SuidDumpDisable)
+    default_execfn true true false.
 
 Example auxsz_refuses_a_build_without_rseq :
   kb_rseq (in_kernel auxsz_rseq_off_input) = false

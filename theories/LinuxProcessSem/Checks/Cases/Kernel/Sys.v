@@ -532,12 +532,14 @@ Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (** PRIVILEGED [setuid]: real, effective and saved all become the
     argument — the transition that gives root away for good, and the
-    reason a privilege drop must set the group ids FIRST.
+    reason a privilege drop must set the group ids FIRST.  The effective
+    uid moves, so [commit_creds] also sets the dumpable mode to the
+    build's [suid_dumpable], 0 on [State.default_kernel].
     [ENVIRONMENT]: needs uid 0. *)
 Example privileged_setuid_moves_all_three_ids :
   check_syscall (mkInput 146 [1000; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) root_model
-  = CheckOk (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) demo_model) [].
+  = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) demo_model)) [].
 Proof. solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (** -EAGAIN, in the one place it is admissible, and nowhere else.
@@ -568,17 +570,18 @@ Example eagain_only_when_a_privileged_setuid_moves_the_real_uid :
        (mkEffect (errno_ret ENOMEM) [] []) root_model = CheckOk root_model [].
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
-(** UNPRIVILEGED [setuid] moves the EFFECTIVE id and nothing else, and
+(** UNPRIVILEGED [setuid] moves the EFFECTIVE id and no other id, and
     reaches the saved id as well as the real one — a disjunct that is
     dead in every state an unprivileged run can reach, since [State.init_model]
-    makes the two agree at launch.  [ENVIRONMENT]: needs split ids. *)
+    makes the two agree at launch.  As the effective id moves, the dumpable
+    mode becomes [suid_dumpable] (0 here).  [ENVIRONMENT]: needs split ids. *)
 Example unprivileged_setuid_moves_only_the_effective_id :
   check_syscall (mkInput 146 [1000; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) split_ids_model
-  = CheckOk (with_creds (mkCreds 1000 1000 1002 2000 2001 2002 demo_groups) demo_model) []
+  = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1000 1002 2000 2001 2002 demo_groups) demo_model)) []
   /\ check_syscall (mkInput 146 [1002; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) split_ids_model
-     = CheckOk (with_creds (mkCreds 1000 1002 1002 2000 2001 2002 demo_groups) demo_model) []
+     = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1002 1002 2000 2001 2002 demo_groups) demo_model)) []
   /\ check_syscall (mkInput 146 [1003; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) split_ids_model = CheckReject.
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
@@ -606,7 +609,7 @@ Example setresuid_reaches_its_allocating_branch :
   check_syscall (mkInput 147 [1000; 1000; 1000; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) root_model
-  = CheckOk (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) demo_model) []
+  = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) demo_model)) []
   (* -EAGAIN is admissible: the REAL uid moves, and this is the user
      setter *)
   /\ check_syscall (mkInput 147 [1000; 1000; 1000; 0; 0; 0]
@@ -631,7 +634,7 @@ Example unprivileged_setresuid_may_rearrange_held_ids :
   check_syscall (mkInput 147 [4294967295; 1002; 4294967295; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) split_ids_model
-  = CheckOk (with_creds (mkCreds 1000 1002 1002 2000 2001 2002 demo_groups) demo_model) []
+  = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1002 1002 2000 2001 2002 demo_groups) demo_model)) []
   (* the real uid does not move here, so -ENOMEM is admissible and
      -EAGAIN is not *)
   /\ check_syscall (mkInput 147 [4294967295; 1002; 4294967295; 0; 0; 0]
@@ -656,9 +659,10 @@ Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
    passed -- an option that still declines, and [PR_CAPBSET_READ]
    unchanged -- so a [prctl] that answered everything would fail here as
    surely as one that answered nothing.  The model is [demo_model]
-   throughout.  [PR_SET_DUMPABLE] and [PR_SET_NO_NEW_PRIVS] hand it back
-   unchanged; [PR_SET_PDEATHSIG] stores its argument, and its reader
-   [PR_GET_PDEATHSIG] has examples of its own at the end of this file.
+   throughout.  Each setter stores what it sets: [PR_SET_DUMPABLE] the
+   dumpable mode, [PR_SET_NO_NEW_PRIVS] the bit, [PR_SET_PDEATHSIG] the
+   signal; the readers have examples of their own below and at the end
+   of this file.
    ========================================================================= *)
 
 Definition prctl_in (opt a2 a3 a4 a5 : word) : SyscallInput :=
@@ -670,7 +674,7 @@ Definition prctl_in (opt a2 a3 a4 a5 : word) : SyscallInput :=
     high half on a0 is discarded and 2^32 + 38 is the same call. *)
 Example prctl_no_new_privs_answered :
   check_syscall (prctl_in 38 1 0 0 0) (mkEffect 0 [] []) demo_model
-    = CheckOk demo_model []
+    = CheckOk (with_no_new_privs true demo_model) []
   /\ check_syscall (prctl_in 38 2 0 0 0)
        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
   /\ check_syscall (prctl_in 38 1 0 0 1)
@@ -678,7 +682,7 @@ Example prctl_no_new_privs_answered :
   /\ check_syscall (prctl_in 38 1 4294967296 0 0)
        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
   /\ check_syscall (prctl_in 4294967334 1 0 0 0) (mkEffect 0 [] []) demo_model
-       = CheckOk demo_model []
+       = CheckOk (with_no_new_privs true demo_model) []
   (* and each answer is the only one: no 0 for a refused shape, no
      -EINVAL for the accepted one *)
   /\ check_syscall (prctl_in 38 2 0 0 0) (mkEffect 0 [] []) demo_model
@@ -711,30 +715,56 @@ Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (** [prctl(PR_SET_DUMPABLE, v)] is 0 for [SUID_DUMP_DISABLE] (0) and
     [SUID_DUMP_USER] (1), the call bwrap makes after it drops privilege,
-    and -EINVAL for anything else, [SUID_DUMP_ROOT] (2) included. *)
+    and stores [v]; -EINVAL for anything else, [SUID_DUMP_ROOT] (2)
+    included, stores nothing. *)
 Example prctl_dumpable_answered :
   check_syscall (prctl_in 4 1 0 0 0) (mkEffect 0 [] []) demo_model
-    = CheckOk demo_model []
+    = CheckOk (with_dumpable 1 demo_model) []
   /\ check_syscall (prctl_in 4 0 0 0 0) (mkEffect 0 [] []) demo_model
-       = CheckOk demo_model []
+       = CheckOk (with_dumpable 0 demo_model) []
   /\ check_syscall (prctl_in 4 2 0 0 0)
        (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
   /\ check_syscall (prctl_in 4 2 0 0 0) (mkEffect 0 [] []) demo_model
        = CheckReject.
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
-(** THE CONTROL, which the model before these three options passed too.
-    The readers [PR_GET_NO_NEW_PRIVS] (39) and [PR_GET_DUMPABLE] (3)
-    still decline, as does the tagging option 55 the [State.access_okb]
-    argument rests on, and [PR_CAPBSET_READ] still admits 1 for
-    capability 0. *)
+(** THE READERS, which the model before these fields declined.
+    [prctl(PR_GET_DUMPABLE)] answers the stored mode with no argument
+    read: 1 at launch ([State.m_dumpable_init_model]), 0 after
+    [PR_SET_DUMPABLE] 0, and 2 where [commit_creds] installed a
+    [suid_dumpable] of 2.  [prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0)]
+    answers 0 at launch and 1 after [PR_SET_NO_NEW_PRIVS]; any nonzero
+    [arg2]..[arg5] is -EINVAL.  Each answer is the only one. *)
+Example prctl_readers_answered :
+  check_syscall (prctl_in 3 0 0 0 0) (mkEffect 1 [] []) demo_model
+    = CheckOk demo_model []
+  /\ check_syscall (prctl_in 3 7 7 7 7) (mkEffect 1 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall (prctl_in 3 0 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckReject
+  /\ check_syscall (prctl_in 3 0 0 0 0) (mkEffect 0 [] []) (with_dumpable 0 demo_model)
+       = CheckOk (with_dumpable 0 demo_model) []
+  /\ check_syscall (prctl_in 3 0 0 0 0) (mkEffect 2 [] []) (with_dumpable 2 demo_model)
+       = CheckOk (with_dumpable 2 demo_model) []
+  /\ check_syscall (prctl_in 39 0 0 0 0) (mkEffect 0 [] []) demo_model
+       = CheckOk demo_model []
+  /\ check_syscall (prctl_in 39 0 0 0 0) (mkEffect 1 [] []) demo_model
+       = CheckReject
+  /\ check_syscall (prctl_in 39 0 0 0 0) (mkEffect 1 [] [])
+       (with_no_new_privs true demo_model)
+       = CheckOk (with_no_new_privs true demo_model) []
+  /\ check_syscall (prctl_in 39 1 0 0 0)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model []
+  /\ check_syscall (prctl_in 39 0 0 0 1)
+       (mkEffect (errno_ret EINVAL) [] []) demo_model = CheckOk demo_model [].
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE CONTROL, which the model before these options passed too.  The
+    tagging option 55 the [State.access_okb] argument rests on still
+    declines, and [PR_CAPBSET_READ] still admits 1 for capability 0. *)
 Example prctl_options_still_declined :
-  check_syscall (prctl_in 39 0 0 0 0) (mkEffect 0 [] []) demo_model
+  check_syscall (prctl_in 55 0 0 0 0) (mkEffect 0 [] []) demo_model
     = CheckUnmodeled
-  /\ check_syscall (prctl_in 3 0 0 0 0) (mkEffect 1 [] []) demo_model
-       = CheckUnmodeled
-  /\ check_syscall (prctl_in 55 0 0 0 0) (mkEffect 0 [] []) demo_model
-       = CheckUnmodeled
   /\ check_syscall (prctl_in 23 0 0 0 0) (mkEffect 1 [] []) demo_model
        = CheckOk demo_model [].
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
@@ -988,29 +1018,31 @@ Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (** SET, THEN A CREDENTIAL CHANGE, THEN GET.  [setresuid(1000, 1000,
     1000)] moves the effective uid off 0, so [commit_creds] resets the
-    signal and the read gives 0.  [setresuid(1000, 0, 1000)] keeps the
-    effective uid 0, so the signal stays 9: the reset follows the
-    effective id, not the real or saved one. *)
+    signal and the read gives 0; it also sets the dumpable mode to the
+    build's [suid_dumpable], 0 for [State.default_kernel].
+    [setresuid(1000, 0, 1000)] keeps the effective uid 0, so the signal
+    stays 9: the reset follows the effective id, not the real or saved
+    one. *)
 Example pdeath_reset_by_effective_uid_change :
   check_syscall (prctl_mem_in 1 9) (mkEffect 0 [] []) root_model
     = CheckOk pdeath_root_model []
   /\ check_syscall (mkInput 147 [1000; 1000; 1000; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) pdeath_root_model
-    = CheckOk (with_pdeath_signal 0
+    = CheckOk (with_dumpable 0 (with_pdeath_signal 0
                  (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups)
-                    pdeath_root_model)) []
+                    pdeath_root_model))) []
   /\ check_syscall (prctl_mem_in 2 4096) (mkEffect 0 [(4096, word_le4 0)] [])
-       (with_pdeath_signal 0
+       (with_dumpable 0 (with_pdeath_signal 0
           (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups)
-             pdeath_root_model))
-     = CheckOk (with_pdeath_signal 0
+             pdeath_root_model)))
+     = CheckOk (with_dumpable 0 (with_pdeath_signal 0
                   (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups)
-                     pdeath_root_model)) []
+                     pdeath_root_model))) []
   /\ check_syscall (prctl_mem_in 2 4096) (mkEffect 0 [(4096, word_le4 9)] [])
-       (with_pdeath_signal 0
+       (with_dumpable 0 (with_pdeath_signal 0
           (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups)
-             pdeath_root_model))
+             pdeath_root_model)))
      = CheckReject
   /\ check_syscall (mkInput 147 [1000; 0; 1000; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
@@ -1021,6 +1053,36 @@ Example pdeath_reset_by_effective_uid_change :
        (with_creds (mkCreds 1000 0 1000 0 0 0 demo_groups) pdeath_root_model)
      = CheckOk (with_creds (mkCreds 1000 0 1000 0 0 0 demo_groups)
                   pdeath_root_model) [].
+Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
+
+(** THE DUMPABLE MODE FOLLOWS THE BUILD'S [suid_dumpable].  On a build
+    whose fs.suid_dumpable is 2, [setresuid(1000, 1000, 1000)] leaves the
+    mode at 2, and [PR_GET_DUMPABLE] answers 2 where the default build
+    answers 0; a call that keeps the effective uid keeps the mode 1. *)
+Definition suid2_kernel : KernelBuild :=
+  mkKernelBuild (kb_thp default_kernel) (kb_vdso default_kernel)
+                (kb_aslr default_kernel) (kb_guard default_kernel)
+                (kb_rnd_bits default_kernel) (kb_rseq default_kernel)
+                (kb_vlenb default_kernel) (kb_cache default_kernel) SuidDumpRoot.
+Definition suid2_root_model : Model := with_kernel suid2_kernel root_model.
+Example dumpable_reset_to_suid_dumpable :
+  check_syscall (mkInput 147 [1000; 1000; 1000; 0; 0; 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) suid2_root_model
+    = CheckOk (with_dumpable 2 (with_pdeath_signal 0
+                 (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups)
+                    suid2_root_model))) []
+  /\ check_syscall (prctl_in 3 0 0 0 0) (mkEffect 2 [] [])
+       (with_dumpable 2 (with_pdeath_signal 0
+          (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) suid2_root_model)))
+     = CheckOk (with_dumpable 2 (with_pdeath_signal 0
+                  (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups)
+                     suid2_root_model))) []
+  /\ check_syscall (mkInput 147 [1000; 0; 1000; 0; 0; 0]
+                     (fun _ => None) (fun _ => None))
+       (mkEffect 0 [] []) suid2_root_model
+     = CheckOk (with_creds (mkCreds 1000 0 1000 0 0 0 demo_groups)
+                  suid2_root_model) [].
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (** SET, THEN [setgroups(0, NULL)], THEN GET: the list is cleared, no id
@@ -1056,11 +1118,11 @@ Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (** THE CONTROLS.  At launch the read gives 0
     ([State.m_pdeath_signal_init_model]), and an option the model still
-    does not answer, [PR_GET_DUMPABLE] (3), stays declined with the
+    does not answer, the tagging option 55, stays declined with the
     signal set. *)
 Example pdeath_controls :
   check_syscall (prctl_mem_in 2 4096) (mkEffect 0 [(4096, word_le4 0)] [])
     demo_model = CheckOk demo_model []
-  /\ check_syscall (prctl_mem_in 3 0) (mkEffect 1 [] []) pdeath_root_model
+  /\ check_syscall (prctl_mem_in 55 0) (mkEffect 0 [] []) pdeath_root_model
      = CheckUnmodeled.
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.

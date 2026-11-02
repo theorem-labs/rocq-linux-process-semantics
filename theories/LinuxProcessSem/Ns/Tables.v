@@ -178,12 +178,15 @@ Record Dentry := mkDentryRec {
 Definition mkDentry (i s : positive) (p : option positive) (name : list byte) (ino : positive) : Dentry :=
   mkDentryRec i s p name ino false.
 
-(** Where a walk ends: a dentry seen through a mount, or an entry of a
+(** Where a walk ends: a dentry seen through a mount, an entry of a
     task's procfs directory ([/proc/<pid>/...] below the task's
-    directory, [rest] the names after it). *)
+    directory, [rest] the names after it), or procfs's "self" link itself
+    when the walk does not follow it ([own]: the caller's tgid in that
+    procfs's pid namespace, [None] when it has none there). *)
 Inductive Loc :=
   | LDentry (mnt d : positive)
-  | LProcTask (mnt : positive) (pid : Z) (rest : list (list byte)).
+  | LProcTask (mnt : positive) (pid : Z) (rest : list (list byte))
+  | LProcSelf (mnt : positive) (own : option Z).
 
 (** A credential as capability checks and map writes read it: its user
     namespace, euid and egid (kernel ids), and its effective set, which is
@@ -258,17 +261,55 @@ Record ProcEntry := mkProcEntry {
   px_empty : bool
 }.
 
+(** The values /proc/<pid>/mountinfo prints that the tables do not hold
+    ([Ns.Mountinfo]): attributes of kernel objects, fixed for each object
+    while it lives, so one value per object for the whole run.  The
+    kernel's mount ids and peer-group ids, each superblock's device
+    number, the type name of a host superblock, each mount's source name,
+    the text a superblock's [show_options] prints, and [propagate_from]. *)
+Record MiEnv := mkMiEnv {
+  mi_id      : positive -> Z;              (** [mnt_id] of a mount *)
+  mi_group   : positive -> Z;              (** [mnt_group_id] of a peer group *)
+  mi_dev     : positive -> Z * Z;          (** [MAJOR], [MINOR] of a superblock's [s_dev] *)
+  mi_type    : positive -> list byte;      (** the type name of a host superblock *)
+  mi_source  : positive -> list byte;      (** a mount's [mnt_devname] *)
+  mi_sbopts  : positive -> list byte;      (** a superblock's [show_options] text *)
+  mi_dom     : positive -> option Z        (** [get_dominating_id] when it differs from the master *)
+}.
+
+(** One choice of those values: ids as the tables number the objects,
+    device 0:<superblock id>, no type, source or options text. *)
+Definition default_mi_env : MiEnv :=
+  mkMiEnv (fun i => Zpos i) (fun g => Zpos g) (fun s => (0%Z, Zpos s))
+          (fun _ => []) (fun _ => []) (fun _ => []) (fun _ => None).
+
 (** What the running kernel's build and boot configuration fix, which no
     call changes: the mount limit (sysctl fs.mount-max), the static
     entries every procfs instance shows (the entries a kernel build
     creates in the procfs root and below it, outside the task
-    directories), and the devices a new network namespace gets besides
-    lo (the fallback devices of the loaded modules, such as sit0 or
-    ip6tnl0, each down and with no address). *)
+    directories), the devices a new network namespace gets besides lo
+    (the fallback devices of the loaded modules, such as sit0 or ip6tnl0,
+    each down and with no address), the mountinfo values above, and the
+    largest [if_nlmsg_size] (net/core/rtnetlink.c) of a device a namespace
+    of this model holds -- lo and the fallback devices, with no virtual
+    function and no port -- which bounds every RTM_NEWLINK message of a
+    link dump ([Net.nl_env_ok]).  That bound is a fact of the build's
+    configuration (the attribute sizes [if_nlmsg_size] and the address
+    families' [get_link_af_size] add up); a value below Linux's makes the
+    model refuse the dump Linux gives.  Last, the names KNOWN ABSENT from
+    a host directory: pairs of a host directory's dentry and a name whose
+    lookup there returns -ENOENT, as a negative dentry records it.  A
+    host lookup of a name the tables do not list is otherwise undecided;
+    a pair is a measured fact about the host (stat of that path gave
+    ENOENT), and a statement that lists one asks that nothing outside the
+    model creates the name. *)
 Record NsEnv := mkNsEnv {
   env_mount_max     : Z;
   env_proc_entries  : list ProcEntry;
-  env_net_fallback  : list NetIf
+  env_net_fallback  : list NetIf;
+  env_mountinfo     : MiEnv;
+  env_nl_link_max   : Z;
+  env_host_absent   : list (positive * list byte)
 }.
 
 (** The shared namespace state of a whole system.  [ns_files] holds the
@@ -299,15 +340,12 @@ Record CapSets := mkCaps {
 (** What one task holds: which user, mount, pid and network namespace it is
     in, its pid in each pid namespace from its own outwards, its root and
     current directory as (mount, dentry), its umask, its capability sets
-    (in its user namespace) and securebits, the descriptors marked
-    close-on-exec, the no_new_privs bit and the dumpable mode.  The
-    parent-death signal is the released model's ([State.m_pdeath_signal]),
-    not this record's.
-
-    [cx_no_new_privs] and [cx_dumpable] are [None] where the model does
-    not know them: the released model stores neither, so a task that
-    leaves the host's namespaces may have set either there; an arm that
-    would report one declines while it is [None]. *)
+    (in its user namespace) and securebits, and the descriptors marked
+    close-on-exec.  The parent-death signal, the no-new-privs bit and the
+    dumpable mode are the released model's ([State.m_pdeath_signal],
+    [State.m_no_new_privs], [State.m_dumpable]), not this record's: a
+    clone copies them with the process record ([Procs.child_proc]), so
+    they are known in every world. *)
 Record NsCtx := mkNsCtx {
   cx_user         : positive;
   cx_mount        : positive;
@@ -319,9 +357,7 @@ Record NsCtx := mkNsCtx {
   cx_umask        : Z;
   cx_caps         : CapSets;
   cx_securebits   : Z;
-  cx_cloexec      : list Z;
-  cx_no_new_privs : option bool;
-  cx_dumpable     : option Z
+  cx_cloexec      : list Z
 }.
 
 (** The pid of the task in pid namespace [pidns] ([task_tgid_nr_ns]), from
@@ -337,7 +373,7 @@ Fixpoint pid_in (ps : list (positive * Z)) (pidns : positive) : option Z :=
     no procfs entry.  A core builds its released world from this, never
     from the constructor, so a new field changes no caller. *)
 Definition empty_nsstate : NsState :=
-  mkNsState [] [] [] [] [] [] [] [] [] (mkNsEnv 100000%Z [] []).
+  mkNsState [] [] [] [] [] [] [] [] [] (mkNsEnv 100000%Z [] [] default_mi_env 65536%Z []).
 
 Definition with_mounts (st : NsState) (ms : list Mount) : NsState :=
   mkNsState ms (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
@@ -353,10 +389,9 @@ Definition with_files (st : NsState) (fs : list (N * NsFile)) : NsState :=
 
 (** The context of a task that has entered no namespace: the initial
     namespaces, root and cwd at the root mount's root dentry, the umask
-    022, no capability, no securebits, no close-on-exec descriptor,
-    no_new_privs clear, dumpable.  These are assumptions about the
-    launcher, as the released model's launch values are: it set the
-    umask to 022, set no_new_privs nowhere and left the task dumpable. *)
+    022, no capability, no securebits, no close-on-exec descriptor.  These
+    are assumptions about the launcher, as the released model's launch
+    values are: it set the umask to 022. *)
 Definition init_nsctx : NsCtx :=
   mkNsCtx 1%positive 1%positive 1%positive 1%positive [] (1%positive, 1%positive)
-          (1%positive, 1%positive) 18%Z (mkCaps 0 0 0 0 0) 0%Z [] (Some false) (Some 1%Z).
+          (1%positive, 1%positive) 18%Z (mkCaps 0 0 0 0 0) 0%Z [].

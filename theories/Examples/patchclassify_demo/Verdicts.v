@@ -185,17 +185,21 @@ Proof. reflexivity. Qed.
 Lemma must_exit_everywhere_of_exits_c :
   forall (segs : list Segment) (pc : N) (ph : PhdrInfo)
          (code : word) (fuel : nat),
-    (forall sp mem rom,
-        exits_c segs code fuel (demo_init_state pc sp mem rom) = true) ->
+    (forall vt sp mem rom,
+        exits_c (segs ++ vt) code fuel (demo_init_state pc sp mem rom) = true) ->
     forall lim en inp, must_exit_with code (mkImage segs pc ph) lim en inp.
 Proof.
   intros segs pc ph code fuel Hc lim [sp brk0 mbase rnd] inp.
   cbn [must_exit_with]. unfold init_config.
   apply (exits_c_must_exit_at _ _ fuel);
-    [apply m_halted_init_model | apply init_model_no_lazy |].
-  destruct (init_machine_state_abstracts segs pc ph sp mbase rnd inp)
+    [ exact (m_halted_init_model (segments_reserved (run_segments segs inp sp mbase))
+               brk0 mbase sp lim inp)
+    | exact (init_model_no_lazy (segments_reserved (run_segments segs inp sp mbase))
+               brk0 mbase sp lim inp) |].
+  destruct (init_machine_state_abstracts (run_segments segs inp sp mbase) pc ph sp mbase
+              rnd inp)
     as (mem & rom & Hshape).
-  rewrite Hshape. apply Hc.
+  rewrite Hshape. exact (Hc (vdso_segments (in_kernel inp) sp mbase) sp mem rom).
 Qed.
 
 (* =========================================================================
@@ -210,35 +214,38 @@ Qed.
 
     Each of these six is where the indifference is actually established:
     the [sp], the [mem] and the [rom] are universally quantified, and
-    the computation reaches [true] without them. *)
+    the computation reaches [true] without them.  So is [vt], the
+    segments a run appends after the image's own ([Run.run_segments]
+    appends the vDSO pair there): every fetch is answered by the
+    image's own segment, which [find_segment] tests first. *)
 
-Lemma O1_exits_c : forall sp mem rom,
-  exits_c O1m.loaded_segments verdict_reject 8
+Lemma O1_exits_c : forall vt sp mem rom,
+  exits_c (O1m.loaded_segments ++ vt) verdict_reject 8
     (demo_init_state O1m.init_pc sp mem rom) = true.
 Proof. intros. vm_compute. reflexivity. Qed.
 
-Lemma O2_exits_c : forall sp mem rom,
-  exits_c O2m.loaded_segments verdict_accept 8
+Lemma O2_exits_c : forall vt sp mem rom,
+  exits_c (O2m.loaded_segments ++ vt) verdict_accept 8
     (demo_init_state O2m.init_pc sp mem rom) = true.
 Proof. intros. vm_compute. reflexivity. Qed.
 
-Lemma P1_exits_c : forall sp mem rom,
-  exits_c P1m.loaded_segments verdict_accept 8
+Lemma P1_exits_c : forall vt sp mem rom,
+  exits_c (P1m.loaded_segments ++ vt) verdict_accept 8
     (demo_init_state P1m.init_pc sp mem rom) = true.
 Proof. intros. vm_compute. reflexivity. Qed.
 
-Lemma P2_exits_c : forall sp mem rom,
-  exits_c P2m.loaded_segments verdict_accept 8
+Lemma P2_exits_c : forall vt sp mem rom,
+  exits_c (P2m.loaded_segments ++ vt) verdict_accept 8
     (demo_init_state P2m.init_pc sp mem rom) = true.
 Proof. intros. vm_compute. reflexivity. Qed.
 
-Lemma C1_exits_c : forall sp mem rom,
-  exits_c C1m.loaded_segments verdict_reject 8
+Lemma C1_exits_c : forall vt sp mem rom,
+  exits_c (C1m.loaded_segments ++ vt) verdict_reject 8
     (demo_init_state C1m.init_pc sp mem rom) = true.
 Proof. intros. vm_compute. reflexivity. Qed.
 
-Lemma C2_exits_c : forall sp mem rom,
-  exits_c C2m.loaded_segments verdict_reject 8
+Lemma C2_exits_c : forall vt sp mem rom,
+  exits_c (C2m.loaded_segments ++ vt) verdict_reject 8
     (demo_init_state C2m.init_pc sp mem rom) = true.
 Proof. intros. vm_compute. reflexivity. Qed.
 
