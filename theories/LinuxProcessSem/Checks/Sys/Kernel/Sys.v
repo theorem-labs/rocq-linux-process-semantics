@@ -238,8 +238,9 @@ Qed.
 (** ftruncate: the negative length decided BEFORE the fd lookup, one
     -EINVAL for every fd kind that is not a writable regular file, and on
     a WRITABLE one — [FdFileW], [FdFileA] and [FdFileRW], which share a
-    single arm because [do_ftruncate] reads only S_ISREG and FMODE_WRITE
-    — a bare 0 with the file resized and THE OFFSET LEFT
+    single arm because [do_ftruncate] reads only S_ISREG and FMODE_WRITE,
+    and a writable [FdAnon], whose new contents reach every descriptor of
+    its file — a bare 0 with the file resized and THE OFFSET LEFT
     ALONE (see [Open.ftruncate_spec]).  The size guard is consulted only
     on that arm, as in the spec: a huge length on a channel or a
     directory is still the kernel's -EINVAL, not a decline. *)

@@ -65,14 +65,15 @@ Proof. vm_compute. reflexivity. Qed.
     [Run.SError] on every execution, and [Equivalence.equiv]'s
     [bh_all_errors] escape would admit an ARBITRARY target.
 
-    The four examples below are the shape of that claim: the SAME call,
-    at the SAME fully readable 24-byte [struct sigaction], differing only
+    The examples below are the shape of that claim: the SAME call, at
+    the SAME fully readable 24-byte [struct sigaction], differing only
     in the signal number.  SIGINT is accepted and answers 0, storing no
-    disposition; SIGSEGV, SIGPIPE and SIGCHLD fail closed — the first because
-    every [MachineFault] site raises it, the second because a modeled
-    [ReadWrite.write_spec] on a channel whose reader has gone raises it
-    on a real kernel, and the third because a child's exit raises it and
-    the model has a parent side that admits a child can exist.
+    disposition; SIGSEGV and SIGCHLD fail closed -- the first because
+    every [MachineFault] site raises it, the second because a child's
+    exit raises it and the model has a parent side that admits a child
+    can exist.  SIGPIPE is the exception, answered WITH STATE: its action
+    is the one the model stores ([Signal.rt_sigaction_sigpipe]), and a
+    SIG_DFL or SIG_IGN install is answered and recorded.
     What these add is the decline against the
     acceptance in the SAME file, so that a widened
     [Signal.sigaction_accepted] cannot pass the Rocq build. *)
@@ -86,12 +87,27 @@ Example rt_sigaction_sigsegv_unmodeled :
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-Example rt_sigaction_sigpipe_unmodeled :
+(** SIGPIPE's SIG_DFL install IS ANSWERED: 0, the 24 bytes of [act] in
+    the ledger, and the action stored ([State.with_sigpipe_install] of
+    SIG_DFL, flags 0, mask 0).  This is the pass-after half of a pair.
+    The fail-before half was [rt_sigaction_sigpipe_unmodeled], the same
+    call on the same model judged [CheckUnmodeled], which held while the
+    model stored no SIGPIPE action and declined every SIGPIPE install;
+    it is false by design now, and this statement replaces it.  As for
+    [rt_sigaction_sigint_accepted] below, the same answer with an empty
+    ledger is rejected rather than declined. *)
+Example rt_sigaction_sigpipe_dfl_answered :
+  check_syscall (mkInput 134 [13; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
+    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+  = CheckOk (with_sigpipe_install (mkSigpipeAction true 0 0)
+               (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))) [] /\
   check_syscall (mkInput 134 [13; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
     (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckUnmodeled.
-Proof. vm_compute. reflexivity. Qed.
+  = CheckReject.
+Proof. split; vm_compute; reflexivity. Qed.
 
 (** SIGCHLD (17) declines because the model has a modeled
     [clone]/[clone3] parent side and a modeled [wait4], so a child can
@@ -122,9 +138,10 @@ Proof. vm_compute. reflexivity. Qed.
     The one install for signal 6 that IS answered is SIG_DFL, musl's own
     on abort's second path: it sets the disposition [tkill_self] already
     assumes ([Signal.sigabrt_dfl_install] says why that is sound).  The
-    SIG_DFL case for SIGSEGV, SIGPIPE and SIGCHLD above is still
-    declined: [mem_sigaction_zero] is a SIG_DFL install, so those three
-    say that the acceptance is for SIGABRT and not for SIG_DFL as such.
+    SIG_DFL case for SIGSEGV and SIGCHLD above is still declined:
+    [mem_sigaction_zero] is a SIG_DFL install, so those two say that the
+    acceptance is for SIGABRT and not for SIG_DFL as such.  (SIGPIPE's
+    SIG_DFL is answered by its own arm, which stores the action.)
 
     THE THREE DIFFER FROM EACH OTHER IN THE HANDLER WORD ONLY, which is
     what makes them say that the HANDLER is the reason.  And
@@ -191,6 +208,66 @@ Example rt_sigaction_sigint_accepted :
                    (fun _ => None))
     (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
   = CheckReject.
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** SIGPIPE'S ACTION IS STORED AND READ BACK.  [rt_sigaction_sigpipe]
+    is the one rt_sigaction arm with state, so its cases are about the
+    VALUE kept, in three parts the [rt_sigaction_sigpipe_dfl_answered]
+    case above cannot show, since its install of SIG_DFL over a launch
+    at SIG_DFL leaves the record as it was.
+
+    [wmem_oact] is 24 writable bytes at 8192 and nothing else writable;
+    [sigpipe_model mask] is the launch at SIG_DFL with the given blocked
+    mask.  4096 is [sigmask(SIGPIPE)], 1 << 12. *)
+Definition wmem_oact : word -> option byte :=
+  fun a => if bv_leu 8192 a && bv_ltu a (8192 + 24) then Some 0 else None.
+
+Definition sigpipe_model (mask : word) : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (mkProcInput [] [] [] IEof demo_uid demo_gid demo_groups net_silent
+       default_nofile mask demo_hwcap false Sv48).
+
+(** FIRST: SIG_IGN installed with [oact] set.  The 24 bytes written to
+    [oact] are the action BEFORE the install (SIG_DFL, flags 0, mask 0:
+    all zero), and the model keeps SIG_IGN.  SECOND: a read with [act]
+    NULL then writes the action the model KEPT, whose handler word is
+    SIG_IGN (1), and installs nothing.  A spec that wrote the new action
+    to [oact], or that stored nothing, fails one of the two. *)
+Example rt_sigaction_sigpipe_ign_stored_and_read_back :
+  check_syscall (mkInput 134 [13; 4096; 8192; 8; 0; 0] mem_sigaction_ign wmem_oact)
+    (with_copyins [(4096, 24%nat)]
+       (mkEffect 0 [(8192, sigpipe_action_bytes (mkSigpipeAction true 0 0))] []))
+    (sigpipe_model 0)
+  = CheckOk (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 0)) [] /\
+  check_syscall (mkInput 134 [13; 0; 8192; 8; 0; 0] (fun _ => None) wmem_oact)
+    (mkEffect 0 [(8192, sigpipe_action_bytes (mkSigpipeAction false 0 0))] [])
+    (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 0))
+  = CheckOk (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 0)) [] /\
+  check_syscall (mkInput 134 [13; 0; 8192; 8; 0; 0] (fun _ => None) wmem_oact)
+    (mkEffect 0 [(8192, sigpipe_action_bytes (mkSigpipeAction true 0 0))] [])
+    (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 0))
+  = CheckReject.
+Proof. split; [|split]; vm_compute; reflexivity. Qed.
+
+(** THIRD: SIG_DFL over SIG_IGN DECLINES WHILE SIGPIPE IS BLOCKED -- the
+    spec's hidden-pending rule ([Signal.sigpipe_hidden_pending_possible]):
+    Linux may hold a SIGPIPE pending there that the model does not, and
+    an install of SIG_DFL keeps it, so the unblock would kill on Linux
+    and not in the model.  The same install with SIGPIPE open in the
+    mask is answered, so the decline is the mask's and not the
+    handler's. *)
+Example rt_sigaction_sigpipe_dfl_over_hidden_pending :
+  check_syscall (mkInput 134 [13; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
+    (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 4096))
+  = CheckUnmodeled /\
+  check_syscall (mkInput 134 [13; 4096; 0; 8; 0; 0] mem_sigaction_zero
+                   (fun _ => None))
+    (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
+    (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 0))
+  = CheckOk (with_sigpipe_install (mkSigpipeAction true 0 0)
+               (with_sigpipe_install (mkSigpipeAction false 0 0) (sigpipe_model 0))) [].
 Proof. split; vm_compute; reflexivity. Qed.
 
 (** Eight readable bytes at 4096 holding [sigmask(SIGSEGV)] = 1 << 10,

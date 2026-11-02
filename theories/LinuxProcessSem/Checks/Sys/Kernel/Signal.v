@@ -162,15 +162,439 @@ Proof.
     cbv beta iota in *; inv_ok.
 Qed.
 
-(** rt_sigaction: every admissible outcome is a bare return.  The arms
-    after the 24-byte copy of [act] carry that copy in the ledger; the
-    arms before it, and the -EFAULT of the copy itself, carry none.  The
-    declining arms are the ones whose answer would need a stored
-    disposition (see [Signal.rt_sigaction_spec]). *)
+(** An effect that is exactly one write and nothing else, in the shape
+    [check_ret_only] has for an effect that is nothing at all.  Local to
+    this file because one syscall produces that shape; it moves to
+    [Checks.Sys.Prelude] when a second one does. *)
+Definition check_one_write (eff : SyscallEffect) (r a : word)
+    (bs : list byte) (m' : Model) : check_result :=
+  match eff with
+  | mkEffectU ret ws [] [] [] [] =>
+      if bv_eqb ret r && writes_eqb ws [(a, bs)]
+      then CheckOk m' [] else CheckReject
+  | _ => CheckReject
+  end.
+
+Lemma check_one_write_ok_iff : forall eff r a bs m1 m' evs,
+  check_one_write eff r a bs m1 = CheckOk m' evs <->
+  (eff = mkEffect r [(a, bs)] [] /\ m' = m1 /\ evs = []).
+Proof.
+  intros [ret ws zs us cs cin] r a bs m1 m' evs; cbn.
+  destruct zs as [|z zs];
+    [destruct us as [|u us];
+      [destruct cs as [|c cs]; [destruct cin as [|d cin]|]|]|];
+    try (split; [discriminate|intros (H1 & _ & _); discriminate H1]).
+  destruct (bv_eqb ret r) eqn:E; cbn.
+  - apply bv_eqb_eq in E; subst.
+    destruct (writes_eqb ws [(a, bs)]) eqn:W.
+    + apply writes_eqb_eq in W; subst.
+      split; [intro H; inversion H; auto|intros (_ & -> & ->); reflexivity].
+    + split; [discriminate|]. intros (H1 & _ & _). inversion H1; subst.
+      now rewrite (proj2 (writes_eqb_eq _ _) eq_refl) in W.
+  - split; [discriminate|]. intros (H1 & _ & _). inversion H1; subst.
+    now rewrite bv_eqb_refl in E.
+Qed.
+
+(* -------------------------------------------- rt_sigaction(SIGPIPE) *)
+
+(** The [oact] copy-out acceptor for SIGPIPE, mirroring
+    [Kernel.Signal.sigpipe_oact_write] arm for arm and testing the same
+    booleans in the same order: NULL, then [State.access_okb] over the
+    24 bytes, then the whole-struct walk, then the first byte.  [m'] is
+    the model the install (if any) has ALREADY produced: the copy-out is
+    the last step and an -EFAULT here does not roll the install back.
+
+    Both answering arms demand an empty copy-in ledger, which is what
+    [sigpipe_oact_write] produces; the install arm runs it under a
+    [Syscall.record_copyins] and wraps it in [check_copyins_after]. *)
+Definition check_sigpipe_oact_write (i : SyscallInput) (oact : word)
+    (old : SigpipeAction) (eff : SyscallEffect) (m' : Model) : check_result :=
+  if w_is0 oact then check_ret_only eff (Z_to_bv 64 0) m' []
+  else if negb (access_okb oact 24) then check_ret_only eff (errno_ret EFAULT) m' []
+  else
+    match read_bytes_map (in_wmem i) oact (Z_to_bv 64 24) with
+    | Some _ => check_one_write eff (Z_to_bv 64 0) oact (sigpipe_action_bytes old) m'
+    | None =>
+        match read_bytes_map (in_wmem i) oact (Z_to_bv 64 1) with
+        | None => check_ret_only eff (errno_ret EFAULT) m' []
+        | Some _ => CheckUnmodeled          (* a partial copy: declined *)
+        end
+    end.
+
+(** [sigpipe_oact_write] reads no input of its own -- it is handed the
+    one [rt_sigaction_sigpipe] bound -- so the four directions hold at
+    any input [i0] it is run at. *)
+Lemma check_sigpipe_oact_write_sound_ok : forall i i0 oact old eff m1 m' evs,
+  check_sigpipe_oact_write i oact old eff m1 = CheckOk m' evs ->
+  sigpipe_oact_write oact old i i0 m1 (Ok eff m' evs).
+Proof.
+  intros i i0 oact old eff m1 m' evs H.
+  unfold check_sigpipe_oact_write in H. unfold sigpipe_oact_write.
+  destruct (w_is0 oact) eqn:Hz; cbv beta iota in H |- *.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (negb (access_okb oact 24)) eqn:Ha; cbv beta iota in H |- *.
+  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 24)) eqn:Hw;
+    cbv beta iota in H |- *.
+  { apply check_one_write_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 1)) eqn:Hw1;
+    cbv beta iota in H |- *; [discriminate|].
+  apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok.
+Qed.
+
+Lemma check_sigpipe_oact_write_sound_unmodeled : forall i i0 oact old eff m1,
+  check_sigpipe_oact_write i oact old eff m1 = CheckUnmodeled ->
+  sigpipe_oact_write oact old i i0 m1 Unmodeled.
+Proof.
+  intros i i0 oact old eff m1 H.
+  unfold check_sigpipe_oact_write in H. unfold sigpipe_oact_write.
+  destruct (w_is0 oact) eqn:Hz; cbv beta iota in H |- *.
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (negb (access_okb oact 24)) eqn:Ha; cbv beta iota in H |- *.
+  { now apply check_ret_only_no_unmodeled in H. }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 24)) eqn:Hw;
+    cbv beta iota in H |- *.
+  { unfold check_one_write in H.
+    destruct eff as [ret ws zs us cs cin];
+      destruct zs, us, cs, cin; try discriminate;
+      destruct (bv_eqb ret (Z_to_bv 64 0) && writes_eqb ws _); discriminate. }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 1)) eqn:Hw1;
+    cbv beta iota in H |- *; [apply unmodeled_intro|].
+  now apply check_ret_only_no_unmodeled in H.
+Qed.
+
+Lemma check_sigpipe_oact_write_complete_ok : forall i i0 oact old eff m1 m' evs,
+  sigpipe_oact_write oact old i i0 m1 (Ok eff m' evs) ->
+  check_sigpipe_oact_write i oact old eff m1 = CheckOk m' evs.
+Proof.
+  intros i i0 oact old eff m1 m' evs H.
+  unfold sigpipe_oact_write in H. unfold check_sigpipe_oact_write.
+  destruct (w_is0 oact) eqn:Hz; cbv beta iota in H |- *.
+  { unfold ret_only, pure in H. inv_ok. apply check_ret_only_ok_iff; auto. }
+  destruct (negb (access_okb oact 24)) eqn:Ha; cbv beta iota in H |- *.
+  { unfold err_ret, ret_only, pure in H. inv_ok. apply check_ret_only_ok_iff; auto. }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 24)) eqn:Hw;
+    cbv beta iota in H |- *.
+  { unfold pure in H. inv_ok. apply check_one_write_ok_iff; auto. }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 1)) eqn:Hw1;
+    cbv beta iota in H |- *.
+  - unfold unmodeled in H. discriminate H.
+  - unfold err_ret, ret_only, pure in H. inv_ok. apply check_ret_only_ok_iff; auto.
+Qed.
+
+Lemma check_sigpipe_oact_write_complete_unmodeled : forall i i0 oact old eff m1,
+  sigpipe_oact_write oact old i i0 m1 Unmodeled ->
+  check_sigpipe_oact_write i oact old eff m1 = CheckUnmodeled.
+Proof.
+  intros i i0 oact old eff m1 H.
+  unfold sigpipe_oact_write in H. unfold check_sigpipe_oact_write.
+  destruct (w_is0 oact) eqn:Hz; cbv beta iota in H |- *.
+  { unfold ret_only, pure in H. discriminate H. }
+  destruct (negb (access_okb oact 24)) eqn:Ha; cbv beta iota in H |- *.
+  { unfold err_ret, ret_only, pure in H. discriminate H. }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 24)) eqn:Hw;
+    cbv beta iota in H |- *.
+  { unfold pure in H. discriminate H. }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 1)) eqn:Hw1;
+    cbv beta iota in H |- *; [reflexivity|].
+  unfold err_ret, ret_only, pure in H. discriminate H.
+Qed.
+
+(** Every answer of the copy-out is a bare effect: the ledger it accepts
+    is empty, which is what lets the install arm's
+    [check_copyins_after] see exactly the recorded [act] range. *)
+Lemma check_sigpipe_oact_write_ok_copyins : forall i oact old eff m1 m' evs,
+  check_sigpipe_oact_write i oact old eff m1 = CheckOk m' evs ->
+  eff_copyins eff = [].
+Proof.
+  intros i oact old eff m1 m' evs H.
+  unfold check_sigpipe_oact_write in H.
+  destruct (w_is0 oact); cbv beta iota in H.
+  { apply check_ret_only_ok_iff in H. now destruct H as (-> & _ & _). }
+  destruct (negb (access_okb oact 24)); cbv beta iota in H.
+  { apply check_ret_only_ok_iff in H. now destruct H as (-> & _ & _). }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 24)); cbv beta iota in H.
+  { apply check_one_write_ok_iff in H. now destruct H as (-> & _ & _). }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 1)); cbv beta iota in H;
+    [discriminate|].
+  apply check_ret_only_ok_iff in H. now destruct H as (-> & _ & _).
+Qed.
+
+(** The model after a [modify] steps to the continuation's, which is
+    all the SIGPIPE arm's completeness proofs need from its install. *)
+Local Lemma modify_bind_ok_inv {A} : forall f (k : unit -> Sys A) i m x m' evs,
+  bind (modify f) k i m (Ok x m' evs) -> k tt i (f m) (Ok x m' evs).
+Proof.
+  intros f k i m x m' evs H.
+  destruct H as (u & m1 & evs1 & evs2 & Hm & Hk & ->).
+  unfold modify in Hm. injection Hm as -> -> ->. exact Hk.
+Qed.
+
+Local Lemma modify_bind_unmodeled_inv {A} : forall f (k : unit -> Sys A) i m,
+  bind (modify f) k i m Unmodeled -> k tt i (f m) Unmodeled.
+Proof.
+  intros f k i m H. destruct H as [Hm | (u & m1 & evs1 & Hm & Hk)].
+  - unfold modify in Hm. discriminate Hm.
+  - unfold modify in Hm. injection Hm as -> -> ->. exact Hk.
+Qed.
+
+(** [Kernel.Signal.rt_sigaction_sigpipe] as an acceptor, the one
+    rt_sigaction arm WITH STATE, test for test in the spec's order: a
+    NULL [act] installs nothing and goes straight to the copy-out of the
+    CURRENT action; otherwise the 24-byte [copy_from_user] (its -EFAULT
+    records nothing), and past it, under the [act] ledger, the handler
+    rule (an address declines), the hidden-pending rule (SIG_DFL over a
+    SIG_IGN'd, blocked SIGPIPE declines), and the install
+    ([State.with_sigpipe_install], flags masked to [UAPI_SA_FLAGS], the
+    mask without SIGKILL and SIGSTOP) followed by the copy-out of the
+    action as it was BEFORE the install.  The stored action is written
+    out field for field as the spec builds it, so a checker that stored
+    the wrong flags or mask answers a different model and the
+    completeness lemma fails. *)
+Definition check_rt_sigaction_sigpipe (i : SyscallInput) (act oact : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  let old := m_sigpipe_action m in
+  if w_is0 act then check_sigpipe_oact_write i oact old eff m
+  else
+    match sigaction_struct (in_mem i) act with
+    | None => check_ret_only eff (errno_ret EFAULT) m []
+    | Some bs =>
+        let h := sigaction_field bs 0 in
+        if negb (Z.eqb h SIG_DFL || Z.eqb h SIG_IGN)%bool then CheckUnmodeled
+        else if (Z.eqb h SIG_DFL && sigpipe_hidden_pending_possible m)%bool
+        then CheckUnmodeled
+        else
+          check_copyins_after [(act, 24%nat)] eff
+            (check_sigpipe_oact_write i oact old (clear_copyins eff)
+               (with_sigpipe_install
+                  (mkSigpipeAction (Z.eqb h SIG_DFL)
+                     (Z.land (sigaction_field bs 8) UAPI_SA_FLAGS)
+                     (Z.ldiff (sigaction_field bs 16) sig_kernel_only_mask))
+                  m))
+    end.
+
+Lemma check_rt_sigaction_sigpipe_sound_ok : forall i act oact eff m m' evs,
+  check_rt_sigaction_sigpipe i act oact eff m = CheckOk m' evs ->
+  rt_sigaction_sigpipe act oact i m (Ok eff m' evs).
+Proof.
+  intros i act oact eff m m' evs H.
+  unfold check_rt_sigaction_sigpipe in H. unfold rt_sigaction_sigpipe.
+  eapply bind_ok0; [apply input_ok|]. cbv beta.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta zeta.
+  cbv zeta in H.
+  destruct (w_is0 act) eqn:Hact; cbv beta iota in H |- *.
+  { eapply check_sigpipe_oact_write_sound_ok; exact H. }
+  destruct (sigaction_struct (in_mem i) act) as [bs|] eqn:Hbs;
+    cbv beta iota in H |- *.
+  2:{ apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
+  destruct (negb (Z.eqb (sigaction_field bs 0) SIG_DFL
+                  || Z.eqb (sigaction_field bs 0) SIG_IGN)%bool) eqn:Hh;
+    cbv beta iota in H |- *; [discriminate|].
+  destruct (Z.eqb (sigaction_field bs 0) SIG_DFL
+            && sigpipe_hidden_pending_possible m)%bool eqn:Hp;
+    cbv beta iota in H |- *; [discriminate|].
+  apply check_copyins_after_ok_iff in H. destruct H as (Hreads & H).
+  apply record_copyins_clear_ok; [exact Hreads|].
+  eapply bind_ok0; [apply modify_ok|]. cbv beta.
+  eapply check_sigpipe_oact_write_sound_ok; exact H.
+Qed.
+
+Lemma check_rt_sigaction_sigpipe_sound_unmodeled : forall i act oact eff m,
+  check_rt_sigaction_sigpipe i act oact eff m = CheckUnmodeled ->
+  rt_sigaction_sigpipe act oact i m Unmodeled.
+Proof.
+  intros i act oact eff m H.
+  unfold check_rt_sigaction_sigpipe in H. unfold rt_sigaction_sigpipe.
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta zeta.
+  cbv zeta in H.
+  destruct (w_is0 act) eqn:Hact; cbv beta iota in H |- *.
+  { eapply check_sigpipe_oact_write_sound_unmodeled; exact H. }
+  destruct (sigaction_struct (in_mem i) act) as [bs|] eqn:Hbs;
+    cbv beta iota in H |- *.
+  2:{ now apply check_ret_only_no_unmodeled in H. }
+  apply record_copyins_unmodeled.
+  destruct (negb (Z.eqb (sigaction_field bs 0) SIG_DFL
+                  || Z.eqb (sigaction_field bs 0) SIG_IGN)%bool) eqn:Hh;
+    cbv beta iota in H |- *; [apply unmodeled_intro|].
+  destruct (Z.eqb (sigaction_field bs 0) SIG_DFL
+            && sigpipe_hidden_pending_possible m)%bool eqn:Hp;
+    cbv beta iota in H |- *; [apply unmodeled_intro|].
+  apply check_copyins_after_unmodeled in H.
+  eapply bind_unmodeled2; [apply modify_ok|]. cbv beta.
+  eapply check_sigpipe_oact_write_sound_unmodeled; exact H.
+Qed.
+
+Lemma check_rt_sigaction_sigpipe_complete_ok : forall i act oact eff m m' evs,
+  rt_sigaction_sigpipe act oact i m (Ok eff m' evs) ->
+  check_rt_sigaction_sigpipe i act oact eff m = CheckOk m' evs.
+Proof.
+  intros i act oact eff m m' evs H.
+  unfold rt_sigaction_sigpipe in H. unfold check_rt_sigaction_sigpipe.
+  apply bind_input_model_inv in H. cbv beta zeta in H |- *.
+  destruct (w_is0 act) eqn:Hact; cbv beta iota in H |- *.
+  { eapply check_sigpipe_oact_write_complete_ok; exact H. }
+  destruct (sigaction_struct (in_mem i) act) as [bs|] eqn:Hbs;
+    cbv beta iota in H |- *.
+  2:{ unfold err_ret, ret_only, pure in H. inv_ok. apply check_ret_only_ok_iff; auto. }
+  apply record_copyins_ok_inv in H. destruct H as (core & Hcore & ->).
+  destruct (negb (Z.eqb (sigaction_field bs 0) SIG_DFL
+                  || Z.eqb (sigaction_field bs 0) SIG_IGN)%bool) eqn:Hh;
+    cbv beta iota in Hcore |- *.
+  { unfold unmodeled in Hcore. discriminate Hcore. }
+  destruct (Z.eqb (sigaction_field bs 0) SIG_DFL
+            && sigpipe_hidden_pending_possible m)%bool eqn:Hp;
+    cbv beta iota in Hcore |- *.
+  { unfold unmodeled in Hcore. discriminate Hcore. }
+  apply modify_bind_ok_inv in Hcore. cbv beta in Hcore.
+  eapply check_sigpipe_oact_write_complete_ok in Hcore.
+  pose proof (check_sigpipe_oact_write_ok_copyins _ _ _ _ _ _ _ Hcore) as Hnil.
+  apply check_copyins_after_ok_iff.
+  destruct core as [r ws zs us cs cis]; cbn [eff_copyins] in Hnil; subst cis.
+  cbn [clear_copyins with_copyins eff_ret eff_writes eff_zeros eff_unmaps
+       eff_copies eff_copyins app].
+  split; [reflexivity | exact Hcore].
+Qed.
+
+Lemma check_rt_sigaction_sigpipe_complete_unmodeled : forall i act oact m eff,
+  rt_sigaction_sigpipe act oact i m Unmodeled ->
+  check_rt_sigaction_sigpipe i act oact eff m = CheckUnmodeled.
+Proof.
+  intros i act oact m eff H.
+  unfold rt_sigaction_sigpipe in H. unfold check_rt_sigaction_sigpipe.
+  apply bind_input_model_inv in H. cbv beta zeta in H |- *.
+  destruct (w_is0 act) eqn:Hact; cbv beta iota in H |- *.
+  { eapply check_sigpipe_oact_write_complete_unmodeled; exact H. }
+  destruct (sigaction_struct (in_mem i) act) as [bs|] eqn:Hbs;
+    cbv beta iota in H |- *.
+  2:{ unfold err_ret, ret_only, pure in H. discriminate H. }
+  apply record_copyins_unmodeled_inv in H.
+  destruct (negb (Z.eqb (sigaction_field bs 0) SIG_DFL
+                  || Z.eqb (sigaction_field bs 0) SIG_IGN)%bool) eqn:Hh;
+    cbv beta iota in H |- *; [reflexivity|].
+  destruct (Z.eqb (sigaction_field bs 0) SIG_DFL
+            && sigpipe_hidden_pending_possible m)%bool eqn:Hp;
+    cbv beta iota in H |- *; [reflexivity|].
+  apply modify_bind_unmodeled_inv in H. cbv beta in H.
+  unfold check_copyins_after.
+  erewrite check_sigpipe_oact_write_complete_unmodeled by exact H.
+  reflexivity.
+Qed.
+
+(** The copy-out answers at the model it was handed. *)
+Lemma check_sigpipe_oact_write_model : forall i oact old eff m1 m' evs,
+  check_sigpipe_oact_write i oact old eff m1 = CheckOk m' evs -> m' = m1.
+Proof.
+  intros i oact old eff m1 m' evs H.
+  unfold check_sigpipe_oact_write in H.
+  destruct (w_is0 oact); cbv beta iota in H.
+  { apply check_ret_only_ok_iff in H. now destruct H as (_ & -> & _). }
+  destruct (negb (access_okb oact 24)); cbv beta iota in H.
+  { apply check_ret_only_ok_iff in H. now destruct H as (_ & -> & _). }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 24)); cbv beta iota in H.
+  { apply check_one_write_ok_iff in H. now destruct H as (_ & -> & _). }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 1)); cbv beta iota in H;
+    [discriminate|].
+  apply check_ret_only_ok_iff in H. now destruct H as (_ & -> & _).
+Qed.
+
+(** The framing statement [Checks.VmMapsDisjoint]'s cascade consumes for
+    the SIGPIPE arm, stated here for [check_rt_sigprocmask_frame]'s
+    reason: the arm CHANGES the model, through
+    [State.with_sigpipe_install], which rebuilds [ProcState] alone and
+    carries the address space across unchanged, and the cascade's
+    generic tactic does not reduce through this file's acceptors. *)
+Lemma check_rt_sigaction_sigpipe_frame : forall i act oact eff m m' evs,
+  check_rt_sigaction_sigpipe i act oact eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i act oact eff m m' evs H.
+  unfold check_rt_sigaction_sigpipe in H. cbv zeta in H.
+  destruct (w_is0 act); cbv beta iota in H.
+  { apply check_sigpipe_oact_write_model in H. now subst. }
+  destruct (sigaction_struct (in_mem i) act) as [bs|]; cbv beta iota in H.
+  2:{ apply check_ret_only_ok_iff in H. now destruct H as (_ & -> & _). }
+  destruct (negb (Z.eqb (sigaction_field bs 0) SIG_DFL
+                  || Z.eqb (sigaction_field bs 0) SIG_IGN)%bool);
+    cbv beta iota in H; [discriminate|].
+  destruct (Z.eqb (sigaction_field bs 0) SIG_DFL
+            && sigpipe_hidden_pending_possible m)%bool;
+    cbv beta iota in H; [discriminate|].
+  apply check_copyins_after_ok_iff in H. destruct H as (_ & H).
+  apply check_sigpipe_oact_write_model in H. subst m'. reflexivity.
+Qed.
+
+(** The SIGPIPE arm accepts at most one effect: every answer it gives is
+    fixed by the input and the model.  [Checks.AbortWitness]'s
+    determinism lemma for rt_sigaction reaches this arm through the
+    SIGPIPE test and closes it with this, as it closes the
+    [check_write_oset] leaves with that acceptor's own lemma. *)
+Lemma check_sigpipe_oact_write_det : forall i oact old e1 e2 m1 ma va mb vb,
+  check_sigpipe_oact_write i oact old e1 m1 = CheckOk ma va ->
+  check_sigpipe_oact_write i oact old e2 m1 = CheckOk mb vb ->
+  e1 = e2 /\ ma = mb /\ va = vb.
+Proof.
+  intros i oact old e1 e2 m1 ma va mb vb H1 H2.
+  unfold check_sigpipe_oact_write in H1, H2.
+  destruct (w_is0 oact); cbv beta iota in H1, H2.
+  { apply check_ret_only_ok_iff in H1, H2.
+    destruct H1 as (-> & -> & ->), H2 as (-> & -> & ->). repeat split. }
+  destruct (negb (access_okb oact 24)); cbv beta iota in H1, H2.
+  { apply check_ret_only_ok_iff in H1, H2.
+    destruct H1 as (-> & -> & ->), H2 as (-> & -> & ->). repeat split. }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 24)); cbv beta iota in H1, H2.
+  { apply check_one_write_ok_iff in H1, H2.
+    destruct H1 as (-> & -> & ->), H2 as (-> & -> & ->). repeat split. }
+  destruct (read_bytes_map (in_wmem i) oact (Z_to_bv 64 1)); cbv beta iota in H1, H2;
+    [discriminate H1|].
+  apply check_ret_only_ok_iff in H1, H2.
+  destruct H1 as (-> & -> & ->), H2 as (-> & -> & ->). repeat split.
+Qed.
+
+Lemma check_rt_sigaction_sigpipe_det : forall i act oact e1 e2 m m1 v1 m2 v2,
+  check_rt_sigaction_sigpipe i act oact e1 m = CheckOk m1 v1 ->
+  check_rt_sigaction_sigpipe i act oact e2 m = CheckOk m2 v2 ->
+  e1 = e2 /\ m1 = m2 /\ v1 = v2.
+Proof.
+  intros i act oact e1 e2 m m1 v1 m2 v2 H1 H2.
+  unfold check_rt_sigaction_sigpipe in H1, H2. cbv zeta in H1, H2.
+  destruct (w_is0 act); cbv beta iota in H1, H2.
+  { eapply check_sigpipe_oact_write_det; eassumption. }
+  destruct (sigaction_struct (in_mem i) act) as [bs|]; cbv beta iota in H1, H2.
+  2:{ apply check_ret_only_ok_iff in H1, H2.
+      destruct H1 as (-> & -> & ->), H2 as (-> & -> & ->). repeat split. }
+  destruct (negb (Z.eqb (sigaction_field bs 0) SIG_DFL
+                  || Z.eqb (sigaction_field bs 0) SIG_IGN)%bool);
+    cbv beta iota in H1, H2; [discriminate H1|].
+  destruct (Z.eqb (sigaction_field bs 0) SIG_DFL
+            && sigpipe_hidden_pending_possible m)%bool;
+    cbv beta iota in H1, H2; [discriminate H1|].
+  apply check_copyins_after_ok_iff in H1. destruct H1 as (C1 & W1).
+  apply check_copyins_after_ok_iff in H2. destruct H2 as (C2 & W2).
+  destruct (check_sigpipe_oact_write_det _ _ _ _ _ _ _ _ _ _ W1 W2) as (Hc & Hm & Hv).
+  split; [|split; assumption].
+  destruct e1 as [r1 w1 z1 u1 c1 i1], e2 as [r2 w2 z2 u2 c2 i2].
+  cbn [eff_copyins] in C1, C2. subst i1 i2.
+  unfold clear_copyins, with_copyins in Hc. cbn [eff_ret eff_writes eff_zeros eff_unmaps eff_copies] in Hc.
+  injection Hc as -> -> -> -> ->. reflexivity.
+Qed.
+
+(* --------------------------------------------------------- rt_sigaction *)
+
+(** rt_sigaction: the bad [sigsetsize] first, then SIGPIPE to its own
+    acceptor above ([check_rt_sigaction_sigpipe], the one signal whose
+    action the model stores), then the other 63.  For those, every
+    admissible outcome is a bare return.  The arms after the 24-byte
+    copy of [act] carry that copy in the ledger; the arms before it,
+    and the -EFAULT of the copy itself, carry none.  The declining arms
+    are the ones whose answer would need a stored disposition (see
+    [Signal.rt_sigaction_spec]). *)
 Definition check_rt_sigaction (i : SyscallInput) (sig act oact ss : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if negb (bv_eqb ss (Z_to_bv 64 8))
   then check_ret_only eff (errno_ret EINVAL) m []
+  else if Z.eqb (bv_unsigned sig) SIGPIPE
+  then check_rt_sigaction_sigpipe i act oact eff m
   else if negb (w_is0 oact) then CheckUnmodeled
   else if w_is0 act
   then (if sig_valid sig then check_ret_only eff (Z_to_bv 64 0) m []
@@ -200,6 +624,8 @@ Proof.
   destruct (negb (bv_eqb ss (Z_to_bv 64 8))) eqn:Hss; cbv beta iota.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
+  destruct (Z.eqb (bv_unsigned sig) SIGPIPE) eqn:Hpipe; cbv beta iota in H |- *.
+  { apply check_rt_sigaction_sigpipe_sound_ok; exact H. }
   destruct (negb (w_is0 oact)) eqn:Ho; cbv beta iota; [discriminate|].
   destruct (w_is0 act) eqn:Hact; cbv beta iota.
   { destruct (sig_valid sig) eqn:Hv; cbv beta iota;
@@ -232,6 +658,8 @@ Proof.
   unfold check_rt_sigaction in H. unfold rt_sigaction_spec.
   destruct (negb (bv_eqb ss (Z_to_bv 64 8))) eqn:Hss; cbv beta iota.
   { now apply check_ret_only_no_unmodeled in H. }
+  destruct (Z.eqb (bv_unsigned sig) SIGPIPE) eqn:Hpipe; cbv beta iota in H |- *.
+  { apply check_rt_sigaction_sigpipe_sound_unmodeled with (eff := eff); exact H. }
   destruct (negb (w_is0 oact)) eqn:Ho; cbv beta iota.
   { apply unmodeled_intro. }
   destruct (w_is0 act) eqn:Hact; cbv beta iota.
@@ -262,6 +690,8 @@ Proof.
   unfold rt_sigaction_spec in H. unfold check_rt_sigaction. sys_unfold.
   destruct (negb (bv_eqb ss (Z_to_bv 64 8))) eqn:Hss; cbv beta iota in *.
   { inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
+  destruct (Z.eqb (bv_unsigned sig) SIGPIPE) eqn:Hpipe; cbv beta iota in *.
+  { apply check_rt_sigaction_sigpipe_complete_ok; exact H. }
   destruct (negb (w_is0 oact)) eqn:Ho; cbv beta iota in *; [inv_ok|].
   destruct (w_is0 act) eqn:Hact; cbv beta iota in *.
   { destruct (sig_valid sig) eqn:Hv; cbv beta iota in *; inv_ok;
@@ -289,6 +719,8 @@ Proof.
   unfold rt_sigaction_spec in H. unfold check_rt_sigaction. sys_unfold.
   destruct (negb (bv_eqb ss (Z_to_bv 64 8))) eqn:Hss; cbv beta iota in *;
     [inv_ok|].
+  destruct (Z.eqb (bv_unsigned sig) SIGPIPE) eqn:Hpipe; cbv beta iota in *.
+  { apply check_rt_sigaction_sigpipe_complete_unmodeled; exact H. }
   destruct (negb (w_is0 oact)) eqn:Ho; cbv beta iota in *; [reflexivity|].
   destruct (w_is0 act) eqn:Hact; cbv beta iota in *.
   { destruct (sig_valid sig) eqn:Hv; cbv beta iota in *; inv_ok. }
@@ -302,39 +734,6 @@ Proof.
   destruct (sigaction_accepted sig) eqn:Ha; cbv beta iota in *; [inv_ok|].
   destruct (sigabrt_dfl_install sig (in_mem i) act) eqn:Hd; cbv beta iota in *;
     [inv_ok|reflexivity].
-Qed.
-
-(** An effect that is exactly one write and nothing else, in the shape
-    [check_ret_only] has for an effect that is nothing at all.  Local to
-    this file because one syscall produces that shape; it moves to
-    [Checks.Sys.Prelude] when a second one does. *)
-Definition check_one_write (eff : SyscallEffect) (r a : word)
-    (bs : list byte) (m' : Model) : check_result :=
-  match eff with
-  | mkEffectU ret ws [] [] [] [] =>
-      if bv_eqb ret r && writes_eqb ws [(a, bs)]
-      then CheckOk m' [] else CheckReject
-  | _ => CheckReject
-  end.
-
-Lemma check_one_write_ok_iff : forall eff r a bs m1 m' evs,
-  check_one_write eff r a bs m1 = CheckOk m' evs <->
-  (eff = mkEffect r [(a, bs)] [] /\ m' = m1 /\ evs = []).
-Proof.
-  intros [ret ws zs us cs cin] r a bs m1 m' evs; cbn.
-  destruct zs as [|z zs];
-    [destruct us as [|u us];
-      [destruct cs as [|c cs]; [destruct cin as [|d cin]|]|]|];
-    try (split; [discriminate|intros (H1 & _ & _); discriminate H1]).
-  destruct (bv_eqb ret r) eqn:E; cbn.
-  - apply bv_eqb_eq in E; subst.
-    destruct (writes_eqb ws [(a, bs)]) eqn:W.
-    + apply writes_eqb_eq in W; subst.
-      split; [intro H; inversion H; auto|intros (_ & -> & ->); reflexivity].
-    + split; [discriminate|]. intros (H1 & _ & _). inversion H1; subst.
-      now rewrite (proj2 (writes_eqb_eq _ _) eq_refl) in W.
-  - split; [discriminate|]. intros (H1 & _ & _). inversion H1; subst.
-    now rewrite bv_eqb_refl in E.
 Qed.
 
 (** The [oset] copy-out acceptor, mirroring [Kernel.Signal.write_oset]

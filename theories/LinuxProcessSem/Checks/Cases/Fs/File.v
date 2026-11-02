@@ -224,3 +224,37 @@ Example dup3_over_the_limit_is_ebadf_before_the_oldfd_lookup :
        (mkEffect 2000 [] []) dup_model
      = CheckReject.
 Proof. split; [check_eq|split; [check_eq | vm_compute; reflexivity]]. Qed.
+
+(** One AF_UNIX stream pair beside the three channels: id 0, side
+    [false] at fd 3 and side [true] at fd 4, both empty, blocking and
+    open both ways.  The lowest free fd is 5. *)
+Definition dup_pair_end : StreamEnd :=
+  mkStreamEnd [] false 212992%Z 212992%Z false false.
+
+Definition dup_pair_model : Model :=
+  mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+           (3, FdStream 0 false dup_pair_end); (4, FdStream 0 true dup_pair_end)]
+    (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+
+(** A STREAM-PAIR END IS NEVER DUPLICATED.  [File.dup_modeled_entry]
+    declines it as a source -- a second fd naming one end would make a
+    close of either look like the peer going away, and would let two
+    copies of its O_NONBLOCK drift apart -- so dup(3) and dup3(3, 7)
+    decline for every claimed return. *)
+Lemma dup_and_dup3_decline_on_a_stream_end : forall eff,
+  check_syscall (mkInput 23 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    eff dup_pair_model
+  = CheckUnmodeled
+  /\ check_syscall (mkInput 24 [3; 7; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       eff dup_pair_model
+     = CheckUnmodeled.
+Proof. intro eff. split; vm_compute; reflexivity. Qed.
+
+(** ...and the twin in the same model: dup(0), a channel, answers the
+    lowest free fd, so the decline above is about the stream end and
+    not about the table it sits in. *)
+Example dup_of_a_channel_beside_the_pair_answers :
+  check_syscall (mkInput 23 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 5 [] []) dup_pair_model
+  = CheckOk (with_fds (fd_insert (m_fds dup_pair_model) 5 (FdChannel 0)) dup_pair_model) [].
+Proof. check_eq. Qed.
