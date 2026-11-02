@@ -12,15 +12,15 @@
     the environment refuses the clone.
 
     THE SHAPE IS THE RELEASED ONE, and that is the claim's whole value.
-    [Procs.pholts_within_budget] is [HaltsAllowed.halts_allowed_T_scfg_budgets]
+    [MustExitP.pholts_within_budget] is [HaltsAllowed.halts_allowed_T_scfg_budgets]
     at [Run.forced_only_cfg] with one thing changed: the one-process
     [MustExit.must_exit_in_scfg] becomes the whole-system
-    [Procs.must_exit_in_p].  Same quantifier over the [execve] draws and the
+    [MustExitP.must_exit_in_p].  Same quantifier over the [execve] draws and the
     input, same environment, same budget premise.  So this statement is
     comparable with every released halting statement rather than a different
     kind of claim, and the difference between them is exactly the predicate.
 
-    WHAT IT RULES OUT, by [Procs.must_exit_in_p_at]'s own premises: no
+    WHAT IT RULES OUT, by [MustExitP.must_exit_in_p_at]'s own premises: no
     execution reaches the error transition, from any process; no execution
     deadlocks, because the progress premise asks the WHOLE SYSTEM to be able
     to step; no interleaving escapes, because the scheduler is the index of
@@ -29,8 +29,9 @@
     surviving entry halted too.
 
     WHAT IT DOES NOT CLAIM.  Nothing about a child that outlives its parent
-    (this model has no init to reparent to, so it refuses rather than
-    guesses), nothing about a signalled child (the reap arm declines one),
+    (the parent's exit orphans it to no process of the table, so this model
+    has no init to reap it, and the predicate asks every surviving entry to
+    have halted), nothing about a signalled child (the reap arms decline one),
     and nothing about fairness (a program whose child loops forever is
     refuted by this predicate, which is right for a program with no way to
     stop the child). *)
