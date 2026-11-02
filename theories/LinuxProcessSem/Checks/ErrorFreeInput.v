@@ -85,7 +85,7 @@ Proof. exact demo_input_valid. Qed.
 Definition efi_demo_fin : FinProcInput :=
   mkFinProcInput [[]] [] [] [] demo_uid demo_gid demo_groups net_silent
                  default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] []
-                 default_kernel default_execfn true true.
+                 default_kernel default_execfn true true false.
 
 Lemma efi_demo_to_proc_input : to_proc_input efi_demo_fin = efi_demo_input.
 Proof. reflexivity. Qed.
@@ -138,20 +138,14 @@ Qed.
     [MustExit.must_exit_with_no_error], which is what lets a
     [MustExit.must_exit_with] obligation stand in for an error-freedom
     one — a binary that decides by exiting cannot also be allowed to
-    fault.  The second half, that the run never dies by a signal, is
-    [Checks.Examples.exits_c_never_dies] at the same [exits_c] witness:
-    the program's only non-empty trace is its exit event.  The entry
-    hypothesis is discarded rather than used: the exit-0 image behaves
-    at EVERY entry, valid or not, which is stronger than the definition
-    asks for. *)
+    fault.  The entry hypothesis is discarded rather than used: the
+    exit-0 image behaves at EVERY entry, valid or not, which is stronger
+    than the definition asks for. *)
 Lemma exit0_error_free_input : error_free_input exit0_image efi_demo_input.
 Proof.
-  intros en _. unfold error_free_unkilled. split.
-  - exact (must_exit_with_no_error _ _ _ _ _
-             (exit0_must_exit_zero_at_source_budget en)).
-  - destruct en as [sp brk0 mbase rnd]. unfold exit0_image.
-    apply (exits_c_never_dies _ _ _ verdict_accept 8).
-    vm_compute. reflexivity.
+  intros en _.
+  exact (must_exit_with_no_error _ _ _ _ _
+           (exit0_must_exit_zero_at_source_budget en)).
 Qed.
 
 (** THE BUGGY REGION IS INHABITED TOO, at the same input for a different

@@ -110,7 +110,7 @@ Definition exit1_image : Image := mkImage exit1_segments 0x100 demo_phdrs.
 Definition gated_demo_fin : FinProcInput :=
   mkFinProcInput [[]] [] [] [] demo_uid demo_gid demo_groups net_silent
                  default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] []
-                 default_kernel default_execfn true true.
+                 default_kernel default_execfn true true false.
 
 Lemma gated_demo_to_proc_input :
   to_proc_input gated_demo_fin = demo_proc_input.
@@ -434,7 +434,7 @@ Qed.
 Definition gated_demo_fin_stdin : FinProcInput :=
   mkFinProcInput [[]] [] [] [Z_to_bv 8 65] demo_uid demo_gid demo_groups
                  net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-                 [] [] default_kernel default_execfn true true.
+                 [] [] default_kernel default_execfn true true false.
 
 Lemma gated_demo_fin_stdin_valid : valid_fin_input gated_demo_fin_stdin.
 Proof.
@@ -600,7 +600,7 @@ Proof.
              gated_demo_fin_valid).
   - exact (demo_entry_valid_undecodable (to_proc_input gated_demo_fin)
              gated_demo_fin_valid).
-  - intros ((Hsrc & _) & _ & _). apply Hsrc, run_unmodeled_errors.
+  - intros (Hsrc & _ & _). apply Hsrc, run_unmodeled_errors.
     rewrite gated_demo_to_proc_input.
     exact run_of_undecodable_image_is_unmodeled_at_demo_entry.
 Qed.
@@ -817,6 +817,6 @@ Proof.
              gated_demo_fin_valid).
   - exact (demo_entry_valid_undecodable (to_proc_input gated_demo_fin)
              gated_demo_fin_valid).
-  - intros ((Hsrc & _) & _ & _). apply Hsrc, run_scfg_unmodeled_errors.
+  - intros (Hsrc & _ & _). apply Hsrc, run_scfg_unmodeled_errors.
     exact (undecodable_unmodeled_scfg_at_demo_entry cfg).
 Qed.

@@ -1411,8 +1411,8 @@ Qed.
    The one-sided frame, refuted
    ========================================================================= *)
 
-(** WHY [Run.decl_off_frame] CARRIES THE PENDING BIT, as a refutation
-    rather than as a sentence.
+(** WHY [Run.kill_off] CLOSES THE PENDING BITS WITH THE DECLARATIONS, as
+    a refutation rather than as a sentence.
 
     The tempting reading of the abort declaration is that it is the
     guard: nothing can be killed while [State.m_abort_terminal] is
@@ -1431,7 +1431,8 @@ Qed.
     "both bits clear" rather than "the declaration is clear".  A
     one-sided [Run.decl_off_frame_one_sided] is false, so every theorem
     stated with it as a hypothesis would be vacuous, and this is what
-    stops that shape coming back.
+    stops that shape coming back.  The frame the model does rest on,
+    [Run.kill_frame], is proved: [Checks.KillFree.kill_frame_holds].
 
     ADMISSION REASON (the third at the top of [Checks/Examples.v]): no
     real run can reach the state this refutation is about, since
@@ -1478,18 +1479,21 @@ Proof.
   vm_compute in Hk. discriminate.
 Qed.
 
-(** ...and the invariant form is not vacuous in the other direction
-    either: its hypotheses are inhabited.  Same call, same shape, from a
-    model with BOTH bits clear — which the frame then obliges to stay
-    that way, and it does. *)
-Example decl_off_frame_hypotheses_inhabited :
-  m_abort_terminal abort_model_undeclared = false
-  /\ m_sigabrt_pending abort_model_undeclared = false
+(** ...and the hypotheses of [Run.kill_frame] are not vacuous in the
+    other direction either: they are inhabited.  Same call, same shape,
+    from a model with the gates closed — which the frame then obliges to
+    stay that way, and it does. *)
+Example kill_frame_hypotheses_inhabited :
+  kill_off abort_model_undeclared
+  /\ m_halted abort_model_undeclared = None
   /\ check_syscall (mkInput 135 [1; 4096; 0; 8; 0; 0] mem_sigset_sigabrt
                      (fun _ => None))
        (with_copyins sig_copyin (mkEffect 0 [] [])) abort_model_undeclared
      = CheckOk (with_sigmask (Z_to_bv 64 0) abort_model_undeclared) [].
-Proof. split; [reflexivity | split; [reflexivity | check_eq]]. Qed.
+Proof.
+  split; [unfold kill_off; repeat split; reflexivity |].
+  split; [reflexivity | check_eq].
+Qed.
 
 (* =========================================================================
    THE THREE USER READS THAT WERE ARGUED OUT OF A RANGE TEST

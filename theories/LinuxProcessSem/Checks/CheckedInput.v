@@ -650,8 +650,10 @@ Record RawProcInput := mkRawProcInput {
   rpi_channel_reader : bool;              (* whether the far end of fds 1 and 2
                                              has a reader ([State.in_channel_reader]);
                                              a bool, so every value is in type *)
-  rpi_sigpipe_default : bool              (* SIGPIPE's disposition is SIG_DFL
+  rpi_sigpipe_default : bool;             (* SIGPIPE's disposition is SIG_DFL
                                              ([State.in_sigpipe_default]); a bool *)
+  rpi_sigpipe_terminal : bool             (* the launch declares the SIGPIPE death
+                                             ([State.in_sigpipe_terminal]); a bool *)
 }.
 
 Fixpoint stream_of_bytes (l : list byte) : InputStream :=
@@ -921,7 +923,8 @@ Qed.
     [in_execfn] — [rpi_kernel] and [rpi_execfn] below are what it
     bought — and for revision/sigpipe's [in_channel_reader] and
     [in_sigpipe_default], which bought [rpi_channel_reader] and
-    [rpi_sigpipe_default]; those two are bools, so every value is in
+    [rpi_sigpipe_default], and for [in_sigpipe_terminal], which bought
+    [rpi_sigpipe_terminal]; those three are bools, so every value is in
     type and their check is the type itself.  The repair is a raw
     field and its check, never [mkProcInput] and never a default. *)
 Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
@@ -941,7 +944,8 @@ Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
                   uid gid groups net nofile sigmask hwcap
                   (rpi_abort_terminal r) (rpi_va_size r)
                   (urandom_of_bytes urandom) tmp kernel execfn
-                  (rpi_channel_reader r) (rpi_sigpipe_default r))
+                  (rpi_channel_reader r) (rpi_sigpipe_default r)
+                  (rpi_sigpipe_terminal r))
       | _, _, _, _, _, _, _ => None
       end
   | _, _, _, _, _, _, _, _ => None

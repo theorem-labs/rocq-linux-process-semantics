@@ -510,7 +510,7 @@ Definition a1_input_argv (argv : list (list byte)) (execfn : list byte)
     (kb : KernelBuild) : ProcInput :=
   mkProcInput_full argv [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
                    net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc
-                   false Sv48 default_urandom [] kb execfn true true.
+                   false Sv48 default_urandom [] kb execfn true true false.
 
 (** The fixture's input with the launch facts left open, so that a
     refusal below can be stated for EVERY value of them. *)
