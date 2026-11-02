@@ -371,6 +371,27 @@ Definition read_urandom (buf count : word) (i : SyscallInput) (m : Model)
       end
   end.
 
+(** THE SURVIVOR'S EMPTY READ, from what the end has shown of its error
+    ([State.ResetState]): nothing yet ([RsUnknown]) is a CHOICE shown in
+    the return value, -ECONNRESET or end of file, and either way the
+    error is gone after it; a ppoll that showed EPOLLERR ([RsPending])
+    leaves exactly one -ECONNRESET to answer; with the error gone
+    ([RsNone]) the read is end of file and moves nothing.  The record is
+    written into this end's own entry at [fd], and nowhere else. *)
+Definition stream_reset_seen (fd id : word) (side : bool) (st : StreamEnd)
+    (m : Model) : list (word * FdEntry) :=
+  fd_insert (m_fds m) fd (FdStream id side (se_set_reset st RsNone)).
+
+Definition stream_read_reset (fd id : word) (side : bool) (st : StreamEnd)
+    (m : Model) : Sys SyscallEffect :=
+  match se_reset st with
+  | RsUnknown =>
+      alt (set_fds (stream_reset_seen fd id side st m) ;; err_ret ECONNRESET)
+          (set_fds (stream_reset_seen fd id side st m) ;; ret_only (Z_to_bv 64 0))
+  | RsPending => set_fds (stream_reset_seen fd id side st m) ;; err_ret ECONNRESET
+  | RsNone => ret_only (Z_to_bv 64 0)                (* RCV_SHUTDOWN: end of file *)
+  end.
+
 (** A READ OF A STREAM-PAIR END, shared by [read_spec],
     [Net.Socket.recvfrom_spec] and, through [stream_read_empty], by
     [readv_imported]'s stream arm.  [fd] holds the end [(id, side)],
@@ -397,12 +418,20 @@ Definition read_urandom (buf count : word) (i : SyscallInput) (m : Model)
       queue untouched ([unix_stream_read_actor] fails before
       [UNIXCB(skb).consumed] moves); a partially writable one declines,
       as on every kind that copies (see [readv_imported]'s note).
-    - THE QUEUE EMPTY AND THE PEER CLOSED: DECLINED.  Linux answers a
-      pending [sk_err] first -- one -ECONNRESET, set by the close when the
-      closing end still held unread bytes -- and then end of file.  The
-      model keeps [Fs.Open.close_spec] kind-blind (see [State.StreamEnd]),
-      so the table says the peer is gone and not whether that error was
-      set, and the arm declines rather than pick one.
+    - THE QUEUE EMPTY AND THE PEER CLOSED: the survivor's error, then end
+      of file.  [sock_error] runs first: it returns a pending [sk_err]
+      -- the -ECONNRESET the close set when the closing end still held
+      unread bytes -- and clears it (an [xchg] to 0), so that error is
+      answered once; then RCV_SHUTDOWN, which the close set, is end of
+      file, 0.  The model keeps [Fs.Open.close_spec] kind-blind (see
+      [State.StreamEnd]), so the table says the peer is gone and not
+      whether the error was set, and [stream_read_reset] answers from
+      what the end has shown so far, [State.se_reset].
+      THIS READ IS THE ERROR'S ONLY CONSUMER IN THE MODEL, because the
+      other one, getsockopt(SO_ERROR) ([sk_getsockopt]'s
+      [-sock_error(sk)], net/core/sock.c), is declined on a pair end
+      ([Net.Socket.stream_getsockopt]).  A change that answers SO_ERROR
+      must read and set [se_reset] as this arm does.
     - THE QUEUE EMPTY AND THE PEER OPEN, in the order "POSIX 1003.1g
       mandates": no [sk_err] can be pending, since only the peer's close
       sets one; RCV_SHUTDOWN is end of file, 0; then, when the call may
@@ -432,10 +461,10 @@ Definition read_urandom (buf count : word) (i : SyscallInput) (m : Model)
       end non-blocking in [cf_socket_open] before any I/O (curl
       lib/cf-socket.c:1378).  If a later target does reach it, this
       decline is what says so. *)
-Definition stream_read_empty (id : word) (side : bool) (st : StreamEnd)
+Definition stream_read_empty (fd id : word) (side : bool) (st : StreamEnd)
     (nonblock : bool) (m : Model) : Sys SyscallEffect :=
   match stream_peer (m_fds m) id side with
-  | None => unmodeled                   (* the peer closed: EOF, or one ECONNRESET first *)
+  | None => stream_read_reset fd id side st m   (* the peer closed: one ECONNRESET, or EOF *)
   | Some _ =>
       if se_shut_rd st then ret_only (Z_to_bv 64 0)   (* RCV_SHUTDOWN: end of file *)
       else if nonblock then err_ret EAGAIN            (* [if (!timeo)] *)
@@ -446,7 +475,7 @@ Definition stream_read (fd id : word) (side : bool) (st : StreamEnd)
     (nonblock : bool) (buf count : word) (i : SyscallInput) (m : Model)
     : Sys SyscallEffect :=
   match se_rx st with
-  | [] => stream_read_empty id side st nonblock m
+  | [] => stream_read_empty fd id side st nonblock m
   | q =>
       let del := pipe_take q (rw_count_clamp count) in
       match read_bytes_map (in_wmem i) buf (len_word del) with
@@ -3429,7 +3458,7 @@ Definition readv_imported (fd : word) (r : ReadableFd)
          O_NONBLOCK as MSG_DONTWAIT; the zero aggregate above is
          [vfs_readv]'s own early 0, ahead of it *)
       match se_rx st with
-      | [] => stream_read_empty id side st (se_nonblock st) m
+      | [] => stream_read_empty fd id side st (se_nonblock st) m
       | q =>
           let del := pipe_take q total in
           match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with

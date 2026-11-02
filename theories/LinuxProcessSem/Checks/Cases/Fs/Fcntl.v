@@ -469,7 +469,7 @@ Qed.
     at fd 4 NON-BLOCKING (a [socketpair] asked for SOCK_NONBLOCK, or an
     earlier F_SETFL).  Both empty and open both ways. *)
 Definition fcntl_pair_end (nb : bool) : StreamEnd :=
-  mkStreamEnd [] nb 212992%Z 212992%Z false false.
+  mkStreamEnd [] nb 212992%Z 212992%Z false false RsUnknown.
 
 Definition fcntl_pair_model : Model :=
   mkModel [(0, FdChannel 0); (1, FdChannel 1);

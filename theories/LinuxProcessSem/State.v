@@ -2730,6 +2730,27 @@ Definition PIPE_BUF : Z := 4096%Z.
     need a second slot is declined rather than guessed at. *)
 Definition PipeBuf : Type := list byte * Z.
 
+(** WHAT A STREAM-PAIR END HAS SHOWN OF THE ERROR ITS PEER'S CLOSE MAY
+    HAVE LEFT ([StreamEnd.se_reset]).  Linux v6.18.46 (commit
+    1f99e9ab748f), net/unix/af_unix.c: [unix_release_sock] of one end
+    sets the other end's [sk_err = ECONNRESET] when the closing end's
+    own receive queue still held bytes; an empty read on the survivor
+    ([unix_stream_read_generic]) returns that error once and clears it
+    ([sock_error], an [xchg] to 0), and [unix_poll] reports EPOLLERR
+    while it is set, without clearing it.
+
+    - [RsUnknown]: no call has shown it yet.  Whether the close left the
+      error set is open, and the next call that shows it chooses.
+    - [RsPending]: a [ppoll] has shown EPOLLERR, so the error is set and
+      not yet consumed.  The next empty read answers -ECONNRESET.
+    - [RsNone]: the error is not set -- it never was, or a read consumed
+      it.  Every later empty read is end of file, and EPOLLERR is clear.
+
+    It only moves forward: [RsUnknown] to either of the others,
+    [RsPending] to [RsNone], and never back
+    ([Checks.StreamReset]). *)
+Inductive ResetState := RsUnknown | RsPending | RsNone.
+
 (** ONE END OF AN IN-PROCESS STREAM PAIR: everything Linux keeps on one
     of the two AF_UNIX/SOCK_STREAM sockets [socketpair] joins, as far as
     this model reads it.  Every claim in this block is Linux v6.18.46
@@ -2768,14 +2789,21 @@ Definition PipeBuf : Type := list byte * Z.
       [SEND_SHUTDOWN] bits of [sk_shutdown] as [shutdown] left them.
       [unix_shutdown] sets the caller's bits and the MIRRORED bits on the
       peer (a SHUT_WR here is RCV_SHUTDOWN there).
+    - [se_reset] is what this end has SHOWN of its [sk_err] since its
+      peer closed ([ResetState]).  It is owned by this end: only this
+      end's own calls write it -- an empty read
+      ([Fs.ReadWrite.stream_read_empty]) and a [ppoll] that names it
+      ([Fs.Select.ppoll_record]) -- and only while the peer is gone.
+      [stream_fresh] makes it [RsUnknown], and while the peer is live
+      nothing writes it.
 
-    WHAT A CLOSE DOES TO THE SURVIVOR IS NOT STORED HERE: A CHOSEN
-    BOUNDARY, NOT A GAP.  [unix_release_sock] ORs [SHUTDOWN_MASK] into the
-    survivor and sets its [sk_err = ECONNRESET] when the closing end still
-    held unread bytes.  The model keeps [Fs.Open.close_spec] KIND-BLIND
-    instead — the entry goes and nothing else moves — because a close
-    that writes into another descriptor's entry would make false every
-    published lemma that says a close only removes its entry
+    WHAT A CLOSE DOES TO THE SURVIVOR IS NOT WRITTEN BY THE CLOSE: A
+    CHOSEN BOUNDARY, NOT A GAP.  [unix_release_sock] ORs [SHUTDOWN_MASK]
+    into the survivor and sets its [sk_err = ECONNRESET] when the closing
+    end still held unread bytes.  The model keeps [Fs.Open.close_spec]
+    KIND-BLIND instead — the entry goes and nothing else moves — because
+    a close that writes into another descriptor's entry would make false
+    every published lemma that says a close only removes its entry
     (theories/Common/FileSim.v [tfo_close] and [tfo_close_rec]), and
     keeping those would need a premise on them.  78 of the 89 published
     proof trees vendor them, and 34 of those 78 are trees that the new
@@ -2787,20 +2815,23 @@ Definition PipeBuf : Type := list byte * Z.
     So the survivor reads "the peer has closed" off the table —
     [stream_peer] is [None] — and every arm treats that as
     [SHUTDOWN_MASK]: a send is -EPIPE, select reports readable and
-    writable.  WHAT IS NOT MODELED is the survivor's error state: whether
-    the close left [sk_err] set.  An empty read on the survivor turns on
-    it (end of file, or one -ECONNRESET first), and it DECLINES rather
-    than guess.  A [ppoll] on the survivor, whose filter always holds
-    EPOLLERR, answers with EPOLLERR set or clear, as a choice shown in
-    its [revents] ([Fs.Select.ppoll_revents_of]).  No call of
-    curl_fuzzer_proto_http reaches the read, but other cURL protocol
-    targets do: in the census of the 19 wave-3 targets, a read on a
-    survivor is the first declined call of 401 runs in 11 targets
-    (dispatch://OSSV-286/artifact/census-wave3-md, kind D2).  The repair
-    keeps [close_spec] kind-blind: the survivor's first call that shows
-    the error chooses whether it was set, and the survivor keeps to that
-    choice.  It is a separate change
-    (dispatch://OSSV-287/artifact/d2-design-md).
+    writable.  Whether the close also left [sk_err] set is one fact the
+    close fixed on Linux, and the model leaves it OPEN until the
+    survivor's first call that shows it, and from then on answers from
+    [se_reset]: the first empty read answers -ECONNRESET or end of file
+    as a choice shown in its return value, a [ppoll] answers with
+    EPOLLERR set or clear as a choice shown in its [revents], and each
+    records the choice in [se_reset] so every later call keeps to it.
+    Linux's run is always one of the branches the model admits; the model
+    does not say which, so a proof must cover both.  (The design:
+    dispatch://OSSV-287/artifact/d2-design-md.  The evidence: in the
+    census of the 19 wave-3 cURL targets, a read on a survivor is the
+    first declined call of 401 runs in 11 targets,
+    dispatch://OSSV-286/artifact/census-wave3-md, kind D2.)  The empty
+    read is the error's ONLY CONSUMER in the model because
+    getsockopt(SO_ERROR), which also clears it, is declined on a pair
+    end ([Net.Socket.stream_getsockopt]); a change that answers SO_ERROR
+    must read and set [se_reset] too.
 
     WHAT IS NOT HERE, and deliberately.  No ADDRESS: a [socketpair] end
     is unbound, [unix_getname] reports the unnamed address, and nothing
@@ -2819,7 +2850,8 @@ Record StreamEnd := mkStreamEnd {
   se_sndbuf   : Z;
   se_rcvbuf   : Z;
   se_shut_rd  : bool;
-  se_shut_wr  : bool
+  se_shut_wr  : bool;
+  se_reset    : ResetState
 }.
 
 (** THE COUNTER BEHIND AN EVENTFD: what Linux keeps in the [struct
@@ -5969,10 +6001,11 @@ Definition stream_id_live (fds : list (word * FdEntry)) (id : word) : bool :=
   end.
 
 (** A fresh end, as [unix_create1] leaves a socket and [unix_socketpair]
-    then connects it: an empty receive queue, no shutdown bit, and the two
-    buffer sizes and the file's O_NONBLOCK as the caller decides them. *)
+    then connects it: an empty receive queue, no shutdown bit, the two
+    buffer sizes and the file's O_NONBLOCK as the caller decides them,
+    and nothing shown of an error ([RsUnknown]; no peer has closed). *)
 Definition stream_fresh (nonblock : bool) (sndbuf rcvbuf : Z) : StreamEnd :=
-  mkStreamEnd [] nonblock sndbuf rcvbuf false false.
+  mkStreamEnd [] nonblock sndbuf rcvbuf false false RsUnknown.
 
 (** The bytes this end has queued for it to read, in [Z]. *)
 Definition se_rx_len (st : StreamEnd) : Z := Z.of_nat (length (se_rx st)).
@@ -5981,23 +6014,26 @@ Definition se_rx_len (st : StreamEnd) : Z := Z.of_nat (length (se_rx st)).
     the record whole; they are the only places that do. *)
 Definition se_set_rx (st : StreamEnd) (q : list byte) : StreamEnd :=
   mkStreamEnd q (se_nonblock st) (se_sndbuf st) (se_rcvbuf st)
-              (se_shut_rd st) (se_shut_wr st).
+              (se_shut_rd st) (se_shut_wr st) (se_reset st).
 Definition se_set_nonblock (st : StreamEnd) (b : bool) : StreamEnd :=
   mkStreamEnd (se_rx st) b (se_sndbuf st) (se_rcvbuf st)
-              (se_shut_rd st) (se_shut_wr st).
+              (se_shut_rd st) (se_shut_wr st) (se_reset st).
 Definition se_set_sndbuf (st : StreamEnd) (v : Z) : StreamEnd :=
   mkStreamEnd (se_rx st) (se_nonblock st) v (se_rcvbuf st)
-              (se_shut_rd st) (se_shut_wr st).
+              (se_shut_rd st) (se_shut_wr st) (se_reset st).
 Definition se_set_rcvbuf (st : StreamEnd) (v : Z) : StreamEnd :=
   mkStreamEnd (se_rx st) (se_nonblock st) (se_sndbuf st) v
-              (se_shut_rd st) (se_shut_wr st).
+              (se_shut_rd st) (se_shut_wr st) (se_reset st).
+Definition se_set_reset (st : StreamEnd) (r : ResetState) : StreamEnd :=
+  mkStreamEnd (se_rx st) (se_nonblock st) (se_sndbuf st) (se_rcvbuf st)
+              (se_shut_rd st) (se_shut_wr st) r.
 
 (** OR shutdown bits into an end: [rd] for RCV_SHUTDOWN, [wr] for
     SEND_SHUTDOWN.  Bits are only ever added -- [unix_shutdown] writes
     [sk_shutdown | mode] -- so this cannot clear one. *)
 Definition se_add_shut (st : StreamEnd) (rd wr : bool) : StreamEnd :=
   mkStreamEnd (se_rx st) (se_nonblock st) (se_sndbuf st) (se_rcvbuf st)
-              (se_shut_rd st || rd) (se_shut_wr st || wr).
+              (se_shut_rd st || rd) (se_shut_wr st || wr) (se_reset st).
 
 (** HOW MANY BYTES A NON-BLOCKING SEND MAY MOVE, as a relation: [k] bytes
     of an [n]-byte send, onto a peer queue that already holds [q] bytes

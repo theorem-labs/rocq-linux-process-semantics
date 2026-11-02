@@ -25,25 +25,28 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
    in the effect, so the acceptor READS THEM BACK rather than search:
    [sel] through a syscall-specific readback [rd] of the writes, the
    remaining time as the last write.  It then rebuilds the answer for
-   that choice and compares.  Soundness needs nothing of [rd]; for
+   that choice and compares, and the model after the call is the call's
+   record [rec] of that choice: so it is a function of the model before
+   the call and of the effect.  Soundness needs nothing of [rd]; for
    completeness [rd] must return the choice that made the writes
    ([pa_readback]), which each syscall proves below.
    ========================================================================= *)
 
 Definition check_pselect_answer (pa : PselectAnswers)
     (rd : list (word * list byte) -> Z) (reads : list (word * nat))
-    (eff : SyscallEffect) (m : Model) : check_result :=
+    (rec : Z -> Model -> Model) (eff : SyscallEffect) (m : Model) : check_result :=
   match eff with
   | mkEffectU r' ws' [] [] [] ks =>
       if access_ranges_eqb ks reads then
         match pa_ans pa (Z.land (pa_und pa) (rd ws')) with
         | (r, ws, None) =>
-            if bv_eqb r' r && writes_eqb ws' ws then CheckOk m [] else CheckReject
+            if bv_eqb r' r && writes_eqb ws' ws
+            then CheckOk (rec (Z.land (pa_und pa) (rd ws')) m) [] else CheckReject
         | (r, ws, Some (tsp, (sec, nsec))) =>
             if bv_eqb r' r
                && writes_eqb ws' (ws ++ [(tsp, snd (last ws' (tsp, [])))])
                && pselect_remaining_ok sec nsec (snd (last ws' (tsp, [])))
-            then CheckOk m [] else CheckReject
+            then CheckOk (rec (Z.land (pa_und pa) (rd ws')) m) [] else CheckReject
         end
       else CheckReject
   | _ => CheckReject
@@ -66,11 +69,11 @@ Proof.
   rewrite Z.land_0_l in Hs |- *. exact Hs.
 Qed.
 
-Lemma check_pselect_answer_sound : forall pa rd reads eff m m' evs i,
-  check_pselect_answer pa rd reads eff m = CheckOk m' evs ->
-  pselect_answer reads pa i m (Ok eff m' evs).
+Lemma check_pselect_answer_sound : forall pa rd reads rec eff m m' evs i,
+  check_pselect_answer pa rd reads rec eff m = CheckOk m' evs ->
+  pselect_answer reads pa rec i m (Ok eff m' evs).
 Proof.
-  intros pa rd reads [r' ws' zs us cs ks] m m' evs i H.
+  intros pa rd reads rec [r' ws' zs us cs ks] m m' evs i H.
   unfold check_pselect_answer in H.
   destruct zs as [|? ?]; [|discriminate H].
   destruct us as [|? ?]; [|discriminate H].
@@ -81,6 +84,7 @@ Proof.
   eapply bind_ok0;
     [apply (choose_ok _ (Z.land (pa_und pa) (rd ws'))); apply land_und_idem|].
   cbv beta.
+  eapply bind_ok0; [apply modify_ok|]. cbv beta.
   destruct (pa_ans pa (Z.land (pa_und pa) (rd ws'))) as [[r ws] [[tsp [sec nsec]]|]];
     cbv beta iota in H |- *.
   - match type of H with context [if ?b then _ else _] => destruct b eqn:Hg end;
@@ -88,6 +92,7 @@ Proof.
     injection H as <- <-.
     apply andb_true_iff in Hg as [Hg Hok]. apply andb_true_iff in Hg as [Hr Hw].
     apply bv_eqb_eq in Hr. apply writes_eqb_eq in Hw. subst r'.
+    set (mm := rec (Z.land (pa_und pa) (rd ws')) m).
     rewrite Hw at 1.
     eapply bind_ok0; [apply (choose_ok _ (snd (last ws' (tsp, [])))); exact Hok|].
     cbv beta. apply pure_ok.
@@ -99,10 +104,10 @@ Proof.
     apply pure_ok.
 Qed.
 
-Lemma check_pselect_answer_not_unmodeled : forall pa rd reads eff m,
-  check_pselect_answer pa rd reads eff m <> CheckUnmodeled.
+Lemma check_pselect_answer_not_unmodeled : forall pa rd reads rec eff m,
+  check_pselect_answer pa rd reads rec eff m <> CheckUnmodeled.
 Proof.
-  intros pa rd reads [r' ws' zs us cs ks] m. unfold check_pselect_answer.
+  intros pa rd reads rec [r' ws' zs us cs ks] m. unfold check_pselect_answer.
   destruct zs as [|? ?]; [|discriminate].
   destruct us as [|? ?]; [|discriminate].
   destruct cs as [|? ?]; [|discriminate].
@@ -112,11 +117,13 @@ Proof.
     match goal with |- context [if ?b then _ else _] => destruct b end; discriminate.
 Qed.
 
-(** The acceptor never moves the model. *)
-Lemma check_pselect_answer_model : forall pa rd reads eff m m' evs,
-  check_pselect_answer pa rd reads eff m = CheckOk m' evs -> m' = m.
+(** The acceptor's model is the call's record of the choice it read
+    back. *)
+Lemma check_pselect_answer_model : forall pa rd reads rec eff m m' evs,
+  check_pselect_answer pa rd reads rec eff m = CheckOk m' evs ->
+  m' = rec (Z.land (pa_und pa) (rd (eff_writes eff))) m.
 Proof.
-  intros pa rd reads [r' ws' zs us cs ks] m m' evs H.
+  intros pa rd reads rec [r' ws' zs us cs ks] m m' evs H.
   unfold check_pselect_answer in H.
   destruct zs as [|? ?]; [|discriminate H].
   destruct us as [|? ?]; [|discriminate H].
@@ -128,30 +135,33 @@ Proof.
      cbv beta iota in H; [injection H as <- _; reflexivity | discriminate H]).
 Qed.
 
-Lemma pselect_answer_no_unmodeled : forall reads pa i m,
-  ~ pselect_answer reads pa i m Unmodeled.
+Lemma pselect_answer_no_unmodeled : forall reads pa rec i m,
+  ~ pselect_answer reads pa rec i m Unmodeled.
 Proof.
-  intros reads pa i m H.
-  unfold pselect_answer, bind, choose, pure in H. cbv beta iota in H.
+  intros reads pa rec i m H.
+  unfold pselect_answer, bind, choose, modify, pure in H. cbv beta iota in H.
   destruct H as [(x & _ & Hx) | (sel & m1 & evs1 & _ & Hk)]; [discriminate Hx|].
+  destruct Hk as [Hu | (u & m2 & evs2 & _ & Hk)]; [discriminate Hu|].
   destruct (pa_ans pa sel) as [[r ws] [[tsp [sec nsec]]|]]; cbv beta iota in Hk.
-  - destruct Hk as [(y & _ & Hy) | (rem & m2 & e1 & _ & Hk2)];
+  - destruct Hk as [(y & _ & Hy) | (rem & m3 & e1 & _ & Hk2)];
       [discriminate Hy | discriminate Hk2].
   - discriminate Hk.
 Qed.
 
-Lemma check_pselect_answer_complete : forall pa rd reads i m eff m' evs,
+Lemma check_pselect_answer_complete : forall pa rd reads rec i m eff m' evs,
   pa_readback pa rd ->
-  pselect_answer reads pa i m (Ok eff m' evs) ->
-  check_pselect_answer pa rd reads eff m = CheckOk m' evs.
+  pselect_answer reads pa rec i m (Ok eff m' evs) ->
+  check_pselect_answer pa rd reads rec eff m = CheckOk m' evs.
 Proof.
-  intros pa rd reads i m eff m' evs Hrd H.
-  unfold pselect_answer, bind, choose, pure in H. cbv beta iota in H.
+  intros pa rd reads rec i m eff m' evs Hrd H.
+  unfold pselect_answer, bind, choose, modify, pure in H. cbv beta iota in H.
   destruct H as (sel & m1 & evs1 & evs2 & (sel0 & Hsel & Hc) & Hk & ->).
   injection Hc as -> -> ->.
+  destruct Hk as (u & m2 & evs3 & evs4 & Hm & Hk & ->).
+  injection Hm as -> -> ->.
   destruct (pa_ans pa sel0) as [[r ws] [[tsp [sec nsec]]|]] eqn:Ha;
     cbv beta iota in Hk.
-  - destruct Hk as (rem & m2 & e1 & e2 & (rem0 & Hrem & Hc2) & Hk2 & ->).
+  - destruct Hk as (rem & m3 & e1 & e2 & (rem0 & Hrem & Hc2) & Hk2 & ->).
     injection Hc2 as -> -> ->.
     injection Hk2 as -> -> ->.
     pose proof (Hrd sel0 [(tsp, rem0)] Hsel) as E.
@@ -507,7 +517,7 @@ Definition check_pselect6 (i : SyscallInput) (n32 inp outp exp tsp sig : word)
   | None => CheckUnmodeled
   | Some pa =>
       check_pselect_answer pa (pselect6_rd i m n32 inp outp exp)
-        (pselect6_reads i n32 inp outp exp tsp sig) eff m
+        (pselect6_reads i n32 inp outp exp tsp sig) (fun _ m0 => m0) eff m
   end.
 
 (** Reading the syscall input and the model off the head of a spec. *)
@@ -547,7 +557,7 @@ Proof.
   apply bind_input_iff. cbv beta. apply bind_get_model. cbv beta.
   destruct (pselect6_outcome i m n32 inp outp exp tsp sig) as [pa|];
     cbv beta iota; [|apply unmodeled_intro].
-  exfalso. exact (check_pselect_answer_not_unmodeled _ _ _ _ _ H).
+  exfalso. exact (check_pselect_answer_not_unmodeled _ _ _ _ _ _ H).
 Qed.
 
 Lemma check_pselect6_complete_ok :
@@ -576,7 +586,7 @@ Proof.
   unfold check_pselect6.
   destruct (pselect6_outcome i m n32 inp outp exp tsp sig) as [pa|];
     cbv beta iota in H |- *; [|reflexivity].
-  exfalso. exact (pselect_answer_no_unmodeled _ _ _ _ H).
+  exfalso. exact (pselect_answer_no_unmodeled _ _ _ _ _ H).
 Qed.
 
 (* -------------------------------------------------- ppoll *)
@@ -607,7 +617,7 @@ Lemma stream_poll_mask_small : forall fds id side st,
 Proof.
   intros fds id side st. unfold stream_poll_mask. cbv zeta.
   destruct (stream_peer fds id side) as [[x pst]|]; destruct (se_rx st);
-    cbv beta iota; destr_ifs; reflexivity.
+    destruct (se_reset st); cbv beta iota; destr_ifs; reflexivity.
 Qed.
 
 Lemma ppoll_revents_of_ok : forall fds fd ev lo hi,
@@ -761,14 +771,16 @@ Qed.
     model declines, which is [CheckUnmodeled] here.  Its choices are
     pselect6's, read back the same way: the [revents] of an undecided
     pair end by [ppoll_rd], and the remaining time as the last write.
-    The ledger [Select.ppoll_reads] is compared as well. *)
+    The ledger [Select.ppoll_reads] is compared as well, and the model
+    after the call is [Select.ppoll_rec] of the choice read back: the
+    EPOLLERR each survivor it named has shown. *)
 Definition check_ppoll (i : SyscallInput) (ufds nfds tsp sig sigsetsize : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match ppoll_outcome i m ufds nfds tsp sig sigsetsize with
   | None => CheckUnmodeled
   | Some pa =>
       check_pselect_answer pa (ppoll_rd i m ufds nfds)
-        (ppoll_reads i m ufds nfds tsp sig sigsetsize) eff m
+        (ppoll_reads i m ufds nfds tsp sig sigsetsize) (ppoll_rec pa) eff m
   end.
 
 Lemma check_ppoll_sound_ok :
@@ -794,7 +806,7 @@ Proof.
   apply bind_input_iff. cbv beta. apply bind_get_model. cbv beta.
   destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [pa|];
     cbv beta iota; [|apply unmodeled_intro].
-  exfalso. exact (check_pselect_answer_not_unmodeled _ _ _ _ _ H).
+  exfalso. exact (check_pselect_answer_not_unmodeled _ _ _ _ _ _ H).
 Qed.
 
 Lemma check_ppoll_complete_ok :
@@ -823,5 +835,5 @@ Proof.
   unfold check_ppoll.
   destruct (ppoll_outcome i m ufds nfds tsp sig sigsetsize) as [pa|];
     cbv beta iota in H |- *; [|reflexivity].
-  exfalso. exact (pselect_answer_no_unmodeled _ _ _ _ H).
+  exfalso. exact (pselect_answer_no_unmodeled _ _ _ _ _ H).
 Qed.

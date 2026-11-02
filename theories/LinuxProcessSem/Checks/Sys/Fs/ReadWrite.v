@@ -351,58 +351,158 @@ Proof.
   unfold two_pow_64, EAGAIN, MAX_RW_COUNT in *. lia.
 Qed.
 
-(** [ReadWrite.stream_read_empty] as an acceptor: a closed peer
-    declines (the table cannot say whether its close left an
-    -ECONNRESET pending), then end of file, the non-blocking -EAGAIN,
-    and the deliberate decline of a blocking read, in that order.  No
-    answer moves the model, and every one is computed, so nothing is
-    matched against a predicate. *)
-Definition check_stream_read_empty (id : word) (side : bool) (st : StreamEnd)
+(** One answer of the survivor's read that records what it showed: this
+    end's entry rewritten, then the return.  It has exactly one
+    outcome. *)
+Lemma stream_reset_ret_ok : forall fds r i m,
+  (set_fds fds ;; ret_only r) i m (Ok (mkEffect r [] []) (with_fds fds m) []).
+Proof.
+  intros fds r i m. eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+Qed.
+
+Lemma stream_reset_ret_ok_inv : forall fds r i m eff m' evs,
+  (set_fds fds ;; ret_only r) i m (Ok eff m' evs) ->
+  eff = mkEffect r [] [] /\ m' = with_fds fds m /\ evs = [].
+Proof.
+  intros fds r i m eff m' evs (u & m1 & evs1 & evs2 & Hset & Hret & ->).
+  unfold set_fds, modify in Hset. inversion Hset; subst; clear Hset.
+  cbv beta in Hret. apply ret_only_ok_inv in Hret. destruct Hret as (-> & -> & ->).
+  repeat split; reflexivity.
+Qed.
+
+Lemma stream_reset_ret_no_unmodeled : forall fds r i m,
+  ~ (set_fds fds ;; ret_only r) i m Unmodeled.
+Proof.
+  intros fds r i m [H|(u & m1 & evs1 & Hset & H)].
+  - unfold set_fds, modify in H. discriminate H.
+  - cbv beta in H. exact (ret_only_no_unmodeled _ _ _ H).
+Qed.
+
+Lemma zero_not_econnreset : bv_eqb (Z_to_bv 64 0) (errno_ret ECONNRESET) = false.
+Proof. vm_compute. reflexivity. Qed.
+
+(** [ReadWrite.stream_read_reset] as an acceptor.  Its one choice, on an
+    end that has shown nothing yet, is the return value, so the checker
+    reads it back: -ECONNRESET, or anything else as the end of file it
+    must then be.  The model after it is a function of the model before
+    it and of that return. *)
+Definition check_stream_read_reset (fd id : word) (side : bool) (st : StreamEnd)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  match se_reset st with
+  | RsUnknown =>
+      if bv_eqb (eff_ret eff) (errno_ret ECONNRESET)
+      then check_ret_only eff (errno_ret ECONNRESET)
+             (with_fds (stream_reset_seen fd id side st m) m) []
+      else check_ret_only eff (Z_to_bv 64 0)
+             (with_fds (stream_reset_seen fd id side st m) m) []
+  | RsPending =>
+      check_ret_only eff (errno_ret ECONNRESET)
+        (with_fds (stream_reset_seen fd id side st m) m) []
+  | RsNone => check_ret_only eff (Z_to_bv 64 0) m []
+  end.
+
+Lemma check_stream_read_reset_sound_ok : forall fd id side st eff m m' evs i,
+  check_stream_read_reset fd id side st eff m = CheckOk m' evs ->
+  stream_read_reset fd id side st m i m (Ok eff m' evs).
+Proof.
+  intros fd id side st eff m m' evs i H.
+  unfold check_stream_read_reset in H. unfold stream_read_reset, err_ret.
+  destruct (se_reset st); cbv beta iota in H |- *.
+  - destruct (bv_eqb (eff_ret eff) (errno_ret ECONNRESET)); cbv beta iota in H;
+      apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+      [apply alt_l | apply alt_r]; apply stream_reset_ret_ok.
+  - apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    apply stream_reset_ret_ok.
+  - apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok.
+Qed.
+
+Lemma check_stream_read_reset_not_unmodeled : forall fd id side st eff m,
+  check_stream_read_reset fd id side st eff m <> CheckUnmodeled.
+Proof.
+  intros fd id side st eff m. unfold check_stream_read_reset.
+  destruct (se_reset st); cbv beta iota;
+    [destruct (bv_eqb (eff_ret eff) (errno_ret ECONNRESET)); cbv beta iota| |];
+    apply check_ret_only_no_unmodeled.
+Qed.
+
+Lemma stream_read_reset_no_unmodeled : forall fd id side st m i,
+  ~ stream_read_reset fd id side st m i m Unmodeled.
+Proof.
+  intros fd id side st m i H. unfold stream_read_reset, err_ret in H.
+  destruct (se_reset st); cbv beta iota in H.
+  - unfold alt in H. destruct H as [H|H]; exact (stream_reset_ret_no_unmodeled _ _ _ _ H).
+  - exact (stream_reset_ret_no_unmodeled _ _ _ _ H).
+  - exact (ret_only_no_unmodeled _ _ _ H).
+Qed.
+
+Lemma check_stream_read_reset_complete_ok : forall fd id side st eff m m' evs i,
+  stream_read_reset fd id side st m i m (Ok eff m' evs) ->
+  check_stream_read_reset fd id side st eff m = CheckOk m' evs.
+Proof.
+  intros fd id side st eff m m' evs i H.
+  unfold stream_read_reset, err_ret in H. unfold check_stream_read_reset.
+  destruct (se_reset st); cbv beta iota in H |- *.
+  - unfold alt in H. destruct H as [H|H]; apply stream_reset_ret_ok_inv in H;
+      destruct H as (-> & -> & ->); cbn [eff_ret];
+      [rewrite bv_eqb_refl | rewrite zero_not_econnreset]; cbv beta iota;
+      apply check_ret_only_ok_iff; repeat split; reflexivity.
+  - apply stream_reset_ret_ok_inv in H. destruct H as (-> & -> & ->).
+    apply check_ret_only_ok_iff. repeat split; reflexivity.
+  - apply ret_only_ok_inv in H. destruct H as (-> & -> & ->).
+    apply check_ret_only_ok_iff. repeat split; reflexivity.
+Qed.
+
+(** [ReadWrite.stream_read_empty] as an acceptor: a closed peer is
+    [check_stream_read_reset]'s, then end of file, the non-blocking
+    -EAGAIN, and the deliberate decline of a blocking read, in that
+    order.  Only the survivor's answer moves the model, and only its
+    first one chooses; every other answer is computed. *)
+Definition check_stream_read_empty (fd id : word) (side : bool) (st : StreamEnd)
     (nonblock : bool) (eff : SyscallEffect) (m : Model) : check_result :=
   match stream_peer (m_fds m) id side with
-  | None => CheckUnmodeled
+  | None => check_stream_read_reset fd id side st eff m
   | Some _ =>
       if se_shut_rd st then check_ret_only eff (Z_to_bv 64 0) m []
       else if nonblock then check_ret_only eff (errno_ret EAGAIN) m []
       else CheckUnmodeled
   end.
 
-Lemma check_stream_read_empty_sound_ok : forall id side st nonblock eff m m' evs i,
-  check_stream_read_empty id side st nonblock eff m = CheckOk m' evs ->
-  stream_read_empty id side st nonblock m i m (Ok eff m' evs).
+Lemma check_stream_read_empty_sound_ok : forall fd id side st nonblock eff m m' evs i,
+  check_stream_read_empty fd id side st nonblock eff m = CheckOk m' evs ->
+  stream_read_empty fd id side st nonblock m i m (Ok eff m' evs).
 Proof.
-  intros id side st nonblock eff m m' evs i H.
+  intros fd id side st nonblock eff m m' evs i H.
   unfold check_stream_read_empty in H. unfold stream_read_empty.
   destruct (stream_peer (m_fds m) id side) as [p|]; cbv beta iota in H |- *;
-    [|discriminate].
+    [|apply check_stream_read_reset_sound_ok; exact H].
   destruct (se_shut_rd st); cbv beta iota in H |- *.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
   destruct nonblock; cbv beta iota in H |- *; [|discriminate].
   apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok.
 Qed.
 
-Lemma check_stream_read_empty_sound_unmodeled : forall id side st nonblock eff m i,
-  check_stream_read_empty id side st nonblock eff m = CheckUnmodeled ->
-  stream_read_empty id side st nonblock m i m Unmodeled.
+Lemma check_stream_read_empty_sound_unmodeled : forall fd id side st nonblock eff m i,
+  check_stream_read_empty fd id side st nonblock eff m = CheckUnmodeled ->
+  stream_read_empty fd id side st nonblock m i m Unmodeled.
 Proof.
-  intros id side st nonblock eff m i H.
+  intros fd id side st nonblock eff m i H.
   unfold check_stream_read_empty in H. unfold stream_read_empty.
   destruct (stream_peer (m_fds m) id side) as [p|]; cbv beta iota in H |- *;
-    [|apply unmodeled_intro].
+    [|exfalso; exact (check_stream_read_reset_not_unmodeled _ _ _ _ _ _ H)].
   destruct (se_shut_rd st); cbv beta iota in H |- *;
     [now apply check_ret_only_no_unmodeled in H|].
   destruct nonblock; cbv beta iota in H |- *;
     [now apply check_ret_only_no_unmodeled in H|apply unmodeled_intro].
 Qed.
 
-Lemma check_stream_read_empty_complete_ok : forall id side st nonblock eff m m' evs i,
-  stream_read_empty id side st nonblock m i m (Ok eff m' evs) ->
-  check_stream_read_empty id side st nonblock eff m = CheckOk m' evs.
+Lemma check_stream_read_empty_complete_ok : forall fd id side st nonblock eff m m' evs i,
+  stream_read_empty fd id side st nonblock m i m (Ok eff m' evs) ->
+  check_stream_read_empty fd id side st nonblock eff m = CheckOk m' evs.
 Proof.
-  intros id side st nonblock eff m m' evs i H.
+  intros fd id side st nonblock eff m m' evs i H.
   unfold stream_read_empty in H. unfold check_stream_read_empty.
   destruct (stream_peer (m_fds m) id side) as [p|]; cbv beta iota in H |- *;
-    [|exfalso; exact (unmodeled_no_ok _ _ _ _ _ H)].
+    [|eapply check_stream_read_reset_complete_ok; exact H].
   destruct (se_shut_rd st); cbv beta iota in H |- *.
   { apply ret_only_ok_inv in H. destruct H as (-> & -> & ->).
     apply check_ret_only_ok_iff. repeat split; reflexivity. }
@@ -412,18 +512,34 @@ Proof.
   exfalso. exact (unmodeled_no_ok _ _ _ _ _ H).
 Qed.
 
-Lemma check_stream_read_empty_complete_unmodeled : forall id side st nonblock eff m i,
-  stream_read_empty id side st nonblock m i m Unmodeled ->
-  check_stream_read_empty id side st nonblock eff m = CheckUnmodeled.
+Lemma check_stream_read_empty_complete_unmodeled : forall fd id side st nonblock eff m i,
+  stream_read_empty fd id side st nonblock m i m Unmodeled ->
+  check_stream_read_empty fd id side st nonblock eff m = CheckUnmodeled.
 Proof.
-  intros id side st nonblock eff m i H.
+  intros fd id side st nonblock eff m i H.
   unfold stream_read_empty in H. unfold check_stream_read_empty.
   destruct (stream_peer (m_fds m) id side) as [p|]; cbv beta iota in H |- *;
-    [|reflexivity].
+    [|exfalso; exact (stream_read_reset_no_unmodeled _ _ _ _ _ _ H)].
   destruct (se_shut_rd st); cbv beta iota in H |- *.
   { exfalso. exact (ret_only_no_unmodeled _ _ _ H). }
   destruct nonblock; cbv beta iota in H |- *; [|reflexivity].
   exfalso. unfold err_ret in H. exact (ret_only_no_unmodeled _ _ _ H).
+Qed.
+
+(** No empty-queue answer writes user memory. *)
+Lemma check_stream_read_empty_no_writes : forall fd id side st nonblock eff m m' evs,
+  check_stream_read_empty fd id side st nonblock eff m = CheckOk m' evs ->
+  eff_writes eff = [].
+Proof.
+  intros fd id side st nonblock eff m m' evs H.
+  unfold check_stream_read_empty, check_stream_read_reset in H.
+  destruct (stream_peer (m_fds m) id side); cbv beta iota in H.
+  - destruct (se_shut_rd st); cbv beta iota in H;
+      [|destruct nonblock; cbv beta iota in H; [|discriminate]];
+      apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity.
+  - destruct (se_reset st); cbv beta iota in H;
+      [destruct (bv_eqb (eff_ret eff) (errno_ret ECONNRESET)); cbv beta iota in H| |];
+      apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _); reflexivity.
 Qed.
 
 (** [ReadWrite.stream_read] as an acceptor, branch for branch: the
@@ -435,7 +551,7 @@ Definition check_stream_read (fd id : word) (side : bool) (st : StreamEnd)
     (nonblock : bool) (buf count : word) (i : SyscallInput)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match se_rx st with
-  | [] => check_stream_read_empty id side st nonblock eff m
+  | [] => check_stream_read_empty fd id side st nonblock eff m
   | q =>
       let del := pipe_take q (rw_count_clamp count) in
       match read_bytes_map (in_wmem i) buf (len_word del) with
@@ -565,12 +681,7 @@ Proof.
   intros fd id side st nonblock buf count i eff m m' evs a bs H Hws.
   unfold check_stream_read in H.
   destruct (se_rx st) as [|b q0]; cbv beta iota zeta in H.
-  { unfold check_stream_read_empty in H.
-    destruct (stream_peer (m_fds m) id side); cbv beta iota in H; [|discriminate].
-    destruct (se_shut_rd st); cbv beta iota in H;
-      [|destruct nonblock; cbv beta iota in H; [|discriminate]];
-      apply check_ret_only_ok_iff in H; destruct H as (-> & _ & _);
-      discriminate Hws. }
+  { apply check_stream_read_empty_no_writes in H. rewrite H in Hws. discriminate Hws. }
   destruct (read_bytes_map (in_wmem i) buf
               (len_word (pipe_take (b :: q0) (rw_count_clamp count))));
     cbv beta iota in H.
@@ -6615,7 +6726,7 @@ Definition check_readv_imported (i : SyscallInput) (fd : word)
          answers, then exactly [pipe_take] of the queue at the capped
          total, scattered in order, the queue advanced past it *)
       match se_rx st with
-      | [] => check_stream_read_empty id side st (se_nonblock st) eff m
+      | [] => check_stream_read_empty fd id side st (se_nonblock st) eff m
       | q =>
           let del := pipe_take q total in
           match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with

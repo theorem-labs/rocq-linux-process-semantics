@@ -53,25 +53,52 @@ Qed.
 
 (* ------------------------------------------------- stream-pair ends *)
 
+(** [ReadWrite.stream_read_reset]'s one outcome per state: an end that
+    has shown nothing answers end of file and records that the error is
+    gone, a shown EPOLLERR is the one -ECONNRESET, and a gone error is
+    end of file. *)
+Definition witness_stream_read_reset (fd id : word) (side : bool) (st : StreamEnd)
+    (m : Model) : outcome SyscallEffect :=
+  match se_reset st with
+  | RsUnknown =>
+      Ok (mkEffect (Z_to_bv 64 0) [] []) (with_fds (stream_reset_seen fd id side st m) m) []
+  | RsPending =>
+      Ok (mkEffect (errno_ret ECONNRESET) [] [])
+         (with_fds (stream_reset_seen fd id side st m) m) []
+  | RsNone => ret_outcome (Z_to_bv 64 0) m
+  end.
+
+Lemma witness_stream_read_reset_ok : forall fd id side st i m,
+  stream_read_reset fd id side st m i m (witness_stream_read_reset fd id side st m).
+Proof.
+  intros. unfold stream_read_reset, witness_stream_read_reset.
+  destruct (se_reset st); cbv beta iota.
+  - apply alt_r. eapply bind_step; [apply modify_ok|]. apply pure_ok.
+  - eapply bind_step; [apply modify_ok|]. apply pure_ok.
+  - apply pure_ok.
+Qed.
+
 (** [ReadWrite.stream_read_empty]'s one outcome per branch: a closed
-    peer and a blocking read decline, a shut receive side is end of
-    file, and a call that may not wait is -EAGAIN. *)
-Definition witness_stream_read_empty (id : word) (side : bool) (st : StreamEnd)
+    peer is [witness_stream_read_reset]'s, a blocking read declines, a
+    shut receive side is end of file, and a call that may not wait is
+    -EAGAIN. *)
+Definition witness_stream_read_empty (fd id : word) (side : bool) (st : StreamEnd)
     (nonblock : bool) (m : Model) : outcome SyscallEffect :=
   match stream_peer (m_fds m) id side with
-  | None => Unmodeled
+  | None => witness_stream_read_reset fd id side st m
   | Some _ =>
       if se_shut_rd st then ret_outcome (Z_to_bv 64 0) m
       else if nonblock then ret_outcome (errno_ret EAGAIN) m
       else Unmodeled
   end.
 
-Lemma witness_stream_read_empty_ok : forall id side st nonblock i m,
-  stream_read_empty id side st nonblock m i m
-    (witness_stream_read_empty id side st nonblock m).
+Lemma witness_stream_read_empty_ok : forall fd id side st nonblock i m,
+  stream_read_empty fd id side st nonblock m i m
+    (witness_stream_read_empty fd id side st nonblock m).
 Proof.
   intros. unfold stream_read_empty, witness_stream_read_empty.
-  destruct (stream_peer (m_fds m) id side); cbv beta iota; [|apply unmodeled_intro].
+  destruct (stream_peer (m_fds m) id side); cbv beta iota;
+    [|apply witness_stream_read_reset_ok].
   destruct (se_shut_rd st); cbv beta iota; [apply pure_ok|].
   destruct nonblock; cbv beta iota; [apply pure_ok|apply unmodeled_intro].
 Qed.
@@ -82,7 +109,7 @@ Definition witness_stream_read (fd id : word) (side : bool) (st : StreamEnd)
     (nonblock : bool) (buf count : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   match se_rx st with
-  | [] => witness_stream_read_empty id side st nonblock m
+  | [] => witness_stream_read_empty fd id side st nonblock m
   | q =>
       let del := pipe_take q (rw_count_clamp count) in
       match read_bytes_map (in_wmem i) buf (len_word del) with
@@ -2381,7 +2408,7 @@ Definition readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                   end
               | RdStream id side st =>
                   match se_rx st with
-                  | [] => witness_stream_read_empty id side st (se_nonblock st) m
+                  | [] => witness_stream_read_empty fd id side st (se_nonblock st) m
                   | q =>
                       let del := pipe_take q total in
                       match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with

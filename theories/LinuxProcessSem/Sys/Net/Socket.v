@@ -1406,7 +1406,18 @@ Definition stream_setsockopt (fd id : word) (side : bool) (st : StreamEnd)
     it and, with no cgroup program attached, hands the result back
     unchanged -- the same environment the AF_INET arm describes.  The
     caller has recorded [do_sock_getsockopt]'s own read of [optlen]; this
-    records [sk_getsockopt]'s second one. *)
+    records [sk_getsockopt]'s second one.
+
+    EVERY OTHER OPTION DECLINES, SO_ERROR INCLUDED, and that decline is
+    what lets the empty read be the only consumer of a survivor's error
+    in the model.  [sk_getsockopt]'s SO_ERROR stores [-sock_error(sk)]
+    (net/core/sock.c), which clears [sk_err] just as the read does, so on
+    a survivor it would report in [optval] the ECONNRESET its peer's
+    close may have left ([State.StreamEnd]).  A change that answers
+    SO_ERROR here must read [State.se_reset] for that value and set it as
+    [Fs.ReadWrite.stream_read_reset] does: [RsUnknown] a choice of
+    ECONNRESET or 0, [RsPending] ECONNRESET, both leaving [RsNone], and
+    [RsNone] 0. *)
 Definition stream_getsockopt (st : StreamEnd) (optname optval optlenp : word)
     (i : SyscallInput) : Sys SyscallEffect :=
   let on := bv_unsigned optname in
