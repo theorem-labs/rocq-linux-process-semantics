@@ -249,12 +249,12 @@ Ltac kf_stream_base H Hoff Hk :=
   [ exact (check_efault_or_kf _ _ _ _ _ H Hoff Hk)
   | exact (check_sigpipe_write_kf _ _ _ _ H Hoff Hk) ].
 
-Lemma check_stream_read_empty_kf : forall id side st nonblock eff m m' evs,
-  check_stream_read_empty id side st nonblock eff m = CheckOk m' evs ->
+Lemma check_stream_read_empty_kf : forall fd id side st nonblock eff m m' evs,
+  check_stream_read_empty fd id side st nonblock eff m = CheckOk m' evs ->
   kill_post m m' evs.
 Proof.
-  intros id side st nonblock eff m m' evs H Hoff Hk.
-  unfold check_stream_read_empty in H. cbv beta iota zeta in H.
+  intros fd id side st nonblock eff m m' evs H Hoff Hk.
+  unfold check_stream_read_empty, check_stream_read_reset in H. cbv beta iota zeta in H.
   repeat (kf_step H || kf_stream_base H Hoff Hk); kf_close m Hoff Hk.
 Qed.
 
@@ -264,7 +264,7 @@ Lemma check_stream_read_kf :
   kill_post m m' evs.
 Proof.
   intros fd id side st nonblock buf count i eff m m' evs H Hoff Hk.
-  unfold check_stream_read, check_stream_read_empty in H. cbv beta iota zeta in H.
+  unfold check_stream_read, check_stream_read_empty, check_stream_read_reset in H. cbv beta iota zeta in H.
   repeat (kf_step H || kf_stream_base H Hoff Hk); kf_close m Hoff Hk.
 Qed.
 
@@ -290,7 +290,7 @@ Qed.
 Ltac kf_stream H Hoff Hk :=
   first
   [ exact (check_stream_read_kf _ _ _ _ _ _ _ _ _ _ _ _ H Hoff Hk)
-  | exact (check_stream_read_empty_kf _ _ _ _ _ _ _ _ H Hoff Hk)
+  | exact (check_stream_read_empty_kf _ _ _ _ _ _ _ _ _ H Hoff Hk)
   | exact (check_stream_write_kf _ _ _ _ _ _ _ _ _ _ _ _ H Hoff Hk)
   | exact (check_stream_send_kf _ _ _ _ _ _ _ _ _ _ _ _ H Hoff Hk) ].
 

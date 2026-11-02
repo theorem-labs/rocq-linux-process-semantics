@@ -313,10 +313,12 @@ Example d3_ppoll_band_under_a_deadline :
 Proof. split; [|split]; check_eq. Qed.
 
 (** THE FALLOUT THE DESIGN NAMES.  After 3 closes, 4's peer left
-    SHUTDOWN_MASK (HUP, RDHUP, IN), and whether it also left [sk_err] the
-    model does not record; EPOLLERR is in every filter.  So ppoll on 4
-    asking POLLIN answers 1 with [revents] POLLIN|POLLHUP (17), or with
-    POLLERR too (25); POLLHUP alone is refused. *)
+    SHUTDOWN_MASK (HUP, RDHUP, IN).  The close does not record whether it
+    also left [sk_err]; the first ppoll that shows it records what it
+    showed ([Fs.Select.ppoll_record]).  EPOLLERR is in every filter.  So
+    this first ppoll on 4 asking POLLIN answers 1 with [revents]
+    POLLIN|POLLHUP (17), or with POLLERR too (25); POLLHUP alone is
+    refused. *)
 Example d3_ppoll_peer_closed_answers_with_epollerr_set_or_clear :
   is_ok (after closed (ppoll_in 4 1 None) (ppoll_eff false 1 [17]%Z None)) = true
   /\ is_ok (after closed (ppoll_in 4 1 None) (ppoll_eff false 1 [25]%Z None)) = true
