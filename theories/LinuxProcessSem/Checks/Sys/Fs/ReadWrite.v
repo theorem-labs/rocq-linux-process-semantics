@@ -242,7 +242,7 @@ Proof.
 Qed.
 
 (** The executable form of [ReadWrite.sigpipe_write], shared by the
-    three arms that can raise signal 13.  First the declaration: at
+    arms that can raise signal 13.  First the declaration: at
     SIG_DFL with the SIGPIPE death not declared
     ([ReadWrite.sigpipe_declines]) the write declines.  Otherwise the
     answer is -EPIPE with an

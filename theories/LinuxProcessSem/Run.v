@@ -1142,7 +1142,10 @@ Definition reaches_error (c0 : config) : Prop :=
     world it is about rather than assuming one, and the other world has
     its own predicate, [valid_input_sigpipe_ignored], under which
     [Sys.Fs.ReadWrite.raise_sigpipe] discards the signal and no write
-    arm can end the run until the program itself installs SIG_DFL.
+    arm kills the process.  If the program itself installs SIG_DFL, a
+    later write that would raise the signal declines (an error step,
+    not a death), because that launch pins [State.in_sigpipe_terminal]
+    to [false] too.
 
     WHETHER THE MODEL FOLLOWS THE DEATH is a second declared field,
     [State.in_sigpipe_terminal], and [valid_input] pins it to [false]:
@@ -4559,15 +4562,18 @@ Qed.
     ran `signal(SIGPIPE, SIG_IGN)` before execve and the disposition
     survived it, so [Sys.Fs.ReadWrite.raise_sigpipe] discards the signal
     and a write to a far end with no reader is -EPIPE with the process
-    STILL RUNNING -- until the program itself installs SIG_DFL
-    ([Kernel.Signal.rt_sigaction_sigpipe]), which is the program's act
-    and not the launch's.  Every other clause is [valid_input]'s, the
-    abort declaration included.
+    STILL RUNNING.  If the program itself installs SIG_DFL
+    ([Kernel.Signal.rt_sigaction_sigpipe]), a later such write declines,
+    because [State.in_sigpipe_terminal] is pinned [false] here as in
+    [valid_input]: that decline is an error step, not a death, and no
+    run under this launch dies
+    ([Checks.KillFree.valid_input_sigpipe_ignored_no_kill]).  Every
+    other clause is [valid_input]'s, the abort declaration included.
 
     WHAT A STATEMENT QUANTIFIED OVER THIS ONE IS WORTH.  It is the
     reading a program that handles -EPIPE itself was written for -- a
     daemon, a filter under a service manager -- and under it no write
-    arm can end the run while the handler stays SIG_IGN, so a halts
+    arm ends the run while the handler stays SIG_IGN, so a halts
     statement is not refuted by a reader-less channel for a program that
     keeps it so.  It is NOT the safer predicate: it asserts
     something about the launch that the ordinary one does not, and a

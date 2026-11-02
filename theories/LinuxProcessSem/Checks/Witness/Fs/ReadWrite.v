@@ -117,7 +117,7 @@ Qed.
 (** [ReadWrite.sigpipe_write] as a witness: [Unmodeled] where the write
     declines because the launch did not declare the SIGPIPE death
     ([ReadWrite.sigpipe_declines]), and otherwise -EPIPE over the model
-    [ReadWrite.raise_sigpipe] produces.  The three arms that can raise
+    [ReadWrite.raise_sigpipe] produces.  The arms that can raise
     signal 13 exhibit through this. *)
 Definition sigpipe_write_witness (m : Model) : outcome SyscallEffect :=
   if sigpipe_declines m then Unmodeled
