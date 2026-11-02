@@ -4948,8 +4948,8 @@ Definition with_sigpipe_terminal (b : bool) (m : Model) : Model :=
     on [procst_sigabrt_pending], because a signal already pending has to
     be taken by the mask install that uncovers it whatever the task
     declared.  A reader checking the declaration-off claim needs both
-    rows — see [Run.decl_off_frame], whose conclusion is about THIS
-    SIGNAL for exactly this reason, and
+    rows — see [Run.kill_off], which closes the pending bit with the
+    declaration for exactly this reason, and
     [Checks.Cases.Kernel.Signal.decl_off_frame_one_sided_refuted], which
     refutes the version that names only the declaration.
 
@@ -4972,7 +4972,13 @@ Definition with_sigpipe_terminal (b : bool) (m : Model) : Model :=
     because [raise_sigpipe] discards the signal.
     [procst_sigpipe_terminal] is the task's too, and decides whether the
     death is followed at all; [Run.valid_input_sigpipe_kills] and
-    [Run.valid_input_channel_closed] are the launches that set it. *)
+    [Run.valid_input_channel_closed] are the launches that set it.
+
+    THAT THESE ARE THE ONLY CALLERS, AND THAT EACH IS GATED, IS A
+    THEOREM: [Checks.KillFree.kill_frame_holds] goes through every arm
+    of the dispatcher, and [Checks.KillFree.valid_input_no_kill] is the
+    consequence for every run under [Run.valid_input].  A new caller
+    that is not behind a gate breaks that proof. *)
 Definition with_killed (sig : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (Some sig) (m_tid m) (m_creds m)

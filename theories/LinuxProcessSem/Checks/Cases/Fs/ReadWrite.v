@@ -2935,8 +2935,8 @@ Definition pipe_reader_gone_kills_model : Model :=
     so on a launch that declares the death the call is judged: signal
     13 and -EPIPE, fs/pipe.c [anon_pipe_write] :460-465, repeated at
     the top of each loop iteration at :501-506.  On the ordinary launch
-    it still declines; [write_pipe_no_reader_declines_unless_declared]
-    below is that pair.
+    it still declines; [Checks.Cases.Fs.SigpipeLaunch] is that pair, on
+    launches proved valid and a pipe the program made with [pipe2].
 
     The first conjunct is the answer.  The second is the ordering
     that makes it sound, and it is not a stylistic one: the no-reader
@@ -2967,60 +2967,6 @@ Proof.
   split; [check_eq|].
   split; [vm_compute; reflexivity|].
   split; check_eq.
-Qed.
-
-(** THE PAIR THE PIN-THE-TOP CHANGE TURNS ON.  The two launches below are
-    the same program state -- a pipe the program made, its read end
-    closed, fd 4 its write end, SIGPIPE at SIG_DFL and open in the mask
-    -- and differ ONLY in the SIGPIPE-death declaration.
-
-    On the ORDINARY launch ([demo_input], built by [State.mkProcInput],
-    whose declaration is the literal [false] that [Run.valid_input]
-    pins: [State.mkProcInput_sigpipe_terminal]) the write DECLINES, as
-    it did at the published model, so no run under [Run.valid_input]
-    ends here in [KillEv 13].  On the launch [Run.valid_input_sigpipe_kills]
-    names ([kills_input], the same record with the declaration [true])
-    the same write raises signal 13 and the process dies.  The third
-    conjunct is the discrimination: the killing answer is not an answer
-    on the ordinary launch either -- it is a decline, not a refusal of
-    one effect in favour of another. *)
-Definition kills_input : ProcInput :=
-  mkProcInput_full [] [] [] IEof demo_uid demo_gid demo_groups net_silent
-                   default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-                   default_urandom [] default_kernel default_execfn
-                   true true true.
-
-Definition pipe_gone_on (inp : ProcInput) : Model :=
-  with_pipes [(0, (@nil byte, 0%Z))]
-    (with_fds [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
-               (4, FdPipe 0 true)]
-       (init_model [] 0 0 demo_sp demo_limit inp)).
-
-Example write_pipe_no_reader_declines_unless_declared :
-  in_sigpipe_terminal (demo_input [] IEof) = false
-  /\ in_sigpipe_terminal kills_input = true
-  /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
-       (mkEffect (errno_ret EPIPE) [] []) (pipe_gone_on (demo_input [] IEof))
-     = CheckUnmodeled
-  /\ check_syscall (mkInput 64 [4; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
-       (mkEffect (errno_ret EPIPE) [] []) (pipe_gone_on kills_input)
-     = CheckOk (with_killed (Z_to_bv 64 13) (pipe_gone_on kills_input)) [].
-Proof.
-  split; [reflexivity|]. split; [reflexivity|].
-  split; [vm_compute; reflexivity | check_eq].
-Qed.
-
-(** The same decline, read off the launch predicate rather than off a
-    fixture: on every input [Run.valid_input] admits, the model the run
-    starts from has the death undeclared, so every write that would raise
-    SIGPIPE at SIG_DFL declines ([Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled]). *)
-Lemma valid_input_model_declines_sigpipe :
-  forall reserved brk0 mbase sp lim inp,
-  valid_input inp ->
-  m_sigpipe_terminal (init_model reserved brk0 mbase sp lim inp) = false.
-Proof.
-  intros reserved brk0 mbase sp lim inp Hv.
-  rewrite m_sigpipe_terminal_init_model. exact (valid_input_sigpipe_terminal _ Hv).
 Qed.
 
 (** THE SAME READER-LESS PIPE, AT A RANGE [access_ok] REFUSES: -EFAULT

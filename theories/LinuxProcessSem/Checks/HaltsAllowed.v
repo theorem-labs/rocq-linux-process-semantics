@@ -36,8 +36,8 @@
     SIGABRT.  [Run.valid_input] pins [State.in_abort_terminal] to
     [false], and with the declaration off [Kernel.Signal.tkill_spec]
     declines every call, so no run this statement quantifies over can
-    reach a [State.KillEv] CARRYING SIGABRT ([Run.sstep_off_no_kill],
-    which says that and no longer says "no kill").  So that refutation
+    reach a [State.KillEv] ([Checks.KillFree.valid_input_no_kill], which
+    covers SIGPIPE too).  So that refutation
     is fired where it can be — against [MustExit.must_exit_in] on
     [Checks.AbortWitness]'s killed run — and [abrt_input_not_valid_input]
     pins the reason it stops there, so a reader does not take the
@@ -50,7 +50,8 @@
     but [Fs.ReadWrite.sigpipe_write] DECLINES such a write at SIG_DFL
     unless the launch declares the death ([State.in_sigpipe_terminal]),
     and [Run.valid_input] pins that declaration [false].  So under the
-    ordinary predicate no run ends in [KillEv 13]: the write is an
+    ordinary predicate no run ends in [KillEv 13]
+    ([Checks.KillFree.valid_input_no_kill]): the write is an
     error, which [must_exit_in] refutes through its error conjunct.  The
     death is reached by name, under [Run.valid_input_sigpipe_kills] for
     a pipe or a socket and [Run.valid_input_channel_closed] for a

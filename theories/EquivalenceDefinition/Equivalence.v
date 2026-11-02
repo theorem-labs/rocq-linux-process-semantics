@@ -220,17 +220,23 @@ Definition error_free (b : behavior) : Prop := ~ bh_errors b.
 
 (** The run can end by being KILLED, rather than by exiting: some
     admissible trace carries a [State.KillEv].  Under the declarations
-    [Run.valid_input] pins there are none, because both arms that can
-    produce one decline
+    [Run.valid_input] pins there are none, and that is a THEOREM,
+    [Checks.KillFree.valid_input_no_kill]: no trace of [Run.run] or of
+    [Run.run_scfg] under any configuration carries one.  It is proved
+    arm by arm over the dispatcher ([Checks.KillFree.kill_frame_holds]),
+    because both signals the model raises sit behind a declaration that
+    [Run.valid_input] pins clear
     ([Kernel.Signal.tkill_spec_off_unmodeled] for SIGABRT,
-    [Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled] for SIGPIPE); under
+    [Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled] for SIGPIPE).  Under
     [Run.valid_input_abort] a program that calls [abort] has one, and
     under [Run.valid_input_sigpipe_kills] or
     [Run.valid_input_channel_closed] a write whose far end has no reader
     has one.  If a kill ever became reachable under [Run.valid_input],
-    every error-free statement in this tree would silently weaken; the
-    SIGPIPE declaration ([State.in_sigpipe_terminal]) exists so that it
-    does not.
+    every error-free statement in this tree would silently weaken; that
+    theorem is what would break first, and
+    [Checks.KillFree.valid_input_error_free_unkilled_iff] states the
+    consequence: under [Run.valid_input], [error_free] and
+    [error_free_unkilled] below are the same predicate of a run.
 
     IT IS READ OFF [bh_traces] rather than carried as a new field of
     [Run.behavior], and that is the point of the event being an event: a
