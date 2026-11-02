@@ -103,11 +103,12 @@ Definition dentry_inode (st : NsState) (d : positive) : option Inode :=
   end.
 
 (** The inode at a location; [None] for an entry of a task's procfs
-    directory, whose inodes the tables do not list. *)
+    directory and for procfs's "self" link, whose inodes the tables do
+    not list. *)
 Definition loc_inode (st : NsState) (l : Loc) : option Inode :=
   match l with
   | LDentry _ d => dentry_inode st d
-  | LProcTask _ _ _ => None
+  | LProcTask _ _ _ | LProcSelf _ _ => None
   end.
 
 Definition byte_eqb (a b : byte) : bool := bv_eqb a b.
@@ -250,6 +251,12 @@ Definition loc_eqb (a b : Loc) : bool :=
   | LDentry am ad, LDentry bm bd => Pos.eqb am bm && Pos.eqb ad bd
   | LProcTask am ap ar, LProcTask bm bp br =>
       Pos.eqb am bm && Z.eqb ap bp && name_lists_eqb ar br
+  | LProcSelf am ao, LProcSelf bm bo =>
+      Pos.eqb am bm && (match ao, bo with
+                        | Some x, Some y => Z.eqb x y
+                        | None, None => true
+                        | _, _ => false
+                        end)
   | _, _ => false
   end.
 
@@ -307,6 +314,7 @@ Definition loc_dir (st : NsState) (l : Loc) : option bool :=
       | None => None
       end
   | LProcTask _ _ rest => Some (proc_dir_rest rest)
+  | LProcSelf _ _ => Some false
   end.
 
 (** [acl_permission_check] (fs/namei.c) for MAY_EXEC: the owner bits for the
@@ -360,7 +368,7 @@ Definition may_exec_dir (st : NsState) (ctx : NsCtx) (cr : WalkCreds) (l : Loc) 
       | IDir => inode_exec_bit cr ino || (has_dir_search_cap ctx && inode_ids_mapped st ctx ino)
       | _ => false
       end
-  | None => match l with LProcTask _ _ rest => proc_dir_rest rest | LDentry _ _ => false end
+  | None => match l with LProcTask _ _ rest => proc_dir_rest rest | _ => false end
   end.
 
 (* =========================================================================
@@ -380,7 +388,7 @@ Fixpoint follow_mounts_fuel (fuel : nat) (st : NsState) (l : Loc) : WalkResult :
           | Some child => follow_mounts_fuel f st (LDentry (mnt_id child) (mnt_root child))
           | None => WOk l
           end
-      | LProcTask _ _ _ => WOk l
+      | LProcTask _ _ _ | LProcSelf _ _ => WOk l
       end
   end.
 
@@ -453,6 +461,7 @@ Definition follow_dotdot (st : NsState) (root current : Loc) : WalkResult :=
   if loc_eqb current root then follow_mounts st current
   else match current with
        | LProcTask m pid rest => proc_dotdot st m pid rest
+       | LProcSelf _ _ => WOver
        | LDentry m d =>
            match find_mount (ns_mounts st) m with
            | None => WOver
@@ -473,14 +482,15 @@ Definition follow_dotdot (st : NsState) (root current : Loc) : WalkResult :=
 
 (** What a name in a directory is:
     - [LIDentry l]: an object at [l];
-    - [LIProcSelf own]: procfs's "self", a symbolic link to the caller's pid
-      in the procfs pid namespace ([None]: the caller has none there);
+    - [LIProcSelf m own]: the "self" link of the procfs seen through mount
+      [m], a symbolic link to the caller's pid in the procfs pid namespace
+      ([None]: the caller has none there);
     - [LIMagicLink l target]: a procfs magic link at [l] to [target]
       ([None]: a target the tables hold no path for);
     - an errno, or [LIOver] where the tables do not decide. *)
 Inductive LookupItem :=
   | LIDentry (l : Loc)
-  | LIProcSelf (own : option Z)
+  | LIProcSelf (mnt : positive) (own : option Z)
   | LIMagicLink (l : Loc) (target : option Loc)
   | LIError (e : Z)
   | LIOver.
@@ -492,7 +502,7 @@ Inductive LookupItem :=
     do not hold; else ENOENT. *)
 Definition lookup_proc_root (ctx : NsCtx) (m pidns : positive) (name : list byte)
     : LookupItem :=
-  if bytes_eqb name proc_self_name then LIProcSelf (pid_in (cx_pids ctx) pidns)
+  if bytes_eqb name proc_self_name then LIProcSelf m (pid_in (cx_pids ctx) pidns)
   else if bytes_eqb name proc_thread_self_name then LIOver
   else match name_to_int name with
        | Some n =>
@@ -566,6 +576,7 @@ Definition lookup_child (st : NsState) (ctx : NsCtx) (fd_loc : Z -> option (opti
     (current : Loc) (name : list byte) : LookupItem :=
   match current with
   | LProcTask m pid rest => lookup_proc_task ctx fd_loc m pid rest name
+  | LProcSelf _ _ => LIOver
   | LDentry m d =>
       match child_dentry st d name with
       | Some child => LIDentry (LDentry m (d_id child))
@@ -594,7 +605,7 @@ Definition lookup_child (st : NsState) (ctx : NsCtx) (fd_loc : Z -> option (opti
 
 (** [step_into] (fs/namei.c): [handle_mounts] before anything else. *)
 Definition step_into (st : NsState) (l : Loc) : WalkResult :=
-  match l with LDentry _ _ => follow_mounts st l | LProcTask _ _ _ => WOk l end.
+  match l with LDentry _ _ => follow_mounts st l | LProcTask _ _ _ | LProcSelf _ _ => WOk l end.
 
 (** [step_into] (fs/namei.c): a link is followed unless it is the last
     component and neither LOOKUP_FOLLOW nor a trailing '/' asks for it. *)
@@ -689,6 +700,7 @@ Fixpoint walk_loop (fuel links : nat) (st : NsState) (ctx : NsCtx) (cr : WalkCre
                         | LProcTask _ _ _ =>
                             walk_loop f links st ctx cr fd_loc root next rest trailing parent_mode
                               scoped fl
+                        | LProcSelf _ _ => (WOver, scoped)
                         | LDentry _ _ =>
                             match loc_inode st next with
                             | None => (WOver, scoped)
@@ -721,8 +733,10 @@ Fixpoint walk_loop (fuel links : nat) (st : NsState) (ctx : NsCtx) (cr : WalkCre
                             end
                         end
                     end
-                | LIProcSelf own =>
-                    if negb follow then (WOver, scoped)
+                | LIProcSelf mn own =>
+                    if negb follow
+                    then walk_loop f links st ctx cr fd_loc root (LProcSelf mn own) rest trailing
+                           parent_mode scoped fl
                     else if Nat.leb MAXSYMLINKS links then (WErr ELOOP, scoped)
                     else match own with
                          | None => (WErr ENOENT, scoped)

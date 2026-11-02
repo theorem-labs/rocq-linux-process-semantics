@@ -219,7 +219,8 @@ Definition AT_FDCWD_word : word := Z_to_bv 64 AT_FDCWD.
    The object at a location
    ========================================================================= *)
 
-Definition loc_mnt (l : Loc) : positive := match l with LDentry m _ => m | LProcTask m _ _ => m end.
+Definition loc_mnt (l : Loc) : positive :=
+  match l with LDentry m _ => m | LProcTask m _ _ => m | LProcSelf m _ => m end.
 
 (** The mount a location is seen through, and its superblock. *)
 Definition loc_mnt_sb (st : NsState) (l : Loc) : option (Mount * SuperBlock) :=
@@ -309,6 +310,7 @@ Definition loc_attr (m : Model) (ctx : NsCtx) (st : NsState) (l : Loc) : option 
                      end
             end
       end
+  | LProcSelf _ _ => None
   end.
 
 Definition kind_is (k : InodeKind) (a : ObjAttr) : bool :=
@@ -603,7 +605,7 @@ Definition child_exists (st : NsState) (P : Loc) (name : list byte) : option boo
                 | _ => None
                 end
       end
-  | LProcTask _ _ _ => None
+  | LProcTask _ _ _ | LProcSelf _ _ => None
   end.
 
 (** [fsuidgid_has_mapping] (fs/namei.c): the fsuid and fsgid have a
@@ -644,7 +646,7 @@ Definition max_inode_id (st : NsState) : positive :=
 Definition create_file (m : Model) (ctx : NsCtx) (st : NsState) (cr : WalkCreds) (P : Loc)
     (name : list byte) (mode : Z) : OpenRes :=
   match P with
-  | LProcTask _ _ _ => OROver
+  | LProcTask _ _ _ | LProcSelf _ _ => OROver
   | LDentry mn d =>
       match find_dentry st d, loc_mnt_sb st P, dentry_inode st d with
       | Some dx, Some (mt, sb), Some dino =>
@@ -1275,16 +1277,19 @@ Definition d_path (st : NsState) (ctx : NsCtx) (l : Loc) : option (list byte) :=
               end
           end
       end
+  | LProcSelf _ _ => None
   end.
 
 (** What [vfs_readlink] (fs/namei.c) reads at a location: a link's
     target; for the task's own cwd, root and fd/<k> links,
     [proc_pid_readlink] and [do_proc_readlink] (fs/proc/base.c) on the
     target's path ([proc_cwd_link], [proc_root_link], [proc_fd_link]);
-    [NotLink] for an object that is no link; [LinkOver] where the tables
-    do not decide (an ns link, whose text holds an nsfs inode number; a
-    descriptor with no path; another task's entry, behind a ptrace
-    check). *)
+    for procfs's "self", [proc_self_get_link] (fs/proc/self.c): the
+    caller's tgid in the procfs's pid namespace in decimal, ENOENT when it
+    has none there; [NotLink] for an object that is no link; [LinkOver]
+    where the tables do not decide (an ns link, whose text holds an nsfs
+    inode number; a descriptor with no path; another task's entry, behind
+    a ptrace check). *)
 Inductive LinkText := LinkBytes (bs : list byte) | LinkPath (l : Loc) | LinkErr (e : Z)
                     | NotLink | LinkOver.
 
@@ -1314,6 +1319,11 @@ Definition link_text (m : Model) (ctx : NsCtx) (st : NsState) (l : Loc) : LinkTe
                else LinkOver
            | _ => NotLink
            end
+  | LProcSelf _ own =>
+      match own with
+      | Some pid => LinkBytes (decimal_bytes pid)
+      | None => LinkErr ENOENT
+      end
   end.
 
 (** [readlinkat] (78): [do_readlinkat] (fs/stat.c): EINVAL for a size of 0

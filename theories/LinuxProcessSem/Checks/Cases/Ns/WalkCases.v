@@ -242,10 +242,11 @@ Example walk_proc_self :
   = (WOk (LProcTask 3 42 []), false).
 Proof. vm_compute. reflexivity. Qed.
 
-(** /proc/self itself, not followed, has no location in the model. *)
+(** /proc/self itself, not followed: the walk ends at the link, which
+    holds the caller's pid in the procfs pid namespace. *)
 Example walk_proc_self_unfollowed :
   walk world (ctx 1 no_caps) creds no_fd (LDentry 1 1) p_self f_nofollow
-  = (WOver, false).
+  = (WOk (LProcSelf 3 (Some 42)), false).
 Proof. vm_compute. reflexivity. Qed.
 
 (** /proc/self/fd/3 follows to the location descriptor 3 has. *)
