@@ -599,7 +599,7 @@ Proof.
              gated_demo_fin_valid).
   - exact (demo_entry_valid_undecodable (to_proc_input gated_demo_fin)
              gated_demo_fin_valid).
-  - intros ((Hsrc & _) & _ & _). apply Hsrc, run_unmodeled_errors.
+  - intros (Hsrc & _ & _). apply Hsrc, run_unmodeled_errors.
     rewrite gated_demo_to_proc_input.
     exact run_of_undecodable_image_is_unmodeled_at_demo_entry.
 Qed.
@@ -816,6 +816,6 @@ Proof.
              gated_demo_fin_valid).
   - exact (demo_entry_valid_undecodable (to_proc_input gated_demo_fin)
              gated_demo_fin_valid).
-  - intros ((Hsrc & _) & _ & _). apply Hsrc, run_scfg_unmodeled_errors.
+  - intros (Hsrc & _ & _). apply Hsrc, run_scfg_unmodeled_errors.
     exact (undecodable_unmodeled_scfg_at_demo_entry cfg).
 Qed.

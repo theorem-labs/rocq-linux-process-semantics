@@ -544,15 +544,16 @@ Theorem exit0_strong_universal_error_free_abort :
 Proof. intros en_s en_t inp _ _ _. apply exit0_strong_equiv_error_free_abort_any. Qed.
 
 (** The declaration-off half, which the either conjunction needs beside
-    it: the same per-input fact.  The declaration-off triple asks for
-    [error_free_unkilled] too now -- a SIGPIPE death needs no
-    declaration -- so the abort-declared fact is the off fact as it
-    stands. *)
+    it: the same per-input fact with [error_free_unkilled] weakened to
+    [error_free], since the off triple asks only that. *)
 Theorem exit0_strong_universal_error_free :
   strong_universal_error_free_T exit0_image exit0_image.
 Proof.
   intros en_s en_t inp _ _ _.
-  exact (exit0_strong_equiv_error_free_abort_any en_s en_t inp).
+  destruct (exit0_strong_equiv_error_free_abort_any en_s en_t inp)
+    as (Hsef & Htef & Htr).
+  split; [exact (error_free_unkilled_error_free _ Hsef)|].
+  split; [exact (error_free_unkilled_error_free _ Htef) | exact Htr].
 Qed.
 
 Theorem exit0_strong_universal_error_free_either :

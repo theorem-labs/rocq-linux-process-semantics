@@ -1105,9 +1105,68 @@ Definition raise_sigpipe (m : Model) : Model :=
   then with_sigpipe_pending m
   else with_killed (Z_to_bv 64 SIGPIPE) m.
 
+(** WHETHER THE MODEL FOLLOWS THE SIGNAL AT ALL, and the test every
+    write that would raise it makes first.  A write that would RAISE
+    SIGPIPE at SIG_DFL declines unless the task declared that the model
+    covers the death ([State.m_sigpipe_terminal]), whatever the mask
+    says -- the same stance [Kernel.Signal.tkill_spec] takes with
+    [State.m_abort_terminal] clear.  Declining the BLOCKED case too is
+    what keeps the death out rather than postponing it: a blocked
+    SIGPIPE is left pending, and the [rt_sigprocmask] that uncovers it
+    kills there ([Kernel.Signal.sigmask_deliver_model]).  With the
+    declaration clear no SIGPIPE is ever sent, so none is ever pending
+    and no run carries [KillEv 13]; [sigpipe_write_off_unmodeled] is
+    that, at the spec.
+
+    WHY THE ORDINARY LAUNCH DECLINES.  [Run.valid_input] pins the
+    declaration clear, so that no statement quantified over it sees a
+    death by signal: [Equivalence.error_free] sees an error transition
+    and not a death, and a declined step is an error.  That is how a
+    reader-less write was answered before this arm existed, and it is
+    what keeps those statements saying what they said.  The launches
+    that want the death name it ([Run.valid_input_sigpipe_kills],
+    [Run.valid_input_channel_closed]).
+
+    SIG_IGN IS NOT DECLINED: nothing is raised, the write answers
+    -EPIPE and the process runs on, whatever the declaration says. *)
+Definition sigpipe_declines (m : Model) : bool :=
+  (m_sigpipe_default m && negb (m_sigpipe_terminal m))%bool.
+
 Definition sigpipe_write : Sys SyscallEffect :=
-  modify raise_sigpipe ;;
-  err_ret EPIPE.
+  m <- get_model ;;
+  if sigpipe_declines m then unmodeled
+  else (modify raise_sigpipe ;; err_ret EPIPE).
+
+(** With the declaration clear and SIGPIPE at SIG_DFL the only outcome
+    is [Unmodeled], the twin of [Kernel.Signal.tkill_spec_off_unmodeled]. *)
+Lemma sigpipe_write_off_unmodeled : forall i m o,
+  m_sigpipe_default m = true -> m_sigpipe_terminal m = false ->
+  sigpipe_write i m o -> o = Unmodeled.
+Proof.
+  intros i m o Hdfl Hoff H. unfold sigpipe_write in H.
+  rewrite bind_get_model in H. cbv beta in H. unfold sigpipe_declines in H.
+  rewrite Hdfl, Hoff in H. exact H.
+Qed.
+
+(** The two outcomes, one per value of the declaration test. *)
+Lemma sigpipe_write_declines : forall i m,
+  sigpipe_declines m = true -> sigpipe_write i m Unmodeled.
+Proof.
+  intros i m Hd. unfold sigpipe_write.
+  apply (proj2 (bind_get_model _ i m Unmodeled)). cbv beta.
+  rewrite Hd. cbv iota. cbv [unmodeled]. reflexivity.
+Qed.
+
+Lemma sigpipe_write_epipe : forall i m,
+  sigpipe_declines m = false ->
+  sigpipe_write i m (Ok (mkEffect (errno_ret EPIPE) [] []) (raise_sigpipe m) []).
+Proof.
+  intros i m Hd. unfold sigpipe_write.
+  apply (proj2 (bind_get_model _ i m _)). cbv beta.
+  rewrite Hd. cbv iota. unfold bind.
+  exists tt, (raise_sigpipe m), [], []. split; [reflexivity | split; reflexivity].
+Qed.
+
 (** The faulting-source post-state of a write whose bytes would have
     landed at [off] in [p]: the file extended to [off], the descriptor
     untouched, or [None] where the hole is one the model will not build.
@@ -1219,7 +1278,9 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            end is a pipe, net/core/stream.c [sk_stream_error] :190-198
            when it is a socket), and under the default disposition the
            process DIES; see [raise_sigpipe], which is where the mask
-           decides between the death and the errno.
+           decides between the death and the errno, and
+           [sigpipe_declines], which declines the write instead when the
+           launch did not ask for the death.
 
            AFTER THE ZERO-COUNT BRANCH, because fs/pipe.c returns 0 for
            a zero-length write at :454-456, BEFORE the [mutex_lock] at
@@ -1302,7 +1363,9 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          [kiocb_set_rw_flags], which no write(2) or writev(2) path
          calls.  So the process takes SIGPIPE and, at the default
          disposition, DIES; [raise_sigpipe] is where the mask decides
-         between that death and the -EPIPE.  SIGPIPE is in none of
+         between that death and the -EPIPE, and [sigpipe_declines] is
+         where a launch that did not ask for the death declines the
+         write instead.  SIGPIPE is in none of
          SIG_KERNEL_IGNORE_MASK, SIG_KERNEL_STOP_MASK or
          SIG_KERNEL_COREDUMP_MASK (include/linux/signal.h), so under
          SIG_DFL kernel/signal.c [get_signal] reaches [do_group_exit]
@@ -1325,7 +1388,10 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          class [Equivalence.modeled] cannot see.  The model now has a
          death that is not [exit] ([State.with_killed],
          [Run.sstep_killed]), so the argument no longer holds and the
-         answer is the kernel's.  The sendto/sendmsg path keeps its own
+         answer is the kernel's -- on a launch that declares the death
+         ([State.m_sigpipe_terminal]); on any other, a write that would
+         raise the signal at SIG_DFL still declines ([sigpipe_write]).
+         The sendto/sendmsg path keeps its own
          MSG_NOSIGNAL gate, where the flag is an argument a spec can
          read ([Net.Socket.send_flags_modeled]) *)
   | Some (FdFileW p off) =>
@@ -1529,7 +1595,9 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            guard is true for write(2), which cannot set that kiocb flag.
            Under the default disposition the process DIES by signal 13;
            [raise_sigpipe] is where the mask decides between that death
-           and the -EPIPE a program with signal 13 blocked reads back.
+           and the -EPIPE a program with signal 13 blocked reads back,
+           and [sigpipe_declines] where a launch that did not ask for
+           the death declines the write.
 
            DECIDED AFTER the zero-count branch above, which is :454-456
            returning 0 BEFORE the [mutex_lock] at :458 and so before
@@ -1557,9 +1625,12 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
 
            THIS USED TO FAIL CLOSED, on the argument that the model had
            no signals and no death that is not [exit].  It has both now
-           ([State.with_killed], [Run.sstep_killed]), so the pipe write
-           is answered instead of declined, and a program that closes a
-           pipe's read end and writes is a program proofs can cover *)
+           ([State.with_killed], [Run.sstep_killed]), so on a launch
+           that declares the death ([State.m_sigpipe_terminal]) the pipe
+           write is answered, and a program that closes a pipe's read
+           end and writes is a program proofs can cover.  On a launch
+           that does not, the write still declines at SIG_DFL, as it
+           did ([sigpipe_write]) *)
         sigpipe_write
       else
       match pipe_lookup (m_pipes m) id with

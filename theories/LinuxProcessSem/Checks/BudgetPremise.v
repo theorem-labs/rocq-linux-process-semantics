@@ -1685,12 +1685,10 @@ Proof.
   intros cfg ls lt [sps brks mbs rnds] [spt brkt mbt rndt] inp _ _ _ _.
   unfold strong_equiv_error_free_budgets_scfg.
   split; [| split].
-  - apply error_free_unkilled_scfg_of_error_free_unkilled.
-    unfold error_free_unkilled. split; [| apply exit0_never_dies_by_signal].
+  - apply error_free_scfg_of_error_free.
     apply error_free_iff. cbn [omni_corun exit0_image img_segments].
     apply exit0_never_errors.
-  - apply error_free_unkilled_scfg_of_error_free_unkilled.
-    unfold error_free_unkilled. split; [| apply exit0_never_dies_by_signal].
+  - apply error_free_scfg_of_error_free.
     apply error_free_iff. cbn [omni_corun exit0_image img_segments].
     apply exit0_never_errors.
   - intros tr. cbn [run_scfg exit0_image bh_traces].
