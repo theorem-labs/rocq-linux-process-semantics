@@ -786,7 +786,7 @@ Lemma check_pselect6_kf : forall i n32 inp outp exp tsp sig eff m m' evs,
   check_pselect6 i n32 inp outp exp tsp sig eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i n32 inp outp exp tsp sig eff m m' evs H Hoff Hk.
-  unfold check_pselect6 in H.
+  unfold check_pselect6, check_pselect_answer in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -794,7 +794,7 @@ Lemma check_ppoll_kf : forall i ufds nfds tsp sig sigsetsize eff m m' evs,
   check_ppoll i ufds nfds tsp sig sigsetsize eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i ufds nfds tsp sig sigsetsize eff m m' evs H Hoff Hk.
-  unfold check_ppoll in H.
+  unfold check_ppoll, check_pselect_answer in H.
   kf_frame H m Hoff Hk.
 Qed.
 
