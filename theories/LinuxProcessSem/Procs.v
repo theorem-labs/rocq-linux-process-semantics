@@ -409,17 +409,30 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     this, the decline included, so an arm that one day answers an eventfd
     counter fails that Check until the counter is moved into [shared].
 
+    SYNCED ([multiproc_synced_sysnos]): 101 nanosleep and 113 clock_gettime.
+    CLOCK_MONOTONIC is one clock in Linux and a per-entry copy here
+    ([State.timest_clock] lives in [pe_model], and [pe_cfg] does not splice
+    it: [MustExitP.view_frame_absorb] fixes the view at [m_fsys] and
+    [m_io]).  So the core keeps the copies agreeing where it matters: an
+    entry whose call reads the clock while its copy is behind another
+    entry's first takes a silent step, [pstep_sync], that raises its copy
+    to the maximum over the table ([sync_result]); only then does the
+    released step answer ([sync_pending_b] gates [pstep_other]).  Every
+    reading therefore starts at or after every reading any process has
+    made, which is the monotonicity Linux gives across processes.
+
     NOT HERE, AND WHY.
     - Class (C), the answer needs the peer: 32 flock and 35 unlinkat (each
       checks only the caller's own table for a conflicting or naming
       descriptor), 80 fstat, 160 uname and 261 prlimit64 (a per-entry lazy
       pin of a value the peer shares), 96 172 178 157 (pin the tid by a
       free choice that can be a live peer's pid), 156 getsid and 173
-      getppid (a fresh choice where the answer is the parent's), 101 and
-      113 (a per-entry copy of the one CLOCK_MONOTONIC), 167 prctl
+      getppid (a fresh choice where the answer is the parent's), 167 prctl
       (PR_SET_PDEATHSIG asks for a signal at parent death that the exit arm
       does not send). *)
 Definition multiproc_core_sysnos : list Z := [93; 94; 220; 260; 435]%Z.
+
+Definition multiproc_synced_sysnos : list Z := [101; 113]%Z.
 
 Definition multiproc_private_sysnos : list Z :=
   [ 17;  19;  20;  21;  22;  23;  24;  25;  29;  57;  59;  61;  72;  73;
@@ -432,7 +445,8 @@ Definition multiproc_shared_sysnos : list Z :=
   [46; 48; 56; 62; 63; 64; 65; 66; 67; 68; 78; 79; 202; 242; 439]%Z.
 
 Definition multiproc_sysnos : list Z :=
-  multiproc_core_sysnos ++ multiproc_private_sysnos ++ multiproc_shared_sysnos.
+  (multiproc_core_sysnos ++ multiproc_synced_sysnos)
+    ++ multiproc_private_sysnos ++ multiproc_shared_sysnos.
 
 Definition multiproc_allowed (P : pconfig) (c : config) : bool :=
   match ms_svc_pending (cfg_ms c) with
@@ -443,13 +457,15 @@ Definition multiproc_allowed (P : pconfig) (c : config) : bool :=
   end.
 
 (** The guard without the class-(A) and class-(B) numbers: no call
-    pending, one entry, or a core-answered number. *)
+    pending, one entry, or a number the core answers through arms of its
+    own (the core list and the synced list). *)
 Definition multiproc_base (P : pconfig) (c : config) : bool :=
   match ms_svc_pending (cfg_ms c) with
   | None => true
   | Some x8 =>
       Nat.leb (List.length (pcfg_procs P)) 1%nat
-      || List.existsb (Z.eqb (bv_unsigned x8)) multiproc_core_sysnos
+      || List.existsb (Z.eqb (bv_unsigned x8))
+           (multiproc_core_sysnos ++ multiproc_synced_sysnos)
   end.
 
 (** A class-(A) number is pending. *)
@@ -477,7 +493,9 @@ Proof.
   unfold multiproc_allowed, multiproc_base, multiproc_classed, multiproc_private,
     multiproc_shared, multiproc_sysnos.
   destruct (ms_svc_pending (cfg_ms c)); [|reflexivity].
-  rewrite !List.existsb_app. apply orb_assoc.
+  rewrite (List.existsb_app _ (multiproc_core_sysnos ++ multiproc_synced_sysnos)),
+    (List.existsb_app _ multiproc_private_sysnos).
+  apply orb_assoc.
 Qed.
 
 (* =========================================================================
@@ -1053,6 +1071,34 @@ Definition ns_refused_b (P : pconfig) (e : ProcessEntry) : bool :=
           && List.existsb (Z.eqb (bv_unsigned x8)) ns_netns_sysnos)
   end.
 
+(** THE SYNC.  The largest CLOCK_MONOTONIC copy in the table, as an
+    unsigned count of nanoseconds; every copy is a word, so it is one. *)
+Definition clock_max (ps : list (Pid * ProcessEntry)) : Z :=
+  List.fold_right (fun kv acc => Z.max (bv_unsigned (m_clock (pe_model (snd kv)))) acc)
+    0%Z ps.
+
+(** A synced call is pending and the entry's clock copy is behind another
+    entry's.  At one entry the copy is the maximum, so this is false. *)
+Definition sync_pending_b (P : pconfig) (e : ProcessEntry) : bool :=
+  match ms_svc_pending (pe_ms e) with
+  | None => false
+  | Some x8 =>
+      List.existsb (Z.eqb (bv_unsigned x8)) multiproc_synced_sysnos
+      && (bv_unsigned (m_clock (pe_model e)) <? clock_max (pcfg_procs P))%Z
+  end.
+
+(** The entry with its clock copy raised to the table's maximum, and
+    nothing else changed: not its machine state (the call stays pending),
+    not its other model state. *)
+Definition sync_entry (P : pconfig) (e : ProcessEntry) : ProcessEntry :=
+  mkEntry (pe_pid e) (pe_parent e) (pe_ms e)
+    (with_clock (Z_to_bv 64 (clock_max (pcfg_procs P))) (pe_model e))
+    (pe_ofd e) (pe_nsctx e).
+
+Definition sync_result (P : pconfig) (e : ProcessEntry) : pconfig :=
+  mkPCfg (replace_in (pcfg_procs P) (pe_pid e) (sync_entry P e))
+         (pcfg_root P) (pcfg_shared P).
+
 (** What a reap leaves: the caller past the call with the effect applied,
     and the child [q] gone.  [pstep_wait_reap]'s conclusion is this term
     written out, and is left written out because [Examples/forkwait]
@@ -1096,6 +1142,9 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     (* THE NAMESPACE GATE: never the released answer of a call a namespace
        the entry's context does not reflect would change. *)
     ns_refused_b P e = false ->
+    (* THE SYNC GATE: a synced call never reads a clock copy that is behind
+       another entry's; [pstep_sync] raises it first. *)
+    sync_pending_b P e = false ->
     pstep_at segs cfg (pe_pid e) P evs (PNext (absorb P e c'))
 (** THE ERROR TRANSITION, and it must EXCLUDE the intercepted wait.
     A blocking [wait4(-1, _, 0, NULL)] is [unmodeled] in the released spec
@@ -1243,7 +1292,15 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     look P (pe_pid e) = Some e ->
     m_halted (pe_model e) = None ->
     ns_refused_b P e = true ->
-    pstep_at segs cfg (pe_pid e) P [] PError.
+    pstep_at segs cfg (pe_pid e) P [] PError
+(** THE SYNC: an entry about to read a clock copy that is behind another
+    entry's raises it to the table's maximum, silently, and stays at the
+    call. *)
+| pstep_sync : forall P e,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    sync_pending_b P e = true ->
+    pstep_at segs cfg (pe_pid e) P [] (PNext (sync_result P e)).
 
 (** The system steps when SOME entry does. *)
 Definition pstep_cfg (segs : list Segment) (cfg : SpuriousCfg)
@@ -1360,6 +1417,22 @@ Proof.
   destruct (ms_svc_pending (pe_ms e)); reflexivity.
 Qed.
 
+(** At one entry the sync gate is closed: the only clock copy is the
+    table's maximum. *)
+Lemma clock_max_single : forall k e,
+  clock_max [(k, e)] = bv_unsigned (m_clock (pe_model e)).
+Proof.
+  intros k e. unfold clock_max. cbn [List.fold_right snd].
+  apply Z.max_l. pose proof (bv_unsigned_in_range _ (m_clock (pe_model e))). lia.
+Qed.
+
+Lemma sync_pending_one : forall c, sync_pending_b (one_proc c) (one_entry c) = false.
+Proof.
+  intros c. unfold sync_pending_b. cbn [one_proc pcfg_procs].
+  destruct (ms_svc_pending (pe_ms (one_entry c))); [|reflexivity].
+  rewrite clock_max_single, Z.ltb_irrefl, andb_false_r. reflexivity.
+Qed.
+
 Lemma absorb_one_proc : forall c c',
   absorb (one_proc c) (one_entry c) c' = one_proc c'.
 Proof.
@@ -1449,6 +1522,12 @@ Proof.
     | [ Hw : wait4_owned_b _ _ = true |- _ ] =>
         rewrite wait4_owned_one in Hw; discriminate
     end.
+  - (* pstep_sync: the gate is closed at one entry *)
+    exfalso.
+    match goal with
+    | [ Hw : sync_pending_b _ _ = true |- _ ] =>
+        rewrite sync_pending_one in Hw; discriminate
+    end.
 Qed.
 
 Lemma pstep_single_next_bwd : forall segs cfg c evs c',
@@ -1468,6 +1547,7 @@ Proof.
   - apply multiproc_allowed_one.
   - apply wait4_owned_one.
   - apply ns_refused_one.
+  - apply sync_pending_one.
 Qed.
 
 Lemma pstep_single_err_fwd : forall segs cfg c evs,
@@ -1661,9 +1741,10 @@ Qed.
     Keep that property when adding an arm: give the arm a disjunct here, and
     do not let a program proof invert [pstep_at] directly. *)
 
-(** A step to a successor is one of the five producing arms: the released
-    step, the clone, and the three [wait4] arms (the blocking reap, and the
-    two WNOHANG arms of the gate, both behind [wait4_owned_b]). *)
+(** A step to a successor is one of the six producing arms: the released
+    step, the clone, the three [wait4] arms (the blocking reap, and the
+    two WNOHANG arms of the gate, both behind [wait4_owned_b]), and the
+    clock sync. *)
 Lemma pstep_next_cases : forall segs cfg p P evs P',
   pstep_at segs cfg p P evs (PNext P') ->
   exists e,
@@ -1680,7 +1761,8 @@ Lemma pstep_next_cases : forall segs cfg p P evs P',
             /\ look P q = None
             /\ P' = clone_result P e c' q)
       \/ (wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true /\ evs = [])
-      \/ (wait4_owned_b P e = true /\ evs = []) ).
+      \/ (wait4_owned_b P e = true /\ evs = [])
+      \/ (sync_pending_b P e = true /\ evs = [] /\ P' = sync_result P e) ).
 Proof.
   intros segs cfg p P evs P' Hp.
   inversion Hp; subst.
@@ -1701,10 +1783,13 @@ Proof.
     right; right; left. split; [assumption | reflexivity].
   - (* pstep_wait_nohang_reap *)
     eexists. split; [eassumption | split; [reflexivity|]].
-    right; right; right. split; [assumption | reflexivity].
+    right; right; right; left. split; [assumption | reflexivity].
   - (* pstep_wait_nohang_zero *)
     eexists. split; [eassumption | split; [reflexivity|]].
-    right; right; right. split; [assumption | reflexivity].
+    right; right; right; left. split; [assumption | reflexivity].
+  - (* pstep_sync *)
+    eexists. split; [eassumption | split; [reflexivity|]].
+    right; right; right; right. split; [assumption | split; reflexivity].
 Qed.
 
 (** A step to the error transition is one of the four refusing arms: a
@@ -1814,6 +1899,26 @@ Proof.
   intros P e x8 Hs H. unfold ns_refused_b. rewrite Hs.
   rewrite List.existsb_app in H. apply orb_false_iff in H as [Hu Hn].
   rewrite Hu, Hn, !andb_false_r. reflexivity.
+Qed.
+
+(** The sync gate is closed at an instruction, and at any number outside
+    the synced list. *)
+Lemma sync_instr : forall P e,
+  ms_svc_pending (pe_ms e) = None -> sync_pending_b P e = false.
+Proof. intros P e Hs. unfold sync_pending_b. rewrite Hs. reflexivity. Qed.
+
+Lemma sync_of_sysno : forall P e x8,
+  ms_svc_pending (pe_ms e) = Some x8 ->
+  List.existsb (Z.eqb (bv_unsigned x8)) multiproc_synced_sysnos = false ->
+  sync_pending_b P e = false.
+Proof. intros P e x8 Hs H. unfold sync_pending_b. rewrite Hs, H. reflexivity. Qed.
+
+(** A [wait4] is never synced. *)
+Lemma wait4_owned_not_sync : forall P e,
+  wait4_owned_b P e = true -> sync_pending_b P e = false.
+Proof.
+  intros P e H. destruct (wait4_owned_260 P e H) as (x8 & Hs & H260).
+  apply (sync_of_sysno P e x8 Hs). rewrite H260. reflexivity.
 Qed.
 
 (** A [wait4] is never namespace-gated. *)
@@ -2051,6 +2156,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
     wait4_owned_b P e = false ->
     ns_refused_b P e = false ->
+    sync_pending_b P e = false ->
     multiproc_ok ext segs P e = true ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' ctx' st'))
 | px_clone : forall P e evs c' q child ret st',
@@ -2181,7 +2287,12 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     look P (pe_pid e) = Some e ->
     m_halted (pe_model e) = None ->
     ns_refused_b P e = true ->
-    pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError.
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError
+| px_sync : forall P e,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    sync_pending_b P e = true ->
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] (PNext (sync_result P e)).
 
 Definition pstep_x_cfg (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cfg : SpuriousCfg)
     (P : pconfig) (evs : list event) (r : pstep_to) : Prop :=
@@ -2198,7 +2309,7 @@ Proof.
   destruct H; [eapply px_other | eapply px_clone | eapply px_clone_fail | eapply px_clone_unmodeled
               | eapply px_clone_claimed | eapply px_wait_reap | eapply px_error | eapply px_outside
               | eapply px_wait_nohang_reap | eapply px_wait_nohang_zero | eapply px_wait_refuse
-              | eapply px_ns_refuse];
+              | eapply px_ns_refuse | eapply px_sync];
     eauto.
 Qed.
 
@@ -2290,6 +2401,16 @@ Proof.
   unfold clone_sysno in H.
   apply orb_true_iff in H as [H|H]; apply Z.eqb_eq in H; rewrite H;
     rewrite !andb_false_r; reflexivity.
+Qed.
+
+(** ... nor synced. *)
+Lemma clone_pending_not_sync : forall P e,
+  clone_pending_b (pe_cfg (pcfg_shared P) e) = true -> sync_pending_b P e = false.
+Proof.
+  intros P e H. unfold clone_pending_b in H. cbn [cfg_ms pe_cfg] in H.
+  destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hs; [|discriminate H].
+  apply (sync_of_sysno P e x8 Hs). unfold clone_sysno in H.
+  apply orb_true_iff in H as [H|H]; apply Z.eqb_eq in H; rewrite H; reflexivity.
 Qed.
 
 (** A return in the errno range is [-en] for an [en] in [1, 4095]. *)
@@ -2442,7 +2563,7 @@ Theorem pstep_x_at_agree_iff : forall ext cenv segs cfg p P evs r,
 Proof.
   intros ext cenv segs cfg p P evs r Hag. split.
   - intros H. revert Hag. destruct H as
-      [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hns Hmp
+      [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hns Hsy Hmp
       | Q e ev c' q child ret st' Hl Hcl Hs Hsucc Hq Hfree Hma Hec
       | Q e ev c' en hq st' Hl Hcl Hs Hcp Hsucc Hret Hma Hec Hnr
       | Q e ev c' hq Hl Hcl Hs Hcp Hma Hec
@@ -2455,7 +2576,8 @@ Proof.
           Hl Hh Hx8 Hwo Hna Hru Hq Hne Hpar Hk Hst Hrd Hlen Heff Hmat
       | Q e x8 stat_addr ru Hl Hh Hx8 Hwo Hna Hru Hz
       | Q e Hl Hh Hrf
-      | Q e Hl Hh Hns ]; intros Hag;
+      | Q e Hl Hh Hns
+      | Q e Hl Hh Hsy ]; intros Hag;
       destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* px_other *)
       apply (proj1 (Hxs _ _ _ _ _)) in Hx. destruct Hx as (Hs & -> & ->).
@@ -2475,6 +2597,7 @@ Proof.
       * apply clone_pending_not_wait4. exact Hcp.
       * apply clone_pending_not_owned. exact Hcp.
       * apply clone_pending_not_ns. exact Hcp.
+      * apply clone_pending_not_sync. exact Hcp.
     + (* px_clone_unmodeled *)
       apply (proj1 (Hcln _ _)) in Hec.
       destruct Hec as [Heq | (en & _ & Heq)]; discriminate Heq.
@@ -2495,8 +2618,10 @@ Proof.
       apply pstep_wait_refuse; assumption.
     + (* px_ns_refuse: the gate's own arm, on both sides *)
       apply pstep_ns_refuse; assumption.
+    + (* px_sync: the gate's own arm, on both sides *)
+      apply pstep_sync; assumption.
   - intros H. revert Hag. destruct H as
-      [ Q e ev c' Hl Hs Hsucc Hwt Hma Hwo Hns
+      [ Q e ev c' Hl Hs Hsucc Hwt Hma Hwo Hns Hsy
       | Q e ev c' q Hl Hs Hsucc Hq Hfree Hma
       | Q e q ez x8 stat_addr status eff model'' dumped
           Hl Hh Hx8 Hwt Hargs Hq Hne Hpar Hk Hst Hrd Heff Hmat
@@ -2506,7 +2631,8 @@ Proof.
           Hl Hh Hx8 Hwo Hna Hru Hq Hne Hpar Hk Hst Hrd Hlen Heff Hmat
       | Q e x8 stat_addr ru Hl Hh Hx8 Hwo Hna Hru Hz
       | Q e Hl Hh Hrf
-      | Q e Hl Hh Hns ]; intros Hag;
+      | Q e Hl Hh Hns
+      | Q e Hl Hh Hsy ]; intros Hag;
       destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* pstep_other *)
       destruct (clone_pending_b (pe_cfg (pcfg_shared Q) e)) eqn:Hp.
@@ -2543,6 +2669,8 @@ Proof.
       apply px_wait_refuse; assumption.
     + (* pstep_ns_refuse *)
       apply px_ns_refuse; assumption.
+    + (* pstep_sync *)
+      apply px_sync; assumption.
 Qed.
 
 (** An extension that claims no pending call of an entry of [P] and whose

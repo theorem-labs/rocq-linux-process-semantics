@@ -861,6 +861,17 @@ Proof.
   unfold multiproc_private. cbn [cfg_ms pe_cfg]. rewrite Hs, H260. reflexivity.
 Qed.
 
+Lemma private_not_sync : forall P e,
+  sync_pending_b P e = true -> multiproc_private (pe_cfg (pcfg_shared P) e) = false.
+Proof.
+  intros P e H. unfold sync_pending_b in H. unfold multiproc_private.
+  cbn [cfg_ms pe_cfg]. destruct (ms_svc_pending (pe_ms e)) as [x8|]; [|discriminate H].
+  apply andb_true_iff in H as [H _]. cbn [multiproc_synced_sysnos List.existsb] in H.
+  apply orb_true_iff in H as [H|H];
+    [|apply orb_true_iff in H as [H|H]; [|discriminate H]];
+    apply Z.eqb_eq in H; rewrite H; reflexivity.
+Qed.
+
 (** THE FRAME.  A step of [p] at a class-(A) call keeps the shared state
     and the root, and every other entry, but for the orphaning of [p]'s
     children when the step halted [p]. *)
@@ -883,7 +894,7 @@ Proof.
   destruct Hcases as
     [ (c' & Hs & _ & _ & ->)
     | [ (c' & q & _ & Hsucc & _)
-      | [ (Hwt & _) | (Hwo & _) ] ] ].
+      | [ (Hwt & _) | [ (Hwo & _) | (Hsy & _ & _) ] ] ] ].
   - pose proof (sstep_private_shared _ _ _ _ _ Hp Hs) as Hsh.
     unfold sh_of in Hsh. injection Hsh as Hf Hi.
     split; [|split; [reflexivity|]].
@@ -896,6 +907,7 @@ Proof.
   - rewrite (private_not_clone _ (clone_success_pending _ _ Hsucc)) in Hp. discriminate Hp.
   - rewrite (private_not_intercept _ Hwt) in Hp. discriminate Hp.
   - rewrite (private_not_owned _ _ Hwo) in Hp. discriminate Hp.
+  - rewrite (private_not_sync _ _ Hsy) in Hp. discriminate Hp.
 Qed.
 
 (** So every other entry's VIEW is unchanged: [pe_cfg] reads [pe_ms] and
@@ -955,7 +967,7 @@ Qed.
 
 (** Class (C): the answer needs the peer, and the core does not give it. *)
 Definition multiproc_peer_sysnos : list Z :=
-  [32; 35; 80; 96; 101; 113; 156; 157; 160; 167; 172; 173; 178; 261]%Z.
+  [32; 35; 80; 96; 156; 157; 160; 167; 172; 173; 178; 261]%Z.
 
 Lemma not_admitted_sysno : forall n,
   List.existsb (Z.eqb n) multiproc_peer_sysnos = true ->
@@ -987,7 +999,8 @@ Lemma pstep_next_allowed : forall segs cfg p P evs P',
   exists e, look P p = Some e /\
     ( multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true
       \/ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true
-      \/ wait4_owned_b P e = true ).
+      \/ wait4_owned_b P e = true
+      \/ sync_pending_b P e = true ).
 Proof.
   intros segs cfg p P evs P' H. inversion H; subst;
     (eexists; split; [eassumption|]); auto.
@@ -1015,7 +1028,7 @@ Proof.
   intros evs P' Hp.
   destruct (pstep_next_allowed _ _ _ _ _ _ Hp) as (e1 & Hl1 & Hor).
   rewrite Hl in Hl1. injection Hl1 as <-.
-  destruct Hor as [Hma' | [Hwt | Hwo]].
+  destruct Hor as [Hma' | [Hwt | [Hwo | Hsy]]].
   - congruence.
   - destruct (intercept_260 _ Hwt) as (y & Hy & Hy260).
     cbn [cfg_ms pe_cfg] in Hy. rewrite Hs in Hy. injection Hy as <-.
@@ -1023,6 +1036,10 @@ Proof.
   - destruct (wait4_owned_260 _ _ Hwo) as (y & Hy & Hy260).
     rewrite Hs in Hy. injection Hy as <-.
     exact (not_admitted_not_260 _ Hna Hy260).
+  - unfold sync_pending_b in Hsy. rewrite Hs in Hsy.
+    apply andb_true_iff in Hsy as [Hsy _].
+    unfold multiproc_sysnos in Hna. rewrite !List.existsb_app, Hsy in Hna.
+    rewrite orb_true_r in Hna. discriminate Hna.
 Qed.
 
 (** The admitted lists and the class-(C) list are the modeled surface, each

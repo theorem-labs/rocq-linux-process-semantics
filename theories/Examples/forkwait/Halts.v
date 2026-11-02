@@ -655,7 +655,7 @@ Proof.
      because the reap arms have thirteen premises and more, and an Ltac
      pattern over them is how the first attempt failed. *)
   inversion Hp as
-    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1 Hns1 Heq1 Heq2 Heq3
+    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1 Hns1 Hsy1 Heq1 Heq2 Heq3
     | P2 e2 evs2 c2 q2 Hl2 Hs2 Hc2 Hcp2 Hfr2 Hm2 Heq4 Heq5 Heq6
     | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
       Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
@@ -666,7 +666,8 @@ Proof.
       Hl6 Hh6 Hsv6 Hwo6 Hna6 Hru6 Hlq6 Hne6 Hpar6 Hk6 Hst6 Hrd6 Hlen6 Heff6 Hmat6
     | P7 e7 x87 sa7 ru7 Hl7 Hh7 Hsv7 Hwo7 Hna7 Hru7 Hz7
     | P8 e8 Hl8 Hh8 Hrf8
-    | P9 e9 Hl9 Hh9 Hns9 ]; subst.
+    | P9 e9 Hl9 Hh9 Hns9
+    | P10 e10 Hl10 Hh10 Hsy10 ]; subst.
   - left. apply absorb_procs_length.
   - right; left. apply clone_result_procs_length.
   - right; right. cbn [pcfg_procs].
@@ -686,6 +687,8 @@ Proof.
     + exact Hlq6.
   - (* the WNOHANG zero replaces the caller's entry and nothing else *)
     left. unfold wait4_zero_result. apply absorb_procs_length.
+  - (* the clock sync replaces the caller's entry and nothing else *)
+    left. unfold sync_result. cbn [pcfg_procs]. apply replace_in_length.
 Qed.
 
 (** [absorb] keeps the table's shape at a one-entry configuration: the
@@ -1512,6 +1515,12 @@ Proof.
     exfalso. congruence.
   - (* pstep_wait_nohang_zero: and its WNOHANG zero *)
     exfalso. congruence.
+  - (* pstep_sync: the clock sync needs a pending call too *)
+    exfalso.
+    match goal with
+    | [ Hsy : sync_pending_b _ _ = true |- _ ] =>
+        rewrite (sync_instr _ _ Hs) in Hsy; discriminate Hsy
+    end.
 Qed.
 
 (** A PENDING 94: the exit arm, and only it.  The clone arm needs
@@ -1570,6 +1579,13 @@ Proof.
     | [ Hwo : wait4_owned_b _ _ = true |- _ ] =>
         rewrite (wait4_owned_not_260 _ _ x8 Hs) in Hwo;
           [discriminate Hwo | rewrite H94; discriminate]
+    end.
+  - (* pstep_sync: 94 is not a clock call *)
+    exfalso.
+    match goal with
+    | [ Hsy : sync_pending_b _ _ = true |- _ ] =>
+        rewrite (sync_of_sysno _ _ x8 Hs) in Hsy;
+          [discriminate Hsy | rewrite H94; reflexivity]
     end.
 Qed.
 
@@ -1669,6 +1685,13 @@ Proof.
     match goal with
     | [ Hna : wait4_nohang_args (pe_ms e) = Some _ |- _ ] =>
         rewrite (wait4_blocking_not_nohang _ _ Hwa) in Hna; discriminate Hna
+    end.
+  - (* pstep_sync: 260 is not a clock call *)
+    exfalso.
+    match goal with
+    | [ Hsy : sync_pending_b _ _ = true |- _ ] =>
+        rewrite (sync_of_sysno _ _ x8 Hs) in Hsy;
+          [discriminate Hsy | rewrite H260; reflexivity]
     end.
 Qed.
 
@@ -1823,7 +1846,7 @@ Proof.
      more, and an Ltac pattern over them is how the first attempt failed
      -- [pstep_length_cases] above records the same lesson. *)
   inversion Hp as
-    [ P1 e1 evs1 c1 Hl1 Hss1 Hcs1 Hwi1 Hma1 Hwo1 Hns1 Heq1 Heq2 Heq3
+    [ P1 e1 evs1 c1 Hl1 Hss1 Hcs1 Hwi1 Hma1 Hwo1 Hns1 Hsy1 Heq1 Heq2 Heq3
     | P2 e2 evs2 c2 q2 Hl2 Hss2 Hcs2 Hcp2 Hfr2 Hma2 Heq4 Heq5 Heq6
     | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
       Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
@@ -1834,7 +1857,8 @@ Proof.
       Hl6 Hh6 Hsv6 Hwo6 Hna6 Hru6 Hlq6 Hne6 Hpar6 Hk6 Hst6 Hrd6 Hlen6 Heff6 Hmat6
     | P7 e7 x87 sa7 ru7 Hl7 Hh7 Hsv7 Hwo7 Hna7 Hru7 Hz7
     | P8 e8 Hl8 Hh8 Hrf8
-    | P9 e9 Hl9 Hh9 Hns9 ]; subst.
+    | P9 e9 Hl9 Hh9 Hns9
+    | P10 e10 Hl10 Hh10 Hsy10 ]; subst.
   - (* pstep_other: the clone declined, so a0 is in the errno list *)
     assert (He1 : e1 = e)
       by (rewrite Hl1 in Hl; injection Hl as Hl; exact Hl).
@@ -1915,6 +1939,13 @@ Proof.
     subst e7.
     rewrite (wait4_owned_not_260 _ _ x8 Hs) in Hwo7;
       [discriminate Hwo7 | rewrite H220; discriminate].
+  - (* pstep_sync: 220 is not a clock call *)
+    exfalso.
+    assert (He10 : e10 = e)
+      by (rewrite Hl10 in Hl; injection Hl as Hl; exact Hl).
+    subst e10.
+    rewrite (sync_of_sysno _ _ x8 Hs) in Hsy10;
+      [discriminate Hsy10 | rewrite H220; reflexivity].
 Qed.
 
 (* =========================================================================
@@ -3862,13 +3893,14 @@ Proof.
   exists (pe_pid e).
   apply (pstep_other forkwait_segs cfg P e _
            (mkCfg (pe_ms e) (with_halted code m)));
-    [exact Hl | exact Hss | | | exact Hma | | ].
+    [exact Hl | exact Hss | | | exact Hma | | | ].
   - unfold clone_success_b. cbn [cfg_ms pe_cfg]. rewrite Hsv.
     rewrite fw_ninety_four. reflexivity.
   - unfold wait4_intercept_b. cbn [cfg_ms pe_cfg]. rewrite Hsv.
     rewrite fw_ninety_four. reflexivity.
   - apply (wait4_owned_not_260 P e 94 Hsv). rewrite fw_ninety_four. discriminate.
   - apply (ns_refused_of_sysno P e 94 Hsv). rewrite fw_ninety_four. reflexivity.
+  - apply (sync_of_sysno P e 94 Hsv). rewrite fw_ninety_four. reflexivity.
 Qed.
 
 (** A FRESH PID EXISTS, and it is chosen rather than searched for: the

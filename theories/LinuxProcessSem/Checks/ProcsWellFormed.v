@@ -612,6 +612,24 @@ Proof.
   - apply root_orphan. apply (root_replace _ _ e); [exact Hnd | exact He | reflexivity | exact Hroot].
 Qed.
 
+(** The clock sync replaces one entry by one with the same pid, parent and
+    halt state. *)
+Lemma tbl_root_sync : forall P e,
+  tbl_wf (pcfg_procs P) -> root_ok (pcfg_procs P) (pcfg_root P) ->
+  look P (pe_pid e) = Some e -> m_halted (pe_model e) = None ->
+  tbl_wf (pcfg_procs (sync_result P e))
+  /\ root_ok (pcfg_procs (sync_result P e)) (pcfg_root (sync_result P e)).
+Proof.
+  intros P e Htbl Hroot Hl Hh. pose proof (look_in_In _ _ _ Hl) as He.
+  pose proof Htbl as (_ & _ & Hnd).
+  unfold sync_result. cbn [pcfg_procs pcfg_root]. split.
+  - rewrite <- (orphan_at_exit_running (pe_model (sync_entry P e)) (pe_pid e)
+                  (replace_in (pcfg_procs P) (pe_pid e) (sync_entry P e)))
+      by exact Hh.
+    apply (tbl_absorb _ _ e); [exact Htbl | exact He | reflexivity | reflexivity | reflexivity].
+  - apply (root_replace _ _ e); [exact Hnd | exact He | reflexivity | exact Hroot].
+Qed.
+
 Lemma tbl_root_reap : forall P e q ez eff model'',
   tbl_wf (pcfg_procs P) -> root_ok (pcfg_procs P) (pcfg_root P) ->
   look P (pe_pid e) = Some e -> m_halted (pe_model e) = None ->
@@ -650,7 +668,7 @@ Proof.
   intros segs cfg p P evs P' Hwf Hp.
   apply wf_iff in Hwf as [Htbl Hroot]. apply wf_iff.
   inversion Hp as
-    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1 Hns1
+    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1 Hns1 Hsy1
     | P2 e2 evs2 c2 q2 Hl2 Hs2 Hc2 Hcp2 Hfr2 Hm2
     | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
         Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
@@ -660,7 +678,8 @@ Proof.
         Hl6 Hh6 Hsv6 Hwo6 Hna6 Hru6 Hlq6 Hne6 Hpar6 Hk6 Hst6 Hrd6 Hlen6 Heff6 Hmat6
     | P7 e7 x87 sa7 ru7 Hl7 Hh7 Hsv7 Hwo7 Hna7 Hru7 Hz7
     | P8 e8 Hl8 Hh8 Hrf8
-    | P9 e9 Hl9 Hh9 Hns9 ]; subst.
+    | P9 e9 Hl9 Hh9 Hns9
+    | P10 e10 Hl10 Hh10 Hsy10 ]; subst.
   - (* pstep_other *)
     exact (tbl_root_absorb _ e1 c1 Htbl Hroot Hl1).
   - (* pstep_clone *)
@@ -681,4 +700,6 @@ Proof.
              (pe_status_halted _ _ _ Hst6) Hmat6).
   - (* pstep_wait_nohang_zero: an absorb *)
     exact (tbl_root_absorb _ e7 _ Htbl Hroot Hl7).
+  - (* pstep_sync: one entry's clock copy, nothing structural *)
+    exact (tbl_root_sync _ e10 Htbl Hroot Hl10 Hh10).
 Qed.

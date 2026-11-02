@@ -81,7 +81,7 @@ Theorem owned_wait4_never_released : forall segs cfg p P e evs r,
 Proof.
   intros segs cfg p P e evs r Hl Hwo Hp. revert Hl Hwo.
   destruct Hp as
-    [ Q e0 ev c' Hl0 Hs Hsucc Hwt Hma Hwo0 Hns0
+    [ Q e0 ev c' Hl0 Hs Hsucc Hwt Hma Hwo0 Hns0 Hsy0
     | Q e0 ev c' q Hl0 Hs Hsucc Hq Hfree Hma
     | Q e0 q ez x8 stat_addr status eff model'' dumped
         Hl0 Hh Hx8 Hwt Hargs Hq Hne Hpar Hk Hst Hrd Heff Hmat
@@ -91,7 +91,8 @@ Proof.
         Hl0 Hh Hx8 Hwo0 Hna Hru Hq Hne Hpar Hk Hst Hrd Hlen Heff Hmat
     | Q e0 x8 stat_addr ru Hl0 Hh Hx8 Hwo0 Hna Hru Hz
     | Q e0 Hl0 Hh Hrf
-    | Q e0 Hl0 Hh Hns0 ]; intros Hl Hwo;
+    | Q e0 Hl0 Hh Hns0
+    | Q e0 Hl0 Hh Hsy0 ]; intros Hl Hwo;
     rewrite Hl0 in Hl; injection Hl as Hl; subst e0.
   - (* pstep_other: behind the gate *)
     rewrite Hwo0 in Hwo. discriminate Hwo.
@@ -118,6 +119,8 @@ Proof.
     split; [reflexivity|]. right; right. split; [exact Hrf | reflexivity].
   - (* pstep_ns_refuse: a [wait4] is not namespace-gated *)
     rewrite (wait4_owned_not_ns Q e Hwo) in Hns0. discriminate Hns0.
+  - (* pstep_sync: a [wait4] is not synced *)
+    rewrite (wait4_owned_not_sync Q e Hwo) in Hsy0. discriminate Hsy0.
 Qed.
 
 (** NOR DOES THE EXTENSION, claimed or not. *)
@@ -129,7 +132,7 @@ Theorem owned_wait4_never_released_x : forall ext cenv segs cfg p P e evs r,
 Proof.
   intros ext cenv segs cfg p P e evs r Hl Hwo Hp. revert Hl Hwo.
   destruct Hp as
-    [ Q e0 ev c' ctx' st' Hl0 Hx Hcp Hwt Hwo0 Hns0 Hmp
+    [ Q e0 ev c' ctx' st' Hl0 Hx Hcp Hwt Hwo0 Hns0 Hsy0 Hmp
     | Q e0 ev c' q child ret st' Hl0 Hcl Hs Hsucc Hq Hfree Hma Hec
     | Q e0 ev c' en hq st' Hl0 Hcl Hs Hcp Hsucc Hret Hma Hec Hnr
     | Q e0 ev c' hq Hl0 Hcl Hs Hcp Hma Hec
@@ -142,7 +145,8 @@ Proof.
         Hl0 Hh Hx8 Hwo0 Hna Hru Hq Hne Hpar Hk Hst Hrd Hlen Heff Hmat
     | Q e0 x8 stat_addr ru Hl0 Hh Hx8 Hwo0 Hna Hru Hz
     | Q e0 Hl0 Hh Hrf
-    | Q e0 Hl0 Hh Hns0 ]; intros Hl Hwo;
+    | Q e0 Hl0 Hh Hns0
+    | Q e0 Hl0 Hh Hsy0 ]; intros Hl Hwo;
     rewrite Hl0 in Hl; injection Hl as Hl; subst e0.
   - (* px_other: behind the gate *)
     rewrite Hwo0 in Hwo. discriminate Hwo.
@@ -175,6 +179,8 @@ Proof.
     split; [reflexivity|]. right; right. split; [exact Hrf | reflexivity].
   - (* px_ns_refuse *)
     rewrite (wait4_owned_not_ns Q e Hwo) in Hns0. discriminate Hns0.
+  - (* px_sync *)
+    rewrite (wait4_owned_not_sync Q e Hwo) in Hsy0. discriminate Hsy0.
 Qed.
 
 (** What the two "never blocks" theorems share: a non-blocking [wait4] of
