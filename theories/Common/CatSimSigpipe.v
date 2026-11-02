@@ -47,12 +47,15 @@ Definition w1x_byte : byte := Z_to_bv 8 0x93.
 
 (** The two launches: [Checks.Examples.demo_input_valid]'s input, with the
     far end of stdout read ([reader = true], which is that input exactly)
-    or not ([reader = false]).  Every other field is the same, and in
-    particular SIGPIPE's disposition is the default, the last field. *)
+    or not ([reader = false]).  SIGPIPE's disposition is the default in
+    both.  The SIGPIPE-death declaration, the last field, follows the
+    reader: the reader-gone launch is [Run.valid_input_channel_closed],
+    which declares the death, and the reader launch is [Run.valid_input],
+    which does not. *)
 Definition w1x_input (reader : bool) : ProcInput :=
   mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
     default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom []
-    default_kernel default_execfn reader true.
+    default_kernel default_execfn reader true (negb reader).
 
 (** THE TWO LAUNCHES, EACH UNDER ITS OWN PREDICATE.  [Run.valid_input]
     pins the reader PRESENT, so it is the reader launch that it admits
@@ -257,9 +260,10 @@ Lemma w1x_modeled : bufs_modeled [[w1x_byte]].
 Proof. apply bufs_modeled_single. unfold buf_modeled. vm_compute. discriminate. Qed.
 
 (** SIGPIPE is fatal at the reader-gone launch: the disposition is the
-    default and the empty mask leaves signal 13 open. *)
+    default, the launch declares the death, and the empty mask leaves
+    signal 13 open. *)
 Lemma w1x_fatal : sigpipe_fatal (w1x_input false).
-Proof. split; [reflexivity | vm_compute; reflexivity]. Qed.
+Proof. split; [reflexivity | split; [reflexivity | vm_compute; reflexivity]]. Qed.
 
 Lemma is_prefix_In : forall {A} (l1 l2 : list A) x,
   is_prefix l1 l2 -> In x l1 -> In x l2.

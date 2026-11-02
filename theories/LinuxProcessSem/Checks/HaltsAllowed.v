@@ -43,21 +43,19 @@
     pins the reason it stops there, so a reader does not take the
     missing statement-level refutation for an oversight.
 
-    SIGPIPE.  This one has no declaration that holds it off everywhere.
+    SIGPIPE.  The same shape, through its own declaration.
     [Fs.ReadWrite.write_spec] raises signal 13 from ordinary modeled
     state — a pipe whose read end the program closed, a socket with no
     connection, a channel [State.in_channel_reader] says is unread —
-    and [Run.valid_input] constrains only the third of the three: it
-    pins the reader PRESENT, so the reader-less channel is reached by
-    name under [Run.valid_input_channel_closed], while the closed pipe
-    and the unconnected socket are ordinary states under the ordinary
-    predicate.  So the kill conjunct of [MustExit.must_exit_in_at] is a
-    LIVE refutation of
-    [halts_allowed_T] over this very input class, and
-    [halts_allowed_T_refuted_by_kill] below, which used to be
-    unfireable at statement level, is a lemma with a reachable
-    hypothesis.  A run that dies by signal 13 does not satisfy
-    [must_exit_in]: that predicate's halted constructor requires
+    but [Fs.ReadWrite.sigpipe_write] DECLINES such a write at SIG_DFL
+    unless the launch declares the death ([State.in_sigpipe_terminal]),
+    and [Run.valid_input] pins that declaration [false].  So under the
+    ordinary predicate no run ends in [KillEv 13]: the write is an
+    error, which [must_exit_in] refutes through its error conjunct.  The
+    death is reached by name, under [Run.valid_input_sigpipe_kills] for
+    a pipe or a socket and [Run.valid_input_channel_closed] for a
+    reader-less channel, and there a run that dies by signal 13 does not
+    satisfy [must_exit_in]: that predicate's halted constructor requires
     [State.m_killed] to be [None], so it asks the program to end BY
     EXIT and not merely to end. *)
 

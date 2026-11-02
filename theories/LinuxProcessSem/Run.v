@@ -750,12 +750,12 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
     requires to be [None].
 
     THE DECLARATION IS NOT A PREMISE HERE.  For SIGABRT it is one
-    inside [Kernel.Signal.tkill_spec]; for SIGPIPE there is none at
-    all, because [Sys.Fs.ReadWrite.write_spec]'s three write arms raise
-    it from ordinary modeled state.  Putting a declaration here as well
-    would make this rule unable to fire on an outcome the spec layer
-    produced -- which is a STUCK configuration, not a decline, and
-    [sstep_cfg_progress] below would be false.  What carries the
+    inside [Kernel.Signal.tkill_spec]; for SIGPIPE it is one inside
+    [Sys.Fs.ReadWrite.sigpipe_write], which declines the write while
+    [State.m_sigpipe_terminal] is clear.  Putting a declaration here as
+    well would make this rule unable to fire on an outcome the spec
+    layer produced -- which is a STUCK configuration, not a decline,
+    and [sstep_cfg_progress] below would be false.  What carries the
     abort-compatibility claim instead is [decl_off_frame] above, stated
     once and consumed by [sstep_off_no_kill], and it is a claim about
     SIGABRT alone. *)
@@ -839,13 +839,13 @@ Qed.
 
     IT IS ABOUT SIGABRT AND NOT ABOUT KILLS.  [State.with_killed] has a
     second signal, SIGPIPE, raised by the three write arms of
-    [Sys.Fs.ReadWrite.write_spec] from ordinary modeled state, and NOTHING
-    gates those on a declaration — a pipe whose read end the program
-    closed is state the program made, not a stance a task took.  So "no
-    kill with the declaration off" is FALSE, and the frame says what is
-    true instead: no kill CARRYING SIGABRT.  A reader who wants the
-    stronger reading will not find it here, and [sstep_off_no_kill] says
-    in as many words what it no longer rules out.
+    [Sys.Fs.ReadWrite.write_spec], and THAT send is behind its own
+    declaration, [State.m_sigpipe_terminal], rather than this one:
+    [Sys.Fs.ReadWrite.sigpipe_write] declines it while that field is
+    clear ([Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled]), which
+    [valid_input] pins.  This frame does not state that half, and
+    [sstep_off_no_kill] says in as many words what it does not rule
+    out.
 
     So they are a hypothesis with a name.  [decl_off_frame] states
     exactly what the abort path's code establishes BY
@@ -931,15 +931,15 @@ Proof. intros m1 m2 H. unfold m_sigabrt_pending. now rewrite H. Qed.
     it — see [decl_off_frame] — and dropping it from either side makes
     this lemma's hypothesis the false one.
 
-    WHAT IT NO LONGER RULES OUT, said once so that nobody reads "no
-    kill" where this says "no SIGABRT kill": a step MAY contribute a
-    [State.KillEv] carrying SIGPIPE (13) with both abort bits clear and
-    the declaration off, because the three write arms of
-    [Sys.Fs.ReadWrite.write_spec] raise that signal from ordinary
-    modeled state — a pipe whose read end the program closed, a socket
-    with no connection, a channel the launch says has no reader — and
-    none of those is behind the abort declaration.  This lemma is about
-    the abort path's inertness and about nothing else. *)
+    WHAT IT DOES NOT RULE OUT, said once so that nobody reads "no
+    kill" where this says "no SIGABRT kill": this lemma's hypotheses
+    say nothing about SIGPIPE.  A step contributes a [State.KillEv]
+    carrying SIGPIPE (13) only through the write arms of
+    [Sys.Fs.ReadWrite.write_spec], and only while
+    [State.m_sigpipe_terminal] is set; with it clear, as
+    [valid_input] pins it, those writes decline
+    ([Sys.Fs.ReadWrite.sigpipe_write_off_unmodeled]).  This lemma is
+    about the abort path's inertness and about nothing else. *)
 Lemma sstep_off_no_kill : decl_off_frame ->
   forall ms model evs c',
     m_abort_terminal model = false ->
@@ -1189,13 +1189,18 @@ Definition reaches_error (c0 : config) : Prop :=
     world it is about rather than assuming one, and the other world has
     its own predicate, [valid_input_sigpipe_ignored], under which
     [Sys.Fs.ReadWrite.raise_sigpipe] discards the signal and no write
-    arm can end the run.  The alternative considered and rejected was
-    declining every write once the launch could have ignored the
-    signal, which gives back exactly the coverage this revision bought.
-    BLOCKING is a third, independent matter and was already modeled: a
-    launch whose [in_sigmask] blocks signal 13 is a valid input, the
-    write answers -EPIPE, and [State.procst_sigpipe_pending] carries
-    the signal to the [rt_sigprocmask] that uncovers it. *)
+    arm can end the run.
+
+    WHETHER THE MODEL FOLLOWS THE DEATH is a second declared field,
+    [State.in_sigpipe_terminal], and [valid_input] pins it to [false]:
+    at SIG_DFL a write that would raise the signal DECLINES, whatever
+    the mask, so it lands HERE, in [unmodeled_at], and no run under
+    [valid_input] ends in [KillEv 13] -- the reading every error-free
+    statement in this tree was written under.  The launch that follows
+    the death is [valid_input_sigpipe_kills].  BLOCKING is a third,
+    independent matter: on that launch a blocked signal 13 makes the
+    write answer -EPIPE, and [State.procst_sigpipe_pending] carries the
+    signal to the [rt_sigprocmask] that uncovers it. *)
 (** THE vDSO SPLITS THIS PREDICATE'S FIRST SHAPE IN TWO, and the split
     is the whole point of the arm that answers a call.
     [RiscvSemantics.step_accesses] answers [MachineUnmodeled] for every
@@ -4424,7 +4429,8 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true.
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 (** The SAME predicate with the abort-path declaration turned on, and it
     is a separate definition rather than a parameter for the reason the
@@ -4452,18 +4458,22 @@ Definition valid_input (inp : ProcInput) : Prop :=
     [State.KillEv] CARRYING SIGABRT can appear in any trace
     ([sstep_off_no_kill]).
 
-    THE SIGPIPE DECLARATION IS PINNED HERE TOO, and the two are
-    independent stances rather than one.  [State.in_sigpipe_default] is
-    [true] under this predicate: the launch left signal 13 at SIG_DFL,
-    so a write whose far end has no reader ENDS THE PROCESS and a run
-    under [valid_input] can carry [KillEv 13] -- see
-    [Sys.Fs.ReadWrite.write_spec] and [Sys.Fs.ReadWrite.raise_sigpipe].
-    It is pinned rather than left open because that is the world every
-    statement in this tree was written under, and because the other
-    world is not a different number but a different OUTCOME: with
-    SIG_IGN the same write returns -EPIPE and the program runs on.  A
-    task that wants either other reading asks for it by name
-    ([valid_input_abort], [valid_input_sigpipe_ignored]).
+    THE SIGPIPE DECLARATIONS ARE PINNED HERE TOO, and they are
+    independent stances from the abort one.  [State.in_sigpipe_default]
+    is [true] under this predicate: the launch left signal 13 at
+    SIG_DFL, the world every statement in this tree was written under;
+    with SIG_IGN the same write would return -EPIPE and the program run
+    on, a different OUTCOME and not a different number.
+    [State.in_sigpipe_terminal] is [false]: a write that would raise
+    SIGPIPE at SIG_DFL DECLINES, on every descriptor and under every
+    mask ([Sys.Fs.ReadWrite.sigpipe_write]), as [tkill] declines with
+    the abort declaration off.  So NO run under [valid_input] carries
+    [KillEv 13] or holds a pending SIGPIPE, and a statement that
+    concludes [Equivalence.error_free] does not weaken: the reader-less
+    write is an error here, as it was before the write arms could raise
+    the signal.  A task that wants another reading asks for it by name
+    ([valid_input_abort], [valid_input_sigpipe_ignored],
+    [valid_input_sigpipe_kills]).
 
     THE READER DECLARATION IS PINNED HERE TOO, at [true].
     [State.in_channel_reader] says whether anything still reads
@@ -4487,7 +4497,8 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true.
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 (** Neither ABORT stance pinned: the clauses both share, and nothing
     about that declaration.  A statement quantified over this one is the
@@ -4508,7 +4519,8 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true.
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
@@ -4582,7 +4594,8 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = false
-  /\ in_channel_reader inp = true.
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 (** Neither SIGPIPE stance pinned: the clauses both share, and nothing
     about the disposition.  A statement quantified over this one is the
@@ -4600,7 +4613,8 @@ Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_channel_reader inp = true.
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_sigpipe_either inp.
@@ -4658,25 +4672,30 @@ Qed.
 
     WHY THE PIN RATHER THAN BOTH READINGS.  With the field unpinned
     every ordinary statement would also be a claim about a run whose
-    first write to standard output KILLS IT (signal 13 at SIG_DFL,
-    which [valid_input] pins as well), so a halts statement or a
-    trace statement would silently have to cover a death the task
-    never meant to describe.  The pin says which launch the tree is
-    about; the predicates below say the other one.
+    first write to standard output raises signal 13, so a halts
+    statement or a trace statement would silently have to cover an
+    ending the task never meant to describe.  The pin says which launch
+    the tree is about; the predicates below say the other one.
 
     [valid_input_channel_closed] is the reader-GONE launch named, in
     the shape [valid_input_abort] has for the abort declaration: every
-    clause of [valid_input] with the reader pinned to [false].  It is
-    NOT the safer predicate -- it asserts something about the launch
-    that [valid_input] does not, and a proof made under it says nothing
+    clause of [valid_input] with the reader pinned to [false] -- AND
+    THE SIGPIPE DEATH FOLLOWED ([State.in_sigpipe_terminal] [true]),
+    because that death is the whole point of the launch; with it
+    declined every write to standard output would decline.  It is NOT
+    the safer predicate -- it asserts something about the launch that
+    [valid_input] does not, and a proof made under it says nothing
     about a run whose output is read.  What it buys is a world where
     [Sys.Fs.ReadWrite.write_spec]'s channel arm takes the reader-less
     branch, which is what [Common.CatSimSigpipe] proves a whole run of.
 
-    [valid_input_channel_either] pins neither value, the twin of
+    [valid_input_channel_either] pins neither reader value, the twin of
     [valid_input_either]: a statement quantified over it is the
     CONJUNCTION of the two readings, which is what makes forgetting to
-    choose the safe failure rather than the dangerous one. *)
+    choose the safe failure rather than the dangerous one.  It ties the
+    SIGPIPE-death declaration to the reader
+    ([State.in_sigpipe_terminal] is [negb] of [State.in_channel_reader])
+    so that its two halves are exactly the two named launches. *)
 Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4688,7 +4707,8 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = false.
+  /\ in_channel_reader inp = false
+  /\ in_sigpipe_terminal inp = true.
 
 (** Neither reader stance pinned: the clauses both share, and nothing
     about that declaration. *)
@@ -4702,7 +4722,8 @@ Definition valid_input_channel_either (inp : ProcInput) : Prop :=
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
   /\ valid_launch inp
-  /\ in_sigpipe_default inp = true.
+  /\ in_sigpipe_default inp = true
+  /\ in_sigpipe_terminal inp = negb (in_channel_reader inp).
 
 Lemma valid_input_channel_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_channel_either inp.
@@ -4713,7 +4734,10 @@ Proof.
      [valid_urandom], which is coinductive. *)
   intros inp H. red in H |- *.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat match goal with |- _ /\ _ => split end; assumption.
+  repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | match goal with Hr : in_channel_reader _ = _ |- _ =>
+              rewrite Hr; cbn [negb]; assumption end ].
 Qed.
 
 Lemma valid_input_channel_either_of_valid_input_channel_closed : forall inp,
@@ -4721,7 +4745,10 @@ Lemma valid_input_channel_either_of_valid_input_channel_closed : forall inp,
 Proof.
   intros inp H. red in H |- *.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  repeat match goal with |- _ /\ _ => split end; assumption.
+  repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | match goal with Hr : in_channel_reader _ = _ |- _ =>
+              rewrite Hr; cbn [negb]; assumption end ].
 Qed.
 
 (** The exhaustiveness the paragraph above claims, as a lemma rather
@@ -4732,10 +4759,10 @@ Lemma valid_input_channel_either_splits : forall inp,
   valid_input_channel_either inp ->
   valid_input inp \/ valid_input_channel_closed inp.
 Proof.
-  intros inp H.
-  destruct (in_channel_reader inp) eqn:Hcr; [left | right];
-    red in H |- *;
-    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+  intros inp H. red in H.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  destruct (in_channel_reader inp) eqn:Hcr; cbn [negb] in *; [left | right];
+    red;
     repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
@@ -4780,6 +4807,70 @@ Proof.
   assumption.
 Qed.
 
+(** THE SIGPIPE-DEATH DECLARATION under each named reading, as an
+    accessor for the same reason. *)
+Lemma valid_input_sigpipe_terminal : forall inp,
+  valid_input inp -> in_sigpipe_terminal inp = false.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_channel_closed_sigpipe_terminal : forall inp,
+  valid_input_channel_closed inp -> in_sigpipe_terminal inp = true.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** * THE SIGPIPE-DEATH DECLARATION: the launch that follows the death
+
+    [State.in_sigpipe_terminal] says whether the model follows a SIGPIPE
+    at SIG_DFL into the death it causes.  [valid_input] pins it to
+    [false]: a write that would raise the signal there DECLINES
+    ([Sys.Fs.ReadWrite.sigpipe_write]), on every descriptor and under
+    every mask, as [tkill] declines with [State.in_abort_terminal]
+    clear.  So no run under [valid_input] carries [KillEv 13], none
+    holds a pending SIGPIPE, and every statement quantified over it
+    that concludes [Equivalence.error_free] keeps the meaning it had
+    before the write arms could raise the signal: the reader-less write
+    is an error there, as it was when the arms declined it.
+
+    [valid_input_sigpipe_kills] is the other world named, the twin of
+    [valid_input_abort]: every clause of [valid_input] with the field
+    pinned to [true].  What it ADDS is the death: a write to a pipe the
+    program left unread, or to a socket with no connection, ends the
+    run in [KillEv 13] at SIG_DFL with signal 13 open, and leaves it
+    pending with the signal blocked.  It is NOT the safer predicate: a
+    statement over it that asks [Equivalence.error_free] alone does not
+    see that death, which is why the statements that quantify over a
+    death-following launch ask [Equivalence.error_free_unkilled].
+    [valid_input_channel_closed] above follows the death too, on
+    descriptors 1 and 2, because its whole point is that death. *)
+Definition valid_input_sigpipe_kills (inp : ProcInput) : Prop :=
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
+  /\ fs_keys_relative (in_image_fs inp)
+  /\ fs_image_real (in_image_fs inp) = true
+  /\ valid_creds inp /\ valid_nofile (in_nofile inp)
+  /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
+  /\ in_abort_terminal inp = false
+  /\ in_va_size inp = Sv48
+  /\ valid_urandom inp
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = true.
+
+Lemma valid_input_sigpipe_kills_sigpipe_terminal : forall inp,
+  valid_input_sigpipe_kills inp -> in_sigpipe_terminal inp = true.
+Proof.
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
 (** * The address-space declaration: the same predicate per size
 
     Separate definitions rather than a parameter, for the reason the
@@ -4809,7 +4900,8 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true.
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -4822,7 +4914,8 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true.
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -4834,7 +4927,8 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true.
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Lemma valid_input_image_real : forall inp,
   valid_input inp -> fs_image_real (in_image_fs inp) = true.
@@ -5131,7 +5225,8 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true.
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5144,7 +5239,8 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true.
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 (** Each declaration is a NARROWING of the default, so a statement
     quantified over [valid_input] is about every input either predicate
@@ -5238,7 +5334,8 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true.
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5251,7 +5348,8 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_urandom inp
   /\ valid_launch inp
   /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true.
+  /\ in_channel_reader inp = true
+  /\ in_sigpipe_terminal inp = false.
 
 (** The three proofs below take the conjuncts BY SHAPE, never by
     position.  A positional pattern ([intros inp (a & b & ... & L)])

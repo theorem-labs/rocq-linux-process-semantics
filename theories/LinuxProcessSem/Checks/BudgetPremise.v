@@ -1580,8 +1580,7 @@ Qed.
 (** ** The sealed ascription
 
     The exit-0 pair satisfies the error-free budget statement at EVERY
-    pair of budgets — the image never touches the heap and is never
-    killed ([exit0_never_dies_by_signal]) — and so seals
+    pair of budgets — the image never touches the heap — and so seals
     [Equivalence.SPEC_ERROR_FREE_BUDGETS] under the shipped budgets,
     which is the ascription a generated Checker makes for a flavour
     pair. *)
@@ -1589,13 +1588,11 @@ Theorem exit0_strong_universal_error_free_budgets : forall lim_source lim_target
   strong_universal_error_free_T_budgets lim_source lim_target exit0_image exit0_image.
 Proof.
   intros ls lt [sps brks mbs rnds] [spt brkt mbt rndt] inp _ _ _ _.
-  unfold strong_equiv_error_free_budgets, error_free_unkilled.
+  unfold strong_equiv_error_free_budgets.
   split; [| split].
-  - split; [| apply exit0_never_dies_by_signal].
-    apply error_free_iff. cbn [omni_corun exit0_image img_segments].
+  - apply error_free_iff. cbn [omni_corun exit0_image img_segments].
     apply exit0_never_errors.
-  - split; [| apply exit0_never_dies_by_signal].
-    apply error_free_iff. cbn [omni_corun exit0_image img_segments].
+  - apply error_free_iff. cbn [omni_corun exit0_image img_segments].
     apply exit0_never_errors.
   - intros tr. cbn [run exit0_image bh_traces].
     rewrite !exit0_obs. reflexivity.
@@ -1705,12 +1702,10 @@ Proof.
   intros cfg ls lt [sps brks mbs rnds] [spt brkt mbt rndt] inp _ _ _ _.
   unfold strong_equiv_error_free_budgets_scfg.
   split; [| split].
-  - apply error_free_unkilled_scfg_of_error_free_unkilled.
-    unfold error_free_unkilled. split; [| apply exit0_never_dies_by_signal].
+  - apply error_free_scfg_of_error_free.
     apply error_free_iff. cbn [omni_corun exit0_image img_segments].
     apply exit0_never_errors.
-  - apply error_free_unkilled_scfg_of_error_free_unkilled.
-    unfold error_free_unkilled. split; [| apply exit0_never_dies_by_signal].
+  - apply error_free_scfg_of_error_free.
     apply error_free_iff. cbn [omni_corun exit0_image img_segments].
     apply exit0_never_errors.
   - intros tr. cbn [run_scfg exit0_image bh_traces].

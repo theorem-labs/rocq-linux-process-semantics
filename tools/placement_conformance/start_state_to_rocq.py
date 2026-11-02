@@ -461,7 +461,7 @@ Definition rec_input : ProcInput :=
   mkProcInput_full rec_argv rec_envp [] IEof
     (Z_to_bv 64 {uid}) (Z_to_bv 64 {gid}) []
     net_silent default_nofile (Z_to_bv 64 0) (Z_to_bv 64 {hwcap:#x})
-    false {va} default_urandom [] rec_kernel rec_execfn true true.
+    false {va} default_urandom [] rec_kernel rec_execfn true true false.
 
 (** The image, as {phdr_src}: the phdr table at
     {phdr_addr:#x}, {phdr_num} entries of {phdr_ent} bytes, and an entry point

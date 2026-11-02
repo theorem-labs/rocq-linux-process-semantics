@@ -1116,7 +1116,7 @@ Example the_random_clause_is_what_the_fixture_carries :
         (mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups
                           net_silent default_nofile (Z_to_bv 64 0) demo_hwcap
                           false Sv48 IEof [] default_kernel default_execfn
-                          true true).
+                          true true false).
 Proof.
   split.
   - valid_urandom_default.
