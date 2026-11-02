@@ -1,6 +1,19 @@
-# review.yml: Claude reviews each pull request into main and each new issue by the rules in .github/review.md, and the
-# review is posted as a comment there.
+# review.yml: Claude reviews pull requests into main and issues by the rules in .github/review.md, and the review is
+# posted as a comment there.
 #
+# Whose pull requests and issues are reviewed. A pull request or an issue is reviewed when it is opened (and a pull
+# request again at each push) if its author has write access to this repository and so does the account whose action
+# started the run. Write access is what GitHub's collaborator permission API answers: admin or write (maintain counts
+# as write). Membership of the organisation alone is not write access. The Apps in APPS count as having it. Anyone
+# else's pull request or issue is reviewed only when a maintainer asks for it:
+#
+#   gh workflow run review.yml -R theorem-labs/rocq-linux-process-semantics -f number=<n>
+#
+# or "Run workflow" on this workflow's page in the Actions tab. GitHub lets only an account with write access start a
+# run that way. Every review reads the comments and reviews of the author and of accounts with write access, and no
+# others.
+#
+#   trust   decides whether the review job runs. It checks nothing out, and its token can only read metadata.
 #   review  reads the pull request or the issue as data, with this repository's main and the Linux and QEMU source the
 #           model describes, and asks Claude for the comment. It holds an identity token, which Anthropic exchanges for
 #           a short-lived token that can call Claude and nothing else; no key is stored. Anthropic's federation rule
@@ -10,10 +23,18 @@
 # No job runs code of a pull request. pull_request_target runs this file as main has it, so a pull request, from a fork
 # or not, cannot change what runs here. The review job checks out main, never the pull request; it reads the pull
 # request's diff and files from git objects as data under .review/, with every CLAUDE.md, AGENTS.md and .claude/ taken
-# out, and Claude gets the tools Read, Glob and Grep only, with no read of the runner's temporary files or of /proc:
-# it can run nothing and write nothing. The post job checks out nothing.
+# out. Claude gets the tools Read, Glob and Grep only, in the permission mode dontAsk (a call that would need approval
+# is refused), and reads nothing outside the checkout: not the runner's temporary files, which hold the identity
+# token, the Claude token and git's own files, nor /proc. It can run nothing and write nothing. The post job checks
+# out nothing.
 #
-# To review a pull request or an issue by hand: gh workflow run review.yml -f number=<n>
+# From 2 December 2026 GitHub blocks pull_request_target in a public repository unless an Actions event policy allows
+# it. This file needs a repository policy that targets the workflow path .github/workflows/review.yml and allows the
+# events pull_request_target, issues and workflow_dispatch. Without it, a pull request is reviewed only when someone
+# with write access asks for it.
+#
+# Never re-run this workflow with debug logging. A debug run prints the whole conversation with the model, with the
+# pull request's or the issue's text, in the run's log, and anyone can read the logs of a public repository.
 name: review
 run-name: >-
   ${{ format('review #{0}', github.event.pull_request.number || github.event.issue.number || inputs.number) }}
@@ -38,27 +59,86 @@ env:
   # This repository's decision: "true" posts each review as a comment on its pull request or issue; any other value
   # keeps it in the run's summary only.
   POST_REVIEW: "true"
-  # The most reviews that may call the model in one hour. Anyone can open an issue or a pull request here, so a burst
-  # of them must not start model runs without limit. A run at the cap stops before the model, and the run is red; a
-  # maintainer can re-run it once the hour has passed.
+  # The Apps that count as having write access: this organisation's own. The Review step admits no other App.
+  APPS: "sjawhar-agent[bot],oss-verify[bot]"
+  # The most reviews that may call the model in one hour. Only the pull requests and issues of accounts with write
+  # access reach the model on their own, but an agent of ours can open many at once, so a burst must not start model
+  # runs without limit. A run at the cap stops before the model, and the run is red; a maintainer can re-run it once
+  # the hour has passed. A run that the trust job stops never counts.
   HOURLY_CAP: "10"
 
-concurrency:
-  # One review at a time for each pull request or issue: a new push replaces the review of the old head.
-  group: review-${{ github.event.pull_request.number || github.event.issue.number || inputs.number }}
-  cancel-in-progress: true
-
 jobs:
-  review:
-    name: review
-    # This repository only (not a fork). Not a draft pull request (ready_for_review starts its review), and an edit of
-    # a pull request only when its base changed. An App's run only for the Apps the Review step admits (allowed_bots):
-    # the action refuses any other.
+  # A draft pull request is not reviewed (ready_for_review starts its review), nor an edit of a pull request that left
+  # its base as it was, nor anything in a fork of this repository.
+  trust:
     if: >-
       github.repository_id == 1425819621
       && (github.event_name != 'pull_request_target' || (!github.event.pull_request.draft
           && (github.event.action != 'edited' || github.event.changes.base != null)))
-      && (!endsWith(github.actor, '[bot]') || contains(fromJSON('["sjawhar-agent[bot]", "oss-verify[bot]"]'), github.actor))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      review: ${{ steps.trust.outputs.review }}
+    steps:
+      - name: Whether the author and the account that started the run have write access
+        id: trust
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          # trusted
+          # trusted <login>: 0 when <login> is one of the APPS, or an account that GitHub's collaborator permission API
+          # gives admin or write; 1 when it is neither; 2 when the API could not say.
+          trusted() {
+            local permission
+            [[ $1 =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 1
+            [[ ,$APPS, != *",$1,"* ]] || return 0
+            [[ $1 != *'[bot]' ]] || return 1
+            permission=$(gh api "repos/$REPO/collaborators/$1/permission" --jq .permission) || return 2
+            [[ $permission == admin || $permission == write ]]
+          }
+          # end of trusted
+          # check <who> <login>: stops here, with no review, unless <login> passes.
+          check() {
+            local rc=0
+            trusted "$2" || rc=$?
+            case $rc in
+              0) ;;
+              1) echo "::notice::No review of #$NUMBER: $1 ($2) has no write access. A maintainer can ask for one:" \
+                   "gh workflow run review.yml -R $REPO -f number=$NUMBER"
+                 echo "review=false" >> "$GITHUB_OUTPUT"
+                 exit 0 ;;
+              *) echo "::error::GitHub did not say whether $2 has write access. Re-run this run."; exit 1 ;;
+            esac
+          }
+          case $EVENT in
+            pull_request_target|issues)
+              check "its author" "$AUTHOR"
+              check "the account that started this run" "$ACTOR" ;;
+            # GitHub lets only an account with write access start a run by hand; an App must be one of the APPS, as the
+            # Review step's allowed_bots says.
+            workflow_dispatch)
+              [[ $ACTOR != *'[bot]' ]] || check "the App that started this run" "$ACTOR" ;;
+            *) echo "::error::not an event of this workflow: $EVENT"; exit 1 ;;
+          esac
+          echo "Reviewing #$NUMBER: $EVENT by $ACTOR."
+          echo "review=true" >> "$GITHUB_OUTPUT"
+
+  review:
+    name: review
+    needs: trust
+    if: needs.trust.outputs.review == 'true'
+    # One review at a time for each pull request or issue: a new push replaces the review of the old head. A run that
+    # the trust job stops never reaches this job, so it cancels no review.
+    concurrency:
+      group: review-${{ github.event.pull_request.number || github.event.issue.number || inputs.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     permissions: {contents: read, pull-requests: read, issues: read, checks: read, statuses: read, actions: read, id-token: write}
@@ -98,7 +178,8 @@ jobs:
       # have called the model or may still call it: one whose Review step ran or runs; one that passed this step and
       # has not finished; and one that has not finished this step yet and belongs to an earlier run, which goes first.
       # So in a burst the earliest runs go ahead and the later ones stop here. Runs created up to 3 hours ago are read,
-      # which covers a job's 75 minutes and its time in the queue.
+      # which covers a job's 75 minutes and its time in the queue. A review job that waits for its run's trust job is
+      # not listed yet, and one the trust job skipped has no Review step, so neither counts.
       - name: Hold at the hourly cap
         env: {RUN_ID: "${{ github.run_id }}", RUN_ATTEMPT: "${{ github.run_attempt }}"}
         run: |
@@ -136,7 +217,7 @@ jobs:
           echo "$count reviews in the last hour, under the cap of $HOURLY_CAP."
 
       # Data only: nothing gathered here runs. The pull request's files come from git objects (git diff, git cat-file),
-      # never from a checkout, so no attribute, filter or hook of the pull request applies. What head/ leaves out is
+      # never from a checkout, so no attribute, filter or hook of the pull request applies. What .review/ leaves out is
       # listed in omitted.txt.
       - name: Gather the pull request or issue, and the Linux and QEMU source
         env:
@@ -146,15 +227,59 @@ jobs:
           set -euo pipefail
           out=.review
           mkdir -p "$out"
+          : > "$out/omitted.txt"
+          # trusted
+          # trusted <login>: 0 when <login> is one of the APPS, or an account that GitHub's collaborator permission API
+          # gives admin or write; 1 when it is neither; 2 when the API could not say.
+          trusted() {
+            local permission
+            [[ $1 =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 1
+            [[ ,$APPS, != *",$1,"* ]] || return 0
+            [[ $1 != *'[bot]' ]] || return 1
+            permission=$(gh api "repos/$REPO/collaborators/$1/permission" --jq .permission) || return 2
+            [[ $permission == admin || $permission == write ]]
+          }
+          # end of trusted
+          # comments
+          # The comments, reviews and review comments that the review reads: those of the pull request's or the
+          # issue's author, and of each account that trusted passes. GitHub's REST API names an App <name>[bot]. The
+          # others are counted in omitted.txt, and never read.
+          author=$(gh api "repos/$REPO/issues/$NUMBER" --jq .user.login)
+          gh api --paginate "repos/$REPO/issues/$NUMBER/comments" \
+            --jq '.[] | {author: .user.login, created_at, body}' > "$RUNNER_TEMP/comments.jsonl"
+          : > "$RUNNER_TEMP/reviews.jsonl"
+          : > "$RUNNER_TEMP/review-comments.jsonl"
+          if [ "$KIND" = pr ]; then
+            gh api --paginate "repos/$REPO/pulls/$NUMBER/reviews" \
+              --jq '.[] | {author: .user.login, state, submitted_at, body}' > "$RUNNER_TEMP/reviews.jsonl"
+            gh api --paginate "repos/$REPO/pulls/$NUMBER/comments" \
+              --jq '.[] | {author: .user.login, path, line: (.line // .original_line), body}' \
+              > "$RUNNER_TEMP/review-comments.jsonl"
+          fi
+          readers=("$author")
+          while IFS= read -r login; do
+            if [ "$login" != "$author" ] && trusted "$login"; then readers+=("$login"); fi
+          done < <(cat "$RUNNER_TEMP"/{comments,reviews,review-comments}.jsonl | jq -r '.author // empty' | sort -u)
+          read_json=$(jq -cn '$ARGS.positional' --args "${readers[@]}")
+          for what in comments reviews review-comments; do
+            jq -s --argjson readers "$read_json" 'map(select(.author | IN($readers[])))' "$RUNNER_TEMP/$what.jsonl" \
+              > "$RUNNER_TEMP/$what.json"
+            left=$(jq -s --argjson readers "$read_json" 'map(select(.author | IN($readers[]) | not)) | length' \
+              "$RUNNER_TEMP/$what.jsonl")
+            (( left == 0 )) || echo "$left $what by accounts without write access: not read" >> "$out/omitted.txt"
+          done
+          # end of comments
           if [ "$KIND" = issue ]; then
-            gh issue view "$NUMBER" -R "$REPO" --json number,title,author,createdAt,state,body,comments > "$out/issue.json"
+            gh issue view "$NUMBER" -R "$REPO" --json number,title,author,createdAt,state,body \
+              | jq --slurpfile c "$RUNNER_TEMP/comments.json" '. + {comments: $c[0]}' > "$out/issue.json"
           else
             gh pr view "$NUMBER" -R "$REPO" --json \
-              number,title,author,createdAt,isDraft,baseRefName,headRefOid,headRepository,body,commits,files,comments,reviews \
-              > "$out/pr.json"
+              number,title,author,createdAt,isDraft,baseRefName,headRefOid,headRepository,body,commits,files \
+              | jq --slurpfile c "$RUNNER_TEMP/comments.json" --slurpfile r "$RUNNER_TEMP/reviews.json" \
+                  '. + {comments: $c[0], reviews: $r[0]}' > "$out/pr.json"
             gh pr view "$NUMBER" -R "$REPO" --json statusCheckRollup > "$out/checks.json"
-            gh api --paginate "repos/$REPO/pulls/$NUMBER/comments" \
-              --jq '.[] | "\(.user.login) \(.path):\(.line // .original_line) \(.body)"' > "$out/review-comments.txt"
+            jq -r '.[] | "\(.author) \(.path):\(.line) \(.body)"' "$RUNNER_TEMP/review-comments.json" \
+              > "$out/review-comments.txt"
             base=$(jq -r .baseRefName "$out/pr.json")
             [ "$base" = main ] || { echo "::error::pull request #$NUMBER is into $base, not main: not reviewed."; exit 1; }
             git fetch -q --no-tags origin "+refs/pull/$NUMBER/head:refs/review/head"
@@ -168,7 +293,6 @@ jobs:
             (( changed <= 3000 )) || { echo "::error::$changed changed files: too large for this review."; exit 1; }
             git diff --no-renames --no-ext-diff --no-textconv "$mb" "$head" > "$out/pr.diff"
             # Each changed file as the pull request has it: regular files only, each cut at 2 MiB, 512 MiB in all.
-            : > "$out/omitted.txt"
             total=0
             while IFS= read -r -d '' path; do
               mode=$(git ls-tree --format='%(objectmode)' "$head" -- ":(literal)$path")
@@ -213,6 +337,41 @@ jobs:
           fetch "$out/qemu" "$QEMU_URL" "$QEMU_COMMIT" /linux-user/ /include/user/ /target/riscv/
           echo "Gathered $(find "$out" -type f | wc -l) files."
 
+      # The Review step's action writes this job's GitHub token into the checkout's git configuration (as the origin
+      # URL), and Claude can read every file of the working directory. So git's own directory moves under the runner's
+      # temporary directory, which Claude cannot read, and .git becomes a file that names it. git works as before.
+      - name: Keep git's configuration out of Claude's reach
+        run: |
+          set -euo pipefail
+          git init -q --separate-git-dir="$RUNNER_TEMP/review-git"
+          [ -f .git ] || { echo "::error::.git is still a directory"; exit 1; }
+
+      # The action would download and run Claude Code's installer (curl https://claude.ai/install.sh | bash) and a Bun
+      # at run time, unchecked, in a job that holds an identity token. This step downloads the versions that the action
+      # at its pinned commit installs, and refuses any file whose SHA-256 is not the one written here. When the action's
+      # pin moves, take the new versions from its src/entrypoints/run.ts (claudeCodeVersion) and its action.yml
+      # (bun-version), and their digests from https://downloads.claude.ai/claude-code-releases/<version>/manifest.json
+      # (platforms.linux-x64.checksum) and from the bun-linux-x64.zip asset of the oven-sh/bun release.
+      - name: Download Claude Code and Bun at pinned digests
+        env:
+          CLAUDE_CODE_VERSION: 2.1.312
+          CLAUDE_CODE_SHA256: 4f4178ce41d83e23341ebfbaecdbcf8ea6bf7baea0690025abe49eeec3a5d01d
+          BUN_VERSION: 1.4.4
+          BUN_SHA256: bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c
+        run: |
+          set -euo pipefail
+          [ "$(uname -sm)" = "Linux x86_64" ] || { echo "::error::the pinned binaries are for Linux on x86-64"; exit 1; }
+          dir=$RUNNER_TEMP/review-tools
+          mkdir -p "$dir"
+          curl -fsSL --retry 3 -o "$dir/claude" \
+            "https://downloads.claude.ai/claude-code-releases/$CLAUDE_CODE_VERSION/linux-x64/claude"
+          curl -fsSL --retry 3 -o "$dir/bun.zip" \
+            "https://github.com/oven-sh/bun/releases/download/bun-v$BUN_VERSION/bun-linux-x64.zip"
+          printf '%s  %s\n' "$CLAUDE_CODE_SHA256" "$dir/claude" "$BUN_SHA256" "$dir/bun.zip" | sha256sum -c --strict
+          unzip -q -j "$dir/bun.zip" bun-linux-x64/bun -d "$dir"
+          rm "$dir/bun.zip"
+          chmod +x "$dir/claude" "$dir/bun"
+
       - name: Review
         id: review
         timeout-minutes: 50
@@ -225,23 +384,32 @@ jobs:
           anthropic_service_account_id: svac_01WdHTLcJPEfiPttcuLK1hGT
           anthropic_workspace_id: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
           github_token: ${{ github.token }}
-          allowed_non_write_users: "*"
-          allowed_bots: sjawhar-agent[bot],oss-verify[bot]
-          # The runner's temporary files hold the identity token and the exchanged Claude token, and /proc holds the
-          # environment: Claude reads neither.
-          settings: '{"permissions": {"deny": ["Read(//home/runner/work/_temp/**)", "Read(//proc/**)"]}}'
+          # The action itself refuses a run started by an account without write access (its default), and any App
+          # but these.
+          allowed_bots: ${{ env.APPS }}
+          path_to_claude_code_executable: ${{ runner.temp }}/review-tools/claude
+          path_to_bun_executable: ${{ runner.temp }}/review-tools/bun
+          # Claude reads nothing outside the checkout. The runner's temporary files hold the identity token, the
+          # exchanged Claude token and git's configuration, and /proc holds the environment: the deny rules name them
+          # as well.
+          settings: >-
+            {"permissions": {"blockReadsOutsideWorkingDirectories": true,
+            "deny": ["Read(//home/runner/work/_temp/**)", "Read(//proc/**)"]}}
           prompt: >-
             Read .github/review.md: it is the rules of this review. Review ${{ steps.what.outputs.kind == 'pr' &&
             'pull request' || 'issue' }} #${{ steps.what.outputs.number }} of this repository as it says, from what
             .review/ holds, and give the comment as the structured output.
           claude_args: >-
-            --tools Read,Glob,Grep --permission-mode default --model claude-opus-5-5 --effort xhigh --max-turns 300
+            --tools Read,Glob,Grep --permission-mode dontAsk --model claude-opus-5-5 --effort xhigh --max-turns 300
             --json-schema '{"type": "object", "additionalProperties": false, "required": ["comment"],
             "properties": {"comment": {"type": "string", "description": "The review comment, in Markdown."}}}'
 
-      # The model's text, which a pull request or an issue can steer, with every @mention and cross-repository
-      # reference broken by a word joiner (U+2060) so that it notifies nobody, cut at 20,000 characters, between a
-      # header and a footer the model does not write.
+      # The model's text, which a pull request or an issue can steer, made unable to notify anyone or to link another
+      # issue or pull request. First each character reference (&#64;, &#x40;, &commat; and the like, with or without
+      # its ;) that stands for an ASCII letter or digit or one of @ # / : . _ - is decoded, again until none is left,
+      # so that the rules after it see the text as GitHub renders it. Then a word joiner (U+2060) goes after every @,
+      # and between a digit and the #, the GH- or the github.com/<owner>/<repo>/issues/ (pull/, pulls/, discussions/)
+      # before it. The text is cut at 20,000 characters and put between a header and a footer the model does not write.
       - name: The comment, as it is posted
         id: result
         env:
@@ -250,9 +418,21 @@ jobs:
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          comment=$(jq -re 'map(select(.type == "result")) | last | .structured_output.comment | strings' "$RESULT")
-          comment=$(printf '%s' "$comment" \
-            | LC_ALL=C sed -E 's/(^|[^[:alnum:]_`])@([[:alnum:]_-])/\1@\xE2\x81\xA0\2/g; s/([[:alnum:]_.-]+\/[[:alnum:]_.-]+)#([0-9])/\1\xE2\x81\xA0#\2/g')
+          comment=$(jq -re 'map(select(.type == "result")) | last | .structured_output.comment | strings' "$RESULT" \
+            | python3 -X utf8 -c '
+          import html, re, sys
+          text = sys.stdin.read()
+          ref = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);?")
+          def decode(m):
+              c = html.unescape(m.group(0))
+              return c if len(c) == 1 and c.isascii() and (c.isalnum() or c in "@#/:._-") else m.group(0)
+          while (decoded := ref.sub(decode, text)) != text:
+              text = decoded
+          text = text.replace("@", "@\u2060")
+          text = re.sub(r"(#|(?i:GH-)|(?i:github\.com/[^/\s]+/[^/\s]+/(?:issues|pulls?|discussions)/))(?=[0-9])",
+                        "\\1\u2060", text)
+          sys.stdout.write(text)
+          ')
           if (( ${#comment} > 20000 )); then
             comment="${comment:0:20000}"$'\n\n'"(The review was cut here, at 20,000 characters.)"
           fi

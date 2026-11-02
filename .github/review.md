@@ -1,8 +1,9 @@
 # The automated review
 
 `.github/workflows/review.yml` asks Claude to review each pull request into
-`main` and each new issue, and posts the review as a comment. The review is
-advice. A maintainer decides what to merge.
+`main` and each issue whose author has write access, and each other one that
+a maintainer asks it to review, and posts the review as a comment. The review
+is advice. A maintainer decides what to merge.
 
 The review uses the copy of this file on `main`, so a change to it takes
 effect after it merges.
@@ -19,6 +20,9 @@ effect after it merges.
     `review-comments.txt` and `checks.json` (the state of its checks when
     the review started);
   - for an issue, `issue.json`;
+  - in `pr.json`, `issue.json` and `review-comments.txt`, only the comments
+    and reviews of the author and of accounts with write access; `omitted.txt`
+    counts the others;
   - `linux/`: part of stable Linux v6.18.46, commit `1f99e9ab748f`: `mm/`,
     `kernel/`, `ipc/`, `lib/`, `arch/riscv/`, `include/`, `fs/`, `net/`,
     `security/`, `init/`, `block/`, `io_uring/`, `drivers/char/` and

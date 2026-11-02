@@ -118,6 +118,19 @@ jobs:
             endGroup
           uninstall: ''
 
+  # The scripts of .github/workflows/review.yml, run against a stand-in gh (.github/test_review.py): who is reviewed,
+  # which comments the review reads, and what the posted comment can notify or link. It is quick, so it runs on every
+  # change, a change to *.md only included.
+  review-workflow:
+    name: Review workflow
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+      - run: python3 .github/test_review.py
+
   opam:
     name: opam install
     needs: route
@@ -153,11 +166,12 @@ jobs:
           opam exec -- gen-fd-lemmas --help > /dev/null
 
   # The one check to require: it always runs, and passes only when the route
-  # succeeded and every lane it started passed (a lane the route skipped
-  # counts as passed). All three Rocq lanes stay blocking.
+  # succeeded, the review workflow's tests passed, and every lane the route
+  # started passed (a lane the route skipped counts as passed). All three Rocq
+  # lanes stay blocking.
   ci:
     name: CI
-    needs: [route, build, opam]
+    needs: [route, build, opam, review-workflow]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -167,9 +181,11 @@ jobs:
           BUILD_ROUTED: ${{ needs.route.outputs.build }}
           BUILD: ${{ needs.build.result }}
           OPAM: ${{ needs.opam.result }}
+          REVIEW_WORKFLOW: ${{ needs.review-workflow.result }}
         run: |
-          echo "route=$ROUTE build-routed=$BUILD_ROUTED build=$BUILD opam=$OPAM"
+          echo "route=$ROUTE build-routed=$BUILD_ROUTED build=$BUILD opam=$OPAM review-workflow=$REVIEW_WORKFLOW"
           [ "$ROUTE" = success ] || { echo "route did not succeed"; exit 1; }
+          [ "$REVIEW_WORKFLOW" = success ] || { echo "the review workflow's tests did not pass"; exit 1; }
           if [ "$BUILD_ROUTED" = true ]; then
             [ "$BUILD" = success ] && [ "$OPAM" = success ] || { echo "a lane did not pass"; exit 1; }
           else
