@@ -82,13 +82,15 @@ Proof. intros m ctx o. apply ns_spec_flat. reflexivity. Qed.
     released world gets the core's guard alone.  Outside it, the calls the
     setup child makes are admitted where their answer reads and writes
     only the shared namespace state, the task's own context and table, or
-    nothing a peer can change: [getpid], [mount], a [read] of a namespace
-    file or of an eventfd, a [writev] of a standard channel, a [close] of
-    an opaque descriptor, [fcntl] F_SETFD on any descriptor.  Not admitted:
-    a [read] or [writev] of a regular file the released model opened, a
-    [close] of a released pipe, [fcntl] F_SETFL on a released file (each
-    reads or moves state the core keeps per process), and a call the
-    child does not make ([clock_gettime]). *)
+    nothing a peer can change: [getpid], [mount], [capget], an anonymous
+    [mmap] (the address space is per process after a clone without
+    CLONE_VM), a [read] of a namespace file or of an eventfd, a [writev] of
+    a standard channel, a [close] of an opaque descriptor, [fcntl] F_SETFD
+    on any descriptor.  Not admitted: a file [mmap], a [read] or [writev]
+    of a regular file the released model opened, a [close] of a released
+    pipe, [fcntl] F_SETFL on a released file (each reads or moves state the
+    core keeps per process), and a call the child does not make
+    ([clock_gettime]). *)
 Example multiproc_flat_core_guard : forall i m ctx,
   ext_multiproc ns_ext i m ctx empty_nsstate = false.
 Proof. intros i m ctx. reflexivity. Qed.
@@ -104,6 +106,22 @@ Proof. intros m. reflexivity. Qed.
 Example multiproc_clock_not_inside : forall m,
   ext_multiproc ns_ext (call 113) m (task 2 18) one_mount = false.
 Proof. intros m. reflexivity. Qed.
+
+Example multiproc_capget_inside : forall m,
+  ext_multiproc ns_ext (call 90) m (task 2 18) one_mount = true.
+Proof. intros m. reflexivity. Qed.
+
+(** mmap(NULL, 4096, PROT_READ|PROT_WRITE, flags, fd, 0): MAP_PRIVATE|MAP_ANONYMOUS
+    (0x22) is admitted, MAP_PRIVATE (0x02) on a descriptor is not. *)
+Definition mmap_in (flags fd : word) : SyscallInput :=
+  mkInput 222 [0; 4096; 3; flags; fd; 0] (fun _ => None) (fun _ => None).
+Example multiproc_mmap_rules : forall m,
+  ext_multiproc ns_ext (mmap_in 34 (Z_to_bv 64 (2 ^ 64 - 1))) m (task 2 18) one_mount = true
+  /\ ext_multiproc ns_ext (mmap_in 2 3) m (task 2 18) one_mount = false.
+Proof.
+  intros m. change (ext_multiproc ns_ext) with ns_multiproc.
+  unfold ns_multiproc, ns_multiproc_call. cbv zeta. split; reflexivity.
+Qed.
 
 Definition call2 (n a b : word) : SyscallInput :=
   mkInput n [a; b] (fun _ => None) (fun _ => None).

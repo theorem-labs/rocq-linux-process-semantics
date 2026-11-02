@@ -194,6 +194,13 @@ Qed.
       process's later use declines;
     - [fcntl] (25) F_GETFD (1) and F_SETFD (2): the close-on-exec bit is
       the caller's descriptor table's.
+    THE ADDRESS SPACE is per process in Linux after a clone without
+    CLONE_VM ([dup_mm], kernel/fork.c) and per process in the core, so the
+    memory calls are admitted: [brk] 214, [munmap] 215, [mremap] 216,
+    [mprotect] 226, [madvise] 233 (the harness's checks allocate, and
+    musl's allocator may map or unmap a group), and [mmap] 222 only with
+    MAP_ANONYMOUS: a file mapping reads the file, and the released file
+    system is kept per process.  [capget] 90 reads the task's own sets.
     Every other claimed call is not admitted while another process lives:
     the core makes it a model error, never a wrong answer.  That covers
     time ([clock_gettime] 113: the core keeps a clock per process), the
@@ -201,8 +208,8 @@ Qed.
     every call this child does not make.  Widening the list is one more
     row of this argument. *)
 Definition ns_mp_any_fd : list Z :=
-  [17; 34; 36; 39; 40; 41; 43; 48; 49; 50; 56; 78; 79; 91; 97; 135; 166; 167; 172; 198; 437;
-   442]%Z.
+  [17; 34; 36; 39; 40; 41; 43; 48; 49; 50; 56; 78; 79; 90; 91; 97; 135; 166; 167; 172; 198;
+   214; 215; 216; 226; 233; 437; 442]%Z.
 
 (** [ioctl], [getdents64], [read], [write], [fstat], [bind], [sendto] and
     [recvfrom], admitted on a descriptor of the namespace model only. *)
@@ -225,7 +232,8 @@ Definition ns_multiproc_call (i : SyscallInput) (m : Model) : bool :=
   || (Z.eqb n 63 && evfd)
   || (Z.eqb n 66 && chan)
   || (Z.eqb n 57 && opaque)
-  || (Z.eqb n 25 && (nsfile || Z.eqb cmd 1 || Z.eqb cmd 2)).
+  || (Z.eqb n 25 && (nsfile || Z.eqb cmd 1 || Z.eqb cmd 2))
+  || (Z.eqb n 222 && Z.testbit (bv_unsigned (in_arg i 3)) 5).    (* MAP_ANONYMOUS, 0x20 *)
 
 Definition ns_multiproc (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) : bool :=
   negb (flat_view ctx st) && ns_multiproc_call i m.
