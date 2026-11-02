@@ -4444,9 +4444,10 @@ Definition valid_input (inp : ProcInput) : Prop :=
     SIGPIPE at SIG_DFL DECLINES, on every descriptor and under every
     mask ([Sys.Fs.ReadWrite.sigpipe_write]), as [tkill] declines with
     the abort declaration off.  So NO run under [valid_input] carries a
-    [KillEv] or holds a pending signal -- a closed theorem,
-    [Checks.KillFree.valid_input_no_kill], proved over every arm of the
-    dispatcher -- and a statement that concludes
+    [KillEv] -- a closed theorem, [Checks.KillFree.valid_input_no_kill],
+    proved over every arm of the dispatcher -- nor ever holds a pending
+    signal ([star_kill_off] with [Checks.KillFree.kill_frame_holds]), and
+    a statement that concludes
     [Equivalence.error_free] does not weaken: the reader-less write is an
     error here, as it was before the write arms could raise the signal
     ([Checks.KillFree.valid_input_error_free_unkilled_iff]).  A task that
@@ -4811,9 +4812,10 @@ Qed.
     [false]: a write that would raise the signal there DECLINES
     ([Sys.Fs.ReadWrite.sigpipe_write]), on every descriptor and under
     every mask, as [tkill] declines with [State.in_abort_terminal]
-    clear.  So no run under [valid_input] carries [KillEv 13] and none
-    holds a pending SIGPIPE ([Checks.KillFree.valid_input_no_kill], which
-    proves it for every signal), and every statement quantified over it
+    clear.  So no run under [valid_input] carries [KillEv 13]
+    ([Checks.KillFree.valid_input_no_kill], which proves it for every
+    signal), none holds a pending SIGPIPE ([star_kill_off] with
+    [Checks.KillFree.kill_frame_holds]), and every statement quantified over it
     that concludes [Equivalence.error_free] keeps the meaning it had
     before the write arms could raise the signal: the reader-less write
     is an error there, as it was when the arms declined it.
