@@ -25,7 +25,8 @@ stopped computing anything would be green on its own, so the build carries a
 negative beside the shortest record and beside the longest one, each moving
 a byte in a different part of the block.
 
-This is the A4 check of dispatch://OSSV-257.  It supersedes
+This is the acceptance item A4 check of the start-state specification.  It
+supersedes
 check_start_state.py, which compared the record with a PYTHON transcription
 of the model: a second model of the entry block that nothing proved agreed
 with the first.  Here the model is read from the Rocq source by Rocq, and

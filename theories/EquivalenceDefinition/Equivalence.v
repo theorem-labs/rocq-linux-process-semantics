@@ -219,11 +219,27 @@ Definition error_free (b : behavior) : Prop := ~ bh_errors b.
    ========================================================================= *)
 
 (** The run can end by being KILLED, rather than by exiting: some
-    admissible trace carries a [State.KillEv].  Under the declaration
-    [Run.valid_input] pins there are none, because the only arm that can
-    produce one declines
-    ([Kernel.Signal.tkill_spec_off_unmodeled]); under
-    [Run.valid_input_abort] a program that calls [abort] has one.
+    admissible trace carries a [State.KillEv].  Which signals can do it
+    depends on the declaration, and under [Run.valid_input] the answer is
+    ONE, not none.
+
+    SIGABRT cannot: [Run.valid_input] keeps [State.m_abort_terminal]
+    clear, so [Kernel.Signal.tkill_spec] declines every call
+    ([Kernel.Signal.tkill_spec_off_unmodeled], [Run.sstep_off_no_kill]).
+    Under [Run.valid_input_abort] a program that calls [abort] has one.
+
+    SIGPIPE CAN.  [Run.valid_input] leaves signal 13 at SIG_DFL, so a
+    write whose far end has no reader ends the process with [KillEv 13]
+    ([Sys.Fs.ReadWrite.write_spec], [Sys.Fs.ReadWrite.raise_sigpipe]).
+    Descriptors 1 and 2 cannot raise it, because the same predicate pins
+    their reader alive ([State.in_channel_reader]); a pipe the program
+    made and left unread, or a socket with no connection, still can.
+
+    So [~ dies_by_signal] is NOT free under [Run.valid_input].  It holds
+    for a program that never writes to such a descriptor, and that is a
+    fact about the program, to be shown rather than assumed.  (An earlier
+    version of this comment said there were none under [Run.valid_input];
+    that was true before the SIGPIPE declaration and is not true now.)
 
     IT IS READ OFF [bh_traces] rather than carried as a new field of
     [Run.behavior], and that is the point of the event being an event: a

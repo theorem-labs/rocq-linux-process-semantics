@@ -7,7 +7,7 @@
     [Mmap.mmap_spec] USED TO say three things about a preference-free
     placement — page-aligned, inside the user address space, disjoint
     from every recorded mapping — and leave the choice to the
-    nondeterminism monad.  SINCE OSSV-231 IT SAYS WHERE: the fresh-grant
+    nondeterminism monad.  SINCE THE PLACEMENT WORK IT SAYS WHERE: the fresh-grant
     arms choose with [Mmap.linux_place], which has at most one solution.
     So the three conditions are still NECESSARY ([linux_place_admissible])
     and no longer SUFFICIENT, and a proof that needs one concrete
@@ -286,20 +286,21 @@ Qed.
 (* =========================================================================
    THE PLACEMENT WITNESS — one concrete address, for proofs that want one
 
-   [Mmap.mmap_spec] constrains a preference-free placement by admissibility
-   alone and leaves the choice to the nondeterminism monad, which is right
-   for the spec and unhelpful for a proof strategy that wants to compute.
-   This is the instance that closes that gap: an executable search, a
-   soundness lemma against the spec's own conditions, and a completeness
-   lemma saying the search finds an address whenever one exists.
+   [Mmap.mmap_spec] places a mapping with [Mmap.linux_place], which is a
+   Prop and has at most one solution
+   ([Checks.Placement.linux_place_unique]); a proof that wants to compute
+   an address needs an executable search.  This file gives one: an
+   executable search, a soundness lemma against admissibility conditions,
+   and a completeness lemma saying the search finds an address whenever
+   one exists.
 
    IT IS KERNEL-*LIKE*, NOT KERNEL-PINNED, and the difference is the whole
-   reason it lives here rather than in the spec.  Linux's real answer
-   depends on the full VMA set, on a per-exec random base, and on a
-   process-controlled layout policy; none of that is recoverable from the
-   model's ledger, so no function over the ledger is Linux's function.
-   What this one is instead is A correct kernel's answer: every address it
-   returns is one the spec admits, which is all a witness has to be.
+   reason it lives here rather than in the spec.  Linux's answer is a
+   function of the ledger, the run's [mm->mmap_base] and the kernel build,
+   and [Mmap.linux_place] is that function (its executable twin is
+   [Checks.Placement.linux_place_b]).  The search here is a different
+   function: every address it returns is admissible, which is all a
+   witness has to be, but it need not be Linux's address.
 
    Determinism IS claimed here, and may be: [find] returns the first
    fitting candidate in the candidate list's order, so [place] is a

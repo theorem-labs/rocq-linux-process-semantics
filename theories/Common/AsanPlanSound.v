@@ -355,7 +355,7 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
 
      WHY [CEIL] IS NOT THE CONSTANT [AsanCeil.alloc_ceiling =
      0x7fff7f800000] any more.  That constant was FALSE at Linux's
-     address, and it was false before OSSV-231 too — the old
+     address, and it was false before the placement work too — the old
      [AsanCeil.placement_policy] HYPOTHESIS asserted the bound, and a
      hypothesis that is assumed is never checked; Task 10 turned the
      gate into the theorem [AsanCeil.placement_policy_holds] and left
@@ -370,7 +370,7 @@ Record cs_ok (E : env) (cs : acs) (R : bvmap 5 word) (FULL : word -> option byte
      [sp_window_hi - stack_max_size = 0x7fffff800000].  A high base
      draw therefore puts a grant up to about 1.9 GiB above the
      constant, where the invariant said none could be.  This is
-     residual R-a of the OSSV-231 plan, and SCOPE.md names it.
+     residual R-a of the placement plan, and SCOPE.md names it.
 
      WHY NOT A PREMISE INSTEAD.  The two repairs that keep a constant
      — bounding the mmap base inside [cs_ok], or having the grant node

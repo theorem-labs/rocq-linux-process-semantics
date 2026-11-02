@@ -292,11 +292,10 @@ Definition mremap_final_budget_b (m : Model)
 
     Both halves of the [region_free] conjunct are LIVE.  The [vm_maps] half
     is the ordinary case; the [vm_reserved]
-    half — an in-place grow running into the binary image — no trace reaches,
-    because the only modeled way to choose an anonymous mapping's address is
-    the PROT_NONE MAP_FIXED guard ([Mmap.mmap_fixed_noaccess_b]), which must land
-    inside a mapping the process already owns, so no trace can put a tracked
-    mapping below a LOAD segment.  It is not dead either:
+    half — an in-place grow running into the binary image — a trace can
+    reach: a hinted [mmap] whose range ends just below a LOAD segment
+    lands at the hint ([Mmap.linux_place] honours a free hint), and a
+    grow of that mapping then meets the segment.  The check also pins it:
     [Checks/Examples.v]'s [mremap_inplace_grow_into_image_rejected] flips
     [mremap_inplace_grow_accepts] to [CheckReject] by adding one reserved
     entry and changing nothing else.
@@ -706,20 +705,15 @@ Definition mremap_move_effect (old old_n dst : word) (old_nZ new_nZ : Z)
     ([__split_vma], mm/vma.c) or exceed [sysctl_max_map_count]
     ([vms_gather_munmap_vmas], mm/vma.c).
 
-    The choice between growing in place and moving is a genuine [alt],
-    because Linux's in-place test reads state the model's ledger does not
-    have: [vma_expandable] (mm/mremap.c, Linux v6.18.46) consults
-    the next VMA in the maple tree, plus [TASK_SIZE], [mmap_min_addr] and
-    the LSM hook through [get_unmapped_area] under MAP_FIXED
-    ([__get_unmapped_area], mm/mmap.c, and
-    [generic_get_unmapped_area], or its topdown twin
-    [generic_get_unmapped_area_topdown]);
-    and [vrm_can_expand_in_place]'s first test requires
-    [old_len == vma->vm_end - addr], which a kernel-side
-    VMA merge can defeat.  Any of those can send Linux to the move path
-    where the model sees free space, so the model admits both.  That
-    argument does NOT apply to the equal-size and shrink arms — they never
-    reach [vma_expandable] — which is why those two are deterministic.
+    The choice between growing in place and moving is NOT an [alt]: it
+    is an [if] on [mremap_inplace_room_b], as Linux's is a test on its
+    VMA tree ([vrm_can_expand_in_place], whose [vma_expandable] tests
+    that no VMA meets the grown range and runs a MAP_FIXED
+    [get_unmapped_area], mm/mremap.c, Linux v6.18.46).  With room the
+    model grows in place, and a failing charge refuses with no move;
+    without room it moves to the one address [Mmap.linux_place] gives.
+    The [alt] around the shrink and grow arms adds only the errno
+    answers ([mremap_errnos]).
 
     An injected ENOMEM leaves no memory effects: on a failed move
     [copy_vma_and_data] moves the page
@@ -885,16 +879,25 @@ Definition mremap_spec (old old_size new_size flags : word)
     [LZ_OWNED] and [MAT_OWNED], on the PAGE FLOOR rather than on bytes,
     establishes it at [Run.init_config] ([init_config_WF]) and preserves it
     across every writer of the ledgers ([check_brk_WF], [check_mmap_WF],
-    [check_munmap_WF], [check_mprotect_WF], [check_mremap_WF]).  The floor
+    [check_munmap_WF], [check_mprotect_WF], [check_mremap_WF],
+    [check_madvise_WF] -- all SIX writer arms).  The floor
     is not a convenience: byte ownership is NOT inductive under a same-page
     [brk] shrink, because [Mmap.brk_maps_next] cuts byte by byte while
     [Mmap.brk_unmaps] forgets page-rounded; see that file's header and
     [brk_floor_outside].
 
-    A CALLER THAT STILL TAKES IT AS A HYPOTHESIS is no longer obliged to:
-    it can discharge it from [Common/WfInvariant.WF] of the state it is
-    reasoning about, which every run carries from its initial
-    configuration.  Those call sites are not rewritten here. *)
+    A CALLER THAT STILL TAKES IT AS A HYPOTHESIS IS STILL OBLIGED TO, and
+    the earlier sentence here -- that such a caller "can discharge it from
+    [Common/WfInvariant.WF] of the state it is reasoning about, which every
+    run carries from its initial configuration" -- was WRONG and is
+    withdrawn.  No run carries [WF]: [Common/WfInvariant.v]'s own closing
+    note says there is no [check_syscall_preserves_WF], no
+    [syscall_spec_preserves_WF] and no [sstep]/[star]/[star_cfg] lemma, so
+    [WF] is NOT available at an arbitrary reachable state.  What is proved
+    is the initial state and the per-arm steps; composing them needs a
+    second per-arm frame family stated over [State.m_vm], which does not
+    exist.  Until it does, a caller on a reachable state must take [WF] as
+    a hypothesis, exactly as before.  Those call sites are unchanged. *)
 Definition mremap_move_charge (m : Model) (old old_n new_n : word) : Z :=
   let h := m_vmmaps m in
   let old_lo := bv_unsigned old in

@@ -581,7 +581,7 @@ Proof. apply bv_eq. reflexivity. Qed.
 
 Section OurSpecNodes.
 Variable segs : list Segment.
-(** The placement gate IS a spec fact since OSSV-231: the fresh-grant
+(** The placement gate IS a spec fact since the placement work: the fresh-grant
     arms of [Mmap.mmap_spec] choose with [Mmap.linux_place], and
     [AsanCeil.placement_policy_holds] proves the gate from it.  The
     NULL-hint grant nodes below used to take it as a named hypothesis

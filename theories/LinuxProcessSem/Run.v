@@ -3440,9 +3440,10 @@ Definition stack_rnd_max : Z := 0x3ffff000%Z.
     to 0x3ffff, when PF_RANDOMIZE is set, and nothing otherwise.
     [arch_align_stack] (arch/riscv/kernel/process.c) subtracts [r]
     from 0 to 4095 and clears the low four bits; from a page-aligned
-    [T] that gives [T] again for [r] in 0..4094 and [T - 4096] for
-    [r = 4095], because [(T - 4095) & ~0xf = T - 4096].  PAGE_ALIGN
-    then rounds the first case back up to [T].
+    [T] that gives a value above [T - 4096] for [r] in 0..4080, and
+    [T - 4096] for [r] in 4081..4095, because [T - 4096] is the only
+    16-aligned value in [[T - 4095, T - 4081]].  PAGE_ALIGN then rounds
+    the first case back up to [T].
 
     So the end is page-aligned, and it is [T0 - 4096 * k] for [k] in
     [0, 0x40000] with randomization, or [T0] or [T0 - 4096] without.
@@ -3454,7 +3455,9 @@ Definition stack_rnd_max : Z := 0x3ffff000%Z.
     calls.  A root write to the sysctl during the [execve] therefore
     gives a launch with no stack draw, no base draw, and the
     [arch_align_stack] pad.  Admitting it costs nothing and needs no
-    SCOPE.md assumption (dispatch://OSSV-257/ask/a4606aae). *)
+    SCOPE.md assumption: [arch_align_stack] reads [randomize_va_space]
+    again, so an [execve] with randomization turned off part way gives
+    the pad with no draw. *)
 Definition valid_stack_top_va (v : VaSize) (aslr : bool) (top : word) : Prop :=
   (bv_unsigned top mod page_size = 0)%Z
   /\ (bv_unsigned top <= va_stack_top v)%Z
@@ -4417,11 +4420,11 @@ Definition valid_input (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 (** The SAME predicate with the abort-path declaration turned on, and it
     is a separate definition rather than a parameter for the reason the
@@ -4470,8 +4473,9 @@ Definition valid_input (inp : ProcInput) : Prop :=
     `head` has had its line, where that same write raises signal 13 and
     ends the run -- is named rather than covered here, and a task that
     means it asks for it by name ([valid_input_channel_closed]); a task
-    that means both asks for [valid_input_channel_either].  The stance
-    is the stream owner's answer to dispatch://OSSV-266/ask/77724e06. *)
+    that means both asks for [valid_input_channel_either].  The model
+    pins the reader, and names the reader-gone launch so a proof can
+    ask for it, the shape the abort declaration already has. *)
 Definition valid_input_abort (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
   /\ fs_keys_relative (in_image_fs inp)
@@ -4479,11 +4483,11 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = true
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 (** Neither ABORT stance pinned: the clauses both share, and nothing
     about that declaration.  A statement quantified over this one is the
@@ -4500,11 +4504,11 @@ Definition valid_input_either (inp : ProcInput) : Prop :=
   /\ fs_image_real (in_image_fs inp) = true
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Lemma valid_input_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_either inp.
@@ -4536,14 +4540,17 @@ Qed.
 Lemma valid_input_either_splits : forall inp,
   valid_input_either inp -> valid_input inp \/ valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & s & n & v & u & L).
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   destruct (in_abort_terminal inp) eqn:Hab.
   - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj Hab (conj s (conj n (conj v (conj u L)))))))))))))).
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
   - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj Hab (conj s (conj n (conj v (conj u L)))))))))))))).
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** * The SIGPIPE declaration: the same predicate with signal 13 ignored
@@ -4571,11 +4578,11 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = false
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = false
+  /\ in_channel_reader inp = true.
 
 (** Neither SIGPIPE stance pinned: the clauses both share, and nothing
     about the disposition.  A statement quantified over this one is the
@@ -4590,10 +4597,10 @@ Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_channel_reader inp = true.
 
 Lemma valid_input_sigpipe_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_sigpipe_either inp.
@@ -4617,14 +4624,24 @@ Lemma valid_input_sigpipe_either_splits : forall inp,
   valid_input_sigpipe_either inp ->
   valid_input inp \/ valid_input_sigpipe_ignored inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & n & v & u & L).
+  (* The hypotheses are taken apart and the goal is rebuilt BY SPLITTING,
+     not by naming a position.  An explicit [conj] chain hard-codes the
+     order of the conjunction it builds, so moving a conjunct silently
+     puts a proof of one fact where another is expected — which is what
+     this very lemma did when the two signal-death pins moved to the end,
+     and it is the proof-side twin of the consumer peels this reorder
+     exists to protect.  [repeat split] does not care about the order,
+     and [assumption] cannot pick a wrong one: the two pins differ in
+     their bool, so only the branch's own [Hsp] matches. *)
+  intros inp Hv. red in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   destruct (in_sigpipe_default inp) eqn:Hsp.
-  - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj Hsp (conj n (conj v (conj u L)))))))))))))).
-  - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj Hsp (conj n (conj v (conj u L)))))))))))))).
+  - left.  unfold valid_input.
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
+  - right. unfold valid_input_sigpipe_ignored.
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** * THE READER DECLARATION: PINNED PRESENT, AND THE OTHER WORLD NAMED
@@ -4633,9 +4650,8 @@ Qed.
     descriptors 1 and 2.  [valid_input] above PINS IT TO [true]: the
     ordinary launch is the one whose standard output is read, and a
     statement quantified over [valid_input] speaks about that launch
-    and no other.  That is the stance the stream owner chose for
-    dispatch://OSSV-266/ask/77724e06 -- pin the reader, and name the
-    reader-gone launch so a proof can ask for it -- and it is the shape
+    and no other.  The model pins the reader, and names the reader-gone
+    launch so a proof can ask for it -- and it is the shape
     the abort declaration already has: [valid_input] pins
     [State.in_abort_terminal] to [false] and [valid_input_abort] names
     the other world.
@@ -4668,11 +4684,11 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = false
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = false.
 
 (** Neither reader stance pinned: the clauses both share, and nothing
     about that declaration. *)
@@ -4683,10 +4699,10 @@ Definition valid_input_channel_either (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true.
 
 Lemma valid_input_channel_either_of_valid_input : forall inp,
   valid_input inp -> valid_input_channel_either inp.
@@ -4789,11 +4805,11 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv39
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -4802,11 +4818,11 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv57
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -4815,10 +4831,10 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Lemma valid_input_image_real : forall inp,
   valid_input inp -> fs_image_real (in_image_fs inp) = true.
@@ -4829,6 +4845,99 @@ Proof.
 Qed.
 
 Lemma valid_input_va_size : forall inp, valid_input inp -> in_va_size inp = Sv48.
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** THE REMAINING CONJUNCTS OF [valid_input], AS ACCESSORS.
+
+    Six of the fifteen conjuncts already had one; these are the other
+    nine, so that NO consumer has to reach a conjunct by its position.
+
+    A positional peel of a right-nested conjunction is not merely
+    fragile, it fails QUIETLY in both directions.  A pattern SHORTER
+    than the conjunction still typechecks, because the last slot
+    absorbs the rest: if that slot is anonymous the consumer silently
+    loses a fact, and if it is NAMED the name is silently bound to a
+    conjunction — or, once a conjunct is inserted rather than appended,
+    to the wrong conjunct entirely.  Either way the error appears
+    wherever the name is USED, naming neither [valid_input] nor the
+    destruct that caused it.
+
+    Four consumer forks were measured against this file and every one
+    of them peeled positionally to reach [valid_launch], which was the
+    only conjunct with no accessor.  That is the reason these exist.
+
+    Two rules follow and both are kept here rather than in a note.  A
+    new conjunct is APPENDED, never inserted: appending leaves every
+    existing position correct, while inserting shifts every position
+    after it under consumers that cannot be recompiled here.  And a
+    consumer takes a conjunct BY NAME: an accessor costs one line and
+    no later conjunct can move it. *)
+
+Lemma valid_input_argv : forall inp, valid_input inp -> valid_argv (in_argv inp).
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_envp : forall inp, valid_input inp -> valid_envp (in_envp inp).
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_fs : forall inp, valid_input inp -> valid_fs (in_fs inp).
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_keys_relative :
+  forall inp, valid_input inp -> fs_keys_relative (in_image_fs inp).
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_creds : forall inp, valid_input inp -> valid_creds inp.
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_nofile : forall inp, valid_input inp -> valid_nofile (in_nofile inp).
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_sigmask : forall inp, valid_input inp -> valid_sigmask inp.
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_input_hwcap : forall inp, valid_input inp -> valid_hwcap (in_hwcap inp).
+Proof.
+  intros inp Hv. unfold valid_input in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** The LAST conjunct, and the one four forks peeled positionally to
+    reach.  A consumer that hands the start layer its launch facts
+    needs this and nothing more: no premise, no new hypothesis. *)
+Lemma valid_input_launch : forall inp, valid_input inp -> valid_launch inp.
 Proof.
   intros inp Hv. unfold valid_input in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
@@ -4945,17 +5054,21 @@ Lemma valid_input_va_any_splits : forall inp,
   valid_input_va_any inp ->
   valid_input inp \/ valid_input_sv39 inp \/ valid_input_sv57 inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & s & n & u & L).
+  intros inp Hin. red in Hin.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
   destruct (in_va_size inp) eqn:Hv.
   - right; left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj Hv (conj u L)))))))))))))).
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
   - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj Hv (conj u L)))))))))))))).
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
   - right; right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj Hv (conj u L)))))))))))))).
+    try red;
+    repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** * The hardware-capability declaration: the same predicate per word
@@ -5014,11 +5127,11 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5027,11 +5140,11 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = false
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 (** Each declaration is a NARROWING of the default, so a statement
     quantified over [valid_input] is about every input either predicate
@@ -5040,17 +5153,21 @@ Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
 Lemma valid_input_of_valid_input_hwcap_rv64gc : forall inp,
   valid_input_hwcap_rv64gc inp -> valid_input inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v (conj n (conj u L))))))))))))).
+  intros inp Hv. red in Hv. red.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | unfold valid_hwcap; (left; assumption) || (right; assumption) ].
 Qed.
 
 Lemma valid_input_of_valid_input_hwcap_rv64gcv : forall inp,
   valid_input_hwcap_rv64gcv inp -> valid_input inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v (conj n (conj u L))))))))))))).
+  intros inp Hv. red in Hv. red.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | unfold valid_hwcap; (left; assumption) || (right; assumption) ].
 Qed.
 
 (** …and the two are EXHAUSTIVE on the default, because [valid_hwcap] is
@@ -5063,13 +5180,11 @@ Lemma valid_input_hwcap_splits : forall inp,
   valid_input inp ->
   valid_input_hwcap_rv64gc inp \/ valid_input_hwcap_rv64gcv inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & s & n & v & u).
-  - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
-  - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
+  intros inp Hv. red in Hv. unfold valid_hwcap in *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  match goal with H : _ \/ _ |- _ => destruct H end;
+    [left | right]; red;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 (** The declared word, read back out of the predicate.  A statement's
@@ -5119,11 +5234,11 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = true
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
@@ -5132,39 +5247,52 @@ Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = true
-  /\ in_sigpipe_default inp = true
-  /\ in_channel_reader inp = true
   /\ in_va_size inp = Sv48
   /\ valid_urandom inp
-  /\ valid_launch inp.
+  /\ valid_launch inp
+  /\ in_sigpipe_default inp = true
+  /\ in_channel_reader inp = true.
 
+(** The three proofs below take the conjuncts BY SHAPE, never by
+    position.  A positional pattern ([intros inp (a & b & ... & L)])
+    names each conjunct by where it sits, so appending or reordering
+    one silently rebinds every name after it, and the proof fails with
+    "No such assumption" at a line that has nothing wrong with it.
+    That is what these three did before: fourteen binders against
+    fifteen conjuncts.  [red] then [repeat destruct] takes whatever is
+    there, in whatever order, and [repeat split; assumption] puts it
+    back, so a later conjunct costs these proofs nothing. *)
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gc : forall inp,
   valid_input_abort_hwcap_rv64gc inp -> valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_introl g) (conj h (conj v (conj n (conj u L))))))))))))).
+  intros inp Hv. red in Hv. red.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | unfold valid_hwcap; (left; assumption) || (right; assumption) ].
 Qed.
 
 Lemma valid_input_abort_of_valid_input_abort_hwcap_rv64gcv : forall inp,
   valid_input_abort_hwcap_rv64gcv inp -> valid_input_abort inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & g & h & v & n & u & L).
-  exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-    (conj (or_intror g) (conj h (conj v (conj n (conj u L))))))))))))).
+  intros inp Hv. red in Hv. red.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end;
+    repeat match goal with |- _ /\ _ => split end;
+    first [ assumption
+          | unfold valid_hwcap; (left; assumption) || (right; assumption) ].
 Qed.
 
+(** The hwcap disjunction is found by shape too, rather than by sitting
+    ninth in the pattern. *)
 Lemma valid_input_abort_hwcap_splits : forall inp,
   valid_input_abort inp ->
   valid_input_abort_hwcap_rv64gc inp \/ valid_input_abort_hwcap_rv64gcv inp.
 Proof.
-  intros inp (a & b & c & k & r & d & e & f & [g | g] & h & s & n & v & u).
-  - left.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
-  - right.
-    exact (conj a (conj b (conj c (conj k (conj r (conj d (conj e (conj f
-      (conj g (conj h (conj s (conj n (conj v u))))))))))))).
+  intros inp Hv. red in Hv. unfold valid_hwcap in *.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  match goal with H : _ \/ _ |- _ => destruct H end;
+    [left | right]; red;
+    repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
 Lemma valid_input_abort_hwcap_rv64gc_word : forall inp,

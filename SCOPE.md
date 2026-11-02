@@ -203,10 +203,19 @@ mode answers. QEMU citations are QEMU 10.0.11.
 
 The entries above are the ones the model and QEMU user mode are known to
 differ on. The list is maintained by hand; no tool checks that it is
-complete. A replay of 4,291 recorded traces (19,693 judged system calls)
+complete. A replay of 4,291 recorded traces (`reports/corpus-replay.md`)
 through extracted checkers found twelve system calls where the model
 answers and an older tree declines; each of the twelve was read against
 v6.18.46 and the model answers Linux's at every one.
+
+This sentence used to add "(19,693 judged system calls)". **That figure is
+withdrawn as unmeasured**: no report in `reports/` produces it, and no run
+behind it could be found. The judged-record counts that DO carry a run are
+in `reports/evidence-checked-entry.md`: the corpus holds 23,984 syscall
+records, of which 19,070 reach the boundary, because `--replay` stops a
+trace at its first unreproduced verdict and the records after one are never
+judged. The trace count, 4,291, is measured two ways in
+`reports/evidence-corpus-replay-features.md`.
 
 ## Where older Linux versions differ
 
@@ -301,7 +310,10 @@ bytes between the stack pointer and that end. There is no band. The
 three rules are `randomize_stack_top` and `setup_arg_pages`
 (`mm/util.c`, `fs/exec.c`) for the end, `create_elf_tables`
 (`fs/binfmt_elf.c`) for the stack pointer, and `mmap_base` with
-`arch_mmap_rnd` (`mm/util.c`) for the base.
+`arch_mmap_rnd` (`mm/util.c`) for the base. This closes the residual
+R-d that earlier revisions named, where `sp` and the base were drawn
+apart: `Checks/Cases/EntryLaunch.v`'s `a1_kind1_pair_refused` refutes
+its example pair, `sp` = 0x7fffe0000000 with the base at 0x7ffff8000000.
 
 The launch's own facts are therefore premises of each statement:
 whether the launch randomises, the `stack_guard_gap` boot parameter,
@@ -321,6 +333,29 @@ These cases stay outside the model:
   at `STACK_TOP / 6 * 5`, and Linux's top-down search stops at the
   stack's guard region instead (`mm/vma.c`), so the vDSO's address and
   the stack floor can differ from the model's. The proofs use Sv48.
+- A program run by a task whose `brk_randomized` bit is clear, on a
+  kernel built with `CONFIG_COMPAT_BRK`. A launch that does not
+  randomise (`State.kb_aslr` false) is in scope, and so is the program
+  break it gets. `Sys/Mm/Mmap.v`'s `min_brk` is `vm_start_brk`, Linux's
+  `mm->start_brk`. `SYSCALL_DEFINE1(brk)` (`mm/mmap.c`) uses that value
+  except under `CONFIG_COMPAT_BRK` with `current->brk_randomized` clear,
+  where it takes `mm->end_data`, a lower floor: Linux then grants a
+  break below the heap base that the model answers with the unchanged
+  break. The bit is set by an exec that moves the break, which needs
+  `PF_RANDOMIZE` and `randomize_va_space` 2 (`fs/binfmt_elf.c`,
+  `load_elf_binary`). Nothing clears it, and `fork` copies it, so in the
+  ordinary case it is set: a kernel without `CONFIG_COMPAT_BRK` has no
+  such floor, and with `randomize_va_space` 2 from boot, `init`'s exec
+  sets the bit for every later task, a `setarch -R` launch included. It
+  stays clear only on a task whose lineage had no randomising exec while
+  `randomize_va_space` was 2: for example, a `setarch -R` shell started
+  under `randomize_va_space` 1 (the boot default with
+  `CONFIG_COMPAT_BRK`, `mm/memory.c`), which then runs the program after
+  the setting is raised to 2. A statement says nothing about a program
+  run from such a task. `Run.valid_brk` holds both of Linux's initial
+  breaks: its band `[image top, image top + 1 GiB]` holds the randomised
+  break and also the fixed page-rounded image top that a launch without
+  randomisation gets.
 
 The finite input record is a surjection onto the finite inputs, not an
 encoding of them. `EquivalenceDefinition/FinInput.v`'s `to_proc_input`
@@ -386,8 +421,10 @@ not apply.
   name, `Run.valid_input_channel_closed`, in the shape
   `Run.valid_input_abort` has for the abort declaration, and a
   statement that means both readings asks for
-  `Run.valid_input_channel_either` (the stream owner's answer to
-  dispatch://OSSV-266/ask/77724e06). A reader that goes away PART WAY
+  `Run.valid_input_channel_either`. The model pins the reader, and
+  names the reader-gone launch so a proof can ask for it, the shape
+  the abort declaration already has.
+  A reader that goes away PART WAY
   through the output is a third thing the model has no term for, and a
   program whose reader goes away mid-output is outside the model.
 - No write to a regular file fails. The model has no `ENOSPC`, `EDQUOT`
@@ -442,18 +479,6 @@ not apply.
   settings. Each refusal the budget forces is also admissible under the
   errno `alt` of its arm, so the budget narrows which runs a statement
   covers rather than claiming an answer Linux does not give.
-- The program break is randomised. `Sys/Mm/Mmap.v`'s `min_brk` is
-  `vm_start_brk`, Linux's `mm->start_brk`. `SYSCALL_DEFINE1(brk)`
-  (`mm/mmap.c`) uses that value except under `CONFIG_COMPAT_BRK` with
-  `current->brk_randomized` false, where it takes `mm->end_data`
-  instead — a lower floor, so such a kernel admits a break below the
-  heap base that the model answers with the unchanged break. The
-  assumption holds when the kernel is built without `CONFIG_COMPAT_BRK`,
-  or when it is built with it and `randomize_va_space` is 2, which is
-  what sets `brk_randomized` (`fs/binfmt_elf.c`, `load_elf_binary`).
-  The model's own break placement already assumes the randomised case:
-  `Run.valid_brk` draws the base in `[image top, image top + 1 GiB]`,
-  which is `arch_randomize_brk`'s window.
 - The process uses the top-down mmap layout. The process does not have
   the `ADDR_COMPAT_LAYOUT` personality (`setarch -L`), and
   `vm.legacy_va_layout` is 0. (An unlimited `RLIMIT_STACK` also selects
@@ -585,22 +610,6 @@ equivalence) can be true of the model and false of Linux.
   stands in for it only while the stack has not grown to within
   `stack_guard_gap` and a page of that bound. The stack VMA in the
   ledger closes this too.
-- **R-d, the stack pointer and the mmap base are drawn apart.**
-  `Run.valid_entry_va` takes `sp` and the base from their windows
-  independently. Linux links them. With randomisation on, the base gap
-  holds the full stack draw, so the base is at most 2^47 less 8 MiB, less
-  the guard gap, less 0x3ffff000 (`mm/util.c`, `mmap_base`, which adds
-  `stack_guard_gap` and `STACK_RND_MASK << PAGE_SHIFT` to the stack limit;
-  `arch/riscv/include/asm/elf.h`, `STACK_RND_MASK` = 0x3ffff pages). Also
-  `State.sp_window_lo` is 0x7fff80000000, which is 2^47 less 2 GiB, while
-  Linux's lowest `sp` is about 2^47 less 1 GiB less the entry image
-  (`fs/binfmt_elf.c`, `load_elf_binary`, which calls
-  `randomize_stack_top(STACK_TOP)`). So the model has start states that no
-  Linux launch gives, for example `sp` = 0x7fffe0000000 with the base at
-  0x7ffff8000000. A program that prints the distance between a mapping and
-  its stack can show the difference. It stays open because the model
-  quantifies the two draws separately. One predicate that relates `sp`, the
-  stack limit and the base closes it.
 - **What a vDSO call leaves behind.** After a call to an exported vDSO
   entry, the caller-saved registers other than `a0`, and the bytes of
   `[sp - F, sp)`, take the values of the launch's draw
@@ -663,8 +672,9 @@ equivalence) can be true of the model and false of Linux.
   standard output is read; the writing end of `prog | head -1` is
   `Run.valid_input_channel_closed`, named the way
   `Run.valid_input_abort` names the aborting launch, and a statement
-  that means both readings asks for `Run.valid_input_channel_either`
-  (the stream owner's answer to dispatch://OSSV-266/ask/77724e06).
+  that means both readings asks for `Run.valid_input_channel_either`:
+  the model pins the reader, and names the reader-gone launch so a
+  proof can ask for it.
   What is left is NOT the
   SIGPIPE disposition: that was an unstated premise and is now a
   declaration (`State.ProcInput.in_sigpipe_default`, pinned to

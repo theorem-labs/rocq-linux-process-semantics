@@ -1,12 +1,12 @@
 (** * LinuxProcessSem.Checks.Cases.EntryWitness — the two directions of the start-state defect
 
-    Acceptance A2 of dispatch://OSSV-257, in one file: a Linux start
+    Acceptance item A2 of the start-state specification, in one file: a Linux start
     state the model USED NOT TO ADMIT, and a start state it USED TO
     ADMIT that no Linux launch gives.  Each half is a check that FAILS
     on the model as it stood before [Run.entry_launch_ok_va] and passes
     after it; each header below says what it would have shown.
 
-    The fixture is the spec's, without randomization: argv ["a"], no
+    The fixture is the specification's, without randomization: argv ["a"], no
     envp, exec file name "a", uid = gid = 1000, AT_HWCAP without V,
     CONFIG_RSEQ on, a guard gap of 256 pages, [vm.mmap_rnd_bits] 18, no
     vector unit, no cache leaves, the first vDSO image.  With those the

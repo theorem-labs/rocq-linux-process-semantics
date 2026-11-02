@@ -287,7 +287,7 @@ Proof. check_eq. Qed.
     stops.  Before the change the model admitted it, because the old
     guard asked only for page alignment, the user range and
     disjointness, and that is exactly the freedom that let the model
-    refuse a mapping Linux grants (OSSV-210's B2, B3 and N3). *)
+    refuse a mapping Linux grants (the placement holes B2, B3 and N3). *)
 Example wit_step5_null_hint_low_rejected :
   check_syscall
     (mkInput 222 [0; 4096; 3; 34; mmap_fd_none; 0]

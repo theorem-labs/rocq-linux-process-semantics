@@ -1,4 +1,4 @@
-# A4 transcription brief — LPS start-state model (branch `revision/entry`, `/home/sami/src/lps-entry`)
+# A4 transcription brief — LPS start-state model (branch `revision/entry`)
 
 All paths relative to `theories/LinuxProcessSem/`. Citations are `file:line`. `SL`=StackLayout.v, `ST`=State.v, `RN`=Run.v, `BV`=BvBase.v.
 Conventions: `word = bv 64`, `byte = bv 8`. `Z_to_bv n z = z mod 2^n` and `bv_extract lo len v = (unsigned(v) >> lo) mod 2^len` (stdpp `bv`; these two are imported from `Riscv/Prelude`, NOT defined in the three files, and I did not read their source — standard stdpp semantics). All address arithmetic on `word` (`+`, `-`) wraps mod 2^64 (never wraps in practice). `[Z]`/`nat` arithmetic below is exact.
@@ -6,7 +6,7 @@ Conventions: `word = bv 64`, `byte = bv 8`. `Z_to_bv n z = z mod 2^n` and `bv_ex
 ## 0. Findings you must know first
 
 1. **`vdso_images` DOES NOT EXIST on this branch** (grep over whole repo incl. ignored files: no match for `vdso_images`, `vdso_image`, or any table of vDSO bytes). The model holds NO vDSO bytes. It only holds a vDSO *size in pages*: `vdso_text_pages kb = 1 + (kb_vdso mod 16)` (ST:3217). `ST:3215` says "a lane that gives the model a table of MEASURED images replaces this body alone"; `ST:3160-3162` says the image's content "belongs to the vDSO rules". `State.v` also does not define the hwcap constants (they are in StackLayout.v, SL:103-104).
-2. The `reports/` dir could not be created by me (my write tool is limited to `local://`); this brief is at `local://a4-model-brief.md` (on disk under `~/.omp/agent/sessions/-src-oss-verifier/2026-10-31T02-58-40-392Z_01a18fe5-2088-7566-a8eb-ea299455799e/local/a4-model-brief.md`). Copy to `/home/sami/src/lps-entry/reports/a4-model-brief.md` if needed.
+2. This brief was written before `reports/` existed on the branch, by an agent whose write tool could not create it.
 3. The build-stack function takes **11 args** in this branch: `build_stack_bytes la ph entry sp top argv envp execfn uid gid hwcap draw` (SL:451). (Many `Common/*.v` files still use the old 7-arg form; they're stale vs. this file.)
 4. Fixture sanity numbers (Checks/Cases/EntryLaunch.v:26-30): argv=["a"], envp=[], execfn="a", RSEQ on → auxv 29 entries, items=4, C=512, L=4.
 
