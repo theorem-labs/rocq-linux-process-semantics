@@ -472,13 +472,48 @@ Fixpoint view_get (l : list (OfdId * option Ofd)) (o : OfdId) : option (option O
   | (k, d) :: r => if bv_eqb k o then Some d else view_get r o
   end.
 
+(** WHAT OF A DESCRIPTION'S REFERENCE COUNT A HOLDER CAN OBSERVE.  The core
+    has three kinds of shared description ([Procs.OfdWhat]); for each, the
+    count is compared ([ofd_seen] keeps it) exactly when a holder can tell
+    one count from another:
+    - [OfdPipe]: COMPARED.  A read sees end of file, and a write gets EPIPE
+      and SIGPIPE, when the other end's count reaches zero (fs/pipe.c,
+      [pipe_read], [pipe_write]; [Procs.Ofd]'s comment).
+    - [OfdSocket]: COMPARED.  On Linux a socket's release at its last
+      close is what its peer sees as end of file, ECONNRESET or EPIPE
+      (net/socket.c, [sock_close]).  The model's [State.SockState] holds
+      no connection between two descriptions, so no answer reads another
+      holder's count today; the count is compared anyway, so that a model
+      that connects sockets needs no change here.
+    - [OfdFile]: NOT COMPARED.  On Linux the count of a file's description
+      is read by no call ([f_count] is in neither stat nor fdinfo); what
+      a holder can see is the release at the LAST close (__fput, fs/file_table.c):
+      flock locks and open-file-description record locks dropped, a lease
+      broken, fsnotify's close events, an unlinked inode freed.  While [f]
+      names the description the count is at least one, so another
+      process's close cannot be that last close.  In the model none of
+      those is held for a shared description anyway: flock (32) is refused
+      while another process lives ([Procs] class C), record locks, leases
+      and F_NOTIFY have no state ([Sys.Fs.Fcntl]'s fcntl header), and
+      inotify and fanotify have no arm.
+    The namespace model's own open files are in the namespace state
+    ([fv_ns]), compared whole. *)
+Definition ofd_seen (d : Ofd) : Ofd :=
+  match ofd_what d with
+  | OfdFile _ _ => mkOfd (ofd_what d) (ofd_off d) (ofd_flags d) (Z_to_bv 64 0)
+  | OfdPipe _ _ | OfdSocket _ => d
+  end.
+
 (** Two views are the same for [f] up to the exchange descriptions [xs]:
-    every part equal, except the content of a description in [xs]. *)
+    every part equal, except the content of a description in [xs], and a
+    file description's reference count ([ofd_seen]). *)
 Definition focus_eq (xs : list OfdId) (a b : FocusView) : Prop :=
   fv_entry a = fv_entry b /\ fv_fsys a = fv_fsys b /\ fv_io a = fv_io b
   /\ fv_pipes a = fv_pipes b /\ fv_ns a = fv_ns b /\ fv_meta a = fv_meta b
   /\ map fst (fv_ofds a) = map fst (fv_ofds b)
-  /\ forall o, ~ In o xs -> view_get (fv_ofds a) o = view_get (fv_ofds b) o.
+  /\ forall o, ~ In o xs ->
+       option_map (option_map ofd_seen) (view_get (fv_ofds a) o)
+       = option_map (option_map ofd_seen) (view_get (fv_ofds b) o).
 
 Lemma focus_eq_refl : forall xs v, focus_eq xs v v.
 Proof. intros xs v. repeat split; intros; reflexivity. Qed.
