@@ -306,7 +306,7 @@ Definition fam_window (M s_min s_max W_O : Z) : Z :=
     - [M] COUNTS EVERY FAMILY ENTRY THE LEDGER HOLDS, not only the live
       allocations: [List.filter is_fam L] runs over the whole ledger, so
       an ASan secondary chunk that is quarantined but still mapped is in
-      it, and so are its redzones and its guard page.  A consumer must
+      it, and so are its redzones and its header page.  A consumer must
       bound the quarantined-but-mapped bytes in [M] too.
     - The family premises are about the ledger AT THIS CALL: total bytes
       at most [M], each entry at least [s_min] bytes.  No upper size

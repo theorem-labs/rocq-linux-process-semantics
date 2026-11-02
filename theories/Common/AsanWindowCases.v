@@ -45,6 +45,7 @@ From LinuxProcessSemantics.LinuxProcessSem Require Import
 From LinuxProcessSemantics.LinuxProcessSem.Sys.Mm Require Import Mmap.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
   ExecutableSpecs Placement Cases.Prelude.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require MmapTopFrame.
 From LinuxProcessSemantics.Common Require Import AsanPlacement AsanWindow.
 Import ListNotations.
 Open Scope bv_scope.
@@ -553,3 +554,5 @@ Print Assumptions family_place_in_window_single.
 Print Assumptions family_place_in_window_b.
 Print Assumptions tight_window_claim_false.
 Print Assumptions caseF_escapes.
+Print Assumptions caseA_first_map_is_the_checkers.
+Print Assumptions MmapTopFrame.mm_ok_keeps_mmap_top.
