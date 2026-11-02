@@ -303,10 +303,13 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
          [CLASS(fd, tf)] ([fdget] skips FMODE_PATH, fs/file.c), which is
          -EBADF and not a poll question at all; an eventfd has
          [.poll = eventfd_poll] (fs/eventfd.c) and a /proc/sys file
-         [.poll = proc_sys_poll] (fs/proc/proc_sysctl.c), both read at
-         v6.18.44; identical at v6.18.46.  An [ONsFile]'s answer depends
-         on an object of unknown type.  None of the four answers is
-         written. *)
+         [.poll = proc_sys_poll] (fs/proc/proc_sysctl.c), and a
+         signalfd [.poll = signalfd_poll] (fs/signalfd.c); the
+         /proc/self/fd directory's [proc_fd_operations] (fs/proc/fd.c)
+         has no [.poll], so [file_can_poll] is false and ADD is -EPERM.
+         All read at v6.18.44; identical at v6.18.46.  An [ONsFile]'s
+         answer depends on an object of unknown type.  None of the six
+         answers is written. *)
   end.
 
 (** The complement claim, as a check rather than a sentence.
@@ -519,10 +522,11 @@ Definition epoll_ctl_outcome (i : SyscallInput) (m : Model)
         (* FAIL-CLOSED on the EPOLL descriptor.  [do_epoll_ctl]'s
            [CLASS(fd, f)(epfd)] refuses an O_PATH descriptor with
            -EBADF ([fdget] skips FMODE_PATH, fs/file.c and
-           fs/eventpoll.c, v6.18.44; identical at v6.18.46), where an eventfd or a /proc/sys
-           file goes on to the target as any non-epoll file does.  The
-           split is not written, and an [ONsFile]'s object is of unknown
-           type, so all four decline. *)
+           fs/eventpoll.c, v6.18.44; identical at v6.18.46), where an
+           eventfd, a /proc/sys file, the /proc/self/fd directory or a
+           signalfd goes on to the target as any non-epoll file does.
+           The split is not written, and an [ONsFile]'s object is of
+           unknown type, so all six decline. *)
     | Some _ =>
         match fd_lookup (m_fds m) tfd with
         | None => Some (errno_ret EBADF)

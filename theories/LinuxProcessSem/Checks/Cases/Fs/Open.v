@@ -2477,3 +2477,73 @@ Example openat_relative_dotdot_from_proc_fd_declines :
        (with_copyins [(8192, 7%nat)] (mkEffect 4 [] [])) proc_fd_model
      = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns)) [].
 Proof. repeat split; check_eq. Qed.
+
+(** THE /proc/self/fd DIRECTORY.  bubblewrap's monitor process lists
+    its own descriptors with [openat(proc_fd, "self/fd",
+    O_DIRECTORY|O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_NOCTTY)], which musl
+    issues with O_LARGEFILE as well: the word 0x98900.  The answer is
+    the lowest free descriptor holding [State.OProcFdDir] with that word
+    and position 0, or any errno but -EINTR; the 8 pathname bytes are on
+    the ledger either way.  The absolute name from AT_FDCWD answers
+    alike.  Before this arm both were declined.
+
+    THE CONTROL is declined by the old text and the new: the same word
+    on "self/fdinfo", a /proc directory the model does not list. *)
+Definition s_self_fd : list byte := [115; 101; 108; 102; 47; 102; 100].  (* "self/fd" *)
+Definition s_proc_self_fd : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 102; 100].        (* "/proc/self/fd" *)
+Definition s_self_fdinfo : list byte :=
+  [115; 101; 108; 102; 47; 102; 100; 105; 110; 102; 111].             (* "self/fdinfo" *)
+
+Example openat_proc_self_fd_directory :
+  check_syscall (proc_open_in 3 s_self_fd 0x98900)
+    (with_copyins [(8192, 8%nat)] (mkEffect 4 [] [])) proc_fd_model
+  = CheckOk (proc_opened proc_fd_model 4
+               (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))) []
+  /\ check_syscall (proc_open_in 3 s_self_fd 0x98900)
+       (with_copyins [(8192, 8%nat)] (mkEffect (errno_ret EMFILE) [] [])) proc_fd_model
+     = CheckOk proc_fd_model []
+  /\ check_syscall (proc_open_in 3 s_self_fd 0x98900)
+       (with_copyins [(8192, 8%nat)] (mkEffect (errno_ret EINTR) [] [])) proc_fd_model
+     = CheckReject
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc_self_fd 0x98900)
+       (with_copyins [(8192, 14%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckOk (proc_opened proc_open_model 3
+                  (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))) []
+  (* the control *)
+  /\ check_syscall (proc_open_in 3 s_self_fdinfo 0x98900)
+       (with_copyins [(8192, 12%nat)] (mkEffect 4 [] [])) proc_fd_model
+     = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** "fd" RELATIVE TO A DESCRIPTOR ON "/proc/self" is declined, for the
+    directory word and for an O_PATH word alike.
+    [openat(AT_FDCWD, "/proc/self", O_PATH|O_NOFOLLOW)] holds the symlink
+    itself, and [path_init] (fs/namei.c, read at v6.18.44; identical at
+    v6.18.46) answers -ENOTDIR for any name relative to it.  The model
+    does not record O_NOFOLLOW, so it declines the join
+    ([Open.proc_open_target]).  Before this rule both opens were answered.
+
+    THE CONTROL is answered alike by the old text and the new: an O_PATH
+    open of "ns" relative to the same descriptor. *)
+Definition s_proc_self : list byte := [47; 112; 114; 111; 99; 47; 115; 101; 108; 102].  (* "/proc/self" *)
+Definition s_fd : list byte := [102; 100].                                              (* "fd" *)
+Definition s_ns : list byte := [110; 115].                                              (* "ns" *)
+Definition s_proc_self_ns : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 110; 115].                       (* "/proc/self/ns" *)
+
+Definition proc_self_dirfd_model : Model :=
+  proc_opened proc_open_model 3 (OProcPath s_proc_self).
+
+Example openat_fd_relative_to_proc_self_declines :
+  check_syscall (proc_open_in 3 s_fd 0x98900)
+    (with_copyins [(8192, 3%nat)] (mkEffect 4 [] [])) proc_self_dirfd_model
+  = CheckUnmodeled
+  /\ check_syscall (proc_open_in 3 s_fd 0x208000)
+       (with_copyins [(8192, 3%nat)] (mkEffect 4 [] [])) proc_self_dirfd_model
+     = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall (proc_open_in 3 s_ns 0x208000)
+       (with_copyins [(8192, 3%nat)] (mkEffect 4 [] [])) proc_self_dirfd_model
+     = CheckOk (proc_opened proc_self_dirfd_model 4 (OProcPath s_proc_self_ns)) [].
+Proof. repeat split; check_eq. Qed.

@@ -69,6 +69,7 @@
       Sys/Fs/Timerfd.v           fs/timerfd.c      timerfd_create
       Sys/Fs/EventPoll.v         fs/eventpoll.c    epoll_create1 epoll_ctl epoll_pwait
       Sys/Fs/EventFd.v           fs/eventfd.c      eventfd2
+      Sys/Fs/Signalfd.v          fs/signalfd.c     signalfd4
       Sys/Mm/Mmap.v              mm/mmap.c         brk mmap munmap
       Sys/Mm/Mremap.v            mm/mremap.c       mremap
       Sys/Mm/Mprotect.v          mm/mprotect.c     mprotect
@@ -116,7 +117,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
   Dispatch SyscallTable
   Syscall Uapi Uaccess
   Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Sync Fs.Stat Fs.Select Fs.Ioctl Fs.Fcntl Fs.Namei
-  Fs.Readdir Fs.Locks Fs.Timerfd Fs.Pipe Fs.EventPoll Fs.EventFd
+  Fs.Readdir Fs.Locks Fs.Timerfd Fs.Pipe Fs.EventPoll Fs.EventFd Fs.Signalfd
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise
   Kernel.Capability
   Kernel.Exit Kernel.Fork Kernel.Futex.Syscalls Kernel.Groups Kernel.Sched.Syscalls
