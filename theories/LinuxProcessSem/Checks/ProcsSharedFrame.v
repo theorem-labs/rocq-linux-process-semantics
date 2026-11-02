@@ -26,13 +26,16 @@
       all named files of the file system still does after the step, with
       the same machine state and model; only the two spliced slots it sees
       changed.  [pstep_x_at_shared_frame]: the frame under [ext_agrees].
-    - [eventfd_declined]: an eventfd made before a clone is a per-process
-      copy of a counter Linux has once.  At every class-(B) number that
-      takes a descriptor (46, 62-68), with an eventfd at that descriptor,
-      every [Ok] answer leaves the model alone, emits nothing, writes no
-      user memory and returns an errno: no arm answers from the copy.  An
-      arm that one day does breaks this lemma, which is the point: the
-      counter must move into [shared] first. *)
+    - [eventfd_declined] and [eventfd_rw_keeps_model]: Linux has ONE
+      counter per eventfd, however many processes hold it.  At ftruncate,
+      lseek, readv, writev, pread64 and pwrite64 (46, 62, 65-68), with an
+      eventfd at the descriptor, every [Ok] answer leaves the model alone,
+      emits nothing, writes no user memory and returns an errno.  [read]
+      and [write] (63, 64) answer a non-blocking eventfd with no counter
+      in the model at all (the counter is the environment's), and every
+      [Ok] answer leaves the model alone and emits nothing.  A counter in
+      the model must move into [shared] first; an arm that keeps one per
+      process breaks these lemmas, which is the point. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -499,8 +502,10 @@ Qed.
    ========================================================================= *)
 
 (** The class-(B) numbers whose argument 0 is a descriptor they read or
-    write: ftruncate, lseek, read, write, readv, writev, pread64, pwrite64. *)
-Definition eventfd_io_sysnos : list Z := [46; 62; 63; 64; 65; 66; 67; 68]%Z.
+    write and which DECLINE an eventfd: ftruncate, lseek, readv, writev,
+    pread64, pwrite64.  [read] (63) and [write] (64) answer a non-blocking
+    eventfd ([eventfd_rw_keeps_model] below). *)
+Definition eventfd_io_sysnos : list Z := [46; 62; 65; 66; 67; 68]%Z.
 
 (** An answer that is an argument errno and nothing else. *)
 Definition errno_only (m : Model) (eff : SyscallEffect) (m' : Model) (evs : list event)
@@ -529,8 +534,7 @@ Local Ltac efd_leaf H :=
 (** THE PIN.  With an eventfd at the descriptor, every [Ok] answer of these
     arms is an errno that changes nothing: the arms decline the descriptor
     ([unmodeled]) and answer only argument checks taken before its kind is
-    read.  So an eventfd made before a clone, one counter per process here
-    where Linux has one, is never answered from. *)
+    read. *)
 Theorem eventfd_declined : forall i m eff m' evs f,
   List.In (bv_unsigned (in_sysno i)) eventfd_io_sysnos ->
   fd_lookup (m_fds m) (fd32 (in_arg i 0)) = Some (FdOpaque (OEventFd f)) ->
@@ -539,7 +543,7 @@ Theorem eventfd_declined : forall i m eff m' evs f,
 Proof.
   intros i m eff m' evs f Hin Hfd H. apply check_syscall_ok_iff in H.
   cbn [eventfd_io_sysnos List.In] in Hin.
-  destruct Hin as [E|[E|[E|[E|[E|[E|[E|[E|[]]]]]]]]]; symmetry in E.
+  destruct Hin as [E|[E|[E|[E|[E|[E|[]]]]]]]; symmetry in E.
   - assert (Hc : check_syscall i eff m = ca_check arm_ftruncate i eff m)
       by (unfold check_syscall; rewrite E; reflexivity).
     rewrite Hc in H. autorewrite with arm_unfold in H.
@@ -548,14 +552,6 @@ Proof.
       by (unfold check_syscall; rewrite E; reflexivity).
     rewrite Hc in H. autorewrite with arm_unfold in H.
     unfold check_lseek in H. efd_walk H Hfd. all: efd_leaf H.
-  - assert (Hc : check_syscall i eff m = ca_check arm_read i eff m)
-      by (unfold check_syscall; rewrite E; reflexivity).
-    rewrite Hc in H. autorewrite with arm_unfold in H.
-    unfold check_read in H. efd_walk H Hfd. all: efd_leaf H.
-  - assert (Hc : check_syscall i eff m = ca_check arm_write i eff m)
-      by (unfold check_syscall; rewrite E; reflexivity).
-    rewrite Hc in H. autorewrite with arm_unfold in H.
-    unfold check_write in H. efd_walk H Hfd. all: efd_leaf H.
   - assert (Hc : check_syscall i eff m = ca_check arm_readv i eff m)
       by (unfold check_syscall; rewrite E; reflexivity).
     rewrite Hc in H. autorewrite with arm_unfold in H.
@@ -572,4 +568,54 @@ Proof.
       by (unfold check_syscall; rewrite E; reflexivity).
     rewrite Hc in H. autorewrite with arm_unfold in H.
     unfold check_pwrite64 in H. efd_walk H Hfd. all: efd_leaf H.
+Qed.
+
+Local Ltac efd_keep H :=
+  repeat (cbv beta iota zeta in H;
+          lazymatch type of H with
+          | CheckOk _ _ = CheckOk _ _ => fail
+          | check_ret_only _ _ _ _ = CheckOk _ _ => fail
+          | check_ret_only_copyins _ _ _ _ _ = CheckOk _ _ => fail
+          | _ => match type of H with
+                 | context [match ?x with _ => _ end] => destruct x
+                 | context [if ?b then _ else _] => destruct b
+                 end
+          end);
+  first
+  [ discriminate H
+  | injection H as <- <-; split; reflexivity
+  | apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+    split; reflexivity
+  | apply check_ret_only_copyins_ok_iff in H; destruct H as (-> & -> & ->);
+    split; reflexivity ].
+
+(** READ AND WRITE ON AN EVENTFD keep the model.  [read] (63) and [write]
+    (64) answer a non-blocking eventfd ([Fs.ReadWrite.read_eventfd_spec],
+    [Fs.ReadWrite.write_eventfd_spec]) without a counter: the counter is
+    the ENVIRONMENT's, so a read returns any value the kernel could hold
+    and a write any answer it could give, and a peer's write is one more
+    environment write.  Every [Ok] answer leaves the model as it was and
+    emits nothing, so nothing per process can drift from the counter
+    Linux has once.  A counter in the model must go into the shared state
+    ([Procs.shared]) first; such a change breaks this lemma. *)
+Theorem eventfd_rw_keeps_model : forall i m eff m' evs f,
+  (bv_unsigned (in_sysno i) = 63%Z \/ bv_unsigned (in_sysno i) = 64%Z) ->
+  fd_lookup (m_fds m) (fd32 (in_arg i 0)) = Some (FdOpaque (OEventFd f)) ->
+  syscall_spec i m (Ok eff m' evs) ->
+  m' = m /\ evs = [].
+Proof.
+  intros i m eff m' evs f [E|E] Hfd H; apply check_syscall_ok_iff in H.
+  - assert (Hc : check_syscall i eff m = ca_check arm_read i eff m)
+      by (unfold check_syscall; rewrite E; reflexivity).
+    rewrite Hc in H. autorewrite with arm_unfold in H.
+    unfold check_read, check_read_urandom, check_socket_pending_error,
+      check_access_ok_zero, check_read_opaque, check_read_proc,
+      check_read_proc_bare, check_read_eventfd, check_eventfd_deliver in H.
+    efd_walk H Hfd. all: efd_keep H.
+  - assert (Hc : check_syscall i eff m = ca_check arm_write i eff m)
+      by (unfold check_syscall; rewrite E; reflexivity).
+    rewrite Hc in H. autorewrite with arm_unfold in H.
+    unfold check_write, check_write_fault_extend, check_access_ok_zero,
+      check_write_opaque, check_write_eventfd in H.
+    efd_walk H Hfd. all: efd_keep H.
 Qed.
