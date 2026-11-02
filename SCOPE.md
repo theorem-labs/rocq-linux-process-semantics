@@ -23,7 +23,16 @@ now. The model does not check claims about them.
 Each configuration choice that the model fixes is an assumption about the
 Linux system. "Assumptions that the model does not check" below lists
 them; `CONFIG_EVENTFD=y` is one, and `eventfd2` therefore answers
-`-EINVAL` for a refused flag word and never `-ENOSYS`.
+`-EINVAL` for a refused flag word and never `-ENOSYS`. `CONFIG_UNIX=y`
+is another: `socketpair(AF_UNIX, SOCK_STREAM, 0)` succeeds only on a
+kernel with AF_UNIX registered. The riscv64 defconfig gets it from
+`CONFIG_NET_9P_FD`, which has `imply UNIX` (`net/9p/Kconfig`); the
+generated `.config` has `CONFIG_UNIX=y` and `CONFIG_AF_UNIX_OOB=y`
+(dispatch://OSSV-287/artifact/skb-sizes-md). `CONFIG_IPV6=y` is a third:
+`socket(AF_INET6, SOCK_DGRAM, 0)` succeeds only on a kernel with AF_INET6
+registered. `net/ipv6/Kconfig` gives `IPV6` `default y`, and the same
+generated `.config` has `CONFIG_IPV6=y` (line 961 of `build-nodbg.config`,
+among that artifact's raw files).
 
 ## Where QEMU user mode differs
 
@@ -290,7 +299,7 @@ them. A proof says nothing about a program in such a case.
 | Area | Limit |
 | --- | --- |
 | Threads | The model has one thread. It has no scheduler and no shared-memory interleaving. For `fork`-like calls, the model describes the parent only. It does not run the child. |
-| Signals | The model does not run signal handlers. It has two signals and both are fatal: `SIGABRT`, raised by `tkill`/`tgkill` on the abort path, and `SIGPIPE`, raised by a write whose far end has no reader. Each is behind a declaration of the launch, and with the declaration off the call that would raise it declines: `State.in_abort_terminal` for `SIGABRT` and `State.in_sigpipe_terminal` for `SIGPIPE`, both pinned off by `Run.valid_input`, so no run under the ordinary statements dies by a signal. With the declaration on (`Run.valid_input_abort`; `Run.valid_input_sigpipe_kills` and `Run.valid_input_channel_closed`), each ends the run with a death that is not an exit (`State.KillEv`), or, where the launch mask blocks it, returns the errno and leaves the signal pending until a `rt_sigprocmask` uncovers it. `rt_sigaction` declines every install that would change either disposition, so no modeled call moves one. For `SIGABRT` the model assumes the launch left the disposition at `SIG_DFL`. For `SIGPIPE` it no longer assumes: the launch declares it (`State.in_sigpipe_default`), `Run.valid_input` pins the declaration to `SIG_DFL`, and `Run.valid_input_sigpipe_ignored` is the launch that ran `signal(SIGPIPE, SIG_IGN)` before `execve` — a launch `execve` preserves (`fs/exec.c`, `begin_new_exec`'s `flush_signal_handlers` with `force_default = 0`, Linux v6.18.46), under which the same write returns `-EPIPE` and the program runs on. No other signal is modeled: `SIGSEGV` is reported as the error transition rather than as a death, `SIGCHLD`'s default action is to ignore it, `SIGXFSZ` needs an `RLIMIT_FSIZE` the model does not carry, and nothing outside the process can send one. |
+| Signals | The model does not run signal handlers. It has two signals and both are fatal: `SIGABRT`, raised by `tkill`/`tgkill` on the abort path, and `SIGPIPE`, raised by a write whose far end has no reader. Each is behind a declaration of the launch, and with the declaration off the call that would raise it declines: `State.in_abort_terminal` for `SIGABRT` and `State.in_sigpipe_terminal` for `SIGPIPE`, both pinned off by `Run.valid_input`, so no run under the ordinary statements dies by a signal. With the declaration on (`Run.valid_input_abort`; `Run.valid_input_sigpipe_kills` and `Run.valid_input_channel_closed`), each ends the run with a death that is not an exit (`State.KillEv`), or, where the launch mask blocks it, returns the errno and leaves the signal pending until a `rt_sigprocmask` uncovers it. `rt_sigaction` declines every install that would change `SIGABRT`'s disposition. For `SIGPIPE` it answers an install of `SIG_DFL` or `SIG_IGN`, with any flags, and a read of the old action (`Kernel.Signal.rt_sigaction_sigpipe`, `State.procst_sigpipe_action`); an install of a handler address is declined, and so is an install of `SIG_DFL` while the handler is `SIG_IGN` and signal 13 is blocked, because Linux may then hold a pending `SIGPIPE` that the model does not record (the note above `ReadWrite.raise_sigpipe`). For `SIGABRT` the model assumes the launch left the disposition at `SIG_DFL`. For `SIGPIPE` it does not assume: the launch declares the starting handler (`State.in_sigpipe_default`), `Run.valid_input` pins the declaration to `SIG_DFL`, and `Run.valid_input_sigpipe_ignored` is the launch that ran `signal(SIGPIPE, SIG_IGN)` before `execve` — a launch `execve` preserves (`fs/exec.c`, `begin_new_exec`'s `flush_signal_handlers` with `force_default = 0`, Linux v6.18.46), under which the same write returns `-EPIPE` and the program runs on. No other signal is modeled: `SIGSEGV` is reported as the error transition rather than as a death, `SIGCHLD`'s default action is to ignore it, `SIGXFSZ` needs an `RLIMIT_FSIZE` the model does not carry, and nothing outside the process can send one. |
 | Address-space size | The system call specifications use Sv48. Thus you cannot prove the Sv39 and Sv57 statements for an image that can run. |
 | Stack limit | The stack limit is 8 MiB. A larger or unlimited `RLIMIT_STACK`, which selects the legacy mmap layout, is outside the model. The model counts the whole entry block against this limit, from the stack VMA's end `StackLayout.ed_top` down, as Linux counts it. |
 | Arguments | `Run.valid_input` requires that the arguments after `argv[0]` do not contain `/` and are not `..`. Thus a proof about `cp src dst` does not apply to `cp /tmp/src dst`. It also bounds the lists (`Run.valid_argv`, `Run.valid_envp`): 1 to 1024 arguments and at most 2 MiB of argument bytes, at most 256 environment variables and at most 128 KiB of environment bytes, and at most 131071 bytes in each string. Each count of bytes includes the terminating NUL of each string. These are the model's own per-list bounds. Linux's own bound is joint, and `Run.valid_launch` carries it: the exec file name, the envp strings and the argv strings with their NULs, plus 8 bytes for each argv and envp pointer, are at most 2 MiB together at the 8 MiB stack limit (`bprm_stack_limits`, `fs/exec.c`). Linux answers `E2BIG` for a larger launch. `Run.valid_launch` also says which exec file names `execve` can present (`State.in_execfn`): a path of 1 to 4095 bytes without a NUL, or `/dev/fd/N`, or `/dev/fd/N/` and such a path that does not start with `/` (`getname_flags` in `fs/namei.c`, `alloc_bprm` in `fs/exec.c`). Both binaries of a pair run under the same exec file name, as they run on the same input. A launch outside these bounds is outside the model. |
@@ -300,6 +309,8 @@ them. A proof says nothing about a program in such a case.
 | Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
 | Shared memory | The model has no shared mapping. `mmap` with `MAP_SHARED` is `unmodeled`, anonymous requests included. Linux builds an anonymous shared mapping on a shmem file (`mm/vma.c`, `__mmap_new_vma` calls `shmem_zero_setup`), so `vma_is_anonymous` is false for it, its pages survive the zap that `MADV_DONTNEED` performs, and a `fork` shares them instead of copying them. `Sys/Mm/Mmap.v` gives the full reason and what an arm would take. |
 | The vDSO | The model maps the vDSO text and the four vvar pages that `execve` installs, and answers a call to an exported entry with the system call's own specification (`Run.sstep`'s vDSO arm). It does not run the vDSO's instructions. Four cases are `unmodeled`, and a proof says nothing about a program that reaches one: a load from the vvar pages; a fetch at any text address that is not an exported entry; a call to `__vdso_getrandom` or `__vdso_rt_sigreturn`; and an outcome of a call that returns `-EFAULT`. A store to the text or to vvar is a fault, as on Linux: the kernel maps neither with `VM_WRITE`. The text mapping carries no `x` flag in the model, although Linux maps it `PROT_READ\|PROT_EXEC`: the flag says "the model fetches and executes these bytes", and of the vDSO's bytes it does not. |
+| Datagram sockets and eventfds | `socket(AF_INET6 or AF_UNIX, SOCK_DGRAM, 0)` gives a socket (`State.FdDgram`) on which the model answers `close`, `F_GETFL`, an empty `F_SETFL`, the terminal ioctls, `SIOCGIFINDEX` for `lo`, and the errnos of calls that stop before the socket (`-ESPIPE` from `pread64`, `pwrite64` and `lseek`, `-EINVAL` from `fsync` and `ftruncate`, `-ENOTDIR` from `getdents64`); every call that would read or change socket state, and every other protocol or flag of these two families, is `unmodeled`. An eventfd answers `read`, `write`, `select`/`poll`, `fcntl`, the terminal ioctls, `lseek` and `close`; a nonempty `readv` or `writev` on it is `unmodeled`. |
+| Unnamed files | A `/tmp` file whose name `unlinkat` removes while descriptors hold it becomes an unnamed file (`State.FdAnon`), and `openat("/proc/self/fd/N")` opens it again under `O_RDONLY`, `O_WRONLY\|O_CREAT\|O_TRUNC` and `O_WRONLY\|O_CREAT\|O_APPEND`. On it the model answers `read`, `write`, `writev`, `pwrite64`, `pwritev2` (with flags 0 or `RWF_NOAPPEND`, as musl's `pwrite` sends), `lseek`, `ftruncate`, `fstat`, the terminal ioctls, `select`/`poll`, `fsync`, `getdents64`'s `-ENOTDIR`, an empty `F_SETFL` and `close`; `pread64`, `readv`, `F_GETFL`, `flock`, `dup`, `dup3`, `F_DUPFD` and a `clone` that holds one are `unmodeled`. The removal of a name a descriptor holds in the working directory is `unmodeled`. |
 
 The entry premises also limit the launches that a statement covers, and
 they limit them to Linux's own. For one input and one kernel build
@@ -318,9 +329,13 @@ its example pair, `sp` = 0x7fffe0000000 with the base at 0x7ffff8000000.
 The launch's own facts are therefore premises of each statement:
 whether the launch randomises, the `stack_guard_gap` boot parameter,
 `vm.mmap_rnd_bits`, `CONFIG_RSEQ`, the vector unit's `VLENB`, the
-machine's four cache leaves and which vDSO image the build carries.
-They are fields of `State.KernelBuild`, which is part of the input, so
-both binaries of a pair are launched on one machine by one launcher.
+machine's four cache leaves, which vDSO image the build carries, and
+the socket-buffer numbers: `sizeof(struct sk_buff)` and the
+`net.core.wmem_default`, `rmem_default`, `wmem_max` and `rmem_max`
+sysctls. They are fields of `State.KernelBuild`, which is part of the
+input, so both binaries of a pair are launched on one machine by one
+launcher. A build whose `struct sk_buff` is larger than 1 KiB is outside
+the model (`State.skb_head_bytes`).
 
 These cases stay outside the model:
 
@@ -396,6 +411,72 @@ not apply.
   `Sys/Kernel/Exit.v`). `execve` does not reap a child in Linux, so a
   launcher that forks a grandchild, or attaches a tracee, before it
   execs the image makes this assumption false.
+- An in-process stream pair (`socketpair(AF_UNIX, SOCK_STREAM, 0)`,
+  `State.FdStream`) is used by this one thread only. Both ends are in
+  this process and no modeled call shares one: `dup`, `dup3`, `F_DUPFD`
+  and a `clone` holding one are declined, and `sendmsg` on one is
+  declined, so no descriptor travels by `SCM_RIGHTS`. A blocking read of
+  an empty queue whose peer is open, and a blocking send that might
+  wait for room, are declined: on Linux such a call never returns,
+  because the only task that could act on the peer is the one that
+  waits. A program that reaches either is outside the model. After one
+  end is closed, two calls on the other end are declined too: a read of
+  its empty queue (Linux gives end of file, or first one `-ECONNRESET`
+  when the closed end left bytes unread) and `ppoll` on it. The model's
+  `close` does not record which of the two the closed end left, because
+  a `close` that changed another descriptor's entry would make false
+  the published lemmas that say a `close` only removes its own entry
+  (`theories/Common/FileSim.v`, `tfo_close`).
+- The `net.core` sysctls `wmem_default`, `rmem_default`, `wmem_max` and
+  `rmem_max` do not change while the program runs. The model reads them
+  from `State.KernelBuild`, which a launch states once; statements
+  quantify over every value. Another process that writes
+  `/proc/sys/net/core/*` during the run makes this assumption false.
+- A send on a stream-pair end never fails with `-ENOBUFS`. Linux's
+  `sock_alloc_send_pskb` returns it when the kernel cannot allocate an
+  skb, under memory pressure; the model leaves that answer out of
+  `Fs.ReadWrite.stream_send`. On the datagram socket kind
+  (`State.FdDgram`) no send is answered at all, and its creation admits
+  `-ENOBUFS` for `AF_INET6`.
+- An eventfd (`eventfd2`, `State.FdEventfd`) is used by this one thread
+  only, and no kernel subsystem signals it. `dup`, `dup3`, `F_DUPFD` and
+  a `clone` holding one are declined. A blocking read of a zero counter,
+  and a blocking write that would take the counter to `ULLONG_MAX`, are
+  declined: on Linux such a call never returns, because the only task
+  that could change the counter is the one that waits. A program that
+  reaches either is outside the model.
+- procfs is mounted at `/proc` for the process's own pid namespace, so
+  `/proc/self` names this process. The model answers
+  `openat(AT_FDCWD, "/proc/self/fd/N", ...)` on that assumption
+  (`Fs.Open.openat_procfd_spec`); with no procfs there, Linux answers
+  `-ENOENT` where the model opens the file again.
+- A hard link to a `/tmp` file is outside the model, so a program that
+  makes one, or that runs where something outside it made one, has no
+  statement here. The model has no `link` or `linkat` arm, and it treats
+  the run's private `/tmp` (`State.in_tmp`) as holding regular files
+  whose one name is their name in `/tmp`. That is why a file whose
+  `/tmp` name the run removes while descriptors hold it has link count 0
+  afterwards, and its `fstat` reports `st_nlink` 0
+  (`Uapi.stat_pin_unlinked`, `Fs.Stat.fstat_anon_spec`).
+- An unnamed file (`State.FdAnon`) is used by this process only. `dup`,
+  `dup3`, `F_DUPFD` and a `clone` holding one of its descriptors are
+  declined, so no other process or descriptor table shares it. Its
+  contents live in its descriptors' entries, so the exit event's file
+  system does not include it, as Linux's does not. Its contents are
+  replicated, one copy per descriptor, and the model answers no call
+  that reads them unless every copy agrees (`State.anon_agree`).
+- The network namespace's loopback device is named `lo`. The model
+  answers `ioctl(fd, SIOCGIFINDEX, &ifr)` on an `AF_UNIX` or `AF_INET6`
+  datagram socket only for the name `lo`, and answers it with index 1
+  (`Fs.Ioctl.siocgifindex_spec`). Linux gives the loopback device the name
+  `lo` and the index 1 in every namespace (`loopback_net_init`,
+  `drivers/net/loopback.c`; `LOOPBACK_IFINDEX`, `include/net/flow.h`), but
+  a privileged process can rename it afterwards, and another device can
+  then take the name. Every other name is declined.
+- The kernel was booted without `ipv6.disable=1`. With it, `inet6_init`
+  returns before it registers the `AF_INET6` family
+  (`net/ipv6/af_inet6.c`), and `socket(AF_INET6, ...)` is
+  `-EAFNOSUPPORT` where the model answers a descriptor.
 - The launch left `SIGPIPE` at its default disposition, and the
   statements say which launch they mean rather than assuming one. On
   Linux a write to a pipe or a socket whose reader has gone raises
@@ -572,6 +653,17 @@ equivalence) can be true of the model and false of Linux.
   two, and the value of `hrtimer_resolution`, follow the kernel build and
   the boot (`CONFIG_HIGH_RES_TIMERS`, `CONFIG_HZ`). The model does not
   constrain later calls to use the same resolution.
+- **The count of a non-blocking send on a stream pair.** Linux cuts the
+  send into skbs and stops at the first one that the sender's
+  `sk_wmem_alloc`, counted in TRUESIZE, does not admit
+  (`unix_stream_sendmsg`, `sock_alloc_send_pskb`). Truesize depends on
+  kmalloc rounding, which the model does not carry. So
+  `State.stream_send_ok` admits every count from the first skb's size
+  to the bound the send buffer allows, and Linux gives only some of
+  them; and a send onto a non-empty queue may answer `-EAGAIN` where
+  Linux would admit one more skb. Readiness has the same cause: in the
+  band where `unix_writable` turns on truesize, `ppoll` and `pselect6`
+  decline a request for POLLOUT rather than answer it.
 - **R-a, an mmap base above `State.alloc_top`.** The model's stack window is
   `[sp - 8 MiB, sp)`. Linux measures its 8 MiB from the end of the stack
   VMA, which is above `sp` by the entry image. With an entry image of more

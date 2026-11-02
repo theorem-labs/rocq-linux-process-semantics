@@ -659,6 +659,31 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        is a consumption the declaration has to account for:
                        the stream is what the device hands THIS process. *)
                     | FdUrandom => true
+                    (* A STREAM-PAIR END JOINS THE GATE, fail-closed, for
+                       the pipe's reason: the child's copy names the same
+                       socket, so a child that reads drains the parent's
+                       queue and a child that closes its copy does not run
+                       [unix_release_sock], which happens at the last
+                       [fput] -- and [State.stream_peer] reads ends off
+                       the fd table, which a copied table would double. *)
+                    | FdStream _ _ _ => false
+                    (* AN EVENTFD JOINS THE GATE for the same reason: the
+                       child's copy names the same [eventfd_ctx], so a
+                       child that reads or writes moves the parent's
+                       counter, and [State.FdEventfd] keeps that counter
+                       in the one entry a copied table would double. *)
+                    | FdEventfd _ => false
+                    (* A DATAGRAM SOCKET takes the [FdSocket] answer, for
+                       [Fs.File.dup_modeled_entry]'s reason: one rule for
+                       every socket kind. *)
+                    | FdDgram _ => false
+                    (* AN UNNAMED FILE JOINS THE GATE: the child's copy
+                       would share the one [struct file] -- its [f_pos]
+                       -- and the inode, so a child's write would move
+                       contents that [State.FdAnon] keeps in this
+                       process's entries alone.  SCOPE.md states that an
+                       unnamed file is this process's only. *)
+                    | FdAnon _ _ => false
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which

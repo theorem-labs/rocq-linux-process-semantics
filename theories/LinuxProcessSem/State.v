@@ -610,7 +610,15 @@ Definition EROFS  : Z := 30%Z.
    can fail (see [Kernel.Sys.setid_errnos]).  It is deliberately NOT in
    any other syscall's injection set — admitting a blocking-style EAGAIN
    where no kernel produces one would add nondeterminism a target could
-   hide behavior in, and programs handle it inconsistently anyway. *)
+   hide behavior in, and programs handle it inconsistently anyway.
+   It is also ANSWERED, never injected, by the non-blocking transfers on
+   a stream-pair end ([FdStream]): [Fs.ReadWrite.stream_read_empty] and
+   [Fs.ReadWrite.stream_send] return it exactly where
+   [unix_stream_read_generic] and [sock_alloc_send_pskb] can, from the
+   end's O_NONBLOCK and its queues; and by the non-blocking transfers on
+   an eventfd ([FdEventfd]): [Fs.ReadWrite.eventfd_read] and
+   [Fs.ReadWrite.eventfd_write] return it exactly where [eventfd_read]
+   and [eventfd_write] do, from the file's O_NONBLOCK and the counter. *)
 Definition EAGAIN : Z := 11%Z.
 
 (** Socket errno values.  All from the asm-generic table
@@ -627,6 +635,7 @@ Definition EOPNOTSUPP      : Z := 95%Z.
 Definition EAFNOSUPPORT    : Z := 97%Z.
 Definition EADDRINUSE      : Z := 98%Z.
 Definition ECONNRESET      : Z := 104%Z.
+Definition ENOBUFS         : Z := 105%Z.   (* [inet6_create]'s [sk_alloc] failure *)
 Definition EISCONN         : Z := 106%Z.
 Definition ENOTCONN        : Z := 107%Z.
 Definition ETIMEDOUT       : Z := 110%Z.
@@ -2634,11 +2643,13 @@ Definition nq_rest (q : NetQueue) : NetQueue :=
 
 (** THE LIFE OF A SOCKET, as much of it as this model covers.
 
-    Only AF_INET/SOCK_STREAM sockets ever enter the fd table:
-    [Net.Socket.socket_spec] declines every other domain and type, so a
+    Only AF_INET/SOCK_STREAM sockets ever become an [FdSocket]:
+    [Net.Socket.socket_spec] declines every other AF_INET type, so a
     [FdSocket] is always a TCP socket and the domain, type and protocol
-    need not be stored.  (That is also why "listen on a UDP socket is
-    -EOPNOTSUPP" never arises here: there are no UDP sockets.)
+    need not be stored.  The datagram sockets [socket_spec] does make --
+    AF_INET6 and AF_UNIX, SOCK_DGRAM -- are [FdDgram], a kind of their
+    own on which every call that would move socket state declines, so
+    "listen on a UDP socket is -EOPNOTSUPP" still never arises here.
 
     - [SkFresh]      — created by [socket], not yet bound.  [read] is
                        -ENOTCONN; [accept] and a second [bind] are
@@ -2750,6 +2761,191 @@ Definition PIPE_BUF : Z := 4096%Z.
     is never true and no modeled write can block.  A write that would
     need a second slot is declined rather than guessed at. *)
 Definition PipeBuf : Type := list byte * Z.
+
+(** ONE END OF AN IN-PROCESS STREAM PAIR: everything Linux keeps on one
+    of the two AF_UNIX/SOCK_STREAM sockets [socketpair] joins, as far as
+    this model reads it.  Every claim in this block is Linux v6.18.46
+    (commit 1f99e9ab748f): net/unix/af_unix.c, net/socket.c and
+    net/core/sock.c.
+
+    - [se_rx] is this end's [sk_receive_queue], counted in bytes.  The
+      queue lives HERE, on the RECEIVING end, because that is where Linux
+      keeps it: [unix_stream_sendmsg] appends every skb to
+      [other->sk_receive_queue], and [unix_stream_read_generic] takes
+      from its own.  So a write through one end appends to the OTHER
+      end's [se_rx], and a read consumes the reader's own.  Two
+      consequences come free from the layout and are Linux's: closing an
+      end drops its queue with its entry ([unix_release_sock] purges
+      [sk_receive_queue]), and the bytes an end wrote before it closed
+      stay readable on the survivor, whose queue they are in.
+    - [se_nonblock] is O_NONBLOCK in the open file's [f_flags], which
+      [sock_read_iter], [sock_write_iter], [__sys_sendto] and
+      [__sys_recvfrom] all turn into MSG_DONTWAIT.  It belongs to the
+      [struct file], not to the socket; it is carried on the end because
+      no descriptor of this kind is ever duplicated (see [FdStream]), so
+      the end and its one file are the same object here.
+    - [se_sndbuf] is [sk_sndbuf]: what getsockopt(SO_SNDBUF) reports,
+      and the bound on what this end may have queued on its PEER.
+      [sock_alloc_send_pskb] admits a new skb only while the WRITER's
+      [sk_wmem_alloc] is below the WRITER's [sk_sndbuf], so the capacity
+      of the direction A -> B is A's [se_sndbuf], read against B's
+      [se_rx].  That one number is what the write arms bound by, what
+      the readiness arm's [unix_writable] tests, and what SO_SNDBUF
+      reports.
+    - [se_rcvbuf] is [sk_rcvbuf]: what getsockopt(SO_RCVBUF) reports.
+      No AF_UNIX stream path reads it -- neither [unix_stream_sendmsg]
+      nor [unix_stream_read_generic] mentions it -- so it is a value
+      reported back and nothing else.
+    - [se_shut_rd] and [se_shut_wr] are the [RCV_SHUTDOWN] and
+      [SEND_SHUTDOWN] bits of [sk_shutdown] as [shutdown] left them.
+      [unix_shutdown] sets the caller's bits and the MIRRORED bits on the
+      peer (a SHUT_WR here is RCV_SHUTDOWN there).
+
+    WHAT A CLOSE DOES TO THE SURVIVOR IS NOT STORED HERE: A CHOSEN
+    BOUNDARY, NOT A GAP.  [unix_release_sock] ORs [SHUTDOWN_MASK] into the
+    survivor and sets its [sk_err = ECONNRESET] when the closing end still
+    held unread bytes.  The model keeps [Fs.Open.close_spec] KIND-BLIND
+    instead — the entry goes and nothing else moves — because a close
+    that writes into another descriptor's entry would make false every
+    published lemma that says a close only removes its entry
+    (theories/Common/FileSim.v [tfo_close] and [tfo_close_rec]), and
+    keeping those would need a premise on them.  78 of the 89 published
+    proof trees vendor them, and 34 of those 78 are trees that the new
+    [FdStream] constructor does not otherwise break (it breaks 48), so
+    the premise would reach trees this change never touches (counted on
+    oss-verify-proofs-internal ossv/recipes 87c4b944; the LPSREV owner's
+    decision, 2026-10-31, on dispatch://OSSV-287).
+
+    So the survivor reads "the peer has closed" off the table —
+    [stream_peer] is [None] — and every arm treats that as
+    [SHUTDOWN_MASK]: a send is -EPIPE, select reports readable and
+    writable.  WHAT IS NOT MODELED is the survivor's error state: whether
+    the close left [sk_err] set.  The two answers that turn on it DECLINE
+    rather than guess: an empty read on the survivor (end of file, or one
+    -ECONNRESET first) and a [ppoll] on it, whose filter always holds
+    EPOLLERR.  No call of curl_fuzzer_proto_http reaches either, but
+    other cURL protocol targets do: in the census of the 19 wave-3
+    targets, a read on a survivor is the first declined call of 401 runs
+    in 11 targets (dispatch://OSSV-286/artifact/census-wave3-md, kind
+    D2).  The repair keeps [close_spec] kind-blind: the survivor's first
+    call that shows the error chooses whether it was set, and the
+    survivor keeps to that choice.  It is a separate change
+    (dispatch://OSSV-287/artifact/d2-design-md).
+
+    WHAT IS NOT HERE, and deliberately.  No ADDRESS: a [socketpair] end
+    is unbound, [unix_getname] reports the unnamed address, and nothing
+    in this model binds or connects one ([Net.Socket.bind_spec] answers
+    only the errors [unix_bind] gives before a name is looked at).  No
+    DEADLINE: no timeout option is modeled, so a call either answers now
+    or is declined.  No SECOND THREAD: both ends are held by this one
+    process, so a call that would wait for the peer to act waits
+    forever, and the arms decline that case rather than represent a run
+    that cannot progress (see [Fs.ReadWrite.stream_read]).  Each of the
+    three is a chosen boundary, not a gap a later reader should fill by
+    guessing. *)
+Record StreamEnd := mkStreamEnd {
+  se_rx       : list byte;
+  se_nonblock : bool;
+  se_sndbuf   : Z;
+  se_rcvbuf   : Z;
+  se_shut_rd  : bool;
+  se_shut_wr  : bool
+}.
+
+(** THE COUNTER BEHIND AN EVENTFD: what Linux keeps in the [struct
+    eventfd_ctx] [do_eventfd] allocates, and in the one [struct file]
+    over it, as far as this model reads them.  Every claim in this block
+    is Linux v6.18.46 (commit 1f99e9ab748f), fs/eventfd.c.
+
+    - [ef_count] is [ctx->count], a [__u64], held in [Z] and kept in
+      [0, 2^64 - 1] by the arms that move it: [eventfd2] stores the
+      [unsigned int] it was given ([ctx->count = count]), a read
+      subtracts what it returns ([eventfd_ctx_do_read]), and a write adds
+      only while [ULLONG_MAX - ctx->count > ucnt] ([eventfd_write]), so
+      the sum stays at most [2^64 - 2].  [eventfd_signal_mask], the one
+      path that can push it to [ULLONG_MAX], is the kernel's own (AIO,
+      KVM, vfio and the like) and no modeled call reaches it.
+    - [ef_semaphore] is [EFD_SEMAPHORE] in [ctx->flags]: a read takes 1
+      from a non-zero counter rather than the whole of it.
+    - [ef_nonblock] is O_NONBLOCK in the file's [f_flags].
+      [anon_inode_getfile_fmode] hands [alloc_file_pseudo] the creation
+      flags masked with [O_ACCMODE | O_NONBLOCK] (fs/anon_inodes.c), and
+      [EFD_NONBLOCK] is O_NONBLOCK ([do_eventfd]'s [BUILD_BUG_ON]).  It
+      belongs to the [struct file], not to the context; it is carried
+      here for [StreamEnd.se_nonblock]'s reason: no descriptor of this
+      kind is ever duplicated (see [FdEventfd]), so the context and its
+      one file are the same object.
+
+    WHAT IS NOT HERE.  No wait queue: a read of a zero counter or a write
+    that would overflow it sleeps until another task acts, and in this
+    one-thread model none can, so the arms decline the blocking case
+    rather than represent a run that cannot progress (see
+    [Fs.ReadWrite.eventfd_read]).  No [ctx->id]: it names the context in
+    /proc/PID/fdinfo only, which no modeled call reads. *)
+Record EventfdCtx := mkEventfdCtx {
+  ef_count     : Z;
+  ef_semaphore : bool;
+  ef_nonblock  : bool
+}.
+
+(** [ULLONG_MAX], the ceiling of an eventfd's [__u64] counter and the
+    one value [eventfd_write] refuses outright. *)
+Definition U64_MAX : Z := (2 ^ 64 - 1)%Z.
+
+(** One-field updates of a context.  Rocq has no record-update syntax,
+    so each spells the record whole; they are the only places that do.
+    The counter is what a read or a write moves, O_NONBLOCK what an
+    [F_SETFL] moves. *)
+Definition ef_set_count (ctx : EventfdCtx) (c : Z) : EventfdCtx :=
+  mkEventfdCtx c (ef_semaphore ctx) (ef_nonblock ctx).
+Definition ef_set_nonblock (ctx : EventfdCtx) (b : bool) : EventfdCtx :=
+  mkEventfdCtx (ef_count ctx) (ef_semaphore ctx) b.
+
+(** ONE DESCRIPTOR'S VIEW OF AN UNNAMED FILE ([FdAnon]): a regular file
+    whose last name was removed while descriptors still held it.  Every
+    claim in this block is Linux v6.18.46 (commit 1f99e9ab748f).
+
+    - [af_data] is the file's contents, its page cache up to [i_size].
+      It belongs to the INODE, not to the descriptor, so EVERY entry of
+      one file carries the same bytes, and an arm that changes them
+      writes the change to every entry of the file ([anon_update]).
+    - [af_off] is this descriptor's [f_pos]: it belongs to the
+      [struct file], so it is the one field the entries of one file do
+      not share.
+    - [af_rd] and [af_wr] are FMODE_READ and FMODE_WRITE, which
+      [do_dentry_open] (fs/open.c) set from the access mode of the open
+      that made the [struct file].
+    - [af_append] is O_APPEND in [f_flags]: [iocb_flags]
+      (include/linux/fs.h) turns it into IOCB_APPEND and
+      [generic_write_checks_count] (fs/read_write.c) then puts every
+      write at [i_size_read(inode)], whatever [f_pos] says.
+    - [af_pin] is the file's stat pin ([procst_statpins]'s bytes for a
+      named file): the [struct stat] its first [fstat] delivered, or
+      [None] before one.  It too belongs to the inode, so every entry of
+      one file carries the same pin.
+
+    WHAT IS NOT HERE: no name (the file has none, which is the point),
+    no link count (it is 0 for every unnamed file the model makes, see
+    [Fs.Namei.unlink_open_tmp_spec]), and no O_NONBLOCK or O_CLOEXEC,
+    which no modeled call on a regular file reads. *)
+Record AnonFile := mkAnonFile {
+  af_data   : list byte;
+  af_off    : word;
+  af_rd     : bool;
+  af_wr     : bool;
+  af_append : bool;
+  af_pin    : option (list byte)
+}.
+
+(** One-field updates, for [ef_set_count]'s reason: Rocq has no record
+    update syntax.  The contents and the pin are what an arm writes to
+    every entry of a file; the offset is what it writes to its own. *)
+Definition af_set_data (af : AnonFile) (d : list byte) : AnonFile :=
+  mkAnonFile d (af_off af) (af_rd af) (af_wr af) (af_append af) (af_pin af).
+Definition af_set_off (af : AnonFile) (o : word) : AnonFile :=
+  mkAnonFile (af_data af) o (af_rd af) (af_wr af) (af_append af) (af_pin af).
+Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
+  mkAnonFile (af_data af) (af_off af) (af_rd af) (af_wr af) (af_append af) (Some b).
 
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
@@ -2898,7 +3094,131 @@ Definition PipeBuf : Type := list byte * Z.
       from [urandom_fops] and the VFS path that reaches it; the rest
       fail closed.  THE ENVIRONMENT ASSUMPTION IT RESTS ON -- the
       environment's /dev/urandom is the random device -- is stated once, at
-      the openat arm, and pointed to from everywhere else. *)
+      the openat arm, and pointed to from everywhere else.
+    - [FdStream id side st]: ONE END of an AF_UNIX/SOCK_STREAM pair made
+      by [socketpair] (see [Net.Socket.socketpair_spec]), with both ends
+      held by this process.  [id] names the pair -- both ends carry the
+      same one -- and [side] says which end this is; the PEER of
+      [(id, side)] is the one live entry [(id, negb side)], found by
+      [stream_peer].  [st] is everything Linux keeps on this end's
+      socket that the model reads, [StreamEnd], INCLUDING THIS END'S
+      RECEIVE QUEUE: unlike a pipe, whose bytes belong to neither end and
+      live in [m_pipes], a stream pair's bytes are on the socket that
+      will read them, because that is where [unix_stream_sendmsg] puts
+      them.  So this kind needs no side table and no field of [FdState].
+
+      A NEW KIND, NOT A WIDENING OF [FdSocket].  [SkConnected] names a
+      peer OUTSIDE the process and a script the environment supplies;
+      making it name a descriptor of this same process would change what
+      every existing accepted-socket arm quantifies over.  A constructor
+      of its own touches only the arms that match it, and every [FdEntry]
+      match that enumerates now has to say what this kind does -- the
+      reason this type enumerates at all.
+
+      AT MOST ONE DESCRIPTOR PER END.  [Fs.File.dup_modeled_entry]
+      declines this kind, as it declines a pipe end, and
+      [Kernel.Fork.clone_no_shared_file_b] declines a clone holding one,
+      so no second entry ever names [(id, side)] and [socketpair] is the
+      only constructor.  [stream_peer] relies on that, and so does
+      [se_nonblock] living on the end rather than on a file.
+    - [FdEventfd ctx]: AN EVENTFD, made by [eventfd2] (see
+      [Fs.EventFd.eventfd2_spec]).  [ctx] is everything Linux keeps on
+      its [struct eventfd_ctx] and its file that the model reads,
+      [EventfdCtx], INCLUDING THE COUNTER: an eventfd's state belongs to
+      its one context, not to a pair of ends as a pipe's does, so it
+      lives in the entry and needs no side table.  Its file is
+      [anon_inode_getfile_fmode]'s, over the shared anonymous inode with
+      [eventfd_fops] (fs/anon_inodes.c, fs/eventfd.c, Linux v6.18.46),
+      opened O_RDWR: FMODE_READ and FMODE_WRITE are both set, and
+      [alloc_file_pseudo] sets FMODE_LSEEK (the table has [.llseek]) but
+      never FMODE_PREAD or FMODE_PWRITE, which only [do_dentry_open]
+      grants (fs/file_table.c [file_init_path]).
+
+      A NEW KIND, for the reason the type enumerates: every [FdEntry]
+      match now says what an eventfd does, and the read, write, poll and
+      fcntl arms answer from [ctx].
+
+      AT MOST ONE DESCRIPTOR PER EVENTFD, as for [FdStream]:
+      [Fs.File.dup_modeled_entry] declines this kind, so [dup], [dup3]
+      and [F_DUPFD] of one decline, and
+      [Kernel.Fork.clone_no_shared_file_b] declines a clone holding one.
+      So [eventfd2] is the only constructor and the counter has one
+      home, which is what lets a read or a write move it by rewriting
+      this one entry.
+    - [FdDgram family]: an UNCONNECTED DATAGRAM SOCKET, made by
+      [socket(family, SOCK_DGRAM, 0)] for [family] AF_INET6 (10) or
+      AF_UNIX (1) (see [Net.Socket.socket_spec]).  The model only
+      creates one, closes it, asks it the loopback's index through
+      SIOCGIFINDEX ([Fs.Ioctl.ioctl_spec]), and answers the calls whose
+      answer the socket's state cannot change -- [F_GETFL], an empty
+      [F_SETFL], the terminal ioctls, the -ESPIPE of a positioned
+      transfer.  Every other call on it declines, so it carries NO STATE
+      but its family: nothing it could bind, connect, queue or shut down
+      is ever moved.
+
+      A NEW KIND, NOT A WIDENING OF [FdSocket].  [SockState] is a TCP
+      socket's life, and every arm that matches [FdSocket] reads it as
+      one; a datagram socket folded into it would be answered by those
+      arms as a TCP socket.  A constructor of its own makes each socket
+      arm state, explicitly, that this kind IS a socket (never
+      -ENOTSOCK) and that it declines.
+
+      ONE ENTRY PER SOCKET is not needed by anything here, since no arm
+      reads one [FdDgram] to answer for another; [dup] and [clone] still
+      treat it as they treat [FdSocket] ([Fs.File.dup_modeled_entry]
+      and [Kernel.Fork.clone_no_shared_file_b] decline both).
+
+      -ENOBUFS, PER SOCKET KIND, because the reading differs.  On a
+      STREAM-PAIR END the errno is left out of every send: an in-process
+      AF_UNIX stream with a bounded queue answers a send that does not fit
+      with -EAGAIN or a partial count ([Fs.ReadWrite.stream_send]), and
+      the -ENOBUFS of a failed skb allocation under memory pressure is
+      stated as an assumption in SCOPE.md.  On this kind the errno IS
+      reachable in Linux, on the datagram send path, and the model gives
+      it no answer to be wrong about: every send and receive on an
+      [FdDgram] declines.  Its creation is the one answered path where
+      Linux can refuse with -ENOBUFS ([inet6_create]'s [sk_alloc] for
+      AF_INET6), and [Net.Socket.socket_dgram_errnos] admits it there.
+    - [FdAnon id af]: a descriptor of an UNNAMED FILE, a regular file in
+      the run's /tmp whose name [unlinkat] removed while descriptors
+      still held it ([Fs.Namei.unlink_open_tmp_spec]), or a descriptor
+      that [openat] of "/proc/self/fd/N" opened again on such a file
+      ([Fs.Open.openat_procfd_spec]).  Linux keeps the inode alive while
+      a [struct file] holds it: [vfs_unlink] (fs/namei.c) drops the
+      link count, and the inode is freed at the last [fput] (Linux
+      v6.18.46).  [id] names the FILE -- every descriptor of one file
+      carries the same id -- and [af] is this descriptor's view of it
+      ([AnonFile]).
+
+      THE CONTENTS LIVE IN THE ENTRIES, and not in the file system or
+      a new field of [Model] (dispatch://OSSV-287/spec, decision "An
+      unnamed file lives in its descriptors").  The file system is
+      observable at exit ([ExitEv] carries [m_fs]), and Linux's file
+      system at exit holds no unnamed file, so a hidden key there would
+      make the model observe what Linux does not; and a new field of
+      the model would break every published tree that builds a model
+      record.  The cost is the invariant the arms keep: ALL ENTRIES
+      WITH ONE [id] CARRY THE SAME [af_data] AND THE SAME [af_pin].
+      Every arm reads the entry the call names, and every arm that
+      changes the contents or the pin writes the change to every entry
+      of the id ([anon_update]); only [af_off] is written to the
+      entry alone, since [f_pos] belongs to the [struct file].
+
+      THE FILE GOES AWAY WITH ITS LAST DESCRIPTOR, as Linux frees the
+      inode at the last [fput], and nothing has to happen for that:
+      [Fs.Open.close_spec] stays kind-blind and removes one entry, and
+      once no entry carries the id nothing names the file.  A new id is
+      one above the largest live one ([anon_new_id]), so a dead file's
+      id is never reused while another entry still carries it.
+
+      A NEW KIND, NOT A [FdFile] WITH NO PATH, for the reason the type
+      enumerates: every [FdFile] arm reads its bytes from [m_fs] under
+      the path, and an unnamed file has none.  [dup], [dup3] and
+      [F_DUPFD] decline it ([Fs.File.dup_modeled_entry]): a copied
+      entry would split the one [f_pos] two Linux descriptors share.  A
+      [clone] holding one declines too
+      ([Kernel.Fork.clone_no_shared_file_b]), so the file is this
+      process's alone, an assumption SCOPE.md states. *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
   | FdFile (p : path) (offset : word)
@@ -2909,7 +3229,11 @@ Inductive FdEntry :=
   | FdSocket (sk : SockState)
   | FdPipe (id : word) (writer : bool)
   | FdDevNull (rd wr : bool)
-  | FdUrandom.
+  | FdUrandom
+  | FdStream (id : word) (side : bool) (st : StreamEnd)
+  | FdEventfd (ctx : EventfdCtx)
+  | FdDgram (family : Z)
+  | FdAnon (id : word) (af : AnonFile).
 
 (** Virtual-memory bookkeeping: a ledger of allocator decisions the model
     has already committed to (the flat byte-map memory can't encode
@@ -3381,6 +3705,22 @@ Record KernelBuild := mkKernelBuild {
   kb_cache : CacheView
     (* the machine's four cache leaves, which [ARCH_DLINFO] publishes
        as eight auxv words *);
+  kb_skb_head : N
+    (* [sizeof(struct sk_buff)] of the build, in bytes: the one structure
+       size the socket-buffer floors turn on ([SOCK_MIN_SNDBUF],
+       [SOCK_MIN_RCVBUF]).  [skb_head_bytes] below aligns it as
+       [SKB_DATA_ALIGN] does and holds it in range *);
+  kb_wmem_default : N
+    (* the [net.core.wmem_default] sysctl: a new socket's [sk_sndbuf]
+       ([sock_init_data], net/core/sock.c).  [sysctl_wmem_default]
+       holds it in the sysctl's own range *);
+  kb_rmem_default : N
+    (* [net.core.rmem_default]: a new socket's [sk_rcvbuf] *);
+  kb_wmem_max : N
+    (* [net.core.wmem_max]: the ceiling [setsockopt(SO_SNDBUF)] clamps
+       a request to before doubling it *);
+  kb_rmem_max : N
+    (* [net.core.rmem_max]: the same for SO_RCVBUF *)
 }.
 
 (** The vvar pages the kernel maps below the vDSO text: four, fixed by
@@ -3492,13 +3832,88 @@ Qed.
       selects HAVE_RSEQ);
     - no vector unit and no cache leaves reported, which is what a
       machine whose devicetree carries neither gives
-      ([get_cacheinfo] finds no leaf, arch/riscv/kernel/cacheinfo.c).
+      ([get_cacheinfo] finds no leaf, arch/riscv/kernel/cacheinfo.c);
+    - the socket-buffer numbers of the riscv64 defconfig with stock
+      sysctls.  [sizeof(struct sk_buff)] = 224 was MEASURED, not
+      assumed: pahole on the DWARF of that configuration
+      ([make ARCH=riscv defconfig] at v6.18.46 plus
+      CONFIG_DEBUG_INFO_DWARF5 for the debug info alone; the layout was
+      confirmed unchanged against the build without it, by the kernel's
+      own [sizeof] evaluated under each build's exact compile command),
+      recorded at dispatch://OSSV-287/artifact/skb-sizes-md.  So
+      [SKB_DATA_ALIGN] of it is 256, [SOCK_MIN_SNDBUF] 4608 and
+      [SOCK_MIN_RCVBUF] 2304.  [net.core.wmem_default] and
+      [rmem_default] are at their boot value [SK_WMEM_DEFAULT] =
+      [SKB_TRUESIZE(256) * 256] = (256 + 256 + 320) * 256 = 212992
+      (include/net/sock.h; the 320 is the measured
+      [SKB_DATA_ALIGN(sizeof(struct skb_shared_info))]), and [wmem_max]
+      and [rmem_max] at their boot value [4 << 20] (net/core/sock.c).
+      All five are FIELDS of the run's build, which a launch states for
+      itself; these are only the values a model gets when it states
+      none.
 
     A run built from a [ProcInput] never sees this value — [init_model]
     installs [in_kernel] — exactly as with [default_nofile].
     Linux v6.18.46, commit 1f99e9ab748f, throughout. *)
 Definition default_kernel : KernelBuild :=
-  mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent.
+  mkKernelBuild false 1%N true 256%N 0%N true 0%N cache_view_absent
+                224%N 212992%N 212992%N 4194304%N 4194304%N.
+
+(** [INT_MAX], the ceiling of every [int] sysctl and of [sk_sndbuf]. *)
+Definition INT_MAX : Z := 2147483647%Z.
+
+(** [SKB_DATA_ALIGN(sizeof(struct sk_buff))] for the build [kb] names:
+    [kb_skb_head] rounded up to a whole number of riscv64's 64-byte
+    cache lines ([SMP_CACHE_BYTES], which [SKB_DATA_ALIGN] aligns to,
+    include/linux/skbuff.h) and held to one to sixteen lines.  EVERY
+    [N] gives one; a build whose [struct sk_buff] is larger than 1 KiB
+    is not one this model describes, and SCOPE.md says so.  It is a
+    FIELD of the run's build, not a constant, because the structure's
+    size moves with the configuration (debug and netfilter options add
+    members); the default is the measured value. *)
+Definition skb_head_bytes (kb : KernelBuild) : Z :=
+  (64 * Z.max 1 (Z.min 16 ((Z.of_N (kb_skb_head kb) + 63) / 64)))%Z.
+
+(** [SOCK_MIN_RCVBUF] = [TCP_SKB_MIN_TRUESIZE] =
+    [2048 + SKB_DATA_ALIGN(sizeof(struct sk_buff))], and
+    [SOCK_MIN_SNDBUF] is twice it (include/net/sock.h, Linux v6.18.46):
+    the floor every buffer size is raised to, and the floor of the
+    sysctls below. *)
+Definition sock_min_rcvbuf (kb : KernelBuild) : Z := (2048 + skb_head_bytes kb)%Z.
+Definition sock_min_sndbuf (kb : KernelBuild) : Z := (2 * sock_min_rcvbuf kb)%Z.
+
+(** The four buffer sysctls, each held in its own range: net/core/
+    sysctl_net_core.c registers [wmem_max] and [wmem_default] with
+    [proc_dointvec_minmax] and [extra1 = &min_sndbuf]
+    ([SOCK_MIN_SNDBUF]), [rmem_max] and [rmem_default] with
+    [extra1 = &min_rcvbuf], and none with an [extra2], so each is an
+    [int] no smaller than its floor.  They are the launch's
+    CONFIGURATION rather than its build, and sit in this record because
+    they are fixed for the run like the rest of it; the clamp makes
+    every [N] a value the sysctl can hold. *)
+Definition sysctl_wmem_default (kb : KernelBuild) : Z :=
+  Z.max (sock_min_sndbuf kb) (Z.min INT_MAX (Z.of_N (kb_wmem_default kb))).
+Definition sysctl_rmem_default (kb : KernelBuild) : Z :=
+  Z.max (sock_min_rcvbuf kb) (Z.min INT_MAX (Z.of_N (kb_rmem_default kb))).
+Definition sysctl_wmem_max (kb : KernelBuild) : Z :=
+  Z.max (sock_min_sndbuf kb) (Z.min INT_MAX (Z.of_N (kb_wmem_max kb))).
+Definition sysctl_rmem_max (kb : KernelBuild) : Z :=
+  Z.max (sock_min_rcvbuf kb) (Z.min INT_MAX (Z.of_N (kb_rmem_max kb))).
+
+(** What [setsockopt(SO_SNDBUF, val)] stores ([sk_setsockopt],
+    net/core/sock.c, Linux v6.18.46): [val] clamped as a [u32] to
+    [sysctl_wmem_max] ([min_t(u32, val, ...)]), then to [INT_MAX / 2]
+    so the doubling cannot overflow, doubled, and raised to
+    [SOCK_MIN_SNDBUF].  [v] is the option's four bytes read as the
+    [u32] [min_t] compares. *)
+Definition sndbuf_after_set (kb : KernelBuild) (v : Z) : Z :=
+  Z.max (2 * Z.min (Z.min v (sysctl_wmem_max kb)) (INT_MAX / 2)) (sock_min_sndbuf kb).
+
+(** What [setsockopt(SO_RCVBUF, val)] stores: the same against
+    [sysctl_rmem_max], through [__sock_set_rcvbuf], raised to
+    [SOCK_MIN_RCVBUF]. *)
+Definition rcvbuf_after_set (kb : KernelBuild) (v : Z) : Z :=
+  Z.max (2 * Z.min (Z.min v (sysctl_rmem_max kb)) (INT_MAX / 2)) (sock_min_rcvbuf kb).
 
 (** THE GUARD GAP IN BYTES.  [stack_guard_gap] (mm/mmap.c, Linux
     v6.18.46, commit 1f99e9ab748f) is [256UL << PAGE_SHIFT], and
@@ -3781,6 +4196,44 @@ Record Creds := mkCreds {
     taking them as input — which is the same world. *)
 Definition creds_privileged (c : Creds) : bool :=
   bv_eqb (cr_euid c) (Z_to_bv 64 0).
+
+(** SIGPIPE's ACTION, as far as this model carries one: the three
+    fields of the [struct sigaction] in [sighand->action[SIGPIPE-1]]
+    that a riscv64 [rt_sigaction] stores and reads back (handler, flags,
+    mask; riscv has no [sa_restorer], see [Kernel.Signal.sigaction_flags]).
+
+    - [spa_default] is the handler, as a boolean: [true] is SIG_DFL (0),
+      [false] is SIG_IGN (1) (include/uapi/asm-generic/signal-defs.h).
+      There is no third value because the model holds no handler that
+      runs: [Kernel.Signal.rt_sigaction_sigpipe] declines an install of
+      a handler address, and that is a chosen boundary, not a gap.  The
+      polarity is SIG_DFL = [true] so that [State.m_sigpipe_default]
+      keeps its old meaning and a model [init_model] builds REDUCES to
+      [in_sigpipe_default] (Common/CatSim.v relies on that conversion).
+    - [spa_flags] is [sa_flags] as [do_sigaction] stores it,
+      [act->sa.sa_flags &= UAPI_SA_FLAGS] ([Uapi.UAPI_SA_FLAGS]).  With
+      no handler running none of these bits has an effect; they are
+      stored because an [oldact] reads them back.
+    - [spa_mask] is [sa_mask] as [do_sigaction] stores it, with SIGKILL
+      and SIGSTOP removed ([sigdelsetmask]).  The same: it would be
+      added to the blocked mask while a handler runs, none runs, and an
+      [oldact] reads it back.
+
+    Both numbers are held in [Z] and are in [0, 2^64) by construction:
+    the seed is 0, and the install arm stores a masked [bv_unsigned]. *)
+Record SigpipeAction := mkSigpipeAction {
+  spa_default : bool;
+  spa_flags   : Z;
+  spa_mask    : Z
+}.
+
+(** The action an execve leaves SIGPIPE with, from the one launch fact
+    that decides it: kernel/signal.c [flush_signal_handlers], called as
+    [flush_signal_handlers(me, 0)] by fs/exec.c [begin_new_exec] (Linux
+    v6.18.46), keeps a SIG_IGN handler and resets any other to SIG_DFL,
+    and sets [sa_flags = 0] and an empty [sa_mask] for every signal. *)
+Definition sigpipe_action_at_exec (dfl : bool) : SigpipeAction :=
+  mkSigpipeAction dfl 0 0.
 
 (** The process itself: whether it has halted, its identity, who it runs
     as, and whether it has led a session. *)
@@ -4114,18 +4567,27 @@ Record ProcState := mkProcState {
                                     process dies there, which is why this field
                                     is not the common case.
 
-                                    WHO CLEARS IT: nothing, and
-                                    [Kernel.Signal.sigmask_deliver_model] is why
-                                    that is right.  A pending SIGPIPE is
-                                    delivered by the mask install that uncovers
-                                    it, and that delivery KILLS, so the state
-                                    after it is a halted one and no later reader
-                                    exists.  SIGPIPE's default action is
-                                    terminate (it is in none of
-                                    SIG_KERNEL_IGNORE_MASK, SIG_KERNEL_STOP_MASK
-                                    or SIG_KERNEL_COREDUMP_MASK,
-                                    include/linux/signal.h), so there is no
-                                    disposition under which the delivery returns.
+                                    WHO CLEARS IT: [with_sigpipe_install] of
+                                    SIG_IGN, as [do_sigaction]'s
+                                    [flush_sigqueue_mask] does, and nothing
+                                    else.  [Kernel.Signal.sigmask_deliver_model]
+                                    is why nothing else needs to: a pending
+                                    SIGPIPE is delivered by the mask install
+                                    that uncovers it, and that delivery KILLS,
+                                    so the state after it is a halted one and no
+                                    later reader exists.  It kills because the
+                                    handler is SIG_DFL whenever this bit is
+                                    set: [raise_sigpipe] sets it only under
+                                    SIG_DFL, and the one install that moves the
+                                    handler to SIG_IGN clears it.  SIGPIPE's
+                                    default action is terminate (it is in none
+                                    of SIG_KERNEL_IGNORE_MASK,
+                                    SIG_KERNEL_STOP_MASK or
+                                    SIG_KERNEL_COREDUMP_MASK,
+                                    include/linux/signal.h).  A SIGPIPE queued
+                                    under SIG_IGN is not recorded here at all;
+                                    the note above [Sys.Fs.ReadWrite.raise_sigpipe]
+                                    gives the invariant that makes that right.
 
                                     A BOOL AND NOT A SIGSET, for
                                     [procst_sigabrt_pending]'s reason: one write
@@ -4179,56 +4641,55 @@ Record ProcState := mkProcState {
                                     inside the write arm -- is no longer
                                     assumed anywhere. *)
 ;
-  procst_sigpipe_default : bool  (* THE THIRD FIELD OF THIS RECORD THAT IS NOT
-                                    KERNEL STATE IN THE USUAL SENSE: whether the
-                                    process was launched with SIGPIPE at its
-                                    DEFAULT DISPOSITION (SIG_DFL).  [true] is
-                                    SIG_DFL and so death on delivery; [false] is
-                                    SIG_IGN, under which the kernel never
-                                    delivers the signal at all and the write
-                                    simply returns -EPIPE.  Seeded by
-                                    [init_model] from [ProcInput]'s
-                                    [in_sigpipe_default] and written by nothing,
-                                    so one run has one answer.
+  procst_sigpipe_action : SigpipeAction
+                                 (* SIGPIPE's ACTION: its handler (SIG_DFL or
+                                    SIG_IGN), flags and mask, as Linux keeps
+                                    them in [sighand->action[SIGPIPE-1]]
+                                    (kernel/signal.c, Linux v6.18.46, commit
+                                    1f99e9ab748f).  [SigpipeAction] carries
+                                    the per-field argument; this note says
+                                    who writes it.
 
-                                    WHY THE MODEL HAS TO BE TOLD, AND WHY THIS IS
-                                    THE TASK'S DECLARATION RATHER THAN THE
-                                    ENVIRONMENT'S.  A disposition SURVIVES
-                                    execve when it is SIG_IGN: fs/exec.c
-                                    [begin_new_exec] calls
-                                    kernel/signal.c [flush_signal_handlers] with
-                                    [force_default = 0], which resets only
-                                    handlers that are neither SIG_DFL nor
-                                    SIG_IGN (Linux v6.18.46, commit
-                                    1f99e9ab748f).  So `signal(SIGPIPE, SIG_IGN)`
+                                    THE START IS THE TASK'S DECLARATION.  A
+                                    handler SURVIVES execve when it is SIG_IGN:
+                                    fs/exec.c [begin_new_exec] calls
+                                    kernel/signal.c [flush_signal_handlers]
+                                    with [force_default = 0], which resets to
+                                    SIG_DFL every handler that is not SIG_IGN
+                                    and sets every action's flags to 0 and its
+                                    mask empty.  So `signal(SIGPIPE, SIG_IGN)`
                                     in a launcher -- what a shell job-control
                                     wrapper, a service manager or a language
                                     runtime that wants EPIPE instead of death
                                     does -- hands this process a world in which
-                                    no write kills it.  The model cannot derive
-                                    which world it is in, because nothing inside
-                                    the modeled surface can observe or change it:
-                                    [Kernel.Signal.rt_sigaction_spec] declines
-                                    every install for signal 13.
+                                    no write kills it, and the model cannot
+                                    derive which world it is in.
+                                    [init_model] therefore seeds this field
+                                    from [ProcInput]'s [in_sigpipe_default] and
+                                    NOTHING ELSE ([sigpipe_action_at_exec]):
+                                    the handler from it, the flags and the mask
+                                    0, which is what [flush_signal_handlers]
+                                    leaves.  The launch gains no free choice.
+                                    [Run.valid_input] pins the declaration to
+                                    SIG_DFL, the world every statement in this
+                                    tree was written under; the other world is
+                                    [Run.valid_input_sigpipe_ignored].
 
-                                    IT IS PINNED, UNLIKE [procst_channel_reader].
-                                    [Run.valid_input] pins it to [true], because
-                                    that is the world every statement in this
-                                    tree was written under -- the ordinary
-                                    launch, in which a reader-less write would
-                                    end the program.  Whether the model FOLLOWS
-                                    the run into that death or declines the
-                                    write is a separate declaration,
-                                    [procst_sigpipe_terminal] below.  The other
-                                    world is a predicate of
-                                    its own, [Run.valid_input_sigpipe_ignored],
-                                    exactly as the abort stance is
-                                    [Run.valid_input_abort].  Without the field
-                                    that pinning would be an UNSTATED premise of
-                                    every theorem here, and a launcher that
-                                    ignores SIGPIPE would hand the model a
-                                    process it kills where Linux returns -EPIPE
-                                    and runs on. *)
+                                    THE ONE WRITER INSIDE A RUN is
+                                    [with_sigpipe_install], and its only caller
+                                    is the SIGPIPE install arm of
+                                    [Kernel.Signal.rt_sigaction_spec]
+                                    ([Kernel.Signal.rt_sigaction_sigpipe]).
+                                    Every other setter of this record carries
+                                    the field across unchanged.  Before that
+                                    arm existed every SIGPIPE install was
+                                    [unmodeled], so a run modeled before it
+                                    installs nothing, keeps the seeded action,
+                                    and reads the same [m_sigpipe_default] it
+                                    read when this field was a bare boolean:
+                                    such a run behaves exactly as it did.
+                                    [Kernel.Signal.rt_sigaction_sigpipe] gives
+                                    the commands that check this. *)
 ;
   procst_sigpipe_terminal : bool (* THE TASK'S DECLARATION of whether the model
                                     covers DEATH BY SIGPIPE at all, the twin of
@@ -4261,8 +4722,8 @@ Record ProcState := mkProcState {
                                     asks for it by name
                                     ([Run.valid_input_sigpipe_kills],
                                     [Run.valid_input_channel_closed]).
-                                    Under SIG_IGN ([procst_sigpipe_default]
-                                    [false]) nothing is raised and the write is
+                                    Under SIG_IGN ([procst_sigpipe_action]'s
+                                    handler) nothing is raised and the write is
                                     answered -EPIPE whatever this field says. *)
 }.
 
@@ -4412,12 +4873,20 @@ Definition m_sigpipe_pending (m : Model) : bool :=
     value; see [procst_channel_reader]. *)
 Definition m_channel_reader (m : Model) : bool :=
   procst_channel_reader (m_proc m).
-(** Whether SIGPIPE is still at SIG_DFL, the launch declaration
+(** SIGPIPE's current action: handler, flags and mask, as the last
+    install left them or as the launch seeded them.  See
+    [procst_sigpipe_action]. *)
+Definition m_sigpipe_action (m : Model) : SigpipeAction :=
+  procst_sigpipe_action (m_proc m).
+(** Whether SIGPIPE's handler is SIG_DFL -- the one bit of the action
     [Sys.Fs.ReadWrite.raise_sigpipe] reads before it ends the process.
-    [Run.valid_input] pins it to [true]; the other reading is
-    [Run.valid_input_sigpipe_ignored].  See [procst_sigpipe_default]. *)
+    The same meaning this name had when the handler was a bare launch
+    declaration: [Run.valid_input] pins the declaration to SIG_DFL, the
+    other reading is [Run.valid_input_sigpipe_ignored], and a run that
+    installs nothing keeps the seeded value ([with_sigpipe_install] is
+    the only writer after [init_model]). *)
 Definition m_sigpipe_default (m : Model) : bool :=
-  procst_sigpipe_default (m_proc m).
+  spa_default (m_sigpipe_action m).
 (** Whether the model follows a SIGPIPE at SIG_DFL into its death, the
     launch declaration [Sys.Fs.ReadWrite.sigpipe_write] reads before it
     raises the signal.  [Run.valid_input] pins it to [false]; see
@@ -4477,7 +4946,7 @@ Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
                (mkCreds overflow_id overflow_id overflow_id
                         overflow_id overflow_id overflow_id [])
                false (Z_to_bv 64 0) false None false false false false []
-               false true true false)
+               false true (sigpipe_action_at_exec true) false)
             (mkLimState rlim default_nofile)
             (mkTimeState (Z_to_bv 64 0)).
 
@@ -4578,6 +5047,14 @@ Definition with_net (q : NetQueue) (m : Model) : Model :=
     through this one setter equivalent to putting it in [unlinkat] and
     cheaper than remembering to.
 
+    THE REMOVAL OF A NAME AN OPEN DESCRIPTOR HOLDS drops the pin here
+    too, and that is still right: the inode outlives the name, so its
+    pin must outlive it as well, and [Fs.Namei.unlink_open_tmp_spec]
+    first copies it into every [FdAnon] entry it makes ([af_pin]),
+    with [st_nlink] at 0, before this filter takes it off the name.
+    The next file created under the name then starts with no pin, as
+    Linux gives it a new inode.
+
     A CREATE OVER AN EXISTING FILE KEEPS THE PIN, and should: O_TRUNC
     resizes an inode rather than replacing it, and [st_size] is not a
     member the pin holds fixed anyway. *)
@@ -4598,7 +5075,7 @@ Definition with_fs (fs : Fs.Fs) (m : Model) : Model :=
                          (m_abort_terminal m)
                          (statpins_restrict fs (m_statpins m))
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 (** Halt the process by an EXIT, which is the other half of what the
     kill flag distinguishes: this clears it, so a model this produced has
@@ -4616,7 +5093,7 @@ Definition with_halted (code : word) (m : Model) : Model :=
                          false (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 Definition with_tid (tid : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -4627,7 +5104,7 @@ Definition with_tid (tid : word) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
@@ -4651,7 +5128,7 @@ Definition with_utsname (bs : list byte) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 (** Look a file's stat pin up by path.  [None] means no [fstat] has
     delivered a [struct stat] for that file yet, which is the branch
@@ -4689,7 +5166,7 @@ Definition with_statpin (p : Fs.path) (bs : list byte) (m : Model) : Model :=
                          (m_abort_terminal m)
                          ((p, bs) :: m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 
 (** Seed the soft descriptor limit.  Its only caller is [init_model], for
@@ -4717,7 +5194,7 @@ Definition with_abort_terminal (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m) b
                          (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 
 Definition with_nofile (n : word) (m : Model) : Model :=
@@ -4732,7 +5209,7 @@ Definition with_creds (c : Creds) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 Definition with_setsid_succeeded (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -4742,7 +5219,7 @@ Definition with_setsid_succeeded (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 
 (** Record that the process now has something to reap.
@@ -4770,7 +5247,7 @@ Definition with_children (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 (** Install a new blocked mask.  [Kernel.Signal.rt_sigprocmask_spec] is
     the only caller, and the only kernel path that reaches
@@ -4792,7 +5269,7 @@ Definition with_sigmask (s : word) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 
 (** Record that a [sigaltstack] has installed an alternate stack.
@@ -4821,7 +5298,7 @@ Definition with_sigaltstack_installed (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 
 (** Record that SIGABRT has been sent and is BLOCKED, so it waits in
@@ -4849,7 +5326,7 @@ Definition with_sigabrt_pending (m : Model) : Model :=
                          (procst_killed (m_proc m)) true (m_abort_terminal m)
                          (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 
 (** Record that SIGPIPE has been sent and is BLOCKED, the same shape as
@@ -4858,11 +5335,11 @@ Definition with_sigabrt_pending (m : Model) : Model :=
     reaches here only when [Sys.Uapi.sigpipe_blocked] holds of the
     process's mask; with the mask open it calls [with_killed] instead.
 
-    NOTHING CLEARS IT, for [procst_sigabrt_pending]'s reason and more
-    simply: SIGPIPE's default action is TERMINATE and the model admits
-    no other disposition for it ([Kernel.Signal.rt_sigaction_spec]
-    declines every install for signal 13), so the delivery that would
-    dequeue it is the step that ends the process. *)
+    ONE THING CLEARS IT: [with_sigpipe_install] of SIG_IGN, as
+    [do_sigaction]'s [flush_sigqueue_mask] does (kernel/signal.c, Linux
+    v6.18.46).  Nothing else does, for [procst_sigabrt_pending]'s reason:
+    SIGPIPE's default action is TERMINATE, so the delivery that would
+    dequeue it under SIG_DFL is the step that ends the process. *)
 Definition with_sigpipe_pending (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
@@ -4872,7 +5349,7 @@ Definition with_sigpipe_pending (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          true (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 
 (** Seed the environment's channel-reader fact.  Its only caller is
@@ -4892,18 +5369,21 @@ Definition with_channel_reader (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) b
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 
-(** Seed the task's SIGPIPE disposition.  Its only caller is
-    [init_model], for the reason [with_abort_terminal] gives: the
-    disposition is a parameter of the RUN -- it was decided before
-    execve and survives it ([procst_sigpipe_default] names the kernel
-    site) -- so the one place that may install it is the one that turns
-    a [ProcInput] into a model.  Nothing inside the modeled surface
-    writes it: [Kernel.Signal.rt_sigaction_spec] declines every install
-    for signal 13, so it is constant along every run. *)
-Definition with_sigpipe_default (b : bool) (m : Model) : Model :=
+(** Seed SIGPIPE's action from the launch declaration [dfl] (SIG_DFL
+    when [true], SIG_IGN when [false]), as [sigpipe_action_at_exec]
+    builds it.  Its only caller is [init_model_setter_chain], the chain
+    [init_model] is proved equal to; [init_model] itself builds the same
+    seed inline.  That is for the reason [with_abort_terminal] gives:
+    the handler was decided before execve and survives it
+    ([procst_sigpipe_action] names the kernel site), so the one place
+    that may install the starting action is the one that
+    turns a [ProcInput] into a model.  The flags and the mask are 0
+    here because execve leaves them 0, not because the launch chose
+    them. *)
+Definition with_sigpipe_default (dfl : bool) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
                          (m_setsid_succeeded m) (m_sigmask m)
@@ -4912,7 +5392,7 @@ Definition with_sigpipe_default (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         b (m_sigpipe_terminal m))
+                         (sigpipe_action_at_exec dfl) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 
 (** Seed the task's SIGPIPE-death declaration.  Its only caller is
@@ -4928,7 +5408,33 @@ Definition with_sigpipe_terminal (b : bool) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) b)
+                         (m_sigpipe_action m) b)
+            (m_lim m) (m_time m).
+
+(** INSTALL [a] AS SIGPIPE's ACTION: the one writer of
+    [procst_sigpipe_action] inside a run.  Its only caller is
+    [Kernel.Signal.rt_sigaction_sigpipe], the SIGPIPE install arm of
+    [Kernel.Signal.rt_sigaction_spec]; [with_sigpipe_default] above is
+    the other writer, and it runs only in [init_model].
+
+    [do_sigaction] (kernel/signal.c, Linux v6.18.46) does two things
+    here: [*k = *act] stores the action, and when the new handler
+    passes [sig_handler_ignored] -- for SIGPIPE that is SIG_IGN alone,
+    since 13 is not in SIG_KERNEL_IGNORE_MASK (include/linux/signal.h)
+    -- [flush_sigqueue_mask] discards a pending SIGPIPE, "whether or not
+    it is blocked" (POSIX 3.3.1.3, quoted there).  So the pending bit is
+    cleared exactly when [a] is SIG_IGN, and kept when [a] is SIG_DFL. *)
+Definition with_sigpipe_install (a : SigpipeAction) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m && spa_default a)%bool
+                         (m_channel_reader m)
+                         a (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 
 (** End the process by a fatal signal.  It writes the signal number into
@@ -4965,11 +5471,12 @@ Definition with_sigpipe_terminal (b : bool) (m : Model) : Model :=
 
     THREE LAUNCH FACTS GATE IT.  [procst_channel_reader] is the
     ENVIRONMENT's -- whether anything still reads descriptors 1 and 2 --
-    and [Run.valid_input] pins it present.  [procst_sigpipe_default] is
-    the TASK's -- whether SIGPIPE is still at SIG_DFL -- and
-    [Run.valid_input] pins it to [true]; under
-    [Run.valid_input_sigpipe_ignored] this setter is never reached
-    because [raise_sigpipe] discards the signal.
+    and [Run.valid_input] pins it present.  [procst_sigpipe_action]'s
+    handler is the TASK's at launch -- whether SIGPIPE is still at
+    SIG_DFL -- and [Run.valid_input] pins it to [true]; under
+    [Run.valid_input_sigpipe_ignored], or after an install of SIG_IGN
+    inside the run ([with_sigpipe_install]), this setter is never
+    reached for signal 13 because [raise_sigpipe] discards the signal.
     [procst_sigpipe_terminal] is the task's too, and decides whether the
     death is followed at all; [Run.valid_input_sigpipe_kills] and
     [Run.valid_input_channel_closed] are the launches that set it.
@@ -4988,7 +5495,7 @@ Definition with_killed (sig : word) (m : Model) : Model :=
                          true (m_sigabrt_pending m)
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_sigpipe_terminal m))
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 
 (** The invariant the two fields are written under, stated where the
@@ -5292,8 +5799,10 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     falsified by anything added below it.  [openat] resolves against
     [m_fs] and yields an [FdFile]/[FdFileW]/[FdFileA]/[FdFileRW] — or,
     for the device paths it answers, an [FdDevNull] or an [FdUrandom] — never
-    an [FdPipe], so a path
-    merely NAMED like a procfs one cannot hand out a second reference.
+    an [FdPipe].  The one procfs path it answers, "/proc/self/fd/N"
+    ([Fs.Open.openat_procfd_spec]), opens again only an [FdAnon] and
+    declines every other kind at N, a pipe end included, so a procfs
+    path cannot hand out a second reference to a pipe either.
 
     A syscall that DUPLICATES a descriptor would keep the two
     constructions in step for a reason worth writing down, because a
@@ -5324,20 +5833,27 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     kernel's counter but a WRONG one.
 
     What closes it is an arm in a different file, and the coupling is
-    worth stating because nobody would look for it here:
-    [Net.Socket.socket_spec] answers [unmodeled] for every family but
-    AF_INET, and at v6.18.46 fd-passing is AF_UNIX only —
-    [unix_attach_fds] (net/unix/af_unix.c:1958) is the sole path from an
-    SCM_RIGHTS control message to an installed descriptor, and SCM_RIGHTS
-    appears nowhere in net/ipv4: [ip_cmsg_send] (net/ipv4/ip_sockglue.c)
-    understands IP_RETOPTS, IP_PKTINFO, IP_TTL, IP_TOS and IP_PROTOCOL,
-    none of which carries an fd.  So no modeled socket can transport one.
+    worth stating because nobody would look for it here.  At v6.18.46
+    fd-passing is AF_UNIX only — [unix_attach_fds]
+    (net/unix/af_unix.c) is the sole path from an SCM_RIGHTS control
+    message to an installed descriptor, and SCM_RIGHTS appears nowhere
+    in net/ipv4: [ip_cmsg_send] (net/ipv4/ip_sockglue.c) understands
+    IP_RETOPTS, IP_PKTINFO, IP_TTL, IP_TOS and IP_PROTOCOL, none of which
+    carries an fd.  The AF_UNIX sockets the model has are the
+    [FdStream] ends [Net.Socket.socketpair_spec] makes and the
+    unconnected [FdDgram] sockets [Net.Socket.socket_spec] makes.
 
-    THE CONDITION THAT FALSIFIES THIS: modelling AF_UNIX.  A change that
-    admits that family reopens the case above, and it must either decline
-    a pipe end at [sendmsg]'s control data or give this model a notion of
-    a pipe end held by nothing in the fd table.  The decline in
-    [socket_spec] is load-bearing for pipe end-of-file, not only for
+    THE CONDITION THAT FALSIFIED THIS WAS MODELLING AF_UNIX, AND IT HAS
+    HAPPENED, so the argument now rests on the gate that condition named.
+    An SCM_RIGHTS message rides only in a [sendmsg]'s control data —
+    [write], [writev] and [sendto] carry none ([__sys_sendto] sets
+    [msg_control] to NULL) — and [Net.Socket.sendmsg_spec] DECLINES
+    every [FdStream] end and every [FdDgram] socket outright, control
+    data or not.  So no modeled socket can carry a pipe end, or a
+    stream end, in flight.  A change
+    that answers [sendmsg] on either kind must decline its control data or
+    give this model a notion of a file held by nothing in the fd table;
+    that decline is load-bearing for pipe end-of-file, not only for
     sockets.
 
     THE GENERAL CLAIM, since the paragraphs above each argue one route and
@@ -5365,10 +5881,11 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
       by an arm.  [Fcntl.fcntl_spec] carries the obligation in its own
       prose too, beside its [F_DUPFD] bullet, because this file is not
       where someone widening fcntl's command set will look;
-    - a reference IN FLIGHT is closed by two gates, the AF_INET one
-      argued above and [Net.Socket.sendmsg_spec]'s
-      [if negb (w_is0 ctllen) then unmodeled], which the paragraph above
-      names only as something a future AF_UNIX change would need.
+    - a reference IN FLIGHT is closed by [Net.Socket.sendmsg_spec]: it
+      declines every [FdStream] end and every [FdDgram] socket, the only
+      AF_UNIX sockets there are, and keeps
+      [if negb (w_is0 ctllen) then unmodeled] for an AF_INET one, which
+      could not carry SCM_RIGHTS anyway.
 
     ONLY THE WRITER DIRECTION IS A SOUNDNESS EXPOSURE, which is what
     decides how much any future widening costs.  Under-reporting a WRITER
@@ -5404,6 +5921,12 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
   | (_, FdSocket _) :: r => pipe_end_live r id writer
   | (_, FdDevNull _ _) :: r => pipe_end_live r id writer
   | (_, FdUrandom) :: r => pipe_end_live r id writer
+  | (_, FdStream _ _ _) :: r => pipe_end_live r id writer
+  | (_, FdEventfd _) :: r => pipe_end_live r id writer
+  | (_, FdDgram _) :: r => pipe_end_live r id writer
+  | (_, FdAnon _ _) :: r => pipe_end_live r id writer
+    (* an unnamed file is a regular file's inode, not a pipe's: its
+       [id] numbers files, a space of its own *)
   end.
 
 (** A 32-bit value as the four little-endian bytes the kernel's
@@ -5421,6 +5944,318 @@ Definition le32_bytes (v : word) : list byte :=
     [fd[0] = fdr] and [fd[1] = fdw] set at :1005-1006, v6.18.46). *)
 Definition pipe_fd_bytes (fdr fdw : word) : list byte :=
   le32_bytes fdr ++ le32_bytes fdw.
+
+(* =========================================================================
+   Unnamed-file helpers — the [FdAnon] entries an unlink of an open /tmp
+   file and a "/proc/self/fd/N" open make
+   ========================================================================= *)
+
+(** The unnamed file an entry is a descriptor of, or [None].
+
+    ENUMERATED, for [pipe_end_live]'s reason: a later [FdEntry]
+    constructor that could hold an unnamed file must stop the build
+    here.  A missed descriptor would keep a stale copy of the contents
+    when another descriptor writes ([anon_update]) and would let
+    [anon_new_id] hand its id to a second file. *)
+Definition entry_anon_id (e : FdEntry) : option word :=
+  match e with
+  | FdAnon id _ => Some id
+  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
+  | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
+  | FdStream _ _ _ | FdEventfd _ | FdDgram _ => None
+  end.
+
+(** The largest file id a live [FdAnon] entry carries, or -1 when none
+    does. *)
+Fixpoint anon_max_id (fds : list (word * FdEntry)) : Z :=
+  match fds with
+  | [] => (-1)%Z
+  | (_, e) :: r =>
+      match entry_anon_id e with
+      | Some id => Z.max (bv_unsigned id) (anon_max_id r)
+      | None => anon_max_id r
+      end
+  end.
+
+(** The id a new unnamed file gets: one above every live one's, for
+    [stream_new_id]'s reason.  A dead file needs no avoiding -- its
+    contents left with its last entry -- and a live one does, since a
+    reused id would join two files.  [Fs.Namei.unlink_open_tmp_spec]
+    checks that no live entry carries it, so the one way to fail, a
+    live id of 2^64 - 1 whose successor wraps to 0, declines rather
+    than aliases. *)
+Definition anon_new_id (fds : list (word * FdEntry)) : word :=
+  Z_to_bv 64 (anon_max_id fds + 1).
+
+(** Does some live entry carry file id [id]? *)
+Definition anon_id_live (fds : list (word * FdEntry)) (id : word) : bool :=
+  existsb (fun p => match entry_anon_id (snd p) with
+                    | Some id' => bv_eqb id' id
+                    | None => false
+                    end) fds.
+
+(** [f] applied to one entry if it is a descriptor of file [id], and
+    the entry unchanged otherwise.  Enumerated, for [entry_anon_id]'s
+    reason. *)
+Definition anon_entry_update (id : word) (f : AnonFile -> AnonFile)
+    (e : FdEntry) : FdEntry :=
+  match e with
+  | FdAnon id' af => if bv_eqb id' id then FdAnon id' (f af) else e
+  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
+  | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
+  | FdStream _ _ _ | FdEventfd _ | FdDgram _ => e
+  end.
+
+(** [f] applied to EVERY descriptor of file [id], each in its place in
+    the table.  This is how an arm keeps [FdAnon]'s invariant: a change
+    of the contents or of the pin is the inode's, so every [struct file]
+    on the inode sees it. *)
+Definition anon_update (fds : list (word * FdEntry)) (id : word)
+    (f : AnonFile -> AnonFile) : list (word * FdEntry) :=
+  map (fun p => (fst p, anon_entry_update id f (snd p))) fds.
+
+(** The contents [d] written to every descriptor of file [id]. *)
+Definition anon_set_data (fds : list (word * FdEntry)) (id : word)
+    (d : list byte) : list (word * FdEntry) :=
+  anon_update fds id (fun af => af_set_data af d).
+
+(** A transfer through descriptor [fd], whose entry was [FdAnon id af],
+    that leaves the file holding [d] and this descriptor's [f_pos] at
+    [o]: the contents go to every descriptor of the file, the offset to
+    this one alone. *)
+Definition anon_write_back (fds : list (word * FdEntry)) (fd id : word)
+    (af : AnonFile) (d : list byte) (o : word) : list (word * FdEntry) :=
+  fd_insert (anon_set_data fds id d) fd (FdAnon id (af_set_off (af_set_data af d) o)).
+
+
+(** Two pins are the same: both absent, or both the same bytes. *)
+Definition anon_pin_eqb (a b : option (list byte)) : bool :=
+  match a, b with
+  | None, None => true
+  | Some x, Some y => Fs.path_eqb x y
+  | None, Some _ | Some _, None => false
+  end.
+
+(** Entry [e] agrees with [af] as a descriptor of file [id]: a descriptor
+    of another file, or of no unnamed file, agrees trivially; a
+    descriptor of file [id] must carry the same contents and pin.
+    Enumerated, for [entry_anon_id]'s reason. *)
+Definition anon_entry_agrees (id : word) (af : AnonFile) (e : FdEntry) : bool :=
+  match e with
+  | FdAnon id' af' =>
+      implb (bv_eqb id' id)
+            (Fs.path_eqb (af_data af') (af_data af) && anon_pin_eqb (af_pin af') (af_pin af))
+  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
+  | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
+  | FdStream _ _ _ | FdEventfd _ | FdDgram _ => true
+  end.
+
+(** THE REPLICAS AGREE: every descriptor of file [id] in the table carries
+    the contents and the pin of [af], the entry the call names.
+
+    The contents of an unnamed file are REPLICATED, one copy per
+    descriptor ([FdAnon]), so nothing in the type stops two descriptors of
+    one file from disagreeing, and a state where they do describes no
+    Linux machine: one inode has one size and one set of bytes.  So the
+    model answers no call that reads an unnamed file's contents or pin in
+    such a state.  EVERY arm that reads them — [Fs.ReadWrite]'s read,
+    write, writev, pwrite64, pwritev2 and lseek, [Fs.Open]'s ftruncate and
+    /proc/self/fd/N reopen, [Fs.Stat]'s fstat — first requires
+    [anon_agree] and DECLINES otherwise.  A proof therefore cannot use a
+    disagreeing state to conclude anything about a run: the run is
+    unmodeled there.
+
+    The arms that answer also KEEP the replicas agreeing, which is what
+    makes the decline unreachable from a launch (no launch holds an
+    unnamed file): a change of the contents goes to every descriptor of
+    the file ([anon_update], [anon_write_back]), a reopen copies the
+    contents and pin of an agreeing descriptor, the removal of a /tmp name
+    gives every descriptor it converts the same contents and pin under one
+    fresh id, and a close only removes an entry.
+    [Checks.AnonAgree] states these as lemmas. *)
+Definition anon_agree (fds : list (word * FdEntry)) (id : word) (af : AnonFile) : bool :=
+  forallb (fun p => anon_entry_agrees id af (snd p)) fds.
+(* =========================================================================
+   Stream-pair helpers — the [FdStream] ends [socketpair] makes
+   ========================================================================= *)
+
+(** The live end [(id, side)] of a stream pair: its descriptor and its
+    state, or [None] once that end is closed.  The first match wins, and
+    there is never a second: an end is made only by
+    [Net.Socket.socketpair_spec], which takes [id] from [stream_new_id],
+    and no modeled call duplicates one (see [FdStream]).
+
+    ENUMERATED, for [pipe_end_live]'s reason: a later [FdEntry]
+    constructor able to name a stream end must stop the build here.  A
+    missed end would make [stream_peer] answer "closed" for a live peer,
+    and every arm that reads the peer would then answer -EPIPE or end of
+    file where Linux delivers. *)
+Fixpoint stream_end (fds : list (word * FdEntry)) (id : word) (side : bool)
+    : option (word * StreamEnd) :=
+  match fds with
+  | [] => None
+  | (fd, FdStream id' s st) :: r =>
+      if (bv_eqb id' id && Bool.eqb s side)%bool then Some (fd, st)
+      else stream_end r id side
+  | (_, FdChannel _) :: r => stream_end r id side
+  | (_, FdFile _ _) :: r => stream_end r id side
+  | (_, FdFileW _ _) :: r => stream_end r id side
+  | (_, FdFileA _ _) :: r => stream_end r id side
+  | (_, FdFileRW _ _) :: r => stream_end r id side
+  | (_, FdDir) :: r => stream_end r id side
+  | (_, FdSocket _) :: r => stream_end r id side
+  | (_, FdPipe _ _) :: r => stream_end r id side
+  | (_, FdDevNull _ _) :: r => stream_end r id side
+  | (_, FdUrandom) :: r => stream_end r id side
+  | (_, FdEventfd _) :: r => stream_end r id side
+  | (_, FdDgram _) :: r => stream_end r id side
+    (* neither names a stream end: an eventfd is an anonymous inode and
+       an [FdDgram] is a socket no [socketpair] joined to anything *)
+  | (_, FdAnon _ _) :: r => stream_end r id side
+    (* a regular file's inode; its [id] numbers files, not pairs *)
+  end.
+
+(** The PEER of end [(id, side)]: [unix_peer] of that socket, while the
+    peer's descriptor is still open.  [None] means the peer has closed:
+    [unix_release_sock] ran for it. *)
+Definition stream_peer (fds : list (word * FdEntry)) (id : word) (side : bool)
+    : option (word * StreamEnd) :=
+  stream_end fds id (negb side).
+
+(** The largest pair id a live end carries, or -1 when none does. *)
+Fixpoint stream_max_id (fds : list (word * FdEntry)) : Z :=
+  match fds with
+  | [] => (-1)%Z
+  | (_, FdStream id _ _) :: r => Z.max (bv_unsigned id) (stream_max_id r)
+  | (_, FdChannel _) :: r => stream_max_id r
+  | (_, FdFile _ _) :: r => stream_max_id r
+  | (_, FdFileW _ _) :: r => stream_max_id r
+  | (_, FdFileA _ _) :: r => stream_max_id r
+  | (_, FdFileRW _ _) :: r => stream_max_id r
+  | (_, FdDir) :: r => stream_max_id r
+  | (_, FdSocket _) :: r => stream_max_id r
+  | (_, FdPipe _ _) :: r => stream_max_id r
+  | (_, FdDevNull _ _) :: r => stream_max_id r
+  | (_, FdUrandom) :: r => stream_max_id r
+  | (_, FdEventfd _) :: r => stream_max_id r
+  | (_, FdDgram _) :: r => stream_max_id r
+  | (_, FdAnon _ _) :: r => stream_max_id r
+  end.
+
+(** The id a new pair gets: one above every LIVE pair's.  Unlike
+    [pipe_new_id] it need not avoid dead pairs, because a stream pair has
+    no side table for a dead one to haunt: its bytes left with its
+    entries.  What it must avoid is a LIVE end, whose [stream_peer] a
+    reused id would confuse, and one above the largest live id does.
+    [Net.Socket.socketpair_spec] still checks that no live end carries
+    it, so the one way to fail -- a live id of 2^64 - 1, where the
+    successor wraps to 0 -- declines rather than aliases. *)
+Definition stream_new_id (fds : list (word * FdEntry)) : word :=
+  Z_to_bv 64 (stream_max_id fds + 1).
+
+(** Does some live end carry pair id [id], on either side? *)
+Definition stream_id_live (fds : list (word * FdEntry)) (id : word) : bool :=
+  match stream_end fds id false, stream_end fds id true with
+  | None, None => false
+  | _, _ => true
+  end.
+
+(** A fresh end, as [unix_create1] leaves a socket and [unix_socketpair]
+    then connects it: an empty receive queue, no shutdown bit, and the two
+    buffer sizes and the file's O_NONBLOCK as the caller decides them. *)
+Definition stream_fresh (nonblock : bool) (sndbuf rcvbuf : Z) : StreamEnd :=
+  mkStreamEnd [] nonblock sndbuf rcvbuf false false.
+
+(** The bytes this end has queued for it to read, in [Z]. *)
+Definition se_rx_len (st : StreamEnd) : Z := Z.of_nat (length (se_rx st)).
+
+(** One-field updates.  Rocq has no record-update syntax, so each spells
+    the record whole; they are the only places that do. *)
+Definition se_set_rx (st : StreamEnd) (q : list byte) : StreamEnd :=
+  mkStreamEnd q (se_nonblock st) (se_sndbuf st) (se_rcvbuf st)
+              (se_shut_rd st) (se_shut_wr st).
+Definition se_set_nonblock (st : StreamEnd) (b : bool) : StreamEnd :=
+  mkStreamEnd (se_rx st) b (se_sndbuf st) (se_rcvbuf st)
+              (se_shut_rd st) (se_shut_wr st).
+Definition se_set_sndbuf (st : StreamEnd) (v : Z) : StreamEnd :=
+  mkStreamEnd (se_rx st) (se_nonblock st) v (se_rcvbuf st)
+              (se_shut_rd st) (se_shut_wr st).
+Definition se_set_rcvbuf (st : StreamEnd) (v : Z) : StreamEnd :=
+  mkStreamEnd (se_rx st) (se_nonblock st) (se_sndbuf st) v
+              (se_shut_rd st) (se_shut_wr st).
+
+(** OR shutdown bits into an end: [rd] for RCV_SHUTDOWN, [wr] for
+    SEND_SHUTDOWN.  Bits are only ever added -- [unix_shutdown] writes
+    [sk_shutdown | mode] -- so this cannot clear one. *)
+Definition se_add_shut (st : StreamEnd) (rd wr : bool) : StreamEnd :=
+  mkStreamEnd (se_rx st) (se_nonblock st) (se_sndbuf st) (se_rcvbuf st)
+              (se_shut_rd st || rd) (se_shut_wr st || wr).
+
+(** HOW MANY BYTES A NON-BLOCKING SEND MAY MOVE, as a relation: [k] bytes
+    of an [n]-byte send, onto a peer queue that already holds [q] bytes
+    this end wrote, with this end's [sk_sndbuf] at [s].
+
+    Linux decides it in [unix_stream_sendmsg] (net/unix/af_unix.c,
+    v6.18.46), which cuts the send into skbs of at most
+    [(sk_sndbuf >> 1) - 64] bytes and asks [sock_alloc_send_pskb]
+    (net/core/sock.c) for each; that admits an skb only while
+    [sk_wmem_alloc_get(sk) < sk_sndbuf], and otherwise returns -EAGAIN to
+    a call that may not wait, which [unix_stream_sendmsg] turns into the
+    count sent so far or, with nothing sent, the -EAGAIN.  [sk_wmem_alloc]
+    counts the TRUESIZE of every skb this end has queued on the peer and
+    the peer has not yet consumed -- the data plus the [struct sk_buff],
+    the shared info and kmalloc's rounding.  Truesize is a function of
+    the kernel build that the model does not carry, so the model does not
+    say exactly where the queue fills.  It says what truesize >= data
+    lets it say:
+
+    - [sk_wmem_alloc] is at least [q], so an skb is admitted only while
+      the queued DATA is below [s], and the last one admitted adds at
+      most [s/2 - 64] more.  So [q + k < s + s/2], and here [<=], which
+      is weaker and keeps the relation inhabited for every [s];
+    - [k] is at least 1 and at most [n], since a send that moves nothing
+      returns -EAGAIN instead of 0 (decided by the callers, see
+      [stream_send_full] and [stream_send_may_refuse]);
+    - [k] is at least the FIRST skb's size, [min n ((s >> 1) - 64)
+      (SKB_MAX_HEAD(0) + UNIX_SKB_FRAGS_SZ)]: once that skb is admitted
+      its bytes are copied whole (a fault declines, see
+      [Fs.ReadWrite.stream_send]) and queued, and only a LATER skb can be
+      refused, which returns the bytes already sent.  The model writes
+      32768 for the last term, which is below its measured 36544 on the
+      riscv64 defconfig (dispatch://OSSV-287/artifact/skb-sizes-md), so
+      the bound is no larger than Linux's.
+
+    Every count Linux can return satisfies this, which is what makes it
+    sound; it admits more than Linux does — any total between the first
+    skb and the last admitted one, where Linux's totals are sums of skb
+    sizes cut at truesize-dependent points — which is what makes it an
+    over-approximation, named in SCOPE.md's gaps in precision. *)
+Definition stream_send_ok (q s n k : Z) : Prop :=
+  (1 <= k <= n)%Z /\ (Z.min n (Z.min (s / 2 - 64) 32768) <= k)%Z
+  /\ (q + k <= s + s / 2)%Z.
+
+(** THE QUEUE IS CERTAINLY FULL: the data alone reaches [s], so
+    [sk_wmem_alloc >= s] and [sock_alloc_send_pskb] admits nothing. *)
+Definition stream_send_full (q s : Z) : bool := (s <=? q)%Z.
+
+(** THE FIRST SKB MAY BE REFUSED: some data is queued, so [sk_wmem_alloc]
+    may already be at [s], depending on truesize.  An EMPTY queue has no
+    skb left on it -- [unix_stream_read_generic] unlinks and consumes
+    each skb it empties -- so [sk_wmem_alloc] is 0 there and the first
+    skb is always admitted. *)
+Definition stream_send_may_refuse (q : Z) : bool := (0 <? q)%Z.
+
+(** A BLOCKING SEND THAT CANNOT WAIT: one skb carries all [n] bytes and
+    the queue is empty, so the one [sock_alloc_send_pskb] is admitted and
+    the send returns [n] without sleeping.  One skb carries
+    [min n ((s >> 1) - 64) (SKB_MAX_HEAD(0) + UNIX_SKB_FRAGS_SZ)] bytes,
+    and [UNIX_SKB_FRAGS_SZ] is [PAGE_SIZE << get_order(32768)] = 32768 on
+    riscv64 (include/net/af_unix.h, net/unix/af_unix.c), a lower bound on
+    that last term.  Outside this test a blocking send may sleep for
+    room only the peer -- this same thread -- could make, and the arms
+    decline it. *)
+Definition stream_send_fits_one (q s n : Z) : bool :=
+  ((q =? 0) && (n <=? Z.min (s / 2 - 64) 32768))%Z.
 
 (* =========================================================================
    VmMaps helpers — interval arithmetic in Z over unsigned values
@@ -6544,7 +7379,10 @@ Record ProcInput := mkProcInput_full {
        the whole truth about it: what the run holds there is this
        declaration, plus what [Fs.Open.create_wronly] created, minus
        what [Fs.Namei.unlinkat_spec] removed, and nothing else can put
-       a file there or take one away.
+       a file there or take one away.  PRIVATE INCLUDES THE FILES'
+       LINKS: each declared file is a regular file whose one name is
+       its name here, so the removal of that name leaves it with link
+       count 0 ([Uapi.stat_pin_unlinked]).
 
        [Run.valid_input] has NO clause naming it: [fs_seed_tmp] seeds
        any list into the canonical form, so every value is one a launch
@@ -6637,13 +7475,13 @@ Record ProcInput := mkProcInput_full {
        [begin_new_exec] calls kernel/signal.c [flush_signal_handlers]
        with [force_default = 0], which resets handlers but leaves
        SIG_DFL and SIG_IGN alone (Linux v6.18.46, commit 1f99e9ab748f).
-       So the disposition the program runs under was decided by its
+       So the handler the program starts under was decided by its
        launcher, exactly as the launching uid and the blocked mask
-       were, and nothing inside the modeled surface can observe or
-       change it: [Kernel.Signal.rt_sigaction_spec] declines every
-       install for signal 13.  Ignoring SIGPIPE is what a service
-       manager, a shell wrapper and several language runtimes do.
-
+       were.  Ignoring SIGPIPE is what a service manager, a shell
+       wrapper and several language runtimes do.  The program may
+       change it afterwards: [Kernel.Signal.rt_sigaction_spec] answers
+       an install of SIG_DFL or SIG_IGN for signal 13, and this field is
+       the value it changes FROM.
        [Run.valid_input] PINS IT TO [true], and that is settled where
        the reader above is not.  The two fields gate the same death,
        but this one is the TASK's stance and not the environment's, so
@@ -6655,8 +7493,8 @@ Record ProcInput := mkProcInput_full {
        SIGPIPE would be handed a model that kills the process where
        Linux returns -EPIPE and runs on.
 
-       [init_model] copies this into [procst_sigpipe_default] and
-       nothing else writes it *);
+       [init_model] seeds [procst_sigpipe_action] from this and nothing
+       else ([sigpipe_action_at_exec]: this handler, flags 0, mask 0) *);
   in_sigpipe_terminal : bool
     (* THE TASK'S DECLARATION of whether the model follows a SIGPIPE at
        SIG_DFL into the death it causes, the twin of [in_abort_terminal]
@@ -6894,7 +7732,7 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
                 (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
        false (in_sigmask inp) false None false false false
        (in_abort_terminal inp) [] false (in_channel_reader inp)
-       (in_sigpipe_default inp) (in_sigpipe_terminal inp))
+       (sigpipe_action_at_exec (in_sigpipe_default inp)) (in_sigpipe_terminal inp))
     (mkLimState None (in_nofile inp))
     (mkTimeState (Z_to_bv 64 0)).
 
@@ -7058,6 +7896,11 @@ Lemma m_kernel_with_sigpipe_pending : forall m,
   m_kernel (with_sigpipe_pending m) = m_kernel m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_sigpipe_pending : model.
+
+Lemma m_kernel_with_sigpipe_install : forall a m,
+  m_kernel (with_sigpipe_install a m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_sigpipe_install : model.
 
 Lemma m_kernel_with_creds : forall v m, m_kernel (with_creds v m) = m_kernel m.
 Proof. reflexivity. Qed.
