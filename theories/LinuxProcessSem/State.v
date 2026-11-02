@@ -5242,17 +5242,7 @@ Definition with_child_pids (l : list word) (m : Model) : Model :=
     citation: kernel/fork.c [copy_process], read at v6.18.44; identical at
     v6.18.46. *)
 Definition with_child (pid : word) (m : Model) : Model :=
-  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
-            (mkProcState (m_halted m) (m_tid m) (m_creds m)
-                         (m_setsid_succeeded m) (m_sigmask m) true
-                         (m_utsname m) (m_sigaltstack_installed m)
-                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
-                         (m_abort_terminal m) (m_statpins m)
-                         (m_sigpipe_pending m) (m_channel_reader m)
-                         (m_sigpipe_default m) (m_pdeath_signal m)
-                         (m_child_pids m ++ [pid]) (m_no_new_privs m)
-                         (m_dumpable m))
-            (m_lim m) (m_time m).
+  with_child_pids (m_child_pids m ++ [pid]) (with_children m).
 
 (** [with_child] is [with_children], then the pid appended. *)
 Lemma with_child_as_children : forall pid m,
