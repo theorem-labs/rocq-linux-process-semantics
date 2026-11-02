@@ -1,9 +1,13 @@
 # The automated review
 
 `.github/workflows/review.yml` asks Claude to review each pull request into
-`main` and each issue whose author has write access, and each other one that
-a maintainer asks it to review, and posts the review as a comment. The review
-is advice. A maintainer decides what to merge.
+`main` and each issue, and posts the review as a comment. When the author,
+or the account that started the run, has no write access, an automated
+screen reads the pull request or the issue first (`.github/screen.py`), and
+the review runs only when the screen passes it; otherwise the pull request
+or the issue gets the label `review-held`, and a maintainer decides. A
+maintainer can also ask for a review. The review is advice. A maintainer
+decides what to merge.
 
 The review uses the copy of this file on `main`, so a change to it takes
 effect after it merges.
