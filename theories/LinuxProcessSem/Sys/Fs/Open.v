@@ -168,23 +168,50 @@ Definition open_ignored_flags : Z := (O_CLOEXEC + O_LARGEFILE + O_NONBLOCK)%Z.
 Definition open_path_word (fl : Z) : bool :=
   Z.eqb (Z.ldiff fl (O_DIRECTORY + O_NOFOLLOW)) O_PATH.
 
+(** The words [openat_proc_spec] answers on "/proc/self/fd", read past
+    [open_ignored_flags]: O_RDONLY, with or without O_DIRECTORY and
+    O_NOCTTY.  Bubblewrap's [fdwalk] (utils.c) passes
+    [O_DIRECTORY | O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY], and
+    musl's [openat] adds O_LARGEFILE.  On a procfs directory neither of
+    the two interpreted bits changes the answer: the name IS a directory,
+    so O_DIRECTORY's -ENOTDIR cannot fire, and O_NOCTTY is read only by a
+    terminal's [->open] and then cleared by [do_dentry_open]
+    (fs/open.c, fs/namei.c [do_open]: read at v6.18.44; identical at
+    v6.18.46). *)
+Definition procfd_dir_word (fl : Z) : bool :=
+  Z.eqb (Z.ldiff fl (O_DIRECTORY + O_NOCTTY)) 0.
+
+(** The two of those words the gate below did not already admit: the
+    ones with O_NOCTTY.  Like the O_PATH words they are answered only on
+    a procfs name, and [openat_body_spec] declines them everywhere else
+    ([open_procfs_only_word]), so no arm written for the access-mode words
+    sees one. *)
+Definition procfd_noctty_word (fl : Z) : bool :=
+  Z.eqb (Z.ldiff fl O_DIRECTORY) O_NOCTTY.
+
+(** The words [openat_body_spec] answers only on a procfs name. *)
+Definition open_procfs_only_word (fl : Z) : bool :=
+  open_path_word fl || procfd_noctty_word fl.
+
 (** The flag WORDS [openat_spec] interprets: O_RDONLY, the clobbering
     write-create shape, the exclusive write-create shapes, the
     read-a-directory shape O_RDONLY|O_DIRECTORY, the APPEND
     write-create shape, the READ-WRITE shapes ([rdwr_open_word] and
     [is_rdwr_excl_create]), the EXCLUSIVE APPEND shapes
-    ([is_excl_append_create]), and the O_PATH words ([open_path_word]),
+    ([is_excl_append_create]), the O_PATH words ([open_path_word]), and
+    the O_NOCTTY words of "/proc/self/fd" ([procfd_noctty_word]),
     each modulo the bits in [open_ignored_flags].
     Linux validates
     the flags in [build_open_flags()] BEFORE it fetches the pathname, so
     this test runs first in [openat_spec] too — see the ORDER paragraph
     there.
 
-    THE O_PATH WORDS PASS THIS GATE AND ARE ANSWERED ONLY ON A PROCFS
-    NAME.  [openat_body_spec] hands them to [openat_proc_spec] when
-    [proc_open_target] finds one, and declines them everywhere else,
-    before any of the arms below them is reached; so every arm written
-    for the access-mode words still sees only those words.
+    THE O_PATH AND O_NOCTTY WORDS PASS THIS GATE AND ARE ANSWERED ONLY ON
+    A PROCFS NAME ([open_procfs_only_word]).  [openat_body_spec] hands them
+    to [openat_proc_spec] when [proc_open_target] finds one, and declines
+    them everywhere else, before any of the arms below them is reached;
+    so every arm written for the access-mode words still sees only those
+    words.
 
     O_DIRECTORY IS INTERPRETED, NOT IGNORED, and outside the O_PATH words
     it is the only flag here that is neither an access mode nor a creation flag.  The reason it
@@ -233,7 +260,8 @@ Definition open_path_word (fl : Z) : bool :=
       its [open_flag & O_CREAT] block) and which no reported program
       issues, so it is declined rather than aliased.
 
-    - O_NOCTTY is declined because the single thing that makes it
+    - O_NOCTTY is declined, outside the one procfs directory
+      [procfd_noctty_word] names, because the single thing that makes it
       MEANINGFUL is a terminal, and this model has none.  A program that
       passes O_NOCTTY is opening something it believes is a tty;
       answering it with regular-file semantics would be a confident
@@ -267,7 +295,7 @@ Definition modeled_open_flags (flags : word) : bool :=
   Z.eqb fl 0 || Z.eqb fl wr_create_flags || is_excl_create fl
   || Z.eqb fl O_DIRECTORY || Z.eqb fl append_create_flags
   || rdwr_open_word fl || is_rdwr_excl_create fl
-  || is_excl_append_create fl || open_path_word fl.
+  || is_excl_append_create fl || open_path_word fl || procfd_noctty_word fl.
 
 (** One introduction lemma per modeled shape, so a proof that already
     knows which arm it is in can clear the flags guard. *)
@@ -1343,7 +1371,8 @@ Definition openat_resolved_spec (p : path) (flags : word) (m : Model)
   else unmodeled.
 
 (* =========================================================================
-   Paths under /proc: the O_PATH descriptor and the /proc/sys read
+   Paths under /proc: the O_PATH descriptor, the /proc/sys read and the
+   /proc/self/fd directory
    ========================================================================= *)
 
 (** "/proc": the five bytes '/', 'p', 'r', 'o', 'c'. *)
@@ -1354,6 +1383,13 @@ Definition proc_root_path : path :=
 Definition proc_sys_prefix : path :=
   proc_root_path ++
     [slash_byte; Z_to_bv 8 115; Z_to_bv 8 121; Z_to_bv 8 115; slash_byte].
+
+(** "/proc/self/fd", the one procfs directory [openat_proc_spec] opens
+    for reading: "/proc", then "/self/fd". *)
+Definition proc_self_fd_path : path :=
+  proc_root_path ++
+    [slash_byte; Z_to_bv 8 115; Z_to_bv 8 101; Z_to_bv 8 108; Z_to_bv 8 102;
+     slash_byte; Z_to_bv 8 102; Z_to_bv 8 100].
 
 (** The components of a path, split at every separator: [link_path_walk]
     (fs/namei.c) walks exactly these, skipping the empty ones a doubled
@@ -1475,15 +1511,27 @@ Definition proc_open_result (m : Model) (o : OpaqueFd) : Sys SyscallEffect :=
 (** [openat] of the procfs name [c] ([proc_open_target]), as bubblewrap's
     parent issues it: [openat(AT_FDCWD, "/proc", O_PATH)],
     [openat(AT_FDCWD, "/proc/sys/kernel/overflowuid", O_RDONLY|O_CLOEXEC)]
-    and [openat(proc_fd, "<pid>/ns", O_PATH)].
+    and [openat(proc_fd, "<pid>/ns", O_PATH)], and as bubblewrap's
+    monitor process issues it in [fdwalk] (utils.c):
+    [openat(proc_fd, "self/fd", O_DIRECTORY|O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_NOCTTY)].
 
-    TWO SHAPES ARE ANSWERED:
+    THREE SHAPES ARE ANSWERED:
     - an O_PATH word ([open_path_word]) on any procfs name: an
       [OProcPath c] descriptor, or an errno;
     - O_RDONLY (with [open_ignored_flags]) on either
       [proc_sys_overflowuid_path] or [proc_sys_overflowgid_path]: an
-      [OProcFile c] descriptor, or an errno.
-    Every other word and sysctl name is declined, as it was before this arm.
+      [OProcFile c] descriptor, or an errno;
+    - a [procfd_dir_word] on [proc_self_fd_path] exactly: an
+      [OProcFdDir flags (Some 0)] descriptor (the open word, and the
+      position 0 [alloc_empty_file] starts every file at), or an errno.
+      "/proc/self" is [proc_self_get_link]'s link to the caller's own
+      thread-group directory, or -ENOENT when the caller has no pid in
+      that procfs's namespace, so the directory listed is always the
+      caller's own descriptor table.  [proc_fd_operations] has no
+      [.open], so [do_dentry_open] changes nothing the process can see.
+    Every other word and sysctl name is declined, as it was before this
+    arm, and so is every other spelling of the directory's name
+    ("/proc/self/fd/", "/proc/<pid>/fd").
 
     KERNEL PATH, read at v6.18.44:
       fs/open.c [SYSCALL_DEFINE4(openat)], [do_sys_openat2],
@@ -1492,6 +1540,10 @@ Definition proc_open_result (m : Model) (o : OpaqueFd) : Sys SyscallEffect :=
         [link_path_walk], [do_open]: read at v6.18.44; identical at v6.18.46.
       fs/file.c [get_unused_fd_flags], [alloc_fd]: read at v6.18.44; identical at v6.18.46.
       fs/proc/proc_sysctl.c [proc_sys_open], [proc_sys_permission]: read at v6.18.44; identical at v6.18.46.
+      fs/proc/self.c [proc_self_get_link]: read at v6.18.44; identical at v6.18.46.
+      fs/proc/base.c [proc_pid_lookup], [proc_tgid_base_lookup],
+        [proc_pident_lookup], [proc_pident_instantiate]: read at v6.18.44; identical at v6.18.46.
+      fs/proc/fd.c [proc_fd_permission], [proc_fd_operations]: read at v6.18.44; identical at v6.18.46.
 
     THE SUCCESS.  [do_sys_openat2] takes the lowest free descriptor
     ([get_unused_fd_flags]) before the walk and installs the file there.
@@ -1532,6 +1584,8 @@ Definition openat_proc_spec (c : path) (flags : word) (m : Model)
   let fl := Z.ldiff (bv_unsigned flags) open_ignored_flags in
   if open_path_word fl then proc_open_result m (OProcPath c)
   else if Z.eqb fl 0 && proc_sys_file_b c then proc_open_result m (OProcFile c)
+  else if procfd_dir_word fl && path_eqb c proc_self_fd_path
+  then proc_open_result m (OProcFdDir flags (Some (Z_to_bv 64 0)))
   else unmodeled.
 
 (** [openat dirfd path flags mode].  Modeled shapes (the
@@ -1629,10 +1683,11 @@ Definition openat_proc_spec (c : path) (flags : word) (m : Model)
     PROCFS NAMES ARE THE OTHER EXCEPTION, ahead of all of the above: an
     absolute name under "/proc", from any dirfd, or a name relative to
     an O_PATH descriptor on one ([State.OProcPath]), is
-    [openat_proc_spec]'s, which answers the O_PATH words and O_RDONLY
+    [openat_proc_spec]'s, which answers the O_PATH words, O_RDONLY
     only for [proc_sys_overflowuid_path] and [proc_sys_overflowgid_path],
-    and declines the rest ([proc_open_target]).  An O_PATH word on any
-    other name is declined.
+    and the [procfd_dir_word]s only for [proc_self_fd_path], and
+    declines the rest ([proc_open_target]).  An O_PATH word or an
+    O_NOCTTY word ([open_procfs_only_word]) on any other name is declined.
 
     Anything else — a dirfd other than AT_FDCWD, other flag
     combinations — is unmodeled: [unmodeled].  An open on an arm that can
@@ -1688,9 +1743,9 @@ Definition openat_body_spec (i : SyscallInput) (m : Model)
            modeled, so we can't decide the call — [unmodeled], NOT the
            program faulting. *)
         if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
-        (* an O_PATH word off procfs: declined, so that every arm below
-           sees only the access-mode words it was written for *)
-        else if open_path_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
+        (* an O_PATH or O_NOCTTY word off procfs: declined, so that every
+           arm below sees only the access-mode words it was written for *)
+        else if open_procfs_only_word (Z.ldiff (bv_unsigned flags) open_ignored_flags)
         then unmodeled
         else openat_resolved_spec p flags m
         end

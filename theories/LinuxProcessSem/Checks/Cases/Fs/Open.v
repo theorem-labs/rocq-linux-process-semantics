@@ -2477,3 +2477,41 @@ Example openat_relative_dotdot_from_proc_fd_declines :
        (with_copyins [(8192, 7%nat)] (mkEffect 4 [] [])) proc_fd_model
      = CheckOk (proc_opened proc_fd_model 4 (OProcPath s_proc_pid_ns)) [].
 Proof. repeat split; check_eq. Qed.
+
+(** THE /proc/self/fd DIRECTORY.  bubblewrap's monitor process lists
+    its own descriptors with [openat(proc_fd, "self/fd",
+    O_DIRECTORY|O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_NOCTTY)], which musl
+    issues with O_LARGEFILE as well: the word 0x98900.  The answer is
+    the lowest free descriptor holding [State.OProcFdDir] with that word
+    and position 0, or any errno but -EINTR; the 8 pathname bytes are on
+    the ledger either way.  The absolute name from AT_FDCWD answers
+    alike.  Before this arm both were declined.
+
+    THE CONTROL is declined by the old text and the new: the same word
+    on "self/fdinfo", a /proc directory the model does not list. *)
+Definition s_self_fd : list byte := [115; 101; 108; 102; 47; 102; 100].  (* "self/fd" *)
+Definition s_proc_self_fd : list byte :=
+  [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 102; 100].        (* "/proc/self/fd" *)
+Definition s_self_fdinfo : list byte :=
+  [115; 101; 108; 102; 47; 102; 100; 105; 110; 102; 111].             (* "self/fdinfo" *)
+
+Example openat_proc_self_fd_directory :
+  check_syscall (proc_open_in 3 s_self_fd 0x98900)
+    (with_copyins [(8192, 8%nat)] (mkEffect 4 [] [])) proc_fd_model
+  = CheckOk (proc_opened proc_fd_model 4
+               (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))) []
+  /\ check_syscall (proc_open_in 3 s_self_fd 0x98900)
+       (with_copyins [(8192, 8%nat)] (mkEffect (errno_ret EMFILE) [] [])) proc_fd_model
+     = CheckOk proc_fd_model []
+  /\ check_syscall (proc_open_in 3 s_self_fd 0x98900)
+       (with_copyins [(8192, 8%nat)] (mkEffect (errno_ret EINTR) [] [])) proc_fd_model
+     = CheckReject
+  /\ check_syscall (proc_open_in AT_FDCWD s_proc_self_fd 0x98900)
+       (with_copyins [(8192, 14%nat)] (mkEffect 3 [] [])) proc_open_model
+     = CheckOk (proc_opened proc_open_model 3
+                  (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))) []
+  (* the control *)
+  /\ check_syscall (proc_open_in 3 s_self_fdinfo 0x98900)
+       (with_copyins [(8192, 12%nat)] (mkEffect 4 [] [])) proc_fd_model
+     = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.

@@ -58,7 +58,7 @@ Definition lowest_fd (fds : list (word * FdEntry)) : Sys word :=
       description shares: copying the entry IS the sharing.
     - [FdDir] is nullary, and no modeled arm observes a directory
       position: [ReadWrite.lseek_spec] declines on [FdDir], and
-      [Readdir.getdents64_spec] declines every listing, answering only
+      [Readdir.getdents64_spec] declines every listing of an [FdDir], answering only
       where the buffer has no room for an entry — which is the arm that
       moves no position.
     - [FdFile]/[FdFileW]/[FdFileRW] carry [offset], which read, readv,
@@ -152,15 +152,18 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      file]s on the random device draw from one generator.  Copying the
      entry loses nothing. *)
   | FdUrandom => true
-  (* THE FOUR OPAQUE OBJECTS DECLINE.  [SYSCALL_DEFINE1(dup)]'s
+  (* EVERY OPAQUE OBJECT DECLINES.  [SYSCALL_DEFINE1(dup)]'s
      [fget_raw] accepts an O_PATH file too (fs/file.c, read at
-     v6.18.44; identical at v6.18.46), so Linux duplicates all four.
+     v6.18.44; identical at v6.18.46), so Linux duplicates them all.
      Copying the entry would be exact for [OProcPath] (nothing modeled
      reads its [f_pos] or [f_flags]) and for [OProcFile] (each read's
      bytes are the environment's whatever the shared offset), and for an
-     eventfd it would be a second reference to one counter, which no
-     modeled arm reads.  An [ONsFile] is declined so that no arm of this
-     model mints one.  None of that is needed, so it is not written. *)
+     eventfd it would be a second reference to one counter the model
+     holds as the environment's.  It would be WRONG for [OProcFdDir]:
+     the copy would carry its own position, and Linux's two descriptors
+     share one [f_pos].  An [ONsFile] is declined so that no arm of this
+     model mints one.  None of the exact cases is needed, so none is
+     written. *)
   | FdOpaque _ => false
   end.
 

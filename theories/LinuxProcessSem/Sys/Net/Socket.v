@@ -1120,6 +1120,14 @@ Definition sock_fd (m : Model) (fd : word) : SockState + Z :=
   | Some (FdOpaque (ONsFile _)) => inr ENOTSOCK
                                        (* never consulted: each of the five calls
                                           declines this kind first ([fd_is_ns_file]) *)
+  | Some (FdOpaque (OProcFdDir _ _)) => inr ENOTSOCK
+                                       (* the /proc/self/fd directory: [proc_fd_operations]
+                                          (fs/proc/fd.c, v6.18.44; identical at v6.18.46) is
+                                          not [socket_file_ops] *)
+  | Some (FdOpaque (OSignalFd _ _)) => inr ENOTSOCK
+                                       (* a signalfd: [signalfd_fops] (fs/signalfd.c,
+                                          v6.18.44; identical at v6.18.46) is not
+                                          [socket_file_ops] *)
   | Some (FdSocket sk)  => inl sk
   end.
 
