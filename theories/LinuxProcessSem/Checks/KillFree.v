@@ -385,14 +385,72 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
+(** The opaque arms keep the model: every answer is the model they were
+    given and no event.  Proved apart, once each, so that [check_read_kf],
+    [check_write_kf] and [check_fstat_kf] do not open the opaque arms
+    inside every branch of the arm around them, which costs the build
+    more memory than a CI runner has. *)
+Ltac opaque_keeps H :=
+  repeat (cbv beta iota zeta in H;
+          lazymatch type of H with
+          | CheckOk _ _ = CheckOk _ _ => fail
+          | check_ret_only _ _ _ _ = CheckOk _ _ => fail
+          | check_ret_only_copyins _ _ _ _ _ = CheckOk _ _ => fail
+          | _ => first
+                 [ discriminate H
+                 | match type of H with
+                   | context [match ?x with _ => _ end] => destruct x
+                   | context [if ?b then _ else _] => destruct b
+                   end ]
+          end);
+  first
+    [ discriminate H
+    | (injection H as <- <-; split; reflexivity)
+    | (apply check_ret_only_ok_iff in H;
+       let H1 := fresh in let H2 := fresh in
+       destruct H as (_ & H1 & H2); subst; split; reflexivity)
+    | (apply check_ret_only_copyins_ok_iff in H;
+       let H1 := fresh in let H2 := fresh in
+       destruct H as (_ & H1 & H2); subst; split; reflexivity) ].
+
+(** A read of an opaque object (a /proc/sys file, an eventfd). *)
+Lemma check_read_opaque_keeps : forall i o buf count eff m m' evs,
+  check_read_opaque i o buf count eff m = CheckOk m' evs -> m' = m /\ evs = [].
+Proof.
+  intros i o buf count eff m m' evs H.
+  unfold check_read_opaque, check_read_proc, check_read_proc_bare, check_read_eventfd,
+    check_eventfd_deliver in H.
+  opaque_keeps H.
+Qed.
+
+(** A write to an opaque object (an eventfd). *)
+Lemma check_write_opaque_keeps : forall i o buf count eff m m' evs,
+  check_write_opaque i o buf count eff m = CheckOk m' evs -> m' = m /\ evs = [].
+Proof.
+  intros i o buf count eff m m' evs H.
+  unfold check_write_opaque, check_write_eventfd in H.
+  opaque_keeps H.
+Qed.
+
+(** [fstat] of an opaque object (the /proc/self/fd directory). *)
+Lemma check_fstat_opaque_keeps : forall i o statbuf eff m m' evs,
+  check_fstat_opaque i o statbuf eff m = CheckOk m' evs -> m' = m /\ evs = [].
+Proof.
+  intros i o statbuf eff m m' evs H.
+  unfold check_fstat_opaque, check_fstat_procfd_dir in H.
+  opaque_keeps H.
+Qed.
+
 Lemma check_read_kf : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd buf count eff m m' evs H Hoff Hk.
-  unfold check_read, check_read_urandom, check_socket_pending_error, check_access_ok_zero,
-    check_read_proc, check_read_proc_bare in H.
+  unfold check_read, check_read_urandom, check_socket_pending_error, check_access_ok_zero in H.
   cbv zeta in H.
-  kf_frame H m Hoff Hk.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (apply check_read_opaque_keeps in H; destruct H as [-> ->])).
+  all: kf_close m Hoff Hk.
 Qed.
 
 Lemma check_write_kf : forall i fd buf count eff m m' evs,
@@ -400,7 +458,10 @@ Lemma check_write_kf : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H Hoff Hk.
   unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
-  kf_frame H m Hoff Hk.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (apply check_write_opaque_keeps in H; destruct H as [-> ->])).
+  all: kf_close m Hoff Hk.
 Qed.
 
 Lemma check_pread64_kf : forall i fd buf count pos eff m m' evs,
@@ -500,11 +561,12 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_getdents64_kf : forall fd count eff m m' evs,
-  check_getdents64 fd count eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_getdents64_kf : forall i fd dirent count eff m m' evs,
+  check_getdents64 i fd dirent count eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros fd count eff m m' evs H Hoff Hk.
-  unfold check_getdents64 in H.
+  intros i fd dirent count eff m m' evs H Hoff Hk.
+  unfold check_getdents64, check_getdents64_opaque, check_procfd_getdents in H.
+  cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -686,7 +748,10 @@ Proof.
   intros i fd statbuf eff m m' evs H Hoff Hk.
   unfold check_fstat, check_fstat_file, check_fstat_devnull, check_fstat_urandom,
     check_fstat_chrdev, check_fstat_deliver, check_fstat_deliver_by in H.
-  kf_frame H m Hoff Hk.
+  cbv beta iota zeta in H;
+  repeat (kf_step H || kf_done H Hoff Hk
+          || (apply check_fstat_opaque_keeps in H; destruct H as [-> ->])).
+  all: kf_close m Hoff Hk.
 Qed.
 
 Lemma check_getid_kf : forall sel eff m m' evs,
@@ -998,6 +1063,14 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
+Lemma check_signalfd4_kf : forall i ufd mask sizemask flags eff m m' evs,
+  check_signalfd4 i ufd mask sizemask flags eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i ufd mask sizemask flags eff m m' evs H Hoff Hk.
+  unfold check_signalfd4, check_new_fd_result in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
 Lemma check_pipe2_kf : forall i fildes flags eff m m' evs,
   check_pipe2 i fildes flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
@@ -1137,6 +1210,7 @@ Proof.
     | eapply check_connect_kf; eassumption
     | eapply check_timerfd_create_kf; eassumption
     | eapply check_eventfd2_kf; eassumption
+    | eapply check_signalfd4_kf; eassumption
     | eapply check_pipe2_kf; eassumption
     | eapply check_getcwd_kf; eassumption
     | eapply check_epoll_create1_kf; eassumption

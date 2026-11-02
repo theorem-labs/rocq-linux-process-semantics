@@ -69,7 +69,7 @@
  },
  "mkProcState": {
   "theories/LinuxProcessSem/Procs.v": 1,
-  "theories/LinuxProcessSem/State.v": 26
+  "theories/LinuxProcessSem/State.v": 24
  },
  "mkShared": {
   "theories/LinuxProcessSem/Procs.v": 6

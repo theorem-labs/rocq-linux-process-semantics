@@ -419,17 +419,22 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                answer is [DEFAULT_POLLMASK] and would be [true].  Not
                written; declined. *)
             | Some (FdOpaque _) => false
-            (* FAIL-CLOSED, and for each of the four objects a
+            (* FAIL-CLOSED, and for each of the six objects a
                different reason.  An O_PATH descriptor is refused by
                [select_poll_one]'s [CLASS(fd, f)] ([fdget] skips
                FMODE_PATH, fs/file.c), which answers EPOLLNVAL, a bit
                of all three result sets (fs/select.c); an eventfd's
                mask is [eventfd_poll]'s, a function of a counter the
                model does not hold (fs/eventfd.c); a /proc/sys file has
-               [proc_sys_poll] (fs/proc/proc_sysctl.c).  All read at
-               v6.18.44; identical at v6.18.46; an [ONsFile]'s object is
-               of unknown type.  None is written as an arm, so the call
-               declines to [PsCoreGap]. *)
+               [proc_sys_poll] (fs/proc/proc_sysctl.c); the
+               /proc/self/fd directory's [proc_fd_operations] has no
+               [.poll], so its mask is [DEFAULT_POLLMASK]
+               (fs/proc/fd.c); a signalfd's is [signalfd_poll]'s, a
+               function of pending signals the model does not hold
+               (fs/signalfd.c).  All read at v6.18.44; identical at
+               v6.18.46; an [ONsFile]'s object is of unknown type.  None
+               is written as an arm, so the call declines to
+               [PsCoreGap]. *)
             end
        else true)
       && bits_all_pollable fds z k'
@@ -1026,8 +1031,11 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
            (* FAIL-CLOSED: [do_pollfd]'s [fdget] refuses an O_PATH
               descriptor (that would be [EPOLLNVAL]), an eventfd answers
               [eventfd_poll] off its counter, a /proc/sys file answers
-              [proc_sys_poll], and an [ONsFile]'s object is of unknown
-              type; none of the four is written *)
+              [proc_sys_poll], the /proc/self/fd directory
+              [DEFAULT_POLLMASK] (no [.poll]), a signalfd
+              [signalfd_poll] off its pending signals, and an
+              [ONsFile]'s object is of unknown type; none of the six is
+              written *)
        end.
 
 Fixpoint ppoll_revents (fds : list (word * FdEntry)) (es : list (Z * Z))
