@@ -46,8 +46,9 @@ Definition ns_fd_entry (h : N) : FdEntry := FdOpaque (ONsFile h).
 Definition fd_entry_handle (e : FdEntry) : option N :=
   match e with FdOpaque (ONsFile h) => Some h | _ => None end.
 
-(** One of the four opaque objects ([State.FdOpaque]): an O_PATH or
-    /proc/sys file, an eventfd, or an open file of the namespace model. *)
+(** One of the opaque objects ([State.FdOpaque]): an O_PATH or /proc/sys
+    file, an eventfd, an open file of the namespace model, the
+    /proc/self/fd directory, or a signalfd. *)
 Definition fd_entry_opaque (e : FdEntry) : bool :=
   match e with FdOpaque _ => true | _ => false end.
 

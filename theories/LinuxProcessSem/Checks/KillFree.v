@@ -390,7 +390,8 @@ Lemma check_read_kf : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H Hoff Hk.
   unfold check_read, check_read_urandom, check_socket_pending_error, check_access_ok_zero,
-    check_read_proc, check_read_proc_bare in H.
+    check_read_opaque, check_read_proc, check_read_proc_bare, check_read_eventfd,
+    check_eventfd_deliver in H.
   cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
@@ -399,7 +400,8 @@ Lemma check_write_kf : forall i fd buf count eff m m' evs,
   check_write i fd buf count eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd buf count eff m m' evs H Hoff Hk.
-  unfold check_write, check_write_fault_extend, check_access_ok_zero in H.
+  unfold check_write, check_write_fault_extend, check_access_ok_zero,
+    check_write_opaque, check_write_eventfd in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -500,11 +502,12 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_getdents64_kf : forall fd count eff m m' evs,
-  check_getdents64 fd count eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_getdents64_kf : forall i fd dirent count eff m m' evs,
+  check_getdents64 i fd dirent count eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros fd count eff m m' evs H Hoff Hk.
-  unfold check_getdents64 in H.
+  intros i fd dirent count eff m m' evs H Hoff Hk.
+  unfold check_getdents64, check_getdents64_opaque, check_procfd_getdents in H.
+  cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -685,7 +688,8 @@ Lemma check_fstat_kf : forall i fd statbuf eff m m' evs,
 Proof.
   intros i fd statbuf eff m m' evs H Hoff Hk.
   unfold check_fstat, check_fstat_file, check_fstat_devnull, check_fstat_urandom,
-    check_fstat_chrdev, check_fstat_deliver, check_fstat_deliver_by in H.
+    check_fstat_chrdev, check_fstat_deliver, check_fstat_deliver_by,
+    check_fstat_opaque, check_fstat_procfd_dir in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -998,6 +1002,14 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
+Lemma check_signalfd4_kf : forall i ufd mask sizemask flags eff m m' evs,
+  check_signalfd4 i ufd mask sizemask flags eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i ufd mask sizemask flags eff m m' evs H Hoff Hk.
+  unfold check_signalfd4, check_new_fd_result in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
 Lemma check_pipe2_kf : forall i fildes flags eff m m' evs,
   check_pipe2 i fildes flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
@@ -1137,6 +1149,7 @@ Proof.
     | eapply check_connect_kf; eassumption
     | eapply check_timerfd_create_kf; eassumption
     | eapply check_eventfd2_kf; eassumption
+    | eapply check_signalfd4_kf; eassumption
     | eapply check_pipe2_kf; eassumption
     | eapply check_getcwd_kf; eassumption
     | eapply check_epoll_create1_kf; eassumption

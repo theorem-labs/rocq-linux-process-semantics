@@ -669,3 +669,40 @@ Example readlinkat_reads_its_pathname :
        statat_absent_model
      = CheckOk statat_absent_model [].
 Proof. repeat split; check_eq. Qed.
+
+(** fstat (80) ON THE /proc/self/fd DIRECTORY ([State.OProcFdDir]).
+    musl's [fdopendir] calls [fstat] first and refuses anything that is
+    not a directory.  The model pins the type and the mode, S_IFDIR with
+    0500 ([PROCFD_DIR_MODE]: the "fd" entry of [tgid_base_stuff],
+    fs/proc/base.c, read at v6.18.44; identical at v6.18.46), and leaves
+    every other member to the environment.
+    A regular-file mode is rejected.  Before this arm fstat on every
+    opaque kind was declined.
+
+    THE CONTROL is declined by the old text and the new: fstat on the
+    O_PATH descriptor on "/proc" at fd 3. *)
+Definition procfd_stat_model : Model :=
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  with_fds (fd_insert (fd_insert (m_fds m)
+              3 (FdOpaque (OProcPath [47; 112; 114; 111; 99])))
+              4 (FdOpaque (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0))))) m.
+
+Definition procfd_fstat_in (fd : word) : SyscallInput :=
+  mkInput 80 [fd; 0x3000; 0; 0; 0; 0] (fun _ => None) ns_buf_wmem.
+
+Example fstat_proc_self_fd_directory :
+  check_syscall (procfd_fstat_in 4)
+    (mkEffect 0 [(0x3000, stat_of 1234 PROCFD_DIR_MODE 0 0 0)] []) procfd_stat_model
+  = CheckOk procfd_stat_model []
+  /\ check_syscall (procfd_fstat_in 4)
+       (mkEffect 0 [(0x3000, stat_of 1234 PROCFD_DIR_MODE 3 0 7)] []) procfd_stat_model
+     = CheckOk procfd_stat_model []
+  (* a regular file's mode *)
+  /\ check_syscall (procfd_fstat_in 4)
+       (mkEffect 0 [(0x3000, stat_of 1234 (S_IFREG + 420) 0 0 0)] []) procfd_stat_model
+     = CheckReject
+  (* the control *)
+  /\ check_syscall (procfd_fstat_in 3)
+       (mkEffect 0 [(0x3000, stat_of 1234 PROCFD_DIR_MODE 0 0 0)] []) procfd_stat_model
+     = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
