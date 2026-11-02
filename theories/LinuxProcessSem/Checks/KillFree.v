@@ -440,7 +440,7 @@ Lemma check_openat_kf : forall i dirfd pathp flags eff m m' evs,
   check_openat i dirfd pathp flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i dirfd pathp flags eff m m' evs H Hoff Hk.
-  unfold check_openat, Open.check_openat_body, Open.check_openat_resolved, Open.check_openat_sep, Open.check_openat_localtime, Open.check_openat_devnull, Open.check_open_devnull, Open.check_openat_urandom, Open.check_open_urandom, Open.check_openat_tmp, Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl, Open.check_openat_dir, Open.check_openat_append, Open.check_openat_rdwr, Open.check_openat_rdwr_excl, check_create_wronly, check_open_append, check_open_rdwr in H.
+  unfold check_openat, Open.check_openat_body, Open.check_openat_resolved, Open.check_openat_sep, Open.check_openat_localtime, Open.check_openat_devnull, Open.check_open_devnull, Open.check_openat_urandom, Open.check_open_urandom, Open.check_openat_tmp, Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl, Open.check_openat_dir, Open.check_openat_append, Open.check_openat_rdwr, Open.check_openat_rdwr_excl, Open.check_openat_proc, Open.check_proc_open_result, check_create_wronly, check_open_append, check_open_rdwr in H.
   kf_frame H m Hoff Hk.
 Qed.
 
