@@ -411,20 +411,36 @@ class CommentsTest(Runner):
 class CommentStepTest(Runner):
     """The step that makes the model's text into the comment the post job writes."""
 
-    def comment(self, text):
+    def comment(self, text, screened="", want_foot=None):
         result = os.path.join(self.dir, "result.json")
         with open(result, "w") as f:
             json.dump([{"type": "assistant"}, {"type": "result", "structured_output": {"comment": text}}], f)
         s = step("review", "The comment, as it is posted")
-        rc, out, got = self.run_script(s["run"], RESULT=result, RULES=RULES, RUN=RUN)
+        rc, out, got = self.run_script(s["run"], RESULT=result, RULES=RULES, RUN=RUN, SCREENED=screened)
         self.assertEqual(rc, 0, out)
         body = got["body"]
         head, rest = body.split("\n\n", 1)
         self.assertEqual(head, "<!-- review -->\n**Automated review** of this issue")
         text, foot = rest.rsplit("\n\n---\n", 1)
-        self.assertEqual(foot, f"Claude wrote this review by [these rules]({RULES}) ([run]({RUN})). "
+        self.assertEqual(foot, (want_foot or "") + f"Claude wrote this review by [these rules]({RULES}) ([run]({RUN})). "
                                "It is advice; a maintainer decides.")
         return text
+
+    def test_a_screened_review_names_the_checks_that_ran(self):
+        """A clean verdict from fewer checks must not read as one from all three."""
+        for screened, names in (("model_armor", "Google Cloud Model Armor"),
+                                ("model_armor,prompt_shields",
+                                 "Google Cloud Model Armor, Azure AI Content Safety Prompt Shields"),
+                                ("model_armor,prompt_shields,claude", "Google Cloud Model Armor, Azure AI Content "
+                                 "Safety Prompt Shields, a Claude model with no tools")):
+            with self.subTest(screened=screened):
+                self.comment("ok", screened, f"An automated screen passed it first. The checks that ran: {names}. ")
+        s = step("review", "The comment, as it is posted")
+        self.assertEqual(s["env"]["SCREENED"],
+                         "${{ needs.trust.outputs.route == 'screen' && needs.screen.outputs.checks || '' }}")
+        result = os.path.join(self.dir, "result.json")
+        rc, _out, _got = self.run_script(s["run"], RESULT=result, RULES=RULES, RUN=RUN, SCREENED="x; rm -rf /")
+        self.assertNotEqual(rc, 0)
 
     def assertInert(self, text):
         self.assertNotRegex(text, "@(?!" + WJ + ")")
@@ -719,7 +735,8 @@ class HoldingsTest(unittest.TestCase):
         job = JOBS["screen"]
         self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write"})
         self.assertEqual(job["environment"], {"name": "review-screen", "deployment": False})
-        self.assertEqual(job["outputs"], {"verdict": "${{ steps.screen.outputs.verdict }}"})
+        self.assertEqual(job["outputs"], {"verdict": "${{ steps.screen.outputs.verdict }}",
+                                          "checks": "${{ steps.screen.outputs.checks }}"})
         for s in job["steps"]:
             if "uses" in s and s["uses"].startswith("actions/checkout@"):
                 self.assertIs(s["with"]["persist-credentials"], False)
@@ -769,9 +786,11 @@ class HoldingsTest(unittest.TestCase):
         self.assertRegex(e["CONTENT_SAFETY_URL"], r"^https://[a-z0-9-]+\.cognitiveservices\.azure\.com$")
         self.assertEqual(e["ANTHROPIC_URL"], "https://api.anthropic.com")
         self.assertEqual(e["STORAGE_URL"], "https://storage.googleapis.com")
-        self.assertRegex(e["AZURE_CLIENT_ID"], r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-        self.assertRegex(e["ANTHROPIC_SERVICE_ACCOUNT_ID"], r"^svac_[0-9A-Za-z]+$")
-        self.assertRegex(e["ANTHROPIC_FEDERATION_RULE_ID"], r"^fdrl_[0-9A-Za-z]+$")
+        # an identity not set up yet is empty, and its check does not run; one that is set up is well formed
+        self.assertRegex(e["AZURE_CLIENT_ID"], r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$")
+        self.assertRegex(e["ANTHROPIC_SERVICE_ACCOUNT_ID"], r"^(svac_[0-9A-Za-z]+)?$")
+        self.assertRegex(e["ANTHROPIC_FEDERATION_RULE_ID"], r"^(fdrl_[0-9A-Za-z]+)?$")
+        self.assertEqual(bool(e["ANTHROPIC_SERVICE_ACCOUNT_ID"]), bool(e["ANTHROPIC_FEDERATION_RULE_ID"]))
         # the review's own account and rule are not the screen's
         review = step("review", "Review")["with"]
         self.assertNotEqual(e["ANTHROPIC_SERVICE_ACCOUNT_ID"], review["anthropic_service_account_id"])

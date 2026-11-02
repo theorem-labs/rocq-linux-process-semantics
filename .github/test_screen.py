@@ -194,9 +194,10 @@ class ScreenTest(unittest.TestCase):
 
     def verdict(self):
         written, printed, reason = self.run_screen()
-        self.assertIn(written, ("verdict=clean\n", "verdict=held\n"))
+        self.assertRegex(written, r"^verdict=(clean|held)\nchecks=[a-z_,]*\n$")
         self.assertEqual(printed.count("\n"), 1, printed)
-        return written.split("=")[1].strip(), reason
+        self.assertEqual(written.split("\n")[1], "checks=" + ",".join(reason.get("ran", [])))
+        return written.split("\n")[0].split("=")[1], reason
 
     # --- the verdict ------------------------------------------------------------------------------------------
 
@@ -269,12 +270,53 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual(v, "held")
         self.assertEqual(reason["checks"]["prompt_shields"]["word"], "error")
 
-    def test_a_setting_not_set_holds_it(self):
+    def test_a_check_that_is_set_up_in_part_holds_it(self):
+        """Fail closed for a check that is set up: one of its settings missing is no answer."""
+        for check, setting in (("claude", "ANTHROPIC_SERVICE_ACCOUNT_ID"), ("prompt_shields", "AZURE_TENANT_ID"),
+                               ("model_armor", "MODEL_ARMOR_TEMPLATE")):
+            with self.subTest(setting=setting):
+                self.fresh()
+                self.item()
+                del self.env[setting]
+                v, reason = self.verdict()
+                self.assertEqual(v, "held")
+                self.assertIn(setting, reason["checks"][check]["error"])
+        # without the Google token, Model Armor cannot answer, and the reason cannot be stored either
+        self.fresh()
         self.item()
-        del self.env["ANTHROPIC_FEDERATION_RULE_ID"]
-        v, reason = self.verdict()
-        self.assertEqual(v, "held")
-        self.assertIn("ANTHROPIC_FEDERATION_RULE_ID", reason["checks"]["claude"]["error"])
+        del self.env["GOOGLE_ACCESS_TOKEN"]
+        written, printed, reason = self.run_screen()
+        self.assertEqual((written.split("\n")[0], reason), ("verdict=held", None))
+        self.assertTrue(printed.endswith("Its reason could not be stored.\n"), printed)
+
+    def test_a_check_that_is_not_set_up_does_not_run_and_the_verdict_says_so(self):
+        for unset, ran in ((["ANTHROPIC_FEDERATION_RULE_ID"], ["model_armor", "prompt_shields"]),
+                           (["AZURE_CLIENT_ID"], ["model_armor", "claude"]),
+                           (["AZURE_CLIENT_ID", "ANTHROPIC_FEDERATION_RULE_ID"], ["model_armor"])):
+            with self.subTest(unset=unset):
+                self.fresh()
+                self.item()
+                for name in unset:
+                    self.env[name] = ""
+                written, printed, reason = self.run_screen()
+                self.assertEqual(written, f"verdict=clean\nchecks={','.join(ran)}\n")
+                self.assertIn(f"from the checks {', '.join(ran)}.", printed)
+                self.assertEqual(reason["ran"], ran)
+                for check, *_ in screen.CHECKS:
+                    if check not in ran:
+                        self.assertEqual(reason["checks"][check], {"word": "not set up"})
+                if "ANTHROPIC_FEDERATION_RULE_ID" in unset:
+                    self.assertEqual(self.services.to("/v1/messages") + self.services.to("/v1/oauth/token"), [])
+                if "AZURE_CLIENT_ID" in unset:
+                    self.assertEqual(self.services.to("/contentsafety/text:shieldPrompt"), [])
+
+    def test_model_armor_always_runs(self):
+        """No setting turns it off: without it no verdict is clean."""
+        self.assertIsNone(next(s for c, _f, s in screen.CHECKS if c == "model_armor"))
+        self.item()
+        self.env.update(AZURE_CLIENT_ID="", ANTHROPIC_FEDERATION_RULE_ID="")
+        self.services.answers[":sanitizeUserPrompt"] = (503, {"error": "down"})
+        self.assertEqual(self.verdict()[0], "held")
 
     def test_a_retried_service_that_answers_counts(self):
         self.item()
@@ -293,9 +335,9 @@ class ScreenTest(unittest.TestCase):
         self.services.answers[":sanitizeUserPrompt"] = (403, {"error": {"message": MARK}})
         self.services.answers["/v1/messages"] = lambda _b: message('{"verdict": "suspicious"}')
         written, printed, reason = self.run_screen()
-        self.assertEqual(written, "verdict=held\n")
-        self.assertEqual(printed, "The screen's verdict: held. Its reason is in the private bucket, as "
-                                  "acme/model/1-1.json.\n")
+        self.assertEqual(written, "verdict=held\nchecks=model_armor,prompt_shields,claude\n")
+        self.assertEqual(printed, "The screen's verdict: held, from the checks model_armor, prompt_shields, claude. "
+                                  "Its reason is in the private bucket, as acme/model/1-1.json.\n")
         self.assertIn(MARK, json.dumps(reason))
         upload = self.services.to("/storage/upload/storage/v1/b/reasons/o")[0]
         self.assertEqual(upload["query"]["ifGenerationMatch"], ["0"])
@@ -312,23 +354,24 @@ class ScreenTest(unittest.TestCase):
         r = subprocess.run([sys.executable, os.path.join(HERE, "screen.py"), self.review], env=env,
                            capture_output=True, text=True, timeout=120)
         self.assertEqual((r.returncode, r.stderr), (0, ""))
-        self.assertEqual(r.stdout, "The screen's verdict: held. Its reason is in the private bucket, as "
-                                   "acme/model/1-1.json.\n")
+        self.assertEqual(r.stdout, "The screen's verdict: held, from the checks model_armor, prompt_shields, claude. "
+                                   "Its reason is in the private bucket, as acme/model/1-1.json.\n")
         with open(self.output) as f:
-            self.assertEqual(f.read(), "verdict=held\n")
+            self.assertEqual(f.read(), "verdict=held\nchecks=model_armor,prompt_shields,claude\n")
 
     def test_a_reason_that_cannot_be_stored_is_lost_and_the_verdict_stands(self):
         self.item()
         self.env["STORAGE_URL"] = "http://127.0.0.1:9"
         written, printed, _reason = self.run_screen()
-        self.assertEqual(written, "verdict=clean\n")
-        self.assertEqual(printed, "The screen's verdict: clean. Its reason could not be stored.\n")
+        self.assertEqual(written, "verdict=clean\nchecks=model_armor,prompt_shields,claude\n")
+        self.assertEqual(printed, "The screen's verdict: clean, from the checks model_armor, prompt_shields, claude. "
+                                  "Its reason could not be stored.\n")
 
     def test_a_fault_of_the_screen_holds_it_and_prints_nothing_of_it(self):
         with open(os.path.join(self.review, "issue.json"), "w") as f:
             f.write("{not json " + MARK)
         written, printed, reason = self.run_screen()
-        self.assertEqual(written, "verdict=held\n")
+        self.assertEqual(written, "verdict=held\nchecks=\n")
         self.assertNotIn(MARK, printed)
         self.assertIn("fault", reason)
 

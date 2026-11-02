@@ -4,24 +4,27 @@ write access may go to the full review without a person.
 
     python3 .github/screen.py <the .review directory>
 
-Three independent checks read the text that the account wrote, and each answers one word, clean or suspicious:
+Up to three independent checks read the text that the account wrote, and each answers one word, clean or suspicious:
 
   Model Armor   Google Cloud Model Armor's prompt injection and jailbreak filter, through the template that
-                MODEL_ARMOR_TEMPLATE names (confidence medium and above).
+                MODEL_ARMOR_TEMPLATE names (confidence medium and above). Always runs.
   Prompt Shields
-                Azure AI Content Safety's Prompt Shields, its check of documents for attacks.
-  Claude        a small Claude model with no tools, whose answer a JSON schema holds to the two words.
+                Azure AI Content Safety's Prompt Shields, its check of documents for attacks. Runs when AZURE_CLIENT_ID
+                is set.
+  Claude        a small Claude model with no tools, whose answer a JSON schema holds to the two words. Runs when
+                ANTHROPIC_FEDERATION_RULE_ID is set.
 
-The verdict is clean when all three answer clean, and held otherwise: when any answers suspicious, when any cannot
-answer (a service that cannot be reached, refuses, or answers in a form this file does not know), and when the text
-cannot be screened at all (a changed file that is not text, or more text than MAX_CHARS). A held item gets no full
-review; a person decides.
+A check that is not set up does not run, and the verdict names the checks that ran. A check that is set up and cannot
+answer is no answer: the item is held. The verdict is clean when every check that ran answers clean, and held
+otherwise: when any answers suspicious, when any cannot answer (a service that cannot be reached, refuses, or answers
+in a form this file does not know, or a setting of it is missing), and when the text cannot be screened at all (a
+changed file that is not text, or more text than MAX_CHARS). A held item gets no full review; a person decides.
 
 What each check answered, and why the text could not be screened, is the reason. It goes as one JSON object to the
-private bucket REASON_BUCKET, and nowhere else: this file writes the verdict to GITHUB_OUTPUT and one line to its
-standard output, and nothing more, so the run's public log and its outputs never hold the reason. No check can act on
-the text: the text is sent to each service as data, the model has no tool, and what comes back is read for its one
-word and nothing else.
+private bucket REASON_BUCKET, and nowhere else: this file writes the verdict and the names of the checks that ran to
+GITHUB_OUTPUT and one line to its standard output, and nothing more, so the run's public log and its outputs never
+hold the reason. No check can act on the text: the text is sent to each service as data, the model has no tool, and
+what comes back is read for its one word and nothing else.
 
 Every setting is an environment variable that review.yml sets; the tokens come from GitHub's identity token, which
 the job's environment review-screen alone can exchange for them.
@@ -344,18 +347,27 @@ def claude(found):
     return claude_word(answer), {}
 
 
-CHECKS = (("model_armor", model_armor), ("prompt_shields", prompt_shields), ("claude", claude))
+# Each check, and the setting whose presence sets it up. Model Armor has none: it always runs, so no verdict is ever
+# clean without it.
+CHECKS = (("model_armor", model_armor, None), ("prompt_shields", prompt_shields, "AZURE_CLIENT_ID"),
+          ("claude", claude, "ANTHROPIC_FEDERATION_RULE_ID"))
 
 
 # --- the verdict --------------------------------------------------------------------------------------------------
 
 def screen(review):
-    """The verdict and the reason."""
+    """The verdict, the names of the checks that ran, and the reason. A check runs when it is set up; one that runs
+    and cannot answer holds the item."""
     found, unscreenable = parts(review)
     reason = {"sources": [[s, len(t)] for s, t in found], "unscreenable": unscreenable, "checks": {}}
     if unscreenable:
-        return "held", reason
-    for name, check in CHECKS:
+        return "held", [], reason
+    ran = []
+    for name, check, setting in CHECKS:
+        if setting and not os.environ.get(setting):
+            reason["checks"][name] = {"word": "not set up"}
+            continue
+        ran.append(name)
         try:
             word, detail = check(found)
         except CheckError as e:
@@ -363,8 +375,8 @@ def screen(review):
         except Exception as e:   # a fault of this file: no answer, and so held
             word, detail = "error", {"error": f"{type(e).__name__}: {str(e)[:2000]}"}
         reason["checks"][name] = dict(detail, word=word)
-    clean = all(reason["checks"][name]["word"] == "clean" for name, _check in CHECKS)
-    return ("clean" if clean else "held"), reason
+    clean = bool(ran) and all(reason["checks"][name]["word"] == "clean" for name in ran)
+    return ("clean" if clean else "held"), ran, reason
 
 
 def store(reason):
@@ -383,19 +395,19 @@ def main():
         print("usage: screen.py <the .review directory>", file=sys.stderr)
         return 2
     try:
-        verdict, reason = screen(sys.argv[1])
+        verdict, ran, reason = screen(sys.argv[1])
     except Exception as e:   # a fault of this file before the checks: held, and the fault goes to the reason only
-        verdict, reason = "held", {"fault": f"{type(e).__name__}: {str(e)[:2000]}"}
-    reason.update(verdict=verdict, repository=os.environ.get("REPOSITORY", ""), number=os.environ.get("NUMBER", ""),
-                  run=os.environ.get("RUN_URL", ""))
+        verdict, ran, reason = "held", [], {"fault": f"{type(e).__name__}: {str(e)[:2000]}"}
+    reason.update(verdict=verdict, ran=ran, repository=os.environ.get("REPOSITORY", ""),
+                  number=os.environ.get("NUMBER", ""), run=os.environ.get("RUN_URL", ""))
     try:
         store(reason)
         kept = f"Its reason is in the private bucket, as {os.environ['REASON_OBJECT']}."
     except Exception:   # the reason is lost, never printed; the verdict stands
         kept = "Its reason could not be stored."
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
-        f.write(f"verdict={verdict}\n")
-    print(f"The screen's verdict: {verdict}. {kept}")
+        f.write(f"verdict={verdict}\nchecks={','.join(ran)}\n")
+    print(f"The screen's verdict: {verdict}, from the checks {', '.join(ran) or 'none'}. {kept}")
     return 0
 
 

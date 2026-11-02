@@ -7,10 +7,11 @@
 # count as having it.
 #
 # - When its author has write access, and so does the account whose action started the run, it is reviewed.
-# - Otherwise it is screened first (the screen job, .github/screen.py). Three independent checks read the text that
-#   the account wrote: Google Cloud Model Armor's prompt injection and jailbreak filter, Azure AI Content Safety's
-#   Prompt Shields, and a small Claude model with no tools, whose answer a schema holds to the words clean and
-#   suspicious. When all three answer clean it is reviewed, as a writer's is. Otherwise, and when a check cannot
+# - Otherwise it is screened first (the screen job, .github/screen.py). Independent checks read the text that the
+#   account wrote: Google Cloud Model Armor's prompt injection and jailbreak filter, always; Azure AI Content Safety's
+#   Prompt Shields, and a small Claude model with no tools whose answer a schema holds to the words clean and
+#   suspicious, each when its identity is set up below. When every check that ran answers clean it is reviewed, as a
+#   writer's is, and the review's comment names the checks that ran. Otherwise, and when a check that ran cannot
 #   answer, it is held: it gets the label review-held and a short comment, and no review, and a person decides. Why it
 #   was held goes to a private bucket, never to this run's log or outputs. When the account that started the run has
 #   no write access and its events have reached the screen OUTSIDE_HOURLY_LIMIT times in the last hour, it is held
@@ -29,11 +30,11 @@
 #   gather  reads the pull request or the issue as data into .review/, and keeps it as this run's artifact, which the
 #           screen job and the review job both take, by its SHA-256: the review reads what the screen passed. Its
 #           token can only read, and it holds no model.
-#   screen  runs in the environment review-screen. Its identity token is exchanged for three short-lived tokens, which
-#           only a job of this file in that environment can get: Google Cloud (Model Armor, and adding the reason to
-#           its bucket), Azure (Prompt Shields) and Anthropic (a service account of its own, not the review's). Its
-#           GitHub token can only read, and no key is stored. The checks get the text as data, and each answers a
-#           word; none can act on it.
+#   screen  runs in the environment review-screen. Its identity token is exchanged for short-lived tokens, which only
+#           a job of this file in that environment can get: Google Cloud (Model Armor, and adding the reason to its
+#           bucket), Azure (Prompt Shields) and Anthropic (a service account of its own, not the review's). Its GitHub
+#           token can only read, and no key is stored. The checks get the text as data, and each answers a word; none
+#           can act on it. Its outputs are the verdict and the names of the checks that ran.
 #   review  reads .review/, with this repository's main and the Linux and QEMU source the model describes, and asks
 #           Claude for the comment. It holds an identity token, which Anthropic exchanges for a short-lived token that
 #           can call Claude and nothing else; no key is stored. Anthropic's federation rule admits this file alone, on
@@ -382,6 +383,7 @@ jobs:
     permissions: {contents: read, id-token: write}
     outputs:
       verdict: ${{ steps.screen.outputs.verdict }}
+      checks: ${{ steps.screen.outputs.checks }}
     env:
       # Ids and endpoints, not secrets. Google Cloud: the pool, its provider and the account that only this
       # environment's jobs of this file reach, Model Armor's template, and the bucket the reason goes to.
@@ -394,15 +396,17 @@ jobs:
       # Azure: Theorem's tenant, the managed identity review-screen and the Content Safety account.
       AZURE_LOGIN_URL: https://login.microsoftonline.com
       AZURE_TENANT_ID: aaa6ad34-51af-41e7-891f-f16f5c53c396
-      AZURE_CLIENT_ID: AZURE_CLIENT_ID_AFTER_APPLY
+      # Empty until the managed identity exists: Prompt Shields then does not run, and the verdict says so.
+      AZURE_CLIENT_ID: ""
       CONTENT_SAFETY_URL: https://theorem-review-screen.cognitiveservices.azure.com
       # Anthropic: Theorem's organization, the service account review-screen, its workspace, and the federation rule
-      # that admits this file's jobs in review-screen on main.
+      # that admits this file's jobs in review-screen on main. The account and the rule ids are empty until they exist:
+      # the Claude check then does not run, and the verdict says so.
       ANTHROPIC_URL: https://api.anthropic.com
       ANTHROPIC_ORGANIZATION_ID: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
       ANTHROPIC_WORKSPACE_ID: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
-      ANTHROPIC_SERVICE_ACCOUNT_ID: ANTHROPIC_SERVICE_ACCOUNT_ID_AFTER_APPLY
-      ANTHROPIC_FEDERATION_RULE_ID: ANTHROPIC_FEDERATION_RULE_ID_AFTER_APPLY
+      ANTHROPIC_SERVICE_ACCOUNT_ID: ""
+      ANTHROPIC_FEDERATION_RULE_ID: ""
       SCREEN_MODEL: claude-haiku-5-5
     steps:
       # main's .github/, for screen.py; never the pull request.
@@ -631,6 +635,8 @@ jobs:
         env:
           RESULT: ${{ steps.review.outputs.execution_file }}
           RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review.md
+          # The checks the screen ran, when it screened this pull request or issue first.
+          SCREENED: ${{ needs.trust.outputs.route == 'screen' && needs.screen.outputs.checks || '' }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -654,8 +660,15 @@ jobs:
           fi
           what="this issue"
           [ ! -f .review/commits.txt ] || what="commit $(sed -n 's/^head //p' .review/commits.txt | cut -c1-12)"
-          body=$(printf '%s\n%s\n\n%s\n\n---\n%s\n' '<!-- review -->' "**Automated review** of $what" "$comment" \
-            "Claude wrote this review by [these rules]($RULES) ([run]($RUN)). It is advice; a maintainer decides.")
+          foot="Claude wrote this review by [these rules]($RULES) ([run]($RUN)). It is advice; a maintainer decides."
+          if [ -n "$SCREENED" ]; then
+            [[ $SCREENED =~ ^[a-z_]+(,[a-z_]+)*$ ]] || { echo "::error::not a list of checks: $SCREENED"; exit 1; }
+            names=$(tr ',' '\n' <<< "$SCREENED" | sed -e 's/^model_armor$/Google Cloud Model Armor/' \
+              -e 's/^prompt_shields$/Azure AI Content Safety Prompt Shields/' -e 's/^claude$/a Claude model with no tools/' \
+              | paste -sd ',' | sed 's/,/, /g')
+            foot="An automated screen passed it first. The checks that ran: $names. $foot"
+          fi
+          body=$(printf '%s\n%s\n\n%s\n\n---\n%s\n' '<!-- review -->' "**Automated review** of $what" "$comment" "$foot")
           delimiter="body_$(openssl rand -hex 16)"
           { echo "body<<$delimiter"; printf '%s\n' "$body"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
 
