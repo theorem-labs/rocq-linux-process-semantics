@@ -120,10 +120,11 @@ Definition sfd_read_in (fd count : Z) : SyscallInput :=
   mkInput 63 [Z_to_bv 64 fd; 0x10000; Z_to_bv 64 count; 0; 0; 0] (fun _ => None)
     (bytes_at 0x10000 (repeat (Z_to_bv 8 0) 256)).
 
-(** One [struct signalfd_siginfo] whose [ssi_signo] is [signo], the other
-    124 bytes 0. *)
+(** One [struct signalfd_siginfo] whose [ssi_signo] is [signo] and whose
+    [ssi_code] is CLD_EXITED (1), every other byte 0. *)
 Definition sfd_record (signo : Z) : list byte :=
-  word_le4 (Z_to_bv 64 signo) ++ repeat (Z_to_bv 8 0) 124.
+  word_le4 (Z_to_bv 64 signo) ++ repeat (Z_to_bv 8 0) 4
+  ++ word_le4 (Z_to_bv 64 1) ++ repeat (Z_to_bv 8 0) 116.
 
 (** bubblewrap's [read(signal_fd, &fdsi, 128)] with SIGCHLD blocked and a
     child recorded: -EAGAIN (no child has changed state yet), or 128 with
@@ -152,6 +153,25 @@ Example read_signalfd_bwrap_monitor :
   /\ check_syscall (sfd_read_in 3 128) (mkEffect (errno_ret EAGAIN) [] [])
        sfd_blocking_model
      = CheckUnmodeled.
+Proof. repeat split; check_eq. Qed.
+
+(** THE RECORD'S LAYOUT IS LINUX'S.  [signalfd_copyinfo] (fs/signalfd.c,
+    read at v6.18.44; identical at v6.18.46) zeroes the record and fills
+    only the [SIL_CHLD] fields, so a nonzero byte in [__pad] (offset 100)
+    or an [ssi_code] that is not a [CLD_*] code is rejected.  Before this
+    every byte but [ssi_signo] was admitted.  THE CONTROL is the record
+    with [ssi_code] CLD_EXITED and every other field 0, admitted by both. *)
+Example read_signalfd_record_layout :
+  check_syscall (sfd_read_in 3 128)
+    (mkEffect 128 [(0x10000, firstn 100 (sfd_record 17) ++ [Z_to_bv 8 0xff]
+                              ++ repeat (Z_to_bv 8 0) 27)] [])
+    sfd_ready_model = CheckReject
+  /\ check_syscall (sfd_read_in 3 128)
+       (mkEffect 128 [(0x10000, word_le4 (Z_to_bv 64 17) ++ repeat (Z_to_bv 8 0) 124)] [])
+       sfd_ready_model = CheckReject
+  (* the control *)
+  /\ check_syscall (sfd_read_in 3 128) (mkEffect 128 [(0x10000, sfd_record 17)] [])
+       sfd_ready_model = CheckOk sfd_ready_model [].
 Proof. repeat split; check_eq. Qed.
 
 (** WITH SIGCHLD NOT BLOCKED nothing can be pending: at SIG_DFL an

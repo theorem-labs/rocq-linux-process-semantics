@@ -889,7 +889,9 @@ Proof.
   apply andb_true_iff in H as [Hr Hk].
   unfold signalfd_record_ok in Hr.
   change (Z.to_nat SIGNALFD_SIGINFO_BYTES) with 128%nat in Hr.
-  apply andb_true_iff in Hr as [Hl _].
+  assert (Hl : Nat.eqb (length (firstn 128 bs)) 128 = true).
+  { destruct (Nat.eqb (length (firstn 128 bs)) 128); [reflexivity|].
+    cbn in Hr. discriminate Hr. }
   apply Nat.eqb_eq in Hl. rewrite length_firstn in Hl.
   revert Hk.
   destruct (skipn 128 bs) as [|b rest] eqn:E; intros Hk.

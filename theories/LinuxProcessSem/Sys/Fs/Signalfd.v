@@ -131,15 +131,38 @@ Definition signalfd_other_may_pend (mask : word) (m : Model) : bool :=
        && (m_sigpipe_pending m
            || (negb (m_sigpipe_default m) && sigpipe_blocked (m_sigmask m)))))%bool.
 
+(** The byte ranges, as (offset, length), of [struct signalfd_siginfo]
+    (include/uapi/linux/signalfd.h) that a SIGCHLD record leaves 0.
+    [signalfd_copyinfo] (fs/signalfd.c) starts from a zeroed record and,
+    for the [SIL_CHLD] layout, fills [ssi_signo], [ssi_errno], [ssi_code],
+    [ssi_pid], [ssi_uid], [ssi_status], [ssi_utime] and [ssi_stime];
+    [do_notify_parent] and [do_notify_parent_cldstop] (kernel/signal.c)
+    set [si_errno] to 0.  So [ssi_errno] (4..8), [ssi_fd] .. [ssi_trapno]
+    (20..40), [ssi_int] and [ssi_ptr] (44..56) and everything from
+    [ssi_addr] on (72..128, [__pad] included) are 0.  All read at
+    v6.18.44; identical at v6.18.46. *)
+Definition sigchld_zero_ranges : list (nat * nat) :=
+  [(4%nat, 4%nat); (20%nat, 20%nat); (44%nat, 12%nat); (72%nat, 56%nat)].
+
+Definition bytes_all_zero_b (bs : list byte) : bool :=
+  forallb (fun b => Z.eqb (bv_unsigned b) 0) bs.
+
 (** One [struct signalfd_siginfo] the model admits for a dequeued
     SIGCHLD: 128 bytes whose [ssi_signo], the little-endian [__u32] at
-    offset 0, is 17.  Every other byte is the environment's: [ssi_pid],
-    [ssi_uid], [ssi_status], [ssi_utime] and [ssi_stime] describe the
-    child, and [ssi_code] how it changed ([signalfd_copyinfo]'s
-    [SIL_CHLD] case). *)
+    offset 0, is 17; whose [ssi_code] (offset 8) is one of the six
+    [CLD_*] codes a child's change of state is reported with (1 to 6,
+    include/uapi/asm-generic/siginfo.h); and whose [sigchld_zero_ranges]
+    are 0.  [ssi_pid], [ssi_uid], [ssi_status], [ssi_utime] and
+    [ssi_stime] are the environment's: they describe the child
+    ([signalfd_copyinfo]'s [SIL_CHLD] case, fs/signalfd.c, read at
+    v6.18.44; identical at v6.18.46). *)
 Definition signalfd_record_ok (bs : list byte) : bool :=
   (Nat.eqb (length bs) (Z.to_nat SIGNALFD_SIGINFO_BYTES)
-   && Z.eqb (bytes_le_to_Z (firstn 4 bs)) SIGCHLD)%bool.
+   && Z.eqb (bytes_le_to_Z (firstn 4 bs)) SIGCHLD
+   && (1 <=? bytes_le_to_Z (firstn 4 (skipn 8 bs)))%Z
+   && (bytes_le_to_Z (firstn 4 (skipn 8 bs)) <=? 6)%Z
+   && forallb (fun r => bytes_all_zero_b (firstn (snd r) (skipn (fst r) bs)))
+              sigchld_zero_ranges)%bool.
 
 (** [bs] is between 1 and [n] such records, one after another, as
     [signalfd_read_iter] copies them out: it dequeues and copies until

@@ -878,7 +878,8 @@ Example signalfd_read_reads_the_mask :
              (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80800)))) sig_model) in
   let i := mkInput 63 [5; 0x10000; 128; 0; 0; 0] (fun _ => None)
              (fun a => if bv_leu 0x10000 a && bv_ltu a 0x10080 then Some 0 else None) in
-  let rec17 := word_le4 (Z_to_bv 64 17) ++ repeat (Z_to_bv 8 0) 124 in
+  let rec17 := word_le4 (Z_to_bv 64 17) ++ repeat (Z_to_bv 8 0) 4
+                ++ word_le4 (Z_to_bv 64 1) ++ repeat (Z_to_bv 8 0) 116 in
   check_syscall i (mkEffect 128 [(0x10000, rec17)] []) (with_sigmask (Z_to_bv 64 0x10000) m)
   = CheckOk (with_sigmask (Z_to_bv 64 0x10000) m) []
   /\ check_syscall i (mkEffect 128 [(0x10000, rec17)] []) m = CheckReject
