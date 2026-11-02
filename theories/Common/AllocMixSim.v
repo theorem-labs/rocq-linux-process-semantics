@@ -153,8 +153,8 @@ Lemma illegal_no_snext : forall ms model evs c',
   ~ sstep segs (mkCfg ms model) evs (SNext c').
 Proof.
   intros ms model evs c' Hlazy Hsvc Hill Hss.
-  inversion Hss; subst; try congruence.
-  match goal with H : mi_account_step segs ms model = MachineOk _ |- _ =>
+  inversion Hss; subst; try congruence;
+  match goal with H : mi_account_step segs ms model = _ |- _ =>
     rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hill in H;
     discriminate
   end.
@@ -291,7 +291,9 @@ Proof.
       [exact Hlazy | exact Hsvc | exact Hstep | apply IH; assumption].
   - intros (tr & c & Hstar & Hun).
     inversion Hstar as [| c1 evs c2 tr2 c3 Hss Hstar2]; subst.
-    + destruct Hun as (_ & [(Hsvc' & _) | (x8' & Hsvc' & Herr)]); cbn in *.
+    + destruct Hun
+        as (_ & [(Hsvc' & _) | [(Hsvc' & _) | (x8' & Hsvc' & Herr)]]); cbn in *.
+      * congruence.
       * congruence.
       * rewrite Hsvc in Hsvc'; inversion Hsvc'; subst x8'.
         exact (brk_no_unmodeled segs ms x8 model Hno Herr).
@@ -317,7 +319,8 @@ End WithSegs.
     of every outcome trace). *)
 Lemma alloc_mix_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
   to_outcomes_mix segs (init_machine_state segs pc ph sp mb rnd inp)
-                  (init_model (segments_reserved segs) brk0 mb sp lim inp) U ->
+                  (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+                     (init_model (segments_reserved segs) brk0 mb sp lim inp)) U ->
   (exists o, U o) ->
   forall tr, obs_trace segs (init_config segs pc ph sp brk0 mb rnd lim inp) tr
     <-> exists o, U o /\ is_prefix tr (outcome_trace (in_fs inp) o).
@@ -325,12 +328,11 @@ Proof.
   intros segs pc ph sp brk0 mb rnd lim inp U Hto Hne tr.
   unfold init_config.
   set (ms := init_machine_state segs pc ph sp mb rnd inp) in *.
-  assert (Hh : m_halted (init_model (segments_reserved segs) brk0 mb sp lim inp) = None)
-    by reflexivity.
-  assert (Hlazy : m_vm_lazy
-      (init_model (segments_reserved segs) brk0 mb sp lim inp) = []) by reflexivity.
-  assert (Hfs : m_fs (init_model (segments_reserved segs) brk0 mb sp lim inp) = in_fs inp)
-    by reflexivity.
+  set (m0 := with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+               (init_model (segments_reserved segs) brk0 mb sp lim inp)) in *.
+  assert (Hh : m_halted m0 = None) by reflexivity.
+  assert (Hlazy : m_vm_lazy m0 = []) by reflexivity.
+  assert (Hfs : m_fs m0 = in_fs inp) by reflexivity.
   split.
   - intros (tr' & c & Hstar & Hp).
     destruct (tom_star_only segs ms _ U Hto Hh Hlazy tr' c Hstar)
@@ -355,12 +357,14 @@ Qed.
 Lemma alloc_mix_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd rlim target_segs apc aph asp abrk amb arnd alim
          U inp,
-  to_outcomes_mix source_segs
-    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp rlim inp) U ->
-  to_outcomes target_segs
-    (init_machine_state target_segs apc aph asp amb arnd inp)
-    (init_model (segments_reserved target_segs) abrk amb asp alim inp) U ->
+  to_outcomes_mix (run_segments source_segs inp rsp rmb)
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp rlim inp)) U ->
+  to_outcomes (run_segments target_segs inp asp amb)
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp alim inp)) U ->
   (exists o, U o) ->
   Equivalence.modeled (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
   /\ Equivalence.equiv (run (mkImage source_segs rpc rph) rlim (mkEntry rsp rbrk rmb rrnd) inp)
@@ -373,7 +377,7 @@ Proof.
     eapply tom_no_unmodeled; [exact Hsource | reflexivity | reflexivity]. }
   right. split.
   - intro tr. cbn.
-    rewrite (alloc_mix_obs_iff source_segs rpc rph rsp rbrk rmb rrnd rlim inp U
+    rewrite (alloc_mix_obs_iff (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd rlim inp U
                Hsource Hne tr).
     rewrite (alloc_obs_iff target_segs apc aph asp abrk amb arnd alim inp U
                Htarget tr).
@@ -392,12 +396,16 @@ Qed.
     crashing source — is visible. *)
 Lemma alloc_mix_omni_strong_equiv :
   forall source_segs rpc rph rsp rbrk rmb rrnd target_segs apc aph asp abrk amb arnd U inp,
-  to_outcomes_mix source_segs
-    (init_machine_state source_segs rpc rph rsp rmb rrnd inp)
-    (init_model (segments_reserved source_segs) rbrk rmb rsp source_alloc_limit inp) U ->
-  to_outcomes target_segs
-    (init_machine_state target_segs apc aph asp amb arnd inp)
-    (init_model (segments_reserved target_segs) abrk amb asp target_alloc_limit inp) U ->
+  to_outcomes_mix (run_segments source_segs inp rsp rmb)
+    (init_machine_state (run_segments source_segs inp rsp rmb) rpc rph rsp rmb rrnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso rrnd))
+       (init_model (segments_reserved (run_segments source_segs inp rsp rmb)) rbrk rmb rsp
+          source_alloc_limit inp)) U ->
+  to_outcomes (run_segments target_segs inp asp amb)
+    (init_machine_state (run_segments target_segs inp asp amb) apc aph asp amb arnd inp)
+    (with_vdso (Vdso.vdso_run_init (ed_vdso arnd))
+       (init_model (segments_reserved (run_segments target_segs inp asp amb)) abrk amb asp
+          target_alloc_limit inp)) U ->
   (exists o, U o) ->
   omni_strong_equiv (mkImage source_segs rpc rph) (mkImage target_segs apc aph)
                     (mkEntry rsp rbrk rmb rrnd) (mkEntry asp abrk amb arnd) inp.
@@ -409,7 +417,8 @@ Proof.
     eapply tom_no_unmodeled; [exact Hsource | reflexivity | reflexivity]. }
   right. split.
   - apply trace_equiv_iff_omni. intro tr. cbn.
-    rewrite (alloc_mix_obs_iff source_segs rpc rph rsp rbrk rmb rrnd source_alloc_limit inp U
+    rewrite (alloc_mix_obs_iff (run_segments source_segs inp rsp rmb) rpc rph rsp rbrk rmb rrnd
+               source_alloc_limit inp U
                Hsource Hne tr).
     rewrite (alloc_obs_iff target_segs apc aph asp abrk amb arnd target_alloc_limit inp U
                Htarget tr).

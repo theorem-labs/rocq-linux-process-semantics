@@ -154,24 +154,29 @@ Ltac src_clear :=
         | rewrite ?length_word_to_le_bytes; cbn [length];
           imm_norm; u_norm; lia ] ].
 
+(** The vDSO pair the run appends after the image's own segment
+    ([Run.run_segments]); the derivation never reaches it. *)
+Local Abbreviation vt := (vdso_segments (in_kernel inp) rsp rmb).
+
 (** The packed w+x fetch premise for one step, from the generated
-    static fetch fact [SF]. *)
+    static fetch fact [SF], carried to the run's segment list. *)
 Ltac wxf SF :=
   eapply wx_fetch_intro with (lo := 0x10078%Z) (hi := 0x100e4%Z);
-    [ exact source_no_ro_exec
+    [ apply source_run_no_ro_exec
     | src_clear
     | imm_norm; lia
     | imm_norm; lia
     | lia
-    | exact SF ].
+    | exact (fetch_word_wx_app source_segs vt _ _ SF) ].
 
 (* ================================================================= *)
 (* The derivation: 18 instructions, no output, exit 5.                *)
 (* ================================================================= *)
 
 Lemma source_wexit :
-  to_wexit source_segs
-    (init_machine_state source_segs 0x10078 source_phdrs rsp rmb rrnd inp)
+  to_wexit (run_segments source_segs inp rsp rmb)
+    (init_machine_state (run_segments source_segs inp rsp rmb) 0x10078 source_phdrs
+       rsp rmb rrnd inp)
     [] (Z_to_bv 64 5).
 Proof.
   pose proof rsp_lo_num as Hlo. pose proof rsp_hi_num as Hhi.
@@ -240,7 +245,7 @@ Proof.
       [ wxf SF_1009c | reflexivity | exact SD_1009c
       | getr_resolve; regupd_resolve; imm_norm; rewrite v_addi_0; reflexivity
       | getr_resolve; regupd_resolve; reflexivity
-      | apply source_store_ok; u_norm; cbn [Z.of_nat]; lia ]
+      | apply (store_ok_app source_segs vt), source_store_ok; u_norm; cbn [Z.of_nat]; lia ]
     | step_simpl ].
   (* 0x100a0 jal ra, main (0x100d0) *)
   eapply tw_step;
@@ -268,7 +273,7 @@ Proof.
       | getr_resolve; regupd_resolve; imm_norm; bveq
       | getr_resolve; regupd_resolve; reflexivity
       | bveq
-      | apply source_store_ok; u_norm; cbn [Z.of_nat]; lia ]
+      | apply (store_ok_app source_segs vt), source_store_ok; u_norm; cbn [Z.of_nat]; lia ]
     | step_simpl ].
   (* 0x100dc lbu a0, 228(a5) — read flag back OUT OF THE OVERLAY *)
   eapply tw_step;

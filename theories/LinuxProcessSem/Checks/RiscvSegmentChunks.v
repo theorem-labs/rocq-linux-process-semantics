@@ -15,7 +15,8 @@ Definition chunked_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 5;
   seg_perms := "r-x";
-  seg_bytes := ["1122"%pstring; "334455"%pstring]
+  seg_bytes := ["1122"%pstring; "334455"%pstring];
+  seg_kind  := SegLoader
 |}.
 
 Definition chunked_segments : list Segment := [chunked_segment].

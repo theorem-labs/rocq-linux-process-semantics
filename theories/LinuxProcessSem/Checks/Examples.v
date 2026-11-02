@@ -210,7 +210,8 @@ Definition undecodable_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 4;
   seg_perms := "r-x"%string;
-  seg_bytes := ["ffffffff"%pstring]
+  seg_bytes := ["ffffffff"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition undecodable_segments : list Segment := [undecodable_segment].
 
@@ -238,6 +239,21 @@ Example undecodable_step_unmodeled :
   = MachineUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
+(** The same first fetch at the segment list a RUN carries: the
+    binary's own segments with the vDSO pair appended
+    ([Run.run_segments]).  [find_segment] walks the list head first and
+    this image's segment covers 0x100, so the pair is never consulted
+    and the answer is the one above.  [Run.vdso_segments] stays
+    [Opaque] here, so no measured image byte is normalised. *)
+Example undecodable_step_unmodeled_run :
+  RiscvSemantics.step
+    (run_segments undecodable_segments demo_proc_input demo_sp demo_mbase)
+    (init_machine_state
+       (run_segments undecodable_segments demo_proc_input demo_sp demo_mbase)
+       0x100 demo_phdrs demo_sp demo_mbase demo_draw demo_proc_input)
+  = MachineUnmodeled.
+Proof. unfold run_segments. vm_compute. reflexivity. Qed.
+
 (** …and therefore the run is NOT modeled.  Any [strong_universal_T]
     naming this image as its source is unprovable, however the target is
     chosen — which is exactly the vacuity the clause exists to block. *)
@@ -249,14 +265,14 @@ Example run_of_undecodable_image_is_unmodeled :
                   demo_proc_input).
 Proof.
   cbn [run bh_unmodeled]. unfold init_config.
-  apply reaches_unmodeled_intro; [reflexivity | reflexivity |].
+  apply reaches_unmodeled_intro; [reflexivity | reflexivity | | reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
   (* [Run.init_machine_state] takes the input WHOLE now, so no
      projection is left to reduce before the step lemma applies. *)
-  rewrite undecodable_step_unmodeled. reflexivity.
+  rewrite undecodable_step_unmodeled_run. reflexivity.
 Qed.
 
 Example run_of_undecodable_image_refutes_modeled :
@@ -823,14 +839,16 @@ Qed.
     a signal.  Proved from the image's own run, not from the absence of a
     counterexample. *)
 Lemma exits_c_never_dies : forall segs pc ph code fuel lim sp brk0 mbase rnd inp,
-  exits_c segs code fuel
-    (init_machine_state segs pc ph sp mbase rnd inp) = true ->
+  exits_c (run_segments segs inp sp mbase) code fuel
+    (init_machine_state (run_segments segs inp sp mbase) pc ph sp mbase rnd inp) = true ->
   ~ dies_by_signal (run (mkImage segs pc ph) lim (mkEntry sp brk0 mbase rnd) inp).
 Proof.
   intros segs pc ph code fuel lim sp brk0 mbase rnd inp Hms (tr & sig & fs & Ht & Hin).
   cbn [run bh_traces] in Ht. unfold init_config in Ht.
-  exact (exits_c_obs_no_kill segs code fuel _
-           (init_model (segments_reserved segs) brk0 mbase sp lim inp) tr sig fs
+  exact (exits_c_obs_no_kill (run_segments segs inp sp mbase) code fuel _
+           (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))
+              (init_model (segments_reserved (run_segments segs inp sp mbase)) brk0 mbase sp lim inp))
+           tr sig fs
            eq_refl eq_refl Hms Ht Hin).
 Qed.
 
@@ -847,7 +865,8 @@ Definition exit0_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 12;
   seg_perms := "r-x"%string;
-  seg_bytes := ["9308d0051305000073000000"%pstring]
+  seg_bytes := ["9308d0051305000073000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 Definition exit0_segments : list Segment := [exit0_segment].
 Definition exit0_image : Image := mkImage exit0_segments 0x100 demo_phdrs.
@@ -1171,16 +1190,42 @@ Example undecodable_step_unmodeled_at_demo_entry :
   = MachineUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
+(** The same fetch at the segment list the run at [demo_entry] carries
+    ([Run.run_segments]), exactly as [undecodable_step_unmodeled_run]
+    is to [undecodable_step_unmodeled]: the image's own segment covers
+    the entry, so the vDSO pair is never consulted. *)
+Example undecodable_step_unmodeled_at_demo_entry_run :
+  RiscvSemantics.step
+    (run_segments undecodable_segments demo_proc_input
+       (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x7fffbf701000))
+    (init_machine_state
+       (run_segments undecodable_segments demo_proc_input
+          (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x7fffbf701000))
+       0x100 demo_phdrs
+       (Z_to_bv 64 0x7ffffffffdf0) (Z_to_bv 64 0x7fffbf701000)
+       (mkDraw demo_random (Z_to_bv 64 0x800000000000) vdso_keeps_all)
+       demo_proc_input)
+  = MachineUnmodeled.
+Proof. unfold run_segments. vm_compute. reflexivity. Qed.
+
 (** A configuration the model declines to interpret has no successor at
     all: [Run.sstep_instr] needs [Run.mi_account_step] to have answered
     [MachineOk], and every syscall constructor needs a pending syscall
-    number. *)
+    number.
+
+    THE vDSO PREMISE.  [Run.sstep]'s vDSO arms fire at
+    [MachineUnmodeled] too — that is the point of them, a pc in the
+    vDSO text is unmodeled to the decoder and answered by the call arm
+    instead — so this lemma asks that the pc is not an exported entry.
+    Every caller is at an image's own instruction, where it is
+    [reflexivity]. *)
 Lemma unmodeled_no_next : forall segs ms model evs c',
   ms_svc_pending ms = None ->
   mi_account_step segs ms model = MachineUnmodeled ->
+  vdso_entry_fn segs (ms_pc ms) = None ->
   ~ sstep segs (mkCfg ms model) evs (SNext c').
 Proof.
-  intros segs ms model evs c' Hsvc Hacc Hss.
+  intros segs ms model evs c' Hsvc Hacc Hvd Hss.
   inversion Hss; subst; congruence.
 Qed.
 
@@ -1214,14 +1259,14 @@ Proof.
   cbn [run bh_traces undecodable_image] in Htr.
   eapply no_next_obs_trace_nil; [|exact Htr].
   intros evs c'. unfold init_config.
-  apply unmodeled_no_next; [reflexivity|].
+  apply unmodeled_no_next; [reflexivity| |reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
   (* [Run.init_machine_state] takes the input WHOLE now, so no
      projection is left to reduce before the step lemma applies. *)
-  rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+  rewrite undecodable_step_unmodeled_at_demo_entry_run. reflexivity.
 Qed.
 
 (** The exit-0 image and the undecodable image do not agree on this
@@ -1269,14 +1314,14 @@ Example run_of_undecodable_image_is_unmodeled_at_demo_entry :
 Proof.
   rewrite demo_entry_fields.
   cbn [run bh_unmodeled undecodable_image]. unfold init_config.
-  apply reaches_unmodeled_intro; [reflexivity | reflexivity |].
+  apply reaches_unmodeled_intro; [reflexivity | reflexivity | | reflexivity].
   match goal with
   | |- mi_account_step ?segs ?ms ?model = _ =>
       rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
   end.
   (* [Run.init_machine_state] takes the input WHOLE now, so no
      projection is left to reduce before the step lemma applies. *)
-  rewrite undecodable_step_unmodeled_at_demo_entry. reflexivity.
+  rewrite undecodable_step_unmodeled_at_demo_entry_run. reflexivity.
 Qed.
 
 (** The abort-declared twin of this one is

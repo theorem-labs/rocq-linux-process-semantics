@@ -23,7 +23,8 @@ Definition alignment_segment : Segment := {|
   seg_base := 0x100;
   seg_size := 8;
   seg_perms := "r-x";
-  seg_bytes := ["7300000013000000"%pstring]
+  seg_bytes := ["7300000013000000"%pstring];
+  seg_kind  := SegLoader
 |}.
 
 Definition alignment_segments : list Segment := [alignment_segment].

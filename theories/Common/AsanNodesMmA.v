@@ -541,6 +541,10 @@ Proof.
   eapply (srz_mprotect2 SEGS R (Z_to_bv 64 (pc cs)) FULL (seg_rom SEGS) model w addr len TA TB Hf He Hhalt R17 R10 Hal R11 ltac:(lia)).
   - unfold two_pow_64. fold nZ. ceilnum. lia.
   - exact R12.
+  - (* the range is apart from the vDSO pair: it is free of the whole
+       reserved ledger ([slice_args]), and the ledger holds the pair ([co_vdso]) *)
+    cbv zeta. apply region_free_intro. intros a' sz Hin.
+    exact (region_free_In _ _ _ a' sz Hrfres (co_vdso _ _ _ _ _ _ _ _ _ _ _ _ HC (a', sz) Hin)).
   - exact Hna.
   - exact Hmc.
   - apply mprotect_budget_ok_intro_gen; [exact Hwf|]. pose proof (budget_slack E cs R FULL model nhi HC ltac:(unfold budget_ok; apply Z.leb_le; exact Hbud)). fold nZ n. lia.

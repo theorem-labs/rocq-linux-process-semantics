@@ -48,9 +48,14 @@ Proof. exact Hsp_lo. Qed.
 Lemma asp_hi_num : (bv_unsigned asp <= 0x800000000000)%Z.
 Proof. exact Hsp_hi. Qed.
 
+(** The vDSO pair the run appends after the image's own segments
+    ([Run.run_segments]); the derivation never reaches it. *)
+Local Abbreviation vt := (vdso_segments (in_kernel inp) asp amb).
+
 Lemma target_wexit :
-  to_wexit target_segs
-    (init_machine_state target_segs 0x1001190 target_phdrs asp amb arnd inp)
+  to_wexit (run_segments target_segs inp asp amb)
+    (init_machine_state (run_segments target_segs inp asp amb) 0x1001190 target_phdrs
+       asp amb arnd inp)
     [] (Z_to_bv 64 5).
 Proof.
   pose proof asp_lo_num as Hlo. pose proof asp_hi_num as Hhi.
@@ -58,13 +63,15 @@ Proof.
   (* 0x1001190 lui a0, 0x1002 *)
   eapply tw_step;
     [ reflexivity
-    | exact (step_lui _ _ _ _ _ _ _ _ TF_1001190 eq_refl TD_1001190)
+    | exact (step_lui _ _ _ _ _ _ _ _ (fetch_word_app target_segs vt _ _ TF_1001190)
+               eq_refl TD_1001190)
     | step_simpl ].
   (* 0x1001194 li a1, 5 *)
   eapply tw_step;
     [ reflexivity
     | eapply step_addi_at with (v := Z_to_bv 64 5);
-      [ exact TF_1001194 | reflexivity | exact TD_1001194 | reflexivity
+      [ exact (fetch_word_app target_segs vt _ _ TF_1001194) | reflexivity
+      | exact TD_1001194 | reflexivity
       | getr_resolve; imm_norm; bveq ]
     | step_simpl ].
   (* 0x1001198 sb a1, 424(a0) — the writable global := 5 *)
@@ -72,17 +79,19 @@ Proof.
     [ reflexivity
     | eapply step_sb_at with (a := Z_to_bv 64 0x10021a8)
         (v := Z_to_bv 64 5) (b := Z_to_bv 8 5);
-      [ exact TF_1001198 | reflexivity | exact TD_1001198
+      [ exact (fetch_word_app target_segs vt _ _ TF_1001198) | reflexivity
+      | exact TD_1001198
       | getr_resolve; regupd_resolve; imm_norm; bveq
       | getr_resolve; regupd_resolve; reflexivity
       | bveq
-      | apply target_store_ok; u_norm; cbn [Z.of_nat]; lia ]
+      | apply (store_ok_app target_segs vt), target_store_ok; u_norm; cbn [Z.of_nat]; lia ]
     | step_simpl ].
   (* 0x100119c lbu a0, 424(a0) — read it back *)
   eapply tw_step;
     [ reflexivity
     | eapply step_lbu with (b := Z_to_bv 8 5);
-      [ exact TF_100119c | reflexivity | exact TD_100119c
+      [ exact (fetch_word_app target_segs vt _ _ TF_100119c) | reflexivity
+      | exact TD_100119c
       | getr_resolve; regupd_resolve; imm_norm; wlits_closed;
         change 1%nat with (length [Z_to_bv 8 5]);
         apply rdn_wbytes_hit; u_norm; cbn [length]; lia ]
@@ -91,13 +100,14 @@ Proof.
   eapply tw_step;
     [ reflexivity
     | eapply step_addi_at with (v := Z_to_bv 64 93);
-      [ exact TF_10011a0 | reflexivity | exact TD_10011a0 | reflexivity
+      [ exact (fetch_word_app target_segs vt _ _ TF_10011a0) | reflexivity
+      | exact TD_10011a0 | reflexivity
       | getr_resolve; imm_norm; bveq ]
     | step_simpl ].
   (* 0x10011a4 ecall — exit(5) *)
   eapply tw_step;
     [ reflexivity
-    | apply (step_ecall _ _ _ _ _ _ TF_10011a4 eq_refl)
+    | apply (step_ecall _ _ _ _ _ _ (fetch_word_app target_segs vt _ _ TF_10011a4) eq_refl)
     | ].
   apply tw_exit_coden.
   - getr_resolve; regupd_resolve; u_norm; lia.
