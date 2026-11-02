@@ -56,17 +56,6 @@ Definition unshare_valid : Z :=
 
 Definition CAP_FULL_SET : Z := 2 ^ 41 - 1.
 
-(** [topmost_overmount]: from mount [m], the mount on its root dentry, and
-    so on up. *)
-Fixpoint topmost_fuel (fuel : nat) (st : NsState) (m : Mount) : Mount :=
-  match fuel with
-  | O => m
-  | S f => match mount_on st (mnt_id m) (mnt_root m) with
-           | Some m' => topmost_fuel f st m'
-           | None => m
-           end
-  end.
-
 (** [current_chrooted]: the task's root is not the root dentry of the
     topmost mount on its mount namespace's root mount.  [None] when the
     tables do not list that namespace or mount. *)
@@ -77,7 +66,7 @@ Definition current_chrooted (st : NsState) (ctx : NsCtx) : option bool :=
       match find_mount (ns_mounts st) (mntns_root n) with
       | None => None
       | Some r =>
-          let top := topmost_fuel (length (ns_mounts st)) st r in
+          let top := ns_top st r in
           Some (negb (Pos.eqb (fst (cx_root ctx)) (mnt_id top) && Pos.eqb (snd (cx_root ctx)) (mnt_root top)))
       end
   end.

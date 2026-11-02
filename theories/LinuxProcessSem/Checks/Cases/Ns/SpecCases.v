@@ -7,7 +7,7 @@
 
 From Stdlib Require Import ZArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm Spec.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm UserArms Spec.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -107,3 +107,28 @@ Definition slash : list byte := [Z_to_bv 8 47].
 Example host_loc_root : host_loc (world true) slash = Some (LDentry 1 1) := eq_refl.
 Example host_loc_needs_host_ns : host_loc (world false) slash = None := eq_refl.
 Example host_loc_relative : host_loc (world true) [Z_to_bv 8 112] = None := eq_refl.
+
+(** As on Linux: the host namespace's root mount is rootfs (mount 1, root
+    dentry 1) and "/" is mount 2, mounted on rootfs's root, with "/etc"
+    (dentry 3) in it.  A released path resolves from mount 2's root, the
+    root of a task that is not chrooted, not from rootfs; and such a task's
+    root (2, 2) is not chrooted. *)
+Definition rootfs_world : NsState :=
+  mkNsState [mkMount 1 1 None 1 1 1 nf nf false false None None;
+             mkMount 2 1 (Some 1%positive) 1 2 2 nf nf false false None None]
+            [mkUserNs 1 None 0 0 None None true true 100 false]
+            [mkMntNs 1 1 1 true] [] []
+            [mkSb 1 SbHost 1 1 false 0 false false false; mkSb 2 SbHost 2 1 false 0 false false false]
+            [mkDentry 1 1 None [] 1; mkDentry 2 2 None [] 2;
+             mkDentry 3 2 (Some 2%positive) [Z_to_bv 8 101; Z_to_bv 8 116; Z_to_bv 8 99] 3]
+            [mkInode 1 IDir 493 0 0 0 [] false; mkInode 2 IDir 493 0 0 0 [] false;
+             mkInode 3 IDir 493 0 0 0 [] false] [] (ns_env empty_nsstate).
+
+Example host_loc_from_top : host_loc rootfs_world slash = Some (LDentry 2 2) := eq_refl.
+Example host_loc_below_top :
+  host_loc rootfs_world [Z_to_bv 8 47; Z_to_bv 8 101; Z_to_bv 8 116; Z_to_bv 8 99] = Some (LDentry 2 3)
+  := eq_refl.
+Example top_root_not_chrooted :
+  UserArms.current_chrooted rootfs_world
+    (mkNsCtx 1 1 1 1 [] (2%positive, 2%positive) (2%positive, 2%positive) 18 (mkCaps 0 0 0 0 0) 0 []
+             (Some false) (Some 1%Z)) = Some false := eq_refl.
