@@ -587,8 +587,8 @@ Qed.
 (** AN ORDINARY INSTRUCTION STEP OF ONE ENTRY, built from the accounted
     machine step.  This is the junction between the symbolic execution's
     [machine_run] and this relation: each of its [k] steps is one of these,
-    and the three guards are all discharged by the same fact -- that no
-    system call is pending, so none of the three tests can fire. *)
+    and the four guards are all discharged by the same fact -- that no
+    system call is pending, so none of the four tests can fire. *)
 Lemma pstep_instr_entry : forall segs cfg P e ms' model',
   look P (pe_pid e) = Some e ->
   m_halted (pe_model e) = None ->
@@ -604,6 +604,7 @@ Proof.
   - unfold clone_success_b. cbn [cfg_ms pe_cfg]. rewrite Hs. reflexivity.
   - unfold wait4_intercept_b. cbn [cfg_ms pe_cfg]. rewrite Hs. reflexivity.
   - unfold multiproc_allowed. cbn [cfg_ms pe_cfg]. rewrite Hs. reflexivity.
+  - apply wait4_owned_instr. exact Hs.
 Qed.
 
 (** THE NO-LAZY FORM IS NOT STATED HERE, and the reason is a scope fact
