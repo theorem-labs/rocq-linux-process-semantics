@@ -1517,3 +1517,213 @@ Proof.
     destruct (ppoll_core i m ufds nfds); cbv iota in H; try discriminate H;
     injection H as <- <-; split; reflexivity.
 Qed.
+
+(** ** An infinite wait that ends: [ppoll_wakeable_b] and [ppoll_wake_spec]
+
+    [ppoll_spec] declines a NULL-timeout call whose all-not-ready choice
+    exists, because that choice never returns and the model cannot say
+    so.  That is the reading every statement gets by default: a
+    statement that a program must exit would otherwise assume that the
+    eventfd's writer writes or that the child changes state, and a
+    program whose child never ends would be proved to exit.
+
+    A run that names [Run.waits_end] reads such a call instead as ENDING
+    with one of its ready choices; [Run.sstep_wcfg] is where that reading
+    is taken.  These two definitions say where that is and what it
+    admits.  Neither changes [ppoll_spec], and neither is consulted
+    anywhere else. *)
+
+(** The shape: [ppoll] (73) with a NULL [tsp] and a NULL mask, its
+    entries answerable, a choice where nothing is ready (the LEAST choice
+    counts 0), and a ready choice that is answered (the MOST choice), so
+    that the wait can end.  The two counts are what "at least one eventfd
+    or signalfd entry that can be ready" comes to: only those kinds admit
+    both 0 and a ready answer. *)
+Definition ppoll_wakeable_b (i : SyscallInput) (m : Model) : bool :=
+  let ufds := in_arg i 0 in
+  let nfds := unfds32 (in_arg i 1) in
+  let tsp := in_arg i 2 in
+  let sig := in_arg i 3 in
+  Z.eqb (bv_unsigned (in_sysno i)) 73 && w_is0 tsp && w_is0 sig
+  && match ppoll_plan i m ufds nfds tsp sig (in_arg i 4) with
+     | PpPoll PsToNone sets =>
+         ppoll_choice_in sets (ppoll_least sets)
+         && Z.eqb (ppoll_count (ppoll_least sets)) 0
+         && ppoll_choice_in sets (ppoll_most sets)
+         && ppoll_answers (ppoll_finish i ufds nfds tsp PsToNone (ppoll_most sets))
+     | _ => false
+     end.
+
+(** The READY choices of that call -- at least one entry with a nonzero
+    [revents] -- with their write-back and the ledger [ppoll_reads], read
+    off the same arguments [Sys.SyscallTable.spec_table] hands
+    [ppoll_spec].  Every ready choice is answered there, since
+    [ppoll_finish] reads a choice only through whether its count is 0
+    and the MOST choice is answered.  Off that shape it declines. *)
+Definition ppoll_wake_spec : Sys SyscallEffect :=
+  i <- input ;;
+  m <- get_model ;;
+  let ufds := in_arg i 0 in
+  let nfds := unfds32 (in_arg i 1) in
+  let tsp := in_arg i 2 in
+  let sig := in_arg i 3 in
+  let sigsetsize := in_arg i 4 in
+  if negb (ppoll_wakeable_b i m) then unmodeled
+  else
+    match ppoll_plan i m ufds nfds tsp sig sigsetsize with
+    | PpPoll tmo sets =>
+        rw <- choose (fun rw => exists rs,
+                ppoll_choice_in sets rs = true
+                /\ ppoll_count rs <> 0%Z
+                /\ ppoll_finish i ufds nfds tsp tmo rs = Some rw) ;;
+        pure (with_copyins (ppoll_reads i m ufds nfds tsp sig sigsetsize)
+                (mkEffect (fst rw) (snd rw) []))
+    | PpDecided _ => unmodeled
+    end.
+
+(** A choice where nothing is ready never returns from a NULL-timeout
+    call: [poll_select_finish] gets no count, and the write-back's range
+    test is never reached. *)
+Lemma ppoll_finish_quiet : forall i ufds nfds tsp rs,
+  ppoll_count rs = 0%Z -> ppoll_finish i ufds nfds tsp PsToNone rs = None.
+Proof.
+  intros i ufds nfds tsp rs H.
+  unfold ppoll_finish, ppoll_writeback_access, pselect_finish.
+  rewrite H. destruct (access_okb ufds (pollfd_bytes * bv_unsigned nfds));
+    reflexivity.
+Qed.
+
+(** A NULL-timeout call that returns, where the write-back's range test
+    passes, returns the count of ready entries and writes their
+    [revents] back. *)
+Lemma ppoll_finish_ready : forall i ufds nfds tsp rs r ws,
+  access_okb ufds (pollfd_bytes * bv_unsigned nfds) = true ->
+  ppoll_finish i ufds nfds tsp PsToNone rs = Some (r, ws) ->
+  r = Z_to_bv 64 (ppoll_count rs) /\ ws = ppoll_writeback ufds rs.
+Proof.
+  intros i ufds nfds tsp rs r ws Ha H.
+  unfold ppoll_finish, ppoll_writeback_access, pselect_finish, pselect_writes in H.
+  cbv iota in H. rewrite Ha in H. cbv iota in H.
+  destruct (Z.eqb (ppoll_count rs) 0); cbv iota in H; [discriminate H|].
+  destruct (writes_all_writable i (ppoll_writeback ufds rs)); cbv iota in H;
+    [|discriminate H].
+  injection H as <- <-. split; reflexivity.
+Qed.
+
+Lemma ppoll_wakeable_sysno : forall i m,
+  ppoll_wakeable_b i m = true -> bv_unsigned (in_sysno i) = 73%Z.
+Proof.
+  intros i m Hw. unfold ppoll_wakeable_b in Hw. cbv zeta in Hw.
+  apply andb_true_iff in Hw as [Hw _]. apply andb_true_iff in Hw as [Hw _].
+  apply andb_true_iff in Hw as [Hw _]. apply Z.eqb_eq. exact Hw.
+Qed.
+
+(** Where the shape holds, [ppoll_spec] declines and admits nothing
+    else: the reading [ppoll_wake_spec] replaces is a decline, never an
+    answer. *)
+Lemma ppoll_spec_wakeable_declined : forall i m o,
+  ppoll_wakeable_b i m = true ->
+  (ppoll_spec (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2) (in_arg i 3)
+     (in_arg i 4) i m o
+   <-> o = Unmodeled).
+Proof.
+  intros i m o Hw.
+  unfold ppoll_wakeable_b in Hw. cbv zeta in Hw.
+  destruct (ppoll_plan i m (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2)
+              (in_arg i 3) (in_arg i 4)) as [o0|tmo sets] eqn:Hp;
+    cbv iota in Hw; [rewrite andb_false_r in Hw; discriminate Hw|].
+  destruct tmo; cbv iota in Hw; try (rewrite andb_false_r in Hw; discriminate Hw).
+  apply andb_true_iff in Hw as [_ Hw].
+  apply andb_true_iff in Hw as [Hw _]. apply andb_true_iff in Hw as [Hw _].
+  apply andb_true_iff in Hw as [_ Hq]. apply Z.eqb_eq in Hq.
+  assert (Hg : ppoll_all_answered i (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2)
+                 PsToNone sets = false).
+  { unfold ppoll_all_answered. rewrite (ppoll_finish_quiet _ _ _ _ _ Hq).
+    cbn [ppoll_answers]. rewrite !andb_false_r. reflexivity. }
+  unfold ppoll_spec. split.
+  - intros H. destruct o as [eff m' evs|]; [exfalso|reflexivity].
+    destruct H as (i0 & m1 & evs1 & evs2 & Hin & H & _).
+    unfold input in Hin. injection Hin as -> -> ->.
+    destruct H as (m0 & m2 & evs3 & evs4 & Hgm & H & _).
+    unfold get_model in Hgm. injection Hgm as -> -> ->.
+    cbv beta in H. rewrite Hp in H. cbv iota in H. rewrite Hg in H.
+    cbn [negb] in H. unfold unmodeled in H. cbv beta in H. discriminate H.
+  - intros ->.
+    eapply bind_unmodeled2; [apply input_ok|].
+    cbv beta.
+    eapply bind_unmodeled2; [apply get_model_ok|].
+    cbv beta. rewrite Hp. cbv iota. rewrite Hg. cbn [negb]. reflexivity.
+Qed.
+
+(** Where the shape holds, a ready outcome exists: the MOST choice. *)
+Lemma ppoll_wake_spec_progress : forall i m,
+  ppoll_wakeable_b i m = true -> exists eff, ppoll_wake_spec i m (Ok eff m []).
+Proof.
+  intros i m Hw0. pose proof Hw0 as Hw.
+  unfold ppoll_wakeable_b in Hw. cbv zeta in Hw.
+  destruct (ppoll_plan i m (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2)
+              (in_arg i 3) (in_arg i 4)) as [o0|tmo sets] eqn:Hp;
+    cbv iota in Hw; [rewrite andb_false_r in Hw; discriminate Hw|].
+  destruct tmo; cbv iota in Hw; try (rewrite andb_false_r in Hw; discriminate Hw).
+  apply andb_true_iff in Hw as [_ Hw].
+  apply andb_true_iff in Hw as [Hw Hans]. apply andb_true_iff in Hw as [_ Hchi].
+  destruct (ppoll_finish i (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2) PsToNone
+              (ppoll_most sets)) as [rw|] eqn:Hf; [|discriminate Hans].
+  assert (Hc : ppoll_count (ppoll_most sets) <> 0%Z).
+  { intros Hq. rewrite (ppoll_finish_quiet _ _ _ _ _ Hq) in Hf. discriminate Hf. }
+  exists (with_copyins
+            (ppoll_reads i m (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2)
+               (in_arg i 3) (in_arg i 4))
+            (mkEffect (fst rw) (snd rw) [])).
+  unfold ppoll_wake_spec.
+  exists i, m, [], []. split; [reflexivity|]. split; [|reflexivity].
+  exists m, m, [], []. split; [reflexivity|]. split; [|reflexivity].
+  cbv beta zeta. rewrite Hw0. cbn [negb]. rewrite Hp. cbv iota.
+  exists rw, m, [], []. split; [|split; reflexivity].
+  exists rw. split; [|reflexivity].
+  exists (ppoll_most sets). split; [exact Hchi | split; [exact Hc | exact Hf]].
+Qed.
+
+(** A wake outcome is a call that RETURNED READY: it leaves the model as
+    it was, emits nothing, returns the count of ready entries, between 1
+    and [ppoll_nfds_max], and writes back the [revents] of that choice. *)
+Lemma ppoll_wake_spec_ready : forall i m eff m' evs,
+  ppoll_wake_spec i m (Ok eff m' evs) ->
+  m' = m /\ evs = []
+  /\ exists rs, (1 <= ppoll_count rs <= ppoll_nfds_max)%Z
+             /\ eff_ret eff = Z_to_bv 64 (ppoll_count rs)
+             /\ eff_writes eff = ppoll_writeback (in_arg i 0) rs.
+Proof.
+  intros i m eff m' evs H. unfold ppoll_wake_spec in H.
+  destruct H as (i0 & m1 & evs1 & evs2 & Hin & H & Hevs).
+  unfold input in Hin. injection Hin as -> -> ->.
+  destruct H as (m0 & m2 & evs3 & evs4 & Hgm & H & Hevs2).
+  unfold get_model in Hgm. injection Hgm as -> -> ->.
+  cbv beta zeta in H.
+  destruct (negb (ppoll_wakeable_b i m)) eqn:Hw; cbv beta iota in H;
+    [unfold unmodeled in H; cbv beta in H; discriminate H|].
+  apply negb_false_iff in Hw. unfold ppoll_wakeable_b in Hw. cbv zeta in Hw.
+  destruct (ppoll_plan i m (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2)
+              (in_arg i 3) (in_arg i 4)) as [o0|tmo sets] eqn:Hp;
+    cbv iota in H, Hw.
+  { unfold unmodeled in H. cbv beta in H. discriminate H. }
+  destruct tmo; cbv iota in Hw; try (rewrite andb_false_r in Hw; discriminate Hw).
+  destruct H as (rw & m3 & evs5 & evs6 & Hch & Hk & Hevs3).
+  destruct Hch as (rw' & (rs & Hc & Hcnt & Hf) & Hq).
+  injection Hq as -> -> ->.
+  unfold pure in Hk. cbv beta in Hk. injection Hk as -> -> ->.
+  cbn [app] in Hevs, Hevs2, Hevs3. subst evs evs2 evs4.
+  destruct (ppoll_plan_poll _ _ _ _ _ _ _ _ _ Hp) as [Hcore _].
+  destruct (ppoll_core_poll _ _ _ _ _ Hcore) as [Hlen Hacc].
+  assert (Ha : access_okb (in_arg i 0) (pollfd_bytes * bv_unsigned (unfds32 (in_arg i 1)))
+               = true).
+  { apply not_false_iff_true. intros Ea. specialize (Hacc Ea). subst sets.
+    destruct rs; [apply Hcnt; reflexivity | discriminate Hc]. }
+  destruct rw' as [r ws].
+  destruct (ppoll_finish_ready _ _ _ _ _ _ _ Ha Hf) as [-> ->].
+  split; [reflexivity|]. split; [reflexivity|].
+  exists rs. split; [|split; reflexivity].
+  pose proof (ppoll_count_bounds rs) as Hb.
+  pose proof (ppoll_choice_in_length _ _ Hc) as Hl.
+  lia.
+Qed.
