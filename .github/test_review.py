@@ -605,10 +605,18 @@ def run_graph(trust, results=None, outputs=None):
             for k, v in out.get(n, {}).items():
                 ctx[f"needs.{n}.outputs.{k}"] = v
         cond = job.get("if", "")
+        # GitHub's implicit success() needs every ancestor, not only the direct needs, to have succeeded
+        ancestors, todo = set(), list(needs)
+        while todo:
+            n = todo.pop()
+            if n not in ancestors:
+                ancestors.add(n)
+                up = JOBS[n].get("needs", [])
+                todo.extend(up if isinstance(up, list) else [up])
         if cond and STATUS_FUNCTIONS.search(cond):
             runs = bool(evaluate(cond, ctx))
         else:
-            runs = all(got[n] == "success" for n in needs) and (not cond or bool(evaluate(cond, ctx)))
+            runs = all(got[n] == "success" for n in ancestors) and (not cond or bool(evaluate(cond, ctx)))
         got[name] = results.get(name, "success") if runs else "skipped"
         out[name] = outputs.get(name, {}) if got[name] == "success" else {}
     return got

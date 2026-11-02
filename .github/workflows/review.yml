@@ -194,9 +194,10 @@ jobs:
               known "$AUTHOR" || author=$?
               known "$ACTOR" || actor=$?
               (( author != 0 || actor != 0 )) || route review ""
-              # The account without write access: the author, or else the account that started the run.
-              outsider=$ACTOR
-              (( author == 0 )) || outsider=$AUTHOR
+              # The account without write access whose action the action checks: the account that started the run,
+              # or else the author.
+              outsider=$AUTHOR
+              (( actor == 0 )) || outsider=$ACTOR
               [[ $outsider =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] \
                 || { echo "::notice::No review of #$NUMBER: $outsider is not a GitHub login."; exit 0; }
               echo "::notice::#$NUMBER is screened first: $outsider has no write access. A maintainer can ask for" \
@@ -725,6 +726,8 @@ jobs:
 
   post:
     needs: review
+    # GitHub's implicit success() skips a job with a skipped ancestor, and a writer's run skips the screen job.
+    if: ${{ !cancelled() && needs.review.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {issues: write, pull-requests: write}
