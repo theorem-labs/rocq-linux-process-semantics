@@ -94,27 +94,24 @@ Lemma last_map_app_single : forall (A B : Type) (f : A -> B) (l : list A) (x : A
   List.last (List.map f (l ++ [x])) d = f x.
 Proof. intros A B f l x d. rewrite List.map_app. cbn [List.map]. apply List.last_last. Qed.
 
-(** A step that lengthens the table is a successful clone: [px_other] and
-    [px_clone_fail] replace an entry, the reap drops one, and the rest end
-    in [PError]. *)
+(** A step that lengthens the table is a successful clone: [px_other],
+    [px_clone_fail] and the WNOHANG zero answer replace an entry, the two
+    reaps drop one, and the rest end in [PError]. *)
 Lemma pstep_x_at_grows : forall ext cenv segs cfg p P evs P',
   pstep_x_at ext cenv segs cfg p P evs (PNext P') ->
   (List.length (pcfg_procs P) < List.length (pcfg_procs P'))%nat ->
   exists e c' q child st', P' = clone_result_x P e c' q child st'.
 Proof.
   intros ext cenv segs cfg p P evs P' H Hlt.
-  inversion H; subst.
-  - exfalso. unfold absorb_x in Hlt. simpl pcfg_procs in Hlt.
-    rewrite replace_in_length in Hlt. lia.
-  - do 5 eexists. reflexivity.
-  - exfalso. unfold absorb_x in Hlt. simpl pcfg_procs in Hlt.
-    rewrite replace_in_length in Hlt. lia.
-  - exfalso. simpl pcfg_procs in Hlt.
-    match type of Hlt with
-    | (_ < List.length (drop_in ?l ?q0))%nat =>
-        pose proof (drop_in_length_le l q0) as Hle
-    end.
-    rewrite replace_in_length in Hle. lia.
+  inversion H; subst; try (do 5 eexists; reflexivity); exfalso;
+    unfold absorb_x, absorb, wait4_zero_result, wait4_reap_result in Hlt;
+    simpl pcfg_procs in Hlt;
+    first
+      [ rewrite replace_in_length in Hlt; lia
+      | match type of Hlt with
+        | (_ < List.length (drop_in ?l ?q0))%nat =>
+            pose proof (drop_in_length_le l q0) as Hle; rewrite replace_in_length in Hle; lia
+        end ].
 Qed.
 
 Lemma child_projection_clone_result_x : forall P e c' q child st',
@@ -600,3 +597,59 @@ Proof.
     + apply ProcsCore.lineage_pick_one. reflexivity.
     + apply ProcsCore.pstep_at_one. exact H.
 Qed.
+
+(* =========================================================================
+   The conditional form: for every run in which the first clone succeeds
+   ========================================================================= *)
+
+(** The runs of the start process [r0] until its first successful clone,
+    and after it the lineage's halting ([must_exit_lineage_at]).  Before
+    the clone nothing is claimed: the start process may step, halt, be
+    killed, step to the model's error or run for ever, and the claim holds
+    (co-inductive, so a run that never clones is not required to end).  On
+    the step that makes a new process the lineage moves to it, and from
+    there every maximal run of the lineage must halt on a code in [S], not
+    killed, with no step of it to the model's error.  So the claim is about
+    the process the first clone makes, and says nothing false when that
+    clone fails: then there is no such process. *)
+CoInductive after_first_clone_at (ctx : ProcsCore.StepCtx) (S : list word) (r0 : Pid) : pconfig -> Prop :=
+| afc_step : forall P,
+    (forall evs P', NsProcs.nstep ctx P evs (PNext P') ->
+       (MustExitP.lineage_pick P' r0 -> after_first_clone_at ctx S r0 P')
+       /\ (~ MustExitP.lineage_pick P' r0 -> must_exit_lineage_at ctx S P')) ->
+    after_first_clone_at ctx S r0 P.
+
+(** THE CONDITIONAL LINEAGE HALTING STATEMENT: as [lholts_ns_within_budget],
+    but for every run in which the start process's first clone succeeds:
+    the process that clone makes (the lineage after it) exits on a code in
+    [allowed].  A run in which the clone fails, or the start process stops
+    or errs before it, has no such process and is not claimed about, so no
+    clone environment narrower than [Ns.Ext.any_clone_failure] is needed
+    for the clone itself: a statement of this shape needs NO environment
+    premise about the host's namespace counts.
+
+    VACUITY: this form is true of a program whose first clone never
+    succeeds.  A statement of this shape must be paired with a witness that
+    a successful clone is reachable from an admitted input and host (a run
+    of the start process to its clone, and the clone arm's success there).
+
+    The other premises are [lholts_ns_within_budget]'s: [parents_quiet]
+    ([lineage_quiet]) is a hypothesis on the other processes' behaviour,
+    and the budget premise is the released one-process run's. *)
+Definition lholts_ns_after_clone (cenv : CloneEnv) (pre : ProcInput -> Prop)
+    (host : NsState -> Prop) (xs : pconfig -> Pid -> list OfdId) (cut_at : Pid -> pconfig -> Prop)
+    (lim : Z) (allowed : list word) (img : Image) : Prop :=
+  forall (en : ExecEntry) (inp : ProcInput) (st : NsState),
+    valid_entry img en inp ->
+    valid_input inp ->
+    pre inp ->
+    host st ->
+    ~ run_scfg_budget_refused forced_only_cfg img lim en inp ->
+    match img, en with
+    | mkImage segs pc ph, Run.mkEntry sp brk0 mbase rnd =>
+        lineage_quiet xs cut_at (cenv, (segs, forced_only_cfg))
+          (one_proc_in (init_config segs pc ph sp brk0 mbase rnd lim inp) st) ->
+        after_first_clone_at (cenv, (segs, forced_only_cfg)) allowed
+          (pcfg_root (one_proc_in (init_config segs pc ph sp brk0 mbase rnd lim inp) st))
+          (one_proc_in (init_config segs pc ph sp brk0 mbase rnd lim inp) st)
+    end.
