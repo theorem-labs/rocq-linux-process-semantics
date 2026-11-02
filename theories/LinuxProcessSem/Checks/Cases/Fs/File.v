@@ -229,7 +229,7 @@ Proof. split; [check_eq|split; [check_eq | vm_compute; reflexivity]]. Qed.
     [false] at fd 3 and side [true] at fd 4, both empty, blocking and
     open both ways.  The lowest free fd is 5. *)
 Definition dup_pair_end : StreamEnd :=
-  mkStreamEnd [] false 212992%Z 212992%Z false false.
+  mkStreamEnd [] false 212992%Z 212992%Z false false RsUnknown.
 
 Definition dup_pair_model : Model :=
   mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);

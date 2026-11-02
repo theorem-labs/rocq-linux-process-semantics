@@ -473,7 +473,8 @@ Definition POLLEX_SET : Z := EPOLLPRI.
     Linux reports one of the two.  So [hi] is [lo] with bits added, and
     never the other way.  The callers answer with a CHOICE between them,
     made once per end and written into the effect ([select_fd_masks],
-    [ppoll_revents_of]).  The bits:
+    [ppoll_revents_of]); a ppoll also records a survivor's EPOLLERR
+    choice in the end ([ppoll_record]).  The bits:
 
     - EPOLLHUP when both shutdown bits are set ([shutdown ==
       SHUTDOWN_MASK]).  The other EPOLLHUP source, [sk_state ==
@@ -491,8 +492,11 @@ Definition POLLEX_SET : Z := EPOLLPRI.
     [SHUTDOWN_MASK] behind ([unix_release_sock]), so HUP, RDHUP, IN and
     RDNORM are set; it purged its queue and so freed this end's skbs, so
     the end is writable; and whether it also left [sk_err] the table does
-    not say (see [State.StreamEnd]), so EPOLLERR is the undecided bit.
-    With the peer open, EPOLLERR is clear.
+    not say (see [State.StreamEnd]).  EPOLLERR is then what the end has
+    shown of that error ([State.se_reset]): set after a ppoll showed it
+    ([RsPending]), clear once it is known to be gone ([RsNone]), and the
+    undecided bit while nothing has shown it ([RsUnknown]).  With the
+    peer open, EPOLLERR is clear.
 
     WRITABILITY is [unix_writable]: [(refcount_read(&sk_wmem_alloc) << 2)
     <= sk_sndbuf], where the refcount is 1 plus the TRUESIZE of every skb
@@ -513,7 +517,11 @@ Definition stream_poll_mask (fds : list (word * FdEntry)) (id : word)
   | None =>
       let m0 := Z.lor rx (Z.lor EPOLLHUP (Z.lor EPOLLRDHUP (Z.lor EPOLLIN EPOLLRDNORM))) in
       let m1 := if (4 <=? s)%Z then Z.lor m0 w else m0 in
-      (m1, Z.lor m1 EPOLLERR)
+      match se_reset st with
+      | RsUnknown => (m1, Z.lor m1 EPOLLERR)
+      | RsPending => (Z.lor m1 EPOLLERR, Z.lor m1 EPOLLERR)
+      | RsNone => (m1, m1)
+      end
   | Some (_, pst) =>
       let base :=
         Z.lor (if (se_shut_rd st && se_shut_wr st)%bool then EPOLLHUP else 0)
@@ -558,19 +566,34 @@ Definition default_pollmask : Z := 325.
     A STREAM-PAIR END reports [stream_poll_mask].  Where its two masks
     differ, Linux reports one of them -- which one turns on skb truesize
     (the three write bits) or on [sk_err] (EPOLLERR after the peer
-    closed), neither of which the model carries -- and [pselect_core]
-    makes that a choice shown in the result words.  An EVENTFD reports
-    [eventfd_poll_mask], one mask.  Every other kind is answered exactly
-    when [bits_all_pollable] calls its mask constant, and the constant is
-    [DEFAULT_POLLMASK]: readable and writable, never exceptional.  The
-    [_] arm hands every other constructor to that enumerated predicate,
-    so a new kind is declined there, never answered here.  A DECLINE
-    HERE DECLINES THE WHOLE CALL: [select_scan] returns [None] at the
-    first such descriptor. *)
+    closed, while the end has not shown it), neither of which the model
+    carries -- and [pselect_core] makes that a choice shown in the result
+    words.  A SURVIVOR HAS ONE ANSWER HERE, and pselect6 records nothing
+    in it: EPOLLERR is only in [POLLIN_SET] and [POLLOUT_SET], and the
+    survivor already meets both, readable by RCV_SHUTDOWN and writable
+    because its peer's purge freed its skbs, so the bit changes no result
+    word.  The one exception is a send buffer below 4 bytes, where
+    [unix_writable] fails and EPOLLERR alone would set the write bit; no
+    Linux socket has one ([SOCK_MIN_SNDBUF] is 4608, and
+    [sock_setsockopt] and [net.core.wmem_default] both clamp to it), so
+    for an end that has shown nothing yet the model declines that state
+    rather than make there a choice the end would not keep.  An EVENTFD
+    reports [eventfd_poll_mask], one mask.  Every other kind is answered
+    exactly when [bits_all_pollable] calls its mask constant, and the
+    constant is [DEFAULT_POLLMASK]: readable and writable, never
+    exceptional.  The [_] arm hands every other constructor to that
+    enumerated predicate, so a new kind is declined there, never answered
+    here.  A DECLINE HERE DECLINES THE WHOLE CALL: [select_scan] returns
+    [None] at the first such descriptor. *)
 Definition select_fd_masks (fds : list (word * FdEntry)) (fd : word)
     : option (Z * Z) :=
   match fd_lookup fds fd with
-  | Some (FdStream id side st) => Some (stream_poll_mask fds id side st)
+  | Some (FdStream id side st) =>
+      match stream_peer fds id side, se_reset st with
+      | None, RsUnknown =>
+          if (4 <=? se_sndbuf st)%Z then Some (stream_poll_mask fds id side st) else None
+      | _, _ => Some (stream_poll_mask fds id side st)
+      end
   | Some (FdEventfd ctx) => Some (eventfd_poll_mask ctx, eventfd_poll_mask ctx)
   | _ =>
       if bits_all_pollable fds (Z.shiftl 1 (bv_unsigned fd)) (S (Z.to_nat (bv_unsigned fd)))
@@ -814,11 +837,12 @@ Inductive PselectCore :=
     checker reads [sel] back from the words.  An end whose masks differ
     only in bits nobody asked for is not in [und] and has one answer.
     Linux's answer is [lo] or [hi] for each such end, and the set admits
-    both, so it admits every answer Linux gives.  The cases that reach
-    this are POLLOUT in the band where [unix_writable] turns on skb
-    truesize, and POLLOUT on a survivor whose peer closed with its send
-    buffer below 4 bytes, where only the undecided EPOLLERR (which is in
-    [POLLOUT_SET]) would set the bit. *)
+    both, so it admits every answer Linux gives.  The one case that
+    reaches this is POLLOUT in the band where [unix_writable] turns on
+    skb truesize.  A survivor whose peer closed is not one: its EPOLLERR
+    changes no result word, and the state where it would -- a send
+    buffer below 4 bytes -- is declined ([select_fd_masks]), so pselect6
+    gives a survivor one answer and moves nothing. *)
 Definition pselect_core (i : SyscallInput) (m : Model)
     (n32 inp outp exp : word) : PselectCore :=
   let n := nfds_signed n32 in
@@ -1042,10 +1066,15 @@ Definition pselect_finish (i : SyscallInput) (tsp : word)
     where a remaining time is written, a choice of the sixteen bytes.
     Both are in the effect -- [sel] in the result words or the
     [revents], the time in the last write -- so each admitted effect
-    determines its choices, and the model is the same after every one. *)
+    determines its choices.  [rec sel] is what the call records of its
+    choice in the model: nothing for pselect6 ([fun _ m => m]), and for
+    ppoll the EPOLLERR each survivor it named has now shown
+    ([ppoll_rec]).  So the model after the call is a function of the
+    model before it and of the effect. *)
 Definition pselect_answer (reads : list (word * nat)) (pa : PselectAnswers)
-    : Sys SyscallEffect :=
+    (rec : Z -> Model -> Model) : Sys SyscallEffect :=
   sel <- choose (fun sel => Z.land (pa_und pa) sel = sel) ;;
+  modify (rec sel) ;;
   match pa_ans pa sel with
   | (r, ws, None) => pure (with_copyins reads (mkEffect r ws []))
   | (r, ws, Some (tsp, (sec, nsec))) =>
@@ -1156,7 +1185,7 @@ Definition pselect6_spec (n32 inp outp exp tsp sig : word)
   m <- get_model ;;
   match pselect6_outcome i m n32 inp outp exp tsp sig with
   | None => unmodeled
-  | Some pa => pselect_answer (pselect6_reads i n32 inp outp exp tsp sig) pa
+  | Some pa => pselect_answer (pselect6_reads i n32 inp outp exp tsp sig) pa (fun _ m => m)
   end.
 
 (** ** ppoll (73)
@@ -1240,13 +1269,19 @@ Definition pselect6_spec (n32 inp outp exp tsp sig : word)
       masks ([stream_poll_mask]) differ inside the entry's filter --
       POLLOUT in the band where [unix_writable] turns on skb truesize,
       and EPOLLERR, which every filter holds, on a survivor whose peer
-      closed -- Linux reports one of them and the model admits both.  The
-      choice is made once per DESCRIPTOR, not per entry: [do_poll] polls
-      every entry in one pass over state nothing changes meanwhile, and
-      the hidden state behind the choice ([sk_wmem_alloc], [sk_err])
-      belongs to the end, so two entries naming one descriptor report
-      the same mask.  The choice is visible in the effect, in the
-      [revents] written back for each such entry.
+      closed and which has not shown its error yet -- Linux reports one
+      of them and the model admits both.  The choice is made once per
+      DESCRIPTOR, not per entry: [do_poll] polls every entry in one pass
+      over state nothing changes meanwhile, and the hidden state behind
+      the choice ([sk_wmem_alloc], [sk_err]) belongs to the end, so two
+      entries naming one descriptor report the same mask.  The choice is
+      visible in the effect, in the [revents] written back for each such
+      entry.  The survivor's choice is also RECORDED, once, in that end's
+      own entry and in no other ([ppoll_record]): [sk_err] is one fact
+      that the peer's close fixed, so every later call on the end -- a
+      read or another ppoll -- keeps to what this one showed.  The
+      truesize choice is not recorded: a later call that answers it
+      differently adds runs Linux may not have, and removes none.
 
     WHERE THE ORDERING COMES FROM.  As for pselect6: the bodies of
     [SYSCALL_DEFINE5(ppoll, ...)], [do_sys_poll], [do_poll] and
@@ -1376,9 +1411,10 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               filtered: where the undecided bits fall outside the filter
               the two are equal and there is one answer; where they fall
               inside -- POLLOUT asked in the truesize band, or the
-              EPOLLERR every filter holds on a survivor whose peer closed
-              -- [ppoll_core] makes the entry's [revents] a choice of the
-              two *)
+              EPOLLERR every filter holds on a survivor that has shown
+              nothing yet ([State.RsUnknown]) -- [ppoll_core] makes the
+              entry's [revents] a choice of the two, and [ppoll_record]
+              records the survivor's *)
            let '(lo, hi) := stream_poll_mask fds id side st in
            let filt := Z.lor events (Z.lor EPOLLERR EPOLLHUP) in
            Some (Z.land lo filt, Z.land hi filt)
@@ -1537,6 +1573,43 @@ Definition ppoll_core (i : SyscallInput) (m : Model) (ufds nfds : word)
         (fun sel => let rs := ppoll_pick cs sel in (ppoll_count rs, ppoll_writeback ufds rs))
   end.
 
+(** WHAT A PPOLL RECORDS: the EPOLLERR that each survivor it named has
+    now shown.  [und] is the call's undecided descriptors -- [pa_und] of
+    its answer, which is [ppoll_undecided] of the entries when [do_poll]'s
+    [revents] are written back and 0 on every errno -- and [sel] is the
+    choice.  A descriptor in [und] that holds a survivor still at
+    [State.RsUnknown] had EPOLLERR as its undecided bit, because every
+    filter holds EPOLLERR, and its entry now records what its [revents]
+    showed: [RsPending] where [sel] chose [hi] (EPOLLERR set), [RsNone]
+    where it chose [lo] (clear).  Every other entry stays as it is: a
+    live peer's end in [und] is the truesize band's, which is not
+    recorded; a survivor that has shown its error already had one
+    answer; and no other descriptor's entry is touched.  Keyed by the
+    descriptor, as [ppoll_pick] is, so an end that two entries name
+    records one choice. *)
+Definition ppoll_record_entry (fds : list (word * FdEntry)) (und sel : Z)
+    (fd : word) (e : FdEntry) : FdEntry :=
+  match e with
+  | FdStream id side st =>
+      if Z.testbit und (bv_unsigned fd) then
+        match stream_peer fds id side, se_reset st with
+        | None, RsUnknown =>
+            FdStream id side
+              (se_set_reset st (if Z.testbit sel (bv_unsigned fd) then RsPending else RsNone))
+        | _, _ => e
+        end
+      else e
+  | _ => e
+  end.
+
+Definition ppoll_record (fds : list (word * FdEntry)) (und sel : Z)
+    : list (word * FdEntry) :=
+  map (fun p => (fst p, ppoll_record_entry fds und sel (fst p) (snd p))) fds.
+
+(** [ppoll_record] as [pselect_answer]'s record step. *)
+Definition ppoll_rec (pa : PselectAnswers) (sel : Z) (m : Model) : Model :=
+  with_fds (ppoll_record (m_fds m) (pa_und pa) sel) m.
+
 (** [user_write_access_begin(ufds, nfds * sizeof pollfd)] (fs/select.c),
     the range test [do_sys_poll] makes on the write-back band.
 
@@ -1682,5 +1755,5 @@ Definition ppoll_spec (ufds nfds tsp sig sigsetsize : word)
   m <- get_model ;;
   match ppoll_outcome i m ufds nfds tsp sig sigsetsize with
   | None => unmodeled
-  | Some pa => pselect_answer (ppoll_reads i m ufds nfds tsp sig sigsetsize) pa
+  | Some pa => pselect_answer (ppoll_reads i m ufds nfds tsp sig sigsetsize) pa (ppoll_rec pa)
   end.

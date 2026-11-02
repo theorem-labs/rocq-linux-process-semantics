@@ -208,16 +208,20 @@ Example a1_read_after_peer_shutdown_is_eof :
                   (read_in 4 64) (read_ok [Z_to_bv 8 104])) = true.
 Proof. split; check_eq. Qed.
 
-(** After the peer CLOSES, the empty read declines: Linux answers end of
-    file, or first one -ECONNRESET when the closing end left bytes
-    unread, and the kind-blind close does not record which
-    ([State.StreamEnd]).  The survivor's send is answered: -EPIPE. *)
+(** After the peer CLOSES, the empty read is answered: end of file, or
+    first one -ECONNRESET, which Linux gives when the closing end left
+    bytes unread.  The kind-blind close does not record which, so the
+    survivor's first read chooses and the end keeps to it
+    ([Fs.ReadWrite.stream_read_reset]; the cases are
+    [Checks.Cases.Net.StreamReset]).  The survivor's send is answered:
+    -EPIPE. *)
 Example a1_after_peer_close :
-  after (pair ++ [close_ok 3]) (read_in 4 64) (read_ok []) = Some CheckUnmodeled
+  is_ok (after (pair ++ [close_ok 3]) (read_in 4 64) (read_ok [])) = true
+  /\ is_ok (after (pair ++ [close_ok 3]) (read_in 4 64) (errno_eff ECONNRESET)) = true
   /\ is_ok (after (pair ++ [close_ok 3])
                   (mk 206 [Z_to_bv 64 4; src_addr; Z_to_bv 64 1; Z_to_bv 64 16384; 0; 0])
                   (errno_eff EPIPE)) = true.
-Proof. split; check_eq. Qed.
+Proof. split; [|split]; check_eq. Qed.
 
 (** A1's witness: [syscall_spec_witness] gives an outcome for the
     socketpair call, and the checker accepts that outcome. *)
@@ -288,11 +292,12 @@ Example a2_ppoll_rdhup_after_peer_shutdown :
 Proof. check_eq. Qed.
 
 (** After the peer CLOSES, ppoll on the survivor answers with EPOLLERR
-    set or clear: EPOLLERR is in every filter, and whether the close left
-    [sk_err] is not recorded, so the model admits both.  POLLIN (1) and
-    POLLHUP (16) are set either way.  The witness gives the answer
-    without EPOLLERR (17), the one with it (25) is accepted too, and
-    POLLHUP alone is refused. *)
+    set or clear: EPOLLERR is in every filter, and the close does not
+    record whether it left [sk_err], so the first call that shows it
+    admits both (and records the one it gave: [Fs.Select.ppoll_record]).
+    POLLIN (1) and POLLHUP (16) are set either way.  The witness gives
+    the answer without EPOLLERR (17), the one with it (25) is accepted
+    too, and POLLHUP alone is refused. *)
 Example a2_ppoll_after_peer_close_answers_with_epollerr_set_or_clear :
   ppoll_answer (pair ++ [close_ok 3]) 4 1
   = Some (Z_to_bv 64 1, [(pfd_addr + Z_to_bv 64 6, [17; 0])])

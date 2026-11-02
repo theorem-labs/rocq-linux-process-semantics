@@ -31,21 +31,24 @@ Proof.
 Qed.
 
 (** One answer of [Select.pselect_answer]: the choice 0 -- every
-    undecided pair end reports its smaller mask -- and, where a remaining
+    undecided pair end reports its smaller mask, and a survivor that
+    has shown nothing records EPOLLERR clear -- and, where a remaining
     time is chosen, {0,0}. *)
 Definition pselect_answer_witness (reads : list (word * nat)) (pa : PselectAnswers)
-    (m : Model) : outcome SyscallEffect :=
+    (rec : Z -> Model -> Model) (m : Model) : outcome SyscallEffect :=
   match pa_ans pa 0%Z with
-  | (r, ws, None) => Ok (with_copyins reads (mkEffect r ws [])) m []
+  | (r, ws, None) => Ok (with_copyins reads (mkEffect r ws [])) (rec 0%Z m) []
   | (r, ws, Some (tsp, _)) =>
-      Ok (with_copyins reads (mkEffect r (ws ++ [(tsp, pselect_timespec_zero)]) [])) m []
+      Ok (with_copyins reads (mkEffect r (ws ++ [(tsp, pselect_timespec_zero)]) []))
+         (rec 0%Z m) []
   end.
 
-Lemma pselect_answer_witness_ok : forall reads pa i m,
-  pselect_answer reads pa i m (pselect_answer_witness reads pa m).
+Lemma pselect_answer_witness_ok : forall reads pa rec i m,
+  pselect_answer reads pa rec i m (pselect_answer_witness reads pa rec m).
 Proof.
-  intros reads pa i m. unfold pselect_answer, pselect_answer_witness.
+  intros reads pa rec i m. unfold pselect_answer, pselect_answer_witness.
   eapply bind_step; [apply (choose_ok _ 0%Z); apply Z.land_0_r|]. cbv beta.
+  eapply bind_step; [apply modify_ok|]. cbv beta.
   destruct (pa_ans pa 0%Z) as [[r ws] [[tsp [sec nsec]]|]]; cbv beta iota.
   - eapply bind_step;
       [apply (choose_ok _ pselect_timespec_zero); apply pselect_remaining_ok_zero|].
@@ -59,7 +62,9 @@ Definition pselect6_witness (i : SyscallInput) (m : Model)
     (n32 inp outp exp tsp sig : word) : outcome SyscallEffect :=
   match pselect6_outcome i m n32 inp outp exp tsp sig with
   | None => Unmodeled
-  | Some pa => pselect_answer_witness (pselect6_reads i n32 inp outp exp tsp sig) pa m
+  | Some pa =>
+      pselect_answer_witness (pselect6_reads i n32 inp outp exp tsp sig) pa
+        (fun _ m0 => m0) m
   end.
 
 Lemma pselect6_witness_ok : forall n32 inp outp exp tsp sig i m,
@@ -78,7 +83,9 @@ Definition ppoll_witness (i : SyscallInput) (m : Model)
     (ufds nfds tsp sig sigsetsize : word) : outcome SyscallEffect :=
   match ppoll_outcome i m ufds nfds tsp sig sigsetsize with
   | None => Unmodeled
-  | Some pa => pselect_answer_witness (ppoll_reads i m ufds nfds tsp sig sigsetsize) pa m
+  | Some pa =>
+      pselect_answer_witness (ppoll_reads i m ufds nfds tsp sig sigsetsize) pa
+        (ppoll_rec pa) m
   end.
 
 Lemma ppoll_witness_ok : forall ufds nfds tsp sig sigsetsize i m,
