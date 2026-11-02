@@ -7148,32 +7148,29 @@ Record ProcInput := mkProcInput_full {
        read at v6.18.44 and identical at v6.18.46 *)
 }.
 
-(** THE POSITIONAL-LITERAL FORM: every field except the nine
+(** THE POSITIONAL-LITERAL FORM: every field except the seven
     TRAILING DECLARATION fields of the record ([in_urandom], [in_tmp],
     [in_kernel], [in_execfn], [in_channel_reader],
-    [in_sigpipe_default], [in_sigpipe_terminal], [in_ppid],
-    [in_cap_inheritable]).
+    [in_sigpipe_default], [in_sigpipe_terminal]).
 
     The record's own constructor is [mkProcInput_full] and takes every
     field.  This takes the first thirteen, in that order, and fills the
-    last nine with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
+    last seven with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
     DEFAULT KERNEL BUILD, THE DEFAULT EXEC NAME, A LIVE CHANNEL READER,
-    SIGPIPE AT SIG_DFL, SIGPIPE DEATHS DECLINED, PARENT PID 0 and AN EMPTY
-    INHERITABLE SET: [default_urandom],
+    SIGPIPE AT SIG_DFL and SIGPIPE DEATHS DECLINED: [default_urandom],
     which is zero bytes
     forever; a private /tmp that starts empty; [default_kernel], a
     kernel built without transparent huge pages; [default_execfn], the
     one-byte name "a"; [true], the reading every literal written before
     [in_channel_reader] existed was already assuming; [true] again,
-    the SIG_DFL launch [Run.valid_input] pins; [false], the
+    the SIG_DFL launch [Run.valid_input] pins; and [false], the
     declined SIGPIPE death [Run.valid_input] pins
-    ([mkProcInput_sigpipe_terminal] proves it is the literal); and the
-    literal 0 for each word.  So a literal written
+    ([mkProcInput_sigpipe_terminal] proves it is the literal).  So a
+    literal written
     through this name denotes an input in an environment that holds no
     file of its own, on an ordinary kernel, launched as "a", whose
-    standard output is read, whose SIGPIPE is at SIG_DFL, whose
-    write to a reader-less descriptor declines, whose parent is observed
-    as pid 0, and whose inheritable set is empty.
+    standard output is read, whose SIGPIPE is at SIG_DFL, and whose
+    write to a reader-less descriptor declines.
 
     THE RANDOM DEFAULT IS NOT [IEof]: under
     [Run.valid_urandom] every valid input declares an endless stream, so
@@ -7199,8 +7196,7 @@ Definition mkProcInput
     (va_size : VaSize) : ProcInput :=
   mkProcInput_full argv envp image_fs stdin uid gid groups net
     nofile sigmask hwcap abort_terminal va_size default_urandom []
-    default_kernel default_execfn true true false (Z_to_bv 64 0)
-    (Z_to_bv 64 0).
+    default_kernel default_execfn true true false.
 
 (** The default is the LITERAL [false], not a variable: every input
     built through [mkProcInput] is one on which a SIGPIPE death
@@ -7211,23 +7207,6 @@ Lemma mkProcInput_sigpipe_terminal :
   in_sigpipe_terminal
     (mkProcInput argv envp image_fs stdin uid gid groups net nofile sigmask
        hwcap abort_terminal va_size) = false.
-Proof. reflexivity. Qed.
-
-(** The parent pid and inheritable set defaults are the literal 0. *)
-Lemma mkProcInput_ppid :
-  forall argv envp image_fs stdin uid gid groups net nofile sigmask hwcap
-         abort_terminal va_size,
-  in_ppid
-    (mkProcInput argv envp image_fs stdin uid gid groups net nofile sigmask
-       hwcap abort_terminal va_size) = Z_to_bv 64 0.
-Proof. reflexivity. Qed.
-
-Lemma mkProcInput_cap_inheritable :
-  forall argv envp image_fs stdin uid gid groups net nofile sigmask hwcap
-         abort_terminal va_size,
-  in_cap_inheritable
-    (mkProcInput argv envp image_fs stdin uid gid groups net nofile sigmask
-       hwcap abort_terminal va_size) = Z_to_bv 64 0.
 Proof. reflexivity. Qed.
 
 (** THE FILE SYSTEM THE RUN STARTS WITH: the image, with the run's
