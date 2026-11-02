@@ -209,9 +209,16 @@ Record ProcessEntry := mkEntry {
     ([Ns.Ext.ext_clone] builds the child's context); until an extension
     reflects a namespace, [peer_refused_b] stops the core answering the calls
     that namespace changes.  An absent entry reads as no bit
-    ([meta_look]). *)
+    ([meta_look]).
+
+    [pm_sid]: the session id the process inherited at its clone, when the
+    core knows it: its parent's tid if the parent had led a session by
+    then ([setsid]), else what the parent inherited.  [None] for the root,
+    whose session the launching environment chose.  Read by getsid
+    ([answer_ok_b]). *)
 Record ProcMeta := mkMeta {
-  pm_ns_stale : Z
+  pm_ns_stale : Z;
+  pm_sid      : option word
 }.
 
 (** Shared Run state: one of each, for the whole system. *)
@@ -450,10 +457,28 @@ Definition entry_a0_zero (e : ProcessEntry) : Prop :=
     share an unread fork-time value, is not needed until a target calls
     prlimit64 from both sides of a clone.
 
-    NOT HERE, AND WHY.
-    - Class (C), the answer needs the peer: 96 172 178 157 (pin the tid by
-      a free choice that can be a live peer's pid), 156 getsid and 173
-      getppid (a fresh choice where the answer is the parent's). *)
+    PIDS ([multiproc_pid_sysnos]): 96 set_tid_address, 172 getpid, 178
+    gettid, 157 setsid, 156 getsid, 173 getppid.  The released specs pin
+    the tid by a free choice and answer getsid and getppid by a fresh one;
+    with a peer the answer is fixed by the table.  A non-root entry's pid
+    is its key, the value its parent's clone returned; the root's is its
+    tid, pinned by its own first call.  So [answer_ok_b] keeps only the
+    released answers that agree: a non-root entry pins its key; the root
+    pins a value no other entry's key holds; getppid answers the parent's
+    pid (an orphan, whose parent exited, keeps the released choice: Linux
+    reparents it to a reaper the model does not name); getsid answers the
+    session the entry inherited at its clone ([pm_sid]) until its own
+    setsid, and the released choice when no ancestor led one.  A child of
+    the root asking getppid while the root's tid is unpinned first takes
+    a silent step, [pstep_pin_root], that pins it.  What cannot be
+    answered is refused ([peer_refused_b]): a pid call in a new pid
+    namespace the entry's context does not reflect, any pid call while
+    the root's tid equals another entry's key (a clone below the root
+    chose it), and a tid pin that disagrees with the key.
+
+    Every modeled number is in one of these lists ([multiproc_sysnos] is
+    [Specs.modeled_sysnos], [Checks.ProcsPrivateFrame.multiproc_partition]);
+    a number outside them takes [pstep_outside]. *)
 Definition multiproc_core_sysnos : list Z := [93; 94; 220; 260; 435]%Z.
 
 Definition multiproc_clock_sysnos : list Z := [101; 113]%Z.
@@ -462,10 +487,15 @@ Definition multiproc_synced_sysnos : list Z := [80; 101; 113; 160]%Z.
 
 Definition multiproc_gated_sysnos : list Z := [35; 261]%Z.
 
+Definition multiproc_pid_sysnos : list Z := [96; 156; 157; 172; 173; 178]%Z.
+
+(** The numbers that pin the caller's tid. *)
+Definition multiproc_tid_sysnos : list Z := [96; 157; 172; 178]%Z.
+
 (** The numbers the core answers through arms of its own beyond the core
-    list: the synced and the gated ones. *)
+    list: the synced, the gated and the pid ones. *)
 Definition multiproc_owned_sysnos : list Z :=
-  multiproc_synced_sysnos ++ multiproc_gated_sysnos.
+  multiproc_synced_sysnos ++ multiproc_gated_sysnos ++ multiproc_pid_sysnos.
 
 Definition multiproc_private_sysnos : list Z :=
   [ 17;  19;  20;  21;  22;  23;  24;  25;  29;  32;  57;  59;  61;  72;
@@ -739,7 +769,7 @@ Definition clone_flags_of (c : config) : Z :=
 (** The metadata of [p]; an absent pid reads as no stale namespace. *)
 Fixpoint meta_look (ms : list (Pid * ProcMeta)) (p : Pid) : ProcMeta :=
   match ms with
-  | [] => mkMeta 0
+  | [] => mkMeta 0 None
   | (k, m) :: r => if bv_eqb k p then m else meta_look r p
   end.
 
@@ -759,8 +789,10 @@ Definition ns_stale_child (stale flags : Z) (pctx cctx : NsCtx) : Z :=
              (if Pos.eqb (cx_pidns cctx) (cx_pidns pctx) then Z.land flags CLONE_NEWPID else 0))).
 
 Definition child_meta (P : pconfig) (e : ProcessEntry) (cctx : NsCtx) : ProcMeta :=
-  mkMeta (ns_stale_child (pm_ns_stale (meta_look (sh_meta (pcfg_shared P)) (pe_pid e)))
-            (clone_flags_of (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) cctx).
+  let pm := meta_look (sh_meta (pcfg_shared P)) (pe_pid e) in
+  mkMeta (ns_stale_child (pm_ns_stale pm)
+            (clone_flags_of (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) cctx)
+         (if m_setsid_succeeded (pe_model e) then m_tid (pe_model e) else pm_sid pm).
 
 (** The configuration a successful clone steps to.  Under no extension the
     child's context is the parent's, so every namespace its flag word asks
@@ -1124,10 +1156,40 @@ Definition flock_conflict_b (P : pconfig) (e : ProcessEntry) : bool :=
   | None => false
   end.
 
-(** THE REFUSAL GATE: the namespace gate above; the prlimit64 gate (261
-    while a peer lives and the caller's RLIMIT_CORE is unpinned); the flock
-    gate (32 while another entry has a descriptor on the same file).  See
-    the class-(A) and GATED notes above the guard. *)
+(** THE PIDS.  [f] is the root entry. *)
+Definition is_root_b (P : pconfig) (f : ProcessEntry) : bool :=
+  bv_eqb (pe_pid f) (pcfg_root P).
+
+(** [t] is the key, so the pid, of an entry that is not the root. *)
+Definition key_taken_b (P : pconfig) (t : word) : bool :=
+  List.existsb (fun kv => negb (bv_eqb (fst kv) (pcfg_root P)) && bv_eqb (fst kv) t)
+    (pcfg_procs P).
+
+(** The root's pinned tid, its pid. *)
+Definition root_tid (P : pconfig) : option word :=
+  match look P (pcfg_root P) with
+  | Some r => m_tid (pe_model r)
+  | None => None
+  end.
+
+(** Two entries would answer one pid: the root's tid is another entry's
+    key (a clone below the root chose it). *)
+Definition pid_collision_b (P : pconfig) : bool :=
+  match root_tid P with Some t => key_taken_b P t | None => false end.
+
+(** A non-root entry's pinned tid is not its key. *)
+Definition tid_conflict_b (P : pconfig) (e : ProcessEntry) : bool :=
+  match m_tid (pe_model e) with
+  | Some t => negb (is_root_b P e) && negb (bv_eqb t (pe_pid e))
+  | None => false
+  end.
+
+(** THE REFUSAL GATE: the namespace gate above (a pid call in a new pid
+    namespace among it); the prlimit64 gate (261 while a peer lives and
+    the caller's RLIMIT_CORE is unpinned); the flock gate (32 while
+    another entry has a descriptor on the same file); the pid gate (a pid
+    call while two entries would answer one pid, or while the caller's
+    tid is not its key).  See the notes above the guard. *)
 Definition peer_refused_b (P : pconfig) (e : ProcessEntry) : bool :=
   let stale := pm_ns_stale (meta_look (sh_meta (pcfg_shared P)) (pe_pid e)) in
   match ms_svc_pending (pe_ms e) with
@@ -1142,7 +1204,73 @@ Definition peer_refused_b (P : pconfig) (e : ProcessEntry) : bool :=
           && Z.eqb (bv_unsigned x8) 261)
       || (Nat.ltb 1 (List.length (pcfg_procs P))
           && Z.eqb (bv_unsigned x8) 32 && flock_conflict_b P e)
+      || (negb (Z.eqb (Z.land stale CLONE_NEWPID) 0)
+          && List.existsb (Z.eqb (bv_unsigned x8)) multiproc_pid_sysnos)
+      || (Nat.ltb 1 (List.length (pcfg_procs P))
+          && (pid_collision_b P || tid_conflict_b P e)
+          && List.existsb (Z.eqb (bv_unsigned x8)) multiproc_pid_sysnos)
   end.
+
+(** THE PID FILTER, read off the released step's result [c']: of the
+    released answers, only the ones the table fixes (see the PIDS note
+    above the guard).  A filter, not a refusal: a released answer that
+    disagrees is no step, and one that agrees always exists (a key is a
+    pid [Fork.clone_pid_ok_b] admitted, so the tid choice can take it).
+    At one entry every answer passes ([answer_ok_one]). *)
+Definition answer_ok_b (P : pconfig) (e : ProcessEntry) (c' : config) : bool :=
+  match ms_svc_pending (pe_ms e) with
+  | None => true
+  | Some x8 =>
+      if List.existsb (Z.eqb (bv_unsigned x8)) multiproc_tid_sysnos then
+        match m_tid (pe_model e), m_tid (cfg_model c') with
+        | None, Some t =>
+            if is_root_b P e then negb (key_taken_b P t) else bv_eqb t (pe_pid e)
+        | _, _ => true
+        end
+      else if Z.eqb (bv_unsigned x8) 173 then
+        if is_root_b P e then true
+        else match pe_parent e with
+             | Some par =>
+                 if bv_eqb par (pcfg_root P)
+                 then match root_tid P with
+                      | Some t => bv_eqb (ms_gpr (cfg_ms c') 0) t
+                      | None => false
+                      end
+                 else bv_eqb (ms_gpr (cfg_ms c') 0) par
+             | None => true
+             end
+      else if Z.eqb (bv_unsigned x8) 156 then
+        if m_setsid_succeeded (pe_model e) then true
+        else match pm_sid (meta_look (sh_meta (pcfg_shared P)) (pe_pid e)) with
+             | Some s => bv_eqb (ms_gpr (cfg_ms c') 0) s
+             | None => true
+             end
+      else true
+  end.
+
+(** A child of the root at getppid while the root's tid is unpinned:
+    [pstep_pin_root] pins it first. *)
+Definition root_pin_pending_b (P : pconfig) (e : ProcessEntry) : bool :=
+  match ms_svc_pending (pe_ms e) with
+  | Some x8 =>
+      Z.eqb (bv_unsigned x8) 173 && negb (is_root_b P e)
+      && match pe_parent e with
+         | Some par => bv_eqb par (pcfg_root P)
+         | None => false
+         end
+      && match look P (pcfg_root P) with
+         | Some r => match m_tid (pe_model r) with None => true | Some _ => false end
+         | None => false
+         end
+  | None => false
+  end.
+
+(** The table with the root's tid pinned to [t]. *)
+Definition pin_root (P : pconfig) (r : ProcessEntry) (t : word) : pconfig :=
+  mkPCfg (replace_in (pcfg_procs P) (pcfg_root P)
+            (mkEntry (pe_pid r) (pe_parent r) (pe_ms r) (with_tid t (pe_model r))
+                     (pe_ofd r) (pe_nsctx r)))
+         (pcfg_root P) (pcfg_shared P).
 
 (** [p] was a path of [old] and is not one of [new]. *)
 Definition removed_b (old new : Fs.Fs) (p : Fs.path) : bool :=
@@ -1359,6 +1487,8 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     (* THE STEP GATE: never a halt that would lose a child's parent-death
        signal, never an unlinkat that removes a path a peer names. *)
     step_refused_b P e c' = false ->
+    (* THE PID FILTER: only the released pid answers the table fixes. *)
+    answer_ok_b P e c' = true ->
     pstep_at segs cfg (pe_pid e) P evs (PNext (absorb P e c'))
 (** THE ERROR TRANSITION, and it must EXCLUDE the intercepted wait.
     A blocking [wait4(-1, _, 0, NULL)] is [unmodeled] in the released spec
@@ -1527,7 +1657,20 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     peer_refused_b P e = false ->
     sync_pending_b P e = false ->
     step_refused_b P e c' = true ->
-    pstep_at segs cfg (pe_pid e) P [] PError.
+    answer_ok_b P e c' = true ->
+    pstep_at segs cfg (pe_pid e) P [] PError
+(** THE ROOT PIN: a child of the root at getppid while the root's tid is
+    unpinned pins it, silently, to a pid no other entry's key holds, in the
+    range the released tid choice draws from ([Fork.set_tid_address_spec]),
+    and stays at its call. *)
+| pstep_pin_root : forall P e r t,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    root_pin_pending_b P e = true ->
+    look P (pcfg_root P) = Some r ->
+    (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z ->
+    key_taken_b P t = false ->
+    pstep_at segs cfg (pe_pid e) P [] (PNext (pin_root P r t)).
 
 (** The system steps when SOME entry does. *)
 Definition pstep_cfg (segs : list Segment) (cfg : SpuriousCfg)
@@ -1669,6 +1812,33 @@ Qed.
 Lemma step_refused_one : forall c e c', step_refused_b (one_proc c) e c' = false.
 Proof. intros c e c'. reflexivity. Qed.
 
+(** At one entry every released pid answer passes the filter: the entry is
+    the root, no other key exists, and nothing is inherited. *)
+Lemma answer_ok_one : forall c c', answer_ok_b (one_proc c) (one_entry c) c' = true.
+Proof.
+  intros c c'.
+  assert (Hk : forall t, key_taken_b (one_proc c) t = false).
+  { intros t. unfold key_taken_b. cbn [one_proc pcfg_procs pcfg_root List.existsb fst].
+    rewrite bv_eqb_same. reflexivity. }
+  unfold answer_ok_b, is_root_b. cbn [one_proc pcfg_root one_entry pe_pid].
+  rewrite bv_eqb_same.
+  destruct (ms_svc_pending _) as [x8|]; [|reflexivity].
+  destruct (List.existsb _ multiproc_tid_sysnos).
+  - destruct (m_tid _), (m_tid (cfg_model c')); rewrite ?Hk; reflexivity.
+  - destruct (Z.eqb _ 173); [reflexivity|].
+    destruct (Z.eqb _ 156); [|reflexivity].
+    destruct (m_setsid_succeeded _); reflexivity.
+Qed.
+
+(** At one entry no root pin is pending: the entry is the root. *)
+Lemma root_pin_one : forall c, root_pin_pending_b (one_proc c) (one_entry c) = false.
+Proof.
+  intros c. unfold root_pin_pending_b, is_root_b.
+  cbn [one_proc pcfg_root one_entry pe_pid].
+  destruct (ms_svc_pending _); [|reflexivity].
+  rewrite bv_eqb_same. cbn [negb]. rewrite andb_false_r. reflexivity.
+Qed.
+
 Lemma absorb_one_proc : forall c c',
   absorb (one_proc c) (one_entry c) c' = one_proc c'.
 Proof.
@@ -1764,6 +1934,12 @@ Proof.
     | [ Hw : sync_pending_b _ _ = true |- _ ] =>
         rewrite sync_pending_one in Hw; discriminate
     end.
+  - (* pstep_pin_root: the only entry is the root *)
+    exfalso.
+    match goal with
+    | [ Hw : root_pin_pending_b _ _ = true |- _ ] =>
+        rewrite root_pin_one in Hw; discriminate
+    end.
 Qed.
 
 Lemma pstep_single_next_bwd : forall segs cfg c evs c',
@@ -1785,6 +1961,7 @@ Proof.
   - apply peer_refused_one.
   - apply sync_pending_one.
   - apply step_refused_one.
+  - apply answer_ok_one.
 Qed.
 
 Lemma pstep_single_err_fwd : forall segs cfg c evs,
@@ -1983,10 +2160,10 @@ Qed.
     Keep that property when adding an arm: give the arm a disjunct here, and
     do not let a program proof invert [pstep_at] directly. *)
 
-(** A step to a successor is one of the six producing arms: the released
+(** A step to a successor is one of the seven producing arms: the released
     step, the clone, the three [wait4] arms (the blocking reap, and the
-    two WNOHANG arms of the gate, both behind [wait4_owned_b]), and the
-    clock sync. *)
+    two WNOHANG arms of the gate, both behind [wait4_owned_b]), the
+    clock sync, and the root pin. *)
 Lemma pstep_next_cases : forall segs cfg p P evs P',
   pstep_at segs cfg p P evs (PNext P') ->
   exists e,
@@ -2004,7 +2181,9 @@ Lemma pstep_next_cases : forall segs cfg p P evs P',
             /\ P' = clone_result P e c' q)
       \/ (wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true /\ evs = [])
       \/ (wait4_owned_b P e = true /\ evs = [])
-      \/ (sync_pending_b P e = true /\ evs = [] /\ P' = sync_result P e) ).
+      \/ (sync_pending_b P e = true /\ evs = [] /\ P' = sync_result P e)
+      \/ (root_pin_pending_b P e = true /\ evs = []
+          /\ exists r t, look P (pcfg_root P) = Some r /\ P' = pin_root P r t) ).
 Proof.
   intros segs cfg p P evs P' Hp.
   inversion Hp; subst.
@@ -2031,7 +2210,11 @@ Proof.
     right; right; right; left. split; [assumption | reflexivity].
   - (* pstep_sync *)
     eexists. split; [eassumption | split; [reflexivity|]].
-    right; right; right; right. split; [assumption | split; reflexivity].
+    right; right; right; right; left. split; [assumption | split; reflexivity].
+  - (* pstep_pin_root *)
+    eexists. split; [eassumption | split; [reflexivity|]].
+    right; right; right; right; right. split; [assumption | split; [reflexivity|]].
+    do 2 eexists. split; [eassumption | reflexivity].
 Qed.
 
 (** A step to the error transition is one of the four refusing arms: a
@@ -2143,15 +2326,15 @@ Proof. intros P e Hs. unfold peer_refused_b. rewrite Hs. reflexivity. Qed.
 Lemma peer_refused_of_sysno : forall P e x8,
   ms_svc_pending (pe_ms e) = Some x8 ->
   List.existsb (Z.eqb (bv_unsigned x8))
-    (ns_userns_sysnos ++ ns_netns_sysnos ++ [32; 261]%Z) = false ->
+    (ns_userns_sysnos ++ ns_netns_sysnos ++ [32; 261]%Z ++ multiproc_pid_sysnos) = false ->
   peer_refused_b P e = false.
 Proof.
   intros P e x8 Hs H. unfold peer_refused_b. rewrite Hs.
   rewrite !List.existsb_app in H. apply orb_false_iff in H as [Hu H].
-  apply orb_false_iff in H as [Hn Hg].
+  apply orb_false_iff in H as [Hn H]. apply orb_false_iff in H as [Hg Hp].
   cbn [List.existsb] in Hg. apply orb_false_iff in Hg as [H32 Hg].
   apply orb_false_iff in Hg as [H261 _].
-  rewrite Hu, Hn, H32, H261, !andb_false_r. reflexivity.
+  rewrite Hu, Hn, H32, H261, Hp, !andb_false_r. reflexivity.
 Qed.
 
 (** No entry of the table is a child of [e]: the parent-death part of the
@@ -2192,6 +2375,32 @@ Qed.
 Lemma sync_instr : forall P e,
   ms_svc_pending (pe_ms e) = None -> sync_pending_b P e = false.
 Proof. intros P e Hs. unfold sync_pending_b. rewrite Hs. reflexivity. Qed.
+
+(** The root pin is closed at an instruction and at any number but 173;
+    the pid filter passes every step at an instruction and at any number
+    outside the pid list. *)
+Lemma root_pin_of_sysno : forall P e,
+  (forall x8, ms_svc_pending (pe_ms e) = Some x8 -> bv_unsigned x8 <> 173%Z) ->
+  root_pin_pending_b P e = false.
+Proof.
+  intros P e H. unfold root_pin_pending_b.
+  destruct (ms_svc_pending (pe_ms e)) as [x8|]; [|reflexivity].
+  specialize (H x8 eq_refl). apply Z.eqb_neq in H. rewrite H. reflexivity.
+Qed.
+
+Lemma answer_ok_of_sysno : forall P e c',
+  (forall x8, ms_svc_pending (pe_ms e) = Some x8 ->
+     List.existsb (Z.eqb (bv_unsigned x8)) multiproc_pid_sysnos = false) ->
+  answer_ok_b P e c' = true.
+Proof.
+  intros P e c' H. unfold answer_ok_b.
+  destruct (ms_svc_pending (pe_ms e)) as [x8|]; [|reflexivity].
+  specialize (H x8 eq_refl). cbn [multiproc_pid_sysnos List.existsb] in H.
+  repeat (apply orb_false_iff in H as [?E H]).
+  cbn [multiproc_tid_sysnos List.existsb].
+  repeat match goal with E : Z.eqb _ _ = false |- _ => rewrite E; clear E end.
+  reflexivity.
+Qed.
 
 Lemma sync_of_sysno : forall P e x8,
   ms_svc_pending (pe_ms e) = Some x8 ->
@@ -2468,6 +2677,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     peer_refused_b P e = false ->
     sync_pending_b P e = false ->
     step_refused_b P e c' = false ->
+    answer_ok_b P e c' = true ->
     multiproc_ok ext segs P e = true ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' ctx' st'))
 | px_clone : forall P e evs c' q child ret st',
@@ -2615,7 +2825,16 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     sync_pending_b P e = false ->
     multiproc_ok ext segs P e = true ->
     step_refused_b P e c' = true ->
-    pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError.
+    answer_ok_b P e c' = true ->
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError
+| px_pin_root : forall P e r t,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    root_pin_pending_b P e = true ->
+    look P (pcfg_root P) = Some r ->
+    (0 < bv_unsigned t < PID_MAX_ENVELOPE)%Z ->
+    key_taken_b P t = false ->
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] (PNext (pin_root P r t)).
 
 Definition pstep_x_cfg (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cfg : SpuriousCfg)
     (P : pconfig) (evs : list event) (r : pstep_to) : Prop :=
@@ -2632,7 +2851,8 @@ Proof.
   destruct H; [eapply px_other | eapply px_clone | eapply px_clone_fail | eapply px_clone_unmodeled
               | eapply px_clone_claimed | eapply px_wait_reap | eapply px_error | eapply px_outside
               | eapply px_wait_nohang_reap | eapply px_wait_nohang_zero | eapply px_wait_refuse
-              | eapply px_peer_refuse | eapply px_sync | eapply px_step_refuse];
+              | eapply px_peer_refuse | eapply px_sync | eapply px_step_refuse
+              | eapply px_pin_root];
     eauto.
 Qed.
 
@@ -2721,6 +2941,17 @@ Proof.
   intros P e H. unfold clone_pending_b in H. cbn [cfg_ms pe_cfg] in H.
   destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hs; [|discriminate H].
   apply (peer_refused_of_sysno P e x8 Hs). unfold clone_sysno in H.
+  apply orb_true_iff in H as [H|H]; apply Z.eqb_eq in H; rewrite H; reflexivity.
+Qed.
+
+(** ... nor filtered by the pid filter. *)
+Lemma clone_pending_answer_ok : forall P e c',
+  clone_pending_b (pe_cfg (pcfg_shared P) e) = true -> answer_ok_b P e c' = true.
+Proof.
+  intros P e c' H. unfold clone_pending_b in H. cbn [cfg_ms pe_cfg] in H.
+  unfold answer_ok_b.
+  destruct (ms_svc_pending (pe_ms e)) as [x8|]; [|reflexivity].
+  unfold clone_sysno in H.
   apply orb_true_iff in H as [H|H]; apply Z.eqb_eq in H; rewrite H; reflexivity.
 Qed.
 
@@ -2897,7 +3128,7 @@ Theorem pstep_x_at_agree_iff : forall ext cenv segs cfg p P evs r,
 Proof.
   intros ext cenv segs cfg p P evs r Hag. split.
   - intros H. revert Hag. destruct H as
-      [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hns Hsy Hst Hmp
+      [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hns Hsy Hst Han Hmp
       | Q e ev c' q child ret st' Hl Hcl Hs Hsucc Hq Hfree Hma Hec
       | Q e ev c' en hq st' Hl Hcl Hs Hcp Hsucc Hret Hma Hec Hnr
       | Q e ev c' hq Hl Hcl Hs Hcp Hma Hec
@@ -2912,7 +3143,8 @@ Proof.
       | Q e Hl Hh Hrf
       | Q e Hl Hh Hns
       | Q e Hl Hh Hsy
-      | Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hns Hsy Hmp Hst ]; intros Hag;
+      | Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hns Hsy Hmp Hst Han
+      | Q e r t Hl Hh Hpin Hlr Ht Hkt ]; intros Hag;
       destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* px_other *)
       apply (proj1 (Hxs _ _ _ _ _)) in Hx. destruct Hx as (Hs & -> & ->).
@@ -2934,6 +3166,7 @@ Proof.
       * apply clone_pending_not_ns. exact Hcp.
       * apply clone_pending_not_sync. exact Hcp.
       * apply clone_pending_not_step. exact Hcp.
+      * apply clone_pending_answer_ok. exact Hcp.
     + (* px_clone_unmodeled *)
       apply (proj1 (Hcln _ _)) in Hec.
       destruct Hec as [Heq | (en & _ & Heq)]; discriminate Heq.
@@ -2961,8 +3194,10 @@ Proof.
       apply pstep_step_refuse with (evs := ev) (c' := c'); try assumption.
       * apply clone_pending_success. exact Hcp.
       * rewrite <- Hmpe. exact Hmp.
+    + (* px_pin_root: the core's own arm, on both sides *)
+      eapply pstep_pin_root; eassumption.
   - intros H. revert Hag. destruct H as
-      [ Q e ev c' Hl Hs Hsucc Hwt Hma Hwo Hns Hsy Hst
+      [ Q e ev c' Hl Hs Hsucc Hwt Hma Hwo Hns Hsy Hst Han
       | Q e ev c' q Hl Hs Hsucc Hq Hfree Hma
       | Q e q ez x8 stat_addr status eff model'' dumped
           Hl Hh Hx8 Hwt Hargs Hq Hne Hpar Hk Hst Hrd Heff Hmat
@@ -2974,7 +3209,8 @@ Proof.
       | Q e Hl Hh Hrf
       | Q e Hl Hh Hns
       | Q e Hl Hh Hsy
-      | Q e ev c' Hl Hs Hsucc Hwt Hma Hwo Hns Hsy Hst ]; intros Hag;
+      | Q e ev c' Hl Hs Hsucc Hwt Hma Hwo Hns Hsy Hst Han
+      | Q e r t Hl Hh Hpin Hlr Ht Hkt ]; intros Hag;
       destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* pstep_other *)
       destruct (clone_pending_b (pe_cfg (pcfg_shared Q) e)) eqn:Hp.
@@ -3020,6 +3256,8 @@ Proof.
           (ctx' := pe_nsctx e) (st' := sh_ns (pcfg_shared Q)); try assumption.
         -- apply (proj2 (Hxs _ _ _ _ _)). split; [exact Hs | split; reflexivity].
         -- rewrite Hmpe. exact Hma.
+    + (* pstep_pin_root *)
+      eapply px_pin_root; eassumption.
 Qed.
 
 (** An extension that claims no pending call of an entry of [P] and whose

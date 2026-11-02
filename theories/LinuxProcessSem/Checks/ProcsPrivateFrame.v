@@ -26,11 +26,11 @@
       ([Checks.ProcsWellFormed.pstep_at_preserves_wf]).
     - [pstep_x_at_private_frame]: the same for [Procs.pstep_x_at] wherever
       [Procs.ext_agrees] holds, through [Procs.pstep_x_at_agree_iff].
-    - [peer_call_outside]: the pin.  A class-(C) call of an entry whose
-      table has another entry takes [pstep_outside], and no step of that
-      entry has a successor.
-    - [multiproc_partition]: the core, class-(A), class-(B) and class-(C)
-      lists together are exactly [Specs.modeled_sysnos].
+    - [unadmitted_call_outside]: the pin.  A number no list of the guard
+      admits, pending at an entry whose table has another entry, takes
+      [pstep_outside], and no step of that entry has a successor.
+    - [multiproc_partition]: the guard's lists together are exactly
+      [Specs.modeled_sysnos].
 
     Class (B) is [Checks.ProcsSharedFrame]'s. *)
 
@@ -876,6 +876,15 @@ Proof.
   unfold multiproc_private. cbn [cfg_ms pe_cfg]. rewrite Hs, H260. reflexivity.
 Qed.
 
+Lemma private_not_pin : forall P e,
+  root_pin_pending_b P e = true -> multiproc_private (pe_cfg (pcfg_shared P) e) = false.
+Proof.
+  intros P e H. unfold root_pin_pending_b in H. unfold multiproc_private.
+  cbn [cfg_ms pe_cfg]. destruct (ms_svc_pending (pe_ms e)) as [x8|]; [|discriminate H].
+  destruct (Z.eqb (bv_unsigned x8) 173) eqn:E; [|discriminate H].
+  apply Z.eqb_eq in E. rewrite E. reflexivity.
+Qed.
+
 Lemma private_not_sync : forall P e,
   sync_pending_b P e = true -> multiproc_private (pe_cfg (pcfg_shared P) e) = false.
 Proof.
@@ -909,7 +918,7 @@ Proof.
   destruct Hcases as
     [ (c' & Hs & _ & _ & ->)
     | [ (c' & q & _ & Hsucc & _)
-      | [ (Hwt & _) | [ (Hwo & _) | (Hsy & _ & _) ] ] ] ].
+      | [ (Hwt & _) | [ (Hwo & _) | [ (Hsy & _ & _) | (Hrp & _ & _) ] ] ] ] ].
   - pose proof (sstep_private_shared _ _ _ _ _ Hp Hs) as Hsh.
     unfold sh_of in Hsh. injection Hsh as Hf Hi.
     split; [|split; [reflexivity|]].
@@ -923,6 +932,7 @@ Proof.
   - rewrite (private_not_intercept _ Hwt) in Hp. discriminate Hp.
   - rewrite (private_not_owned _ _ Hwo) in Hp. discriminate Hp.
   - rewrite (private_not_sync _ _ Hsy) in Hp. discriminate Hp.
+  - rewrite (private_not_pin _ _ Hrp) in Hp. discriminate Hp.
 Qed.
 
 (** So every other entry's VIEW is unchanged: [pe_cfg] reads [pe_ms] and
@@ -980,19 +990,6 @@ Qed.
    The pin: what is not admitted still fails closed
    ========================================================================= *)
 
-(** Class (C): the answer needs the peer, and the core does not give it. *)
-Definition multiproc_peer_sysnos : list Z :=
-  [96; 156; 157; 172; 173; 178]%Z.
-
-Lemma not_admitted_sysno : forall n,
-  List.existsb (Z.eqb n) multiproc_peer_sysnos = true ->
-  List.existsb (Z.eqb n) multiproc_sysnos = false.
-Proof.
-  intros n H. apply List.existsb_exists in H as (k & Hin & Hk).
-  apply Z.eqb_eq in Hk. subst k. cbn in Hin.
-  repeat (destruct Hin as [<- | Hin]; [reflexivity|]). destruct Hin.
-Qed.
-
 Lemma not_admitted_not_260 : forall n,
   List.existsb (Z.eqb n) multiproc_sysnos = false -> n <> 260%Z.
 Proof. intros n H ->. discriminate H. Qed.
@@ -1008,34 +1005,35 @@ Proof.
 Qed.
 
 (** A step to a successor passes the surface guard, or is one of the
-    [wait4] arms, which need a pending 260. *)
+    core's own arms: the [wait4] arms (a pending 260), the sync (a synced
+    number) and the root pin (a pending 173). *)
 Lemma pstep_next_allowed : forall segs cfg p P evs P',
   pstep_at segs cfg p P evs (PNext P') ->
   exists e, look P p = Some e /\
     ( multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true
       \/ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true
       \/ wait4_owned_b P e = true
-      \/ sync_pending_b P e = true ).
+      \/ sync_pending_b P e = true
+      \/ root_pin_pending_b P e = true ).
 Proof.
   intros segs cfg p P evs P' H. inversion H; subst;
-    (eexists; split; [eassumption|]); auto.
+    (eexists; split; [eassumption|]); auto 6.
 Qed.
 
-(** THE PIN.  An entry whose table holds another entry, with a class-(C)
-    call pending, takes [pstep_outside], and no step of it has a
-    successor: the released spec never answers it.  getpid (172), whose
-    released answer would pin a tid that can be the peer's pid, is one. *)
-Theorem peer_call_outside : forall segs cfg P e x8,
+(** THE PIN.  An entry whose table holds another entry, with a number
+    pending that no list of the guard admits, takes [pstep_outside], and
+    no step of it has a successor.  Every modeled number is admitted
+    ([multiproc_partition]), so this is the fate of every other number. *)
+Theorem unadmitted_call_outside : forall segs cfg P e x8,
   look P (pe_pid e) = Some e ->
   m_halted (pe_model e) = None ->
   ms_svc_pending (pe_ms e) = Some x8 ->
-  List.existsb (Z.eqb (bv_unsigned x8)) multiproc_peer_sysnos = true ->
+  List.existsb (Z.eqb (bv_unsigned x8)) multiproc_sysnos = false ->
   (1 < List.length (pcfg_procs P))%nat ->
   pstep_at segs cfg (pe_pid e) P [] PError
   /\ (forall evs P', ~ pstep_at segs cfg (pe_pid e) P evs (PNext P')).
 Proof.
-  intros segs cfg P e x8 Hl Hh Hs Hn Hlen.
-  pose proof (not_admitted_sysno _ Hn) as Hna.
+  intros segs cfg P e x8 Hl Hh Hs Hna Hlen.
   assert (Hma : multiproc_allowed P (pe_cfg (pcfg_shared P) e) = false).
   { unfold multiproc_allowed. cbn [cfg_ms pe_cfg]. rewrite Hs, Hna.
     rewrite (proj2 (Nat.leb_gt _ _) Hlen). reflexivity. }
@@ -1043,7 +1041,7 @@ Proof.
   intros evs P' Hp.
   destruct (pstep_next_allowed _ _ _ _ _ _ Hp) as (e1 & Hl1 & Hor).
   rewrite Hl in Hl1. injection Hl1 as <-.
-  destruct Hor as [Hma' | [Hwt | [Hwo | Hsy]]].
+  destruct Hor as [Hma' | [Hwt | [Hwo | [Hsy | Hrp]]]].
   - congruence.
   - destruct (intercept_260 _ Hwt) as (y & Hy & Hy260).
     cbn [cfg_ms pe_cfg] in Hy. rewrite Hs in Hy. injection Hy as <-.
@@ -1056,16 +1054,14 @@ Proof.
     unfold multiproc_sysnos, multiproc_owned_sysnos in Hna.
     rewrite !List.existsb_app, Hin in Hna.
     destruct (List.existsb _ multiproc_core_sysnos); discriminate Hna.
+  - unfold root_pin_pending_b in Hrp. rewrite Hs in Hrp.
+    destruct (Z.eqb (bv_unsigned x8) 173) eqn:E; [|discriminate Hrp].
+    apply Z.eqb_eq in E. rewrite E in Hna. discriminate Hna.
 Qed.
 
-(** The admitted lists and the class-(C) list are the modeled surface, each
-    number once in all. *)
+(** The admitted lists are the modeled surface. *)
 Lemma multiproc_partition :
-  List.forallb (fun n => List.existsb (Z.eqb n)
-                  (multiproc_sysnos ++ multiproc_peer_sysnos))
-    modeled_sysnos = true
-  /\ List.forallb (fun n => List.existsb (Z.eqb n) modeled_sysnos)
-       (multiproc_sysnos ++ multiproc_peer_sysnos) = true
-  /\ List.length (multiproc_sysnos ++ multiproc_peer_sysnos)
-     = List.length modeled_sysnos.
+  List.forallb (fun n => List.existsb (Z.eqb n) multiproc_sysnos) modeled_sysnos = true
+  /\ List.forallb (fun n => List.existsb (Z.eqb n) modeled_sysnos) multiproc_sysnos = true
+  /\ List.length multiproc_sysnos = List.length modeled_sysnos.
 Proof. split; [|split]; vm_compute; reflexivity. Qed.

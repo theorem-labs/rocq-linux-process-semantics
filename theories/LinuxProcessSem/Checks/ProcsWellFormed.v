@@ -630,6 +630,39 @@ Proof.
   - apply (root_replace _ _ e); [exact Hnd | exact He | reflexivity | exact Hroot].
 Qed.
 
+(** The root pin replaces the root's entry by one with the same pid,
+    parent and halt state; the root is running, since the caller is its
+    child and a parent in the table is running. *)
+Lemma tbl_root_pin : forall P e r t,
+  tbl_wf (pcfg_procs P) -> root_ok (pcfg_procs P) (pcfg_root P) ->
+  look P (pe_pid e) = Some e -> root_pin_pending_b P e = true ->
+  look P (pcfg_root P) = Some r ->
+  tbl_wf (pcfg_procs (pin_root P r t))
+  /\ root_ok (pcfg_procs (pin_root P r t)) (pcfg_root (pin_root P r t)).
+Proof.
+  intros P e r t Htbl Hroot Hl Hpin Hlr.
+  pose proof (look_in_In _ _ _ Hl) as He.
+  pose proof (look_in_In _ _ _ Hlr) as Hr.
+  pose proof Htbl as (Hkey & Hpar & Hnd).
+  unfold root_pin_pending_b in Hpin.
+  destruct (ms_svc_pending (pe_ms e)); [|discriminate Hpin].
+  apply andb_true_iff in Hpin as [Hpin _]. apply andb_true_iff in Hpin as [_ Hpe].
+  destruct (pe_parent e) as [par|] eqn:Hpe'; [|discriminate Hpe].
+  apply bv_eqb_true_eq in Hpe. subst par.
+  destruct (Hpar _ _ He Hpe') as (_ & f & Hf & Hfrun).
+  rewrite (In_unique _ _ _ _ Hnd Hf Hr) in Hfrun.
+  pose proof (Hkey _ Hr) as Hkr. cbn [fst snd] in Hkr.
+  unfold pin_root. cbn [pcfg_procs pcfg_root]. split.
+  - rewrite <- (orphan_at_exit_running (with_tid t (pe_model r)) (pcfg_root P)
+                  (replace_in (pcfg_procs P) (pcfg_root P)
+                     (mkEntry (pe_pid r) (pe_parent r) (pe_ms r) (with_tid t (pe_model r))
+                              (pe_ofd r) (pe_nsctx r))))
+      by exact Hfrun.
+    apply (tbl_absorb _ _ r);
+      [exact Htbl | exact Hr | cbn [pe_pid]; symmetry; exact Hkr | reflexivity | reflexivity].
+  - apply (root_replace _ _ r); [exact Hnd | exact Hr | reflexivity | exact Hroot].
+Qed.
+
 Lemma tbl_root_reap : forall P e q ez eff model'',
   tbl_wf (pcfg_procs P) -> root_ok (pcfg_procs P) (pcfg_root P) ->
   look P (pe_pid e) = Some e -> m_halted (pe_model e) = None ->
@@ -668,7 +701,7 @@ Proof.
   intros segs cfg p P evs P' Hwf Hp.
   apply wf_iff in Hwf as [Htbl Hroot]. apply wf_iff.
   inversion Hp as
-    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1 Hns1 Hsy1 Hst1
+    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1 Hns1 Hsy1 Hst1 Han1
     | P2 e2 evs2 c2 q2 Hl2 Hs2 Hc2 Hcp2 Hfr2 Hm2
     | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
         Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
@@ -680,7 +713,8 @@ Proof.
     | P8 e8 Hl8 Hh8 Hrf8
     | P9 e9 Hl9 Hh9 Hns9
     | P10 e10 Hl10 Hh10 Hsy10
-    | P11 e11 evs11 c11 Hl11 Hs11 Hc11 Hw11 Hm11 Hwo11 Hns11 Hsy11 Hst11 ]; subst.
+    | P11 e11 evs11 c11 Hl11 Hs11 Hc11 Hw11 Hm11 Hwo11 Hns11 Hsy11 Hst11 Han11
+    | P12 e12 r12 t12 Hl12 Hh12 Hpin12 Hlr12 Ht12 Hkt12 ]; subst.
   - (* pstep_other *)
     exact (tbl_root_absorb _ e1 c1 Htbl Hroot Hl1).
   - (* pstep_clone *)
@@ -703,4 +737,6 @@ Proof.
     exact (tbl_root_absorb _ e7 _ Htbl Hroot Hl7).
   - (* pstep_sync: one entry's clock copy, nothing structural *)
     exact (tbl_root_sync _ e10 Htbl Hroot Hl10 Hh10).
+  - (* pstep_pin_root: the root's tid, nothing structural *)
+    exact (tbl_root_pin _ e12 r12 t12 Htbl Hroot Hl12 Hpin12 Hlr12).
 Qed.

@@ -57,7 +57,8 @@ Lemma pstep_next_ns : forall segs cfg p P evs P',
       \/ clone_pending_b (pe_cfg (pcfg_shared P) e) = true
       \/ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true
       \/ wait4_owned_b P e = true
-      \/ sync_pending_b P e = true ).
+      \/ sync_pending_b P e = true
+      \/ root_pin_pending_b P e = true ).
 Proof.
   intros segs cfg p P evs P' H. inversion H; subst;
     (eexists; split; [eassumption|]).
@@ -66,7 +67,8 @@ Proof.
     | right; left; eapply clone_success_pending; eassumption
     | right; right; left; assumption
     | right; right; right; left; assumption
-    | right; right; right; right; assumption ].
+    | right; right; right; right; left; assumption
+    | right; right; right; right; right; assumption ].
 Qed.
 
 Lemma intercept_260_ns : forall c,
@@ -99,7 +101,7 @@ Proof.
   intros evs P' Hp.
   destruct (pstep_next_ns _ _ _ _ _ _ Hp) as (e1 & Hl1 & Hor).
   rewrite Hl in Hl1. injection Hl1 as <-.
-  destruct Hor as [Hn | [Hcp | [Hwt | [Hwo | Hsy]]]].
+  destruct Hor as [Hn | [Hcp | [Hwt | [Hwo | [Hsy | Hrp]]]]].
   - congruence.
   - unfold clone_pending_b, clone_sysno in Hcp. cbn [cfg_ms pe_cfg] in Hcp.
     rewrite Hs, H174 in Hcp. discriminate Hcp.
@@ -108,4 +110,5 @@ Proof.
   - destruct (wait4_owned_260 _ _ Hwo) as (y & Hy & Hy260).
     rewrite Hs in Hy. injection Hy as <-. lia.
   - unfold sync_pending_b in Hsy. rewrite Hs, H174 in Hsy. discriminate Hsy.
+  - unfold root_pin_pending_b in Hrp. rewrite Hs, H174 in Hrp. discriminate Hrp.
 Qed.

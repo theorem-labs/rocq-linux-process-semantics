@@ -379,6 +379,15 @@ Proof.
   unfold multiproc_shared. cbn [cfg_ms pe_cfg]. rewrite Hs, H260. reflexivity.
 Qed.
 
+Lemma shared_not_pin : forall P e,
+  root_pin_pending_b P e = true -> multiproc_shared (pe_cfg (pcfg_shared P) e) = false.
+Proof.
+  intros P e H. unfold root_pin_pending_b in H. unfold multiproc_shared.
+  cbn [cfg_ms pe_cfg]. destruct (ms_svc_pending (pe_ms e)) as [x8|]; [|discriminate H].
+  destruct (Z.eqb (bv_unsigned x8) 173) eqn:E; [|discriminate H].
+  apply Z.eqb_eq in E. rewrite E. reflexivity.
+Qed.
+
 Lemma shared_not_sync : forall P e,
   sync_pending_b P e = true -> multiproc_shared (pe_cfg (pcfg_shared P) e) = false.
 Proof.
@@ -416,7 +425,7 @@ Proof.
   destruct Hcases as
     [ (c' & Hs & _ & _ & ->)
     | [ (c' & q & _ & Hsucc & _)
-      | [ (Hwt & _) | [ (Hwo & _) | (Hsy & _ & _) ] ] ] ].
+      | [ (Hwt & _) | [ (Hwo & _) | [ (Hsy & _ & _) | (Hrp & _ & _) ] ] ] ] ].
   - pose proof (sstep_shared_grows _ _ _ _ _ Hp Hs) as Hg.
     split; [reflexivity|]. split; [reflexivity|]. split; [reflexivity|].
     split; [reflexivity|]. split.
@@ -429,6 +438,7 @@ Proof.
   - rewrite (shared_not_intercept _ Hwt) in Hp. discriminate Hp.
   - rewrite (shared_not_owned _ _ Hwo) in Hp. discriminate Hp.
   - rewrite (shared_not_sync _ _ Hsy) in Hp. discriminate Hp.
+  - rewrite (shared_not_pin _ _ Hrp) in Hp. discriminate Hp.
 Qed.
 
 (** The path a file descriptor names, for the four kinds that name one. *)

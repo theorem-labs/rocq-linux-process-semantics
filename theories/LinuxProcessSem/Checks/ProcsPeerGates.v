@@ -41,7 +41,9 @@ Lemma pstep_next_gate_cases : forall segs cfg p P evs P',
       \/ clone_pending_b (pe_cfg (pcfg_shared P) e) = true
       \/ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true
       \/ wait4_owned_b P e = true
-      \/ (sync_pending_b P e = true /\ P' = sync_result P e) ).
+      \/ (sync_pending_b P e = true /\ P' = sync_result P e)
+      \/ (root_pin_pending_b P e = true
+          /\ exists r t, look P (pcfg_root P) = Some r /\ P' = pin_root P r t) ).
 Proof.
   intros segs cfg p P evs P' H. inversion H; subst;
     (eexists; split; [eassumption | split; [reflexivity|]]).
@@ -50,7 +52,9 @@ Proof.
     | right; left; eapply clone_success_pending; eassumption
     | right; right; left; assumption
     | right; right; right; left; assumption
-    | right; right; right; right; split; [assumption | reflexivity] ].
+    | right; right; right; right; left; split; [assumption | reflexivity]
+    | right; right; right; right; right; split;
+      [assumption | do 2 eexists; split; [eassumption | reflexivity]] ].
 Qed.
 
 Lemma look_absorb_self : forall P e c',
@@ -103,7 +107,7 @@ Proof.
   intros evs P' Hp.
   destruct (pstep_next_gate_cases _ _ _ _ _ _ Hp) as (e1 & Hl1 & _ & Hcases).
   rewrite Hl in Hl1. injection Hl1 as <-.
-  destruct Hcases as [ (c' & _ & Hpr' & _) | [ Hcp | [ Hwt | [ Hwo | (Hsy & _) ] ] ] ].
+  destruct Hcases as [ (c' & _ & Hpr' & _) | [ Hcp | [ Hwt | [ Hwo | [ (Hsy & _) | (Hrp & _) ] ] ] ] ].
   - congruence.
   - unfold clone_pending_b, clone_sysno in Hcp. cbn [cfg_ms pe_cfg] in Hcp.
     rewrite Hs, H32 in Hcp. discriminate Hcp.
@@ -113,6 +117,7 @@ Proof.
     rewrite Hs in Hy. injection Hy as <-. lia.
   - rewrite (sync_of_sysno P e x8 Hs) in Hsy; [discriminate Hsy|].
     rewrite H32. reflexivity.
+  - unfold root_pin_pending_b in Hrp. rewrite Hs, H32 in Hrp. discriminate Hrp.
 Qed.
 
 (* =========================================================================
@@ -166,7 +171,7 @@ Proof.
   intros segs cfg P evs P' e x8 q f Hl Hs H35 Hp Hne Hf Hin.
   destruct (pstep_next_gate_cases _ _ _ _ _ _ Hp) as (e1 & Hl1 & _ & Hcases).
   rewrite Hl in Hl1. injection Hl1 as <-.
-  destruct Hcases as [ (c' & _ & _ & Hst & ->) | [ Hcp | [ Hwt | [ Hwo | (Hsy & _) ] ] ] ].
+  destruct Hcases as [ (c' & _ & _ & Hst & ->) | [ Hcp | [ Hwt | [ Hwo | [ (Hsy & _) | (Hrp & _) ] ] ] ] ].
   - destruct (absorb_keeps_other P e c' q f (fun E => Hne (eq_sym E)) Hf)
       as (f' & Hf' & Hm & _).
     exists f'. split; [exact Hf'|]. split; [exact Hm|].
@@ -192,6 +197,7 @@ Proof.
     rewrite Hs in Hy. injection Hy as <-. lia.
   - exfalso. rewrite (sync_of_sysno P e x8 Hs) in Hsy; [discriminate Hsy|].
     rewrite H35. reflexivity.
+  - exfalso. unfold root_pin_pending_b in Hrp. rewrite Hs, H35 in Hrp. discriminate Hrp.
 Qed.
 
 (* =========================================================================
@@ -217,7 +223,7 @@ Proof.
   intros segs cfg P evs P' e e' Hl Hh Hlen Hcp Hwi Hwo Hp Hl' Hh'.
   destruct (pstep_next_gate_cases _ _ _ _ _ _ Hp) as (e1 & Hl1 & _ & Hcases).
   rewrite Hl in Hl1. injection Hl1 as <-.
-  destruct Hcases as [ (c' & _ & _ & Hst & ->) | [ Hcp' | [ Hwt | [ Hwo' | (Hsy & ->) ] ] ] ].
+  destruct Hcases as [ (c' & _ & _ & Hst & ->) | [ Hcp' | [ Hwt | [ Hwo' | [ (Hsy & ->) | (Hrp & r & t & Hlr & ->) ] ] ] ] ].
   - rewrite (look_absorb_self P e c' Hl) in Hl'. injection Hl' as <-.
     change (m_halted (pe_model (pe_absorb e c'))) with (m_halted (cfg_model c')) in Hh'.
     unfold step_refused_b in Hst. apply Nat.ltb_lt in Hlen. rewrite Hlen in Hst.
@@ -234,4 +240,13 @@ Proof.
   - exfalso. unfold look, sync_result in Hl'. cbn [pcfg_procs] in Hl'.
     rewrite look_in_replace_same in Hl' by (unfold look in Hl; rewrite Hl; discriminate).
     injection Hl' as <-. rewrite sync_entry_halted in Hh'. contradiction.
+  - (* the root pin writes the root, and the caller is not the root *)
+    exfalso. unfold root_pin_pending_b, is_root_b in Hrp.
+    destruct (ms_svc_pending (pe_ms e)); [|discriminate Hrp].
+    destruct (bv_eqb (pe_pid e) (pcfg_root P)) eqn:Er;
+      [cbn [negb] in Hrp; rewrite andb_false_r in Hrp; discriminate Hrp|].
+    unfold look, pin_root in Hl'. cbn [pcfg_procs] in Hl'.
+    rewrite look_in_replace_other in Hl'
+      by (intros E; rewrite E, bv_eqb_same in Er; discriminate Er).
+    unfold look in Hl. rewrite Hl in Hl'. injection Hl' as <-. contradiction.
 Qed.

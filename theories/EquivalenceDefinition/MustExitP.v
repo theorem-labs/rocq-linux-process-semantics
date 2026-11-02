@@ -668,6 +668,7 @@ Proof.
     + left. destruct (mi_account_step_model_frame _ _ _ _ _ Hm)
         as (_ & _ & _ & _ & _ & Hproc & _).
       cbn [cfg_model]. unfold m_halted. rewrite Hproc. exact Hh.
+  - apply answer_ok_of_sysno. intros x8 Hx. rewrite Hs in Hx. discriminate Hx.
 Qed.
 
 (** THE NO-LAZY FORM IS NOT STATED HERE, and the reason is a scope fact

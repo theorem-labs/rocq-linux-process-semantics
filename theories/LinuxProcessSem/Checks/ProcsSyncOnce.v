@@ -11,7 +11,8 @@
       is closed, for every synced number (80, 101, 113, 160).
     - (2) [other_step_keeps_entry], with [uts_lag_pinned] and
       [pin_lag_pinned]: a step of ANOTHER entry leaves a running entry's
-      machine state and model as they were, and the uname and fstat gates
+      machine state and model as they were (but for the tid the root pin
+      writes), and the uname and fstat gates
       read only the entry's own pin once it has one.  So for 160 and 80 the
       gate, once closed by a pin, stays closed until the entry itself
       steps: at most one sync per call.
@@ -218,24 +219,32 @@ Proof.
     split; reflexivity.
 Qed.
 
-(** A step of another entry leaves a running entry's machine state and
-    model as they were (its parent may be cleared by an exit). *)
+(** A step of another entry leaves a running entry's machine state, and
+    its model but for the tid the root pin writes into the root's (its
+    parent may be cleared by an exit). *)
 Theorem other_step_keeps_entry : forall segs cfg q P evs P' p f,
   pstep_at segs cfg q P evs (PNext P') ->
   q <> p -> look P p = Some f -> m_halted (pe_model f) = None ->
-  exists f', look P' p = Some f' /\ pe_model f' = pe_model f /\ pe_ms f' = pe_ms f.
+  exists f', look P' p = Some f' /\ pe_ms f' = pe_ms f
+    /\ (pe_model f' = pe_model f \/ exists t, pe_model f' = with_tid t (pe_model f)).
 Proof.
   intros segs cfg q P evs P' p f H Hne Hf Hh.
+  assert (Hab : forall e c', pe_pid e <> p ->
+            exists f', look (absorb P e c') p = Some f' /\ pe_ms f' = pe_ms f
+              /\ (pe_model f' = pe_model f
+                  \/ exists t, pe_model f' = with_tid t (pe_model f))).
+  { intros e c' Hep. destruct (absorb_keeps_other P e c' p f Hep Hf) as (f' & H1 & H2 & H3).
+    exists f'. split; [exact H1|]. split; [exact H3 | left; exact H2]. }
   inversion H; subst.
-  - (* pstep_other *) apply absorb_keeps_other; assumption.
+  - (* pstep_other *) apply Hab; assumption.
   - (* pstep_clone *)
-    exists f. split; [|split; reflexivity].
+    exists f. split; [|split; [reflexivity | left; reflexivity]].
     unfold look, clone_result. cbn [pcfg_procs].
     rewrite look_in_app, look_in_replace_other
       by (intros E; apply Hne; symmetry; exact E).
     unfold look in Hf. rewrite Hf. reflexivity.
   - (* pstep_wait_reap: the reaped child is halted, so it is not [p] *)
-    exists f. split; [|split; reflexivity].
+    exists f. split; [|split; [reflexivity | left; reflexivity]].
     unfold look. cbn [pcfg_procs].
     match goal with
     | Hq : look P ?q0 = Some ?ez, Hst : pe_status _ ?ez = Some _ |- _ =>
@@ -247,7 +256,7 @@ Proof.
     rewrite look_in_replace_other by (intros E; apply Hne; symmetry; exact E).
     unfold look in Hf. exact Hf.
   - (* pstep_wait_nohang_reap *)
-    exists f. split; [|split; reflexivity].
+    exists f. split; [|split; [reflexivity | left; reflexivity]].
     unfold look, wait4_reap_result. cbn [pcfg_procs].
     match goal with
     | Hq : look P ?q0 = Some ?ez, Hst : pe_status _ ?ez = Some _ |- _ =>
@@ -259,12 +268,29 @@ Proof.
     rewrite look_in_replace_other by (intros E; apply Hne; symmetry; exact E).
     unfold look in Hf. exact Hf.
   - (* pstep_wait_nohang_zero: an absorb *)
-    unfold wait4_zero_result. apply absorb_keeps_other; assumption.
+    unfold wait4_zero_result. apply Hab; assumption.
   - (* pstep_sync *)
-    exists f. split; [|split; reflexivity].
+    exists f. split; [|split; [reflexivity | left; reflexivity]].
     unfold look, sync_result. cbn [pcfg_procs].
     rewrite look_in_replace_other by (intros E; apply Hne; symmetry; exact E).
     unfold look in Hf. exact Hf.
+  - (* pstep_pin_root: the root's tid, nothing else *)
+    match goal with
+    | Hlr : look P (pcfg_root P) = Some ?r |- _ =>
+        destruct (bv_eqb (pcfg_root P) p) eqn:Erp;
+        [ apply bv_eqb_true_eq in Erp; rewrite Erp in Hlr; rewrite Hf in Hlr;
+          injection Hlr as <-;
+          eexists; split;
+          [ unfold look, pin_root; cbn [pcfg_procs]; rewrite <- Erp;
+            apply look_in_replace_same; unfold look in Hf; rewrite <- Erp in Hf;
+            rewrite Hf; discriminate
+          | split; [reflexivity | right; eexists; reflexivity] ]
+        | exists f; split; [|split; [reflexivity | left; reflexivity]];
+          unfold look, pin_root; cbn [pcfg_procs];
+          rewrite look_in_replace_other
+            by (intros E; rewrite E, bv_eqb_same in Erp; discriminate Erp);
+          unfold look in Hf; exact Hf ]
+    end.
 Qed.
 
 (** And once pinned, the uname and fstat gates read only the entry's own

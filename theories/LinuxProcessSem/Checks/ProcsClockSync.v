@@ -234,7 +234,8 @@ Lemma pstep_next_sync_cases : forall segs cfg p P evs P',
       \/ clone_pending_b (pe_cfg (pcfg_shared P) e) = true
       \/ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true
       \/ wait4_owned_b P e = true
-      \/ (sync_pending_b P e = true /\ P' = sync_result P e) ).
+      \/ (sync_pending_b P e = true /\ P' = sync_result P e)
+      \/ root_pin_pending_b P e = true ).
 Proof.
   intros segs cfg p P evs P' H. inversion H; subst;
     (eexists; split; [eassumption | split; [reflexivity|]]).
@@ -243,7 +244,8 @@ Proof.
     | right; left; eapply clone_success_pending; eassumption
     | right; right; left; assumption
     | right; right; right; left; assumption
-    | right; right; right; right; split; [assumption | reflexivity] ].
+    | right; right; right; right; left; split; [assumption | reflexivity]
+    | right; right; right; right; right; assumption ].
 Qed.
 
 Lemma synced_not_other : forall (x8 : word) (n : Z),
@@ -270,7 +272,7 @@ Proof.
   destruct (pstep_next_sync_cases _ _ _ _ _ _ H) as (e1 & Hl1 & Hpid & Hcases).
   rewrite Hl in Hl1. injection Hl1 as <-. subst p.
   destruct Hcases as
-    [ (c1 & Hss & Hsy & ->) | [ Hcp | [ Hwt | [ Hwo | (Hsy & ->) ] ] ] ].
+    [ (c1 & Hss & Hsy & ->) | [ Hcp | [ Hwt | [ Hwo | [ (Hsy & ->) | Hrp ] ] ] ] ].
   - (* the released step: the copy was already the maximum *)
     unfold sync_pending_b in Hsy. rewrite Hs, Hn in Hsy. cbn [andb] in Hsy.
     apply orb_false_iff in Hsy as [Hsy _]. apply orb_false_iff in Hsy as [Hsy _].
@@ -310,6 +312,10 @@ Proof.
       change (m_clock (pe_model (sync_entry P e)))
         with (Z_to_bv 64 (clock_max (pcfg_procs P))).
       rewrite word_small by exact (clock_max_range _). exact Hm.
+  - (* the root pin: 101 and 113 are not getppid *)
+    exfalso. unfold root_pin_pending_b in Hrp. rewrite Hs in Hrp.
+    destruct (Z.eqb (bv_unsigned x8) 173) eqn:E; [|discriminate Hrp].
+    apply Z.eqb_eq in E. exact (synced_not_other _ _ Hn E ltac:(lia) ltac:(lia)).
 Qed.
 
 (** At one entry the gate is closed. *)

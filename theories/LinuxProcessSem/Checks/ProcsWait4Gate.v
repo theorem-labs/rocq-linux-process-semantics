@@ -81,7 +81,7 @@ Theorem owned_wait4_never_released : forall segs cfg p P e evs r,
 Proof.
   intros segs cfg p P e evs r Hl Hwo Hp. revert Hl Hwo.
   destruct Hp as
-    [ Q e0 ev c' Hl0 Hs Hsucc Hwt Hma Hwo0 Hns0 Hsy0 Hst0
+    [ Q e0 ev c' Hl0 Hs Hsucc Hwt Hma Hwo0 Hns0 Hsy0 Hst0 Han0
     | Q e0 ev c' q Hl0 Hs Hsucc Hq Hfree Hma
     | Q e0 q ez x8 stat_addr status eff model'' dumped
         Hl0 Hh Hx8 Hwt Hargs Hq Hne Hpar Hk Hst Hrd Heff Hmat
@@ -93,7 +93,8 @@ Proof.
     | Q e0 Hl0 Hh Hrf
     | Q e0 Hl0 Hh Hns0
     | Q e0 Hl0 Hh Hsy0
-    | Q e0 ev c' Hl0 Hs Hsucc Hwt Hma Hwo0 Hns0 Hsy0 Hst0 ]; intros Hl Hwo;
+    | Q e0 ev c' Hl0 Hs Hsucc Hwt Hma Hwo0 Hns0 Hsy0 Hst0 Han0
+    | Q e0 r t Hl0 Hh Hpin Hlr Ht Hkt ]; intros Hl Hwo;
     rewrite Hl0 in Hl; injection Hl as Hl; subst e0.
   - (* pstep_other: behind the gate *)
     rewrite Hwo0 in Hwo. discriminate Hwo.
@@ -124,6 +125,12 @@ Proof.
     rewrite (wait4_owned_not_sync Q e Hwo) in Hsy0. discriminate Hsy0.
   - (* pstep_step_refuse: behind the gate *)
     rewrite Hwo0 in Hwo. discriminate Hwo.
+  - (* pstep_pin_root: a [wait4] is not getppid *)
+    destruct (wait4_owned_260 Q e Hwo) as (y & Hy & Hy260).
+    rewrite (root_pin_of_sysno _ _
+               (fun z Hz => ltac:(rewrite Hy in Hz; injection Hz as <-;
+                                  rewrite Hy260; discriminate))) in Hpin.
+    discriminate Hpin.
 Qed.
 
 (** NOR DOES THE EXTENSION, claimed or not. *)
@@ -135,7 +142,7 @@ Theorem owned_wait4_never_released_x : forall ext cenv segs cfg p P e evs r,
 Proof.
   intros ext cenv segs cfg p P e evs r Hl Hwo Hp. revert Hl Hwo.
   destruct Hp as
-    [ Q e0 ev c' ctx' st' Hl0 Hx Hcp Hwt Hwo0 Hns0 Hsy0 Hst0 Hmp
+    [ Q e0 ev c' ctx' st' Hl0 Hx Hcp Hwt Hwo0 Hns0 Hsy0 Hst0 Han0 Hmp
     | Q e0 ev c' q child ret st' Hl0 Hcl Hs Hsucc Hq Hfree Hma Hec
     | Q e0 ev c' en hq st' Hl0 Hcl Hs Hcp Hsucc Hret Hma Hec Hnr
     | Q e0 ev c' hq Hl0 Hcl Hs Hcp Hma Hec
@@ -150,7 +157,8 @@ Proof.
     | Q e0 Hl0 Hh Hrf
     | Q e0 Hl0 Hh Hns0
     | Q e0 Hl0 Hh Hsy0
-    | Q e0 ev c' ctx' st' Hl0 Hx Hcp Hwt Hwo0 Hns0 Hsy0 Hmp Hst0 ]; intros Hl Hwo;
+    | Q e0 ev c' ctx' st' Hl0 Hx Hcp Hwt Hwo0 Hns0 Hsy0 Hmp Hst0 Han0
+    | Q e0 r t Hl0 Hh Hpin Hlr Ht Hkt ]; intros Hl Hwo;
     rewrite Hl0 in Hl; injection Hl as Hl; subst e0.
   - (* px_other: behind the gate *)
     rewrite Hwo0 in Hwo. discriminate Hwo.
@@ -187,6 +195,12 @@ Proof.
     rewrite (wait4_owned_not_sync Q e Hwo) in Hsy0. discriminate Hsy0.
   - (* px_step_refuse: behind the gate *)
     rewrite Hwo0 in Hwo. discriminate Hwo.
+  - (* px_pin_root: a [wait4] is not getppid *)
+    destruct (wait4_owned_260 Q e Hwo) as (y & Hy & Hy260).
+    rewrite (root_pin_of_sysno _ _
+               (fun z Hz => ltac:(rewrite Hy in Hz; injection Hz as <-;
+                                  rewrite Hy260; discriminate))) in Hpin.
+    discriminate Hpin.
 Qed.
 
 (** What the two "never blocks" theorems share: a non-blocking [wait4] of

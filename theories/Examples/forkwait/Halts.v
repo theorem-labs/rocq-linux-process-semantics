@@ -655,7 +655,7 @@ Proof.
      because the reap arms have thirteen premises and more, and an Ltac
      pattern over them is how the first attempt failed. *)
   inversion Hp as
-    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1 Hns1 Hsy1 Hst1 Heq1 Heq2 Heq3
+    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1 Hns1 Hsy1 Hst1 Han1 Heq1 Heq2 Heq3
     | P2 e2 evs2 c2 q2 Hl2 Hs2 Hc2 Hcp2 Hfr2 Hm2 Heq4 Heq5 Heq6
     | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
       Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
@@ -668,7 +668,8 @@ Proof.
     | P8 e8 Hl8 Hh8 Hrf8
     | P9 e9 Hl9 Hh9 Hns9
     | P10 e10 Hl10 Hh10 Hsy10
-    | P11 e11 evs11 c11 Hl11 Hs11 Hc11 Hw11 Hm11 Hwo11 Hns11 Hsy11 Hst11 ]; subst.
+    | P11 e11 evs11 c11 Hl11 Hs11 Hc11 Hw11 Hm11 Hwo11 Hns11 Hsy11 Hst11 Han11
+    | P12 e12 r12 t12 Hl12 Hh12 Hpin12 Hlr12 Ht12 Hkt12 ]; subst.
   - left. apply absorb_procs_length.
   - right; left. apply clone_result_procs_length.
   - right; right. cbn [pcfg_procs].
@@ -690,6 +691,8 @@ Proof.
     left. unfold wait4_zero_result. apply absorb_procs_length.
   - (* the clock sync replaces the caller's entry and nothing else *)
     left. unfold sync_result. cbn [pcfg_procs]. apply replace_in_length.
+  - (* the root pin replaces the root's entry and nothing else *)
+    left. unfold pin_root. cbn [pcfg_procs]. apply replace_in_length.
 Qed.
 
 (** [absorb] keeps the table's shape at a one-entry configuration: the
@@ -1522,6 +1525,14 @@ Proof.
     | [ Hsy : sync_pending_b _ _ = true |- _ ] =>
         rewrite (sync_instr _ _ Hs) in Hsy; discriminate Hsy
     end.
+  - (* pstep_pin_root: the root pin needs a pending call too *)
+    exfalso.
+    match goal with
+    | [ Hrp : root_pin_pending_b _ _ = true |- _ ] =>
+        rewrite (root_pin_of_sysno _ _
+                   (fun y Hy => ltac:(rewrite Hs in Hy; discriminate Hy))) in Hrp;
+        discriminate Hrp
+    end.
 Qed.
 
 (** A PENDING 94: the exit arm, and only it.  The clone arm needs
@@ -1587,6 +1598,15 @@ Proof.
     | [ Hsy : sync_pending_b _ _ = true |- _ ] =>
         rewrite (sync_of_sysno _ _ x8 Hs) in Hsy;
           [discriminate Hsy | rewrite H94; reflexivity]
+    end.
+  - (* pstep_pin_root: 94 is not getppid *)
+    exfalso.
+    match goal with
+    | [ Hrp : root_pin_pending_b _ _ = true |- _ ] =>
+        rewrite (root_pin_of_sysno _ _
+                   (fun y Hy => ltac:(rewrite Hs in Hy; injection Hy as <-;
+                                      rewrite H94; discriminate))) in Hrp;
+        discriminate Hrp
     end.
 Qed.
 
@@ -1693,6 +1713,15 @@ Proof.
     | [ Hsy : sync_pending_b _ _ = true |- _ ] =>
         rewrite (sync_of_sysno _ _ x8 Hs) in Hsy;
           [discriminate Hsy | rewrite H260; reflexivity]
+    end.
+  - (* pstep_pin_root: 260 is not getppid *)
+    exfalso.
+    match goal with
+    | [ Hrp : root_pin_pending_b _ _ = true |- _ ] =>
+        rewrite (root_pin_of_sysno _ _
+                   (fun y Hy => ltac:(rewrite Hs in Hy; injection Hy as <-;
+                                      rewrite H260; discriminate))) in Hrp;
+        discriminate Hrp
     end.
 Qed.
 
@@ -1847,7 +1876,7 @@ Proof.
      more, and an Ltac pattern over them is how the first attempt failed
      -- [pstep_length_cases] above records the same lesson. *)
   inversion Hp as
-    [ P1 e1 evs1 c1 Hl1 Hss1 Hcs1 Hwi1 Hma1 Hwo1 Hns1 Hsy1 Hst1 Heq1 Heq2 Heq3
+    [ P1 e1 evs1 c1 Hl1 Hss1 Hcs1 Hwi1 Hma1 Hwo1 Hns1 Hsy1 Hst1 Han1 Heq1 Heq2 Heq3
     | P2 e2 evs2 c2 q2 Hl2 Hss2 Hcs2 Hcp2 Hfr2 Hma2 Heq4 Heq5 Heq6
     | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
       Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
@@ -1860,7 +1889,8 @@ Proof.
     | P8 e8 Hl8 Hh8 Hrf8
     | P9 e9 Hl9 Hh9 Hns9
     | P10 e10 Hl10 Hh10 Hsy10
-    | P11 e11 evs11 c11 Hl11 Hs11 Hc11 Hw11 Hm11 Hwo11 Hns11 Hsy11 Hst11 ]; subst.
+    | P11 e11 evs11 c11 Hl11 Hs11 Hc11 Hw11 Hm11 Hwo11 Hns11 Hsy11 Hst11 Han11
+    | P12 e12 r12 t12 Hl12 Hh12 Hpin12 Hlr12 Ht12 Hkt12 ]; subst.
   - (* pstep_other: the clone declined, so a0 is in the errno list *)
     assert (He1 : e1 = e)
       by (rewrite Hl1 in Hl; injection Hl as Hl; exact Hl).
@@ -1948,6 +1978,15 @@ Proof.
     subst e10.
     rewrite (sync_of_sysno _ _ x8 Hs) in Hsy10;
       [discriminate Hsy10 | rewrite H220; reflexivity].
+  - (* pstep_pin_root: 220 is not getppid *)
+    exfalso.
+    assert (He12 : e12 = e)
+      by (rewrite Hl12 in Hl; injection Hl as Hl; exact Hl).
+    subst e12.
+    rewrite (root_pin_of_sysno _ _
+               (fun y Hy => ltac:(rewrite Hs in Hy; injection Hy as <-;
+                                  rewrite H220; discriminate))) in Hpin12.
+    discriminate Hpin12.
 Qed.
 
 (* =========================================================================
@@ -4002,18 +4041,21 @@ Proof.
   { apply (peer_refused_of_sysno P e 94 Hsv). rewrite fw_ninety_four. reflexivity. }
   assert (Hsy : sync_pending_b P e = false).
   { apply (sync_of_sysno P e 94 Hsv). rewrite fw_ninety_four. reflexivity. }
+  assert (Han : answer_ok_b P e (mkCfg (pe_ms e) (with_halted code m)) = true).
+  { apply answer_ok_of_sysno. intros y Hy. rewrite Hsv in Hy. injection Hy as <-.
+    rewrite fw_ninety_four. reflexivity. }
   (* THE STEP GATE either way: closed, the exit; open, its refusal. *)
   destruct (step_refused_b P e (mkCfg (pe_ms e) (with_halted code m))) eqn:Hst.
   - exists [], PError, (pe_pid e).
     exact (pstep_step_refuse forkwait_segs cfg P e _
              (mkCfg (pe_ms e) (with_halted code m))
-             Hl Hss Hcs Hwi Hma Hwo Hpr Hsy Hst).
+             Hl Hss Hcs Hwi Hma Hwo Hpr Hsy Hst Han).
   - exists ([] ++ [ExitEv code (m_fs (with_halted code m))]),
            (PNext (absorb P e (mkCfg (pe_ms e) (with_halted code m)))).
     exists (pe_pid e).
     exact (pstep_other forkwait_segs cfg P e _
              (mkCfg (pe_ms e) (with_halted code m))
-             Hl Hss Hcs Hwi Hma Hwo Hpr Hsy Hst).
+             Hl Hss Hcs Hwi Hma Hwo Hpr Hsy Hst Han).
 Qed.
 
 (** A FRESH PID EXISTS, and it is chosen rather than searched for: the
