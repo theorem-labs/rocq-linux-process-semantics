@@ -614,8 +614,8 @@ Definition EROFS  : Z := 30%Z.
    one other place it is answered is not an injection: a read or write
    of a NON-BLOCKING eventfd ([Fs.ReadWrite.read_eventfd_spec],
    [Fs.ReadWrite.write_eventfd_spec]), where [eventfd_read] and
-   [eventfd_write] (fs/eventfd.c) return it from a counter that is the
-   environment's. *)
+   [eventfd_write] (fs/eventfd.c, read at v6.18.44; identical at
+   v6.18.46) return it from a counter that is the environment's. *)
 Definition EAGAIN : Z := 11%Z.
 
 (** Socket errno values.  All from the asm-generic table

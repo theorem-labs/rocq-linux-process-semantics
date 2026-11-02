@@ -164,8 +164,9 @@ Definition O_DIRECTORY : Z := 65536%Z.
     O_RDONLY, with or without O_DIRECTORY, for the open of
     "/proc/self/fd" that bubblewrap's [fdwalk] issues
     ([Open.procfd_noctty_word]).  On that directory it does nothing:
-    [do_dentry_open] (fs/open.c) clears it from [f_flags], and only a
-    terminal's [->open] reads it. *)
+    [do_dentry_open] (fs/open.c, read at v6.18.44; identical at
+    v6.18.46) clears it from [f_flags], and only a terminal's [->open]
+    reads it. *)
 Definition O_NOCTTY : Z := 256%Z.
 
 (** O_NOFOLLOW: 00400000, and O_PATH: 010000000

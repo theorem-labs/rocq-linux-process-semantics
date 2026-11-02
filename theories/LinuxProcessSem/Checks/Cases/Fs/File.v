@@ -225,6 +225,35 @@ Example dup3_over_the_limit_is_ebadf_before_the_oldfd_lookup :
      = CheckReject.
 Proof. split; [check_eq|split; [check_eq | vm_compute; reflexivity]]. Qed.
 
+(** dup AND dup3 DECLINE the /proc/self/fd directory
+    ([State.OProcFdDir]) and a signalfd ([State.OSignalFd]), as they
+    decline every opaque kind ([File.dup_modeled_entry]).  For the
+    directory a copied entry would be wrong: it would carry its own
+    position, where Linux's two descriptors share one [f_pos].  THE
+    CONTROL is answered alike by the text before these kinds and after:
+    dup3 of the channel at 0 onto 7 installs a copy. *)
+Definition dup_opaque_model : Model :=
+  with_fds (fd_insert (fd_insert (m_fds dup_model) 5
+              (FdOpaque (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))))
+            6 (FdOpaque (OSignalFd (Z_to_bv 64 0x10000) (Z_to_bv 64 0x80800))))
+    dup_model.
+
+Example dup3_declines_procfd_dir_and_signalfd :
+  check_syscall (mkInput 24 [5; 7; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 7 [] []) dup_opaque_model = CheckUnmodeled
+  /\ check_syscall (mkInput 24 [6; 7; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 7 [] []) dup_opaque_model = CheckUnmodeled
+  /\ check_syscall (mkInput 23 [5; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 7 [] []) dup_opaque_model = CheckUnmodeled
+  /\ check_syscall (mkInput 23 [6; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 7 [] []) dup_opaque_model = CheckUnmodeled
+  (* the control *)
+  /\ check_syscall (mkInput 24 [0; 7; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 7 [] []) dup_opaque_model
+     = CheckOk (with_fds (fd_insert (m_fds dup_opaque_model) 7 (FdChannel 0))
+                  dup_opaque_model) [].
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
 (* -------------------------------------------------------------------------
    close_range (436)
 

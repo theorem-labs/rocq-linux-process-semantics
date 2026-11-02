@@ -467,11 +467,16 @@ Qed.
     O_DIRECTORY|O_LARGEFILE|O_NONBLOCK, 0x18800.  The open word itself
     is rejected.
 
-    THE CONTROL is answered alike by the old text and the new: F_SETFD
-    on the same descriptor is kind-blind, 0. *)
+    THE CONTROL is answered alike by the old text and the new: F_GETFL
+    on an eventfd ([State.OEventFd]) at the same number declines. *)
 Definition procfd_fcntl_model : Model :=
   with_fds (fd_insert (m_fds fcntl_model) 9
               (FdOpaque (OProcFdDir (Z_to_bv 64 0x98900) (Some (Z_to_bv 64 0)))))
+    fcntl_model.
+
+Definition efd_fcntl_model : Model :=
+  with_fds (fd_insert (m_fds fcntl_model) 9
+              (FdOpaque (OEventFd (Z_to_bv 64 0x80800))))
     fcntl_model.
 
 Example fcntl_getfl_proc_self_fd_directory :
@@ -480,6 +485,6 @@ Example fcntl_getfl_proc_self_fd_directory :
   /\ check_syscall (mkInput 25 [9; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0x98900 [] []) procfd_fcntl_model = CheckReject
   (* the control *)
-  /\ check_syscall (mkInput 25 [9; 2; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
-       (mkEffect 0 [] []) procfd_fcntl_model = CheckOk procfd_fcntl_model [].
+  /\ check_syscall (mkInput 25 [9; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0x80802 [] []) efd_fcntl_model = CheckUnmodeled.
 Proof. repeat split; check_eq. Qed.

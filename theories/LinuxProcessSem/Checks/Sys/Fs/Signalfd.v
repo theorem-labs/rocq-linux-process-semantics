@@ -21,7 +21,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import
 (** [Fs.Signalfd.signalfd4_spec] as an acceptor.  The flag gate is
     written out rather than taken from [signalfd4_einval_b], as
     [Checks.Sys.Fs.EventFd] writes out its own.  A new descriptor is
-    [Open.check_new_fd_result]'s shape, judged on the effect with its
+    [Open.check_new_fd_result]'s shape, checked on the effect with its
     copy-in ledger cleared, and the ledger must be exactly the 8 mask
     bytes read. *)
 Definition check_signalfd4 (i : SyscallInput) (ufd mask sizemask flags : word)

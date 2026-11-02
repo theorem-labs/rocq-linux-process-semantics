@@ -19,10 +19,12 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export Prelude
    The /proc/self/fd listing
    ------------------------------------------------------------------------- *)
 
-(** One record with [d_ino] 0, the given [d_off] bytes, [d_reclen], the
-    [d_type] the entry's kind gives first, the name and its NUL. *)
+(** One record with [d_ino] 1, the given [d_off] bytes, [d_reclen], the
+    [d_type] the entry's kind gives first, the name and its NUL.  [d_ino]
+    is the environment's; no record Linux writes has 0 ([get_next_ino],
+    fs/inode.c, read at v6.18.44; identical at v6.18.46). *)
 Definition procfd_rec_bytes (e : procfd_ent) (doff : list byte) : list byte :=
-  Z_to_le_bytes 8 0 ++ doff
+  Z_to_le_bytes 8 1 ++ doff
   ++ Z_to_le_bytes 2 (dirent64_reclen (length (pfe_name e)))
   ++ [Z_to_bv 8 (if pfe_isfd e then DT_LNK else DT_DIR)]
   ++ pfe_name e ++ [Z_to_bv 8 0].

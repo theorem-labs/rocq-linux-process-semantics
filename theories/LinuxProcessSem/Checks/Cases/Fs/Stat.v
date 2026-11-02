@@ -674,7 +674,8 @@ Proof. repeat split; check_eq. Qed.
     musl's [fdopendir] calls [fstat] first and refuses anything that is
     not a directory.  The model pins the type and the mode, S_IFDIR with
     0500 ([PROCFD_DIR_MODE]: the "fd" entry of [tgid_base_stuff],
-    fs/proc/base.c), and leaves every other member to the environment.
+    fs/proc/base.c, read at v6.18.44; identical at v6.18.46), and leaves
+    every other member to the environment.
     A regular-file mode is rejected.  Before this arm fstat on every
     opaque kind was declined.
 

@@ -451,13 +451,18 @@ Definition read_proc_spec (buf count : word) : Sys SyscallEffect :=
    read (63) and write (64) on an eventfd ([State.OEventFd])
    ========================================================================= *)
 
-(** Is the eventfd's file non-blocking?  [do_eventfd] (fs/eventfd.c)
-    makes the file with [flags & EFD_SHARED_FCNTL_FLAGS | O_RDWR], so its
-    [f_flags] carries O_NONBLOCK exactly when the [eventfd2] word did
-    ([EFD_NONBLOCK] is [O_NONBLOCK]), and [eventfd_read] and
-    [eventfd_write] test [file->f_flags & O_NONBLOCK].  Nothing modeled
-    changes that bit afterwards: [Fcntl.fcntl_spec] declines F_SETFL on
-    an opaque descriptor and [Ioctl.ioctl_spec] declines FIONBIO. *)
+(** Is the eventfd's file non-blocking?  [do_eventfd] (fs/eventfd.c,
+    read at v6.18.44; identical at v6.18.46) makes the file with
+    [flags & EFD_SHARED_FCNTL_FLAGS | O_RDWR], so its [f_flags] carries
+    O_NONBLOCK exactly when the [eventfd2] word did ([EFD_NONBLOCK] is
+    [O_NONBLOCK]), and [eventfd_read] and [eventfd_write] test
+    [file->f_flags & O_NONBLOCK].  Nothing modeled changes that bit
+    afterwards: [Fcntl.fcntl_spec] declines F_SETFL on an opaque
+    descriptor and [Ioctl.ioctl_spec] declines FIONBIO.  ANOTHER holder
+    of the same open file can: a child that got it at a modeled [clone]
+    shares [f_flags], and [setfl] (fs/fcntl.c) lets it clear O_NONBLOCK,
+    after which a read here would wait.  SCOPE.md assumes no other holder
+    does ("Assumptions that the model does not check"). *)
 Definition efd_nonblock_b (flags : word) : bool :=
   negb (Z.eqb (Z.land (bv_unsigned flags) O_NONBLOCK) 0).
 
@@ -468,7 +473,8 @@ Definition efd_semaphore_b (flags : word) : bool :=
 
 (** The 8 bytes a successful eventfd [read] may store: the counter's
     value as a little-endian [__u64], never 0, and exactly 1 under
-    [EFD_SEMAPHORE].  [eventfd_ctx_do_read] (fs/eventfd.c) hands back
+    [EFD_SEMAPHORE].  [eventfd_ctx_do_read] (fs/eventfd.c, read at
+    v6.18.44; identical at v6.18.46) hands back
     [(ctx->flags & EFD_SEMAPHORE) && ctx->count ? 1 : ctx->count], and
     [eventfd_read] reaches it only with [ctx->count] nonzero.  Any
     nonzero value up to [ULLONG_MAX] is admitted, because

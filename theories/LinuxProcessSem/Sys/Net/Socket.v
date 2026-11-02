@@ -2317,10 +2317,11 @@ Definition sockfd_lookup_errno (fds : list (word * FdEntry)) (fd : word)
   | Some FdUrandom => Some ENOTSOCK
       (* and /dev/urandom's is [urandom_fops] (drivers/char/random.c) *)
   | Some (FdOpaque _) => None
-      (* FAIL-CLOSED: an O_PATH file is [fdget]'s -EBADF, the eventfd and
-         /proc/sys objects [sock_from_file]'s -ENOTSOCK, and an [ONsFile]
-         may be a socket (net/socket.c, read at v6.18.44; identical at
-         v6.18.46); the split is not written *)
+      (* FAIL-CLOSED: an O_PATH file is [fdget]'s -EBADF, the eventfd,
+         /proc/sys, /proc/self/fd and signalfd objects
+         [sock_from_file]'s -ENOTSOCK, and an [ONsFile] may be a socket
+         (net/socket.c, read at v6.18.44; identical at v6.18.46); the
+         split is not written *)
   | Some (FdSocket _) => None
   end.
 

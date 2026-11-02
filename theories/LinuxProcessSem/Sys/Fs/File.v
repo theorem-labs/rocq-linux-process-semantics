@@ -161,9 +161,11 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      eventfd it would be a second reference to one counter the model
      holds as the environment's.  It would be WRONG for [OProcFdDir]:
      the copy would carry its own position, and Linux's two descriptors
-     share one [f_pos].  An [ONsFile] is declined so that no arm of this
-     model mints one.  None of the exact cases is needed, so none is
-     written. *)
+     share one [f_pos].  For a signalfd ([OSignalFd]) a copy would be
+     exact too: the two descriptors share one mask, and [signalfd4] on
+     an existing descriptor is declined, so the mask never changes.
+     An [ONsFile] is declined so that no arm of this model mints one.
+     None of the exact cases is needed, so none is written. *)
   | FdOpaque _ => false
   end.
 

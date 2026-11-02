@@ -697,7 +697,10 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                          another writer has done
                          ([ReadWrite.read_eventfd_spec],
                          [ReadWrite.write_eventfd_spec]).  The child is
-                         one more such writer.
+                         one more such writer.  It also shares
+                         [f_flags], whose O_NONBLOCK those two arms read
+                         ([ReadWrite.efd_nonblock_b]); SCOPE.md assumes
+                         no other holder changes it.
                        - a namespace and mount model file ([ONsFile]) shares an [f_pos]
                          and [f_flags], and nothing modeled reads either:
                          every arm but close, close_range and fcntl's

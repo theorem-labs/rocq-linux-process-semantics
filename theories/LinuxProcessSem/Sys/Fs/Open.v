@@ -1336,7 +1336,8 @@ Definition openat_sep_spec (p : path) (flags : word) (m : Model)
     [openat_core_spec] has ALREADY refused every flag word the model
     does not interpret, through [modeled_open_flags], before this
     definition is reached, and [openat_body_spec] has refused every
-    O_PATH word ([open_path_word]) off procfs.  So the [else unmodeled]
+    O_PATH word ([open_path_word]) and every O_NOCTTY word
+    ([open_procfs_only_word]) off procfs.  So the [else unmodeled]
     below is unreachable, both orders answer [unmodeled] on exactly the
     same inputs, and hoisting changes no answer the model gives — only
     which of two reasons it declines for.  The kernel's order agrees, which is
@@ -1350,7 +1351,8 @@ Definition openat_sep_spec (p : path) (flags : word) (m : Model)
     declines are on the path rather than on the flag word.  The FINAL
     [else unmodeled] here is still unreachable — the branches exhaust
     what [modeled_open_flags] admits once [openat_body_spec] has taken
-    the O_PATH words away, which [modeled_open_flags] admits too — but
+    the O_PATH and O_NOCTTY words away, which [modeled_open_flags]
+    admits too — but
     this dispatcher does
     not decline only above an arm: it also declines inside one, and the
     [Checks] mirror carries a matching decline inside
@@ -1469,8 +1471,18 @@ Definition proc_sys_file_b (p : path) : bool :=
       tested before the table is read: it is not a descriptor, and the
       test keeps the answer for a relative name from depending on what
       the table holds at the number [AT_FDCWD32].
+    - ONE RELATIVE JOIN IS [None]: "/proc/self/fd" reached from any
+      descriptor but the one on "/proc" itself, which can only be
+      "/proc/self" with the name "fd".  An O_PATH|O_NOFOLLOW open of
+      "/proc/self" holds the symlink ([proc_self_init] makes its inode
+      S_IFLNK, fs/proc/self.c), and [path_init]'s [d_can_lookup] test
+      answers -ENOTDIR for any name relative to it.  The model does not
+      record O_NOFOLLOW, and [openat_proc_spec] opens "/proc/self/fd" as
+      a directory the model LISTS ([State.OProcFdDir]), so the join is
+      declined for every word: "self/fd" relative to "/proc", and the
+      absolute name, are the forms answered.
 
-    fs/namei.c [path_init]: read at v6.18.44; identical at v6.18.46. *)
+    fs/namei.c [path_init], fs/proc/self.c [proc_self_init]: read at v6.18.44; identical at v6.18.46. *)
 Definition proc_open_target (fds : list (word * FdEntry)) (dirfd : word)
     (p : path) : option path :=
   match p with
@@ -1482,7 +1494,9 @@ Definition proc_open_target (fds : list (word * FdEntry)) (dirfd : word)
         match fd_lookup fds dirfd with
         | Some (FdOpaque (OProcPath q)) =>
             let c := q ++ slash_byte :: p in
-            if proc_path_b c then Some c else None
+            if proc_path_b c
+               && negb (path_eqb c proc_self_fd_path && negb (path_eqb q proc_root_path))
+            then Some c else None
         | _ => None
         end
   | [] => None
