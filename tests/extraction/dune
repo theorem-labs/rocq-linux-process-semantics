@@ -31,10 +31,13 @@
   (run rocq c -R %{project_root}/theories LinuxProcessSemantics Extraction.v)))
 
 ; The extracted code is generated, so its warnings are not ours to fix.
+; rocq-runtime.kernel is where extraction's realisation of a primitive
+; string lives (module Pstring): the model's measured vDSO images are
+; PrimString literals, and the checker reaches them.
 (executable
  (name checked_input_smoke)
  (modules syscall_model checked_input_smoke)
- (libraries zarith)
+ (libraries zarith rocq-runtime.kernel)
  (flags
   (:standard -w -a)))
 
