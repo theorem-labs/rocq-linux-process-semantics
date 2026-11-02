@@ -216,7 +216,7 @@ Definition mount_bind (reads : list (word * nat)) (source : option (list byte))
       match fst (walk_from m ctx st (walk_creds m) AT_FDCWD_word srcpath follow_walk_flags) with
       | WErr e => err reads e m ctx st
       | WOver => EUnmodeled
-      | WOk (LProcTask _ _ _) => EUnmodeled
+      | WOk (LProcTask _ _ _) | WOk (LProcSelf _ _) => EUnmodeled
       | WOk (LDentry src sd) =>
           match bind_paths st src sd tgt td with
           | None => EUnmodeled
@@ -334,7 +334,7 @@ Definition mount_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState) 
               | POk target_path =>
                   match fst (walk_from m ctx st (walk_creds m) AT_FDCWD_word target_path follow_walk_flags) with
                   | WErr e => err reads e m ctx st
-                  | WOver | WOk (LProcTask _ _ _) => EUnmodeled
+                  | WOver | WOk (LProcTask _ _ _) | WOk (LProcSelf _ _) => EUnmodeled
                   | WOk (LDentry target td) =>
                       let flags := strip_mount_magic flagsp in
                       if has flags MS_NOUSER then err reads EINVAL m ctx st
@@ -440,11 +440,11 @@ Definition umount2_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsState
            let fl := mkWalkFlags (negb (has flags UMOUNT_NOFOLLOW)) false false false false in
            match fst (walk_from m ctx st (walk_creds m) AT_FDCWD_word path fl) with
            | WErr e => err reads e m ctx st
-           | WOver | WOk (LProcTask _ _ _) => EUnmodeled
+           | WOver | WOk (LProcTask _ _ _) | WOk (LProcSelf _ _) => EUnmodeled
            | WOk (LDentry mt d) =>
                match follow_mounts st (LDentry mt d) with
                | WErr e => err reads e m ctx st
-               | WOver | WOk (LProcTask _ _ _) => EUnmodeled
+               | WOver | WOk (LProcTask _ _ _) | WOk (LProcSelf _ _) => EUnmodeled
                | WOk (LDentry top td) =>
                    match mount_may_mount m ctx st with
                    | None => EUnmodeled
@@ -510,7 +510,7 @@ Definition pivot_root_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSt
       | POk new_path =>
           match fst (walk_from m ctx st (walk_creds m) AT_FDCWD_word new_path directory_walk_flags) with
           | WErr e => err rnew e m ctx st
-          | WOver | WOk (LProcTask _ _ _) => EUnmodeled
+          | WOver | WOk (LProcTask _ _ _) | WOk (LProcSelf _ _) => EUnmodeled
           | WOk (LDentry nr nd) =>
               let reads := rnew ++ path_reads i oldp in
               match path_arg i oldp with
@@ -519,7 +519,7 @@ Definition pivot_root_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : NsSt
               | POk old_path =>
                   match fst (walk_from m ctx st (walk_creds m) AT_FDCWD_word old_path directory_walk_flags) with
                   | WErr e => err reads e m ctx st
-                  | WOver | WOk (LProcTask _ _ _) => EUnmodeled
+                  | WOver | WOk (LProcTask _ _ _) | WOk (LProcSelf _ _) => EUnmodeled
                   | WOk (LDentry old od) =>
                       let rt := fst (cx_root ctx) in
                       let rd := snd (cx_root ctx) in
@@ -692,7 +692,7 @@ Definition mount_setattr_fn (i : SyscallInput) (m : Model) (ctx : NsCtx) (st : N
                          let fl := mkWalkFlags true false (has flags AT_EMPTY_PATH) false false in
                          match fst (walk_from m ctx st (walk_creds m) dfd path fl) with
                          | WErr e => err reads e m ctx st
-                         | WOver | WOk (LProcTask _ _ _) => EUnmodeled
+                         | WOver | WOk (LProcTask _ _ _) | WOk (LProcSelf _ _) => EUnmodeled
                          | WOk (LDentry mt d) =>
                              mount_setattr_apply reads change (has flags AT_RECURSIVE) m ctx st mt d
                          end

@@ -150,6 +150,7 @@ Definition loc_view (l : Loc) : Z * Z * list (list Z) :=
   match l with
   | LDentry m d => (Zpos m, Zpos d, [])
   | LProcTask m p r => (Zpos m, p, map (map bv_unsigned) r)
+  | LProcSelf m o => (Zpos m, match o with Some p => p | None => -1 end, [])
   end.
 
 (** The newest open file of an answer: 0 for O_PATH, 1 for a directory, 2
@@ -552,6 +553,23 @@ Example readlinkat_not_link : ret_of (readlinkat_fn (readlink_in CWD s_file 64) 
 Proof. vm_compute. reflexivity. Qed.
 Example readlinkat_empty_not_link :
   ret_of (readlinkat_fn (readlink_in 3 [] 64) m_dir3 c0 W_dir3) = Some (-2).
+Proof. vm_compute. reflexivity. Qed.
+
+(** /proc/self itself is a link to the caller's tgid in the procfs's pid
+    namespace ([proc_self_get_link], fs/proc/self.c): "42", cut to the
+    size, no NUL. *)
+Example readlinkat_proc_self :
+  writes_of (readlinkat_fn (readlink_in CWD s_self 64) m3 c0 W) = Some [(BUF, [52; 50])]
+  /\ ret_of (readlinkat_fn (readlink_in CWD s_self 64) m3 c0 W) = Some 2
+  /\ writes_of (readlinkat_fn (readlink_in CWD s_self 1) m3 c0 W) = Some [(BUF, [52])].
+Proof. repeat split; vm_compute; reflexivity. Qed.
+
+(** A caller with no pid in the procfs's pid namespace: ENOENT. *)
+Definition c_nopid : NsCtx :=
+  mkNsCtx 1 1 1 1 [] (1%positive, 1%positive) (1%positive, 2%positive) 18 no_caps 0 []
+          (Some false) (Some 1%Z).
+Example readlinkat_proc_self_no_pid :
+  ret_of (readlinkat_fn (readlink_in CWD s_self 64) m3 c_nopid W) = Some (-2).
 Proof. vm_compute. reflexivity. Qed.
 
 (* ---- getcwd ------------------------------------------------------------ *)

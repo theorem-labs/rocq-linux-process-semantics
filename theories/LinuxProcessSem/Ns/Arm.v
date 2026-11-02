@@ -46,6 +46,11 @@ Definition ns_fd_entry (h : N) : FdEntry := FdOpaque (ONsFile h).
 Definition fd_entry_handle (e : FdEntry) : option N :=
   match e with FdOpaque (ONsFile h) => Some h | _ => None end.
 
+(** One of the four opaque objects ([State.FdOpaque]): an O_PATH or
+    /proc/sys file, an eventfd, or an open file of the namespace model. *)
+Definition fd_entry_opaque (e : FdEntry) : bool :=
+  match e with FdOpaque _ => true | _ => false end.
+
 (** The creation flags of the released model's eventfd at descriptor
     [fd], if that is what the descriptor is. *)
 Definition eventfd_flags_of (m : Model) (fd : word) : option word :=

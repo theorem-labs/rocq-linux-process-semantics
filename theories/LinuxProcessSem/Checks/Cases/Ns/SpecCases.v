@@ -7,7 +7,7 @@
 
 From Stdlib Require Import ZArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State Monad Specs.
-From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm UserArms Spec.
+From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Ext Arm UserArms Files Spec.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -78,11 +78,19 @@ Example getpid_flat_is_released : forall m ctx o,
   ns_spec (call 172) m ctx empty_nsstate o <-> released (call 172) m ctx empty_nsstate o.
 Proof. intros m ctx o. apply ns_spec_flat. reflexivity. Qed.
 
-(** While other processes are live: a task in the released world gets
-    the core's guard alone; outside it a call that reads only its own or
-    the shared namespace state is admitted ([getpid]), and a [read] on a
-    regular file the released model opened, whose offset a multi-process
-    core keeps per process, is not. *)
+(** While other processes are live ([Spec.ns_multiproc]): a task in the
+    released world gets the core's guard alone.  Outside it, the calls the
+    setup child makes are admitted where their answer reads and writes
+    only the shared namespace state, the task's own context and table, or
+    nothing a peer can change: [getpid], [mount], [capget], an anonymous
+    [mmap] (the address space is per process after a clone without
+    CLONE_VM), a [read] of a namespace file or of an eventfd, a [writev] of
+    a standard channel, a [close] of an opaque descriptor, [fcntl] F_SETFD
+    on any descriptor.  Not admitted: a file [mmap], a [read] or [writev]
+    of a regular file the released model opened, a [close] of a released
+    pipe, [fcntl] F_SETFL on a released file (each reads or moves state the
+    core keeps per process), and a call the child does not make
+    ([clock_gettime]). *)
 Example multiproc_flat_core_guard : forall i m ctx,
   ext_multiproc ns_ext i m ctx empty_nsstate = false.
 Proof. intros i m ctx. reflexivity. Qed.
@@ -91,12 +99,61 @@ Example multiproc_getpid_inside : forall m,
   ext_multiproc ns_ext (call 172) m (task 2 18) one_mount = true.
 Proof. intros m. reflexivity. Qed.
 
-Example multiproc_released_file_read_inside : forall m,
-  fd_lookup (m_fds m) (in_arg (call1 63 3) 0) = Some (FdFile [] (Z_to_bv 64 0)) ->
-  ext_multiproc ns_ext (call1 63 3) m (task 2 18) one_mount = false.
+Example multiproc_mount_inside : forall m,
+  ext_multiproc ns_ext (call 40) m (task 2 18) one_mount = true.
+Proof. intros m. reflexivity. Qed.
+
+Example multiproc_clock_not_inside : forall m,
+  ext_multiproc ns_ext (call 113) m (task 2 18) one_mount = false.
+Proof. intros m. reflexivity. Qed.
+
+Example multiproc_capget_inside : forall m,
+  ext_multiproc ns_ext (call 90) m (task 2 18) one_mount = true.
+Proof. intros m. reflexivity. Qed.
+
+(** mmap(NULL, 4096, PROT_READ|PROT_WRITE, flags, fd, 0): MAP_PRIVATE|MAP_ANONYMOUS
+    (0x22) is admitted, MAP_PRIVATE (0x02) on a descriptor is not. *)
+Definition mmap_in (flags fd : word) : SyscallInput :=
+  mkInput 222 [0; 4096; 3; flags; fd; 0] (fun _ => None) (fun _ => None).
+Example multiproc_mmap_rules : forall m,
+  ext_multiproc ns_ext (mmap_in 34 (Z_to_bv 64 (2 ^ 64 - 1))) m (task 2 18) one_mount = true
+  /\ ext_multiproc ns_ext (mmap_in 2 3) m (task 2 18) one_mount = false.
 Proof.
-  intros m H. change (ext_multiproc ns_ext) with ns_multiproc.
-  unfold ns_multiproc, released_private_fd. rewrite H. reflexivity.
+  intros m. change (ext_multiproc ns_ext) with ns_multiproc.
+  unfold ns_multiproc, ns_multiproc_call. cbv zeta. split; reflexivity.
+Qed.
+
+Definition call2 (n a b : word) : SyscallInput :=
+  mkInput n [a; b] (fun _ => None) (fun _ => None).
+
+(** The descriptor a call names, in the caller's table. *)
+Definition fd3 (i : SyscallInput) (m : Model) : option FdEntry :=
+  fd_lookup (m_fds m) (fd_word (in_arg i 0)).
+
+Example multiproc_descriptor_rules : forall m,
+  (fd3 (call1 63 3) m = Some (FdOpaque (ONsFile 1)) ->
+   ext_multiproc ns_ext (call1 63 3) m (task 2 18) one_mount = true)
+  /\ (fd3 (call1 63 3) m = Some (FdOpaque (OEventFd (Z_to_bv 64 0))) ->
+      ext_multiproc ns_ext (call1 63 3) m (task 2 18) one_mount = true)
+  /\ (fd3 (call1 63 3) m = Some (FdFile [] (Z_to_bv 64 0)) ->
+      ext_multiproc ns_ext (call1 63 3) m (task 2 18) one_mount = false)
+  /\ (fd3 (call1 66 3) m = Some (FdChannel (Z_to_bv 64 2)) ->
+      ext_multiproc ns_ext (call1 66 3) m (task 2 18) one_mount = true)
+  /\ (fd3 (call1 66 3) m = Some (FdFileW [] (Z_to_bv 64 0)) ->
+      ext_multiproc ns_ext (call1 66 3) m (task 2 18) one_mount = false)
+  /\ (fd3 (call1 57 3) m = Some (FdOpaque (OProcPath [])) ->
+      ext_multiproc ns_ext (call1 57 3) m (task 2 18) one_mount = true)
+  /\ (fd3 (call1 57 3) m = Some (FdPipe (Z_to_bv 64 0) true) ->
+      ext_multiproc ns_ext (call1 57 3) m (task 2 18) one_mount = false)
+  /\ (fd3 (call2 25 3 2) m = Some (FdFile [] (Z_to_bv 64 0)) ->
+      ext_multiproc ns_ext (call2 25 3 2) m (task 2 18) one_mount = true)
+  /\ (fd3 (call2 25 3 4) m = Some (FdFile [] (Z_to_bv 64 0)) ->
+      ext_multiproc ns_ext (call2 25 3 4) m (task 2 18) one_mount = false).
+Proof.
+  intros m.
+  repeat split; intros H; change (ext_multiproc ns_ext) with ns_multiproc;
+    unfold ns_multiproc, ns_multiproc_call, fd_entry_handle, eventfd_flags_of, fd_entry_opaque;
+    unfold fd3 in H; cbv zeta; rewrite H; reflexivity.
 Qed.
 
 (** A descriptor the released model opened resolves in the host's mount
