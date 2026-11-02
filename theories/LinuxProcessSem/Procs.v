@@ -461,32 +461,68 @@ Definition promote_one (S : shared) (i : OfdId) (fd : word) (e : FdEntry)
    ========================================================================= *)
 
 (** The child's machine state: the parent's successor with a0 = 0, and the
-    stack pointer the call asked for.  [set_reg] takes a PHYSICAL register
-    number; a0 is x10 and sp is x2.
+    stack pointer the call gives the child.  [set_reg] takes a PHYSICAL
+    register number; a0 is x10 and sp is x2.
 
-    [newsp] is honoured when it is non-zero.  Legacy [clone] accepts an
-    arbitrary one and it changes the CHILD's stack pointer (Fork.v:753-764);
-    zero means the child keeps the parent's, which is what [fork] does. *)
+    WHICH CALL MOVES THE CHILD'S STACK, and the reason the argument is not
+    read blindly.  Linux's [copy_thread] (arch/riscv/kernel/process.c)
+    seats [usp] in the child's sp only when it is non-zero; otherwise the
+    child keeps the parent's.
+    - [clone] (220): [usp] is argument 1, [newsp].  Legacy [clone] accepts
+      an arbitrary one and it changes the CHILD's stack pointer
+      (Fork.v:753-764); zero, which musl's [fork] passes, keeps the
+      parent's.
+    - [clone3] (435): argument 1 is the SIZE of [struct clone_args], 88
+      at the one modeled size, not a stack.  [usp] is the struct's
+      [stack] field, which the released spec requires to be zero
+      (Fork.v:957), so the child keeps the parent's.
+    Reading argument 1 for both gave every [clone3] child sp = 88.
+    [clone_child_sp] is the stack a successful call seats, [None] for the
+    parent's. *)
+Definition clone_child_sp (c : config) : option word :=
+  match ms_svc_pending (cfg_ms c) with
+  | Some x8 =>
+      if Z.eqb (bv_unsigned x8) 220%Z then
+        if w_is0 (ms_gpr (cfg_ms c) 1) then None else Some (ms_gpr (cfg_ms c) 1)
+      else None
+  | None => None
+  end.
+
 Definition child_ms (c c' : config) : machine_state :=
-  let newsp := ms_gpr (cfg_ms c) 1 in
   let base := set_reg (cfg_ms c') 10 (Z_to_bv 64 0) in
-  if w_is0 newsp then base else set_reg base 2 newsp.
+  match clone_child_sp c with
+  | None => base
+  | Some sp => set_reg base 2 sp
+  end.
 
-(** The child's process record: the parent's, with the fields that are the
-    CHILD's own cleared.
+(** The child's process record: the parent's, with the SIX fields that
+    are the CHILD's own cleared, and every other field copied.
 
-    [procst_children] because the child has none -- and copying the parent's
-    pre-clone record is not enough, because on a SECOND clone the parent's is
-    already set.  [procst_tid] because the child's differs on Linux, and
-    because clone admission itself reads it (Fork.v:679-681), so declining
-    [getpid] does not make an inherited one unobservable.
-    [procst_sigpipe_pending] is false (a new thread group starts with no
-    pending signal), [procst_pdeath_signal] is 0 ([copy_process] clears
-    it, kernel/fork.c), and the two launch facts
-    ([procst_channel_reader], [procst_sigpipe_default]) are copied. *)
+    - [procst_tid] is [None]: the child's differs on Linux, and clone
+      admission itself reads it (Fork.v:679-681), so declining [getpid]
+      does not make an inherited one unobservable.
+    - [procst_setsid_succeeded] is false.  The flag means exactly "this
+      process's [setsid] has succeeded, so it leads its session"
+      ([Sys.Kernel.Sys.setsid_spec]: [signal->leader], which only
+      [ksys_setsid] sets and nothing clears).  Leadership does not
+      inherit: [copy_signal] (kernel/fork.c) sets the new thread group's
+      [sig->leader = 0], and the child's new pid is in its parent's
+      process group, so it leads no group either and its own [setsid]
+      succeeds.  Copying the parent's flag answered that call -EPERM, an
+      answer Linux does not give.
+    - [procst_children] is false: the child has none, and copying the
+      parent's pre-clone record is not enough, because on a SECOND clone
+      the parent's is already set.
+    - [procst_sigabrt_pending] and [procst_sigpipe_pending] are false: a
+      new thread group starts with no pending signal ([copy_process],
+      kernel/fork.c).
+    - [procst_pdeath_signal] is 0: [copy_process] clears it.
+
+    The two launch facts ([procst_channel_reader], [procst_sigpipe_default])
+    are copied. *)
 Definition child_proc (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
-              (procst_setsid_succeeded ps) (procst_sigmask ps)
+              false (procst_sigmask ps)
               false (procst_utsname ps) (procst_sigaltstack_installed ps)
               (* [procst_sigabrt_pending] is FALSE in the child, not
                  copied: a new thread group starts with no pending signal
@@ -573,10 +609,88 @@ Definition pe_status (dumped : bool) (e : ProcessEntry) : option word :=
    The relation
    ========================================================================= *)
 
+(** THE ORPHANING AT EXIT.  When a process ends, Linux reparents its
+    children at once ([exit_notify] -> [forget_original_parent],
+    kernel/exit.c), to a subreaper or to init, neither of which is a
+    process of this table.  So when an entry stops running, every OTHER
+    entry that names it as parent gets [pe_parent = None]: no process of
+    the table can reap it any more, which is the nearest this model has to
+    init adopting it.  Without this a reap drops a zombie whose children
+    still name its pid, and a later clone that REUSES the pid would make a
+    stranger their parent -- R clones A, A clones G, A exits, R reaps A, R
+    clones B with A's old pid, G exits, and B's [wait4] would reap G where
+    Linux answers B -ECHILD.
+
+    WHY [m_halted] IS THE ONE TEST.  An entry stops running only through a
+    released step that leaves its model halted: every [Run.sstep_cfg] arm
+    requires a running model, and the two that end one, [sstep_cfg_exit]
+    and [sstep_cfg_killed], both leave [m_halted] set -- a death by signal
+    too, because [State.m_killed] reads the halt field through the kill
+    flag (State.v:4435-4436), so [m_killed = Some _] implies
+    [m_halted = Some _].  Every such step reaches the table through
+    [absorb] (or [absorb_x], below, which orphans the same way); the reap
+    arms and the clone leave the caller running.
+
+    The exiting entry itself is skipped: it is not its own child in any
+    table [pconfig_wf] admits, and skipping it leaves a one-entry table
+    unchanged by construction. *)
+Definition with_parent (e : ProcessEntry) (par : option Pid) : ProcessEntry :=
+  mkEntry (pe_pid e) par (pe_ms e) (pe_model e) (pe_ofd e) (pe_nsctx e).
+
+(** One table slot after [p] exits: a child of [p] other than [p]'s own
+    entry loses its parent, and every other slot is unchanged. *)
+Definition orphan_one (p : Pid) (kv : Pid * ProcessEntry) : Pid * ProcessEntry :=
+  if negb (bv_eqb (fst kv) p)
+     && match pe_parent (snd kv) with Some q => bv_eqb q p | None => false end
+  then (fst kv, with_parent (snd kv) None)
+  else kv.
+
+Definition orphan_children (p : Pid) (ps : list (Pid * ProcessEntry))
+    : list (Pid * ProcessEntry) :=
+  List.map (orphan_one p) ps.
+
+(** Orphan [p]'s children exactly when the model [p] was left with is over. *)
+Definition orphan_at_exit (m : Model) (p : Pid) (ps : list (Pid * ProcessEntry))
+    : list (Pid * ProcessEntry) :=
+  match m_halted m with
+  | Some _ => orphan_children p ps
+  | None => ps
+  end.
+
 Definition absorb (P : pconfig) (e : ProcessEntry) (c' : config) : pconfig :=
-  mkPCfg (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c'))
+  mkPCfg (orphan_at_exit (cfg_model c') (pe_pid e)
+            (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c')))
          (pcfg_root P)
          (shared_absorb (pcfg_shared P) c').
+
+(** A one-entry table is unchanged by the orphaning: its only entry is the
+    exiting one, which is skipped. *)
+Lemma orphan_children_single : forall p e, orphan_children p [(p, e)] = [(p, e)].
+Proof.
+  intros p e. unfold orphan_children, orphan_one. cbn [List.map fst].
+  rewrite bv_eqb_same. reflexivity.
+Qed.
+
+(** The orphaning keeps every slot: the table has the same length. *)
+Lemma orphan_at_exit_length : forall m p ps,
+  List.length (orphan_at_exit m p ps) = List.length ps.
+Proof.
+  intros m p ps. unfold orphan_at_exit, orphan_children.
+  destruct (m_halted m); [|reflexivity].
+  induction ps as [|kv r IH]; [reflexivity|].
+  cbn [List.map List.length]. rewrite IH. reflexivity.
+Qed.
+
+Lemma orphan_at_exit_single : forall m p e, orphan_at_exit m p [(p, e)] = [(p, e)].
+Proof.
+  intros m p e. unfold orphan_at_exit.
+  destruct (m_halted m); [apply orphan_children_single | reflexivity].
+Qed.
+
+(** And a running successor orphans nobody. *)
+Lemma orphan_at_exit_running : forall m p ps,
+  m_halted m = None -> orphan_at_exit m p ps = ps.
+Proof. intros m p ps H. unfold orphan_at_exit. rewrite H. reflexivity. Qed.
 
 (* =========================================================================
    The wait4 gate: a caller with a child in the table
@@ -843,10 +957,12 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
        that is its own parent, which [pconfig_wf] excludes -- but
        [pconfig_wf] is not a premise here, and every other condition of
        this relation is in the arm rather than in an invariant.  It
-       reaches no statement: [pinit_config] gives [pconfig_wf] and no arm
-       breaks it, so the excluded case is unreachable from any start state
-       a statement quantifies over.  (Found by trying to prove that the
-       entry count decides which arm fired, 2026-11-01.) *)
+       reaches no statement: [pinit_config] gives [pconfig_wf]
+       ([pconfig_wf_one_proc]) and every producing arm keeps it
+       ([Checks.ProcsWellFormed.pstep_at_preserves_wf]), so the excluded
+       case is unreachable from any start state a statement quantifies
+       over.  (Found by trying to prove that the entry count decides which
+       arm fired, 2026-11-01.) *)
     q <> pe_pid e ->
     pe_parent ez = Some (pe_pid e) ->
     m_killed (pe_model ez) = None ->
@@ -1032,9 +1148,14 @@ Proof. intros segs c e. unfold wait4_refused_b. rewrite wait4_owned_one. reflexi
 Lemma absorb_one_proc : forall c c',
   absorb (one_proc c) (one_entry c) c' = one_proc c'.
 Proof.
-  intros c c'. unfold absorb, one_proc, one_entry, replace_in. cbn.
-  rewrite bv_eqb_same.
-  destruct c' as [ms' m']. destruct m'. reflexivity.
+  intros c c'. unfold absorb.
+  replace (replace_in (pcfg_procs (one_proc c)) (pe_pid (one_entry c))
+             (pe_absorb (one_entry c) c'))
+    with [(one_pid, pe_absorb (one_entry c) c')]
+    by (cbn; rewrite bv_eqb_same; reflexivity).
+  change (pe_pid (one_entry c)) with one_pid.
+  rewrite orphan_at_exit_single.
+  unfold one_proc, one_entry. destruct c' as [ms' m']. destruct m'. reflexivity.
 Qed.
 
 (** No system call is pending: the next step is an instruction. *)
@@ -1260,25 +1381,41 @@ Qed.
    Well-formedness
    ========================================================================= *)
 
-(** The structural invariant every arm must preserve.  Stated once, because
-    several results silently assume parts of it: the key of the table is the
-    entry's own pid, the root is present and parentless, and every parent
-    link resolves. *)
+(** The structural invariant every arm preserves
+    ([Checks.ProcsWellFormed.pstep_at_preserves_wf]).  Stated once, because
+    several results silently assume parts of it:
+
+    1. the key of the table is the entry's own pid;
+    2. the root is present and parentless;
+    3. every parent link resolves, to an entry other than the child;
+    4. NO KEY IS REPEATED.  [look], [replace_in] and [drop_in] act on the
+       FIRST entry with a key, so a repeated key would leave a shadowed
+       entry that no arm sees and every arm keeps;
+    5. every parent is RUNNING.  This is what makes a reap's drop safe: an
+       entry stops running only at its exit, where [absorb] orphans its
+       children ([orphan_at_exit]), so a zombie is nobody's parent and
+       dropping it leaves no link dangling.
+
+    A parentless entry is the root or an ORPHAN, whose parent exited:
+    clause 2 names the root, and nothing reads "parentless" as "root"
+    ([root_view] and [MustExitP.lineage_pick] read [pcfg_root]). *)
 Definition pconfig_wf (P : pconfig) : Prop :=
   (forall kv, List.In kv (pcfg_procs P) -> fst kv = pe_pid (snd kv))
   /\ (exists e, look P (pcfg_root P) = Some e /\ pe_parent e = None)
-  /\ (forall kv, List.In kv (pcfg_procs P) ->
-        match pe_parent (snd kv) with
-        | None => pe_pid (snd kv) = pcfg_root P
-        | Some q => exists f, look P q = Some f
-        end).
+  /\ (forall kv q, List.In kv (pcfg_procs P) -> pe_parent (snd kv) = Some q ->
+        q <> fst kv /\ exists f, look P q = Some f)
+  /\ List.NoDup (List.map fst (pcfg_procs P))
+  /\ (forall kv q f, List.In kv (pcfg_procs P) -> pe_parent (snd kv) = Some q ->
+        look P q = Some f -> m_halted (pe_model f) = None).
 
 Lemma pconfig_wf_one_proc : forall c, pconfig_wf (one_proc c).
 Proof.
-  intros c. unfold pconfig_wf. split; [|split].
+  intros c. unfold pconfig_wf. split; [|split; [|split; [|split]]].
   - intros kv Hkv. cbn in Hkv. destruct Hkv as [<-|[]]. reflexivity.
   - exists (one_entry c). split; [apply one_proc_entry | reflexivity].
-  - intros kv Hkv. cbn in Hkv. destruct Hkv as [<-|[]]. reflexivity.
+  - intros kv q Hkv Hq. cbn in Hkv. destruct Hkv as [<-|[]]. discriminate Hq.
+  - cbn. constructor; [intros []|constructor].
+  - intros kv q f Hkv Hq. cbn in Hkv. destruct Hkv as [<-|[]]. discriminate Hq.
 Qed.
 
 (* =========================================================================
@@ -1562,9 +1699,12 @@ Definition with_sh_ns (S : shared) (st : NsState) : shared :=
 Definition with_nsctx (e : ProcessEntry) (ctx : NsCtx) : ProcessEntry :=
   mkEntry (pe_pid e) (pe_parent e) (pe_ms e) (pe_model e) (pe_ofd e) ctx.
 
+(** It orphans at exit exactly as [absorb] does: a claimed call that ends
+    the process ([xs_exit], [xs_killed]) leaves its model halted too. *)
 Definition absorb_x (P : pconfig) (e : ProcessEntry) (c' : config) (ctx' : NsCtx)
     (st' : NsState) : pconfig :=
-  mkPCfg (replace_in (pcfg_procs P) (pe_pid e) (with_nsctx (pe_absorb e c') ctx'))
+  mkPCfg (orphan_at_exit (cfg_model c') (pe_pid e)
+            (replace_in (pcfg_procs P) (pe_pid e) (with_nsctx (pe_absorb e c') ctx')))
          (pcfg_root P)
          (with_sh_ns (shared_absorb (pcfg_shared P) c') st').
 

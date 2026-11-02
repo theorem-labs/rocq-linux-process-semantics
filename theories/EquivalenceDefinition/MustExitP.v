@@ -172,9 +172,9 @@ Lemma child_entry_a0_zero : forall e c c' q,
 Proof.
   intros e c c' q.
   unfold entry_a0_zero, child_entry, child_ms. cbn [pe_ms].
-  destruct (w_is0 (ms_gpr (cfg_ms c) 1)).
-  - apply ms_gpr_set_reg_a0.
+  destruct (clone_child_sp c).
   - apply ms_gpr_set_reg_sp_a0.
+  - apply ms_gpr_set_reg_a0.
 Qed.
 
 (* =========================================================================
@@ -316,15 +316,53 @@ Proof.
   - destruct (bv_eqb (fst kv) q); [reflexivity | apply IH; exact Hne].
 Qed.
 
-(** An ordinary step of one entry leaves every other entry's lookup alone.
-    [absorb] replaces exactly the stepping entry and rebuilds the shared
-    state; the table is untouched at every other key. *)
+(** The orphaning, read at one key: the slot there, possibly with its
+    parent cleared.  [orphan_one] keeps every key, so a lookup finds the
+    same slot it found before. *)
+Lemma look_in_orphan : forall ps p q,
+  look_in (orphan_children p ps) q
+  = match look_in ps q with
+    | Some x => Some (snd (orphan_one p (q, x)))
+    | None => None
+    end.
+Proof.
+  induction ps as [|[k x] r IH]; intros p q; [reflexivity|].
+  unfold orphan_children in *. cbn [List.map look_in fst snd].
+  assert (Hf : fst (orphan_one p (k, x)) = k).
+  { unfold orphan_one.
+    match goal with |- context [if ?b then _ else _] => destruct b end; reflexivity. }
+  rewrite Hf. destruct (bv_eqb k q) eqn:E.
+  - apply bv_eqb_true_eq in E. subst k. reflexivity.
+  - apply IH.
+Qed.
+
+(** An ordinary step of one entry leaves every other entry's lookup alone,
+    EXCEPT that a step ending the entry orphans its children
+    ([Procs.orphan_at_exit]).  [absorb] replaces exactly the stepping entry
+    and rebuilds the shared state; at every other key the table is
+    untouched unless the successor is over and the entry there is a child
+    of the stepping one. *)
 Lemma look_absorb_other : forall P e c' q,
   bv_eqb (pe_pid e) q = false ->
+  (m_halted (cfg_model c') = None
+   \/ match look P q with
+      | Some eq => pe_parent eq <> Some (pe_pid e)
+      | None => True
+      end) ->
   look (absorb P e c') q = look P q.
 Proof.
-  intros P e c' q Hne. unfold look, absorb. cbn.
-  apply look_in_replace_other. exact Hne.
+  intros P e c' q Hne Hcase. unfold look, absorb. cbn [pcfg_procs].
+  unfold orphan_at_exit. destruct (m_halted (cfg_model c')) as [w|] eqn:Hm.
+  - destruct Hcase as [Hc|Hc]; [discriminate Hc|].
+    rewrite look_in_orphan, look_in_replace_other by exact Hne.
+    unfold look in Hc. destruct (look_in (pcfg_procs P) q) as [x|]; [|reflexivity].
+    unfold orphan_one. cbn [fst snd].
+    destruct (pe_parent x) as [r|] eqn:Ep; cbv beta iota.
+    + destruct (bv_eqb r (pe_pid e)) eqn:Er.
+      * apply bv_eqb_true_eq in Er. subst r. exfalso. apply Hc. reflexivity.
+      * rewrite andb_false_r. reflexivity.
+    + rewrite andb_false_r. reflexivity.
+  - apply look_in_replace_other. exact Hne.
 Qed.
 
 (** A clone leaves every entry but the parent and the new child alone: it
@@ -548,15 +586,33 @@ Definition pmeasure (f : ProcessEntry -> nat) (P : pconfig) : nat :=
   msum f (pcfg_procs P).
 
 (** An ordinary step decreases it exactly when the stepping entry's own
-    count decreases.  This is the whole of the two-entry argument: the
-    schedule cannot matter, because whichever entry steps, the sum falls by
-    that entry's own decrease and nothing else moves. *)
+    count decreases, for a count that does not read parent links.  This is
+    the whole of the two-entry argument: the schedule cannot matter,
+    because whichever entry steps, the sum falls by that entry's own
+    decrease and nothing else moves -- a step that ends the entry orphans
+    its children ([Procs.orphan_at_exit]), which changes their parent link
+    and nothing a parent-blind count sees. *)
+Lemma msum_orphan : forall f m p ps,
+  (forall x, f (with_parent x None) = f x) ->
+  msum f (orphan_at_exit m p ps) = msum f ps.
+Proof.
+  intros f m p ps Hf. unfold orphan_at_exit, orphan_children.
+  destruct (m_halted m); [|reflexivity].
+  induction ps as [|kv r IH]; [reflexivity|].
+  cbn [List.map]. rewrite !msum_cons, IH. f_equal.
+  unfold orphan_one.
+  match goal with |- context [if ?b then _ else _] => destruct b end;
+    [apply Hf | reflexivity].
+Qed.
+
 Lemma pmeasure_absorb_lt : forall f P e c',
+  (forall x, f (with_parent x None) = f x) ->
   look P (pe_pid e) = Some e ->
   (f (pe_absorb e c') < f e)%nat ->
   (pmeasure f (absorb P e c') < pmeasure f P)%nat.
 Proof.
-  intros f P e c' Hl Hlt. unfold pmeasure, absorb. cbn [pcfg_procs].
+  intros f P e c' Hf Hl Hlt. unfold pmeasure, absorb. cbn [pcfg_procs].
+  rewrite (msum_orphan f _ _ _ Hf).
   pose proof (msum_replace f (pcfg_procs P) (pe_pid e) e (pe_absorb e c') Hl).
   lia.
 Qed.
@@ -656,11 +712,17 @@ Lemma look_absorb_self : forall P e c',
   look (absorb P e c') (pe_pid e) = Some (pe_absorb e c').
 Proof.
   intros P e c' Hl. unfold look, absorb. cbn [pcfg_procs].
-  revert Hl. unfold look. generalize (pcfg_procs P) as ps. clear P.
-  induction ps as [|kv r IH]; cbn; [discriminate|].
-  destruct (bv_eqb (fst kv) (pe_pid e)) eqn:Hb; cbn.
-  - intros Hs. injection Hs as <-. rewrite bv_eqb_same. reflexivity.
-  - intros Hs. rewrite Hb. apply IH. exact Hs.
+  assert (Hr : look_in (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c')) (pe_pid e)
+               = Some (pe_absorb e c')).
+  { revert Hl. unfold look. generalize (pcfg_procs P) as ps. clear P.
+    induction ps as [|kv r IH]; cbn; [discriminate|].
+    destruct (bv_eqb (fst kv) (pe_pid e)) eqn:Hb; cbn.
+    - intros Hs. injection Hs as <-. rewrite bv_eqb_same. reflexivity.
+    - intros Hs. rewrite Hb. apply IH. exact Hs. }
+  (* the orphaning skips the stepping entry's own slot *)
+  unfold orphan_at_exit. destruct (m_halted (cfg_model c')); [|exact Hr].
+  rewrite look_in_orphan, Hr. unfold orphan_one. cbn [fst snd].
+  rewrite bv_eqb_same. reflexivity.
 Qed.
 
 (* =========================================================================

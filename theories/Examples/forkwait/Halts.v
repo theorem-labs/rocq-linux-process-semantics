@@ -537,7 +537,7 @@ Lemma absorb_procs_length : forall P e c',
   = List.length (pcfg_procs P).
 Proof.
   intros P e c'. unfold absorb. cbn [pcfg_procs].
-  apply replace_in_length.
+  rewrite orphan_at_exit_length. apply replace_in_length.
 Qed.
 
 (** And a clone's successor has exactly one more entry: [clone_result]
@@ -600,7 +600,8 @@ Qed.
 
     THE PATHFINDER IS NOT AFFECTED.  Its configurations are well formed by
     construction: [pinit_config] gives [pconfig_wf]
-    ([Procs.pconfig_wf_one_proc]) and no arm breaks it.  The count lemma
+    ([Procs.pconfig_wf_one_proc]) and every producing arm keeps it
+    ([Checks.ProcsWellFormed.pstep_at_preserves_wf]).  The count lemma
     is provable with [pconfig_wf P] as a premise.
 
     WHICH FIX IS RIGHT IS NOT MINE TO CHOOSE ALONE, because it changes a
@@ -700,9 +701,22 @@ Proof.
   intros P e c' Hp Hr.
   unfold absorb, look. cbn [pcfg_procs pcfg_root].
   rewrite Hp. cbn [replace_in fst].
-  rewrite bv_eqb_same.
+  rewrite bv_eqb_same, orphan_at_exit_single.
   split; [reflexivity|]. split; [exact Hr|].
   cbn [look_in fst snd]. rewrite bv_eqb_same. reflexivity.
+Qed.
+
+(** At a two-entry table whose first entry is parentless, the orphaning
+    at the second entry's exit changes nothing: the only other entry is
+    nobody's child. *)
+Lemma fw_orphan_two_child : forall m p ep x,
+  pe_parent ep = None ->
+  orphan_at_exit m p [(pe_pid ep, ep); (p, x)] = [(pe_pid ep, ep); (p, x)].
+Proof.
+  intros m p ep x Hpar. unfold orphan_at_exit.
+  destruct (m_halted m); [|reflexivity].
+  unfold orphan_children, orphan_one. cbn [List.map fst snd].
+  rewrite Hpar, bv_eqb_same. cbv beta iota. rewrite andb_false_r. reflexivity.
 Qed.
 
 (** [pe_absorb] keeps the pid and the parent link, which is what every
@@ -1083,14 +1097,18 @@ Qed.
     What every row needs first is that the entry that did NOT step is
     unchanged, which is the pair of frame lemmas below. *)
 
-(** The other entry's RECORD survives, from the table lemmas. *)
+(** The other entry's RECORD survives, from the table lemmas -- unless the
+    step ended the stepping entry and the other is its child, whose parent
+    the exit clears ([Procs.orphan_at_exit]). *)
 Lemma fw_two_other_record : forall P e c' q eq,
   bv_eqb (pe_pid e) q = false ->
   look P q = Some eq ->
+  (m_halted (cfg_model c') = None \/ pe_parent eq <> Some (pe_pid e)) ->
   look (absorb P e c') q = Some eq.
 Proof.
-  intros P e c' q eq Hne Hl.
-  rewrite look_absorb_other; [exact Hl | exact Hne].
+  intros P e c' q eq Hne Hl Hcase.
+  rewrite look_absorb_other; [exact Hl | exact Hne |].
+  rewrite Hl. exact Hcase.
 Qed.
 
 (** And its VIEW survives, provided the step left the shared file system
@@ -2158,6 +2176,13 @@ Definition fw_entry_left (e : ProcessEntry) : nat :=
   | None => fw_ms_left (pe_ms e)
   end.
 
+(** The count reads the halt flag and the machine state, never the parent
+    link, so the orphaning at an exit leaves it alone
+    ([MustExitP.pmeasure_absorb_lt]'s premise). *)
+Lemma fw_entry_left_parent_blind : forall x,
+  fw_entry_left (with_parent x None) = fw_entry_left x.
+Proof. intros x. reflexivity. Qed.
+
 Definition fw_mu (P : pconfig) : nat := pmeasure fw_entry_left P.
 
 Lemma fw_ms_left_of : forall ms k msf x8,
@@ -2262,7 +2287,7 @@ Lemma fw_mu_absorb_one_lt : forall P e c' n,
   (n < fw_entry_left e)%nat ->
   (fw_mu (absorb P e c') < fw_mu P)%nat.
 Proof.
-  intros P e c' n Hp Ha Hn. unfold fw_mu. apply pmeasure_absorb_lt.
+  intros P e c' n Hp Ha Hn. unfold fw_mu. apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind).
   - unfold look. rewrite Hp. cbn [look_in fst snd].
     rewrite bv_eqb_same. reflexivity.
   - lia.
@@ -2351,7 +2376,7 @@ Proof.
     by (unfold look; rewrite Hp; cbn [look_in fst snd];
         rewrite bv_eqb_same; reflexivity).
   split;
-    [| unfold fw_mu; apply pmeasure_absorb_lt;
+    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind);
        [ exact Hlook
        | exact (fw_entry_left_lt_step e Q ms' model' HQp
                   (fw_model_ok_halted _ Hh) Hsv Hrem Hmstep Hhal) ] ].
@@ -2389,7 +2414,7 @@ Proof.
               Hl Hsv Hstep) as (ms' & model' & Hmstep & Hhal & Hfrm & HP').
   subst P'.
   split;
-    [| unfold fw_mu; apply pmeasure_absorb_lt;
+    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind);
        [ exact Hl
        | exact (fw_entry_left_lt_step ep fw_q_wait4 ms' model'
                   fw_q_wait4_pending (fw_model_ok_halted _ Hh) Hsv Hrem
@@ -2397,6 +2422,8 @@ Proof.
   exists (pe_absorb ep (mkCfg ms' model')), ec.
   unfold absorb. cbn [pcfg_procs pcfg_root].
   rewrite Hp, fw_two_replace_parent.
+  rewrite orphan_at_exit_running
+    by (cbn [cfg_model]; rewrite Hhal; exact (fw_model_ok_halted _ Hh)).
   split; [reflexivity|].
   split; [exact Hr|].
   split; [exact Hne|].
@@ -2433,7 +2460,7 @@ Proof.
               Hl Hsv Hstep) as (ms' & model' & Hmstep & Hhal & Hfrm & HP').
   subst P'.
   split;
-    [| unfold fw_mu; apply pmeasure_absorb_lt;
+    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind);
        [ exact Hl
        | exact (fw_entry_left_lt_step ec fw_q_exit7 ms' model'
                   fw_q_exit7_pending (fw_model_ok_halted _ Hh) Hsv Hrem
@@ -2441,6 +2468,7 @@ Proof.
   exists ep, (pe_absorb ec (mkCfg ms' model')).
   unfold absorb. cbn [pcfg_procs pcfg_root].
   rewrite Hp, (fw_two_replace_child ep ec _ Hne).
+  rewrite fw_orphan_two_child by exact Hppar.
   split; [reflexivity|].
   split; [exact Hr|].
   split; [exact Hne|].
@@ -2504,7 +2532,7 @@ Proof.
     by (unfold look; rewrite Hp; cbn [look_in fst snd];
         rewrite bv_eqb_same; reflexivity).
   split;
-    [| unfold fw_mu; apply pmeasure_absorb_lt;
+    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind);
        [ exact Hlook
        | rewrite (fw_entry_left_halted (pe_absorb e cex))
            by (cbn [pe_model pe_absorb cfg_model];
@@ -2546,7 +2574,7 @@ Proof.
              Hl Hsv fw_ninety_four Hstep).
   rewrite Ha0, fw_and_seven.
   split;
-    [| unfold fw_mu; apply pmeasure_absorb_lt;
+    [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind);
        [ exact Hl
        | rewrite (fw_entry_left_halted
                     (pe_absorb ec (mkCfg (pe_ms ec)
@@ -2564,6 +2592,7 @@ Proof.
              (cfg_model (pe_cfg (pcfg_shared P) ec))))).
   unfold absorb. cbn [pcfg_procs pcfg_root].
   rewrite Hp, (fw_two_replace_child ep ec _ Hne).
+  rewrite fw_orphan_two_child by exact Hppar.
   split; [reflexivity|].
   split; [exact Hr|].
   split; [exact Hne|].
@@ -2684,13 +2713,17 @@ Lemma fw_w_is0_zero : w_is0 (0 : word) = true.
 Proof. vm_compute. reflexivity. Qed.
 
 (** With [newsp] zero -- which is what this program passes -- the child
-    inherits the parent's stack and differs from it only in a0. *)
+    inherits the parent's stack and differs from it only in a0
+    ([Procs.clone_child_sp] moves it only for a [clone] with a non-zero
+    [newsp]). *)
 Lemma fw_child_ms_eq : forall c c',
   ms_gpr (cfg_ms c) 1 = 0 ->
   child_ms c c' = set_reg (cfg_ms c') 10 (Z_to_bv 64 0).
 Proof.
-  intros c c' H1. unfold child_ms. cbv zeta. rewrite H1, fw_w_is0_zero.
-  reflexivity.
+  intros c c' H1. unfold child_ms, clone_child_sp. cbv zeta.
+  destruct (ms_svc_pending (cfg_ms c)) as [x8|]; [|reflexivity].
+  destruct (Z.eqb (bv_unsigned x8) 220%Z); [|reflexivity].
+  rewrite H1, fw_w_is0_zero. reflexivity.
 Qed.
 
 (** An errno return is negative as a signed word, which is what sends
@@ -3392,8 +3425,13 @@ Lemma fw_two_entry_step : forall segs cfg P e eo qo ms' model',
 Proof.
   intros segs cfg P e eo qo ms' model' Hl Hlo Hne Hh Hs Hm.
   split; [exact (pstep_instr_entry segs cfg P e ms' model' Hl Hh Hs Hm)|].
+  assert (Hrun : m_halted (cfg_model (mkCfg ms' model')) = None).
+  { destruct (mi_account_step_model_frame _ _ _ _ _ Hm)
+      as (_ & _ & _ & _ & _ & Hproc & _).
+    cbn [cfg_model]. unfold m_halted in *. rewrite Hproc. exact Hh. }
   assert (Hlo' : look (absorb P e (mkCfg ms' model')) qo = Some eo)
-    by exact (fw_two_other_record P e (mkCfg ms' model') qo eo Hne Hlo).
+    by exact (fw_two_other_record P e (mkCfg ms' model') qo eo Hne Hlo
+                (or_introl Hrun)).
   split; [exact Hlo'|].
   (* the view: an accounted instruction step fixes every model
      component, so the shared file system and I/O are unchanged and
