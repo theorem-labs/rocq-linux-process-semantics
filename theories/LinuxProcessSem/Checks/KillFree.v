@@ -389,7 +389,8 @@ Lemma check_read_kf : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd buf count eff m m' evs H Hoff Hk.
-  unfold check_read, check_read_urandom, check_socket_pending_error, check_access_ok_zero in H.
+  unfold check_read, check_read_urandom, check_socket_pending_error, check_access_ok_zero,
+    check_read_proc, check_read_proc_bare in H.
   cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
@@ -475,10 +476,10 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_readlinkat_kf : forall dirfd eff m m' evs,
-  check_readlinkat dirfd eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_readlinkat_kf : forall i dirfd eff m m' evs,
+  check_readlinkat i dirfd eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros dirfd eff m m' evs H Hoff Hk.
+  intros i dirfd eff m m' evs H Hoff Hk.
   unfold check_readlinkat in H.
   kf_frame H m Hoff Hk.
 Qed.
@@ -559,11 +560,11 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_prctl_kf : forall option_ arg2 eff m m' evs,
-  check_prctl option_ arg2 eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_prctl_kf : forall i option_ arg2 eff m m' evs,
+  check_prctl i option_ arg2 eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros option_ arg2 eff m m' evs H Hoff Hk.
-  unfold check_prctl in H.
+  intros i option_ arg2 eff m m' evs H Hoff Hk.
+  unfold check_prctl, check_ret_writes in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -675,7 +676,7 @@ Lemma check_newfstatat_kf : forall i dirfd pathp flag eff m m' evs,
   check_newfstatat i dirfd pathp flag eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i dirfd pathp flag eff m m' evs H Hoff Hk.
-  unfold check_newfstatat in H.
+  unfold check_newfstatat, check_newfstatat_proc, check_newfstatat_proc_errno in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -720,11 +721,63 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_setgroups_kf : forall eff m m' evs,
-  check_setgroups eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_setgroups_kf : forall i eff m m' evs,
+  check_setgroups i eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i eff m m' evs H Hoff Hk.
+  unfold check_setgroups in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+(** The parent-side arms the extensions added: each unfolds as its
+    [Checks.VmMapsDisjoint] [_frame] lemma does.  None reaches
+    [State.with_killed]: [capset] and [close_range] write the credentials
+    and the descriptor table, the four readers write user memory only. *)
+Lemma check_capget_kf : forall i header dataptr eff m m' evs,
+  check_capget i header dataptr eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i header dataptr eff m m' evs H Hoff Hk.
+  unfold check_capget, check_capget_copy in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma check_capset_kf : forall i header data eff m m' evs,
+  check_capset i header data eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i header data eff m m' evs H Hoff Hk.
+  unfold check_capset in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma check_close_range_kf : forall fd max_fd flags eff m m' evs,
+  check_close_range fd max_fd flags eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros fd max_fd flags eff m m' evs H Hoff Hk.
+  unfold check_close_range in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma check_getppid_kf : forall eff m m' evs,
+  check_getppid eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros eff m m' evs H Hoff Hk.
-  unfold check_setgroups in H.
+  unfold check_getppid in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma check_getsid_kf : forall pid eff m m' evs,
+  check_getsid pid eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros pid eff m m' evs H Hoff Hk.
+  unfold check_getsid, check_getppid in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma check_getresid_kf : forall i get rp ep sp eff m m' evs,
+  check_getresid i get rp ep sp eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i get rp ep sp eff m m' evs H Hoff Hk.
+  unfold check_getresid, check_ret_writes in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -828,7 +881,8 @@ Lemma check_clone_kf : forall flags eff m m' evs,
   check_clone flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros flags eff m m' evs H Hoff Hk.
-  unfold check_clone, check_clone_resolve, check_clone_answer in H.
+  unfold check_clone, check_clone_resolve, check_clone_answer,
+    check_clone_ns_resolve, check_clone_ns_answer in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -844,7 +898,7 @@ Lemma check_getsockname_kf : forall fd eff m m' evs,
   check_getsockname fd eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros fd eff m m' evs H Hoff Hk.
-  unfold check_getsockname in H.
+  unfold check_getsockname, check_getsockname_core in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -852,7 +906,7 @@ Lemma check_getpeername_kf : forall fd eff m m' evs,
   check_getpeername fd eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros fd eff m m' evs H Hoff Hk.
-  unfold check_getpeername in H.
+  unfold check_getpeername, check_getpeername_core in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -860,7 +914,7 @@ Lemma check_setsockopt_kf : forall fd level optlen eff m m' evs,
   check_setsockopt fd level optlen eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros fd level optlen eff m m' evs H Hoff Hk.
-  unfold check_setsockopt in H.
+  unfold check_setsockopt, check_setsockopt_core in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -868,7 +922,7 @@ Lemma check_getsockopt_kf : forall i fd level optlenp eff m m' evs,
   check_getsockopt i fd level optlenp eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd level optlenp eff m m' evs H Hoff Hk.
-  unfold check_getsockopt in H.
+  unfold check_getsockopt, check_getsockopt_core in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -876,7 +930,7 @@ Lemma check_shutdown_kf : forall fd how eff m m' evs,
   check_shutdown fd how eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros fd how eff m m' evs H Hoff Hk.
-  unfold check_shutdown in H.
+  unfold check_shutdown, check_shutdown_core in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -940,7 +994,7 @@ Lemma check_eventfd2_kf : forall flags eff m m' evs,
   check_eventfd2 flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros flags eff m m' evs H Hoff Hk.
-  unfold check_eventfd2 in H.
+  unfold check_eventfd2, check_new_fd_result in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1088,6 +1142,12 @@ Proof.
     | eapply check_epoll_create1_kf; eassumption
     | eapply check_epoll_ctl_kf; eassumption
     | eapply check_epoll_pwait_kf; eassumption
+    | eapply check_capget_kf; eassumption
+    | eapply check_capset_kf; eassumption
+    | eapply check_close_range_kf; eassumption
+    | eapply check_getppid_kf; eassumption
+    | eapply check_getsid_kf; eassumption
+    | eapply check_getresid_kf; eassumption
     | fail 1 "checked_table_kill_free has no case for this dispatcher arm: give the new checker a *_kf lemma and add it to the list above" ].
 Qed.
 

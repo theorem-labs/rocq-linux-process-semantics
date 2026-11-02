@@ -542,10 +542,10 @@ Proof.
 Qed.
 
 (** So a released step that is a successful clone leaves its caller
-    running: the instruction arm has no pending call, the syscall arm keeps
-    the halt flag through the materialization, and the two arms that end a
-    process would need the clone spec to halt its caller, which it never
-    does. *)
+    running: the instruction and vDSO arms have no pending call, the
+    syscall arm keeps the halt flag through the materialization, and the
+    two arms that end a process would need the clone spec to halt its
+    caller, which it never does. *)
 Lemma clone_step_running : forall segs cfg c evs c',
   sstep_cfg segs cfg c evs (SNext c') ->
   clone_success_b c c' = true ->
@@ -556,13 +556,17 @@ Proof.
   unfold clone_pending_b in Hcp.
   inversion Hss as
     [ ms model ms' model' Hh Hsv Hacc
-    | | 
+    | |
+    | ms model fn n eff model' model'' evs0 Hh Hsv Hacc Hfn Hn Hsp Hne Hh' Hmat
+    | |
     | ms model x8 eff model' model'' evs0 Hh Hsv Hsp Hrf Hh' Hmat
     |
     | ms model x8 eff model' evs0 code Hh Hsv Hsp Hh' Hk'
     | ms model x8 eff model' evs0 sig Hh Hsv Hsp Hk'
     | ]; subst; cbn [cfg_model cfg_ms] in *.
   - (* an instruction: nothing is pending *)
+    rewrite Hsv in Hcp. discriminate Hcp.
+  - (* a vDSO call: nothing is pending either *)
     rewrite Hsv in Hcp. discriminate Hcp.
   - (* a syscall: the materialization keeps the process record *)
     destruct (materialize_model_accesses_frame _ _ _ Hmat)
