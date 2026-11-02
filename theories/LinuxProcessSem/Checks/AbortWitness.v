@@ -1149,10 +1149,10 @@ Definition blk_L7 (t : word) : machine_state :=
     they compute, for the reason [abrt_open] gives: a syscall input
     carries the run's segment list inside its readers, and a
     [vm_compute] over one reads the measured image back under the
-    binder.  The [unfold] list is [blk_open]'s; [try], because a few
-    goals name no leg. *)
+    binder.  The [unfold] list runs from [blk_L7] down, for the reason
+    [blk_open] gives below; [try], because a few goals name no leg. *)
 Ltac blk_abs :=
-  unfold blk_L1, blk_L2, blk_L3, blk_L4, blk_L5, blk_L6, blk_L7,
+  unfold blk_L7, blk_L6, blk_L5, blk_L4, blk_L3, blk_L2, blk_L1,
     blk_leg, blk_legk, blk_L0, run_segments; try abstract_vdso.
 
 Ltac blk_check_eq :=
@@ -1182,13 +1182,47 @@ Definition blk_m8 (t : word) (lim : Z) : Model :=
   with_killed (Z_to_bv 64 SIGABRT)
     (with_sigmask (Z_to_bv 64 0xfffffffffffbfedf) (blk_m7 t lim)).
 
-(** Every state of a leg carries the read-only backing, a closure over
-    the run's segment list; [vm_compute] would read the vDSO pair back
-    under its binder.  Opening the leg's definitions and abstracting the
-    pair first keeps the computation to the image's own segment. *)
+(** [blk_L0] with its read-only backing replaced.  [blk_open] uses it
+    to put a variable where the backing was. *)
+Definition with_rom (ms : machine_state) (rom : word -> option byte) : machine_state :=
+  {| ms_regs := ms_regs ms; ms_fregs := ms_fregs ms; ms_pc_val := ms_pc_val ms;
+     ms_svc_pending := ms_svc_pending ms; ms_resv := ms_resv ms; ms_fcsr := ms_fcsr ms;
+     ms_mem := ms_mem ms; ms_rom := rom |}.
+
+Lemma with_rom_eta : forall ms, ms = with_rom ms (ms_rom ms).
+Proof. intros []; reflexivity. Qed.
+
+(** Every state of a leg carries the read-only backing [ms_rom], a
+    closure over the run's segment list, and the step equation of
+    [leg_ok] has a state on each side, so [vm_compute] normalises that
+    closure under its binder.
+
+    THE ORDER OF THE UNFOLDS MATTERS.  [unfold] takes its list one name
+    at a time, so a name that an earlier unfold exposes stays folded if
+    it is earlier in the list.  [blk_L2] is defined through [blk_L1], and
+    [blk_L1] through [blk_L0]: an unfold in the order [blk_L1, blk_L2]
+    leaves [blk_L1] folded inside [blk_L2], [abstract_vdso] cannot see
+    the vDSO pair behind it, and [vm_compute] unfolds it and reads the
+    measured vDSO images back under the backing's binder.  That is what
+    ran out of memory: the step equation of [blk_leg2_ok] at index 0
+    passed a 24 GiB cap in 300 s, and [ms_rom] was the only field of its
+    result that did not normalise in under 0.01 s.  [blk_leg0_ok] and
+    [blk_leg1_ok] were not affected, because [blk_L1] is first in the
+    list.  So the list runs from [blk_L7] down to [blk_L1].
+
+    THE BACKING IS ALSO MADE A VARIABLE.  No step reads [ms_rom]
+    ([RiscvSemantics.step] fetches through the segment list and loads
+    through [ms_mem]); each step only carries it to the next state.  So
+    [blk_open] replaces [blk_L0]'s backing by a variable, every state of
+    the leg carries that variable, and nothing is normalised under a
+    binder.  The vDSO pair in the segment list is abstracted as
+    [Checks.Omni.abstract_vdso] does. *)
 Ltac blk_open :=
-  unfold leg_ok, blk_L1, blk_L2, blk_L3, blk_L4, blk_L5, blk_L6, blk_L7,
-    blk_leg, blk_legk, blk_L0, run_segments;
+  unfold leg_ok, blk_L7, blk_L6, blk_L5, blk_L4, blk_L3, blk_L2, blk_L1,
+    blk_leg, blk_legk;
+  rewrite (with_rom_eta blk_L0);
+  generalize (ms_rom blk_L0) as rom; intros rom;
+  unfold run_segments;
   abstract_vdso.
 
 Lemma blk_leg0_ok : forall k, (k < 3)%nat -> leg_ok blk_L0 k.
