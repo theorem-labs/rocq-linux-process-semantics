@@ -1122,6 +1122,12 @@ Proof.
   | [ H : ?f i m (Ok eff m' ?e) |- _ ] => revert H
   end.
   revert Hmark.
+  (* The vDSO pair's gate comes first and answers [unmodeled], so the
+     mark is [false] there. *)
+  destruct (negb (region_free (vdso_reserved (m_kernel m) (vdso_top (m_vmmaps m)))
+                    (in_arg i 0)
+                    (Z_to_bv 64 (page_round_up_Z (bv_unsigned (in_arg i 1))))));
+    [intros Hmark _; discriminate Hmark |].
   destruct (map_contains (vm_noaccess (m_vmmaps m)) (in_arg i 0)
               (Z_to_bv 64 (page_round_up_Z (bv_unsigned (in_arg i 1))))
             && map_contains (vm_maps (m_vmmaps m)) (in_arg i 0)
