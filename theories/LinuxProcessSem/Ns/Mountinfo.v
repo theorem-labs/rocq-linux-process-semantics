@@ -17,36 +17,58 @@
     backslash ("\ooo").  Every mount of the model is relatime (see
     [Ns.NewMount]).
 
-    What the tables do not hold is the environment's, in [MiEnv]: the
-    kernel's mount ids and peer-group ids (any values, the ids of
-    distinct mounts distinct), each superblock's device number, the type
-    name of a host superblock, each mount's source name, the superblock
-    options a file system prints, and [propagate_from], which turns on
-    peer groups outside the namespace.  A reader of the text can rely on
-    the root, the mount point, the mount options, the type of a tmpfs,
+    What the tables do not hold is the environment's, in [Tables.MiEnv],
+    one value per kernel object for the whole run, kept in the namespace
+    state ([env_mountinfo]): the kernel's mount ids and peer-group ids,
+    each superblock's device number, the type name of a host superblock,
+    each mount's source name, the superblock options a file system prints,
+    and [propagate_from], which turns on peer groups outside the
+    namespace.  [show_type], [mangle] and [seq_show_option] escape space,
+    tab, newline and backslash in the type, the source and the options,
+    so no value breaks a line or a field.  A reader of the text can rely
+    on the root, the mount point, the mount options, the type of a tmpfs,
     procfs or devpts superblock, the superblock's ro/rw, which mounts are
-    shared, slaves or unbindable, and which lines name the same parent. *)
+    shared, slaves or unbindable, which lines name the same parent, and,
+    where the values are well formed ([mi_env_ok]), distinct ids for
+    distinct mounts and distinct devices for distinct superblocks. *)
 
-From Stdlib Require Import ZArith List Bool PArith.
+From Stdlib Require Import ZArith List Bool PArith Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase.
 From LinuxProcessSemantics.LinuxProcessSem.Ns Require Import Tables Mount Walk Files.
 Import ListNotations.
 Local Open Scope Z_scope.
 
-Record MiEnv := mkMiEnv {
-  mi_id      : positive -> Z;              (** [mnt_id] of a mount *)
-  mi_group   : positive -> Z;              (** [mnt_group_id] of a peer group *)
-  mi_dev     : positive -> Z * Z;          (** [MAJOR], [MINOR] of a superblock's [s_dev] *)
-  mi_type    : positive -> list byte;      (** the type name of a host superblock *)
-  mi_source  : positive -> list byte;      (** a mount's [mnt_devname] *)
-  mi_sbopts  : positive -> list byte;      (** a superblock's [show_options] text *)
-  mi_dom     : positive -> option Z        (** [get_dominating_id] when it differs from the master *)
-}.
+(** A byte that separates fields or lines in the text: space, tab or
+    newline. *)
+Definition separator_byte (c : byte) : bool :=
+  let v := bv_unsigned c in (v =? 32) || (v =? 9) || (v =? 10).
 
-(** The ids of distinct mounts of the namespace are distinct. *)
-Definition mi_env_ok (E : MiEnv) (st : NsState) : Prop :=
-  forall a b, In a (map mnt_id (ns_mounts st)) -> In b (map mnt_id (ns_mounts st)) ->
-              mi_id E a = mi_id E b -> a = b.
+(** Well-formed values: distinct mounts have distinct ids ([mnt_id] comes
+    from an IDA, fs/namespace.c [mnt_alloc_id]) and distinct superblocks
+    distinct device numbers ([s_dev] is the block device, or an anonymous
+    device from [get_anon_bdev]); the numbers are not negative, as the
+    text prints them unsigned; and a host type name and the options text
+    hold no space, tab or newline, which [show_type] and
+    [seq_show_option] (fs/proc_namespace.c, fs/seq_file.c) print escaped
+    ("\ooo").  The values are the text after that escaping. *)
+Definition mi_env_ok (E : MiEnv) : Prop :=
+  (forall a b, mi_id E a = mi_id E b -> a = b)
+  /\ (forall a b, mi_dev E a = mi_dev E b -> a = b)
+  /\ (forall a, 0 <= mi_id E a)
+  /\ (forall s, 0 <= fst (mi_dev E s) /\ 0 <= snd (mi_dev E s))
+  /\ (forall s, existsb separator_byte (mi_type E s) = false)
+  /\ (forall s, existsb separator_byte (mi_sbopts E s) = false).
+
+Lemma default_mi_env_ok : mi_env_ok default_mi_env.
+Proof.
+  split; [|split; [|split; [|split; [|split]]]].
+  - intros a b H. cbn in H. injection H as H. exact H.
+  - intros a b H. cbn in H. injection H as H. exact H.
+  - intros a. cbn. lia.
+  - intros s. cbn. lia.
+  - intros s. reflexivity.
+  - intros s. reflexivity.
+Qed.
 
 Fixpoint dec_rev (fuel : nat) (n : Z) : list byte :=
   match fuel with

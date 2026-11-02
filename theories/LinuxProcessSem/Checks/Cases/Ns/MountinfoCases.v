@@ -59,3 +59,28 @@ Example mountinfo_from_proc :
   mountinfo_text E st 1 (LDentry 2 31) = Some (s "22 21 0:3 /sys / ro,nosuid,nodev,relatime - proc none rw
 ").
 Proof. vm_compute. reflexivity. Qed.
+
+(** The case's values are well formed; a host type name or an options
+    text with a newline is not (Linux prints it escaped), nor are two
+    superblocks with one device number. *)
+Example E_ok : mi_env_ok E.
+Proof.
+  split; [|split; [|split; [|split; [|split]]]].
+  - intros a b H. cbn in H. apply Pos2Z.inj. lia.
+  - intros a b H. cbn in H. injection H as H. exact H.
+  - intros a. cbn. lia.
+  - intros x. cbn. lia.
+  - intros x. reflexivity.
+  - intros x. reflexivity.
+Qed.
+
+Example newline_type_not_ok :
+  ~ mi_env_ok (mkMiEnv (fun i => Zpos i) (fun g => Zpos g) (fun x => (0, Zpos x))
+                       (fun _ => s "ext4
+") (fun _ => []) (fun _ => []) (fun _ => None)).
+Proof. intros (_ & _ & _ & _ & H & _). specialize (H 1%positive). vm_compute in H. discriminate H. Qed.
+
+Example shared_device_not_ok :
+  ~ mi_env_ok (mkMiEnv (fun i => Zpos i) (fun g => Zpos g) (fun _ => (0, 7))
+                       (fun _ => []) (fun _ => []) (fun _ => []) (fun _ => None)).
+Proof. intros (_ & H & _). specialize (H 1%positive 2%positive eq_refl). discriminate H. Qed.

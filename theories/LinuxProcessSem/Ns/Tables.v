@@ -258,17 +258,40 @@ Record ProcEntry := mkProcEntry {
   px_empty : bool
 }.
 
+(** The values /proc/<pid>/mountinfo prints that the tables do not hold
+    ([Ns.Mountinfo]): attributes of kernel objects, fixed for each object
+    while it lives, so one value per object for the whole run.  The
+    kernel's mount ids and peer-group ids, each superblock's device
+    number, the type name of a host superblock, each mount's source name,
+    the text a superblock's [show_options] prints, and [propagate_from]. *)
+Record MiEnv := mkMiEnv {
+  mi_id      : positive -> Z;              (** [mnt_id] of a mount *)
+  mi_group   : positive -> Z;              (** [mnt_group_id] of a peer group *)
+  mi_dev     : positive -> Z * Z;          (** [MAJOR], [MINOR] of a superblock's [s_dev] *)
+  mi_type    : positive -> list byte;      (** the type name of a host superblock *)
+  mi_source  : positive -> list byte;      (** a mount's [mnt_devname] *)
+  mi_sbopts  : positive -> list byte;      (** a superblock's [show_options] text *)
+  mi_dom     : positive -> option Z        (** [get_dominating_id] when it differs from the master *)
+}.
+
+(** One choice of those values: ids as the tables number the objects,
+    device 0:<superblock id>, no type, source or options text. *)
+Definition default_mi_env : MiEnv :=
+  mkMiEnv (fun i => Zpos i) (fun g => Zpos g) (fun s => (0%Z, Zpos s))
+          (fun _ => []) (fun _ => []) (fun _ => []) (fun _ => None).
+
 (** What the running kernel's build and boot configuration fix, which no
     call changes: the mount limit (sysctl fs.mount-max), the static
     entries every procfs instance shows (the entries a kernel build
     creates in the procfs root and below it, outside the task
-    directories), and the devices a new network namespace gets besides
-    lo (the fallback devices of the loaded modules, such as sit0 or
-    ip6tnl0, each down and with no address). *)
+    directories), the devices a new network namespace gets besides lo
+    (the fallback devices of the loaded modules, such as sit0 or ip6tnl0,
+    each down and with no address), and the mountinfo values above. *)
 Record NsEnv := mkNsEnv {
   env_mount_max     : Z;
   env_proc_entries  : list ProcEntry;
-  env_net_fallback  : list NetIf
+  env_net_fallback  : list NetIf;
+  env_mountinfo     : MiEnv
 }.
 
 (** The shared namespace state of a whole system.  [ns_files] holds the
@@ -337,7 +360,7 @@ Fixpoint pid_in (ps : list (positive * Z)) (pidns : positive) : option Z :=
     no procfs entry.  A core builds its released world from this, never
     from the constructor, so a new field changes no caller. *)
 Definition empty_nsstate : NsState :=
-  mkNsState [] [] [] [] [] [] [] [] [] (mkNsEnv 100000%Z [] []).
+  mkNsState [] [] [] [] [] [] [] [] [] (mkNsEnv 100000%Z [] [] default_mi_env).
 
 Definition with_mounts (st : NsState) (ms : list Mount) : NsState :=
   mkNsState ms (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)
