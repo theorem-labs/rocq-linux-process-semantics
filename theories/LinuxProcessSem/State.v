@@ -4028,7 +4028,7 @@ Record ProcState := mkProcState {
                                     -ECHILD for a process that now has
                                     something to reap.  See the launcher
                                     premise on [Kernel.Exit.wait4_spec]
-                                    and [Checks.Examples.wait4_with_a_child_is_unmodeled],
+                                    and [Checks.Examples.wait4_with_a_child_admits_no_echild],
                                     which is the tripwire and does not live in
                                     a file a process-creation change would
                                     edit. *);

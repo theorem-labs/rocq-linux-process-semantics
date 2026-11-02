@@ -7,11 +7,14 @@
 
     - [syscall_spec_child_pids]: every [Ok] answer of the released spec
       keeps the list, except a clone's, which leaves the model alone with
-      an errno or is [State.with_child] of the pid it returns.  A [Forall]
-      over [checked_table], one checker lemma per arm, so a new arm that
-      writes the list fails the build by name.
+      an errno or is [State.with_child] of the pid it returns, and a
+      [wait4]'s (260), which keeps it or removes one recorded pid
+      ([Kernel.Exit.remove_pid]).  A [Forall] over [checked_table], one
+      checker lemma per arm, so a new arm that writes the list fails the
+      build by name.
     - [sstep_child_pids_kept], [sstep_child_pids_clone]: so a released step
-      that is not a successful clone keeps the list, and a successful clone
+      that is not a successful clone keeps the list when the caller has no
+      recorded child at a pending [wait4], and a successful clone
       ([Procs.clone_success_b]) appends the pid it returned. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
@@ -30,6 +33,21 @@ Open Scope bv_scope.
 Local Open Scope bool_scope.
 
 Definition cp_of (m : Model) : list word := m_child_pids m.
+
+(** A released [wait4] that reaps removes one recorded pid. *)
+Definition wait4_reaped (m m' : Model) : Prop :=
+  exists q, List.In q (cp_of m) /\ cp_of m' = remove_pid q (cp_of m).
+
+(** What a released answer at number [n] that is not a clone's does to the
+    list: keeps it, or, at [wait4] (260) only, removes one recorded pid. *)
+Definition cp_kept (n : Z) (m m' : Model) : Prop :=
+  cp_of m' = cp_of m \/ ((n =? 260)%Z = true /\ wait4_reaped m m').
+
+Lemma pid_recorded_b_In : forall q l, pid_recorded_b q l = true -> List.In q l.
+Proof.
+  intros q l H. unfold pid_recorded_b in H. apply existsb_exists in H as (p & Hp & E).
+  apply bv_eqb_true_eq in E. subst p. exact Hp.
+Qed.
 
 Ltac cp_frame H := repeat vm_step H; reflexivity.
 
@@ -218,12 +236,33 @@ Proof.
   try reflexivity.
 Qed.
 
+(** [wait4] keeps the list, or reaps one recorded pid. *)
 Lemma check_wait4_cp : forall i upid stat_addr options rusage eff m m' evs,
   check_wait4 i upid stat_addr options rusage eff m = CheckOk m' evs ->
-  cp_of m' = cp_of m.
+  cp_kept 260 m m'.
 Proof.
   intros i upid stat_addr options rusage eff m m' evs H.
-  unfold check_wait4 in H. cp_frame2 H.
+  unfold check_wait4 in H.
+  repeat (cbv beta iota zeta in H;
+          lazymatch type of H with
+          | CheckOk _ _ = CheckOk _ _ => fail
+          | _ => first
+                 [ discriminate H
+                 | match type of H with
+                   | context [match ?x with _ => _ end] => destruct x eqn:?
+                   | context [if ?b then _ else _] => destruct b eqn:?
+                   end ]
+          end).
+  all: injection H as <- _.
+  all: first
+    [ left; reflexivity
+    | right; split; [reflexivity|];
+      match goal with
+      | Hb : (pid_recorded_b ?r ?l && _)%bool = true, El : m_child_pids ?m = ?l |- _ =>
+          apply andb_true_iff in Hb as [Hrec _];
+          exists r; unfold cp_of; rewrite El;
+          split; [exact (pid_recorded_b_In _ _ Hrec) | reflexivity]
+      end ].
 Qed.
 
 Lemma check_epoll_create1_cp : forall flags32 eff m m' evs,
@@ -1008,7 +1047,7 @@ Definition clone_answer (eff : SyscallEffect) (m m' : Model) : Prop :=
 
 Definition arm_cp (c : CheckedArm) : Prop :=
   forall i eff m m' evs, ca_check c i eff m = CheckOk m' evs ->
-    (clone_sysno (ca_no c) = false /\ cp_of m' = cp_of m)
+    (clone_sysno (ca_no c) = false /\ cp_kept (ca_no c) m m')
     \/ (clone_sysno (ca_no c) = true /\ clone_answer eff m m').
 
 Lemma checked_table_cp : Forall arm_cp checked_table.
@@ -1020,7 +1059,8 @@ Proof.
   all: first
     [ right; split; [vm_compute; reflexivity | exact (check_clone_cp _ _ _ _ _ H)]
     | right; split; [vm_compute; reflexivity | exact (check_clone3_cp _ _ _ _ _ _ _ H)]
-    | left; split; [vm_compute; reflexivity|];
+    | left; split; [vm_compute; reflexivity | eapply check_wait4_cp; eassumption]
+    | left; split; [vm_compute; reflexivity|]; unfold cp_kept; left;
       first
       [
           eapply check_read_cp; eassumption
@@ -1045,7 +1085,6 @@ Proof.
         | eapply check_writev_cp; eassumption
         | eapply check_readv_imported_cp; eassumption
         | eapply check_readv_cp; eassumption
-        | eapply check_wait4_cp; eassumption
         | eapply check_epoll_create1_cp; eassumption
         | eapply check_epoll_ctl_cp; eassumption
         | eapply check_epoll_pwait_cp; eassumption
@@ -1125,10 +1164,11 @@ Qed.
 
 (** THE SPEC FACT: every released answer keeps the list, but a clone's,
     which leaves the model alone with an errno or is [with_child] of the
-    pid it returns. *)
+    pid it returns, and a [wait4]'s, which may remove one recorded pid. *)
 Theorem syscall_spec_child_pids : forall i m eff m' evs,
   syscall_spec i m (Ok eff m' evs) ->
-  (clone_sysno (bv_unsigned (in_sysno i)) = false /\ cp_of m' = cp_of m)
+  (clone_sysno (bv_unsigned (in_sysno i)) = false
+   /\ cp_kept (bv_unsigned (in_sysno i)) m m')
   \/ (clone_sysno (bv_unsigned (in_sysno i)) = true /\ clone_answer eff m m').
 Proof.
   intros i m eff m' evs H. apply check_syscall_ok_iff in H.
@@ -1198,14 +1238,20 @@ Proof.
 Qed.
 
 (** THE STEP FACTS.  A released step that is not a successful clone keeps
-    the list; a successful clone appends the pid it returned. *)
+    the list, provided a pending [wait4] finds no recorded child (the
+    released [wait4] reaps only a recorded pid; the multi-process core
+    runs the released step at a [wait4] only for a caller with no child in
+    the table, [Procs.wait4_owned_b]); a successful clone appends the pid
+    it returned. *)
 Theorem sstep_child_pids_kept : forall segs cfg c evs c',
   sstep_cfg segs cfg c evs (SNext c') ->
   clone_success_b c c' = false ->
+  (forall x8, ms_svc_pending (cfg_ms c) = Some x8 -> bv_unsigned x8 = 260%Z ->
+     cp_of (cfg_model c) = []) ->
   cp_of (cfg_model c') = cp_of (cfg_model c).
 Proof.
-  intros segs cfg c evs c' H Hcs.
-  inversion H; subst; cbn [cfg_ms cfg_model] in Hcs |- *.
+  intros segs cfg c evs c' H Hcs Hpre.
+  inversion H; subst; cbn [cfg_ms cfg_model] in Hcs, Hpre |- *.
   - (* an instruction *)
     match goal with
     | Ha : mi_account_step _ _ _ = MachineOk _ |- _ =>
@@ -1217,9 +1263,13 @@ Proof.
     match goal with
     | Hsp : syscall_spec _ _ (Ok _ _ _), Hf : vdso_fn_sysno ?fn = Some _,
       Hm : materialize_model_accesses ?m' _ = Some ?m'' |- _ =>
-        destruct (syscall_spec_child_pids _ _ _ _ _ Hsp) as [(_ & E) | (Hc & _)];
+        destruct (syscall_spec_child_pids _ _ _ _ _ Hsp)
+          as [(_ & [E | (Hc & _)]) | (Hc & _)];
         [ transitivity (cp_of m''); [reflexivity|];
           rewrite (cp_materialize _ _ _ Hm); exact E
+        | exfalso; cbn [in_sysno sys_input] in Hc;
+          destruct fn; cbn [vdso_fn_sysno] in Hf; try discriminate Hf;
+          injection Hf as <-; vm_compute in Hc; discriminate Hc
         | exfalso; cbn [in_sysno sys_input] in Hc;
           destruct fn; cbn [vdso_fn_sysno] in Hf; try discriminate Hf;
           injection Hf as <-; vm_compute in Hc; discriminate Hc ]
@@ -1231,27 +1281,36 @@ Proof.
       Hm : materialize_model_accesses _ _ = Some _ |- _ =>
         rewrite (cp_materialize _ _ _ Hm);
         destruct (syscall_spec_child_pids _ _ _ _ _ Hsp)
-          as [(_ & E) | (Hc & [(-> & _) | (-> & Hok)])];
-        [ exact E | reflexivity | exfalso ];
+          as [(_ & [E | (Hw & q & Hq & _)]) | (Hc & [(-> & _) | (-> & Hok)])];
+        [ exact E
+        | exfalso; cbn [in_sysno sys_input] in Hw; apply Z.eqb_eq in Hw;
+          rewrite (Hpre _ Hs Hw) in Hq; exact Hq
+        | reflexivity | exfalso ];
         unfold clone_success_b in Hcs; cbn [cfg_ms] in Hcs; rewrite Hs in Hcs;
         cbn [in_sysno sys_input] in Hc; rewrite Hc, cp_a0_after_effect,
           (clone_pid_not_error _ _ Hok) in Hcs; discriminate Hcs
     end.
   - (* an exit: a clone's answer would not halt *)
     match goal with
-    | Hsp : syscall_spec _ ?m (Ok _ ?m' _), Hh : m_halted ?m = None,
-      Hx : m_halted ?m' = Some _ |- _ =>
-        destruct (syscall_spec_child_pids _ _ _ _ _ Hsp) as [(_ & E) | (_ & Ha)];
+    | Hsp : syscall_spec (sys_input _ _ ?x8) ?m (Ok _ ?m' _), Hh : m_halted ?m = None,
+      Hs : ms_svc_pending _ = Some ?x8, Hx : m_halted ?m' = Some _ |- _ =>
+        destruct (syscall_spec_child_pids _ _ _ _ _ Hsp)
+          as [(_ & [E | (Hw & q & Hq & _)]) | (_ & Ha)];
         [ exact E
+        | exfalso; cbn [in_sysno sys_input] in Hw; apply Z.eqb_eq in Hw;
+          rewrite (Hpre _ Hs Hw) in Hq; exact Hq
         | exfalso; destruct (clone_answer_running _ _ _ Ha Hh) as (Hh' & _);
           rewrite Hh' in Hx; discriminate Hx ]
     end.
   - (* a kill: likewise *)
     match goal with
-    | Hsp : syscall_spec _ ?m (Ok _ ?m' _), Hh : m_halted ?m = None,
-      Hk : m_killed ?m' = Some _ |- _ =>
-        destruct (syscall_spec_child_pids _ _ _ _ _ Hsp) as [(_ & E) | (_ & Ha)];
+    | Hsp : syscall_spec (sys_input _ _ ?x8) ?m (Ok _ ?m' _), Hh : m_halted ?m = None,
+      Hs : ms_svc_pending _ = Some ?x8, Hk : m_killed ?m' = Some _ |- _ =>
+        destruct (syscall_spec_child_pids _ _ _ _ _ Hsp)
+          as [(_ & [E | (Hw & q & Hq & _)]) | (_ & Ha)];
         [ exact E
+        | exfalso; cbn [in_sysno sys_input] in Hw; apply Z.eqb_eq in Hw;
+          rewrite (Hpre _ Hs Hw) in Hq; exact Hq
         | exfalso; destruct (clone_answer_running _ _ _ Ha Hh) as (_ & Hk');
           rewrite Hk' in Hk; discriminate Hk ]
     end.
