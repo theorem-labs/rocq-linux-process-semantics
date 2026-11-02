@@ -1351,6 +1351,8 @@ Proof.
   destruct (fs_of_raw (rpi_tmp r)); [|discriminate].
   destruct (kernel_of_raw (rpi_kernel r)); [|discriminate].
   destruct (execfn_of_Z (rpi_execfn r)); [|discriminate].
+  destruct (word_of_Z (rpi_ppid r)); [|discriminate].
+  destruct (word_of_Z (rpi_cap_inheritable r)); [|discriminate].
   injection H as <-.
   exact (image_fs_of_raw_real _ _ Himg).
 Qed.

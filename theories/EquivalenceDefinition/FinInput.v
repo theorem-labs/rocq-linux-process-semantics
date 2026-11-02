@@ -1228,14 +1228,15 @@ Lemma valid_input_not_finite : forall inp,
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
                  (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
                  (in_channel_reader inp) (in_sigpipe_default inp)
-                 (in_sigpipe_terminal inp))
+                 (in_sigpipe_terminal inp) (in_ppid inp) (in_cap_inheritable inp))
   /\ ~ finite_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp)
                       all_zeros
                       (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                       (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
                       (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
                       (in_channel_reader inp) (in_sigpipe_default inp)
-                      (in_sigpipe_terminal inp)).
+                      (in_sigpipe_terminal inp) (in_ppid inp)
+                      (in_cap_inheritable inp)).
 Proof.
   intros inp H. split.
   - apply valid_input_stdin_irrelevant, H.
