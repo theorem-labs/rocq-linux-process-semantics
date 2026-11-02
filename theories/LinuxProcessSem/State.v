@@ -1307,10 +1307,10 @@ Qed.
     and is outside [Specs.modeled_sysnos] — as is [execve] — so it falls
     through the dispatcher to [Monad.unmodeled], fail closed, before any
     tagged pointer can reach this predicate.  [prctl] is 167 and IS in
-    [Specs.modeled_sysnos]: it answers the five options of
+    [Specs.modeled_sysnos]: it answers the seven options of
     [Kernel.Sys.prctl_modeled_options] — [PR_CAPBSET_READ],
     [PR_SET_PDEATHSIG], [PR_GET_PDEATHSIG], [PR_SET_DUMPABLE],
-    [PR_SET_NO_NEW_PRIVS], none of
+    [PR_SET_NO_NEW_PRIVS], [PR_GET_DUMPABLE], [PR_GET_NO_NEW_PRIVS], none of
     which reaches [set_tagged_addr_ctrl] — and nothing else, so what is
     declined is the OPTION rather than the number, and
     [PR_SET_TAGGED_ADDR_CTRL] (55) is declined inside

@@ -532,12 +532,14 @@ Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (** PRIVILEGED [setuid]: real, effective and saved all become the
     argument — the transition that gives root away for good, and the
-    reason a privilege drop must set the group ids FIRST.
+    reason a privilege drop must set the group ids FIRST.  The effective
+    uid moves, so [commit_creds] also sets the dumpable mode to the
+    build's [suid_dumpable], 0 on [State.default_kernel].
     [ENVIRONMENT]: needs uid 0. *)
 Example privileged_setuid_moves_all_three_ids :
   check_syscall (mkInput 146 [1000; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) root_model
-  = CheckOk (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) demo_model) [].
+  = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) demo_model)) [].
 Proof. solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
 (** -EAGAIN, in the one place it is admissible, and nowhere else.
@@ -568,17 +570,18 @@ Example eagain_only_when_a_privileged_setuid_moves_the_real_uid :
        (mkEffect (errno_ret ENOMEM) [] []) root_model = CheckOk root_model [].
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
 
-(** UNPRIVILEGED [setuid] moves the EFFECTIVE id and nothing else, and
+(** UNPRIVILEGED [setuid] moves the EFFECTIVE id and no other id, and
     reaches the saved id as well as the real one — a disjunct that is
     dead in every state an unprivileged run can reach, since [State.init_model]
-    makes the two agree at launch.  [ENVIRONMENT]: needs split ids. *)
+    makes the two agree at launch.  As the effective id moves, the dumpable
+    mode becomes [suid_dumpable] (0 here).  [ENVIRONMENT]: needs split ids. *)
 Example unprivileged_setuid_moves_only_the_effective_id :
   check_syscall (mkInput 146 [1000; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) split_ids_model
-  = CheckOk (with_creds (mkCreds 1000 1000 1002 2000 2001 2002 demo_groups) demo_model) []
+  = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1000 1002 2000 2001 2002 demo_groups) demo_model)) []
   /\ check_syscall (mkInput 146 [1002; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) split_ids_model
-     = CheckOk (with_creds (mkCreds 1000 1002 1002 2000 2001 2002 demo_groups) demo_model) []
+     = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1002 1002 2000 2001 2002 demo_groups) demo_model)) []
   /\ check_syscall (mkInput 146 [1003; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) split_ids_model = CheckReject.
 Proof. repeat split; solve [ check_eq | vm_compute; reflexivity ]. Qed.
@@ -606,7 +609,7 @@ Example setresuid_reaches_its_allocating_branch :
   check_syscall (mkInput 147 [1000; 1000; 1000; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) root_model
-  = CheckOk (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) demo_model) []
+  = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1000 1000 0 0 0 demo_groups) demo_model)) []
   (* -EAGAIN is admissible: the REAL uid moves, and this is the user
      setter *)
   /\ check_syscall (mkInput 147 [1000; 1000; 1000; 0; 0; 0]
@@ -631,7 +634,7 @@ Example unprivileged_setresuid_may_rearrange_held_ids :
   check_syscall (mkInput 147 [4294967295; 1002; 4294967295; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) split_ids_model
-  = CheckOk (with_creds (mkCreds 1000 1002 1002 2000 2001 2002 demo_groups) demo_model) []
+  = CheckOk (with_dumpable 0 (with_creds (mkCreds 1000 1002 1002 2000 2001 2002 demo_groups) demo_model)) []
   (* the real uid does not move here, so -ENOMEM is admissible and
      -EAGAIN is not *)
   /\ check_syscall (mkInput 147 [4294967295; 1002; 4294967295; 0; 0; 0]
