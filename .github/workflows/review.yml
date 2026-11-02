@@ -1,0 +1,292 @@
+# review.yml: Claude reviews each pull request into main and each new issue by the rules in .github/review.md, and the
+# review is posted as a comment there.
+#
+#   review  reads the pull request or the issue as data, with this repository's main and the Linux and QEMU source the
+#           model describes, and asks Claude for the comment. It holds an identity token, which Anthropic exchanges for
+#           a short-lived token that can call Claude and nothing else; no key is stored. Anthropic's federation rule
+#           admits this file alone, on refs/heads/main, for the three events below.
+#   post    posts that comment, or replaces the one it posted before, when POST_REVIEW says so.
+#
+# No job runs code of a pull request. pull_request_target runs this file as main has it, so a pull request, from a fork
+# or not, cannot change what runs here. The review job checks out main, never the pull request; it reads the pull
+# request's diff and files from git objects as data under .review/, with every CLAUDE.md, AGENTS.md and .claude/ taken
+# out, and Claude gets the tools Read, Glob and Grep only, with no read of the runner's temporary files or of /proc:
+# it can run nothing and write nothing. The post job checks out nothing.
+#
+# To review a pull request or an issue by hand: gh workflow run review.yml -f number=<n>
+name: review
+run-name: >-
+  ${{ format('review #{0}', github.event.pull_request.number || github.event.issue.number || inputs.number) }}
+
+on:
+  pull_request_target:
+    branches: [main]
+    # edited for a pull request retargeted to main; the job runs on it only when the base changed.
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+  issues:
+    types: [opened, reopened]
+  workflow_dispatch:
+    inputs:
+      number:
+        description: Number of the pull request or issue to review
+        required: true
+        type: number
+
+permissions: {}
+
+env:
+  # This repository's decision: "true" posts each review as a comment on its pull request or issue; any other value
+  # keeps it in the run's summary only.
+  POST_REVIEW: "true"
+  # The most reviews that may call the model in one hour. Anyone can open an issue or a pull request here, so a burst
+  # of them must not start model runs without limit. A run at the cap stops before the model, and the run is red; a
+  # maintainer can re-run it once the hour has passed.
+  HOURLY_CAP: "10"
+
+concurrency:
+  # One review at a time for each pull request or issue: a new push replaces the review of the old head.
+  group: review-${{ github.event.pull_request.number || github.event.issue.number || inputs.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: review
+    # This repository only (not a fork). Not a draft pull request (ready_for_review starts its review), and an edit of
+    # a pull request only when its base changed. An App's run only for the Apps the Review step admits (allowed_bots):
+    # the action refuses any other.
+    if: >-
+      github.repository_id == 1425819621
+      && (github.event_name != 'pull_request_target' || (!github.event.pull_request.draft
+          && (github.event.action != 'edited' || github.event.changes.base != null)))
+      && (!endsWith(github.actor, '[bot]') || contains(fromJSON('["sjawhar-agent[bot]", "oss-verify[bot]"]'), github.actor))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions: {contents: read, pull-requests: read, issues: read, checks: read, statuses: read, actions: read, id-token: write}
+    outputs:
+      number: ${{ steps.what.outputs.number }}
+      body: ${{ steps.result.outputs.body }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      # The Linux the model describes (README.md, SCOPE.md: stable Linux v6.18.46), and QEMU 10.0.11, the version of
+      # SCOPE.md's QEMU measurements.
+      LINUX_URL: https://github.com/gregkh/linux
+      LINUX_COMMIT: 1f99e9ab748fc5c32120de9c4eca31abfe54a4d5
+      QEMU_URL: https://github.com/qemu/qemu
+      QEMU_COMMIT: e3ad0582fdcec5c194835b0b4e8342cdc197b5cb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with: {persist-credentials: false, fetch-depth: 0}
+
+      - name: What to review
+        id: what
+        env:
+          EVENT: ${{ github.event_name }}
+          NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.number }}
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
+          case $EVENT in
+            pull_request_target) kind="pr" ;;
+            issues) kind="issue" ;;
+            *) kind=$(gh api "repos/$REPO/issues/$NUMBER" --jq 'if .pull_request then "pr" else "issue" end') ;;
+          esac
+          echo "Reviewing $kind #$NUMBER."
+          { echo "kind=$kind"; echo "number=$NUMBER"; } >> "$GITHUB_OUTPUT"
+
+      # Counts the review jobs of this workflow's other runs that started in the last hour, or have not started, and
+      # have called the model or may still call it: one whose Review step ran or runs; one that passed this step and
+      # has not finished; and one that has not finished this step yet and belongs to an earlier run, which goes first.
+      # So in a burst the earliest runs go ahead and the later ones stop here. Runs created up to 3 hours ago are read,
+      # which covers a job's 75 minutes and its time in the queue.
+      - name: Hold at the hourly cap
+        env: {RUN_ID: "${{ github.run_id }}", RUN_ATTEMPT: "${{ github.run_attempt }}"}
+        run: |
+          set -uo pipefail
+          held() { echo "::error::HELD: $1 No model ran. A maintainer can re-run this run once the hour has passed."; exit 1; }
+          [[ $HOURLY_CAP =~ ^[1-9][0-9]*$ ]] || held "HOURLY_CAP is not a number."
+          SINCE=$(date -u -d '-1 hour' +%s) || held "the time could not be read."
+          from=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ) || held "the time could not be read."
+          export SINCE
+          runs=$(gh api --method GET --paginate "repos/$REPO/actions/workflows/review.yml/runs" \
+            -f created=">=$from" -F per_page=100 --jq '.workflow_runs[] | "\(.id) \(.created_at)"') \
+            || held "the runs could not be read."
+          count=0
+          while read -r id created; do
+            [ -n "$id" ] || continue
+            [[ $id =~ ^[0-9]+$ ]] || held "a run id is not a number."
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            n=$(RUN_CREATED=$created gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" \
+              -f filter=all -F per_page=100 --jq '
+                [.jobs[] | select(.name == "review")
+                 | select((.run_id | tostring) != $ENV.RUN_ID or (.run_attempt | tostring) != $ENV.RUN_ATTEMPT)
+                 | select(((.started_at // $ENV.RUN_CREATED) | fromdateiso8601) >= ($ENV.SINCE | tonumber))
+                 | ([(.steps // [])[] | select(.name == "Review")] | first) as $review
+                 | ([(.steps // [])[] | select(.name == "Hold at the hourly cap")] | first) as $cap
+                 | select(($review != null and ($review.status == "in_progress"
+                                                 or ($review.conclusion != null and $review.conclusion != "skipped")))
+                          or (.status != "completed" and $cap != null and $cap.conclusion == "success")
+                          or (.status != "completed" and ($cap == null or $cap.status != "completed")
+                              and .run_id < ($ENV.RUN_ID | tonumber)))]
+                | length') || held "the jobs of run $id could not be read."
+            [[ $n =~ ^[0-9]+$ ]] || held "the jobs of run $id could not be read."
+            count=$((count + n))
+          done <<< "$runs"
+          (( count < HOURLY_CAP )) || held "$count reviews called the model, or may, in the last hour: the cap is $HOURLY_CAP."
+          echo "$count reviews in the last hour, under the cap of $HOURLY_CAP."
+
+      # Data only: nothing gathered here runs. The pull request's files come from git objects (git diff, git cat-file),
+      # never from a checkout, so no attribute, filter or hook of the pull request applies. What head/ leaves out is
+      # listed in omitted.txt.
+      - name: Gather the pull request or issue, and the Linux and QEMU source
+        env:
+          KIND: ${{ steps.what.outputs.kind }}
+          NUMBER: ${{ steps.what.outputs.number }}
+        run: |
+          set -euo pipefail
+          out=.review
+          mkdir -p "$out"
+          if [ "$KIND" = issue ]; then
+            gh issue view "$NUMBER" -R "$REPO" --json number,title,author,createdAt,state,body,comments > "$out/issue.json"
+          else
+            gh pr view "$NUMBER" -R "$REPO" --json \
+              number,title,author,createdAt,isDraft,baseRefName,headRefOid,headRepository,body,commits,files,comments,reviews \
+              > "$out/pr.json"
+            gh pr view "$NUMBER" -R "$REPO" --json statusCheckRollup > "$out/checks.json"
+            gh api --paginate "repos/$REPO/pulls/$NUMBER/comments" \
+              --jq '.[] | "\(.user.login) \(.path):\(.line // .original_line) \(.body)"' > "$out/review-comments.txt"
+            base=$(jq -r .baseRefName "$out/pr.json")
+            [ "$base" = main ] || { echo "::error::pull request #$NUMBER is into $base, not main: not reviewed."; exit 1; }
+            git fetch -q --no-tags origin "+refs/pull/$NUMBER/head:refs/review/head"
+            head=$(git rev-parse refs/review/head)
+            [ "$head" = "$(jq -r .headRefOid "$out/pr.json")" ] \
+              || { echo "::error::the pull request's head moved while it was read; the next run reviews the new head."; exit 1; }
+            mb=$(git merge-base origin/main "$head")
+            printf 'base %s\nhead %s\n' "$mb" "$head" > "$out/commits.txt"
+            git diff --no-renames --name-only -z "$mb" "$head" > "$RUNNER_TEMP/changed"
+            changed=$(tr -cd '\0' < "$RUNNER_TEMP/changed" | wc -c)
+            (( changed <= 3000 )) || { echo "::error::$changed changed files: too large for this review."; exit 1; }
+            git diff --no-renames --no-ext-diff --no-textconv "$mb" "$head" > "$out/pr.diff"
+            # Each changed file as the pull request has it: regular files only, each cut at 2 MiB, 512 MiB in all.
+            : > "$out/omitted.txt"
+            total=0
+            while IFS= read -r -d '' path; do
+              mode=$(git ls-tree --format='%(objectmode)' "$head" -- ":(literal)$path")
+              case $mode in
+                '') echo "$path: deleted" >> "$out/omitted.txt"; continue ;;
+                100644|100755) ;;
+                *) echo "$path: not a regular file (mode $mode)" >> "$out/omitted.txt"; continue ;;
+              esac
+              file="$out/head/$path"
+              mkdir -p "$(dirname -- "$file")"
+              git cat-file blob "$head:$path" > "$file"
+              size=$(stat -c %s "$file")
+              total=$((total + size))
+              (( total <= 536870912 )) || { echo "::error::the changed files hold over 512 MiB: too large for this review."; exit 1; }
+              if (( size > 2097152 )); then
+                truncate -s 2097152 "$file"
+                echo "$path: cut at 2 MiB of its $size bytes" >> "$out/omitted.txt"
+              fi
+            done < "$RUNNER_TEMP/changed"
+            # Claude Code reads a CLAUDE.md, an AGENTS.md or a .claude/ beside a file it reads as instructions. The pull
+            # request's are data, so they go.
+            if [ -d "$out/head" ]; then
+              find "$out/head" \( -iname 'CLAUDE*.md' -o -iname 'AGENTS*.md' -o -iname .claude \) -prune -print0 \
+                | while IFS= read -r -d '' p; do
+                    echo "${p#"$out"/head/}: removed (instructions for Claude Code)" >> "$out/omitted.txt"
+                    rm -rf -- "$p"
+                  done
+            fi
+          fi
+          # The source the model describes, for the kernel and QEMU code that comments and issues cite.
+          fetch() {
+            local dir=$1 url=$2 commit=$3; shift 3
+            git init -q "$dir"
+            git -C "$dir" fetch -q --depth 1 --filter=blob:none "$url" "$commit"
+            git -C "$dir" sparse-checkout set --no-cone "$@"
+            git -C "$dir" -c advice.detachedHead=false checkout -q FETCH_HEAD
+            rm -rf "$dir/.git"
+            find "$dir" \( -iname 'CLAUDE*.md' -o -iname 'AGENTS*.md' -o -iname .claude \) -prune -exec rm -rf {} +
+          }
+          fetch "$out/linux" "$LINUX_URL" "$LINUX_COMMIT" /mm/ /kernel/ /ipc/ /lib/ /arch/riscv/ /include/ /fs/ /net/ \
+            /security/ /init/ /block/ /io_uring/ /drivers/char/ /drivers/tty/
+          fetch "$out/qemu" "$QEMU_URL" "$QEMU_COMMIT" /linux-user/ /include/user/ /target/riscv/
+          echo "Gathered $(find "$out" -type f | wc -l) files."
+
+      - name: Review
+        id: review
+        timeout-minutes: 50
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
+        with:
+          # Theorem's Anthropic organization, its service account oss-verify-ci and its workspace, and the federation
+          # rule that admits this file on main (ids, not secrets).
+          anthropic_federation_rule_id: fdrl_01PuYUs4GWGMxDQi1kLWwu7y
+          anthropic_organization_id: 5fd73c3e-8a2c-4166-b80d-fb5ce0c1b4a6
+          anthropic_service_account_id: svac_01WdHTLcJPEfiPttcuLK1hGT
+          anthropic_workspace_id: wrkspc_01Qr1iUVcow4jdgQM7Amfks5
+          github_token: ${{ github.token }}
+          allowed_non_write_users: "*"
+          allowed_bots: sjawhar-agent[bot],oss-verify[bot]
+          # The runner's temporary files hold the identity token and the exchanged Claude token, and /proc holds the
+          # environment: Claude reads neither.
+          settings: '{"permissions": {"deny": ["Read(//home/runner/work/_temp/**)", "Read(//proc/**)"]}}'
+          prompt: >-
+            Read .github/review.md: it is the rules of this review. Review ${{ steps.what.outputs.kind == 'pr' &&
+            'pull request' || 'issue' }} #${{ steps.what.outputs.number }} of this repository as it says, from what
+            .review/ holds, and give the comment as the structured output.
+          claude_args: >-
+            --tools Read,Glob,Grep --permission-mode default --model claude-opus-5-5 --effort xhigh --max-turns 300
+            --json-schema '{"type": "object", "additionalProperties": false, "required": ["comment"],
+            "properties": {"comment": {"type": "string", "description": "The review comment, in Markdown."}}}'
+
+      # The model's text, which a pull request or an issue can steer, with every @mention and cross-repository
+      # reference broken by a word joiner (U+2060) so that it notifies nobody, cut at 20,000 characters, between a
+      # header and a footer the model does not write.
+      - name: The comment, as it is posted
+        id: result
+        env:
+          RESULT: ${{ steps.review.outputs.execution_file }}
+          RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review.md
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          comment=$(jq -re 'map(select(.type == "result")) | last | .structured_output.comment | strings' "$RESULT")
+          comment=$(printf '%s' "$comment" \
+            | LC_ALL=C sed -E 's/(^|[^[:alnum:]_`])@([[:alnum:]_-])/\1@\xE2\x81\xA0\2/g; s/([[:alnum:]_.-]+\/[[:alnum:]_.-]+)#([0-9])/\1\xE2\x81\xA0#\2/g')
+          if (( ${#comment} > 20000 )); then
+            comment="${comment:0:20000}"$'\n\n'"(The review was cut here, at 20,000 characters.)"
+          fi
+          what="this issue"
+          [ ! -f .review/commits.txt ] || what="commit $(sed -n 's/^head //p' .review/commits.txt | cut -c1-12)"
+          body=$(printf '%s\n%s\n\n%s\n\n---\n%s\n' '<!-- review -->' "**Automated review** of $what" "$comment" \
+            "Claude wrote this review by [these rules]($RULES) ([run]($RUN)). It is advice; a maintainer decides.")
+          delimiter="body_$(openssl rand -hex 16)"
+          { echo "body<<$delimiter"; printf '%s\n' "$body"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
+
+  post:
+    needs: review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {issues: write, pull-requests: write}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      NUMBER: ${{ needs.review.outputs.number }}
+      BODY: ${{ needs.review.outputs.body }}
+    steps:
+      - name: Post the review, or replace the one posted before
+        if: env.POST_REVIEW == 'true'
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[1-9][0-9]*$ && -n $BODY ]] || { echo "::error::no review to post"; exit 1; }
+          id=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review -->"))) | .id' \
+            | tail -n 1)
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$id" -f body="$BODY" --jq .html_url
+          else
+            gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$BODY" --jq .html_url
+          fi
+      - name: Keep the review in the run's summary
+        if: env.POST_REVIEW != 'true'
+        run: printf '%s\n' "$BODY" >> "$GITHUB_STEP_SUMMARY"
