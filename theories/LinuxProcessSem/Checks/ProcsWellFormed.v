@@ -557,12 +557,16 @@ Proof.
   inversion Hss as
     [ ms model ms' model' Hh Hsv Hacc
     | | 
+    | ms model fn n eff model' model'' evs0 Hh Hsv Hm Hfn Hn Hsp Hne Hh' Hmat
+    | |
     | ms model x8 eff model' model'' evs0 Hh Hsv Hsp Hrf Hh' Hmat
     |
     | ms model x8 eff model' evs0 code Hh Hsv Hsp Hh' Hk'
     | ms model x8 eff model' evs0 sig Hh Hsv Hsp Hk'
     | ]; subst; cbn [cfg_model cfg_ms] in *.
   - (* an instruction: nothing is pending *)
+    rewrite Hsv in Hcp. discriminate Hcp.
+  - (* a vDSO call: nothing is pending either *)
     rewrite Hsv in Hcp. discriminate Hcp.
   - (* a syscall: the materialization keeps the process record *)
     destruct (materialize_model_accesses_frame _ _ _ Hmat)

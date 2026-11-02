@@ -98,18 +98,20 @@ Lemma check_sigpipe_write_fs : forall eff m m' evs,
   check_sigpipe_write eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
 Proof.
   intros eff m m' evs H. unfold check_sigpipe_write in H.
+  destruct (sigpipe_declines m); cbv iota in H; [discriminate H|].
   apply check_ret_only_model in H; subst.
   unfold raise_sigpipe.
-  destruct (m_sigpipe_default m), (sigpipe_blocked (m_sigmask m)); fs_leaf.
+  destruct (m_sigpipe_default m), (sigpipe_blocked (m_sigmask m)); exact (fs_grows_refl _).
 Qed.
 
 Lemma check_sigpipe_writev_fs : forall reads eff m m' evs,
   check_sigpipe_writev reads eff m = CheckOk m' evs -> fs_grows (m_fs m) (m_fs m').
 Proof.
   intros reads eff m m' evs H. unfold check_sigpipe_writev in H.
+  destruct (sigpipe_declines m); cbv iota in H; [discriminate H|].
   apply check_ret_only_copyins_model in H; subst.
   unfold raise_sigpipe.
-  destruct (m_sigpipe_default m), (sigpipe_blocked (m_sigmask m)); fs_leaf.
+  destruct (m_sigpipe_default m), (sigpipe_blocked (m_sigmask m)); exact (fs_grows_refl _).
 Qed.
 
 Lemma check_open_result_fs : forall eff m mk m' evs,

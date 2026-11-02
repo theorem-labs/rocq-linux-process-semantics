@@ -17,14 +17,16 @@ Definition ForkwaitMemImage_segment_000 : Segment := {|
   seg_base  := 0x10000%N;
   seg_size  := 0x1000%N;
   seg_perms := "r--";
-  seg_bytes := [ForkwaitMemImage_seg_bytes_000]
+  seg_bytes := [ForkwaitMemImage_seg_bytes_000];
+  seg_kind  := SegLoader
 |}.
 
 Definition ForkwaitMemImage_segment_001 : Segment := {|
   seg_base  := 0x11000%N;
   seg_size  := 0x1000%N;
   seg_perms := "r-x";
-  seg_bytes := [ForkwaitMemImage_seg_bytes_001]
+  seg_bytes := [ForkwaitMemImage_seg_bytes_001];
+  seg_kind  := SegLoader
 |}.
 
 Definition ForkwaitMemImage_loaded_segments : list Segment :=

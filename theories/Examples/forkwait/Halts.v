@@ -1290,18 +1290,26 @@ Qed.
 
 (** With no call pending only the instruction arm of [Run.sstep_cfg] can
     produce a successor: the four syscall arms all require
-    [ms_svc_pending ms = Some x8]. *)
+    [ms_svc_pending ms = Some x8], and the vDSO arm a pc at a vDSO entry,
+    which a program whose segments carry no vDSO text never has
+    ([fw_no_vdso]). *)
 Lemma fw_sstep_instr_inv : forall segs cfg ms model evs c',
   ms_svc_pending ms = None ->
+  vdso_entry_fn segs (ms_pc ms) = None ->
   sstep_cfg segs cfg (mkCfg ms model) evs (SNext c') ->
   exists ms' model',
     mi_account_step segs ms model = MachineOk (ms', model')
     /\ c' = mkCfg ms' model'.
 Proof.
-  intros segs cfg ms model evs c' Hs H.
+  intros segs cfg ms model evs c' Hs Hnv H.
   inversion H; subst; try congruence.
   eexists _, _. split; [eassumption | reflexivity].
 Qed.
+
+(** This program's segments carry no vDSO text, so no pc is a vDSO entry:
+    the vDSO mapping is [Run.vdso_segments]', never the snapshot's. *)
+Lemma fw_no_vdso : forall pc, vdso_entry_fn forkwait_segs pc = None.
+Proof. intros pc. reflexivity. Qed.
 
 (** The two facts about [State.with_halted] the exit arms turn on. *)
 Lemma fw_m_halted_with_halted : forall code m,
@@ -1474,6 +1482,7 @@ Qed.
 Lemma fw_entry_instr_step : forall segs cfg p P evs P' e,
   look P p = Some e ->
   ms_svc_pending (pe_ms e) = None ->
+  vdso_entry_fn segs (ms_pc (pe_ms e)) = None ->
   pstep_at segs cfg p P evs (PNext P') ->
   exists ms' model',
     RiscvSemantics.step segs (pe_ms e) = MachineOk ms'
@@ -1481,7 +1490,7 @@ Lemma fw_entry_instr_step : forall segs cfg p P evs P' e,
     /\ (fw_model_ok (pe_model e) -> fw_model_ok model')
     /\ P' = absorb P e (mkCfg ms' model').
 Proof.
-  intros segs cfg p P evs P' e Hl Hs Hp.
+  intros segs cfg p P evs P' e Hl Hs Hnv Hp.
   inversion Hp; subst;
     match goal with
     | [ Hl0 : look P (pe_pid ?e0) = Some ?e0 |- _ ] =>
@@ -1494,7 +1503,7 @@ Proof.
     match goal with
     | [ Hss : sstep_cfg segs cfg _ evs (SNext ?c') |- _ ] =>
         destruct (fw_sstep_instr_inv segs cfg (pe_ms e)
-                    (cfg_model (pe_cfg (pcfg_shared P) e)) evs c' Hs Hss)
+                    (cfg_model (pe_cfg (pcfg_shared P) e)) evs c' Hs Hnv Hss)
           as (ms' & model' & Hacc & Hc')
     end.
     destruct (mi_account_step_model_frame _ _ _ _ _ Hacc)
@@ -1656,7 +1665,7 @@ Lemma fw_entry_reap_step : forall segs cfg p P evs P' e x8 a,
                           (apply_effect (pe_ms e)
                              (mkEffect q
                                 [(a, Z_to_le_bytes 4 (bv_unsigned status))] [])))
-                       (clear_shared model'') (pe_ofd e) (pe_nsctx e)))
+                       (clear_shared (reap_model q model'')) (pe_ofd e) (pe_nsctx e)))
                  q)
               (pcfg_root P)
               (shared_absorb (pcfg_shared P) (mkCfg (pe_ms e) model'')).
@@ -2441,7 +2450,7 @@ Proof.
   destruct Hstep as (p & Hstep).
   destruct (pstep_at_not_halted _ _ _ _ _ _ Hstep) as (e0 & Hl0 & _).
   destruct (fw_look_one P e p e0 Hp Hl0) as (He0 & _). subst e0.
-  destruct (fw_entry_instr_step forkwait_segs cfg p P evs P' e Hl0 Hsv Hstep)
+  destruct (fw_entry_instr_step forkwait_segs cfg p P evs P' e Hl0 Hsv (fw_no_vdso _) Hstep)
     as (ms' & model' & Hmstep & Hhal & Hfrm & HP').
   destruct (absorb_one_entry P e (mkCfg ms' model') Hp Hr)
     as (Hp' & Hr' & _).
@@ -2485,7 +2494,7 @@ Proof.
   intros cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar Hh Hrem Hsv Hch Hstep.
   pose proof (fw_look_two_parent P ep ec Hp) as Hl.
   destruct (fw_entry_instr_step forkwait_segs cfg (pe_pid ep) P evs P' ep
-              Hl Hsv Hstep) as (ms' & model' & Hmstep & Hhal & Hfrm & HP').
+              Hl Hsv (fw_no_vdso _) Hstep) as (ms' & model' & Hmstep & Hhal & Hfrm & HP').
   subst P'.
   split;
     [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind);
@@ -2531,7 +2540,7 @@ Proof.
   intros cfg P evs P' ep ec Hp Hr Hne Hcpar Hppar Hpar Hh Hrem Hsv Hstep.
   pose proof (fw_look_two_child P ep ec Hp Hne) as Hl.
   destruct (fw_entry_instr_step forkwait_segs cfg (pe_pid ec) P evs P' ec
-              Hl Hsv Hstep) as (ms' & model' & Hmstep & Hhal & Hfrm & HP').
+              Hl Hsv (fw_no_vdso _) Hstep) as (ms' & model' & Hmstep & Hhal & Hfrm & HP').
   subst P'.
   split;
     [| unfold fw_mu; apply (pmeasure_absorb_lt _ _ _ _ fw_entry_left_parent_blind);
@@ -2957,7 +2966,7 @@ Proof.
                      (mkEffect (pe_pid ec)
                         [(ms_gpr (pe_ms ep) 1,
                           Z_to_le_bytes 4 (bv_unsigned status))] [])))
-               (clear_shared model'') (pe_ofd ep) (pe_nsctx ep)))
+               (clear_shared (reap_model (pe_pid ec) model'')) (pe_ofd ep) (pe_nsctx ep)))
      fw_q_exit7).
   { cbn [pe_ms].
     apply (fw_reap_rem _ (ms_gpr (pe_ms ep) 1)).
@@ -2979,13 +2988,15 @@ Proof.
                     (mkEffect (pe_pid ec)
                        [(ms_gpr (pe_ms ep) 1,
                          Z_to_le_bytes 4 (bv_unsigned status))] [])))
-              (clear_shared model'') (pe_ofd ep) (pe_nsctx ep))).
+              (clear_shared (reap_model (pe_pid ec) model'')) (pe_ofd ep) (pe_nsctx ep))).
     - cbn [pcfg_procs]. rewrite Hp.
       exact (fw_reap_target_table ep ec _ (pe_pid ec) Hne eq_refl).
     - cbn [pcfg_root]. exact Hr.
     - cbn [pe_parent]. exact Hppar.
     - cbn [pe_model].
-      exact (fw_model_ok_clear_shared _
+      (* the reap takes the child's pid off the list, which [fw_model_ok]
+         does not read *)
+      exact (fw_model_ok_clear_shared (reap_model (pe_pid ec) model'')
                (fw_model_ok_materialize _ _ _ Hmat
                   (fw_model_ok_pe_cfg _ ep Hh))).
     - exact Hrem7. }
@@ -3347,7 +3358,7 @@ Proof.
                    (ms_gpr (pe_ms ep) 1) Hsv fw_two_sixty Hwa) in Hwi.
         discriminate Hwi.
       * destruct (fw_sstep_instr_inv forkwait_segs cfg (pe_ms ep)
-                    (cfg_model (pe_cfg (pcfg_shared P) ep)) evs c' Hsv Hss)
+                    (cfg_model (pe_cfg (pcfg_shared P) ep)) evs c' Hsv (fw_no_vdso _) Hss)
           as (ms' & model' & Hacc & ->).
         destruct (mi_account_step_model_frame _ _ _ _ _ Hacc)
           as (_ & _ & _ & _ & _ & Hproc & _).
@@ -3894,10 +3905,9 @@ Lemma fw_shape_at_pinit : forall sp brk0 mbase rnd lim inp,
               sp brk0 mbase rnd lim inp).
 Proof.
   intros sp brk0 mbase rnd lim inp Hve Hvi.
-  assert (Hva : in_va_size inp = Sv48)
-    by (destruct Hvi as (_&_&_&_&_&_&_&_&_&_&_&_& H &_); exact H).
-  assert (Hvl : valid_launch inp)
-    by (destruct Hvi as (_&_&_&_&_&_&_&_&_&_&_&_&_&_& H); exact H).
+  (* through the accessors, not by position: [valid_input] grows *)
+  pose proof (valid_input_va_size inp Hvi) as Hva.
+  pose proof (valid_input_launch inp Hvi) as Hvl.
   unfold valid_entry, valid_entry_va in Hve. rewrite Hva in Hve.
   destruct Hve as (Hsp & _ & _ & _ & Hlau).
   unfold pinit_config. left.

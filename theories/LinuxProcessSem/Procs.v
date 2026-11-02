@@ -1447,10 +1447,20 @@ Proof.
     destruct (m_utsname _); try destruct (uts_any _); reflexivity.
 Qed.
 
-(** What a reap leaves: the caller past the call with the effect applied,
-    and the child [q] gone.  [pstep_wait_reap]'s conclusion is this term
-    written out, and is left written out because [Examples/forkwait]
-    matches on it. *)
+(** THE REAPER'S LIST: the reaped pid leaves [State.procst_child_pids], as
+    [release_task] unlinks the child from [p->children] (kernel/exit.c,
+    read at v6.18.44; identical at v6.18.46).  The core's reap arms are
+    the reap; the released [wait4] never runs for a caller with a child in
+    the table ([wait4_owned_b]), so its own removal does not reach them.
+    [Checks.ProcsChildPids] proves the list is then exactly the keys of
+    the caller's children in the table. *)
+Definition reap_model (q : Pid) (m : Model) : Model :=
+  with_child_pids (List.filter (fun x => negb (bv_eqb x q)) (m_child_pids m)) m.
+
+(** What a reap leaves: the caller past the call with the effect applied
+    and the child's pid off its list, and the child [q] gone.
+    [pstep_wait_reap]'s conclusion is this term written out, and is left
+    written out because [Examples/forkwait] matches on it. *)
 Definition wait4_reap_result (P : pconfig) (e : ProcessEntry) (q : Pid)
     (eff : SyscallEffect) (model'' : Model) : pconfig :=
   mkPCfg
@@ -1458,7 +1468,7 @@ Definition wait4_reap_result (P : pconfig) (e : ProcessEntry) (q : Pid)
        (replace_in (pcfg_procs P) (pe_pid e)
           (mkEntry (pe_pid e) (pe_parent e)
              (advance_past_svc (apply_effect (pe_ms e) eff))
-             (clear_shared model'') (pe_ofd e) (pe_nsctx e)))
+             (clear_shared (reap_model q model'')) (pe_ofd e) (pe_nsctx e)))
        q)
     (pcfg_root P)
     (shared_absorb (pcfg_shared P) (mkCfg (pe_ms e) model'')).
@@ -1580,7 +1590,7 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
                    (replace_in (pcfg_procs P) (pe_pid e)
                       (mkEntry (pe_pid e) (pe_parent e)
                          (advance_past_svc (apply_effect (pe_ms e) eff))
-                         (clear_shared model'') (pe_ofd e) (pe_nsctx e)))
+                         (clear_shared (reap_model q model'')) (pe_ofd e) (pe_nsctx e)))
                    q)
                 (pcfg_root P)
                 (shared_absorb (pcfg_shared P) (mkCfg (pe_ms e) model''))))
@@ -2765,7 +2775,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
                    (replace_in (pcfg_procs P) (pe_pid e)
                       (mkEntry (pe_pid e) (pe_parent e)
                          (advance_past_svc (apply_effect (pe_ms e) eff))
-                         (clear_shared model'') (pe_ofd e) (pe_nsctx e)))
+                         (clear_shared (reap_model q model'')) (pe_ofd e) (pe_nsctx e)))
                    q)
                 (pcfg_root P)
                 (shared_absorb (pcfg_shared P) (mkCfg (pe_ms e) model''))))
