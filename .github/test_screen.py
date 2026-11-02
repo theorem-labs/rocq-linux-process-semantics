@@ -510,17 +510,66 @@ class ScreenTest(unittest.TestCase):
                 self.assertEqual(reason["unscreenable"], ["changed file docs/a.png is not UTF-8 text"])
                 self.assertEqual(self.services.to(":sanitizeUserPrompt") + self.services.to("/v1/messages"), [])
 
+    # Text that hides text, each with the character the reason names.
+    HIDDEN = {
+        "a bidirectional override": ("Fine.\u202Eenil", "U+202E"),
+        "a bidirectional isolate": ("Fine.\u2066x\u2069", "U+2066"),
+        "a tag character": ("Fine.\U000E0041\U000E0042", "U+E0041"),
+        "a zero-width space in a word": ("ig\u200Bnore", "U+200B"),
+        "a joiner in a Latin word": ("ig\u200Dnore", "U+200D"),
+        "a non-joiner in a Latin word": ("ig\u200Cnore", "U+200C"),
+        "a joiner run between Latin letters": ("a\u200C\u200D\u200C\u200Db", "U+200C"),
+        "a joiner run between Persian letters": ("\u0645\u06CC\u200C\u200C\u062E\u0648\u0627\u0647\u0645", "U+200C"),
+        "a joiner between a Latin letter and an emoji": ("a\u200D\U0001F600", "U+200D"),
+        "a non-joiner between emoji": ("\U0001F468\u200C\U0001F469", "U+200C"),
+        "a word joiner": ("Ask @\u2060octocat.", "U+2060"),
+        "a byte order mark inside a body": ("Fine.\uFEFFhidden", "U+FEFF"),
+    }
+    # Text where those characters do ordinary work.
+    ALLOWED = {
+        "a Persian non-joiner": "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645",
+        "a Devanagari joiner after a virama": "\u0915\u094D\u200D\u0937",
+        "a Malayalam non-joiner": "\u0D15\u0D4D\u200C\u0D15",
+        "an emoji family": "\U0001F468\u200D\U0001F469\u200D\U0001F467",
+        "an emoji with a variation selector and skin tone": "\U0001F3F3\uFE0F\u200D\U0001F308 \U0001F44B\U0001F3FD\u200D\u2642",
+    }
+
     def test_text_that_hides_text_is_held_unscreened(self):
-        for ch in ("\U000E0041", "\u202E", "\u2066", "\u200B", "\u200D", "\uFEFF", "\u00AD", "\u2062"):
-            with self.subTest(ch=hex(ord(ch))):
+        for name, (body, char) in self.HIDDEN.items():
+            with self.subTest(name=name):
                 self.fresh()
-                self.item(body=f"Fine.{ch}hidden")
+                self.item(body=body)
                 v, reason = self.verdict()
                 self.assertEqual(v, "held")
-                self.assertRegex(reason["unscreenable"][0], "^body holds characters that hide text")
+                self.assertEqual(reason["unscreenable"], [f"body holds {char}, a character that hides text"])
                 self.assertEqual(self.services.to(":sanitizeUserPrompt"), [])
+
+    def test_joiners_that_do_ordinary_work_pass(self):
+        for name, body in self.ALLOWED.items():
+            with self.subTest(name=name):
+                self.fresh()
+                self.item(body=f"{body} is how it is written.")
+                self.assertEqual(self.verdict()[0], "clean")
+
+    def test_a_byte_order_mark_passes_only_as_a_files_first_character(self):
+        new_file = ("diff --git a/n.v b/n.v\nnew file mode 100644\n--- /dev/null\n+++ b/n.v\n@@ -0,0 +1,2 @@\n"
+                    "+\uFEFFLemma x.\n+Proof. Qed.\n")
+        changed = ("diff --git a/o.v b/o.v\n--- a/o.v\n+++ b/o.v\n@@ -1,2 +1,2 @@\n-Lemma y.\n+\uFEFFLemma y.\n"
+                   " Proof. Qed.\n")
+        later = "diff --git a/o.v b/o.v\n--- a/o.v\n+++ b/o.v\n@@ -4,2 +4,2 @@\n-x\n+\uFEFFx\n y\n"
+        midline = "diff --git a/o.v b/o.v\n--- a/o.v\n+++ b/o.v\n@@ -0,0 +1 @@\n+Lemma\uFEFF y.\n"
+        for diff, want in ((new_file, "clean"), (changed, "clean"), (later, "held"), (midline, "held")):
+            with self.subTest(diff=diff[-30:]):
+                self.fresh()
+                self.item(kind="pr", diff=diff)
+                v, reason = self.verdict()
+                self.assertEqual(v, want, reason["unscreenable"])
+                if want == "held":
+                    self.assertEqual(reason["unscreenable"], ["pr.diff holds U+FEFF, a character that hides text"])
         self.fresh()
-        self.item(body="Ask @\u2060octocat.")   # the word joiner the review's comments use
+        self.item()
+        with open(os.path.join(self.review, "omitted.txt"), "w", encoding="utf-8") as f:
+            f.write("\uFEFFa.png: not a regular file\n")
         self.assertEqual(self.verdict()[0], "clean")
 
     def test_too_much_text_is_held_unscreened(self):

@@ -16,7 +16,7 @@ suspicious. SCREEN_CHECKS names the ones that run, and must name Model Armor:
 The verdict names the checks that ran. It is clean when every one answers clean, and held otherwise: when any answers
 suspicious, when any cannot answer (a service that cannot be reached, refuses, or answers in a form this file does not
 know, a setting of it that is missing, or no time left of DEADLINE_SECONDS), and when the text cannot be screened at
-all (a changed file that is not text, characters that hide text, or more text than MAX_CHARS). A held item gets no full review; a person decides.
+all (a changed file that is not text, a character that hides text, or more text than MAX_CHARS). A held item gets no full review; a person decides.
 
 What each check answered, and why the text could not be screened, is the reason. It goes as one JSON object to the
 private bucket REASON_BUCKET, and nowhere else: this file writes the verdict and the names of the checks that ran to
@@ -34,6 +34,7 @@ import re
 import secrets
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -114,11 +115,77 @@ def read_text(path):
 
 # git's line for a binary change; it quotes a name that is not plain ASCII ("b/\303\251.v").
 BINARY_DIFF = re.compile(r"^Binary files (.*) and (.*) differ$", re.M)
-# Characters that hide text from a person, reorder what a person sees, or split a word so that a check misses it
-# while a model reads through it: the Unicode tag characters, the bidirectional controls, the zero-width space, joiner
-# and non-joiner, the byte order mark, the soft hyphen and the invisible operators. U+2060 is not among them: the
-# review's own comments put it after every @.
-HIDING = re.compile("[\U000E0000-\U000E007F\u202A-\u202E\u2066-\u2069\u200B-\u200D\uFEFF\u00AD\u2061-\u2064]")
+# Characters used to hide text from a person, or to split a word so that a check misses it while a model reads
+# through it: the bidirectional overrides and isolates, the tag characters, and the zero-width characters (space,
+# non-joiner, joiner, word joiner, byte order mark). Two kinds of them do ordinary work, and hiding() lets those pass.
+HIDING = re.compile("[\u202A-\u202E\u2066-\u2069\U000E0000-\U000E007F\u200B-\u200D\u2060\uFEFF]")
+# The scripts whose words use the zero-width non-joiner and joiner between their letters (Persian among the Arabic
+# script's languages, and the Indic scripts), by the first word of each character's Unicode name.
+JOINER_SCRIPTS = frozenset("ARABIC SYRIAC NKO THAANA MONGOLIAN DEVANAGARI BENGALI GURMUKHI GUJARATI ORIYA TAMIL TELUGU "
+                           "KANNADA MALAYALAM SINHALA TIBETAN MYANMAR KHMER".split())
+# A diff's hunk header, with the first line of each side.
+HUNK = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def in_joiner_script(c):
+    """A letter or mark of a script that uses joiners (a virama before a joiner is a mark)."""
+    return unicodedata.category(c)[0] in "LM" and unicodedata.name(c, "").split(" ")[0] in JOINER_SCRIPTS
+
+
+def emoji(c):
+    cp = ord(c)
+    return (0x1F000 <= cp <= 0x1FAFF or 0x2600 <= cp <= 0x27BF or 0x2300 <= cp <= 0x23FF or 0x2B00 <= cp <= 0x2BFF
+            or 0x2190 <= cp <= 0x21FF or cp in (0xA9, 0xAE, 0x203C, 0x2049, 0x2122, 0x2139, 0x3030, 0x303D))
+
+
+def emoji_before(text, k):
+    """Whether an emoji ends just before position k, past its variation selector and skin tone."""
+    j = k - 1
+    while j >= 0 and (text[j] == "\uFE0F" or 0x1F3FB <= ord(text[j]) <= 0x1F3FF):
+        j -= 1
+    return j >= 0 and emoji(text[j])
+
+
+def first_of_file(text, k, whole_file, diff):
+    """Whether position k is the very first character of a file: of a file that is the whole text, or, in a diff, of
+    the first line of a file on the side the line belongs to."""
+    if whole_file and k == 0:
+        return True
+    if not diff or k < 2 or text[k - 1] not in "+- " or text[k - 2] != "\n":
+        return False
+    side = text[k - 1]
+    # Back from this line to its hunk's header, over the lines of the other side only: then this line is the first of
+    # its side in the hunk.
+    other = {"+": "-", "-": "+", " ": ""}[side]
+    end = k - 2
+    while True:
+        start = text.rfind("\n", 0, end) + 1
+        line = text[start:end]
+        m = HUNK.match(line)
+        if m:
+            break
+        if not other or not line.startswith(other) or start == 0:
+            return False
+        end = start - 1
+    old, new = m.group(1), m.group(2)
+    return {"-": old in ("0", "1"), "+": new == "1", " ": old == "1" and new == "1"}[side]
+
+
+def hiding(text, whole_file=False, diff=False):
+    """The first character of text that hides text, as U+XXXX, or None. A non-joiner or joiner passes between two
+    letters of a script that uses joiners, and a joiner inside an emoji sequence; a byte order mark passes as the very
+    first character of a file. Anything else of HIDING, a run of joiners among them, holds the item."""
+    for m in HIDING.finditer(text):
+        c, k = m.group(), m.start()
+        if c in "\u200C\u200D" and 0 < k < len(text) - 1:
+            if in_joiner_script(text[k - 1]) and in_joiner_script(text[k + 1]):
+                continue
+            if c == "\u200D" and emoji_before(text, k) and emoji(text[k + 1]):
+                continue
+        if c == "\uFEFF" and first_of_file(text, k, whole_file, diff):
+            continue
+        return f"U+{ord(c):04X}"
+    return None
 
 
 def parts(review):
@@ -131,7 +198,7 @@ def parts(review):
     a maintainer's request, and telling the authors apart here is one more thing to get wrong. Each changed file under
     head/ must be text, and the diff must show it as text: the diff then holds every new line of it, and an image or
     another binary file could carry what no check here reads."""
-    found, unscreenable = [], []
+    found, unscreenable, whole_files = [], [], set()
     item_path = next((os.path.join(review, n) for n in ("pr.json", "issue.json")
                       if os.path.isfile(os.path.join(review, n))), None)
     if item_path is None:
@@ -164,15 +231,16 @@ def parts(review):
                 found.append((shown, "\n".join(strings(json.loads(text)))))
             else:
                 found.append((shown, text))
+                whole_files.add(shown)
                 if shown == "pr.diff":
                     for m in BINARY_DIFF.finditer(text):
                         if m.group(2) != "/dev/null":   # a deleted file is not read
                             unscreenable.append(f"the diff shows {m.group(2).strip(chr(34))[2:]} as binary")
     found = [(s, t) for s, t in found if t.strip()]
     for source, text in found:
-        if HIDING.search(text):
-            unscreenable.append(f"{source} holds characters that hide text (Unicode tags, bidirectional controls "
-                                "or zero-width characters)")
+        c = hiding(text, whole_file=source in whole_files, diff=source == "pr.diff")
+        if c:
+            unscreenable.append(f"{source} holds {c}, a character that hides text")
     total = sum(len(s) + len(t) + 4 for s, t in found)
     if total > MAX_CHARS:
         unscreenable.append(f"{total} characters, over the {MAX_CHARS} this screen reads")

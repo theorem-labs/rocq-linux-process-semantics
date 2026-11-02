@@ -126,6 +126,7 @@ jobs:
       route: ${{ steps.trust.outputs.route }}
       outsider: ${{ steps.trust.outputs.outsider }}
       number: ${{ steps.trust.outputs.number }}
+      started: ${{ steps.trust.outputs.started }}
     steps:
       - name: Whether the author and the account that started the run have write access
         id: trust
@@ -183,7 +184,8 @@ jobs:
           }
           route() {
             echo "Route of #$NUMBER: $1."
-            { echo "route=$1"; echo "outsider=$2"; echo "number=$NUMBER"; } >> "$GITHUB_OUTPUT"
+            { echo "route=$1"; echo "outsider=$2"; echo "number=$NUMBER"; echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } \
+              >> "$GITHUB_OUTPUT"
             exit 0
           }
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
@@ -491,6 +493,7 @@ jobs:
     permissions: {contents: read, pull-requests: read, issues: read, checks: read, statuses: read, actions: read, id-token: write}
     outputs:
       number: ${{ needs.gather.outputs.number }}
+      started: ${{ needs.trust.outputs.started }}
       head: ${{ steps.result.outputs.head }}
       body: ${{ steps.result.outputs.body }}
     env:
@@ -672,12 +675,17 @@ jobs:
             --json-schema '{"type": "object", "additionalProperties": false, "required": ["comment"],
             "properties": {"comment": {"type": "string", "description": "The review comment, in Markdown."}}}'
 
-      # The model's text, which a pull request or an issue can steer, made unable to notify anyone or to link another
-      # issue or pull request. First each character reference (&#64;, &#x40;, &commat; and the like, with or without
-      # its ;) that stands for an ASCII letter or digit or one of @ # / : . _ - is decoded, again until none is left,
-      # so that the rules after it see the text as GitHub renders it. Then a word joiner (U+2060) goes after every @,
-      # and between a digit and the #, the GH- or the github.com/<owner>/<repo>/issues/ (pull/, pulls/, discussions/)
-      # before it. The text is cut at 20,000 characters and put between a header and a footer the model does not write.
+      # The model's text, which a pull request or an issue can steer, made unable to notify anyone, to link another
+      # issue or pull request, or to link or load anything outside github.com. First each character reference (&#64;,
+      # &#x40;, &commat; and the like, with or without its ;) that stands for an ASCII letter or digit or one of
+      # @ # / \ : . _ - is decoded, again until none is left, so that the rules after it see the text as GitHub renders
+      # it. Then a word joiner (U+2060) goes after every @, and between a digit and the #, the GH- or the
+      # github.com/<owner>/<repo>/issues/ (pull/, pulls/, discussions/) before it. A word joiner also goes before the :
+      # of each URL scheme that a link or an image can use, unless it is http or https to github.com itself, inside the
+      # two slashes of a link or image address with no scheme (//host), and after the www of an address GitHub would
+      # link on its own: such an address is text, or at most a link within this repository, and no image loads from
+      # outside. A review's own links to github.com, this repository's docs among them, still work. The text is cut at
+      # 20,000 characters and put between a header and a footer the model does not write.
       - name: The comment, as it is posted
         id: result
         env:
@@ -695,12 +703,16 @@ jobs:
           ref = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);?")
           def decode(m):
               c = html.unescape(m.group(0))
-              return c if len(c) == 1 and c.isascii() and (c.isalnum() or c in "@#/:._-") else m.group(0)
+              return c if len(c) == 1 and c.isascii() and (c.isalnum() or c in "@#/\\:._-") else m.group(0)
           while (decoded := ref.sub(decode, text)) != text:
               text = decoded
           text = text.replace("@", "@\u2060")
           text = re.sub(r"(#|(?i:GH-)|(?i:github\.com/[^/\s]+/[^/\s]+/(?:issues|pulls?|discussions)/))(?=[0-9])",
                         "\\1\u2060", text)
+          text = re.sub(r"(?i)\b(https?|ftps?|mailto|xmpp|ircs?|news|nntp|wss?|data|tel|sms|javascript|vbscript|file)"
+                        r"(?=:)(?!:[/\\]{2}(?:www\.)?github\.com(?:[/?#\s)\]>\x22\x27]|$))", "\\1\u2060", text)
+          text = re.sub(r"(?m)((?:[(=<\x22\x27]|^\s*\[[^\]\n]+\]:)\s*[/\\])(?=[/\\])", "\\1\u2060", text)
+          text = re.sub(r"(?i)(?<![\w.\-/\\@])(www)(?=\.)(?!\.github\.com(?:[/?#\s)\]>\x22\x27]|$))", "\\1\u2060", text)
           sys.stdout.write(text)
           ')
           if (( ${#comment} > 20000 )); then
@@ -751,16 +763,28 @@ jobs:
             gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$BODY" --jq .html_url
           fi
       # A review replaces the hold: a maintainer's request, or a later push that the screen passed. Not the review of
-      # an older head: a newer push may have been held since.
+      # an older head: a newer push may have been held since. Nor when a hold came after this run started: a newer
+      # event of the issue or the pull request was held.
       - name: Take the label review-held off
         if: env.POST_REVIEW == 'true'
         env:
           HEAD: ${{ needs.review.outputs.head }}
+          STARTED: ${{ needs.review.outputs.started }}
         run: |
           set -uo pipefail
+          [[ $STARTED =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+            || { echo "::error::no start time of this run"; exit 1; }
           if [ -n "$HEAD" ]; then
             now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) || { echo "::error::no head of #$NUMBER"; exit 1; }
             [ "$now" = "$HEAD" ] || { echo "#$NUMBER has moved on from $HEAD: the label stays."; exit 0; }
+          fi
+          held=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[]
+            | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-held -->"))) | .updated_at') \
+            || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
+          last=$(sort <<< "$held" | tail -n 1)
+          if [[ -n $last && ! $last < $STARTED ]]; then
+            echo "#$NUMBER was held at $last, after this run started at $STARTED: the label stays."
+            exit 0
           fi
           out=$(gh api --method DELETE "repos/$REPO/issues/$NUMBER/labels/$HELD_LABEL" 2>&1) && exit 0
           [[ $out == *"(HTTP 404)"* ]] || { echo "::error::the label could not be taken off: $out"; exit 1; }
@@ -800,6 +824,8 @@ jobs:
           if [ "$ROUTE" = limit ]; then
             [[ $OUTSIDER =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "::error::not a GitHub login: $OUTSIDER"; exit 1; }
             why="The account that started this run has no write access to this repository, and its pull requests, issues and pushes have reached the limit of $OUTSIDE_HOURLY_LIMIT an hour that are screened for the automated review. The next one after that hour is screened again."
+          elif [ -z "$OUTSIDER" ]; then
+            why="A maintainer asked for the automated screen first, and the screen did not pass it, or the automated review after it did not finish. A maintainer will look at it."
           elif [ "$REVIEW" = failure ]; then
             why="It comes from an account without write access to this repository. The automated screen passed it, but the automated review of it did not finish, for example because the hourly limit of such reviews was reached. A maintainer will look at it."
           else

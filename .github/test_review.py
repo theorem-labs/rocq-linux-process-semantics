@@ -283,6 +283,17 @@ class TrustTest(Runner):
         _out, got = self.assertReview("screen", "pull_request_target", "alice", "mallory")
         self.assertEqual(got["outsider"], "mallory")
 
+    def test_a_push_by_another_outsider_names_the_pusher(self):
+        """The Review step's action checks the account that started the run: that account is the one it admits."""
+        self.permissions(mallory="read", eve="read")
+        _out, got = self.assertReview("screen", "pull_request_target", "mallory", "eve")
+        self.assertEqual(got["outsider"], "eve")
+
+    def test_the_route_says_when_the_run_started(self):
+        self.permissions(alice="write")
+        _out, got = self.assertReview("review", "issues", "alice", "alice")
+        self.assertRegex(got["started"], r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+
     def test_a_writer_reopening_an_outsiders_pull_request_screens_it(self):
         self.permissions(alice="write", mallory="read")
         _out, got = self.assertReview("screen", "pull_request_target", "mallory", "alice")
@@ -319,7 +330,7 @@ class TrustTest(Runner):
         job = JOBS["trust"]
         self.assertEqual(job["permissions"], {"actions": "read"})
         self.assertFalse(any("uses" in s for s in job["steps"]))
-        for name in ("route", "outsider", "number"):
+        for name in ("route", "outsider", "number", "started"):
             self.assertEqual(job["outputs"][name], "${{ steps.trust.outputs.%s }}" % name)
 
     def test_a_run_the_trust_job_stops_cancels_no_review(self):
@@ -502,6 +513,39 @@ class CommentStepTest(Runner):
                           "http://github.com/a/b/issues/6 www.github.com/a/b/pull/7",
                           "<a href=\"https://github.com/a/b/issues/8\">x</a>", "&#x26;#64;e"])
         self.assertInert(self.comment(text))
+
+    # Addresses outside github.com, written every way the model could: a link, an image, an autolink, raw HTML, a
+    # reference definition, an address with no scheme, a bare www address, and character references. Each is pieced
+    # together so that no line of this file is a link.
+    OUTSIDE = ["[x](https" + "://evil.example/a)", "![i](https" + "://evil.example/p.png)", "<https" + "://evil.example>",
+               "https" + "://evil.example/b", "<a href=\"http" + "://evil.example\">a</a>",
+               "<img src=\"https" + "://evil.example/t.gif\">", "[r]: https" + "://evil.example/r",
+               "[p](//evil.example/c)", "<img src=\"//evil.example/u.gif\">", "[q]: //evil.example/q", "www.evil.example",
+               "[b](https:\\\\evil.example)", "[e](https&#58;//evil.example)", "[m](mailto:a" + "@evil.example)",
+               "[g](https" + "://github.com.evil.example/x)", "[h](https" + "://github.com" + "@evil.example/x)",
+               "![d](data:image/png;base64,AAAA)", "[s](HTTPS" + "://evil.example)"]
+    # Addresses that stay links: github.com, this repository's files among them.
+    KEPT = ["[rules](https" + "://github.com/acme/model/blob/main/.github/review.md)",
+            "https" + "://github.com/acme/model/blob/main/SCOPE.md", "[w](https" + "://www.github.com/acme)",
+            "[d](SCOPE.md)"]
+
+    def assertNoOutsideAddress(self, text):
+        self.assertNotRegex(text, r"(?i)\b(https?|ftps?|mailto|data|javascript):(?![/\\]{2}(www\.)?github\.com[/?#\s)\]>\x22]|[/\\]{2}(www\.)?github\.com$)")
+        self.assertNotRegex(text, r"[(=<\x22]\s*[/\\][/\\]")
+        self.assertNotRegex(text, r"(?im)^\s*\[[^\]]+\]:\s*[/\\][/\\]")
+        self.assertNotRegex(text, r"(?i)(?<![\w./\\@])www\.(?!github\.com)")
+
+    def test_no_link_or_image_reaches_outside_github(self):
+        for text in self.OUTSIDE:
+            with self.subTest(text=text):
+                got = self.comment(text)
+                self.assertNoOutsideAddress(got)
+                self.assertEqual(got.replace("\u2060", ""), text.replace("&#58;", ":"))   # the text stays readable
+
+    def test_links_to_github_and_the_repositorys_files_are_kept(self):
+        for text in self.KEPT:
+            with self.subTest(text=text):
+                self.assertEqual(self.comment(text), text)
 
     def test_a_long_review_is_cut(self):
         got = self.comment("x" * 20001)
@@ -942,6 +986,19 @@ class HoldTest(Runner):
         self.assertTrue(all(v.startswith(("${{ needs.trust.", "${{ github.", "${{ needs.review.result"))
                             for v in e.values()))
 
+    def test_a_maintainers_screen_says_so(self):
+        """A maintainer's -f screen=true has no outsider: the comment does not say the account lacks write access."""
+        self.serve(f"repos/{REPO}/issues/7/comments", [])
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+        self.serve(f"repos/{REPO}/labels/review-held", {"name": "review-held"})
+        rc, out, _ = self.run_script(step("hold", "Label it and say that it was held")["run"], NUMBER="7",
+                                     ROUTE="screen", OUTSIDER="", REVIEW="skipped", HELD_LABEL=WF["env"]["HELD_LABEL"],
+                                     OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"])
+        self.assertEqual(rc, 0, out)
+        body = next(a for c in gh_calls(self.api) for a in c if a.startswith("body="))
+        self.assertIn("A maintainer asked for the automated screen first", body)
+        self.assertNotIn("without write access", body)
+
     def test_a_screened_review_that_did_not_finish_says_so(self):
         self.serve(f"repos/{REPO}/issues/7/comments", [])
         self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
@@ -957,29 +1014,57 @@ class HoldTest(Runner):
 
 class PostLabelTest(Runner):
     DELETE = ["--method", "DELETE", f"repos/{REPO}/issues/7/labels/review-held"]
+    STARTED = "2026-11-02T10:00:00Z"
 
-    def take_off(self, head="", now=None):
+    def take_off(self, head="", now=None, held=()):
+        """held: the updated_at of each hold comment on the issue or pull request."""
         s = step("post", "Take the label review-held off")
         self.serve(f"repos/{REPO}/issues/7/labels/review-held", [])
+        self.serve(f"repos/{REPO}/issues/7/comments",
+                   [{"user": {"login": "github-actions[bot]"}, "body": "<!-- review-held -->\nheld", "updated_at": t}
+                    for t in held] + [{"user": {"login": "mallory"}, "body": "<!-- review-held --> forged",
+                                       "updated_at": "2099-01-01T00:00:00Z"}])
         if now:
             self.serve(f"repos/{REPO}/pulls/7", {"head": {"sha": now}})
-        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD=head)
+        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD=head, STARTED=self.STARTED)
         self.assertEqual(rc, 0, out)
         return [c for c in gh_calls(self.api) if c[:2] == ["--method", "DELETE"]]
 
     def test_a_posted_review_takes_the_label_off(self):
         self.assertEqual(self.take_off(), [self.DELETE])
+        self.tearDown()
         self.setUp()
         self.assertEqual(self.take_off("a" * 40, "a" * 40), [self.DELETE])
+        self.tearDown()
+        self.setUp()
+        self.assertEqual(self.take_off(held=["2026-11-02T09:59:59Z"]), [self.DELETE])
 
     def test_the_review_of_an_older_head_leaves_the_label(self):
         """A newer push may have been held since."""
         self.assertEqual(self.take_off("a" * 40, "b" * 40), [])
 
+    def test_a_hold_after_this_run_started_leaves_the_label(self):
+        """An issue has no head: a newer event of it, held while this run's review ran, keeps its label."""
+        for when in ("2026-11-02T10:00:00Z", "2026-11-02T10:30:00Z"):
+            with self.subTest(when=when):
+                self.tearDown()
+                self.setUp()
+                self.assertEqual(self.take_off(held=["2026-11-01T00:00:00Z", when]), [])
+        self.assertEqual(step("post", "Take the label review-held off")["env"]["STARTED"],
+                         "${{ needs.review.outputs.started }}")
+        self.assertEqual(JOBS["review"]["outputs"]["started"], "${{ needs.trust.outputs.started }}")
+
     def test_no_label_is_no_error(self):
         s = step("post", "Take the label review-held off")
-        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD="")
+        self.serve(f"repos/{REPO}/issues/7/comments", [])
+        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD="", STARTED=self.STARTED)
         self.assertEqual(rc, 0, out)
+
+    def test_no_start_time_stops_it(self):
+        s = step("post", "Take the label review-held off")
+        rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD="", STARTED="")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual([c for c in gh_calls(self.api) if c[:2] == ["--method", "DELETE"]], [])
 
 
 class CapTest(Runner):
