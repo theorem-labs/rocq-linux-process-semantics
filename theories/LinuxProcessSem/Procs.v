@@ -192,6 +192,28 @@ Record ProcessEntry := mkEntry {
   pe_nsctx  : NsCtx
 }.
 
+(** WHAT THE CORE KNOWS ABOUT A PROCESS THAT ITS MODEL DOES NOT SAY, kept
+    beside the table rather than in [ProcessEntry]: an entry's fields are
+    what statements about the reap name, and this is the core's own
+    bookkeeping.
+
+    [pm_ns_stale]: the namespace bits (of [CLONE_NEWUSER], [CLONE_NEWNET],
+    [CLONE_NEWPID]) the process was created under, through its own clone or
+    an ancestor's, that its namespace context ([pe_nsctx]) does NOT
+    reflect.  Under [Ns.Ext.no_ext] a clone with namespace bits leaves the
+    child the parent's context and the parent's model copy, which is not
+    the child's Linux view: in a new user namespace with no [uid_map] the
+    id calls answer the overflow id 65534 and the capability sets are
+    full; in a new network namespace no connection from the environment
+    can arrive.  The exact behaviour is the namespace extension's
+    ([Ns.Ext.ext_clone] builds the child's context); until an extension
+    reflects a namespace, [ns_refused_b] stops the core answering the calls
+    that namespace changes.  An absent entry reads as no bit
+    ([meta_look]). *)
+Record ProcMeta := mkMeta {
+  pm_ns_stale : Z
+}.
+
 (** Shared Run state: one of each, for the whole system. *)
 Record shared := mkShared {
   sh_fsys  : FsState;
@@ -202,7 +224,8 @@ Record shared := mkShared {
       a consumer reads, and a buffer hidden in another field's slot cannot be
       named by one. *)
   sh_pipes : list (word * PipeBuf);
-  sh_ns    : NsState
+  sh_ns    : NsState;
+  sh_meta  : list (Pid * ProcMeta)
 }.
 
 (** The process table is keyed exactly as [State.m_fds] is, so the lookup and
@@ -248,7 +271,7 @@ Definition pe_absorb (e : ProcessEntry) (c : config) : ProcessEntry :=
 
 Definition shared_absorb (S : shared) (c : config) : shared :=
   mkShared (m_fsys (cfg_model c)) (m_io (cfg_model c))
-           (sh_ofd S) (sh_pipes S) (sh_ns S).
+           (sh_ofd S) (sh_pipes S) (sh_ns S) (sh_meta S).
 
 (** The splice and the absorb are inverse, which is the whole reason the
     per-entry [m_fsys] and [m_io] slots may be blank. *)
@@ -560,7 +583,7 @@ Definition promote_one (S : shared) (i : OfdId) (fd : word) (e : FdEntry)
       Some (mkShared (sh_fsys S) (sh_io S)
                      ((i, mkOfd what off (Z_to_bv 64 0) (Z_to_bv 64 2))
                         :: sh_ofd S)
-                     (sh_pipes S) (sh_ns S),
+                     (sh_pipes S) (sh_ns S) (sh_meta S),
             (fd, i))
   end.
 
@@ -654,13 +677,49 @@ Definition child_entry (e : ProcessEntry) (c c' : config) (q : Pid)
                                    (pe_model e)))
           (pe_ofd e) (pe_nsctx e).
 
-(** The configuration a successful clone steps to. *)
+(** The flag word of a pending clone: argument 0 of [clone] (220);
+    [clone3] (435) answers only the fork image, whose word is [SIGCHLD]. *)
+Definition clone_flags_of (c : config) : Z :=
+  match ms_svc_pending (cfg_ms c) with
+  | Some x8 => if Z.eqb (bv_unsigned x8) 220 then bv_unsigned (ms_gpr (cfg_ms c) 0) else SIGCHLD
+  | None => 0%Z
+  end.
+
+(** The metadata of [p]; an absent pid reads as no stale namespace. *)
+Fixpoint meta_look (ms : list (Pid * ProcMeta)) (p : Pid) : ProcMeta :=
+  match ms with
+  | [] => mkMeta 0
+  | (k, m) :: r => if bv_eqb k p then m else meta_look r p
+  end.
+
+(** Record [m] for [p], in front of anything recorded for it before (a pid
+    a reap freed and a later clone reuses). *)
+Definition with_meta (S : shared) (p : Pid) (m : ProcMeta) : shared :=
+  mkShared (sh_fsys S) (sh_io S) (sh_ofd S) (sh_pipes S) (sh_ns S)
+           ((p, m) :: sh_meta S).
+
+(** The child's stale namespaces: its parent's, and each namespace the
+    clone's flag word asks for that the child's context does not reflect
+    (its id there is still the parent's). *)
+Definition ns_stale_child (stale flags : Z) (pctx cctx : NsCtx) : Z :=
+  Z.lor stale
+    (Z.lor (if Pos.eqb (cx_user cctx) (cx_user pctx) then Z.land flags CLONE_NEWUSER else 0)
+      (Z.lor (if Pos.eqb (cx_net cctx) (cx_net pctx) then Z.land flags CLONE_NEWNET else 0)
+             (if Pos.eqb (cx_pidns cctx) (cx_pidns pctx) then Z.land flags CLONE_NEWPID else 0))).
+
+Definition child_meta (P : pconfig) (e : ProcessEntry) (cctx : NsCtx) : ProcMeta :=
+  mkMeta (ns_stale_child (pm_ns_stale (meta_look (sh_meta (pcfg_shared P)) (pe_pid e)))
+            (clone_flags_of (pe_cfg (pcfg_shared P) e)) (pe_nsctx e) cctx).
+
+(** The configuration a successful clone steps to.  Under no extension the
+    child's context is the parent's, so every namespace its flag word asks
+    for is recorded stale. *)
 Definition clone_result (P : pconfig) (e : ProcessEntry) (c' : config)
     (q : Pid) : pconfig :=
   mkPCfg (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c')
             ++ [(q, child_entry e (pe_cfg (pcfg_shared P) e) c' q)])
          (pcfg_root P)
-         (shared_absorb (pcfg_shared P) c').
+         (with_meta (shared_absorb (pcfg_shared P) c') q (child_meta P e (pe_nsctx e))).
 
 (** The entry a step added, if it added one.  [clone_result] appends, so the
     added entry is the last one, and the length test is what says a step
@@ -964,6 +1023,36 @@ Definition wait4_zero_result (P : pconfig) (e : ProcessEntry) : pconfig :=
     (mkCfg (advance_past_svc (apply_effect (pe_ms e) (mkEffect (Z_to_bv 64 0) [] [])))
            (cfg_model (pe_cfg (pcfg_shared P) e))).
 
+(** THE NAMESPACE GATE.  The class-(A)/(B) calls whose answer a namespace
+    changes, refused for an entry whose context does not reflect that
+    namespace ([pm_ns_stale]).  A new user namespace: the id readers and
+    setters, capget and capset, getgroups and setgroups (Linux answers the
+    overflow ids and full capabilities until a [uid_map] is written).  A new
+    network namespace: the socket calls (no connection from the
+    environment reaches it).  A new pid namespace changes only class-(C)
+    calls, none of which this core answers.  The gate holds under an
+    extension too, claimed or not: a bit is stale only when the extension's
+    clone left the child's context for that namespace the parent's
+    ([child_meta] compares them), so the extension does not model that
+    namespace for the entry either; with the gate the same on both
+    relations, the four agreement iffs keep their statements. *)
+Definition ns_userns_sysnos : list Z :=
+  [90; 91; 144; 146; 147; 148; 149; 150; 158; 159; 174; 175; 176; 177]%Z.
+
+Definition ns_netns_sysnos : list Z :=
+  [198; 199; 200; 201; 202; 203; 204; 205; 206; 207; 208; 209; 210; 211; 212; 242]%Z.
+
+Definition ns_refused_b (P : pconfig) (e : ProcessEntry) : bool :=
+  let stale := pm_ns_stale (meta_look (sh_meta (pcfg_shared P)) (pe_pid e)) in
+  match ms_svc_pending (pe_ms e) with
+  | None => false
+  | Some x8 =>
+      (negb (Z.eqb (Z.land stale CLONE_NEWUSER) 0)
+       && List.existsb (Z.eqb (bv_unsigned x8)) ns_userns_sysnos)
+      || (negb (Z.eqb (Z.land stale CLONE_NEWNET) 0)
+          && List.existsb (Z.eqb (bv_unsigned x8)) ns_netns_sysnos)
+  end.
+
 (** What a reap leaves: the caller past the call with the effect applied,
     and the child [q] gone.  [pstep_wait_reap]'s conclusion is this term
     written out, and is left written out because [Examples/forkwait]
@@ -1004,6 +1093,9 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     (* THE GATE: the released step never answers a [wait4] of a caller
        with a child in the table; see the design note above. *)
     wait4_owned_b P e = false ->
+    (* THE NAMESPACE GATE: never the released answer of a call a namespace
+       the entry's context does not reflect would change. *)
+    ns_refused_b P e = false ->
     pstep_at segs cfg (pe_pid e) P evs (PNext (absorb P e c'))
 (** THE ERROR TRANSITION, and it must EXCLUDE the intercepted wait.
     A blocking [wait4(-1, _, 0, NULL)] is [unmodeled] in the released spec
@@ -1144,6 +1236,13 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     look P (pe_pid e) = Some e ->
     m_halted (pe_model e) = None ->
     wait4_refused_b segs P e = true ->
+    pstep_at segs cfg (pe_pid e) P [] PError
+(** A CALL THE NAMESPACE GATE REFUSES: an error, fail-closed, so the entry
+    is not modelled as blocked. *)
+| pstep_ns_refuse : forall P e,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    ns_refused_b P e = true ->
     pstep_at segs cfg (pe_pid e) P [] PError.
 
 (** The system steps when SOME entry does. *)
@@ -1196,7 +1295,7 @@ Definition one_entry (c : config) : ProcessEntry :=
 Definition one_proc (c : config) : pconfig :=
   mkPCfg [(one_pid, one_entry c)] one_pid
          (mkShared (m_fsys (cfg_model c)) (m_io (cfg_model c)) [] []
-                   empty_nsstate).
+                   empty_nsstate []).
 
 Lemma one_proc_entry : forall c,
   look (one_proc c) one_pid = Some (one_entry c).
@@ -1252,6 +1351,14 @@ Qed.
 
 Lemma wait4_refused_one : forall segs c e, wait4_refused_b segs (one_proc c) e = false.
 Proof. intros segs c e. unfold wait4_refused_b. rewrite wait4_owned_one. reflexivity. Qed.
+
+(** At one entry the namespace gate is closed: a one-process system records
+    no metadata, so nothing is stale. *)
+Lemma ns_refused_one : forall c e, ns_refused_b (one_proc c) e = false.
+Proof.
+  intros c e. unfold ns_refused_b. cbn [one_proc pcfg_shared sh_meta meta_look pm_ns_stale].
+  destruct (ms_svc_pending (pe_ms e)); reflexivity.
+Qed.
 
 Lemma absorb_one_proc : forall c c',
   absorb (one_proc c) (one_entry c) c' = one_proc c'.
@@ -1360,6 +1467,7 @@ Proof.
   - rewrite one_proc_view. exact Hwt.
   - apply multiproc_allowed_one.
   - apply wait4_owned_one.
+  - apply ns_refused_one.
 Qed.
 
 Lemma pstep_single_err_fwd : forall segs cfg c evs,
@@ -1382,6 +1490,11 @@ Proof.
     match goal with
     | [ Hrf : wait4_refused_b _ (one_proc c) _ = true |- _ ] =>
         rewrite wait4_refused_one in Hrf; discriminate
+    end.
+  - exfalso.
+    match goal with
+    | [ Hrf : ns_refused_b (one_proc c) _ = true |- _ ] =>
+        rewrite ns_refused_one in Hrf; discriminate
     end.
 Qed.
 
@@ -1594,8 +1707,9 @@ Proof.
     right; right; right. split; [assumption | reflexivity].
 Qed.
 
-(** A step to the error transition is one of the three refusing arms: a
-    released [SError], the surface guard, or the [wait4] gate's refusal. *)
+(** A step to the error transition is one of the four refusing arms: a
+    released [SError], the surface guard, the [wait4] gate's refusal, or the
+    namespace gate's. *)
 Lemma pstep_error_cases : forall segs cfg p P evs,
   pstep_at segs cfg p P evs PError ->
   exists e,
@@ -1603,7 +1717,8 @@ Lemma pstep_error_cases : forall segs cfg p P evs,
     ( (sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs SError
        /\ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false)
       \/ (multiproc_allowed P (pe_cfg (pcfg_shared P) e) = false /\ evs = [])
-      \/ (wait4_refused_b segs P e = true /\ evs = []) ).
+      \/ (wait4_refused_b segs P e = true /\ evs = [])
+      \/ (ns_refused_b P e = true /\ evs = []) ).
 Proof.
   intros segs cfg p P evs Hp.
   inversion Hp; subst.
@@ -1612,7 +1727,9 @@ Proof.
   - eexists. split; [eassumption | split; [reflexivity|]].
     right; left. split; [assumption | reflexivity].
   - eexists. split; [eassumption | split; [reflexivity|]].
-    right; right. split; [assumption | reflexivity].
+    right; right; left. split; [assumption | reflexivity].
+  - eexists. split; [eassumption | split; [reflexivity|]].
+    right; right; right. split; [assumption | reflexivity].
 Qed.
 
 (** The splice does not disturb the halt flag: [set_fsys] and [set_io]
@@ -1681,6 +1798,30 @@ Proof.
   intros P e H. destruct (wait4_owned_260 P e H) as (x8 & Hs & H260).
   unfold multiproc_allowed. cbn [cfg_ms pe_cfg]. rewrite Hs, H260.
   destruct (Nat.leb _ _); reflexivity.
+Qed.
+
+(** The namespace gate is closed at an instruction, and at any number
+    outside its two lists. *)
+Lemma ns_refused_instr : forall P e,
+  ms_svc_pending (pe_ms e) = None -> ns_refused_b P e = false.
+Proof. intros P e Hs. unfold ns_refused_b. rewrite Hs. reflexivity. Qed.
+
+Lemma ns_refused_of_sysno : forall P e x8,
+  ms_svc_pending (pe_ms e) = Some x8 ->
+  List.existsb (Z.eqb (bv_unsigned x8)) (ns_userns_sysnos ++ ns_netns_sysnos) = false ->
+  ns_refused_b P e = false.
+Proof.
+  intros P e x8 Hs H. unfold ns_refused_b. rewrite Hs.
+  rewrite List.existsb_app in H. apply orb_false_iff in H as [Hu Hn].
+  rewrite Hu, Hn, !andb_false_r. reflexivity.
+Qed.
+
+(** A [wait4] is never namespace-gated. *)
+Lemma wait4_owned_not_ns : forall P e,
+  wait4_owned_b P e = true -> ns_refused_b P e = false.
+Proof.
+  intros P e H. destruct (wait4_owned_260 P e H) as (x8 & Hs & H260).
+  unfold ns_refused_b. rewrite Hs, H260. rewrite !andb_false_r. reflexivity.
 Qed.
 
 (** ... and it is open without the class numbers: 260 is core-answered. *)
@@ -1813,7 +1954,7 @@ Inductive xsstep (ext : ExtSpec) (segs : list Segment) (cfg : SpuriousCfg)
     xsstep ext segs cfg ctx st (mkCfg ms model) [] SError ctx st.
 
 Definition with_sh_ns (S : shared) (st : NsState) : shared :=
-  mkShared (sh_fsys S) (sh_io S) (sh_ofd S) (sh_pipes S) st.
+  mkShared (sh_fsys S) (sh_io S) (sh_ofd S) (sh_pipes S) st (sh_meta S).
 
 Definition with_nsctx (e : ProcessEntry) (ctx : NsCtx) : ProcessEntry :=
   mkEntry (pe_pid e) (pe_parent e) (pe_ms e) (pe_model e) (pe_ofd e) ctx.
@@ -1832,7 +1973,7 @@ Definition clone_result_x (P : pconfig) (e : ProcessEntry) (c' : config) (q : Pi
   mkPCfg (replace_in (pcfg_procs P) (pe_pid e) (pe_absorb e c')
             ++ [(q, with_nsctx (child_entry e (pe_cfg (pcfg_shared P) e) c' q) child)])
          (pcfg_root P)
-         (with_sh_ns (shared_absorb (pcfg_shared P) c') st').
+         (with_sh_ns (with_meta (shared_absorb (pcfg_shared P) c') q (child_meta P e child)) st').
 
 (** The parent's configuration after a clone, when the extension gives
     its call a return value of its own ([CnOk]'s [ret]: the child's pid in
@@ -1850,13 +1991,6 @@ Definition clone_pending_b (c : config) : bool :=
   | None => false
   end.
 
-(** The flag word of a pending clone: argument 0 of [clone] (220);
-    [clone3] (435) answers only the fork image, whose word is [SIGCHLD]. *)
-Definition clone_flags_of (c : config) : Z :=
-  match ms_svc_pending (cfg_ms c) with
-  | Some x8 => if Z.eqb (bv_unsigned x8) 220 then bv_unsigned (ms_gpr (cfg_ms c) 0) else SIGCHLD
-  | None => 0%Z
-  end.
 
 (** THE GUARD UNDER AN EXTENSION.  An unclaimed call is the released step,
     so the core's guard ([multiproc_allowed]) decides it.  A claimed call is
@@ -1916,6 +2050,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     clone_pending_b (pe_cfg (pcfg_shared P) e) = false ->
     wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
     wait4_owned_b P e = false ->
+    ns_refused_b P e = false ->
     multiproc_ok ext segs P e = true ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' ctx' st'))
 | px_clone : forall P e evs c' q child ret st',
@@ -2041,6 +2176,11 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     look P (pe_pid e) = Some e ->
     m_halted (pe_model e) = None ->
     wait4_refused_b segs P e = true ->
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError
+| px_ns_refuse : forall P e,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    ns_refused_b P e = true ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError.
 
 Definition pstep_x_cfg (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cfg : SpuriousCfg)
@@ -2057,7 +2197,8 @@ Proof.
   intros ext cenv1 cenv2 segs cfg p P evs r Hsub H.
   destruct H; [eapply px_other | eapply px_clone | eapply px_clone_fail | eapply px_clone_unmodeled
               | eapply px_clone_claimed | eapply px_wait_reap | eapply px_error | eapply px_outside
-              | eapply px_wait_nohang_reap | eapply px_wait_nohang_zero | eapply px_wait_refuse];
+              | eapply px_wait_nohang_reap | eapply px_wait_nohang_zero | eapply px_wait_refuse
+              | eapply px_ns_refuse];
     eauto.
 Qed.
 
@@ -2137,6 +2278,18 @@ Proof.
   destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hs; [|discriminate H].
   apply (wait4_owned_not_260 P e x8 Hs). unfold clone_sysno in H.
   apply orb_true_iff in H as [H|H]; apply Z.eqb_eq in H; rewrite H; discriminate.
+Qed.
+
+(** ... and no clone number is namespace-gated. *)
+Lemma clone_pending_not_ns : forall P e,
+  clone_pending_b (pe_cfg (pcfg_shared P) e) = true -> ns_refused_b P e = false.
+Proof.
+  intros P e H. unfold clone_pending_b in H. cbn [cfg_ms pe_cfg] in H.
+  unfold ns_refused_b.
+  destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hs; [|discriminate H].
+  unfold clone_sysno in H.
+  apply orb_true_iff in H as [H|H]; apply Z.eqb_eq in H; rewrite H;
+    rewrite !andb_false_r; reflexivity.
 Qed.
 
 (** A return in the errno range is [-en] for an [en] in [1, 4095]. *)
@@ -2289,7 +2442,7 @@ Theorem pstep_x_at_agree_iff : forall ext cenv segs cfg p P evs r,
 Proof.
   intros ext cenv segs cfg p P evs r Hag. split.
   - intros H. revert Hag. destruct H as
-      [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hmp
+      [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hns Hmp
       | Q e ev c' q child ret st' Hl Hcl Hs Hsucc Hq Hfree Hma Hec
       | Q e ev c' en hq st' Hl Hcl Hs Hcp Hsucc Hret Hma Hec Hnr
       | Q e ev c' hq Hl Hcl Hs Hcp Hma Hec
@@ -2301,7 +2454,8 @@ Proof.
       | Q e q ez x8 stat_addr ru ru_bytes status eff model'' dumped
           Hl Hh Hx8 Hwo Hna Hru Hq Hne Hpar Hk Hst Hrd Hlen Heff Hmat
       | Q e x8 stat_addr ru Hl Hh Hx8 Hwo Hna Hru Hz
-      | Q e Hl Hh Hrf ]; intros Hag;
+      | Q e Hl Hh Hrf
+      | Q e Hl Hh Hns ]; intros Hag;
       destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* px_other *)
       apply (proj1 (Hxs _ _ _ _ _)) in Hx. destruct Hx as (Hs & -> & ->).
@@ -2320,6 +2474,7 @@ Proof.
       apply pstep_other; try assumption.
       * apply clone_pending_not_wait4. exact Hcp.
       * apply clone_pending_not_owned. exact Hcp.
+      * apply clone_pending_not_ns. exact Hcp.
     + (* px_clone_unmodeled *)
       apply (proj1 (Hcln _ _)) in Hec.
       destruct Hec as [Heq | (en & _ & Heq)]; discriminate Heq.
@@ -2338,8 +2493,10 @@ Proof.
       eapply pstep_wait_nohang_zero; eassumption.
     + (* px_wait_refuse *)
       apply pstep_wait_refuse; assumption.
+    + (* px_ns_refuse: the gate's own arm, on both sides *)
+      apply pstep_ns_refuse; assumption.
   - intros H. revert Hag. destruct H as
-      [ Q e ev c' Hl Hs Hsucc Hwt Hma Hwo
+      [ Q e ev c' Hl Hs Hsucc Hwt Hma Hwo Hns
       | Q e ev c' q Hl Hs Hsucc Hq Hfree Hma
       | Q e q ez x8 stat_addr status eff model'' dumped
           Hl Hh Hx8 Hwt Hargs Hq Hne Hpar Hk Hst Hrd Heff Hmat
@@ -2348,7 +2505,8 @@ Proof.
       | Q e q ez x8 stat_addr ru ru_bytes status eff model'' dumped
           Hl Hh Hx8 Hwo Hna Hru Hq Hne Hpar Hk Hst Hrd Hlen Heff Hmat
       | Q e x8 stat_addr ru Hl Hh Hx8 Hwo Hna Hru Hz
-      | Q e Hl Hh Hrf ]; intros Hag;
+      | Q e Hl Hh Hrf
+      | Q e Hl Hh Hns ]; intros Hag;
       destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* pstep_other *)
       destruct (clone_pending_b (pe_cfg (pcfg_shared Q) e)) eqn:Hp.
@@ -2383,6 +2541,8 @@ Proof.
       eapply px_wait_nohang_zero; eassumption.
     + (* pstep_wait_refuse *)
       apply px_wait_refuse; assumption.
+    + (* pstep_ns_refuse *)
+      apply px_ns_refuse; assumption.
 Qed.
 
 (** An extension that claims no pending call of an entry of [P] and whose

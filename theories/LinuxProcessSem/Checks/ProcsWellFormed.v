@@ -650,7 +650,7 @@ Proof.
   intros segs cfg p P evs P' Hwf Hp.
   apply wf_iff in Hwf as [Htbl Hroot]. apply wf_iff.
   inversion Hp as
-    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1
+    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1 Hns1
     | P2 e2 evs2 c2 q2 Hl2 Hs2 Hc2 Hcp2 Hfr2 Hm2
     | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
         Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
@@ -659,7 +659,8 @@ Proof.
     | P6 e6 q6 ez6 x86 sa6 ru6 rb6 st6 eff6 mo6 du6
         Hl6 Hh6 Hsv6 Hwo6 Hna6 Hru6 Hlq6 Hne6 Hpar6 Hk6 Hst6 Hrd6 Hlen6 Heff6 Hmat6
     | P7 e7 x87 sa7 ru7 Hl7 Hh7 Hsv7 Hwo7 Hna7 Hru7 Hz7
-    | P8 e8 Hl8 Hh8 Hrf8 ]; subst.
+    | P8 e8 Hl8 Hh8 Hrf8
+    | P9 e9 Hl9 Hh9 Hns9 ]; subst.
   - (* pstep_other *)
     exact (tbl_root_absorb _ e1 c1 Htbl Hroot Hl1).
   - (* pstep_clone *)
