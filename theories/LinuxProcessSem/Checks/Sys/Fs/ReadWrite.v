@@ -3364,9 +3364,13 @@ Proof.
   exfalso. exact (check_ret_only_no_unmodeled _ _ _ _ Hs).
 Qed.
 
+(** [record_copyins] appends its own empty event list after the
+    [sigpipe_write] outcome's, so the [CheckOk] the goal states carries
+    [evs ++ []]; [app_nil_r] puts it in the bridge's form first. *)
 Ltac sigpipev_complete :=
   match goal with
   | Hs : sigpipe_write _ _ (Ok _ _ _) |- _ =>
+      rewrite ?app_nil_r;
       exact (check_sigpipe_writev_of_ok _ _ _ _ _ _ Hs)
   | Hs : sigpipe_write _ _ Unmodeled |- _ =>
       exact (check_sigpipe_writev_of_unmodeled _ _ _ _ Hs)

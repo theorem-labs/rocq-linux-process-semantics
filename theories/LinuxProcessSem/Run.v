@@ -4390,11 +4390,10 @@ Lemma valid_input_channel_either_splits : forall inp,
   valid_input_channel_either inp ->
   valid_input inp \/ valid_input_channel_closed inp.
 Proof.
-  intros inp H.
-  destruct (in_channel_reader inp) eqn:Hcr; [left | right];
-    red in H |- *;
-    repeat match goal with H : _ /\ _ |- _ => destruct H end;
-    cbn [negb] in *;
+  intros inp H. red in H.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  destruct (in_channel_reader inp) eqn:Hcr; cbn [negb] in *; [left | right];
+    red;
     repeat match goal with |- _ /\ _ => split end; assumption.
 Qed.
 
