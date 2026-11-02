@@ -3218,9 +3218,8 @@ Example mmap_null_hint_zero_rejected :
   = CheckReject.
 Proof. check_eq. Qed.
 
-(** NEGATIVE: not where Linux puts it.  [demo_top] is below this run's
-    stack, inside its guard band, which a placement keeps free; and a
-    NULL-hint request goes where the search puts it, not here. *)
+(** NEGATIVE: not where Linux puts it.  A NULL-hint request goes where
+    the search puts it, and [demo_top] is not that address. *)
 Example mmap_null_hint_above_ceiling_rejected :
   check_syscall (mmap_in 4096)
     (mkEffect (Z_to_bv 64 demo_top) []

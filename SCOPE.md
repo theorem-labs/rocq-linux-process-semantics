@@ -597,10 +597,11 @@ equivalence) can be true of the model and false of Linux.
   So while Linux's stack is short, an address below Linux's stack start
   but inside the model's window, or inside the model's guard band, is one
   Linux can grant and the model does not: a hint there is honoured by
-  Linux and placed elsewhere by the model, a `MAP_FIXED_NOREPLACE` or an
-  in-place `mremap` grow into the window answers `-EEXIST` or moves, and
-  an `munmap` of it is `unmodeled`. Every difference is the model
-  refusing, never granting what Linux refuses.
+  Linux and placed elsewhere by the model, an in-place `mremap` grow into
+  the window moves instead, and a `MAP_FIXED` or `MAP_FIXED_NOREPLACE`
+  mapping or an `munmap` there is `unmodeled`. In each difference the
+  model places elsewhere, moves or declines; it never grants an address
+  that Linux refuses.
   `Checks/Cases/Mm/StackVma.v`, `residual_hint_below_full_stack_refused`,
   pins one such hint. It stays open because the model has no stack growth
   in the machine semantics; a model whose stack entry starts at Linux's

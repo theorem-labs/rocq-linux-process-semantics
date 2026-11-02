@@ -16,8 +16,10 @@
     of them rests on a hand-built ledger.
 
     THE FIVE CASES.
-    - D3, the defect: an in-place [mremap] grow up to the stack's floor
-      is accepted ([d3_mremap_inplace_accepted]).  It used to be
+    - D3, the defect: D3's in-place [mremap] grow is accepted
+      ([d3_mremap_inplace_accepted]), and so is one that ends exactly at
+      the stack's floor ([d3_mremap_inplace_to_the_floor_accepted]); one
+      page more is refused ([d3_mremap_inplace_into_the_stack_refused]).  It used to be
       rejected, because the model bounded every grow by [alloc_top].
     - D3's control, the same effect two pages lower
       ([d3_control_inplace_accepted]).
@@ -204,18 +206,30 @@ Definition mremap_in (a : Z) : SyscallInput :=
 Definition mremap_inplace (a : Z) : SyscallEffect :=
   mkEffectU (Z_to_bv 64 a) [] [(Z_to_bv 64 (a + 4096), 4096)] [] [] [].
 
-(** D3's address: the page whose 8 KiB grow ends exactly at the stack's
-    floor, 0x7fffff800000 - 0x1000. *)
+(** [mremap(a, 4096, 12288, MREMAP_MAYMOVE)] and its in-place answer:
+    the tail [[a + 4096, a + 12288)] zero-filled, [a] returned. *)
+Definition mremap3_in (a : Z) : SyscallInput :=
+  mkInput 216 [Z_to_bv 64 a; 4096; 12288; 1; 0; 0] (fun _ => None) (fun _ => None).
+Definition mremap3_inplace (a : Z) : SyscallEffect :=
+  mkEffectU (Z_to_bv 64 a) [] [(Z_to_bv 64 (a + 4096), 8192)] [] [] [].
+
+(** D3's address, three pages below the stack's floor 0x7fffff800000.
+    [g + 4096] is [alloc_top] (0x7fffff7fe000), the highest end the
+    MAP_FIXED_NOREPLACE gate admits, so no higher page can be mapped
+    first. *)
 Definition g : Z := 0x7fffff7fd000%Z.
 
 (* -------------------------------------------------------------------------
    Case 1, D3.  The mapping is made with MAP_FIXED_NOREPLACE at [g]:
    Linux keeps no guard gap on that path, so it maps [g] whatever the
-   stack's size, and so does the model.  Then the grow.  [g + 8192] is
-   the stack's floor: the grown range meets neither the stack nor
-   anything else, and Linux grows in place ([vma_expandable] tests only
+   stack's size, and so does the model.  Then D3's own grow, to 8 KiB:
+   the grown range ends a page below the stack's floor and meets nothing,
+   and Linux grows in place ([vma_expandable] tests only
    [find_vma_intersection], mm/mremap.c).  The model used to answer this
    with a move, because [alloc_top] ([g + 4096]) bounded every grow.
+   And the same grow to 12 KiB, which ends EXACTLY at the stack's floor:
+   still in place, because the stack's entry is the only thing above and
+   an in-place grow keeps no guard gap.
    ------------------------------------------------------------------------- *)
 
 Definition d3_map := check_syscall_for_run (mmap_in g f_noreplace) (mmap_at g) sv_start.
@@ -228,6 +242,24 @@ Example d3_mremap_inplace_accepted :
   summarize (mremap_inplace g)
     (check_syscall_for_run (mremap_in g) (mremap_inplace g) (model_of d3_map sv_start))
   = OOk g [(g, 8192%Z)].
+Proof. vm_compute. reflexivity. Qed.
+
+Example d3_mremap_inplace_to_the_floor_accepted :
+  (g + 12288 = 0x7fffff800000)%Z
+  /\ summarize (mremap3_inplace g)
+       (check_syscall_for_run (mremap3_in g) (mremap3_inplace g) (model_of d3_map sv_start))
+     = OOk g [(g, 12288%Z)].
+Proof. split; vm_compute; reflexivity. Qed.
+
+(** One page further reaches into the stack's entry, and the grow is not
+    in place: the in-place answer is refused. *)
+Example d3_mremap_inplace_into_the_stack_refused :
+  summarize (mkEffectU (Z_to_bv 64 g) [] [(Z_to_bv 64 (g + 4096), 12288)] [] [] [])
+    (check_syscall_for_run
+       (mkInput 216 [Z_to_bv 64 g; 4096; 16384; 1; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffectU (Z_to_bv 64 g) [] [(Z_to_bv 64 (g + 4096), 12288)] [] [] [])
+       (model_of d3_map sv_start))
+  = OReject.
 Proof. vm_compute. reflexivity. Qed.
 
 (* -------------------------------------------------------------------------

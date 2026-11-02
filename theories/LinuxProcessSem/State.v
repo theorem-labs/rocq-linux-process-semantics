@@ -3011,13 +3011,15 @@ Record VmMaps := mkVmMapsFull {
 (** THE STACK'S RLIMIT FLOOR AS SEEN FROM [sp]: [stack_max_size] below
     the stack pointer this run was started with.
 
-    One reader is left, and it is not a grant gate: [mmap_top], the top
-    of the top-down search, takes the minimum of the mmap base and this
-    (residual R-a of SCOPE.md).  Every gate that used to bound a grant by
-    it — the hint, the bottom-up fallback, MAP_FIXED, [brk], [munmap],
-    [mremap] — reads the stack's own ledger entry ([stack_reserved])
-    and, where Linux keeps one, the guard gap below it
-    ([stack_guard_band]) instead, with [TASK_SIZE] as the top.
+    Two readers are left.  [mmap_top], the top of the top-down search,
+    takes the minimum of the mmap base and this (residual R-a of
+    SCOPE.md).  The MAP_FIXED and MAP_FIXED_NOREPLACE argument gates and
+    their budget mark ([Sys/Mm/Mmap.v]) answer [unmodeled] for a range
+    that ends above it (SCOPE.md, "MAP_FIXED above [State.alloc_top]").
+    The hint, the bottom-up fallback, [brk], [munmap] and [mremap] read
+    the stack's own ledger entry ([stack_reserved]) and, where Linux keeps
+    one, the guard gap below it ([stack_guard_band]), with [TASK_SIZE] as
+    the top.
 
     Computed in [Z] from a [word], so it is below 2^64 for every ledger
     ([alloc_top_lt]) with no wrap argument.

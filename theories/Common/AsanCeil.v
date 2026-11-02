@@ -4,10 +4,12 @@
     The reflective ASan automation (AsanPlanCore / AsanPlan / AsanPlanSound /
     the AsanNodes* files) assumes that every anonymous grant ends below the
     CONSTANT [alloc_ceiling = 0x7fff7f800000] and that first-fit placement
-    starts at [bottomup_floor = 0x2aaaaaaab000].  The spec instead bounds
-    grants by [State.alloc_top h = vm_init_sp h - stack_max_size] (the RUN's
-    stack pointer) and has no floor (placement is admissibility, not a
-    search).  The checker keeps its numeric constants
+    starts at [bottomup_floor = 0x2aaaaaaab000].  The spec instead places
+    a grant by [Sys/Mm/Mmap.linux_place], whose top-down window stops at
+    [State.mmap_top h], at most [State.alloc_top h = vm_init_sp h -
+    stack_max_size] (the RUN's stack pointer), and whose fallback reaches
+    [TASK_SIZE]; the stack's entry and guard band lie above the ceiling
+    ([stack_band_ok] below).  The checker keeps its numeric constants
     ([AsanPlanCore.CEIL] / [FLOOR]); soundness needs only that the constant
     ceiling lies at or below the spec's: for every admissible run
     [sp >= sp_window_lo = 0x7fff80000000] ([Run.valid_sp]), hence

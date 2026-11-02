@@ -1336,7 +1336,8 @@ Definition linux_place (h : VmMaps) (kb : KernelBuild) (hint : word) (nZ a : Z)
     MAP_FIXED shapes are recognized separately below.  A NON-NULL [addr]
     is not constrained: without MAP_FIXED it is only a hint, and
     [linux_place] decides it as the kernel does — the hint itself when
-    the range is free below [State.alloc_top], else the top-down search.
+    the range is free below [State.TASK_SIZE] and clear of the stack's
+    guard band ([State.stack_guard_band]), else the top-down search.
     A NULL [addr] leaves the kernel to place, and [linux_place] gives
     the one address — see the placement section above.
     Everything else — file-backed mappings, executable permissions,
@@ -1726,12 +1727,12 @@ Definition mmap_fixed_rw_span_budget_ok (flags : word) (m : Model)
    WHAT THE LEDGER SEES.  The kernel's own VMAs — the vdso/vvar pair
    and the stack [execve] installs — are [vm_reserved] entries
    ([State.vdso_reserved], [State.stack_reserved]), so a request that
-   lands on them answers -EEXIST here as it does on Linux.  The stack's
-   entry is the stack at its full [RLIMIT_STACK] size, so a request
-   below Linux's current stack VMA but inside that window answers
-   -EEXIST here where Linux, whose stack is still short, grants it
-   (residual R-e of SCOPE.md).  No guard gap is kept on this path:
-   [__get_unmapped_area] hands a MAP_FIXED address straight back.
+   lands on the pair answers -EEXIST here as it does on Linux.  A request
+   that reaches the stack's entry never gets that far: the entry starts
+   above [State.alloc_top], so the argument gate below answers
+   [unmodeled] first (SCOPE.md, "MAP_FIXED above [State.alloc_top]").
+   No guard gap is kept on this path: [__get_unmapped_area] hands a
+   MAP_FIXED address straight back.
    ========================================================================= *)
 
 (** Does [flags] spell a MAP_FIXED_NOREPLACE request over the plain
@@ -1786,7 +1787,6 @@ Definition mmap_noreplace_noaccess_b (prot flags off : word) : bool :=
     Linux looks at the FLAGS first and the length second — see
     [mmap_plain_anon_b] for the citations.  For the modeled shape
     ([mmap_modeled_b]): either fails
-    with an errno from [mmap_errnos], or the kernel grants ANY
     with an errno from [mmap_errnos], or the kernel grants the
     page-aligned, nonzero region [linux_place] gives, below [TASK_SIZE],
     disjoint from the binary image, the stack, the vdso/vvar pair, the

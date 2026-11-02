@@ -309,9 +309,9 @@ Definition mremap_final_budget_b (m : Model)
     size, so a grow into the part of that window Linux's shorter stack
     VMA does not cover yet is refused here (residual R-e of SCOPE.md).
     [Checks/Cases/Mm/StackVma.v] pins the boundary on a real launch:
-    [d3_mremap_inplace_accepted] grows a page up to the stack's floor in
-    place, and [d3_control_inplace_accepted] does the same two pages
-    lower.  The
+    [d3_mremap_inplace_to_the_floor_accepted] grows a mapping in place up
+    to the stack's floor, and [d3_mremap_inplace_into_the_stack_refused]
+    one page further is refused.  The
     [TASK_SIZE] conjunct is [check_mremap_params]'s own limit and keeps
     the grown end a word. *)
 (** THE ROOM TEST ALONE, with no budget in it.  Linux asks the two
