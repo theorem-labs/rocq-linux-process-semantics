@@ -335,7 +335,15 @@ def model_armor(found):
         try:
             result = answer["sanitizationResult"]["filterResults"]["pi_and_jailbreak"]["piAndJailbreakFilterResult"]
         except (KeyError, TypeError):
-            raise CheckError(f"no prompt injection result for piece {i + 1}") from None
+            # What the service said instead, its own metadata and no text: the invocation's state, its error, and
+            # the filters it answered for.
+            r = answer.get("sanitizationResult") if isinstance(answer, dict) else None
+            r = r if isinstance(r, dict) else {}
+            raise CheckError(f"no prompt injection result for piece {i + 1}: invocationResult "
+                             f"{r.get('invocationResult')!r}, sanitizationMetadata "
+                             f"{json.dumps(r.get('sanitizationMetadata'))[:500]}, filterResults keys "
+                             f"{sorted((r.get('filterResults') or {}).keys()) if isinstance(r.get('filterResults'), dict) else None}, "
+                             f"answer keys {sorted(answer) if isinstance(answer, dict) else type(answer).__name__}") from None
         if result.get("executionState") != "EXECUTION_SUCCESS":
             raise CheckError(f"the filter did not run on piece {i + 1}: "
                              f"{json.dumps(result.get('messageItems'))[:500]}")
@@ -473,11 +481,32 @@ def screen(review):
             word, detail = "error", {"error": str(e)[:2000]}
         except Exception as e:   # a fault of this file: no answer, and so held
             word, detail = "error", {"error": f"{type(e).__name__}: {str(e)[:2000]}"}
-        reason["checks"][name] = dict(detail, word=word)
+        reason["checks"][name] = dict(detail, word=word, outcome=outcome(word, detail.get("error", "")))
     for name in CHECKS:
         reason["checks"].setdefault(name, {"word": "not listed in SCREEN_CHECKS"})
     clean = all(reason["checks"][name]["word"] == "clean" for name in ran)
     return ("clean" if clean else "held"), ran, reason
+
+
+def outcome(word, error):
+    """What a check's run was, for the public log: that it answered (never which word), or the kind of failure, which
+    says nothing of the text: an HTTP status, an unreachable service, no time left, a missing setting, or an answer
+    in a form the screen does not know."""
+    if word in WORDS:
+        return "answered"
+    m = re.match(r"HTTP (\d{3}) ", error)
+    if m:
+        return f"no answer, HTTP {m.group(1)}"
+    # The service's own state and the names of the filters it answered for: no text of the item is in either.
+    m = re.match(r"no prompt injection result for piece \d+: invocationResult ('[A-Z_]+'|None), .*filterResults keys "
+                 r"(\[[a-z_', ]*\]|None),", error)
+    if m:
+        return f"no answer, no prompt injection result (invocationResult {m.group(1)}, filters {m.group(2)})"
+    for needle, kind in (("ran out of its", "no answer, out of time"), (" reaching ", "no answer, unreachable"),
+                         (" is not set", "no answer, a setting is missing")):
+        if needle in error:
+            return kind
+    return "no answer, an answer in a form the screen does not know"
 
 
 def store(reason):
@@ -508,7 +537,11 @@ def main():
         kept = "Its reason could not be stored."
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
         f.write(f"verdict={verdict}\nchecks={','.join(ran)}\n")
-    print(f"The screen's verdict: {verdict}, from the checks {', '.join(ran) or 'none'}. {kept}")
+    # Each check's outcome class, never its word: an operator tells a broken screen from a working one by it.
+    outcomes = "; ".join(f"{n}: {reason.get('checks', {}).get(n, {}).get('outcome', '?')}" for n in ran)
+    held_unscreened = " The text could not be screened." if verdict == "held" and not ran else ""
+    print(f"The screen's verdict: {verdict}, from the checks {', '.join(ran) or 'none'}"
+          f"{f' ({outcomes})' if outcomes else ''}.{held_unscreened} {kept}")
     return 0
 
 
