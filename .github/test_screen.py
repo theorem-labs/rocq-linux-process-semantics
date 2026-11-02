@@ -449,6 +449,10 @@ class ScreenTest(unittest.TestCase):
         self.assertEqual(v, "held")
         self.assertEqual(reason["unscreenable"], ["the diff shows a.v as binary"])
         self.fresh()
+        self.item(kind="pr", diff='Binary files /dev/null and "b/\\303\\251.v" differ\n')
+        v, reason = self.verdict()
+        self.assertEqual((v, reason["unscreenable"]), ("held", ["the diff shows \\303\\251.v as binary"]))
+        self.fresh()
         self.item(kind="pr", diff="diff --git a/old.png b/old.png\nBinary files a/old.png and /dev/null differ\n")
         self.assertEqual(self.verdict()[0], "clean")
 
@@ -507,7 +511,7 @@ class ScreenTest(unittest.TestCase):
                 self.assertEqual(self.services.to(":sanitizeUserPrompt") + self.services.to("/v1/messages"), [])
 
     def test_text_that_hides_text_is_held_unscreened(self):
-        for ch in ("\U000E0041", "\u202E", "\u2066"):
+        for ch in ("\U000E0041", "\u202E", "\u2066", "\u200B", "\u200D", "\uFEFF", "\u00AD", "\u2062"):
             with self.subTest(ch=hex(ord(ch))):
                 self.fresh()
                 self.item(body=f"Fine.{ch}hidden")

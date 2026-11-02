@@ -100,12 +100,13 @@ env:
   # that the screen holds, never counts. The reviews of screened items count toward SCREENED_HOURLY_CAP instead.
   HOURLY_CAP: "10"
   # The same cap for the reviews of screened pull requests and issues, counted apart, so that accounts without write
-  # access cannot use up HOURLY_CAP. A screened run at this cap is held.
-  SCREENED_HOURLY_CAP: "4"
+  # access cannot use up HOURLY_CAP. A screened run at this cap is held. It is above OUTSIDE_HOURLY_LIMIT, so one
+  # account cannot fill it alone; several new accounts together still can, and then the others' items are held.
+  SCREENED_HOURLY_CAP: "6"
   # The most runs that one account without write access may start in an hour and have screened: its next pull request,
   # issue or push in that hour is held without a screen. Every run its event started that the trust job did not skip
   # counts, the held ones too, so a burst stays held until an hour has passed since its runs.
-  OUTSIDE_HOURLY_LIMIT: "4"
+  OUTSIDE_HOURLY_LIMIT: "3"
   # The label a held pull request or issue gets, and the marker of the comment that says so.
   HELD_LABEL: review-held
 

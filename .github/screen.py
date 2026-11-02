@@ -112,10 +112,13 @@ def read_text(path):
         return None
 
 
-BINARY_DIFF = re.compile(r"^Binary files (?:a/.*|/dev/null) and (b/.*) differ$", re.M)
-# Characters that hide text from a person or reorder what a person sees: the Unicode tag characters and the
-# bidirectional controls. U+2060 is not among them: the review's own comments put it after every @.
-HIDING = re.compile("[\U000E0000-\U000E007F\u202A-\u202E\u2066-\u2069]")
+# git's line for a binary change; it quotes a name that is not plain ASCII ("b/\303\251.v").
+BINARY_DIFF = re.compile(r"^Binary files (.*) and (.*) differ$", re.M)
+# Characters that hide text from a person, reorder what a person sees, or split a word so that a check misses it
+# while a model reads through it: the Unicode tag characters, the bidirectional controls, the zero-width space, joiner
+# and non-joiner, the byte order mark, the soft hyphen and the invisible operators. U+2060 is not among them: the
+# review's own comments put it after every @.
+HIDING = re.compile("[\U000E0000-\U000E007F\u202A-\u202E\u2066-\u2069\u200B-\u200D\uFEFF\u00AD\u2061-\u2064]")
 
 
 def parts(review):
@@ -163,11 +166,13 @@ def parts(review):
                 found.append((shown, text))
                 if shown == "pr.diff":
                     for m in BINARY_DIFF.finditer(text):
-                        unscreenable.append(f"the diff shows {m.group(1)[2:]} as binary")
+                        if m.group(2) != "/dev/null":   # a deleted file is not read
+                            unscreenable.append(f"the diff shows {m.group(2).strip(chr(34))[2:]} as binary")
     found = [(s, t) for s, t in found if t.strip()]
     for source, text in found:
         if HIDING.search(text):
-            unscreenable.append(f"{source} holds characters that hide text (Unicode tags or bidirectional controls)")
+            unscreenable.append(f"{source} holds characters that hide text (Unicode tags, bidirectional controls "
+                                "or zero-width characters)")
     total = sum(len(s) + len(t) + 4 for s, t in found)
     if total > MAX_CHARS:
         unscreenable.append(f"{total} characters, over the {MAX_CHARS} this screen reads")

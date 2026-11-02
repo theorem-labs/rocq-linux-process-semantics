@@ -1003,6 +1003,9 @@ class CapTest(Runner):
         self.assertEqual(rc, 1, out)
         self.assertIn("HELD", out)
 
+    def test_one_account_cannot_fill_the_screened_pool_alone(self):
+        self.assertLess(int(WF["env"]["OUTSIDE_HOURLY_LIMIT"]), int(WF["env"]["SCREENED_HOURLY_CAP"]))
+
     def test_screened_reviews_have_their_own_cap(self):
         screened = int(WF["env"]["SCREENED_HOURLY_CAP"])
         self.assertEqual(self.cap("screen", ["review"] * 30 + ["review (screened)"] * (screened - 1))[0], 0)
@@ -1014,12 +1017,23 @@ class CapTest(Runner):
         self.assertEqual(evaluate(name, {"needs.trust.outputs.route": "review"}), "review")
 
 
-class BunTest(unittest.TestCase):
+class BunTest(Runner):
     def test_no_other_bun_can_come_first(self):
         names = [s.get("name") for s in JOBS["review"]["steps"]]
         self.assertLess(names.index("No Bun but the pinned one"), names.index("Review"))
         run = step("review", "No Bun but the pinned one")["run"]
-        self.assertIn("/usr/bin/bun /bin/bun", run)
+        self.assertEqual(run.count("/usr/bin/bun /bin/bun"), 1)
+        # the step's own logic, on stand-in paths
+        usr, bin_ = os.path.join(self.dir, "usr-bin-bun"), os.path.join(self.dir, "bin-bun")
+        script = run.replace("/usr/bin/bun /bin/bun", f"{usr} {bin_}")
+        self.assertEqual(self.run_script(script)[0], 0)
+        for path in (usr, bin_):
+            with self.subTest(path=path):
+                open(path, "w").close()
+                rc, out, _ = self.run_script(script)
+                self.assertEqual(rc, 1, out)
+                self.assertIn("ahead of the pinned Bun", out)
+                os.remove(path)
 
 
 if __name__ == "__main__":
