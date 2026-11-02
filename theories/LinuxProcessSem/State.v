@@ -3385,7 +3385,7 @@ Record KernelBuild := mkKernelBuild {
 
 (** The vvar pages the kernel maps below the vDSO text: four, fixed by
     the build ([__VDSO_PAGES], arch/riscv/include/asm/vdso.h;
-    [VDSO_NR_PAGES], lib/vdso/datastore.c, Linux v6.18.46, commit
+    [VDSO_NR_PAGES], include/vdso/datapage.h, Linux v6.18.46, commit
     1f99e9ab748f). *)
 Definition vdso_vvar_pages : Z := 4.
 

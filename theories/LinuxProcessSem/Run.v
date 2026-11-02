@@ -3069,9 +3069,10 @@ Definition stack_rnd_max : Z := 0x3ffff000%Z.
     to 0x3ffff, when PF_RANDOMIZE is set, and nothing otherwise.
     [arch_align_stack] (arch/riscv/kernel/process.c) subtracts [r]
     from 0 to 4095 and clears the low four bits; from a page-aligned
-    [T] that gives [T] again for [r] in 0..4094 and [T - 4096] for
-    [r = 4095], because [(T - 4095) & ~0xf = T - 4096].  PAGE_ALIGN
-    then rounds the first case back up to [T].
+    [T] that gives a value above [T - 4096] for [r] in 0..4080, and
+    [T - 4096] for [r] in 4081..4095, because [T - 4096] is the only
+    16-aligned value in [[T - 4095, T - 4081]].  PAGE_ALIGN then rounds
+    the first case back up to [T].
 
     So the end is page-aligned, and it is [T0 - 4096 * k] for [k] in
     [0, 0x40000] with randomization, or [T0] or [T0 - 4096] without.
