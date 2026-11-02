@@ -347,3 +347,22 @@ Example walk_empty_link_is_pure_jump :
   walk empty_link_world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [101]) f_follow
   = (WOk (LDentry 1 1), false).
 Proof. vm_compute. reflexivity. Qed.
+
+(** A host name the tables record as absent is -ENOENT, as Linux's
+    negative lookup gives; any other missing host name stays undecided,
+    and a listed dentry still wins over a stale record of its name. *)
+Definition s_probe : list byte := bytes [112; 114; 111; 98; 101].
+Definition absent_world : NsState :=
+  mkNsState (ns_mounts world) (ns_userns world) (ns_mntns world) (ns_pidns world) (ns_netns world)
+            (ns_sbs world) (ns_dentries world) (ns_inodes world) (ns_files world)
+            (mkNsEnv 100000 [] [] default_mi_env 65536 [(1%positive, s_probe); (1%positive, s_home)]).
+Example walk_host_absent :
+  walk absent_world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [47] ++ s_probe) f_follow
+  = (WErr ENOENT, false)
+  /\ walk world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [47] ++ s_probe) f_follow
+     = (WOver, false)
+  /\ walk absent_world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [47; 120]) f_follow
+     = (WOver, false)
+  /\ walk absent_world (ctx 1 no_caps) creds no_fd (LDentry 1 1) (bytes [47] ++ s_home) f_follow
+     = (WOk (LDentry 1 2), false).
+Proof. repeat split; vm_compute; reflexivity. Qed.
