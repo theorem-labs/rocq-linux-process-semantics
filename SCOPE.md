@@ -599,7 +599,7 @@ equivalence) can be true of the model and false of Linux.
   Linux can grant and the model does not: a hint there is honoured by
   Linux and placed elsewhere by the model, an in-place `mremap` grow into
   the window moves instead, and a `MAP_FIXED` or `MAP_FIXED_NOREPLACE`
-  mapping or an `munmap` there is `unmodeled`. In each difference the
+  mapping or an `munmap` into the window is `unmodeled`. In each difference the
   model places elsewhere, moves or declines; it never grants an address
   that Linux refuses.
   `Checks/Cases/Mm/StackVma.v`, `residual_hint_below_full_stack_refused`,
