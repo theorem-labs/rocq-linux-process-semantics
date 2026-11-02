@@ -323,16 +323,18 @@ Definition replay_kernel : KernelBuild :=
 (** The launch.  Nothing below reads the argument vector, the environment,
     the file system or the credentials, so they are empty or ordinary; the
     three fields that decide a placement — the reserved ledger, the mmap
-    base and the stack pointer — are the log's.  The three trailing
+    base and the stack pointer — are the log's.  The trailing
     declarations are [in_channel_reader] and [in_sigpipe_default], both
     [true], and [in_sigpipe_terminal], [false]: an ordinary launch whose
     standard output is read, whose SIGPIPE is at SIG_DFL and whose
     SIGPIPE death is declined, which is what [Run.valid_input] pins and
-    what a placement replay has no opinion about. *)
+    what a placement replay has no opinion about.  The launch parent pid
+    and inheritable capability set are 0. *)
 Definition replay_input : ProcInput :=
   mkProcInput_full [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
     net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48
-    default_urandom [] replay_kernel default_execfn true true false.
+    default_urandom [] replay_kernel default_execfn true true false
+    (Z_to_bv 64 0) (Z_to_bv 64 0).
 
 (** The probe's own image, as /proc/self/maps reported it.  The vDSO pair is
     not here: [init_model] appends it from [replay_kernel]. *)

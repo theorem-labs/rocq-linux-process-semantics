@@ -73,7 +73,8 @@ let seed : M.rawProcInput = {
   rpi_urandom = []; rpi_tmp = [];
   rpi_kernel = kernel_default; rpi_execfn = execfn_default;
   rpi_channel_reader = true; rpi_sigpipe_default = true;
-  rpi_sigpipe_terminal = false }
+  rpi_sigpipe_terminal = false; rpi_ppid = z "0";
+  rpi_cap_inheritable = z "0" }
 
 let model =
   match M.init_model_checked [] (z "4096") (z "4096") (z "4096") (z "0") seed with
@@ -168,6 +169,10 @@ let () =
     (seed_refused { seed with M.rpi_sigmask = z w });
   check "an out-of-range AT_HWCAP is refused"
     (seed_refused { seed with M.rpi_hwcap = z w });
+  check "an out-of-range parent pid is refused"
+    (seed_refused { seed with M.rpi_ppid = z w });
+  check "an out-of-range inheritable capability set is refused"
+    (seed_refused { seed with M.rpi_cap_inheritable = z w });
   check "an argv byte above 255 is refused"
     (seed_refused { seed with M.rpi_argv = [[z "256"]] });
   check "an envp byte above 255 is refused"
@@ -246,7 +251,8 @@ let () =
                   rkb_suid_dumpable = M.SuidDumpRoot };
               rpi_execfn = [z "47"; z "97"];
               rpi_channel_reader = true; rpi_sigpipe_default = true;
-              rpi_sigpipe_terminal = false }))
+              rpi_sigpipe_terminal = false; rpi_ppid = z "0";
+              rpi_cap_inheritable = z "0" }))
 
 (* ----------------------------------------------------------------- *)
 (* the file-system image the run is launched over                     *)

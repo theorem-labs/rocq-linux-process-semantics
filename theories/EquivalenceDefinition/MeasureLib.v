@@ -2119,12 +2119,12 @@ Qed.
    ========================================================================= *)
 
 (** A canonical [FinInput.FinProcInput] over a given core.  The four
-    core fields are copied; the nine LAUNCH ENVIRONMENT fields and the
+    core fields are copied; the eleven LAUNCH ENVIRONMENT fields and the
     four declarations are invented, and the choices are these:
 
     - [fin_uid], [fin_gid], [fin_nofile] and [fin_sigmask] are all
       [Z_to_bv 64 0].  [Run.valid_input] constrains four
-      of the nine — the ids through [Run.valid_creds] and [Run.valid_id]
+      of the eleven — the ids through [Run.valid_creds] and [Run.valid_id]
       ([bv_unsigned] below [2 ^ 32 - 1]), the descriptor limit through
       [Run.valid_nofile] ([bv_unsigned] at most [2 ^ 31 - 64]), and the
       blocked mask through [Run.valid_sigmask] (no [SIGKILL] or
@@ -2169,9 +2169,11 @@ Qed.
       [Run.valid_input] fixes it too, so it is forced in the same way:
       [true] would be valid only under [Run.valid_input_sigpipe_kills]
       or [Run.valid_input_channel_closed].
+    - [fin_ppid] and [fin_cap_inheritable] are [Z_to_bv 64 0].
+      [Run.valid_input] does not constrain either field.
 
     The choice is arbitrary and is allowed to be, because
-    [FinInput.fin_core] forgets all thirteen ([FinInput.fin_core_env_eq]
+    [FinInput.fin_core] forgets all fifteen ([FinInput.fin_core_env_eq]
     pins that it forgets these and nothing else).  What the embedding is
     FOR is [fin_core_core_input]: it is a section of
     [FinInput.fin_core], so a statement about a list of cores can be
@@ -2186,7 +2188,8 @@ Definition core_input (c : FinCore) : FinProcInput :=
   mkFinProcInput (core_argv c) (core_envp c) (core_fs c) (core_stdin c)
                  (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
                  (Z_to_bv 64 0) (Z_to_bv 64 0) hwcap_rv64gc false Sv48 [] []
-                 default_kernel default_execfn true true false.
+                 default_kernel default_execfn true true false
+                 (Z_to_bv 64 0) (Z_to_bv 64 0).
 
 (** THE LAUNCH-ENVIRONMENT FIELDS ARE NOT ARBITRARY, even though this
     definition claims nothing about them.  A caller proving its own

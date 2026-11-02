@@ -653,8 +653,10 @@ Record RawProcInput := mkRawProcInput {
                                              a bool, so every value is in type *)
   rpi_sigpipe_default : bool;             (* SIGPIPE's disposition is SIG_DFL
                                              ([State.in_sigpipe_default]); a bool *)
-  rpi_sigpipe_terminal : bool             (* the launch declares the SIGPIPE death
+  rpi_sigpipe_terminal : bool;            (* the launch declares the SIGPIPE death
                                              ([State.in_sigpipe_terminal]); a bool *)
+  rpi_ppid : Z;                           (* the launch parent pid *)
+  rpi_cap_inheritable : Z                 (* the launch inheritable capability set *)
 }.
 
 Fixpoint stream_of_bytes (l : list byte) : InputStream :=
@@ -927,8 +929,10 @@ Qed.
     [in_sigpipe_default], which bought [rpi_channel_reader] and
     [rpi_sigpipe_default], and for [in_sigpipe_terminal], which bought
     [rpi_sigpipe_terminal]; those three are bools, so every value is in
-    type and their check is the type itself.  The repair is a raw
-    field and its check, never [mkProcInput] and never a default. *)
+    type and their check is the type itself.  The parent pid and inheritable
+    set are words, so [rpi_ppid] and [rpi_cap_inheritable] are checked by
+    [word_of_Z].  The repair is a raw field and its check, never
+    [mkProcInput] and never a default. *)
 Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
   match bytes_list_of_Z (rpi_argv r), bytes_list_of_Z (rpi_envp r),
         image_fs_of_raw (rpi_image_fs r), bytes_of_Z (rpi_stdin r),
@@ -939,16 +943,17 @@ Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
       match word_of_Z (rpi_nofile r), word_of_Z (rpi_sigmask r),
             word_of_Z (rpi_hwcap r), bytes_of_Z (rpi_urandom r),
             fs_of_raw (rpi_tmp r), kernel_of_raw (rpi_kernel r),
-            execfn_of_Z (rpi_execfn r) with
+            execfn_of_Z (rpi_execfn r), word_of_Z (rpi_ppid r),
+            word_of_Z (rpi_cap_inheritable r) with
       | Some nofile, Some sigmask, Some hwcap, Some urandom, Some tmp,
-        Some kernel, Some execfn =>
+        Some kernel, Some execfn, Some ppid, Some cap_inheritable =>
           Some (mkProcInput_full argv envp image_fs (stream_of_bytes stdin)
                   uid gid groups net nofile sigmask hwcap
                   (rpi_abort_terminal r) (rpi_va_size r)
                   (urandom_of_bytes urandom) tmp kernel execfn
                   (rpi_channel_reader r) (rpi_sigpipe_default r)
-                  (rpi_sigpipe_terminal r))
-      | _, _, _, _, _, _, _ => None
+                  (rpi_sigpipe_terminal r) ppid cap_inheritable)
+      | _, _, _, _, _, _, _, _, _ => None
       end
   | _, _, _, _, _, _, _, _ => None
   end.

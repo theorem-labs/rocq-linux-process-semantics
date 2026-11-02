@@ -737,8 +737,10 @@ Definition child_ms (c c' : config) : machine_state :=
     ([copy_process] sets it in
     the child when the parent has it) and the dumpable mode ([mm_init]
     keeps the parent's MMF_DUMPABLE bits; under CLONE_VM the mm is the
-    parent's own), kernel/fork.c, read at v6.18.44, identical at
-    v6.18.46. *)
+    parent's own).  The child parent pid is the parent's pinned tid, or
+    0 before it is pinned; [getppid] observes that value.  The inheritable
+    capability set copies with the credentials.  Kernel citations, read at
+    v6.18.44, identical at v6.18.46. *)
 Definition child_proc (ps : ProcState) : ProcState :=
   mkProcState (procst_halted ps) None (procst_creds ps)
               false (procst_sigmask ps)
@@ -755,7 +757,12 @@ Definition child_proc (ps : ProcState) : ProcState :=
               false (procst_channel_reader ps) (procst_sigpipe_default ps)
               (procst_sigpipe_terminal ps)
               (Z_to_bv 64 0)
-              [] (procst_no_new_privs ps) (procst_dumpable ps).
+              [] (procst_no_new_privs ps) (procst_dumpable ps)
+              (match procst_tid ps with
+               | Some tid => tid
+               | None => Z_to_bv 64 0
+               end)
+              (procst_cap_inheritable ps).
 
 Definition with_proc (ps : ProcState) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) ps (m_lim m) (m_time m).

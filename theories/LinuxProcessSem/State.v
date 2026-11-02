@@ -4500,7 +4500,31 @@ Record ProcState := mkProcState {
                                     read at v6.18.44 and identical at v6.18.46:
                                     fs/exec.c [begin_new_exec], kernel/sys.c
                                     [prctl], kernel/cred.c [commit_creds],
-                                    kernel/fork.c [mm_init]. *)
+                                    kernel/fork.c [mm_init]. *);
+  procst_ppid : word             (* THE CURRENT PARENT PID, the value
+                                    [task->real_parent] gives [getppid]
+                                    (kernel/sys.c).  It is seeded from
+                                    [ProcInput] at launch.  No modeled call
+                                    writes it on this branch; [with_ppid] is the
+                                    one setter.  A child gets the parent's
+                                    pinned tid, or 0 before the parent has
+                                    pinned one; [Procs.child_proc] names that
+                                    rule.  Kernel citations, read at v6.18.44
+                                    and identical at v6.18.46: kernel/sys.c
+                                    [getppid], kernel/sched/core.c
+                                    [task_ppid_nr_ns]. *);
+  procst_cap_inheritable : word  (* THE INHERITABLE CAPABILITY SET,
+                                    [cred->cap_inheritable]
+                                    (include/linux/cred.h).  Every word is a
+                                    launch value; [init_model] copies
+                                    [ProcInput]'s declaration.  No modeled call
+                                    writes it on this branch; [with_cap_inheritable]
+                                    is the one setter, and [Procs.child_proc]
+                                    copies it when fork copies credentials.
+                                    Kernel citations, read at v6.18.44 and
+                                    identical at v6.18.46: include/linux/cred.h,
+                                    security/commoncap.c [cap_capset],
+                                    kernel/fork.c [copy_process]. *)
 }.
 
 (** The resource limits the process has been observed to have. *)
@@ -4675,6 +4699,12 @@ Definition m_no_new_privs (m : Model) : bool :=
 (** The dumpable mode, 0, 1 or 2; see [procst_dumpable]. *)
 Definition m_dumpable (m : Model) : word :=
   procst_dumpable (m_proc m).
+(** The current parent pid; see [procst_ppid]. *)
+Definition m_ppid (m : Model) : word :=
+  procst_ppid (m_proc m).
+(** The inheritable capability set; see [procst_cap_inheritable]. *)
+Definition m_cap_inheritable (m : Model) : word :=
+  procst_cap_inheritable (m_proc m).
 Definition m_utsname (m : Model) : option (list byte) :=
   procst_utsname (m_proc m).
 Definition m_statpins (m : Model) : list (Fs.path * list byte) :=
@@ -4728,7 +4758,8 @@ Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
                (mkCreds overflow_id overflow_id overflow_id
                         overflow_id overflow_id overflow_id [])
                false (Z_to_bv 64 0) false None false false false false []
-               false true true false (Z_to_bv 64 0) [] false (Z_to_bv 64 1))
+               false true true false (Z_to_bv 64 0) [] false (Z_to_bv 64 1)
+               (Z_to_bv 64 0) (Z_to_bv 64 0))
             (mkLimState rlim default_nofile)
             (mkTimeState (Z_to_bv 64 0)).
 
@@ -4850,7 +4881,8 @@ Definition with_fs (fs : Fs.Fs) (m : Model) : Model :=
                          (statpins_restrict fs (m_statpins m))
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 (** Halt the process by an EXIT, which is the other half of what the
     kill flag distinguishes: this clears it, so a model this produced has
@@ -4869,7 +4901,8 @@ Definition with_halted (code : word) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 Definition with_tid (tid : word) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -4881,7 +4914,8 @@ Definition with_tid (tid : word) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 Definition with_rlimit_core (bs : list byte) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m) (m_proc m)
@@ -4906,7 +4940,8 @@ Definition with_utsname (bs : list byte) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 (** Look a file's stat pin up by path.  [None] means no [fstat] has
     delivered a [struct stat] for that file yet, which is the branch
@@ -4945,7 +4980,8 @@ Definition with_statpin (p : Fs.path) (bs : list byte) (m : Model) : Model :=
                          ((p, bs) :: m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** Seed the soft descriptor limit.  Its only caller is [init_model], for
@@ -4974,7 +5010,8 @@ Definition with_abort_terminal (b : bool) (m : Model) : Model :=
                          (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 Definition with_nofile (n : word) (m : Model) : Model :=
@@ -4990,7 +5027,8 @@ Definition with_creds (c : Creds) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 Definition with_setsid_succeeded (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
@@ -5001,7 +5039,8 @@ Definition with_setsid_succeeded (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** Record that the process now has something to reap.  The released
@@ -5029,7 +5068,8 @@ Definition with_children (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 (** Install a new blocked mask.  [Kernel.Signal.rt_sigprocmask_spec] is
     the only caller, and the only kernel path that reaches
@@ -5052,7 +5092,8 @@ Definition with_sigmask (s : word) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** Record that a [sigaltstack] has installed an alternate stack.
@@ -5082,7 +5123,8 @@ Definition with_sigaltstack_installed (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** Record that SIGABRT has been sent and is BLOCKED, so it waits in
@@ -5111,7 +5153,8 @@ Definition with_sigabrt_pending (m : Model) : Model :=
                          (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** Record that SIGPIPE has been sent and is BLOCKED, the same shape as
@@ -5135,7 +5178,8 @@ Definition with_sigpipe_pending (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          true (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** Seed the environment's channel-reader fact.  Its only caller is
@@ -5156,7 +5200,8 @@ Definition with_channel_reader (b : bool) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) b
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** Seed the task's SIGPIPE disposition.  Its only caller is
@@ -5177,7 +5222,8 @@ Definition with_sigpipe_default (b : bool) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          b (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** Seed the task's SIGPIPE-death declaration.  Its only caller is
@@ -5194,7 +5240,8 @@ Definition with_sigpipe_terminal (b : bool) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) b (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** Install a parent-death signal.  Two kinds of caller, both in
@@ -5212,7 +5259,8 @@ Definition with_pdeath_signal (s : word) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) s
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** Install the list of unreaped children.  Its writers are the reap
@@ -5228,7 +5276,8 @@ Definition with_child_pids (l : list word) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         l (m_no_new_privs m) (m_dumpable m))
+                         l (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** Record a child a successful clone created: [with_children]'s bit,
@@ -5261,7 +5310,8 @@ Definition with_no_new_privs (b : bool) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) b (m_dumpable m))
+                         (m_child_pids m) b (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** Install a dumpable mode.  Two kinds of caller, both in [Kernel.Sys]:
@@ -5278,7 +5328,41 @@ Definition with_dumpable (d : word) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) d)
+                         (m_child_pids m) (m_no_new_privs m) d
+                         (m_ppid m) (m_cap_inheritable m))
+            (m_lim m) (m_time m).
+
+(** Install the current parent pid.  No modeled call uses this setter on
+    this branch; see [procst_ppid]. *)
+Definition with_ppid (p : word) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m) (m_sigpipe_terminal m)
+                         (m_pdeath_signal m) (m_child_pids m)
+                         (m_no_new_privs m) (m_dumpable m) p
+                         (m_cap_inheritable m))
+            (m_lim m) (m_time m).
+
+(** Install the inheritable capability set.  No modeled call uses this
+    setter on this branch; see [procst_cap_inheritable]. *)
+Definition with_cap_inheritable (c : word) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m) (m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_default m) (m_sigpipe_terminal m)
+                         (m_pdeath_signal m) (m_child_pids m)
+                         (m_no_new_privs m) (m_dumpable m) (m_ppid m) c)
             (m_lim m) (m_time m).
 
 (** End the process by a fatal signal.  It writes the signal number into
@@ -5339,7 +5423,8 @@ Definition with_killed (sig : word) (m : Model) : Model :=
                          (m_abort_terminal m) (m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_default m) (m_sigpipe_terminal m) (m_pdeath_signal m)
-                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m))
+                         (m_child_pids m) (m_no_new_privs m) (m_dumpable m)
+                         (m_ppid m) (m_cap_inheritable m))
             (m_lim m) (m_time m).
 
 (** The invariant the two fields are written under, stated where the
@@ -7048,7 +7133,19 @@ Record ProcInput := mkProcInput_full {
        position, as [mkProcInput]'s note asks.
 
        [init_model] copies this into [procst_sigpipe_terminal] and
-       nothing else writes it *)
+       nothing else writes it *);
+  in_ppid : word
+    (* THE LAUNCH PARENT PID.  [init_model] copies it into
+       [procst_ppid]; [getppid] reads that current value.  Every word is
+       an input because a parent in another pid namespace is observed as
+       0.  Kernel citations: [task->real_parent] and [getppid],
+       kernel/sys.c, read at v6.18.44 and identical at v6.18.46 *);
+  in_cap_inheritable : word
+    (* THE LAUNCH INHERITABLE CAPABILITY SET.  [init_model] copies it
+       into [procst_cap_inheritable], and [capset] may change the copy.
+       Every word is an input.  Kernel citations: [cred->cap_inheritable],
+       include/linux/cred.h, and [cap_capset], security/commoncap.c,
+       read at v6.18.44 and identical at v6.18.46 *)
 }.
 
 (** THE POSITIONAL-LITERAL FORM: every field except the seven
@@ -7261,7 +7358,8 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
                 (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
        false (in_sigmask inp) false None false false false
        (in_abort_terminal inp) [] false (in_channel_reader inp)
-       (in_sigpipe_default inp) (in_sigpipe_terminal inp) (Z_to_bv 64 0) [] false (Z_to_bv 64 1))
+       (in_sigpipe_default inp) (in_sigpipe_terminal inp) (Z_to_bv 64 0) [] false
+       (Z_to_bv 64 1) (in_ppid inp) (in_cap_inheritable inp))
     (mkLimState None (in_nofile inp))
     (mkTimeState (Z_to_bv 64 0)).
 
@@ -7272,7 +7370,9 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
     the point of keeping it. *)
 Definition init_model_setter_chain (reserved : list (word * word))
     (brk0 mbase sp : word) (lim : Z) (inp : ProcInput) : Model :=
-  with_sigpipe_terminal (in_sigpipe_terminal inp)
+  with_cap_inheritable (in_cap_inheritable inp)
+  (with_ppid (in_ppid inp)
+  (with_sigpipe_terminal (in_sigpipe_terminal inp)
   (with_sigpipe_default (in_sigpipe_default inp)
   (with_channel_reader (in_channel_reader inp)
   (with_abort_terminal (in_abort_terminal inp)
@@ -7294,7 +7394,7 @@ Definition init_model_setter_chain (reserved : list (word * word))
        (in_fs inp)
        None
        None
-       None)))))))))).
+       None)))))))))))).
 Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
   m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.
 Proof. reflexivity. Qed.
@@ -7558,6 +7658,56 @@ Lemma m_vmmaps_with_dumpable : forall (v : word) (m : Model),
   m_vmmaps (with_dumpable v m) = m_vmmaps m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_vmmaps_with_dumpable : model.
+
+Lemma m_kernel_with_ppid : forall v m,
+  m_kernel (with_ppid v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_ppid : model.
+
+Lemma m_ppid_with_ppid : forall (v : word) (m : Model),
+  m_ppid (with_ppid v m) = v.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_ppid_with_ppid : model.
+
+Lemma m_ppid_with_creds : forall (v : Creds) (m : Model),
+  m_ppid (with_creds v m) = m_ppid m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_ppid_with_creds : model.
+
+Lemma m_creds_with_ppid : forall (v : word) (m : Model),
+  m_creds (with_ppid v m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_creds_with_ppid : model.
+
+Lemma m_vmmaps_with_ppid : forall (v : word) (m : Model),
+  m_vmmaps (with_ppid v m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vmmaps_with_ppid : model.
+
+Lemma m_kernel_with_cap_inheritable : forall v m,
+  m_kernel (with_cap_inheritable v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_cap_inheritable : model.
+
+Lemma m_cap_inheritable_with_cap_inheritable : forall (v : word) (m : Model),
+  m_cap_inheritable (with_cap_inheritable v m) = v.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_cap_inheritable_with_cap_inheritable : model.
+
+Lemma m_cap_inheritable_with_creds : forall (v : Creds) (m : Model),
+  m_cap_inheritable (with_creds v m) = m_cap_inheritable m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_cap_inheritable_with_creds : model.
+
+Lemma m_creds_with_cap_inheritable : forall (v : word) (m : Model),
+  m_creds (with_cap_inheritable v m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_creds_with_cap_inheritable : model.
+
+Lemma m_vmmaps_with_cap_inheritable : forall (v : word) (m : Model),
+  m_vmmaps (with_cap_inheritable v m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vmmaps_with_cap_inheritable : model.
 
 Lemma init_model_is_the_setter_chain :
   forall reserved brk0 mbase sp lim inp,
@@ -9603,6 +9753,11 @@ Arguments m_no_new_privs : simpl never.
 Arguments with_no_new_privs : simpl never.
 Arguments m_dumpable : simpl never.
 Arguments with_dumpable : simpl never.
+Arguments m_ppid : simpl never.
+Arguments with_ppid : simpl never.
+Arguments m_cap_inheritable : simpl never.
+Arguments with_cap_inheritable : simpl never.
+
 
 (** And of the model a run starts from.  [init_model] builds one with
     [mkModel], so these are [reflexivity] too -- but a proof cannot see that
@@ -10460,6 +10615,15 @@ Proof. reflexivity. Qed.
 
 Lemma m_dumpable_init_model : forall reserved brk0 mbase sp lim inp,
   m_dumpable (init_model reserved brk0 mbase sp lim inp) = Z_to_bv 64 1.
+Proof. reflexivity. Qed.
+
+Lemma m_ppid_init_model : forall reserved brk0 mbase sp lim inp,
+  m_ppid (init_model reserved brk0 mbase sp lim inp) = in_ppid inp.
+Proof. reflexivity. Qed.
+
+Lemma m_cap_inheritable_init_model : forall reserved brk0 mbase sp lim inp,
+  m_cap_inheritable (init_model reserved brk0 mbase sp lim inp)
+  = in_cap_inheritable inp.
 Proof. reflexivity. Qed.
 
 Lemma m_killed_init_model : forall reserved brk0 mbase sp lim inp,

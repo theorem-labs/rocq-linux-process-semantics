@@ -85,7 +85,8 @@ Proof. exact demo_input_valid. Qed.
 Definition efi_demo_fin : FinProcInput :=
   mkFinProcInput [[]] [] [] [] demo_uid demo_gid demo_groups net_silent
                  default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] []
-                 default_kernel default_execfn true true false.
+                 default_kernel default_execfn true true false
+                 (Z_to_bv 64 0) (Z_to_bv 64 0).
 
 Lemma efi_demo_to_proc_input : to_proc_input efi_demo_fin = efi_demo_input.
 Proof. reflexivity. Qed.
