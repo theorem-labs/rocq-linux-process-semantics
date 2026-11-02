@@ -63,7 +63,8 @@ Definition WAIT_ANY32 : Z := (2 ^ 32 - 1)%Z.
 
     - THE CREATING ARMS RECORD THE CHILD.  [clone_resolve] and
       [clone_ns_resolve] end their pid branch with
-      [modify with_children], and
+      [modify (with_child pid)] ([State.with_children]'s bit and the pid
+      appended to [State.procst_child_pids]), and
       [Checks.ProcessCreation.clone_resolve_declines_or_sets_children]
       and [Checks.ProcessCreation.clone_ns_resolve_declines_or_sets_children]
       are the universal statements of it, over every model, every
@@ -75,7 +76,7 @@ Definition WAIT_ANY32 : Z := (2 ^ 32 - 1)%Z.
       [unmodeled] otherwise.  A caller with a child gets no answer here
       rather than a wrong one.
 
-    WHAT A NEW CHILD-CREATING ARM OWES is [State.with_children] on its
+    WHAT A NEW CHILD-CREATING ARM OWES is [State.with_child] on its
     post-state.  Nothing enforces that: an arm that creates a child and
     never applies the setter leaves this spec answering -ECHILD for a
     caller that has one, with the gate proved and the creating arm

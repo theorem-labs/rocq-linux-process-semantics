@@ -419,6 +419,12 @@ Proof. reflexivity. Qed.
 Lemma m_io_with_children : forall m, m_io (with_children m) = m_io m.
 Proof. reflexivity. Qed.
 
+Lemma m_fsys_with_child : forall p m, m_fsys (with_child p m) = m_fsys m.
+Proof. reflexivity. Qed.
+
+Lemma m_io_with_child : forall p m, m_io (with_child p m) = m_io m.
+Proof. reflexivity. Qed.
+
 (** And the splice puts the shared pair into the view, so a step that starts
     from [pe_cfg S e] starts from a model whose [m_fsys] IS [sh_fsys S].
     That is what turns the two lemmas above into the hypothesis

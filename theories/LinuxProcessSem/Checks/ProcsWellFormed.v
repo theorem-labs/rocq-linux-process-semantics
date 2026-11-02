@@ -26,7 +26,7 @@
     The clone arm hands its child the parent's SUCCESSOR as parent, so the
     successor must run.  The released step for 220 and 435 never halts the
     caller: [clone_spec_keeps_halted] reads it off the executable checker,
-    whose answers are the model unchanged or [State.with_children] of it. *)
+    whose answers are the model unchanged or [State.with_child] of it. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -515,7 +515,7 @@ Qed.
 
 (** Every answer the released spec gives [clone] (220) and [clone3] (435)
     leaves the caller's halt flag as it was: the model comes back
-    unchanged, or with the child recorded ([State.with_children]). *)
+    unchanged, or with the child recorded ([State.with_child]). *)
 Lemma clone_spec_keeps_halted : forall i m eff m' evs,
   (bv_unsigned (in_sysno i) = 220%Z \/ bv_unsigned (in_sysno i) = 435%Z) ->
   syscall_spec i m (Ok eff m' evs) -> m_halted m' = m_halted m.
