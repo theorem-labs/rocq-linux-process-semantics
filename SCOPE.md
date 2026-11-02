@@ -141,7 +141,12 @@ true of the model and false of the real systems.
   mmap layouts). Where they differ, the model lets each system call choose
   again. A real system makes the choice the same way each time. Also, the
   source and the target can make different choices, as if they ran on
-  different systems.
+  different systems. For example, repeated `set_robust_list` calls can
+  alternate between Linux's return and QEMU's `ENOSYS` return.
+- **Clock resolution.** For supported non-CPU clock IDs, `clock_getres`
+  accepts any positive nanosecond value below one second. Linux returns
+  1 ns or a tick-based resolution; QEMU user mode forwards the host result.
+  The model does not constrain later calls to use the same resolution.
 - **mmap placement.** A mapping without an address hint can go to any free,
   page-aligned address below `State.alloc_top`. This is wider than the
   placement policy of each supported system.

@@ -75,7 +75,7 @@
       Sys/Mm/Madvise.v           mm/madvise.c      madvise
       Sys/Kernel/Exit.v          kernel/exit.c     exit exit_group wait4
       Sys/Kernel/Fork.v          kernel/fork.c     set_tid_address clone clone3
-      Sys/Kernel/Futex/Syscalls.v  kernel/futex/syscalls.c  futex
+      Sys/Kernel/Futex/Syscalls.v  kernel/futex/syscalls.c  futex set_robust_list
       Sys/Kernel/Signal.v        kernel/signal.c   sigaltstack rt_sigaction
                                                    rt_sigprocmask
       Sys/Kernel/Groups.v        kernel/groups.c   getgroups setgroups
@@ -94,7 +94,7 @@
                                                    security_task_prctl)
       Sys/Kernel/Time/Hrtimer.v  kernel/time/hrtimer.c       nanosleep
       Sys/Kernel/Time/PosixTimers.v
-                                 kernel/time/posix-timers.c  clock_gettime
+                                 kernel/time/posix-timers.c  clock_gettime clock_getres
       Sys/Kernel/Time/Time.v     kernel/time/time.c          gettimeofday
       Sys/Net/Socket.v           net/socket.c      socket bind listen accept connect accept4
       Sys/Drivers/Char/Random.v  drivers/char/random.c  getrandom

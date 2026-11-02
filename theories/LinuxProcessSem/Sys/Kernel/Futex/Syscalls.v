@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Sys.Kernel.Futex.Syscalls — futex (98)
+(** * LinuxProcessSem.Sys.Kernel.Futex.Syscalls — futex (98), set_robust_list (99)
 
     This file answers to Linux [kernel/futex/syscalls.c]: it holds what
     the kernel defines there, and nothing else.  Which file a spec
@@ -17,6 +17,19 @@ From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
+
+(** Linux checks the native 64-bit [struct robust_list_head] size before
+    storing the pointer.  Its three fields are 64-bit words, so the only
+    accepted length is 24.  It does not read or validate [head] here.
+    QEMU user mode returns -ENOSYS for every length and pointer instead.
+    The registered pointer is used only at thread exit; this model's exit
+    step discards user-memory effects and has no later user step.
+    See kernel/futex/syscalls.c and QEMU linux-user/syscall.c. *)
+Definition set_robust_list_spec (len : word) : Sys SyscallEffect :=
+  alt (err_ret ENOSYS)
+      (if Z.eqb (bv_unsigned len) 24
+       then ret_only (Z_to_bv 64 0)
+       else err_ret EINVAL).
 
 (** THE WAITER SET OF A PRIVATE FUTEX KEY IS EMPTY IN THIS MODEL, and
     everything below rests on it.  Citations are torvalds/linux read at
