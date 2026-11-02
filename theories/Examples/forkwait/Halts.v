@@ -557,9 +557,9 @@ Qed.
     successor's table: a step from a one-entry shape either keeps one entry
     (and the target is a one-entry shape at the successor's pc) or makes
     two (and the target is [fw_two]).  Nothing else can happen, because
-    [pstep_next_cases] has exactly three producing arms and the reap needs
-    a zombie, which a one-entry configuration of this program does not
-    have. *)
+    the reaps of [pstep_next_cases] need a zombie, which a one-entry
+    configuration of this program does not have, and its two WNOHANG arms
+    need a pending WNOHANG [wait4], which this program never issues. *)
 
 (** The reap arm's successor has one FEWER entry. *)
 Lemma drop_in_procs_length_lt : forall ps p e,
@@ -629,13 +629,15 @@ Proof.
   specialize (Hlt Hl). rewrite replace_in_length in Hlt. exact Hlt.
 Qed.
 
-(** THE LENGTH DECIDES WHICH ARM FIRED, now that the reap arm carries
-    [q <> pe_pid e].  No two producing arms change the table's length the
-    same way, so counting the successor is a decision procedure for the
-    arm -- which is what makes a preservation proof a case analysis on
-    three arms rather than on eight shapes times three.
+(** THE LENGTH SORTS THE ARMS INTO THREE KINDS, now that the reap arms
+    carry [q <> pe_pid e]: an entry replaced ([pstep_other], and the
+    [wait4] gate's WNOHANG zero), a child appended ([pstep_clone]), a
+    zombie dropped (the blocking and the WNOHANG reap).  Counting the
+    successor therefore decides which kind fired -- which is what makes a
+    preservation proof a case analysis on three kinds rather than on eight
+    shapes times every arm.
 
-    The reap case needed the new premise and nothing else: with it,
+    The reap cases needed the new premise and nothing else: with it,
     [look_in_replace_other] carries the reaped entry's lookup through the
     parent's replacement, and [drop_in_procs_length_lt] then shortens the
     table. *)
@@ -646,19 +648,23 @@ Lemma pstep_length_cases : forall segs cfg p P evs P',
   \/ (List.length (pcfg_procs P') < List.length (pcfg_procs P))%nat.
 Proof.
   intros segs cfg p P evs P' Hp.
-  (* FIVE branches, not three: [pstep_at] has the two error arms as well,
-     and a disjunctive pattern must cover every constructor even where the
+  (* EIGHT branches: [pstep_at] has three error arms as well, and a
+     disjunctive pattern must cover every constructor even where the
      conclusion rules most of them out.  Named rather than matched,
-     because the reap arm has thirteen premises and an Ltac pattern over
-     them is how the first attempt failed. *)
+     because the reap arms have thirteen premises and more, and an Ltac
+     pattern over them is how the first attempt failed. *)
   inversion Hp as
-    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Heq1 Heq2 Heq3
+    [ P1 e1 evs1 c1 Hl1 Hs1 Hc1 Hw1 Hm1 Hwo1 Heq1 Heq2 Heq3
     | P2 e2 evs2 c2 q2 Hl2 Hs2 Hc2 Hcp2 Hfr2 Hm2 Heq4 Heq5 Heq6
     | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
       Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
       Heq7 Heq8 Heq9
-    | P4 e4 evs4 Hl4 Hs4 Hw4 Heq10 Heq11 Heq12
-    | P5 e5 Hl5 Hh5 Hm5 Heq13 Heq14 Heq15 ]; subst.
+    | P4 e4 evs4 Hl4 Hs4 Hw4 Hwo4
+    | P5 e5 Hl5 Hh5 Hm5
+    | P6 e6 q6 ez6 x86 sa6 ru6 rb6 st6 eff6 mo6 du6
+      Hl6 Hh6 Hsv6 Hwo6 Hna6 Hru6 Hlq6 Hne6 Hpar6 Hk6 Hst6 Hrd6 Hlen6 Heff6 Hmat6
+    | P7 e7 x87 sa7 ru7 Hl7 Hh7 Hsv7 Hwo7 Hna7 Hru7 Hz7
+    | P8 e8 Hl8 Hh8 Hrf8 ]; subst.
   - left. apply absorb_procs_length.
   - right; left. apply clone_result_procs_length.
   - right; right. cbn [pcfg_procs].
@@ -670,6 +676,14 @@ Proof.
     + destruct (bv_eqb (pe_pid e3) q3) eqn:Hb; [| reflexivity ].
       apply bv_eqb_true_eq in Hb. congruence.
     + exact Hlq3.
+  - (* the WNOHANG reap drops a child, as the blocking one does *)
+    right; right. unfold wait4_reap_result. cbn [pcfg_procs].
+    apply (drop_replace_length_lt _ _ _ _ ez6).
+    + destruct (bv_eqb (pe_pid e6) q6) eqn:Hb; [| reflexivity ].
+      apply bv_eqb_true_eq in Hb. congruence.
+    + exact Hlq6.
+  - (* the WNOHANG zero replaces the caller's entry and nothing else *)
+    left. unfold wait4_zero_result. apply absorb_procs_length.
 Qed.
 
 (** [absorb] keeps the table's shape at a one-entry configuration: the
@@ -1020,29 +1034,16 @@ Qed.
 
 (** ITEM (3): the no-error premise at the shapes.
 
-    [MustExitP.pstep_error_cases] splits an error transition into the two
-    refusing arms: a released [SError], or the surface guard firing.  The
-    second is impossible everywhere in this program -- [fw_guard_open]
-    with [fw_sysnos_allowed], since the only numbers it issues are 220,
-    260 and 94 -- so what a shape has to rule out is the released
-    [SError] alone.
-
-    This lemma is the half that does not depend on which shape: given
-    that no entry of the configuration can take a released [SError] and
-    that the guard is open at each, no transition reaches [PError]. *)
-Lemma fw_no_error_of_entries : forall segs cfg P,
-  (forall e, look P (pe_pid e) = Some e ->
-     forall evs, ~ sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs SError) ->
-  (forall e, look P (pe_pid e) = Some e ->
-     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true) ->
-  forall evs, ~ pstep_cfg segs cfg P evs PError.
-Proof.
-  intros segs cfg P Hno Hguard evs [p Hp].
-  destruct (pstep_error_cases segs cfg p P evs Hp)
-    as (e & Hl & Hpid & [[Hss _] | [Hg _]]).
-  - subst p. exact (Hno e Hl evs Hss).
-  - subst p. rewrite (Hguard e Hl) in Hg. discriminate.
-Qed.
+    [MustExitP.pstep_error_cases] splits an error transition into the
+    three refusing arms: a released [SError], the surface guard firing,
+    or the [wait4] gate's refusal.  The guard is impossible everywhere in
+    this program -- [fw_guard_open] with [fw_sysnos_allowed], since the
+    only numbers it issues are 220, 260 and 94 -- and so is the refusal:
+    its gate needs a pending 260, and the one 260 this program issues has
+    the blocking shape, which the refusal excludes ([fw_not_owned_of_rem],
+    [Procs.wait4_refused_intercept]).  What a shape has to rule out is the
+    released [SError] alone; [fw_no_error] below does that, shape by
+    shape. *)
 
 (** And the guard really is open at every entry of this program, because
     the only system calls it issues are on the multi-process surface.
@@ -1488,6 +1489,10 @@ Proof.
     end.
   - (* pstep_wait_reap: so does a reap *)
     exfalso. congruence.
+  - (* pstep_wait_nohang_reap: and the gate's WNOHANG reap *)
+    exfalso. congruence.
+  - (* pstep_wait_nohang_zero: and its WNOHANG zero *)
+    exfalso. congruence.
 Qed.
 
 (** A PENDING 94: the exit arm, and only it.  The clone arm needs
@@ -1533,6 +1538,20 @@ Proof.
         unfold wait4_intercept_b in Hwi; cbn [cfg_ms pe_cfg] in Hwi;
         rewrite Hs, H94 in Hwi; cbn in Hwi; discriminate
     end.
+  - (* pstep_wait_nohang_reap: the [wait4] gate needs 260 *)
+    exfalso.
+    match goal with
+    | [ Hwo : wait4_owned_b _ _ = true |- _ ] =>
+        rewrite (wait4_owned_not_260 _ _ x8 Hs) in Hwo;
+          [discriminate Hwo | rewrite H94; discriminate]
+    end.
+  - (* pstep_wait_nohang_zero: likewise *)
+    exfalso.
+    match goal with
+    | [ Hwo : wait4_owned_b _ _ = true |- _ ] =>
+        rewrite (wait4_owned_not_260 _ _ x8 Hs) in Hwo;
+          [discriminate Hwo | rewrite H94; discriminate]
+    end.
 Qed.
 
 (** The guard the reap arm is behind, and which the other two arms at
@@ -1552,7 +1571,8 @@ Qed.
     only it.  [Procs.pstep_other] and [Procs.pstep_error] both require
     the intercept guard to be OFF -- that exclusion is what lets the
     parent sleep instead of erroring (Procs.v, the note on the error
-    transition) -- and the clone arm is decided by the number.
+    transition) -- the clone arm is decided by the number, and the
+    [wait4] gate's two WNOHANG arms by the option word, which is 0 here.
 
     So this is the one state where a shape has exactly one successor
     and no released step of its own. *)
@@ -1619,6 +1639,18 @@ Proof.
     split; [eassumption|]. split; [eassumption|]. split; [eassumption|].
     split; [eassumption|]. split; [eassumption|].
     split; [eassumption | reflexivity].
+  - (* pstep_wait_nohang_reap: the option word is 0, not WNOHANG *)
+    exfalso.
+    match goal with
+    | [ Hna : wait4_nohang_args (pe_ms e) = Some _ |- _ ] =>
+        rewrite (wait4_blocking_not_nohang _ _ Hwa) in Hna; discriminate Hna
+    end.
+  - (* pstep_wait_nohang_zero: likewise *)
+    exfalso.
+    match goal with
+    | [ Hna : wait4_nohang_args (pe_ms e) = Some _ |- _ ] =>
+        rewrite (wait4_blocking_not_nohang _ _ Hwa) in Hna; discriminate Hna
+    end.
 Qed.
 
 (** A model that is not halted is not killed either: [State.m_killed]
@@ -1768,17 +1800,21 @@ Proof.
     destruct (fw_clone_post segs (pe_ms e) x8 _ eff m' ev H220 Ha0 Hsp)
       as (_ & _ & _ & _ & _ & Hhm & _ & _).
     rewrite Hhm. exact (fw_model_ok_halted _ Hh). }
-  (* NAMED rather than matched: the reap arm has thirteen premises, and
-     an Ltac pattern over them is how the first attempt failed --
-     [pstep_length_cases] above records the same lesson. *)
+  (* NAMED rather than matched: the reap arms have thirteen premises and
+     more, and an Ltac pattern over them is how the first attempt failed
+     -- [pstep_length_cases] above records the same lesson. *)
   inversion Hp as
-    [ P1 e1 evs1 c1 Hl1 Hss1 Hcs1 Hwi1 Hma1 Heq1 Heq2 Heq3
+    [ P1 e1 evs1 c1 Hl1 Hss1 Hcs1 Hwi1 Hma1 Hwo1 Heq1 Heq2 Heq3
     | P2 e2 evs2 c2 q2 Hl2 Hss2 Hcs2 Hcp2 Hfr2 Hma2 Heq4 Heq5 Heq6
     | P3 e3 q3 ez3 x83 sa3 st3 eff3 mo3 du3
       Hl3 Hh3 Hsv3 Hwi3 Hwa3 Hlq3 Hne3 Hpar3 Hk3 Hst3 Hrd3 Heff3 Hmat3
       Heq7 Heq8 Heq9
-    | P4 e4 evs4 Hl4 Hs4 Hw4 Heq10 Heq11 Heq12
-    | P5 e5 Hl5 Hh5 Hm5 Heq13 Heq14 Heq15 ]; subst.
+    | P4 e4 evs4 Hl4 Hs4 Hw4 Hwo4
+    | P5 e5 Hl5 Hh5 Hm5
+    | P6 e6 q6 ez6 x86 sa6 ru6 rb6 st6 eff6 mo6 du6
+      Hl6 Hh6 Hsv6 Hwo6 Hna6 Hru6 Hlq6 Hne6 Hpar6 Hk6 Hst6 Hrd6 Hlen6 Heff6 Hmat6
+    | P7 e7 x87 sa7 ru7 Hl7 Hh7 Hsv7 Hwo7 Hna7 Hru7 Hz7
+    | P8 e8 Hl8 Hh8 Hrf8 ]; subst.
   - (* pstep_other: the clone declined, so a0 is in the errno list *)
     assert (He1 : e1 = e)
       by (rewrite Hl1 in Hl; injection Hl as Hl; exact Hl).
@@ -1845,6 +1881,20 @@ Proof.
     subst e3.
     unfold wait4_intercept_b in Hwi3. cbn [cfg_ms pe_cfg] in Hwi3.
     rewrite Hs, H220 in Hwi3. cbn in Hwi3. discriminate.
+  - (* pstep_wait_nohang_reap: nor is it the [wait4] gate's *)
+    exfalso.
+    assert (He6 : e6 = e)
+      by (rewrite Hl6 in Hl; injection Hl as Hl; exact Hl).
+    subst e6.
+    rewrite (wait4_owned_not_260 _ _ x8 Hs) in Hwo6;
+      [discriminate Hwo6 | rewrite H220; discriminate].
+  - (* pstep_wait_nohang_zero: likewise *)
+    exfalso.
+    assert (He7 : e7 = e)
+      by (rewrite Hl7 in Hl; injection Hl as Hl; exact Hl).
+    subst e7.
+    rewrite (wait4_owned_not_260 _ _ x8 Hs) in Hwo7;
+      [discriminate Hwo7 | rewrite H220; discriminate].
 Qed.
 
 (* =========================================================================
@@ -3053,13 +3103,33 @@ Proof.
   - apply (fw_guard_open_at P _ nr). left. exact Hsv.
 Qed.
 
+(** THE [wait4] GATE IS CLOSED at an entry heading for any call but 260,
+    because the gate needs a pending 260. *)
+Lemma fw_not_owned_of_rem : forall P e Q nr,
+  (forall ms, Q ms -> exists x8, ms_svc_pending ms = Some x8
+                                 /\ bv_unsigned x8 = nr) ->
+  nr <> 260%Z ->
+  fw_rem (pe_ms e) Q ->
+  wait4_owned_b P e = false.
+Proof.
+  intros P e Q nr Hnr Hne Hrem.
+  destruct (ms_svc_pending (pe_ms e)) eqn:Hsv.
+  - assert (HQ : Q (pe_ms e))
+      by (apply (fw_rem_now _ _ Hrem); rewrite Hsv; discriminate).
+    destruct (Hnr _ HQ) as (x8 & Hs & Hv).
+    apply (wait4_owned_not_260 P e x8 Hs). rewrite Hv. exact Hne.
+  - apply wait4_owned_instr. exact Hsv.
+Qed.
+
 (** THE NO-ERROR PREMISE.  Every shape's live entries are heading for
     one of the three calls; the guard is open at each, the two
     instruction refusals are excluded by the remainder, and the
     [Unmodeled] answers by the two spec facts above.  The one entry
-    that could error is the parent parked at its [wait4], and the
-    error arm is behind the negation of the intercept guard that
-    parks it -- which is 7.2 paying for itself a third time.
+    that could error is the parent parked at its [wait4], and both the
+    released error arm and the [wait4] gate's refusal are behind the
+    negation of the intercept guard that parks it -- which is 7.2 paying
+    for itself a third time.  Every other entry is heading for 220 or 94,
+    where the gate is closed.
 
     IT DOES NOT USE THE STATEMENT'S BUDGET PREMISE, and that is worth
     recording rather than leaving to be noticed.
@@ -3085,10 +3155,14 @@ Proof.
   - (* one entry heading for the clone *)
     destruct Hone as (e0 & Hp0 & Hr & Hpar & Hok & Hrem).
     destruct (fw_look_one P e0 p e Hp0 Hl) as (He & _). subst e.
-    destruct Hcase as [(Hss & _) | (Hg & _)].
+    destruct Hcase as [(Hss & _) | [(Hg & _) | (Hrf & _)]].
     + exact (fw_no_error_clone_entry cfg (pcfg_shared P) e0 Hok Hrem evs Hss).
     + rewrite (fw_guard_of_rem P (pcfg_shared P) e0 fw_q_clone 220%Z
                  fw_q_clone_nr (or_introl eq_refl) Hrem) in Hg.
+      discriminate.
+    + rewrite (wait4_refused_not_owned _ _ _
+                 (fw_not_owned_of_rem P e0 fw_q_clone 220%Z fw_q_clone_nr
+                    ltac:(discriminate) Hrem)) in Hrf.
       discriminate.
   - (* two entries *)
     destruct Htwo as (ep & ec & Hp0 & Hr & Hne & Hcpar & Hppar & Hlp & Hch).
@@ -3103,7 +3177,7 @@ Proof.
         pose proof (fw_wait4_args (pe_ms ep) Ha0 Ha2 Ha3) as Hwa.
         assert (Hx : x8 = 260) by congruence.
         subst x8.
-        destruct Hcase as [(_ & Hwi) | (Hg & _)].
+        destruct Hcase as [(_ & Hwi) | [(Hg & _) | (Hrf & _)]].
         -- rewrite (fw_wait4_intercept_true (pcfg_shared P) ep 260
                       (ms_gpr (pe_ms ep) 1) Hsv fw_two_sixty Hwa) in Hwi.
            discriminate.
@@ -3111,7 +3185,11 @@ Proof.
                       fw_q_wait4_nr (or_intror (or_introl eq_refl)) Hremp)
              in Hg.
            discriminate.
-      * destruct Hcase as [(Hss & _) | (Hg & _)].
+        -- rewrite (wait4_refused_intercept _ _ _
+                      (fw_wait4_intercept_true (pcfg_shared P) ep 260
+                         (ms_gpr (pe_ms ep) 1) Hsv fw_two_sixty Hwa)) in Hrf.
+           discriminate.
+      * destruct Hcase as [(Hss & _) | [(Hg & _) | (Hrf & _)]].
         -- destruct Hokp as (Hh & Hlz & Hgate & Htid).
            destruct (fw_rem_step_exists (pe_ms ep) fw_q_wait4
                        fw_q_wait4_pending Hremp Hsv) as (ms1 & Hs1).
@@ -3121,23 +3199,34 @@ Proof.
                       fw_q_wait4_nr (or_intror (or_introl eq_refl)) Hremp)
              in Hg.
            discriminate.
+        -- rewrite (wait4_refused_not_owned _ _ _ (wait4_owned_instr P ep Hsv))
+             in Hrf.
+           discriminate.
     + (* the child: a zombie cannot step at all *)
       destruct Hch as [(Hokc & Hremc) | (Hz & _)].
-      * destruct Hcase as [(Hss & _) | (Hg & _)].
+      * destruct Hcase as [(Hss & _) | [(Hg & _) | (Hrf & _)]].
         -- exact (fw_no_error_exit7_entry cfg (pcfg_shared P) ec
                     Hokc Hremc evs Hss).
         -- rewrite (fw_guard_of_rem P (pcfg_shared P) ec fw_q_exit7 94%Z
                       fw_q_exit7_nr (or_intror (or_intror eq_refl)) Hremc)
              in Hg.
            discriminate.
+        -- rewrite (wait4_refused_not_owned _ _ _
+                      (fw_not_owned_of_rem P ec fw_q_exit7 94%Z fw_q_exit7_nr
+                         ltac:(discriminate) Hremc)) in Hrf.
+           discriminate.
       * rewrite Hl in Hlh. injection Hlh as Hlh. subst eh. congruence.
   - (* one entry heading for its exit_group *)
     destruct Hex as (e0 & Hp0 & Hr & Hpar & Hok & Hrem).
     destruct (fw_look_one P e0 p e Hp0 Hl) as (He & _). subst e.
-    destruct Hcase as [(Hss & _) | (Hg & _)].
+    destruct Hcase as [(Hss & _) | [(Hg & _) | (Hrf & _)]].
     + exact (fw_no_error_exit7_entry cfg (pcfg_shared P) e0 Hok Hrem evs Hss).
     + rewrite (fw_guard_of_rem P (pcfg_shared P) e0 fw_q_exit7 94%Z
                  fw_q_exit7_nr (or_intror (or_intror eq_refl)) Hrem) in Hg.
+      discriminate.
+    + rewrite (wait4_refused_not_owned _ _ _
+                 (fw_not_owned_of_rem P e0 fw_q_exit7 94%Z fw_q_exit7_nr
+                    ltac:(discriminate) Hrem)) in Hrf.
       discriminate.
   - (* halted: the entry that stepped would have to be running *)
     destruct Hhalt as (e0 & c & Hp0 & Hrv & Hhc & _).
@@ -3588,8 +3677,8 @@ Proof. intros segs cfg H P evs P' Hsh Hs. exact (H P evs P' Hsh Hs). Qed.
     Everything else is discharged: the base case by
     [fw_shape_one_proc], the leaf by [fw_shape_terminal_halted], the
     measure at the two shape-changing steps by [fw_measure_clone] and
-    [fw_measure_reap], no-error by [fw_no_error_of_entries] with
-    [fw_guard_open_at], and progress by [fw_progress_from_entry]. *)
+    [fw_measure_reap], no-error by [fw_no_error], and progress by
+    [fw_progress_from_entry]. *)
 Theorem forkwait_halts_of_lands : forall segs cfg P0 mu,
   fw_lands_in_shape segs cfg ->
   fw_shape P0 ->
@@ -3667,11 +3756,12 @@ Proof.
   exists (pe_pid e).
   apply (pstep_other forkwait_segs cfg P e _
            (mkCfg (pe_ms e) (with_halted code m)));
-    [exact Hl | exact Hss | | | exact Hma].
+    [exact Hl | exact Hss | | | exact Hma | ].
   - unfold clone_success_b. cbn [cfg_ms pe_cfg]. rewrite Hsv.
     rewrite fw_ninety_four. reflexivity.
   - unfold wait4_intercept_b. cbn [cfg_ms pe_cfg]. rewrite Hsv.
     rewrite fw_ninety_four. reflexivity.
+  - apply (wait4_owned_not_260 P e 94 Hsv). rewrite fw_ninety_four. discriminate.
 Qed.
 
 (** A FRESH PID EXISTS, and it is chosen rather than searched for: the

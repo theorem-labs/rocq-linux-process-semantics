@@ -578,6 +578,186 @@ Definition absorb (P : pconfig) (e : ProcessEntry) (c' : config) : pconfig :=
          (pcfg_root P)
          (shared_absorb (pcfg_shared P) c').
 
+(* =========================================================================
+   The wait4 gate: a caller with a child in the table
+   ========================================================================= *)
+
+(** DESIGN NOTE: THE CORE DECIDES EVERY [wait4] OF A CALLER WITH A CHILD.
+
+    [Exit.wait4_spec] is the ONE-PROCESS answer, right only for a caller
+    with nothing to reap (Exit.v:234-246).  Here a child is an entry of
+    [pcfg_procs], so a caller with one must never reach that spec: whatever
+    it answers -- [unmodeled] today, an environment choice of 0 or a pid
+    with an invented status once it is given one -- is an answer about
+    children it cannot see, while the table holds the real ones and their
+    real statuses.  So, for a caller with at least one child in the table
+    ([wait4_owned_b]), every call numbered 260 is answered by an arm of
+    this core:
+
+    - wait4(-1, &st, 0, NULL), the blocking shape: [pstep_wait_reap],
+      unchanged.  A zombie child is reaped; otherwise there is no arm, and
+      no arm is how this core says BLOCKED.
+    - wait4(-1, &st, WNOHANG, ru), [ru] NULL or writable for a whole
+      [struct rusage] ([wait4_rusage_ok_b]): [pstep_wait_nohang_reap]
+      reaps a zombie child under the blocking reap's own conditions, and
+      with no zombie child [pstep_wait_nohang_zero] returns 0 and changes
+      nothing.
+    - everything else is [pstep_wait_refuse], an error ([wait4_refused_b]):
+      every other argument shape, and a WNOHANG call with a zombie child
+      the reap arm cannot take (a killed child, an unwritable [st], a
+      copy-out the budget refuses).  A non-blocking call must not be left
+      without an arm, because that would model it as blocking; the error
+      is fail-closed, and the status word of a killed child, once it is
+      modeled, narrows it into an answer.
+
+    [pstep_other] and [pstep_error] are behind [wait4_owned_b = false], so
+    the released spec answers a [wait4] only for a caller with NO child in
+    the table, exactly as before this gate.
+
+    THE NEXT STEP, deliberately not taken here: a [procst_child_pids]
+    field of [State.ProcState], appended to by the clone arm, removed from
+    by the reap arms, with an invariant lemma that it lists exactly the
+    caller's children in [pcfg_procs].  That invariant also settles the one
+    disagreement this gate cannot see: on a hand-built configuration the
+    model's own [State.m_has_children] bit and the table can disagree
+    (a table child under a clear bit), and the released spec reads the
+    bit while this gate reads the table.
+
+    [struct rusage] is accounting this model does not carry, so a reap
+    into a non-NULL [ru] writes an ENVIRONMENT-CHOSEN record of
+    [RUSAGE_BYTES] bytes, as [pe_status]'s [dumped] bit is chosen. *)
+
+(** The caller has a child in the table. *)
+Definition has_child_b (P : pconfig) (p : Pid) : bool :=
+  match children_of P p with
+  | [] => false
+  | _ :: _ => true
+  end.
+
+(** THE GATE: a pending 260 from a caller with a child in the table.  It
+    REQUIRES the pending call for the reason [wait4_intercept_b] does. *)
+Definition wait4_owned_b (P : pconfig) (e : ProcessEntry) : bool :=
+  match ms_svc_pending (pe_ms e) with
+  | None => false
+  | Some x8 => Z.eqb (bv_unsigned x8) 260%Z && has_child_b P (pe_pid e)
+  end.
+
+(** The WNOHANG shape: wait4(-1, stat_addr, WNOHANG, ru), giving
+    [(stat_addr, ru)].  The words are read as [Exit.wait4_spec]'s
+    dispatcher reads them, through [pid32] and [waitopts32]. *)
+Definition wait4_nohang_args (ms : machine_state) : option (word * word) :=
+  if negb (Z.eqb (bv_unsigned (pid32 (ms_gpr ms 0))) WAIT_ANY32) then None
+  else if negb (Z.eqb (bv_unsigned (waitopts32 (ms_gpr ms 2))) WNOHANG) then None
+  else Some (ms_gpr ms 1, ms_gpr ms 3).
+
+(** [sizeof(struct rusage)] on a 64-bit kernel: two [struct timeval] of
+    16 bytes and fourteen [long]s (include/uapi/linux/resource.h). *)
+Definition RUSAGE_BYTES : Z := 144.
+
+(** The writability test the reap arm uses for its copy-out, as a boolean. *)
+Definition user_writable_b (segs : list Segment) (ms : machine_state) (x8 : word)
+    (a : word) (n : Z) : bool :=
+  match read_bytes_map (in_wmem (sys_input segs ms x8)) a (Z_to_bv 64 n) with
+  | Some _ => true
+  | None => false
+  end.
+
+Definition wait4_rusage_ok_b (segs : list Segment) (ms : machine_state) (x8 : word)
+    (ru : word) : bool :=
+  w_is0 ru || user_writable_b segs ms x8 ru RUSAGE_BYTES.
+
+(** The WNOHANG shape the core answers, at the entry's pending call. *)
+Definition wait4_nohang_shape_b (segs : list Segment) (e : ProcessEntry) : bool :=
+  match ms_svc_pending (pe_ms e), wait4_nohang_args (pe_ms e) with
+  | Some x8, Some (_, ru) => wait4_rusage_ok_b segs (pe_ms e) x8 ru
+  | _, _ => false
+  end.
+
+Definition pe_zombie_b (e : ProcessEntry) : bool :=
+  match pe_zombie e with
+  | Some _ => true
+  | None => false
+  end.
+
+(** The child at key [q] is one the reap arms can take from [p]: present,
+    [p]'s child, not [p] itself, halted, and not killed. *)
+Definition wait4_reapable_at (P : pconfig) (p q : Pid) : bool :=
+  match look P q with
+  | Some ez =>
+      match pe_parent ez with Some r => bv_eqb r p | None => false end
+      && negb (bv_eqb q p)
+      && match m_halted (pe_model ez), m_killed (pe_model ez) with
+         | Some _, None => true
+         | _, _ => false
+         end
+  | None => false
+  end.
+
+(** The writes of a WNOHANG reap: the status word, then the usage record
+    when [ru] is not NULL -- [kernel_wait4]'s [put_user] and then the
+    [copy_to_user] in [SYSCALL_DEFINE4(wait4, ...)], in that order. *)
+Definition wait4_nohang_writes (stat_addr status ru : word) (ru_bytes : list byte)
+    : list (word * list byte) :=
+  (stat_addr, Z_to_le_bytes 4 (bv_unsigned status))
+    :: (if w_is0 ru then [] else [(ru, ru_bytes)]).
+
+(** The user ranges those writes name.  They depend on the addresses and
+    lengths only, so the refusal below can test the copy-out without
+    choosing the child, its status or the usage bytes. *)
+Definition wait4_nohang_accesses (stat_addr ru : word) : list (word * nat) :=
+  (stat_addr, 4%nat)
+    :: (if w_is0 ru then [] else [(ru, Z.to_nat RUSAGE_BYTES)]).
+
+(** The WNOHANG reap arm can fire: the status word is writable, some key
+    holds a reapable child, and the copy-out materializes. *)
+Definition wait4_nohang_reap_ok_b (segs : list Segment) (P : pconfig)
+    (e : ProcessEntry) : bool :=
+  match ms_svc_pending (pe_ms e), wait4_nohang_args (pe_ms e) with
+  | Some x8, Some (sa, ru) =>
+      user_writable_b segs (pe_ms e) x8 sa 4%Z
+      && List.existsb (fun kv => wait4_reapable_at P (pe_pid e) (fst kv)) (pcfg_procs P)
+      && match materialize_model_accesses (cfg_model (pe_cfg (pcfg_shared P) e))
+                 (wait4_nohang_accesses sa ru) with
+         | Some _ => true
+         | None => false
+         end
+  | _, _ => false
+  end.
+
+(** THE FAIL-CLOSED CONDITION: a call the gate owns that no answering arm
+    takes.  Not the blocking shape, and either not the WNOHANG shape the
+    core answers, or that shape with a zombie child the reap cannot take. *)
+Definition wait4_refused_b (segs : list Segment) (P : pconfig) (e : ProcessEntry)
+    : bool :=
+  wait4_owned_b P e
+  && negb (wait4_intercept_b (pe_cfg (pcfg_shared P) e))
+  && (negb (wait4_nohang_shape_b segs e)
+      || (List.existsb pe_zombie_b (children_of P (pe_pid e))
+          && negb (wait4_nohang_reap_ok_b segs P e))).
+
+(** What WNOHANG with nothing to reap leaves: a0 = 0, the pc past the
+    call, and nothing else. *)
+Definition wait4_zero_result (P : pconfig) (e : ProcessEntry) : pconfig :=
+  absorb P e
+    (mkCfg (advance_past_svc (apply_effect (pe_ms e) (mkEffect (Z_to_bv 64 0) [] [])))
+           (cfg_model (pe_cfg (pcfg_shared P) e))).
+
+(** What a reap leaves: the caller past the call with the effect applied,
+    and the child [q] gone.  [pstep_wait_reap]'s conclusion is this term
+    written out, and is left written out because [Examples/forkwait]
+    matches on it. *)
+Definition wait4_reap_result (P : pconfig) (e : ProcessEntry) (q : Pid)
+    (eff : SyscallEffect) (model'' : Model) : pconfig :=
+  mkPCfg
+    (drop_in
+       (replace_in (pcfg_procs P) (pe_pid e)
+          (mkEntry (pe_pid e) (pe_parent e)
+             (advance_past_svc (apply_effect (pe_ms e) eff))
+             (clear_shared model'') (pe_ofd e) (pe_nsctx e)))
+       q)
+    (pcfg_root P)
+    (shared_absorb (pcfg_shared P) (mkCfg (pe_ms e) model'')).
+
 (** ONE TRANSITION OF THE SYSTEM, WITH THE STEPPING PID AS AN INDEX.
 
     The index is not decoration.  An earlier draft defined the per-process
@@ -599,6 +779,9 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     clone_success_b (pe_cfg (pcfg_shared P) e) c' = false ->
     wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true ->
+    (* THE GATE: the released step never answers a [wait4] of a caller
+       with a child in the table; see the design note above. *)
+    wait4_owned_b P e = false ->
     pstep_at segs cfg (pe_pid e) P evs (PNext (absorb P e c'))
 (** THE ERROR TRANSITION, and it must EXCLUDE the intercepted wait.
     A blocking [wait4(-1, _, 0, NULL)] is [unmodeled] in the released spec
@@ -607,7 +790,12 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     waiting parent to [PError] and the sleep of this core would never happen.
     So the intercepted shape is excluded here, and it is the SECOND place --
     beside a successful clone -- where this relation and the released one
-    differ.  [pstep_single]'s second hypothesis is exactly that exclusion. *)
+    differ.  [pstep_single]'s second hypothesis is exactly that exclusion.
+    The error transition is ALSO behind [wait4_owned_b = false], as
+    [pstep_other] is: a [wait4] of a caller with a child in the table is
+    answered or refused by the gate's own arms, never by a released
+    [SError].  At one entry the gate is closed ([wait4_owned_one]), so the
+    single-process theorems need no new hypothesis. *)
 (** THE CLONE ARM.  The parent's half is the RELEASED step, unedited: flag
     word, errno list, pid envelope, [State.with_children] and the
     [Fork.clone_no_shared_file_b] gate are all [Sys.Kernel.Fork]'s.  This arm
@@ -682,11 +870,56 @@ Inductive pstep_at (segs : list Segment) (cfg : SpuriousCfg)
     look P (pe_pid e) = Some e ->
     sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs SError ->
     wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
+    wait4_owned_b P e = false ->
     pstep_at segs cfg (pe_pid e) P evs PError
 | pstep_outside : forall P e,
     look P (pe_pid e) = Some e ->
     m_halted (pe_model e) = None ->
     multiproc_allowed P (pe_cfg (pcfg_shared P) e) = false ->
+    pstep_at segs cfg (pe_pid e) P [] PError
+(** THE WNOHANG REAP: [pstep_wait_reap]'s conditions on the child and the
+    copy-out, at wait4(-1, &st, WNOHANG, ru).  When [ru] is not NULL it
+    must be writable for a whole [struct rusage], and the record written
+    there is the environment's choice ([ru_bytes]): the model carries no
+    accounting. *)
+| pstep_wait_nohang_reap : forall P e q ez x8 stat_addr ru ru_bytes status eff
+                             model'' dumped,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    ms_svc_pending (pe_ms e) = Some x8 ->
+    wait4_owned_b P e = true ->
+    wait4_nohang_args (pe_ms e) = Some (stat_addr, ru) ->
+    wait4_rusage_ok_b segs (pe_ms e) x8 ru = true ->
+    look P q = Some ez ->
+    q <> pe_pid e ->
+    pe_parent ez = Some (pe_pid e) ->
+    m_killed (pe_model ez) = None ->
+    pe_status dumped ez = Some status ->
+    read_bytes_map (in_wmem (sys_input segs (pe_ms e) x8)) stat_addr
+      (Z_to_bv 64 4) <> None ->
+    List.length ru_bytes = Z.to_nat RUSAGE_BYTES ->
+    eff = mkEffect q (wait4_nohang_writes stat_addr status ru ru_bytes) [] ->
+    materialize_model_accesses (cfg_model (pe_cfg (pcfg_shared P) e))
+      (syscall_effect_accesses eff) = Some model'' ->
+    pstep_at segs cfg (pe_pid e) P [] (PNext (wait4_reap_result P e q eff model''))
+(** WNOHANG WITH NO ZOMBIE CHILD: 0, and nothing changes but a0 and the
+    pc.  A child exists ([wait4_owned_b]) and has nothing to report, which
+    is exactly when [__do_wait] clears [notask_error] to 0. *)
+| pstep_wait_nohang_zero : forall P e x8 stat_addr ru,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    ms_svc_pending (pe_ms e) = Some x8 ->
+    wait4_owned_b P e = true ->
+    wait4_nohang_args (pe_ms e) = Some (stat_addr, ru) ->
+    wait4_rusage_ok_b segs (pe_ms e) x8 ru = true ->
+    List.existsb pe_zombie_b (children_of P (pe_pid e)) = false ->
+    pstep_at segs cfg (pe_pid e) P [] (PNext (wait4_zero_result P e))
+(** EVERY OTHER [wait4] OF A CALLER WITH A CHILD: an error, fail-closed,
+    and never the released step ([wait4_refused_b]). *)
+| pstep_wait_refuse : forall P e,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    wait4_refused_b segs P e = true ->
     pstep_at segs cfg (pe_pid e) P [] PError.
 
 (** The system steps when SOME entry does. *)
@@ -780,6 +1013,22 @@ Proof.
   destruct (ms_svc_pending (cfg_ms c')); reflexivity.
 Qed.
 
+(** At one entry the [wait4] gate is closed: the only entry has no parent,
+    so nobody has a child in the table, and every [wait4] of a one-process
+    system is the released step's, as it was before the gate. *)
+Lemma has_child_one : forall c p, has_child_b (one_proc c) p = false.
+Proof. intros c p. reflexivity. Qed.
+
+Lemma wait4_owned_one : forall c e, wait4_owned_b (one_proc c) e = false.
+Proof.
+  intros c e. unfold wait4_owned_b.
+  destruct (ms_svc_pending (pe_ms e)); [|reflexivity].
+  rewrite has_child_one. apply andb_false_r.
+Qed.
+
+Lemma wait4_refused_one : forall segs c e, wait4_refused_b segs (one_proc c) e = false.
+Proof. intros segs c e. unfold wait4_refused_b. rewrite wait4_owned_one. reflexivity. Qed.
+
 Lemma absorb_one_proc : forall c c',
   absorb (one_proc c) (one_entry c) c' = one_proc c'.
 Proof.
@@ -833,7 +1082,7 @@ Proof.
            | [ H : look (one_proc c) _ = Some ?x |- _ ] =>
                rewrite (look_one_proc_inv _ _ _ H) in *
            end;
-    rewrite one_proc_view in *.
+    try rewrite one_proc_view in *.
   - (* pstep_other: the step this lemma is about *)
     match goal with
     | [ Hss : sstep_cfg _ _ _ _ (SNext ?c1) |- _ ] =>
@@ -852,6 +1101,18 @@ Proof.
     | [ Hwi : wait4_intercept_b _ = true |- _ ] =>
         rewrite Hwt in Hwi; discriminate
     end.
+  - (* pstep_wait_nohang_reap: the gate is closed at one entry *)
+    exfalso.
+    match goal with
+    | [ Hw : wait4_owned_b _ _ = true |- _ ] =>
+        rewrite wait4_owned_one in Hw; discriminate
+    end.
+  - (* pstep_wait_nohang_zero: likewise *)
+    exfalso.
+    match goal with
+    | [ Hw : wait4_owned_b _ _ = true |- _ ] =>
+        rewrite wait4_owned_one in Hw; discriminate
+    end.
 Qed.
 
 Lemma pstep_single_next_bwd : forall segs cfg c evs c',
@@ -869,6 +1130,7 @@ Proof.
   - rewrite one_proc_view. exact Hcl.
   - rewrite one_proc_view. exact Hwt.
   - apply multiproc_allowed_one.
+  - apply wait4_owned_one.
 Qed.
 
 Lemma pstep_single_err_fwd : forall segs cfg c evs,
@@ -887,6 +1149,11 @@ Proof.
     | [ Hall : multiproc_allowed (one_proc c) _ = false |- _ ] =>
         rewrite multiproc_allowed_one in Hall; discriminate
     end.
+  - exfalso.
+    match goal with
+    | [ Hrf : wait4_refused_b _ (one_proc c) _ = true |- _ ] =>
+        rewrite wait4_refused_one in Hrf; discriminate
+    end.
 Qed.
 
 Lemma pstep_single_err_bwd : forall segs cfg c evs,
@@ -900,6 +1167,7 @@ Proof.
   - apply one_proc_entry.
   - rewrite one_proc_view. exact Hss.
   - rewrite one_proc_view. exact Hwt.
+  - apply wait4_owned_one.
 Qed.
 
 (** A one-process system steps exactly as [Run.sstep_cfg] does, outside the
@@ -1035,7 +1303,9 @@ Qed.
     Keep that property when adding an arm: give the arm a disjunct here, and
     do not let a program proof invert [pstep_at] directly. *)
 
-(** A step to a successor is one of the three producing arms. *)
+(** A step to a successor is one of the five producing arms: the released
+    step, the clone, and the three [wait4] arms (the blocking reap, and the
+    two WNOHANG arms of the gate, both behind [wait4_owned_b]). *)
 Lemma pstep_next_cases : forall segs cfg p P evs P',
   pstep_at segs cfg p P evs (PNext P') ->
   exists e,
@@ -1051,7 +1321,8 @@ Lemma pstep_next_cases : forall segs cfg p P evs P',
             /\ child_pid_core c' q
             /\ look P q = None
             /\ P' = clone_result P e c' q)
-      \/ (wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true /\ evs = []) ).
+      \/ (wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true /\ evs = [])
+      \/ (wait4_owned_b P e = true /\ evs = []) ).
 Proof.
   intros segs cfg p P evs P' Hp.
   inversion Hp; subst.
@@ -1069,24 +1340,34 @@ Proof.
     split; [eassumption|]. reflexivity.
   - (* pstep_wait_reap *)
     eexists. split; [eassumption | split; [reflexivity|]].
-    right; right. split; [assumption | reflexivity].
+    right; right; left. split; [assumption | reflexivity].
+  - (* pstep_wait_nohang_reap *)
+    eexists. split; [eassumption | split; [reflexivity|]].
+    right; right; right. split; [assumption | reflexivity].
+  - (* pstep_wait_nohang_zero *)
+    eexists. split; [eassumption | split; [reflexivity|]].
+    right; right; right. split; [assumption | reflexivity].
 Qed.
 
-(** A step to the error transition is one of the two refusing arms. *)
+(** A step to the error transition is one of the three refusing arms: a
+    released [SError], the surface guard, or the [wait4] gate's refusal. *)
 Lemma pstep_error_cases : forall segs cfg p P evs,
   pstep_at segs cfg p P evs PError ->
   exists e,
     look P p = Some e /\ pe_pid e = p /\
     ( (sstep_cfg segs cfg (pe_cfg (pcfg_shared P) e) evs SError
        /\ wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false)
-      \/ (multiproc_allowed P (pe_cfg (pcfg_shared P) e) = false /\ evs = []) ).
+      \/ (multiproc_allowed P (pe_cfg (pcfg_shared P) e) = false /\ evs = [])
+      \/ (wait4_refused_b segs P e = true /\ evs = []) ).
 Proof.
   intros segs cfg p P evs Hp.
   inversion Hp; subst.
   - eexists. split; [eassumption | split; [reflexivity|]].
     left. split; assumption.
   - eexists. split; [eassumption | split; [reflexivity|]].
-    right. split; [assumption | reflexivity].
+    right; left. split; [assumption | reflexivity].
+  - eexists. split; [eassumption | split; [reflexivity|]].
+    right; right. split; [assumption | reflexivity].
 Qed.
 
 (** The splice does not disturb the halt flag: [set_fsys] and [set_io]
@@ -1119,6 +1400,67 @@ Proof.
         pose proof (sstep_cfg_halted_none _ _ _ _ _ Hss) as Hh;
         rewrite m_halted_pe_cfg in Hh; exact Hh
     end.
+Qed.
+
+(* -------------------------------------------------- facts about the wait4 gate *)
+
+(** The gate needs a pending 260, so a pending call with any other number,
+    or no pending call, keeps it closed. *)
+Lemma wait4_owned_not_260 : forall P e x8,
+  ms_svc_pending (pe_ms e) = Some x8 -> bv_unsigned x8 <> 260%Z ->
+  wait4_owned_b P e = false.
+Proof.
+  intros P e x8 Hs Hn. unfold wait4_owned_b. rewrite Hs.
+  apply andb_false_intro1. apply Z.eqb_neq. exact Hn.
+Qed.
+
+Lemma wait4_owned_instr : forall P e,
+  ms_svc_pending (pe_ms e) = None -> wait4_owned_b P e = false.
+Proof. intros P e Hs. unfold wait4_owned_b. rewrite Hs. reflexivity. Qed.
+
+Lemma wait4_owned_260 : forall P e,
+  wait4_owned_b P e = true ->
+  exists x8, ms_svc_pending (pe_ms e) = Some x8 /\ bv_unsigned x8 = 260%Z.
+Proof.
+  intros P e H. unfold wait4_owned_b in H.
+  destruct (ms_svc_pending (pe_ms e)) as [x8|]; [|discriminate H].
+  apply andb_true_iff in H as [H _]. apply Z.eqb_eq in H.
+  exists x8. split; [reflexivity | exact H].
+Qed.
+
+(** 260 is on the multi-process surface, so the surface guard is open
+    wherever the gate is. *)
+Lemma wait4_owned_allowed : forall P e,
+  wait4_owned_b P e = true -> multiproc_allowed P (pe_cfg (pcfg_shared P) e) = true.
+Proof.
+  intros P e H. destruct (wait4_owned_260 P e H) as (x8 & Hs & H260).
+  unfold multiproc_allowed. cbn [cfg_ms pe_cfg]. rewrite Hs, H260.
+  destruct (Nat.leb _ _); reflexivity.
+Qed.
+
+(** The blocking shape and the WNOHANG shape are disjoint: the option word
+    is 0 in one and [WNOHANG] in the other. *)
+Lemma wait4_blocking_not_nohang : forall ms a,
+  wait4_blocking_args ms = Some a -> wait4_nohang_args ms = None.
+Proof.
+  intros ms a. unfold wait4_blocking_args, wait4_nohang_args.
+  destruct (negb (Z.eqb (bv_unsigned (pid32 (ms_gpr ms 0))) WAIT_ANY32));
+    [intros H; discriminate H|].
+  destruct (w_is0 (waitopts32 (ms_gpr ms 2))) eqn:Hw; cbn [negb];
+    [|intros H; discriminate H].
+  intros _. unfold w_is0 in Hw. apply bv_eqb_true_eq in Hw. rewrite Hw. reflexivity.
+Qed.
+
+(** The refusal is behind the gate, and never at the blocking shape. *)
+Lemma wait4_refused_not_owned : forall segs P e,
+  wait4_owned_b P e = false -> wait4_refused_b segs P e = false.
+Proof. intros segs P e H. unfold wait4_refused_b. rewrite H. reflexivity. Qed.
+
+Lemma wait4_refused_intercept : forall segs P e,
+  wait4_intercept_b (pe_cfg (pcfg_shared P) e) = true -> wait4_refused_b segs P e = false.
+Proof.
+  intros segs P e H. unfold wait4_refused_b. rewrite H.
+  cbn [negb]. rewrite andb_false_r. reflexivity.
 Qed.
 
 (* =========================================================================
@@ -1270,7 +1612,16 @@ Definition multiproc_ok (ext : ExtSpec) (segs : list Segment) (P : pconfig)
      end.
 
 (** ONE TRANSITION OF THE SYSTEM UNDER AN EXTENSION, indexed by the pid
-    that steps, as [pstep_at] is. *)
+    that steps, as [pstep_at] is.
+
+    THE [wait4] GATE HOLDS HERE TOO, CLAIMED OR NOT.  [px_other] and
+    [px_error] are behind [wait4_owned_b = false], so neither the released
+    step nor the extension answers a [wait4] of a caller with a child in
+    the table, and the three gate arms below carry no claim premise.  They
+    could not: [ext_agrees] promises an unclaimed call only for the
+    blocking shape, so a claim premise on the WNOHANG arms would break
+    [pstep_x_at_agree_iff].  [px_wait_reap] keeps its claim premise as it
+    was; a claimed blocking call therefore still has no arm. *)
 Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cfg : SpuriousCfg)
   : Pid -> pconfig -> list event -> pstep_to -> Prop :=
 | px_other : forall P e evs c' ctx' st',
@@ -1279,6 +1630,7 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
       (pe_cfg (pcfg_shared P) e) evs (SNext c') ctx' st' ->
     clone_pending_b (pe_cfg (pcfg_shared P) e) = false ->
     wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
+    wait4_owned_b P e = false ->
     multiproc_ok ext segs P e = true ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs (PNext (absorb_x P e c' ctx' st'))
 | px_clone : forall P e evs c' q child ret st',
@@ -1364,11 +1716,46 @@ Inductive pstep_x_at (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cf
     xsstep ext segs cfg (pe_nsctx e) (sh_ns (pcfg_shared P))
       (pe_cfg (pcfg_shared P) e) evs SError ctx' st' ->
     wait4_intercept_b (pe_cfg (pcfg_shared P) e) = false ->
+    wait4_owned_b P e = false ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P evs PError
 | px_outside : forall P e,
     look P (pe_pid e) = Some e ->
     m_halted (pe_model e) = None ->
     multiproc_ok ext segs P e = false ->
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError
+| px_wait_nohang_reap : forall P e q ez x8 stat_addr ru ru_bytes status eff
+                          model'' dumped,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    ms_svc_pending (pe_ms e) = Some x8 ->
+    wait4_owned_b P e = true ->
+    wait4_nohang_args (pe_ms e) = Some (stat_addr, ru) ->
+    wait4_rusage_ok_b segs (pe_ms e) x8 ru = true ->
+    look P q = Some ez ->
+    q <> pe_pid e ->
+    pe_parent ez = Some (pe_pid e) ->
+    m_killed (pe_model ez) = None ->
+    pe_status dumped ez = Some status ->
+    read_bytes_map (in_wmem (sys_input segs (pe_ms e) x8)) stat_addr
+      (Z_to_bv 64 4) <> None ->
+    List.length ru_bytes = Z.to_nat RUSAGE_BYTES ->
+    eff = mkEffect q (wait4_nohang_writes stat_addr status ru ru_bytes) [] ->
+    materialize_model_accesses (cfg_model (pe_cfg (pcfg_shared P) e))
+      (syscall_effect_accesses eff) = Some model'' ->
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] (PNext (wait4_reap_result P e q eff model''))
+| px_wait_nohang_zero : forall P e x8 stat_addr ru,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    ms_svc_pending (pe_ms e) = Some x8 ->
+    wait4_owned_b P e = true ->
+    wait4_nohang_args (pe_ms e) = Some (stat_addr, ru) ->
+    wait4_rusage_ok_b segs (pe_ms e) x8 ru = true ->
+    List.existsb pe_zombie_b (children_of P (pe_pid e)) = false ->
+    pstep_x_at ext cenv segs cfg (pe_pid e) P [] (PNext (wait4_zero_result P e))
+| px_wait_refuse : forall P e,
+    look P (pe_pid e) = Some e ->
+    m_halted (pe_model e) = None ->
+    wait4_refused_b segs P e = true ->
     pstep_x_at ext cenv segs cfg (pe_pid e) P [] PError.
 
 Definition pstep_x_cfg (ext : ExtSpec) (cenv : CloneEnv) (segs : list Segment) (cfg : SpuriousCfg)
@@ -1384,7 +1771,8 @@ Lemma pstep_x_at_cenv_mono : forall ext (cenv1 cenv2 : CloneEnv) segs cfg p P ev
 Proof.
   intros ext cenv1 cenv2 segs cfg p P evs r Hsub H.
   destruct H; [eapply px_other | eapply px_clone | eapply px_clone_fail | eapply px_clone_unmodeled
-              | eapply px_clone_claimed | eapply px_wait_reap | eapply px_error | eapply px_outside];
+              | eapply px_clone_claimed | eapply px_wait_reap | eapply px_error | eapply px_outside
+              | eapply px_wait_nohang_reap | eapply px_wait_nohang_zero | eapply px_wait_refuse];
     eauto.
 Qed.
 
@@ -1454,6 +1842,16 @@ Proof.
   destruct (ms_svc_pending (cfg_ms c)) as [x8|]; cbv beta iota in H |- *; [|reflexivity].
   unfold clone_sysno in H. apply orb_true_iff in H as [H|H]; apply Z.eqb_eq in H;
     rewrite H; reflexivity.
+Qed.
+
+(** A pending clone is not a [wait4], so the gate is closed at it. *)
+Lemma clone_pending_not_owned : forall P e,
+  clone_pending_b (pe_cfg (pcfg_shared P) e) = true -> wait4_owned_b P e = false.
+Proof.
+  intros P e H. unfold clone_pending_b in H. cbn [cfg_ms pe_cfg] in H.
+  destruct (ms_svc_pending (pe_ms e)) as [x8|] eqn:Hs; [|discriminate H].
+  apply (wait4_owned_not_260 P e x8 Hs). unfold clone_sysno in H.
+  apply orb_true_iff in H as [H|H]; apply Z.eqb_eq in H; rewrite H; discriminate.
 Qed.
 
 (** A return in the errno range is [-en] for an [en] in [1, 4095]. *)
@@ -1603,15 +2001,19 @@ Theorem pstep_x_at_agree_iff : forall ext cenv segs cfg p P evs r,
 Proof.
   intros ext cenv segs cfg p P evs r Hag. split.
   - intros H. revert Hag. destruct H as
-      [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hmp
+      [ Q e ev c' ctx' st' Hl Hx Hcp Hwt Hwo Hmp
       | Q e ev c' q child ret st' Hl Hcl Hs Hsucc Hq Hfree Hma Hec
       | Q e ev c' en hq st' Hl Hcl Hs Hcp Hsucc Hret Hma Hec Hnr
       | Q e ev c' hq Hl Hcl Hs Hcp Hma Hec
       | Q e Hl Hh Hcp Hcl
       | Q e q ez x8 stat_addr status eff model'' dumped
           Hl Hcl Hh Hx8 Hwt Hargs Hq Hne Hpar Hk Hst Hrd Heff Hmat
-      | Q e ev ctx' st' Hl Hx Hwt
-      | Q e Hl Hh Hmp ]; intros Hag;
+      | Q e ev ctx' st' Hl Hx Hwt Hwo
+      | Q e Hl Hh Hmp
+      | Q e q ez x8 stat_addr ru ru_bytes status eff model'' dumped
+          Hl Hh Hx8 Hwo Hna Hru Hq Hne Hpar Hk Hst Hrd Hlen Heff Hmat
+      | Q e x8 stat_addr ru Hl Hh Hx8 Hwo Hna Hru Hz
+      | Q e Hl Hh Hrf ]; intros Hag;
       destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* px_other *)
       apply (proj1 (Hxs _ _ _ _ _)) in Hx. destruct Hx as (Hs & -> & ->).
@@ -1628,7 +2030,8 @@ Proof.
       destruct Hec as [Heq | (en' & _ & Heq)]; [discriminate Heq|].
       injection Heq as _ ->. rewrite absorb_x_same.
       apply pstep_other; try assumption.
-      apply clone_pending_not_wait4. exact Hcp.
+      * apply clone_pending_not_wait4. exact Hcp.
+      * apply clone_pending_not_owned. exact Hcp.
     + (* px_clone_unmodeled *)
       apply (proj1 (Hcln _ _)) in Hec.
       destruct Hec as [Heq | (en & _ & Heq)]; discriminate Heq.
@@ -1641,13 +2044,23 @@ Proof.
       apply pstep_error; assumption.
     + (* px_outside *)
       rewrite Hmpe in Hmp. apply pstep_outside; assumption.
+    + (* px_wait_nohang_reap: the gate's own arm, on both sides *)
+      eapply pstep_wait_nohang_reap; eassumption.
+    + (* px_wait_nohang_zero *)
+      eapply pstep_wait_nohang_zero; eassumption.
+    + (* px_wait_refuse *)
+      apply pstep_wait_refuse; assumption.
   - intros H. revert Hag. destruct H as
-      [ Q e ev c' Hl Hs Hsucc Hwt Hma
+      [ Q e ev c' Hl Hs Hsucc Hwt Hma Hwo
       | Q e ev c' q Hl Hs Hsucc Hq Hfree Hma
       | Q e q ez x8 stat_addr status eff model'' dumped
           Hl Hh Hx8 Hwt Hargs Hq Hne Hpar Hk Hst Hrd Heff Hmat
-      | Q e ev Hl Hs Hwt
-      | Q e Hl Hh Hma ]; intros Hag;
+      | Q e ev Hl Hs Hwt Hwo
+      | Q e Hl Hh Hma
+      | Q e q ez x8 stat_addr ru ru_bytes status eff model'' dumped
+          Hl Hh Hx8 Hwo Hna Hru Hq Hne Hpar Hk Hst Hrd Hlen Heff Hmat
+      | Q e x8 stat_addr ru Hl Hh Hx8 Hwo Hna Hru Hz
+      | Q e Hl Hh Hrf ]; intros Hag;
       destruct (Hag e Hl) as (Hxs & Hclp & Hwtp & Hmpe & Hcln & Hnrf).
     + (* pstep_other *)
       destruct (clone_pending_b (pe_cfg (pcfg_shared Q) e)) eqn:Hp.
@@ -1676,6 +2089,12 @@ Proof.
       apply (proj2 (Hxs _ _ _ _ _)). split; [exact Hs | split; reflexivity].
     + (* pstep_outside *)
       apply px_outside; try assumption. rewrite Hmpe. exact Hma.
+    + (* pstep_wait_nohang_reap *)
+      eapply px_wait_nohang_reap; eassumption.
+    + (* pstep_wait_nohang_zero *)
+      eapply px_wait_nohang_zero; eassumption.
+    + (* pstep_wait_refuse *)
+      apply px_wait_refuse; assumption.
 Qed.
 
 (** An extension that claims no pending call of an entry of [P] and whose
