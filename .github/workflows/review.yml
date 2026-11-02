@@ -39,7 +39,10 @@
 #   review  reads .review/, with this repository's main and the Linux and QEMU source the model describes, and asks
 #           Claude for the comment. It holds an identity token, which Anthropic exchanges for a short-lived token that
 #           can call Claude and nothing else; no key is stored. Anthropic's federation rule admits this file alone, on
-#           refs/heads/main, for the three events below, and refuses a job in review-screen.
+#           refs/heads/main, for the three events below. That rule is to refuse a job in review-screen too; until it
+#           does, the screen job could exchange its identity token for the review's Claude token, though the only
+#           code it runs is .github/screen.py from main. The review job cannot get the screen's tokens: they need
+#           the environment.
 #   post    posts that comment, or replaces the one it posted before, when POST_REVIEW says so, and takes the label
 #           review-held off.
 #   hold    labels a held pull request or issue review-held and says so in a comment. It holds no model, and has no
