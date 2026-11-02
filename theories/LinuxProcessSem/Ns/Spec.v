@@ -68,10 +68,12 @@ Proof. intros i m ctx st Hflat _ o. unfold ns_spec. rewrite Hflat. reflexivity. 
    Injected refusals
    ========================================================================= *)
 
-(** The injected refusals of the arms [ns_table] holds.  An answer of an
-    arm whose refusals are not listed is never filtered; the pass-through
-    calls list none, so none of their answers is filtered outside the
-    released world. *)
+(** The injected refusals of the namespace arms [ns_table] holds.  An answer
+    of a namespace arm whose refusals are not listed is never filtered.  The
+    pass-through calls ([Pass.pass_numbers]) are not listed here: their
+    answer is the released answer in every world, so [ns_refusal] gives them
+    the released filter itself ([Run.spurious_refusal_cfg], which also
+    knows [brk]'s refusal by value). *)
 Definition ns_injected_table : list NsInjected :=
   task_injected ++ file_injected ++ fsops_injected ++ user_injected ++ mount_injected
   ++ net_injected.
@@ -100,12 +102,16 @@ Definition ns_refusal_off_b (cfg : SpuriousCfg) (i : SyscallInput) (ret : word) 
   end.
 
 (** The forced-only filter of [ns_ext]: the released filter for a task in
-    the released world; elsewhere, a refusal of switched-off families where the model
-    also admits an answer that is no refusal at all (the state did not
-    force the refusal). *)
+    the released world, and for a pass-through call in every world (its
+    answer is the released answer, [Pass.pass_arms_released], so the
+    released question "did the state force this refusal?" is the same
+    question); elsewhere, a refusal of switched-off families where the
+    model also admits an answer that is no refusal at all (the state did
+    not force the refusal). *)
 Definition ns_refusal (cfg : SpuriousCfg) (i : SyscallInput) (m : Model) (ctx : NsCtx)
     (st : NsState) (eff : SyscallEffect) : Prop :=
-  if flat_view ctx st then spurious_refusal_cfg cfg i m eff
+  if flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers
+  then spurious_refusal_cfg cfg i m eff
   else ns_refusal_off_b cfg i (eff_ret eff) = true
        /\ exists eff' m' ctx' st' evs',
             ns_spec i m ctx st (EOk eff' m' ctx' st' evs') /\ ns_matching i (eff_ret eff') = [].
@@ -132,7 +138,7 @@ Lemma ns_spurious_refusal_cfg_mono : forall cfg1 cfg2 i m ctx st eff,
   cfg_le cfg1 cfg2 -> ns_refusal cfg2 i m ctx st eff -> ns_refusal cfg1 i m ctx st eff.
 Proof.
   intros cfg1 cfg2 i m ctx st eff Hle. unfold ns_refusal.
-  destruct (flat_view ctx st).
+  destruct (flat_view ctx st || existsb (Z.eqb (ns_sysno i)) pass_numbers).
   - unfold spurious_refusal_cfg, injected_family_off.
     destruct (injected_arm (bv_unsigned (in_sysno i))) as [a|]; [|intros [Hc _]; discriminate Hc].
     intros [Hoff Hrest]. split; [|exact Hrest].
