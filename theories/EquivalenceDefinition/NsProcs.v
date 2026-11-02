@@ -105,7 +105,7 @@ Proof.
   intros ext cenv segs cfg p P evs P' H Hlt.
   inversion H; subst; try (do 5 eexists; reflexivity); exfalso;
     unfold absorb_x, absorb, wait4_zero_result, wait4_reap_result in Hlt;
-    simpl pcfg_procs in Hlt;
+    simpl pcfg_procs in Hlt; try rewrite orphan_at_exit_length in Hlt;
     first
       [ rewrite replace_in_length in Hlt; lia
       | match type of Hlt with
