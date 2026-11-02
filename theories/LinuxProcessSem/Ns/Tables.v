@@ -296,13 +296,20 @@ Definition default_mi_env : MiEnv :=
     link dump ([Net.nl_env_ok]).  That bound is a fact of the build's
     configuration (the attribute sizes [if_nlmsg_size] and the address
     families' [get_link_af_size] add up); a value below Linux's makes the
-    model refuse the dump Linux gives. *)
+    model refuse the dump Linux gives.  Last, the names KNOWN ABSENT from
+    a host directory: pairs of a host directory's dentry and a name whose
+    lookup there returns -ENOENT, as a negative dentry records it.  A
+    host lookup of a name the tables do not list is otherwise undecided;
+    a pair is a measured fact about the host (stat of that path gave
+    ENOENT), and a statement that lists one asks that nothing outside the
+    model creates the name. *)
 Record NsEnv := mkNsEnv {
   env_mount_max     : Z;
   env_proc_entries  : list ProcEntry;
   env_net_fallback  : list NetIf;
   env_mountinfo     : MiEnv;
-  env_nl_link_max   : Z
+  env_nl_link_max   : Z;
+  env_host_absent   : list (positive * list byte)
 }.
 
 (** The shared namespace state of a whole system.  [ns_files] holds the
@@ -371,7 +378,7 @@ Fixpoint pid_in (ps : list (positive * Z)) (pidns : positive) : option Z :=
     no procfs entry.  A core builds its released world from this, never
     from the constructor, so a new field changes no caller. *)
 Definition empty_nsstate : NsState :=
-  mkNsState [] [] [] [] [] [] [] [] [] (mkNsEnv 100000%Z [] [] default_mi_env 65536%Z).
+  mkNsState [] [] [] [] [] [] [] [] [] (mkNsEnv 100000%Z [] [] default_mi_env 65536%Z []).
 
 Definition with_mounts (st : NsState) (ms : list Mount) : NsState :=
   mkNsState ms (ns_userns st) (ns_mntns st) (ns_pidns st) (ns_netns st) (ns_sbs st)

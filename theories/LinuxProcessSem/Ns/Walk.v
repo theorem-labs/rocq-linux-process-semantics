@@ -570,8 +570,10 @@ Definition proc_root_pidns (st : NsState) (d : positive) : option (option positi
   end.
 
 (** [walk_component] (fs/namei.c) on listed dentries.  Missing tmpfs and
-    devpts names have the simple-lookup NAME_MAX limit, a host lookup is
-    outside this table, and procfs subdirectories enumerate ENOENT. *)
+    devpts names have the simple-lookup NAME_MAX limit; a missing host
+    name is -ENOENT when [Tables.env_host_absent] records it for that
+    directory and outside this table otherwise; procfs subdirectories
+    enumerate ENOENT. *)
 Definition lookup_child (st : NsState) (ctx : NsCtx) (fd_loc : Z -> option (option Loc))
     (current : Loc) (name : list byte) : LookupItem :=
   match current with
@@ -593,7 +595,10 @@ Definition lookup_child (st : NsState) (ctx : NsCtx) (fd_loc : Z -> option (opti
                       | SbTmpfs | SbDevpts =>
                           if Nat.ltb NAME_MAX (length name) then LIError ENAMETOOLONG else LIError ENOENT
                       | SbProc _ => LIError ENOENT
-                      | SbHost => LIOver
+                      | SbHost =>
+                          if existsb (fun p => Pos.eqb (fst p) d && bytes_eqb (snd p) name)
+                                     (env_host_absent (ns_env st))
+                          then LIError ENOENT else LIOver
                       end
                   | None => LIOver
                   end
