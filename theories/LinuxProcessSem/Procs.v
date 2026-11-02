@@ -1144,7 +1144,9 @@ Qed.
     ([pstep_x_at_any_clone_failure]: it is the largest), and a narrower one
     is an environment premise of the statement that names it.
 
-    [pstep_at] is untouched; [pstep_at_no_ext_iff] is the two relations'
+    The text of [pstep_at] is unchanged (its meaning changed with the
+    parent-side extensions, through [clone_success_b], [child_proc] and
+    [fd_shared_view]); [pstep_at_no_ext_iff] is the two relations'
     equality at [no_ext] and [any_clone_failure], and
     [pstep_x_at_released_iff] at any extension that leaves every entry of a
     configuration to the released step. *)
